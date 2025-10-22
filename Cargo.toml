@@ -1,0 +1,26 @@
+[package]
+name = "nexa-os"
+version = "0.0.1"
+edition = "2021"
+description = "Hybrid-kernel experimental operating system for NexaOS"
+authors = ["nexa-sys <opensource@nexa.sys>"]
+license = "MIT"
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["rlib"]
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+
+[dependencies]
+multiboot2 = { version = "0.24", default-features = false }
+spin = "0.9"
+uart_16550 = "0.3"
+x86_64 = "0.15"
+
+[build-dependencies]
+cc = "1"
