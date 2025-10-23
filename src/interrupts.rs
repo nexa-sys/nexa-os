@@ -133,11 +133,42 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
 extern "x86-interrupt" fn syscall_handler(stack_frame: InterruptStackFrame) {
     // Debug output to confirm handler is called
     crate::serial_println!("SYSCALL_HANDLER: INT 0x80 triggered from Ring {}!", (stack_frame.code_segment.0 & 3));
-    
-    // For now, just return 0 as syscall result
-    // We'll implement proper syscall handling later
-    
-    crate::serial_println!("SYSCALL_HANDLER: Returning 0");
-    
+    crate::kprintln!("SYSCALL_HANDLER: INT 0x80 triggered from Ring {}!", (stack_frame.code_segment.0 & 3));
+
+    // Get syscall parameters from registers
+    // In x86-64 System V ABI:
+    // RAX = syscall number
+    // RDI = arg1, RSI = arg2, RDX = arg3
+    let syscall_num: u64;
+    let arg1: u64;
+    let arg2: u64;
+    let arg3: u64;
+
+    unsafe {
+        core::arch::asm!(
+            "mov {0}, rax",
+            "mov {1}, rdi",
+            "mov {2}, rsi",
+            "mov {3}, rdx",
+            out(reg) syscall_num,
+            out(reg) arg1,
+            out(reg) arg2,
+            out(reg) arg3,
+        );
+    }
+
+    crate::serial_println!("SYSCALL: num={}, arg1={}, arg2={}, arg3={}",
+        syscall_num, arg1, arg2, arg3);
+
+    // Handle the syscall
+    let result = crate::syscall::handle_syscall(syscall_num, arg1, arg2, arg3);
+
+    crate::serial_println!("SYSCALL result: {}", result);
+
+    // Return result in RAX
+    unsafe {
+        core::arch::asm!("mov rax, {}", in(reg) result);
+    }
+
     // No EOI needed for software interrupts (INT 0x80)
 }

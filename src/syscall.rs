@@ -29,7 +29,9 @@ fn syscall_write(fd: u64, buf: *const u8, count: usize) -> u64 {
         // stdout or stderr
         let slice = unsafe { core::slice::from_raw_parts(buf, count) };
         if let Ok(s) = core::str::from_utf8(slice) {
+            // Output to both serial and VGA for user programs
             crate::serial_print!("{}", s);
+            crate::kprint!("{}", s);
             return count as u64;
         }
     }
