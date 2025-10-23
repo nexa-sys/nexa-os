@@ -66,42 +66,6 @@ _start:
     
     # Enable FIFO
     movw $0x3FA, %dx      # 0x3FA: FCR
-    movb $0xC7, %al
-    outb %al, %dx
-    
-    # Enable IRQs, set RTS/DTR
-    movw $0x3FC, %dx      # 0x3FC: MCR
-    movb $0x0B, %al
-    outb %al, %dx
-    
-    # Write test character
-    movw $0x3F8, %dx
-    movb $'B', %al
-    outb %al, %dx
-    
-    # Set up stack
-    movl $stack_top, %esp
-    movl %esp, %ebp
-    
-    # Debug: Stack set
-    movw $0x3F8, %dx
-    movb $'S', %al
-    outb %al, %dx
-
-    # Load GDT
-    lgdt gdt64_pointer
-    
-    # Debug: GDT loaded
-    movw $0x3F8, %dx
-    movb $'G', %al
-    outb %al, %dx
-
-    movw $0x10, %ax
-    movw %ax, %ds
-    movw %ax, %es
-    movw %ax, %fs
-    movw %ax, %gs
-    movw %ax, %ss
     
     # Debug: Segments loaded
     movw $0x3F8, %dx
@@ -129,6 +93,15 @@ _start:
     movl $0xC0000083, %eax       # map 3..4 GiB
     movl %eax, pdpt_table + 24
     movl $0x0, pdpt_table + 28
+
+    lgdt gdt64_pointer
+
+    mov $0x10, %ax
+    mov %ax, %ds
+    mov %ax, %es
+    mov %ax, %ss
+    mov %ax, %fs
+    mov %ax, %gs
     
     # Debug: Page tables set
     movw $0x3F8, %dx
@@ -139,7 +112,7 @@ _start:
     movl %eax, %cr3
 
     movl %cr4, %eax
-    orl $(1 << 5), %eax          # enable PAE
+    orl $((1 << 5) | (1 << 9) | (1 << 10)), %eax  # enable PAE + SSE support
     movl %eax, %cr4
     
     # Debug: PAE enabled
@@ -158,8 +131,11 @@ _start:
     outb %al, %dx
 
     movl %cr0, %eax
+    andl $~(1 << 2), %eax        # clear EM for SSE
     orl $(1 << 31), %eax         # enable paging
     orl $(1 << 0), %eax          # ensure protected mode
+    orl $(1 << 1), %eax          # set MP
+    orl $(1 << 5), %eax          # set NE
     movl %eax, %cr0
     
     # Debug: Paging enabled
@@ -194,44 +170,20 @@ long_mode_entry:
     movb $'Z', %al
     outb %al, %dx
     
-    # System V AMD64 ABI requires (%rsp + 8) to be 16-byte aligned before call
+    # System V AMD64 ABI requires %rsp to be 16-byte aligned *before* a call.
+    # CALL will push an 8-byte return address, leaving the callee with
+    # %rsp congruent to 8 (mod 16) as expected by compilers. Therefore we just
+    # align to 16 here without any extra subtraction.
     lea stack_top(%rip), %rsp
-    sub $8, %rsp          # Adjust for call's push
+    andq $~0xF, %rsp
 
     # Load multiboot parameters
     movl multiboot_magic(%rip), %esi
     movq multiboot_info(%rip), %rdi
-    
-    # Success message
-    movw $0x3F8, %dx
-    movb $'O', %al
-    outb %al, %dx
-    movb $'K', %al
-    outb %al, %dx
-    movb $'!', %al
-    outb %al, %dx
-    movb $'\n', %al
-    outb %al, %dx
-    
-    # Write to VGA
-    movabs $0xB8000, %rdi
-    movb $'N', (%rdi)
-    movb $0x0F, 1(%rdi)
-    movb $'e', 2(%rdi)
-    movb $0x0F, 3(%rdi)
-    movb $'x', 4(%rdi)
-    movb $0x0F, 5(%rdi)
-    movb $'a', 6(%rdi)
-    movb $0x0F, 7(%rdi)
-    movb $'O', 8(%rdi)
-    movb $0x0F, 9(%rdi)
-    movb $'S', 10(%rdi)
-    movb $0x0F, 11(%rdi)
-    
+
     cld
-    
-    # TODO: Fix Rust calling - for now just halt
-    # call kmain
+
+    call kmain
 
 1:
     hlt
