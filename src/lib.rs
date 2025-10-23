@@ -12,30 +12,39 @@ pub const MULTIBOOT_BOOTLOADER_MAGIC: u32 = 0x2BADB002;  // Multiboot v1
 pub const MULTIBOOT2_BOOTLOADER_MAGIC: u32 = 0x36d76289; // Multiboot v2
 
 pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
-    // Initialize serial port first for early debugging
-    serial::init();
+    // DON'T initialize serial - already done in assembly
+    // serial::init();
     
-    // Early marker - if this doesn't print, serial::init() crashed
+    // Early marker - write directly to serial
     unsafe {
         let port = 0x3F8 as *mut u8;
         port.write_volatile(b'R');
+        port.write_volatile(b'U');
+        port.write_volatile(b'S');
+        port.write_volatile(b'T');
+        port.write_volatile(b'\n');
     }
     
+    // Try to use serial_println macro
     serial_println!("[NexaOS] Kernel starting...");
     serial_println!("[NexaOS] Multiboot magic: {:#x}", magic);
+    serial_println!("[NexaOS] Multiboot info: {:#x}", multiboot_info_address);
     
-    vga_buffer::init();
+    // Skip VGA for now
+    // vga_buffer::init();
 
     // Accept both Multiboot v1 and v2
     if magic != MULTIBOOT2_BOOTLOADER_MAGIC && magic != MULTIBOOT_BOOTLOADER_MAGIC {
         serial_println!("[ERROR] Invalid Multiboot magic: {:#x}", magic);
-        println!("Invalid Multiboot magic: {:#x}", magic);
+        // Don't use println! yet
         arch::halt_loop();
     }
 
     serial_println!("[NexaOS] Kernel entry successful.");
-    println!("Welcome to NexaOS!");
+    serial_println!("[NexaOS] System halted.");
 
+    // Skip all other initialization for now
+    /*
     let boot_info = unsafe {
         BootInformation::load(multiboot_info_address as *const BootInformationHeader)
             .expect("valid multiboot info structure")
@@ -52,6 +61,7 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
 
     serial_println!("[NexaOS] Initialization complete.");
     println!("System halted. Enjoy exploring the code!");
+    */
 
     arch::halt_loop()
 }

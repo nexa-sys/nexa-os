@@ -2,6 +2,8 @@
 .section .boot.header,"a",@progbits
 .align 8
 
+.globl multiboot_header_start
+multiboot_header_start:
 multiboot2_header_start:
     .long 0xe85250d6                # magic
     .long 0                         # architecture (i386)
@@ -180,19 +182,56 @@ long_mode_entry:
     movb $'4', %al
     outb %al, %dx
     
+    # Set up stack
+    # Clear stack area first (in case BSS not zeroed)
+    lea stack_bottom(%rip), %rdi
+    mov $8192, %rcx          # Stack size
+    xor %rax, %rax
+    rep stosb
+    
+    # Debug: Stack cleared
+    movw $0x3F8, %dx
+    movb $'Z', %al
+    outb %al, %dx
+    
+    # System V AMD64 ABI requires (%rsp + 8) to be 16-byte aligned before call
     lea stack_top(%rip), %rsp
+    sub $8, %rsp          # Adjust for call's push
 
     # Load multiboot parameters
     movl multiboot_magic(%rip), %esi
     movq multiboot_info(%rip), %rdi
     
-    # Debug: About to call kmain
+    # Success message
     movw $0x3F8, %dx
+    movb $'O', %al
+    outb %al, %dx
     movb $'K', %al
     outb %al, %dx
-
+    movb $'!', %al
+    outb %al, %dx
+    movb $'\n', %al
+    outb %al, %dx
+    
+    # Write to VGA
+    movabs $0xB8000, %rdi
+    movb $'N', (%rdi)
+    movb $0x0F, 1(%rdi)
+    movb $'e', 2(%rdi)
+    movb $0x0F, 3(%rdi)
+    movb $'x', 4(%rdi)
+    movb $0x0F, 5(%rdi)
+    movb $'a', 6(%rdi)
+    movb $0x0F, 7(%rdi)
+    movb $'O', 8(%rdi)
+    movb $0x0F, 9(%rdi)
+    movb $'S', 10(%rdi)
+    movb $0x0F, 11(%rdi)
+    
     cld
-    call kmain
+    
+    # TODO: Fix Rust calling - for now just halt
+    # call kmain
 
 1:
     hlt
