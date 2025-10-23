@@ -30,7 +30,7 @@ pub enum Color {
 
 #[derive(Clone, Copy)]
 #[repr(transparent)]
-struct ColorCode(u8);
+pub struct ColorCode(u8);
 
 impl ColorCode {
     const fn new(foreground: Color, background: Color) -> Self {
@@ -51,20 +51,10 @@ pub fn init() {
     clear_screen();
 }
 
-pub fn writer() -> impl Write {
-    VGAWriter
-}
-
 pub(crate) fn _print(args: fmt::Arguments<'_>) {
-    VGAWriter.write_fmt(args).ok();
-}
-
-struct VGAWriter;
-
-impl Write for VGAWriter {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        VGA_WRITER.lock().write_str(s)
-    }
+    with_writer(|writer| {
+        writer.write_fmt(args).ok();
+    });
 }
 
 pub struct Writer {
@@ -82,6 +72,29 @@ impl Writer {
             color_code: ColorCode::new(Color::LightGreen, Color::Black),
             buffer_ptr: VGA_BUFFER_ADDR as *mut ScreenChar,
         }
+    }
+
+    pub fn color_code(&self) -> ColorCode {
+        self.color_code
+    }
+
+    pub fn set_color(&mut self, foreground: Color, background: Color) {
+        self.color_code = ColorCode::new(foreground, background);
+    }
+
+    pub fn set_color_code(&mut self, color_code: ColorCode) {
+        self.color_code = color_code;
+    }
+
+    pub fn with_color<F, R>(&mut self, foreground: Color, background: Color, f: F) -> R
+    where
+        F: FnOnce(&mut Writer) -> R,
+    {
+        let previous = self.color_code;
+        self.color_code = ColorCode::new(foreground, background);
+        let result = f(self);
+        self.color_code = previous;
+        result
     }
 
     fn write_byte(&mut self, byte: u8) {
@@ -164,4 +177,12 @@ pub fn clear_screen() {
         writer.clear_row(row);
     }
     writer.column_position = 0;
+}
+
+pub fn with_writer<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut Writer) -> R,
+{
+    let mut writer = VGA_WRITER.lock();
+    f(&mut writer)
 }
