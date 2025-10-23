@@ -8,49 +8,33 @@ pub mod vga_buffer;
 use core::panic::PanicInfo;
 use multiboot2::{BootInformation, BootInformationHeader};
 
-pub const MULTIBOOT2_BOOTLOADER_MAGIC: u32 = 0x36d76289;
-
-const MULTIBOOT_HEADER_MAGIC: u32 = 0xe85250d6;
-const MULTIBOOT_HEADER_ARCHITECTURE: u32 = 0;
-const MULTIBOOT_HEADER_LENGTH: u32 = core::mem::size_of::<MultibootHeader>() as u32;
-const MULTIBOOT_HEADER_CHECKSUM: u32 = (0u32)
-    .wrapping_sub(MULTIBOOT_HEADER_MAGIC + MULTIBOOT_HEADER_ARCHITECTURE + MULTIBOOT_HEADER_LENGTH);
-
-#[repr(C, packed)]
-struct MultibootHeader {
-    magic: u32,
-    architecture: u32,
-    length: u32,
-    checksum: u32,
-    end_tag_type: u16,
-    end_tag_flags: u16,
-    end_tag_size: u32,
-}
-
-#[link_section = ".boot.header"]
-#[used]
-static MULTIBOOT_HEADER: MultibootHeader = MultibootHeader {
-    magic: MULTIBOOT_HEADER_MAGIC,
-    architecture: MULTIBOOT_HEADER_ARCHITECTURE,
-    length: MULTIBOOT_HEADER_LENGTH,
-    checksum: MULTIBOOT_HEADER_CHECKSUM,
-    end_tag_type: 0,
-    end_tag_flags: 0,
-    end_tag_size: 8,
-};
+pub const MULTIBOOT_BOOTLOADER_MAGIC: u32 = 0x2BADB002;  // Multiboot v1
+pub const MULTIBOOT2_BOOTLOADER_MAGIC: u32 = 0x36d76289; // Multiboot v2
 
 pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
+    // Initialize serial port first for early debugging
     serial::init();
+    
+    // Early marker - if this doesn't print, serial::init() crashed
+    unsafe {
+        let port = 0x3F8 as *mut u8;
+        port.write_volatile(b'R');
+    }
+    
+    serial_println!("[NexaOS] Kernel starting...");
+    serial_println!("[NexaOS] Multiboot magic: {:#x}", magic);
+    
     vga_buffer::init();
 
-    if magic != MULTIBOOT2_BOOTLOADER_MAGIC {
-        serial_println!("Invalid Multiboot magic: {:#x}", magic);
+    // Accept both Multiboot v1 and v2
+    if magic != MULTIBOOT2_BOOTLOADER_MAGIC && magic != MULTIBOOT_BOOTLOADER_MAGIC {
+        serial_println!("[ERROR] Invalid Multiboot magic: {:#x}", magic);
         println!("Invalid Multiboot magic: {:#x}", magic);
         arch::halt_loop();
     }
 
-    serial_println!("[NexaOS] Kernel entry.");
-    println!("Welcome to NexaOS kernel bootstrap!");
+    serial_println!("[NexaOS] Kernel entry successful.");
+    println!("Welcome to NexaOS!");
 
     let boot_info = unsafe {
         BootInformation::load(multiboot_info_address as *const BootInformationHeader)

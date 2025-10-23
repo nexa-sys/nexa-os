@@ -10,5 +10,5 @@ fn main() {
     cc::Build::new()
         .file("boot/long_mode.S")
         .flag_if_supported("-fno-asynchronous-unwind-tables")
-        .compile("long_mode");
+        .compile("boot");
 }
