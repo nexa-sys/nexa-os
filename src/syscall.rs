@@ -24,11 +24,12 @@ pub fn handle_syscall(syscall_num: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 
 
 /// Write system call
 fn syscall_write(fd: u64, buf: *const u8, count: usize) -> u64 {
+    crate::kdebug!("syscall_write fd={} count={}", fd, count);
     if fd == 1 || fd == 2 {
         // stdout or stderr
         let slice = unsafe { core::slice::from_raw_parts(buf, count) };
         if let Ok(s) = core::str::from_utf8(slice) {
-            crate::print!("{}", s);
+            crate::serial_print!("{}", s);
             return count as u64;
         }
     }

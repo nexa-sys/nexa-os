@@ -1,0 +1,30 @@
+# Configuration file for Bochs
+plugin_ctrl: unmapped=1, e1000=1
+config_interface: textconfig
+display_library: x
+memory: host=1024, guest=512
+
+romimage: file=/usr/share/bochs/BIOS-bochs-latest
+vgaromimage: file=/usr/share/bochs/VGABIOS-lgpl-latest
+
+ata0: enabled=1, ioaddr1=0x1f0, ioaddr2=0x3f0, irq=14
+ata0-master: type=disk, path="dist/nexaos.iso", mode=flat, cylinders=1, heads=1, spt=1
+
+boot: cdrom
+
+# Enable logging
+log: bochsout.txt
+error: action=report
+info: action=report
+debug: action=report
+
+# CPU settings - use modern CPU model
+cpu: count=1, ips=4000000, model=nehalem
+
+# Enable triple fault debugging
+magic_break: enabled=1
+port_e9_hack: enabled=1
+
+# Stop on triple fault
+debugger: enabled=1
+break_on_triple_fault: 1

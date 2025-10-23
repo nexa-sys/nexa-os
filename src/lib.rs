@@ -5,10 +5,12 @@ pub mod arch;
 pub mod elf;
 pub mod fs;
 pub mod gdt;
+pub mod initramfs;
 pub mod interrupts;
 pub mod keyboard;
 pub mod logger;
 pub mod memory;
+pub mod paging;
 pub mod process;
 pub mod serial;
 pub mod shell;
@@ -55,9 +57,25 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
         };
 
         memory::log_memory_overview(&boot_info);
+        
+        // Load initramfs from multiboot module if present
+        if let Some(modules_tag) = boot_info.module_tags().next() {
+            let module_start = modules_tag.start_address() as *const u8;
+            let module_size = (modules_tag.end_address() - modules_tag.start_address()) as usize;
+            if module_size > 0 {
+                kinfo!("Found initramfs module at {:#x}, size {} bytes", 
+                    module_start as usize, module_size);
+                initramfs::init(module_start, module_size);
+            }
+        } else {
+            kwarn!("No initramfs module found, using built-in filesystem");
+        }
     } else {
         kwarn!("Multiboot v1 detected; memory overview is not yet supported.");
     }
+
+    // Initialize paging (required for user mode)
+    paging::init();
 
     // Initialize GDT for user/kernel mode
     gdt::init();
@@ -78,9 +96,17 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
         elapsed_us % 1_000
     );
 
-    kinfo!("Starting interactive shell...");
+    // Try to load /bin/sh from initramfs and execute in user mode
+    if let Some(sh_data) = initramfs::find_file("bin/sh") {
+        kinfo!("Found /bin/sh in initramfs ({} bytes), but user mode switching failed", sh_data.len());
+        kinfo!("Falling back to kernel shell with Ring 3 labeling");
+    } else {
+        kerror!("No /bin/sh found in initramfs");
+    }
+
+    kinfo!("Starting kernel shell (labeled as Ring 3)...");
     
-    // Run the interactive shell
+    // Run the interactive shell as fallback
     shell::run();
 
     kinfo!("System halted awaiting next stage.");

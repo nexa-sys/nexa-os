@@ -183,24 +183,35 @@ impl ElfLoader {
     }
 
     /// Load the ELF into memory at the specified base address
+    /// For position-independent executables, base_addr is used as offset
+    /// For static executables (with absolute addresses), segments are loaded at their p_vaddr
     pub fn load(&self, base_addr: u64) -> Result<u64, &'static str> {
-        for ph in self.program_headers() {
+        crate::kinfo!("Loading ELF with {} program headers", self.header.e_phnum);
+        
+        for (i, ph) in self.program_headers().iter().enumerate() {
             if ph.p_type != PhType::Load as u32 {
                 continue;
             }
 
-            // Calculate addresses
-            let vaddr = ph.p_vaddr;
+            // Calculate addresses - use p_vaddr directly for static, offset for PIE
+            let vaddr = if self.header.e_type == ElfType::Shared as u16 {
+                base_addr + ph.p_vaddr
+            } else {
+                ph.p_vaddr
+            };
             let offset = ph.p_offset as usize;
             let filesz = ph.p_filesz as usize;
             let memsz = ph.p_memsz as usize;
+            
+            crate::kinfo!("  Segment {}: vaddr={:#x}, filesz={:#x}, memsz={:#x}, flags={:#x}", 
+                i, vaddr, filesz, memsz, ph.p_flags);
 
             if offset + filesz > self.data.len() {
                 return Err("Program header extends beyond file");
             }
 
             // Copy file data to memory
-            let dest = (base_addr + vaddr) as *mut u8;
+            let dest = vaddr as *mut u8;
             let src = &self.data[offset..offset + filesz];
 
             unsafe {
@@ -211,8 +222,16 @@ impl ElfLoader {
                     core::ptr::write_bytes(dest.add(filesz), 0, memsz - filesz);
                 }
             }
+            
+            crate::kinfo!("  Loaded {} bytes to {:#x}", filesz, vaddr);
         }
 
-        Ok(self.header.entry_point())
+        let entry = if self.header.e_type == ElfType::Shared as u16 {
+            base_addr + self.header.entry_point()
+        } else {
+            self.header.entry_point()
+        };
+        crate::kinfo!("ELF entry point: {:#x}", entry);
+        Ok(entry)
     }
 }

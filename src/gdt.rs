@@ -33,14 +33,21 @@ pub fn init() {
         TSS.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = {
             const STACK_SIZE: usize = 4096 * 5;
             static mut STACK: [u8; STACK_SIZE] = [0; STACK_SIZE];
-            VirtAddr::from_ptr(&STACK) + STACK_SIZE as u64
+            // Ensure 16-byte alignment after CPU pushes interrupt frame (adds 8 bytes).
+            let top = VirtAddr::from_ptr(&STACK) + STACK_SIZE as u64;
+            top
         };
 
-        // Setup privilege stack for syscall
+        // Setup privilege stack for syscall (RSP0 for Ring 0)
         TSS.privilege_stack_table[0] = {
             const STACK_SIZE: usize = 4096 * 5;
             static mut STACK: [u8; STACK_SIZE] = [0; STACK_SIZE];
-            VirtAddr::from_ptr(&STACK) + STACK_SIZE as u64
+            // Align so that after the processor pushes the interrupt frame (40 bytes)
+            // the resulting RSP is still 16-byte aligned, which avoids #GP faults
+            // when the compiler emits aligned SSE stores (movaps) in handlers.
+            let top = VirtAddr::from_ptr(&raw const STACK) + STACK_SIZE as u64;
+            // Subtract 8 bytes since 40 mod 16 = 8. This keeps (top - 8 - 40) % 16 == 0.
+            top - 8u64
         };
 
         // Create GDT

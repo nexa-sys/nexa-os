@@ -16,16 +16,28 @@ done
 
 cargo build --release
 
+# Build userspace programs and initramfs
+echo "Building user-space programs..."
+bash "$ROOT_DIR/scripts/build-userspace.sh"
+
 rm -rf "$ISO_DIR" "$DIST_DIR"
 mkdir -p "$ISO_DIR/boot/grub" "$DIST_DIR"
 
 cp "$KERNEL_BIN" "$ISO_DIR/boot/kernel.elf"
+
+# Copy initramfs if it exists
+if [ -f "$ROOT_DIR/build/initramfs.cpio" ]; then
+    cp "$ROOT_DIR/build/initramfs.cpio" "$ISO_DIR/boot/initramfs.cpio"
+    echo "Including initramfs in ISO"
+fi
+
 cat > "$ISO_DIR/boot/grub/grub.cfg" <<'CFG'
 set timeout=0
 set default=0
 
 menuentry "NexaOS" {
     multiboot2 /boot/kernel.elf
+    module2 /boot/initramfs.cpio
     boot
 }
 CFG
