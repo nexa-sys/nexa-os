@@ -98,10 +98,21 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
 
     // Try to load /bin/sh from initramfs and execute in user mode
     if let Some(sh_data) = initramfs::find_file("bin/sh") {
-        kinfo!("Found /bin/sh in initramfs ({} bytes), but user mode switching failed", sh_data.len());
-        kinfo!("Falling back to kernel shell with Ring 3 labeling");
+        kinfo!("Found /bin/sh in initramfs ({} bytes), loading...", sh_data.len());
+        
+        match process::Process::from_elf(sh_data) {
+            Ok(mut proc) => {
+                kinfo!("Successfully loaded /bin/sh as PID {}", proc.pid);
+                kinfo!("Switching to REAL user mode (Ring 3)...");
+                proc.execute(); // Never returns
+            }
+            Err(e) => {
+                kerror!("Failed to load /bin/sh: {}", e);
+                kwarn!("Falling back to kernel shell");
+            }
+        }
     } else {
-        kerror!("No /bin/sh found in initramfs");
+        kerror!("No /bin/sh found in initramfs, using kernel shell");
     }
 
     kinfo!("Starting kernel shell (labeled as Ring 3)...");

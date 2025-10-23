@@ -11,6 +11,6 @@
   "linker-flavor": "ld",
   "panic-strategy": "abort",
   "relocation-model": "static",
-  "code-model": "kernel",
+  "code-model": "small",
   "function-sections": true
 }

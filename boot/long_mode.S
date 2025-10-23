@@ -169,6 +169,8 @@ long_mode_entry:
     movw $0x3F8, %dx
     movb $'Z', %al
     outb %al, %dx
+    movb $'\n', %al
+    outb %al, %dx
     
     # System V AMD64 ABI requires %rsp to be 16-byte aligned *before* a call.
     # CALL will push an 8-byte return address, leaving the callee with

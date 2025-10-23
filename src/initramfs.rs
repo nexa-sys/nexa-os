@@ -84,11 +84,15 @@ impl Initramfs {
     
     /// Find a specific file by path
     pub fn find(&self, path: &str) -> Option<InitramfsEntry> {
+        crate::ktrace!("Initramfs::find searching for '{}'", path);
         for entry in self.entries() {
+            crate::ktrace!("Checking entry: '{}'", entry.name);
             if entry.name == path {
+                crate::ktrace!("Found matching entry: '{}'", entry.name);
                 return Some(entry);
             }
         }
+        crate::ktrace!("File '{}' not found in initramfs", path);
         None
     }
 }
@@ -168,7 +172,7 @@ pub fn init(base: *const u8, size: usize) {
     if let Some(ref ramfs) = unsafe { &INITRAMFS } {
         crate::kinfo!("Initramfs contents:");
         for entry in ramfs.entries() {
-            crate::kinfo!("  {} ({} bytes, mode {:#o})", entry.name, entry.data.len(), entry.mode);
+            crate::kinfo!("  '{}' ({} bytes, mode {:#o})", entry.name, entry.data.len(), entry.mode);
         }
     }
 }
@@ -180,5 +184,9 @@ pub fn get() -> Option<&'static Initramfs> {
 
 /// Find a file in initramfs
 pub fn find_file(path: &str) -> Option<&'static [u8]> {
-    get()?.find(path).map(|e| e.data)
+    crate::kdebug!("Searching for file: '{}'", path);
+    get()?.find(path).map(|e| {
+        crate::kdebug!("Found file '{}' with {} bytes", e.name, e.data.len());
+        e.data
+    })
 }

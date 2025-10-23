@@ -58,18 +58,20 @@ pub fn init() {
         let kernel_code = gdt.append(Descriptor::kernel_code_segment());
         // Entry 2: Kernel data segment
         let kernel_data = gdt.append(Descriptor::kernel_data_segment());
-        // Entry 3: User code segment
-        let user_code = gdt.append(Descriptor::user_code_segment());
-        // Entry 4: User data segment
-        let user_data = gdt.append(Descriptor::user_data_segment());
+        // Entry 3: User code segment - manually set DPL=3
+        let user_code = Descriptor::user_code_segment();
+        let user_code_sel = gdt.append(user_code);
+        // Entry 4: User data segment - manually set DPL=3  
+        let user_data = Descriptor::user_data_segment();
+        let user_data_sel = gdt.append(user_data);
         // Entry 5: TSS
         let tss = gdt.append(Descriptor::tss_segment(&TSS));
 
         SELECTORS = Some(Selectors {
             code_selector: kernel_code,
             data_selector: kernel_data,
-            user_code_selector: user_code,
-            user_data_selector: user_data,
+            user_code_selector: SegmentSelector((user_code_sel.0 as u16) | 3),
+            user_data_selector: SegmentSelector((user_data_sel.0 as u16) | 3),
             tss_selector: tss,
         });
 
@@ -88,12 +90,20 @@ pub fn init() {
         }
     }
 
+    // Debug: Print selectors
+    let _selectors = get_selectors();
+    crate::kinfo!("TSS privilege stack[0]: {:#x}", unsafe { TSS.privilege_stack_table[0].as_u64() });
+
     crate::kinfo!("GDT initialized with user/kernel segments");
 }
 
 /// Get the current selectors
 pub fn get_selectors() -> &'static Selectors {
-    unsafe {
+    let selectors = unsafe {
         SELECTORS.as_ref().expect("GDT not initialized")
-    }
+    };
+    crate::kinfo!("GDT selectors: code=0x{:x}, data=0x{:x}, user_code=0x{:x}, user_data=0x{:x}, tss=0x{:x}",
+        selectors.code_selector.0, selectors.data_selector.0, 
+        selectors.user_code_selector.0, selectors.user_data_selector.0, selectors.tss_selector.0);
+    selectors
 }

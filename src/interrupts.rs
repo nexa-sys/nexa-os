@@ -11,7 +11,7 @@ pub static PICS: spin::Mutex<ChainedPics> = spin::Mutex::new(unsafe { ChainedPic
 
 // Exception handlers
 extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
-    crate::kinfo!("BREAKPOINT: {:#?}", stack_frame);
+    crate::serial_println!("BREAKPOINT_HANDLER: int 3 triggered from Ring {}!", (stack_frame.code_segment.0 & 3));
 }
 
 extern "x86-interrupt" fn page_fault_handler(
@@ -79,8 +79,11 @@ lazy_static! {
         idt[33].set_handler_fn(keyboard_interrupt_handler);
         
         // System call interrupt (INT 0x80)
-        idt[0x80].set_handler_fn(syscall_handler)
-            .set_privilege_level(x86_64::PrivilegeLevel::Ring3);
+        unsafe {
+            idt[0x80].set_handler_fn(syscall_handler)
+                .set_privilege_level(x86_64::PrivilegeLevel::Ring3)
+                .set_stack_index(0); // Use privilege stack table[0]
+        }
         
         idt
     };
@@ -89,7 +92,13 @@ lazy_static! {
 /// Initialize IDT with interrupt handlers
 pub fn init() {
     IDT.load();
-
+    crate::kinfo!("IDT loaded successfully");
+    crate::kinfo!("IDT[0x80] handler: {:?}", IDT[0x80]);
+    
+    // Test if we can trigger breakpoint interrupt manually
+    crate::kinfo!("Testing breakpoint interrupt...");
+    x86_64::instructions::interrupts::int3();
+    
     // Initialize PIC
     unsafe {
         PICS.lock().initialize();
@@ -122,29 +131,13 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
 }
 
 extern "x86-interrupt" fn syscall_handler(stack_frame: InterruptStackFrame) {
-    crate::serial_println!("SYSCALL_HANDLER called!");
+    // Debug output to confirm handler is called
+    crate::serial_println!("SYSCALL_HANDLER: INT 0x80 triggered from Ring {}!", (stack_frame.code_segment.0 & 3));
     
-    // System call handling via INT 0x80
-    // Arguments in: RAX (syscall#), RDI (arg1), RSI (arg2), RDX (arg3)
-    // Return value in: RAX
+    // For now, just return 0 as syscall result
+    // We'll implement proper syscall handling later
     
-    // Get syscall arguments from stack
-    // Stack: ... RAX, RBX, RCX, RDX, RSI, RDI, RBP, ... error_code, RIP, CS, RFLAGS, RSP, SS
-    let stack_ptr = &stack_frame as *const InterruptStackFrame as *const u64;
-    let syscall_num = unsafe { *stack_ptr.add(6) }; // RAX
-    let arg1 = unsafe { *stack_ptr.add(11) }; // RDI
-    let arg2 = unsafe { *stack_ptr.add(10) }; // RSI
-    let arg3 = unsafe { *stack_ptr.add(9) }; // RDX
-    
-    crate::serial_println!("SYSCALL: num={} arg1={:#x} arg2={:#x} arg3={:#x}", syscall_num, arg1, arg2, arg3);
-    
-    // Handle the system call
-    let result = crate::syscall::handle_syscall(syscall_num, arg1, arg2, arg3);
-    
-    // Write result back to RAX on stack
-    unsafe {
-        * (stack_ptr.add(5) as *mut u64) = result;
-    }
+    crate::serial_println!("SYSCALL_HANDLER: Returning 0");
     
     // No EOI needed for software interrupts (INT 0x80)
 }

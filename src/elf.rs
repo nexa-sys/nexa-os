@@ -150,16 +150,24 @@ pub struct ElfLoader {
 impl ElfLoader {
     /// Create a new ELF loader from raw bytes
     pub fn new(data: &'static [u8]) -> Result<Self, &'static str> {
+        crate::kinfo!("ElfLoader::new called with {} bytes", data.len());
         if data.len() < core::mem::size_of::<Elf64Header>() {
+            crate::kerror!("Data too small for ELF header");
             return Err("Data too small for ELF header");
         }
 
         let header = unsafe { &*(data.as_ptr() as *const Elf64Header) };
+        crate::kinfo!("ELF magic: {:#x}", header.e_ident[0] as u32 | 
+            (header.e_ident[1] as u32) << 8 | 
+            (header.e_ident[2] as u32) << 16 | 
+            (header.e_ident[3] as u32) << 24);
 
         if !header.is_valid() {
+            crate::kerror!("Invalid ELF header");
             return Err("Invalid ELF header");
         }
 
+        crate::kinfo!("ELF header is valid");
         Ok(Self { data, header })
     }
 
@@ -189,22 +197,21 @@ impl ElfLoader {
         crate::kinfo!("Loading ELF with {} program headers", self.header.e_phnum);
         
         for (i, ph) in self.program_headers().iter().enumerate() {
+            crate::kinfo!("  Program header {}: type={:#x}, vaddr={:#x}, filesz={:#x}", 
+                i, ph.p_type, ph.p_vaddr, ph.p_filesz);
             if ph.p_type != PhType::Load as u32 {
+                crate::kinfo!("    Skipping non-LOAD segment (type {:#x})", ph.p_type);
                 continue;
             }
 
-            // Calculate addresses - use p_vaddr directly for static, offset for PIE
-            let vaddr = if self.header.e_type == ElfType::Shared as u16 {
-                base_addr + ph.p_vaddr
-            } else {
-                ph.p_vaddr
-            };
+            // Always relocate to user space base address
+            let vaddr = base_addr + ph.p_vaddr;
             let offset = ph.p_offset as usize;
             let filesz = ph.p_filesz as usize;
             let memsz = ph.p_memsz as usize;
             
-            crate::kinfo!("  Segment {}: vaddr={:#x}, filesz={:#x}, memsz={:#x}, flags={:#x}", 
-                i, vaddr, filesz, memsz, ph.p_flags);
+            crate::kinfo!("  Loading segment: vaddr={:#x}, filesz={:#x}, memsz={:#x}", 
+                vaddr, filesz, memsz);
 
             if offset + filesz > self.data.len() {
                 return Err("Program header extends beyond file");
@@ -226,12 +233,8 @@ impl ElfLoader {
             crate::kinfo!("  Loaded {} bytes to {:#x}", filesz, vaddr);
         }
 
-        let entry = if self.header.e_type == ElfType::Shared as u16 {
-            base_addr + self.header.entry_point()
-        } else {
-            self.header.entry_point()
-        };
+        let entry = self.header.entry_point();
         crate::kinfo!("ELF entry point: {:#x}", entry);
-        Ok(entry)
+        Ok(base_addr + entry)
     }
 }
