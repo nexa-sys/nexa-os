@@ -78,19 +78,19 @@ _start:
     movl %eax, pml4_table
     movl $0x0, pml4_table + 4
 
-    movl $0x00000083, %eax       # map 0..1 GiB
+    movl $0x00000087, %eax       # map 0..1 GiB (P|RW|U|PS)
     movl %eax, pdpt_table
     movl $0x0, pdpt_table + 4
 
-    movl $0x40000083, %eax       # map 1..2 GiB
+    movl $0x40000087, %eax       # map 1..2 GiB (P|RW|U|PS)
     movl %eax, pdpt_table + 8
     movl $0x0, pdpt_table + 12
 
-    movl $0x80000083, %eax       # map 2..3 GiB
+    movl $0x80000087, %eax       # map 2..3 GiB (P|RW|U|PS)
     movl %eax, pdpt_table + 16
     movl $0x0, pdpt_table + 20
 
-    movl $0xC0000083, %eax       # map 3..4 GiB
+    movl $0xC0000087, %eax       # map 3..4 GiB (P|RW|U|PS)
     movl %eax, pdpt_table + 24
     movl $0x0, pdpt_table + 28
 

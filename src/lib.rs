@@ -1,9 +1,18 @@
 #![no_std]
+#![feature(abi_x86_interrupt)]
 
 pub mod arch;
+pub mod elf;
+pub mod fs;
+pub mod gdt;
+pub mod interrupts;
+pub mod keyboard;
 pub mod logger;
 pub mod memory;
+pub mod process;
 pub mod serial;
+pub mod shell;
+pub mod syscall;
 pub mod vga_buffer;
 
 use core::panic::PanicInfo;
@@ -50,12 +59,29 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
         kwarn!("Multiboot v1 detected; memory overview is not yet supported.");
     }
 
+    // Initialize GDT for user/kernel mode
+    gdt::init();
+    
+    // Initialize interrupts and system calls
+    interrupts::init();
+    
+    // Enable interrupts
+    x86_64::instructions::interrupts::enable();
+    
+    // Initialize filesystem
+    fs::init();
+
     let elapsed_us = logger::boot_time_us();
     kinfo!(
         "Kernel initialization completed in {}.{:03} ms",
         elapsed_us / 1_000,
         elapsed_us % 1_000
     );
+
+    kinfo!("Starting interactive shell...");
+    
+    // Run the interactive shell
+    shell::run();
 
     kinfo!("System halted awaiting next stage.");
     arch::halt_loop()
@@ -144,5 +170,21 @@ macro_rules! kdebug {
 macro_rules! ktrace {
     ($($arg:tt)*) => {{
         $crate::klog!($crate::logger::LogLevel::Trace, $($arg)*);
+    }};
+}
+
+#[macro_export]
+macro_rules! kprint {
+    ($($arg:tt)*) => {{
+        $crate::vga_buffer::_print(format_args!($($arg)*));
+    }};
+}
+
+#[macro_export]
+macro_rules! kprintln {
+    () => { $crate::kprint!("\n") };
+    ($($arg:tt)*) => {{
+        $crate::kprint!($($arg)*);
+        $crate::kprint!("\n");
     }};
 }

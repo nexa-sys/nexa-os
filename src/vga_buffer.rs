@@ -52,6 +52,8 @@ pub fn init() {
 }
 
 pub(crate) fn _print(args: fmt::Arguments<'_>) {
+    // Print to both VGA and serial
+    crate::serial::_print(args);
     with_writer(|writer| {
         writer.write_fmt(args).ok();
     });
@@ -171,6 +173,15 @@ impl Write for Writer {
     }
 }
 
+impl Writer {
+    pub fn clear_screen(&mut self) {
+        for row in 0..BUFFER_HEIGHT {
+            self.clear_row(row);
+        }
+        self.column_position = 0;
+    }
+}
+
 pub fn clear_screen() {
     let mut writer = VGA_WRITER.lock();
     for row in 0..BUFFER_HEIGHT {
@@ -186,3 +197,5 @@ where
     let mut writer = VGA_WRITER.lock();
     f(&mut writer)
 }
+
+pub static WRITER: Mutex<Option<&'static mut Writer>> = Mutex::new(None);
