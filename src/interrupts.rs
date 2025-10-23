@@ -1,41 +1,15 @@
 /// Interrupt Descriptor Table (IDT) and interrupt handlers
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
-use spin::Mutex;
+use lazy_static::lazy_static;
+use spin;
+use pic8259::ChainedPics;
 
-static mut IDT: InterruptDescriptorTable = InterruptDescriptorTable::new();
+pub const PIC_1_OFFSET: u8 = 32;
+pub const PIC_2_OFFSET: u8 = PIC_1_OFFSET + 8;
 
-/// Initialize IDT with interrupt handlers
-pub fn init() {
-    unsafe {
-        IDT.breakpoint.set_handler_fn(breakpoint_handler);
-        IDT.page_fault.set_handler_fn(page_fault_handler);
-        IDT.general_protection_fault.set_handler_fn(general_protection_fault_handler);
-        IDT.divide_error.set_handler_fn(divide_error_handler);
-        
-        // Keyboard interrupt (IRQ1 -> INT 0x21)
-        IDT[0x21].set_handler_fn(keyboard_interrupt_handler);
-        
-        // System call interrupt (INT 0x80)
-        IDT[0x80].set_handler_fn(syscall_handler)
-            .set_privilege_level(x86_64::PrivilegeLevel::Ring3);
-        
-        IDT.load();
-    }
+pub static PICS: spin::Mutex<ChainedPics> = spin::Mutex::new(unsafe { ChainedPics::new(PIC_1_OFFSET, PIC_2_OFFSET) });
 
-    // Enable interrupts in PIC
-    unsafe {
-        // Initialize PIC
-        pic8259::ChainedPics::new(0x20, 0x28).initialize();
-        
-        // Enable keyboard interrupt (IRQ1)
-        let mut port = x86_64::instructions::port::Port::<u8>::new(0x21);
-        let mask = port.read();
-        port.write(mask & !0x02); // Enable IRQ1
-    }
-
-    crate::kinfo!("IDT initialized with system call and keyboard support");
-}
-
+// Exception handlers
 extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
     crate::kinfo!("BREAKPOINT: {:#?}", stack_frame);
 }
@@ -70,9 +44,59 @@ extern "x86-interrupt" fn general_protection_fault_handler(
 }
 
 extern "x86-interrupt" fn divide_error_handler(stack_frame: InterruptStackFrame) {
-    crate::kerror!("DIVIDE ERROR: {:#?}", stack_frame);
-    loop {
-        x86_64::instructions::hlt();
+    crate::serial_println!("EXCEPTION: DIVIDE ERROR\n{:#?}", stack_frame);
+    loop {}
+}
+
+extern "x86-interrupt" fn double_fault_handler(stack_frame: InterruptStackFrame, error_code: u64) -> ! {
+    panic!("EXCEPTION: DOUBLE FAULT (error: {})\n{:#?}", error_code, stack_frame);
+}
+
+extern "x86-interrupt" fn segment_not_present_handler(stack_frame: InterruptStackFrame, error_code: u64) {
+    panic!("EXCEPTION: SEGMENT NOT PRESENT (error: {})\n{:#?}", error_code, stack_frame);
+}
+
+lazy_static! {
+    static ref IDT: InterruptDescriptorTable = {
+        let mut idt = InterruptDescriptorTable::new();
+        idt.breakpoint.set_handler_fn(breakpoint_handler);
+        idt.page_fault.set_handler_fn(page_fault_handler);
+        idt.general_protection_fault.set_handler_fn(general_protection_fault_handler);
+        idt.divide_error.set_handler_fn(divide_error_handler);
+        idt.double_fault.set_handler_fn(double_fault_handler);
+        idt.segment_not_present.set_handler_fn(segment_not_present_handler);
+        
+        // Timer interrupt (IRQ0 -> INT 32)
+        idt[32].set_handler_fn(timer_interrupt_handler);
+        
+        // Keyboard interrupt (IRQ1 -> INT 33)
+        idt[33].set_handler_fn(keyboard_interrupt_handler);
+        
+        // System call interrupt (INT 0x80)
+        idt[0x80].set_handler_fn(syscall_handler)
+            .set_privilege_level(x86_64::PrivilegeLevel::Ring3);
+        
+        idt
+    };
+}
+
+/// Initialize IDT with interrupt handlers
+pub fn init() {
+    IDT.load();
+
+    // Initialize PIC
+    unsafe {
+        PICS.lock().initialize();
+    }
+
+    crate::kinfo!("IDT initialized with system call and keyboard support");
+}
+
+// Hardware interrupt handlers
+extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
+    // Send EOI to PIC
+    unsafe {
+        PICS.lock().notify_end_of_interrupt(PIC_1_OFFSET);
     }
 }
 
@@ -86,20 +110,17 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
     
     // Send EOI to PIC
     unsafe {
-        let mut pic = Port::<u8>::new(0x20);
-        pic.write(0x20);
+        PICS.lock().notify_end_of_interrupt(PIC_1_OFFSET + 1);
     }
 }
 
-extern "x86-interrupt" fn syscall_handler(stack_frame: InterruptStackFrame) {
+extern "x86-interrupt" fn syscall_handler(_stack_frame: InterruptStackFrame) {
     // System call handling via registers
     // For now, we'll just acknowledge the interrupt
     // Real syscall implementation would use SYSCALL/SYSRET instructions
     
     // Send EOI
     unsafe {
-        use x86_64::instructions::port::Port;
-        let mut pic = Port::<u8>::new(0x20);
-        pic.write(0x20);
+        PICS.lock().notify_end_of_interrupt(0x80);
     }
 }
