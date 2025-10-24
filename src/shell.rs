@@ -275,21 +275,21 @@ impl Shell {
 
 /// Initialize and run the shell (interactive mode)
 pub fn run() {
-    crate::serial_println!();
-    crate::serial_println!("============================================================");
-    crate::serial_println!("       NexaOS User-Space Shell (Ring 3 Mode)");
-    crate::serial_println!("                   Version 0.1.0");
-    crate::serial_println!("============================================================");
-    crate::serial_println!();
-    crate::serial_println!("Welcome to user space! You are now running in Ring 3.");
-    crate::serial_println!("This is a fully functional shell with real keyboard input.");
-    crate::serial_println!();
-    crate::serial_println!("Type 'help' for available commands.");
-    crate::serial_println!("Type commands using your keyboard!");
-    crate::serial_println!();
+    crate::println!();
+    crate::println!("============================================================");
+    crate::println!("       NexaOS User-Space Shell (Ring 3 Mode)");
+    crate::println!("                   Version 0.1.0");
+    crate::println!("============================================================");
+    crate::println!();
+    crate::println!("Welcome to user space! You are now running in Ring 3.");
+    crate::println!("This is a fully functional shell with real keyboard input.");
+    crate::println!();
+    crate::println!("Type 'help' for available commands.");
+    crate::println!("Type commands using your keyboard!");
+    crate::println!();
 
     loop {
-        crate::serial_print!("user$ ");
+        crate::print!("user$ ");
         
         let mut buffer = [0u8; MAX_CMD_LEN];
         let len = crate::keyboard::read_line(&mut buffer);

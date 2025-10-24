@@ -55,7 +55,7 @@ pub mod ph_flags {
 }
 
 /// ELF64 header
-#[repr(C)]
+#[repr(C, packed)]
 #[derive(Debug, Clone, Copy)]
 pub struct Elf64Header {
     pub e_ident: [u8; 16],      // ELF identification
@@ -75,7 +75,7 @@ pub struct Elf64Header {
 }
 
 /// ELF64 program header
-#[repr(C)]
+#[repr(C, packed)]
 #[derive(Debug, Clone, Copy)]
 pub struct Elf64ProgramHeader {
     pub p_type: u32,            // Segment type
@@ -144,97 +144,157 @@ impl Elf64Header {
 /// ELF loader
 pub struct ElfLoader {
     data: &'static [u8],
-    header: &'static Elf64Header,
 }
 
 impl ElfLoader {
     /// Create a new ELF loader from raw bytes
     pub fn new(data: &'static [u8]) -> Result<Self, &'static str> {
+        use core::ptr;
+        
         crate::kinfo!("ElfLoader::new called with {} bytes", data.len());
-        if data.len() < core::mem::size_of::<Elf64Header>() {
+        if data.len() < 64 {
             crate::kerror!("Data too small for ELF header");
             return Err("Data too small for ELF header");
         }
 
-        let header = unsafe { &*(data.as_ptr() as *const Elf64Header) };
-        crate::kinfo!("ELF magic: {:#x}", header.e_ident[0] as u32 | 
-            (header.e_ident[1] as u32) << 8 | 
-            (header.e_ident[2] as u32) << 16 | 
-            (header.e_ident[3] as u32) << 24);
+        // Check magic
+        let magic = unsafe { ptr::read_unaligned(data.as_ptr() as *const u32) };
+        if magic != ELF_MAGIC {
+            crate::kerror!("Invalid ELF magic: {:#x}", magic);
+            return Err("Invalid ELF magic");
+        }
 
-        if !header.is_valid() {
-            crate::kerror!("Invalid ELF header");
-            return Err("Invalid ELF header");
+        // Check class (64-bit)
+        let class = unsafe { ptr::read_unaligned(data.as_ptr().add(4) as *const u8) };
+        if class != ElfClass::Elf64 as u8 {
+            crate::kerror!("Not ELF64");
+            return Err("Not ELF64");
+        }
+
+        // Check data encoding (little endian)
+        let data_enc = unsafe { ptr::read_unaligned(data.as_ptr().add(5) as *const u8) };
+        if data_enc != ElfData::LittleEndian as u8 {
+            crate::kerror!("Not little endian");
+            return Err("Not little endian");
+        }
+
+        // Check version
+        let version = unsafe { ptr::read_unaligned(data.as_ptr().add(6) as *const u8) };
+        if version != 1 {
+            crate::kerror!("Invalid version");
+            return Err("Invalid version");
+        }
+
+        // Check machine type (x86-64)
+        let machine = unsafe { ptr::read_unaligned(data.as_ptr().add(18) as *const u16) };
+        if machine != 0x3E {
+            crate::kerror!("Not x86-64");
+            return Err("Not x86-64");
         }
 
         crate::kinfo!("ELF header is valid");
-        Ok(Self { data, header })
+        
+        // Read header fields
+        let e_phoff = unsafe { ptr::read_unaligned(data.as_ptr().add(32) as *const u64) };
+        let e_phentsize = unsafe { ptr::read_unaligned(data.as_ptr().add(54) as *const u16) };
+        let e_phnum = unsafe { ptr::read_unaligned(data.as_ptr().add(56) as *const u16) };
+        let e_entry = unsafe { ptr::read_unaligned(data.as_ptr().add(24) as *const u64) };
+        
+        crate::kinfo!("ELF header: e_phoff={:#x}, e_phnum={}, e_phentsize={}, e_entry={:#x}", 
+            e_phoff, e_phnum, e_phentsize, e_entry);
+
+        Ok(Self { data })
     }
 
     /// Get the ELF header
     pub fn header(&self) -> &Elf64Header {
-        self.header
+        unsafe { &*(self.data.as_ptr() as *const Elf64Header) }
     }
 
     /// Get program headers
     pub fn program_headers(&self) -> &[Elf64ProgramHeader] {
-        let offset = self.header.e_phoff as usize;
-        let count = self.header.e_phnum as usize;
-        let size = self.header.e_phentsize as usize;
+        use core::ptr;
+        
+        let e_phoff = unsafe { ptr::read_unaligned(self.data.as_ptr().add(32) as *const u64) } as usize;
+        let e_phnum = unsafe { ptr::read_unaligned(self.data.as_ptr().add(56) as *const u16) } as usize;
+        let e_phentsize = unsafe { ptr::read_unaligned(self.data.as_ptr().add(54) as *const u16) } as usize;
 
-        if size != core::mem::size_of::<Elf64ProgramHeader>() {
+        crate::kinfo!("program_headers: offset={:#x}, count={}, size={}, expected={}", 
+            e_phoff, e_phnum, e_phentsize, core::mem::size_of::<Elf64ProgramHeader>());
+
+        if e_phentsize != core::mem::size_of::<Elf64ProgramHeader>() {
+            crate::kinfo!("program_headers: size mismatch");
             return &[];
         }
 
-        let ptr = unsafe { self.data.as_ptr().add(offset) as *const Elf64ProgramHeader };
-        unsafe { slice::from_raw_parts(ptr, count) }
+        if e_phoff + (e_phnum * e_phentsize) > self.data.len() {
+            crate::kinfo!("program_headers: offset + size * count ({}) > data.len() ({})", e_phoff + (e_phnum * e_phentsize), self.data.len());
+            return &[];
+        }
+
+        let ptr = unsafe { self.data.as_ptr().add(e_phoff) as *const Elf64ProgramHeader };
+        let slice = unsafe { slice::from_raw_parts(ptr, e_phnum) };
+        crate::kinfo!("program_headers: returning {} headers", slice.len());
+        slice
     }
 
     /// Load the ELF into memory at the specified base address
     /// For position-independent executables, base_addr is used as offset
     /// For static executables (with absolute addresses), segments are loaded at their p_vaddr
     pub fn load(&self, base_addr: u64) -> Result<u64, &'static str> {
-        crate::kinfo!("Loading ELF with {} program headers", self.header.e_phnum);
+        use core::ptr;
         
-        for (i, ph) in self.program_headers().iter().enumerate() {
-            crate::kinfo!("  Program header {}: type={:#x}, vaddr={:#x}, filesz={:#x}", 
-                i, ph.p_type, ph.p_vaddr, ph.p_filesz);
-            if ph.p_type != PhType::Load as u32 {
-                crate::kinfo!("    Skipping non-LOAD segment (type {:#x})", ph.p_type);
+        let e_phoff = unsafe { ptr::read_unaligned(self.data.as_ptr().add(32) as *const u64) } as usize;
+        let e_phnum = unsafe { ptr::read_unaligned(self.data.as_ptr().add(56) as *const u16) } as usize;
+        let e_phentsize = unsafe { ptr::read_unaligned(self.data.as_ptr().add(54) as *const u16) } as usize;
+        
+        for i in 0..e_phnum {
+            let ph_offset = e_phoff + i * e_phentsize;
+            if ph_offset + 56 > self.data.len() {
+                continue;
+            }
+            
+            // Read program header fields directly from bytes
+            let p_type = unsafe { ptr::read_unaligned(self.data.as_ptr().add(ph_offset) as *const u32) };
+            let p_offset_val = unsafe { ptr::read_unaligned(self.data.as_ptr().add(ph_offset + 8) as *const u64) } as usize;
+            let p_vaddr = unsafe { ptr::read_unaligned(self.data.as_ptr().add(ph_offset + 16) as *const u64) };
+            let p_filesz = unsafe { ptr::read_unaligned(self.data.as_ptr().add(ph_offset + 32) as *const u64) } as usize;
+            let p_memsz = unsafe { ptr::read_unaligned(self.data.as_ptr().add(ph_offset + 40) as *const u64) } as usize;
+            
+            if p_type != PhType::Load as u32 {
                 continue;
             }
 
             // Always relocate to user space base address
-            let vaddr = base_addr + ph.p_vaddr;
-            let offset = ph.p_offset as usize;
-            let filesz = ph.p_filesz as usize;
-            let memsz = ph.p_memsz as usize;
-            
-            crate::kinfo!("  Loading segment: vaddr={:#x}, filesz={:#x}, memsz={:#x}", 
-                vaddr, filesz, memsz);
+            let target_addr = base_addr + p_vaddr; // Relocate to base + virtual address
 
-            if offset + filesz > self.data.len() {
-                return Err("Program header extends beyond file");
-            }
-
-            // Copy file data to memory
-            let dest = vaddr as *mut u8;
-            let src = &self.data[offset..offset + filesz];
-
-            unsafe {
-                core::ptr::copy_nonoverlapping(src.as_ptr(), dest, filesz);
-
-                // Zero out BSS section
-                if memsz > filesz {
-                    core::ptr::write_bytes(dest.add(filesz), 0, memsz - filesz);
+            // Copy data from ELF to memory
+            if p_filesz > 0 {
+                if p_offset_val + p_filesz > self.data.len() {
+                    return Err("Invalid program header");
+                }
+                
+                let src = unsafe { self.data.as_ptr().add(p_offset_val) };
+                let dst = target_addr as *mut u8;
+                
+                // Zero out the memory first
+                if p_memsz > 0 {
+                    unsafe { 
+                        core::ptr::write_bytes(dst, 0, p_memsz);
+                    }
+                }
+                
+                // Copy the file data
+                unsafe {
+                    core::ptr::copy_nonoverlapping(src, dst, p_filesz);
                 }
             }
-            
-            crate::kinfo!("  Loaded {} bytes to {:#x}", filesz, vaddr);
         }
 
-        let entry = self.header.entry_point();
-        crate::kinfo!("ELF entry point: {:#x}", entry);
-        Ok(base_addr + entry)
+        // Get entry point
+        let e_entry = unsafe { ptr::read_unaligned(self.data.as_ptr().add(24) as *const u64) };
+        let entry_point = base_addr + e_entry; // Relocate entry point
+        
+        Ok(entry_point)
     }
 }

@@ -1,6 +1,7 @@
 /// Process management for user-space execution
 use crate::elf::ElfLoader;
 use core::sync::atomic::{AtomicU64, Ordering};
+use crate::gdt;
 
 /// Process ID type
 pub type Pid = u64;
@@ -54,6 +55,8 @@ impl Process {
         const STACK_SIZE: u64 = 0x100000; // 1MB stack
         const HEAP_SIZE: u64 = 0x100000; // 1MB heap
 
+        crate::kinfo!("Constants defined: USER_BASE={:#x}, STACK_SIZE={:#x}", USER_BASE, STACK_SIZE);
+
         // Load ELF
         crate::kinfo!("About to call loader.load with base_addr={:#x}", USER_BASE);
         let entry_point = loader.load(USER_BASE)?;
@@ -95,21 +98,40 @@ impl Process {
 /// This function never returns - execution continues in user space
 #[inline(never)]
 pub unsafe fn jump_to_usermode(entry: u64, stack: u64) {
-    // This should never return
+    crate::kinfo!("About to execute int 0x80 with entry={:#x}, stack={:#x}", entry, stack);
+    
+    // Debug: check if user code is loaded
     unsafe {
-        core::arch::asm!(
-            // Set up iretq stack for Ring 3
-            "push 0x23",        // SS (user data segment, RPL=3)
-            "push {1}",         // RSP (user stack)
-            "push 0x202",       // RFLAGS (IF=1, reserved=1)
-            "push 0x1B",        // CS (user code segment, RPL=3)
-            "push {0}",         // RIP (user program entry)
-            "iretq",
-            in(reg) entry,
-            in(reg) stack,
-        );
+        let code_ptr = entry as *const u8;
+        let code_bytes = [code_ptr.read(), code_ptr.add(1).read(), code_ptr.add(2).read(), code_ptr.add(3).read()];
+        crate::kinfo!("User code at {:#x}: {:02x} {:02x} {:02x} {:02x}", entry, code_bytes[0], code_bytes[1], code_bytes[2], code_bytes[3]);
     }
     
-    // If we get here, iretq failed - this should never happen
-    crate::kerror!("ERROR: iretq returned! This should not happen.");
+    // Store entry and stack in global variables for the interrupt handler
+    unsafe {
+        USER_ENTRY = entry;
+        USER_STACK = stack;
+    }
+    
+    // Trigger interrupt 0x80 to switch to user mode
+    unsafe {
+        core::arch::asm!("int 0x80");
+    }
+    
+    // If we get here, the switch failed
+    crate::kerror!("ERROR: Ring 3 switch failed!");
+}
+
+/// User process entry point and stack for Ring 3 switching
+static mut USER_ENTRY: u64 = 0;
+static mut USER_STACK: u64 = 0;
+
+/// Get the stored user entry point
+pub unsafe fn get_user_entry() -> u64 {
+    USER_ENTRY
+}
+
+/// Get the stored user stack
+pub unsafe fn get_user_stack() -> u64 {
+    USER_STACK
 }

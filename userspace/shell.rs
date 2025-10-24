@@ -11,7 +11,7 @@ const SYS_EXIT: u64 = 60;
 fn syscall3(n: u64, a1: u64, a2: u64, a3: u64) -> u64 {
     let ret: u64;
     unsafe {
-        asm!("int 0x81", in("rax") n, in("rdi") a1, in("rsi") a2, in("rdx") a3, lateout("rax") ret);
+        asm!("syscall", in("rax") n, in("rdi") a1, in("rsi") a2, in("rdx") a3, lateout("rax") ret);
     }
     ret
 }
@@ -19,7 +19,7 @@ fn syscall3(n: u64, a1: u64, a2: u64, a3: u64) -> u64 {
 fn syscall1(n: u64, a1: u64) -> u64 {
     let ret: u64;
     unsafe {
-        asm!("int 0x81", in("rax") n, in("rdi") a1, lateout("rax") ret);
+        asm!("syscall", in("rax") n, in("rdi") a1, lateout("rax") ret);
     }
     ret
 }
@@ -71,12 +71,29 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 }
 
 #[no_mangle]
-pub extern "C" fn _start() {
-    // Print the shell prompt
+pub extern "C" fn main() {
+    // We're now in Ring 3! Print the prompt and start the shell
     print("nexa$ ");
     
-    // Infinite loop for shell
-    loop {}
+    // For now, just loop - we'll add proper shell logic later
+    loop {
+        // TODO: Read input, process commands
+        unsafe { asm!("nop") };
+    }
+}
+
+#[no_mangle]
+#[unsafe(naked)]
+pub extern "C" fn _start() -> ! {
+    unsafe {
+        core::arch::naked_asm!(
+            // Set up stack frame or whatever is needed
+            "call main",
+            // If main returns, loop forever
+            "2:",
+            "jmp 2b"
+        );
+    }
 }
 
 #[no_mangle]
