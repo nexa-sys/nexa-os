@@ -84,7 +84,7 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
     interrupts::init();
     
     // Enable interrupts
-    x86_64::instructions::interrupts::enable();
+    // x86_64::instructions::interrupts::enable();
     
     // Initialize filesystem
     fs::init();
@@ -99,6 +99,12 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
     // Try to load /bin/sh from initramfs and execute in user mode
     if let Some(sh_data) = initramfs::find_file("bin/sh") {
         kinfo!("Found /bin/sh in initramfs ({} bytes), loading...", sh_data.len());
+        
+        // Debug: Check first few bytes of ELF
+        if sh_data.len() >= 4 {
+            kinfo!("ELF header: {:02x} {:02x} {:02x} {:02x}", 
+                sh_data[0], sh_data[1], sh_data[2], sh_data[3]);
+        }
         
         match process::Process::from_elf(sh_data) {
             Ok(mut proc) => {

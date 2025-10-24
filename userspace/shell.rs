@@ -11,7 +11,7 @@ const SYS_EXIT: u64 = 60;
 fn syscall3(n: u64, a1: u64, a2: u64, a3: u64) -> u64 {
     let ret: u64;
     unsafe {
-        asm!("int 0x80", in("rax") n, in("rdi") a1, in("rsi") a2, in("rdx") a3, lateout("rax") ret);
+        asm!("int 0x81", in("rax") n, in("rdi") a1, in("rsi") a2, in("rdx") a3, lateout("rax") ret);
     }
     ret
 }
@@ -19,7 +19,7 @@ fn syscall3(n: u64, a1: u64, a2: u64, a3: u64) -> u64 {
 fn syscall1(n: u64, a1: u64) -> u64 {
     let ret: u64;
     unsafe {
-        asm!("int 0x80", in("rax") n, in("rdi") a1, lateout("rax") ret);
+        asm!("int 0x81", in("rax") n, in("rdi") a1, lateout("rax") ret);
     }
     ret
 }
@@ -72,13 +72,11 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 
 #[no_mangle]
 pub extern "C" fn _start() {
-    // 显示shell提示符
+    // Print the shell prompt
     print("nexa$ ");
     
-    // 简单的shell循环
-    loop {
-        // 暂时只是循环，稍后添加命令处理
-    }
+    // Infinite loop for shell
+    loop {}
 }
 
 #[no_mangle]
