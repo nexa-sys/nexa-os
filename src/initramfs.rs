@@ -111,6 +111,11 @@ impl Iterator for InitramfsIter {
         }
         
         unsafe {
+            // Ensure we have enough space for header
+            if self.current.add(core::mem::size_of::<CpioNewcHeader>()) > self.end {
+                return None;
+            }
+            
             // Read CPIO header
             let header = &*(self.current as *const CpioNewcHeader);
             
@@ -123,6 +128,11 @@ impl Iterator for InitramfsIter {
             
             // Move past header
             let mut ptr = self.current.add(core::mem::size_of::<CpioNewcHeader>());
+            
+            // Check bounds for name
+            if ptr.add(namesize) > self.end {
+                return None;
+            }
             
             // Read filename
             let name_bytes = slice::from_raw_parts(ptr, namesize.saturating_sub(1)); // -1 for null terminator
@@ -137,6 +147,11 @@ impl Iterator for InitramfsIter {
             ptr = ptr.add(namesize);
             let align = (4 - (ptr as usize % 4)) % 4;
             ptr = ptr.add(align);
+            
+            // Check bounds for data
+            if ptr.add(filesize) > self.end {
+                return None;
+            }
             
             // Read file data
             let data = slice::from_raw_parts(ptr, filesize);
@@ -160,8 +175,24 @@ impl Iterator for InitramfsIter {
 // Global initramfs instance
 static mut INITRAMFS: Option<Initramfs> = None;
 
+/// Get global initramfs instance
+pub fn get() -> Option<&'static Initramfs> {
+    unsafe { INITRAMFS.as_ref() }
+}
+
+/// Find a file in initramfs
+pub fn find_file(path: &str) -> Option<&'static [u8]> {
+    crate::kdebug!("Searching for file: '{}'", path);
+    get()?.find(path).map(|e| {
+        crate::kdebug!("Found file '{}' with {} bytes", e.name, e.data.len());
+        e.data
+    })
+}
+
 /// Initialize initramfs from multiboot module
 pub fn init(base: *const u8, size: usize) {
+    // Assume GRUB has already mapped the initramfs region
+    
     unsafe {
         INITRAMFS = Some(Initramfs::new(base, size));
     }
@@ -175,18 +206,4 @@ pub fn init(base: *const u8, size: usize) {
             crate::kinfo!("  '{}' ({} bytes, mode {:#o})", entry.name, entry.data.len(), entry.mode);
         }
     }
-}
-
-/// Get global initramfs instance
-pub fn get() -> Option<&'static Initramfs> {
-    unsafe { INITRAMFS.as_ref() }
-}
-
-/// Find a file in initramfs
-pub fn find_file(path: &str) -> Option<&'static [u8]> {
-    crate::kdebug!("Searching for file: '{}'", path);
-    get()?.find(path).map(|e| {
-        crate::kdebug!("Found file '{}' with {} bytes", e.name, e.data.len());
-        e.data
-    })
 }

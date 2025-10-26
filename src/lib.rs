@@ -119,20 +119,17 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
                 proc.execute(); // Never returns
             }
             Err(e) => {
-                kerror!("Failed to load /bin/sh: {}", e);
-                kwarn!("Falling back to kernel shell");
+                kfatal!("Failed to load /bin/sh: {}", e);
+                arch::halt_loop();
             }
         }
     } else {
-        kerror!("No /bin/sh found in initramfs, using kernel shell");
+        kfatal!("No /bin/sh found in initramfs");
+        arch::halt_loop();
     }
 
-    kinfo!("Starting kernel shell (labeled as Ring 3)...");
-    
-    // Run the interactive shell as fallback
-    shell::run();
-
-    kinfo!("System halted awaiting next stage.");
+    // If we reach here, /bin/sh executed successfully, but it should never return
+    kfatal!("Unexpected return from user mode process");
     arch::halt_loop()
 }
 

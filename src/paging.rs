@@ -125,6 +125,9 @@ unsafe fn init_user_page_tables() {
     // User program expects to run at virtual address 0x200000, but is loaded at physical 0x600000
     map_user_program();
 
+    // Map VGA buffer for kernel output
+    map_vga_buffer();
+
     crate::kinfo!("User page tables initialized with USER_ACCESSIBLE permissions");
 }
 
@@ -258,6 +261,46 @@ unsafe fn map_user_program() {
     }
 
     crate::kinfo!("ELF program mapping completed: {} pages mapped", num_pages);
+}
+
+/// Map VGA buffer for kernel output
+unsafe fn map_vga_buffer() {
+    use x86_64::registers::control::Cr3;
+    use x86_64::structures::paging::{PageTable, PageTableFlags, PhysFrame, Size4KiB};
+    use x86_64::PhysAddr;
+
+    const VGA_VIRT_ADDR: u64 = 0xb8000; // Virtual address for VGA buffer
+    const VGA_PHYS_ADDR: u64 = 0xb8000; // Physical address for VGA buffer
+
+    crate::kdebug!("Mapping VGA buffer: virtual {:#x} -> physical {:#x}",
+        VGA_VIRT_ADDR, VGA_PHYS_ADDR);
+
+    // Get current page table root (PML4)
+    let (pml4_frame, _) = Cr3::read();
+    let pml4_addr = pml4_frame.start_address();
+    let pml4 = &mut *(pml4_addr.as_u64() as *mut PageTable);
+
+    // Calculate indices for virtual address 0xb8000
+    let pml4_index = ((VGA_VIRT_ADDR >> 39) & 0x1FF) as usize;
+    let pdp_index = ((VGA_VIRT_ADDR >> 30) & 0x1FF) as usize;
+    let pd_index = ((VGA_VIRT_ADDR >> 21) & 0x1FF) as usize;
+    let pt_index = ((VGA_VIRT_ADDR >> 12) & 0x1FF) as usize;
+
+    // Assume page tables exist (set by GRUB or previous mapping)
+    let pdp_addr = pml4[pml4_index].addr();
+    let pdp = &mut *(pdp_addr.as_u64() as *mut PageTable);
+
+    let pd_addr = pdp[pdp_index].addr();
+    let pd = &mut *(pd_addr.as_u64() as *mut PageTable);
+
+    let pt_addr = pd[pd_index].addr();
+    let pt = &mut *(pt_addr.as_u64() as *mut PageTable);
+
+    // Map the page
+    let frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(VGA_PHYS_ADDR));
+    pt[pt_index].set_frame(frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
+
+    crate::kdebug!("VGA buffer mapping completed");
 }
 
 /// Ensure paging is enabled (required for user mode)
