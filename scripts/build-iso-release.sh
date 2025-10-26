@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TARGET_DIR="$ROOT_DIR/target/x86_64-nexaos/debug"
+TARGET_DIR="$ROOT_DIR/target/x86_64-nexaos/release"
 ISO_DIR="$ROOT_DIR/target/iso"
 DIST_DIR="$ROOT_DIR/dist"
 KERNEL_BIN="$TARGET_DIR/nexa-os"
@@ -14,7 +14,7 @@ for tool in grub-mkrescue xorriso; do
     fi
 done
 
-cargo build
+cargo build --release
 
 # Build userspace programs and initramfs
 echo "Building user-space programs..."
