@@ -92,6 +92,10 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
     // Enable interrupts
     x86_64::instructions::interrupts::enable();
     
+    // Keep all PIC interrupts masked for now to avoid spurious interrupts
+    // TODO: Enable timer interrupt after testing syscall and user mode switching
+    kinfo!("CPU interrupts enabled, PIC interrupts remain masked");
+    
     // Initialize filesystem
     fs::init();
 

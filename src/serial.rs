@@ -44,3 +44,12 @@ pub fn write_byte(byte: u8) {
         port.send(byte);
     }
 }
+
+pub fn write_str(s: &str) {
+    SERIAL1.lock().ensure_init();
+    if let Some(ref mut port) = SERIAL1.lock().port {
+        for byte in s.bytes() {
+            port.send(byte);
+        }
+    }
+}

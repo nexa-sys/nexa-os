@@ -286,21 +286,30 @@ unsafe fn map_vga_buffer() {
     let pd_index = ((VGA_VIRT_ADDR >> 21) & 0x1FF) as usize;
     let pt_index = ((VGA_VIRT_ADDR >> 12) & 0x1FF) as usize;
 
-    // Assume page tables exist (set by GRUB or previous mapping)
+    // Check if PDP[0] is a huge page
     let pdp_addr = pml4[pml4_index].addr();
     let pdp = &mut *(pdp_addr.as_u64() as *mut PageTable);
+    
+    if pdp[pdp_index].flags().contains(PageTableFlags::HUGE_PAGE) {
+        // PDP[0] is a huge page, VGA buffer is already identity mapped
+        // Ensure it has correct permissions
+        let flags = pdp[pdp_index].flags();
+        pdp[pdp_index].set_flags(flags | PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
+        crate::kdebug!("VGA buffer already mapped via huge page, updated permissions");
+    } else {
+        // Normal page table structure exists
+        let pd_addr = pdp[pdp_index].addr();
+        let pd = &mut *(pd_addr.as_u64() as *mut PageTable);
 
-    let pd_addr = pdp[pdp_index].addr();
-    let pd = &mut *(pd_addr.as_u64() as *mut PageTable);
+        let pt_addr = pd[pd_index].addr();
+        let pt = &mut *(pt_addr.as_u64() as *mut PageTable);
 
-    let pt_addr = pd[pd_index].addr();
-    let pt = &mut *(pt_addr.as_u64() as *mut PageTable);
+        // Map the page
+        let frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(VGA_PHYS_ADDR));
+        pt[pt_index].set_frame(frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
 
-    // Map the page
-    let frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(VGA_PHYS_ADDR));
-    pt[pt_index].set_frame(frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
-
-    crate::kdebug!("VGA buffer mapping completed");
+        crate::kdebug!("VGA buffer mapping completed via page tables");
+    }
 }
 
 /// Ensure paging is enabled (required for user mode)

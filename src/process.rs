@@ -111,11 +111,16 @@ impl Process {
 pub fn jump_to_usermode(entry: u64, stack: u64) {
     crate::kinfo!("About to execute iretq with entry={:#x}, stack={:#x}", entry, stack);
     
-    // Set GS data for syscall
+    // Set GS data for syscall and Ring 3 switching
     unsafe {
         let selectors = crate::gdt::get_selectors();
         crate::kinfo!("Selectors: user_code={:#x}, user_data={:#x}", selectors.user_code_selector.0, selectors.user_data_selector.0);
         crate::interrupts::set_gs_data(entry, stack, selectors.user_code_selector.0 as u64 | 3, selectors.user_data_selector.0 as u64 | 3, selectors.user_data_selector.0 as u64 | 3);
+        
+        // Set GS base to point to GS_DATA for both kernel and user mode
+        use x86_64::registers::model_specific::Msr;
+        Msr::new(0xc0000101).write(&raw const crate::interrupts::GS_DATA as *const _ as u64); // GS base
+        crate::kinfo!("GS base set to GS_DATA at {:#x}", &raw const crate::interrupts::GS_DATA as *const _ as u64);
     }
     
     unsafe {

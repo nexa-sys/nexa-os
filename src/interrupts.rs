@@ -226,6 +226,15 @@ pub fn init_interrupts() {
     // Initialize PICs
     unsafe { PICS.lock().initialize(); }
     
+    // Mask all interrupts to prevent spurious interrupts during setup
+    unsafe {
+        use x86_64::instructions::port::Port;
+        let mut port = Port::<u8>::new(0x21); // Master PIC IMR
+        port.write(0xFF);
+        let mut port = Port::<u8>::new(0xA1); // Slave PIC IMR  
+        port.write(0xFF);
+    }
+    
     // Setup syscall
     setup_syscall();
     
@@ -258,16 +267,10 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
 extern "C" fn syscall_instruction_handler() {
     core::arch::naked_asm!(
         // syscall entry: RIP->RCX, RFLAGS->R11, CS/SS set from STAR, RSP->RSP0
-        "swapgs",                    // Switch to kernel GS
+        
+        // GS base is already set to GS_DATA in setup_syscall
         "mov gs:[0], rsp",           // Save user RSP
         "mov rsp, gs:[8]",           // Load kernel RSP
-        
-        // Push user state for sysret
-        "push 0x23",                 // User SS
-        "push gs:[0]",               // User RSP
-        "push r11",                  // User RFLAGS
-        "push 0x1b",                 // User CS
-        "push rcx",                  // User RIP
         
         // Save syscall args
         "push rax",
@@ -278,20 +281,23 @@ extern "C" fn syscall_instruction_handler() {
         // Call handler
         "call syscall_dispatch",
         
+        // Save return value
+        "push rax",
+        
         // Restore syscall args
         "pop rdx",
         "pop rsi",
         "pop rdi", 
+        "add rsp, 8",                // Skip original rax on stack
+        
+        // Restore return value to rax
         "pop rax",
         
-        // Restore user state from stack
-        "pop rcx",                   // User RIP
-        "add rsp, 8",                // Skip user CS
-        "pop r11",                   // User RFLAGS
-        "pop rsp",                   // User RSP
-        "add rsp, 8",                // Skip user SS
+        // Prepare stack for sysret: RIP, RFLAGS, RSP
+        "push rcx",                  // User RIP
+        "push r11",                  // User RFLAGS
+        "push gs:[0]",               // User RSP
         
-        "swapgs",                    // Switch back to user GS
         "sysret",                    // Return to user mode
     );
 }
@@ -439,7 +445,13 @@ pub fn setup_syscall() {
     // Setup syscall
     crate::kinfo!("Setting syscall handler to {:#x}", syscall_instruction_handler as u64);
     unsafe {
-        Msr::new(0xc0000101).write(&raw const GS_DATA as *const _ as u64); // GS base
+        // Initialize GS data for syscall
+        GS_DATA[1] = crate::gdt::get_kernel_stack_top(); // Kernel stack for syscall at gs:[8]
+        
+        // Set GS base to GS_DATA address
+        let gs_base = &raw const GS_DATA as *const _ as u64;
+        Msr::new(0xc0000101).write(gs_base); // GS base
+        
         Msr::new(0xc0000080).write(1 << 0); // IA32_EFER.SCE = 1
         Msr::new(0xc0000081).write((0x08 << 32) | (0x1b << 48)); // STAR
         Msr::new(0xc0000082).write(syscall_instruction_handler as u64); // LSTAR

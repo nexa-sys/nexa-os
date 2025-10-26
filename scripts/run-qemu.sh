@@ -13,5 +13,4 @@ qemu-system-x86_64 \
     -serial stdio \
     -cdrom "$ISO_PATH" \
     -d guest_errors \
-    -no-reboot \
     -monitor none
