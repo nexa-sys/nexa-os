@@ -61,8 +61,14 @@ impl Process {
 
         // Load ELF
         crate::kinfo!("About to call loader.load with base_addr={:#x}", USER_BASE);
-        let entry_point = loader.load(USER_BASE)?;
-        crate::kinfo!("ELF loaded successfully, entry_point={:#x}", entry_point);
+        let physical_entry = loader.load(USER_BASE)?;
+        crate::kinfo!("ELF loaded successfully, physical_entry={:#x}", physical_entry);
+        
+        // Calculate virtual entry point
+        // The ELF entry point is relative to the first load segment
+        let header = loader.header();
+        let virtual_entry = header.entry_point();
+        crate::kinfo!("Virtual entry point from ELF: {:#x}", virtual_entry);
 
         let pid = NEXT_PID.fetch_add(1, Ordering::SeqCst);
 
@@ -74,7 +80,7 @@ impl Process {
         let process = Process {
             pid,
             state: ProcessState::Ready,
-            entry_point: 0x20119c, // Hardcoded for now
+            entry_point: virtual_entry, // Use virtual entry point for Ring 3 execution
             stack_top,
             heap_start: USER_BASE + 0x200000, // Heap after code
             heap_end: USER_BASE + 0x200000 + HEAP_SIZE,
@@ -103,18 +109,33 @@ impl Process {
 /// This function never returns - execution continues in user space
 #[inline(never)]
 pub fn jump_to_usermode(entry: u64, stack: u64) {
-    crate::kinfo!("About to execute int 0x80 with entry={:#x}, stack={:#x}", entry, stack);
+    crate::kinfo!("About to execute iretq with entry={:#x}, stack={:#x}", entry, stack);
+    
+    // Set GS data for syscall
     unsafe {
+        let selectors = crate::gdt::get_selectors();
+        crate::kinfo!("Selectors: user_code={:#x}, user_data={:#x}", selectors.user_code_selector.0, selectors.user_data_selector.0);
+        crate::interrupts::set_gs_data(entry, stack, selectors.user_code_selector.0 as u64 | 3, selectors.user_data_selector.0 as u64 | 3, selectors.user_data_selector.0 as u64 | 3);
+    }
+    
+    unsafe {
+        let selectors = crate::gdt::get_selectors();
+        crate::kinfo!("About to push iretq parameters: ss={:#x}, rsp={:#x}, rflags=0x202, cs={:#x}, rip={:#x}", 
+            selectors.user_data_selector.0 as u64 | 3, stack, selectors.user_code_selector.0 as u64 | 3, entry);
         asm!(
-            "push {}",     // user entry point
-            "push {}",     // user stack
-            "pushfq",      // rflags
-            "push rax",    // dummy value for cs  
-            "push rax",    // dummy value for ss
-            "int 0x80",
-            in(reg) entry,
+            "push {}",      // user ss
+            "push {}",      // user stack
+            "push 0x202",   // rflags (IF=1)
+            "push {}",      // user cs
+            "push {}",      // user entry point
+            "iretq",
+            in(reg) selectors.user_data_selector.0 as u64 | 3,
             in(reg) stack,
+            in(reg) selectors.user_code_selector.0 as u64 | 3,
+            in(reg) entry,
         );
+        // This code never executes
+        crate::kinfo!("ERROR: iretq returned!");
     }
 }
 

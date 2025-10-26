@@ -35,13 +35,43 @@ global_asm!(
     "push r14",
     "push r15",
     
-    // Call syscall_dispatch(nr=rax, arg1=rdi, arg2=rsi, arg3=rdx)
-    "mov rcx, rdx", // arg3
-    "mov rdx, rsi", // arg2
-    "mov rsi, rdi", // arg1
-    "mov rdi, rax", // nr
-    "call syscall_dispatch",
-    // Return value is in rax
+    // Debug: write syscall number to VGA
+    "mov byte ptr [0xB8020], al",  // syscall number low byte
+    "mov byte ptr [0xB8021], 0x0F",
+    
+    // Check if this is SYS_WRITE (1)
+    "cmp rax, 1",
+    "jne .not_write",
+    
+    // Handle SYS_WRITE: write to serial port
+    // rsi = count, rdx = buffer
+    ".write_loop:",
+    "test rsi, rsi",
+    "jz .write_done",
+    "mov al, [rdx]",
+    "mov dx, 0x3F8",
+    "out dx, al",
+    "inc rdx",
+    "dec rsi",
+    "jmp .write_loop",
+    ".write_done:",
+    "mov byte ptr [0xB8012], 'W'",
+    "mov byte ptr [0xB8013], 0x0F",
+    "mov rax, 1",  // Return count (simplified)
+    "jmp .syscall_done",
+    
+    ".not_write:",
+    "mov byte ptr [0xB8014], 'E'",
+    "mov byte ptr [0xB8015], 0x0F",
+    "mov rax, 0",  // Default return
+    // Debug: write 'N' to VGA for not write
+    "mov byte ptr [0xB8010], 'N'",
+    "mov byte ptr [0xB8011], 0x0F",
+    
+    ".syscall_done:",
+    // Debug: write 'S' to VGA to indicate syscall handled
+    "mov byte ptr [0xB8000], 'S'",
+    "mov byte ptr [0xB8001], 0x0F",
     
     // Restore registers
     "pop r15",
@@ -135,20 +165,18 @@ extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: InterruptStackFram
 global_asm!(
     ".global ring3_switch_handler",
     "ring3_switch_handler:",
-    "add rsp, 40",
-    "pop r14",
-    "pop r15",
-    "pop r13",
-    "pop r15",
-    "pop r12",
+    // Stack layout from int 0x80: [ss, rsp, rflags, cs, rip] + pushed values [entry, stack, rflags, cs, ss]
+    // We need to set up sysret parameters
+    "mov rcx, [rsp + 8]",    // entry point (rip for sysret)
+    "mov r11, [rsp + 16]",   // rflags 
+    "mov rsp, [rsp]",        // stack pointer
+    // Set user data segments
     "mov ax, 0x23",
     "mov ds, ax",
-    "mov es, ax",
+    "mov es, ax", 
     "mov fs, ax",
     "mov gs, ax",
-    "mov rcx, r14",
-    "mov r11, 0x202",
-    "mov rsp, r15",
+    // Return to user mode
     "sysretq"
 );
 
@@ -179,6 +207,11 @@ lazy_static! {
         // Set up syscall interrupt handler at 0x81
         unsafe {
             idt[0x81].set_handler_addr(x86_64::VirtAddr::new(syscall_interrupt_handler as u64));
+        }
+        
+        // Set up ring3 switch handler at 0x80
+        unsafe {
+            idt[0x80].set_handler_addr(x86_64::VirtAddr::new(ring3_switch_handler as u64));
         }
         
         idt
@@ -406,7 +439,7 @@ pub fn setup_syscall() {
     // Setup syscall
     crate::kinfo!("Setting syscall handler to {:#x}", syscall_instruction_handler as u64);
     unsafe {
-        Msr::new(0xc0000101).write(0); // GS base
+        Msr::new(0xc0000101).write(&raw const GS_DATA as *const _ as u64); // GS base
         Msr::new(0xc0000080).write(1 << 0); // IA32_EFER.SCE = 1
         Msr::new(0xc0000081).write((0x08 << 32) | (0x1b << 48)); // STAR
         Msr::new(0xc0000082).write(syscall_instruction_handler as u64); // LSTAR

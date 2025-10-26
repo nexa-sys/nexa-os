@@ -39,7 +39,12 @@ fn syscall_exit(code: i32) -> u64 {
 
 #[no_mangle]
 pub extern "C" fn syscall_dispatch(nr: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 {
-    crate::kinfo!("SYSCALL: nr={}, arg1={}, arg2={}, arg3={}", nr, arg1, arg2, arg3);
+    // Debug: write syscall number to VGA
+    unsafe {
+        *(0xB8000 as *mut u64) = 0x4142434445464748; // "ABCDEFGH" in ASCII
+        *(0xB8008 as *mut u64) = nr; // Write syscall number
+    }
+    
     match nr {
         SYS_WRITE => {
             let ret = syscall_write(arg1, arg2, arg3);

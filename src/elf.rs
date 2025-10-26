@@ -295,10 +295,34 @@ impl ElfLoader {
             }
         }
 
-        // Get entry point
+        // Get entry point and relocate it
         let e_entry = unsafe { ptr::read_unaligned(self.data.as_ptr().add(24) as *const u64) };
-        let entry_point = base_addr + e_entry; // Relocate entry point
         
-        Ok(entry_point)
+        // For static executables, entry point is absolute virtual address
+        // We need to relocate it to our user space base address
+        // Use the first load segment as the base for relocation
+        let mut first_load_vaddr = 0u64;
+        for i in 0..e_phnum {
+            let ph_offset = e_phoff + i * e_phentsize;
+            if ph_offset + 56 > self.data.len() {
+                continue;
+            }
+            
+            let p_type = unsafe { ptr::read_unaligned(self.data.as_ptr().add(ph_offset) as *const u32) };
+            let p_vaddr = unsafe { ptr::read_unaligned(self.data.as_ptr().add(ph_offset + 16) as *const u64) };
+            
+            if p_type == PhType::Load as u32 {
+                first_load_vaddr = p_vaddr;
+                break;
+            }
+        }
+        
+        let relocated_entry = if first_load_vaddr != 0 {
+            base_addr + (e_entry - first_load_vaddr)
+        } else {
+            e_entry // Fallback if no load segment found
+        };
+        
+        Ok(relocated_entry)
     }
 }

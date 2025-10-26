@@ -72,9 +72,12 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 
 #[no_mangle]
 pub extern "C" fn _start() {
-    unsafe {
-        core::arch::asm!("call main");
-    }
+    // Test syscall: write "Hello from user space!\n" to stdout
+    let msg = b"Hello from user space!\n";
+    write(1, msg.as_ptr(), msg.len());
+    
+    // Then exit
+    exit(0);
 }
 
 #[no_mangle]
