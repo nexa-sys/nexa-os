@@ -37,3 +37,10 @@ pub fn init() {
 pub(crate) fn _print(args: fmt::Arguments<'_>) {
     SERIAL1.lock().write_fmt(args);
 }
+
+pub fn write_byte(byte: u8) {
+    SERIAL1.lock().ensure_init();
+    if let Some(ref mut port) = SERIAL1.lock().port {
+        port.send(byte);
+    }
+}

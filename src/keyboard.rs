@@ -95,6 +95,42 @@ pub fn read_char() -> Option<char> {
     }
 }
 
+/// Try to read a character from keyboard (non-blocking)
+pub fn try_read_char() -> Option<char> {
+    if let Some(scancode) = get_scancode() {
+        // Handle key release
+        if scancode & 0x80 != 0 {
+            let key = scancode & 0x7F;
+            if key == 0x2A || key == 0x36 {
+                *SHIFT_PRESSED.lock() = false;
+            }
+            return None;
+        }
+        
+        // Handle shift keys
+        if scancode == 0x2A || scancode == 0x36 {
+            *SHIFT_PRESSED.lock() = true;
+            return None;
+        }
+        
+        // Get character
+        let shift = *SHIFT_PRESSED.lock();
+        let ch = if shift {
+            SCANCODE_TO_CHAR_SHIFT[scancode as usize]
+        } else {
+            SCANCODE_TO_CHAR[scancode as usize]
+        };
+        
+        if ch != '\0' {
+            Some(ch)
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
 /// Read a line from keyboard
 pub fn read_line(buf: &mut [u8]) -> usize {
     let mut pos = 0;

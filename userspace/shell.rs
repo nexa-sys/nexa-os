@@ -19,7 +19,7 @@ fn syscall3(n: u64, a1: u64, a2: u64, a3: u64) -> u64 {
 fn syscall1(n: u64, a1: u64) -> u64 {
     let ret: u64;
     unsafe {
-        asm!("syscall", in("rax") n, in("rdi") a1, lateout("rax") ret);
+        asm!("int 0x81", in("rax") n, in("rdi") a1, lateout("rax") ret);
     }
     ret
 }
@@ -37,13 +37,13 @@ fn exit(code: i32) {
     loop {} // Should not reach here
 }
 
-fn print(s: &str) {
+fn print(s: &[u8]) {
     write(1, s.as_ptr(), s.len());
 }
 
 fn print_number(mut n: u64) {
     if n == 0 {
-        print("0");
+        print(b"0");
         return;
     }
     let mut buf = [0u8; 20];
@@ -71,28 +71,9 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 }
 
 #[no_mangle]
-pub extern "C" fn main() {
-    // We're now in Ring 3! Print the prompt and start the shell
-    print("nexa$ ");
-    
-    // For now, just loop - we'll add proper shell logic later
-    loop {
-        // TODO: Read input, process commands
-        unsafe { asm!("nop") };
-    }
-}
-
-#[no_mangle]
-#[unsafe(naked)]
-pub extern "C" fn _start() -> ! {
+pub extern "C" fn _start() {
     unsafe {
-        core::arch::naked_asm!(
-            // Set up stack frame or whatever is needed
-            "call main",
-            // If main returns, loop forever
-            "2:",
-            "jmp 2b"
-        );
+        core::arch::asm!("call main");
     }
 }
 
@@ -108,3 +89,8 @@ pub extern "C" fn memset(dest: *mut u8, val: i32, n: usize) -> *mut u8 {
 
 #[lang = "eh_personality"]
 extern "C" fn eh_personality() {}
+
+#[no_mangle]
+pub extern "C" fn main() {
+    exit(0);
+}

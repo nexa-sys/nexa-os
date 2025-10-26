@@ -1,5 +1,7 @@
 #![no_std]
 #![feature(abi_x86_interrupt)]
+#![feature(naked_functions)]
+#![feature(global_asm)]
 
 pub mod arch;
 pub mod elf;
@@ -80,11 +82,15 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
     // Initialize GDT for user/kernel mode
     gdt::init();
     
+    kinfo!("About to call interrupts::init_interrupts()");
+    
     // Initialize interrupts and system calls
-    interrupts::init();
+    crate::interrupts::init_interrupts();
+    
+    kinfo!("interrupts::init() completed successfully");
     
     // Enable interrupts
-    // x86_64::instructions::interrupts::enable();
+    x86_64::instructions::interrupts::enable();
     
     // Initialize filesystem
     fs::init();

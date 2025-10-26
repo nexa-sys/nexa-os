@@ -1,5 +1,5 @@
 /// Memory paging setup for x86_64
-use x86_64::structures::paging::PageTable;
+use x86_64::structures::paging::{PageTable, PageTableFlags, PhysFrame, Size4KiB, PageTableIndex};
 use x86_64::VirtAddr;
 
 /// Initialize identity-mapped paging
@@ -20,9 +20,6 @@ unsafe fn init_user_page_tables() {
 
     crate::kinfo!("Setting up user-accessible pages for user space (0x400000-0x800000)");
     
-    // For now, let's try a simpler approach - set USER_ACCESSIBLE on identity-mapped pages
-    // We'll iterate through the expected page table structure for identity mapping
-    
     // Get current page table root (PML4)
     let (pml4_frame, _) = Cr3::read();
     let pml4_addr = pml4_frame.start_address();
@@ -42,50 +39,86 @@ unsafe fn init_user_page_tables() {
         crate::kinfo!("PDP at {:#x}", pdp_addr.as_u64());
         
         if !pdp[0].is_unused() {
+            crate::kinfo!("PDP[0] is used, getting addr");
+            let pd_addr = pdp[0].addr();
+            crate::kinfo!("PD addr: {:#x}", pd_addr.as_u64());
+            
+            // Check if it's a huge page (PS bit set)
+            let flags = pdp[0].flags();
+            if flags.contains(PageTableFlags::HUGE_PAGE) {
+                // For huge pages, set USER_ACCESSIBLE directly on PDP entry
+                pdp[0].set_flags(flags | PageTableFlags::USER_ACCESSIBLE);
+                crate::kinfo!("Set USER_ACCESSIBLE for huge page at PDP[0]");
+                return;
+            }
+            // Set PDP[0] to not huge page
+            pdp[0].set_flags(PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE);
+            
             let pdp_flags = pdp[0].flags();
             crate::kinfo!("PDP[0] flags: {:#x}", pdp_flags.bits());
             
-            if pdp_flags.contains(PageTableFlags::HUGE_PAGE) {
-                // This is a 2MB huge page, set USER_ACCESSIBLE directly on PDP entry
-                crate::kinfo!("Detected 2MB huge page at PDP[0], setting USER_ACCESSIBLE");
-                if !pdp_flags.contains(PageTableFlags::USER_ACCESSIBLE) {
-                    pdp[0].set_flags(pdp_flags | PageTableFlags::USER_ACCESSIBLE);
-                    crate::kinfo!("Set USER_ACCESSIBLE on 2MB huge page");
-                } else {
-                    crate::kinfo!("2MB huge page already has USER_ACCESSIBLE");
+            // Always treat as 4KB pages for simplicity
+            let pd_addr = pdp[0].addr();
+            if pd_addr.as_u64() == 0 {
+                // PD not allocated, allocate at fixed address 0x12a000
+                let new_pd_addr = PhysAddr::new(0x12a000);
+                // Clear the PD memory first
+                unsafe {
+                    core::ptr::write_bytes(new_pd_addr.as_u64() as *mut u8, 0, 4096);
                 }
-            } else {
-                // Normal 4KB pages, traverse to PD and PT
-                let pd_addr = pdp[0].addr();
-                let pd = &mut *(pd_addr.as_u64() as *mut PageTable);
-                crate::kinfo!("PD at {:#x}", pd_addr.as_u64());
+                pdp[0].set_addr(new_pd_addr, PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE);
+                crate::kinfo!("Allocated new PD at {:#x}", new_pd_addr.as_u64());
+            }
+            let pd_addr = pdp[0].addr();
+            crate::kinfo!("PD addr: {:#x}", pd_addr.as_u64());
+            let pd = unsafe { &mut *(pd_addr.as_u64() as *mut PageTable) };
+            crate::kinfo!("PD pointer created");
+            crate::kinfo!("PD at {:#x}", pd_addr.as_u64());
+            
+            // Initialize PD to all zeros first
+            crate::kinfo!("Initializing PD to zeros");
+            for i in 0..512 {
+                pd[i].set_unused();
+            }
+            crate::kinfo!("PD initialized to zeros");
+            
+            // Set USER_ACCESSIBLE on existing PD entries
+            for pd_idx in 0..4 { // Check PD[0-3] for 0-4MB range
+                crate::kinfo!("Checking PD[{}]", pd_idx);
                 
-                // PD entries 0-3 cover 0-4MB, we need 0-2MB (pages 0-511)
-                for pd_idx in 0..4 {
-                    if !pd[pd_idx].is_unused() {
-                        let pd_flags = pd[pd_idx].flags();
-                        crate::kinfo!("PD[{}] flags: {:#x}", pd_idx, pd_flags.bits());
-                        
-                        let pt_addr = pd[pd_idx].addr();
-                        let pt = &mut *(pt_addr.as_u64() as *mut PageTable);
-                        crate::kinfo!("PT[{}] at {:#x}", pd_idx, pt_addr.as_u64());
-                        
-                        // Each PT has 512 entries, 4 PTs cover 2048 pages (8MB)
-                        let start_pt_entry = if pd_idx == 0 { 256 } else { 0 }; // Start from 0x400000 (page 256)
-                        let end_pt_entry = if pd_idx == 1 { 256 } else { 512 }; // End at 0x800000 (page 512)
-                        
-                        for pt_idx in start_pt_entry..end_pt_entry {
-                            let flags = pt[pt_idx].flags();
-                            if !flags.contains(PageTableFlags::USER_ACCESSIBLE) {
-                                pt[pt_idx].set_flags(flags | PageTableFlags::USER_ACCESSIBLE);
-                                crate::kdebug!("Set USER_ACCESSIBLE for page {:#x} (PT[{}][{}])", 
-                                    (pd_idx * 512 + pt_idx) * 4096, pd_idx, pt_idx);
-                            }
+                if pd[pd_idx].is_unused() {
+                    crate::kinfo!("PD[{}] is unused", pd_idx);
+                    continue;
+                }
+                
+                crate::kinfo!("PD[{}] is used, getting flags", pd_idx);
+                let pd_flags = pd[pd_idx].flags();
+                crate::kinfo!("PD[{}] flags: {:#x}", pd_idx, pd_flags.bits());
+                if pd_flags.contains(PageTableFlags::HUGE_PAGE) {
+                    // 2MB huge page
+                    pd[pd_idx].set_flags(pd_flags | PageTableFlags::USER_ACCESSIBLE);
+                    crate::kdebug!("Set USER_ACCESSIBLE for 2MB page at PD[{}]", pd_idx);
+                } else {
+                    // 4KB pages - set USER_ACCESSIBLE on PT entries
+                    let pt_addr = pd[pd_idx].addr();
+                    crate::kinfo!("PT[{}] at {:#x}", pd_idx, pt_addr.as_u64());
+                    let pt = unsafe { &mut *(pt_addr.as_u64() as *mut PageTable) };
+                    
+                    // Set USER_ACCESSIBLE on all PT entries
+                    for pt_idx in 0..512 {
+                        if !pt[pt_idx].is_unused() {
+                            let pt_flags = pt[pt_idx].flags();
+                            pt[pt_idx].set_flags(pt_flags | PageTableFlags::USER_ACCESSIBLE);
+                            crate::kdebug!("Set USER_ACCESSIBLE for PT[{}][{}]", pd_idx, pt_idx);
                         }
                     }
                 }
             }
+        } else {
+            crate::kinfo!("PDP[0] is unused - no identity mapping found");
         }
+    } else {
+        crate::kinfo!("PML4[0] is unused - no page tables found");
     }
 
     crate::kinfo!("User page tables initialized with USER_ACCESSIBLE permissions");

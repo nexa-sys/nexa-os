@@ -261,12 +261,16 @@ impl ElfLoader {
             let p_filesz = unsafe { ptr::read_unaligned(self.data.as_ptr().add(ph_offset + 32) as *const u64) } as usize;
             let p_memsz = unsafe { ptr::read_unaligned(self.data.as_ptr().add(ph_offset + 40) as *const u64) } as usize;
             
+            crate::kinfo!("Segment {}: p_type={}, p_vaddr={:#x}, p_filesz={:#x}, p_memsz={:#x}", i, p_type, p_vaddr, p_filesz, p_memsz);
+
             if p_type != PhType::Load as u32 {
                 continue;
             }
 
             // Always relocate to user space base address
             let target_addr = base_addr + p_vaddr; // Relocate to base + virtual address
+
+            crate::kinfo!("Loading segment p_vaddr={:#x}, p_filesz={:#x}, p_memsz={:#x}, target_addr={:#x}", p_vaddr, p_filesz, p_memsz, target_addr);
 
             // Copy data from ELF to memory
             if p_filesz > 0 {

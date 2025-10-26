@@ -1,5 +1,5 @@
 /// Global Descriptor Table (GDT) setup for user/kernel mode separation
-use x86_64::structures::gdt::{Descriptor, DescriptorFlags, GlobalDescriptorTable, SegmentSelector};
+use x86_64::structures::gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector};
 use x86_64::structures::tss::TaskStateSegment;
 use x86_64::VirtAddr;
 
@@ -23,6 +23,19 @@ pub struct Selectors {
 
 static mut SELECTORS: Option<Selectors> = None;
 
+/// Kernel stack for syscall
+static mut KERNEL_STACK: [u8; 4096 * 5] = [0; 4096 * 5];
+
+/// User code segment descriptor
+pub fn user_code_segment() -> Descriptor {
+    Descriptor::UserSegment(0)
+}
+
+/// User data segment descriptor
+pub fn user_segment(base: u64) -> Descriptor {
+    Descriptor::UserSegment(base)
+}
+
 /// Initialize GDT with kernel and user segments
 pub fn init() {
     use x86_64::instructions::segmentation::{CS, DS, Segment};
@@ -34,7 +47,7 @@ pub fn init() {
             const STACK_SIZE: usize = 4096 * 5;
             static mut STACK: [u8; STACK_SIZE] = [0; STACK_SIZE];
             // Ensure 16-byte alignment after CPU pushes interrupt frame (adds 8 bytes).
-            let stack_ptr = unsafe { &STACK as *const _ as u64 };
+            let stack_ptr = unsafe { &raw const STACK as *const _ as u64 };
             let top = VirtAddr::new(stack_ptr + STACK_SIZE as u64);
             top
         };
@@ -60,13 +73,13 @@ pub fn init() {
         // Entry 2: Kernel data segment
         let kernel_data = gdt.append(Descriptor::kernel_data_segment());
         // Entry 3: User code segment - manually set DPL=3
-        let user_code = Descriptor::user_code_segment();
+        let user_code = user_code_segment();
         let user_code_sel = gdt.append(user_code);
         // Entry 4: User data segment - manually set DPL=3  
-        let user_data = Descriptor::user_data_segment();
+        let user_data = user_segment(0);
         let user_data_sel = gdt.append(user_data);
         // Entry 5: TSS
-        let tss = gdt.append(Descriptor::tss_segment(&TSS));
+        let tss = gdt.append(Descriptor::tss_segment(unsafe { &* (&raw const TSS as *const TaskStateSegment) }));
 
         SELECTORS = Some(Selectors {
             code_selector: kernel_code,
@@ -76,8 +89,13 @@ pub fn init() {
             tss_selector: tss,
         });
 
-        crate::kinfo!("GDT selectors set: kernel_code={:#x}, kernel_data={:#x}, user_code={:#x}, user_data={:#x}, tss={:#x}",
-            kernel_code.0, kernel_data.0, user_code_sel.0, user_data_sel.0, tss.0);
+        // Set kernel stack for Ring 0
+        unsafe {
+            TSS.privilege_stack_table[0] = x86_64::VirtAddr::new(get_kernel_stack_top());
+        }
+
+        // crate::kinfo!("GDT selectors set: kernel_code={:#x}, kernel_data={:#x}, user_code={:#x}, user_data={:#x}, tss={:#x}",
+        //     kernel_code.0, kernel_data.0, user_code_sel.0, user_data_sel.0, tss.0);
 
         GDT = Some(gdt);
 
@@ -96,12 +114,18 @@ pub fn init() {
 
     // Debug: Print selectors
     let _selectors = unsafe { get_selectors() };
-    crate::kinfo!("TSS privilege stack[0]: {:#x}", unsafe { TSS.privilege_stack_table[0].as_u64() });
-
-    crate::kinfo!("GDT initialized with user/kernel segments");
 }
 
 /// Get the current selectors
 pub unsafe fn get_selectors() -> &'static Selectors {
     SELECTORS.as_ref().expect("GDT not initialized")
+}
+
+/// Get privilege stack for the given index
+pub unsafe fn get_privilege_stack(index: usize) -> u64 {
+    TSS.privilege_stack_table[index].as_u64()
+}
+
+pub fn get_kernel_stack_top() -> u64 {
+    unsafe { &raw const KERNEL_STACK as *const _ as u64 + 4096 * 5 }
 }

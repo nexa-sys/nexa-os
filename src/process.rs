@@ -2,6 +2,7 @@
 use crate::elf::ElfLoader;
 use core::sync::atomic::{AtomicU64, Ordering};
 use crate::gdt;
+use core::arch::asm;
 
 /// Process ID type
 pub type Pid = u64;
@@ -51,11 +52,12 @@ impl Process {
         crate::kinfo!("ElfLoader created successfully");
         
         // Allocate user space memory
-        const USER_BASE: u64 = 0x400000; // Standard Linux user space base
+        const USER_BASE: u64 = 0x400000; // Physical base for user code
+        const STACK_BASE: u64 = 0x600000; // Physical base for user stack
         const STACK_SIZE: u64 = 0x100000; // 1MB stack
         const HEAP_SIZE: u64 = 0x100000; // 1MB heap
 
-        crate::kinfo!("Constants defined: USER_BASE={:#x}, STACK_SIZE={:#x}", USER_BASE, STACK_SIZE);
+        crate::kinfo!("Constants defined: USER_BASE={:#x}, STACK_BASE={:#x}, STACK_SIZE={:#x}", USER_BASE, STACK_BASE, STACK_SIZE);
 
         // Load ELF
         crate::kinfo!("About to call loader.load with base_addr={:#x}", USER_BASE);
@@ -64,18 +66,21 @@ impl Process {
 
         let pid = NEXT_PID.fetch_add(1, Ordering::SeqCst);
 
-        // Initialize user stack in user space (not kernel space)
-        let stack_base = USER_BASE + 0x200000; // User stack at 0x600000
+        // Initialize user stack
+        let stack_base = STACK_BASE; // Virtual stack base will be mapped
         let stack_size = STACK_SIZE;
+        let stack_top = stack_base + stack_size;
 
-        Ok(Process {
+        let process = Process {
             pid,
             state: ProcessState::Ready,
-            entry_point,
-            stack_top: (USER_BASE + 0x200000 - 16) & !15, // 64KB stack space, 16-byte aligned
-            heap_start: stack_base + stack_size,
-            heap_end: stack_base + stack_size + HEAP_SIZE,
-        })
+            entry_point: 0x20119c, // Hardcoded for now
+            stack_top,
+            heap_start: USER_BASE + 0x200000, // Heap after code
+            heap_end: USER_BASE + 0x200000 + HEAP_SIZE,
+        };
+
+        Ok(process)
     }
 
     /// Execute the process in user mode (Ring 3)
@@ -97,29 +102,20 @@ impl Process {
 /// Jump to user mode (Ring 3) and execute code at given address
 /// This function never returns - execution continues in user space
 #[inline(never)]
-pub unsafe fn jump_to_usermode(entry: u64, stack: u64) {
+pub fn jump_to_usermode(entry: u64, stack: u64) {
     crate::kinfo!("About to execute int 0x80 with entry={:#x}, stack={:#x}", entry, stack);
-    
-    // Debug: check if user code is loaded
     unsafe {
-        let code_ptr = entry as *const u8;
-        let code_bytes = [code_ptr.read(), code_ptr.add(1).read(), code_ptr.add(2).read(), code_ptr.add(3).read()];
-        crate::kinfo!("User code at {:#x}: {:02x} {:02x} {:02x} {:02x}", entry, code_bytes[0], code_bytes[1], code_bytes[2], code_bytes[3]);
+        asm!(
+            "push {}",     // user entry point
+            "push {}",     // user stack
+            "pushfq",      // rflags
+            "push rax",    // dummy value for cs  
+            "push rax",    // dummy value for ss
+            "int 0x80",
+            in(reg) entry,
+            in(reg) stack,
+        );
     }
-    
-    // Store entry and stack in global variables for the interrupt handler
-    unsafe {
-        USER_ENTRY = entry;
-        USER_STACK = stack;
-    }
-    
-    // Trigger interrupt 0x80 to switch to user mode
-    unsafe {
-        core::arch::asm!("int 0x80");
-    }
-    
-    // If we get here, the switch failed
-    crate::kerror!("ERROR: Ring 3 switch failed!");
 }
 
 /// User process entry point and stack for Ring 3 switching

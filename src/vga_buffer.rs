@@ -199,3 +199,9 @@ where
 }
 
 pub static WRITER: Mutex<Option<&'static mut Writer>> = Mutex::new(None);
+
+pub fn print_char(c: char) {
+    if let Some(writer) = WRITER.lock().as_mut() {
+        writer.write_byte(c as u8);
+    }
+}

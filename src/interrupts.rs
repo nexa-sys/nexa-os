@@ -6,6 +6,8 @@ use lazy_static::lazy_static;
 use spin;
 use pic8259::ChainedPics;
 use core::arch::asm;
+use core::arch::naked_asm;
+use core::arch::global_asm;
 use x86_64::registers::model_specific::Msr;
 
 pub const PIC_1_OFFSET: u8 = 32;
@@ -13,12 +15,71 @@ pub const PIC_2_OFFSET: u8 = PIC_1_OFFSET + 8;
 
 pub static PICS: spin::Mutex<ChainedPics> = spin::Mutex::new(unsafe { ChainedPics::new(PIC_1_OFFSET, PIC_2_OFFSET) });
 
-// Exception handlers
+global_asm!(
+    ".global syscall_interrupt_handler",
+    "syscall_interrupt_handler:",
+    // Save all registers
+    "push rax",
+    "push rbx",
+    "push rcx",
+    "push rdx",
+    "push rsi",
+    "push rdi",
+    "push rbp",
+    "push r8",
+    "push r9",
+    "push r10",
+    "push r11",
+    "push r12",
+    "push r13",
+    "push r14",
+    "push r15",
+    
+    // Call syscall_dispatch(nr=rax, arg1=rdi, arg2=rsi, arg3=rdx)
+    "mov rcx, rdx", // arg3
+    "mov rdx, rsi", // arg2
+    "mov rsi, rdi", // arg1
+    "mov rdi, rax", // nr
+    "call syscall_dispatch",
+    // Return value is in rax
+    
+    // Restore registers
+    "pop r15",
+    "pop r14",
+    "pop r13",
+    "pop r12",
+    "pop r11",
+    "pop r10",
+    "pop r9",
+    "pop r8",
+    "pop rbp",
+    "pop rdi",
+    "pop rsi",
+    "pop rdx",
+    "pop rcx",
+    "pop rbx",
+    "pop rax",
+    
+    "iretq"
+);
+
+extern "C" {
+    fn syscall_interrupt_handler();
+    fn syscall_handler();
+}
+
+/// Exception handlers
 extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
-    crate::kerror!("EXCEPTION: BREAKPOINT from Ring {}!", (stack_frame.code_segment.0 & 3));
-    crate::kdebug!("RIP: {:#x}, CS: {:#x}", stack_frame.instruction_pointer, stack_frame.code_segment.0);
-    loop {
-        x86_64::instructions::hlt();
+    let ring = stack_frame.code_segment.0 & 3;
+    if ring == 3 {
+        crate::kinfo!("BREAKPOINT from user mode (Ring 3) at {:#x}", stack_frame.instruction_pointer);
+        // Just return for user mode breakpoints
+    } else {
+        crate::kerror!("EXCEPTION: BREAKPOINT from Ring {}!", ring);
+        crate::kdebug!("RIP: {:#x}, CS: {:#x}", stack_frame.instruction_pointer, stack_frame.code_segment.0);
+        loop {
+            x86_64::instructions::hlt();
+        }
     }
 }
 
@@ -71,92 +132,33 @@ extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: InterruptStackFram
 }
 
 // Ring 3 switch handler - interrupt 0x80
-extern "x86-interrupt" fn ring3_switch_handler(_stack_frame: InterruptStackFrame) {
-    crate::kdebug!("RING3_SWITCH: Switching to user mode by building new iretq frame");
-    
-    // Get stored user entry and stack
-    let entry = unsafe { crate::process::get_user_entry() };
-    let stack = unsafe { crate::process::get_user_stack() };
-    
-    // Get user selectors
-    let selectors = unsafe { crate::gdt::get_selectors() };
-    let user_cs = selectors.user_code_selector.0 as u64;
-    let user_ss = selectors.user_data_selector.0 as u64;
-    let user_ds = selectors.user_data_selector.0 as u64;
-    
-    crate::kdebug!("RING3_SWITCH: Using CS={:#x}, SS={:#x}, DS={:#x}, RIP={:#x}, RSP={:#x}", 
-        user_cs, user_ss, user_ds, entry, stack);
-    
-    // Read GDTR to find real GDT base
-    crate::kdebug!("RING3_SWITCH: Reading GDTR to find real GDT base");
-    let mut gdtr: [u8; 10] = [0; 10];
-    unsafe {
-        core::arch::asm!("sgdt [{}]", in(reg) gdtr.as_mut_ptr());
-    }
-    let limit = u16::from_le_bytes([gdtr[0], gdtr[1]]);
-    let mut base_bytes = [0u8; 8];
-    base_bytes.copy_from_slice(&gdtr[2..10]);
-    let gdt_base = u64::from_le_bytes(base_bytes);
-    crate::kdebug!("GDTR: limit={:#x}, base={:#x}", limit, gdt_base);
-    
-    // Dump first 8 descriptors from real GDT base
-    unsafe {
-        for i in 0..8 {
-            let low = *(gdt_base as *const u32).add(i * 2);
-            let high = *(gdt_base as *const u32).add(i * 2 + 1);
-            let desc = ((high as u64) << 32) | (low as u64);
-            crate::kdebug!("GDT[{}]: {:#018x}", i, desc);
-        }
-    }
-    
-    // Build iretq frame on current stack
-    // iretq expects: SS, RSP, RFLAGS, CS, RIP (in that order, from high to low addresses)
-    // All values must be 64-bit
-    crate::kdebug!("RING3_SWITCH: Building iretq frame with 64-bit values");
-    
-    // Check current RFLAGS
-    let current_rflags: u64;
-    unsafe {
-        asm!("pushfq; pop {}", out(reg) current_rflags);
-    }
-    crate::kdebug!("RING3_SWITCH: Current RFLAGS = {:#x}", current_rflags);
-    
-    unsafe {
-        asm!(
-            // Save current stack pointer
-            "mov r15, rsp",
-            
-            // Build iretq frame (push in reverse order: RIP, CS, RFLAGS, RSP, SS)
-            "push {user_ss}",     // SS (64-bit)
-            "push {user_stack}",  // RSP (64-bit) 
-            "push {rflags}",      // RFLAGS (64-bit)
-            "push {user_cs}",     // CS (64-bit)
-            "push {user_entry}",  // RIP (64-bit)
-            
-            // Set DS to user data selector
-            "mov ds, {user_ds:x}",
-            "mov es, {user_ds:x}",
-            "mov fs, {user_ds:x}",
-            "mov gs, {user_ds:x}",
-            
-            // Execute iretq to switch to Ring 3
-            "iretq",
-            
-            user_ss = in(reg) user_ss,
-            user_stack = in(reg) stack,
-            rflags = in(reg) current_rflags,
-            user_cs = in(reg) user_cs,
-            user_entry = in(reg) entry,
-            user_ds = in(reg) user_ds,
-        );
-    }
-    
-    // This should never be reached if iretq succeeds
-    crate::kerror!("ERROR: iretq failed to execute!");
+global_asm!(
+    ".global ring3_switch_handler",
+    "ring3_switch_handler:",
+    "add rsp, 40",
+    "pop r14",
+    "pop r15",
+    "pop r13",
+    "pop r15",
+    "pop r12",
+    "mov ax, 0x23",
+    "mov ds, ax",
+    "mov es, ax",
+    "mov fs, ax",
+    "mov gs, ax",
+    "mov rcx, r14",
+    "mov r11, 0x202",
+    "mov rsp, r15",
+    "sysretq"
+);
+
+extern "C" {
+    fn ring3_switch_handler();
 }
 
 lazy_static! {
     static ref IDT: InterruptDescriptorTable = {
+        // crate::kinfo!("Initializing IDT...");
         let mut idt = InterruptDescriptorTable::new();
         
         // Set up interrupt handlers
@@ -170,69 +172,31 @@ lazy_static! {
         idt.invalid_tss.set_handler_fn(segment_not_present_handler); // Reuse handler
         idt.stack_segment_fault.set_handler_fn(segment_not_present_handler); // Reuse handler
         
-        // Set up system call interrupt at 0x81
-        idt[0x81].set_handler_fn(syscall_handler).set_privilege_level(x86_64::PrivilegeLevel::Ring3);
-        
-        // Set up Ring 3 switch interrupt at 0x80
-        idt[0x80].set_handler_fn(ring3_switch_handler);
-        
         // Set up hardware interrupts
         idt[PIC_1_OFFSET].set_handler_fn(timer_interrupt_handler);
         idt[PIC_1_OFFSET + 1].set_handler_fn(keyboard_interrupt_handler);
+        
+        // Set up syscall interrupt handler at 0x81
+        unsafe {
+            idt[0x81].set_handler_addr(x86_64::VirtAddr::new(syscall_interrupt_handler as u64));
+        }
         
         idt
     };
 }
 
 /// Initialize IDT with interrupt handlers
-pub fn init() {
-    crate::kinfo!("INTERRUPTS::INIT: Starting interrupt initialization");
-    
+pub fn init_interrupts() {
+    // Load the IDT
     IDT.load();
-    crate::kinfo!("IDT loaded successfully");
     
-    // Set up syscall MSR for fast system calls
-    unsafe {
-        let handler_addr = syscall_instruction_handler as u64;
-        crate::kinfo!("Setting IA32_LSTAR to {:#x}", handler_addr);
-        // IA32_LSTAR: syscall entry point
-        Msr::new(0xC0000082).write(handler_addr);
-        // IA32_STAR: CS/SS selectors for syscall/sysret
-        // syscall: CS = STAR[47:32] & 0xFFFC, SS = STAR[47:32] + 8
-        // sysret: CS = STAR[63:48] + 16, SS = STAR[63:48] + 24  
-        // For our GDT: kernel CS=0x8, SS=0x10, user CS=0x18|3=0x1b, SS=0x20|3=0x23
-        let star_value = (0x08u64 << 48) | (0x1bu64 << 32) | (0x23u64 << 16) | 0x10u64;
-        crate::kinfo!("Setting IA32_STAR to {:#x}", star_value);
-        Msr::new(0xC0000081).write(star_value);
-        // IA32_FMASK: RFLAGS mask
-        Msr::new(0xC0000084).write(0x200); // Clear IF
-        
-        // Enable syscall instruction
-        let efer = Msr::new(0xC0000080).read();
-        crate::kinfo!("Current IA32_EFER: {:#x}", efer);
-        Msr::new(0xC0000080).write(efer | 1); // Set SCE bit
-        crate::kinfo!("Enabled syscall instruction (SCE=1)");
-    }
-    crate::kinfo!("Syscall MSR configured");
+    // Initialize PICs
+    unsafe { PICS.lock().initialize(); }
     
-    // Test if we can trigger breakpoint interrupt manually
-    // crate::kinfo!("Testing breakpoint interrupt...");
-    // x86_64::instructions::interrupts::int3();
+    // Setup syscall
+    setup_syscall();
     
-    // Initialize PIC
-    // unsafe {
-    //     PICS.lock().initialize();
-    // }
-
-    crate::kinfo!("IDT initialized with system call and keyboard support");
-    crate::kinfo!("System call handler at interrupt 0x81");
-    
-    // Test syscall interrupt manually
-    crate::kinfo!("Testing syscall interrupt...");
-    unsafe {
-        asm!("int 0x81");
-    }
-    
+    crate::kinfo!("IDT loaded and syscall configured");
 }
 
 // Hardware interrupt handlers
@@ -257,89 +221,199 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
     }
 }
 
-extern "x86-interrupt" fn syscall_handler(stack_frame: InterruptStackFrame) {
-    // Debug output to confirm handler is called
-    crate::kdebug!("SYSCALL_HANDLER: INT 0x81 triggered from Ring {}!", (stack_frame.code_segment.0 & 3));
-
-    // Check if this is from user space
-    if (stack_frame.code_segment.0 & 3) == 3 {
-        crate::kdebug!("SYSCALL_HANDLER: This is a USER syscall!");
+#[unsafe(naked)]
+extern "C" fn syscall_instruction_handler() {
+    core::arch::naked_asm!(
+        // syscall entry: RIP->RCX, RFLAGS->R11, CS/SS set from STAR, RSP->RSP0
+        "swapgs",                    // Switch to kernel GS
+        "mov gs:[0], rsp",           // Save user RSP
+        "mov rsp, gs:[8]",           // Load kernel RSP
         
-        // Check debug markers from user program
-        unsafe {
-            let debug_addr = 0x600000 as *const u64;
-            let debug_addr2 = (0x600000 + 8) as *const u64;
-            let debug_addr3 = (0x600000 + 16) as *const u64;
-            
-            crate::kdebug!("Debug marker 1: {:#x}", *debug_addr);
-            crate::kdebug!("Debug marker 2: {:#x}", *debug_addr2);
-            crate::kdebug!("Debug marker 3: {:#x}", *debug_addr3);
-        }
+        // Push user state for sysret
+        "push 0x23",                 // User SS
+        "push gs:[0]",               // User RSP
+        "push r11",                  // User RFLAGS
+        "push 0x1b",                 // User CS
+        "push rcx",                  // User RIP
         
-        // Output the shell prompt
-        crate::serial_print!("nexa$ ");
-        // Return success
-        unsafe {
-            asm!("mov rax, {}", in(reg) 6u64); // Return the number of bytes written
-        }
-        return;
-    } else {
-        crate::kdebug!("SYSCALL_HANDLER: This is a KERNEL syscall!");
-    }
-
-    // For now, let's handle the most common syscall (write) directly
-    // The user program is trying to print "nexa$ "
-    // Let's just output it directly to both serial and VGA
-
-    // Output the shell prompt
-    crate::serial_print!("nexa$ ");
-
-    // Return success
-    unsafe {
-        asm!("mov rax, {}", in(reg) 6u64); // Return the number of bytes written
-    }
-
-    // No EOI needed for software interrupts (INT 0x81)
+        // Save syscall args
+        "push rax",
+        "push rdi",
+        "push rsi", 
+        "push rdx",
+        
+        // Call handler
+        "call syscall_dispatch",
+        
+        // Restore syscall args
+        "pop rdx",
+        "pop rsi",
+        "pop rdi", 
+        "pop rax",
+        
+        // Restore user state from stack
+        "pop rcx",                   // User RIP
+        "add rsp, 8",                // Skip user CS
+        "pop r11",                   // User RFLAGS
+        "pop rsp",                   // User RSP
+        "add rsp, 8",                // Skip user SS
+        
+        "swapgs",                    // Switch back to user GS
+        "sysret",                    // Return to user mode
+    );
 }
 
-extern "C" fn syscall_instruction_handler() {
+#[unsafe(no_mangle)]
+extern "C" fn syscall_instruction_handler_inner() {
+    // This function is called from naked assembly
+    // Registers: rax=syscall_num, rdi=arg1, rsi=arg2, rdx=arg3
+    let syscall_num: u64;
+    let arg1: u64;
+    let arg2: u64;
+    let arg3: u64;
+    
     unsafe {
-        // syscall saves user RIP in RCX, RFLAGS in R11
-        let user_rip: u64;
-        let user_rflags: u64;
-        let syscall_num: u64;
-        let arg1: u64;
-        let arg2: u64;
-        let arg3: u64;
-        
-        asm!("", 
-            out("rcx") user_rip, 
-            out("r11") user_rflags,
-            out("rax") syscall_num,
-            out("rdi") arg1,
-            out("rsi") arg2,
-            out("rdx") arg3
+        asm!(
+            "mov {}, rax",
+            "mov {}, rdi", 
+            "mov {}, rsi",
+            "mov {}, rdx",
+            out(reg) syscall_num,
+            out(reg) arg1,
+            out(reg) arg2,
+            out(reg) arg3,
         );
+    }
+    
+    crate::kdebug!("SYSCALL_INSTRUCTION_HANDLER: syscall={} arg1={:#x} arg2={:#x} arg3={:#x}", syscall_num, arg1, arg2, arg3);
+    
+    if syscall_num == 1 { // write
+        let fd = arg1;
+        let buf_ptr = arg2 as *const u8;
+        let count = arg3 as usize;
         
-        // Handle the syscall
-        match syscall_num {
-            1 => { // SYS_WRITE
-                let fd = arg1;
-                let buf = arg2 as *const u8;
-                let count = arg3 as usize;
-                
-                if fd == 1 { // stdout
-                    // Write to serial port from kernel space using proper logging macro
-                    let s = core::str::from_utf8_unchecked(core::slice::from_raw_parts(buf, count));
-                    crate::serial_print!("{}", s);
-                }
-            },
-            _ => {
-                // Unknown syscall - do nothing
-            }
+        crate::kdebug!("SYSCALL: write fd={} buf={:#x} count={}", fd, buf_ptr as u64, count);
+        
+        // For simplicity, assume fd=1 and print to VGA and serial
+        for i in 0..count {
+            let byte = unsafe { *buf_ptr.add(i) };
+            crate::kdebug!("SYSCALL: writing byte {}", byte as char);
+            write_char_to_vga(byte);
+            write_char_to_serial(byte);
         }
         
-        // For now, don't return to user space - just continue in kernel
-        // This will cause the user process to be terminated, but let's see if syscall works
+        // Return count
+        unsafe {
+            asm!("mov rax, {}", in(reg) count as u64);
+        }
+    } else {
+        crate::kdebug!("SYSCALL: unknown syscall {}", syscall_num);
+        unsafe {
+            asm!("mov rax, {}", in(reg) (-1i64 as u64));
+        }
     }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn write_char_to_vga(c: u8) {
+    use core::fmt::Write;
+    crate::vga_buffer::with_writer(|writer| {
+        let _ = write!(writer, "{}", c as char);
+    });
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn write_char_to_serial(c: u8) {
+    crate::serial::_print(format_args!("{}", c as char));
+}
+
+// Debug function for Ring 3 switch
+#[unsafe(no_mangle)]
+extern "C" fn ring3_debug_print() {
+    // This function is called from assembly with registers set
+    // rsi = entry, rdi = stack, rdx = cs, rcx = ss, r8 = ds
+    let entry: u64;
+    let stack: u64;
+    let cs: u64;
+    let ss: u64;
+    let ds: u64;
+    
+    unsafe {
+        asm!(
+            "mov {}, rsi",
+            "mov {}, rdi",
+            "mov {}, rdx",
+            "mov {}, rcx",
+            "mov {}, r8",
+            out(reg) entry,
+            out(reg) stack,
+            out(reg) cs,
+            out(reg) ss,
+            out(reg) ds,
+        );
+    }
+    
+    crate::kinfo!("RING3_SWITCH: entry={:#x}, stack={:#x}, cs={:#x}, ss={:#x}, ds={:#x}", 
+        entry, stack, cs, ss, ds);
+}
+
+// Debug function for Ring 3 switch GS check
+#[unsafe(no_mangle)]
+extern "C" fn ring3_debug_print2() {
+    // This function is called from assembly with registers set
+    // rax = gs:[0], rbx = gs:[8], rcx = gs:[40]
+    let gs0: u64;
+    let gs8: u64;
+    let gs40: u64;
+    
+    unsafe {
+        asm!(
+            "mov {}, rax",
+            "mov {}, rbx",
+            "mov {}, rcx",
+            out(reg) gs0,
+            out(reg) gs8,
+            out(reg) gs40,
+        );
+    }
+    
+    crate::kdebug!("GS check: gs:[0]={:#x}, gs:[8]={:#x}, gs:[40]={:#x}", gs0, gs8, gs40);
+}
+
+/// Set GS data for Ring 3 switch
+pub unsafe fn set_gs_data(entry: u64, stack: u64, user_cs: u64, user_ss: u64, user_ds: u64) {
+    unsafe {
+        // Get kernel stack from TSS privilege stack table
+        let kernel_stack = crate::gdt::get_kernel_stack_top();
+        
+        crate::interrupts::GS_DATA[0] = stack; // user RSP at gs:[0]
+        crate::interrupts::GS_DATA[1] = kernel_stack; // kernel RSP at gs:[8]
+        crate::interrupts::GS_DATA[2] = entry; // USER_ENTRY at gs:[16]
+        crate::interrupts::GS_DATA[3] = stack; // USER_STACK at gs:[24]
+        crate::interrupts::GS_DATA[4] = user_cs; // user_cs at gs:[32]
+        crate::interrupts::GS_DATA[5] = user_ss; // user_ss at gs:[40]
+        crate::interrupts::GS_DATA[6] = user_ds; // user_ds at gs:[48]
+        
+        crate::kdebug!("GS_DATA set: entry={:#x}, stack={:#x}, cs={:#x}, ss={:#x}, ds={:#x}", entry, stack, user_cs, user_ss, user_ds);
+        crate::kdebug!("GS_DATA[1] (kernel stack) = {:#x}", crate::interrupts::GS_DATA[1]);
+    }
+}
+
+// GS data for syscall and Ring 3 switch
+pub static mut GS_DATA: [u64; 16] = [0; 16];
+
+pub fn setup_syscall() {
+    // Setup syscall
+    crate::kinfo!("Setting syscall handler to {:#x}", syscall_instruction_handler as u64);
+    unsafe {
+        Msr::new(0xc0000101).write(0); // GS base
+        Msr::new(0xc0000080).write(1 << 0); // IA32_EFER.SCE = 1
+        Msr::new(0xc0000081).write((0x08 << 32) | (0x1b << 48)); // STAR
+        Msr::new(0xc0000082).write(syscall_instruction_handler as u64); // LSTAR
+        Msr::new(0xc0000084).write(0x200); // FMASK
+    }
+}
+
+extern "C" fn debug_params(stack: u64, entry: u64) {
+    crate::kinfo!("RING3_SWITCH: entry={:#x}, stack={:#x}", entry, stack);
 }
