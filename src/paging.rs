@@ -49,6 +49,10 @@ unsafe fn init_user_page_tables() {
                 // For huge pages, set USER_ACCESSIBLE directly on PDP entry
                 pdp[0].set_flags(flags | PageTableFlags::USER_ACCESSIBLE);
                 crate::kinfo!("Set USER_ACCESSIBLE for huge page at PDP[0]");
+                // Since VGA (0xb8000) is identity-mapped by the huge page,
+                // it's now safe to write to the VGA buffer. Mark it ready so
+                // higher-level logging will emit to VGA again.
+                crate::vga_buffer::set_vga_ready();
                 return;
             }
             // Set PDP[0] to not huge page
@@ -297,7 +301,12 @@ unsafe fn map_vga_buffer() {
         pdp[pdp_index].set_flags(flags | PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
         crate::kdebug!("VGA buffer already mapped via huge page, updated permissions");
         // Indicate VGA is ready for higher-level writes
-        crate::vga_buffer::set_vga_ready();
+    crate::vga_buffer::set_vga_ready();
+    // Transient serial-only confirmation so we can verify at runtime that
+    // this branch executed and VGA was marked ready. Serial is always
+    // available early in boot, so this will appear in serial logs even if
+    // VGA output is not visible.
+    crate::serial_println!("VGA mapped and marked ready (huge page)");
     } else {
         // Normal page table structure exists
         let pd_addr = pdp[pdp_index].addr();
@@ -312,7 +321,10 @@ unsafe fn map_vga_buffer() {
 
         crate::kdebug!("VGA buffer mapping completed via page tables");
         // Indicate VGA is ready for higher-level writes
-        crate::vga_buffer::set_vga_ready();
+    crate::vga_buffer::set_vga_ready();
+    // Confirm via serial so we can see in the run logs whether this path
+    // executed.
+    crate::serial_println!("VGA mapped and marked ready (page table)");
     }
 }
 

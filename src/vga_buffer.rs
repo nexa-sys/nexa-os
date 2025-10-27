@@ -52,7 +52,12 @@ pub static VGA_WRITER: Mutex<Writer> = Mutex::new(Writer::new());
 pub static VGA_READY: AtomicBool = AtomicBool::new(false);
 
 pub fn set_vga_ready() {
+    // Mark VGA as ready and emit a serial-only confirmation so we can observe
+    // at runtime whether VGA ready was actually set. We avoid using the
+    // higher-level kinfo! macro here to guarantee this appears on serial even
+    // if logger or VGA are in an unexpected state.
     VGA_READY.store(true, Ordering::SeqCst);
+    crate::serial_println!("VGA_READY set");
 }
 
 pub fn is_vga_ready() -> bool {
@@ -60,7 +65,12 @@ pub fn is_vga_ready() -> bool {
 }
 
 pub fn init() {
+    // Initialize the VGA writer and clear the screen. Also emit a serial-only
+    // notice that we ran VGA init to help debug early boot ordering issues.
     clear_screen();
+    // Use kernel logging macro so the message follows the kernel's logging
+    // conventions (emitted to serial and VGA when available).
+    crate::kinfo!("vga_buffer::init() called");
 }
 
 pub(crate) fn _print(args: fmt::Arguments<'_>) {
