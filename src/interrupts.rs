@@ -9,6 +9,7 @@ use core::arch::asm;
 use core::arch::naked_asm;
 use core::arch::global_asm;
 use x86_64::registers::model_specific::Msr;
+use x86_64::instructions::port::Port;
 
 pub const PIC_1_OFFSET: u8 = 32;
 pub const PIC_2_OFFSET: u8 = PIC_1_OFFSET + 8;
@@ -117,7 +118,7 @@ extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
 
 extern "x86-interrupt" fn page_fault_handler(
     stack_frame: InterruptStackFrame,
-    error_code: PageFaultErrorCode,
+    _error_code: PageFaultErrorCode,
 ) {
     // Very low-level serial dump: write PF marker, CR2 (faulting address), and RIP
     use x86_64::registers::control::Cr2;
@@ -127,7 +128,7 @@ extern "x86-interrupt" fn page_fault_handler(
     };
 
     unsafe {
-        use x86_64::instructions::port::Port;
+        // no direct port writes here anymore; use kernel logging macros
         let mut port = Port::new(0x3F8u16);
         // Write marker
         port.write(b'P');
@@ -527,37 +528,33 @@ pub fn setup_syscall() {
         // Set GS base to GS_DATA address
         let gs_base = &raw const GS_DATA as *const _ as u64;
         // Use minimal serial port writes to trace MSR writes during early boot
-        use x86_64::instructions::port::Port;
-        let mut p = Port::new(0x3F8u16);
+    use x86_64::instructions::port::Port;
 
-        p.write(b'G'); // about to write GS base
-        Msr::new(0xc0000101).write(gs_base); // GS base
-        p.write(b'g'); // GS base written
+    // Use kernel logging for MSR write tracing so it follows the
+    // kernel logging convention (serial + optional VGA). logger
+    // will skip VGA until it's ready, so this is safe during early boot.
+    crate::kdebug!("MSR: about to write GS base");
+    Msr::new(0xc0000101).write(gs_base); // GS base
+    crate::kdebug!("MSR: GS base written");
 
-        p.write(b'E');
-        Msr::new(0xc0000080).write(1 << 0); // IA32_EFER.SCE = 1
-        p.write(b'e');
+    crate::kdebug!("MSR: about to set EFER.SCE");
+    Msr::new(0xc0000080).write(1 << 0); // IA32_EFER.SCE = 1
+    crate::kdebug!("MSR: EFER.SCE set");
 
-        p.write(b'S');
-        Msr::new(0xc0000081).write((0x08 << 32) | (0x1b << 48)); // STAR
-        p.write(b's');
+    crate::kdebug!("MSR: about to write STAR");
+    Msr::new(0xc0000081).write((0x08 << 32) | (0x1b << 48)); // STAR
+    crate::kdebug!("MSR: STAR written");
 
-        // Point LSTAR to the Rust/assembly syscall handler which prepares
-        // arguments (moves rax->rdi, etc.) and uses sysretq. The
-        // earlier `syscall_instruction_handler` naked stub did a direct
-        // `call syscall_dispatch` without arranging SysV args which can
-        // cause incorrect arguments and exceptions. Use the well-formed
-        // `syscall_handler` defined in `src/syscall.rs`.
-        p.write(b'L');
-        Msr::new(0xc0000082).write(syscall_handler as u64); // LSTAR
-        p.write(b'l');
+    // Point LSTAR to the Rust/assembly syscall handler which prepares
+    // arguments (moves rax->rdi, etc.) and uses sysretq.
+    crate::kdebug!("MSR: about to write LSTAR");
+    Msr::new(0xc0000082).write(syscall_handler as u64); // LSTAR
+    crate::kdebug!("MSR: LSTAR written");
 
-        p.write(b'F');
-        Msr::new(0xc0000084).write(0x200); // FMASK
-        p.write(b'f');
+    crate::kdebug!("MSR: about to write FMASK");
+    Msr::new(0xc0000084).write(0x200); // FMASK
+    crate::kdebug!("MSR: FMASK written");
     }
 }
 
-extern "C" fn debug_params(stack: u64, entry: u64) {
-    crate::kinfo!("RING3_SWITCH: entry={:#x}, stack={:#x}", entry, stack);
-}
+// debug_params removed; use logging macros in callers if needed

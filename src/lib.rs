@@ -15,7 +15,6 @@ pub mod memory;
 pub mod paging;
 pub mod process;
 pub mod serial;
-pub mod shell;
 pub mod syscall;
 pub mod vga_buffer;
 
