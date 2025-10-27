@@ -175,9 +175,19 @@ impl Iterator for InitramfsIter {
 // Global initramfs instance
 static mut INITRAMFS: Option<Initramfs> = None;
 
+// Backup buffer for initramfs data so we keep a kernel-owned copy
+// in case page tables change the accessibility of the original module
+// address provided by the bootloader. 64 KiB should be plenty for our
+// small user-space programs used in tests.
+static mut INITRAMFS_COPY_BUF: [u8; 64 * 1024] = [0; 64 * 1024];
+const INITRAMFS_COPY_BUF_SIZE: usize = 64 * 1024;
+
 /// Get global initramfs instance
 pub fn get() -> Option<&'static Initramfs> {
-    unsafe { INITRAMFS.as_ref() }
+    unsafe {
+        let p: *const Option<Initramfs> = &raw const INITRAMFS;
+        (*p).as_ref()
+    }
 }
 
 /// Find a file in initramfs
@@ -194,16 +204,31 @@ pub fn init(base: *const u8, size: usize) {
     // Assume GRUB has already mapped the initramfs region
     
     unsafe {
-        INITRAMFS = Some(Initramfs::new(base, size));
+        // If the module fits into our kernel-owned buffer, copy it there
+    if size <= INITRAMFS_COPY_BUF_SIZE {
+            let dst: *mut u8 = &raw mut INITRAMFS_COPY_BUF as *mut _ as *mut u8;
+            core::ptr::copy_nonoverlapping(base, dst, size);
+            INITRAMFS = Some(Initramfs::new(dst as *const u8, size));
+            crate::kinfo!("Initramfs copied into kernel buffer ({} bytes)", size);
+        } else {
+            // Fallback: reference original module memory
+            INITRAMFS = Some(Initramfs::new(base, size));
+            crate::kwarn!("Initramfs module too large to copy ({} bytes), using original pointer", size);
+        }
     }
     
     crate::kinfo!("Initramfs initialized at {:#x}, size {} bytes", base as usize, size);
     
     // List all files
-    if let Some(ref ramfs) = unsafe { &INITRAMFS } {
-        crate::kinfo!("Initramfs contents:");
-        for entry in ramfs.entries() {
-            crate::kinfo!("  '{}' ({} bytes, mode {:#o})", entry.name, entry.data.len(), entry.mode);
+    // Safely iterate over entries using a raw pointer to avoid creating
+    // shared references to mutable statics.
+    unsafe {
+        let p: *const Option<Initramfs> = &raw const INITRAMFS;
+        if let Some(ref ramfs) = (*p).as_ref() {
+            crate::kinfo!("Initramfs contents:");
+            for entry in ramfs.entries() {
+                crate::kinfo!("  '{}' ({} bytes, mode {:#o})", entry.name, entry.data.len(), entry.mode);
+            }
         }
     }
 }

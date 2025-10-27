@@ -1,6 +1,7 @@
 use core::fmt::{self, Write};
 use core::ptr;
 use spin::Mutex;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 const BUFFER_HEIGHT: usize = 25;
 const BUFFER_WIDTH: usize = 80;
@@ -46,6 +47,17 @@ struct ScreenChar {
 }
 
 pub static VGA_WRITER: Mutex<Writer> = Mutex::new(Writer::new());
+
+// Indicates whether the VGA buffer has been mapped and is safe to write.
+pub static VGA_READY: AtomicBool = AtomicBool::new(false);
+
+pub fn set_vga_ready() {
+    VGA_READY.store(true, Ordering::SeqCst);
+}
+
+pub fn is_vga_ready() -> bool {
+    VGA_READY.load(Ordering::SeqCst)
+}
 
 pub fn init() {
     clear_screen();

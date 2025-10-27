@@ -101,6 +101,8 @@ extern "C" {
 /// Exception handlers
 extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
     let ring = stack_frame.code_segment.0 & 3;
+    // Low-level marker for breakpoint
+    unsafe { let mut port = x86_64::instructions::port::Port::new(0x3F8u16); port.write(b'B'); }
     if ring == 3 {
         crate::kinfo!("BREAKPOINT from user mode (Ring 3) at {:#x}", stack_frame.instruction_pointer);
         // Just return for user mode breakpoints
@@ -117,8 +119,59 @@ extern "x86-interrupt" fn page_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: PageFaultErrorCode,
 ) {
-    crate::kerror!("EXCEPTION: PAGE FAULT (error: {:?}) from Ring {}!", error_code, (stack_frame.code_segment.0 & 3));
-    crate::kdebug!("RIP: {:#x}, CS: {:#x}", stack_frame.instruction_pointer, stack_frame.code_segment.0);
+    // Very low-level serial dump: write PF marker, CR2 (faulting address), and RIP
+    use x86_64::registers::control::Cr2;
+    let cr2 = match Cr2::read() {
+        Ok(addr) => addr,
+        Err(_) => x86_64::VirtAddr::new(0),
+    };
+
+    unsafe {
+        use x86_64::instructions::port::Port;
+        let mut port = Port::new(0x3F8u16);
+        // Write marker
+        port.write(b'P');
+        port.write(b'F');
+        port.write(b' ');
+
+        // Helper: write 64-bit value as 16 hex digits via closure that performs the unsafe write
+        const HEX: &[u8; 16] = b"0123456789ABCDEF";
+        let mut v = cr2.as_u64();
+        let mut buf = [b'0'; 16];
+        for i in 0..16 {
+            let shift = (15 - i) * 4;
+            let nibble = ((v >> shift) & 0xF) as usize;
+            buf[i] = HEX[nibble];
+        }
+        for &b in &buf {
+            port.write(b);
+        }
+
+        port.write(b' ');
+        // Write RIP
+        let rip = stack_frame.instruction_pointer.as_u64();
+        v = rip;
+        for i in 0..16 {
+            let shift = (15 - i) * 4;
+            let nibble = ((v >> shift) & 0xF) as usize;
+            buf[i] = HEX[nibble];
+        }
+        for &b in &buf {
+            port.write(b);
+        }
+        // Terminate low-level dump with newline to keep the raw serial dump atomic
+        port.write(b'\n');
+    }
+
+    // Emit a very small, deterministic marker via port to make automated
+    // parsing simpler, then halt. We avoid higher-level logging to prevent
+    // interleaving with other serial writes coming from assembly startup code.
+    unsafe {
+        use x86_64::instructions::port::Port;
+        let mut port = Port::new(0x3F8u16);
+        port.write(b'!');
+        port.write(b'\n');
+    }
     loop {
         x86_64::instructions::hlt();
     }
@@ -128,6 +181,8 @@ extern "x86-interrupt" fn general_protection_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: u64,
 ) {
+    // Low-level marker for GPF
+    unsafe { let mut port = x86_64::instructions::port::Port::new(0x3F8u16); port.write(b'G'); }
     crate::kerror!("EXCEPTION: GENERAL PROTECTION FAULT (error: {}) from Ring {}!", error_code, (stack_frame.code_segment.0 & 3));
     crate::kdebug!("RIP: {:#x}, CS: {:#x}", stack_frame.instruction_pointer, stack_frame.code_segment.0);
     loop {
@@ -136,6 +191,8 @@ extern "x86-interrupt" fn general_protection_fault_handler(
 }
 
 extern "x86-interrupt" fn divide_error_handler(stack_frame: InterruptStackFrame) {
+    // Low-level marker for divide error
+    unsafe { let mut port = x86_64::instructions::port::Port::new(0x3F8u16); port.write(b'D'); }
     crate::kerror!("EXCEPTION: DIVIDE ERROR\n{:#?}", stack_frame);
     loop {}
 }
@@ -144,6 +201,17 @@ extern "x86-interrupt" fn double_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: u64,
 ) -> ! {
+    // Try to write a minimal, low-dependency marker to the serial port
+    // so we can observe double faults even if higher-level logging
+    // infrastructure is corrupted.
+    use x86_64::instructions::port::Port;
+    unsafe {
+        let mut port = Port::new(0x3F8u16);
+        // Write 'D' 'F' marker
+        port.write(b'D');
+        port.write(b'F');
+    }
+
     crate::kerror!("EXCEPTION: DOUBLE FAULT (error: {})\n{:#?}", error_code, stack_frame);
     loop {}
 }
@@ -157,6 +225,8 @@ extern "x86-interrupt" fn segment_not_present_handler(
 }
 
 extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: InterruptStackFrame) {
+    // Low-level marker for invalid opcode
+    unsafe { let mut port = x86_64::instructions::port::Port::new(0x3F8u16); port.write(b'I'); }
     crate::kerror!("EXCEPTION: INVALID OPCODE\n{:#?}", stack_frame);
     loop {}
 }
@@ -194,7 +264,13 @@ lazy_static! {
         idt.page_fault.set_handler_fn(page_fault_handler);
         idt.general_protection_fault.set_handler_fn(general_protection_fault_handler);
         idt.divide_error.set_handler_fn(divide_error_handler);
-        idt.double_fault.set_handler_fn(double_fault_handler);
+        // Use a dedicated IST entry for double fault to ensure the CPU
+        // switches to a known-good stack when a double fault occurs. This
+        // reduces the chance of a triple fault caused by stack corruption.
+        unsafe {
+            idt.double_fault.set_handler_fn(double_fault_handler)
+                .set_stack_index(crate::gdt::DOUBLE_FAULT_IST_INDEX as u16);
+        }
         idt.segment_not_present.set_handler_fn(segment_not_present_handler);
         idt.invalid_opcode.set_handler_fn(invalid_opcode_handler);
         idt.invalid_tss.set_handler_fn(segment_not_present_handler); // Reuse handler
@@ -450,12 +526,35 @@ pub fn setup_syscall() {
         
         // Set GS base to GS_DATA address
         let gs_base = &raw const GS_DATA as *const _ as u64;
+        // Use minimal serial port writes to trace MSR writes during early boot
+        use x86_64::instructions::port::Port;
+        let mut p = Port::new(0x3F8u16);
+
+        p.write(b'G'); // about to write GS base
         Msr::new(0xc0000101).write(gs_base); // GS base
-        
+        p.write(b'g'); // GS base written
+
+        p.write(b'E');
         Msr::new(0xc0000080).write(1 << 0); // IA32_EFER.SCE = 1
+        p.write(b'e');
+
+        p.write(b'S');
         Msr::new(0xc0000081).write((0x08 << 32) | (0x1b << 48)); // STAR
-        Msr::new(0xc0000082).write(syscall_instruction_handler as u64); // LSTAR
+        p.write(b's');
+
+        // Point LSTAR to the Rust/assembly syscall handler which prepares
+        // arguments (moves rax->rdi, etc.) and uses sysretq. The
+        // earlier `syscall_instruction_handler` naked stub did a direct
+        // `call syscall_dispatch` without arranging SysV args which can
+        // cause incorrect arguments and exceptions. Use the well-formed
+        // `syscall_handler` defined in `src/syscall.rs`.
+        p.write(b'L');
+        Msr::new(0xc0000082).write(syscall_handler as u64); // LSTAR
+        p.write(b'l');
+
+        p.write(b'F');
         Msr::new(0xc0000084).write(0x200); // FMASK
+        p.write(b'f');
     }
 }
 

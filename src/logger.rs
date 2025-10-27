@@ -131,6 +131,14 @@ fn emit_serial(level: LogLevel, timestamp_us: u64, args: fmt::Arguments<'_>) {
 }
 
 fn emit_vga(level: LogLevel, timestamp_us: u64, args: fmt::Arguments<'_>) {
+    // Avoid writing to VGA until mapping is completed. Some early boot
+    // code runs before the VGA buffer is safely mapped and writes to it
+    // can cause page faults (observed as PF at 0xb8f00). Check the
+    // VGA readiness flag and skip VGA output until it's set by paging.
+    if !crate::vga_buffer::is_vga_ready() {
+        return;
+    }
+
     use core::fmt::Write;
 
     vga_buffer::with_writer(|writer| {

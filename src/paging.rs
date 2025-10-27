@@ -296,6 +296,8 @@ unsafe fn map_vga_buffer() {
         let flags = pdp[pdp_index].flags();
         pdp[pdp_index].set_flags(flags | PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
         crate::kdebug!("VGA buffer already mapped via huge page, updated permissions");
+        // Indicate VGA is ready for higher-level writes
+        crate::vga_buffer::set_vga_ready();
     } else {
         // Normal page table structure exists
         let pd_addr = pdp[pdp_index].addr();
@@ -309,6 +311,8 @@ unsafe fn map_vga_buffer() {
         pt[pt_index].set_frame(frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
 
         crate::kdebug!("VGA buffer mapping completed via page tables");
+        // Indicate VGA is ready for higher-level writes
+        crate::vga_buffer::set_vga_ready();
     }
 }
 
