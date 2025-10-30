@@ -121,11 +121,11 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
         try_init_exec!(init_path);
     }
 
-    let initFileList = ["/sbin/init", "/etc/init", "/bin/init", "/bin/sh"];
+    const INIT_PATHS: &[&str] = &["/sbin/init", "/etc/init", "/bin/init", "/bin/sh"];
 
-    kinfo!("Using default init file list: {:?}", initFileList);
+    kinfo!("Using default init file list: {}", INIT_PATHS.len());
     kinfo!("Pausing briefly before starting init");
-    for (&path) in initFileList.iter() {
+    for (&path) in  INIT_PATHS.iter() {
         kinfo!("Trying init file: {}", path);
         try_init_exec!(path);
         kinfo!("Pausing briefly before starting init");
