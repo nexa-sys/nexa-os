@@ -19,13 +19,17 @@ pub mod syscall;
 pub mod vga_buffer;
 
 use core::panic::PanicInfo;
-use multiboot2::{BootInformation, BootInformationHeader};
-
+use multiboot2::{BootInformation, BootInformationHeader, CommandLineTag};
 pub const MULTIBOOT_BOOTLOADER_MAGIC: u32 = 0x2BADB002; // Multiboot v1
 pub const MULTIBOOT2_BOOTLOADER_MAGIC: u32 = 0x36d76289; // Multiboot v2
 
 pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
     let freq_hz = logger::init();
+    let boot_info = unsafe {
+        BootInformation::load(multiboot_info_address as *const BootInformationHeader)
+            .expect("valid multiboot info structure")
+    };
+
     vga_buffer::init();
 
     kinfo!("NexaOS kernel bootstrap start");
@@ -52,20 +56,18 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
     }
 
     if magic == MULTIBOOT2_BOOTLOADER_MAGIC {
-        let boot_info = unsafe {
-            BootInformation::load(multiboot_info_address as *const BootInformationHeader)
-                .expect("valid multiboot info structure")
-        };
-
         memory::log_memory_overview(&boot_info);
-        
+
         // Load initramfs from multiboot module if present
         if let Some(modules_tag) = boot_info.module_tags().next() {
             let module_start = modules_tag.start_address() as *const u8;
             let module_size = (modules_tag.end_address() - modules_tag.start_address()) as usize;
             if module_size > 0 {
-                kinfo!("Found initramfs module at {:#x}, size {} bytes", 
-                    module_start as usize, module_size);
+                kinfo!(
+                    "Found initramfs module at {:#x}, size {} bytes",
+                    module_start as usize,
+                    module_size
+                );
                 initramfs::init(module_start, module_size);
             }
         } else {
@@ -80,21 +82,21 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
 
     // Initialize GDT for user/kernel mode
     gdt::init();
-    
+
     kinfo!("About to call interrupts::init_interrupts()");
-    
+
     // Initialize interrupts and system calls
     crate::interrupts::init_interrupts();
-    
+
     kinfo!("interrupts::init() completed successfully");
-    
+
     // Enable interrupts
     x86_64::instructions::interrupts::enable();
-    
+
     // Keep all PIC interrupts masked for now to avoid spurious interrupts
     // TODO: Enable timer interrupt after testing syscall and user mode switching
     kinfo!("CPU interrupts enabled, PIC interrupts remain masked");
-    
+
     // Initialize filesystem
     fs::init();
 
@@ -105,37 +107,35 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
         elapsed_us % 1_000
     );
 
+    let cmdline = boot_info
+            .command_line_tag()
+            .map(|tag| {
+                tag.cmdline()
+                    .expect("Invalid command line (not UTF-8 or not null-terminated)")
+            })
+            .unwrap_or("");
+        let init_path = parse_init_from_cmdline(cmdline).unwrap_or("(none)");
+
+    if init_path != "(none)" {
+        kinfo!("Custom init path: {}", init_path);
+        try_init_exec!(init_path);
+    }
+
     let initFileList = ["/sbin/init", "/etc/init", "/bin/init", "/bin/sh"];
-    
+
+    kinfo!("Using default init file list: {:?}", initFileList);
+    kinfo!("Pausing briefly before starting init");
     for (&path) in initFileList.iter() {
-        if let Some(init_data) = initramfs::find_file(path) {
-            kinfo!("Found init file '{}' in initramfs ({} bytes), loading...", path, init_data.len());
-            
-            // Debug: Check first few bytes of ELF
-            if init_data.len() >= 4 {
-                kinfo!("ELF header: {:02x} {:02x} {:02x} {:02x}", 
-                    init_data[0], init_data[1], init_data[2], init_data[3]);
-            }
-            
-            match process::Process::from_elf(init_data) {
-                Ok(mut proc) => {
-                    kinfo!("Successfully loaded '{}' as PID {}", path, proc.pid);
-                    kinfo!("Switching to REAL user mode (Ring 3)...");
-                    proc.execute(); // Never returns
-                }
-                Err(e) => {
-                    kerror!("Failed to load '{}': {}", path, e);
-                }
-            }
-        } else {
-            kdebug!("Init file '{}' not found in initramfs", path);
-            if path == "/bin/sh" {
-                kfatal!("'/bin/sh' not found in initramfs; cannot continue to user mode.");
-                arch::halt_loop();
-            }
+        kinfo!("Trying init file: {}", path);
+        try_init_exec!(path);
+        kinfo!("Pausing briefly before starting init");
+        if path == "/bin/sh" {
+            kfatal!("'/bin/sh' not found in initramfs; cannot continue to user mode.");
+            arch::halt_loop();
         }
     }
-    // Try to load /bin/sh from initramfs and 
+
+    // Try to load /bin/sh from initramfs and
     // If we reach here, /bin/sh executed successfully, but it should never return
     kfatal!("Unexpected return from user mode process");
     arch::halt_loop()
@@ -240,5 +240,52 @@ macro_rules! kprintln {
     ($($arg:tt)*) => {{
         $crate::kprint!($($arg)*);
         $crate::kprint!("\n");
+    }};
+}
+
+fn parse_init_from_cmdline(cmdline: &str) -> Option<&str> {
+    for arg in cmdline.split_whitespace() {
+        if let Some(value) = arg.strip_prefix("init=") {
+            return Some(value);
+        }
+    }
+    None
+}
+
+#[macro_export]
+macro_rules! try_init_exec {
+    ($path:expr) => {{
+        let path: &str = $path; // 强制类型为 &str，提供一定类型安全
+        if let Some(init_data) = initramfs::find_file(path) {
+            kinfo!(
+                "Found init file '{}' in initramfs ({} bytes), loading...",
+                path,
+                init_data.len()
+            );
+
+            // Debug: Check first few bytes of ELF
+            if init_data.len() >= 4 {
+                kinfo!(
+                    "ELF header: {:02x} {:02x} {:02x} {:02x}",
+                    init_data[0],
+                    init_data[1],
+                    init_data[2],
+                    init_data[3]
+                );
+            }
+
+            match process::Process::from_elf(init_data) {
+                Ok(mut proc) => {
+                    kinfo!("Successfully loaded '{}' as PID {}", path, proc.pid);
+                    kinfo!("Switching to REAL user mode (Ring 3)...");
+                    proc.execute(); // Never returns
+                }
+                Err(e) => {
+                    kerror!("Failed to load '{}': {}", path, e);
+                }
+            }
+        } else {
+            kwarn!("Init file '{}' not found in initramfs", path);
+        }
     }};
 }

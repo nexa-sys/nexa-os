@@ -15,8 +15,10 @@ NexaOS is an experimental Rust-based operating system implementing a hybrid-kern
 - `src/main.rs`: Multiboot entry point, calls `nexa_os::kernel_main()`
 - `src/lib.rs`: Core kernel initialization sequence
 - `src/process.rs`: ELF loading and Ring 3 user mode switching
-- `src/syscall.rs`: System call dispatch (write/read/exit/getpid)
+- `src/syscall.rs`: System call dispatch (write/read/exit/getpid/open/close)
 - `src/paging.rs`: Virtual memory setup for user space
+- `src/initramfs.rs`: CPIO archive parsing for initial filesystem
+- `src/fs.rs`: Simple in-memory filesystem for runtime file operations
 - `userspace/shell.rs`: Minimal shell using syscall interface
 
 ## Critical Developer Workflows
@@ -59,19 +61,31 @@ kdebug!("Memory region: {:#x} - {:#x}", start, end);
 
 ### Memory Management
 - Physical addresses for kernel, virtual for userspace
-- User space: 0x400000-0x800000 (code), 0x600000-0x700000 (stack)
+- User space layout: 0x400000-0x800000 (code), 0x600000-0x700000 (stack), heap after code
 - Identity mapping for bootloader compatibility
 - No dynamic allocation in kernel core
 
 ### Syscall Interface
 ```rust
-// Kernel side (syscall.rs)
+// Kernel side (syscall.rs) - uses syscall instruction
 pub const SYS_WRITE: u64 = 1;
-// Assembly handler with register preservation
+pub const SYS_READ: u64 = 0;
+pub const SYS_EXIT: u64 = 60;
+pub const SYS_GETPID: u64 = 39;
+pub const SYS_OPEN: u64 = 2;
+pub const SYS_CLOSE: u64 = 3;
 
-// Userspace side (shell.rs)
+// Assembly handler with register preservation
+#[no_mangle]
+pub extern "C" fn syscall_dispatch(nr: u64, arg1: u64, arg2: u64, arg3: u64) -> u64
+
+// Userspace side (shell.rs) - syscall instruction
 fn syscall3(n: u64, a1: u64, a2: u64, a3: u64) -> u64 {
-    unsafe { asm!("syscall", /* params */) }
+    let ret: u64;
+    unsafe {
+        asm!("syscall", in("rax") n, in("rdi") a1, in("rsi") a2, in("rdx") a3, lateout("rax") ret);
+    }
+    ret
 }
 ```
 
@@ -80,6 +94,12 @@ fn syscall3(n: u64, a1: u64, a2: u64, a3: u64) -> u64 {
 - Loads to fixed physical addresses (0x400000+)
 - Entry point calculation: `header.entry_point()`
 - No dynamic linking support
+- Process creation: `Process::from_elf(data)` returns executable process
+
+### Filesystem Architecture
+- **Initramfs**: CPIO newc format parsing for boot-time files
+- **Runtime FS**: Simple in-memory filesystem (64 file limit) for dynamic content
+- Dual filesystem design: initramfs for initial programs, memory fs for runtime data
 
 ## Build System Details
 
@@ -150,6 +170,11 @@ grub-file --is-x86-multiboot2 target/x86_64-nexaos/release/nexa-os
 3. Verify with memory map logging
 4. Test ELF loading functionality
 
+### When Adding Filesystem Features
+1. Consider initramfs vs runtime filesystem usage
+2. Update both `initramfs.rs` and `fs.rs` if needed
+3. Test file operations in userspace shell
+
 ## Cross-Component Communication
 
 ### Kernel ↔ Userspace
@@ -161,5 +186,11 @@ grub-file --is-x86-multiboot2 target/x86_64-nexaos/release/nexa-os
 - Multiboot2 tags for memory map, modules
 - GRUB modules for initramfs
 - Serial console for debugging
+
+### Process Management
+- Single process execution model
+- ELF loading with fixed address allocation
+- Ring 3 transition via `iretq`
+- Process state tracking (Ready/Running/Sleeping/Zombie)
 
 Remember: This is experimental code. Changes can break the entire system. Always test boots after modifications, and use `git bisect` for regression hunting.
