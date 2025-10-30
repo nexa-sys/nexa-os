@@ -1,7 +1,7 @@
 use core::fmt::{self, Write};
 use core::ptr;
-use spin::Mutex;
 use core::sync::atomic::{AtomicBool, Ordering};
+use spin::Mutex;
 
 use crate::kinfo;
 

@@ -44,7 +44,7 @@ pub extern "C" fn syscall_dispatch(nr: u64, arg1: u64, arg2: u64, arg3: u64) -> 
         *(0xB8000 as *mut u64) = 0x4142434445464748; // "ABCDEFGH" in ASCII
         *(0xB8008 as *mut u64) = nr; // Write syscall number
     }
-    
+
     match nr {
         SYS_WRITE => {
             let ret = syscall_write(arg1, arg2, arg3);
@@ -64,7 +64,7 @@ global_asm!(
     ".global syscall_handler",
     "syscall_handler:",
     "push rbx",
-    "push rcx",     // return address
+    "push rcx", // return address
     "push rdx",
     "push rsi",
     "push rdi",
@@ -72,7 +72,7 @@ global_asm!(
     "push r8",
     "push r9",
     "push r10",
-    "push r11",     // rflags
+    "push r11", // rflags
     "push r12",
     "push r13",
     "push r14",

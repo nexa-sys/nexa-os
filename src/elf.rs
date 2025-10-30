@@ -58,34 +58,34 @@ pub mod ph_flags {
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy)]
 pub struct Elf64Header {
-    pub e_ident: [u8; 16],      // ELF identification
-    pub e_type: u16,            // Object file type
-    pub e_machine: u16,         // Machine type
-    pub e_version: u32,         // Object file version
-    pub e_entry: u64,           // Entry point address
-    pub e_phoff: u64,           // Program header offset
-    pub e_shoff: u64,           // Section header offset
-    pub e_flags: u32,           // Processor-specific flags
-    pub e_ehsize: u16,          // ELF header size
-    pub e_phentsize: u16,       // Size of program header entry
-    pub e_phnum: u16,           // Number of program header entries
-    pub e_shentsize: u16,       // Size of section header entry
-    pub e_shnum: u16,           // Number of section header entries
-    pub e_shstrndx: u16,        // Section name string table index
+    pub e_ident: [u8; 16], // ELF identification
+    pub e_type: u16,       // Object file type
+    pub e_machine: u16,    // Machine type
+    pub e_version: u32,    // Object file version
+    pub e_entry: u64,      // Entry point address
+    pub e_phoff: u64,      // Program header offset
+    pub e_shoff: u64,      // Section header offset
+    pub e_flags: u32,      // Processor-specific flags
+    pub e_ehsize: u16,     // ELF header size
+    pub e_phentsize: u16,  // Size of program header entry
+    pub e_phnum: u16,      // Number of program header entries
+    pub e_shentsize: u16,  // Size of section header entry
+    pub e_shnum: u16,      // Number of section header entries
+    pub e_shstrndx: u16,   // Section name string table index
 }
 
 /// ELF64 program header
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy)]
 pub struct Elf64ProgramHeader {
-    pub p_type: u32,            // Segment type
-    pub p_flags: u32,           // Segment flags
-    pub p_offset: u64,          // Segment file offset
-    pub p_vaddr: u64,           // Segment virtual address
-    pub p_paddr: u64,           // Segment physical address
-    pub p_filesz: u64,          // Segment size in file
-    pub p_memsz: u64,           // Segment size in memory
-    pub p_align: u64,           // Segment alignment
+    pub p_type: u32,   // Segment type
+    pub p_flags: u32,  // Segment flags
+    pub p_offset: u64, // Segment file offset
+    pub p_vaddr: u64,  // Segment virtual address
+    pub p_paddr: u64,  // Segment physical address
+    pub p_filesz: u64, // Segment size in file
+    pub p_memsz: u64,  // Segment size in memory
+    pub p_align: u64,  // Segment alignment
 }
 
 impl Elf64Header {
@@ -98,7 +98,7 @@ impl Elf64Header {
             self.e_ident[2],
             self.e_ident[3],
         ]);
-        
+
         if magic != ELF_MAGIC {
             return false;
         }
@@ -150,7 +150,7 @@ impl ElfLoader {
     /// Create a new ELF loader from raw bytes
     pub fn new(data: &'static [u8]) -> Result<Self, &'static str> {
         use core::ptr;
-        
+
         crate::kinfo!("ElfLoader::new called with {} bytes", data.len());
         if data.len() < 64 {
             crate::kerror!("Data too small for ELF header");
@@ -193,15 +193,20 @@ impl ElfLoader {
         }
 
         crate::kinfo!("ELF header is valid");
-        
+
         // Read header fields
         let e_phoff = unsafe { ptr::read_unaligned(data.as_ptr().add(32) as *const u64) };
         let e_phentsize = unsafe { ptr::read_unaligned(data.as_ptr().add(54) as *const u16) };
         let e_phnum = unsafe { ptr::read_unaligned(data.as_ptr().add(56) as *const u16) };
         let e_entry = unsafe { ptr::read_unaligned(data.as_ptr().add(24) as *const u64) };
-        
-        crate::kinfo!("ELF header: e_phoff={:#x}, e_phnum={}, e_phentsize={}, e_entry={:#x}", 
-            e_phoff, e_phnum, e_phentsize, e_entry);
+
+        crate::kinfo!(
+            "ELF header: e_phoff={:#x}, e_phnum={}, e_phentsize={}, e_entry={:#x}",
+            e_phoff,
+            e_phnum,
+            e_phentsize,
+            e_entry
+        );
 
         Ok(Self { data })
     }
@@ -214,13 +219,21 @@ impl ElfLoader {
     /// Get program headers
     pub fn program_headers(&self) -> &[Elf64ProgramHeader] {
         use core::ptr;
-        
-        let e_phoff = unsafe { ptr::read_unaligned(self.data.as_ptr().add(32) as *const u64) } as usize;
-        let e_phnum = unsafe { ptr::read_unaligned(self.data.as_ptr().add(56) as *const u16) } as usize;
-        let e_phentsize = unsafe { ptr::read_unaligned(self.data.as_ptr().add(54) as *const u16) } as usize;
 
-        crate::kinfo!("program_headers: offset={:#x}, count={}, size={}, expected={}", 
-            e_phoff, e_phnum, e_phentsize, core::mem::size_of::<Elf64ProgramHeader>());
+        let e_phoff =
+            unsafe { ptr::read_unaligned(self.data.as_ptr().add(32) as *const u64) } as usize;
+        let e_phnum =
+            unsafe { ptr::read_unaligned(self.data.as_ptr().add(56) as *const u16) } as usize;
+        let e_phentsize =
+            unsafe { ptr::read_unaligned(self.data.as_ptr().add(54) as *const u16) } as usize;
+
+        crate::kinfo!(
+            "program_headers: offset={:#x}, count={}, size={}, expected={}",
+            e_phoff,
+            e_phnum,
+            e_phentsize,
+            core::mem::size_of::<Elf64ProgramHeader>()
+        );
 
         if e_phentsize != core::mem::size_of::<Elf64ProgramHeader>() {
             crate::kinfo!("program_headers: size mismatch");
@@ -228,7 +241,11 @@ impl ElfLoader {
         }
 
         if e_phoff + (e_phnum * e_phentsize) > self.data.len() {
-            crate::kinfo!("program_headers: offset + size * count ({}) > data.len() ({})", e_phoff + (e_phnum * e_phentsize), self.data.len());
+            crate::kinfo!(
+                "program_headers: offset + size * count ({}) > data.len() ({})",
+                e_phoff + (e_phnum * e_phentsize),
+                self.data.len()
+            );
             return &[];
         }
 
@@ -243,25 +260,44 @@ impl ElfLoader {
     /// For static executables (with absolute addresses), segments are loaded at their p_vaddr
     pub fn load(&self, base_addr: u64) -> Result<u64, &'static str> {
         use core::ptr;
-        
-        let e_phoff = unsafe { ptr::read_unaligned(self.data.as_ptr().add(32) as *const u64) } as usize;
-        let e_phnum = unsafe { ptr::read_unaligned(self.data.as_ptr().add(56) as *const u16) } as usize;
-        let e_phentsize = unsafe { ptr::read_unaligned(self.data.as_ptr().add(54) as *const u16) } as usize;
-        
+
+        let e_phoff =
+            unsafe { ptr::read_unaligned(self.data.as_ptr().add(32) as *const u64) } as usize;
+        let e_phnum =
+            unsafe { ptr::read_unaligned(self.data.as_ptr().add(56) as *const u16) } as usize;
+        let e_phentsize =
+            unsafe { ptr::read_unaligned(self.data.as_ptr().add(54) as *const u16) } as usize;
+
         for i in 0..e_phnum {
             let ph_offset = e_phoff + i * e_phentsize;
             if ph_offset + 56 > self.data.len() {
                 continue;
             }
-            
+
             // Read program header fields directly from bytes
-            let p_type = unsafe { ptr::read_unaligned(self.data.as_ptr().add(ph_offset) as *const u32) };
-            let p_offset_val = unsafe { ptr::read_unaligned(self.data.as_ptr().add(ph_offset + 8) as *const u64) } as usize;
-            let p_vaddr = unsafe { ptr::read_unaligned(self.data.as_ptr().add(ph_offset + 16) as *const u64) };
-            let p_filesz = unsafe { ptr::read_unaligned(self.data.as_ptr().add(ph_offset + 32) as *const u64) } as usize;
-            let p_memsz = unsafe { ptr::read_unaligned(self.data.as_ptr().add(ph_offset + 40) as *const u64) } as usize;
-            
-            crate::kinfo!("Segment {}: p_type={}, p_vaddr={:#x}, p_filesz={:#x}, p_memsz={:#x}", i, p_type, p_vaddr, p_filesz, p_memsz);
+            let p_type =
+                unsafe { ptr::read_unaligned(self.data.as_ptr().add(ph_offset) as *const u32) };
+            let p_offset_val =
+                unsafe { ptr::read_unaligned(self.data.as_ptr().add(ph_offset + 8) as *const u64) }
+                    as usize;
+            let p_vaddr = unsafe {
+                ptr::read_unaligned(self.data.as_ptr().add(ph_offset + 16) as *const u64)
+            };
+            let p_filesz = unsafe {
+                ptr::read_unaligned(self.data.as_ptr().add(ph_offset + 32) as *const u64)
+            } as usize;
+            let p_memsz = unsafe {
+                ptr::read_unaligned(self.data.as_ptr().add(ph_offset + 40) as *const u64)
+            } as usize;
+
+            crate::kinfo!(
+                "Segment {}: p_type={}, p_vaddr={:#x}, p_filesz={:#x}, p_memsz={:#x}",
+                i,
+                p_type,
+                p_vaddr,
+                p_filesz,
+                p_memsz
+            );
 
             if p_type != PhType::Load as u32 {
                 continue;
@@ -270,24 +306,30 @@ impl ElfLoader {
             // Always relocate to user space base address
             let target_addr = base_addr + p_vaddr; // Relocate to base + virtual address
 
-            crate::kinfo!("Loading segment p_vaddr={:#x}, p_filesz={:#x}, p_memsz={:#x}, target_addr={:#x}", p_vaddr, p_filesz, p_memsz, target_addr);
+            crate::kinfo!(
+                "Loading segment p_vaddr={:#x}, p_filesz={:#x}, p_memsz={:#x}, target_addr={:#x}",
+                p_vaddr,
+                p_filesz,
+                p_memsz,
+                target_addr
+            );
 
             // Copy data from ELF to memory
             if p_filesz > 0 {
                 if p_offset_val + p_filesz > self.data.len() {
                     return Err("Invalid program header");
                 }
-                
+
                 let src = unsafe { self.data.as_ptr().add(p_offset_val) };
                 let dst = target_addr as *mut u8;
-                
+
                 // Zero out the memory first
                 if p_memsz > 0 {
-                    unsafe { 
+                    unsafe {
                         core::ptr::write_bytes(dst, 0, p_memsz);
                     }
                 }
-                
+
                 // Copy the file data
                 unsafe {
                     core::ptr::copy_nonoverlapping(src, dst, p_filesz);
@@ -297,7 +339,7 @@ impl ElfLoader {
 
         // Get entry point and relocate it
         let e_entry = unsafe { ptr::read_unaligned(self.data.as_ptr().add(24) as *const u64) };
-        
+
         // For static executables, entry point is absolute virtual address
         // We need to relocate it to our user space base address
         // Use the first load segment as the base for relocation
@@ -307,22 +349,25 @@ impl ElfLoader {
             if ph_offset + 56 > self.data.len() {
                 continue;
             }
-            
-            let p_type = unsafe { ptr::read_unaligned(self.data.as_ptr().add(ph_offset) as *const u32) };
-            let p_vaddr = unsafe { ptr::read_unaligned(self.data.as_ptr().add(ph_offset + 16) as *const u64) };
-            
+
+            let p_type =
+                unsafe { ptr::read_unaligned(self.data.as_ptr().add(ph_offset) as *const u32) };
+            let p_vaddr = unsafe {
+                ptr::read_unaligned(self.data.as_ptr().add(ph_offset + 16) as *const u64)
+            };
+
             if p_type == PhType::Load as u32 {
                 first_load_vaddr = p_vaddr;
                 break;
             }
         }
-        
+
         let relocated_entry = if first_load_vaddr != 0 {
             base_addr + (e_entry - first_load_vaddr)
         } else {
             e_entry // Fallback if no load segment found
         };
-        
+
         Ok(relocated_entry)
     }
 }

@@ -108,27 +108,26 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
     );
 
     let cmdline = boot_info
-            .command_line_tag()
-            .map(|tag| {
-                tag.cmdline()
-                    .expect("Invalid command line (not UTF-8 or not null-terminated)")
-            })
-            .unwrap_or("");
-        let init_path = parse_init_from_cmdline(cmdline).unwrap_or("(none)");
+        .command_line_tag()
+        .map(|tag| {
+            tag.cmdline()
+                .expect("Invalid command line (not UTF-8 or not null-terminated)")
+        })
+        .unwrap_or("");
+    let cmd_init_path = parse_init_from_cmdline(cmdline).unwrap_or("(none)");
 
-    if init_path != "(none)" {
-        kinfo!("Custom init path: {}", init_path);
-        try_init_exec!(init_path);
+    if cmd_init_path != "(none)" {
+        kinfo!("Custom init path: {}", cmd_init_path);
+        try_init_exec!(cmd_init_path);
     }
 
     const INIT_PATHS: &[&str] = &["/sbin/init", "/etc/init", "/bin/init", "/bin/sh"];
 
     kinfo!("Using default init file list: {}", INIT_PATHS.len());
     kinfo!("Pausing briefly before starting init");
-    for (&path) in  INIT_PATHS.iter() {
+    for (&path) in INIT_PATHS.iter() {
         kinfo!("Trying init file: {}", path);
         try_init_exec!(path);
-        kinfo!("Pausing briefly before starting init");
         if path == "/bin/sh" {
             kfatal!("'/bin/sh' not found in initramfs; cannot continue to user mode.");
             arch::halt_loop();

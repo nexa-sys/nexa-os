@@ -1,10 +1,10 @@
 /// Memory paging setup for x86_64
-use x86_64::structures::paging::{PageTable, PageTableFlags, PhysFrame, Size4KiB, PageTableIndex};
+use x86_64::structures::paging::{PageTable, PageTableFlags, PageTableIndex, PhysFrame, Size4KiB};
 use x86_64::VirtAddr;
 
 /// Initialize identity-mapped paging
 pub fn init() {
-    unsafe { 
+    unsafe {
         init_user_page_tables();
         ensure_paging_enabled();
     };
@@ -19,30 +19,30 @@ unsafe fn init_user_page_tables() {
     use x86_64::PhysAddr;
 
     crate::kinfo!("Setting up user-accessible pages for user space (0x400000-0x800000)");
-    
+
     // Get current page table root (PML4)
     let (pml4_frame, _) = Cr3::read();
     let pml4_addr = pml4_frame.start_address();
     let pml4 = &mut *(pml4_addr.as_u64() as *mut PageTable);
-    
+
     crate::kinfo!("PML4 at {:#x}", pml4_addr.as_u64());
-    
+
     // For identity mapping, we expect:
     // - PML4[0] -> PDP (covers 0-512GB)
-    // - PDP[0] -> PD (covers 0-1GB) 
+    // - PDP[0] -> PD (covers 0-1GB)
     // - PD[0-3] -> PTs (covers 0-4MB, but we need up to 2MB)
-    
+
     // Check if we have the expected structure
     if !pml4[0].is_unused() {
         let pdp_addr = pml4[0].addr();
         let pdp = &mut *(pdp_addr.as_u64() as *mut PageTable);
         crate::kinfo!("PDP at {:#x}", pdp_addr.as_u64());
-        
+
         if !pdp[0].is_unused() {
             crate::kinfo!("PDP[0] is used, getting addr");
             let pd_addr = pdp[0].addr();
             crate::kinfo!("PD addr: {:#x}", pd_addr.as_u64());
-            
+
             // Check if it's a huge page (PS bit set)
             let flags = pdp[0].flags();
             if flags.contains(PageTableFlags::HUGE_PAGE) {
@@ -56,11 +56,15 @@ unsafe fn init_user_page_tables() {
                 return;
             }
             // Set PDP[0] to not huge page
-            pdp[0].set_flags(PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE);
-            
+            pdp[0].set_flags(
+                PageTableFlags::PRESENT
+                    | PageTableFlags::WRITABLE
+                    | PageTableFlags::USER_ACCESSIBLE,
+            );
+
             let pdp_flags = pdp[0].flags();
             crate::kinfo!("PDP[0] flags: {:#x}", pdp_flags.bits());
-            
+
             // Always treat as 4KB pages for simplicity
             let pd_addr = pdp[0].addr();
             if pd_addr.as_u64() == 0 {
@@ -70,7 +74,12 @@ unsafe fn init_user_page_tables() {
                 unsafe {
                     core::ptr::write_bytes(new_pd_addr.as_u64() as *mut u8, 0, 4096);
                 }
-                pdp[0].set_addr(new_pd_addr, PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE);
+                pdp[0].set_addr(
+                    new_pd_addr,
+                    PageTableFlags::PRESENT
+                        | PageTableFlags::WRITABLE
+                        | PageTableFlags::USER_ACCESSIBLE,
+                );
                 crate::kinfo!("Allocated new PD at {:#x}", new_pd_addr.as_u64());
             }
             let pd_addr = pdp[0].addr();
@@ -78,23 +87,24 @@ unsafe fn init_user_page_tables() {
             let pd = unsafe { &mut *(pd_addr.as_u64() as *mut PageTable) };
             crate::kinfo!("PD pointer created");
             crate::kinfo!("PD at {:#x}", pd_addr.as_u64());
-            
+
             // Initialize PD to all zeros first
             crate::kinfo!("Initializing PD to zeros");
             for i in 0..512 {
                 pd[i].set_unused();
             }
             crate::kinfo!("PD initialized to zeros");
-            
+
             // Set USER_ACCESSIBLE on existing PD entries
-            for pd_idx in 0..4 { // Check PD[0-3] for 0-4MB range
+            for pd_idx in 0..4 {
+                // Check PD[0-3] for 0-4MB range
                 crate::kinfo!("Checking PD[{}]", pd_idx);
-                
+
                 if pd[pd_idx].is_unused() {
                     crate::kinfo!("PD[{}] is unused", pd_idx);
                     continue;
                 }
-                
+
                 crate::kinfo!("PD[{}] is used, getting flags", pd_idx);
                 let pd_flags = pd[pd_idx].flags();
                 crate::kinfo!("PD[{}] flags: {:#x}", pd_idx, pd_flags.bits());
@@ -107,7 +117,7 @@ unsafe fn init_user_page_tables() {
                     let pt_addr = pd[pd_idx].addr();
                     crate::kinfo!("PT[{}] at {:#x}", pd_idx, pt_addr.as_u64());
                     let pt = unsafe { &mut *(pt_addr.as_u64() as *mut PageTable) };
-                    
+
                     // Set USER_ACCESSIBLE on all PT entries
                     for pt_idx in 0..512 {
                         if !pt[pt_idx].is_unused() {
@@ -145,8 +155,12 @@ unsafe fn map_user_program() {
     const USER_PHYS_BASE: u64 = 0x600000; // Physical address where user program is loaded
     const USER_SIZE: u64 = 0x200000; // 2MB user space
 
-    crate::kinfo!("Mapping user program: virtual {:#x} -> physical {:#x}, size {:#x}", 
-        USER_VIRT_BASE, USER_PHYS_BASE, USER_SIZE);
+    crate::kinfo!(
+        "Mapping user program: virtual {:#x} -> physical {:#x}, size {:#x}",
+        USER_VIRT_BASE,
+        USER_PHYS_BASE,
+        USER_SIZE
+    );
 
     // Get current page table root (PML4)
     let (pml4_frame, _) = Cr3::read();
@@ -162,8 +176,13 @@ unsafe fn map_user_program() {
     if pml4[pdp_index].is_unused() {
         // Allocate PDP
         let pdp_addr = PhysAddr::new(0x120000); // Fixed address for PDP
-        unsafe { core::ptr::write_bytes(pdp_addr.as_u64() as *mut u8, 0, 4096); }
-        pml4[pdp_index].set_addr(pdp_addr, PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE);
+        unsafe {
+            core::ptr::write_bytes(pdp_addr.as_u64() as *mut u8, 0, 4096);
+        }
+        pml4[pdp_index].set_addr(
+            pdp_addr,
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE,
+        );
         crate::kinfo!("Allocated PDP at {:#x}", pdp_addr.as_u64());
     }
 
@@ -174,8 +193,13 @@ unsafe fn map_user_program() {
     if pdp[pd_index].is_unused() {
         // Allocate PD
         let pd_addr = PhysAddr::new(0x121000); // Fixed address for PD
-        unsafe { core::ptr::write_bytes(pd_addr.as_u64() as *mut u8, 0, 4096); }
-        pdp[pd_index].set_addr(pd_addr, PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE);
+        unsafe {
+            core::ptr::write_bytes(pd_addr.as_u64() as *mut u8, 0, 4096);
+        }
+        pdp[pd_index].set_addr(
+            pd_addr,
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE,
+        );
         crate::kinfo!("Allocated PD at {:#x}", pd_addr.as_u64());
     }
 
@@ -185,27 +209,41 @@ unsafe fn map_user_program() {
     // Map 2MB of user space (0x200000 -> 0x600000)
     let num_pages = USER_SIZE / 4096;
     let pt_addr_fixed = PhysAddr::new(0x122000); // Fixed PT address
-    
+
     // Allocate PT if needed
     if pd[0].is_unused() {
-        unsafe { core::ptr::write_bytes(pt_addr_fixed.as_u64() as *mut u8, 0, 4096); }
-        pd[0].set_addr(pt_addr_fixed, PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE);
+        unsafe {
+            core::ptr::write_bytes(pt_addr_fixed.as_u64() as *mut u8, 0, 4096);
+        }
+        pd[0].set_addr(
+            pt_addr_fixed,
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE,
+        );
         crate::kinfo!("Allocated PT at {:#x}", pt_addr_fixed.as_u64());
     }
-    
+
     let pt_addr = pd[0].addr();
     let pt = &mut *(pt_addr.as_u64() as *mut PageTable);
-    
+
     for i in 0..num_pages {
         let virt_addr = USER_VIRT_BASE + i * 4096;
         let phys_addr = USER_PHYS_BASE + i * 4096;
-        
-        let page_index = x86_64::structures::paging::PageTableIndex::new(((virt_addr / 4096) % 512) as u16);
+
+        let page_index =
+            x86_64::structures::paging::PageTableIndex::new(((virt_addr / 4096) % 512) as u16);
         let frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(phys_addr));
-        
-        pt[page_index].set_frame(frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE);
-        if i == 0 { // Only log the first mapping
-            crate::kinfo!("Mapped first page: virtual {:#x} -> physical {:#x}", USER_VIRT_BASE, USER_PHYS_BASE);
+
+        pt[page_index].set_frame(
+            frame,
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE,
+        );
+        if i == 0 {
+            // Only log the first mapping
+            crate::kinfo!(
+                "Mapped first page: virtual {:#x} -> physical {:#x}",
+                USER_VIRT_BASE,
+                USER_PHYS_BASE
+            );
         }
     }
 
@@ -216,8 +254,12 @@ unsafe fn map_user_program() {
     const ELF_PHYS_BASE: u64 = 0x400000;
     const ELF_SIZE: u64 = 0x200000; // 2MB
 
-    crate::kinfo!("Mapping ELF program: virtual {:#x} -> physical {:#x}, size {:#x}",
-        ELF_VIRT_BASE, ELF_PHYS_BASE, ELF_SIZE);
+    crate::kinfo!(
+        "Mapping ELF program: virtual {:#x} -> physical {:#x}, size {:#x}",
+        ELF_VIRT_BASE,
+        ELF_PHYS_BASE,
+        ELF_SIZE
+    );
 
     let num_pages = ELF_SIZE / 4096;
     for i in 0..num_pages {
@@ -233,8 +275,15 @@ unsafe fn map_user_program() {
         // Ensure PDP exists
         if pml4[pml4_index].is_unused() {
             let pdp_addr = PhysAddr::new(0x123000 + (pml4_index as u64) * 4096);
-            unsafe { core::ptr::write_bytes(pdp_addr.as_u64() as *mut u8, 0, 4096); }
-            pml4[pml4_index].set_addr(pdp_addr, PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE);
+            unsafe {
+                core::ptr::write_bytes(pdp_addr.as_u64() as *mut u8, 0, 4096);
+            }
+            pml4[pml4_index].set_addr(
+                pdp_addr,
+                PageTableFlags::PRESENT
+                    | PageTableFlags::WRITABLE
+                    | PageTableFlags::USER_ACCESSIBLE,
+            );
         }
 
         let pdp_addr = pml4[pml4_index].addr();
@@ -243,8 +292,15 @@ unsafe fn map_user_program() {
         // Ensure PD exists
         if pdp[pdp_index].is_unused() {
             let pd_addr = PhysAddr::new(0x124000 + (pdp_index as u64) * 4096);
-            unsafe { core::ptr::write_bytes(pd_addr.as_u64() as *mut u8, 0, 4096); }
-            pdp[pdp_index].set_addr(pd_addr, PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE);
+            unsafe {
+                core::ptr::write_bytes(pd_addr.as_u64() as *mut u8, 0, 4096);
+            }
+            pdp[pdp_index].set_addr(
+                pd_addr,
+                PageTableFlags::PRESENT
+                    | PageTableFlags::WRITABLE
+                    | PageTableFlags::USER_ACCESSIBLE,
+            );
         }
 
         let pd_addr = pdp[pdp_index].addr();
@@ -253,15 +309,25 @@ unsafe fn map_user_program() {
         // Ensure PT exists
         if pd[pd_index].is_unused() {
             let pt_addr = PhysAddr::new(0x125000 + (pd_index as u64) * 4096);
-            unsafe { core::ptr::write_bytes(pt_addr.as_u64() as *mut u8, 0, 4096); }
-            pd[pd_index].set_addr(pt_addr, PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE);
+            unsafe {
+                core::ptr::write_bytes(pt_addr.as_u64() as *mut u8, 0, 4096);
+            }
+            pd[pd_index].set_addr(
+                pt_addr,
+                PageTableFlags::PRESENT
+                    | PageTableFlags::WRITABLE
+                    | PageTableFlags::USER_ACCESSIBLE,
+            );
         }
 
         let pt_addr = pd[pd_index].addr();
         let pt = &mut *(pt_addr.as_u64() as *mut PageTable);
 
         let frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(phys_addr));
-        pt[pt_index].set_frame(frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE);
+        pt[pt_index].set_frame(
+            frame,
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE,
+        );
     }
 
     crate::kinfo!("ELF program mapping completed: {} pages mapped", num_pages);
@@ -276,8 +342,11 @@ unsafe fn map_vga_buffer() {
     const VGA_VIRT_ADDR: u64 = 0xb8000; // Virtual address for VGA buffer
     const VGA_PHYS_ADDR: u64 = 0xb8000; // Physical address for VGA buffer
 
-    crate::kdebug!("Mapping VGA buffer: virtual {:#x} -> physical {:#x}",
-        VGA_VIRT_ADDR, VGA_PHYS_ADDR);
+    crate::kdebug!(
+        "Mapping VGA buffer: virtual {:#x} -> physical {:#x}",
+        VGA_VIRT_ADDR,
+        VGA_PHYS_ADDR
+    );
 
     // Get current page table root (PML4)
     let (pml4_frame, _) = Cr3::read();
@@ -293,7 +362,7 @@ unsafe fn map_vga_buffer() {
     // Check if PDP[0] is a huge page
     let pdp_addr = pml4[pml4_index].addr();
     let pdp = &mut *(pdp_addr.as_u64() as *mut PageTable);
-    
+
     if pdp[pdp_index].flags().contains(PageTableFlags::HUGE_PAGE) {
         // PDP[0] is a huge page, VGA buffer is already identity mapped
         // Ensure it has correct permissions
@@ -301,12 +370,12 @@ unsafe fn map_vga_buffer() {
         pdp[pdp_index].set_flags(flags | PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
         crate::kdebug!("VGA buffer already mapped via huge page, updated permissions");
         // Indicate VGA is ready for higher-level writes
-    crate::vga_buffer::set_vga_ready();
-    // Transient serial-only confirmation so we can verify at runtime that
-    // this branch executed and VGA was marked ready. Serial is always
-    // available early in boot, so this will appear in serial logs even if
-    // VGA output is not visible.
-    crate::serial_println!("VGA mapped and marked ready (huge page)");
+        crate::vga_buffer::set_vga_ready();
+        // Transient serial-only confirmation so we can verify at runtime that
+        // this branch executed and VGA was marked ready. Serial is always
+        // available early in boot, so this will appear in serial logs even if
+        // VGA output is not visible.
+        crate::serial_println!("VGA mapped and marked ready (huge page)");
     } else {
         // Normal page table structure exists
         let pd_addr = pdp[pdp_index].addr();
@@ -321,17 +390,17 @@ unsafe fn map_vga_buffer() {
 
         crate::kdebug!("VGA buffer mapping completed via page tables");
         // Indicate VGA is ready for higher-level writes
-    crate::vga_buffer::set_vga_ready();
-    // Confirm via serial so we can see in the run logs whether this path
-    // executed.
-    crate::serial_println!("VGA mapped and marked ready (page table)");
+        crate::vga_buffer::set_vga_ready();
+        // Confirm via serial so we can see in the run logs whether this path
+        // executed.
+        crate::serial_println!("VGA mapped and marked ready (page table)");
     }
 }
 
 /// Ensure paging is enabled (required for user mode)
 unsafe fn ensure_paging_enabled() {
     use x86_64::registers::control::{Cr0, Cr0Flags, Cr4, Cr4Flags};
-    
+
     // Ensure PAE is enabled (required for x86_64)
     let mut cr4 = Cr4::read();
     if !cr4.contains(Cr4Flags::PHYSICAL_ADDRESS_EXTENSION) {
@@ -339,7 +408,7 @@ unsafe fn ensure_paging_enabled() {
         Cr4::write(cr4);
         crate::kinfo!("PAE enabled");
     }
-    
+
     let mut cr0 = Cr0::read();
     if !cr0.contains(Cr0Flags::PAGING) {
         cr0.insert(Cr0Flags::PAGING);

@@ -9,7 +9,7 @@ static QUEUE_TAIL: Mutex<usize> = Mutex::new(0);
 pub fn add_scancode(scancode: u8) {
     let mut head = QUEUE_HEAD.lock();
     let tail = *QUEUE_TAIL.lock();
-    
+
     let next_head = (*head + 1) % 128;
     if next_head != tail {
         let mut queue = SCANCODE_QUEUE.lock();
@@ -22,7 +22,7 @@ pub fn add_scancode(scancode: u8) {
 fn get_scancode() -> Option<u8> {
     let mut tail = QUEUE_TAIL.lock();
     let head = *QUEUE_HEAD.lock();
-    
+
     if *tail == head {
         None
     } else {
@@ -35,25 +35,25 @@ fn get_scancode() -> Option<u8> {
 
 /// US QWERTY keyboard layout
 const SCANCODE_TO_CHAR: [char; 127] = [
-    '\0', '\x1B', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\x08', '\t',
-    'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n', '\0', 'a', 's',
-    'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', '\'', '`', '\0', '\\', 'z', 'x', 'c', 'v',
-    'b', 'n', 'm', ',', '.', '/', '\0', '*', '\0', ' ', '\0', '\0', '\0', '\0', '\0', '\0',
-    '\0', '\0', '\0', '\0', '\0', '\0', '7', '8', '9', '-', '4', '5', '6', '+', '1',
-    '2', '3', '0', '.', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',
+    '\0', '\x1B', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\x08', '\t', 'q',
+    'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n', '\0', 'a', 's', 'd', 'f', 'g',
+    'h', 'j', 'k', 'l', ';', '\'', '`', '\0', '\\', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.',
+    '/', '\0', '*', '\0', ' ', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',
+    '\0', '7', '8', '9', '-', '4', '5', '6', '+', '1', '2', '3', '0', '.', '\0', '\0', '\0', '\0',
     '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',
     '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',
+    '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',
 ];
 
 const SCANCODE_TO_CHAR_SHIFT: [char; 128] = [
-    '\0', '\x1B', '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '_', '+', '\x08', '\t',
-    'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', '\n', '\0', 'A', 'S',
-    'D', 'F', 'G', 'H', 'J', 'K', 'L', ':', '"', '~', '\0', '|', 'Z', 'X', 'C', 'V',
-    'B', 'N', 'M', '<', '>', '?', '\0', '*', '\0', ' ', '\0', '\0', '\0', '\0', '\0', '\0',
-    '\0', '\0', '\0', '\0', '\0', '\0', '\0', '7', '8', '9', '-', '4', '5', '6', '+', '1',
-    '2', '3', '0', '.', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',
+    '\0', '\x1B', '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '_', '+', '\x08', '\t', 'Q',
+    'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', '\n', '\0', 'A', 'S', 'D', 'F', 'G',
+    'H', 'J', 'K', 'L', ':', '"', '~', '\0', '|', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', '<', '>', '?',
+    '\0', '*', '\0', ' ', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',
+    '\0', '7', '8', '9', '-', '4', '5', '6', '+', '1', '2', '3', '0', '.', '\0', '\0', '\0', '\0',
     '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',
     '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',
+    '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',
 ];
 
 static SHIFT_PRESSED: Mutex<bool> = Mutex::new(false);
@@ -70,13 +70,13 @@ pub fn read_char() -> Option<char> {
                 }
                 continue;
             }
-            
+
             // Handle shift keys
             if scancode == 0x2A || scancode == 0x36 {
                 *SHIFT_PRESSED.lock() = true;
                 continue;
             }
-            
+
             // Get character
             let shift = *SHIFT_PRESSED.lock();
             let ch = if shift {
@@ -84,7 +84,7 @@ pub fn read_char() -> Option<char> {
             } else {
                 SCANCODE_TO_CHAR[scancode as usize]
             };
-            
+
             if ch != '\0' {
                 return Some(ch);
             }
@@ -106,13 +106,13 @@ pub fn try_read_char() -> Option<char> {
             }
             return None;
         }
-        
+
         // Handle shift keys
         if scancode == 0x2A || scancode == 0x36 {
             *SHIFT_PRESSED.lock() = true;
             return None;
         }
-        
+
         // Get character
         let shift = *SHIFT_PRESSED.lock();
         let ch = if shift {
@@ -120,7 +120,7 @@ pub fn try_read_char() -> Option<char> {
         } else {
             SCANCODE_TO_CHAR[scancode as usize]
         };
-        
+
         if ch != '\0' {
             Some(ch)
         } else {
@@ -134,7 +134,7 @@ pub fn try_read_char() -> Option<char> {
 /// Read a line from keyboard
 pub fn read_line(buf: &mut [u8]) -> usize {
     let mut pos = 0;
-    
+
     loop {
         if let Some(ch) = read_char() {
             match ch {

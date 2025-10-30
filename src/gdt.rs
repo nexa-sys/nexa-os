@@ -38,7 +38,7 @@ pub fn user_segment(base: u64) -> Descriptor {
 
 /// Initialize GDT with kernel and user segments
 pub fn init() {
-    use x86_64::instructions::segmentation::{CS, DS, Segment};
+    use x86_64::instructions::segmentation::{Segment, CS, DS};
     use x86_64::instructions::tables::load_tss;
 
     unsafe {
@@ -66,7 +66,7 @@ pub fn init() {
 
         // Create GDT
         let mut gdt = GlobalDescriptorTable::new();
-        
+
         // Entry 0: Null descriptor (required)
         // Entry 1: Kernel code segment
         let kernel_code = gdt.append(Descriptor::kernel_code_segment());
@@ -75,11 +75,13 @@ pub fn init() {
         // Entry 3: User code segment - manually set DPL=3
         let user_code = user_code_segment();
         let user_code_sel = gdt.append(user_code);
-        // Entry 4: User data segment - manually set DPL=3  
+        // Entry 4: User data segment - manually set DPL=3
         let user_data = user_segment(0);
         let user_data_sel = gdt.append(user_data);
         // Entry 5: TSS
-        let tss = gdt.append(Descriptor::tss_segment(unsafe { &* (&raw const TSS as *const TaskStateSegment) }));
+        let tss = gdt.append(Descriptor::tss_segment(unsafe {
+            &*(&raw const TSS as *const TaskStateSegment)
+        }));
 
         SELECTORS = Some(Selectors {
             code_selector: kernel_code,
