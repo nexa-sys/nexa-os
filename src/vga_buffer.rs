@@ -3,6 +3,8 @@ use core::ptr;
 use spin::Mutex;
 use core::sync::atomic::{AtomicBool, Ordering};
 
+use crate::kinfo;
+
 const BUFFER_HEIGHT: usize = 25;
 const BUFFER_WIDTH: usize = 80;
 const VGA_BUFFER_ADDR: usize = 0xb8000;
@@ -57,7 +59,7 @@ pub fn set_vga_ready() {
     // higher-level kinfo! macro here to guarantee this appears on serial even
     // if logger or VGA are in an unexpected state.
     VGA_READY.store(true, Ordering::SeqCst);
-    crate::serial_println!("VGA_READY set");
+    kinfo!("VGA_READY set");
 }
 
 pub fn is_vga_ready() -> bool {

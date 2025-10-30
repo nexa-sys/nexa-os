@@ -105,32 +105,37 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
         elapsed_us % 1_000
     );
 
-    // Try to load /bin/sh from initramfs and execute in user mode
-    if let Some(sh_data) = initramfs::find_file("bin/sh") {
-        kinfo!("Found /bin/sh in initramfs ({} bytes), loading...", sh_data.len());
-        
-        // Debug: Check first few bytes of ELF
-        if sh_data.len() >= 4 {
-            kinfo!("ELF header: {:02x} {:02x} {:02x} {:02x}", 
-                sh_data[0], sh_data[1], sh_data[2], sh_data[3]);
-        }
-        
-        match process::Process::from_elf(sh_data) {
-            Ok(mut proc) => {
-                kinfo!("Successfully loaded /bin/sh as PID {}", proc.pid);
-                kinfo!("Switching to REAL user mode (Ring 3)...");
-                proc.execute(); // Never returns
+    let initFileList = ["/sbin/init", "/etc/init", "/bin/init", "/bin/sh"];
+    
+    for (&path) in initFileList.iter() {
+        if let Some(init_data) = initramfs::find_file(path) {
+            kinfo!("Found init file '{}' in initramfs ({} bytes), loading...", path, init_data.len());
+            
+            // Debug: Check first few bytes of ELF
+            if init_data.len() >= 4 {
+                kinfo!("ELF header: {:02x} {:02x} {:02x} {:02x}", 
+                    init_data[0], init_data[1], init_data[2], init_data[3]);
             }
-            Err(e) => {
-                kfatal!("Failed to load /bin/sh: {}", e);
+            
+            match process::Process::from_elf(init_data) {
+                Ok(mut proc) => {
+                    kinfo!("Successfully loaded '{}' as PID {}", path, proc.pid);
+                    kinfo!("Switching to REAL user mode (Ring 3)...");
+                    proc.execute(); // Never returns
+                }
+                Err(e) => {
+                    kerror!("Failed to load '{}': {}", path, e);
+                }
+            }
+        } else {
+            kdebug!("Init file '{}' not found in initramfs", path);
+            if path == "/bin/sh" {
+                kfatal!("'/bin/sh' not found in initramfs; cannot continue to user mode.");
                 arch::halt_loop();
             }
         }
-    } else {
-        kfatal!("No /bin/sh found in initramfs");
-        arch::halt_loop();
     }
-
+    // Try to load /bin/sh from initramfs and 
     // If we reach here, /bin/sh executed successfully, but it should never return
     kfatal!("Unexpected return from user mode process");
     arch::halt_loop()
