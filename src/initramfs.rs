@@ -1,25 +1,43 @@
 /// Initial RAM Filesystem support
 /// Loads files from a CPIO archive embedded in the kernel
+///
+/// 初始 RAM 文件系统支持（initramfs）
+/// 从内核嵌入的 CPIO 归档加载文件，用于启动阶段提供最小用户态程序和资源。
 use core::slice;
-
 /// CPIO newc format header (110 bytes ASCII)
+///
+/// CPIO newc 格式的头部（110 字节 ASCII），字段都是十六进制 ASCII 文本表示。
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy)]
 pub struct CpioNewcHeader {
     pub magic: [u8; 6],     // "070701" or "070702"
+    // magic 字段：应为 ASCII "070701"（newc）或 "070702"
     pub ino: [u8; 8],       // Inode number
+    // inode 编号（ASCII hex）
     pub mode: [u8; 8],      // File mode
+    // 文件模式（权限和类型，以 ASCII hex 表示）
     pub uid: [u8; 8],       // User ID
+    // 所属用户 ID（ASCII hex）
     pub gid: [u8; 8],       // Group ID
+    // 所属组 ID（ASCII hex）
     pub nlink: [u8; 8],     // Number of links
+    // 硬链接数量（ASCII hex）
     pub mtime: [u8; 8],     // Modification time
+    // 修改时间（ASCII hex，UNIX 时间戳）
     pub filesize: [u8; 8],  // File size
+    // 文件大小（字节，ASCII hex）
     pub devmajor: [u8; 8],  // Device major
+    // 设备主号（ASCII hex，通常为 0）
     pub devminor: [u8; 8],  // Device minor
+    // 设备次号（ASCII hex，通常为 0）
     pub rdevmajor: [u8; 8], // Real device major
+    // 特殊设备（rdev）主号（ASCII hex）
     pub rdevminor: [u8; 8], // Real device minor
+    // 特殊设备（rdev）次号（ASCII hex）
     pub namesize: [u8; 8],  // Filename length
+    // 文件名长度（包括末尾的 NUL 字节，ASCII hex）
     pub check: [u8; 8],     // Checksum
+    // 校验和字段（通常未使用，ASCII hex）
 }
 
 impl CpioNewcHeader {
@@ -70,11 +88,19 @@ pub struct Initramfs {
 
 impl Initramfs {
     /// Create from embedded data
+    /// Create from embedded data
+    ///
+    /// 从原始内存区域创建 Initramfs 实例。调用者需保证 base 指向有效的 CPIO 数据
+    /// 且在该 Initramfs 生命周期内保持可读（或已被内核复制）。这是 unsafe 的因为
+    /// 函数接受裸指针并依赖调用方保证内存有效性。
     pub unsafe fn new(base: *const u8, size: usize) -> Self {
         Self { base, size }
     }
 
     /// Parse CPIO archive and return all entries
+    /// Parse CPIO archive and return all entries
+    ///
+    /// 返回一个迭代器，用于按顺序遍历归档中的每个条目。
     pub fn entries(&self) -> InitramfsIter {
         InitramfsIter {
             current: self.base,
@@ -83,6 +109,10 @@ impl Initramfs {
     }
 
     /// Find a specific file by path
+    /// Find a specific file by path
+    ///
+    /// 在归档中查找指定路径的条目并返回其拷贝（InitramfsEntry）。此操作会遍历所有条目，
+    /// 适合少量文件的 initramfs 场景。
     pub fn find(&self, path: &str) -> Option<InitramfsEntry> {
         crate::ktrace!("Initramfs::find searching for '{}'", path);
         for entry in self.entries() {
@@ -135,6 +165,7 @@ impl Iterator for InitramfsIter {
             }
 
             // Read filename
+            // 读取文件名（namesize 包含结尾 NUL，因此取 namesize - 1）
             let name_bytes = slice::from_raw_parts(ptr, namesize.saturating_sub(1)); // -1 for null terminator
             let name = core::str::from_utf8(name_bytes).unwrap_or("");
 
@@ -164,6 +195,7 @@ impl Iterator for InitramfsIter {
             self.current = ptr;
 
             Some(InitramfsEntry {
+                // 返回的 name/data 指向原始内存或复制缓冲区，调用者不应修改它们
                 name: core::str::from_utf8(name_bytes).unwrap_or(""),
                 data,
                 mode: header.mode(),
@@ -182,6 +214,9 @@ static mut INITRAMFS: Option<Initramfs> = None;
 static mut INITRAMFS_COPY_BUF: [u8; 64 * 1024] = [0; 64 * 1024];
 const INITRAMFS_COPY_BUF_SIZE: usize = 64 * 1024;
 
+// 全局 initramfs 实例的备忘：INITRAMFS 保存了 Initramfs 对象的可选值。
+// INITRAMFS_COPY_BUF 是内核拥有的备份缓冲区，用于在需要时复制模块数据以确保可访问性。
+
 /// Get global initramfs instance
 pub fn get() -> Option<&'static Initramfs> {
     unsafe {
@@ -199,9 +234,35 @@ pub fn find_file(path: &str) -> Option<&'static [u8]> {
     })
 }
 
+/// Iterate over all initramfs entries and call the provided callback for each one.
+///
+/// 这个函数不会进行堆分配，直接遍历归档并将每个 `InitramfsEntry`（按值）传给回调。
+/// 回调签名例如 `|entry: InitramfsEntry| { ... }`。
+pub fn for_each_entry<F>(mut cb: F)
+where
+    F: FnMut(InitramfsEntry),
+{
+    if let Some(ramfs) = get() {
+        for entry in ramfs.entries() {
+            cb(entry);
+        }
+    }
+}
+
+/// Iterate over all filenames (paths) in the initramfs and call `cb` with each path.
+///
+/// 这是一个更轻量的便利函数，回调接收 `&str`，通常用于列举或构建外部索引。
+pub fn for_each_path<F>(mut cb: F)
+where
+    F: FnMut(&'static str),
+{
+    for_each_entry(|entry| cb(entry.name));
+}
+
 /// Initialize initramfs from multiboot module
 pub fn init(base: *const u8, size: usize) {
     // Assume GRUB has already mapped the initramfs region
+    // 假设 GRUB 或引导程序已经将 initramfs 模块映射到内存中并传递了基地址/大小
 
     unsafe {
         // If the module fits into our kernel-owned buffer, copy it there

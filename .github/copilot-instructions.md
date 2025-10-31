@@ -19,6 +19,7 @@ NexaOS is an experimental Rust-based operating system implementing a hybrid-kern
 - `src/paging.rs`: Virtual memory setup for user space
 - `src/initramfs.rs`: CPIO archive parsing for initial filesystem
 - `src/fs.rs`: Simple in-memory filesystem for runtime file operations
+- `src/interrupts.rs`: IDT setup, PIC configuration, syscall interrupt handling
 - `userspace/shell.rs`: Minimal shell using syscall interface
 
 ## Critical Developer Workflows
@@ -97,8 +98,8 @@ fn syscall3(n: u64, a1: u64, a2: u64, a3: u64) -> u64 {
 - Process creation: `Process::from_elf(data)` returns executable process
 
 ### Filesystem Architecture
-- **Initramfs**: CPIO newc format parsing for boot-time files
-- **Runtime FS**: Simple in-memory filesystem (64 file limit) for dynamic content
+- **Initramfs**: CPIO newc format parsing for boot-time files (`src/initramfs.rs`)
+- **Runtime FS**: Simple in-memory filesystem (64 file limit) for dynamic content (`src/fs.rs`)
 - Dual filesystem design: initramfs for initial programs, memory fs for runtime data
 
 ## Build System Details
