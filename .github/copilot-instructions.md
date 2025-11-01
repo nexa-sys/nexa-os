@@ -20,7 +20,8 @@ NexaOS is an experimental Rust-based operating system implementing a hybrid-kern
 - `src/initramfs.rs`: CPIO archive parsing for initial filesystem
 - `src/fs.rs`: Simple in-memory filesystem for runtime file operations
 - `src/interrupts.rs`: IDT setup, PIC configuration, syscall interrupt handling
-- `userspace/shell.rs`: Minimal shell using syscall interface
+- `src/keyboard.rs`: PS/2 keyboard driver with scancode processing
+- `src/gdt.rs`: Global Descriptor Table for privilege separation
 
 ## Critical Developer Workflows
 
@@ -52,12 +53,14 @@ Use kernel logging macros instead of `println!`:
 kinfo!("Kernel initialized successfully");
 kerror!("Failed to load ELF: {}", error);
 kdebug!("Memory region: {:#x} - {:#x}", start, end);
+kwarn!("Using fallback configuration");
+kfatal!("Critical error, halting system");
 ```
 
 ### No-Std Environment
 - `#![no_std]` with custom panic handler
 - Core types from `core::` instead of `std::`
-- No heap allocation in kernel (stack-only)
+- No heap allocation in kernel (stack-only, fixed-size arrays)
 - Custom `#[lang_items]` for userspace
 
 ### Memory Management
@@ -69,18 +72,24 @@ kdebug!("Memory region: {:#x} - {:#x}", start, end);
 ### Syscall Interface
 ```rust
 // Kernel side (syscall.rs) - uses syscall instruction
-pub const SYS_WRITE: u64 = 1;
 pub const SYS_READ: u64 = 0;
-pub const SYS_EXIT: u64 = 60;
-pub const SYS_GETPID: u64 = 39;
+pub const SYS_WRITE: u64 = 1;
 pub const SYS_OPEN: u64 = 2;
 pub const SYS_CLOSE: u64 = 3;
+pub const SYS_EXIT: u64 = 60;
+pub const SYS_GETPID: u64 = 39;
 
 // Assembly handler with register preservation
 #[no_mangle]
 pub extern "C" fn syscall_dispatch(nr: u64, arg1: u64, arg2: u64, arg3: u64) -> u64
 
-// Userspace side (shell.rs) - syscall instruction
+// GS_DATA structure for syscall context (interrupts.rs)
+pub static mut GS_DATA: [u64; 16] = [0; 16];
+// GS_DATA[0] = user stack, GS_DATA[1] = kernel stack
+// GS_DATA[2] = user entry point, GS_DATA[3] = user stack
+// GS_DATA[4-6] = segment selectors (CS, SS, DS)
+
+// Userspace syscall wrapper (shell.rs)
 fn syscall3(n: u64, a1: u64, a2: u64, a3: u64) -> u64 {
     let ret: u64;
     unsafe {
@@ -101,6 +110,13 @@ fn syscall3(n: u64, a1: u64, a2: u64, a3: u64) -> u64 {
 - **Initramfs**: CPIO newc format parsing for boot-time files (`src/initramfs.rs`)
 - **Runtime FS**: Simple in-memory filesystem (64 file limit) for dynamic content (`src/fs.rs`)
 - Dual filesystem design: initramfs for initial programs, memory fs for runtime data
+- Files registered via `fs::add_file_bytes(name, content, is_dir)`
+
+### Keyboard Input
+- PS/2 keyboard driver with scancode queue (128 bytes)
+- US QWERTY layout with shift key support
+- Blocking character and line reading
+- Interrupt-driven (IRQ1) with PIC handling
 
 ## Build System Details
 
@@ -119,6 +135,11 @@ fn syscall3(n: u64, a1: u64, a2: u64, a3: u64) -> u64 {
 - CPIO archive format for GRUB modules
 - Stripped binaries: `strip --strip-all`
 
+### Command Line Parsing
+- GRUB command line support: `init=/path/to/program`
+- Parsed in `kernel_main()` for custom init programs
+- Fallback to default init paths: `/sbin/init`, `/etc/init`, `/bin/init`, `/bin/sh`
+
 ## Testing & Debugging
 
 ### Verification Steps
@@ -135,6 +156,7 @@ grub-file --is-x86-multiboot2 target/x86_64-nexaos/release/nexa-os
 - **No output**: Verify VGA buffer initialization, serial port setup
 - **Boot hangs**: Check Multiboot header, GRUB configuration
 - **Syscall fails**: Verify GS register setup, IDT configuration
+- **Keyboard not working**: Check PIC initialization, IRQ handling
 
 ## File Organization
 
@@ -176,11 +198,17 @@ grub-file --is-x86-multiboot2 target/x86_64-nexaos/release/nexa-os
 2. Update both `initramfs.rs` and `fs.rs` if needed
 3. Test file operations in userspace shell
 
+### When Adding Device Drivers
+1. Initialize interrupts in `interrupts::init_interrupts()`
+2. Configure PIC for device IRQs
+3. Add interrupt handlers with proper masking
+4. Test with QEMU device emulation
+
 ## Cross-Component Communication
 
 ### Kernel ↔ Userspace
 - Syscalls via `syscall` instruction
-- GS register for kernel data access
+- GS register for kernel data access (GS_DATA array)
 - Fixed memory layout contracts
 
 ### Bootloader Integration

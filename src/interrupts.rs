@@ -3,7 +3,6 @@
 use core::arch::asm;
 use core::arch::global_asm;
 use core::arch::naked_asm;
-use lazy_static::lazy_static;
 use pic8259::ChainedPics;
 use spin;
 use x86_64::instructions::port::Port;
@@ -284,69 +283,86 @@ extern "C" {
     fn ring3_switch_handler();
 }
 
-lazy_static! {
-    static ref IDT: InterruptDescriptorTable = {
-        // crate::kinfo!("Initializing IDT...");
-        let mut idt = InterruptDescriptorTable::new();
-
-        // Set up interrupt handlers
-        idt.breakpoint.set_handler_fn(breakpoint_handler);
-        idt.page_fault.set_handler_fn(page_fault_handler);
-        idt.general_protection_fault.set_handler_fn(general_protection_fault_handler);
-        idt.divide_error.set_handler_fn(divide_error_handler);
-        // Use a dedicated IST entry for double fault to ensure the CPU
-        // switches to a known-good stack when a double fault occurs. This
-        // reduces the chance of a triple fault caused by stack corruption.
-        unsafe {
-            idt.double_fault.set_handler_fn(double_fault_handler)
-                .set_stack_index(crate::gdt::DOUBLE_FAULT_IST_INDEX as u16);
-        }
-        idt.segment_not_present.set_handler_fn(segment_not_present_handler);
-        idt.invalid_opcode.set_handler_fn(invalid_opcode_handler);
-        idt.invalid_tss.set_handler_fn(segment_not_present_handler); // Reuse handler
-        idt.stack_segment_fault.set_handler_fn(segment_not_present_handler); // Reuse handler
-
-        // Set up hardware interrupts
-        idt[PIC_1_OFFSET].set_handler_fn(timer_interrupt_handler);
-        idt[PIC_1_OFFSET + 1].set_handler_fn(keyboard_interrupt_handler);
-
-        // Set up syscall interrupt handler at 0x81
-        unsafe {
-            idt[0x81].set_handler_addr(x86_64::VirtAddr::new(syscall_interrupt_handler as u64));
-        }
-
-        // Set up ring3 switch handler at 0x80
-        unsafe {
-            idt[0x80].set_handler_addr(x86_64::VirtAddr::new(ring3_switch_handler as u64));
-        }
-
-        idt
-    };
-}
+/// Global IDT instance - initialized at runtime to avoid static initialization conflicts
+static mut IDT: Option<InterruptDescriptorTable> = None;
 
 /// Initialize IDT with interrupt handlers
 pub fn init_interrupts() {
-    // Load the IDT
-    IDT.load();
-
-    // Initialize PICs
+    crate::kinfo!("init_interrupts: START");
+    crate::kdebug!("GS_DATA address: {:p}", &raw const crate::initramfs::GS_DATA as *const _);
+    
+    // Initialize IDT at runtime instead of using lazy_static
     unsafe {
-        PICS.lock().initialize();
-    }
+        IDT = Some({
+            let mut idt = InterruptDescriptorTable::new();
 
-    // Mask all interrupts to prevent spurious interrupts during setup
-    unsafe {
-        use x86_64::instructions::port::Port;
-        let mut port = Port::<u8>::new(0x21); // Master PIC IMR
-        port.write(0xFF);
-        let mut port = Port::<u8>::new(0xA1); // Slave PIC IMR
-        port.write(0xFF);
-    }
+            // Set up interrupt handlers
+            idt.breakpoint.set_handler_fn(breakpoint_handler);
+            idt.page_fault.set_handler_fn(page_fault_handler);
+            idt.general_protection_fault.set_handler_fn(general_protection_fault_handler);
+            idt.divide_error.set_handler_fn(divide_error_handler);
+            // Use a dedicated IST entry for double fault to ensure the CPU
+            // switches to a known-good stack when a double fault occurs. This
+            // reduces the chance of a triple fault caused by stack corruption.
+            idt.double_fault.set_handler_fn(double_fault_handler)
+                .set_stack_index(crate::gdt::DOUBLE_FAULT_IST_INDEX as u16);
+            idt.segment_not_present.set_handler_fn(segment_not_present_handler);
+            idt.invalid_opcode.set_handler_fn(invalid_opcode_handler);
+            idt.invalid_tss.set_handler_fn(segment_not_present_handler); // Reuse handler
+            idt.stack_segment_fault.set_handler_fn(segment_not_present_handler); // Reuse handler
 
-    // Setup syscall
+            // Set up hardware interrupts
+            idt[PIC_1_OFFSET].set_handler_fn(timer_interrupt_handler);
+            idt[PIC_1_OFFSET + 1].set_handler_fn(keyboard_interrupt_handler);
+
+            // Set up syscall interrupt handler at 0x81
+            idt[0x81].set_handler_addr(x86_64::VirtAddr::new(syscall_interrupt_handler as u64));
+
+            // Set up ring3 switch handler at 0x80
+            idt[0x80].set_handler_addr(x86_64::VirtAddr::new(ring3_switch_handler as u64));
+
+            idt
+        });
+    }
+    
+    crate::kinfo!("init_interrupts: IDT initialized");
+
+    // Skip PIC initialization and masking for now to test if that's causing the hang
+    crate::kinfo!("init_interrupts: skipping PIC initialization and masking");
+
+    // // Mask all interrupts BEFORE initializing PICs to prevent spurious interrupts during setup
+    // crate::kinfo!("init_interrupts: about to mask interrupts");
+    // unsafe {
+    //     crate::kinfo!("init_interrupts: masking master PIC (0x21)");
+    //     let mut port = Port::<u8>::new(0x21); // Master PIC IMR
+    //     port.write(0xFF);
+    //     crate::kinfo!("init_interrupts: master PIC masked");
+        
+    //     crate::kinfo!("init_interrupts: masking slave PIC (0xA1)");
+    //     let mut port = Port::<u8>::new(0xA1); // Slave PIC IMR
+    //     port.write(0xFF);
+    //     crate::kinfo!("init_interrupts: slave PIC masked");
+    // }
+    // crate::kinfo!("init_interrupts: interrupts masked");
+
+    // // Initialize PICs AFTER masking interrupts
+    // crate::kinfo!("init_interrupts: about to initialize PICs");
+    // unsafe {
+    //     PICS.lock().initialize();
+    // }
+    // crate::kinfo!("init_interrupts: PICs initialized");
+
+    crate::kinfo!("init_interrupts: about to call setup_syscall");
     setup_syscall();
+    crate::kinfo!("init_interrupts: setup_syscall completed");
 
-    crate::kinfo!("IDT loaded and syscall configured");
+    // Load IDT LAST to avoid corrupting static variables
+    unsafe {
+        if let Some(ref idt) = IDT {
+            idt.load();
+        }
+    }
+    crate::kinfo!("init_interrupts: IDT loaded");
 }
 
 // Hardware interrupt handlers
@@ -545,35 +561,23 @@ extern "C" fn ring3_debug_print2() {
 
 /// Set GS data for Ring 3 switch
 pub unsafe fn set_gs_data(entry: u64, stack: u64, user_cs: u64, user_ss: u64, user_ds: u64) {
+    // Get kernel stack from TSS privilege stack table
+    let kernel_stack = crate::gdt::get_kernel_stack_top();
+
+    // Get GS_DATA address without creating a reference that might corrupt nearby statics
+    let gs_data_addr = &raw const crate::initramfs::GS_DATA as *const _ as u64;
+    let gs_data_ptr = gs_data_addr as *mut u64;
+    
     unsafe {
-        // Get kernel stack from TSS privilege stack table
-        let kernel_stack = crate::gdt::get_kernel_stack_top();
-
-        crate::interrupts::GS_DATA[0] = stack; // user RSP at gs:[0]
-        crate::interrupts::GS_DATA[1] = kernel_stack; // kernel RSP at gs:[8]
-        crate::interrupts::GS_DATA[2] = entry; // USER_ENTRY at gs:[16]
-        crate::interrupts::GS_DATA[3] = stack; // USER_STACK at gs:[24]
-        crate::interrupts::GS_DATA[4] = user_cs; // user_cs at gs:[32]
-        crate::interrupts::GS_DATA[5] = user_ss; // user_ss at gs:[40]
-        crate::interrupts::GS_DATA[6] = user_ds; // user_ds at gs:[48]
-
-        crate::kdebug!(
-            "GS_DATA set: entry={:#x}, stack={:#x}, cs={:#x}, ss={:#x}, ds={:#x}",
-            entry,
-            stack,
-            user_cs,
-            user_ss,
-            user_ds
-        );
-        crate::kdebug!(
-            "GS_DATA[1] (kernel stack) = {:#x}",
-            crate::interrupts::GS_DATA[1]
-        );
+        gs_data_ptr.add(0).write(stack); // user RSP at gs:[0]
+        gs_data_ptr.add(1).write(kernel_stack); // kernel RSP at gs:[8]
+        gs_data_ptr.add(2).write(entry); // USER_ENTRY at gs:[16]
+        gs_data_ptr.add(3).write(stack); // USER_STACK at gs:[24]
+        gs_data_ptr.add(4).write(user_cs); // user_cs at gs:[32]
+        gs_data_ptr.add(5).write(user_ss); // user_ss at gs:[40]
+        gs_data_ptr.add(6).write(user_ds); // user_ds at gs:[48]
     }
 }
-
-// GS data for syscall and Ring 3 switch
-pub static mut GS_DATA: [u64; 16] = [0; 16];
 
 pub fn setup_syscall() {
     // Setup syscall
@@ -582,21 +586,21 @@ pub fn setup_syscall() {
         syscall_instruction_handler as u64
     );
     unsafe {
-        // Initialize GS data for syscall
-        GS_DATA[1] = crate::gdt::get_kernel_stack_top(); // Kernel stack for syscall at gs:[8]
+        // Get GS_DATA address without creating a reference that might corrupt nearby statics
+        let gs_data_addr = &raw const crate::initramfs::GS_DATA as *const _ as u64;
+        
+        // Initialize GS data for syscall - write directly to the address
+        let gs_data_ptr = gs_data_addr as *mut u64;
+        gs_data_ptr.add(1).write(crate::gdt::get_kernel_stack_top()); // Kernel stack for syscall at gs:[8]
 
         // Set GS base to GS_DATA address
-        let gs_base = &raw const GS_DATA as *const _ as u64;
-        // Use minimal serial port writes to trace MSR writes during early boot
-        use x86_64::instructions::port::Port;
+        // GS base is already set in kernel_main before interrupt initialization
+        // let gs_base = gs_data_addr;
+        // Msr::new(0xc0000101).write(gs_base); // GS base
 
         // Use kernel logging for MSR write tracing so it follows the
         // kernel logging convention (serial + optional VGA). logger
         // will skip VGA until it's ready, so this is safe during early boot.
-        crate::kdebug!("MSR: about to write GS base");
-        Msr::new(0xc0000101).write(gs_base); // GS base
-        crate::kdebug!("MSR: GS base written");
-
         crate::kdebug!("MSR: about to set EFER.SCE");
         Msr::new(0xc0000080).write(1 << 0); // IA32_EFER.SCE = 1
         crate::kdebug!("MSR: EFER.SCE set");
@@ -616,5 +620,3 @@ pub fn setup_syscall() {
         crate::kdebug!("MSR: FMASK written");
     }
 }
-
-// debug_params removed; use logging macros in callers if needed

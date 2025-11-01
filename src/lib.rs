@@ -58,6 +58,15 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
     if magic == MULTIBOOT2_BOOTLOADER_MAGIC {
         memory::log_memory_overview(&boot_info);
 
+        // Set GS base EARLY to avoid corrupting static variables during initramfs loading
+        unsafe {
+            // Get GS_DATA address without creating a reference that might corrupt nearby statics
+            let gs_data_addr = &raw const crate::initramfs::GS_DATA as *const _ as u64;
+            use x86_64::registers::model_specific::Msr;
+            Msr::new(0xc0000101).write(gs_data_addr); // GS base
+            kinfo!("GS base set to {:#x}", gs_data_addr);
+        }
+
         // Load initramfs from multiboot module if present
         if let Some(modules_tag) = boot_info.module_tags().next() {
             let module_start = modules_tag.start_address() as *const u8;
@@ -68,7 +77,9 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
                     module_start as usize,
                     module_size
                 );
+                kinfo!("About to call initramfs::init()");
                 initramfs::init(module_start, module_size);
+                kinfo!("initramfs::init() completed");
             }
         } else {
             kwarn!("No initramfs module found, using built-in filesystem");
@@ -80,8 +91,20 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
     // Initialize paging (required for user mode)
     paging::init();
 
+    // Check INITRAMFS after paging::init()
+    {
+        let test = crate::initramfs::get().is_some();
+        kinfo!("INITRAMFS after paging::init(): {}", test);
+    }
+
     // Initialize GDT for user/kernel mode
     gdt::init();
+
+    // Check INITRAMFS after gdt::init()
+    {
+        let test = crate::initramfs::get().is_some();
+        kinfo!("INITRAMFS after gdt::init(): {}", test);
+    }
 
     kinfo!("About to call interrupts::init_interrupts()");
 
@@ -91,11 +114,16 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
     kinfo!("interrupts::init() completed successfully");
 
     // Enable interrupts
-    x86_64::instructions::interrupts::enable();
+    // x86_64::instructions::interrupts::enable();
 
     // Keep all PIC interrupts masked for now to avoid spurious interrupts
     // TODO: Enable timer interrupt after testing syscall and user mode switching
-    kinfo!("CPU interrupts enabled, PIC interrupts remain masked");
+    kinfo!("CPU interrupts disabled, PIC interrupts remain masked");
+
+    // Debug: Check initramfs state before filesystem init
+    kinfo!("Checking initramfs state before fs::init()...");
+    let initramfs_check = crate::initramfs::get();
+    kinfo!("INITRAMFS check before fs::init(): {:?}", initramfs_check.is_some());
 
     // Initialize filesystem
     fs::init();
@@ -125,12 +153,11 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
 
     kinfo!("Using default init file list: {}", INIT_PATHS.len());
     kinfo!("Pausing briefly before starting init");
-    for (&path) in INIT_PATHS.iter() {
+    for &path in INIT_PATHS.iter() {
         kinfo!("Trying init file: {}", path);
         try_init_exec!(path);
         if path == "/bin/sh" {
-            kfatal!("'/bin/sh' not found in initramfs; cannot continue to user mode.");
-            arch::halt_loop();
+            kpanic!("'/bin/sh' not found in initramfs; cannot continue to user mode.");
         }
     }
 
@@ -142,6 +169,7 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
 
 pub fn panic(info: &PanicInfo) -> ! {
     kfatal!("KERNEL PANIC: {}", info);
+    
     arch::halt_loop()
 }
 
@@ -185,44 +213,79 @@ macro_rules! klog {
 }
 
 #[macro_export]
+macro_rules! kpanic {
+    ($($arg:tt)*) => {{
+        // 自动捕获调用位置（仅行列信息，避免对 file() 的潜在未映射访问）
+        let loc = core::panic::Location::caller();
+        $crate::klog!(
+            $crate::logger::LogLevel::PANIC,
+            "PANIC at line {} column {} (file path unavailable): {}",
+            loc.line(),
+            loc.column(),
+            format_args!($($arg)*)
+        );
+
+        // --- 栈回溯 ---
+        {
+            use core::arch::asm;
+            $crate::klog!($crate::logger::LogLevel::PANIC, "Stack backtrace:");
+            unsafe {
+                let mut rbp: u64;
+                asm!("mov {}, rbp", out(reg) rbp);
+                for i in 0..20 {
+                    let return_addr = *(rbp.wrapping_add(8) as *const u64);
+                    if return_addr == 0 { break; }
+                    $crate::klog!($crate::logger::LogLevel::PANIC, "  #{}: {:#018x}", i, return_addr);
+                    let next_rbp = *(rbp as *const u64);
+                    if next_rbp == 0 || next_rbp < 0x1000 || next_rbp <= rbp { break; }
+                    rbp = next_rbp;
+                }
+            }
+        }
+
+        $crate::arch::halt_loop();
+    }};
+}
+
+#[macro_export]
 macro_rules! kfatal {
     ($($arg:tt)*) => {{
-        $crate::klog!($crate::logger::LogLevel::Fatal, $($arg)*);
+        $crate::klog!($crate::logger::LogLevel::FATAL, $($arg)*);
     }};
 }
 
 #[macro_export]
 macro_rules! kerror {
     ($($arg:tt)*) => {{
-        $crate::klog!($crate::logger::LogLevel::Error, $($arg)*);
+        $crate::klog!($crate::logger::LogLevel::ERROR, $($arg)*);
     }};
 }
 
 #[macro_export]
 macro_rules! kwarn {
     ($($arg:tt)*) => {{
-        $crate::klog!($crate::logger::LogLevel::Warn, $($arg)*);
+        $crate::klog!($crate::logger::LogLevel::WARN, $($arg)*);
     }};
 }
 
 #[macro_export]
 macro_rules! kinfo {
     ($($arg:tt)*) => {{
-        $crate::klog!($crate::logger::LogLevel::Info, $($arg)*);
+        $crate::klog!($crate::logger::LogLevel::INFO, $($arg)*);
     }};
 }
 
 #[macro_export]
 macro_rules! kdebug {
     ($($arg:tt)*) => {{
-        $crate::klog!($crate::logger::LogLevel::Debug, $($arg)*);
+        $crate::klog!($crate::logger::LogLevel::DEBUG, $($arg)*);
     }};
 }
 
 #[macro_export]
 macro_rules! ktrace {
     ($($arg:tt)*) => {{
-        $crate::klog!($crate::logger::LogLevel::Trace, $($arg)*);
+        $crate::klog!($crate::logger::LogLevel::TRACE, $($arg)*);
     }};
 }
 

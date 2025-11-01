@@ -13,56 +13,61 @@ const DEFAULT_TSC_FREQUENCY_HZ: u64 = 1_000_000_000; // 1 GHz fallback
 
 #[derive(Clone, Copy, Debug)]
 pub enum LogLevel {
-    Fatal,
-    Error,
-    Warn,
-    Info,
-    Debug,
-    Trace,
+    PANIC,
+    FATAL,
+    ERROR,
+    WARN,
+    INFO,
+    DEBUG,
+    TRACE,
 }
 
 impl LogLevel {
     pub const fn as_str(self) -> &'static str {
         match self {
-            LogLevel::Fatal => "FATAL",
-            LogLevel::Error => "ERROR",
-            LogLevel::Warn => "WARN",
-            LogLevel::Info => "INFO",
-            LogLevel::Debug => "DEBUG",
-            LogLevel::Trace => "TRACE",
+            LogLevel::PANIC => "PANIC",
+            LogLevel::FATAL => "FATAL",
+            LogLevel::ERROR => "ERROR",
+            LogLevel::WARN => "WARN",
+            LogLevel::INFO => "INFO",
+            LogLevel::DEBUG => "DEBUG",
+            LogLevel::TRACE => "TRACE",
         }
     }
 
     fn serial_color(self) -> &'static str {
         match self {
-            LogLevel::Fatal => "\x1b[1;37;41m",
-            LogLevel::Error => "\x1b[1;31m",
-            LogLevel::Warn => "\x1b[33m",
-            LogLevel::Info => "\x1b[32m",
-            LogLevel::Debug => "\x1b[36m",
-            LogLevel::Trace => "\x1b[90m",
+            LogLevel::PANIC => "\x1b[1;37;41m",
+            LogLevel::FATAL => "\x1b[1;37;41m",
+            LogLevel::ERROR => "\x1b[1;31m",
+            LogLevel::WARN => "\x1b[33m",
+            LogLevel::INFO => "\x1b[32m",
+            LogLevel::DEBUG => "\x1b[36m",
+            LogLevel::TRACE => "\x1b[90m",
         }
     }
 
     fn badge_colors(self) -> (Color, Color) {
         match self {
-            LogLevel::Fatal => (Color::White, Color::Red),
-            LogLevel::Error => (Color::LightRed, Color::Black),
-            LogLevel::Warn => (Color::Yellow, Color::Black),
-            LogLevel::Info => (Color::LightGreen, Color::Black),
-            LogLevel::Debug => (Color::LightCyan, Color::Black),
-            LogLevel::Trace => (Color::LightGray, Color::Black),
+            LogLevel::PANIC => (Color::White, Color::Red),
+            LogLevel::FATAL => (Color::White, Color::Red),
+            LogLevel::ERROR => (Color::LightRed, Color::Black),
+            LogLevel::WARN => (Color::Yellow, Color::Black),
+            LogLevel::INFO => (Color::LightGreen, Color::Black),
+            LogLevel::DEBUG => (Color::LightCyan, Color::Black),
+            LogLevel::TRACE => (Color::LightGray, Color::Black),
         }
     }
 
     fn message_colors(self) -> (Color, Color) {
         match self {
-            LogLevel::Fatal => (Color::White, Color::Red),
-            LogLevel::Error => (Color::LightRed, Color::Black),
-            LogLevel::Warn => (Color::Yellow, Color::Black),
-            LogLevel::Info => (Color::LightGreen, Color::Black),
-            LogLevel::Debug => (Color::LightCyan, Color::Black),
-            LogLevel::Trace => (Color::LightGray, Color::Black),
+            LogLevel::PANIC => (Color::White, Color::Red),
+            LogLevel::FATAL => (Color::White, Color::Red),
+            LogLevel::ERROR => (Color::LightRed, Color::Black),
+            LogLevel::WARN => (Color::Yellow, Color::Black),
+            LogLevel::INFO => (Color::LightGreen, Color::Black),
+            LogLevel::DEBUG => (Color::LightCyan, Color::Black),
+            LogLevel::TRACE => (Color::LightGray, Color::Black),
         }
     }
 }

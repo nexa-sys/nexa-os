@@ -9,11 +9,11 @@ use spin::Mutex;
 
 #[derive(Clone, Copy)]
 pub struct File {
-    // File name (static string slice)
-    // 文件名（静态字符串切片）
+    // File name (string slice)
+    // 文件名（字符串切片）
     pub name: &'static str,
     // File content as a byte slice (supports both text and binary)
-    // 文件内容（静态字节切片），既可表示文本也可表示二进制
+    // 文件内容（字节切片），既可表示文本也可表示二进制
     pub content: &'static [u8],
     // Whether this entry is a directory (used to distinguish files/dirs)
     // 是否为目录（用于区分文件和目录条目）
@@ -35,13 +35,25 @@ static FILE_COUNT: Mutex<usize> = Mutex::new(0);
 /// Initialize the filesystem
 /// 初始化文件系统
 pub fn init() {
+    crate::kinfo!("Filesystem init: start");
     crate::kinfo!("Initializing filesystem...");
+    crate::kinfo!("Filesystem init: before for_each_entry call");
+    crate::kinfo!("fs::init() calling for_each_entry");
+    
+    // Test get() directly
+    crate::kinfo!("Testing get() directly...");
+    let test_result = crate::initramfs::get();
+    crate::kinfo!("get() returned: {:?}", test_result.is_some());
+    
     // Register all initramfs entries (register raw bytes so executables like ELF are included)
+    let mut entry_count = 0;
     crate::initramfs::for_each_entry(|entry| {
+        entry_count += 1;
+        crate::kinfo!("Registering file: {}", entry.name);
         let name = entry.name.strip_prefix('/').unwrap_or(entry.name);
         crate::fs::add_file_bytes(name, entry.data, false);
     });
-    crate::kinfo!("Filesystem initialized with {} files", *FILE_COUNT.lock());
+    crate::kinfo!("Filesystem initialized with {} files (processed {} entries)", 0, entry_count);
 }
 
 /// Add a file or directory entry to the in-memory file table

@@ -151,8 +151,8 @@ unsafe fn map_user_program() {
     use x86_64::structures::paging::{PageTable, PageTableFlags, PhysFrame, Size4KiB};
     use x86_64::PhysAddr;
 
-    const USER_VIRT_BASE: u64 = 0x200000; // Virtual address where user program expects to run
-    const USER_PHYS_BASE: u64 = 0x600000; // Physical address where user program is loaded
+    const USER_VIRT_BASE: u64 = 0x0; // Virtual address where user program expects to run (0x0 for statically linked programs)
+    const USER_PHYS_BASE: u64 = 0x400000; // Physical address where user program is loaded (matches process.rs USER_BASE)
     const USER_SIZE: u64 = 0x200000; // 2MB user space
 
     crate::kinfo!(
