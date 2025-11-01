@@ -42,10 +42,7 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
 
     vga_buffer::init();
 
-    kinfo!(
-        "Kernel log level set to {}",
-        logger::max_level().as_str()
-    );
+    kinfo!("Kernel log level set to {}", logger::max_level().as_str());
 
     kinfo!("NexaOS kernel bootstrap start");
     kdebug!("Multiboot magic: {:#x}", magic);
@@ -167,7 +164,7 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
     for &path in INIT_PATHS.iter() {
         kinfo!("Trying init file: {}", path);
         let result = try_init_exec!(path);
-        if path == "/bin/sh" {   
+        if path == "/bin/sh" {
             kfatal!("'/bin/sh' not found in initramfs;");
             kfatal!("cannot initialize user mode.");
             kpanic!("Final fallback init program not found.");
@@ -181,7 +178,7 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
 
 pub fn panic(info: &PanicInfo) -> ! {
     kfatal!("KERNEL PANIC: {}", info);
-    
+
     arch::halt_loop()
 }
 
@@ -236,8 +233,8 @@ macro_rules! kpanic {
             loc.column(),
         );
 
-        $crate::klog!($crate::logger::LogLevel::PANIC, "  {}", $($arg)*);
-        
+        $crate::klog!($crate::logger::LogLevel::PANIC, $($arg)*);
+
         // --- 栈信息快照（避免解引用潜在无效指针） ---
         {
             use core::arch::asm;
@@ -258,6 +255,30 @@ macro_rules! kpanic {
             );
         }
 
+        // --- 关键寄存器快照 ---
+        {
+            use core::arch::asm;
+            let rip: u64;
+            let rsp: u64;
+            let rbp: u64;
+            // inline assembly is unsafe; perform the asm in an unsafe block.
+            // Use LEA with RIP-relative addressing to obtain the current RIP,
+            // and read RSP/RBP normally.
+            unsafe {
+                asm!(
+                    "lea {0}, [rip + 0]",
+                    "mov {1}, rsp",
+                    "mov {2}, rbp",
+                    out(reg) rip,
+                    out(reg) rsp,
+                    out(reg) rbp,
+                );
+            }
+            $crate::klog!($crate::logger::LogLevel::PANIC, "Registers at panic:");
+            $crate::klog!($crate::logger::LogLevel::PANIC, "  RIP: {:#018x}", rip);
+            $crate::klog!($crate::logger::LogLevel::PANIC, "  RSP: {:#018x}", rsp);
+            $crate::klog!($crate::logger::LogLevel::PANIC, "  RBP: {:#018x}", rbp);
+        }
         $crate::arch::halt_loop()
     }};
 }
@@ -359,8 +380,7 @@ macro_rules! try_init_exec {
                     drop(proc)
                 }
                 Err(e) => {
-                    kerror!("Failed to load '{}': {}", path, e);
-                    drop(e)
+                    kpanic!("Failed to load '{}': {}", path, e);
                 }
             }
         } else {
