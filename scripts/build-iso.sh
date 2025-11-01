@@ -6,6 +6,7 @@ TARGET_DIR="$ROOT_DIR/target/x86_64-nexaos/debug"
 ISO_DIR="$ROOT_DIR/target/iso"
 DIST_DIR="$ROOT_DIR/dist"
 KERNEL_BIN="$TARGET_DIR/nexa-os"
+GRUB_CMDLINE="log=debug"
 
 for tool in grub-mkrescue xorriso; do
     if ! command -v "$tool" >/dev/null 2>&1; then
@@ -26,21 +27,33 @@ mkdir -p "$ISO_DIR/boot/grub" "$DIST_DIR"
 cp "$KERNEL_BIN" "$ISO_DIR/boot/kernel.elf"
 
 # Copy initramfs if it exists
+HAS_INITRAMFS=0
 if [ -f "$ROOT_DIR/build/initramfs.cpio" ]; then
     cp "$ROOT_DIR/build/initramfs.cpio" "$ISO_DIR/boot/initramfs.cpio"
     echo "Including initramfs in ISO"
+    HAS_INITRAMFS=1
 fi
 
-cat > "$ISO_DIR/boot/grub/grub.cfg" <<'CFG'
+{
+    cat <<GRUBCFG
 set timeout=0
 set default=0
 
 menuentry "NexaOS" {
-    multiboot2 /boot/kernel.elf
+    multiboot2 /boot/kernel.elf ${GRUB_CMDLINE}
+GRUBCFG
+
+    if [ "$HAS_INITRAMFS" -eq 1 ]; then
+        cat <<'GRUBCFG_MODULE'
     module2 /boot/initramfs.cpio
+GRUBCFG_MODULE
+    fi
+
+    cat <<'GRUBCFG_END'
     boot
 }
-CFG
+GRUBCFG_END
+} > "$ISO_DIR/boot/grub/grub.cfg"
 
 grub-mkrescue -o "$DIST_DIR/nexaos.iso" "$ISO_DIR"
 

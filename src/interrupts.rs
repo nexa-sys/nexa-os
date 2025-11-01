@@ -289,7 +289,10 @@ static mut IDT: Option<InterruptDescriptorTable> = None;
 /// Initialize IDT with interrupt handlers
 pub fn init_interrupts() {
     crate::kinfo!("init_interrupts: START");
-    crate::kdebug!("GS_DATA address: {:p}", &raw const crate::initramfs::GS_DATA as *const _);
+    let idt_ptr = core::ptr::addr_of!(IDT) as usize;
+    crate::kdebug!("IDT storage address: {:#x}", idt_ptr);
+    let gs_ptr = unsafe { &raw const crate::initramfs::GS_DATA.0 as *const _ } as usize;
+    crate::kdebug!("GS_DATA address: {:#x}", gs_ptr);
     
     // Initialize IDT at runtime instead of using lazy_static
     unsafe {
@@ -316,10 +319,14 @@ pub fn init_interrupts() {
             idt[PIC_1_OFFSET + 1].set_handler_fn(keyboard_interrupt_handler);
 
             // Set up syscall interrupt handler at 0x81
-            idt[0x81].set_handler_addr(x86_64::VirtAddr::new(syscall_interrupt_handler as u64));
+            idt[0x81].set_handler_addr(x86_64::VirtAddr::new_truncate(
+                syscall_interrupt_handler as u64,
+            ));
 
             // Set up ring3 switch handler at 0x80
-            idt[0x80].set_handler_addr(x86_64::VirtAddr::new(ring3_switch_handler as u64));
+            idt[0x80].set_handler_addr(x86_64::VirtAddr::new_truncate(
+                ring3_switch_handler as u64,
+            ));
 
             idt
         });
@@ -354,6 +361,7 @@ pub fn init_interrupts() {
 
     crate::kinfo!("init_interrupts: about to call setup_syscall");
     setup_syscall();
+    crate::initramfs::debug_dump_state("after-setup-syscall");
     crate::kinfo!("init_interrupts: setup_syscall completed");
 
     // Load IDT LAST to avoid corrupting static variables
@@ -363,6 +371,8 @@ pub fn init_interrupts() {
         }
     }
     crate::kinfo!("init_interrupts: IDT loaded");
+
+    crate::initramfs::debug_dump_state("after-init-interrupts");
 }
 
 // Hardware interrupt handlers
@@ -565,7 +575,7 @@ pub unsafe fn set_gs_data(entry: u64, stack: u64, user_cs: u64, user_ss: u64, us
     let kernel_stack = crate::gdt::get_kernel_stack_top();
 
     // Get GS_DATA address without creating a reference that might corrupt nearby statics
-    let gs_data_addr = &raw const crate::initramfs::GS_DATA as *const _ as u64;
+    let gs_data_addr = &raw const crate::initramfs::GS_DATA.0 as *const _ as u64;
     let gs_data_ptr = gs_data_addr as *mut u64;
     
     unsafe {
@@ -587,11 +597,15 @@ pub fn setup_syscall() {
     );
     unsafe {
         // Get GS_DATA address without creating a reference that might corrupt nearby statics
-        let gs_data_addr = &raw const crate::initramfs::GS_DATA as *const _ as u64;
+        let gs_data_addr = &raw const crate::initramfs::GS_DATA.0 as *const _ as u64;
         
         // Initialize GS data for syscall - write directly to the address
         let gs_data_ptr = gs_data_addr as *mut u64;
         gs_data_ptr.add(1).write(crate::gdt::get_kernel_stack_top()); // Kernel stack for syscall at gs:[8]
+        crate::kdebug!(
+            "setup_syscall: initramfs available? {}",
+            crate::initramfs::get().is_some()
+        );
 
         // Set GS base to GS_DATA address
         // GS base is already set in kernel_main before interrupt initialization

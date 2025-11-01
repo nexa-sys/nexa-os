@@ -153,10 +153,10 @@ pub fn jump_to_usermode(entry: u64, stack: u64) {
 
         // Set GS base to point to GS_DATA for both kernel and user mode
         use x86_64::registers::model_specific::Msr;
-        Msr::new(0xc0000101).write(&raw const crate::initramfs::GS_DATA as *const _ as u64); // GS base
+    Msr::new(0xc0000101).write(&raw const crate::initramfs::GS_DATA.0 as *const _ as u64); // GS base
         crate::kinfo!(
             "GS base set to GS_DATA at {:#x}",
-            &raw const crate::initramfs::GS_DATA as *const _ as u64
+            &raw const crate::initramfs::GS_DATA.0 as *const _ as u64
         );
     }
 

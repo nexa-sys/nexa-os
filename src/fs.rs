@@ -36,24 +36,29 @@ static FILE_COUNT: Mutex<usize> = Mutex::new(0);
 /// 初始化文件系统
 pub fn init() {
     crate::kinfo!("Filesystem init: start");
-    crate::kinfo!("Initializing filesystem...");
-    crate::kinfo!("Filesystem init: before for_each_entry call");
-    crate::kinfo!("fs::init() calling for_each_entry");
-    
-    // Test get() directly
-    crate::kinfo!("Testing get() directly...");
-    let test_result = crate::initramfs::get();
-    crate::kinfo!("get() returned: {:?}", test_result.is_some());
-    
-    // Register all initramfs entries (register raw bytes so executables like ELF are included)
+
+    if crate::initramfs::get().is_none() {
+        crate::kwarn!("Filesystem init: no initramfs available; starting empty");
+        return;
+    }
+
     let mut entry_count = 0;
     crate::initramfs::for_each_entry(|entry| {
         entry_count += 1;
-        crate::kinfo!("Registering file: {}", entry.name);
         let name = entry.name.strip_prefix('/').unwrap_or(entry.name);
-        crate::fs::add_file_bytes(name, entry.data, false);
+        add_file_bytes(name, entry.data, false);
     });
-    crate::kinfo!("Filesystem initialized with {} files (processed {} entries)", 0, entry_count);
+
+    let files_total = {
+        let guard = FILE_COUNT.lock();
+        *guard
+    };
+
+    crate::kinfo!(
+        "Filesystem initialized with {} files ({} initramfs entries processed)",
+        files_total,
+        entry_count
+    );
 }
 
 /// Add a file or directory entry to the in-memory file table

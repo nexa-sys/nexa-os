@@ -5,11 +5,35 @@
 /// 从内核嵌入的 CPIO 归档加载文件，用于启动阶段提供最小用户态程序和资源。
 use core::slice;
 
-// GS data for syscall and Ring 3 switch - moved to top to avoid memory layout conflicts
-pub static mut GS_DATA: core::mem::MaybeUninit<[u64; 16]> = core::mem::MaybeUninit::uninit();
+#[allow(dead_code)]
+pub fn debug_dump_state(label: &str) {
+    unsafe {
+        let present = INITRAMFS_PRESENT;
+        let instance_ptr = core::ptr::addr_of!(INITRAMFS_INSTANCE);
+        let storage_addr = instance_ptr as usize;
+        let base = (*instance_ptr).base as usize;
+        let size = (*instance_ptr).size;
+        crate::kdebug!(
+            "initramfs::debug_dump_state[{}]: present={} storage={:#x} base={:#x} size={:#x}",
+            label,
+            present,
+            storage_addr,
+            base,
+            size
+        );
+    }
+}
 
-// Large padding to separate GS_DATA from other statics
-static mut _PADDING1: core::mem::MaybeUninit<[u8; 4096]> = core::mem::MaybeUninit::uninit();
+// GS data for syscall and Ring 3 switch - moved to top to avoid memory layout conflicts
+#[repr(C, align(64))]
+pub struct GsData(pub [u64; 16]);
+
+#[link_section = ".gs_data"]
+pub static mut GS_DATA: GsData = GsData([0; 16]);
+
+#[used]
+#[link_section = ".gs_data_pad"]
+static mut GS_DATA_PADDING: [u8; 4096] = [0; 4096];
 
 /// CPIO newc format header (110 bytes ASCII)
 ///
@@ -88,9 +112,19 @@ pub struct InitramfsEntry {
     pub mode: u32,
 }
 
+#[derive(Clone, Copy, Debug)]
 pub struct Initramfs {
     base: *const u8,
     size: usize,
+}
+
+impl Initramfs {
+    const fn empty() -> Self {
+        Self {
+            base: core::ptr::null(),
+            size: 0,
+        }
+    }
 }
 
 impl Initramfs {
@@ -219,28 +253,31 @@ impl Iterator for InitramfsIter {
 static mut INITRAMFS_COPY_BUF: core::mem::MaybeUninit<[u8; 64 * 1024]> = core::mem::MaybeUninit::uninit();
 const INITRAMFS_COPY_BUF_SIZE: usize = 64 * 1024;
 
-// More padding before INITRAMFS
-static mut _PADDING2: core::mem::MaybeUninit<[u8; 4096]> = core::mem::MaybeUninit::uninit();
+// Global initramfs state
+#[link_section = ".initramfs_meta"]
+static mut INITRAMFS_INSTANCE: Initramfs = Initramfs::empty();
 
-// Global initramfs instance - moved to end to avoid corruption from GS_DATA access
-static mut INITRAMFS: Option<Initramfs> = None;
-
-// Final padding
-static mut _PADDING3: core::mem::MaybeUninit<[u8; 4096]> = core::mem::MaybeUninit::uninit();
+#[link_section = ".initramfs_flag"]
+static mut INITRAMFS_PRESENT: bool = false;
 
 /// Get global initramfs instance
 pub fn get() -> Option<&'static Initramfs> {
-    crate::kdebug!("get() called - start");
-    crate::kdebug!("get() - accessing INITRAMFS static");
-    crate::kdebug!("INITRAMFS address: {:p}", &raw const INITRAMFS as *const _);
-    crate::kdebug!("INITRAMFS_COPY_BUF address: {:p}", &raw const INITRAMFS_COPY_BUF as *const _);
-    crate::kdebug!("GS_DATA address: {:p}", &raw const GS_DATA as *const _);
     unsafe {
-        if (*(&raw const INITRAMFS as *const Option<Initramfs>)).is_none() {
-            crate::kerror!("INITRAMFS static is None!");
-            return None;
+        let present = INITRAMFS_PRESENT;
+        let instance_ptr = core::ptr::addr_of!(INITRAMFS_INSTANCE);
+        let storage_addr = instance_ptr as usize;
+        crate::kdebug!(
+            "initramfs::get state: present={} storage={:#x} base={:#x} size={:#x}",
+            present,
+            storage_addr,
+            (*instance_ptr).base as usize,
+            (*instance_ptr).size
+        );
+        if present {
+            Some(&*instance_ptr)
+        } else {
+            None
         }
-        (&*(&raw const INITRAMFS as *const Option<Initramfs>)).as_ref()
     }
 }
 
@@ -265,20 +302,15 @@ pub fn for_each_entry<F>(mut cb: F)
 where
     F: FnMut(InitramfsEntry),
 {
-    crate::kerror!("for_each_entry: START");
-    crate::kdebug!("for_each_entry: calling get()");
+    crate::kdebug!("initramfs::for_each_entry start");
     if let Some(ramfs) = get() {
-        crate::kdebug!("for_each_entry: found initramfs instance");
         for entry in ramfs.entries() {
-            crate::kdebug!("for_each_entry: processing entry '{}'", entry.name);
             cb(entry);
         }
-        crate::kdebug!("for_each_entry: finished processing all entries");
     } else {
-        crate::kerror!("for_each_entry: no initramfs instance found!");
-        return;
+        crate::kwarn!("initramfs::for_each_entry: no initramfs instance available");
     }
-    crate::kinfo!("for_each_entry: END");
+    crate::kdebug!("initramfs::for_each_entry end");
 }
 
 /// Iterate over all filenames (paths) in the initramfs and call `cb` with each path.
@@ -297,20 +329,29 @@ pub fn init(base: *const u8, size: usize) {
     // 假设 GRUB 或引导程序已经将 initramfs 模块映射到内存中并传递了基地址/大小
 
     unsafe {
+        if size == 0 {
+            INITRAMFS_PRESENT = false;
+            INITRAMFS_INSTANCE = Initramfs::empty();
+            crate::kwarn!("Initramfs module reported size 0; skipping load");
+            return;
+        }
+
         // If the module fits into our kernel-owned buffer, copy it there
         if size <= INITRAMFS_COPY_BUF_SIZE {
-            let dst: *mut u8 = (&raw mut INITRAMFS_COPY_BUF as *mut core::mem::MaybeUninit<[u8; 64 * 1024]>).cast::<u8>();
+            let dst = (&raw mut INITRAMFS_COPY_BUF as *mut core::mem::MaybeUninit<[u8; 64 * 1024]>).cast::<u8>();
             core::ptr::copy_nonoverlapping(base, dst, size);
-            INITRAMFS = Some(Initramfs::new(dst as *const u8, size));
+            INITRAMFS_INSTANCE = Initramfs::new(dst as *const u8, size);
             crate::kinfo!("Initramfs copied into kernel buffer ({} bytes)", size);
         } else {
             // Fallback: reference original module memory
-            INITRAMFS = Some(Initramfs::new(base, size));
+            INITRAMFS_INSTANCE = Initramfs::new(base, size);
             crate::kwarn!(
                 "Initramfs module too large to copy ({} bytes), using original pointer",
                 size
             );
         }
+
+        INITRAMFS_PRESENT = true;
     }
 
     crate::kinfo!(
@@ -319,27 +360,20 @@ pub fn init(base: *const u8, size: usize) {
         size
     );
 
-    // Debug: Verify INITRAMFS was set
-    unsafe {
-        let p: *const Option<Initramfs> = &raw const INITRAMFS;
-        crate::kinfo!("INITRAMFS after init: {:?}", (*p).is_some());
-    }
+    debug_dump_state("after-init");
+
+    crate::kinfo!("INITRAMFS after init: {}", get().is_some());
 
     // List all files
-    // Safely iterate over entries using a raw pointer to avoid creating
-    // shared references to mutable statics.
-    unsafe {
-        let p: *const Option<Initramfs> = &raw const INITRAMFS;
-        if let Some(ref ramfs) = (*p).as_ref() {
-            crate::kinfo!("Initramfs contents:");
-            for entry in ramfs.entries() {
-                crate::kinfo!(
-                    "  '{}' ({} bytes, mode {:#o})",
-                    entry.name,
-                    entry.data.len(),
-                    entry.mode
-                );
-            }
+    if let Some(ramfs) = get() {
+        crate::kinfo!("Initramfs contents:");
+        for entry in ramfs.entries() {
+            crate::kinfo!(
+                "  '{}' ({} bytes, mode {:#o})",
+                entry.name,
+                entry.data.len(),
+                entry.mode
+            );
         }
     }
 }

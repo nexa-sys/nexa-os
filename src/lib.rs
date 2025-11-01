@@ -76,7 +76,7 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
         // Set GS base EARLY to avoid corrupting static variables during initramfs loading
         unsafe {
             // Get GS_DATA address without creating a reference that might corrupt nearby statics
-            let gs_data_addr = &raw const crate::initramfs::GS_DATA as *const _ as u64;
+            let gs_data_addr = &raw const crate::initramfs::GS_DATA.0 as *const _ as u64;
             use x86_64::registers::model_specific::Msr;
             Msr::new(0xc0000101).write(gs_data_addr); // GS base
             kinfo!("GS base set to {:#x}", gs_data_addr);
@@ -160,22 +160,23 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
         try_init_exec!(cmd_init_path);
     }
 
-    const INIT_PATHS: &[&str] = &["/sbin/init", "/etc/init", "/bin/init", "/bin/sh"];
+    static INIT_PATHS: &[&str] = &["/sbin/init", "/etc/init", "/bin/init", "/bin/sh"];
 
     kinfo!("Using default init file list: {}", INIT_PATHS.len());
     kinfo!("Pausing briefly before starting init");
     for &path in INIT_PATHS.iter() {
         kinfo!("Trying init file: {}", path);
-        try_init_exec!(path);
-        if path == "/bin/sh" {
-            kpanic!("'/bin/sh' not found in initramfs; cannot continue to user mode.");
+        let result = try_init_exec!(path);
+        if path == "/bin/sh" {   
+            kfatal!("'/bin/sh' not found in initramfs;");
+            kfatal!("cannot initialize user mode.");
+            kpanic!("Final fallback init program not found.");
         }
     }
 
     // Try to load /bin/sh from initramfs and
     // If we reach here, /bin/sh executed successfully, but it should never return
-    kfatal!("Unexpected return from user mode process");
-    arch::halt_loop()
+    kpanic!("Unexpected return from user mode process");
 }
 
 pub fn panic(info: &PanicInfo) -> ! {
@@ -257,7 +258,7 @@ macro_rules! kpanic {
             );
         }
 
-        $crate::arch::halt_loop();
+        $crate::arch::halt_loop()
     }};
 }
 
@@ -355,9 +356,11 @@ macro_rules! try_init_exec {
                     kinfo!("Successfully loaded '{}' as PID {}", path, proc.pid);
                     kinfo!("Switching to REAL user mode (Ring 3)...");
                     proc.execute(); // Never returns
+                    drop(proc)
                 }
                 Err(e) => {
                     kerror!("Failed to load '{}': {}", path, e);
+                    drop(e)
                 }
             }
         } else {

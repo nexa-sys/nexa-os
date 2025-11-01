@@ -40,6 +40,10 @@ SECTIONS
     .data ALIGN(4K) : AT(ADDR(.data))
     {
         *(.data*)
+        *(.initramfs_meta*)
+        *(.initramfs_flag*)
+        *(.gs_data*)
+        *(.gs_data_pad*)
     } :data
 
     .bss ALIGN(4K) : AT(ADDR(.bss))
