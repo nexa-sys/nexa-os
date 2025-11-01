@@ -1,6 +1,4 @@
 /// Memory paging setup for x86_64
-use x86_64::structures::paging::{PageTable, PageTableFlags, PageTableIndex, PhysFrame, Size4KiB};
-use x86_64::VirtAddr;
 
 /// Initialize identity-mapped paging
 pub fn init() {
@@ -15,7 +13,7 @@ pub fn init() {
 /// SAFETY: This function must be called only once during kernel initialization
 unsafe fn init_user_page_tables() {
     use x86_64::registers::control::Cr3;
-    use x86_64::structures::paging::{PageTable, PageTableFlags, PhysFrame, Size4KiB};
+    use x86_64::structures::paging::{PageTable, PageTableFlags};
     use x86_64::PhysAddr;
 
     crate::kinfo!("Setting up user-accessible pages for user space (0x400000-0x800000)");

@@ -1,4 +1,3 @@
-use core::arch::asm;
 use core::arch::global_asm;
 
 /// System call numbers
@@ -101,6 +100,3 @@ global_asm!(
     "sysretq"
 );
 
-extern "C" {
-    fn syscall_handler();
-}

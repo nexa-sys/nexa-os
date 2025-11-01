@@ -1,8 +1,5 @@
-#![feature(naked_functions)]
-
 use core::arch::asm;
 use core::arch::global_asm;
-use core::arch::naked_asm;
 use pic8259::ChainedPics;
 use spin;
 use x86_64::instructions::port::Port;

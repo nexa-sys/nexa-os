@@ -1,7 +1,5 @@
 #![no_std]
 #![feature(abi_x86_interrupt)]
-#![feature(naked_functions)]
-#![feature(global_asm)]
 
 pub mod arch;
 pub mod elf;
@@ -163,7 +161,7 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
     kinfo!("Pausing briefly before starting init");
     for &path in INIT_PATHS.iter() {
         kinfo!("Trying init file: {}", path);
-        let result = try_init_exec!(path);
+        try_init_exec!(path);
         if path == "/bin/sh" {
             kfatal!("'/bin/sh' not found in initramfs;");
             kfatal!("cannot initialize user mode.");

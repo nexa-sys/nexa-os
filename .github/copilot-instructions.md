@@ -9,7 +9,7 @@ NexaOS is an experimental Rust-based operating system implementing a hybrid-kern
 - **Hybrid kernel**: Combines microkernel-style isolation with monolithic performance optimizations
 - **Boot flow**: Multiboot2 → GRUB → Rust kernel entry (`kmain`) → user mode transition
 - **Memory model**: Identity-mapped paging with separate kernel/user spaces (Ring 0/3)
-- **Process model**: Single user process execution (currently `/bin/sh` from initramfs)
+- **Process model**: Single user process execution (currently `/bin/sh` from initramfs) with structures for future multi-process support
 
 ### Key Components
 - `src/main.rs`: Multiboot entry point, calls `nexa_os::kernel_main()`
@@ -27,6 +27,10 @@ NexaOS is an experimental Rust-based operating system implementing a hybrid-kern
 
 ### Build Process
 ```bash
+# Set up Rust nightly toolchain
+rustup override set nightly
+rustup component add rust-src llvm-tools-preview --toolchain nightly
+
 # Kernel build (requires nightly Rust toolchain)
 cargo build --release
 
@@ -43,7 +47,7 @@ cargo build --release
 ### Prerequisites
 - Rust nightly: `rustup override set nightly && rustup component add rust-src llvm-tools-preview`
 - System deps: `build-essential lld grub-pc-bin xorriso qemu-system-x86`
-- Custom target: Uses `x86_64-nexaos.json` for bare-metal compilation
+- Custom target: Uses `x86_64-nexaos.json` for bare-metal compilation (no OS, soft-float, PIC model)
 
 ## Code Patterns & Conventions
 
@@ -61,11 +65,15 @@ kfatal!("Critical error, halting system");
 - `#![no_std]` with custom panic handler
 - Core types from `core::` instead of `std::`
 - No heap allocation in kernel (stack-only, fixed-size arrays)
-- Custom `#[lang_items]` for userspace
+- Custom `#[lang_items]` for userspace programs
 
 ### Memory Management
 - Physical addresses for kernel, virtual for userspace
-- User space layout: 0x400000-0x800000 (code), 0x600000-0x700000 (stack), heap after code
+- User space layout constants (`src/process.rs`):
+  - `USER_BASE: u64 = 0x400000` (code segment start)
+  - `STACK_BASE: u64 = 0x600000` (stack segment start)
+  - `STACK_SIZE: u64 = 0x100000` (1MB stack)
+  - `HEAP_SIZE: u64 = 0x100000` (1MB heap after code)
 - Identity mapping for bootloader compatibility
 - No dynamic allocation in kernel core
 
@@ -85,11 +93,11 @@ pub extern "C" fn syscall_dispatch(nr: u64, arg1: u64, arg2: u64, arg3: u64) -> 
 
 // GS_DATA structure for syscall context (interrupts.rs)
 pub static mut GS_DATA: [u64; 16] = [0; 16];
-// GS_DATA[0] = user stack, GS_DATA[1] = kernel stack
-// GS_DATA[2] = user entry point, GS_DATA[3] = user stack
+// GS_DATA[0] = user RSP, GS_DATA[1] = kernel RSP
+// GS_DATA[2] = user entry point, GS_DATA[3] = user stack base
 // GS_DATA[4-6] = segment selectors (CS, SS, DS)
 
-// Userspace syscall wrapper (shell.rs)
+// Userspace syscall wrapper (userspace/shell.rs)
 fn syscall3(n: u64, a1: u64, a2: u64, a3: u64) -> u64 {
     let ret: u64;
     unsafe {
@@ -99,6 +107,13 @@ fn syscall3(n: u64, a1: u64, a2: u64, a3: u64) -> u64 {
 }
 ```
 
+### Userspace Program Structure
+- `#![no_std]` with custom panic handler and lang items
+- Entry point: `#[no_mangle] pub extern "C" fn _start()`
+- Syscall wrappers for kernel communication
+- No standard library, manual memory management
+- Built with `-Z build-std=core` and custom target
+
 ### ELF Loading
 - Custom ELF parser in `src/elf.rs`
 - Loads to fixed physical addresses (0x400000+)
@@ -107,10 +122,11 @@ fn syscall3(n: u64, a1: u64, a2: u64, a3: u64) -> u64 {
 - Process creation: `Process::from_elf(data)` returns executable process
 
 ### Filesystem Architecture
-- **Initramfs**: CPIO newc format parsing for boot-time files (`src/initramfs.rs`)
-- **Runtime FS**: Simple in-memory filesystem (64 file limit) for dynamic content (`src/fs.rs`)
-- Dual filesystem design: initramfs for initial programs, memory fs for runtime data
+- **Dual filesystem design**: Initramfs for boot-time files, memory filesystem for runtime data
+- **Initramfs**: CPIO newc format parsing (`src/initramfs.rs`) for immutable boot files
+- **Runtime FS**: Simple in-memory filesystem (64 file limit) in `src/fs.rs` for dynamic content
 - Files registered via `fs::add_file_bytes(name, content, is_dir)`
+- Initramfs loaded from GRUB modules, parsed at boot time
 
 ### Keyboard Input
 - PS/2 keyboard driver with scancode queue (128 bytes)
@@ -121,19 +137,21 @@ fn syscall3(n: u64, a1: u64, a2: u64, a3: u64) -> u64 {
 ## Build System Details
 
 ### Cargo Configuration
-- Custom target: `x86_64-nexaos.json` (no OS, soft-float)
+- Custom target: `x86_64-nexaos.json` (no OS, soft-float, PIC relocation model)
 - Release profile: `panic = "abort"` (no unwinding)
 - Build dependencies: `cc` for assembly compilation
+- Userspace builds: `-Z build-std=core` for minimal std replacement
 
 ### Linker Script
 - `linker.ld`: Places Multiboot header at 0x100000
-- Custom sections: `.multiboot`, `.bootstrap_stack`
-- Assembly bootstrap: `boot/long_mode.S`
+- Custom sections: `.boot.header`, `.boot`, `.text`, `.rodata`, `.data`, `.bss`
+- Assembly bootstrap: `boot/long_mode.S` with identity-mapped page tables
 
 ### Initramfs Creation
 - Userspace binaries built with `-Z build-std=core`
-- CPIO archive format for GRUB modules
-- Stripped binaries: `strip --strip-all`
+- CPIO newc archive format for GRUB modules
+- Stripped binaries: `strip --strip-all` to minimize size
+- Build script: `./scripts/build-userspace.sh` creates `build/initramfs.cpio`
 
 ### Command Line Parsing
 - GRUB command line support: `init=/path/to/program`
@@ -149,6 +167,9 @@ grub-file --is-x86-multiboot2 target/x86_64-nexaos/release/nexa-os
 
 # Serial output monitoring
 ./scripts/run-qemu.sh  # Check for kernel logs
+
+# Build validation
+cargo build --release && ./scripts/build-userspace.sh && ./scripts/build-iso.sh
 ```
 
 ### Common Issues
@@ -157,6 +178,7 @@ grub-file --is-x86-multiboot2 target/x86_64-nexaos/release/nexa-os
 - **Boot hangs**: Check Multiboot header, GRUB configuration
 - **Syscall fails**: Verify GS register setup, IDT configuration
 - **Keyboard not working**: Check PIC initialization, IRQ handling
+- **Userspace won't start**: Check ELF loading, paging setup, GDT configuration
 
 ## File Organization
 
@@ -169,34 +191,36 @@ grub-file --is-x86-multiboot2 target/x86_64-nexaos/release/nexa-os
 - `target/x86_64-nexaos/`: Custom target builds
 
 ### Configuration Files
-- `x86_64-nexaos.json`: Rust target specification
-- `linker.ld`: Kernel linking layout
+- `x86_64-nexaos.json`: Rust target specification (bare-metal, no OS)
+- `linker.ld`: Kernel linking layout with Multiboot header
 - `rust-toolchain.toml`: Nightly version pinning
+- `Cargo.toml`: Dependencies and build configuration
 
 ## Development Guidelines
 
 ### When Adding Kernel Features
-1. Initialize in `kernel_main()` sequence
+1. Initialize in `kernel_main()` sequence in `src/lib.rs`
 2. Use `kinfo!` for boot progress logging
 3. Handle failures gracefully (halt vs panic)
-4. Test with QEMU serial output
+4. Test with QEMU serial output and verify boot
 
 ### When Adding Syscalls
-1. Define constant in `syscall.rs`
-2. Add dispatch case in `syscall_dispatch()`
-3. Update userspace syscall wrappers
-4. Test with shell integration
+1. Define constant in `src/syscall.rs`
+2. Add dispatch case in `syscall_dispatch()` function
+3. Update userspace syscall wrappers in `userspace/shell.rs`
+4. Test with shell integration and verify syscall numbers
 
 ### When Modifying Memory Layout
-1. Update `paging.rs` user space mappings
-2. Adjust `process.rs` address constants
-3. Verify with memory map logging
-4. Test ELF loading functionality
+1. Update `src/paging.rs` user space mappings
+2. Adjust address constants in `src/process.rs`
+3. Update `linker.ld` if kernel memory layout changes
+4. Verify with memory map logging and ELF loading tests
 
 ### When Adding Filesystem Features
 1. Consider initramfs vs runtime filesystem usage
-2. Update both `initramfs.rs` and `fs.rs` if needed
+2. Update both `src/initramfs.rs` and `src/fs.rs` if needed
 3. Test file operations in userspace shell
+4. Rebuild initramfs with `./scripts/build-userspace.sh`
 
 ### When Adding Device Drivers
 1. Initialize interrupts in `interrupts::init_interrupts()`
@@ -207,19 +231,20 @@ grub-file --is-x86-multiboot2 target/x86_64-nexaos/release/nexa-os
 ## Cross-Component Communication
 
 ### Kernel ↔ Userspace
-- Syscalls via `syscall` instruction
-- GS register for kernel data access (GS_DATA array)
-- Fixed memory layout contracts
+- Syscalls via `syscall` instruction (x86_64 fast syscall)
+- GS register points to GS_DATA array for kernel data access
+- Fixed memory layout contracts (user code at 0x400000+)
 
 ### Bootloader Integration
-- Multiboot2 tags for memory map, modules
-- GRUB modules for initramfs
-- Serial console for debugging
+- Multiboot2 tags for memory map, command line, modules
+- GRUB modules for initramfs (CPIO archives)
+- Serial console for debugging output
 
 ### Process Management
-- Single process execution model
+- Single process execution model (currently)
+- Process structures support future multi-process (PID, state, memory layout)
 - ELF loading with fixed address allocation
-- Ring 3 transition via `iretq`
+- Ring 3 transition via `iretq` instruction
 - Process state tracking (Ready/Running/Sleeping/Zombie)
 
 Remember: This is experimental code. Changes can break the entire system. Always test boots after modifications, and use `git bisect` for regression hunting.

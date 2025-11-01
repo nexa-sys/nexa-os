@@ -177,6 +177,11 @@ pub struct InitramfsIter {
     end: *const u8,
 }
 
+#[inline(always)]
+const fn align4(value: usize) -> usize {
+    (value + 3) & !3
+}
+
 impl Iterator for InitramfsIter {
     type Item = InitramfsEntry;
 
@@ -186,8 +191,11 @@ impl Iterator for InitramfsIter {
         }
 
         unsafe {
-            // Ensure we have enough space for header
-            if self.current.add(core::mem::size_of::<CpioNewcHeader>()) > self.end {
+            let header_size = core::mem::size_of::<CpioNewcHeader>();
+            let base_addr = self.current as usize;
+            let end_addr = self.end as usize;
+
+            if base_addr + header_size > end_addr {
                 return None;
             }
 
@@ -201,47 +209,71 @@ impl Iterator for InitramfsIter {
             let namesize = header.namesize();
             let filesize = header.filesize();
 
-            // Move past header
-            let mut ptr = self.current.add(core::mem::size_of::<CpioNewcHeader>());
+            let name_ptr = base_addr + header_size;
+            let name_end = match name_ptr.checked_add(namesize) {
+                Some(end) => end,
+                None => return None,
+            };
 
-            // Check bounds for name
-            if ptr.add(namesize) > self.end {
+            if name_end > end_addr {
                 return None;
             }
 
             // Read filename
             // 读取文件名（namesize 包含结尾 NUL，因此取 namesize - 1）
-            let name_bytes = slice::from_raw_parts(ptr, namesize.saturating_sub(1)); // -1 for null terminator
+            let name_bytes = slice::from_raw_parts(name_ptr as *const u8, namesize.saturating_sub(1));
             let name = core::str::from_utf8(name_bytes).unwrap_or("");
+
+            crate::kdebug!(
+                "CPIO entry: name='{}', header={:#x}, name_ptr={:#x}, name_end={:#x}, filesize={:#x}",
+                name,
+                base_addr,
+                name_ptr,
+                name_end,
+                filesize
+            );
 
             // Check for trailer
             if name == CpioNewcHeader::TRAILER {
+                self.current = self.end;
                 return None;
             }
 
-            // Align to 4 bytes after name
-            ptr = ptr.add(namesize);
-            let align = (4 - (ptr as usize % 4)) % 4;
-            ptr = ptr.add(align);
+            let data_offset = align4(name_end);
 
-            // Check bounds for data
-            if ptr.add(filesize) > self.end {
+            if data_offset > end_addr {
+                return None;
+            }
+
+            let data_end = match data_offset.checked_add(filesize) {
+                Some(end) => end,
+                None => return None,
+            };
+
+            if data_end > end_addr {
                 return None;
             }
 
             // Read file data
-            let data = slice::from_raw_parts(ptr, filesize);
+            let data = slice::from_raw_parts(data_offset as *const u8, filesize);
 
-            // Align to 4 bytes after data
-            ptr = ptr.add(filesize);
-            let align = (4 - (ptr as usize % 4)) % 4;
-            ptr = ptr.add(align);
+            crate::kdebug!(
+                "CPIO entry data: name='{}', data_offset={:#x}, first_bytes={:02x} {:02x} {:02x} {:02x}",
+                name,
+                data_offset,
+                data.get(0).copied().unwrap_or(0),
+                data.get(1).copied().unwrap_or(0),
+                data.get(2).copied().unwrap_or(0),
+                data.get(3).copied().unwrap_or(0)
+            );
 
-            self.current = ptr;
+            let next_offset = align4(data_end);
+
+            self.current = next_offset as *const u8;
 
             Some(InitramfsEntry {
                 // 返回的 name/data 指向原始内存或复制缓冲区，调用者不应修改它们
-                name: core::str::from_utf8(name_bytes).unwrap_or(""),
+                name,
                 data,
                 mode: header.mode(),
             })

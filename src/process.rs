@@ -1,6 +1,5 @@
 /// Process management for user-space execution
 use crate::elf::ElfLoader;
-use crate::gdt;
 use core::arch::asm;
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -117,11 +116,9 @@ impl Process {
         );
 
         // Jump to user mode - this never returns
-        unsafe {
-            jump_to_usermode(self.entry_point, self.stack_top);
-            // If we get here, iretq failed
-            crate::kerror!("Failed to jump to user mode!");
-        }
+        jump_to_usermode(self.entry_point, self.stack_top);
+        // If we get here, iretq failed
+        crate::kerror!("Failed to jump to user mode!");
     }
 }
 
@@ -153,17 +150,20 @@ pub fn jump_to_usermode(entry: u64, stack: u64) {
 
         // Set GS base to point to GS_DATA for both kernel and user mode
         use x86_64::registers::model_specific::Msr;
-    Msr::new(0xc0000101).write(&raw const crate::initramfs::GS_DATA.0 as *const _ as u64); // GS base
-        crate::kinfo!(
-            "GS base set to GS_DATA at {:#x}",
-            &raw const crate::initramfs::GS_DATA.0 as *const _ as u64
-        );
+        let gs_base = &raw const crate::initramfs::GS_DATA.0 as *const _ as u64;
+        Msr::new(0xc0000101).write(gs_base);
+        crate::kinfo!("GS base set to GS_DATA at {:#x}", gs_base);
     }
 
     unsafe {
         let selectors = crate::gdt::get_selectors();
-        crate::kinfo!("About to push iretq parameters: ss={:#x}, rsp={:#x}, rflags=0x202, cs={:#x}, rip={:#x}", 
-            selectors.user_data_selector.0 as u64 | 3, stack, selectors.user_code_selector.0 as u64 | 3, entry);
+        crate::kinfo!(
+            "About to push iretq parameters: ss={:#x}, rsp={:#x}, rflags=0x202, cs={:#x}, rip={:#x}",
+            selectors.user_data_selector.0 as u64 | 3,
+            stack,
+            selectors.user_code_selector.0 as u64 | 3,
+            entry
+        );
         asm!(
             "push {}",      // user ss
             "push {}",      // user stack
