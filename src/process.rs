@@ -6,7 +6,6 @@ use core::sync::atomic::{AtomicU64, Ordering};
 /// Process ID type
 pub type Pid = u64;
 
-/// Process state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcessState {
     Ready,
@@ -14,7 +13,6 @@ pub enum ProcessState {
     Sleeping,
     Zombie,
 }
-
 /// Process structure
 pub struct Process {
     pub pid: Pid,
@@ -140,14 +138,6 @@ pub fn jump_to_usermode(entry: u64, stack: u64) {
             selectors.user_code_selector.0,
             selectors.user_data_selector.0
         );
-        let user_data_sel = (selectors.user_data_selector.0 as u16) | 3;
-        core::arch::asm!(
-            "mov ds, ax",
-            "mov es, ax",
-            "mov fs, ax",
-            in("ax") user_data_sel,
-            options(nostack, preserves_flags)
-        );
         crate::interrupts::set_gs_data(
             entry,
             stack,
@@ -164,28 +154,44 @@ pub fn jump_to_usermode(entry: u64, stack: u64) {
     }
 
     unsafe {
+        // Touch the top of the user stack to ensure the mapping is present and
+        // writable before we attempt to transition. If this write triggers a
+        // fault we will catch it while still on the kernel stack, which makes
+        // debugging substantially easier than chasing a double fault.
+        let stack_top_ptr = (stack - 8) as *mut u64;
+        stack_top_ptr.write_volatile(0xdeadbeefdeadbeef);
+
+        let rsp_before: u64;
+        core::arch::asm!("mov {}, rsp", out(reg) rsp_before);
+        crate::kinfo!(
+            "Kernel RSP before iret: {:#x} (mod16={})",
+            rsp_before,
+            rsp_before & 0xF
+        );
         let selectors = crate::gdt::get_selectors();
+        let user_ss = selectors.user_data_selector.0 | 3;
+        let user_cs = selectors.user_code_selector.0 | 3;
         crate::kinfo!(
             "About to push iretq parameters: ss={:#x}, rsp={:#x}, rflags=0x202, cs={:#x}, rip={:#x}",
-            selectors.user_data_selector.0 as u64 | 3,
+            user_ss,
             stack,
-            selectors.user_code_selector.0 as u64 | 3,
+            user_cs,
             entry
         );
         asm!(
-            "push {}",      // user ss
-            "push {}",      // user stack
-            "push 0x202",   // rflags (IF=1)
-            "push {}",      // user cs
-            "push {}",      // user entry point
-            "iretq",
-            in(reg) selectors.user_data_selector.0 as u64 | 3,
-            in(reg) stack,
-            in(reg) selectors.user_code_selector.0 as u64 | 3,
-            in(reg) entry,
+            "mov rcx, {entry}",
+            "mov r11, 0x202",   // RFLAGS with IF=1
+            "mov rsp, {stack}",
+            "mov ds, ax",
+            "mov es, ax",
+            "mov fs, ax",
+            "mov gs, ax",
+            "sysretq",
+            entry = in(reg) entry,
+            stack = in(reg) stack,
+            in("ax") user_ss,
+            options(noreturn)
         );
-        // This code never executes
-        crate::kinfo!("ERROR: iretq returned!");
     }
 }
 

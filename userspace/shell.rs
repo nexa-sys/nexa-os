@@ -9,20 +9,23 @@ const SYS_READ: u64 = 0;
 const SYS_EXIT: u64 = 60;
 
 fn syscall3(n: u64, a1: u64, a2: u64, a3: u64) -> u64 {
+    // Route all syscalls via int 0x81 so the CPU saves/restores SS:RSP for Ring3 safely.
+    // Kernel handler expects: rax=nr, rdi=arg1, rsi=arg2, rdx=arg3 (SysV order).
     let ret: u64;
     unsafe {
-        asm!("syscall", in("rax") n, in("rdi") a1, in("rsi") a2, in("rdx") a3, lateout("rax") ret);
+        asm!(
+            "int 0x81",
+            in("rax") n,
+            in("rdi") a1,
+            in("rsi") a2,
+            in("rdx") a3,
+            lateout("rax") ret
+        );
     }
     ret
 }
 
-fn syscall1(n: u64, a1: u64) -> u64 {
-    let ret: u64;
-    unsafe {
-        asm!("int 0x81", in("rax") n, in("rdi") a1, lateout("rax") ret);
-    }
-    ret
-}
+fn syscall1(n: u64, a1: u64) -> u64 { syscall3(n, a1, 0, 0) }
 
 fn write(fd: u64, buf: *const u8, count: usize) {
     syscall3(SYS_WRITE, fd, buf as u64, count as u64);

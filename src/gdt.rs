@@ -56,10 +56,22 @@ unsafe fn aligned_stack_top(stack: *const AlignedStack) -> VirtAddr {
 
 #[inline(always)]
 unsafe fn aligned_ist_stack_top(stack: *const AlignedStack) -> VirtAddr {
-    // Empirically, entering the double fault handler via IST pushes five
-    // 64-bit values before our Rust prologue executes. Bias the aligned top by
-    // 8 bytes so that, after those implicit pushes and the compiler-generated
-    // register saves, all SIMD spills remain 16-byte aligned.
+    // Provide a 16-byte aligned IST pointer so that, after the CPU pushes the
+    // interrupt frame (which toggles the stack alignment) and the handler
+    // subtracts its stack frame size, the final spill slots targeted by the
+    // compiler remain 16-byte aligned. Returning the aligned top directly keeps
+    // the resulting stack layout compatible with the `movaps` instructions that
+    // the compiler emits when saving SIMD registers in the double fault
+    // handler's prologue.
+    aligned_stack_top(stack)
+}
+
+#[inline(always)]
+unsafe fn aligned_privilege_stack_top(stack: *const AlignedStack) -> VirtAddr {
+    // On privilege transitions the CPU pushes SS, RSP, RFLAGS, CS and RIP
+    // (5×8 bytes). Bias the initial stack pointer by 8 bytes so that, after
+    // those pushes, the resulting RSP is still 16-byte aligned when our
+    // interrupt handlers start executing.
     let top = aligned_stack_top(stack).as_u64();
     VirtAddr::new(top - 8)
 }
@@ -87,7 +99,7 @@ pub fn init() {
         );
 
     // Setup privilege stack for syscall (RSP0 for Ring 0)
-    TSS.privilege_stack_table[0] = aligned_stack_top(ptr::addr_of!(KERNEL_STACK));
+    TSS.privilege_stack_table[0] = aligned_privilege_stack_top(ptr::addr_of!(KERNEL_STACK));
         crate::kinfo!(
             "Kernel privilege stack (RSP0) set to {:#x}",
             TSS.privilege_stack_table[0].as_u64()
@@ -157,5 +169,5 @@ pub unsafe fn get_privilege_stack(index: usize) -> u64 {
 }
 
 pub fn get_kernel_stack_top() -> u64 {
-    unsafe { aligned_stack_top(ptr::addr_of!(KERNEL_STACK)).as_u64() }
+    unsafe { aligned_privilege_stack_top(ptr::addr_of!(KERNEL_STACK)).as_u64() }
 }

@@ -70,7 +70,7 @@ kfatal!("Critical error, halting system");
 ### Memory Management
 - Physical addresses for kernel, virtual for userspace
 - User space layout constants (`src/process.rs`):
-  - `USER_BASE: u64 = 0x400000` (code segment start)
+  - `USER_BASE: u64 = 0x200000` (code segment start)
   - `STACK_BASE: u64 = 0x600000` (stack segment start)
   - `STACK_SIZE: u64 = 0x100000` (1MB stack)
   - `HEAP_SIZE: u64 = 0x100000` (1MB heap after code)
@@ -116,7 +116,7 @@ fn syscall3(n: u64, a1: u64, a2: u64, a3: u64) -> u64 {
 
 ### ELF Loading
 - Custom ELF parser in `src/elf.rs`
-- Loads to fixed physical addresses (0x400000+)
+- Loads to fixed physical addresses (0x200000+)
 - Entry point calculation: `header.entry_point()`
 - No dynamic linking support
 - Process creation: `Process::from_elf(data)` returns executable process
@@ -233,7 +233,7 @@ cargo build --release && ./scripts/build-userspace.sh && ./scripts/build-iso.sh
 ### Kernel ↔ Userspace
 - Syscalls via `syscall` instruction (x86_64 fast syscall)
 - GS register points to GS_DATA array for kernel data access
-- Fixed memory layout contracts (user code at 0x400000+)
+- Fixed memory layout contracts (user code at 0x200000+)
 
 ### Bootloader Integration
 - Multiboot2 tags for memory map, command line, modules

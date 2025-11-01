@@ -42,6 +42,6 @@ menuentry "NexaOS" {
 }
 CFG
 
-grub-mkrescue -o "$DIST_DIR/nexaos.iso" "$ISO_DIR"
+grub-mkrescue -o "$DIST_DIR/nexaos-release.iso" "$ISO_DIR"
 
-echo "ISO image created at $DIST_DIR/nexaos.iso"
+echo "ISO image created at $DIST_DIR/nexaos-release.iso"

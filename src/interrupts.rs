@@ -25,90 +25,44 @@ unsafe fn write_hex_u64(port: &mut x86_64::instructions::port::Port<u8>, value: 
 global_asm!(
     ".global syscall_interrupt_handler",
     "syscall_interrupt_handler:",
-    // Save all registers
+    // On int gate CPU pushed: RFLAGS, CS, RIP, (SS, RSP on CPL change)
+    // Save registers we might clobber. Preserve callee-saved too (rbx, rbp, r12-r15)
     "push rax",
-    "push rbx",
     "push rcx",
     "push rdx",
     "push rsi",
     "push rdi",
+    "push rbx",
     "push rbp",
-    "push r8",
-    "push r9",
-    "push r10",
-    "push r11",
     "push r12",
     "push r13",
     "push r14",
     "push r15",
-    // Debug: write syscall number to VGA
-    "mov byte ptr [0xB8020], al", // syscall number low byte
-    "mov byte ptr [0xB8021], 0x0F",
-    // Check if this is SYS_WRITE (1)
-    "cmp rax, 1",
-    "jne .not_write",
-    // Handle SYS_WRITE: write to serial port
-    // rsi = count, rdx = buffer
-    ".write_loop:",
-    "test rsi, rsi",
-    "jz .write_done",
-    "mov al, [rdx]",
-    "mov dx, 0x3F8",
-    "out dx, al",
-    "inc rdx",
-    "dec rsi",
-    "jmp .write_loop",
-    ".write_done:",
-    "mov byte ptr [0xB8012], 'W'",
-    "mov byte ptr [0xB8013], 0x0F",
-    "mov rax, 1", // Return count (simplified)
-    "jmp .syscall_done",
-    ".not_write:",
-    "mov byte ptr [0xB8014], 'E'",
-    "mov byte ptr [0xB8015], 0x0F",
-    "mov rax, 0", // Default return
-    // Debug: write 'N' to VGA for not write
-    "mov byte ptr [0xB8010], 'N'",
-    "mov byte ptr [0xB8011], 0x0F",
-    ".syscall_done:",
-    // Debug: write 'S' to VGA to indicate syscall handled
-    "mov byte ptr [0xB8000], 'S'",
-    "mov byte ptr [0xB8001], 0x0F",
-    // Restore registers
+    // Call syscall_dispatch(nr=rax, arg1=rdi, arg2=rsi, arg3=rdx)
+    "mov rcx, rdx", // rcx = arg3
+    "mov rdx, rsi", // rdx = arg2
+    "mov rsi, rdi", // rsi = arg1
+    "mov rdi, rax", // rdi = nr
+    "call syscall_dispatch",
+    // Return value already in rax
+    // Restore registers (reverse order)
     "pop r15",
     "pop r14",
     "pop r13",
     "pop r12",
-    "pop r11",
-    "pop r10",
-    "pop r9",
-    "pop r8",
     "pop rbp",
+    "pop rbx",
     "pop rdi",
     "pop rsi",
     "pop rdx",
     "pop rcx",
-    "pop rbx",
     "pop rax",
-    "iretq",
-
-    ".global double_fault_handler_stub",
-    "double_fault_handler_stub:",
-    "cli",
-    "mov dx, 0x3F8",
-    "mov al, 'D'",
-    "out dx, al",
-    "mov al, 'F'",
-    "out dx, al",
-    "1:",
-    "hlt",
-    "jmp 1b"
+    "iretq"
 );
 
 extern "C" {
     fn syscall_interrupt_handler();
     fn syscall_handler();
-    fn double_fault_handler_stub();
 }
 
 /// Exception handlers
@@ -142,59 +96,13 @@ extern "x86-interrupt" fn page_fault_handler(
     stack_frame: InterruptStackFrame,
     _error_code: PageFaultErrorCode,
 ) {
-    // Very low-level serial dump: write PF marker, CR2 (faulting address), and RIP
     use x86_64::registers::control::Cr2;
-    let cr2 = match Cr2::read() {
-        Ok(addr) => addr,
-        Err(_) => x86_64::VirtAddr::new(0),
-    };
-
-    unsafe {
-        // no direct port writes here anymore; use kernel logging macros
-        let mut port = Port::new(0x3F8u16);
-        // Write marker
-        port.write(b'P');
-        port.write(b'F');
-        port.write(b' ');
-
-        // Helper: write 64-bit value as 16 hex digits via closure that performs the unsafe write
-        const HEX: &[u8; 16] = b"0123456789ABCDEF";
-        let mut v = cr2.as_u64();
-        let mut buf = [b'0'; 16];
-        for i in 0..16 {
-            let shift = (15 - i) * 4;
-            let nibble = ((v >> shift) & 0xF) as usize;
-            buf[i] = HEX[nibble];
-        }
-        for &b in &buf {
-            port.write(b);
-        }
-
-        port.write(b' ');
-        // Write RIP
-        let rip = stack_frame.instruction_pointer.as_u64();
-        v = rip;
-        for i in 0..16 {
-            let shift = (15 - i) * 4;
-            let nibble = ((v >> shift) & 0xF) as usize;
-            buf[i] = HEX[nibble];
-        }
-        for &b in &buf {
-            port.write(b);
-        }
-        // Terminate low-level dump with newline to keep the raw serial dump atomic
-        port.write(b'\n');
-    }
-
-    // Emit a very small, deterministic marker via port to make automated
-    // parsing simpler, then halt. We avoid higher-level logging to prevent
-    // interleaving with other serial writes coming from assembly startup code.
-    unsafe {
-        use x86_64::instructions::port::Port;
-        let mut port = Port::new(0x3F8u16);
-        port.write(b'!');
-        port.write(b'\n');
-    }
+    let cr2 = Cr2::read().unwrap_or_else(|_| x86_64::VirtAddr::new(0));
+    crate::kerror!(
+        "EXCEPTION: PAGE FAULT at {:#x}, RIP={:#x}",
+        cr2.as_u64(),
+        stack_frame.instruction_pointer.as_u64()
+    );
     loop {
         x86_64::instructions::hlt();
     }
@@ -222,6 +130,29 @@ extern "x86-interrupt" fn general_protection_fault_handler(
     }
 
     interrupts::disable();
+    loop {
+        x86_64::instructions::hlt();
+    }
+}
+
+extern "x86-interrupt" fn double_fault_handler(
+    stack_frame: InterruptStackFrame,
+    error_code: u64,
+) -> ! {
+    crate::serial::_print(format_args!(
+        "\nDOUBLE FAULT: code={:#x} rip={:#x} rsp={:#x} ss={:#x}\n",
+        error_code,
+        stack_frame.instruction_pointer.as_u64(),
+        stack_frame.stack_pointer.as_u64(),
+        stack_frame.stack_segment.0
+    ));
+    crate::kerror!(
+        "DOUBLE FAULT: code={:#x} rip={:#x} rsp={:#x} ss={:#x}",
+        error_code,
+        stack_frame.instruction_pointer.as_u64(),
+        stack_frame.stack_pointer.as_u64(),
+        stack_frame.stack_segment.0
+    );
     loop {
         x86_64::instructions::hlt();
     }
@@ -308,9 +239,7 @@ pub fn init_interrupts() {
             // switches to a known-good stack when a double fault occurs. This
             // reduces the chance of a triple fault caused by stack corruption.
             idt.double_fault
-                .set_handler_addr(x86_64::VirtAddr::new_truncate(
-                    double_fault_handler_stub as u64,
-                ))
+                .set_handler_fn(double_fault_handler)
                 .set_stack_index(crate::gdt::DOUBLE_FAULT_IST_INDEX as u16);
             idt.segment_not_present
                 .set_handler_fn(segment_not_present_handler);
@@ -323,44 +252,44 @@ pub fn init_interrupts() {
             idt[PIC_1_OFFSET].set_handler_fn(timer_interrupt_handler);
             idt[PIC_1_OFFSET + 1].set_handler_fn(keyboard_interrupt_handler);
 
-            // Set up syscall interrupt handler at 0x81
-            idt[0x81].set_handler_addr(x86_64::VirtAddr::new_truncate(
-                syscall_interrupt_handler as u64,
-            ));
+            // Set up syscall interrupt handler at 0x81 (callable from Ring 3)
+            use x86_64::PrivilegeLevel;
+            idt[0x81]
+                .set_handler_addr(x86_64::VirtAddr::new_truncate(syscall_interrupt_handler as u64))
+                .set_privilege_level(PrivilegeLevel::Ring3);
 
-            // Set up ring3 switch handler at 0x80
-            idt[0x80].set_handler_addr(x86_64::VirtAddr::new_truncate(ring3_switch_handler as u64));
+            // Set up ring3 switch handler at 0x80 (also callable from Ring 3)
+            idt[0x80]
+                .set_handler_addr(x86_64::VirtAddr::new_truncate(ring3_switch_handler as u64))
+                .set_privilege_level(PrivilegeLevel::Ring3);
 
             idt
         });
-    }
+    }   
 
     crate::kinfo!("init_interrupts: IDT initialized");
 
-    // Skip PIC initialization and masking for now to test if that's causing the hang
-    crate::kinfo!("init_interrupts: skipping PIC initialization and masking");
+    // Mask all interrupts BEFORE initializing PICs to prevent spurious interrupts during setup
+    crate::kinfo!("init_interrupts: about to mask interrupts");
+    unsafe {
+        crate::kinfo!("init_interrupts: masking master PIC (0x21)");
+        let mut port = Port::<u8>::new(0x21); // Master PIC IMR
+        port.write(0xFF);
+        crate::kinfo!("init_interrupts: master PIC masked");
 
-    // // Mask all interrupts BEFORE initializing PICs to prevent spurious interrupts during setup
-    // crate::kinfo!("init_interrupts: about to mask interrupts");
-    // unsafe {
-    //     crate::kinfo!("init_interrupts: masking master PIC (0x21)");
-    //     let mut port = Port::<u8>::new(0x21); // Master PIC IMR
-    //     port.write(0xFF);
-    //     crate::kinfo!("init_interrupts: master PIC masked");
+        crate::kinfo!("init_interrupts: masking slave PIC (0xA1)");
+        let mut port = Port::<u8>::new(0xA1); // Slave PIC IMR
+        port.write(0xFF);
+        crate::kinfo!("init_interrupts: slave PIC masked");
+    }
+    crate::kinfo!("init_interrupts: interrupts masked");
 
-    //     crate::kinfo!("init_interrupts: masking slave PIC (0xA1)");
-    //     let mut port = Port::<u8>::new(0xA1); // Slave PIC IMR
-    //     port.write(0xFF);
-    //     crate::kinfo!("init_interrupts: slave PIC masked");
-    // }
-    // crate::kinfo!("init_interrupts: interrupts masked");
-
-    // // Initialize PICs AFTER masking interrupts
-    // crate::kinfo!("init_interrupts: about to initialize PICs");
-    // unsafe {
-    //     PICS.lock().initialize();
-    // }
-    // crate::kinfo!("init_interrupts: PICs initialized");
+    // Initialize PICs AFTER masking interrupts
+    crate::kinfo!("init_interrupts: about to initialize PICs");
+    unsafe {
+        PICS.lock().initialize();
+    }
+    crate::kinfo!("init_interrupts: PICs initialized");
 
     crate::kinfo!("init_interrupts: about to call setup_syscall");
     setup_syscall();

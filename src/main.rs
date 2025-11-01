@@ -13,12 +13,6 @@ pub extern "C" fn kmain(multiboot_info_address: u64, multiboot_magic: u32) -> ! 
     // Touch the multiboot header to prevent it from being optimized away
     unsafe {
         core::ptr::read_volatile(&multiboot_header_start as *const u8);
-        let port = 0x3F8 as *mut u8;
-        port.write_volatile(b'R');
-        port.write_volatile(b'u');
-        port.write_volatile(b's');
-        port.write_volatile(b't');
-        port.write_volatile(b'\n');
     }
 
     nexa_os::kernel_main(multiboot_info_address, multiboot_magic)

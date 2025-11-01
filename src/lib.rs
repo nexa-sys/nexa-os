@@ -39,7 +39,7 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
     }
 
     vga_buffer::init();
-
+    
     kinfo!("Kernel log level set to {}", logger::max_level().as_str());
 
     kinfo!("NexaOS kernel bootstrap start");
