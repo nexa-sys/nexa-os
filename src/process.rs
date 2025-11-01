@@ -86,9 +86,13 @@ impl Process {
         let pid = NEXT_PID.fetch_add(1, Ordering::SeqCst);
 
         // Initialize user stack
-        let stack_base = STACK_BASE; // Virtual stack base (identity mapped)
-        let stack_size = STACK_SIZE;
-        let stack_top = stack_base + stack_size;
+    let stack_base = STACK_BASE; // Virtual stack base (identity mapped)
+    let stack_size = STACK_SIZE;
+    // SysV ABI expects 16-byte alignment before a CALL instruction pushes the
+    // return RIP. Because we jump directly into user mode with IRET (no call),
+    // we need to enter with RSP % 16 == 8 so that typical function prologues
+    // realign the stack correctly before using SSE instructions (e.g. movaps).
+    let stack_top = stack_base + stack_size - 8;
 
         let process = Process {
             pid,
