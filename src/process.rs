@@ -140,6 +140,14 @@ pub fn jump_to_usermode(entry: u64, stack: u64) {
             selectors.user_code_selector.0,
             selectors.user_data_selector.0
         );
+        let user_data_sel = (selectors.user_data_selector.0 as u16) | 3;
+        core::arch::asm!(
+            "mov ds, ax",
+            "mov es, ax",
+            "mov fs, ax",
+            in("ax") user_data_sel,
+            options(nostack, preserves_flags)
+        );
         crate::interrupts::set_gs_data(
             entry,
             stack,

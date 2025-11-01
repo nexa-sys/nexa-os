@@ -47,11 +47,21 @@ unsafe fn stack_top(stack: *const AlignedStack) -> VirtAddr {
 
 #[inline(always)]
 unsafe fn aligned_stack_top(stack: *const AlignedStack) -> VirtAddr {
-    // Ensure the resulting stack is 16-byte aligned after the CPU pushes
-    // the interrupt frame (which is 24 bytes without an error code and
-    // 32 bytes with an error code when there is no privilege change).
     let raw_top = stack_top(stack).as_u64();
-    VirtAddr::new(raw_top.saturating_sub(8))
+    // Align down to the nearest 16-byte boundary to satisfy the
+    // x86-interrupt calling convention's requirement that the stack is
+    // 16-byte aligned on entry.
+    VirtAddr::new(raw_top & !0xFu64)
+}
+
+#[inline(always)]
+unsafe fn aligned_ist_stack_top(stack: *const AlignedStack) -> VirtAddr {
+    // Empirically, entering the double fault handler via IST pushes five
+    // 64-bit values before our Rust prologue executes. Bias the aligned top by
+    // 8 bytes so that, after those implicit pushes and the compiler-generated
+    // register saves, all SIMD spills remain 16-byte aligned.
+    let top = aligned_stack_top(stack).as_u64();
+    VirtAddr::new(top - 8)
 }
 
 /// Initialize GDT with kernel and user segments
@@ -60,12 +70,28 @@ pub fn init() {
     use x86_64::instructions::tables::load_tss;
 
     unsafe {
-        // Setup TSS
-        TSS.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] =
-            aligned_stack_top(ptr::addr_of!(DOUBLE_FAULT_STACK));
+        let df_base = ptr::addr_of!(DOUBLE_FAULT_STACK.bytes).cast::<u8>() as u64;
+        let df_top_aligned = aligned_ist_stack_top(ptr::addr_of!(DOUBLE_FAULT_STACK));
+        crate::kinfo!(
+            "Double fault stack base={:#x}, aligned_top={:#x}",
+            df_base,
+            df_top_aligned.as_u64()
+        );
 
-        // Setup privilege stack for syscall (RSP0 for Ring 0)
-        TSS.privilege_stack_table[0] = aligned_stack_top(ptr::addr_of!(KERNEL_STACK));
+        // Setup TSS
+        TSS.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = df_top_aligned;
+
+        crate::kinfo!(
+            "Double fault IST pointer set to {:#x}",
+            TSS.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize].as_u64()
+        );
+
+    // Setup privilege stack for syscall (RSP0 for Ring 0)
+    TSS.privilege_stack_table[0] = aligned_stack_top(ptr::addr_of!(KERNEL_STACK));
+        crate::kinfo!(
+            "Kernel privilege stack (RSP0) set to {:#x}",
+            TSS.privilege_stack_table[0].as_u64()
+        );
 
         // Create GDT
         let mut gdt = GlobalDescriptorTable::new();
@@ -92,7 +118,7 @@ pub fn init() {
         });
 
         // Set kernel stack for Ring 0
-        TSS.privilege_stack_table[0] = x86_64::VirtAddr::new(get_kernel_stack_top());
+    TSS.privilege_stack_table[0] = x86_64::VirtAddr::new(get_kernel_stack_top());
 
         // crate::kinfo!("GDT selectors set: kernel_code={:#x}, kernel_data={:#x}, user_code={:#x}, user_data={:#x}, tss={:#x}",
         //     kernel_code.0, kernel_data.0, user_code_sel.0, user_data_sel.0, tss.0);

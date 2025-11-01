@@ -13,6 +13,15 @@ pub const PIC_2_OFFSET: u8 = PIC_1_OFFSET + 8;
 pub static PICS: spin::Mutex<ChainedPics> =
     spin::Mutex::new(unsafe { ChainedPics::new(PIC_1_OFFSET, PIC_2_OFFSET) });
 
+unsafe fn write_hex_u64(port: &mut x86_64::instructions::port::Port<u8>, value: u64) {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    for i in (0..16).rev() {
+        let shift = i * 4;
+        let nibble = ((value >> shift) & 0xF) as usize;
+        port.write(HEX[nibble]);
+    }
+}
+
 global_asm!(
     ".global syscall_interrupt_handler",
     "syscall_interrupt_handler:",
@@ -81,12 +90,25 @@ global_asm!(
     "pop rcx",
     "pop rbx",
     "pop rax",
-    "iretq"
+    "iretq",
+
+    ".global double_fault_handler_stub",
+    "double_fault_handler_stub:",
+    "cli",
+    "mov dx, 0x3F8",
+    "mov al, 'D'",
+    "out dx, al",
+    "mov al, 'F'",
+    "out dx, al",
+    "1:",
+    "hlt",
+    "jmp 1b"
 );
 
 extern "C" {
     fn syscall_interrupt_handler();
     fn syscall_handler();
+    fn double_fault_handler_stub();
 }
 
 /// Exception handlers
@@ -182,21 +204,24 @@ extern "x86-interrupt" fn general_protection_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: u64,
 ) {
-    // Low-level marker for GPF
+    use x86_64::instructions::interrupts;
+    use x86_64::instructions::port::Port;
+
     unsafe {
-        let mut port = x86_64::instructions::port::Port::new(0x3F8u16);
+        let mut port = Port::<u8>::new(0x3F8);
         port.write(b'G');
+        port.write(b'P');
+        port.write(b' ');
+
+        write_hex_u64(&mut port, error_code);
+        port.write(b' ');
+        write_hex_u64(&mut port, stack_frame.instruction_pointer.as_u64());
+        port.write(b' ');
+        write_hex_u64(&mut port, stack_frame.code_segment.0 as u64);
+        port.write(b'\n');
     }
-    crate::kerror!(
-        "EXCEPTION: GENERAL PROTECTION FAULT (error: {}) from Ring {}!",
-        error_code,
-        (stack_frame.code_segment.0 & 3)
-    );
-    crate::kdebug!(
-        "RIP: {:#x}, CS: {:#x}",
-        stack_frame.instruction_pointer,
-        stack_frame.code_segment.0
-    );
+
+    interrupts::disable();
     loop {
         x86_64::instructions::hlt();
     }
@@ -209,29 +234,6 @@ extern "x86-interrupt" fn divide_error_handler(stack_frame: InterruptStackFrame)
         port.write(b'D');
     }
     crate::kerror!("EXCEPTION: DIVIDE ERROR\n{:#?}", stack_frame);
-    loop {}
-}
-
-extern "x86-interrupt" fn double_fault_handler(
-    stack_frame: InterruptStackFrame,
-    error_code: u64,
-) -> ! {
-    // Try to write a minimal, low-dependency marker to the serial port
-    // so we can observe double faults even if higher-level logging
-    // infrastructure is corrupted.
-    use x86_64::instructions::port::Port;
-    unsafe {
-        let mut port = Port::new(0x3F8u16);
-        // Write 'D' 'F' marker
-        port.write(b'D');
-        port.write(b'F');
-    }
-
-    crate::kerror!(
-        "EXCEPTION: DOUBLE FAULT (error: {})\n{:#?}",
-        error_code,
-        stack_frame
-    );
     loop {}
 }
 
@@ -306,7 +308,9 @@ pub fn init_interrupts() {
             // switches to a known-good stack when a double fault occurs. This
             // reduces the chance of a triple fault caused by stack corruption.
             idt.double_fault
-                .set_handler_fn(double_fault_handler)
+                .set_handler_addr(x86_64::VirtAddr::new_truncate(
+                    double_fault_handler_stub as u64,
+                ))
                 .set_stack_index(crate::gdt::DOUBLE_FAULT_IST_INDEX as u16);
             idt.segment_not_present
                 .set_handler_fn(segment_not_present_handler);
