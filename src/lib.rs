@@ -226,72 +226,93 @@ macro_rules! klog {
 macro_rules! kpanic {
     ($($arg:tt)*) => {{
         use core::arch::asm;
-        // 自动捕获调用位置（仅行列信息，避免对 file() 的潜在未映射访问）
         let loc = core::panic::Location::caller();
+        let message = format_args!($($arg)*);
+
+        let cpu_id: u32 = unsafe {
+            #[cfg(target_arch = "x86_64")]
+            {
+                use core::arch::x86_64::__cpuid;
+                (__cpuid(1).ebx >> 24) as u32
+            }
+            #[cfg(not(target_arch = "x86_64"))]
+            {
+                0
+            }
+        };
+
         $crate::klog!(
             $crate::logger::LogLevel::PANIC,
-            "PANIC at line {} column {} (file path unavailable): ",
-            loc.line(),
-            loc.column(),
+            "------------[ cut here ]------------"
         );
 
-        $crate::klog!($crate::logger::LogLevel::PANIC, $($arg)*);
+        $crate::logger::log(
+            $crate::logger::LogLevel::PANIC,
+            format_args!("Kernel panic - not syncing: {}", message)
+        );
 
-        // --- CR2 寄存器快照 --- 
+        $crate::klog!(
+            $crate::logger::LogLevel::PANIC,
+            "CPU: {cpu} PID: 0 Comm: kernel Tainted: N/A",
+            cpu = cpu_id
+        );
+
+        $crate::klog!(
+            $crate::logger::LogLevel::PANIC,
+            "Hardware name: NexaOS experimental"
+        );
+
+        $crate::klog!(
+            $crate::logger::LogLevel::PANIC,
+            "Call Trace: <panic> at {file}:{line}:{column}",
+            file = loc.file(),
+            line = loc.line(),
+            column = loc.column(),
+        );
+
         unsafe {
+            let cr0: u64;
             let cr2: u64;
+            let cr3: u64;
+            let cr4: u64;
+            asm!("mov {0}, cr0", out(reg) cr0);
             asm!("mov {0}, cr2", out(reg) cr2);
-            $crate::klog!($crate::logger::LogLevel::PANIC, "  CR2 (fault addr): {:#018x}", cr2);
-        }
-
-        // --- 栈信息快照（避免解引用潜在无效指针） ---
-        {
-            let (mut rbp, mut rsp): (u64, u64);
-            unsafe {
-                asm!("mov {}, rbp", out(reg) rbp);
-                asm!("mov {}, rsp", out(reg) rsp);
-            }
+            asm!("mov {0}, cr3", out(reg) cr3);
+            asm!("mov {0}, cr4", out(reg) cr4);
             $crate::klog!(
                 $crate::logger::LogLevel::PANIC,
-                "Stack registers: "
-            );
-            $crate::klog!(
-                $crate::logger::LogLevel::PANIC,
-                "  rbp={:#018x}, rsp={:#018x}",
-                rbp,
-                rsp,
+                "Control: CR0={cr0:#018x} CR2={cr2:#018x} CR3={cr3:#018x} CR4={cr4:#018x}",
+                cr0 = cr0,
+                cr2 = cr2,
+                cr3 = cr3,
+                cr4 = cr4,
             );
         }
 
-        // --- 关键寄存器快照 ---
         {
-            use core::arch::asm;
-            let rip: u64;
-            let rsp: u64;
-            let rbp: u64;
-            // inline assembly is unsafe; perform the asm in an unsafe block.
-            // Use LEA with RIP-relative addressing to obtain the current RIP,
-            // and read RSP/RBP normally.
+            let (rip, rsp, rbp, rflags): (u64, u64, u64, u64);
             unsafe {
-                asm!(
-                    "lea {0}, [rip + 0]",
-                    "mov {1}, rsp",
-                    "mov {2}, rbp",
-                    out(reg) rip,
-                    out(reg) rsp,
-                    out(reg) rbp,
-                );
+                asm!("lea {0}, [rip + 0]", out(reg) rip);
+                asm!("mov {0}, rsp", out(reg) rsp);
+                asm!("mov {0}, rbp", out(reg) rbp);
+                asm!("pushf; pop {0}", out(reg) rflags);
             }
-            let rflags: u64;
-            unsafe { asm!("pushf; pop {}", out(reg) rflags); }
             let interrupt_enabled = (rflags & (1 << 9)) != 0;
-            $crate::klog!($crate::logger::LogLevel::PANIC, "  RFLAGS: {:#018x} (IF={})", rflags, interrupt_enabled);
-            $crate::klog!($crate::logger::LogLevel::PANIC, "Registers at panic:");
-            $crate::klog!($crate::logger::LogLevel::PANIC, "  RIP: {:#018x}", rip);
-            $crate::klog!($crate::logger::LogLevel::PANIC, "  RSP: {:#018x}", rsp);
-            $crate::klog!($crate::logger::LogLevel::PANIC, "  RBP: {:#018x}", rbp);
-
+            $crate::klog!(
+                $crate::logger::LogLevel::PANIC,
+                "RIP: {rip:#018x} RSP: {rsp:#018x} RBP: {rbp:#018x} RFLAGS: {rflags:#018x} (IF={})",
+                interrupt_enabled,
+                rip = rip,
+                rsp = rsp,
+                rbp = rbp,
+                rflags = rflags,
+            );
         }
+
+        $crate::klog!(
+            $crate::logger::LogLevel::PANIC,
+            "------------[ end Kernel panic ]------------"
+        );
         $crate::arch::halt_loop()
     }};
 }
