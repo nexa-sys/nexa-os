@@ -359,14 +359,41 @@ macro_rules! try_init_exec {
                 init_data.len()
             );
 
+            kinfo!(
+                "Init file '{}' data ptr={:#x}",
+                path,
+                init_data.as_ptr() as usize
+            );
+            unsafe {
+                let ptr = init_data.as_ptr();
+                let before = if ptr as usize > 0 {
+                    *ptr.offset(-1)
+                } else {
+                    0
+                };
+                if let Some(ramfs) = crate::initramfs::get() {
+                    let base = ramfs.base_ptr() as usize;
+                    let offset = ptr as usize - base;
+                    kinfo!("Initramfs base={:#x}, data offset={:#x}", base, offset);
+                }
+                kinfo!(
+                    "Byte before data: {:02x}",
+                    before
+                );
+            }
+
             // Debug: Check first few bytes of ELF
             if init_data.len() >= 4 {
                 kinfo!(
-                    "ELF header: {:02x} {:02x} {:02x} {:02x}",
+                    "ELF header bytes 0-7: {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
                     init_data[0],
                     init_data[1],
                     init_data[2],
-                    init_data[3]
+                    init_data[3],
+                    init_data.get(4).copied().unwrap_or(0),
+                    init_data.get(5).copied().unwrap_or(0),
+                    init_data.get(6).copied().unwrap_or(0),
+                    init_data.get(7).copied().unwrap_or(0),
                 );
             }
 

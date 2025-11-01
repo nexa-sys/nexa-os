@@ -59,8 +59,8 @@ impl Process {
         crate::kinfo!("ElfLoader created successfully");
 
         // Allocate user space memory
-        const USER_BASE: u64 = 0x400000; // Physical base for user code
-        const STACK_BASE: u64 = 0x600000; // Physical base for user stack
+        const USER_BASE: u64 = 0x200000; // Physical base aligned with user virtual addresses
+        const STACK_BASE: u64 = 0x600000; // Virtual stack base (identity-mapped)
         const STACK_SIZE: u64 = 0x100000; // 1MB stack
         const HEAP_SIZE: u64 = 0x100000; // 1MB heap
 
@@ -88,7 +88,7 @@ impl Process {
         let pid = NEXT_PID.fetch_add(1, Ordering::SeqCst);
 
         // Initialize user stack
-        let stack_base = STACK_BASE; // Virtual stack base will be mapped
+        let stack_base = STACK_BASE; // Virtual stack base (identity mapped)
         let stack_size = STACK_SIZE;
         let stack_top = stack_base + stack_size;
 

@@ -290,7 +290,7 @@ pub fn init_interrupts() {
     crate::kdebug!("IDT storage address: {:#x}", idt_ptr);
     let gs_ptr = unsafe { &raw const crate::initramfs::GS_DATA.0 as *const _ } as usize;
     crate::kdebug!("GS_DATA address: {:#x}", gs_ptr);
-    
+
     // Initialize IDT at runtime instead of using lazy_static
     unsafe {
         IDT = Some({
@@ -299,17 +299,21 @@ pub fn init_interrupts() {
             // Set up interrupt handlers
             idt.breakpoint.set_handler_fn(breakpoint_handler);
             idt.page_fault.set_handler_fn(page_fault_handler);
-            idt.general_protection_fault.set_handler_fn(general_protection_fault_handler);
+            idt.general_protection_fault
+                .set_handler_fn(general_protection_fault_handler);
             idt.divide_error.set_handler_fn(divide_error_handler);
             // Use a dedicated IST entry for double fault to ensure the CPU
             // switches to a known-good stack when a double fault occurs. This
             // reduces the chance of a triple fault caused by stack corruption.
-            idt.double_fault.set_handler_fn(double_fault_handler)
+            idt.double_fault
+                .set_handler_fn(double_fault_handler)
                 .set_stack_index(crate::gdt::DOUBLE_FAULT_IST_INDEX as u16);
-            idt.segment_not_present.set_handler_fn(segment_not_present_handler);
+            idt.segment_not_present
+                .set_handler_fn(segment_not_present_handler);
             idt.invalid_opcode.set_handler_fn(invalid_opcode_handler);
             idt.invalid_tss.set_handler_fn(segment_not_present_handler); // Reuse handler
-            idt.stack_segment_fault.set_handler_fn(segment_not_present_handler); // Reuse handler
+            idt.stack_segment_fault
+                .set_handler_fn(segment_not_present_handler); // Reuse handler
 
             // Set up hardware interrupts
             idt[PIC_1_OFFSET].set_handler_fn(timer_interrupt_handler);
@@ -321,14 +325,12 @@ pub fn init_interrupts() {
             ));
 
             // Set up ring3 switch handler at 0x80
-            idt[0x80].set_handler_addr(x86_64::VirtAddr::new_truncate(
-                ring3_switch_handler as u64,
-            ));
+            idt[0x80].set_handler_addr(x86_64::VirtAddr::new_truncate(ring3_switch_handler as u64));
 
             idt
         });
     }
-    
+
     crate::kinfo!("init_interrupts: IDT initialized");
 
     // Skip PIC initialization and masking for now to test if that's causing the hang
@@ -341,7 +343,7 @@ pub fn init_interrupts() {
     //     let mut port = Port::<u8>::new(0x21); // Master PIC IMR
     //     port.write(0xFF);
     //     crate::kinfo!("init_interrupts: master PIC masked");
-        
+
     //     crate::kinfo!("init_interrupts: masking slave PIC (0xA1)");
     //     let mut port = Port::<u8>::new(0xA1); // Slave PIC IMR
     //     port.write(0xFF);
@@ -574,7 +576,7 @@ pub unsafe fn set_gs_data(entry: u64, stack: u64, user_cs: u64, user_ss: u64, us
     // Get GS_DATA address without creating a reference that might corrupt nearby statics
     let gs_data_addr = &raw const crate::initramfs::GS_DATA.0 as *const _ as u64;
     let gs_data_ptr = gs_data_addr as *mut u64;
-    
+
     unsafe {
         gs_data_ptr.add(0).write(stack); // user RSP at gs:[0]
         gs_data_ptr.add(1).write(kernel_stack); // kernel RSP at gs:[8]
@@ -595,7 +597,7 @@ pub fn setup_syscall() {
     unsafe {
         // Get GS_DATA address without creating a reference that might corrupt nearby statics
         let gs_data_addr = &raw const crate::initramfs::GS_DATA.0 as *const _ as u64;
-        
+
         // Initialize GS data for syscall - write directly to the address
         let gs_data_ptr = gs_data_addr as *mut u64;
         gs_data_ptr.add(1).write(crate::gdt::get_kernel_stack_top()); // Kernel stack for syscall at gs:[8]

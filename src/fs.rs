@@ -85,7 +85,11 @@ pub fn add_file_bytes(name: &'static str, content: &'static [u8], is_dir: bool) 
     let mut count = FILE_COUNT.lock();
 
     if *count < MAX_FILES {
-        files[*count] = Some(File { name, content, is_dir });
+        files[*count] = Some(File {
+            name,
+            content,
+            is_dir,
+        });
         *count += 1;
     }
 }

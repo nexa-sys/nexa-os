@@ -99,4 +99,3 @@ global_asm!(
     "pop rbx",
     "sysretq"
 );
-

@@ -41,34 +41,34 @@ static mut GS_DATA_PADDING: [u8; 4096] = [0; 4096];
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy)]
 pub struct CpioNewcHeader {
-    pub magic: [u8; 6],     // "070701" or "070702"
+    pub magic: [u8; 6], // "070701" or "070702"
     // magic 字段：应为 ASCII "070701"（newc）或 "070702"
-    pub ino: [u8; 8],       // Inode number
+    pub ino: [u8; 8], // Inode number
     // inode 编号（ASCII hex）
-    pub mode: [u8; 8],      // File mode
+    pub mode: [u8; 8], // File mode
     // 文件模式（权限和类型，以 ASCII hex 表示）
-    pub uid: [u8; 8],       // User ID
+    pub uid: [u8; 8], // User ID
     // 所属用户 ID（ASCII hex）
-    pub gid: [u8; 8],       // Group ID
+    pub gid: [u8; 8], // Group ID
     // 所属组 ID（ASCII hex）
-    pub nlink: [u8; 8],     // Number of links
+    pub nlink: [u8; 8], // Number of links
     // 硬链接数量（ASCII hex）
-    pub mtime: [u8; 8],     // Modification time
+    pub mtime: [u8; 8], // Modification time
     // 修改时间（ASCII hex，UNIX 时间戳）
-    pub filesize: [u8; 8],  // File size
+    pub filesize: [u8; 8], // File size
     // 文件大小（字节，ASCII hex）
-    pub devmajor: [u8; 8],  // Device major
+    pub devmajor: [u8; 8], // Device major
     // 设备主号（ASCII hex，通常为 0）
-    pub devminor: [u8; 8],  // Device minor
+    pub devminor: [u8; 8], // Device minor
     // 设备次号（ASCII hex，通常为 0）
     pub rdevmajor: [u8; 8], // Real device major
     // 特殊设备（rdev）主号（ASCII hex）
     pub rdevminor: [u8; 8], // Real device minor
     // 特殊设备（rdev）次号（ASCII hex）
-    pub namesize: [u8; 8],  // Filename length
+    pub namesize: [u8; 8], // Filename length
     // 文件名长度（包括末尾的 NUL 字节，ASCII hex）
-    pub check: [u8; 8],     // Checksum
-    // 校验和字段（通常未使用，ASCII hex）
+    pub check: [u8; 8], // Checksum
+                        // 校验和字段（通常未使用，ASCII hex）
 }
 
 impl CpioNewcHeader {
@@ -149,6 +149,10 @@ impl Initramfs {
         }
     }
 
+    pub fn base_ptr(&self) -> *const u8 {
+        self.base
+    }
+
     /// Find a specific file by path
     /// Find a specific file by path
     ///
@@ -156,10 +160,10 @@ impl Initramfs {
     /// 适合少量文件的 initramfs 场景。
     pub fn find(&self, path: &str) -> Option<InitramfsEntry> {
         crate::ktrace!("Initramfs::find searching for '{}'", path);
-        
+
         // Normalize the search path by removing leading slash
         let search_path = path.strip_prefix('/').unwrap_or(path);
-        
+
         for entry in self.entries() {
             crate::ktrace!("Checking entry: '{}'", entry.name);
             if entry.name == search_path {
@@ -221,7 +225,8 @@ impl Iterator for InitramfsIter {
 
             // Read filename
             // 读取文件名（namesize 包含结尾 NUL，因此取 namesize - 1）
-            let name_bytes = slice::from_raw_parts(name_ptr as *const u8, namesize.saturating_sub(1));
+            let name_bytes =
+                slice::from_raw_parts(name_ptr as *const u8, namesize.saturating_sub(1));
             let name = core::str::from_utf8(name_bytes).unwrap_or("");
 
             crate::kdebug!(
@@ -239,18 +244,29 @@ impl Iterator for InitramfsIter {
                 return None;
             }
 
-            let data_offset = align4(name_end);
+            let relative_name_end = header_size + namesize;
+            let data_offset = base_addr + align4(relative_name_end);
 
             if data_offset > end_addr {
                 return None;
             }
 
-            let data_end = match data_offset.checked_add(filesize) {
+            let data_offset_rel = align4(relative_name_end);
+            let data_end_rel = match data_offset_rel.checked_add(filesize) {
                 Some(end) => end,
                 None => return None,
             };
 
+            let data_end = base_addr + data_end_rel;
+
             if data_end > end_addr {
+                return None;
+            }
+
+            let next_offset_rel = align4(data_end_rel);
+            let next_offset = base_addr + next_offset_rel;
+
+            if next_offset > end_addr {
                 return None;
             }
 
@@ -267,8 +283,6 @@ impl Iterator for InitramfsIter {
                 data.get(3).copied().unwrap_or(0)
             );
 
-            let next_offset = align4(data_end);
-
             self.current = next_offset as *const u8;
 
             Some(InitramfsEntry {
@@ -282,7 +296,8 @@ impl Iterator for InitramfsIter {
 }
 
 // Copy buffer for initramfs data
-static mut INITRAMFS_COPY_BUF: core::mem::MaybeUninit<[u8; 64 * 1024]> = core::mem::MaybeUninit::uninit();
+static mut INITRAMFS_COPY_BUF: core::mem::MaybeUninit<[u8; 64 * 1024]> =
+    core::mem::MaybeUninit::uninit();
 const INITRAMFS_COPY_BUF_SIZE: usize = 64 * 1024;
 
 // Global initramfs state
@@ -370,7 +385,8 @@ pub fn init(base: *const u8, size: usize) {
 
         // If the module fits into our kernel-owned buffer, copy it there
         if size <= INITRAMFS_COPY_BUF_SIZE {
-            let dst = (&raw mut INITRAMFS_COPY_BUF as *mut core::mem::MaybeUninit<[u8; 64 * 1024]>).cast::<u8>();
+            let dst = (&raw mut INITRAMFS_COPY_BUF as *mut core::mem::MaybeUninit<[u8; 64 * 1024]>)
+                .cast::<u8>();
             core::ptr::copy_nonoverlapping(base, dst, size);
             INITRAMFS_INSTANCE = Initramfs::new(dst as *const u8, size);
             crate::kinfo!("Initramfs copied into kernel buffer ({} bytes)", size);

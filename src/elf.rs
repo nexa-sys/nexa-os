@@ -268,6 +268,30 @@ impl ElfLoader {
         let e_phentsize =
             unsafe { ptr::read_unaligned(self.data.as_ptr().add(54) as *const u16) } as usize;
 
+        // Determine the base virtual address of the first loadable segment so we
+        // can relocate all program segments relative to it. This lets us place
+        // the executable at an arbitrary physical base while preserving the
+        // virtual addresses expected by the binary.
+        let mut first_load_vaddr: Option<u64> = None;
+        for i in 0..e_phnum {
+            let ph_offset = e_phoff + i * e_phentsize;
+            if ph_offset + 56 > self.data.len() {
+                continue;
+            }
+
+            let p_type =
+                unsafe { ptr::read_unaligned(self.data.as_ptr().add(ph_offset) as *const u32) };
+            if p_type == PhType::Load as u32 {
+                let p_vaddr = unsafe {
+                    ptr::read_unaligned(self.data.as_ptr().add(ph_offset + 16) as *const u64)
+                };
+                first_load_vaddr = Some(p_vaddr);
+                break;
+            }
+        }
+
+        let first_load_vaddr = first_load_vaddr.ok_or("ELF has no loadable segments")?;
+
         for i in 0..e_phnum {
             let ph_offset = e_phoff + i * e_phentsize;
             if ph_offset + 56 > self.data.len() {
@@ -303,8 +327,16 @@ impl ElfLoader {
                 continue;
             }
 
-            // Always relocate to user space base address
-            let target_addr = base_addr + p_vaddr; // Relocate to base + virtual address
+            let base_vaddr = first_load_vaddr;
+            if p_vaddr < base_vaddr {
+                return Err("Segment virtual address before base segment");
+            }
+
+            // Relocate relative to the first loadable segment so the binary can
+            // run at its intended virtual addresses while we choose the
+            // physical placement.
+            let relative_offset = p_vaddr - base_vaddr;
+            let target_addr = base_addr + relative_offset;
 
             crate::kinfo!(
                 "Loading segment p_vaddr={:#x}, p_filesz={:#x}, p_memsz={:#x}, target_addr={:#x}",
@@ -343,30 +375,7 @@ impl ElfLoader {
         // For static executables, entry point is absolute virtual address
         // We need to relocate it to our user space base address
         // Use the first load segment as the base for relocation
-        let mut first_load_vaddr = 0u64;
-        for i in 0..e_phnum {
-            let ph_offset = e_phoff + i * e_phentsize;
-            if ph_offset + 56 > self.data.len() {
-                continue;
-            }
-
-            let p_type =
-                unsafe { ptr::read_unaligned(self.data.as_ptr().add(ph_offset) as *const u32) };
-            let p_vaddr = unsafe {
-                ptr::read_unaligned(self.data.as_ptr().add(ph_offset + 16) as *const u64)
-            };
-
-            if p_type == PhType::Load as u32 {
-                first_load_vaddr = p_vaddr;
-                break;
-            }
-        }
-
-        let relocated_entry = if first_load_vaddr != 0 {
-            base_addr + (e_entry - first_load_vaddr)
-        } else {
-            e_entry // Fallback if no load segment found
-        };
+        let relocated_entry = base_addr + (e_entry - first_load_vaddr);
 
         Ok(relocated_entry)
     }

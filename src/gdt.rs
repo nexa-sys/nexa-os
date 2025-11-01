@@ -1,7 +1,15 @@
 /// Global Descriptor Table (GDT) setup for user/kernel mode separation
+use core::ptr;
 use x86_64::structures::gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector};
 use x86_64::structures::tss::TaskStateSegment;
 use x86_64::VirtAddr;
+
+const STACK_SIZE: usize = 4096 * 5;
+
+#[repr(align(16))]
+struct AlignedStack {
+    bytes: [u8; STACK_SIZE],
+}
 
 /// Privilege stack table index for double fault handler
 pub const DOUBLE_FAULT_IST_INDEX: u16 = 0;
@@ -24,16 +32,26 @@ pub struct Selectors {
 static mut SELECTORS: Option<Selectors> = None;
 
 /// Kernel stack for syscall
-static mut KERNEL_STACK: [u8; 4096 * 5] = [0; 4096 * 5];
+static mut KERNEL_STACK: AlignedStack = AlignedStack {
+    bytes: [0; STACK_SIZE],
+};
+static mut DOUBLE_FAULT_STACK: AlignedStack = AlignedStack {
+    bytes: [0; STACK_SIZE],
+};
 
-/// User code segment descriptor
-pub fn user_code_segment() -> Descriptor {
-    Descriptor::UserSegment(0)
+#[inline(always)]
+unsafe fn stack_top(stack: *const AlignedStack) -> VirtAddr {
+    let base = ptr::addr_of!((*stack).bytes).cast::<u8>() as u64;
+    VirtAddr::new(base + STACK_SIZE as u64)
 }
 
-/// User data segment descriptor
-pub fn user_segment(base: u64) -> Descriptor {
-    Descriptor::UserSegment(base)
+#[inline(always)]
+unsafe fn aligned_stack_top(stack: *const AlignedStack) -> VirtAddr {
+    // Ensure the resulting stack is 16-byte aligned after the CPU pushes
+    // the interrupt frame (which is 24 bytes without an error code and
+    // 32 bytes with an error code when there is no privilege change).
+    let raw_top = stack_top(stack).as_u64();
+    VirtAddr::new(raw_top.saturating_sub(8))
 }
 
 /// Initialize GDT with kernel and user segments
@@ -43,26 +61,11 @@ pub fn init() {
 
     unsafe {
         // Setup TSS
-        TSS.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = {
-            const STACK_SIZE: usize = 4096 * 5;
-            static mut STACK: [u8; STACK_SIZE] = [0; STACK_SIZE];
-            // Ensure 16-byte alignment after CPU pushes interrupt frame (adds 8 bytes).
-            let stack_ptr = unsafe { &raw const STACK as *const _ as u64 };
-            let top = VirtAddr::new(stack_ptr + STACK_SIZE as u64);
-            top
-        };
+        TSS.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] =
+            aligned_stack_top(ptr::addr_of!(DOUBLE_FAULT_STACK));
 
         // Setup privilege stack for syscall (RSP0 for Ring 0)
-        TSS.privilege_stack_table[0] = {
-            const STACK_SIZE: usize = 4096 * 5;
-            static mut STACK: [u8; STACK_SIZE] = [0; STACK_SIZE];
-            // Align so that after the processor pushes the interrupt frame (40 bytes)
-            // the resulting RSP is still 16-byte aligned, which avoids #GP faults
-            // when the compiler emits aligned SSE stores (handlers.
-            let top = VirtAddr::from_ptr(&raw const STACK) + STACK_SIZE as u64;
-            // Subtract 8 bytes since 40 mod 16 = 8. This keeps (top - 8 - 40) % 16 == 0.
-            top - 8u64
-        };
+        TSS.privilege_stack_table[0] = aligned_stack_top(ptr::addr_of!(KERNEL_STACK));
 
         // Create GDT
         let mut gdt = GlobalDescriptorTable::new();
@@ -72,16 +75,13 @@ pub fn init() {
         let kernel_code = gdt.append(Descriptor::kernel_code_segment());
         // Entry 2: Kernel data segment
         let kernel_data = gdt.append(Descriptor::kernel_data_segment());
-        // Entry 3: User code segment - manually set DPL=3
-        let user_code = user_code_segment();
-        let user_code_sel = gdt.append(user_code);
-        // Entry 4: User data segment - manually set DPL=3
-        let user_data = user_segment(0);
-        let user_data_sel = gdt.append(user_data);
+        // Entry 3: User code segment (DPL=3)
+        let user_code_sel = gdt.append(Descriptor::user_code_segment());
+        // Entry 4: User data segment (DPL=3)
+        let user_data_sel = gdt.append(Descriptor::user_data_segment());
         // Entry 5: TSS
-        let tss = gdt.append(Descriptor::tss_segment(unsafe {
-            &*(&raw const TSS as *const TaskStateSegment)
-        }));
+        let tss_ptr = &raw const TSS as *const TaskStateSegment;
+        let tss = gdt.append(Descriptor::tss_segment(&*tss_ptr));
 
         SELECTORS = Some(Selectors {
             code_selector: kernel_code,
@@ -92,9 +92,7 @@ pub fn init() {
         });
 
         // Set kernel stack for Ring 0
-        unsafe {
-            TSS.privilege_stack_table[0] = x86_64::VirtAddr::new(get_kernel_stack_top());
-        }
+        TSS.privilege_stack_table[0] = x86_64::VirtAddr::new(get_kernel_stack_top());
 
         // crate::kinfo!("GDT selectors set: kernel_code={:#x}, kernel_data={:#x}, user_code={:#x}, user_data={:#x}, tss={:#x}",
         //     kernel_code.0, kernel_data.0, user_code_sel.0, user_data_sel.0, tss.0);
@@ -103,6 +101,9 @@ pub fn init() {
 
         // Load GDT
         if let Some(ref gdt) = GDT {
+            for (idx, entry) in gdt.entries().iter().enumerate() {
+                crate::kinfo!("GDT[{}] = {:#018x}", idx, entry.raw());
+            }
             gdt.load();
         }
 
@@ -119,6 +120,7 @@ pub fn init() {
 }
 
 /// Get the current selectors
+#[allow(static_mut_refs)]
 pub unsafe fn get_selectors() -> &'static Selectors {
     SELECTORS.as_ref().expect("GDT not initialized")
 }
@@ -129,5 +131,5 @@ pub unsafe fn get_privilege_stack(index: usize) -> u64 {
 }
 
 pub fn get_kernel_stack_top() -> u64 {
-    unsafe { &raw const KERNEL_STACK as *const _ as u64 + 4096 * 5 }
+    unsafe { aligned_stack_top(ptr::addr_of!(KERNEL_STACK)).as_u64() }
 }

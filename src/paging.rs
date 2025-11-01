@@ -14,7 +14,7 @@ pub fn init() {
 unsafe fn init_user_page_tables() {
     use x86_64::registers::control::Cr3;
     use x86_64::structures::paging::{PageTable, PageTableFlags};
-    use x86_64::PhysAddr;
+        use x86_64::PhysAddr; // Removed unused import
 
     crate::kinfo!("Setting up user-accessible pages for user space (0x400000-0x800000)");
 
@@ -133,8 +133,10 @@ unsafe fn init_user_page_tables() {
         crate::kinfo!("PML4[0] is unused - no page tables found");
     }
 
-    // Map user program virtual addresses to physical addresses
-    // User program expects to run at virtual address 0x200000, but is loaded at physical 0x600000
+    // Map user program virtual addresses (code, heap, stack) to physical addresses
+    // User program expects to run at virtual address 0x200000, with heap and stack
+    // residing up to 0x700000. We map the region with 2 MiB huge pages so the
+    // stack (at 0x600000-0x700000) has backing memory and retains user access.
     map_user_program();
 
     // Map VGA buffer for kernel output
@@ -146,18 +148,21 @@ unsafe fn init_user_page_tables() {
 /// Map user program virtual addresses to physical addresses
 unsafe fn map_user_program() {
     use x86_64::registers::control::Cr3;
-    use x86_64::structures::paging::{PageTable, PageTableFlags, PhysFrame, Size4KiB};
+    use x86_64::structures::paging::{PageTable, PageTableFlags};
     use x86_64::PhysAddr;
 
-    const USER_VIRT_BASE: u64 = 0x0; // Virtual address where user program expects to run (0x0 for statically linked programs)
-    const USER_PHYS_BASE: u64 = 0x400000; // Physical address where user program is loaded (matches process.rs USER_BASE)
-    const USER_SIZE: u64 = 0x200000; // 2MB user space
+    // Keep these constants aligned with the values used in `process::from_elf`
+    const USER_VIRT_BASE: u64 = 0x200000; // Virtual base expected by the userspace binary
+    const USER_PHYS_BASE: u64 = 0x200000; // Physical base where we load the ELF segments
+    const USER_TOTAL_SIZE: u64 = 0x500000; // Cover code, heap, and stack (up to 0x700000)
+    const HUGE_PAGE_SIZE: u64 = 0x200000; // 2 MiB
 
     crate::kinfo!(
-        "Mapping user program: virtual {:#x} -> physical {:#x}, size {:#x}",
+        "Mapping user region: virtual {:#x}-{:#x} -> physical {:#x}-{:#x}",
         USER_VIRT_BASE,
+        USER_VIRT_BASE + USER_TOTAL_SIZE,
         USER_PHYS_BASE,
-        USER_SIZE
+        USER_PHYS_BASE + USER_TOTAL_SIZE
     );
 
     // Get current page table root (PML4)
@@ -165,170 +170,65 @@ unsafe fn map_user_program() {
     let pml4_addr = pml4_frame.start_address();
     let pml4 = &mut *(pml4_addr.as_u64() as *mut PageTable);
 
-    // Calculate indices for virtual address 0x200000
-    // 0x200000 = 2MB, so PDP index = 0, PD index = 0, PT index = 0
-    let pdp_index = x86_64::structures::paging::PageTableIndex::new(0);
-    let pd_index = x86_64::structures::paging::PageTableIndex::new(0);
+    // Calculate indices for the virtual base address
+    let pml4_index_val = ((USER_VIRT_BASE >> 39) & 0x1FF) as usize;
+    let pdp_index_val = ((USER_VIRT_BASE >> 30) & 0x1FF) as usize;
 
     // Ensure PDP exists
-    if pml4[pdp_index].is_unused() {
+    if pml4[pml4_index_val].is_unused() {
         // Allocate PDP
         let pdp_addr = PhysAddr::new(0x120000); // Fixed address for PDP
         unsafe {
             core::ptr::write_bytes(pdp_addr.as_u64() as *mut u8, 0, 4096);
         }
-        pml4[pdp_index].set_addr(
+        pml4[pml4_index_val].set_addr(
             pdp_addr,
             PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE,
         );
         crate::kinfo!("Allocated PDP at {:#x}", pdp_addr.as_u64());
     }
 
-    let pdp_addr = pml4[pdp_index].addr();
+    let pdp_addr = pml4[pml4_index_val].addr();
     let pdp = &mut *(pdp_addr.as_u64() as *mut PageTable);
 
     // Ensure PD exists
-    if pdp[pd_index].is_unused() {
+    if pdp[pdp_index_val].is_unused() {
         // Allocate PD
         let pd_addr = PhysAddr::new(0x121000); // Fixed address for PD
         unsafe {
             core::ptr::write_bytes(pd_addr.as_u64() as *mut u8, 0, 4096);
         }
-        pdp[pd_index].set_addr(
+        pdp[pdp_index_val].set_addr(
             pd_addr,
             PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE,
         );
         crate::kinfo!("Allocated PD at {:#x}", pd_addr.as_u64());
     }
 
-    let pd_addr = pdp[pd_index].addr();
+    let pd_addr = pdp[pdp_index_val].addr();
     let pd = &mut *(pd_addr.as_u64() as *mut PageTable);
 
-    // Map 2MB of user space (0x200000 -> 0x600000)
-    let num_pages = USER_SIZE / 4096;
-    let pt_addr_fixed = PhysAddr::new(0x122000); // Fixed PT address
-
-    // Allocate PT if needed
-    if pd[0].is_unused() {
-        unsafe {
-            core::ptr::write_bytes(pt_addr_fixed.as_u64() as *mut u8, 0, 4096);
-        }
-        pd[0].set_addr(
-            pt_addr_fixed,
-            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE,
-        );
-        crate::kinfo!("Allocated PT at {:#x}", pt_addr_fixed.as_u64());
-    }
-
-    let pt_addr = pd[0].addr();
-    let pt = &mut *(pt_addr.as_u64() as *mut PageTable);
-
-    for i in 0..num_pages {
-        let virt_addr = USER_VIRT_BASE + i * 4096;
-        let phys_addr = USER_PHYS_BASE + i * 4096;
-
-        let page_index =
-            x86_64::structures::paging::PageTableIndex::new(((virt_addr / 4096) % 512) as u16);
-        let frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(phys_addr));
-
-        pt[page_index].set_frame(
-            frame,
-            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE,
-        );
-        if i == 0 {
-            // Only log the first mapping
-            crate::kinfo!(
-                "Mapped first page: virtual {:#x} -> physical {:#x}",
-                USER_VIRT_BASE,
-                USER_PHYS_BASE
-            );
-        }
-    }
-
-    crate::kinfo!("User program mapping completed: {} pages mapped", num_pages);
-
-    // Map user ELF memory (0x400000 virtual -> 0x400000 physical)
-    const ELF_VIRT_BASE: u64 = 0x400000;
-    const ELF_PHYS_BASE: u64 = 0x400000;
-    const ELF_SIZE: u64 = 0x200000; // 2MB
-
-    crate::kinfo!(
-        "Mapping ELF program: virtual {:#x} -> physical {:#x}, size {:#x}",
-        ELF_VIRT_BASE,
-        ELF_PHYS_BASE,
-        ELF_SIZE
-    );
-
-    let num_pages = ELF_SIZE / 4096;
-    for i in 0..num_pages {
-        let virt_addr = ELF_VIRT_BASE + i * 4096;
-        let phys_addr = ELF_PHYS_BASE + i * 4096;
-
-        // Calculate page table indices
-        let pml4_index = ((virt_addr >> 39) & 0x1FF) as usize;
-        let pdp_index = ((virt_addr >> 30) & 0x1FF) as usize;
+    for offset in (0..USER_TOTAL_SIZE).step_by(HUGE_PAGE_SIZE as usize) {
+        let virt_addr = USER_VIRT_BASE + offset;
+        let phys_addr = USER_PHYS_BASE + offset;
         let pd_index = ((virt_addr >> 21) & 0x1FF) as usize;
-        let pt_index = ((virt_addr >> 12) & 0x1FF) as usize;
 
-        // Ensure PDP exists
-        if pml4[pml4_index].is_unused() {
-            let pdp_addr = PhysAddr::new(0x123000 + (pml4_index as u64) * 4096);
-            unsafe {
-                core::ptr::write_bytes(pdp_addr.as_u64() as *mut u8, 0, 4096);
-            }
-            pml4[pml4_index].set_addr(
-                pdp_addr,
-                PageTableFlags::PRESENT
-                    | PageTableFlags::WRITABLE
-                    | PageTableFlags::USER_ACCESSIBLE,
-            );
-        }
+        pd[pd_index].set_addr(
+            PhysAddr::new(phys_addr),
+            PageTableFlags::PRESENT
+                | PageTableFlags::WRITABLE
+                | PageTableFlags::USER_ACCESSIBLE
+                | PageTableFlags::HUGE_PAGE,
+        );
 
-        let pdp_addr = pml4[pml4_index].addr();
-        let pdp = &mut *(pdp_addr.as_u64() as *mut PageTable);
-
-        // Ensure PD exists
-        if pdp[pdp_index].is_unused() {
-            let pd_addr = PhysAddr::new(0x124000 + (pdp_index as u64) * 4096);
-            unsafe {
-                core::ptr::write_bytes(pd_addr.as_u64() as *mut u8, 0, 4096);
-            }
-            pdp[pdp_index].set_addr(
-                pd_addr,
-                PageTableFlags::PRESENT
-                    | PageTableFlags::WRITABLE
-                    | PageTableFlags::USER_ACCESSIBLE,
-            );
-        }
-
-        let pd_addr = pdp[pdp_index].addr();
-        let pd = &mut *(pd_addr.as_u64() as *mut PageTable);
-
-        // Ensure PT exists
-        if pd[pd_index].is_unused() {
-            let pt_addr = PhysAddr::new(0x125000 + (pd_index as u64) * 4096);
-            unsafe {
-                core::ptr::write_bytes(pt_addr.as_u64() as *mut u8, 0, 4096);
-            }
-            pd[pd_index].set_addr(
-                pt_addr,
-                PageTableFlags::PRESENT
-                    | PageTableFlags::WRITABLE
-                    | PageTableFlags::USER_ACCESSIBLE,
-            );
-        }
-
-        let pt_addr = pd[pd_index].addr();
-        let pt = &mut *(pt_addr.as_u64() as *mut PageTable);
-
-        let frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(phys_addr));
-        pt[pt_index].set_frame(
-            frame,
-            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE,
+        crate::kinfo!(
+            "Mapped user huge page: virtual {:#x} -> physical {:#x}",
+            virt_addr,
+            phys_addr
         );
     }
 
-    crate::kinfo!("ELF program mapping completed: {} pages mapped", num_pages);
+    crate::kinfo!("User program mapping completed using huge pages");
 }
 
 /// Map VGA buffer for kernel output
