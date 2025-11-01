@@ -9,6 +9,8 @@ static BOOT_TSC: AtomicU64 = AtomicU64::new(0);
 static TSC_FREQUENCY_HZ: AtomicU64 = AtomicU64::new(1_000_000_000);
 static TSC_FREQ_GUESSED: AtomicBool = AtomicBool::new(true);
 static LOG_LEVEL: AtomicU8 = AtomicU8::new(LogLevel::INFO.priority());
+static SERIAL_RUNTIME_ENABLED: AtomicBool = AtomicBool::new(true);
+static VGA_RUNTIME_ENABLED: AtomicBool = AtomicBool::new(true);
 
 const DEFAULT_TSC_FREQUENCY_HZ: u64 = 1_000_000_000; // 1 GHz fallback
 
@@ -150,11 +152,24 @@ pub fn log(level: LogLevel, args: fmt::Arguments<'_>) {
         return;
     }
 
+    let emit_serial = should_emit_serial(level);
+    let emit_vga = should_emit_vga(level);
+
+    if !emit_serial && !emit_vga {
+        return;
+    }
+
     let timestamp_us = boot_time_us();
 
-    let args_for_vga = args.clone();
-    emit_serial(level, timestamp_us, args);
-    emit_vga(level, timestamp_us, args_for_vga);
+    match (emit_serial, emit_vga) {
+        (true, true) => {
+            emit_serial_line(level, timestamp_us, args.clone());
+            emit_vga_line(level, timestamp_us, args);
+        }
+        (true, false) => emit_serial_line(level, timestamp_us, args),
+        (false, true) => emit_vga_line(level, timestamp_us, args),
+        (false, false) => {}
+    }
 }
 
 pub fn set_max_level(level: LogLevel) {
@@ -194,7 +209,23 @@ pub fn tsc_frequency_hz() -> u64 {
     TSC_FREQUENCY_HZ.load(Ordering::Relaxed)
 }
 
-fn emit_serial(level: LogLevel, timestamp_us: u64, args: fmt::Arguments<'_>) {
+fn should_emit_serial(level: LogLevel) -> bool {
+    if SERIAL_RUNTIME_ENABLED.load(Ordering::Relaxed) {
+        true
+    } else {
+        level.priority() <= LogLevel::ERROR.priority()
+    }
+}
+
+fn should_emit_vga(level: LogLevel) -> bool {
+    if VGA_RUNTIME_ENABLED.load(Ordering::Relaxed) {
+        true
+    } else {
+        level.priority() <= LogLevel::ERROR.priority()
+    }
+}
+
+fn emit_serial_line(level: LogLevel, timestamp_us: u64, args: fmt::Arguments<'_>) {
     serial::_print(format_args!(
         "{color}[{timestamp}] [{level:<5}] {message}\x1b[0m\n",
         color = level.serial_color(),
@@ -206,7 +237,7 @@ fn emit_serial(level: LogLevel, timestamp_us: u64, args: fmt::Arguments<'_>) {
     ));
 }
 
-fn emit_vga(level: LogLevel, timestamp_us: u64, args: fmt::Arguments<'_>) {
+fn emit_vga_line(level: LogLevel, timestamp_us: u64, args: fmt::Arguments<'_>) {
     // Avoid writing to VGA until mapping is completed. Some early boot
     // code runs before the VGA buffer is safely mapped and writes to it
     // can cause page faults (observed as PF at 0xb8f00). Check the
@@ -240,6 +271,19 @@ fn emit_vga(level: LogLevel, timestamp_us: u64, args: fmt::Arguments<'_>) {
 
         let _ = writer.write_str("\n");
     });
+}
+
+pub fn set_console_output_enabled(serial_enabled: bool, vga_enabled: bool) {
+    SERIAL_RUNTIME_ENABLED.store(serial_enabled, Ordering::Relaxed);
+    VGA_RUNTIME_ENABLED.store(vga_enabled, Ordering::Relaxed);
+}
+
+pub fn disable_runtime_console_output() {
+    set_console_output_enabled(false, false);
+}
+
+pub fn enable_runtime_console_output() {
+    set_console_output_enabled(true, true);
 }
 
 fn read_tsc() -> u64 {

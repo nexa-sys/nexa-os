@@ -113,6 +113,8 @@ impl Process {
             self.stack_top
         );
 
+        crate::logger::disable_runtime_console_output();
+
         // Jump to user mode - this never returns
         jump_to_usermode(self.entry_point, self.stack_top);
         // If we get here, iretq failed
@@ -124,7 +126,7 @@ impl Process {
 /// This function never returns - execution continues in user space
 #[inline(never)]
 pub fn jump_to_usermode(entry: u64, stack: u64) {
-    crate::kinfo!(
+    crate::kdebug!(
         "About to execute iretq with entry={:#x}, stack={:#x}",
         entry,
         stack
@@ -133,7 +135,7 @@ pub fn jump_to_usermode(entry: u64, stack: u64) {
     // Set GS data for syscall and Ring 3 switching
     unsafe {
         let selectors = crate::gdt::get_selectors();
-        crate::kinfo!(
+        crate::kdebug!(
             "Selectors: user_code={:#x}, user_data={:#x}",
             selectors.user_code_selector.0,
             selectors.user_data_selector.0
@@ -150,7 +152,7 @@ pub fn jump_to_usermode(entry: u64, stack: u64) {
         use x86_64::registers::model_specific::Msr;
         let gs_base = &raw const crate::initramfs::GS_DATA.0 as *const _ as u64;
         Msr::new(0xc0000101).write(gs_base);
-        crate::kinfo!("GS base set to GS_DATA at {:#x}", gs_base);
+        crate::kdebug!("GS base set to GS_DATA at {:#x}", gs_base);
     }
 
     unsafe {
@@ -163,7 +165,7 @@ pub fn jump_to_usermode(entry: u64, stack: u64) {
 
         let rsp_before: u64;
         core::arch::asm!("mov {}, rsp", out(reg) rsp_before);
-        crate::kinfo!(
+        crate::kdebug!(
             "Kernel RSP before iret: {:#x} (mod16={})",
             rsp_before,
             rsp_before & 0xF
@@ -171,7 +173,7 @@ pub fn jump_to_usermode(entry: u64, stack: u64) {
         let selectors = crate::gdt::get_selectors();
         let user_ss = selectors.user_data_selector.0 | 3;
         let user_cs = selectors.user_code_selector.0 | 3;
-        crate::kinfo!(
+        crate::kdebug!(
             "About to push iretq parameters: ss={:#x}, rsp={:#x}, rflags=0x202, cs={:#x}, rip={:#x}",
             user_ss,
             stack,
