@@ -1,4 +1,5 @@
 use core::{arch::global_asm, cmp, ptr, slice, str};
+use x86_64::instructions::interrupts;
 
 /// System call numbers
 pub const SYS_READ: u64 = 0;
@@ -201,7 +202,13 @@ fn read_from_keyboard(buf: *mut u8, count: usize) -> u64 {
 
     let mut line = [0u8; MAX_STDIN_LINE];
     let max_copy = cmp::min(count.saturating_sub(1), MAX_STDIN_LINE - 1);
+
+    // Allow the keyboard interrupt handler to run while we wait for input.
+    // The INT 0x81 gate enters with IF=0, so without re-enabling here the
+    // HLT inside `keyboard::read_line` would never resume.
+    interrupts::enable();
     let read_len = crate::keyboard::read_line(&mut line[..max_copy]);
+    interrupts::disable();
 
     unsafe {
         if read_len > 0 {
@@ -218,16 +225,10 @@ fn read_from_keyboard(buf: *mut u8, count: usize) -> u64 {
 
 #[no_mangle]
 pub extern "C" fn syscall_dispatch(nr: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 {
-    // Debug: write syscall number to VGA
-    unsafe {
-        *(0xB8000 as *mut u64) = 0x4142434445464748; // "ABCDEFGH" in ASCII
-        *(0xB8008 as *mut u64) = nr; // Write syscall number
-    }
-
     match nr {
         SYS_WRITE => {
             let ret = syscall_write(arg1, arg2, arg3);
-            crate::kinfo!("SYSCALL_WRITE returned: {}", ret);
+            crate::kdebug!("SYSCALL_WRITE returned: {}", ret);
             ret
         }
         SYS_READ => syscall_read(arg1, arg2 as *mut u8, arg3 as usize),

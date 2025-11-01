@@ -1,36 +1,61 @@
 /// PS/2 Keyboard driver
+use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 
-static SCANCODE_QUEUE: Mutex<[u8; 128]> = Mutex::new([0; 128]);
-static QUEUE_HEAD: Mutex<usize> = Mutex::new(0);
-static QUEUE_TAIL: Mutex<usize> = Mutex::new(0);
+const QUEUE_CAPACITY: usize = 128;
+
+struct KeyboardBuffer {
+    data: [u8; QUEUE_CAPACITY],
+    head: usize,
+    tail: usize,
+}
+
+impl KeyboardBuffer {
+    const fn new() -> Self {
+        Self {
+            data: [0; QUEUE_CAPACITY],
+            head: 0,
+            tail: 0,
+        }
+    }
+
+    fn push(&mut self, scancode: u8) {
+        let next_head = (self.head + 1) % QUEUE_CAPACITY;
+        if next_head != self.tail {
+            self.data[self.head] = scancode;
+            self.head = next_head;
+        } else {
+            // Buffer full; drop the oldest scancode to keep the latest input responsive.
+            self.tail = (self.tail + 1) % QUEUE_CAPACITY;
+            self.data[self.head] = scancode;
+            self.head = next_head;
+        }
+    }
+
+    fn pop(&mut self) -> Option<u8> {
+        if self.head == self.tail {
+            None
+        } else {
+            let scancode = self.data[self.tail];
+            self.tail = (self.tail + 1) % QUEUE_CAPACITY;
+            Some(scancode)
+        }
+    }
+}
+
+static SCANCODE_QUEUE: Mutex<KeyboardBuffer> = Mutex::new(KeyboardBuffer::new());
+static SHIFT_PRESSED: AtomicBool = AtomicBool::new(false);
 
 /// Add scancode to queue (called from interrupt handler)
 pub fn add_scancode(scancode: u8) {
-    let mut head = QUEUE_HEAD.lock();
-    let tail = *QUEUE_TAIL.lock();
-
-    let next_head = (*head + 1) % 128;
-    if next_head != tail {
-        let mut queue = SCANCODE_QUEUE.lock();
-        queue[*head] = scancode;
-        *head = next_head;
-    }
+    let mut queue = SCANCODE_QUEUE.lock();
+    queue.push(scancode);
 }
 
 /// Get next scancode from queue
 fn get_scancode() -> Option<u8> {
-    let mut tail = QUEUE_TAIL.lock();
-    let head = *QUEUE_HEAD.lock();
-
-    if *tail == head {
-        None
-    } else {
-        let queue = SCANCODE_QUEUE.lock();
-        let scancode = queue[*tail];
-        *tail = (*tail + 1) % 128;
-        Some(scancode)
-    }
+    let mut queue = SCANCODE_QUEUE.lock();
+    queue.pop()
 }
 
 /// US QWERTY keyboard layout
@@ -56,8 +81,6 @@ const SCANCODE_TO_CHAR_SHIFT: [char; 128] = [
     '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',
 ];
 
-static SHIFT_PRESSED: Mutex<bool> = Mutex::new(false);
-
 /// Read a character from keyboard (blocking)
 pub fn read_char() -> Option<char> {
     loop {
@@ -66,19 +89,19 @@ pub fn read_char() -> Option<char> {
             if scancode & 0x80 != 0 {
                 let key = scancode & 0x7F;
                 if key == 0x2A || key == 0x36 {
-                    *SHIFT_PRESSED.lock() = false;
+                    SHIFT_PRESSED.store(false, Ordering::Release);
                 }
                 continue;
             }
 
             // Handle shift keys
             if scancode == 0x2A || scancode == 0x36 {
-                *SHIFT_PRESSED.lock() = true;
+                SHIFT_PRESSED.store(true, Ordering::Release);
                 continue;
             }
 
             // Get character
-            let shift = *SHIFT_PRESSED.lock();
+            let shift = SHIFT_PRESSED.load(Ordering::Acquire);
             let ch = if shift {
                 SCANCODE_TO_CHAR_SHIFT[scancode as usize]
             } else {
@@ -102,19 +125,19 @@ pub fn try_read_char() -> Option<char> {
         if scancode & 0x80 != 0 {
             let key = scancode & 0x7F;
             if key == 0x2A || key == 0x36 {
-                *SHIFT_PRESSED.lock() = false;
+                SHIFT_PRESSED.store(false, Ordering::Release);
             }
             return None;
         }
 
         // Handle shift keys
         if scancode == 0x2A || scancode == 0x36 {
-            *SHIFT_PRESSED.lock() = true;
+            SHIFT_PRESSED.store(true, Ordering::Release);
             return None;
         }
 
         // Get character
-        let shift = *SHIFT_PRESSED.lock();
+        let shift = SHIFT_PRESSED.load(Ordering::Acquire);
         let ch = if shift {
             SCANCODE_TO_CHAR_SHIFT[scancode as usize]
         } else {
