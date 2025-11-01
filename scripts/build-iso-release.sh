@@ -32,7 +32,7 @@ if [ -f "$ROOT_DIR/build/initramfs.cpio" ]; then
 fi
 
 cat > "$ISO_DIR/boot/grub/grub.cfg" <<'CFG'
-set timeout=0
+set timeout=3
 set default=0
 
 menuentry "NexaOS" {

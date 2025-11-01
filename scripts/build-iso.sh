@@ -36,7 +36,7 @@ fi
 
 {
     cat <<GRUBCFG
-set timeout=0
+set timeout=3
 set default=0
 
 menuentry "NexaOS" {

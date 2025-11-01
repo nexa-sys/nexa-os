@@ -27,7 +27,6 @@ global_asm!(
     "syscall_interrupt_handler:",
     // On int gate CPU pushed: RFLAGS, CS, RIP, (SS, RSP on CPL change)
     // Save registers we might clobber. Preserve callee-saved too (rbx, rbp, r12-r15)
-    "push rax",
     "push rcx",
     "push rdx",
     "push rsi",
@@ -56,7 +55,6 @@ global_asm!(
     "pop rsi",
     "pop rdx",
     "pop rcx",
-    "pop rax",
     "iretq"
 );
 
