@@ -11,6 +11,7 @@ pub mod keyboard;
 pub mod logger;
 pub mod memory;
 pub mod paging;
+pub mod posix;
 pub mod process;
 pub mod serial;
 pub mod syscall;
@@ -363,20 +364,13 @@ macro_rules! try_init_exec {
             );
             unsafe {
                 let ptr = init_data.as_ptr();
-                let before = if ptr as usize > 0 {
-                    *ptr.offset(-1)
-                } else {
-                    0
-                };
+                let before = if ptr as usize > 0 { *ptr.offset(-1) } else { 0 };
                 if let Some(ramfs) = crate::initramfs::get() {
                     let base = ramfs.base_ptr() as usize;
                     let offset = ptr as usize - base;
                     kinfo!("Initramfs base={:#x}, data offset={:#x}", base, offset);
                 }
-                kinfo!(
-                    "Byte before data: {:02x}",
-                    before
-                );
+                kinfo!("Byte before data: {:02x}", before);
             }
 
             // Debug: Check first few bytes of ELF

@@ -1,59 +1,128 @@
-/// Simple in-memory filesystem
-/// 简单的内存文件系统（in-memory filesystem）
-///
-/// This module provides a very small, fixed-size in-memory file table used by the
-/// kernel during early boot to offer basic file read and listing capabilities.
-/// Files are stored as static string references and are suitable for initramfs
-/// or built-in read-only kernel content.
 use spin::Mutex;
+
+use crate::posix::{self, FileType, Metadata};
+
+pub mod ext2;
 
 #[derive(Clone, Copy)]
 pub struct File {
-    // File name (string slice)
-    // 文件名（字符串切片）
     pub name: &'static str,
-    // File content as a byte slice (supports both text and binary)
-    // 文件内容（字节切片），既可表示文本也可表示二进制
     pub content: &'static [u8],
-    // Whether this entry is a directory (used to distinguish files/dirs)
-    // 是否为目录（用于区分文件和目录条目）
     pub is_dir: bool,
 }
 
-// Maximum number of file entries: avoid dynamic allocation by using a fixed-size array
-// 文件表最大容量：避免动态分配，使用固定大小数组
 const MAX_FILES: usize = 64;
+const MAX_MOUNTS: usize = 8;
 
-// Protect global static data with spin::Mutex (suitable for no_std environments
-// and very short critical sections)
-// 使用 spin::Mutex 保护全局静态数据（适合 no_std 环境与非常短的临界区）
 static FILES: Mutex<[Option<File>; MAX_FILES]> = Mutex::new([None; MAX_FILES]);
-// Current number of added files
-// 当前已添加的文件数
+static FILE_METADATA: Mutex<[Option<Metadata>; MAX_FILES]> = Mutex::new([None; MAX_FILES]);
 static FILE_COUNT: Mutex<usize> = Mutex::new(0);
+static MOUNTS: Mutex<[Option<MountEntry>; MAX_MOUNTS]> = Mutex::new([None; MAX_MOUNTS]);
 
-/// Initialize the filesystem
-/// 初始化文件系统
+#[derive(Clone, Copy)]
+pub enum FileContent {
+    Inline(&'static [u8]),
+    Ext2(ext2::FileRef),
+}
+
+#[derive(Clone, Copy)]
+pub struct OpenFile {
+    pub content: FileContent,
+    pub metadata: Metadata,
+}
+
+pub trait FileSystem: Sync {
+    fn name(&self) -> &'static str;
+    fn read(&self, path: &str) -> Option<OpenFile>;
+    fn metadata(&self, path: &str) -> Option<Metadata>;
+    fn list(&self, path: &str, cb: &mut dyn FnMut(&'static str, Metadata));
+}
+
+#[derive(Clone, Copy)]
+struct MountEntry {
+    mount_point: &'static str,
+    fs: &'static dyn FileSystem,
+}
+
+struct InitramfsFilesystem;
+
+static INITFS: InitramfsFilesystem = InitramfsFilesystem;
+
 pub fn init() {
     crate::kinfo!("Filesystem init: start");
+
+    {
+        let mut files = FILES.lock();
+        let mut metas = FILE_METADATA.lock();
+        for slot in files.iter_mut() {
+            *slot = None;
+        }
+        for slot in metas.iter_mut() {
+            *slot = None;
+        }
+        *FILE_COUNT.lock() = 0;
+    }
+
+    {
+        let mut mounts = MOUNTS.lock();
+        for slot in mounts.iter_mut() {
+            *slot = None;
+        }
+    }
+
+    mount("/", &INITFS).expect("root mount must succeed");
 
     if crate::initramfs::get().is_none() {
         crate::kwarn!("Filesystem init: no initramfs available; starting empty");
         return;
     }
 
-    let mut entry_count = 0;
+    let mut entry_count = 0usize;
+    let mut ext_candidate: Option<&'static [u8]> = None;
+
     crate::initramfs::for_each_entry(|entry| {
         entry_count += 1;
         let name = entry.name.strip_prefix('/').unwrap_or(entry.name);
-        add_file_bytes(name, entry.data, false);
+        let (mode, file_type) = posix::split_mode(entry.mode);
+
+        let mut meta = Metadata::empty().with_mode(mode).with_type(file_type);
+        meta.size = entry.data.len() as u64;
+        meta.nlink = 1;
+        meta.blocks = ((meta.size + 511) / 512).max(1);
+
+        let is_dir = matches!(file_type, FileType::Directory);
+
+        add_file_with_metadata(name, entry.data, is_dir, meta);
+
+        if ext_candidate.is_none()
+            && matches!(file_type, FileType::Regular)
+            && (name.ends_with(".ext2") || name.ends_with(".ext3") || name.ends_with(".ext4"))
+        {
+            ext_candidate = Some(entry.data);
+        }
     });
 
-    let files_total = {
-        let guard = FILE_COUNT.lock();
-        *guard
-    };
+    if let Some(image) = ext_candidate {
+        match ext2::Ext2Filesystem::new(image) {
+            Ok(fs) => {
+                let fs_ref = ext2::register_global(fs);
+                match mount("/mnt/ext", fs_ref) {
+                    Ok(()) => crate::kinfo!("Mounted ext2 image at /mnt/ext"),
+                    Err(err) => crate::kwarn!("Failed to mount ext2 filesystem: {:?}", err),
+                }
+                let mut dir_meta = Metadata::empty().with_type(FileType::Directory);
+                dir_meta.nlink = 2;
+                dir_meta.mode |= 0o755;
+                add_file_with_metadata("mnt", &[], true, dir_meta);
+                add_file_with_metadata("mnt/ext", &[], true, dir_meta);
+            }
+            Err(err) => {
+                crate::kwarn!("Failed to parse ext2 image: {:?}", err);
+            }
+        }
+    }
 
+    let files_total = *FILE_COUNT.lock();
     crate::kinfo!(
         "Filesystem initialized with {} files ({} initramfs entries processed)",
         files_total,
@@ -61,93 +130,224 @@ pub fn init() {
     );
 }
 
-/// Add a file or directory entry to the in-memory file table
-/// 向内存文件表添加一个文件或目录条目
-///
-/// - name: file name (static lifetime)
-/// - name: 文件名（静态生命周期）
-/// - content: file content (static lifetime), pass empty string for directories
-/// - content: 文件内容（静态生命周期），目录可传空字符串
-/// - is_dir: whether this entry is a directory
-/// - is_dir: 是否为目录
-///
-/// Note: For simplicity there is no deduplication and no resizing. When MAX_FILES
-/// is reached, further adds are silently ignored.
-/// 注意：为了简单起见没有去重检查，也不会扩容；当达到 MAX_FILES 时后续添加会被静默忽略。
 pub fn add_file(name: &'static str, content: &'static str, is_dir: bool) {
-    // Wrapper: register text file by converting to bytes
     add_file_bytes(name, content.as_bytes(), is_dir);
 }
 
-/// Register raw bytes as a file (supports both text and binary)
 pub fn add_file_bytes(name: &'static str, content: &'static [u8], is_dir: bool) {
-    let mut files = FILES.lock();
-    let mut count = FILE_COUNT.lock();
+    let mut meta = Metadata::empty();
+    meta.size = content.len() as u64;
+    meta.blocks = ((meta.size + 511) / 512).max(1);
+    meta.nlink = 1;
+    meta = meta.with_type(if is_dir {
+        FileType::Directory
+    } else {
+        FileType::Regular
+    });
+    add_file_with_metadata(name, content, is_dir, meta);
+}
 
-    if *count < MAX_FILES {
-        files[*count] = Some(File {
+pub fn add_file_with_metadata(
+    name: &'static str,
+    content: &'static [u8],
+    is_dir: bool,
+    metadata: Metadata,
+) {
+    register_entry(
+        File {
             name,
             content,
             is_dir,
-        });
-        *count += 1;
+        },
+        metadata.normalize(),
+    );
+}
+
+pub fn open(path: &str) -> Option<OpenFile> {
+    let (fs, relative) = resolve_mount(path)?;
+    fs.read(relative)
+}
+
+pub fn stat(path: &str) -> Option<Metadata> {
+    let (fs, relative) = resolve_mount(path)?;
+    fs.metadata(relative)
+}
+
+pub fn list_directory<F>(path: &str, mut cb: F)
+where
+    F: FnMut(&'static str, Metadata),
+{
+    if let Some((fs, relative)) = resolve_mount(path) {
+        fs.list(relative, &mut cb);
     }
 }
 
-/// List all entries in the root directory (returns a fixed-size array view)
-/// 列举根目录下的所有条目（返回整个固定长度的数组视图）
-///
-/// The return type is a fixed-size slice of Option<File> that contains both used
-/// and unused slots. We use unsafe to create a static slice from the locked array
-/// pointer; callers should avoid mutating the returned slice.
-/// 返回类型是固定长度的 Option<File> 切片视图，包含已占用与未占用的槽位。
-/// 这里使用 unsafe 从锁得到的数组指针构造静态切片视图，调用者应当避免修改内容。
 pub fn list_files() -> &'static [Option<File>] {
     let files = FILES.lock();
-    // SAFETY: FILES is a global static array; we convert its pointer into a fixed-size
-    // slice for read-only inspection. The returned slice's lifetime is extended to
-    // 'static which is a common kernel simplification—do not write through this slice.
-    // SAFETY: FILES 是一个全局静态数组，我们将其指针转换为固定大小的切片用于只读查看。
-    // 返回的切片生命周期被扩展为 'static，这是常见的内核简化手段，但请注意不要在切片上做可变操作。
     unsafe { core::slice::from_raw_parts(files.as_ptr(), MAX_FILES) }
 }
 
-/// Read file content by name (returns regular file content only; directories return None)
-/// 根据名字读取文件内容（只返回常规文件的内容，目录不会返回）
-///
-/// Returns Option<&'static str>, or None if the file does not exist or is a directory.
-/// 返回 Option<&'static str>，当文件不存在或是目录时返回 None。
 pub fn read_file_bytes(name: &str) -> Option<&'static [u8]> {
+    if let Some(opened) = open(name) {
+        if let FileContent::Inline(bytes) = opened.content {
+            return Some(bytes);
+        }
+    }
+    None
+}
+
+pub fn read_file(name: &str) -> Option<&'static str> {
+    read_file_bytes(name).and_then(|b| core::str::from_utf8(b).ok())
+}
+
+pub fn file_exists(name: &str) -> bool {
+    stat(name).is_some()
+}
+
+fn register_entry(file: File, metadata: Metadata) {
+    let mut files = FILES.lock();
+    let mut metas = FILE_METADATA.lock();
+    let mut count = FILE_COUNT.lock();
+
+    for idx in 0..*count {
+        if let Some(existing) = files[idx] {
+            if existing.name == file.name {
+                files[idx] = Some(file);
+                metas[idx] = Some(metadata);
+                return;
+            }
+        }
+    }
+
+    if *count < MAX_FILES {
+        files[*count] = Some(file);
+        metas[*count] = Some(metadata);
+        *count += 1;
+    } else {
+        crate::kwarn!("File table full, ignoring '{}'", file.name);
+    }
+}
+
+fn mount(mount_point: &'static str, fs: &'static dyn FileSystem) -> Result<(), MountError> {
+    let normalized = if mount_point == "/" {
+        "/"
+    } else {
+        mount_point.trim_end_matches('/')
+    };
+
+    let mut mounts = MOUNTS.lock();
+    if mounts
+        .iter()
+        .flatten()
+        .any(|entry| entry.mount_point == normalized)
+    {
+        return Err(MountError::AlreadyMounted);
+    }
+
+    for slot in mounts.iter_mut() {
+        if slot.is_none() {
+            *slot = Some(MountEntry {
+                mount_point: normalized,
+                fs,
+            });
+            crate::kinfo!("Mounted {} at {}", fs.name(), normalized);
+            return Ok(());
+        }
+    }
+
+    Err(MountError::TableFull)
+}
+
+#[derive(Debug)]
+enum MountError {
+    AlreadyMounted,
+    TableFull,
+}
+
+fn resolve_mount(path: &str) -> Option<(&'static dyn FileSystem, &str)> {
+    if path.is_empty() {
+        return None;
+    }
+
+    let is_absolute = path.starts_with('/');
+    let mut best: Option<(&'static dyn FileSystem, &str, usize)> = None;
+    let mounts = MOUNTS.lock();
+
+    for entry in mounts.iter().flatten() {
+        if entry.mount_point == "/" {
+            let relative = if is_absolute {
+                path.trim_start_matches('/')
+            } else {
+                path
+            };
+            if best.map_or(true, |(_, _, len)| len <= 1) {
+                best = Some((entry.fs, relative, 1));
+            }
+        } else if is_absolute && path.starts_with(entry.mount_point) {
+            let rest = &path[entry.mount_point.len()..];
+            let relative = rest.trim_start_matches('/');
+            let mp_len = entry.mount_point.len();
+            if best.map_or(true, |(_, _, len)| mp_len > len) {
+                best = Some((entry.fs, relative, mp_len));
+            }
+        }
+    }
+
+    best.map(|(fs, rel, _)| (fs, rel))
+}
+
+fn find_file_index(name: &str) -> Option<usize> {
     let files = FILES.lock();
     let count = *FILE_COUNT.lock();
-
-    for i in 0..count {
-        if let Some(file) = files[i] {
-            if file.name == name && !file.is_dir {
-                return Some(file.content);
+    let target = name.trim_matches('/');
+    for idx in 0..count {
+        if let Some(file) = files[idx] {
+            if file.name == target {
+                return Some(idx);
             }
         }
     }
     None
 }
 
-/// Try to read a file as UTF-8 text; returns None if not found or not valid UTF-8
-pub fn read_file(name: &str) -> Option<&'static str> {
-    read_file_bytes(name).and_then(|b| core::str::from_utf8(b).ok())
-}
+impl FileSystem for InitramfsFilesystem {
+    fn name(&self) -> &'static str {
+        "initramfs"
+    }
 
-/// Check whether an entry with the given name exists (includes files and directories)
-/// 检查指定名称的条目是否存在（包括文件和目录）
-pub fn file_exists(name: &str) -> bool {
-    let files = FILES.lock();
-    let count = *FILE_COUNT.lock();
+    fn read(&self, path: &str) -> Option<OpenFile> {
+        let idx = find_file_index(path)?;
+        let files = FILES.lock();
+        let metas = FILE_METADATA.lock();
+        let file = files[idx]?;
+        let meta = metas[idx].unwrap_or_else(Metadata::empty);
+        Some(OpenFile {
+            content: FileContent::Inline(file.content),
+            metadata: meta,
+        })
+    }
 
-    for i in 0..count {
-        if let Some(file) = files[i] {
-            if file.name == name {
-                return true;
+    fn metadata(&self, path: &str) -> Option<Metadata> {
+        let idx = find_file_index(path)?;
+        let metas = FILE_METADATA.lock();
+        metas[idx]
+    }
+
+    fn list(&self, path: &str, cb: &mut dyn FnMut(&'static str, Metadata)) {
+        let target = path.trim_matches('/');
+        let files = FILES.lock();
+        let metas = FILE_METADATA.lock();
+        let count = *FILE_COUNT.lock();
+
+        for idx in 0..count {
+            if let Some(file) = files[idx] {
+                let meta = metas[idx].unwrap_or_else(Metadata::empty);
+                if target.is_empty() {
+                    cb(file.name, meta);
+                } else if file.name.starts_with(target) {
+                    cb(file.name, meta);
+                }
             }
         }
     }
-    false
 }
