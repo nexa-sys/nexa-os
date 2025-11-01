@@ -19,7 +19,7 @@ pub mod syscall;
 pub mod vga_buffer;
 
 use core::panic::PanicInfo;
-use multiboot2::{BootInformation, BootInformationHeader, CommandLineTag};
+use multiboot2::{BootInformation, BootInformationHeader};
 pub const MULTIBOOT_BOOTLOADER_MAGIC: u32 = 0x2BADB002; // Multiboot v1
 pub const MULTIBOOT2_BOOTLOADER_MAGIC: u32 = 0x36d76289; // Multiboot v2
 
@@ -30,7 +30,22 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
             .expect("valid multiboot info structure")
     };
 
+    let cmdline_opt = boot_info
+        .command_line_tag()
+        .and_then(|tag| tag.cmdline().ok());
+
+    if let Some(line) = cmdline_opt {
+        if let Some(level) = logger::parse_level_directive(line) {
+            logger::set_max_level(level);
+        }
+    }
+
     vga_buffer::init();
+
+    kinfo!(
+        "Kernel log level set to {}",
+        logger::max_level().as_str()
+    );
 
     kinfo!("NexaOS kernel bootstrap start");
     kdebug!("Multiboot magic: {:#x}", magic);
@@ -92,19 +107,19 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
     paging::init();
 
     // Check INITRAMFS after paging::init()
-    {
-        let test = crate::initramfs::get().is_some();
-        kinfo!("INITRAMFS after paging::init(): {}", test);
-    }
+    kinfo!(
+        "INITRAMFS after paging::init(): {}",
+        crate::initramfs::get().is_some()
+    );
 
     // Initialize GDT for user/kernel mode
     gdt::init();
 
     // Check INITRAMFS after gdt::init()
-    {
-        let test = crate::initramfs::get().is_some();
-        kinfo!("INITRAMFS after gdt::init(): {}", test);
-    }
+    kinfo!(
+        "INITRAMFS after gdt::init(): {}",
+        crate::initramfs::get().is_some()
+    );
 
     kinfo!("About to call interrupts::init_interrupts()");
 
@@ -122,8 +137,10 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
 
     // Debug: Check initramfs state before filesystem init
     kinfo!("Checking initramfs state before fs::init()...");
-    let initramfs_check = crate::initramfs::get();
-    kinfo!("INITRAMFS check before fs::init(): {:?}", initramfs_check.is_some());
+    kinfo!(
+        "INITRAMFS check before fs::init(): {}",
+        crate::initramfs::get().is_some()
+    );
 
     // Initialize filesystem
     fs::init();
@@ -135,13 +152,7 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
         elapsed_us % 1_000
     );
 
-    let cmdline = boot_info
-        .command_line_tag()
-        .map(|tag| {
-            tag.cmdline()
-                .expect("Invalid command line (not UTF-8 or not null-terminated)")
-        })
-        .unwrap_or("");
+    let cmdline = cmdline_opt.unwrap_or("");
     let cmd_init_path = parse_init_from_cmdline(cmdline).unwrap_or("(none)");
 
     if cmd_init_path != "(none)" {
@@ -219,28 +230,31 @@ macro_rules! kpanic {
         let loc = core::panic::Location::caller();
         $crate::klog!(
             $crate::logger::LogLevel::PANIC,
-            "PANIC at line {} column {} (file path unavailable): {}",
+            "PANIC at line {} column {} (file path unavailable): ",
             loc.line(),
             loc.column(),
-            format_args!($($arg)*)
         );
 
-        // --- 栈回溯 ---
+        $crate::klog!($crate::logger::LogLevel::PANIC, "  {}", $($arg)*);
+        
+        // --- 栈信息快照（避免解引用潜在无效指针） ---
         {
             use core::arch::asm;
-            $crate::klog!($crate::logger::LogLevel::PANIC, "Stack backtrace:");
+            let (mut rbp, mut rsp): (u64, u64);
             unsafe {
-                let mut rbp: u64;
                 asm!("mov {}, rbp", out(reg) rbp);
-                for i in 0..20 {
-                    let return_addr = *(rbp.wrapping_add(8) as *const u64);
-                    if return_addr == 0 { break; }
-                    $crate::klog!($crate::logger::LogLevel::PANIC, "  #{}: {:#018x}", i, return_addr);
-                    let next_rbp = *(rbp as *const u64);
-                    if next_rbp == 0 || next_rbp < 0x1000 || next_rbp <= rbp { break; }
-                    rbp = next_rbp;
-                }
+                asm!("mov {}, rsp", out(reg) rsp);
             }
+            $crate::klog!(
+                $crate::logger::LogLevel::PANIC,
+                "Stack registers: "
+            );
+            $crate::klog!(
+                $crate::logger::LogLevel::PANIC,
+                "  rbp={:#018x}, rsp={:#018x}",
+                rbp,
+                rsp,
+            );
         }
 
         $crate::arch::halt_loop();

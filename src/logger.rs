@@ -1,5 +1,5 @@
 use core::fmt;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 
 use crate::serial;
 use crate::vga_buffer::{self, Color};
@@ -8,10 +8,11 @@ static LOGGER_INITIALIZED: AtomicBool = AtomicBool::new(false);
 static BOOT_TSC: AtomicU64 = AtomicU64::new(0);
 static TSC_FREQUENCY_HZ: AtomicU64 = AtomicU64::new(1_000_000_000);
 static TSC_FREQ_GUESSED: AtomicBool = AtomicBool::new(true);
+static LOG_LEVEL: AtomicU8 = AtomicU8::new(LogLevel::INFO.priority());
 
 const DEFAULT_TSC_FREQUENCY_HZ: u64 = 1_000_000_000; // 1 GHz fallback
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LogLevel {
     PANIC,
     FATAL,
@@ -70,6 +71,50 @@ impl LogLevel {
             LogLevel::TRACE => (Color::LightGray, Color::Black),
         }
     }
+
+    const fn priority(self) -> u8 {
+        match self {
+            LogLevel::PANIC => 0,
+            LogLevel::FATAL => 1,
+            LogLevel::ERROR => 2,
+            LogLevel::WARN => 3,
+            LogLevel::INFO => 4,
+            LogLevel::DEBUG => 5,
+            LogLevel::TRACE => 6,
+        }
+    }
+
+    fn from_priority(value: u8) -> Self {
+        match value {
+            0 => LogLevel::PANIC,
+            1 => LogLevel::FATAL,
+            2 => LogLevel::ERROR,
+            3 => LogLevel::WARN,
+            4 => LogLevel::INFO,
+            5 => LogLevel::DEBUG,
+            _ => LogLevel::TRACE,
+        }
+    }
+
+    pub fn from_str(value: &str) -> Option<Self> {
+        if value.eq_ignore_ascii_case("panic") {
+            Some(LogLevel::PANIC)
+        } else if value.eq_ignore_ascii_case("fatal") {
+            Some(LogLevel::FATAL)
+        } else if value.eq_ignore_ascii_case("error") {
+            Some(LogLevel::ERROR)
+        } else if value.eq_ignore_ascii_case("warn") || value.eq_ignore_ascii_case("warning") {
+            Some(LogLevel::WARN)
+        } else if value.eq_ignore_ascii_case("info") {
+            Some(LogLevel::INFO)
+        } else if value.eq_ignore_ascii_case("debug") {
+            Some(LogLevel::DEBUG)
+        } else if value.eq_ignore_ascii_case("trace") {
+            Some(LogLevel::TRACE)
+        } else {
+            None
+        }
+    }
 }
 
 pub fn init() -> u64 {
@@ -100,11 +145,37 @@ pub fn tsc_frequency_is_guessed() -> bool {
 }
 
 pub fn log(level: LogLevel, args: fmt::Arguments<'_>) {
+    let current = LOG_LEVEL.load(Ordering::Relaxed);
+    if level.priority() > current {
+        return;
+    }
+
     let timestamp_us = boot_time_us();
 
     let args_for_vga = args.clone();
     emit_serial(level, timestamp_us, args);
     emit_vga(level, timestamp_us, args_for_vga);
+}
+
+pub fn set_max_level(level: LogLevel) {
+    LOG_LEVEL.store(level.priority(), Ordering::Relaxed);
+}
+
+pub fn max_level() -> LogLevel {
+    LogLevel::from_priority(LOG_LEVEL.load(Ordering::Relaxed))
+}
+
+pub fn parse_level_directive(cmdline: &str) -> Option<LogLevel> {
+    for token in cmdline.split_whitespace() {
+        if let Some((key, value)) = token.split_once('=') {
+            if key.eq_ignore_ascii_case("log") || key.eq_ignore_ascii_case("loglevel") {
+                if let Some(level) = LogLevel::from_str(value) {
+                    return Some(level);
+                }
+            }
+        }
+    }
+    None
 }
 
 pub fn boot_time_us() -> u64 {
