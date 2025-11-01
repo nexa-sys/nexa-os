@@ -2,11 +2,13 @@
 #![feature(abi_x86_interrupt)]
 
 pub mod arch;
+pub mod auth;
 pub mod elf;
 pub mod fs;
 pub mod gdt;
 pub mod initramfs;
 pub mod interrupts;
+pub mod ipc;
 pub mod keyboard;
 pub mod logger;
 pub mod memory;
@@ -135,6 +137,9 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
         crate::initramfs::get().is_some()
     );
 
+    auth::init();
+    ipc::init();
+
     // Initialize filesystem
     fs::init();
 
@@ -220,6 +225,7 @@ macro_rules! klog {
 #[macro_export]
 macro_rules! kpanic {
     ($($arg:tt)*) => {{
+        use core::arch::asm;
         // 自动捕获调用位置（仅行列信息，避免对 file() 的潜在未映射访问）
         let loc = core::panic::Location::caller();
         $crate::klog!(
@@ -231,9 +237,15 @@ macro_rules! kpanic {
 
         $crate::klog!($crate::logger::LogLevel::PANIC, $($arg)*);
 
+        // --- CR2 寄存器快照 --- 
+        unsafe {
+            let cr2: u64;
+            asm!("mov {0}, cr2", out(reg) cr2);
+            $crate::klog!($crate::logger::LogLevel::PANIC, "  CR2 (fault addr): {:#018x}", cr2);
+        }
+
         // --- 栈信息快照（避免解引用潜在无效指针） ---
         {
-            use core::arch::asm;
             let (mut rbp, mut rsp): (u64, u64);
             unsafe {
                 asm!("mov {}, rbp", out(reg) rbp);
@@ -270,10 +282,15 @@ macro_rules! kpanic {
                     out(reg) rbp,
                 );
             }
+            let rflags: u64;
+            unsafe { asm!("pushf; pop {}", out(reg) rflags); }
+            let interrupt_enabled = (rflags & (1 << 9)) != 0;
+            $crate::klog!($crate::logger::LogLevel::PANIC, "  RFLAGS: {:#018x} (IF={})", rflags, interrupt_enabled);
             $crate::klog!($crate::logger::LogLevel::PANIC, "Registers at panic:");
             $crate::klog!($crate::logger::LogLevel::PANIC, "  RIP: {:#018x}", rip);
             $crate::klog!($crate::logger::LogLevel::PANIC, "  RSP: {:#018x}", rsp);
             $crate::klog!($crate::logger::LogLevel::PANIC, "  RBP: {:#018x}", rbp);
+
         }
         $crate::arch::halt_loop()
     }};

@@ -253,7 +253,9 @@ pub fn init_interrupts() {
             // Set up syscall interrupt handler at 0x81 (callable from Ring 3)
             use x86_64::PrivilegeLevel;
             idt[0x81]
-                .set_handler_addr(x86_64::VirtAddr::new_truncate(syscall_interrupt_handler as u64))
+                .set_handler_addr(x86_64::VirtAddr::new_truncate(
+                    syscall_interrupt_handler as u64,
+                ))
                 .set_privilege_level(PrivilegeLevel::Ring3);
 
             // Set up ring3 switch handler at 0x80 (also callable from Ring 3)
@@ -263,7 +265,7 @@ pub fn init_interrupts() {
 
             idt
         });
-    }   
+    }
 
     crate::kinfo!("init_interrupts: IDT initialized");
 

@@ -9,15 +9,19 @@ static ERRNO: AtomicI32 = AtomicI32::new(0);
 pub mod errno {
     pub const EPERM: i32 = 1;
     pub const ENOENT: i32 = 2;
+    pub const EAGAIN: i32 = 11;
+    pub const ENOMEM: i32 = 12;
+    pub const EACCES: i32 = 13;
+    pub const EEXIST: i32 = 17;
+    pub const ENOTDIR: i32 = 20;
+    pub const EISDIR: i32 = 21;
     pub const EIO: i32 = 5;
     pub const EBADF: i32 = 9;
     pub const EINVAL: i32 = 22;
     pub const EMFILE: i32 = 24;
-    pub const ENOSYS: i32 = 38;
     pub const ENOSPC: i32 = 28;
-    pub const EISDIR: i32 = 21;
-    pub const ENOTDIR: i32 = 20;
-    pub const ENOMEM: i32 = 12;
+    pub const ENOSYS: i32 = 38;
+    pub const ENOTSUP: i32 = 95;
 }
 
 /// POSIX file type enumeration used by the VFS layer.
@@ -84,6 +88,16 @@ impl Metadata {
     pub fn with_type(mut self, file_type: FileType) -> Self {
         self.file_type = file_type;
         self.mode = (self.mode & !0o170000) | file_type.mode_bits();
+        self
+    }
+
+    pub fn with_uid(mut self, uid: u32) -> Self {
+        self.uid = uid;
+        self
+    }
+
+    pub fn with_gid(mut self, gid: u32) -> Self {
+        self.gid = gid;
         self
     }
 

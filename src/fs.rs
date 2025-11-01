@@ -31,6 +31,12 @@ pub struct OpenFile {
     pub metadata: Metadata,
 }
 
+#[derive(Clone, Copy)]
+struct ListedEntry {
+    name: &'static str,
+    metadata: Metadata,
+}
+
 pub trait FileSystem: Sync {
     fn name(&self) -> &'static str;
     fn read(&self, path: &str) -> Option<OpenFile>;
@@ -47,6 +53,61 @@ struct MountEntry {
 struct InitramfsFilesystem;
 
 static INITFS: InitramfsFilesystem = InitramfsFilesystem;
+
+fn normalize_component(path: &str) -> &str {
+    if path.is_empty() || path == "/" {
+        ""
+    } else {
+        path.trim_matches('/')
+    }
+}
+
+fn split_first_component(path: &'static str) -> (&'static str, Option<&'static str>) {
+    if let Some(pos) = path.find('/') {
+        let (head, rest) = path.split_at(pos);
+        let remainder = &rest[1..];
+        if remainder.is_empty() {
+            (head, None)
+        } else {
+            (head, Some(remainder))
+        }
+    } else {
+        (path, None)
+    }
+}
+
+fn default_dir_meta() -> Metadata {
+    let mut meta = Metadata::empty()
+        .with_type(FileType::Directory)
+        .with_mode(0o755);
+    meta.nlink = 2;
+    meta
+}
+
+fn emit_unique(entries: &mut [Option<ListedEntry>; MAX_FILES], name: &'static str, meta: Metadata) {
+    for slot in entries.iter_mut() {
+        if let Some(existing) = slot {
+            if existing.name == name {
+                if existing.metadata.file_type != FileType::Directory
+                    && meta.file_type == FileType::Directory
+                {
+                    *slot = Some(ListedEntry {
+                        name,
+                        metadata: meta,
+                    });
+                }
+                return;
+            }
+        }
+    }
+
+    if let Some(slot) = entries.iter_mut().find(|slot| slot.is_none()) {
+        *slot = Some(ListedEntry {
+            name,
+            metadata: meta,
+        });
+    }
+}
 
 pub fn init() {
     crate::kinfo!("Filesystem init: start");
@@ -169,7 +230,12 @@ pub fn open(path: &str) -> Option<OpenFile> {
 }
 
 pub fn stat(path: &str) -> Option<Metadata> {
-    let (fs, relative) = resolve_mount(path)?;
+    let normalized = if path.is_empty() { "/" } else { path };
+    if normalized == "/" || normalized.trim_matches('/').is_empty() {
+        return Some(default_dir_meta());
+    }
+
+    let (fs, relative) = resolve_mount(normalized)?;
     fs.metadata(relative)
 }
 
@@ -334,20 +400,68 @@ impl FileSystem for InitramfsFilesystem {
     }
 
     fn list(&self, path: &str, cb: &mut dyn FnMut(&'static str, Metadata)) {
-        let target = path.trim_matches('/');
-        let files = FILES.lock();
-        let metas = FILE_METADATA.lock();
+        let target = normalize_component(path);
+        let files_guard = FILES.lock();
+        let metas_guard = FILE_METADATA.lock();
         let count = *FILE_COUNT.lock();
 
+        let mut emitted: [Option<ListedEntry>; MAX_FILES] = [None; MAX_FILES];
+
         for idx in 0..count {
-            if let Some(file) = files[idx] {
-                let meta = metas[idx].unwrap_or_else(Metadata::empty);
-                if target.is_empty() {
-                    cb(file.name, meta);
-                } else if file.name.starts_with(target) {
-                    cb(file.name, meta);
+            let Some(file) = files_guard[idx] else {
+                continue;
+            };
+            let meta = metas_guard[idx].unwrap_or_else(Metadata::empty);
+            if target.is_empty() {
+                let (child, remainder) = split_first_component(file.name);
+                if child.is_empty() {
+                    continue;
                 }
+                let child_meta = if remainder.is_some() && !file.is_dir {
+                    default_dir_meta()
+                } else {
+                    meta
+                };
+                emit_unique(&mut emitted, child, child_meta);
+            } else {
+                let name = file.name;
+                if name == target {
+                    continue;
+                }
+                if !name.starts_with(target) {
+                    continue;
+                }
+                let suffix = &name[target.len()..];
+                if suffix.is_empty() {
+                    continue;
+                }
+                if !suffix.starts_with('/') {
+                    continue;
+                }
+                let suffix = &suffix[1..];
+                if suffix.is_empty() {
+                    continue;
+                }
+                let (child, remainder) = split_first_component(suffix);
+                if child.is_empty() {
+                    continue;
+                }
+                let child_meta = if remainder.is_some() {
+                    default_dir_meta()
+                } else if file.is_dir {
+                    meta
+                } else {
+                    meta
+                };
+                emit_unique(&mut emitted, child, child_meta);
             }
+        }
+
+        drop(metas_guard);
+        drop(files_guard);
+
+        for entry in emitted.iter().flatten() {
+            cb(entry.name, entry.metadata);
         }
     }
 }

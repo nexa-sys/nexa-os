@@ -14,6 +14,12 @@ pub const SYS_EXIT: u64 = 60;
 pub const SYS_GETPID: u64 = 39;
 pub const SYS_LIST_FILES: u64 = 200;
 pub const SYS_GETERRNO: u64 = 201;
+pub const SYS_IPC_CREATE: u64 = 210;
+pub const SYS_IPC_SEND: u64 = 211;
+pub const SYS_IPC_RECV: u64 = 212;
+pub const SYS_USER_ADD: u64 = 220;
+pub const SYS_USER_LOGIN: u64 = 221;
+pub const SYS_USER_INFO: u64 = 222;
 
 const STDIN: u64 = 0;
 const STDOUT: u64 = 1;
@@ -22,6 +28,41 @@ const STDERR: u64 = 2;
 const FD_BASE: u64 = 3;
 const MAX_OPEN_FILES: usize = 16;
 const MAX_STDIN_LINE: usize = 512;
+const LIST_FLAG_INCLUDE_HIDDEN: u64 = 0x1;
+const USER_FLAG_ADMIN: u64 = 0x1;
+
+#[repr(C)]
+struct ListDirRequest {
+    path_ptr: u64,
+    path_len: u64,
+    flags: u64,
+}
+
+#[repr(C)]
+struct UserRequest {
+    username_ptr: u64,
+    username_len: u64,
+    password_ptr: u64,
+    password_len: u64,
+    flags: u64,
+}
+
+#[repr(C)]
+struct UserInfoReply {
+    username: [u8; 32],
+    username_len: u64,
+    uid: u32,
+    gid: u32,
+    is_admin: u32,
+}
+
+#[repr(C)]
+struct IpcTransferRequest {
+    channel_id: u32,
+    flags: u32,
+    buffer_ptr: u64,
+    buffer_len: u64,
+}
 
 #[derive(Clone, Copy)]
 enum FileBacking {
@@ -222,16 +263,62 @@ fn syscall_close(fd: u64) -> u64 {
     u64::MAX
 }
 
-fn syscall_list_files(buf: *mut u8, count: usize) -> u64 {
+fn syscall_list_files(buf: *mut u8, count: usize, request_ptr: *const ListDirRequest) -> u64 {
     if buf.is_null() || count == 0 {
-        return 0;
+        posix::set_errno(posix::errno::EINVAL);
+        return u64::MAX;
+    }
+
+    let mut include_hidden = false;
+    let mut path = "/";
+
+    if !request_ptr.is_null() {
+        let request = unsafe { &*request_ptr };
+        include_hidden = (request.flags & LIST_FLAG_INCLUDE_HIDDEN) != 0;
+        if request.path_ptr != 0 && request.path_len > 0 {
+            let raw = unsafe {
+                slice::from_raw_parts(request.path_ptr as *const u8, request.path_len as usize)
+            };
+            match str::from_utf8(raw) {
+                Ok(p) => {
+                    let trimmed = p.trim();
+                    if !trimmed.is_empty() {
+                        path = trimmed;
+                    }
+                }
+                Err(_) => {
+                    posix::set_errno(posix::errno::EINVAL);
+                    return u64::MAX;
+                }
+            }
+        }
+    }
+
+    let normalized = if path.is_empty() { "/" } else { path };
+
+    if normalized != "/" {
+        match crate::fs::stat(normalized) {
+            Some(meta) => {
+                if meta.file_type != FileType::Directory {
+                    posix::set_errno(posix::errno::ENOTDIR);
+                    return u64::MAX;
+                }
+            }
+            None => {
+                posix::set_errno(posix::errno::ENOENT);
+                return u64::MAX;
+            }
+        }
     }
 
     let mut written = 0usize;
     let mut overflow = false;
 
-    crate::fs::list_directory("/", |name, _meta| {
+    crate::fs::list_directory(normalized, |name, _meta| {
         if overflow {
+            return;
+        }
+        if !include_hidden && name.starts_with('.') {
             return;
         }
         let name_bytes = name.as_bytes();
@@ -248,7 +335,11 @@ fn syscall_list_files(buf: *mut u8, count: usize) -> u64 {
         }
     });
 
-    posix::set_errno(0);
+    if overflow {
+        posix::set_errno(posix::errno::EAGAIN);
+    } else {
+        posix::set_errno(0);
+    }
     written as u64
 }
 
@@ -358,6 +449,228 @@ fn syscall_get_errno() -> u64 {
     posix::errno() as u64
 }
 
+fn map_auth_error(err: crate::auth::AuthError) -> i32 {
+    match err {
+        crate::auth::AuthError::InvalidInput => posix::errno::EINVAL,
+        crate::auth::AuthError::AlreadyExists => posix::errno::EEXIST,
+        crate::auth::AuthError::TableFull => posix::errno::ENOSPC,
+        crate::auth::AuthError::InvalidCredentials => posix::errno::EPERM,
+        crate::auth::AuthError::AccessDenied => posix::errno::EACCES,
+    }
+}
+
+fn syscall_user_add(request_ptr: *const UserRequest) -> u64 {
+    if request_ptr.is_null() {
+        posix::set_errno(posix::errno::EINVAL);
+        return u64::MAX;
+    }
+
+    if !crate::auth::require_admin() {
+        posix::set_errno(posix::errno::EACCES);
+        return u64::MAX;
+    }
+
+    let request = unsafe { &*request_ptr };
+    if request.username_ptr == 0 || request.password_ptr == 0 {
+        posix::set_errno(posix::errno::EINVAL);
+        return u64::MAX;
+    }
+
+    let username_bytes = unsafe {
+        slice::from_raw_parts(
+            request.username_ptr as *const u8,
+            request.username_len as usize,
+        )
+    };
+    let password_bytes = unsafe {
+        slice::from_raw_parts(
+            request.password_ptr as *const u8,
+            request.password_len as usize,
+        )
+    };
+
+    let username = match str::from_utf8(username_bytes) {
+        Ok(name) => name,
+        Err(_) => {
+            posix::set_errno(posix::errno::EINVAL);
+            return u64::MAX;
+        }
+    };
+
+    let password = match str::from_utf8(password_bytes) {
+        Ok(pass) => pass,
+        Err(_) => {
+            posix::set_errno(posix::errno::EINVAL);
+            return u64::MAX;
+        }
+    };
+
+    match crate::auth::create_user(username, password, (request.flags & USER_FLAG_ADMIN) != 0) {
+        Ok(uid) => {
+            posix::set_errno(0);
+            uid as u64
+        }
+        Err(err) => {
+            posix::set_errno(map_auth_error(err));
+            u64::MAX
+        }
+    }
+}
+
+fn syscall_user_login(request_ptr: *const UserRequest) -> u64 {
+    if request_ptr.is_null() {
+        posix::set_errno(posix::errno::EINVAL);
+        return u64::MAX;
+    }
+
+    let request = unsafe { &*request_ptr };
+    if request.username_ptr == 0 || request.password_ptr == 0 {
+        posix::set_errno(posix::errno::EINVAL);
+        return u64::MAX;
+    }
+
+    let username_bytes = unsafe {
+        slice::from_raw_parts(
+            request.username_ptr as *const u8,
+            request.username_len as usize,
+        )
+    };
+    let password_bytes = unsafe {
+        slice::from_raw_parts(
+            request.password_ptr as *const u8,
+            request.password_len as usize,
+        )
+    };
+
+    let username = match str::from_utf8(username_bytes) {
+        Ok(name) => name,
+        Err(_) => {
+            posix::set_errno(posix::errno::EINVAL);
+            return u64::MAX;
+        }
+    };
+
+    let password = match str::from_utf8(password_bytes) {
+        Ok(pass) => pass,
+        Err(_) => {
+            posix::set_errno(posix::errno::EINVAL);
+            return u64::MAX;
+        }
+    };
+
+    match crate::auth::authenticate(username, password) {
+        Ok(creds) => {
+            posix::set_errno(0);
+            creds.uid as u64
+        }
+        Err(err) => {
+            posix::set_errno(map_auth_error(err));
+            u64::MAX
+        }
+    }
+}
+
+fn syscall_user_info(info_ptr: *mut UserInfoReply) -> u64 {
+    if info_ptr.is_null() {
+        posix::set_errno(posix::errno::EINVAL);
+        return u64::MAX;
+    }
+
+    let info = crate::auth::current_user();
+    let mut reply = UserInfoReply {
+        username: [0; 32],
+        username_len: 0,
+        uid: info.credentials.uid,
+        gid: info.credentials.gid,
+        is_admin: if info.credentials.is_admin { 1 } else { 0 },
+    };
+    let copy_len = core::cmp::min(info.username_len, reply.username.len());
+    reply.username[..copy_len].copy_from_slice(&info.username[..copy_len]);
+    reply.username_len = copy_len as u64;
+
+    unsafe {
+        ptr::write(info_ptr, reply);
+    }
+    posix::set_errno(0);
+    0
+}
+
+fn map_ipc_error(err: crate::ipc::IpcError) -> i32 {
+    match err {
+        crate::ipc::IpcError::NoSuchChannel => posix::errno::ENOENT,
+        crate::ipc::IpcError::TableFull => posix::errno::ENOSPC,
+        crate::ipc::IpcError::WouldBlock | crate::ipc::IpcError::Empty => posix::errno::EAGAIN,
+        crate::ipc::IpcError::InvalidInput => posix::errno::EINVAL,
+    }
+}
+
+fn syscall_ipc_create() -> u64 {
+    match crate::ipc::create_channel() {
+        Ok(id) => {
+            posix::set_errno(0);
+            id as u64
+        }
+        Err(err) => {
+            posix::set_errno(map_ipc_error(err));
+            u64::MAX
+        }
+    }
+}
+
+fn syscall_ipc_send(request_ptr: *const IpcTransferRequest) -> u64 {
+    if request_ptr.is_null() {
+        posix::set_errno(posix::errno::EINVAL);
+        return u64::MAX;
+    }
+    let request = unsafe { &*request_ptr };
+    if request.buffer_ptr == 0 || request.buffer_len == 0 {
+        posix::set_errno(posix::errno::EINVAL);
+        return u64::MAX;
+    }
+
+    let data = unsafe {
+        slice::from_raw_parts(request.buffer_ptr as *const u8, request.buffer_len as usize)
+    };
+
+    match crate::ipc::send(request.channel_id, data) {
+        Ok(()) => {
+            posix::set_errno(0);
+            0
+        }
+        Err(err) => {
+            posix::set_errno(map_ipc_error(err));
+            u64::MAX
+        }
+    }
+}
+
+fn syscall_ipc_recv(request_ptr: *const IpcTransferRequest) -> u64 {
+    if request_ptr.is_null() {
+        posix::set_errno(posix::errno::EINVAL);
+        return u64::MAX;
+    }
+    let request = unsafe { &*request_ptr };
+    if request.buffer_ptr == 0 || request.buffer_len == 0 {
+        posix::set_errno(posix::errno::EINVAL);
+        return u64::MAX;
+    }
+
+    let buffer = unsafe {
+        slice::from_raw_parts_mut(request.buffer_ptr as *mut u8, request.buffer_len as usize)
+    };
+
+    match crate::ipc::receive(request.channel_id, buffer) {
+        Ok(bytes) => {
+            posix::set_errno(0);
+            bytes as u64
+        }
+        Err(err) => {
+            posix::set_errno(map_ipc_error(err));
+            u64::MAX
+        }
+    }
+}
+
 fn read_from_keyboard(buf: *mut u8, count: usize) -> u64 {
     if count == 0 {
         return 0;
@@ -400,10 +713,20 @@ pub extern "C" fn syscall_dispatch(nr: u64, arg1: u64, arg2: u64, arg3: u64) -> 
         SYS_STAT => syscall_stat(arg1 as *const u8, arg2 as usize, arg3 as *mut posix::Stat),
         SYS_FSTAT => syscall_fstat(arg1, arg2 as *mut posix::Stat),
         SYS_LSEEK => syscall_lseek(arg1, arg2 as i64, arg3),
-        SYS_LIST_FILES => syscall_list_files(arg1 as *mut u8, arg2 as usize),
+        SYS_LIST_FILES => syscall_list_files(
+            arg1 as *mut u8,
+            arg2 as usize,
+            arg3 as *const ListDirRequest,
+        ),
         SYS_EXIT => syscall_exit(arg1 as i32),
         SYS_GETPID => 1,
         SYS_GETERRNO => syscall_get_errno(),
+        SYS_IPC_CREATE => syscall_ipc_create(),
+        SYS_IPC_SEND => syscall_ipc_send(arg1 as *const IpcTransferRequest),
+        SYS_IPC_RECV => syscall_ipc_recv(arg1 as *const IpcTransferRequest),
+        SYS_USER_ADD => syscall_user_add(arg1 as *const UserRequest),
+        SYS_USER_LOGIN => syscall_user_login(arg1 as *const UserRequest),
+        SYS_USER_INFO => syscall_user_info(arg1 as *mut UserInfoReply),
         _ => {
             crate::kinfo!("Unknown syscall: {}", nr);
             posix::set_errno(posix::errno::ENOSYS);

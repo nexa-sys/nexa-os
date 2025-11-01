@@ -1,8 +1,7 @@
 /// Memory paging setup for x86_64
-
 use core::cell::UnsafeCell;
-use x86_64::PhysAddr;
 use x86_64::structures::paging::PageTable;
+use x86_64::PhysAddr;
 
 #[repr(align(4096))]
 struct PageTableHolder(UnsafeCell<PageTable>);
@@ -15,10 +14,7 @@ impl PageTableHolder {
     }
 
     fn reset(&self) {
-        crate::kinfo!(
-            "paging::reset table @ {:#x}\n",
-            self.as_ptr() as u64
-        );
+        crate::kinfo!("paging::reset table @ {:#x}\n", self.as_ptr() as u64);
         let table = unsafe { &mut *self.as_mut_ptr() };
         for entry in table.iter_mut() {
             entry.set_unused();
@@ -130,9 +126,7 @@ unsafe fn init_user_page_tables() {
                         | PageTableFlags::WRITABLE
                         | PageTableFlags::USER_ACCESSIBLE,
                 );
-                crate::kinfo!(
-                    "Converted PDP[0] 1GiB huge page into 2MiB identity directory"
-                );
+                crate::kinfo!("Converted PDP[0] 1GiB huge page into 2MiB identity directory");
                 crate::vga_buffer::set_vga_ready();
                 should_map_user = false;
             } else {
@@ -176,9 +170,7 @@ unsafe fn init_user_page_tables() {
                             | PageTableFlags::WRITABLE
                             | PageTableFlags::HUGE_PAGE,
                     );
-                    crate::kinfo!(
-                        "Mapped kernel identity huge page: virtual 0x0 -> physical 0x0"
-                    );
+                    crate::kinfo!("Mapped kernel identity huge page: virtual 0x0 -> physical 0x0");
                 }
                 crate::serial::_print(format_args!(
                     "PD[0] after mapping: flags={:#x}, addr={:#x}\n",

@@ -98,8 +98,8 @@ pub fn init() {
             TSS.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize].as_u64()
         );
 
-    // Setup privilege stack for syscall (RSP0 for Ring 0)
-    TSS.privilege_stack_table[0] = aligned_privilege_stack_top(ptr::addr_of!(KERNEL_STACK));
+        // Setup privilege stack for syscall (RSP0 for Ring 0)
+        TSS.privilege_stack_table[0] = aligned_privilege_stack_top(ptr::addr_of!(KERNEL_STACK));
         crate::kinfo!(
             "Kernel privilege stack (RSP0) set to {:#x}",
             TSS.privilege_stack_table[0].as_u64()
@@ -130,7 +130,7 @@ pub fn init() {
         });
 
         // Set kernel stack for Ring 0
-    TSS.privilege_stack_table[0] = x86_64::VirtAddr::new(get_kernel_stack_top());
+        TSS.privilege_stack_table[0] = x86_64::VirtAddr::new(get_kernel_stack_top());
 
         // crate::kinfo!("GDT selectors set: kernel_code={:#x}, kernel_data={:#x}, user_code={:#x}, user_data={:#x}, tss={:#x}",
         //     kernel_code.0, kernel_data.0, user_code_sel.0, user_data_sel.0, tss.0);
