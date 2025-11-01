@@ -1,3 +1,6 @@
+#define directives
+.set STACK_SIZE, 32768
+
 # Multiboot2 header  
 .section .boot.header,"a",@progbits
 .align 8
@@ -161,7 +164,7 @@ long_mode_entry:
     # Set up stack
     # Clear stack area first (in case BSS not zeroed)
     lea stack_bottom(%rip), %rdi
-    mov $8192, %rcx          # Stack size
+    mov $STACK_SIZE, %rcx          # Stack size
     xor %rax, %rax
     rep stosb
     
@@ -222,5 +225,5 @@ pdpt_table:
 
 .align 16
 stack_bottom:
-    .zero 8192
+    .zero STACK_SIZE
 stack_top:

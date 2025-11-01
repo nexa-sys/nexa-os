@@ -179,17 +179,16 @@ pub fn jump_to_usermode(entry: u64, stack: u64) {
             entry
         );
         asm!(
-            "mov rcx, {entry}",
-            "mov r11, 0x202",   // RFLAGS with IF=1
-            "mov rsp, {stack}",
-            "mov ds, ax",
-            "mov es, ax",
-            "mov fs, ax",
-            "mov gs, ax",
-            "sysretq",
-            entry = in(reg) entry,
+            "push {ss}",
+            "push {stack}",
+            "push 0x202",
+            "push {cs}",
+            "push {entry}",
+            "iretq",
+            ss = in(reg) user_ss as u64,
             stack = in(reg) stack,
-            in("ax") user_ss,
+            cs = in(reg) user_cs as u64,
+            entry = in(reg) entry,
             options(noreturn)
         );
     }

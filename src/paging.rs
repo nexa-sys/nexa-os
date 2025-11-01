@@ -15,10 +15,10 @@ impl PageTableHolder {
     }
 
     fn reset(&self) {
-        crate::serial::_print(format_args!(
+        crate::kinfo!(
             "paging::reset table @ {:#x}\n",
             self.as_ptr() as u64
-        ));
+        );
         let table = unsafe { &mut *self.as_mut_ptr() };
         for entry in table.iter_mut() {
             entry.set_unused();
@@ -94,11 +94,11 @@ unsafe fn init_user_page_tables() {
         let pdp_addr = pml4[0].addr();
         let pdp = &mut *(pdp_addr.as_u64() as *mut PageTable);
         crate::kinfo!("PDP at {:#x}", pdp_addr.as_u64());
-        crate::serial::_print(format_args!(
+        crate::kinfo!(
             "PDP[0] initial flags={:#x}, addr={:#x}\n",
             pdp[0].flags().bits(),
             pdp[0].addr().as_u64()
-        ));
+        );
 
         if !pdp[0].is_unused() {
             crate::kinfo!("PDP[0] is used, getting addr");
@@ -373,7 +373,7 @@ unsafe fn map_vga_buffer() {
         // this branch executed and VGA was marked ready. Serial is always
         // available early in boot, so this will appear in serial logs even if
         // VGA output is not visible.
-        crate::serial_println!("VGA mapped and marked ready (huge page)");
+        crate::kinfo!("VGA mapped and marked ready (huge page)");
         return;
     }
 
@@ -389,7 +389,7 @@ unsafe fn map_vga_buffer() {
         pd_entry.set_flags(flags | PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
         crate::kdebug!("VGA buffer covered by PD huge page, updated permissions");
         crate::vga_buffer::set_vga_ready();
-        crate::serial_println!("VGA mapped and marked ready (PD huge page)");
+        crate::kinfo!("VGA mapped and marked ready (PD huge page)");
         return;
     }
 
@@ -405,7 +405,7 @@ unsafe fn map_vga_buffer() {
     crate::vga_buffer::set_vga_ready();
     // Confirm via serial so we can see in the run logs whether this path
     // executed.
-    crate::serial_println!("VGA mapped and marked ready (page table)");
+    crate::kinfo!("VGA mapped and marked ready (page table)");
 }
 
 /// Ensure paging is enabled (required for user mode)
