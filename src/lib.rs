@@ -39,7 +39,7 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
     }
 
     vga_buffer::init();
-    
+
     kinfo!("Kernel log level set to {}", logger::max_level().as_str());
 
     kinfo!("NexaOS kernel bootstrap start");
@@ -123,12 +123,9 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
 
     kinfo!("interrupts::init() completed successfully");
 
-    // Enable interrupts
-    // x86_64::instructions::interrupts::enable();
-
-    // Keep all PIC interrupts masked for now to avoid spurious interrupts
-    // TODO: Enable timer interrupt after testing syscall and user mode switching
-    kinfo!("CPU interrupts disabled, PIC interrupts remain masked");
+    // Enable interrupts now that essential handlers and PIC configuration are in place
+    x86_64::instructions::interrupts::enable();
+    kinfo!("CPU interrupts enabled");
 
     // Debug: Check initramfs state before filesystem init
     kinfo!("Checking initramfs state before fs::init()...");

@@ -304,6 +304,17 @@ pub fn init_interrupts() {
     }
     crate::kinfo!("init_interrupts: IDT loaded");
 
+    unsafe {
+        let mut master_port = Port::<u8>::new(0x21);
+        let current_mask = master_port.read();
+        let new_mask = current_mask & !(1 << 1); // Unmask keyboard IRQ (IRQ1)
+        master_port.write(new_mask);
+        crate::kinfo!(
+            "init_interrupts: keyboard IRQ unmasked (IMR={:#010b})",
+            new_mask
+        );
+    }
+
     crate::initramfs::debug_dump_state("after-init-interrupts");
 }
 

@@ -28,10 +28,31 @@ static mut FILE_HANDLES: [Option<FileHandle>; MAX_OPEN_FILES] = [None; MAX_OPEN_
 /// Write system call
 fn syscall_write(fd: u64, buf: u64, count: u64) -> u64 {
     if fd == STDOUT || fd == STDERR {
-        for i in 0..count as usize {
-            let c = unsafe { *(buf as *const u8).add(i) };
-            crate::serial::write_byte(c);
+        let slice = unsafe { slice::from_raw_parts(buf as *const u8, count as usize) };
+
+        for &byte in slice {
+            crate::serial::write_byte(byte);
         }
+
+        crate::vga_buffer::with_writer(|writer| {
+            use core::fmt::Write;
+
+            if let Ok(text) = str::from_utf8(slice) {
+                writer.write_str(text).ok();
+            } else {
+                for &byte in slice {
+                    let ch = match byte {
+                        b'\r' => '\r',
+                        b'\n' => '\n',
+                        b'\t' => '\t',
+                        0x20..=0x7E => byte as char,
+                        _ => '?',
+                    };
+                    writer.write_char(ch).ok();
+                }
+            }
+        });
+
         count
     } else {
         0
