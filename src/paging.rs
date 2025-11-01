@@ -64,10 +64,10 @@ unsafe fn init_user_page_tables() {
     let pml4_addr = pml4_frame.start_address();
     let pml4 = &mut *(pml4_addr.as_u64() as *mut PageTable);
 
-    crate::serial::_print(format_args!(
+    crate::kinfo!(
         "init_user_page_tables: CR3 frame={:#x}\n",
         pml4_addr.as_u64()
-    ));
+    );
 
     crate::kinfo!("PML4 at {:#x}", pml4_addr.as_u64());
 
