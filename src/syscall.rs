@@ -103,10 +103,12 @@ fn syscall_write(fd: u64, buf: u64, count: u64) -> u64 {
 
         crate::serial::write_bytes(slice);
 
+        let utf8_view = str::from_utf8(slice);
+
         crate::vga_buffer::with_writer(|writer| {
             use core::fmt::Write;
 
-            match str::from_utf8(slice) {
+            match utf8_view {
                 Ok(text) => {
                     writer.write_str(text).ok();
                 }
@@ -124,6 +126,11 @@ fn syscall_write(fd: u64, buf: u64, count: u64) -> u64 {
                 }
             }
         });
+
+        match utf8_view {
+            Ok(text) => crate::framebuffer::write_str(text),
+            Err(_) => crate::framebuffer::write_bytes(slice),
+        }
 
         posix::set_errno(0);
         count

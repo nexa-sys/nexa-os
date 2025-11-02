@@ -1,4 +1,4 @@
-use core::fmt;
+use core::fmt::{self, Write};
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 
 use crate::serial;
@@ -246,8 +246,6 @@ fn emit_vga_line(level: LogLevel, timestamp_us: u64, args: fmt::Arguments<'_>) {
         return;
     }
 
-    use core::fmt::Write;
-
     vga_buffer::with_writer(|writer| {
         writer.with_color(Color::LightGray, Color::Black, |writer| {
             let _ = write!(
@@ -271,6 +269,19 @@ fn emit_vga_line(level: LogLevel, timestamp_us: u64, args: fmt::Arguments<'_>) {
 
         let _ = writer.write_str("\n");
     });
+
+    let mut plain = PlainLogBuffer::new();
+    let _ = write!(
+        plain,
+        "[{timestamp}] [{level}] ",
+        timestamp = TimestampDisplay {
+            microseconds: timestamp_us,
+        },
+        level = LevelDisplay(level)
+    );
+    let _ = fmt::write(&mut plain, args.clone());
+    let _ = plain.write_str("\n");
+    crate::framebuffer::write_bytes(plain.as_bytes());
 }
 
 pub fn set_console_output_enabled(serial_enabled: bool, vga_enabled: bool) {
@@ -353,5 +364,35 @@ struct LevelDisplay(LogLevel);
 impl fmt::Display for LevelDisplay {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:<5}", self.0.as_str())
+    }
+}
+
+struct PlainLogBuffer {
+    buf: [u8; 512],
+    len: usize,
+}
+
+impl PlainLogBuffer {
+    const fn new() -> Self {
+        Self {
+            buf: [0; 512],
+            len: 0,
+        }
+    }
+
+    fn as_bytes(&self) -> &[u8] {
+        &self.buf[..self.len]
+    }
+}
+
+impl Write for PlainLogBuffer {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        let bytes = s.as_bytes();
+        if self.len + bytes.len() > self.buf.len() {
+            return Err(fmt::Error);
+        }
+        self.buf[self.len..self.len + bytes.len()].copy_from_slice(bytes);
+        self.len += bytes.len();
+        Ok(())
     }
 }

@@ -293,19 +293,25 @@ pub fn activate() {
     };
 
     let mut writer_guard = FRAMEBUFFER_WRITER.lock();
+    let mut activated = false;
     if writer_guard.is_none() {
         if let Some(mut writer) = FramebufferWriter::new(buffer_ptr, spec) {
             writer.clear();
             *writer_guard = Some(writer);
             FRAMEBUFFER_READY.store(true, Ordering::SeqCst);
-            kinfo!(
-                "Framebuffer activated at {:#x} ({}x{} @ {}bpp)",
-                spec.address,
-                spec.width,
-                spec.height,
-                spec.bpp
-            );
+            activated = true;
         }
+    }
+    drop(writer_guard);
+
+    if activated {
+        kinfo!(
+            "Framebuffer activated at {:#x} ({}x{} @ {}bpp)",
+            spec.address,
+            spec.width,
+            spec.height,
+            spec.bpp
+        );
     }
 }
 
@@ -322,6 +328,39 @@ pub fn clear() {
 pub fn backspace() {
     if let Some(writer) = FRAMEBUFFER_WRITER.lock().as_mut() {
         writer.backspace();
+    }
+}
+
+pub fn write_str(text: &str) {
+    if !FRAMEBUFFER_READY.load(Ordering::SeqCst) {
+        return;
+    }
+
+    if let Some(mut guard) = FRAMEBUFFER_WRITER.try_lock() {
+        if let Some(writer) = guard.as_mut() {
+            let _ = writer.write_str(text);
+        }
+    }
+}
+
+pub fn write_bytes(bytes: &[u8]) {
+    if !FRAMEBUFFER_READY.load(Ordering::SeqCst) {
+        return;
+    }
+
+    if let Some(mut guard) = FRAMEBUFFER_WRITER.try_lock() {
+        if let Some(writer) = guard.as_mut() {
+            for &byte in bytes {
+                let ch = match byte {
+                    b'\r' => '\r',
+                    b'\n' => '\n',
+                    b'\t' => '\t',
+                    0x20..=0x7E => byte as char,
+                    _ => '?',
+                };
+                writer.write_char(ch);
+            }
+        }
     }
 }
 
