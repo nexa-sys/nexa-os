@@ -1,6 +1,6 @@
 /// Memory paging setup for x86_64
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 use x86_64::structures::paging::PageTable;
 use x86_64::PhysAddr;
 
@@ -77,6 +77,7 @@ static EXTRA_TABLES: [PageTableHolder; EXTRA_TABLE_COUNT] = [
 ];
 
 static EXTRA_TABLE_INDEX: AtomicUsize = AtomicUsize::new(0);
+static NXE_ENABLED: AtomicBool = AtomicBool::new(false);
 
 fn allocate_extra_table() -> Option<&'static PageTableHolder> {
     let idx = EXTRA_TABLE_INDEX.fetch_add(1, AtomicOrdering::SeqCst);
@@ -92,6 +93,57 @@ fn allocate_extra_table() -> Option<&'static PageTableHolder> {
 #[derive(Debug)]
 pub enum MapDeviceError {
     OutOfTableSpace,
+}
+
+/// Ensure the CPU's NX bit is set before we rely on non-executable mappings.
+pub fn ensure_nxe_enabled() {
+    if NXE_ENABLED.load(AtomicOrdering::Relaxed) {
+        return;
+    }
+
+    if !cpu_supports_nx() {
+        // Hardware does not expose NX; leave the flag unset to avoid #GP faults.
+        crate::kwarn!("CPU does not report NX support; skipping NXE enable");
+        NXE_ENABLED.store(true, AtomicOrdering::Relaxed);
+        return;
+    }
+
+    unsafe {
+        enable_nxe();
+    }
+}
+
+fn cpu_supports_nx() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        let result = core::arch::x86_64::__cpuid(0x8000_0001);
+        (result.edx & (1 << 20)) != 0
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        false
+    }
+}
+
+unsafe fn enable_nxe() {
+    use x86_64::registers::model_specific::Msr;
+
+    const IA32_EFER: u32 = 0xC000_0080;
+    const EFER_NXE: u64 = 1 << 11;
+
+    let mut msr = Msr::new(IA32_EFER);
+    let mut value = msr.read();
+
+    if (value & EFER_NXE) == 0 {
+        value |= EFER_NXE;
+        msr.write(value);
+        crate::kinfo!("Enabled NXE bit in IA32_EFER");
+    } else {
+        crate::kdebug!("IA32_EFER.NXE already set");
+    }
+
+    NXE_ENABLED.store(true, AtomicOrdering::Relaxed);
 }
 
 /// Initialize identity-mapped paging
@@ -484,6 +536,8 @@ unsafe fn ensure_paging_enabled() {
 pub unsafe fn map_device_region(phys_start: u64, length: usize) -> Result<*mut u8, MapDeviceError> {
     use x86_64::registers::control::{Cr3, Cr3Flags};
     use x86_64::structures::paging::PageTableFlags;
+
+    ensure_nxe_enabled();
 
     if length == 0 {
         return Ok(phys_start as *mut u8);

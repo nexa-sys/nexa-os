@@ -73,6 +73,8 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
     if magic == MULTIBOOT2_BOOTLOADER_MAGIC {
         memory::log_memory_overview(&boot_info);
 
+        paging::ensure_nxe_enabled();
+
         // Set GS base EARLY to avoid corrupting static variables during initramfs loading
         unsafe {
             // Get GS_DATA address without creating a reference that might corrupt nearby statics
