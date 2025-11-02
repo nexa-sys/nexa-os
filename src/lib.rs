@@ -4,6 +4,7 @@
 pub mod arch;
 pub mod auth;
 pub mod elf;
+pub mod framebuffer;
 pub mod fs;
 pub mod gdt;
 pub mod initramfs;
@@ -41,6 +42,7 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
         }
     }
 
+    framebuffer::early_init(&boot_info);
     vga_buffer::init();
 
     kinfo!("Kernel log level set to {}", logger::max_level().as_str());
@@ -103,6 +105,7 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
 
     // Initialize paging (required for user mode)
     paging::init();
+    framebuffer::activate();
 
     // Check INITRAMFS after paging::init()
     kinfo!(

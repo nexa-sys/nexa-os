@@ -25,22 +25,65 @@ mkdir -p "$ISO_DIR/boot/grub" "$DIST_DIR"
 
 cp "$KERNEL_BIN" "$ISO_DIR/boot/kernel.elf"
 
+# Copy default GRUB font if present for EFI gfxterm support
+GRUB_FONT_SOURCE=""
+for candidate in /usr/share/grub/unicode.pf2 /usr/share/grub2/unicode.pf2; do
+    if [ -z "$GRUB_FONT_SOURCE" ] && [ -f "$candidate" ]; then
+        GRUB_FONT_SOURCE="$candidate"
+    fi
+done
+
+if [ -n "$GRUB_FONT_SOURCE" ]; then
+    mkdir -p "$ISO_DIR/boot/grub/fonts"
+    cp "$GRUB_FONT_SOURCE" "$ISO_DIR/boot/grub/fonts/unicode.pf2"
+fi
+
 # Copy initramfs if it exists
+HAS_INITRAMFS=0
 if [ -f "$ROOT_DIR/build/initramfs.cpio" ]; then
     cp "$ROOT_DIR/build/initramfs.cpio" "$ISO_DIR/boot/initramfs.cpio"
     echo "Including initramfs in ISO"
+    HAS_INITRAMFS=1
 fi
 
-cat > "$ISO_DIR/boot/grub/grub.cfg" <<'CFG'
+{
+    cat <<'GRUBCFG'
 set timeout=3
 set default=0
 
+if [ "$grub_platform" = "efi" ]; then
+    if loadfont /boot/grub/fonts/unicode.pf2; then
+        set gfxmode=auto
+        insmod efi_gop
+        insmod efi_uga
+        insmod gfxterm
+        terminal_output gfxterm
+    else
+        terminal_output console
+    fi
+else
+    terminal_output console
+fi
+
+set gfxpayload=keep
+insmod video_bochs
+insmod video_cirrus
+
 menuentry "NexaOS" {
     multiboot2 /boot/kernel.elf
+GRUBCFG
+
+    if [ "$HAS_INITRAMFS" -eq 1 ]; then
+        cat <<'GRUBCFG_MODULE'
     module2 /boot/initramfs.cpio
+GRUBCFG_MODULE
+    fi
+
+    cat <<'GRUBCFG_END'
     boot
 }
-CFG
+GRUBCFG_END
+} > "$ISO_DIR/boot/grub/grub.cfg"
 
 grub-mkrescue -o "$DIST_DIR/nexaos-release.iso" "$ISO_DIR"
 

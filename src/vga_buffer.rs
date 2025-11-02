@@ -3,6 +3,7 @@ use core::ptr;
 use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 
+use crate::framebuffer;
 use crate::kinfo;
 
 const BUFFER_HEIGHT: usize = 25;
@@ -78,6 +79,7 @@ pub fn init() {
 pub(crate) fn _print(args: fmt::Arguments<'_>) {
     // Print to both VGA and serial
     crate::serial::_print(args);
+    framebuffer::_print(args);
     with_writer(|writer| {
         writer.write_fmt(args).ok();
     });
@@ -166,6 +168,7 @@ impl Writer {
                 self.write_at(row, col, blank);
             }
         }
+        framebuffer::backspace();
     }
 
     fn new_line(&mut self) {
@@ -231,6 +234,7 @@ pub fn clear_screen() {
         writer.clear_row(row);
     }
     writer.column_position = 0;
+    framebuffer::clear();
 }
 
 pub fn with_writer<F, R>(f: F) -> R

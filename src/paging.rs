@@ -1,5 +1,6 @@
 /// Memory paging setup for x86_64
 use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use x86_64::structures::paging::PageTable;
 use x86_64::PhysAddr;
 
@@ -37,6 +38,61 @@ impl PageTableHolder {
 static USER_PDP: PageTableHolder = PageTableHolder::new();
 static USER_PD: PageTableHolder = PageTableHolder::new();
 static KERNEL_IDENTITY_PD: PageTableHolder = PageTableHolder::new();
+
+const EXTRA_TABLE_COUNT: usize = 32;
+
+static EXTRA_TABLES: [PageTableHolder; EXTRA_TABLE_COUNT] = [
+    PageTableHolder::new(),
+    PageTableHolder::new(),
+    PageTableHolder::new(),
+    PageTableHolder::new(),
+    PageTableHolder::new(),
+    PageTableHolder::new(),
+    PageTableHolder::new(),
+    PageTableHolder::new(),
+    PageTableHolder::new(),
+    PageTableHolder::new(),
+    PageTableHolder::new(),
+    PageTableHolder::new(),
+    PageTableHolder::new(),
+    PageTableHolder::new(),
+    PageTableHolder::new(),
+    PageTableHolder::new(),
+    PageTableHolder::new(),
+    PageTableHolder::new(),
+    PageTableHolder::new(),
+    PageTableHolder::new(),
+    PageTableHolder::new(),
+    PageTableHolder::new(),
+    PageTableHolder::new(),
+    PageTableHolder::new(),
+    PageTableHolder::new(),
+    PageTableHolder::new(),
+    PageTableHolder::new(),
+    PageTableHolder::new(),
+    PageTableHolder::new(),
+    PageTableHolder::new(),
+    PageTableHolder::new(),
+    PageTableHolder::new(),
+];
+
+static EXTRA_TABLE_INDEX: AtomicUsize = AtomicUsize::new(0);
+
+fn allocate_extra_table() -> Option<&'static PageTableHolder> {
+    let idx = EXTRA_TABLE_INDEX.fetch_add(1, AtomicOrdering::SeqCst);
+    if idx >= EXTRA_TABLES.len() {
+        None
+    } else {
+        let holder = &EXTRA_TABLES[idx];
+        holder.reset();
+        Some(holder)
+    }
+}
+
+#[derive(Debug)]
+pub enum MapDeviceError {
+    OutOfTableSpace,
+}
 
 /// Initialize identity-mapped paging
 pub fn init() {
@@ -420,4 +476,76 @@ unsafe fn ensure_paging_enabled() {
     } else {
         crate::kdebug!("Paging already enabled");
     }
+}
+
+/// Map a physical device region into the kernel's virtual address space using
+/// identity mapping and 2 MiB huge pages. Returns the virtual address (which
+/// equals the physical start on success).
+pub unsafe fn map_device_region(phys_start: u64, length: usize) -> Result<*mut u8, MapDeviceError> {
+    use x86_64::registers::control::{Cr3, Cr3Flags};
+    use x86_64::structures::paging::PageTableFlags;
+
+    if length == 0 {
+        return Ok(phys_start as *mut u8);
+    }
+
+    let (pml4_frame, _) = Cr3::read();
+    let pml4_addr = pml4_frame.start_address();
+    let pml4 = &mut *(pml4_addr.as_u64() as *mut PageTable);
+
+    let huge_page = 0x200000u64;
+    let start = phys_start & !(huge_page - 1);
+    let end = (phys_start + length as u64 + huge_page - 1) & !(huge_page - 1);
+
+    for addr in (start..end).step_by(huge_page as usize) {
+        let virt = addr;
+        let pml4_index = ((virt >> 39) & 0x1FF) as usize;
+        let pdp_index = ((virt >> 30) & 0x1FF) as usize;
+        let pd_index = ((virt >> 21) & 0x1FF) as usize;
+
+        if pml4[pml4_index].is_unused() {
+            let table = allocate_extra_table().ok_or(MapDeviceError::OutOfTableSpace)?;
+            pml4[pml4_index].set_addr(
+                table.phys_addr(),
+                PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+            );
+        }
+
+        let pdp_ptr = pml4[pml4_index].addr().as_u64() as *mut PageTable;
+        let pdp = &mut *pdp_ptr;
+
+        if pdp[pdp_index].flags().contains(PageTableFlags::HUGE_PAGE) {
+            // Already covered by a 1 GiB huge page, nothing else to do.
+            continue;
+        }
+
+        if pdp[pdp_index].is_unused() {
+            let table = allocate_extra_table().ok_or(MapDeviceError::OutOfTableSpace)?;
+            pdp[pdp_index].set_addr(
+                table.phys_addr(),
+                PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+            );
+        }
+
+        let pd_ptr = pdp[pdp_index].addr().as_u64() as *mut PageTable;
+        let pd = &mut *pd_ptr;
+
+        let entry = &mut pd[pd_index];
+        if entry.is_unused() {
+            entry.set_addr(
+                PhysAddr::new(addr),
+                PageTableFlags::PRESENT
+                    | PageTableFlags::WRITABLE
+                    | PageTableFlags::HUGE_PAGE
+                    | PageTableFlags::WRITE_THROUGH
+                    | PageTableFlags::NO_CACHE
+                    | PageTableFlags::NO_EXECUTE,
+            );
+        }
+    }
+
+    let (flush_frame, _) = Cr3::read();
+    Cr3::write(flush_frame, Cr3Flags::empty());
+
+    Ok(phys_start as *mut u8)
 }

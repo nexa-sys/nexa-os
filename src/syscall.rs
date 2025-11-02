@@ -804,7 +804,7 @@ fn read_from_keyboard(buf: *mut u8, count: usize) -> u64 {
 
     unsafe {
         if read_len > 0 {
-            ptr::copy_nonoverlapping(line.as_ptr(), buf, read_len);   
+            ptr::copy_nonoverlapping(line.as_ptr(), buf, read_len);
         }
         let mut total = read_len;
         if total < count {
@@ -812,7 +812,7 @@ fn read_from_keyboard(buf: *mut u8, count: usize) -> u64 {
             total += 1;
         }
         posix::set_errno(0);
-    crate::kinfo!("sys_read(stdin): returning {} bytes to userspace", total);
+        crate::kinfo!("sys_read(stdin): returning {} bytes to userspace", total);
         total as u64
     }
 }

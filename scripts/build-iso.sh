@@ -26,6 +26,19 @@ mkdir -p "$ISO_DIR/boot/grub" "$DIST_DIR"
 
 cp "$KERNEL_BIN" "$ISO_DIR/boot/kernel.elf"
 
+# Copy default GRUB font if present (required for gfxterm on EFI systems)
+GRUB_FONT_SOURCE=""
+for candidate in /usr/share/grub/unicode.pf2 /usr/share/grub2/unicode.pf2; do
+    if [ -z "$GRUB_FONT_SOURCE" ] && [ -f "$candidate" ]; then
+        GRUB_FONT_SOURCE="$candidate"
+    fi
+done
+
+if [ -n "$GRUB_FONT_SOURCE" ]; then
+    mkdir -p "$ISO_DIR/boot/grub/fonts"
+    cp "$GRUB_FONT_SOURCE" "$ISO_DIR/boot/grub/fonts/unicode.pf2"
+fi
+
 # Copy initramfs if it exists
 HAS_INITRAMFS=0
 if [ -f "$ROOT_DIR/build/initramfs.cpio" ]; then
@@ -35,9 +48,27 @@ if [ -f "$ROOT_DIR/build/initramfs.cpio" ]; then
 fi
 
 {
-    cat <<GRUBCFG
+    cat <<'GRUBCFG'
 set timeout=3
 set default=0
+
+if [ "$grub_platform" = "efi" ]; then
+    if loadfont /boot/grub/fonts/unicode.pf2; then
+        set gfxmode=auto
+        insmod efi_gop
+        insmod efi_uga
+        insmod gfxterm
+        terminal_output gfxterm
+    else
+        terminal_output console
+    fi
+else
+    terminal_output console
+fi
+
+set gfxpayload=keep
+insmod video_bochs
+insmod video_cirrus
 
 menuentry "NexaOS" {
     multiboot2 /boot/kernel.elf ${GRUB_CMDLINE}
