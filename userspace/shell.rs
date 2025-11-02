@@ -404,19 +404,37 @@ fn print_mode_short(mode: u32) {
     print_bytes(&buf);
 }
 
+fn report_stdin_error(err: i32) {
+    print_str("stdin read failed (errno ");
+    print_i64(err as i64);
+    println_str(")");
+}
+
 fn read_line(buf: &mut [u8]) -> usize {
-    let len = read(0, buf.as_mut_ptr(), buf.len());
-    println_str("[read_line raw]");
-    print_u64(len as u64);
-    println_str("[read_line raw end]");
-    if len == 0 {
-        return 0;
+    loop {
+        let len = read(0, buf.as_mut_ptr(), buf.len());
+        if len == usize::MAX {
+            let err = errno();
+            if err != 0 {
+                report_stdin_error(err);
+            }
+            continue;
+        }
+
+        if len == 0 {
+            let err = errno();
+            if err != 0 {
+                report_stdin_error(err);
+            }
+            return 0;
+        }
+
+        let mut end = len;
+        while end > 0 && (buf[end - 1] == b'\n' || buf[end - 1] == b'\r') {
+            end -= 1;
+        }
+        return end;
     }
-    let mut end = len;
-    while end > 0 && (buf[end - 1] == b'\n' || buf[end - 1] == b'\r') {
-        end -= 1;
-    }
-    end
 }
 
 fn open_file(path: &str) -> Option<u64> {
@@ -780,6 +798,7 @@ fn prompt(state: &ShellState) {
     let username = if refresh_current_user(&mut info) {
         let len = info.username_len as usize;
         if len == 0 {
+
             "anonymous"
         } else {
             core::str::from_utf8(&info.username[..len]).unwrap_or("nexa")
@@ -796,16 +815,12 @@ fn prompt(state: &ShellState) {
 }
 
 fn handle_command(state: &mut ShellState, line: &str) {
-    println_str("[handle_command entry]");
     let mut parts = line.split_whitespace();
     let Some(cmd) = parts.next() else { return; };
 
-    println_str("[handle_command command]");
     match cmd {
         "help" => {
-            println_str("[handle_command help]");
             show_help();
-            println_str("[handle_command help done]");
         }
         "ls" => {
             let mut show_all = false;
@@ -916,20 +931,12 @@ fn shell_loop() -> ! {
     loop {
         prompt(&state);
         let len = read_line(&mut buffer);
-        println_str("[shell_loop len]");
         if len == 0 {
             continue;
         }
         if let Ok(line) = core::str::from_utf8(&buffer[..len]) {
-            println_str("[shell_loop ok]");
             let trimmed = line.trim();
-            println_str("[shell_loop trimmed]");
-            print_u64(trimmed.len() as u64);
-            println_str("[shell_loop trimmed len]");
-            println_str(trimmed);
-            println_str("[shell_loop trimmed value]");
             if !trimmed.is_empty() {
-                println_str("[shell_loop handle]");
                 handle_command(&mut state, trimmed);
             }
         } else {

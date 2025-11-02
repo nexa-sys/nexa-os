@@ -12,6 +12,7 @@ pub mod errno {
     pub const EAGAIN: i32 = 11;
     pub const ENOMEM: i32 = 12;
     pub const EACCES: i32 = 13;
+    pub const EFAULT: i32 = 14;
     pub const EEXIST: i32 = 17;
     pub const ENOTDIR: i32 = 20;
     pub const EISDIR: i32 = 21;

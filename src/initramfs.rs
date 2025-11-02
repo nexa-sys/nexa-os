@@ -370,41 +370,93 @@ where
     for_each_entry(|entry| cb(entry.name));
 }
 
-/// Initialize initramfs from multiboot module
-pub fn init(base: *const u8, size: usize) {
+/// Initialize initramfs from a Multiboot module.
+///
+/// # Safety
+///
+/// * `base` must point to a valid, readable CPIO archive of `size` bytes.
+/// * The pointed-to memory must remain accessible for the duration of this
+///   function, and—when the archive is larger than the internal staging
+///   buffer—until the kernel no longer needs to access the archive contents.
+pub unsafe fn init(base: *const u8, size: usize) {
     // Assume GRUB has already mapped the initramfs region
     // 假设 GRUB 或引导程序已经将 initramfs 模块映射到内存中并传递了基地址/大小
 
-    unsafe {
-        if size == 0 {
+    if size == 0 {
+        INITRAMFS_PRESENT = false;
+        INITRAMFS_INSTANCE = Initramfs::empty();
+        crate::kwarn!("Initramfs module reported size 0; skipping load");
+        return;
+    }
+
+    let module_addr = base as u64;
+    let module_end = match module_addr.checked_add(size as u64) {
+        Some(end) => end,
+        None => {
             INITRAMFS_PRESENT = false;
             INITRAMFS_INSTANCE = Initramfs::empty();
-            crate::kwarn!("Initramfs module reported size 0; skipping load");
-            return;
-        }
-
-        // If the module fits into our kernel-owned buffer, copy it there
-        if size <= INITRAMFS_COPY_BUF_SIZE {
-            let dst = (&raw mut INITRAMFS_COPY_BUF as *mut core::mem::MaybeUninit<[u8; 64 * 1024]>)
-                .cast::<u8>();
-            core::ptr::copy_nonoverlapping(base, dst, size);
-            INITRAMFS_INSTANCE = Initramfs::new(dst as *const u8, size);
-            crate::kinfo!("Initramfs copied into kernel buffer ({} bytes)", size);
-        } else {
-            // Fallback: reference original module memory
-            INITRAMFS_INSTANCE = Initramfs::new(base, size);
-            crate::kwarn!(
-                "Initramfs module too large to copy ({} bytes), using original pointer",
+            crate::kfatal!(
+                "Initramfs module size causes address overflow: start={:#x}, size={} bytes",
+                module_addr,
                 size
             );
+            return;
         }
+    };
 
-        INITRAMFS_PRESENT = true;
+    const IDENTITY_LIMIT: u64 = 0x1_0000_0000; // 4 GiB identity window established in boot code
+
+    let mapped_base: *const u8 = if module_end <= IDENTITY_LIMIT {
+        base
+    } else {
+        crate::kwarn!(
+            "Initramfs module spans high physical memory: start={:#x}, end={:#x}; provisioning identity mapping",
+            module_addr,
+            module_end
+        );
+
+        match crate::paging::map_device_region(module_addr, size) {
+            Ok(ptr) => {
+                crate::kinfo!(
+                    "Initramfs module mapped for high memory access using {} bytes",
+                    size
+                );
+                ptr as *const u8
+            }
+            Err(err) => {
+                INITRAMFS_PRESENT = false;
+                INITRAMFS_INSTANCE = Initramfs::empty();
+                crate::kfatal!(
+                    "Failed to map initramfs module [{:#x}, {:#x}): {:?}",
+                    module_addr,
+                    module_end,
+                    err
+                );
+                return;
+            }
+        }
+    };
+
+    // If the module fits into our kernel-owned buffer, copy it there
+    if size <= INITRAMFS_COPY_BUF_SIZE {
+        let dst = core::ptr::addr_of_mut!(INITRAMFS_COPY_BUF).cast::<u8>();
+        core::ptr::copy_nonoverlapping(mapped_base, dst, size);
+        INITRAMFS_INSTANCE = Initramfs::new(dst as *const u8, size);
+        crate::kinfo!("Initramfs copied into kernel buffer ({} bytes)", size);
+    } else {
+        // Fallback: reference original (now safely mapped) module memory
+        INITRAMFS_INSTANCE = Initramfs::new(mapped_base, size);
+        crate::kwarn!(
+            "Initramfs module too large to copy ({} bytes), using mapped pointer",
+            size
+        );
     }
+
+    INITRAMFS_PRESENT = true;
 
     crate::kinfo!(
         "Initramfs initialized at {:#x}, size {} bytes",
-        base as usize,
+        module_addr as usize,
         size
     );
 

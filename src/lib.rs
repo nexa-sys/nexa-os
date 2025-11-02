@@ -93,7 +93,9 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
                     module_size
                 );
                 kinfo!("About to call initramfs::init()");
-                initramfs::init(module_start, module_size);
+                unsafe {
+                    initramfs::init(module_start, module_size);
+                }
                 kinfo!("initramfs::init() completed");
             }
         } else {
@@ -434,7 +436,6 @@ macro_rules! try_init_exec {
                     kinfo!("Successfully loaded '{}' as PID {}", path, proc.pid);
                     kinfo!("Switching to REAL user mode (Ring 3)...");
                     proc.execute(); // Never returns
-                    drop(proc)
                 }
                 Err(e) => {
                     kpanic!("Failed to load '{}': {}", path, e);

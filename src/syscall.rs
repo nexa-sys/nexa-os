@@ -143,7 +143,13 @@ fn syscall_write(fd: u64, buf: u64, count: u64) -> u64 {
 /// Read system call
 fn syscall_read(fd: u64, buf: *mut u8, count: usize) -> u64 {
     crate::kinfo!("sys_read(fd={}, count={})", fd, count);
-    if count == 0 || buf.is_null() {
+    if buf.is_null() {
+        posix::set_errno(posix::errno::EFAULT);
+        return u64::MAX;
+    }
+
+    if count == 0 {
+        posix::set_errno(0);
         return 0;
     }
 
@@ -153,13 +159,13 @@ fn syscall_read(fd: u64, buf: *mut u8, count: usize) -> u64 {
 
     if fd < FD_BASE {
         posix::set_errno(posix::errno::EBADF);
-        return 0;
+        return u64::MAX;
     }
 
     let idx = (fd - FD_BASE) as usize;
     if idx >= MAX_OPEN_FILES {
         posix::set_errno(posix::errno::EBADF);
-        return 0;
+        return u64::MAX;
     }
 
     unsafe {
@@ -196,7 +202,7 @@ fn syscall_read(fd: u64, buf: *mut u8, count: usize) -> u64 {
     }
 
     posix::set_errno(posix::errno::EBADF);
-    0
+    u64::MAX
 }
 
 /// Exit system call
