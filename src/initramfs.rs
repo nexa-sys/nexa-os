@@ -27,6 +27,9 @@ pub fn debug_dump_state(label: &str) {
 // GS data for syscall and Ring 3 switch - moved to top to avoid memory layout conflicts
 #[repr(C, align(64))]
 pub struct GsData(pub [u64; 16]);
+// Layout (8-byte slots):
+// [0] user_rsp, [1] kernel_rsp, [2] user_entry, [3] user_stack,
+// [4] user_cs, [5] user_ss, [6] user_ds, [7] saved_rcx, [8] saved_rflags.
 
 #[link_section = ".gs_data"]
 pub static mut GS_DATA: GsData = GsData([0; 16]);

@@ -10,6 +10,11 @@ use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, Pag
 pub const PIC_1_OFFSET: u8 = 32;
 pub const PIC_2_OFFSET: u8 = PIC_1_OFFSET + 8;
 
+/// Toggle IA32_* MSR configuration for `syscall` fast path.
+/// Keep disabled while userspace dispatches via `int 0x81` so we avoid
+/// touching MSRs on hardware that may not like partially configured selectors.
+const ENABLE_SYSCALL_MSRS: bool = false;
+
 pub static PICS: spin::Mutex<ChainedPics> =
     spin::Mutex::new(unsafe { ChainedPics::new(PIC_1_OFFSET, PIC_2_OFFSET) });
 
@@ -37,6 +42,9 @@ global_asm!(
     "push r13",
     "push r14",
     "push r15",
+    // Align stack to 16 bytes before calling into Rust (SysV ABI requires
+    // %rsp % 16 == 8 at the call site so the callee observes 16-byte alignment).
+    "sub rsp, 8",
     // Call syscall_dispatch(nr=rax, arg1=rdi, arg2=rsi, arg3=rdx)
     "mov rcx, rdx", // rcx = arg3
     "mov rdx, rsi", // rdx = arg2
@@ -44,6 +52,7 @@ global_asm!(
     "mov rdi, rax", // rdi = nr
     "call syscall_dispatch",
     // Return value already in rax
+    "add rsp, 8",
     // Restore registers (reverse order)
     "pop r15",
     "pop r14",
@@ -60,6 +69,7 @@ global_asm!(
 
 extern "C" {
     fn syscall_interrupt_handler();
+    #[allow(dead_code)]
     fn syscall_handler();
 }
 
@@ -306,10 +316,16 @@ pub fn init_interrupts() {
     }
     crate::kinfo!("init_interrupts: PICs initialized");
 
-    crate::kinfo!("init_interrupts: about to call setup_syscall");
-    setup_syscall();
-    crate::initramfs::debug_dump_state("after-setup-syscall");
-    crate::kinfo!("init_interrupts: setup_syscall completed");
+    if ENABLE_SYSCALL_MSRS {
+        crate::kinfo!("init_interrupts: enabling SYSCALL MSR fast path");
+        setup_syscall();
+        crate::initramfs::debug_dump_state("after-setup-syscall");
+        crate::kinfo!("init_interrupts: setup_syscall completed");
+    } else {
+        crate::kinfo!(
+            "init_interrupts: skipping SYSCALL MSR setup (using int 0x81 gateway)"
+        );
+    }
 
     // Load IDT LAST to avoid corrupting static variables
     unsafe {
@@ -404,32 +420,47 @@ define_spurious_irq!(spurious_irq15_handler, PIC_2_OFFSET + 7);
 #[unsafe(naked)]
 extern "C" fn syscall_instruction_handler() {
     core::arch::naked_asm!(
-        // syscall entry: RIP->RCX, RFLAGS->R11, CS/SS set from STAR, RSP->RSP0
+        // On SYSCALL entry the CPU stores the user return RIP in RCX and the
+        // user RFLAGS in R11. Capture that state alongside the user stack so
+        // the kernel can restore it exactly before executing SYSRET.
+        "mov gs:[0], rsp",   // GS[0]  = user RSP snapshot
+        "mov rsp, gs:[8]",   // RSP    = kernel stack top
+        "mov gs:[56], rcx",  // GS[7]  = user return RIP (RCX)
+        "mov gs:[64], r11",  // GS[8]  = user RFLAGS (R11)
 
-        // GS base is already set to GS_DATA in setup_syscall
-        "mov gs:[0], rsp", // Save user RSP
-        "mov rsp, gs:[8]", // Load kernel RSP
-        // Save syscall args
-        "push rax",
-        "push rdi",
-        "push rsi",
-        "push rdx",
-        // Call handler
+        // Preserve callee-saved registers that Rust expects us to maintain.
+        "push r15",
+        "push r14",
+        "push r13",
+        "push r12",
+        "push rbx",
+        "push rbp",
+
+    // See note in int 0x81 handler: ensure 16-byte stack alignment before call.
+    "sub rsp, 8",
+
+        // Arrange SysV ABI arguments for syscall_dispatch(nr, arg1, arg2, arg3).
+        "mov rcx, rdx",    // rcx = arg3
+        "mov rdx, rsi",    // rdx = arg2
+        "mov rsi, rdi",    // rsi = arg1
+        "mov rdi, rax",    // rdi = syscall number
         "call syscall_dispatch",
-        // Save return value
-        "push rax",
-        // Restore syscall args
-        "pop rdx",
-        "pop rsi",
-        "pop rdi",
-        "add rsp, 8", // Skip original rax on stack
-        // Restore return value to rax
-        "pop rax",
-        // Prepare stack for sysret: RIP, RFLAGS, RSP
-        "push rcx",    // User RIP
-        "push r11",    // User RFLAGS
-        "push gs:[0]", // User RSP
-        "sysret",      // Return to user mode
+
+    "add rsp, 8",
+
+        // Restore the callee-saved register set before we leave the kernel stack.
+        "pop rbp",
+        "pop rbx",
+        "pop r12",
+        "pop r13",
+        "pop r14",
+        "pop r15",
+
+        // Recover the saved user return context and jump back with SYSRETQ.
+        "mov rcx, gs:[56]", // rcx = user RIP
+        "mov r11, gs:[64]", // r11 = user RFLAGS
+        "mov rsp, gs:[0]",  // rsp = user RSP
+        "sysretq",
     );
 }
 
@@ -590,15 +621,62 @@ pub unsafe fn set_gs_data(entry: u64, stack: u64, user_cs: u64, user_ss: u64, us
         gs_data_ptr.add(4).write(user_cs); // user_cs at gs:[32]
         gs_data_ptr.add(5).write(user_ss); // user_ss at gs:[40]
         gs_data_ptr.add(6).write(user_ds); // user_ds at gs:[48]
+        gs_data_ptr.add(7).write(0); // Clear saved RCX slot
+        gs_data_ptr.add(8).write(0); // Clear saved RFLAGS slot
     }
 }
 
 pub fn setup_syscall() {
-    // Setup syscall
-    crate::kinfo!(
-        "Setting syscall handler to {:#x}",
-        syscall_instruction_handler as u64
+    let handler_addr = syscall_instruction_handler as u64;
+
+    crate::kinfo!("Setting syscall handler to {:#x}", handler_addr);
+
+    if !cpu_supports_syscall() {
+        crate::kwarn!("CPU lacks SYSCALL/SYSRET support; skipping setup");
+        return;
+    }
+
+    if !is_canonical_address(handler_addr) {
+        crate::kerror!(
+            "SYSCALL handler address {:#x} is non-canonical; keeping int 0x81 path",
+            handler_addr
+        );
+        return;
+    }
+
+    let selectors = unsafe { crate::gdt::get_selectors() };
+    let kernel_cs = selectors.code_selector.0 as u16;
+    let kernel_ss = selectors.data_selector.0 as u16;
+    let user_cs = selectors.user_code_selector.0 as u16;
+    let user_ss = selectors.user_data_selector.0 as u16;
+
+    if kernel_ss != kernel_cs + 8 {
+        crate::kwarn!(
+            "Kernel SS ({:#x}) does not equal kernel CS+8 ({:#x}); STAR will assume the latter",
+            kernel_ss,
+            kernel_cs + 8
+        );
+    }
+
+    if user_ss != user_cs + 8 {
+        crate::kwarn!(
+            "User SS ({:#x}) does not equal user CS+8 ({:#x}); STAR will assume the latter",
+            user_ss,
+            user_cs + 8
+        );
+    }
+
+    let kernel_cs_star = (kernel_cs & !0x7) as u64; // ensure RPL=0
+    let user_cs_star = ((user_cs | 0x3) & 0xFFFF) as u64; // ensure RPL=3
+
+    let star_value = (kernel_cs_star << 32) | (user_cs_star << 48);
+    crate::kdebug!(
+        "MSR: STAR composed from selectors kernel_cs={:#x}, user_cs={:#x} -> {:#x}",
+        kernel_cs,
+        user_cs,
+        star_value
     );
+
     unsafe {
         // Get GS_DATA address without creating a reference that might corrupt nearby statics
         let gs_data_addr = &raw const crate::initramfs::GS_DATA.0 as *const _ as u64;
@@ -611,6 +689,10 @@ pub fn setup_syscall() {
             crate::initramfs::get().is_some()
         );
 
+        crate::kdebug!("MSR: about to write KERNEL_GS_BASE");
+        Msr::new(0xc0000102).write(gs_data_addr); // Kernel GS base used by swapgs
+        crate::kdebug!("MSR: KERNEL_GS_BASE written");
+
         // Set GS base to GS_DATA address
         // GS base is already set in kernel_main before interrupt initialization
         // let gs_base = gs_data_addr;
@@ -619,22 +701,58 @@ pub fn setup_syscall() {
         // Use kernel logging for MSR write tracing so it follows the
         // kernel logging convention (serial + optional VGA). logger
         // will skip VGA until it's ready, so this is safe during early boot.
-        crate::kdebug!("MSR: about to set EFER.SCE");
-        Msr::new(0xc0000080).write(1 << 0); // IA32_EFER.SCE = 1
-        crate::kdebug!("MSR: EFER.SCE set");
+        crate::kdebug!("MSR: about to enable EFER.SCE");
+        let mut efer_msr = Msr::new(0xc0000080);
+        let mut efer_val = efer_msr.read();
+        let had_sce = (efer_val & (1 << 0)) != 0;
+        efer_val |= 1 << 0; // IA32_EFER.SCE
+        efer_msr.write(efer_val);
+        crate::kdebug!(
+            "MSR: EFER updated (prev_sce={}, new_val={:#x})",
+            had_sce,
+            efer_val
+        );
 
         crate::kdebug!("MSR: about to write STAR");
-        Msr::new(0xc0000081).write((0x08 << 32) | (0x1b << 48)); // STAR
+        Msr::new(0xc0000081).write(star_value);
         crate::kdebug!("MSR: STAR written");
 
         // Point LSTAR to the Rust/assembly syscall handler which prepares
         // arguments (moves rax->rdi, etc.) and uses sysretq.
         crate::kdebug!("MSR: about to write LSTAR");
-        Msr::new(0xc0000082).write(syscall_handler as u64); // LSTAR
-        crate::kdebug!("MSR: LSTAR written");
+        Msr::new(0xc0000082).write(handler_addr); // LSTAR
+        let lstar_val = Msr::new(0xc0000082).read();
+        crate::kdebug!(
+            "MSR: LSTAR written (handler={:#x}, readback={:#x})",
+            handler_addr,
+            lstar_val
+        );
 
         crate::kdebug!("MSR: about to write FMASK");
         Msr::new(0xc0000084).write(0x200); // FMASK
         crate::kdebug!("MSR: FMASK written");
+    }
+}
+
+fn cpu_supports_syscall() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        let res = core::arch::x86_64::__cpuid(0x8000_0001);
+        (res.edx & (1 << 11)) != 0
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        false
+    }
+}
+
+fn is_canonical_address(addr: u64) -> bool {
+    let sign = (addr >> 47) & 1;
+    let upper = addr >> 48;
+    if sign == 0 {
+        upper == 0
+    } else {
+        upper == 0xFFFF
     }
 }
