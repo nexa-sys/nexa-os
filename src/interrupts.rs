@@ -322,9 +322,7 @@ pub fn init_interrupts() {
         crate::initramfs::debug_dump_state("after-setup-syscall");
         crate::kinfo!("init_interrupts: setup_syscall completed");
     } else {
-        crate::kinfo!(
-            "init_interrupts: skipping SYSCALL MSR setup (using int 0x81 gateway)"
-        );
+        crate::kinfo!("init_interrupts: skipping SYSCALL MSR setup (using int 0x81 gateway)");
     }
 
     // Load IDT LAST to avoid corrupting static variables
@@ -340,9 +338,7 @@ pub fn init_interrupts() {
         master_port.write(0xFD); // Unmask only keyboard IRQ (IRQ1)
         let mut slave_port = Port::<u8>::new(0xA1);
         slave_port.write(0xFF); // Keep all slave IRQs masked
-        crate::kinfo!(
-            "init_interrupts: PIC masks applied (master=0xFD, slave=0xFF)"
-        );
+        crate::kinfo!("init_interrupts: PIC masks applied (master=0xFD, slave=0xFF)");
     }
 
     crate::initramfs::debug_dump_state("after-init-interrupts");
@@ -381,21 +377,13 @@ macro_rules! define_spurious_irq {
                     let mut port = Port::<u8>::new(0x21);
                     let mask = port.read() | (1 << irq_index);
                     port.write(mask);
-                    crate::kwarn!(
-                        "Masked master PIC line {} (IMR={:#010b})",
-                        irq_index,
-                        mask
-                    );
+                    crate::kwarn!("Masked master PIC line {} (IMR={:#010b})", irq_index, mask);
                 } else {
                     let irq_index = ($vector - PIC_2_OFFSET) as u8;
                     let mut port = Port::<u8>::new(0xA1);
                     let mask = port.read() | (1 << irq_index);
                     port.write(mask);
-                    crate::kwarn!(
-                        "Masked slave PIC line {} (IMR={:#010b})",
-                        irq_index,
-                        mask
-                    );
+                    crate::kwarn!("Masked slave PIC line {} (IMR={:#010b})", irq_index, mask);
                 }
             }
         }
@@ -423,11 +411,10 @@ extern "C" fn syscall_instruction_handler() {
         // On SYSCALL entry the CPU stores the user return RIP in RCX and the
         // user RFLAGS in R11. Capture that state alongside the user stack so
         // the kernel can restore it exactly before executing SYSRET.
-        "mov gs:[0], rsp",   // GS[0]  = user RSP snapshot
-        "mov rsp, gs:[8]",   // RSP    = kernel stack top
-        "mov gs:[56], rcx",  // GS[7]  = user return RIP (RCX)
-        "mov gs:[64], r11",  // GS[8]  = user RFLAGS (R11)
-
+        "mov gs:[0], rsp",  // GS[0]  = user RSP snapshot
+        "mov rsp, gs:[8]",  // RSP    = kernel stack top
+        "mov gs:[56], rcx", // GS[7]  = user return RIP (RCX)
+        "mov gs:[64], r11", // GS[8]  = user RFLAGS (R11)
         // Preserve callee-saved registers that Rust expects us to maintain.
         "push r15",
         "push r14",
@@ -435,19 +422,15 @@ extern "C" fn syscall_instruction_handler() {
         "push r12",
         "push rbx",
         "push rbp",
-
-    // See note in int 0x81 handler: ensure 16-byte stack alignment before call.
-    "sub rsp, 8",
-
+        // See note in int 0x81 handler: ensure 16-byte stack alignment before call.
+        "sub rsp, 8",
         // Arrange SysV ABI arguments for syscall_dispatch(nr, arg1, arg2, arg3).
-        "mov rcx, rdx",    // rcx = arg3
-        "mov rdx, rsi",    // rdx = arg2
-        "mov rsi, rdi",    // rsi = arg1
-        "mov rdi, rax",    // rdi = syscall number
+        "mov rcx, rdx", // rcx = arg3
+        "mov rdx, rsi", // rdx = arg2
+        "mov rsi, rdi", // rsi = arg1
+        "mov rdi, rax", // rdi = syscall number
         "call syscall_dispatch",
-
-    "add rsp, 8",
-
+        "add rsp, 8",
         // Restore the callee-saved register set before we leave the kernel stack.
         "pop rbp",
         "pop rbx",
@@ -455,7 +438,6 @@ extern "C" fn syscall_instruction_handler() {
         "pop r13",
         "pop r14",
         "pop r15",
-
         // Recover the saved user return context and jump back with SYSRETQ.
         "mov rcx, gs:[56]", // rcx = user RIP
         "mov r11, gs:[64]", // r11 = user RFLAGS

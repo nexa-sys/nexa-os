@@ -154,21 +154,50 @@ pub fn log(level: LogLevel, args: fmt::Arguments<'_>) {
 
     let emit_serial = should_emit_serial(level);
     let emit_vga = should_emit_vga(level);
+    let emit_framebuffer = emit_vga && crate::framebuffer::is_ready();
 
-    if !emit_serial && !emit_vga {
+    if !emit_serial && !emit_vga && !emit_framebuffer {
         return;
     }
 
     let timestamp_us = boot_time_us();
+    let mut ansi_line = None;
+    if emit_serial || emit_framebuffer {
+        ansi_line = build_color_log_line(level, timestamp_us, args.clone());
+    }
 
-    match (emit_serial, emit_vga) {
-        (true, true) => {
-            emit_serial_line(level, timestamp_us, args.clone());
-            emit_vga_line(level, timestamp_us, args);
+    let mut plain_line: Option<LogLineBuffer> = None;
+
+    if emit_serial {
+        if let Some(buffer) = ansi_line.as_ref() {
+            serial::write_bytes(buffer.as_bytes());
+        } else {
+            if plain_line.is_none() {
+                plain_line = build_plain_log_line(level, timestamp_us, args.clone());
+            }
+            if let Some(buffer) = plain_line.as_ref() {
+                serial::write_bytes(buffer.as_bytes());
+            } else {
+                emit_serial_fallback(level, timestamp_us, args.clone());
+            }
         }
-        (true, false) => emit_serial_line(level, timestamp_us, args),
-        (false, true) => emit_vga_line(level, timestamp_us, args),
-        (false, false) => {}
+    }
+
+    if emit_vga {
+        emit_vga_line(level, timestamp_us, args.clone());
+    }
+
+    if emit_framebuffer {
+        if let Some(buffer) = ansi_line.as_ref() {
+            crate::framebuffer::write_bytes(buffer.as_bytes());
+        } else {
+            if plain_line.is_none() {
+                plain_line = build_plain_log_line(level, timestamp_us, args);
+            }
+            if let Some(buffer) = plain_line.as_ref() {
+                crate::framebuffer::write_bytes(buffer.as_bytes());
+            }
+        }
     }
 }
 
@@ -225,7 +254,7 @@ fn should_emit_vga(level: LogLevel) -> bool {
     }
 }
 
-fn emit_serial_line(level: LogLevel, timestamp_us: u64, args: fmt::Arguments<'_>) {
+fn emit_serial_fallback(level: LogLevel, timestamp_us: u64, args: fmt::Arguments<'_>) {
     serial::_print(format_args!(
         "{color}[{timestamp}] [{level:<5}] {message}\x1b[0m\n",
         color = level.serial_color(),
@@ -269,19 +298,63 @@ fn emit_vga_line(level: LogLevel, timestamp_us: u64, args: fmt::Arguments<'_>) {
 
         let _ = writer.write_str("\n");
     });
+}
 
-    let mut plain = PlainLogBuffer::new();
-    let _ = write!(
-        plain,
+fn build_color_log_line(
+    level: LogLevel,
+    timestamp_us: u64,
+    args: fmt::Arguments<'_>,
+) -> Option<LogLineBuffer> {
+    let mut buffer = LogLineBuffer::new();
+    if buffer.write_str(level.serial_color()).is_err() {
+        return None;
+    }
+    if write!(
+        buffer,
+        "[{timestamp}] [{level:<5}] ",
+        timestamp = TimestampDisplay {
+            microseconds: timestamp_us,
+        },
+        level = LevelDisplay(level)
+    )
+    .is_err()
+    {
+        return None;
+    }
+    if fmt::write(&mut buffer, args).is_err() {
+        return None;
+    }
+    if buffer.write_str("\x1b[0m\n").is_err() {
+        return None;
+    }
+    Some(buffer)
+}
+
+fn build_plain_log_line(
+    level: LogLevel,
+    timestamp_us: u64,
+    args: fmt::Arguments<'_>,
+) -> Option<LogLineBuffer> {
+    let mut buffer = LogLineBuffer::new();
+    if write!(
+        buffer,
         "[{timestamp}] [{level}] ",
         timestamp = TimestampDisplay {
             microseconds: timestamp_us,
         },
         level = LevelDisplay(level)
-    );
-    let _ = fmt::write(&mut plain, args.clone());
-    let _ = plain.write_str("\n");
-    crate::framebuffer::write_bytes(plain.as_bytes());
+    )
+    .is_err()
+    {
+        return None;
+    }
+    if fmt::write(&mut buffer, args).is_err() {
+        return None;
+    }
+    if buffer.write_str("\n").is_err() {
+        return None;
+    }
+    Some(buffer)
 }
 
 pub fn set_console_output_enabled(serial_enabled: bool, vga_enabled: bool) {
@@ -367,15 +440,15 @@ impl fmt::Display for LevelDisplay {
     }
 }
 
-struct PlainLogBuffer {
-    buf: [u8; 512],
+struct LogLineBuffer {
+    buf: [u8; 1024],
     len: usize,
 }
 
-impl PlainLogBuffer {
+impl LogLineBuffer {
     const fn new() -> Self {
         Self {
-            buf: [0; 512],
+            buf: [0; 1024],
             len: 0,
         }
     }
@@ -385,7 +458,7 @@ impl PlainLogBuffer {
     }
 }
 
-impl Write for PlainLogBuffer {
+impl Write for LogLineBuffer {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         let bytes = s.as_bytes();
         if self.len + bytes.len() > self.buf.len() {
