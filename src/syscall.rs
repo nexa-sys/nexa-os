@@ -1,5 +1,10 @@
 use crate::posix::{self, FileType};
-use core::{arch::global_asm, cmp, ptr, slice, str};
+use core::{
+    arch::global_asm,
+    cmp,
+    fmt::{self, Write},
+    ptr, slice, str,
+};
 use x86_64::instructions::interrupts;
 
 /// System call numbers
@@ -20,6 +25,8 @@ pub const SYS_IPC_RECV: u64 = 212;
 pub const SYS_USER_ADD: u64 = 220;
 pub const SYS_USER_LOGIN: u64 = 221;
 pub const SYS_USER_INFO: u64 = 222;
+pub const SYS_USER_LIST: u64 = 223;
+pub const SYS_USER_LOGOUT: u64 = 224;
 
 const STDIN: u64 = 0;
 const STDOUT: u64 = 1;
@@ -81,35 +88,48 @@ static mut FILE_HANDLES: [Option<FileHandle>; MAX_OPEN_FILES] = [None; MAX_OPEN_
 
 /// Write system call
 fn syscall_write(fd: u64, buf: u64, count: u64) -> u64 {
+    if count == 0 {
+        posix::set_errno(0);
+        return 0;
+    }
+
+    if buf == 0 {
+        posix::set_errno(posix::errno::EINVAL);
+        return u64::MAX;
+    }
+
     if fd == STDOUT || fd == STDERR {
         let slice = unsafe { slice::from_raw_parts(buf as *const u8, count as usize) };
 
-        for &byte in slice {
-            crate::serial::write_byte(byte);
-        }
+        crate::serial::write_bytes(slice);
 
         crate::vga_buffer::with_writer(|writer| {
             use core::fmt::Write;
 
-            if let Ok(text) = str::from_utf8(slice) {
-                writer.write_str(text).ok();
-            } else {
-                for &byte in slice {
-                    let ch = match byte {
-                        b'\r' => '\r',
-                        b'\n' => '\n',
-                        b'\t' => '\t',
-                        0x20..=0x7E => byte as char,
-                        _ => '?',
-                    };
-                    writer.write_char(ch).ok();
+            match str::from_utf8(slice) {
+                Ok(text) => {
+                    writer.write_str(text).ok();
+                }
+                Err(_) => {
+                    for &byte in slice {
+                        let ch = match byte {
+                            b'\r' => '\r',
+                            b'\n' => '\n',
+                            b'\t' => '\t',
+                            0x20..=0x7E => byte as char,
+                            _ => '?',
+                        };
+                        writer.write_char(ch).ok();
+                    }
                 }
             }
         });
 
+        posix::set_errno(0);
         count
     } else {
-        0
+        posix::set_errno(posix::errno::EBADF);
+        u64::MAX
     }
 }
 
@@ -459,6 +479,48 @@ fn map_auth_error(err: crate::auth::AuthError) -> i32 {
     }
 }
 
+struct BufferWriter<'a> {
+    buf: &'a mut [u8],
+    len: usize,
+    overflow: bool,
+}
+
+impl<'a> BufferWriter<'a> {
+    fn new(buf: &'a mut [u8]) -> Self {
+        Self {
+            buf,
+            len: 0,
+            overflow: false,
+        }
+    }
+
+    fn written(&self) -> usize {
+        self.len
+    }
+
+    fn overflowed(&self) -> bool {
+        self.overflow
+    }
+}
+
+impl fmt::Write for BufferWriter<'_> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        if self.overflow {
+            return Err(fmt::Error);
+        }
+
+        let bytes = s.as_bytes();
+        if self.len + bytes.len() > self.buf.len() {
+            self.overflow = true;
+            return Err(fmt::Error);
+        }
+
+        self.buf[self.len..self.len + bytes.len()].copy_from_slice(bytes);
+        self.len += bytes.len();
+        Ok(())
+    }
+}
+
 fn syscall_user_add(request_ptr: *const UserRequest) -> u64 {
     if request_ptr.is_null() {
         posix::set_errno(posix::errno::EINVAL);
@@ -595,6 +657,51 @@ fn syscall_user_info(info_ptr: *mut UserInfoReply) -> u64 {
     0
 }
 
+fn syscall_user_list(buf_ptr: *mut u8, count: usize) -> u64 {
+    if buf_ptr.is_null() || count == 0 {
+        posix::set_errno(posix::errno::EINVAL);
+        return u64::MAX;
+    }
+
+    let buffer = unsafe { slice::from_raw_parts_mut(buf_ptr, count) };
+    let mut writer = BufferWriter::new(buffer);
+
+    crate::auth::enumerate_users(|summary| {
+        if writer.overflowed() {
+            return;
+        }
+
+        let username = summary.username_str();
+        let admin_flag = if summary.is_admin { 1 } else { 0 };
+        let _ = write!(
+            writer,
+            "{} uid={} gid={} admin={}\n",
+            username, summary.uid, summary.gid, admin_flag
+        );
+    });
+
+    if writer.overflowed() {
+        posix::set_errno(posix::errno::EAGAIN);
+    } else {
+        posix::set_errno(0);
+    }
+
+    writer.written() as u64
+}
+
+fn syscall_user_logout() -> u64 {
+    match crate::auth::logout() {
+        Ok(_) => {
+            posix::set_errno(0);
+            0
+        }
+        Err(err) => {
+            posix::set_errno(map_auth_error(err));
+            u64::MAX
+        }
+    }
+}
+
 fn map_ipc_error(err: crate::ipc::IpcError) -> i32 {
     match err {
         crate::ipc::IpcError::NoSuchChannel => posix::errno::ENOENT,
@@ -681,10 +788,16 @@ fn read_from_keyboard(buf: *mut u8, count: usize) -> u64 {
 
     // Allow the keyboard interrupt handler to run while we wait for input.
     // The INT 0x81 gate enters with IF=0, so without re-enabling here the
-    // HLT inside `keyboard::read_line` would never resume.
-    interrupts::enable();
+    // HLT inside `keyboard::read_line` would never resume. Preserve the
+    // previous interrupt state so nested callers remain well-behaved.
+    let were_enabled = interrupts::are_enabled();
+    if !were_enabled {
+        interrupts::enable();
+    }
     let read_len = crate::keyboard::read_line(&mut line[..max_copy]);
-    interrupts::disable();
+    if !were_enabled {
+        interrupts::disable();
+    }
 
     unsafe {
         if read_len > 0 {
@@ -695,6 +808,7 @@ fn read_from_keyboard(buf: *mut u8, count: usize) -> u64 {
             *buf.add(total) = b'\n';
             total += 1;
         }
+        posix::set_errno(0);
         total as u64
     }
 }
@@ -702,11 +816,7 @@ fn read_from_keyboard(buf: *mut u8, count: usize) -> u64 {
 #[no_mangle]
 pub extern "C" fn syscall_dispatch(nr: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 {
     match nr {
-        SYS_WRITE => {
-            let ret = syscall_write(arg1, arg2, arg3);
-            crate::kdebug!("SYSCALL_WRITE returned: {}", ret);
-            ret
-        }
+        SYS_WRITE => syscall_write(arg1, arg2, arg3),
         SYS_READ => syscall_read(arg1, arg2 as *mut u8, arg3 as usize),
         SYS_OPEN => syscall_open(arg1 as *const u8, arg2 as usize),
         SYS_CLOSE => syscall_close(arg1),
@@ -727,6 +837,8 @@ pub extern "C" fn syscall_dispatch(nr: u64, arg1: u64, arg2: u64, arg3: u64) -> 
         SYS_USER_ADD => syscall_user_add(arg1 as *const UserRequest),
         SYS_USER_LOGIN => syscall_user_login(arg1 as *const UserRequest),
         SYS_USER_INFO => syscall_user_info(arg1 as *mut UserInfoReply),
+        SYS_USER_LIST => syscall_user_list(arg1 as *mut u8, arg2 as usize),
+        SYS_USER_LOGOUT => syscall_user_logout(),
         _ => {
             crate::kinfo!("Unknown syscall: {}", nr);
             posix::set_errno(posix::errno::ENOSYS);
@@ -752,6 +864,7 @@ global_asm!(
     "push r13",
     "push r14",
     "push r15",
+    "sub rsp, 8", // maintain 16-byte stack alignment before calling into Rust
     // Call syscall_dispatch(nr=rax, arg1=rdi, arg2=rsi, arg3=rdx)
     "mov rcx, rdx", // arg3
     "mov rdx, rsi", // arg2
@@ -759,6 +872,7 @@ global_asm!(
     "mov rdi, rax", // nr
     "call syscall_dispatch",
     // Return value is in rax
+    "add rsp, 8",
     "pop r15",
     "pop r14",
     "pop r13",

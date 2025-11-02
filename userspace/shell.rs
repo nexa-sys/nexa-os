@@ -18,9 +18,14 @@ const SYS_IPC_RECV: u64 = 212;
 const SYS_USER_ADD: u64 = 220;
 const SYS_USER_LOGIN: u64 = 221;
 const SYS_USER_INFO: u64 = 222;
+const SYS_USER_LIST: u64 = 223;
+const SYS_USER_LOGOUT: u64 = 224;
 
 const LIST_FLAG_INCLUDE_HIDDEN: u64 = 0x1;
 const USER_FLAG_ADMIN: u64 = 0x1;
+
+const HOSTNAME: &str = "nexa";
+const MAX_PATH: usize = 256;
 
 fn syscall3(n: u64, a1: u64, a2: u64, a3: u64) -> u64 {
     // Route all syscalls via int 0x81 so the CPU saves/restores SS:RSP for Ring3 safely.
@@ -123,6 +128,134 @@ impl UserInfo {
             is_admin: 0,
         }
     }
+}
+
+struct ShellState {
+    path: [u8; MAX_PATH],
+    len: usize,
+}
+
+impl ShellState {
+    fn new() -> Self {
+        let mut path = [0u8; MAX_PATH];
+        path[0] = b'/';
+        Self { path, len: 1 }
+    }
+
+    fn current_path(&self) -> &str {
+        core::str::from_utf8(&self.path[..self.len]).unwrap_or("/")
+    }
+
+    fn set_path(&mut self, path: &str) {
+        let bytes = path.as_bytes();
+        let mut len = core::cmp::min(bytes.len(), MAX_PATH);
+        while len > 1 && bytes[len - 1] == b'/' {
+            len -= 1;
+        }
+        if len == 0 {
+            self.path[0] = b'/';
+            self.len = 1;
+        } else {
+            self.path[..len].copy_from_slice(&bytes[..len]);
+            self.len = len;
+        }
+    }
+
+    fn resolve<'a>(&self, input: &str, out: &'a mut [u8]) -> Option<&'a str> {
+        normalize_path(self.current_path(), input, out)
+    }
+}
+
+fn trim_line<'a>(buf: &'a [u8], mut len: usize) -> &'a str {
+    while len > 0 && matches!(buf[len - 1], b'\n' | b'\r' | 0) {
+        len -= 1;
+    }
+    core::str::from_utf8(&buf[..len]).unwrap_or("")
+}
+
+fn normalize_path<'a>(base: &str, input: &str, out: &'a mut [u8]) -> Option<&'a str> {
+    if out.is_empty() {
+        return None;
+    }
+
+    if input.is_empty() {
+        let bytes = base.as_bytes();
+        if bytes.len() > out.len() {
+            return None;
+        }
+        out[..bytes.len()].copy_from_slice(bytes);
+        return core::str::from_utf8(&out[..bytes.len()]).ok();
+    }
+
+    let mut path_len;
+    let mut remaining = input;
+
+    if remaining.starts_with('/') {
+        out[0] = b'/';
+        path_len = 1;
+        remaining = remaining.trim_start_matches('/');
+    } else {
+        let base_bytes = base.as_bytes();
+        if base_bytes.len() > out.len() {
+            return None;
+        }
+        path_len = base_bytes.len();
+        out[..path_len].copy_from_slice(base_bytes);
+    }
+
+    for part in remaining.split('/') {
+        if part.is_empty() || part == "." {
+            continue;
+        }
+        if part == ".." {
+            if path_len > 1 {
+                if out[path_len - 1] == b'/' && path_len > 1 {
+                    path_len -= 1;
+                }
+                while path_len > 0 && out[path_len - 1] != b'/' {
+                    path_len -= 1;
+                }
+                if path_len == 0 {
+                    out[0] = b'/';
+                    path_len = 1;
+                }
+            }
+            continue;
+        }
+
+        if path_len > 1 && out[path_len - 1] != b'/' {
+            if path_len >= out.len() {
+                return None;
+            }
+            out[path_len] = b'/';
+            path_len += 1;
+        } else if path_len == 0 {
+            out[path_len] = b'/';
+            path_len += 1;
+        }
+
+        let bytes = part.as_bytes();
+        if path_len + bytes.len() > out.len() {
+            return None;
+        }
+        out[path_len..path_len + bytes.len()].copy_from_slice(bytes);
+        path_len += bytes.len();
+    }
+
+    if path_len > 1 && out[path_len - 1] == b'/' {
+        path_len -= 1;
+    }
+
+    if path_len == 0 {
+        out[0] = b'/';
+        path_len = 1;
+    }
+
+    core::str::from_utf8(&out[..path_len]).ok()
+}
+
+fn is_directory(mode: u32) -> bool {
+    (mode & 0o170000) == 0o040000
 }
 
 #[repr(C)]
@@ -228,37 +361,10 @@ fn fetch_stat(path: &str, out: &mut Stat) -> bool {
 }
 
 fn format_child_path<'a>(base: &'a str, child: &'a str, out: &'a mut [u8]) -> Option<&'a str> {
-    let mut idx = 0usize;
-    let trimmed_base = if base == "/" {
-        ""
-    } else {
-        base.trim_matches('/')
-    };
-
-    if !trimmed_base.is_empty() {
-        let base_bytes = trimmed_base.as_bytes();
-        if base_bytes.len() >= out.len() {
-            return None;
-        }
-        out[..base_bytes.len()].copy_from_slice(base_bytes);
-        idx = base_bytes.len();
-        if idx >= out.len() {
-            return None;
-        }
-        out[idx] = b'/';
-        idx += 1;
-    }
-
-    let child_bytes = child.as_bytes();
-    if child_bytes.len() == 0 {
+    if child.is_empty() {
         return None;
     }
-    if idx + child_bytes.len() > out.len() {
-        return None;
-    }
-    out[idx..idx + child_bytes.len()].copy_from_slice(child_bytes);
-    idx += child_bytes.len();
-    core::str::from_utf8(&out[..idx]).ok()
+    normalize_path(base, child, out)
 }
 
 fn refresh_current_user(info: &mut UserInfo) -> bool {
@@ -338,8 +444,19 @@ fn close_file(fd: u64) {
     syscall3(SYS_CLOSE, fd, 0, 0);
 }
 
-fn list_directory_entries(path: &str, show_all: bool, long_format: bool) {
-    let trimmed = path.trim();
+fn list_directory_entries(state: &ShellState, path: &str, show_all: bool, long_format: bool) {
+    let mut resolved_buf = [0u8; MAX_PATH];
+    let effective = if path.is_empty() {
+        state.current_path()
+    } else {
+        match state.resolve(path, &mut resolved_buf) {
+            Some(p) => p,
+            None => {
+                println_str("ls: invalid path");
+                return;
+            }
+        }
+    };
     let mut request = ListDirRequest {
         path_ptr: 0,
         path_len: 0,
@@ -350,9 +467,9 @@ fn list_directory_entries(path: &str, show_all: bool, long_format: bool) {
         request.flags |= LIST_FLAG_INCLUDE_HIDDEN;
     }
 
-    if !trimmed.is_empty() {
-        request.path_ptr = trimmed.as_ptr() as u64;
-        request.path_len = trimmed.len() as u64;
+    if effective != "/" {
+        request.path_ptr = effective.as_ptr() as u64;
+        request.path_len = effective.len() as u64;
     }
 
     let req_ptr = if request.path_len == 0 && request.flags == 0 {
@@ -376,7 +493,7 @@ fn list_directory_entries(path: &str, show_all: bool, long_format: bool) {
     }
 
     if let Ok(list) = core::str::from_utf8(&buf[..len]) {
-        let mut path_buf = [0u8; 128];
+        let mut path_buf = [0u8; MAX_PATH];
         for entry in list.lines() {
             if entry.is_empty() {
                 continue;
@@ -386,7 +503,7 @@ fn list_directory_entries(path: &str, show_all: bool, long_format: bool) {
             }
 
             if long_format {
-                if let Some(full_path) = format_child_path(trimmed, entry, &mut path_buf) {
+                if let Some(full_path) = format_child_path(effective, entry, &mut path_buf) {
                     let mut stat = Stat::zero();
                     if fetch_stat(full_path, &mut stat) {
                         print_mode_short(stat.st_mode);
@@ -410,9 +527,15 @@ fn list_directory_entries(path: &str, show_all: bool, long_format: bool) {
     }
 }
 
-fn stat_path(path: &str) {
+fn stat_path(state: &ShellState, path: &str) {
+    let mut buf = [0u8; MAX_PATH];
+    let Some(full_path) = state.resolve(path, &mut buf) else {
+        println_str("stat: invalid path");
+        return;
+    };
+
     let mut stat = Stat::zero();
-    if !fetch_stat(path, &mut stat) {
+    if !fetch_stat(full_path, &mut stat) {
         println_str("stat: failed");
         println_errno(errno());
         return;
@@ -445,7 +568,7 @@ fn login_user(username: &str) {
     print_str("password: ");
     let mut buffer = [0u8; 64];
     let len = read_line(&mut buffer);
-    let password = core::str::from_utf8(&buffer[..len]).unwrap_or("");
+    let password = trim_line(&buffer, len);
 
     let request = UserRequest {
         username_ptr: username.as_ptr() as u64,
@@ -472,7 +595,7 @@ fn add_user(username: &str, admin: bool) {
     print_str("new password: ");
     let mut buffer = [0u8; 64];
     let len = read_line(&mut buffer);
-    let password = core::str::from_utf8(&buffer[..len]).unwrap_or("");
+    let password = trim_line(&buffer, len);
 
     let request = UserRequest {
         username_ptr: username.as_ptr() as u64,
@@ -505,6 +628,43 @@ fn whoami() {
     } else {
         println_str("whoami: failed");
         println_errno(errno());
+    }
+}
+
+fn list_users() {
+    let mut buffer = [0u8; 512];
+    let written = syscall3(
+        SYS_USER_LIST,
+        buffer.as_mut_ptr() as u64,
+        buffer.len() as u64,
+        0,
+    );
+    if written == u64::MAX {
+        println_str("users: failed");
+        println_errno(errno());
+        return;
+    }
+
+    let len = written as usize;
+    if len == 0 {
+        println_str("(no users)");
+        return;
+    }
+
+    if let Ok(text) = core::str::from_utf8(&buffer[..len]) {
+        print_str(text);
+    } else {
+        println_str("users: invalid data");
+    }
+}
+
+fn logout_user() {
+    let ret = syscall1(SYS_USER_LOGOUT, 0);
+    if ret == u64::MAX {
+        println_str("logout: failed");
+        println_errno(errno());
+    } else {
+        println_str("logged out");
     }
 }
 
@@ -566,8 +726,14 @@ fn ipc_receive_message(channel: u32) {
     }
 }
 
-fn cat(path: &str) {
-    if let Some(fd) = open_file(path) {
+fn cat(state: &ShellState, path: &str) {
+    let mut buf = [0u8; MAX_PATH];
+    let Some(full_path) = state.resolve(path, &mut buf) else {
+        println_str("cat: invalid path");
+        return;
+    };
+
+    if let Some(fd) = open_file(full_path) {
         let mut chunk = [0u8; 256];
         loop {
             let read = syscall3(SYS_READ, fd, chunk.as_mut_ptr() as u64, chunk.len() as u64) as usize;
@@ -592,6 +758,8 @@ fn show_help() {
     println_str("  stat <file>       Show file metadata");
     println_str("  login <user>      Switch active user");
     println_str("  whoami            Show current user");
+    println_str("  users             List registered users");
+    println_str("  logout            Log out current user");
     println_str("  adduser [-a] <u>  Create a new user (-a for admin)");
     println_str("  ipc-create        Allocate IPC channel");
     println_str("  ipc-send <c> <m>  Send IPC message");
@@ -604,23 +772,27 @@ fn clear_screen() {
     print_bytes(b"\x1b[2J\x1b[H");
 }
 
-fn prompt() {
+fn prompt(state: &ShellState) {
     let mut info = UserInfo::zero();
     let username = if refresh_current_user(&mut info) {
         let len = info.username_len as usize;
         if len == 0 {
-            "nexa"
+            "anonymous"
         } else {
             core::str::from_utf8(&info.username[..len]).unwrap_or("nexa")
         }
     } else {
-        "nexa"
+        "unknown"
     };
     print_str(username);
-    print_str("@nexa> ");
+    print_str("@");
+    print_str(HOSTNAME);
+    print_str(":");
+    print_str(state.current_path());
+    print_str("$ ");
 }
 
-fn handle_command(line: &str) {
+fn handle_command(state: &mut ShellState, line: &str) {
     let mut parts = line.split_whitespace();
     let Some(cmd) = parts.next() else { return; };
 
@@ -647,18 +819,18 @@ fn handle_command(line: &str) {
                     target = arg;
                 }
             }
-            list_directory_entries(target, show_all, long_format);
+            list_directory_entries(state, target, show_all, long_format);
         }
         "cat" => {
             if let Some(arg) = parts.next() {
-                cat(arg);
+                cat(state, arg);
             } else {
                 println_str("cat: missing file name");
             }
         }
         "stat" => {
             if let Some(arg) = parts.next() {
-                stat_path(arg);
+                stat_path(state, arg);
             } else {
                 println_str("stat: missing file name");
             }
@@ -671,6 +843,8 @@ fn handle_command(line: &str) {
             }
         }
         "whoami" => whoami(),
+        "users" => list_users(),
+        "logout" => logout_user(),
         "adduser" => {
             let mut admin = false;
             let mut username: Option<&str> = None;
@@ -728,9 +902,10 @@ fn handle_command(line: &str) {
 fn shell_loop() -> ! {
     println_str("Welcome to NexaOS shell. Type 'help' for commands.");
     let mut buffer = [0u8; 256];
+    let mut state = ShellState::new();
 
     loop {
-        prompt();
+        prompt(&state);
         let len = read_line(&mut buffer);
         if len == 0 {
             continue;
@@ -738,7 +913,7 @@ fn shell_loop() -> ! {
         if let Ok(line) = core::str::from_utf8(&buffer[..len]) {
             let trimmed = line.trim();
             if !trimmed.is_empty() {
-                handle_command(trimmed);
+                handle_command(&mut state, trimmed);
             }
         } else {
             println_str("Invalid UTF-8 input");

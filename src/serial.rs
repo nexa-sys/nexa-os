@@ -26,6 +26,14 @@ impl SerialPortWrapper {
             port.write_fmt(args).ok();
         }
     }
+
+    fn with_port<F, R>(&mut self, f: F) -> Option<R>
+    where
+        F: FnOnce(&mut SerialPort) -> R,
+    {
+        self.ensure_init();
+        self.port.as_mut().map(f)
+    }
 }
 
 static SERIAL1: Mutex<SerialPortWrapper> = Mutex::new(SerialPortWrapper::new());
@@ -39,17 +47,23 @@ pub(crate) fn _print(args: fmt::Arguments<'_>) {
 }
 
 pub fn write_byte(byte: u8) {
-    SERIAL1.lock().ensure_init();
-    if let Some(ref mut port) = SERIAL1.lock().port {
-        port.send(byte);
-    }
+    let mut guard = SERIAL1.lock();
+    guard.with_port(|port| port.send(byte));
 }
 
 pub fn write_str(s: &str) {
-    SERIAL1.lock().ensure_init();
-    if let Some(ref mut port) = SERIAL1.lock().port {
-        for byte in s.bytes() {
+    write_bytes(s.as_bytes())
+}
+
+pub fn write_bytes(bytes: &[u8]) {
+    if bytes.is_empty() {
+        return;
+    }
+
+    let mut guard = SERIAL1.lock();
+    guard.with_port(|port| {
+        for &byte in bytes {
             port.send(byte);
         }
-    }
+    });
 }

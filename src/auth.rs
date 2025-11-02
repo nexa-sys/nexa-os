@@ -14,6 +14,15 @@ pub struct Credentials {
 }
 
 #[derive(Clone, Copy, Debug)]
+pub struct UserSummary {
+    pub username: [u8; MAX_NAME_LEN],
+    pub username_len: usize,
+    pub uid: u32,
+    pub gid: u32,
+    pub is_admin: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
 pub struct CurrentUser {
     pub username: [u8; MAX_NAME_LEN],
     pub username_len: usize,
@@ -104,6 +113,24 @@ pub fn current_user() -> CurrentUser {
     *CURRENT.lock()
 }
 
+pub fn enumerate_users<F>(mut f: F)
+where
+    F: FnMut(UserSummary),
+{
+    let users = USERS.lock();
+    for record in users.iter() {
+        if record.used {
+            f(UserSummary {
+                username: record.username,
+                username_len: record.username_len,
+                uid: record.uid,
+                gid: record.gid,
+                is_admin: record.is_admin,
+            });
+        }
+    }
+}
+
 pub fn authenticate(username: &str, password: &str) -> Result<Credentials, AuthError> {
     if username.is_empty() || password.is_empty() {
         return Err(AuthError::InvalidInput);
@@ -163,6 +190,31 @@ pub fn require_admin() -> bool {
     CURRENT.lock().credentials.is_admin
 }
 
+pub fn logout() -> Result<(), AuthError> {
+    let root_record = {
+        let users = USERS.lock();
+        users
+            .iter()
+            .find(|record| record.used && record.uid == 0)
+            .copied()
+    };
+
+    if let Some(root) = root_record {
+        let mut current = CURRENT.lock();
+        current.username.iter_mut().for_each(|byte| *byte = 0);
+        current.username[..root.username_len].copy_from_slice(&root.username[..root.username_len]);
+        current.username_len = root.username_len;
+        current.credentials = Credentials {
+            uid: root.uid,
+            gid: root.gid,
+            is_admin: root.is_admin,
+        };
+        Ok(())
+    } else {
+        Err(AuthError::InvalidInput)
+    }
+}
+
 fn to_array(bytes: &[u8]) -> [u8; MAX_NAME_LEN] {
     let mut arr = [0u8; MAX_NAME_LEN];
     let len = core::cmp::min(bytes.len(), MAX_NAME_LEN);
@@ -177,4 +229,10 @@ fn hash_password(bytes: &[u8]) -> u64 {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     hash
+}
+
+impl UserSummary {
+    pub fn username_str(&self) -> &str {
+        core::str::from_utf8(&self.username[..self.username_len]).unwrap_or("")
+    }
 }
