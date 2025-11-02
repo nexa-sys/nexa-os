@@ -1,6 +1,7 @@
 /// PS/2 Keyboard driver
 use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
+use x86_64::instructions::interrupts;
 
 const QUEUE_CAPACITY: usize = 128;
 
@@ -45,17 +46,22 @@ impl KeyboardBuffer {
 
 static SCANCODE_QUEUE: Mutex<KeyboardBuffer> = Mutex::new(KeyboardBuffer::new());
 static SHIFT_PRESSED: AtomicBool = AtomicBool::new(false);
+static LAST_BYTE_WAS_CR: AtomicBool = AtomicBool::new(false);
 
 /// Add scancode to queue (called from interrupt handler)
 pub fn add_scancode(scancode: u8) {
-    let mut queue = SCANCODE_QUEUE.lock();
-    queue.push(scancode);
+    interrupts::without_interrupts(|| {
+        let mut queue = SCANCODE_QUEUE.lock();
+        queue.push(scancode);
+    });
 }
 
 /// Get next scancode from queue
 fn get_scancode() -> Option<u8> {
-    let mut queue = SCANCODE_QUEUE.lock();
-    queue.pop()
+    interrupts::without_interrupts(|| {
+        let mut queue = SCANCODE_QUEUE.lock();
+        queue.pop()
+    })
 }
 
 /// US QWERTY keyboard layout
@@ -80,6 +86,27 @@ const SCANCODE_TO_CHAR_SHIFT: [char; 128] = [
     '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',
     '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',
 ];
+
+fn echo_char(byte: u8) {
+    crate::serial::write_bytes(&[byte]);
+    crate::vga_buffer::with_writer(|writer| {
+        writer.push_byte(byte);
+    });
+}
+
+fn echo_newline() {
+    crate::serial::write_bytes(b"\r\n");
+    crate::vga_buffer::with_writer(|writer| {
+        writer.push_byte(b'\n');
+    });
+}
+
+fn echo_backspace() {
+    crate::serial::write_bytes(b"\x08 \x08");
+    crate::vga_buffer::with_writer(|writer| {
+        writer.backspace();
+    });
+}
 
 /// Read a character from keyboard (blocking)
 pub fn read_char() -> Option<char> {
@@ -109,6 +136,11 @@ pub fn read_char() -> Option<char> {
             };
 
             if ch != '\0' {
+                if ch == '\r' {
+                    LAST_BYTE_WAS_CR.store(true, Ordering::Release);
+                    return Some('\n');
+                }
+                LAST_BYTE_WAS_CR.store(false, Ordering::Release);
                 return Some(ch);
             }
         } else {
@@ -145,7 +177,13 @@ pub fn try_read_char() -> Option<char> {
         };
 
         if ch != '\0' {
-            Some(ch)
+            if ch == '\r' {
+                LAST_BYTE_WAS_CR.store(true, Ordering::Release);
+                Some('\n')
+            } else {
+                LAST_BYTE_WAS_CR.store(false, Ordering::Release);
+                Some(ch)
+            }
         } else {
             None
         }
@@ -156,27 +194,28 @@ pub fn try_read_char() -> Option<char> {
 
 /// Read a line from keyboard
 pub fn read_line(buf: &mut [u8]) -> usize {
+    LAST_BYTE_WAS_CR.store(false, Ordering::Release);
     let mut pos = 0;
 
     loop {
         if let Some(ch) = read_char() {
             match ch {
                 '\n' => {
-                    crate::kprint!("\n");
+                    echo_newline();
                     return pos;
                 }
                 '\x08' => {
                     // Backspace
                     if pos > 0 {
                         pos -= 1;
-                        crate::print!("\x08 \x08");
+                        echo_backspace();
                     }
                 }
                 _ => {
                     if pos < buf.len() {
                         buf[pos] = ch as u8;
                         pos += 1;
-                        crate::print!("{}", ch);
+                        echo_char(ch as u8);
                     }
                 }
             }

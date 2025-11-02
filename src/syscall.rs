@@ -887,5 +887,5 @@ global_asm!(
     "pop rdx",
     "pop rcx",
     "pop rbx",
-    "sysretq"
+    "iretq"
 );

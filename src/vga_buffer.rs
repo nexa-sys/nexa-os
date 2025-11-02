@@ -149,6 +149,25 @@ impl Writer {
         }
     }
 
+    pub fn push_byte(&mut self, byte: u8) {
+        self.write_byte(byte);
+    }
+
+    pub fn backspace(&mut self) {
+        if self.column_position > 0 {
+            self.column_position -= 1;
+            let row = BUFFER_HEIGHT - 1;
+            let col = self.column_position;
+            let blank = ScreenChar {
+                ascii_character: b' ',
+                color_code: self.color_code,
+            };
+            unsafe {
+                self.write_at(row, col, blank);
+            }
+        }
+    }
+
     fn new_line(&mut self) {
         for row in 1..BUFFER_HEIGHT {
             for col in 0..BUFFER_WIDTH {
