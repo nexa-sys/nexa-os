@@ -241,6 +241,13 @@ where
     f(&mut writer)
 }
 
+pub fn try_with_writer<F, R>(f: F) -> Option<R>
+where
+    F: FnOnce(&mut Writer) -> R,
+{
+    VGA_WRITER.try_lock().map(|mut writer| f(&mut writer))
+}
+
 pub static WRITER: Mutex<Option<&'static mut Writer>> = Mutex::new(None);
 
 pub fn print_char(c: char) {

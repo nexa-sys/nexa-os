@@ -406,6 +406,9 @@ fn print_mode_short(mode: u32) {
 
 fn read_line(buf: &mut [u8]) -> usize {
     let len = read(0, buf.as_mut_ptr(), buf.len());
+    println_str("[read_line raw]");
+    print_u64(len as u64);
+    println_str("[read_line raw end]");
     if len == 0 {
         return 0;
     }
@@ -793,11 +796,17 @@ fn prompt(state: &ShellState) {
 }
 
 fn handle_command(state: &mut ShellState, line: &str) {
+    println_str("[handle_command entry]");
     let mut parts = line.split_whitespace();
     let Some(cmd) = parts.next() else { return; };
 
+    println_str("[handle_command command]");
     match cmd {
-        "help" => show_help(),
+        "help" => {
+            println_str("[handle_command help]");
+            show_help();
+            println_str("[handle_command help done]");
+        }
         "ls" => {
             let mut show_all = false;
             let mut long_format = false;
@@ -907,12 +916,18 @@ fn shell_loop() -> ! {
     loop {
         prompt(&state);
         let len = read_line(&mut buffer);
+        println_str("[shell_loop len]");
         if len == 0 {
             continue;
         }
         if let Ok(line) = core::str::from_utf8(&buffer[..len]) {
+            println_str("[shell_loop ok]");
             let trimmed = line.trim();
+            println_str("[shell_loop trimmed]");
+            print_u64(trimmed.len() as u64);
+            println_str("[shell_loop trimmed len]");
             if !trimmed.is_empty() {
+                println_str("[shell_loop handle]");
                 handle_command(&mut state, trimmed);
             }
         } else {

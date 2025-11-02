@@ -89,23 +89,29 @@ const SCANCODE_TO_CHAR_SHIFT: [char; 128] = [
 
 fn echo_char(byte: u8) {
     crate::serial::write_bytes(&[byte]);
-    crate::vga_buffer::with_writer(|writer| {
-        writer.push_byte(byte);
-    });
+    if crate::vga_buffer::is_vga_ready() {
+        let _ = crate::vga_buffer::try_with_writer(|writer| {
+            writer.push_byte(byte);
+        });
+    }
 }
 
 fn echo_newline() {
     crate::serial::write_bytes(b"\r\n");
-    crate::vga_buffer::with_writer(|writer| {
-        writer.push_byte(b'\n');
-    });
+    if crate::vga_buffer::is_vga_ready() {
+        let _ = crate::vga_buffer::try_with_writer(|writer| {
+            writer.push_byte(b'\n');
+        });
+    }
 }
 
 fn echo_backspace() {
     crate::serial::write_bytes(b"\x08 \x08");
-    crate::vga_buffer::with_writer(|writer| {
-        writer.backspace();
-    });
+    if crate::vga_buffer::is_vga_ready() {
+        let _ = crate::vga_buffer::try_with_writer(|writer| {
+            writer.backspace();
+        });
+    }
 }
 
 /// Read a character from keyboard (blocking)
