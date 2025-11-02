@@ -77,7 +77,8 @@ static EXTRA_TABLES: [PageTableHolder; EXTRA_TABLE_COUNT] = [
 ];
 
 static EXTRA_TABLE_INDEX: AtomicUsize = AtomicUsize::new(0);
-static NXE_ENABLED: AtomicBool = AtomicBool::new(false);
+static NXE_CHECKED: AtomicBool = AtomicBool::new(false);
+static NXE_AVAILABLE: AtomicBool = AtomicBool::new(false);
 
 fn allocate_extra_table() -> Option<&'static PageTableHolder> {
     let idx = EXTRA_TABLE_INDEX.fetch_add(1, AtomicOrdering::SeqCst);
@@ -97,14 +98,15 @@ pub enum MapDeviceError {
 
 /// Ensure the CPU's NX bit is set before we rely on non-executable mappings.
 pub fn ensure_nxe_enabled() {
-    if NXE_ENABLED.load(AtomicOrdering::Relaxed) {
+    if NXE_CHECKED.load(AtomicOrdering::Relaxed) {
         return;
     }
 
     if !cpu_supports_nx() {
-        // Hardware does not expose NX; leave the flag unset to avoid #GP faults.
+        // Hardware does not expose NX; remember that NO_EXECUTE must remain unset.
         crate::kwarn!("CPU does not report NX support; skipping NXE enable");
-        NXE_ENABLED.store(true, AtomicOrdering::Relaxed);
+        NXE_CHECKED.store(true, AtomicOrdering::Relaxed);
+        NXE_AVAILABLE.store(false, AtomicOrdering::Relaxed);
         return;
     }
 
@@ -143,7 +145,12 @@ unsafe fn enable_nxe() {
         crate::kdebug!("IA32_EFER.NXE already set");
     }
 
-    NXE_ENABLED.store(true, AtomicOrdering::Relaxed);
+    NXE_CHECKED.store(true, AtomicOrdering::Relaxed);
+    NXE_AVAILABLE.store(true, AtomicOrdering::Relaxed);
+}
+
+fn nxe_supported() -> bool {
+    NXE_AVAILABLE.load(AtomicOrdering::Relaxed)
 }
 
 /// Initialize identity-mapped paging
@@ -586,15 +593,17 @@ pub unsafe fn map_device_region(phys_start: u64, length: usize) -> Result<*mut u
 
         let entry = &mut pd[pd_index];
         if entry.is_unused() {
-            entry.set_addr(
-                PhysAddr::new(addr),
-                PageTableFlags::PRESENT
-                    | PageTableFlags::WRITABLE
-                    | PageTableFlags::HUGE_PAGE
-                    | PageTableFlags::WRITE_THROUGH
-                    | PageTableFlags::NO_CACHE
-                    | PageTableFlags::NO_EXECUTE,
-            );
+            let mut flags = PageTableFlags::PRESENT
+                | PageTableFlags::WRITABLE
+                | PageTableFlags::HUGE_PAGE
+                | PageTableFlags::WRITE_THROUGH
+                | PageTableFlags::NO_CACHE;
+
+            if nxe_supported() {
+                flags |= PageTableFlags::NO_EXECUTE;
+            }
+
+            entry.set_addr(PhysAddr::new(addr), flags);
         }
     }
 

@@ -419,19 +419,22 @@ macro_rules! try_init_exec {
             }
 
             // Debug: Check first few bytes of ELF
-            if init_data.len() >= 4 {
-                kinfo!(
-                    "ELF header bytes 0-7: {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
-                    init_data[0],
-                    init_data[1],
-                    init_data[2],
-                    init_data[3],
-                    init_data.get(4).copied().unwrap_or(0),
-                    init_data.get(5).copied().unwrap_or(0),
-                    init_data.get(6).copied().unwrap_or(0),
-                    init_data.get(7).copied().unwrap_or(0),
-                );
+            let mut header = [0u8; 8];
+            let to_copy = core::cmp::min(header.len(), init_data.len());
+            for i in 0..to_copy {
+                header[i] = init_data[i];
             }
+            kinfo!(
+                "ELF header bytes 0-7: {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
+                header[0],
+                header[1],
+                header[2],
+                header[3],
+                header[4],
+                header[5],
+                header[6],
+                header[7],
+            );
 
             match process::Process::from_elf(init_data) {
                 Ok(mut proc) => {

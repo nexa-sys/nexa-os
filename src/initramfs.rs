@@ -273,14 +273,30 @@ impl Iterator for InitramfsIter {
             // Read file data
             let data = slice::from_raw_parts(data_offset as *const u8, filesize);
 
+            let b0 = match data.get(0) {
+                Some(b) => *b,
+                None => 0,
+            };
+            let b1 = match data.get(1) {
+                Some(b) => *b,
+                None => 0,
+            };
+            let b2 = match data.get(2) {
+                Some(b) => *b,
+                None => 0,
+            };
+            let b3 = match data.get(3) {
+                Some(b) => *b,
+                None => 0,
+            };
             crate::kdebug!(
                 "CPIO entry data: name='{}', data_offset={:#x}, first_bytes={:02x} {:02x} {:02x} {:02x}",
                 name,
                 data_offset,
-                data.get(0).copied().unwrap_or(0),
-                data.get(1).copied().unwrap_or(0),
-                data.get(2).copied().unwrap_or(0),
-                data.get(3).copied().unwrap_or(0)
+                b0,
+                b1,
+                b2,
+                b3
             );
 
             self.current = next_offset as *const u8;

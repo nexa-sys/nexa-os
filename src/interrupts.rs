@@ -249,6 +249,21 @@ pub fn init_interrupts() {
             // Set up hardware interrupts
             idt[PIC_1_OFFSET].set_handler_fn(timer_interrupt_handler);
             idt[PIC_1_OFFSET + 1].set_handler_fn(keyboard_interrupt_handler);
+            idt[PIC_1_OFFSET + 2].set_handler_fn(spurious_irq2_handler);
+            idt[PIC_1_OFFSET + 3].set_handler_fn(spurious_irq3_handler);
+            idt[PIC_1_OFFSET + 4].set_handler_fn(spurious_irq4_handler);
+            idt[PIC_1_OFFSET + 5].set_handler_fn(spurious_irq5_handler);
+            idt[PIC_1_OFFSET + 6].set_handler_fn(spurious_irq6_handler);
+            idt[PIC_1_OFFSET + 7].set_handler_fn(spurious_irq7_handler);
+
+            idt[PIC_2_OFFSET].set_handler_fn(spurious_irq8_handler);
+            idt[PIC_2_OFFSET + 1].set_handler_fn(spurious_irq9_handler);
+            idt[PIC_2_OFFSET + 2].set_handler_fn(spurious_irq10_handler);
+            idt[PIC_2_OFFSET + 3].set_handler_fn(spurious_irq11_handler);
+            idt[PIC_2_OFFSET + 4].set_handler_fn(spurious_irq12_handler);
+            idt[PIC_2_OFFSET + 5].set_handler_fn(spurious_irq13_handler);
+            idt[PIC_2_OFFSET + 6].set_handler_fn(spurious_irq14_handler);
+            idt[PIC_2_OFFSET + 7].set_handler_fn(spurious_irq15_handler);
 
             // Set up syscall interrupt handler at 0x81 (callable from Ring 3)
             use x86_64::PrivilegeLevel;
@@ -306,12 +321,11 @@ pub fn init_interrupts() {
 
     unsafe {
         let mut master_port = Port::<u8>::new(0x21);
-        let current_mask = master_port.read();
-        let new_mask = current_mask & !(1 << 1); // Unmask keyboard IRQ (IRQ1)
-        master_port.write(new_mask);
+        master_port.write(0xFD); // Unmask only keyboard IRQ (IRQ1)
+        let mut slave_port = Port::<u8>::new(0xA1);
+        slave_port.write(0xFF); // Keep all slave IRQs masked
         crate::kinfo!(
-            "init_interrupts: keyboard IRQ unmasked (IMR={:#010b})",
-            new_mask
+            "init_interrupts: PIC masks applied (master=0xFD, slave=0xFF)"
         );
     }
 
@@ -339,6 +353,53 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
         PICS.lock().notify_end_of_interrupt(PIC_1_OFFSET + 1);
     }
 }
+
+macro_rules! define_spurious_irq {
+    ($name:ident, $vector:expr) => {
+        extern "x86-interrupt" fn $name(_stack_frame: InterruptStackFrame) {
+            crate::kwarn!("Unhandled IRQ vector {} received; masking line", $vector);
+            unsafe {
+                PICS.lock().notify_end_of_interrupt($vector);
+                if $vector < PIC_2_OFFSET {
+                    let irq_index = ($vector - PIC_1_OFFSET) as u8;
+                    let mut port = Port::<u8>::new(0x21);
+                    let mask = port.read() | (1 << irq_index);
+                    port.write(mask);
+                    crate::kwarn!(
+                        "Masked master PIC line {} (IMR={:#010b})",
+                        irq_index,
+                        mask
+                    );
+                } else {
+                    let irq_index = ($vector - PIC_2_OFFSET) as u8;
+                    let mut port = Port::<u8>::new(0xA1);
+                    let mask = port.read() | (1 << irq_index);
+                    port.write(mask);
+                    crate::kwarn!(
+                        "Masked slave PIC line {} (IMR={:#010b})",
+                        irq_index,
+                        mask
+                    );
+                }
+            }
+        }
+    };
+}
+
+define_spurious_irq!(spurious_irq2_handler, PIC_1_OFFSET + 2);
+define_spurious_irq!(spurious_irq3_handler, PIC_1_OFFSET + 3);
+define_spurious_irq!(spurious_irq4_handler, PIC_1_OFFSET + 4);
+define_spurious_irq!(spurious_irq5_handler, PIC_1_OFFSET + 5);
+define_spurious_irq!(spurious_irq6_handler, PIC_1_OFFSET + 6);
+define_spurious_irq!(spurious_irq7_handler, PIC_1_OFFSET + 7);
+define_spurious_irq!(spurious_irq8_handler, PIC_2_OFFSET + 0);
+define_spurious_irq!(spurious_irq9_handler, PIC_2_OFFSET + 1);
+define_spurious_irq!(spurious_irq10_handler, PIC_2_OFFSET + 2);
+define_spurious_irq!(spurious_irq11_handler, PIC_2_OFFSET + 3);
+define_spurious_irq!(spurious_irq12_handler, PIC_2_OFFSET + 4);
+define_spurious_irq!(spurious_irq13_handler, PIC_2_OFFSET + 5);
+define_spurious_irq!(spurious_irq14_handler, PIC_2_OFFSET + 6);
+define_spurious_irq!(spurious_irq15_handler, PIC_2_OFFSET + 7);
 
 #[unsafe(naked)]
 extern "C" fn syscall_instruction_handler() {
