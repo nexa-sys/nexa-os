@@ -99,11 +99,9 @@ fn syscall_write(fd: u64, buf: u64, count: u64) -> u64 {
     }
 
     if fd == STDOUT || fd == STDERR {
-        crate::serial::write_bytes(b"[sys_write entry]\n");
         let slice = unsafe { slice::from_raw_parts(buf as *const u8, count as usize) };
 
         crate::serial::write_bytes(slice);
-        crate::serial::write_bytes(b"[sys_write done]\n");
 
         crate::vga_buffer::with_writer(|writer| {
             use core::fmt::Write;
@@ -137,7 +135,6 @@ fn syscall_write(fd: u64, buf: u64, count: u64) -> u64 {
 
 /// Read system call
 fn syscall_read(fd: u64, buf: *mut u8, count: usize) -> u64 {
-    crate::serial::write_bytes(b"[sys_read entry]\n");
     crate::kinfo!("sys_read(fd={}, count={})", fd, count);
     if count == 0 || buf.is_null() {
         return 0;
@@ -790,7 +787,6 @@ fn read_from_keyboard(buf: *mut u8, count: usize) -> u64 {
     let mut line = [0u8; MAX_STDIN_LINE];
     let max_copy = cmp::min(count.saturating_sub(1), MAX_STDIN_LINE - 1);
 
-    crate::serial::write_bytes(b"[read_keyboard start]\n");
     // Allow the keyboard interrupt handler to run while we wait for input.
     // The INT 0x81 gate enters with IF=0, so without re-enabling here the
     // HLT inside `keyboard::read_line` would never resume. Preserve the
@@ -801,7 +797,6 @@ fn read_from_keyboard(buf: *mut u8, count: usize) -> u64 {
     }
     crate::kinfo!("sys_read(stdin): waiting for line (max_copy={})", max_copy);
     let read_len = crate::keyboard::read_line(&mut line[..max_copy]);
-    crate::serial::write_bytes(b"[read_keyboard got line]\n");
     crate::kinfo!("sys_read(stdin): line read, len={} bytes", read_len);
     if !were_enabled {
         interrupts::disable();
@@ -817,9 +812,7 @@ fn read_from_keyboard(buf: *mut u8, count: usize) -> u64 {
             total += 1;
         }
         posix::set_errno(0);
-        crate::serial::write_bytes(b"[read_keyboard done]\n");
-        crate::kinfo!("sys_read(stdin): returning {} bytes to userspace", total);
-        crate::serial::write_bytes(b"[sys_read return]\n");
+    crate::kinfo!("sys_read(stdin): returning {} bytes to userspace", total);
         total as u64
     }
 }

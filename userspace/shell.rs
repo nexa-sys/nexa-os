@@ -926,6 +926,8 @@ fn shell_loop() -> ! {
             println_str("[shell_loop trimmed]");
             print_u64(trimmed.len() as u64);
             println_str("[shell_loop trimmed len]");
+            println_str(trimmed);
+            println_str("[shell_loop trimmed value]");
             if !trimmed.is_empty() {
                 println_str("[shell_loop handle]");
                 handle_command(&mut state, trimmed);
