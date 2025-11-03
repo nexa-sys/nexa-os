@@ -13,6 +13,7 @@ echo "Building user-space programs..."
 # Create build directories
 mkdir -p "$BUILD_DIR/bin"
 mkdir -p "$BUILD_DIR/sbin"
+mkdir -p "$BUILD_DIR/etc/ni"
 
 # Create Cargo.toml if it doesn't exist
 if [ ! -f "$BUILD_DIR/Cargo.toml" ]; then
@@ -59,10 +60,25 @@ echo "User-space programs built successfully:"
 ls -lh "$BUILD_DIR/sbin/ni"
 ls -lh "$BUILD_DIR/bin/sh"
 
+# Copy configuration files
+echo "Copying configuration files..."
+if [ -f "$PROJECT_ROOT/etc/ni/ni.conf" ]; then
+    cp "$PROJECT_ROOT/etc/ni/ni.conf" "$BUILD_DIR/etc/ni/ni.conf"
+    echo "  - Copied /etc/ni/ni.conf"
+else
+    echo "  - Warning: /etc/ni/ni.conf not found"
+fi
+
+if [ -f "$PROJECT_ROOT/etc/inittab" ]; then
+    mkdir -p "$BUILD_DIR/etc"
+    cp "$PROJECT_ROOT/etc/inittab" "$BUILD_DIR/etc/inittab"
+    echo "  - Copied /etc/inittab"
+fi
+
 # Create initramfs
 echo "Creating initramfs..."
 cd "$BUILD_DIR"
-find sbin bin -type f -print0 | cpio --null -o --format=newc > "$INITRAMFS_CPIO"
+find sbin bin etc -type f -print0 2>/dev/null | cpio --null -o --format=newc > "$INITRAMFS_CPIO"
 cd "$PROJECT_ROOT"
 
 echo "Initramfs created: $INITRAMFS_CPIO"
