@@ -23,7 +23,7 @@ version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "init"
+name = "ni"
 path = "../../userspace/init.rs"
 
 [[bin]]
@@ -47,16 +47,16 @@ RUSTFLAGS="-C opt-level=2 -C panic=abort -C linker=rust-lld -C link-arg=--image-
 
 # Copy binaries
 echo "Copying binaries..."
-cp "target/x86_64-nexaos/release/init" "$BUILD_DIR/sbin/init"
+cp "target/x86_64-nexaos/release/ni" "$BUILD_DIR/sbin/ni"
 cp "target/x86_64-nexaos/release/sh" "$BUILD_DIR/bin/sh"
 
 # Strip symbols
 echo "Stripping binaries..."
-strip --strip-all "$BUILD_DIR/sbin/init" 2>/dev/null || true
+strip --strip-all "$BUILD_DIR/sbin/ni" 2>/dev/null || true
 strip --strip-all "$BUILD_DIR/bin/sh" 2>/dev/null || true
 
 echo "User-space programs built successfully:"
-ls -lh "$BUILD_DIR/sbin/init"
+ls -lh "$BUILD_DIR/sbin/ni"
 ls -lh "$BUILD_DIR/bin/sh"
 
 # Create initramfs

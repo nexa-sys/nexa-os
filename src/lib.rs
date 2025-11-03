@@ -188,7 +188,8 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
     // Standard Unix init search paths (in order of preference)
     // Following FHS (Filesystem Hierarchy Standard) and POSIX conventions
     static INIT_PATHS: &[&str] = &[
-        "/sbin/init",      // Primary init location (System V, systemd)
+        "/sbin/ni",        // Nexa Init (primary)
+        "/sbin/init",      // Traditional init location (fallback)
         "/etc/init",       // Alternative init location
         "/bin/init",       // Fallback init location
         "/bin/sh",         // Emergency shell (minimal init)
@@ -203,7 +204,7 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
         // If /bin/sh is not found, this is a critical failure
         if path == "/bin/sh" {
             kfatal!("Critical: No init program found in initramfs");
-            kfatal!("Searched paths: /sbin/init, /etc/init, /bin/init, /bin/sh");
+            kfatal!("Searched paths: /sbin/ni, /sbin/init, /etc/init, /bin/init, /bin/sh");
             kfatal!("Cannot continue without init process (PID 1)");
             kpanic!("Init process not found - system halted");
         }

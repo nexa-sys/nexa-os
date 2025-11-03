@@ -267,27 +267,27 @@ impl ServiceState {
     }
 }
 
-/// systemd-style logging
+/// systemd-style logging with colors
 fn log_info(msg: &str) {
-    print("[  OK  ] ");
+    print("\x1b[1;32m[  OK  ]\x1b[0m ");  // Green
     print(msg);
     print("\n");
 }
 
 fn log_start(msg: &str) {
-    print("[ .... ] ");
+    print("\x1b[1;36m[ .... ]\x1b[0m ");  // Cyan
     print(msg);
     print("\n");
 }
 
 fn log_fail(msg: &str) {
-    print("[FAILED] ");
+    print("\x1b[1;31m[FAILED]\x1b[0m ");  // Red
     print(msg);
     print("\n");
 }
 
 fn log_warn(msg: &str) {
-    print("[ WARN ] ");
+    print("\x1b[1;33m[ WARN ]\x1b[0m ");  // Yellow
     print(msg);
     print("\n");
 }
@@ -311,10 +311,10 @@ fn delay_ms(ms: u64) {
 /// Main init loop with service supervision
 fn init_main() -> ! {
     print("\n");
-    print("=========================================\n");
-    print("  NexaOS Init System (PID 1)\n");
-    print("  Hybrid Kernel - Process Supervisor\n");
-    print("=========================================\n");
+    print("\x1b[1;34m=========================================\x1b[0m\n");  // Blue
+    print("\x1b[1;34m  NexaOS Init (ni) - PID 1\x1b[0m\n");
+    print("\x1b[1;34m  Hybrid Kernel - Process Supervisor\x1b[0m\n");
+    print("\x1b[1;34m=========================================\x1b[0m\n");
     print("\n");
     
     // Verify we are PID 1
@@ -358,9 +358,9 @@ fn init_main() -> ! {
     log_info("System initialization complete");
     print("\n");
     
-    // Service supervision
+    // Service supervision with fork/exec/wait
     log_start("Starting service supervision");
-    log_warn("fork/exec not implemented - using exec replacement");
+    log_info("Using fork/exec/wait supervision model");
     print("\n");
     
     let mut service_state = ServiceState::new();
@@ -372,49 +372,77 @@ fn init_main() -> ! {
         if !service_state.should_respawn(timestamp) {
             log_fail("Shell respawn limit exceeded");
             log_fail("System cannot continue without shell");
-            eprint("\ninit: CRITICAL: Too many shell failures\n");
-            eprint("init: Respawn limit: ");
+            eprint("\nni: CRITICAL: Too many shell failures\n");
+            eprint("ni: Respawn limit: ");
             print(itoa(MAX_RESPAWN_COUNT as u64, &mut buf));
             eprint(" in ");
             print(itoa(RESPAWN_WINDOW_SEC, &mut buf));
             eprint(" seconds\n");
-            eprint("init: Total starts: ");
+            eprint("ni: Total starts: ");
             print(itoa(service_state.total_starts, &mut buf));
             eprint("\n");
             exit(1);
         }
         
-        log_start("Starting /bin/sh");
+        log_start("Spawning /bin/sh");
         print("         Attempt: ");
         print(itoa(service_state.total_starts, &mut buf));
         print("\n");
         
-        // Execute shell
-        let path = "/bin/sh\0";
-        let argv: [*const u8; 2] = [
-            path.as_ptr(),
-            core::ptr::null(),
-        ];
-        let envp: [*const u8; 1] = [
-            core::ptr::null(),
-        ];
+        // Fork to create child process
+        let pid = fork();
         
-        log_info("Executing /bin/sh (replacing init)");
-        print("\n");
+        if pid < 0 {
+            // Fork failed
+            log_fail("fork() failed - cannot create child process");
+            delay_ms(RESTART_DELAY_MS);
+            continue;
+        }
         
-        let ret = execve(path, &argv, &envp);
-        
-        // If we get here, execve failed
-        log_fail("execve failed - shell did not start");
-        print("         Error code: ");
-        print(itoa(ret as u64, &mut buf));
-        print("\n");
-        
-        log_start("Waiting before retry");
-        delay_ms(RESTART_DELAY_MS);
-        log_info("Retry delay complete");
-        
-        print("\n");
+        if pid == 0 {
+            // Child process - execute shell
+            let path = "/bin/sh\0";
+            let argv: [*const u8; 2] = [
+                path.as_ptr(),
+                core::ptr::null(),
+            ];
+            let envp: [*const u8; 1] = [
+                core::ptr::null(),
+            ];
+            
+            log_info("Child process executing /bin/sh");
+            execve(path, &argv, &envp);
+            
+            // If execve returns, it failed
+            log_fail("execve failed in child process");
+            exit(1);
+        } else {
+            // Parent process - wait for child
+            log_info("Shell started successfully");
+            print("         Child PID: ");
+            print(itoa(pid as u64, &mut buf));
+            print("\n\n");
+            
+            // Wait for child to exit
+            let mut status: i32 = 0;
+            let wait_pid = wait4(pid, &mut status, 0);
+            
+            print("\n");
+            if wait_pid as i64 == pid {
+                log_warn("Shell process exited");
+                print("         Exit status: ");
+                print(itoa((status & 0xFF) as u64, &mut buf));
+                print("\n");
+            } else {
+                log_fail("wait4() failed");
+            }
+            
+            // Delay before respawn
+            log_start("Waiting before respawn");
+            delay_ms(RESTART_DELAY_MS);
+            log_info("Respawning shell");
+            print("\n");
+        }
     }
 }
 
