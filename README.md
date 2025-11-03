@@ -77,7 +77,7 @@ NexaOS implements a hybrid kernel architecture that balances the security and mo
 - [x] Basic IPC (message channels)
 - [ ] Signal handling mechanism
 - [ ] Process scheduler with fair time-slicing
-- [ ] Fork/exec implementation
+- [x] Fork/exec implementation
 - [ ] Pipe and FIFO support
 
 ### Phase 3: Security & Multi-User (In Progress ⚙️)

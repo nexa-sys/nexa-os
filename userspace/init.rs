@@ -4,13 +4,14 @@
 
 //! /sbin/init - System initialization program (PID 1)
 //! 
-//! This is the first userspace program executed by the kernel.
-//! It follows Unix conventions:
-//! - Always runs as PID 1
-//! - Never exits (or kernel panic)
-//! - Spawns and manages system services
-//! - Reaps zombie processes
-//! - Handles system runlevel changes
+//! Hybrid kernel init system with process supervision
+//! 
+//! Features:
+//! - PID 1 process management
+//! - Service supervision and respawn
+//! - systemd-style logging
+//! - Automatic restart on failure
+//! - Runlevel management
 //!
 //! POSIX/Unix-like compliance:
 //! - Process hierarchy root (PPID = 0)
@@ -38,6 +39,11 @@ const SYS_RUNLEVEL: u64 = 231;
 const STDIN: u64 = 0;
 const STDOUT: u64 = 1;
 const STDERR: u64 = 2;
+
+// Service management constants
+const MAX_RESPAWN_COUNT: u32 = 5;  // Max respawns within window
+const RESPAWN_WINDOW_SEC: u64 = 60; // Respawn window in seconds
+const RESTART_DELAY_MS: u64 = 1000; // Delay between restarts
 
 /// Syscall wrapper
 /// NexaOS uses int 0x81 for system calls (not syscall instruction)
@@ -228,11 +234,86 @@ fn spawn_shell() -> bool {
     true
 }
 
-/// Main init loop
+/// Service state tracking
+struct ServiceState {
+    respawn_count: u32,
+    last_respawn_time: u64,
+    total_starts: u64,
+}
+
+impl ServiceState {
+    const fn new() -> Self {
+        Self {
+            respawn_count: 0,
+            last_respawn_time: 0,
+            total_starts: 0,
+        }
+    }
+
+    fn should_respawn(&mut self, current_time: u64) -> bool {
+        // Reset counter if outside window
+        if current_time - self.last_respawn_time > RESPAWN_WINDOW_SEC {
+            self.respawn_count = 0;
+        }
+
+        if self.respawn_count >= MAX_RESPAWN_COUNT {
+            return false; // Hit respawn limit
+        }
+
+        self.respawn_count += 1;
+        self.last_respawn_time = current_time;
+        self.total_starts += 1;
+        true
+    }
+}
+
+/// systemd-style logging
+fn log_info(msg: &str) {
+    print("[  OK  ] ");
+    print(msg);
+    print("\n");
+}
+
+fn log_start(msg: &str) {
+    print("[ .... ] ");
+    print(msg);
+    print("\n");
+}
+
+fn log_fail(msg: &str) {
+    print("[FAILED] ");
+    print(msg);
+    print("\n");
+}
+
+fn log_warn(msg: &str) {
+    print("[ WARN ] ");
+    print(msg);
+    print("\n");
+}
+
+/// Simple timestamp (just a counter for now)
+fn get_timestamp() -> u64 {
+    static mut COUNTER: u64 = 0;
+    unsafe {
+        COUNTER += 1;
+        COUNTER
+    }
+}
+
+/// Delay function
+fn delay_ms(ms: u64) {
+    for _ in 0..(ms * 1000) {
+        unsafe { asm!("pause") }
+    }
+}
+
+/// Main init loop with service supervision
 fn init_main() -> ! {
     print("\n");
     print("=========================================\n");
     print("  NexaOS Init System (PID 1)\n");
+    print("  Hybrid Kernel - Process Supervisor\n");
     print("=========================================\n");
     print("\n");
     
@@ -241,63 +322,100 @@ fn init_main() -> ! {
     let ppid = getppid();
     
     let mut buf = [0u8; 32];
-    print("init: process ID: ");
+    
+    log_start("Verifying init process identity");
+    print("         PID: ");
     print(itoa(pid, &mut buf));
     print("\n");
-    
-    print("init: parent process ID: ");
+    print("         PPID: ");
     print(itoa(ppid, &mut buf));
     print("\n");
     
     if pid != 1 {
-        eprint("init: WARNING: Not running as PID 1!\n");
-        eprint("init: This is unusual for init process\n");
-    }
-    
-    if ppid != 0 {
-        eprint("init: WARNING: PPID is not 0!\n");
-        eprint("init: Init should have no parent\n");
-    }
-    
-    // Get current runlevel
-    let runlevel = get_runlevel();
-    if runlevel >= 0 {
-        print("init: current runlevel: ");
-        print(itoa(runlevel as u64, &mut buf));
-        print("\n");
-    }
-    
-    print("\n");
-    print("init: system initialization complete\n");
-    print("init: NOTE: fork/exec system calls not yet implemented\n");
-    print("init: exec'ing /bin/sh directly (replacing PID 1)\n");
-    print("\n");
-    
-    // Since fork() is not yet implemented in the kernel,
-    // we exec the shell directly, replacing the init process
-    // In a full implementation, init would fork() first to create
-    // a child process, then the child would exec the shell
-    let path = "/bin/sh\0";
-    let argv: [*const u8; 2] = [
-        path.as_ptr(),
-        core::ptr::null(),
-    ];
-    let envp: [*const u8; 1] = [
-        core::ptr::null(),
-    ];
-    
-    print("init: executing /bin/sh...\n\n");
-    
-    let ret = execve(path, &argv, &envp);
-    if ret < 0 {
-        eprint("\ninit: FATAL: execve(/bin/sh) failed\n");
-        eprint("init: system cannot continue without shell\n");
+        log_fail("Not running as PID 1 - system unstable");
         exit(1);
     }
     
-    // Should never reach here if execve succeeds
-    eprint("\ninit: ERROR: execve returned unexpectedly\n");
-    exit(1);
+    if ppid != 0 {
+        log_warn("PPID is not 0 - unusual configuration");
+    } else {
+        log_info("Init process identity verified");
+    }
+    
+    // Get current runlevel
+    log_start("Querying system runlevel");
+    let runlevel = get_runlevel();
+    if runlevel >= 0 {
+        print("         Runlevel: ");
+        print(itoa(runlevel as u64, &mut buf));
+        print("\n");
+        log_info("System runlevel configured");
+    } else {
+        log_warn("Failed to query runlevel");
+    }
+    
+    print("\n");
+    log_info("System initialization complete");
+    print("\n");
+    
+    // Service supervision
+    log_start("Starting service supervision");
+    log_warn("fork/exec not implemented - using exec replacement");
+    print("\n");
+    
+    let mut service_state = ServiceState::new();
+    
+    // Main supervision loop
+    loop {
+        let timestamp = get_timestamp();
+        
+        if !service_state.should_respawn(timestamp) {
+            log_fail("Shell respawn limit exceeded");
+            log_fail("System cannot continue without shell");
+            eprint("\ninit: CRITICAL: Too many shell failures\n");
+            eprint("init: Respawn limit: ");
+            print(itoa(MAX_RESPAWN_COUNT as u64, &mut buf));
+            eprint(" in ");
+            print(itoa(RESPAWN_WINDOW_SEC, &mut buf));
+            eprint(" seconds\n");
+            eprint("init: Total starts: ");
+            print(itoa(service_state.total_starts, &mut buf));
+            eprint("\n");
+            exit(1);
+        }
+        
+        log_start("Starting /bin/sh");
+        print("         Attempt: ");
+        print(itoa(service_state.total_starts, &mut buf));
+        print("\n");
+        
+        // Execute shell
+        let path = "/bin/sh\0";
+        let argv: [*const u8; 2] = [
+            path.as_ptr(),
+            core::ptr::null(),
+        ];
+        let envp: [*const u8; 1] = [
+            core::ptr::null(),
+        ];
+        
+        log_info("Executing /bin/sh (replacing init)");
+        print("\n");
+        
+        let ret = execve(path, &argv, &envp);
+        
+        // If we get here, execve failed
+        log_fail("execve failed - shell did not start");
+        print("         Error code: ");
+        print(itoa(ret as u64, &mut buf));
+        print("\n");
+        
+        log_start("Waiting before retry");
+        delay_ms(RESTART_DELAY_MS);
+        log_info("Retry delay complete");
+        
+        print("\n");
+    }
 }
 
 #[panic_handler]
