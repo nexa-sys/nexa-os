@@ -4,6 +4,20 @@ use crate::posix::{self, FileType, Metadata};
 
 pub mod ext2;
 
+// Default /etc/inittab configuration
+// Format: SERVICE_PATH RUNLEVEL
+// 
+// Services are started in order by ni (Nexa Init) at boot.
+// Runlevels: 0=halt, 1=single, 2=multi-user, 3=network, etc.
+// 
+// Example configuration:
+// #id:1:initdefault:         # Default runlevel (comment style)
+// /bin/sh:2:respawn:         # Shell respawns on exit
+// /sbin/getty:2:respawn:     # Getty respawns on exit
+//
+// Current format: PATH RUNLEVEL (simplified for minimal init)
+const DEFAULT_INITTAB: &[u8] = b"# NexaOS init configuration (/etc/inittab)\n# Format: PATH RUNLEVEL\n# Services listed here will be started by ni (Nexa Init) at boot\n# Runlevel 2 = multi-user mode\n/bin/sh 2\n";
+
 #[derive(Clone, Copy)]
 pub struct File {
     pub name: &'static str,
@@ -181,6 +195,12 @@ pub fn init() {
                 crate::kwarn!("Failed to parse ext2 image: {:?}", err);
             }
         }
+    }
+
+    // Add default /etc/inittab configuration file if not already present
+    if stat("/etc/inittab").is_none() {
+        add_file_bytes("etc/inittab", DEFAULT_INITTAB, false);
+        crate::kinfo!("Added default /etc/inittab configuration");
     }
 
     let files_total = *FILE_COUNT.lock();

@@ -65,6 +65,11 @@ fn syscall3(n: u64, a1: u64, a2: u64, a3: u64) -> u64 {
 }
 
 #[inline(always)]
+fn syscall2(n: u64, a1: u64, a2: u64) -> u64 {
+    syscall3(n, a1, a2, 0)
+}
+
+#[inline(always)]
 fn syscall1(n: u64, a1: u64) -> u64 {
     syscall3(n, a1, 0, 0)
 }
@@ -158,6 +163,22 @@ fn get_runlevel() -> i32 {
     ret as i32
 }
 
+/// Open file
+fn open(path: &str) -> u64 {
+    syscall2(SYS_OPEN, path.as_ptr() as u64, path.len() as u64)
+}
+
+/// Read from file descriptor
+fn read(fd: u64, buf: *mut u8, count: usize) -> u64 {
+    syscall3(SYS_READ, fd, buf as u64, count as u64)
+}
+
+/// Close file descriptor
+fn close(fd: u64) -> u64 {
+    const SYS_CLOSE: u64 = 3;
+    syscall1(SYS_CLOSE, fd)
+}
+
 /// Simple integer to string conversion
 fn itoa(mut n: u64, buf: &mut [u8]) -> &str {
     if n == 0 {
@@ -234,6 +255,139 @@ fn spawn_shell() -> bool {
     true
 }
 
+/// Service configuration entry
+#[derive(Clone, Copy)]
+struct ServiceEntry {
+    path: &'static str,
+    runlevel: u8,
+}
+
+/// Configuration buffer - max 10 services
+static mut CONFIG_BUFFER: [u8; 2048] = [0; 2048];
+static mut SERVICE_ENTRIES: [Option<ServiceEntry>; 10] = [None; 10];
+static mut SERVICE_COUNT: usize = 0;
+
+/// Load services from /etc/inittab configuration file
+/// Format: one service per line
+/// PATH RUNLEVEL
+/// e.g.:
+/// /bin/sh 2
+/// /sbin/getty 2
+fn load_config() -> &'static [Option<ServiceEntry>] {
+    unsafe {
+        let fd = open("/etc/inittab");
+        if fd == u64::MAX {
+            // Config file not found, use defaults
+            SERVICE_COUNT = 0;
+            return &SERVICE_ENTRIES[0..0];
+        }
+        
+        // Read config file
+        let read_count = read(fd, CONFIG_BUFFER.as_mut_ptr(), CONFIG_BUFFER.len());
+        close(fd);
+        
+        if read_count == 0 || read_count == u64::MAX {
+            SERVICE_COUNT = 0;
+            return &SERVICE_ENTRIES[0..0];
+        }
+        
+        // Parse configuration
+        let config_slice = core::slice::from_raw_parts(CONFIG_BUFFER.as_ptr(), read_count as usize);
+        let mut line_start = 0;
+        let mut line_num = 0;
+        
+        for (i, &byte) in config_slice.iter().enumerate() {
+            if byte == b'\n' || i == config_slice.len() - 1 {
+                let line_end = if byte == b'\n' { i } else { i + 1 };
+                let line_bytes = &config_slice[line_start..line_end];
+                
+                // Skip empty lines and comments
+                if line_bytes.len() > 0 && line_bytes[0] != b'#' {
+                    if let Some(entry) = parse_config_line(line_bytes) {
+                        if line_num < 10 {
+                            SERVICE_ENTRIES[line_num] = Some(entry);
+                            line_num += 1;
+                        }
+                    }
+                }
+                
+                line_start = i + 1;
+            }
+        }
+        
+        SERVICE_COUNT = line_num;
+        &SERVICE_ENTRIES[0..line_num]
+    }
+}
+
+/// Parse a single configuration line
+/// Returns (path, runlevel) or None if invalid
+fn parse_config_line(line: &[u8]) -> Option<ServiceEntry> {
+    // Trim whitespace
+    let mut start = 0;
+    let mut end = line.len();
+    
+    while start < end && (line[start] == b' ' || line[start] == b'\t') {
+        start += 1;
+    }
+    while end > start && (line[end - 1] == b' ' || line[end - 1] == b'\t' || line[end - 1] == b'\r') {
+        end -= 1;
+    }
+    
+    if start >= end {
+        return None;
+    }
+    
+    let trimmed = &line[start..end];
+    
+    // Find space separator
+    let mut space_pos = 0;
+    while space_pos < trimmed.len() && trimmed[space_pos] != b' ' && trimmed[space_pos] != b'\t' {
+        space_pos += 1;
+    }
+    
+    if space_pos >= trimmed.len() {
+        return None;
+    }
+    
+    // Extract path
+    let path_bytes = &trimmed[0..space_pos];
+    let path_str = match core::str::from_utf8(path_bytes) {
+        Ok(s) => s,
+        Err(_) => return None,
+    };
+    
+    // Convert string to 'static str by using CONFIG_BUFFER offset
+    // This is a bit hacky but works for our use case
+    let path: &'static str = unsafe {
+        let offset = path_bytes.as_ptr() as usize - CONFIG_BUFFER.as_ptr() as usize;
+        let ptr = CONFIG_BUFFER.as_ptr().add(offset) as *const u8;
+        let len = path_str.len();
+        core::str::from_utf8_unchecked(core::slice::from_raw_parts(ptr, len))
+    };
+    
+    // Find runlevel
+    let mut level_start = space_pos;
+    while level_start < trimmed.len() && (trimmed[level_start] == b' ' || trimmed[level_start] == b'\t') {
+        level_start += 1;
+    }
+    
+    if level_start >= trimmed.len() {
+        return None;
+    }
+    
+    // Parse runlevel as single digit
+    let runlevel_byte = trimmed[level_start];
+    if runlevel_byte < b'0' || runlevel_byte > b'9' {
+        return None;
+    }
+    
+    Some(ServiceEntry {
+        path,
+        runlevel: (runlevel_byte - b'0') as u8,
+    })
+}
+
 /// Service state tracking
 struct ServiceState {
     respawn_count: u32,
@@ -266,6 +420,7 @@ impl ServiceState {
         true
     }
 }
+
 
 /// systemd-style logging with colors
 fn log_info(msg: &str) {
@@ -358,70 +513,136 @@ fn init_main() -> ! {
     log_info("System initialization complete");
     print("\n");
     
+    // Load service configuration
+    print("\n");
+    log_start("Loading service configuration");
+    let config = load_config();
+    if config.len() == 0 {
+        log_warn("No services configured, using default shell");
+    } else {
+        log_info("Loaded services from /etc/inittab");
+        print("         Service count: ");
+        print(itoa(config.len() as u64, &mut buf));
+        print("\n");
+    }
+    
     // Service supervision with fork/exec/wait
+    print("\n");
     log_start("Starting service supervision");
     log_info("Using fork/exec/wait supervision model");
     print("\n");
     
-    let mut service_state = ServiceState::new();
-    
-    // Main supervision loop
+    // If no config, add default shell
+    if config.len() == 0 {
+        let mut service_state = ServiceState::new();
+        run_service_loop(&mut service_state, "/bin/sh", &mut buf)
+    } else {
+        // Run each configured service
+        // Note: run_service_loop never returns (loops forever within each service)
+        // So only the first service will ever run
+        for i in 0..config.len() {
+            if let Some(service_entry) = config[i] {
+                let mut service_state = ServiceState::new();
+                print("         Service: ");
+                print(service_entry.path);
+                print(" (runlevel ");
+                print(itoa(service_entry.runlevel as u64, &mut buf));
+                print(")\n");
+                
+                // This call never returns (service runs in infinite loop)
+                run_service_loop(&mut service_state, service_entry.path, &mut buf);
+            }
+        }
+        // This should never be reached since run_service_loop never returns
+        loop {}
+    }
+}
+
+/// Run service supervision loop for a single service
+fn run_service_loop(service_state: &mut ServiceState, path: &str, buf: &mut [u8]) -> ! {
     loop {
         let timestamp = get_timestamp();
         
         if !service_state.should_respawn(timestamp) {
-            log_fail("Shell respawn limit exceeded");
-            log_fail("System cannot continue without shell");
-            eprint("\nni: CRITICAL: Too many shell failures\n");
+            log_fail("Service respawn limit exceeded");
+            print("         Service: ");
+            print(path);
+            print("\n");
+            eprint("ni: CRITICAL: Too many failures for service ");
+            eprint(path);
+            eprint("\n");
             eprint("ni: Respawn limit: ");
-            print(itoa(MAX_RESPAWN_COUNT as u64, &mut buf));
+            print(itoa(MAX_RESPAWN_COUNT as u64, buf));
             eprint(" in ");
-            print(itoa(RESPAWN_WINDOW_SEC, &mut buf));
+            print(itoa(RESPAWN_WINDOW_SEC, buf));
             eprint(" seconds\n");
             eprint("ni: Total starts: ");
-            print(itoa(service_state.total_starts, &mut buf));
-            eprint("\n");
-            exit(1);
+            print(itoa(service_state.total_starts, buf));
+            eprint("\n\n");
+            // Wait and continue trying (infinite wait)
+            loop {
+                delay_ms(5000);
+            }
         }
         
-        log_start("Spawning /bin/sh");
+        log_start("Spawning service");
+        print("         Service: ");
+        print(path);
+        print("\n");
         print("         Attempt: ");
-        print(itoa(service_state.total_starts, &mut buf));
+        print(itoa(service_state.total_starts, buf));
         print("\n");
         
-        // Fork and execute shell
+        // Fork and execute service
         let pid = fork();
         
         if pid < 0 {
             log_fail("fork() failed");
+            print("         Service: ");
+            print(path);
+            print("\n");
             delay_ms(RESTART_DELAY_MS);
             continue;
         }
         
-        // In our model, fork() returns a fake child PID (2)
-        // We don't actually have separate processes
-        // So we directly execute the shell  
-        log_info("Shell started successfully");
+        log_info("Service started successfully");
         print("         Child PID: ");
-        print(itoa(pid as u64, &mut buf));
+        print(itoa(pid as u64, buf));
         print("\n\n");
         
-        // Execute shell directly - this jumps to shell and never returns
-        // (Shell exit will be handled by kernel)
-        let path = "/bin/sh\0";
+        // Add null terminator to path for execve
+        let mut path_with_null = [0u8; 256];
+        let path_bytes = path.as_bytes();
+        if path_bytes.len() >= 256 {
+            log_fail("Service path too long");
+            delay_ms(RESTART_DELAY_MS);
+            continue;
+        }
+        
+        // Copy path and add null terminator
+        for (i, &b) in path_bytes.iter().enumerate() {
+            path_with_null[i] = b;
+        }
+        path_with_null[path_bytes.len()] = 0;
+        
+        // Execute service directly - this jumps and never returns normally
+        // (Service exit will be handled by kernel)
         let argv: [*const u8; 2] = [
-            path.as_ptr(),
+            path_with_null.as_ptr(),
             core::ptr::null(),
         ];
         let envp: [*const u8; 1] = [
             core::ptr::null(),
         ];
         
-        execve(path, &argv, &envp);
+        execve(core::str::from_utf8(&path_with_null[..path_bytes.len()]).unwrap_or(""), &argv, &envp);
         
         // If execve returns, it failed
-        log_fail("execve failed - shell not found");
-        exit(1);
+        log_fail("execve failed - service not found");
+        print("         Service: ");
+        print(path);
+        print("\n");
+        delay_ms(RESTART_DELAY_MS);
     }
 }
 
@@ -431,6 +652,7 @@ fn panic(_info: &PanicInfo) -> ! {
     eprint("init: FATAL: System cannot continue without PID 1\n");
     exit(1);
 }
+
 
 #[lang = "eh_personality"]
 extern "C" fn eh_personality() {}
