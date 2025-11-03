@@ -7,7 +7,7 @@ use core::{
 };
 use x86_64::instructions::interrupts;
 
-/// System call numbers
+/// System call numbers (POSIX-compliant where possible)
 pub const SYS_READ: u64 = 0;
 pub const SYS_WRITE: u64 = 1;
 pub const SYS_OPEN: u64 = 2;
@@ -15,8 +15,19 @@ pub const SYS_CLOSE: u64 = 3;
 pub const SYS_STAT: u64 = 4;
 pub const SYS_FSTAT: u64 = 5;
 pub const SYS_LSEEK: u64 = 8;
-pub const SYS_EXIT: u64 = 60;
+pub const SYS_PIPE: u64 = 22;
+pub const SYS_DUP: u64 = 32;
+pub const SYS_DUP2: u64 = 33;
 pub const SYS_GETPID: u64 = 39;
+pub const SYS_FORK: u64 = 57;
+pub const SYS_EXECVE: u64 = 59;
+pub const SYS_EXIT: u64 = 60;
+pub const SYS_WAIT4: u64 = 61;
+pub const SYS_KILL: u64 = 62;
+pub const SYS_SIGACTION: u64 = 13;
+pub const SYS_SIGPROCMASK: u64 = 14;
+pub const SYS_GETPPID: u64 = 110;
+pub const SYS_SCHED_YIELD: u64 = 24;
 pub const SYS_LIST_FILES: u64 = 200;
 pub const SYS_GETERRNO: u64 = 201;
 pub const SYS_IPC_CREATE: u64 = 210;
@@ -830,6 +841,134 @@ fn read_from_keyboard(buf: *mut u8, count: usize) -> u64 {
     }
 }
 
+/// POSIX pipe() system call - creates a pipe
+fn syscall_pipe(pipefd: *mut [i32; 2]) -> u64 {
+    if pipefd.is_null() {
+        posix::set_errno(posix::errno::EFAULT);
+        return u64::MAX;
+    }
+
+    match crate::pipe::create_pipe() {
+        Ok((read_fd, write_fd)) => {
+            unsafe {
+                (*pipefd)[0] = read_fd as i32;
+                (*pipefd)[1] = write_fd as i32;
+            }
+            posix::set_errno(0);
+            0
+        }
+        Err(_) => {
+            posix::set_errno(posix::errno::EMFILE);
+            u64::MAX
+        }
+    }
+}
+
+/// POSIX kill() system call - send signal to process
+fn syscall_kill(pid: u64, signum: u64) -> u64 {
+    if signum >= crate::signal::NSIG as u64 {
+        posix::set_errno(posix::errno::EINVAL);
+        return u64::MAX;
+    }
+
+    // For now, just log the signal send
+    crate::kinfo!("kill(pid={}, sig={}) called", pid, signum);
+    
+    // TODO: Implement actual signal delivery to target process
+    posix::set_errno(0);
+    0
+}
+
+/// POSIX getppid() system call - get parent process ID
+fn syscall_getppid() -> u64 {
+    // For now, return 0 (no parent)
+    // TODO: Implement proper parent PID tracking
+    posix::set_errno(0);
+    0
+}
+
+/// POSIX fork() system call - create child process
+fn syscall_fork() -> u64 {
+    // Fork is complex and requires full process management
+    // For now, return error indicating not implemented
+    crate::kwarn!("fork() system call not yet fully implemented");
+    posix::set_errno(posix::errno::ENOSYS);
+    u64::MAX
+}
+
+/// POSIX execve() system call - execute program
+fn syscall_execve(path: *const u8, _argv: *const u64, _envp: *const u64) -> u64 {
+    if path.is_null() {
+        posix::set_errno(posix::errno::EFAULT);
+        return u64::MAX;
+    }
+
+    // For now, just log the attempt
+    crate::kwarn!("execve() system call not yet fully implemented");
+    posix::set_errno(posix::errno::ENOSYS);
+    u64::MAX
+}
+
+/// POSIX wait4() system call - wait for process state change
+fn syscall_wait4(pid: i64, _status: *mut i32, _options: i32, _rusage: *mut u8) -> u64 {
+    crate::kinfo!("wait4(pid={}) called", pid);
+    
+    // TODO: Implement proper wait with process state tracking
+    posix::set_errno(posix::errno::ECHILD); // No child processes
+    u64::MAX
+}
+
+/// POSIX sigaction() system call - examine and change signal action
+fn syscall_sigaction(signum: u64, _act: *const u8, _oldact: *mut u8) -> u64 {
+    if signum >= crate::signal::NSIG as u64 {
+        posix::set_errno(posix::errno::EINVAL);
+        return u64::MAX;
+    }
+
+    // TODO: Implement full sigaction with user-space handlers
+    crate::kinfo!("sigaction(sig={}) called", signum);
+    posix::set_errno(0);
+    0
+}
+
+/// POSIX sigprocmask() system call - examine and change blocked signals
+fn syscall_sigprocmask(_how: i32, _set: *const u64, _oldset: *mut u64) -> u64 {
+    // TODO: Implement signal masking
+    crate::kinfo!("sigprocmask() called");
+    posix::set_errno(0);
+    0
+}
+
+/// POSIX dup() system call - duplicate file descriptor
+fn syscall_dup(oldfd: u64) -> u64 {
+    // TODO: Implement file descriptor duplication
+    crate::kinfo!("dup(fd={}) called", oldfd);
+    posix::set_errno(posix::errno::ENOSYS);
+    u64::MAX
+}
+
+/// POSIX dup2() system call - duplicate file descriptor to specific FD
+fn syscall_dup2(oldfd: u64, newfd: u64) -> u64 {
+    // TODO: Implement file descriptor duplication to target FD
+    crate::kinfo!("dup2(oldfd={}, newfd={}) called", oldfd, newfd);
+    posix::set_errno(posix::errno::ENOSYS);
+    u64::MAX
+}
+
+/// POSIX sched_yield() system call - yield CPU to scheduler
+fn syscall_sched_yield() -> u64 {
+    crate::kinfo!("sched_yield() called");
+    
+    // Trigger scheduler to select next process
+    if let Some(_next_pid) = crate::scheduler::schedule() {
+        // TODO: Perform context switch to next process
+        crate::kinfo!("Scheduler selected next process");
+    }
+    
+    posix::set_errno(0);
+    0
+}
+
 #[no_mangle]
 pub extern "C" fn syscall_dispatch(nr: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 {
     match nr {
@@ -840,13 +979,24 @@ pub extern "C" fn syscall_dispatch(nr: u64, arg1: u64, arg2: u64, arg3: u64) -> 
         SYS_STAT => syscall_stat(arg1 as *const u8, arg2 as usize, arg3 as *mut posix::Stat),
         SYS_FSTAT => syscall_fstat(arg1, arg2 as *mut posix::Stat),
         SYS_LSEEK => syscall_lseek(arg1, arg2 as i64, arg3),
+        SYS_PIPE => syscall_pipe(arg1 as *mut [i32; 2]),
+        SYS_DUP => syscall_dup(arg1),
+        SYS_DUP2 => syscall_dup2(arg1, arg2),
+        SYS_FORK => syscall_fork(),
+        SYS_EXECVE => syscall_execve(arg1 as *const u8, arg2 as *const u64, arg3 as *const u64),
+        SYS_EXIT => syscall_exit(arg1 as i32),
+        SYS_WAIT4 => syscall_wait4(arg1 as i64, arg2 as *mut i32, arg3 as i32, 0 as *mut u8),
+        SYS_KILL => syscall_kill(arg1, arg2),
+        SYS_SIGACTION => syscall_sigaction(arg1, arg2 as *const u8, arg3 as *mut u8),
+        SYS_SIGPROCMASK => syscall_sigprocmask(arg1 as i32, arg2 as *const u64, arg3 as *mut u64),
+        SYS_GETPID => 1,
+        SYS_GETPPID => syscall_getppid(),
+        SYS_SCHED_YIELD => syscall_sched_yield(),
         SYS_LIST_FILES => syscall_list_files(
             arg1 as *mut u8,
             arg2 as usize,
             arg3 as *const ListDirRequest,
         ),
-        SYS_EXIT => syscall_exit(arg1 as i32),
-        SYS_GETPID => 1,
         SYS_GETERRNO => syscall_get_errno(),
         SYS_IPC_CREATE => syscall_ipc_create(),
         SYS_IPC_SEND => syscall_ipc_send(arg1 as *const IpcTransferRequest),
