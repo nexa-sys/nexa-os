@@ -14,9 +14,12 @@ pub mod keyboard;
 pub mod logger;
 pub mod memory;
 pub mod paging;
+pub mod pipe;
 pub mod posix;
 pub mod process;
+pub mod scheduler;
 pub mod serial;
+pub mod signal;
 pub mod syscall;
 pub mod vga_buffer;
 
@@ -148,6 +151,9 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
 
     auth::init();
     ipc::init();
+    signal::init();
+    pipe::init();
+    scheduler::init();
 
     // Initialize filesystem
     fs::init();
