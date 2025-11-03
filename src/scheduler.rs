@@ -1,5 +1,5 @@
 /// Basic round-robin process scheduler for hybrid kernel
-use crate::process::{Process, ProcessState, Pid};
+use crate::process::{Pid, Process, ProcessState};
 use spin::Mutex;
 
 const MAX_PROCESSES: usize = 32;
@@ -8,9 +8,9 @@ const MAX_PROCESSES: usize = 32;
 #[derive(Clone, Copy)]
 pub struct ProcessEntry {
     pub process: Process,
-    pub priority: u8,        // 0 = highest, 255 = lowest
-    pub time_slice: u64,     // Remaining time slice in ms
-    pub total_time: u64,     // Total CPU time used in ms
+    pub priority: u8,    // 0 = highest, 255 = lowest
+    pub time_slice: u64, // Remaining time slice in ms
+    pub total_time: u64, // Total CPU time used in ms
 }
 
 impl ProcessEntry {
@@ -34,7 +34,8 @@ impl ProcessEntry {
 }
 
 /// Process table
-static PROCESS_TABLE: Mutex<[Option<ProcessEntry>; MAX_PROCESSES]> = Mutex::new([None; MAX_PROCESSES]);
+static PROCESS_TABLE: Mutex<[Option<ProcessEntry>; MAX_PROCESSES]> =
+    Mutex::new([None; MAX_PROCESSES]);
 
 /// Currently running process PID
 static CURRENT_PID: Mutex<Option<Pid>> = Mutex::new(None);
@@ -54,7 +55,11 @@ pub fn add_process(process: Process, priority: u8) -> Result<(), &'static str> {
                 time_slice: DEFAULT_TIME_SLICE,
                 total_time: 0,
             });
-            crate::kinfo!("Scheduler: Added process PID {} with priority {}", process.pid, priority);
+            crate::kinfo!(
+                "Scheduler: Added process PID {} with priority {}",
+                process.pid,
+                priority
+            );
             return Ok(());
         }
     }
@@ -129,18 +134,19 @@ pub fn schedule() -> Option<Pid> {
         if let Some(entry) = &table[idx] {
             if entry.process.state == ProcessState::Ready {
                 let next_pid = entry.process.pid;
-                
+
                 // Update previous process state
                 if let Some(curr_pid) = current {
                     for slot in table.iter_mut() {
                         if let Some(e) = slot {
-                            if e.process.pid == curr_pid && e.process.state == ProcessState::Running {
+                            if e.process.pid == curr_pid && e.process.state == ProcessState::Running
+                            {
                                 e.process.state = ProcessState::Ready;
                             }
                         }
                     }
                 }
-                
+
                 // Update next process state
                 for slot in table.iter_mut() {
                     if let Some(e) = slot {
@@ -172,7 +178,7 @@ pub fn tick(elapsed_ms: u64) -> bool {
             if let Some(entry) = slot {
                 if entry.process.pid == curr_pid && entry.process.state == ProcessState::Running {
                     entry.total_time += elapsed_ms;
-                    
+
                     if entry.time_slice > elapsed_ms {
                         entry.time_slice -= elapsed_ms;
                         return false; // No need to reschedule
@@ -224,6 +230,9 @@ pub fn list_processes() {
 
 /// Initialize scheduler subsystem
 pub fn init() {
-    crate::kinfo!("Process scheduler initialized (round-robin, {} max processes, {}ms time slice)",
-        MAX_PROCESSES, DEFAULT_TIME_SLICE);
+    crate::kinfo!(
+        "Process scheduler initialized (round-robin, {} max processes, {}ms time slice)",
+        MAX_PROCESSES,
+        DEFAULT_TIME_SLICE
+    );
 }

@@ -235,8 +235,8 @@ extern "C" {
     fn ring3_switch_handler();
 }
 
-use lazy_static::lazy_static;
 use core::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use lazy_static::lazy_static;
 
 /// SMP/Multi-core IDT Strategy Documentation
 ///
@@ -273,7 +273,7 @@ static IDT_INITIALIZED: AtomicBool = AtomicBool::new(false);
 lazy_static! {
     /// Global IDT instance - using lazy_static to avoid stack overflow
     /// InterruptDescriptorTable is ~4KB and would overflow the stack if created inline
-    /// 
+    ///
     /// IMPORTANT: Currently shared across all cores in SMP configurations.
     /// This is safe for our current single-core focus but will need per-core
     /// IDTs for true SMP support with per-core interrupt handling.
@@ -362,13 +362,13 @@ pub fn init_interrupts() {
     // Ensure interrupts are disabled during initialization
     // This is critical to prevent race conditions and ensure atomic setup
     x86_64::instructions::interrupts::disable();
-    
+
     // Check if already initialized (protection against double-init)
     if IDT_INITIALIZED.load(AtomicOrdering::SeqCst) {
         crate::kwarn!("init_interrupts: Already initialized, skipping");
         return;
     }
-    
+
     // Safe to log now that interrupts are disabled
     crate::kinfo!("init_interrupts: Starting IDT initialization (BSP)");
 
@@ -390,7 +390,7 @@ pub fn init_interrupts() {
     // Load IDT before applying PIC masks to ensure handlers are in place
     // Access to IDT via lazy_static will initialize it on first access
     crate::kinfo!("init_interrupts: loading IDT");
-    
+
     // Ensure IDT structure is fully written before loading
     core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
     IDT.load();
@@ -417,7 +417,7 @@ pub fn init_interrupts() {
 
     // Mark IDT as initialized to prevent re-initialization
     IDT_INITIALIZED.store(true, AtomicOrdering::SeqCst);
-    
+
     // Final memory barrier to ensure all initialization is visible to other cores
     core::sync::atomic::fence(AtomicOrdering::SeqCst);
 
@@ -425,7 +425,7 @@ pub fn init_interrupts() {
 }
 
 /// Check if IDT has been initialized
-/// 
+///
 /// Useful for AP (Application Processor) cores in SMP configurations
 /// to verify that BSP has completed IDT setup before loading it.
 #[allow(dead_code)]
@@ -451,19 +451,19 @@ pub fn is_idt_initialized() -> bool {
 pub fn init_interrupts_ap() {
     // Ensure interrupts are disabled
     x86_64::instructions::interrupts::disable();
-    
+
     // Verify that BSP has initialized the IDT
     if !is_idt_initialized() {
         crate::kpanic!("AP attempted to load IDT before BSP initialization");
     }
-    
+
     crate::kinfo!("init_interrupts_ap: Loading IDT on AP core");
-    
+
     // Load the shared IDT on this core
     core::sync::atomic::compiler_fence(AtomicOrdering::SeqCst);
     IDT.load();
     core::sync::atomic::compiler_fence(AtomicOrdering::SeqCst);
-    
+
     crate::kinfo!("init_interrupts_ap: IDT loaded on AP core");
 }
 

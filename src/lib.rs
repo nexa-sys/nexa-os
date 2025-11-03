@@ -154,13 +154,13 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
     );
 
     // Initialize subsystems in dependency order
-    auth::init();           // User authentication system
-    ipc::init();            // Inter-process communication
-    signal::init();         // POSIX signal handling
-    pipe::init();           // Pipe system
-    scheduler::init();      // Process scheduler
-    fs::init();             // Filesystem
-    init::init();           // Init system (PID 1 management)
+    auth::init(); // User authentication system
+    ipc::init(); // Inter-process communication
+    signal::init(); // POSIX signal handling
+    pipe::init(); // Pipe system
+    scheduler::init(); // Process scheduler
+    fs::init(); // Filesystem
+    init::init(); // Init system (PID 1 management)
 
     let elapsed_us = logger::boot_time_us();
     kinfo!(
@@ -188,19 +188,22 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
     // Standard Unix init search paths (in order of preference)
     // Following FHS (Filesystem Hierarchy Standard) and POSIX conventions
     static INIT_PATHS: &[&str] = &[
-        "/sbin/ni",        // Nexa Init (primary)
-        "/sbin/init",      // Traditional init location (fallback)
-        "/etc/init",       // Alternative init location
-        "/bin/init",       // Fallback init location
-        "/bin/sh",         // Emergency shell (minimal init)
+        "/sbin/ni",   // Nexa Init (primary)
+        "/sbin/init", // Traditional init location (fallback)
+        "/etc/init",  // Alternative init location
+        "/bin/init",  // Fallback init location
+        "/bin/sh",    // Emergency shell (minimal init)
     ];
 
-    kinfo!("Searching for init in {} standard locations", INIT_PATHS.len());
-    
+    kinfo!(
+        "Searching for init in {} standard locations",
+        INIT_PATHS.len()
+    );
+
     for &path in INIT_PATHS.iter() {
         kinfo!("Trying init program: {}", path);
         try_init_exec!(path);
-        
+
         // If /bin/sh is not found, this is a critical failure
         if path == "/bin/sh" {
             kfatal!("Critical: No init program found in initramfs");

@@ -7,23 +7,23 @@ static ERRNO: AtomicI32 = AtomicI32::new(0);
 
 /// POSIX style error numbers (subset).
 pub mod errno {
-    pub const EPERM: i32 = 1;       // Operation not permitted
-    pub const ENOENT: i32 = 2;      // No such file or directory
-    pub const EIO: i32 = 5;         // I/O error
-    pub const EBADF: i32 = 9;       // Bad file descriptor
-    pub const ECHILD: i32 = 10;     // No child processes
-    pub const EAGAIN: i32 = 11;     // Try again
-    pub const ENOMEM: i32 = 12;     // Out of memory
-    pub const EACCES: i32 = 13;     // Permission denied
-    pub const EFAULT: i32 = 14;     // Bad address
-    pub const EEXIST: i32 = 17;     // File exists
-    pub const ENOTDIR: i32 = 20;    // Not a directory
-    pub const EISDIR: i32 = 21;     // Is a directory
-    pub const EINVAL: i32 = 22;     // Invalid argument
-    pub const EMFILE: i32 = 24;     // Too many open files
-    pub const ENOSPC: i32 = 28;     // No space left on device
-    pub const ENOSYS: i32 = 38;     // Function not implemented
-    pub const ENOTSUP: i32 = 95;    // Operation not supported
+    pub const EPERM: i32 = 1; // Operation not permitted
+    pub const ENOENT: i32 = 2; // No such file or directory
+    pub const EIO: i32 = 5; // I/O error
+    pub const EBADF: i32 = 9; // Bad file descriptor
+    pub const ECHILD: i32 = 10; // No child processes
+    pub const EAGAIN: i32 = 11; // Try again
+    pub const ENOMEM: i32 = 12; // Out of memory
+    pub const EACCES: i32 = 13; // Permission denied
+    pub const EFAULT: i32 = 14; // Bad address
+    pub const EEXIST: i32 = 17; // File exists
+    pub const ENOTDIR: i32 = 20; // Not a directory
+    pub const EISDIR: i32 = 21; // Is a directory
+    pub const EINVAL: i32 = 22; // Invalid argument
+    pub const EMFILE: i32 = 24; // Too many open files
+    pub const ENOSPC: i32 = 28; // No space left on device
+    pub const ENOSYS: i32 = 38; // Function not implemented
+    pub const ENOTSUP: i32 = 95; // Operation not supported
 }
 
 /// POSIX file type enumeration used by the VFS layer.

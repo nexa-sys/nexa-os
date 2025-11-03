@@ -4,19 +4,23 @@ use crate::posix::{self, FileType, Metadata};
 
 pub mod ext2;
 
-// Default /etc/inittab configuration
-// Format: SERVICE_PATH RUNLEVEL
-// 
-// Services are started in order by ni (Nexa Init) at boot.
-// Runlevels: 0=halt, 1=single, 2=multi-user, 3=network, etc.
-// 
-// Example configuration:
-// #id:1:initdefault:         # Default runlevel (comment style)
-// /bin/sh:2:respawn:         # Shell respawns on exit
-// /sbin/getty:2:respawn:     # Getty respawns on exit
-//
-// Current format: PATH RUNLEVEL (simplified for minimal init)
-const DEFAULT_INITTAB: &[u8] = b"# NexaOS init configuration (/etc/inittab)\n# Format: PATH RUNLEVEL\n# Services listed here will be started by ni (Nexa Init) at boot\n# Runlevel 2 = multi-user mode\n/bin/sh 2\n";
+// Default ni configuration shipped when initramfs does not provide one.
+// The format mirrors a minimal subset of systemd units with an Init section
+// and one or more Service blocks.
+const DEFAULT_NI_CONF: &[u8] = b"# Nexa Init configuration (ni)\n\
+# This file is loaded by /sbin/init on boot if no custom config exists\n\
+[Init]\n\
+DefaultTarget=multi-user.target\n\
+FallbackTarget=rescue.target\n\
+\n\
+[Service \"bootstrap-shell\"]\n\
+Description=Interactive bootstrap shell\n\
+ExecStart=/bin/sh\n\
+Restart=always\n\
+RestartSec=1\n\
+RestartLimitIntervalSec=60\n\
+RestartLimitBurst=5\n\
+WantedBy=multi-user.target rescue.target\n";
 
 #[derive(Clone, Copy)]
 pub struct File {
@@ -197,10 +201,18 @@ pub fn init() {
         }
     }
 
-    // Add default /etc/inittab configuration file if not already present
-    if stat("/etc/inittab").is_none() {
-        add_file_bytes("etc/inittab", DEFAULT_INITTAB, false);
-        crate::kinfo!("Added default /etc/inittab configuration");
+    // Ensure ni configuration hierarchy exists when initramfs is minimal.
+    if stat("/etc").is_none() {
+        add_file_bytes("etc", &[], true);
+    }
+    if stat("/etc/ni").is_none() {
+        add_file_bytes("etc/ni", &[], true);
+    }
+
+    // Add default ni configuration file if not already present
+    if stat("/etc/ni/ni.conf").is_none() {
+        add_file_bytes("etc/ni/ni.conf", DEFAULT_NI_CONF, false);
+        crate::kinfo!("Added default /etc/ni/ni.conf configuration");
     }
 
     let files_total = *FILE_COUNT.lock();

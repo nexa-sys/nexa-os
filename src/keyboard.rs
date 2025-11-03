@@ -233,7 +233,7 @@ pub fn read_line(buf: &mut [u8]) -> usize {
 pub fn read_raw(buf: &mut [u8], count: usize) -> usize {
     let mut pos = 0;
     let max_read = core::cmp::min(buf.len(), count);
-    
+
     while pos < max_read {
         if let Some(ch) = read_char() {
             buf[pos] = ch as u8;

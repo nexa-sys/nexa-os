@@ -30,13 +30,11 @@ const SYS_CLOSE: u64 = 3;
 const SYS_FORK: u64 = 57;
 const SYS_EXECVE: u64 = 59;
 const SYS_EXIT: u64 = 60;
-const SYS_WAIT4: u64 = 61;
 const SYS_GETPID: u64 = 39;
 const SYS_GETPPID: u64 = 110;
 const SYS_RUNLEVEL: u64 = 231;
 
 // Standard file descriptors
-const STDIN: u64 = 0;
 const STDOUT: u64 = 1;
 const STDERR: u64 = 2;
 
@@ -142,21 +140,6 @@ fn execve(path: &str, argv: &[*const u8], envp: &[*const u8]) -> i64 {
     }
 }
 
-/// Wait for child process
-fn wait4(pid: i64, status: &mut i32, options: i32) -> i64 {
-    let ret = syscall3(
-        SYS_WAIT4,
-        pid as u64,
-        status as *mut i32 as u64,
-        options as u64,
-    );
-    if ret == u64::MAX {
-        -1
-    } else {
-        ret as i64
-    }
-}
-
 /// Get current runlevel
 fn get_runlevel() -> i32 {
     let ret = syscall1(SYS_RUNLEVEL, (-1i32) as u64);
@@ -175,7 +158,6 @@ fn read(fd: u64, buf: *mut u8, count: usize) -> u64 {
 
 /// Close file descriptor
 fn close(fd: u64) -> u64 {
-    const SYS_CLOSE: u64 = 3;
     syscall1(SYS_CLOSE, fd)
 }
 
@@ -201,197 +183,634 @@ fn itoa(mut n: u64, buf: &mut [u8]) -> &str {
     core::str::from_utf8(&buf[0..i]).unwrap()
 }
 
-/// Spawn a shell and wait for it
-fn spawn_shell() -> bool {
-    print("init: spawning shell /bin/sh\n");
-    
-    let pid = fork();
-    
-    if pid < 0 {
-        eprint("init: ERROR: fork() failed\n");
+fn itoa_hex(mut n: u64, buf: &mut [u8]) -> &str {
+    if n == 0 {
+        buf[0] = b'0';
+        return core::str::from_utf8(&buf[0..1]).unwrap();
+    }
+
+    let mut i = 0;
+    while n > 0 {
+        let digit = (n & 0xf) as u8;
+        buf[i] = match digit {
+            0..=9 => b'0' + digit,
+            _ => b'a' + (digit - 10),
+        };
+        n >>= 4;
+        i += 1;
+    }
+
+    for j in 0..i / 2 {
+        buf.swap(j, i - 1 - j);
+    }
+
+    core::str::from_utf8(&buf[..i]).unwrap()
+}
+
+const CONFIG_PATH: &str = "/etc/ni/ni.conf";
+const CONFIG_BUFFER_SIZE: usize = 4096;
+const MAX_SERVICES: usize = 12;
+const DEFAULT_TARGET_NAME: &str = "multi-user.target";
+const FALLBACK_TARGET_NAME: &str = "rescue.target";
+const POWER_OFF_TARGET_NAME: &str = "poweroff.target";
+const NETWORK_TARGET_NAME: &str = "network.target";
+const EMPTY_STR: &str = "";
+const MAX_FIELD_LEN: usize = 256;
+const SERVICE_FIELD_COUNT: usize = 5; // name, description, exec, after, wants
+const FIELD_IDX_NAME: usize = 0;
+const FIELD_IDX_DESCRIPTION: usize = 1;
+const FIELD_IDX_EXEC_START: usize = 2;
+const FIELD_IDX_AFTER: usize = 3;
+const FIELD_IDX_WANTS: usize = 4;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RestartPolicy {
+    No,
+    OnFailure,
+    Always,
+}
+
+impl RestartPolicy {
+    fn from_str(raw: &str) -> Self {
+        let lower = raw.as_bytes();
+        match lower {
+            b"no" | b"none" | b"never" | b"false" => RestartPolicy::No,
+            b"on-failure" | b"onfailure" | b"failure" => RestartPolicy::OnFailure,
+            b"always" | b"true" | b"yes" => RestartPolicy::Always,
+            _ => RestartPolicy::Always,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RestartSettings {
+    burst: u32,
+    interval_sec: u64,
+}
+
+impl RestartSettings {
+    const fn new() -> Self {
+        Self {
+            burst: MAX_RESPAWN_COUNT,
+            interval_sec: RESPAWN_WINDOW_SEC,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ServiceConfig {
+    name: &'static str,
+    description: &'static str,
+    exec_start: &'static str,
+    restart: RestartPolicy,
+    restart_settings: RestartSettings,
+    restart_delay_ms: u64,
+    after: &'static str,
+    wants: &'static str,
+}
+
+impl ServiceConfig {
+    const fn empty() -> Self {
+        Self {
+            name: EMPTY_STR,
+            description: EMPTY_STR,
+            exec_start: EMPTY_STR,
+            restart: RestartPolicy::Always,
+            restart_settings: RestartSettings::new(),
+            restart_delay_ms: RESTART_DELAY_MS,
+            after: EMPTY_STR,
+            wants: DEFAULT_TARGET_NAME,
+        }
+    }
+
+    fn is_valid(&self) -> bool {
+        !self.exec_start.is_empty()
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ServiceCatalog {
+    services: &'static [ServiceConfig],
+    default_target: &'static str,
+    fallback_target: &'static str,
+}
+
+static mut CONFIG_BUFFER: [u8; CONFIG_BUFFER_SIZE] = [0; CONFIG_BUFFER_SIZE];
+static mut SERVICE_CONFIGS: [ServiceConfig; MAX_SERVICES] = [ServiceConfig::empty(); MAX_SERVICES];
+static mut DEFAULT_BOOT_TARGET: &'static str = DEFAULT_TARGET_NAME;
+static mut FALLBACK_BOOT_TARGET: &'static str = FALLBACK_TARGET_NAME;
+static mut STRING_STORAGE: [[u8; MAX_FIELD_LEN]; MAX_SERVICES * SERVICE_FIELD_COUNT] =
+    [[0; MAX_FIELD_LEN]; MAX_SERVICES * SERVICE_FIELD_COUNT];
+static mut STRING_LENGTHS: [usize; MAX_SERVICES * SERVICE_FIELD_COUNT] =
+    [0; MAX_SERVICES * SERVICE_FIELD_COUNT];
+
+fn load_service_catalog() -> ServiceCatalog {
+    unsafe {
+        DEFAULT_BOOT_TARGET = DEFAULT_TARGET_NAME;
+        FALLBACK_BOOT_TARGET = FALLBACK_TARGET_NAME;
+
+        for slot in SERVICE_CONFIGS.iter_mut() {
+            *slot = ServiceConfig::empty();
+        }
+
+        for bucket in STRING_STORAGE.iter_mut() {
+            for byte in bucket.iter_mut() {
+                *byte = 0;
+            }
+        }
+
+        for len in STRING_LENGTHS.iter_mut() {
+            *len = 0;
+        }
+
+        for byte in CONFIG_BUFFER.iter_mut() {
+            *byte = 0;
+        }
+
+        let fd = open(CONFIG_PATH);
+        if fd == u64::MAX {
+            return ServiceCatalog {
+                services: &SERVICE_CONFIGS[0..0],
+                default_target: DEFAULT_BOOT_TARGET,
+                fallback_target: FALLBACK_BOOT_TARGET,
+            };
+        }
+
+        let read_count = read(fd, CONFIG_BUFFER.as_mut_ptr(), CONFIG_BUFFER.len());
+        close(fd);
+
+        if read_count == 0 || read_count == u64::MAX {
+            return ServiceCatalog {
+                services: &SERVICE_CONFIGS[0..0],
+                default_target: DEFAULT_BOOT_TARGET,
+                fallback_target: FALLBACK_BOOT_TARGET,
+            };
+        }
+
+        let usable = core::cmp::min(read_count as usize, CONFIG_BUFFER.len());
+        let service_count = parse_unit_file(usable);
+
+        ServiceCatalog {
+            services: &SERVICE_CONFIGS[0..service_count],
+            default_target: DEFAULT_BOOT_TARGET,
+            fallback_target: FALLBACK_BOOT_TARGET,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ParserSection {
+    None,
+    Init,
+    Service,
+}
+
+fn parse_unit_file(len: usize) -> usize {
+    unsafe {
+        let bytes = &CONFIG_BUFFER[..len];
+        let mut section = ParserSection::None;
+        let mut current = ServiceConfig::empty();
+        let mut service_active = false;
+        let mut line_start = 0usize;
+        let mut service_count = 0usize;
+
+        for (idx, &byte) in bytes.iter().enumerate() {
+            if byte == b'\n' {
+                process_line(
+                    &bytes[line_start..idx],
+                    &mut section,
+                    &mut current,
+                    &mut service_active,
+                    &mut service_count,
+                );
+                line_start = idx + 1;
+            }
+        }
+
+        if line_start < bytes.len() {
+            process_line(
+                &bytes[line_start..bytes.len()],
+                &mut section,
+                &mut current,
+                &mut service_active,
+                &mut service_count,
+            );
+        }
+
+        if section == ParserSection::Service && service_active && current.is_valid() {
+            finalize_service(&current, &mut service_count);
+        }
+        service_count
+    }
+}
+
+fn process_line(
+    raw_line: &[u8],
+    section: &mut ParserSection,
+    current: &mut ServiceConfig,
+    service_active: &mut bool,
+    service_count: &mut usize,
+) {
+    let line = trim_slice(raw_line);
+    if line.is_empty() {
+        return;
+    }
+
+    match line[0] {
+        b'#' | b';' => return,
+        b'[' => {
+            handle_section_header(line, section, current, service_active, service_count);
+        }
+        _ => match section {
+            ParserSection::Service => handle_service_key_value(line, current),
+            ParserSection::Init => handle_init_key_value(line),
+            ParserSection::None => {}
+        },
+    }
+}
+
+fn handle_section_header(
+    line: &[u8],
+    section: &mut ParserSection,
+    current: &mut ServiceConfig,
+    service_active: &mut bool,
+    service_count: &mut usize,
+) {
+    let cleaned = strip_brackets(line);
+    if cleaned.is_empty() {
+        return;
+    }
+
+    match identify_section(cleaned) {
+        ParserSection::Service => {
+            if *section == ParserSection::Service && *service_active && current.is_valid() {
+                finalize_service(current, service_count);
+            }
+
+            *current = ServiceConfig::empty();
+            *service_active = true;
+            *section = ParserSection::Service;
+
+            if let Some(name_bytes) = extract_quoted_identifier(cleaned) {
+                current.name = unsafe { slice_to_static(name_bytes) };
+            }
+        }
+        ParserSection::Init => {
+            if *section == ParserSection::Service && *service_active && current.is_valid() {
+                finalize_service(current, service_count);
+            }
+            *section = ParserSection::Init;
+            *service_active = false;
+        }
+        ParserSection::None => {
+            if *section == ParserSection::Service && *service_active && current.is_valid() {
+                finalize_service(current, service_count);
+            }
+            *section = ParserSection::None;
+            *service_active = false;
+        }
+    }
+}
+
+fn handle_service_key_value(line: &[u8], current: &mut ServiceConfig) {
+    if let Some((key, value)) = split_key_value(line) {
+        let key_str = unsafe { slice_to_static(key) };
+        let value_str = unsafe { slice_to_static(value) };
+        let value_trimmed = strip_optional_quotes(value_str);
+
+        if eq_ignore_ascii_case(key_str, "Description") {
+            current.description = value_trimmed;
+        } else if eq_ignore_ascii_case(key_str, "ExecStart") {
+            current.exec_start = value_trimmed;
+        } else if eq_ignore_ascii_case(key_str, "Restart") {
+            current.restart = RestartPolicy::from_str(to_ascii_lower(value_trimmed));
+        } else if eq_ignore_ascii_case(key_str, "RestartLimitIntervalSec") {
+            current.restart_settings.interval_sec = parse_u64(value_trimmed, RESPAWN_WINDOW_SEC);
+        } else if eq_ignore_ascii_case(key_str, "RestartLimitBurst") {
+            current.restart_settings.burst = parse_u32(value_trimmed, MAX_RESPAWN_COUNT);
+        } else if eq_ignore_ascii_case(key_str, "RestartSec") {
+            let seconds = parse_u64(value_trimmed, RESTART_DELAY_MS / 1000);
+            current.restart_delay_ms = seconds.saturating_mul(1000);
+        } else if eq_ignore_ascii_case(key_str, "After") {
+            current.after = value_trimmed;
+        } else if eq_ignore_ascii_case(key_str, "WantedBy") {
+            current.wants = value_trimmed;
+        } else if eq_ignore_ascii_case(key_str, "Unit") && current.name.is_empty() {
+            current.name = value_trimmed;
+        }
+    }
+}
+
+fn handle_init_key_value(line: &[u8]) {
+    if let Some((key, value)) = split_key_value(line) {
+        let key_str = unsafe { slice_to_static(key) };
+        let value_str = unsafe { slice_to_static(value) };
+        let trimmed = strip_optional_quotes(value_str);
+
+        unsafe {
+            if eq_ignore_ascii_case(key_str, "DefaultTarget") && !trimmed.is_empty() {
+                DEFAULT_BOOT_TARGET = trimmed;
+            } else if eq_ignore_ascii_case(key_str, "FallbackTarget") && !trimmed.is_empty() {
+                FALLBACK_BOOT_TARGET = trimmed;
+            }
+        }
+    }
+}
+
+fn store_service_field(
+    service_idx: usize,
+    field_idx: usize,
+    value: &'static str,
+    label: &str,
+) -> &'static str {
+    if value.is_empty() {
+        return EMPTY_STR;
+    }
+
+    unsafe {
+        let slot = service_idx * SERVICE_FIELD_COUNT + field_idx;
+        if slot >= STRING_STORAGE.len() {
+            log_warn("Unit config storage exhausted");
+            print("         Field: ");
+            print(label);
+            print("\n");
+            return EMPTY_STR;
+        }
+
+        let dest = &mut STRING_STORAGE[slot];
+        let bytes = value.as_bytes();
+        let max_copy = if MAX_FIELD_LEN == 0 { 0 } else { MAX_FIELD_LEN - 1 };
+        let mut copy_len = bytes.len();
+        if copy_len > max_copy {
+            copy_len = max_copy;
+            log_warn("Unit config field truncated");
+            print("         Field: ");
+            print(label);
+            print("\n");
+        }
+
+        for i in 0..copy_len {
+            dest[i] = bytes[i];
+        }
+        if copy_len < MAX_FIELD_LEN {
+            dest[copy_len] = 0;
+        }
+        STRING_LENGTHS[slot] = copy_len;
+
+        core::str::from_utf8_unchecked(&dest[..copy_len])
+    }
+}
+
+fn finalize_service(service: &ServiceConfig, service_count: &mut usize) {
+    unsafe {
+        if *service_count >= MAX_SERVICES || !service.is_valid() {
+            return;
+        }
+
+        let idx = *service_count;
+        let mut stored = *service;
+
+        stored.name = store_service_field(idx, FIELD_IDX_NAME, stored.name, "Unit");
+        stored.description = store_service_field(idx, FIELD_IDX_DESCRIPTION, stored.description, "Description");
+        stored.exec_start = store_service_field(idx, FIELD_IDX_EXEC_START, stored.exec_start, "ExecStart");
+        stored.after = store_service_field(idx, FIELD_IDX_AFTER, stored.after, "After");
+        stored.wants = store_service_field(idx, FIELD_IDX_WANTS, stored.wants, "WantedBy");
+
+        SERVICE_CONFIGS[idx] = stored;
+        *service_count += 1;
+    }
+}
+
+fn trim_slice(slice: &[u8]) -> &[u8] {
+    let mut start = 0usize;
+    let mut end = slice.len();
+
+    while start < end && is_whitespace(slice[start]) {
+        start += 1;
+    }
+    while end > start && is_whitespace(slice[end - 1]) {
+        end -= 1;
+    }
+
+    &slice[start..end]
+}
+
+fn is_whitespace(byte: u8) -> bool {
+    matches!(byte, b' ' | b'\t' | b'\r' | b'\n')
+}
+
+fn strip_brackets(line: &[u8]) -> &[u8] {
+    if line.len() >= 2 && line[0] == b'[' && line[line.len() - 1] == b']' {
+        trim_slice(&line[1..line.len() - 1])
+    } else {
+        line
+    }
+}
+
+fn identify_section(header: &[u8]) -> ParserSection {
+    if starts_with_ignore_case(header, b"Service") {
+        ParserSection::Service
+    } else if starts_with_ignore_case(header, b"Init") {
+        ParserSection::Init
+    } else {
+        ParserSection::None
+    }
+}
+
+fn extract_quoted_identifier(header: &[u8]) -> Option<&[u8]> {
+    if let Some(start) = header.iter().position(|&b| b == b'"') {
+        let rest = &header[start + 1..];
+        if let Some(end) = rest.iter().position(|&b| b == b'"') {
+            let candidate = &rest[..end];
+            if !candidate.is_empty() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+fn split_key_value(line: &[u8]) -> Option<(&[u8], &[u8])> {
+    if let Some(pos) = line.iter().position(|&b| b == b'=') {
+        let key = trim_slice(&line[..pos]);
+        let value = trim_slice(&line[pos + 1..]);
+        if !key.is_empty() {
+            return Some((key, value));
+        }
+    }
+    None
+}
+
+fn slice_to_static(slice: &[u8]) -> &'static str {
+    if slice.is_empty() {
+        return EMPTY_STR;
+    }
+    unsafe {
+        let base = CONFIG_BUFFER.as_ptr() as usize;
+        let start = slice.as_ptr() as usize;
+        if start < base {
+            return EMPTY_STR;
+        }
+        let offset = start - base;
+        if offset >= CONFIG_BUFFER.len() {
+            return EMPTY_STR;
+        }
+        let end = match offset.checked_add(slice.len()) {
+            Some(val) => val,
+            None => return EMPTY_STR,
+        };
+        if end > CONFIG_BUFFER.len() {
+            return EMPTY_STR;
+        }
+        core::str::from_utf8_unchecked(core::slice::from_raw_parts(
+            CONFIG_BUFFER.as_ptr().add(offset),
+            slice.len(),
+        ))
+    }
+}
+
+fn strip_optional_quotes(value: &'static str) -> &'static str {
+    let bytes = value.as_bytes();
+    if bytes.len() >= 2 && bytes[0] == b'"' && bytes[bytes.len() - 1] == b'"' {
+        unsafe {
+            let inner = &bytes[1..bytes.len() - 1];
+            slice_to_static(inner)
+        }
+    } else {
+        value
+    }
+}
+
+fn eq_ignore_ascii_case(a: &str, b: &str) -> bool {
+    if a.len() != b.len() {
         return false;
     }
-    
-    if pid == 0 {
-        // Child process - exec shell
-        let shell_path = "/bin/sh\0";
-        let argv: [*const u8; 2] = [
-            shell_path.as_ptr(),
-            core::ptr::null(),
-        ];
-        let envp: [*const u8; 1] = [core::ptr::null()];
-        
-        if execve("/bin/sh", &argv, &envp) < 0 {
-            eprint("init: ERROR: execve(/bin/sh) failed\n");
-            exit(1);
+    for (ac, bc) in a.bytes().zip(b.bytes()) {
+        if ac.to_ascii_lowercase() != bc.to_ascii_lowercase() {
+            return false;
         }
-        
-        // Never reached
-        exit(0);
     }
-    
-    // Parent process - wait for shell
-    let mut buf = [0u8; 32];
-    let pid_str = itoa(pid as u64, &mut buf);
-    print("init: shell spawned with PID ");
-    print(pid_str);
-    print("\n");
-    
-    let mut status: i32 = 0;
-    let wait_pid = wait4(pid, &mut status, 0);
-    
-    if wait_pid > 0 {
-        print("init: shell (PID ");
-        let wait_pid_str = itoa(wait_pid as u64, &mut buf);
-        print(wait_pid_str);
-        print(") exited with status ");
-        let status_str = itoa((status & 0xFF) as u64, &mut buf);
-        print(status_str);
-        print("\n");
-    } else {
-        eprint("init: ERROR: wait4() failed\n");
-    }
-    
     true
 }
 
-/// Service configuration entry
-#[derive(Clone, Copy)]
-struct ServiceEntry {
-    path: &'static str,
-    runlevel: u8,
+fn starts_with_ignore_case(haystack: &[u8], needle: &[u8]) -> bool {
+    if haystack.len() < needle.len() {
+        return false;
+    }
+    for (h, &n) in haystack.iter().zip(needle) {
+        if h.to_ascii_lowercase() != n.to_ascii_lowercase() {
+            return false;
+        }
+    }
+    true
 }
 
-/// Configuration buffer - max 10 services
-static mut CONFIG_BUFFER: [u8; 2048] = [0; 2048];
-static mut SERVICE_ENTRIES: [Option<ServiceEntry>; 10] = [None; 10];
-static mut SERVICE_COUNT: usize = 0;
+fn parse_u32(value: &'static str, default: u32) -> u32 {
+    if value.is_empty() {
+        return default;
+    }
+    let mut result: u32 = 0;
+    for &b in value.as_bytes() {
+        if b < b'0' || b > b'9' {
+            return default;
+        }
+        result = result.saturating_mul(10).saturating_add((b - b'0') as u32);
+    }
+    result
+}
 
-/// Load services from /etc/inittab configuration file
-/// Format: one service per line
-/// PATH RUNLEVEL
-/// e.g.:
-/// /bin/sh 2
-/// /sbin/getty 2
-fn load_config() -> &'static [Option<ServiceEntry>] {
+fn parse_u64(value: &'static str, default: u64) -> u64 {
+    if value.is_empty() {
+        return default;
+    }
+    let mut result: u64 = 0;
+    for &b in value.as_bytes() {
+        if b < b'0' || b > b'9' {
+            return default;
+        }
+        result = result.saturating_mul(10).saturating_add((b - b'0') as u64);
+    }
+    result
+}
+
+fn to_ascii_lower(value: &'static str) -> &'static str {
+    // Values are stored in CONFIG_BUFFER, mutate in place for lowercase
+    let bytes = value.as_bytes();
+    if bytes.is_empty() {
+        return value;
+    }
     unsafe {
-        let fd = open("/etc/inittab");
-        if fd == u64::MAX {
-            // Config file not found, use defaults
-            SERVICE_COUNT = 0;
-            return &SERVICE_ENTRIES[0..0];
+        let base = CONFIG_BUFFER.as_ptr() as usize;
+        let start = value.as_ptr() as usize;
+        if start < base {
+            return value;
         }
-        
-        // Read config file
-        let read_count = read(fd, CONFIG_BUFFER.as_mut_ptr(), CONFIG_BUFFER.len());
-        close(fd);
-        
-        if read_count == 0 || read_count == u64::MAX {
-            SERVICE_COUNT = 0;
-            return &SERVICE_ENTRIES[0..0];
+        let offset = start - base;
+        if offset >= CONFIG_BUFFER.len() {
+            return value;
         }
-        
-        // Parse configuration
-        let config_slice = core::slice::from_raw_parts(CONFIG_BUFFER.as_ptr(), read_count as usize);
-        let mut line_start = 0;
-        let mut line_num = 0;
-        
-        for (i, &byte) in config_slice.iter().enumerate() {
-            if byte == b'\n' || i == config_slice.len() - 1 {
-                let line_end = if byte == b'\n' { i } else { i + 1 };
-                let line_bytes = &config_slice[line_start..line_end];
-                
-                // Skip empty lines and comments
-                if line_bytes.len() > 0 && line_bytes[0] != b'#' {
-                    if let Some(entry) = parse_config_line(line_bytes) {
-                        if line_num < 10 {
-                            SERVICE_ENTRIES[line_num] = Some(entry);
-                            line_num += 1;
-                        }
-                    }
-                }
-                
-                line_start = i + 1;
-            }
+        let end = match offset.checked_add(bytes.len()) {
+            Some(val) => val,
+            None => return value,
+        };
+        if end > CONFIG_BUFFER.len() {
+            return value;
         }
-        
-        SERVICE_COUNT = line_num;
-        &SERVICE_ENTRIES[0..line_num]
+        let ptr = CONFIG_BUFFER.as_mut_ptr().add(offset);
+        for i in 0..bytes.len() {
+            let b = ptr.add(i).read();
+            ptr.add(i).write(b.to_ascii_lowercase());
+        }
+        core::str::from_utf8_unchecked(core::slice::from_raw_parts(ptr, bytes.len()))
     }
 }
 
-/// Parse a single configuration line
-/// Returns (path, runlevel) or None if invalid
-fn parse_config_line(line: &[u8]) -> Option<ServiceEntry> {
-    // Trim whitespace
-    let mut start = 0;
-    let mut end = line.len();
-    
-    while start < end && (line[start] == b' ' || line[start] == b'\t') {
-        start += 1;
+fn select_boot_target(
+    runlevel: i32,
+    default_target: &'static str,
+    fallback_target: &'static str,
+) -> &'static str {
+    match runlevel {
+        0 => POWER_OFF_TARGET_NAME,
+        1 => fallback_target,
+        2 => default_target,
+        3 => NETWORK_TARGET_NAME,
+        _ => default_target,
     }
-    while end > start && (line[end - 1] == b' ' || line[end - 1] == b'\t' || line[end - 1] == b'\r') {
-        end -= 1;
-    }
-    
-    if start >= end {
-        return None;
-    }
-    
-    let trimmed = &line[start..end];
-    
-    // Find space separator
-    let mut space_pos = 0;
-    while space_pos < trimmed.len() && trimmed[space_pos] != b' ' && trimmed[space_pos] != b'\t' {
-        space_pos += 1;
-    }
-    
-    if space_pos >= trimmed.len() {
-        return None;
-    }
-    
-    // Extract path
-    let path_bytes = &trimmed[0..space_pos];
-    let path_str = match core::str::from_utf8(path_bytes) {
-        Ok(s) => s,
-        Err(_) => return None,
-    };
-    
-    // Convert string to 'static str by using CONFIG_BUFFER offset
-    // This is a bit hacky but works for our use case
-    let path: &'static str = unsafe {
-        let offset = path_bytes.as_ptr() as usize - CONFIG_BUFFER.as_ptr() as usize;
-        let ptr = CONFIG_BUFFER.as_ptr().add(offset) as *const u8;
-        let len = path_str.len();
-        core::str::from_utf8_unchecked(core::slice::from_raw_parts(ptr, len))
-    };
-    
-    // Find runlevel
-    let mut level_start = space_pos;
-    while level_start < trimmed.len() && (trimmed[level_start] == b' ' || trimmed[level_start] == b'\t') {
-        level_start += 1;
-    }
-    
-    if level_start >= trimmed.len() {
-        return None;
-    }
-    
-    // Parse runlevel as single digit
-    let runlevel_byte = trimmed[level_start];
-    if runlevel_byte < b'0' || runlevel_byte > b'9' {
-        return None;
-    }
-    
-    Some(ServiceEntry {
-        path,
-        runlevel: (runlevel_byte - b'0') as u8,
-    })
 }
+
+fn service_matches_target(service: &ServiceConfig, target: &str) -> bool {
+    if service.wants.is_empty() {
+        return true;
+    }
+
+    for token in service.wants.split_whitespace() {
+        if token == target {
+            return true;
+        }
+    }
+
+    false
+}
+
+const FALLBACK_SERVICE: ServiceConfig = ServiceConfig {
+    name: "fallback-shell",
+    description: "Emergency fallback interactive shell",
+    exec_start: "/bin/sh",
+    restart: RestartPolicy::Always,
+    restart_settings: RestartSettings {
+        burst: MAX_RESPAWN_COUNT,
+        interval_sec: RESPAWN_WINDOW_SEC,
+    },
+    restart_delay_ms: RESTART_DELAY_MS,
+    after: EMPTY_STR,
+    wants: DEFAULT_TARGET_NAME,
+};
 
 /// Service state tracking
 struct ServiceState {
     respawn_count: u32,
-    last_respawn_time: u64,
+    window_start: u64,
     total_starts: u64,
 }
 
@@ -399,25 +818,46 @@ impl ServiceState {
     const fn new() -> Self {
         Self {
             respawn_count: 0,
-            last_respawn_time: 0,
+            window_start: 0,
             total_starts: 0,
         }
     }
 
-    fn should_respawn(&mut self, current_time: u64) -> bool {
-        // Reset counter if outside window
-        if current_time - self.last_respawn_time > RESPAWN_WINDOW_SEC {
-            self.respawn_count = 0;
-        }
+    fn allow_attempt(
+        &mut self,
+        current_time: u64,
+        policy: RestartPolicy,
+        settings: RestartSettings,
+    ) -> bool {
+        match policy {
+            RestartPolicy::No => {
+                if self.total_starts == 0 {
+                    self.total_starts = 1;
+                    true
+                } else {
+                    false
+                }
+            }
+            RestartPolicy::OnFailure | RestartPolicy::Always => {
+                if settings.interval_sec > 0 {
+                    if self.window_start == 0 {
+                        self.window_start = current_time;
+                        self.respawn_count = 0;
+                    } else if current_time.saturating_sub(self.window_start) >= settings.interval_sec {
+                        self.window_start = current_time;
+                        self.respawn_count = 0;
+                    }
+                }
 
-        if self.respawn_count >= MAX_RESPAWN_COUNT {
-            return false; // Hit respawn limit
-        }
+                if settings.burst != 0 && self.respawn_count >= settings.burst {
+                    return false;
+                }
 
-        self.respawn_count += 1;
-        self.last_respawn_time = current_time;
-        self.total_starts += 1;
-        true
+                self.respawn_count = self.respawn_count.saturating_add(1);
+                self.total_starts = self.total_starts.saturating_add(1);
+                true
+            }
+        }
     }
 }
 
@@ -513,120 +953,183 @@ fn init_main() -> ! {
     log_info("System initialization complete");
     print("\n");
     
-    // Load service configuration
+    // Load service catalog
     print("\n");
-    log_start("Loading service configuration");
-    let config = load_config();
-    if config.len() == 0 {
-        log_warn("No services configured, using default shell");
+    log_start("Loading unit catalog");
+    let catalog = load_service_catalog();
+    let services = catalog.services;
+    if services.is_empty() {
+        log_warn("No unit definitions found, preparing fallback shell");
     } else {
-        log_info("Loaded services from /etc/inittab");
-        print("         Service count: ");
-        print(itoa(config.len() as u64, &mut buf));
+        log_info("Loaded units from /etc/ni/ni.conf");
+        print("         Unit count: ");
+        print(itoa(services.len() as u64, &mut buf));
         print("\n");
     }
-    
+
+    let boot_target = select_boot_target(runlevel, catalog.default_target, catalog.fallback_target);
+    print("         Boot target: ");
+    print(boot_target);
+    print("\n");
+
     // Service supervision with fork/exec/wait
     print("\n");
-    log_start("Starting service supervision");
+    log_start("Starting unit supervision");
     log_info("Using fork/exec/wait supervision model");
     print("\n");
-    
-    // If no config, add default shell
-    if config.len() == 0 {
-        let mut service_state = ServiceState::new();
-        run_service_loop(&mut service_state, "/bin/sh", &mut buf)
-    } else {
-        // Run each configured service
-        // Note: run_service_loop never returns (loops forever within each service)
-        // So only the first service will ever run
-        for i in 0..config.len() {
-            if let Some(service_entry) = config[i] {
-                let mut service_state = ServiceState::new();
-                print("         Service: ");
-                print(service_entry.path);
-                print(" (runlevel ");
-                print(itoa(service_entry.runlevel as u64, &mut buf));
-                print(")\n");
-                
-                // This call never returns (service runs in infinite loop)
-                run_service_loop(&mut service_state, service_entry.path, &mut buf);
-            }
-        }
-        // This should never be reached since run_service_loop never returns
-        loop {}
+
+    if services.is_empty() {
+        log_warn("Activating fallback shell (no configured units)");
+        let mut fallback_state = ServiceState::new();
+        run_service_loop(&mut fallback_state, &FALLBACK_SERVICE, &mut buf);
     }
+
+    for service in services {
+        if service_matches_target(service, boot_target) {
+            log_start("Activating unit");
+            print("         Unit: ");
+            if service.name.is_empty() {
+                print(service.exec_start);
+            } else {
+                print(service.name);
+            }
+            print("\n");
+            if !service.description.is_empty() {
+                print("         Description: ");
+                print(service.description);
+                print("\n");
+            }
+            print("         ExecStart: ");
+            print(service.exec_start);
+            print("\n");
+            if !service.after.is_empty() {
+                print("         After (len ");
+                print(itoa(service.after.len() as u64, &mut buf));
+                print(", ptr 0x");
+                print(itoa_hex(service.after.as_ptr() as u64, &mut buf));
+                print("): ");
+                print(service.after);
+                print("\n");
+            }
+            if !service.wants.is_empty() {
+                print("         WantedBy: ");
+                print(service.wants);
+                print("\n");
+            }
+
+            let mut service_state = ServiceState::new();
+            run_service_loop(&mut service_state, service, &mut buf);
+        }
+    }
+
+    log_warn("No unit matched boot target; falling back to emergency shell");
+    let mut fallback_state = ServiceState::new();
+    run_service_loop(&mut fallback_state, &FALLBACK_SERVICE, &mut buf);
 }
 
 /// Run service supervision loop for a single service
-fn run_service_loop(service_state: &mut ServiceState, path: &str, buf: &mut [u8]) -> ! {
+fn run_service_loop(service_state: &mut ServiceState, service: &ServiceConfig, buf: &mut [u8]) -> ! {
     loop {
         let timestamp = get_timestamp();
         
-        if !service_state.should_respawn(timestamp) {
-            log_fail("Service respawn limit exceeded");
-            print("         Service: ");
-            print(path);
+        if !service_state.allow_attempt(timestamp, service.restart, service.restart_settings) {
+            log_fail("Restart limit reached");
+            print("         Unit: ");
+            if service.name.is_empty() {
+                print(service.exec_start);
+            } else {
+                print(service.name);
+            }
             print("\n");
-            eprint("ni: CRITICAL: Too many failures for service ");
-            eprint(path);
+            eprint("ni: CRITICAL: Restart limit exceeded for unit ");
+            if service.name.is_empty() {
+                eprint(service.exec_start);
+            } else {
+                eprint(service.name);
+            }
             eprint("\n");
-            eprint("ni: Respawn limit: ");
-            print(itoa(MAX_RESPAWN_COUNT as u64, buf));
+            eprint("ni: Restart policy: ");
+            match service.restart {
+                RestartPolicy::No => eprint("none\n"),
+                RestartPolicy::OnFailure => eprint("on-failure\n"),
+                RestartPolicy::Always => eprint("always\n"),
+            }
+            eprint("ni: Restart burst: ");
+            print(itoa(service.restart_settings.burst as u64, buf));
             eprint(" in ");
-            print(itoa(RESPAWN_WINDOW_SEC, buf));
+            print(itoa(service.restart_settings.interval_sec, buf));
             eprint(" seconds\n");
-            eprint("ni: Total starts: ");
+            eprint("ni: Total attempts: ");
             print(itoa(service_state.total_starts, buf));
             eprint("\n\n");
-            // Wait and continue trying (infinite wait)
-            loop {
-                delay_ms(5000);
+
+            match service.restart {
+                RestartPolicy::No => exit(1),
+                _ => {
+                    delay_ms(service.restart_delay_ms.max(RESTART_DELAY_MS));
+                    continue;
+                }
             }
         }
-        
-        log_start("Spawning service");
-        print("         Service: ");
-        print(path);
+
+        log_start("Spawning unit");
+        print("         Unit: ");
+        if service.name.is_empty() {
+            print(service.exec_start);
+        } else {
+            print(service.name);
+        }
         print("\n");
+        if !service.description.is_empty() {
+            print("         Description: ");
+            print(service.description);
+            print("\n");
+        }
         print("         Attempt: ");
         print(itoa(service_state.total_starts, buf));
         print("\n");
-        
-        // Fork and execute service
+
+        // Fork and execute unit
         let pid = fork();
-        
+
         if pid < 0 {
             log_fail("fork() failed");
-            print("         Service: ");
-            print(path);
+            print("         Unit: ");
+            if service.name.is_empty() {
+                print(service.exec_start);
+            } else {
+                print(service.name);
+            }
             print("\n");
-            delay_ms(RESTART_DELAY_MS);
+            delay_ms(service.restart_delay_ms);
             continue;
         }
-        
-        log_info("Service started successfully");
+
+        log_info("Unit process created");
         print("         Child PID: ");
         print(itoa(pid as u64, buf));
         print("\n\n");
-        
-        // Add null terminator to path for execve
+
+        // Add null terminator to ExecStart for execve path parameter
         let mut path_with_null = [0u8; 256];
-        let path_bytes = path.as_bytes();
-        if path_bytes.len() >= 256 {
-            log_fail("Service path too long");
-            delay_ms(RESTART_DELAY_MS);
+        let exec_bytes = service.exec_start.as_bytes();
+        if exec_bytes.is_empty() {
+            log_fail("ExecStart not defined for unit");
+            delay_ms(service.restart_delay_ms);
             continue;
         }
-        
-        // Copy path and add null terminator
-        for (i, &b) in path_bytes.iter().enumerate() {
+        if exec_bytes.len() >= path_with_null.len() {
+            log_fail("ExecStart exceeds maximum length (255 bytes)");
+            delay_ms(service.restart_delay_ms);
+            continue;
+        }
+
+        for (i, &b) in exec_bytes.iter().enumerate() {
             path_with_null[i] = b;
         }
-        path_with_null[path_bytes.len()] = 0;
-        
-        // Execute service directly - this jumps and never returns normally
-        // (Service exit will be handled by kernel)
+        path_with_null[exec_bytes.len()] = 0;
+
+        // Execute unit directly - this jumps and never returns normally
         let argv: [*const u8; 2] = [
             path_with_null.as_ptr(),
             core::ptr::null(),
@@ -634,15 +1137,23 @@ fn run_service_loop(service_state: &mut ServiceState, path: &str, buf: &mut [u8]
         let envp: [*const u8; 1] = [
             core::ptr::null(),
         ];
-        
-        execve(core::str::from_utf8(&path_with_null[..path_bytes.len()]).unwrap_or(""), &argv, &envp);
-        
+
+        let exec_path = unsafe {
+            core::str::from_utf8_unchecked(&path_with_null[..exec_bytes.len()])
+        };
+
+        execve(exec_path, &argv, &envp);
+
         // If execve returns, it failed
-        log_fail("execve failed - service not found");
-        print("         Service: ");
-        print(path);
+        log_fail("execve failed");
+        print("         Unit: ");
+        if service.name.is_empty() {
+            print(service.exec_start);
+        } else {
+            print(service.name);
+        }
         print("\n");
-        delay_ms(RESTART_DELAY_MS);
+        delay_ms(service.restart_delay_ms);
     }
 }
 

@@ -86,7 +86,7 @@ pub fn create_pipe() -> Result<(PipeId, PipeId), &'static str> {
         if pipe.state == PipeState::Closed {
             *pipe = PipeBuffer::new();
             pipe.state = PipeState::Open;
-            
+
             // For now, return the same index for both ends
             // In a full implementation, we'd track read/write ends separately
             return Ok((idx, idx));
@@ -183,5 +183,9 @@ pub fn close_pipe_write(pipe_id: PipeId) -> Result<(), &'static str> {
 
 /// Initialize pipe subsystem
 pub fn init() {
-    crate::kinfo!("POSIX pipe subsystem initialized ({} pipes, {} bytes each)", MAX_PIPES, PIPE_BUF_SIZE);
+    crate::kinfo!(
+        "POSIX pipe subsystem initialized ({} pipes, {} bytes each)",
+        MAX_PIPES,
+        PIPE_BUF_SIZE
+    );
 }

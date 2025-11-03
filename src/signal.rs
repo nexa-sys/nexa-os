@@ -34,8 +34,8 @@ pub enum SignalAction {
 /// Per-process signal state
 #[derive(Clone, Copy)]
 pub struct SignalState {
-    pending: u64,           // Bitmask of pending signals
-    blocked: u64,           // Bitmask of blocked signals
+    pending: u64, // Bitmask of pending signals
+    blocked: u64, // Bitmask of blocked signals
     actions: [SignalAction; NSIG],
 }
 
@@ -83,7 +83,11 @@ impl SignalState {
     }
 
     /// Set signal action
-    pub fn set_action(&mut self, signum: u32, action: SignalAction) -> Result<SignalAction, &'static str> {
+    pub fn set_action(
+        &mut self,
+        signum: u32,
+        action: SignalAction,
+    ) -> Result<SignalAction, &'static str> {
         if signum == 0 || signum >= NSIG as u32 {
             return Err("Invalid signal number");
         }

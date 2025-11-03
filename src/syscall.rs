@@ -40,9 +40,9 @@ pub const SYS_USER_LIST: u64 = 223;
 pub const SYS_USER_LOGOUT: u64 = 224;
 
 // Init system calls
-pub const SYS_REBOOT: u64 = 169;        // sys_reboot (Linux)
-pub const SYS_SHUTDOWN: u64 = 230;      // Custom: system shutdown
-pub const SYS_RUNLEVEL: u64 = 231;      // Custom: get/set runlevel
+pub const SYS_REBOOT: u64 = 169; // sys_reboot (Linux)
+pub const SYS_SHUTDOWN: u64 = 230; // Custom: system shutdown
+pub const SYS_RUNLEVEL: u64 = 231; // Custom: get/set runlevel
 
 const STDIN: u64 = 0;
 const STDOUT: u64 = 1;
@@ -224,61 +224,61 @@ fn syscall_read(fd: u64, buf: *mut u8, count: usize) -> u64 {
 fn syscall_exit(code: i32) -> u64 {
     let pid = crate::scheduler::current_pid().unwrap_or(0);
     crate::kinfo!("Process {} exited with code: {}", pid, code);
-    
+
     // Check if shell (via wait4) is running (shell flag set in GS_DATA[15] bit 0)
     let shell_is_running = unsafe {
         let gs_data_addr = &raw const crate::initramfs::GS_DATA.0 as *const _ as u64;
         let gs_data_ptr = gs_data_addr as *mut u64;
-        
+
         let flags = gs_data_ptr.add(15).read();
         let shell_flag = (flags & 1) != 0;
-        
+
         if shell_flag {
             crate::kinfo!("exit: shell process exited, returning to init");
-            
+
             // Clear shell flag
             gs_data_ptr.add(15).write(flags & !1);
-            
+
             // Store exit code
             gs_data_ptr.add(14).write(code as u64);
         }
-        
+
         shell_flag
     };
-    
+
     if shell_is_running {
         // Return to init's wait4() call
         // We need to modify the return address on the stack
         // Actually, we can't easily do that from here...
         // Instead, we'll use a trick: manually return from int 0x81 with iretq
-        
+
         // Get init's (actually current process's) RIP from the interrupt frame
         // on the stack, and modify it to return from wait4() successfully
-        
+
         // This is very hackish, but since we only have one process,
         // we can assume certain stack layout...
-        // 
+        //
         // Actually, a simpler approach: just halt, and let init's wait4
         // detect that shell exited and return
         crate::kinfo!("exit: halting process, init will detect shell exit");
         crate::arch::halt_loop();
     }
-    
+
     // For non-shell processes, continue with normal exit
     crate::init::handle_process_exit(pid, code);
-    
+
     if pid != 0 {
         let _ = crate::scheduler::set_process_state(pid, crate::process::ProcessState::Zombie);
         let _ = crate::scheduler::remove_process(pid);
     }
-    
+
     if let Some(next_pid) = crate::scheduler::schedule() {
         crate::kinfo!("Switching to next process: {}", next_pid);
     } else {
         crate::kinfo!("No more processes to run, halting system");
         crate::arch::halt_loop();
     }
-    
+
     0
 }
 fn syscall_open(path_ptr: *const u8, len: usize) -> u64 {
@@ -917,7 +917,7 @@ fn syscall_kill(pid: u64, signum: u64) -> u64 {
 
     // For now, just log the signal send
     crate::kinfo!("kill(pid={}, sig={}) called", pid, signum);
-    
+
     // TODO: Implement actual signal delivery to target process
     posix::set_errno(0);
     0
@@ -938,9 +938,9 @@ fn syscall_fork() -> u64 {
     // - fork() always returns a fake child PID (2) to the parent
     // - This allows init to call wait4() to "wait" for the shell
     // - wait4() will launch the shell and wait for it to complete
-    
+
     crate::kinfo!("fork() called - returning fake child PID 2");
-    
+
     // Return fake child PID to the caller
     // The actual shell will be executed by wait4()
     2
@@ -974,7 +974,7 @@ fn syscall_execve(path: *const u8, _argv: *const u64, _envp: *const u64) -> u64 
 
     // Note: In our simplified architecture, execve is mainly used by test programs.
     // Shell is launched via wait4() as part of the fork/wait sequence.
-    
+
     // Try to load the ELF file from filesystem
     let elf_data = match crate::fs::read_file_bytes(path_str) {
         Some(data) => data,
@@ -997,27 +997,27 @@ fn syscall_execve(path: *const u8, _argv: *const u64, _envp: *const u64) -> u64 
 
     let entry = new_process.entry_point;
     let stack = new_process.stack_top;
-    
+
     crate::kinfo!("execve: ELF loaded, entry={:#x}, stack={:#x}", entry, stack);
     crate::kinfo!("execve: switching to new process");
-    
+
     unsafe {
         let gs_data_addr = &raw const crate::initramfs::GS_DATA.0 as *const _ as u64;
         let gs_data_ptr = gs_data_addr as *mut u64;
-        
+
         gs_data_ptr.add(0).write(stack);
         gs_data_ptr.add(2).write(entry);
         gs_data_ptr.add(3).write(stack);
-        
+
         crate::kinfo!("execve: jumping to entry={:#x}, stack={:#x}", entry, stack);
-        
+
         core::arch::asm!(
             "mov ax, (4 << 3) | 3",
             "mov ds, ax",
             "mov es, ax",
             "mov fs, ax",
             "mov gs, ax",
-            
+
             "push {user_ss}",
             "push {user_rsp}",
             "pushf",
@@ -1026,9 +1026,9 @@ fn syscall_execve(path: *const u8, _argv: *const u64, _envp: *const u64) -> u64 
             "push rax",
             "push {user_cs}",
             "push {user_rip}",
-            
+
             "iretq",
-            
+
             user_ss = in(reg) (4u64 << 3) | 3,
             user_rsp = in(reg) stack,
             user_cs = in(reg) (3u64 << 3) | 3,
@@ -1041,17 +1041,17 @@ fn syscall_execve(path: *const u8, _argv: *const u64, _envp: *const u64) -> u64 
 /// POSIX wait4() system call - wait for process state change
 fn syscall_wait4(pid: i64, status: *mut i32, _options: i32, _rusage: *mut u8) -> u64 {
     crate::kinfo!("wait4(pid={}) called", pid);
-    
+
     // Simplified implementation: just return success with status 0
     // In a full OS this would block and wait for child exit
     // For now, simulate child immediate exit
-    
+
     if !status.is_null() {
         unsafe {
             *status = 0; // Exit status 0 (success)
         }
     }
-    
+
     // Return the child PID that "exited"
     posix::set_errno(0);
     pid as u64
@@ -1097,13 +1097,13 @@ fn syscall_dup2(oldfd: u64, newfd: u64) -> u64 {
 /// POSIX sched_yield() system call - yield CPU to scheduler
 fn syscall_sched_yield() -> u64 {
     crate::kinfo!("sched_yield() called");
-    
+
     // Trigger scheduler to select next process
     if let Some(_next_pid) = crate::scheduler::schedule() {
         // TODO: Perform context switch to next process
         crate::kinfo!("Scheduler selected next process");
     }
-    
+
     posix::set_errno(0);
     0
 }
@@ -1112,7 +1112,7 @@ fn syscall_sched_yield() -> u64 {
 /// cmd values: 0x01234567=RESTART, 0x4321FEDC=HALT, 0xCDEF0123=POWER_OFF
 fn syscall_reboot(cmd: i32) -> u64 {
     crate::kinfo!("reboot(cmd={:#x}) called", cmd);
-    
+
     // Check if caller is root (UID 0) or has CAP_SYS_BOOT
     // For now, we allow any process to reboot (simplified security)
     if !crate::auth::is_superuser() {
@@ -1120,12 +1120,12 @@ fn syscall_reboot(cmd: i32) -> u64 {
         posix::set_errno(posix::errno::EPERM);
         return u64::MAX;
     }
-    
+
     // Linux reboot magic numbers
     const LINUX_REBOOT_CMD_RESTART: i32 = 0x01234567;
     const LINUX_REBOOT_CMD_HALT: i32 = 0x4321FEDC_u32 as i32;
     const LINUX_REBOOT_CMD_POWER_OFF: i32 = 0xCDEF0123_u32 as i32;
-    
+
     match cmd {
         LINUX_REBOOT_CMD_RESTART => {
             crate::kinfo!("System reboot requested via syscall");
@@ -1145,7 +1145,7 @@ fn syscall_reboot(cmd: i32) -> u64 {
             return u64::MAX;
         }
     }
-    
+
     // Never returns
     posix::set_errno(0);
     0
@@ -1154,17 +1154,17 @@ fn syscall_reboot(cmd: i32) -> u64 {
 /// System shutdown - power off the system
 fn syscall_shutdown() -> u64 {
     crate::kinfo!("shutdown() called");
-    
+
     // Check privilege
     if !crate::auth::is_superuser() {
         crate::kwarn!("Shutdown attempted by non-root user");
         posix::set_errno(posix::errno::EPERM);
         return u64::MAX;
     }
-    
+
     crate::kinfo!("System shutdown requested via syscall");
     crate::init::shutdown();
-    
+
     // Never returns
     posix::set_errno(0);
     0
@@ -1181,14 +1181,14 @@ fn syscall_runlevel(level: i32) -> u64 {
         posix::set_errno(0);
         return current as u64;
     }
-    
+
     // Set runlevel (requires privilege)
     if !crate::auth::is_superuser() {
         crate::kwarn!("Runlevel change attempted by non-root user");
         posix::set_errno(posix::errno::EPERM);
         return u64::MAX;
     }
-    
+
     // Validate runlevel
     let new_level = match level {
         0 => crate::init::RunLevel::Halt,
@@ -1204,9 +1204,9 @@ fn syscall_runlevel(level: i32) -> u64 {
             return u64::MAX;
         }
     };
-    
+
     crate::kinfo!("runlevel: set -> {:?}", new_level);
-    
+
     match crate::init::change_runlevel(new_level) {
         Ok(_) => {
             posix::set_errno(0);

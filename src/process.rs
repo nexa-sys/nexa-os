@@ -32,13 +32,13 @@ pub const USER_REGION_SIZE: u64 = (STACK_BASE + STACK_SIZE) - USER_VIRT_BASE;
 #[derive(Clone, Copy)]
 pub struct Process {
     pub pid: Pid,
-    pub ppid: Pid,              // Parent process ID (POSIX)
+    pub ppid: Pid, // Parent process ID (POSIX)
     pub state: ProcessState,
     pub entry_point: u64,
     pub stack_top: u64,
     pub heap_start: u64,
     pub heap_end: u64,
-    pub signal_state: crate::signal::SignalState,  // POSIX signal handling
+    pub signal_state: crate::signal::SignalState, // POSIX signal handling
 }
 
 static NEXT_PID: AtomicU64 = AtomicU64::new(1);
@@ -114,13 +114,13 @@ impl Process {
 
         let process = Process {
             pid,
-            ppid: 0,  // Will be set by caller if needed (init has ppid=0)
+            ppid: 0, // Will be set by caller if needed (init has ppid=0)
             state: ProcessState::Ready,
             entry_point: virtual_entry, // Use virtual entry point for Ring 3 execution
             stack_top,
             heap_start: HEAP_BASE,
             heap_end: HEAP_BASE + HEAP_SIZE,
-            signal_state: crate::signal::SignalState::new(),  // Initialize signal handling
+            signal_state: crate::signal::SignalState::new(), // Initialize signal handling
         };
 
         Ok(process)
