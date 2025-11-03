@@ -1040,84 +1040,21 @@ fn syscall_execve(path: *const u8, _argv: *const u64, _envp: *const u64) -> u64 
 
 /// POSIX wait4() system call - wait for process state change
 fn syscall_wait4(pid: i64, status: *mut i32, _options: i32, _rusage: *mut u8) -> u64 {
-    crate::kinfo!("wait4(pid={}) called - launching shell", pid);
+    crate::kinfo!("wait4(pid={}) called", pid);
     
-    // Simplified implementation:
-    // When init calls wait4() after fork(), we actually run the shell
-    // This is our way of simulating "child process execution"
+    // Simplified implementation: just return success with status 0
+    // In a full OS this would block and wait for child exit
+    // For now, simulate child immediate exit
     
-    // Load and execute the shell
-    let elf_data = match crate::fs::read_file_bytes("/bin/sh") {
-        Some(data) => data,
-        None => {
-            crate::kerror!("wait4: shell not found");
-            if !status.is_null() {
-                unsafe {
-                    *status = 1; // Error status
-                }
-            }
-            return pid as u64;
+    if !status.is_null() {
+        unsafe {
+            *status = 0; // Exit status 0 (success)
         }
-    };
-    
-    let new_process = match crate::process::Process::from_elf(elf_data) {
-        Ok(proc) => proc,
-        Err(e) => {
-            crate::kerror!("wait4: failed to load shell ELF: {:?}", e);
-            if !status.is_null() {
-                unsafe {
-                    *status = 1;
-                }
-            }
-            return pid as u64;
-        }
-    };
-    
-    let entry = new_process.entry_point;
-    let stack = new_process.stack_top;
-    
-    crate::kinfo!("wait4: executing shell at entry={:#x}, stack={:#x}", entry, stack);
-    
-    // Execute the shell via iretq
-    // When shell exits, we'll return here and return from wait4()
-    unsafe {
-        let gs_data_addr = &raw const crate::initramfs::GS_DATA.0 as *const _ as u64;
-        let gs_data_ptr = gs_data_addr as *mut u64;
-        
-        // Mark that we're in shell mode (so shell's exit() returns correctly)
-        let current_flags = gs_data_ptr.add(15).read();
-        gs_data_ptr.add(15).write(current_flags | 1);  // Set shell flag in bit 0
-        
-        gs_data_ptr.add(0).write(stack); // User RSP
-        gs_data_ptr.add(2).write(entry); // User entry point
-        gs_data_ptr.add(3).write(stack); // User stack base
-        
-        // Build interrupt frame for iretq
-        core::arch::asm!(
-            "mov ax, (4 << 3) | 3",
-            "mov ds, ax",
-            "mov es, ax",
-            "mov fs, ax",
-            "mov gs, ax",
-            
-            "push {user_ss}",
-            "push {user_rsp}",
-            "pushf",
-            "pop rax",
-            "or rax, 0x200",
-            "push rax",
-            "push {user_cs}",
-            "push {user_rip}",
-            
-            "iretq",
-            
-            user_ss = in(reg) (4u64 << 3) | 3,
-            user_rsp = in(reg) stack,
-            user_cs = in(reg) (3u64 << 3) | 3,
-            user_rip = in(reg) entry,
-            options(noreturn)
-        );
     }
+    
+    // Return the child PID that "exited"
+    posix::set_errno(0);
+    pid as u64
 }
 
 /// POSIX sigaction() system call - examine and change signal action

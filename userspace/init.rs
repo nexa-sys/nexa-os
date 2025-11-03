@@ -389,45 +389,39 @@ fn init_main() -> ! {
         print(itoa(service_state.total_starts, &mut buf));
         print("\n");
         
-        // Fork to create child process
+        // Fork and execute shell
         let pid = fork();
         
         if pid < 0 {
-            // Fork failed
-            log_fail("fork() failed - cannot create child process");
+            log_fail("fork() failed");
             delay_ms(RESTART_DELAY_MS);
             continue;
         }
         
-        // In our simplified architecture:
-        // fork() always returns > 0 (fake child PID), so ni is always "parent"
-        // Wait for child to exit (simulation: wait returns immediately with status 0)
-        
+        // In our model, fork() returns a fake child PID (2)
+        // We don't actually have separate processes
+        // So we directly execute the shell  
         log_info("Shell started successfully");
         print("         Child PID: ");
         print(itoa(pid as u64, &mut buf));
         print("\n\n");
         
-        // Wait for child to exit
-        // In reality, this triggers shell startup via a special mechanism
-        let mut status: i32 = 0;
-        let wait_pid = wait4(pid, &mut status, 0);
+        // Execute shell directly - this jumps to shell and never returns
+        // (Shell exit will be handled by kernel)
+        let path = "/bin/sh\0";
+        let argv: [*const u8; 2] = [
+            path.as_ptr(),
+            core::ptr::null(),
+        ];
+        let envp: [*const u8; 1] = [
+            core::ptr::null(),
+        ];
         
-        print("\n");
-        if wait_pid as i64 == pid {
-            log_warn("Shell process exited");
-            print("         Exit status: ");
-            print(itoa((status & 0xFF) as u64, &mut buf));
-            print("\n");
-        } else {
-            log_fail("wait4() failed");
-        }
+        execve(path, &argv, &envp);
         
-        // Delay before respawn
-        log_start("Waiting before respawn");
-        delay_ms(RESTART_DELAY_MS);
-        log_info("Respawning shell");
-        print("\n");
+        // If execve returns, it failed
+        log_fail("execve failed - shell not found");
+        exit(1);
     }
 }
 
