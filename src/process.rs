@@ -13,6 +13,21 @@ pub enum ProcessState {
     Sleeping,
     Zombie,
 }
+
+/// Virtual base address where userspace expects to be mapped.
+pub const USER_VIRT_BASE: u64 = 0x400000;
+/// Physical base address used when copying the userspace image.
+pub const USER_PHYS_BASE: u64 = 0x400000;
+/// Virtual address chosen for the base of the userspace stack region.
+pub const STACK_BASE: u64 = 0x800000;
+/// Size of the userspace stack in bytes (must stay 2 MiB aligned for huge pages).
+pub const STACK_SIZE: u64 = 0x200000;
+/// Virtual address where the heap begins in userspace.
+pub const HEAP_BASE: u64 = USER_VIRT_BASE + 0x200000;
+/// Size of the initial heap allocation reserved for userspace.
+pub const HEAP_SIZE: u64 = 0x200000;
+/// Total virtual span that must be mapped for the userspace image, heap, and stack.
+pub const USER_REGION_SIZE: u64 = (STACK_BASE + STACK_SIZE) - USER_VIRT_BASE;
 /// Process structure
 pub struct Process {
     pub pid: Pid,
@@ -57,21 +72,21 @@ impl Process {
         crate::kinfo!("ElfLoader created successfully");
 
         // Allocate user space memory
-        const USER_BASE: u64 = 0x200000; // Physical base aligned with user virtual addresses
-        const STACK_BASE: u64 = 0x600000; // Virtual stack base (identity-mapped)
-        const STACK_SIZE: u64 = 0x100000; // 1MB stack
-        const HEAP_SIZE: u64 = 0x100000; // 1MB heap
-
         crate::kinfo!(
-            "Constants defined: USER_BASE={:#x}, STACK_BASE={:#x}, STACK_SIZE={:#x}",
-            USER_BASE,
+            "Userspace layout: phys_base={:#x}, virt_base={:#x}, stack_base={:#x}, stack_size={:#x}",
+            USER_PHYS_BASE,
+            USER_VIRT_BASE,
             STACK_BASE,
             STACK_SIZE
         );
 
         // Load ELF
-        crate::kinfo!("About to call loader.load with base_addr={:#x}", USER_BASE);
-        let physical_entry = loader.load(USER_BASE)?;
+        crate::kinfo!(
+            "About to call loader.load with phys_base={:#x} (virt base {:#x})",
+            USER_PHYS_BASE,
+            USER_VIRT_BASE
+        );
+        let physical_entry = loader.load(USER_PHYS_BASE)?;
         crate::kinfo!(
             "ELF loaded successfully, physical_entry={:#x}",
             physical_entry
@@ -99,8 +114,8 @@ impl Process {
             state: ProcessState::Ready,
             entry_point: virtual_entry, // Use virtual entry point for Ring 3 execution
             stack_top,
-            heap_start: USER_BASE + 0x200000, // Heap after code
-            heap_end: USER_BASE + 0x200000 + HEAP_SIZE,
+            heap_start: HEAP_BASE,
+            heap_end: HEAP_BASE + HEAP_SIZE,
         };
 
         Ok(process)

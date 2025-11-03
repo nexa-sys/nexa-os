@@ -248,15 +248,13 @@ impl FramebufferWriter {
         for (row_offset, bits) in glyph.iter().enumerate() {
             for sy in 0..SCALE_Y {
                 let target_y = pixel_y + row_offset * SCALE_Y + sy;
-                let mut mask = 0x80u8;
-                let mut target_x = pixel_x;
-                for _ in 0..BASE_FONT_WIDTH {
+                for col_offset in 0..BASE_FONT_WIDTH {
+                    let mask = 1u8 << col_offset;
                     let color = if bits & mask != 0 { &self.fg } else { &self.bg };
+                    let target_x = pixel_x + col_offset * SCALE_X;
                     for sx in 0..SCALE_X {
                         self.write_pixel(target_x + sx, target_y, color);
                     }
-                    target_x += SCALE_X;
-                    mask >>= 1;
                 }
             }
         }

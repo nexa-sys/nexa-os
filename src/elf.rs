@@ -357,15 +357,28 @@ impl ElfLoader {
 
                 // Zero out the memory first
                 if p_memsz > 0 {
+                    crate::kinfo!(
+                        "Zeroing segment bytes: addr={:#x}, memsz={:#x}",
+                        target_addr,
+                        p_memsz
+                    );
                     unsafe {
                         core::ptr::write_bytes(dst, 0, p_memsz);
                     }
+                    crate::kinfo!("Zero complete at {:#x}", target_addr);
                 }
 
                 // Copy the file data
+                crate::kinfo!(
+                    "Copying segment data: src_off={:#x}, dst={:#x}, size={:#x}",
+                    p_offset_val,
+                    target_addr,
+                    p_filesz
+                );
                 unsafe {
                     core::ptr::copy_nonoverlapping(src, dst, p_filesz);
                 }
+                crate::kinfo!("Copy complete to {:#x}", target_addr);
             }
         }
 

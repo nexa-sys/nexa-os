@@ -22,6 +22,7 @@ pub mod vga_buffer;
 
 use core::panic::PanicInfo;
 use multiboot2::{BootInformation, BootInformationHeader};
+use x86_64::registers::control::{Cr0, Cr0Flags, Cr4, Cr4Flags};
 pub const MULTIBOOT_BOOTLOADER_MAGIC: u32 = 0x2BADB002; // Multiboot v1
 pub const MULTIBOOT2_BOOTLOADER_MAGIC: u32 = 0x36d76289; // Multiboot v2
 
@@ -66,8 +67,7 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
     }
 
     if magic != MULTIBOOT2_BOOTLOADER_MAGIC && magic != MULTIBOOT_BOOTLOADER_MAGIC {
-        kerror!("Invalid Multiboot magic value: {:#x}", magic);
-        arch::halt_loop();
+        kpanic!("Invalid Multiboot magic value: {:#x}", magic);
     }
 
     if magic == MULTIBOOT2_BOOTLOADER_MAGIC {
@@ -110,6 +110,8 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
     // Initialize paging (required for user mode)
     paging::init();
     framebuffer::activate();
+
+    enable_floating_point_unit();
 
     // Check INITRAMFS after paging::init()
     kinfo!(
@@ -185,9 +187,22 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
 }
 
 pub fn panic(info: &PanicInfo) -> ! {
-    kfatal!("KERNEL PANIC: {}", info);
+    kpanic!("{}", info);
+}
 
-    arch::halt_loop()
+fn enable_floating_point_unit() {
+    unsafe {
+        let mut cr0 = Cr0::read();
+        cr0.remove(Cr0Flags::EMULATE_COPROCESSOR | Cr0Flags::TASK_SWITCHED);
+        cr0.insert(Cr0Flags::MONITOR_COPROCESSOR);
+        Cr0::write(cr0);
+
+        let mut cr4 = Cr4::read();
+        cr4.insert(Cr4Flags::OSFXSR | Cr4Flags::OSXMMEXCPT_ENABLE);
+        Cr4::write(cr4);
+    }
+
+    kinfo!("Enabled FPU/SSE support for user mode execution");
 }
 
 #[macro_export]

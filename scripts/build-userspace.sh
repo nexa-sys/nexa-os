@@ -29,7 +29,8 @@ EOF
 # Compile shell
 echo "Compiling /bin/sh..."
 cd "$BUILD_DIR"
-RUSTFLAGS="-C opt-level=s -C panic=abort -C linker=rust-lld" cargo build -Z build-std=core --target /home/hanxi-cat/dev/nexa-os/x86_64-nexaos.json --release --bin sh
+RUSTFLAGS="-C opt-level=s -C panic=abort -C linker=rust-lld -C link-arg=--image-base=0x00400000" \
+    cargo build -Z build-std=core --target /home/hanxi-cat/dev/nexa-os/x86_64-nexaos.json --release --bin sh
 cd ../..
 
 # Copy the binary

@@ -154,16 +154,13 @@ extern "x86-interrupt" fn double_fault_handler(
         stack_frame.stack_pointer.as_u64(),
         stack_frame.stack_segment.0
     ));
-    crate::kerror!(
+    crate::kpanic!(
         "DOUBLE FAULT: code={:#x} rip={:#x} rsp={:#x} ss={:#x}",
         error_code,
         stack_frame.instruction_pointer.as_u64(),
         stack_frame.stack_pointer.as_u64(),
         stack_frame.stack_segment.0
     );
-    loop {
-        x86_64::instructions::hlt();
-    }
 }
 
 extern "x86-interrupt" fn divide_error_handler(stack_frame: InterruptStackFrame) {
@@ -172,20 +169,18 @@ extern "x86-interrupt" fn divide_error_handler(stack_frame: InterruptStackFrame)
         let mut port = x86_64::instructions::port::Port::new(0x3F8u16);
         port.write(b'D');
     }
-    crate::kerror!("EXCEPTION: DIVIDE ERROR\n{:#?}", stack_frame);
-    loop {}
+    crate::kpanic!("EXCEPTION: DIVIDE ERROR\n{:#?}", stack_frame);
 }
 
 extern "x86-interrupt" fn segment_not_present_handler(
     stack_frame: InterruptStackFrame,
     error_code: u64,
 ) {
-    crate::kerror!(
+    crate::kpanic!(
         "EXCEPTION: SEGMENT NOT PRESENT (error: {})\n{:#?}",
         error_code,
         stack_frame
     );
-    loop {}
 }
 
 extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: InterruptStackFrame) {
@@ -194,8 +189,27 @@ extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: InterruptStackFram
         let mut port = x86_64::instructions::port::Port::new(0x3F8u16);
         port.write(b'I');
     }
-    crate::kerror!("EXCEPTION: INVALID OPCODE\n{:#?}", stack_frame);
-    loop {}
+    let rip = stack_frame.instruction_pointer.as_u64();
+    let rsp = stack_frame.stack_pointer.as_u64();
+    let mut bytes_at_rip: [u8; 16] = [0; 16];
+    let mut bytes_at_rsp: [u8; 16] = [0; 16];
+    unsafe {
+        let rip_ptr = rip as *const u8;
+        let rsp_ptr = rsp as *const u8;
+        for i in 0..16 {
+            // Use read_volatile so the compiler does not optimise the loads away
+            bytes_at_rip[i] = rip_ptr.add(i).read_volatile();
+            bytes_at_rsp[i] = rsp_ptr.add(i).read_volatile();
+        }
+    }
+    crate::kpanic!(
+        "EXCEPTION: INVALID OPCODE rip={:#x} rsp={:#x} bytes rip={:02x?} stack={:02x?}\n{:#?}",
+        rip,
+        rsp,
+        bytes_at_rip,
+        bytes_at_rsp,
+        stack_frame
+    );
 }
 
 // Ring 3 switch handler - interrupt 0x80

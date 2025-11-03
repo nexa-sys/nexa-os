@@ -187,8 +187,6 @@ unsafe fn init_user_page_tables() {
     // - PDP[0] -> PD (covers 0-1GB)
     // - PD[0-3] -> PTs (covers 0-4MB, but we need up to 2MB)
 
-    let mut should_map_user = true;
-
     // Check if we have the expected structure
     if !pml4[0].is_unused() {
         let current_flags = pml4[0].flags();
@@ -243,7 +241,6 @@ unsafe fn init_user_page_tables() {
                 );
                 crate::kinfo!("Converted PDP[0] 1GiB huge page into 2MiB identity directory");
                 crate::vga_buffer::set_vga_ready();
-                should_map_user = false;
             } else {
                 // Ensure standard page table entry carries correct permissions
                 pdp[0].set_flags(
@@ -342,11 +339,7 @@ unsafe fn init_user_page_tables() {
     // User program expects to run at virtual address 0x200000, with heap and stack
     // residing up to 0x700000. We map the region with 2 MiB huge pages so the
     // stack (at 0x600000-0x700000) has backing memory and retains user access.
-    if should_map_user {
-        map_user_program();
-    } else {
-        crate::kinfo!("User region reuses converted identity mappings; skipping extra map");
-    }
+    map_user_program();
 
     // Map VGA buffer for kernel output
     map_vga_buffer();
@@ -360,22 +353,19 @@ unsafe fn init_user_page_tables() {
 
 /// Map user program virtual addresses to physical addresses
 unsafe fn map_user_program() {
+    use crate::process::{USER_PHYS_BASE, USER_REGION_SIZE, USER_VIRT_BASE};
     use x86_64::registers::control::Cr3;
     use x86_64::structures::paging::{PageTable, PageTableFlags};
     use x86_64::PhysAddr;
 
-    // Keep these constants aligned with the values used in `process::from_elf`
-    const USER_VIRT_BASE: u64 = 0x200000; // Virtual base expected by the userspace binary
-    const USER_PHYS_BASE: u64 = 0x200000; // Physical base where we load the ELF segments
-    const USER_TOTAL_SIZE: u64 = 0x500000; // Cover code, heap, and stack (up to 0x700000)
     const HUGE_PAGE_SIZE: u64 = 0x200000; // 2 MiB
 
     crate::kinfo!(
         "Mapping user region: virtual {:#x}-{:#x} -> physical {:#x}-{:#x}",
         USER_VIRT_BASE,
-        USER_VIRT_BASE + USER_TOTAL_SIZE,
+        USER_VIRT_BASE + USER_REGION_SIZE,
         USER_PHYS_BASE,
-        USER_PHYS_BASE + USER_TOTAL_SIZE
+        USER_PHYS_BASE + USER_REGION_SIZE
     );
 
     // Get current page table root (PML4)
@@ -415,7 +405,7 @@ unsafe fn map_user_program() {
     let pd_addr = pdp[pdp_index_val].addr();
     let pd = &mut *(pd_addr.as_u64() as *mut PageTable);
 
-    for offset in (0..USER_TOTAL_SIZE).step_by(HUGE_PAGE_SIZE as usize) {
+    for offset in (0..USER_REGION_SIZE).step_by(HUGE_PAGE_SIZE as usize) {
         let virt_addr = USER_VIRT_BASE + offset;
         let phys_addr = USER_PHYS_BASE + offset;
         let pd_index = ((virt_addr >> 21) & 0x1FF) as usize;
