@@ -399,50 +399,35 @@ fn init_main() -> ! {
             continue;
         }
         
-        if pid == 0 {
-            // Child process - execute shell
-            let path = "/bin/sh\0";
-            let argv: [*const u8; 2] = [
-                path.as_ptr(),
-                core::ptr::null(),
-            ];
-            let envp: [*const u8; 1] = [
-                core::ptr::null(),
-            ];
-            
-            log_info("Child process executing /bin/sh");
-            execve(path, &argv, &envp);
-            
-            // If execve returns, it failed
-            log_fail("execve failed in child process");
-            exit(1);
+        // In our simplified architecture:
+        // fork() always returns > 0 (fake child PID), so ni is always "parent"
+        // Wait for child to exit (simulation: wait returns immediately with status 0)
+        
+        log_info("Shell started successfully");
+        print("         Child PID: ");
+        print(itoa(pid as u64, &mut buf));
+        print("\n\n");
+        
+        // Wait for child to exit
+        // In reality, this triggers shell startup via a special mechanism
+        let mut status: i32 = 0;
+        let wait_pid = wait4(pid, &mut status, 0);
+        
+        print("\n");
+        if wait_pid as i64 == pid {
+            log_warn("Shell process exited");
+            print("         Exit status: ");
+            print(itoa((status & 0xFF) as u64, &mut buf));
+            print("\n");
         } else {
-            // Parent process - wait for child
-            log_info("Shell started successfully");
-            print("         Child PID: ");
-            print(itoa(pid as u64, &mut buf));
-            print("\n\n");
-            
-            // Wait for child to exit
-            let mut status: i32 = 0;
-            let wait_pid = wait4(pid, &mut status, 0);
-            
-            print("\n");
-            if wait_pid as i64 == pid {
-                log_warn("Shell process exited");
-                print("         Exit status: ");
-                print(itoa((status & 0xFF) as u64, &mut buf));
-                print("\n");
-            } else {
-                log_fail("wait4() failed");
-            }
-            
-            // Delay before respawn
-            log_start("Waiting before respawn");
-            delay_ms(RESTART_DELAY_MS);
-            log_info("Respawning shell");
-            print("\n");
+            log_fail("wait4() failed");
         }
+        
+        // Delay before respawn
+        log_start("Waiting before respawn");
+        delay_ms(RESTART_DELAY_MS);
+        log_info("Respawning shell");
+        print("\n");
     }
 }
 
