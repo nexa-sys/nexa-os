@@ -79,12 +79,49 @@ fn syscall0(n: u64) -> u64 {
 
 /// Write to file descriptor
 fn write(fd: u64, buf: &[u8]) -> isize {
-    let ret = syscall3(SYS_WRITE, fd, buf.as_ptr() as u64, buf.len() as u64);
-    if ret == u64::MAX {
-        -1
-    } else {
-        ret as isize
+    const USER_BASE: u64 = 0x400000;
+    const USER_END: u64 = 0xA00000; // exclusive upper bound
+
+    if buf.is_empty() {
+        return 0;
     }
+
+    let ptr = buf.as_ptr() as u64;
+    let len = buf.len() as u64;
+
+    let in_user_range = ptr >= USER_BASE
+        && ptr.checked_add(len).map_or(false, |end| end <= USER_END);
+
+    if in_user_range {
+        let ret = syscall3(SYS_WRITE, fd, ptr, len);
+        return if ret == u64::MAX { -1 } else { ret as isize };
+    }
+
+    // Some buffers (e.g. config-backed strings) may live outside the user window, so
+    // bounce them through the user stack before writing.
+    let mut total_written = 0usize;
+    let mut copied = 0usize;
+    let mut scratch = [0u8; 128];
+
+    while copied < buf.len() {
+        let chunk = core::cmp::min(scratch.len(), buf.len() - copied);
+        scratch[..chunk].copy_from_slice(&buf[copied..copied + chunk]);
+
+        let ret = syscall3(SYS_WRITE, fd, scratch.as_ptr() as u64, chunk as u64);
+        if ret == u64::MAX {
+            return if total_written == 0 { -1 } else { total_written as isize };
+        }
+
+        let wrote = ret as usize;
+        total_written += wrote;
+        if wrote != chunk {
+            break;
+        }
+
+        copied += chunk;
+    }
+
+    total_written as isize
 }
 
 /// Print string to stdout

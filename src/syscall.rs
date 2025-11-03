@@ -1,4 +1,5 @@
 use crate::posix::{self, FileType};
+use crate::process::{USER_REGION_SIZE, USER_VIRT_BASE};
 use core::{
     arch::global_asm,
     cmp,
@@ -109,11 +110,22 @@ fn syscall_write(fd: u64, buf: u64, count: u64) -> u64 {
     }
 
     if buf == 0 {
-        posix::set_errno(posix::errno::EINVAL);
+        posix::set_errno(posix::errno::EFAULT);
         return u64::MAX;
     }
 
     if fd == STDOUT || fd == STDERR {
+        if !user_buffer_in_range(buf, count) {
+            crate::kerror!(
+                "sys_write: invalid user buffer fd={} buf={:#x} count={}",
+                fd,
+                buf,
+                count
+            );
+            posix::set_errno(posix::errno::EFAULT);
+            return u64::MAX;
+        }
+
         let slice = unsafe { slice::from_raw_parts(buf as *const u8, count as usize) };
 
         crate::serial::write_bytes(slice);
@@ -153,6 +165,24 @@ fn syscall_write(fd: u64, buf: u64, count: u64) -> u64 {
         posix::set_errno(posix::errno::EBADF);
         u64::MAX
     }
+}
+
+#[inline(always)]
+fn user_buffer_in_range(buf: u64, count: u64) -> bool {
+    if count == 0 {
+        return true;
+    }
+
+    if buf < USER_VIRT_BASE {
+        return false;
+    }
+
+    let Some(end) = buf.checked_add(count) else {
+        return false;
+    };
+
+    let user_end = USER_VIRT_BASE + USER_REGION_SIZE;
+    end <= user_end
 }
 
 /// Read system call

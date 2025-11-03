@@ -309,7 +309,33 @@ fn exit(code: i32) {
 }
 
 fn print_bytes(bytes: &[u8]) {
-    write(1, bytes.as_ptr(), bytes.len());
+    const USER_BASE: u64 = 0x400000;
+    const USER_END: u64 = 0xA00000; // exclusive upper bound
+
+    if bytes.is_empty() {
+        return;
+    }
+
+    let ptr = bytes.as_ptr() as u64;
+    let len = bytes.len() as u64;
+
+    let in_user_range = ptr >= USER_BASE
+        && ptr.checked_add(len).map_or(false, |end| end <= USER_END);
+
+    if in_user_range {
+        write(1, bytes.as_ptr(), bytes.len());
+        return;
+    }
+
+    let mut offset = 0usize;
+    let mut scratch = [0u8; 128];
+
+    while offset < bytes.len() {
+        let chunk = core::cmp::min(scratch.len(), bytes.len() - offset);
+        scratch[..chunk].copy_from_slice(&bytes[offset..offset + chunk]);
+        write(1, scratch.as_ptr(), chunk);
+        offset += chunk;
+    }
 }
 
 fn print_str(s: &str) {
