@@ -235,21 +235,15 @@ extern "C" {
     fn ring3_switch_handler();
 }
 
-/// Global IDT instance - initialized at runtime to avoid static initialization conflicts
-static mut IDT: Option<InterruptDescriptorTable> = None;
+use lazy_static::lazy_static;
 
-/// Initialize IDT with interrupt handlers
-pub fn init_interrupts() {
-    crate::kinfo!("init_interrupts: START");
-    
-    // Ensure interrupts are disabled during initialization
-    x86_64::instructions::interrupts::disable();
-    
-    // Initialize IDT at runtime instead of using lazy_static
-    unsafe {
-        IDT = Some({
-            let mut idt = InterruptDescriptorTable::new();
+lazy_static! {
+    /// Global IDT instance - using lazy_static to avoid stack overflow
+    /// InterruptDescriptorTable is ~4KB and would overflow the stack if created inline
+    static ref IDT: InterruptDescriptorTable = {
+        let mut idt = InterruptDescriptorTable::new();
 
+        unsafe {
             // Set up interrupt handlers
             idt.breakpoint.set_handler_fn(breakpoint_handler);
             idt.page_fault.set_handler_fn(page_fault_handler);
@@ -300,15 +294,20 @@ pub fn init_interrupts() {
             idt[0x80]
                 .set_handler_addr(x86_64::VirtAddr::new_truncate(ring3_switch_handler as u64))
                 .set_privilege_level(PrivilegeLevel::Ring3);
+        }
 
-            idt
-        });
-        
-        // Memory barrier to ensure IDT is fully written before we proceed
-        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
-    }
+        idt
+    };
+}
 
-    crate::kinfo!("init_interrupts: IDT initialized");
+/// Initialize IDT with interrupt handlers
+pub fn init_interrupts() {
+    // Ensure interrupts are disabled during initialization
+    // Do this BEFORE any logging to avoid issues
+    x86_64::instructions::interrupts::disable();
+    
+    // Safe to log now that interrupts are disabled
+    crate::kinfo!("init_interrupts: IDT structure initialization starting");
 
     // Mask all interrupts BEFORE initializing PICs to prevent spurious interrupts during setup
     unsafe {
@@ -326,19 +325,15 @@ pub fn init_interrupts() {
     crate::kinfo!("init_interrupts: PICs initialized");
 
     // Load IDT before applying PIC masks to ensure handlers are in place
+    // Access to IDT via lazy_static will initialize it on first access
     crate::kinfo!("init_interrupts: loading IDT");
-    unsafe {
-        if let Some(ref idt) = IDT {
-            // Ensure IDT structure is fully written before loading
-            core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
-            idt.load();
-            // Ensure load completes before continuing
-            core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
-            crate::kinfo!("init_interrupts: IDT loaded successfully");
-        } else {
-            crate::kpanic!("init_interrupts: IDT was not initialized");
-        }
-    }
+    
+    // Ensure IDT structure is fully written before loading
+    core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+    IDT.load();
+    // Ensure load completes before continuing
+    core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+    crate::kinfo!("init_interrupts: IDT loaded successfully");
 
     // Now set final PIC masks - unmask only keyboard IRQ
     unsafe {

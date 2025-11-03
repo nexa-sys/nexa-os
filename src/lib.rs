@@ -133,9 +133,24 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
 
     kinfo!("About to call interrupts::init_interrupts()");
 
+    // Write a marker to serial port before critical section
+    unsafe {
+        let mut port = x86_64::instructions::port::Port::<u8>::new(0x3F8);
+        for byte in b"[ENTERING init_interrupts]\n" {
+            port.write(*byte);
+        }
+    }
+
     // Initialize interrupts and system calls
     // This is a critical section - any failure here will cause a triple fault
     crate::interrupts::init_interrupts();
+
+    unsafe {
+        let mut port = x86_64::instructions::port::Port::<u8>::new(0x3F8);
+        for byte in b"[EXITED init_interrupts]\n" {
+            port.write(*byte);
+        }
+    }
 
     kinfo!("interrupts::init() completed successfully");
 
