@@ -912,10 +912,102 @@ fn syscall_execve(path: *const u8, _argv: *const u64, _envp: *const u64) -> u64 
         return u64::MAX;
     }
 
-    // For now, just log the attempt
-    crate::kwarn!("execve() system call not yet fully implemented");
-    posix::set_errno(posix::errno::ENOSYS);
-    u64::MAX
+    // Read the path string from user space
+    let path_str = unsafe {
+        let mut len = 0;
+        while len < 256 && *path.add(len) != 0 {
+            len += 1;
+        }
+        core::slice::from_raw_parts(path, len)
+    };
+
+    let path_str = match core::str::from_utf8(path_str) {
+        Ok(s) => s,
+        Err(_) => {
+            posix::set_errno(posix::errno::EINVAL);
+            return u64::MAX;
+        }
+    };
+
+    crate::kinfo!("execve: loading program '{}'", path_str);
+
+    // Try to load the ELF file from filesystem
+    let elf_data = match crate::fs::read_file_bytes(path_str) {
+        Some(data) => data,
+        None => {
+            crate::kerror!("execve: file not found: {}", path_str);
+            posix::set_errno(posix::errno::ENOENT);
+            return u64::MAX;
+        }
+    };
+
+    // Create a new process from the ELF data
+    let new_process = match crate::process::Process::from_elf(elf_data) {
+        Ok(proc) => proc,
+        Err(e) => {
+            crate::kerror!("execve: failed to load ELF: {:?}", e);
+            posix::set_errno(posix::errno::EINVAL); // Use EINVAL instead of ENOEXEC
+            return u64::MAX;
+        }
+    };
+
+    let entry = new_process.entry_point;
+    let stack = new_process.stack_top;
+    
+    crate::kinfo!("execve: ELF loaded, entry={:#x}, stack={:#x}", entry, stack);
+
+    // Replace the current process with the new one
+    // This is a simplified implementation - in a full OS, we would:
+    // 1. Free current process memory
+    // 2. Update process table
+    // 3. Set up new memory mappings
+    // 4. Return to user mode with new entry point
+    
+    // For now, we just switch to the new process
+    // We don't actually "return" from this syscall - we jump to the new program
+    crate::kinfo!("execve: switching to new process");
+    
+    unsafe {
+        // Update GS_DATA with new values
+        let gs_data_addr = &raw const crate::initramfs::GS_DATA.0 as *const _ as u64;
+        let gs_data_ptr = gs_data_addr as *mut u64;
+        
+        gs_data_ptr.add(0).write(stack); // User RSP
+        gs_data_ptr.add(2).write(entry); // User entry point
+        gs_data_ptr.add(3).write(stack); // User stack base
+        
+        crate::kinfo!("execve: jumping to entry={:#x}, stack={:#x}", entry, stack);
+        
+        // Build an interrupt frame to return to user mode with new process
+        // This simulates a return from interrupt but with new RIP and RSP
+        core::arch::asm!(
+            // Set up user mode segments
+            "mov ax, (4 << 3) | 3",  // User data segment with RPL=3
+            "mov ds, ax",
+            "mov es, ax",
+            "mov fs, ax",
+            "mov gs, ax",
+            
+            // Push stack frame for iretq
+            "push {user_ss}",         // SS
+            "push {user_rsp}",        // RSP
+            "pushf",                  // RFLAGS
+            "pop rax",
+            "or rax, 0x200",          // Set IF (interrupts enabled)
+            "push rax",               // RFLAGS with IF
+            "push {user_cs}",         // CS
+            "push {user_rip}",        // RIP
+            
+            // Return to user mode
+            "iretq",
+            
+            user_ss = in(reg) (4u64 << 3) | 3,  // RPL=3
+            user_rsp = in(reg) stack,
+            user_cs = in(reg) (3u64 << 3) | 3,  // RPL=3
+            user_rip = in(reg) entry,
+            options(noreturn)
+        );
+    }
 }
 
 /// POSIX wait4() system call - wait for process state change
