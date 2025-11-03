@@ -2,7 +2,7 @@
 name = "nexa-os"
 version = "0.0.1"
 edition = "2021"
-description = "Hybrid-kernel experimental operating system for NexaOS"
+description = "Production-grade hybrid-kernel operating system with full POSIX compliance and Linux ABI compatibility"
 authors = ["nexa-sys <opensource@nexa.sys>"]
 license = "MIT"
 
