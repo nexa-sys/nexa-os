@@ -2,7 +2,34 @@
 
 ## [Unreleased] - 2025-11-03
 
-### Added - Init System (POSIX/Unix-like Compliant)
+### Added - Dynamic Service Configuration System
+
+#### Configuration File Support
+- **Dynamic Service Loading** (`userspace/init.rs`)
+  - `load_config()` function to read `/etc/inittab` at boot time
+  - `parse_config_line()` for parsing service definitions
+  - `run_service_loop()` for individual service supervision
+  - Support for comments (`#` prefixed lines) and empty lines
+  - Format: `SERVICE_PATH RUNLEVEL` (simplified from traditional init)
+
+#### System Call Wrappers
+- Added `syscall2()` helper for two-argument syscalls
+- `open()` - open configuration files
+- `read()` - read file content into buffer
+- `close()` - close file descriptors
+
+#### Filesystem Integration
+- Auto-created `/etc/inittab` default configuration in `src/fs.rs`
+- Default configuration includes helpful comments and example format
+- Automatic fallback if initramfs doesn't include custom inittab
+
+#### User Experience
+- Improved boot logging showing "Loaded services from /etc/inittab"
+- Service count display during initialization
+- Individual service status messages with runlevel information
+- Seamless multi-service startup capability
+
+### Changed - Init System (POSIX/Unix-like Compliant)
 
 #### Core Init System
 - **Complete Init System** (`src/init.rs`, 540 lines)
