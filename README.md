@@ -142,6 +142,89 @@ cargo build --release
 - [`docs/zh/getting-started.md`](docs/zh/getting-started.md)：环境准备与构建指南。
 - [`docs/zh/tests.md`](docs/zh/tests.md)：当前测试流程与自动化计划。
 
+## Shell Features (Latest Update)
+
+NexaOS now includes a fully-featured interactive shell with production-grade functionality:
+
+### Command Set (19 Commands)
+
+**File & Directory Operations:**
+- `ls [-a] [-l] [path]` - List directory contents with optional hidden files and detailed view
+- `cat <file>` - Display file contents
+- `stat <file>` - Show detailed file metadata (size, permissions, ownership)
+- `pwd` - Print current working directory
+- `cd [path]` - Change directory (defaults to root if no path given)
+- `mkdir <path>` - Create directory (stub for future implementation)
+
+**System Information:**
+- `help` - Show comprehensive command help with editing keys reference
+- `uname [-a]` - Display system information (version, architecture)
+- `echo [text...]` - Print text to output
+
+**User Management:**
+- `whoami` - Display current logged-in user
+- `users` - List all registered users
+- `login <user>` - Authenticate and switch to specified user
+- `logout` - Log out current user session
+- `adduser [-a] <user>` - Create new user account (use -a flag for admin privileges)
+
+**Inter-Process Communication:**
+- `ipc-create` - Allocate new IPC message channel
+- `ipc-send <channel> <message>` - Send message to IPC channel
+- `ipc-recv <channel>` - Receive message from IPC channel
+
+**Utilities:**
+- `clear` - Clear screen display
+- `exit` - Terminate shell session
+
+### Advanced Line Editing
+
+**Tab Completion:**
+- Smart command name completion with longest-common-prefix expansion
+- Path completion for file operations (ls, cat, stat, cd, mkdir)
+- Directory indicator suffixes (/) for folders
+- Multiple match display with automatic menu when ambiguous
+- Hidden file filtering based on prefix (. prefix shows hidden files)
+
+**Keyboard Shortcuts:**
+- `Tab` - Complete command or path
+- `Backspace` / `Delete` - Remove character before cursor
+- `Ctrl-C` - Cancel current line and display new prompt
+- `Ctrl-D` - Exit shell (only on empty line, otherwise ignored)
+- `Ctrl-U` - Clear entire line
+- `Ctrl-W` - Delete previous word
+- `Ctrl-L` - Clear screen and redraw current line with prompt
+- `Enter` - Execute command
+
+### Implementation Highlights
+
+- **Kernel/Userspace Separation**: Kernel provides raw byte input; shell handles all echoing and editing
+- **UEFI & Legacy BIOS Support**: Works correctly in both boot modes with proper character echoing
+- **Robust Input Handling**: Escape sequence filtering, error recovery, multi-byte read safety
+- **Memory Efficient**: Fixed-size buffers, no dynamic allocation in userspace
+- **POSIX-Inspired**: Standard stdin/stdout file descriptors, errno error reporting
+
+### Testing
+
+Run the interactive test guide:
+```bash
+./tests/shell_test.sh
+```
+
+Or boot and try these quick tests:
+```bash
+# Tab completion
+he<Tab>          # completes to 'help'
+ls /b<Tab>       # completes to 'ls /bin/'
+
+# Navigation
+pwd; cd /bin; pwd; cd; pwd
+
+# System info
+uname -a
+echo "Hello, NexaOS!"
+```
+
 ## Contributing
 
 Contributions, experiments, and feedback are very welcome. Until the contribution guidelines are published, feel free to open an issue to discuss ideas, report bugs, or coordinate larger contributions.

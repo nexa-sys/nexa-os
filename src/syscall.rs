@@ -45,7 +45,6 @@ const STDERR: u64 = 2;
 
 const FD_BASE: u64 = 3;
 const MAX_OPEN_FILES: usize = 16;
-const MAX_STDIN_LINE: usize = 512;
 const LIST_FLAG_INCLUDE_HIDDEN: u64 = 0x1;
 const USER_FLAG_ADMIN: u64 = 0x1;
 
@@ -808,37 +807,25 @@ fn read_from_keyboard(buf: *mut u8, count: usize) -> u64 {
         return 0;
     }
 
-    let mut line = [0u8; MAX_STDIN_LINE];
-    let max_copy = cmp::min(count.saturating_sub(1), MAX_STDIN_LINE - 1);
-
     // Allow the keyboard interrupt handler to run while we wait for input.
     // The INT 0x81 gate enters with IF=0, so without re-enabling here the
-    // HLT inside `keyboard::read_line` would never resume. Preserve the
+    // HLT inside `keyboard::read_raw` would never resume. Preserve the
     // previous interrupt state so nested callers remain well-behaved.
     let were_enabled = interrupts::are_enabled();
     if !were_enabled {
         interrupts::enable();
     }
-    crate::kinfo!("sys_read(stdin): waiting for line (max_copy={})", max_copy);
-    let read_len = crate::keyboard::read_line(&mut line[..max_copy]);
-    crate::kinfo!("sys_read(stdin): line read, len={} bytes", read_len);
+
+    // Read directly into userspace buffer (no echo, userspace handles that)
+    let slice = unsafe { core::slice::from_raw_parts_mut(buf, count) };
+    let read_len = crate::keyboard::read_raw(slice, count);
+
     if !were_enabled {
         interrupts::disable();
     }
 
-    unsafe {
-        if read_len > 0 {
-            ptr::copy_nonoverlapping(line.as_ptr(), buf, read_len);
-        }
-        let mut total = read_len;
-        if total < count {
-            *buf.add(total) = b'\n';
-            total += 1;
-        }
-        posix::set_errno(0);
-        crate::kinfo!("sys_read(stdin): returning {} bytes to userspace", total);
-        total as u64
-    }
+    posix::set_errno(0);
+    read_len as u64
 }
 
 /// POSIX pipe() system call - creates a pipe

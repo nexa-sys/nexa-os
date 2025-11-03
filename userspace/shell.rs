@@ -166,6 +166,31 @@ impl ShellState {
     }
 }
 
+const COMMANDS: [&str; 19] = [
+    "help",
+    "ls",
+    "cat",
+    "stat",
+    "pwd",
+    "cd",
+    "echo",
+    "uname",
+    "mkdir",
+    "login",
+    "whoami",
+    "users",
+    "logout",
+    "adduser",
+    "ipc-create",
+    "ipc-send",
+    "ipc-recv",
+    "clear",
+    "exit",
+];
+
+const MAX_COMPLETIONS: usize = 32;
+const COMPLETION_BUFFER_SIZE: usize = 2048;
+
 fn trim_line<'a>(buf: &'a [u8], mut len: usize) -> &'a str {
     while len > 0 && matches!(buf[len - 1], b'\n' | b'\r' | 0) {
         len -= 1;
@@ -410,7 +435,7 @@ fn report_stdin_error(err: i32) {
     println_str(")");
 }
 
-fn read_line(buf: &mut [u8]) -> usize {
+fn read_line_raw(buf: &mut [u8]) -> usize {
     loop {
         let len = read(0, buf.as_mut_ptr(), buf.len());
         if len == usize::MAX {
@@ -434,6 +459,475 @@ fn read_line(buf: &mut [u8]) -> usize {
             end -= 1;
         }
         return end;
+    }
+}
+
+fn append_to_buffer(buf: &mut [u8], len: &mut usize, text: &[u8]) -> bool {
+    if *len + text.len() > buf.len() {
+        return false;
+    }
+    buf[*len..*len + text.len()].copy_from_slice(text);
+    *len += text.len();
+    true
+}
+
+fn beep() {
+    print_bytes(b"\x07");
+}
+
+fn erase_last_char(buf: &mut [u8], len: &mut usize) -> bool {
+    if *len == 0 {
+        return false;
+    }
+    *len -= 1;
+    buf[*len] = 0;
+    print_bytes(b"\x08 \x08");
+    true
+}
+
+fn erase_last_word(buf: &mut [u8], len: &mut usize) {
+    while *len > 0 && buf[*len - 1].is_ascii_whitespace() {
+        if !erase_last_char(buf, len) {
+            return;
+        }
+    }
+    while *len > 0 && !buf[*len - 1].is_ascii_whitespace() {
+        if !erase_last_char(buf, len) {
+            break;
+        }
+    }
+}
+
+fn longest_common_prefix<'a>(items: &[&'a str]) -> &'a str {
+    if items.is_empty() {
+        return "";
+    }
+    let first = items[0].as_bytes();
+    let mut prefix_len = first.len();
+    for item in &items[1..] {
+        let bytes = item.as_bytes();
+        let mut i = 0;
+        let limit = core::cmp::min(prefix_len, bytes.len());
+        while i < limit && first[i] == bytes[i] {
+            i += 1;
+        }
+        prefix_len = i;
+        if prefix_len == 0 {
+            break;
+        }
+    }
+    core::str::from_utf8(&first[..prefix_len]).unwrap_or("")
+}
+
+fn command_accepts_path(command: &str, token_index: usize) -> bool {
+    if token_index == 0 {
+        return false;
+    }
+    matches!(command, "ls" | "cat" | "stat" | "cd" | "mkdir")
+}
+
+fn complete_commands(state: &ShellState, buffer: &mut [u8], len: &mut usize, prefix: &str) {
+    let mut matches = [""; COMMANDS.len()];
+    let mut count = 0usize;
+
+    for &cmd in COMMANDS.iter() {
+        if cmd.starts_with(prefix) {
+            if count < matches.len() {
+                matches[count] = cmd;
+                count += 1;
+            }
+        }
+    }
+
+    if count == 0 {
+        beep();
+        return;
+    }
+
+    let prefix_len = prefix.len();
+
+    if count == 1 {
+        let candidate = matches[0];
+        let addition = &candidate.as_bytes()[prefix_len..];
+        if append_to_buffer(buffer, len, addition) {
+            print_bytes(addition);
+            if append_to_buffer(buffer, len, b" ") {
+                print_bytes(b" ");
+            }
+        } else {
+            beep();
+        }
+        return;
+    }
+
+    let lcp = longest_common_prefix(&matches[..count]);
+    if lcp.len() > prefix_len {
+        let addition = &lcp.as_bytes()[prefix_len..];
+        if append_to_buffer(buffer, len, addition) {
+            print_bytes(addition);
+            return;
+        }
+        beep();
+        return;
+    }
+
+    print_bytes(b"\n");
+    for idx in 0..count {
+        println_str(matches[idx]);
+    }
+    prompt(state);
+    print_bytes(&buffer[..*len]);
+}
+
+fn complete_path(state: &ShellState, buffer: &mut [u8], len: &mut usize, prefix: &str) {
+    let (dir_input, name_prefix) = match prefix.rfind('/') {
+        Some(idx) => (&prefix[..=idx], &prefix[idx + 1..]),
+        None => ("", prefix),
+    };
+
+    let mut resolved_dir_buf = [0u8; MAX_PATH];
+    let directory = if prefix.starts_with('/') {
+        if dir_input.is_empty() {
+            "/"
+        } else if let Some(abs) = normalize_path("/", dir_input, &mut resolved_dir_buf) {
+            abs
+        } else {
+            beep();
+            return;
+        }
+    } else if dir_input.is_empty() {
+        state.current_path()
+    } else if let Some(abs) = state.resolve(dir_input, &mut resolved_dir_buf) {
+        abs
+    } else {
+        beep();
+        return;
+    };
+
+    let show_hidden = name_prefix.starts_with('.');
+    let mut request = ListDirRequest {
+        path_ptr: 0,
+        path_len: 0,
+        flags: 0,
+    };
+
+    if show_hidden {
+        request.flags |= LIST_FLAG_INCLUDE_HIDDEN;
+    }
+
+    if directory != "/" {
+        request.path_ptr = directory.as_ptr() as u64;
+        request.path_len = directory.len() as u64;
+    }
+
+    let req_ptr = if request.path_len == 0 && request.flags == 0 {
+        0
+    } else {
+        &request as *const ListDirRequest as u64
+    };
+
+    let mut list_buf = [0u8; COMPLETION_BUFFER_SIZE];
+    let written = syscall3(
+        SYS_LIST_FILES,
+        list_buf.as_mut_ptr() as u64,
+        list_buf.len() as u64,
+        req_ptr,
+    );
+    if written == u64::MAX {
+        beep();
+        return;
+    }
+
+    let list_len = written as usize;
+    let list = match core::str::from_utf8(&list_buf[..list_len]) {
+        Ok(text) => text,
+        Err(_) => {
+            beep();
+            return;
+        }
+    };
+
+    let mut matches = [""; MAX_COMPLETIONS];
+    let mut match_is_dir = [false; MAX_COMPLETIONS];
+    let mut count = 0usize;
+    let mut path_buf = [0u8; MAX_PATH];
+
+    for entry in list.lines() {
+        if entry.is_empty() {
+            continue;
+        }
+        if !show_hidden && entry.starts_with('.') {
+            continue;
+        }
+        if name_prefix.is_empty() && (entry == "." || entry == "..") {
+            continue;
+        }
+        if entry.starts_with(name_prefix) {
+            if count < matches.len() {
+                matches[count] = entry;
+                if let Some(full_path) = format_child_path(directory, entry, &mut path_buf) {
+                    let mut stat = Stat::zero();
+                    if fetch_stat(full_path, &mut stat) && is_directory(stat.st_mode) {
+                        match_is_dir[count] = true;
+                    }
+                }
+                count += 1;
+            }
+        }
+    }
+
+    if count == 0 {
+        beep();
+        return;
+    }
+
+    let prefix_len = name_prefix.len();
+
+    if count == 1 {
+        let candidate = matches[0];
+        let addition = &candidate.as_bytes()[prefix_len..];
+        if !append_to_buffer(buffer, len, addition) {
+            beep();
+            return;
+        }
+        print_bytes(addition);
+        if match_is_dir[0] {
+            if append_to_buffer(buffer, len, b"/") {
+                print_bytes(b"/");
+            }
+        } else if append_to_buffer(buffer, len, b" ") {
+            print_bytes(b" ");
+        }
+        return;
+    }
+
+    let lcp = longest_common_prefix(&matches[..count]);
+    let mut appended = false;
+    if lcp.len() > name_prefix.len() {
+        let addition = &lcp.as_bytes()[name_prefix.len()..];
+        if append_to_buffer(buffer, len, addition) {
+            print_bytes(addition);
+            appended = true;
+        } else {
+            beep();
+            return;
+        }
+    }
+
+    if !appended {
+        print_bytes(b"\n");
+        for idx in 0..count {
+            print_str(dir_input);
+            print_str(matches[idx]);
+            if match_is_dir[idx] {
+                print_bytes(b"/");
+            }
+            print_bytes(b"\n");
+        }
+        prompt(state);
+        print_bytes(&buffer[..*len]);
+    }
+}
+
+fn handle_tab_completion(state: &ShellState, buffer: &mut [u8], len: &mut usize) {
+    if core::str::from_utf8(&buffer[..*len]).is_err() {
+        beep();
+        return;
+    }
+
+    let mut token_end = *len;
+    while token_end > 0 && buffer[token_end - 1].is_ascii_whitespace() {
+        token_end -= 1;
+    }
+    let has_trailing_whitespace = token_end != *len;
+
+    let mut token_start = token_end;
+    while token_start > 0 && !buffer[token_start - 1].is_ascii_whitespace() {
+        token_start -= 1;
+    }
+
+    if has_trailing_whitespace {
+        token_start = *len;
+        token_end = *len;
+    }
+
+    let prefix_len = token_end - token_start;
+    if prefix_len > MAX_PATH {
+        beep();
+        return;
+    }
+
+    let mut prefix_buf = [0u8; MAX_PATH];
+    if prefix_len > 0 {
+        prefix_buf[..prefix_len].copy_from_slice(&buffer[token_start..token_end]);
+    }
+    let prefix = match core::str::from_utf8(&prefix_buf[..prefix_len]) {
+        Ok(p) => p,
+        Err(_) => {
+            beep();
+            return;
+        }
+    };
+
+    let mut token_index = 0usize;
+    let mut i = 0usize;
+    while i < token_start {
+        while i < token_start && buffer[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= token_start {
+            break;
+        }
+        token_index += 1;
+        while i < token_start && !buffer[i].is_ascii_whitespace() {
+            i += 1;
+        }
+    }
+
+    let mut command_buf = [0u8; MAX_PATH];
+    let mut command_len = 0usize;
+    let mut j = 0usize;
+    while j < *len && buffer[j].is_ascii_whitespace() {
+        j += 1;
+    }
+    let command_start = j;
+    while j < *len && !buffer[j].is_ascii_whitespace() {
+        j += 1;
+    }
+    if j > command_start {
+        command_len = j - command_start;
+        if command_len > MAX_PATH {
+            beep();
+            return;
+        }
+        command_buf[..command_len].copy_from_slice(&buffer[command_start..j]);
+    }
+
+    if token_index == 0 {
+        complete_commands(state, buffer, len, prefix);
+        return;
+    }
+
+    if command_len == 0 {
+        beep();
+        return;
+    }
+
+    let command = match core::str::from_utf8(&command_buf[..command_len]) {
+        Ok(c) => c,
+        Err(_) => {
+            beep();
+            return;
+        }
+    };
+
+    if command_accepts_path(command, token_index) {
+        complete_path(state, buffer, len, prefix);
+    } else {
+        beep();
+    }
+}
+
+fn discard_escape_sequence() {
+    let mut consumed = 0;
+    loop {
+        let mut ch = 0u8;
+        let read_len = read(0, &mut ch as *mut u8, 1);
+        if read_len != 1 {
+            break;
+        }
+        consumed += 1;
+        if (0x40..=0x7e).contains(&ch) || consumed >= 4 {
+            break;
+        }
+    }
+}
+
+fn read_byte_blocking() -> Option<u8> {
+    loop {
+        let mut ch = 0u8;
+        let read_len = read(0, &mut ch as *mut u8, 1);
+        if read_len == usize::MAX {
+            let err = errno();
+            if err != 0 {
+                report_stdin_error(err);
+                continue;
+            }
+            return None;
+        }
+        if read_len == 0 {
+            continue;
+        }
+        return Some(ch);
+    }
+}
+
+fn read_line(state: &ShellState, buf: &mut [u8]) -> usize {
+    prompt(state);
+    let mut len = 0usize;
+
+    loop {
+        let Some(ch) = read_byte_blocking() else {
+            continue;
+        };
+
+        match ch {
+            b'\r' | b'\n' => {
+                print_bytes(b"\n");
+                return len;
+            }
+            0x03 => {
+                for idx in 0..len {
+                    buf[idx] = 0;
+                }
+                print_bytes(b"^C\n");
+                return 0;
+            }
+            0x04 => {
+                if len == 0 {
+                    println_str("exit");
+                    exit(0);
+                } else {
+                    beep();
+                }
+            }
+            0x08 | 0x7f => {
+                if !erase_last_char(buf, &mut len) {
+                    beep();
+                }
+            }
+            b'\t' => {
+                handle_tab_completion(state, buf, &mut len);
+            }
+            0x15 => {
+                while erase_last_char(buf, &mut len) {}
+            }
+            0x17 => {
+                erase_last_word(buf, &mut len);
+            }
+            0x0c => {
+                clear_screen();
+                prompt(state);
+                if len > 0 {
+                    print_bytes(&buf[..len]);
+                }
+            }
+            0x1b => {
+                discard_escape_sequence();
+            }
+            ch if ch < 0x20 => {
+                beep();
+            }
+            _ => {
+                if len < buf.len() {
+                    buf[len] = ch;
+                    len += 1;
+                    print_bytes(&[ch]);
+                } else {
+                    beep();
+                }
+            }
+        }
     }
 }
 
@@ -588,7 +1082,7 @@ fn login_user(username: &str) {
 
     print_str("password: ");
     let mut buffer = [0u8; 64];
-    let len = read_line(&mut buffer);
+    let len = read_line_raw(&mut buffer);
     let password = trim_line(&buffer, len);
 
     let request = UserRequest {
@@ -615,7 +1109,7 @@ fn add_user(username: &str, admin: bool) {
     }
     print_str("new password: ");
     let mut buffer = [0u8; 64];
-    let len = read_line(&mut buffer);
+    let len = read_line_raw(&mut buffer);
     let password = trim_line(&buffer, len);
 
     let request = UserRequest {
@@ -724,7 +1218,7 @@ fn ipc_send_message(channel: u32, message: &str) {
 
 fn ipc_receive_message(channel: u32) {
     let mut buffer = [0u8; 256];
-    let mut request = IpcTransferRequest {
+    let request = IpcTransferRequest {
         channel_id: channel,
         flags: 0,
         buffer_ptr: buffer.as_mut_ptr() as u64,
@@ -777,6 +1271,11 @@ fn show_help() {
     println_str("  ls [-a] [-l] [p]  List directory contents");
     println_str("  cat <file>        Print file contents");
     println_str("  stat <file>       Show file metadata");
+    println_str("  pwd               Print working directory");
+    println_str("  cd <path>         Change directory");
+    println_str("  echo [text...]    Print text to output");
+    println_str("  uname [-a]        Show system information");
+    println_str("  mkdir <path>      Create directory (stub)");
     println_str("  login <user>      Switch active user");
     println_str("  whoami            Show current user");
     println_str("  users             List registered users");
@@ -787,10 +1286,76 @@ fn show_help() {
     println_str("  ipc-recv <c>      Receive IPC message");
     println_str("  clear             Clear the screen");
     println_str("  exit              Exit the shell");
+    println_str("");
+    println_str("Editing keys:");
+    println_str("  Tab               Complete command/path");
+    println_str("  Backspace         Delete character");
+    println_str("  Ctrl-C            Cancel line");
+    println_str("  Ctrl-D            Exit (on empty line)");
+    println_str("  Ctrl-U            Clear line");
+    println_str("  Ctrl-W            Delete word");
+    println_str("  Ctrl-L            Refresh screen");
 }
 
 fn clear_screen() {
     print_bytes(b"\x1b[2J\x1b[H");
+}
+
+fn show_uname(all: bool) {
+    if all {
+        println_str("NexaOS 0.1.0 x86_64 (experimental hybrid kernel)");
+    } else {
+        println_str("NexaOS");
+    }
+}
+
+fn cmd_pwd(state: &ShellState) {
+    println_str(state.current_path());
+}
+
+fn cmd_cd(state: &mut ShellState, path: &str) {
+    if path.is_empty() {
+        state.set_path("/");
+        return;
+    }
+
+    let mut buf = [0u8; MAX_PATH];
+    let Some(resolved) = state.resolve(path, &mut buf) else {
+        println_str("cd: invalid path");
+        return;
+    };
+
+    let mut stat = Stat::zero();
+    if !fetch_stat(resolved, &mut stat) {
+        println_str("cd: path not found");
+        return;
+    }
+
+    if !is_directory(stat.st_mode) {
+        println_str("cd: not a directory");
+        return;
+    }
+
+    state.set_path(resolved);
+}
+
+fn cmd_echo(args: &str) {
+    println_str(args);
+}
+
+fn cmd_mkdir(state: &ShellState, path: &str) {
+    if path.is_empty() {
+        println_str("mkdir: missing operand");
+        return;
+    }
+
+    let mut buf = [0u8; MAX_PATH];
+    let Some(_resolved) = state.resolve(path, &mut buf) else {
+        println_str("mkdir: invalid path");
+        return;
+    };
+
+    println_str("mkdir: not yet implemented (filesystem is read-only)");
 }
 
 fn prompt(state: &ShellState) {
@@ -821,6 +1386,31 @@ fn handle_command(state: &mut ShellState, line: &str) {
     match cmd {
         "help" => {
             show_help();
+        }
+        "pwd" => {
+            cmd_pwd(state);
+        }
+        "cd" => {
+            if let Some(path) = parts.next() {
+                cmd_cd(state, path);
+            } else {
+                cmd_cd(state, "/");
+            }
+        }
+        "echo" => {
+            let rest = line.strip_prefix("echo").unwrap_or("").trim();
+            cmd_echo(rest);
+        }
+        "uname" => {
+            let show_all = parts.next().map_or(false, |arg| arg == "-a");
+            show_uname(show_all);
+        }
+        "mkdir" => {
+            if let Some(path) = parts.next() {
+                cmd_mkdir(state, path);
+            } else {
+                println_str("mkdir: missing operand");
+            }
         }
         "ls" => {
             let mut show_all = false;
@@ -929,8 +1519,7 @@ fn shell_loop() -> ! {
     let mut state = ShellState::new();
 
     loop {
-        prompt(&state);
-        let len = read_line(&mut buffer);
+        let len = read_line(&state, &mut buffer);
         if len == 0 {
             continue;
         }

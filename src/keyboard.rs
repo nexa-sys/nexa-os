@@ -198,7 +198,7 @@ pub fn try_read_char() -> Option<char> {
     }
 }
 
-/// Read a line from keyboard
+/// Read a line from keyboard (with echo)
 pub fn read_line(buf: &mut [u8]) -> usize {
     LAST_BYTE_WAS_CR.store(false, Ordering::Release);
     let mut pos = 0;
@@ -227,4 +227,22 @@ pub fn read_line(buf: &mut [u8]) -> usize {
             }
         }
     }
+}
+
+/// Read raw bytes from keyboard (no echo, for userspace control)
+pub fn read_raw(buf: &mut [u8], count: usize) -> usize {
+    let mut pos = 0;
+    let max_read = core::cmp::min(buf.len(), count);
+    
+    while pos < max_read {
+        if let Some(ch) = read_char() {
+            buf[pos] = ch as u8;
+            pos += 1;
+            // Stop at newline
+            if ch == '\n' {
+                break;
+            }
+        }
+    }
+    pos
 }
