@@ -1,6 +1,4 @@
 /// POSIX signal handling implementation
-use core::sync::atomic::{AtomicU64, Ordering};
-use spin::Mutex;
 
 /// POSIX signal numbers
 pub const SIGHUP: u32 = 1;
