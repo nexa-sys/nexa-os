@@ -134,6 +134,7 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
     kinfo!("About to call interrupts::init_interrupts()");
 
     // Initialize interrupts and system calls
+    // This is a critical section - any failure here will cause a triple fault
     crate::interrupts::init_interrupts();
 
     kinfo!("interrupts::init() completed successfully");

@@ -241,11 +241,10 @@ static mut IDT: Option<InterruptDescriptorTable> = None;
 /// Initialize IDT with interrupt handlers
 pub fn init_interrupts() {
     crate::kinfo!("init_interrupts: START");
-    let idt_ptr = core::ptr::addr_of!(IDT) as usize;
-    crate::kdebug!("IDT storage address: {:#x}", idt_ptr);
-    let gs_ptr = unsafe { &raw const crate::initramfs::GS_DATA.0 as *const _ } as usize;
-    crate::kdebug!("GS_DATA address: {:#x}", gs_ptr);
-
+    
+    // Ensure interrupts are disabled during initialization
+    x86_64::instructions::interrupts::disable();
+    
     // Initialize IDT at runtime instead of using lazy_static
     unsafe {
         IDT = Some({
@@ -304,58 +303,61 @@ pub fn init_interrupts() {
 
             idt
         });
+        
+        // Memory barrier to ensure IDT is fully written before we proceed
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
     }
 
     crate::kinfo!("init_interrupts: IDT initialized");
 
     // Mask all interrupts BEFORE initializing PICs to prevent spurious interrupts during setup
-    crate::kinfo!("init_interrupts: about to mask interrupts");
     unsafe {
-        crate::kinfo!("init_interrupts: masking master PIC (0x21)");
         let mut port = Port::<u8>::new(0x21); // Master PIC IMR
         port.write(0xFF);
-        crate::kinfo!("init_interrupts: master PIC masked");
-
-        crate::kinfo!("init_interrupts: masking slave PIC (0xA1)");
         let mut port = Port::<u8>::new(0xA1); // Slave PIC IMR
         port.write(0xFF);
-        crate::kinfo!("init_interrupts: slave PIC masked");
     }
     crate::kinfo!("init_interrupts: interrupts masked");
 
     // Initialize PICs AFTER masking interrupts
-    crate::kinfo!("init_interrupts: about to initialize PICs");
     unsafe {
         PICS.lock().initialize();
     }
     crate::kinfo!("init_interrupts: PICs initialized");
 
-    if ENABLE_SYSCALL_MSRS {
-        crate::kinfo!("init_interrupts: enabling SYSCALL MSR fast path");
-        setup_syscall();
-        crate::initramfs::debug_dump_state("after-setup-syscall");
-        crate::kinfo!("init_interrupts: setup_syscall completed");
-    } else {
-        crate::kinfo!("init_interrupts: skipping SYSCALL MSR setup (using int 0x81 gateway)");
-    }
-
-    // Load IDT LAST to avoid corrupting static variables
+    // Load IDT before applying PIC masks to ensure handlers are in place
+    crate::kinfo!("init_interrupts: loading IDT");
     unsafe {
         if let Some(ref idt) = IDT {
+            // Ensure IDT structure is fully written before loading
+            core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
             idt.load();
+            // Ensure load completes before continuing
+            core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+            crate::kinfo!("init_interrupts: IDT loaded successfully");
+        } else {
+            crate::kpanic!("init_interrupts: IDT was not initialized");
         }
     }
-    crate::kinfo!("init_interrupts: IDT loaded");
 
+    // Now set final PIC masks - unmask only keyboard IRQ
     unsafe {
         let mut master_port = Port::<u8>::new(0x21);
         master_port.write(0xFD); // Unmask only keyboard IRQ (IRQ1)
         let mut slave_port = Port::<u8>::new(0xA1);
         slave_port.write(0xFF); // Keep all slave IRQs masked
-        crate::kinfo!("init_interrupts: PIC masks applied (master=0xFD, slave=0xFF)");
+    }
+    crate::kinfo!("init_interrupts: PIC masks applied (keyboard unmasked)");
+
+    if ENABLE_SYSCALL_MSRS {
+        crate::kinfo!("init_interrupts: enabling SYSCALL MSR fast path");
+        setup_syscall();
+        crate::kinfo!("init_interrupts: setup_syscall completed");
+    } else {
+        crate::kinfo!("init_interrupts: skipping SYSCALL MSR setup (using int 0x81 gateway)");
     }
 
-    crate::initramfs::debug_dump_state("after-init-interrupts");
+    crate::kinfo!("init_interrupts: COMPLETE");
 }
 
 // Hardware interrupt handlers
