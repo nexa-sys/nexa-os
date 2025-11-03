@@ -17,13 +17,14 @@ NexaOS implements a fully functional 64-bit kernel with the following production
 
 - **Boot Infrastructure**: Multiboot2-compliant boot flow with GRUB integration, complete 64-bit long mode initialization
 - **Memory Management**: Virtual memory with paging, user/kernel space separation, ELF binary loading with proper address space isolation
-- **Process Management**: Ring 0/3 privilege separation, user mode process execution, process state tracking
-- **System Calls**: Production syscall interface (read/write/open/close/exit/getpid) with proper context switching
+- **Process Management**: Ring 0/3 privilege separation, user mode process execution, process state tracking, PPID support
+- **Init System**: Complete Unix-like init (PID 1) with System V runlevels, service management, respawn capability, /etc/inittab support
+- **System Calls**: Production syscall interface including POSIX I/O, process control, and system management (reboot/shutdown/runlevel)
 - **File Systems**: Initramfs support with CPIO parsing, runtime in-memory filesystem for dynamic content
 - **Device Drivers**: PS/2 keyboard driver with interrupt handling, VGA text mode, serial console for diagnostics
 - **IPC Mechanisms**: Message-passing channels for inter-process communication
-- **Security**: Multi-user authentication system with role-based access control, root/user privilege separation
-- **POSIX Compliance**: Error number definitions (errno), file metadata structures, standard file types
+- **Security**: Multi-user authentication system with role-based access control, root/user privilege separation, superuser checks
+- **POSIX Compliance**: Error number definitions (errno), file metadata structures, standard file types, process hierarchy
 - **Interactive Shell**: Full command-line environment with POSIX commands (ls, cat, echo, pwd, ps, etc.)
 
 ## Architecture Overview

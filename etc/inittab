@@ -1,0 +1,49 @@
+# /etc/inittab - init daemon configuration
+# Format: id:runlevels:action:process
+# 
+# Runlevels:
+#   0 - halt (system shutdown)
+#   1 - single user mode
+#   2 - multi-user mode without networking
+#   3 - multi-user mode with networking
+#   4 - unused
+#   5 - multi-user mode with GUI
+#   6 - reboot
+
+# System initialization (run once at boot)
+si::sysinit:/etc/init.d/rcS
+
+# Default runlevel
+id:3:initdefault:
+
+# What to do in single-user mode
+~~:S:wait:/sbin/sulogin
+
+# What to do when CTRL-ALT-DEL is pressed
+ca::ctrlaltdel:/sbin/shutdown -r now
+
+# Runlevel 0: halt
+l0:0:wait:/etc/init.d/rc 0
+
+# Runlevel 1: single-user
+l1:1:wait:/etc/init.d/rc 1
+
+# Runlevel 2-5: multi-user
+l2:2:wait:/etc/init.d/rc 2
+l3:3:wait:/etc/init.d/rc 3
+l4:4:wait:/etc/init.d/rc 4
+l5:5:wait:/etc/init.d/rc 5
+
+# Runlevel 6: reboot
+l6:6:wait:/etc/init.d/rc 6
+
+# Getty processes (spawn login shells)
+# Format: id:runlevels:respawn:command
+1:2345:respawn:/sbin/getty 38400 tty1
+2:2345:respawn:/sbin/getty 38400 tty2
+3:2345:respawn:/sbin/getty 38400 tty3
+4:2345:respawn:/sbin/getty 38400 tty4
+
+# Emergency shell (for debugging)
+# Uncomment to enable
+# em:12345:respawn:/bin/sh

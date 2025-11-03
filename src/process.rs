@@ -114,7 +114,7 @@ impl Process {
 
         let process = Process {
             pid,
-            ppid: 0,  // Root process has no parent
+            ppid: 0,  // Will be set by caller if needed (init has ppid=0)
             state: ProcessState::Ready,
             entry_point: virtual_entry, // Use virtual entry point for Ring 3 execution
             stack_top,
@@ -124,6 +124,26 @@ impl Process {
         };
 
         Ok(process)
+    }
+
+    /// Set parent process ID (POSIX)
+    pub fn set_ppid(&mut self, ppid: Pid) {
+        self.ppid = ppid;
+    }
+
+    /// Get process ID
+    pub fn pid(&self) -> Pid {
+        self.pid
+    }
+
+    /// Get parent process ID
+    pub fn ppid(&self) -> Pid {
+        self.ppid
+    }
+
+    /// Get process state
+    pub fn state(&self) -> ProcessState {
+        self.state
     }
 
     /// Execute the process in user mode (Ring 3)

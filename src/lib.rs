@@ -7,6 +7,7 @@ pub mod elf;
 pub mod framebuffer;
 pub mod fs;
 pub mod gdt;
+pub mod init;
 pub mod initramfs;
 pub mod interrupts;
 pub mod ipc;
@@ -152,14 +153,14 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
         crate::initramfs::get().is_some()
     );
 
-    auth::init();
-    ipc::init();
-    signal::init();
-    pipe::init();
-    scheduler::init();
-
-    // Initialize filesystem
-    fs::init();
+    // Initialize subsystems in dependency order
+    auth::init();           // User authentication system
+    ipc::init();            // Inter-process communication
+    signal::init();         // POSIX signal handling
+    pipe::init();           // Pipe system
+    scheduler::init();      // Process scheduler
+    fs::init();             // Filesystem
+    init::init();           // Init system (PID 1 management)
 
     let elapsed_us = logger::boot_time_us();
     kinfo!(
@@ -168,31 +169,49 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
         elapsed_us % 1_000
     );
 
+    // Try to load init configuration (Unix-like /etc/inittab)
+    if let Err(e) = init::load_inittab() {
+        kwarn!("Failed to load /etc/inittab: {}", e);
+        kwarn!("Using default init configuration");
+    }
+
+    // Parse kernel command line for init= parameter (POSIX convention)
     let cmdline = cmdline_opt.unwrap_or("");
     let cmd_init_path = parse_init_from_cmdline(cmdline).unwrap_or("(none)");
 
+    // Try custom init path first (if specified on command line)
     if cmd_init_path != "(none)" {
-        kinfo!("Custom init path: {}", cmd_init_path);
+        kinfo!("Custom init path from cmdline: {}", cmd_init_path);
         try_init_exec!(cmd_init_path);
     }
 
-    static INIT_PATHS: &[&str] = &["/sbin/init", "/etc/init", "/bin/init", "/bin/sh"];
+    // Standard Unix init search paths (in order of preference)
+    // Following FHS (Filesystem Hierarchy Standard) and POSIX conventions
+    static INIT_PATHS: &[&str] = &[
+        "/sbin/init",      // Primary init location (System V, systemd)
+        "/etc/init",       // Alternative init location
+        "/bin/init",       // Fallback init location
+        "/bin/sh",         // Emergency shell (minimal init)
+    ];
 
-    kinfo!("Using default init file list: {}", INIT_PATHS.len());
-    kinfo!("Pausing briefly before starting init");
+    kinfo!("Searching for init in {} standard locations", INIT_PATHS.len());
+    
     for &path in INIT_PATHS.iter() {
-        kinfo!("Trying init file: {}", path);
+        kinfo!("Trying init program: {}", path);
         try_init_exec!(path);
+        
+        // If /bin/sh is not found, this is a critical failure
         if path == "/bin/sh" {
-            kfatal!("'/bin/sh' not found in initramfs;");
-            kfatal!("cannot initialize user mode.");
-            kpanic!("Final fallback init program not found.");
+            kfatal!("Critical: No init program found in initramfs");
+            kfatal!("Searched paths: /sbin/init, /etc/init, /bin/init, /bin/sh");
+            kfatal!("Cannot continue without init process (PID 1)");
+            kpanic!("Init process not found - system halted");
         }
     }
 
-    // Try to load /bin/sh from initramfs and
-    // If we reach here, /bin/sh executed successfully, but it should never return
-    kpanic!("Unexpected return from user mode process");
+    // If we reach here, all init programs failed to execute
+    // This should never happen if try_init_exec! works correctly
+    kpanic!("Unexpected return from init process execution");
 }
 
 pub fn panic(info: &PanicInfo) -> ! {

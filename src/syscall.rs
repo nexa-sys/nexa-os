@@ -39,6 +39,11 @@ pub const SYS_USER_INFO: u64 = 222;
 pub const SYS_USER_LIST: u64 = 223;
 pub const SYS_USER_LOGOUT: u64 = 224;
 
+// Init system calls
+pub const SYS_REBOOT: u64 = 169;        // sys_reboot (Linux)
+pub const SYS_SHUTDOWN: u64 = 230;      // Custom: system shutdown
+pub const SYS_RUNLEVEL: u64 = 231;      // Custom: get/set runlevel
+
 const STDIN: u64 = 0;
 const STDOUT: u64 = 1;
 const STDERR: u64 = 2;
@@ -217,12 +222,29 @@ fn syscall_read(fd: u64, buf: *mut u8, count: usize) -> u64 {
 
 /// Exit system call
 fn syscall_exit(code: i32) -> u64 {
-    crate::kinfo!("Process exited with code: {}", code);
-    // In a real OS, we would switch to another process
-    // For now, just halt
-    loop {
-        x86_64::instructions::hlt();
+    let pid = crate::scheduler::current_pid().unwrap_or(0);
+    crate::kinfo!("Process {} exited with code: {}", pid, code);
+    
+    // Notify init system about process exit
+    crate::init::handle_process_exit(pid, code);
+    
+    // Mark process as zombie and remove from scheduler
+    if pid != 0 {
+        let _ = crate::scheduler::set_process_state(pid, crate::process::ProcessState::Zombie);
+        let _ = crate::scheduler::remove_process(pid);
     }
+    
+    // Schedule next process
+    if let Some(next_pid) = crate::scheduler::schedule() {
+        crate::kinfo!("Switching to next process: {}", next_pid);
+        // TODO: Implement context switch to next process
+    } else {
+        crate::kinfo!("No more processes to run, halting system");
+        crate::arch::halt_loop();
+    }
+    
+    // Should never reach here
+    0
 }
 fn syscall_open(path_ptr: *const u8, len: usize) -> u64 {
     if path_ptr.is_null() || len == 0 {
@@ -956,6 +978,118 @@ fn syscall_sched_yield() -> u64 {
     0
 }
 
+/// System reboot - requires privilege (Linux compatible)
+/// cmd values: 0x01234567=RESTART, 0x4321FEDC=HALT, 0xCDEF0123=POWER_OFF
+fn syscall_reboot(cmd: i32) -> u64 {
+    crate::kinfo!("reboot(cmd={:#x}) called", cmd);
+    
+    // Check if caller is root (UID 0) or has CAP_SYS_BOOT
+    // For now, we allow any process to reboot (simplified security)
+    if !crate::auth::is_superuser() {
+        crate::kwarn!("Reboot attempted by non-root user");
+        posix::set_errno(posix::errno::EPERM);
+        return u64::MAX;
+    }
+    
+    // Linux reboot magic numbers
+    const LINUX_REBOOT_CMD_RESTART: i32 = 0x01234567;
+    const LINUX_REBOOT_CMD_HALT: i32 = 0x4321FEDC_u32 as i32;
+    const LINUX_REBOOT_CMD_POWER_OFF: i32 = 0xCDEF0123_u32 as i32;
+    
+    match cmd {
+        LINUX_REBOOT_CMD_RESTART => {
+            crate::kinfo!("System reboot requested via syscall");
+            crate::init::reboot();
+        }
+        LINUX_REBOOT_CMD_HALT => {
+            crate::kinfo!("System halt requested via syscall");
+            crate::init::shutdown();
+        }
+        LINUX_REBOOT_CMD_POWER_OFF => {
+            crate::kinfo!("System power off requested via syscall");
+            crate::init::shutdown();
+        }
+        _ => {
+            crate::kwarn!("Invalid reboot command: {:#x}", cmd);
+            posix::set_errno(posix::errno::EINVAL);
+            return u64::MAX;
+        }
+    }
+    
+    // Never returns
+    posix::set_errno(0);
+    0
+}
+
+/// System shutdown - power off the system
+fn syscall_shutdown() -> u64 {
+    crate::kinfo!("shutdown() called");
+    
+    // Check privilege
+    if !crate::auth::is_superuser() {
+        crate::kwarn!("Shutdown attempted by non-root user");
+        posix::set_errno(posix::errno::EPERM);
+        return u64::MAX;
+    }
+    
+    crate::kinfo!("System shutdown requested via syscall");
+    crate::init::shutdown();
+    
+    // Never returns
+    posix::set_errno(0);
+    0
+}
+
+/// Get or set system runlevel
+/// arg < 0: get current runlevel (return value)
+/// arg >= 0: set runlevel (requires root)
+fn syscall_runlevel(level: i32) -> u64 {
+    if level < 0 {
+        // Get current runlevel
+        let current = crate::init::current_runlevel();
+        crate::kinfo!("runlevel: get -> {:?}", current);
+        posix::set_errno(0);
+        return current as u64;
+    }
+    
+    // Set runlevel (requires privilege)
+    if !crate::auth::is_superuser() {
+        crate::kwarn!("Runlevel change attempted by non-root user");
+        posix::set_errno(posix::errno::EPERM);
+        return u64::MAX;
+    }
+    
+    // Validate runlevel
+    let new_level = match level {
+        0 => crate::init::RunLevel::Halt,
+        1 => crate::init::RunLevel::SingleUser,
+        2 => crate::init::RunLevel::MultiUser,
+        3 => crate::init::RunLevel::MultiUserNetwork,
+        4 => crate::init::RunLevel::Unused,
+        5 => crate::init::RunLevel::MultiUserGUI,
+        6 => crate::init::RunLevel::Reboot,
+        _ => {
+            crate::kwarn!("Invalid runlevel: {}", level);
+            posix::set_errno(posix::errno::EINVAL);
+            return u64::MAX;
+        }
+    };
+    
+    crate::kinfo!("runlevel: set -> {:?}", new_level);
+    
+    match crate::init::change_runlevel(new_level) {
+        Ok(_) => {
+            posix::set_errno(0);
+            0
+        }
+        Err(e) => {
+            crate::kerror!("Failed to change runlevel: {}", e);
+            posix::set_errno(posix::errno::EINVAL);
+            u64::MAX
+        }
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn syscall_dispatch(nr: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 {
     match nr {
@@ -993,6 +1127,9 @@ pub extern "C" fn syscall_dispatch(nr: u64, arg1: u64, arg2: u64, arg3: u64) -> 
         SYS_USER_INFO => syscall_user_info(arg1 as *mut UserInfoReply),
         SYS_USER_LIST => syscall_user_list(arg1 as *mut u8, arg2 as usize),
         SYS_USER_LOGOUT => syscall_user_logout(),
+        SYS_REBOOT => syscall_reboot(arg1 as i32),
+        SYS_SHUTDOWN => syscall_shutdown(),
+        SYS_RUNLEVEL => syscall_runlevel(arg1 as i32),
         _ => {
             crate::kinfo!("Unknown syscall: {}", nr);
             posix::set_errno(posix::errno::ENOSYS);

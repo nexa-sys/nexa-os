@@ -190,6 +190,22 @@ pub fn require_admin() -> bool {
     CURRENT.lock().credentials.is_admin
 }
 
+/// Check if current user is superuser (UID 0 or admin flag)
+pub fn is_superuser() -> bool {
+    let current = CURRENT.lock();
+    current.credentials.uid == 0 || current.credentials.is_admin
+}
+
+/// Get current user's UID
+pub fn current_uid() -> u32 {
+    CURRENT.lock().credentials.uid
+}
+
+/// Get current user's GID
+pub fn current_gid() -> u32 {
+    CURRENT.lock().credentials.gid
+}
+
 pub fn logout() -> Result<(), AuthError> {
     let root_record = {
         let users = USERS.lock();
