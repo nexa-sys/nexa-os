@@ -30,6 +30,7 @@ const SYS_CLOSE: u64 = 3;
 const SYS_FORK: u64 = 57;
 const SYS_EXECVE: u64 = 59;
 const SYS_EXIT: u64 = 60;
+const SYS_WAIT4: u64 = 61;
 const SYS_GETPID: u64 = 39;
 const SYS_GETPPID: u64 = 110;
 const SYS_RUNLEVEL: u64 = 231;
@@ -196,6 +197,16 @@ fn read(fd: u64, buf: *mut u8, count: usize) -> u64 {
 /// Close file descriptor
 fn close(fd: u64) -> u64 {
     syscall1(SYS_CLOSE, fd)
+}
+
+/// Wait for process state change (wait4 syscall)
+fn wait4(pid: i64, status: *mut i32, options: i32) -> i64 {
+    let ret = syscall3(SYS_WAIT4, pid as u64, status as u64, options as u64);
+    if ret == u64::MAX {
+        -1
+    } else {
+        ret as i64
+    }
 }
 
 /// Simple integer to string conversion
@@ -845,10 +856,12 @@ const FALLBACK_SERVICE: ServiceConfig = ServiceConfig {
 };
 
 /// Service state tracking
+#[derive(Clone, Copy)]
 struct ServiceState {
     respawn_count: u32,
     window_start: u64,
     total_starts: u64,
+    pid: i64, // Current PID of running service (0 if not running)
 }
 
 impl ServiceState {
@@ -857,6 +870,7 @@ impl ServiceState {
             respawn_count: 0,
             window_start: 0,
             total_starts: 0,
+            pid: 0,
         }
     }
 
@@ -896,6 +910,13 @@ impl ServiceState {
             }
         }
     }
+}
+
+/// Running service tracker (for parallel supervision)
+#[derive(Clone, Copy)]
+struct RunningService<'a> {
+    config: &'a ServiceConfig,
+    state: ServiceState,
 }
 
 
@@ -1009,21 +1030,63 @@ fn init_main() -> ! {
     print(boot_target);
     print("\n");
 
-    // Service supervision with fork/exec/wait
+    // Service supervision with parallel fork/exec/wait
     print("\n");
-    log_start("Starting unit supervision");
-    log_info("Using fork/exec/wait supervision model");
+    log_start("Starting parallel unit supervision");
+    log_info("Using fork/exec/wait4 supervision model");
     print("\n");
+
+    // Build list of services to run
+    let mut running_services: [Option<RunningService>; MAX_SERVICES] = [None; MAX_SERVICES];
+    let mut service_count = 0usize;
 
     if services.is_empty() {
-        log_warn("Activating fallback shell (no configured units)");
-        let mut fallback_state = ServiceState::new();
-        run_service_loop(&mut fallback_state, &FALLBACK_SERVICE, &mut buf);
+        log_warn("No configured units, using fallback shell");
+        running_services[0] = Some(RunningService {
+            config: &FALLBACK_SERVICE,
+            state: ServiceState::new(),
+        });
+        service_count = 1;
+    } else {
+        for service in services {
+            if service_matches_target(service, boot_target) {
+                if service_count < MAX_SERVICES {
+                    running_services[service_count] = Some(RunningService {
+                        config: service,
+                        state: ServiceState::new(),
+                    });
+                    service_count += 1;
+                }
+            }
+        }
+
+        if service_count == 0 {
+            log_warn("No unit matched boot target; using fallback shell");
+            running_services[0] = Some(RunningService {
+                config: &FALLBACK_SERVICE,
+                state: ServiceState::new(),
+            });
+            service_count = 1;
+        }
     }
 
-    for service in services {
-        if service_matches_target(service, boot_target) {
-            log_start("Activating unit");
+    print("         Active units: ");
+    print(itoa(service_count as u64, &mut buf));
+    print("\n\n");
+
+    // Start all services in parallel and supervise them
+    parallel_service_supervisor(&mut running_services, service_count, &mut buf);
+}
+
+/// Parallel service supervisor - manages multiple services simultaneously
+fn parallel_service_supervisor(running_services: &mut [Option<RunningService>; MAX_SERVICES], service_count: usize, buf: &mut [u8]) -> ! {
+    // Start all services initially
+    for i in 0..service_count {
+        if let Some(ref mut rs) = running_services[i] {
+            let service = rs.config;
+            let state = &mut rs.state;
+            
+            log_start("Starting unit");
             print("         Unit: ");
             if service.name.is_empty() {
                 print(service.exec_start);
@@ -1031,40 +1094,161 @@ fn init_main() -> ! {
                 print(service.name);
             }
             print("\n");
-            if !service.description.is_empty() {
-                print("         Description: ");
-                print(service.description);
+            
+            let pid = start_service(service, buf);
+            if pid > 0 {
+                state.pid = pid;
+                state.total_starts = state.total_starts.saturating_add(1);
+                log_info("Unit started");
+                print("         PID: ");
+                print(itoa(pid as u64, buf));
+                print("\n\n");
+            } else {
+                log_fail("Failed to start unit");
                 print("\n");
             }
-            print("         ExecStart: ");
-            print(service.exec_start);
-            print("\n");
-            if !service.after.is_empty() {
-                print("         After (len ");
-                print(itoa(service.after.len() as u64, &mut buf));
-                print(", ptr 0x");
-                print(itoa_hex(service.after.as_ptr() as u64, &mut buf));
-                print("): ");
-                print(service.after);
-                print("\n");
-            }
-            if !service.wants.is_empty() {
-                print("         WantedBy: ");
-                print(service.wants);
-                print("\n");
-            }
-
-            let mut service_state = ServiceState::new();
-            run_service_loop(&mut service_state, service, &mut buf);
         }
     }
 
-    log_warn("No unit matched boot target; falling back to emergency shell");
-    let mut fallback_state = ServiceState::new();
-    run_service_loop(&mut fallback_state, &FALLBACK_SERVICE, &mut buf);
+    // Main supervision loop - wait for any child process to exit and restart if needed
+    loop {
+        let mut status: i32 = 0;
+        let pid = wait4(-1, &mut status as *mut i32, 0); // Wait for any child
+        
+        if pid < 0 {
+            // No children or error, delay and retry
+            delay_ms(1000);
+            continue;
+        }
+
+        let timestamp = get_timestamp();
+        
+        // Find which service exited
+        for i in 0..service_count {
+            if let Some(ref mut rs) = running_services[i] {
+                if rs.state.pid == pid {
+                    let service = rs.config;
+                    let state = &mut rs.state;
+                    
+                    log_warn("Unit terminated");
+                    print("         Unit: ");
+                    if service.name.is_empty() {
+                        print(service.exec_start);
+                    } else {
+                        print(service.name);
+                    }
+                    print("\n");
+                    print("         PID: ");
+                    print(itoa(pid as u64, buf));
+                    print("\n");
+                    print("         Exit status: ");
+                    print(itoa(status as u64, buf));
+                    print("\n");
+                    
+                    state.pid = 0;
+                    
+                    // Check if we should restart
+                    let should_restart = match service.restart {
+                        RestartPolicy::No => false,
+                        RestartPolicy::Always => true,
+                        RestartPolicy::OnFailure => status != 0,
+                    };
+                    
+                    if should_restart && state.allow_attempt(timestamp, service.restart, service.restart_settings) {
+                        delay_ms(service.restart_delay_ms);
+                        
+                        log_start("Restarting unit");
+                        print("         Unit: ");
+                        if service.name.is_empty() {
+                            print(service.exec_start);
+                        } else {
+                            print(service.name);
+                        }
+                        print("\n");
+                        
+                        let new_pid = start_service(service, buf);
+                        if new_pid > 0 {
+                            state.pid = new_pid;
+                            log_info("Unit restarted");
+                            print("         PID: ");
+                            print(itoa(new_pid as u64, buf));
+                            print("\n\n");
+                        } else {
+                            log_fail("Failed to restart unit");
+                            print("\n");
+                        }
+                    } else if should_restart {
+                        log_fail("Restart limit exceeded for unit");
+                        print("         Unit: ");
+                        if service.name.is_empty() {
+                            print(service.exec_start);
+                        } else {
+                            print(service.name);
+                        }
+                        print("\n\n");
+                    } else {
+                        log_info("Unit will not be restarted (policy: no restart)");
+                        print("\n");
+                    }
+                    
+                    break;
+                }
+            }
+        }
+    }
 }
 
-/// Run service supervision loop for a single service
+/// Start a single service (fork and exec)
+fn start_service(service: &ServiceConfig, buf: &mut [u8]) -> i64 {
+    let pid = fork();
+    
+    if pid < 0 {
+        // Fork failed
+        return -1;
+    }
+    
+    if pid == 0 {
+        // Child process - exec the service
+        let exec_bytes = service.exec_start.as_bytes();
+        if exec_bytes.is_empty() {
+            exit(1);
+        }
+        
+        // Prepare null-terminated path
+        let mut path_with_null = [0u8; 256];
+        if exec_bytes.len() >= path_with_null.len() {
+            exit(1);
+        }
+        
+        for (i, &b) in exec_bytes.iter().enumerate() {
+            path_with_null[i] = b;
+        }
+        path_with_null[exec_bytes.len()] = 0;
+        
+        let exec_path = unsafe {
+            core::str::from_utf8_unchecked(&path_with_null[..exec_bytes.len()])
+        };
+        
+        let argv: [*const u8; 2] = [
+            path_with_null.as_ptr(),
+            core::ptr::null(),
+        ];
+        let envp: [*const u8; 1] = [
+            core::ptr::null(),
+        ];
+        
+        execve(exec_path, &argv, &envp);
+        
+        // If execve returns, it failed
+        exit(1);
+    }
+    
+    // Parent process - return child PID
+    pid
+}
+
+/// Old single-service loop (kept for reference but not used)
+#[allow(dead_code)]
 fn run_service_loop(service_state: &mut ServiceState, service: &ServiceConfig, buf: &mut [u8]) -> ! {
     loop {
         let timestamp = get_timestamp();
