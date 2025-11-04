@@ -14,6 +14,7 @@ pub struct ProcessEntry {
 }
 
 impl ProcessEntry {
+    #[allow(dead_code)]
     const fn empty() -> Self {
         Self {
             process: Process {

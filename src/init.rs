@@ -66,9 +66,9 @@ static INIT_STATE: Mutex<InitState> = Mutex::new(InitState {
 
 /// Respawn limit per service (prevent fork bombs)
 const MAX_RESPAWN_COUNT: u32 = 5;
-const RESPAWN_WINDOW_MS: u64 = 60000; // 1 minute
 
 impl InitState {
+    #[allow(dead_code)]
     const fn new() -> Self {
         Self {
             current_runlevel: RunLevel::SingleUser,

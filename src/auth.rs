@@ -137,9 +137,20 @@ pub fn authenticate(username: &str, password: &str) -> Result<Credentials, AuthE
     }
 
     let hash = hash_password(password.as_bytes());
+    crate::kinfo!(
+        "auth::authenticate attempt username='{}' hash={:#x}",
+        username,
+        hash
+    );
     let users = USERS.lock();
     for record in users.iter() {
         if record.used && record.username_str() == username && record.password_hash == hash {
+            crate::kinfo!(
+                "auth::authenticate success for '{}' (uid={}, is_admin={})",
+                username,
+                record.uid,
+                record.is_admin
+            );
             let creds = Credentials {
                 uid: record.uid,
                 gid: record.gid,
@@ -154,6 +165,10 @@ pub fn authenticate(username: &str, password: &str) -> Result<Credentials, AuthE
             return Ok(creds);
         }
     }
+    crate::kwarn!(
+        "auth::authenticate failed for '{}' (no matching credentials)",
+        username
+    );
     Err(AuthError::InvalidCredentials)
 }
 

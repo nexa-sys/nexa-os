@@ -30,11 +30,16 @@ const SYS_CLOSE: u64 = 3;
 const SYS_FORK: u64 = 57;
 const SYS_EXECVE: u64 = 59;
 const SYS_EXIT: u64 = 60;
+const SYS_WAIT4: u64 = 61;
 const SYS_GETPID: u64 = 39;
 const SYS_GETPPID: u64 = 110;
 const SYS_RUNLEVEL: u64 = 231;
+const SYS_USER_ADD: u64 = 220;
+const SYS_USER_LOGIN: u64 = 221;
+const SYS_GETERRNO: u64 = 201;
 
 // Standard file descriptors
+const STDIN: u64 = 0;
 const STDOUT: u64 = 1;
 const STDERR: u64 = 2;
 
@@ -198,6 +203,16 @@ fn close(fd: u64) -> u64 {
     syscall1(SYS_CLOSE, fd)
 }
 
+/// Wait for process state change (wait4 syscall)
+fn wait4(pid: i64, status: *mut i32, options: i32) -> i64 {
+    let ret = syscall3(SYS_WAIT4, pid as u64, status as u64, options as u64);
+    if ret == u64::MAX {
+        -1
+    } else {
+        ret as i64
+    }
+}
+
 /// Simple integer to string conversion
 fn itoa(mut n: u64, buf: &mut [u8]) -> &str {
     if n == 0 {
@@ -220,6 +235,7 @@ fn itoa(mut n: u64, buf: &mut [u8]) -> &str {
     core::str::from_utf8(&buf[0..i]).unwrap()
 }
 
+#[allow(dead_code)]
 fn itoa_hex(mut n: u64, buf: &mut [u8]) -> &str {
     if n == 0 {
         buf[0] = b'0';
@@ -489,7 +505,7 @@ fn handle_section_header(
             *section = ParserSection::Service;
 
             if let Some(name_bytes) = extract_quoted_identifier(cleaned) {
-                current.name = unsafe { slice_to_static(name_bytes) };
+                current.name = slice_to_static(name_bytes);
             }
         }
         ParserSection::Init => {
@@ -511,8 +527,8 @@ fn handle_section_header(
 
 fn handle_service_key_value(line: &[u8], current: &mut ServiceConfig) {
     if let Some((key, value)) = split_key_value(line) {
-        let key_str = unsafe { slice_to_static(key) };
-        let value_str = unsafe { slice_to_static(value) };
+        let key_str = slice_to_static(key);
+        let value_str = slice_to_static(value);
         let value_trimmed = strip_optional_quotes(value_str);
 
         if eq_ignore_ascii_case(key_str, "Description") {
@@ -540,8 +556,8 @@ fn handle_service_key_value(line: &[u8], current: &mut ServiceConfig) {
 
 fn handle_init_key_value(line: &[u8]) {
     if let Some((key, value)) = split_key_value(line) {
-        let key_str = unsafe { slice_to_static(key) };
-        let value_str = unsafe { slice_to_static(value) };
+        let key_str = slice_to_static(key);
+        let value_str = slice_to_static(value);
         let trimmed = strip_optional_quotes(value_str);
 
         unsafe {
@@ -709,10 +725,8 @@ fn slice_to_static(slice: &[u8]) -> &'static str {
 fn strip_optional_quotes(value: &'static str) -> &'static str {
     let bytes = value.as_bytes();
     if bytes.len() >= 2 && bytes[0] == b'"' && bytes[bytes.len() - 1] == b'"' {
-        unsafe {
-            let inner = &bytes[1..bytes.len() - 1];
-            slice_to_static(inner)
-        }
+        let inner = &bytes[1..bytes.len() - 1];
+        slice_to_static(inner)
     } else {
         value
     }
@@ -845,10 +859,12 @@ const FALLBACK_SERVICE: ServiceConfig = ServiceConfig {
 };
 
 /// Service state tracking
+#[derive(Clone, Copy)]
 struct ServiceState {
     respawn_count: u32,
     window_start: u64,
     total_starts: u64,
+    pid: i64, // Current PID of running service (0 if not running)
 }
 
 impl ServiceState {
@@ -857,6 +873,7 @@ impl ServiceState {
             respawn_count: 0,
             window_start: 0,
             total_starts: 0,
+            pid: 0,
         }
     }
 
@@ -896,6 +913,13 @@ impl ServiceState {
             }
         }
     }
+}
+
+/// Running service tracker (for parallel supervision)
+#[derive(Clone, Copy)]
+struct RunningService<'a> {
+    config: &'a ServiceConfig,
+    state: ServiceState,
 }
 
 
@@ -1009,21 +1033,71 @@ fn init_main() -> ! {
     print(boot_target);
     print("\n");
 
-    // Service supervision with fork/exec/wait
+    // Service supervision with parallel fork/exec/wait
     print("\n");
-    log_start("Starting unit supervision");
-    log_info("Using fork/exec/wait supervision model");
+    log_start("Starting parallel unit supervision");
+    log_info("Using fork/exec/wait4 supervision model");
     print("\n");
+
+    // Build list of services to run
+    let mut running_services: [Option<RunningService>; MAX_SERVICES] = [None; MAX_SERVICES];
+    let mut service_count = 0usize;
 
     if services.is_empty() {
-        log_warn("Activating fallback shell (no configured units)");
-        let mut fallback_state = ServiceState::new();
-        run_service_loop(&mut fallback_state, &FALLBACK_SERVICE, &mut buf);
+        log_warn("No configured units, using fallback shell");
+        running_services[0] = Some(RunningService {
+            config: &FALLBACK_SERVICE,
+            state: ServiceState::new(),
+        });
+        service_count = 1;
+    } else {
+        for service in services {
+            if service_matches_target(service, boot_target) {
+                if service_count < MAX_SERVICES {
+                    running_services[service_count] = Some(RunningService {
+                        config: service,
+                        state: ServiceState::new(),
+                    });
+                    service_count += 1;
+                }
+            }
+        }
+
+        if service_count == 0 {
+            log_warn("No unit matched boot target; using fallback shell");
+            running_services[0] = Some(RunningService {
+                config: &FALLBACK_SERVICE,
+                state: ServiceState::new(),
+            });
+            service_count = 1;
+        }
     }
 
-    for service in services {
-        if service_matches_target(service, boot_target) {
-            log_start("Activating unit");
+    print("         Active units: ");
+    print(itoa(service_count as u64, &mut buf));
+    print("\n\n");
+
+    // NOTE: Since fork() is not fully implemented (returns fake PID),
+    // we cannot run services as separate processes in parallel.
+    // Instead, we show login prompt directly and exec into shell.
+    
+    print("\n");
+    log_info("System ready - starting login sequence");
+    print("\n");
+    
+    // Show login prompt and authenticate
+    show_login_and_exec_shell(&mut buf);
+}
+
+/// Parallel service supervisor - manages multiple services simultaneously
+fn parallel_service_supervisor(running_services: &mut [Option<RunningService>; MAX_SERVICES], service_count: usize, buf: &mut [u8]) -> ! {
+    // Start all services initially
+    for i in 0..service_count {
+        if let Some(ref mut rs) = running_services[i] {
+            let service = rs.config;
+            let state = &mut rs.state;
+            
+            log_start("Starting unit");
             print("         Unit: ");
             if service.name.is_empty() {
                 print(service.exec_start);
@@ -1031,40 +1105,161 @@ fn init_main() -> ! {
                 print(service.name);
             }
             print("\n");
-            if !service.description.is_empty() {
-                print("         Description: ");
-                print(service.description);
+            
+            let pid = start_service(service, buf);
+            if pid > 0 {
+                state.pid = pid;
+                state.total_starts = state.total_starts.saturating_add(1);
+                log_info("Unit started");
+                print("         PID: ");
+                print(itoa(pid as u64, buf));
+                print("\n\n");
+            } else {
+                log_fail("Failed to start unit");
                 print("\n");
             }
-            print("         ExecStart: ");
-            print(service.exec_start);
-            print("\n");
-            if !service.after.is_empty() {
-                print("         After (len ");
-                print(itoa(service.after.len() as u64, &mut buf));
-                print(", ptr 0x");
-                print(itoa_hex(service.after.as_ptr() as u64, &mut buf));
-                print("): ");
-                print(service.after);
-                print("\n");
-            }
-            if !service.wants.is_empty() {
-                print("         WantedBy: ");
-                print(service.wants);
-                print("\n");
-            }
-
-            let mut service_state = ServiceState::new();
-            run_service_loop(&mut service_state, service, &mut buf);
         }
     }
 
-    log_warn("No unit matched boot target; falling back to emergency shell");
-    let mut fallback_state = ServiceState::new();
-    run_service_loop(&mut fallback_state, &FALLBACK_SERVICE, &mut buf);
+    // Main supervision loop - wait for any child process to exit and restart if needed
+    loop {
+        let mut status: i32 = 0;
+        let pid = wait4(-1, &mut status as *mut i32, 0); // Wait for any child
+        
+        if pid < 0 {
+            // No children or error, delay and retry
+            delay_ms(1000);
+            continue;
+        }
+
+        let timestamp = get_timestamp();
+        
+        // Find which service exited
+        for i in 0..service_count {
+            if let Some(ref mut rs) = running_services[i] {
+                if rs.state.pid == pid {
+                    let service = rs.config;
+                    let state = &mut rs.state;
+                    
+                    log_warn("Unit terminated");
+                    print("         Unit: ");
+                    if service.name.is_empty() {
+                        print(service.exec_start);
+                    } else {
+                        print(service.name);
+                    }
+                    print("\n");
+                    print("         PID: ");
+                    print(itoa(pid as u64, buf));
+                    print("\n");
+                    print("         Exit status: ");
+                    print(itoa(status as u64, buf));
+                    print("\n");
+                    
+                    state.pid = 0;
+                    
+                    // Check if we should restart
+                    let should_restart = match service.restart {
+                        RestartPolicy::No => false,
+                        RestartPolicy::Always => true,
+                        RestartPolicy::OnFailure => status != 0,
+                    };
+                    
+                    if should_restart && state.allow_attempt(timestamp, service.restart, service.restart_settings) {
+                        delay_ms(service.restart_delay_ms);
+                        
+                        log_start("Restarting unit");
+                        print("         Unit: ");
+                        if service.name.is_empty() {
+                            print(service.exec_start);
+                        } else {
+                            print(service.name);
+                        }
+                        print("\n");
+                        
+                        let new_pid = start_service(service, buf);
+                        if new_pid > 0 {
+                            state.pid = new_pid;
+                            log_info("Unit restarted");
+                            print("         PID: ");
+                            print(itoa(new_pid as u64, buf));
+                            print("\n\n");
+                        } else {
+                            log_fail("Failed to restart unit");
+                            print("\n");
+                        }
+                    } else if should_restart {
+                        log_fail("Restart limit exceeded for unit");
+                        print("         Unit: ");
+                        if service.name.is_empty() {
+                            print(service.exec_start);
+                        } else {
+                            print(service.name);
+                        }
+                        print("\n\n");
+                    } else {
+                        log_info("Unit will not be restarted (policy: no restart)");
+                        print("\n");
+                    }
+                    
+                    break;
+                }
+            }
+        }
+    }
 }
 
-/// Run service supervision loop for a single service
+/// Start a single service (fork and exec)
+fn start_service(service: &ServiceConfig, _buf: &mut [u8]) -> i64 {
+    let pid = fork();
+    
+    if pid < 0 {
+        // Fork failed
+        return -1;
+    }
+    
+    if pid == 0 {
+        // Child process - exec the service
+        let exec_bytes = service.exec_start.as_bytes();
+        if exec_bytes.is_empty() {
+            exit(1);
+        }
+        
+        // Prepare null-terminated path
+        let mut path_with_null = [0u8; 256];
+        if exec_bytes.len() >= path_with_null.len() {
+            exit(1);
+        }
+        
+        for (i, &b) in exec_bytes.iter().enumerate() {
+            path_with_null[i] = b;
+        }
+        path_with_null[exec_bytes.len()] = 0;
+        
+        let exec_path = unsafe {
+            core::str::from_utf8_unchecked(&path_with_null[..exec_bytes.len()])
+        };
+        
+        let argv: [*const u8; 2] = [
+            path_with_null.as_ptr(),
+            core::ptr::null(),
+        ];
+        let envp: [*const u8; 1] = [
+            core::ptr::null(),
+        ];
+        
+        execve(exec_path, &argv, &envp);
+        
+        // If execve returns, it failed
+        exit(1);
+    }
+    
+    // Parent process - return child PID
+    pid
+}
+
+/// Old single-service loop (kept for reference but not used)
+#[allow(dead_code)]
 fn run_service_loop(service_state: &mut ServiceState, service: &ServiceConfig, buf: &mut [u8]) -> ! {
     loop {
         let timestamp = get_timestamp();
@@ -1191,6 +1386,244 @@ fn run_service_loop(service_state: &mut ServiceState, service: &ServiceConfig, b
         }
         print("\n");
         delay_ms(service.restart_delay_ms);
+    }
+}
+
+/// Show login prompt and exec into shell after successful authentication
+/// This works within single-process model without needing fork()
+fn show_login_and_exec_shell(buf: &mut [u8]) -> ! {
+    // Display welcome banner
+    print("\n");
+    print("\x1b[1;36m╔════════════════════════════════════════╗\x1b[0m\n");
+    print("\x1b[1;36m║                                        ║\x1b[0m\n");
+    print("\x1b[1;36m║          \x1b[1;37mWelcome to NexaOS\x1b[1;36m          ║\x1b[0m\n");
+    print("\x1b[1;36m║                                        ║\x1b[0m\n");
+    print("\x1b[1;36m║    \x1b[0mHybrid Kernel Operating System\x1b[1;36m     ║\x1b[0m\n");
+    print("\x1b[1;36m║                                        ║\x1b[0m\n");
+    print("\x1b[1;36m╚════════════════════════════════════════╝\x1b[0m\n");
+    print("\n");
+    print("\x1b[1;32mNexaOS Login\x1b[0m\n");
+    print("\x1b[0;36mDefault credentials: root/root\x1b[0m\n");
+    print("\n");
+    
+    // Ensure default root user exists
+    ensure_default_user();
+    
+    // Read username
+    print("login: ");
+    let mut username_buf = [0u8; 64];
+    let username_len = read_line_input(&mut username_buf);
+    
+    if username_len == 0 {
+        print("\n\x1b[1;31mLogin failed: empty username\x1b[0m\n");
+        exit(1);
+    }
+    
+    if username_len > 64 {
+        print("\n\x1b[1;31mLogin failed: username too long\x1b[0m\n");
+        exit(1);
+    }
+    
+    // Read password
+    print("password: ");
+    let mut password_buf = [0u8; 64];
+    let password_len = read_password_input(&mut password_buf);
+    
+    if password_len > 64 {
+        print("\n\x1b[1;31mLogin failed: password too long\x1b[0m\n");
+        exit(1);
+    }
+    
+    // Authenticate - use safe indexing
+    let username_slice = if username_len <= username_buf.len() {
+        &username_buf[..username_len]
+    } else {
+        &username_buf[..]
+    };
+    
+    let password_slice = if password_len <= password_buf.len() {
+        &password_buf[..password_len]
+    } else {
+        &password_buf[..]
+    };
+    
+    print("\n[DEBUG] Calling authenticate_user...\n");
+    let login_success = authenticate_user(username_slice, password_slice);
+    print("[DEBUG] authenticate_user returned\n");
+    
+    if login_success {
+        print("\n\x1b[1;32mLogin successful!\x1b[0m\n");
+        print("Starting user session...\n\n");
+        
+        print("[DEBUG] About to call execve...\n");
+        
+        // Exec into shell (ensure C string semantics for kernel syscall)
+        let shell_bytes = b"/bin/sh";
+        let mut path_with_null = [0u8; 256];
+
+        if shell_bytes.len() >= path_with_null.len() {
+            print("\n\x1b[1;31mShell path too long\x1b[0m\n");
+            exit(1);
+        }
+
+        path_with_null[..shell_bytes.len()].copy_from_slice(shell_bytes);
+        path_with_null[shell_bytes.len()] = 0;
+
+        let exec_path = unsafe {
+            core::str::from_utf8_unchecked(&path_with_null[..shell_bytes.len()])
+        };
+
+        let argv: [*const u8; 2] = [
+            path_with_null.as_ptr(),
+            core::ptr::null(),
+        ];
+        let envp: [*const u8; 1] = [
+            core::ptr::null(),
+        ];
+
+        execve(exec_path, &argv, &envp);
+        
+        // If exec fails, show error
+        print("\n\x1b[1;31mFailed to start shell\x1b[0m\n");
+        exit(1);
+    } else {
+        print("\n\x1b[1;31mLogin incorrect\x1b[0m\n");
+        exit(1);
+    }
+}
+
+/// Read a line from stdin
+fn read_line_input(buf: &mut [u8]) -> usize {
+    let mut pos = 0;
+    let mut tmp = [0u8; 1];
+    
+    while pos < buf.len() {
+        let n = read(STDIN, tmp.as_mut_ptr(), 1);
+        if n == 0 || n == u64::MAX {
+            break;
+        }
+        
+        let ch = tmp[0];
+        
+        // Handle backspace
+        if ch == 8 || ch == 127 {
+            if pos > 0 {
+                pos -= 1;
+                print("\x08 \x08");
+            }
+            continue;
+        }
+        
+        // Handle newline
+        if ch == b'\n' || ch == b'\r' {
+            print("\n");
+            break;
+        }
+        
+        // Printable characters
+        if ch >= 32 && ch < 127 {
+            buf[pos] = ch;
+            pos += 1;
+            write(STDOUT, &[ch]);
+        }
+    }
+    
+    pos
+}
+
+/// Read password (masked input)
+fn read_password_input(buf: &mut [u8]) -> usize {
+    let mut pos = 0;
+    let mut tmp = [0u8; 1];
+    
+    while pos < buf.len() {
+        let n = read(STDIN, tmp.as_mut_ptr(), 1);
+        if n == 0 || n == u64::MAX {
+            break;
+        }
+        
+        let ch = tmp[0];
+        
+        // Handle backspace
+        if ch == 8 || ch == 127 {
+            if pos > 0 {
+                pos -= 1;
+                print("\x08 \x08");
+            }
+            continue;
+        }
+        
+        // Handle newline
+        if ch == b'\n' || ch == b'\r' {
+            print("\n");
+            break;
+        }
+        
+        // Printable characters (but don't echo)
+        if ch >= 32 && ch < 127 {
+            buf[pos] = ch;
+            pos += 1;
+            print("*");
+        }
+    }
+    
+    pos
+}
+
+/// Ensure default root user exists
+fn ensure_default_user() {
+    let username = b"root";
+    let password = b"root";
+    
+    #[repr(C)]
+    struct UserRequest {
+        username_ptr: u64,
+        username_len: u64,
+        password_ptr: u64,
+        password_len: u64,
+        flags: u64,
+    }
+    
+    let req = UserRequest {
+        username_ptr: username.as_ptr() as u64,
+        username_len: username.len() as u64,
+        password_ptr: password.as_ptr() as u64,
+        password_len: password.len() as u64,
+        flags: 1, // Admin flag
+    };
+    
+    syscall1(SYS_USER_ADD, &req as *const UserRequest as u64);
+}
+
+/// Authenticate user
+fn authenticate_user(username: &[u8], password: &[u8]) -> bool {
+    #[repr(C)]
+    struct UserRequest {
+        username_ptr: u64,
+        username_len: u64,
+        password_ptr: u64,
+        password_len: u64,
+        flags: u64,
+    }
+    
+    let req = UserRequest {
+        username_ptr: username.as_ptr() as u64,
+        username_len: username.len() as u64,
+        password_ptr: password.as_ptr() as u64,
+        password_len: password.len() as u64,
+        flags: 0,
+    };
+    
+    let result = syscall1(SYS_USER_LOGIN, &req as *const UserRequest as u64);
+    if result == 0 {
+        true
+    } else {
+        let errno = syscall1(SYS_GETERRNO, 0);
+        let mut buf = [0u8; 32];
+        print("[DEBUG] login errno: ");
+        print(itoa(errno, &mut buf));
+        print("\n");
+        false
     }
 }
 

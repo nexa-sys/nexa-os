@@ -170,6 +170,11 @@ pub fn init() {
         meta.blocks = ((meta.size + 511) / 512).max(1);
 
         let is_dir = matches!(file_type, FileType::Directory);
+        
+        // Debug: log file registration
+        if name == "bin/sh" || name.ends_with("/sh") {
+            crate::kinfo!("Registering shell: '{}' (size: {} bytes, is_dir: {})", name, entry.data.len(), is_dir);
+        }
 
         add_file_with_metadata(name, entry.data, is_dir, meta);
 
@@ -398,6 +403,18 @@ fn find_file_index(name: &str) -> Option<usize> {
     let files = FILES.lock();
     let count = *FILE_COUNT.lock();
     let target = name.trim_matches('/');
+    
+    // Debug: log the lookup
+    if target == "bin/sh" || target.ends_with("/sh") {
+        crate::kinfo!("find_file_index: looking for '{}' (trimmed: '{}')", name, target);
+        crate::kinfo!("find_file_index: file_count = {}", count);
+        for idx in 0..count {
+            if let Some(file) = files[idx] {
+                crate::kinfo!("  [{}]: '{}'", idx, file.name);
+            }
+        }
+    }
+    
     for idx in 0..count {
         if let Some(file) = files[idx] {
             if file.name == target {

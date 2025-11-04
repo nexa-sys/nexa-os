@@ -702,6 +702,14 @@ fn syscall_user_login(request_ptr: *const UserRequest) -> u64 {
         return u64::MAX;
     }
 
+    crate::kinfo!(
+        "user_login: request username_ptr={:#x} len={} password_ptr={:#x} len={}",
+        request.username_ptr,
+        request.username_len,
+        request.password_ptr,
+        request.password_len
+    );
+
     let username_bytes = unsafe {
         slice::from_raw_parts(
             request.username_ptr as *const u8,
@@ -714,6 +722,12 @@ fn syscall_user_login(request_ptr: *const UserRequest) -> u64 {
             request.password_len as usize,
         )
     };
+
+    crate::kinfo!(
+        "user_login: username bytes={:02x?} password bytes={:02x?}",
+        username_bytes,
+        password_bytes
+    );
 
     let username = match str::from_utf8(username_bytes) {
         Ok(name) => name,
@@ -730,6 +744,13 @@ fn syscall_user_login(request_ptr: *const UserRequest) -> u64 {
             return u64::MAX;
         }
     };
+
+    crate::kinfo!(
+        "user_login: parsed username='{}' password_len={} password_has_null?={}",
+        username,
+        password.len(),
+        password_bytes.iter().any(|&b| b == 0)
+    );
 
     match crate::auth::authenticate(username, password) {
         Ok(creds) => {
@@ -1001,13 +1022,23 @@ fn syscall_execve(path: *const u8, _argv: *const u64, _envp: *const u64) -> u64 
     };
 
     crate::kinfo!("execve: loading program '{}'", path_str);
+    
+    // Debug: Check if file exists before trying to read
+    if crate::fs::file_exists(path_str) {
+        crate::kinfo!("execve: file exists check passed for '{}'", path_str);
+    } else {
+        crate::kerror!("execve: file_exists returned false for '{}'", path_str);
+    }
 
     // Note: In our simplified architecture, execve is mainly used by test programs.
     // Shell is launched via wait4() as part of the fork/wait sequence.
 
     // Try to load the ELF file from filesystem
     let elf_data = match crate::fs::read_file_bytes(path_str) {
-        Some(data) => data,
+        Some(data) => {
+            crate::kinfo!("execve: successfully read {} bytes from '{}'", data.len(), path_str);
+            data
+        }
         None => {
             crate::kerror!("execve: file not found: {}", path_str);
             posix::set_errno(posix::errno::ENOENT);
