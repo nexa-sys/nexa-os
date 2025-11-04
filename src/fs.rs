@@ -403,6 +403,18 @@ fn find_file_index(name: &str) -> Option<usize> {
     let files = FILES.lock();
     let count = *FILE_COUNT.lock();
     let target = name.trim_matches('/');
+    
+    // Debug: log the lookup
+    if target == "bin/sh" || target.ends_with("/sh") {
+        crate::kinfo!("find_file_index: looking for '{}' (trimmed: '{}')", name, target);
+        crate::kinfo!("find_file_index: file_count = {}", count);
+        for idx in 0..count {
+            if let Some(file) = files[idx] {
+                crate::kinfo!("  [{}]: '{}'", idx, file.name);
+            }
+        }
+    }
+    
     for idx in 0..count {
         if let Some(file) = files[idx] {
             if file.name == target {
