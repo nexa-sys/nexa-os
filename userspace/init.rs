@@ -34,8 +34,11 @@ const SYS_WAIT4: u64 = 61;
 const SYS_GETPID: u64 = 39;
 const SYS_GETPPID: u64 = 110;
 const SYS_RUNLEVEL: u64 = 231;
+const SYS_USER_ADD: u64 = 220;
+const SYS_USER_LOGIN: u64 = 221;
 
 // Standard file descriptors
+const STDIN: u64 = 0;
 const STDOUT: u64 = 1;
 const STDERR: u64 = 2;
 
@@ -1073,8 +1076,16 @@ fn init_main() -> ! {
     print(itoa(service_count as u64, &mut buf));
     print("\n\n");
 
-    // Start all services in parallel and supervise them
-    parallel_service_supervisor(&mut running_services, service_count, &mut buf);
+    // NOTE: Since fork() is not fully implemented (returns fake PID),
+    // we cannot run services as separate processes in parallel.
+    // Instead, we show login prompt directly and exec into shell.
+    
+    print("\n");
+    log_info("System ready - starting login sequence");
+    print("\n");
+    
+    // Show login prompt and authenticate
+    show_login_and_exec_shell(&mut buf);
 }
 
 /// Parallel service supervisor - manages multiple services simultaneously
@@ -1375,6 +1386,199 @@ fn run_service_loop(service_state: &mut ServiceState, service: &ServiceConfig, b
         print("\n");
         delay_ms(service.restart_delay_ms);
     }
+}
+
+/// Show login prompt and exec into shell after successful authentication
+/// This works within single-process model without needing fork()
+fn show_login_and_exec_shell(buf: &mut [u8]) -> ! {
+    // Display welcome banner
+    print("\n");
+    print("\x1b[1;36m╔════════════════════════════════════════╗\x1b[0m\n");
+    print("\x1b[1;36m║                                        ║\x1b[0m\n");
+    print("\x1b[1;36m║          \x1b[1;37mWelcome to NexaOS\x1b[1;36m          ║\x1b[0m\n");
+    print("\x1b[1;36m║                                        ║\x1b[0m\n");
+    print("\x1b[1;36m║    \x1b[0mHybrid Kernel Operating System\x1b[1;36m     ║\x1b[0m\n");
+    print("\x1b[1;36m║                                        ║\x1b[0m\n");
+    print("\x1b[1;36m╚════════════════════════════════════════╝\x1b[0m\n");
+    print("\n");
+    print("\x1b[1;32mNexaOS Login\x1b[0m\n");
+    print("\x1b[0;36mDefault credentials: root/root\x1b[0m\n");
+    print("\n");
+    
+    // Ensure default root user exists
+    ensure_default_user();
+    
+    // Read username
+    print("login: ");
+    let mut username_buf = [0u8; 64];
+    let username_len = read_line_input(&mut username_buf);
+    
+    if username_len == 0 {
+        print("\n\x1b[1;31mLogin failed: empty username\x1b[0m\n");
+        exit(1);
+    }
+    
+    // Read password
+    print("password: ");
+    let mut password_buf = [0u8; 64];
+    let password_len = read_password_input(&mut password_buf);
+    
+    // Authenticate
+    let login_success = authenticate_user(&username_buf[..username_len], &password_buf[..password_len]);
+    
+    if login_success {
+        print("\n\x1b[1;32mLogin successful!\x1b[0m\n");
+        print("Starting user session...\n\n");
+        
+        // Exec into shell
+        let shell_path = "/bin/sh\0";
+        let shell_path_str = unsafe {
+            core::str::from_utf8_unchecked(&shell_path.as_bytes()[..7])
+        };
+        
+        let argv: [*const u8; 2] = [
+            shell_path.as_ptr(),
+            core::ptr::null(),
+        ];
+        let envp: [*const u8; 1] = [
+            core::ptr::null(),
+        ];
+        
+        execve(shell_path_str, &argv, &envp);
+        
+        // If exec fails, show error
+        print("\n\x1b[1;31mFailed to start shell\x1b[0m\n");
+        exit(1);
+    } else {
+        print("\n\x1b[1;31mLogin incorrect\x1b[0m\n");
+        exit(1);
+    }
+}
+
+/// Read a line from stdin
+fn read_line_input(buf: &mut [u8]) -> usize {
+    let mut pos = 0;
+    let mut tmp = [0u8; 1];
+    
+    while pos < buf.len() {
+        let n = read(STDIN, tmp.as_mut_ptr(), 1);
+        if n == 0 || n == u64::MAX {
+            break;
+        }
+        
+        let ch = tmp[0];
+        
+        // Handle backspace
+        if ch == 8 || ch == 127 {
+            if pos > 0 {
+                pos -= 1;
+                print("\x08 \x08");
+            }
+            continue;
+        }
+        
+        // Handle newline
+        if ch == b'\n' || ch == b'\r' {
+            print("\n");
+            break;
+        }
+        
+        // Printable characters
+        if ch >= 32 && ch < 127 {
+            buf[pos] = ch;
+            pos += 1;
+            write(STDOUT, &[ch]);
+        }
+    }
+    
+    pos
+}
+
+/// Read password (masked input)
+fn read_password_input(buf: &mut [u8]) -> usize {
+    let mut pos = 0;
+    let mut tmp = [0u8; 1];
+    
+    while pos < buf.len() {
+        let n = read(STDIN, tmp.as_mut_ptr(), 1);
+        if n == 0 || n == u64::MAX {
+            break;
+        }
+        
+        let ch = tmp[0];
+        
+        // Handle backspace
+        if ch == 8 || ch == 127 {
+            if pos > 0 {
+                pos -= 1;
+                print("\x08 \x08");
+            }
+            continue;
+        }
+        
+        // Handle newline
+        if ch == b'\n' || ch == b'\r' {
+            print("\n");
+            break;
+        }
+        
+        // Printable characters (but don't echo)
+        if ch >= 32 && ch < 127 {
+            buf[pos] = ch;
+            pos += 1;
+            print("*");
+        }
+    }
+    
+    pos
+}
+
+/// Ensure default root user exists
+fn ensure_default_user() {
+    let username = b"root";
+    let password = b"root";
+    
+    #[repr(C)]
+    struct UserRequest {
+        username_ptr: u64,
+        username_len: u64,
+        password_ptr: u64,
+        password_len: u64,
+        flags: u64,
+    }
+    
+    let req = UserRequest {
+        username_ptr: username.as_ptr() as u64,
+        username_len: username.len() as u64,
+        password_ptr: password.as_ptr() as u64,
+        password_len: password.len() as u64,
+        flags: 1, // Admin flag
+    };
+    
+    syscall1(SYS_USER_ADD, &req as *const UserRequest as u64);
+}
+
+/// Authenticate user
+fn authenticate_user(username: &[u8], password: &[u8]) -> bool {
+    #[repr(C)]
+    struct UserRequest {
+        username_ptr: u64,
+        username_len: u64,
+        password_ptr: u64,
+        password_len: u64,
+        flags: u64,
+    }
+    
+    let req = UserRequest {
+        username_ptr: username.as_ptr() as u64,
+        username_len: username.len() as u64,
+        password_ptr: password.as_ptr() as u64,
+        password_len: password.len() as u64,
+        flags: 0,
+    };
+    
+    let result = syscall1(SYS_USER_LOGIN, &req as *const UserRequest as u64);
+    result == 0
 }
 
 #[panic_handler]
