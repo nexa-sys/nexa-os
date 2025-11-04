@@ -31,6 +31,14 @@ path = "../../userspace/init.rs"
 name = "sh"
 path = "../../userspace/shell.rs"
 
+[[bin]]
+name = "getty"
+path = "../../userspace/getty.rs"
+
+[[bin]]
+name = "login"
+path = "../../userspace/login.rs"
+
 [profile.release]
 panic = "abort"
 opt-level = 2
@@ -49,16 +57,22 @@ RUSTFLAGS="-C opt-level=2 -C panic=abort -C linker=rust-lld -C link-arg=--image-
 # Copy binaries
 echo "Copying binaries..."
 cp "target/x86_64-nexaos/release/ni" "$BUILD_DIR/sbin/ni"
+cp "target/x86_64-nexaos/release/getty" "$BUILD_DIR/sbin/getty"
 cp "target/x86_64-nexaos/release/sh" "$BUILD_DIR/bin/sh"
+cp "target/x86_64-nexaos/release/login" "$BUILD_DIR/bin/login"
 
 # Strip symbols
 echo "Stripping binaries..."
 strip --strip-all "$BUILD_DIR/sbin/ni" 2>/dev/null || true
+strip --strip-all "$BUILD_DIR/sbin/getty" 2>/dev/null || true
 strip --strip-all "$BUILD_DIR/bin/sh" 2>/dev/null || true
+strip --strip-all "$BUILD_DIR/bin/login" 2>/dev/null || true
 
 echo "User-space programs built successfully:"
 ls -lh "$BUILD_DIR/sbin/ni"
+ls -lh "$BUILD_DIR/sbin/getty"
 ls -lh "$BUILD_DIR/bin/sh"
+ls -lh "$BUILD_DIR/bin/login"
 
 # Copy configuration files
 echo "Copying configuration files..."
