@@ -1418,17 +1418,43 @@ fn show_login_and_exec_shell(buf: &mut [u8]) -> ! {
         exit(1);
     }
     
+    if username_len > 64 {
+        print("\n\x1b[1;31mLogin failed: username too long\x1b[0m\n");
+        exit(1);
+    }
+    
     // Read password
     print("password: ");
     let mut password_buf = [0u8; 64];
     let password_len = read_password_input(&mut password_buf);
     
-    // Authenticate
-    let login_success = authenticate_user(&username_buf[..username_len], &password_buf[..password_len]);
+    if password_len > 64 {
+        print("\n\x1b[1;31mLogin failed: password too long\x1b[0m\n");
+        exit(1);
+    }
+    
+    // Authenticate - use safe indexing
+    let username_slice = if username_len <= username_buf.len() {
+        &username_buf[..username_len]
+    } else {
+        &username_buf[..]
+    };
+    
+    let password_slice = if password_len <= password_buf.len() {
+        &password_buf[..password_len]
+    } else {
+        &password_buf[..]
+    };
+    
+    print("\n[DEBUG] Calling authenticate_user...\n");
+    let login_success = authenticate_user(username_slice, password_slice);
+    print("[DEBUG] authenticate_user returned\n");
     
     if login_success {
         print("\n\x1b[1;32mLogin successful!\x1b[0m\n");
         print("Starting user session...\n\n");
+        
+        print("[DEBUG] About to call execve...\n");
         
         // Exec into shell
         let shell_path = "/bin/sh";
