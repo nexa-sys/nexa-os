@@ -1431,10 +1431,7 @@ fn show_login_and_exec_shell(buf: &mut [u8]) -> ! {
         print("Starting user session...\n\n");
         
         // Exec into shell
-        let shell_path = "/bin/sh\0";
-        let shell_path_str = unsafe {
-            core::str::from_utf8_unchecked(&shell_path.as_bytes()[..7])
-        };
+        let shell_path = "/bin/sh";
         
         let argv: [*const u8; 2] = [
             shell_path.as_ptr(),
@@ -1444,7 +1441,7 @@ fn show_login_and_exec_shell(buf: &mut [u8]) -> ! {
             core::ptr::null(),
         ];
         
-        execve(shell_path_str, &argv, &envp);
+        execve(shell_path, &argv, &envp);
         
         // If exec fails, show error
         print("\n\x1b[1;31mFailed to start shell\x1b[0m\n");
