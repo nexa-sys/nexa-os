@@ -153,21 +153,8 @@ fn getty_main() -> ! {
             
             execve(login_path_str, &argv, &envp);
             
-            // If execve fails, fall back to shell
-            print("\x1b[1;33mWarning: login not found, starting shell\x1b[0m\n");
-            let shell_path = "/bin/sh\0";
-            let shell_path_str = unsafe {
-                core::str::from_utf8_unchecked(&shell_path.as_bytes()[..7])
-            };
-            
-            let argv_sh: [*const u8; 2] = [
-                shell_path.as_ptr(),
-                core::ptr::null(),
-            ];
-            
-            execve(shell_path_str, &argv_sh, &envp);
-            
-            // Both failed
+            // If execve fails, exit and let init restart getty
+            print("\x1b[1;31mError: Failed to execute /bin/login\x1b[0m\n");
             exit(1);
         }
         
