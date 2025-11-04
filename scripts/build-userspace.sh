@@ -15,9 +15,8 @@ mkdir -p "$BUILD_DIR/bin"
 mkdir -p "$BUILD_DIR/sbin"
 mkdir -p "$BUILD_DIR/etc/ni"
 
-# Create Cargo.toml if it doesn't exist
-if [ ! -f "$BUILD_DIR/Cargo.toml" ]; then
-    cat > "$BUILD_DIR/Cargo.toml" << 'EOF'
+# Always regenerate Cargo.toml to ensure it has all binaries
+cat > "$BUILD_DIR/Cargo.toml" << 'EOF'
 [package]
 name = "userspace"
 version = "0.1.0"
@@ -46,7 +45,6 @@ lto = true
 
 [dependencies]
 EOF
-fi
 
 # Build all binaries
 echo "Compiling userspace programs..."
