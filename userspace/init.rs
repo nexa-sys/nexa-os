@@ -36,6 +36,7 @@ const SYS_GETPPID: u64 = 110;
 const SYS_RUNLEVEL: u64 = 231;
 const SYS_USER_ADD: u64 = 220;
 const SYS_USER_LOGIN: u64 = 221;
+const SYS_GETERRNO: u64 = 201;
 
 // Standard file descriptors
 const STDIN: u64 = 0;
@@ -1456,18 +1457,31 @@ fn show_login_and_exec_shell(buf: &mut [u8]) -> ! {
         
         print("[DEBUG] About to call execve...\n");
         
-        // Exec into shell
-        let shell_path = "/bin/sh";
-        
+        // Exec into shell (ensure C string semantics for kernel syscall)
+        let shell_bytes = b"/bin/sh";
+        let mut path_with_null = [0u8; 256];
+
+        if shell_bytes.len() >= path_with_null.len() {
+            print("\n\x1b[1;31mShell path too long\x1b[0m\n");
+            exit(1);
+        }
+
+        path_with_null[..shell_bytes.len()].copy_from_slice(shell_bytes);
+        path_with_null[shell_bytes.len()] = 0;
+
+        let exec_path = unsafe {
+            core::str::from_utf8_unchecked(&path_with_null[..shell_bytes.len()])
+        };
+
         let argv: [*const u8; 2] = [
-            shell_path.as_ptr(),
+            path_with_null.as_ptr(),
             core::ptr::null(),
         ];
         let envp: [*const u8; 1] = [
             core::ptr::null(),
         ];
-        
-        execve(shell_path, &argv, &envp);
+
+        execve(exec_path, &argv, &envp);
         
         // If exec fails, show error
         print("\n\x1b[1;31mFailed to start shell\x1b[0m\n");
@@ -1601,7 +1615,16 @@ fn authenticate_user(username: &[u8], password: &[u8]) -> bool {
     };
     
     let result = syscall1(SYS_USER_LOGIN, &req as *const UserRequest as u64);
-    result == 0
+    if result == 0 {
+        true
+    } else {
+        let errno = syscall1(SYS_GETERRNO, 0);
+        let mut buf = [0u8; 32];
+        print("[DEBUG] login errno: ");
+        print(itoa(errno, &mut buf));
+        print("\n");
+        false
+    }
 }
 
 #[panic_handler]
