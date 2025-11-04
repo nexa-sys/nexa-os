@@ -194,6 +194,11 @@ pub fn enter_emergency_mode(reason: &str) -> ! {
 
 /// Storage for static strings parsed from cmdline
 /// We use a simple bump allocator for storing boot config strings
+/// 
+/// SAFETY: This is only safe because:
+/// 1. parse_boot_config() is called exactly once during boot from kernel_main()
+/// 2. It runs in single-threaded context before any other threads exist
+/// 3. The storage is only written during initialization, then becomes read-only
 const CMDLINE_BUF_SIZE: usize = 512;
 static mut CMDLINE_STORAGE: [u8; CMDLINE_BUF_SIZE] = [0; CMDLINE_BUF_SIZE];
 static mut CMDLINE_OFFSET: usize = 0;
@@ -201,14 +206,16 @@ static mut CMDLINE_OFFSET: usize = 0;
 fn store_static_str(s: &str) -> &'static str {
     unsafe {
         let len = s.len();
-        if CMDLINE_OFFSET + len >= CMDLINE_BUF_SIZE {
+        // Reserve space for string only (no null terminator needed for Rust strings)
+        if CMDLINE_OFFSET + len > CMDLINE_BUF_SIZE {
+            crate::kwarn!("Boot cmdline buffer overflow, using fallback");
             return "(overflow)";
         }
         
         let start = CMDLINE_OFFSET;
         let end = start + len;
         CMDLINE_STORAGE[start..end].copy_from_slice(s.as_bytes());
-        CMDLINE_OFFSET = end + 1; // +1 for null terminator space
+        CMDLINE_OFFSET = end; // No +1, we don't need null terminators for Rust &str
         
         core::str::from_utf8_unchecked(&CMDLINE_STORAGE[start..end])
     }
@@ -274,8 +281,10 @@ fn mount_sys() -> Result<(), &'static str> {
     crate::fs::add_directory("/sys/class");
     crate::fs::add_directory("/sys/devices");
     
-    // Add some basic system information
-    crate::fs::add_file_bytes("/sys/kernel/version", b"NexaOS 0.0.1\n", false);
+    // Add system information
+    // TODO: Read version from build-time constant
+    const KERNEL_VERSION: &[u8] = b"NexaOS 0.0.1 (experimental)\n";
+    crate::fs::add_file_bytes("/sys/kernel/version", KERNEL_VERSION, false);
     
     mark_mounted("sys");
     
@@ -305,20 +314,24 @@ fn mount_dev() -> Result<(), &'static str> {
 }
 
 /// Wait for root device to appear (simplified)
+/// 
+/// TODO: This is a placeholder implementation that always succeeds.
+/// A real implementation would:
+/// 1. Poll /sys/block for the device node
+/// 2. Use udev events for device hotplug
+/// 3. Implement a timeout mechanism
+/// 4. Verify device is accessible and has expected filesystem
 fn wait_for_root_device(device: &str) -> bool {
     crate::kinfo!("Checking for root device: {}", device);
     
-    // In a real implementation, this would poll /sys/block or use udev events
-    // For now, we just check if the device string makes sense
+    // PLACEHOLDER: In a real implementation, this would:
+    // - Poll /sys/block/*/dev for matching device
+    // - Wait for udev to settle
+    // - Verify block device is accessible
+    // - Check filesystem signature
     
-    // Simulate device detection delay
-    for _ in 0..100 {
-        core::hint::spin_loop();
-    }
-    
-    // For now, accept any device specification
-    // In a real system, we would check /sys/block/*/dev for the device
-    crate::kinfo!("Root device {} detected (simulated)", device);
+    // For now, we accept any device specification as a framework
+    crate::kwarn!("Device detection is placeholder - assuming {} exists", device);
     true
 }
 

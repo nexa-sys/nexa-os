@@ -1307,6 +1307,13 @@ fn syscall_runlevel(level: i32) -> u64 {
 }
 
 /// Mount a filesystem (simplified implementation)
+/// 
+/// TODO: This is a placeholder that validates arguments but doesn't perform actual mounting.
+/// Real implementation requires:
+/// - Block device layer for accessing storage
+/// - Filesystem drivers (ext2, ext4, etc.)
+/// - Mount point tracking
+/// - VFS integration
 fn syscall_mount(req_ptr: *const MountRequest) -> u64 {
     crate::kinfo!("syscall: mount");
 
@@ -1317,7 +1324,10 @@ fn syscall_mount(req_ptr: *const MountRequest) -> u64 {
         return u64::MAX;
     }
 
-    if req_ptr.is_null() {
+    // Validate pointer is in user space (simplified check)
+    let ptr_addr = req_ptr as usize;
+    if req_ptr.is_null() || ptr_addr < USER_VIRT_BASE as usize || ptr_addr >= (USER_VIRT_BASE + USER_REGION_SIZE) as usize {
+        crate::kwarn!("mount: invalid request pointer: {:#x}", ptr_addr);
         posix::set_errno(posix::errno::EFAULT);
         return u64::MAX;
     }
@@ -1361,10 +1371,15 @@ fn syscall_mount(req_ptr: *const MountRequest) -> u64 {
 
     crate::kinfo!("mount: source='{}' target='{}' fstype='{}'", source, target, fstype);
 
-    // For now, just log and mark as success
-    // Real implementation would call filesystem mount code
-    posix::set_errno(0);
-    0
+    // PLACEHOLDER: Return not implemented
+    // Real implementation would:
+    // 1. Open block device at 'source'
+    // 2. Detect/verify filesystem type
+    // 3. Create VFS mount structure
+    // 4. Add to mount table
+    crate::kwarn!("mount syscall not fully implemented, returning ENOSYS");
+    posix::set_errno(posix::errno::ENOSYS);
+    u64::MAX
 }
 
 /// Unmount a filesystem
@@ -1394,9 +1409,10 @@ fn syscall_umount(target_ptr: *const u8, target_len: usize) -> u64 {
 
     crate::kinfo!("umount: target='{}'", target);
 
-    // For now, just log and mark as success
-    posix::set_errno(0);
-    0
+    // PLACEHOLDER: Return not implemented
+    crate::kwarn!("umount syscall not fully implemented, returning ENOSYS");
+    posix::set_errno(posix::errno::ENOSYS);
+    u64::MAX
 }
 
 /// Change root directory (chroot)
@@ -1426,13 +1442,21 @@ fn syscall_chroot(path_ptr: *const u8, path_len: usize) -> u64 {
 
     crate::kinfo!("chroot: path='{}'", path);
 
-    // For now, just log and mark as success
-    // Real implementation would change process root directory
-    posix::set_errno(0);
-    0
+    // PLACEHOLDER: Return not implemented
+    // Real implementation would update process root directory in PCB
+    crate::kwarn!("chroot syscall not fully implemented, returning ENOSYS");
+    posix::set_errno(posix::errno::ENOSYS);
+    u64::MAX
 }
 
 /// Pivot root - change root filesystem
+/// 
+/// TODO: This is a placeholder that validates arguments but doesn't perform actual pivot.
+/// Real implementation requires:
+/// - VFS root switching
+/// - Mount point migration
+/// - Process root directory updates
+/// - Initramfs memory cleanup
 fn syscall_pivot_root(req_ptr: *const PivotRootRequest) -> u64 {
     crate::kinfo!("syscall: pivot_root");
 
@@ -1443,7 +1467,10 @@ fn syscall_pivot_root(req_ptr: *const PivotRootRequest) -> u64 {
         return u64::MAX;
     }
 
-    if req_ptr.is_null() {
+    // Validate pointer is in user space
+    let ptr_addr = req_ptr as usize;
+    if req_ptr.is_null() || ptr_addr < USER_VIRT_BASE as usize || ptr_addr >= (USER_VIRT_BASE + USER_REGION_SIZE) as usize {
+        crate::kwarn!("pivot_root: invalid request pointer: {:#x}", ptr_addr);
         posix::set_errno(posix::errno::EFAULT);
         return u64::MAX;
     }
@@ -1475,14 +1502,16 @@ fn syscall_pivot_root(req_ptr: *const PivotRootRequest) -> u64 {
 
     crate::kinfo!("pivot_root: new_root='{}' put_old='{}'", new_root, put_old);
 
-    // For now, just log and mark as success
+    // PLACEHOLDER: Return not implemented
     // Real implementation would:
     // 1. Verify new_root is a mount point
     // 2. Verify put_old is under new_root
     // 3. Swap root filesystem
     // 4. Move old root to put_old
-    posix::set_errno(0);
-    0
+    // 5. Update all process root directories
+    crate::kwarn!("pivot_root syscall not fully implemented, returning ENOSYS");
+    posix::set_errno(posix::errno::ENOSYS);
+    u64::MAX
 }
 
 #[no_mangle]
