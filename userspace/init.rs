@@ -231,6 +231,7 @@ fn itoa(mut n: u64, buf: &mut [u8]) -> &str {
     core::str::from_utf8(&buf[0..i]).unwrap()
 }
 
+#[allow(dead_code)]
 fn itoa_hex(mut n: u64, buf: &mut [u8]) -> &str {
     if n == 0 {
         buf[0] = b'0';
@@ -1197,7 +1198,7 @@ fn parallel_service_supervisor(running_services: &mut [Option<RunningService>; M
 }
 
 /// Start a single service (fork and exec)
-fn start_service(service: &ServiceConfig, buf: &mut [u8]) -> i64 {
+fn start_service(service: &ServiceConfig, _buf: &mut [u8]) -> i64 {
     let pid = fork();
     
     if pid < 0 {
