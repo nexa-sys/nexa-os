@@ -1001,13 +1001,23 @@ fn syscall_execve(path: *const u8, _argv: *const u64, _envp: *const u64) -> u64 
     };
 
     crate::kinfo!("execve: loading program '{}'", path_str);
+    
+    // Debug: Check if file exists before trying to read
+    if crate::fs::file_exists(path_str) {
+        crate::kinfo!("execve: file exists check passed for '{}'", path_str);
+    } else {
+        crate::kerror!("execve: file_exists returned false for '{}'", path_str);
+    }
 
     // Note: In our simplified architecture, execve is mainly used by test programs.
     // Shell is launched via wait4() as part of the fork/wait sequence.
 
     // Try to load the ELF file from filesystem
     let elf_data = match crate::fs::read_file_bytes(path_str) {
-        Some(data) => data,
+        Some(data) => {
+            crate::kinfo!("execve: successfully read {} bytes from '{}'", data.len(), path_str);
+            data
+        }
         None => {
             crate::kerror!("execve: file not found: {}", path_str);
             posix::set_errno(posix::errno::ENOENT);

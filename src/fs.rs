@@ -170,6 +170,11 @@ pub fn init() {
         meta.blocks = ((meta.size + 511) / 512).max(1);
 
         let is_dir = matches!(file_type, FileType::Directory);
+        
+        // Debug: log file registration
+        if name == "bin/sh" || name.ends_with("/sh") {
+            crate::kinfo!("Registering shell: '{}' (size: {} bytes, is_dir: {})", name, entry.data.len(), is_dir);
+        }
 
         add_file_with_metadata(name, entry.data, is_dir, meta);
 
