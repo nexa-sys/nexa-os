@@ -365,6 +365,33 @@ fn mount(mount_point: &'static str, fs: &'static dyn FileSystem) -> Result<(), M
     Err(MountError::TableFull)
 }
 
+/// Public interface to mount a filesystem at a given path
+pub fn mount_at(mount_point: &'static str, fs: &'static dyn FileSystem) -> Result<(), &'static str> {
+    mount(mount_point, fs).map_err(|e| match e {
+        MountError::AlreadyMounted => "Already mounted",
+        MountError::TableFull => "Mount table full",
+    })
+}
+
+/// Remount root filesystem (used for pivot_root)
+/// This replaces the root mount point with a new filesystem
+pub fn remount_root(fs: &'static dyn FileSystem) -> Result<(), &'static str> {
+    let mut mounts = MOUNTS.lock();
+    
+    // Find and replace the root mount
+    for entry in mounts.iter_mut() {
+        if let Some(mount) = entry {
+            if mount.mount_point == "/" {
+                crate::kinfo!("Replacing root mount: {} -> {}", mount.fs.name(), fs.name());
+                mount.fs = fs;
+                return Ok(());
+            }
+        }
+    }
+    
+    Err("Root not mounted")
+}
+
 #[derive(Debug)]
 enum MountError {
     AlreadyMounted,

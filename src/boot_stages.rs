@@ -354,16 +354,85 @@ pub fn mount_real_root() -> Result<(), &'static str> {
     // Create /sysroot mount point
     crate::fs::add_directory("/sysroot");
     
-    // In a real implementation, we would:
-    // 1. Open the block device
-    // 2. Run fsck if needed
-    // 3. Mount the filesystem
-    // For now, just mark as mounted
+    // Step 1: Scan for block device / ext2 image
+    // In a real system, this would scan PCI for virtio-blk or AHCI controllers
+    // For now, we look for an ext2 disk image in initramfs
+    let disk_image = scan_for_block_device(root_dev)?;
     
-    mark_mounted("rootfs");
-    crate::kinfo!("Real root mounted at /sysroot");
+    // Step 2: Detect and verify filesystem
+    if root_fstype == "ext2" {
+        // Parse ext2 filesystem
+        let ext2_fs = crate::fs::ext2::Ext2Filesystem::new(disk_image)
+            .map_err(|e| {
+                crate::kerror!("Failed to parse ext2 filesystem: {:?}", e);
+                "Invalid ext2 filesystem"
+            })?;
+        
+        crate::kinfo!("Successfully parsed ext2 filesystem");
+        
+        // Step 3: Register and mount the filesystem
+        let fs_ref = crate::fs::ext2::register_global(ext2_fs);
+        
+        // Mount at /sysroot
+        crate::fs::mount_at("/sysroot", fs_ref)
+            .map_err(|e| {
+                crate::kerror!("Failed to mount filesystem: {:?}", e);
+                "Mount failed"
+            })?;
+        
+        mark_mounted("rootfs");
+        crate::kinfo!("Real root mounted at /sysroot (ext2, read-only)");
+        
+        Ok(())
+    } else {
+        crate::kerror!("Unsupported filesystem type: {}", root_fstype);
+        Err("Unsupported filesystem type")
+    }
+}
+
+/// Scan for block device (simplified - looks for disk image in initramfs)
+/// 
+/// In a real implementation, this would:
+/// 1. Scan PCI bus for storage controllers (virtio-blk, AHCI)
+/// 2. Initialize discovered controllers
+/// 3. Enumerate block devices
+/// 4. Match device by name/UUID/LABEL
+fn scan_for_block_device(device_name: &str) -> Result<&'static [u8], &'static str> {
+    crate::kinfo!("Scanning for block device: {}", device_name);
     
-    Ok(())
+    // Strategy 1: Look for rootfs.ext2 in initramfs
+    if let Some(data) = crate::initramfs::find_file("/rootfs.ext2") {
+        crate::kinfo!("Found rootfs.ext2 in initramfs ({} bytes)", data.len());
+        return Ok(data);
+    }
+    
+    // Strategy 2: Look for disk.ext2 in initramfs
+    if let Some(data) = crate::initramfs::find_file("/disk.ext2") {
+        crate::kinfo!("Found disk.ext2 in initramfs ({} bytes)", data.len());
+        return Ok(data);
+    }
+    
+    // Strategy 3: Look for any .ext2 file in initramfs
+    let mut found_image: Option<&'static [u8]> = None;
+    crate::initramfs::for_each_entry(|entry| {
+        if found_image.is_none() && (entry.name.ends_with(".ext2") || entry.name.ends_with(".img")) {
+            crate::kinfo!("Found disk image: {} ({} bytes)", entry.name, entry.data.len());
+            found_image = Some(entry.data);
+        }
+    });
+    
+    if let Some(data) = found_image {
+        return Ok(data);
+    }
+    
+    // TODO: In a real implementation, scan actual hardware:
+    // - Scan PCI for virtio-blk (vendor 0x1AF4, device 0x1001/0x1042)
+    // - Scan for AHCI controllers (class 0x01, subclass 0x06)
+    // - Initialize controller and read device
+    
+    crate::kerror!("No block device or disk image found for '{}'", device_name);
+    crate::kerror!("Searched: /rootfs.ext2, /disk.ext2, *.ext2, *.img in initramfs");
+    Err("Block device not found")
 }
 
 /// Stage 5: Pivot to real root
@@ -373,16 +442,41 @@ pub fn pivot_to_real_root() -> Result<(), &'static str> {
     crate::kinfo!("=== Root Switch Stage ===");
     crate::kinfo!("Performing pivot_root /sysroot /sysroot/initrd");
     
-    // In a real implementation, we would:
-    // 1. Move mount points to new root
-    // 2. Change root directory with pivot_root syscall
-    // 3. Move /proc, /sys, /dev to new root
-    // 4. Unmount old initramfs
+    // Step 1: Verify /sysroot is mounted
+    if !is_mounted("rootfs") {
+        crate::kerror!("Cannot pivot: /sysroot not mounted");
+        return Err("Root not mounted");
+    }
     
-    // For now, we simulate this by just changing boot stage
+    // Step 2: Remount root filesystem at /
+    // This effectively makes /sysroot the new root
+    // In a real implementation, we would use the pivot_root syscall
+    // For now, we remount the ext2 filesystem at root
+    if let Some(ext2_fs) = crate::fs::ext2::global() {
+        crate::kinfo!("Remounting ext2 filesystem as new root");
+        
+        // Remount at root (this will override initramfs at /)
+        crate::fs::remount_root(ext2_fs)
+            .map_err(|e| {
+                crate::kerror!("Failed to remount root: {}", e);
+                "Remount failed"
+            })?;
+        
+        crate::kinfo!("Root filesystem switched successfully");
+    } else {
+        crate::kerror!("No ext2 filesystem registered");
+        return Err("No filesystem to pivot to");
+    }
+    
+    // Step 3: Update boot stage
     advance_stage(BootStage::RealRoot);
     
-    crate::kinfo!("Root switch completed");
+    // Note: In a full implementation, we would:
+    // - Move /proc, /sys, /dev mount points to new root
+    // - Create /sysroot/initrd and move old root there
+    // - Free initramfs memory
+    
+    crate::kinfo!("Root switch completed - now running from real root");
     Ok(())
 }
 
