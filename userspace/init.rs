@@ -500,7 +500,7 @@ fn handle_section_header(
             *section = ParserSection::Service;
 
             if let Some(name_bytes) = extract_quoted_identifier(cleaned) {
-                current.name = unsafe { slice_to_static(name_bytes) };
+                current.name = slice_to_static(name_bytes);
             }
         }
         ParserSection::Init => {
@@ -522,8 +522,8 @@ fn handle_section_header(
 
 fn handle_service_key_value(line: &[u8], current: &mut ServiceConfig) {
     if let Some((key, value)) = split_key_value(line) {
-        let key_str = unsafe { slice_to_static(key) };
-        let value_str = unsafe { slice_to_static(value) };
+        let key_str = slice_to_static(key);
+        let value_str = slice_to_static(value);
         let value_trimmed = strip_optional_quotes(value_str);
 
         if eq_ignore_ascii_case(key_str, "Description") {
@@ -551,8 +551,8 @@ fn handle_service_key_value(line: &[u8], current: &mut ServiceConfig) {
 
 fn handle_init_key_value(line: &[u8]) {
     if let Some((key, value)) = split_key_value(line) {
-        let key_str = unsafe { slice_to_static(key) };
-        let value_str = unsafe { slice_to_static(value) };
+        let key_str = slice_to_static(key);
+        let value_str = slice_to_static(value);
         let trimmed = strip_optional_quotes(value_str);
 
         unsafe {
@@ -720,10 +720,8 @@ fn slice_to_static(slice: &[u8]) -> &'static str {
 fn strip_optional_quotes(value: &'static str) -> &'static str {
     let bytes = value.as_bytes();
     if bytes.len() >= 2 && bytes[0] == b'"' && bytes[bytes.len() - 1] == b'"' {
-        unsafe {
-            let inner = &bytes[1..bytes.len() - 1];
-            slice_to_static(inner)
-        }
+        let inner = &bytes[1..bytes.len() - 1];
+        slice_to_static(inner)
     } else {
         value
     }
