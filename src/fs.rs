@@ -232,6 +232,10 @@ pub fn add_file(name: &'static str, content: &'static str, is_dir: bool) {
     add_file_bytes(name, content.as_bytes(), is_dir);
 }
 
+pub fn add_directory(name: &'static str) {
+    add_file_bytes(name, &[], true);
+}
+
 pub fn add_file_bytes(name: &'static str, content: &'static [u8], is_dir: bool) {
     let mut meta = Metadata::empty();
     meta.size = content.len() as u64;
