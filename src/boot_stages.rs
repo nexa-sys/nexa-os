@@ -191,8 +191,7 @@ pub fn enter_emergency_mode(reason: &str) -> ! {
     }
 
     // If we can't spawn a shell, halt
-    crate::kfatal!("No emergency shell available, system halted");
-    crate::arch::halt_loop()
+    crate::kpanic!("No emergency shell available, system halted");
 }
 
 /// Storage for static strings parsed from cmdline

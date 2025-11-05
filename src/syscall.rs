@@ -127,6 +127,9 @@ struct FileHandle {
 
 static mut FILE_HANDLES: [Option<FileHandle>; MAX_OPEN_FILES] = [None; MAX_OPEN_FILES];
 
+const USER_LOW_START: u64 = 0x1000; // Skip null page to catch obvious bugs
+const USER_LOW_END: u64 = 0x4000_0000; // 1 GiB identity-mapped user region
+
 /// Write system call
 fn syscall_write(fd: u64, buf: u64, count: u64) -> u64 {
     if count == 0 {
@@ -198,22 +201,28 @@ fn user_buffer_in_range(buf: u64, count: u64) -> bool {
         return true;
     }
 
-    if buf < USER_VIRT_BASE {
-        return false;
-    }
-
     let Some(end) = buf.checked_add(count) else {
         return false;
     };
 
+    let user_base = USER_VIRT_BASE;
     let user_end = USER_VIRT_BASE + USER_REGION_SIZE;
-    end <= user_end
+
+    let in_high_region = buf >= user_base && end <= user_end;
+    let in_low_region = buf >= USER_LOW_START && end <= USER_LOW_END;
+
+    in_high_region || in_low_region
 }
 
 /// Read system call
 fn syscall_read(fd: u64, buf: *mut u8, count: usize) -> u64 {
     crate::kinfo!("sys_read(fd={}, count={})", fd, count);
     if buf.is_null() {
+        posix::set_errno(posix::errno::EFAULT);
+        return u64::MAX;
+    }
+
+    if !user_buffer_in_range(buf as u64, count as u64) {
         posix::set_errno(posix::errno::EFAULT);
         return u64::MAX;
     }
@@ -938,6 +947,11 @@ fn syscall_ipc_recv(request_ptr: *const IpcTransferRequest) -> u64 {
 fn read_from_keyboard(buf: *mut u8, count: usize) -> u64 {
     if count == 0 {
         return 0;
+    }
+
+    if !user_buffer_in_range(buf as u64, count as u64) {
+        posix::set_errno(posix::errno::EFAULT);
+        return u64::MAX;
     }
 
     // Allow the keyboard interrupt handler to run while we wait for input.
