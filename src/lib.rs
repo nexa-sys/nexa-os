@@ -495,7 +495,45 @@ fn parse_init_from_cmdline(cmdline: &str) -> Option<&str> {
 macro_rules! try_init_exec {
     ($path:expr) => {{
         let path: &str = $path; // 强制类型为 &str，提供一定类型安全
-        if let Some(init_data) = initramfs::find_file(path) {
+        if let Some(init_data) = crate::fs::read_file_bytes(path) {
+            kinfo!(
+                "Found init file '{}' in root filesystem ({} bytes), loading...",
+                path,
+                init_data.len()
+            );
+
+            let mut header = [0u8; 8];
+            let to_copy = core::cmp::min(header.len(), init_data.len());
+            for i in 0..to_copy {
+                header[i] = init_data[i];
+            }
+            kinfo!(
+                "ELF header bytes 0-7: {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
+                header[0],
+                header[1],
+                header[2],
+                header[3],
+                header[4],
+                header[5],
+                header[6],
+                header[7],
+            );
+
+            match process::Process::from_elf(init_data) {
+                Ok(mut proc) => {
+                    kinfo!(
+                        "Successfully loaded '{}' from root filesystem as PID {}",
+                        path,
+                        proc.pid
+                    );
+                    kinfo!("Switching to REAL user mode (Ring 3)...");
+                    proc.execute(); // Never returns
+                }
+                Err(e) => {
+                    kwarn!("Failed to load '{}' from root filesystem: {}", path, e);
+                }
+            }
+        } else if let Some(init_data) = initramfs::find_file(path) {
             kinfo!(
                 "Found init file '{}' in initramfs ({} bytes), loading...",
                 path,
@@ -518,7 +556,6 @@ macro_rules! try_init_exec {
                 kinfo!("Byte before data: {:02x}", before);
             }
 
-            // Debug: Check first few bytes of ELF
             let mut header = [0u8; 8];
             let to_copy = core::cmp::min(header.len(), init_data.len());
             for i in 0..to_copy {
@@ -543,11 +580,14 @@ macro_rules! try_init_exec {
                     proc.execute(); // Never returns
                 }
                 Err(e) => {
-                    kpanic!("Failed to load '{}': {}", path, e);
+                    kwarn!("Failed to load '{}' from initramfs: {}", path, e);
                 }
             }
         } else {
-            kwarn!("Init file '{}' not found in initramfs", path);
+            kwarn!(
+                "Init file '{}' not found on root filesystem or in initramfs",
+                path
+            );
         }
     }};
 }

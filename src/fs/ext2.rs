@@ -10,6 +10,7 @@ const SUPERBLOCK_SIZE: usize = 1024;
 const EXT2_SUPER_MAGIC: u16 = 0xEF53;
 const EXT2_NDIR_BLOCKS: usize = 12;
 const EXT2_IND_BLOCK: usize = 12;
+const EXT2_BLOCK_POINTER_SIZE: usize = core::mem::size_of::<u32>();
 
 #[derive(Debug, Copy, Clone)]
 pub enum Ext2Error {
@@ -370,10 +371,12 @@ impl Ext2Filesystem {
         while remaining > 0 {
             let block_index = current_offset / block_size;
             let within_block = current_offset % block_size;
-            if block_index >= EXT2_IND_BLOCK {
-                break; // Only support direct blocks for now
+            let Some(block_number) = self.block_number(&inode, block_index) else {
+                break;
+            };
+            if block_number == 0 {
+                break;
             }
-            let block_number = inode.block[block_index];
             let Some(block) = self.read_block(block_number) else {
                 break;
             };
@@ -386,6 +389,40 @@ impl Ext2Filesystem {
         }
 
         written
+    }
+
+    fn block_number(&self, inode: &Inode, index: usize) -> Option<u32> {
+        if index < EXT2_NDIR_BLOCKS {
+            return Some(inode.block[index]);
+        }
+
+        let ind_index = index - EXT2_NDIR_BLOCKS;
+        let pointers_per_block = self.block_size / EXT2_BLOCK_POINTER_SIZE;
+        if ind_index >= pointers_per_block {
+            return None;
+        }
+
+        let indirect_block = inode.block[EXT2_IND_BLOCK];
+        if indirect_block == 0 {
+            return None;
+        }
+
+        let Some(raw) = self.read_block(indirect_block) else {
+            return None;
+        };
+
+        let offset = ind_index * EXT2_BLOCK_POINTER_SIZE;
+        if offset + EXT2_BLOCK_POINTER_SIZE > raw.len() {
+            return None;
+        }
+
+        let entry = u32::from_le_bytes([
+            raw[offset],
+            raw[offset + 1],
+            raw[offset + 2],
+            raw[offset + 3],
+        ]);
+        Some(entry)
     }
 }
 
