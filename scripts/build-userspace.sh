@@ -118,18 +118,36 @@ boot_stages module. This initramfs serves as a safety net and
 provides the foundation for future driver loading capabilities.
 EOF
 
-# Include rootfs.ext2 if it exists (for testing)
-if [ -f "$PROJECT_ROOT/build/rootfs.ext2" ]; then
-    echo "Including rootfs.ext2 in initramfs for testing..."
-    cp "$PROJECT_ROOT/build/rootfs.ext2" "$BUILD_DIR/rootfs.ext2"
-    echo "✓ Added rootfs.ext2 ($(stat -c%s "$BUILD_DIR/rootfs.ext2") bytes)"
-fi
-
 # Create initramfs CPIO archive
 echo "Creating initramfs CPIO archive..."
-cd "$BUILD_DIR"
-find . -print0 | cpio --null -o --format=newc > "$INITRAMFS_CPIO"
+
+# Create a clean staging directory to avoid including build artifacts
+STAGING_DIR="$BUILD_DIR/staging"
+rm -rf "$STAGING_DIR"
+mkdir -p "$STAGING_DIR"/{bin,dev,proc,sys,sysroot}
+
+# Copy only the essential files
+cp "$BUILD_DIR/init" "$STAGING_DIR/"
+cp "$BUILD_DIR/README.txt" "$STAGING_DIR/"
+cp "$BUILD_DIR/bin/sh" "$STAGING_DIR/bin/"
+
+# Include rootfs.ext2 if it exists (for testing until real block devices work)
+# Note: This embeds the entire root filesystem in initramfs for convenience.
+# In production with real hardware drivers, rootfs.ext2 would be on a separate disk.
+if [ -f "$PROJECT_ROOT/build/rootfs.ext2" ]; then
+    echo "Including rootfs.ext2 in initramfs for testing..."
+    cp "$PROJECT_ROOT/build/rootfs.ext2" "$STAGING_DIR/rootfs.ext2"
+    ROOTFS_SIZE=$(stat -c%s "$STAGING_DIR/rootfs.ext2")
+    echo "✓ Added rootfs.ext2 ($ROOTFS_SIZE bytes, $(numfmt --to=iec-i $ROOTFS_SIZE))"
+fi
+
+# Create CPIO archive from staging directory
+cd "$STAGING_DIR"
+find . -print0 | cpio --null -o --format=newc > "$INITRAMFS_CPIO" 2>/dev/null
 cd "$PROJECT_ROOT"
+
+# Clean up staging directory
+rm -rf "$STAGING_DIR"
 
 echo "✓ Initramfs created: $INITRAMFS_CPIO"
 ls -lh "$INITRAMFS_CPIO"
