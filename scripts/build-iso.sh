@@ -2,12 +2,22 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TARGET_DIR="$ROOT_DIR/target/x86_64-nexaos/debug"
+
+# Support both debug and release builds
+BUILD_TYPE="${1:-release}"
+if [ "$BUILD_TYPE" = "release" ]; then
+    TARGET_DIR="$ROOT_DIR/target/x86_64-nexaos/release"
+else
+    TARGET_DIR="$ROOT_DIR/target/x86_64-nexaos/debug"
+fi
+
 ISO_DIR="$ROOT_DIR/target/iso"
 DIST_DIR="$ROOT_DIR/dist"
 KERNEL_BIN="$TARGET_DIR/nexa-os"
 # Boot with root device on virtio disk
 GRUB_CMDLINE="root=/dev/vda1 rootfstype=ext2 loglevel=info"
+
+echo "Building ISO with $BUILD_TYPE kernel..."
 
 for tool in grub-mkrescue xorriso; do
     if ! command -v "$tool" >/dev/null 2>&1; then
@@ -16,7 +26,11 @@ for tool in grub-mkrescue xorriso; do
     fi
 done
 
-cargo build
+if [ "$BUILD_TYPE" = "release" ]; then
+    cargo build --release
+else
+    cargo build
+fi
 
 # Build minimal initramfs (for early boot only)
 echo "Building minimal initramfs..."
@@ -53,11 +67,11 @@ if [ -f "$ROOT_DIR/build/initramfs.cpio" ]; then
 fi
 
 {
-    cat <<'GRUBCFG'
+    cat <<GRUBCFG
 set timeout=3
 set default=0
 
-if [ "$grub_platform" = "efi" ]; then
+if [ "\$grub_platform" = "efi" ]; then
     if loadfont /boot/grub/fonts/unicode.pf2; then
         set gfxmode=auto
         insmod efi_gop
@@ -76,7 +90,7 @@ insmod video_bochs
 insmod video_cirrus
 
 menuentry "NexaOS" {
-    multiboot2 /boot/kernel.elf ${GRUB_CMDLINE}
+    multiboot2 /boot/kernel.elf $GRUB_CMDLINE
 GRUBCFG
 
     if [ "$HAS_INITRAMFS" -eq 1 ]; then

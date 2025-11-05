@@ -30,9 +30,9 @@ bash "$SCRIPT_DIR/build-rootfs.sh"
 echo "✓ Root filesystem ready"
 echo ""
 
-# Step 4: Build bootable ISO
+# Step 4: Build bootable ISO (release build)
 echo "Step 4/4: Building bootable ISO..."
-bash "$SCRIPT_DIR/build-iso.sh"
+bash "$SCRIPT_DIR/build-iso.sh" release
 echo "✓ ISO created"
 echo ""
 
