@@ -6,7 +6,8 @@ TARGET_DIR="$ROOT_DIR/target/x86_64-nexaos/debug"
 ISO_DIR="$ROOT_DIR/target/iso"
 DIST_DIR="$ROOT_DIR/dist"
 KERNEL_BIN="$TARGET_DIR/nexa-os"
-GRUB_CMDLINE="log=debug"
+# Boot with root device on virtio disk
+GRUB_CMDLINE="root=/dev/vda1 rootfstype=ext2 loglevel=info"
 
 for tool in grub-mkrescue xorriso; do
     if ! command -v "$tool" >/dev/null 2>&1; then
@@ -17,9 +18,13 @@ done
 
 cargo build
 
-# Build userspace programs and initramfs
-echo "Building user-space programs..."
+# Build minimal initramfs (for early boot only)
+echo "Building minimal initramfs..."
 bash "$ROOT_DIR/scripts/build-userspace.sh"
+
+# Note: To create the full root filesystem on ext2 disk, run:
+#   scripts/build-rootfs.sh
+# This creates build/rootfs.ext2 which QEMU will attach as /dev/vda
 
 rm -rf "$ISO_DIR" "$DIST_DIR"
 mkdir -p "$ISO_DIR/boot/grub" "$DIST_DIR"
