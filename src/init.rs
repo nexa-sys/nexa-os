@@ -67,6 +67,10 @@ static INIT_STATE: Mutex<InitState> = Mutex::new(InitState {
 /// Respawn limit per service (prevent fork bombs)
 const MAX_RESPAWN_COUNT: u32 = 5;
 
+fn load_system_file(path: &str) -> Option<&'static [u8]> {
+    crate::fs::read_file_bytes(path).or_else(|| crate::initramfs::find_file(path))
+}
+
 impl InitState {
     #[allow(dead_code)]
     const fn new() -> Self {
@@ -156,9 +160,7 @@ pub fn start_init_process(init_path: &str) -> Result<Pid, &'static str> {
     crate::kinfo!("Starting init process: {}", init_path);
 
     // Try to load init binary from filesystem
-    let init_data = crate::initramfs::find_file(init_path)
-        .or_else(|| crate::fs::read_file_bytes(init_path))
-        .ok_or("Init binary not found")?;
+    let init_data = load_system_file(init_path).ok_or("Init binary not found")?;
 
     // Create init process
     let mut init_proc = Process::from_elf(init_data)?;
@@ -188,11 +190,9 @@ pub fn start_init_process(init_path: &str) -> Result<Pid, &'static str> {
 pub fn exec_init_process(init_path: &str) -> ! {
     crate::kinfo!("Executing init process in legacy mode: {}", init_path);
 
-    let init_data = crate::initramfs::find_file(init_path)
-        .or_else(|| crate::fs::read_file_bytes(init_path))
-        .unwrap_or_else(|| {
-            crate::kpanic!("Init binary not found: {}", init_path);
-        });
+    let init_data = load_system_file(init_path).unwrap_or_else(|| {
+        crate::kpanic!("Init binary not found: {}", init_path);
+    });
 
     let mut proc = Process::from_elf(init_data).unwrap_or_else(|e| {
         crate::kpanic!("Failed to load init process '{}': {}", init_path, e);
@@ -307,9 +307,7 @@ fn start_service(state: &mut InitState, service_idx: usize) -> Result<Pid, &'sta
     crate::kinfo!("Starting service: {}", path);
 
     // Load service binary
-    let binary = crate::initramfs::find_file(path)
-        .or_else(|| crate::fs::read_file_bytes(path))
-        .ok_or("Service binary not found")?;
+    let binary = load_system_file(path).ok_or("Service binary not found")?;
 
     // Create process
     let proc = Process::from_elf(binary)?;
@@ -513,9 +511,7 @@ pub fn load_inittab() -> Result<(), &'static str> {
     crate::kinfo!("Loading /etc/inittab");
 
     // Try to read /etc/inittab
-    let inittab_data = crate::initramfs::find_file("/etc/inittab")
-        .or_else(|| crate::fs::read_file_bytes("/etc/inittab"))
-        .ok_or("inittab not found")?;
+    let inittab_data = load_system_file("/etc/inittab").ok_or("inittab not found")?;
 
     let inittab_str = core::str::from_utf8(inittab_data).map_err(|_| "Invalid UTF-8 in inittab")?;
 

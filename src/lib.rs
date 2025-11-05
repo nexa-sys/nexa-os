@@ -56,7 +56,7 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
 
     // Stage 2: Kernel Init - Initialize boot stage tracking
     boot_stages::init();
-    
+
     kinfo!("==========================================================");
     kinfo!("NexaOS Kernel Bootstrap");
     kinfo!("==========================================================");
@@ -182,17 +182,17 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
         elapsed_us / 1_000,
         elapsed_us % 1_000
     );
-    
+
     kinfo!("Stage 2: Kernel Init - Complete");
     boot_stages::mark_mounted("initramfs");
-    
+
     // Stage 3: Initramfs Stage - Mount virtual filesystems and prepare for real root
     kinfo!("Stage 3: Initramfs Stage - Starting...");
     if let Err(e) = boot_stages::initramfs_stage() {
         boot_stages::enter_emergency_mode(e);
     }
     kinfo!("Stage 3: Initramfs Stage - Complete");
-    
+
     // Stage 4 & 5: Mount real root (if specified) or use initramfs
     let config = boot_stages::boot_config();
     if config.root_device.is_some() {
@@ -201,13 +201,13 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
             boot_stages::enter_emergency_mode(e);
         }
         kinfo!("Stage 4: Root Mounting - Complete");
-        
+
         kinfo!("Stage 5: Root Switch - Starting...");
         if let Err(e) = boot_stages::pivot_to_real_root() {
             boot_stages::enter_emergency_mode(e);
         }
         kinfo!("Stage 5: Root Switch - Complete");
-        
+
         if let Err(e) = boot_stages::start_real_root_init() {
             boot_stages::enter_emergency_mode(e);
         }
@@ -227,7 +227,7 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
     kinfo!("==========================================================");
     kinfo!("Stage 6: User Space - Starting init process");
     kinfo!("==========================================================");
-    
+
     // Parse kernel command line for init= parameter (POSIX convention)
     let cmdline = cmdline_opt.unwrap_or("");
     let cmd_init_path = parse_init_from_cmdline(cmdline).unwrap_or("(none)");

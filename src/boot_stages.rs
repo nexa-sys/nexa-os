@@ -1,5 +1,5 @@
 /// Boot stage management for rootfs initialization
-/// 
+///
 /// This module implements a multi-stage boot process similar to Linux:
 /// 1. Bootloader Stage (GRUB/Multiboot2)
 /// 2. Kernel Init Stage (hardware detection, memory setup, initramfs unpacking)
@@ -7,7 +7,6 @@
 /// 4. Root Switch Stage (pivot_root, chroot to new root)
 /// 5. Real Root Stage (remount rw, mount /usr, /home, start init)
 /// 6. User Space Stage (login, shell, services)
-
 use spin::Mutex;
 
 /// Boot stage enumeration
@@ -94,15 +93,19 @@ pub fn advance_stage(next_stage: BootStage) {
     let mut state = BOOT_STATE.lock();
     let prev_stage = state.current_stage;
     state.current_stage = next_stage;
-    crate::kinfo!("Boot stage transition: {:?} -> {:?}", prev_stage, next_stage);
+    crate::kinfo!(
+        "Boot stage transition: {:?} -> {:?}",
+        prev_stage,
+        next_stage
+    );
 }
 
 /// Set boot configuration from kernel command line
 pub fn parse_boot_config(cmdline: &str) {
     let mut state = BOOT_STATE.lock();
-    
+
     crate::kinfo!("Parsing boot configuration from cmdline: {}", cmdline);
-    
+
     for arg in cmdline.split_whitespace() {
         if let Some(value) = arg.strip_prefix("root=") {
             // Store in a static buffer to ensure 'static lifetime
@@ -172,7 +175,7 @@ pub fn enter_emergency_mode(reason: &str) -> ! {
     crate::kerror!("  - Check kernel log for error messages");
     crate::kerror!("  - Type 'exit' to attempt boot continuation");
     crate::kerror!("");
-    
+
     // Try to spawn emergency shell
     if let Some(sh_data) = crate::initramfs::find_file("/bin/sh") {
         crate::kinfo!("Spawning emergency shell...");
@@ -186,7 +189,7 @@ pub fn enter_emergency_mode(reason: &str) -> ! {
             }
         }
     }
-    
+
     // If we can't spawn a shell, halt
     crate::kfatal!("No emergency shell available, system halted");
     crate::arch::halt_loop()
@@ -194,7 +197,7 @@ pub fn enter_emergency_mode(reason: &str) -> ! {
 
 /// Storage for static strings parsed from cmdline
 /// We use a simple bump allocator for storing boot config strings
-/// 
+///
 /// SAFETY: This is only safe because:
 /// 1. parse_boot_config() is called exactly once during boot from kernel_main()
 /// 2. It runs in single-threaded context before any other threads exist
@@ -211,12 +214,12 @@ fn store_static_str(s: &str) -> &'static str {
             crate::kwarn!("Boot cmdline buffer overflow, using fallback");
             return "(overflow)";
         }
-        
+
         let start = CMDLINE_OFFSET;
         let end = start + len;
         CMDLINE_STORAGE[start..end].copy_from_slice(s.as_bytes());
         CMDLINE_OFFSET = end; // No +1, we don't need null terminators for Rust &str
-        
+
         core::str::from_utf8_unchecked(&CMDLINE_STORAGE[start..end])
     }
 }
@@ -224,21 +227,21 @@ fn store_static_str(s: &str) -> &'static str {
 /// Stage 3: Initramfs stage - mount virtual filesystems and prepare for real root
 pub fn initramfs_stage() -> Result<(), &'static str> {
     advance_stage(BootStage::InitramfsStage);
-    
+
     crate::kinfo!("=== Initramfs Stage ===");
     crate::kinfo!("Mounting virtual filesystems...");
-    
+
     // Mount /proc (process information pseudo-filesystem)
     mount_proc()?;
-    
+
     // Mount /sys (sysfs for device and kernel information)
     mount_sys()?;
-    
+
     // Mount /dev (device files)
     mount_dev()?;
-    
+
     crate::kinfo!("Virtual filesystems mounted successfully");
-    
+
     // Wait for root device to appear (simplified - no actual udev)
     // In a real system, this would use udevadm settle
     let config = boot_config();
@@ -250,21 +253,21 @@ pub fn initramfs_stage() -> Result<(), &'static str> {
     } else {
         crate::kwarn!("No root device specified, will use initramfs as root");
     }
-    
+
     Ok(())
 }
 
 /// Mount /proc pseudo-filesystem
 fn mount_proc() -> Result<(), &'static str> {
     crate::kinfo!("Mounting /proc...");
-    
+
     // Create /proc directory in filesystem
     crate::fs::add_directory("/proc");
-    
+
     // In a real implementation, we would populate /proc with process info
     // For now, just mark it as mounted
     mark_mounted("proc");
-    
+
     crate::kinfo!("/proc mounted successfully");
     Ok(())
 }
@@ -272,22 +275,22 @@ fn mount_proc() -> Result<(), &'static str> {
 /// Mount /sys pseudo-filesystem
 fn mount_sys() -> Result<(), &'static str> {
     crate::kinfo!("Mounting /sys...");
-    
+
     // Create /sys directory
     crate::fs::add_directory("/sys");
-    
+
     // Create basic sysfs structure
     crate::fs::add_directory("/sys/block");
     crate::fs::add_directory("/sys/class");
     crate::fs::add_directory("/sys/devices");
-    
+
     // Add system information
     // TODO: Read version from build-time constant
     const KERNEL_VERSION: &[u8] = b"NexaOS 0.0.1 (experimental)\n";
     crate::fs::add_file_bytes("/sys/kernel/version", KERNEL_VERSION, false);
-    
+
     mark_mounted("sys");
-    
+
     crate::kinfo!("/sys mounted successfully");
     Ok(())
 }
@@ -295,26 +298,26 @@ fn mount_sys() -> Result<(), &'static str> {
 /// Mount /dev device filesystem
 fn mount_dev() -> Result<(), &'static str> {
     crate::kinfo!("Mounting /dev...");
-    
+
     // Create /dev directory
     crate::fs::add_directory("/dev");
-    
+
     // Create standard device nodes
     crate::fs::add_file_bytes("/dev/null", b"", false);
     crate::fs::add_file_bytes("/dev/zero", b"", false);
     crate::fs::add_file_bytes("/dev/console", b"", false);
-    
+
     // In a real system, we would have actual device nodes here
     // For now, just create placeholders
-    
+
     mark_mounted("dev");
-    
+
     crate::kinfo!("/dev mounted successfully");
     Ok(())
 }
 
 /// Wait for root device to appear (simplified)
-/// 
+///
 /// TODO: This is a placeholder implementation that always succeeds.
 /// A real implementation would:
 /// 1. Poll /sys/block for the device node
@@ -323,66 +326,67 @@ fn mount_dev() -> Result<(), &'static str> {
 /// 4. Verify device is accessible and has expected filesystem
 fn wait_for_root_device(device: &str) -> bool {
     crate::kinfo!("Checking for root device: {}", device);
-    
+
     // PLACEHOLDER: In a real implementation, this would:
     // - Poll /sys/block/*/dev for matching device
     // - Wait for udev to settle
     // - Verify block device is accessible
     // - Check filesystem signature
-    
+
     // For now, we accept any device specification as a framework
-    crate::kwarn!("Device detection is placeholder - assuming {} exists", device);
+    crate::kwarn!(
+        "Device detection is placeholder - assuming {} exists",
+        device
+    );
     true
 }
 
 /// Stage 4: Mount real root filesystem at /sysroot
 pub fn mount_real_root() -> Result<(), &'static str> {
     let config = boot_config();
-    
+
     if config.root_device.is_none() {
         crate::kinfo!("No root device specified, using initramfs as final root");
         advance_stage(BootStage::RealRoot);
         return Ok(());
     }
-    
+
     let root_dev = config.root_device.unwrap();
     let root_fstype = config.root_fstype.unwrap_or("ext2");
-    
+
     crate::kinfo!("=== Root Mounting Stage ===");
     crate::kinfo!("Mounting {} as {} at /sysroot", root_dev, root_fstype);
-    
+
     // Create /sysroot mount point
     crate::fs::add_directory("/sysroot");
-    
+
     // Step 1: Scan for block device / ext2 image
     // In a real system, this would scan PCI for virtio-blk or AHCI controllers
     // For now, we look for an ext2 disk image in initramfs
     let disk_image = scan_for_block_device(root_dev)?;
-    
+
     // Step 2: Detect and verify filesystem
     if root_fstype == "ext2" {
         // Parse ext2 filesystem
-        let ext2_fs = crate::fs::ext2::Ext2Filesystem::new(disk_image)
-            .map_err(|e| {
-                crate::kerror!("Failed to parse ext2 filesystem: {:?}", e);
-                "Invalid ext2 filesystem"
-            })?;
-        
+        let ext2_fs = crate::fs::ext2::Ext2Filesystem::new(disk_image).map_err(|e| {
+            crate::kerror!("Failed to parse ext2 filesystem: {:?}", e);
+            "Invalid ext2 filesystem"
+        })?;
+
         crate::kinfo!("Successfully parsed ext2 filesystem");
-        
+
         // Step 3: Register and mount the filesystem
         let fs_ref = crate::fs::ext2::register_global(ext2_fs);
-        
+
         // Mount at /sysroot
-        crate::fs::mount_at("/sysroot", fs_ref)
-            .map_err(|e| {
-                crate::kerror!("Failed to mount filesystem: {:?}", e);
-                "Mount failed"
-            })?;
-        
+        crate::fs::mount_at("/sysroot", fs_ref).map_err(|e| {
+            crate::kerror!("Failed to mount filesystem: {:?}", e);
+            "Mount failed"
+        })?;
+
         mark_mounted("rootfs");
         crate::kinfo!("Real root mounted at /sysroot (ext2, read-only)");
-        
+
         Ok(())
     } else {
         crate::kerror!("Unsupported filesystem type: {}", root_fstype);
@@ -391,7 +395,7 @@ pub fn mount_real_root() -> Result<(), &'static str> {
 }
 
 /// Scan for block device (simplified - looks for disk image in initramfs)
-/// 
+///
 /// In a real implementation, this would:
 /// 1. Scan PCI bus for storage controllers (virtio-blk, AHCI)
 /// 2. Initialize discovered controllers
@@ -399,37 +403,42 @@ pub fn mount_real_root() -> Result<(), &'static str> {
 /// 4. Match device by name/UUID/LABEL
 fn scan_for_block_device(device_name: &str) -> Result<&'static [u8], &'static str> {
     crate::kinfo!("Scanning for block device: {}", device_name);
-    
+
     // Strategy 1: Look for rootfs.ext2 in initramfs
     if let Some(data) = crate::initramfs::find_file("/rootfs.ext2") {
         crate::kinfo!("Found rootfs.ext2 in initramfs ({} bytes)", data.len());
         return Ok(data);
     }
-    
+
     // Strategy 2: Look for disk.ext2 in initramfs
     if let Some(data) = crate::initramfs::find_file("/disk.ext2") {
         crate::kinfo!("Found disk.ext2 in initramfs ({} bytes)", data.len());
         return Ok(data);
     }
-    
+
     // Strategy 3: Look for any .ext2 file in initramfs
     let mut found_image: Option<&'static [u8]> = None;
     crate::initramfs::for_each_entry(|entry| {
-        if found_image.is_none() && (entry.name.ends_with(".ext2") || entry.name.ends_with(".img")) {
-            crate::kinfo!("Found disk image: {} ({} bytes)", entry.name, entry.data.len());
+        if found_image.is_none() && (entry.name.ends_with(".ext2") || entry.name.ends_with(".img"))
+        {
+            crate::kinfo!(
+                "Found disk image: {} ({} bytes)",
+                entry.name,
+                entry.data.len()
+            );
             found_image = Some(entry.data);
         }
     });
-    
+
     if let Some(data) = found_image {
         return Ok(data);
     }
-    
+
     // TODO: In a real implementation, scan actual hardware:
     // - Scan PCI for virtio-blk (vendor 0x1AF4, device 0x1001/0x1042)
     // - Scan for AHCI controllers (class 0x01, subclass 0x06)
     // - Initialize controller and read device
-    
+
     crate::kerror!("No block device or disk image found for '{}'", device_name);
     crate::kerror!("Searched: /rootfs.ext2, /disk.ext2, *.ext2, *.img in initramfs");
     Err("Block device not found")
@@ -438,44 +447,43 @@ fn scan_for_block_device(device_name: &str) -> Result<&'static [u8], &'static st
 /// Stage 5: Pivot to real root
 pub fn pivot_to_real_root() -> Result<(), &'static str> {
     advance_stage(BootStage::RootSwitch);
-    
+
     crate::kinfo!("=== Root Switch Stage ===");
     crate::kinfo!("Performing pivot_root /sysroot /sysroot/initrd");
-    
+
     // Step 1: Verify /sysroot is mounted
     if !is_mounted("rootfs") {
         crate::kerror!("Cannot pivot: /sysroot not mounted");
         return Err("Root not mounted");
     }
-    
+
     // Step 2: Remount root filesystem at /
     // This effectively makes /sysroot the new root
     // In a real implementation, we would use the pivot_root syscall
     // For now, we remount the ext2 filesystem at root
     if let Some(ext2_fs) = crate::fs::ext2::global() {
         crate::kinfo!("Remounting ext2 filesystem as new root");
-        
+
         // Remount at root (this will override initramfs at /)
-        crate::fs::remount_root(ext2_fs)
-            .map_err(|e| {
-                crate::kerror!("Failed to remount root: {}", e);
-                "Remount failed"
-            })?;
-        
+        crate::fs::remount_root(ext2_fs).map_err(|e| {
+            crate::kerror!("Failed to remount root: {}", e);
+            "Remount failed"
+        })?;
+
         crate::kinfo!("Root filesystem switched successfully");
     } else {
         crate::kerror!("No ext2 filesystem registered");
         return Err("No filesystem to pivot to");
     }
-    
+
     // Step 3: Update boot stage
     advance_stage(BootStage::RealRoot);
-    
+
     // Note: In a full implementation, we would:
     // - Move /proc, /sys, /dev mount points to new root
     // - Create /sysroot/initrd and move old root there
     // - Free initramfs memory
-    
+
     crate::kinfo!("Root switch completed - now running from real root");
     Ok(())
 }
@@ -483,18 +491,18 @@ pub fn pivot_to_real_root() -> Result<(), &'static str> {
 /// Stage 6: Start init process in real root
 pub fn start_real_root_init() -> Result<(), &'static str> {
     advance_stage(BootStage::RealRoot);
-    
+
     crate::kinfo!("=== Real Root Stage ===");
-    
+
     let config = boot_config();
-    
+
     // Remount root as read-write if needed
     if config.root_options == Some("rw") || config.root_options.is_none() {
         crate::kinfo!("Remounting root as read-write");
     }
-    
+
     crate::kinfo!("Real root initialization complete");
     advance_stage(BootStage::UserSpace);
-    
+
     Ok(())
 }

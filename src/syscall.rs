@@ -1047,7 +1047,7 @@ fn syscall_execve(path: *const u8, _argv: *const u64, _envp: *const u64) -> u64 
     };
 
     crate::kinfo!("execve: loading program '{}'", path_str);
-    
+
     // Debug: Check if file exists before trying to read
     if crate::fs::file_exists(path_str) {
         crate::kinfo!("execve: file exists check passed for '{}'", path_str);
@@ -1061,7 +1061,11 @@ fn syscall_execve(path: *const u8, _argv: *const u64, _envp: *const u64) -> u64 
     // Try to load the ELF file from filesystem
     let elf_data = match crate::fs::read_file_bytes(path_str) {
         Some(data) => {
-            crate::kinfo!("execve: successfully read {} bytes from '{}'", data.len(), path_str);
+            crate::kinfo!(
+                "execve: successfully read {} bytes from '{}'",
+                data.len(),
+                path_str
+            );
             data
         }
         None => {
@@ -1307,7 +1311,7 @@ fn syscall_runlevel(level: i32) -> u64 {
 }
 
 /// Mount a filesystem (simplified implementation)
-/// 
+///
 /// TODO: This is a placeholder that validates arguments but doesn't perform actual mounting.
 /// Real implementation requires:
 /// - Block device layer for accessing storage
@@ -1326,7 +1330,10 @@ fn syscall_mount(req_ptr: *const MountRequest) -> u64 {
 
     // Validate pointer is in user space (simplified check)
     let ptr_addr = req_ptr as usize;
-    if req_ptr.is_null() || ptr_addr < USER_VIRT_BASE as usize || ptr_addr >= (USER_VIRT_BASE + USER_REGION_SIZE) as usize {
+    if req_ptr.is_null()
+        || ptr_addr < USER_VIRT_BASE as usize
+        || ptr_addr >= (USER_VIRT_BASE + USER_REGION_SIZE) as usize
+    {
         crate::kwarn!("mount: invalid request pointer: {:#x}", ptr_addr);
         posix::set_errno(posix::errno::EFAULT);
         return u64::MAX;
@@ -1336,9 +1343,8 @@ fn syscall_mount(req_ptr: *const MountRequest) -> u64 {
     let req = unsafe { &*req_ptr };
 
     // Read strings from userspace
-    let source_slice = unsafe {
-        slice::from_raw_parts(req.source_ptr as *const u8, req.source_len as usize)
-    };
+    let source_slice =
+        unsafe { slice::from_raw_parts(req.source_ptr as *const u8, req.source_len as usize) };
     let source = match str::from_utf8(source_slice) {
         Ok(s) => s,
         Err(_) => {
@@ -1347,9 +1353,8 @@ fn syscall_mount(req_ptr: *const MountRequest) -> u64 {
         }
     };
 
-    let target_slice = unsafe {
-        slice::from_raw_parts(req.target_ptr as *const u8, req.target_len as usize)
-    };
+    let target_slice =
+        unsafe { slice::from_raw_parts(req.target_ptr as *const u8, req.target_len as usize) };
     let target = match str::from_utf8(target_slice) {
         Ok(s) => s,
         Err(_) => {
@@ -1358,9 +1363,8 @@ fn syscall_mount(req_ptr: *const MountRequest) -> u64 {
         }
     };
 
-    let fstype_slice = unsafe {
-        slice::from_raw_parts(req.fstype_ptr as *const u8, req.fstype_len as usize)
-    };
+    let fstype_slice =
+        unsafe { slice::from_raw_parts(req.fstype_ptr as *const u8, req.fstype_len as usize) };
     let fstype = match str::from_utf8(fstype_slice) {
         Ok(s) => s,
         Err(_) => {
@@ -1369,7 +1373,12 @@ fn syscall_mount(req_ptr: *const MountRequest) -> u64 {
         }
     };
 
-    crate::kinfo!("mount: source='{}' target='{}' fstype='{}'", source, target, fstype);
+    crate::kinfo!(
+        "mount: source='{}' target='{}' fstype='{}'",
+        source,
+        target,
+        fstype
+    );
 
     // PLACEHOLDER: Return not implemented
     // Real implementation would:
@@ -1450,7 +1459,7 @@ fn syscall_chroot(path_ptr: *const u8, path_len: usize) -> u64 {
 }
 
 /// Pivot root - change root filesystem
-/// 
+///
 /// TODO: This is a placeholder that validates arguments but doesn't perform actual pivot.
 /// Real implementation requires:
 /// - VFS root switching
@@ -1469,7 +1478,10 @@ fn syscall_pivot_root(req_ptr: *const PivotRootRequest) -> u64 {
 
     // Validate pointer is in user space
     let ptr_addr = req_ptr as usize;
-    if req_ptr.is_null() || ptr_addr < USER_VIRT_BASE as usize || ptr_addr >= (USER_VIRT_BASE + USER_REGION_SIZE) as usize {
+    if req_ptr.is_null()
+        || ptr_addr < USER_VIRT_BASE as usize
+        || ptr_addr >= (USER_VIRT_BASE + USER_REGION_SIZE) as usize
+    {
         crate::kwarn!("pivot_root: invalid request pointer: {:#x}", ptr_addr);
         posix::set_errno(posix::errno::EFAULT);
         return u64::MAX;
@@ -1478,9 +1490,8 @@ fn syscall_pivot_root(req_ptr: *const PivotRootRequest) -> u64 {
     // Read request structure
     let req = unsafe { &*req_ptr };
 
-    let new_root_slice = unsafe {
-        slice::from_raw_parts(req.new_root_ptr as *const u8, req.new_root_len as usize)
-    };
+    let new_root_slice =
+        unsafe { slice::from_raw_parts(req.new_root_ptr as *const u8, req.new_root_len as usize) };
     let new_root = match str::from_utf8(new_root_slice) {
         Ok(s) => s,
         Err(_) => {
@@ -1489,9 +1500,8 @@ fn syscall_pivot_root(req_ptr: *const PivotRootRequest) -> u64 {
         }
     };
 
-    let put_old_slice = unsafe {
-        slice::from_raw_parts(req.put_old_ptr as *const u8, req.put_old_len as usize)
-    };
+    let put_old_slice =
+        unsafe { slice::from_raw_parts(req.put_old_ptr as *const u8, req.put_old_len as usize) };
     let put_old = match str::from_utf8(put_old_slice) {
         Ok(s) => s,
         Err(_) => {
