@@ -34,6 +34,11 @@ impl SerialPortWrapper {
         self.ensure_init();
         self.port.as_mut().map(f)
     }
+
+    fn try_read_byte(&mut self) -> Option<u8> {
+        self.ensure_init();
+        self.port.as_mut().and_then(|port| port.try_receive().ok())
+    }
 }
 
 static SERIAL1: Mutex<SerialPortWrapper> = Mutex::new(SerialPortWrapper::new());
@@ -66,4 +71,8 @@ pub fn write_bytes(bytes: &[u8]) {
             port.send(byte);
         }
     });
+}
+
+pub fn try_read_byte() -> Option<u8> {
+    SERIAL1.lock().try_read_byte()
 }

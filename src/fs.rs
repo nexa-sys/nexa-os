@@ -22,6 +22,12 @@ RestartLimitIntervalSec=60\n\
 RestartLimitBurst=5\n\
 WantedBy=multi-user.target rescue.target\n";
 
+const EXT2_READ_CACHE_SIZE: usize = 8 * 1024 * 1024; // 8 MiB scratch buffer for ext2 reads
+
+static EXT2_READ_CACHE_LOCK: Mutex<()> = Mutex::new(());
+static mut EXT2_READ_CACHE: [u8; EXT2_READ_CACHE_SIZE] = [0; EXT2_READ_CACHE_SIZE];
+static EMPTY_EXT2_FILE: [u8; 0] = [];
+
 #[derive(Clone, Copy)]
 pub struct File {
     pub name: &'static str,
@@ -170,10 +176,15 @@ pub fn init() {
         meta.blocks = ((meta.size + 511) / 512).max(1);
 
         let is_dir = matches!(file_type, FileType::Directory);
-        
+
         // Debug: log file registration
         if name == "bin/sh" || name.ends_with("/sh") {
-            crate::kinfo!("Registering shell: '{}' (size: {} bytes, is_dir: {})", name, entry.data.len(), is_dir);
+            crate::kinfo!(
+                "Registering shell: '{}' (size: {} bytes, is_dir: {})",
+                name,
+                entry.data.len(),
+                is_dir
+            );
         }
 
         add_file_with_metadata(name, entry.data, is_dir, meta);
@@ -230,6 +241,10 @@ pub fn init() {
 
 pub fn add_file(name: &'static str, content: &'static str, is_dir: bool) {
     add_file_bytes(name, content.as_bytes(), is_dir);
+}
+
+pub fn add_directory(name: &'static str) {
+    add_file_bytes(name, &[], true);
 }
 
 pub fn add_file_bytes(name: &'static str, content: &'static [u8], is_dir: bool) {
@@ -291,12 +306,50 @@ pub fn list_files() -> &'static [Option<File>] {
 }
 
 pub fn read_file_bytes(name: &str) -> Option<&'static [u8]> {
-    if let Some(opened) = open(name) {
-        if let FileContent::Inline(bytes) = opened.content {
-            return Some(bytes);
+    let opened = open(name)?;
+
+    match opened.content {
+        FileContent::Inline(bytes) => Some(bytes),
+        FileContent::Ext2(file_ref) => {
+            let size = file_ref.size() as usize;
+            if size == 0 {
+                return Some(&EMPTY_EXT2_FILE);
+            }
+            if size > EXT2_READ_CACHE_SIZE {
+                crate::kwarn!(
+                    "ext2 file '{}' is {} bytes, exceeds {} byte scratch buffer",
+                    name,
+                    size,
+                    EXT2_READ_CACHE_SIZE
+                );
+                return None;
+            }
+
+            let _guard = EXT2_READ_CACHE_LOCK.lock();
+            unsafe {
+                let dest = &mut EXT2_READ_CACHE[..size];
+                let mut offset = 0usize;
+
+                while offset < size {
+                    let read = file_ref.read_at(offset, &mut dest[offset..]);
+                    if read == 0 {
+                        crate::kwarn!(
+                            "short read while loading '{}' from ext2 (offset {} of {})",
+                            name,
+                            offset,
+                            size
+                        );
+                        return None;
+                    }
+                    offset += read;
+                }
+
+                #[allow(static_mut_refs)]
+                let slice = core::slice::from_raw_parts(EXT2_READ_CACHE.as_ptr(), size);
+                Some(slice)
+            }
         }
     }
-    None
 }
 
 pub fn read_file(name: &str) -> Option<&'static str> {
@@ -361,6 +414,36 @@ fn mount(mount_point: &'static str, fs: &'static dyn FileSystem) -> Result<(), M
     Err(MountError::TableFull)
 }
 
+/// Public interface to mount a filesystem at a given path
+pub fn mount_at(
+    mount_point: &'static str,
+    fs: &'static dyn FileSystem,
+) -> Result<(), &'static str> {
+    mount(mount_point, fs).map_err(|e| match e {
+        MountError::AlreadyMounted => "Already mounted",
+        MountError::TableFull => "Mount table full",
+    })
+}
+
+/// Remount root filesystem (used for pivot_root)
+/// This replaces the root mount point with a new filesystem
+pub fn remount_root(fs: &'static dyn FileSystem) -> Result<(), &'static str> {
+    let mut mounts = MOUNTS.lock();
+
+    // Find and replace the root mount
+    for entry in mounts.iter_mut() {
+        if let Some(mount) = entry {
+            if mount.mount_point == "/" {
+                crate::kinfo!("Replacing root mount: {} -> {}", mount.fs.name(), fs.name());
+                mount.fs = fs;
+                return Ok(());
+            }
+        }
+    }
+
+    Err("Root not mounted")
+}
+
 #[derive(Debug)]
 enum MountError {
     AlreadyMounted,
@@ -403,10 +486,14 @@ fn find_file_index(name: &str) -> Option<usize> {
     let files = FILES.lock();
     let count = *FILE_COUNT.lock();
     let target = name.trim_matches('/');
-    
+
     // Debug: log the lookup
     if target == "bin/sh" || target.ends_with("/sh") {
-        crate::kinfo!("find_file_index: looking for '{}' (trimmed: '{}')", name, target);
+        crate::kinfo!(
+            "find_file_index: looking for '{}' (trimmed: '{}')",
+            name,
+            target
+        );
         crate::kinfo!("find_file_index: file_count = {}", count);
         for idx in 0..count {
             if let Some(file) = files[idx] {
@@ -414,7 +501,7 @@ fn find_file_index(name: &str) -> Option<usize> {
             }
         }
     }
-    
+
     for idx in 0..count {
         if let Some(file) = files[idx] {
             if file.name == target {

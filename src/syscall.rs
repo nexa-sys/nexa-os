@@ -45,6 +45,12 @@ pub const SYS_REBOOT: u64 = 169; // sys_reboot (Linux)
 pub const SYS_SHUTDOWN: u64 = 230; // Custom: system shutdown
 pub const SYS_RUNLEVEL: u64 = 231; // Custom: get/set runlevel
 
+// Filesystem management calls
+pub const SYS_MOUNT: u64 = 165; // sys_mount (Linux)
+pub const SYS_UMOUNT: u64 = 166; // sys_umount (Linux)
+pub const SYS_PIVOT_ROOT: u64 = 155; // sys_pivot_root (Linux)
+pub const SYS_CHROOT: u64 = 161; // sys_chroot (Linux)
+
 const STDIN: u64 = 0;
 const STDOUT: u64 = 1;
 const STDERR: u64 = 2;
@@ -80,6 +86,25 @@ struct UserInfoReply {
 }
 
 #[repr(C)]
+struct MountRequest {
+    source_ptr: u64,
+    source_len: u64,
+    target_ptr: u64,
+    target_len: u64,
+    fstype_ptr: u64,
+    fstype_len: u64,
+    flags: u64,
+}
+
+#[repr(C)]
+struct PivotRootRequest {
+    new_root_ptr: u64,
+    new_root_len: u64,
+    put_old_ptr: u64,
+    put_old_len: u64,
+}
+
+#[repr(C)]
 struct IpcTransferRequest {
     channel_id: u32,
     flags: u32,
@@ -101,6 +126,9 @@ struct FileHandle {
 }
 
 static mut FILE_HANDLES: [Option<FileHandle>; MAX_OPEN_FILES] = [None; MAX_OPEN_FILES];
+
+const USER_LOW_START: u64 = 0x1000; // Skip null page to catch obvious bugs
+const USER_LOW_END: u64 = 0x4000_0000; // 1 GiB identity-mapped user region
 
 /// Write system call
 fn syscall_write(fd: u64, buf: u64, count: u64) -> u64 {
@@ -173,22 +201,28 @@ fn user_buffer_in_range(buf: u64, count: u64) -> bool {
         return true;
     }
 
-    if buf < USER_VIRT_BASE {
-        return false;
-    }
-
     let Some(end) = buf.checked_add(count) else {
         return false;
     };
 
+    let user_base = USER_VIRT_BASE;
     let user_end = USER_VIRT_BASE + USER_REGION_SIZE;
-    end <= user_end
+
+    let in_high_region = buf >= user_base && end <= user_end;
+    let in_low_region = buf >= USER_LOW_START && end <= USER_LOW_END;
+
+    in_high_region || in_low_region
 }
 
 /// Read system call
 fn syscall_read(fd: u64, buf: *mut u8, count: usize) -> u64 {
     crate::kinfo!("sys_read(fd={}, count={})", fd, count);
     if buf.is_null() {
+        posix::set_errno(posix::errno::EFAULT);
+        return u64::MAX;
+    }
+
+    if !user_buffer_in_range(buf as u64, count as u64) {
         posix::set_errno(posix::errno::EFAULT);
         return u64::MAX;
     }
@@ -915,6 +949,11 @@ fn read_from_keyboard(buf: *mut u8, count: usize) -> u64 {
         return 0;
     }
 
+    if !user_buffer_in_range(buf as u64, count as u64) {
+        posix::set_errno(posix::errno::EFAULT);
+        return u64::MAX;
+    }
+
     // Allow the keyboard interrupt handler to run while we wait for input.
     // The INT 0x81 gate enters with IF=0, so without re-enabling here the
     // HLT inside `keyboard::read_raw` would never resume. Preserve the
@@ -1022,7 +1061,7 @@ fn syscall_execve(path: *const u8, _argv: *const u64, _envp: *const u64) -> u64 
     };
 
     crate::kinfo!("execve: loading program '{}'", path_str);
-    
+
     // Debug: Check if file exists before trying to read
     if crate::fs::file_exists(path_str) {
         crate::kinfo!("execve: file exists check passed for '{}'", path_str);
@@ -1036,7 +1075,11 @@ fn syscall_execve(path: *const u8, _argv: *const u64, _envp: *const u64) -> u64 
     // Try to load the ELF file from filesystem
     let elf_data = match crate::fs::read_file_bytes(path_str) {
         Some(data) => {
-            crate::kinfo!("execve: successfully read {} bytes from '{}'", data.len(), path_str);
+            crate::kinfo!(
+                "execve: successfully read {} bytes from '{}'",
+                data.len(),
+                path_str
+            );
             data
         }
         None => {
@@ -1281,6 +1324,220 @@ fn syscall_runlevel(level: i32) -> u64 {
     }
 }
 
+/// Mount a filesystem (simplified implementation)
+///
+/// TODO: This is a placeholder that validates arguments but doesn't perform actual mounting.
+/// Real implementation requires:
+/// - Block device layer for accessing storage
+/// - Filesystem drivers (ext2, ext4, etc.)
+/// - Mount point tracking
+/// - VFS integration
+fn syscall_mount(req_ptr: *const MountRequest) -> u64 {
+    crate::kinfo!("syscall: mount");
+
+    // Check privilege
+    if !crate::auth::is_superuser() {
+        crate::kwarn!("mount: permission denied");
+        posix::set_errno(posix::errno::EPERM);
+        return u64::MAX;
+    }
+
+    // Validate pointer is in user space (simplified check)
+    let ptr_addr = req_ptr as usize;
+    if req_ptr.is_null()
+        || ptr_addr < USER_VIRT_BASE as usize
+        || ptr_addr >= (USER_VIRT_BASE + USER_REGION_SIZE) as usize
+    {
+        crate::kwarn!("mount: invalid request pointer: {:#x}", ptr_addr);
+        posix::set_errno(posix::errno::EFAULT);
+        return u64::MAX;
+    }
+
+    // Read request structure
+    let req = unsafe { &*req_ptr };
+
+    // Read strings from userspace
+    let source_slice =
+        unsafe { slice::from_raw_parts(req.source_ptr as *const u8, req.source_len as usize) };
+    let source = match str::from_utf8(source_slice) {
+        Ok(s) => s,
+        Err(_) => {
+            posix::set_errno(posix::errno::EINVAL);
+            return u64::MAX;
+        }
+    };
+
+    let target_slice =
+        unsafe { slice::from_raw_parts(req.target_ptr as *const u8, req.target_len as usize) };
+    let target = match str::from_utf8(target_slice) {
+        Ok(s) => s,
+        Err(_) => {
+            posix::set_errno(posix::errno::EINVAL);
+            return u64::MAX;
+        }
+    };
+
+    let fstype_slice =
+        unsafe { slice::from_raw_parts(req.fstype_ptr as *const u8, req.fstype_len as usize) };
+    let fstype = match str::from_utf8(fstype_slice) {
+        Ok(s) => s,
+        Err(_) => {
+            posix::set_errno(posix::errno::EINVAL);
+            return u64::MAX;
+        }
+    };
+
+    crate::kinfo!(
+        "mount: source='{}' target='{}' fstype='{}'",
+        source,
+        target,
+        fstype
+    );
+
+    // PLACEHOLDER: Return not implemented
+    // Real implementation would:
+    // 1. Open block device at 'source'
+    // 2. Detect/verify filesystem type
+    // 3. Create VFS mount structure
+    // 4. Add to mount table
+    crate::kwarn!("mount syscall not fully implemented, returning ENOSYS");
+    posix::set_errno(posix::errno::ENOSYS);
+    u64::MAX
+}
+
+/// Unmount a filesystem
+fn syscall_umount(target_ptr: *const u8, target_len: usize) -> u64 {
+    crate::kinfo!("syscall: umount");
+
+    // Check privilege
+    if !crate::auth::is_superuser() {
+        crate::kwarn!("umount: permission denied");
+        posix::set_errno(posix::errno::EPERM);
+        return u64::MAX;
+    }
+
+    if target_ptr.is_null() || target_len == 0 {
+        posix::set_errno(posix::errno::EFAULT);
+        return u64::MAX;
+    }
+
+    let target_slice = unsafe { slice::from_raw_parts(target_ptr, target_len) };
+    let target = match str::from_utf8(target_slice) {
+        Ok(s) => s,
+        Err(_) => {
+            posix::set_errno(posix::errno::EINVAL);
+            return u64::MAX;
+        }
+    };
+
+    crate::kinfo!("umount: target='{}'", target);
+
+    // PLACEHOLDER: Return not implemented
+    crate::kwarn!("umount syscall not fully implemented, returning ENOSYS");
+    posix::set_errno(posix::errno::ENOSYS);
+    u64::MAX
+}
+
+/// Change root directory (chroot)
+fn syscall_chroot(path_ptr: *const u8, path_len: usize) -> u64 {
+    crate::kinfo!("syscall: chroot");
+
+    // Check privilege
+    if !crate::auth::is_superuser() {
+        crate::kwarn!("chroot: permission denied");
+        posix::set_errno(posix::errno::EPERM);
+        return u64::MAX;
+    }
+
+    if path_ptr.is_null() || path_len == 0 {
+        posix::set_errno(posix::errno::EFAULT);
+        return u64::MAX;
+    }
+
+    let path_slice = unsafe { slice::from_raw_parts(path_ptr, path_len) };
+    let path = match str::from_utf8(path_slice) {
+        Ok(s) => s,
+        Err(_) => {
+            posix::set_errno(posix::errno::EINVAL);
+            return u64::MAX;
+        }
+    };
+
+    crate::kinfo!("chroot: path='{}'", path);
+
+    // PLACEHOLDER: Return not implemented
+    // Real implementation would update process root directory in PCB
+    crate::kwarn!("chroot syscall not fully implemented, returning ENOSYS");
+    posix::set_errno(posix::errno::ENOSYS);
+    u64::MAX
+}
+
+/// Pivot root - change root filesystem
+///
+/// TODO: This is a placeholder that validates arguments but doesn't perform actual pivot.
+/// Real implementation requires:
+/// - VFS root switching
+/// - Mount point migration
+/// - Process root directory updates
+/// - Initramfs memory cleanup
+fn syscall_pivot_root(req_ptr: *const PivotRootRequest) -> u64 {
+    crate::kinfo!("syscall: pivot_root");
+
+    // Check privilege
+    if !crate::auth::is_superuser() {
+        crate::kwarn!("pivot_root: permission denied");
+        posix::set_errno(posix::errno::EPERM);
+        return u64::MAX;
+    }
+
+    // Validate pointer is in user space
+    let ptr_addr = req_ptr as usize;
+    if req_ptr.is_null()
+        || ptr_addr < USER_VIRT_BASE as usize
+        || ptr_addr >= (USER_VIRT_BASE + USER_REGION_SIZE) as usize
+    {
+        crate::kwarn!("pivot_root: invalid request pointer: {:#x}", ptr_addr);
+        posix::set_errno(posix::errno::EFAULT);
+        return u64::MAX;
+    }
+
+    // Read request structure
+    let req = unsafe { &*req_ptr };
+
+    let new_root_slice =
+        unsafe { slice::from_raw_parts(req.new_root_ptr as *const u8, req.new_root_len as usize) };
+    let new_root = match str::from_utf8(new_root_slice) {
+        Ok(s) => s,
+        Err(_) => {
+            posix::set_errno(posix::errno::EINVAL);
+            return u64::MAX;
+        }
+    };
+
+    let put_old_slice =
+        unsafe { slice::from_raw_parts(req.put_old_ptr as *const u8, req.put_old_len as usize) };
+    let put_old = match str::from_utf8(put_old_slice) {
+        Ok(s) => s,
+        Err(_) => {
+            posix::set_errno(posix::errno::EINVAL);
+            return u64::MAX;
+        }
+    };
+
+    crate::kinfo!("pivot_root: new_root='{}' put_old='{}'", new_root, put_old);
+
+    // PLACEHOLDER: Return not implemented
+    // Real implementation would:
+    // 1. Verify new_root is a mount point
+    // 2. Verify put_old is under new_root
+    // 3. Swap root filesystem
+    // 4. Move old root to put_old
+    // 5. Update all process root directories
+    crate::kwarn!("pivot_root syscall not fully implemented, returning ENOSYS");
+    posix::set_errno(posix::errno::ENOSYS);
+    u64::MAX
+}
+
 #[no_mangle]
 pub extern "C" fn syscall_dispatch(nr: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 {
     match nr {
@@ -1321,6 +1578,10 @@ pub extern "C" fn syscall_dispatch(nr: u64, arg1: u64, arg2: u64, arg3: u64) -> 
         SYS_REBOOT => syscall_reboot(arg1 as i32),
         SYS_SHUTDOWN => syscall_shutdown(),
         SYS_RUNLEVEL => syscall_runlevel(arg1 as i32),
+        SYS_MOUNT => syscall_mount(arg1 as *const MountRequest),
+        SYS_UMOUNT => syscall_umount(arg1 as *const u8, arg2 as usize),
+        SYS_CHROOT => syscall_chroot(arg1 as *const u8, arg2 as usize),
+        SYS_PIVOT_ROOT => syscall_pivot_root(arg1 as *const PivotRootRequest),
         _ => {
             crate::kinfo!("Unknown syscall: {}", nr);
             posix::set_errno(posix::errno::ENOSYS);

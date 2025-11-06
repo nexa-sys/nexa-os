@@ -3,6 +3,7 @@
 
 pub mod arch;
 pub mod auth;
+pub mod boot_stages;
 pub mod elf;
 pub mod framebuffer;
 pub mod fs;
@@ -31,6 +32,7 @@ pub const MULTIBOOT_BOOTLOADER_MAGIC: u32 = 0x2BADB002; // Multiboot v1
 pub const MULTIBOOT2_BOOTLOADER_MAGIC: u32 = 0x36d76289; // Multiboot v2
 
 pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
+    // Stage 1: Bootloader has loaded us (GRUB/Multiboot2)
     let freq_hz = logger::init();
     let boot_info = unsafe {
         BootInformation::load(multiboot_info_address as *const BootInformationHeader)
@@ -52,9 +54,21 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
 
     kinfo!("Kernel log level set to {}", logger::max_level().as_str());
 
-    kinfo!("NexaOS kernel bootstrap start");
+    // Stage 2: Kernel Init - Initialize boot stage tracking
+    boot_stages::init();
+
+    kinfo!("==========================================================");
+    kinfo!("NexaOS Kernel Bootstrap");
+    kinfo!("==========================================================");
+    kinfo!("Stage 1: Bootloader - Complete");
+    kinfo!("Stage 2: Kernel Init - Starting...");
     kdebug!("Multiboot magic: {:#x}", magic);
     kdebug!("Multiboot info struct at: {:#x}", multiboot_info_address);
+
+    // Parse boot configuration from kernel command line
+    if let Some(cmdline) = cmdline_opt {
+        boot_stages::parse_boot_config(cmdline);
+    }
 
     if logger::tsc_frequency_is_guessed() {
         kwarn!(
@@ -169,11 +183,50 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
         elapsed_us % 1_000
     );
 
+    kinfo!("Stage 2: Kernel Init - Complete");
+    boot_stages::mark_mounted("initramfs");
+
+    // Stage 3: Initramfs Stage - Mount virtual filesystems and prepare for real root
+    kinfo!("Stage 3: Initramfs Stage - Starting...");
+    if let Err(e) = boot_stages::initramfs_stage() {
+        boot_stages::enter_emergency_mode(e);
+    }
+    kinfo!("Stage 3: Initramfs Stage - Complete");
+
+    // Stage 4 & 5: Mount real root (if specified) or use initramfs
+    let config = boot_stages::boot_config();
+    if config.root_device.is_some() {
+        kinfo!("Stage 4: Root Mounting - Starting...");
+        if let Err(e) = boot_stages::mount_real_root() {
+            boot_stages::enter_emergency_mode(e);
+        }
+        kinfo!("Stage 4: Root Mounting - Complete");
+
+        kinfo!("Stage 5: Root Switch - Starting...");
+        if let Err(e) = boot_stages::pivot_to_real_root() {
+            boot_stages::enter_emergency_mode(e);
+        }
+        kinfo!("Stage 5: Root Switch - Complete");
+
+        if let Err(e) = boot_stages::start_real_root_init() {
+            boot_stages::enter_emergency_mode(e);
+        }
+    } else {
+        kinfo!("No root device specified, using initramfs as final root");
+        boot_stages::advance_stage(boot_stages::BootStage::RealRoot);
+        boot_stages::advance_stage(boot_stages::BootStage::UserSpace);
+    }
+
     // Try to load init configuration (Unix-like /etc/inittab)
     if let Err(e) = init::load_inittab() {
         kwarn!("Failed to load /etc/inittab: {}", e);
         kwarn!("Using default init configuration");
     }
+
+    // Stage 6: User Space - Start init process
+    kinfo!("==========================================================");
+    kinfo!("Stage 6: User Space - Starting init process");
+    kinfo!("==========================================================");
 
     // Parse kernel command line for init= parameter (POSIX convention)
     let cmdline = cmdline_opt.unwrap_or("");
@@ -209,13 +262,13 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
             kfatal!("Critical: No init program found in initramfs");
             kfatal!("Searched paths: /sbin/ni, /sbin/init, /etc/init, /bin/init, /bin/sh");
             kfatal!("Cannot continue without init process (PID 1)");
-            kpanic!("Init process not found - system halted");
+            boot_stages::enter_emergency_mode("No init program found");
         }
     }
 
     // If we reach here, all init programs failed to execute
     // This should never happen if try_init_exec! works correctly
-    kpanic!("Unexpected return from init process execution");
+    boot_stages::enter_emergency_mode("Unexpected return from init process execution");
 }
 
 pub fn panic(info: &PanicInfo) -> ! {
@@ -442,7 +495,45 @@ fn parse_init_from_cmdline(cmdline: &str) -> Option<&str> {
 macro_rules! try_init_exec {
     ($path:expr) => {{
         let path: &str = $path; // 强制类型为 &str，提供一定类型安全
-        if let Some(init_data) = initramfs::find_file(path) {
+        if let Some(init_data) = crate::fs::read_file_bytes(path) {
+            kinfo!(
+                "Found init file '{}' in root filesystem ({} bytes), loading...",
+                path,
+                init_data.len()
+            );
+
+            let mut header = [0u8; 8];
+            let to_copy = core::cmp::min(header.len(), init_data.len());
+            for i in 0..to_copy {
+                header[i] = init_data[i];
+            }
+            kinfo!(
+                "ELF header bytes 0-7: {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
+                header[0],
+                header[1],
+                header[2],
+                header[3],
+                header[4],
+                header[5],
+                header[6],
+                header[7],
+            );
+
+            match process::Process::from_elf(init_data) {
+                Ok(mut proc) => {
+                    kinfo!(
+                        "Successfully loaded '{}' from root filesystem as PID {}",
+                        path,
+                        proc.pid
+                    );
+                    kinfo!("Switching to REAL user mode (Ring 3)...");
+                    proc.execute(); // Never returns
+                }
+                Err(e) => {
+                    kwarn!("Failed to load '{}' from root filesystem: {}", path, e);
+                }
+            }
+        } else if let Some(init_data) = initramfs::find_file(path) {
             kinfo!(
                 "Found init file '{}' in initramfs ({} bytes), loading...",
                 path,
@@ -465,7 +556,6 @@ macro_rules! try_init_exec {
                 kinfo!("Byte before data: {:02x}", before);
             }
 
-            // Debug: Check first few bytes of ELF
             let mut header = [0u8; 8];
             let to_copy = core::cmp::min(header.len(), init_data.len());
             for i in 0..to_copy {
@@ -490,11 +580,14 @@ macro_rules! try_init_exec {
                     proc.execute(); // Never returns
                 }
                 Err(e) => {
-                    kpanic!("Failed to load '{}': {}", path, e);
+                    kwarn!("Failed to load '{}' from initramfs: {}", path, e);
                 }
             }
         } else {
-            kwarn!("Init file '{}' not found in initramfs", path);
+            kwarn!(
+                "Init file '{}' not found on root filesystem or in initramfs",
+                path
+            );
         }
     }};
 }

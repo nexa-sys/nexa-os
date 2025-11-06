@@ -114,88 +114,99 @@ fn echo_backspace() {
     }
 }
 
+fn decode_scancode(scancode: u8) -> Option<char> {
+    // Handle key release
+    if scancode & 0x80 != 0 {
+        let key = scancode & 0x7F;
+        if key == 0x2A || key == 0x36 {
+            SHIFT_PRESSED.store(false, Ordering::Release);
+        }
+        return None;
+    }
+
+    // Handle shift keys
+    if scancode == 0x2A || scancode == 0x36 {
+        SHIFT_PRESSED.store(true, Ordering::Release);
+        return None;
+    }
+
+    let shift = SHIFT_PRESSED.load(Ordering::Acquire);
+    let ch = if shift {
+        SCANCODE_TO_CHAR_SHIFT[scancode as usize]
+    } else {
+        SCANCODE_TO_CHAR[scancode as usize]
+    };
+
+    if ch == '\r' {
+        LAST_BYTE_WAS_CR.store(true, Ordering::Release);
+        Some('\n')
+    } else if ch != '\0' {
+        LAST_BYTE_WAS_CR.store(false, Ordering::Release);
+        Some(ch)
+    } else {
+        None
+    }
+}
+
+fn decode_serial_byte(byte: u8) -> Option<char> {
+    match byte {
+        b'\r' => {
+            LAST_BYTE_WAS_CR.store(true, Ordering::Release);
+            Some('\n')
+        }
+        b'\n' => {
+            if LAST_BYTE_WAS_CR.swap(false, Ordering::AcqRel) {
+                None
+            } else {
+                Some('\n')
+            }
+        }
+        8 | 0x7F => {
+            LAST_BYTE_WAS_CR.store(false, Ordering::Release);
+            Some('\x08')
+        }
+        0 => None,
+        byte if byte.is_ascii() => {
+            LAST_BYTE_WAS_CR.store(false, Ordering::Release);
+            Some(byte as char)
+        }
+        _ => {
+            LAST_BYTE_WAS_CR.store(false, Ordering::Release);
+            None
+        }
+    }
+}
+
+fn poll_input_char() -> Option<char> {
+    if let Some(scancode) = get_scancode() {
+        if let Some(ch) = decode_scancode(scancode) {
+            return Some(ch);
+        }
+    }
+
+    if let Some(byte) = crate::serial::try_read_byte() {
+        if let Some(ch) = decode_serial_byte(byte) {
+            return Some(ch);
+        }
+    }
+
+    None
+}
+
 /// Read a character from keyboard (blocking)
 pub fn read_char() -> Option<char> {
     loop {
-        if let Some(scancode) = get_scancode() {
-            // Handle key release
-            if scancode & 0x80 != 0 {
-                let key = scancode & 0x7F;
-                if key == 0x2A || key == 0x36 {
-                    SHIFT_PRESSED.store(false, Ordering::Release);
-                }
-                continue;
-            }
-
-            // Handle shift keys
-            if scancode == 0x2A || scancode == 0x36 {
-                SHIFT_PRESSED.store(true, Ordering::Release);
-                continue;
-            }
-
-            // Get character
-            let shift = SHIFT_PRESSED.load(Ordering::Acquire);
-            let ch = if shift {
-                SCANCODE_TO_CHAR_SHIFT[scancode as usize]
-            } else {
-                SCANCODE_TO_CHAR[scancode as usize]
-            };
-
-            if ch != '\0' {
-                if ch == '\r' {
-                    LAST_BYTE_WAS_CR.store(true, Ordering::Release);
-                    return Some('\n');
-                }
-                LAST_BYTE_WAS_CR.store(false, Ordering::Release);
-                return Some(ch);
-            }
-        } else {
-            // Wait for interrupt
-            x86_64::instructions::hlt();
+        if let Some(ch) = poll_input_char() {
+            return Some(ch);
         }
+        // Wait for interrupt (keyboard IRQ or serial receive interrupt)
+        x86_64::instructions::hlt();
     }
 }
 
 /// Try to read a character from keyboard (non-blocking)
 pub fn try_read_char() -> Option<char> {
-    if let Some(scancode) = get_scancode() {
-        // Handle key release
-        if scancode & 0x80 != 0 {
-            let key = scancode & 0x7F;
-            if key == 0x2A || key == 0x36 {
-                SHIFT_PRESSED.store(false, Ordering::Release);
-            }
-            return None;
-        }
-
-        // Handle shift keys
-        if scancode == 0x2A || scancode == 0x36 {
-            SHIFT_PRESSED.store(true, Ordering::Release);
-            return None;
-        }
-
-        // Get character
-        let shift = SHIFT_PRESSED.load(Ordering::Acquire);
-        let ch = if shift {
-            SCANCODE_TO_CHAR_SHIFT[scancode as usize]
-        } else {
-            SCANCODE_TO_CHAR[scancode as usize]
-        };
-
-        if ch != '\0' {
-            if ch == '\r' {
-                LAST_BYTE_WAS_CR.store(true, Ordering::Release);
-                Some('\n')
-            } else {
-                LAST_BYTE_WAS_CR.store(false, Ordering::Release);
-                Some(ch)
-            }
-        } else {
-            None
-        }
-    } else {
-        None
-    }
+    poll_input_char()
 }
 
 /// Read a line from keyboard (with echo)

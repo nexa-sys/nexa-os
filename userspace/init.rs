@@ -1396,9 +1396,9 @@ fn show_login_and_exec_shell(buf: &mut [u8]) -> ! {
     print("\n");
     print("\x1b[1;36m╔════════════════════════════════════════╗\x1b[0m\n");
     print("\x1b[1;36m║                                        ║\x1b[0m\n");
-    print("\x1b[1;36m║          \x1b[1;37mWelcome to NexaOS\x1b[1;36m          ║\x1b[0m\n");
+    print("\x1b[1;36m║          \x1b[1;37mWelcome to NexaOS\x1b[1;36m                     ║\x1b[0m\n");
     print("\x1b[1;36m║                                        ║\x1b[0m\n");
-    print("\x1b[1;36m║    \x1b[0mHybrid Kernel Operating System\x1b[1;36m     ║\x1b[0m\n");
+    print("\x1b[1;36m║    \x1b[0mHybrid Kernel Operating System\x1b[1;36m      ║\x1b[0m\n");
     print("\x1b[1;36m║                                        ║\x1b[0m\n");
     print("\x1b[1;36m╚════════════════════════════════════════╝\x1b[0m\n");
     print("\n");
