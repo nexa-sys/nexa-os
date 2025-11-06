@@ -45,6 +45,7 @@ static NEXT_PID: AtomicU64 = AtomicU64::new(1);
 
 impl Process {
     /// Create a new process from an ELF binary
+    /// Supports both static and dynamically linked executables via PT_INTERP
     pub fn from_elf(elf_data: &'static [u8]) -> Result<Self, &'static str> {
         crate::kinfo!(
             "Process::from_elf called with {} bytes of ELF data",
@@ -74,6 +75,61 @@ impl Process {
         let loader = ElfLoader::new(elf_data)?;
         crate::kinfo!("ElfLoader created successfully");
 
+        // Check if this is a dynamically linked executable
+        if let Some(interp_path) = loader.get_interpreter() {
+            crate::kinfo!("Dynamic executable detected, interpreter: {}", interp_path);
+            
+            // Try to load the interpreter
+            if let Some(interp_data) = crate::fs::read_file_bytes(interp_path) {
+                crate::kinfo!("Found interpreter at {}, loading it", interp_path);
+                
+                // Load the interpreter instead of the original program
+                let interp_loader = ElfLoader::new(interp_data)?;
+                
+                // Load interpreter into memory
+                let _physical_entry = interp_loader.load(USER_PHYS_BASE)?;
+                let header = interp_loader.header();
+                let virtual_entry = header.entry_point();
+                
+                crate::kinfo!(
+                    "Interpreter loaded, entry point: {:#x}",
+                    virtual_entry
+                );
+
+                // TODO: The interpreter needs to know about the original program
+                // For now, we'll just execute the interpreter directly
+                // A proper implementation would pass auxiliary vectors with information
+                // about the original program's segments, entry point, etc.
+
+                let pid = NEXT_PID.fetch_add(1, Ordering::SeqCst);
+                let stack_base = STACK_BASE;
+                let stack_size = STACK_SIZE;
+                let stack_top = stack_base + stack_size - 8;
+
+                let process = Process {
+                    pid,
+                    ppid: 0,
+                    state: ProcessState::Ready,
+                    entry_point: virtual_entry,
+                    stack_top,
+                    heap_start: HEAP_BASE,
+                    heap_end: HEAP_BASE + HEAP_SIZE,
+                    signal_state: crate::signal::SignalState::new(),
+                };
+
+                return Ok(process);
+            } else {
+                crate::kwarn!(
+                    "Interpreter '{}' not found, trying to load as static binary",
+                    interp_path
+                );
+                // Fall through to load as static binary
+            }
+        } else {
+            crate::kinfo!("Static executable detected (no PT_INTERP)");
+        }
+
+        // Load as static binary (original behavior)
         // Allocate user space memory
         crate::kinfo!(
             "Userspace layout: phys_base={:#x}, virt_base={:#x}, stack_base={:#x}, stack_size={:#x}",

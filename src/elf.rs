@@ -255,6 +255,82 @@ impl ElfLoader {
         slice
     }
 
+    /// Check if the ELF file has a PT_INTERP segment (dynamic linking)
+    pub fn has_interpreter(&self) -> bool {
+        use core::ptr;
+
+        let e_phoff =
+            unsafe { ptr::read_unaligned(self.data.as_ptr().add(32) as *const u64) } as usize;
+        let e_phnum =
+            unsafe { ptr::read_unaligned(self.data.as_ptr().add(56) as *const u16) } as usize;
+        let e_phentsize =
+            unsafe { ptr::read_unaligned(self.data.as_ptr().add(54) as *const u16) } as usize;
+
+        for i in 0..e_phnum {
+            let ph_offset = e_phoff + i * e_phentsize;
+            if ph_offset + 4 > self.data.len() {
+                continue;
+            }
+
+            let p_type =
+                unsafe { ptr::read_unaligned(self.data.as_ptr().add(ph_offset) as *const u32) };
+            if p_type == PhType::Interp as u32 {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Get the interpreter path from PT_INTERP segment
+    /// Returns None if no interpreter is specified
+    pub fn get_interpreter(&self) -> Option<&str> {
+        use core::ptr;
+
+        let e_phoff =
+            unsafe { ptr::read_unaligned(self.data.as_ptr().add(32) as *const u64) } as usize;
+        let e_phnum =
+            unsafe { ptr::read_unaligned(self.data.as_ptr().add(56) as *const u16) } as usize;
+        let e_phentsize =
+            unsafe { ptr::read_unaligned(self.data.as_ptr().add(54) as *const u16) } as usize;
+
+        for i in 0..e_phnum {
+            let ph_offset = e_phoff + i * e_phentsize;
+            if ph_offset + 56 > self.data.len() {
+                continue;
+            }
+
+            let p_type =
+                unsafe { ptr::read_unaligned(self.data.as_ptr().add(ph_offset) as *const u32) };
+            
+            if p_type == PhType::Interp as u32 {
+                let p_offset = unsafe {
+                    ptr::read_unaligned(self.data.as_ptr().add(ph_offset + 8) as *const u64)
+                } as usize;
+                let p_filesz = unsafe {
+                    ptr::read_unaligned(self.data.as_ptr().add(ph_offset + 32) as *const u64)
+                } as usize;
+
+                if p_offset + p_filesz > self.data.len() {
+                    return None;
+                }
+
+                // The interpreter path is null-terminated
+                let interp_bytes = &self.data[p_offset..p_offset + p_filesz];
+                
+                // Find the null terminator
+                let null_pos = interp_bytes.iter().position(|&b| b == 0).unwrap_or(p_filesz);
+                
+                // Convert to string
+                if let Ok(s) = core::str::from_utf8(&interp_bytes[..null_pos]) {
+                    return Some(s);
+                }
+            }
+        }
+
+        None
+    }
+
     /// Load the ELF into memory at the specified base address
     /// For position-independent executables, base_addr is used as offset
     /// For static executables (with absolute addresses), segments are loaded at their p_vaddr
