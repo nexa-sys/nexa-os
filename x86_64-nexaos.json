@@ -10,7 +10,7 @@
   "features": "+sse,+sse2",
   "linker-flavor": "ld",
   "panic-strategy": "abort",
-  "relocation-model": "pic",
+  "relocation-model": "static",
   "code-model": "small",
   "function-sections": true
 }
