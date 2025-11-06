@@ -328,12 +328,19 @@ fn print_bytes(bytes: &[u8]) {
     }
 
     let mut offset = 0usize;
-    let mut scratch = [0u8; 128];
+    let mut scratch = core::mem::MaybeUninit::<[u8; 128]>::uninit();
+    let scratch_ptr = scratch.as_mut_ptr() as *mut u8;
 
     while offset < bytes.len() {
-        let chunk = core::cmp::min(scratch.len(), bytes.len() - offset);
-        scratch[..chunk].copy_from_slice(&bytes[offset..offset + chunk]);
-        write(1, scratch.as_ptr(), chunk);
+        let chunk = core::cmp::min(128, bytes.len() - offset);
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                bytes.as_ptr().add(offset),
+                scratch_ptr,
+                chunk,
+            );
+            write(1, scratch_ptr as *const u8, chunk);
+        }
         offset += chunk;
     }
 }

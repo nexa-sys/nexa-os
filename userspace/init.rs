@@ -106,13 +106,20 @@ fn write(fd: u64, buf: &[u8]) -> isize {
     // bounce them through the user stack before writing.
     let mut total_written = 0usize;
     let mut copied = 0usize;
-    let mut scratch = [0u8; 128];
+    let mut scratch = core::mem::MaybeUninit::<[u8; 128]>::uninit();
+    let scratch_ptr = scratch.as_mut_ptr() as *mut u8;
 
     while copied < buf.len() {
-        let chunk = core::cmp::min(scratch.len(), buf.len() - copied);
-        scratch[..chunk].copy_from_slice(&buf[copied..copied + chunk]);
+        let chunk = core::cmp::min(128, buf.len() - copied);
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                buf[copied..].as_ptr(),
+                scratch_ptr,
+                chunk,
+            );
+        }
 
-        let ret = syscall3(SYS_WRITE, fd, scratch.as_ptr() as u64, chunk as u64);
+        let ret = syscall3(SYS_WRITE, fd, scratch_ptr as u64, chunk as u64);
         if ret == u64::MAX {
             return if total_written == 0 { -1 } else { total_written as isize };
         }
@@ -348,6 +355,43 @@ struct ServiceCatalog {
     fallback_target: &'static str,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum InitLogLevel {
+    Info,
+    Debug,
+}
+
+impl InitLogLevel {
+    const fn default() -> Self {
+        InitLogLevel::Info
+    }
+
+    fn from_str(raw: &'static str) -> Self {
+        if raw.is_empty() {
+            return InitLogLevel::Info;
+        }
+        let lower = to_ascii_lower(raw);
+        if lower == "debug" {
+            InitLogLevel::Debug
+        } else {
+            InitLogLevel::Info
+        }
+    }
+
+    const fn allows_debug(self) -> bool {
+        match self {
+            InitLogLevel::Debug => true,
+            InitLogLevel::Info => false,
+        }
+    }
+}
+
+static mut INIT_LOG_LEVEL: InitLogLevel = InitLogLevel::default();
+
+fn debug_logs_enabled() -> bool {
+    unsafe { INIT_LOG_LEVEL.allows_debug() }
+}
+
 static mut CONFIG_BUFFER: [u8; CONFIG_BUFFER_SIZE] = [0; CONFIG_BUFFER_SIZE];
 static mut SERVICE_CONFIGS: [ServiceConfig; MAX_SERVICES] = [ServiceConfig::empty(); MAX_SERVICES];
 static mut DEFAULT_BOOT_TARGET: &'static str = DEFAULT_TARGET_NAME;
@@ -361,6 +405,7 @@ fn load_service_catalog() -> ServiceCatalog {
     unsafe {
         DEFAULT_BOOT_TARGET = DEFAULT_TARGET_NAME;
         FALLBACK_BOOT_TARGET = FALLBACK_TARGET_NAME;
+        INIT_LOG_LEVEL = InitLogLevel::default();
 
         for slot in SERVICE_CONFIGS.iter_mut() {
             *slot = ServiceConfig::empty();
@@ -565,6 +610,8 @@ fn handle_init_key_value(line: &[u8]) {
                 DEFAULT_BOOT_TARGET = trimmed;
             } else if eq_ignore_ascii_case(key_str, "FallbackTarget") && !trimmed.is_empty() {
                 FALLBACK_BOOT_TARGET = trimmed;
+            } else if eq_ignore_ascii_case(key_str, "LogLevel") && !trimmed.is_empty() {
+                INIT_LOG_LEVEL = InitLogLevel::from_str(trimmed);
             }
         }
     }
@@ -1453,15 +1500,21 @@ fn show_login_and_exec_shell(buf: &mut [u8]) -> ! {
         &password_buf[..]
     };
     
-    print("\n[DEBUG] Calling authenticate_user...\n");
+    if debug_logs_enabled() {
+        print("\n[DEBUG] Calling authenticate_user...\n");
+    }
     let login_success = authenticate_user(username_slice, password_slice);
-    print("[DEBUG] authenticate_user returned\n");
+    if debug_logs_enabled() {
+        print("[DEBUG] authenticate_user returned\n");
+    }
     
     if login_success {
         print("\n\x1b[1;32mLogin successful!\x1b[0m\n");
         print("Starting user session...\n\n");
         
-        print("[DEBUG] About to call execve...\n");
+        if debug_logs_enabled() {
+            print("[DEBUG] About to call execve...\n");
+        }
         
         // Exec into shell (ensure C string semantics for kernel syscall)
         let shell_bytes = b"/bin/sh";
@@ -1651,10 +1704,12 @@ fn authenticate_user(username: &[u8], password: &[u8]) -> bool {
         true
     } else {
         let errno = syscall1(SYS_GETERRNO, 0);
-        let mut buf = [0u8; 32];
-        print("[DEBUG] login errno: ");
-        print(itoa(errno, &mut buf));
-        print("\n");
+        if debug_logs_enabled() {
+            let mut buf = [0u8; 32];
+            print("[DEBUG] login errno: ");
+            print(itoa(errno, &mut buf));
+            print("\n");
+        }
         false
     }
 }
@@ -1682,6 +1737,9 @@ fn main() {
 }
 
 fn debug_print_ptr(label: &str, value: u64) {
+    if !debug_logs_enabled() {
+        return;
+    }
     print("[DEBUG] ");
     print(label);
     print(": 0x");
@@ -1702,6 +1760,9 @@ fn debug_print_ptr(label: &str, value: u64) {
 }
 
 fn debug_print_len(label: &str, value: usize) {
+    if !debug_logs_enabled() {
+        return;
+    }
     print("[DEBUG] ");
     print(label);
     print(": ");
