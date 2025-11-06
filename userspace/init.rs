@@ -1413,6 +1413,9 @@ fn show_login_and_exec_shell(buf: &mut [u8]) -> ! {
     print("login: ");
     let mut username_buf = [0u8; 64];
     let username_len = read_line_input(&mut username_buf);
+
+    debug_print_len("username_len_raw", username_len);
+    debug_print_ptr("username_buf_ptr", username_buf.as_ptr() as u64);
     
     if username_len == 0 {
         print("\n\x1b[1;31mLogin failed: empty username\x1b[0m\n");
@@ -1428,6 +1431,9 @@ fn show_login_and_exec_shell(buf: &mut [u8]) -> ! {
     print("password: ");
     let mut password_buf = [0u8; 64];
     let password_len = read_password_input(&mut password_buf);
+
+    debug_print_len("password_len_raw", password_len);
+    debug_print_ptr("password_buf_ptr", password_buf.as_ptr() as u64);
     
     if password_len > 64 {
         print("\n\x1b[1;31mLogin failed: password too long\x1b[0m\n");
@@ -1499,11 +1505,17 @@ fn read_line_input(buf: &mut [u8]) -> usize {
     
     while pos < buf.len() {
         let n = read(STDIN, tmp.as_mut_ptr(), 1);
-        if n == 0 || n == u64::MAX {
+        if n == u64::MAX {
+            debug_print_len("read_line_input_err", pos);
             break;
+        }
+        if n == 0 {
+            debug_print_len("read_line_input_retry", pos);
+            continue;
         }
         
         let ch = tmp[0];
+        debug_print_ptr("read_line_input_byte", ch as u64);
         
         // Handle backspace
         if ch == 8 || ch == 127 {
@@ -1516,6 +1528,11 @@ fn read_line_input(buf: &mut [u8]) -> usize {
         
         // Handle newline
         if ch == b'\n' || ch == b'\r' {
+            if pos == 0 {
+                debug_print_len("read_line_input_skip_newline", pos);
+                // Ignore stray newline before any input arrives.
+                continue;
+            }
             print("\n");
             break;
         }
@@ -1538,11 +1555,17 @@ fn read_password_input(buf: &mut [u8]) -> usize {
     
     while pos < buf.len() {
         let n = read(STDIN, tmp.as_mut_ptr(), 1);
-        if n == 0 || n == u64::MAX {
+        if n == u64::MAX {
+            debug_print_len("read_password_input_err", pos);
             break;
+        }
+        if n == 0 {
+            debug_print_len("read_password_input_retry", pos);
+            continue;
         }
         
         let ch = tmp[0];
+        debug_print_ptr("read_password_input_byte", ch as u64);
         
         // Handle backspace
         if ch == 8 || ch == 127 {
@@ -1555,6 +1578,10 @@ fn read_password_input(buf: &mut [u8]) -> usize {
         
         // Handle newline
         if ch == b'\n' || ch == b'\r' {
+            if pos == 0 {
+                debug_print_len("read_password_input_skip_newline", pos);
+                continue;
+            }
             print("\n");
             break;
         }
@@ -1614,6 +1641,11 @@ fn authenticate_user(username: &[u8], password: &[u8]) -> bool {
         flags: 0,
     };
     
+    debug_print_ptr("username_ptr", req.username_ptr);
+    debug_print_len("username_len", username.len());
+    debug_print_ptr("password_ptr", req.password_ptr);
+    debug_print_len("password_len", password.len());
+
     let result = syscall1(SYS_USER_LOGIN, &req as *const UserRequest as u64);
     if result == 0 {
         true
@@ -1647,4 +1679,34 @@ pub extern "C" fn _start() -> ! {
 #[allow(dead_code)]
 fn main() {
     loop {}
+}
+
+fn debug_print_ptr(label: &str, value: u64) {
+    print("[DEBUG] ");
+    print(label);
+    print(": 0x");
+
+    let mut buf = [0u8; 16];
+    for i in 0..16 {
+        let shift = (15 - i) * 4;
+        let nibble = ((value >> shift) & 0xF) as u8;
+        buf[i] = if nibble < 10 {
+            b'0' + nibble
+        } else {
+            b'a' + (nibble - 10)
+        };
+    }
+
+    let _ = write(STDOUT, &buf);
+    print("\n");
+}
+
+fn debug_print_len(label: &str, value: usize) {
+    print("[DEBUG] ");
+    print(label);
+    print(": ");
+
+    let mut buf = [0u8; 32];
+    print(itoa(value as u64, &mut buf));
+    print("\n");
 }

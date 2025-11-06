@@ -2,10 +2,16 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Always use release build
 TARGET_DIR="$ROOT_DIR/target/x86_64-nexaos/release"
 ISO_DIR="$ROOT_DIR/target/iso"
 DIST_DIR="$ROOT_DIR/dist"
 KERNEL_BIN="$TARGET_DIR/nexa-os"
+# Boot with root device on virtio disk
+GRUB_CMDLINE="root=/dev/vda1 rootfstype=ext2 loglevel=debug"
+
+echo "Building ISO with release kernel..."
 
 for tool in grub-mkrescue xorriso; do
     if ! command -v "$tool" >/dev/null 2>&1; then
@@ -16,16 +22,20 @@ done
 
 cargo build --release
 
-# Build userspace programs and initramfs
-echo "Building user-space programs..."
+# Build minimal initramfs (for early boot only)
+echo "Building minimal initramfs..."
 bash "$ROOT_DIR/scripts/build-userspace.sh"
+
+# Note: To create the full root filesystem on ext2 disk, run:
+#   scripts/build-rootfs.sh
+# This creates build/rootfs.ext2 which QEMU will attach as /dev/vda
 
 rm -rf "$ISO_DIR" "$DIST_DIR"
 mkdir -p "$ISO_DIR/boot/grub" "$DIST_DIR"
 
 cp "$KERNEL_BIN" "$ISO_DIR/boot/kernel.elf"
 
-# Copy default GRUB font if present for EFI gfxterm support
+# Copy default GRUB font if present (required for gfxterm on EFI systems)
 GRUB_FONT_SOURCE=""
 for candidate in /usr/share/grub/unicode.pf2 /usr/share/grub2/unicode.pf2; do
     if [ -z "$GRUB_FONT_SOURCE" ] && [ -f "$candidate" ]; then
@@ -47,11 +57,11 @@ if [ -f "$ROOT_DIR/build/initramfs.cpio" ]; then
 fi
 
 {
-    cat <<'GRUBCFG'
+    cat <<GRUBCFG
 set timeout=3
 set default=0
 
-if [ "$grub_platform" = "efi" ]; then
+if [ "\$grub_platform" = "efi" ]; then
     if loadfont /boot/grub/fonts/unicode.pf2; then
         set gfxmode=auto
         insmod efi_gop
@@ -70,7 +80,7 @@ insmod video_bochs
 insmod video_cirrus
 
 menuentry "NexaOS" {
-    multiboot2 /boot/kernel.elf
+    multiboot2 /boot/kernel.elf $GRUB_CMDLINE
 GRUBCFG
 
     if [ "$HAS_INITRAMFS" -eq 1 ]; then
@@ -85,6 +95,6 @@ GRUBCFG_MODULE
 GRUBCFG_END
 } > "$ISO_DIR/boot/grub/grub.cfg"
 
-grub-mkrescue -o "$DIST_DIR/nexaos-release.iso" "$ISO_DIR"
+grub-mkrescue -o "$DIST_DIR/nexaos.iso" "$ISO_DIR"
 
-echo "ISO image created at $DIST_DIR/nexaos-release.iso"
+echo "ISO image created at $DIST_DIR/nexaos.iso"

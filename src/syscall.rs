@@ -144,14 +144,29 @@ fn syscall_write(fd: u64, buf: u64, count: u64) -> u64 {
 
     if fd == STDOUT || fd == STDERR {
         if !user_buffer_in_range(buf, count) {
+            let (stack_base, stack_top) = current_stack_bounds();
             crate::kerror!(
-                "sys_write: invalid user buffer fd={} buf={:#x} count={}",
+                "sys_write: invalid user buffer fd={} buf={:#x} count={} stack_base={:#x} stack_top={:#x}",
                 fd,
                 buf,
-                count
+                count,
+                stack_base,
+                stack_top
             );
             posix::set_errno(posix::errno::EFAULT);
             return u64::MAX;
+        }
+
+        if buf >= 0x8000_0000 {
+            let (stack_base, stack_top) = current_stack_bounds();
+            crate::kwarn!(
+                "sys_write: high user buffer fd={} buf={:#x} count={} stack_base={:#x} stack_top={:#x}",
+                fd,
+                buf,
+                count,
+                stack_base,
+                stack_top
+            );
         }
 
         let slice = unsafe { slice::from_raw_parts(buf as *const u8, count as usize) };
@@ -212,6 +227,20 @@ fn user_buffer_in_range(buf: u64, count: u64) -> bool {
     let in_low_region = buf >= USER_LOW_START && end <= USER_LOW_END;
 
     in_high_region || in_low_region
+}
+
+#[inline(always)]
+fn current_stack_bounds() -> (u64, u64) {
+    unsafe {
+        let gs_ptr = core::ptr::addr_of!(crate::initramfs::GS_DATA.0) as *const u64;
+        let stack_top = gs_ptr.add(3).read();
+        if stack_top == 0 {
+            (0, 0)
+        } else {
+            let stack_base = stack_top.saturating_sub(crate::process::STACK_SIZE);
+            (stack_base, stack_top)
+        }
+    }
 }
 
 /// Read system call
