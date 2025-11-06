@@ -124,8 +124,11 @@ fn read_line(buf: &mut [u8]) -> usize {
     
     while pos < buf.len() {
         let n = read(STDIN, &mut tmp);
-        if n <= 0 {
+        if n < 0 {
             break;
+        }
+        if n == 0 {
+            continue;
         }
         
         let ch = tmp[0];
@@ -163,8 +166,11 @@ fn read_password(buf: &mut [u8]) -> usize {
     
     while pos < buf.len() {
         let n = read(STDIN, &mut tmp);
-        if n <= 0 {
+        if n < 0 {
             break;
+        }
+        if n == 0 {
+            continue;
         }
         
         let ch = tmp[0];
@@ -215,7 +221,7 @@ fn ensure_default_user() {
 fn login_main() -> ! {
     // Ensure we have a default user
     ensure_default_user();
-    
+
     let mut username_buf = [0u8; MAX_INPUT];
     let mut password_buf = [0u8; MAX_INPUT];
     
@@ -244,6 +250,9 @@ fn login_main() -> ! {
         password_len: password_len as u64,
         flags: 0,
     };
+
+    debug_print_ptr("username_ptr", req.username_ptr);
+    debug_print_ptr("password_ptr", req.password_ptr);
     
     let result = syscall1(SYS_USER_LOGIN, &req as *const UserRequest as u64);
     
@@ -303,4 +312,20 @@ pub extern "C" fn _start() -> ! {
 #[allow(dead_code)]
 fn main() {
     loop {}
+}
+
+fn debug_print_ptr(label: &str, value: u64) {
+    print(label);
+    print(": 0x");
+    let mut buf = [0u8; 16];
+    for i in 0..16 {
+        let shift = (15 - i) * 4;
+        let nibble = ((value >> shift) & 0xF) as u8;
+        buf[i] = match nibble {
+            0..=9 => b'0' + nibble,
+            _ => b'a' + (nibble - 10),
+        };
+    }
+    let _ = write(STDOUT, &buf);
+    print("\n");
 }

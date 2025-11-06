@@ -33,7 +33,7 @@ path = "../../userspace/shell.rs"
 [profile.release]
 panic = "abort"
 opt-level = 2
-lto = true
+lto = false
 
 [dependencies]
 EOF

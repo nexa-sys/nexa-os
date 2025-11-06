@@ -1,5 +1,15 @@
 # NexaOS Changelog
 
+## [Unreleased] - 2025-11-06
+
+### Fixed
+- **Release Build Buffer Validation Error**
+  - Fixed sys_write invalid buffer errors in release builds (`buf=0x803e6e00`)
+  - Changed relocation model from "pic" to "static" in `x86_64-nexaos.json`
+  - Disabled LTO in userspace builds to prevent aggressive optimization issues
+  - Root cause: PIC + LTO was generating incorrect stack pointer calculations
+  - See `docs/bugfixes/release-build-buffer-error.md` for detailed analysis
+
 ## [Unreleased] - 2025-11-03
 
 ### Added - Dynamic Service Configuration System

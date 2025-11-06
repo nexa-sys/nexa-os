@@ -19,8 +19,7 @@
 //! - Signal handling for system control
 //! - Service respawn on failure
 
-use core::arch::asm;
-use core::panic::PanicInfo;
+use core::{arch::asm, cell::UnsafeCell, panic::PanicInfo};
 
 // System call numbers
 const SYS_READ: u64 = 0;
@@ -43,6 +42,28 @@ const STDIN: u64 = 0;
 const STDOUT: u64 = 1;
 const STDERR: u64 = 2;
 
+const WRITE_SCRATCH_SIZE: usize = 128;
+
+struct ScratchBuffer<const N: usize> {
+    inner: UnsafeCell<[u8; N]>,
+}
+
+impl<const N: usize> ScratchBuffer<N> {
+    const fn new() -> Self {
+        Self {
+            inner: UnsafeCell::new([0; N]),
+        }
+    }
+
+    unsafe fn get(&self) -> &mut [u8; N] {
+        &mut *self.inner.get()
+    }
+}
+
+unsafe impl<const N: usize> Sync for ScratchBuffer<N> {}
+
+static WRITE_SCRATCH: ScratchBuffer<WRITE_SCRATCH_SIZE> = ScratchBuffer::new();
+
 // Service management constants
 const MAX_RESPAWN_COUNT: u32 = 5;  // Max respawns within window
 const RESPAWN_WINDOW_SEC: u64 = 60; // Respawn window in seconds
@@ -61,6 +82,7 @@ fn syscall3(n: u64, a1: u64, a2: u64, a3: u64) -> u64 {
             in("rsi") a2,
             in("rdx") a3,
             lateout("rax") ret,
+            clobber_abi("sysv64"),
             options(nostack)
         );
     }
@@ -103,16 +125,22 @@ fn write(fd: u64, buf: &[u8]) -> isize {
     }
 
     // Some buffers (e.g. config-backed strings) may live outside the user window, so
-    // bounce them through the user stack before writing.
+    // bounce them through a statically allocated user-mapped buffer before writing.
     let mut total_written = 0usize;
     let mut copied = 0usize;
-    let mut scratch = [0u8; 128];
 
     while copied < buf.len() {
-        let chunk = core::cmp::min(scratch.len(), buf.len() - copied);
-        scratch[..chunk].copy_from_slice(&buf[copied..copied + chunk]);
+        let chunk = core::cmp::min(WRITE_SCRATCH_SIZE, buf.len() - copied);
+        let ret = unsafe {
+            let scratch = WRITE_SCRATCH.get();
+            core::ptr::copy_nonoverlapping(
+                buf.as_ptr().add(copied),
+                scratch.as_mut_ptr(),
+                chunk,
+            );
+            syscall3(SYS_WRITE, fd, scratch.as_ptr() as u64, chunk as u64)
+        };
 
-        let ret = syscall3(SYS_WRITE, fd, scratch.as_ptr() as u64, chunk as u64);
         if ret == u64::MAX {
             return if total_written == 0 { -1 } else { total_written as isize };
         }
@@ -348,6 +376,43 @@ struct ServiceCatalog {
     fallback_target: &'static str,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum InitLogLevel {
+    Info,
+    Debug,
+}
+
+impl InitLogLevel {
+    const fn default() -> Self {
+        InitLogLevel::Info
+    }
+
+    fn from_str(raw: &'static str) -> Self {
+        if raw.is_empty() {
+            return InitLogLevel::Info;
+        }
+        let lower = to_ascii_lower(raw);
+        if lower == "debug" {
+            InitLogLevel::Debug
+        } else {
+            InitLogLevel::Info
+        }
+    }
+
+    const fn allows_debug(self) -> bool {
+        match self {
+            InitLogLevel::Debug => true,
+            InitLogLevel::Info => false,
+        }
+    }
+}
+
+static mut INIT_LOG_LEVEL: InitLogLevel = InitLogLevel::default();
+
+fn debug_logs_enabled() -> bool {
+    unsafe { INIT_LOG_LEVEL.allows_debug() }
+}
+
 static mut CONFIG_BUFFER: [u8; CONFIG_BUFFER_SIZE] = [0; CONFIG_BUFFER_SIZE];
 static mut SERVICE_CONFIGS: [ServiceConfig; MAX_SERVICES] = [ServiceConfig::empty(); MAX_SERVICES];
 static mut DEFAULT_BOOT_TARGET: &'static str = DEFAULT_TARGET_NAME;
@@ -361,6 +426,7 @@ fn load_service_catalog() -> ServiceCatalog {
     unsafe {
         DEFAULT_BOOT_TARGET = DEFAULT_TARGET_NAME;
         FALLBACK_BOOT_TARGET = FALLBACK_TARGET_NAME;
+        INIT_LOG_LEVEL = InitLogLevel::default();
 
         for slot in SERVICE_CONFIGS.iter_mut() {
             *slot = ServiceConfig::empty();
@@ -565,6 +631,8 @@ fn handle_init_key_value(line: &[u8]) {
                 DEFAULT_BOOT_TARGET = trimmed;
             } else if eq_ignore_ascii_case(key_str, "FallbackTarget") && !trimmed.is_empty() {
                 FALLBACK_BOOT_TARGET = trimmed;
+            } else if eq_ignore_ascii_case(key_str, "LogLevel") && !trimmed.is_empty() {
+                INIT_LOG_LEVEL = InitLogLevel::from_str(trimmed);
             }
         }
     }
@@ -1413,6 +1481,9 @@ fn show_login_and_exec_shell(buf: &mut [u8]) -> ! {
     print("login: ");
     let mut username_buf = [0u8; 64];
     let username_len = read_line_input(&mut username_buf);
+
+    debug_print_len("username_len_raw", username_len);
+    debug_print_ptr("username_buf_ptr", username_buf.as_ptr() as u64);
     
     if username_len == 0 {
         print("\n\x1b[1;31mLogin failed: empty username\x1b[0m\n");
@@ -1428,6 +1499,9 @@ fn show_login_and_exec_shell(buf: &mut [u8]) -> ! {
     print("password: ");
     let mut password_buf = [0u8; 64];
     let password_len = read_password_input(&mut password_buf);
+
+    debug_print_len("password_len_raw", password_len);
+    debug_print_ptr("password_buf_ptr", password_buf.as_ptr() as u64);
     
     if password_len > 64 {
         print("\n\x1b[1;31mLogin failed: password too long\x1b[0m\n");
@@ -1447,15 +1521,21 @@ fn show_login_and_exec_shell(buf: &mut [u8]) -> ! {
         &password_buf[..]
     };
     
-    print("\n[DEBUG] Calling authenticate_user...\n");
+    if debug_logs_enabled() {
+        print("\n[DEBUG] Calling authenticate_user...\n");
+    }
     let login_success = authenticate_user(username_slice, password_slice);
-    print("[DEBUG] authenticate_user returned\n");
+    if debug_logs_enabled() {
+        print("[DEBUG] authenticate_user returned\n");
+    }
     
     if login_success {
         print("\n\x1b[1;32mLogin successful!\x1b[0m\n");
         print("Starting user session...\n\n");
         
-        print("[DEBUG] About to call execve...\n");
+        if debug_logs_enabled() {
+            print("[DEBUG] About to call execve...\n");
+        }
         
         // Exec into shell (ensure C string semantics for kernel syscall)
         let shell_bytes = b"/bin/sh";
@@ -1499,11 +1579,17 @@ fn read_line_input(buf: &mut [u8]) -> usize {
     
     while pos < buf.len() {
         let n = read(STDIN, tmp.as_mut_ptr(), 1);
-        if n == 0 || n == u64::MAX {
+        if n == u64::MAX {
+            debug_print_len("read_line_input_err", pos);
             break;
+        }
+        if n == 0 {
+            debug_print_len("read_line_input_retry", pos);
+            continue;
         }
         
         let ch = tmp[0];
+        debug_print_ptr("read_line_input_byte", ch as u64);
         
         // Handle backspace
         if ch == 8 || ch == 127 {
@@ -1516,6 +1602,11 @@ fn read_line_input(buf: &mut [u8]) -> usize {
         
         // Handle newline
         if ch == b'\n' || ch == b'\r' {
+            if pos == 0 {
+                debug_print_len("read_line_input_skip_newline", pos);
+                // Ignore stray newline before any input arrives.
+                continue;
+            }
             print("\n");
             break;
         }
@@ -1538,11 +1629,17 @@ fn read_password_input(buf: &mut [u8]) -> usize {
     
     while pos < buf.len() {
         let n = read(STDIN, tmp.as_mut_ptr(), 1);
-        if n == 0 || n == u64::MAX {
+        if n == u64::MAX {
+            debug_print_len("read_password_input_err", pos);
             break;
+        }
+        if n == 0 {
+            debug_print_len("read_password_input_retry", pos);
+            continue;
         }
         
         let ch = tmp[0];
+        debug_print_ptr("read_password_input_byte", ch as u64);
         
         // Handle backspace
         if ch == 8 || ch == 127 {
@@ -1555,6 +1652,10 @@ fn read_password_input(buf: &mut [u8]) -> usize {
         
         // Handle newline
         if ch == b'\n' || ch == b'\r' {
+            if pos == 0 {
+                debug_print_len("read_password_input_skip_newline", pos);
+                continue;
+            }
             print("\n");
             break;
         }
@@ -1614,15 +1715,22 @@ fn authenticate_user(username: &[u8], password: &[u8]) -> bool {
         flags: 0,
     };
     
+    debug_print_ptr("username_ptr", req.username_ptr);
+    debug_print_len("username_len", username.len());
+    debug_print_ptr("password_ptr", req.password_ptr);
+    debug_print_len("password_len", password.len());
+
     let result = syscall1(SYS_USER_LOGIN, &req as *const UserRequest as u64);
     if result == 0 {
         true
     } else {
         let errno = syscall1(SYS_GETERRNO, 0);
-        let mut buf = [0u8; 32];
-        print("[DEBUG] login errno: ");
-        print(itoa(errno, &mut buf));
-        print("\n");
+        if debug_logs_enabled() {
+            let mut buf = [0u8; 32];
+            print("[DEBUG] login errno: ");
+            print(itoa(errno, &mut buf));
+            print("\n");
+        }
         false
     }
 }
@@ -1647,4 +1755,40 @@ pub extern "C" fn _start() -> ! {
 #[allow(dead_code)]
 fn main() {
     loop {}
+}
+
+fn debug_print_ptr(label: &str, value: u64) {
+    if !debug_logs_enabled() {
+        return;
+    }
+    print("[DEBUG] ");
+    print(label);
+    print(": 0x");
+
+    let mut buf = [0u8; 16];
+    for i in 0..16 {
+        let shift = (15 - i) * 4;
+        let nibble = ((value >> shift) & 0xF) as u8;
+        buf[i] = if nibble < 10 {
+            b'0' + nibble
+        } else {
+            b'a' + (nibble - 10)
+        };
+    }
+
+    let _ = write(STDOUT, &buf);
+    print("\n");
+}
+
+fn debug_print_len(label: &str, value: usize) {
+    if !debug_logs_enabled() {
+        return;
+    }
+    print("[DEBUG] ");
+    print(label);
+    print(": ");
+
+    let mut buf = [0u8; 32];
+    print(itoa(value as u64, &mut buf));
+    print("\n");
 }
