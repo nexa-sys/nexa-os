@@ -83,39 +83,72 @@ impl Process {
             if let Some(interp_data) = crate::fs::read_file_bytes(interp_path) {
                 crate::kinfo!("Found interpreter at {}, loading it", interp_path);
                 
-                // Load the interpreter instead of the original program
-                let interp_loader = ElfLoader::new(interp_data)?;
-                
-                // Load interpreter into memory
-                let _physical_entry = interp_loader.load(USER_PHYS_BASE)?;
-                let header = interp_loader.header();
-                let virtual_entry = header.entry_point();
+                // First, load the original program at its expected address
+                // Program goes at USER_PHYS_BASE (0x400000)
+                crate::kinfo!("Loading original program at {:#x}", USER_PHYS_BASE);
+                let program_entry_physical = loader.load(USER_PHYS_BASE)?;
+                let program_header = loader.header();
+                let program_entry = program_header.entry_point();
                 
                 crate::kinfo!(
-                    "Interpreter loaded, entry point: {:#x}",
-                    virtual_entry
+                    "Program loaded: entry={:#x}, phys_entry={:#x}",
+                    program_entry,
+                    program_entry_physical
+                );
+                
+                // Load the interpreter at a different physical location
+                // Interpreter goes after the program and heap space
+                // Program: 0x400000-0x600000 (2MB)
+                // Heap:    0x600000-0x800000 (2MB)
+                // Stack:   0x800000-0xA00000 (2MB)
+                // Interp:  0xA00000+ (after stack)
+                const INTERP_BASE: u64 = 0xA00000; // 10MB mark
+                let interp_loader = ElfLoader::new(interp_data)?;
+                let _interp_entry_physical = interp_loader.load(INTERP_BASE)?;
+                let interp_header = interp_loader.header();
+                let interp_entry = interp_header.entry_point();
+                
+                crate::kinfo!(
+                    "Interpreter loaded at {:#x}, entry point: {:#x}",
+                    INTERP_BASE,
+                    interp_entry
                 );
 
-                // TODO: The interpreter needs to know about the original program
-                // For now, we'll just execute the interpreter directly
-                // A proper implementation would pass auxiliary vectors with information
-                // about the original program's segments, entry point, etc.
-
+                // Set up auxiliary vectors for the dynamic linker
+                // The linker needs to know about the program it's loading
                 let pid = NEXT_PID.fetch_add(1, Ordering::SeqCst);
                 let stack_base = STACK_BASE;
                 let stack_size = STACK_SIZE;
+                
+                // We'll set up the stack with auxiliary vectors
+                // Stack layout (from high to low addresses):
+                // - argc, argv, envp
+                // - auxiliary vectors (AT_PHDR, AT_ENTRY, etc.)
+                // - NULL terminator
+                
+                // For now, we'll use a simplified stack setup
+                // The interpreter entry point is what we execute
                 let stack_top = stack_base + stack_size - 8;
 
                 let process = Process {
                     pid,
                     ppid: 0,
                     state: ProcessState::Ready,
-                    entry_point: virtual_entry,
+                    entry_point: interp_entry, // Execute the interpreter
                     stack_top,
                     heap_start: HEAP_BASE,
                     heap_end: HEAP_BASE + HEAP_SIZE,
                     signal_state: crate::signal::SignalState::new(),
                 };
+
+                // TODO: Set up auxiliary vectors on the stack
+                // This would require modifying the stack before jumping to user mode
+                // Key vectors needed:
+                // AT_PHDR = 3   // Program headers address
+                // AT_PHENT = 4  // Program header entry size
+                // AT_PHNUM = 5  // Number of program headers
+                // AT_BASE = 7   // Interpreter base address
+                // AT_ENTRY = 9  // Program entry point
 
                 return Ok(process);
             } else {
