@@ -16,7 +16,7 @@ echo "========================================"
 
 # Create rootfs directory structure
 echo "Creating rootfs directory structure..."
-mkdir -p "$ROOTFS_DIR"/{bin,sbin,etc/ni,dev,proc,sys,tmp,var,home,root}
+mkdir -p "$ROOTFS_DIR"/{bin,sbin,etc/ni,dev,proc,sys,tmp,var,home,root,lib64}
 
 # Build userspace programs for rootfs
 echo "Building userspace programs..."
@@ -72,6 +72,15 @@ strip --strip-all "$ROOTFS_DIR/sbin/ni" 2>/dev/null || true
 strip --strip-all "$ROOTFS_DIR/sbin/getty" 2>/dev/null || true
 strip --strip-all "$ROOTFS_DIR/bin/sh" 2>/dev/null || true
 strip --strip-all "$ROOTFS_DIR/bin/login" 2>/dev/null || true
+
+# Copy dynamic linker for dynamically linked programs
+echo "Copying dynamic linker..."
+if [ -f "/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2" ]; then
+    cp "/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2" "$ROOTFS_DIR/lib64/"
+    echo "✓ Added dynamic linker ld-linux-x86-64.so.2"
+else
+    echo "⚠ Warning: System dynamic linker not found, dynamically linked programs won't work"
+fi
 
 # Copy configuration files
 echo "Copying configuration files..."
