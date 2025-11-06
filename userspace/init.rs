@@ -19,8 +19,7 @@
 //! - Signal handling for system control
 //! - Service respawn on failure
 
-use core::arch::asm;
-use core::panic::PanicInfo;
+use core::{arch::asm, cell::UnsafeCell, panic::PanicInfo};
 
 // System call numbers
 const SYS_READ: u64 = 0;
@@ -43,6 +42,28 @@ const STDIN: u64 = 0;
 const STDOUT: u64 = 1;
 const STDERR: u64 = 2;
 
+const WRITE_SCRATCH_SIZE: usize = 128;
+
+struct ScratchBuffer<const N: usize> {
+    inner: UnsafeCell<[u8; N]>,
+}
+
+impl<const N: usize> ScratchBuffer<N> {
+    const fn new() -> Self {
+        Self {
+            inner: UnsafeCell::new([0; N]),
+        }
+    }
+
+    unsafe fn get(&self) -> &mut [u8; N] {
+        &mut *self.inner.get()
+    }
+}
+
+unsafe impl<const N: usize> Sync for ScratchBuffer<N> {}
+
+static WRITE_SCRATCH: ScratchBuffer<WRITE_SCRATCH_SIZE> = ScratchBuffer::new();
+
 // Service management constants
 const MAX_RESPAWN_COUNT: u32 = 5;  // Max respawns within window
 const RESPAWN_WINDOW_SEC: u64 = 60; // Respawn window in seconds
@@ -61,6 +82,7 @@ fn syscall3(n: u64, a1: u64, a2: u64, a3: u64) -> u64 {
             in("rsi") a2,
             in("rdx") a3,
             lateout("rax") ret,
+            clobber_abi("sysv64"),
             options(nostack)
         );
     }
@@ -103,23 +125,22 @@ fn write(fd: u64, buf: &[u8]) -> isize {
     }
 
     // Some buffers (e.g. config-backed strings) may live outside the user window, so
-    // bounce them through the user stack before writing.
+    // bounce them through a statically allocated user-mapped buffer before writing.
     let mut total_written = 0usize;
     let mut copied = 0usize;
-    let mut scratch = core::mem::MaybeUninit::<[u8; 128]>::uninit();
-    let scratch_ptr = scratch.as_mut_ptr() as *mut u8;
 
     while copied < buf.len() {
-        let chunk = core::cmp::min(128, buf.len() - copied);
-        unsafe {
+        let chunk = core::cmp::min(WRITE_SCRATCH_SIZE, buf.len() - copied);
+        let ret = unsafe {
+            let scratch = WRITE_SCRATCH.get();
             core::ptr::copy_nonoverlapping(
-                buf[copied..].as_ptr(),
-                scratch_ptr,
+                buf.as_ptr().add(copied),
+                scratch.as_mut_ptr(),
                 chunk,
             );
-        }
+            syscall3(SYS_WRITE, fd, scratch.as_ptr() as u64, chunk as u64)
+        };
 
-        let ret = syscall3(SYS_WRITE, fd, scratch_ptr as u64, chunk as u64);
         if ret == u64::MAX {
             return if total_written == 0 { -1 } else { total_written as isize };
         }

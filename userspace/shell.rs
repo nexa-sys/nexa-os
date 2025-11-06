@@ -2,8 +2,7 @@
 #![no_main]
 #![feature(lang_items)]
 
-use core::arch::asm;
-
+use core::{arch::asm, cell::UnsafeCell};
 const SYS_READ: u64 = 0;
 const SYS_WRITE: u64 = 1;
 const SYS_OPEN: u64 = 2;
@@ -26,6 +25,27 @@ const USER_FLAG_ADMIN: u64 = 0x1;
 
 const HOSTNAME: &str = "nexa";
 const MAX_PATH: usize = 256;
+const PRINT_SCRATCH_SIZE: usize = 128;
+
+struct ScratchBuffer<const N: usize> {
+    inner: UnsafeCell<[u8; N]>,
+}
+
+impl<const N: usize> ScratchBuffer<N> {
+    const fn new() -> Self {
+        Self {
+            inner: UnsafeCell::new([0; N]),
+        }
+    }
+
+    unsafe fn get(&self) -> &mut [u8; N] {
+        &mut *self.inner.get()
+    }
+}
+
+unsafe impl<const N: usize> Sync for ScratchBuffer<N> {}
+
+static PRINT_SCRATCH: ScratchBuffer<PRINT_SCRATCH_SIZE> = ScratchBuffer::new();
 
 fn syscall3(n: u64, a1: u64, a2: u64, a3: u64) -> u64 {
     // Route all syscalls via int 0x81 so the CPU saves/restores SS:RSP for Ring3 safely.
@@ -38,7 +58,8 @@ fn syscall3(n: u64, a1: u64, a2: u64, a3: u64) -> u64 {
             in("rdi") a1,
             in("rsi") a2,
             in("rdx") a3,
-            lateout("rax") ret
+            lateout("rax") ret,
+            clobber_abi("sysv64")
         );
     }
     ret
@@ -328,18 +349,16 @@ fn print_bytes(bytes: &[u8]) {
     }
 
     let mut offset = 0usize;
-    let mut scratch = core::mem::MaybeUninit::<[u8; 128]>::uninit();
-    let scratch_ptr = scratch.as_mut_ptr() as *mut u8;
-
     while offset < bytes.len() {
-        let chunk = core::cmp::min(128, bytes.len() - offset);
+        let chunk = core::cmp::min(PRINT_SCRATCH_SIZE, bytes.len() - offset);
         unsafe {
+            let scratch = PRINT_SCRATCH.get();
             core::ptr::copy_nonoverlapping(
                 bytes.as_ptr().add(offset),
-                scratch_ptr,
+                scratch.as_mut_ptr(),
                 chunk,
             );
-            write(1, scratch_ptr as *const u8, chunk);
+            write(1, scratch.as_ptr(), chunk);
         }
         offset += chunk;
     }

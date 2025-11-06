@@ -1587,7 +1587,10 @@ pub extern "C" fn syscall_dispatch(nr: u64, arg1: u64, arg2: u64, arg3: u64) -> 
         SYS_KILL => syscall_kill(arg1, arg2),
         SYS_SIGACTION => syscall_sigaction(arg1, arg2 as *const u8, arg3 as *mut u8),
         SYS_SIGPROCMASK => syscall_sigprocmask(arg1 as i32, arg2 as *const u64, arg3 as *mut u64),
-        SYS_GETPID => 1,
+        SYS_GETPID => {
+            crate::kdebug!("SYS_GETPID called");
+            1
+        },
         SYS_GETPPID => syscall_getppid(),
         SYS_SCHED_YIELD => syscall_sched_yield(),
         SYS_LIST_FILES => syscall_list_files(
