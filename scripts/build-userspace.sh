@@ -36,6 +36,7 @@ opt-level = 2
 lto = false
 
 [dependencies]
+nrlib = { path = "../../userspace/nrlib" }
 EOF
 
 cd "$PROJECT_ROOT/build/initramfs-build"

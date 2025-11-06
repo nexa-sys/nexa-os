@@ -47,9 +47,13 @@ path = "../../userspace/login.rs"
 [profile.release]
 panic = "abort"
 opt-level = 2
-lto = true
+
+# Disable LTO for now to avoid PIC/LTO issues with user-space buffers (see docs/bugfixes)
+lto = false
 
 [dependencies]
+nrlib = { path = "../../userspace/nrlib" }
+
 EOF
 
 cd "$BUILD_DIR/userspace-build"
