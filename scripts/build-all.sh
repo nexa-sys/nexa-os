@@ -11,17 +11,10 @@ echo "Building Complete NexaOS System"
 echo "========================================"
 echo ""
 
-# Step 1: Build kernel
-echo "Step 1/4: Building kernel..."
-cd "$PROJECT_ROOT"
-cargo build --release
-echo "✓ Kernel built"
-echo ""
-
-# Step 2: Build minimal initramfs (early boot only)
-echo "Step 2/4: Building minimal initramfs..."
-bash "$SCRIPT_DIR/build-userspace.sh"
-echo "✓ Minimal initramfs ready"
+# Step 4: Build bootable ISO (debug build)
+echo "Step 4/4: Building bootable ISO..."
+bash "$SCRIPT_DIR/build-iso.sh"
+echo "✓ ISO created"
 echo ""
 
 # Step 3: Build ext2 root filesystem (full system)
@@ -30,11 +23,6 @@ bash "$SCRIPT_DIR/build-rootfs.sh"
 echo "✓ Root filesystem ready"
 echo ""
 
-# Step 4: Build bootable ISO (release build)
-echo "Step 4/4: Building bootable ISO..."
-bash "$SCRIPT_DIR/build-iso.sh" release
-echo "✓ ISO created"
-echo ""
 
 echo "========================================"
 echo "Build Complete!"

@@ -5,11 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # Support both debug and release builds
 BUILD_TYPE="${1:-release}"
-if [ "$BUILD_TYPE" = "release" ]; then
-    TARGET_DIR="$ROOT_DIR/target/x86_64-nexaos/release"
-else
     TARGET_DIR="$ROOT_DIR/target/x86_64-nexaos/debug"
-fi
 
 ISO_DIR="$ROOT_DIR/target/iso"
 DIST_DIR="$ROOT_DIR/dist"
@@ -26,11 +22,7 @@ for tool in grub-mkrescue xorriso; do
     fi
 done
 
-if [ "$BUILD_TYPE" = "release" ]; then
-    cargo build --release
-else
     cargo build
-fi
 
 # Build minimal initramfs (for early boot only)
 echo "Building minimal initramfs..."
