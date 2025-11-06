@@ -147,7 +147,7 @@ This is simpler and more predictable, especially for bare-metal/OS code where we
 
 ## Related Issues
 
-- Rust issue #28728: PIC can cause issues with optimized builds
+- [Rust issue #28728](https://github.com/rust-lang/rust/issues/28728): PIC can cause issues with optimized builds
 - LLVM issues with aggressive optimization and stack allocation
 - x86-64 ABI stack alignment requirements
 
