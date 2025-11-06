@@ -83,8 +83,10 @@ impl Process {
             if let Some(interp_data) = crate::fs::read_file_bytes(interp_path) {
                 crate::kinfo!("Found interpreter at {}, loading it", interp_path);
                 
-                // First, load the original program at its expected address
-                // Program goes at USER_PHYS_BASE (0x400000)
+                // First, load the original program at USER_PHYS_BASE
+                // Note: For position-independent executables (PIE), this serves as the base
+                // address offset. For position-dependent executables, the ELF loader will
+                // place segments at their requested virtual addresses relative to this base.
                 crate::kinfo!("Loading original program at {:#x}", USER_PHYS_BASE);
                 let program_entry_physical = loader.load(USER_PHYS_BASE)?;
                 let program_header = loader.header();
@@ -97,12 +99,12 @@ impl Process {
                 );
                 
                 // Load the interpreter at a different physical location
-                // Interpreter goes after the program and heap space
-                // Program: 0x400000-0x600000 (2MB)
-                // Heap:    0x600000-0x800000 (2MB)
-                // Stack:   0x800000-0xA00000 (2MB)
-                // Interp:  0xA00000+ (after stack)
-                const INTERP_BASE: u64 = 0xA00000; // 10MB mark
+                // Memory layout:
+                // Program: 0x400000-0x600000 (2MB at USER_PHYS_BASE)
+                // Heap:    0x600000-0x800000 (2MB after program)
+                // Stack:   0x800000-0xA00000 (2MB for stack)
+                // Interp:  0xA00000+         (dynamic linker)
+                const INTERP_BASE: u64 = 0xA00000; // 10.5MB mark, after stack
                 let interp_loader = ElfLoader::new(interp_data)?;
                 let _interp_entry_physical = interp_loader.load(INTERP_BASE)?;
                 let interp_header = interp_loader.header();

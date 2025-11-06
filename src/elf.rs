@@ -287,6 +287,8 @@ impl ElfLoader {
     pub fn get_interpreter(&self) -> Option<&str> {
         use core::ptr;
 
+        const PROGRAM_HEADER_SIZE: usize = 56; // Size of Elf64ProgramHeader
+
         let e_phoff =
             unsafe { ptr::read_unaligned(self.data.as_ptr().add(32) as *const u64) } as usize;
         let e_phnum =
@@ -296,7 +298,7 @@ impl ElfLoader {
 
         for i in 0..e_phnum {
             let ph_offset = e_phoff + i * e_phentsize;
-            if ph_offset + 56 > self.data.len() {
+            if ph_offset + PROGRAM_HEADER_SIZE > self.data.len() {
                 continue;
             }
 
