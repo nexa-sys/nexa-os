@@ -104,6 +104,15 @@ pub unsafe extern "C" fn getenv(_name: *const i8) -> *mut i8 {
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn isatty(fd: c_int) -> c_int {
+    if (0..=2).contains(&fd) {
+        1
+    } else {
+        0
+    }
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn setenv(_name: *const i8, _value: *const i8, _overwrite: c_int) -> c_int {
     -1
 }
@@ -229,11 +238,22 @@ pub unsafe extern "C" fn sysconf(_name: c_int) -> c_long {
 // File Control Operations
 // ============================================================================
 
+const F_DUPFD: c_int = 0;
+const F_GETFL: c_int = 3;
+const F_SETFL: c_int = 4;
+
 #[no_mangle]
-pub unsafe extern "C" fn fcntl(fd: c_int, cmd: c_int, _arg: c_int) -> c_int {
-    // Stub: pretend all fcntl operations succeed
+pub unsafe extern "C" fn fcntl(fd: c_int, cmd: c_int, arg: c_int) -> c_int {
     match cmd {
-        _ => 0,  // Success
+        F_DUPFD => {
+            if arg <= fd {
+                crate::dup(fd) as c_int
+            } else {
+                crate::dup2(fd, arg) as c_int
+            }
+        }
+        F_GETFL | F_SETFL => 0,
+        _ => 0,
     }
 }
 
@@ -348,18 +368,6 @@ pub unsafe extern "C" fn pthread_getattr_np(
 // ============================================================================
 // File Descriptor Operations
 // ============================================================================
-
-#[no_mangle]
-pub unsafe extern "C" fn dup(fd: c_int) -> c_int {
-    // Stub: just return the same fd (not a real dup)
-    fd
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn dup2(oldfd: c_int, newfd: c_int) -> c_int {
-    // Stub: pretend it worked
-    newfd
-}
 
 // ============================================================================
 // Signal Handling Stubs

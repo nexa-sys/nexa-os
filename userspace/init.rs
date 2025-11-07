@@ -82,25 +82,38 @@ fn syscall0(n: u64) -> u64 {
     syscall3(n, 0, 0, 0)
 }
 
+/// Write raw bytes to STDOUT using the kernel write syscall.
+fn stdout_write_bytes(bytes: &[u8]) {
+    if bytes.is_empty() {
+        return;
+    }
+    unsafe {
+        syscall3(SYS_WRITE, STDOUT as u64, bytes.as_ptr() as u64, bytes.len() as u64);
+    }
+}
+
 /// Print string to stdout using direct syscall (for debugging)
 fn print_raw(s: &str) {
-    unsafe {
-        syscall3(1, 1, s.as_ptr() as u64, s.len() as u64);
-    }
+    stdout_write_bytes(s.as_bytes());
 }
 
 /// Print string to stdout (uses std::io, may fail if std not initialized)
 fn print(s: &str) {
     // Fallback to raw syscall if std::io fails
-    match io::stdout().write_all(s.as_bytes()) {
-        Ok(_) => {},
-        Err(_) => print_raw(s),
-    }
+    stdout_write_bytes(s.as_bytes());
 }
 
 /// Print string to stderr
 fn eprint(s: &str) {
-    let _ = io::stderr().write_all(s.as_bytes());
+    // stderr path still uses std::io because it is rarely hit; fallback to raw if it fails
+    if io::stderr().write_all(s.as_bytes()).is_err() {
+        stdout_write_bytes(s.as_bytes());
+    }
+}
+
+/// Ensure stdout is flushed so interactive prompts appear immediately.
+fn flush_stdout() {
+    // STDOUT writes are unbuffered at the syscall layer, so nothing to do here.
 }
 
 /// Exit process
@@ -1420,6 +1433,7 @@ fn show_login_and_exec_shell(buf: &mut [u8]) -> ! {
     
     // Read username
     print("login: ");
+    flush_stdout();
     let mut username_buf = [0u8; 64];
     let username_len = read_line_input(&mut username_buf);
 
@@ -1438,6 +1452,7 @@ fn show_login_and_exec_shell(buf: &mut [u8]) -> ! {
     
     // Read password
     print("password: ");
+    flush_stdout();
     let mut password_buf = [0u8; 64];
     let password_len = read_password_input(&mut password_buf);
 
@@ -1541,6 +1556,7 @@ fn read_line_input(buf: &mut [u8]) -> usize {
             if pos > 0 {
                 pos -= 1;
                 print("\x08 \x08");
+                flush_stdout();
             }
             continue;
         }
@@ -1553,6 +1569,7 @@ fn read_line_input(buf: &mut [u8]) -> usize {
                 continue;
             }
             print("\n");
+            flush_stdout();
             break;
         }
         
@@ -1560,7 +1577,7 @@ fn read_line_input(buf: &mut [u8]) -> usize {
         if ch >= 32 && ch < 127 {
             buf[pos] = ch;
             pos += 1;
-            let _ = io::stdout().write_all(&[ch]);
+            stdout_write_bytes(&[ch]);
         }
     }
     
@@ -1594,7 +1611,7 @@ fn read_password_input(buf: &mut [u8]) -> usize {
         if ch == 8 || ch == 127 {
             if pos > 0 {
                 pos -= 1;
-                let _ = io::stdout().write_all(b"\x08 \x08");
+                stdout_write_bytes(b"\x08 \x08");
             }
             continue;
         }
@@ -1605,7 +1622,7 @@ fn read_password_input(buf: &mut [u8]) -> usize {
                 debug_print_len("read_password_input_skip_newline", pos);
                 continue;
             }
-            let _ = io::stdout().write_all(b"\n");
+            stdout_write_bytes(b"\n");
             break;
         }
         
@@ -1613,7 +1630,7 @@ fn read_password_input(buf: &mut [u8]) -> usize {
         if ch >= 32 && ch < 127 {
             buf[pos] = ch;
             pos += 1;
-            let _ = io::stdout().write_all(b"*");
+            stdout_write_bytes(b"*");
         }
     }
     
@@ -1695,9 +1712,8 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
     print_raw("[DEBUG] Entered main(), before std initialization\n");
     
     // Try to use std::io
-    print_raw("[DEBUG] Attempting std::io::stdout()...\n");
-    let _ = io::stdout().write_all(b"[DEBUG] std::io works!\n");
-    print_raw("[DEBUG] std::io succeeded\n");
+    print_raw("[DEBUG] Skipping std::io::stdout(); using direct syscall writes.\n");
+    print_raw("[DEBUG] about to call init_main()\n");
     
     // Now call the actual init main
     init_main();
@@ -1724,7 +1740,7 @@ fn debug_print_ptr(label: &str, value: u64) {
         };
     }
 
-    let _ = io::stdout().write_all(&buf);
+    stdout_write_bytes(&buf);
     print("\n");
 }
 

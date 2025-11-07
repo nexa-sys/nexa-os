@@ -33,11 +33,35 @@ const SYS_READ: u64 = 0;
 const SYS_WRITE: u64 = 1;
 const SYS_OPEN: u64 = 2;
 const SYS_CLOSE: u64 = 3;
+const SYS_DUP: u64 = 32;
+const SYS_PIPE: u64 = 22;
+const SYS_DUP2: u64 = 33;
 const SYS_FORK: u64 = 57;
 const SYS_EXECVE: u64 = 59;
 const SYS_EXIT: u64 = 60;
 const SYS_WAIT4: u64 = 61;
 const SYS_GETPID: u64 = 39;
+#[no_mangle]
+pub extern "C" fn pipe(pipefd: *mut i32) -> i32 {
+    if pipefd.is_null() {
+        set_errno(EINVAL);
+        return -1;
+    }
+
+    let mut fds = [0i32; 2];
+    let ret = syscall1(SYS_PIPE, &mut fds as *mut [i32; 2] as u64);
+    if ret == u64::MAX {
+        refresh_errno_from_kernel();
+        -1
+    } else {
+        unsafe {
+            *pipefd.add(0) = fds[0];
+            *pipefd.add(1) = fds[1];
+        }
+        set_errno(0);
+        0
+    }
+}
 const SYS_GETPPID: u64 = 110;
 const SYS_RUNLEVEL: u64 = 231;
 const SYS_USER_ADD: u64 = 220;
@@ -147,6 +171,16 @@ pub extern "C" fn open(path: *const u8, flags: i32, _mode: i32) -> i32 {
 #[no_mangle]
 pub extern "C" fn close(fd: i32) -> i32 {
     translate_ret_i32(syscall1(SYS_CLOSE, fd as u64))
+}
+
+#[no_mangle]
+pub extern "C" fn dup(fd: i32) -> i32 {
+    translate_ret_i32(syscall1(SYS_DUP, fd as u64))
+}
+
+#[no_mangle]
+pub extern "C" fn dup2(oldfd: i32, newfd: i32) -> i32 {
+    translate_ret_i32(syscall2(SYS_DUP2, oldfd as u64, newfd as u64))
 }
 
 #[no_mangle]
