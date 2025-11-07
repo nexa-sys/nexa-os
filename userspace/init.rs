@@ -365,39 +365,62 @@ static mut STRING_LENGTHS: [usize; MAX_SERVICES * SERVICE_FIELD_COUNT] =
     [0; MAX_SERVICES * SERVICE_FIELD_COUNT];
 
 fn load_service_catalog() -> ServiceCatalog {
-    print("[DEBUG A] Entered load_service_catalog()\n");
     unsafe {
-        print("[DEBUG B] Inside unsafe block\n");
         DEFAULT_BOOT_TARGET = DEFAULT_TARGET_NAME;
         FALLBACK_BOOT_TARGET = FALLBACK_TARGET_NAME;
         INIT_LOG_LEVEL = InitLogLevel::default();
 
-        print("[DEBUG C] Clearing SERVICE_CONFIGS\n");
-        for slot in SERVICE_CONFIGS.iter_mut() {
-            *slot = ServiceConfig::empty();
+        // Note: Skip manual clearing of large buffers to avoid performance issues
+        // The buffers will be overwritten when used
+        
+        // Use raw syscalls instead of std::fs to avoid blocking issues
+        extern "C" {
+            fn open(path: *const u8, flags: i32, mode: i32) -> i32;
+            fn read(fd: i32, buf: *mut u8, count: usize) -> isize;
+            fn close(fd: i32) -> i32;
+        }
+        
+        let path_bytes = b"/etc/ni/ni.conf\0";
+        let fd = open(path_bytes.as_ptr(), 0, 0); // O_RDONLY = 0
+        
+        if fd < 0 {
+            print("         File open failed\n");
+            return ServiceCatalog {
+                services: &SERVICE_CONFIGS[0..0],
+                default_target: DEFAULT_BOOT_TARGET,
+                fallback_target: FALLBACK_BOOT_TARGET,
+            };
         }
 
-        for bucket in STRING_STORAGE.iter_mut() {
-            for byte in bucket.iter_mut() {
-                *byte = 0;
-            }
+        log_info("Unit catalog file opened");
+
+        let read_count = read(fd, CONFIG_BUFFER.as_mut_ptr(), CONFIG_BUFFER.len());
+        close(fd);
+        
+        if read_count <= 0 {
+            return ServiceCatalog {
+                services: &SERVICE_CONFIGS[0..0],
+                default_target: DEFAULT_BOOT_TARGET,
+                fallback_target: FALLBACK_BOOT_TARGET,
+            };
         }
 
-        for len in STRING_LENGTHS.iter_mut() {
-            *len = 0;
-        }
+        let usable = core::cmp::min(read_count as usize, CONFIG_BUFFER.len());
+        
+        let mut diag_buf = [0u8; 32];
+        print("         Bytes read: ");
+        print(itoa(usable as u64, &mut diag_buf));
+        print("\n");
 
-        for byte in CONFIG_BUFFER.iter_mut() {
-            *byte = 0;
-        }
+        let service_count = parse_unit_file(usable);
 
-        // TEMPORARY: Skip file loading to test if File::open is the issue
-        print("         [TEMP] Skipping std::fs, returning empty catalog\n");
-        return ServiceCatalog {
-            services: &SERVICE_CONFIGS[0..0],
+        log_info("Unit catalog parsed successfully");
+
+        ServiceCatalog {
+            services: &SERVICE_CONFIGS[0..service_count],
             default_target: DEFAULT_BOOT_TARGET,
             fallback_target: FALLBACK_BOOT_TARGET,
-        };
+        }
     }
 }
 
@@ -1010,9 +1033,7 @@ fn init_main() -> ! {
     // Load service catalog
     print("\n");
     log_start("Loading unit catalog");
-    print("[DEBUG 1] About to call load_service_catalog()\n");
     let catalog = load_service_catalog();
-    print("[DEBUG 2] Returned from load_service_catalog()\n");
     let services = catalog.services;
     if services.is_empty() {
         log_warn("No unit definitions found, preparing fallback shell");
