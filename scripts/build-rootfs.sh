@@ -66,19 +66,50 @@ EOF
 
 cd "$BUILD_DIR/userspace-build"
 
-# Build init (ni) with std, no nrlib dependency
+# Build init (ni) with std
 echo "Building ni (init) with std..."
 
-# Create stub library for libc and libunwind
+# First, build nrlib as staticlib to provide libc compatibility
 mkdir -p "$BUILD_DIR/userspace-build/sysroot/lib"
-echo "Compiling stub libc..."
-gcc -c -O2 -fPIC -fno-stack-protector -nostdlib -ffreestanding \
-    "$PROJECT_ROOT/userspace/stub_libc.c" \
-    -o "$BUILD_DIR/userspace-build/sysroot/lib/stub_libc.o"
-ar rcs "$BUILD_DIR/userspace-build/sysroot/lib/libc.a" "$BUILD_DIR/userspace-build/sysroot/lib/stub_libc.o"
-# libunwind symbols are also in stub_libc.c, so copy it
-cp "$BUILD_DIR/userspace-build/sysroot/lib/libc.a" "$BUILD_DIR/userspace-build/sysroot/lib/libunwind.a"
+echo "Building nrlib staticlib for libc compatibility..."
+cd "$PROJECT_ROOT/userspace/nrlib"
+RUSTFLAGS="-C opt-level=2 -C panic=abort" \
+    cargo build -Z build-std=core --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release
+    
+# Copy nrlib staticlib as libc.a and libunwind.a
+cp "$PROJECT_ROOT/userspace/nrlib/target/x86_64-nexaos-userspace/release/libnrlib.a" \
+   "$BUILD_DIR/userspace-build/sysroot/lib/libc.a"
 
+# Remove only the conflicting panic/unwind symbols, keep everything else
+# Extract all object files, strip conflicting symbols, repack
+mkdir -p "$BUILD_DIR/temp_libc"
+cd "$BUILD_DIR/temp_libc"
+ar x "$BUILD_DIR/userspace-build/sysroot/lib/libc.a"
+
+# For object files containing panic symbols, strip only those specific symbols
+for obj in *.o; do
+    if nm "$obj" 2>/dev/null | grep -q "rust_begin_unwind\|rust_eh_personality"; then
+        echo "Stripping panic symbols from $obj"
+        # Use objcopy to remove only the conflicting symbols
+        objcopy --strip-symbol=rust_begin_unwind \
+                --strip-symbol=rust_eh_personality \
+                --strip-symbol=_RNvCshaUc5Hc2GaF_7___rustc17rust_begin_unwind \
+                "$obj" "$obj.tmp" 2>/dev/null || cp "$obj" "$obj.tmp"
+        mv "$obj.tmp" "$obj"
+    fi
+done
+
+# Repack libc.a
+rm "$BUILD_DIR/userspace-build/sysroot/lib/libc.a"
+ar crs "$BUILD_DIR/userspace-build/sysroot/lib/libc.a" *.o
+cd "$PROJECT_ROOT"
+rm -rf "$BUILD_DIR/temp_libc"
+
+# Create an empty libunwind.a (std has its own unwind implementation)
+ar crs "$BUILD_DIR/userspace-build/sysroot/lib/libunwind.a"
+
+# Now build ni with std, linking against our nrlib-based libc
+cd "$BUILD_DIR/userspace-build"
 RUSTFLAGS="-C opt-level=2 -C panic=abort -C linker=rust-lld -C link-arg=--image-base=0x00400000 -L $BUILD_DIR/userspace-build/sysroot/lib" \
     cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release \
     --bin ni --no-default-features

@@ -1,8 +1,12 @@
 #![no_std]
 #![feature(lang_items)]
 #![feature(thread_local)]
+#![feature(c_variadic)]
 
 use core::{arch::asm, ffi::c_void, ptr};
+
+// libc compatibility layer for std support
+pub mod libc_compat;
 
 // Libc-compatible type definitions for NexaOS
 pub type c_char = i8;
