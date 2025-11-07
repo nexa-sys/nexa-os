@@ -1,6 +1,7 @@
 /// Process management for user-space execution
-use crate::elf::ElfLoader;
+use crate::elf::{ElfLoader, LoadResult};
 use core::arch::asm;
+use core::ptr;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 /// Process ID type
@@ -26,8 +27,12 @@ pub const STACK_SIZE: u64 = 0x200000;
 pub const HEAP_BASE: u64 = USER_VIRT_BASE + 0x200000;
 /// Size of the initial heap allocation reserved for userspace.
 pub const HEAP_SIZE: u64 = 0x200000;
-/// Total virtual span that must be mapped for the userspace image, heap, and stack.
-pub const USER_REGION_SIZE: u64 = (STACK_BASE + STACK_SIZE) - USER_VIRT_BASE;
+/// Virtual base where the dynamic loader and shared objects are staged.
+pub const INTERP_BASE: u64 = STACK_BASE + STACK_SIZE;
+/// Reserved size for the dynamic loader and dependent shared objects (multiple of 2 MiB).
+pub const INTERP_REGION_SIZE: u64 = 0x600000;
+/// Total virtual span that must be mapped for the userspace image, heap, stack, and interpreter region.
+pub const USER_REGION_SIZE: u64 = (INTERP_BASE + INTERP_REGION_SIZE) - USER_VIRT_BASE;
 /// Process structure
 #[derive(Clone, Copy)]
 pub struct Process {
@@ -43,6 +48,24 @@ pub struct Process {
 
 static NEXT_PID: AtomicU64 = AtomicU64::new(1);
 
+const DEFAULT_ARGV0: &[u8] = b"nexa";
+const STACK_RANDOM_SEED: [u8; 16] = *b"NexaOSGuardSeed!";
+
+const AT_NULL: u64 = 0;
+const AT_PHDR: u64 = 3;
+const AT_PHENT: u64 = 4;
+const AT_PHNUM: u64 = 5;
+const AT_PAGESZ: u64 = 6;
+const AT_BASE: u64 = 7;
+const AT_FLAGS: u64 = 8;
+const AT_ENTRY: u64 = 9;
+const AT_UID: u64 = 11;
+const AT_EUID: u64 = 12;
+const AT_GID: u64 = 13;
+const AT_EGID: u64 = 14;
+const AT_RANDOM: u64 = 25;
+const AT_EXECFN: u64 = 31;
+
 impl Process {
     /// Create a new process from an ELF binary
     /// Supports both static and dynamically linked executables via PT_INTERP
@@ -52,13 +75,11 @@ impl Process {
             elf_data.len()
         );
 
-        // Check if the data looks like a valid ELF
         if elf_data.len() < 64 {
             crate::kerror!("ELF data too small: {} bytes", elf_data.len());
             return Err("ELF data too small");
         }
 
-        // Check ELF magic
         if &elf_data[0..4] != b"\x7fELF" {
             crate::kerror!(
                 "Invalid ELF magic: {:02x} {:02x} {:02x} {:02x}",
@@ -75,146 +96,77 @@ impl Process {
         let loader = ElfLoader::new(elf_data)?;
         crate::kinfo!("ElfLoader created successfully");
 
-        // Check if this is a dynamically linked executable
+        let program_image = loader.load(USER_PHYS_BASE)?;
+        crate::kinfo!(
+            "Program image loaded: entry={:#x}, base={:#x}, bias={:+}, phdr={:#x}",
+            program_image.entry_point,
+            program_image.base_addr,
+            program_image.load_bias,
+            program_image.phdr_vaddr
+        );
+
+        let program_name = DEFAULT_ARGV0;
+
         if let Some(interp_path) = loader.get_interpreter() {
             crate::kinfo!("Dynamic executable detected, interpreter: {}", interp_path);
-            
-            // Try to load the interpreter
+
             if let Some(interp_data) = crate::fs::read_file_bytes(interp_path) {
                 crate::kinfo!("Found interpreter at {}, loading it", interp_path);
-                
-                // First, load the original program at USER_PHYS_BASE
-                // Note: For position-independent executables (PIE), this serves as the base
-                // address offset. For position-dependent executables, the ELF loader will
-                // place segments at their requested virtual addresses relative to this base.
-                crate::kinfo!("Loading original program at {:#x}", USER_PHYS_BASE);
-                let program_entry_physical = loader.load(USER_PHYS_BASE)?;
-                let program_header = loader.header();
-                let program_entry = program_header.entry_point();
-                
-                crate::kinfo!(
-                    "Program loaded: entry={:#x}, phys_entry={:#x}",
-                    program_entry,
-                    program_entry_physical
-                );
-                
-                // Load the interpreter at a different physical location
-                // Memory layout:
-                // Program: 0x400000-0x600000 (2MB at USER_PHYS_BASE)
-                // Heap:    0x600000-0x800000 (2MB after program)
-                // Stack:   0x800000-0xA00000 (2MB for stack)
-                // Interp:  0xA00000+         (dynamic linker)
-                const INTERP_BASE: u64 = 0xA00000; // 10.5MB mark, after stack
+
                 let interp_loader = ElfLoader::new(interp_data)?;
-                let _interp_entry_physical = interp_loader.load(INTERP_BASE)?;
-                let interp_header = interp_loader.header();
-                let interp_entry = interp_header.entry_point();
-                
+                let interp_image = interp_loader.load(INTERP_BASE)?;
                 crate::kinfo!(
-                    "Interpreter loaded at {:#x}, entry point: {:#x}",
-                    INTERP_BASE,
-                    interp_entry
+                    "Interpreter image loaded: entry={:#x}, base={:#x}, bias={:+}",
+                    interp_image.entry_point,
+                    interp_image.base_addr,
+                    interp_image.load_bias
                 );
 
-                // Set up auxiliary vectors for the dynamic linker
-                // The linker needs to know about the program it's loading
-                let pid = NEXT_PID.fetch_add(1, Ordering::SeqCst);
-                let stack_base = STACK_BASE;
-                let stack_size = STACK_SIZE;
-                
-                // We'll set up the stack with auxiliary vectors
-                // Stack layout (from high to low addresses):
-                // - argc, argv, envp
-                // - auxiliary vectors (AT_PHDR, AT_ENTRY, etc.)
-                // - NULL terminator
-                
-                // For now, we'll use a simplified stack setup
-                // The interpreter entry point is what we execute
-                let stack_top = stack_base + stack_size - 8;
+                let stack_ptr = build_initial_stack(
+                    program_name,
+                    STACK_BASE,
+                    STACK_SIZE,
+                    &program_image,
+                    Some(&interp_image),
+                )?;
 
-                let process = Process {
+                let pid = NEXT_PID.fetch_add(1, Ordering::SeqCst);
+
+                return Ok(Process {
                     pid,
                     ppid: 0,
                     state: ProcessState::Ready,
-                    entry_point: interp_entry, // Execute the interpreter
-                    stack_top,
+                    entry_point: interp_image.entry_point,
+                    stack_top: stack_ptr,
                     heap_start: HEAP_BASE,
                     heap_end: HEAP_BASE + HEAP_SIZE,
                     signal_state: crate::signal::SignalState::new(),
-                };
-
-                // TODO: Set up auxiliary vectors on the stack
-                // This would require modifying the stack before jumping to user mode
-                // Key vectors needed:
-                // AT_PHDR = 3   // Program headers address
-                // AT_PHENT = 4  // Program header entry size
-                // AT_PHNUM = 5  // Number of program headers
-                // AT_BASE = 7   // Interpreter base address
-                // AT_ENTRY = 9  // Program entry point
-
-                return Ok(process);
+                });
             } else {
                 crate::kwarn!(
-                    "Interpreter '{}' not found, trying to load as static binary",
+                    "Interpreter '{}' not found, attempting static execution",
                     interp_path
                 );
-                // Fall through to load as static binary
             }
         } else {
             crate::kinfo!("Static executable detected (no PT_INTERP)");
         }
 
-        // Load as static binary (original behavior)
-        // Allocate user space memory
-        crate::kinfo!(
-            "Userspace layout: phys_base={:#x}, virt_base={:#x}, stack_base={:#x}, stack_size={:#x}",
-            USER_PHYS_BASE,
-            USER_VIRT_BASE,
-            STACK_BASE,
-            STACK_SIZE
-        );
-
-        // Load ELF
-        crate::kinfo!(
-            "About to call loader.load with phys_base={:#x} (virt base {:#x})",
-            USER_PHYS_BASE,
-            USER_VIRT_BASE
-        );
-        let physical_entry = loader.load(USER_PHYS_BASE)?;
-        crate::kinfo!(
-            "ELF loaded successfully, physical_entry={:#x}",
-            physical_entry
-        );
-
-        // Calculate virtual entry point
-        // The ELF entry point is relative to the first load segment
-        let header = loader.header();
-        let virtual_entry = header.entry_point();
-        crate::kinfo!("Virtual entry point from ELF: {:#x}", virtual_entry);
+        let stack_ptr =
+            build_initial_stack(program_name, STACK_BASE, STACK_SIZE, &program_image, None)?;
 
         let pid = NEXT_PID.fetch_add(1, Ordering::SeqCst);
 
-        // Initialize user stack
-        let stack_base = STACK_BASE; // Virtual stack base (identity mapped)
-        let stack_size = STACK_SIZE;
-        // SysV ABI expects 16-byte alignment before a CALL instruction pushes the
-        // return RIP. Because we jump directly into user mode with IRET (no call),
-        // we need to enter with RSP % 16 == 8 so that typical function prologues
-        // realign the stack correctly before using SSE instructions (e.g. movaps).
-        let stack_top = stack_base + stack_size - 8;
-
-        let process = Process {
+        Ok(Process {
             pid,
-            ppid: 0, // Will be set by caller if needed (init has ppid=0)
+            ppid: 0,
             state: ProcessState::Ready,
-            entry_point: virtual_entry, // Use virtual entry point for Ring 3 execution
-            stack_top,
+            entry_point: program_image.entry_point,
+            stack_top: stack_ptr,
             heap_start: HEAP_BASE,
             heap_end: HEAP_BASE + HEAP_SIZE,
-            signal_state: crate::signal::SignalState::new(), // Initialize signal handling
-        };
-
-        Ok(process)
+            signal_state: crate::signal::SignalState::new(),
+        })
     }
 
     /// Set parent process ID (POSIX)
@@ -255,6 +207,166 @@ impl Process {
         // If we get here, iretq failed
         crate::kerror!("Failed to jump to user mode!");
     }
+}
+
+struct UserStackBuilder {
+    cursor: u64,
+    lower_bound: u64,
+}
+
+impl UserStackBuilder {
+    fn new(base: u64, size: u64) -> Self {
+        Self {
+            cursor: base + size,
+            lower_bound: base,
+        }
+    }
+
+    fn current_ptr(&self) -> u64 {
+        self.cursor
+    }
+
+    fn pad_to_alignment(&mut self, align: u64) -> Result<(), &'static str> {
+        debug_assert!(align.is_power_of_two());
+        if align == 0 {
+            return Ok(());
+        }
+
+        let mask = align - 1;
+        let remainder = self.cursor & mask;
+        if remainder == 0 {
+            return Ok(());
+        }
+
+        let padding = remainder;
+        self.cursor = self.cursor.checked_sub(padding).ok_or("Stack overflow")?;
+        if self.cursor < self.lower_bound {
+            return Err("Stack overflow");
+        }
+
+        unsafe {
+            ptr::write_bytes(self.cursor as *mut u8, 0, padding as usize);
+        }
+
+        Ok(())
+    }
+
+    fn push_bytes(&mut self, bytes: &[u8]) -> Result<u64, &'static str> {
+        if bytes.is_empty() {
+            return Ok(self.cursor);
+        }
+
+        let len = bytes.len() as u64;
+        self.cursor = self.cursor.checked_sub(len).ok_or("Stack overflow")?;
+        if self.cursor < self.lower_bound {
+            return Err("Stack overflow");
+        }
+
+        unsafe {
+            ptr::copy_nonoverlapping(bytes.as_ptr(), self.cursor as *mut u8, bytes.len());
+        }
+
+        Ok(self.cursor)
+    }
+
+    fn push_cstring(&mut self, bytes: &[u8]) -> Result<u64, &'static str> {
+        let null_ptr = self.push_bytes(&[0])?;
+        if bytes.is_empty() {
+            return Ok(null_ptr);
+        }
+        self.push_bytes(bytes)
+    }
+
+    fn push_u64(&mut self, value: u64) -> Result<u64, &'static str> {
+        self.pad_to_alignment(8)?;
+        self.cursor = self.cursor.checked_sub(8).ok_or("Stack overflow")?;
+        if self.cursor < self.lower_bound {
+            return Err("Stack overflow");
+        }
+        unsafe {
+            (self.cursor as *mut u64).write(value);
+        }
+        Ok(self.cursor)
+    }
+}
+
+fn build_initial_stack(
+    program_name: &[u8],
+    stack_base: u64,
+    stack_size: u64,
+    program: &LoadResult,
+    interpreter: Option<&LoadResult>,
+) -> Result<u64, &'static str> {
+    let mut builder = UserStackBuilder::new(stack_base, stack_size);
+
+    let random_ptr = builder.push_bytes(&STACK_RANDOM_SEED)?;
+    let argv0_ptr = if program_name.is_empty() {
+        None
+    } else {
+        Some(builder.push_cstring(program_name)?)
+    };
+
+    builder.pad_to_alignment(16)?;
+
+    const AUX_MAX: usize = 16;
+    let mut aux_entries: [(u64, u64); AUX_MAX] = [(AT_NULL, 0); AUX_MAX];
+    let mut aux_len: usize = 0;
+
+    aux_entries[aux_len] = (AT_PHDR, program.phdr_vaddr);
+    aux_len += 1;
+    aux_entries[aux_len] = (AT_PHENT, program.phentsize as u64);
+    aux_len += 1;
+    aux_entries[aux_len] = (AT_PHNUM, program.phnum as u64);
+    aux_len += 1;
+    aux_entries[aux_len] = (AT_PAGESZ, 4096);
+    aux_len += 1;
+
+    if let Some(interp) = interpreter {
+        aux_entries[aux_len] = (AT_BASE, interp.base_addr);
+        aux_len += 1;
+    }
+
+    aux_entries[aux_len] = (AT_FLAGS, 0);
+    aux_len += 1;
+    aux_entries[aux_len] = (AT_ENTRY, program.entry_point);
+    aux_len += 1;
+    aux_entries[aux_len] = (AT_UID, 0);
+    aux_len += 1;
+    aux_entries[aux_len] = (AT_EUID, 0);
+    aux_len += 1;
+    aux_entries[aux_len] = (AT_GID, 0);
+    aux_len += 1;
+    aux_entries[aux_len] = (AT_EGID, 0);
+    aux_len += 1;
+    aux_entries[aux_len] = (AT_RANDOM, random_ptr);
+    aux_len += 1;
+
+    if let Some(ptr) = argv0_ptr {
+        aux_entries[aux_len] = (AT_EXECFN, ptr);
+        aux_len += 1;
+    }
+
+    aux_entries[aux_len] = (AT_NULL, 0);
+    aux_len += 1;
+
+    for (key, value) in aux_entries[..aux_len].iter().rev() {
+        builder.push_u64(*value)?;
+        builder.push_u64(*key)?;
+    }
+
+    builder.push_u64(0)?; // envp NULL
+    builder.push_u64(0)?; // argv NULL terminator
+
+    if let Some(ptr) = argv0_ptr {
+        builder.push_u64(ptr)?;
+    }
+
+    let argc = if argv0_ptr.is_some() { 1 } else { 0 };
+
+    builder.pad_to_alignment(16)?;
+    builder.push_u64(argc as u64)?;
+
+    Ok(builder.current_ptr())
 }
 
 /// Jump to user mode (Ring 3) and execute code at given address

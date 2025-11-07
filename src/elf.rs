@@ -146,6 +146,25 @@ pub struct ElfLoader {
     data: &'static [u8],
 }
 
+/// Result information describing how an ELF image was loaded into memory.
+#[derive(Debug, Clone, Copy)]
+pub struct LoadResult {
+    /// Final entry point address to transfer control to.
+    pub entry_point: u64,
+    /// Runtime base address where the first PT_LOAD segment was placed.
+    pub base_addr: u64,
+    /// Original virtual address of the first PT_LOAD segment.
+    pub first_load_vaddr: u64,
+    /// Difference between runtime base address and original virtual address.
+    pub load_bias: i64,
+    /// Runtime virtual address of the program headers table.
+    pub phdr_vaddr: u64,
+    /// Size in bytes of each program header entry.
+    pub phentsize: u16,
+    /// Number of program header entries.
+    pub phnum: u16,
+}
+
 impl ElfLoader {
     /// Create a new ELF loader from raw bytes
     pub fn new(data: &'static [u8]) -> Result<Self, &'static str> {
@@ -304,7 +323,7 @@ impl ElfLoader {
 
             let p_type =
                 unsafe { ptr::read_unaligned(self.data.as_ptr().add(ph_offset) as *const u32) };
-            
+
             if p_type == PhType::Interp as u32 {
                 let p_offset = unsafe {
                     ptr::read_unaligned(self.data.as_ptr().add(ph_offset + 8) as *const u64)
@@ -319,10 +338,13 @@ impl ElfLoader {
 
                 // The interpreter path is null-terminated
                 let interp_bytes = &self.data[p_offset..p_offset + p_filesz];
-                
+
                 // Find the null terminator
-                let null_pos = interp_bytes.iter().position(|&b| b == 0).unwrap_or(p_filesz);
-                
+                let null_pos = interp_bytes
+                    .iter()
+                    .position(|&b| b == 0)
+                    .unwrap_or(p_filesz);
+
                 // Convert to string
                 if let Ok(s) = core::str::from_utf8(&interp_bytes[..null_pos]) {
                     return Some(s);
@@ -336,7 +358,7 @@ impl ElfLoader {
     /// Load the ELF into memory at the specified base address
     /// For position-independent executables, base_addr is used as offset
     /// For static executables (with absolute addresses), segments are loaded at their p_vaddr
-    pub fn load(&self, base_addr: u64) -> Result<u64, &'static str> {
+    pub fn load(&self, base_addr: u64) -> Result<LoadResult, &'static str> {
         use core::ptr;
 
         let e_phoff =
@@ -351,6 +373,8 @@ impl ElfLoader {
         // the executable at an arbitrary physical base while preserving the
         // virtual addresses expected by the binary.
         let mut first_load_vaddr: Option<u64> = None;
+        let mut first_load_offset: Option<u64> = None;
+        let mut first_load_filesz: Option<u64> = None;
         for i in 0..e_phnum {
             let ph_offset = e_phoff + i * e_phentsize;
             if ph_offset + 56 > self.data.len() {
@@ -363,12 +387,25 @@ impl ElfLoader {
                 let p_vaddr = unsafe {
                     ptr::read_unaligned(self.data.as_ptr().add(ph_offset + 16) as *const u64)
                 };
+                let p_offset = unsafe {
+                    ptr::read_unaligned(self.data.as_ptr().add(ph_offset + 8) as *const u64)
+                };
+                let p_filesz = unsafe {
+                    ptr::read_unaligned(self.data.as_ptr().add(ph_offset + 32) as *const u64)
+                };
                 first_load_vaddr = Some(p_vaddr);
+                first_load_offset = Some(p_offset);
+                first_load_filesz = Some(p_filesz);
                 break;
             }
         }
 
         let first_load_vaddr = first_load_vaddr.ok_or("ELF has no loadable segments")?;
+        let first_load_offset = first_load_offset.ok_or("ELF has no loadable segments")?;
+        let first_load_filesz = first_load_filesz.ok_or("ELF has no loadable segments")?;
+
+        let header = self.header();
+        let mut phdr_runtime: Option<u64> = None;
 
         for i in 0..e_phnum {
             let ph_offset = e_phoff + i * e_phentsize;
@@ -458,6 +495,24 @@ impl ElfLoader {
                 }
                 crate::kinfo!("Copy complete to {:#x}", target_addr);
             }
+
+            if phdr_runtime.is_none() {
+                if p_type == PhType::Phdr as u32 {
+                    phdr_runtime = Some(target_addr);
+                } else {
+                    let ph_table_offset = header.e_phoff as u64;
+                    let ph_table_size = (header.e_phentsize as u64) * (header.e_phnum as u64);
+                    if ph_table_size != 0 {
+                        let seg_offset = p_offset_val as u64;
+                        if ph_table_offset >= seg_offset
+                            && ph_table_offset + ph_table_size <= seg_offset + p_filesz as u64
+                        {
+                            let within = ph_table_offset - seg_offset;
+                            phdr_runtime = Some(target_addr + within);
+                        }
+                    }
+                }
+            }
         }
 
         // Get entry point and relocate it
@@ -468,6 +523,30 @@ impl ElfLoader {
         // Use the first load segment as the base for relocation
         let relocated_entry = base_addr + (e_entry - first_load_vaddr);
 
-        Ok(relocated_entry)
+        if phdr_runtime.is_none() {
+            let ph_table_offset = header.e_phoff as u64;
+            let ph_table_size = (header.e_phentsize as u64) * (header.e_phnum as u64);
+            if ph_table_size != 0
+                && ph_table_offset >= first_load_offset
+                && ph_table_offset + ph_table_size <= first_load_offset + first_load_filesz
+            {
+                let within = ph_table_offset - first_load_offset;
+                phdr_runtime = Some(base_addr + within);
+            }
+        }
+
+        let phdr_vaddr = phdr_runtime.ok_or("Failed to locate program headers in memory")?;
+
+        let load_bias = base_addr as i64 - first_load_vaddr as i64;
+
+        Ok(LoadResult {
+            entry_point: relocated_entry,
+            base_addr,
+            first_load_vaddr,
+            load_bias,
+            phdr_vaddr,
+            phentsize: header.e_phentsize,
+            phnum: header.e_phnum,
+        })
     }
 }

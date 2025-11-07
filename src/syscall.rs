@@ -1590,7 +1590,7 @@ pub extern "C" fn syscall_dispatch(nr: u64, arg1: u64, arg2: u64, arg3: u64) -> 
         SYS_GETPID => {
             crate::kdebug!("SYS_GETPID called");
             1
-        },
+        }
         SYS_GETPPID => syscall_getppid(),
         SYS_SCHED_YIELD => syscall_sched_yield(),
         SYS_LIST_FILES => syscall_list_files(
