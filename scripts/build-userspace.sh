@@ -14,7 +14,7 @@ echo "Building minimal initramfs"
 echo "========================================"
 
 # Create minimal directory structure for initramfs
-mkdir -p "$BUILD_DIR"/{bin,sbin,dev,proc,sys,sysroot}
+mkdir -p "$BUILD_DIR"/{bin,sbin,dev,proc,sys,sysroot,lib64}
 
 # Build only essential tools for initramfs
 echo "Building emergency shell (for recovery)..."
@@ -48,6 +48,16 @@ cp "target/x86_64-nexaos/release/sh" "$BUILD_DIR/bin/sh"
 strip --strip-all "$BUILD_DIR/bin/sh" 2>/dev/null || true
 
 echo "✓ Emergency shell built: $(stat -c%s "$BUILD_DIR/bin/sh") bytes"
+
+# Copy dynamic linker for dynamically linked programs
+echo "Copying dynamic linker to initramfs..."
+if [ -f "/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2" ]; then
+    cp "/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2" "$BUILD_DIR/lib64/"
+    LINKER_SIZE=$(stat -c%s "$BUILD_DIR/lib64/ld-linux-x86-64.so.2")
+    echo "✓ Added dynamic linker: $LINKER_SIZE bytes"
+else
+    echo "⚠ Warning: System dynamic linker not found at /lib/x86_64-linux-gnu/ld-linux-x86-64.so.2"
+fi
 
 # Create init script for initramfs
 # This script is executed by the kernel early in the boot process
@@ -125,12 +135,17 @@ echo "Creating initramfs CPIO archive..."
 # Create a clean staging directory to avoid including build artifacts
 STAGING_DIR="$BUILD_DIR/staging"
 rm -rf "$STAGING_DIR"
-mkdir -p "$STAGING_DIR"/{bin,dev,proc,sys,sysroot}
+mkdir -p "$STAGING_DIR"/{bin,dev,proc,sys,sysroot,lib64}
 
 # Copy only the essential files
 cp "$BUILD_DIR/init" "$STAGING_DIR/"
 cp "$BUILD_DIR/README.txt" "$STAGING_DIR/"
 cp "$BUILD_DIR/bin/sh" "$STAGING_DIR/bin/"
+
+# Copy dynamic linker if it exists
+if [ -f "$BUILD_DIR/lib64/ld-linux-x86-64.so.2" ]; then
+    cp "$BUILD_DIR/lib64/ld-linux-x86-64.so.2" "$STAGING_DIR/lib64/"
+fi
 
 # Include rootfs.ext2 if it exists (for testing until real block devices work)
 # Note: This embeds the entire root filesystem in initramfs for convenience.

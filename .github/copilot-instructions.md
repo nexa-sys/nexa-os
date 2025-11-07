@@ -115,11 +115,14 @@ fn syscall3(n: u64, a1: u64, a2: u64, a3: u64) -> u64 {
 - Built with `-Z build-std=core` and custom target
 
 ### ELF Loading
-- Custom ELF parser in `src/elf.rs`
-- Loads to fixed physical addresses (0x200000+)
+- Custom ELF parser in `src/elf.rs` with PT_INTERP detection
+- Supports both static and dynamically linked executables
+- Static binaries: Load to fixed physical addresses (0x400000+)
+- Dynamic binaries: Load program at 0x400000, interpreter at 0xA00000
 - Entry point calculation: `header.entry_point()`
-- No dynamic linking support
+- Dynamic linking: Detects PT_INTERP, loads ld-linux.so from `/lib64/`
 - Process creation: `Process::from_elf(data)` returns executable process
+- Note: Auxiliary vectors not yet implemented for full dynamic linking support
 
 ### Filesystem Architecture
 - **Dual filesystem design**: Initramfs for boot-time files, memory filesystem for runtime data

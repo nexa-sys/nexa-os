@@ -9,4 +9,8 @@ crate-type = ["rlib", "staticlib"]
 [profile.release]
 panic = "abort"
 
+[features]
+default = []
+use-std = []
+
 [dependencies]

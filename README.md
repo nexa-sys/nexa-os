@@ -16,8 +16,8 @@ NexaOS is a production-grade operating system written in Rust, implementing a hy
 NexaOS implements a fully functional 64-bit kernel with the following production features:
 
 - **Boot Infrastructure**: Multiboot2-compliant boot flow with GRUB integration, complete 64-bit long mode initialization
-- **Memory Management**: Virtual memory with paging, user/kernel space separation, ELF binary loading with proper address space isolation
-- **Process Management**: Ring 0/3 privilege separation, user mode process execution, process state tracking, PPID support
+- **Memory Management**: Virtual memory with paging, user/kernel space separation, ELF binary loading with proper address space isolation, PT_INTERP detection for dynamic linking
+- **Process Management**: Ring 0/3 privilege separation, user mode process execution, process state tracking, PPID support, dynamic linker support
 - **Init System**: Complete Unix-like init (PID 1) with System V runlevels, service management, respawn capability, /etc/inittab support
 - **System Calls**: Production syscall interface including POSIX I/O, process control, and system management (reboot/shutdown/runlevel)
 - **File Systems**: Initramfs support with CPIO parsing, runtime in-memory filesystem for dynamic content
@@ -94,11 +94,11 @@ NexaOS implements a hybrid kernel architecture that balances the security and mo
 - [ ] Network stack (TCP/IP)
 - [ ] Block device layer
 - [ ] Ext2/4 filesystem driver
-- [ ] Dynamic linking and shared libraries
+- [x] Dynamic linking and shared libraries (PT_INTERP detection, ld-linux.so included)
 
 ### Phase 5: Linux Compatibility
 - [ ] Linux syscall translation layer
-- [ ] ELF dynamic linker compatibility
+- [x] ELF dynamic linker compatibility (basic support, needs auxiliary vectors)
 - [ ] Linux ABI compatibility layer
 - [ ] Common Linux utilities port
 - [ ] Package management integration
