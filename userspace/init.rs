@@ -15,10 +15,6 @@
 //! - Signal handling for system control
 //! - Service respawn on failure
 
-// Use #![no_main] to bypass Rust's standard main wrapper
-// We provide our own main function with C ABI that crt.rs can call
-#![no_main]
-
 use std::arch::asm;
 use std::io::{self, Write};
 
@@ -406,10 +402,19 @@ fn load_service_catalog() -> ServiceCatalog {
             }
         };
 
+        log_info("Unit catalog file opened");
+
         let read_count = match file.read(&mut CONFIG_BUFFER) {
             Ok(n) => n,
             Err(_) => 0,
         };
+
+        if read_count > 0 {
+            let mut diag_buf = [0u8; 32];
+            print("         Bytes read: ");
+            print(itoa(read_count as u64, &mut diag_buf));
+            print("\n");
+        }
 
         if read_count == 0 {
             return ServiceCatalog {
@@ -421,6 +426,8 @@ fn load_service_catalog() -> ServiceCatalog {
 
         let usable = std::cmp::min(read_count, CONFIG_BUFFER.len());
         let service_count = parse_unit_file(usable);
+
+        log_info("Unit catalog parsed successfully");
 
         ServiceCatalog {
             services: &SERVICE_CONFIGS[0..service_count],
@@ -1706,19 +1713,8 @@ fn authenticate_user(username: &[u8], password: &[u8]) -> bool {
 // This allows std::io, TLS, and other std features to work correctly
 // Using extern "C" to provide the C ABI main function directly
 // argc/argv are ignored since we don't use command-line arguments
-#[no_mangle]
-pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
-    // First test: Try to write directly via syscall BEFORE any std::io
-    print_raw("[DEBUG] Entered main(), before std initialization\n");
-    
-    // Try to use std::io
-    print_raw("[DEBUG] Skipping std::io::stdout(); using direct syscall writes.\n");
-    print_raw("[DEBUG] about to call init_main()\n");
-    
-    // Now call the actual init main
-    init_main();
-    // Never reached (init_main has infinite loop)
-    0
+fn main() -> ! {
+    init_main()
 }
 
 fn debug_print_ptr(label: &str, value: u64) {
