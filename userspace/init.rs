@@ -1,7 +1,3 @@
-#![no_std]
-#![no_main]
-#![feature(lang_items)]
-
 //! /sbin/init - System initialization program (PID 1)
 //! 
 //! Hybrid kernel init system with process supervision
@@ -19,7 +15,8 @@
 //! - Signal handling for system control
 //! - Service respawn on failure
 
-use core::{arch::asm, cell::UnsafeCell, panic::PanicInfo};
+use std::arch::asm;
+use std::io::{self, Write};
 
 // System call numbers
 const SYS_READ: u64 = 0;
@@ -38,39 +35,16 @@ const SYS_USER_LOGIN: u64 = 221;
 const SYS_GETERRNO: u64 = 201;
 
 // Standard file descriptors
-const STDIN: u64 = 0;
-const STDOUT: u64 = 1;
-const STDERR: u64 = 2;
-
-const WRITE_SCRATCH_SIZE: usize = 128;
-
-struct ScratchBuffer<const N: usize> {
-    inner: UnsafeCell<[u8; N]>,
-}
-
-impl<const N: usize> ScratchBuffer<N> {
-    const fn new() -> Self {
-        Self {
-            inner: UnsafeCell::new([0; N]),
-        }
-    }
-
-    unsafe fn get(&self) -> &mut [u8; N] {
-        &mut *self.inner.get()
-    }
-}
-
-unsafe impl<const N: usize> Sync for ScratchBuffer<N> {}
-
-static WRITE_SCRATCH: ScratchBuffer<WRITE_SCRATCH_SIZE> = ScratchBuffer::new();
+const STDIN: i32 = 0;
+const STDOUT: i32 = 1;
+const STDERR: i32 = 2;
 
 // Service management constants
 const MAX_RESPAWN_COUNT: u32 = 5;  // Max respawns within window
 const RESPAWN_WINDOW_SEC: u64 = 60; // Respawn window in seconds
 const RESTART_DELAY_MS: u64 = 1000; // Delay between restarts
 
-/// Syscall wrapper
-/// NexaOS uses int 0x81 for system calls (not syscall instruction)
+// Direct syscall implementations (inline, no nrlib dependency)
 #[inline(always)]
 fn syscall3(n: u64, a1: u64, a2: u64, a3: u64) -> u64 {
     let ret: u64;
@@ -104,85 +78,29 @@ fn syscall0(n: u64) -> u64 {
     syscall3(n, 0, 0, 0)
 }
 
-/// Write to file descriptor
-fn write(fd: u64, buf: &[u8]) -> isize {
-    const USER_BASE: u64 = 0x400000;
-    const USER_END: u64 = 0xA00000; // exclusive upper bound
-
-    if buf.is_empty() {
-        return 0;
-    }
-
-    let ptr = buf.as_ptr() as u64;
-    let len = buf.len() as u64;
-
-    let in_user_range = ptr >= USER_BASE
-        && ptr.checked_add(len).map_or(false, |end| end <= USER_END);
-
-    if in_user_range {
-        let ret = syscall3(SYS_WRITE, fd, ptr, len);
-        return if ret == u64::MAX { -1 } else { ret as isize };
-    }
-
-    // Some buffers (e.g. config-backed strings) may live outside the user window, so
-    // bounce them through a statically allocated user-mapped buffer before writing.
-    let mut total_written = 0usize;
-    let mut copied = 0usize;
-
-    while copied < buf.len() {
-        let chunk = core::cmp::min(WRITE_SCRATCH_SIZE, buf.len() - copied);
-        let ret = unsafe {
-            let scratch = WRITE_SCRATCH.get();
-            core::ptr::copy_nonoverlapping(
-                buf.as_ptr().add(copied),
-                scratch.as_mut_ptr(),
-                chunk,
-            );
-            syscall3(SYS_WRITE, fd, scratch.as_ptr() as u64, chunk as u64)
-        };
-
-        if ret == u64::MAX {
-            return if total_written == 0 { -1 } else { total_written as isize };
-        }
-
-        let wrote = ret as usize;
-        total_written += wrote;
-        if wrote != chunk {
-            break;
-        }
-
-        copied += chunk;
-    }
-
-    total_written as isize
-}
-
 /// Print string to stdout
 fn print(s: &str) {
-    write(STDOUT, s.as_bytes());
+    let _ = io::stdout().write_all(s.as_bytes());
 }
 
 /// Print string to stderr
 fn eprint(s: &str) {
-    write(STDERR, s.as_bytes());
+    let _ = io::stderr().write_all(s.as_bytes());
 }
 
 /// Exit process
 fn exit(code: i32) -> ! {
-    syscall1(SYS_EXIT, code as u64);
-    loop {
-        unsafe { asm!("hlt") }
-    }
+    std::process::exit(code)
 }
 
 /// Get process ID
-fn getpid() -> u64 {
-    syscall0(SYS_GETPID)
+fn getpid() -> i32 {
+    syscall0(SYS_GETPID) as i32
 }
 
 /// Get parent process ID
-fn getppid() -> u64 {
-    syscall0(SYS_GETPPID)
+fn getppid() -> i32 {
+    syscall0(SYS_GETPPID) as i32
 }
 
 /// Fork process
@@ -245,7 +163,7 @@ fn wait4(pid: i64, status: *mut i32, options: i32) -> i64 {
 fn itoa(mut n: u64, buf: &mut [u8]) -> &str {
     if n == 0 {
         buf[0] = b'0';
-        return core::str::from_utf8(&buf[0..1]).unwrap();
+        return std::str::from_utf8(&buf[0..1]).unwrap();
     }
     
     let mut i = 0;
@@ -260,14 +178,14 @@ fn itoa(mut n: u64, buf: &mut [u8]) -> &str {
         buf.swap(j, i - 1 - j);
     }
     
-    core::str::from_utf8(&buf[0..i]).unwrap()
+    std::str::from_utf8(&buf[0..i]).unwrap()
 }
 
 #[allow(dead_code)]
 fn itoa_hex(mut n: u64, buf: &mut [u8]) -> &str {
     if n == 0 {
         buf[0] = b'0';
-        return core::str::from_utf8(&buf[0..1]).unwrap();
+        return std::str::from_utf8(&buf[0..1]).unwrap();
     }
 
     let mut i = 0;
@@ -285,7 +203,7 @@ fn itoa_hex(mut n: u64, buf: &mut [u8]) -> &str {
         buf.swap(j, i - 1 - j);
     }
 
-    core::str::from_utf8(&buf[..i]).unwrap()
+    std::str::from_utf8(&buf[..i]).unwrap()
 }
 
 const CONFIG_PATH: &str = "/etc/ni/ni.conf";
@@ -446,8 +364,26 @@ fn load_service_catalog() -> ServiceCatalog {
             *byte = 0;
         }
 
-        let fd = open(CONFIG_PATH);
-        if fd == u64::MAX {
+        use std::fs::File;
+        use std::io::Read;
+        
+        let mut file = match File::open(CONFIG_PATH) {
+            Ok(f) => f,
+            Err(_) => {
+                return ServiceCatalog {
+                    services: &SERVICE_CONFIGS[0..0],
+                    default_target: DEFAULT_BOOT_TARGET,
+                    fallback_target: FALLBACK_BOOT_TARGET,
+                };
+            }
+        };
+
+        let read_count = match file.read(&mut CONFIG_BUFFER) {
+            Ok(n) => n,
+            Err(_) => 0,
+        };
+
+        if read_count == 0 {
             return ServiceCatalog {
                 services: &SERVICE_CONFIGS[0..0],
                 default_target: DEFAULT_BOOT_TARGET,
@@ -455,18 +391,7 @@ fn load_service_catalog() -> ServiceCatalog {
             };
         }
 
-        let read_count = read(fd, CONFIG_BUFFER.as_mut_ptr(), CONFIG_BUFFER.len());
-        close(fd);
-
-        if read_count == 0 || read_count == u64::MAX {
-            return ServiceCatalog {
-                services: &SERVICE_CONFIGS[0..0],
-                default_target: DEFAULT_BOOT_TARGET,
-                fallback_target: FALLBACK_BOOT_TARGET,
-            };
-        }
-
-        let usable = core::cmp::min(read_count as usize, CONFIG_BUFFER.len());
+        let usable = std::cmp::min(read_count, CONFIG_BUFFER.len());
         let service_count = parse_unit_file(usable);
 
         ServiceCatalog {
@@ -678,7 +603,7 @@ fn store_service_field(
         }
         STRING_LENGTHS[slot] = copy_len;
 
-        core::str::from_utf8_unchecked(&dest[..copy_len])
+        std::str::from_utf8_unchecked(&dest[..copy_len])
     }
 }
 
@@ -783,7 +708,7 @@ fn slice_to_static(slice: &[u8]) -> &'static str {
         if end > CONFIG_BUFFER.len() {
             return EMPTY_STR;
         }
-        core::str::from_utf8_unchecked(core::slice::from_raw_parts(
+        std::str::from_utf8_unchecked(std::slice::from_raw_parts(
             CONFIG_BUFFER.as_ptr().add(offset),
             slice.len(),
         ))
@@ -880,7 +805,7 @@ fn to_ascii_lower(value: &'static str) -> &'static str {
             let b = ptr.add(i).read();
             ptr.add(i).write(b.to_ascii_lowercase());
         }
-        core::str::from_utf8_unchecked(core::slice::from_raw_parts(ptr, bytes.len()))
+        std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr, bytes.len()))
     }
 }
 
@@ -1049,10 +974,10 @@ fn init_main() -> ! {
     
     log_start("Verifying init process identity");
     print("         PID: ");
-    print(itoa(pid, &mut buf));
+    print(itoa(pid as u64, &mut buf));
     print("\n");
     print("         PPID: ");
-    print(itoa(ppid, &mut buf));
+    print(itoa(ppid as u64, &mut buf));
     print("\n");
     
     if pid != 1 {
@@ -1305,15 +1230,15 @@ fn start_service(service: &ServiceConfig, _buf: &mut [u8]) -> i64 {
         path_with_null[exec_bytes.len()] = 0;
         
         let exec_path = unsafe {
-            core::str::from_utf8_unchecked(&path_with_null[..exec_bytes.len()])
+            std::str::from_utf8_unchecked(&path_with_null[..exec_bytes.len()])
         };
         
         let argv: [*const u8; 2] = [
             path_with_null.as_ptr(),
-            core::ptr::null(),
+            std::ptr::null(),
         ];
         let envp: [*const u8; 1] = [
-            core::ptr::null(),
+            std::ptr::null(),
         ];
         
         execve(exec_path, &argv, &envp);
@@ -1432,14 +1357,14 @@ fn run_service_loop(service_state: &mut ServiceState, service: &ServiceConfig, b
         // Execute unit directly - this jumps and never returns normally
         let argv: [*const u8; 2] = [
             path_with_null.as_ptr(),
-            core::ptr::null(),
+            std::ptr::null(),
         ];
         let envp: [*const u8; 1] = [
-            core::ptr::null(),
+            std::ptr::null(),
         ];
 
         let exec_path = unsafe {
-            core::str::from_utf8_unchecked(&path_with_null[..exec_bytes.len()])
+            std::str::from_utf8_unchecked(&path_with_null[..exec_bytes.len()])
         };
 
         execve(exec_path, &argv, &envp);
@@ -1550,15 +1475,15 @@ fn show_login_and_exec_shell(buf: &mut [u8]) -> ! {
         path_with_null[shell_bytes.len()] = 0;
 
         let exec_path = unsafe {
-            core::str::from_utf8_unchecked(&path_with_null[..shell_bytes.len()])
+            std::str::from_utf8_unchecked(&path_with_null[..shell_bytes.len()])
         };
 
         let argv: [*const u8; 2] = [
             path_with_null.as_ptr(),
-            core::ptr::null(),
+            std::ptr::null(),
         ];
         let envp: [*const u8; 1] = [
-            core::ptr::null(),
+            std::ptr::null(),
         ];
 
         execve(exec_path, &argv, &envp);
@@ -1574,15 +1499,19 @@ fn show_login_and_exec_shell(buf: &mut [u8]) -> ! {
 
 /// Read a line from stdin
 fn read_line_input(buf: &mut [u8]) -> usize {
+    use std::io::Read;
+    let mut stdin = io::stdin();
     let mut pos = 0;
     let mut tmp = [0u8; 1];
     
     while pos < buf.len() {
-        let n = read(STDIN, tmp.as_mut_ptr(), 1);
-        if n == u64::MAX {
-            debug_print_len("read_line_input_err", pos);
-            break;
-        }
+        let n = match stdin.read(&mut tmp) {
+            Ok(n) => n,
+            Err(_) => {
+                debug_print_len("read_line_input_err", pos);
+                break;
+            }
+        };
         if n == 0 {
             debug_print_len("read_line_input_retry", pos);
             continue;
@@ -1615,7 +1544,7 @@ fn read_line_input(buf: &mut [u8]) -> usize {
         if ch >= 32 && ch < 127 {
             buf[pos] = ch;
             pos += 1;
-            write(STDOUT, &[ch]);
+            let _ = io::stdout().write_all(&[ch]);
         }
     }
     
@@ -1624,15 +1553,19 @@ fn read_line_input(buf: &mut [u8]) -> usize {
 
 /// Read password (masked input)
 fn read_password_input(buf: &mut [u8]) -> usize {
+    use std::io::Read;
+    let mut stdin = io::stdin();
     let mut pos = 0;
     let mut tmp = [0u8; 1];
     
     while pos < buf.len() {
-        let n = read(STDIN, tmp.as_mut_ptr(), 1);
-        if n == u64::MAX {
-            debug_print_len("read_password_input_err", pos);
-            break;
-        }
+        let n = match stdin.read(&mut tmp) {
+            Ok(n) => n,
+            Err(_) => {
+                debug_print_len("read_password_input_err", pos);
+                break;
+            }
+        };
         if n == 0 {
             debug_print_len("read_password_input_retry", pos);
             continue;
@@ -1645,7 +1578,7 @@ fn read_password_input(buf: &mut [u8]) -> usize {
         if ch == 8 || ch == 127 {
             if pos > 0 {
                 pos -= 1;
-                print("\x08 \x08");
+                let _ = io::stdout().write_all(b"\x08 \x08");
             }
             continue;
         }
@@ -1656,7 +1589,7 @@ fn read_password_input(buf: &mut [u8]) -> usize {
                 debug_print_len("read_password_input_skip_newline", pos);
                 continue;
             }
-            print("\n");
+            let _ = io::stdout().write_all(b"\n");
             break;
         }
         
@@ -1664,7 +1597,7 @@ fn read_password_input(buf: &mut [u8]) -> usize {
         if ch >= 32 && ch < 127 {
             buf[pos] = ch;
             pos += 1;
-            print("*");
+            let _ = io::stdout().write_all(b"*");
         }
     }
     
@@ -1735,26 +1668,8 @@ fn authenticate_user(username: &[u8], password: &[u8]) -> bool {
     }
 }
 
-#[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
-    eprint("\ninit: PANIC: Init process panicked!\n");
-    eprint("init: FATAL: System cannot continue without PID 1\n");
-    exit(1);
-}
-
-
-#[lang = "eh_personality"]
-extern "C" fn eh_personality() {}
-
-#[no_mangle]
-pub extern "C" fn _start() -> ! {
-    init_main()
-}
-
-// Dummy main function (never called, but needed for compilation)
-#[allow(dead_code)]
 fn main() {
-    loop {}
+    init_main()
 }
 
 fn debug_print_ptr(label: &str, value: u64) {
@@ -1776,7 +1691,7 @@ fn debug_print_ptr(label: &str, value: u64) {
         };
     }
 
-    let _ = write(STDOUT, &buf);
+    let _ = io::stdout().write_all(&buf);
     print("\n");
 }
 

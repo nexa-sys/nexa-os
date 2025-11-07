@@ -31,18 +31,22 @@ edition = "2021"
 [[bin]]
 name = "ni"
 path = "../../userspace/init.rs"
+required-features = []
 
 [[bin]]
 name = "sh"
 path = "../../userspace/shell.rs"
+required-features = ["use-nrlib"]
 
 [[bin]]
 name = "getty"
 path = "../../userspace/getty.rs"
+required-features = ["use-nrlib"]
 
 [[bin]]
 name = "login"
 path = "../../userspace/login.rs"
+required-features = ["use-nrlib"]
 
 [profile.release]
 panic = "abort"
@@ -52,20 +56,40 @@ opt-level = 2
 lto = false
 
 [dependencies]
-nrlib = { path = "../../userspace/nrlib" }
+nrlib = { path = "../../userspace/nrlib", optional = true }
+
+[features]
+default = ["use-nrlib"]
+use-nrlib = ["nrlib"]
 
 EOF
 
 cd "$BUILD_DIR/userspace-build"
+
+# Build init (ni) with std, no nrlib dependency
+echo "Building ni (init) with std..."
+
+# Create stub libraries for libc and libunwind (empty archives)
+mkdir -p "$BUILD_DIR/userspace-build/sysroot/lib"
+ar rcs "$BUILD_DIR/userspace-build/sysroot/lib/libunwind.a" 2>/dev/null || true
+ar rcs "$BUILD_DIR/userspace-build/sysroot/lib/libc.a" 2>/dev/null || true
+
+RUSTFLAGS="-C opt-level=2 -C panic=abort -C linker=rust-lld -C link-arg=--image-base=0x00400000 -L $BUILD_DIR/userspace-build/sysroot/lib" \
+    cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release \
+    --bin ni --no-default-features
+
+# Build other binaries with nrlib (no_std)
+echo "Building other userspace programs (no_std + nrlib)..."
 RUSTFLAGS="-C opt-level=2 -C panic=abort -C linker=rust-lld -C link-arg=--image-base=0x00400000" \
-    cargo build -Z build-std=core --target "$PROJECT_ROOT/x86_64-nexaos.json" --release
+    cargo build -Z build-std=core --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release \
+    --bin sh --bin getty --bin login --features use-nrlib
 
 # Copy binaries to rootfs
 echo "Copying binaries to rootfs..."
-cp "target/x86_64-nexaos/release/ni" "$ROOTFS_DIR/sbin/ni"
-cp "target/x86_64-nexaos/release/getty" "$ROOTFS_DIR/sbin/getty"
-cp "target/x86_64-nexaos/release/sh" "$ROOTFS_DIR/bin/sh"
-cp "target/x86_64-nexaos/release/login" "$ROOTFS_DIR/bin/login"
+cp "target/x86_64-nexaos-userspace/release/ni" "$ROOTFS_DIR/sbin/ni"
+cp "target/x86_64-nexaos-userspace/release/getty" "$ROOTFS_DIR/sbin/getty"
+cp "target/x86_64-nexaos-userspace/release/sh" "$ROOTFS_DIR/bin/sh"
+cp "target/x86_64-nexaos-userspace/release/login" "$ROOTFS_DIR/bin/login"
 
 # Strip symbols
 strip --strip-all "$ROOTFS_DIR/sbin/ni" 2>/dev/null || true

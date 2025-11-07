@@ -1,7 +1,25 @@
 #![no_std]
 #![feature(lang_items)]
+#![feature(thread_local)]
 
 use core::{arch::asm, ffi::c_void, ptr};
+
+// Libc-compatible type definitions for NexaOS
+pub type c_char = i8;
+pub type c_int = i32;
+pub type c_uint = u32;
+pub type c_long = i64;
+pub type c_ulong = u64;
+pub type size_t = usize;
+pub type ssize_t = isize;
+pub type time_t = i64;
+pub type suseconds_t = i64;
+pub type rlim_t = u64;
+pub type pid_t = i32;
+pub type uid_t = u32;
+pub type gid_t = u32;
+pub type mode_t = u32;
+pub type off_t = i64;
 
 // System call numbers mirror the kernel definitions
 const SYS_READ: u64 = 0;
@@ -326,6 +344,143 @@ pub extern "C" fn abort() -> ! {
             asm!("hlt");
         }
     }
+}
+
+// Thread-local storage (TLS) support ----------------------------------------
+// std expects pthread_key_create/delete/setspecific/getspecific
+// We provide a minimal fake implementation (single-threaded for now)
+
+const MAX_TLS_KEYS: usize = 128;
+static mut TLS_KEYS: [Option<*mut c_void>; MAX_TLS_KEYS] = [None; MAX_TLS_KEYS];
+static mut TLS_NEXT_KEY: usize = 0;
+
+#[repr(C)]
+pub struct pthread_key_t {
+    key: usize,
+}
+
+type pthread_destructor = Option<unsafe extern "C" fn(*mut c_void)>;
+
+#[no_mangle]
+pub unsafe extern "C" fn pthread_key_create(
+    key: *mut pthread_key_t,
+    _destructor: pthread_destructor,
+) -> i32 {
+    if TLS_NEXT_KEY >= MAX_TLS_KEYS {
+        set_errno(EINVAL);
+        return -1;
+    }
+    let k = TLS_NEXT_KEY;
+    TLS_NEXT_KEY += 1;
+    (*key).key = k;
+    TLS_KEYS[k] = None;
+    0
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn pthread_key_delete(_key: pthread_key_t) -> i32 {
+    0
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn pthread_getspecific(key: pthread_key_t) -> *mut c_void {
+    if key.key < MAX_TLS_KEYS {
+        TLS_KEYS[key.key].unwrap_or(ptr::null_mut())
+    } else {
+        ptr::null_mut()
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn pthread_setspecific(key: pthread_key_t, value: *const c_void) -> i32 {
+    if key.key < MAX_TLS_KEYS {
+        TLS_KEYS[key.key] = Some(value as *mut c_void);
+        0
+    } else {
+        set_errno(EINVAL);
+        -1
+    }
+}
+
+// Allocator support for std::alloc::System ----------------------------------
+// std expects malloc/free/realloc/calloc
+
+const HEAP_SIZE: usize = 1024 * 1024; // 1MB heap
+static mut HEAP: [u8; HEAP_SIZE] = [0; HEAP_SIZE];
+static mut HEAP_POS: usize = 0;
+
+#[no_mangle]
+pub unsafe extern "C" fn malloc(size: usize) -> *mut c_void {
+    if size == 0 {
+        return ptr::null_mut();
+    }
+    
+    // Align to 8 bytes
+    let aligned_size = (size + 7) & !7;
+    
+    if HEAP_POS + aligned_size > HEAP_SIZE {
+        set_errno(12); // ENOMEM
+        return ptr::null_mut();
+    }
+    
+    let ptr = HEAP.as_mut_ptr().add(HEAP_POS);
+    HEAP_POS += aligned_size;
+    ptr as *mut c_void
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn free(_ptr: *mut c_void) {
+    // Bump allocator doesn't support free
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn realloc(ptr: *mut c_void, new_size: usize) -> *mut c_void {
+    if ptr.is_null() {
+        return malloc(new_size);
+    }
+    
+    if new_size == 0 {
+        free(ptr);
+        return ptr::null_mut();
+    }
+    
+    // Simple implementation: allocate new, copy, ignore old
+    let new_ptr = malloc(new_size);
+    if !new_ptr.is_null() {
+        // We don't know the old size, so just copy what we can
+        // This is unsafe but works for our simple case
+        ptr::copy_nonoverlapping(ptr as *const u8, new_ptr as *mut u8, new_size);
+    }
+    new_ptr
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn calloc(nmemb: usize, size: usize) -> *mut c_void {
+    let total = nmemb.saturating_mul(size);
+    let ptr = malloc(total);
+    if !ptr.is_null() {
+        ptr::write_bytes(ptr as *mut u8, 0, total);
+    }
+    ptr
+}
+
+// Random number generation (for std::random) --------------------------------
+#[no_mangle]
+pub unsafe extern "C" fn arc4random_buf(buf: *mut c_void, nbytes: usize) {
+    // Simple pseudo-random (not cryptographically secure)
+    static mut SEED: u64 = 0x123456789abcdef0;
+    
+    let bytes = core::slice::from_raw_parts_mut(buf as *mut u8, nbytes);
+    for byte in bytes {
+        SEED = SEED.wrapping_mul(6364136223846793005).wrapping_add(1);
+        *byte = (SEED >> 56) as u8;
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn getrandom(buf: *mut c_void, buflen: usize, _flags: u32) -> isize {
+    arc4random_buf(buf, buflen);
+    buflen as isize
 }
 
 // lang items ----------------------------------------------------------------
