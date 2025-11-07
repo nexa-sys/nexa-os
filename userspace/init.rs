@@ -15,6 +15,8 @@
 //! - Signal handling for system control
 //! - Service respawn on failure
 
+#![no_main]  // We define our own _start, don't use CRT's main wrapper
+
 use std::arch::asm;
 use std::io::{self, Write};
 
@@ -959,6 +961,7 @@ fn delay_ms(ms: u64) {
 
 /// Main init loop with service supervision
 fn init_main() -> ! {
+    // Now we can use std::io!
     print("\n");
     print("\x1b[1;34m=========================================\x1b[0m\n");  // Blue
     print("\x1b[1;34m  NexaOS Init (ni) - PID 1\x1b[0m\n");
@@ -1668,6 +1671,17 @@ fn authenticate_user(username: &[u8], password: &[u8]) -> bool {
     }
 }
 
+// Entry point for the init program
+// We need #[no_mangle] and extern "C" to ensure the linker can find the entry point
+// Even though we're using std, we define our own _start instead of using CRT
+#[no_mangle]
+pub extern "C" fn _start() -> ! {
+    init_main();
+    // Should never reach here (init_main has infinite loop)
+    exit(0);
+}
+
+// Main function for compatibility (not actually used as entry point)
 fn main() {
     init_main()
 }

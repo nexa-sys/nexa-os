@@ -69,10 +69,15 @@ cd "$BUILD_DIR/userspace-build"
 # Build init (ni) with std, no nrlib dependency
 echo "Building ni (init) with std..."
 
-# Create stub libraries for libc and libunwind (empty archives)
+# Create stub library for libc and libunwind
 mkdir -p "$BUILD_DIR/userspace-build/sysroot/lib"
-ar rcs "$BUILD_DIR/userspace-build/sysroot/lib/libunwind.a" 2>/dev/null || true
-ar rcs "$BUILD_DIR/userspace-build/sysroot/lib/libc.a" 2>/dev/null || true
+echo "Compiling stub libc..."
+gcc -c -O2 -fPIC -fno-stack-protector -nostdlib -ffreestanding \
+    "$PROJECT_ROOT/userspace/stub_libc.c" \
+    -o "$BUILD_DIR/userspace-build/sysroot/lib/stub_libc.o"
+ar rcs "$BUILD_DIR/userspace-build/sysroot/lib/libc.a" "$BUILD_DIR/userspace-build/sysroot/lib/stub_libc.o"
+# libunwind symbols are also in stub_libc.c, so copy it
+cp "$BUILD_DIR/userspace-build/sysroot/lib/libc.a" "$BUILD_DIR/userspace-build/sysroot/lib/libunwind.a"
 
 RUSTFLAGS="-C opt-level=2 -C panic=abort -C linker=rust-lld -C link-arg=--image-base=0x00400000 -L $BUILD_DIR/userspace-build/sysroot/lib" \
     cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release \
