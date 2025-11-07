@@ -17,15 +17,32 @@ use crate::{c_int, c_long, c_ulong, c_void, size_t, ssize_t};
 #[no_mangle]
 pub unsafe extern "C" fn posix_memalign(
     memptr: *mut *mut c_void,
-    _alignment: size_t,
+    alignment: size_t,
     size: size_t,
 ) -> c_int {
-    let ptr = crate::malloc(size);
-    if ptr.is_null() {
-        return -1;
+    if memptr.is_null() {
+        return crate::EINVAL;
     }
-    *memptr = ptr;
-    0
+
+    if alignment == 0
+        || alignment < core::mem::size_of::<usize>()
+        || (alignment & (alignment - 1)) != 0
+    {
+        return crate::EINVAL;
+    }
+
+    if size == 0 {
+        *memptr = ptr::null_mut();
+        return 0;
+    }
+
+    let ptr = crate::malloc_aligned(size, alignment);
+    if ptr.is_null() {
+        crate::ENOMEM
+    } else {
+        *memptr = ptr;
+        0
+    }
 }
 
 // ============================================================================

@@ -3,7 +3,7 @@
 #![feature(thread_local)]
 #![feature(c_variadic)]
 
-use core::{arch::asm, ffi::c_void, ptr};
+use core::{arch::asm, cmp, ffi::c_void, mem, ptr};
 
 // C Runtime support for std programs
 pub mod crt;
@@ -41,6 +41,10 @@ const SYS_EXECVE: u64 = 59;
 const SYS_EXIT: u64 = 60;
 const SYS_WAIT4: u64 = 61;
 const SYS_GETPID: u64 = 39;
+const SYS_STAT: u64 = 4;
+const SYS_FSTAT: u64 = 5;
+const SYS_LSEEK: u64 = 8;
+
 #[no_mangle]
 pub extern "C" fn pipe(pipefd: *mut i32) -> i32 {
     if pipefd.is_null() {
@@ -68,8 +72,9 @@ const SYS_USER_ADD: u64 = 220;
 const SYS_USER_LOGIN: u64 = 221;
 const SYS_GETERRNO: u64 = 201;
 
-const EINVAL: i32 = 22;
-const ENOENT: i32 = 2;
+pub(crate) const EINVAL: i32 = 22;
+pub(crate) const ENOENT: i32 = 2;
+pub(crate) const ENOMEM: i32 = 12;
 
 // Minimal syscall wrappers that match the userspace convention (int 0x81)
 #[inline(always)]
@@ -164,8 +169,13 @@ pub extern "C" fn open(path: *const u8, flags: i32, _mode: i32) -> i32 {
         set_errno(EINVAL);
         return -1;
     }
-    let len = unsafe { strlen(path) };
+    let len = strlen(path);
     translate_ret_i32(syscall3(SYS_OPEN, path as u64, len as u64, flags as u64))
+}
+
+#[no_mangle]
+pub extern "C" fn open64(path: *const u8, flags: i32, mode: i32) -> i32 {
+    open(path, flags, mode)
 }
 
 #[no_mangle]
@@ -214,6 +224,76 @@ pub extern "C" fn wait4(
         status as u64,
         options as u64,
     ))
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct stat {
+    pub st_dev: u64,
+    pub st_ino: u64,
+    pub st_mode: u32,
+    pub st_nlink: u32,
+    pub st_uid: u32,
+    pub st_gid: u32,
+    pub st_rdev: u64,
+    pub st_size: i64,
+    pub st_blksize: i64,
+    pub st_blocks: i64,
+    pub st_atime: i64,
+    pub st_atime_nsec: i64,
+    pub st_mtime: i64,
+    pub st_mtime_nsec: i64,
+    pub st_ctime: i64,
+    pub st_ctime_nsec: i64,
+    pub st_reserved: [i64; 3],
+}
+
+#[no_mangle]
+pub extern "C" fn stat(path: *const u8, buf: *mut stat) -> i32 {
+    if path.is_null() || buf.is_null() {
+        set_errno(EINVAL);
+        return -1;
+    }
+    let len = strlen(path);
+    translate_ret_i32(syscall3(SYS_STAT, path as u64, len as u64, buf as u64))
+}
+
+#[no_mangle]
+pub extern "C" fn stat64(path: *const u8, buf: *mut stat) -> i32 {
+    stat(path, buf)
+}
+
+#[no_mangle]
+pub extern "C" fn fstat(fd: i32, buf: *mut stat) -> i32 {
+    if buf.is_null() {
+        set_errno(EINVAL);
+        return -1;
+    }
+    translate_ret_i32(syscall3(SYS_FSTAT, fd as u64, buf as u64, 0))
+}
+
+#[no_mangle]
+pub extern "C" fn fstat64(fd: i32, buf: *mut stat) -> i32 {
+    fstat(fd, buf)
+}
+
+#[no_mangle]
+pub extern "C" fn lseek(fd: c_int, offset: c_long, whence: c_int) -> c_long {
+    let raw_offset = offset as i64 as u64;
+    let ret = syscall3(SYS_LSEEK, fd as u64, raw_offset, whence as u64);
+    if ret == u64::MAX {
+        refresh_errno_from_kernel();
+        -1
+    } else {
+        set_errno(0);
+        ret as i64
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn lseek64(fd: c_int, offset: i64, whence: c_int) -> i64 {
+    lseek(fd, offset as c_long, whence)
 }
 
 #[no_mangle]
@@ -282,7 +362,7 @@ pub mod os {
 
     #[inline]
     pub fn read(fd: i32, buf: &mut [u8]) -> Result<usize, i32> {
-        let ret = unsafe { super::read(fd, buf.as_mut_ptr().cast::<c_void>(), buf.len()) };
+        let ret = super::read(fd, buf.as_mut_ptr().cast::<c_void>(), buf.len());
         if ret < 0 {
             Err(unsafe { *__errno_location() })
         } else {
@@ -292,7 +372,7 @@ pub mod os {
 
     #[inline]
     pub fn write(fd: i32, buf: &[u8]) -> Result<usize, i32> {
-        let ret = unsafe { super::write(fd, buf.as_ptr().cast::<c_void>(), buf.len()) };
+        let ret = super::write(fd, buf.as_ptr().cast::<c_void>(), buf.len());
         if ret < 0 {
             Err(unsafe { *__errno_location() })
         } else {
@@ -302,7 +382,7 @@ pub mod os {
 
     #[inline]
     pub fn open(path: &CStr, flags: i32) -> Result<i32, i32> {
-        let ret = unsafe { super::open(path.as_ptr() as *const u8, flags, 0) };
+        let ret = super::open(path.as_ptr() as *const u8, flags, 0);
         if ret < 0 {
             Err(unsafe { *__errno_location() })
         } else {
@@ -446,27 +526,115 @@ pub unsafe extern "C" fn pthread_setspecific(key: pthread_key_t, value: *const c
 // Allocator support for std::alloc::System ----------------------------------
 // std expects malloc/free/realloc/calloc
 
-const HEAP_SIZE: usize = 1024 * 1024; // 1MB heap
+const HEAP_SIZE: usize = 2 * 1024 * 1024; // 2MB heap
+const DEFAULT_ALIGNMENT: usize = 16;
+const HEADER_SIZE: usize = core::mem::size_of::<usize>();
+
 static mut HEAP: [u8; HEAP_SIZE] = [0; HEAP_SIZE];
 static mut HEAP_POS: usize = 0;
 
+#[inline(always)]
+fn is_power_of_two(value: usize) -> bool {
+    value != 0 && (value & (value - 1)) == 0
+}
+
+#[inline(always)]
+fn align_up(value: usize, align: usize) -> Option<usize> {
+    if !is_power_of_two(align) {
+        return None;
+    }
+    let mask = align - 1;
+    value.checked_add(mask).map(|aligned| aligned & !mask)
+}
+
+unsafe fn alloc_internal(size: usize, align: usize) -> *mut c_void {
+    if size == 0 {
+        set_errno(0);
+        return ptr::null_mut();
+    }
+
+    if align == 0 {
+        set_errno(EINVAL);
+        return ptr::null_mut();
+    }
+
+    let requested_align = align.max(mem::size_of::<usize>());
+    if !is_power_of_two(requested_align) {
+        set_errno(EINVAL);
+        return ptr::null_mut();
+    }
+
+    let header_align = mem::align_of::<usize>();
+    let mut current = HEAP_POS;
+    current = match align_up(current, header_align) {
+        Some(val) => val,
+        None => {
+            set_errno(EINVAL);
+            return ptr::null_mut();
+        }
+    };
+
+    let after_header = match current.checked_add(HEADER_SIZE) {
+        Some(val) => val,
+        None => {
+            set_errno(ENOMEM);
+            return ptr::null_mut();
+        }
+    };
+
+    let aligned_data = match align_up(after_header, requested_align) {
+        Some(val) => val,
+        None => {
+            set_errno(EINVAL);
+            return ptr::null_mut();
+        }
+    };
+
+    let end = match aligned_data.checked_add(size) {
+        Some(val) => val,
+        None => {
+            set_errno(ENOMEM);
+            return ptr::null_mut();
+        }
+    };
+
+    if end > HEAP_SIZE {
+        set_errno(ENOMEM);
+        return ptr::null_mut();
+    }
+
+    let header_offset = aligned_data - HEADER_SIZE;
+    let header_ptr = HEAP.as_mut_ptr().add(header_offset) as *mut usize;
+    header_ptr.write(size);
+
+    HEAP_POS = end;
+    set_errno(0);
+    HEAP.as_mut_ptr().add(aligned_data) as *mut c_void
+}
+
+unsafe fn allocation_size(ptr: *mut c_void) -> Option<usize> {
+    if ptr.is_null() {
+        return None;
+    }
+
+    let base = HEAP.as_ptr() as *mut u8;
+    let data_ptr = ptr as *mut u8;
+
+    if data_ptr < base.add(HEADER_SIZE) || data_ptr >= base.add(HEAP_SIZE) {
+        return None;
+    }
+
+    let header_ptr = data_ptr.sub(HEADER_SIZE) as *mut usize;
+    Some(header_ptr.read())
+}
+
+pub(crate) unsafe fn malloc_aligned(size: usize, alignment: usize) -> *mut c_void {
+    alloc_internal(size, alignment)
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn malloc(size: usize) -> *mut c_void {
-    if size == 0 {
-        return ptr::null_mut();
-    }
-    
-    // Align to 8 bytes
-    let aligned_size = (size + 7) & !7;
-    
-    if HEAP_POS + aligned_size > HEAP_SIZE {
-        set_errno(12); // ENOMEM
-        return ptr::null_mut();
-    }
-    
-    let ptr = HEAP.as_mut_ptr().add(HEAP_POS);
-    HEAP_POS += aligned_size;
-    ptr as *mut c_void
+    alloc_internal(size, DEFAULT_ALIGNMENT)
 }
 
 #[no_mangle]
@@ -477,32 +645,52 @@ pub unsafe extern "C" fn free(_ptr: *mut c_void) {
 #[no_mangle]
 pub unsafe extern "C" fn realloc(ptr: *mut c_void, new_size: usize) -> *mut c_void {
     if ptr.is_null() {
-        return malloc(new_size);
+        return alloc_internal(new_size, DEFAULT_ALIGNMENT);
     }
-    
+
     if new_size == 0 {
         free(ptr);
+        set_errno(0);
         return ptr::null_mut();
     }
-    
-    // Simple implementation: allocate new, copy, ignore old
-    let new_ptr = malloc(new_size);
-    if !new_ptr.is_null() {
-        // We don't know the old size, so just copy what we can
-        // This is unsafe but works for our simple case
-        ptr::copy_nonoverlapping(ptr as *const u8, new_ptr as *mut u8, new_size);
+
+    let old_size = allocation_size(ptr).unwrap_or(0);
+
+    if old_size != 0 && new_size <= old_size {
+        let header_ptr = (ptr as *mut u8).sub(HEADER_SIZE) as *mut usize;
+        header_ptr.write(new_size);
+        set_errno(0);
+        return ptr;
     }
+
+    let new_ptr = alloc_internal(new_size, DEFAULT_ALIGNMENT);
+    if new_ptr.is_null() {
+        return ptr::null_mut();
+    }
+
+    if old_size != 0 {
+        let copy_len = cmp::min(old_size, new_size);
+        ptr::copy_nonoverlapping(ptr as *const u8, new_ptr as *mut u8, copy_len);
+    }
+
     new_ptr
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn calloc(nmemb: usize, size: usize) -> *mut c_void {
-    let total = nmemb.saturating_mul(size);
-    let ptr = malloc(total);
-    if !ptr.is_null() {
-        ptr::write_bytes(ptr as *mut u8, 0, total);
+    match nmemb.checked_mul(size) {
+        Some(total) if total > 0 => {
+            let ptr = alloc_internal(total, DEFAULT_ALIGNMENT);
+            if !ptr.is_null() {
+                ptr::write_bytes(ptr as *mut u8, 0, total);
+            }
+            ptr
+        }
+        _ => {
+            set_errno(0);
+            ptr::null_mut()
+        }
     }
-    ptr
 }
 
 // Random number generation (for std::random) --------------------------------
