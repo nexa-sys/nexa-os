@@ -365,11 +365,14 @@ static mut STRING_LENGTHS: [usize; MAX_SERVICES * SERVICE_FIELD_COUNT] =
     [0; MAX_SERVICES * SERVICE_FIELD_COUNT];
 
 fn load_service_catalog() -> ServiceCatalog {
+    print("[DEBUG A] Entered load_service_catalog()\n");
     unsafe {
+        print("[DEBUG B] Inside unsafe block\n");
         DEFAULT_BOOT_TARGET = DEFAULT_TARGET_NAME;
         FALLBACK_BOOT_TARGET = FALLBACK_TARGET_NAME;
         INIT_LOG_LEVEL = InitLogLevel::default();
 
+        print("[DEBUG C] Clearing SERVICE_CONFIGS\n");
         for slot in SERVICE_CONFIGS.iter_mut() {
             *slot = ServiceConfig::empty();
         }
@@ -388,52 +391,13 @@ fn load_service_catalog() -> ServiceCatalog {
             *byte = 0;
         }
 
-        use std::fs::File;
-        use std::io::Read;
-        
-        let mut file = match File::open(CONFIG_PATH) {
-            Ok(f) => f,
-            Err(_) => {
-                return ServiceCatalog {
-                    services: &SERVICE_CONFIGS[0..0],
-                    default_target: DEFAULT_BOOT_TARGET,
-                    fallback_target: FALLBACK_BOOT_TARGET,
-                };
-            }
-        };
-
-        log_info("Unit catalog file opened");
-
-        let read_count = match file.read(&mut CONFIG_BUFFER) {
-            Ok(n) => n,
-            Err(_) => 0,
-        };
-
-        if read_count > 0 {
-            let mut diag_buf = [0u8; 32];
-            print("         Bytes read: ");
-            print(itoa(read_count as u64, &mut diag_buf));
-            print("\n");
-        }
-
-        if read_count == 0 {
-            return ServiceCatalog {
-                services: &SERVICE_CONFIGS[0..0],
-                default_target: DEFAULT_BOOT_TARGET,
-                fallback_target: FALLBACK_BOOT_TARGET,
-            };
-        }
-
-        let usable = std::cmp::min(read_count, CONFIG_BUFFER.len());
-        let service_count = parse_unit_file(usable);
-
-        log_info("Unit catalog parsed successfully");
-
-        ServiceCatalog {
-            services: &SERVICE_CONFIGS[0..service_count],
+        // TEMPORARY: Skip file loading to test if File::open is the issue
+        print("         [TEMP] Skipping std::fs, returning empty catalog\n");
+        return ServiceCatalog {
+            services: &SERVICE_CONFIGS[0..0],
             default_target: DEFAULT_BOOT_TARGET,
             fallback_target: FALLBACK_BOOT_TARGET,
-        }
+        };
     }
 }
 
@@ -1046,7 +1010,9 @@ fn init_main() -> ! {
     // Load service catalog
     print("\n");
     log_start("Loading unit catalog");
+    print("[DEBUG 1] About to call load_service_catalog()\n");
     let catalog = load_service_catalog();
+    print("[DEBUG 2] Returned from load_service_catalog()\n");
     let services = catalog.services;
     if services.is_empty() {
         log_warn("No unit definitions found, preparing fallback shell");

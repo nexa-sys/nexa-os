@@ -114,8 +114,13 @@ pub fn syscall0(n: u64) -> u64 {
 static mut ERRNO: i32 = 0;
 
 #[inline(always)]
-fn set_errno(value: i32) {
+pub fn set_errno(value: i32) {
     unsafe { ERRNO = value; }
+}
+
+#[inline(always)]
+pub fn get_errno() -> i32 {
+    unsafe { ERRNO }
 }
 
 #[inline(always)]

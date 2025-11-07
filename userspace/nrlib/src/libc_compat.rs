@@ -6,7 +6,7 @@
 //! needed by std that are not in lib.rs.
 
 use core::ptr;
-use crate::{c_int, c_long, c_ulong, c_void, size_t, ssize_t};
+use crate::{c_char, c_int, c_uint, c_long, c_ulong, c_void, size_t, ssize_t};
 
 // ============================================================================
 // Memory Allocation - Already defined in lib.rs
@@ -56,6 +56,58 @@ pub unsafe extern "C" fn posix_memalign(
 // ============================================================================
 
 // Note: read, write, open, close are defined in lib.rs
+
+// Versioned stat functions for glibc compatibility
+// std expects these for File::open and metadata operations
+#[no_mangle]
+pub unsafe extern "C" fn __xstat(_ver: c_int, path: *const u8, buf: *mut crate::stat) -> c_int {
+    crate::stat(path, buf)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn __xstat64(_ver: c_int, path: *const u8, buf: *mut crate::stat) -> c_int {
+    crate::stat(path, buf)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn __fxstat(_ver: c_int, fd: c_int, buf: *mut crate::stat) -> c_int {
+    crate::fstat(fd, buf)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn __fxstat64(_ver: c_int, fd: c_int, buf: *mut crate::stat) -> c_int {
+    crate::fstat(fd, buf)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn __lxstat(_ver: c_int, path: *const u8, buf: *mut crate::stat) -> c_int {
+    // lstat is the same as stat for us (no symlinks)
+    crate::stat(path, buf)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn __lxstat64(_ver: c_int, path: *const u8, buf: *mut crate::stat) -> c_int {
+    crate::stat(path, buf)
+}
+
+// fstatat and newfstatat - used by std::fs for relative path operations
+#[no_mangle]
+pub unsafe extern "C" fn fstatat(dirfd: c_int, pathname: *const c_char, buf: *mut crate::stat, flags: c_int) -> c_int {
+    // We don't support dirfd, just treat as normal stat
+    let _ = dirfd;
+    let _ = flags;
+    crate::stat(pathname as *const u8, buf)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn newfstatat(dirfd: c_int, pathname: *const c_char, buf: *mut crate::stat, flags: c_int) -> c_int {
+    fstatat(dirfd, pathname, buf, flags)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn fstatat64(dirfd: c_int, pathname: *const c_char, buf: *mut crate::stat, flags: c_int) -> c_int {
+    fstatat(dirfd, pathname, buf, flags)
+}
 
 // Vector I/O
 #[repr(C)]
@@ -251,6 +303,51 @@ pub unsafe extern "C" fn sysconf(_name: c_int) -> c_long {
     -1  // Not supported
 }
 
+// File access check (F_OK, R_OK, W_OK, X_OK)
+const F_OK: c_int = 0;
+const R_OK: c_int = 4;
+const W_OK: c_int = 2;
+const X_OK: c_int = 1;
+
+#[no_mangle]
+pub unsafe extern "C" fn access(path: *const u8, mode: c_int) -> c_int {
+    if path.is_null() {
+        crate::set_errno(crate::EINVAL);
+        return -1;
+    }
+
+    // Use stat to check if file exists
+    let mut statbuf: crate::stat = core::mem::zeroed();
+    let ret = crate::stat(path, &mut statbuf);
+    
+    if ret < 0 {
+        // stat failed, file doesn't exist or error
+        return -1;
+    }
+
+    // File exists, check permissions if needed
+    // For now, we allow all access (no permission checking)
+    if mode == F_OK {
+        return 0; // File exists
+    }
+    
+    // Simplified: assume all files are readable/writable/executable
+    0
+}
+
+// openat - open file relative to directory fd
+#[no_mangle]
+pub unsafe extern "C" fn openat(dirfd: c_int, pathname: *const c_char, flags: c_int, mode: c_int) -> c_int {
+    // We don't support dirfd, just treat as normal open
+    let _ = dirfd;
+    crate::open(pathname as *const u8, flags, mode)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn openat64(dirfd: c_int, pathname: *const c_char, flags: c_int, mode: c_int) -> c_int {
+    openat(dirfd, pathname, flags, mode)
+}
+
 // ============================================================================
 // File Control Operations
 // ============================================================================
@@ -275,8 +372,43 @@ pub unsafe extern "C" fn fcntl(fd: c_int, cmd: c_int, arg: c_int) -> c_int {
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn ioctl(_fd: c_int, _request: c_ulong, _args: *mut c_void) -> c_int {
+    // Minimal ioctl implementation
+    // std uses this to check if fd is a terminal
+    -1  // Return error for all ioctl calls
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn readlink(path: *const c_char, buf: *mut c_char, bufsiz: size_t) -> ssize_t {
+    // Symbolic links not supported - return error
+    crate::set_errno(22); // EINVAL
+    -1
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn readlinkat(dirfd: c_int, pathname: *const c_char, buf: *mut c_char, bufsiz: size_t) -> ssize_t {
+    // Symbolic links not supported - return error
+    let _ = dirfd;
+    let _ = pathname;
+    let _ = buf;
+    let _ = bufsiz;
+    crate::set_errno(22); // EINVAL
+    -1
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn poll(_fds: *mut c_void, _nfds: c_ulong, _timeout: c_int) -> c_int {
     0  // No events
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn getdents64(fd: c_int, dirp: *mut c_void, count: c_uint) -> c_int {
+    // Directory reading not yet supported
+    let _ = fd;
+    let _ = dirp;
+    let _ = count;
+    crate::set_errno(38); // ENOSYS - Function not implemented
+    -1
 }
 
 // ============================================================================
