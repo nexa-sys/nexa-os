@@ -5,6 +5,9 @@
 
 use core::{arch::asm, ffi::c_void, ptr};
 
+// C Runtime support for std programs
+pub mod crt;
+
 // libc compatibility layer for std support
 pub mod libc_compat;
 

@@ -11,9 +11,10 @@ pub const PIC_1_OFFSET: u8 = 32;
 pub const PIC_2_OFFSET: u8 = PIC_1_OFFSET + 8;
 
 /// Toggle IA32_* MSR configuration for `syscall` fast path.
-/// Keep disabled while userspace dispatches via `int 0x81` so we avoid
-/// touching MSRs on hardware that may not like partially configured selectors.
-const ENABLE_SYSCALL_MSRS: bool = false;
+/// With dynamic linking we now encounter Glibc-generated `syscall` instructions
+/// immediately during interpreter startup, so keep this enabled by default and
+/// fall back to the legacy `int 0x81` gateway only if MSR programming fails.
+const ENABLE_SYSCALL_MSRS: bool = true;
 
 pub static PICS: spin::Mutex<ChainedPics> =
     spin::Mutex::new(unsafe { ChainedPics::new(PIC_1_OFFSET, PIC_2_OFFSET) });

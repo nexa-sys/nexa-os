@@ -15,7 +15,9 @@
 //! - Signal handling for system control
 //! - Service respawn on failure
 
-#![no_main]  // We define our own _start, don't use CRT's main wrapper
+// Use #![no_main] to bypass Rust's standard main wrapper
+// We provide our own main function with C ABI that crt.rs can call
+#![no_main]
 
 use std::arch::asm;
 use std::io::{self, Write};
@@ -80,9 +82,20 @@ fn syscall0(n: u64) -> u64 {
     syscall3(n, 0, 0, 0)
 }
 
-/// Print string to stdout
+/// Print string to stdout using direct syscall (for debugging)
+fn print_raw(s: &str) {
+    unsafe {
+        syscall3(1, 1, s.as_ptr() as u64, s.len() as u64);
+    }
+}
+
+/// Print string to stdout (uses std::io, may fail if std not initialized)
 fn print(s: &str) {
-    let _ = io::stdout().write_all(s.as_bytes());
+    // Fallback to raw syscall if std::io fails
+    match io::stdout().write_all(s.as_bytes()) {
+        Ok(_) => {},
+        Err(_) => print_raw(s),
+    }
 }
 
 /// Print string to stderr
@@ -1672,18 +1685,24 @@ fn authenticate_user(username: &[u8], password: &[u8]) -> bool {
 }
 
 // Entry point for the init program
-// We need #[no_mangle] and extern "C" to ensure the linker can find the entry point
-// Even though we're using std, we define our own _start instead of using CRT
+// Using standard main() to ensure std runtime initialization
+// This allows std::io, TLS, and other std features to work correctly
+// Using extern "C" to provide the C ABI main function directly
+// argc/argv are ignored since we don't use command-line arguments
 #[no_mangle]
-pub extern "C" fn _start() -> ! {
+pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
+    // First test: Try to write directly via syscall BEFORE any std::io
+    print_raw("[DEBUG] Entered main(), before std initialization\n");
+    
+    // Try to use std::io
+    print_raw("[DEBUG] Attempting std::io::stdout()...\n");
+    let _ = io::stdout().write_all(b"[DEBUG] std::io works!\n");
+    print_raw("[DEBUG] std::io succeeded\n");
+    
+    // Now call the actual init main
     init_main();
-    // Should never reach here (init_main has infinite loop)
-    exit(0);
-}
-
-// Main function for compatibility (not actually used as entry point)
-fn main() {
-    init_main()
+    // Never reached (init_main has infinite loop)
+    0
 }
 
 fn debug_print_ptr(label: &str, value: u64) {

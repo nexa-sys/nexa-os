@@ -6,7 +6,7 @@
 //! needed by std that are not in lib.rs.
 
 use core::ptr;
-use crate::{c_int, c_void, size_t, ssize_t};
+use crate::{c_int, c_long, c_ulong, c_void, size_t, ssize_t};
 
 // ============================================================================
 // Memory Allocation - Already defined in lib.rs
@@ -215,6 +215,162 @@ pub unsafe extern "C" fn _Unwind_Resume(_exception_object: *mut c_void) {}
 
 #[no_mangle]
 pub unsafe extern "C" fn _Unwind_DeleteException(_exception_object: *mut c_void) {}
+
+// ============================================================================
+// POSIX System Configuration
+// ============================================================================
+
+#[no_mangle]
+pub unsafe extern "C" fn sysconf(_name: c_int) -> c_long {
+    -1  // Not supported
+}
+
+// ============================================================================
+// File Control Operations
+// ============================================================================
+
+#[no_mangle]
+pub unsafe extern "C" fn fcntl(fd: c_int, cmd: c_int, _arg: c_int) -> c_int {
+    // Stub: pretend all fcntl operations succeed
+    match cmd {
+        _ => 0,  // Success
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn poll(_fds: *mut c_void, _nfds: c_ulong, _timeout: c_int) -> c_int {
+    0  // No events
+}
+
+// ============================================================================
+// String/Error Functions
+// ============================================================================
+
+#[no_mangle]
+pub unsafe extern "C" fn __xpg_strerror_r(
+    _errnum: c_int,
+    buf: *mut i8,
+    buflen: size_t,
+) -> c_int {
+    // Write a generic error message
+    if buflen > 0 {
+        *buf = 0;  // Empty string
+    }
+    0
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn strerror_r(
+    errnum: c_int,
+    buf: *mut i8,
+    buflen: size_t,
+) -> *mut i8 {
+    __xpg_strerror_r(errnum, buf, buflen);
+    buf
+}
+
+// ============================================================================
+// Thread Attribute Functions
+// ============================================================================
+
+#[repr(C)]
+pub struct pthread_attr_t {
+    __size: [u64; 7],
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn pthread_attr_init(_attr: *mut pthread_attr_t) -> c_int {
+    0
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn pthread_attr_destroy(_attr: *mut pthread_attr_t) -> c_int {
+    0
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn pthread_attr_setstacksize(
+    _attr: *mut pthread_attr_t,
+    _stacksize: size_t,
+) -> c_int {
+    0
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn pthread_attr_setguardsize(
+    _attr: *mut pthread_attr_t,
+    _guardsize: size_t,
+) -> c_int {
+    0
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn pthread_attr_getguardsize(
+    _attr: *const pthread_attr_t,
+    guardsize: *mut size_t,
+) -> c_int {
+    if !guardsize.is_null() {
+        *guardsize = 0;
+    }
+    0
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn pthread_attr_getstack(
+    _attr: *const pthread_attr_t,
+    stackaddr: *mut *mut c_void,
+    stacksize: *mut size_t,
+) -> c_int {
+    if !stackaddr.is_null() {
+        *stackaddr = ptr::null_mut();
+    }
+    if !stacksize.is_null() {
+        *stacksize = 0;
+    }
+    0
+}
+
+pub type pthread_t = c_ulong;
+
+#[no_mangle]
+pub unsafe extern "C" fn pthread_self() -> pthread_t {
+    1  // Always return 1 for single-threaded
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn pthread_getattr_np(
+    _thread: pthread_t,
+    _attr: *mut pthread_attr_t,
+) -> c_int {
+    0
+}
+
+// ============================================================================
+// File Descriptor Operations
+// ============================================================================
+
+#[no_mangle]
+pub unsafe extern "C" fn dup(fd: c_int) -> c_int {
+    // Stub: just return the same fd (not a real dup)
+    fd
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn dup2(oldfd: c_int, newfd: c_int) -> c_int {
+    // Stub: pretend it worked
+    newfd
+}
+
+// ============================================================================
+// Signal Handling Stubs
+// ============================================================================
+
+pub type sighandler_t = Option<unsafe extern "C" fn(c_int)>;
+
+#[no_mangle]
+pub unsafe extern "C" fn signal(_signum: c_int, _handler: sighandler_t) -> sighandler_t {
+    None  // Return NULL (signal not supported)
+}
 
 // ============================================================================
 // Dynamic Linker Stubs

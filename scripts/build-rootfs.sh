@@ -110,7 +110,7 @@ ar crs "$BUILD_DIR/userspace-build/sysroot/lib/libunwind.a"
 
 # Now build ni with std, linking against our nrlib-based libc
 cd "$BUILD_DIR/userspace-build"
-RUSTFLAGS="-C opt-level=2 -C panic=abort -C linker=rust-lld -C link-arg=--image-base=0x00400000 -L $BUILD_DIR/userspace-build/sysroot/lib" \
+RUSTFLAGS="-C opt-level=2 -C panic=abort -C linker=rust-lld -C link-arg=--image-base=0x00400000 -C link-arg=--entry=_start -L $BUILD_DIR/userspace-build/sysroot/lib" \
     cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release \
     --bin ni --no-default-features
 
