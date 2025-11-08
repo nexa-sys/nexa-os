@@ -207,7 +207,7 @@ pub unsafe extern "C" fn unsetenv(_name: *const i8) -> c_int {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn getcwd(buf: *mut i8, _size: size_t) -> *mut i8 {
+pub unsafe extern "C" fn getcwd(_buf: *mut i8, _size: size_t) -> *mut i8 {
     ptr::null_mut()
 }
 
@@ -407,9 +407,9 @@ pub unsafe extern "C" fn ioctl(_fd: c_int, _request: c_ulong, _args: *mut c_void
 
 #[no_mangle]
 pub unsafe extern "C" fn readlink(
-    path: *const c_char,
-    buf: *mut c_char,
-    bufsiz: size_t,
+    _path: *const c_char,
+    _buf: *mut c_char,
+    _bufsiz: size_t,
 ) -> ssize_t {
     // Symbolic links not supported - return error
     crate::set_errno(22); // EINVAL

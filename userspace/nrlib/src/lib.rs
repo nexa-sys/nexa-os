@@ -490,12 +490,12 @@ pub struct pthread_key_t {
     key: usize,
 }
 
-type pthread_destructor = Option<unsafe extern "C" fn(*mut c_void)>;
+type PthreadDestructor = Option<unsafe extern "C" fn(*mut c_void)>;
 
 #[no_mangle]
 pub unsafe extern "C" fn pthread_key_create(
     key: *mut pthread_key_t,
-    _destructor: pthread_destructor,
+    _destructor: PthreadDestructor,
 ) -> i32 {
     if TLS_NEXT_KEY >= MAX_TLS_KEYS {
         set_errno(EINVAL);
