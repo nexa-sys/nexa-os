@@ -80,31 +80,6 @@ RUSTFLAGS="-C opt-level=2 -C panic=abort" \
 cp "$PROJECT_ROOT/userspace/nrlib/target/x86_64-nexaos-userspace/release/libnrlib.a" \
    "$BUILD_DIR/userspace-build/sysroot/lib/libc.a"
 
-# Remove only the conflicting panic/unwind symbols, keep everything else
-# Extract all object files, strip conflicting symbols, repack
-mkdir -p "$BUILD_DIR/temp_libc"
-cd "$BUILD_DIR/temp_libc"
-ar x "$BUILD_DIR/userspace-build/sysroot/lib/libc.a"
-
-# For object files containing panic symbols, strip only those specific symbols
-for obj in *.o; do
-    if nm "$obj" 2>/dev/null | grep -q "rust_begin_unwind\|rust_eh_personality"; then
-        echo "Stripping panic symbols from $obj"
-        # Use objcopy to remove only the conflicting symbols
-        objcopy --strip-symbol=rust_begin_unwind \
-                --strip-symbol=rust_eh_personality \
-                --strip-symbol=_RNvCshaUc5Hc2GaF_7___rustc17rust_begin_unwind \
-                "$obj" "$obj.tmp" 2>/dev/null || cp "$obj" "$obj.tmp"
-        mv "$obj.tmp" "$obj"
-    fi
-done
-
-# Repack libc.a
-rm "$BUILD_DIR/userspace-build/sysroot/lib/libc.a"
-ar crs "$BUILD_DIR/userspace-build/sysroot/lib/libc.a" *.o
-cd "$PROJECT_ROOT"
-rm -rf "$BUILD_DIR/temp_libc"
-
 # Create an empty libunwind.a (std has its own unwind implementation)
 ar crs "$BUILD_DIR/userspace-build/sysroot/lib/libunwind.a"
 

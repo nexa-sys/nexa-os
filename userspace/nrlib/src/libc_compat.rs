@@ -1,12 +1,12 @@
 //! libc compatibility layer for std support
 //! Provides necessary C ABI functions that std expects from libc
-//! 
-//! Note: Basic functions (read, write, open, close, exit, getpid, memcpy, etc.) 
-//! are already defined in lib.rs. This module only adds additional functions 
+//!
+//! Note: Basic functions (read, write, open, close, exit, getpid, memcpy, etc.)
+//! are already defined in lib.rs. This module only adds additional functions
 //! needed by std that are not in lib.rs.
 
-use core::ptr;
-use crate::{c_char, c_int, c_uint, c_long, c_ulong, c_void, size_t, ssize_t};
+use crate::{c_char, c_int, c_long, c_uint, c_ulong, c_void, size_t, ssize_t};
+use core::{hint::spin_loop, ptr};
 
 // ============================================================================
 // Memory Allocation - Already defined in lib.rs
@@ -92,7 +92,12 @@ pub unsafe extern "C" fn __lxstat64(_ver: c_int, path: *const u8, buf: *mut crat
 
 // fstatat and newfstatat - used by std::fs for relative path operations
 #[no_mangle]
-pub unsafe extern "C" fn fstatat(dirfd: c_int, pathname: *const c_char, buf: *mut crate::stat, flags: c_int) -> c_int {
+pub unsafe extern "C" fn fstatat(
+    dirfd: c_int,
+    pathname: *const c_char,
+    buf: *mut crate::stat,
+    flags: c_int,
+) -> c_int {
     // We don't support dirfd, just treat as normal stat
     let _ = dirfd;
     let _ = flags;
@@ -100,12 +105,22 @@ pub unsafe extern "C" fn fstatat(dirfd: c_int, pathname: *const c_char, buf: *mu
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn newfstatat(dirfd: c_int, pathname: *const c_char, buf: *mut crate::stat, flags: c_int) -> c_int {
+pub unsafe extern "C" fn newfstatat(
+    dirfd: c_int,
+    pathname: *const c_char,
+    buf: *mut crate::stat,
+    flags: c_int,
+) -> c_int {
     fstatat(dirfd, pathname, buf, flags)
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn fstatat64(dirfd: c_int, pathname: *const c_char, buf: *mut crate::stat, flags: c_int) -> c_int {
+pub unsafe extern "C" fn fstatat64(
+    dirfd: c_int,
+    pathname: *const c_char,
+    buf: *mut crate::stat,
+    flags: c_int,
+) -> c_int {
     fstatat(dirfd, pathname, buf, flags)
 }
 
@@ -206,7 +221,7 @@ pub unsafe extern "C" fn getcwd(buf: *mut i8, _size: size_t) -> *mut i8 {
 // Thread-Local Storage - Already defined in lib.rs
 // ============================================================================
 
-// Note: pthread_key_create, pthread_key_delete, pthread_getspecific, 
+// Note: pthread_key_create, pthread_key_delete, pthread_getspecific,
 // pthread_setspecific are all defined in lib.rs
 
 // ============================================================================
@@ -284,7 +299,9 @@ pub unsafe extern "C" fn _Unwind_Backtrace(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn _Unwind_RaiseException(_exception_object: *mut c_void) -> UnwindReasonCode {
+pub unsafe extern "C" fn _Unwind_RaiseException(
+    _exception_object: *mut c_void,
+) -> UnwindReasonCode {
     0
 }
 
@@ -300,7 +317,7 @@ pub unsafe extern "C" fn _Unwind_DeleteException(_exception_object: *mut c_void)
 
 #[no_mangle]
 pub unsafe extern "C" fn sysconf(_name: c_int) -> c_long {
-    -1  // Not supported
+    -1 // Not supported
 }
 
 // File access check (F_OK, R_OK, W_OK, X_OK)
@@ -319,7 +336,7 @@ pub unsafe extern "C" fn access(path: *const u8, mode: c_int) -> c_int {
     // Use stat to check if file exists
     let mut statbuf: crate::stat = core::mem::zeroed();
     let ret = crate::stat(path, &mut statbuf);
-    
+
     if ret < 0 {
         // stat failed, file doesn't exist or error
         return -1;
@@ -330,21 +347,31 @@ pub unsafe extern "C" fn access(path: *const u8, mode: c_int) -> c_int {
     if mode == F_OK {
         return 0; // File exists
     }
-    
+
     // Simplified: assume all files are readable/writable/executable
     0
 }
 
 // openat - open file relative to directory fd
 #[no_mangle]
-pub unsafe extern "C" fn openat(dirfd: c_int, pathname: *const c_char, flags: c_int, mode: c_int) -> c_int {
+pub unsafe extern "C" fn openat(
+    dirfd: c_int,
+    pathname: *const c_char,
+    flags: c_int,
+    mode: c_int,
+) -> c_int {
     // We don't support dirfd, just treat as normal open
     let _ = dirfd;
     crate::open(pathname as *const u8, flags, mode)
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn openat64(dirfd: c_int, pathname: *const c_char, flags: c_int, mode: c_int) -> c_int {
+pub unsafe extern "C" fn openat64(
+    dirfd: c_int,
+    pathname: *const c_char,
+    flags: c_int,
+    mode: c_int,
+) -> c_int {
     openat(dirfd, pathname, flags, mode)
 }
 
@@ -375,18 +402,27 @@ pub unsafe extern "C" fn fcntl(fd: c_int, cmd: c_int, arg: c_int) -> c_int {
 pub unsafe extern "C" fn ioctl(_fd: c_int, _request: c_ulong, _args: *mut c_void) -> c_int {
     // Minimal ioctl implementation
     // std uses this to check if fd is a terminal
-    -1  // Return error for all ioctl calls
+    -1 // Return error for all ioctl calls
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn readlink(path: *const c_char, buf: *mut c_char, bufsiz: size_t) -> ssize_t {
+pub unsafe extern "C" fn readlink(
+    path: *const c_char,
+    buf: *mut c_char,
+    bufsiz: size_t,
+) -> ssize_t {
     // Symbolic links not supported - return error
     crate::set_errno(22); // EINVAL
     -1
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn readlinkat(dirfd: c_int, pathname: *const c_char, buf: *mut c_char, bufsiz: size_t) -> ssize_t {
+pub unsafe extern "C" fn readlinkat(
+    dirfd: c_int,
+    pathname: *const c_char,
+    buf: *mut c_char,
+    bufsiz: size_t,
+) -> ssize_t {
     // Symbolic links not supported - return error
     let _ = dirfd;
     let _ = pathname;
@@ -398,7 +434,7 @@ pub unsafe extern "C" fn readlinkat(dirfd: c_int, pathname: *const c_char, buf: 
 
 #[no_mangle]
 pub unsafe extern "C" fn poll(_fds: *mut c_void, _nfds: c_ulong, _timeout: c_int) -> c_int {
-    0  // No events
+    0 // No events
 }
 
 #[no_mangle]
@@ -416,24 +452,16 @@ pub unsafe extern "C" fn getdents64(fd: c_int, dirp: *mut c_void, count: c_uint)
 // ============================================================================
 
 #[no_mangle]
-pub unsafe extern "C" fn __xpg_strerror_r(
-    _errnum: c_int,
-    buf: *mut i8,
-    buflen: size_t,
-) -> c_int {
+pub unsafe extern "C" fn __xpg_strerror_r(_errnum: c_int, buf: *mut i8, buflen: size_t) -> c_int {
     // Write a generic error message
     if buflen > 0 {
-        *buf = 0;  // Empty string
+        *buf = 0; // Empty string
     }
     0
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn strerror_r(
-    errnum: c_int,
-    buf: *mut i8,
-    buflen: size_t,
-) -> *mut i8 {
+pub unsafe extern "C" fn strerror_r(errnum: c_int, buf: *mut i8, buflen: size_t) -> *mut i8 {
     __xpg_strerror_r(errnum, buf, buflen);
     buf
 }
@@ -503,7 +531,7 @@ pub type pthread_t = c_ulong;
 
 #[no_mangle]
 pub unsafe extern "C" fn pthread_self() -> pthread_t {
-    1  // Always return 1 for single-threaded
+    1 // Always return 1 for single-threaded
 }
 
 #[no_mangle]
@@ -526,7 +554,7 @@ pub type sighandler_t = Option<unsafe extern "C" fn(c_int)>;
 
 #[no_mangle]
 pub unsafe extern "C" fn signal(_signum: c_int, _handler: sighandler_t) -> sighandler_t {
-    None  // Return NULL (signal not supported)
+    None // Return NULL (signal not supported)
 }
 
 // ============================================================================
@@ -635,9 +663,115 @@ pub unsafe extern "C" fn nanosleep(_req: *const c_void, _rem: *mut c_void) -> c_
 // Syscall Wrapper
 // ============================================================================
 
+const SYS_SCHED_YIELD: i64 = 24;
+const SYS_NANOSLEEP: i64 = 35;
+const SYS_GETPID: i64 = 39;
+const SYS_GETTID: i64 = 186;
+const SYS_FUTEX: i64 = 202;
+const SYS_GETRANDOM: i64 = 318;
+
+const FUTEX_WAIT: i32 = 0;
+const FUTEX_WAKE: i32 = 1;
+const FUTEX_CMD_MASK: i32 = 0x7;
+const FUTEX_PRIVATE_FLAG: i32 = 128;
+
+#[repr(C)]
+struct Timespec {
+    tv_sec: i64,
+    tv_nsec: i64,
+}
+
 #[no_mangle]
-pub unsafe extern "C" fn syscall(_number: i64, ...) -> i64 {
-    -1
+pub unsafe extern "C" fn syscall(number: i64, mut args: ...) -> i64 {
+    use core::ffi::VaListImpl;
+
+    match number {
+        SYS_GETPID => {
+            crate::set_errno(0);
+            crate::getpid() as i64
+        }
+        SYS_GETTID => {
+            crate::set_errno(0);
+            crate::getpid() as i64
+        }
+        SYS_SCHED_YIELD => {
+            // Single-threaded for now – nothing to schedule.
+            crate::set_errno(0);
+            0
+        }
+        SYS_NANOSLEEP => {
+            let _req: *const Timespec = args.arg();
+            let _rem: *mut Timespec = args.arg();
+            let _ = (_req, _rem);
+            crate::set_errno(0);
+            0
+        }
+        SYS_GETRANDOM => {
+            let buf: *mut c_void = args.arg();
+            let len: usize = args.arg();
+            let flags: u32 = args.arg();
+            let res = crate::getrandom(buf, len, flags);
+            if res < 0 {
+                res as i64
+            } else {
+                crate::set_errno(0);
+                res as i64
+            }
+        }
+        SYS_FUTEX => {
+            let uaddr: *mut i32 = args.arg();
+            let mut op: i32 = args.arg();
+            let val: i32 = args.arg();
+            let _timeout: *const Timespec = args.arg();
+            let _uaddr2: *mut i32 = args.arg();
+            let _val3: i32 = args.arg();
+
+            if uaddr.is_null() {
+                crate::set_errno(crate::EINVAL);
+                return -1;
+            }
+
+            op &= !(FUTEX_PRIVATE_FLAG);
+            let cmd = op & FUTEX_CMD_MASK;
+
+            match cmd {
+                FUTEX_WAIT => {
+                    let current = core::ptr::read_volatile(uaddr);
+                    if current != val {
+                        crate::set_errno(crate::EAGAIN);
+                        return -1;
+                    }
+
+                    for _ in 0..1024 {
+                        spin_loop();
+                        if core::ptr::read_volatile(uaddr) != val {
+                            crate::set_errno(0);
+                            return 0;
+                        }
+                    }
+
+                    crate::set_errno(crate::EAGAIN);
+                    -1
+                }
+                FUTEX_WAKE => {
+                    crate::set_errno(0);
+                    if val > 0 {
+                        1
+                    } else {
+                        0
+                    }
+                }
+                _ => {
+                    crate::set_errno(crate::ENOSYS);
+                    -1
+                }
+            }
+        }
+        _ => {
+            crate::set_errno(crate::ENOSYS);
+            -1
+        }
+    }
 }
 
 // ============================================================================

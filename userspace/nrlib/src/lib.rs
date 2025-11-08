@@ -1,5 +1,6 @@
 #![no_std]
 #![feature(lang_items)]
+#![feature(linkage)]
 #![feature(thread_local)]
 #![feature(c_variadic)]
 
@@ -10,6 +11,15 @@ pub mod crt;
 
 // libc compatibility layer for std support
 pub mod libc_compat;
+// Minimal stdio support (unbuffered) implemented in stdio.rs
+pub mod stdio;
+
+// Re-export commonly used stdio helpers for convenience
+pub use stdio::{
+    fflush, fprintf, fread, fwrite, getchar, printf, putchar, puts, stderr_write_all,
+    stderr_write_str, stdin_read_line, stdin_read_line_masked, stdin_read_line_noecho,
+    stdout_flush, stdout_write_all, stdout_write_fmt, stdout_write_str,
+};
 
 // Libc-compatible type definitions for NexaOS
 pub type c_char = i8;
@@ -74,7 +84,9 @@ const SYS_GETERRNO: u64 = 201;
 
 pub(crate) const EINVAL: i32 = 22;
 pub(crate) const ENOENT: i32 = 2;
+pub(crate) const EAGAIN: i32 = 11;
 pub(crate) const ENOMEM: i32 = 12;
+pub(crate) const ENOSYS: i32 = 38;
 
 // Minimal syscall wrappers that match the userspace convention (int 0x81)
 #[inline(always)]
@@ -115,7 +127,9 @@ static mut ERRNO: i32 = 0;
 
 #[inline(always)]
 pub fn set_errno(value: i32) {
-    unsafe { ERRNO = value; }
+    unsafe {
+        ERRNO = value;
+    }
 }
 
 #[inline(always)]
@@ -204,11 +218,7 @@ pub extern "C" fn fork() -> i32 {
 }
 
 #[no_mangle]
-pub extern "C" fn execve(
-    path: *const u8,
-    argv: *const *const u8,
-    envp: *const *const u8,
-) -> i32 {
+pub extern "C" fn execve(path: *const u8, argv: *const *const u8, envp: *const *const u8) -> i32 {
     if path.is_null() {
         set_errno(ENOENT);
         return -1;
@@ -217,12 +227,7 @@ pub extern "C" fn execve(
 }
 
 #[no_mangle]
-pub extern "C" fn wait4(
-    pid: i32,
-    status: *mut i32,
-    options: i32,
-    _rusage: *mut c_void,
-) -> i32 {
+pub extern "C" fn wait4(pid: i32, status: *mut i32, options: i32, _rusage: *mut c_void) -> i32 {
     translate_ret_i32(syscall3(
         SYS_WAIT4,
         pid as u64,
@@ -363,7 +368,7 @@ pub extern "C" fn nexa_user_login(req: *const UserRequest) -> i32 {
 pub mod os {
     use core::{ffi::CStr, result::Result};
 
-    use super::{c_void, __errno_location};
+    use super::{__errno_location, c_void};
 
     #[inline]
     pub fn read(fd: i32, buf: &mut [u8]) -> Result<usize, i32> {
@@ -703,7 +708,7 @@ pub unsafe extern "C" fn calloc(nmemb: usize, size: usize) -> *mut c_void {
 pub unsafe extern "C" fn arc4random_buf(buf: *mut c_void, nbytes: usize) {
     // Simple pseudo-random (not cryptographically secure)
     static mut SEED: u64 = 0x123456789abcdef0;
-    
+
     let bytes = core::slice::from_raw_parts_mut(buf as *mut u8, nbytes);
     for byte in bytes {
         SEED = SEED.wrapping_mul(6364136223846793005).wrapping_add(1);
@@ -719,10 +724,14 @@ pub unsafe extern "C" fn getrandom(buf: *mut c_void, buflen: usize, _flags: u32)
 
 // lang items ----------------------------------------------------------------
 
+#[cfg(feature = "panic-handler")]
 #[lang = "eh_personality"]
+#[linkage = "weak"]
 extern "C" fn eh_personality() {}
 
+#[cfg(feature = "panic-handler")]
 #[panic_handler]
+#[linkage = "weak"]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     abort()
 }

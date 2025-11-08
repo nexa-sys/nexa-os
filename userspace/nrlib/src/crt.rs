@@ -1,9 +1,9 @@
 //! C Runtime (CRT) initialization for std programs
-//! 
+//!
 //! Provides the _start entry point and environment setup needed for Rust std
 
-use core::arch::asm;
 use crate::{c_int, exit as sys_exit};
+use core::arch::asm;
 
 // Rust's generated main function (C ABI)
 // For std programs, Rust generates a main function with C calling convention
@@ -20,10 +20,10 @@ pub unsafe extern "C" fn _start() -> ! {
     // For now, pass 0/NULL
     let argc: c_int = 0;
     let argv: *const *const u8 = core::ptr::null();
-    
+
     // Call Rust's generated main (which calls lang_start -> user's main)
     let exit_code = main(argc, argv);
-    
+
     // If main returns, exit with its return code
     sys_exit(exit_code)
 }

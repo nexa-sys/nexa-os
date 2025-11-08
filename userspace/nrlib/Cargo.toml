@@ -10,7 +10,7 @@ crate-type = ["rlib", "staticlib"]
 panic = "abort"
 
 [features]
-default = []
-use-std = []
+default = ["panic-handler"]
+panic-handler = []
 
 [dependencies]

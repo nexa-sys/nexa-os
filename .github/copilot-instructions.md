@@ -1,52 +1,61 @@
 # NexaOS AI Coding Guidelines
 
 ## Project Overview
-NexaOS is an experimental Rust-based operating system implementing a hybrid-kernel architecture. It targets x86_64 with Multiboot2 + GRUB boot, providing POSIX-inspired interfaces and limited Linux userspace compatibility.
+NexaOS is a production-grade operating system written in Rust, implementing a hybrid-kernel architecture with full POSIX compliance and Unix-like semantics. The system provides a self-contained environment with comprehensive Linux ABI compatibility, targeting modern x86_64 hardware through Multiboot2 + GRUB boot protocol.
 
 ## Architecture Fundamentals
 
 ### Kernel Structure
 - **Hybrid kernel**: Combines microkernel-style isolation with monolithic performance optimizations
-- **Boot flow**: Multiboot2 → GRUB → Rust kernel entry (`kmain`) → user mode transition
+- **Boot flow**: Multiboot2 → GRUB → Rust kernel entry (`kmain`) → 6-stage boot process → user mode transition
 - **Memory model**: Identity-mapped paging with separate kernel/user spaces (Ring 0/3)
-- **Process model**: Single user process execution (currently `/bin/sh` from initramfs) with structures for future multi-process support
+- **Process model**: Multi-process support with scheduler, authentication, IPC, signals, and pipes
 
 ### Key Components
 - `src/main.rs`: Multiboot entry point, calls `nexa_os::kernel_main()`
-- `src/lib.rs`: Core kernel initialization sequence
-- `src/process.rs`: ELF loading and Ring 3 user mode switching
-- `src/syscall.rs`: System call dispatch (write/read/exit/getpid/open/close)
-- `src/paging.rs`: Virtual memory setup for user space
-- `src/initramfs.rs`: CPIO archive parsing for initial filesystem
-- `src/fs.rs`: Simple in-memory filesystem for runtime file operations
-- `src/interrupts.rs`: IDT setup, PIC configuration, syscall interrupt handling
-- `src/keyboard.rs`: PS/2 keyboard driver with scancode processing
-- `src/gdt.rs`: Global Descriptor Table for privilege separation
+- `src/lib.rs`: Core kernel initialization sequence with 6-stage boot process
+- `src/boot_stages.rs`: Multi-stage boot management (Bootloader→KernelInit→Initramfs→RootSwitch→RealRoot→UserSpace)
+- `src/process.rs`: ELF loading and Ring 3 user mode switching with dynamic linking support
+- `src/scheduler.rs`: Round-robin process scheduler with time slicing and priority support
+- `src/syscall.rs`: System call dispatch (write/read/exit/getpid/open/close + POSIX extensions)
+- `src/auth.rs`: Multi-user authentication system with UID/GID and role-based access
+- `src/ipc.rs`: Message-passing channels for inter-process communication
+- `src/signal.rs`: POSIX signal handling with 32 signal types and signal actions
+- `src/pipe.rs`: POSIX pipe implementation for IPC with 4KB buffers
+- `src/paging.rs`: Virtual memory setup for user space with address space isolation
+- `src/initramfs.rs`: CPIO archive parsing for initial filesystem with PT_INTERP detection
+- `src/fs.rs`: Dual filesystem: initramfs (immutable boot files) + runtime in-memory filesystem
+- `src/init.rs`: Complete init system (PID 1) with System V runlevels, service management, and /etc/inittab
+- `src/interrupts.rs`: IDT setup, PIC/APIC configuration, syscall interrupt handling
+- `src/keyboard.rs`: PS/2 keyboard driver with scancode processing and US QWERTY layout
+- `src/gdt.rs`: Global Descriptor Table for privilege separation (Ring 0/3)
+- `src/serial.rs`: Serial console driver for debugging and logging
+- `src/vga_buffer.rs`: VGA text mode driver for console output
 
 ## Critical Developer Workflows
 
 ### Build Process
-```bash
-# Set up Rust nightly toolchain
-rustup override set nightly
-rustup component add rust-src llvm-tools-preview --toolchain nightly
+NexaOS uses a two-stage build: minimal initramfs for early boot + full ext2 root filesystem.
 
-# Kernel build (requires nightly Rust toolchain)
+```bash
+# Complete system build (kernel + initramfs + rootfs + ISO)
+./scripts/build-all.sh
+
+# Individual components:
+./scripts/build-userspace.sh    # Build initramfs (minimal boot environment)
+./scripts/build-rootfs.sh       # Build full ext2 root filesystem
+./scripts/build-iso.sh          # Create bootable ISO with GRUB
+
+# Kernel-only build
 cargo build --release
 
-# Userspace programs (creates initramfs)
-./scripts/build-userspace.sh
-
-# ISO creation with GRUB
-./scripts/build-iso.sh
-
-# QEMU testing
+# QEMU testing with full system
 ./scripts/run-qemu.sh
 ```
 
 ### Prerequisites
 - Rust nightly: `rustup override set nightly && rustup component add rust-src llvm-tools-preview`
-- System deps: `build-essential lld grub-pc-bin xorriso qemu-system-x86`
+- System deps: `build-essential lld grub-pc-bin xorriso qemu-system-x86 mtools`
 - Custom target: Uses `x86_64-nexaos.json` for bare-metal compilation (no OS, soft-float, PIC model)
 
 ## Code Patterns & Conventions
@@ -86,6 +95,7 @@ pub const SYS_OPEN: u64 = 2;
 pub const SYS_CLOSE: u64 = 3;
 pub const SYS_EXIT: u64 = 60;
 pub const SYS_GETPID: u64 = 39;
+// ... additional POSIX syscalls
 
 // Assembly handler with register preservation
 #[no_mangle]
@@ -114,7 +124,29 @@ fn syscall3(n: u64, a1: u64, a2: u64, a3: u64) -> u64 {
 - No standard library, manual memory management
 - Built with `-Z build-std=core` and custom target
 
-### ELF Loading
+### Process Scheduling
+- Round-robin scheduler with configurable time slices
+- Process table with 32 process limit
+- Priority-based scheduling (0=highest, 255=lowest)
+- Process state tracking: Ready/Running/Sleeping/Zombie
+
+### Authentication & Security
+- Multi-user system with UID/GID-based permissions
+- Root user (UID 0) with admin privileges
+- User database with password hashing
+- Credential passing between processes
+
+### IPC Mechanisms
+- Message-passing channels (32 channels, 32 messages/channel, 256 bytes/message)
+- POSIX pipes (4KB buffers, 16 pipe limit)
+- Blocking/non-blocking operations
+
+### Signal Handling
+- Full POSIX signal support (32 signals including SIGINT, SIGTERM, SIGHUP, etc.)
+- Signal actions: Default/Ignore/Custom Handler
+- Per-process signal state with pending/blocked masks
+
+### ELF Loading & Dynamic Linking
 - Custom ELF parser in `src/elf.rs` with PT_INTERP detection
 - Supports both static and dynamically linked executables
 - Static binaries: Load to fixed physical addresses (0x400000+)
@@ -123,6 +155,12 @@ fn syscall3(n: u64, a1: u64, a2: u64, a3: u64) -> u64 {
 - Dynamic linking: Detects PT_INTERP, loads ld-linux.so from `/lib64/`
 - Process creation: `Process::from_elf(data)` returns executable process
 - Note: Auxiliary vectors not yet implemented for full dynamic linking support
+
+### Init System Architecture
+- System V-style init with runlevels (0=halt, 1=single-user, 3=multi-user, 6=reboot)
+- Service management with respawn capability
+- `/etc/inittab` configuration file support
+- PID 1 management with proper orphan process handling
 
 ### Filesystem Architecture
 - **Dual filesystem design**: Initramfs for boot-time files, memory filesystem for runtime data
@@ -140,7 +178,7 @@ fn syscall3(n: u64, a1: u64, a2: u64, a3: u64) -> u64 {
 ## Build System Details
 
 ### Cargo Configuration
-- Custom target: `x86_64-nexaos.json` (no OS, soft-float, PIC relocation model)
+- Custom target: `x86_64-nexaos.json` (bare-metal, no OS, soft-float, PIC relocation model)
 - Release profile: `panic = "abort"` (no unwinding)
 - Build dependencies: `cc` for assembly compilation
 - Userspace builds: `-Z build-std=core` for minimal std replacement
@@ -150,16 +188,16 @@ fn syscall3(n: u64, a1: u64, a2: u64, a3: u64) -> u64 {
 - Custom sections: `.boot.header`, `.boot`, `.text`, `.rodata`, `.data`, `.bss`
 - Assembly bootstrap: `boot/long_mode.S` with identity-mapped page tables
 
-### Initramfs Creation
-- Userspace binaries built with `-Z build-std=core`
-- CPIO newc archive format for GRUB modules
-- Stripped binaries: `strip --strip-all` to minimize size
-- Build script: `./scripts/build-userspace.sh` creates `build/initramfs.cpio`
+### Multi-Stage Build Process
+- **Initramfs Creation**: Userspace binaries built with `-Z build-std=core`, CPIO newc archive format
+- **Root Filesystem**: ext2-formatted disk image (50MB) with full directory structure
+- **ISO Creation**: GRUB configuration with kernel, initramfs, and rootfs disk image
+- **Boot Parameters**: `root=/dev/vda1 rootfstype=ext2 loglevel=debug`
 
 ### Command Line Parsing
-- GRUB command line support: `init=/path/to/program`
+- GRUB command line support: `init=/path/to/program root=/dev/vda1`
 - Parsed in `kernel_main()` for custom init programs
-- Fallback to default init paths: `/sbin/init`, `/etc/init`, `/bin/init`, `/bin/sh`
+- Fallback to standard Unix init paths: `/sbin/ni`, `/sbin/init`, `/etc/init`, `/bin/init`, `/bin/sh`
 
 ## Testing & Debugging
 
@@ -172,82 +210,127 @@ grub-file --is-x86-multiboot2 target/x86_64-nexaos/release/nexa-os
 ./scripts/run-qemu.sh  # Check for kernel logs
 
 # Build validation
-cargo build --release && ./scripts/build-userspace.sh && ./scripts/build-iso.sh
+./scripts/build-all.sh && ./scripts/run-qemu.sh
+
+# Individual component testing
+./scripts/test-boot-stages.sh    # Test boot stage progression
+./scripts/test-init.sh           # Test init system
+./scripts/test-shell-exit.sh     # Test shell and process cleanup
 ```
 
 ### Common Issues
-- **Build fails**: Check `lld` availability, Rust nightly components
-- **No output**: Verify VGA buffer initialization, serial port setup
-- **Boot hangs**: Check Multiboot header, GRUB configuration
-- **Syscall fails**: Verify GS register setup, IDT configuration
-- **Keyboard not working**: Check PIC initialization, IRQ handling
-- **Userspace won't start**: Check ELF loading, paging setup, GDT configuration
+- **Build fails**: Check `lld` availability, Rust nightly components, `x86_64-nexaos.json` target
+- **No output**: Verify VGA buffer initialization, serial port setup, framebuffer activation
+- **Boot hangs**: Check Multiboot header, GRUB configuration, boot stage progression
+- **Syscall fails**: Verify GS register setup, IDT configuration, syscall dispatch table
+- **Keyboard not working**: Check PIC initialization, IRQ handling, PS/2 controller setup
+- **Userspace won't start**: Check ELF loading, paging setup, GDT configuration, dynamic linking
+- **Init system fails**: Check `/etc/inittab` syntax, service paths, runlevel configuration
+- **Filesystem issues**: Verify initramfs CPIO format, rootfs ext2 mounting, mount point setup
 
 ## File Organization
 
 ### Key Directories
-- `src/`: Kernel source (lib.rs entry point)
-- `userspace/`: User programs (shell.rs)
-- `boot/`: Assembly bootstrap code
-- `scripts/`: Build automation
+- `src/`: Kernel source (lib.rs entry point with 6-stage boot)
+- `userspace/`: User programs (shell.rs, init.rs, login.rs, getty.rs)
+- `boot/`: Assembly bootstrap code for long mode initialization
+- `scripts/`: Build automation (build-all.sh, build-iso.sh, build-rootfs.sh, build-userspace.sh)
+- `docs/`: Architecture and implementation documentation
 - `docs/zh/`: Chinese documentation
+- `build/`: Build artifacts (initramfs.cpio, rootfs.ext2, userspace binaries)
 - `target/x86_64-nexaos/`: Custom target builds
+- `etc/`: System configuration files (inittab, ni.conf)
 
 ### Configuration Files
 - `x86_64-nexaos.json`: Rust target specification (bare-metal, no OS)
+- `x86_64-nexaos-userspace.json`: Userspace target for `-Z build-std=core`
 - `linker.ld`: Kernel linking layout with Multiboot header
 - `rust-toolchain.toml`: Nightly version pinning
 - `Cargo.toml`: Dependencies and build configuration
+- `etc/inittab`: Init system configuration (System V style)
 
 ## Development Guidelines
 
 ### When Adding Kernel Features
-1. Initialize in `kernel_main()` sequence in `src/lib.rs`
-2. Use `kinfo!` for boot progress logging
-3. Handle failures gracefully (halt vs panic)
-4. Test with QEMU serial output and verify boot
+1. Initialize in `kernel_main()` sequence in `src/lib.rs` (after existing subsystems)
+2. Use `kinfo!` for boot progress logging with timing information
+3. Handle failures gracefully (halt vs panic) with proper error reporting
+4. Test with QEMU serial output and verify boot stage completion
+5. Update boot stage tracking if adding new initialization phases
 
 ### When Adding Syscalls
-1. Define constant in `src/syscall.rs`
-2. Add dispatch case in `syscall_dispatch()` function
-3. Update userspace syscall wrappers in `userspace/shell.rs`
-4. Test with shell integration and verify syscall numbers
+1. Define constant in `src/syscall.rs` (follow POSIX numbering where possible)
+2. Add dispatch case in `syscall_dispatch()` function with parameter validation
+3. Update userspace syscall wrappers in appropriate userspace programs
+4. Test with shell integration and verify syscall numbers match POSIX standards
+
+### When Adding Processes/Services
+1. Implement as userspace program in `userspace/` directory
+2. Add to build system in `scripts/build-userspace.sh` or `scripts/build-rootfs.sh`
+3. Configure in `/etc/inittab` for init system management
+4. Test process lifecycle: spawn, execution, cleanup, signal handling
 
 ### When Modifying Memory Layout
-1. Update `src/paging.rs` user space mappings
-2. Adjust address constants in `src/process.rs`
+1. Update `src/paging.rs` user space mappings and address space calculations
+2. Adjust address constants in `src/process.rs` (USER_BASE, STACK_BASE, etc.)
 3. Update `linker.ld` if kernel memory layout changes
 4. Verify with memory map logging and ELF loading tests
+5. Test with both static and dynamically linked executables
 
 ### When Adding Filesystem Features
-1. Consider initramfs vs runtime filesystem usage
+1. Consider initramfs vs runtime filesystem usage (initramfs for boot, runtime for dynamic content)
 2. Update both `src/initramfs.rs` and `src/fs.rs` if needed
-3. Test file operations in userspace shell
-4. Rebuild initramfs with `./scripts/build-userspace.sh`
+3. Test file operations in userspace shell with various file types
+4. Rebuild initramfs with `./scripts/build-userspace.sh` and test boot
 
 ### When Adding Device Drivers
-1. Initialize interrupts in `interrupts::init_interrupts()`
-2. Configure PIC for device IRQs
-3. Add interrupt handlers with proper masking
-4. Test with QEMU device emulation
+1. Initialize interrupts in `interrupts::init_interrupts()` with proper IRQ routing
+2. Configure PIC/APIC for device IRQs with mask/unmask logic
+3. Add interrupt handlers with proper register preservation and error handling
+4. Test with QEMU device emulation and verify interrupt delivery
+
+### When Modifying Authentication/Security
+1. Update user database structures in `src/auth.rs`
+2. Implement credential validation and permission checking
+3. Add UID/GID handling in syscall implementations
+4. Test with multi-user scenarios and privilege escalation prevention
+
+### When Adding IPC Mechanisms
+1. Implement in appropriate module (`ipc.rs` for channels, `pipe.rs` for pipes)
+2. Add syscall support in `syscall.rs` dispatch table
+3. Implement blocking/non-blocking semantics with proper synchronization
+4. Test inter-process communication between multiple userspace programs
+
+### When Modifying Signal Handling
+1. Add signal constants and default actions in `src/signal.rs`
+2. Update signal delivery mechanism in process scheduler
+3. Implement signal masking and pending signal queues
+4. Test signal delivery, blocking, and custom handlers
 
 ## Cross-Component Communication
 
 ### Kernel ↔ Userspace
-- Syscalls via `syscall` instruction (x86_64 fast syscall)
-- GS register points to GS_DATA array for kernel data access
-- Fixed memory layout contracts (user code at 0x200000+)
+- Syscalls via `syscall` instruction (x86_64 fast syscall) with GS register context
+- Fixed memory layout contracts (user code at 0x200000+, stack at 0x600000+)
+- Signal delivery through process control structures
+- IPC through kernel-mediated message passing and pipes
 
 ### Bootloader Integration
-- Multiboot2 tags for memory map, command line, modules
-- GRUB modules for initramfs (CPIO archives)
-- Serial console for debugging output
+- Multiboot2 tags for memory map, command line, modules (initramfs)
+- GRUB modules for initramfs (CPIO archives) and root filesystem (ext2 disk)
+- Serial console for debugging output with configurable log levels
 
 ### Process Management
-- Single process execution model (currently)
-- Process structures support future multi-process (PID, state, memory layout)
-- ELF loading with fixed address allocation
-- Ring 3 transition via `iretq` instruction
-- Process state tracking (Ready/Running/Sleeping/Zombie)
+- Scheduler integration with process table and time slicing
+- Authentication system for user credential management
+- Signal handling for inter-process communication
+- IPC channels and pipes for data exchange
+- Init system for service lifecycle management
 
-Remember: This is experimental code. Changes can break the entire system. Always test boots after modifications, and use `git bisect` for regression hunting.
+### Filesystem Integration
+- Initramfs provides boot-time files (binaries, configs)
+- Runtime filesystem handles dynamic content and temporary files
+- Root filesystem (ext2) contains full system after boot stage 4
+- Virtual filesystems (/proc, /sys, /dev) mounted during initramfs stage
+
+Remember: This is experimental code. Changes can break the entire system. Always test builds with `./scripts/build-all.sh` and boot with `./scripts/run-qemu.sh` after modifications. Use `git bisect` for regression hunting, and verify all boot stages complete successfully.
