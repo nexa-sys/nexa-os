@@ -17,11 +17,13 @@
 
 use core::{cell::UnsafeCell, ffi::c_void};
 use std::arch::asm;
+use std::io::{self, Write};
 use std::panic;
 
 extern "C" {
     fn write(fd: i32, buf: *const c_void, count: usize) -> isize;
     fn _exit(code: i32) -> !;
+    fn fflush(stream: *mut c_void) -> i32;
 }
 
 fn install_minimal_panic_hook() {
@@ -1051,128 +1053,43 @@ fn delay_ms(ms: u64) {
 
 /// Main init loop with service supervision
 fn init_main() -> ! {
-    // Now we can use std::io!
-    print("\n");
-    print("\x1b[1;34m=========================================\x1b[0m\n"); // Blue
-    print("\x1b[1;34m  NexaOS Init (ni) - PID 1\x1b[0m\n");
-    print("\x1b[1;34m  Hybrid Kernel - Process Supervisor\x1b[0m\n");
-    print("\x1b[1;34m=========================================\x1b[0m\n");
-    print("\n");
 
-    // Verify we are PID 1
-    let pid = getpid();
-    let ppid = getppid();
+    announce_runtime_start();
 
-    let mut buf = [0u8; 32];
-
-    log_start("Verifying init process identity");
-    print("         PID: ");
-    print(itoa(pid as u64, &mut buf));
-    print("\n");
-    print("         PPID: ");
-    print(itoa(ppid as u64, &mut buf));
-    print("\n");
-
-    if pid != 1 {
-        log_fail("Not running as PID 1 - system unstable");
-        exit(1);
-    }
-
-    if ppid != 0 {
-        log_warn("PPID is not 0 - unusual configuration");
-    } else {
-        log_info("Init process identity verified");
-    }
-
-    // Get current runlevel
-    log_start("Querying system runlevel");
-    let runlevel = get_runlevel();
-    if runlevel >= 0 {
-        print("         Runlevel: ");
-        print(itoa(runlevel as u64, &mut buf));
-        print("\n");
-        log_info("System runlevel configured");
-    } else {
-        log_warn("Failed to query runlevel");
-    }
-
-    print("\n");
-    log_info("System initialization complete");
-    print("\n");
-
-    // Load service catalog
-    print("\n");
-    log_start("Loading unit catalog");
     let catalog = load_service_catalog();
-    let services = catalog.services;
-    if services.is_empty() {
-        log_warn("No unit definitions found, preparing fallback shell");
-    } else {
-        log_info("Loaded units from /etc/ni/ni.conf");
-        print("         Unit count: ");
-        print(itoa(services.len() as u64, &mut buf));
-        print("\n");
+    
+    // Simple initialization to avoid complex const expressions
+    let empty_service: Option<RunningService> = None;
+    let mut running_services: [Option<RunningService>; MAX_SERVICES] = [
+        empty_service, empty_service, empty_service, empty_service,
+        empty_service, empty_service, empty_service, empty_service,
+        empty_service, empty_service, empty_service, empty_service,
+    ];
+    
+    let service_count = catalog.services.len();
+
+    for i in 0..service_count {
+        running_services[i] = Some(RunningService {
+            config: &catalog.services[i],
+            state: ServiceState::new(),
+        });
     }
 
-    let boot_target = select_boot_target(runlevel, catalog.default_target, catalog.fallback_target);
-    print("         Boot target: ");
-    print(boot_target);
-    print("\n");
+    let mut buf = [0u8; 256];
 
-    // Service supervision with parallel fork/exec/wait
-    print("\n");
-    log_start("Starting parallel unit supervision");
-    log_info("Using fork/exec/wait4 supervision model");
-    print("\n");
-
-    // Build list of services to run
-    let mut running_services: [Option<RunningService>; MAX_SERVICES] = [None; MAX_SERVICES];
-    let mut service_count = 0usize;
-
-    if services.is_empty() {
-        log_warn("No configured units, using fallback shell");
+    if service_count == 0 {
+        log_warn("No units configured, starting fallback shell");
+        
+        // Use FALLBACK_SERVICE configuration
         running_services[0] = Some(RunningService {
             config: &FALLBACK_SERVICE,
             state: ServiceState::new(),
         });
-        service_count = 1;
-    } else {
-        for service in services {
-            if service_matches_target(service, boot_target) {
-                if service_count < MAX_SERVICES {
-                    running_services[service_count] = Some(RunningService {
-                        config: service,
-                        state: ServiceState::new(),
-                    });
-                    service_count += 1;
-                }
-            }
-        }
-
-        if service_count == 0 {
-            log_warn("No unit matched boot target; using fallback shell");
-            running_services[0] = Some(RunningService {
-                config: &FALLBACK_SERVICE,
-                state: ServiceState::new(),
-            });
-            service_count = 1;
-        }
+        
+        parallel_service_supervisor(&mut running_services, 1, &mut buf);
     }
 
-    print("         Active units: ");
-    print(itoa(service_count as u64, &mut buf));
-    print("\n\n");
-
-    // NOTE: Since fork() is not fully implemented (returns fake PID),
-    // we cannot run services as separate processes in parallel.
-    // Instead, we show login prompt directly and exec into shell.
-
-    print("\n");
-    log_info("System ready - starting login sequence");
-    print("\n");
-
-    // Show login prompt and authenticate
-    show_login_and_exec_shell(&mut buf);
+    parallel_service_supervisor(&mut running_services, service_count, &mut buf);
 }
 
 /// Parallel service supervisor - manages multiple services simultaneously
@@ -1195,8 +1112,9 @@ fn parallel_service_supervisor(
                 print(service.name);
             }
             print("\n");
-
+            
             let pid = start_service(service, buf);
+            
             if pid > 0 {
                 state.pid = pid;
                 state.total_starts = state.total_starts.saturating_add(1);
@@ -1210,15 +1128,29 @@ fn parallel_service_supervisor(
             }
         }
     }
-
+    
     // Main supervision loop - wait for any child process to exit and restart if needed
     loop {
         let mut status: i32 = 0;
         let pid = wait4(-1, &mut status as *mut i32, 0); // Wait for any child
 
-        if pid < 0 {
-            // No children or error, delay and retry
-            delay_ms(1000);
+        // Since fork is fake in current implementation, we'll never have real children
+        // Instead, display login prompt directly here
+        if pid < 0 || pid == 2 {
+            // Show login prompt
+            println!("\n");
+            println!("\x1b[1;36m╔════════════════════════════════════════╗\x1b[0m");
+            println!("\x1b[1;36m║                                        ║\x1b[0m");
+            println!("\x1b[1;36m║          \x1b[1;37mWelcome to NexaOS\x1b[1;36m               ║\x1b[0m");
+            println!("\x1b[1;36m║                                        ║\x1b[0m");
+            println!("\x1b[1;36m║    \x1b[0mHybrid Kernel Operating System\x1b[1;36m        ║\x1b[0m");
+            println!("\x1b[1;36m║                                        ║\x1b[0m");
+            println!("\x1b[1;36m╚════════════════════════════════════════╝\x1b[0m");
+            println!("\n");
+            println!("login: ");
+            
+            // For now, just loop - in future this would handle login
+            delay_ms(10000);
             continue;
         }
 
@@ -1303,15 +1235,19 @@ fn parallel_service_supervisor(
 
 /// Start a single service (fork and exec)
 fn start_service(service: &ServiceConfig, _buf: &mut [u8]) -> i64 {
+    eprintln!("[ni] start_service: service.exec_start='{}'", service.exec_start);
+    
     let pid = fork();
 
     if pid < 0 {
         // Fork failed
+        eprintln!("[ni] start_service: fork failed");
         return -1;
     }
 
     if pid == 0 {
         // Child process - exec the service
+        eprintln!("[ni] start_service: in child, about to exec");
         let exec_bytes = service.exec_start.as_bytes();
         if exec_bytes.is_empty() {
             exit(1);

@@ -132,6 +132,7 @@ const USER_LOW_END: u64 = 0x4000_0000; // 1 GiB identity-mapped user region
 
 /// Write system call
 fn syscall_write(fd: u64, buf: u64, count: u64) -> u64 {
+    // crate::kdebug!("sys_write(fd={}, buf={:#x}, count={})", fd, buf, count);
     if count == 0 {
         posix::set_errno(0);
         return 0;
@@ -145,7 +146,7 @@ fn syscall_write(fd: u64, buf: u64, count: u64) -> u64 {
     if fd == STDOUT || fd == STDERR {
         if !user_buffer_in_range(buf, count) {
             let (stack_base, stack_top) = current_stack_bounds();
-            crate::kerror!(
+            crate::kwarn!(
                 "sys_write: invalid user buffer fd={} buf={:#x} count={} stack_base={:#x} stack_top={:#x}",
                 fd,
                 buf,
@@ -203,6 +204,7 @@ fn syscall_write(fd: u64, buf: u64, count: u64) -> u64 {
         }
 
         posix::set_errno(0);
+        // crate::kdebug!("sys_write complete fd={} wrote={}", fd, count);
         count
     } else {
         posix::set_errno(posix::errno::EBADF);
@@ -1569,7 +1571,7 @@ fn syscall_pivot_root(req_ptr: *const PivotRootRequest) -> u64 {
 
 #[no_mangle]
 pub extern "C" fn syscall_dispatch(nr: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 {
-    match nr {
+    let result = match nr {
         SYS_WRITE => syscall_write(arg1, arg2, arg3),
         SYS_READ => syscall_read(arg1, arg2 as *mut u8, arg3 as usize),
         SYS_OPEN => syscall_open(arg1 as *const u8, arg2 as usize),
@@ -1615,11 +1617,13 @@ pub extern "C" fn syscall_dispatch(nr: u64, arg1: u64, arg2: u64, arg3: u64) -> 
         SYS_CHROOT => syscall_chroot(arg1 as *const u8, arg2 as usize),
         SYS_PIVOT_ROOT => syscall_pivot_root(arg1 as *const PivotRootRequest),
         _ => {
-            crate::kinfo!("Unknown syscall: {}", nr);
+            crate::kwarn!("Unknown syscall: {}", nr);
             posix::set_errno(posix::errno::ENOSYS);
             0
         }
-    }
+    };
+    // crate::kdebug!("syscall_dispatch return nr={} -> {:#x}", nr, result);
+    result
 }
 
 global_asm!(

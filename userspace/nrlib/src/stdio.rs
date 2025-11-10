@@ -213,6 +213,10 @@ fn write_all_fd(fd: i32, mut buf: &[u8]) -> Result<(), i32> {
     Ok(())
 }
 
+fn debug_log(msg: &[u8]) {
+    let _ = write_all_fd(STDERR, msg);
+}
+
 unsafe fn lock_stream<'a>(stream: *mut FILE) -> Result<FileGuard<'a>, ()> {
     if stream.is_null() {
         set_errno(EINVAL);
@@ -283,6 +287,8 @@ fn file_write_bytes(file: &mut FILE, bytes: &[u8]) -> Result<(), i32> {
     while !remaining.is_empty() {
         let available = BUFFER_CAPACITY.saturating_sub(file.buffer.len);
         if available == 0 {
+            // Buffer is full, need to flush. Set last_op first!
+            file.last_op = LastOp::Write;
             file_flush(file)?;
             continue;
         }
@@ -290,6 +296,10 @@ fn file_write_bytes(file: &mut FILE, bytes: &[u8]) -> Result<(), i32> {
         let end = file.buffer.len + chunk;
         file.buffer.data[file.buffer.len..end].copy_from_slice(&remaining[..chunk]);
         file.buffer.len = end;
+        
+        // Set last_op BEFORE flushing so that file_flush can see it
+        file.last_op = LastOp::Write;
+        
         let newline_written = if matches!(file.mode, BufferMode::Line) {
             remaining[..chunk].iter().any(|b| *b == b'\n')
         } else {
@@ -301,7 +311,6 @@ fn file_write_bytes(file: &mut FILE, bytes: &[u8]) -> Result<(), i32> {
         remaining = &remaining[chunk..];
     }
 
-    file.last_op = LastOp::Write;
     Ok(())
 }
 
@@ -636,6 +645,7 @@ pub fn stdout_write_str(s: &str) -> Result<(), i32> {
 }
 
 pub fn stdout_write_fmt(args: fmt::Arguments<'_>) -> Result<(), i32> {
+    debug_log(b"[nrlib] stdout_write_fmt enter\n");
     struct StdoutWriter {
         error: Option<i32>,
     }
@@ -653,10 +663,15 @@ pub fn stdout_write_fmt(args: fmt::Arguments<'_>) -> Result<(), i32> {
     }
 
     let mut writer = StdoutWriter { error: None };
-    match writer.write_fmt(args) {
+    let result = match writer.write_fmt(args) {
         Ok(()) => Ok(()),
         Err(_) => Err(writer.error.unwrap_or_else(get_errno)),
+    };
+    match result {
+        Ok(()) => debug_log(b"[nrlib] stdout_write_fmt ok\n"),
+        Err(_) => debug_log(b"[nrlib] stdout_write_fmt err\n"),
     }
+    result
 }
 
 pub fn stdout_flush() -> Result<(), i32> {
@@ -1254,31 +1269,44 @@ pub unsafe extern "C" fn fflush(stream: *mut FILE) -> i32 {
     if stream.is_null() {
         let mut result = 0;
         let mut error_code = 0;
+        debug_log(b"[nrlib] fflush(NULL) -> stdout\n");
         if let Err(err) = flush_stream(stdout) {
             result = -1;
             error_code = err;
+            debug_log(b"[nrlib] fflush stdout error\n");
+        } else {
+            debug_log(b"[nrlib] fflush stdout ok\n");
         }
+        debug_log(b"[nrlib] fflush(NULL) -> stderr\n");
         if let Err(err) = flush_stream(stderr) {
             result = -1;
             if error_code == 0 {
                 error_code = err;
             }
+            debug_log(b"[nrlib] fflush stderr error\n");
+        } else {
+            debug_log(b"[nrlib] fflush stderr ok\n");
         }
         if result == 0 {
             set_errno(0);
+            debug_log(b"[nrlib] fflush(NULL) success\n");
         } else {
             set_errno(error_code);
+            debug_log(b"[nrlib] fflush(NULL) failure\n");
         }
         return result;
     }
 
+    debug_log(b"[nrlib] fflush(stream)\n");
     match flush_stream(stream) {
         Ok(()) => {
             set_errno(0);
+            debug_log(b"[nrlib] fflush(stream) success\n");
             0
         }
         Err(err) => {
             set_errno(err);
+            debug_log(b"[nrlib] fflush(stream) failure\n");
             -1
         }
     }

@@ -116,6 +116,10 @@ fn wait4(pid: i64, status: *mut i32, options: i32) -> i64 {
 }
 
 fn getty_main() -> ! {
+    // Test output at the very beginning
+    print("GETTY_STARTING\n");
+    print("GETTY_STARTING_LINE_2\n");
+    
     loop {
         // Display banner
         print("\n");

@@ -38,13 +38,18 @@ NexaOS is a production-grade operating system written in Rust, implementing a hy
 NexaOS uses a two-stage build: minimal initramfs for early boot + full ext2 root filesystem.
 
 ```bash
-# Complete system build (kernel + initramfs + rootfs + ISO)
+# Complete system build (kernel + initramfs + rootfs + ISO) - RECOMMENDED
 ./scripts/build-all.sh
 
-# Individual components:
-./scripts/build-userspace.sh    # Build initramfs (minimal boot environment)
-./scripts/build-rootfs.sh       # Build full ext2 root filesystem
-./scripts/build-iso.sh          # Create bootable ISO with GRUB
+# Individual components - CRITICAL BUILD ORDER:
+# The ext2 root filesystem is embedded in initramfs, so you MUST:
+# 1. Build rootfs FIRST (creates build/rootfs.ext2)
+# 2. Then build ISO (embeds rootfs.ext2 into initramfs)
+./scripts/build-rootfs.sh       # Step 1: Build full ext2 root filesystem
+./scripts/build-iso.sh          # Step 2: Create bootable ISO with GRUB
+# NEVER build ISO without building rootfs first - you'll get stale filesystem!
+
+./scripts/build-userspace.sh    # Build initramfs only (minimal boot environment)
 
 # Kernel-only build
 cargo build --release
@@ -329,6 +334,51 @@ grub-file --is-x86-multiboot2 target/x86_64-nexaos/release/nexa-os
 
 ### Filesystem Integration
 - Initramfs provides boot-time files (binaries, configs)
+- Runtime filesystem handles dynamic content and temporary files
+- Root filesystem (ext2) contains full system after boot stage 4
+- Virtual filesystems (/proc, /sys, /dev) mounted during initramfs stage
+
+## Critical Design Principles
+
+### NexaOS Userspace Library (nrlib)
+**CRITICAL**: `nrlib` is specifically designed to provide libc compatibility for Rust's `std` library. It is NOT a standalone userspace library.
+
+**Core Design Goals**:
+1. **Enable Rust std**: Primary purpose is to make Rust's standard library work in NexaOS userspace
+2. **Provide libc ABI**: Implements C ABI functions that `std` expects from libc (pthread, malloc, syscalls, etc.)
+3. **Transparent Integration**: Programs using `std` should work without modifications
+
+**DO NOT**:
+- ❌ Bypass `std` to use nrlib directly (defeats the purpose)
+- ❌ Implement workarounds that avoid std I/O (println!, io::stdout, etc.)
+- ❌ Create custom non-std alternatives when std functionality is needed
+
+**DO**:
+- ✅ Fix issues in nrlib to make std work correctly
+- ✅ Debug std behavior by instrumenting nrlib implementations
+- ✅ Ensure pthread, TLS, futex, and other libc primitives work for std's needs
+- ✅ Test with standard Rust patterns (println!, io::Write, std::sync, etc.)
+
+**When std I/O fails**: The problem is in nrlib's libc compatibility layer, not in std itself. Fix the underlying libc implementation rather than working around it.
+
+### Build System Architecture
+**CRITICAL**: The ext2 root filesystem is embedded in the initramfs CPIO archive.
+
+**Build Dependencies**:
+```
+rootfs.ext2 → initramfs.cpio → nexaos.iso
+```
+
+**Correct Build Order**:
+1. `./scripts/build-rootfs.sh` creates `build/rootfs.ext2`
+2. `./scripts/build-iso.sh` embeds `rootfs.ext2` into `build/initramfs.cpio`
+3. ISO contains kernel + initramfs (which includes rootfs.ext2)
+
+**Common Mistake**: Building ISO without building rootfs first results in missing or stale filesystem.
+
+**Always use**: `./scripts/build-all.sh` to ensure correct build order, or manually follow: rootfs → ISO.
+
+Remember: This is experimental code. Changes can break the entire system. Always test builds with `./scripts/build-all.sh` and boot with `./scripts/run-qemu.sh` after modifications. Use `git bisect` for regression hunting, and verify all boot stages complete successfully.
 - Runtime filesystem handles dynamic content and temporary files
 - Root filesystem (ext2) contains full system after boot stage 4
 - Virtual filesystems (/proc, /sys, /dev) mounted during initramfs stage

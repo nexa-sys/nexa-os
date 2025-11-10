@@ -4,7 +4,19 @@
 #![feature(thread_local)]
 #![feature(c_variadic)]
 
-use core::{arch::asm, cmp, ffi::c_void, mem, ptr};
+use core::{
+    arch::asm,
+    cmp,
+    ffi::c_void,
+    mem,
+    ptr,
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+};
+
+// Indicate to std that we're in single-threaded mode
+// This may cause std to skip locking entirely for I/O
+#[no_mangle]
+pub static __libc_single_threaded: u8 = 1;  // 1 = single-threaded (skip locks)
 
 // C Runtime support for std programs
 pub mod crt;
@@ -87,6 +99,7 @@ pub(crate) const ENOENT: i32 = 2;
 pub(crate) const EAGAIN: i32 = 11;
 pub(crate) const ENOMEM: i32 = 12;
 pub(crate) const ENOSYS: i32 = 38;
+pub(crate) const ENOTTY: i32 = 25;
 
 // Minimal syscall wrappers that match the userspace convention (int 0x81)
 #[inline(always)]
@@ -124,6 +137,140 @@ pub fn syscall0(n: u64) -> u64 {
 
 // errno support (global for now, single-process environment)
 static mut ERRNO: i32 = 0;
+
+// Environment variables support (empty for now)
+#[no_mangle]
+pub static mut environ: *mut *mut c_char = ptr::null_mut();
+
+#[no_mangle]
+pub static mut __environ: *mut *mut c_char = ptr::null_mut();
+
+static DEBUG_WRITE_LOGGING: AtomicBool = AtomicBool::new(false);
+static PTHREAD_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
+static ALLOC_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+const STDERR_FD: u64 = 2;
+
+struct DebugWriteContext {
+    active: bool,
+    fd: i32,
+    count: usize,
+}
+
+fn append_decimal(buf: &mut [u8], mut value: u64) -> usize {
+    if value == 0 {
+        if !buf.is_empty() {
+            buf[0] = b'0';
+            return 1;
+        }
+        return 0;
+    }
+    let mut tmp = [0u8; 20];
+    let mut idx = 0usize;
+    while value > 0 && idx < tmp.len() {
+        tmp[idx] = b'0' + (value % 10) as u8;
+        value /= 10;
+        idx += 1;
+    }
+    let mut written = 0usize;
+    for i in (0..idx).rev() {
+        if written >= buf.len() {
+            break;
+        }
+        buf[written] = tmp[i];
+        written += 1;
+    }
+    written
+}
+
+fn append_signed(buf: &mut [u8], value: i64) -> usize {
+    if value < 0 {
+        if buf.is_empty() {
+            return 0;
+        }
+        buf[0] = b'-';
+        1 + append_decimal(&mut buf[1..], (-value) as u64)
+    } else {
+        append_decimal(buf, value as u64)
+    }
+}
+
+fn debug_log_flush(mut buf: [u8; 80], len: usize) {
+    if len == 0 {
+        return;
+    }
+    let _ = syscall3(SYS_WRITE, STDERR_FD, buf.as_mut_ptr() as u64, len as u64);
+}
+
+// Debug logging - disabled by default for clean output
+#[allow(dead_code)]
+fn debug_log_message(_msg: &[u8]) {
+    // Disabled: let _ = syscall3(SYS_WRITE, STDERR_FD, msg.as_ptr() as u64, msg.len() as u64);
+}
+
+fn debug_log_write_start(fd: i32, count: usize) -> DebugWriteContext {
+    let active = DEBUG_WRITE_LOGGING
+        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_ok();
+    if active {
+        let mut buf = [0u8; 80];
+        let mut cursor = 0usize;
+        let prefix = b"[nrlib] write fd=";
+        if prefix.len() < buf.len() {
+            buf[..prefix.len()].copy_from_slice(prefix);
+            cursor = prefix.len();
+        }
+        if cursor < buf.len() {
+            cursor += append_signed(&mut buf[cursor..], fd as i64);
+        }
+        let middle = b", count=";
+        if cursor + middle.len() < buf.len() {
+            buf[cursor..cursor + middle.len()].copy_from_slice(middle);
+            cursor += middle.len();
+        }
+        if cursor < buf.len() {
+            cursor += append_decimal(&mut buf[cursor..], count as u64);
+        }
+        if cursor < buf.len() {
+            buf[cursor] = b'\n';
+            cursor += 1;
+        }
+        debug_log_flush(buf, cursor);
+    }
+    DebugWriteContext { active, fd, count }
+}
+
+fn debug_log_write_end(ctx: DebugWriteContext, ret: isize) {
+    if !ctx.active {
+        return;
+    }
+
+    let mut buf = [0u8; 80];
+    let mut cursor = 0usize;
+    let prefix = b"[nrlib] write fd=";
+    if prefix.len() < buf.len() {
+        buf[..prefix.len()].copy_from_slice(prefix);
+        cursor = prefix.len();
+    }
+    if cursor < buf.len() {
+        cursor += append_signed(&mut buf[cursor..], ctx.fd as i64);
+    }
+    let mid = b", ret=";
+    if cursor + mid.len() < buf.len() {
+        buf[cursor..cursor + mid.len()].copy_from_slice(mid);
+        cursor += mid.len();
+    }
+    if cursor < buf.len() {
+        cursor += append_signed(&mut buf[cursor..], ret as i64);
+    }
+    if cursor < buf.len() {
+        buf[cursor] = b'\n';
+        cursor += 1;
+    }
+    debug_log_flush(buf, cursor);
+
+    DEBUG_WRITE_LOGGING.store(false, Ordering::Release);
+}
 
 #[inline(always)]
 pub fn set_errno(value: i32) {
@@ -179,7 +326,9 @@ pub extern "C" fn read(fd: i32, buf: *mut c_void, count: usize) -> isize {
 
 #[no_mangle]
 pub extern "C" fn write(fd: i32, buf: *const c_void, count: usize) -> isize {
-    translate_ret_isize(syscall3(SYS_WRITE, fd as u64, buf as u64, count as u64))
+    // Temporarily disable all logging to debug the issue
+    let ret_raw = syscall3(SYS_WRITE, fd as u64, buf as u64, count as u64);
+    translate_ret_isize(ret_raw)
 }
 
 #[no_mangle]
@@ -485,10 +634,7 @@ const MAX_TLS_KEYS: usize = 128;
 static mut TLS_KEYS: [Option<*mut c_void>; MAX_TLS_KEYS] = [None; MAX_TLS_KEYS];
 static mut TLS_NEXT_KEY: usize = 0;
 
-#[repr(C)]
-pub struct pthread_key_t {
-    key: usize,
-}
+pub type pthread_key_t = c_uint;
 
 type PthreadDestructor = Option<unsafe extern "C" fn(*mut c_void)>;
 
@@ -497,26 +643,42 @@ pub unsafe extern "C" fn pthread_key_create(
     key: *mut pthread_key_t,
     _destructor: PthreadDestructor,
 ) -> i32 {
+    // let slot = PTHREAD_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
+    // if slot < 32 {
+    //     debug_log_message(b"[nrlib] pthread_key_create\n");
+    // }
     if TLS_NEXT_KEY >= MAX_TLS_KEYS {
         set_errno(EINVAL);
         return -1;
     }
     let k = TLS_NEXT_KEY;
     TLS_NEXT_KEY += 1;
-    (*key).key = k;
     TLS_KEYS[k] = None;
+    *key = k as pthread_key_t;
     0
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn pthread_key_delete(_key: pthread_key_t) -> i32 {
-    0
+    let idx = _key as usize;
+    if idx < MAX_TLS_KEYS {
+        TLS_KEYS[idx] = None;
+        0
+    } else {
+        set_errno(EINVAL);
+        -1
+    }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn pthread_getspecific(key: pthread_key_t) -> *mut c_void {
-    if key.key < MAX_TLS_KEYS {
-        TLS_KEYS[key.key].unwrap_or(ptr::null_mut())
+    // let slot = PTHREAD_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
+    // if slot < 32 {
+    //     debug_log_message(b"[nrlib] pthread_getspecific\n");
+    // }
+    let idx = key as usize;
+    if idx < MAX_TLS_KEYS {
+        TLS_KEYS[idx].unwrap_or(ptr::null_mut())
     } else {
         ptr::null_mut()
     }
@@ -524,8 +686,13 @@ pub unsafe extern "C" fn pthread_getspecific(key: pthread_key_t) -> *mut c_void 
 
 #[no_mangle]
 pub unsafe extern "C" fn pthread_setspecific(key: pthread_key_t, value: *const c_void) -> i32 {
-    if key.key < MAX_TLS_KEYS {
-        TLS_KEYS[key.key] = Some(value as *mut c_void);
+    // let slot = PTHREAD_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
+    // if slot < 32 {
+    //     debug_log_message(b"[nrlib] pthread_setspecific\n");
+    // }
+    let idx = key as usize;
+    if idx < MAX_TLS_KEYS {
+        TLS_KEYS[idx] = Some(value as *mut c_void);
         0
     } else {
         set_errno(EINVAL);
@@ -558,6 +725,33 @@ fn align_up(value: usize, align: usize) -> Option<usize> {
 }
 
 unsafe fn alloc_internal(size: usize, align: usize) -> *mut c_void {
+    let alloc_slot = ALLOC_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
+    if alloc_slot < 64 {
+        let mut buf = [0u8; 80];
+        let mut cursor = 0usize;
+        let prefix = b"[nrlib] alloc size=";
+        if prefix.len() < buf.len() {
+            buf[..prefix.len()].copy_from_slice(prefix);
+            cursor = prefix.len();
+        }
+        if cursor < buf.len() {
+            cursor += append_decimal(&mut buf[cursor..], size as u64);
+        }
+        if cursor < buf.len() {
+            let mid = b" align=";
+            let end = (cursor + mid.len()).min(buf.len());
+            buf[cursor..end].copy_from_slice(&mid[..end - cursor]);
+            cursor = end;
+        }
+        if cursor < buf.len() {
+            cursor += append_decimal(&mut buf[cursor..], align as u64);
+        }
+        if cursor < buf.len() {
+            buf[cursor] = b'\n';
+            cursor += 1;
+        }
+        debug_log_flush(buf, cursor);
+    }
     if size == 0 {
         set_errno(0);
         return ptr::null_mut();
@@ -644,6 +838,7 @@ pub(crate) unsafe fn malloc_aligned(size: usize, alignment: usize) -> *mut c_voi
 
 #[no_mangle]
 pub unsafe extern "C" fn malloc(size: usize) -> *mut c_void {
+    // DO NOT log here - may cause recursion if logging allocates
     alloc_internal(size, DEFAULT_ALIGNMENT)
 }
 
@@ -688,6 +883,7 @@ pub unsafe extern "C" fn realloc(ptr: *mut c_void, new_size: usize) -> *mut c_vo
 
 #[no_mangle]
 pub unsafe extern "C" fn calloc(nmemb: usize, size: usize) -> *mut c_void {
+    // DO NOT log here - may cause recursion if logging allocates
     match nmemb.checked_mul(size) {
         Some(total) if total > 0 => {
             let ptr = alloc_internal(total, DEFAULT_ALIGNMENT);
