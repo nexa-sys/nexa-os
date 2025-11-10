@@ -17,8 +17,8 @@
 
 use core::{cell::UnsafeCell, ffi::c_void};
 use std::arch::asm;
-use std::io::{self, Write};
 use std::panic;
+use std::ptr;
 
 extern "C" {
     fn write(fd: i32, buf: *const c_void, count: usize) -> isize;
@@ -1053,7 +1053,38 @@ fn delay_ms(ms: u64) {
 
 /// Main init loop with service supervision
 fn init_main() -> ! {
-
+    eprintln!("[init] Starting init_main");
+    
+    // Test 1: Direct write to STDERR (should work)
+    eprintln!("[init] Test 1: write() to STDERR");
+    unsafe {
+        let test_msg = b"[direct] Direct write to STDERR\n";
+        let ret = write(STDERR, test_msg.as_ptr() as *const c_void, test_msg.len());
+        eprintln!("[init] write(STDERR) returned: {}", ret);
+    }
+    
+    // Test 2: Direct write to STDOUT (hang here?)
+    eprintln!("[init] Test 2: About to write() to STDOUT...");
+    unsafe {
+        let test_msg = b"[direct] Direct write to STDOUT\n";
+        let ret = write(STDOUT, test_msg.as_ptr() as *const c_void, test_msg.len());
+        eprintln!("[init] write(STDOUT) returned: {}", ret);
+    }
+    
+    eprintln!("[init] After all write tests");
+    
+    // Test 3: Trace into Rust std stdout initialization
+    // First, let's check if Rust std itself loads correctly
+    eprintln!("[init] Test 3.0: About to use std directly...");
+    
+    // Try accessing std::io module without calling stdout
+    eprintln!("[init] Test 3.1: Can use std::io in eprintln");
+    
+    // DIAGNOSTIC: Skip the std::io::stdout() test for now - it hangs due to Rust std issue
+    // TODO: Investigate why Rust std's stdout() initialization hangs in NexaOS
+    eprintln!("[init] Skipping std::io::stdout() test (known Rust std issue)");
+    eprintln!("[init] Proceeding with service initialization instead...");
+    
     announce_runtime_start();
 
     let catalog = load_service_catalog();

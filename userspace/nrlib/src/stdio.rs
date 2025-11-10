@@ -29,6 +29,8 @@ const STDIN: i32 = 0;
 const STDOUT: i32 = 1;
 const STDERR: i32 = 2;
 
+const EAGAIN: i32 = 11;  // Resource temporarily unavailable (POSIX error code)
+
 const BUFFER_CAPACITY: usize = 512;
 const INT_BUFFER_SIZE: usize = 128;
 const FLOAT_BUFFER_SIZE: usize = 128;
@@ -214,7 +216,9 @@ fn write_all_fd(fd: i32, mut buf: &[u8]) -> Result<(), i32> {
 }
 
 fn debug_log(msg: &[u8]) {
-    let _ = write_all_fd(STDERR, msg);
+    // Safe debug logging using direct syscall bypass
+    // This avoids lock recursion issues by writing directly
+    let _ = unsafe { crate::syscall3(SYS_WRITE, 2, msg.as_ptr() as u64, msg.len() as u64) };
 }
 
 unsafe fn lock_stream<'a>(stream: *mut FILE) -> Result<FileGuard<'a>, ()> {
@@ -222,18 +226,70 @@ unsafe fn lock_stream<'a>(stream: *mut FILE) -> Result<FileGuard<'a>, ()> {
         set_errno(EINVAL);
         return Err(());
     }
+    
     let file = &*stream;
-    while file
-        .lock
-        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-        .is_err()
-    {
-        spin_loop();
+    
+    // Production-grade lock acquisition with:
+    // 1. Bounded wait time to detect deadlocks
+    // 2. Exponential backoff to reduce CPU contention
+    // 3. Diagnostic capability for debugging lock issues
+    //
+    // In practice, in single-threaded mode (__libc_single_threaded=1),
+    // the lock should almost never be contested. If it is, it indicates
+    // reentrancy or a serious logic error that must be diagnosed.
+    
+    const MAX_SPIN_COUNT: u32 = 10000;  // ~10ms on modern CPUs
+    const BACKOFF_CAP: u32 = 256;       // Cap exponential backoff at 256 iterations
+    
+    let mut spin_count = 0u32;
+    let mut backoff = 1u32;
+    
+    loop {
+        match file
+            .lock
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+        {
+            Ok(_) => {
+                // Successfully acquired lock
+                return Ok(FileGuard {
+                    file: stream,
+                    _marker: PhantomData,
+                });
+            }
+            Err(_) => {
+                // Lock is already held, apply exponential backoff
+                spin_count += 1;
+                
+                // Exponential backoff: gradually increase spin count to reduce CPU usage
+                // and improve fairness if multiple threads were competing
+                for _ in 0..backoff {
+                    spin_loop();
+                }
+                
+                // Increase backoff for next iteration (with cap to prevent overflow)
+                backoff = (backoff * 2).min(BACKOFF_CAP);
+                
+                // DIAGNOSTIC: Use direct syscall to report lock contention
+                // This helps debug the actual lock issue without causing more contention
+                if spin_count == 100 {
+                    let diag_msg = b"[nrlib] WARNING: lock contention detected on stdio\n";
+                    let _ = unsafe { crate::syscall3(SYS_WRITE, 2, diag_msg.as_ptr() as u64, diag_msg.len() as u64) };
+                }
+                
+                // Safety check: if we've been spinning too long, something is definitely wrong
+                // This protects against deadlock scenarios (which shouldn't happen in single-threaded
+                // mode but could indicate a serious bug like reentrancy or corruption)
+                if spin_count >= MAX_SPIN_COUNT {
+                    // CRITICAL: Failed to acquire lock after excessive spinning
+                    let err_msg = b"[nrlib] CRITICAL: Lock acquisition timeout - possible deadlock\n";
+                    let _ = unsafe { crate::syscall3(SYS_WRITE, 2, err_msg.as_ptr() as u64, err_msg.len() as u64) };
+                    
+                    set_errno(EAGAIN);
+                    return Err(());
+                }
+            }
+        }
     }
-    Ok(FileGuard {
-        file: stream,
-        _marker: PhantomData,
-    })
 }
 
 fn file_prepare_write(file: &mut FILE) -> Result<(), i32> {
@@ -1404,4 +1460,20 @@ pub unsafe extern "C" fn fread(
     }
 
     read_total / size
+}
+
+/// Get file descriptor from FILE* - CRITICAL for Rust std::io initialization
+/// Rust std calls fileno(stdout) to check if stdout is a terminal with isatty()
+/// without fileno, Rust std's stdout initialization hangs or fails
+#[no_mangle]
+pub extern "C" fn fileno(stream: *mut FILE) -> i32 {
+    if stream.is_null() {
+        set_errno(EINVAL);
+        return -1;
+    }
+    
+    unsafe {
+        let file = &*stream;
+        file.fd
+    }
 }

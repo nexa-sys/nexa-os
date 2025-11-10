@@ -9,7 +9,7 @@ ISO_DIR="$ROOT_DIR/target/iso"
 DIST_DIR="$ROOT_DIR/dist"
 KERNEL_BIN="$TARGET_DIR/nexa-os"
 # Boot with root device on virtio disk
-GRUB_CMDLINE="root=/dev/vda1 rootfstype=ext2 loglevel=debug"
+GRUB_CMDLINE="root=/dev/vda1 rootfstype=ext2 loglevel=info"
 
 echo "Building ISO with release kernel..."
 

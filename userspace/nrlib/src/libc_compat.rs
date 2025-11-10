@@ -336,11 +336,15 @@ pub unsafe extern "C" fn isatty(fd: c_int) -> c_int {
     let _ = crate::syscall3(SYS_WRITE_NR, 2, fd_str.as_ptr() as u64, fd_str.len() as u64);
     let _ = crate::syscall3(SYS_WRITE_NR, 2, b"\n".as_ptr() as u64, 1);
     
-    if (0..=2).contains(&fd) {
-        1
-    } else {
-        0
-    }
+    let result = if (0..=2).contains(&fd) { 1 } else { 0 };
+    
+    let result_msg = b"[nrlib] isatty returning: ";
+    let _ = crate::syscall3(SYS_WRITE_NR, 2, result_msg.as_ptr() as u64, result_msg.len() as u64);
+    let result_str = simple_itoa(result as u64, &mut buf);
+    let _ = crate::syscall3(SYS_WRITE_NR, 2, result_str.as_ptr() as u64, result_str.len() as u64);
+    let _ = crate::syscall3(SYS_WRITE_NR, 2, b"\n".as_ptr() as u64, 1);
+    
+    result
 }
 
 fn simple_itoa(mut n: u64, buf: &mut [u8]) -> &[u8] {
@@ -1139,6 +1143,26 @@ pub unsafe extern "C" fn pthread_once(
 ) -> c_int {
     trace_fn!("pthread_once");
     
+    // CRITICAL DIAGNOSTIC: Log every call to pthread_once with the function pointer
+    let routine_addr = if let Some(f) = init_routine {
+        f as *const () as u64
+    } else {
+        0
+    };
+    
+    let mut buf = [0u8; 64];
+    let diag_msg = b"[nrlib] pthread_once called with routine @ 0x";
+    let _ = crate::syscall3(SYS_WRITE_NR, 2, diag_msg.as_ptr() as u64, diag_msg.len() as u64);
+    
+    // Format routine address as hex
+    for i in 0..16 {
+        let shift = (15 - i) * 4;
+        let nibble = ((routine_addr >> shift) & 0xF) as u8;
+        let ch = if nibble < 10 { b'0' + nibble } else { b'a' + nibble - 10 };
+        let _ = crate::syscall3(SYS_WRITE_NR, 2, &ch as *const u8 as u64, 1);
+    }
+    let _ = crate::syscall3(SYS_WRITE_NR, 2, b"\n".as_ptr() as u64, 1);
+    
     if once_control.is_null() {
         return crate::EINVAL;
     }
@@ -1164,7 +1188,16 @@ pub unsafe extern "C" fn pthread_once(
     ) {
         Ok(_) => {
             // We won the race, do the initialization
+            // DIAGNOSTIC: Log when we're about to call the init routine
+            let diag_msg = b"[nrlib] pthread_once: Calling init routine\n";
+            let _ = crate::syscall3(SYS_WRITE_NR, 2, diag_msg.as_ptr() as u64, diag_msg.len() as u64);
+            
             init();
+            
+            // DIAGNOSTIC: Log when init completed
+            let diag_msg = b"[nrlib] pthread_once: Init routine completed\n";
+            let _ = crate::syscall3(SYS_WRITE_NR, 2, diag_msg.as_ptr() as u64, diag_msg.len() as u64);
+            
             control.state.store(PTHREAD_ONCE_DONE, Ordering::Release);
             0
         }
@@ -1174,9 +1207,27 @@ pub unsafe extern "C" fn pthread_once(
         }
         Err(_) => {
             // Someone else is initializing, spin-wait
-            while control.state.load(Ordering::Acquire) == PTHREAD_ONCE_IN_PROGRESS {
+            let diag_msg = b"[nrlib] pthread_once: Waiting for init from another thread\n";
+            let _ = crate::syscall3(SYS_WRITE_NR, 2, diag_msg.as_ptr() as u64, diag_msg.len() as u64);
+            
+            // IMPORTANT: Add timeout to detect hangs
+            let mut spin_count = 0u32;
+            loop {
+                if control.state.load(Ordering::Acquire) != PTHREAD_ONCE_IN_PROGRESS {
+                    break;
+                }
+                spin_count += 1;
+                if spin_count > 100000 {
+                    let hang_msg = b"[nrlib] WARNING: pthread_once init timeout - possible hang\n";
+                    let _ = crate::syscall3(SYS_WRITE_NR, 2, hang_msg.as_ptr() as u64, hang_msg.len() as u64);
+                    break;
+                }
                 spin_loop();
             }
+            
+            let diag_msg = b"[nrlib] pthread_once: Init completed by other thread\n";
+            let _ = crate::syscall3(SYS_WRITE_NR, 2, diag_msg.as_ptr() as u64, diag_msg.len() as u64);
+            
             0
         }
     }

@@ -48,6 +48,11 @@ name = "login"
 path = "../../userspace/login.rs"
 required-features = ["use-nrlib"]
 
+[[bin]]
+name = "test-stdout"
+path = "../../userspace/test-stdout.rs"
+required-features = []
+
 [profile.release]
 panic = "abort"
 opt-level = 2
@@ -95,18 +100,26 @@ RUSTFLAGS="-C opt-level=2 -C panic=abort -C linker=rust-lld -C link-arg=--image-
     cargo build -Z build-std=core --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release \
     --bin sh --bin getty --bin login --features use-nrlib
 
+# Build test-stdout with std
+echo "Building test-stdout with std..."
+RUSTFLAGS="-C opt-level=2 -C panic=abort -C linker=rust-lld -C link-arg=--image-base=0x00400000 -C link-arg=--entry=_start -L $BUILD_DIR/userspace-build/sysroot/lib -C link-arg=-upthread_mutexattr_settype -C link-arg=-upthread_mutexattr_init -C link-arg=-upthread_mutexattr_destroy -C link-arg=-upthread_mutex_init -C link-arg=-upthread_mutex_lock -C link-arg=-upthread_mutex_unlock -C link-arg=-upthread_mutex_destroy -C link-arg=-upthread_once -C link-arg=-u__libc_single_threaded" \
+    cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release \
+    --bin test-stdout --no-default-features
+
 # Copy binaries to rootfs
 echo "Copying binaries to rootfs..."
 cp "target/x86_64-nexaos-userspace/release/ni" "$ROOTFS_DIR/sbin/ni"
 cp "target/x86_64-nexaos-userspace/release/getty" "$ROOTFS_DIR/sbin/getty"
 cp "target/x86_64-nexaos-userspace/release/sh" "$ROOTFS_DIR/bin/sh"
 cp "target/x86_64-nexaos-userspace/release/login" "$ROOTFS_DIR/bin/login"
+cp "target/x86_64-nexaos-userspace/release/test-stdout" "$ROOTFS_DIR/bin/test-stdout"
 
 # Strip symbols
 strip --strip-all "$ROOTFS_DIR/sbin/ni" 2>/dev/null || true
 strip --strip-all "$ROOTFS_DIR/sbin/getty" 2>/dev/null || true
 strip --strip-all "$ROOTFS_DIR/bin/sh" 2>/dev/null || true
 strip --strip-all "$ROOTFS_DIR/bin/login" 2>/dev/null || true
+strip --strip-all "$ROOTFS_DIR/bin/test-stdout" 2>/dev/null || true
 
 # Copy dynamic linker for dynamically linked programs
 echo "Copying dynamic linker..."

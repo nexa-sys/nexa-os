@@ -379,6 +379,54 @@ rootfs.ext2 → initramfs.cpio → nexaos.iso
 **Always use**: `./scripts/build-all.sh` to ensure correct build order, or manually follow: rootfs → ISO.
 
 Remember: This is experimental code. Changes can break the entire system. Always test builds with `./scripts/build-all.sh` and boot with `./scripts/run-qemu.sh` after modifications. Use `git bisect` for regression hunting, and verify all boot stages complete successfully.
+
+## Production-Grade System Standards
+
+### Correctness Over Simplicity
+**CRITICAL PRINCIPLE**: NexaOS is designed as a production-grade operating system. **NEVER sacrifice correctness, robustness, or safety for the sake of simplification.**
+
+**DO NOT**:
+- ❌ Remove error handling to simplify code
+- ❌ Use simplified locking mechanisms that can deadlock (e.g., unbounded spin loops)
+- ❌ Skip timeout mechanisms in lock acquisition
+- ❌ Disable debug/diagnostic logging without comprehensive monitoring alternatives
+- ❌ Assume single-threaded behavior to bypass synchronization
+- ❌ Short-cut system call error handling
+- ❌ Ignore corner cases or edge conditions
+
+**DO**:
+- ✅ Implement robust error handling with proper errno propagation
+- ✅ Use bounded locks with timeout detection to prevent deadlocks
+- ✅ Maintain comprehensive diagnostic capabilities
+- ✅ Implement proper synchronization primitives (mutexes, spinlocks with bounds)
+- ✅ Handle all error paths explicitly
+- ✅ Add detailed comments explaining non-obvious synchronization logic
+- ✅ Test edge cases and failure scenarios
+- ✅ Document assumptions and invariants
+
+### Synchronization & Concurrency
+When implementing locks or synchronization primitives:
+1. **Always include timeout/bailout mechanisms** - prevent infinite hangs
+2. **Use atomic operations with Acquire/Release semantics** - ensure memory consistency
+3. **Implement exponential backoff** - reduce CPU contention
+4. **Detect re-entrancy issues** - prevent deadlocks from nested lock attempts
+5. **Add safety checks** - validate lock state and detect anomalies
+6. **Test with load** - verify behavior under contention and stress
+
+### Debugging & Observability
+- **Never disable logging in critical paths** - instead, use conditional compilation or log levels
+- **If a diagnostic tool breaks functionality** (e.g., debug_log causing deadlock), fix the underlying issue, don't just disable it
+- **Maintain tracing capability** - system state must be observable for production debugging
+- **Document why things are the way they are** - future maintainers need to understand design decisions
+
+### System Reliability
+- **Buffer overflows must never occur** - use bounds checking everywhere
+- **Syscall failures must be handled** - every syscall can fail, check return values
+- **Process state must be consistent** - scheduler, memory, and permission state must always be coherent
+- **Recovery must be automatic where possible** - systems should heal themselves, not get stuck
+- **Failures must be detectable** - use panic, assertions, or error logging to catch problems early
+
+Remember: This is production-grade code targeting real systems. Every design decision impacts system reliability and debuggability.
 - Runtime filesystem handles dynamic content and temporary files
 - Root filesystem (ext2) contains full system after boot stage 4
 - Virtual filesystems (/proc, /sys, /dev) mounted during initramfs stage
