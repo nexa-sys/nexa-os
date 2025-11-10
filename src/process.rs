@@ -82,6 +82,7 @@ pub struct Process {
     pub heap_end: u64,
     pub signal_state: crate::signal::SignalState, // POSIX signal handling
     pub context: Context, // CPU context for context switching
+    pub cr3: u64, // Page table root (for process-specific page tables) - 0 means use kernel page table
 }
 
 static NEXT_PID: AtomicU64 = AtomicU64::new(1);
@@ -189,6 +190,7 @@ impl Process {
                     heap_end: HEAP_BASE + HEAP_SIZE,
                     signal_state: crate::signal::SignalState::new(),
                     context,
+                    cr3: 0, // TODO: Allocate process-specific page table
                 });
             } else {
                 crate::kwarn!(
@@ -219,6 +221,7 @@ impl Process {
             heap_end: HEAP_BASE + HEAP_SIZE,
             signal_state: crate::signal::SignalState::new(),
             context,
+            cr3: 0, // TODO: Allocate process-specific page table
         })
     }
 

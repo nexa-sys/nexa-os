@@ -31,8 +31,10 @@ unsafe fn write_hex_u64(port: &mut x86_64::instructions::port::Port<u8>, value: 
 global_asm!(
     ".global syscall_interrupt_handler",
     "syscall_interrupt_handler:",
-    // On int gate CPU pushed: RFLAGS, CS, RIP, (SS, RSP on CPL change)
-    // Save registers we might clobber. Preserve callee-saved too (rbx, rbp, r12-r15)
+    // On int gate from Ring 3, CPU pushed: RIP, CS, RFLAGS, RSP, SS
+    // Save RIP (return address) before we push other registers
+    "mov r10, [rsp + 0]", // r10 = user RIP (at top of stack after int)
+    // Now save other registers we might clobber
     "push rcx",
     "push rdx",
     "push rsi",
@@ -46,7 +48,9 @@ global_asm!(
     // Align stack to 16 bytes before calling into Rust (SysV ABI requires
     // %rsp % 16 == 8 at the call site so the callee observes 16-byte alignment).
     "sub rsp, 8",
-    // Call syscall_dispatch(nr=rax, arg1=rdi, arg2=rsi, arg3=rdx)
+    // Prepare arguments for syscall_dispatch(nr=rax, arg1=rdi, arg2=rsi, arg3=rdx, syscall_return_addr=r10)
+    // System V x86_64 ABI: rdi, rsi, rdx, rcx, r8
+    "mov r8, r10", // r8 = syscall_return_addr (from r10)
     "mov rcx, rdx", // rcx = arg3
     "mov rdx, rsi", // rdx = arg2
     "mov rsi, rdi", // rsi = arg1

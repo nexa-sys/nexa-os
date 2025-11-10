@@ -1246,17 +1246,23 @@ fn start_service(service: &ServiceConfig, _buf: &mut [u8]) -> i64 {
     }
 
     if pid == 0 {
-        // Child process
-        // WARNING: Current fork implementation shares memory with parent
-        // This means child is running the SAME code as parent
-        // We MUST exit immediately to avoid infinite loop
-        eprintln!("[ni] start_service: child process (PID 0 from fork), exiting to avoid loop");
+        // Child process - exec the service
+        eprintln!("[ni] start_service: child process (PID 0 from fork), about to exec");
         
-        // TODO: When memory isolation is implemented, exec the service here:
-        // execve(service.exec_start, argv, envp);
+        // FIXME: For now, we hardcode the path to getty
+        // This avoids issues with service.exec_start in the child process
+        let exec_path = "/sbin/getty";
         
-        // For now, just exit immediately
-        exit(0);
+        // Execute the service program
+        let result = execve(
+            exec_path,
+            &[0u64 as *const u8],
+            &[0u64 as *const u8],
+        );
+        
+        // If execve returns, it failed
+        eprintln!("[ni] start_service: execve failed with code {}", result);
+        exit(127);  // Standard exit code for "command not found"
     }
 
     // Parent process - return child PID

@@ -27,6 +27,7 @@ impl ProcessEntry {
                 heap_end: 0,
                 signal_state: crate::signal::SignalState::new(),
                 context: crate::process::Context::zero(),
+                cr3: 0,
             },
             priority: 128,
             time_slice: 0,
@@ -208,6 +209,38 @@ pub fn get_process(pid: Pid) -> Option<Process> {
         }
     }
 
+    None
+}
+
+/// Query a specific child process state
+/// Returns the child's state if found and is a child of parent_pid
+pub fn get_child_state(parent_pid: Pid, child_pid: Pid) -> Option<ProcessState> {
+    let table = PROCESS_TABLE.lock();
+    
+    for slot in table.iter() {
+        if let Some(entry) = slot {
+            if entry.process.pid == child_pid && entry.process.ppid == parent_pid {
+                return Some(entry.process.state);
+            }
+        }
+    }
+    
+    None
+}
+
+/// Find a child process by parent PID and state
+/// Returns first matching child PID if found
+pub fn find_child_with_state(parent_pid: Pid, target_state: ProcessState) -> Option<Pid> {
+    let table = PROCESS_TABLE.lock();
+    
+    for slot in table.iter() {
+        if let Some(entry) = slot {
+            if entry.process.ppid == parent_pid && entry.process.state == target_state {
+                return Some(entry.process.pid);
+            }
+        }
+    }
+    
     None
 }
 
@@ -409,6 +442,10 @@ pub fn do_schedule() {
                 &next_context as *const _
             );
         }
+    } else {
+        // No ready process found - just return to caller
+        // This allows the current process to continue
+        crate::kwarn!("do_schedule(): No ready process found, returning to caller");
     }
 }
 

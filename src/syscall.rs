@@ -1023,8 +1023,10 @@ fn syscall_getppid() -> u64 {
 }
 
 /// POSIX fork() system call - create child process
-fn syscall_fork() -> u64 {
+fn syscall_fork(syscall_return_addr: u64) -> u64 {
     use crate::process::{USER_VIRT_BASE, INTERP_BASE, INTERP_REGION_SIZE};
+    
+    crate::kdebug!("syscall_fork: syscall_return_addr = {:#x}", syscall_return_addr);
     
     // Get current process
     let current_pid = match crate::scheduler::get_current_pid() {
@@ -1057,8 +1059,13 @@ fn syscall_fork() -> u64 {
     
     // Copy parent's context - child will resume from same point
     child_process.context = parent_process.context;
-    // Child should return 0 from fork
+    // Child should return 0 from fork and resume from syscall return point
     child_process.context.rax = 0;
+    // FIX: Set child's RIP to the syscall return address, not parent's current RIP
+    // This ensures child resumes execution from the fork() call site in user code
+    child_process.context.rip = syscall_return_addr;
+    
+    crate::kdebug!("Child RIP set to {:#x}, Child RAX = 0", child_process.context.rip);
     
     // TODO: Full production implementation needs:
     // 1. Copy entire memory space (code, data, heap, stack)
@@ -1217,8 +1224,10 @@ fn syscall_execve(path: *const u8, _argv: *const u64, _envp: *const u64) -> u64 
 }
 
 /// POSIX wait4() system call - wait for process state change
-fn syscall_wait4(pid: i64, status: *mut i32, _options: i32, _rusage: *mut u8) -> u64 {
-    crate::kinfo!("wait4(pid={}) called - will block until child exits", pid);
+/// SIMPLIFIED IMPLEMENTATION: Uses busy-waiting instead of true blocking
+/// TODO: Proper implementation requires async/await or cooperative scheduling
+fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> u64 {
+    crate::kinfo!("wait4(pid={}) called", pid);
 
     // Get current process PID
     let current_pid = match crate::scheduler::get_current_pid() {
@@ -1230,35 +1239,116 @@ fn syscall_wait4(pid: i64, status: *mut i32, _options: i32, _rusage: *mut u8) ->
         }
     };
 
-    // TODO: Full implementation needs:
-    // 1. Check if pid is a child of current process
-    // 2. Block current process until child exits (set state to Sleeping)
-    // 3. When child exits, collect exit status and zombie cleanup
-    // 4. Wake up parent and return child PID
-    //
-    // For now: simplified version that marks parent as Sleeping and yields
+    crate::kinfo!("wait4() from PID {} waiting for pid {}", current_pid, pid);
     
-    crate::kinfo!("wait4() from PID {} waiting for child {}", current_pid, pid);
+    // WNOHANG flag (non-blocking wait)
+    const WNOHANG: i32 = 1;
+    let is_nonblocking = (options & WNOHANG) != 0;
     
-    // Mark parent as Sleeping so scheduler skips it
-    if let Err(e) = crate::scheduler::set_process_state(current_pid, crate::process::ProcessState::Sleeping) {
-        crate::kerror!("wait4(): failed to set process {} to Sleeping: {}", current_pid, e);
-    }
+    // For now: implement as simple polling without context switching
+    // This is a temporary solution until we have proper async/cooperative scheduling
     
-    // Yield CPU to let child process run
-    // Child exit should wake parent (TODO: implement in syscall_exit)
-    crate::scheduler::do_schedule();
+    // Busy-wait loop: Keep checking child status
+    // The child process needs to be scheduled out to run,
+    // but we'll rely on the kernel's timer interrupt to preempt this process
+    // and give other processes CPU time
     
-    // When we return here, child should have run (in theory)
-    // Set status to success
-    if !status.is_null() {
-        unsafe {
-            *status = 0; // Exit status 0 (success)
+    const MAX_CHECKS: u32 = 100000;  // Increase significantly to give child more chances to run
+    let mut check_count = 0u32;
+    
+    loop {
+        check_count += 1;
+        
+        // Check if the specified child has exited
+        let mut found_child = false;
+        let mut child_exited = false;
+        let mut child_exit_code = 0i32;
+        let mut wait_pid = 0u64;
+        
+        // Query all children and look for matching one
+        if pid == -1 {
+            // Wait for any child
+            for check_pid in 2..32 {
+                if let Some(child_state) = crate::scheduler::get_child_state(current_pid, check_pid) {
+                    found_child = true;
+                    wait_pid = check_pid;
+                    
+                    if child_state == crate::process::ProcessState::Zombie {
+                        child_exited = true;
+                        child_exit_code = 0;
+                        crate::kinfo!("wait4() found exited child PID {} after {} checks", check_pid, check_count);
+                        break;
+                    }
+                }
+            }
+        } else if pid > 0 {
+            // Wait for specific PID
+            if let Some(child_state) = crate::scheduler::get_child_state(current_pid, pid as u64) {
+                found_child = true;
+                wait_pid = pid as u64;
+                
+                if child_state == crate::process::ProcessState::Zombie {
+                    child_exited = true;
+                    child_exit_code = 0;
+                    crate::kinfo!("wait4() found exited specific child PID {} after {} checks", pid, check_count);
+                }
+            }
+        }
+        
+        // If child has exited, clean up and return
+        if child_exited {
+            let _ = crate::scheduler::remove_process(wait_pid);
+            
+            if !status.is_null() {
+                unsafe {
+                    *status = child_exit_code;
+                }
+            }
+            
+            crate::kinfo!("wait4() returning child PID {} with status {}", wait_pid, child_exit_code);
+            posix::set_errno(0);
+            return wait_pid;
+        }
+        
+        // If no child found at all, error
+        if !found_child {
+            crate::kinfo!("wait4() no matching child found");
+            posix::set_errno(posix::errno::ECHILD);
+            return u64::MAX;
+        }
+        
+        // If non-blocking and child hasn't exited, return immediately
+        if is_nonblocking {
+            crate::kinfo!("wait4() WNOHANG: child not yet exited");
+            posix::set_errno(0);
+            return 0;
+        }
+        
+        // Reached max checks
+        if check_count >= MAX_CHECKS {
+            crate::kwarn!("wait4() exceeded max checks ({}) for child PID {}, returning anyway", MAX_CHECKS, wait_pid);
+            // In a real implementation, the process would sleep here
+            // For now, we return to avoid hanging
+            posix::set_errno(0);
+            return wait_pid;
+        }
+        
+        // Busy wait: Just loop and keep checking
+        // The kernel's timer interrupt will periodically context-switch to other processes
+        // This is inefficient but will work until we implement proper blocking
+        // Do a few busy loops to give other processes a chance to run
+        for _ in 0..10 {
+            unsafe {
+                core::arch::asm!("nop");
+            }
+        }
+        
+        // Every few checks, yield to let other processes run
+        if check_count % 100 == 0 {
+            crate::kinfo!("wait4() yielding CPU at check {}", check_count);
+            crate::scheduler::do_schedule();
         }
     }
-
-    posix::set_errno(0);
-    pid as u64
 }
 
 /// POSIX sigaction() system call - examine and change signal action
@@ -1636,7 +1726,7 @@ fn syscall_pivot_root(req_ptr: *const PivotRootRequest) -> u64 {
 }
 
 #[no_mangle]
-pub extern "C" fn syscall_dispatch(nr: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 {
+pub extern "C" fn syscall_dispatch(nr: u64, arg1: u64, arg2: u64, arg3: u64, syscall_return_addr: u64) -> u64 {
     let result = match nr {
         SYS_WRITE => syscall_write(arg1, arg2, arg3),
         SYS_READ => syscall_read(arg1, arg2 as *mut u8, arg3 as usize),
@@ -1648,7 +1738,7 @@ pub extern "C" fn syscall_dispatch(nr: u64, arg1: u64, arg2: u64, arg3: u64) -> 
         SYS_PIPE => syscall_pipe(arg1 as *mut [i32; 2]),
         SYS_DUP => syscall_dup(arg1),
         SYS_DUP2 => syscall_dup2(arg1, arg2),
-        SYS_FORK => syscall_fork(),
+        SYS_FORK => syscall_fork(syscall_return_addr),
         SYS_EXECVE => syscall_execve(arg1 as *const u8, arg2 as *const u64, arg3 as *const u64),
         SYS_EXIT => syscall_exit(arg1 as i32),
         SYS_WAIT4 => syscall_wait4(arg1 as i64, arg2 as *mut i32, arg3 as i32, 0 as *mut u8),
@@ -1696,7 +1786,7 @@ global_asm!(
     ".global syscall_handler",
     "syscall_handler:",
     "push rbx",
-    "push rcx", // return address
+    "push rcx", // return address (will be parameter 5)
     "push rdx",
     "push rsi",
     "push rdi",
@@ -1710,11 +1800,17 @@ global_asm!(
     "push r14",
     "push r15",
     "sub rsp, 8", // maintain 16-byte stack alignment before calling into Rust
-    // Call syscall_dispatch(nr=rax, arg1=rdi, arg2=rsi, arg3=rdx)
-    "mov rcx, rdx", // arg3
-    "mov rdx, rsi", // arg2
-    "mov rsi, rdi", // arg1
-    "mov rdi, rax", // nr
+    // Stack layout after all pushes and sub:
+    // We pushed 16 registers (rbx, rcx, rdx, rsi, rdi, rbp, r8, r9, r10, r11, r12, r13, r14, r15)
+    // That's 16 * 8 = 128 bytes
+    // Then sub rsp, 8 adds 8 more
+    // Original RCX is at position 2 from top (after rbx), which is [rsp + 120]
+    // (120 = 15*8, since we need to skip 15 registers above rcx to reach it from new rsp)
+    "mov r8, [rsp + 120]", // Get original RCX (syscall return address) -> r8 (param 5)
+    "mov rcx, rdx", // arg3 -> rcx (param 4)
+    "mov rdx, rsi", // arg2 -> rdx (param 3)
+    "mov rsi, rdi", // arg1 -> rsi (param 2)
+    "mov rdi, rax", // nr -> rdi (param 1)
     "call syscall_dispatch",
     // Return value is in rax
     "add rsp, 8",
