@@ -45,7 +45,12 @@ fn syscall3(n: u64, a1: u64, a2: u64, a3: u64) -> u64 {
             in("rsi") a2,
             in("rdx") a3,
             lateout("rax") ret,
-            options(nostack)
+            // nostack removed - iretq modifies stack and RSP alignment
+            out("rcx") _,  // rcx clobbered by interrupt
+            out("r8") _,   // r8 clobbered by interrupt  
+            out("r9") _,   // r9 might be clobbered
+            out("r10") _,  // r10 clobbered by interrupt
+            out("r11") _   // r11 clobbered by interrupt
         );
     }
     ret
