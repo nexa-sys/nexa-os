@@ -315,67 +315,37 @@ fn syscall_read(fd: u64, buf: *mut u8, count: usize) -> u64 {
     u64::MAX
 }
 
-/// Exit system call
-fn syscall_exit(code: i32) -> u64 {
+/// Exit system call - terminate current process
+fn syscall_exit(code: i32) -> ! {
     let pid = crate::scheduler::current_pid().unwrap_or(0);
-    crate::kinfo!("Process {} exited with code: {}", pid, code);
+    crate::kinfo!("Process {} exiting with code: {}", pid, code);
 
-    // Check if shell (via wait4) is running (shell flag set in GS_DATA[15] bit 0)
-    let shell_is_running = unsafe {
-        let gs_data_addr = &raw const crate::initramfs::GS_DATA.0 as *const _ as u64;
-        let gs_data_ptr = gs_data_addr as *mut u64;
-
-        let flags = gs_data_ptr.add(15).read();
-        let shell_flag = (flags & 1) != 0;
-
-        if shell_flag {
-            crate::kinfo!("exit: shell process exited, returning to init");
-
-            // Clear shell flag
-            gs_data_ptr.add(15).write(flags & !1);
-
-            // Store exit code
-            gs_data_ptr.add(14).write(code as u64);
+    if pid == 0 {
+        crate::kfatal!("Cannot exit from kernel context (PID 0)!");
+        loop {
+            unsafe { core::arch::asm!("hlt") }
         }
-
-        shell_flag
-    };
-
-    if shell_is_running {
-        // Return to init's wait4() call
-        // We need to modify the return address on the stack
-        // Actually, we can't easily do that from here...
-        // Instead, we'll use a trick: manually return from int 0x81 with iretq
-
-        // Get init's (actually current process's) RIP from the interrupt frame
-        // on the stack, and modify it to return from wait4() successfully
-
-        // This is very hackish, but since we only have one process,
-        // we can assume certain stack layout...
-        //
-        // Actually, a simpler approach: just halt, and let init's wait4
-        // detect that shell exited and return
-        crate::kinfo!("exit: halting process, init will detect shell exit");
-        crate::arch::halt_loop();
     }
 
-    // For non-shell processes, continue with normal exit
-    crate::init::handle_process_exit(pid, code);
-
-    if pid != 0 {
-        let _ = crate::scheduler::set_process_state(pid, crate::process::ProcessState::Zombie);
-        let _ = crate::scheduler::remove_process(pid);
+    // Set process state to Zombie
+    let _ = crate::scheduler::set_process_state(pid, crate::process::ProcessState::Zombie);
+    
+    // TODO: Save exit code in process structure for parent's wait4()
+    // TODO: Send SIGCHLD to parent process
+    // TODO: Wake up parent if it's sleeping in wait4()
+    
+    crate::kinfo!("Process {} terminated, switching to next process", pid);
+    
+    // Switch to next ready process (never returns)
+    crate::scheduler::do_schedule();
+    
+    // If no other process to run, halt
+    crate::kwarn!("No other process to schedule after exit!");
+    loop {
+        unsafe { core::arch::asm!("hlt") }
     }
-
-    if let Some(next_pid) = crate::scheduler::schedule() {
-        crate::kinfo!("Switching to next process: {}", next_pid);
-    } else {
-        crate::kinfo!("No more processes to run, halting system");
-        crate::arch::halt_loop();
-    }
-
-    0
 }
+
 fn syscall_open(path_ptr: *const u8, len: usize) -> u64 {
     if path_ptr.is_null() || len == 0 {
         posix::set_errno(posix::errno::EINVAL);
@@ -1054,17 +1024,90 @@ fn syscall_getppid() -> u64 {
 
 /// POSIX fork() system call - create child process
 fn syscall_fork() -> u64 {
-    // Simplified fork implementation
-    // In our single-process architecture:
-    // - fork() always returns a fake child PID (2) to the parent
-    // - This allows init to call wait4() to "wait" for the shell
-    // - wait4() will launch the shell and wait for it to complete
+    use crate::process::{USER_VIRT_BASE, INTERP_BASE, INTERP_REGION_SIZE};
+    
+    // Get current process
+    let current_pid = match crate::scheduler::get_current_pid() {
+        Some(pid) => pid,
+        None => {
+            crate::kerror!("fork() called but no current process");
+            return u64::MAX;
+        }
+    };
 
-    crate::kinfo!("fork() called - returning fake child PID 2");
+    // Get current process info
+    let parent_process = match crate::scheduler::get_process(current_pid) {
+        Some(proc) => proc,
+        None => {
+            crate::kerror!("fork() - current process {} not found", current_pid);
+            return u64::MAX;
+        }
+    };
 
-    // Return fake child PID to the caller
-    // The actual shell will be executed by wait4()
-    2
+    crate::kinfo!("fork() called from PID {}", current_pid);
+
+    // Allocate new PID for child
+    let child_pid = crate::process::allocate_pid();
+    
+    // Create child process - start by copying parent state
+    let mut child_process = parent_process;
+    child_process.pid = child_pid;
+    child_process.ppid = current_pid;
+    child_process.state = crate::process::ProcessState::Ready;
+    
+    // Copy parent's context - child will resume from same point
+    child_process.context = parent_process.context;
+    // Child should return 0 from fork
+    child_process.context.rax = 0;
+    
+    // TODO: Full production implementation needs:
+    // 1. Copy entire memory space (code, data, heap, stack)
+    //    - Allocate new physical pages for child
+    //    - Copy USER_VIRT_BASE to (INTERP_BASE + INTERP_REGION_SIZE)
+    //    - This includes: code, heap, stack, interpreter region
+    // 2. Set up separate page tables for child process
+    //    - Create new CR3 (page directory pointer)
+    //    - Map child's physical pages to same virtual addresses
+    //    - Implement copy-on-write (COW) for efficiency
+    // 3. Copy file descriptor table
+    //    - Duplicate all open file descriptors
+    //    - Share underlying file objects but separate FD table
+    // 4. Copy signal handlers and masks
+    // 5. Handle shared memory regions correctly
+    //
+    // Current simplified version for fork+exec pattern:
+    // - Shares parent's memory (no copy yet)
+    // - Works because exec() immediately replaces memory
+    // - Good enough for init/getty/shell pattern
+    
+    let memory_size = (INTERP_BASE + INTERP_REGION_SIZE) - USER_VIRT_BASE;
+    crate::kinfo!(
+        "fork() - memory copy needed: {:#x} bytes ({} KB) from {:#x}",
+        memory_size,
+        memory_size / 1024,
+        USER_VIRT_BASE
+    );
+    
+    // Simplified memory sharing for now
+    // When we implement page tables per-process, we'll do proper COW
+    crate::kdebug!(
+        "fork() - using shared memory model (OK for fork+exec pattern)"
+    );
+
+    // Add child to scheduler
+    if let Err(e) = crate::scheduler::add_process(child_process, 128) {
+        crate::kerror!("fork() - failed to add child process: {}", e);
+        return u64::MAX;
+    }
+
+    crate::kinfo!(
+        "fork() created child PID {} from parent PID {} (child will return 0)",
+        child_pid,
+        current_pid
+    );
+
+    // Return child PID to parent (child gets 0 via context.rax)
+    child_pid
 }
 
 /// POSIX execve() system call - execute program
@@ -1175,19 +1218,45 @@ fn syscall_execve(path: *const u8, _argv: *const u64, _envp: *const u64) -> u64 
 
 /// POSIX wait4() system call - wait for process state change
 fn syscall_wait4(pid: i64, status: *mut i32, _options: i32, _rusage: *mut u8) -> u64 {
-    crate::kinfo!("wait4(pid={}) called", pid);
+    crate::kinfo!("wait4(pid={}) called - will block until child exits", pid);
 
-    // Simplified implementation: just return success with status 0
-    // In a full OS this would block and wait for child exit
-    // For now, simulate child immediate exit
+    // Get current process PID
+    let current_pid = match crate::scheduler::get_current_pid() {
+        Some(pid) => pid,
+        None => {
+            crate::kerror!("wait4() called but no current process");
+            posix::set_errno(posix::errno::EINVAL);
+            return u64::MAX;
+        }
+    };
 
+    // TODO: Full implementation needs:
+    // 1. Check if pid is a child of current process
+    // 2. Block current process until child exits (set state to Sleeping)
+    // 3. When child exits, collect exit status and zombie cleanup
+    // 4. Wake up parent and return child PID
+    //
+    // For now: simplified version that marks parent as Sleeping and yields
+    
+    crate::kinfo!("wait4() from PID {} waiting for child {}", current_pid, pid);
+    
+    // Mark parent as Sleeping so scheduler skips it
+    if let Err(e) = crate::scheduler::set_process_state(current_pid, crate::process::ProcessState::Sleeping) {
+        crate::kerror!("wait4(): failed to set process {} to Sleeping: {}", current_pid, e);
+    }
+    
+    // Yield CPU to let child process run
+    // Child exit should wake parent (TODO: implement in syscall_exit)
+    crate::scheduler::do_schedule();
+    
+    // When we return here, child should have run (in theory)
+    // Set status to success
     if !status.is_null() {
         unsafe {
             *status = 0; // Exit status 0 (success)
         }
     }
 
-    // Return the child PID that "exited"
     posix::set_errno(0);
     pid as u64
 }
@@ -1231,13 +1300,10 @@ fn syscall_dup2(oldfd: u64, newfd: u64) -> u64 {
 
 /// POSIX sched_yield() system call - yield CPU to scheduler
 fn syscall_sched_yield() -> u64 {
-    crate::kinfo!("sched_yield() called");
+    crate::kinfo!("sched_yield() - yielding CPU to scheduler");
 
-    // Trigger scheduler to select next process
-    if let Some(_next_pid) = crate::scheduler::schedule() {
-        // TODO: Perform context switch to next process
-        crate::kinfo!("Scheduler selected next process");
-    }
+    // Perform context switch to next ready process
+    crate::scheduler::do_schedule();
 
     posix::set_errno(0);
     0

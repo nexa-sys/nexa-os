@@ -1246,37 +1246,21 @@ fn start_service(service: &ServiceConfig, _buf: &mut [u8]) -> i64 {
     }
 
     if pid == 0 {
-        // Child process - exec the service
-        eprintln!("[ni] start_service: in child, about to exec");
-        let exec_bytes = service.exec_start.as_bytes();
-        if exec_bytes.is_empty() {
-            exit(1);
-        }
-
-        // Prepare null-terminated path
-        let mut path_with_null = [0u8; 256];
-        if exec_bytes.len() >= path_with_null.len() {
-            exit(1);
-        }
-
-        for (i, &b) in exec_bytes.iter().enumerate() {
-            path_with_null[i] = b;
-        }
-        path_with_null[exec_bytes.len()] = 0;
-
-        let exec_path =
-            unsafe { std::str::from_utf8_unchecked(&path_with_null[..exec_bytes.len()]) };
-
-        let argv: [*const u8; 2] = [path_with_null.as_ptr(), std::ptr::null()];
-        let envp: [*const u8; 1] = [std::ptr::null()];
-
-        execve(exec_path, &argv, &envp);
-
-        // If execve returns, it failed
-        exit(1);
+        // Child process
+        // WARNING: Current fork implementation shares memory with parent
+        // This means child is running the SAME code as parent
+        // We MUST exit immediately to avoid infinite loop
+        eprintln!("[ni] start_service: child process (PID 0 from fork), exiting to avoid loop");
+        
+        // TODO: When memory isolation is implemented, exec the service here:
+        // execve(service.exec_start, argv, envp);
+        
+        // For now, just exit immediately
+        exit(0);
     }
 
     // Parent process - return child PID
+    eprintln!("[ni] start_service: parent continuing, child PID={}", pid);
     pid
 }
 

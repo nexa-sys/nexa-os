@@ -232,12 +232,6 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
     let cmdline = cmdline_opt.unwrap_or("");
     let cmd_init_path = parse_init_from_cmdline(cmdline).unwrap_or("(none)");
 
-    // Try custom init path first (if specified on command line)
-    if cmd_init_path != "(none)" {
-        kinfo!("Custom init path from cmdline: {}", cmd_init_path);
-        try_init_exec!(cmd_init_path);
-    }
-
     // Standard Unix init search paths (in order of preference)
     // Following FHS (Filesystem Hierarchy Standard) and POSIX conventions
     static INIT_PATHS: &[&str] = &[
@@ -253,22 +247,135 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
         INIT_PATHS.len()
     );
 
-    for &path in INIT_PATHS.iter() {
-        kinfo!("Trying init program: {}", path);
-        try_init_exec!(path);
+    // Try to load init process into scheduler
+    let mut init_pid: Option<u64> = None;
+    
+    // Try custom init path first (if specified on command line)
+    if cmd_init_path != "(none)" {
+        kinfo!("Custom init path from cmdline: {}", cmd_init_path);
+        init_pid = try_load_init(cmd_init_path);
+    }
+    
+    // If custom init failed, try standard paths
+    if init_pid.is_none() {
+        for &path in INIT_PATHS.iter() {
+            kinfo!("Trying init program: {}", path);
+            if let Some(pid) = try_load_init(path) {
+                init_pid = Some(pid);
+                break;
+            }
 
-        // If /bin/sh is not found, this is a critical failure
-        if path == "/bin/sh" {
-            kfatal!("Critical: No init program found in initramfs");
-            kfatal!("Searched paths: /sbin/ni, /sbin/init, /etc/init, /bin/init, /bin/sh");
-            kfatal!("Cannot continue without init process (PID 1)");
-            boot_stages::enter_emergency_mode("No init program found");
+            // If /bin/sh is not found, this is a critical failure
+            if path == "/bin/sh" {
+                kfatal!("Critical: No init program found in initramfs");
+                kfatal!("Searched paths: /sbin/ni, /sbin/init, /etc/init, /bin/init, /bin/sh");
+                kfatal!("Cannot continue without init process (PID 1)");
+                boot_stages::enter_emergency_mode("No init program found");
+            }
         }
     }
+    
+    // If we have init loaded, start the scheduler
+    // All processes (including init) run through the scheduler
+    if let Some(pid) = init_pid {
+        kinfo!("==========================================================");
+        kinfo!("Init process loaded (PID {}), starting scheduler", pid);
+        kinfo!("==========================================================");
+        
+        // Set init as current process
+        scheduler::set_current_pid(Some(pid));
+        
+        // Mark init as Ready (scheduler will pick it up)
+        let _ = scheduler::set_process_state(pid, process::ProcessState::Ready);
+        
+        // Start the scheduler - this will switch to init and never return
+        kinfo!("Starting process scheduler");
+        scheduler::do_schedule();
+        
+        // Should never reach here
+        kfatal!("Scheduler returned to kernel_main!");
+    }
+    
+    // If we reach here, all init programs failed to load
+    boot_stages::enter_emergency_mode("Failed to load any init program")
+}
 
-    // If we reach here, all init programs failed to execute
-    // This should never happen if try_init_exec! works correctly
-    boot_stages::enter_emergency_mode("Unexpected return from init process execution");
+/// Try to load init program from given path
+/// Returns Some(pid) if successful, None otherwise
+fn try_load_init(path: &str) -> Option<u64> {
+    
+    // Try root filesystem first
+    if let Some(init_data) = fs::read_file_bytes(path) {
+        kinfo!(
+            "Found init file '{}' in root filesystem ({} bytes), loading...",
+            path,
+            init_data.len()
+        );
+
+        match process::Process::from_elf(init_data) {
+            Ok(proc) => {
+                let pid = proc.pid;
+                kinfo!(
+                    "Successfully loaded '{}' from root filesystem as PID {}",
+                    path,
+                    pid
+                );
+                kinfo!("Adding init process to scheduler...");
+                
+                // Add init process to scheduler
+                if let Err(e) = scheduler::add_process(proc, 0) {
+                    kwarn!("Failed to add init process to scheduler: {}", e);
+                    return None;
+                }
+                
+                kinfo!("Init process (PID {}) added to scheduler", pid);
+                // Set init as current process
+                scheduler::set_current_pid(Some(pid));
+                return Some(pid);
+            }
+            Err(e) => {
+                kwarn!("Failed to load '{}' from root filesystem: {}", path, e);
+            }
+        }
+    }
+    
+    // Try initramfs
+    if let Some(init_data) = initramfs::find_file(path) {
+        kinfo!(
+            "Found init file '{}' in initramfs ({} bytes), loading...",
+            path,
+            init_data.len()
+        );
+
+        match process::Process::from_elf(init_data) {
+            Ok(proc) => {
+                let pid = proc.pid;
+                kinfo!("Successfully loaded '{}' from initramfs as PID {}", path, pid);
+                kinfo!("Adding init process to scheduler...");
+                
+                // Add init process to scheduler
+                if let Err(e) = scheduler::add_process(proc, 0) {
+                    kwarn!("Failed to add init process to scheduler: {}", e);
+                    return None;
+                }
+                
+                kinfo!("Init process (PID {}) added to scheduler", pid);
+                // Set init as current process
+                scheduler::set_current_pid(Some(pid));
+                return Some(pid);
+            }
+            Err(e) => {
+                kwarn!("Failed to load '{}' from initramfs: {}", path, e);
+            }
+        }
+    } else {
+        kwarn!(
+            "Init file '{}' not found on root filesystem or in initramfs",
+            path
+        );
+    }
+    
+    None
 }
 
 pub fn panic(info: &PanicInfo) -> ! {
@@ -489,105 +596,4 @@ fn parse_init_from_cmdline(cmdline: &str) -> Option<&str> {
         }
     }
     None
-}
-
-#[macro_export]
-macro_rules! try_init_exec {
-    ($path:expr) => {{
-        let path: &str = $path; // 强制类型为 &str，提供一定类型安全
-        if let Some(init_data) = crate::fs::read_file_bytes(path) {
-            kinfo!(
-                "Found init file '{}' in root filesystem ({} bytes), loading...",
-                path,
-                init_data.len()
-            );
-
-            let mut header = [0u8; 8];
-            let to_copy = core::cmp::min(header.len(), init_data.len());
-            for i in 0..to_copy {
-                header[i] = init_data[i];
-            }
-            kinfo!(
-                "ELF header bytes 0-7: {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
-                header[0],
-                header[1],
-                header[2],
-                header[3],
-                header[4],
-                header[5],
-                header[6],
-                header[7],
-            );
-
-            match process::Process::from_elf(init_data) {
-                Ok(mut proc) => {
-                    kinfo!(
-                        "Successfully loaded '{}' from root filesystem as PID {}",
-                        path,
-                        proc.pid
-                    );
-                    kinfo!("Switching to REAL user mode (Ring 3)...");
-                    proc.execute(); // Never returns
-                }
-                Err(e) => {
-                    kwarn!("Failed to load '{}' from root filesystem: {}", path, e);
-                }
-            }
-        } else if let Some(init_data) = initramfs::find_file(path) {
-            kinfo!(
-                "Found init file '{}' in initramfs ({} bytes), loading...",
-                path,
-                init_data.len()
-            );
-
-            kinfo!(
-                "Init file '{}' data ptr={:#x}",
-                path,
-                init_data.as_ptr() as usize
-            );
-            unsafe {
-                let ptr = init_data.as_ptr();
-                let before = if ptr as usize > 0 { *ptr.offset(-1) } else { 0 };
-                if let Some(ramfs) = crate::initramfs::get() {
-                    let base = ramfs.base_ptr() as usize;
-                    let offset = ptr as usize - base;
-                    kinfo!("Initramfs base={:#x}, data offset={:#x}", base, offset);
-                }
-                kinfo!("Byte before data: {:02x}", before);
-            }
-
-            let mut header = [0u8; 8];
-            let to_copy = core::cmp::min(header.len(), init_data.len());
-            for i in 0..to_copy {
-                header[i] = init_data[i];
-            }
-            kinfo!(
-                "ELF header bytes 0-7: {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
-                header[0],
-                header[1],
-                header[2],
-                header[3],
-                header[4],
-                header[5],
-                header[6],
-                header[7],
-            );
-
-            match process::Process::from_elf(init_data) {
-                Ok(mut proc) => {
-                    kinfo!("Successfully loaded '{}' as PID {}", path, proc.pid);
-                    kinfo!("Switching to REAL user mode (Ring 3)...");
-                    proc.execute(); // Never returns
-                }
-                Err(e) => {
-                    kwarn!("Failed to load '{}' from initramfs: {}", path, e);
-                }
-            }
-        } else {
-            kwarn!(
-                "Init file '{}' not found on root filesystem or in initramfs",
-                path
-            );
-        }
-    }};
 }

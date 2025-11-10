@@ -33,6 +33,43 @@ pub const INTERP_BASE: u64 = STACK_BASE + STACK_SIZE;
 pub const INTERP_REGION_SIZE: u64 = 0x600000;
 /// Total virtual span that must be mapped for the userspace image, heap, stack, and interpreter region.
 pub const USER_REGION_SIZE: u64 = (INTERP_BASE + INTERP_REGION_SIZE) - USER_VIRT_BASE;
+/// CPU context saved during context switch
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct Context {
+    // General purpose registers
+    pub r15: u64,
+    pub r14: u64,
+    pub r13: u64,
+    pub r12: u64,
+    pub r11: u64,
+    pub r10: u64,
+    pub r9: u64,
+    pub r8: u64,
+    pub rsi: u64,
+    pub rdi: u64,
+    pub rbp: u64,
+    pub rdx: u64,
+    pub rcx: u64,
+    pub rbx: u64,
+    pub rax: u64,
+    
+    // Instruction pointer and stack pointer
+    pub rip: u64,
+    pub rsp: u64,
+    pub rflags: u64,
+}
+
+impl Context {
+    pub const fn zero() -> Self {
+        Self {
+            r15: 0, r14: 0, r13: 0, r12: 0, r11: 0, r10: 0, r9: 0, r8: 0,
+            rsi: 0, rdi: 0, rbp: 0, rdx: 0, rcx: 0, rbx: 0, rax: 0,
+            rip: 0, rsp: 0, rflags: 0x202, // IF flag set (interrupts enabled)
+        }
+    }
+}
+
 /// Process structure
 #[derive(Clone, Copy)]
 pub struct Process {
@@ -44,9 +81,15 @@ pub struct Process {
     pub heap_start: u64,
     pub heap_end: u64,
     pub signal_state: crate::signal::SignalState, // POSIX signal handling
+    pub context: Context, // CPU context for context switching
 }
 
 static NEXT_PID: AtomicU64 = AtomicU64::new(1);
+
+/// Allocate a new unique PID
+pub fn allocate_pid() -> Pid {
+    NEXT_PID.fetch_add(1, Ordering::SeqCst)
+}
 
 const DEFAULT_ARGV0: &[u8] = b"nexa";
 const STACK_RANDOM_SEED: [u8; 16] = *b"NexaOSGuardSeed!";
@@ -132,6 +175,10 @@ impl Process {
 
                 let pid = NEXT_PID.fetch_add(1, Ordering::SeqCst);
 
+                let mut context = Context::zero();
+                context.rip = interp_image.entry_point;
+                context.rsp = stack_ptr;
+
                 return Ok(Process {
                     pid,
                     ppid: 0,
@@ -141,6 +188,7 @@ impl Process {
                     heap_start: HEAP_BASE,
                     heap_end: HEAP_BASE + HEAP_SIZE,
                     signal_state: crate::signal::SignalState::new(),
+                    context,
                 });
             } else {
                 crate::kwarn!(
@@ -157,6 +205,10 @@ impl Process {
 
         let pid = NEXT_PID.fetch_add(1, Ordering::SeqCst);
 
+        let mut context = Context::zero();
+        context.rip = program_image.entry_point;
+        context.rsp = stack_ptr;
+
         Ok(Process {
             pid,
             ppid: 0,
@@ -166,6 +218,7 @@ impl Process {
             heap_start: HEAP_BASE,
             heap_end: HEAP_BASE + HEAP_SIZE,
             signal_state: crate::signal::SignalState::new(),
+            context,
         })
     }
 
