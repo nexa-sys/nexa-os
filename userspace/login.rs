@@ -251,9 +251,7 @@ fn login_main() -> ! {
         flags: 0,
     };
 
-    debug_print_ptr("username_ptr", req.username_ptr);
-    debug_print_ptr("password_ptr", req.password_ptr);
-    
+    // Removed debug output to avoid terminal corruption
     let result = syscall1(SYS_USER_LOGIN, &req as *const UserRequest as u64);
     
     if result == 0 {
@@ -314,18 +312,4 @@ fn main() {
     loop {}
 }
 
-fn debug_print_ptr(label: &str, value: u64) {
-    print(label);
-    print(": 0x");
-    let mut buf = [0u8; 16];
-    for i in 0..16 {
-        let shift = (15 - i) * 4;
-        let nibble = ((value >> shift) & 0xF) as u8;
-        buf[i] = match nibble {
-            0..=9 => b'0' + nibble,
-            _ => b'a' + (nibble - 10),
-        };
-    }
-    let _ = write(STDOUT, &buf);
-    print("\n");
-}
+
