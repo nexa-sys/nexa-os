@@ -288,6 +288,9 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
         // Mark init as Ready (scheduler will pick it up)
         let _ = scheduler::set_process_state(pid, process::ProcessState::Ready);
         
+        // 标记 init 已启动 - 此后内核日志将只输出到环形缓冲区
+        logger::mark_init_started();
+        
         // Start the scheduler - this will switch to init and never return
         kinfo!("Starting process scheduler");
         scheduler::do_schedule();

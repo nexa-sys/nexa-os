@@ -11,6 +11,13 @@ static TSC_FREQ_GUESSED: AtomicBool = AtomicBool::new(true);
 static LOG_LEVEL: AtomicU8 = AtomicU8::new(LogLevel::INFO.priority());
 static SERIAL_RUNTIME_ENABLED: AtomicBool = AtomicBool::new(true);
 static VGA_RUNTIME_ENABLED: AtomicBool = AtomicBool::new(true);
+static INIT_STARTED: AtomicBool = AtomicBool::new(false);
+
+// 环形缓冲区用于存储内核日志（64KB）
+const RINGBUF_SIZE: usize = 65536;
+static RINGBUF: Mutex<RingBuffer> = Mutex::new(RingBuffer::new());
+
+use spin::Mutex;
 
 const DEFAULT_TSC_FREQUENCY_HZ: u64 = 1_000_000_000; // 1 GHz fallback
 
@@ -152,13 +159,23 @@ pub fn log(level: LogLevel, args: fmt::Arguments<'_>) {
         return;
     }
 
-    let emit_serial = should_emit_serial(level);
-    let emit_vga = should_emit_vga(level);
+    let init_started = INIT_STARTED.load(Ordering::Relaxed);
+    
+    // 在 init 启动前，输出到显示器和串口；启动后，只输出到环形缓冲区
+    // Panic 总是输出到显示器和串口
+    let emit_serial = if init_started {
+        level.priority() <= LogLevel::PANIC.priority()
+    } else {
+        should_emit_serial(level)
+    };
+    
+    let emit_vga = if init_started {
+        level.priority() <= LogLevel::PANIC.priority()
+    } else {
+        should_emit_vga(level)
+    };
+    
     let emit_framebuffer = emit_vga && crate::framebuffer::is_ready();
-
-    if !emit_serial && !emit_vga && !emit_framebuffer {
-        return;
-    }
 
     let timestamp_us = boot_time_us();
     let mut ansi_line = None;
@@ -192,12 +209,22 @@ pub fn log(level: LogLevel, args: fmt::Arguments<'_>) {
             crate::framebuffer::write_bytes(buffer.as_bytes());
         } else {
             if plain_line.is_none() {
-                plain_line = build_plain_log_line(level, timestamp_us, args);
+                plain_line = build_plain_log_line(level, timestamp_us, args.clone());
             }
             if let Some(buffer) = plain_line.as_ref() {
                 crate::framebuffer::write_bytes(buffer.as_bytes());
             }
         }
+    }
+
+    // 总是向环形缓冲区写入日志
+    if plain_line.is_none() && !emit_serial && !emit_vga {
+        plain_line = build_plain_log_line(level, timestamp_us, args);
+    }
+    
+    if let Some(buffer) = plain_line.as_ref() {
+        let mut ringbuf = RINGBUF.lock();
+        ringbuf.write_bytes(buffer.as_bytes());
     }
 }
 
@@ -370,6 +397,24 @@ pub fn enable_runtime_console_output() {
     set_console_output_enabled(true, true);
 }
 
+/// 标记 init 进程已启动
+/// 在此之后，内核日志仅输出到环形缓冲区（除了 panic）
+pub fn mark_init_started() {
+    INIT_STARTED.store(true, Ordering::Relaxed);
+}
+
+/// 读取内核日志环形缓冲区
+pub fn read_ringbuffer() -> [u8; RINGBUF_SIZE] {
+    let ringbuf = RINGBUF.lock();
+    ringbuf.buf
+}
+
+/// 获取环形缓冲区的写入位置（用于知道有效数据的范围）
+pub fn ringbuffer_write_pos() -> usize {
+    let ringbuf = RINGBUF.lock();
+    ringbuf.write_pos
+}
+
 fn read_tsc() -> u64 {
     unsafe { core::arch::x86_64::_rdtsc() }
 }
@@ -467,5 +512,40 @@ impl Write for LogLineBuffer {
         self.buf[self.len..self.len + bytes.len()].copy_from_slice(bytes);
         self.len += bytes.len();
         Ok(())
+    }
+}
+
+/// 内核日志环形缓冲区
+struct RingBuffer {
+    buf: [u8; RINGBUF_SIZE],
+    write_pos: usize,
+}
+
+impl RingBuffer {
+    const fn new() -> Self {
+        Self {
+            buf: [0; RINGBUF_SIZE],
+            write_pos: 0,
+        }
+    }
+
+    /// 向环形缓冲区写入字节
+    fn write_bytes(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.buf[self.write_pos] = byte;
+            self.write_pos = (self.write_pos + 1) % RINGBUF_SIZE;
+        }
+    }
+
+    /// 返回整个缓冲区（当已满时为循环buffer，否则为有效数据）
+    #[allow(dead_code)]
+    fn get_buf(&self) -> &[u8] {
+        &self.buf
+    }
+
+    /// 获取写入位置（用于确定有效数据的范围）
+    #[allow(dead_code)]
+    fn write_pos(&self) -> usize {
+        self.write_pos
     }
 }
