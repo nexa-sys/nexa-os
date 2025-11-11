@@ -19,6 +19,7 @@ pub mod paging;
 pub mod pipe;
 pub mod posix;
 pub mod process;
+pub mod safety;
 pub mod scheduler;
 pub mod serial;
 pub mod signal;

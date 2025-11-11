@@ -458,10 +458,7 @@ fn syscall_exit(code: i32) -> ! {
     crate::kinfo!("Process {} exiting with code: {}", pid, code);
 
     if pid == 0 {
-        crate::kfatal!("Cannot exit from kernel context (PID 0)!");
-        loop {
-            unsafe { core::arch::asm!("hlt") }
-        }
+        crate::kpanic!("Cannot exit from kernel context (PID 0)!");
     }
 
     // Set process state to Zombie
@@ -477,10 +474,7 @@ fn syscall_exit(code: i32) -> ! {
     crate::scheduler::do_schedule();
 
     // If no other process to run, halt
-    crate::kwarn!("No other process to schedule after exit!");
-    loop {
-        unsafe { core::arch::asm!("hlt") }
-    }
+    crate::kpanic!("No other process to schedule after exit!");
 }
 
 fn syscall_open(path_ptr: *const u8, len: usize) -> u64 {

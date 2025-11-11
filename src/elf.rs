@@ -1,5 +1,5 @@
 /// ELF loader implementation following POSIX and Unix-like standards
-use core::slice;
+use crate::safety::{RawAccessError, RawReader};
 
 /// ELF magic number
 pub const ELF_MAGIC: u32 = 0x464C457F; // 0x7F 'E' 'L' 'F'
@@ -143,7 +143,7 @@ impl Elf64Header {
 
 /// ELF loader
 pub struct ElfLoader {
-    data: &'static [u8],
+    reader: RawReader<'static>,
 }
 
 /// Result information describing how an ELF image was loaded into memory.
@@ -168,44 +168,56 @@ pub struct LoadResult {
 impl ElfLoader {
     /// Create a new ELF loader from raw bytes
     pub fn new(data: &'static [u8]) -> Result<Self, &'static str> {
-        use core::ptr;
+        let reader = RawReader::new(data);
 
-        crate::kinfo!("ElfLoader::new called with {} bytes", data.len());
-        if data.len() < 64 {
+        crate::kinfo!("ElfLoader::new called with {} bytes", reader.len());
+        if reader.len() < 64 {
             crate::kerror!("Data too small for ELF header");
             return Err("Data too small for ELF header");
         }
 
-        // Check magic
-        let magic = unsafe { ptr::read_unaligned(data.as_ptr() as *const u32) };
+        macro_rules! read_field {
+            ($method:ident, $offset:expr, $label:expr) => {{
+                match reader.$method($offset) {
+                    Ok(value) => value,
+                    Err(err) => {
+                        crate::kerror!(
+                            "Failed to read {} at offset {:#x}: {:?}",
+                            $label,
+                            $offset,
+                            err
+                        );
+                        return Err("Malformed ELF header");
+                    }
+                }
+            }};
+        }
+
+        let magic = read_field!(u32, 0, "ELF magic");
         if magic != ELF_MAGIC {
             crate::kerror!("Invalid ELF magic: {:#x}", magic);
             return Err("Invalid ELF magic");
         }
 
-        // Check class (64-bit)
-        let class = unsafe { ptr::read_unaligned(data.as_ptr().add(4) as *const u8) };
+        let class = read_field!(u8, 4, "ELF class");
         if class != ElfClass::Elf64 as u8 {
             crate::kerror!("Not ELF64");
             return Err("Not ELF64");
         }
 
-        // Check data encoding (little endian)
-        let data_enc = unsafe { ptr::read_unaligned(data.as_ptr().add(5) as *const u8) };
+        let data_enc = read_field!(u8, 5, "ELF data encoding");
         if data_enc != ElfData::LittleEndian as u8 {
             crate::kerror!("Not little endian");
             return Err("Not little endian");
         }
 
-        // Check version
-        let version = unsafe { ptr::read_unaligned(data.as_ptr().add(6) as *const u8) };
+        let version = read_field!(u8, 6, "ELF version");
         if version != 1 {
             crate::kerror!("Invalid version");
             return Err("Invalid version");
         }
 
-        // Check machine type (x86-64)
-        let machine = unsafe { ptr::read_unaligned(data.as_ptr().add(18) as *const u16) };
+        let machine = read_field!(u16, 18, "ELF machine");
         if machine != 0x3E {
             crate::kerror!("Not x86-64");
             return Err("Not x86-64");
@@ -213,11 +225,10 @@ impl ElfLoader {
 
         crate::kinfo!("ELF header is valid");
 
-        // Read header fields
-        let e_phoff = unsafe { ptr::read_unaligned(data.as_ptr().add(32) as *const u64) };
-        let e_phentsize = unsafe { ptr::read_unaligned(data.as_ptr().add(54) as *const u16) };
-        let e_phnum = unsafe { ptr::read_unaligned(data.as_ptr().add(56) as *const u16) };
-        let e_entry = unsafe { ptr::read_unaligned(data.as_ptr().add(24) as *const u64) };
+        let e_phoff = read_field!(u64, 32, "program header offset");
+        let e_phentsize = read_field!(u16, 54, "program header size");
+        let e_phnum = read_field!(u16, 56, "program header count");
+        let e_entry = read_field!(u64, 24, "entry point");
 
         crate::kinfo!(
             "ELF header: e_phoff={:#x}, e_phnum={}, e_phentsize={}, e_entry={:#x}",
@@ -227,24 +238,39 @@ impl ElfLoader {
             e_entry
         );
 
-        Ok(Self { data })
+        Ok(Self { reader })
     }
 
     /// Get the ELF header
-    pub fn header(&self) -> &Elf64Header {
-        unsafe { &*(self.data.as_ptr() as *const Elf64Header) }
+    pub fn header(&self) -> Result<Elf64Header, RawAccessError> {
+        self.reader.read::<Elf64Header>(0)
     }
 
     /// Get program headers
     pub fn program_headers(&self) -> &[Elf64ProgramHeader] {
-        use core::ptr;
+        let reader = self.reader;
 
-        let e_phoff =
-            unsafe { ptr::read_unaligned(self.data.as_ptr().add(32) as *const u64) } as usize;
-        let e_phnum =
-            unsafe { ptr::read_unaligned(self.data.as_ptr().add(56) as *const u16) } as usize;
-        let e_phentsize =
-            unsafe { ptr::read_unaligned(self.data.as_ptr().add(54) as *const u16) } as usize;
+        let e_phoff = match reader.u64(32) {
+            Ok(v) => v as usize,
+            Err(err) => {
+                crate::kerror!("program_headers: failed to read e_phoff: {:?}", err);
+                return &[];
+            }
+        };
+        let e_phnum = match reader.u16(56) {
+            Ok(v) => v as usize,
+            Err(err) => {
+                crate::kerror!("program_headers: failed to read e_phnum: {:?}", err);
+                return &[];
+            }
+        };
+        let e_phentsize = match reader.u16(54) {
+            Ok(v) => v as usize,
+            Err(err) => {
+                crate::kerror!("program_headers: failed to read e_phentsize: {:?}", err);
+                return &[];
+            }
+        };
 
         crate::kinfo!(
             "program_headers: offset={:#x}, count={}, size={}, expected={}",
@@ -259,42 +285,65 @@ impl ElfLoader {
             return &[];
         }
 
-        if e_phoff + (e_phnum * e_phentsize) > self.data.len() {
-            crate::kinfo!(
-                "program_headers: offset + size * count ({}) > data.len() ({})",
-                e_phoff + (e_phnum * e_phentsize),
-                self.data.len()
-            );
-            return &[];
+        match reader.slice::<Elf64ProgramHeader>(e_phoff, e_phnum) {
+            Ok(slice) => {
+                crate::kinfo!("program_headers: returning {} headers", slice.len());
+                slice
+            }
+            Err(err) => {
+                crate::kerror!("program_headers: failed to read slice: {:?}", err);
+                &[]
+            }
         }
-
-        let ptr = unsafe { self.data.as_ptr().add(e_phoff) as *const Elf64ProgramHeader };
-        let slice = unsafe { slice::from_raw_parts(ptr, e_phnum) };
-        crate::kinfo!("program_headers: returning {} headers", slice.len());
-        slice
     }
 
     /// Check if the ELF file has a PT_INTERP segment (dynamic linking)
     pub fn has_interpreter(&self) -> bool {
-        use core::ptr;
+        let reader = self.reader;
 
-        let e_phoff =
-            unsafe { ptr::read_unaligned(self.data.as_ptr().add(32) as *const u64) } as usize;
-        let e_phnum =
-            unsafe { ptr::read_unaligned(self.data.as_ptr().add(56) as *const u16) } as usize;
-        let e_phentsize =
-            unsafe { ptr::read_unaligned(self.data.as_ptr().add(54) as *const u16) } as usize;
+        let e_phoff = match reader.u64(32) {
+            Ok(v) => v as usize,
+            Err(err) => {
+                crate::kerror!("has_interpreter: failed to read e_phoff: {:?}", err);
+                return false;
+            }
+        };
+        let e_phnum = match reader.u16(56) {
+            Ok(v) => v as usize,
+            Err(err) => {
+                crate::kerror!("has_interpreter: failed to read e_phnum: {:?}", err);
+                return false;
+            }
+        };
+        let e_phentsize = match reader.u16(54) {
+            Ok(v) => v as usize,
+            Err(err) => {
+                crate::kerror!("has_interpreter: failed to read e_phentsize: {:?}", err);
+                return false;
+            }
+        };
 
         for i in 0..e_phnum {
-            let ph_offset = e_phoff + i * e_phentsize;
-            if ph_offset + 4 > self.data.len() {
-                continue;
-            }
+            let delta = match i.checked_mul(e_phentsize) {
+                Some(v) => v,
+                None => return false,
+            };
+            let ph_offset = match e_phoff.checked_add(delta) {
+                Some(v) => v,
+                None => return false,
+            };
 
-            let p_type =
-                unsafe { ptr::read_unaligned(self.data.as_ptr().add(ph_offset) as *const u32) };
-            if p_type == PhType::Interp as u32 {
-                return true;
+            match reader.u32(ph_offset) {
+                Ok(p_type) if p_type == PhType::Interp as u32 => return true,
+                Ok(_) => {}
+                Err(err) => {
+                    crate::kerror!(
+                        "has_interpreter: failed to read program header {}: {:?}",
+                        i,
+                        err
+                    );
+                    return false;
+                }
             }
         }
 
@@ -304,51 +353,32 @@ impl ElfLoader {
     /// Get the interpreter path from PT_INTERP segment
     /// Returns None if no interpreter is specified
     pub fn get_interpreter(&self) -> Option<&str> {
-        use core::ptr;
+        let reader = self.reader;
 
-        const PROGRAM_HEADER_SIZE: usize = 56; // Size of Elf64ProgramHeader
-
-        let e_phoff =
-            unsafe { ptr::read_unaligned(self.data.as_ptr().add(32) as *const u64) } as usize;
-        let e_phnum =
-            unsafe { ptr::read_unaligned(self.data.as_ptr().add(56) as *const u16) } as usize;
-        let e_phentsize =
-            unsafe { ptr::read_unaligned(self.data.as_ptr().add(54) as *const u16) } as usize;
+        let e_phoff = reader.u64(32).ok()? as usize;
+        let e_phnum = reader.u16(56).ok()? as usize;
+        let e_phentsize = reader.u16(54).ok()? as usize;
 
         for i in 0..e_phnum {
-            let ph_offset = e_phoff + i * e_phentsize;
-            if ph_offset + PROGRAM_HEADER_SIZE > self.data.len() {
-                continue;
-            }
+            let delta = i.checked_mul(e_phentsize)?;
+            let ph_offset = e_phoff.checked_add(delta)?;
 
-            let p_type =
-                unsafe { ptr::read_unaligned(self.data.as_ptr().add(ph_offset) as *const u32) };
+            let p_type = reader.u32(ph_offset).ok()?;
 
             if p_type == PhType::Interp as u32 {
-                let p_offset = unsafe {
-                    ptr::read_unaligned(self.data.as_ptr().add(ph_offset + 8) as *const u64)
-                } as usize;
-                let p_filesz = unsafe {
-                    ptr::read_unaligned(self.data.as_ptr().add(ph_offset + 32) as *const u64)
-                } as usize;
+                let p_offset = reader.u64(ph_offset + 8).ok()? as usize;
+                let p_filesz = reader.u64(ph_offset + 32).ok()? as usize;
 
-                if p_offset + p_filesz > self.data.len() {
-                    return None;
-                }
-
-                // The interpreter path is null-terminated
-                let interp_bytes = &self.data[p_offset..p_offset + p_filesz];
-
-                // Find the null terminator
+                let interp_bytes = reader.bytes(p_offset, p_filesz).ok()?;
                 let null_pos = interp_bytes
                     .iter()
                     .position(|&b| b == 0)
                     .unwrap_or(p_filesz);
 
-                // Convert to string
                 if let Ok(s) = core::str::from_utf8(&interp_bytes[..null_pos]) {
                     return Some(s);
                 }
+                return None;
             }
         }
 
@@ -361,38 +391,66 @@ impl ElfLoader {
     pub fn load(&self, base_addr: u64) -> Result<LoadResult, &'static str> {
         use core::ptr;
 
-        let e_phoff =
-            unsafe { ptr::read_unaligned(self.data.as_ptr().add(32) as *const u64) } as usize;
-        let e_phnum =
-            unsafe { ptr::read_unaligned(self.data.as_ptr().add(56) as *const u16) } as usize;
-        let e_phentsize =
-            unsafe { ptr::read_unaligned(self.data.as_ptr().add(54) as *const u16) } as usize;
+        let reader = self.reader;
 
-        // Determine the base virtual address of the first loadable segment so we
-        // can relocate all program segments relative to it. This lets us place
-        // the executable at an arbitrary physical base while preserving the
-        // virtual addresses expected by the binary.
+        let e_phoff = match reader.u64(32) {
+            Ok(v) => v as usize,
+            Err(err) => {
+                crate::kerror!("load: failed to read e_phoff: {:?}", err);
+                return Err("Malformed program header table");
+            }
+        };
+        let e_phnum = match reader.u16(56) {
+            Ok(v) => v as usize,
+            Err(err) => {
+                crate::kerror!("load: failed to read e_phnum: {:?}", err);
+                return Err("Malformed program header table");
+            }
+        };
+        let e_phentsize = match reader.u16(54) {
+            Ok(v) => v as usize,
+            Err(err) => {
+                crate::kerror!("load: failed to read e_phentsize: {:?}", err);
+                return Err("Malformed program header table");
+            }
+        };
+
+        let header = self.header().map_err(|err| {
+            crate::kerror!("load: failed to read ELF header: {:?}", err);
+            "Malformed ELF header"
+        })?;
+
+        let ph_offset = |index: usize| -> Result<usize, &'static str> {
+            let delta = index
+                .checked_mul(e_phentsize)
+                .ok_or("Program header overflow")?;
+            e_phoff.checked_add(delta).ok_or("Program header overflow")
+        };
+
         let mut first_load_vaddr: Option<u64> = None;
         let mut first_load_offset: Option<u64> = None;
         let mut first_load_filesz: Option<u64> = None;
         for i in 0..e_phnum {
-            let ph_offset = e_phoff + i * e_phentsize;
-            if ph_offset + 56 > self.data.len() {
-                continue;
-            }
+            let offset = ph_offset(i)?;
+            let p_type = reader.u32(offset).map_err(|err| {
+                crate::kerror!("load: failed to read p_type for {}: {:?}", i, err);
+                "Invalid program header"
+            })?;
 
-            let p_type =
-                unsafe { ptr::read_unaligned(self.data.as_ptr().add(ph_offset) as *const u32) };
             if p_type == PhType::Load as u32 {
-                let p_vaddr = unsafe {
-                    ptr::read_unaligned(self.data.as_ptr().add(ph_offset + 16) as *const u64)
-                };
-                let p_offset = unsafe {
-                    ptr::read_unaligned(self.data.as_ptr().add(ph_offset + 8) as *const u64)
-                };
-                let p_filesz = unsafe {
-                    ptr::read_unaligned(self.data.as_ptr().add(ph_offset + 32) as *const u64)
-                };
+                let p_vaddr = reader.u64(offset + 16).map_err(|err| {
+                    crate::kerror!("load: failed to read p_vaddr for {}: {:?}", i, err);
+                    "Invalid program header"
+                })?;
+                let p_offset = reader.u64(offset + 8).map_err(|err| {
+                    crate::kerror!("load: failed to read p_offset for {}: {:?}", i, err);
+                    "Invalid program header"
+                })?;
+                let p_filesz = reader.u64(offset + 32).map_err(|err| {
+                    crate::kerror!("load: failed to read p_filesz for {}: {:?}", i, err);
+                    "Invalid program header"
+                })?;
+
                 first_load_vaddr = Some(p_vaddr);
                 first_load_offset = Some(p_offset);
                 first_load_filesz = Some(p_filesz);
@@ -404,30 +462,30 @@ impl ElfLoader {
         let first_load_offset = first_load_offset.ok_or("ELF has no loadable segments")?;
         let first_load_filesz = first_load_filesz.ok_or("ELF has no loadable segments")?;
 
-        let header = self.header();
         let mut phdr_runtime: Option<u64> = None;
 
         for i in 0..e_phnum {
-            let ph_offset = e_phoff + i * e_phentsize;
-            if ph_offset + 56 > self.data.len() {
-                continue;
-            }
-
-            // Read program header fields directly from bytes
-            let p_type =
-                unsafe { ptr::read_unaligned(self.data.as_ptr().add(ph_offset) as *const u32) };
-            let p_offset_val =
-                unsafe { ptr::read_unaligned(self.data.as_ptr().add(ph_offset + 8) as *const u64) }
-                    as usize;
-            let p_vaddr = unsafe {
-                ptr::read_unaligned(self.data.as_ptr().add(ph_offset + 16) as *const u64)
-            };
-            let p_filesz = unsafe {
-                ptr::read_unaligned(self.data.as_ptr().add(ph_offset + 32) as *const u64)
-            } as usize;
-            let p_memsz = unsafe {
-                ptr::read_unaligned(self.data.as_ptr().add(ph_offset + 40) as *const u64)
-            } as usize;
+            let offset = ph_offset(i)?;
+            let p_type = reader.u32(offset).map_err(|err| {
+                crate::kerror!("load: failed to read p_type for {}: {:?}", i, err);
+                "Invalid program header"
+            })?;
+            let p_offset_val = reader.u64(offset + 8).map_err(|err| {
+                crate::kerror!("load: failed to read p_offset for {}: {:?}", i, err);
+                "Invalid program header"
+            })? as usize;
+            let p_vaddr = reader.u64(offset + 16).map_err(|err| {
+                crate::kerror!("load: failed to read p_vaddr for {}: {:?}", i, err);
+                "Invalid program header"
+            })?;
+            let p_filesz = reader.u64(offset + 32).map_err(|err| {
+                crate::kerror!("load: failed to read p_filesz for {}: {:?}", i, err);
+                "Invalid program header"
+            })? as usize;
+            let p_memsz = reader.u64(offset + 40).map_err(|err| {
+                crate::kerror!("load: failed to read p_memsz for {}: {:?}", i, err);
+                "Invalid program header"
+            })? as usize;
 
             crate::kinfo!(
                 "Segment {}: p_type={}, p_vaddr={:#x}, p_filesz={:#x}, p_memsz={:#x}",
@@ -439,18 +497,18 @@ impl ElfLoader {
             );
 
             if p_type != PhType::Load as u32 {
+                if phdr_runtime.is_none() && p_type == PhType::Phdr as u32 {
+                    let target_addr = base_addr + (p_vaddr - first_load_vaddr);
+                    phdr_runtime = Some(target_addr);
+                }
                 continue;
             }
 
-            let base_vaddr = first_load_vaddr;
-            if p_vaddr < base_vaddr {
+            if p_vaddr < first_load_vaddr {
                 return Err("Segment virtual address before base segment");
             }
 
-            // Relocate relative to the first loadable segment so the binary can
-            // run at its intended virtual addresses while we choose the
-            // physical placement.
-            let relative_offset = p_vaddr - base_vaddr;
+            let relative_offset = p_vaddr - first_load_vaddr;
             let target_addr = base_addr + relative_offset;
 
             crate::kinfo!(
@@ -461,16 +519,14 @@ impl ElfLoader {
                 target_addr
             );
 
-            // Copy data from ELF to memory
             if p_filesz > 0 {
-                if p_offset_val + p_filesz > self.data.len() {
-                    return Err("Invalid program header");
-                }
+                let segment = reader.bytes(p_offset_val, p_filesz).map_err(|err| {
+                    crate::kerror!("load: segment {} source out of range: {:?}", i, err);
+                    "Invalid program header"
+                })?;
 
-                let src = unsafe { self.data.as_ptr().add(p_offset_val) };
                 let dst = target_addr as *mut u8;
 
-                // Zero out the memory first
                 if p_memsz > 0 {
                     crate::kinfo!(
                         "Zeroing segment bytes: addr={:#x}, memsz={:#x}",
@@ -478,12 +534,11 @@ impl ElfLoader {
                         p_memsz
                     );
                     unsafe {
-                        core::ptr::write_bytes(dst, 0, p_memsz);
+                        ptr::write_bytes(dst, 0, p_memsz);
                     }
                     crate::kinfo!("Zero complete at {:#x}", target_addr);
                 }
 
-                // Copy the file data
                 crate::kinfo!(
                     "Copying segment data: src_off={:#x}, dst={:#x}, size={:#x}",
                     p_offset_val,
@@ -491,36 +546,31 @@ impl ElfLoader {
                     p_filesz
                 );
                 unsafe {
-                    core::ptr::copy_nonoverlapping(src, dst, p_filesz);
+                    ptr::copy_nonoverlapping(segment.as_ptr(), dst, p_filesz);
                 }
                 crate::kinfo!("Copy complete to {:#x}", target_addr);
             }
 
             if phdr_runtime.is_none() {
-                if p_type == PhType::Phdr as u32 {
-                    phdr_runtime = Some(target_addr);
-                } else {
-                    let ph_table_offset = header.e_phoff as u64;
-                    let ph_table_size = (header.e_phentsize as u64) * (header.e_phnum as u64);
-                    if ph_table_size != 0 {
-                        let seg_offset = p_offset_val as u64;
-                        if ph_table_offset >= seg_offset
-                            && ph_table_offset + ph_table_size <= seg_offset + p_filesz as u64
-                        {
-                            let within = ph_table_offset - seg_offset;
-                            phdr_runtime = Some(target_addr + within);
-                        }
+                let ph_table_offset = header.e_phoff as u64;
+                let ph_table_size = (header.e_phentsize as u64) * (header.e_phnum as u64);
+                if ph_table_size != 0 {
+                    let seg_offset = p_offset_val as u64;
+                    if ph_table_offset >= seg_offset
+                        && ph_table_offset + ph_table_size <= seg_offset + p_filesz as u64
+                    {
+                        let within = ph_table_offset - seg_offset;
+                        phdr_runtime = Some(target_addr + within);
                     }
                 }
             }
         }
 
-        // Get entry point and relocate it
-        let e_entry = unsafe { ptr::read_unaligned(self.data.as_ptr().add(24) as *const u64) };
+        let e_entry = reader.u64(24).map_err(|err| {
+            crate::kerror!("load: failed to read entry point: {:?}", err);
+            "Malformed ELF header"
+        })?;
 
-        // For static executables, entry point is absolute virtual address
-        // We need to relocate it to our user space base address
-        // Use the first load segment as the base for relocation
         let relocated_entry = base_addr + (e_entry - first_load_vaddr);
 
         if phdr_runtime.is_none() {

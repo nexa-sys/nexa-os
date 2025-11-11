@@ -1,3 +1,4 @@
+use crate::safety::StaticArena;
 /// Boot stage management for rootfs initialization
 ///
 /// This module implements a multi-stage boot process similar to Linux:
@@ -195,31 +196,15 @@ pub fn enter_emergency_mode(reason: &str) -> ! {
 }
 
 /// Storage for static strings parsed from cmdline
-/// We use a simple bump allocator for storing boot config strings
-///
-/// SAFETY: This is only safe because:
-/// 1. parse_boot_config() is called exactly once during boot from kernel_main()
-/// 2. It runs in single-threaded context before any other threads exist
-/// 3. The storage is only written during initialization, then becomes read-only
-const CMDLINE_BUF_SIZE: usize = 512;
-static mut CMDLINE_STORAGE: [u8; CMDLINE_BUF_SIZE] = [0; CMDLINE_BUF_SIZE];
-static mut CMDLINE_OFFSET: usize = 0;
+static CMDLINE_STORAGE: StaticArena<512> = StaticArena::new();
 
 fn store_static_str(s: &str) -> &'static str {
-    unsafe {
-        let len = s.len();
-        // Reserve space for string only (no null terminator needed for Rust strings)
-        if CMDLINE_OFFSET + len > CMDLINE_BUF_SIZE {
-            crate::kwarn!("Boot cmdline buffer overflow, using fallback");
-            return "(overflow)";
+    match CMDLINE_STORAGE.store_str(s) {
+        Ok(value) => value,
+        Err(err) => {
+            crate::kwarn!("Boot cmdline arena error: {:?}", err);
+            "(overflow)"
         }
-
-        let start = CMDLINE_OFFSET;
-        let end = start + len;
-        CMDLINE_STORAGE[start..end].copy_from_slice(s.as_bytes());
-        CMDLINE_OFFSET = end; // No +1, we don't need null terminators for Rust &str
-
-        core::str::from_utf8_unchecked(&CMDLINE_STORAGE[start..end])
     }
 }
 

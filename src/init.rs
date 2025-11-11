@@ -444,16 +444,6 @@ fn system_reboot() -> ! {
     }
 }
 
-/// Emergency sync and halt (called on panic)
-pub fn emergency_halt() -> ! {
-    crate::kfatal!("Emergency halt requested");
-
-    // Try to sync filesystems (if we had a real filesystem)
-    // sync_filesystems();
-
-    // Halt the system
-    crate::arch::halt_loop()
-}
 
 /// Parse inittab-style configuration (simplified)
 /// Format: id:runlevels:action:process
