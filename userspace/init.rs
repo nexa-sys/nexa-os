@@ -17,13 +17,13 @@
 
 use core::{cell::UnsafeCell, ffi::c_void};
 use std::arch::asm;
+use std::io::{self, Write};
 use std::panic;
 use std::ptr;
 
 extern "C" {
     fn write(fd: i32, buf: *const c_void, count: usize) -> isize;
     fn _exit(code: i32) -> !;
-    fn fflush(stream: *mut c_void) -> i32;
 }
 
 fn install_minimal_panic_hook() {
@@ -35,10 +35,7 @@ fn install_minimal_panic_hook() {
 }
 
 fn announce_runtime_start() {
-    unsafe {
-        const BOOT_MSG: &[u8] = b"NI_RUNNING\n";
-        let _ = write(STDOUT, BOOT_MSG.as_ptr() as *const c_void, BOOT_MSG.len());
-    }
+    println!("NI_RUNNING");
 }
 
 // System call numbers
@@ -101,35 +98,9 @@ fn syscall0(n: u64) -> u64 {
     syscall3(n, 0, 0, 0)
 }
 
-// 基础输出封装：直接使用 write 系统调用，忽略错误
-fn write_all(fd: i32, mut buf: &[u8]) -> Result<(), ()> {
-    while !buf.is_empty() {
-        let written = unsafe { write(fd, buf.as_ptr() as *const c_void, buf.len()) };
-        if written <= 0 {
-            return Err(());
-        }
-        let written = written as usize;
-        if written > buf.len() {
-            return Err(());
-        }
-        buf = &buf[written..];
-    }
-    Ok(())
+fn flush_stdout() {
+    let _ = io::stdout().flush();
 }
-
-fn write_str(fd: i32, s: &str) -> Result<(), ()> {
-    write_all(fd, s.as_bytes())
-}
-
-fn print(s: &str) {
-    let _ = write_str(STDOUT, s);
-}
-
-fn eprint(s: &str) {
-    let _ = write_str(STDERR, s);
-}
-
-fn flush_stdout() {}
 
 /// Exit process
 fn exit(code: i32) -> ! {
@@ -445,7 +416,7 @@ fn load_service_catalog() -> ServiceCatalog {
         let fd = open(path_bytes.as_ptr(), 0, 0); // O_RDONLY = 0
 
         if fd < 0 {
-            print("         File open failed\n");
+            println!("         File open failed");
             return ServiceCatalog {
                 services: &SERVICE_CONFIGS[0..0],
                 default_target: DEFAULT_BOOT_TARGET,
@@ -468,10 +439,9 @@ fn load_service_catalog() -> ServiceCatalog {
 
         let usable = core::cmp::min(read_count as usize, config_buffer_capacity());
 
-        let mut diag_buf = [0u8; 32];
-        print("         Bytes read: ");
-        print(itoa(usable as u64, &mut diag_buf));
-        print("\n");
+    let mut diag_buf = [0u8; 32];
+    let bytes_read = itoa(usable as u64, &mut diag_buf);
+    println!("         Bytes read: {}", bytes_read);
 
         let service_count = parse_unit_file(usable);
 
@@ -660,9 +630,7 @@ fn store_service_field(
         let slot = service_idx * SERVICE_FIELD_COUNT + field_idx;
         if slot >= STRING_STORAGE.len() {
             log_warn("Unit config storage exhausted");
-            print("         Field: ");
-            print(label);
-            print("\n");
+            println!("         Field: {}", label);
             return EMPTY_STR;
         }
 
@@ -677,9 +645,7 @@ fn store_service_field(
         if copy_len > max_copy {
             copy_len = max_copy;
             log_warn("Unit config field truncated");
-            print("         Field: ");
-            print(label);
-            print("\n");
+            println!("         Field: {}", label);
         }
 
         for i in 0..copy_len {
@@ -930,6 +896,14 @@ fn service_matches_target(service: &ServiceConfig, target: &str) -> bool {
     false
 }
 
+fn service_label(service: &ServiceConfig) -> &str {
+    if service.name.is_empty() {
+        service.exec_start
+    } else {
+        service.name
+    }
+}
+
 const FALLBACK_SERVICE: ServiceConfig = ServiceConfig {
     name: "fallback-shell",
     description: "Emergency fallback interactive shell",
@@ -1012,27 +986,19 @@ struct RunningService<'a> {
 
 /// systemd-style logging with colors
 fn log_info(msg: &str) {
-    print("\x1b[1;32m[  OK  ]\x1b[0m "); // Green
-    print(msg);
-    print("\n");
+    println!("\x1b[1;32m[  OK  ]\x1b[0m {}", msg); // Green
 }
 
 fn log_start(msg: &str) {
-    print("\x1b[1;36m[ .... ]\x1b[0m "); // Cyan
-    print(msg);
-    print("\n");
+    println!("\x1b[1;36m[ .... ]\x1b[0m {}", msg); // Cyan
 }
 
 fn log_fail(msg: &str) {
-    print("\x1b[1;31m[FAILED]\x1b[0m "); // Red
-    print(msg);
-    print("\n");
+    println!("\x1b[1;31m[FAILED]\x1b[0m {}", msg); // Red
 }
 
 fn log_warn(msg: &str) {
-    print("\x1b[1;33m[ WARN ]\x1b[0m "); // Yellow
-    print(msg);
-    print("\n");
+    println!("\x1b[1;33m[ WARN ]\x1b[0m {}", msg); // Yellow
 }
 
 /// Simple timestamp (just a counter for now)
@@ -1104,13 +1070,7 @@ fn parallel_service_supervisor(
             let state = &mut rs.state;
 
             log_start("Starting unit");
-            print("         Unit: ");
-            if service.name.is_empty() {
-                print(service.exec_start);
-            } else {
-                print(service.name);
-            }
-            print("\n");
+            println!("         Unit: {}", service_label(service));
             
             let pid = start_service(service, buf);
             
@@ -1118,12 +1078,12 @@ fn parallel_service_supervisor(
                 state.pid = pid;
                 state.total_starts = state.total_starts.saturating_add(1);
                 log_info("Unit started");
-                print("         PID: ");
-                print(itoa(pid as u64, buf));
-                print("\n\n");
+                let pid_str = itoa(pid as u64, buf);
+                println!("         PID: {}", pid_str);
+                println!();
             } else {
                 log_fail("Failed to start unit");
-                print("\n");
+                println!();
             }
         }
     }
@@ -1137,7 +1097,7 @@ fn parallel_service_supervisor(
         // Instead, display login prompt directly here
         if pid < 0 || pid == 2 {
             // Show login prompt
-            println!("\n");
+            println!();
             println!("\x1b[1;36m╔════════════════════════════════════════╗\x1b[0m");
             println!("\x1b[1;36m║                                        ║\x1b[0m");
             println!("\x1b[1;36m║          \x1b[1;37mWelcome to NexaOS\x1b[1;36m               ║\x1b[0m");
@@ -1145,8 +1105,9 @@ fn parallel_service_supervisor(
             println!("\x1b[1;36m║    \x1b[0mHybrid Kernel Operating System\x1b[1;36m        ║\x1b[0m");
             println!("\x1b[1;36m║                                        ║\x1b[0m");
             println!("\x1b[1;36m╚════════════════════════════════════════╝\x1b[0m");
-            println!("\n");
-            println!("login: ");
+            println!();
+            print!("login: ");
+            flush_stdout();
             
             // For now, just loop - in future this would handle login
             delay_ms(10000);
@@ -1163,19 +1124,11 @@ fn parallel_service_supervisor(
                     let state = &mut rs.state;
 
                     log_warn("Unit terminated");
-                    print("         Unit: ");
-                    if service.name.is_empty() {
-                        print(service.exec_start);
-                    } else {
-                        print(service.name);
-                    }
-                    print("\n");
-                    print("         PID: ");
-                    print(itoa(pid as u64, buf));
-                    print("\n");
-                    print("         Exit status: ");
-                    print(itoa(status as u64, buf));
-                    print("\n");
+                    println!("         Unit: {}", service_label(service));
+                    let pid_str = itoa(pid as u64, buf);
+                    println!("         PID: {}", pid_str);
+                    let exit_str = itoa(status as u64, buf);
+                    println!("         Exit status: {}", exit_str);
 
                     state.pid = 0;
 
@@ -1192,37 +1145,26 @@ fn parallel_service_supervisor(
                         delay_ms(service.restart_delay_ms);
 
                         log_start("Restarting unit");
-                        print("         Unit: ");
-                        if service.name.is_empty() {
-                            print(service.exec_start);
-                        } else {
-                            print(service.name);
-                        }
-                        print("\n");
+                        println!("         Unit: {}", service_label(service));
 
                         let new_pid = start_service(service, buf);
                         if new_pid > 0 {
                             state.pid = new_pid;
                             log_info("Unit restarted");
-                            print("         PID: ");
-                            print(itoa(new_pid as u64, buf));
-                            print("\n\n");
+                            let new_pid_str = itoa(new_pid as u64, buf);
+                            println!("         PID: {}", new_pid_str);
+                            println!();
                         } else {
                             log_fail("Failed to restart unit");
-                            print("\n");
+                            println!();
                         }
                     } else if should_restart {
                         log_fail("Restart limit exceeded for unit");
-                        print("         Unit: ");
-                        if service.name.is_empty() {
-                            print(service.exec_start);
-                        } else {
-                            print(service.name);
-                        }
-                        print("\n\n");
+                        println!("         Unit: {}", service_label(service));
+                        println!();
                     } else {
                         log_info("Unit will not be restarted (policy: no restart)");
-                        print("\n");
+                        println!();
                     }
 
                     break;
@@ -1274,41 +1216,30 @@ fn start_service(service: &ServiceConfig, _buf: &mut [u8]) -> i64 {
 fn run_service_loop(
     service_state: &mut ServiceState,
     service: &ServiceConfig,
-    buf: &mut [u8],
+    _buf: &mut [u8],
 ) -> ! {
     loop {
         let timestamp = get_timestamp();
 
         if !service_state.allow_attempt(timestamp, service.restart, service.restart_settings) {
             log_fail("Restart limit reached");
-            print("         Unit: ");
-            if service.name.is_empty() {
-                print(service.exec_start);
-            } else {
-                print(service.name);
-            }
-            print("\n");
-            eprint("ni: CRITICAL: Restart limit exceeded for unit ");
-            if service.name.is_empty() {
-                eprint(service.exec_start);
-            } else {
-                eprint(service.name);
-            }
-            eprint("\n");
-            eprint("ni: Restart policy: ");
-            match service.restart {
-                RestartPolicy::No => eprint("none\n"),
-                RestartPolicy::OnFailure => eprint("on-failure\n"),
-                RestartPolicy::Always => eprint("always\n"),
-            }
-            eprint("ni: Restart burst: ");
-            print(itoa(service.restart_settings.burst as u64, buf));
-            eprint(" in ");
-            print(itoa(service.restart_settings.interval_sec, buf));
-            eprint(" seconds\n");
-            eprint("ni: Total attempts: ");
-            print(itoa(service_state.total_starts, buf));
-            eprint("\n\n");
+            println!("         Unit: {}", service_label(service));
+            eprintln!(
+                "ni: CRITICAL: Restart limit exceeded for unit {}",
+                service_label(service)
+            );
+            let policy_label = match service.restart {
+                RestartPolicy::No => "none",
+                RestartPolicy::OnFailure => "on-failure",
+                RestartPolicy::Always => "always",
+            };
+            eprintln!("ni: Restart policy: {}", policy_label);
+            eprintln!(
+                "ni: Restart burst: {} in {} seconds",
+                service.restart_settings.burst,
+                service.restart_settings.interval_sec
+            );
+            eprintln!("ni: Total attempts: {}\n", service_state.total_starts);
 
             match service.restart {
                 RestartPolicy::No => exit(1),
@@ -1320,42 +1251,25 @@ fn run_service_loop(
         }
 
         log_start("Spawning unit");
-        print("         Unit: ");
-        if service.name.is_empty() {
-            print(service.exec_start);
-        } else {
-            print(service.name);
-        }
-        print("\n");
+        println!("         Unit: {}", service_label(service));
         if !service.description.is_empty() {
-            print("         Description: ");
-            print(service.description);
-            print("\n");
+            println!("         Description: {}", service.description);
         }
-        print("         Attempt: ");
-        print(itoa(service_state.total_starts, buf));
-        print("\n");
+        println!("         Attempt: {}", service_state.total_starts);
 
         // Fork and execute unit
         let pid = fork();
 
         if pid < 0 {
             log_fail("fork() failed");
-            print("         Unit: ");
-            if service.name.is_empty() {
-                print(service.exec_start);
-            } else {
-                print(service.name);
-            }
-            print("\n");
+            println!("         Unit: {}", service_label(service));
             delay_ms(service.restart_delay_ms);
             continue;
         }
 
         log_info("Unit process created");
-        print("         Child PID: ");
-        print(itoa(pid as u64, buf));
-        print("\n\n");
+        println!("         Child PID: {}", pid);
+        println!();
 
         // Add null terminator to ExecStart for execve path parameter
         let mut path_with_null = [0u8; 256];
@@ -1387,13 +1301,7 @@ fn run_service_loop(
 
         // If execve returns, it failed
         log_fail("execve failed");
-        print("         Unit: ");
-        if service.name.is_empty() {
-            print(service.exec_start);
-        } else {
-            print(service.name);
-        }
-        print("\n");
+        println!("         Unit: {}", service_label(service));
         delay_ms(service.restart_delay_ms);
     }
 }
@@ -1402,26 +1310,26 @@ fn run_service_loop(
 /// This works within single-process model without needing fork()
 fn show_login_and_exec_shell(_buf: &mut [u8]) -> ! {
     // Display welcome banner
-    print("\n");
-    print("\x1b[1;36m╔════════════════════════════════════════╗\x1b[0m\n");
-    print("\x1b[1;36m║                                        ║\x1b[0m\n");
-    print(
-        "\x1b[1;36m║          \x1b[1;37mWelcome to NexaOS\x1b[1;36m                     ║\x1b[0m\n",
+    println!();
+    println!("\x1b[1;36m╔════════════════════════════════════════╗\x1b[0m");
+    println!("\x1b[1;36m║                                        ║\x1b[0m");
+    println!(
+        "\x1b[1;36m║          \x1b[1;37mWelcome to NexaOS\x1b[1;36m                     ║\x1b[0m"
     );
-    print("\x1b[1;36m║                                        ║\x1b[0m\n");
-    print("\x1b[1;36m║    \x1b[0mHybrid Kernel Operating System\x1b[1;36m      ║\x1b[0m\n");
-    print("\x1b[1;36m║                                        ║\x1b[0m\n");
-    print("\x1b[1;36m╚════════════════════════════════════════╝\x1b[0m\n");
-    print("\n");
-    print("\x1b[1;32mNexaOS Login\x1b[0m\n");
-    print("\x1b[0;36mDefault credentials: root/root\x1b[0m\n");
-    print("\n");
+    println!("\x1b[1;36m║                                        ║\x1b[0m");
+    println!("\x1b[1;36m║    \x1b[0mHybrid Kernel Operating System\x1b[1;36m      ║\x1b[0m");
+    println!("\x1b[1;36m║                                        ║\x1b[0m");
+    println!("\x1b[1;36m╚════════════════════════════════════════╝\x1b[0m");
+    println!();
+    println!("\x1b[1;32mNexaOS Login\x1b[0m");
+    println!("\x1b[0;36mDefault credentials: root/root\x1b[0m");
+    println!();
 
     // Ensure default root user exists
     ensure_default_user();
 
     // Read username
-    print("login: ");
+    print!("login: ");
     flush_stdout();
     let mut username_buf = [0u8; 64];
     let username_len = read_line_input(&mut username_buf);
@@ -1430,17 +1338,17 @@ fn show_login_and_exec_shell(_buf: &mut [u8]) -> ! {
     debug_print_ptr("username_buf_ptr", username_buf.as_ptr() as u64);
 
     if username_len == 0 {
-        print("\n\x1b[1;31mLogin failed: empty username\x1b[0m\n");
+        println!("\n\x1b[1;31mLogin failed: empty username\x1b[0m");
         exit(1);
     }
 
     if username_len > 64 {
-        print("\n\x1b[1;31mLogin failed: username too long\x1b[0m\n");
+        println!("\n\x1b[1;31mLogin failed: username too long\x1b[0m");
         exit(1);
     }
 
     // Read password
-    print("password: ");
+    print!("password: ");
     flush_stdout();
     let mut password_buf = [0u8; 64];
     let password_len = read_password_input(&mut password_buf);
@@ -1449,7 +1357,7 @@ fn show_login_and_exec_shell(_buf: &mut [u8]) -> ! {
     debug_print_ptr("password_buf_ptr", password_buf.as_ptr() as u64);
 
     if password_len > 64 {
-        print("\n\x1b[1;31mLogin failed: password too long\x1b[0m\n");
+        println!("\n\x1b[1;31mLogin failed: password too long\x1b[0m");
         exit(1);
     }
 
@@ -1467,19 +1375,19 @@ fn show_login_and_exec_shell(_buf: &mut [u8]) -> ! {
     };
 
     if debug_logs_enabled() {
-        print("\n[DEBUG] Calling authenticate_user...\n");
+        println!("\n[DEBUG] Calling authenticate_user...");
     }
     let login_success = authenticate_user(username_slice, password_slice);
     if debug_logs_enabled() {
-        print("[DEBUG] authenticate_user returned\n");
+        println!("[DEBUG] authenticate_user returned");
     }
 
     if login_success {
-        print("\n\x1b[1;32mLogin successful!\x1b[0m\n");
-        print("Starting user session...\n\n");
+        println!("\n\x1b[1;32mLogin successful!\x1b[0m");
+        println!("Starting user session...\n");
 
         if debug_logs_enabled() {
-            print("[DEBUG] About to call execve...\n");
+            println!("[DEBUG] About to call execve...");
         }
 
         // Exec into shell (ensure C string semantics for kernel syscall)
@@ -1487,7 +1395,7 @@ fn show_login_and_exec_shell(_buf: &mut [u8]) -> ! {
         let mut path_with_null = [0u8; 256];
 
         if shell_bytes.len() >= path_with_null.len() {
-            print("\n\x1b[1;31mShell path too long\x1b[0m\n");
+            println!("\n\x1b[1;31mShell path too long\x1b[0m");
             exit(1);
         }
 
@@ -1503,10 +1411,10 @@ fn show_login_and_exec_shell(_buf: &mut [u8]) -> ! {
         execve(exec_path, &argv, &envp);
 
         // If exec fails, show error
-        print("\n\x1b[1;31mFailed to start shell\x1b[0m\n");
+        println!("\n\x1b[1;31mFailed to start shell\x1b[0m");
         exit(1);
     } else {
-        print("\n\x1b[1;31mLogin incorrect\x1b[0m\n");
+        println!("\n\x1b[1;31mLogin incorrect\x1b[0m");
         exit(1);
     }
 }
@@ -1515,6 +1423,7 @@ fn show_login_and_exec_shell(_buf: &mut [u8]) -> ! {
 fn read_line_input(buf: &mut [u8]) -> usize {
     let mut pos = 0;
     let mut tmp = [0u8; 1];
+    let mut stdout = io::stdout();
 
     while pos < buf.len() {
         let read_bytes = read(STDIN as u64, tmp.as_mut_ptr(), 1);
@@ -1527,7 +1436,8 @@ fn read_line_input(buf: &mut [u8]) -> usize {
         if ch == 8 || ch == 127 {
             if pos > 0 {
                 pos -= 1;
-                print("\x08 \x08");
+                print!("\x08 \x08");
+                let _ = stdout.flush();
             }
             continue;
         }
@@ -1537,14 +1447,15 @@ fn read_line_input(buf: &mut [u8]) -> usize {
                 debug_print_len("read_line_input_skip_newline", pos);
                 continue;
             }
-            print("\n");
+            println!();
             break;
         }
 
         if ch.is_ascii_graphic() || ch == b' ' {
             buf[pos] = ch;
             pos += 1;
-            let _ = write_all(STDOUT, &tmp);
+            let _ = stdout.write_all(&tmp);
+            let _ = stdout.flush();
         }
     }
 
@@ -1559,6 +1470,7 @@ fn read_line_input(buf: &mut [u8]) -> usize {
 fn read_password_input(buf: &mut [u8]) -> usize {
     let mut pos = 0;
     let mut tmp = [0u8; 1];
+    let mut stdout = io::stdout();
 
     while pos < buf.len() {
         let read_bytes = read(STDIN as u64, tmp.as_mut_ptr(), 1);
@@ -1571,7 +1483,8 @@ fn read_password_input(buf: &mut [u8]) -> usize {
         if ch == 8 || ch == 127 {
             if pos > 0 {
                 pos -= 1;
-                print("\x08 \x08");
+                print!("\x08 \x08");
+                let _ = stdout.flush();
             }
             continue;
         }
@@ -1581,14 +1494,15 @@ fn read_password_input(buf: &mut [u8]) -> usize {
                 debug_print_len("read_password_input_skip_newline", pos);
                 continue;
             }
-            print("\n");
+            println!();
             break;
         }
 
         if ch.is_ascii_graphic() || ch == b' ' {
             buf[pos] = ch;
             pos += 1;
-            print("*");
+            print!("*");
+            let _ = stdout.flush();
         }
     }
 
@@ -1654,10 +1568,7 @@ fn authenticate_user(username: &[u8], password: &[u8]) -> bool {
     } else {
         let errno = syscall1(SYS_GETERRNO, 0);
         if debug_logs_enabled() {
-            let mut buf = [0u8; 32];
-            print("[DEBUG] login errno: ");
-            print(itoa(errno, &mut buf));
-            print("\n");
+            println!("[DEBUG] login errno: {}", errno);
         }
         false
     }
@@ -1678,35 +1589,12 @@ fn debug_print_ptr(label: &str, value: u64) {
     if !debug_logs_enabled() {
         return;
     }
-    print("[DEBUG] ");
-    print(label);
-    print(": 0x");
-
-    let mut buf = [0u8; 16];
-    for i in 0..16 {
-        let shift = (15 - i) * 4;
-        let nibble = ((value >> shift) & 0xF) as u8;
-        buf[i] = if nibble < 10 {
-            b'0' + nibble
-        } else {
-            b'a' + (nibble - 10)
-        };
-    }
-
-    // 直接输出 16 字节 hex
-    let _ = write_all(STDOUT, &buf);
-    print("\n");
+    println!("[DEBUG] {}: 0x{value:016x}", label);
 }
 
 fn debug_print_len(label: &str, value: usize) {
     if !debug_logs_enabled() {
         return;
     }
-    print("[DEBUG] ");
-    print(label);
-    print(": ");
-
-    let mut buf = [0u8; 32];
-    print(itoa(value as u64, &mut buf));
-    print("\n");
+    println!("[DEBUG] {}: {}", label, value);
 }
