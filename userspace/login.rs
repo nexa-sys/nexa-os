@@ -1,12 +1,7 @@
-#![no_std]
-#![no_main]
-#![feature(lang_items)]
-
 //! Login - user authentication program
 //! Prompts for username/password and authenticates against kernel user database
 
-use core::arch::asm;
-use core::panic::PanicInfo;
+use std::{arch::asm, io::{self, Write}, panic};
 
 // System call numbers
 const SYS_READ: u64 = 0;
@@ -31,6 +26,14 @@ struct UserRequest {
     password_ptr: u64,
     password_len: u64,
     flags: u64,
+}
+
+fn install_panic_hook() {
+    panic::set_hook(Box::new(|_info| {
+        eprintln!();
+        eprintln!("login: PANIC");
+        exit(1);
+    }));
 }
 
 /// Syscall wrapper
@@ -84,9 +87,8 @@ fn read(fd: u64, buf: &mut [u8]) -> isize {
     }
 }
 
-/// Print string to stdout
-fn print(s: &str) {
-    write(STDOUT, s.as_bytes());
+fn flush_stdout() {
+    let _ = io::stdout().flush();
 }
 
 /// Exit process
@@ -142,14 +144,15 @@ fn read_line(buf: &mut [u8]) -> usize {
         if ch == 8 || ch == 127 {
             if pos > 0 {
                 pos -= 1;
-                print("\x08 \x08"); // Backspace, space, backspace
+                print!("\x08 \x08"); // Backspace, space, backspace
+                flush_stdout();
             }
             continue;
         }
         
         // Handle newline
         if ch == b'\n' || ch == b'\r' {
-            print("\n");
+            println!();
             break;
         }
         
@@ -184,14 +187,15 @@ fn read_password(buf: &mut [u8]) -> usize {
         if ch == 8 || ch == 127 {
             if pos > 0 {
                 pos -= 1;
-                print("\x08 \x08"); // Backspace, space, backspace
+                print!("\x08 \x08"); // Backspace, space, backspace
+                flush_stdout();
             }
             continue;
         }
         
         // Handle newline
         if ch == b'\n' || ch == b'\r' {
-            print("\n");
+            println!();
             break;
         }
         
@@ -199,7 +203,8 @@ fn read_password(buf: &mut [u8]) -> usize {
         if ch >= 32 && ch < 127 {
             buf[pos] = ch;
             pos += 1;
-            print("*"); // Show asterisk instead
+            print!("*"); // Show asterisk instead
+            flush_stdout();
         }
     }
     
@@ -230,13 +235,14 @@ fn login_main() -> ! {
     let mut username_buf = [0u8; MAX_INPUT];
     let mut password_buf = [0u8; MAX_INPUT];
     
-    print("\n");
-    print("\x1b[1;32mNexaOS Login\x1b[0m\n");
-    print("\x1b[0;36mDefault credentials: root/root\x1b[0m\n");
-    print("\n");
+    println!();
+    println!("\x1b[1;32mNexaOS Login\x1b[0m");
+    println!("\x1b[0;36mDefault credentials: root/root\x1b[0m");
+    println!();
     
     // Read username
-    print("login: ");
+    print!("login: ");
+    flush_stdout();
     let username_len = read_line(&mut username_buf);
     
     if username_len == 0 {
@@ -244,7 +250,8 @@ fn login_main() -> ! {
     }
     
     // Read password
-    print("password: ");
+    print!("password: ");
+    flush_stdout();
     let password_len = read_password(&mut password_buf);
     
     // Attempt login
@@ -261,8 +268,10 @@ fn login_main() -> ! {
     
     if result == 0 {
         // Login successful
-        print("\n\x1b[1;32mLogin successful!\x1b[0m\n");
-        print("Starting user session...\n\n");
+        println!();
+        println!("\x1b[1;32mLogin successful!\x1b[0m");
+        println!("Starting user session...");
+        println!();
         
         // Fork and exec shell as user session
         let pid = fork();
@@ -285,7 +294,7 @@ fn login_main() -> ! {
             execve(shell_path_str, &argv, &envp);
             
             // If exec fails
-            print("Failed to start shell\n");
+            println!("Failed to start shell");
             exit(1);
         }
         
@@ -293,28 +302,14 @@ fn login_main() -> ! {
         exit(0);
     } else {
         // Login failed
-        print("\n\x1b[1;31mLogin incorrect\x1b[0m\n");
+        println!();
+        println!("\x1b[1;31mLogin incorrect\x1b[0m");
         exit(1);
     }
 }
-
-#[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
-    print("\nlogin: PANIC\n");
-    exit(1);
-}
-
-#[lang = "eh_personality"]
-extern "C" fn eh_personality() {}
-
-#[no_mangle]
-pub extern "C" fn _start() -> ! {
+fn main() -> ! {
+    install_panic_hook();
     login_main()
-}
-
-#[allow(dead_code)]
-fn main() {
-    loop {}
 }
 
 

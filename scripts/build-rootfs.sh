@@ -36,7 +36,6 @@ required-features = []
 [[bin]]
 name = "sh"
 path = "../../userspace/shell.rs"
-required-features = ["use-nrlib"]
 
 [[bin]]
 name = "getty"
@@ -46,7 +45,6 @@ required-features = []
 [[bin]]
 name = "login"
 path = "../../userspace/login.rs"
-required-features = ["use-nrlib"]
 
 [profile.release]
 panic = "abort"
@@ -96,11 +94,17 @@ RUSTFLAGS="$STD_RUSTFLAGS" \
     cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release \
     --bin getty --no-default-features
 
-# Build other binaries with nrlib (no_std)
-echo "Building other userspace programs (no_std + nrlib)..."
-RUSTFLAGS="-C opt-level=2 -C panic=abort -C linker=rust-lld -C link-arg=--image-base=0x00400000" \
-    cargo build -Z build-std=core --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release \
-    --bin sh --bin login --features use-nrlib
+# Build shell with std
+echo "Building sh (shell) with std..."
+RUSTFLAGS="$STD_RUSTFLAGS" \
+    cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release \
+    --bin sh
+
+# Build login with std
+echo "Building login with std..."
+RUSTFLAGS="$STD_RUSTFLAGS" \
+    cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release \
+    --bin login
 
 # Copy binaries to rootfs
 echo "Copying binaries to rootfs..."

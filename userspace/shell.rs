@@ -1,8 +1,16 @@
-#![no_std]
-#![no_main]
-#![feature(lang_items)]
+use std::{arch::asm, cell::UnsafeCell, panic};
+use core::matches;
+use core::marker::Sync;
+use core::marker::Copy;
+use core::result::Result::Err;
+use core::result::Result::Ok;
+use core::option::Option::Some;
+use core::option::Option::None;
+use core::option::Option;
+use core::prelude::rust_2024::derive;
+use core::iter::Iterator;
+use core::clone::Clone;
 
-use core::{arch::asm, cell::UnsafeCell};
 const SYS_READ: u64 = 0;
 const SYS_WRITE: u64 = 1;
 const SYS_OPEN: u64 = 2;
@@ -46,6 +54,12 @@ impl<const N: usize> ScratchBuffer<N> {
 unsafe impl<const N: usize> Sync for ScratchBuffer<N> {}
 
 static PRINT_SCRATCH: ScratchBuffer<PRINT_SCRATCH_SIZE> = ScratchBuffer::new();
+
+fn install_panic_hook() {
+    panic::set_hook(Box::new(|_info| {
+        exit(1);
+    }));
+}
 
 fn syscall3(n: u64, a1: u64, a2: u64, a3: u64) -> u64 {
     // Route all syscalls via int 0x81 so the CPU saves/restores SS:RSP for Ring3 safely.
@@ -1586,31 +1600,7 @@ fn shell_loop() -> ! {
     }
 }
 
-#[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
-    exit(1);
-    loop {}
-}
-
-#[no_mangle]
-pub extern "C" fn _start() -> ! {
+fn main() -> ! {
+    install_panic_hook();
     shell_loop()
-}
-
-#[no_mangle]
-pub extern "C" fn memset(dest: *mut u8, val: i32, n: usize) -> *mut u8 {
-    let mut i = 0;
-    while i < n {
-        unsafe { *dest.add(i) = val as u8; }
-        i += 1;
-    }
-    dest
-}
-
-#[lang = "eh_personality"]
-extern "C" fn eh_personality() {}
-
-#[no_mangle]
-pub extern "C" fn main() {
-    exit(0);
 }

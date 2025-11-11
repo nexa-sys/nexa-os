@@ -34,17 +34,32 @@ path = "../../userspace/shell.rs"
 panic = "abort"
 opt-level = 2
 lto = false
-
-[dependencies]
-nrlib = { path = "../../userspace/nrlib" }
 EOF
 
 cd "$PROJECT_ROOT/build/initramfs-build"
-RUSTFLAGS="-C opt-level=2 -C panic=abort -C linker=rust-lld -C link-arg=--image-base=0x00400000" \
-    cargo build -Z build-std=core --target "$PROJECT_ROOT/x86_64-nexaos.json" --release
+
+# Build nrlib as staticlib to provide libc compatibility
+echo "Building nrlib staticlib for shell..."
+mkdir -p "$PROJECT_ROOT/build/initramfs-build/sysroot/lib"
+cd "$PROJECT_ROOT/userspace/nrlib"
+RUSTFLAGS="-C opt-level=2 -C panic=abort" \
+    cargo build -Z build-std=core --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release
+
+# Copy nrlib staticlib as libc.a
+cp "$PROJECT_ROOT/userspace/nrlib/target/x86_64-nexaos-userspace/release/libnrlib.a" \
+   "$PROJECT_ROOT/build/initramfs-build/sysroot/lib/libc.a"
+
+# Create an empty libunwind.a
+ar crs "$PROJECT_ROOT/build/initramfs-build/sysroot/lib/libunwind.a"
+
+# Build shell with std
+cd "$PROJECT_ROOT/build/initramfs-build"
+STD_RUSTFLAGS="-C opt-level=2 -C panic=abort -C linker=rust-lld -C link-arg=--image-base=0x00400000 -C link-arg=--entry=_start -L $PROJECT_ROOT/build/initramfs-build/sysroot/lib -C link-arg=-upthread_mutexattr_settype -C link-arg=-upthread_mutexattr_init -C link-arg=-upthread_mutexattr_destroy -C link-arg=-upthread_mutex_init -C link-arg=-upthread_mutex_lock -C link-arg=-upthread_mutex_unlock -C link-arg=-upthread_mutex_destroy -C link-arg=-upthread_once -C link-arg=-u__libc_single_threaded"
+RUSTFLAGS="$STD_RUSTFLAGS" \
+    cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release
 
 # Copy emergency shell to initramfs
-cp "target/x86_64-nexaos/release/sh" "$BUILD_DIR/bin/sh"
+cp "target/x86_64-nexaos-userspace/release/sh" "$BUILD_DIR/bin/sh"
 strip --strip-all "$BUILD_DIR/bin/sh" 2>/dev/null || true
 
 echo "✓ Emergency shell built: $(stat -c%s "$BUILD_DIR/bin/sh") bytes"
