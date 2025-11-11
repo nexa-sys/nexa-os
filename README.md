@@ -234,7 +234,7 @@ cargo build --release
 - Check QEMU command includes `-serial stdio`
 - Try `-display curses` or `-nographic` instead
 
-> 📚 **Documentation**: See [`docs/zh/getting-started.md`](docs/zh/getting-started.md) for detailed setup and [`docs/BUILD-SYSTEM.md`](docs/BUILD-SYSTEM.md) for build system architecture.
+> 📚 **Documentation**: See [`docs/zh/getting-started.md`](docs/zh/getting-started.md) for detailed setup (Chinese) and [`docs/en/BUILD-SYSTEM.md`](docs/en/BUILD-SYSTEM.md) for build system architecture (English).
 
 ## Shell Features
 
@@ -300,42 +300,42 @@ NexaOS includes a fully-featured interactive shell with production-grade functio
 
 ## Documentation
 
-> 📚 **Complete Documentation Index**: See [docs/INDEX.md](docs/INDEX.md) for organized navigation of all documentation by topic, role, and task.
+> 📚 **Complete Documentation Index**: See [docs/README.md](docs/README.md) for organized navigation of all documentation by topic, role, and language.
 
 ### Core Documentation
 
-- **[System Overview](docs/SYSTEM-OVERVIEW.md)** - Comprehensive system architecture, components, and capabilities
-- **[Architecture](docs/ARCHITECTURE.md)** - Kernel design, memory management, process model, syscalls
-- **[Build System](docs/BUILD-SYSTEM.md)** - Build process, scripts, filesystem structure, and tooling
-- **[System Call Reference](docs/SYSCALL-REFERENCE.md)** - Complete syscall API documentation with 38+ calls
-- **[Quick Reference](docs/QUICK-REFERENCE.md)** - Cheat sheet for commands, syscalls, and architecture
+- **[System Overview](docs/en/SYSTEM-OVERVIEW.md)** - Comprehensive system architecture, components, and capabilities
+- **[Architecture](docs/en/ARCHITECTURE.md)** - Kernel design, memory management, process model, syscalls
+- **[Build System](docs/en/BUILD-SYSTEM.md)** - Build process, scripts, filesystem structure, and tooling
+- **[System Call Reference](docs/en/SYSCALL-REFERENCE.md)** - Complete syscall API documentation with 38+ calls
+- **[Quick Reference](docs/en/QUICK-REFERENCE.md)** - Cheat sheet for commands, syscalls, and architecture
 
 ### Technical Guides
 
-- **[Kernel Logging System](docs/kernel-logging-system.md)** - TSC-based timestamps, log levels, debugging
-- **[Dynamic Linking](docs/DYNAMIC_LINKING.md)** - ELF loading, PT_INTERP, ld-linux.so, auxiliary vectors
-- **[Root Filesystem Boot](docs/ROOTFS-BOOT-IMPLEMENTATION.md)** - Multi-stage boot process, ext2 mounting
-- **[Config System](docs/CONFIG_SYSTEM_SUMMARY.md)** - /etc/inittab parsing, service management
+- **[Kernel Logging System](docs/en/kernel-logging-system.md)** - TSC-based timestamps, log levels, debugging
+- **[Dynamic Linking](docs/en/DYNAMIC_LINKING.md)** - ELF loading, PT_INTERP, ld-linux.so, auxiliary vectors
+- **[Root Filesystem Boot](docs/en/ROOTFS-BOOT-IMPLEMENTATION.md)** - Multi-stage boot process, ext2 mounting
+- **[Config System](docs/en/CONFIG_SYSTEM_SUMMARY.md)** - /etc/inittab parsing, service management
 
 ### Development
 
 - **[Getting Started](docs/zh/getting-started.md)** (中文) - Environment setup, build instructions
-- **[Testing Guide](docs/bugfixes/testing-guide.md)** - Test scenarios, verification steps
-- **[Debug Builds](docs/DEBUG-BUILD.md)** - Debug symbols, verbose logging, GDB integration
+- **[Testing Guide](docs/en/bugfixes/testing-guide.md)** - Test scenarios, verification steps
+- **[Debug Builds](docs/en/DEBUG-BUILD.md)** - Debug symbols, verbose logging, GDB integration
 
 ### Implementation Reports
 
 - **[Init System](docs/zh/INIT_IMPLEMENTATION_SUMMARY.md)** (中文) - PID 1, runlevels, service supervision
 - **[Interactive Shell](docs/zh/interactive-shell.md)** (中文) - Command implementation, line editing
-- **[STDIO Enhancements](docs/STDIO_ENHANCEMENTS.md)** - Buffering, newline handling, nrlib integration
-- **[Fork/Wait Issues](docs/FORK_WAIT_ISSUES.md)** - Process management debugging
+- **[STDIO Enhancements](docs/en/STDIO_ENHANCEMENTS.md)** - Buffering, newline handling, nrlib integration
+- **[Fork/Wait Issues](docs/en/FORK_WAIT_ISSUES.md)** - Process management debugging
 
 ### Bug Fixes & Diagnostics
 
-- **[Stdout Hang Diagnosis](docs/RUST_STDOUT_HANG_DIAGNOSIS.md)** - Deadlock analysis, single-threaded I/O
-- **[Println Deadlock Fix](docs/stdio-println-deadlock-fix.md)** - Lock removal, unbuffered stdout
-- **[Release Build Buffer Error](docs/bugfixes/release-build-buffer-error.md)** - Optimization issues
-- **[Newline Flush Fix](docs/bugfixes/newline-flush-fix.md)** - Line buffering semantics
+- **[Stdout Hang Diagnosis](docs/en/RUST_STDOUT_HANG_DIAGNOSIS.md)** - Deadlock analysis, single-threaded I/O
+- **[Println Deadlock Fix](docs/en/stdio-println-deadlock-fix.md)** - Lock removal, unbuffered stdout
+- **[Release Build Buffer Error](docs/en/bugfixes/release-build-buffer-error.md)** - Optimization issues
+- **[Newline Flush Fix](docs/en/bugfixes/newline-flush-fix.md)** - Line buffering semantics
 
 ## Project Structure
 
@@ -373,11 +373,19 @@ nexa-os/
 │   ├── build-iso.sh        # Bootable ISO
 │   └── run-qemu.sh         # QEMU testing
 ├── docs/                    # Documentation
-│   ├── SYSTEM-OVERVIEW.md  # Comprehensive system guide
-│   ├── ARCHITECTURE.md     # Technical architecture
-│   ├── BUILD-SYSTEM.md     # Build process details
-│   ├── SYSCALL-REFERENCE.md # Complete syscall docs
-│   └── zh/                 # Chinese documentation
+│   ├── README.md            # Documentation index and navigation
+│   ├── en/                  # English documentation
+│   │   ├── SYSTEM-OVERVIEW.md    # Comprehensive system guide
+│   │   ├── ARCHITECTURE.md       # Technical architecture
+│   │   ├── BUILD-SYSTEM.md       # Build process details
+│   │   ├── SYSCALL-REFERENCE.md  # Complete syscall docs
+│   │   ├── QUICK-REFERENCE.md    # Developer quick reference
+│   │   └── bugfixes/             # Bug analysis and fixes
+│   └── zh/                  # Chinese documentation
+│       ├── README.md            # Chinese documentation index
+│       ├── getting-started.md   # Setup and quick start
+│       ├── INIT_IMPLEMENTATION_SUMMARY.md  # Init system details
+│       └── ...                  # Other Chinese documentation
 ├── etc/
 │   └── inittab             # Init system configuration
 ├── build/                   # Build artifacts
