@@ -249,13 +249,13 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
 
     // Try to load init process into scheduler
     let mut init_pid: Option<u64> = None;
-    
+
     // Try custom init path first (if specified on command line)
     if cmd_init_path != "(none)" {
         kinfo!("Custom init path from cmdline: {}", cmd_init_path);
         init_pid = try_load_init(cmd_init_path);
     }
-    
+
     // If custom init failed, try standard paths
     if init_pid.is_none() {
         for &path in INIT_PATHS.iter() {
@@ -274,31 +274,31 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
             }
         }
     }
-    
+
     // If we have init loaded, start the scheduler
     // All processes (including init) run through the scheduler
     if let Some(pid) = init_pid {
         kinfo!("==========================================================");
         kinfo!("Init process loaded (PID {}), starting scheduler", pid);
         kinfo!("==========================================================");
-        
+
         // Set init as current process
         scheduler::set_current_pid(Some(pid));
-        
+
         // Mark init as Ready (scheduler will pick it up)
         let _ = scheduler::set_process_state(pid, process::ProcessState::Ready);
-        
+
         // 标记 init 已启动 - 此后内核日志将只输出到环形缓冲区
         logger::mark_init_started();
-        
+
         // Start the scheduler - this will switch to init and never return
         kinfo!("Starting process scheduler");
         scheduler::do_schedule();
-        
+
         // Should never reach here
         kfatal!("Scheduler returned to kernel_main!");
     }
-    
+
     // If we reach here, all init programs failed to load
     boot_stages::enter_emergency_mode("Failed to load any init program")
 }
@@ -306,7 +306,6 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
 /// Try to load init program from given path
 /// Returns Some(pid) if successful, None otherwise
 fn try_load_init(path: &str) -> Option<u64> {
-    
     // Try root filesystem first
     if let Some(init_data) = fs::read_file_bytes(path) {
         kinfo!(
@@ -324,13 +323,13 @@ fn try_load_init(path: &str) -> Option<u64> {
                     pid
                 );
                 kinfo!("Adding init process to scheduler...");
-                
+
                 // Add init process to scheduler
                 if let Err(e) = scheduler::add_process(proc, 0) {
                     kwarn!("Failed to add init process to scheduler: {}", e);
                     return None;
                 }
-                
+
                 kinfo!("Init process (PID {}) added to scheduler", pid);
                 // Set init as current process
                 scheduler::set_current_pid(Some(pid));
@@ -341,7 +340,7 @@ fn try_load_init(path: &str) -> Option<u64> {
             }
         }
     }
-    
+
     // Try initramfs
     if let Some(init_data) = initramfs::find_file(path) {
         kinfo!(
@@ -353,15 +352,19 @@ fn try_load_init(path: &str) -> Option<u64> {
         match process::Process::from_elf(init_data) {
             Ok(proc) => {
                 let pid = proc.pid;
-                kinfo!("Successfully loaded '{}' from initramfs as PID {}", path, pid);
+                kinfo!(
+                    "Successfully loaded '{}' from initramfs as PID {}",
+                    path,
+                    pid
+                );
                 kinfo!("Adding init process to scheduler...");
-                
+
                 // Add init process to scheduler
                 if let Err(e) = scheduler::add_process(proc, 0) {
                     kwarn!("Failed to add init process to scheduler: {}", e);
                     return None;
                 }
-                
+
                 kinfo!("Init process (PID {}) added to scheduler", pid);
                 // Set init as current process
                 scheduler::set_current_pid(Some(pid));
@@ -377,7 +380,7 @@ fn try_load_init(path: &str) -> Option<u64> {
             path
         );
     }
-    
+
     None
 }
 

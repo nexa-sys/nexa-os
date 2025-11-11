@@ -160,7 +160,7 @@ pub fn log(level: LogLevel, args: fmt::Arguments<'_>) {
     }
 
     let init_started = INIT_STARTED.load(Ordering::Relaxed);
-    
+
     // 在 init 启动前，输出到显示器和串口；启动后，只输出到环形缓冲区
     // Panic 总是输出到显示器和串口
     let emit_serial = if init_started {
@@ -168,13 +168,13 @@ pub fn log(level: LogLevel, args: fmt::Arguments<'_>) {
     } else {
         should_emit_serial(level)
     };
-    
+
     let emit_vga = if init_started {
         level.priority() <= LogLevel::PANIC.priority()
     } else {
         should_emit_vga(level)
     };
-    
+
     let emit_framebuffer = emit_vga && crate::framebuffer::is_ready();
 
     let timestamp_us = boot_time_us();
@@ -221,7 +221,7 @@ pub fn log(level: LogLevel, args: fmt::Arguments<'_>) {
     if plain_line.is_none() && !emit_serial && !emit_vga {
         plain_line = build_plain_log_line(level, timestamp_us, args);
     }
-    
+
     if let Some(buffer) = plain_line.as_ref() {
         let mut ringbuf = RINGBUF.lock();
         ringbuf.write_bytes(buffer.as_bytes());

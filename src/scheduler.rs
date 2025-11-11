@@ -216,7 +216,7 @@ pub fn get_process(pid: Pid) -> Option<Process> {
 /// Returns the child's state if found and is a child of parent_pid
 pub fn get_child_state(parent_pid: Pid, child_pid: Pid) -> Option<ProcessState> {
     let table = PROCESS_TABLE.lock();
-    
+
     for slot in table.iter() {
         if let Some(entry) = slot {
             if entry.process.pid == child_pid && entry.process.ppid == parent_pid {
@@ -224,7 +224,7 @@ pub fn get_child_state(parent_pid: Pid, child_pid: Pid) -> Option<ProcessState> 
             }
         }
     }
-    
+
     None
 }
 
@@ -232,7 +232,7 @@ pub fn get_child_state(parent_pid: Pid, child_pid: Pid) -> Option<ProcessState> 
 /// Returns first matching child PID if found
 pub fn find_child_with_state(parent_pid: Pid, target_state: ProcessState) -> Option<Pid> {
     let table = PROCESS_TABLE.lock();
-    
+
     for slot in table.iter() {
         if let Some(entry) = slot {
             if entry.process.ppid == parent_pid && entry.process.state == target_state {
@@ -240,7 +240,7 @@ pub fn find_child_with_state(parent_pid: Pid, target_state: ProcessState) -> Opt
             }
         }
     }
-    
+
     None
 }
 
@@ -283,7 +283,7 @@ pub fn mark_process_as_forked_child(pid: Pid) {
     // For now, this is a placeholder - the fork return value handling
     // will be done differently (see fork implementation notes)
     let mut table = PROCESS_TABLE.lock();
-    
+
     for slot in table.iter_mut() {
         if let Some(entry) = slot {
             if entry.process.pid == pid {
@@ -300,12 +300,14 @@ pub fn mark_process_as_forked_child(pid: Pid) {
 /// Saves the old context and restores the new context
 /// This is called from schedule() to switch between processes
 #[unsafe(naked)]
-unsafe extern "C" fn context_switch(_old_context: *mut crate::process::Context, _new_context: *const crate::process::Context) {
+unsafe extern "C" fn context_switch(
+    _old_context: *mut crate::process::Context,
+    _new_context: *const crate::process::Context,
+) {
     core::arch::naked_asm!(
         // Save old context (if not null)
         "test rdi, rdi",
         "jz 2f",
-        
         // Save all registers to old_context
         "mov [rdi + 0x00], r15",
         "mov [rdi + 0x08], r14",
@@ -322,20 +324,16 @@ unsafe extern "C" fn context_switch(_old_context: *mut crate::process::Context, 
         "mov [rdi + 0x60], rcx",
         "mov [rdi + 0x68], rbx",
         "mov [rdi + 0x70], rax",
-        
         // Save rip (return address)
         "mov rax, [rsp]",
         "mov [rdi + 0x78], rax",
-        
         // Save rsp (before return address was pushed)
         "lea rax, [rsp + 8]",
         "mov [rdi + 0x80], rax",
-        
         // Save rflags
         "pushfq",
         "pop rax",
         "mov [rdi + 0x88], rax",
-        
         // Restore new context
         "2:",
         "mov r15, [rsi + 0x00]",
@@ -351,23 +349,18 @@ unsafe extern "C" fn context_switch(_old_context: *mut crate::process::Context, 
         "mov rcx, [rsi + 0x60]",
         "mov rbx, [rsi + 0x68]",
         "mov rax, [rsi + 0x70]",
-        
         // Restore rflags
         "mov rdi, [rsi + 0x88]",
         "push rdi",
         "popfq",
-        
         // Restore rsp
         "mov rsp, [rsi + 0x80]",
-        
         // Push rip onto new stack for ret
         "mov rdi, [rsi + 0x78]",
         "push rdi",
-        
         // Restore rsi and rdi last
         "mov rdi, [rsi + 0x48]",
         "mov rsi, [rsi + 0x40]",
-        
         // Return to new context's rip
         "ret",
     )
@@ -379,16 +372,18 @@ pub fn do_schedule() {
     let next_process: Option<(Pid, crate::process::Context)> = {
         let table = PROCESS_TABLE.lock();
         let current = CURRENT_PID.lock();
-        
+
         let start_idx = if let Some(pid) = *current {
             // Find current process index
-            table.iter().position(|e| e.as_ref().map_or(false, |entry| entry.process.pid == pid))
+            table
+                .iter()
+                .position(|e| e.as_ref().map_or(false, |entry| entry.process.pid == pid))
                 .map(|i| (i + 1) % MAX_PROCESSES)
                 .unwrap_or(0)
         } else {
             0
         };
-        
+
         // Round-robin: find next Ready process
         let mut result = None;
         for i in 0..MAX_PROCESSES {
@@ -402,16 +397,20 @@ pub fn do_schedule() {
         }
         result
     };
-    
+
     if let Some((next_pid, next_context)) = next_process {
         let old_context_ptr = {
             let mut table = PROCESS_TABLE.lock();
             let current = CURRENT_PID.lock();
-            
+
             let old_ptr = if let Some(old_pid) = *current {
                 // Find old process and get context pointer
-                table.iter_mut()
-                    .find(|e| e.as_ref().map_or(false, |entry| entry.process.pid == old_pid))
+                table
+                    .iter_mut()
+                    .find(|e| {
+                        e.as_ref()
+                            .map_or(false, |entry| entry.process.pid == old_pid)
+                    })
                     .and_then(|e| e.as_mut())
                     .map(|entry| {
                         entry.process.state = ProcessState::Ready;
@@ -420,26 +419,30 @@ pub fn do_schedule() {
             } else {
                 None
             };
-            
+
             // Set next process as Running
-            if let Some(entry) = table.iter_mut()
-                .find(|e| e.as_ref().map_or(false, |entry| entry.process.pid == next_pid))
+            if let Some(entry) = table
+                .iter_mut()
+                .find(|e| {
+                    e.as_ref()
+                        .map_or(false, |entry| entry.process.pid == next_pid)
+                })
                 .and_then(|e| e.as_mut())
             {
                 entry.process.state = ProcessState::Running;
             }
-            
+
             old_ptr
         };
-        
+
         // Update current PID
         *CURRENT_PID.lock() = Some(next_pid);
-        
+
         // Perform context switch
         unsafe {
             context_switch(
                 old_context_ptr.unwrap_or(core::ptr::null_mut()),
-                &next_context as *const _
+                &next_context as *const _,
             );
         }
     } else {
@@ -448,4 +451,3 @@ pub fn do_schedule() {
         crate::kwarn!("do_schedule(): No ready process found, returning to caller");
     }
 }
-

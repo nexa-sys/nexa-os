@@ -53,7 +53,7 @@ pub struct Context {
     pub rcx: u64,
     pub rbx: u64,
     pub rax: u64,
-    
+
     // Instruction pointer and stack pointer
     pub rip: u64,
     pub rsp: u64,
@@ -63,9 +63,24 @@ pub struct Context {
 impl Context {
     pub const fn zero() -> Self {
         Self {
-            r15: 0, r14: 0, r13: 0, r12: 0, r11: 0, r10: 0, r9: 0, r8: 0,
-            rsi: 0, rdi: 0, rbp: 0, rdx: 0, rcx: 0, rbx: 0, rax: 0,
-            rip: 0, rsp: 0, rflags: 0x202, // IF flag set (interrupts enabled)
+            r15: 0,
+            r14: 0,
+            r13: 0,
+            r12: 0,
+            r11: 0,
+            r10: 0,
+            r9: 0,
+            r8: 0,
+            rsi: 0,
+            rdi: 0,
+            rbp: 0,
+            rdx: 0,
+            rcx: 0,
+            rbx: 0,
+            rax: 0,
+            rip: 0,
+            rsp: 0,
+            rflags: 0x202, // IF flag set (interrupts enabled)
         }
     }
 }
@@ -81,7 +96,7 @@ pub struct Process {
     pub heap_start: u64,
     pub heap_end: u64,
     pub signal_state: crate::signal::SignalState, // POSIX signal handling
-    pub context: Context, // CPU context for context switching
+    pub context: Context,                         // CPU context for context switching
     pub cr3: u64, // Page table root (for process-specific page tables) - 0 means use kernel page table
 }
 

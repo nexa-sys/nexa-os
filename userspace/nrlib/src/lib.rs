@@ -66,6 +66,7 @@ const SYS_GETPID: u64 = 39;
 const SYS_STAT: u64 = 4;
 const SYS_FSTAT: u64 = 5;
 const SYS_LSEEK: u64 = 8;
+const SYS_FCNTL: u64 = 72;
 
 #[no_mangle]
 pub extern "C" fn pipe(pipefd: *mut i32) -> i32 {
@@ -353,11 +354,31 @@ pub extern "C" fn close(fd: i32) -> i32 {
 
 #[no_mangle]
 pub extern "C" fn dup(fd: i32) -> i32 {
+    dup_impl(fd)
+}
+
+#[no_mangle]
+pub extern "C" fn __dup(fd: i32) -> i32 {
+    dup_impl(fd)
+}
+
+#[inline(always)]
+fn dup_impl(fd: i32) -> i32 {
     translate_ret_i32(syscall1(SYS_DUP, fd as u64))
 }
 
 #[no_mangle]
 pub extern "C" fn dup2(oldfd: i32, newfd: i32) -> i32 {
+    dup2_impl(oldfd, newfd)
+}
+
+#[no_mangle]
+pub extern "C" fn __dup2(oldfd: i32, newfd: i32) -> i32 {
+    dup2_impl(oldfd, newfd)
+}
+
+#[inline(always)]
+fn dup2_impl(oldfd: i32, newfd: i32) -> i32 {
     translate_ret_i32(syscall2(SYS_DUP2, oldfd as u64, newfd as u64))
 }
 
@@ -563,42 +584,97 @@ pub mod os {
 // Minimal C runtime helpers -------------------------------------------------
 
 #[no_mangle]
-pub extern "C" fn memcpy(dest: *mut u8, src: *const u8, n: usize) -> *mut u8 {
-    unsafe {
-        ptr::copy_nonoverlapping(src, dest, n);
-        dest
+pub unsafe extern "C" fn memcpy(dest: *mut c_void, src: *const c_void, n: usize) -> *mut c_void {
+    let dest = dest as *mut u8;
+    let src = src as *const u8;
+
+    if n == 0 || (dest as *const u8) == src {
+        return dest as *mut c_void;
     }
+
+    let mut offset = 0usize;
+    while offset < n {
+        let byte = ptr::read_volatile(src.add(offset));
+        ptr::write_volatile(dest.add(offset), byte);
+        offset += 1;
+    }
+    dest as *mut c_void
 }
 
 #[no_mangle]
-pub extern "C" fn memmove(dest: *mut u8, src: *const u8, n: usize) -> *mut u8 {
-    unsafe {
-        ptr::copy(src, dest, n);
-        dest
-    }
-}
+pub unsafe extern "C" fn memmove(dest: *mut c_void, src: *const c_void, n: usize) -> *mut c_void {
+    let dest = dest as *mut u8;
+    let src = src as *const u8;
 
-#[no_mangle]
-pub extern "C" fn memset(s: *mut u8, c: i32, n: usize) -> *mut u8 {
-    unsafe {
-        ptr::write_bytes(s, c as u8, n);
-        s
+    if n == 0 || (dest as *const u8) == src {
+        return dest as *mut c_void;
     }
-}
 
-#[no_mangle]
-pub extern "C" fn memcmp(a: *const u8, b: *const u8, n: usize) -> i32 {
-    unsafe {
-        let mut i = 0usize;
-        while i < n {
-            let va = ptr::read(a.add(i));
-            let vb = ptr::read(b.add(i));
-            if va != vb {
-                return (va as i32) - (vb as i32);
-            }
-            i += 1;
+    let dest_addr = dest as usize;
+    let src_addr = src as usize;
+
+    if dest_addr < src_addr || dest_addr >= src_addr.saturating_add(n) {
+        let mut offset = 0usize;
+        while offset < n {
+            let byte = ptr::read_volatile(src.add(offset));
+            ptr::write_volatile(dest.add(offset), byte);
+            offset += 1;
         }
-        0
+    } else {
+        let mut offset = n;
+        while offset > 0 {
+            offset -= 1;
+            let byte = ptr::read_volatile(src.add(offset));
+            ptr::write_volatile(dest.add(offset), byte);
+        }
+    }
+    dest as *mut c_void
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn memset(s: *mut c_void, c: i32, n: usize) -> *mut c_void {
+    let s = s as *mut u8;
+
+    if n == 0 {
+        return s as *mut c_void;
+    }
+
+    let value = c as u8;
+    let mut offset = 0usize;
+    while offset < n {
+        ptr::write_volatile(s.add(offset), value);
+        offset += 1;
+    }
+    s as *mut c_void
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn memcmp(a: *const c_void, b: *const c_void, n: usize) -> i32 {
+    let a = a as *const u8;
+    let b = b as *const u8;
+
+    let mut i = 0usize;
+    while i < n {
+        let va = ptr::read(a.add(i));
+        let vb = ptr::read(b.add(i));
+        if va != vb {
+            return (va as i32) - (vb as i32);
+        }
+        i += 1;
+    }
+    0
+}
+
+static mut MEM_INTRINSIC_PTRS: [usize; 4] = [0; 4];
+
+#[no_mangle]
+#[inline(never)]
+pub extern "C" fn __nrlib_force_mem_link() {
+    unsafe {
+        ptr::write_volatile(&mut MEM_INTRINSIC_PTRS[0], memcpy as usize);
+        ptr::write_volatile(&mut MEM_INTRINSIC_PTRS[1], memmove as usize);
+        ptr::write_volatile(&mut MEM_INTRINSIC_PTRS[2], memset as usize);
+        ptr::write_volatile(&mut MEM_INTRINSIC_PTRS[3], memcmp as usize);
     }
 }
 
@@ -725,33 +801,11 @@ fn align_up(value: usize, align: usize) -> Option<usize> {
 }
 
 unsafe fn alloc_internal(size: usize, align: usize) -> *mut c_void {
-    let alloc_slot = ALLOC_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
-    if alloc_slot < 64 {
-        let mut buf = [0u8; 80];
-        let mut cursor = 0usize;
-        let prefix = b"[nrlib] alloc size=";
-        if prefix.len() < buf.len() {
-            buf[..prefix.len()].copy_from_slice(prefix);
-            cursor = prefix.len();
-        }
-        if cursor < buf.len() {
-            cursor += append_decimal(&mut buf[cursor..], size as u64);
-        }
-        if cursor < buf.len() {
-            let mid = b" align=";
-            let end = (cursor + mid.len()).min(buf.len());
-            buf[cursor..end].copy_from_slice(&mid[..end - cursor]);
-            cursor = end;
-        }
-        if cursor < buf.len() {
-            cursor += append_decimal(&mut buf[cursor..], align as u64);
-        }
-        if cursor < buf.len() {
-            buf[cursor] = b'\n';
-            cursor += 1;
-        }
-        debug_log_flush(buf, cursor);
-    }
+    // CRITICAL: DO NOT log here - causes infinite recursion!
+    // Logging from allocator can trigger more allocations.
+    // let alloc_slot = ALLOC_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
+    // if alloc_slot < 64 { ... }
+    
     if size == 0 {
         set_errno(0);
         return ptr::null_mut();

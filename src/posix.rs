@@ -22,6 +22,7 @@ pub mod errno {
     pub const EINVAL: i32 = 22; // Invalid argument
     pub const EMFILE: i32 = 24; // Too many open files
     pub const ENOSPC: i32 = 28; // No space left on device
+    pub const ESPIPE: i32 = 29; // Illegal seek
     pub const ENOSYS: i32 = 38; // Function not implemented
     pub const ENOTSUP: i32 = 95; // Operation not supported
 }

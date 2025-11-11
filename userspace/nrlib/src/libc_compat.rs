@@ -154,7 +154,8 @@ unsafe fn alloc_mutex_inner(kind: c_int) -> Result<*mut MutexInner, c_int> {
             let slot = &mut MUTEX_POOL[idx];
             let inner_ptr = slot.as_mut_ptr();
             ptr::write(inner_ptr, MutexInner::new(kind));
-            debug_mutex_event(b"[nrlib] alloc_mutex_inner\n");
+            // CRITICAL: DO NOT log here - may trigger malloc during stdout init
+            // debug_mutex_event(b"[nrlib] alloc_mutex_inner\n");
             return Ok(inner_ptr);
         }
     }
@@ -186,15 +187,16 @@ unsafe fn ensure_mutex_inner(mutex: *mut pthread_mutex_t) -> Result<*mut MutexIn
         return Err(crate::EINVAL);
     }
 
-    crate::debug_log_message(b"[nrlib] ensure_mutex_inner start\n");
-    debug_mutex_event(b"[nrlib] ensure_mutex_inner allocating\n");
-    log_mutex_state(b"[nrlib] mutex raw", &(*mutex).data);
+    // CRITICAL: DO NOT log here - may trigger malloc during stdout init
+    // crate::debug_log_message(b"[nrlib] ensure_mutex_inner start\n");
+    // debug_mutex_event(b"[nrlib] ensure_mutex_inner allocating\n");
+    // log_mutex_state(b"[nrlib] mutex raw", &(*mutex).data);
     let kind = detect_static_kind(mutex);
-    log_mutex_kind(b"[nrlib] mutex kind", kind);
+    // log_mutex_kind(b"[nrlib] mutex kind", kind);
     let inner = alloc_mutex_inner(kind)?;
     (*inner).kind = kind;
     mutex_set_inner(mutex, inner);
-    crate::debug_log_message(b"[nrlib] ensure_mutex_inner done\n");
+    // crate::debug_log_message(b"[nrlib] ensure_mutex_inner done\n");
     Ok(inner)
 }
 
@@ -381,22 +383,12 @@ pub unsafe extern "C" fn getenv(_name: *const i8) -> *mut i8 {
 
 #[no_mangle]
 pub unsafe extern "C" fn isatty(fd: c_int) -> c_int {
-    let mut buf = [0u8; 64];
-    let msg = b"[nrlib] isatty called for fd=";
-    let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
-    let fd_str = simple_itoa(fd as u64, &mut buf);
-    let _ = crate::syscall3(SYS_WRITE_NR, 2, fd_str.as_ptr() as u64, fd_str.len() as u64);
-    let _ = crate::syscall3(SYS_WRITE_NR, 2, b"\n".as_ptr() as u64, 1);
+    // CRITICAL: DO NOT log here - may trigger malloc during stdout init
+    // let mut buf = [0u8; 64];
+    // ... (logging code removed)
     
-    let result = if (0..=2).contains(&fd) { 1 } else { 0 };
-    
-    let result_msg = b"[nrlib] isatty returning: ";
-    let _ = crate::syscall3(SYS_WRITE_NR, 2, result_msg.as_ptr() as u64, result_msg.len() as u64);
-    let result_str = simple_itoa(result as u64, &mut buf);
-    let _ = crate::syscall3(SYS_WRITE_NR, 2, result_str.as_ptr() as u64, result_str.len() as u64);
-    let _ = crate::syscall3(SYS_WRITE_NR, 2, b"\n".as_ptr() as u64, 1);
-    
-    result
+    // Return 1 (true) for stdin/stdout/stderr, 0 (false) otherwise
+    if (0..=2).contains(&fd) { 1 } else { 0 }
 }
 
 fn simple_itoa(mut n: u64, buf: &mut [u8]) -> &[u8] {
@@ -603,24 +595,20 @@ const F_SETFL: c_int = 4;
 
 #[no_mangle]
 pub unsafe extern "C" fn fcntl(fd: c_int, cmd: c_int, arg: c_int) -> c_int {
-    let mut buf = [0u8; 64];
-    let msg = b"[nrlib] fcntl fd=";
-    let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
-    let fd_str = simple_itoa(fd as u64, &mut buf);
-    let _ = crate::syscall3(SYS_WRITE_NR, 2, fd_str.as_ptr() as u64, fd_str.len() as u64);
-    let msg2 = b" cmd=";
-    let _ = crate::syscall3(SYS_WRITE_NR, 2, msg2.as_ptr() as u64, msg2.len() as u64);
-    let cmd_str = simple_itoa(cmd as u64, &mut buf);
-    let _ = crate::syscall3(SYS_WRITE_NR, 2, cmd_str.as_ptr() as u64, cmd_str.len() as u64);
-    let _ = crate::syscall3(SYS_WRITE_NR, 2, b"\n".as_ptr() as u64, 1);
+    // CRITICAL: DO NOT log here - may trigger malloc during stdout init
+    // let mut buf = [0u8; 64];
+    // let msg = b"[nrlib] fcntl fd=";
+    // let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
+    // ... (logging code removed)
     
     match cmd {
         F_DUPFD => {
-            if arg <= fd {
-                crate::dup(fd) as c_int
-            } else {
-                crate::dup2(fd, arg) as c_int
-            }
+            crate::translate_ret_i32(crate::syscall3(
+                crate::SYS_FCNTL,
+                fd as u64,
+                cmd as u64,
+                (arg as i64) as u64,
+            ))
         }
         F_GETFL | F_SETFL => 0,
         _ => 0,
@@ -629,19 +617,10 @@ pub unsafe extern "C" fn fcntl(fd: c_int, cmd: c_int, arg: c_int) -> c_int {
 
 #[no_mangle]
 pub unsafe extern "C" fn ioctl(fd: c_int, request: c_ulong, _args: *mut c_void) -> c_int {
+    // CRITICAL: DO NOT log here - may trigger malloc during stdout init
     // Log ioctl calls for debugging
-    let mut buf = [0u8; 128];
-    let msg = b"[nrlib] ioctl called fd=";
-    let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
-    let fd_str = simple_itoa(fd as u64, &mut buf);
-    let _ = crate::syscall3(SYS_WRITE_NR, 2, fd_str.as_ptr() as u64, fd_str.len() as u64);
-    let msg2 = b" request=0x";
-    let _ = crate::syscall3(SYS_WRITE_NR, 2, msg2.as_ptr() as u64, msg2.len() as u64);
-    // Print request in hex
-    let mut hex_buf = [0u8; 16];
-    let hex_str = u64_to_hex(request, &mut hex_buf);
-    let _ = crate::syscall3(SYS_WRITE_NR, 2, hex_str.as_ptr() as u64, hex_str.len() as u64);
-    let _ = crate::syscall3(SYS_WRITE_NR, 2, b"\n".as_ptr() as u64, 1);
+    // let mut buf = [0u8; 128];
+    // ... (logging code removed)
     
     // Return error for all ioctl calls
     crate::set_errno(crate::ENOTTY);
@@ -951,15 +930,16 @@ pub unsafe extern "C" fn pthread_mutex_init(
         return crate::EINVAL;
     }
 
-    crate::debug_log_message(b"[nrlib] pthread_mutex_init enter\n");
-    debug_mutex_event(b"[nrlib] pthread_mutex_init enter\n");
+    // CRITICAL: DO NOT log here - may trigger malloc during stdout init
+    // crate::debug_log_message(b"[nrlib] pthread_mutex_init enter\n");
+    // debug_mutex_event(b"[nrlib] pthread_mutex_init enter\n");
     let kind = if attr.is_null() {
         PTHREAD_MUTEX_DEFAULT
     } else {
         (*attr).kind()
     };
 
-    log_mutex_kind(b"[nrlib] pthread_mutex_init", kind);
+    // log_mutex_kind(b"[nrlib] pthread_mutex_init", kind);
 
     let inner = match alloc_mutex_inner(kind) {
         Ok(inner) => inner,
@@ -967,8 +947,8 @@ pub unsafe extern "C" fn pthread_mutex_init(
     };
     (*inner).kind = kind;
     mutex_set_inner(mutex, inner);
-    log_mutex(b"[nrlib] pthread_mutex_init\n");
-    crate::debug_log_message(b"[nrlib] pthread_mutex_init done\n");
+    // log_mutex(b"[nrlib] pthread_mutex_init\n");
+    // crate::debug_log_message(b"[nrlib] pthread_mutex_init done\n");
     0
 }
 
@@ -996,17 +976,18 @@ pub unsafe extern "C" fn pthread_mutex_lock(mutex: *mut pthread_mutex_t) -> c_in
         return crate::EINVAL;
     }
 
-    crate::debug_log_message(b"[nrlib] pthread_mutex_lock enter\n");
-    debug_mutex_event(b"[nrlib] pthread_mutex_lock enter\n");
-    log_mutex(b"[nrlib] pthread_mutex_lock\n");
-    log_mutex_state(b"[nrlib] lock raw", &(*mutex).data);
+    // CRITICAL: DO NOT log here - may trigger malloc during stdout init
+    // crate::debug_log_message(b"[nrlib] pthread_mutex_lock enter\n");
+    // debug_mutex_event(b"[nrlib] pthread_mutex_lock enter\n");
+    // log_mutex(b"[nrlib] pthread_mutex_lock\n");
+    // log_mutex_state(b"[nrlib] lock raw", &(*mutex).data);
 
     let inner = match ensure_mutex_inner(mutex) {
         Ok(inner) => inner,
         Err(err) => return err,
     };
 
-    crate::debug_log_message(b"[nrlib] pthread_mutex_lock after ensure\n");
+    // crate::debug_log_message(b"[nrlib] pthread_mutex_lock after ensure\n");
 
     let tid = crate::getpid() as c_ulong;
     let kind = (*inner).kind;
@@ -1034,19 +1015,20 @@ pub unsafe extern "C" fn pthread_mutex_lock(mutex: *mut pthread_mutex_t) -> c_in
         if spins > MAX_SPINS {
             // In single-threaded environment, if we've spun this much,
             // something is wrong (likely deadlock or incorrect usage).
-            // Log and return EBUSY to prevent infinite loop.
-            log_mutex(b"[nrlib] pthread_mutex_lock DEADLOCK detected\n");
+            // CRITICAL: DO NOT log here - may trigger malloc
+            // log_mutex(b"[nrlib] pthread_mutex_lock DEADLOCK detected\n");
             return EBUSY;
         }
-        if spins % 10_000 == 0 {
-            log_mutex(b"[nrlib] pthread_mutex_lock spinning\n");
-        }
+        // CRITICAL: DO NOT log during spin - may trigger malloc
+        // if spins % 10_000 == 0 {
+        //     log_mutex(b"[nrlib] pthread_mutex_lock spinning\n");
+        // }
         spin_loop();
     }
 
     (*inner).owner = tid;
     (*inner).recursion = 1;
-    crate::debug_log_message(b"[nrlib] pthread_mutex_lock acquired\n");
+    // crate::debug_log_message(b"[nrlib] pthread_mutex_lock acquired\n");
     0
 }
 
@@ -1056,8 +1038,9 @@ pub unsafe extern "C" fn pthread_mutex_trylock(mutex: *mut pthread_mutex_t) -> c
         return crate::EINVAL;
     }
 
-    debug_mutex_event(b"[nrlib] pthread_mutex_trylock enter\n");
-    log_mutex(b"[nrlib] pthread_mutex_trylock\n");
+    // CRITICAL: DO NOT log here - may trigger malloc during stdout init
+    // debug_mutex_event(b"[nrlib] pthread_mutex_trylock enter\n");
+    // log_mutex(b"[nrlib] pthread_mutex_trylock\n");
 
     let inner = match ensure_mutex_inner(mutex) {
         Ok(inner) => inner,
@@ -1093,9 +1076,10 @@ pub unsafe extern "C" fn pthread_mutex_unlock(mutex: *mut pthread_mutex_t) -> c_
         return crate::EINVAL;
     }
 
-    debug_mutex_event(b"[nrlib] pthread_mutex_unlock enter\n");
-    log_mutex(b"[nrlib] pthread_mutex_unlock\n");
-    log_mutex_state(b"[nrlib] unlock raw", &(*mutex).data);
+    // CRITICAL: DO NOT log here - may trigger malloc during stdout init
+    // debug_mutex_event(b"[nrlib] pthread_mutex_unlock enter\n");
+    // log_mutex(b"[nrlib] pthread_mutex_unlock\n");
+    // log_mutex_state(b"[nrlib] unlock raw", &(*mutex).data);
 
     let inner = match ensure_mutex_inner(mutex) {
         Ok(inner) => inner,

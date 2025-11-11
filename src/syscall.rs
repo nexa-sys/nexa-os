@@ -16,6 +16,7 @@ pub const SYS_CLOSE: u64 = 3;
 pub const SYS_STAT: u64 = 4;
 pub const SYS_FSTAT: u64 = 5;
 pub const SYS_LSEEK: u64 = 8;
+pub const SYS_FCNTL: u64 = 72;
 pub const SYS_PIPE: u64 = 22;
 pub const SYS_DUP: u64 = 32;
 pub const SYS_DUP2: u64 = 33;
@@ -59,6 +60,9 @@ const FD_BASE: u64 = 3;
 const MAX_OPEN_FILES: usize = 16;
 const LIST_FLAG_INCLUDE_HIDDEN: u64 = 0x1;
 const USER_FLAG_ADMIN: u64 = 0x1;
+const F_DUPFD: u64 = 0;
+const F_GETFL: u64 = 3;
+const F_SETFL: u64 = 4;
 
 #[repr(C)]
 struct ListDirRequest {
@@ -116,6 +120,14 @@ struct IpcTransferRequest {
 enum FileBacking {
     Inline(&'static [u8]),
     Ext2(crate::fs::ext2::FileRef),
+    StdStream(StdStreamKind),
+}
+
+#[derive(Clone, Copy)]
+enum StdStreamKind {
+    Stdin,
+    Stdout,
+    Stderr,
 }
 
 #[derive(Clone, Copy)]
@@ -126,6 +138,152 @@ struct FileHandle {
 }
 
 static mut FILE_HANDLES: [Option<FileHandle>; MAX_OPEN_FILES] = [None; MAX_OPEN_FILES];
+
+impl StdStreamKind {
+    fn fd(self) -> u64 {
+        match self {
+            StdStreamKind::Stdin => STDIN,
+            StdStreamKind::Stdout => STDOUT,
+            StdStreamKind::Stderr => STDERR,
+        }
+    }
+}
+
+fn std_stream_metadata(kind: StdStreamKind) -> crate::posix::Metadata {
+    use crate::posix::FileType;
+
+    let mut meta = crate::posix::Metadata::empty()
+        .with_type(FileType::Character)
+        .with_uid(0)
+        .with_gid(0);
+
+    let perm: u16 = match kind {
+        StdStreamKind::Stdin => 0o0600,
+        StdStreamKind::Stdout | StdStreamKind::Stderr => 0o0600,
+    };
+
+    meta.mode = meta.mode | perm;
+    meta.normalize()
+}
+
+fn std_stream_handle(kind: StdStreamKind) -> FileHandle {
+    FileHandle {
+        backing: FileBacking::StdStream(kind),
+        position: 0,
+        metadata: std_stream_metadata(kind),
+    }
+}
+
+fn handle_for_fd(fd: u64) -> Result<FileHandle, i32> {
+    match fd {
+        STDIN => Ok(std_stream_handle(StdStreamKind::Stdin)),
+        STDOUT => Ok(std_stream_handle(StdStreamKind::Stdout)),
+        STDERR => Ok(std_stream_handle(StdStreamKind::Stderr)),
+        _ if fd >= FD_BASE => {
+            let idx = (fd - FD_BASE) as usize;
+            if idx >= MAX_OPEN_FILES {
+                return Err(posix::errno::EBADF);
+            }
+            unsafe {
+                if let Some(handle) = FILE_HANDLES[idx] {
+                    Ok(handle)
+                } else {
+                    Err(posix::errno::EBADF)
+                }
+            }
+        }
+        _ => Err(posix::errno::EBADF),
+    }
+}
+
+fn allocate_duplicate_slot(min_fd: u64, handle: FileHandle) -> Result<u64, i32> {
+    let min_fd = min_fd.max(FD_BASE);
+    let start_idx = if min_fd <= FD_BASE {
+        0
+    } else {
+        let offset = min_fd - FD_BASE;
+        if offset >= MAX_OPEN_FILES as u64 {
+            return Err(posix::errno::EMFILE);
+        }
+        offset as usize
+    };
+
+    unsafe {
+        for idx in start_idx..MAX_OPEN_FILES {
+            if FILE_HANDLES[idx].is_none() {
+                FILE_HANDLES[idx] = Some(handle);
+                posix::set_errno(0);
+                return Ok(FD_BASE + idx as u64);
+            }
+        }
+    }
+
+    Err(posix::errno::EMFILE)
+}
+
+fn write_to_std_stream(kind: StdStreamKind, buf: u64, count: u64) -> u64 {
+    if !user_buffer_in_range(buf, count) {
+        let (stack_base, stack_top) = current_stack_bounds();
+        crate::kwarn!(
+            "sys_write: invalid user buffer fd={} buf={:#x} count={} stack_base={:#x} stack_top={:#x}",
+            kind.fd(),
+            buf,
+            count,
+            stack_base,
+            stack_top
+        );
+        posix::set_errno(posix::errno::EFAULT);
+        return u64::MAX;
+    }
+
+    if buf >= 0x8000_0000 {
+        let (stack_base, stack_top) = current_stack_bounds();
+        crate::kwarn!(
+            "sys_write: high user buffer fd={} buf={:#x} count={} stack_base={:#x} stack_top={:#x}",
+            kind.fd(),
+            buf,
+            count,
+            stack_base,
+            stack_top
+        );
+    }
+
+    let slice = unsafe { slice::from_raw_parts(buf as *const u8, count as usize) };
+
+    crate::serial::write_bytes(slice);
+
+    let utf8_view = str::from_utf8(slice);
+
+    crate::vga_buffer::with_writer(|writer| {
+        use core::fmt::Write;
+
+        match utf8_view {
+            Ok(text) => {
+                writer.write_str(text).ok();
+            }
+            Err(_) => {
+                for &byte in slice {
+                    let ch = match byte {
+                        b'\r' => '\r',
+                        b'\n' => '\n',
+                        b'\t' => '\t',
+                        0x20..=0x7E => byte as char,
+                        _ => '?',
+                    };
+                    writer.write_char(ch).ok();
+                }
+            }
+        }
+    });
+
+    match utf8_view {
+        Ok(text) => crate::framebuffer::write_str(text),
+        Err(_) => crate::framebuffer::write_bytes(slice),
+    }
+
+    posix::set_errno(0);
+    count
+}
 
 const USER_LOW_START: u64 = 0x1000; // Skip null page to catch obvious bugs
 const USER_LOW_END: u64 = 0x4000_0000; // 1 GiB identity-mapped user region
@@ -143,73 +301,45 @@ fn syscall_write(fd: u64, buf: u64, count: u64) -> u64 {
         return u64::MAX;
     }
 
-    if fd == STDOUT || fd == STDERR {
-        if !user_buffer_in_range(buf, count) {
-            let (stack_base, stack_top) = current_stack_bounds();
-            crate::kwarn!(
-                "sys_write: invalid user buffer fd={} buf={:#x} count={} stack_base={:#x} stack_top={:#x}",
-                fd,
-                buf,
-                count,
-                stack_base,
-                stack_top
-            );
-            posix::set_errno(posix::errno::EFAULT);
-            return u64::MAX;
-        }
-
-        if buf >= 0x8000_0000 {
-            let (stack_base, stack_top) = current_stack_bounds();
-            crate::kwarn!(
-                "sys_write: high user buffer fd={} buf={:#x} count={} stack_base={:#x} stack_top={:#x}",
-                fd,
-                buf,
-                count,
-                stack_base,
-                stack_top
-            );
-        }
-
-        let slice = unsafe { slice::from_raw_parts(buf as *const u8, count as usize) };
-
-        crate::serial::write_bytes(slice);
-
-        let utf8_view = str::from_utf8(slice);
-
-        crate::vga_buffer::with_writer(|writer| {
-            use core::fmt::Write;
-
-            match utf8_view {
-                Ok(text) => {
-                    writer.write_str(text).ok();
-                }
-                Err(_) => {
-                    for &byte in slice {
-                        let ch = match byte {
-                            b'\r' => '\r',
-                            b'\n' => '\n',
-                            b'\t' => '\t',
-                            0x20..=0x7E => byte as char,
-                            _ => '?',
-                        };
-                        writer.write_char(ch).ok();
-                    }
-                }
-            }
-        });
-
-        match utf8_view {
-            Ok(text) => crate::framebuffer::write_str(text),
-            Err(_) => crate::framebuffer::write_bytes(slice),
-        }
-
-        posix::set_errno(0);
-        // crate::kdebug!("sys_write complete fd={} wrote={}", fd, count);
-        count
-    } else {
-        posix::set_errno(posix::errno::EBADF);
-        u64::MAX
+    if fd == STDOUT {
+        return write_to_std_stream(StdStreamKind::Stdout, buf, count);
     }
+
+    if fd == STDERR {
+        return write_to_std_stream(StdStreamKind::Stderr, buf, count);
+    }
+
+    if fd < FD_BASE {
+        posix::set_errno(posix::errno::EBADF);
+        return u64::MAX;
+    }
+
+    let idx = (fd - FD_BASE) as usize;
+    if idx >= MAX_OPEN_FILES {
+        posix::set_errno(posix::errno::EBADF);
+        return u64::MAX;
+    }
+
+    unsafe {
+        if let Some(handle) = FILE_HANDLES[idx] {
+            match handle.backing {
+                FileBacking::StdStream(StdStreamKind::Stdout) => {
+                    return write_to_std_stream(StdStreamKind::Stdout, buf, count);
+                }
+                FileBacking::StdStream(StdStreamKind::Stderr) => {
+                    return write_to_std_stream(StdStreamKind::Stderr, buf, count);
+                }
+                FileBacking::StdStream(StdStreamKind::Stdin) => {
+                    posix::set_errno(posix::errno::EBADF);
+                    return u64::MAX;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    posix::set_errno(posix::errno::EBADF);
+    u64::MAX
 }
 
 #[inline(always)]
@@ -281,6 +411,13 @@ fn syscall_read(fd: u64, buf: *mut u8, count: usize) -> u64 {
     unsafe {
         if let Some(handle) = FILE_HANDLES[idx].as_mut() {
             match handle.backing {
+                FileBacking::StdStream(StdStreamKind::Stdin) => {
+                    return read_from_keyboard(buf, count);
+                }
+                FileBacking::StdStream(_) => {
+                    posix::set_errno(posix::errno::EBADF);
+                    return u64::MAX;
+                }
                 FileBacking::Inline(data) => {
                     let remaining = data.len().saturating_sub(handle.position);
                     if remaining == 0 {
@@ -329,16 +466,16 @@ fn syscall_exit(code: i32) -> ! {
 
     // Set process state to Zombie
     let _ = crate::scheduler::set_process_state(pid, crate::process::ProcessState::Zombie);
-    
+
     // TODO: Save exit code in process structure for parent's wait4()
     // TODO: Send SIGCHLD to parent process
     // TODO: Wake up parent if it's sleeping in wait4()
-    
+
     crate::kinfo!("Process {} terminated, switching to next process", pid);
-    
+
     // Switch to next ready process (never returns)
     crate::scheduler::do_schedule();
-    
+
     // If no other process to run, halt
     crate::kwarn!("No other process to schedule after exit!");
     loop {
@@ -547,27 +684,20 @@ fn syscall_fstat(fd: u64, stat_buf: *mut posix::Stat) -> u64 {
         posix::set_errno(posix::errno::EINVAL);
         return u64::MAX;
     }
-    if fd < FD_BASE {
-        posix::set_errno(posix::errno::EBADF);
-        return u64::MAX;
-    }
-    let idx = (fd - FD_BASE) as usize;
-    if idx >= MAX_OPEN_FILES {
-        posix::set_errno(posix::errno::EBADF);
-        return u64::MAX;
-    }
-
-    unsafe {
-        if let Some(handle) = FILE_HANDLES[idx] {
-            let stat = posix::Stat::from_metadata(&handle.metadata);
-            ptr::write(stat_buf, stat);
-            posix::set_errno(0);
-            return 0;
+    let handle = match handle_for_fd(fd) {
+        Ok(handle) => handle,
+        Err(errno) => {
+            posix::set_errno(errno);
+            return u64::MAX;
         }
-    }
+    };
 
-    posix::set_errno(posix::errno::EBADF);
-    u64::MAX
+    let stat = posix::Stat::from_metadata(&handle.metadata);
+    unsafe {
+        ptr::write(stat_buf, stat);
+    }
+    posix::set_errno(0);
+    0
 }
 
 fn syscall_lseek(fd: u64, offset: i64, whence: u64) -> u64 {
@@ -583,6 +713,14 @@ fn syscall_lseek(fd: u64, offset: i64, whence: u64) -> u64 {
 
     unsafe {
         if let Some(handle) = FILE_HANDLES[idx].as_mut() {
+            match handle.backing {
+                FileBacking::StdStream(_) => {
+                    posix::set_errno(posix::errno::ESPIPE);
+                    return u64::MAX;
+                }
+                _ => {}
+            }
+
             let base = match whence {
                 0 => 0i64,
                 1 => handle.position as i64,
@@ -609,6 +747,47 @@ fn syscall_lseek(fd: u64, offset: i64, whence: u64) -> u64 {
 
     posix::set_errno(posix::errno::EBADF);
     u64::MAX
+}
+
+fn syscall_fcntl(fd: u64, cmd: u64, arg: u64) -> u64 {
+    match cmd {
+        F_DUPFD => {
+            let handle = match handle_for_fd(fd) {
+                Ok(handle) => handle,
+                Err(errno) => {
+                    posix::set_errno(errno);
+                    return u64::MAX;
+                }
+            };
+
+            let requested_min = (arg as i32) as i64;
+            if requested_min < 0 {
+                posix::set_errno(posix::errno::EINVAL);
+                return u64::MAX;
+            }
+
+            let min_fd = requested_min.max(FD_BASE as i64) as u64;
+            match allocate_duplicate_slot(min_fd, handle) {
+                Ok(fd) => {
+                    posix::set_errno(0);
+                    fd
+                }
+                Err(errno) => {
+                    posix::set_errno(errno);
+                    u64::MAX
+                }
+            }
+        }
+        F_GETFL | F_SETFL => {
+            posix::set_errno(0);
+            0
+        }
+        _ => {
+            crate::kwarn!("fcntl: unsupported cmd={} for fd={}", cmd, fd);
+            posix::set_errno(posix::errno::ENOSYS);
+            u64::MAX
+        }
+    }
 }
 
 fn syscall_get_errno() -> u64 {
@@ -1024,10 +1203,13 @@ fn syscall_getppid() -> u64 {
 
 /// POSIX fork() system call - create child process
 fn syscall_fork(syscall_return_addr: u64) -> u64 {
-    use crate::process::{USER_VIRT_BASE, INTERP_BASE, INTERP_REGION_SIZE};
-    
-    crate::kdebug!("syscall_fork: syscall_return_addr = {:#x}", syscall_return_addr);
-    
+    use crate::process::{INTERP_BASE, INTERP_REGION_SIZE, USER_VIRT_BASE};
+
+    crate::kdebug!(
+        "syscall_fork: syscall_return_addr = {:#x}",
+        syscall_return_addr
+    );
+
     // Get current process
     let current_pid = match crate::scheduler::get_current_pid() {
         Some(pid) => pid,
@@ -1050,13 +1232,13 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
 
     // Allocate new PID for child
     let child_pid = crate::process::allocate_pid();
-    
+
     // Create child process - start by copying parent state
     let mut child_process = parent_process;
     child_process.pid = child_pid;
     child_process.ppid = current_pid;
     child_process.state = crate::process::ProcessState::Ready;
-    
+
     // Copy parent's context - child will resume from same point
     child_process.context = parent_process.context;
     // Child should return 0 from fork and resume from syscall return point
@@ -1064,9 +1246,12 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
     // FIX: Set child's RIP to the syscall return address, not parent's current RIP
     // This ensures child resumes execution from the fork() call site in user code
     child_process.context.rip = syscall_return_addr;
-    
-    crate::kdebug!("Child RIP set to {:#x}, Child RAX = 0", child_process.context.rip);
-    
+
+    crate::kdebug!(
+        "Child RIP set to {:#x}, Child RAX = 0",
+        child_process.context.rip
+    );
+
     // TODO: Full production implementation needs:
     // 1. Copy entire memory space (code, data, heap, stack)
     //    - Allocate new physical pages for child
@@ -1086,7 +1271,7 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
     // - Shares parent's memory (no copy yet)
     // - Works because exec() immediately replaces memory
     // - Good enough for init/getty/shell pattern
-    
+
     let memory_size = (INTERP_BASE + INTERP_REGION_SIZE) - USER_VIRT_BASE;
     crate::kinfo!(
         "fork() - memory copy needed: {:#x} bytes ({} KB) from {:#x}",
@@ -1094,12 +1279,10 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
         memory_size / 1024,
         USER_VIRT_BASE
     );
-    
+
     // Simplified memory sharing for now
     // When we implement page tables per-process, we'll do proper COW
-    crate::kdebug!(
-        "fork() - using shared memory model (OK for fork+exec pattern)"
-    );
+    crate::kdebug!("fork() - using shared memory model (OK for fork+exec pattern)");
 
     // Add child to scheduler
     if let Err(e) = crate::scheduler::add_process(child_process, 128) {
@@ -1240,43 +1423,48 @@ fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> 
     };
 
     crate::kinfo!("wait4() from PID {} waiting for pid {}", current_pid, pid);
-    
+
     // WNOHANG flag (non-blocking wait)
     const WNOHANG: i32 = 1;
     let is_nonblocking = (options & WNOHANG) != 0;
-    
+
     // For now: implement as simple polling without context switching
     // This is a temporary solution until we have proper async/cooperative scheduling
-    
+
     // Busy-wait loop: Keep checking child status
     // The child process needs to be scheduled out to run,
     // but we'll rely on the kernel's timer interrupt to preempt this process
     // and give other processes CPU time
-    
-    const MAX_CHECKS: u32 = 100000;  // Increase significantly to give child more chances to run
+
+    const MAX_CHECKS: u32 = 100000; // Increase significantly to give child more chances to run
     let mut check_count = 0u32;
-    
+
     loop {
         check_count += 1;
-        
+
         // Check if the specified child has exited
         let mut found_child = false;
         let mut child_exited = false;
         let mut child_exit_code = 0i32;
         let mut wait_pid = 0u64;
-        
+
         // Query all children and look for matching one
         if pid == -1 {
             // Wait for any child
             for check_pid in 2..32 {
-                if let Some(child_state) = crate::scheduler::get_child_state(current_pid, check_pid) {
+                if let Some(child_state) = crate::scheduler::get_child_state(current_pid, check_pid)
+                {
                     found_child = true;
                     wait_pid = check_pid;
-                    
+
                     if child_state == crate::process::ProcessState::Zombie {
                         child_exited = true;
                         child_exit_code = 0;
-                        crate::kinfo!("wait4() found exited child PID {} after {} checks", check_pid, check_count);
+                        crate::kinfo!(
+                            "wait4() found exited child PID {} after {} checks",
+                            check_pid,
+                            check_count
+                        );
                         break;
                     }
                 }
@@ -1286,53 +1474,65 @@ fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> 
             if let Some(child_state) = crate::scheduler::get_child_state(current_pid, pid as u64) {
                 found_child = true;
                 wait_pid = pid as u64;
-                
+
                 if child_state == crate::process::ProcessState::Zombie {
                     child_exited = true;
                     child_exit_code = 0;
-                    crate::kinfo!("wait4() found exited specific child PID {} after {} checks", pid, check_count);
+                    crate::kinfo!(
+                        "wait4() found exited specific child PID {} after {} checks",
+                        pid,
+                        check_count
+                    );
                 }
             }
         }
-        
+
         // If child has exited, clean up and return
         if child_exited {
             let _ = crate::scheduler::remove_process(wait_pid);
-            
+
             if !status.is_null() {
                 unsafe {
                     *status = child_exit_code;
                 }
             }
-            
-            crate::kinfo!("wait4() returning child PID {} with status {}", wait_pid, child_exit_code);
+
+            crate::kinfo!(
+                "wait4() returning child PID {} with status {}",
+                wait_pid,
+                child_exit_code
+            );
             posix::set_errno(0);
             return wait_pid;
         }
-        
+
         // If no child found at all, error
         if !found_child {
             crate::kinfo!("wait4() no matching child found");
             posix::set_errno(posix::errno::ECHILD);
             return u64::MAX;
         }
-        
+
         // If non-blocking and child hasn't exited, return immediately
         if is_nonblocking {
             crate::kinfo!("wait4() WNOHANG: child not yet exited");
             posix::set_errno(0);
             return 0;
         }
-        
+
         // Reached max checks
         if check_count >= MAX_CHECKS {
-            crate::kwarn!("wait4() exceeded max checks ({}) for child PID {}, returning anyway", MAX_CHECKS, wait_pid);
+            crate::kwarn!(
+                "wait4() exceeded max checks ({}) for child PID {}, returning anyway",
+                MAX_CHECKS,
+                wait_pid
+            );
             // In a real implementation, the process would sleep here
             // For now, we return to avoid hanging
             posix::set_errno(0);
             return wait_pid;
         }
-        
+
         // Busy wait: Just loop and keep checking
         // The kernel's timer interrupt will periodically context-switch to other processes
         // This is inefficient but will work until we implement proper blocking
@@ -1342,7 +1542,7 @@ fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> 
                 core::arch::asm!("nop");
             }
         }
-        
+
         // Every few checks, yield to let other processes run
         if check_count % 100 == 0 {
             crate::kinfo!("wait4() yielding CPU at check {}", check_count);
@@ -1374,18 +1574,58 @@ fn syscall_sigprocmask(_how: i32, _set: *const u64, _oldset: *mut u64) -> u64 {
 
 /// POSIX dup() system call - duplicate file descriptor
 fn syscall_dup(oldfd: u64) -> u64 {
-    // TODO: Implement file descriptor duplication
-    crate::kinfo!("dup(fd={}) called", oldfd);
-    posix::set_errno(posix::errno::ENOSYS);
-    u64::MAX
+    let handle = match handle_for_fd(oldfd) {
+        Ok(handle) => handle,
+        Err(errno) => {
+            posix::set_errno(errno);
+            return u64::MAX;
+        }
+    };
+
+    match allocate_duplicate_slot(FD_BASE, handle) {
+        Ok(fd) => {
+            posix::set_errno(0);
+            fd
+        }
+        Err(errno) => {
+            posix::set_errno(errno);
+            u64::MAX
+        }
+    }
 }
 
 /// POSIX dup2() system call - duplicate file descriptor to specific FD
 fn syscall_dup2(oldfd: u64, newfd: u64) -> u64 {
-    // TODO: Implement file descriptor duplication to target FD
-    crate::kinfo!("dup2(oldfd={}, newfd={}) called", oldfd, newfd);
-    posix::set_errno(posix::errno::ENOSYS);
-    u64::MAX
+    if oldfd == newfd {
+        posix::set_errno(0);
+        return newfd;
+    }
+
+    let handle = match handle_for_fd(oldfd) {
+        Ok(handle) => handle,
+        Err(errno) => {
+            posix::set_errno(errno);
+            return u64::MAX;
+        }
+    };
+
+    if newfd < FD_BASE {
+        posix::set_errno(posix::errno::EBADF);
+        return u64::MAX;
+    }
+
+    let idx = (newfd - FD_BASE) as usize;
+    if idx >= MAX_OPEN_FILES {
+        posix::set_errno(posix::errno::EBADF);
+        return u64::MAX;
+    }
+
+    unsafe {
+        FILE_HANDLES[idx] = Some(handle);
+    }
+
+    posix::set_errno(0);
+    newfd
 }
 
 /// POSIX sched_yield() system call - yield CPU to scheduler
@@ -1726,7 +1966,13 @@ fn syscall_pivot_root(req_ptr: *const PivotRootRequest) -> u64 {
 }
 
 #[no_mangle]
-pub extern "C" fn syscall_dispatch(nr: u64, arg1: u64, arg2: u64, arg3: u64, syscall_return_addr: u64) -> u64 {
+pub extern "C" fn syscall_dispatch(
+    nr: u64,
+    arg1: u64,
+    arg2: u64,
+    arg3: u64,
+    syscall_return_addr: u64,
+) -> u64 {
     let result = match nr {
         SYS_WRITE => syscall_write(arg1, arg2, arg3),
         SYS_READ => syscall_read(arg1, arg2 as *mut u8, arg3 as usize),
@@ -1735,6 +1981,7 @@ pub extern "C" fn syscall_dispatch(nr: u64, arg1: u64, arg2: u64, arg3: u64, sys
         SYS_STAT => syscall_stat(arg1 as *const u8, arg2 as usize, arg3 as *mut posix::Stat),
         SYS_FSTAT => syscall_fstat(arg1, arg2 as *mut posix::Stat),
         SYS_LSEEK => syscall_lseek(arg1, arg2 as i64, arg3),
+        SYS_FCNTL => syscall_fcntl(arg1, arg2, arg3),
         SYS_PIPE => syscall_pipe(arg1 as *mut [i32; 2]),
         SYS_DUP => syscall_dup(arg1),
         SYS_DUP2 => syscall_dup2(arg1, arg2),
@@ -1807,10 +2054,10 @@ global_asm!(
     // Original RCX is at position 2 from top (after rbx), which is [rsp + 120]
     // (120 = 15*8, since we need to skip 15 registers above rcx to reach it from new rsp)
     "mov r8, [rsp + 120]", // Get original RCX (syscall return address) -> r8 (param 5)
-    "mov rcx, rdx", // arg3 -> rcx (param 4)
-    "mov rdx, rsi", // arg2 -> rdx (param 3)
-    "mov rsi, rdi", // arg1 -> rsi (param 2)
-    "mov rdi, rax", // nr -> rdi (param 1)
+    "mov rcx, rdx",        // arg3 -> rcx (param 4)
+    "mov rdx, rsi",        // arg2 -> rdx (param 3)
+    "mov rsi, rdi",        // arg1 -> rsi (param 2)
+    "mov rdi, rax",        // nr -> rdi (param 1)
     "call syscall_dispatch",
     // Return value is in rax
     "add rsp, 8",

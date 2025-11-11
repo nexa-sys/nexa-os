@@ -50,7 +50,7 @@ global_asm!(
     "sub rsp, 8",
     // Prepare arguments for syscall_dispatch(nr=rax, arg1=rdi, arg2=rsi, arg3=rdx, syscall_return_addr=r10)
     // System V x86_64 ABI: rdi, rsi, rdx, rcx, r8
-    "mov r8, r10", // r8 = syscall_return_addr (from r10)
+    "mov r8, r10",  // r8 = syscall_return_addr (from r10)
     "mov rcx, rdx", // rcx = arg3
     "mov rdx, rsi", // rdx = arg2
     "mov rsi, rdi", // rsi = arg1
