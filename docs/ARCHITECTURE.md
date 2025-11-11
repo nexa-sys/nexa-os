@@ -259,16 +259,73 @@ TERMINATED
 
 ```rust
 pub struct Process {
-    pub pid: u32,
-    pub ppid: u32,
-    pub state: ProcessState,
-    pub entry_point: u64,
-    pub user_stack_base: u64,
-    pub user_rsp: u64,
-    pub kernel_rsp: u64,
-    pub credentials: Credentials,
-    pub open_files: [Option<FileDescriptor>; MAX_FDS],
+    pub pid: Pid,                    // Process ID (64-bit)
+    pub ppid: Pid,                   // Parent process ID (POSIX)
+    pub state: ProcessState,         // Ready/Running/Sleeping/Zombie
+    pub entry_point: u64,            // Virtual address of program entry
+    pub stack_top: u64,              // Top of user stack
+    pub heap_start: u64,             // Heap start address
+    pub heap_end: u64,               // Current heap break
+    pub signal_state: SignalState,   // POSIX signal handling state
+    pub context: Context,            // CPU registers for context switch
+    pub cr3: u64,                    // Page table root (0 = kernel PT)
 }
+
+pub struct Context {
+    // General purpose registers
+    pub r15, r14, r13, r12, r11, r10, r9, r8: u64,
+    pub rsi, rdi, rbp, rdx, rcx, rbx, rax: u64,
+    // Control registers
+    pub rip: u64,                    // Instruction pointer
+    pub rsp: u64,                    // Stack pointer
+    pub rflags: u64,                 // RFLAGS (IF flag set)
+}
+```
+
+### Process Memory Layout
+
+```
+High Addresses
+┌─────────────────────────────────┐ 0x1000000 (INTERP_BASE + INTERP_REGION_SIZE)
+│   Dynamic Linker Region         │
+│   (ld-linux.so + shared libs)   │
+│   Size: 6 MB (INTERP_REGION_SIZE)│
+├─────────────────────────────────┤ 0xA00000 (INTERP_BASE)
+│   User Stack (grows down)       │
+│   Size: 2 MB (STACK_SIZE)       │
+│   Guard pages for overflow      │
+├─────────────────────────────────┤ 0x800000 (STACK_BASE)
+│   Heap (grows up)               │
+│   Size: 2 MB (HEAP_SIZE)        │
+│   Managed by process            │
+├─────────────────────────────────┤ 0x600000 (HEAP_BASE)
+│   .data, .bss segments          │
+│   (initialized/uninitialized)   │
+├─────────────────────────────────┤
+│   .text (Code segment)          │
+│   ELF PT_LOAD segments          │
+├─────────────────────────────────┤ 0x400000 (USER_VIRT_BASE)
+│   Reserved / NULL guard page    │
+└─────────────────────────────────┘ 0x000000
+Low Addresses
+
+Total Region: 12 MB (USER_REGION_SIZE)
+```
+
+### Scheduler
+
+**Algorithm**: Round-robin with priority-based time slicing
+- **Process Table**: 32 process slots
+- **Time Slice**: 10ms default (configurable per priority)
+- **Priority Levels**: 0-255 (0 = highest priority)
+- **States**: Ready → Running → Sleeping/Zombie → Terminated
+
+**Implementation** (`src/scheduler.rs`):
+```rust
+pub fn add_process(process: Process, priority: u8) -> Result<(), &'static str>
+pub fn remove_process(pid: Pid) -> Result<(), &'static str>
+pub fn schedule() -> Option<Pid>  // Select next process
+pub fn yield_current()             // Voluntary yield
 ```
 
 ### Context Switching
@@ -315,14 +372,48 @@ Return:     RAX (value or -errno)
 
 ### Implemented System Calls
 
-| Number | Name | Signature | POSIX |
-|--------|------|-----------|-------|
-| 0 | read | `ssize_t read(int fd, void *buf, size_t count)` | ✅ |
-| 1 | write | `ssize_t write(int fd, const void *buf, size_t count)` | ✅ |
-| 2 | open | `int open(const char *path, int flags, mode_t mode)` | ✅ |
-| 3 | close | `int close(int fd)` | ✅ |
-| 39 | getpid | `pid_t getpid(void)` | ✅ |
-| 60 | exit | `void exit(int status)` | ✅ |
+| Number | Name | Signature | POSIX | Status |
+|--------|------|-----------|-------|--------|
+| 0 | read | `ssize_t read(int fd, void *buf, size_t count)` | ✅ | ✅ |
+| 1 | write | `ssize_t write(int fd, const void *buf, size_t count)` | ✅ | ✅ |
+| 2 | open | `int open(const char *path, int flags, mode_t mode)` | ✅ | ✅ |
+| 3 | close | `int close(int fd)` | ✅ | ✅ |
+| 4 | stat | `int stat(const char *path, struct stat *buf)` | ✅ | ✅ |
+| 5 | fstat | `int fstat(int fd, struct stat *buf)` | ✅ | ✅ |
+| 8 | lseek | `off_t lseek(int fd, off_t offset, int whence)` | ✅ | ✅ |
+| 13 | sigaction | `int sigaction(int sig, ...)` | ✅ | ✅ |
+| 14 | sigprocmask | `int sigprocmask(int how, ...)` | ✅ | ✅ |
+| 22 | pipe | `int pipe(int pipefd[2])` | ✅ | ✅ |
+| 24 | sched_yield | `int sched_yield(void)` | ✅ | ✅ |
+| 32 | dup | `int dup(int oldfd)` | ✅ | ✅ |
+| 33 | dup2 | `int dup2(int oldfd, int newfd)` | ✅ | ✅ |
+| 39 | getpid | `pid_t getpid(void)` | ✅ | ✅ |
+| 57 | fork | `pid_t fork(void)` | ✅ | ✅ |
+| 59 | execve | `int execve(const char *path, char *const argv[], ...)` | ✅ | ✅ |
+| 60 | exit | `void exit(int status)` | ✅ | ✅ |
+| 61 | wait4 | `pid_t wait4(pid_t pid, int *status, int options, ...)` | ✅ | ✅ |
+| 62 | kill | `int kill(pid_t pid, int sig)` | ✅ | ✅ |
+| 72 | fcntl | `int fcntl(int fd, int cmd, ...)` | ✅ | ✅ |
+| 110 | getppid | `pid_t getppid(void)` | ✅ | ✅ |
+| 155 | pivot_root | `int pivot_root(const char *new, const char *old)` | ✅ | ✅ |
+| 161 | chroot | `int chroot(const char *path)` | ✅ | ✅ |
+| 165 | mount | `int mount(const char *src, const char *tgt, ...)` | ✅ | ✅ |
+| 166 | umount | `int umount(const char *target)` | ✅ | ✅ |
+| 169 | reboot | `int reboot(int cmd)` | ✅ | ✅ |
+| 200 | list_files | `int list_files(const char *path, uint64_t flags)` | ❌ | ✅ |
+| 201 | geterrno | `int geterrno(void)` | ❌ | ✅ |
+| 210 | ipc_create | `int ipc_create(void)` | ❌ | ✅ |
+| 211 | ipc_send | `int ipc_send(int chan, const void *msg, size_t len)` | ❌ | ✅ |
+| 212 | ipc_recv | `int ipc_recv(int chan, void *msg, size_t len)` | ❌ | ✅ |
+| 220 | user_add | `int user_add(const char *user, const char *pass, ...)` | ❌ | ✅ |
+| 221 | user_login | `int user_login(const char *user, const char *pass)` | ❌ | ✅ |
+| 222 | user_info | `int user_info(void *buf)` | ❌ | ✅ |
+| 223 | user_list | `int user_list(void)` | ❌ | ✅ |
+| 224 | user_logout | `int user_logout(void)` | ❌ | ✅ |
+| 230 | shutdown | `int shutdown(int mode)` | ❌ | ✅ |
+| 231 | runlevel | `int runlevel(int level)` | ❌ | ✅ |
+
+**Legend**: ✅ POSIX standard | ❌ NexaOS extension
 
 ### Error Handling
 
@@ -337,36 +428,52 @@ Return:     RAX (value or -errno)
 ### Virtual File System (VFS)
 
 ```
-┌───────────────────────────────────┐
-│        VFS Interface              │
-│  - open/close/read/write          │
-│  - stat, readdir                  │
-└───────────────┬───────────────────┘
-                │
-        ┌───────┴────────┐
-        │                │
-┌───────▼──────┐ ┌───────▼──────┐
-│  Initramfs   │ │  Memory FS   │
-│  (Read-Only) │ │  (Read-Write)│
-└──────────────┘ └──────────────┘
+┌─────────────────────────────────────────────┐
+│           VFS Interface (src/fs.rs)         │
+│  - open/close/read/write                    │
+│  - stat, list_files, add_file_bytes         │
+│  - mount/umount/pivot_root/chroot           │
+└──────────────┬──────────────────────────────┘
+               │
+       ┌───────┴────────────┐
+       │                    │
+┌──────▼──────┐    ┌────────▼────────┐
+│  Initramfs  │    │   Memory FS     │
+│ (Read-Only) │    │  (Read-Write)   │
+│ CPIO newc   │    │  64 files max   │
+│ Boot files  │    │  Runtime files  │
+└─────────────┘    └─────────────────┘
+       │
+┌──────▼──────────────────┐
+│   External Ext2 Root    │
+│  (Mounted via syscall)  │
+│   /dev/vda1 → /         │
+│   50MB disk image       │
+└─────────────────────────┘
 ```
 
 ### Initramfs
-- CPIO newc format parsing
-- Loaded at boot from GRUB modules
-- Read-only filesystem for boot binaries
-- Example: `/bin/sh`, `/etc/config`
+- **Format**: CPIO newc archive parsed at boot
+- **Source**: GRUB module loaded by bootloader
+- **Purpose**: Boot-time binaries and configuration
+- **Examples**: `/bin/sh`, `/lib64/ld-linux.so`, emergency shell
+- **Read-Only**: Immutable after unpacking
+- **Implementation**: `src/initramfs.rs` with CPIO parser
 
 ### Memory Filesystem
-- In-memory file storage (64 file limit)
-- Runtime file creation
-- File metadata tracking
-- Directory support
+- **In-memory**: Volatile storage for runtime data
+- **Capacity**: 64 files maximum (configurable)
+- **Operations**: read, write, stat, list
+- **Use Cases**: Temporary files, runtime configuration
+- **Implementation**: `src/fs.rs` with simple file table
 
-### Future: Disk Filesystems
-- Ext2 read support (planned)
-- Ext4 full support (planned)
-- FAT32 compatibility (planned)
+### Ext2 Root Filesystem
+- **Format**: Standard ext2 filesystem on disk image
+- **Size**: 50MB (configurable via build script)
+- **Mount**: Via `mount()` syscall during boot stage 4
+- **Layout**: Complete Unix FHS structure (/bin, /sbin, /etc, /home, etc.)
+- **Persistence**: Survives reboots when running on real hardware
+- **Build**: `./scripts/build-rootfs.sh` creates `build/rootfs.ext2`
 
 ---
 

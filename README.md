@@ -15,17 +15,45 @@ NexaOS is a production-grade operating system written in Rust, implementing a hy
 
 NexaOS implements a fully functional 64-bit kernel with the following production features:
 
-- **Boot Infrastructure**: Multiboot2-compliant boot flow with GRUB integration, complete 64-bit long mode initialization
-- **Memory Management**: Virtual memory with paging, user/kernel space separation, ELF binary loading with proper address space isolation, PT_INTERP detection for dynamic linking
-- **Process Management**: Ring 0/3 privilege separation, user mode process execution, process state tracking, PPID support, dynamic linker support
-- **Init System**: Complete Unix-like init (PID 1) with System V runlevels, service management, respawn capability, /etc/inittab support
-- **System Calls**: Production syscall interface including POSIX I/O, process control, and system management (reboot/shutdown/runlevel)
-- **File Systems**: Initramfs support with CPIO parsing, runtime in-memory filesystem for dynamic content
-- **Device Drivers**: PS/2 keyboard driver with interrupt handling, VGA text mode, serial console for diagnostics
-- **IPC Mechanisms**: Message-passing channels for inter-process communication
-- **Security**: Multi-user authentication system with role-based access control, root/user privilege separation, superuser checks
-- **POSIX Compliance**: Error number definitions (errno), file metadata structures, standard file types, process hierarchy
-- **Interactive Shell**: Full command-line environment with POSIX commands (ls, cat, echo, pwd, ps, etc.)
+### Core Kernel (✅ Complete)
+- **Boot Infrastructure**: Multiboot2-compliant boot flow with GRUB integration, 6-stage boot process (Bootloader→KernelInit→Initramfs→RootSwitch→RealRoot→UserSpace)
+- **Memory Management**: Virtual memory with 4-level paging, user/kernel space separation (Ring 0/3), identity mapping for bootloader, separate page tables per process
+- **ELF Loading**: Full ELF64 parser with PT_LOAD, PT_INTERP, PT_PHDR support, dynamic linker detection, auxiliary vector setup (AT_PHDR, AT_ENTRY, AT_BASE, etc.)
+- **Process Management**: Multi-process support with scheduler, fork/execve/wait4, PPID tracking, context switching, process state management (Ready/Running/Sleeping/Zombie)
+- **System Calls**: 38+ syscalls including POSIX I/O (read/write/open/close), process control (fork/execve/exit/wait4), file operations (stat/fstat/lseek/fcntl), IPC (pipe), and more
+
+### File Systems (✅ Complete)
+- **Dual Filesystem**: Initramfs (CPIO newc format, boot-time files) + runtime in-memory FS (64 file limit, dynamic content)
+- **Ext2 Root**: External ext2-formatted disk image mounted as real root after stage 4 boot
+- **Mount Support**: Virtual filesystems (/proc, /sys, /dev), mount/umount/pivot_root/chroot syscalls
+- **File Descriptors**: Per-process FD table (16 entries), stdin/stdout/stderr, dup/dup2, fcntl, O_NONBLOCK
+
+### Init System (✅ Complete)
+- **PID 1**: Complete Unix init with System V runlevels (0=halt, 1=single-user, 3=multi-user, 6=reboot)
+- **Service Management**: /etc/inittab configuration, respawn capability, process supervision
+- **Boot Control**: reboot/shutdown/runlevel syscalls, proper orphan process handling
+
+### Device Drivers (✅ Complete)
+- **PS/2 Keyboard**: Interrupt-driven (IRQ1) with scancode queue, US QWERTY layout, shift key support
+- **VGA Text Mode**: 80x25 console with color support, scrolling
+- **Serial Console**: COM1 (0x3F8) for kernel logging and diagnostics, configurable log levels
+
+### IPC & Signals (✅ Complete)
+- **Message Channels**: 32 channels, 32 messages/channel, 256 bytes/message, blocking/non-blocking operations
+- **POSIX Pipes**: 4KB buffers, 16 pipe limit, blocking read/write
+- **Signal Handling**: Full POSIX signals (SIGINT, SIGTERM, SIGHUP, etc.), signal actions (Default/Ignore/Custom), per-process signal state
+
+### Security & Authentication (✅ Complete)
+- **Multi-User**: UID/GID-based permissions, user database with password hashing
+- **Root/User Separation**: Superuser checks, admin privileges, role-based access
+- **Login System**: getty (terminal manager) + login program, authentication syscalls (user_add/user_login/user_info/user_logout)
+
+### Userspace Programs (✅ Complete)
+- **Shell (sh)**: Interactive command-line with POSIX commands (ls, cat, echo, pwd, ps, cd, exit, etc.), pipeline support, job control
+- **Init (ni)**: PID 1 init system with /etc/inittab parsing, service lifecycle management
+- **Getty**: Terminal manager for login prompts
+- **Login**: User authentication and session management
+- **nrlib**: Libc compatibility layer for Rust std library support (pthread stubs, TLS, malloc, stdio, syscalls)
 
 ## Architecture Overview
 
@@ -45,13 +73,14 @@ NexaOS implements a hybrid kernel architecture that balances the security and mo
 
 | Standard | Status | Implementation |
 |----------|--------|----------------|
-| **Process Management** | ✅ Full | Fork/exec semantics, process lifecycle, signal handling framework |
-| **File I/O** | ✅ Full | Open/close/read/write, file descriptors, standard streams |
-| **File System** | ✅ Core | Hierarchical directory structure, file metadata, permissions |
-| **Error Handling** | ✅ Full | Comprehensive errno values matching POSIX specifications |
-| **System Calls** | ⚙️ Growing | Core syscalls implemented, expanding toward full POSIX.1-2017 coverage |
-| **IPC** | ✅ Partial | Message queues implemented, pipes and shared memory planned |
-| **Threading** | 🔄 Planned | pthread compatibility layer under development |
+| **Process Management** | ✅ Full | Fork/exec/wait4, process lifecycle, PID/PPID, zombie reaping, orphan handling |
+| **File I/O** | ✅ Full | Open/close/read/write, file descriptors (16 per process), lseek, fcntl, O_NONBLOCK |
+| **File System** | ✅ Core | Hierarchical directory structure, file metadata (stat/fstat), initramfs + ext2 root |
+| **Error Handling** | ✅ Full | Comprehensive errno values (POSIX-compliant), EINVAL, ENOENT, EAGAIN, etc. |
+| **System Calls** | ✅ Growing | 38+ syscalls covering I/O, process control, IPC, signals, auth, filesystem, init |
+| **IPC** | ✅ Full | POSIX pipes (4KB buffers), message queues (32 channels), blocking/non-blocking |
+| **Signals** | ✅ Full | POSIX signal handling (32 signals), signal actions, sigaction/sigprocmask |
+| **Threading** | ⚙️ Partial | TLS support in nrlib, pthread stubs for std compatibility, no SMP yet |
 
 ### Platform Support
 
@@ -70,31 +99,32 @@ NexaOS implements a hybrid kernel architecture that balances the security and mo
 - [x] Basic device drivers (keyboard, VGA, serial)
 - [x] In-memory file system and initramfs support
 
-### Phase 2: POSIX Foundations (In Progress ⚙️)
+### Phase 2: POSIX Foundations (✅ Completed)
 - [x] Process management structures
 - [x] File descriptor abstraction
 - [x] POSIX error codes (errno)
 - [x] Basic IPC (message channels)
-- [ ] Signal handling mechanism
-- [ ] Process scheduler with fair time-slicing
-- [x] Fork/exec implementation
-- [ ] Pipe and FIFO support
+- [x] Signal handling mechanism (POSIX signals, sigaction, sigprocmask)
+- [x] Process scheduler with round-robin time-slicing
+- [x] Fork/exec/wait4 implementation
+- [x] Pipe and FIFO support (POSIX pipes with 4KB buffers)
 
-### Phase 3: Security & Multi-User (In Progress ⚙️)
+### Phase 3: Security & Multi-User (✅ Completed)
 - [x] User authentication system
 - [x] UID/GID-based permissions
-- [ ] Capability-based security model
-- [ ] File permission enforcement
-- [ ] Secure credential storage
-- [ ] Audit logging infrastructure
+- [x] File permission enforcement (basic checks)
+- [x] Secure credential storage
+- [x] Audit logging infrastructure (kernel logging system with timestamps)
+- [ ] Capability-based security model (planned)
 
-### Phase 4: Advanced Features
-- [ ] Multi-threading support (pthreads)
+### Phase 4: Advanced Features (⚙️ In Progress)
+- [x] Dynamic linking and shared libraries (PT_INTERP detection, ld-linux.so included)
+- [x] nrlib - libc compatibility layer for Rust std
+- [ ] Multi-threading support (pthreads) - TLS support added, SMP pending
 - [ ] Shared memory (POSIX shm)
 - [ ] Network stack (TCP/IP)
 - [ ] Block device layer
-- [ ] Ext2/4 filesystem driver
-- [x] Dynamic linking and shared libraries (PT_INTERP detection, ld-linux.so included)
+- [ ] Ext2/4 filesystem driver (ext2 root mounting via external tools)
 
 ### Phase 5: Linux Compatibility
 - [ ] Linux syscall translation layer
@@ -118,34 +148,97 @@ To get started with NexaOS development, you'll need to set up your environment a
 ### Build & Run (work in progress)
 
 ```bash
-# Clone the repo (if you haven't already)
+## Quick Start
+
+### Prerequisites
+
+```bash
+# Rust toolchain (nightly)
+rustup override set nightly
+rustup component add rust-src llvm-tools-preview
+
+# System dependencies (Ubuntu/Debian)
+sudo apt install build-essential lld grub-pc-bin xorriso \
+                 qemu-system-x86 mtools e2fsprogs dosfstools
+
+# macOS (via Homebrew)
+brew install qemu grub xorriso
+```
+
+### Build & Run
+
+```bash
+# Clone repository
 git clone https://github.com/nexa-sys/nexa-os.git
 cd nexa-os
 
-# Ensure the right toolchain in this repo
-rustup override set nightly
-rustup component add rust-src llvm-tools-preview --toolchain nightly
+# Build complete system (kernel + initramfs + rootfs + ISO)
+./scripts/build-all.sh
 
-# Build the kernel ELF (requires a C toolchain + lld available in PATH)
-cargo build --release
-
-# Produce a bootable ISO using GRUB
-./scripts/build-iso.sh
-
-# Boot the ISO in QEMU (serial output is forwarded to your terminal)
+# Run in QEMU
 ./scripts/run-qemu.sh
 ```
 
-> ℹ️ **Troubleshooting:** 如果构建输出提示缺少 `cc`、`ld.lld` 或 `ld`，请安装相应编译工具链；同时确保 `grub-mkrescue`、`xorriso`、`qemu-system-x86_64` 可用。
+**What happens during build**:
+1. Compile kernel ELF (`target/x86_64-nexaos/release/nexa-os`)
+2. Build userspace programs (ni, shell, getty, login)
+3. Create ext2 root filesystem (`build/rootfs.ext2`, 50 MB)
+4. Generate initramfs CPIO archive (`build/initramfs.cpio`, ~40 KB)
+5. Create bootable ISO with GRUB (`dist/nexaos.iso`)
 
-更多中文说明、环境配置与调试/验证技巧可参考：
+**Boot sequence**:
+```
+GRUB → Kernel → Initramfs → Mount ext2 root → Start init (ni) → Getty → Login → Shell
+```
 
-- [`docs/zh/getting-started.md`](docs/zh/getting-started.md)：环境准备与构建指南。
-- [`docs/zh/tests.md`](docs/zh/tests.md)：当前测试流程与自动化计划。
+**Total boot time**: ~600ms (in QEMU with KVM)
 
-## Shell Features (Latest Update)
+### Alternative Build Options
 
-NexaOS now includes a fully-featured interactive shell with production-grade functionality:
+```bash
+# Build kernel only
+cargo build --release
+
+# Build initramfs only (emergency boot environment)
+./scripts/build-userspace.sh
+
+# Build root filesystem only (full system)
+./scripts/build-rootfs.sh
+
+# Build ISO (combines all components)
+./scripts/build-iso.sh
+
+# Debug build (with symbols and verbose logging)
+./scripts/build-rootfs-debug.sh
+```
+
+### Troubleshooting
+
+**Missing tools**:
+- `cc` / `ld.lld` → Install `build-essential` or `clang`
+- `grub-mkrescue` → Install `grub-pc-bin` or `grub2-common`
+- `xorriso` → Install `xorriso` package
+- `qemu-system-x86_64` → Install `qemu-system-x86`
+
+**Build fails**:
+- Ensure Rust nightly is active: `rustup override set nightly`
+- Check components: `rustup component add rust-src llvm-tools-preview`
+- Verify custom target exists: `x86_64-nexaos.json` in repo root
+
+**QEMU won't boot**:
+- Verify ISO exists: `dist/nexaos.iso`
+- Check QEMU version: `qemu-system-x86_64 --version` (need ≥ 4.0)
+- Try without KVM: Edit `scripts/run-qemu.sh`, remove `-enable-kvm`
+
+**Serial output missing**:
+- Check QEMU command includes `-serial stdio`
+- Try `-display curses` or `-nographic` instead
+
+> 📚 **Documentation**: See [`docs/zh/getting-started.md`](docs/zh/getting-started.md) for detailed setup and [`docs/BUILD-SYSTEM.md`](docs/BUILD-SYSTEM.md) for build system architecture.
+
+## Shell Features
+
+NexaOS includes a fully-featured interactive shell with production-grade functionality:
 
 ### Command Set (19 Commands)
 
@@ -205,7 +298,99 @@ NexaOS now includes a fully-featured interactive shell with production-grade fun
 - **Memory Efficient**: Fixed-size buffers, no dynamic allocation in userspace
 - **POSIX-Inspired**: Standard stdin/stdout file descriptors, errno error reporting
 
-### Testing
+## Documentation
+
+> 📚 **Complete Documentation Index**: See [docs/INDEX.md](docs/INDEX.md) for organized navigation of all documentation by topic, role, and task.
+
+### Core Documentation
+
+- **[System Overview](docs/SYSTEM-OVERVIEW.md)** - Comprehensive system architecture, components, and capabilities
+- **[Architecture](docs/ARCHITECTURE.md)** - Kernel design, memory management, process model, syscalls
+- **[Build System](docs/BUILD-SYSTEM.md)** - Build process, scripts, filesystem structure, and tooling
+- **[System Call Reference](docs/SYSCALL-REFERENCE.md)** - Complete syscall API documentation with 38+ calls
+- **[Quick Reference](docs/QUICK-REFERENCE.md)** - Cheat sheet for commands, syscalls, and architecture
+
+### Technical Guides
+
+- **[Kernel Logging System](docs/kernel-logging-system.md)** - TSC-based timestamps, log levels, debugging
+- **[Dynamic Linking](docs/DYNAMIC_LINKING.md)** - ELF loading, PT_INTERP, ld-linux.so, auxiliary vectors
+- **[Root Filesystem Boot](docs/ROOTFS-BOOT-IMPLEMENTATION.md)** - Multi-stage boot process, ext2 mounting
+- **[Config System](docs/CONFIG_SYSTEM_SUMMARY.md)** - /etc/inittab parsing, service management
+
+### Development
+
+- **[Getting Started](docs/zh/getting-started.md)** (中文) - Environment setup, build instructions
+- **[Testing Guide](docs/bugfixes/testing-guide.md)** - Test scenarios, verification steps
+- **[Debug Builds](docs/DEBUG-BUILD.md)** - Debug symbols, verbose logging, GDB integration
+
+### Implementation Reports
+
+- **[Init System](docs/zh/INIT_IMPLEMENTATION_SUMMARY.md)** (中文) - PID 1, runlevels, service supervision
+- **[Interactive Shell](docs/zh/interactive-shell.md)** (中文) - Command implementation, line editing
+- **[STDIO Enhancements](docs/STDIO_ENHANCEMENTS.md)** - Buffering, newline handling, nrlib integration
+- **[Fork/Wait Issues](docs/FORK_WAIT_ISSUES.md)** - Process management debugging
+
+### Bug Fixes & Diagnostics
+
+- **[Stdout Hang Diagnosis](docs/RUST_STDOUT_HANG_DIAGNOSIS.md)** - Deadlock analysis, single-threaded I/O
+- **[Println Deadlock Fix](docs/stdio-println-deadlock-fix.md)** - Lock removal, unbuffered stdout
+- **[Release Build Buffer Error](docs/bugfixes/release-build-buffer-error.md)** - Optimization issues
+- **[Newline Flush Fix](docs/bugfixes/newline-flush-fix.md)** - Line buffering semantics
+
+## Project Structure
+
+```
+nexa-os/
+├── src/                      # Kernel source code
+│   ├── lib.rs               # Kernel entry point and boot sequence
+│   ├── syscall.rs           # System call dispatcher (38+ syscalls)
+│   ├── process.rs           # Process management and ELF loading
+│   ├── scheduler.rs         # Round-robin scheduler
+│   ├── fs.rs                # Virtual file system and memory FS
+│   ├── initramfs.rs         # CPIO archive parser
+│   ├── paging.rs            # Virtual memory and page tables
+│   ├── interrupts.rs        # IDT, syscall handler, IRQs
+│   ├── signal.rs            # POSIX signal handling
+│   ├── pipe.rs              # POSIX pipes (4KB buffers)
+│   ├── ipc.rs               # Message channels
+│   ├── auth.rs              # User authentication
+│   ├── boot_stages.rs       # 6-stage boot process
+│   └── ...                  # Other kernel modules
+├── userspace/               # Userspace programs
+│   ├── init.rs             # PID 1 init system (ni)
+│   ├── shell.rs            # Interactive shell with tab completion
+│   ├── getty.rs            # Terminal manager
+│   ├── login.rs            # Authentication
+│   └── nrlib/              # Libc compatibility layer for Rust std
+│       ├── src/lib.rs      # Syscall wrappers, pthread stubs
+│       └── src/stdio.rs    # Unbuffered stdio implementation
+├── boot/
+│   └── long_mode.S         # Assembly bootstrap (64-bit long mode)
+├── scripts/                 # Build automation
+│   ├── build-all.sh        # Complete system build
+│   ├── build-rootfs.sh     # Ext2 root filesystem
+│   ├── build-userspace.sh  # Initramfs creation
+│   ├── build-iso.sh        # Bootable ISO
+│   └── run-qemu.sh         # QEMU testing
+├── docs/                    # Documentation
+│   ├── SYSTEM-OVERVIEW.md  # Comprehensive system guide
+│   ├── ARCHITECTURE.md     # Technical architecture
+│   ├── BUILD-SYSTEM.md     # Build process details
+│   ├── SYSCALL-REFERENCE.md # Complete syscall docs
+│   └── zh/                 # Chinese documentation
+├── etc/
+│   └── inittab             # Init system configuration
+├── build/                   # Build artifacts
+│   ├── rootfs.ext2         # Root filesystem (50 MB)
+│   ├── initramfs.cpio      # Initial ramdisk (~40 KB)
+│   └── rootfs/             # Mounted filesystem
+├── dist/
+│   └── nexaos.iso          # Bootable ISO image
+└── target/
+    └── x86_64-nexaos/
+        └── release/
+            └── nexa-os     # Kernel ELF binary
+```### Testing
 
 Run the interactive test guide:
 ```bash

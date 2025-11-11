@@ -1,4 +1,23 @@
-# NexaOS Changelog
+## [Unreleased] - 2025-11-12
+
+### Documentation (work in progress)
+- docs/SYSTEM-OVERVIEW.md (draft)
+- docs/SYSCALL-REFERENCE.md (draft)
+- docs/BUILD-SYSTEM.md (draft)
+- docs/ARCHITECTURE.md (updated draft)
+- README.md (updated draft)
+
+### High-level status
+- Kernel: candidate quality; verification and CI pending
+- Memory/VM: 4-level paging integration under validation
+- Process: fork/exec/wait and scheduler integration tests pending
+- Filesystems: initramfs (CPIO), runtime memfs, ext2 root image under test
+- IPC: pipes, channels, and signal handling under stress testing
+- Init: PID 1 and inittab supervision experimental
+- Userspace: shell, getty, login, nrlib — compatibility work ongoing
+- Drivers: PS/2, VGA, serial — hardware validation pending
+
+Snapshot of current work; status subject to change.
 
 ## [Unreleased] - 2025-11-06
 
