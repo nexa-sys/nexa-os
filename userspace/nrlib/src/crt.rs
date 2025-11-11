@@ -9,7 +9,6 @@ use core::arch::asm;
 // For std programs, Rust generates a main function with C calling convention
 extern "C" {
     fn main(argc: c_int, argv: *const *const u8) -> c_int;
-    fn __nrlib_force_mem_link();
 }
 
 /// Program entry point
@@ -21,9 +20,6 @@ pub unsafe extern "C" fn _start() -> ! {
     // For now, pass 0/NULL
     let argc: c_int = 0;
     let argv: *const *const u8 = core::ptr::null();
-
-    // Ensure the real memcpy/memmove/memset/memcmp implementations are linked
-    __nrlib_force_mem_link();
 
     // Call Rust's generated main (which calls lang_start -> user's main)
     let exit_code = main(argc, argv);

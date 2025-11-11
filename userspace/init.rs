@@ -24,7 +24,6 @@ extern "C" {
     fn write(fd: i32, buf: *const c_void, count: usize) -> isize;
     fn _exit(code: i32) -> !;
     fn fflush(stream: *mut c_void) -> i32;
-    fn __nrlib_force_mem_link();
 }
 
 fn install_minimal_panic_hook() {
@@ -1670,9 +1669,6 @@ fn authenticate_user(username: &[u8], password: &[u8]) -> bool {
 // Using extern "C" to provide the C ABI main function directly
 // argc/argv are ignored since we don't use command-line arguments
 fn main() -> ! {
-    unsafe {
-        __nrlib_force_mem_link();
-    }
     install_minimal_panic_hook();
     announce_runtime_start();
     init_main()

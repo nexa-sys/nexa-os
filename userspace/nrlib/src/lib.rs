@@ -665,17 +665,26 @@ pub unsafe extern "C" fn memcmp(a: *const c_void, b: *const c_void, n: usize) ->
     0
 }
 
-static mut MEM_INTRINSIC_PTRS: [usize; 4] = [0; 4];
+#[repr(C)]
+struct MemIntrinsicRefs {
+    memcpy: unsafe extern "C" fn(*mut c_void, *const c_void, usize) -> *mut c_void,
+    memmove: unsafe extern "C" fn(*mut c_void, *const c_void, usize) -> *mut c_void,
+    memset: unsafe extern "C" fn(*mut c_void, c_int, usize) -> *mut c_void,
+    memcmp: unsafe extern "C" fn(*const c_void, *const c_void, usize) -> c_int,
+}
+
+#[used]
+static MEM_INTRINSIC_REFS: MemIntrinsicRefs = MemIntrinsicRefs {
+    memcpy,
+    memmove,
+    memset,
+    memcmp,
+};
 
 #[no_mangle]
-#[inline(never)]
+#[deprecated(note = "No longer required; memory intrinsics are retained automatically")]
 pub extern "C" fn __nrlib_force_mem_link() {
-    unsafe {
-        ptr::write_volatile(&mut MEM_INTRINSIC_PTRS[0], memcpy as usize);
-        ptr::write_volatile(&mut MEM_INTRINSIC_PTRS[1], memmove as usize);
-        ptr::write_volatile(&mut MEM_INTRINSIC_PTRS[2], memset as usize);
-        ptr::write_volatile(&mut MEM_INTRINSIC_PTRS[3], memcmp as usize);
-    }
+    // Compatibility shim kept for older binaries; no work required now.
 }
 
 #[no_mangle]
