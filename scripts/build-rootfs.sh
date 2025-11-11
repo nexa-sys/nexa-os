@@ -41,7 +41,7 @@ required-features = ["use-nrlib"]
 [[bin]]
 name = "getty"
 path = "../../userspace/getty.rs"
-required-features = ["use-nrlib"]
+required-features = []
 
 [[bin]]
 name = "login"
@@ -85,15 +85,22 @@ ar crs "$BUILD_DIR/userspace-build/sysroot/lib/libunwind.a"
 
 # Now build ni with std, linking against our nrlib-based libc
 cd "$BUILD_DIR/userspace-build"
-RUSTFLAGS="-C opt-level=2 -C panic=abort -C linker=rust-lld -C link-arg=--image-base=0x00400000 -C link-arg=--entry=_start -L $BUILD_DIR/userspace-build/sysroot/lib -C link-arg=-upthread_mutexattr_settype -C link-arg=-upthread_mutexattr_init -C link-arg=-upthread_mutexattr_destroy -C link-arg=-upthread_mutex_init -C link-arg=-upthread_mutex_lock -C link-arg=-upthread_mutex_unlock -C link-arg=-upthread_mutex_destroy -C link-arg=-upthread_once -C link-arg=-u__libc_single_threaded" \
+STD_RUSTFLAGS="-C opt-level=2 -C panic=abort -C linker=rust-lld -C link-arg=--image-base=0x00400000 -C link-arg=--entry=_start -L $BUILD_DIR/userspace-build/sysroot/lib -C link-arg=-upthread_mutexattr_settype -C link-arg=-upthread_mutexattr_init -C link-arg=-upthread_mutexattr_destroy -C link-arg=-upthread_mutex_init -C link-arg=-upthread_mutex_lock -C link-arg=-upthread_mutex_unlock -C link-arg=-upthread_mutex_destroy -C link-arg=-upthread_once -C link-arg=-u__libc_single_threaded"
+RUSTFLAGS="$STD_RUSTFLAGS" \
     cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release \
     --bin ni --no-default-features
+
+# Build getty with std to leverage std::io printing
+echo "Building getty with std..."
+RUSTFLAGS="$STD_RUSTFLAGS" \
+    cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release \
+    --bin getty --no-default-features
 
 # Build other binaries with nrlib (no_std)
 echo "Building other userspace programs (no_std + nrlib)..."
 RUSTFLAGS="-C opt-level=2 -C panic=abort -C linker=rust-lld -C link-arg=--image-base=0x00400000" \
     cargo build -Z build-std=core --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release \
-    --bin sh --bin getty --bin login --features use-nrlib
+    --bin sh --bin login --features use-nrlib
 
 # Copy binaries to rootfs
 echo "Copying binaries to rootfs..."
