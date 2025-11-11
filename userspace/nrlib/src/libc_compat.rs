@@ -80,6 +80,38 @@ impl MutexInner {
     }
 }
 
+const MAX_PTHREAD_MUTEXES: usize = 128;
+const MUTEX_INNER_SIZE: usize = mem::size_of::<MutexInner>();
+
+#[repr(align(16))]
+#[derive(Copy, Clone)]
+struct MutexSlot {
+    bytes: [u8; MUTEX_INNER_SIZE],
+}
+
+impl MutexSlot {
+    const fn new() -> Self {
+        Self {
+            bytes: [0; MUTEX_INNER_SIZE],
+        }
+    }
+
+    fn as_mut_ptr(&mut self) -> *mut MutexInner {
+        self.bytes.as_mut_ptr() as *mut MutexInner
+    }
+
+    fn as_ptr(&self) -> *const MutexInner {
+        self.bytes.as_ptr() as *const MutexInner
+    }
+
+    fn reset(&mut self) {
+        self.bytes = [0; MUTEX_INNER_SIZE];
+    }
+}
+
+static mut MUTEX_POOL: [MutexSlot; MAX_PTHREAD_MUTEXES] = [MutexSlot::new(); MAX_PTHREAD_MUTEXES];
+static mut MUTEX_POOL_USED: [bool; MAX_PTHREAD_MUTEXES] = [false; MAX_PTHREAD_MUTEXES];
+
 unsafe fn mutex_word_ptr(mutex: *mut pthread_mutex_t, index: usize) -> *mut usize {
     (*mutex).data.as_mut_ptr().add(index)
 }
@@ -116,14 +148,34 @@ unsafe fn detect_static_kind(mutex: *mut pthread_mutex_t) -> c_int {
 }
 
 unsafe fn alloc_mutex_inner(kind: c_int) -> Result<*mut MutexInner, c_int> {
-    let ptr = crate::malloc(mem::size_of::<MutexInner>()) as *mut MutexInner;
-    if ptr.is_null() {
-        crate::set_errno(crate::ENOMEM);
-        return Err(crate::ENOMEM);
+    for idx in 0..MAX_PTHREAD_MUTEXES {
+        if !MUTEX_POOL_USED[idx] {
+            MUTEX_POOL_USED[idx] = true;
+            let slot = &mut MUTEX_POOL[idx];
+            let inner_ptr = slot.as_mut_ptr();
+            ptr::write(inner_ptr, MutexInner::new(kind));
+            debug_mutex_event(b"[nrlib] alloc_mutex_inner\n");
+            return Ok(inner_ptr);
+        }
     }
-    debug_mutex_event(b"[nrlib] alloc_mutex_inner\n");
-    ptr::write(ptr, MutexInner::new(kind));
-    Ok(ptr)
+
+    crate::set_errno(crate::ENOMEM);
+    Err(crate::ENOMEM)
+}
+
+unsafe fn free_mutex_inner(inner: *mut MutexInner) {
+    if inner.is_null() {
+        return;
+    }
+
+    for idx in 0..MAX_PTHREAD_MUTEXES {
+        let slot_ptr = MUTEX_POOL[idx].as_ptr() as *const MutexInner;
+        if slot_ptr == inner as *const MutexInner {
+            MUTEX_POOL[idx].reset();
+            MUTEX_POOL_USED[idx] = false;
+            return;
+        }
+    }
 }
 
 unsafe fn ensure_mutex_inner(mutex: *mut pthread_mutex_t) -> Result<*mut MutexInner, c_int> {
@@ -931,7 +983,7 @@ pub unsafe extern "C" fn pthread_mutex_destroy(mutex: *mut pthread_mutex_t) -> c
             return EBUSY;
         }
 
-        crate::free(inner as *mut c_void);
+        free_mutex_inner(inner);
     }
 
     (*mutex).data = [0; PTHREAD_MUTEX_WORDS];
