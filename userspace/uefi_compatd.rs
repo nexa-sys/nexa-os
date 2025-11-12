@@ -5,7 +5,7 @@
 
 use nrlib::{
     get_errno, uefi_get_block, uefi_get_counts, uefi_get_framebuffer, uefi_get_network,
-    UefiBlockDescriptor, UefiCompatCounts, UefiNetworkDescriptor,
+    uefi_map_framebuffer, UefiBlockDescriptor, UefiCompatCounts, UefiNetworkDescriptor,
 };
 use std::process::exit;
 
@@ -33,6 +33,20 @@ fn main() {
                 "[uefi-compatd] framebuffer @ {:#x}, {}x{} pitch={} bpp={}",
                 fb_info.address, fb_info.width, fb_info.height, fb_info.pitch, fb_info.bpp
             );
+            
+            // Map framebuffer to user space
+            let fb_ptr = uefi_map_framebuffer();
+            if !fb_ptr.is_null() {
+                println!(
+                    "[uefi-compatd] framebuffer mapped to user virtual address {:#x}",
+                    fb_ptr as u64
+                );
+            } else {
+                eprintln!(
+                    "[uefi-compatd] failed to map framebuffer (errno={})",
+                    get_errno()
+                );
+            }
         } else {
             eprintln!(
                 "[uefi-compatd] framebuffer query failed (errno={})",
@@ -85,4 +99,3 @@ fn main() {
 
     println!("[uefi-compatd] initialisation complete");
 }
-

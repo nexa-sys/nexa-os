@@ -102,6 +102,7 @@ const SYS_UEFI_GET_COUNTS: u64 = 240;
 const SYS_UEFI_GET_FB_INFO: u64 = 241;
 const SYS_UEFI_GET_NET_INFO: u64 = 242;
 const SYS_UEFI_GET_BLOCK_INFO: u64 = 243;
+const SYS_UEFI_MAP_FRAMEBUFFER: u64 = 244;
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -232,6 +233,17 @@ pub fn uefi_get_block(index: usize, info: &mut UefiBlockDescriptor) -> i32 {
         index as u64,
         info as *mut _ as u64,
     ))
+}
+
+/// Maps the framebuffer to user space and returns the virtual address
+#[inline(always)]
+pub fn uefi_map_framebuffer() -> *mut u8 {
+    let ret = syscall0(SYS_UEFI_MAP_FRAMEBUFFER);
+    if ret == u64::MAX {
+        ptr::null_mut()
+    } else {
+        ret as *mut u8
+    }
 }
 
 // errno support (global for now, single-process environment)
