@@ -4,6 +4,7 @@
 pub mod arch;
 pub mod auth;
 pub mod boot_stages;
+pub mod bootinfo;
 pub mod elf;
 pub mod framebuffer;
 pub mod fs;
@@ -28,11 +29,14 @@ pub mod vga_buffer;
 
 use core::panic::PanicInfo;
 use multiboot2::{BootInformation, BootInformationHeader};
+use nexa_boot_info::BootInfo;
 use x86_64::registers::control::{Cr0, Cr0Flags, Cr4, Cr4Flags};
 pub const MULTIBOOT_BOOTLOADER_MAGIC: u32 = 0x2BADB002; // Multiboot v1
 pub const MULTIBOOT2_BOOTLOADER_MAGIC: u32 = 0x36d76289; // Multiboot v2
 
 pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
+    bootinfo::clear();
+
     // Stage 1: Bootloader has loaded us (GRUB/Multiboot2)
     let freq_hz = logger::init();
     let boot_info = unsafe {
@@ -40,11 +44,16 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
             .expect("valid multiboot info structure")
     };
 
-    let cmdline_opt = boot_info
+    let cmdline_multiboot = boot_info
         .command_line_tag()
-        .and_then(|tag| tag.cmdline().ok());
+        .and_then(|tag| tag.cmdline().ok())
+        .map(|line| bootinfo::stash_cmdline(line));
 
-    if let Some(line) = cmdline_opt {
+    let cmdline_uefi = bootinfo::cmdline_str().map(|line| bootinfo::stash_cmdline(line));
+
+    let cmdline_effective = cmdline_multiboot.or(cmdline_uefi);
+
+    if let Some(line) = cmdline_effective {
         if let Some(level) = logger::parse_level_directive(line) {
             logger::set_max_level(level);
         }
@@ -66,8 +75,7 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
     kdebug!("Multiboot magic: {:#x}", magic);
     kdebug!("Multiboot info struct at: {:#x}", multiboot_info_address);
 
-    // Parse boot configuration from kernel command line
-    if let Some(cmdline) = cmdline_opt {
+    if let Some(cmdline) = cmdline_effective {
         boot_stages::parse_boot_config(cmdline);
     }
 
@@ -94,14 +102,7 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
 
         paging::ensure_nxe_enabled();
 
-        // Set GS base EARLY to avoid corrupting static variables during initramfs loading
-        unsafe {
-            // Get GS_DATA address without creating a reference that might corrupt nearby statics
-            let gs_data_addr = &raw const crate::initramfs::GS_DATA.0 as *const _ as u64;
-            use x86_64::registers::model_specific::Msr;
-            Msr::new(0xc0000101).write(gs_data_addr); // GS base
-            kinfo!("GS base set to {:#x}", gs_data_addr);
-        }
+        configure_gs_base();
 
         // Load initramfs from multiboot module if present
         if let Some(modules_tag) = boot_info.module_tags().next() {
@@ -126,6 +127,98 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
         kwarn!("Multiboot v1 detected; memory overview is not yet supported.");
     }
 
+    proceed_after_initramfs(cmdline_effective)
+}
+
+pub fn kernel_main_uefi(boot_info_ptr: *const BootInfo) -> ! {
+    if boot_info_ptr.is_null() {
+        kpanic!("UEFI entry invoked with null boot info pointer");
+    }
+
+    let freq_hz = logger::init();
+    let boot_info = unsafe { &*boot_info_ptr };
+
+    if let Err(err) = bootinfo::set(boot_info) {
+        match err {
+            bootinfo::BootInfoError::InvalidSignature => {
+                kpanic!("UEFI boot info signature mismatch")
+            }
+            bootinfo::BootInfoError::UnsupportedVersion(ver) => {
+                kpanic!("Unsupported UEFI boot info version: {}", ver)
+            }
+        }
+    }
+
+    let cmdline_effective = bootinfo::cmdline_str().map(|line| bootinfo::stash_cmdline(line));
+
+    if let Some(line) = cmdline_effective {
+        if let Some(level) = logger::parse_level_directive(line) {
+            logger::set_max_level(level);
+        }
+    }
+
+    if let Some(fb) = bootinfo::framebuffer_info() {
+        framebuffer::install_from_bootinfo(&fb);
+    }
+
+    vga_buffer::init();
+
+    kinfo!("Kernel log level set to {}", logger::max_level().as_str());
+
+    boot_stages::init();
+
+    kinfo!("==========================================================");
+    kinfo!("NexaOS Kernel Bootstrap (UEFI)");
+    kinfo!("==========================================================");
+    kinfo!("Stage 1: UEFI Loader - Complete");
+    kinfo!("Stage 2: Kernel Init - Starting...");
+
+    if let Some(cmdline) = cmdline_effective {
+        boot_stages::parse_boot_config(cmdline);
+    }
+
+    if logger::tsc_frequency_is_guessed() {
+        kwarn!(
+            "Falling back to default TSC frequency: {}.{:03} MHz",
+            freq_hz / 1_000_000,
+            (freq_hz % 1_000_000) / 1_000
+        );
+    } else {
+        kinfo!(
+            "Detected invariant TSC frequency: {}.{:03} MHz",
+            freq_hz / 1_000_000,
+            (freq_hz % 1_000_000) / 1_000
+        );
+    }
+
+    paging::ensure_nxe_enabled();
+    configure_gs_base();
+
+    if let Some(initramfs) = bootinfo::initramfs_slice() {
+        kinfo!(
+            "UEFI loader provided initramfs payload at {:#x} ({} bytes)",
+            initramfs.as_ptr() as usize,
+            initramfs.len()
+        );
+        unsafe {
+            initramfs::init(initramfs.as_ptr(), initramfs.len());
+        }
+    } else {
+        kwarn!("UEFI loader did not supply an initramfs payload");
+    }
+
+    if let Some(rootfs) = bootinfo::rootfs_slice() {
+        kinfo!(
+            "UEFI loader staged rootfs image at {:#x} ({} bytes)",
+            rootfs.as_ptr() as usize,
+            rootfs.len()
+        );
+    }
+
+    proceed_after_initramfs(cmdline_effective)
+}
+
+fn proceed_after_initramfs(cmdline_opt: Option<&'static str>) -> ! {
     // Initialize paging (required for user mode)
     paging::init();
     framebuffer::activate();
@@ -302,6 +395,15 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
 
     // If we reach here, all init programs failed to load
     boot_stages::enter_emergency_mode("Failed to load any init program")
+}
+
+fn configure_gs_base() {
+    unsafe {
+        let gs_data_addr = &raw const crate::initramfs::GS_DATA.0 as *const _ as u64;
+        use x86_64::registers::model_specific::Msr;
+        Msr::new(0xc0000101).write(gs_data_addr);
+        kinfo!("GS base set to {:#x}", gs_data_addr);
+    }
 }
 
 /// Try to load init program from given path

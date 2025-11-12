@@ -108,11 +108,16 @@ dependencies = [
  "lazy_static",
  "linked_list_allocator",
  "multiboot2",
+ "nexa_boot_info",
  "pic8259",
  "spin",
  "uart_16550",
  "x86_64 0.15.2",
 ]
+
+[[package]]
+name = "nexa_boot_info"
+version = "0.1.0"
 
 [[package]]
 name = "pic8259"

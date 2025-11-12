@@ -1,5 +1,6 @@
 use spin::Mutex;
 
+use crate::bootinfo;
 use crate::posix::{self, FileType, Metadata};
 
 pub mod ext2;
@@ -196,6 +197,23 @@ pub fn init() {
             ext_candidate = Some(entry.data);
         }
     });
+
+    if ext_candidate.is_none() {
+        if let Some(rootfs) = bootinfo::rootfs_slice() {
+            crate::kinfo!(
+                "Registering UEFI-staged rootfs image as /rootfs.ext2 ({} bytes)",
+                rootfs.len()
+            );
+            add_file_bytes("/rootfs.ext2", rootfs, false);
+            ext_candidate = Some(rootfs);
+        }
+    } else if let Some(rootfs) = bootinfo::rootfs_slice() {
+        crate::kinfo!(
+            "UEFI-staged rootfs also available ({} bytes) as /rootfs-uefi.ext2",
+            rootfs.len()
+        );
+        add_file_bytes("/rootfs-uefi.ext2", rootfs, false);
+    }
 
     if let Some(image) = ext_candidate {
         match ext2::Ext2Filesystem::new(image) {

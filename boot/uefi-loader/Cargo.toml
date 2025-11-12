@@ -1,0 +1,22 @@
+[package]
+name = "nexa-uefi-loader"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+
+[dependencies]
+uefi = { version = "0.30", default-features = false, features = ["alloc"] }
+uefi-services = { version = "0.27", default-features = false }
+log = { version = "0.4", default-features = false }
+nexa_boot_info = { path = "../boot-info" }

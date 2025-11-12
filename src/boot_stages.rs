@@ -1,3 +1,4 @@
+use crate::bootinfo;
 use crate::safety::StaticArena;
 /// Boot stage management for rootfs initialization
 ///
@@ -387,6 +388,15 @@ pub fn mount_real_root() -> Result<(), &'static str> {
 /// 4. Match device by name/UUID/LABEL
 fn scan_for_block_device(device_name: &str) -> Result<&'static [u8], &'static str> {
     crate::kinfo!("Scanning for block device: {}", device_name);
+
+    if let Some(data) = bootinfo::rootfs_slice() {
+        crate::kinfo!(
+            "Using UEFI-staged rootfs image ({} bytes) for {}",
+            data.len(),
+            device_name
+        );
+        return Ok(data);
+    }
 
     // Strategy 1: Look for rootfs.ext2 in initramfs
     if let Some(data) = crate::initramfs::find_file("/rootfs.ext2") {

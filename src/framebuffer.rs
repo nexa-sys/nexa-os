@@ -3,6 +3,7 @@ use core::ptr;
 use core::sync::atomic::{AtomicBool, Ordering};
 use font8x8::legacy::BASIC_LEGACY;
 use multiboot2::{BootInformation, FramebufferField, FramebufferTag, FramebufferType};
+use nexa_boot_info::FramebufferInfo as BootFramebufferInfo;
 use spin::Mutex;
 
 use crate::kinfo;
@@ -645,6 +646,42 @@ fn store_spec(tag: &FramebufferTag) {
             crate::kwarn!("Unknown framebuffer type: {:?}", err);
         }
     }
+}
+
+pub fn install_from_bootinfo(info: &BootFramebufferInfo) {
+    if !info.is_valid() {
+        return;
+    }
+
+    let spec = FramebufferSpec {
+        address: info.address,
+        pitch: info.pitch,
+        width: info.width,
+        height: info.height,
+        bpp: info.bpp,
+        red: FramebufferField {
+            position: info.red_position,
+            size: info.red_size,
+        },
+        green: FramebufferField {
+            position: info.green_position,
+            size: info.green_size,
+        },
+        blue: FramebufferField {
+            position: info.blue_position,
+            size: info.blue_size,
+        },
+    };
+
+    *FRAMEBUFFER_SPEC.lock() = Some(spec);
+    FRAMEBUFFER_READY.store(false, Ordering::SeqCst);
+    kinfo!(
+        "Framebuffer provided by UEFI: {}x{} {}bpp (pitch {})",
+        spec.width,
+        spec.height,
+        spec.bpp,
+        spec.pitch
+    );
 }
 
 pub fn activate() {

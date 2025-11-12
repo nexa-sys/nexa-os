@@ -23,6 +23,9 @@ done
 
 cargo build
 
+echo "Building UEFI isolation loader..."
+bash "$ROOT_DIR/scripts/build-uefi-loader.sh"
+
 # Build minimal initramfs (for early boot only)
 echo "Building minimal initramfs..."
 bash "$ROOT_DIR/scripts/build-userspace.sh"
@@ -55,6 +58,13 @@ if [ -f "$ROOT_DIR/build/initramfs.cpio" ]; then
     cp "$ROOT_DIR/build/initramfs.cpio" "$ISO_DIR/boot/initramfs.cpio"
     echo "Including initramfs in ISO"
     HAS_INITRAMFS=1
+fi
+
+# Copy UEFI loader (if available)
+if [ -f "$ROOT_DIR/build/BootX64.EFI" ]; then
+    mkdir -p "$ISO_DIR/EFI/BOOT"
+    cp "$ROOT_DIR/build/BootX64.EFI" "$ISO_DIR/EFI/BOOT/BOOTX64.EFI"
+    echo "Including UEFI loader (EFI/BOOT/BOOTX64.EFI)"
 fi
 
 {

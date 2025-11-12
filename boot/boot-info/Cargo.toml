@@ -1,0 +1,15 @@
+[package]
+name = "nexa_boot_info"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Shared boot information structures exchanged between NexaOS UEFI loader and kernel"
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["rlib"]
+
+[features]
+default = []
+
+[dependencies]
