@@ -15,21 +15,17 @@
 //! - Signal handling for system control
 //! - Service respawn on failure
 
-use core::{cell::UnsafeCell, ffi::c_void};
+use core::cell::UnsafeCell;
 use std::arch::asm;
-use std::io::{self, Write};
+use std::io::{self, Write, Read};
 use std::panic;
-
-extern "C" {
-    fn write(fd: i32, buf: *const c_void, count: usize) -> isize;
-    fn _exit(code: i32) -> !;
-}
+use std::fs;
+use std::path::Path;
 
 fn install_minimal_panic_hook() {
-    panic::set_hook(Box::new(|_info| unsafe {
-        const MSG: &[u8] = b"[ni] panic\n";
-        let _ = write(STDERR, MSG.as_ptr() as *const c_void, MSG.len());
-        _exit(255);
+    panic::set_hook(Box::new(|_info| {
+        let _ = eprintln!("[ni] panic");
+        std::process::abort();
     }));
 }
 
@@ -41,9 +37,6 @@ fn announce_runtime_start() {
 const SYS_FORK: u64 = 57;
 const SYS_EXECVE: u64 = 59;
 const SYS_WAIT4: u64 = 61;
-
-// Standard file descriptors
-const STDERR: i32 = 2;
 
 // Service management constants
 const MAX_RESPAWN_COUNT: u32 = 5; // Max respawns within window
@@ -78,12 +71,12 @@ fn flush_stdout() {
     let _ = io::stdout().flush();
 }
 
-/// Exit process
+/// Exit process using std::process
 fn exit(code: i32) -> ! {
     std::process::exit(code)
 }
 
-/// Fork process
+/// Fork process - wraps kernel syscall
 fn fork() -> i64 {
     let ret = syscall0(SYS_FORK);
     if ret == u64::MAX {
@@ -93,7 +86,7 @@ fn fork() -> i64 {
     }
 }
 
-/// Execute program
+/// Execute program - wraps kernel syscall
 fn execve(path: &str, argv: &[*const u8], envp: &[*const u8]) -> i64 {
     let ret = syscall3(
         SYS_EXECVE,
@@ -119,16 +112,21 @@ fn wait4(pid: i64, status: *mut i32, options: i32) -> i64 {
 }
 
 /// Simple integer to string conversion
-fn itoa(mut n: u64, buf: &mut [u8]) -> &str {
+fn itoa(n: u64, buf: &mut [u8]) -> &str {
+    if buf.is_empty() {
+        return "";
+    }
+    
     if n == 0 {
         buf[0] = b'0';
         return std::str::from_utf8(&buf[0..1]).unwrap();
     }
 
     let mut i = 0;
-    while n > 0 {
-        buf[i] = b'0' + (n % 10) as u8;
-        n /= 10;
+    let mut num = n;
+    while num > 0 && i < buf.len() {
+        buf[i] = b'0' + (num % 10) as u8;
+        num /= 10;
         i += 1;
     }
 
@@ -280,55 +278,41 @@ fn load_service_catalog() -> ServiceCatalog {
     unsafe {
         DEFAULT_BOOT_TARGET = DEFAULT_TARGET_NAME;
         FALLBACK_BOOT_TARGET = FALLBACK_TARGET_NAME;
-        // Note: Skip manual clearing of large buffers to avoid performance issues
-        // The buffers will be overwritten when used
-
-        // Use raw syscalls instead of std::fs to avoid blocking issues
-        extern "C" {
-            fn open(path: *const u8, flags: i32, mode: i32) -> i32;
-            fn read(fd: i32, buf: *mut u8, count: usize) -> isize;
-            fn close(fd: i32) -> i32;
-        }
-
-        let path_bytes = b"/etc/ni/ni.conf\0";
-        let fd = open(path_bytes.as_ptr(), 0, 0); // O_RDONLY = 0
-
-        if fd < 0 {
-            println!("         File open failed");
-            return ServiceCatalog {
-                services: &SERVICE_CONFIGS[0..0],
-                default_target: DEFAULT_BOOT_TARGET,
-                fallback_target: FALLBACK_BOOT_TARGET,
-            };
-        }
-
-        log_info("Unit catalog file opened");
-
-        let read_count = read(fd, config_buffer_ptr(), config_buffer_capacity());
-        close(fd);
-
-        if read_count <= 0 {
-            return ServiceCatalog {
-                services: &SERVICE_CONFIGS[0..0],
-                default_target: DEFAULT_BOOT_TARGET,
-                fallback_target: FALLBACK_BOOT_TARGET,
-            };
-        }
-
-        let usable = core::cmp::min(read_count as usize, config_buffer_capacity());
-
-    let mut diag_buf = [0u8; 32];
-    let bytes_read = itoa(usable as u64, &mut diag_buf);
-    println!("         Bytes read: {}", bytes_read);
-
-        let service_count = parse_unit_file(usable);
-
-        log_info("Unit catalog parsed successfully");
-
-        ServiceCatalog {
-            services: &SERVICE_CONFIGS[0..service_count],
-            default_target: DEFAULT_BOOT_TARGET,
-            fallback_target: FALLBACK_BOOT_TARGET,
+        
+        // Use std::fs for file operations - nrlib provides std I/O support
+        match fs::read("/etc/ni/ni.conf") {
+            Ok(content) => {
+                log_info("Unit catalog file opened");
+                
+                let usable = core::cmp::min(content.len(), config_buffer_capacity());
+                
+                // Copy content to CONFIG_BUFFER
+                let buffer_ptr = config_buffer_ptr();
+                for i in 0..usable {
+                    buffer_ptr.add(i).write(content[i]);
+                }
+                
+                let mut diag_buf = [0u8; 32];
+                let bytes_read = itoa(usable as u64, &mut diag_buf);
+                println!("         Bytes read: {}", bytes_read);
+                
+                let service_count = parse_unit_file(usable);
+                log_info("Unit catalog parsed successfully");
+                
+                ServiceCatalog {
+                    services: &SERVICE_CONFIGS[0..service_count],
+                    default_target: DEFAULT_BOOT_TARGET,
+                    fallback_target: FALLBACK_BOOT_TARGET,
+                }
+            }
+            Err(e) => {
+                eprintln!("         File open failed: {:?}", e);
+                ServiceCatalog {
+                    services: &SERVICE_CONFIGS[0..0],
+                    default_target: DEFAULT_BOOT_TARGET,
+                    fallback_target: FALLBACK_BOOT_TARGET,
+                }
+            }
         }
     }
 }
@@ -858,14 +842,23 @@ fn get_timestamp() -> u64 {
     }
 }
 
-/// Delay function
+/// Delay function with std thread sleeping support
 fn delay_ms(ms: u64) {
-    for _ in 0..(ms * 1000) {
-        unsafe { asm!("pause") }
+    // Try to use std::thread::sleep if available, fallback to spin loop
+    #[cfg(target_os = "none")]
+    {
+        // No std::thread in bare metal, use spin loop
+        for _ in 0..(ms * 1000) {
+            unsafe { asm!("pause") }
+        }
+    }
+    
+    #[cfg(not(target_os = "none"))]
+    {
+        // In normal environments, use proper sleep
+        std::thread::sleep(std::time::Duration::from_millis(ms));
     }
 }
-
-/// Main init loop with service supervision
 fn init_main() -> ! {
     let catalog = load_service_catalog();
     
