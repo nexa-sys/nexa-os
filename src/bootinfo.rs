@@ -5,7 +5,9 @@ use core::sync::atomic::{AtomicPtr, Ordering};
 
 use crate::safety::StaticArena;
 
-use nexa_boot_info::{flags, BootInfo, MemoryRegion};
+use nexa_boot_info::{
+    flags, BlockDeviceInfo, BootInfo, DeviceDescriptor, DeviceKind, MemoryRegion, NetworkDeviceInfo,
+};
 
 #[derive(Debug)]
 pub enum BootInfoError {
@@ -127,5 +129,57 @@ pub fn framebuffer_info() -> Option<nexa_boot_info::FramebufferInfo> {
             return None;
         }
         Some(info.framebuffer)
+    })
+}
+
+/// Returns the raw device descriptors provided by the UEFI loader.
+pub fn device_descriptors() -> Option<&'static [DeviceDescriptor]> {
+    with_boot_info(|info| {
+        if !info.has_device_table() {
+            return None;
+        }
+        Some(info.devices())
+    })
+}
+
+/// Returns the PCI device descriptors supplied by firmware.
+pub fn pci_devices() -> Option<impl Iterator<Item = &'static nexa_boot_info::PciDeviceInfo>> {
+    device_descriptors().map(|entries| {
+        entries.iter().filter_map(|desc| {
+            if desc.kind == DeviceKind::Pci {
+                // SAFETY: Descriptor was written by the trusted loader; caller promises not to mutate.
+                Some(unsafe { &desc.data.pci })
+            } else {
+                None
+            }
+        })
+    })
+}
+
+/// Returns the block device descriptors supplied by firmware.
+pub fn block_devices() -> Option<impl Iterator<Item = &'static BlockDeviceInfo>> {
+    device_descriptors().map(|entries| {
+        entries.iter().filter_map(|desc| {
+            if desc.kind == DeviceKind::Block {
+                // SAFETY: Descriptor payload is initialised by the UEFI loader.
+                Some(unsafe { &desc.data.block })
+            } else {
+                None
+            }
+        })
+    })
+}
+
+/// Returns the network device descriptors supplied by firmware.
+pub fn network_devices() -> Option<impl Iterator<Item = &'static NetworkDeviceInfo>> {
+    device_descriptors().map(|entries| {
+        entries.iter().filter_map(|desc| {
+            if desc.kind == DeviceKind::Network {
+                // SAFETY: Descriptor payload is initialised by the UEFI loader.
+                Some(unsafe { &desc.data.network })
+            } else {
+                None
+            }
+        })
     })
 }

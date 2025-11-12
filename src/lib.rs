@@ -29,7 +29,7 @@ pub mod vga_buffer;
 
 use core::panic::PanicInfo;
 use multiboot2::{BootInformation, BootInformationHeader};
-use nexa_boot_info::BootInfo;
+use nexa_boot_info::{device_flags, BootInfo};
 use x86_64::registers::control::{Cr0, Cr0Flags, Cr4, Cr4Flags};
 pub const MULTIBOOT_BOOTLOADER_MAGIC: u32 = 0x2BADB002; // Multiboot v1
 pub const MULTIBOOT2_BOOTLOADER_MAGIC: u32 = 0x36d76289; // Multiboot v2
@@ -175,6 +175,31 @@ pub fn kernel_main_uefi(boot_info_ptr: *const BootInfo) -> ! {
 
     if let Some(cmdline) = cmdline_effective {
         boot_stages::parse_boot_config(cmdline);
+    }
+
+    if let Some(pci_iter) = bootinfo::pci_devices() {
+        for dev in pci_iter {
+            let blk = if (dev.device_flags & device_flags::BLOCK) != 0 { "y" } else { "n" };
+            let net = if (dev.device_flags & device_flags::NETWORK) != 0 { "y" } else { "n" };
+            let usb = if (dev.device_flags & device_flags::USB_HOST) != 0 { "y" } else { "n" };
+            let gfx = if (dev.device_flags & device_flags::GRAPHICS) != 0 { "y" } else { "n" };
+            kinfo!(
+                "UEFI PCI {:04x}:{:02x}:{:02x}.{} vendor={:04x} device={:04x} class={:02x}-{:02x}-{:02x} caps[blk={},net={},usb={},gfx={}]",
+                dev.segment,
+                dev.bus,
+                dev.device,
+                dev.function,
+                dev.vendor_id,
+                dev.device_id,
+                dev.class_code,
+                dev.subclass,
+                dev.prog_if,
+                blk,
+                net,
+                usb,
+                gfx
+            );
+        }
     }
 
     if logger::tsc_frequency_is_guessed() {

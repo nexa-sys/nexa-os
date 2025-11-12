@@ -4,7 +4,10 @@
 pub const BOOT_INFO_SIGNATURE: [u8; 8] = *b"NEXAUEFI";
 
 /// Current version of the [`BootInfo`] structure.
-pub const BOOT_INFO_VERSION: u16 = 1;
+pub const BOOT_INFO_VERSION: u16 = 2;
+
+/// Maximum number of device descriptors exported in [`BootInfo`].
+pub const MAX_DEVICE_DESCRIPTORS: usize = 32;
 
 /// Bit flags stored in [`BootInfo::flags`].
 pub mod flags {
@@ -16,6 +19,38 @@ pub mod flags {
     pub const HAS_CMDLINE: u32 = 1 << 2;
     /// Framebuffer information (`gop`) is populated.
     pub const HAS_FRAMEBUFFER: u32 = 1 << 3;
+    /// Device descriptors are populated in [`BootInfo::devices`].
+    pub const HAS_DEVICE_TABLE: u32 = 1 << 4;
+}
+
+/// Flags describing capabilities/features of a device descriptor.
+pub mod device_flags {
+    /// Device provides block storage access (e.g. virtio-blk, AHCI).
+    pub const BLOCK: u16 = 1 << 0;
+    /// Device provides packet network access.
+    pub const NETWORK: u16 = 1 << 1;
+    /// Device exposes USB host controller capabilities.
+    pub const USB_HOST: u16 = 1 << 2;
+    /// Device exposes GPU/framebuffer functionality beyond GOP (e.g. PCI GPU).
+    pub const GRAPHICS: u16 = 1 << 3;
+    /// Device has MSI/MSI-X enabled during boot.
+    pub const MSI_ENABLED: u16 = 1 << 8;
+}
+
+/// Device kinds exported via [`DeviceDescriptor`].
+#[repr(u16)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum DeviceKind {
+    /// PCI/PCIe device configured by firmware.
+    Pci = 1,
+    /// ACPI-described platform device.
+    Acpi = 2,
+    /// Logical block device (Block I/O protocol).
+    Block = 3,
+    /// Network interface (Simple Network Protocol).
+    Network = 4,
+    /// Other/unknown.
+    Other = 0xFFFF,
 }
 
 /// A physical memory region handed off by the UEFI loader.
@@ -66,9 +101,223 @@ impl FramebufferInfo {
     }
 }
 
-/// Boot handoff structure written by the UEFI isolation layer.
+/// PCI BAR description captured after firmware initialisation.
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
+pub struct PciBarInfo {
+    pub base: u64,
+    pub length: u64,
+    pub bar_flags: u32,
+    pub reserved: u32,
+}
+
+impl PciBarInfo {
+    pub const fn empty() -> Self {
+        Self {
+            base: 0,
+            length: 0,
+            bar_flags: 0,
+            reserved: 0,
+        }
+    }
+}
+
+/// PCI specific data exported through [`DeviceDescriptor`].
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct PciDeviceInfo {
+    pub segment: u16,
+    pub bus: u8,
+    pub device: u8,
+    pub function: u8,
+    pub vendor_id: u16,
+    pub device_id: u16,
+    pub class_code: u8,
+    pub subclass: u8,
+    pub prog_if: u8,
+    pub revision: u8,
+    pub interrupt_line: u8,
+    pub interrupt_pin: u8,
+    pub header_type: u8,
+    pub reserved: u8,
+    pub device_flags: u16,
+    pub bars: [PciBarInfo; 6],
+}
+
+impl PciDeviceInfo {
+    pub const fn empty() -> Self {
+        Self {
+            segment: 0,
+            bus: 0,
+            device: 0,
+            function: 0,
+            vendor_id: 0,
+            device_id: 0,
+            class_code: 0,
+            subclass: 0,
+            prog_if: 0,
+            revision: 0,
+            interrupt_line: 0,
+            interrupt_pin: 0,
+            header_type: 0,
+            reserved: 0,
+            device_flags: 0,
+            bars: [PciBarInfo::empty(); 6],
+        }
+    }
+}
+
+/// Flags describing PCI BAR properties.
+pub mod bar_flags {
+    /// BAR targets I/O port space instead of MMIO.
+    pub const IO_SPACE: u32 = 1 << 0;
+    /// BAR is prefetchable.
+    pub const PREFETCHABLE: u32 = 1 << 1;
+    /// BAR spans a 64-bit address range.
+    pub const MEMORY_64BIT: u32 = 1 << 2;
+}
+
+/// Flags associated with [`BlockDeviceInfo`].
+pub mod block_flags {
+    /// Media is currently present in the device.
+    pub const MEDIA_PRESENT: u16 = 1 << 0;
+    /// Media is marked read only.
+    pub const READ_ONLY: u16 = 1 << 1;
+    /// Device reports removable media.
+    pub const REMOVABLE: u16 = 1 << 2;
+    /// Block device is a logical partition view (not whole disk).
+    pub const LOGICAL_PARTITION: u16 = 1 << 3;
+    /// Write caching is enabled on the device.
+    pub const WRITE_CACHING: u16 = 1 << 4;
+}
+
+/// Flags associated with [`NetworkDeviceInfo`].
+pub mod network_flags {
+    /// Link is reported as up.
+    pub const LINK_UP: u16 = 1 << 0;
+    /// Media is present/connected.
+    pub const MEDIA_PRESENT: u16 = 1 << 1;
+    /// Device allows MAC address changes.
+    pub const MAC_MUTABLE: u16 = 1 << 2;
+    /// Multiple TX operations supported concurrently.
+    pub const MULTIPLE_TX: u16 = 1 << 3;
+}
+
+/// Logical block device information (UEFI Block I/O media).
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct BlockDeviceInfo {
+    pub pci_segment: u16,
+    pub pci_bus: u8,
+    pub pci_device: u8,
+    pub pci_function: u8,
+    pub block_size: u32,
+    pub last_block: u64,
+    pub media_id: u32,
+    pub io_align: u32,
+    pub logical_blocks_per_physical: u32,
+    pub optimal_transfer_granularity: u32,
+    pub lowest_aligned_lba: u64,
+    pub flags: u16,
+    pub reserved: [u8; 46],
+}
+
+impl BlockDeviceInfo {
+    pub const fn empty() -> Self {
+        Self {
+            pci_segment: 0,
+            pci_bus: 0,
+            pci_device: 0,
+            pci_function: 0,
+            block_size: 0,
+            last_block: 0,
+            media_id: 0,
+            io_align: 0,
+            logical_blocks_per_physical: 0,
+            optimal_transfer_granularity: 0,
+            lowest_aligned_lba: 0,
+            flags: 0,
+            reserved: [0; 46],
+        }
+    }
+}
+
+/// Network device information (UEFI Simple Network Protocol).
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct NetworkDeviceInfo {
+    pub pci_segment: u16,
+    pub pci_bus: u8,
+    pub pci_device: u8,
+    pub pci_function: u8,
+    pub if_type: u8,
+    pub mac_len: u8,
+    pub mac_address: [u8; 32],
+    pub max_packet_size: u32,
+    pub link_speed_mbps: u32,
+    pub receive_filter_mask: u32,
+    pub receive_filter_setting: u32,
+    pub flags: u16,
+    pub reserved: [u8; 46],
+}
+
+impl NetworkDeviceInfo {
+    pub const fn empty() -> Self {
+        Self {
+            pci_segment: 0,
+            pci_bus: 0,
+            pci_device: 0,
+            pci_function: 0,
+            if_type: 0,
+            mac_len: 0,
+            mac_address: [0; 32],
+            max_packet_size: 0,
+            link_speed_mbps: 0,
+            receive_filter_mask: 0,
+            receive_filter_setting: 0,
+            flags: 0,
+            reserved: [0; 46],
+        }
+    }
+}
+
+/// Fixed-size payload used for device descriptors.
+pub const DEVICE_DATA_SIZE: usize = 192;
+
+/// Union used to pack various device payloads.
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub union DeviceData {
+    pub pci: PciDeviceInfo,
+    pub block: BlockDeviceInfo,
+    pub network: NetworkDeviceInfo,
+    pub raw: [u8; DEVICE_DATA_SIZE],
+}
+
+/// Generic device descriptor.
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct DeviceDescriptor {
+    pub kind: DeviceKind,
+    pub flags: u16,
+    pub reserved: u32,
+    pub data: DeviceData,
+}
+
+impl DeviceDescriptor {
+    pub const fn empty() -> Self {
+        Self {
+            kind: DeviceKind::Other,
+            flags: 0,
+            reserved: 0,
+            data: DeviceData { raw: [0; DEVICE_DATA_SIZE] },
+        }
+    }
+}
+
+/// Boot handoff structure written by the UEFI isolation layer.
+#[repr(C)]
+#[derive(Copy, Clone)]
 pub struct BootInfo {
     /// Must contain [`BOOT_INFO_SIGNATURE`].
     pub signature: [u8; 8],
@@ -86,8 +335,13 @@ pub struct BootInfo {
     pub cmdline: MemoryRegion,
     /// Framebuffer information if available.
     pub framebuffer: FramebufferInfo,
-    /// Reserved for future extensions (ABI padding to 128 bytes total).
-    pub reserved: [u8; 32],
+    /// Number of valid entries in `devices`.
+    pub device_count: u16,
+    pub _padding: u16,
+    /// Firmware-prepared device descriptors.
+    pub devices: [DeviceDescriptor; MAX_DEVICE_DESCRIPTORS],
+    /// Reserved for future extensions.
+    pub reserved: [u8; 64],
 }
 
 impl BootInfo {
@@ -114,5 +368,16 @@ impl BootInfo {
     /// Returns whether framebuffer data is present.
     pub fn has_framebuffer(&self) -> bool {
         (self.flags & flags::HAS_FRAMEBUFFER) != 0 && self.framebuffer.is_valid()
+    }
+
+    /// Returns `true` if the device table contains entries.
+    pub fn has_device_table(&self) -> bool {
+        (self.flags & flags::HAS_DEVICE_TABLE) != 0 && self.device_count != 0
+    }
+
+    /// Returns the populated device descriptors.
+    pub fn devices(&self) -> &[DeviceDescriptor] {
+        let count = core::cmp::min(self.device_count as usize, MAX_DEVICE_DESCRIPTORS);
+        &self.devices[..count]
     }
 }

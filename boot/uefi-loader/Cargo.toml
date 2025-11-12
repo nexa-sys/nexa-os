@@ -7,7 +7,10 @@ publish = false
 
 [lib]
 path = "src/lib.rs"
-crate-type = ["cdylib"]
+
+[[bin]]
+name = "nexa-uefi-loader"
+path = "src/main.rs"
 
 [profile.dev]
 panic = "abort"
@@ -16,7 +19,6 @@ panic = "abort"
 panic = "abort"
 
 [dependencies]
-uefi = { version = "0.30", default-features = false, features = ["alloc"] }
-uefi-services = { version = "0.27", default-features = false }
+uefi = { version = "=0.28.0", default-features = false, features = ["alloc", "global_allocator", "logger", "panic_handler"] }
 log = { version = "0.4", default-features = false }
 nexa_boot_info = { path = "../boot-info" }
