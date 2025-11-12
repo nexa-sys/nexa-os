@@ -21,6 +21,12 @@ Restart=always\n\
 RestartSec=1\n\
 RestartLimitIntervalSec=60\n\
 RestartLimitBurst=5\n\
+WantedBy=multi-user.target rescue.target\n\
+\n\
+[Service \"uefi-compatd\"]\n\
+Description=UEFI compatibility bridge\n\
+ExecStart=/sbin/uefi-compatd\n\
+Restart=no\n\
 WantedBy=multi-user.target rescue.target\n";
 
 const EXT2_READ_CACHE_SIZE: usize = 8 * 1024 * 1024; // 8 MiB scratch buffer for ext2 reads

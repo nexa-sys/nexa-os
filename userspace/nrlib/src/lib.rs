@@ -1,8 +1,11 @@
-#![no_std]
-#![feature(lang_items)]
+#![cfg_attr(not(feature = "std"), no_std)]
+#![cfg_attr(all(not(feature = "std"), feature = "panic-handler"), feature(lang_items))]
 #![feature(linkage)]
 #![feature(thread_local)]
 #![feature(c_variadic)]
+
+#[cfg(feature = "std")]
+extern crate std;
 
 use core::{
     arch::asm,
@@ -12,6 +15,7 @@ use core::{
     ptr,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
+use nexa_boot_info::{BlockDeviceInfo, FramebufferInfo, NetworkDeviceInfo};
 
 // Indicate to std that we're in single-threaded mode
 // This may cause std to skip locking entirely for I/O
@@ -94,6 +98,71 @@ const SYS_RUNLEVEL: u64 = 231;
 const SYS_USER_ADD: u64 = 220;
 const SYS_USER_LOGIN: u64 = 221;
 const SYS_GETERRNO: u64 = 201;
+const SYS_UEFI_GET_COUNTS: u64 = 240;
+const SYS_UEFI_GET_FB_INFO: u64 = 241;
+const SYS_UEFI_GET_NET_INFO: u64 = 242;
+const SYS_UEFI_GET_BLOCK_INFO: u64 = 243;
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct UefiCompatCounts {
+    pub framebuffer: u8,
+    pub network: u8,
+    pub block: u8,
+    pub _reserved: u8,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct UefiNetworkDescriptor {
+    pub info: NetworkDeviceInfo,
+    pub mmio_base: u64,
+    pub mmio_length: u64,
+    pub bar_flags: u32,
+    pub interrupt_line: u8,
+    pub interrupt_pin: u8,
+    pub _reserved: [u8; 2],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct UefiBlockDescriptor {
+    pub info: BlockDeviceInfo,
+    pub mmio_base: u64,
+    pub mmio_length: u64,
+    pub bar_flags: u32,
+    pub interrupt_line: u8,
+    pub interrupt_pin: u8,
+    pub _reserved: [u8; 2],
+}
+
+impl Default for UefiNetworkDescriptor {
+    fn default() -> Self {
+        Self {
+            info: NetworkDeviceInfo::empty(),
+            mmio_base: 0,
+            mmio_length: 0,
+            bar_flags: 0,
+            interrupt_line: 0,
+            interrupt_pin: 0,
+            _reserved: [0; 2],
+        }
+    }
+}
+
+impl Default for UefiBlockDescriptor {
+    fn default() -> Self {
+        Self {
+            info: BlockDeviceInfo::empty(),
+            mmio_base: 0,
+            mmio_length: 0,
+            bar_flags: 0,
+            interrupt_line: 0,
+            interrupt_pin: 0,
+            _reserved: [0; 2],
+        }
+    }
+}
 
 pub(crate) const EINVAL: i32 = 22;
 pub(crate) const ENOENT: i32 = 2;
@@ -101,6 +170,7 @@ pub(crate) const EAGAIN: i32 = 11;
 pub(crate) const ENOMEM: i32 = 12;
 pub(crate) const ENOSYS: i32 = 38;
 pub(crate) const ENOTTY: i32 = 25;
+pub(crate) const ENODEV: i32 = 19;
 
 // Minimal syscall wrappers that match the userspace convention (int 0x81)
 #[inline(always)]
@@ -134,6 +204,34 @@ pub fn syscall1(n: u64, a1: u64) -> u64 {
 #[inline(always)]
 pub fn syscall0(n: u64) -> u64 {
     syscall3(n, 0, 0, 0)
+}
+
+#[inline(always)]
+pub fn uefi_get_counts(out: &mut UefiCompatCounts) -> i32 {
+    translate_ret_i32(syscall1(SYS_UEFI_GET_COUNTS, out as *mut _ as u64))
+}
+
+#[inline(always)]
+pub fn uefi_get_framebuffer(info: &mut FramebufferInfo) -> i32 {
+    translate_ret_i32(syscall1(SYS_UEFI_GET_FB_INFO, info as *mut _ as u64))
+}
+
+#[inline(always)]
+pub fn uefi_get_network(index: usize, info: &mut UefiNetworkDescriptor) -> i32 {
+    translate_ret_i32(syscall2(
+        SYS_UEFI_GET_NET_INFO,
+        index as u64,
+        info as *mut _ as u64,
+    ))
+}
+
+#[inline(always)]
+pub fn uefi_get_block(index: usize, info: &mut UefiBlockDescriptor) -> i32 {
+    translate_ret_i32(syscall2(
+        SYS_UEFI_GET_BLOCK_INFO,
+        index as u64,
+        info as *mut _ as u64,
+    ))
 }
 
 // errno support (global for now, single-process environment)

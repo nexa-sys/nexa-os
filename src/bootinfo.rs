@@ -7,6 +7,7 @@ use crate::safety::StaticArena;
 
 use nexa_boot_info::{
     flags, BlockDeviceInfo, BootInfo, DeviceDescriptor, DeviceKind, MemoryRegion, NetworkDeviceInfo,
+    PciDeviceInfo,
 };
 
 #[derive(Debug)]
@@ -180,6 +181,22 @@ pub fn network_devices() -> Option<impl Iterator<Item = &'static NetworkDeviceIn
             } else {
                 None
             }
+        })
+    })
+}
+
+pub fn pci_device_by_location(
+    segment: u16,
+    bus: u8,
+    device: u8,
+    function: u8,
+) -> Option<&'static PciDeviceInfo> {
+    pci_devices().and_then(|mut iter| {
+        iter.find(|dev| {
+            dev.segment == segment
+                && dev.bus == bus
+                && dev.device == device
+                && dev.function == function
         })
     })
 }

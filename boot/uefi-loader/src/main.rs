@@ -9,24 +9,26 @@ use core::mem;
 use core::ptr;
 
 use nexa_boot_info::{
+    bar_flags,
     block_flags,
     device_flags,
     flags,
     network_flags,
+    BlockDeviceInfo,
     BootInfo,
     DeviceDescriptor,
     DeviceKind,
     FramebufferInfo,
     MemoryRegion,
+    NetworkDeviceInfo,
     PciBarInfo,
     PciDeviceInfo,
-    BlockDeviceInfo,
-    NetworkDeviceInfo,
     MAX_DEVICE_DESCRIPTORS,
 };
 use r_efi::base as raw_base;
 use r_efi::protocols::pci_io;
 use uefi::prelude::*;
+use uefi::Guid;
 use uefi::proto::console::gop::{GraphicsOutput, PixelFormat};
 use uefi::proto::device_path::{DevicePath, DevicePathNodeEnum};
 use uefi::proto::loaded_image::LoadedImage;
@@ -34,13 +36,11 @@ use uefi::proto::media::block::BlockIO;
 use uefi::proto::media::file::{Directory, File, FileAttribute, FileMode, RegularFile};
 use uefi::proto::media::fs::SimpleFileSystem;
 use uefi::proto::network::snp::{NetworkState, SimpleNetwork};
-use uefi::proto::Protocol;
 use uefi::proto::unsafe_protocol;
 use uefi::table::boot::{AllocateType, MemoryType, OpenProtocolAttributes, OpenProtocolParams, SearchType};
 use uefi::Identify;
 use uefi::Error;
-use uefi::{cstr16, guid, Handle, Status};
-use uefi::Guid;
+use uefi::{cstr16, Handle, Status};
 
 const KERNEL_PATH: &uefi::CStr16 = cstr16!("\\EFI\\NEXAOS\\KERNEL.ELF");
 const INITRAMFS_PATH: &uefi::CStr16 = cstr16!("\\EFI\\NEXAOS\\INITRAMFS.CPIO");
@@ -64,6 +64,107 @@ struct PciAddress {
     function: u8,
 }
 
+// Convert the r_efi GUID to the `uefi::Guid` type expected by the
+// `unsafe_protocol` macro. `pci_io::PROTOCOL_GUID` is a
+// `r_efi::base::Guid` so we copy its fields into a `uefi::Guid`
+// constant and reference that in the attribute.
+const PCI_IO_GUID: Guid = Guid::from_bytes(*pci_io::PROTOCOL_GUID.as_bytes());
+
+#[repr(transparent)]
+#[unsafe_protocol(PCI_IO_GUID)]
+struct PciIo(pci_io::Protocol);
+
+#[derive(Clone, Copy)]
+struct PciSnapshot {
+    vendor_id: u16,
+    device_id: u16,
+    class_code: u8,
+    subclass: u8,
+    prog_if: u8,
+    revision: u8,
+    header_type: u8,
+    interrupt_line: u8,
+    interrupt_pin: u8,
+    bars: [PciBarInfo; 6],
+}
+
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+struct AcpiAddressSpaceDescriptor {
+    desc: u8,
+    len: u8,
+    res_type: u8,
+    gen_flags: u8,
+    specific_flags: u8,
+    addr_space_granularity: u64,
+    addr_range_min: u64,
+    addr_range_max: u64,
+    addr_translation_offset: u64,
+    addr_len: u64,
+}
+
+const ACPI_ADDRESS_SPACE_DESCRIPTOR: u8 = 0x8A;
+
+impl PciIo {
+    fn protocol_mut(&self) -> *mut pci_io::Protocol {
+        self as *const _ as *mut pci_io::Protocol
+    }
+
+    fn read_config_u32(&self, offset: u32) -> Result<u32, Status> {
+        let mut value = 0u32;
+        let status = unsafe {
+            (self.0.pci.read)(
+                self.protocol_mut(),
+                pci_io::WIDTH_UINT32,
+                offset,
+                1,
+                (&mut value as *mut u32).cast::<c_void>(),
+            )
+        };
+        if status == raw_base::Status::SUCCESS {
+            Ok(value)
+        } else {
+            Err(Status(status.as_usize()))
+        }
+    }
+
+    fn read_config_u16(&self, offset: u32) -> Result<u16, Status> {
+        let mut value = 0u16;
+        let status = unsafe {
+            (self.0.pci.read)(
+                self.protocol_mut(),
+                pci_io::WIDTH_UINT16,
+                offset,
+                1,
+                (&mut value as *mut u16).cast::<c_void>(),
+            )
+        };
+        if status == raw_base::Status::SUCCESS {
+            Ok(value)
+        } else {
+            Err(Status(status.as_usize()))
+        }
+    }
+
+    fn read_config_u8(&self, offset: u32) -> Result<u8, Status> {
+        let mut value = 0u8;
+        let status = unsafe {
+            (self.0.pci.read)(
+                self.protocol_mut(),
+                pci_io::WIDTH_UINT8,
+                offset,
+                1,
+                (&mut value as *mut u8).cast::<c_void>(),
+            )
+        };
+        if status == raw_base::Status::SUCCESS {
+            Ok(value)
+        } else {
+            Err(Status(status.as_usize()))
+        }
+    }
+}
+
 impl DeviceTable {
     const fn new() -> Self {
         Self {
@@ -76,12 +177,28 @@ impl DeviceTable {
         self.count as usize >= MAX_DEVICE_DESCRIPTORS
     }
 
-    fn add_or_update(&mut self, address: PciAddress, capability: u16) {
+    fn push_descriptor(&mut self, descriptor: DeviceDescriptor) -> bool {
+        if self.is_full() {
+            return false;
+        }
+        let idx = self.count as usize;
+        self.entries[idx] = descriptor;
+        self.count += 1;
+        true
+    }
+
+    fn ensure_pci_entry<F>(&mut self, address: PciAddress, capability: u16, mut update: F)
+    where
+        F: FnMut(&mut PciDeviceInfo),
+    {
         if let Some(descriptor) = self.find_pci_mut(address) {
-            descriptor.flags |= capability;
             unsafe {
                 let pci = &mut descriptor.data.pci;
-                pci.device_flags |= capability;
+                if capability != 0 {
+                    pci.device_flags |= capability;
+                }
+                update(pci);
+                descriptor.flags = pci.device_flags;
             }
             return;
         }
@@ -95,11 +212,12 @@ impl DeviceTable {
         pci_info.bus = address.bus;
         pci_info.device = address.device;
         pci_info.function = address.function;
-        pci_info.device_flags = capability;
+        pci_info.device_flags |= capability;
+        update(&mut pci_info);
 
         let mut descriptor = DeviceDescriptor::empty();
         descriptor.kind = DeviceKind::Pci;
-        descriptor.flags = capability;
+        descriptor.flags = pci_info.device_flags;
         descriptor.data = nexa_boot_info::DeviceData { pci: pci_info };
 
         let idx = self.count as usize;
@@ -159,18 +277,13 @@ fn is_pci_root_hid(hid: u32) -> bool {
 
 fn collect_device_table(bs: &BootServices, image: Handle) -> DeviceTable {
     let mut table = DeviceTable::new();
-    collect_pci_devices_for_protocol::<BlockIO>(bs, image, &mut table, device_flags::BLOCK);
-    collect_pci_devices_for_protocol::<SimpleNetwork>(bs, image, &mut table, device_flags::NETWORK);
+    collect_block_devices(bs, image, &mut table);
+    collect_network_devices(bs, image, &mut table);
     table
 }
 
-fn collect_pci_devices_for_protocol<P: Protocol + ?Sized>(
-    bs: &BootServices,
-    image: Handle,
-    table: &mut DeviceTable,
-    capability: u16,
-) {
-    let Ok(handles) = bs.locate_handle_buffer(SearchType::ByProtocol(&P::GUID)) else {
+fn collect_block_devices(bs: &BootServices, image: Handle, table: &mut DeviceTable) {
+    let Ok(handles) = bs.locate_handle_buffer(SearchType::ByProtocol(&BlockIO::GUID)) else {
         return;
     };
 
@@ -178,10 +291,352 @@ fn collect_pci_devices_for_protocol<P: Protocol + ?Sized>(
         if table.is_full() {
             break;
         }
-        if let Some(address) = pci_address_for_handle(bs, image, *handle) {
-            table.add_or_update(address, capability);
+
+        let Some(address) = pci_address_for_handle(bs, image, *handle) else {
+            continue;
+        };
+
+        let block_proto = unsafe {
+            bs.open_protocol::<BlockIO>(
+                OpenProtocolParams {
+                    handle: *handle,
+                    agent: image,
+                    controller: None,
+                },
+                OpenProtocolAttributes::GetProtocol,
+            )
+        };
+        let Ok(block_proto) = block_proto else {
+            continue;
+        };
+        let Some(block_io) = block_proto.get() else {
+            continue;
+        };
+        let media = block_io.media();
+
+        let pci_snapshot = pci_snapshot_for_handle(bs, image, *handle);
+        table.ensure_pci_entry(address, device_flags::BLOCK, |pci| {
+            if let Some(snapshot) = pci_snapshot.as_ref() {
+                apply_pci_snapshot(pci, snapshot);
+            }
+        });
+
+        let block_info = build_block_info(address, media);
+        let mut descriptor = DeviceDescriptor::empty();
+        descriptor.kind = DeviceKind::Block;
+        descriptor.flags = device_flags::BLOCK;
+        descriptor.data = nexa_boot_info::DeviceData { block: block_info };
+        if !table.push_descriptor(descriptor) {
+            break;
         }
     }
+}
+
+fn collect_network_devices(bs: &BootServices, image: Handle, table: &mut DeviceTable) {
+    let Ok(handles) = bs.locate_handle_buffer(SearchType::ByProtocol(&SimpleNetwork::GUID)) else {
+        return;
+    };
+
+    for handle in handles.iter() {
+        if table.is_full() {
+            break;
+        }
+
+        let Some(address) = pci_address_for_handle(bs, image, *handle) else {
+            continue;
+        };
+
+        let snp_proto = unsafe {
+            bs.open_protocol::<SimpleNetwork>(
+                OpenProtocolParams {
+                    handle: *handle,
+                    agent: image,
+                    controller: None,
+                },
+                OpenProtocolAttributes::GetProtocol,
+            )
+        };
+        let Ok(snp_proto) = snp_proto else {
+            continue;
+        };
+        let Some(snp) = snp_proto.get() else {
+            continue;
+        };
+        let mode = snp.mode();
+
+        let pci_snapshot = pci_snapshot_for_handle(bs, image, *handle);
+        table.ensure_pci_entry(address, device_flags::NETWORK, |pci| {
+            if let Some(snapshot) = pci_snapshot.as_ref() {
+                apply_pci_snapshot(pci, snapshot);
+            }
+        });
+
+        let network_info = build_network_info(address, mode);
+        let mut descriptor = DeviceDescriptor::empty();
+        descriptor.kind = DeviceKind::Network;
+        descriptor.flags = device_flags::NETWORK;
+        descriptor.data = nexa_boot_info::DeviceData { network: network_info };
+        if !table.push_descriptor(descriptor) {
+            break;
+        }
+    }
+}
+
+fn pci_snapshot_for_handle(bs: &BootServices, image: Handle, handle: Handle) -> Option<PciSnapshot> {
+    let pci_proto = unsafe {
+        bs.open_protocol::<PciIo>(
+            OpenProtocolParams {
+                handle,
+                agent: image,
+                controller: None,
+            },
+            OpenProtocolAttributes::GetProtocol,
+        )
+    }
+    .ok()?;
+
+    let snapshot = pci_proto.get().and_then(|pci| read_pci_snapshot(bs, pci));
+    snapshot
+}
+
+fn apply_pci_snapshot(target: &mut PciDeviceInfo, snapshot: &PciSnapshot) {
+    target.vendor_id = snapshot.vendor_id;
+    target.device_id = snapshot.device_id;
+    target.class_code = snapshot.class_code;
+    target.subclass = snapshot.subclass;
+    target.prog_if = snapshot.prog_if;
+    target.revision = snapshot.revision;
+    target.header_type = snapshot.header_type;
+    target.interrupt_line = snapshot.interrupt_line;
+    target.interrupt_pin = snapshot.interrupt_pin;
+    target.bars.copy_from_slice(&snapshot.bars);
+}
+
+fn build_block_info(
+    address: PciAddress,
+    media: &uefi::proto::media::block::BlockIOMedia,
+) -> BlockDeviceInfo {
+    let mut info = BlockDeviceInfo::empty();
+    info.pci_segment = address.segment;
+    info.pci_bus = address.bus;
+    info.pci_device = address.device;
+    info.pci_function = address.function;
+    info.block_size = media.block_size();
+    info.last_block = media.last_block();
+    info.media_id = media.media_id();
+    info.io_align = media.io_align();
+    info.logical_blocks_per_physical = media.logical_blocks_per_physical_block();
+    info.optimal_transfer_granularity = media.optimal_transfer_length_granularity();
+    info.lowest_aligned_lba = media.lowest_aligned_lba();
+
+    let mut flags = 0u16;
+    if media.is_media_present() {
+        flags |= block_flags::MEDIA_PRESENT;
+    }
+    if media.is_read_only() {
+        flags |= block_flags::READ_ONLY;
+    }
+    if media.is_removable_media() {
+        flags |= block_flags::REMOVABLE;
+    }
+    if media.is_logical_partition() {
+        flags |= block_flags::LOGICAL_PARTITION;
+    }
+    if media.is_write_caching() {
+        flags |= block_flags::WRITE_CACHING;
+    }
+    info.flags = flags;
+
+    info
+}
+
+fn build_network_info(
+    address: PciAddress,
+    mode: &uefi::proto::network::snp::NetworkMode,
+) -> NetworkDeviceInfo {
+    let mut info = NetworkDeviceInfo::empty();
+    info.pci_segment = address.segment;
+    info.pci_bus = address.bus;
+    info.pci_device = address.device;
+    info.pci_function = address.function;
+    info.if_type = mode.if_type;
+
+    let mac_len = mode
+        .hw_address_size
+        .min(info.mac_address.len() as u32) as usize;
+    info.mac_len = mac_len as u8;
+    if mac_len > 0 {
+        info.mac_address[..mac_len].copy_from_slice(&mode.current_address.0[..mac_len]);
+    }
+
+    info.max_packet_size = mode.max_packet_size;
+    info.receive_filter_mask = mode.receive_filter_mask;
+    info.receive_filter_setting = mode.receive_filter_setting;
+    info.link_speed_mbps = 0;
+
+    let mut flags = 0u16;
+    if mode.media_present {
+        flags |= network_flags::MEDIA_PRESENT;
+    }
+    if mode.media_present && mode.state == NetworkState::INITIALIZED {
+        flags |= network_flags::LINK_UP;
+    }
+    if mode.mac_address_changeable {
+        flags |= network_flags::MAC_MUTABLE;
+    }
+    if mode.multiple_tx_supported {
+        flags |= network_flags::MULTIPLE_TX;
+    }
+    info.flags = flags;
+
+    info
+}
+
+fn read_pci_snapshot(bs: &BootServices, pci_io: &PciIo) -> Option<PciSnapshot> {
+    let vendor_id = pci_io.read_config_u16(0x00).ok()?;
+    if vendor_id == 0xFFFF {
+        return None;
+    }
+    let device_id = pci_io.read_config_u16(0x02).ok()?;
+    let class_reg = pci_io.read_config_u32(0x08).ok()?;
+    let header_reg = pci_io.read_config_u32(0x0C).ok()?;
+    let interrupt_reg = pci_io.read_config_u32(0x3C).unwrap_or(0);
+
+    let header_type = ((header_reg >> 16) & 0xFF) as u8;
+    let bars = read_pci_bars(bs, pci_io, header_type);
+
+    Some(PciSnapshot {
+        vendor_id,
+        device_id,
+        class_code: ((class_reg >> 24) & 0xFF) as u8,
+        subclass: ((class_reg >> 16) & 0xFF) as u8,
+        prog_if: ((class_reg >> 8) & 0xFF) as u8,
+        revision: (class_reg & 0xFF) as u8,
+        header_type,
+        interrupt_line: (interrupt_reg & 0xFF) as u8,
+        interrupt_pin: ((interrupt_reg >> 8) & 0xFF) as u8,
+        bars,
+    })
+}
+
+fn read_pci_bars(bs: &BootServices, pci_io: &PciIo, header_type: u8) -> [PciBarInfo; 6] {
+    let mut bars = [PciBarInfo::empty(); 6];
+    let layout = header_type & 0x7F;
+    let max_bars = match layout {
+        0x00 => 6,
+        0x01 => 2,
+        _ => 0,
+    };
+
+    let mut bar_index = 0usize;
+    let mut slot = 0usize;
+    while bar_index < max_bars && slot < bars.len() {
+        let offset = 0x10 + (bar_index * 4) as u32;
+        let raw = match pci_io.read_config_u32(offset) {
+            Ok(value) => value,
+            Err(_) => {
+                bar_index += 1;
+                continue;
+            }
+        };
+        if raw == 0 {
+            bar_index += 1;
+            continue;
+        }
+
+        let mut flags = 0u32;
+        let mut consumed = 1usize;
+        let mut base = 0u64;
+        let mut length = 0u64;
+
+        if (raw & 0x1) != 0 {
+            base = (raw & 0xFFFF_FFFC) as u64;
+            flags |= bar_flags::IO_SPACE;
+        } else {
+            if (raw & 0x8) != 0 {
+                flags |= bar_flags::PREFETCHABLE;
+            }
+            base = (raw & 0xFFFF_FFF0) as u64;
+            let mem_type = (raw >> 1) & 0x3;
+            if mem_type == 0b10 {
+                let high = pci_io.read_config_u32(offset + 4).unwrap_or(0);
+                base |= (high as u64) << 32;
+                flags |= bar_flags::MEMORY_64BIT;
+                consumed = 2;
+            }
+        }
+
+        if let Some((desc_base, desc_len)) = query_bar_descriptor(bs, pci_io, bar_index as u8) {
+            if desc_base != 0 {
+                base = desc_base;
+            }
+            if desc_len != 0 {
+                length = desc_len;
+            }
+        }
+
+        bars[slot] = PciBarInfo {
+            base,
+            length,
+            bar_flags: flags,
+            reserved: 0,
+        };
+
+        slot += 1;
+        bar_index += consumed;
+    }
+
+    bars
+}
+
+fn query_bar_descriptor(
+    bs: &BootServices,
+    pci_io: &PciIo,
+    bar_index: u8,
+) -> Option<(u64, u64)> {
+    let mut _attributes: pci_io::Attribute = 0;
+    let mut resource_ptr: *mut c_void = ptr::null_mut();
+    let status = unsafe {
+        (pci_io.0.get_bar_attributes)(
+            pci_io.protocol_mut(),
+            bar_index,
+            &mut _attributes,
+            &mut resource_ptr,
+        )
+    };
+    if status != raw_base::Status::SUCCESS {
+        return None;
+    }
+
+    let mut result = None;
+    if !resource_ptr.is_null() {
+        unsafe {
+            if let Some(descriptor) = parse_address_space_descriptor(resource_ptr.cast::<c_void>())
+            {
+                result = Some((descriptor.addr_range_min, descriptor.addr_len));
+            }
+        }
+    }
+
+    if !resource_ptr.is_null() {
+        unsafe {
+            let _ = bs.free_pool(resource_ptr.cast::<u8>());
+        }
+    }
+
+    result
+}
+
+fn parse_address_space_descriptor(ptr: *const c_void) -> Option<AcpiAddressSpaceDescriptor> {
+    if ptr.is_null() {
+        return None;
+    }
+
+    let descriptor = unsafe { ptr::read_unaligned(ptr.cast::<AcpiAddressSpaceDescriptor>()) };
+    if descriptor.desc != ACPI_ADDRESS_SPACE_DESCRIPTOR {
+        return None;
+    }
+    Some(descriptor)
 }
 
 fn pci_address_for_handle(bs: &BootServices, image: Handle, handle: Handle) -> Option<PciAddress> {

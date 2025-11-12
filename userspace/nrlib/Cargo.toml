@@ -12,5 +12,7 @@ panic = "abort"
 [features]
 default = ["panic-handler"]
 panic-handler = []
+std = []
 
 [dependencies]
+nexa_boot_info = { path = "../../boot/boot-info" }

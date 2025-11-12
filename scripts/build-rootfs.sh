@@ -46,6 +46,10 @@ required-features = []
 name = "login"
 path = "../../userspace/login.rs"
 
+[[bin]]
+name = "uefi-compatd"
+path = "../../userspace/uefi_compatd.rs"
+
 [profile.release]
 panic = "abort"
 opt-level = 2
@@ -54,11 +58,13 @@ opt-level = 2
 lto = false
 
 [dependencies]
-nrlib = { path = "../../userspace/nrlib", optional = true }
+nrlib = { path = "../../userspace/nrlib", optional = true, default-features = false }
+nexa_boot_info = { path = "../../boot/boot-info" }
 
 [features]
 default = ["use-nrlib"]
-use-nrlib = ["nrlib"]
+use-nrlib = ["nrlib", "nrlib/panic-handler"]
+use-nrlib-std = ["nrlib", "nrlib/std"]
 
 EOF
 
@@ -106,18 +112,26 @@ RUSTFLAGS="$STD_RUSTFLAGS" \
     cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release \
     --bin login
 
+# Build uefi-compatd
+echo "Building uefi-compatd with std..."
+RUSTFLAGS="$STD_RUSTFLAGS" \
+    cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release \
+    --bin uefi-compatd --no-default-features --features use-nrlib-std
+
 # Copy binaries to rootfs
 echo "Copying binaries to rootfs..."
 cp "target/x86_64-nexaos-userspace/release/ni" "$ROOTFS_DIR/sbin/ni"
 cp "target/x86_64-nexaos-userspace/release/getty" "$ROOTFS_DIR/sbin/getty"
 cp "target/x86_64-nexaos-userspace/release/sh" "$ROOTFS_DIR/bin/sh"
 cp "target/x86_64-nexaos-userspace/release/login" "$ROOTFS_DIR/bin/login"
+cp "target/x86_64-nexaos-userspace/release/uefi-compatd" "$ROOTFS_DIR/sbin/uefi-compatd"
 
 # Strip symbols
 strip --strip-all "$ROOTFS_DIR/sbin/ni" 2>/dev/null || true
 strip --strip-all "$ROOTFS_DIR/sbin/getty" 2>/dev/null || true
 strip --strip-all "$ROOTFS_DIR/bin/sh" 2>/dev/null || true
 strip --strip-all "$ROOTFS_DIR/bin/login" 2>/dev/null || true
+strip --strip-all "$ROOTFS_DIR/sbin/uefi-compatd" 2>/dev/null || true
 
 # Copy dynamic linker for dynamically linked programs
 echo "Copying dynamic linker..."

@@ -26,6 +26,7 @@ pub mod serial;
 pub mod signal;
 pub mod syscall;
 pub mod vga_buffer;
+pub mod uefi_compat;
 
 use core::panic::PanicInfo;
 use multiboot2::{BootInformation, BootInformationHeader};
@@ -36,6 +37,7 @@ pub const MULTIBOOT2_BOOTLOADER_MAGIC: u32 = 0x36d76289; // Multiboot v2
 
 pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
     bootinfo::clear();
+    uefi_compat::reset();
 
     // Stage 1: Bootloader has loaded us (GRUB/Multiboot2)
     let freq_hz = logger::init();
@@ -138,6 +140,8 @@ pub fn kernel_main_uefi(boot_info_ptr: *const BootInfo) -> ! {
     let freq_hz = logger::init();
     let boot_info = unsafe { &*boot_info_ptr };
 
+    uefi_compat::reset();
+
     if let Err(err) = bootinfo::set(boot_info) {
         match err {
             bootinfo::BootInfoError::InvalidSignature => {
@@ -156,6 +160,8 @@ pub fn kernel_main_uefi(boot_info_ptr: *const BootInfo) -> ! {
             logger::set_max_level(level);
         }
     }
+
+    uefi_compat::init();
 
     if let Some(fb) = bootinfo::framebuffer_info() {
         framebuffer::install_from_bootinfo(&fb);
@@ -179,10 +185,26 @@ pub fn kernel_main_uefi(boot_info_ptr: *const BootInfo) -> ! {
 
     if let Some(pci_iter) = bootinfo::pci_devices() {
         for dev in pci_iter {
-            let blk = if (dev.device_flags & device_flags::BLOCK) != 0 { "y" } else { "n" };
-            let net = if (dev.device_flags & device_flags::NETWORK) != 0 { "y" } else { "n" };
-            let usb = if (dev.device_flags & device_flags::USB_HOST) != 0 { "y" } else { "n" };
-            let gfx = if (dev.device_flags & device_flags::GRAPHICS) != 0 { "y" } else { "n" };
+            let blk = if (dev.device_flags & device_flags::BLOCK) != 0 {
+                "y"
+            } else {
+                "n"
+            };
+            let net = if (dev.device_flags & device_flags::NETWORK) != 0 {
+                "y"
+            } else {
+                "n"
+            };
+            let usb = if (dev.device_flags & device_flags::USB_HOST) != 0 {
+                "y"
+            } else {
+                "n"
+            };
+            let gfx = if (dev.device_flags & device_flags::GRAPHICS) != 0 {
+                "y"
+            } else {
+                "n"
+            };
             kinfo!(
                 "UEFI PCI {:04x}:{:02x}:{:02x}.{} vendor={:04x} device={:04x} class={:02x}-{:02x}-{:02x} caps[blk={},net={},usb={},gfx={}]",
                 dev.segment,

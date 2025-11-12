@@ -1,12 +1,15 @@
 use crate::posix::{self, FileType};
+use crate::uefi_compat::{self, BlockDescriptor, CompatCounts, NetworkDescriptor};
 use crate::process::{USER_REGION_SIZE, USER_VIRT_BASE};
 use core::{
     arch::global_asm,
     cmp,
     fmt::{self, Write},
+    mem,
     ptr, slice, str,
 };
 use x86_64::instructions::interrupts;
+use nexa_boot_info::FramebufferInfo;
 
 /// System call numbers (POSIX-compliant where possible)
 pub const SYS_READ: u64 = 0;
@@ -63,6 +66,12 @@ const USER_FLAG_ADMIN: u64 = 0x1;
 const F_DUPFD: u64 = 0;
 const F_GETFL: u64 = 3;
 const F_SETFL: u64 = 4;
+
+// UEFI compatibility bridge syscalls
+pub const SYS_UEFI_GET_COUNTS: u64 = 240;
+pub const SYS_UEFI_GET_FB_INFO: u64 = 241;
+pub const SYS_UEFI_GET_NET_INFO: u64 = 242;
+pub const SYS_UEFI_GET_BLOCK_INFO: u64 = 243;
 
 #[repr(C)]
 struct ListDirRequest {
@@ -1959,6 +1968,96 @@ fn syscall_pivot_root(req_ptr: *const PivotRootRequest) -> u64 {
     u64::MAX
 }
 
+fn syscall_uefi_get_counts(out: *mut CompatCounts) -> u64 {
+    if out.is_null() {
+        posix::set_errno(posix::errno::EFAULT);
+        return u64::MAX;
+    }
+    let length = mem::size_of::<CompatCounts>() as u64;
+    if !user_buffer_in_range(out as u64, length) {
+        posix::set_errno(posix::errno::EFAULT);
+        return u64::MAX;
+    }
+
+    let counts = uefi_compat::counts();
+    unsafe {
+        ptr::write(out, counts);
+    }
+    posix::set_errno(0);
+    0
+}
+
+fn syscall_uefi_get_fb_info(out: *mut FramebufferInfo) -> u64 {
+    if out.is_null() {
+        posix::set_errno(posix::errno::EFAULT);
+        return u64::MAX;
+    }
+    let length = mem::size_of::<FramebufferInfo>() as u64;
+    if !user_buffer_in_range(out as u64, length) {
+        posix::set_errno(posix::errno::EFAULT);
+        return u64::MAX;
+    }
+
+    let Some(info) = uefi_compat::framebuffer() else {
+        posix::set_errno(posix::errno::ENODEV);
+        return u64::MAX;
+    };
+
+    unsafe {
+        ptr::write(out, info);
+    }
+    posix::set_errno(0);
+    0
+}
+
+fn syscall_uefi_get_net_info(index: usize, out: *mut NetworkDescriptor) -> u64 {
+    if out.is_null() {
+        posix::set_errno(posix::errno::EFAULT);
+        return u64::MAX;
+    }
+
+    let length = mem::size_of::<NetworkDescriptor>() as u64;
+    if !user_buffer_in_range(out as u64, length) {
+        posix::set_errno(posix::errno::EFAULT);
+        return u64::MAX;
+    }
+
+    let Some(descriptor) = uefi_compat::network_descriptor(index) else {
+        posix::set_errno(posix::errno::ENODEV);
+        return u64::MAX;
+    };
+
+    unsafe {
+        ptr::write(out, descriptor);
+    }
+    posix::set_errno(0);
+    0
+}
+
+fn syscall_uefi_get_block_info(index: usize, out: *mut BlockDescriptor) -> u64 {
+    if out.is_null() {
+        posix::set_errno(posix::errno::EFAULT);
+        return u64::MAX;
+    }
+
+    let length = mem::size_of::<BlockDescriptor>() as u64;
+    if !user_buffer_in_range(out as u64, length) {
+        posix::set_errno(posix::errno::EFAULT);
+        return u64::MAX;
+    }
+
+    let Some(descriptor) = uefi_compat::block_descriptor(index) else {
+        posix::set_errno(posix::errno::ENODEV);
+        return u64::MAX;
+    };
+
+    unsafe {
+        ptr::write(out, descriptor);
+    }
+    posix::set_errno(0);
+    0
+}
+
 #[no_mangle]
 pub extern "C" fn syscall_dispatch(
     nr: u64,
@@ -2013,6 +2112,14 @@ pub extern "C" fn syscall_dispatch(
         SYS_UMOUNT => syscall_umount(arg1 as *const u8, arg2 as usize),
         SYS_CHROOT => syscall_chroot(arg1 as *const u8, arg2 as usize),
         SYS_PIVOT_ROOT => syscall_pivot_root(arg1 as *const PivotRootRequest),
+        SYS_UEFI_GET_COUNTS => syscall_uefi_get_counts(arg1 as *mut CompatCounts),
+        SYS_UEFI_GET_FB_INFO => syscall_uefi_get_fb_info(arg1 as *mut FramebufferInfo),
+        SYS_UEFI_GET_NET_INFO => {
+            syscall_uefi_get_net_info(arg1 as usize, arg2 as *mut NetworkDescriptor)
+        }
+        SYS_UEFI_GET_BLOCK_INFO => {
+            syscall_uefi_get_block_info(arg1 as usize, arg2 as *mut BlockDescriptor)
+        }
         _ => {
             crate::kwarn!("Unknown syscall: {}", nr);
             posix::set_errno(posix::errno::ENOSYS);

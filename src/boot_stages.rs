@@ -1,4 +1,5 @@
 use crate::bootinfo;
+use crate::uefi_compat;
 use crate::safety::StaticArena;
 /// Boot stage management for rootfs initialization
 ///
@@ -291,6 +292,8 @@ fn mount_dev() -> Result<(), &'static str> {
     crate::fs::add_file_bytes("/dev/null", b"", false);
     crate::fs::add_file_bytes("/dev/zero", b"", false);
     crate::fs::add_file_bytes("/dev/console", b"", false);
+
+    uefi_compat::install_device_nodes();
 
     // In a real system, we would have actual device nodes here
     // For now, just create placeholders

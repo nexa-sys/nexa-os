@@ -444,7 +444,6 @@ fn system_reboot() -> ! {
     }
 }
 
-
 /// Parse inittab-style configuration (simplified)
 /// Format: id:runlevels:action:process
 /// Example: "1:2345:respawn:/sbin/getty"
