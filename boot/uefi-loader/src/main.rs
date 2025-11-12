@@ -4,20 +4,28 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
+use core::ffi::c_void;
 use core::mem;
 use core::ptr;
 
 use nexa_boot_info::{
+    block_flags,
     device_flags,
     flags,
+    network_flags,
     BootInfo,
     DeviceDescriptor,
     DeviceKind,
     FramebufferInfo,
     MemoryRegion,
+    PciBarInfo,
     PciDeviceInfo,
+    BlockDeviceInfo,
+    NetworkDeviceInfo,
     MAX_DEVICE_DESCRIPTORS,
 };
+use r_efi::base as raw_base;
+use r_efi::protocols::pci_io;
 use uefi::prelude::*;
 use uefi::proto::console::gop::{GraphicsOutput, PixelFormat};
 use uefi::proto::device_path::{DevicePath, DevicePathNodeEnum};
@@ -25,12 +33,14 @@ use uefi::proto::loaded_image::LoadedImage;
 use uefi::proto::media::block::BlockIO;
 use uefi::proto::media::file::{Directory, File, FileAttribute, FileMode, RegularFile};
 use uefi::proto::media::fs::SimpleFileSystem;
-use uefi::proto::network::snp::SimpleNetwork;
+use uefi::proto::network::snp::{NetworkState, SimpleNetwork};
 use uefi::proto::Protocol;
+use uefi::proto::unsafe_protocol;
 use uefi::table::boot::{AllocateType, MemoryType, OpenProtocolAttributes, OpenProtocolParams, SearchType};
 use uefi::Identify;
 use uefi::Error;
-use uefi::{cstr16, Handle, Status};
+use uefi::{cstr16, guid, Handle, Status};
+use uefi::Guid;
 
 const KERNEL_PATH: &uefi::CStr16 = cstr16!("\\EFI\\NEXAOS\\KERNEL.ELF");
 const INITRAMFS_PATH: &uefi::CStr16 = cstr16!("\\EFI\\NEXAOS\\INITRAMFS.CPIO");

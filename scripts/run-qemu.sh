@@ -11,6 +11,13 @@ if [[ ! -f "$ISO_PATH" ]]; then
     exit 1
 fi
 
+# Root filesystem now required (initramfs no longer embeds it)
+if [[ ! -f "$ROOTFS_IMG" ]]; then
+    echo "Root filesystem image missing at $ROOTFS_IMG." >&2
+    echo "Run scripts/build-rootfs.sh (or build-all.sh) before launching QEMU." >&2
+    exit 1
+fi
+
 echo "Starting NexaOS in QEMU..."
 echo "  Kernel: via ISO"
 echo "  Root device: ${ROOTFS_IMG}"
@@ -63,21 +70,12 @@ QEMU_CMD=(
     -cdrom "$ISO_PATH"
     -d guest_errors
     -monitor none
+    -drive file="$ROOTFS_IMG",id=rootfs,format=raw,if=none
+    -device virtio-blk-pci,drive=rootfs
 )
 
-# Add root filesystem disk if it exists
-if [[ -f "$ROOTFS_IMG" ]]; then
-    echo "  Found root filesystem: $ROOTFS_IMG"
-    echo "  Boot will use: root=/dev/vda1 rootfstype=ext2"
-    QEMU_CMD+=(
-        -drive file="$ROOTFS_IMG",format=raw,if=virtio
-    )
-    # Note: GRUB config should include: root=/dev/vda1 rootfstype=ext2
-else
-    echo "  Warning: Root filesystem not found at $ROOTFS_IMG"
-    echo "  System will boot from initramfs only"
-    echo "  Run 'scripts/build-rootfs.sh' to create root filesystem"
-fi
+echo "  Virtio block device attached as /dev/vda"
+echo "  Kernel parameters should include: root=/dev/vda1 rootfstype=ext2"
 
 # Run QEMU
 exec "${QEMU_CMD[@]}"  

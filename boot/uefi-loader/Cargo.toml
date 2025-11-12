@@ -22,3 +22,4 @@ panic = "abort"
 uefi = { version = "=0.28.0", default-features = false, features = ["alloc", "global_allocator", "logger", "panic_handler"] }
 log = { version = "0.4", default-features = false }
 nexa_boot_info = { path = "../boot-info" }
+r-efi = { version = "5.3.0", default-features = false }

@@ -162,15 +162,9 @@ if [ -f "$BUILD_DIR/lib64/ld-linux-x86-64.so.2" ]; then
     cp "$BUILD_DIR/lib64/ld-linux-x86-64.so.2" "$STAGING_DIR/lib64/"
 fi
 
-# Include rootfs.ext2 if it exists (for testing until real block devices work)
-# Note: This embeds the entire root filesystem in initramfs for convenience.
-# In production with real hardware drivers, rootfs.ext2 would be on a separate disk.
-if [ -f "$PROJECT_ROOT/build/rootfs.ext2" ]; then
-    echo "Including rootfs.ext2 in initramfs for testing..."
-    cp "$PROJECT_ROOT/build/rootfs.ext2" "$STAGING_DIR/rootfs.ext2"
-    ROOTFS_SIZE=$(stat -c%s "$STAGING_DIR/rootfs.ext2")
-    echo "✓ Added rootfs.ext2 ($ROOTFS_SIZE bytes, $(numfmt --to=iec-i $ROOTFS_SIZE))"
-fi
+# Note: Root filesystem images are no longer embedded here.
+#       They are attached as separate block devices during launch.
+echo "Initramfs will not carry rootfs.ext2; ensure external disk is provided."
 
 # Create CPIO archive from staging directory
 cd "$STAGING_DIR"
