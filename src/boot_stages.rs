@@ -392,7 +392,6 @@ pub fn mount_real_root() -> Result<(), &'static str> {
 fn scan_for_block_device(device_name: &str) -> Result<&'static [u8], &'static str> {
     crate::kinfo!("Scanning for block device: {}", device_name);
 
-    // First, try to use UEFI-staged rootfs image
     if let Some(data) = bootinfo::rootfs_slice() {
         crate::kinfo!(
             "Using UEFI-staged rootfs image ({} bytes) for {}",
@@ -400,60 +399,6 @@ fn scan_for_block_device(device_name: &str) -> Result<&'static [u8], &'static st
             device_name
         );
         return Ok(data);
-    }
-
-    // Try to find a block device that was passed from UEFI
-    if let Some(block_devices) = bootinfo::block_devices() {
-        // In a real implementation, we would match the device_name (e.g. "/dev/vda1") 
-        // with the actual block device information.
-        // For now, we just take the first available block device.
-        for block_device in block_devices {
-            // Try to find the corresponding PCI device to get the memory mapping
-            if let Some(pci_device) = bootinfo::pci_device_by_location(
-                block_device.pci_segment,
-                block_device.pci_bus,
-                block_device.pci_device,
-                block_device.pci_function
-            ) {
-                // Look for a valid MMIO BAR
-                for bar in &pci_device.bars {
-                    if bar.base != 0 && (bar.bar_flags & nexa_boot_info::bar_flags::IO_SPACE) == 0 {
-                        // This is a valid MMIO region - in a real implementation we would
-                        // map this region and read the block device data from it.
-                        // For now, we'll just log that we found it.
-                        crate::kinfo!(
-                            "Found block device: PCI {:04x}:{:02x}:{:02x}.{} with MMIO BAR at {:#x}",
-                            block_device.pci_segment,
-                            block_device.pci_bus,
-                            block_device.pci_device,
-                            block_device.pci_function,
-                            bar.base
-                        );
-                        
-                        // Return a slice pointing to the MMIO region as our block device data
-                        // Note: In a real implementation, we would need to properly initialize
-                        // the storage controller (virtio-blk, AHCI) before accessing it.
-                        // This is just a placeholder to demonstrate the concept.
-                        // Compute total bytes from last_block (inclusive) and block_size.
-                        // UEFI Block I/O reports `last_block` (0-based), so number of blocks = last_block + 1.
-                        let num_blocks = (block_device.last_block as usize).saturating_add(1);
-                        let total_bytes = num_blocks.saturating_mul(block_device.block_size as usize);
-
-                        let data = unsafe {
-                            core::slice::from_raw_parts(bar.base as *const u8, total_bytes)
-                        };
-
-                        crate::kinfo!(
-                            "Returning MMIO-mapped block device data: {} blocks of {} bytes each",
-                            num_blocks,
-                            block_device.block_size
-                        );
-                        
-                        return Ok(data);
-                    }
-                }
-            }
-        }
     }
 
     // Strategy 1: Look for rootfs.ext2 in initramfs

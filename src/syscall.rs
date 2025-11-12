@@ -55,13 +55,6 @@ pub const SYS_UMOUNT: u64 = 166; // sys_umount (Linux)
 pub const SYS_PIVOT_ROOT: u64 = 155; // sys_pivot_root (Linux)
 pub const SYS_CHROOT: u64 = 161; // sys_chroot (Linux)
 
-// UEFI compatibility bridge syscalls
-pub const SYS_UEFI_GET_COUNTS: u64 = 240;
-pub const SYS_UEFI_GET_FB_INFO: u64 = 241;
-pub const SYS_UEFI_GET_NET_INFO: u64 = 242;
-pub const SYS_UEFI_GET_BLOCK_INFO: u64 = 243;
-pub const SYS_UEFI_MAP_FRAMEBUFFER: u64 = 244;
-
 const STDIN: u64 = 0;
 const STDOUT: u64 = 1;
 const STDERR: u64 = 2;
@@ -73,6 +66,12 @@ const USER_FLAG_ADMIN: u64 = 0x1;
 const F_DUPFD: u64 = 0;
 const F_GETFL: u64 = 3;
 const F_SETFL: u64 = 4;
+
+// UEFI compatibility bridge syscalls
+pub const SYS_UEFI_GET_COUNTS: u64 = 240;
+pub const SYS_UEFI_GET_FB_INFO: u64 = 241;
+pub const SYS_UEFI_GET_NET_INFO: u64 = 242;
+pub const SYS_UEFI_GET_BLOCK_INFO: u64 = 243;
 
 #[repr(C)]
 struct ListDirRequest {
@@ -98,7 +97,6 @@ struct UserInfoReply {
     gid: u32,
     is_admin: u32,
 }
-
 
 #[repr(C)]
 struct MountRequest {
@@ -2060,31 +2058,6 @@ fn syscall_uefi_get_block_info(index: usize, out: *mut BlockDescriptor) -> u64 {
     0
 }
 
-/// Maps the framebuffer to user space and returns the virtual address
-fn syscall_uefi_map_framebuffer() -> u64 {
-    let Some(fb_info) = uefi_compat::framebuffer() else {
-        posix::set_errno(posix::errno::ENODEV);
-        return u64::MAX;
-    };
-
-    let length = (fb_info.pitch as usize).saturating_mul(fb_info.height as usize);
-    if length == 0 {
-        posix::set_errno(posix::errno::ENODEV);
-        return u64::MAX;
-    }
-
-    match unsafe { crate::paging::map_device_region(fb_info.address, length) } {
-        Ok(ptr) => {
-            posix::set_errno(0);
-            ptr as u64
-        }
-        Err(_) => {
-            posix::set_errno(posix::errno::ENOMEM);
-            u64::MAX
-        }
-    }
-}
-
 #[no_mangle]
 pub extern "C" fn syscall_dispatch(
     nr: u64,
@@ -2146,9 +2119,6 @@ pub extern "C" fn syscall_dispatch(
         }
         SYS_UEFI_GET_BLOCK_INFO => {
             syscall_uefi_get_block_info(arg1 as usize, arg2 as *mut BlockDescriptor)
-        }
-        SYS_UEFI_MAP_FRAMEBUFFER => {
-            syscall_uefi_map_framebuffer()
         }
         _ => {
             crate::kwarn!("Unknown syscall: {}", nr);

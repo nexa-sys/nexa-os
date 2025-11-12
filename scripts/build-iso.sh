@@ -72,7 +72,9 @@ fi
 set timeout=3
 set default=0
 
+# 检测是否是UEFI环境
 if [ "\$grub_platform" = "efi" ]; then
+    # 设置UEFI显示模式
     if loadfont /boot/grub/fonts/unicode.pf2; then
         set gfxmode=auto
         insmod efi_gop
@@ -82,6 +84,14 @@ if [ "\$grub_platform" = "efi" ]; then
     else
         terminal_output console
     fi
+    
+    # 添加UEFI启动项
+    menuentry "NexaOS (UEFI)" {
+        insmod part_msdos
+        insmod ext2
+        echo 'Loading NexaOS UEFI Loader...'
+        chainloader /EFI/BOOT/BOOTX64.EFI
+    }
 else
     terminal_output console
 fi
@@ -90,7 +100,8 @@ set gfxpayload=keep
 insmod video_bochs
 insmod video_cirrus
 
-menuentry "NexaOS" {
+# Legacy BIOS启动项
+menuentry "NexaOS (Legacy)" {
     multiboot2 /boot/kernel.elf $GRUB_CMDLINE
 GRUBCFG
 

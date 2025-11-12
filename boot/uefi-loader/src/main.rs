@@ -28,7 +28,6 @@ use nexa_boot_info::{
 use r_efi::base as raw_base;
 use r_efi::protocols::pci_io;
 use uefi::prelude::*;
-use uefi::Guid;
 use uefi::proto::console::gop::{GraphicsOutput, PixelFormat};
 use uefi::proto::device_path::{DevicePath, DevicePathNodeEnum};
 use uefi::proto::loaded_image::LoadedImage;
@@ -64,14 +63,8 @@ struct PciAddress {
     function: u8,
 }
 
-// Convert the r_efi GUID to the `uefi::Guid` type expected by the
-// `unsafe_protocol` macro. `pci_io::PROTOCOL_GUID` is a
-// `r_efi::base::Guid` so we copy its fields into a `uefi::Guid`
-// constant and reference that in the attribute.
-const PCI_IO_GUID: Guid = Guid::from_bytes(*pci_io::PROTOCOL_GUID.as_bytes());
-
 #[repr(transparent)]
-#[unsafe_protocol(PCI_IO_GUID)]
+#[unsafe_protocol("937FEBF9-9284-4EC4-8E92-9A5A11B043D8")]
 struct PciIo(pci_io::Protocol);
 
 #[derive(Clone, Copy)]
@@ -107,20 +100,18 @@ const ACPI_ADDRESS_SPACE_DESCRIPTOR: u8 = 0x8A;
 
 impl PciIo {
     fn protocol_mut(&self) -> *mut pci_io::Protocol {
-        self as *const _ as *mut pci_io::Protocol
+        &self.0 as *const _ as *mut pci_io::Protocol
     }
 
-    fn read_config_u32(&self, offset: u32) -> Result<u32, Status> {
-        let mut value = 0u32;
-        let status = unsafe {
-            (self.0.pci.read)(
-                self.protocol_mut(),
-                pci_io::WIDTH_UINT32,
-                offset,
-                1,
-                (&mut value as *mut u32).cast::<c_void>(),
-            )
-        };
+    fn read_config_u8(&self, offset: u32) -> Result<u8, Status> {
+        let mut value = 0u8;
+        let status = (self.0.pci.read)(
+            self.protocol_mut(),
+            pci_io::WIDTH_UINT8,
+            offset,
+            1,
+            (&mut value as *mut u8).cast::<c_void>(),
+        );
         if status == raw_base::Status::SUCCESS {
             Ok(value)
         } else {
@@ -130,15 +121,13 @@ impl PciIo {
 
     fn read_config_u16(&self, offset: u32) -> Result<u16, Status> {
         let mut value = 0u16;
-        let status = unsafe {
-            (self.0.pci.read)(
-                self.protocol_mut(),
-                pci_io::WIDTH_UINT16,
-                offset,
-                1,
-                (&mut value as *mut u16).cast::<c_void>(),
-            )
-        };
+        let status = (self.0.pci.read)(
+            self.protocol_mut(),
+            pci_io::WIDTH_UINT16,
+            offset,
+            1,
+            (&mut value as *mut u16).cast::<c_void>(),
+        );
         if status == raw_base::Status::SUCCESS {
             Ok(value)
         } else {
@@ -146,22 +135,63 @@ impl PciIo {
         }
     }
 
-    fn read_config_u8(&self, offset: u32) -> Result<u8, Status> {
-        let mut value = 0u8;
-        let status = unsafe {
-            (self.0.pci.read)(
-                self.protocol_mut(),
-                pci_io::WIDTH_UINT8,
-                offset,
-                1,
-                (&mut value as *mut u8).cast::<c_void>(),
-            )
-        };
+    fn read_config_u32(&self, offset: u32) -> Result<u32, Status> {
+        let mut value = 0u32;
+        let status = (self.0.pci.read)(
+            self.protocol_mut(),
+            pci_io::WIDTH_UINT32,
+            offset,
+            1,
+            (&mut value as *mut u32).cast::<c_void>(),
+        );
         if status == raw_base::Status::SUCCESS {
             Ok(value)
         } else {
             Err(Status(status.as_usize()))
         }
+    }
+
+    fn read_config_u64(&self, offset: u32) -> Result<u64, Status> {
+        let mut value = 0u64;
+        let status = (self.0.pci.read)(
+            self.protocol_mut(),
+            pci_io::WIDTH_UINT64,
+            offset,
+            1,
+            (&mut value as *mut u64).cast::<c_void>(),
+        );
+        if status == raw_base::Status::SUCCESS {
+            Ok(value)
+        } else {
+            Err(Status(status.as_usize()))
+        }
+    }
+
+    fn get_bar_address(&self, bar_index: u8) -> Result<u64, Status> {
+        let mut value = 0u64;
+        let status = (self.0.pci.read)(
+            self.protocol_mut(),
+            pci_io::WIDTH_UINT64,
+            (bar_index as u32) * 4,
+            1,
+            (&mut value as *mut u64).cast::<c_void>(),
+        );
+        if status == raw_base::Status::SUCCESS {
+            Ok(value)
+        } else {
+            Err(Status(status.as_usize()))
+        }
+    }
+
+    fn write_config_u8(&self, offset: u32, value: u8) -> Result<(), Status> {
+        (self.0.pci.write)(
+            self.protocol_mut(),
+            pci_io::WIDTH_UINT8,
+            offset,
+            1,
+            (&value as *const u8).cast::<c_void>() as *mut c_void,
+        );
+        Ok(())
     }
 }
 
@@ -596,14 +626,12 @@ fn query_bar_descriptor(
 ) -> Option<(u64, u64)> {
     let mut _attributes: pci_io::Attribute = 0;
     let mut resource_ptr: *mut c_void = ptr::null_mut();
-    let status = unsafe {
-        (pci_io.0.get_bar_attributes)(
-            pci_io.protocol_mut(),
-            bar_index,
-            &mut _attributes,
-            &mut resource_ptr,
-        )
-    };
+    let status = (pci_io.0.get_bar_attributes)(
+        pci_io.protocol_mut(),
+        bar_index,
+        &mut _attributes,
+        &mut resource_ptr,
+    );
     if status != raw_base::Status::SUCCESS {
         return None;
     }
@@ -632,7 +660,7 @@ fn parse_address_space_descriptor(ptr: *const c_void) -> Option<AcpiAddressSpace
         return None;
     }
 
-    let descriptor = unsafe { ptr::read_unaligned(ptr.cast::<AcpiAddressSpaceDescriptor>()) };
+    let descriptor = unsafe { ptr::read_unaligned(ptr as *const AcpiAddressSpaceDescriptor) };
     if descriptor.desc != ACPI_ADDRESS_SPACE_DESCRIPTOR {
         return None;
     }
@@ -665,12 +693,16 @@ fn parse_pci_address(path: &DevicePath) -> Option<PciAddress> {
             DevicePathNodeEnum::AcpiAcpi(acpi_node) => {
                 if is_pci_root_hid(acpi_node.hid()) {
                     bus = (acpi_node.uid() & 0xFF) as u8;
+                    let _base = (acpi_node.uid() >> 16) as u16;
+                    // segment = base; // 原代码中base未定义，直接使用计算结果
                     segment = (acpi_node.uid() >> 16) as u16;
                 }
             }
             DevicePathNodeEnum::AcpiExpanded(expanded) => {
                 if is_pci_root_hid(expanded.hid()) {
                     bus = (expanded.uid() & 0xFF) as u8;
+                    let _base = (expanded.uid() >> 16) as u16;
+                    // segment = base; // 原代码中base未定义，直接使用计算结果
                     segment = (expanded.uid() >> 16) as u16;
                 }
             }
@@ -696,16 +728,27 @@ fn efi_main(image: Handle, mut st: SystemTable<Boot>) -> Status {
     }
 
     log::info!("NexaOS UEFI loader starting");
+    log::info!("Image handle: {:?}", image);
 
     let bs = st.boot_services();
+    log::info!("Boot services initialized");
 
     let mut root = match open_boot_volume(bs, image) {
-        Ok(dir) => dir,
-        Err(status) => return status,
+        Ok(dir) => {
+            log::info!("Boot volume opened successfully");
+            dir
+        },
+        Err(status) => {
+            log::error!("Failed to open boot volume: {:?}", status);
+            return status;
+        }
     };
 
     let kernel_bytes = match read_file(&mut root, KERNEL_PATH) {
-        Ok(data) => data,
+        Ok(data) => {
+            log::info!("Kernel image loaded, size: {} bytes", data.len());
+            data
+        },
         Err(status) => {
             log::error!("Failed to load kernel image: {:?}", status);
             return status;
@@ -713,8 +756,14 @@ fn efi_main(image: Handle, mut st: SystemTable<Boot>) -> Status {
     };
 
     let initramfs_bytes = match read_file(&mut root, INITRAMFS_PATH) {
-        Ok(data) => data,
-        Err(status) if status == Status::NOT_FOUND => Vec::new(),
+        Ok(data) => {
+            log::info!("Initramfs loaded, size: {} bytes", data.len());
+            data
+        },
+        Err(status) if status == Status::NOT_FOUND => {
+            log::warn!("Initramfs not found, using empty");
+            Vec::new()
+        },
         Err(status) => {
             log::error!("Failed to load initramfs: {:?}", status);
             return status;
@@ -722,8 +771,14 @@ fn efi_main(image: Handle, mut st: SystemTable<Boot>) -> Status {
     };
 
     let rootfs_bytes = match read_file(&mut root, ROOTFS_PATH) {
-        Ok(data) => data,
-        Err(status) if status == Status::NOT_FOUND => Vec::new(),
+        Ok(data) => {
+            log::info!("Rootfs loaded, size: {} bytes", data.len());
+            data
+        },
+        Err(status) if status == Status::NOT_FOUND => {
+            log::warn!("Rootfs not found, using empty");
+            Vec::new()
+        },
         Err(status) => {
             log::error!("Failed to load rootfs image: {:?}", status);
             return status;
@@ -731,17 +786,39 @@ fn efi_main(image: Handle, mut st: SystemTable<Boot>) -> Status {
     };
 
     drop(root);
+    log::info!("File system root dropped");
 
     let loaded = match load_kernel_image(bs, &kernel_bytes) {
-        Ok(info) => info,
+        Ok(info) => {
+            log::info!("Kernel loaded successfully, UEFI entry point: {:#x}", info.uefi_entry_point);
+            info
+        },
         Err(status) => {
             log::error!("Kernel load failed: {:?}", status);
             return status;
         }
     };
-
+    
+    // 添加调试信息验证入口点地址
+    log::info!("Expected entry point: {:#x}", 0x101020);
+    if loaded.uefi_entry_point != 0x101020 {
+        log::warn!("Entry point mismatch! Expected: {:#x}, Got: {:#x}", 0x101020, loaded.uefi_entry_point);
+    }
+    
+    // 收集设备信息
+    let device_table = collect_device_table(bs, image);
+    log::info!("Device table collected, count: {}", device_table.count);
+    
+    // 准备帧缓冲信息
+    let framebuffer_info = detect_framebuffer(bs, image);
+    log::info!("Framebuffer detection completed, found: {}", framebuffer_info.is_some());
+    
+    // 准备initramfs和rootfs
     let initramfs_region = match stage_payload(bs, &initramfs_bytes, MemoryType::LOADER_DATA) {
-        Ok(region) => region,
+        Ok(region) => {
+            log::info!("Initramfs staged, addr: {:#x}, size: {}", region.phys_addr, region.length);
+            region
+        },
         Err(status) => {
             log::error!("Failed to allocate initramfs region: {:?}", status);
             return status;
@@ -749,33 +826,49 @@ fn efi_main(image: Handle, mut st: SystemTable<Boot>) -> Status {
     };
 
     let rootfs_region = match stage_payload(bs, &rootfs_bytes, MemoryType::LOADER_DATA) {
-        Ok(region) => region,
+        Ok(region) => {
+            log::info!("Rootfs staged, addr: {:#x}, size: {}", region.phys_addr, region.length);
+            region
+        },
         Err(status) => {
             log::error!("Failed to allocate rootfs region: {:?}", status);
             return status;
         }
     };
-
-    let framebuffer = detect_framebuffer(bs, image);
-    let device_table = collect_device_table(bs, image);
-
-    let boot_info_region = match stage_boot_info(bs, initramfs_region, rootfs_region, framebuffer, &device_table) {
-        Ok(region) => region,
+    
+    // 创建启动信息
+    let boot_info_region = match stage_boot_info(
+        bs,
+        initramfs_region,
+        rootfs_region,
+        framebuffer_info,
+        &device_table,
+    ) {
+        Ok(region) => {
+            log::info!("Boot info staged, addr: {:#x}, size: {}", region.phys_addr, region.length);
+            region
+        },
         Err(status) => {
-            log::error!("Failed to allocate boot info block: {:?}", status);
+            log::error!("Failed to allocate boot info region: {:?}", status);
             return status;
         }
     };
 
-    let (_runtime_st, _) = st.exit_boot_services(MemoryType::LOADER_DATA);
+    log::info!("About to exit boot services");
+    let _ = st.exit_boot_services(MemoryType::LOADER_DATA);
+    log::info!("Exit boot services completed");
 
     log::info!(
         "Transferring control to kernel UEFI entry at {:#x}",
         loaded.uefi_entry_point
     );
 
+    // 添加更多调试信息
+    log::info!("Boot info address: {:#x}", boot_info_region.phys_addr);
+    log::info!("Calling kernel entry point");
+
     unsafe {
-        let entry: extern "C" fn(*const BootInfo) -> ! = mem::transmute(loaded.uefi_entry_point);
+        let entry: extern "C" fn(*const BootInfo) -> ! = mem::transmute(loaded.uefi_entry_point as u64);
         entry(boot_info_region.phys_addr as *const BootInfo)
     }
 }
@@ -785,6 +878,7 @@ struct LoadedKernel {
 }
 
 fn open_boot_volume(bs: &BootServices, image: Handle) -> Result<Directory, Status> {
+    // 首先尝试通过LoadedImage获取设备句柄
     let loaded_image = unsafe {
         bs.open_protocol::<LoadedImage>(
             OpenProtocolParams {
@@ -794,15 +888,61 @@ fn open_boot_volume(bs: &BootServices, image: Handle) -> Result<Directory, Statu
             },
             OpenProtocolAttributes::GetProtocol,
         )
-    .map_err(|e: Error| e.status())?
+    .map_err(|e: Error| {
+        log::error!("Failed to open LoadedImage protocol: {:?}", e);
+        e.status()
+    })?
     };
+    
     let loaded_image_ref = loaded_image
         .get()
-        .ok_or(Status::UNSUPPORTED)?;
-    let device_handle = loaded_image_ref
-        .device()
-        .ok_or(Status::UNSUPPORTED)?;
+        .ok_or_else(|| {
+            log::error!("Failed to get LoadedImage reference");
+            Status::UNSUPPORTED
+        })?;
+        
+    // 尝试从LoadedImage获取设备句柄
+    if let Some(device_handle) = loaded_image_ref.device() {
+        // 尝试打开SimpleFileSystem协议
+        let fs_result = unsafe {
+            bs.open_protocol::<SimpleFileSystem>(
+                OpenProtocolParams {
+                    handle: device_handle,
+                    agent: image,
+                    controller: None,
+                },
+                OpenProtocolAttributes::GetProtocol,
+            )
+        };
+        
+        if let Ok(fs) = fs_result {
+            if let Some(file_system) = fs.get_mut() {
+                match file_system.open_volume() {
+                    Ok(volume) => return Ok(volume),
+                    Err(e) => log::warn!("Failed to open volume from LoadedImage device: {:?}", e),
+                }
+            }
+        }
+    }
 
+    // 如果从LoadedImage无法获取文件系统，尝试查找第一个支持文件系统的设备
+    log::info!("Trying to find a device with SimpleFileSystem protocol");
+    let handles = bs
+        .locate_handle_buffer(SearchType::ByProtocol(&SimpleFileSystem::GUID))
+        .map_err(|e| {
+            log::error!("Failed to locate handles with SimpleFileSystem protocol: {:?}", e);
+            Status::UNSUPPORTED
+        })?;
+        
+    if handles.is_empty() {
+        log::error!("No devices with SimpleFileSystem protocol found");
+        return Err(Status::NOT_FOUND);
+    }
+    
+    // 尝试第一个设备
+    let device_handle = handles[0];
+    log::info!("Found device with SimpleFileSystem protocol: {:?}", device_handle);
+    
     let fs = unsafe {
         bs.open_protocol::<SimpleFileSystem>(
             OpenProtocolParams {
@@ -812,13 +952,23 @@ fn open_boot_volume(bs: &BootServices, image: Handle) -> Result<Directory, Statu
             },
             OpenProtocolAttributes::GetProtocol,
         )
-    .map_err(|e: Error| e.status())?
+    .map_err(|e: Error| {
+        log::error!("Failed to open SimpleFileSystem protocol: {:?}", e);
+        e.status()
+    })?
     };
 
-    let file_system = fs.get_mut().ok_or(Status::UNSUPPORTED)?;
+    let file_system = fs.get_mut().ok_or_else(|| {
+        log::error!("Failed to get SimpleFileSystem reference");
+        Status::UNSUPPORTED
+    })?;
+    
     file_system
         .open_volume()
-        .map_err(|e: Error| e.status())
+        .map_err(|e: Error| {
+            log::error!("Failed to open volume: {:?}", e);
+            e.status()
+        })
 }
 
 fn read_file(root: &mut Directory, path: &uefi::CStr16) -> Result<Vec<u8>, Status> {
@@ -1146,7 +1296,14 @@ fn find_uefi_entry(image: &[u8]) -> Option<u64> {
             }
             let mut bytes = [0u8; 8];
             bytes.copy_from_slice(&image[off..off + 8]);
-            return Some(u64::from_le_bytes(bytes));
+            log::info!("Raw bytes from .nexa.uefi_entry: {:02x?}", bytes);
+            let entry_addr = u64::from_le_bytes(bytes);
+            log::info!("Found UEFI entry point in ELF: {:#x}", entry_addr);
+            // 验证地址是否合理
+            if entry_addr < 0x100000 || entry_addr > 0x2000000 {
+                log::warn!("UEFI entry point address seems invalid: {:#x}", entry_addr);
+            }
+            return Some(entry_addr);
         }
     }
 

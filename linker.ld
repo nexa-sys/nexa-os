@@ -4,6 +4,7 @@ ENTRY(_start)
 
 /* Force linker to include multiboot header */
 EXTERN(multiboot_header_start)
+EXTERN(uefi_start)
 
 PHDRS
 {
@@ -50,6 +51,10 @@ SECTIONS
     {
         *(COMMON)
         *(.bss*)
+    } :data
+
+    .nexa.uefi_entry : {
+        QUAD(ABSOLUTE(uefi_start))
     } :data
 
     /DISCARD/ :
