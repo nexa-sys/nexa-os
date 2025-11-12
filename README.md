@@ -5,11 +5,6 @@ NexaOS is a production-grade operating system written in Rust, implementing a hy
 ## Design Goals
 
 - **Production-grade reliability**: Memory-safe kernel and core services implemented in Rust with rigorous error handling and security guarantees.
-- **Hybrid kernel architecture**: Combines microkernel-style modularity with monolithic kernel performance, optimizing for both isolation and efficiency. Critical subsystems run in kernel space while maintaining clean interfaces and minimal coupling.
-- **Full POSIX compliance**: Comprehensive implementation of POSIX.1-2017 standards including process management, file systems, signals, IPC mechanisms, and threading primitives.
-- **Unix-like semantics**: Everything-is-a-file philosophy, hierarchical filesystem, shell integration, and standard Unix conventions.
-- **Linux ABI compatibility**: Binary compatibility layer enabling unmodified Linux applications to run natively through syscall translation and compatible userspace libraries.
-- **Enterprise-ready features**: Multi-user support with authentication, capability-based security, resource isolation, and comprehensive logging infrastructure.
 
 ## Current Status
 
@@ -427,3 +422,43 @@ Contributions, experiments, and feedback are very welcome. Until the contributio
 
 This project is released under the terms described in `LICENSE` in the repository root.
 
+
+### Versioning and Release Strategy (Semantic Versioning)
+
+- Use semantic versioning for stable releases: MAJOR.MINOR.PATCH[-PRERELEASE][+BUILD]
+    - MAJOR: incompatible API/ABI changes (e.g. 1.0.0 → 2.0.0)
+    - MINOR: backward-compatible new features or enhancements (e.g. 1.2.0 after 1.1.x)
+    - PATCH: backward-compatible bug fixes and small changes (e.g. 1.2.3)
+    - PRERELEASE (optional): hyphen-prefixed identifiers for alpha/beta/rc (e.g. 2.0.0-alpha.1)
+    - BUILD (optional): plus-prefixed build metadata for tracing (e.g. 1.2.0+20251112). Build metadata does not affect precedence.
+
+- Recommended practices
+    - Start stable releases at 1.0.0. Versions in 0.y.z indicate development and may break compatiblity.
+    - Bump MAJOR for breaking changes and provide clear migration instructions in release notes.
+    - Release new, backward-compatible features as MINOR. Use PATCH for urgent fixes and non-breaking changes.
+    - Use PRERELEASE tags for public testing and release candidates; remove the tag for final releases.
+    - Use BUILD metadata for internal build numbers, timestamps, or CI identifiers — it should not be used to indicate compatibility.
+
+- Examples
+    - 1.0.0 — first stable release
+    - 1.1.0 — new, compatible feature
+    - 1.1.1 — patch/fix
+    - 2.0.0-beta.1 — major-change test release
+    - 2.0.0+build.20251112 — release with build metadata
+
+- Release workflow suggestions
+    - Decide the target version (MAJOR/MINOR/PATCH) before merging a change and state it in the PR description.
+    - Group changes in the CHANGELOG and explicitly call out breaking changes, migration steps, and examples.
+    - Tag releases with annotated Git tags matching the version (e.g. v1.2.0) and publish release notes.
+    - Use CI to add BUILD metadata automatically (e.g. commit SHA, CI build number, timestamp).
+    - For breaking changes, include a migration guide and deprecation period where feasible.
+    - For prerelease testing, publish prerelease artifacts and clearly label them in documentation.
+
+- Governance note
+    - Maintain a clear policy for deprecation and removal of APIs; prefer staged deprecation (deprecate → warn → remove) to ease upgrades.
+
+- **Hybrid kernel architecture**: Combines microkernel-style modularity with monolithic kernel performance, optimizing for both isolation and efficiency. Critical subsystems run in kernel space while maintaining clean interfaces and minimal coupling.
+- **Full POSIX compliance**: Comprehensive implementation of POSIX.1-2017 standards including process management, file systems, signals, IPC mechanisms, and threading primitives.
+- **Unix-like semantics**: Everything-is-a-file philosophy, hierarchical filesystem, shell integration, and standard Unix conventions.
+- **Linux ABI compatibility**: Binary compatibility layer enabling unmodified Linux applications to run natively through syscall translation and compatible userspace libraries.
+- **Enterprise-ready features**: Multi-user support with authentication, capability-based security, resource isolation, and comprehensive logging infrastructure.
