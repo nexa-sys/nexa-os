@@ -1,7 +1,6 @@
 use crate::bootinfo;
 use crate::uefi_compat;
 use crate::safety::StaticArena;
-use nexa_boot_info::bar_flags;
 /// Boot stage management for rootfs initialization
 ///
 /// This module implements a multi-stage boot process similar to Linux:
@@ -435,16 +434,18 @@ fn scan_for_block_device(device_name: &str) -> Result<&'static [u8], &'static st
                         // Note: In a real implementation, we would need to properly initialize
                         // the storage controller (virtio-blk, AHCI) before accessing it.
                         // This is just a placeholder to demonstrate the concept.
+                        // Compute total bytes from last_block (inclusive) and block_size.
+                        // UEFI Block I/O reports `last_block` (0-based), so number of blocks = last_block + 1.
+                        let num_blocks = (block_device.last_block as usize).saturating_add(1);
+                        let total_bytes = num_blocks.saturating_mul(block_device.block_size as usize);
+
                         let data = unsafe {
-                            core::slice::from_raw_parts(
-                                bar.base as *const u8,
-                                block_device.block_count as usize * block_device.block_size as usize
-                            )
+                            core::slice::from_raw_parts(bar.base as *const u8, total_bytes)
                         };
-                        
+
                         crate::kinfo!(
                             "Returning MMIO-mapped block device data: {} blocks of {} bytes each",
-                            block_device.block_count,
+                            num_blocks,
                             block_device.block_size
                         );
                         
