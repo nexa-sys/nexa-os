@@ -5,6 +5,7 @@ use spin::Mutex;
 
 use crate::bootinfo;
 use crate::fs;
+use crate::paging;
 use crate::posix::{FileType, Metadata};
 
 const MAX_NETWORK_DEVICES: usize = 8;
@@ -104,6 +105,36 @@ static NETWORK_DEVICES: Mutex<[Option<NetworkDescriptor>; MAX_NETWORK_DEVICES]> 
 static BLOCK_DEVICES: Mutex<[Option<BlockDescriptor>; MAX_BLOCK_DEVICES]> =
     Mutex::new([None; MAX_BLOCK_DEVICES]);
 
+fn map_mmio_region(base: u64, length: u64, label: &str) {
+    if base == 0 {
+        return;
+    }
+
+    let span = if length == 0 { 0x1000 } else { length };
+    let clamped = span.min(usize::MAX as u64) as usize;
+
+    unsafe {
+        match paging::map_device_region(base, clamped) {
+            Ok(_) => {
+                crate::kdebug!(
+                    "uefi_compat: mapped {} region {:#x}+{:#x}",
+                    label,
+                    base,
+                    span
+                );
+            }
+            Err(paging::MapDeviceError::OutOfTableSpace) => {
+                crate::kwarn!(
+                    "uefi_compat: failed to map {} region {:#x}+{:#x}: out of paging tables",
+                    label,
+                    base,
+                    span
+                );
+            }
+        }
+    }
+}
+
 pub fn reset() {
     *FRAMEBUFFER.lock() = FramebufferState { info: None };
 
@@ -123,6 +154,11 @@ pub fn init() {
     {
         let mut fb_state = FRAMEBUFFER.lock();
         fb_state.info = bootinfo::framebuffer_info();
+
+        if let Some(info) = fb_state.info {
+            let size = (info.pitch as u64) * (info.height as u64);
+            map_mmio_region(info.address, size, "framebuffer");
+        }
     }
 
     populate_network_devices();
@@ -257,6 +293,14 @@ fn populate_network_devices() {
             _reserved: [0; 2],
         };
 
+        if descriptor.mmio_base != 0 {
+            map_mmio_region(
+                descriptor.mmio_base,
+                descriptor.mmio_length,
+                "network device",
+            );
+        }
+
         nets[idx] = Some(descriptor);
     }
 }
@@ -307,6 +351,10 @@ fn populate_block_devices() {
             interrupt_pin,
             _reserved: [0; 2],
         };
+
+        if descriptor.mmio_base != 0 {
+            map_mmio_region(descriptor.mmio_base, descriptor.mmio_length, "block device");
+        }
 
         blocks[idx] = Some(descriptor);
     }

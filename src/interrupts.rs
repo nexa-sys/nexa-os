@@ -37,16 +37,14 @@ global_asm!(
     //   [rsp+16] = RFLAGS
     //   [rsp+24] = user RSP
     //   [rsp+32] = SS
-    
+
     // Record the incoming CS/SS pair for diagnostics
     "mov r10, [rsp + 8]",
     "mov gs:[120], r10", // gs slot 15 = entry CS snapshot
     "mov r10, [rsp + 32]",
     "mov gs:[128], r10", // gs slot 16 = entry SS snapshot
-    
     // Save user RIP for syscall_return_addr parameter
     "mov r10, [rsp + 0]", // r10 = user RIP
-    
     // Now push general-purpose registers (we will NOT touch the interrupt frame on stack)
     "push rcx",
     "push rdx",
@@ -58,11 +56,9 @@ global_asm!(
     "push r13",
     "push r14",
     "push r15",
-    
     // Align stack to 16 bytes before calling into Rust (SysV ABI requires
     // %rsp % 16 == 8 at the call site so the callee observes 16-byte alignment).
     "sub rsp, 8",
-    
     // Prepare arguments for syscall_dispatch(nr=rax, arg1=rdi, arg2=rsi, arg3=rdx, syscall_return_addr=r10)
     // System V x86_64 ABI: rdi, rsi, rdx, rcx, r8
     "mov r8, r10",  // r8 = syscall_return_addr (from r10)
@@ -71,10 +67,8 @@ global_asm!(
     "mov rsi, rdi", // rsi = arg1
     "mov rdi, rax", // rdi = nr
     "call syscall_dispatch",
-    
     // Return value already in rax
     "add rsp, 8",
-    
     // Restore general-purpose registers (reverse order)
     "pop r15",
     "pop r14",
@@ -86,19 +80,18 @@ global_asm!(
     "pop rsi",
     "pop rdx",
     "pop rcx",
-    
     // At this point, stack pointer is back to where the interrupt frame starts
     // The interrupt frame (RIP, CS, RFLAGS, RSP, SS) is still intact on the stack
-    
+
     // Snapshot the user-mode frame before we hand control back, so faults can
     // report the exact values that iretq attempted to restore.
-    "mov r9, rax",       // Save syscall return value temporarily
+    "mov r9, rax", // Save syscall return value temporarily
     "mov rax, [rsp]",
-    "mov gs:[80], rax",  // gs slot 10 = user RIP
+    "mov gs:[80], rax", // gs slot 10 = user RIP
     "mov rax, [rsp + 8]",
-    "mov gs:[88], rax",  // gs slot 11 = user CS
+    "mov gs:[88], rax", // gs slot 11 = user CS
     "mov rax, [rsp + 16]",
-    "mov gs:[96], rax",  // gs slot 12 = user RFLAGS
+    "mov gs:[96], rax", // gs slot 12 = user RFLAGS
     "mov rax, [rsp + 24]",
     "mov gs:[104], rax", // gs slot 13 = user RSP
     "mov rax, [rsp + 32]",
@@ -184,9 +177,39 @@ extern "x86-interrupt" fn general_protection_fault_handler(
     use x86_64::instructions::port::Port;
 
     let handler_rsp: u64;
-    let (reg_rax, reg_rbx, reg_rcx, reg_rdx, reg_rsi, reg_rdi, reg_rbp, reg_r8, reg_r9, reg_r10,
-        reg_r11, reg_r12, reg_r13, reg_r14, reg_r15): (u64, u64, u64, u64, u64, u64, u64, u64,
-        u64, u64, u64, u64, u64, u64, u64);
+    let (
+        reg_rax,
+        reg_rbx,
+        reg_rcx,
+        reg_rdx,
+        reg_rsi,
+        reg_rdi,
+        reg_rbp,
+        reg_r8,
+        reg_r9,
+        reg_r10,
+        reg_r11,
+        reg_r12,
+        reg_r13,
+        reg_r14,
+        reg_r15,
+    ): (
+        u64,
+        u64,
+        u64,
+        u64,
+        u64,
+        u64,
+        u64,
+        u64,
+        u64,
+        u64,
+        u64,
+        u64,
+        u64,
+        u64,
+        u64,
+    );
     unsafe {
         core::arch::asm!("mov {}, rsp", out(reg) handler_rsp);
         core::arch::asm!(
@@ -818,8 +841,8 @@ extern "C" fn syscall_instruction_handler() {
         // On SYSCALL entry the CPU stores the user return RIP in RCX and the
         // user RFLAGS in R11. Capture that state alongside the user stack so
         // the kernel can restore it exactly before executing SYSRET.
-    "mov gs:[0], rsp",  // GS[0]  = user RSP snapshot
-    "mov gs:[72], rsp", // GS[9]  = debug copy of user RSP
+        "mov gs:[0], rsp",  // GS[0]  = user RSP snapshot
+        "mov gs:[72], rsp", // GS[9]  = debug copy of user RSP
         "mov rsp, gs:[8]",  // RSP    = kernel stack top
         "mov gs:[56], rcx", // GS[7]  = user return RIP (RCX)
         "mov gs:[64], r11", // GS[8]  = user RFLAGS (R11)

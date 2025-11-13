@@ -273,7 +273,7 @@ impl Process {
             self.stack_top
         );
 
-    self.has_entered_user = true;
+        self.has_entered_user = true;
 
         // Jump to user mode - this never returns
         jump_to_usermode(self.entry_point, self.stack_top);
@@ -455,14 +455,22 @@ pub fn jump_to_usermode(entry: u64, stack: u64) -> ! {
         }
         for shift in (0..16).rev() {
             let nibble = ((entry >> (shift * 4)) & 0xF) as u8;
-            port.write(if nibble < 10 { b'0' + nibble } else { b'A' + nibble - 10 });
+            port.write(if nibble < 10 {
+                b'0' + nibble
+            } else {
+                b'A' + nibble - 10
+            });
         }
         for &b in b" stack=" {
             port.write(b);
         }
         for shift in (0..16).rev() {
             let nibble = ((stack >> (shift * 4)) & 0xF) as u8;
-            port.write(if nibble < 10 { b'0' + nibble } else { b'A' + nibble - 10 });
+            port.write(if nibble < 10 {
+                b'0' + nibble
+            } else {
+                b'A' + nibble - 10
+            });
         }
         port.write(b'\n');
     }
@@ -470,9 +478,9 @@ pub fn jump_to_usermode(entry: u64, stack: u64) -> ! {
     // Set GS data for syscall and Ring 3 switching
     unsafe {
         use x86_64::instructions::port::Port;
-        
+
         let selectors = crate::gdt::get_selectors();
-        
+
         // Debug output for selectors
         let mut port = Port::<u8>::new(0x3F8);
         for &b in b"SEL: ucode=" {
@@ -481,7 +489,11 @@ pub fn jump_to_usermode(entry: u64, stack: u64) -> ! {
         let uc = selectors.user_code_selector.0;
         for shift in (0..4).rev() {
             let nibble = ((uc >> (shift * 4)) & 0xF) as u8;
-            port.write(if nibble < 10 { b'0' + nibble } else { b'A' + nibble - 10 });
+            port.write(if nibble < 10 {
+                b'0' + nibble
+            } else {
+                b'A' + nibble - 10
+            });
         }
         for &b in b" udata=" {
             port.write(b);
@@ -489,10 +501,14 @@ pub fn jump_to_usermode(entry: u64, stack: u64) -> ! {
         let ud = selectors.user_data_selector.0;
         for shift in (0..4).rev() {
             let nibble = ((ud >> (shift * 4)) & 0xF) as u8;
-            port.write(if nibble < 10 { b'0' + nibble } else { b'A' + nibble - 10 });
+            port.write(if nibble < 10 {
+                b'0' + nibble
+            } else {
+                b'A' + nibble - 10
+            });
         }
         port.write(b'\n');
-        
+
         crate::interrupts::set_gs_data(
             entry,
             stack,
@@ -515,60 +531,80 @@ pub fn jump_to_usermode(entry: u64, stack: u64) -> ! {
         let selectors = crate::gdt::get_selectors();
         let user_ss = (selectors.user_data_selector.0 | 3) as u64;
         let user_cs = (selectors.user_code_selector.0 | 3) as u64;
-        
+
         // Debug output before iretq
         use x86_64::instructions::port::Port;
         let mut port = Port::<u8>::new(0x3F8);
         for &b in b"BEFORE_IRETQ\n" {
             port.write(b);
         }
-        
+
         // Build iretq frame and jump to user mode (never returns)
         // Get clean kernel stack from GS data
         let gs_ptr = core::ptr::addr_of!(crate::initramfs::GS_DATA.0) as *const u64;
         let kernel_stack = gs_ptr.add(1).read_volatile(); // GS[1] = kernel stack
-        
+
         // Debug: print kernel_stack value
         for &b in b"KSTACK=" {
             port.write(b);
         }
         for shift in (0..16).rev() {
             let nibble = ((kernel_stack >> (shift * 4)) & 0xF) as u8;
-            port.write(if nibble < 10 { b'0' + nibble } else { b'A' + nibble - 10 });
+            port.write(if nibble < 10 {
+                b'0' + nibble
+            } else {
+                b'A' + nibble - 10
+            });
         }
         port.write(b'\n');
-        
+
         // Debug: print all iretq frame values
         for &b in b"IRETQ_FRAME: entry=" {
             port.write(b);
         }
         for shift in (0..16).rev() {
             let nibble = ((entry >> (shift * 4)) & 0xF) as u8;
-            port.write(if nibble < 10 { b'0' + nibble } else { b'A' + nibble - 10 });
+            port.write(if nibble < 10 {
+                b'0' + nibble
+            } else {
+                b'A' + nibble - 10
+            });
         }
         for &b in b" cs=" {
             port.write(b);
         }
         for shift in (0..4).rev() {
             let nibble = ((user_cs >> (shift * 4)) & 0xF) as u8;
-            port.write(if nibble < 10 { b'0' + nibble } else { b'A' + nibble - 10 });
+            port.write(if nibble < 10 {
+                b'0' + nibble
+            } else {
+                b'A' + nibble - 10
+            });
         }
         for &b in b" stack=" {
             port.write(b);
         }
         for shift in (0..16).rev() {
             let nibble = ((stack >> (shift * 4)) & 0xF) as u8;
-            port.write(if nibble < 10 { b'0' + nibble } else { b'A' + nibble - 10 });
+            port.write(if nibble < 10 {
+                b'0' + nibble
+            } else {
+                b'A' + nibble - 10
+            });
         }
         for &b in b" ss=" {
             port.write(b);
         }
         for shift in (0..4).rev() {
             let nibble = ((user_ss >> (shift * 4)) & 0xF) as u8;
-            port.write(if nibble < 10 { b'0' + nibble } else { b'A' + nibble - 10 });
+            port.write(if nibble < 10 {
+                b'0' + nibble
+            } else {
+                b'A' + nibble - 10
+            });
         }
         port.write(b'\n');
-        
+
         // Use inline assembly with fixed register assignments
         // iretq stack layout (from high to low address): SS, RSP, RFLAGS, CS, RIP
         core::arch::asm!(

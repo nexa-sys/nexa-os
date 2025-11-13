@@ -184,9 +184,8 @@ unsafe fn init_user_page_tables() {
     let identity_pdp = &mut *identity_pdp_holder.as_mut_ptr();
     identity_pdp_holder.reset();
 
-    let pd_flags = PageTableFlags::PRESENT 
-        | PageTableFlags::WRITABLE 
-        | PageTableFlags::USER_ACCESSIBLE; // Critical: Allow Ring 3 access through page directory
+    let pd_flags =
+        PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE; // Critical: Allow Ring 3 access through page directory
     new_pml4[0].set_addr(identity_pdp_holder.phys_addr(), pd_flags);
 
     // Map the first N gigabytes using 2 MiB huge pages.

@@ -270,13 +270,7 @@ impl FramebufferWriter {
         if offset + self.bytes_per_pixel > total_bytes {
             crate::serial::_print(format_args!(
                 "write_pixel oob base={:#x} offset={} total={} x={} y={} pitch={} bpp={}\n",
-                self.buffer as usize,
-                offset,
-                total_bytes,
-                x,
-                y,
-                self.pitch,
-                self.bytes_per_pixel
+                self.buffer as usize, offset, total_bytes, x, y, self.pitch, self.bytes_per_pixel
             ));
             return;
         }
@@ -575,16 +569,11 @@ impl FramebufferWriter {
     pub fn clear(&mut self) {
         crate::serial::_print(format_args!(
             "FBWRITER::clear buf={:#x} pitch={} cols={} rows={} bytes_pp={}\n",
-            self.buffer as usize,
-            self.pitch,
-            self.columns,
-            self.rows,
-            self.bytes_per_pixel
+            self.buffer as usize, self.pitch, self.columns, self.rows, self.bytes_per_pixel
         ));
         crate::serial::_print(format_args!(
             "FBWRITER::clear spec_addr={:#x} spec_pitch={}\n",
-            self.spec.address,
-            self.spec.pitch
+            self.spec.address, self.spec.pitch
         ));
         for row in 0..self.rows {
             for col in 0..self.columns {

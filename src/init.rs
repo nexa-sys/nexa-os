@@ -101,6 +101,15 @@ pub fn init() {
         50,
     );
 
+    register_service_internal(
+        &mut state,
+        "uefi-compatd",
+        "/sbin/uefi-compatd",
+        false,
+        0b00111110,
+        10,
+    );
+
     crate::kinfo!(
         "Init system initialized, runlevel: {:?}",
         state.current_runlevel
