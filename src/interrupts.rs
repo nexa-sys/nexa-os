@@ -1080,13 +1080,19 @@ pub fn setup_syscall() {
     }
 
     let kernel_cs_star = (kernel_cs & !0x7) as u64; // ensure RPL=0
-    let user_cs_star = ((user_cs | 0x3) & 0xFFFF) as u64; // ensure RPL=3
+    // For SYSRET in 64-bit mode:
+    // CS ← STAR[63:48] + 16
+    // SS ← STAR[63:48] + 8
+    // So STAR[63:48] should be set to kernel_data (0x10), which gives:
+    // CS = 0x10 + 16 = 0x20 (user code, entry 4)
+    // SS = 0x10 + 8 = 0x18 (user data, entry 3)
+    let user_cs_star = (kernel_ss & !0x7) as u64; // use kernel_ss(0x10) as base for SYSRET
 
     let star_value = (kernel_cs_star << 32) | (user_cs_star << 48);
     crate::kdebug!(
-        "MSR: STAR composed from selectors kernel_cs={:#x}, user_cs={:#x} -> {:#x}",
+        "MSR: STAR composed from selectors kernel_cs={:#x}, kernel_ss={:#x} -> {:#x}",
         kernel_cs,
-        user_cs,
+        kernel_ss,
         star_value
     );
 

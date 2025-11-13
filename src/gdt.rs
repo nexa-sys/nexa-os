@@ -113,10 +113,10 @@ pub fn init() {
         let kernel_code = gdt.append(Descriptor::kernel_code_segment());
         // Entry 2: Kernel data segment
         let kernel_data = gdt.append(Descriptor::kernel_data_segment());
-        // Entry 3: User code segment (DPL=3)
-        let user_code_sel = gdt.append(Descriptor::user_code_segment());
-        // Entry 4: User data segment (DPL=3)
+        // Entry 3: User data segment (DPL=3) - MUST come before user code for SYSRET!
         let user_data_sel = gdt.append(Descriptor::user_data_segment());
+        // Entry 4: User code segment (DPL=3) - MUST come after user data for SYSRET!
+        let user_code_sel = gdt.append(Descriptor::user_code_segment());
         // Entry 5: TSS
         let tss_ptr = &raw const TSS as *const TaskStateSegment;
         let tss = gdt.append(Descriptor::tss_segment(&*tss_ptr));

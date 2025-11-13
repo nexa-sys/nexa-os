@@ -529,111 +529,41 @@ pub fn jump_to_usermode(entry: u64, stack: u64) -> ! {
         stack_top_ptr.write_volatile(0xdeadbeefdeadbeef);
 
         let selectors = crate::gdt::get_selectors();
-        let user_ss = (selectors.user_data_selector.0 | 3) as u64;
-        let user_cs = (selectors.user_code_selector.0 | 3) as u64;
+        let user_ds = selectors.user_data_selector.0 | 3;
 
-        // Debug output before iretq
+        // Debug output before sysret
         use x86_64::instructions::port::Port;
         let mut port = Port::<u8>::new(0x3F8);
-        for &b in b"BEFORE_IRETQ\n" {
+        for &b in b"BEFORE_SYSRET\n" {
             port.write(b);
         }
 
-        // Build iretq frame and jump to user mode (never returns)
-        // Get clean kernel stack from GS data
-        let gs_ptr = core::ptr::addr_of!(crate::initramfs::GS_DATA.0) as *const u64;
-        let kernel_stack = gs_ptr.add(1).read_volatile(); // GS[1] = kernel stack
-
-        // Debug: print kernel_stack value
-        for &b in b"KSTACK=" {
-            port.write(b);
-        }
-        for shift in (0..16).rev() {
-            let nibble = ((kernel_stack >> (shift * 4)) & 0xF) as u8;
-            port.write(if nibble < 10 {
-                b'0' + nibble
-            } else {
-                b'A' + nibble - 10
-            });
-        }
-        port.write(b'\n');
-
-        // Debug: print all iretq frame values
-        for &b in b"IRETQ_FRAME: entry=" {
-            port.write(b);
-        }
-        for shift in (0..16).rev() {
-            let nibble = ((entry >> (shift * 4)) & 0xF) as u8;
-            port.write(if nibble < 10 {
-                b'0' + nibble
-            } else {
-                b'A' + nibble - 10
-            });
-        }
-        for &b in b" cs=" {
-            port.write(b);
-        }
-        for shift in (0..4).rev() {
-            let nibble = ((user_cs >> (shift * 4)) & 0xF) as u8;
-            port.write(if nibble < 10 {
-                b'0' + nibble
-            } else {
-                b'A' + nibble - 10
-            });
-        }
-        for &b in b" stack=" {
-            port.write(b);
-        }
-        for shift in (0..16).rev() {
-            let nibble = ((stack >> (shift * 4)) & 0xF) as u8;
-            port.write(if nibble < 10 {
-                b'0' + nibble
-            } else {
-                b'A' + nibble - 10
-            });
-        }
-        for &b in b" ss=" {
-            port.write(b);
-        }
-        for shift in (0..4).rev() {
-            let nibble = ((user_ss >> (shift * 4)) & 0xF) as u8;
-            port.write(if nibble < 10 {
-                b'0' + nibble
-            } else {
-                b'A' + nibble - 10
-            });
-        }
-        port.write(b'\n');
-
-        // Use inline assembly with fixed register assignments
-        // iretq stack layout (from high to low address): SS, RSP, RFLAGS, CS, RIP
+        // Use sysretq to return to user mode
+        // sysretq expects:
+        //   RCX = user RIP
+        //   R11 = user RFLAGS
+        //   RSP = user stack pointer
+        //   User DS/ES/FS/GS must be loaded manually
         core::arch::asm!(
-            "mov rsp, r15",      // Switch to clean kernel stack (r15 = kernel_stack)
-            "push r12",          // Push SS (r12 = user_ss)
-            "push r11",          // Push RSP (r11 = stack)
-            "mov rax, 0x202",    // RFLAGS (IF + reserved bit 1)
-            "push rax",
-            "push r14",          // Push CS (r14 = user_cs)
-            "push r13",          // Push RIP (r13 = entry)
-            "iretq",
-            // If we reach here, iretq failed!
-            "mov dx, 0x3F8",
-            "mov al, 0x46",      // 'F'
-            "out dx, al",
-            "mov al, 0x41",      // 'A'
-            "out dx, al",
-            "mov al, 0x49",      // 'I'
-            "out dx, al",
-            "mov al, 0x4C",      // 'L'
-            "out dx, al",
-            "mov al, 0x0A",      // '\n'
-            "out dx, al",
-            "ud2",               // Trigger undefined instruction exception
-            in("r15") kernel_stack,
-            in("r12") user_ss,
-            in("r11") stack,
-            in("r14") user_cs,
-            in("r13") entry,
+            // Load user data segment into DS, ES, FS, GS
+            "mov ax, {user_ds:x}",
+            "mov ds, ax",
+            "mov es, ax",
+            "mov fs, ax",
+            "mov gs, ax",
+            
+            // Set up registers for sysretq
+            "mov rcx, {entry}",     // RCX = user RIP
+            "mov r11, {rflags}",    // R11 = user RFLAGS (IF enabled)
+            "mov rsp, {stack}",     // RSP = user stack
+            
+            // Return to user mode
+            "sysretq",
+            
+            user_ds = in(reg) user_ds as u64,
+            entry = in(reg) entry,
+            rflags = in(reg) 0x202u64,  // IF (0x200) + reserved bit 1 (0x2)
+            stack = in(reg) stack,
             options(noreturn)
         );
     }

@@ -2137,8 +2137,10 @@ pub extern "C" fn syscall_dispatch(
 global_asm!(
     ".global syscall_handler",
     "syscall_handler:",
+    // Save user RCX (return address) and R11 (rflags) because sysretq needs them
+    "push r11", // save user rflags
+    "push rcx", // save user return address
     "push rbx",
-    "push rcx", // return address (will be parameter 5)
     "push rdx",
     "push rsi",
     "push rdi",
@@ -2146,31 +2148,40 @@ global_asm!(
     "push r8",
     "push r9",
     "push r10",
-    "push r11", // rflags
     "push r12",
     "push r13",
     "push r14",
     "push r15",
     "sub rsp, 8", // maintain 16-byte stack alignment before calling into Rust
-    // Stack layout after all pushes and sub:
-    // We pushed 16 registers (rbx, rcx, rdx, rsi, rdi, rbp, r8, r9, r10, r11, r12, r13, r14, r15)
-    // That's 16 * 8 = 128 bytes
-    // Then sub rsp, 8 adds 8 more
-    // Original RCX is at position 2 from top (after rbx), which is [rsp + 120]
-    // (120 = 15*8, since we need to skip 15 registers above rcx to reach it from new rsp)
-    "mov r8, [rsp + 120]", // Get original RCX (syscall return address) -> r8 (param 5)
+    // Stack layout after alignment:
+    // [rsp + 120] = r11 (user rflags)
+    // [rsp + 112] = rcx (user return address)
+    // [rsp + 104] = rbx
+    // [rsp + 96]  = rdx
+    // [rsp + 88]  = rsi
+    // [rsp + 80]  = rdi
+    // [rsp + 72]  = rbp
+    // [rsp + 64]  = r8
+    // [rsp + 56]  = r9
+    // [rsp + 48]  = r10
+    // [rsp + 40]  = r12
+    // [rsp + 32]  = r13
+    // [rsp + 24]  = r14
+    // [rsp + 16]  = r15
+    // [rsp + 8]   = alignment padding
+    // [rsp]       = current stack pointer
+    "mov r8, [rsp + 112]", // Get original RCX (syscall return address) -> r8 (param 5)
     "mov rcx, rdx",        // arg3 -> rcx (param 4)
     "mov rdx, rsi",        // arg2 -> rdx (param 3)
     "mov rsi, rdi",        // arg1 -> rsi (param 2)
     "mov rdi, rax",        // nr -> rdi (param 1)
     "call syscall_dispatch",
     // Return value is in rax
-    "add rsp, 8",
+    "add rsp, 8",          // remove alignment padding
     "pop r15",
     "pop r14",
     "pop r13",
     "pop r12",
-    "pop r11",
     "pop r10",
     "pop r9",
     "pop r8",
@@ -2178,7 +2189,17 @@ global_asm!(
     "pop rdi",
     "pop rsi",
     "pop rdx",
-    "pop rcx",
     "pop rbx",
-    "iretq"
+    // Restore RCX and R11 for sysretq
+    "pop rcx",  // user return address
+    "pop r11",  // user rflags
+    // Restore user segment registers before sysretq
+    // Note: user data segment is now entry 3 (0x18 | 3 = 0x1B)
+    "mov r8w, 0x1B",  // user data segment selector (0x18 | 3)
+    "mov ds, r8w",
+    "mov es, r8w",
+    "mov fs, r8w",
+    "mov gs, r8w",
+    // Return to user mode via sysretq (RCX=rip, R11=rflags, RAX=return value)
+    "sysretq"
 );
