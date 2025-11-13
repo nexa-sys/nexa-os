@@ -139,6 +139,15 @@ pub fn kernel_main_uefi(boot_info_ptr: *const BootInfo) -> ! {
 
     let boot_info = unsafe { &*boot_info_ptr };
 
+    kinfo!("UEFI boot info pointer: {:#x}", boot_info_ptr as u64);
+
+    let mut signature_probe = [0u8; 8];
+    unsafe {
+        let raw = core::slice::from_raw_parts(boot_info_ptr as *const u8, signature_probe.len());
+        signature_probe.copy_from_slice(raw);
+    }
+    kinfo!("UEFI boot info raw signature bytes: {:?}", signature_probe);
+
     if let Err(err) = bootinfo::set(boot_info) {
         match err {
             bootinfo::BootInfoError::InvalidSignature => {

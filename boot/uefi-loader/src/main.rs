@@ -45,6 +45,7 @@ const KERNEL_PATH: &uefi::CStr16 = cstr16!("\\EFI\\BOOT\\KERNEL.ELF");
 const INITRAMFS_PATH: &uefi::CStr16 = cstr16!("\\EFI\\BOOT\\INITRAMFS.CPIO");
 // Rootfs 不从 ESP 加载，由内核从 /dev/vda 挂载
 const MAX_PHYS_ADDR: u64 = 0x0000FFFF_FFFF;
+const BOOT_INFO_PREF_MAX_ADDR: u64 = 0x03FF_FFFF; // Prefer BootInfo below 64 MiB
 
 const PNP0A03_EISA_ID: u32 = encode_eisa_id(*b"PNP0A03");
 const PNP0A08_EISA_ID: u32 = encode_eisa_id(*b"PNP0A08");
@@ -885,6 +886,7 @@ fn efi_main(image: Handle, mut st: SystemTable<Boot>) -> Status {
     log::info!("Exit boot services completed");
 
     let mut entry_point = loaded.actual_entry_point;
+    let mut boot_info_ptr = boot_info_region.phys_addr;
 
     if loaded.kernel_offset != 0 {
         log::info!(
@@ -897,6 +899,19 @@ fn efi_main(image: Handle, mut st: SystemTable<Boot>) -> Status {
                 "Segments mirrored successfully, switching to expected entry {:#x}",
                 entry_point
             );
+
+            if let Some(expected_ptr) = mirror_boot_info_to_expected(&boot_info_region, loaded.kernel_offset) {
+                boot_info_ptr = expected_ptr;
+                log::info!(
+                    "Boot info mirrored to expected address {:#x}",
+                    boot_info_ptr
+                );
+            } else {
+                log::warn!(
+                    "Failed to mirror boot info block; continuing with relocated pointer {:#x}",
+                    boot_info_ptr
+                );
+            }
         } else {
             log::warn!(
                 "Encountered issues while mirroring segments; continuing from relocated entry {:#x}",
@@ -911,7 +926,11 @@ fn efi_main(image: Handle, mut st: SystemTable<Boot>) -> Status {
     );
 
     // 添加更多调试信息
-    log::info!("Boot info address: {:#x}", boot_info_region.phys_addr);
+    log::info!(
+        "Boot info address: staged {:#x}, handoff {:#x}",
+        boot_info_region.phys_addr,
+        boot_info_ptr
+    );
     log::info!(
         "Kernel base: expected {:#x}, actual {:#x}, offset {:#x}",
         loaded.expected_base,
@@ -919,6 +938,19 @@ fn efi_main(image: Handle, mut st: SystemTable<Boot>) -> Status {
         loaded.kernel_offset
     );
     log::info!("About to jump to kernel entry point...");
+
+    unsafe {
+        let boot_info_ptr_ref = boot_info_ptr as *const BootInfo;
+        let signature = (*boot_info_ptr_ref).signature;
+        let version = (*boot_info_ptr_ref).version;
+        let flags = (*boot_info_ptr_ref).flags;
+        log::info!(
+            "Boot info signature before handoff: {:?}, version: {}, flags: {:#x}",
+            signature,
+            version,
+            flags
+        );
+    }
 
     // 写入原始 COM1 端口确认我们到达这里
     unsafe {
@@ -930,8 +962,8 @@ fn efi_main(image: Handle, mut st: SystemTable<Boot>) -> Status {
     }
 
     unsafe {
-        let entry: extern "C" fn(*const BootInfo) -> ! = mem::transmute(entry_point as u64);
-        entry(boot_info_region.phys_addr as *const BootInfo)
+        let entry: extern "sysv64" fn(*const BootInfo) -> ! = mem::transmute(entry_point as usize);
+        entry(boot_info_ptr as *const BootInfo)
     }
 }
 
@@ -1353,6 +1385,63 @@ fn mirror_segments_to_expected(segments: &[LoadedSegment]) -> bool {
     all_ok
 }
 
+fn mirror_boot_info_to_expected(region: &MemoryRegion, offset: i64) -> Option<u64> {
+    if offset <= 0 || region.is_empty() || region.length == 0 {
+        return Some(region.phys_addr);
+    }
+
+    if region.length > usize::MAX as u64 {
+        log::error!(
+            "Boot info region length ({}) exceeds addressable size",
+            region.length
+        );
+        return None;
+    }
+
+    let offset_u64 = offset as u64;
+    if region.phys_addr < offset_u64 {
+        log::error!(
+            "Boot info address {:#x} is smaller than relocation offset {:#x}",
+            region.phys_addr,
+            offset_u64
+        );
+        return None;
+    }
+
+    let expected_addr = region.phys_addr - offset_u64;
+
+    // Avoid copying into legacy regions that are typically ROM or device windows.
+    if (0x000A_0000..0x0010_0000).contains(&expected_addr) {
+        log::warn!(
+            "Boot info expected address {:#x} lies in reserved low memory; skipping mirror",
+            expected_addr
+        );
+        return None;
+    }
+
+    unsafe {
+        ptr::copy_nonoverlapping(
+            region.phys_addr as *const u8,
+            expected_addr as *mut u8,
+            region.length as usize,
+        );
+    }
+
+    unsafe {
+        let mirrored = &*(expected_addr as *const BootInfo);
+        if mirrored.signature != nexa_boot_info::BOOT_INFO_SIGNATURE {
+            log::warn!(
+                "Boot info mirror verification failed at {:#x}; signature bytes: {:?}",
+                expected_addr,
+                mirrored.signature
+            );
+            return None;
+        }
+    }
+
+    Some(expected_addr)
+}
+
 fn stage_boot_info(
     bs: &BootServices,
     initramfs: MemoryRegion,
@@ -1367,13 +1456,28 @@ fn stage_boot_info(
     let size_bytes = mem::size_of::<BootInfo>();
     debug_assert!(size_bytes <= u16::MAX as usize);
     let pages = (size_bytes + 0xFFF) / 0x1000;
-    let addr = bs
+    let allocation = bs
         .allocate_pages(
-            AllocateType::MaxAddress(MAX_PHYS_ADDR),
+            AllocateType::MaxAddress(BOOT_INFO_PREF_MAX_ADDR),
             MemoryType::LOADER_DATA,
             pages,
         )
-        .map_err(|e: Error| e.status())? as usize;
+        .or_else(|_| {
+            bs.allocate_pages(
+                AllocateType::MaxAddress(MAX_PHYS_ADDR),
+                MemoryType::LOADER_DATA,
+                pages,
+            )
+        })
+        .map_err(|e: Error| e.status())?;
+
+    let addr = allocation as usize;
+    if (addr as u64) > BOOT_INFO_PREF_MAX_ADDR {
+        log::warn!(
+            "Boot info allocated above preferred range: {:#x}",
+            addr
+        );
+    }
 
     let mut device_entries = [DeviceDescriptor::empty(); MAX_DEVICE_DESCRIPTORS];
     device_entries.copy_from_slice(&devices.entries);

@@ -37,7 +37,7 @@ impl PageTableHolder {
 
 static USER_PDP: PageTableHolder = PageTableHolder::new();
 static USER_PD: PageTableHolder = PageTableHolder::new();
-static KERNEL_IDENTITY_PD: PageTableHolder = PageTableHolder::new();
+static KERNEL_PML4: PageTableHolder = PageTableHolder::new();
 
 const EXTRA_TABLE_COUNT: usize = 32;
 
@@ -166,174 +166,59 @@ pub fn init() {
 /// SAFETY: This function must be called only once during kernel initialization
 unsafe fn init_user_page_tables() {
     use x86_64::registers::control::{Cr3, Cr3Flags};
-    use x86_64::structures::paging::PageTableFlags;
+    use x86_64::structures::paging::{PageTableFlags, PhysFrame};
 
-    crate::kinfo!("Setting up user-accessible pages for user space (0x400000-0x800000)");
+    crate::kinfo!("Setting up fresh identity-mapped paging structures");
 
-    // Get current page table root (PML4)
-    let (pml4_frame, _) = Cr3::read();
-    let pml4_addr = pml4_frame.start_address();
-    let pml4 = &mut *(pml4_addr.as_u64() as *mut PageTable);
+    const IDENTITY_MAP_GB: usize = 4;
 
-    crate::kinfo!(
-        "init_user_page_tables: CR3 frame={:#x}\n",
-        pml4_addr.as_u64()
-    );
-
-    crate::kinfo!("PML4 at {:#x}", pml4_addr.as_u64());
-
-    // For identity mapping, we expect:
-    // - PML4[0] -> PDP (covers 0-512GB)
-    // - PDP[0] -> PD (covers 0-1GB)
-    // - PD[0-3] -> PTs (covers 0-4MB, but we need up to 2MB)
-
-    // Check if we have the expected structure
-    if !pml4[0].is_unused() {
-        let current_flags = pml4[0].flags();
-        if !current_flags.contains(PageTableFlags::USER_ACCESSIBLE) {
-            pml4[0].set_flags(
-                current_flags
-                    | PageTableFlags::PRESENT
-                    | PageTableFlags::WRITABLE
-                    | PageTableFlags::USER_ACCESSIBLE,
-            );
-            crate::kinfo!("Enabled USER_ACCESSIBLE on PML4[0]");
-        }
-
-        let pdp_addr = pml4[0].addr();
-        let pdp = &mut *(pdp_addr.as_u64() as *mut PageTable);
-        crate::kinfo!("PDP at {:#x}", pdp_addr.as_u64());
-        crate::kinfo!(
-            "PDP[0] initial flags={:#x}, addr={:#x}\n",
-            pdp[0].flags().bits(),
-            pdp[0].addr().as_u64()
-        );
-
-        if !pdp[0].is_unused() {
-            crate::kinfo!("PDP[0] is used, getting addr");
-
-            // Check if it's a huge page (PS bit set)
-            let flags = pdp[0].flags();
-            if flags.contains(PageTableFlags::HUGE_PAGE) {
-                // Convert the 1 GiB huge page into a directory of 2 MiB pages so
-                // we can retain identity mapping while granting user access to the
-                // low-memory region needed by the userspace binary.
-                KERNEL_IDENTITY_PD.reset();
-                let pd_ptr = KERNEL_IDENTITY_PD.as_mut_ptr();
-                let pd = unsafe { &mut *pd_ptr };
-
-                for (index, entry) in pd.iter_mut().enumerate() {
-                    let phys = (index as u64) * 0x200000;
-                    entry.set_addr(
-                        PhysAddr::new(phys),
-                        PageTableFlags::PRESENT
-                            | PageTableFlags::WRITABLE
-                            | PageTableFlags::USER_ACCESSIBLE
-                            | PageTableFlags::HUGE_PAGE,
-                    );
-                }
-
-                pdp[0].set_addr(
-                    KERNEL_IDENTITY_PD.phys_addr(),
-                    PageTableFlags::PRESENT
-                        | PageTableFlags::WRITABLE
-                        | PageTableFlags::USER_ACCESSIBLE,
-                );
-                crate::kinfo!("Converted PDP[0] 1GiB huge page into 2MiB identity directory");
-                crate::vga_buffer::set_vga_ready();
-            } else {
-                // Ensure standard page table entry carries correct permissions
-                pdp[0].set_flags(
-                    PageTableFlags::PRESENT
-                        | PageTableFlags::WRITABLE
-                        | PageTableFlags::USER_ACCESSIBLE,
-                );
-
-                let mut pd_addr = pdp[0].addr();
-                if pd_addr.as_u64() == 0 {
-                    KERNEL_IDENTITY_PD.reset();
-                    let phys = KERNEL_IDENTITY_PD.phys_addr();
-                    pdp[0].set_addr(
-                        phys,
-                        PageTableFlags::PRESENT
-                            | PageTableFlags::WRITABLE
-                            | PageTableFlags::USER_ACCESSIBLE,
-                    );
-                    crate::kinfo!("Allocated new PD at {:#x}", phys.as_u64());
-                    pd_addr = phys;
-                }
-
-                crate::kinfo!("PD addr: {:#x}", pd_addr.as_u64());
-                let pd = unsafe { &mut *(pd_addr.as_u64() as *mut PageTable) };
-                crate::kinfo!("PD pointer created");
-                crate::kinfo!("PD at {:#x}", pd_addr.as_u64());
-                crate::serial::_print(format_args!(
-                    "PD[0] before mapping: flags={:#x}, addr={:#x}\n",
-                    pd[0].flags().bits(),
-                    pd[0].addr().as_u64()
-                ));
-
-                // Ensure the first 2 MiB (kernel identity region) is mapped so the kernel stack
-                // and other low memory data remain accessible even after we adjust permissions.
-                if pd[0].is_unused() {
-                    pd[0].set_addr(
-                        PhysAddr::new(0),
-                        PageTableFlags::PRESENT
-                            | PageTableFlags::WRITABLE
-                            | PageTableFlags::HUGE_PAGE,
-                    );
-                    crate::kinfo!("Mapped kernel identity huge page: virtual 0x0 -> physical 0x0");
-                }
-                crate::serial::_print(format_args!(
-                    "PD[0] after mapping: flags={:#x}, addr={:#x}\n",
-                    pd[0].flags().bits(),
-                    pd[0].addr().as_u64()
-                ));
-
-                // Set USER_ACCESSIBLE on existing PD entries
-                for pd_idx in 0..4 {
-                    // Check PD[0-3] for 0-4MB range
-                    crate::kinfo!("Checking PD[{}]", pd_idx);
-
-                    if pd[pd_idx].is_unused() {
-                        crate::kinfo!("PD[{}] is unused", pd_idx);
-                        continue;
-                    }
-
-                    crate::kinfo!("PD[{}] is used, getting flags", pd_idx);
-                    let pd_flags = pd[pd_idx].flags();
-                    crate::kinfo!("PD[{}] flags: {:#x}", pd_idx, pd_flags.bits());
-                    if pd_flags.contains(PageTableFlags::HUGE_PAGE) {
-                        // 2MB huge page
-                        pd[pd_idx].set_flags(pd_flags | PageTableFlags::USER_ACCESSIBLE);
-                        crate::kdebug!("Set USER_ACCESSIBLE for 2MB page at PD[{}]", pd_idx);
-                    } else {
-                        // 4KB pages - set USER_ACCESSIBLE on PT entries
-                        let pt_addr = pd[pd_idx].addr();
-                        crate::kinfo!("PT[{}] at {:#x}", pd_idx, pt_addr.as_u64());
-                        let pt = unsafe { &mut *(pt_addr.as_u64() as *mut PageTable) };
-
-                        // Set USER_ACCESSIBLE on all PT entries
-                        for pt_idx in 0..512 {
-                            if !pt[pt_idx].is_unused() {
-                                let pt_flags = pt[pt_idx].flags();
-                                pt[pt_idx].set_flags(pt_flags | PageTableFlags::USER_ACCESSIBLE);
-                                crate::kdebug!(
-                                    "Set USER_ACCESSIBLE for PT[{}][{}]",
-                                    pd_idx,
-                                    pt_idx
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        } else {
-            crate::kinfo!("PDP[0] is unused - no identity mapping found");
-        }
-    } else {
-        crate::kinfo!("PML4[0] is unused - no page tables found");
+    // Prepare a clean PML4 that we fully control.
+    KERNEL_PML4.reset();
+    let new_pml4 = &mut *KERNEL_PML4.as_mut_ptr();
+    for entry in new_pml4.iter_mut() {
+        entry.set_unused();
     }
+
+    // Allocate a PDP table for the lower canonical region.
+    let identity_pdp_holder = allocate_extra_table().expect("out of paging tables for PDP");
+    let identity_pdp = &mut *identity_pdp_holder.as_mut_ptr();
+    identity_pdp_holder.reset();
+
+    let pd_flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
+    new_pml4[0].set_addr(identity_pdp_holder.phys_addr(), pd_flags);
+
+    // Map the first N gigabytes using 2 MiB huge pages.
+    for gb in 0..IDENTITY_MAP_GB {
+        let pd_holder = allocate_extra_table().expect("out of paging tables for PD");
+        pd_holder.reset();
+        let pd = &mut *pd_holder.as_mut_ptr();
+
+        for entry in 0..512 {
+            let phys = ((gb * 512 + entry) as u64) * 0x200000u64;
+            pd[entry].set_addr(
+                PhysAddr::new(phys),
+                PageTableFlags::PRESENT
+                    | PageTableFlags::WRITABLE
+                    | PageTableFlags::HUGE_PAGE
+                    | PageTableFlags::GLOBAL,
+            );
+        }
+
+        identity_pdp[gb].set_addr(pd_holder.phys_addr(), pd_flags);
+    }
+
+    // Provide a recursive mapping slot near the top of the address space for diagnostics.
+    let recursive_index = 510usize;
+    new_pml4[recursive_index].set_addr(KERNEL_PML4.phys_addr(), pd_flags);
+
+    // Switch to the freshly prepared paging structures.
+    let new_frame =
+        PhysFrame::from_start_address(KERNEL_PML4.phys_addr()).expect("aligned PML4 frame");
+    Cr3::write(new_frame, Cr3Flags::empty());
+    crate::kinfo!(
+        "Switched CR3 to new identity root at {:#x}",
+        new_frame.start_address().as_u64()
+    );
 
     // Map user program virtual addresses (code, heap, stack) to physical addresses
     // User program expects to run at virtual address 0x200000, with heap and stack
