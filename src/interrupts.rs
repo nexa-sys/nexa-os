@@ -19,11 +19,10 @@ const ENABLE_SYSCALL_MSRS: bool = true;
 pub static PICS: spin::Mutex<ChainedPics> =
     spin::Mutex::new(unsafe { ChainedPics::new(PIC_1_OFFSET, PIC_2_OFFSET) });
 
-unsafe fn write_hex_u64(port: &mut x86_64::instructions::port::Port<u8>, value: u64) {
+unsafe fn write_hex_u64(port: &mut Port<u8>, value: u64) {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    for i in (0..16).rev() {
-        let shift = i * 4;
-        let nibble = ((value >> shift) & 0xF) as usize;
+    for shift in (0..16).rev() {
+        let nibble = ((value >> (shift * 4)) & 0xF) as usize;
         port.write(HEX[nibble]);
     }
 }
@@ -131,13 +130,33 @@ extern "x86-interrupt" fn page_fault_handler(
 ) {
     use x86_64::registers::control::Cr2;
     let cr2 = Cr2::read().unwrap_or_else(|_| x86_64::VirtAddr::new(0));
-    crate::kerror!(
-        "EXCEPTION: PAGE FAULT at {:#x}, RIP={:#x}",
-        cr2.as_u64(),
-        stack_frame.instruction_pointer.as_u64()
-    );
+    let fault_addr = cr2.as_u64();
+    let rip = stack_frame.instruction_pointer.as_u64();
+
+    let mut hex_buf = [0u8; 16];
+
+    crate::serial::write_bytes(b"EXCEPTION: PAGE FAULT at 0x");
+    encode_hex_u64(fault_addr, &mut hex_buf);
+    crate::serial::write_bytes(&hex_buf);
+    crate::serial::write_bytes(b", RIP=0x");
+    encode_hex_u64(rip, &mut hex_buf);
+    crate::serial::write_bytes(&hex_buf);
+    crate::serial::write_bytes(b"\r\n");
+
+    crate::serial::write_bytes(b"System halted due to unrecoverable page fault\r\n");
     loop {
         x86_64::instructions::hlt();
+    }
+}
+
+fn encode_hex_u64(value: u64, buf: &mut [u8; 16]) {
+    for (idx, byte) in buf.iter_mut().enumerate() {
+        let shift = (15 - idx) * 4;
+        let nibble = ((value >> shift) & 0xF) as u8;
+        *byte = match nibble {
+            0..=9 => b'0' + nibble,
+            _ => b'A' + (nibble - 10),
+        };
     }
 }
 

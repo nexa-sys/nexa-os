@@ -2065,6 +2065,15 @@ pub extern "C" fn syscall_dispatch(
     arg3: u64,
     syscall_return_addr: u64,
 ) -> u64 {
+    crate::serial::_print(format_args!(
+        "[syscall_dispatch] nr={} arg1={:#x} arg2={:#x} arg3={:#x} ret={:#x}\n",
+        nr,
+        arg1,
+        arg2,
+        arg3,
+        syscall_return_addr
+    ));
+
     let result = match nr {
         SYS_WRITE => syscall_write(arg1, arg2, arg3),
         SYS_READ => syscall_read(arg1, arg2 as *mut u8, arg3 as usize),

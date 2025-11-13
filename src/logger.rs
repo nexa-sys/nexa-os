@@ -154,6 +154,50 @@ pub fn tsc_frequency_is_guessed() -> bool {
 }
 
 pub fn log(level: LogLevel, args: fmt::Arguments<'_>) {
+    #[allow(unused_mut)]
+    let mut rsp_val: usize = 0;
+    unsafe {
+        core::arch::asm!("mov {}, rsp", out(reg) rsp_val, options(nomem, preserves_flags));
+    }
+    if rsp_val & 0xF != 0 {
+        use core::sync::atomic::AtomicBool;
+        static REPORTED_UNALIGNED: AtomicBool = AtomicBool::new(false);
+        if !REPORTED_UNALIGNED.swap(true, Ordering::SeqCst) {
+            unsafe {
+                use x86_64::instructions::port::Port;
+                let mut port = Port::<u8>::new(0x3F8);
+                for &byte in b"ALGN" {
+                    port.write(byte);
+                }
+                port.write(b' ');
+                for shift in (0..16).rev() {
+                    let nibble = ((rsp_val >> (shift * 4)) & 0xF) as u8;
+                    let ch = match nibble {
+                        0..=9 => b'0' + nibble,
+                        _ => b'A' + (nibble - 10),
+                    };
+                    port.write(ch);
+                }
+                port.write(b'\n');
+
+                let ret_addr_ptr = (rsp_val + 0xD18) as *const usize;
+                let ret_addr = core::ptr::read(ret_addr_ptr);
+                for &byte in b"RET " {
+                    port.write(byte);
+                }
+                for shift in (0..16).rev() {
+                    let nibble = ((ret_addr >> (shift * 4)) & 0xF) as u8;
+                    let ch = match nibble {
+                        0..=9 => b'0' + nibble,
+                        _ => b'A' + (nibble - 10),
+                    };
+                    port.write(ch);
+                }
+                port.write(b'\n');
+            }
+        }
+    }
+
     let current = LOG_LEVEL.load(Ordering::Relaxed);
     if level.priority() > current {
         return;
