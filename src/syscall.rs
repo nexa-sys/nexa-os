@@ -1356,9 +1356,6 @@ fn syscall_execve(
 ) -> u64 {
     use crate::scheduler::get_current_pid;
 
-    // Use serial directly since kinfo won't show after init starts
-    crate::serial::_print(format_args!("[execve] called with path={:p}\n", path));
-
     if path.is_null() {
         posix::set_errno(posix::errno::EFAULT);
         return u64::MAX;
@@ -1383,17 +1380,12 @@ fn syscall_execve(
             }
         }
     };
-
-    crate::serial::_print(format_args!("[execve] loading '{}'\n", path_str));
-
     // Load the ELF file from filesystem
     let elf_data = match crate::fs::read_file_bytes(path_str) {
         Some(data) => {
-            crate::serial::_print(format_args!("[execve] loaded {} bytes\n", data.len()));
             data
         }
         None => {
-            crate::serial::_print(format_args!("[execve] file not found: {}\n", path_str));
             posix::set_errno(posix::errno::ENOENT);
             return u64::MAX;
         }
@@ -1403,17 +1395,10 @@ fn syscall_execve(
     let new_process = match crate::process::Process::from_elf(elf_data) {
         Ok(proc) => proc,
         Err(e) => {
-            crate::serial::_print(format_args!("[execve] failed to load ELF: {}\n", e));
             posix::set_errno(posix::errno::EINVAL);
             return u64::MAX;
         }
     };
-
-    crate::serial::_print(format_args!(
-        "[execve] new image ready, entry={:#x}, stack={:#x}\n",
-        new_process.entry_point,
-        new_process.stack_top
-    ));
 
     // Get current process and replace it with new image
     let current_pid = match get_current_pid() {
@@ -2144,10 +2129,6 @@ pub extern "C" fn syscall_dispatch(
     arg3: u64,
     syscall_return_addr: u64,
 ) -> u64 {
-    crate::serial::_print(format_args!(
-        "[syscall_dispatch] nr={} arg1={:#x} arg2={:#x} arg3={:#x} ret={:#x}\n",
-        nr, arg1, arg2, arg3, syscall_return_addr
-    ));
 
     let result = match nr {
         SYS_WRITE => syscall_write(arg1, arg2, arg3),
