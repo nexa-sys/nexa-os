@@ -1,6 +1,5 @@
 /// Process management for user-space execution
 use crate::elf::{ElfLoader, LoadResult};
-use core::arch::asm;
 use core::ptr;
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -446,21 +445,54 @@ fn build_initial_stack(
 /// Jump to user mode (Ring 3) and execute code at given address
 /// This function never returns - execution continues in user space
 #[inline(never)]
-pub fn jump_to_usermode(entry: u64, stack: u64) {
-    crate::kdebug!(
-        "About to execute iretq with entry={:#x}, stack={:#x}",
-        entry,
-        stack
-    );
+pub fn jump_to_usermode(entry: u64, stack: u64) -> ! {
+    // Use direct serial output to bypass logger restrictions
+    unsafe {
+        use x86_64::instructions::port::Port;
+        let mut port = Port::<u8>::new(0x3F8);
+        for &b in b"JUMP_TO_USER entry=" {
+            port.write(b);
+        }
+        for shift in (0..16).rev() {
+            let nibble = ((entry >> (shift * 4)) & 0xF) as u8;
+            port.write(if nibble < 10 { b'0' + nibble } else { b'A' + nibble - 10 });
+        }
+        for &b in b" stack=" {
+            port.write(b);
+        }
+        for shift in (0..16).rev() {
+            let nibble = ((stack >> (shift * 4)) & 0xF) as u8;
+            port.write(if nibble < 10 { b'0' + nibble } else { b'A' + nibble - 10 });
+        }
+        port.write(b'\n');
+    }
 
     // Set GS data for syscall and Ring 3 switching
     unsafe {
+        use x86_64::instructions::port::Port;
+        
         let selectors = crate::gdt::get_selectors();
-        crate::kinfo!(
-            "User selectors: code={:#x}, data={:#x}",
-            selectors.user_code_selector.0,
-            selectors.user_data_selector.0
-        );
+        
+        // Debug output for selectors
+        let mut port = Port::<u8>::new(0x3F8);
+        for &b in b"SEL: ucode=" {
+            port.write(b);
+        }
+        let uc = selectors.user_code_selector.0;
+        for shift in (0..4).rev() {
+            let nibble = ((uc >> (shift * 4)) & 0xF) as u8;
+            port.write(if nibble < 10 { b'0' + nibble } else { b'A' + nibble - 10 });
+        }
+        for &b in b" udata=" {
+            port.write(b);
+        }
+        let ud = selectors.user_data_selector.0;
+        for shift in (0..4).rev() {
+            let nibble = ((ud >> (shift * 4)) & 0xF) as u8;
+            port.write(if nibble < 10 { b'0' + nibble } else { b'A' + nibble - 10 });
+        }
+        port.write(b'\n');
+        
         crate::interrupts::set_gs_data(
             entry,
             stack,
@@ -473,49 +505,105 @@ pub fn jump_to_usermode(entry: u64, stack: u64) {
         use x86_64::registers::model_specific::Msr;
         let gs_base = &raw const crate::initramfs::GS_DATA.0 as *const _ as u64;
         Msr::new(0xc0000101).write(gs_base);
-        crate::kdebug!("GS base set to GS_DATA at {:#x}", gs_base);
     }
 
     unsafe {
-        // Touch the top of the user stack to ensure the mapping is present and
-        // writable before we attempt to transition. If this write triggers a
-        // fault we will catch it while still on the kernel stack, which makes
-        // debugging substantially easier than chasing a double fault.
+        // Touch the top of the user stack
         let stack_top_ptr = (stack - 8) as *mut u64;
         stack_top_ptr.write_volatile(0xdeadbeefdeadbeef);
 
-        let rsp_before: u64;
-        core::arch::asm!("mov {}, rsp", out(reg) rsp_before);
-        crate::kdebug!(
-            "Kernel RSP before iret: {:#x} (mod16={})",
-            rsp_before,
-            rsp_before & 0xF
-        );
         let selectors = crate::gdt::get_selectors();
-        let user_ss = selectors.user_data_selector.0 | 3;
-        let user_cs = selectors.user_code_selector.0 | 3;
-        crate::kdebug!(
-            "About to push iretq parameters: ss={:#x}, rsp={:#x}, rflags=0x202, cs={:#x}, rip={:#x}",
-            user_ss,
-            stack,
-            user_cs,
-            entry
-        );
-        asm!(
-            "push {ss}",
-            "push {stack}",
-            "push 0x202",
-            "push {cs}",
-            "push {entry}",
+        let user_ss = (selectors.user_data_selector.0 | 3) as u64;
+        let user_cs = (selectors.user_code_selector.0 | 3) as u64;
+        
+        // Debug output before iretq
+        use x86_64::instructions::port::Port;
+        let mut port = Port::<u8>::new(0x3F8);
+        for &b in b"BEFORE_IRETQ\n" {
+            port.write(b);
+        }
+        
+        // Build iretq frame and jump to user mode (never returns)
+        // Get clean kernel stack from GS data
+        let gs_ptr = core::ptr::addr_of!(crate::initramfs::GS_DATA.0) as *const u64;
+        let kernel_stack = gs_ptr.add(1).read_volatile(); // GS[1] = kernel stack
+        
+        // Debug: print kernel_stack value
+        for &b in b"KSTACK=" {
+            port.write(b);
+        }
+        for shift in (0..16).rev() {
+            let nibble = ((kernel_stack >> (shift * 4)) & 0xF) as u8;
+            port.write(if nibble < 10 { b'0' + nibble } else { b'A' + nibble - 10 });
+        }
+        port.write(b'\n');
+        
+        // Debug: print all iretq frame values
+        for &b in b"IRETQ_FRAME: entry=" {
+            port.write(b);
+        }
+        for shift in (0..16).rev() {
+            let nibble = ((entry >> (shift * 4)) & 0xF) as u8;
+            port.write(if nibble < 10 { b'0' + nibble } else { b'A' + nibble - 10 });
+        }
+        for &b in b" cs=" {
+            port.write(b);
+        }
+        for shift in (0..4).rev() {
+            let nibble = ((user_cs >> (shift * 4)) & 0xF) as u8;
+            port.write(if nibble < 10 { b'0' + nibble } else { b'A' + nibble - 10 });
+        }
+        for &b in b" stack=" {
+            port.write(b);
+        }
+        for shift in (0..16).rev() {
+            let nibble = ((stack >> (shift * 4)) & 0xF) as u8;
+            port.write(if nibble < 10 { b'0' + nibble } else { b'A' + nibble - 10 });
+        }
+        for &b in b" ss=" {
+            port.write(b);
+        }
+        for shift in (0..4).rev() {
+            let nibble = ((user_ss >> (shift * 4)) & 0xF) as u8;
+            port.write(if nibble < 10 { b'0' + nibble } else { b'A' + nibble - 10 });
+        }
+        port.write(b'\n');
+        
+        // Use inline assembly with fixed register assignments
+        // iretq stack layout (from high to low address): SS, RSP, RFLAGS, CS, RIP
+        core::arch::asm!(
+            "mov rsp, r15",      // Switch to clean kernel stack (r15 = kernel_stack)
+            "push r12",          // Push SS (r12 = user_ss)
+            "push r11",          // Push RSP (r11 = stack)
+            "mov rax, 0x202",    // RFLAGS (IF + reserved bit 1)
+            "push rax",
+            "push r14",          // Push CS (r14 = user_cs)
+            "push r13",          // Push RIP (r13 = entry)
             "iretq",
-            ss = in(reg) user_ss as u64,
-            stack = in(reg) stack,
-            cs = in(reg) user_cs as u64,
-            entry = in(reg) entry,
+            // If we reach here, iretq failed!
+            "mov dx, 0x3F8",
+            "mov al, 0x46",      // 'F'
+            "out dx, al",
+            "mov al, 0x41",      // 'A'
+            "out dx, al",
+            "mov al, 0x49",      // 'I'
+            "out dx, al",
+            "mov al, 0x4C",      // 'L'
+            "out dx, al",
+            "mov al, 0x0A",      // '\n'
+            "out dx, al",
+            "ud2",               // Trigger undefined instruction exception
+            in("r15") kernel_stack,
+            in("r12") user_ss,
+            in("r11") stack,
+            in("r14") user_cs,
+            in("r13") entry,
             options(noreturn)
         );
     }
 }
+
+// Note: do_iretq function removed - iretq logic is now inline in jump_to_usermode
 
 /// User process entry point and stack for Ring 3 switching
 static mut USER_ENTRY: u64 = 0;

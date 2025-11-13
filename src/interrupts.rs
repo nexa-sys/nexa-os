@@ -30,16 +30,24 @@ unsafe fn write_hex_u64(port: &mut Port<u8>, value: u64) {
 global_asm!(
     ".global syscall_interrupt_handler",
     "syscall_interrupt_handler:",
-    // On int gate from Ring 3, CPU pushed: RIP, CS, RFLAGS, RSP, SS
-    // Save RIP (return address) before we push other registers
-    "mov r10, [rsp + 0]", // r10 = user RIP (at top of stack after int)
-    // Record the incoming CS/SS pair so we can confirm whether the frame was
-    // already corrupted when we entered.
-    "mov rax, [rsp + 8]",
-    "mov gs:[120], rax", // gs slot 15 = entry CS snapshot
-    "mov rax, [rsp + 32]",
-    "mov gs:[128], rax", // gs slot 16 = entry SS snapshot
-    // Now save other registers we might clobber
+    // On int gate from Ring 3, CPU pushed: SS, RSP, RFLAGS, CS, RIP (in that order from high to low addresses)
+    // Current stack layout (from top, rsp+0 to rsp+32):
+    //   [rsp+0]  = RIP
+    //   [rsp+8]  = CS
+    //   [rsp+16] = RFLAGS
+    //   [rsp+24] = user RSP
+    //   [rsp+32] = SS
+    
+    // Record the incoming CS/SS pair for diagnostics
+    "mov r10, [rsp + 8]",
+    "mov gs:[120], r10", // gs slot 15 = entry CS snapshot
+    "mov r10, [rsp + 32]",
+    "mov gs:[128], r10", // gs slot 16 = entry SS snapshot
+    
+    // Save user RIP for syscall_return_addr parameter
+    "mov r10, [rsp + 0]", // r10 = user RIP
+    
+    // Now push general-purpose registers (we will NOT touch the interrupt frame on stack)
     "push rcx",
     "push rdx",
     "push rsi",
@@ -50,9 +58,11 @@ global_asm!(
     "push r13",
     "push r14",
     "push r15",
+    
     // Align stack to 16 bytes before calling into Rust (SysV ABI requires
     // %rsp % 16 == 8 at the call site so the callee observes 16-byte alignment).
     "sub rsp, 8",
+    
     // Prepare arguments for syscall_dispatch(nr=rax, arg1=rdi, arg2=rsi, arg3=rdx, syscall_return_addr=r10)
     // System V x86_64 ABI: rdi, rsi, rdx, rcx, r8
     "mov r8, r10",  // r8 = syscall_return_addr (from r10)
@@ -61,9 +71,11 @@ global_asm!(
     "mov rsi, rdi", // rsi = arg1
     "mov rdi, rax", // rdi = nr
     "call syscall_dispatch",
+    
     // Return value already in rax
     "add rsp, 8",
-    // Restore registers (reverse order)
+    
+    // Restore general-purpose registers (reverse order)
     "pop r15",
     "pop r14",
     "pop r13",
@@ -74,9 +86,13 @@ global_asm!(
     "pop rsi",
     "pop rdx",
     "pop rcx",
+    
+    // At this point, stack pointer is back to where the interrupt frame starts
+    // The interrupt frame (RIP, CS, RFLAGS, RSP, SS) is still intact on the stack
+    
     // Snapshot the user-mode frame before we hand control back, so faults can
     // report the exact values that iretq attempted to restore.
-    "mov r9, rax",
+    "mov r9, rax",       // Save syscall return value temporarily
     "mov rax, [rsp]",
     "mov gs:[80], rax",  // gs slot 10 = user RIP
     "mov rax, [rsp + 8]",
@@ -87,7 +103,7 @@ global_asm!(
     "mov gs:[104], rax", // gs slot 13 = user RSP
     "mov rax, [rsp + 32]",
     "mov gs:[112], rax", // gs slot 14 = user SS
-    "mov rax, r9",
+    "mov rax, r9",       // Restore syscall return value
     "iretq"
 );
 
