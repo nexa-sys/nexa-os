@@ -34,6 +34,12 @@ global_asm!(
     // On int gate from Ring 3, CPU pushed: RIP, CS, RFLAGS, RSP, SS
     // Save RIP (return address) before we push other registers
     "mov r10, [rsp + 0]", // r10 = user RIP (at top of stack after int)
+    // Record the incoming CS/SS pair so we can confirm whether the frame was
+    // already corrupted when we entered.
+    "mov rax, [rsp + 8]",
+    "mov gs:[120], rax", // gs slot 15 = entry CS snapshot
+    "mov rax, [rsp + 32]",
+    "mov gs:[128], rax", // gs slot 16 = entry SS snapshot
     // Now save other registers we might clobber
     "push rcx",
     "push rdx",
@@ -69,6 +75,20 @@ global_asm!(
     "pop rsi",
     "pop rdx",
     "pop rcx",
+    // Snapshot the user-mode frame before we hand control back, so faults can
+    // report the exact values that iretq attempted to restore.
+    "mov r9, rax",
+    "mov rax, [rsp]",
+    "mov gs:[80], rax",  // gs slot 10 = user RIP
+    "mov rax, [rsp + 8]",
+    "mov gs:[88], rax",  // gs slot 11 = user CS
+    "mov rax, [rsp + 16]",
+    "mov gs:[96], rax",  // gs slot 12 = user RFLAGS
+    "mov rax, [rsp + 24]",
+    "mov gs:[104], rax", // gs slot 13 = user RSP
+    "mov rax, [rsp + 32]",
+    "mov gs:[112], rax", // gs slot 14 = user SS
+    "mov rax, r9",
     "iretq"
 );
 
@@ -128,6 +148,82 @@ extern "x86-interrupt" fn general_protection_fault_handler(
     use x86_64::instructions::interrupts;
     use x86_64::instructions::port::Port;
 
+    let handler_rsp: u64;
+    let (reg_rax, reg_rbx, reg_rcx, reg_rdx, reg_rsi, reg_rdi, reg_rbp, reg_r8, reg_r9, reg_r10,
+        reg_r11, reg_r12, reg_r13, reg_r14, reg_r15): (u64, u64, u64, u64, u64, u64, u64, u64,
+        u64, u64, u64, u64, u64, u64, u64);
+    unsafe {
+        core::arch::asm!("mov {}, rsp", out(reg) handler_rsp);
+        core::arch::asm!(
+            "mov {}, rax\n\
+             mov {}, rbx\n\
+             mov {}, rcx\n\
+             mov {}, rdx\n\
+             mov {}, rsi\n\
+             mov {}, rdi\n\
+             mov {}, rbp\n\
+             mov {}, r8\n\
+             mov {}, r9\n\
+             mov {}, r10\n\
+             mov {}, r11\n\
+             mov {}, r12\n\
+             mov {}, r13\n\
+             mov {}, r14\n\
+             mov {}, r15",
+            out(reg) reg_rax,
+            out(reg) reg_rbx,
+            out(reg) reg_rcx,
+            out(reg) reg_rdx,
+            out(reg) reg_rsi,
+            out(reg) reg_rdi,
+            out(reg) reg_rbp,
+            out(reg) reg_r8,
+            out(reg) reg_r9,
+            out(reg) reg_r10,
+            out(reg) reg_r11,
+            out(reg) reg_r12,
+            out(reg) reg_r13,
+            out(reg) reg_r14,
+            out(reg) reg_r15,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+
+    let (
+        gs_user_rsp,
+        gs_user_rsp_dbg,
+        gs_user_cs,
+        gs_user_ss,
+        frame_rip,
+        frame_cs,
+        frame_rflags,
+        frame_rsp,
+        frame_ss,
+        entry_cs,
+        entry_ss,
+        sysret_rip,
+        sysret_rflags,
+        sysret_rsp,
+    ) = unsafe {
+        let gs_ptr = core::ptr::addr_of!(crate::initramfs::GS_DATA.0) as *const u64;
+        (
+            gs_ptr.add(0).read_volatile(),
+            gs_ptr.add(9).read_volatile(),
+            gs_ptr.add(4).read_volatile(),
+            gs_ptr.add(5).read_volatile(),
+            gs_ptr.add(10).read_volatile(),
+            gs_ptr.add(11).read_volatile(),
+            gs_ptr.add(12).read_volatile(),
+            gs_ptr.add(13).read_volatile(),
+            gs_ptr.add(14).read_volatile(),
+            gs_ptr.add(15).read_volatile(),
+            gs_ptr.add(16).read_volatile(),
+            gs_ptr.add(17).read_volatile(),
+            gs_ptr.add(18).read_volatile(),
+            gs_ptr.add(19).read_volatile(),
+        )
+    };
+
     unsafe {
         let mut port = Port::<u8>::new(0x3F8);
         port.write(b'G');
@@ -139,6 +235,151 @@ extern "x86-interrupt" fn general_protection_fault_handler(
         write_hex_u64(&mut port, stack_frame.instruction_pointer.as_u64());
         port.write(b' ');
         write_hex_u64(&mut port, stack_frame.code_segment.0 as u64);
+        port.write(b'\n');
+        port.write(b' ');
+        write_hex_u64(&mut port, gs_user_rsp);
+        port.write(b' ');
+        write_hex_u64(&mut port, gs_user_cs);
+        port.write(b' ');
+        write_hex_u64(&mut port, gs_user_ss);
+        port.write(b' ');
+        write_hex_u64(&mut port, gs_user_rsp_dbg);
+        port.write(b'\n');
+        port.write(b' ');
+        write_hex_u64(&mut port, frame_rip);
+        port.write(b' ');
+        write_hex_u64(&mut port, frame_cs);
+        port.write(b' ');
+        write_hex_u64(&mut port, frame_rflags);
+        port.write(b' ');
+        write_hex_u64(&mut port, frame_rsp);
+        port.write(b' ');
+        write_hex_u64(&mut port, frame_ss);
+        port.write(b'\n');
+        port.write(b' ');
+        write_hex_u64(&mut port, entry_cs);
+        port.write(b' ');
+        write_hex_u64(&mut port, entry_ss);
+        port.write(b'\n');
+        port.write(b' ');
+        write_hex_u64(&mut port, sysret_rip);
+        port.write(b' ');
+        write_hex_u64(&mut port, sysret_rflags);
+        port.write(b' ');
+        write_hex_u64(&mut port, sysret_rsp);
+        port.write(b'\n');
+        port.write(b' ');
+        write_hex_u64(&mut port, stack_frame.stack_pointer.as_u64());
+        port.write(b' ');
+        write_hex_u64(&mut port, stack_frame.stack_segment.0 as u64);
+        port.write(b' ');
+        write_hex_u64(&mut port, handler_rsp);
+        port.write(b' ');
+        write_hex_u64(&mut port, stack_frame.code_segment.0 as u64);
+        port.write(b'\n');
+        // Dump general-purpose registers to correlate with faulting write
+        port.write(b'R');
+        port.write(b'A');
+        port.write(b'X');
+        port.write(b'=');
+        write_hex_u64(&mut port, reg_rax);
+        port.write(b' ');
+        port.write(b'R');
+        port.write(b'B');
+        port.write(b'X');
+        port.write(b'=');
+        write_hex_u64(&mut port, reg_rbx);
+        port.write(b' ');
+        port.write(b'R');
+        port.write(b'C');
+        port.write(b'X');
+        port.write(b'=');
+        write_hex_u64(&mut port, reg_rcx);
+        port.write(b' ');
+        port.write(b'R');
+        port.write(b'D');
+        port.write(b'X');
+        port.write(b'=');
+        write_hex_u64(&mut port, reg_rdx);
+        port.write(b'\n');
+
+        port.write(b'R');
+        port.write(b'S');
+        port.write(b'I');
+        port.write(b'=');
+        write_hex_u64(&mut port, reg_rsi);
+        port.write(b' ');
+        port.write(b'R');
+        port.write(b'D');
+        port.write(b'I');
+        port.write(b'=');
+        write_hex_u64(&mut port, reg_rdi);
+        port.write(b' ');
+        port.write(b'R');
+        port.write(b'B');
+        port.write(b'P');
+        port.write(b'=');
+        write_hex_u64(&mut port, reg_rbp);
+        port.write(b' ');
+        port.write(b'R');
+        port.write(b'8');
+        port.write(b'=');
+        write_hex_u64(&mut port, reg_r8);
+        port.write(b'\n');
+
+        port.write(b'R');
+        port.write(b'9');
+        port.write(b'=');
+        write_hex_u64(&mut port, reg_r9);
+        port.write(b' ');
+        port.write(b'R');
+        port.write(b'1');
+        port.write(b'0');
+        port.write(b'=');
+        write_hex_u64(&mut port, reg_r10);
+        port.write(b' ');
+        port.write(b'R');
+        port.write(b'1');
+        port.write(b'1');
+        port.write(b'=');
+        write_hex_u64(&mut port, reg_r11);
+        port.write(b' ');
+        port.write(b'R');
+        port.write(b'1');
+        port.write(b'2');
+        port.write(b'=');
+        write_hex_u64(&mut port, reg_r12);
+        port.write(b'\n');
+
+        port.write(b'R');
+        port.write(b'1');
+        port.write(b'3');
+        port.write(b'=');
+        write_hex_u64(&mut port, reg_r13);
+        port.write(b' ');
+        port.write(b'R');
+        port.write(b'1');
+        port.write(b'4');
+        port.write(b'=');
+        write_hex_u64(&mut port, reg_r14);
+        port.write(b' ');
+        port.write(b'R');
+        port.write(b'1');
+        port.write(b'5');
+        port.write(b'=');
+        write_hex_u64(&mut port, reg_r15);
+        port.write(b'\n');
+        let handler_ptr = handler_rsp as *const u64;
+        let mut i = 0usize;
+        while i < 12 {
+            let value = handler_ptr.add(i).read_volatile();
+            port.write(b' ');
+            write_hex_u64(&mut port, i as u64);
+            port.write(b':');
+            write_hex_u64(&mut port, value);
+            port.write(b' ');
+            i += 1;
+        }
         port.write(b'\n');
     }
 
@@ -226,6 +467,9 @@ global_asm!(
     "mov rcx, [rsp + 8]",  // entry point (rip for sysret)
     "mov r11, [rsp + 16]", // rflags
     "mov rsp, [rsp]",      // stack pointer
+    "mov gs:[136], rcx",   // gs slot 17 = sysret target RIP
+    "mov gs:[144], r11",   // gs slot 18 = sysret target RFLAGS
+    "mov gs:[152], rsp",   // gs slot 19 = sysret target RSP
     // Set user data segments
     "mov ax, 0x23",
     "mov ds, ax",
@@ -539,7 +783,8 @@ extern "C" fn syscall_instruction_handler() {
         // On SYSCALL entry the CPU stores the user return RIP in RCX and the
         // user RFLAGS in R11. Capture that state alongside the user stack so
         // the kernel can restore it exactly before executing SYSRET.
-        "mov gs:[0], rsp",  // GS[0]  = user RSP snapshot
+    "mov gs:[0], rsp",  // GS[0]  = user RSP snapshot
+    "mov gs:[72], rsp", // GS[9]  = debug copy of user RSP
         "mov rsp, gs:[8]",  // RSP    = kernel stack top
         "mov gs:[56], rcx", // GS[7]  = user return RIP (RCX)
         "mov gs:[64], r11", // GS[8]  = user RFLAGS (R11)
@@ -566,9 +811,9 @@ extern "C" fn syscall_instruction_handler() {
         "pop r13",
         "pop r14",
         "pop r15",
-        // Recover the saved user return context and jump back with SYSRETQ.
+        // Restore user execution context for SYSRETQ.
         "mov rcx, gs:[56]", // rcx = user RIP
-        "mov r11, gs:[64]", // r11 = user RFLAGS
+        "mov r11, gs:[64]", // r11 = user RFLAGS snapshot
         "mov rsp, gs:[0]",  // rsp = user RSP
         "sysretq",
     );
@@ -794,6 +1039,16 @@ pub fn setup_syscall() {
         // Initialize GS data for syscall - write directly to the address
         let gs_data_ptr = gs_data_addr as *mut u64;
         gs_data_ptr.add(1).write(crate::gdt::get_kernel_stack_top()); // Kernel stack for syscall at gs:[8]
+
+        let selectors = crate::gdt::get_selectors();
+        let user_cs = (selectors.user_code_selector.0 | 0x3) as u64;
+        let user_ss = (selectors.user_data_selector.0 | 0x3) as u64;
+        let user_ds = user_ss;
+
+        gs_data_ptr.add(4).write(user_cs); // Default user CS for SYSRET/IRET
+        gs_data_ptr.add(5).write(user_ss); // Default user SS
+        gs_data_ptr.add(6).write(user_ds); // Default user DS (mirrors SS)
+
         crate::kdebug!(
             "setup_syscall: initramfs available? {}",
             crate::initramfs::get().is_some()

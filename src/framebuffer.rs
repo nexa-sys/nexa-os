@@ -546,6 +546,7 @@ impl FramebufferWriter {
     }
 
     pub fn clear(&mut self) {
+        crate::serial::write_bytes(b"FBWRITER::clear\n");
         for row in 0..self.rows {
             for col in 0..self.columns {
                 self.clear_cell(col, row);

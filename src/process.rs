@@ -97,6 +97,7 @@ pub struct Process {
     pub heap_end: u64,
     pub signal_state: crate::signal::SignalState, // POSIX signal handling
     pub context: Context,                         // CPU context for context switching
+    pub has_entered_user: bool,
     pub cr3: u64, // Page table root (for process-specific page tables) - 0 means use kernel page table
 }
 
@@ -205,6 +206,7 @@ impl Process {
                     heap_end: HEAP_BASE + HEAP_SIZE,
                     signal_state: crate::signal::SignalState::new(),
                     context,
+                    has_entered_user: false,
                     cr3: 0, // TODO: Allocate process-specific page table
                 });
             } else {
@@ -236,6 +238,7 @@ impl Process {
             heap_end: HEAP_BASE + HEAP_SIZE,
             signal_state: crate::signal::SignalState::new(),
             context,
+            has_entered_user: false,
             cr3: 0, // TODO: Allocate process-specific page table
         })
     }
@@ -271,7 +274,7 @@ impl Process {
             self.stack_top
         );
 
-        crate::logger::disable_runtime_console_output();
+    self.has_entered_user = true;
 
         // Jump to user mode - this never returns
         jump_to_usermode(self.entry_point, self.stack_top);
@@ -453,8 +456,8 @@ pub fn jump_to_usermode(entry: u64, stack: u64) {
     // Set GS data for syscall and Ring 3 switching
     unsafe {
         let selectors = crate::gdt::get_selectors();
-        crate::kdebug!(
-            "Selectors: user_code={:#x}, user_data={:#x}",
+        crate::kinfo!(
+            "User selectors: code={:#x}, data={:#x}",
             selectors.user_code_selector.0,
             selectors.user_data_selector.0
         );

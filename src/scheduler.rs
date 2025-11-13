@@ -27,6 +27,7 @@ impl ProcessEntry {
                 heap_end: 0,
                 signal_state: crate::signal::SignalState::new(),
                 context: crate::process::Context::zero(),
+                has_entered_user: false,
                 cr3: 0,
             },
             priority: 128,
@@ -368,86 +369,104 @@ unsafe extern "C" fn context_switch(
 
 /// Perform context switch to next ready process
 pub fn do_schedule() {
-    // Find next ready process
-    let next_process: Option<(Pid, crate::process::Context)> = {
-        let table = PROCESS_TABLE.lock();
-        let current = CURRENT_PID.lock();
+    enum ScheduleDecision {
+        FirstRun(crate::process::Process),
+        Switch {
+            old_context_ptr: *mut crate::process::Context,
+            next_context: crate::process::Context,
+        },
+    }
 
-        let start_idx = if let Some(pid) = *current {
-            // Find current process index
+    let decision: Option<ScheduleDecision> = {
+        let mut table = PROCESS_TABLE.lock();
+        let mut current_lock = CURRENT_PID.lock();
+        let current = *current_lock;
+
+        let start_idx = if let Some(pid) = current {
             table
                 .iter()
-                .position(|e| e.as_ref().map_or(false, |entry| entry.process.pid == pid))
+                .position(|entry| entry.as_ref().map_or(false, |e| e.process.pid == pid))
                 .map(|i| (i + 1) % MAX_PROCESSES)
                 .unwrap_or(0)
         } else {
             0
         };
 
-        // Round-robin: find next Ready process
-        let mut result = None;
-        for i in 0..MAX_PROCESSES {
-            let idx = (start_idx + i) % MAX_PROCESSES;
+        let mut next_idx = None;
+        for offset in 0..MAX_PROCESSES {
+            let idx = (start_idx + offset) % MAX_PROCESSES;
             if let Some(entry) = &table[idx] {
                 if entry.process.state == ProcessState::Ready {
-                    result = Some((entry.process.pid, entry.process.context));
+                    next_idx = Some(idx);
                     break;
                 }
             }
         }
-        result
-    };
 
-    if let Some((next_pid, next_context)) = next_process {
-        let old_context_ptr = {
-            let mut table = PROCESS_TABLE.lock();
-            let current = CURRENT_PID.lock();
-
-            let old_ptr = if let Some(old_pid) = *current {
-                // Find old process and get context pointer
-                table
-                    .iter_mut()
-                    .find(|e| {
-                        e.as_ref()
-                            .map_or(false, |entry| entry.process.pid == old_pid)
-                    })
-                    .and_then(|e| e.as_mut())
-                    .map(|entry| {
-                        entry.process.state = ProcessState::Ready;
-                        &mut entry.process.context as *mut _
-                    })
-            } else {
-                None
-            };
-
-            // Set next process as Running
-            if let Some(entry) = table
-                .iter_mut()
-                .find(|e| {
-                    e.as_ref()
-                        .map_or(false, |entry| entry.process.pid == next_pid)
-                })
-                .and_then(|e| e.as_mut())
-            {
-                entry.process.state = ProcessState::Running;
+        if let Some(next_idx) = next_idx {
+            if let Some(curr_pid) = current {
+                for slot in table.iter_mut() {
+                    if let Some(entry) = slot {
+                        if entry.process.pid == curr_pid
+                            && entry.process.state == ProcessState::Running
+                        {
+                            entry.process.state = ProcessState::Ready;
+                            break;
+                        }
+                    }
+                }
             }
 
-            old_ptr
-        };
+            let entry = table[next_idx].as_mut().expect("Process entry vanished");
+            entry.time_slice = DEFAULT_TIME_SLICE;
+            entry.process.state = ProcessState::Running;
 
-        // Update current PID
-        *CURRENT_PID.lock() = Some(next_pid);
+            let first_run = !entry.process.has_entered_user;
+            let next_pid = entry.process.pid;
+            *current_lock = Some(next_pid);
 
-        // Perform context switch
-        unsafe {
-            context_switch(
-                old_context_ptr.unwrap_or(core::ptr::null_mut()),
-                &next_context as *const _,
-            );
+            if first_run {
+                entry.process.has_entered_user = true;
+                Some(ScheduleDecision::FirstRun(entry.process))
+            } else {
+                let next_context = entry.process.context;
+                let old_context_ptr = if let Some(curr_pid) = current {
+                    table.iter_mut().find_map(|slot| {
+                        slot.as_mut().and_then(|candidate| {
+                            if candidate.process.pid == curr_pid {
+                                Some(&mut candidate.process.context as *mut _)
+                            } else {
+                                None
+                            }
+                        })
+                    })
+                } else {
+                    None
+                };
+
+                Some(ScheduleDecision::Switch {
+                    old_context_ptr: old_context_ptr.unwrap_or(core::ptr::null_mut()),
+                    next_context,
+                })
+            }
+        } else {
+            None
         }
-    } else {
-        // No ready process found - just return to caller
-        // This allows the current process to continue
-        crate::kwarn!("do_schedule(): No ready process found, returning to caller");
+    };
+
+    match decision {
+        Some(ScheduleDecision::FirstRun(mut process)) => {
+            process.execute();
+            crate::kfatal!("process::execute returned unexpectedly");
+        }
+        Some(ScheduleDecision::Switch {
+            old_context_ptr,
+            next_context,
+        }) => unsafe {
+            context_switch(old_context_ptr, &next_context as *const _);
+        },
+        None => {
+            crate::kwarn!("do_schedule(): No ready process found, returning to caller");
+        }
     }
 }
