@@ -48,6 +48,15 @@ impl SignalState {
         }
     }
 
+    /// Reset all signal handlers to SIG_DFL (required by POSIX exec)
+    pub fn reset_to_default(&mut self) {
+        self.pending = 0;
+        // Note: blocked mask is preserved across exec per POSIX
+        for action in &mut self.actions {
+            *action = SignalAction::Default;
+        }
+    }
+
     /// Send a signal to this process
     pub fn send_signal(&mut self, signum: u32) -> Result<(), &'static str> {
         if signum == 0 || signum >= NSIG as u32 {

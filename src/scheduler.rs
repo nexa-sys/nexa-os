@@ -47,6 +47,11 @@ static CURRENT_PID: Mutex<Option<Pid>> = Mutex::new(None);
 /// Default time slice in milliseconds
 const DEFAULT_TIME_SLICE: u64 = 10;
 
+/// Lock the process table for direct access (for syscall use)
+pub fn process_table_lock() -> spin::MutexGuard<'static, [Option<ProcessEntry>; MAX_PROCESSES]> {
+    PROCESS_TABLE.lock()
+}
+
 /// Add a process to the scheduler
 pub fn add_process(process: Process, priority: u8) -> Result<(), &'static str> {
     let mut table = PROCESS_TABLE.lock();

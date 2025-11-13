@@ -6,7 +6,8 @@
 - Syscall surface in `src/syscall.rs` dispatches into auth/ipc/signal subsystems (`src/auth.rs`, `src/ipc.rs`, `src/signal.rs`, `src/pipe.rs`); userspace wrappers live alongside binaries in `userspace/`.
 
 ### Key Workflows
-- End-to-end build: `./scripts/build-all.sh` (runs rootfs → iso chain). If splitting, run `./scripts/build-rootfs.sh` **before** `./scripts/build-iso.sh` or ISO will embed stale rootfs.
+- **End-to-end build: `./scripts/build-all.sh`** (the CORRECT comprehensive build script that handles kernel → userspace → rootfs → ISO chain). Always use this for complete builds.
+- If splitting, run `./scripts/build-rootfs.sh` **before** `./scripts/build-iso.sh` or ISO will embed stale rootfs.
 - Kernel-only iteration: `cargo build --release --target x86_64-nexaos.json`; userspace binaries via `./scripts/build-userspace.sh`.
 - Boot/test quickly with `./scripts/run-qemu.sh`; inspect logs over serial (enabled by `src/serial.rs`). Sanity scripts: `./scripts/test-boot-stages.sh`, `./scripts/test-init.sh`, `./scripts/test-shell-exit.sh`.
 - Verify multiboot status with `grub-file --is-x86-multiboot2 target/x86_64-nexaos/release/nexa-os`.

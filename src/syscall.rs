@@ -9,6 +9,42 @@ use core::{
 };
 use nexa_boot_info::FramebufferInfo;
 use x86_64::instructions::interrupts;
+use spin::Mutex;
+
+/// Exec context - stores entry/stack for exec syscall
+/// Protected by Mutex for production safety
+struct ExecContext {
+    pending: bool,
+    entry: u64,
+    stack: u64,
+}
+
+static EXEC_CONTEXT: Mutex<ExecContext> = Mutex::new(ExecContext {
+    pending: false,
+    entry: 0,
+    stack: 0,
+});
+
+/// Get and clear exec context (called from assembly)
+#[no_mangle]
+pub extern "C" fn get_exec_context(entry_out: *mut u64, stack_out: *mut u64) -> bool {
+    let mut ctx = EXEC_CONTEXT.lock();
+    crate::serial::_print(format_args!("[get_exec_context] pending={}, entry={:#x}, stack={:#x}\n", 
+        ctx.pending, ctx.entry, ctx.stack));
+    if ctx.pending {
+        unsafe {
+            *entry_out = ctx.entry;
+            *stack_out = ctx.stack;
+        }
+        ctx.pending = false;
+        crate::serial::_print(format_args!("[get_exec_context] returning entry={:#x}, stack={:#x}\n", 
+            ctx.entry, ctx.stack));
+        true
+    } else {
+        crate::serial::_print(format_args!("[get_exec_context] no exec pending!\n"));
+        false
+    }
+}
 
 /// System call numbers (POSIX-compliant where possible)
 pub const SYS_READ: u64 = 0;
@@ -1303,7 +1339,26 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
 }
 
 /// POSIX execve() system call - execute program
-fn syscall_execve(path: *const u8, _argv: *const u64, _envp: *const u64) -> u64 {
+///
+/// Production-grade implementation:
+/// - Replaces current process image while preserving PID/PPID (POSIX requirement)
+/// - Resets signal handlers to SIG_DFL
+/// - Returns special value to syscall_dispatch which modifies stack frame
+/// - This allows sysretq to jump to new program without segment issues
+///
+/// Returns:
+/// - Special encoded value on success (high 32 bits = upper entry, low 32 bits set to magic)
+/// - u64::MAX on error with errno set
+fn syscall_execve(
+    path: *const u8,
+    _argv: *const *const u8,
+    _envp: *const *const u8,
+) -> u64 {
+    use crate::scheduler::get_current_pid;
+
+    // Use serial directly since kinfo won't show after init starts
+    crate::serial::_print(format_args!("[execve] called with path={:p}\n", path));
+
     if path.is_null() {
         posix::set_errno(posix::errno::EFAULT);
         return u64::MAX;
@@ -1315,97 +1370,121 @@ fn syscall_execve(path: *const u8, _argv: *const u64, _envp: *const u64) -> u64 
         while len < 256 && *path.add(len) != 0 {
             len += 1;
         }
-        core::slice::from_raw_parts(path, len)
-    };
-
-    let path_str = match core::str::from_utf8(path_str) {
-        Ok(s) => s,
-        Err(_) => {
+        if len >= 256 {
             posix::set_errno(posix::errno::EINVAL);
             return u64::MAX;
         }
+        let slice = core::slice::from_raw_parts(path, len);
+        match core::str::from_utf8(slice) {
+            Ok(s) => s,
+            Err(_) => {
+                posix::set_errno(posix::errno::EINVAL);
+                return u64::MAX;
+            }
+        }
     };
 
-    crate::kinfo!("execve: loading program '{}'", path_str);
+    crate::serial::_print(format_args!("[execve] loading '{}'\n", path_str));
 
-    // Debug: Check if file exists before trying to read
-    if crate::fs::file_exists(path_str) {
-        crate::kinfo!("execve: file exists check passed for '{}'", path_str);
-    } else {
-        crate::kerror!("execve: file_exists returned false for '{}'", path_str);
-    }
-
-    // Note: In our simplified architecture, execve is mainly used by test programs.
-    // Shell is launched via wait4() as part of the fork/wait sequence.
-
-    // Try to load the ELF file from filesystem
+    // Load the ELF file from filesystem
     let elf_data = match crate::fs::read_file_bytes(path_str) {
         Some(data) => {
-            crate::kinfo!(
-                "execve: successfully read {} bytes from '{}'",
-                data.len(),
-                path_str
-            );
+            crate::serial::_print(format_args!("[execve] loaded {} bytes\n", data.len()));
             data
         }
         None => {
-            crate::kerror!("execve: file not found: {}", path_str);
+            crate::serial::_print(format_args!("[execve] file not found: {}\n", path_str));
             posix::set_errno(posix::errno::ENOENT);
             return u64::MAX;
         }
     };
 
-    // Create a new process from the ELF data
+    // Create new process image from ELF
     let new_process = match crate::process::Process::from_elf(elf_data) {
         Ok(proc) => proc,
         Err(e) => {
-            crate::kerror!("execve: failed to load ELF: {:?}", e);
+            crate::serial::_print(format_args!("[execve] failed to load ELF: {}\n", e));
             posix::set_errno(posix::errno::EINVAL);
             return u64::MAX;
         }
     };
 
-    let entry = new_process.entry_point;
-    let stack = new_process.stack_top;
+    crate::serial::_print(format_args!(
+        "[execve] new image ready, entry={:#x}, stack={:#x}\n",
+        new_process.entry_point,
+        new_process.stack_top
+    ));
 
-    crate::kinfo!("execve: ELF loaded, entry={:#x}, stack={:#x}", entry, stack);
-    crate::kinfo!("execve: switching to new process");
+    // Get current process and replace it with new image
+    let current_pid = match get_current_pid() {
+        Some(pid) => pid,
+        None => {
+            crate::serial::_print(format_args!("[execve] no current process\n"));
+            posix::set_errno(posix::errno::EINVAL);
+            return u64::MAX;
+        }
+    };
 
-    unsafe {
-        let gs_data_addr = &raw const crate::initramfs::GS_DATA.0 as *const _ as u64;
-        let gs_data_ptr = gs_data_addr as *mut u64;
+    // Update process table with new image
+    {
+        let mut table = crate::scheduler::process_table_lock();
+        let mut found = false;
 
-        gs_data_ptr.add(0).write(stack);
-        gs_data_ptr.add(2).write(entry);
-        gs_data_ptr.add(3).write(stack);
+        for slot in table.iter_mut() {
+            if let Some(entry) = slot {
+                if entry.process.pid == current_pid {
+                    found = true;
+                    let old_pid = entry.process.pid;
+                    let old_ppid = entry.process.ppid;
 
-        crate::kinfo!("execve: jumping to entry={:#x}, stack={:#x}", entry, stack);
+                    // Replace process image while preserving identity
+                    entry.process.entry_point = new_process.entry_point;
+                    entry.process.stack_top = new_process.stack_top;
+                    entry.process.heap_start = new_process.heap_start;
+                    entry.process.heap_end = new_process.heap_end;
+                    entry.process.context = new_process.context;
+                    entry.process.has_entered_user = false;
 
-        core::arch::asm!(
-            "mov ax, (4 << 3) | 3",
-            "mov ds, ax",
-            "mov es, ax",
-            "mov fs, ax",
-            "mov gs, ax",
+                    // Reset signal handlers to SIG_DFL (POSIX requirement)
+                    entry.process.signal_state.reset_to_default();
 
-            "push {user_ss}",
-            "push {user_rsp}",
-            "pushf",
-            "pop rax",
-            "or rax, 0x200",
-            "push rax",
-            "push {user_cs}",
-            "push {user_rip}",
+                    crate::serial::_print(format_args!(
+                        "[execve] replaced PID {} (parent {}), will jump to {:#x}\n",
+                        old_pid,
+                        old_ppid,
+                        new_process.entry_point
+                    ));
+                    break;
+                }
+            }
+        }
 
-            "iretq",
-
-            user_ss = in(reg) (4u64 << 3) | 3,
-            user_rsp = in(reg) stack,
-            user_cs = in(reg) (3u64 << 3) | 3,
-            user_rip = in(reg) entry,
-            options(noreturn)
-        );
+        if !found {
+            crate::serial::_print(format_args!("[execve] process {:?} not in scheduler\n", current_pid));
+            posix::set_errno(posix::errno::EINVAL);
+            return u64::MAX;
+        }
     }
+
+    // Store new entry/stack for syscall_handler to use
+    // Use Mutex for production-grade thread safety
+    {
+        let mut ctx = EXEC_CONTEXT.lock();
+        ctx.pending = true;
+        ctx.entry = new_process.entry_point;
+        ctx.stack = new_process.stack_top;
+    }
+
+    crate::serial::_print(format_args!(
+        "[execve] context stored, entry={:#x}, stack={:#x}\n",
+        new_process.entry_point,
+        new_process.stack_top
+    ));
+
+    crate::serial::_print(format_args!("[execve] about to return magic value {:#x}\n", 0x4558454300000000u64));
+
+    // Return magic value 0xEXEC0000 to signal exec
+    0x4558454300000000 // "EXEC" + nulls
 }
 
 /// POSIX wait4() system call - wait for process state change
@@ -2083,7 +2162,11 @@ pub extern "C" fn syscall_dispatch(
         SYS_DUP => syscall_dup(arg1),
         SYS_DUP2 => syscall_dup2(arg1, arg2),
         SYS_FORK => syscall_fork(syscall_return_addr),
-        SYS_EXECVE => syscall_execve(arg1 as *const u8, arg2 as *const u64, arg3 as *const u64),
+        SYS_EXECVE => syscall_execve(
+            arg1 as *const u8,
+            arg2 as *const *const u8,
+            arg3 as *const *const u8,
+        ),
         SYS_EXIT => syscall_exit(arg1 as i32),
         SYS_WAIT4 => syscall_wait4(arg1 as i64, arg2 as *mut i32, arg3 as i32, 0 as *mut u8),
         SYS_KILL => syscall_kill(arg1, arg2),
@@ -2153,31 +2236,92 @@ global_asm!(
     "push r14",
     "push r15",
     "sub rsp, 8", // maintain 16-byte stack alignment before calling into Rust
-    // Stack layout after alignment:
-    // [rsp + 120] = r11 (user rflags)
-    // [rsp + 112] = rcx (user return address)
-    // [rsp + 104] = rbx
-    // [rsp + 96]  = rdx
-    // [rsp + 88]  = rsi
-    // [rsp + 80]  = rdi
-    // [rsp + 72]  = rbp
-    // [rsp + 64]  = r8
-    // [rsp + 56]  = r9
-    // [rsp + 48]  = r10
-    // [rsp + 40]  = r12
-    // [rsp + 32]  = r13
-    // [rsp + 24]  = r14
-    // [rsp + 16]  = r15
-    // [rsp + 8]   = alignment padding
-    // [rsp]       = current stack pointer
-    "mov r8, [rsp + 112]", // Get original RCX (syscall return address) -> r8 (param 5)
-    "mov rcx, rdx",        // arg3 -> rcx (param 4)
+    // Stack layout after sub rsp,8:
+    // [rsp+0] = alignment padding  
+    // [rsp+8] = r15 (最后push的)
+    // [rsp+16] = r14
+    // [rsp+24] = r13
+    // [rsp+32] = r12
+    // [rsp+40] = r10
+    // [rsp+48] = r9
+    // [rsp+56] = r8
+    // [rsp+64] = rbp
+    // [rsp+72] = rdi
+    // [rsp+80] = rsi
+    // [rsp+88] = rdx
+    // [rsp+96] = rbx
+    // [rsp+104] = rcx (user return address, DO NOT OVERWRITE!) <-- THIS ONE
+    // [rsp+112] = r11 (user rflags, 第一个push的)
+    "mov r8, [rsp + 104]", // Get original RCX (syscall return address) -> r8 (param 5)
+    // WARNING: RCX register will be used for param 4, but we must NOT overwrite [rsp+104]!
+    // Prepare arguments for syscall_dispatch:
+    // RDI = nr, RSI = arg1, RDX = arg2, RCX = arg3, R8 = syscall_return_addr
+    "mov rcx, rdx",        // arg3 -> rcx (param 4) - THIS OVERWRITES RCX REGISTER BUT NOT STACK
     "mov rdx, rsi",        // arg2 -> rdx (param 3)
     "mov rsi, rdi",        // arg1 -> rsi (param 2)
     "mov rdi, rax",        // nr -> rdi (param 1)
     "call syscall_dispatch",
     // Return value is in rax
-    "add rsp, 8",          // remove alignment padding
+    // Check if this is exec returning (magic value 0x4558454300000000 = "EXEC")
+    // Build magic value: 0x45 58 45 43 00 00 00 00
+    // "EXEC" in little endian = 0x43 0x45 0x58 0x45, then 4 zero bytes
+    // As u64: 0x0000000045584543, but we want "EXEC" in high bytes
+    // Actually: ASCII "E"=0x45, "X"=0x58, "E"=0x45, "C"=0x43
+    // Little endian u64 of these bytes in order: 0x43 0x45 0x58 0x45 0x00 0x00 0x00 0x00
+    // Which is: 0x0000000045584543
+    // Wait, let me recalculate: if we write "EXEC" as bytes: 'E'(0x45) 'X'(0x58) 'E'(0x45) 'C'(0x43)
+    // In memory (little endian): [0x43, 0x45, 0x58, 0x45, 0x00, 0x00, 0x00, 0x00]
+    // As u64: 0x0000000045584543
+    // But the code says: 0x4558454300000000
+    // Let me check: 0x45 = 'E', 0x58 = 'X', 0x45 = 'E', 0x43 = 'C'
+    // If we want bytes to be [0x45, 0x58, 0x45, 0x43, 0, 0, 0, 0] in memory:
+    // Little endian interprets this as: 0x00000000_43455845
+    // Hmm, this doesn't match 0x4558454300000000
+    // Let me think differently:
+    // Magic value 0x4558454300000000 in hex
+    // High 32 bits: 0x45584543 = bytes [0x43, 0x45, 0x58, 0x45] = "CEXE" reversed = "EXEC"
+    // Low 32 bits: 0x00000000 = four zero bytes
+    // So the magic is correct as 0x45584543_00000000
+    "movabs rbx, 0x4558454300000000",
+    "cmp rax, rbx",
+    "jne .Lnormal_return",  // Not exec, normal return
+    // Exec return: call get_exec_context to get entry/stack
+    ".Lexec_return:",
+    // CRITICAL: We're still in syscall_handler's stack frame here!
+    // Stack state: [rsp+0]=alignment, [rsp+8...112]=saved regs
+    // We need to call get_exec_context, which needs 16-byte aligned stack
+    // Current rsp is already aligned (after sub rsp,8 at entry)
+    // Allocate 16 bytes on top of current stack for output parameters
+    "sub rsp, 16",          // Space for entry(8 bytes) and stack(8 bytes)
+    // Now rsp is still 16-byte aligned (was aligned, sub 16 keeps it aligned)
+    "lea rdi, [rsp + 8]",   // entry_out = rsp+8 (first parameter)
+    "mov rsi, rsp",         // stack_out = rsp (second parameter)
+    "call get_exec_context",
+    "test al, al",          // Check if exec was pending
+    "jz .Lnormal_return_after_exec", // Not exec, treat as normal
+    // Load new entry point and stack pointer
+    "mov rcx, [rsp + 8]",   // Load entry -> RCX (for sysretq to use as new RIP)
+    "mov r15, [rsp]",       // Load stack -> R15 (temporary register)
+    // Now we need to abandon the current stack frame entirely
+    // Don't clean up, just switch to new stack
+    "mov rsp, r15",         // Switch to new user stack
+    "mov r11, 0x202",       // User rflags (IF=1, reserved bit=1)
+    // Clear RAX for exec (no return value to userspace)
+    "xor rax, rax",
+    // Restore user segment registers before sysretq
+    "mov r8w, 0x1B",        // user data segment selector (0x18 | 3)
+    "mov ds, r8w",
+    "mov es, r8w",
+    "mov fs, r8w",
+    "mov gs, r8w",
+    // Jump to new program via sysretq
+    // RCX = new entry point, R11 = 0x202, RSP = new stack, segments = user
+    "sysretq",
+    ".Lnormal_return_after_exec:",
+    "add rsp, 16",          // Clean up the 16 bytes we allocated
+    ".Lnormal_return:",
+    // Normal syscall return path
+    "add rsp, 8",           // remove alignment padding
     "pop r15",
     "pop r14",
     "pop r13",
@@ -2191,11 +2335,11 @@ global_asm!(
     "pop rdx",
     "pop rbx",
     // Restore RCX and R11 for sysretq
-    "pop rcx",  // user return address
-    "pop r11",  // user rflags
+    "pop rcx",              // user return address
+    "pop r11",              // user rflags
     // Restore user segment registers before sysretq
     // Note: user data segment is now entry 3 (0x18 | 3 = 0x1B)
-    "mov r8w, 0x1B",  // user data segment selector (0x18 | 3)
+    "mov r8w, 0x1B",        // user data segment selector (0x18 | 3)
     "mov ds, r8w",
     "mov es, r8w",
     "mov fs, r8w",

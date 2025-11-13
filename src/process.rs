@@ -476,19 +476,21 @@ pub fn jump_to_usermode(entry: u64, stack: u64) -> ! {
     }
 
     // Set GS data for syscall and Ring 3 switching
+    // Get selectors ONCE at the beginning to avoid multiple accesses
+    let selectors = unsafe { crate::gdt::get_selectors() };
+    let user_code_sel = selectors.user_code_selector.0;
+    let user_data_sel = selectors.user_data_selector.0;
+
     unsafe {
         use x86_64::instructions::port::Port;
-
-        let selectors = crate::gdt::get_selectors();
 
         // Debug output for selectors
         let mut port = Port::<u8>::new(0x3F8);
         for &b in b"SEL: ucode=" {
             port.write(b);
         }
-        let uc = selectors.user_code_selector.0;
         for shift in (0..4).rev() {
-            let nibble = ((uc >> (shift * 4)) & 0xF) as u8;
+            let nibble = ((user_code_sel >> (shift * 4)) & 0xF) as u8;
             port.write(if nibble < 10 {
                 b'0' + nibble
             } else {
@@ -498,9 +500,8 @@ pub fn jump_to_usermode(entry: u64, stack: u64) -> ! {
         for &b in b" udata=" {
             port.write(b);
         }
-        let ud = selectors.user_data_selector.0;
         for shift in (0..4).rev() {
-            let nibble = ((ud >> (shift * 4)) & 0xF) as u8;
+            let nibble = ((user_data_sel >> (shift * 4)) & 0xF) as u8;
             port.write(if nibble < 10 {
                 b'0' + nibble
             } else {
@@ -512,9 +513,9 @@ pub fn jump_to_usermode(entry: u64, stack: u64) -> ! {
         crate::interrupts::set_gs_data(
             entry,
             stack,
-            selectors.user_code_selector.0 as u64 | 3,
-            selectors.user_data_selector.0 as u64 | 3,
-            selectors.user_data_selector.0 as u64 | 3,
+            user_code_sel as u64 | 3,
+            user_data_sel as u64 | 3,
+            user_data_sel as u64 | 3,
         );
 
         // Set GS base to point to GS_DATA for both kernel and user mode
@@ -528,8 +529,7 @@ pub fn jump_to_usermode(entry: u64, stack: u64) -> ! {
         let stack_top_ptr = (stack - 8) as *mut u64;
         stack_top_ptr.write_volatile(0xdeadbeefdeadbeef);
 
-        let selectors = crate::gdt::get_selectors();
-        let user_ds = selectors.user_data_selector.0 | 3;
+        let user_ds = user_data_sel | 3;
 
         // Debug output before sysret
         use x86_64::instructions::port::Port;

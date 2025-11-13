@@ -67,6 +67,43 @@ global_asm!(
     "mov rsi, rdi", // rsi = arg1
     "mov rdi, rax", // rdi = nr
     "call syscall_dispatch",
+    // Check if execve returned (magic value 0x4558454300000000)
+    "movabs rbx, 0x4558454300000000",
+    "cmp rax, rbx",
+    "jne .Lnormal_int_return",  // Not exec, normal return
+    // Exec return: modify interrupt frame to jump to new program
+    // Call get_exec_context to get new entry/stack
+    "push rax",         // Save magic value (will be overwritten)
+    "sub rsp, 16",      // Space for entry (rsp+8) and stack (rsp)
+    "lea rdi, [rsp + 8]", // entry_out pointer (1st param)
+    "mov rsi, rsp",     // stack_out pointer (2nd param)
+    "call get_exec_context",
+    "test al, al",      // Check if exec was pending
+    "jz .Lexec_failed", // Not exec, restore and normal return
+    // Load new entry and stack
+    "mov r14, [rsp + 8]", // New entry -> r14
+    "mov r15, [rsp]",   // New stack -> r15
+    "add rsp, 16",      // Clean up
+    "add rsp, 8",       // Remove saved rax
+    // Now we're back at the alignment padding (sub rsp,8)
+    "add rsp, 8",       // Remove alignment
+    // Pop all general-purpose registers (we don't need to restore them for exec)
+    "add rsp, 80",      // Skip 10 registers (r15, r14, r13, r12, rbp, rbx, rdi, rsi, rdx, rcx)
+    // Now RSP points to the interrupt frame on stack
+    // Interrupt frame layout (from rsp):
+    //   [rsp+0]  = RIP  ← modify this to new entry
+    //   [rsp+8]  = CS
+    //   [rsp+16] = RFLAGS
+    //   [rsp+24] = RSP  ← modify this to new stack
+    //   [rsp+32] = SS
+    "mov [rsp], r14",   // Set new entry as return RIP
+    "mov [rsp + 24], r15", // Set new stack as user RSP
+    "xor rax, rax",     // Clear return value for exec
+    "iretq",            // Jump to new program
+    ".Lexec_failed:",
+    "add rsp, 16",      // Clean up get_exec_context params
+    "pop rax",          // Restore rax
+    ".Lnormal_int_return:",
     // Return value already in rax
     "add rsp, 8",
     // Restore general-purpose registers (reverse order)
@@ -104,6 +141,8 @@ extern "C" {
     fn syscall_interrupt_handler();
     #[allow(dead_code)]
     fn syscall_handler();
+    // Import get_exec_context from syscall module for exec support
+    fn get_exec_context(entry_out: *mut u64, stack_out: *mut u64) -> bool;
 }
 
 /// Exception handlers
@@ -855,12 +894,34 @@ extern "C" fn syscall_instruction_handler() {
         "push rbp",
         // See note in int 0x81 handler: ensure 16-byte stack alignment before call.
         "sub rsp, 8",
-        // Arrange SysV ABI arguments for syscall_dispatch(nr, arg1, arg2, arg3).
-        "mov rcx, rdx", // rcx = arg3
-        "mov rdx, rsi", // rdx = arg2
-        "mov rsi, rdi", // rsi = arg1
-        "mov rdi, rax", // rdi = syscall number
+        // Arrange SysV ABI arguments for syscall_dispatch(nr, arg1, arg2, arg3, syscall_return_addr).
+        // Get syscall return address from gs:[56] (user RCX saved earlier)
+        "mov r8, gs:[56]",  // r8 = syscall return address (5th param)
+        "mov rcx, rdx",     // rcx = arg3 (4th param)
+        "mov rdx, rsi",     // rdx = arg2 (3rd param)
+        "mov rsi, rdi",     // rsi = arg1 (2nd param)
+        "mov rdi, rax",     // rdi = syscall number (1st param)
         "call syscall_dispatch",
+        // Check if execve returned (magic value 0x4558454300000000)
+        "movabs rbx, 0x4558454300000000",
+        "cmp rax, rbx",
+        "jne 2f",           // Not exec, normal return
+        // Exec return: get new entry/stack from ExecContext
+        "sub rsp, 16",      // Space for entry (rsp+8) and stack (rsp)
+        "lea rdi, [rsp + 8]", // entry_out pointer (1st param)
+        "mov rsi, rsp",     // stack_out pointer (2nd param)
+        "call get_exec_context",
+        "test al, al",      // Check if exec was pending
+        "jz 1f",            // Not exec, restore stack and normal return
+        // Load new entry and stack
+        "mov rcx, [rsp + 8]", // New entry -> rcx (for sysretq)
+        "mov rsp, [rsp]",   // New stack -> rsp
+        "mov r11, 0x202",   // User rflags (IF=1, reserved=1)
+        "xor rax, rax",     // Clear return value for exec
+        "sysretq",          // Jump to new program
+        "1:",               // exec failed, restore stack
+        "add rsp, 16",
+        "2:",               // Normal return path
         "add rsp, 8",
         // Restore the callee-saved register set before we leave the kernel stack.
         "pop rbp",
@@ -1071,11 +1132,15 @@ pub fn setup_syscall() {
         );
     }
 
-    if user_ss != user_cs + 8 {
+    // For SYSRET in 64-bit mode, the CPU calculates:
+    //   CS = STAR[63:48] + 16
+    //   SS = STAR[63:48] + 8
+    // So SS should be CS - 8, not CS + 8!
+    if user_ss != user_cs - 8 {
         crate::kwarn!(
-            "User SS ({:#x}) does not equal user CS+8 ({:#x}); STAR will assume the latter",
+            "User SS ({:#x}) does not equal user CS-8 ({:#x}); check GDT layout for SYSRET",
             user_ss,
-            user_cs + 8
+            user_cs - 8
         );
     }
 
