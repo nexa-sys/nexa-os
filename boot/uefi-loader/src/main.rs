@@ -3,6 +3,7 @@
 
 extern crate alloc;
 
+use alloc::vec;
 use alloc::vec::Vec;
 use core::ffi::c_void;
 use core::mem;
@@ -43,9 +44,12 @@ use uefi::{cstr16, Handle, Status};
 
 const KERNEL_PATH: &uefi::CStr16 = cstr16!("\\EFI\\BOOT\\KERNEL.ELF");
 const INITRAMFS_PATH: &uefi::CStr16 = cstr16!("\\EFI\\BOOT\\INITRAMFS.CPIO");
-// Rootfs 不从 ESP 加载，由内核从 /dev/vda 挂载
+const ROOTFS_PATH: &uefi::CStr16 = cstr16!("\\EFI\\BOOT\\ROOTFS.EXT2");
+const CMDLINE_PATH: &uefi::CStr16 = cstr16!("\\EFI\\BOOT\\cmdline.txt");
+// Rootfs 优先从 ESP 缓存，若缺失则回退到块设备读取
 const MAX_PHYS_ADDR: u64 = 0x0000FFFF_FFFF;
 const BOOT_INFO_PREF_MAX_ADDR: u64 = 0x03FF_FFFF; // Prefer BootInfo below 64 MiB
+const DEFAULT_CMDLINE: &[u8] = b"root=/dev/vda rootfstype=ext2 init=/sbin/ni";
 
 const PNP0A03_EISA_ID: u32 = encode_eisa_id(*b"PNP0A03");
 const PNP0A08_EISA_ID: u32 = encode_eisa_id(*b"PNP0A08");
@@ -783,11 +787,33 @@ fn efi_main(image: Handle, mut st: SystemTable<Boot>) -> Status {
         }
     };
 
-    // Rootfs 不从 ESP 加载，由内核从 virtio 磁盘加载
-    log::info!("Rootfs will be loaded by kernel from virtio disk (/dev/vda)");
+    let mut rootfs_bytes = match read_file(&mut root, ROOTFS_PATH) {
+        Ok(data) => {
+            log::info!("Rootfs image loaded from ESP, size: {} bytes", data.len());
+            Some(data)
+        }
+        Err(status) if status == Status::NOT_FOUND => {
+            log::info!("Rootfs image not present on ESP; will probe block devices");
+            None
+        }
+        Err(status) => {
+            log::warn!("Failed to load rootfs from ESP: {:?}", status);
+            None
+        }
+    };
+
+    let cmdline_bytes = load_kernel_cmdline(&mut root);
+    match core::str::from_utf8(&cmdline_bytes) {
+        Ok(text) => log::info!("Kernel command line: {}", text),
+        Err(_) => log::warn!("Kernel command line contains non-UTF8 data"),
+    }
 
     drop(root);
     log::info!("File system root dropped");
+
+    if rootfs_bytes.is_none() {
+        rootfs_bytes = load_rootfs_from_block_device(bs, image);
+    }
 
     let loaded = match load_kernel_image(bs, &kernel_bytes) {
         Ok(info) => {
@@ -834,9 +860,29 @@ fn efi_main(image: Handle, mut st: SystemTable<Boot>) -> Status {
         }
     };
 
-    // Rootfs 不加载到内存，内核将从 /dev/vda 挂载
-    log::info!("Rootfs will be mounted by kernel from /dev/vda");
-    let rootfs_region = MemoryRegion::empty();
+    let rootfs_region = if let Some(ref bytes) = rootfs_bytes {
+        match stage_payload(bs, bytes, MemoryType::LOADER_DATA) {
+            Ok(region) => {
+                log::info!(
+                    "Rootfs staged, addr: {:#x}, size: {}",
+                    region.phys_addr,
+                    region.length
+                );
+                region
+            }
+            Err(status) => {
+                log::error!("Failed to allocate rootfs region: {:?}", status);
+                return status;
+            }
+        }
+    } else {
+        log::warn!("Rootfs image unavailable; kernel will rely on /dev mounts");
+        MemoryRegion::empty()
+    };
+
+    if !rootfs_region.is_empty() {
+        rootfs_bytes = None;
+    }
     
     // 创建启动信息
     let kernel_segments_region = match stage_kernel_segments(bs, &loaded.segments) {
@@ -869,6 +915,7 @@ fn efi_main(image: Handle, mut st: SystemTable<Boot>) -> Status {
         loaded.kernel_offset,
         loaded.expected_entry_point,
         loaded.actual_entry_point,
+        &cmdline_bytes,
         kernel_segments_region,
     ) {
         Ok(region) => {
@@ -1118,6 +1165,155 @@ fn read_entire_file(mut file: RegularFile) -> Result<Vec<u8>, Status> {
         buffer.extend_from_slice(&chunk[..read]);
     }
     Ok(buffer)
+}
+
+fn load_kernel_cmdline(root: &mut Directory) -> Vec<u8> {
+    match read_file(root, CMDLINE_PATH) {
+        Ok(mut data) => {
+            while matches!(data.last(), Some(b' ') | Some(b'\n') | Some(b'\r') | Some(&0)) {
+                data.pop();
+            }
+            if data.is_empty() {
+                log::warn!(
+                    "cmdline.txt is empty; falling back to default kernel command line"
+                );
+                DEFAULT_CMDLINE.to_vec()
+            } else {
+                log::info!("Loaded kernel command line from cmdline.txt");
+                data
+            }
+        }
+        Err(status) if status == Status::NOT_FOUND => {
+            log::info!(
+                "cmdline.txt not found; using default kernel command line: {}",
+                core::str::from_utf8(DEFAULT_CMDLINE).unwrap_or("<non-utf8>")
+            );
+            DEFAULT_CMDLINE.to_vec()
+        }
+        Err(status) => {
+            log::warn!(
+                "Failed to read cmdline.txt (status {:?}); using default kernel command line",
+                status
+            );
+            DEFAULT_CMDLINE.to_vec()
+        }
+    }
+}
+
+fn load_rootfs_from_block_device(bs: &BootServices, image: Handle) -> Option<Vec<u8>> {
+    let handles = bs
+        .locate_handle_buffer(SearchType::ByProtocol(&BlockIO::GUID))
+        .ok()?;
+
+    for handle in handles.iter() {
+        let block_proto = unsafe {
+            bs.open_protocol::<BlockIO>(
+                OpenProtocolParams {
+                    handle: *handle,
+                    agent: image,
+                    controller: None,
+                },
+                OpenProtocolAttributes::GetProtocol,
+            )
+        };
+        let Ok(block_proto) = block_proto else {
+            continue;
+        };
+        let Some(block_io) = block_proto.get() else {
+            continue;
+        };
+        let media = block_io.media();
+        if !media.is_media_present() {
+            continue;
+        }
+
+        let block_size = media.block_size() as usize;
+        if block_size == 0 {
+            continue;
+        }
+
+        // Prefer 512-byte logical block devices (virtio-blk).
+        if block_size != 512 {
+            log::debug!(
+                "Skipping block device with block size {} bytes (not 512)",
+                block_size
+            );
+            continue;
+        }
+
+        let total_blocks = media.last_block().saturating_add(1);
+        let total_bytes = match total_blocks.checked_mul(block_size as u64) {
+            Some(value) => value,
+            None => {
+                log::warn!("Block device size overflow, skipping");
+                continue;
+            }
+        };
+
+        // Avoid pulling unreasonably large disks into memory.
+        if total_bytes > 256 * 1024 * 1024 {
+            log::warn!(
+                "Block device reports {} bytes (>256 MiB), skipping",
+                total_bytes
+            );
+            continue;
+        }
+
+        let mut buffer = vec![0u8; total_bytes as usize];
+        let media_id = media.media_id();
+        let mut lba = 0u64;
+        let mut offset = 0usize;
+        const CHUNK_BLOCKS: usize = 128;
+
+        log::info!(
+            "Reading root filesystem from block device: {} blocks × {} bytes",
+            total_blocks,
+            block_size
+        );
+
+        while lba < total_blocks {
+            let remaining_blocks = (total_blocks - lba) as usize;
+            let chunk_blocks = remaining_blocks.min(CHUNK_BLOCKS);
+            let chunk_bytes = chunk_blocks * block_size;
+            let slice = &mut buffer[offset..offset + chunk_bytes];
+
+            if let Err(status) = block_io.read_blocks(media_id, lba, slice) {
+                log::warn!(
+                    "Failed to read LBA {} ({} blocks): {:?}",
+                    lba,
+                    chunk_blocks,
+                    status
+                );
+                buffer.clear();
+                break;
+            }
+
+            lba += chunk_blocks as u64;
+            offset += chunk_bytes;
+        }
+
+        if offset == buffer.len() {
+            if let Some(address) = pci_address_for_handle(bs, image, *handle) {
+                log::info!(
+                    "Loaded rootfs image ({} bytes) from {:04x}:{:02x}:{:02x}.{}",
+                    buffer.len(),
+                    address.segment,
+                    address.bus,
+                    address.device,
+                    address.function
+                );
+            } else {
+                log::info!(
+                    "Loaded rootfs image ({} bytes) from block device (no PCI address)",
+                    buffer.len()
+                );
+            }
+
+            return Some(buffer);
+        }
+    }
+
+    None
 }
 
 fn load_kernel_image(bs: &BootServices, image: &[u8]) -> Result<LoadedKernel, Status> {
@@ -1451,6 +1647,7 @@ fn stage_boot_info(
     kernel_offset: i64,
     expected_entry: u64,
     actual_entry: u64,
+    cmdline: &[u8],
     kernel_segments: MemoryRegion,
 ) -> Result<MemoryRegion, Status> {
     let size_bytes = mem::size_of::<BootInfo>();
@@ -1479,10 +1676,27 @@ fn stage_boot_info(
         );
     }
 
+    let cmdline_region = match stage_cmdline(bs, cmdline) {
+        Ok(region) => region,
+        Err(status) => {
+            log::warn!(
+                "Failed to stage kernel cmdline (status {:?}); continuing without cmdline",
+                status
+            );
+            MemoryRegion::empty()
+        }
+    };
+
     let mut device_entries = [DeviceDescriptor::empty(); MAX_DEVICE_DESCRIPTORS];
     device_entries.copy_from_slice(&devices.entries);
 
-    let mut flags_value = determine_flags(&initramfs, &rootfs, framebuffer.is_some(), devices.count != 0);
+    let mut flags_value = determine_flags(
+        &initramfs,
+        &rootfs,
+        framebuffer.is_some(),
+        devices.count != 0,
+        !cmdline_region.is_empty(),
+    );
     
     // 如果有内核加载偏移，设置标志位
     if kernel_offset != 0 {
@@ -1507,7 +1721,7 @@ fn stage_boot_info(
         flags: flags_value,
         initramfs,
         rootfs,
-        cmdline: MemoryRegion::empty(),
+        cmdline: cmdline_region,
         framebuffer: framebuffer.unwrap_or(FramebufferInfo {
             address: 0,
             pitch: 0,
@@ -1546,11 +1760,43 @@ fn stage_boot_info(
     })
 }
 
+fn stage_cmdline(bs: &BootServices, cmdline: &[u8]) -> Result<MemoryRegion, Status> {
+    if cmdline.is_empty() {
+        return Ok(MemoryRegion::empty());
+    }
+
+    let needs_null = cmdline.last().copied() != Some(0);
+    let size = cmdline.len() + if needs_null { 1 } else { 0 };
+    let pages = (size + 0xFFF) / 0x1000;
+
+    let allocation = bs
+        .allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, pages)
+        .map_err(|e: Error| e.status())?;
+    let addr = allocation as usize;
+
+    unsafe {
+        ptr::copy_nonoverlapping(cmdline.as_ptr(), addr as *mut u8, cmdline.len());
+        if needs_null {
+            ptr::write((addr + cmdline.len()) as *mut u8, 0);
+        }
+        let total = pages * 0x1000;
+        if total > size {
+            ptr::write_bytes((addr + size) as *mut u8, 0, total - size);
+        }
+    }
+
+    Ok(MemoryRegion {
+        phys_addr: addr as u64,
+        length: size as u64,
+    })
+}
+
 fn determine_flags(
     initramfs: &MemoryRegion,
     rootfs: &MemoryRegion,
     has_fb: bool,
     has_devices: bool,
+    has_cmdline: bool,
 ) -> u32 {
     let mut flags_val = 0u32;
     if !initramfs.is_empty() {
@@ -1564,6 +1810,9 @@ fn determine_flags(
     }
     if has_devices {
         flags_val |= flags::HAS_DEVICE_TABLE;
+    }
+    if has_cmdline {
+        flags_val |= flags::HAS_CMDLINE;
     }
     flags_val
 }
