@@ -1,15 +1,14 @@
 use crate::posix::{self, FileType};
-use crate::uefi_compat::{self, BlockDescriptor, CompatCounts, NetworkDescriptor};
 use crate::process::{USER_REGION_SIZE, USER_VIRT_BASE};
+use crate::uefi_compat::{self, BlockDescriptor, CompatCounts, NetworkDescriptor};
 use core::{
     arch::global_asm,
     cmp,
     fmt::{self, Write},
-    mem,
-    ptr, slice, str,
+    mem, ptr, slice, str,
 };
-use x86_64::instructions::interrupts;
 use nexa_boot_info::FramebufferInfo;
+use x86_64::instructions::interrupts;
 
 /// System call numbers (POSIX-compliant where possible)
 pub const SYS_READ: u64 = 0;

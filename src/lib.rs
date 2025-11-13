@@ -25,8 +25,8 @@ pub mod scheduler;
 pub mod serial;
 pub mod signal;
 pub mod syscall;
-pub mod vga_buffer;
 pub mod uefi_compat;
+pub mod vga_buffer;
 
 use core::panic::PanicInfo;
 use multiboot2::{BootInformation, BootInformationHeader};
@@ -137,10 +137,7 @@ pub fn kernel_main_uefi(boot_info_ptr: *const BootInfo) -> ! {
         kpanic!("UEFI entry invoked with null boot info pointer");
     }
 
-    let freq_hz = logger::init();
     let boot_info = unsafe { &*boot_info_ptr };
-
-    uefi_compat::reset();
 
     if let Err(err) = bootinfo::set(boot_info) {
         match err {
@@ -152,6 +149,10 @@ pub fn kernel_main_uefi(boot_info_ptr: *const BootInfo) -> ! {
             }
         }
     }
+
+    uefi_compat::reset();
+
+    let freq_hz = logger::init();
 
     let cmdline_effective = bootinfo::cmdline_str().map(|line| bootinfo::stash_cmdline(line));
 
@@ -178,6 +179,20 @@ pub fn kernel_main_uefi(boot_info_ptr: *const BootInfo) -> ! {
     kinfo!("==========================================================");
     kinfo!("Stage 1: UEFI Loader - Complete");
     kinfo!("Stage 2: Kernel Init - Starting...");
+
+    if let Some(offset) = bootinfo::kernel_load_offset() {
+        kinfo!("Kernel relocation offset reported by loader: {:#x}", offset);
+    }
+    if let Some((expected, actual)) = bootinfo::kernel_entry_points() {
+        kdebug!(
+            "Kernel entry points -> expected: {:#x}, actual: {:#x}",
+            expected,
+            actual
+        );
+    }
+    if let Some(segments) = bootinfo::kernel_segments() {
+        kdebug!("Loader reported {} relocated segment(s)", segments.len());
+    }
 
     if let Some(cmdline) = cmdline_effective {
         boot_stages::parse_boot_config(cmdline);

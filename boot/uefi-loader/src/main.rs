@@ -20,6 +20,7 @@ use nexa_boot_info::{
     DeviceKind,
     FramebufferInfo,
     MemoryRegion,
+    KernelSegment,
     NetworkDeviceInfo,
     PciBarInfo,
     PciDeviceInfo,
@@ -30,7 +31,6 @@ use r_efi::protocols::pci_io;
 use uefi::prelude::*;
 use uefi::proto::console::gop::{GraphicsOutput, PixelFormat};
 use uefi::proto::device_path::{DevicePath, DevicePathNodeEnum};
-use uefi::proto::loaded_image::LoadedImage;
 use uefi::proto::media::block::BlockIO;
 use uefi::proto::media::file::{Directory, File, FileAttribute, FileMode, RegularFile};
 use uefi::proto::media::fs::SimpleFileSystem;
@@ -41,9 +41,9 @@ use uefi::Identify;
 use uefi::Error;
 use uefi::{cstr16, Handle, Status};
 
-const KERNEL_PATH: &uefi::CStr16 = cstr16!("\\EFI\\NEXAOS\\KERNEL.ELF");
-const INITRAMFS_PATH: &uefi::CStr16 = cstr16!("\\EFI\\NEXAOS\\INITRAMFS.CPIO");
-const ROOTFS_PATH: &uefi::CStr16 = cstr16!("\\EFI\\NEXAOS\\ROOTFS.EXT2");
+const KERNEL_PATH: &uefi::CStr16 = cstr16!("\\EFI\\BOOT\\KERNEL.ELF");
+const INITRAMFS_PATH: &uefi::CStr16 = cstr16!("\\EFI\\BOOT\\INITRAMFS.CPIO");
+// Rootfs 不从 ESP 加载，由内核从 /dev/vda 挂载
 const MAX_PHYS_ADDR: u64 = 0x0000FFFF_FFFF;
 
 const PNP0A03_EISA_ID: u32 = encode_eisa_id(*b"PNP0A03");
@@ -744,6 +744,18 @@ fn efi_main(image: Handle, mut st: SystemTable<Boot>) -> Status {
         }
     };
 
+    // List root directory
+    log::info!("=== Listing root directory ===");
+    let _ = list_directory(&mut root, cstr16!("\\"));
+    
+    // List EFI directory
+    log::info!("=== Listing \\EFI directory ===");
+    let _ = list_directory(&mut root, cstr16!("\\EFI"));
+    
+    // List BOOT directory
+    log::info!("=== Listing \\EFI\\BOOT directory ===");
+    let _ = list_directory(&mut root, cstr16!("\\EFI\\BOOT"));
+
     let kernel_bytes = match read_file(&mut root, KERNEL_PATH) {
         Ok(data) => {
             log::info!("Kernel image loaded, size: {} bytes", data.len());
@@ -770,27 +782,19 @@ fn efi_main(image: Handle, mut st: SystemTable<Boot>) -> Status {
         }
     };
 
-    let rootfs_bytes = match read_file(&mut root, ROOTFS_PATH) {
-        Ok(data) => {
-            log::info!("Rootfs loaded, size: {} bytes", data.len());
-            data
-        },
-        Err(status) if status == Status::NOT_FOUND => {
-            log::warn!("Rootfs not found, using empty");
-            Vec::new()
-        },
-        Err(status) => {
-            log::error!("Failed to load rootfs image: {:?}", status);
-            return status;
-        }
-    };
+    // Rootfs 不从 ESP 加载，由内核从 virtio 磁盘加载
+    log::info!("Rootfs will be loaded by kernel from virtio disk (/dev/vda)");
 
     drop(root);
     log::info!("File system root dropped");
 
     let loaded = match load_kernel_image(bs, &kernel_bytes) {
         Ok(info) => {
-            log::info!("Kernel loaded successfully, UEFI entry point: {:#x}", info.uefi_entry_point);
+            log::info!(
+                "Kernel loaded successfully: expected entry {:#x}, actual entry {:#x}",
+                info.expected_entry_point,
+                info.actual_entry_point
+            );
             info
         },
         Err(status) => {
@@ -801,8 +805,12 @@ fn efi_main(image: Handle, mut st: SystemTable<Boot>) -> Status {
     
     // 添加调试信息验证入口点地址
     log::info!("Expected entry point: {:#x}", 0x101020);
-    if loaded.uefi_entry_point != 0x101020 {
-        log::warn!("Entry point mismatch! Expected: {:#x}, Got: {:#x}", 0x101020, loaded.uefi_entry_point);
+    if loaded.expected_entry_point != 0x101020 {
+        log::warn!(
+            "Entry point mismatch! Expected: {:#x}, Got: {:#x}",
+            0x101020,
+            loaded.expected_entry_point
+        );
     }
     
     // 收集设备信息
@@ -813,7 +821,7 @@ fn efi_main(image: Handle, mut st: SystemTable<Boot>) -> Status {
     let framebuffer_info = detect_framebuffer(bs, image);
     log::info!("Framebuffer detection completed, found: {}", framebuffer_info.is_some());
     
-    // 准备initramfs和rootfs
+    // 准备initramfs
     let initramfs_region = match stage_payload(bs, &initramfs_bytes, MemoryType::LOADER_DATA) {
         Ok(region) => {
             log::info!("Initramfs staged, addr: {:#x}, size: {}", region.phys_addr, region.length);
@@ -825,24 +833,42 @@ fn efi_main(image: Handle, mut st: SystemTable<Boot>) -> Status {
         }
     };
 
-    let rootfs_region = match stage_payload(bs, &rootfs_bytes, MemoryType::LOADER_DATA) {
+    // Rootfs 不加载到内存，内核将从 /dev/vda 挂载
+    log::info!("Rootfs will be mounted by kernel from /dev/vda");
+    let rootfs_region = MemoryRegion::empty();
+    
+    // 创建启动信息
+    let kernel_segments_region = match stage_kernel_segments(bs, &loaded.segments) {
         Ok(region) => {
-            log::info!("Rootfs staged, addr: {:#x}, size: {}", region.phys_addr, region.length);
+            let segment_count = if region.length == 0 {
+                0
+            } else {
+                region.length as usize / core::mem::size_of::<KernelSegment>()
+            };
+            log::info!(
+                "Kernel segments staged, addr: {:#x}, size: {} ({} entries)",
+                region.phys_addr,
+                region.length,
+                segment_count
+            );
             region
-        },
+        }
         Err(status) => {
-            log::error!("Failed to allocate rootfs region: {:?}", status);
+            log::error!("Failed to stage kernel segment table: {:?}", status);
             return status;
         }
     };
-    
-    // 创建启动信息
+
     let boot_info_region = match stage_boot_info(
         bs,
         initramfs_region,
         rootfs_region,
         framebuffer_info,
         &device_table,
+        loaded.kernel_offset,
+        loaded.expected_entry_point,
+        loaded.actual_entry_point,
+        kernel_segments_region,
     ) {
         Ok(region) => {
             log::info!("Boot info staged, addr: {:#x}, size: {}", region.phys_addr, region.length);
@@ -858,53 +884,96 @@ fn efi_main(image: Handle, mut st: SystemTable<Boot>) -> Status {
     let _ = st.exit_boot_services(MemoryType::LOADER_DATA);
     log::info!("Exit boot services completed");
 
+    let mut entry_point = loaded.actual_entry_point;
+
+    if loaded.kernel_offset != 0 {
+        log::info!(
+            "Kernel relocated by offset {:#x}; mirroring segments to original addresses",
+            loaded.kernel_offset
+        );
+        if mirror_segments_to_expected(&loaded.segments) {
+            entry_point = loaded.expected_entry_point;
+            log::info!(
+                "Segments mirrored successfully, switching to expected entry {:#x}",
+                entry_point
+            );
+        } else {
+            log::warn!(
+                "Encountered issues while mirroring segments; continuing from relocated entry {:#x}",
+                entry_point
+            );
+        }
+    }
+
     log::info!(
         "Transferring control to kernel UEFI entry at {:#x}",
-        loaded.uefi_entry_point
+        entry_point
     );
 
     // 添加更多调试信息
     log::info!("Boot info address: {:#x}", boot_info_region.phys_addr);
-    log::info!("Calling kernel entry point");
+    log::info!(
+        "Kernel base: expected {:#x}, actual {:#x}, offset {:#x}",
+        loaded.expected_base,
+        loaded.kernel_base,
+        loaded.kernel_offset
+    );
+    log::info!("About to jump to kernel entry point...");
+
+    // 写入原始 COM1 端口确认我们到达这里
+    unsafe {
+        let com1 = 0x3f8 as *mut u8;
+        let msg = b"[UEFI] Jumping to kernel...\n";
+        for &byte in msg {
+            com1.write_volatile(byte);
+        }
+    }
 
     unsafe {
-        let entry: extern "C" fn(*const BootInfo) -> ! = mem::transmute(loaded.uefi_entry_point as u64);
+        let entry: extern "C" fn(*const BootInfo) -> ! = mem::transmute(entry_point as u64);
         entry(boot_info_region.phys_addr as *const BootInfo)
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct LoadedSegment {
+    expected_addr: u64,
+    actual_addr: u64,
+    memsz: u64,
+}
+
 struct LoadedKernel {
-    uefi_entry_point: u64,
+    expected_base: u64,
+    expected_entry_point: u64,
+    actual_entry_point: u64,
+    kernel_base: u64,      // 实际加载的基地址
+    kernel_offset: i64,    // 相对于链接地址的偏移
+    segments: Vec<LoadedSegment>,
 }
 
 fn open_boot_volume(bs: &BootServices, image: Handle) -> Result<Directory, Status> {
-    // 首先尝试通过LoadedImage获取设备句柄
-    let loaded_image = unsafe {
-        bs.open_protocol::<LoadedImage>(
-            OpenProtocolParams {
-                handle: image,
-                agent: image,
-                controller: None,
-            },
-            OpenProtocolAttributes::GetProtocol,
-        )
-    .map_err(|e: Error| {
-        log::error!("Failed to open LoadedImage protocol: {:?}", e);
-        e.status()
-    })?
-    };
+    log::info!("Searching for boot volume with kernel files");
     
-    let loaded_image_ref = loaded_image
-        .get()
-        .ok_or_else(|| {
-            log::error!("Failed to get LoadedImage reference");
+    // 获取所有支持 SimpleFileSystem 的设备
+    let handles = bs
+        .locate_handle_buffer(SearchType::ByProtocol(&SimpleFileSystem::GUID))
+        .map_err(|e| {
+            log::error!("Failed to locate handles with SimpleFileSystem protocol: {:?}", e);
             Status::UNSUPPORTED
         })?;
+    
+    if handles.is_empty() {
+        log::error!("No devices with SimpleFileSystem protocol found");
+        return Err(Status::NOT_FOUND);
+    }
+    
+    log::info!("Found {} device(s) with SimpleFileSystem protocol", handles.len());
+    
+    // 尝试每个文件系统设备，找到包含内核文件的那个
+    for (index, &device_handle) in handles.iter().enumerate() {
+        log::info!("Trying device {} ({:?})", index, device_handle);
         
-    // 尝试从LoadedImage获取设备句柄
-    if let Some(device_handle) = loaded_image_ref.device() {
-        // 尝试打开SimpleFileSystem协议
-        let fs_result = unsafe {
+        let fs = unsafe {
             bs.open_protocol::<SimpleFileSystem>(
                 OpenProtocolParams {
                     handle: device_handle,
@@ -915,69 +984,92 @@ fn open_boot_volume(bs: &BootServices, image: Handle) -> Result<Directory, Statu
             )
         };
         
-        if let Ok(fs) = fs_result {
-            if let Some(file_system) = fs.get_mut() {
-                match file_system.open_volume() {
-                    Ok(volume) => return Ok(volume),
-                    Err(e) => log::warn!("Failed to open volume from LoadedImage device: {:?}", e),
-                }
+        let Ok(fs) = fs else {
+            log::warn!("  Failed to open SimpleFileSystem protocol on device {}", index);
+            continue;
+        };
+        
+        let Some(file_system) = fs.get_mut() else {
+            log::warn!("  Failed to get SimpleFileSystem reference for device {}", index);
+            continue;
+        };
+        
+        let mut volume = match file_system.open_volume() {
+            Ok(vol) => vol,
+            Err(e) => {
+                log::warn!("  Failed to open volume on device {}: {:?}", index, e.status());
+                continue;
+            }
+        };
+        
+        // 尝试打开内核文件来验证这是正确的卷
+        log::info!("  Checking for kernel file on device {}", index);
+        let test_result = volume.open(KERNEL_PATH, FileMode::Read, FileAttribute::empty());
+        
+        match test_result {
+            Ok(_) => {
+                log::info!("  Found kernel file on device {}! Using this volume.", index);
+                return Ok(volume);
+            }
+            Err(e) => {
+                log::info!("  Kernel file not found on device {}: {:?}", index, e.status());
+                // 继续尝试下一个设备
             }
         }
     }
+    
+    log::error!("Could not find boot volume with kernel file at {:?}", KERNEL_PATH);
+    Err(Status::NOT_FOUND)
+}
 
-    // 如果从LoadedImage无法获取文件系统，尝试查找第一个支持文件系统的设备
-    log::info!("Trying to find a device with SimpleFileSystem protocol");
-    let handles = bs
-        .locate_handle_buffer(SearchType::ByProtocol(&SimpleFileSystem::GUID))
-        .map_err(|e| {
-            log::error!("Failed to locate handles with SimpleFileSystem protocol: {:?}", e);
-            Status::UNSUPPORTED
+fn list_directory(root: &mut Directory, path: &uefi::CStr16) -> Result<(), Status> {
+    log::info!("Listing directory: {:?}", path);
+    
+    let handle = root
+        .open(path, FileMode::Read, FileAttribute::empty())
+        .map_err(|e: Error| {
+            log::error!("Failed to open directory {:?}: {:?}", path, e.status());
+            e.status()
         })?;
-        
-    if handles.is_empty() {
-        log::error!("No devices with SimpleFileSystem protocol found");
-        return Err(Status::NOT_FOUND);
+    
+    let Some(mut dir) = handle.into_directory() else {
+        log::error!("Path {:?} is not a directory", path);
+        return Err(Status::UNSUPPORTED);
+    };
+    
+    let mut entry_buffer = [0u8; 512];
+    loop {
+        match dir.read_entry(&mut entry_buffer) {
+            Ok(Some(info)) => {
+                log::info!("  Found: {:?} (attr: {:?})", info.file_name(), info.attribute());
+            }
+            Ok(None) => {
+                log::info!("End of directory listing");
+                break;
+            }
+            Err(e) => {
+                log::error!("Error reading directory entry: {:?}", e.status());
+                return Err(e.status());
+            }
+        }
     }
     
-    // 尝试第一个设备
-    let device_handle = handles[0];
-    log::info!("Found device with SimpleFileSystem protocol: {:?}", device_handle);
-    
-    let fs = unsafe {
-        bs.open_protocol::<SimpleFileSystem>(
-            OpenProtocolParams {
-                handle: device_handle,
-                agent: image,
-                controller: None,
-            },
-            OpenProtocolAttributes::GetProtocol,
-        )
-    .map_err(|e: Error| {
-        log::error!("Failed to open SimpleFileSystem protocol: {:?}", e);
-        e.status()
-    })?
-    };
-
-    let file_system = fs.get_mut().ok_or_else(|| {
-        log::error!("Failed to get SimpleFileSystem reference");
-        Status::UNSUPPORTED
-    })?;
-    
-    file_system
-        .open_volume()
-        .map_err(|e: Error| {
-            log::error!("Failed to open volume: {:?}", e);
-            e.status()
-        })
+    Ok(())
 }
 
 fn read_file(root: &mut Directory, path: &uefi::CStr16) -> Result<Vec<u8>, Status> {
+    log::info!("Attempting to open file: {:?}", path);
     let handle = root
     .open(path, FileMode::Read, FileAttribute::empty())
-    .map_err(|e: Error| e.status())?;
+    .map_err(|e: Error| {
+        log::error!("Failed to open file {:?}: {:?}", path, e.status());
+        e.status()
+    })?;
     let Some(file) = handle.into_regular_file() else {
+        log::error!("File {:?} is not a regular file", path);
         return Err(Status::UNSUPPORTED);
     };
+    log::info!("Successfully opened file: {:?}", path);
     read_entire_file(file)
 }
 
@@ -1013,32 +1105,115 @@ fn load_kernel_image(bs: &BootServices, image: &[u8]) -> Result<LoadedKernel, St
     let phoff = header.e_phoff as usize;
     let phentsize = header.e_phentsize as usize;
     let phnum = header.e_phnum as usize;
+    let mut segments: Vec<LoadedSegment> = Vec::new();
 
+    // 第一遍：找出所有 LOAD 段的地址范围
+    let mut min_addr = u64::MAX;
+    let mut max_addr = 0u64;
+    
     for i in 0..phnum {
         let offset = phoff + i * phentsize;
         if offset + mem::size_of::<Elf64Phdr>() > image.len() {
             return Err(Status::LOAD_ERROR);
         }
         let ph = unsafe { &*(image.as_ptr().add(offset) as *const Elf64Phdr) };
+        if ph.p_type != 1 || ph.p_memsz == 0 {
+            continue;
+        }
+        
+        let start = ph.p_paddr;
+        let end = ph.p_paddr + ph.p_memsz;
+        
+        if start < min_addr {
+            min_addr = start;
+        }
+        if end > max_addr {
+            max_addr = end;
+        }
+    }
+    
+    if min_addr >= max_addr {
+        log::error!("No valid LOAD segments found");
+        return Err(Status::LOAD_ERROR);
+    }
+    
+    // 计算需要的总内存大小
+    let total_size = (max_addr - min_addr) as usize;
+    let pages = (total_size + 0xFFF) / 0x1000;
+    
+    log::info!("Kernel expects to be loaded at {:#x}-{:#x} (size: {:#x}, {} pages)", 
+               min_addr, max_addr, total_size, pages);
+    
+    // 尝试在期望地址分配，如果失败则在任意地址分配
+    let actual_base = match bs.allocate_pages(
+        AllocateType::Address(min_addr),
+        MemoryType::LOADER_DATA,
+        pages,
+    ) {
+        Ok(_) => {
+            log::info!("Successfully allocated at expected address {:#x}", min_addr);
+            min_addr
+        }
+        Err(e) => {
+            log::warn!("Cannot allocate at expected address {:#x}: {:?}", min_addr, e.status());
+            
+            // 尝试在 64MB 以下分配（低于常见的 UEFI 固件内存）
+            log::info!("Trying to allocate below 64MB...");
+            match bs.allocate_pages(
+                AllocateType::MaxAddress(0x4000000), // 64MB
+                MemoryType::LOADER_DATA,
+                pages,
+            ) {
+                Ok(addr) => {
+                    log::info!("Allocated at low address {:#x}", addr);
+                    addr
+                }
+                Err(e2) => {
+                    log::warn!("Cannot allocate below 64MB: {:?}, trying below 4GB", e2.status());
+                    // 最后尝试在 4GB 以下分配
+                    match bs.allocate_pages(
+                        AllocateType::MaxAddress(0xFFFFFFFF),
+                        MemoryType::LOADER_DATA,
+                        pages,
+                    ) {
+                        Ok(addr) => {
+                            log::info!("Allocated at alternative address {:#x}", addr);
+                            addr
+                        }
+                        Err(e3) => {
+                            log::error!("Failed to allocate {} pages anywhere: {:?}", pages, e3.status());
+                            return Err(e3.status());
+                        }
+                    }
+                }
+            }
+        }
+    };
+    
+    // 计算加载偏移
+    let load_offset = (actual_base as i64) - (min_addr as i64);
+    log::info!("Load offset: {:#x} (actual base: {:#x}, expected base: {:#x})", 
+               load_offset, actual_base, min_addr);
+    
+    // 第二遍：加载所有段
+    for i in 0..phnum {
+        let offset = phoff + i * phentsize;
+        let ph = unsafe { &*(image.as_ptr().add(offset) as *const Elf64Phdr) };
         if ph.p_type != 1 {
             continue;
         }
 
-        let dest = ph.p_paddr as usize;
+        let expected_addr = ph.p_paddr;
+        let actual_addr = ((expected_addr as i64) + load_offset) as u64;
         let memsz = ph.p_memsz as usize;
         let filesz = ph.p_filesz as usize;
+        
+        log::info!("Loading segment {}: {:#x} -> {:#x}, memsz={:#x}, filesz={:#x}", 
+                   i, expected_addr, actual_addr, memsz, filesz);
+        
         if memsz == 0 {
             continue;
         }
-
-        let pages = (memsz + 0xFFF) / 0x1000;
-        bs
-            .allocate_pages(
-                AllocateType::Address(dest as u64),
-                MemoryType::LOADER_DATA,
-                pages,
-            )
-            .map_err(|e: Error| e.status())?;
 
         if filesz > 0 {
             let src_offset = ph.p_offset as usize;
@@ -1048,7 +1223,7 @@ fn load_kernel_image(bs: &BootServices, image: &[u8]) -> Result<LoadedKernel, St
             unsafe {
                 ptr::copy_nonoverlapping(
                     image.as_ptr().add(src_offset),
-                    dest as *mut u8,
+                    actual_addr as *mut u8,
                     filesz,
                 );
             }
@@ -1056,20 +1231,43 @@ fn load_kernel_image(bs: &BootServices, image: &[u8]) -> Result<LoadedKernel, St
 
         if memsz > filesz {
             unsafe {
-                ptr::write_bytes((dest + filesz) as *mut u8, 0, memsz - filesz);
+                ptr::write_bytes((actual_addr + filesz as u64) as *mut u8, 0, memsz - filesz);
             }
         }
+
+        segments.push(LoadedSegment {
+            expected_addr,
+            actual_addr,
+            memsz: memsz as u64,
+        });
     }
 
-    let uefi_entry_point = match find_uefi_entry(image) {
-        Some(ptr) => ptr,
+    log::info!("Loading kernel ELF program headers complete");
+    
+    // 查找 UEFI 入口点
+    let expected_entry = match find_uefi_entry(image) {
+        Some(ptr) => {
+            log::info!("UEFI entry point in ELF: {:#x}", ptr);
+            ptr
+        },
         None => {
             log::error!("Kernel image missing .nexa.uefi_entry section");
             return Err(Status::LOAD_ERROR);
         }
     };
+    
+    // 应用加载偏移到入口点
+    let actual_entry = ((expected_entry as i64) + load_offset) as u64;
+    log::info!("Actual UEFI entry point: {:#x}", actual_entry);
 
-    Ok(LoadedKernel { uefi_entry_point })
+    Ok(LoadedKernel { 
+        expected_base: min_addr,
+        expected_entry_point: expected_entry,
+        actual_entry_point: actual_entry,
+        kernel_base: actual_base,
+        kernel_offset: load_offset,
+        segments,
+    })
 }
 
 fn stage_payload(bs: &BootServices, data: &[u8], mem_type: MemoryType) -> Result<MemoryRegion, Status> {
@@ -1098,12 +1296,73 @@ fn stage_payload(bs: &BootServices, data: &[u8], mem_type: MemoryType) -> Result
     })
 }
 
+fn stage_kernel_segments(bs: &BootServices, segments: &[LoadedSegment]) -> Result<MemoryRegion, Status> {
+    if segments.is_empty() {
+        return Ok(MemoryRegion::empty());
+    }
+
+    let mut serialized: Vec<KernelSegment> = Vec::with_capacity(segments.len());
+    for seg in segments {
+        serialized.push(KernelSegment {
+            expected_addr: seg.expected_addr,
+            actual_addr: seg.actual_addr,
+            mem_size: seg.memsz,
+        });
+    }
+
+    let bytes = unsafe {
+        core::slice::from_raw_parts(
+            serialized.as_ptr() as *const u8,
+            serialized.len() * core::mem::size_of::<KernelSegment>(),
+        )
+    };
+
+    let region = stage_payload(bs, bytes, MemoryType::LOADER_DATA)?;
+
+    // stage_payload copies into the allocated pages, so dropping the vector is safe.
+    Ok(region)
+}
+
+fn mirror_segments_to_expected(segments: &[LoadedSegment]) -> bool {
+    let mut all_ok = true;
+
+    for seg in segments {
+        if seg.expected_addr == seg.actual_addr || seg.memsz == 0 {
+            continue;
+        }
+
+        if seg.memsz > usize::MAX as u64 {
+            log::error!(
+                "Segment at expected {:#x} exceeds addressable size ({} bytes)",
+                seg.expected_addr,
+                seg.memsz
+            );
+            all_ok = false;
+            continue;
+        }
+
+        unsafe {
+            ptr::copy_nonoverlapping(
+                seg.actual_addr as *const u8,
+                seg.expected_addr as *mut u8,
+                seg.memsz as usize,
+            );
+        }
+    }
+
+    all_ok
+}
+
 fn stage_boot_info(
     bs: &BootServices,
     initramfs: MemoryRegion,
     rootfs: MemoryRegion,
     framebuffer: Option<FramebufferInfo>,
     devices: &DeviceTable,
+    kernel_offset: i64,
+    expected_entry: u64,
+    actual_entry: u64,
+    kernel_segments: MemoryRegion,
 ) -> Result<MemoryRegion, Status> {
     let size_bytes = mem::size_of::<BootInfo>();
     debug_assert!(size_bytes <= u16::MAX as usize);
@@ -1119,7 +1378,23 @@ fn stage_boot_info(
     let mut device_entries = [DeviceDescriptor::empty(); MAX_DEVICE_DESCRIPTORS];
     device_entries.copy_from_slice(&devices.entries);
 
-    let flags_value = determine_flags(&initramfs, &rootfs, framebuffer.is_some(), devices.count != 0);
+    let mut flags_value = determine_flags(&initramfs, &rootfs, framebuffer.is_some(), devices.count != 0);
+    
+    // 如果有内核加载偏移，设置标志位
+    if kernel_offset != 0 {
+        flags_value |= nexa_boot_info::flags::HAS_KERNEL_OFFSET;
+        log::info!("Setting HAS_KERNEL_OFFSET flag, offset={:#x}", kernel_offset);
+    }
+
+    if !kernel_segments.is_empty() {
+        let segment_count = (kernel_segments.length as usize)
+            / core::mem::size_of::<KernelSegment>();
+        flags_value |= nexa_boot_info::flags::HAS_KERNEL_SEGMENTS;
+        log::info!(
+            "Setting HAS_KERNEL_SEGMENTS flag ({} entries)",
+            segment_count
+        );
+    }
 
     let boot_info = BootInfo {
         signature: nexa_boot_info::BOOT_INFO_SIGNATURE,
@@ -1146,7 +1421,11 @@ fn stage_boot_info(
         device_count: devices.count,
         _padding: 0,
         devices: device_entries,
-        reserved: [0; 64],
+        kernel_expected_entry: expected_entry,
+        kernel_actual_entry: actual_entry,
+        kernel_segments,
+        kernel_load_offset: kernel_offset,
+        reserved: [0; 24],
     };
 
     unsafe {
@@ -1248,7 +1527,9 @@ fn detect_framebuffer(bs: &BootServices, image: Handle) -> Option<FramebufferInf
 }
 
 fn find_uefi_entry(image: &[u8]) -> Option<u64> {
+    log::info!("Searching for .nexa.uefi_entry section in kernel ELF");
     if image.len() < mem::size_of::<Elf64Ehdr>() {
+        log::error!("Image too small for ELF header");
         return None;
     }
 
@@ -1258,13 +1539,18 @@ fn find_uefi_entry(image: &[u8]) -> Option<u64> {
     let shnum = header.e_shnum as usize;
     let shstrndx = header.e_shstrndx as usize;
 
+    log::info!("ELF section header: offset={:#x}, count={}, size={}, str_index={}", shoff, shnum, shentsize, shstrndx);
+
     if shoff == 0 || shentsize == 0 || shnum == 0 {
+        log::error!("Invalid section header table");
         return None;
     }
     if shoff + shentsize.saturating_mul(shnum) > image.len() {
+        log::error!("Section headers extend beyond image");
         return None;
     }
     if shstrndx >= shnum {
+        log::error!("Invalid string table index");
         return None;
     }
 
@@ -1276,11 +1562,14 @@ fn find_uefi_entry(image: &[u8]) -> Option<u64> {
     let shstr = section(shstrndx);
     let str_offset = shstr.sh_offset as usize;
     let str_size = shstr.sh_size as usize;
+    log::info!("String table: offset={:#x}, size={}", str_offset, str_size);
     if str_offset.saturating_add(str_size) > image.len() {
+        log::error!("String table extends beyond image");
         return None;
     }
     let strtab = &image[str_offset..str_offset + str_size];
 
+    log::info!("Scanning {} sections for .nexa.uefi_entry...", shnum);
     for idx in 0..shnum {
         let sh = section(idx);
         let name_offset = sh.sh_name as usize;
@@ -1307,6 +1596,7 @@ fn find_uefi_entry(image: &[u8]) -> Option<u64> {
         }
     }
 
+    log::error!(".nexa.uefi_entry section not found in kernel ELF!");
     None
 }
 

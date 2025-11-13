@@ -1,10 +1,12 @@
 #![no_std]
 
+use core::slice;
+
 /// Signature used to validate NexaOS UEFI boot handoff blocks ("NEXAUEFI").
 pub const BOOT_INFO_SIGNATURE: [u8; 8] = *b"NEXAUEFI";
 
 /// Current version of the [`BootInfo`] structure.
-pub const BOOT_INFO_VERSION: u16 = 2;
+pub const BOOT_INFO_VERSION: u16 = 3;
 
 /// Maximum number of device descriptors exported in [`BootInfo`].
 pub const MAX_DEVICE_DESCRIPTORS: usize = 32;
@@ -21,6 +23,10 @@ pub mod flags {
     pub const HAS_FRAMEBUFFER: u32 = 1 << 3;
     /// Device descriptors are populated in [`BootInfo::devices`].
     pub const HAS_DEVICE_TABLE: u32 = 1 << 4;
+    /// Kernel was loaded at a different address than expected (has relocation offset).
+    pub const HAS_KERNEL_OFFSET: u32 = 1 << 5;
+    /// Kernel segment layout table is populated in [`BootInfo::kernel_segments`].
+    pub const HAS_KERNEL_SEGMENTS: u32 = 1 << 6;
 }
 
 /// Flags describing capabilities/features of a device descriptor.
@@ -315,6 +321,18 @@ impl DeviceDescriptor {
     }
 }
 
+/// Description of an individual kernel segment as loaded by the UEFI stub.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct KernelSegment {
+    /// Physical address the kernel expected this segment to occupy.
+    pub expected_addr: u64,
+    /// Physical address where the loader actually placed the segment.
+    pub actual_addr: u64,
+    /// Number of bytes mapped for this segment.
+    pub mem_size: u64,
+}
+
 /// Boot handoff structure written by the UEFI isolation layer.
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -340,8 +358,17 @@ pub struct BootInfo {
     pub _padding: u16,
     /// Firmware-prepared device descriptors.
     pub devices: [DeviceDescriptor; MAX_DEVICE_DESCRIPTORS],
+    /// Kernel entry point as encoded in the ELF image.
+    pub kernel_expected_entry: u64,
+    /// Actual entry address after the UEFI loader applied its relocation.
+    pub kernel_actual_entry: u64,
+    /// Physical memory region describing the kernel segment table.
+    pub kernel_segments: MemoryRegion,
+    /// Kernel load offset (actual_address - expected_address).
+    /// Only valid if HAS_KERNEL_OFFSET flag is set.
+    pub kernel_load_offset: i64,
     /// Reserved for future extensions.
-    pub reserved: [u8; 64],
+    pub reserved: [u8; 24],
 }
 
 impl BootInfo {
@@ -375,9 +402,39 @@ impl BootInfo {
         (self.flags & flags::HAS_DEVICE_TABLE) != 0 && self.device_count != 0
     }
 
+    /// Returns whether kernel was loaded with a relocation offset.
+    pub fn has_kernel_offset(&self) -> bool {
+        (self.flags & flags::HAS_KERNEL_OFFSET) != 0
+    }
+
     /// Returns the populated device descriptors.
     pub fn devices(&self) -> &[DeviceDescriptor] {
         let count = core::cmp::min(self.device_count as usize, MAX_DEVICE_DESCRIPTORS);
         &self.devices[..count]
+    }
+
+    /// Returns whether the loader provided explicit kernel segment layout.
+    pub fn has_kernel_segments(&self) -> bool {
+        (self.flags & flags::HAS_KERNEL_SEGMENTS) != 0 && !self.kernel_segments.is_empty()
+    }
+
+    /// Returns the kernel segments supplied by the loader, if present.
+    pub fn kernel_segments(&self) -> Option<&[KernelSegment]> {
+        if !self.has_kernel_segments() {
+            return None;
+        }
+        if self.kernel_segments.length == 0 {
+            return None;
+        }
+        let count = (self.kernel_segments.length as usize) / core::mem::size_of::<KernelSegment>();
+        if count == 0 {
+            return None;
+        }
+        unsafe {
+            Some(slice::from_raw_parts(
+                self.kernel_segments.phys_addr as *const KernelSegment,
+                count,
+            ))
+        }
     }
 }

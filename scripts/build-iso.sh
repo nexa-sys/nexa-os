@@ -39,6 +39,16 @@ mkdir -p "$ISO_DIR/boot/grub" "$DIST_DIR"
 
 cp "$KERNEL_BIN" "$ISO_DIR/boot/kernel.elf"
 
+# Copy UEFI loader and payload files (if available)
+if [ -f "$ROOT_DIR/build/BootX64.EFI" ]; then
+    mkdir -p "$ISO_DIR/EFI/BOOT"
+    cp "$ROOT_DIR/build/BootX64.EFI" "$ISO_DIR/EFI/BOOT/BOOTX64.EFI"
+    # Copy kernel to both EFI/BOOT and boot/ for maximum compatibility
+    cp "$KERNEL_BIN" "$ISO_DIR/EFI/BOOT/KERNEL.ELF"
+    cp "$KERNEL_BIN" "$ISO_DIR/boot/KERNEL.ELF"
+    echo "Including UEFI loader (EFI/BOOT/BOOTX64.EFI)"
+fi
+
 # Copy default GRUB font if present (required for gfxterm on EFI systems)
 GRUB_FONT_SOURCE=""
 for candidate in /usr/share/grub/unicode.pf2 /usr/share/grub2/unicode.pf2; do
@@ -56,15 +66,13 @@ fi
 HAS_INITRAMFS=0
 if [ -f "$ROOT_DIR/build/initramfs.cpio" ]; then
     cp "$ROOT_DIR/build/initramfs.cpio" "$ISO_DIR/boot/initramfs.cpio"
+    # Also copy to EFI/BOOT and root if UEFI loader exists
+    if [ -f "$ROOT_DIR/build/BootX64.EFI" ]; then
+        cp "$ROOT_DIR/build/initramfs.cpio" "$ISO_DIR/EFI/BOOT/INITRAMFS.CPIO"
+        cp "$ROOT_DIR/build/initramfs.cpio" "$ISO_DIR/boot/INITRAMFS.CPIO"
+    fi
     echo "Including initramfs in ISO"
     HAS_INITRAMFS=1
-fi
-
-# Copy UEFI loader (if available)
-if [ -f "$ROOT_DIR/build/BootX64.EFI" ]; then
-    mkdir -p "$ISO_DIR/EFI/BOOT"
-    cp "$ROOT_DIR/build/BootX64.EFI" "$ISO_DIR/EFI/BOOT/BOOTX64.EFI"
-    echo "Including UEFI loader (EFI/BOOT/BOOTX64.EFI)"
 fi
 
 {
@@ -118,5 +126,76 @@ GRUBCFG_END
 } > "$ISO_DIR/boot/grub/grub.cfg"
 
 grub-mkrescue -o "$DIST_DIR/nexaos.iso" "$ISO_DIR"
+
+# Post-process: Inject kernel and initramfs into ESP
+if [ -f "$ROOT_DIR/build/BootX64.EFI" ]; then
+    echo "Post-processing: Injecting files into ESP..."
+    
+    # Extract ISO to temporary directory
+    ISO_TEMP="$ROOT_DIR/build/iso_extract"
+    rm -rf "$ISO_TEMP"
+    mkdir -p "$ISO_TEMP"
+    
+    # Extract using 7z or similar
+    echo "  Extracting ISO..."
+    if command -v 7z >/dev/null 2>&1; then
+        7z x -o"$ISO_TEMP" "$DIST_DIR/nexaos.iso" -bsp0 -bso0 2>&1 | head -10
+        echo "  Extraction complete"
+    else
+        echo "Error: 7z not found, cannot modify ESP" >&2
+        exit 1
+    fi
+    
+    # Find efi.img
+    EFI_IMG=$(find "$ISO_TEMP" -name "efi.img" 2>/dev/null | head -1)
+    echo "  Looking for efi.img: $EFI_IMG"
+    
+    if [ -n "$EFI_IMG" ] && [ -f "$EFI_IMG" ]; then
+        echo "  Found original ESP: $EFI_IMG"
+        
+        # Create fresh 20MB ESP (bootloader 1MB + kernel 15MB + initramfs 400KB + overhead)
+        NEW_ESP="$ROOT_DIR/build/new_efi.img"
+        echo "  Creating 20MB ESP..."
+        dd if=/dev/zero of="$NEW_ESP" bs=1M count=20 status=none
+        mkfs.vfat -F 12 -n "UEFI" "$NEW_ESP" >/dev/null 2>&1
+        
+        # Create directory structure
+        mmd -i "$NEW_ESP" ::/EFI 2>/dev/null || true
+        mmd -i "$NEW_ESP" ::/EFI/BOOT 2>/dev/null || true
+        
+        # Copy bootloader
+        echo "  Copying BOOTX64.EFI..."
+        mcopy -i "$NEW_ESP" "$ROOT_DIR/build/BootX64.EFI" "::/EFI/BOOT/BOOTX64.EFI"
+        
+        # Add kernel
+        echo "  Adding KERNEL.ELF..."
+        mcopy -i "$NEW_ESP" "$KERNEL_BIN" "::/EFI/BOOT/KERNEL.ELF"
+        
+        if [ -f "$ROOT_DIR/build/initramfs.cpio" ]; then
+            echo "  Adding INITRAMFS.CPIO..."
+            mcopy -i "$NEW_ESP" "$ROOT_DIR/build/initramfs.cpio" "::/EFI/BOOT/INITRAMFS.CPIO"
+        fi
+        
+        # Make old ESP writable and replace with new
+        chmod u+w "$EFI_IMG"
+        mv -f "$NEW_ESP" "$EFI_IMG"
+        
+        # Verify
+        echo "  Final ESP contents:"
+        mdir -i "$EFI_IMG" ::/EFI/BOOT/
+        
+        # Rebuild ISO
+        echo "  Rebuilding ISO..."
+        rm -f "$DIST_DIR/nexaos.iso"
+        grub-mkrescue -o "$DIST_DIR/nexaos.iso" "$ISO_TEMP" 2>&1 | grep -v "xorriso.*WARNING" || true
+        
+        echo "  ✓ ESP modified successfully"
+    else
+        echo "Warning: Could not find efi.img in extracted ISO"
+    fi
+    
+    # Cleanup
+    rm -rf "$ISO_TEMP"
+fi
 
 echo "ISO image created at $DIST_DIR/nexaos.iso"

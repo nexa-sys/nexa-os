@@ -11,13 +11,25 @@ const MAX_NETWORK_DEVICES: usize = 8;
 const MAX_BLOCK_DEVICES: usize = 8;
 
 const DEV_NET_PATHS: [&str; MAX_NETWORK_DEVICES] = [
-    "/dev/net0", "/dev/net1", "/dev/net2", "/dev/net3", "/dev/net4", "/dev/net5", "/dev/net6",
+    "/dev/net0",
+    "/dev/net1",
+    "/dev/net2",
+    "/dev/net3",
+    "/dev/net4",
+    "/dev/net5",
+    "/dev/net6",
     "/dev/net7",
 ];
 
 const DEV_BLOCK_PATHS: [&str; MAX_BLOCK_DEVICES] = [
-    "/dev/block0", "/dev/block1", "/dev/block2", "/dev/block3", "/dev/block4", "/dev/block5",
-    "/dev/block6", "/dev/block7",
+    "/dev/block0",
+    "/dev/block1",
+    "/dev/block2",
+    "/dev/block3",
+    "/dev/block4",
+    "/dev/block5",
+    "/dev/block6",
+    "/dev/block7",
 ];
 
 #[derive(Clone, Copy, Default)]
@@ -277,7 +289,13 @@ fn populate_block_devices() {
 
         let mmio = pci.and_then(select_mmio_bar);
         let (bar_flags, interrupt_line, interrupt_pin) = pci
-            .map(|p| (mmio.map(|bar| bar.bar_flags).unwrap_or(0), p.interrupt_line, p.interrupt_pin))
+            .map(|p| {
+                (
+                    mmio.map(|bar| bar.bar_flags).unwrap_or(0),
+                    p.interrupt_line,
+                    p.interrupt_pin,
+                )
+            })
             .unwrap_or((0, 0, 0));
 
         let descriptor = BlockDescriptor {
@@ -327,4 +345,3 @@ fn select_mmio_bar(pci: &PciDeviceInfo) -> Option<PciBarInfo> {
                 .next()
         })
 }
-

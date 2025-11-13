@@ -1,6 +1,6 @@
 use crate::bootinfo;
-use crate::uefi_compat;
 use crate::safety::StaticArena;
+use crate::uefi_compat;
 /// Boot stage management for rootfs initialization
 ///
 /// This module implements a multi-stage boot process similar to Linux:

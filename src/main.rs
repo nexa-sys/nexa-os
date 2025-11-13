@@ -21,7 +21,6 @@ pub extern "C" fn kmain(multiboot_info_address: u64, multiboot_magic: u32) -> ! 
 
 #[no_mangle]
 pub extern "C" fn uefi_start(boot_info_ptr: *const nexa_boot_info::BootInfo) -> ! {
-
     // 添加调试信息
     unsafe {
         // 简单地写一些字符到COM1端口，确认我们进入了内核
@@ -36,7 +35,7 @@ pub extern "C" fn uefi_start(boot_info_ptr: *const nexa_boot_info::BootInfo) -> 
         write_volatile((serial_port + 6) as *mut u8, b'!' as u8);
         write_volatile((serial_port + 7) as *mut u8, b'\n' as u8);
     }
-    
+
     nexa_os::kernel_main_uefi(boot_info_ptr)
 }
 

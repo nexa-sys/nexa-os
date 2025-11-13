@@ -6,8 +6,8 @@ use core::sync::atomic::{AtomicPtr, Ordering};
 use crate::safety::StaticArena;
 
 use nexa_boot_info::{
-    flags, BlockDeviceInfo, BootInfo, DeviceDescriptor, DeviceKind, MemoryRegion, NetworkDeviceInfo,
-    PciDeviceInfo,
+    flags, BlockDeviceInfo, BootInfo, DeviceDescriptor, DeviceKind, KernelSegment, MemoryRegion,
+    NetworkDeviceInfo, PciDeviceInfo,
 };
 
 #[derive(Debug)]
@@ -199,4 +199,19 @@ pub fn pci_device_by_location(
                 && dev.function == function
         })
     })
+}
+
+/// Returns the relocation offset applied by the UEFI loader, if any.
+pub fn kernel_load_offset() -> Option<i64> {
+    with_boot_info(|info| info.has_kernel_offset().then_some(info.kernel_load_offset))
+}
+
+/// Returns the recorded kernel entry addresses (expected, actual).
+pub fn kernel_entry_points() -> Option<(u64, u64)> {
+    with_boot_info(|info| Some((info.kernel_expected_entry, info.kernel_actual_entry)))
+}
+
+/// Returns the kernel segment mapping table supplied by the loader.
+pub fn kernel_segments() -> Option<&'static [KernelSegment]> {
+    with_boot_info(|info| info.kernel_segments())
 }
