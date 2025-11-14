@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ISO_PATH="$ROOT_DIR/dist/nexaos.iso"
 ROOTFS_IMG="$ROOT_DIR/build/rootfs.ext2"
+SMP_CORES="${SMP:-4}"
 
 # Check for ISO
 if [[ ! -f "$ISO_PATH" ]]; then
@@ -31,6 +32,7 @@ if [[ "$DEFAULT_BIOS_MODE" == "legacy" ]]; then
         qemu-system-x86_64
         -m 512M
         -serial stdio
+        -smp "$SMP_CORES"
         -cdrom "$ISO_PATH"
         -d guest_errors
         -monitor none
@@ -83,6 +85,7 @@ else
         qemu-system-x86_64
         -m 512M
         -serial stdio
+        -smp "$SMP_CORES"
         # UEFI firmware: code (readonly) and writable vars copy
         -drive if=pflash,format=raw,readonly=on,file="$UEFI_CODE"
         -drive if=pflash,format=raw,file="$UEFI_VARS_COPY"
@@ -97,6 +100,8 @@ else
     echo "  Virtio block device attached as /dev/vda"
     echo "  Kernel parameters should include: root=/dev/vda1 rootfstype=ext2"
 fi
+
+echo "  SMP cores: ${SMP_CORES}"
 
 # Run QEMU
 exec "${QEMU_CMD[@]}"

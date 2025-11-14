@@ -166,6 +166,25 @@ pub fn init() {
     let _selectors = unsafe { get_selectors() };
 }
 
+/// Load the shared GDT/TSS on an application processor after BSP setup.
+pub fn init_ap() {
+    use x86_64::instructions::segmentation::{Segment, CS, DS};
+    use x86_64::instructions::tables::load_tss;
+
+    unsafe {
+        if let Some(ref gdt) = GDT {
+            gdt.load();
+        } else {
+            crate::kpanic!("AP attempted to load GDT before BSP initialization");
+        }
+
+        let selectors = get_selectors();
+        CS::set_reg(selectors.code_selector);
+        DS::set_reg(selectors.data_selector);
+        load_tss(selectors.tss_selector);
+    }
+}
+
 /// Get the current selectors
 fn selectors_ref() -> Option<&'static Selectors> {
     if !SELECTORS_READY.load(Ordering::SeqCst) {

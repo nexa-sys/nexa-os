@@ -162,6 +162,14 @@ pub fn init() {
     crate::kinfo!("Paging initialized with user page tables");
 }
 
+/// Return the physical address of the currently loaded PML4.
+pub fn current_pml4_phys() -> u64 {
+    use x86_64::registers::control::Cr3;
+
+    let (frame, _) = Cr3::read();
+    frame.start_address().as_u64()
+}
+
 /// Initialize page tables with user space mapping
 /// SAFETY: This function must be called only once during kernel initialization
 unsafe fn init_user_page_tables() {

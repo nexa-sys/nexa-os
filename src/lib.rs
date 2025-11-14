@@ -1,6 +1,7 @@
 #![no_std]
 #![feature(abi_x86_interrupt)]
 
+mod acpi;
 pub mod arch;
 pub mod auth;
 pub mod boot_stages;
@@ -14,6 +15,7 @@ pub mod initramfs;
 pub mod interrupts;
 pub mod ipc;
 pub mod keyboard;
+pub mod lapic;
 pub mod logger;
 pub mod memory;
 pub mod paging;
@@ -24,6 +26,7 @@ pub mod safety;
 pub mod scheduler;
 pub mod serial;
 pub mod signal;
+pub mod smp;
 pub mod syscall;
 pub mod uefi_compat;
 pub mod vga_buffer;
@@ -324,6 +327,9 @@ fn proceed_after_initramfs(cmdline_opt: Option<&'static str>) -> ! {
     // TODO: Implement per-core IDT for SMP support
     crate::interrupts::init_interrupts();
 
+    // Initialize SMP and bring additional cores online before enabling interrupts
+    crate::smp::init();
+
     kinfo!("interrupts::init() completed successfully");
 
     // Enable interrupts now that essential handlers and PIC configuration are in place
@@ -474,7 +480,7 @@ fn proceed_after_initramfs(cmdline_opt: Option<&'static str>) -> ! {
     boot_stages::enter_emergency_mode("Failed to load any init program")
 }
 
-fn configure_gs_base() {
+pub(crate) fn configure_gs_base() {
     unsafe {
         let gs_data_addr = &raw const crate::initramfs::GS_DATA.0 as *const _ as u64;
         use x86_64::registers::model_specific::Msr;

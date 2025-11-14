@@ -28,6 +28,11 @@ SECTIONS
         *(.boot.text)
     } :boot
 
+    .ap_trampoline ALIGN(16) : AT(ADDR(.ap_trampoline))
+    {
+        *(.ap_trampoline*)
+    } :boot
+
     .text ALIGN(4K) : AT(ADDR(.text))
     {
         *(.text*)

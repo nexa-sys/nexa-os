@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 fn main() {
     println!("cargo:rerun-if-changed=boot/long_mode.S");
+    println!("cargo:rerun-if-changed=boot/ap_trampoline.S");
     println!("cargo:rerun-if-changed=linker.ld");
 
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set by cargo");
@@ -18,6 +19,7 @@ fn main() {
 
         cc::Build::new()
             .file("boot/long_mode.S")
+            .file("boot/ap_trampoline.S")
             .flag_if_supported("-fno-asynchronous-unwind-tables")
             .cargo_metadata(false)
             .compile("boot");
@@ -34,6 +36,7 @@ fn main() {
         // 为UEFI目标构建时，只编译汇编文件
         cc::Build::new()
             .file("boot/long_mode.S")
+            .file("boot/ap_trampoline.S")
             .flag_if_supported("-fno-asynchronous-unwind-tables")
             .compile("boot");
     }
