@@ -6,39 +6,55 @@ use core::{
     cmp,
     fmt::{self, Write},
     mem, ptr, slice, str,
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use nexa_boot_info::FramebufferInfo;
 use x86_64::instructions::interrupts;
-use spin::Mutex;
 
-/// Exec context - stores entry/stack for exec syscall
-/// Protected by Mutex for production safety
+/// Exec context - stores entry/stack/segments for exec syscall
+/// Protected by atomics with release/acquire ordering for safety
 struct ExecContext {
-    pending: bool,
-    entry: u64,
-    stack: u64,
+    pending: AtomicBool,
+    entry: AtomicU64,
+    stack: AtomicU64,
+    user_data_sel: AtomicU64,  // User data segment selector (with RPL=3)
 }
 
-static EXEC_CONTEXT: Mutex<ExecContext> = Mutex::new(ExecContext {
-    pending: false,
-    entry: 0,
-    stack: 0,
-});
+static EXEC_CONTEXT: ExecContext = ExecContext {
+    pending: AtomicBool::new(false),
+    entry: AtomicU64::new(0),
+    stack: AtomicU64::new(0),
+    user_data_sel: AtomicU64::new(0),
+};
 
 /// Get and clear exec context (called from assembly)
+/// Returns: AL = 1 if exec was pending, 0 otherwise
+/// Outputs: entry_out, stack_out, user_data_sel_out (each 8 bytes)
 #[no_mangle]
-pub extern "C" fn get_exec_context(entry_out: *mut u64, stack_out: *mut u64) -> bool {
-    let mut ctx = EXEC_CONTEXT.lock();
-    crate::serial::_print(format_args!("[get_exec_context] pending={}, entry={:#x}, stack={:#x}\n", 
-        ctx.pending, ctx.entry, ctx.stack));
-    if ctx.pending {
+pub extern "C" fn get_exec_context(entry_out: *mut u64, stack_out: *mut u64, user_data_sel_out: *mut u64) -> bool {
+    // Try to atomically swap pending from true to false using Acquire ordering
+    // This synchronizes with the Release store in syscall_execve, ensuring
+    // we see the entry/stack values that were written before pending was set
+    if EXEC_CONTEXT
+        .pending
+        .compare_exchange(true, false, Ordering::Acquire, Ordering::Relaxed)
+        .is_ok()
+    {
+        // After acquiring the pending flag, we can safely read entry/stack/user_data_sel
+        // The Acquire semantics on pending.compare_exchange guarantees
+        // that these loads see the Release stores from syscall_execve
+        let entry = EXEC_CONTEXT.entry.load(Ordering::Relaxed);
+        let stack = EXEC_CONTEXT.stack.load(Ordering::Relaxed);
+        let user_data_sel = EXEC_CONTEXT.user_data_sel.load(Ordering::Relaxed);
         unsafe {
-            *entry_out = ctx.entry;
-            *stack_out = ctx.stack;
+            *entry_out = entry;
+            *stack_out = stack;
+            *user_data_sel_out = user_data_sel;
         }
-        ctx.pending = false;
-        crate::serial::_print(format_args!("[get_exec_context] returning entry={:#x}, stack={:#x}\n", 
-            ctx.entry, ctx.stack));
+        crate::serial::_print(format_args!(
+            "[get_exec_context] returning entry={:#x}, stack={:#x}, user_data_sel={:#x}\n",
+            entry, stack, user_data_sel
+        ));
         true
     } else {
         crate::serial::_print(format_args!("[get_exec_context] no exec pending!\n"));
@@ -1349,11 +1365,7 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
 /// Returns:
 /// - Special encoded value on success (high 32 bits = upper entry, low 32 bits set to magic)
 /// - u64::MAX on error with errno set
-fn syscall_execve(
-    path: *const u8,
-    _argv: *const *const u8,
-    _envp: *const *const u8,
-) -> u64 {
+fn syscall_execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8) -> u64 {
     use crate::scheduler::get_current_pid;
 
     if path.is_null() {
@@ -1382,9 +1394,7 @@ fn syscall_execve(
     };
     // Load the ELF file from filesystem
     let elf_data = match crate::fs::read_file_bytes(path_str) {
-        Some(data) => {
-            data
-        }
+        Some(data) => data,
         None => {
             posix::set_errno(posix::errno::ENOENT);
             return u64::MAX;
@@ -1394,7 +1404,7 @@ fn syscall_execve(
     // Create new process image from ELF
     let new_process = match crate::process::Process::from_elf(elf_data) {
         Ok(proc) => proc,
-        Err(e) => {
+        Err(_e) => {
             posix::set_errno(posix::errno::EINVAL);
             return u64::MAX;
         }
@@ -1440,22 +1450,39 @@ fn syscall_execve(
         }
     }
 
-    // Store new entry/stack for syscall_handler to use
-    // Use Mutex for production-grade thread safety
-    {
-        let mut ctx = EXEC_CONTEXT.lock();
-        ctx.pending = true;
-        ctx.entry = new_process.entry_point;
-        ctx.stack = new_process.stack_top;
-    }
-
+    // Store new entry/stack/user_data_sel for syscall_handler to use
+    // CRITICAL: Use Release ordering for entry/stack to ensure they are visible
+    // to other cores BEFORE we set pending=true
+    
+    // Get user data segment selector
+    let user_data_sel = unsafe {
+        let selectors = crate::gdt::get_selectors();
+        let sel = selectors.user_data_selector.0 as u64;
+        crate::serial::_print(format_args!(
+            "[syscall_execve] user_data_selector raw value: {:#x}\n",
+            sel
+        ));
+        sel | 3  // Add RPL=3
+    };
+    
     crate::serial::_print(format_args!(
-        "[execve] context stored, entry={:#x}, stack={:#x}\n",
-        new_process.entry_point,
-        new_process.stack_top
+        "[syscall_execve] storing user_data_sel: {:#x}\n",
+        user_data_sel
     ));
-
-    crate::serial::_print(format_args!("[execve] about to return magic value {:#x}\n", 0x4558454300000000u64));
+    
+    EXEC_CONTEXT
+        .entry
+        .store(new_process.entry_point, Ordering::Release);
+    EXEC_CONTEXT
+        .stack
+        .store(new_process.stack_top, Ordering::Release);
+    EXEC_CONTEXT
+        .user_data_sel
+        .store(user_data_sel, Ordering::Release);
+    // Finally, signal that exec context is ready with Release ordering
+    // This creates a synchronization point: get_exec_context will use Acquire
+    // to read all prior values
+    EXEC_CONTEXT.pending.store(true, Ordering::Release);
 
     // Return magic value 0xEXEC0000 to signal exec
     0x4558454300000000 // "EXEC" + nulls
@@ -2118,7 +2145,6 @@ pub extern "C" fn syscall_dispatch(
     arg3: u64,
     syscall_return_addr: u64,
 ) -> u64 {
-
     let result = match nr {
         SYS_WRITE => syscall_write(arg1, arg2, arg3),
         SYS_READ => syscall_read(arg1, arg2 as *mut u8, arg3 as usize),
@@ -2207,7 +2233,7 @@ global_asm!(
     "push r15",
     "sub rsp, 8", // maintain 16-byte stack alignment before calling into Rust
     // Stack layout after sub rsp,8:
-    // [rsp+0] = alignment padding  
+    // [rsp+0] = alignment padding
     // [rsp+8] = r15 (最后push的)
     // [rsp+16] = r14
     // [rsp+24] = r13
@@ -2226,10 +2252,10 @@ global_asm!(
     // WARNING: RCX register will be used for param 4, but we must NOT overwrite [rsp+104]!
     // Prepare arguments for syscall_dispatch:
     // RDI = nr, RSI = arg1, RDX = arg2, RCX = arg3, R8 = syscall_return_addr
-    "mov rcx, rdx",        // arg3 -> rcx (param 4) - THIS OVERWRITES RCX REGISTER BUT NOT STACK
-    "mov rdx, rsi",        // arg2 -> rdx (param 3)
-    "mov rsi, rdi",        // arg1 -> rsi (param 2)
-    "mov rdi, rax",        // nr -> rdi (param 1)
+    "mov rcx, rdx", // arg3 -> rcx (param 4) - THIS OVERWRITES RCX REGISTER BUT NOT STACK
+    "mov rdx, rsi", // arg2 -> rdx (param 3)
+    "mov rsi, rdi", // arg1 -> rsi (param 2)
+    "mov rdi, rax", // nr -> rdi (param 1)
     "call syscall_dispatch",
     // Return value is in rax
     // Check if this is exec returning (magic value 0x4558454300000000 = "EXEC")
@@ -2254,44 +2280,43 @@ global_asm!(
     // So the magic is correct as 0x45584543_00000000
     "movabs rbx, 0x4558454300000000",
     "cmp rax, rbx",
-    "jne .Lnormal_return",  // Not exec, normal return
+    "jne .Lnormal_return", // Not exec, normal return
     // Exec return: call get_exec_context to get entry/stack
     ".Lexec_return:",
     // CRITICAL: We're still in syscall_handler's stack frame here!
     // Stack state: [rsp+0]=alignment, [rsp+8...112]=saved regs
     // We need to call get_exec_context, which needs 16-byte aligned stack
     // Current rsp is already aligned (after sub rsp,8 at entry)
-    // Allocate 16 bytes on top of current stack for output parameters
-    "sub rsp, 16",          // Space for entry(8 bytes) and stack(8 bytes)
-    // Now rsp is still 16-byte aligned (was aligned, sub 16 keeps it aligned)
-    "lea rdi, [rsp + 8]",   // entry_out = rsp+8 (first parameter)
-    "mov rsi, rsp",         // stack_out = rsp (second parameter)
+    // Allocate 32 bytes on top of current stack for output parameters
+    // (entry 8 bytes at rsp+24, stack 8 bytes at rsp+16, user_data_sel 8 bytes at rsp+8, plus 8 for alignment)
+    "sub rsp, 32", // Keep 16-byte alignment: 32 is divisible by 16
+    // Now rsp is still 16-byte aligned (was aligned, sub 32 keeps it aligned)
+    "lea rdi, [rsp + 24]", // entry_out = rsp+24 (first parameter)
+    "lea rsi, [rsp + 16]", // stack_out = rsp+16 (second parameter)
+    "lea rdx, [rsp + 8]",  // user_data_sel_out = rsp+8 (third parameter)
     "call get_exec_context",
-    "test al, al",          // Check if exec was pending
+    "test al, al",                   // Check if exec was pending
     "jz .Lnormal_return_after_exec", // Not exec, treat as normal
-    // Load new entry point and stack pointer
-    "mov rcx, [rsp + 8]",   // Load entry -> RCX (for sysretq to use as new RIP)
-    "mov r15, [rsp]",       // Load stack -> R15 (temporary register)
-    // Now we need to abandon the current stack frame entirely
-    // Don't clean up, just switch to new stack
-    "mov rsp, r15",         // Switch to new user stack
-    "mov r11, 0x202",       // User rflags (IF=1, reserved bit=1)
-    // Clear RAX for exec (no return value to userspace)
-    "xor rax, rax",
-    // Restore user segment registers before sysretq
-    "mov r8w, 0x1B",        // user data segment selector (0x18 | 3)
-    "mov ds, r8w",
-    "mov es, r8w",
-    "mov fs, r8w",
-    "mov gs, r8w",
-    // Jump to new program via sysretq
-    // RCX = new entry point, R11 = 0x202, RSP = new stack, segments = user
+    // Exec successful: load new entry, stack, and user_data_sel
+    "mov rcx, [rsp + 24]", // Load entry -> RCX (for sysretq)
+    "mov r8, [rsp + 16]",  // Load stack -> R8 (temp, we'll move to RSP)
+    "mov r9, [rsp + 8]",   // Load user_data_sel -> R9 (temp for segment selector)
+    "mov rsp, r8",         // Switch to new user stack
+    "mov r11, 0x202",      // User rflags (IF=1, reserved bit=1)
+    "xor rax, rax",        // Clear return value for exec
+    // Set user segment selectors from user_data_sel (in R9)
+    "mov ax, r9w",         // user data segment selector
+    "mov ds, ax",
+    "mov es, ax",
+    "mov fs, ax",
+    "mov gs, ax",
+    // sysretq: rcx=rip, r11=rflags, rsp already set to user stack
     "sysretq",
     ".Lnormal_return_after_exec:",
-    "add rsp, 16",          // Clean up the 16 bytes we allocated
+    "add rsp, 32", // Clean up the 32 bytes we allocated
     ".Lnormal_return:",
     // Normal syscall return path
-    "add rsp, 8",           // remove alignment padding
+    "add rsp, 8", // remove alignment padding
     "pop r15",
     "pop r14",
     "pop r13",
@@ -2305,11 +2330,11 @@ global_asm!(
     "pop rdx",
     "pop rbx",
     // Restore RCX and R11 for sysretq
-    "pop rcx",              // user return address
-    "pop r11",              // user rflags
+    "pop rcx", // user return address
+    "pop r11", // user rflags
     // Restore user segment registers before sysretq
     // Note: user data segment is now entry 3 (0x18 | 3 = 0x1B)
-    "mov r8w, 0x1B",        // user data segment selector (0x18 | 3)
+    "mov r8w, 0x1B", // user data segment selector (0x18 | 3)
     "mov ds, r8w",
     "mov es, r8w",
     "mov fs, r8w",

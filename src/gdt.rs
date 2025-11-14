@@ -1,6 +1,6 @@
 /// Global Descriptor Table (GDT) setup for user/kernel mode separation
 use core::mem::MaybeUninit;
-use core::ptr::{self, addr_of, addr_of_mut};
+use core::ptr;
 use core::sync::atomic::{AtomicBool, Ordering};
 use x86_64::structures::gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector};
 use x86_64::structures::tss::TaskStateSegment;
@@ -132,12 +132,17 @@ pub fn init() {
             tss_selector: tss,
         };
 
-        // Write selectors to static storage
-        ptr::write(addr_of_mut!(SELECTORS).cast::<Selectors>(), selectors);
+        crate::kinfo!("GDT selectors calculated: kernel_code={:#x}, kernel_data={:#x}, user_code={:#x}, user_data={:#x}, tss={:#x}",
+            kernel_code.0, kernel_data.0, user_code_sel.0, user_data_sel.0, tss.0);
+
+        // Write selectors to static storage using MaybeUninit::write
+        #[allow(static_mut_refs)]
+        {
+            SELECTORS.write(selectors);
+        }
         SELECTORS_READY.store(true, Ordering::SeqCst);
 
-        crate::kinfo!("GDT selectors set: kernel_code={:#x}, kernel_data={:#x}, user_code={:#x}, user_data={:#x}, tss={:#x}",
-            kernel_code.0, kernel_data.0, user_code_sel.0, user_data_sel.0, tss.0);
+        crate::kinfo!("GDT selectors stored and ready");
 
         GDT = Some(gdt);
 
@@ -166,7 +171,8 @@ fn selectors_ref() -> Option<&'static Selectors> {
     if !SELECTORS_READY.load(Ordering::SeqCst) {
         return None;
     }
-    let ptr = addr_of!(SELECTORS).cast::<Selectors>();
+    #[allow(static_mut_refs)]
+    let ptr = unsafe { SELECTORS.as_ptr() };
     Some(unsafe { &*ptr })
 }
 

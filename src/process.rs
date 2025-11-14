@@ -480,6 +480,34 @@ pub fn jump_to_usermode(entry: u64, stack: u64) -> ! {
     let selectors = unsafe { crate::gdt::get_selectors() };
     let user_code_sel = selectors.user_code_selector.0;
     let user_data_sel = selectors.user_data_selector.0;
+    
+    unsafe {
+        use x86_64::instructions::port::Port;
+        let mut port = Port::<u8>::new(0x3F8);
+        for &b in b"[jump_to_usermode] user_code_selector.0=" {
+            port.write(b);
+        }
+        for shift in (0..4).rev() {
+            let nibble = ((user_code_sel >> (shift * 4)) & 0xF) as u8;
+            port.write(if nibble < 10 {
+                b'0' + nibble
+            } else {
+                b'A' + nibble - 10
+            });
+        }
+        for &b in b", user_data_selector.0=" {
+            port.write(b);
+        }
+        for shift in (0..4).rev() {
+            let nibble = ((user_data_sel >> (shift * 4)) & 0xF) as u8;
+            port.write(if nibble < 10 {
+                b'0' + nibble
+            } else {
+                b'A' + nibble - 10
+            });
+        }
+        port.write(b'\n');
+    }
 
     unsafe {
         use x86_64::instructions::port::Port;
