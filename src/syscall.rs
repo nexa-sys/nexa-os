@@ -31,29 +31,23 @@ static EXEC_CONTEXT: ExecContext = ExecContext {
 /// Returns: AL = 1 if exec was pending, 0 otherwise
 /// Outputs: entry_out, stack_out, user_data_sel_out (each 8 bytes)
 #[no_mangle]
-pub extern "C" fn get_exec_context(entry_out: *mut u64, stack_out: *mut u64, user_data_sel_out: *mut u64) -> bool {
-    // Try to atomically swap pending from true to false using Acquire ordering
-    // This synchronizes with the Release store in syscall_execve, ensuring
-    // we see the entry/stack values that were written before pending was set
+pub extern "C" fn get_exec_context(entry_out: *mut u64, stack_out: *mut u64) -> bool {
+    // Use SeqCst to ensure proper synchronization
     if EXEC_CONTEXT
         .pending
-        .compare_exchange(true, false, Ordering::Acquire, Ordering::Relaxed)
+        .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
         .is_ok()
     {
-        // After acquiring the pending flag, we can safely read entry/stack/user_data_sel
-        // The Acquire semantics on pending.compare_exchange guarantees
-        // that these loads see the Release stores from syscall_execve
-        let entry = EXEC_CONTEXT.entry.load(Ordering::Relaxed);
-        let stack = EXEC_CONTEXT.stack.load(Ordering::Relaxed);
-        let user_data_sel = EXEC_CONTEXT.user_data_sel.load(Ordering::Relaxed);
+        // All values are guaranteed to be visible after the compare_exchange
+        let entry = EXEC_CONTEXT.entry.load(Ordering::SeqCst);
+        let stack = EXEC_CONTEXT.stack.load(Ordering::SeqCst);
         unsafe {
             *entry_out = entry;
             *stack_out = stack;
-            *user_data_sel_out = user_data_sel;
         }
         crate::serial::_print(format_args!(
-            "[get_exec_context] returning entry={:#x}, stack={:#x}, user_data_sel={:#x}\n",
-            entry, stack, user_data_sel
+            "[get_exec_context] returning entry={:#x}, stack={:#x}\n",
+            entry, stack
         ));
         true
     } else {
@@ -1450,39 +1444,29 @@ fn syscall_execve(path: *const u8, _argv: *const *const u8, _envp: *const *const
         }
     }
 
-    // Store new entry/stack/user_data_sel for syscall_handler to use
-    // CRITICAL: Use Release ordering for entry/stack to ensure they are visible
-    // to other cores BEFORE we set pending=true
+    // Store new entry/stack for syscall_handler to use
+    // CRITICAL: Store in specific order with proper orderings
+    // Both entry and stack must be visible before pending is set to true
     
-    // Get user data segment selector
-    let user_data_sel = unsafe {
+    // Get user data segment selector (kept for future use but not stored for iretq path)
+    let _user_data_sel = unsafe {
         let selectors = crate::gdt::get_selectors();
         let sel = selectors.user_data_selector.0 as u64;
-        crate::serial::_print(format_args!(
-            "[syscall_execve] user_data_selector raw value: {:#x}\n",
-            sel
-        ));
         sel | 3  // Add RPL=3
     };
     
-    crate::serial::_print(format_args!(
-        "[syscall_execve] storing user_data_sel: {:#x}\n",
-        user_data_sel
-    ));
-    
+    // Store entry first
     EXEC_CONTEXT
         .entry
-        .store(new_process.entry_point, Ordering::Release);
+        .store(new_process.entry_point, Ordering::SeqCst);
+    // Store stack second  
     EXEC_CONTEXT
         .stack
-        .store(new_process.stack_top, Ordering::Release);
-    EXEC_CONTEXT
-        .user_data_sel
-        .store(user_data_sel, Ordering::Release);
-    // Finally, signal that exec context is ready with Release ordering
-    // This creates a synchronization point: get_exec_context will use Acquire
-    // to read all prior values
-    EXEC_CONTEXT.pending.store(true, Ordering::Release);
+        .store(new_process.stack_top, Ordering::SeqCst);
+    
+    // Finally, signal that exec context is ready
+    // SeqCst ensures all prior stores are visible before this store
+    EXEC_CONTEXT.pending.store(true, Ordering::SeqCst);
 
     // Return magic value 0xEXEC0000 to signal exec
     0x4558454300000000 // "EXEC" + nulls

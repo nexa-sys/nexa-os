@@ -77,6 +77,7 @@ global_asm!(
     "sub rsp, 16",      // Space for entry (rsp+8) and stack (rsp)
     "lea rdi, [rsp + 8]", // entry_out pointer (1st param)
     "mov rsi, rsp",     // stack_out pointer (2nd param)
+    "xor rdx, rdx",     // user_data_sel_out = NULL (3rd param) - we don't need it for iretq
     "call get_exec_context",
     "test al, al",      // Check if exec was pending
     "jz .Lexec_failed", // Not exec, restore and normal return
