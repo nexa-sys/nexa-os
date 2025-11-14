@@ -391,6 +391,7 @@ fn proceed_after_initramfs(cmdline_opt: Option<&'static str>) -> ! {
     if let Err(e) = init::load_inittab() {
         kwarn!("Failed to load /etc/inittab: {}", e);
         kwarn!("Using default init configuration");
+        init::register_default_gettys();
     }
 
     // Stage 6: User Space - Start init process

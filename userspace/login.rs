@@ -6,7 +6,6 @@ use std::{arch::asm, io::{self, Write}, panic};
 // System call numbers
 const SYS_READ: u64 = 0;
 const SYS_WRITE: u64 = 1;
-const SYS_FORK: u64 = 57;
 const SYS_EXECVE: u64 = 59;
 const SYS_EXIT: u64 = 60;
 const SYS_USER_LOGIN: u64 = 221;
@@ -96,16 +95,6 @@ fn exit(code: i32) -> ! {
     syscall1(SYS_EXIT, code as u64);
     loop {
         unsafe { asm!("hlt") }
-    }
-}
-
-/// Fork process
-fn fork() -> i64 {
-    let ret = syscall3(SYS_FORK, 0, 0, 0);
-    if ret == u64::MAX {
-        -1
-    } else {
-        ret as i64
     }
 }
 
@@ -272,34 +261,23 @@ fn login_main() -> ! {
         println!("\x1b[1;32mLogin successful!\x1b[0m");
         println!("Starting user session...");
         println!();
-        
-        // Fork and exec shell as user session
-        let pid = fork();
-        
-        if pid == 0 {
-            // Child process - start user shell
-            let shell_path = "/bin/sh\0";
-            let shell_path_str = unsafe {
-                core::str::from_utf8_unchecked(&shell_path.as_bytes()[..7])
-            };
-            
-            let argv: [*const u8; 2] = [
-                shell_path.as_ptr(),
-                core::ptr::null(),
-            ];
-            let envp: [*const u8; 1] = [
-                core::ptr::null(),
-            ];
-            
-            execve(shell_path_str, &argv, &envp);
-            
-            // If exec fails
-            println!("Failed to start shell");
-            exit(1);
-        }
-        
-        // Parent returns to getty (which will wait for shell to exit)
-        exit(0);
+
+        // Replace current process with the user shell so getty only
+        // restarts once the session actually terminates.
+        let shell_path = "/bin/sh\0";
+        let argv: [*const u8; 2] = [
+            shell_path.as_ptr(),
+            core::ptr::null(),
+        ];
+        let envp: [*const u8; 1] = [
+            core::ptr::null(),
+        ];
+
+        execve(shell_path, &argv, &envp);
+
+        // If exec fails we get here; report and terminate so getty can retry.
+        println!("Failed to start shell");
+        exit(1);
     } else {
         // Login failed
         println!();

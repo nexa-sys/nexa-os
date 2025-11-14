@@ -932,24 +932,9 @@ fn parallel_service_supervisor(
         let mut status: i32 = 0;
         let pid = wait4(-1, &mut status as *mut i32, 0); // Wait for any child
 
-        // Since fork is fake in current implementation, we'll never have real children
-        // Instead, display login prompt directly here
-        if pid < 0 || pid == 2 {
-            // Show login prompt
-            println!();
-            println!("\x1b[1;36m╔════════════════════════════════════════╗\x1b[0m");
-            println!("\x1b[1;36m║                                        ║\x1b[0m");
-            println!("\x1b[1;36m║          \x1b[1;37mWelcome to NexaOS\x1b[1;36m               ║\x1b[0m");
-            println!("\x1b[1;36m║                                        ║\x1b[0m");
-            println!("\x1b[1;36m║    \x1b[0mHybrid Kernel Operating System\x1b[1;36m        ║\x1b[0m");
-            println!("\x1b[1;36m║                                        ║\x1b[0m");
-            println!("\x1b[1;36m╚════════════════════════════════════════╝\x1b[0m");
-            println!();
-            print!("login: ");
-            flush_stdout();
-            
-            // For now, just loop - in future this would handle login
-            delay_ms(10000);
+        if pid < 0 {
+            log_warn("wait4 failed, retrying");
+            delay_ms(100);
             continue;
         }
 

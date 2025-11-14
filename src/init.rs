@@ -91,22 +91,6 @@ pub fn init() {
     let mut state = INIT_STATE.lock();
     state.current_runlevel = RunLevel::MultiUser;
 
-    // Register default services
-    // These would typically be read from /etc/inittab or systemd unit files
-    const GETTY_NAMES: [&str; 6] = ["getty0", "getty1", "getty2", "getty3", "getty4", "getty5"];
-    let vt_count = crate::vt::terminal_count().min(GETTY_NAMES.len());
-    for idx in 0..vt_count {
-        register_service_internal(
-            &mut state,
-            GETTY_NAMES[idx],
-            "/sbin/getty",
-            true,
-            0b00111110,
-            50,
-            Some(idx),
-        );
-    }
-
     register_service_internal(
         &mut state,
         "uefi-compatd",
@@ -541,6 +525,8 @@ pub fn load_inittab() -> Result<(), &'static str> {
 
     let mut state = INIT_STATE.lock();
 
+    let mut found_getty = false;
+
     // Parse each line
     for line in inittab_str.lines() {
         let line = line.trim();
@@ -551,15 +537,47 @@ pub fn load_inittab() -> Result<(), &'static str> {
         }
 
         if let Some(service) = parse_inittab_line(line) {
+            let is_getty = service.path[..service.path_len].starts_with(b"/sbin/getty");
+
             // Add to service table
             for slot in state.services.iter_mut() {
                 if slot.is_none() {
                     *slot = Some(service);
+                    if is_getty {
+                        found_getty = true;
+                    }
                     break;
                 }
             }
         }
     }
 
+    if !found_getty {
+        crate::kwarn!("No getty entries found in inittab, installing defaults");
+        register_default_gettys_locked(&mut state);
+    }
+
     Ok(())
+}
+
+fn register_default_gettys_locked(state: &mut InitState) {
+    const GETTY_NAMES: [&str; 6] = ["getty0", "getty1", "getty2", "getty3", "getty4", "getty5"];
+    let vt_count = crate::vt::terminal_count().min(GETTY_NAMES.len());
+    for idx in 0..vt_count {
+        register_service_internal(
+            state,
+            GETTY_NAMES[idx],
+            "/sbin/getty",
+            true,
+            0b0011_1110,
+            50,
+            Some(idx),
+        );
+    }
+}
+
+/// Register default getty services (used when inittab is missing)
+pub fn register_default_gettys() {
+    let mut state = INIT_STATE.lock();
+    register_default_gettys_locked(&mut state);
 }
