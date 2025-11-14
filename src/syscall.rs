@@ -1404,7 +1404,6 @@ fn syscall_execve(
     let current_pid = match get_current_pid() {
         Some(pid) => pid,
         None => {
-            crate::serial::_print(format_args!("[execve] no current process\n"));
             posix::set_errno(posix::errno::EINVAL);
             return u64::MAX;
         }
@@ -1419,8 +1418,6 @@ fn syscall_execve(
             if let Some(entry) = slot {
                 if entry.process.pid == current_pid {
                     found = true;
-                    let old_pid = entry.process.pid;
-                    let old_ppid = entry.process.ppid;
 
                     // Replace process image while preserving identity
                     entry.process.entry_point = new_process.entry_point;
@@ -1432,20 +1429,12 @@ fn syscall_execve(
 
                     // Reset signal handlers to SIG_DFL (POSIX requirement)
                     entry.process.signal_state.reset_to_default();
-
-                    crate::serial::_print(format_args!(
-                        "[execve] replaced PID {} (parent {}), will jump to {:#x}\n",
-                        old_pid,
-                        old_ppid,
-                        new_process.entry_point
-                    ));
                     break;
                 }
             }
         }
 
         if !found {
-            crate::serial::_print(format_args!("[execve] process {:?} not in scheduler\n", current_pid));
             posix::set_errno(posix::errno::EINVAL);
             return u64::MAX;
         }

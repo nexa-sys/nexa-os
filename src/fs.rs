@@ -31,8 +31,23 @@ WantedBy=multi-user.target rescue.target\n";
 
 const EXT2_READ_CACHE_SIZE: usize = 8 * 1024 * 1024; // 8 MiB scratch buffer for ext2 reads
 
+#[repr(align(4096))]
+struct Ext2CacheBuffer {
+    data: [u8; EXT2_READ_CACHE_SIZE],
+}
+
+impl Ext2CacheBuffer {
+    const fn new() -> Self {
+        Self {
+            data: [0; EXT2_READ_CACHE_SIZE],
+        }
+    }
+}
+
 static EXT2_READ_CACHE_LOCK: Mutex<()> = Mutex::new(());
-static mut EXT2_READ_CACHE: [u8; EXT2_READ_CACHE_SIZE] = [0; EXT2_READ_CACHE_SIZE];
+
+#[link_section = ".kernel_cache"]
+static mut EXT2_READ_CACHE: Ext2CacheBuffer = Ext2CacheBuffer::new();
 static EMPTY_EXT2_FILE: [u8; 0] = [];
 
 #[derive(Clone, Copy)]
@@ -351,7 +366,7 @@ pub fn read_file_bytes(name: &str) -> Option<&'static [u8]> {
 
             let _guard = EXT2_READ_CACHE_LOCK.lock();
             unsafe {
-                let dest = &mut EXT2_READ_CACHE[..size];
+                let dest = &mut EXT2_READ_CACHE.data[..size];
                 let mut offset = 0usize;
 
                 while offset < size {
@@ -369,7 +384,7 @@ pub fn read_file_bytes(name: &str) -> Option<&'static [u8]> {
                 }
 
                 #[allow(static_mut_refs)]
-                let slice = core::slice::from_raw_parts(EXT2_READ_CACHE.as_ptr(), size);
+                let slice = core::slice::from_raw_parts(EXT2_READ_CACHE.data.as_ptr(), size);
                 Some(slice)
             }
         }

@@ -1,5 +1,7 @@
 /// Global Descriptor Table (GDT) setup for user/kernel mode separation
-use core::ptr;
+use core::mem::MaybeUninit;
+use core::ptr::{self, addr_of, addr_of_mut};
+use core::sync::atomic::{AtomicBool, Ordering};
 use x86_64::structures::gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector};
 use x86_64::structures::tss::TaskStateSegment;
 use x86_64::VirtAddr;
@@ -29,7 +31,8 @@ pub struct Selectors {
     pub tss_selector: SegmentSelector,
 }
 
-static mut SELECTORS: Option<Selectors> = None;
+static mut SELECTORS: MaybeUninit<Selectors> = MaybeUninit::uninit();
+static SELECTORS_READY: AtomicBool = AtomicBool::new(false);
 
 /// Kernel stack for syscall
 static mut KERNEL_STACK: AlignedStack = AlignedStack {
@@ -121,19 +124,20 @@ pub fn init() {
         let tss_ptr = &raw const TSS as *const TaskStateSegment;
         let tss = gdt.append(Descriptor::tss_segment(&*tss_ptr));
 
-        SELECTORS = Some(Selectors {
+        let selectors = Selectors {
             code_selector: kernel_code,
             data_selector: kernel_data,
             user_code_selector: user_code_sel,
             user_data_selector: user_data_sel,
             tss_selector: tss,
-        });
+        };
 
-        // Set kernel stack for Ring 0
-        TSS.privilege_stack_table[0] = x86_64::VirtAddr::new(get_kernel_stack_top());
+        // Write selectors to static storage
+        ptr::write(addr_of_mut!(SELECTORS).cast::<Selectors>(), selectors);
+        SELECTORS_READY.store(true, Ordering::SeqCst);
 
-        // crate::kinfo!("GDT selectors set: kernel_code={:#x}, kernel_data={:#x}, user_code={:#x}, user_data={:#x}, tss={:#x}",
-        //     kernel_code.0, kernel_data.0, user_code_sel.0, user_data_sel.0, tss.0);
+        crate::kinfo!("GDT selectors set: kernel_code={:#x}, kernel_data={:#x}, user_code={:#x}, user_data={:#x}, tss={:#x}",
+            kernel_code.0, kernel_data.0, user_code_sel.0, user_data_sel.0, tss.0);
 
         GDT = Some(gdt);
 
@@ -146,7 +150,7 @@ pub fn init() {
         }
 
         // Load segment selectors
-        if let Some(ref selectors) = SELECTORS {
+        if let Some(selectors) = selectors_ref() {
             CS::set_reg(selectors.code_selector);
             DS::set_reg(selectors.data_selector);
             load_tss(selectors.tss_selector);
@@ -158,9 +162,17 @@ pub fn init() {
 }
 
 /// Get the current selectors
+fn selectors_ref() -> Option<&'static Selectors> {
+    if !SELECTORS_READY.load(Ordering::SeqCst) {
+        return None;
+    }
+    let ptr = addr_of!(SELECTORS).cast::<Selectors>();
+    Some(unsafe { &*ptr })
+}
+
 #[allow(static_mut_refs)]
 pub unsafe fn get_selectors() -> &'static Selectors {
-    SELECTORS.as_ref().expect("GDT not initialized")
+    selectors_ref().expect("GDT not initialized")
 }
 
 /// Get privilege stack for the given index

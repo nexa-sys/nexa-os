@@ -47,6 +47,11 @@ SECTIONS
         *(.gs_data_pad*)
     } :data
 
+    .kernel_cache ALIGN(4K) : AT(ADDR(.kernel_cache))
+    {
+        *(.kernel_cache*)
+    } :data
+
     .bss ALIGN(4K) : AT(ADDR(.bss))
     {
         *(COMMON)
