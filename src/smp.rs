@@ -2,8 +2,8 @@ use core::mem::{self, MaybeUninit};
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 
-use x86_64::instructions::{hlt as cpu_hlt, interrupts};
 use x86_64::instructions::tables::sgdt;
+use x86_64::instructions::{hlt as cpu_hlt, interrupts};
 
 use crate::{acpi, gdt, interrupts as idt, lapic, paging};
 
@@ -77,9 +77,8 @@ impl ApBootArgs {
     }
 }
 
-static mut CPU_INFOS: [MaybeUninit<CpuInfo>; MAX_CPUS] = unsafe {
-    MaybeUninit::<[MaybeUninit<CpuInfo>; MAX_CPUS]>::uninit().assume_init()
-};
+static mut CPU_INFOS: [MaybeUninit<CpuInfo>; MAX_CPUS] =
+    unsafe { MaybeUninit::<[MaybeUninit<CpuInfo>; MAX_CPUS]>::uninit().assume_init() };
 static mut AP_BOOT_ARGS: [ApBootArgs; MAX_CPUS] = [ApBootArgs::new(); MAX_CPUS];
 static mut BSP_APIC_ID: u32 = 0;
 
@@ -142,14 +141,20 @@ unsafe fn init_inner() -> Result<(), &'static str> {
             );
             break;
         }
-        CPU_INFOS[count]
-            .as_mut_ptr()
-            .write(CpuInfo::new(desc.apic_id as u32, desc.acpi_processor_id, desc.apic_id as u32 == bsp_apic));
+        CPU_INFOS[count].as_mut_ptr().write(CpuInfo::new(
+            desc.apic_id as u32,
+            desc.acpi_processor_id,
+            desc.apic_id as u32 == bsp_apic,
+        ));
         count += 1;
     }
     CPU_TOTAL.store(count, Ordering::SeqCst);
 
-    crate::kinfo!("SMP: Detected {} logical CPUs (BSP APIC {:#x})", count, bsp_apic);
+    crate::kinfo!(
+        "SMP: Detected {} logical CPUs (BSP APIC {:#x})",
+        count,
+        bsp_apic
+    );
 
     for idx in 0..count {
         let info = cpu_info(idx);
@@ -239,21 +244,25 @@ unsafe fn patch_gdt_descriptors() -> Result<(), &'static str> {
         base,
     };
 
-    write_trampoline_bytes(&__ap_trampoline_start, &ap_gdt16_ptr, gdt16_as_bytes(&gdt16))?;
-    write_trampoline_bytes(&__ap_trampoline_start, &ap_gdt64_ptr, gdt64_as_bytes(&gdt64))?;
+    write_trampoline_bytes(
+        &__ap_trampoline_start,
+        &ap_gdt16_ptr,
+        gdt16_as_bytes(&gdt16),
+    )?;
+    write_trampoline_bytes(
+        &__ap_trampoline_start,
+        &ap_gdt64_ptr,
+        gdt64_as_bytes(&gdt64),
+    )?;
     Ok(())
 }
 
 fn gdt16_as_bytes(ptr: &impl Sized) -> &[u8] {
-    unsafe {
-        core::slice::from_raw_parts(ptr as *const _ as *const u8, mem::size_of_val(ptr))
-    }
+    unsafe { core::slice::from_raw_parts(ptr as *const _ as *const u8, mem::size_of_val(ptr)) }
 }
 
 fn gdt64_as_bytes(ptr: &impl Sized) -> &[u8] {
-    unsafe {
-        core::slice::from_raw_parts(ptr as *const _ as *const u8, mem::size_of_val(ptr))
-    }
+    unsafe { core::slice::from_raw_parts(ptr as *const _ as *const u8, mem::size_of_val(ptr)) }
 }
 
 unsafe fn start_ap(index: usize) -> Result<(), &'static str> {
@@ -287,36 +296,20 @@ unsafe fn prepare_ap_launch(index: usize) -> Result<(), &'static str> {
     }
 
     let pml4 = paging::current_pml4_phys();
-    write_trampoline_bytes(
-        &__ap_trampoline_start,
-        &ap_pml4_ptr,
-        &pml4.to_le_bytes(),
-    )?;
+    write_trampoline_bytes(&__ap_trampoline_start, &ap_pml4_ptr, &pml4.to_le_bytes())?;
 
     let stack = stack_for(index)?;
-    write_trampoline_bytes(
-        &__ap_trampoline_start,
-        &ap_stack_ptr,
-        &stack.to_le_bytes(),
-    )?;
+    write_trampoline_bytes(&__ap_trampoline_start, &ap_stack_ptr, &stack.to_le_bytes())?;
 
     AP_BOOT_ARGS[index] = ApBootArgs {
         cpu_index: index as u32,
         apic_id: cpu_info(index).apic_id,
     };
     let arg_ptr = (&AP_BOOT_ARGS[index] as *const ApBootArgs) as u64;
-    write_trampoline_bytes(
-        &__ap_trampoline_start,
-        &ap_arg_ptr,
-        &arg_ptr.to_le_bytes(),
-    )?;
+    write_trampoline_bytes(&__ap_trampoline_start, &ap_arg_ptr, &arg_ptr.to_le_bytes())?;
 
     let entry = ap_entry as usize as u64;
-    write_trampoline_bytes(
-        &__ap_trampoline_start,
-        &ap_entry_ptr,
-        &entry.to_le_bytes(),
-    )?;
+    write_trampoline_bytes(&__ap_trampoline_start, &ap_entry_ptr, &entry.to_le_bytes())?;
 
     Ok(())
 }
@@ -381,11 +374,7 @@ extern "C" fn ap_entry(arg: *const ApBootArgs) -> ! {
             cpu_info(idx)
                 .status
                 .store(CpuStatus::Online as u8, Ordering::SeqCst);
-            crate::kinfo!(
-                "SMP: Core {} (APIC {:#x}) initialized",
-                idx,
-                args.apic_id
-            );
+            crate::kinfo!("SMP: Core {} (APIC {:#x}) initialized", idx, args.apic_id);
         } else {
             crate::kwarn!("SMP: AP reported invalid cpu_index {}", args.cpu_index);
         }

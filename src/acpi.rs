@@ -192,7 +192,10 @@ unsafe fn scan_sdt(addr: u64, is_xsdt: bool) -> Option<&'static SdtHeader> {
 
         let candidate = &*(entry_addr as *const SdtHeader);
         if &candidate.signature == MADT_SIGNATURE
-            && checksum(candidate as *const _ as *const u8, candidate.length as usize) == 0
+            && checksum(
+                candidate as *const _ as *const u8,
+                candidate.length as usize,
+            ) == 0
         {
             return Some(candidate);
         }
