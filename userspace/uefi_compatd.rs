@@ -3,9 +3,10 @@
 // This process queries kernel-provided syscalls to expose framebuffer,
 // network, and block device information preserved from UEFI boot services.
 
+use core::ptr;
 use nrlib::{
     get_errno, uefi_get_block, uefi_get_counts, uefi_get_framebuffer, uefi_get_network,
-    UefiBlockDescriptor, UefiCompatCounts, UefiNetworkDescriptor,
+    uefi_map_network_mmio, UefiBlockDescriptor, UefiCompatCounts, UefiNetworkDescriptor,
 };
 use std::process::exit;
 
@@ -53,6 +54,21 @@ fn main() {
                 " flags={:#x} irq(line={},pin={})",
                 descriptor.info.flags, descriptor.interrupt_line, descriptor.interrupt_pin
             );
+
+            let mmio_ptr = uefi_map_network_mmio(idx);
+            if mmio_ptr.is_null() {
+                eprintln!(
+                    "[uefi-compatd] net{} failed to map MMIO (errno={})",
+                    idx,
+                    get_errno()
+                );
+            } else {
+                let reg0 = unsafe { ptr::read_volatile(mmio_ptr as *const u32) };
+                println!(
+                    "[uefi-compatd] net{} MMIO mapped at {:p}, REG0={:#x}",
+                    idx, mmio_ptr, reg0
+                );
+            }
         } else {
             eprintln!(
                 "[uefi-compatd] net{} query failed (errno={})",

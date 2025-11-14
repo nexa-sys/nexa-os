@@ -426,6 +426,23 @@ unsafe fn ensure_paging_enabled() {
 /// identity mapping and 2 MiB huge pages. Returns the virtual address (which
 /// equals the physical start on success).
 pub unsafe fn map_device_region(phys_start: u64, length: usize) -> Result<*mut u8, MapDeviceError> {
+    map_device_region_internal(phys_start, length, false)
+}
+
+/// Map a physical device region and mark it user-accessible so Ring3 code can
+/// touch the MMIO window (still uncached + non-executable).
+pub unsafe fn map_user_device_region(
+    phys_start: u64,
+    length: usize,
+) -> Result<*mut u8, MapDeviceError> {
+    map_device_region_internal(phys_start, length, true)
+}
+
+unsafe fn map_device_region_internal(
+    phys_start: u64,
+    length: usize,
+    user_accessible: bool,
+) -> Result<*mut u8, MapDeviceError> {
     use x86_64::registers::control::{Cr3, Cr3Flags};
     use x86_64::structures::paging::PageTableFlags;
 
@@ -484,11 +501,22 @@ pub unsafe fn map_device_region(phys_start: u64, length: usize) -> Result<*mut u
                 | PageTableFlags::WRITE_THROUGH
                 | PageTableFlags::NO_CACHE;
 
+            if user_accessible {
+                flags |= PageTableFlags::USER_ACCESSIBLE;
+            }
+
             if nxe_supported() {
                 flags |= PageTableFlags::NO_EXECUTE;
             }
 
             entry.set_addr(PhysAddr::new(addr), flags);
+        } else if user_accessible {
+            // Upgrade existing mapping to user accessible if necessary.
+            let mut flags = entry.flags() | PageTableFlags::USER_ACCESSIBLE;
+            if nxe_supported() {
+                flags |= PageTableFlags::NO_EXECUTE;
+            }
+            entry.set_flags(flags);
         }
     }
 

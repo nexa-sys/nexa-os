@@ -1,3 +1,4 @@
+use crate::paging;
 use crate::posix::{self, FileType};
 use crate::process::{USER_REGION_SIZE, USER_VIRT_BASE};
 use crate::scheduler;
@@ -19,6 +20,7 @@ struct ExecContext {
     pending: AtomicBool,
     entry: AtomicU64,
     stack: AtomicU64,
+    #[allow(dead_code)]
     user_data_sel: AtomicU64, // User data segment selector (with RPL=3)
 }
 
@@ -119,6 +121,7 @@ pub const SYS_UEFI_GET_COUNTS: u64 = 240;
 pub const SYS_UEFI_GET_FB_INFO: u64 = 241;
 pub const SYS_UEFI_GET_NET_INFO: u64 = 242;
 pub const SYS_UEFI_GET_BLOCK_INFO: u64 = 243;
+pub const SYS_UEFI_MAP_NET_MMIO: u64 = 244;
 
 #[repr(C)]
 struct ListDirRequest {
@@ -2109,6 +2112,39 @@ fn syscall_uefi_get_block_info(index: usize, out: *mut BlockDescriptor) -> u64 {
     0
 }
 
+fn syscall_uefi_map_net_mmio(index: usize) -> u64 {
+    let Some(descriptor) = uefi_compat::network_descriptor(index) else {
+        posix::set_errno(posix::errno::ENODEV);
+        return u64::MAX;
+    };
+
+    if descriptor.mmio_base == 0 {
+        posix::set_errno(posix::errno::ENODEV);
+        return u64::MAX;
+    }
+
+    let span = if descriptor.mmio_length == 0 {
+        0x1000
+    } else {
+        descriptor
+            .mmio_length
+            .min(u64::from(usize::MAX as u32))
+            .max(0x1000)
+    } as usize;
+
+    let map_result = unsafe { paging::map_user_device_region(descriptor.mmio_base, span) };
+    match map_result {
+        Ok(ptr) => {
+            posix::set_errno(0);
+            ptr as u64
+        }
+        Err(paging::MapDeviceError::OutOfTableSpace) => {
+            posix::set_errno(posix::errno::ENOMEM);
+            u64::MAX
+        }
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn syscall_dispatch(
     nr: u64,
@@ -2175,6 +2211,7 @@ pub extern "C" fn syscall_dispatch(
         SYS_UEFI_GET_BLOCK_INFO => {
             syscall_uefi_get_block_info(arg1 as usize, arg2 as *mut BlockDescriptor)
         }
+        SYS_UEFI_MAP_NET_MMIO => syscall_uefi_map_net_mmio(arg1 as usize),
         _ => {
             crate::kwarn!("Unknown syscall: {}", nr);
             posix::set_errno(posix::errno::ENOSYS);

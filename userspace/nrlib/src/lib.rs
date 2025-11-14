@@ -104,6 +104,7 @@ const SYS_UEFI_GET_COUNTS: u64 = 240;
 const SYS_UEFI_GET_FB_INFO: u64 = 241;
 const SYS_UEFI_GET_NET_INFO: u64 = 242;
 const SYS_UEFI_GET_BLOCK_INFO: u64 = 243;
+const SYS_UEFI_MAP_NET_MMIO: u64 = 244;
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -234,6 +235,17 @@ pub fn uefi_get_block(index: usize, info: &mut UefiBlockDescriptor) -> i32 {
         index as u64,
         info as *mut _ as u64,
     ))
+}
+
+#[inline(always)]
+pub fn uefi_map_network_mmio(index: usize) -> *mut c_void {
+    let ret = syscall1(SYS_UEFI_MAP_NET_MMIO, index as u64);
+    if ret == u64::MAX {
+        refresh_errno_from_kernel();
+        ptr::null_mut()
+    } else {
+        ret as *mut c_void
+    }
 }
 
 // errno support (global for now, single-process environment)
