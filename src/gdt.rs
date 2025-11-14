@@ -181,6 +181,20 @@ pub unsafe fn get_selectors() -> &'static Selectors {
     selectors_ref().expect("GDT not initialized")
 }
 
+/// Debug helper to dump selector values when tracking corruption
+pub fn debug_dump_selectors(tag: &str) {
+    let selectors = unsafe { get_selectors() };
+    crate::kinfo!(
+        "[selectors:{}] kernel_code={:#x}, kernel_data={:#x}, user_code={:#x}, user_data={:#x}, tss={:#x}",
+        tag,
+        selectors.code_selector.0,
+        selectors.data_selector.0,
+        selectors.user_code_selector.0,
+        selectors.user_data_selector.0,
+        selectors.tss_selector.0
+    );
+}
+
 /// Get privilege stack for the given index
 pub unsafe fn get_privilege_stack(index: usize) -> u64 {
     TSS.privilege_stack_table[index].as_u64()

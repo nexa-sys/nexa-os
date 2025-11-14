@@ -477,6 +477,7 @@ pub fn jump_to_usermode(entry: u64, stack: u64) -> ! {
 
     // Set GS data for syscall and Ring 3 switching
     // Get selectors ONCE at the beginning to avoid multiple accesses
+    crate::gdt::debug_dump_selectors("jump_to_usermode");
     let selectors = unsafe { crate::gdt::get_selectors() };
     let user_code_sel = selectors.user_code_selector.0;
     let user_data_sel = selectors.user_data_selector.0;
