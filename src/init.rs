@@ -53,6 +53,7 @@ pub struct ServiceEntry {
     pub respawn: bool, // Should we restart if it dies?
     pub runlevels: u8, // Bitmask of runlevels where this should run
     pub priority: u8,  // Start priority (lower = earlier)
+    pub tty: Option<usize>,
 }
 
 const MAX_SERVICES: usize = 16;
@@ -92,14 +93,19 @@ pub fn init() {
 
     // Register default services
     // These would typically be read from /etc/inittab or systemd unit files
-    register_service_internal(
-        &mut state,
-        "getty",
-        "/sbin/getty",
-        true,
-        0b00111110, // All runlevels except 0 and 6
-        50,
-    );
+    const GETTY_NAMES: [&str; 6] = ["getty0", "getty1", "getty2", "getty3", "getty4", "getty5"];
+    let vt_count = crate::vt::terminal_count().min(GETTY_NAMES.len());
+    for idx in 0..vt_count {
+        register_service_internal(
+            &mut state,
+            GETTY_NAMES[idx],
+            "/sbin/getty",
+            true,
+            0b00111110,
+            50,
+            Some(idx),
+        );
+    }
 
     register_service_internal(
         &mut state,
@@ -108,6 +114,7 @@ pub fn init() {
         false,
         0b00111110,
         10,
+        None,
     );
 
     crate::kinfo!(
@@ -124,6 +131,7 @@ fn register_service_internal(
     respawn: bool,
     runlevels: u8,
     priority: u8,
+    tty: Option<usize>,
 ) {
     for slot in state.services.iter_mut() {
         if slot.is_none() {
@@ -136,6 +144,7 @@ fn register_service_internal(
                 respawn,
                 runlevels,
                 priority,
+                tty,
             };
 
             service.name[..service.name_len].copy_from_slice(&name.as_bytes()[..service.name_len]);
@@ -157,9 +166,10 @@ pub fn register_service(
     respawn: bool,
     runlevels: u8,
     priority: u8,
+    tty: Option<usize>,
 ) -> Result<(), &'static str> {
     let mut state = INIT_STATE.lock();
-    register_service_internal(&mut state, name, path, respawn, runlevels, priority);
+    register_service_internal(&mut state, name, path, respawn, runlevels, priority, tty);
     Ok(())
 }
 
@@ -319,7 +329,10 @@ fn start_service(state: &mut InitState, service_idx: usize) -> Result<Pid, &'sta
     let binary = load_system_file(path).ok_or("Service binary not found")?;
 
     // Create process
-    let proc = Process::from_elf(binary)?;
+    let mut proc = Process::from_elf(binary)?;
+    if let Some(tty_idx) = service.tty {
+        proc.set_tty(tty_idx);
+    }
     let pid = proc.pid;
 
     // Add to scheduler
@@ -480,19 +493,32 @@ pub fn parse_inittab_line(line: &str) -> Option<ServiceEntry> {
     // Parse action
     let respawn = action == "respawn";
 
+    let mut tokens = process.split_whitespace();
+    let executable = tokens.next().unwrap_or(process);
+    let mut tty_spec: Option<usize> = None;
+
+    for token in tokens {
+        if let Some(idx) = token.strip_prefix("tty") {
+            if let Ok(num) = idx.parse::<usize>() {
+                tty_spec = num.checked_sub(1);
+            }
+        }
+    }
+
     // Create service entry
     let mut service = ServiceEntry {
         name: [0; 32],
         name_len: 0,
         path: [0; 64],
-        path_len: process.len().min(64),
+        path_len: executable.len().min(64),
         pid: None,
         respawn,
         runlevels,
         priority: 50,
+        tty: tty_spec,
     };
 
-    service.path[..service.path_len].copy_from_slice(&process.as_bytes()[..service.path_len]);
+    service.path[..service.path_len].copy_from_slice(&executable.as_bytes()[..service.path_len]);
 
     // Extract name from path
     if let Some(pos) = process.rfind('/') {

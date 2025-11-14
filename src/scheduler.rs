@@ -29,6 +29,7 @@ impl ProcessEntry {
                 context: crate::process::Context::zero(),
                 has_entered_user: false,
                 cr3: 0,
+                tty: 0,
             },
             priority: 128,
             time_slice: 0,

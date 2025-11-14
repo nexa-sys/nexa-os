@@ -1,5 +1,6 @@
 /// Process management for user-space execution
 use crate::elf::{ElfLoader, LoadResult};
+use crate::kdebug;
 use core::ptr;
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -98,6 +99,7 @@ pub struct Process {
     pub context: Context,                         // CPU context for context switching
     pub has_entered_user: bool,
     pub cr3: u64, // Page table root (for process-specific page tables) - 0 means use kernel page table
+    pub tty: usize, // Controlling virtual terminal index
 }
 
 static NEXT_PID: AtomicU64 = AtomicU64::new(1);
@@ -207,6 +209,7 @@ impl Process {
                     context,
                     has_entered_user: false,
                     cr3: 0, // TODO: Allocate process-specific page table
+                    tty: 0,
                 });
             } else {
                 crate::kwarn!(
@@ -239,6 +242,7 @@ impl Process {
             context,
             has_entered_user: false,
             cr3: 0, // TODO: Allocate process-specific page table
+            tty: 0,
         })
     }
 
@@ -279,6 +283,14 @@ impl Process {
         jump_to_usermode(self.entry_point, self.stack_top);
         // If we get here, iretq failed
         crate::kerror!("Failed to jump to user mode!");
+    }
+
+    pub fn set_tty(&mut self, tty: usize) {
+        self.tty = tty;
+    }
+
+    pub fn tty(&self) -> usize {
+        self.tty
     }
 }
 
@@ -446,99 +458,26 @@ fn build_initial_stack(
 /// This function never returns - execution continues in user space
 #[inline(never)]
 pub fn jump_to_usermode(entry: u64, stack: u64) -> ! {
-    // Use direct serial output to bypass logger restrictions
-    unsafe {
-        use x86_64::instructions::port::Port;
-        let mut port = Port::<u8>::new(0x3F8);
-        for &b in b"JUMP_TO_USER entry=" {
-            port.write(b);
-        }
-        for shift in (0..16).rev() {
-            let nibble = ((entry >> (shift * 4)) & 0xF) as u8;
-            port.write(if nibble < 10 {
-                b'0' + nibble
-            } else {
-                b'A' + nibble - 10
-            });
-        }
-        for &b in b" stack=" {
-            port.write(b);
-        }
-        for shift in (0..16).rev() {
-            let nibble = ((stack >> (shift * 4)) & 0xF) as u8;
-            port.write(if nibble < 10 {
-                b'0' + nibble
-            } else {
-                b'A' + nibble - 10
-            });
-        }
-        port.write(b'\n');
-    }
+    // Use kdebug! macro for direct serial output
+    kdebug!(
+        "[jump_to_usermode] entry={:#018x} stack={:#018x}",
+        entry,
+        stack
+    );
 
     // Set GS data for syscall and Ring 3 switching
-    // Get selectors ONCE at the beginning to avoid multiple accesses
     crate::gdt::debug_dump_selectors("jump_to_usermode");
     let selectors = unsafe { crate::gdt::get_selectors() };
     let user_code_sel = selectors.user_code_selector.0;
     let user_data_sel = selectors.user_data_selector.0;
-    
-    unsafe {
-        use x86_64::instructions::port::Port;
-        let mut port = Port::<u8>::new(0x3F8);
-        for &b in b"[jump_to_usermode] user_code_selector.0=" {
-            port.write(b);
-        }
-        for shift in (0..4).rev() {
-            let nibble = ((user_code_sel >> (shift * 4)) & 0xF) as u8;
-            port.write(if nibble < 10 {
-                b'0' + nibble
-            } else {
-                b'A' + nibble - 10
-            });
-        }
-        for &b in b", user_data_selector.0=" {
-            port.write(b);
-        }
-        for shift in (0..4).rev() {
-            let nibble = ((user_data_sel >> (shift * 4)) & 0xF) as u8;
-            port.write(if nibble < 10 {
-                b'0' + nibble
-            } else {
-                b'A' + nibble - 10
-            });
-        }
-        port.write(b'\n');
-    }
+
+    kdebug!(
+        "[jump_to_usermode] user_code_selector.0={:04x}, user_data_selector.0={:04x}",
+        user_code_sel,
+        user_data_sel
+    );
 
     unsafe {
-        use x86_64::instructions::port::Port;
-
-        // Debug output for selectors
-        let mut port = Port::<u8>::new(0x3F8);
-        for &b in b"SEL: ucode=" {
-            port.write(b);
-        }
-        for shift in (0..4).rev() {
-            let nibble = ((user_code_sel >> (shift * 4)) & 0xF) as u8;
-            port.write(if nibble < 10 {
-                b'0' + nibble
-            } else {
-                b'A' + nibble - 10
-            });
-        }
-        for &b in b" udata=" {
-            port.write(b);
-        }
-        for shift in (0..4).rev() {
-            let nibble = ((user_data_sel >> (shift * 4)) & 0xF) as u8;
-            port.write(if nibble < 10 {
-                b'0' + nibble
-            } else {
-                b'A' + nibble - 10
-            });
-        }
-        port.write(b'\n');
-
         crate::interrupts::set_gs_data(
             entry,
             stack,
@@ -560,38 +499,22 @@ pub fn jump_to_usermode(entry: u64, stack: u64) -> ! {
 
         let user_ds = user_data_sel | 3;
 
-        // Debug output before sysret
-        use x86_64::instructions::port::Port;
-        let mut port = Port::<u8>::new(0x3F8);
-        for &b in b"BEFORE_SYSRET\n" {
-            port.write(b);
-        }
+        kdebug!("BEFORE_SYSRET");
 
         // Use sysretq to return to user mode
-        // sysretq expects:
-        //   RCX = user RIP
-        //   R11 = user RFLAGS
-        //   RSP = user stack pointer
-        //   User DS/ES/FS/GS must be loaded manually
         core::arch::asm!(
-            // Load user data segment into DS, ES, FS, GS
             "mov ax, {user_ds:x}",
             "mov ds, ax",
             "mov es, ax",
             "mov fs, ax",
             "mov gs, ax",
-            
-            // Set up registers for sysretq
-            "mov rcx, {entry}",     // RCX = user RIP
-            "mov r11, {rflags}",    // R11 = user RFLAGS (IF enabled)
-            "mov rsp, {stack}",     // RSP = user stack
-            
-            // Return to user mode
+            "mov rcx, {entry}",
+            "mov r11, {rflags}",
+            "mov rsp, {stack}",
             "sysretq",
-            
             user_ds = in(reg) user_ds as u64,
             entry = in(reg) entry,
-            rflags = in(reg) 0x202u64,  // IF (0x200) + reserved bit 1 (0x2)
+            rflags = in(reg) 0x202u64,
             stack = in(reg) stack,
             options(noreturn)
         );

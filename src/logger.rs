@@ -575,9 +575,18 @@ impl RingBuffer {
 
     /// 向环形缓冲区写入字节
     fn write_bytes(&mut self, bytes: &[u8]) {
+        if self.write_pos >= RINGBUF_SIZE {
+            // Any caller that corrupted the write_pos will be forced
+            // back into range before we try to touch the buffer.
+            self.write_pos %= RINGBUF_SIZE;
+        }
+
         for &byte in bytes {
             self.buf[self.write_pos] = byte;
-            self.write_pos = (self.write_pos + 1) % RINGBUF_SIZE;
+            self.write_pos += 1;
+            if self.write_pos >= RINGBUF_SIZE {
+                self.write_pos = 0;
+            }
         }
     }
 

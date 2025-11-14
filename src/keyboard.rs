@@ -3,6 +3,8 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 use x86_64::instructions::interrupts;
 
+use crate::vt;
+
 const QUEUE_CAPACITY: usize = 128;
 
 struct KeyboardBuffer {
@@ -47,6 +49,7 @@ impl KeyboardBuffer {
 static SCANCODE_QUEUE: Mutex<KeyboardBuffer> = Mutex::new(KeyboardBuffer::new());
 static SHIFT_PRESSED: AtomicBool = AtomicBool::new(false);
 static LAST_BYTE_WAS_CR: AtomicBool = AtomicBool::new(false);
+static ALT_PRESSED: AtomicBool = AtomicBool::new(false);
 
 /// Add scancode to queue (called from interrupt handler)
 pub fn add_scancode(scancode: u8) {
@@ -87,31 +90,19 @@ const SCANCODE_TO_CHAR_SHIFT: [char; 128] = [
     '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',
 ];
 
-fn echo_char(byte: u8) {
+fn echo_char(tty: usize, byte: u8) {
     crate::serial::write_bytes(&[byte]);
-    if crate::vga_buffer::is_vga_ready() {
-        let _ = crate::vga_buffer::try_with_writer(|writer| {
-            writer.push_byte(byte);
-        });
-    }
+    vt::echo_input_byte(tty, byte);
 }
 
-fn echo_newline() {
+fn echo_newline(tty: usize) {
     crate::serial::write_bytes(b"\r\n");
-    if crate::vga_buffer::is_vga_ready() {
-        let _ = crate::vga_buffer::try_with_writer(|writer| {
-            writer.push_byte(b'\n');
-        });
-    }
+    vt::echo_input_newline(tty);
 }
 
-fn echo_backspace() {
+fn echo_backspace(tty: usize) {
     crate::serial::write_bytes(b"\x08 \x08");
-    if crate::vga_buffer::is_vga_ready() {
-        let _ = crate::vga_buffer::try_with_writer(|writer| {
-            writer.backspace();
-        });
-    }
+    vt::echo_input_backspace(tty);
 }
 
 fn decode_scancode(scancode: u8) -> Option<char> {
@@ -121,12 +112,24 @@ fn decode_scancode(scancode: u8) -> Option<char> {
         if key == 0x2A || key == 0x36 {
             SHIFT_PRESSED.store(false, Ordering::Release);
         }
+        if key == 0x38 {
+            ALT_PRESSED.store(false, Ordering::Release);
+        }
         return None;
     }
 
     // Handle shift keys
     if scancode == 0x2A || scancode == 0x36 {
         SHIFT_PRESSED.store(true, Ordering::Release);
+        return None;
+    }
+
+    if scancode == 0x38 {
+        ALT_PRESSED.store(true, Ordering::Release);
+        return None;
+    }
+
+    if handle_vt_switch(scancode) {
         return None;
     }
 
@@ -146,6 +149,31 @@ fn decode_scancode(scancode: u8) -> Option<char> {
     } else {
         None
     }
+}
+
+fn handle_vt_switch(scancode: u8) -> bool {
+    if !ALT_PRESSED.load(Ordering::Acquire) {
+        return false;
+    }
+
+    let target = match scancode {
+        0x3B => Some(0), // F1
+        0x3C => Some(1), // F2
+        0x3D => Some(2), // F3
+        0x3E => Some(3), // F4
+        0x3F => Some(4), // F5
+        0x40 => Some(5), // F6
+        _ => None,
+    };
+
+    if let Some(idx) = target {
+        if idx < vt::terminal_count() {
+            vt::switch_to(idx);
+        }
+        return true;
+    }
+
+    false
 }
 
 fn decode_serial_byte(byte: u8) -> Option<char> {
@@ -211,49 +239,70 @@ pub fn try_read_char() -> Option<char> {
 
 /// Read a line from keyboard (with echo)
 pub fn read_line(buf: &mut [u8]) -> usize {
+    read_line_for_tty(vt::active_terminal(), buf)
+}
+
+fn read_line_for_tty(tty: usize, buf: &mut [u8]) -> usize {
     LAST_BYTE_WAS_CR.store(false, Ordering::Release);
     let mut pos = 0;
 
     loop {
-        if let Some(ch) = read_char() {
+        if tty != vt::active_terminal() {
+            x86_64::instructions::hlt();
+            continue;
+        }
+
+        if let Some(ch) = try_read_char() {
             match ch {
                 '\n' => {
-                    echo_newline();
+                    echo_newline(tty);
                     return pos;
                 }
                 '\x08' => {
-                    // Backspace
                     if pos > 0 {
                         pos -= 1;
-                        echo_backspace();
+                        echo_backspace(tty);
                     }
                 }
                 _ => {
                     if pos < buf.len() {
                         buf[pos] = ch as u8;
                         pos += 1;
-                        echo_char(ch as u8);
+                        echo_char(tty, ch as u8);
                     }
                 }
             }
+        } else {
+            x86_64::instructions::hlt();
         }
     }
 }
 
 /// Read raw bytes from keyboard (no echo, for userspace control)
 pub fn read_raw(buf: &mut [u8], count: usize) -> usize {
+    read_raw_for_tty(vt::active_terminal(), buf, count)
+}
+
+pub fn read_raw_for_tty(tty: usize, buf: &mut [u8], count: usize) -> usize {
     let mut pos = 0;
     let max_read = core::cmp::min(buf.len(), count);
 
     while pos < max_read {
-        if let Some(ch) = read_char() {
+        if tty != vt::active_terminal() {
+            x86_64::instructions::hlt();
+            continue;
+        }
+
+        if let Some(ch) = try_read_char() {
             buf[pos] = ch as u8;
             pos += 1;
-            // Stop at newline
             if ch == '\n' {
                 break;
             }
+        } else {
+            x86_64::instructions::hlt();
         }
     }
+
     pos
 }

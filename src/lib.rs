@@ -27,6 +27,7 @@ pub mod signal;
 pub mod syscall;
 pub mod uefi_compat;
 pub mod vga_buffer;
+pub mod vt;
 
 use core::panic::PanicInfo;
 use multiboot2::{BootInformation, BootInformationHeader};
@@ -293,6 +294,10 @@ fn proceed_after_initramfs(cmdline_opt: Option<&'static str>) -> ! {
     // Initialize paging (required for user mode)
     paging::init();
     framebuffer::activate();
+
+    // Bring up the multi-terminal console before user processes start
+    const DEFAULT_VT_COUNT: usize = 4;
+    vt::init(DEFAULT_VT_COUNT);
 
     enable_floating_point_unit();
 

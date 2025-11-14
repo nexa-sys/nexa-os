@@ -1,6 +1,8 @@
 use crate::posix::{self, FileType};
 use crate::process::{USER_REGION_SIZE, USER_VIRT_BASE};
+use crate::scheduler;
 use crate::uefi_compat::{self, BlockDescriptor, CompatCounts, NetworkDescriptor};
+use crate::vt;
 use core::{
     arch::global_asm,
     cmp,
@@ -17,7 +19,7 @@ struct ExecContext {
     pending: AtomicBool,
     entry: AtomicU64,
     stack: AtomicU64,
-    user_data_sel: AtomicU64,  // User data segment selector (with RPL=3)
+    user_data_sel: AtomicU64, // User data segment selector (with RPL=3)
 }
 
 static EXEC_CONTEXT: ExecContext = ExecContext {
@@ -303,37 +305,20 @@ fn write_to_std_stream(kind: StdStreamKind, buf: u64, count: u64) -> u64 {
     }
 
     let slice = unsafe { slice::from_raw_parts(buf as *const u8, count as usize) };
-
     crate::serial::write_bytes(slice);
 
-    let utf8_view = str::from_utf8(slice);
+    let tty = scheduler::get_current_pid()
+        .and_then(|pid| scheduler::get_process(pid))
+        .map(|proc| proc.tty())
+        .unwrap_or_else(|| vt::active_terminal());
 
-    crate::vga_buffer::with_writer(|writer| {
-        use core::fmt::Write;
+    let stream = match kind {
+        StdStreamKind::Stdout => vt::StreamKind::Stdout,
+        StdStreamKind::Stderr => vt::StreamKind::Stderr,
+        StdStreamKind::Stdin => vt::StreamKind::Input,
+    };
 
-        match utf8_view {
-            Ok(text) => {
-                writer.write_str(text).ok();
-            }
-            Err(_) => {
-                for &byte in slice {
-                    let ch = match byte {
-                        b'\r' => '\r',
-                        b'\n' => '\n',
-                        b'\t' => '\t',
-                        0x20..=0x7E => byte as char,
-                        _ => '?',
-                    };
-                    writer.write_char(ch).ok();
-                }
-            }
-        }
-    });
-
-    match utf8_view {
-        Ok(text) => crate::framebuffer::write_str(text),
-        Err(_) => crate::framebuffer::write_bytes(slice),
-    }
+    vt::write_bytes(tty, slice, stream);
 
     posix::set_errno(0);
     count
@@ -1191,9 +1176,12 @@ fn read_from_keyboard(buf: *mut u8, count: usize) -> u64 {
         interrupts::enable();
     }
 
-    // Read directly into userspace buffer (no echo, userspace handles that)
     let slice = unsafe { core::slice::from_raw_parts_mut(buf, count) };
-    let read_len = crate::keyboard::read_raw(slice, count);
+    let tty = scheduler::get_current_pid()
+        .and_then(|pid| scheduler::get_process(pid))
+        .map(|proc| proc.tty())
+        .unwrap_or_else(|| vt::active_terminal());
+    let read_len = crate::keyboard::read_raw_for_tty(tty, slice, count);
 
     if !were_enabled {
         interrupts::disable();
@@ -1447,23 +1435,23 @@ fn syscall_execve(path: *const u8, _argv: *const *const u8, _envp: *const *const
     // Store new entry/stack for syscall_handler to use
     // CRITICAL: Store in specific order with proper orderings
     // Both entry and stack must be visible before pending is set to true
-    
+
     // Get user data segment selector (kept for future use but not stored for iretq path)
     let _user_data_sel = unsafe {
         let selectors = crate::gdt::get_selectors();
         let sel = selectors.user_data_selector.0 as u64;
-        sel | 3  // Add RPL=3
+        sel | 3 // Add RPL=3
     };
-    
+
     // Store entry first
     EXEC_CONTEXT
         .entry
         .store(new_process.entry_point, Ordering::SeqCst);
-    // Store stack second  
+    // Store stack second
     EXEC_CONTEXT
         .stack
         .store(new_process.stack_top, Ordering::SeqCst);
-    
+
     // Finally, signal that exec context is ready
     // SeqCst ensures all prior stores are visible before this store
     EXEC_CONTEXT.pending.store(true, Ordering::SeqCst);
@@ -2289,7 +2277,7 @@ global_asm!(
     "mov r11, 0x202",      // User rflags (IF=1, reserved bit=1)
     "xor rax, rax",        // Clear return value for exec
     // Set user segment selectors from user_data_sel (in R9)
-    "mov ax, r9w",         // user data segment selector
+    "mov ax, r9w", // user data segment selector
     "mov ds, ax",
     "mov es, ax",
     "mov fs, ax",
