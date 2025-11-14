@@ -17,10 +17,12 @@
 
 use core::cell::UnsafeCell;
 use std::arch::asm;
-use std::io::{self, Write, Read};
-use std::panic;
 use std::fs;
+use std::io::{self, Read, Write};
+use std::panic;
 use std::path::Path;
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 fn install_minimal_panic_hook() {
     panic::set_hook(Box::new(|_info| {
@@ -754,7 +756,7 @@ const FALLBACK_SERVICE: ServiceConfig = ServiceConfig {
 #[derive(Clone, Copy)]
 struct ServiceState {
     respawn_count: u32,
-    window_start: u64,
+    window_start: Option<Instant>,
     total_starts: u64,
     pid: i64, // Current PID of running service (0 if not running)
 }
@@ -763,7 +765,7 @@ impl ServiceState {
     const fn new() -> Self {
         Self {
             respawn_count: 0,
-            window_start: 0,
+            window_start: None,
             total_starts: 0,
             pid: 0,
         }
@@ -771,7 +773,7 @@ impl ServiceState {
 
     fn allow_attempt(
         &mut self,
-        current_time: u64,
+        current_time: Instant,
         policy: RestartPolicy,
         settings: RestartSettings,
     ) -> bool {
@@ -786,14 +788,21 @@ impl ServiceState {
             }
             RestartPolicy::OnFailure | RestartPolicy::Always => {
                 if settings.interval_sec > 0 {
-                    if self.window_start == 0 {
-                        self.window_start = current_time;
-                        self.respawn_count = 0;
-                    } else if current_time.saturating_sub(self.window_start)
-                        >= settings.interval_sec
-                    {
-                        self.window_start = current_time;
-                        self.respawn_count = 0;
+                    let interval = Duration::from_secs(settings.interval_sec);
+                    match self.window_start {
+                        Some(start) => {
+                            let elapsed = current_time
+                                .checked_duration_since(start)
+                                .unwrap_or_default();
+                            if elapsed >= interval {
+                                self.window_start = Some(current_time);
+                                self.respawn_count = 0;
+                            }
+                        }
+                        None => {
+                            self.window_start = Some(current_time);
+                            self.respawn_count = 0;
+                        }
                     }
                 }
 
@@ -834,12 +843,9 @@ fn log_warn(msg: &str) {
 }
 
 /// Simple timestamp (just a counter for now)
-fn get_timestamp() -> u64 {
-    static mut COUNTER: u64 = 0;
-    unsafe {
-        COUNTER += 1;
-        COUNTER
-    }
+fn uptime_seconds() -> u64 {
+    static START: OnceLock<Instant> = OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_secs()
 }
 
 /// Delay function with std thread sleeping support
@@ -856,7 +862,7 @@ fn delay_ms(ms: u64) {
     #[cfg(not(target_os = "none"))]
     {
         // In normal environments, use proper sleep
-        std::thread::sleep(std::time::Duration::from_millis(ms));
+        std::thread::sleep(Duration::from_millis(ms));
     }
 }
 fn init_main() -> ! {
@@ -938,7 +944,8 @@ fn parallel_service_supervisor(
             continue;
         }
 
-        let timestamp = get_timestamp();
+    let now_marker = Instant::now();
+    let uptime = uptime_seconds();
 
         // Find which service exited
         for i in 0..service_count {
@@ -964,7 +971,7 @@ fn parallel_service_supervisor(
                     };
 
                     if should_restart
-                        && state.allow_attempt(timestamp, service.restart, service.restart_settings)
+                        && state.allow_attempt(now_marker, service.restart, service.restart_settings)
                     {
                         delay_ms(service.restart_delay_ms);
 
@@ -990,6 +997,8 @@ fn parallel_service_supervisor(
                         log_info("Unit will not be restarted (policy: no restart)");
                         println!();
                     }
+
+                    println!("         Uptime: {}s", uptime);
 
                     break;
                 }

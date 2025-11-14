@@ -6,6 +6,7 @@
 //! needed by std that are not in lib.rs.
 
 use crate::{c_char, c_int, c_long, c_uint, c_ulong, c_void, size_t, ssize_t};
+use crate::time;
 use core::{
     hint::spin_loop,
     mem,
@@ -79,6 +80,35 @@ impl MutexInner {
         }
     }
 }
+
+pub const CLOCK_REALTIME: c_int = 0;
+pub const CLOCK_MONOTONIC: c_int = 1;
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct timespec {
+    pub tv_sec: i64,
+    pub tv_nsec: i64,
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct timeval {
+    pub tv_sec: i64,
+    pub tv_usec: i64,
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct timezone {
+    pub tz_minuteswest: i32,
+    pub tz_dsttime: i32,
+}
+
+const NSEC_PER_SEC: u128 = 1_000_000_000;
 
 const MAX_PTHREAD_MUTEXES: usize = 128;
 const MUTEX_INNER_SIZE: usize = mem::size_of::<MutexInner>();
@@ -375,6 +405,82 @@ pub unsafe extern "C" fn pause() -> c_int {
 // ============================================================================
 // Environment Functions
 // ============================================================================
+
+fn validate_timespec(ts: &timespec) -> Result<u64, ()> {
+    if ts.tv_sec < 0 || ts.tv_nsec < 0 || ts.tv_nsec >= 1_000_000_000 {
+        return Err(());
+    }
+
+    let total = (ts.tv_sec as u128)
+        .saturating_mul(NSEC_PER_SEC)
+        .saturating_add(ts.tv_nsec as u128);
+
+    Ok(total.min(u64::MAX as u128) as u64)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn clock_gettime(clock_id: c_int, tp: *mut timespec) -> c_int {
+    if tp.is_null() {
+        crate::set_errno(crate::EINVAL);
+        return -1;
+    }
+
+    let (sec, nsec) = match clock_id {
+        CLOCK_REALTIME => time::realtime_timespec(),
+        CLOCK_MONOTONIC => time::monotonic_timespec(),
+        _ => {
+            crate::set_errno(crate::EINVAL);
+            return -1;
+        }
+    };
+
+    (*tp).tv_sec = sec;
+    (*tp).tv_nsec = nsec;
+    crate::set_errno(0);
+    0
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn clock_getres(clock_id: c_int, res: *mut timespec) -> c_int {
+    if res.is_null() {
+        crate::set_errno(crate::EINVAL);
+        return -1;
+    }
+
+    match clock_id {
+        CLOCK_REALTIME | CLOCK_MONOTONIC => {
+            let nanos = time::resolution_ns();
+            (*res).tv_sec = 0;
+            (*res).tv_nsec = nanos.max(1);
+            crate::set_errno(0);
+            0
+        }
+        _ => {
+            crate::set_errno(crate::EINVAL);
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn gettimeofday(tv: *mut timeval, tz: *mut timezone) -> c_int {
+    if tv.is_null() {
+        crate::set_errno(crate::EINVAL);
+        return -1;
+    }
+
+    let (sec, nsec) = time::realtime_timespec();
+    (*tv).tv_sec = sec;
+    (*tv).tv_usec = (nsec / 1_000) as i64;
+
+    if !tz.is_null() {
+        (*tz).tz_minuteswest = 0;
+        (*tz).tz_dsttime = 0;
+    }
+
+    crate::set_errno(0);
+    0
+}
 
 #[no_mangle]
 pub unsafe extern "C" fn getenv(_name: *const i8) -> *mut i8 {
@@ -1390,7 +1496,28 @@ pub unsafe extern "C" fn sched_yield() -> c_int {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn nanosleep(_req: *const c_void, _rem: *mut c_void) -> c_int {
+pub unsafe extern "C" fn nanosleep(req: *const timespec, rem: *mut timespec) -> c_int {
+    if req.is_null() {
+        crate::set_errno(crate::EINVAL);
+        return -1;
+    }
+
+    let requested = match validate_timespec(&*req) {
+        Ok(ns) => ns,
+        Err(_) => {
+            crate::set_errno(crate::EINVAL);
+            return -1;
+        }
+    };
+
+    time::sleep_ns(requested);
+
+    if !rem.is_null() {
+        (*rem).tv_sec = 0;
+        (*rem).tv_nsec = 0;
+    }
+
+    crate::set_errno(0);
     0
 }
 
@@ -1412,12 +1539,6 @@ const FUTEX_PRIVATE_FLAG: i32 = 128;
 
 static FUTEX_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-#[repr(C)]
-struct Timespec {
-    tv_sec: i64,
-    tv_nsec: i64,
-}
-
 #[no_mangle]
 pub unsafe extern "C" fn syscall(number: i64, mut args: ...) -> i64 {
     use core::ffi::VaListImpl;
@@ -1437,11 +1558,9 @@ pub unsafe extern "C" fn syscall(number: i64, mut args: ...) -> i64 {
             0
         }
         SYS_NANOSLEEP => {
-            let _req: *const Timespec = args.arg();
-            let _rem: *mut Timespec = args.arg();
-            let _ = (_req, _rem);
-            crate::set_errno(0);
-            0
+            let req: *const timespec = args.arg();
+            let rem: *mut timespec = args.arg();
+            return nanosleep(req, rem) as i64;
         }
         SYS_GETRANDOM => {
             let buf: *mut c_void = args.arg();
@@ -1459,7 +1578,7 @@ pub unsafe extern "C" fn syscall(number: i64, mut args: ...) -> i64 {
             let uaddr: *mut i32 = args.arg();
             let mut op: i32 = args.arg();
             let val: i32 = args.arg();
-            let _timeout: *const Timespec = args.arg();
+            let _timeout: *const timespec = args.arg();
             let _uaddr2: *mut i32 = args.arg();
             let _val3: i32 = args.arg();
 

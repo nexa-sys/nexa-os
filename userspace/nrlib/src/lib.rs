@@ -29,6 +29,8 @@ pub mod crt;
 pub mod libc_compat;
 // Minimal stdio support (unbuffered) implemented in stdio.rs
 pub mod stdio;
+// Timekeeping utilities for libc compatibility functions
+pub(crate) mod time;
 
 // Re-export commonly used stdio helpers for convenience
 pub use stdio::{
