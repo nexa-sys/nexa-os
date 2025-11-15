@@ -88,6 +88,15 @@ pub trait FileSystem: Sync {
     fn read(&self, path: &str) -> Option<OpenFile>;
     fn metadata(&self, path: &str) -> Option<Metadata>;
     fn list(&self, path: &str, cb: &mut dyn FnMut(&'static str, Metadata));
+    
+    // Optional write support - default implementation returns error
+    fn write(&self, _path: &str, _data: &[u8]) -> Result<usize, &'static str> {
+        Err("write not supported")
+    }
+    
+    fn create(&self, _path: &str) -> Result<(), &'static str> {
+        Err("create not supported")
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -399,6 +408,27 @@ pub fn file_exists(name: &str) -> bool {
     stat(name).is_some()
 }
 
+/// Write data to a file
+pub fn write_file(path: &str, data: &[u8]) -> Result<usize, &'static str> {
+    let (fs, relative) = resolve_mount(path)
+        .ok_or("path not found")?;
+    fs.write(relative, data)
+}
+
+/// Create a new file
+pub fn create_file(path: &str) -> Result<(), &'static str> {
+    let (fs, relative) = resolve_mount(path)
+        .ok_or("path not found")?;
+    fs.create(relative)
+}
+
+/// Enable write support for ext2 filesystem (if available)
+pub fn enable_ext2_write() -> Result<(), &'static str> {
+    ext2::Ext2Filesystem::enable_write_mode();
+    crate::kinfo!("ext2 write mode enabled");
+    Ok(())
+}
+
 fn register_entry(file: File, metadata: Metadata) {
     let mut files = FILES.lock();
     let mut metas = FILE_METADATA.lock();
@@ -638,5 +668,13 @@ impl FileSystem for InitramfsFilesystem {
         for entry in emitted.iter().flatten() {
             cb(entry.name, entry.metadata);
         }
+    }
+
+    fn write(&self, _path: &str, _data: &[u8]) -> Result<usize, &'static str> {
+        Err("initramfs is read-only")
+    }
+
+    fn create(&self, _path: &str) -> Result<(), &'static str> {
+        Err("cannot create files in initramfs")
     }
 }

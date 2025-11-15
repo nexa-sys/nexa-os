@@ -153,10 +153,10 @@ if [ -f "$ROOT_DIR/build/BootX64.EFI" ]; then
     if [ -n "$EFI_IMG" ] && [ -f "$EFI_IMG" ]; then
         echo "  Found original ESP: $EFI_IMG"
         
-        # Create fresh 20MB ESP (bootloader 1MB + kernel 15MB + initramfs 400KB + overhead)
+        # Create fresh 50MB ESP (bootloader 1MB + kernel 32MB + initramfs 400KB + overhead)
         NEW_ESP="$ROOT_DIR/build/new_efi.img"
-        echo "  Creating 20MB ESP..."
-        dd if=/dev/zero of="$NEW_ESP" bs=1M count=20 status=none
+        echo "  Creating 50MB ESP..."
+        dd if=/dev/zero of="$NEW_ESP" bs=1M count=50 status=none
         mkfs.vfat -F 12 -n "UEFI" "$NEW_ESP" >/dev/null 2>&1
         
         # Create directory structure

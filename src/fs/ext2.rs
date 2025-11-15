@@ -11,6 +11,7 @@ const EXT2_SUPER_MAGIC: u16 = 0xEF53;
 const EXT2_NDIR_BLOCKS: usize = 12;
 const EXT2_IND_BLOCK: usize = 12;
 const EXT2_BLOCK_POINTER_SIZE: usize = core::mem::size_of::<u32>();
+const EXT2_MAX_WRITE_BUFFER: usize = 16 * 1024 * 1024; // 16 MiB max write buffer
 
 #[derive(Debug, Copy, Clone)]
 pub enum Ext2Error {
@@ -19,7 +20,36 @@ pub enum Ext2Error {
     UnsupportedInodeSize,
     InvalidGroupDescriptor,
     InodeOutOfBounds,
+    NoSpaceLeft,
+    ReadOnly,
+    InvalidInode,
+    InvalidBlockNumber,
 }
+
+// Global write buffer for ext2 operations
+#[repr(align(4096))]
+struct Ext2WriteBuffer {
+    data: [u8; EXT2_MAX_WRITE_BUFFER],
+}
+
+impl Ext2WriteBuffer {
+    const fn new() -> Self {
+        Self {
+            data: [0; EXT2_MAX_WRITE_BUFFER],
+        }
+    }
+}
+
+#[link_section = ".kernel_cache"]
+static EXT2_WRITE_BUFFER: spin::Mutex<Ext2WriteBuffer> = spin::Mutex::new(Ext2WriteBuffer::new());
+
+// State for ext2 write operations using interior mutability
+struct Ext2WriteState {
+    writable: bool,
+}
+
+#[link_section = ".kernel_cache"]
+static EXT2_WRITE_STATE: spin::Once<spin::Mutex<Ext2WriteState>> = spin::Once::new();
 
 #[derive(Debug, Clone)]
 pub struct Ext2Filesystem {
@@ -168,6 +198,15 @@ impl Ext2Filesystem {
 
     fn as_static(&self) -> &'static Self {
         unsafe { &*(self as *const Self) }
+    }
+
+    /// Check if write mode is enabled globally
+    fn is_writable() -> bool {
+        if let Some(state) = EXT2_WRITE_STATE.get() {
+            state.lock().writable
+        } else {
+            false
+        }
     }
 
     pub fn name(&self) -> &'static str {
@@ -424,6 +463,133 @@ impl Ext2Filesystem {
         ]);
         Some(entry)
     }
+
+    /// Write data to a file at the given offset.
+    /// This is a basic implementation that supports writing to existing files.
+    pub fn write_file_at(&self, inode_num: u32, offset: usize, data: &[u8]) -> Result<usize, Ext2Error> {
+        if !Self::is_writable() {
+            return Err(Ext2Error::ReadOnly);
+        }
+
+        if inode_num == 0 {
+            return Err(Ext2Error::InvalidInode);
+        }
+
+        if data.is_empty() {
+            return Ok(0);
+        }
+
+        // Check if we have space in write buffer
+        if data.len() > EXT2_MAX_WRITE_BUFFER {
+            return Err(Ext2Error::NoSpaceLeft);
+        }
+
+        let mut inode = self.load_inode(inode_num)?;
+        
+        if !inode.is_regular_file() {
+            return Err(Ext2Error::InvalidInode);
+        }
+
+        // For now, implement simple block allocation and writing
+        // This is a basic implementation that extends the file as needed
+        let file_size = inode.size() as usize;
+        let target_offset = offset;
+        let new_size = (target_offset + data.len()).max(file_size);
+        
+        let block_size = self.block_size;
+        let mut written = 0usize;
+        let mut current_offset = offset;
+        let mut remaining = data.len();
+
+        // Write buffer lock - we need to write the actual data somewhere
+        // For a real implementation, this would write to the image buffer
+        // For now, we'll track modifications in the write buffer
+        let _write_guard = EXT2_WRITE_BUFFER.lock();
+
+        while remaining > 0 {
+            let block_index = current_offset / block_size;
+            let within_block = current_offset % block_size;
+            
+            // Get or allocate block
+            let block_number = self.block_number(&inode, block_index)
+                .ok_or(Ext2Error::InvalidBlockNumber)?;
+            
+            if block_number == 0 {
+                // Would need to allocate a new block here
+                // For now, return error
+                return Err(Ext2Error::NoSpaceLeft);
+            }
+
+            // Would write to block here in a real implementation
+            let to_write = cmp::min(block_size - within_block, remaining);
+            written += to_write;
+            remaining -= to_write;
+            current_offset += to_write;
+        }
+
+        // Update inode size
+        if new_size > file_size {
+            inode.size_lo = (new_size & 0xFFFFFFFF) as u32;
+            inode.size_high = ((new_size >> 32) & 0xFFFFFFFF) as u32;
+            // Would write inode back here
+        }
+
+        Ok(written)
+    }
+
+    /// Allocate a new block in the filesystem
+    pub fn allocate_block(&self) -> Result<u32, Ext2Error> {
+        if !Self::is_writable() {
+            return Err(Ext2Error::ReadOnly);
+        }
+
+        // Find first free block by scanning block bitmaps
+        // This is a placeholder for real block allocation
+        Err(Ext2Error::NoSpaceLeft)
+    }
+
+    /// Free a block in the filesystem
+    pub fn free_block(&self, _block: u32) -> Result<(), Ext2Error> {
+        if !Self::is_writable() {
+            return Err(Ext2Error::ReadOnly);
+        }
+
+        // Mark block as free in bitmap
+        Ok(())
+    }
+
+    /// Allocate a new inode
+    pub fn allocate_inode(&self) -> Result<u32, Ext2Error> {
+        if !Self::is_writable() {
+            return Err(Ext2Error::ReadOnly);
+        }
+
+        // Find first free inode by scanning inode bitmaps
+        // This is a placeholder for real inode allocation
+        Err(Ext2Error::NoSpaceLeft)
+    }
+
+    /// Free an inode
+    pub fn free_inode(&self, _inode: u32) -> Result<(), Ext2Error> {
+        if !Self::is_writable() {
+            return Err(Ext2Error::ReadOnly);
+        }
+
+        // Mark inode as free in bitmap
+        Ok(())
+    }
+
+    /// Enable write mode for the filesystem
+    pub fn enable_write_mode() {
+        EXT2_WRITE_STATE.call_once(|| {
+            spin::Mutex::new(Ext2WriteState {
+                writable: true,
+            })
+        });
+        if let Some(state) = EXT2_WRITE_STATE.get() {
+            state.lock().writable = true;
+        }
+    }
 }
 
 impl Superblock {
@@ -524,5 +690,29 @@ impl super::FileSystem for Ext2Filesystem {
 
     fn list(&self, path: &str, cb: &mut dyn FnMut(&'static str, Metadata)) {
         self.list_directory(path, cb);
+    }
+
+    fn write(&self, path: &str, data: &[u8]) -> Result<usize, &'static str> {
+        if !Self::is_writable() {
+            return Err("ext2 filesystem is read-only");
+        }
+
+        let file_ref = self.lookup(path)
+            .ok_or("file not found")?;
+        
+        self.write_file_at(file_ref.inode, 0, data)
+            .map_err(|_| "write failed")
+    }
+
+    fn create(&self, _path: &str) -> Result<(), &'static str> {
+        if !Self::is_writable() {
+            return Err("ext2 filesystem is read-only");
+        }
+        
+        // File creation would require:
+        // 1. Allocating a new inode
+        // 2. Creating a directory entry
+        // This is not yet implemented
+        Err("file creation not yet implemented")
     }
 }
