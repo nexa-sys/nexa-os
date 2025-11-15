@@ -16,6 +16,11 @@ pub enum NetError {
     InvalidDescriptor,
     HardwareFault,
     BufferTooSmall,
+    AddressInUse,
+    TooManyConnections,
+    InvalidSocket,
+    InvalidDevice,
+    ArpCacheMiss,
 }
 
 pub enum DriverInstance {

@@ -10,7 +10,11 @@ use crate::{
 };
 
 mod drivers;
+pub mod arp;
+pub mod ethernet;
+pub mod ipv4;
 pub mod stack;
+pub mod udp;
 
 pub use drivers::NetError;
 

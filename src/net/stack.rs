@@ -1,6 +1,10 @@
 use crate::logger;
 
+use super::arp::{ArpCache, ArpOperation, ArpPacket};
 use super::drivers::NetError;
+use super::ethernet::{EtherType, EthernetFrame, MacAddress};
+use super::ipv4::{IpProtocol, Ipv4Address, Ipv4Header};
+use super::udp::{UdpDatagram, UdpDatagramMut, UdpHeader};
 
 pub const MAX_FRAME_SIZE: usize = 1536;
 const TX_BATCH_CAPACITY: usize = 4;
@@ -8,7 +12,9 @@ const ETHERTYPE_ARP: u16 = 0x0806;
 const ETHERTYPE_IPV4: u16 = 0x0800;
 const PROTO_ICMP: u8 = 1;
 const PROTO_TCP: u8 = 6;
+const PROTO_UDP: u8 = 17;
 const LISTEN_PORT: u16 = 8080;
+const MAX_UDP_SOCKETS: usize = 16;
 
 pub struct TxBatch {
     buffers: [[u8; MAX_FRAME_SIZE]; TX_BATCH_CAPACITY],
@@ -60,9 +66,45 @@ impl DeviceInfo {
     }
 }
 
+/// UDP socket state
+#[derive(Clone, Copy)]
+pub struct UdpSocket {
+    pub local_port: u16,
+    pub remote_ip: Option<[u8; 4]>,
+    pub remote_port: Option<u16>,
+    pub in_use: bool,
+}
+
+impl UdpSocket {
+    pub const fn empty() -> Self {
+        Self {
+            local_port: 0,
+            remote_ip: None,
+            remote_port: None,
+            in_use: false,
+        }
+    }
+
+    pub fn new(local_port: u16) -> Self {
+        Self {
+            local_port,
+            remote_ip: None,
+            remote_port: None,
+            in_use: true,
+        }
+    }
+
+    pub fn connect(&mut self, remote_ip: [u8; 4], remote_port: u16) {
+        self.remote_ip = Some(remote_ip);
+        self.remote_port = Some(remote_port);
+    }
+}
+
 pub struct NetStack {
     devices: [DeviceInfo; super::MAX_NET_DEVICES],
     tcp: TcpEndpoint,
+    udp_sockets: [UdpSocket; MAX_UDP_SOCKETS],
+    arp_cache: ArpCache,
 }
 
 impl NetStack {
@@ -70,6 +112,8 @@ impl NetStack {
         Self {
             devices: [DeviceInfo::empty(); super::MAX_NET_DEVICES],
             tcp: TcpEndpoint::new(),
+            udp_sockets: [UdpSocket::empty(); MAX_UDP_SOCKETS],
+            arp_cache: ArpCache::new(),
         }
     }
 
@@ -84,6 +128,118 @@ impl NetStack {
             present: true,
         };
         self.tcp.register_local(index, mac, ip);
+    }
+
+    /// Allocate a UDP socket
+    pub fn udp_socket(&mut self, local_port: u16) -> Result<usize, NetError> {
+        // Check if port already in use
+        for socket in &self.udp_sockets {
+            if socket.in_use && socket.local_port == local_port {
+                return Err(NetError::AddressInUse);
+            }
+        }
+
+        // Find free slot
+        for (idx, socket) in self.udp_sockets.iter_mut().enumerate() {
+            if !socket.in_use {
+                *socket = UdpSocket::new(local_port);
+                return Ok(idx);
+            }
+        }
+
+        Err(NetError::TooManyConnections)
+    }
+
+    /// Close UDP socket
+    pub fn udp_close(&mut self, socket_idx: usize) -> Result<(), NetError> {
+        if socket_idx >= MAX_UDP_SOCKETS {
+            return Err(NetError::InvalidSocket);
+        }
+        self.udp_sockets[socket_idx].in_use = false;
+        Ok(())
+    }
+
+    /// Send UDP datagram
+    pub fn udp_send(
+        &mut self,
+        device_index: usize,
+        socket_idx: usize,
+        dst_ip: [u8; 4],
+        dst_port: u16,
+        payload: &[u8],
+        tx: &mut TxBatch,
+    ) -> Result<(), NetError> {
+        if socket_idx >= MAX_UDP_SOCKETS {
+            return Err(NetError::InvalidSocket);
+        }
+        if !self.udp_sockets[socket_idx].in_use {
+            return Err(NetError::InvalidSocket);
+        }
+        if device_index >= self.devices.len() {
+            return Err(NetError::InvalidDevice);
+        }
+        if !self.devices[device_index].present {
+            return Err(NetError::InvalidDevice);
+        }
+
+        let socket = &self.udp_sockets[socket_idx];
+        let device = &self.devices[device_index];
+
+        // Lookup destination MAC in ARP cache
+        let dst_ip_addr = Ipv4Address::from(dst_ip);
+        let now_ms = logger::boot_time_us() / 1_000;
+        let dst_mac = self.arp_cache.lookup(&dst_ip_addr, now_ms)
+            .ok_or(NetError::ArpCacheMiss)?;
+
+        // Build UDP datagram
+        let udp_len = 8 + payload.len();
+        let ip_total_len = 20 + udp_len;
+        let frame_len = 14 + ip_total_len;
+
+        if frame_len > MAX_FRAME_SIZE {
+            return Err(NetError::BufferTooSmall);
+        }
+
+        let mut packet = [0u8; MAX_FRAME_SIZE];
+
+        // Ethernet header
+        packet[0..6].copy_from_slice(&dst_mac.0);
+        packet[6..12].copy_from_slice(&device.mac);
+        packet[12..14].copy_from_slice(&ETHERTYPE_IPV4.to_be_bytes());
+
+        // IPv4 header
+        packet[14] = 0x45; // Version 4, IHL 5
+        packet[15] = 0;    // DSCP/ECN
+        packet[16..18].copy_from_slice(&(ip_total_len as u16).to_be_bytes());
+        packet[18..20].copy_from_slice(&[0, 0]); // Identification
+        packet[20..22].copy_from_slice(&[0x40, 0]); // Flags, Fragment offset
+        packet[22] = 64;   // TTL
+        packet[23] = PROTO_UDP;
+        packet[24..26].copy_from_slice(&[0, 0]); // Checksum (will be filled)
+        packet[26..30].copy_from_slice(&device.ip);
+        packet[30..34].copy_from_slice(&dst_ip);
+        let ip_checksum = checksum(&packet[14..34]);
+        packet[24..26].copy_from_slice(&ip_checksum.to_be_bytes());
+
+        // UDP header + payload
+        let udp_offset = 34;
+        packet[udp_offset..udp_offset + 2].copy_from_slice(&socket.local_port.to_be_bytes());
+        packet[udp_offset + 2..udp_offset + 4].copy_from_slice(&dst_port.to_be_bytes());
+        packet[udp_offset + 4..udp_offset + 6].copy_from_slice(&(udp_len as u16).to_be_bytes());
+        packet[udp_offset + 6..udp_offset + 8].copy_from_slice(&[0, 0]); // Checksum
+        packet[udp_offset + 8..udp_offset + 8 + payload.len()].copy_from_slice(payload);
+
+        // Calculate UDP checksum with pseudo-header
+        let src_ip_addr = Ipv4Address::from(device.ip);
+        let udp_checksum = UdpHeader::calculate_checksum(
+            &src_ip_addr,
+            &dst_ip_addr,
+            &packet[udp_offset..udp_offset + udp_len],
+        );
+        packet[udp_offset + 6..udp_offset + 8].copy_from_slice(&udp_checksum.to_be_bytes());
+
+        tx.push(&packet[..frame_len])?;
+        Ok(())
     }
 
     pub fn handle_frame(
@@ -138,28 +294,41 @@ impl NetStack {
         if hw_type != 1 || proto_type != ETHERTYPE_IPV4 || hlen != 6 || plen != 4 {
             return Ok(());
         }
+
+        let sender_mac = MacAddress::from(&frame[22..28]);
+        let sender_ip = Ipv4Address::from(&frame[28..32]);
+        let target_ip = Ipv4Address::from(&frame[38..42]);
+
+        // Update ARP cache with sender info
+        let now_ms = logger::boot_time_us() / 1_000;
+        self.arp_cache.insert(sender_ip, sender_mac, now_ms);
+
         if opcode != 1 {
             return Ok(());
         }
 
-        let target_ip = &frame[38..42];
-        if target_ip != device.ip {
+        let device_ip = Ipv4Address::from(device.ip);
+        if target_ip != device_ip {
             return Ok(());
         }
 
-        let sender_mac = &frame[6..12];
-        let sender_ip = &frame[28..32];
+        // Build ARP reply
+        let device_mac = MacAddress::from(device.mac);
+        let arp_reply = ArpPacket::new_reply(device_mac, device_ip, sender_mac, sender_ip);
 
         let mut packet = [0u8; 42];
-        packet[0..6].copy_from_slice(sender_mac);
-        packet[6..12].copy_from_slice(&device.mac);
+        packet[0..6].copy_from_slice(&sender_mac.0);
+        packet[6..12].copy_from_slice(&device_mac.0);
         packet[12..14].copy_from_slice(&ETHERTYPE_ARP.to_be_bytes());
-        packet[14..22].copy_from_slice(&frame[14..22]);
-        packet[20..22].copy_from_slice(&2u16.to_be_bytes());
-        packet[22..28].copy_from_slice(&device.mac);
-        packet[28..32].copy_from_slice(&device.ip);
-        packet[32..38].copy_from_slice(sender_mac);
-        packet[38..42].copy_from_slice(sender_ip);
+        
+        // Copy ARP packet
+        unsafe {
+            let arp_bytes = core::slice::from_raw_parts(
+                &arp_reply as *const ArpPacket as *const u8,
+                ArpPacket::SIZE,
+            );
+            packet[14..42].copy_from_slice(arp_bytes);
+        }
 
         tx.push(&packet)?;
         Ok(())
@@ -196,6 +365,7 @@ impl NetStack {
             PROTO_TCP => self
                 .tcp
                 .handle_segment(device_index, frame, ihl, total_len, tx),
+            PROTO_UDP => self.handle_udp(device_index, frame, ihl, total_len),
             _ => Ok(()),
         }
     }
@@ -236,6 +406,84 @@ impl NetStack {
         packet[14 + 10..14 + 12].copy_from_slice(&ip_checksum.to_be_bytes());
 
         tx.push(&packet[..frame_len])?;
+        Ok(())
+    }
+
+    fn handle_udp(
+        &mut self,
+        device_index: usize,
+        frame: &[u8],
+        ihl: usize,
+        total_len: usize,
+    ) -> Result<(), NetError> {
+        if total_len < ihl + 8 {
+            return Ok(());
+        }
+
+        let udp_offset = 14 + ihl;
+        let udp_len = total_len - ihl;
+        
+        if udp_len < 8 {
+            return Ok(());
+        }
+
+        // Parse UDP header
+        let src_port = u16::from_be_bytes([frame[udp_offset], frame[udp_offset + 1]]);
+        let dst_port = u16::from_be_bytes([frame[udp_offset + 2], frame[udp_offset + 3]]);
+        let length = u16::from_be_bytes([frame[udp_offset + 4], frame[udp_offset + 5]]) as usize;
+        let checksum = u16::from_be_bytes([frame[udp_offset + 6], frame[udp_offset + 7]]);
+
+        if length < 8 || length > udp_len {
+            return Ok(());
+        }
+
+        // Verify checksum if present (0 means no checksum in IPv4)
+        if checksum != 0 {
+            let src_ip = Ipv4Address::from(&frame[26..30]);
+            let dst_ip = Ipv4Address::from(&frame[30..34]);
+            let computed = UdpHeader::calculate_checksum(
+                &src_ip,
+                &dst_ip,
+                &frame[udp_offset..udp_offset + length],
+            );
+            if computed != 0 {
+                // Checksum mismatch, drop packet
+                return Ok(());
+            }
+        }
+
+        // Find matching socket
+        for socket in &self.udp_sockets {
+            if !socket.in_use {
+                continue;
+            }
+            if socket.local_port != dst_port {
+                continue;
+            }
+
+            // Check if socket is connected to specific remote
+            if let Some(remote_ip) = socket.remote_ip {
+                if remote_ip != &frame[26..30] {
+                    continue;
+                }
+            }
+            if let Some(remote_port) = socket.remote_port {
+                if remote_port != src_port {
+                    continue;
+                }
+            }
+
+            // TODO: Queue packet for socket receive buffer
+            crate::kinfo!(
+                "net: UDP packet received on port {} from {}:{} ({} bytes)",
+                dst_port,
+                frame[26], frame[27],
+                src_port,
+                length - 8
+            );
+            break;
+        }
+
         Ok(())
     }
 }
