@@ -16,7 +16,10 @@ const SYS_WRITE: u64 = 1;
 const SYS_OPEN: u64 = 2;
 const SYS_CLOSE: u64 = 3;
 const SYS_STAT: u64 = 4;
+const SYS_FORK: u64 = 57;
+const SYS_EXECVE: u64 = 59;
 const SYS_EXIT: u64 = 60;
+const SYS_WAIT4: u64 = 61;
 const SYS_LIST_FILES: u64 = 200;
 const SYS_GETERRNO: u64 = 201;
 const SYS_IPC_CREATE: u64 = 210;
@@ -79,6 +82,7 @@ fn syscall3(n: u64, a1: u64, a2: u64, a3: u64) -> u64 {
     ret
 }
 
+fn syscall0(n: u64) -> u64 { syscall3(n, 0, 0, 0) }
 fn syscall1(n: u64, a1: u64) -> u64 { syscall3(n, a1, 0, 0) }
 
 #[repr(C)]
@@ -341,6 +345,18 @@ fn read(fd: u64, buf: *mut u8, count: usize) -> usize {
 fn exit(code: i32) {
     syscall1(SYS_EXIT, code as u64);
     loop {} // Should not reach here
+}
+
+fn fork() -> i32 {
+    syscall0(SYS_FORK) as i32
+}
+
+fn execve(path: *const u8, argv: *const *const u8, envp: *const *const u8) -> i32 {
+    syscall3(SYS_EXECVE, path as u64, argv as u64, envp as u64) as i32
+}
+
+fn wait4(pid: i32, status: *mut i32, options: i32) -> i32 {
+    syscall3(SYS_WAIT4, pid as u64, status as u64, options as u64) as i32
 }
 
 fn print_bytes(bytes: &[u8]) {
@@ -1424,6 +1440,128 @@ fn cmd_mkdir(state: &ShellState, path: &str) {
     println_str("mkdir: not yet implemented (filesystem is read-only)");
 }
 
+// Helper function to check if a file exists and is executable
+fn file_exists(path: &str) -> bool {
+    let mut path_bytes = [0u8; MAX_PATH];
+    let bytes = path.as_bytes();
+    if bytes.len() >= MAX_PATH {
+        return false;
+    }
+    path_bytes[..bytes.len()].copy_from_slice(bytes);
+    path_bytes[bytes.len()] = 0; // null terminate
+
+    let mut stat_buf = Stat::zero();
+    let result = syscall3(
+        SYS_STAT,
+        path_bytes.as_ptr() as u64,
+        bytes.len() as u64,
+        &mut stat_buf as *mut Stat as u64,
+    );
+    result == 0
+}
+
+// Search for an executable in standard paths
+fn find_executable(cmd: &str) -> Option<[u8; MAX_PATH]> {
+    const PATHS: &[&str] = &["/bin", "/sbin", "/usr/bin", "/usr/sbin"];
+    
+    let mut full_path = [0u8; MAX_PATH];
+    
+    for dir in PATHS {
+        let dir_bytes = dir.as_bytes();
+        let cmd_bytes = cmd.as_bytes();
+        
+        // Build path: /dir/cmd
+        let total_len = dir_bytes.len() + 1 + cmd_bytes.len();
+        if total_len >= MAX_PATH {
+            continue;
+        }
+        
+        full_path[..dir_bytes.len()].copy_from_slice(dir_bytes);
+        full_path[dir_bytes.len()] = b'/';
+        full_path[dir_bytes.len() + 1..dir_bytes.len() + 1 + cmd_bytes.len()]
+            .copy_from_slice(cmd_bytes);
+        full_path[total_len] = 0; // null terminate
+        
+        // Check if file exists
+        if let Ok(path_str) = core::str::from_utf8(&full_path[..total_len]) {
+            if file_exists(path_str) {
+                return Some(full_path);
+            }
+        }
+    }
+    
+    None
+}
+
+// Execute an external command
+fn execute_external_command(cmd: &str, args: &[&str]) -> bool {
+    // Try to find the executable
+    let path = match find_executable(cmd) {
+        Some(p) => p,
+        None => {
+            print_str("Command not found: ");
+            println_str(cmd);
+            return false;
+        }
+    };
+    
+    // Prepare argv array (cmd + args + NULL)
+    let mut argv_ptrs: [*const u8; 32] = [core::ptr::null(); 32];
+    let mut argv_storage: [[u8; 64]; 32] = [[0; 64]; 32];
+    
+    // First argument is the command itself
+    let cmd_bytes = cmd.as_bytes();
+    let cmd_len = core::cmp::min(cmd_bytes.len(), 63);
+    argv_storage[0][..cmd_len].copy_from_slice(&cmd_bytes[..cmd_len]);
+    argv_storage[0][cmd_len] = 0;
+    argv_ptrs[0] = argv_storage[0].as_ptr();
+    
+    // Copy additional arguments
+    let argc = core::cmp::min(args.len() + 1, 31);
+    for i in 0..args.len() {
+        if i + 1 >= argc {
+            break;
+        }
+        let arg_bytes = args[i].as_bytes();
+        let arg_len = core::cmp::min(arg_bytes.len(), 63);
+        argv_storage[i + 1][..arg_len].copy_from_slice(&arg_bytes[..arg_len]);
+        argv_storage[i + 1][arg_len] = 0;
+        argv_ptrs[i + 1] = argv_storage[i + 1].as_ptr();
+    }
+    // argv_ptrs[argc] is already null
+    
+    // Empty environment for now
+    let envp: [*const u8; 1] = [core::ptr::null()];
+    
+    // Fork and execute
+    let pid = fork();
+    if pid < 0 {
+        println_str("fork failed");
+        return false;
+    }
+    
+    if pid == 0 {
+        // Child process - this never returns
+        execve(path.as_ptr(), argv_ptrs.as_ptr(), envp.as_ptr());
+        // If execve returns, it failed
+        println_str("execve failed");
+        exit(1);
+        #[allow(unreachable_code)]
+        {
+            return false; // Never reached, but makes type checker happy
+        }
+    }
+    
+    // Parent process - wait for child
+    let mut status: i32 = 0;
+    let wait_result = wait4(pid, &mut status as *mut i32, 0);
+    if wait_result < 0 {
+        println_str("wait failed");
+        return false;
+    }
+    true
+}
+
 fn prompt(state: &ShellState) {
     let mut info = UserInfo::zero();
     let username = if refresh_current_user(&mut info) {
@@ -1574,7 +1712,11 @@ fn handle_command(state: &mut ShellState, line: &str) {
             exit(0);
         }
         _ => {
-            println_str("Unknown command");
+            // Try to execute as external command
+            let args: std::vec::Vec<&str> = parts.collect();
+            if !execute_external_command(cmd, &args) {
+                // execute_external_command already prints error if command not found
+            }
         }
     }
 }

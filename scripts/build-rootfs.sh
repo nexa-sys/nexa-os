@@ -50,9 +50,9 @@ path = "../../userspace/login.rs"
 name = "nslookup"
 path = "../../userspace/nslookup.rs"
 
-[[bin]]
-name = "udp_test"
-path = "../../userspace/udp_test.rs"
+# [[bin]]
+# name = "udp_test"
+# path = "../../userspace/udp_test.rs"
 
 [[bin]]
 name = "uefi-compatd"
@@ -127,11 +127,11 @@ RUSTFLAGS="$STD_RUSTFLAGS" \
     cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release \
     --bin nslookup --no-default-features
 
-# Build udp_test with nrlib (no-std)
-echo "Building udp_test with nrlib (no-std)..."
-RUSTFLAGS="-C opt-level=2 -C panic=abort -C linker=rust-lld -C link-arg=--image-base=0x00400000 -C link-arg=--entry=_start" \
-    cargo build -Z build-std=core --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release \
-    --bin udp_test --features use-nrlib
+# # Build udp_test with nrlib (no-std)
+# echo "Building udp_test with nrlib (no-std)..."
+# RUSTFLAGS="-C opt-level=2 -C panic=abort -C linker=rust-lld -C link-arg=--image-base=0x00400000 -C link-arg=--entry=_start" \
+#     cargo build -Z build-std=core --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release \
+#     --bin udp_test --features use-nrlib
 
 # Build uefi-compatd
 echo "Building uefi-compatd with std..."
@@ -146,7 +146,7 @@ cp "target/x86_64-nexaos-userspace/release/getty" "$ROOTFS_DIR/sbin/getty"
 cp "target/x86_64-nexaos-userspace/release/sh" "$ROOTFS_DIR/bin/sh"
 cp "target/x86_64-nexaos-userspace/release/login" "$ROOTFS_DIR/bin/login"
 cp "target/x86_64-nexaos-userspace/release/nslookup" "$ROOTFS_DIR/bin/nslookup"
-cp "target/x86_64-nexaos-userspace/release/udp_test" "$ROOTFS_DIR/bin/udp_test"
+# cp "target/x86_64-nexaos-userspace/release/udp_test" "$ROOTFS_DIR/bin/udp_test"
 cp "target/x86_64-nexaos-userspace/release/uefi-compatd" "$ROOTFS_DIR/sbin/uefi-compatd"
 
 # Strip symbols
@@ -155,7 +155,7 @@ strip --strip-all "$ROOTFS_DIR/sbin/getty" 2>/dev/null || true
 strip --strip-all "$ROOTFS_DIR/bin/sh" 2>/dev/null || true
 strip --strip-all "$ROOTFS_DIR/bin/login" 2>/dev/null || true
 strip --strip-all "$ROOTFS_DIR/bin/nslookup" 2>/dev/null || true
-strip --strip-all "$ROOTFS_DIR/bin/udp_test" 2>/dev/null || true
+# strip --strip-all "$ROOTFS_DIR/bin/udp_test" 2>/dev/null || true
 strip --strip-all "$ROOTFS_DIR/sbin/uefi-compatd" 2>/dev/null || true
 
 # Copy dynamic linker for dynamically linked programs
