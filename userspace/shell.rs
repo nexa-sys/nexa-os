@@ -430,6 +430,15 @@ fn print_i64(value: i64) {
     }
 }
 
+fn print_i32(value: i32) {
+    if value < 0 {
+        print_bytes(b"-");
+        print_u64((-value) as u64);
+    } else {
+        print_u64(value as u64);
+    }
+}
+
 fn print_octal(mut value: u32) {
     let mut buf = [0u8; 12];
     let mut idx = 0;
@@ -1496,7 +1505,7 @@ fn find_executable(cmd: &str) -> Option<[u8; MAX_PATH]> {
 // Execute an external command
 fn execute_external_command(cmd: &str, args: &[&str]) -> bool {
     // Try to find the executable
-    let path = match find_executable(cmd) {
+    let path_buf = match find_executable(cmd) {
         Some(p) => p,
         None => {
             print_str("Command not found: ");
@@ -1505,30 +1514,43 @@ fn execute_external_command(cmd: &str, args: &[&str]) -> bool {
         }
     };
     
+    // Find the actual length of the path (until first null byte)
+    let mut path_len = 0;
+    while path_len < MAX_PATH && path_buf[path_len] != 0 {
+        path_len += 1;
+    }
+    
+    // Ensure path is null-terminated
+    if path_len >= MAX_PATH || path_buf[path_len] != 0 {
+        println_str("Path too long");
+        return false;
+    }
+    
     // Prepare argv array (cmd + args + NULL)
     let mut argv_ptrs: [*const u8; 32] = [core::ptr::null(); 32];
     let mut argv_storage: [[u8; 64]; 32] = [[0; 64]; 32];
     
-    // First argument is the command itself
+    // First argument is the command itself (just the command name, not full path)
     let cmd_bytes = cmd.as_bytes();
     let cmd_len = core::cmp::min(cmd_bytes.len(), 63);
     argv_storage[0][..cmd_len].copy_from_slice(&cmd_bytes[..cmd_len]);
-    argv_storage[0][cmd_len] = 0;
+    argv_storage[0][cmd_len] = 0; // Null terminate
     argv_ptrs[0] = argv_storage[0].as_ptr();
     
     // Copy additional arguments
-    let argc = core::cmp::min(args.len() + 1, 31);
-    for i in 0..args.len() {
-        if i + 1 >= argc {
+    let mut arg_count = 1;
+    for (i, arg) in args.iter().enumerate() {
+        if arg_count >= 31 {
             break;
         }
-        let arg_bytes = args[i].as_bytes();
+        let arg_bytes = arg.as_bytes();
         let arg_len = core::cmp::min(arg_bytes.len(), 63);
-        argv_storage[i + 1][..arg_len].copy_from_slice(&arg_bytes[..arg_len]);
-        argv_storage[i + 1][arg_len] = 0;
-        argv_ptrs[i + 1] = argv_storage[i + 1].as_ptr();
+        argv_storage[arg_count][..arg_len].copy_from_slice(&arg_bytes[..arg_len]);
+        argv_storage[arg_count][arg_len] = 0; // Null terminate
+        argv_ptrs[arg_count] = argv_storage[arg_count].as_ptr();
+        arg_count += 1;
     }
-    // argv_ptrs[argc] is already null
+    // argv_ptrs[arg_count] is already null (array initialized with nulls)
     
     // Empty environment for now
     let envp: [*const u8; 1] = [core::ptr::null()];
@@ -1542,9 +1564,14 @@ fn execute_external_command(cmd: &str, args: &[&str]) -> bool {
     
     if pid == 0 {
         // Child process - this never returns
-        execve(path.as_ptr(), argv_ptrs.as_ptr(), envp.as_ptr());
+        let result = execve(path_buf.as_ptr(), argv_ptrs.as_ptr(), envp.as_ptr());
         // If execve returns, it failed
-        println_str("execve failed");
+        print_str("execve failed with code: ");
+        print_i32(result);
+        println_str("");
+        print_str("errno: ");
+        print_i32(errno());
+        println_str("");
         exit(1);
         #[allow(unreachable_code)]
         {
