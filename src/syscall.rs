@@ -1413,10 +1413,10 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
 fn syscall_execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8) -> u64 {
     use crate::scheduler::get_current_pid;
 
-    crate::kinfo!("[syscall_execve] Called");
+    crate::serial::_print(format_args!("[syscall_execve] Called\n"));
 
     if path.is_null() {
-        crate::kinfo!("[syscall_execve] Error: path is null");
+        crate::serial::_print(format_args!("[syscall_execve] Error: path is null\n"));
         posix::set_errno(posix::errno::EFAULT);
         return u64::MAX;
     }
@@ -1428,7 +1428,7 @@ fn syscall_execve(path: *const u8, _argv: *const *const u8, _envp: *const *const
             len += 1;
         }
         if len >= 256 {
-            crate::kinfo!("[syscall_execve] Error: path too long");
+            crate::serial::_print(format_args!("[syscall_execve] Error: path too long\n"));
             posix::set_errno(posix::errno::EINVAL);
             return u64::MAX;
         }
@@ -1436,23 +1436,23 @@ fn syscall_execve(path: *const u8, _argv: *const *const u8, _envp: *const *const
         match core::str::from_utf8(slice) {
             Ok(s) => s,
             Err(_) => {
-                crate::kinfo!("[syscall_execve] Error: invalid UTF-8 in path");
+                crate::serial::_print(format_args!("[syscall_execve] Error: invalid UTF-8 in path\n"));
                 posix::set_errno(posix::errno::EINVAL);
                 return u64::MAX;
             }
         }
     };
     
-    crate::kinfo!("[syscall_execve] Path: {}", path_str);
+    crate::serial::_print(format_args!("[syscall_execve] Path: {}\n", path_str));
     
     // Load the ELF file from filesystem
     let elf_data = match crate::fs::read_file_bytes(path_str) {
         Some(data) => {
-            crate::kinfo!("[syscall_execve] Found file, {} bytes", data.len());
+            crate::serial::_print(format_args!("[syscall_execve] Found file, {} bytes\n", data.len()));
             data
         }
         None => {
-            crate::kinfo!("[syscall_execve] Error: file not found: {}", path_str);
+            crate::serial::_print(format_args!("[syscall_execve] Error: file not found: {}\n", path_str));
             posix::set_errno(posix::errno::ENOENT);
             return u64::MAX;
         }
@@ -1461,12 +1461,12 @@ fn syscall_execve(path: *const u8, _argv: *const *const u8, _envp: *const *const
     // Create new process image from ELF
     let new_process = match crate::process::Process::from_elf(elf_data) {
         Ok(proc) => {
-            crate::kinfo!("[syscall_execve] Successfully loaded ELF, entry={:#x}, stack={:#x}", 
-                    proc.entry_point, proc.stack_top);
+            crate::serial::_print(format_args!("[syscall_execve] Successfully loaded ELF, entry={:#x}, stack={:#x}\n", 
+                    proc.entry_point, proc.stack_top));
             proc
         }
         Err(e) => {
-            crate::kinfo!("[syscall_execve] Error loading ELF: {}", e);
+            crate::serial::_print(format_args!("[syscall_execve] Error loading ELF: {}\n", e));
             posix::set_errno(posix::errno::EINVAL);
             return u64::MAX;
         }

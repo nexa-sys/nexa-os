@@ -359,6 +359,16 @@ fn wait4(pid: i32, status: *mut i32, options: i32) -> i32 {
     syscall3(SYS_WAIT4, pid as u64, status as u64, options as u64) as i32
 }
 
+fn print_hex(val: u64) {
+    let hex_chars = b"0123456789abcdef";
+    let mut buf = [0u8; 16];
+    for i in 0..16 {
+        let nibble = ((val >> (60 - i * 4)) & 0xf) as usize;
+        buf[i] = hex_chars[nibble];
+    }
+    write(1, buf.as_ptr(), buf.len());
+}
+
 fn print_bytes(bytes: &[u8]) {
     const USER_BASE: u64 = 0x400000;
     const USER_END: u64 = 0xA00000; // exclusive upper bound
@@ -1473,8 +1483,6 @@ fn file_exists(path: &str) -> bool {
 fn find_executable(cmd: &str) -> Option<[u8; MAX_PATH]> {
     const PATHS: &[&str] = &["/bin", "/sbin", "/usr/bin", "/usr/sbin"];
     
-    let mut full_path = [0u8; MAX_PATH];
-    
     for dir in PATHS {
         let dir_bytes = dir.as_bytes();
         let cmd_bytes = cmd.as_bytes();
@@ -1485,6 +1493,8 @@ fn find_executable(cmd: &str) -> Option<[u8; MAX_PATH]> {
             continue;
         }
         
+        // Create a fresh buffer for each iteration to avoid contamination
+        let mut full_path = [0u8; MAX_PATH];
         full_path[..dir_bytes.len()].copy_from_slice(dir_bytes);
         full_path[dir_bytes.len()] = b'/';
         full_path[dir_bytes.len() + 1..dir_bytes.len() + 1 + cmd_bytes.len()]
@@ -1520,9 +1530,23 @@ fn execute_external_command(cmd: &str, args: &[&str]) -> bool {
         path_len += 1;
     }
     
-    // Ensure path is null-terminated
-    if path_len >= MAX_PATH || path_buf[path_len] != 0 {
-        println_str("Path too long");
+    // Verify we found a valid null-terminated string
+    if path_len == 0 {
+        println_str("Error: empty path");
+        return false;
+    }
+    if path_len >= MAX_PATH {
+        println_str("Error: path too long");
+        return false;
+    }
+    // path_buf[path_len] should be 0 (null terminator)
+    
+    // Debug: print the path we found
+    print_str("Executing: ");
+    if let Ok(path_str) = core::str::from_utf8(&path_buf[..path_len]) {
+        println_str(path_str);
+    } else {
+        println_str("<invalid UTF-8>");
         return false;
     }
     
@@ -1563,19 +1587,43 @@ fn execute_external_command(cmd: &str, args: &[&str]) -> bool {
     }
     
     if pid == 0 {
-        // Child process - this never returns
+        // Child process - this never returns if execve succeeds
+        
+        // Debug: verify path is still valid in child
+        print_str("Child: path=");
+        if let Ok(path_str) = core::str::from_utf8(&path_buf[..path_len]) {
+            println_str(path_str);
+        } else {
+            println_str("<invalid>");
+        }
+        
+        print_str("Child: path_buf.as_ptr()=0x");
+        print_hex(path_buf.as_ptr() as u64);
+        println_str("");
+        
+        print_str("Child: first 16 bytes: ");
+        for i in 0..16.min(path_len) {
+            print_hex(path_buf[i] as u64);
+            print_str(" ");
+        }
+        println_str("");
+        
         let result = execve(path_buf.as_ptr(), argv_ptrs.as_ptr(), envp.as_ptr());
+        
         // If execve returns, it failed
-        print_str("execve failed with code: ");
-        print_i32(result);
-        println_str("");
-        print_str("errno: ");
-        print_i32(errno());
-        println_str("");
-        exit(1);
-        #[allow(unreachable_code)]
-        {
-            return false; // Never reached, but makes type checker happy
+        // Try to print error, but be careful - the process state might be corrupted
+        if result < 0 {
+            // Use simple writes directly to avoid complex printing
+            let msg = b"execve failed\n";
+            write(2, msg.as_ptr(), msg.len()); // stderr
+        }
+        
+        // Exit immediately - don't trust the stack or other state
+        syscall1(SYS_EXIT, 1);
+        
+        // Should never reach here, but if exit fails, loop forever
+        loop {
+            core::hint::spin_loop();
         }
     }
     
