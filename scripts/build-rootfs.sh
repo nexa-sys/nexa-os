@@ -47,6 +47,10 @@ name = "login"
 path = "../../userspace/login.rs"
 
 [[bin]]
+name = "nslookup"
+path = "../../userspace/nslookup.rs"
+
+[[bin]]
 name = "uefi-compatd"
 path = "../../userspace/uefi_compatd.rs"
 
@@ -65,6 +69,7 @@ nexa_boot_info = { path = "../../boot/boot-info" }
 default = ["use-nrlib"]
 use-nrlib = ["nrlib", "nrlib/panic-handler"]
 use-nrlib-std = ["nrlib", "nrlib/std"]
+use-std = ["nrlib"]
 
 EOF
 
@@ -112,6 +117,12 @@ RUSTFLAGS="$STD_RUSTFLAGS" \
     cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release \
     --bin login
 
+# Build nslookup with std
+echo "Building nslookup with std..."
+RUSTFLAGS="$STD_RUSTFLAGS" \
+    cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release \
+    --bin nslookup --no-default-features
+
 # Build uefi-compatd
 echo "Building uefi-compatd with std..."
 RUSTFLAGS="$STD_RUSTFLAGS" \
@@ -124,6 +135,7 @@ cp "target/x86_64-nexaos-userspace/release/ni" "$ROOTFS_DIR/sbin/ni"
 cp "target/x86_64-nexaos-userspace/release/getty" "$ROOTFS_DIR/sbin/getty"
 cp "target/x86_64-nexaos-userspace/release/sh" "$ROOTFS_DIR/bin/sh"
 cp "target/x86_64-nexaos-userspace/release/login" "$ROOTFS_DIR/bin/login"
+cp "target/x86_64-nexaos-userspace/release/nslookup" "$ROOTFS_DIR/bin/nslookup"
 cp "target/x86_64-nexaos-userspace/release/uefi-compatd" "$ROOTFS_DIR/sbin/uefi-compatd"
 
 # Strip symbols
@@ -131,6 +143,7 @@ strip --strip-all "$ROOTFS_DIR/sbin/ni" 2>/dev/null || true
 strip --strip-all "$ROOTFS_DIR/sbin/getty" 2>/dev/null || true
 strip --strip-all "$ROOTFS_DIR/bin/sh" 2>/dev/null || true
 strip --strip-all "$ROOTFS_DIR/bin/login" 2>/dev/null || true
+strip --strip-all "$ROOTFS_DIR/bin/nslookup" 2>/dev/null || true
 strip --strip-all "$ROOTFS_DIR/sbin/uefi-compatd" 2>/dev/null || true
 
 # Copy dynamic linker for dynamically linked programs

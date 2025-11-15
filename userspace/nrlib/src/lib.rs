@@ -32,11 +32,24 @@ pub mod stdio;
 // Timekeeping utilities for libc compatibility functions
 pub(crate) mod time;
 
+// DNS and resolver modules
+pub mod dns;
+pub mod resolver;
+
 // Re-export commonly used stdio helpers for convenience
 pub use stdio::{
     fflush, fprintf, fread, fwrite, getchar, printf, putchar, puts, stderr_write_all,
     stderr_write_str, stdin_read_line, stdin_read_line_masked, stdin_read_line_noecho,
     stdout_flush, stdout_write_all, stdout_write_fmt, stdout_write_str,
+};
+
+// Re-export resolver types
+pub use resolver::{
+    parse_ipv4, format_ipv4, Resolver, SockAddrIn,
+    AF_INET, AF_INET6, AF_UNSPEC,
+    SOCK_STREAM, SOCK_DGRAM,
+    AI_PASSIVE, AI_CANONNAME, AI_NUMERICHOST,
+    EAI_NONAME, EAI_AGAIN, EAI_FAIL,
 };
 
 // Libc-compatible type definitions for NexaOS
