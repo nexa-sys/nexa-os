@@ -1,5 +1,6 @@
 use nexa_boot_info::{
     bar_flags, BlockDeviceInfo, FramebufferInfo, NetworkDeviceInfo, PciBarInfo, PciDeviceInfo,
+    UsbHostInfo, HidInputInfo, device_flags, DeviceKind,
 };
 use spin::Mutex;
 
@@ -10,6 +11,8 @@ use crate::posix::{FileType, Metadata};
 
 const MAX_NETWORK_DEVICES: usize = 8;
 const MAX_BLOCK_DEVICES: usize = 8;
+const MAX_USB_HOSTS: usize = 8;
+const MAX_HID_DEVICES: usize = 8;
 
 const DEV_NET_PATHS: [&str; MAX_NETWORK_DEVICES] = [
     "/dev/net0",
@@ -33,6 +36,28 @@ const DEV_BLOCK_PATHS: [&str; MAX_BLOCK_DEVICES] = [
     "/dev/block7",
 ];
 
+const DEV_USB_PATHS: [&str; MAX_USB_HOSTS] = [
+    "/dev/usb0",
+    "/dev/usb1",
+    "/dev/usb2",
+    "/dev/usb3",
+    "/dev/usb4",
+    "/dev/usb5",
+    "/dev/usb6",
+    "/dev/usb7",
+];
+
+const DEV_HID_PATHS: [&str; MAX_HID_DEVICES] = [
+    "/dev/hid0",
+    "/dev/hid1",
+    "/dev/hid2",
+    "/dev/hid3",
+    "/dev/hid4",
+    "/dev/hid5",
+    "/dev/hid6",
+    "/dev/hid7",
+];
+
 #[derive(Clone, Copy, Default)]
 struct FramebufferState {
     info: Option<FramebufferInfo>,
@@ -44,7 +69,26 @@ pub struct CompatCounts {
     pub framebuffer: u8,
     pub network: u8,
     pub block: u8,
-    pub _reserved: u8,
+    pub usb_host: u8,
+    pub hid_input: u8,
+    pub _reserved: [u8; 3],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct UsbHostDescriptor {
+    pub info: UsbHostInfo,
+    pub mmio_base: u64,
+    pub mmio_size: u64,
+    pub interrupt_line: u8,
+    pub _reserved: [u8; 7],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct HidInputDescriptor {
+    pub info: HidInputInfo,
+    pub _reserved: [u8; 16],
 }
 
 #[repr(C)]
@@ -99,11 +143,36 @@ impl Default for BlockDescriptor {
     }
 }
 
+impl Default for UsbHostDescriptor {
+    fn default() -> Self {
+        Self {
+            info: UsbHostInfo::empty(),
+            mmio_base: 0,
+            mmio_size: 0,
+            interrupt_line: 0,
+            _reserved: [0; 7],
+        }
+    }
+}
+
+impl Default for HidInputDescriptor {
+    fn default() -> Self {
+        Self {
+            info: HidInputInfo::empty(),
+            _reserved: [0; 16],
+        }
+    }
+}
+
 static FRAMEBUFFER: Mutex<FramebufferState> = Mutex::new(FramebufferState { info: None });
 static NETWORK_DEVICES: Mutex<[Option<NetworkDescriptor>; MAX_NETWORK_DEVICES]> =
     Mutex::new([None; MAX_NETWORK_DEVICES]);
 static BLOCK_DEVICES: Mutex<[Option<BlockDescriptor>; MAX_BLOCK_DEVICES]> =
     Mutex::new([None; MAX_BLOCK_DEVICES]);
+static USB_HOST_DEVICES: Mutex<[Option<UsbHostDescriptor>; MAX_USB_HOSTS]> =
+    Mutex::new([None; MAX_USB_HOSTS]);
+static HID_INPUT_DEVICES: Mutex<[Option<HidInputDescriptor>; MAX_HID_DEVICES]> =
+    Mutex::new([None; MAX_HID_DEVICES]);
 
 fn map_mmio_region(base: u64, length: u64, label: &str) {
     if base == 0 {
@@ -148,6 +217,18 @@ pub fn reset() {
     for entry in blocks.iter_mut() {
         *entry = None;
     }
+    drop(blocks);
+
+    let mut usbs = USB_HOST_DEVICES.lock();
+    for entry in usbs.iter_mut() {
+        *entry = None;
+    }
+    drop(usbs);
+
+    let mut hids = HID_INPUT_DEVICES.lock();
+    for entry in hids.iter_mut() {
+        *entry = None;
+    }
 }
 
 pub fn init() {
@@ -163,6 +244,8 @@ pub fn init() {
 
     populate_network_devices();
     populate_block_devices();
+    populate_usb_host_devices();
+    populate_hid_input_devices();
 }
 
 pub fn install_device_nodes() {
@@ -197,6 +280,47 @@ pub fn install_device_nodes() {
             }
         }
 
+        if counts.usb_host > 0 {
+            for idx in 0..(counts.usb_host as usize) {
+                if let Some(descriptor) = usb_host_descriptor(idx) {
+                    let path = DEV_USB_PATHS[idx];
+                    register_device_node(path, FileType::Character, 0o660);
+                    crate::kinfo!(
+                        "Registered {} (USB{}, MMIO={:#x}, size={:#x})",
+                        path,
+                        match descriptor.info.controller_type {
+                            1 => "OHCI",
+                            2 => "EHCI",
+                            3 => "xHCI",
+                            _ => "Unknown",
+                        },
+                        descriptor.mmio_base,
+                        descriptor.mmio_size
+                    );
+                }
+            }
+        }
+
+        if counts.hid_input > 0 {
+            for idx in 0..(counts.hid_input as usize) {
+                if let Some(descriptor) = hid_input_descriptor(idx) {
+                    let path = DEV_HID_PATHS[idx];
+                    register_device_node(path, FileType::Character, 0o660);
+                    crate::kinfo!(
+                        "Registered {} ({}, protocol={})",
+                        path,
+                        match descriptor.info.device_type {
+                            1 => "keyboard",
+                            2 => "mouse",
+                            3 => "combined",
+                            _ => "unknown",
+                        },
+                        descriptor.info.protocol
+                    );
+                }
+            }
+        }
+
         if counts.framebuffer != 0 {
             register_device_node("/dev/fb0", FileType::Character, 0o660);
             crate::kinfo!("Registered /dev/fb0 for framebuffer access");
@@ -215,12 +339,22 @@ pub fn counts() -> CompatCounts {
 
     let blocks = BLOCK_DEVICES.lock();
     let block_count = blocks.iter().filter(|entry| entry.is_some()).count() as u8;
+    drop(blocks);
+
+    let usbs = USB_HOST_DEVICES.lock();
+    let usb_count = usbs.iter().filter(|entry| entry.is_some()).count() as u8;
+    drop(usbs);
+
+    let hids = HID_INPUT_DEVICES.lock();
+    let hid_count = hids.iter().filter(|entry| entry.is_some()).count() as u8;
 
     CompatCounts {
         framebuffer: fb_count,
         network: net_count,
         block: block_count,
-        _reserved: 0,
+        usb_host: usb_count,
+        hid_input: hid_count,
+        _reserved: [0; 3],
     }
 }
 
@@ -236,6 +370,16 @@ pub fn network_descriptor(index: usize) -> Option<NetworkDescriptor> {
 pub fn block_descriptor(index: usize) -> Option<BlockDescriptor> {
     let blocks = BLOCK_DEVICES.lock();
     blocks.get(index).and_then(|entry| *entry)
+}
+
+pub fn usb_host_descriptor(index: usize) -> Option<UsbHostDescriptor> {
+    let usbs = USB_HOST_DEVICES.lock();
+    usbs.get(index).and_then(|entry| *entry)
+}
+
+pub fn hid_input_descriptor(index: usize) -> Option<HidInputDescriptor> {
+    let hids = HID_INPUT_DEVICES.lock();
+    hids.get(index).and_then(|entry| *entry)
 }
 
 fn nonzero_counts() -> Option<CompatCounts> {
@@ -357,6 +501,69 @@ fn populate_block_devices() {
         }
 
         blocks[idx] = Some(descriptor);
+    }
+}
+
+fn populate_usb_host_devices() {
+    let mut usbs = USB_HOST_DEVICES.lock();
+    for entry in usbs.iter_mut() {
+        *entry = None;
+    }
+
+    let Some(iter) = bootinfo::usb_host_devices() else {
+        return;
+    };
+
+    for (idx, usb) in iter.enumerate() {
+        if idx >= MAX_USB_HOSTS {
+            crate::kwarn!(
+                "uefi_compat: USB host device table full (max {})",
+                MAX_USB_HOSTS
+            );
+            break;
+        }
+
+        let descriptor = UsbHostDescriptor {
+            info: *usb,
+            mmio_base: usb.mmio_base,
+            mmio_size: usb.mmio_size,
+            interrupt_line: usb.interrupt_line,
+            _reserved: [0; 7],
+        };
+
+        if descriptor.mmio_base != 0 && descriptor.mmio_size != 0 {
+            map_mmio_region(descriptor.mmio_base, descriptor.mmio_size, "USB host controller");
+        }
+
+        usbs[idx] = Some(descriptor);
+    }
+}
+
+fn populate_hid_input_devices() {
+    let mut hids = HID_INPUT_DEVICES.lock();
+    for entry in hids.iter_mut() {
+        *entry = None;
+    }
+
+    let Some(iter) = bootinfo::hid_input_devices() else {
+        return;
+    };
+
+    for (idx, hid) in iter.enumerate() {
+        if idx >= MAX_HID_DEVICES {
+            crate::kwarn!(
+                "uefi_compat: HID input device table full (max {})",
+                MAX_HID_DEVICES
+            );
+            break;
+        }
+
+        let descriptor = HidInputDescriptor {
+            info: *hid,
+            _reserved: [0; 16],
+        };
+
+        hids[idx] = Some(descriptor);
     }
 }
 

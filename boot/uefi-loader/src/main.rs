@@ -25,6 +25,8 @@ use nexa_boot_info::{
     NetworkDeviceInfo,
     PciBarInfo,
     PciDeviceInfo,
+    UsbHostInfo,
+    HidInputInfo,
     MAX_DEVICE_DESCRIPTORS,
 };
 use r_efi::base as raw_base;
@@ -314,6 +316,7 @@ fn collect_device_table(bs: &BootServices, image: Handle) -> DeviceTable {
     let mut table = DeviceTable::new();
     collect_block_devices(bs, image, &mut table);
     collect_network_devices(bs, image, &mut table);
+    collect_usb_controllers(bs, image, &mut table);
     table
 }
 
@@ -415,6 +418,140 @@ fn collect_network_devices(bs: &BootServices, image: Handle, table: &mut DeviceT
             break;
         }
     }
+}
+
+fn collect_usb_controllers(bs: &BootServices, image: Handle, table: &mut DeviceTable) {
+    // Enumerate all PCI devices to find USB host controllers
+    let Ok(handles) = bs.locate_handle_buffer(SearchType::ByProtocol(&PciIo::GUID)) else {
+        log::warn!("Failed to locate PCI I/O handles");
+        return;
+    };
+
+    for handle in handles.iter() {
+        if table.is_full() {
+            break;
+        }
+
+        let pci_proto = unsafe {
+            bs.open_protocol::<PciIo>(
+                OpenProtocolParams {
+                    handle: *handle,
+                    agent: image,
+                    controller: None,
+                },
+                OpenProtocolAttributes::GetProtocol,
+            )
+        };
+        
+        let Ok(pci_proto) = pci_proto else {
+            continue;
+        };
+        
+        let Some(pci_io) = pci_proto.get() else {
+            continue;
+        };
+
+        // Read class code to identify USB controllers
+        // Class 0x0C = Serial Bus Controller, Subclass 0x03 = USB
+        let Ok(class_reg) = pci_io.read_config_u32(0x08) else {
+            continue;
+        };
+
+        let class_code = ((class_reg >> 24) & 0xFF) as u8;
+        let subclass = ((class_reg >> 16) & 0xFF) as u8;
+        let prog_if = ((class_reg >> 8) & 0xFF) as u8;
+
+        // Check if this is a USB controller
+        if class_code != 0x0C || subclass != 0x03 {
+            continue;
+        }
+
+        let Some(address) = pci_address_for_handle(bs, image, *handle) else {
+            continue;
+        };
+
+        // Determine controller type from prog_if
+        // 0x00 = UHCI, 0x10 = OHCI, 0x20 = EHCI, 0x30 = xHCI, 0x80 = Unspecified
+        let controller_type = match prog_if {
+            0x00 => 0, // UHCI (treated as unknown/legacy)
+            0x10 => 1, // OHCI
+            0x20 => 2, // EHCI
+            0x30 => 3, // xHCI
+            _ => 0,    // Unknown
+        };
+
+        let pci_snapshot = read_pci_snapshot(bs, pci_io);
+        if let Some(snapshot) = pci_snapshot.as_ref() {
+            table.ensure_pci_entry(address, device_flags::USB_HOST, |pci| {
+                apply_pci_snapshot(pci, snapshot);
+            });
+
+            let usb_info = build_usb_host_info(address, &snapshot, controller_type);
+            let mut descriptor = DeviceDescriptor::empty();
+            descriptor.kind = DeviceKind::UsbHost;
+            descriptor.flags = device_flags::USB_HOST;
+            descriptor.data = nexa_boot_info::DeviceData { usb_host: usb_info };
+            
+            if table.push_descriptor(descriptor) {
+                log::info!(
+                    "Found USB {} controller at {:04x}:{:02x}:{:02x}.{} (MMIO: {:#x}, size: {:#x})",
+                    match controller_type {
+                        1 => "OHCI",
+                        2 => "EHCI",
+                        3 => "xHCI",
+                        _ => "Unknown",
+                    },
+                    address.segment,
+                    address.bus,
+                    address.device,
+                    address.function,
+                    usb_info.mmio_base,
+                    usb_info.mmio_size
+                );
+            }
+        }
+    }
+}
+
+fn build_usb_host_info(
+    address: PciAddress,
+    snapshot: &PciSnapshot,
+    controller_type: u8,
+) -> UsbHostInfo {
+    let mut info = UsbHostInfo::empty();
+    info.pci_segment = address.segment;
+    info.pci_bus = address.bus;
+    info.pci_device = address.device;
+    info.pci_function = address.function;
+    info.controller_type = controller_type;
+    info.interrupt_line = snapshot.interrupt_line;
+
+    // Find first valid MMIO BAR
+    for bar in &snapshot.bars {
+        if bar.base != 0 && bar.length != 0 && (bar.bar_flags & bar_flags::IO_SPACE) == 0 {
+            info.mmio_base = bar.base;
+            info.mmio_size = bar.length;
+            break;
+        }
+    }
+
+    // Estimate USB version based on controller type
+    info.usb_version = match controller_type {
+        1 => 0x0110, // OHCI: USB 1.1
+        2 => 0x0200, // EHCI: USB 2.0
+        3 => 0x0300, // xHCI: USB 3.0
+        _ => 0x0100, // Unknown: assume USB 1.0
+    };
+
+    // Port count would require parsing controller-specific registers
+    // For now, set a reasonable default
+    info.port_count = match controller_type {
+        3 => 4,  // xHCI typically has 4-8 ports
+        2 => 4,  // EHCI typically has 2-4 ports
+        _ => 2,  // OHCI typically has 2 ports
+    };
+
+    info
 }
 
 fn pci_snapshot_for_handle(bs: &BootServices, image: Handle, handle: Handle) -> Option<PciSnapshot> {

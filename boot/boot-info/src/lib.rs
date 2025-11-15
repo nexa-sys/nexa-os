@@ -39,6 +39,8 @@ pub mod device_flags {
     pub const USB_HOST: u16 = 1 << 2;
     /// Device exposes GPU/framebuffer functionality beyond GOP (e.g. PCI GPU).
     pub const GRAPHICS: u16 = 1 << 3;
+    /// Device provides HID input (keyboard/mouse).
+    pub const HID_INPUT: u16 = 1 << 4;
     /// Device has MSI/MSI-X enabled during boot.
     pub const MSI_ENABLED: u16 = 1 << 8;
 }
@@ -55,6 +57,10 @@ pub enum DeviceKind {
     Block = 3,
     /// Network interface (Simple Network Protocol).
     Network = 4,
+    /// USB host controller (xHCI/EHCI/OHCI).
+    UsbHost = 5,
+    /// HID input device (keyboard/mouse via USB or PS/2).
+    HidInput = 6,
     /// Other/unknown.
     Other = 0xFFFF,
 }
@@ -287,6 +293,90 @@ impl NetworkDeviceInfo {
     }
 }
 
+/// USB host controller information (xHCI/EHCI/OHCI).
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct UsbHostInfo {
+    pub pci_segment: u16,
+    pub pci_bus: u8,
+    pub pci_device: u8,
+    pub pci_function: u8,
+    /// USB controller type: 0=unknown, 1=OHCI, 2=EHCI, 3=xHCI
+    pub controller_type: u8,
+    /// Number of root hub ports
+    pub port_count: u8,
+    /// USB version (e.g., 0x0200 for USB 2.0, 0x0300 for USB 3.0)
+    pub usb_version: u16,
+    /// MMIO base address for controller registers
+    pub mmio_base: u64,
+    /// MMIO region size
+    pub mmio_size: u64,
+    /// Interrupt line (if using legacy interrupts)
+    pub interrupt_line: u8,
+    pub reserved: [u8; 151],
+}
+
+impl UsbHostInfo {
+    pub const fn empty() -> Self {
+        Self {
+            pci_segment: 0,
+            pci_bus: 0,
+            pci_device: 0,
+            pci_function: 0,
+            controller_type: 0,
+            port_count: 0,
+            usb_version: 0,
+            mmio_base: 0,
+            mmio_size: 0,
+            interrupt_line: 0,
+            reserved: [0; 151],
+        }
+    }
+}
+
+/// HID input device information (keyboard/mouse).
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct HidInputInfo {
+    /// Device type: 0=unknown, 1=keyboard, 2=mouse, 3=combined
+    pub device_type: u8,
+    /// Interface protocol: 0=none, 1=keyboard, 2=mouse
+    pub protocol: u8,
+    /// Connected via USB (vs PS/2 emulation)
+    pub is_usb: u8,
+    /// Parent USB host controller PCI address (if USB)
+    pub usb_host_bus: u8,
+    pub usb_host_device: u8,
+    pub usb_host_function: u8,
+    /// USB device address
+    pub usb_device_addr: u8,
+    /// USB endpoint for input
+    pub usb_endpoint: u8,
+    /// Vendor ID (if available)
+    pub vendor_id: u16,
+    /// Product ID (if available)
+    pub product_id: u16,
+    pub reserved: [u8; 176],
+}
+
+impl HidInputInfo {
+    pub const fn empty() -> Self {
+        Self {
+            device_type: 0,
+            protocol: 0,
+            is_usb: 0,
+            usb_host_bus: 0,
+            usb_host_device: 0,
+            usb_host_function: 0,
+            usb_device_addr: 0,
+            usb_endpoint: 0,
+            vendor_id: 0,
+            product_id: 0,
+            reserved: [0; 176],
+        }
+    }
+}
+
 /// Fixed-size payload used for device descriptors.
 pub const DEVICE_DATA_SIZE: usize = 192;
 
@@ -297,6 +387,8 @@ pub union DeviceData {
     pub pci: PciDeviceInfo,
     pub block: BlockDeviceInfo,
     pub network: NetworkDeviceInfo,
+    pub usb_host: UsbHostInfo,
+    pub hid_input: HidInputInfo,
     pub raw: [u8; DEVICE_DATA_SIZE],
 }
 

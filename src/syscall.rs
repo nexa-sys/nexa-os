@@ -2,7 +2,7 @@ use crate::paging;
 use crate::posix::{self, FileType};
 use crate::process::{USER_REGION_SIZE, USER_VIRT_BASE};
 use crate::scheduler;
-use crate::uefi_compat::{self, BlockDescriptor, CompatCounts, NetworkDescriptor};
+use crate::uefi_compat::{self, BlockDescriptor, CompatCounts, NetworkDescriptor, UsbHostDescriptor, HidInputDescriptor};
 use crate::vt;
 use core::{
     arch::global_asm,
@@ -122,6 +122,9 @@ pub const SYS_UEFI_GET_FB_INFO: u64 = 241;
 pub const SYS_UEFI_GET_NET_INFO: u64 = 242;
 pub const SYS_UEFI_GET_BLOCK_INFO: u64 = 243;
 pub const SYS_UEFI_MAP_NET_MMIO: u64 = 244;
+pub const SYS_UEFI_GET_USB_INFO: u64 = 245;
+pub const SYS_UEFI_GET_HID_INFO: u64 = 246;
+pub const SYS_UEFI_MAP_USB_MMIO: u64 = 247;
 
 #[repr(C)]
 struct ListDirRequest {
@@ -2145,6 +2148,75 @@ fn syscall_uefi_map_net_mmio(index: usize) -> u64 {
     }
 }
 
+fn syscall_uefi_get_usb_info(index: usize, out: *mut UsbHostDescriptor) -> u64 {
+    if out.is_null() {
+        posix::set_errno(posix::errno::EINVAL);
+        return u64::MAX;
+    }
+
+    let Some(descriptor) = uefi_compat::usb_host_descriptor(index) else {
+        posix::set_errno(posix::errno::ENODEV);
+        return u64::MAX;
+    };
+
+    unsafe {
+        ptr::write(out, descriptor);
+    }
+    posix::set_errno(0);
+    0
+}
+
+fn syscall_uefi_get_hid_info(index: usize, out: *mut HidInputDescriptor) -> u64 {
+    if out.is_null() {
+        posix::set_errno(posix::errno::EINVAL);
+        return u64::MAX;
+    }
+
+    let Some(descriptor) = uefi_compat::hid_input_descriptor(index) else {
+        posix::set_errno(posix::errno::ENODEV);
+        return u64::MAX;
+    };
+
+    unsafe {
+        ptr::write(out, descriptor);
+    }
+    posix::set_errno(0);
+    0
+}
+
+fn syscall_uefi_map_usb_mmio(index: usize) -> u64 {
+    let Some(descriptor) = uefi_compat::usb_host_descriptor(index) else {
+        posix::set_errno(posix::errno::ENODEV);
+        return u64::MAX;
+    };
+
+    if descriptor.mmio_base == 0 {
+        posix::set_errno(posix::errno::ENODEV);
+        return u64::MAX;
+    }
+
+    let span = if descriptor.mmio_size == 0 {
+        0x1000
+    } else {
+        descriptor
+            .mmio_size
+            .min(u64::from(usize::MAX as u32))
+            .max(0x1000)
+    } as usize;
+
+    let map_result = unsafe { paging::map_user_device_region(descriptor.mmio_base, span) };
+    match map_result {
+        Ok(ptr) => {
+            posix::set_errno(0);
+            ptr as u64
+        }
+        Err(paging::MapDeviceError::OutOfTableSpace) => {
+            posix::set_errno(posix::errno::ENOMEM);
+            u64::MAX
+        }
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn syscall_dispatch(
     nr: u64,
@@ -2212,6 +2284,13 @@ pub extern "C" fn syscall_dispatch(
             syscall_uefi_get_block_info(arg1 as usize, arg2 as *mut BlockDescriptor)
         }
         SYS_UEFI_MAP_NET_MMIO => syscall_uefi_map_net_mmio(arg1 as usize),
+        SYS_UEFI_GET_USB_INFO => {
+            syscall_uefi_get_usb_info(arg1 as usize, arg2 as *mut UsbHostDescriptor)
+        }
+        SYS_UEFI_GET_HID_INFO => {
+            syscall_uefi_get_hid_info(arg1 as usize, arg2 as *mut HidInputDescriptor)
+        }
+        SYS_UEFI_MAP_USB_MMIO => syscall_uefi_map_usb_mmio(arg1 as usize),
         _ => {
             crate::kwarn!("Unknown syscall: {}", nr);
             posix::set_errno(posix::errno::ENOSYS);

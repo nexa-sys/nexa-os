@@ -7,7 +7,7 @@ use crate::safety::StaticArena;
 
 use nexa_boot_info::{
     flags, BlockDeviceInfo, BootInfo, DeviceDescriptor, DeviceKind, KernelSegment, MemoryRegion,
-    NetworkDeviceInfo, PciDeviceInfo,
+    NetworkDeviceInfo, PciDeviceInfo, UsbHostInfo, HidInputInfo,
 };
 
 #[derive(Debug)]
@@ -178,6 +178,34 @@ pub fn network_devices() -> Option<impl Iterator<Item = &'static NetworkDeviceIn
             if desc.kind == DeviceKind::Network {
                 // SAFETY: Descriptor payload is initialised by the UEFI loader.
                 Some(unsafe { &desc.data.network })
+            } else {
+                None
+            }
+        })
+    })
+}
+
+/// Returns the USB host controller descriptors supplied by firmware.
+pub fn usb_host_devices() -> Option<impl Iterator<Item = &'static UsbHostInfo>> {
+    device_descriptors().map(|entries| {
+        entries.iter().filter_map(|desc| {
+            if desc.kind == DeviceKind::UsbHost {
+                // SAFETY: Descriptor payload is initialised by the UEFI loader.
+                Some(unsafe { &desc.data.usb_host })
+            } else {
+                None
+            }
+        })
+    })
+}
+
+/// Returns the HID input device descriptors supplied by firmware.
+pub fn hid_input_devices() -> Option<impl Iterator<Item = &'static HidInputInfo>> {
+    device_descriptors().map(|entries| {
+        entries.iter().filter_map(|desc| {
+            if desc.kind == DeviceKind::HidInput {
+                // SAFETY: Descriptor payload is initialised by the UEFI loader.
+                Some(unsafe { &desc.data.hid_input })
             } else {
                 None
             }

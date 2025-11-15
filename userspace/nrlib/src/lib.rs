@@ -105,6 +105,9 @@ const SYS_UEFI_GET_FB_INFO: u64 = 241;
 const SYS_UEFI_GET_NET_INFO: u64 = 242;
 const SYS_UEFI_GET_BLOCK_INFO: u64 = 243;
 const SYS_UEFI_MAP_NET_MMIO: u64 = 244;
+const SYS_UEFI_GET_USB_INFO: u64 = 245;
+const SYS_UEFI_GET_HID_INFO: u64 = 246;
+const SYS_UEFI_MAP_USB_MMIO: u64 = 247;
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -112,7 +115,9 @@ pub struct UefiCompatCounts {
     pub framebuffer: u8,
     pub network: u8,
     pub block: u8,
-    pub _reserved: u8,
+    pub usb_host: u8,
+    pub hid_input: u8,
+    pub _reserved: [u8; 3],
 }
 
 #[repr(C)]
@@ -163,6 +168,44 @@ impl Default for UefiBlockDescriptor {
             interrupt_line: 0,
             interrupt_pin: 0,
             _reserved: [0; 2],
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct UefiUsbHostDescriptor {
+    pub info: nexa_boot_info::UsbHostInfo,
+    pub mmio_base: u64,
+    pub mmio_size: u64,
+    pub interrupt_line: u8,
+    pub _reserved: [u8; 7],
+}
+
+impl Default for UefiUsbHostDescriptor {
+    fn default() -> Self {
+        Self {
+            info: nexa_boot_info::UsbHostInfo::empty(),
+            mmio_base: 0,
+            mmio_size: 0,
+            interrupt_line: 0,
+            _reserved: [0; 7],
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct UefiHidInputDescriptor {
+    pub info: nexa_boot_info::HidInputInfo,
+    pub _reserved: [u8; 16],
+}
+
+impl Default for UefiHidInputDescriptor {
+    fn default() -> Self {
+        Self {
+            info: nexa_boot_info::HidInputInfo::empty(),
+            _reserved: [0; 16],
         }
     }
 }
@@ -240,6 +283,35 @@ pub fn uefi_get_block(index: usize, info: &mut UefiBlockDescriptor) -> i32 {
 #[inline(always)]
 pub fn uefi_map_network_mmio(index: usize) -> *mut c_void {
     let ret = syscall1(SYS_UEFI_MAP_NET_MMIO, index as u64);
+    if ret == u64::MAX {
+        refresh_errno_from_kernel();
+        ptr::null_mut()
+    } else {
+        ret as *mut c_void
+    }
+}
+
+#[inline(always)]
+pub fn uefi_get_usb_host(index: usize, info: &mut UefiUsbHostDescriptor) -> i32 {
+    translate_ret_i32(syscall2(
+        SYS_UEFI_GET_USB_INFO,
+        index as u64,
+        info as *mut _ as u64,
+    ))
+}
+
+#[inline(always)]
+pub fn uefi_get_hid_input(index: usize, info: &mut UefiHidInputDescriptor) -> i32 {
+    translate_ret_i32(syscall2(
+        SYS_UEFI_GET_HID_INFO,
+        index as u64,
+        info as *mut _ as u64,
+    ))
+}
+
+#[inline(always)]
+pub fn uefi_map_usb_mmio(index: usize) -> *mut c_void {
+    let ret = syscall1(SYS_UEFI_MAP_USB_MMIO, index as u64);
     if ret == u64::MAX {
         refresh_errno_from_kernel();
         ptr::null_mut()
