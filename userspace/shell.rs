@@ -1615,72 +1615,40 @@ fn execute_external_command(cmd: &str, args: &[&str]) -> bool {
     }
     
     if pid == 0 {
-        // Child process - this never returns if execve succeeds
+        // Child process - execute the command
+        // path_buf is a [u8; 256] array on stack that was copied by fork
         
-        // Debug: Check stack pointer and path buffer address BEFORE and AFTER fork
-        let sp: u64;
-        unsafe {
-            core::arch::asm!("mov {}, rsp", out(reg) sp);
+        // CRITICAL: path_len is a local variable that may not be valid after fork!
+        // Recalculate it from path_buf
+        let mut actual_path_len = 0;
+        while actual_path_len < MAX_PATH && path_buf[actual_path_len] != 0 {
+            actual_path_len += 1;
         }
         
-        print_str("Child: SP=0x");
-        print_hex(sp);
-        print_str(", path_buf addr=0x");
+        // Debug output
+        print_str("Child: path_buf addr=0x");
         print_hex(path_buf.as_ptr() as u64);
-        println_str("");
-        
-        // The address changed after fork! Check what's at the NEW address:
-        print_str("Child: path_buf content at NEW addr: ");
-        for i in 0..16 {
-            print_hex(path_buf[i] as u64);
-            print_str(" ");
-        }
-        println_str("");
-        
-        // Also check what's at the OLD address (0x9fe390):
-        print_str("Child: memory at OLD addr 0x9fe390: ");
-        unsafe {
-            let old_addr = 0x9fe390u64 as *const u8;
-            for i in 0..16 {
-                print_hex(*old_addr.add(i) as u64);
-                print_str(" ");
+        print_str(", len=");
+        print_hex(actual_path_len as u64);
+        print_str(", path=");
+        if actual_path_len > 0 {
+            if let Ok(s) = core::str::from_utf8(&path_buf[..actual_path_len]) {
+                println_str(s);
+            } else {
+                println_str("<invalid UTF-8>");
             }
-        }
-        println_str("");
-        
-        // Debug: verify path is still valid in child
-        print_str("Child: about to execve, path=");
-        if let Ok(path_str) = core::str::from_utf8(&path_buf[..path_len]) {
-            println_str(path_str);
         } else {
-            println_str("<invalid>");
+            println_str("<empty>");
         }
         
-        // Debug: print first few bytes of path_buf
-        print_str("Child: path_buf bytes: ");
-        for i in 0..16.min(path_len) {
-            print_hex(path_buf[i] as u64);
-            print_str(" ");
-        }
-        println_str("");
-        
+        // Execve with the path
         let result = execve(path_buf.as_ptr(), argv_ptrs.as_ptr(), envp.as_ptr());
         
-        // If execve returns, it failed
-        // Try to print error, but be careful - the process state might be corrupted
-        if result < 0 {
-            // Use simple writes directly to avoid complex printing
-            let msg = b"execve failed\n";
-            write(2, msg.as_ptr(), msg.len()); // stderr
-        }
-        
-        // Exit immediately - don't trust the stack or other state
-        syscall1(SYS_EXIT, 1);
-        
-        // Should never reach here, but if exit fails, loop forever
-        loop {
-            core::hint::spin_loop();
-        }
+        // If we get here, execve failed
+        print_str("Child: execve failed, error=");
+        print_hex(result as u64);
+        println_str("");
+        exit(1);
     }
     
     // Parent process - wait for child

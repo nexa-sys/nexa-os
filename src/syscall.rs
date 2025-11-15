@@ -1426,12 +1426,12 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
     crate::serial::_print(format_args!("[fork] Copying {} KB from parent to child\n",
                                        memory_size / 1024));
     
-    // DEBUG: Check if parent's memory at 0xa00228 has data
+    // DEBUG: Check parent's memory at path_buf location (0x9fe390 from shell output)
     unsafe {
-        let test_addr = 0xa00228u64 as *const u8;
+        let test_addr = 0x9fe390u64 as *const u8;
         let test_bytes = core::slice::from_raw_parts(test_addr, 16);
         crate::serial::_print(format_args!(
-            "[fork-debug] Parent mem at 0xa00228: {:02x?}\n",
+            "[fork-debug] Parent mem at path_buf (0x9fe390): {:02x?}\n",
             test_bytes
         ));
     }
@@ -1455,11 +1455,11 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
         
         core::ptr::copy_nonoverlapping(src_ptr, dst_ptr, memory_size as usize);
         
-        // DEBUG: Verify copy worked - check same address in child's physical memory
-        let child_test_addr = (child_phys_base + (0xa00228 - USER_VIRT_BASE)) as *const u8;
+        // DEBUG: Verify copy worked - check path_buf address in child's physical memory
+        let child_test_addr = (child_phys_base + (0x9fe390 - USER_VIRT_BASE)) as *const u8;
         let child_test_bytes = core::slice::from_raw_parts(child_test_addr, 16);
         crate::serial::_print(format_args!(
-            "[fork-debug] Child phys mem at offset 0xa00228: {:02x?}\n",
+            "[fork-debug] Child phys mem at path_buf (0x9fe390): {:02x?}\n",
             child_test_bytes
         ));
     }
