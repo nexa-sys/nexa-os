@@ -36,6 +36,9 @@ pub(crate) mod time;
 pub mod dns;
 pub mod resolver;
 
+// Socket API module
+pub mod socket;
+
 // Re-export commonly used stdio helpers for convenience
 pub use stdio::{
     fflush, fprintf, fread, fwrite, getchar, printf, putchar, puts, stderr_write_all,
@@ -43,14 +46,17 @@ pub use stdio::{
     stdout_flush, stdout_write_all, stdout_write_fmt, stdout_write_str,
 };
 
-// Re-export resolver types
-pub use resolver::{
-    parse_ipv4, format_ipv4, Resolver, SockAddrIn,
+// Re-export socket types and functions
+pub use socket::{
+    bind, connect, recvfrom, sendto, socket,
+    format_ipv4, parse_ipv4, SockAddr, SockAddrIn,
     AF_INET, AF_INET6, AF_UNSPEC,
-    SOCK_STREAM, SOCK_DGRAM,
-    AI_PASSIVE, AI_CANONNAME, AI_NUMERICHOST,
-    EAI_NONAME, EAI_AGAIN, EAI_FAIL,
+    SOCK_STREAM, SOCK_DGRAM, SOCK_RAW,
+    IPPROTO_IP, IPPROTO_ICMP, IPPROTO_TCP, IPPROTO_UDP,
 };
+
+// Re-export resolver types
+pub use resolver::Resolver;
 
 // Libc-compatible type definitions for NexaOS
 pub type c_char = i8;

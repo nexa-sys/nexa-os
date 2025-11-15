@@ -26,6 +26,13 @@ pub mod errno {
     pub const ENODEV: i32 = 19; // No such device
     pub const ENOSYS: i32 = 38; // Function not implemented
     pub const ENOTSUP: i32 = 95; // Operation not supported
+    pub const ENOTSOCK: i32 = 88; // Socket operation on non-socket
+    pub const EAFNOSUPPORT: i32 = 97; // Address family not supported
+    pub const EADDRINUSE: i32 = 98; // Address already in use
+    pub const EADDRNOTAVAIL: i32 = 99; // Cannot assign requested address
+    pub const ENETDOWN: i32 = 100; // Network is down
+    pub const ENETUNREACH: i32 = 101; // Network is unreachable
+    pub const ECONNRESET: i32 = 104; // Connection reset by peer
 }
 
 /// POSIX file type enumeration used by the VFS layer.

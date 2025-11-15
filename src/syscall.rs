@@ -93,6 +93,15 @@ pub const SYS_USER_INFO: u64 = 222;
 pub const SYS_USER_LIST: u64 = 223;
 pub const SYS_USER_LOGOUT: u64 = 224;
 
+// Network socket calls (POSIX-compatible)
+pub const SYS_SOCKET: u64 = 41;     // sys_socket (Linux)
+pub const SYS_BIND: u64 = 49;       // sys_bind (Linux)
+pub const SYS_SENDTO: u64 = 44;     // sys_sendto (Linux)
+pub const SYS_RECVFROM: u64 = 45;   // sys_recvfrom (Linux)
+pub const SYS_CONNECT: u64 = 42;    // sys_connect (Linux)
+pub const SYS_GETSOCKNAME: u64 = 51; // sys_getsockname (Linux)
+pub const SYS_GETPEERNAME: u64 = 52; // sys_getpeername (Linux)
+
 // Init system calls
 pub const SYS_REBOOT: u64 = 169; // sys_reboot (Linux)
 pub const SYS_SHUTDOWN: u64 = 230; // Custom: system shutdown
@@ -115,6 +124,21 @@ const USER_FLAG_ADMIN: u64 = 0x1;
 const F_DUPFD: u64 = 0;
 const F_GETFL: u64 = 3;
 const F_SETFL: u64 = 4;
+
+// Socket domain constants (POSIX)
+const AF_INET: i32 = 2;       // IPv4
+const AF_INET6: i32 = 10;     // IPv6
+
+// Socket type constants (POSIX)
+const SOCK_STREAM: i32 = 1;   // TCP
+const SOCK_DGRAM: i32 = 2;    // UDP
+const SOCK_RAW: i32 = 3;      // Raw sockets
+
+// Socket protocol constants (POSIX)
+const IPPROTO_IP: i32 = 0;    // Dummy protocol for TCP
+const IPPROTO_ICMP: i32 = 1;  // ICMP
+const IPPROTO_TCP: i32 = 6;   // TCP
+const IPPROTO_UDP: i32 = 17;  // UDP
 
 // UEFI compatibility bridge syscalls
 pub const SYS_UEFI_GET_COUNTS: u64 = 240;
@@ -178,11 +202,39 @@ struct IpcTransferRequest {
     buffer_len: u64,
 }
 
+/// sockaddr_in structure (POSIX)
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct SockAddrIn {
+    sin_family: u16,    // AF_INET
+    sin_port: u16,      // Port number (network byte order)
+    sin_addr: u32,      // IPv4 address (network byte order)
+    sin_zero: [u8; 8],  // Padding to match sockaddr size
+}
+
+/// Generic sockaddr structure (POSIX)
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct SockAddr {
+    sa_family: u16,     // Address family
+    sa_data: [u8; 14],  // Address data
+}
+
+/// Socket handle - references a socket in the network stack
+#[derive(Clone, Copy)]
+struct SocketHandle {
+    socket_index: usize,  // Index into network stack's socket table
+    domain: i32,          // AF_INET, AF_INET6
+    socket_type: i32,     // SOCK_STREAM, SOCK_DGRAM
+    protocol: i32,        // IPPROTO_TCP, IPPROTO_UDP
+}
+
 #[derive(Clone, Copy)]
 enum FileBacking {
     Inline(&'static [u8]),
     Ext2(crate::fs::ext2::FileRef),
     StdStream(StdStreamKind),
+    Socket(SocketHandle),
 }
 
 #[derive(Clone, Copy)]
@@ -461,6 +513,11 @@ fn syscall_read(fd: u64, buf: *mut u8, count: usize) -> u64 {
                 }
                 FileBacking::StdStream(_) => {
                     posix::set_errno(posix::errno::EBADF);
+                    return u64::MAX;
+                }
+                FileBacking::Socket(_) => {
+                    // Socket read not yet implemented
+                    posix::set_errno(posix::errno::ENOTSUP);
                     return u64::MAX;
                 }
                 FileBacking::Inline(data) => {
@@ -2148,6 +2205,287 @@ fn syscall_uefi_map_net_mmio(index: usize) -> u64 {
     }
 }
 
+/// SYS_SOCKET - Create a socket
+/// Returns: socket fd on success, -1 on error
+fn syscall_socket(domain: i32, socket_type: i32, protocol: i32) -> u64 {
+    // Validate parameters
+    if domain != AF_INET {
+        posix::set_errno(posix::errno::ENOSYS); // Only IPv4 supported for now
+        return u64::MAX;
+    }
+
+    if socket_type != SOCK_DGRAM {
+        posix::set_errno(posix::errno::ENOSYS); // Only UDP supported for now
+        return u64::MAX;
+    }
+
+    if protocol != 0 && protocol != IPPROTO_UDP {
+        posix::set_errno(posix::errno::EINVAL);
+        return u64::MAX;
+    }
+
+    // Find free file descriptor
+    unsafe {
+        for idx in 0..MAX_OPEN_FILES {
+            if FILE_HANDLES[idx].is_none() {
+                // Socket will be created later on bind()
+                // For now, just reserve the fd with a socket handle
+                let socket_handle = SocketHandle {
+                    socket_index: usize::MAX, // Not allocated yet
+                    domain,
+                    socket_type,
+                    protocol: IPPROTO_UDP,
+                };
+
+                let metadata = crate::posix::Metadata::empty()
+                    .with_type(crate::posix::FileType::Socket)
+                    .with_uid(0)
+                    .with_gid(0)
+                    .with_mode(0o0600);
+
+                let handle = FileHandle {
+                    backing: FileBacking::Socket(socket_handle),
+                    position: 0,
+                    metadata,
+                };
+
+                FILE_HANDLES[idx] = Some(handle);
+                posix::set_errno(0);
+                return FD_BASE + idx as u64;
+            }
+        }
+    }
+
+    // No free file descriptors
+    posix::set_errno(posix::errno::EMFILE);
+    u64::MAX
+}
+
+/// SYS_BIND - Bind socket to local address
+/// Returns: 0 on success, -1 on error
+fn syscall_bind(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
+    if addr.is_null() || addrlen < 16 {
+        posix::set_errno(posix::errno::EINVAL);
+        return u64::MAX;
+    }
+
+    // Get socket handle
+    let idx = if sockfd >= FD_BASE {
+        (sockfd - FD_BASE) as usize
+    } else {
+        posix::set_errno(posix::errno::EBADF);
+        return u64::MAX;
+    };
+
+    if idx >= MAX_OPEN_FILES {
+        posix::set_errno(posix::errno::EBADF);
+        return u64::MAX;
+    }
+
+    unsafe {
+        let Some(handle) = FILE_HANDLES[idx].as_mut() else {
+            posix::set_errno(posix::errno::EBADF);
+            return u64::MAX;
+        };
+
+        let FileBacking::Socket(ref mut sock_handle) = handle.backing else {
+            posix::set_errno(posix::errno::ENOTSOCK);
+            return u64::MAX;
+        };
+
+        // Parse sockaddr_in from generic sockaddr
+        let addr_ref = &*addr;
+        if addr_ref.sa_family != AF_INET as u16 {
+            posix::set_errno(posix::errno::EINVAL);
+            return u64::MAX;
+        }
+
+        // Extract port from sa_data (first 2 bytes, network byte order)
+        let port = u16::from_be_bytes([addr_ref.sa_data[0], addr_ref.sa_data[1]]);
+
+        // TODO: Allocate socket in network stack and bind to port
+        // For now, just store the socket index as port for testing
+        sock_handle.socket_index = port as usize;
+
+        crate::kinfo!("[SYS_BIND] sockfd={} bound to port {}", sockfd, port);
+        posix::set_errno(0);
+        0
+    }
+}
+
+/// SYS_SENDTO - Send datagram to specified address
+/// Returns: number of bytes sent on success, -1 on error
+fn syscall_sendto(
+    sockfd: u64,
+    buf: *const u8,
+    len: usize,
+    _flags: i32,
+    dest_addr: *const SockAddr,
+    addrlen: u32,
+) -> u64 {
+    if buf.is_null() || len == 0 {
+        posix::set_errno(posix::errno::EINVAL);
+        return u64::MAX;
+    }
+
+    if dest_addr.is_null() || addrlen < 16 {
+        posix::set_errno(posix::errno::EINVAL);
+        return u64::MAX;
+    }
+
+    // Get socket handle
+    let idx = if sockfd >= FD_BASE {
+        (sockfd - FD_BASE) as usize
+    } else {
+        posix::set_errno(posix::errno::EBADF);
+        return u64::MAX;
+    };
+
+    if idx >= MAX_OPEN_FILES {
+        posix::set_errno(posix::errno::EBADF);
+        return u64::MAX;
+    }
+
+    unsafe {
+        let Some(handle) = FILE_HANDLES[idx].as_ref() else {
+            posix::set_errno(posix::errno::EBADF);
+            return u64::MAX;
+        };
+
+        let FileBacking::Socket(_sock_handle) = handle.backing else {
+            posix::set_errno(posix::errno::ENOTSOCK);
+            return u64::MAX;
+        };
+
+        // Parse destination address
+        let addr_ref = &*dest_addr;
+        if addr_ref.sa_family != AF_INET as u16 {
+            posix::set_errno(posix::errno::EINVAL);
+            return u64::MAX;
+        }
+
+        // Extract port and IP address
+        let port = u16::from_be_bytes([addr_ref.sa_data[0], addr_ref.sa_data[1]]);
+        let ip = [
+            addr_ref.sa_data[2],
+            addr_ref.sa_data[3],
+            addr_ref.sa_data[4],
+            addr_ref.sa_data[5],
+        ];
+
+        // Copy user data to kernel buffer
+        let data_slice = core::slice::from_raw_parts(buf, len);
+
+        crate::kinfo!(
+            "[SYS_SENDTO] sockfd={} sending {} bytes to {}.{}.{}.{}:{}",
+            sockfd,
+            len,
+            ip[0],
+            ip[1],
+            ip[2],
+            ip[3],
+            port
+        );
+
+        // TODO: Actually send via network stack
+        // For now, just pretend we sent it
+        posix::set_errno(0);
+        len as u64
+    }
+}
+
+/// SYS_RECVFROM - Receive datagram and source address
+/// Returns: number of bytes received on success, -1 on error
+fn syscall_recvfrom(
+    sockfd: u64,
+    buf: *mut u8,
+    len: usize,
+    _flags: i32,
+    src_addr: *mut SockAddr,
+    addrlen: *mut u32,
+) -> u64 {
+    if buf.is_null() || len == 0 {
+        posix::set_errno(posix::errno::EINVAL);
+        return u64::MAX;
+    }
+
+    // Get socket handle
+    let idx = if sockfd >= FD_BASE {
+        (sockfd - FD_BASE) as usize
+    } else {
+        posix::set_errno(posix::errno::EBADF);
+        return u64::MAX;
+    };
+
+    if idx >= MAX_OPEN_FILES {
+        posix::set_errno(posix::errno::EBADF);
+        return u64::MAX;
+    }
+
+    unsafe {
+        let Some(handle) = FILE_HANDLES[idx].as_ref() else {
+            posix::set_errno(posix::errno::EBADF);
+            return u64::MAX;
+        };
+
+        let FileBacking::Socket(_sock_handle) = handle.backing else {
+            posix::set_errno(posix::errno::ENOTSOCK);
+            return u64::MAX;
+        };
+
+        // TODO: Actually receive from network stack
+        // For now, return EAGAIN (would block)
+        posix::set_errno(posix::errno::EAGAIN);
+        u64::MAX
+    }
+}
+
+/// SYS_CONNECT - Connect socket to remote address
+/// Returns: 0 on success, -1 on error
+fn syscall_connect(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
+    if addr.is_null() || addrlen < 16 {
+        posix::set_errno(posix::errno::EINVAL);
+        return u64::MAX;
+    }
+
+    // Get socket handle
+    let idx = if sockfd >= FD_BASE {
+        (sockfd - FD_BASE) as usize
+    } else {
+        posix::set_errno(posix::errno::EBADF);
+        return u64::MAX;
+    };
+
+    if idx >= MAX_OPEN_FILES {
+        posix::set_errno(posix::errno::EBADF);
+        return u64::MAX;
+    }
+
+    unsafe {
+        let Some(handle) = FILE_HANDLES[idx].as_ref() else {
+            posix::set_errno(posix::errno::EBADF);
+            return u64::MAX;
+        };
+
+        let FileBacking::Socket(_sock_handle) = handle.backing else {
+            posix::set_errno(posix::errno::ENOTSOCK);
+            return u64::MAX;
+        };
+
+        // Parse destination address
+        let addr_ref = &*addr;
+        if addr_ref.sa_family != AF_INET as u16 {
+            posix::set_errno(posix::errno::EINVAL);
+            return u64::MAX;
+        }
+
+        // For UDP, connect() just stores the default destination
+        // It doesn't actually establish a connection
+        posix::set_errno(0);
+        0
+    }
+}
+
 fn syscall_uefi_get_usb_info(index: usize, out: *mut UsbHostDescriptor) -> u64 {
     if out.is_null() {
         posix::set_errno(posix::errno::EINVAL);
@@ -2268,6 +2606,25 @@ pub extern "C" fn syscall_dispatch(
         SYS_USER_INFO => syscall_user_info(arg1 as *mut UserInfoReply),
         SYS_USER_LIST => syscall_user_list(arg1 as *mut u8, arg2 as usize),
         SYS_USER_LOGOUT => syscall_user_logout(),
+        SYS_SOCKET => syscall_socket(arg1 as i32, arg2 as i32, arg3 as i32),
+        SYS_BIND => syscall_bind(arg1, arg2 as *const SockAddr, arg3 as u32),
+        SYS_SENDTO => syscall_sendto(
+            arg1,
+            arg2 as *const u8,
+            arg3 as usize,
+            0,                           // flags (arg4, need to access r10)
+            0 as *const SockAddr,        // dest_addr (arg5, need to access r8)
+            0,                            // addrlen (arg6, need to access r9)
+        ),
+        SYS_RECVFROM => syscall_recvfrom(
+            arg1,
+            arg2 as *mut u8,
+            arg3 as usize,
+            0,                      // flags (arg4)
+            0 as *mut SockAddr,     // src_addr (arg5)
+            0 as *mut u32,          // addrlen (arg6)
+        ),
+        SYS_CONNECT => syscall_connect(arg1, arg2 as *const SockAddr, arg3 as u32),
         SYS_REBOOT => syscall_reboot(arg1 as i32),
         SYS_SHUTDOWN => syscall_shutdown(),
         SYS_RUNLEVEL => syscall_runlevel(arg1 as i32),

@@ -4,17 +4,9 @@
 /// /etc/resolv.conf, /etc/nsswitch.conf).
 
 use super::dns::{DnsQuery, DnsResponse, QType, ResolverConfig};
+use super::socket::{SockAddrIn, AF_INET, AF_INET6, AF_UNSPEC, SOCK_STREAM, SOCK_DGRAM, parse_ipv4, format_ipv4};
 
 const MAX_HOSTNAME: usize = 256;
-
-/// Address family constants (compatible with POSIX)
-pub const AF_UNSPEC: i32 = 0;
-pub const AF_INET: i32 = 2;
-pub const AF_INET6: i32 = 10;
-
-/// Socket type constants
-pub const SOCK_STREAM: i32 = 1;
-pub const SOCK_DGRAM: i32 = 2;
 
 /// AI flags for getaddrinfo
 pub const AI_PASSIVE: i32 = 0x01;
@@ -43,27 +35,6 @@ pub const EAI_SERVICE: i32 = -8;
 pub const EAI_MEMORY: i32 = -10;
 pub const EAI_SYSTEM: i32 = -11;
 pub const EAI_OVERFLOW: i32 = -12;
-
-/// sockaddr_in structure (IPv4)
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct SockAddrIn {
-    pub sin_family: u16,      // AF_INET
-    pub sin_port: u16,        // Port (network byte order)
-    pub sin_addr: [u8; 4],    // IPv4 address
-    pub sin_zero: [u8; 8],    // Padding
-}
-
-impl SockAddrIn {
-    pub fn new(ip: [u8; 4], port: u16) -> Self {
-        Self {
-            sin_family: AF_INET as u16,
-            sin_port: port.to_be(),
-            sin_addr: ip,
-            sin_zero: [0; 8],
-        }
-    }
-}
 
 /// addrinfo structure (compatible with POSIX)
 #[repr(C)]
@@ -280,78 +251,6 @@ impl Resolver {
     pub fn nss_sources(&self) -> &[NssSource] {
         &self.nsswitch_hosts[..self.nsswitch_count]
     }
-}
-
-/// Parse IPv4 address string
-pub fn parse_ipv4(s: &str) -> Option<[u8; 4]> {
-    let mut octets = [0u8; 4];
-    let mut index = 0;
-
-    for part in s.split('.') {
-        if index >= 4 {
-            return None;
-        }
-        octets[index] = part.parse::<u8>().ok()?;
-        index += 1;
-    }
-
-    if index != 4 {
-        return None;
-    }
-
-    Some(octets)
-}
-
-/// Format IPv4 address to string
-pub fn format_ipv4(ip: [u8; 4], buffer: &mut [u8]) -> usize {
-    let mut pos = 0;
-    for (i, octet) in ip.iter().enumerate() {
-        if i > 0 {
-            if pos < buffer.len() {
-                buffer[pos] = b'.';
-                pos += 1;
-            }
-        }
-
-        let s = format_u8(*octet);
-        let len = s.len().min(buffer.len() - pos);
-        buffer[pos..pos + len].copy_from_slice(&s.as_bytes()[..len]);
-        pos += len;
-    }
-    pos
-}
-
-/// Format u8 as decimal string
-fn format_u8(n: u8) -> &'static str {
-    const LOOKUP: [&str; 256] = [
-        "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
-        "10", "11", "12", "13", "14", "15", "16", "17", "18", "19",
-        "20", "21", "22", "23", "24", "25", "26", "27", "28", "29",
-        "30", "31", "32", "33", "34", "35", "36", "37", "38", "39",
-        "40", "41", "42", "43", "44", "45", "46", "47", "48", "49",
-        "50", "51", "52", "53", "54", "55", "56", "57", "58", "59",
-        "60", "61", "62", "63", "64", "65", "66", "67", "68", "69",
-        "70", "71", "72", "73", "74", "75", "76", "77", "78", "79",
-        "80", "81", "82", "83", "84", "85", "86", "87", "88", "89",
-        "90", "91", "92", "93", "94", "95", "96", "97", "98", "99",
-        "100", "101", "102", "103", "104", "105", "106", "107", "108", "109",
-        "110", "111", "112", "113", "114", "115", "116", "117", "118", "119",
-        "120", "121", "122", "123", "124", "125", "126", "127", "128", "129",
-        "130", "131", "132", "133", "134", "135", "136", "137", "138", "139",
-        "140", "141", "142", "143", "144", "145", "146", "147", "148", "149",
-        "150", "151", "152", "153", "154", "155", "156", "157", "158", "159",
-        "160", "161", "162", "163", "164", "165", "166", "167", "168", "169",
-        "170", "171", "172", "173", "174", "175", "176", "177", "178", "179",
-        "180", "181", "182", "183", "184", "185", "186", "187", "188", "189",
-        "190", "191", "192", "193", "194", "195", "196", "197", "198", "199",
-        "200", "201", "202", "203", "204", "205", "206", "207", "208", "209",
-        "210", "211", "212", "213", "214", "215", "216", "217", "218", "219",
-        "220", "221", "222", "223", "224", "225", "226", "227", "228", "229",
-        "230", "231", "232", "233", "234", "235", "236", "237", "238", "239",
-        "240", "241", "242", "243", "244", "245", "246", "247", "248", "249",
-        "250", "251", "252", "253", "254", "255",
-    ];
-    LOOKUP[n as usize]
 }
 
 #[cfg(test)]
