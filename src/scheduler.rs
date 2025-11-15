@@ -30,6 +30,8 @@ impl ProcessEntry {
                 has_entered_user: false,
                 cr3: 0,
                 tty: 0,
+                memory_base: 0,
+                memory_size: 0,
             },
             priority: 128,
             time_slice: 0,
@@ -429,7 +431,21 @@ pub fn do_schedule() {
 
             let first_run = !entry.process.has_entered_user;
             let next_pid = entry.process.pid;
+            let next_memory_base = entry.process.memory_base;
+            let next_memory_size = entry.process.memory_size;
             *current_lock = Some(next_pid);
+
+            // Remap user space to the new process's physical memory
+            // This ensures the child process sees its own copy of memory
+            crate::kinfo!("About to remap user space for PID {} to phys {:#x}", next_pid, next_memory_base);
+            crate::serial::_print(format_args!("[scheduler] Remapping for PID {} to phys {:#x}\n", 
+                                               next_pid, next_memory_base));
+            
+            if let Err(e) = crate::paging::remap_user_space(next_memory_base, next_memory_size) {
+                crate::kerror!("Failed to remap user space for PID {}: {}", next_pid, e);
+            } else {
+                crate::kinfo!("Successfully remapped user space to phys {:#x} for PID {}", next_memory_base, next_pid);
+            }
 
             if first_run {
                 entry.process.has_entered_user = true;

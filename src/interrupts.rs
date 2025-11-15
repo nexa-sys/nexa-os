@@ -43,6 +43,11 @@ global_asm!(
     "mov gs:[120], r10", // gs slot 15 = entry CS snapshot
     "mov r10, [rsp + 32]",
     "mov gs:[128], r10", // gs slot 16 = entry SS snapshot
+    
+    // CRITICAL: Save user RSP for fork()
+    "mov r10, [rsp + 24]", // r10 = user RSP
+    "mov gs:[0], r10",     // gs slot 0 = user RSP (for fork to read)
+    
     // Save user RIP for syscall_return_addr parameter
     "mov r10, [rsp + 0]", // r10 = user RIP
     // Now push general-purpose registers (we will NOT touch the interrupt frame on stack)

@@ -525,3 +525,87 @@ unsafe fn map_device_region_internal(
 
     Ok(phys_start as *mut u8)
 }
+
+/// Remap user space to a different physical address
+/// This is used during fork to switch between different process memory regions
+pub fn remap_user_space(phys_base: u64, size: u64) -> Result<(), &'static str> {
+    use x86_64::registers::control::Cr3;
+    use x86_64::registers::control::Cr3Flags;
+    use x86_64::structures::paging::PageTableFlags;
+    use x86_64::PhysAddr;
+
+    // Virtual address where user space is mapped
+    const USER_VIRT_BASE: u64 = 0x400000;
+    
+    crate::kinfo!(
+        "remap_user_space: mapping virt {:#x} to phys {:#x}, size {:#x}",
+        USER_VIRT_BASE,
+        phys_base,
+        size
+    );
+
+    // Calculate number of 2MB pages needed
+    let num_pages = (size + 0x1fffff) / 0x200000;
+
+    // Get PML4 table
+    let pml4 = unsafe { &mut *KERNEL_PML4.as_mut_ptr() };
+
+    // Get or create PDP for user space (entry 0 covers 0-512GB)
+    let pdp_phys = USER_PDP.phys_addr();
+    let pml4_entry = &mut pml4[0];
+    if pml4_entry.is_unused() {
+        pml4_entry.set_addr(
+            pdp_phys,
+            PageTableFlags::PRESENT
+                | PageTableFlags::WRITABLE
+                | PageTableFlags::USER_ACCESSIBLE,
+        );
+    }
+
+    let pdp = unsafe { &mut *USER_PDP.as_mut_ptr() };
+
+    // Get or create PD for user space (entry 0 covers 0-1GB)
+    let pd_phys = USER_PD.phys_addr();
+    let pdp_entry = &mut pdp[0];
+    if pdp_entry.is_unused() {
+        pdp_entry.set_addr(
+            pd_phys,
+            PageTableFlags::PRESENT
+                | PageTableFlags::WRITABLE
+                | PageTableFlags::USER_ACCESSIBLE,
+        );
+    }
+
+    let pd = unsafe { &mut *USER_PD.as_mut_ptr() };
+
+    // Map each 2MB page
+    for i in 0..num_pages {
+        let virt_addr = USER_VIRT_BASE + i * 0x200000;
+        let phys_addr = phys_base + i * 0x200000;
+
+        // Calculate PD index (bits 21-29 of virtual address)
+        let pd_index = ((virt_addr >> 21) & 0x1ff) as usize;
+
+        let entry = &mut pd[pd_index];
+
+        // Set up 2MB page mapping
+        let flags = PageTableFlags::PRESENT
+            | PageTableFlags::WRITABLE
+            | PageTableFlags::USER_ACCESSIBLE
+            | PageTableFlags::HUGE_PAGE;
+
+        if nxe_supported() {
+            // Allow execution in user space (don't set NO_EXECUTE)
+        }
+
+        entry.set_addr(PhysAddr::new(phys_addr), flags);
+    }
+
+    // Flush TLB
+    unsafe {
+        let (flush_frame, _) = Cr3::read();
+        Cr3::write(flush_frame, Cr3Flags::empty());
+    }
+
+    Ok(())
+}

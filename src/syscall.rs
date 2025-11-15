@@ -1309,6 +1309,22 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
         syscall_return_addr
     );
 
+    // CRITICAL: Get the ACTUAL userspace RSP from GS_DATA
+    // The syscall_interrupt_handler stores user_rsp in GS_DATA at a known offset.
+    // We'll use the assembler interface to read it from GS segment.
+    let user_rsp: u64;
+    unsafe {
+        core::arch::asm!(
+            "mov {}, gs:[0]",  // Read from GS_DATA slot 0 (assuming user_rsp is stored there)
+            out(reg) user_rsp
+        );
+    }
+    
+    crate::serial::_print(format_args!(
+        "[fork] Retrieved user_rsp from GS_DATA: {:#x}\n",
+        user_rsp
+    ));
+
     // Get current process
     let current_pid = match crate::scheduler::get_current_pid() {
         Some(pid) => pid,
@@ -1328,9 +1344,14 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
     };
 
     crate::kinfo!("fork() called from PID {}", current_pid);
+    crate::serial::_print(format_args!("[fork] PID {} calling fork\n", current_pid));
+
+    let parent_pid = current_pid;  // Store for later use
 
     // Allocate new PID for child
     let child_pid = crate::process::allocate_pid();
+    
+    crate::serial::_print(format_args!("[fork] Allocated child PID {}\n", child_pid));
 
     // Create child process - start by copying parent state
     let mut child_process = parent_process;
@@ -1345,47 +1366,126 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
     // FIX: Set child's RIP to the syscall return address, not parent's current RIP
     // This ensures child resumes execution from the fork() call site in user code
     child_process.context.rip = syscall_return_addr;
+    
+    // CRITICAL FIX: Use the REAL userspace RSP, not the kernel stack RSP!
+    // We stored user_rsp in GS_DATA[0] in syscall_interrupt_handler.
+    child_process.context.rsp = user_rsp;
 
     crate::kdebug!(
-        "Child RIP set to {:#x}, Child RAX = 0",
-        child_process.context.rip
+        "Child RIP set to {:#x}, Child RAX = 0, Child RSP = {:#x}",
+        child_process.context.rip,
+        child_process.context.rsp
     );
+    
+    // CRITICAL DEBUG: Verify RSP was correctly set
+    crate::serial::_print(format_args!(
+        "[fork] User RSP (from GS_DATA)={:#x}, Kernel RSP={:#x}, Child RSP={:#x}\n",
+        user_rsp, parent_process.context.rsp, child_process.context.rsp
+    ));
 
-    // TODO: Full production implementation needs:
-    // 1. Copy entire memory space (code, data, heap, stack)
-    //    - Allocate new physical pages for child
-    //    - Copy USER_VIRT_BASE to (INTERP_BASE + INTERP_REGION_SIZE)
-    //    - This includes: code, heap, stack, interpreter region
-    // 2. Set up separate page tables for child process
-    //    - Create new CR3 (page directory pointer)
-    //    - Map child's physical pages to same virtual addresses
-    //    - Implement copy-on-write (COW) for efficiency
-    // 3. Copy file descriptor table
-    //    - Duplicate all open file descriptors
-    //    - Share underlying file objects but separate FD table
-    // 4. Copy signal handlers and masks
-    // 5. Handle shared memory regions correctly
-    //
-    // Current simplified version for fork+exec pattern:
-    // - Shares parent's memory (no copy yet)
-    // - Works because exec() immediately replaces memory
-    // - Good enough for init/getty/shell pattern
-
+    // FULL FORK IMPLEMENTATION: Copy entire user space memory
+    // This ensures child has its own copy of code, data, heap, and stack
     let memory_size = (INTERP_BASE + INTERP_REGION_SIZE) - USER_VIRT_BASE;
     crate::kinfo!(
-        "fork() - memory copy needed: {:#x} bytes ({} KB) from {:#x}",
+        "fork() - copying {:#x} bytes ({} KB) from {:#x}",
         memory_size,
         memory_size / 1024,
         USER_VIRT_BASE
     );
+    
+    crate::serial::_print(format_args!("[fork] Copying {} KB of memory\n", memory_size / 1024));
 
-    // Simplified memory sharing for now
-    // When we implement page tables per-process, we'll do proper COW
-    crate::kdebug!("fork() - using shared memory model (OK for fork+exec pattern)");
+    // Allocate new physical memory for child process
+    // We need to find a free physical region to copy parent's memory
+    // For now, we'll allocate at a different physical location
+    let child_phys_base = match allocate_user_memory_region(memory_size) {
+        Some(addr) => addr,
+        None => {
+            crate::kerror!("fork() - failed to allocate memory for child process");
+            return u64::MAX;
+        }
+    };
+
+    crate::kdebug!(
+        "fork() - allocated child memory at physical {:#x}",
+        child_phys_base
+    );
+
+    // Copy parent's memory to child's new physical location
+    // CRITICAL: Parent's data is at VIRTUAL address USER_VIRT_BASE,
+    // but we need to read from parent's PHYSICAL memory.
+    // When we're in syscall context, the page tables are still parent's,
+    // so accessing USER_VIRT_BASE will give us parent's data.
+    // However, we need to be careful about which physical memory to copy from.
+    
+    let parent_phys_base = parent_process.memory_base;
+    
+    crate::serial::_print(format_args!(
+        "[fork] Parent PID {} phys_base={:#x}, child PID {} phys_base={:#x}\n",
+        parent_pid, parent_phys_base, child_pid, child_phys_base));
+    crate::serial::_print(format_args!("[fork] Copying {} KB from parent to child\n",
+                                       memory_size / 1024));
+    
+    // DEBUG: Check if parent's memory at 0xa00228 has data
+    unsafe {
+        let test_addr = 0xa00228u64 as *const u8;
+        let test_bytes = core::slice::from_raw_parts(test_addr, 16);
+        crate::serial::_print(format_args!(
+            "[fork-debug] Parent mem at 0xa00228: {:02x?}\n",
+            test_bytes
+        ));
+    }
+    
+    unsafe {
+        // THE KEY INSIGHT: 
+        // We're currently running in syscall context with PARENT'S page tables active.
+        // USER_VIRT_BASE points to parent's physical memory via parent's page tables.
+        // But since we're in kernel mode, we can ALSO directly access physical memory.
+        // 
+        // Option 1: Copy from virtual (USER_VIRT_BASE) - uses parent's current mapping
+        // Option 2: Copy from parent's physical address directly
+        //
+        // We use Option 1 because parent's page tables are active NOW.
+        let src_ptr = USER_VIRT_BASE as *const u8;
+        let dst_ptr = child_phys_base as *mut u8;
+        
+        crate::serial::_print(format_args!(
+            "[fork] Detailed: reading from VIRT {:#x} (maps to parent phys {:#x}), writing to child PHYS {:#x}\n",
+            src_ptr as u64, parent_phys_base, dst_ptr as u64));
+        
+        core::ptr::copy_nonoverlapping(src_ptr, dst_ptr, memory_size as usize);
+        
+        // DEBUG: Verify copy worked - check same address in child's physical memory
+        let child_test_addr = (child_phys_base + (0xa00228 - USER_VIRT_BASE)) as *const u8;
+        let child_test_bytes = core::slice::from_raw_parts(child_test_addr, 16);
+        crate::serial::_print(format_args!(
+            "[fork-debug] Child phys mem at offset 0xa00228: {:02x?}\n",
+            child_test_bytes
+        ));
+    }
+
+    crate::kinfo!(
+        "fork() - memory copied successfully, {} KB",
+        memory_size / 1024
+    );
+    
+    crate::serial::_print(format_args!("[fork] Memory copied successfully\n"));
+
+    // Store child's physical base in the process struct
+    child_process.memory_base = child_phys_base;
+    child_process.memory_size = memory_size;
+    
+    crate::serial::_print(format_args!("[fork] Child memory_base={:#x}, memory_size={:#x}\n", 
+                                       child_phys_base, memory_size));
+
+    // Copy file descriptor table
+    // For now, we share the FD table (TODO: implement proper copy)
+    crate::kdebug!("fork() - FD table shared (TODO: implement copy)");
 
     // Add child to scheduler
     if let Err(e) = crate::scheduler::add_process(child_process, 128) {
         crate::kerror!("fork() - failed to add child process: {}", e);
+        // TODO: Free allocated memory
         return u64::MAX;
     }
 
@@ -1397,6 +1497,37 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
 
     // Return child PID to parent (child gets 0 via context.rax)
     child_pid
+}
+
+/// Allocate a region of physical memory for user space
+/// Returns physical address of allocated region, or None if allocation fails
+fn allocate_user_memory_region(size: u64) -> Option<u64> {
+    use core::sync::atomic::{AtomicU64, Ordering};
+    
+    // Simple bump allocator for user memory regions
+    // Starts after kernel and grows upward
+    // TODO: Implement proper physical memory allocator with free list
+    static NEXT_USER_REGION: AtomicU64 = AtomicU64::new(0x10000000); // Start at 256MB
+    
+    // Align size to 4KB page boundary
+    let aligned_size = (size + 0xfff) & !0xfff;
+    
+    // Atomic allocation - get current and increment
+    let base = NEXT_USER_REGION.fetch_add(aligned_size, Ordering::SeqCst);
+    
+    // Check if we've exceeded physical memory (assume 4GB limit for now)
+    if base + aligned_size > 0x100000000 {
+        crate::kerror!("allocate_user_memory_region: out of memory");
+        return None;
+    }
+    
+    crate::kdebug!(
+        "allocate_user_memory_region: allocated {} bytes at {:#x}",
+        aligned_size,
+        base
+    );
+    
+    Some(base)
 }
 
 /// POSIX execve() system call - execute program

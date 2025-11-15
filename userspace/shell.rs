@@ -1579,8 +1579,36 @@ fn execute_external_command(cmd: &str, args: &[&str]) -> bool {
     // Empty environment for now
     let envp: [*const u8; 1] = [core::ptr::null()];
     
+    // DEBUG: Verify path_buf contents BEFORE fork
+    print_str("BEFORE FORK: path_buf addr=0x");
+    print_hex(path_buf.as_ptr() as u64);
+    print_str(", first 16 bytes: ");
+    for i in 0..16 {
+        print_hex(path_buf[i] as u64);
+        print_str(" ");
+    }
+    println_str("");
+    
+    // Check stack pointer BEFORE any more function calls
+    let sp_before: u64;
+    unsafe {
+        core::arch::asm!("mov {}, rsp", out(reg) sp_before);
+    }
+    print_str("Parent SP before fork: 0x");
+    print_hex(sp_before);
+    print_str(", path_buf offset from SP: 0x");
+    print_hex((path_buf.as_ptr() as u64).wrapping_sub(sp_before));
+    println_str("");
+    
+    println_str("About to fork...");
+    
     // Fork and execute
     let pid = fork();
+    
+    print_str("fork returned: ");
+    print_hex(pid as u64);
+    println_str("");
+    
     if pid < 0 {
         println_str("fork failed");
         return false;
@@ -1589,19 +1617,47 @@ fn execute_external_command(cmd: &str, args: &[&str]) -> bool {
     if pid == 0 {
         // Child process - this never returns if execve succeeds
         
+        // Debug: Check stack pointer and path buffer address BEFORE and AFTER fork
+        let sp: u64;
+        unsafe {
+            core::arch::asm!("mov {}, rsp", out(reg) sp);
+        }
+        
+        print_str("Child: SP=0x");
+        print_hex(sp);
+        print_str(", path_buf addr=0x");
+        print_hex(path_buf.as_ptr() as u64);
+        println_str("");
+        
+        // The address changed after fork! Check what's at the NEW address:
+        print_str("Child: path_buf content at NEW addr: ");
+        for i in 0..16 {
+            print_hex(path_buf[i] as u64);
+            print_str(" ");
+        }
+        println_str("");
+        
+        // Also check what's at the OLD address (0x9fe390):
+        print_str("Child: memory at OLD addr 0x9fe390: ");
+        unsafe {
+            let old_addr = 0x9fe390u64 as *const u8;
+            for i in 0..16 {
+                print_hex(*old_addr.add(i) as u64);
+                print_str(" ");
+            }
+        }
+        println_str("");
+        
         // Debug: verify path is still valid in child
-        print_str("Child: path=");
+        print_str("Child: about to execve, path=");
         if let Ok(path_str) = core::str::from_utf8(&path_buf[..path_len]) {
             println_str(path_str);
         } else {
             println_str("<invalid>");
         }
         
-        print_str("Child: path_buf.as_ptr()=0x");
-        print_hex(path_buf.as_ptr() as u64);
-        println_str("");
-        
-        print_str("Child: first 16 bytes: ");
+        // Debug: print first few bytes of path_buf
+        print_str("Child: path_buf bytes: ");
         for i in 0..16.min(path_len) {
             print_hex(path_buf[i] as u64);
             print_str(" ");

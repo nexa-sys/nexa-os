@@ -100,6 +100,8 @@ pub struct Process {
     pub has_entered_user: bool,
     pub cr3: u64, // Page table root (for process-specific page tables) - 0 means use kernel page table
     pub tty: usize, // Controlling virtual terminal index
+    pub memory_base: u64, // Physical base address of process memory (for fork)
+    pub memory_size: u64, // Size of process memory region (for fork)
 }
 
 static NEXT_PID: AtomicU64 = AtomicU64::new(1);
@@ -210,6 +212,8 @@ impl Process {
                     has_entered_user: false,
                     cr3: 0, // TODO: Allocate process-specific page table
                     tty: 0,
+                    memory_base: USER_VIRT_BASE, // Initially mapped at virtual = physical
+                    memory_size: USER_REGION_SIZE,
                 });
             } else {
                 crate::kwarn!(
@@ -243,6 +247,8 @@ impl Process {
             has_entered_user: false,
             cr3: 0, // TODO: Allocate process-specific page table
             tty: 0,
+            memory_base: USER_VIRT_BASE, // Initially mapped at virtual = physical
+            memory_size: USER_REGION_SIZE,
         })
     }
 
