@@ -22,7 +22,6 @@ struct ExecContext {
     pending: AtomicBool,
     entry: AtomicU64,
     stack: AtomicU64,
-    #[allow(dead_code)]
     user_data_sel: AtomicU64, // User data segment selector (with RPL=3)
 }
 
@@ -37,7 +36,11 @@ static EXEC_CONTEXT: ExecContext = ExecContext {
 /// Returns: AL = 1 if exec was pending, 0 otherwise
 /// Outputs: entry_out, stack_out, user_data_sel_out (each 8 bytes)
 #[no_mangle]
-pub extern "C" fn get_exec_context(entry_out: *mut u64, stack_out: *mut u64) -> bool {
+pub extern "C" fn get_exec_context(
+    entry_out: *mut u64,
+    stack_out: *mut u64,
+    user_data_sel_out: *mut u64,
+) -> bool {
     // Use SeqCst to ensure proper synchronization
     if EXEC_CONTEXT
         .pending
@@ -47,13 +50,17 @@ pub extern "C" fn get_exec_context(entry_out: *mut u64, stack_out: *mut u64) -> 
         // All values are guaranteed to be visible after the compare_exchange
         let entry = EXEC_CONTEXT.entry.load(Ordering::SeqCst);
         let stack = EXEC_CONTEXT.stack.load(Ordering::SeqCst);
+        let user_data_sel = EXEC_CONTEXT.user_data_sel.load(Ordering::SeqCst);
         unsafe {
             *entry_out = entry;
             *stack_out = stack;
+            if !user_data_sel_out.is_null() {
+                *user_data_sel_out = user_data_sel;
+            }
         }
         crate::serial::_print(format_args!(
-            "[get_exec_context] returning entry={:#x}, stack={:#x}\n",
-            entry, stack
+            "[get_exec_context] returning entry={:#x}, stack={:#x}, user_data_sel={:#x}\n",
+            entry, stack, user_data_sel
         ));
         true
     } else {
@@ -1655,7 +1662,7 @@ fn syscall_execve(path: *const u8, _argv: *const *const u8, _envp: *const *const
     // Both entry and stack must be visible before pending is set to true
 
     // Get user data segment selector (kept for future use but not stored for iretq path)
-    let _user_data_sel = unsafe {
+    let user_data_sel = unsafe {
         let selectors = crate::gdt::get_selectors();
         let sel = selectors.user_data_selector.0 as u64;
         sel | 3 // Add RPL=3
@@ -1669,6 +1676,10 @@ fn syscall_execve(path: *const u8, _argv: *const *const u8, _envp: *const *const
     EXEC_CONTEXT
         .stack
         .store(new_process.stack_top, Ordering::SeqCst);
+    // Store user data segment selector for syscall fast path to restore
+    EXEC_CONTEXT
+        .user_data_sel
+        .store(user_data_sel, Ordering::SeqCst);
 
     // Finally, signal that exec context is ready
     // SeqCst ensures all prior stores are visible before this store

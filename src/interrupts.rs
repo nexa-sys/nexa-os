@@ -146,7 +146,11 @@ extern "C" {
     #[allow(dead_code)]
     fn syscall_handler();
     // Import get_exec_context from syscall module for exec support
-    fn get_exec_context(entry_out: *mut u64, stack_out: *mut u64) -> bool;
+    fn get_exec_context(
+        entry_out: *mut u64,
+        stack_out: *mut u64,
+        user_data_sel_out: *mut u64,
+    ) -> bool;
 }
 
 /// Exception handlers
