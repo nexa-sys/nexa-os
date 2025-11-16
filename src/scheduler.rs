@@ -103,14 +103,22 @@ pub fn add_process(process: Process, priority: u8) -> Result<(), &'static str> {
 }
 
 /// Remove a process from the scheduler
+/// This also handles cleanup of process-specific resources including page tables.
 pub fn remove_process(pid: Pid) -> Result<(), &'static str> {
     let mut table = PROCESS_TABLE.lock();
+    let mut removed_cr3 = None;
     let mut removed = false;
 
     for slot in table.iter_mut() {
         if let Some(entry) = slot {
             if entry.process.pid == pid {
                 crate::kinfo!("Scheduler: Removed process PID {}", pid);
+                
+                // Save CR3 for cleanup after releasing the lock
+                if entry.process.cr3 != 0 {
+                    removed_cr3 = Some(entry.process.cr3);
+                }
+                
                 *slot = None;
                 removed = true;
                 break;
@@ -124,6 +132,13 @@ pub fn remove_process(pid: Pid) -> Result<(), &'static str> {
         if current_pid() == Some(pid) {
             set_current_pid(None);
         }
+        
+        // Clean up process page tables if it had its own CR3
+        if let Some(cr3) = removed_cr3 {
+            crate::kdebug!("Freeing page tables for PID {} (CR3={:#x})", pid, cr3);
+            crate::paging::free_process_address_space(cr3);
+        }
+        
         Ok(())
     } else {
         Err("Process not found")

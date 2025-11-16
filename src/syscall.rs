@@ -1509,25 +1509,10 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
     // This is where fork page tables get corrupted - we must verify the result
     match crate::paging::create_process_address_space(child_phys_base, memory_size) {
         Ok(cr3) => {
-            // CRITICAL: Validate CR3 before storing it
-            if cr3 == 0 {
-                crate::kerror!("fork: create_process_address_space() returned CR3=0!");
+            // CRITICAL: Validate CR3 using dedicated validation function
+            if let Err(e) = crate::paging::validate_cr3(cr3, false) {
+                crate::kerror!("fork: create_process_address_space() returned invalid CR3 {:#x}: {}", cr3, e);
                 crate::kfatal!("Failed to create valid page tables for child");
-            }
-            
-            if cr3 & 0xFFF != 0 {
-                crate::kerror!(
-                    "fork: CR3 {:#x} is not page-aligned! This will cause GP faults!",
-                    cr3
-                );
-                crate::kfatal!("Invalid CR3 alignment");
-            }
-
-            if cr3 >= 0x1_0000_0000 {
-                crate::kwarn!(
-                    "fork: CR3 {:#x} is in very high physical address range",
-                    cr3
-                );
             }
 
             child_process.cr3 = cr3;

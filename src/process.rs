@@ -246,7 +246,14 @@ impl Process {
                     USER_PHYS_BASE,
                     USER_REGION_SIZE,
                 ) {
-                    Ok(cr3) => cr3,
+                    Ok(cr3) => {
+                        // Validate CR3 before using it
+                        if let Err(e) = crate::paging::validate_cr3(cr3, false) {
+                            crate::kerror!("Process::from_elf: Invalid CR3 {:#x}: {}", cr3, e);
+                            return Err("Failed to create valid address space");
+                        }
+                        cr3
+                    }
                     Err(err) => {
                         crate::kerror!("Failed to create address space for process: {}", err);
                         return Err("Failed to create process address space");
@@ -299,7 +306,14 @@ impl Process {
 
         let cr3 =
             match crate::paging::create_process_address_space(USER_PHYS_BASE, USER_REGION_SIZE) {
-                Ok(cr3) => cr3,
+                Ok(cr3) => {
+                    // Validate CR3 before using it
+                    if let Err(e) = crate::paging::validate_cr3(cr3, false) {
+                        crate::kerror!("Process::from_elf: Invalid CR3 {:#x}: {}", cr3, e);
+                        return Err("Failed to create valid address space");
+                    }
+                    cr3
+                }
                 Err(err) => {
                     crate::kerror!("Failed to create address space for process: {}", err);
                     return Err("Failed to create process address space");

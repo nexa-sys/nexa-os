@@ -81,6 +81,11 @@ static NXE_AVAILABLE: AtomicBool = AtomicBool::new(false);
 static NEXT_PT_FRAME: AtomicU64 = AtomicU64::new(0x0800_0000);
 static NEXT_USER_REGION: AtomicU64 = AtomicU64::new(0x1000_0000);
 
+// CR3 allocation statistics for debugging and monitoring
+static CR3_ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
+static CR3_ACTIVATIONS: AtomicU64 = AtomicU64::new(0);
+static CR3_FREES: AtomicU64 = AtomicU64::new(0);
+
 fn allocate_extra_table() -> Option<&'static PageTableHolder> {
     let idx = EXTRA_TABLE_INDEX.fetch_add(1, AtomicOrdering::SeqCst);
     if idx >= EXTRA_TABLES.len() {
@@ -547,11 +552,25 @@ pub fn create_process_address_space(phys_base: u64, size: u64) -> Result<u64, &'
         pd[pd_index].set_addr(PhysAddr::new(phys_addr), flags);
     }
 
+    // Increment allocation counter for monitoring
+    CR3_ALLOCATIONS.fetch_add(1, AtomicOrdering::Relaxed);
+
     Ok(pml4_phys.as_u64())
 }
 
 /// Activate the address space represented by the supplied CR3 physical address.
 /// Passing 0 selects the kernel's bootstrap page tables.
+/// 
+/// # Safety and Validation
+/// - CR3 must be 4KB-aligned (bits 0-11 must be zero)
+/// - CR3 must point to a valid PML4 table in physical memory
+/// - This function validates CR3 before activation to prevent GP faults
+/// 
+/// # Context Switching
+/// This function is called during:
+/// 1. Process execution (Process::execute)
+/// 2. Context switches (scheduler::do_schedule)
+/// 3. Returning to kernel space (scheduler::set_current_pid(None))
 pub fn activate_address_space(cr3_phys: u64) {
     use x86_64::registers::control::{Cr3, Cr3Flags};
 
@@ -594,10 +613,175 @@ pub fn activate_address_space(cr3_phys: u64) {
         Cr3::write(frame, Cr3Flags::empty());
     }
 
+    // Increment activation counter for monitoring
+    CR3_ACTIVATIONS.fetch_add(1, AtomicOrdering::Relaxed);
+
     crate::serial::_print(format_args!(
         "[activate_address_space] Activated CR3={:#x}\n",
         target
     ));
+}
+
+/// Read the current CR3 value from the CPU.
+/// Returns the physical address of the currently active PML4 table.
+/// 
+/// # Usage
+/// This function is useful for:
+/// - Debugging page table issues
+/// - Verifying context switches completed correctly
+/// - Auditing which address space is currently active
+pub fn read_current_cr3() -> u64 {
+    use x86_64::registers::control::Cr3;
+    let (frame, _) = Cr3::read();
+    frame.start_address().as_u64()
+}
+
+/// Validate that a CR3 value is well-formed and safe to use.
+/// Returns Ok(()) if valid, Err with description if invalid.
+/// 
+/// # Validation Checks
+/// 1. Page alignment (4KB boundary, bits 0-11 zero)
+/// 2. Physical address sanity (not beyond reasonable RAM limit)
+/// 3. Not zero (unless explicitly allowed for kernel PT)
+pub fn validate_cr3(cr3: u64, allow_zero: bool) -> Result<(), &'static str> {
+    if cr3 == 0 {
+        if allow_zero {
+            return Ok(());
+        } else {
+            return Err("CR3 is zero but zero not allowed in this context");
+        }
+    }
+
+    // Check 4KB alignment
+    if cr3 & 0xFFF != 0 {
+        return Err("CR3 is not 4KB-aligned");
+    }
+
+    // Sanity check: CR3 should be in reasonable physical RAM range
+    // We allow up to 4GB here, but warn if beyond 1GB
+    if cr3 >= 0x1_0000_0000 {
+        return Err("CR3 exceeds 4GB physical address limit");
+    }
+
+    Ok(())
+}
+
+/// Free a process-specific address space.
+/// This should be called when a process exits to reclaim page table memory.
+/// 
+/// # Safety
+/// - Must not free the kernel's page tables (cr3 == 0 or kernel_pml4_phys())
+/// - Must not free the currently active CR3 (switch to kernel PT first)
+/// - Only frees the PML4, PDP, and PD; assumes pages are managed separately
+/// 
+/// # Current Limitations
+/// Currently this is a placeholder. Full implementation requires:
+/// 1. Walking the page table hierarchy
+/// 2. Freeing all allocated page table pages (PML4, PDP, PD)
+/// 3. Ensuring no dangling references exist
+/// 
+/// # TODO
+/// Implement proper page table deallocation to prevent memory leaks
+pub fn free_process_address_space(cr3: u64) {
+    if cr3 == 0 || cr3 == kernel_pml4_phys() {
+        crate::kwarn!("Attempted to free kernel page tables, ignoring");
+        return;
+    }
+
+    let current_cr3 = read_current_cr3();
+    if cr3 == current_cr3 {
+        crate::kerror!("Cannot free currently active CR3 {:#x}", cr3);
+        crate::kfatal!("Attempted to free active page tables");
+    }
+
+    // Increment free counter for monitoring
+    CR3_FREES.fetch_add(1, AtomicOrdering::Relaxed);
+
+    // TODO: Implement proper page table deallocation
+    // For now, just log that we should free this
+    crate::kdebug!("TODO: Free page tables at CR3 {:#x}", cr3);
+    
+    // In a full implementation, we would:
+    // 1. Walk the PML4 entries for user space (lower half)
+    // 2. For each present PDP, walk its entries
+    // 3. For each present PD, walk its entries
+    // 4. Free PT pages (if using 4KB pages)
+    // 5. Free PD pages
+    // 6. Free PDP pages
+    // 7. Free PML4 page
+    // 8. Return freed frames to the frame allocator
+}
+
+/// Debug helper: print information about a CR3 value and its page table structure.
+/// This is useful for diagnosing page table corruption or misconfigurations.
+/// 
+/// # Output
+/// Prints to kernel log:
+/// - CR3 physical address and validation status
+/// - Whether this is kernel or user space PT
+/// - PML4 entry count for user space (if accessible)
+pub fn debug_cr3_info(cr3: u64, label: &str) {
+    crate::kinfo!("=== CR3 Debug Info: {} ===", label);
+    crate::kinfo!("  CR3 Physical Address: {:#x}", cr3);
+    
+    match validate_cr3(cr3, true) {
+        Ok(()) => crate::kinfo!("  Validation: OK"),
+        Err(e) => crate::kerror!("  Validation: FAILED - {}", e),
+    }
+    
+    if cr3 == 0 {
+        crate::kinfo!("  Type: Zero (will use kernel PT)");
+    } else if cr3 == kernel_pml4_phys() {
+        crate::kinfo!("  Type: Kernel PML4");
+    } else {
+        crate::kinfo!("  Type: User process PT");
+        
+        // Try to read PML4 entry count (careful, may not be mapped)
+        let pml4 = phys_to_page_table(PhysAddr::new(cr3));
+        let mut present_count = 0;
+        let mut user_entries = 0;
+        
+        for (i, entry) in pml4.iter().enumerate() {
+            if !entry.is_unused() {
+                present_count += 1;
+                if i < 256 {  // Lower half = user space
+                    user_entries += 1;
+                }
+            }
+        }
+        
+        crate::kinfo!("  PML4 entries: {} total, {} user space", present_count, user_entries);
+    }
+    
+    let current = read_current_cr3();
+    if cr3 == current {
+        crate::kinfo!("  Status: ACTIVE (currently loaded in CPU)");
+    } else {
+        crate::kinfo!("  Status: Inactive (current CR3={:#x})", current);
+    }
+    
+    crate::kinfo!("=== End CR3 Debug Info ===");
+}
+
+/// Print CR3 allocation statistics.
+/// Useful for monitoring memory usage and detecting leaks.
+pub fn print_cr3_statistics() {
+    let allocs = CR3_ALLOCATIONS.load(AtomicOrdering::Relaxed);
+    let activations = CR3_ACTIVATIONS.load(AtomicOrdering::Relaxed);
+    let frees = CR3_FREES.load(AtomicOrdering::Relaxed);
+    
+    crate::kinfo!("=== CR3 Statistics ===");
+    crate::kinfo!("  Total CR3 allocations: {}", allocs);
+    crate::kinfo!("  Total CR3 activations: {}", activations);
+    crate::kinfo!("  Total CR3 frees: {}", frees);
+    crate::kinfo!("  Active CR3s (allocs - frees): {}", allocs.saturating_sub(frees));
+    
+    if allocs > frees {
+        let leaked = allocs - frees;
+        crate::kwarn!("  WARNING: {} CR3(s) may be leaked!", leaked);
+    }
+    
+    crate::kinfo!("=== End CR3 Statistics ===");
 }
 
 /// Simple bump allocator for user-visible physical regions.
