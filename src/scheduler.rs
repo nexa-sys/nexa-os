@@ -382,6 +382,7 @@ pub fn do_schedule() {
         Switch {
             old_context_ptr: *mut crate::process::Context,
             next_context: crate::process::Context,
+            next_cr3: u64,
         },
     }
 
@@ -431,21 +432,8 @@ pub fn do_schedule() {
 
             let first_run = !entry.process.has_entered_user;
             let next_pid = entry.process.pid;
-            let next_memory_base = entry.process.memory_base;
-            let next_memory_size = entry.process.memory_size;
+            let next_cr3 = entry.process.cr3;
             *current_lock = Some(next_pid);
-
-            // Remap user space to the new process's physical memory
-            // This ensures the child process sees its own copy of memory
-            crate::kinfo!("About to remap user space for PID {} to phys {:#x}", next_pid, next_memory_base);
-            crate::serial::_print(format_args!("[scheduler] Remapping for PID {} to phys {:#x}\n", 
-                                               next_pid, next_memory_base));
-            
-            if let Err(e) = crate::paging::remap_user_space(next_memory_base, next_memory_size) {
-                crate::kerror!("Failed to remap user space for PID {}: {}", next_pid, e);
-            } else {
-                crate::kinfo!("Successfully remapped user space to phys {:#x} for PID {}", next_memory_base, next_pid);
-            }
 
             if first_run {
                 entry.process.has_entered_user = true;
@@ -469,6 +457,7 @@ pub fn do_schedule() {
                 Some(ScheduleDecision::Switch {
                     old_context_ptr: old_context_ptr.unwrap_or(core::ptr::null_mut()),
                     next_context,
+                    next_cr3,
                 })
             }
         } else {
@@ -478,13 +467,16 @@ pub fn do_schedule() {
 
     match decision {
         Some(ScheduleDecision::FirstRun(mut process)) => {
+            crate::paging::activate_address_space(process.cr3);
             process.execute();
             crate::kfatal!("process::execute returned unexpectedly");
         }
         Some(ScheduleDecision::Switch {
             old_context_ptr,
             next_context,
+            next_cr3,
         }) => unsafe {
+            crate::paging::activate_address_space(next_cr3);
             context_switch(old_context_ptr, &next_context as *const _);
         },
         None => {

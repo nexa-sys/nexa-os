@@ -199,6 +199,17 @@ impl Process {
                 context.rip = interp_image.entry_point;
                 context.rsp = stack_ptr;
 
+                let cr3 = match crate::paging::create_process_address_space(
+                    USER_PHYS_BASE,
+                    USER_REGION_SIZE,
+                ) {
+                    Ok(cr3) => cr3,
+                    Err(err) => {
+                        crate::kerror!("Failed to create address space for process: {}", err);
+                        return Err("Failed to create process address space");
+                    }
+                };
+
                 return Ok(Process {
                     pid,
                     ppid: 0,
@@ -210,9 +221,9 @@ impl Process {
                     signal_state: crate::signal::SignalState::new(),
                     context,
                     has_entered_user: false,
-                    cr3: 0, // TODO: Allocate process-specific page table
+                    cr3,
                     tty: 0,
-                    memory_base: USER_VIRT_BASE, // Initially mapped at virtual = physical
+                    memory_base: USER_PHYS_BASE,
                     memory_size: USER_REGION_SIZE,
                 });
             } else {
@@ -234,6 +245,15 @@ impl Process {
         context.rip = program_image.entry_point;
         context.rsp = stack_ptr;
 
+        let cr3 = match crate::paging::create_process_address_space(USER_PHYS_BASE, USER_REGION_SIZE)
+        {
+            Ok(cr3) => cr3,
+            Err(err) => {
+                crate::kerror!("Failed to create address space for process: {}", err);
+                return Err("Failed to create process address space");
+            }
+        };
+
         Ok(Process {
             pid,
             ppid: 0,
@@ -245,9 +265,9 @@ impl Process {
             signal_state: crate::signal::SignalState::new(),
             context,
             has_entered_user: false,
-            cr3: 0, // TODO: Allocate process-specific page table
+            cr3,
             tty: 0,
-            memory_base: USER_VIRT_BASE, // Initially mapped at virtual = physical
+            memory_base: USER_PHYS_BASE,
             memory_size: USER_REGION_SIZE,
         })
     }
@@ -282,6 +302,8 @@ impl Process {
             self.entry_point,
             self.stack_top
         );
+
+        crate::paging::activate_address_space(self.cr3);
 
         self.has_entered_user = true;
 

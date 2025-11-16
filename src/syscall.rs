@@ -1398,7 +1398,7 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
     // Allocate new physical memory for child process
     // We need to find a free physical region to copy parent's memory
     // For now, we'll allocate at a different physical location
-    let child_phys_base = match allocate_user_memory_region(memory_size) {
+    let child_phys_base = match crate::paging::allocate_user_region(memory_size) {
         Some(addr) => addr,
         None => {
             crate::kerror!("fork() - failed to allocate memory for child process");
@@ -1474,6 +1474,19 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
     // Store child's physical base in the process struct
     child_process.memory_base = child_phys_base;
     child_process.memory_size = memory_size;
+    child_process.cr3 = match crate::paging::create_process_address_space(
+        child_phys_base,
+        memory_size,
+    ) {
+        Ok(cr3) => cr3,
+        Err(err) => {
+            crate::kerror!(
+                "fork() - failed to build page tables for child {}: {}",
+                child_pid, err
+            );
+            return u64::MAX;
+        }
+    };
     
     crate::serial::_print(format_args!("[fork] Child memory_base={:#x}, memory_size={:#x}\n", 
                                        child_phys_base, memory_size));
@@ -1497,37 +1510,6 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
 
     // Return child PID to parent (child gets 0 via context.rax)
     child_pid
-}
-
-/// Allocate a region of physical memory for user space
-/// Returns physical address of allocated region, or None if allocation fails
-fn allocate_user_memory_region(size: u64) -> Option<u64> {
-    use core::sync::atomic::{AtomicU64, Ordering};
-    
-    // Simple bump allocator for user memory regions
-    // Starts after kernel and grows upward
-    // TODO: Implement proper physical memory allocator with free list
-    static NEXT_USER_REGION: AtomicU64 = AtomicU64::new(0x10000000); // Start at 256MB
-    
-    // Align size to 4KB page boundary
-    let aligned_size = (size + 0xfff) & !0xfff;
-    
-    // Atomic allocation - get current and increment
-    let base = NEXT_USER_REGION.fetch_add(aligned_size, Ordering::SeqCst);
-    
-    // Check if we've exceeded physical memory (assume 4GB limit for now)
-    if base + aligned_size > 0x100000000 {
-        crate::kerror!("allocate_user_memory_region: out of memory");
-        return None;
-    }
-    
-    crate::kdebug!(
-        "allocate_user_memory_region: allocated {} bytes at {:#x}",
-        aligned_size,
-        base
-    );
-    
-    Some(base)
 }
 
 /// POSIX execve() system call - execute program
@@ -1628,6 +1610,9 @@ fn syscall_execve(path: *const u8, _argv: *const *const u8, _envp: *const *const
                     entry.process.heap_start = new_process.heap_start;
                     entry.process.heap_end = new_process.heap_end;
                     entry.process.context = new_process.context;
+                    entry.process.cr3 = new_process.cr3;
+                    entry.process.memory_base = new_process.memory_base;
+                    entry.process.memory_size = new_process.memory_size;
                     entry.process.has_entered_user = false;
 
                     // Reset signal handlers to SIG_DFL (POSIX requirement)

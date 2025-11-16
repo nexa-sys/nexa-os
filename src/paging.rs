@@ -1,7 +1,7 @@
 /// Memory paging setup for x86_64
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
-use x86_64::structures::paging::PageTable;
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
+use x86_64::structures::paging::{PageTable, PhysFrame};
 use x86_64::PhysAddr;
 
 #[repr(align(4096))]
@@ -35,8 +35,6 @@ impl PageTableHolder {
     }
 }
 
-static USER_PDP: PageTableHolder = PageTableHolder::new();
-static USER_PD: PageTableHolder = PageTableHolder::new();
 static KERNEL_PML4: PageTableHolder = PageTableHolder::new();
 
 const EXTRA_TABLE_COUNT: usize = 32;
@@ -80,6 +78,9 @@ static EXTRA_TABLE_INDEX: AtomicUsize = AtomicUsize::new(0);
 static NXE_CHECKED: AtomicBool = AtomicBool::new(false);
 static NXE_AVAILABLE: AtomicBool = AtomicBool::new(false);
 
+static NEXT_PT_FRAME: AtomicU64 = AtomicU64::new(0x0800_0000);
+static NEXT_USER_REGION: AtomicU64 = AtomicU64::new(0x1000_0000);
+
 fn allocate_extra_table() -> Option<&'static PageTableHolder> {
     let idx = EXTRA_TABLE_INDEX.fetch_add(1, AtomicOrdering::SeqCst);
     if idx >= EXTRA_TABLES.len() {
@@ -89,6 +90,28 @@ fn allocate_extra_table() -> Option<&'static PageTableHolder> {
         holder.reset();
         Some(holder)
     }
+}
+
+fn phys_to_page_table_mut(addr: PhysAddr) -> &'static mut PageTable {
+    unsafe { &mut *(addr.as_u64() as *mut PageTable) }
+}
+
+fn phys_to_page_table(addr: PhysAddr) -> &'static PageTable {
+    unsafe { &*(addr.as_u64() as *const PageTable) }
+}
+
+fn alloc_page_table_frame() -> Result<PhysAddr, &'static str> {
+    const FRAME_SIZE: u64 = 0x1000;
+    let addr = NEXT_PT_FRAME.fetch_add(FRAME_SIZE, AtomicOrdering::SeqCst);
+    if addr.checked_add(FRAME_SIZE).unwrap_or(u64::MAX) > 0x1_0000_0000 {
+        return Err("Out of page table frames");
+    }
+
+    unsafe {
+        core::ptr::write_bytes(addr as *mut u8, 0, FRAME_SIZE as usize);
+    }
+
+    Ok(PhysAddr::new(addr))
 }
 
 #[derive(Debug)]
@@ -192,8 +215,7 @@ unsafe fn init_user_page_tables() {
     let identity_pdp = &mut *identity_pdp_holder.as_mut_ptr();
     identity_pdp_holder.reset();
 
-    let pd_flags =
-        PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE; // Critical: Allow Ring 3 access through page directory
+    let pd_flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
     new_pml4[0].set_addr(identity_pdp_holder.phys_addr(), pd_flags);
 
     // Map the first N gigabytes using 2 MiB huge pages.
@@ -209,7 +231,6 @@ unsafe fn init_user_page_tables() {
                 PageTableFlags::PRESENT
                     | PageTableFlags::WRITABLE
                     | PageTableFlags::HUGE_PAGE
-                    | PageTableFlags::USER_ACCESSIBLE  // Critical: Allow Ring 3 access
                     | PageTableFlags::GLOBAL,
             );
         }
@@ -230,12 +251,6 @@ unsafe fn init_user_page_tables() {
         new_frame.start_address().as_u64()
     );
 
-    // Map user program virtual addresses (code, heap, stack) to physical addresses
-    // User program expects to run at virtual address 0x200000, with heap and stack
-    // residing up to 0x700000. We map the region with 2 MiB huge pages so the
-    // stack (at 0x600000-0x700000) has backing memory and retains user access.
-    map_user_program();
-
     // Map VGA buffer for kernel output
     map_vga_buffer();
 
@@ -244,83 +259,6 @@ unsafe fn init_user_page_tables() {
     Cr3::write(pml4_frame_flush, Cr3Flags::empty());
 
     crate::kinfo!("User page tables initialized with USER_ACCESSIBLE permissions");
-}
-
-/// Map user program virtual addresses to physical addresses
-unsafe fn map_user_program() {
-    use crate::process::{USER_PHYS_BASE, USER_REGION_SIZE, USER_VIRT_BASE};
-    use x86_64::registers::control::Cr3;
-    use x86_64::structures::paging::{PageTable, PageTableFlags};
-    use x86_64::PhysAddr;
-
-    const HUGE_PAGE_SIZE: u64 = 0x200000; // 2 MiB
-
-    crate::kinfo!(
-        "Mapping user region: virtual {:#x}-{:#x} -> physical {:#x}-{:#x}",
-        USER_VIRT_BASE,
-        USER_VIRT_BASE + USER_REGION_SIZE,
-        USER_PHYS_BASE,
-        USER_PHYS_BASE + USER_REGION_SIZE
-    );
-
-    // Get current page table root (PML4)
-    let (pml4_frame, _) = Cr3::read();
-    let pml4_addr = pml4_frame.start_address();
-    let pml4 = &mut *(pml4_addr.as_u64() as *mut PageTable);
-
-    // Calculate indices for the virtual base address
-    let pml4_index_val = ((USER_VIRT_BASE >> 39) & 0x1FF) as usize;
-    let pdp_index_val = ((USER_VIRT_BASE >> 30) & 0x1FF) as usize;
-
-    // Ensure PDP exists
-    if pml4[pml4_index_val].is_unused() {
-        USER_PDP.reset();
-        let pdp_phys = USER_PDP.phys_addr();
-        pml4[pml4_index_val].set_addr(
-            pdp_phys,
-            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE,
-        );
-        crate::kinfo!("Allocated PDP at {:#x}", pdp_phys.as_u64());
-    }
-
-    let pdp_addr = pml4[pml4_index_val].addr();
-    let pdp = &mut *(pdp_addr.as_u64() as *mut PageTable);
-
-    // Ensure PD exists
-    if pdp[pdp_index_val].is_unused() {
-        USER_PD.reset();
-        let pd_phys = USER_PD.phys_addr();
-        pdp[pdp_index_val].set_addr(
-            pd_phys,
-            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE,
-        );
-        crate::kinfo!("Allocated PD at {:#x}", pd_phys.as_u64());
-    }
-
-    let pd_addr = pdp[pdp_index_val].addr();
-    let pd = &mut *(pd_addr.as_u64() as *mut PageTable);
-
-    for offset in (0..USER_REGION_SIZE).step_by(HUGE_PAGE_SIZE as usize) {
-        let virt_addr = USER_VIRT_BASE + offset;
-        let phys_addr = USER_PHYS_BASE + offset;
-        let pd_index = ((virt_addr >> 21) & 0x1FF) as usize;
-
-        pd[pd_index].set_addr(
-            PhysAddr::new(phys_addr),
-            PageTableFlags::PRESENT
-                | PageTableFlags::WRITABLE
-                | PageTableFlags::USER_ACCESSIBLE
-                | PageTableFlags::HUGE_PAGE,
-        );
-
-        crate::kinfo!(
-            "Mapped user huge page: virtual {:#x} -> physical {:#x}",
-            virt_addr,
-            phys_addr
-        );
-    }
-
-    crate::kinfo!("User program mapping completed using huge pages");
 }
 
 /// Map VGA buffer for kernel output
@@ -526,86 +464,136 @@ unsafe fn map_device_region_internal(
     Ok(phys_start as *mut u8)
 }
 
-/// Remap user space to a different physical address
-/// This is used during fork to switch between different process memory regions
-pub fn remap_user_space(phys_base: u64, size: u64) -> Result<(), &'static str> {
-    use x86_64::registers::control::Cr3;
-    use x86_64::registers::control::Cr3Flags;
+/// Physical address of the kernel's PML4 root table.
+pub fn kernel_pml4_phys() -> u64 {
+    KERNEL_PML4.phys_addr().as_u64()
+}
+
+fn clone_table(dst: &mut PageTable, src: &PageTable) {
+    unsafe {
+        core::ptr::copy_nonoverlapping(src as *const PageTable, dst as *mut PageTable, 1);
+    }
+}
+
+/// Create a process-specific address space rooted at a new PML4.
+pub fn create_process_address_space(phys_base: u64, size: u64) -> Result<u64, &'static str> {
+    use crate::process::USER_VIRT_BASE;
     use x86_64::structures::paging::PageTableFlags;
-    use x86_64::PhysAddr;
 
-    // Virtual address where user space is mapped
-    const USER_VIRT_BASE: u64 = 0x400000;
-    
-    crate::kinfo!(
-        "remap_user_space: mapping virt {:#x} to phys {:#x}, size {:#x}",
-        USER_VIRT_BASE,
-        phys_base,
-        size
-    );
-
-    // Calculate number of 2MB pages needed
-    let num_pages = (size + 0x1fffff) / 0x200000;
-
-    // Get PML4 table
-    let pml4 = unsafe { &mut *KERNEL_PML4.as_mut_ptr() };
-
-    // Get or create PDP for user space (entry 0 covers 0-512GB)
-    let pdp_phys = USER_PDP.phys_addr();
-    let pml4_entry = &mut pml4[0];
-    if pml4_entry.is_unused() {
-        pml4_entry.set_addr(
-            pdp_phys,
-            PageTableFlags::PRESENT
-                | PageTableFlags::WRITABLE
-                | PageTableFlags::USER_ACCESSIBLE,
-        );
+    if size == 0 {
+        return Err("Process region size must be non-zero");
     }
 
-    let pdp = unsafe { &mut *USER_PDP.as_mut_ptr() };
+    const HUGE_PAGE_SIZE: u64 = 0x200000;
+    let aligned_size = (size + HUGE_PAGE_SIZE - 1) & !(HUGE_PAGE_SIZE - 1);
 
-    // Get or create PD for user space (entry 0 covers 0-1GB)
-    let pd_phys = USER_PD.phys_addr();
-    let pdp_entry = &mut pdp[0];
-    if pdp_entry.is_unused() {
-        pdp_entry.set_addr(
-            pd_phys,
-            PageTableFlags::PRESENT
-                | PageTableFlags::WRITABLE
-                | PageTableFlags::USER_ACCESSIBLE,
-        );
+    let kernel_root = unsafe { &*KERNEL_PML4.as_ptr() };
+    let pml4_phys = alloc_page_table_frame()?;
+    let pml4 = phys_to_page_table_mut(pml4_phys);
+
+    clone_table(pml4, kernel_root);
+
+    let user_pml4_index = ((USER_VIRT_BASE >> 39) & 0x1FF) as usize;
+    let kernel_pml4_entry = kernel_root[user_pml4_index].clone();
+
+    // Clone the PDP that covers the lower canonical address range so we can
+    // customize user-accessible regions without mutating the kernel template.
+    let pdp_phys = alloc_page_table_frame()?;
+    let pdp = phys_to_page_table_mut(pdp_phys);
+
+    if !kernel_pml4_entry.is_unused() {
+        let kernel_pdp = phys_to_page_table(kernel_pml4_entry.addr());
+        clone_table(pdp, kernel_pdp);
     }
 
-    let pd = unsafe { &mut *USER_PD.as_mut_ptr() };
+    let mut pml4_flags = kernel_pml4_entry.flags();
+    pml4_flags |= PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
+    pml4[user_pml4_index].set_addr(pdp_phys, pml4_flags);
 
-    // Map each 2MB page
-    for i in 0..num_pages {
-        let virt_addr = USER_VIRT_BASE + i * 0x200000;
-        let phys_addr = phys_base + i * 0x200000;
+    let user_pdp_index = ((USER_VIRT_BASE >> 30) & 0x1FF) as usize;
 
-        // Calculate PD index (bits 21-29 of virtual address)
-        let pd_index = ((virt_addr >> 21) & 0x1ff) as usize;
+    // Allocate a private PD for the 1 GiB slice that contains user mappings.
+    let pd_phys = alloc_page_table_frame()?;
+    let pd = phys_to_page_table_mut(pd_phys);
 
-        let entry = &mut pd[pd_index];
+    if !pdp[user_pdp_index].is_unused() {
+        let kernel_pd = phys_to_page_table(pdp[user_pdp_index].addr());
+        clone_table(pd, kernel_pd);
+    }
 
-        // Set up 2MB page mapping
+    let mut pdp_flags = pdp[user_pdp_index].flags();
+    pdp_flags |= PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
+    pdp[user_pdp_index].set_addr(pd_phys, pdp_flags);
+
+    let page_count = ((aligned_size + HUGE_PAGE_SIZE - 1) / HUGE_PAGE_SIZE).max(1);
+
+    for page in 0..page_count {
+        let offset = page * HUGE_PAGE_SIZE;
+        let virt_addr = USER_VIRT_BASE + offset;
+        let phys_addr = phys_base + offset;
+        let pd_index = ((virt_addr >> 21) & 0x1FF) as usize;
+
         let flags = PageTableFlags::PRESENT
             | PageTableFlags::WRITABLE
             | PageTableFlags::USER_ACCESSIBLE
             | PageTableFlags::HUGE_PAGE;
 
         if nxe_supported() {
-            // Allow execution in user space (don't set NO_EXECUTE)
+            // Leave executable for now; future work can toggle NO_EXECUTE per segment.
         }
 
-        entry.set_addr(PhysAddr::new(phys_addr), flags);
+        pd[pd_index].set_addr(PhysAddr::new(phys_addr), flags);
     }
 
-    // Flush TLB
+    Ok(pml4_phys.as_u64())
+}
+
+/// Activate the address space represented by the supplied CR3 physical address.
+/// Passing 0 selects the kernel's bootstrap page tables.
+pub fn activate_address_space(cr3_phys: u64) {
+    use x86_64::registers::control::{Cr3, Cr3Flags};
+
+    let target = if cr3_phys == 0 {
+        kernel_pml4_phys()
+    } else {
+        cr3_phys
+    };
+
+    let (current, _) = Cr3::read();
+    if current.start_address().as_u64() == target {
+        return;
+    }
+
+    let frame = PhysFrame::from_start_address(PhysAddr::new(target)).expect("CR3 frame alignment");
+
     unsafe {
-        let (flush_frame, _) = Cr3::read();
-        Cr3::write(flush_frame, Cr3Flags::empty());
+        Cr3::write(frame, Cr3Flags::empty());
+    }
+}
+
+/// Simple bump allocator for user-visible physical regions.
+pub fn allocate_user_region(size: u64) -> Option<u64> {
+    if size == 0 {
+        return None;
     }
 
-    Ok(())
+    const ALIGN: u64 = 0x200000; // 2 MiB pages
+    let aligned_size = (size + ALIGN - 1) & !(ALIGN - 1);
+    let base = NEXT_USER_REGION.fetch_add(aligned_size, AtomicOrdering::SeqCst);
+    if base.checked_add(aligned_size).unwrap_or(u64::MAX) > 0x1_0000_0000 {
+        crate::kerror!("allocate_user_region: out of physical memory");
+        return None;
+    }
+
+    unsafe {
+        core::ptr::write_bytes(base as *mut u8, 0, aligned_size as usize);
+    }
+
+    crate::kdebug!(
+        "allocate_user_region: allocated {} bytes at {:#x}",
+        aligned_size,
+        base
+    );
+
+    Some(base)
 }
