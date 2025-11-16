@@ -555,6 +555,21 @@ pub fn create_process_address_space(phys_base: u64, size: u64) -> Result<u64, &'
 pub fn activate_address_space(cr3_phys: u64) {
     use x86_64::registers::control::{Cr3, Cr3Flags};
 
+    // CRITICAL FIX: Validate CR3 before use to catch fork-related page table errors
+    // This prevents GP faults from invalid page table structures
+    if cr3_phys != 0 {
+        // Ensure CR3 is page-aligned (4KB boundary)
+        if cr3_phys & 0xFFF != 0 {
+            crate::kerror!("[CRITICAL] CR3 {:#x} is not page-aligned!", cr3_phys);
+            crate::kfatal!("CR3 alignment check failed - possible fork page table corruption");
+        }
+        
+        // Sanity check: CR3 should be in physical RAM, not beyond 4GB
+        if cr3_phys >= 0x1_0000_0000 {
+            crate::kwarn!("[WARN] CR3 {:#x} is in very high physical address range", cr3_phys);
+        }
+    }
+
     let target = if cr3_phys == 0 {
         kernel_pml4_phys()
     } else {
@@ -563,14 +578,26 @@ pub fn activate_address_space(cr3_phys: u64) {
 
     let (current, _) = Cr3::read();
     if current.start_address().as_u64() == target {
-        return;
+        return;  // Short-circuit: CR3 already active, no need to reload
     }
 
-    let frame = PhysFrame::from_start_address(PhysAddr::new(target)).expect("CR3 frame alignment");
+    // Validate the frame creation - convert physical address to PhysFrame
+    let frame_result = PhysFrame::from_start_address(PhysAddr::new(target));
+    if frame_result.is_err() {
+        crate::kerror!("[CRITICAL] Cannot create PhysFrame from CR3 {:#x}", target);
+        crate::kfatal!("PhysFrame creation failed - possible invalid CR3");
+    }
+    
+    let frame = frame_result.expect("PhysFrame validation already checked");
 
     unsafe {
         Cr3::write(frame, Cr3Flags::empty());
     }
+
+    crate::serial::_print(format_args!(
+        "[activate_address_space] Activated CR3={:#x}\n",
+        target
+    ));
 }
 
 /// Simple bump allocator for user-visible physical regions.

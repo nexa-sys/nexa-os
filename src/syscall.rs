@@ -1450,11 +1450,34 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
         let src_ptr = USER_VIRT_BASE as *const u8;
         let dst_ptr = child_phys_base as *mut u8;
 
+        // CRITICAL FIX: Validate addresses before copy
+        // This ensures we catch memory allocation/mapping issues early
+        if dst_ptr as u64 + memory_size > 0x1_0000_0000 {
+            crate::kerror!(
+                "fork: Child physical address {:#x} + size {:#x} exceeds physical limit!",
+                child_phys_base, memory_size
+            );
+            return u64::MAX;
+        }
+
         crate::serial::_print(format_args!(
-            "[fork] Detailed: reading from VIRT {:#x} (maps to parent phys {:#x}), writing to child PHYS {:#x}\n",
-            src_ptr as u64, parent_phys_base, dst_ptr as u64));
+            "[fork] VALIDATED: Copying from VIRT {:#x} to PHYS {:#x}, size {:#x}\n",
+            src_ptr as u64, dst_ptr as u64, memory_size));
 
         core::ptr::copy_nonoverlapping(src_ptr, dst_ptr, memory_size as usize);
+
+        // CRITICAL FIX: Verify memory copy succeeded
+        // Read first byte from both source and destination to ensure copy worked
+        let verify_src = core::ptr::read(src_ptr);
+        let verify_dst = core::ptr::read(dst_ptr);
+        
+        if verify_src != verify_dst {
+            crate::kerror!(
+                "fork: Memory copy verification FAILED! src_byte={:#x}, dst_byte={:#x}",
+                verify_src, verify_dst
+            );
+            crate::kfatal!("Fork memory copy corrupted");
+        }
 
         // DEBUG: Verify copy worked - check path_buf address in child's physical memory
         let child_test_addr = (child_phys_base + (0x9fe390 - USER_VIRT_BASE)) as *const u8;
@@ -1463,6 +1486,12 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
             "[fork-debug] Child phys mem at path_buf (0x9fe390): {:02x?}\n",
             child_test_bytes
         ));
+
+        // CRITICAL FIX: Flush TLB to clear any stale page cache entries
+        // This prevents the CPU from using old TLB entries after we've changed page tables
+        use x86_64::instructions::tlb::flush_all;
+        crate::serial::_print(format_args!("[fork] Flushing TLB after memory copy\n"));
+        flush_all();
     }
 
     crate::kinfo!(
@@ -1475,18 +1504,48 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
     // Store child's physical base in the process struct
     child_process.memory_base = child_phys_base;
     child_process.memory_size = memory_size;
-    child_process.cr3 =
-        match crate::paging::create_process_address_space(child_phys_base, memory_size) {
-            Ok(cr3) => cr3,
-            Err(err) => {
-                crate::kerror!(
-                    "fork() - failed to build page tables for child {}: {}",
-                    child_pid,
-                    err
-                );
-                return u64::MAX;
+    
+    // CRITICAL FIX: Create and validate page tables for child process
+    // This is where fork page tables get corrupted - we must verify the result
+    match crate::paging::create_process_address_space(child_phys_base, memory_size) {
+        Ok(cr3) => {
+            // CRITICAL: Validate CR3 before storing it
+            if cr3 == 0 {
+                crate::kerror!("fork: create_process_address_space() returned CR3=0!");
+                crate::kfatal!("Failed to create valid page tables for child");
             }
-        };
+            
+            if cr3 & 0xFFF != 0 {
+                crate::kerror!(
+                    "fork: CR3 {:#x} is not page-aligned! This will cause GP faults!",
+                    cr3
+                );
+                crate::kfatal!("Invalid CR3 alignment");
+            }
+
+            if cr3 >= 0x1_0000_0000 {
+                crate::kwarn!(
+                    "fork: CR3 {:#x} is in very high physical address range",
+                    cr3
+                );
+            }
+
+            child_process.cr3 = cr3;
+
+            crate::serial::_print(format_args!(
+                "[fork] VALIDATED CR3: {:#x} for child PID {}\n",
+                cr3, child_pid
+            ));
+        },
+        Err(err) => {
+            crate::kerror!(
+                "fork() - failed to build page tables for child {}: {}",
+                child_pid,
+                err
+            );
+            crate::kfatal!("Page table creation failed");
+        }
+    }
 
     crate::serial::_print(format_args!(
         "[fork] Child memory_base={:#x}, memory_size={:#x}\n",
