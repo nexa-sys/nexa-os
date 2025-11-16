@@ -616,14 +616,17 @@ pub fn jump_to_usermode(entry: u64, stack: u64) -> ! {
         // sysretq automatically sets CS/SS from STAR MSR, and setting
         // DS/ES/FS/GS to user segments in kernel mode can cause GP faults.
         // Let the user program set DS/ES/FS after entering Ring 3.
+        //
+        // Ensure R11 (user RFLAGS) is programmed with the canonical 0x202
+        // value explicitly to avoid allocator reuse that can leak stale bits
+        // from prior syscalls and trigger a #GP during sysretq.
         core::arch::asm!(
             "mov rcx, {entry}",    // RCX = user RIP for sysretq
-            "mov r11, {rflags}",   // R11 = user RFLAGS for sysretq
             "mov rsp, {stack}",    // Set user stack
+            "mov r11d, 0x202",     // User RFLAGS with IF=1, reserved bit=1
             "xor rax, rax",        // Clear return value
             "sysretq",             // Return to Ring 3
             entry = in(reg) entry,
-            rflags = in(reg) 0x202u64,
             stack = in(reg) stack,
             options(noreturn)
         );

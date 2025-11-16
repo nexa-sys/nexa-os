@@ -1771,16 +1771,10 @@ fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> 
     // For now: implement as simple polling without context switching
     // This is a temporary solution until we have proper async/cooperative scheduling
 
-    // Busy-wait loop: Keep checking child status
-    // The child process needs to be scheduled out to run,
-    // but we'll rely on the kernel's timer interrupt to preempt this process
-    // and give other processes CPU time
-
-    const MAX_CHECKS: u32 = 100000; // Increase significantly to give child more chances to run
-    let mut check_count = 0u32;
-
+    // Keep checking child status until it transitions to Zombie. Between
+    // checks, yield to the scheduler so the child can actually make
+    // progress (e.g., exit after execing /bin/sh).
     loop {
-        check_count += 1;
 
         // Check if the specified child has exited
         let mut found_child = false;
@@ -1801,9 +1795,8 @@ fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> 
                         child_exited = true;
                         child_exit_code = 0;
                         crate::kinfo!(
-                            "wait4() found exited child PID {} after {} checks",
-                            check_pid,
-                            check_count
+                            "wait4() found exited child PID {}",
+                            check_pid
                         );
                         break;
                     }
@@ -1819,9 +1812,8 @@ fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> 
                     child_exited = true;
                     child_exit_code = 0;
                     crate::kinfo!(
-                        "wait4() found exited specific child PID {} after {} checks",
-                        pid,
-                        check_count
+                        "wait4() found exited specific child PID {}",
+                        pid
                     );
                 }
             }
@@ -1860,34 +1852,8 @@ fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> 
             return 0;
         }
 
-        // Reached max checks
-        if check_count >= MAX_CHECKS {
-            crate::kwarn!(
-                "wait4() exceeded max checks ({}) for child PID {}, returning anyway",
-                MAX_CHECKS,
-                wait_pid
-            );
-            // In a real implementation, the process would sleep here
-            // For now, we return to avoid hanging
-            posix::set_errno(0);
-            return wait_pid;
-        }
-
-        // Busy wait: Just loop and keep checking
-        // The kernel's timer interrupt will periodically context-switch to other processes
-        // This is inefficient but will work until we implement proper blocking
-        // Do a few busy loops to give other processes a chance to run
-        for _ in 0..10 {
-            unsafe {
-                core::arch::asm!("nop");
-            }
-        }
-
-        // Every few checks, yield to let other processes run
-        if check_count % 100 == 0 {
-            crate::kinfo!("wait4() yielding CPU at check {}", check_count);
-            crate::scheduler::do_schedule();
-        }
+        // Block until the child changes state by yielding to the scheduler.
+        crate::scheduler::do_schedule();
     }
 }
 
