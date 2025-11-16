@@ -507,7 +507,8 @@ pub fn create_process_address_space(phys_base: u64, size: u64) -> Result<u64, &'
     }
 
     let mut pml4_flags = kernel_pml4_entry.flags();
-    pml4_flags |= PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
+    pml4_flags |=
+        PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
     pml4[user_pml4_index].set_addr(pdp_phys, pml4_flags);
 
     let user_pdp_index = ((USER_VIRT_BASE >> 30) & 0x1FF) as usize;
@@ -522,7 +523,8 @@ pub fn create_process_address_space(phys_base: u64, size: u64) -> Result<u64, &'
     }
 
     let mut pdp_flags = pdp[user_pdp_index].flags();
-    pdp_flags |= PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
+    pdp_flags |=
+        PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
     pdp[user_pdp_index].set_addr(pd_phys, pdp_flags);
 
     let page_count = ((aligned_size + HUGE_PAGE_SIZE - 1) / HUGE_PAGE_SIZE).max(1);

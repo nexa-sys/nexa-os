@@ -43,11 +43,9 @@ global_asm!(
     "mov gs:[120], r10", // gs slot 15 = entry CS snapshot
     "mov r10, [rsp + 32]",
     "mov gs:[128], r10", // gs slot 16 = entry SS snapshot
-    
     // CRITICAL: Save user RSP for fork()
     "mov r10, [rsp + 24]", // r10 = user RSP
     "mov gs:[0], r10",     // gs slot 0 = user RSP (for fork to read)
-    
     // Save user RIP for syscall_return_addr parameter
     "mov r10, [rsp + 0]", // r10 = user RIP
     // Now push general-purpose registers (we will NOT touch the interrupt frame on stack)
@@ -630,14 +628,18 @@ lazy_static! {
     /// This is safe for our current single-core focus but will need per-core
     /// IDTs for true SMP support with per-core interrupt handling.
     static ref IDT: InterruptDescriptorTable = {
-        let mut idt = InterruptDescriptorTable::new();
+    let mut idt = InterruptDescriptorTable::new();
+    let error_code_ist = crate::gdt::ERROR_CODE_IST_INDEX as u16;
 
         unsafe {
             // Set up interrupt handlers
             idt.breakpoint.set_handler_fn(breakpoint_handler);
-            idt.page_fault.set_handler_fn(page_fault_handler);
+            idt.page_fault
+                .set_handler_fn(page_fault_handler)
+                .set_stack_index(error_code_ist);
             idt.general_protection_fault
-                .set_handler_fn(general_protection_fault_handler);
+                .set_handler_fn(general_protection_fault_handler)
+                .set_stack_index(error_code_ist);
             idt.divide_error.set_handler_fn(divide_error_handler);
             // Use a dedicated IST entry for double fault to ensure the CPU
             // switches to a known-good stack when a double fault occurs. This
@@ -646,11 +648,15 @@ lazy_static! {
                 .set_handler_fn(double_fault_handler)
                 .set_stack_index(crate::gdt::DOUBLE_FAULT_IST_INDEX as u16);
             idt.segment_not_present
-                .set_handler_fn(segment_not_present_handler);
+                .set_handler_fn(segment_not_present_handler)
+                .set_stack_index(error_code_ist);
             idt.invalid_opcode.set_handler_fn(invalid_opcode_handler);
-            idt.invalid_tss.set_handler_fn(segment_not_present_handler); // Reuse handler
+            idt.invalid_tss
+                .set_handler_fn(segment_not_present_handler)
+                .set_stack_index(error_code_ist); // Reuse handler
             idt.stack_segment_fault
-                .set_handler_fn(segment_not_present_handler); // Reuse handler
+                .set_handler_fn(segment_not_present_handler)
+                .set_stack_index(error_code_ist); // Reuse handler
 
             // Set up hardware interrupts
             idt[PIC_1_OFFSET].set_handler_fn(timer_interrupt_handler);

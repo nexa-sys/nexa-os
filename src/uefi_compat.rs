@@ -1,6 +1,6 @@
 use nexa_boot_info::{
-    bar_flags, BlockDeviceInfo, FramebufferInfo, NetworkDeviceInfo, PciBarInfo, PciDeviceInfo,
-    UsbHostInfo, HidInputInfo, device_flags, DeviceKind,
+    bar_flags, device_flags, BlockDeviceInfo, DeviceKind, FramebufferInfo, HidInputInfo,
+    NetworkDeviceInfo, PciBarInfo, PciDeviceInfo, UsbHostInfo,
 };
 use spin::Mutex;
 
@@ -532,7 +532,11 @@ fn populate_usb_host_devices() {
         };
 
         if descriptor.mmio_base != 0 && descriptor.mmio_size != 0 {
-            map_mmio_region(descriptor.mmio_base, descriptor.mmio_size, "USB host controller");
+            map_mmio_region(
+                descriptor.mmio_base,
+                descriptor.mmio_size,
+                "USB host controller",
+            );
         }
 
         usbs[idx] = Some(descriptor);

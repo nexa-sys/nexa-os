@@ -6,8 +6,8 @@ use core::sync::atomic::{AtomicPtr, Ordering};
 use crate::safety::StaticArena;
 
 use nexa_boot_info::{
-    flags, BlockDeviceInfo, BootInfo, DeviceDescriptor, DeviceKind, KernelSegment, MemoryRegion,
-    NetworkDeviceInfo, PciDeviceInfo, UsbHostInfo, HidInputInfo,
+    flags, BlockDeviceInfo, BootInfo, DeviceDescriptor, DeviceKind, HidInputInfo, KernelSegment,
+    MemoryRegion, NetworkDeviceInfo, PciDeviceInfo, UsbHostInfo,
 };
 
 #[derive(Debug)]

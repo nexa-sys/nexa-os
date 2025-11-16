@@ -15,6 +15,8 @@ struct AlignedStack {
 
 /// Privilege stack table index for double fault handler
 pub const DOUBLE_FAULT_IST_INDEX: u16 = 0;
+/// IST slot dedicated to exceptions that push an error code (e.g. #PF, #GP)
+pub const ERROR_CODE_IST_INDEX: u16 = 1;
 
 /// Task State Segment
 static mut TSS: TaskStateSegment = TaskStateSegment::new();
@@ -41,6 +43,9 @@ static mut KERNEL_STACK: AlignedStack = AlignedStack {
 static mut DOUBLE_FAULT_STACK: AlignedStack = AlignedStack {
     bytes: [0; STACK_SIZE],
 };
+static mut ERROR_CODE_STACK: AlignedStack = AlignedStack {
+    bytes: [0; STACK_SIZE],
+};
 
 #[inline(always)]
 unsafe fn stack_top(stack: *const AlignedStack) -> VirtAddr {
@@ -64,17 +69,30 @@ unsafe fn aligned_ist_stack_top(stack: *const AlignedStack) -> VirtAddr {
     // subtracts its stack frame size, the final spill slots targeted by the
     // compiler remain 16-byte aligned. Returning the aligned top directly keeps
     // the resulting stack layout compatible with the `movaps` instructions that
-    // the compiler emits when saving SIMD registers in the double fault
-    // handler's prologue.
+    // the compiler emits when saving SIMD registers in the exception handler
+    // prologues.
     aligned_stack_top(stack)
 }
 
 #[inline(always)]
 unsafe fn aligned_privilege_stack_top(stack: *const AlignedStack) -> VirtAddr {
     // On privilege transitions the CPU pushes SS, RSP, RFLAGS, CS and RIP
-    // (5×8 bytes). Bias the initial stack pointer by 8 bytes so that, after
-    // those pushes, the resulting RSP is still 16-byte aligned when our
-    // interrupt handlers start executing.
+    // (5×8 bytes) when no error code is involved. Bias the initial stack
+    // pointer by 8 bytes so that, after those pushes, the resulting RSP is
+    // still 16-byte aligned when our interrupt handlers start executing.
+    //
+    // Exceptions that *do* push an error code (6×8 bytes) re-use the same bias
+    // through a dedicated IST stack configured below so the handler sees a
+    // naturally aligned stack frame.
+    let top = aligned_stack_top(stack).as_u64();
+    VirtAddr::new(top - 8)
+}
+
+#[inline(always)]
+unsafe fn aligned_error_code_stack_top(stack: *const AlignedStack) -> VirtAddr {
+    // Error-code exceptions need the same 8-byte bias so that, after their
+    // six-quadword frame is pushed (48 bytes), the stack pointer observed by
+    // the handler still satisfies the ABI's expectation of `rsp % 16 == 8`.
     let top = aligned_stack_top(stack).as_u64();
     VirtAddr::new(top - 8)
 }
@@ -99,6 +117,16 @@ pub fn init() {
         crate::kinfo!(
             "Double fault IST pointer set to {:#x}",
             TSS.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize].as_u64()
+        );
+
+        // Provide a dedicated IST for any exception that pushes an error code
+        // (e.g. #PF, #GP) so their stacks remain 16-byte aligned even though
+        // the hardware pushes an extra quadword compared to normal interrupts.
+        let ec_top_aligned = aligned_error_code_stack_top(ptr::addr_of!(ERROR_CODE_STACK));
+        TSS.interrupt_stack_table[ERROR_CODE_IST_INDEX as usize] = ec_top_aligned;
+        crate::kinfo!(
+            "Error-code IST pointer set to {:#x}",
+            TSS.interrupt_stack_table[ERROR_CODE_IST_INDEX as usize].as_u64()
         );
 
         // Setup privilege stack for syscall (RSP0 for Ring 0)

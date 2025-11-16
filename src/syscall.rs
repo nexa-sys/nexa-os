@@ -2,7 +2,9 @@ use crate::paging;
 use crate::posix::{self, FileType};
 use crate::process::{USER_REGION_SIZE, USER_VIRT_BASE};
 use crate::scheduler;
-use crate::uefi_compat::{self, BlockDescriptor, CompatCounts, NetworkDescriptor, UsbHostDescriptor, HidInputDescriptor};
+use crate::uefi_compat::{
+    self, BlockDescriptor, CompatCounts, HidInputDescriptor, NetworkDescriptor, UsbHostDescriptor,
+};
 use crate::vt;
 use core::{
     arch::global_asm,
@@ -94,11 +96,11 @@ pub const SYS_USER_LIST: u64 = 223;
 pub const SYS_USER_LOGOUT: u64 = 224;
 
 // Network socket calls (POSIX-compatible)
-pub const SYS_SOCKET: u64 = 41;     // sys_socket (Linux)
-pub const SYS_BIND: u64 = 49;       // sys_bind (Linux)
-pub const SYS_SENDTO: u64 = 44;     // sys_sendto (Linux)
-pub const SYS_RECVFROM: u64 = 45;   // sys_recvfrom (Linux)
-pub const SYS_CONNECT: u64 = 42;    // sys_connect (Linux)
+pub const SYS_SOCKET: u64 = 41; // sys_socket (Linux)
+pub const SYS_BIND: u64 = 49; // sys_bind (Linux)
+pub const SYS_SENDTO: u64 = 44; // sys_sendto (Linux)
+pub const SYS_RECVFROM: u64 = 45; // sys_recvfrom (Linux)
+pub const SYS_CONNECT: u64 = 42; // sys_connect (Linux)
 pub const SYS_GETSOCKNAME: u64 = 51; // sys_getsockname (Linux)
 pub const SYS_GETPEERNAME: u64 = 52; // sys_getpeername (Linux)
 
@@ -126,19 +128,19 @@ const F_GETFL: u64 = 3;
 const F_SETFL: u64 = 4;
 
 // Socket domain constants (POSIX)
-const AF_INET: i32 = 2;       // IPv4
-const AF_INET6: i32 = 10;     // IPv6
+const AF_INET: i32 = 2; // IPv4
+const AF_INET6: i32 = 10; // IPv6
 
 // Socket type constants (POSIX)
-const SOCK_STREAM: i32 = 1;   // TCP
-const SOCK_DGRAM: i32 = 2;    // UDP
-const SOCK_RAW: i32 = 3;      // Raw sockets
+const SOCK_STREAM: i32 = 1; // TCP
+const SOCK_DGRAM: i32 = 2; // UDP
+const SOCK_RAW: i32 = 3; // Raw sockets
 
 // Socket protocol constants (POSIX)
-const IPPROTO_IP: i32 = 0;    // Dummy protocol for TCP
-const IPPROTO_ICMP: i32 = 1;  // ICMP
-const IPPROTO_TCP: i32 = 6;   // TCP
-const IPPROTO_UDP: i32 = 17;  // UDP
+const IPPROTO_IP: i32 = 0; // Dummy protocol for TCP
+const IPPROTO_ICMP: i32 = 1; // ICMP
+const IPPROTO_TCP: i32 = 6; // TCP
+const IPPROTO_UDP: i32 = 17; // UDP
 
 // UEFI compatibility bridge syscalls
 pub const SYS_UEFI_GET_COUNTS: u64 = 240;
@@ -206,27 +208,27 @@ struct IpcTransferRequest {
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct SockAddrIn {
-    sin_family: u16,    // AF_INET
-    sin_port: u16,      // Port number (network byte order)
-    sin_addr: u32,      // IPv4 address (network byte order)
-    sin_zero: [u8; 8],  // Padding to match sockaddr size
+    sin_family: u16,   // AF_INET
+    sin_port: u16,     // Port number (network byte order)
+    sin_addr: u32,     // IPv4 address (network byte order)
+    sin_zero: [u8; 8], // Padding to match sockaddr size
 }
 
 /// Generic sockaddr structure (POSIX)
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct SockAddr {
-    sa_family: u16,     // Address family
-    sa_data: [u8; 14],  // Address data
+    sa_family: u16,    // Address family
+    sa_data: [u8; 14], // Address data
 }
 
 /// Socket handle - references a socket in the network stack
 #[derive(Clone, Copy)]
 struct SocketHandle {
-    socket_index: usize,  // Index into network stack's socket table
-    domain: i32,          // AF_INET, AF_INET6
-    socket_type: i32,     // SOCK_STREAM, SOCK_DGRAM
-    protocol: i32,        // IPPROTO_TCP, IPPROTO_UDP
+    socket_index: usize, // Index into network stack's socket table
+    domain: i32,         // AF_INET, AF_INET6
+    socket_type: i32,    // SOCK_STREAM, SOCK_DGRAM
+    protocol: i32,       // IPPROTO_TCP, IPPROTO_UDP
 }
 
 #[derive(Clone, Copy)]
@@ -1319,7 +1321,7 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
             out(reg) user_rsp
         );
     }
-    
+
     crate::serial::_print(format_args!(
         "[fork] Retrieved user_rsp from GS_DATA: {:#x}\n",
         user_rsp
@@ -1346,11 +1348,11 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
     crate::kinfo!("fork() called from PID {}", current_pid);
     crate::serial::_print(format_args!("[fork] PID {} calling fork\n", current_pid));
 
-    let parent_pid = current_pid;  // Store for later use
+    let parent_pid = current_pid; // Store for later use
 
     // Allocate new PID for child
     let child_pid = crate::process::allocate_pid();
-    
+
     crate::serial::_print(format_args!("[fork] Allocated child PID {}\n", child_pid));
 
     // Create child process - start by copying parent state
@@ -1395,8 +1397,11 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
         memory_size / 1024,
         USER_VIRT_BASE
     );
-    
-    crate::serial::_print(format_args!("[fork] Copying {} KB of memory\n", memory_size / 1024));
+
+    crate::serial::_print(format_args!(
+        "[fork] Copying {} KB of memory\n",
+        memory_size / 1024
+    ));
 
     // Allocate new physical memory for child process
     // We need to find a free physical region to copy parent's memory
@@ -1420,15 +1425,18 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
     // When we're in syscall context, the page tables are still parent's,
     // so accessing USER_VIRT_BASE will give us parent's data.
     // However, we need to be careful about which physical memory to copy from.
-    
+
     let parent_phys_base = parent_process.memory_base;
-    
+
     crate::serial::_print(format_args!(
         "[fork] Parent PID {} phys_base={:#x}, child PID {} phys_base={:#x}\n",
-        parent_pid, parent_phys_base, child_pid, child_phys_base));
-    crate::serial::_print(format_args!("[fork] Copying {} KB from parent to child\n",
-                                       memory_size / 1024));
-    
+        parent_pid, parent_phys_base, child_pid, child_phys_base
+    ));
+    crate::serial::_print(format_args!(
+        "[fork] Copying {} KB from parent to child\n",
+        memory_size / 1024
+    ));
+
     // DEBUG: Check parent's memory at path_buf location (0x9fe390 from shell output)
     unsafe {
         let test_addr = 0x9fe390u64 as *const u8;
@@ -1438,26 +1446,26 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
             test_bytes
         ));
     }
-    
+
     unsafe {
-        // THE KEY INSIGHT: 
+        // THE KEY INSIGHT:
         // We're currently running in syscall context with PARENT'S page tables active.
         // USER_VIRT_BASE points to parent's physical memory via parent's page tables.
         // But since we're in kernel mode, we can ALSO directly access physical memory.
-        // 
+        //
         // Option 1: Copy from virtual (USER_VIRT_BASE) - uses parent's current mapping
         // Option 2: Copy from parent's physical address directly
         //
         // We use Option 1 because parent's page tables are active NOW.
         let src_ptr = USER_VIRT_BASE as *const u8;
         let dst_ptr = child_phys_base as *mut u8;
-        
+
         crate::serial::_print(format_args!(
             "[fork] Detailed: reading from VIRT {:#x} (maps to parent phys {:#x}), writing to child PHYS {:#x}\n",
             src_ptr as u64, parent_phys_base, dst_ptr as u64));
-        
+
         core::ptr::copy_nonoverlapping(src_ptr, dst_ptr, memory_size as usize);
-        
+
         // DEBUG: Verify copy worked - check path_buf address in child's physical memory
         let child_test_addr = (child_phys_base + (0x9fe390 - USER_VIRT_BASE)) as *const u8;
         let child_test_bytes = core::slice::from_raw_parts(child_test_addr, 16);
@@ -1471,28 +1479,29 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
         "fork() - memory copied successfully, {} KB",
         memory_size / 1024
     );
-    
+
     crate::serial::_print(format_args!("[fork] Memory copied successfully\n"));
 
     // Store child's physical base in the process struct
     child_process.memory_base = child_phys_base;
     child_process.memory_size = memory_size;
-    child_process.cr3 = match crate::paging::create_process_address_space(
-        child_phys_base,
-        memory_size,
-    ) {
-        Ok(cr3) => cr3,
-        Err(err) => {
-            crate::kerror!(
-                "fork() - failed to build page tables for child {}: {}",
-                child_pid, err
-            );
-            return u64::MAX;
-        }
-    };
-    
-    crate::serial::_print(format_args!("[fork] Child memory_base={:#x}, memory_size={:#x}\n", 
-                                       child_phys_base, memory_size));
+    child_process.cr3 =
+        match crate::paging::create_process_address_space(child_phys_base, memory_size) {
+            Ok(cr3) => cr3,
+            Err(err) => {
+                crate::kerror!(
+                    "fork() - failed to build page tables for child {}: {}",
+                    child_pid,
+                    err
+                );
+                return u64::MAX;
+            }
+        };
+
+    crate::serial::_print(format_args!(
+        "[fork] Child memory_base={:#x}, memory_size={:#x}\n",
+        child_phys_base, memory_size
+    ));
 
     // Copy file descriptor table
     // For now, we share the FD table (TODO: implement proper copy)
@@ -1552,23 +1561,31 @@ fn syscall_execve(path: *const u8, _argv: *const *const u8, _envp: *const *const
         match core::str::from_utf8(slice) {
             Ok(s) => s,
             Err(_) => {
-                crate::serial::_print(format_args!("[syscall_execve] Error: invalid UTF-8 in path\n"));
+                crate::serial::_print(format_args!(
+                    "[syscall_execve] Error: invalid UTF-8 in path\n"
+                ));
                 posix::set_errno(posix::errno::EINVAL);
                 return u64::MAX;
             }
         }
     };
-    
+
     crate::serial::_print(format_args!("[syscall_execve] Path: {}\n", path_str));
-    
+
     // Load the ELF file from filesystem
     let elf_data = match crate::fs::read_file_bytes(path_str) {
         Some(data) => {
-            crate::serial::_print(format_args!("[syscall_execve] Found file, {} bytes\n", data.len()));
+            crate::serial::_print(format_args!(
+                "[syscall_execve] Found file, {} bytes\n",
+                data.len()
+            ));
             data
         }
         None => {
-            crate::serial::_print(format_args!("[syscall_execve] Error: file not found: {}\n", path_str));
+            crate::serial::_print(format_args!(
+                "[syscall_execve] Error: file not found: {}\n",
+                path_str
+            ));
             posix::set_errno(posix::errno::ENOENT);
             return u64::MAX;
         }
@@ -1577,8 +1594,10 @@ fn syscall_execve(path: *const u8, _argv: *const *const u8, _envp: *const *const
     // Create new process image from ELF
     let new_process = match crate::process::Process::from_elf(elf_data) {
         Ok(proc) => {
-            crate::serial::_print(format_args!("[syscall_execve] Successfully loaded ELF, entry={:#x}, stack={:#x}\n", 
-                    proc.entry_point, proc.stack_top));
+            crate::serial::_print(format_args!(
+                "[syscall_execve] Successfully loaded ELF, entry={:#x}, stack={:#x}\n",
+                proc.entry_point, proc.stack_top
+            ));
             proc
         }
         Err(e) => {
@@ -2748,17 +2767,17 @@ pub extern "C" fn syscall_dispatch(
             arg1,
             arg2 as *const u8,
             arg3 as usize,
-            0,                           // flags (arg4, need to access r10)
-            0 as *const SockAddr,        // dest_addr (arg5, need to access r8)
-            0,                            // addrlen (arg6, need to access r9)
+            0,                    // flags (arg4, need to access r10)
+            0 as *const SockAddr, // dest_addr (arg5, need to access r8)
+            0,                    // addrlen (arg6, need to access r9)
         ),
         SYS_RECVFROM => syscall_recvfrom(
             arg1,
             arg2 as *mut u8,
             arg3 as usize,
-            0,                      // flags (arg4)
-            0 as *mut SockAddr,     // src_addr (arg5)
-            0 as *mut u32,          // addrlen (arg6)
+            0,                  // flags (arg4)
+            0 as *mut SockAddr, // src_addr (arg5)
+            0 as *mut u32,      // addrlen (arg6)
         ),
         SYS_CONNECT => syscall_connect(arg1, arg2 as *const SockAddr, arg3 as u32),
         SYS_REBOOT => syscall_reboot(arg1 as i32),

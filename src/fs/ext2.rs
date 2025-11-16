@@ -466,7 +466,12 @@ impl Ext2Filesystem {
 
     /// Write data to a file at the given offset.
     /// This is a basic implementation that supports writing to existing files.
-    pub fn write_file_at(&self, inode_num: u32, offset: usize, data: &[u8]) -> Result<usize, Ext2Error> {
+    pub fn write_file_at(
+        &self,
+        inode_num: u32,
+        offset: usize,
+        data: &[u8],
+    ) -> Result<usize, Ext2Error> {
         if !Self::is_writable() {
             return Err(Ext2Error::ReadOnly);
         }
@@ -485,7 +490,7 @@ impl Ext2Filesystem {
         }
 
         let mut inode = self.load_inode(inode_num)?;
-        
+
         if !inode.is_regular_file() {
             return Err(Ext2Error::InvalidInode);
         }
@@ -495,7 +500,7 @@ impl Ext2Filesystem {
         let file_size = inode.size() as usize;
         let target_offset = offset;
         let new_size = (target_offset + data.len()).max(file_size);
-        
+
         let block_size = self.block_size;
         let mut written = 0usize;
         let mut current_offset = offset;
@@ -509,11 +514,12 @@ impl Ext2Filesystem {
         while remaining > 0 {
             let block_index = current_offset / block_size;
             let within_block = current_offset % block_size;
-            
+
             // Get or allocate block
-            let block_number = self.block_number(&inode, block_index)
+            let block_number = self
+                .block_number(&inode, block_index)
                 .ok_or(Ext2Error::InvalidBlockNumber)?;
-            
+
             if block_number == 0 {
                 // Would need to allocate a new block here
                 // For now, return error
@@ -581,11 +587,7 @@ impl Ext2Filesystem {
 
     /// Enable write mode for the filesystem
     pub fn enable_write_mode() {
-        EXT2_WRITE_STATE.call_once(|| {
-            spin::Mutex::new(Ext2WriteState {
-                writable: true,
-            })
-        });
+        EXT2_WRITE_STATE.call_once(|| spin::Mutex::new(Ext2WriteState { writable: true }));
         if let Some(state) = EXT2_WRITE_STATE.get() {
             state.lock().writable = true;
         }
@@ -697,9 +699,8 @@ impl super::FileSystem for Ext2Filesystem {
             return Err("ext2 filesystem is read-only");
         }
 
-        let file_ref = self.lookup(path)
-            .ok_or("file not found")?;
-        
+        let file_ref = self.lookup(path).ok_or("file not found")?;
+
         self.write_file_at(file_ref.inode, 0, data)
             .map_err(|_| "write failed")
     }
@@ -708,7 +709,7 @@ impl super::FileSystem for Ext2Filesystem {
         if !Self::is_writable() {
             return Err("ext2 filesystem is read-only");
         }
-        
+
         // File creation would require:
         // 1. Allocating a new inode
         // 2. Creating a directory entry
