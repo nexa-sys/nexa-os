@@ -500,7 +500,7 @@ pub fn do_schedule() {
             *current_lock = Some(next_pid);
 
             if first_run {
-                // CRITICAL: Don't set has_entered_user here! 
+                // CRITICAL: Don't set has_entered_user here!
                 // We return a COPY of the process, and execute() will set it on the copy.
                 // We need to set it in the process table AFTER execute() completes.
                 // But execute() never returns, so we can't do it there.
@@ -540,12 +540,9 @@ pub fn do_schedule() {
         Some(ScheduleDecision::FirstRun(mut process)) => {
             crate::serial::_print(format_args!(
                 "[do_schedule] FirstRun: PID={}, entry={:#x}, stack={:#x}, has_entered_user={}\n",
-                process.pid,
-                process.entry_point,
-                process.stack_top,
-                process.has_entered_user
+                process.pid, process.entry_point, process.stack_top, process.has_entered_user
             ));
-            
+
             // CRITICAL FIX: Mark the process as entered in the process table BEFORE execute()
             // because execute() never returns and we have a copy of the process here.
             let pid = process.pid;
@@ -560,7 +557,7 @@ pub fn do_schedule() {
                     }
                 }
             }
-            
+
             crate::paging::activate_address_space(process.cr3);
             process.execute();
             crate::kfatal!("process::execute returned unexpectedly");
@@ -575,9 +572,7 @@ pub fn do_schedule() {
         }) => unsafe {
             crate::serial::_print(format_args!(
                 "[do_schedule] Switch: user_rip={:#x}, user_rsp={:#x}, user_rflags={:#x}\n",
-                user_rip,
-                user_rsp,
-                user_rflags
+                user_rip, user_rsp, user_rflags
             ));
             if user_rsp != 0 {
                 crate::interrupts::restore_user_syscall_context(user_rip, user_rsp, user_rflags);

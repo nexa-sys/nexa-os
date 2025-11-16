@@ -307,10 +307,7 @@ impl Process {
 
         crate::serial::_print(format_args!(
             "[process::execute] PID={}, entry={:#x}, stack={:#x}, has_entered_user={}\n",
-            self.pid,
-            self.entry_point,
-            self.stack_top,
-            self.has_entered_user
+            self.pid, self.entry_point, self.stack_top, self.has_entered_user
         ));
 
         crate::kinfo!(
@@ -506,8 +503,7 @@ pub fn jump_to_usermode(entry: u64, stack: u64) -> ! {
     // Use kdebug! macro for direct serial output
     crate::serial::_print(format_args!(
         "[jump_to_usermode] ENTRY: entry={:#x}, stack={:#x}\n",
-        entry,
-        stack
+        entry, stack
     ));
 
     kdebug!(

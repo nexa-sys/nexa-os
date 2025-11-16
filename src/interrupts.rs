@@ -19,6 +19,25 @@ const ENABLE_SYSCALL_MSRS: bool = true;
 pub static PICS: spin::Mutex<ChainedPics> =
     spin::Mutex::new(unsafe { ChainedPics::new(PIC_1_OFFSET, PIC_2_OFFSET) });
 
+// Offsets (in u64 slots) within the GS_DATA scratchpad.
+// Keeping these as explicit constants prevents accidental drift between the
+// assembly fast paths and the Rust helpers that maintain user/kernel context.
+const GS_SLOT_USER_RSP: usize = 0;
+const GS_SLOT_KERNEL_RSP: usize = 1;
+const GS_SLOT_USER_ENTRY: usize = 2;
+const GS_SLOT_USER_STACK: usize = 3;
+const GS_SLOT_USER_CS: usize = 4;
+const GS_SLOT_USER_SS: usize = 5;
+const GS_SLOT_USER_DS: usize = 6;
+const GS_SLOT_SAVED_RCX: usize = 7;
+const GS_SLOT_SAVED_RFLAGS: usize = 8;
+const GS_SLOT_USER_RSP_DEBUG: usize = 9;
+const GS_SLOT_KERNEL_STACK_GUARD: usize = 20;
+const GS_SLOT_KERNEL_STACK_SNAPSHOT: usize = 21;
+
+const GUARD_SOURCE_INT_GATE: u64 = 0;
+const GUARD_SOURCE_SYSCALL: u64 = 1;
+
 unsafe fn write_hex_u64(port: &mut Port<u8>, value: u64) {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
     for shift in (0..16).rev() {
@@ -48,6 +67,16 @@ global_asm!(
     "mov gs:[0], r10",     // gs slot 0 = user RSP (for fork to read)
     // Save user RIP for syscall_return_addr parameter
     "mov r10, [rsp + 0]", // r10 = user RIP
+    // Guard against nested entries while processes share a single kernel stack
+    "mov r9, gs:[160]",
+    "test r9, r9",
+    "jz .Lkernel_stack_guard_set_int",
+    "mov rdi, 0",
+    "call kernel_stack_guard_reentry_fail",
+    ".Lkernel_stack_guard_set_int:",
+    "mov gs:[168], rsp",
+    "mov r9, 1",
+    "mov gs:[160], r9",
     // Now push general-purpose registers (we will NOT touch the interrupt frame on stack)
     "push rcx",
     "push rdx",
@@ -102,8 +131,11 @@ global_asm!(
     //   [rsp+32] = SS
     "mov [rsp], r14",      // Set new entry as return RIP
     "mov [rsp + 24], r15", // Set new stack as user RSP
-    "xor rax, rax",        // Clear return value for exec
-    "iretq",               // Jump to new program
+    "xor r9, r9",
+    "mov gs:[160], r9",
+    "mov gs:[168], r9",
+    "xor rax, rax", // Clear return value for exec
+    "iretq",        // Jump to new program
     ".Lexec_failed:",
     "add rsp, 16", // Clean up get_exec_context params
     "pop rax",     // Restore rax
@@ -126,6 +158,9 @@ global_asm!(
 
     // Snapshot the user-mode frame before we hand control back, so faults can
     // report the exact values that iretq attempted to restore.
+    "xor r10, r10",
+    "mov gs:[160], r10",
+    "mov gs:[168], r10",
     "mov r9, rax", // Save syscall return value temporarily
     "mov rax, [rsp]",
     "mov gs:[80], rax", // gs slot 10 = user RIP
@@ -146,6 +181,7 @@ extern "C" {
     #[allow(dead_code)]
     fn syscall_handler();
     // Import get_exec_context from syscall module for exec support
+    #[allow(dead_code)]
     fn get_exec_context(
         entry_out: *mut u64,
         stack_out: *mut u64,
@@ -569,12 +605,24 @@ global_asm!(
     "ring3_switch_handler:",
     // Stack layout from int 0x80: [ss, rsp, rflags, cs, rip] + pushed values [entry, stack, rflags, cs, ss]
     // We need to set up sysret parameters
+    "mov rax, gs:[160]",
+    "test rax, rax",
+    "jz .Lkernel_stack_guard_set_ring3",
+    "mov rdi, 0",
+    "call kernel_stack_guard_reentry_fail",
+    ".Lkernel_stack_guard_set_ring3:",
+    "mov gs:[168], rsp",
+    "mov rax, 1",
+    "mov gs:[160], rax",
     "mov rcx, [rsp + 8]",  // entry point (rip for sysret)
     "mov r11, [rsp + 16]", // rflags
     "mov rsp, [rsp]",      // stack pointer
     "mov gs:[136], rcx",   // gs slot 17 = sysret target RIP
     "mov gs:[144], r11",   // gs slot 18 = sysret target RFLAGS
     "mov gs:[152], rsp",   // gs slot 19 = sysret target RSP
+    "xor rdx, rdx",
+    "mov gs:[160], rdx",
+    "mov gs:[168], rdx",
     // Set user data segments
     "mov ax, 0x23",
     "mov ds, ax",
@@ -901,6 +949,15 @@ extern "C" fn syscall_instruction_handler() {
         "mov rsp, gs:[8]",  // RSP    = kernel stack top
         "mov gs:[56], rcx", // GS[7]  = user return RIP (RCX)
         "mov gs:[64], r11", // GS[8]  = user RFLAGS (R11)
+        "mov rcx, gs:[160]",
+        "test rcx, rcx",
+        "jz .Lkernel_stack_guard_set_syscall",
+        "mov rdi, 1",
+        "call kernel_stack_guard_reentry_fail",
+        ".Lkernel_stack_guard_set_syscall:",
+        "mov gs:[168], rsp",
+        "mov rcx, 1",
+        "mov gs:[160], rcx",
         // Preserve callee-saved registers that Rust expects us to maintain.
         "push r15",
         "push r14",
@@ -932,10 +989,13 @@ extern "C" fn syscall_instruction_handler() {
         // Load new entry and stack
         "mov rcx, [rsp + 8]", // New entry -> rcx (for sysretq)
         "mov rsp, [rsp]",     // New stack -> rsp
-        "mov r11, 0x202",     // User rflags (IF=1, reserved=1)
-        "xor rax, rax",       // Clear return value for exec
-        "sysretq",            // Jump to new program
-        "1:",                 // exec failed, restore stack
+        "xor rdx, rdx",
+        "mov gs:[160], rdx",
+        "mov gs:[168], rdx",
+        "mov r11, 0x202", // User rflags (IF=1, reserved=1)
+        "xor rax, rax",   // Clear return value for exec
+        "sysretq",        // Jump to new program
+        "1:",             // exec failed, restore stack
         "add rsp, 16",
         "2:", // Normal return path
         "add rsp, 8",
@@ -947,6 +1007,9 @@ extern "C" fn syscall_instruction_handler() {
         "pop r14",
         "pop r15",
         // Restore user execution context for SYSRETQ.
+        "xor rcx, rcx",
+        "mov gs:[160], rcx",
+        "mov gs:[168], rcx",
         "mov rcx, gs:[56]", // rcx = user RIP
         "mov r11, gs:[64]", // r11 = user RFLAGS snapshot
         "mov rsp, gs:[0]",  // rsp = user RSP
@@ -1104,15 +1167,18 @@ pub unsafe fn set_gs_data(entry: u64, stack: u64, user_cs: u64, user_ss: u64, us
     let gs_data_ptr = gs_data_addr as *mut u64;
 
     unsafe {
-        gs_data_ptr.add(0).write(stack); // user RSP at gs:[0]
-        gs_data_ptr.add(1).write(kernel_stack); // kernel RSP at gs:[8]
-        gs_data_ptr.add(2).write(entry); // USER_ENTRY at gs:[16]
-        gs_data_ptr.add(3).write(stack); // USER_STACK at gs:[24]
-        gs_data_ptr.add(4).write(user_cs); // user_cs at gs:[32]
-        gs_data_ptr.add(5).write(user_ss); // user_ss at gs:[40]
-        gs_data_ptr.add(6).write(user_ds); // user_ds at gs:[48]
-        gs_data_ptr.add(7).write(0); // Clear saved RCX slot
-        gs_data_ptr.add(8).write(0); // Clear saved RFLAGS slot
+        gs_data_ptr.add(GS_SLOT_USER_RSP).write(stack);
+        gs_data_ptr.add(GS_SLOT_USER_RSP_DEBUG).write(stack);
+        gs_data_ptr.add(GS_SLOT_KERNEL_RSP).write(kernel_stack);
+        gs_data_ptr.add(GS_SLOT_USER_ENTRY).write(entry);
+        gs_data_ptr.add(GS_SLOT_USER_STACK).write(stack);
+        gs_data_ptr.add(GS_SLOT_USER_CS).write(user_cs);
+        gs_data_ptr.add(GS_SLOT_USER_SS).write(user_ss);
+        gs_data_ptr.add(GS_SLOT_USER_DS).write(user_ds);
+        gs_data_ptr.add(GS_SLOT_SAVED_RCX).write(0);
+        gs_data_ptr.add(GS_SLOT_SAVED_RFLAGS).write(0);
+        gs_data_ptr.add(GS_SLOT_KERNEL_STACK_GUARD).write(0);
+        gs_data_ptr.add(GS_SLOT_KERNEL_STACK_SNAPSHOT).write(0);
     }
 }
 
@@ -1125,9 +1191,45 @@ pub fn restore_user_syscall_context(user_rip: u64, user_rsp: u64, user_rflags: u
         let gs_data_addr = &raw const crate::initramfs::GS_DATA.0 as *const _ as u64;
         let gs_data_ptr = gs_data_addr as *mut u64;
 
-        gs_data_ptr.add(0).write(user_rsp);
-        gs_data_ptr.add(7).write(user_rip);
-        gs_data_ptr.add(8).write(user_rflags);
+        gs_data_ptr.add(GS_SLOT_USER_RSP).write(user_rsp);
+        gs_data_ptr.add(GS_SLOT_USER_RSP_DEBUG).write(user_rsp);
+        gs_data_ptr.add(GS_SLOT_SAVED_RCX).write(user_rip);
+        gs_data_ptr.add(GS_SLOT_SAVED_RFLAGS).write(user_rflags);
+        gs_data_ptr.add(GS_SLOT_KERNEL_STACK_GUARD).write(0);
+        gs_data_ptr.add(GS_SLOT_KERNEL_STACK_SNAPSHOT).write(0);
+    }
+}
+
+#[cold]
+#[no_mangle]
+extern "C" fn kernel_stack_guard_reentry_fail(source: u64) -> ! {
+    let base_ptr = unsafe { core::ptr::addr_of!(crate::initramfs::GS_DATA.0) as *const u64 };
+    let guard_val = unsafe { base_ptr.add(GS_SLOT_KERNEL_STACK_GUARD).read_volatile() };
+    let snapshot = unsafe { base_ptr.add(GS_SLOT_KERNEL_STACK_SNAPSHOT).read_volatile() };
+    let pid = crate::scheduler::current_pid();
+
+    let source_desc = match source {
+        GUARD_SOURCE_INT_GATE => "int 0x81",
+        GUARD_SOURCE_SYSCALL => "syscall fastpath",
+        _ => "unknown",
+    };
+
+    let current_rsp: u64;
+    unsafe {
+        core::arch::asm!("mov {}, rsp", out(reg) current_rsp, options(nostack, preserves_flags));
+    }
+
+    crate::kfatal!(
+        "Kernel stack guard violation detected on {} (pid={:?}, guard={}, snapshot={:#x}, rsp={:#x})",
+        source_desc,
+        pid,
+        guard_val,
+        snapshot,
+        current_rsp
+    );
+
+    loop {
+        x86_64::instructions::hlt();
     }
 }
 
@@ -1198,16 +1300,20 @@ pub fn setup_syscall() {
 
         // Initialize GS data for syscall - write directly to the address
         let gs_data_ptr = gs_data_addr as *mut u64;
-        gs_data_ptr.add(1).write(crate::gdt::get_kernel_stack_top()); // Kernel stack for syscall at gs:[8]
+        gs_data_ptr
+            .add(GS_SLOT_KERNEL_RSP)
+            .write(crate::gdt::get_kernel_stack_top());
 
         let selectors = crate::gdt::get_selectors();
         let user_cs = (selectors.user_code_selector.0 | 0x3) as u64;
         let user_ss = (selectors.user_data_selector.0 | 0x3) as u64;
         let user_ds = user_ss;
 
-        gs_data_ptr.add(4).write(user_cs); // Default user CS for SYSRET/IRET
-        gs_data_ptr.add(5).write(user_ss); // Default user SS
-        gs_data_ptr.add(6).write(user_ds); // Default user DS (mirrors SS)
+        gs_data_ptr.add(GS_SLOT_USER_CS).write(user_cs);
+        gs_data_ptr.add(GS_SLOT_USER_SS).write(user_ss);
+        gs_data_ptr.add(GS_SLOT_USER_DS).write(user_ds);
+        gs_data_ptr.add(GS_SLOT_KERNEL_STACK_GUARD).write(0);
+        gs_data_ptr.add(GS_SLOT_KERNEL_STACK_SNAPSHOT).write(0);
 
         crate::kdebug!(
             "setup_syscall: initramfs available? {}",
