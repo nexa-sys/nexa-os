@@ -6,6 +6,44 @@ ISO_PATH="$ROOT_DIR/dist/nexaos.iso"
 ROOTFS_IMG="$ROOT_DIR/build/rootfs.ext2"
 SMP_CORES="${SMP:-4}"
 
+# Parse script arguments and treat them as additional QEMU arguments.
+# The user can either pass QEMU args directly, or separate script args and
+# QEMU args using `--`. Example: `./scripts/run-qemu.sh -S -s` or
+# `./scripts/run-qemu.sh -- -S -s`.
+EXTRA_QEMU_ARGS=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -h|--help)
+            cat <<'USAGE'
+Usage: run-qemu.sh [--] [<qemu-args>...]
+
+Run NexaOS in QEMU using the defaults defined in this script and append
+any additional QEMU arguments provided on the command line. When in doubt,
+use `--` to separate script-specific options from QEMU options.
+
+Examples:
+  # Start QEMU normally
+  ./scripts/run-qemu.sh
+
+  # Run QEMU with GDB server and paused CPU (-S -s)
+  ./scripts/run-qemu.sh -S -s
+  # or explicitly separate with --
+  ./scripts/run-qemu.sh -- -S -s
+USAGE
+            exit 0
+            ;;
+        --)
+            shift
+            EXTRA_QEMU_ARGS+=("$@")
+            break
+            ;;
+        *)
+            EXTRA_QEMU_ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+
 # Check for ISO
 if [[ ! -f "$ISO_PATH" ]]; then
     echo "ISO image not found at $ISO_PATH. Run scripts/build-iso.sh first." >&2
@@ -102,6 +140,12 @@ else
 fi
 
 echo "  SMP cores: ${SMP_CORES}"
+
+# If additional QEMU args were supplied, forward them to QEMU.
+if [[ ${#EXTRA_QEMU_ARGS[@]} -gt 0 ]]; then
+    echo "  Additional QEMU args: ${EXTRA_QEMU_ARGS[*]}"
+    QEMU_CMD+=("${EXTRA_QEMU_ARGS[@]}")
+fi
 
 # Run QEMU
 exec "${QEMU_CMD[@]}"

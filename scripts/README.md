@@ -99,7 +99,14 @@ Creates a bootable ISO image with GRUB:
 Runs NexaOS in QEMU with proper configuration:
 
 ```bash
+# Run with default options
 ./scripts/run-qemu.sh
+
+# Pass additional QEMU args (example: start GDB server and pause CPUs)
+./scripts/run-qemu.sh -S -s
+
+# Use `--` to separate script args from QEMU args if needed
+./scripts/run-qemu.sh -- -S -s
 ```
 
 **What it does:**
