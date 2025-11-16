@@ -102,6 +102,9 @@ pub struct Process {
     pub tty: usize, // Controlling virtual terminal index
     pub memory_base: u64, // Physical base address of process memory (for fork)
     pub memory_size: u64, // Size of process memory region (for fork)
+    pub user_rip: u64, // Saved user-mode RIP for syscall return
+    pub user_rsp: u64, // Saved user-mode RSP for syscall return
+    pub user_rflags: u64, // Saved user-mode RFLAGS for syscall return
 }
 
 static NEXT_PID: AtomicU64 = AtomicU64::new(1);
@@ -225,6 +228,9 @@ impl Process {
                     tty: 0,
                     memory_base: USER_PHYS_BASE,
                     memory_size: USER_REGION_SIZE,
+                    user_rip: interp_image.entry_point,
+                    user_rsp: stack_ptr,
+                    user_rflags: 0x202,
                 });
             } else {
                 crate::kwarn!(
@@ -269,6 +275,9 @@ impl Process {
             tty: 0,
             memory_base: USER_PHYS_BASE,
             memory_size: USER_REGION_SIZE,
+            user_rip: program_image.entry_point,
+            user_rsp: stack_ptr,
+            user_rflags: 0x202,
         })
     }
 

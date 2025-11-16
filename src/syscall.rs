@@ -1383,6 +1383,9 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
     child_process.context.rax = 0;
     child_process.context.rip = syscall_return_addr;
     child_process.context.rsp = user_rsp;
+    child_process.user_rip = syscall_return_addr;
+    child_process.user_rsp = user_rsp;
+    child_process.user_rflags = parent_process.user_rflags;
 
     crate::kdebug!(
         "Child entry set to {:#x}, stack={:#x}",
@@ -1643,6 +1646,9 @@ fn syscall_execve(path: *const u8, _argv: *const *const u8, _envp: *const *const
                     entry.process.memory_base = new_process.memory_base;
                     entry.process.memory_size = new_process.memory_size;
                     entry.process.has_entered_user = false;
+                    entry.process.user_rip = new_process.entry_point;
+                    entry.process.user_rsp = new_process.stack_top;
+                    entry.process.user_rflags = 0x202;
 
                     // Reset signal handlers to SIG_DFL (POSIX requirement)
                     entry.process.signal_state.reset_to_default();
@@ -2540,7 +2546,7 @@ fn syscall_sendto(
         ];
 
         // Copy user data to kernel buffer
-        let data_slice = core::slice::from_raw_parts(buf, len);
+        let _data_slice = core::slice::from_raw_parts(buf, len);
 
         crate::kinfo!(
             "[SYS_SENDTO] sockfd={} sending {} bytes to {}.{}.{}.{}:{}",
@@ -2567,8 +2573,8 @@ fn syscall_recvfrom(
     buf: *mut u8,
     len: usize,
     _flags: i32,
-    src_addr: *mut SockAddr,
-    addrlen: *mut u32,
+    _src_addr: *mut SockAddr,
+    _addrlen: *mut u32,
 ) -> u64 {
     if buf.is_null() || len == 0 {
         posix::set_errno(posix::errno::EINVAL);
@@ -2729,6 +2735,21 @@ pub extern "C" fn syscall_dispatch(
     arg3: u64,
     syscall_return_addr: u64,
 ) -> u64 {
+    let (user_rsp, user_rflags) = unsafe {
+        let mut rsp_out: u64;
+        let mut rflags_out: u64;
+        core::arch::asm!(
+            "mov {0}, gs:[0]",
+            "mov {1}, gs:[64]",
+            out(reg) rsp_out,
+            out(reg) rflags_out,
+            options(nostack, preserves_flags)
+        );
+        (rsp_out, rflags_out)
+    };
+
+    scheduler::update_current_user_context(syscall_return_addr, user_rsp, user_rflags);
+
     let result = match nr {
         SYS_WRITE => syscall_write(arg1, arg2, arg3),
         SYS_READ => syscall_read(arg1, arg2 as *mut u8, arg3 as usize),

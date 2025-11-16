@@ -32,6 +32,9 @@ impl ProcessEntry {
                 tty: 0,
                 memory_base: 0,
                 memory_size: 0,
+                user_rip: 0,
+                user_rsp: 0,
+                user_rflags: 0,
             },
             priority: 128,
             time_slice: 0,
@@ -53,6 +56,26 @@ const DEFAULT_TIME_SLICE: u64 = 10;
 /// Lock the process table for direct access (for syscall use)
 pub fn process_table_lock() -> spin::MutexGuard<'static, [Option<ProcessEntry>; MAX_PROCESSES]> {
     PROCESS_TABLE.lock()
+}
+
+/// Update the saved user-mode return context for the currently running process.
+pub fn update_current_user_context(user_rip: u64, user_rsp: u64, user_rflags: u64) {
+    let current = current_pid();
+
+    if let Some(pid) = current {
+        let mut table = PROCESS_TABLE.lock();
+
+        for slot in table.iter_mut() {
+            if let Some(entry) = slot {
+                if entry.process.pid == pid {
+                    entry.process.user_rip = user_rip;
+                    entry.process.user_rsp = user_rsp;
+                    entry.process.user_rflags = user_rflags;
+                    break;
+                }
+            }
+        }
+    }
 }
 
 /// Add a process to the scheduler
@@ -418,6 +441,9 @@ pub fn do_schedule() {
             old_context_ptr: *mut crate::process::Context,
             next_context: crate::process::Context,
             next_cr3: u64,
+            user_rip: u64,
+            user_rsp: u64,
+            user_rflags: u64,
         },
     }
 
@@ -468,6 +494,9 @@ pub fn do_schedule() {
             let first_run = !entry.process.has_entered_user;
             let next_pid = entry.process.pid;
             let next_cr3 = entry.process.cr3;
+            let user_rip = entry.process.user_rip;
+            let user_rsp = entry.process.user_rsp;
+            let user_rflags = entry.process.user_rflags;
             *current_lock = Some(next_pid);
 
             if first_run {
@@ -493,6 +522,9 @@ pub fn do_schedule() {
                     old_context_ptr: old_context_ptr.unwrap_or(core::ptr::null_mut()),
                     next_context,
                     next_cr3,
+                    user_rip,
+                    user_rsp,
+                    user_rflags,
                 })
             }
         } else {
@@ -510,7 +542,13 @@ pub fn do_schedule() {
             old_context_ptr,
             next_context,
             next_cr3,
+            user_rip,
+            user_rsp,
+            user_rflags,
         }) => unsafe {
+            if user_rsp != 0 {
+                crate::interrupts::restore_user_syscall_context(user_rip, user_rsp, user_rflags);
+            }
             crate::paging::activate_address_space(next_cr3);
             context_switch(old_context_ptr, &next_context as *const _);
         },

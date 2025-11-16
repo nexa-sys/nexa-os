@@ -1116,6 +1116,21 @@ pub unsafe fn set_gs_data(entry: u64, stack: u64, user_cs: u64, user_ss: u64, us
     }
 }
 
+/// Restore saved user-mode return context to the GS data block so the fast
+/// syscall paths can return with the correct RIP/RSP/RFLAGS after a context
+/// switch. This is called by the scheduler before resuming a process that has
+/// already entered userspace at least once.
+pub fn restore_user_syscall_context(user_rip: u64, user_rsp: u64, user_rflags: u64) {
+    unsafe {
+        let gs_data_addr = &raw const crate::initramfs::GS_DATA.0 as *const _ as u64;
+        let gs_data_ptr = gs_data_addr as *mut u64;
+
+        gs_data_ptr.add(0).write(user_rsp);
+        gs_data_ptr.add(7).write(user_rip);
+        gs_data_ptr.add(8).write(user_rflags);
+    }
+}
+
 pub fn setup_syscall() {
     let handler_addr = syscall_instruction_handler as u64;
 
