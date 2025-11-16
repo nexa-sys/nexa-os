@@ -521,15 +521,11 @@ pub fn jump_to_usermode(entry: u64, stack: u64) -> ! {
     }
 
     unsafe {
-        // Touch the top of the user stack
-        let stack_top_ptr = (stack - 8) as *mut u64;
-        stack_top_ptr.write_volatile(0xdeadbeefdeadbeef);
-
         let user_ds = user_data_sel | 3;
 
         kdebug!("BEFORE_SYSRET");
 
-        // Use sysretq to return to user mode
+        // Use sysretq to return to user mode without clobbering the preserved stack
         core::arch::asm!(
             "mov ax, {user_ds:x}",
             "mov ds, ax",
@@ -539,6 +535,7 @@ pub fn jump_to_usermode(entry: u64, stack: u64) -> ! {
             "mov rcx, {entry}",
             "mov r11, {rflags}",
             "mov rsp, {stack}",
+            "xor rax, rax",
             "sysretq",
             user_ds = in(reg) user_ds as u64,
             entry = in(reg) entry,

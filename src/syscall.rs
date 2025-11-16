@@ -1359,28 +1359,31 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
     child_process.ppid = current_pid;
     child_process.state = crate::process::ProcessState::Ready;
 
-    // Copy parent's context - child will resume from same point
-    child_process.context = parent_process.context;
-    // Child should return 0 from fork and resume from syscall return point
+    // Forked children resume in user mode directly, so drive them through the
+    // first-run path instead of inheriting the parent's in-kernel context.
+    child_process.has_entered_user = false;
+
+    // Repoint entry/stack so jump_to_usermode will return at the original
+    // userspace instruction that invoked fork().
+    child_process.entry_point = syscall_return_addr;
+    child_process.stack_top = user_rsp;
+
+    // Provide a clean context block for debugging/diagnostics even though the
+    // first-run path bypasses it.
+    child_process.context = crate::process::Context::zero();
     child_process.context.rax = 0;
-    // FIX: Set child's RIP to the syscall return address, not parent's current RIP
-    // This ensures child resumes execution from the fork() call site in user code
     child_process.context.rip = syscall_return_addr;
-    
-    // CRITICAL FIX: Use the REAL userspace RSP, not the kernel stack RSP!
-    // We stored user_rsp in GS_DATA[0] in syscall_interrupt_handler.
     child_process.context.rsp = user_rsp;
 
     crate::kdebug!(
-        "Child RIP set to {:#x}, Child RAX = 0, Child RSP = {:#x}",
-        child_process.context.rip,
-        child_process.context.rsp
+        "Child entry set to {:#x}, stack={:#x}",
+        child_process.entry_point,
+        child_process.stack_top
     );
-    
-    // CRITICAL DEBUG: Verify RSP was correctly set
+
     crate::serial::_print(format_args!(
-        "[fork] User RSP (from GS_DATA)={:#x}, Kernel RSP={:#x}, Child RSP={:#x}\n",
-        user_rsp, parent_process.context.rsp, child_process.context.rsp
+        "[fork] User RSP (from GS_DATA)={:#x}, Kernel RSP={:#x}, Child stack_top={:#x}\n",
+        user_rsp, parent_process.context.rsp, child_process.stack_top
     ));
 
     // FULL FORK IMPLEMENTATION: Copy entire user space memory
