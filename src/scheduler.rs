@@ -82,18 +82,29 @@ pub fn add_process(process: Process, priority: u8) -> Result<(), &'static str> {
 /// Remove a process from the scheduler
 pub fn remove_process(pid: Pid) -> Result<(), &'static str> {
     let mut table = PROCESS_TABLE.lock();
+    let mut removed = false;
 
     for slot in table.iter_mut() {
         if let Some(entry) = slot {
             if entry.process.pid == pid {
                 crate::kinfo!("Scheduler: Removed process PID {}", pid);
                 *slot = None;
-                return Ok(());
+                removed = true;
+                break;
             }
         }
     }
 
-    Err("Process not found")
+    drop(table);
+
+    if removed {
+        if current_pid() == Some(pid) {
+            set_current_pid(None);
+        }
+        Ok(())
+    } else {
+        Err("Process not found")
+    }
 }
 
 /// Update process state
@@ -119,7 +130,16 @@ pub fn current_pid() -> Option<Pid> {
 
 /// Set current running process
 pub fn set_current_pid(pid: Option<Pid>) {
-    *CURRENT_PID.lock() = pid;
+    {
+        let mut current = CURRENT_PID.lock();
+        *current = pid;
+    }
+
+    if pid.is_none() {
+        // Ensure we always execute kernel code on the kernel address space when
+        // no user process is active.
+        crate::paging::activate_address_space(0);
+    }
 }
 
 /// Round-robin scheduler: select next process to run
@@ -480,6 +500,7 @@ pub fn do_schedule() {
             context_switch(old_context_ptr, &next_context as *const _);
         },
         None => {
+            set_current_pid(None);
             crate::kwarn!("do_schedule(): No ready process found, returning to caller");
         }
     }
