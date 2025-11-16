@@ -620,9 +620,16 @@ pub fn jump_to_usermode(entry: u64, stack: u64) -> ! {
         // Ensure R11 (user RFLAGS) is programmed with the canonical 0x202
         // value explicitly to avoid allocator reuse that can leak stale bits
         // from prior syscalls and trigger a #GP during sysretq.
+        //
+        // Additionally, disable interrupts just before switching RSP to the
+        // user stack so we never take an interrupt while still running in
+        // kernel mode with a user-mode stack pointer. Otherwise the interrupt
+        // handler would observe a bogus kernel stack and eventually crash with
+        // an unpredictable #GP.
         core::arch::asm!(
+            "cli",                 // Mask interrupts during the stack swap
             "mov rcx, {entry}",    // RCX = user RIP for sysretq
-            "mov rsp, {stack}",    // Set user stack
+            "mov rsp, {stack}",    // Set user stack (now safe from interrupts)
             "mov r11d, 0x202",     // User RFLAGS with IF=1, reserved bit=1
             "xor rax, rax",        // Clear return value
             "sysretq",             // Return to Ring 3
