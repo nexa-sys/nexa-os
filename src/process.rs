@@ -535,12 +535,14 @@ pub fn jump_to_usermode(entry: u64, stack: u64) -> ! {
         kdebug!("BEFORE_SYSRET");
 
         // Use sysretq to return to user mode without clobbering the preserved stack
+        // CRITICAL: Don't set GS to user data segment - GS is used for kernel data access
+        // and is automatically preserved across ring transitions by SWAPGS instruction
         core::arch::asm!(
             "mov ax, {user_ds:x}",
             "mov ds, ax",
             "mov es, ax",
             "mov fs, ax",
-            "mov gs, ax",
+            // Don't touch GS - it points to kernel GS_DATA and SWAPGS handles ring transitions
             "mov rcx, {entry}",
             "mov r11, {rflags}",
             "mov rsp, {stack}",
