@@ -466,6 +466,7 @@ impl Ext2Filesystem {
 
     /// Write data to a file at the given offset.
     /// This is a basic implementation that supports writing to existing files.
+    #[allow(unused_assignments)]
     pub fn write_file_at(
         &self,
         inode_num: u32,

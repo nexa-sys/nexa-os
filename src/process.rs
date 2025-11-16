@@ -115,6 +115,7 @@ pub fn allocate_pid() -> Pid {
 }
 
 const DEFAULT_ARGV0: &[u8] = b"nexa";
+pub const MAX_PROCESS_ARGS: usize = 32;
 const STACK_RANDOM_SEED: [u8; 16] = *b"NexaOSGuardSeed!";
 
 const AT_NULL: u64 = 0;
@@ -136,6 +137,14 @@ impl Process {
     /// Create a new process from an ELF binary
     /// Supports both static and dynamically linked executables via PT_INTERP
     pub fn from_elf(elf_data: &'static [u8]) -> Result<Self, &'static str> {
+        Self::from_elf_with_args(elf_data, &[], None)
+    }
+
+    pub fn from_elf_with_args(
+        elf_data: &'static [u8],
+        argv: &[&[u8]],
+        exec_path: Option<&[u8]>,
+    ) -> Result<Self, &'static str> {
         crate::kinfo!(
             "Process::from_elf called with {} bytes of ELF data",
             elf_data.len()
@@ -171,7 +180,37 @@ impl Process {
             program_image.phdr_vaddr
         );
 
-        let program_name = DEFAULT_ARGV0;
+        let mut arg_storage: [&[u8]; MAX_PROCESS_ARGS] = [&[]; MAX_PROCESS_ARGS];
+        let mut argc = 0usize;
+
+        if argv.is_empty() {
+            let fallback = exec_path.filter(|p| !p.is_empty()).unwrap_or(DEFAULT_ARGV0);
+            arg_storage[0] = fallback;
+            argc = 1;
+        } else {
+            for arg in argv {
+                if argc >= MAX_PROCESS_ARGS {
+                    crate::kerror!(
+                        "execve argument list exceeds MAX_PROCESS_ARGS={}",
+                        MAX_PROCESS_ARGS
+                    );
+                    return Err("Too many arguments");
+                }
+                arg_storage[argc] = *arg;
+                argc += 1;
+            }
+        }
+
+        if argc == 0 {
+            arg_storage[0] = DEFAULT_ARGV0;
+            argc = 1;
+        }
+
+        let final_args = &arg_storage[..argc];
+        let exec_slice = match exec_path {
+            Some(path) if !path.is_empty() => path,
+            _ => final_args[0],
+        };
 
         if let Some(interp_path) = loader.get_interpreter() {
             crate::kinfo!("Dynamic executable detected, interpreter: {}", interp_path);
@@ -189,7 +228,8 @@ impl Process {
                 );
 
                 let stack_ptr = build_initial_stack(
-                    program_name,
+                    final_args,
+                    exec_slice,
                     STACK_BASE,
                     STACK_SIZE,
                     &program_image,
@@ -242,8 +282,14 @@ impl Process {
             crate::kinfo!("Static executable detected (no PT_INTERP)");
         }
 
-        let stack_ptr =
-            build_initial_stack(program_name, STACK_BASE, STACK_SIZE, &program_image, None)?;
+        let stack_ptr = build_initial_stack(
+            final_args,
+            exec_slice,
+            STACK_BASE,
+            STACK_SIZE,
+            &program_image,
+            None,
+        )?;
 
         let pid = NEXT_PID.fetch_add(1, Ordering::SeqCst);
 
@@ -323,8 +369,6 @@ impl Process {
 
         // Jump to user mode - this never returns
         jump_to_usermode(self.entry_point, self.stack_top);
-        // If we get here, iretq failed
-        crate::kerror!("Failed to jump to user mode!");
     }
 
     pub fn set_tty(&mut self, tty: usize) {
@@ -418,7 +462,8 @@ impl UserStackBuilder {
 }
 
 fn build_initial_stack(
-    program_name: &[u8],
+    argv: &[&[u8]],
+    exec_path: &[u8],
     stack_base: u64,
     stack_size: u64,
     program: &LoadResult,
@@ -426,12 +471,23 @@ fn build_initial_stack(
 ) -> Result<u64, &'static str> {
     let mut builder = UserStackBuilder::new(stack_base, stack_size);
 
+    if argv.len() > MAX_PROCESS_ARGS {
+        return Err("Too many arguments");
+    }
+
     let random_ptr = builder.push_bytes(&STACK_RANDOM_SEED)?;
-    let argv0_ptr = if program_name.is_empty() {
+    let execfn_ptr = if exec_path.is_empty() {
         None
     } else {
-        Some(builder.push_cstring(program_name)?)
+        Some(builder.push_cstring(exec_path)?)
     };
+
+    let mut arg_ptrs = [0u64; MAX_PROCESS_ARGS];
+    for i in (0..argv.len()).rev() {
+        arg_ptrs[i] = builder.push_cstring(argv[i])?;
+    }
+
+    let argc = argv.len();
 
     builder.pad_to_alignment(16)?;
 
@@ -468,8 +524,11 @@ fn build_initial_stack(
     aux_entries[aux_len] = (AT_RANDOM, random_ptr);
     aux_len += 1;
 
-    if let Some(ptr) = argv0_ptr {
+    if let Some(ptr) = execfn_ptr {
         aux_entries[aux_len] = (AT_EXECFN, ptr);
+        aux_len += 1;
+    } else if argc > 0 {
+        aux_entries[aux_len] = (AT_EXECFN, arg_ptrs[0]);
         aux_len += 1;
     }
 
@@ -484,11 +543,9 @@ fn build_initial_stack(
     builder.push_u64(0)?; // envp NULL
     builder.push_u64(0)?; // argv NULL terminator
 
-    if let Some(ptr) = argv0_ptr {
-        builder.push_u64(ptr)?;
+    for i in (0..argc).rev() {
+        builder.push_u64(arg_ptrs[i])?;
     }
-
-    let argc = if argv0_ptr.is_some() { 1 } else { 0 };
 
     builder.pad_to_alignment(16)?;
     builder.push_u64(argc as u64)?;

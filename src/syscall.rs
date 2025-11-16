@@ -134,19 +134,9 @@ const F_DUPFD: u64 = 0;
 const F_GETFL: u64 = 3;
 const F_SETFL: u64 = 4;
 
-// Socket domain constants (POSIX)
+// Socket domain and protocol constants (subset of POSIX)
 const AF_INET: i32 = 2; // IPv4
-const AF_INET6: i32 = 10; // IPv6
-
-// Socket type constants (POSIX)
-const SOCK_STREAM: i32 = 1; // TCP
 const SOCK_DGRAM: i32 = 2; // UDP
-const SOCK_RAW: i32 = 3; // Raw sockets
-
-// Socket protocol constants (POSIX)
-const IPPROTO_IP: i32 = 0; // Dummy protocol for TCP
-const IPPROTO_ICMP: i32 = 1; // ICMP
-const IPPROTO_TCP: i32 = 6; // TCP
 const IPPROTO_UDP: i32 = 17; // UDP
 
 // UEFI compatibility bridge syscalls
@@ -209,16 +199,6 @@ struct IpcTransferRequest {
     flags: u32,
     buffer_ptr: u64,
     buffer_len: u64,
-}
-
-/// sockaddr_in structure (POSIX)
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct SockAddrIn {
-    sin_family: u16,   // AF_INET
-    sin_port: u16,     // Port number (network byte order)
-    sin_addr: u32,     // IPv4 address (network byte order)
-    sin_zero: [u8; 8], // Padding to match sockaddr size
 }
 
 /// Generic sockaddr structure (POSIX)
@@ -1545,6 +1525,23 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
 /// Returns:
 /// - Special encoded value on success (high 32 bits = upper entry, low 32 bits set to magic)
 /// - u64::MAX on error with errno set
+fn copy_user_c_string(ptr: *const u8, buffer: &mut [u8]) -> Result<usize, ()> {
+    if ptr.is_null() {
+        return Err(());
+    }
+
+    let mut len = 0usize;
+    while len < buffer.len() {
+        let byte = unsafe { ptr.add(len).read() };
+        if byte == 0 {
+            return Ok(len);
+        }
+        buffer[len] = byte;
+        len += 1;
+    }
+    Err(())
+}
+
 fn syscall_execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8) -> u64 {
     use crate::scheduler::get_current_pid;
 
@@ -1556,31 +1553,81 @@ fn syscall_execve(path: *const u8, _argv: *const *const u8, _envp: *const *const
         return u64::MAX;
     }
 
-    // Read the path string from user space
-    let path_str = unsafe {
-        let mut len = 0;
-        while len < 256 && *path.add(len) != 0 {
-            len += 1;
-        }
-        if len >= 256 {
-            crate::serial::_print(format_args!("[syscall_execve] Error: path too long\n"));
+    const MAX_EXEC_PATH_LEN: usize = 256;
+    const MAX_EXEC_ARGS: usize = crate::process::MAX_PROCESS_ARGS;
+    const MAX_EXEC_ARG_LEN: usize = 256;
+
+    let mut path_buf = [0u8; MAX_EXEC_PATH_LEN];
+    let path_len = match copy_user_c_string(path, &mut path_buf) {
+        Ok(len) => len,
+        Err(_) => {
+            crate::serial::_print(format_args!(
+                "[syscall_execve] Error: path too long or invalid\n"
+            ));
             posix::set_errno(posix::errno::EINVAL);
             return u64::MAX;
         }
-        let slice = core::slice::from_raw_parts(path, len);
-        match core::str::from_utf8(slice) {
-            Ok(s) => s,
-            Err(_) => {
-                crate::serial::_print(format_args!(
-                    "[syscall_execve] Error: invalid UTF-8 in path\n"
-                ));
-                posix::set_errno(posix::errno::EINVAL);
-                return u64::MAX;
-            }
+    };
+
+    let path_slice = &path_buf[..path_len];
+    let path_str = match core::str::from_utf8(path_slice) {
+        Ok(s) => s,
+        Err(_) => {
+            crate::serial::_print(format_args!(
+                "[syscall_execve] Error: invalid UTF-8 in path\n"
+            ));
+            posix::set_errno(posix::errno::EINVAL);
+            return u64::MAX;
         }
     };
 
+    let mut argv_storage = [[0u8; MAX_EXEC_ARG_LEN]; MAX_EXEC_ARGS];
+    let mut arg_lengths = [0usize; MAX_EXEC_ARGS];
+    let mut arg_index = 0usize;
+
+    if !_argv.is_null() {
+        loop {
+            let arg_ptr = unsafe { *_argv.add(arg_index) };
+            if arg_ptr.is_null() {
+                break;
+            }
+
+            if arg_index >= MAX_EXEC_ARGS {
+                crate::serial::_print(format_args!(
+                    "[syscall_execve] Error: too many arguments (> {})\n",
+                    MAX_EXEC_ARGS
+                ));
+                posix::set_errno(posix::errno::E2BIG);
+                return u64::MAX;
+            }
+
+            let len;
+            {
+                let storage = &mut argv_storage[arg_index];
+                len = match copy_user_c_string(arg_ptr, storage) {
+                    Ok(len) => len,
+                    Err(_) => {
+                        posix::set_errno(posix::errno::E2BIG);
+                        return u64::MAX;
+                    }
+                };
+            }
+
+            arg_lengths[arg_index] = len;
+            arg_index += 1;
+        }
+    }
+
+    let mut argv_refs: [&[u8]; MAX_EXEC_ARGS] = [&[]; MAX_EXEC_ARGS];
+    for i in 0..arg_index {
+        argv_refs[i] = &argv_storage[i][..arg_lengths[i]];
+    }
+
+    let argv_list = &argv_refs[..arg_index];
+
     crate::serial::_print(format_args!("[syscall_execve] Path: {}\n", path_str));
+
+    let exec_path_bytes = path_slice;
 
     // Load the ELF file from filesystem
     let elf_data = match crate::fs::read_file_bytes(path_str) {
@@ -1602,7 +1649,11 @@ fn syscall_execve(path: *const u8, _argv: *const *const u8, _envp: *const *const
     };
 
     // Create new process image from ELF
-    let new_process = match crate::process::Process::from_elf(elf_data) {
+    let new_process = match crate::process::Process::from_elf_with_args(
+        elf_data,
+        argv_list,
+        Some(exec_path_bytes),
+    ) {
         Ok(proc) => {
             crate::serial::_print(format_args!(
                 "[syscall_execve] Successfully loaded ELF, entry={:#x}, stack={:#x}\n",
@@ -2465,6 +2516,14 @@ fn syscall_bind(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
             return u64::MAX;
         };
 
+        if sock_handle.domain != AF_INET
+            || sock_handle.socket_type != SOCK_DGRAM
+            || sock_handle.protocol != IPPROTO_UDP
+        {
+            posix::set_errno(posix::errno::ENOTSUP);
+            return u64::MAX;
+        }
+
         // Parse sockaddr_in from generic sockaddr
         let addr_ref = &*addr;
         if addr_ref.sa_family != AF_INET as u16 {
@@ -2524,10 +2583,23 @@ fn syscall_sendto(
             return u64::MAX;
         };
 
-        let FileBacking::Socket(_sock_handle) = handle.backing else {
+        let FileBacking::Socket(sock_handle) = handle.backing else {
             posix::set_errno(posix::errno::ENOTSOCK);
             return u64::MAX;
         };
+
+        if sock_handle.domain != AF_INET
+            || sock_handle.socket_type != SOCK_DGRAM
+            || sock_handle.protocol != IPPROTO_UDP
+        {
+            posix::set_errno(posix::errno::ENOTSUP);
+            return u64::MAX;
+        }
+
+        if sock_handle.socket_index == usize::MAX {
+            posix::set_errno(posix::errno::EINVAL);
+            return u64::MAX;
+        }
 
         // Parse destination address
         let addr_ref = &*dest_addr;
@@ -2600,10 +2672,18 @@ fn syscall_recvfrom(
             return u64::MAX;
         };
 
-        let FileBacking::Socket(_sock_handle) = handle.backing else {
+        let FileBacking::Socket(sock_handle) = handle.backing else {
             posix::set_errno(posix::errno::ENOTSOCK);
             return u64::MAX;
         };
+
+        if sock_handle.domain != AF_INET
+            || sock_handle.socket_type != SOCK_DGRAM
+            || sock_handle.protocol != IPPROTO_UDP
+        {
+            posix::set_errno(posix::errno::ENOTSUP);
+            return u64::MAX;
+        }
 
         // TODO: Actually receive from network stack
         // For now, return EAGAIN (would block)
@@ -2639,10 +2719,18 @@ fn syscall_connect(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
             return u64::MAX;
         };
 
-        let FileBacking::Socket(_sock_handle) = handle.backing else {
+        let FileBacking::Socket(sock_handle) = handle.backing else {
             posix::set_errno(posix::errno::ENOTSOCK);
             return u64::MAX;
         };
+
+        if sock_handle.domain != AF_INET
+            || sock_handle.socket_type != SOCK_DGRAM
+            || sock_handle.protocol != IPPROTO_UDP
+        {
+            posix::set_errno(posix::errno::ENOTSUP);
+            return u64::MAX;
+        }
 
         // Parse destination address
         let addr_ref = &*addr;

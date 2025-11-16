@@ -10,6 +10,7 @@ pub mod errno {
     pub const EPERM: i32 = 1; // Operation not permitted
     pub const ENOENT: i32 = 2; // No such file or directory
     pub const EIO: i32 = 5; // I/O error
+    pub const E2BIG: i32 = 7; // Argument list too long
     pub const EBADF: i32 = 9; // Bad file descriptor
     pub const ECHILD: i32 = 10; // No child processes
     pub const EAGAIN: i32 = 11; // Try again

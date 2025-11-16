@@ -1,6 +1,6 @@
 use nexa_boot_info::{
-    bar_flags, device_flags, BlockDeviceInfo, DeviceKind, FramebufferInfo, HidInputInfo,
-    NetworkDeviceInfo, PciBarInfo, PciDeviceInfo, UsbHostInfo,
+    bar_flags, BlockDeviceInfo, FramebufferInfo, HidInputInfo, NetworkDeviceInfo, PciBarInfo,
+    PciDeviceInfo, UsbHostInfo,
 };
 use spin::Mutex;
 
