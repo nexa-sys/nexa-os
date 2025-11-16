@@ -500,7 +500,11 @@ pub fn do_schedule() {
             *current_lock = Some(next_pid);
 
             if first_run {
-                entry.process.has_entered_user = true;
+                // CRITICAL: Don't set has_entered_user here! 
+                // We return a COPY of the process, and execute() will set it on the copy.
+                // We need to set it in the process table AFTER execute() completes.
+                // But execute() never returns, so we can't do it there.
+                // The solution: set it NOW in the process table, not on the copy.
                 Some(ScheduleDecision::FirstRun(entry.process))
             } else {
                 let next_context = entry.process.context;
@@ -534,6 +538,29 @@ pub fn do_schedule() {
 
     match decision {
         Some(ScheduleDecision::FirstRun(mut process)) => {
+            crate::serial::_print(format_args!(
+                "[do_schedule] FirstRun: PID={}, entry={:#x}, stack={:#x}, has_entered_user={}\n",
+                process.pid,
+                process.entry_point,
+                process.stack_top,
+                process.has_entered_user
+            ));
+            
+            // CRITICAL FIX: Mark the process as entered in the process table BEFORE execute()
+            // because execute() never returns and we have a copy of the process here.
+            let pid = process.pid;
+            {
+                let mut table = PROCESS_TABLE.lock();
+                for slot in table.iter_mut() {
+                    if let Some(entry) = slot {
+                        if entry.process.pid == pid {
+                            entry.process.has_entered_user = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            
             crate::paging::activate_address_space(process.cr3);
             process.execute();
             crate::kfatal!("process::execute returned unexpectedly");
@@ -546,6 +573,12 @@ pub fn do_schedule() {
             user_rsp,
             user_rflags,
         }) => unsafe {
+            crate::serial::_print(format_args!(
+                "[do_schedule] Switch: user_rip={:#x}, user_rsp={:#x}, user_rflags={:#x}\n",
+                user_rip,
+                user_rsp,
+                user_rflags
+            ));
             if user_rsp != 0 {
                 crate::interrupts::restore_user_syscall_context(user_rip, user_rsp, user_rflags);
             }

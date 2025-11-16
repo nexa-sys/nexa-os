@@ -305,6 +305,14 @@ impl Process {
     pub fn execute(&mut self) {
         self.state = ProcessState::Running;
 
+        crate::serial::_print(format_args!(
+            "[process::execute] PID={}, entry={:#x}, stack={:#x}, has_entered_user={}\n",
+            self.pid,
+            self.entry_point,
+            self.stack_top,
+            self.has_entered_user
+        ));
+
         crate::kinfo!(
             "Executing process PID={}, entry={:#x}, stack={:#x}",
             self.pid,
@@ -496,6 +504,12 @@ fn build_initial_stack(
 #[inline(never)]
 pub fn jump_to_usermode(entry: u64, stack: u64) -> ! {
     // Use kdebug! macro for direct serial output
+    crate::serial::_print(format_args!(
+        "[jump_to_usermode] ENTRY: entry={:#x}, stack={:#x}\n",
+        entry,
+        stack
+    ));
+
     kdebug!(
         "[jump_to_usermode] entry={:#018x} stack={:#018x}",
         entry,
@@ -514,6 +528,14 @@ pub fn jump_to_usermode(entry: u64, stack: u64) -> ! {
         user_data_sel
     );
 
+    crate::serial::_print(format_args!(
+        "[jump_to_usermode] Setting GS_DATA: entry={:#x}, stack={:#x}, user_cs={:#x}, user_ds={:#x}\n",
+        entry,
+        stack,
+        user_code_sel as u64 | 3,
+        user_data_sel as u64 | 3
+    ));
+
     unsafe {
         crate::interrupts::set_gs_data(
             entry,
@@ -529,26 +551,24 @@ pub fn jump_to_usermode(entry: u64, stack: u64) -> ! {
         Msr::new(0xc0000101).write(gs_base);
     }
 
-    unsafe {
-        let user_ds = user_data_sel | 3;
+    crate::serial::_print(format_args!(
+        "[jump_to_usermode] About to execute sysretq\n"
+    ));
 
+    unsafe {
         kdebug!("BEFORE_SYSRET");
 
-        // Use sysretq to return to user mode without clobbering the preserved stack
-        // CRITICAL: Don't set GS to user data segment - GS is used for kernel data access
-        // and is automatically preserved across ring transitions by SWAPGS instruction
+        // CRITICAL FIX for exit syscall GP fault:
+        // Don't manually set segment registers before sysretq!
+        // sysretq automatically sets CS/SS from STAR MSR, and setting
+        // DS/ES/FS/GS to user segments in kernel mode can cause GP faults.
+        // Let the user program set DS/ES/FS after entering Ring 3.
         core::arch::asm!(
-            "mov ax, {user_ds:x}",
-            "mov ds, ax",
-            "mov es, ax",
-            "mov fs, ax",
-            // Don't touch GS - it points to kernel GS_DATA and SWAPGS handles ring transitions
-            "mov rcx, {entry}",
-            "mov r11, {rflags}",
-            "mov rsp, {stack}",
-            "xor rax, rax",
-            "sysretq",
-            user_ds = in(reg) user_ds as u64,
+            "mov rcx, {entry}",    // RCX = user RIP for sysretq
+            "mov r11, {rflags}",   // R11 = user RFLAGS for sysretq
+            "mov rsp, {stack}",    // Set user stack
+            "xor rax, rax",        // Clear return value
+            "sysretq",             // Return to Ring 3
             entry = in(reg) entry,
             rflags = in(reg) 0x202u64,
             stack = in(reg) stack,
