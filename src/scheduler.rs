@@ -128,6 +128,20 @@ pub fn current_pid() -> Option<Pid> {
     *CURRENT_PID.lock()
 }
 
+/// Get the physical address of the page table currently active on the CPU.
+/// When no process is running, this falls back to the kernel's page tables.
+pub fn current_cr3() -> u64 {
+    if let Some(pid) = current_pid() {
+        if let Some(process) = get_process(pid) {
+            if process.cr3 != 0 {
+                return process.cr3;
+            }
+        }
+    }
+
+    crate::paging::kernel_pml4_phys()
+}
+
 /// Set current running process
 pub fn set_current_pid(pid: Option<Pid>) {
     {
@@ -281,12 +295,13 @@ pub fn list_processes() {
     for slot in table.iter() {
         if let Some(entry) = slot {
             crate::kinfo!(
-                "PID {}: {:?}, priority={}, time_slice={}ms, total_time={}ms",
+                "PID {}: {:?}, priority={}, time_slice={}ms, total_time={}ms, cr3={:#x}",
                 entry.process.pid,
                 entry.process.state,
                 entry.priority,
                 entry.time_slice,
-                entry.total_time
+                entry.total_time,
+                entry.process.cr3
             );
         }
     }
@@ -504,4 +519,35 @@ pub fn do_schedule() {
             crate::kwarn!("do_schedule(): No ready process found, returning to caller");
         }
     }
+}
+
+/// Update the CR3 (page table root) associated with a process. When the target
+/// process is currently running, the CPU's CR3 register is switched immediately
+/// so the new address space takes effect without waiting for the next context
+/// switch.
+pub fn update_process_cr3(pid: Pid, new_cr3: u64) -> Result<(), &'static str> {
+    let mut table = PROCESS_TABLE.lock();
+    let mut found = false;
+
+    for slot in table.iter_mut() {
+        if let Some(entry) = slot {
+            if entry.process.pid == pid {
+                entry.process.cr3 = new_cr3;
+                found = true;
+                break;
+            }
+        }
+    }
+
+    drop(table);
+
+    if !found {
+        return Err("Process not found");
+    }
+
+    if current_pid() == Some(pid) {
+        crate::paging::activate_address_space(new_cr3);
+    }
+
+    Ok(())
 }
