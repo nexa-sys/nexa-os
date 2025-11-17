@@ -185,9 +185,30 @@ impl Process {
             current_cr3, existing_cr3
         ));
         
+        // CRITICAL: Check if we're about to overwrite any active page tables
+        // Page tables are allocated starting from 0x08000000
+        // User memory starts from phys_base (typically >= 0x10000000)
+        // But we need to be absolutely certain
+        let pt_region_start = 0x08000000u64;
+        let pt_region_end = 0x08100000u64; // Allow 1MB for page tables
+        let clear_start = phys_base;
+        let clear_end = phys_base + USER_REGION_SIZE;
+        
+        if clear_start < pt_region_end && clear_end > pt_region_start {
+            crate::kfatal!(
+                "CRITICAL: About to clear memory region {:#x}-{:#x} which overlaps with \
+                 page table region {:#x}-{:#x}! This would destroy active page tables!",
+                clear_start, clear_end, pt_region_start, pt_region_end
+            );
+        }
+        
         unsafe {
             ptr::write_bytes(phys_base as *mut u8, 0, USER_REGION_SIZE as usize);
         }
+        
+        crate::serial::_print(format_args!(
+            "[from_elf_with_args_at_base] Memory cleared successfully\n"
+        ));
 
         let loader = ElfLoader::new(elf_data)?;
         

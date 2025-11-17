@@ -592,6 +592,23 @@ pub fn activate_address_space(cr3_phys: u64) {
         if cr3_phys >= 0x1_0000_0000 {
             crate::kwarn!("[WARN] CR3 {:#x} is in very high physical address range", cr3_phys);
         }
+
+        // CRITICAL: Verify page table content is valid before activating
+        // Read the first few entries from the PML4 to ensure they're sensible
+        let pml4_ptr = cr3_phys as *const u64;
+        unsafe {
+            let entry0 = core::ptr::read_volatile(pml4_ptr);
+            let entry1 = core::ptr::read_volatile(pml4_ptr.add(1));
+            crate::serial::_print(format_args!(
+                "[activate_address_space] PML4 content check: entry[0]={:#x}, entry[1]={:#x}\n",
+                entry0, entry1
+            ));
+            // Check if entries look valid (present bit should be set for some entries)
+            if entry0 == 0 && entry1 == 0 {
+                crate::kerror!("[CRITICAL] CR3 {:#x} points to all-zero page table!", cr3_phys);
+                crate::kfatal!("Page table corrupted - all entries are zero");
+            }
+        }
     }
 
     let target = if cr3_phys == 0 {

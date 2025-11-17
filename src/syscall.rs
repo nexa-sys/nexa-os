@@ -1783,14 +1783,20 @@ fn syscall_execve(path: *const u8, _argv: *const *const u8, _envp: *const *const
                     entry.process.cr3 = new_process.cr3;
                     entry.process.memory_base = new_process.memory_base;
                     entry.process.memory_size = new_process.memory_size;
-                    entry.process.has_entered_user = false;
+                    // CRITICAL FIX: Keep has_entered_user=true because execve returns directly
+                    // to userspace via sysretq, so the process IS in user mode immediately.
+                    // Setting it to false would cause the scheduler to treat it as FirstRun,
+                    // leading to double-entry and CR3 activation issues.
+                    // Do NOT set has_entered_user=false here!
+                    // entry.process.has_entered_user stays true if already true
                     entry.process.user_rip = new_process.entry_point;
                     entry.process.user_rsp = new_process.stack_top;
                     entry.process.user_rflags = 0x202;
 
                     crate::serial::_print(format_args!(
-                        "[syscall_execve] Updated: entry={:#x}, stack={:#x}, cr3={:#x}\n",
-                        entry.process.entry_point, entry.process.stack_top, entry.process.cr3
+                        "[syscall_execve] Updated: entry={:#x}, stack={:#x}, cr3={:#x}, has_entered_user={}\n",
+                        entry.process.entry_point, entry.process.stack_top, entry.process.cr3,
+                        entry.process.has_entered_user
                     ));
 
                     // Reset signal handlers to SIG_DFL (POSIX requirement)
