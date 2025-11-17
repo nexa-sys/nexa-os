@@ -167,6 +167,10 @@ pub fn set_process_state(pid: Pid, state: ProcessState) -> Result<(), &'static s
     for slot in table.iter_mut() {
         if let Some(entry) = slot {
             if entry.process.pid == pid {
+                crate::serial::_print(format_args!(
+                    "[set_process_state] PID {} state: {:?} -> {:?}\n",
+                    pid, entry.process.state, state
+                ));
                 entry.process.state = state;
                 return Ok(());
             }
@@ -315,12 +319,28 @@ pub fn get_child_state(parent_pid: Pid, child_pid: Pid) -> Option<ProcessState> 
 
     for slot in table.iter() {
         if let Some(entry) = slot {
-            if entry.process.pid == child_pid && entry.process.ppid == parent_pid {
-                return Some(entry.process.state);
+            if entry.process.pid == child_pid {
+                crate::serial::_print(format_args!(
+                    "[get_child_state] Found PID {}: ppid={}, parent_pid arg={}, state={:?}\n",
+                    child_pid, entry.process.ppid, parent_pid, entry.process.state
+                ));
+                if entry.process.ppid == parent_pid {
+                    return Some(entry.process.state);
+                } else {
+                    crate::serial::_print(format_args!(
+                        "[get_child_state] PID {} has wrong parent (ppid={}, expected={})\n",
+                        child_pid, entry.process.ppid, parent_pid
+                    ));
+                    return None;
+                }
             }
         }
     }
 
+    crate::serial::_print(format_args!(
+        "[get_child_state] PID {} not found in process table\n",
+        child_pid
+    ));
     None
 }
 
@@ -465,6 +485,20 @@ unsafe extern "C" fn context_switch(
 
 /// Perform context switch to next ready process
 pub fn do_schedule() {
+    // Debug: Print all process states before scheduling
+    {
+        let table = PROCESS_TABLE.lock();
+        crate::serial::_print(format_args!("[do_schedule] Process table snapshot:\n"));
+        for slot in table.iter() {
+            if let Some(entry) = slot {
+                crate::serial::_print(format_args!(
+                    "  PID {}: ppid={}, state={:?}, CR3={:#x}\n",
+                    entry.process.pid, entry.process.ppid, entry.process.state, entry.process.cr3
+                ));
+            }
+        }
+    }
+    
     enum ScheduleDecision {
         FirstRun(crate::process::Process),
         Switch {
@@ -617,9 +651,10 @@ pub fn do_schedule() {
                 "[do_schedule] Switch: user_rip={:#x}, user_rsp={:#x}, user_rflags={:#x}\n",
                 user_rip, user_rsp, user_rflags
             ));
-            if user_rsp != 0 {
-                crate::interrupts::restore_user_syscall_context(user_rip, user_rsp, user_rflags);
-            }
+            // Note: We don't call restore_user_syscall_context here because:
+            // 1. context_switch already saves/restores all registers
+            // 2. The process might still be in kernel mode (e.g., in wait4 loop)
+            // 3. GS_DATA context is only needed when returning from syscall to userspace
             crate::paging::activate_address_space(next_cr3);
             context_switch(old_context_ptr, &next_context as *const _);
         },

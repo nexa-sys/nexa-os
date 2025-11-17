@@ -546,6 +546,7 @@ fn syscall_read(fd: u64, buf: *mut u8, count: usize) -> u64 {
 /// Exit system call - terminate current process
 fn syscall_exit(code: i32) -> ! {
     let pid = crate::scheduler::current_pid().unwrap_or(0);
+    crate::serial::_print(format_args!("[SYS_EXIT] PID {} exiting with code: {}\n", pid, code));
     crate::kinfo!("Process {} exiting with code: {}", pid, code);
 
     if pid == 0 {
@@ -553,6 +554,7 @@ fn syscall_exit(code: i32) -> ! {
     }
 
     // Set process state to Zombie
+    crate::serial::_print(format_args!("[SYS_EXIT] Setting PID {} to Zombie state\n", pid));
     let _ = crate::scheduler::set_process_state(pid, crate::process::ProcessState::Zombie);
 
     // TODO: Save exit code in process structure for parent's wait4()
@@ -1872,7 +1874,13 @@ fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> 
     // Keep checking child status until it transitions to Zombie. Between
     // checks, yield to the scheduler so the child can actually make
     // progress (e.g., exit after execing /bin/sh).
+    let mut loop_count = 0;
     loop {
+        loop_count += 1;
+        crate::serial::_print(format_args!(
+            "[wait4] ===== Loop {} BEGIN: PID {} waiting for pid {} =====\n",
+            loop_count, current_pid, pid
+        ));
 
         // Check if the specified child has exited
         let mut found_child = false;
@@ -1902,9 +1910,23 @@ fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> 
             }
         } else if pid > 0 {
             // Wait for specific PID
+            if loop_count <= 3 || (loop_count % 100 == 0) {
+                crate::serial::_print(format_args!(
+                    "[wait4] Loop {}: Checking if PID {} is child of PID {}\n",
+                    loop_count, pid, current_pid
+                ));
+            }
+            
             if let Some(child_state) = crate::scheduler::get_child_state(current_pid, pid as u64) {
                 found_child = true;
                 wait_pid = pid as u64;
+
+                if loop_count <= 3 || (loop_count % 100 == 0) {
+                    crate::serial::_print(format_args!(
+                        "[wait4] Loop {}: PID {} found, state={:?}\n",
+                        loop_count, pid, child_state
+                    ));
+                }
 
                 if child_state == crate::process::ProcessState::Zombie {
                     child_exited = true;
@@ -1919,12 +1941,76 @@ fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> 
 
         // If child has exited, clean up and return
         if child_exited {
+            crate::serial::_print(format_args!(
+                "[wait4] Child {} exited, found_child={}, proceeding to cleanup\n",
+                wait_pid, found_child
+            ));
+            
             let _ = crate::scheduler::remove_process(wait_pid);
 
             if !status.is_null() {
                 unsafe {
                     *status = child_exit_code;
                 }
+            }
+
+            // CRITICAL FIX: Rebuild parent's page tables after child exit
+            // This ensures the parent has a fresh, valid page table when it resumes
+            // and prepares to fork again. This prevents GP faults from corrupted page tables.
+            crate::serial::_print(format_args!(
+                "[wait4] Child {} exited, rebuilding parent PID {} page tables\n",
+                wait_pid, current_pid
+            ));
+            
+            // Get parent process info
+            let parent_info: Option<(u64, u64)> = {
+                let table = crate::scheduler::process_table_lock();
+                let mut result = None;
+                
+                for slot in table.iter() {
+                    if let Some(entry) = slot {
+                        if entry.process.pid == current_pid {
+                            result = Some((entry.process.memory_base, entry.process.memory_size));
+                            break;
+                        }
+                    }
+                }
+                
+                result
+            };
+
+            if let Some((memory_base, memory_size)) = parent_info {
+                crate::serial::_print(format_args!(
+                    "[wait4] Rebuilding page tables for PID {}: base={:#x}, size={:#x}\n",
+                    current_pid, memory_base, memory_size
+                ));
+                
+                // Create new page tables for the parent process
+                match crate::paging::create_process_address_space(memory_base, memory_size) {
+                    Ok(new_cr3) => {
+                        crate::serial::_print(format_args!(
+                            "[wait4] Created new page tables, new_CR3={:#x}\n",
+                            new_cr3
+                        ));
+                        
+                        // Update the parent process's CR3 in the process table
+                        // This will also activate the new CR3 if parent is currently running
+                        if let Err(e) = crate::scheduler::update_process_cr3(current_pid, new_cr3) {
+                            crate::kerror!("wait4: Failed to update parent CR3: {}", e);
+                        } else {
+                            crate::serial::_print(format_args!(
+                                "[wait4] Successfully updated parent PID {} with new CR3={:#x}\n",
+                                current_pid, new_cr3
+                            ));
+                        }
+                    }
+                    Err(e) => {
+                        crate::kerror!("wait4: Failed to rebuild page tables for parent: {}", e);
+                        // Continue anyway - parent might still work with old page tables
+                    }
+                }
+            } else {
+                crate::kwarn!("wait4: Could not find parent process {} in table", current_pid);
             }
 
             crate::kinfo!(
@@ -1938,6 +2024,10 @@ fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> 
 
         // If no child found at all, error
         if !found_child {
+            crate::serial::_print(format_args!(
+                "[wait4] No matching child found for PID {} (pid arg={}) - returning ECHILD\n",
+                current_pid, pid
+            ));
             crate::kinfo!("wait4() no matching child found");
             posix::set_errno(posix::errno::ECHILD);
             return u64::MAX;
@@ -1951,7 +2041,19 @@ fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> 
         }
 
         // Block until the child changes state by yielding to the scheduler.
+        if loop_count <= 3 || (loop_count % 100 == 0) {
+            crate::serial::_print(format_args!(
+                "[wait4] Loop {}: Child not ready, calling do_schedule()\n",
+                loop_count
+            ));
+        }
         crate::scheduler::do_schedule();
+        if loop_count <= 3 || (loop_count % 100 == 0) {
+            crate::serial::_print(format_args!(
+                "[wait4] Loop {}: Returned from do_schedule(), continuing loop\n",
+                loop_count
+            ));
+        }
     }
 }
 
