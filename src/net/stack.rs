@@ -15,6 +15,8 @@ const PROTO_TCP: u8 = 6;
 const PROTO_UDP: u8 = 17;
 const LISTEN_PORT: u16 = 8080;
 const MAX_UDP_SOCKETS: usize = 16;
+pub const UDP_MAX_PAYLOAD: usize = MAX_FRAME_SIZE - 14 - 20 - 8;
+const UDP_RX_QUEUE_LEN: usize = 8;
 
 pub struct TxBatch {
     buffers: [[u8; MAX_FRAME_SIZE]; TX_BATCH_CAPACITY],
@@ -73,6 +75,41 @@ pub struct UdpSocket {
     pub remote_ip: Option<[u8; 4]>,
     pub remote_port: Option<u16>,
     pub in_use: bool,
+    rx_head: usize,
+    rx_tail: usize,
+    rx_len: usize,
+    rx_payloads: [[u8; UDP_MAX_PAYLOAD]; UDP_RX_QUEUE_LEN],
+    rx_entries: [UdpRxEntry; UDP_RX_QUEUE_LEN],
+}
+
+#[derive(Clone, Copy)]
+struct UdpRxEntry {
+    len: usize,
+    payload_len: usize,
+    truncated: bool,
+    src_ip: [u8; 4],
+    src_port: u16,
+}
+
+impl UdpRxEntry {
+    const fn empty() -> Self {
+        Self {
+            len: 0,
+            payload_len: 0,
+            truncated: false,
+            src_ip: [0; 4],
+            src_port: 0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct UdpReceiveResult {
+    pub bytes_copied: usize,
+    pub payload_len: usize,
+    pub src_ip: [u8; 4],
+    pub src_port: u16,
+    pub truncated: bool,
 }
 
 impl UdpSocket {
@@ -82,21 +119,85 @@ impl UdpSocket {
             remote_ip: None,
             remote_port: None,
             in_use: false,
+            rx_head: 0,
+            rx_tail: 0,
+            rx_len: 0,
+            rx_payloads: [[0u8; UDP_MAX_PAYLOAD]; UDP_RX_QUEUE_LEN],
+            rx_entries: [UdpRxEntry::empty(); UDP_RX_QUEUE_LEN],
         }
     }
 
     pub fn new(local_port: u16) -> Self {
-        Self {
-            local_port,
-            remote_ip: None,
-            remote_port: None,
-            in_use: true,
-        }
+        let mut socket = Self::empty();
+        socket.local_port = local_port;
+        socket.in_use = true;
+        socket
     }
 
     pub fn connect(&mut self, remote_ip: [u8; 4], remote_port: u16) {
         self.remote_ip = Some(remote_ip);
         self.remote_port = Some(remote_port);
+    }
+
+    pub fn disconnect(&mut self) {
+        self.remote_ip = None;
+        self.remote_port = None;
+    }
+
+    pub fn reset(&mut self) {
+        *self = Self::empty();
+    }
+
+    pub fn enqueue_packet(
+        &mut self,
+        src_ip: [u8; 4],
+        src_port: u16,
+        payload: &[u8],
+    ) -> Result<(), super::drivers::NetError> {
+        if self.rx_len >= UDP_RX_QUEUE_LEN {
+            return Err(super::drivers::NetError::RxQueueFull);
+        }
+
+        let slot = self.rx_tail;
+        let copy_len = core::cmp::min(payload.len(), UDP_MAX_PAYLOAD);
+        self.rx_payloads[slot][..copy_len].copy_from_slice(&payload[..copy_len]);
+        self.rx_entries[slot] = UdpRxEntry {
+            len: copy_len,
+            payload_len: payload.len(),
+            truncated: payload.len() > copy_len,
+            src_ip,
+            src_port,
+        };
+        self.rx_tail = (self.rx_tail + 1) % UDP_RX_QUEUE_LEN;
+        self.rx_len += 1;
+        Ok(())
+    }
+
+    pub fn dequeue_packet(
+        &mut self,
+        buffer: &mut [u8],
+    ) -> Result<UdpReceiveResult, super::drivers::NetError> {
+        if self.rx_len == 0 {
+            return Err(super::drivers::NetError::RxQueueEmpty);
+        }
+
+        let slot = self.rx_head;
+        let entry = self.rx_entries[slot];
+        let to_copy = core::cmp::min(buffer.len(), entry.len);
+        if to_copy > 0 {
+            buffer[..to_copy].copy_from_slice(&self.rx_payloads[slot][..to_copy]);
+        }
+
+        self.rx_head = (self.rx_head + 1) % UDP_RX_QUEUE_LEN;
+        self.rx_len -= 1;
+
+        Ok(UdpReceiveResult {
+            bytes_copied: to_copy,
+            payload_len: entry.payload_len,
+            src_ip: entry.src_ip,
+            src_port: entry.src_port,
+            truncated: entry.truncated || entry.len > buffer.len(),
+        })
     }
 }
 
