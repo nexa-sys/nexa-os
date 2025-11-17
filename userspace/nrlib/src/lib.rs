@@ -236,6 +236,7 @@ pub(crate) const ENOMEM: i32 = 12;
 pub(crate) const ENOSYS: i32 = 38;
 pub(crate) const ENOTTY: i32 = 25;
 pub(crate) const ENODEV: i32 = 19;
+pub(crate) const ENOSPC: i32 = 28;
 
 // Minimal syscall wrappers that match the userspace convention (int 0x81)
 #[inline(always)]
