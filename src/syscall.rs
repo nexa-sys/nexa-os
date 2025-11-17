@@ -561,28 +561,27 @@ fn syscall_exit(code: i32) -> ! {
     // TODO: Send SIGCHLD to parent process
     // TODO: Wake up parent if it's sleeping in wait4()
 
-    crate::kinfo!("Process {} marked as zombie, waiting for timer interrupt to schedule", pid);
+    crate::kinfo!("Process {} marked as zombie, yielding to scheduler", pid);
 
-    // CRITICAL DESIGN: Do NOT call do_schedule() here!
-    // The timer interrupt will automatically switch to another process.
-    // Calling do_schedule() from a zombie process's context is dangerous because:
-    // 1. We're in the zombie's address space (its CR3)
-    // 2. Switching CR3 makes the current kernel stack inaccessible
-    // 3. This causes stack corruption and crashes
+    // CRITICAL: We must give up the CPU after marking as zombie.
+    // The zombie process cannot continue execution - it must be switched out.
+    // 
+    // Safe approach: Call do_schedule() from syscall context (not interrupt context).
+    // This is safe because:
+    // 1. We're in kernel mode via syscall, not in an interrupt handler
+    // 2. All locks are released before calling do_schedule()
+    // 3. The scheduler will skip zombie processes, switching to a Ready process
+    // 4. Parent's wait4() will eventually detect the zombie and call remove_process()
     //
-    // Proper Unix model:
-    // 1. exit() marks process as Zombie (done above)
-    // 2. Scheduler skips zombie processes (already implemented)
-    // 3. Timer interrupt calls do_schedule() to switch out (enabled now)
-    // 4. Parent's wait4() detects zombie and calls remove_process() to cleanup
+    // The CR3 switching problem is solved because:
+    // 1. When do_schedule() switches to another process's CR3, we never return here
+    // 2. This zombie process stays in Zombie state until parent reaps it
+    // 3. No code after do_schedule() will execute in the zombie's context
+    
+    crate::scheduler::do_schedule();
 
-    // Return to user space and wait for timer interrupt to switch us out.
-    // The zombie process will never be scheduled again, so this acts as an infinite sleep.
-    loop {
-        unsafe {
-            core::arch::asm!("hlt");
-        }
-    }
+    // Should never reach here - do_schedule() switches to another process
+    crate::kpanic!("Zombie process {} still running after do_schedule()!", pid);
 }
 
 fn syscall_open(path_ptr: *const u8, len: usize) -> u64 {

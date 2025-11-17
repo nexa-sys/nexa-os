@@ -880,14 +880,13 @@ pub fn init_interrupts_ap() {
 
 // Hardware interrupt handlers
 extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    // Trigger preemptive scheduling
-    // This allows zombie processes to be switched out safely
-    crate::scheduler::do_schedule();
-    
     // Send EOI to PIC
     unsafe {
         PICS.lock().notify_end_of_interrupt(PIC_1_OFFSET);
     }
+    
+    // TODO: Implement preemptive scheduling
+    // For now, timer just ticks. Scheduling happens on syscall yield points.
 }
 
 extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {

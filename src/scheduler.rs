@@ -576,11 +576,22 @@ pub fn do_schedule() {
                 Some(ScheduleDecision::FirstRun(entry.process))
             } else {
                 let next_context = entry.process.context;
+                
+                // Check if current process is a zombie - if so, don't save its context
                 let old_context_ptr = if let Some(curr_pid) = current {
                     table.iter_mut().find_map(|slot| {
                         slot.as_mut().and_then(|candidate| {
                             if candidate.process.pid == curr_pid {
-                                Some(&mut candidate.process.context as *mut _)
+                                // Don't save context for zombie processes
+                                if candidate.process.state == ProcessState::Zombie {
+                                    crate::serial::_print(format_args!(
+                                        "[do_schedule] Current PID {} is Zombie, not saving context\n",
+                                        curr_pid
+                                    ));
+                                    None
+                                } else {
+                                    Some(&mut candidate.process.context as *mut _)
+                                }
                             } else {
                                 None
                             }
