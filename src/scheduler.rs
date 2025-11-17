@@ -544,6 +544,27 @@ pub fn do_schedule() {
                         if entry.process.pid == curr_pid
                             && entry.process.state == ProcessState::Running
                         {
+                            // CRITICAL: Save syscall context from GS_DATA before yielding CPU
+                            // When a process calls syscall (like wait4) and yields via do_schedule(),
+                            // the syscall handler saved RIP/RSP/RFLAGS in GS_DATA.
+                            // We must copy these values to the process struct so they can be
+                            // restored when this process is scheduled again.
+                            unsafe {
+                                let gs_data_ptr = core::ptr::addr_of!(crate::initramfs::GS_DATA.0) as *const u64;
+                                let saved_rip = gs_data_ptr.add(crate::interrupts::GS_SLOT_SAVED_RCX).read();
+                                let saved_rsp = gs_data_ptr.add(crate::interrupts::GS_SLOT_USER_RSP).read();
+                                let saved_rflags = gs_data_ptr.add(crate::interrupts::GS_SLOT_SAVED_RFLAGS).read();
+                                
+                                crate::serial::_print(format_args!(
+                                    "[do_schedule] Saving syscall context for PID {}: rip={:#x}, rsp={:#x}, rflags={:#x}\n",
+                                    curr_pid, saved_rip, saved_rsp, saved_rflags
+                                ));
+                                
+                                entry.process.user_rip = saved_rip;
+                                entry.process.user_rsp = saved_rsp;
+                                entry.process.user_rflags = saved_rflags;
+                            }
+                            
                             entry.process.state = ProcessState::Ready;
                             break;
                         }

@@ -22,19 +22,19 @@ pub static PICS: spin::Mutex<ChainedPics> =
 // Offsets (in u64 slots) within the GS_DATA scratchpad.
 // Keeping these as explicit constants prevents accidental drift between the
 // assembly fast paths and the Rust helpers that maintain user/kernel context.
-const GS_SLOT_USER_RSP: usize = 0;
-const GS_SLOT_KERNEL_RSP: usize = 1;
-const GS_SLOT_USER_ENTRY: usize = 2;
-const GS_SLOT_USER_STACK: usize = 3;
-const GS_SLOT_USER_CS: usize = 4;
-const GS_SLOT_USER_SS: usize = 5;
-const GS_SLOT_USER_DS: usize = 6;
-const GS_SLOT_SAVED_RCX: usize = 7;
-const GS_SLOT_SAVED_RFLAGS: usize = 8;
-const GS_SLOT_USER_RSP_DEBUG: usize = 9;
-const GS_SLOT_SAVED_RAX: usize = 10; // For fork child return value
-const GS_SLOT_KERNEL_STACK_GUARD: usize = 20;
-const GS_SLOT_KERNEL_STACK_SNAPSHOT: usize = 21;
+pub const GS_SLOT_USER_RSP: usize = 0;
+pub const GS_SLOT_KERNEL_RSP: usize = 1;
+pub const GS_SLOT_USER_ENTRY: usize = 2;
+pub const GS_SLOT_USER_STACK: usize = 3;
+pub const GS_SLOT_USER_CS: usize = 4;
+pub const GS_SLOT_USER_SS: usize = 5;
+pub const GS_SLOT_USER_DS: usize = 6;
+pub const GS_SLOT_SAVED_RCX: usize = 7;
+pub const GS_SLOT_SAVED_RFLAGS: usize = 8;
+pub const GS_SLOT_USER_RSP_DEBUG: usize = 9;
+pub const GS_SLOT_SAVED_RAX: usize = 10; // For fork child return value
+pub const GS_SLOT_KERNEL_STACK_GUARD: usize = 20;
+pub const GS_SLOT_KERNEL_STACK_SNAPSHOT: usize = 21;
 
 const GUARD_SOURCE_INT_GATE: u64 = 0;
 const GUARD_SOURCE_SYSCALL: u64 = 1;
@@ -63,11 +63,19 @@ global_asm!(
     "mov gs:[120], r10", // gs slot 15 = entry CS snapshot
     "mov r10, [rsp + 32]",
     "mov gs:[128], r10", // gs slot 16 = entry SS snapshot
-    // CRITICAL: Save user RSP for fork()
+    
+    // CRITICAL: Save user RSP for fork() and context switching
     "mov r10, [rsp + 24]", // r10 = user RSP
-    "mov gs:[0], r10",     // gs slot 0 = user RSP (for fork to read)
-    // Save user RIP for syscall_return_addr parameter
-    "mov r10, [rsp + 0]", // r10 = user RIP
+    "mov gs:[0], r10",     // gs slot 0 = user RSP (GS_SLOT_USER_RSP)
+    
+    // CRITICAL: Save user RIP for context switching
+    "mov r10, [rsp + 0]",  // r10 = user RIP
+    "mov gs:[56], r10",    // gs slot 7 = saved RIP (GS_SLOT_SAVED_RCX, used for syscall return address)
+    
+    // CRITICAL: Save user RFLAGS for context switching  
+    "mov r10, [rsp + 16]", // r10 = user RFLAGS
+    "mov gs:[64], r10",    // gs slot 8 = saved RFLAGS (GS_SLOT_SAVED_RFLAGS)
+    
     // Guard against nested entries while processes share a single kernel stack
     "mov r9, gs:[160]",
     "test r9, r9",
@@ -92,13 +100,14 @@ global_asm!(
     // Align stack to 16 bytes before calling into Rust (SysV ABI requires
     // %rsp % 16 == 8 at the call site so the callee observes 16-byte alignment).
     "sub rsp, 8",
-    // Prepare arguments for syscall_dispatch(nr=rax, arg1=rdi, arg2=rsi, arg3=rdx, syscall_return_addr=r10)
+    // Prepare arguments for syscall_dispatch(nr=rax, arg1=rdi, arg2=rsi, arg3=rdx, syscall_return_addr=user_rip)
     // System V x86_64 ABI: rdi, rsi, rdx, rcx, r8
-    "mov r8, r10",  // r8 = syscall_return_addr (from r10)
-    "mov rcx, rdx", // rcx = arg3
-    "mov rdx, rsi", // rdx = arg2
-    "mov rsi, rdi", // rsi = arg1
-    "mov rdi, rax", // rdi = nr
+    // user_rip is already in GS_DATA slot 7, load it to r8
+    "mov r8, gs:[56]",  // r8 = syscall_return_addr (from GS_SLOT_SAVED_RCX)
+    "mov rcx, rdx",     // rcx = arg3
+    "mov rdx, rsi",     // rdx = arg2
+    "mov rsi, rdi",     // rsi = arg1
+    "mov rdi, rax",     // rdi = nr
     "call syscall_dispatch",
     // Check if execve returned (magic value 0x4558454300000000)
     "movabs rbx, 0x4558454300000000",
