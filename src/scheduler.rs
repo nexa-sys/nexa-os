@@ -1156,7 +1156,9 @@ pub fn do_schedule() {
                 }
             }
 
-            crate::paging::activate_address_space(process.cr3);
+            // CRITICAL: Do NOT call activate_address_space here!
+            // process.execute() will switch CR3 atomically with entering usermode
+            // to avoid accessing kernel stack after address space switch.
             process.execute();
             crate::kfatal!("process::execute returned unexpectedly");
         }

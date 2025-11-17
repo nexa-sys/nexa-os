@@ -607,8 +607,7 @@ impl Process {
             self.stack_top
         );
 
-        crate::paging::activate_address_space(self.cr3);
-
+        // Mark as entered user mode BEFORE switching CR3
         self.has_entered_user = true;
 
         if self.is_fork_child {
@@ -626,14 +625,19 @@ impl Process {
                 self.user_rflags, // user_rflags
             );
 
-            // Return to userspace via sysretq with RAX=0
+            // CRITICAL: Switch CR3 and return to userspace atomically
+            // We must switch CR3 in the same assembly block that does sysretq
+            // to avoid accessing kernel stack after address space switch
             unsafe {
                 core::arch::asm!(
+                    "cli",                 // Disable interrupts during transition
+                    "mov cr3, {cr3}",      // Switch to child's address space
                     "mov rcx, {rip}",      // RCX = return RIP for sysretq
                     "mov r11, {rflags}",   // R11 = RFLAGS for sysretq
                     "mov rsp, {rsp}",      // RSP = user stack
                     "xor rax, rax",        // RAX = 0 (fork child return value)
                     "sysretq",             // Return to Ring 3
+                    cr3 = in(reg) self.cr3,
                     rip = in(reg) self.entry_point,
                     rflags = in(reg) self.user_rflags,
                     rsp = in(reg) self.stack_top,
@@ -642,7 +646,7 @@ impl Process {
             }
         } else {
             // Normal process (init/execve): Jump to entry point
-            jump_to_usermode(self.entry_point, self.stack_top);
+            jump_to_usermode_with_cr3(self.entry_point, self.stack_top, self.cr3);
         }
     }
 
@@ -831,6 +835,90 @@ fn build_initial_stack(
 /// Jump to user mode (Ring 3) and execute code at given address
 /// This function never returns - execution continues in user space
 #[inline(never)]
+pub fn jump_to_usermode_with_cr3(entry: u64, stack: u64, cr3: u64) -> ! {
+    // Use kdebug! macro for direct serial output
+    crate::serial::_print(format_args!(
+        "[jump_to_usermode_with_cr3] ENTRY: entry={:#x}, stack={:#x}, cr3={:#x}\n",
+        entry, stack, cr3
+    ));
+
+    kdebug!(
+        "[jump_to_usermode_with_cr3] entry={:#018x} stack={:#018x} cr3={:#018x}",
+        entry,
+        stack,
+        cr3
+    );
+
+    // Set GS data for syscall and Ring 3 switching
+    crate::gdt::debug_dump_selectors("jump_to_usermode_with_cr3");
+    let selectors = unsafe { crate::gdt::get_selectors() };
+    let user_code_sel = selectors.user_code_selector.0;
+    let user_data_sel = selectors.user_data_selector.0;
+
+    kdebug!(
+        "[jump_to_usermode_with_cr3] user_code_selector.0={:04x}, user_data_selector.0={:04x}",
+        user_code_sel,
+        user_data_sel
+    );
+
+    crate::serial::_print(format_args!(
+        "[jump_to_usermode_with_cr3] Setting GS_DATA: entry={:#x}, stack={:#x}, user_cs={:#x}, user_ds={:#x}\n",
+        entry,
+        stack,
+        user_code_sel as u64 | 3,
+        user_data_sel as u64 | 3
+    ));
+
+    unsafe {
+        crate::interrupts::set_gs_data(
+            entry,
+            stack,
+            user_code_sel as u64 | 3,
+            user_data_sel as u64 | 3,
+            user_data_sel as u64 | 3,
+        );
+
+        // Set GS base to point to GS_DATA for both kernel and user mode
+        use x86_64::registers::model_specific::Msr;
+        let gs_base = &raw const crate::initramfs::GS_DATA.0 as *const _ as u64;
+        Msr::new(0xc0000101).write(gs_base);
+    }
+
+    crate::serial::_print(format_args!(
+        "[jump_to_usermode_with_cr3] About to switch CR3 and execute sysretq\n"
+    ));
+
+    unsafe {
+        kdebug!("BEFORE_SYSRET_WITH_CR3");
+
+        // CRITICAL FIX: Switch CR3 and jump to usermode atomically
+        // We MUST switch CR3 in the same assembly block as sysretq
+        // to avoid accessing kernel stack after address space switch
+        //
+        // The sequence is:
+        // 1. Disable interrupts (cli)
+        // 2. Switch CR3 to user address space
+        // 3. Set up sysretq registers (RCX, R11, RSP)
+        // 4. Execute sysretq
+        //
+        // No Rust code can execute between steps 2 and 4, otherwise
+        // we would access kernel stack through user page tables!
+        core::arch::asm!(
+            "cli",                 // Mask interrupts during the transition
+            "mov cr3, {cr3}",      // Switch to user address space
+            "mov rcx, {entry}",    // RCX = user RIP for sysretq
+            "mov rsp, {stack}",    // Set user stack (safe after CR3 switch)
+            "mov r11d, 0x202",     // User RFLAGS with IF=1, reserved bit=1
+            "xor rax, rax",        // Clear return value
+            "sysretq",             // Return to Ring 3
+            cr3 = in(reg) cr3,
+            entry = in(reg) entry,
+            stack = in(reg) stack,
+            options(noreturn)
+        );
+    }
+}
+
 pub fn jump_to_usermode(entry: u64, stack: u64) -> ! {
     // Use kdebug! macro for direct serial output
     crate::serial::_print(format_args!(
