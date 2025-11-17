@@ -1,16 +1,38 @@
-/// Basic round-robin process scheduler for hybrid kernel
+/// Advanced multi-level feedback queue (MLFQ) process scheduler for hybrid kernel
 use crate::process::{Pid, Process, ProcessState};
+use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 
-const MAX_PROCESSES: usize = 32;
+const MAX_PROCESSES: usize = 64; // Increased from 32
+const NUM_PRIORITY_LEVELS: usize = 8; // 0 = highest, 7 = lowest
+const BASE_TIME_SLICE_MS: u64 = 5; // Base quantum for highest priority
 
-/// Process control block with scheduling info
+/// Scheduling policy for a process
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SchedPolicy {
+    Normal,     // Standard priority-based scheduling
+    Realtime,   // Real-time priority (higher than normal)
+    Batch,      // Background batch processing (lower priority)
+    Idle,       // Only runs when nothing else is ready
+}
+
+/// Process control block with advanced scheduling info
 #[derive(Clone, Copy)]
 pub struct ProcessEntry {
     pub process: Process,
-    pub priority: u8,    // 0 = highest, 255 = lowest
-    pub time_slice: u64, // Remaining time slice in ms
-    pub total_time: u64, // Total CPU time used in ms
+    pub priority: u8,           // Current dynamic priority (0 = highest, 255 = lowest)
+    pub base_priority: u8,      // Base static priority
+    pub time_slice: u64,        // Remaining time slice in ms
+    pub total_time: u64,        // Total CPU time used in ms
+    pub wait_time: u64,         // Time spent waiting in ready queue
+    pub last_scheduled: u64,    // Last time this process was scheduled (in ticks)
+    pub cpu_burst_count: u64,   // Number of CPU bursts
+    pub avg_cpu_burst: u64,     // Average CPU burst length (for I/O vs CPU bound detection)
+    pub policy: SchedPolicy,    // Scheduling policy
+    pub nice: i8,               // Nice value (-20 to 19, POSIX compatible)
+    pub quantum_level: u8,      // Current priority level in MLFQ (0-7)
+    pub preempt_count: u64,     // Number of times preempted
+    pub voluntary_switches: u64, // Number of voluntary context switches
 }
 
 impl ProcessEntry {
@@ -39,8 +61,18 @@ impl ProcessEntry {
                 exit_code: 0,
             },
             priority: 128,
+            base_priority: 128,
             time_slice: 0,
             total_time: 0,
+            wait_time: 0,
+            last_scheduled: 0,
+            cpu_burst_count: 0,
+            avg_cpu_burst: 0,
+            policy: SchedPolicy::Normal,
+            nice: 0,
+            quantum_level: 4, // Start at middle level
+            preempt_count: 0,
+            voluntary_switches: 0,
         }
     }
 }
@@ -52,8 +84,60 @@ static PROCESS_TABLE: Mutex<[Option<ProcessEntry>; MAX_PROCESSES]> =
 /// Currently running process PID
 static CURRENT_PID: Mutex<Option<Pid>> = Mutex::new(None);
 
+/// Global tick counter for scheduler timing
+static GLOBAL_TICK: AtomicU64 = AtomicU64::new(0);
+
+/// Scheduler statistics
+static SCHED_STATS: Mutex<SchedulerStats> = Mutex::new(SchedulerStats::new());
+
+/// Scheduler statistics structure
+#[derive(Clone, Copy)]
+pub struct SchedulerStats {
+    pub total_context_switches: u64,
+    pub total_preemptions: u64,
+    pub total_voluntary_switches: u64,
+    pub idle_time: u64,
+    pub last_idle_start: u64,
+}
+
+impl SchedulerStats {
+    const fn new() -> Self {
+        Self {
+            total_context_switches: 0,
+            total_preemptions: 0,
+            total_voluntary_switches: 0,
+            idle_time: 0,
+            last_idle_start: 0,
+        }
+    }
+}
+
 /// Default time slice in milliseconds
 const DEFAULT_TIME_SLICE: u64 = 10;
+
+/// Calculate time slice based on priority level (MLFQ)
+/// Higher levels get longer quanta to reduce context switching overhead
+#[inline]
+fn calculate_time_slice(quantum_level: u8) -> u64 {
+    BASE_TIME_SLICE_MS * (1 << quantum_level.min(7))
+}
+
+/// Calculate dynamic priority based on wait time and CPU usage
+/// Rewards I/O-bound processes and penalizes CPU-bound processes
+#[inline]
+fn calculate_dynamic_priority(base: u8, wait_time: u64, cpu_time: u64, nice: i8) -> u8 {
+    let base = base as i32;
+    let nice_offset = nice as i32; // -20 to 19
+    
+    // Priority boost for waiting (I/O bound processes)
+    let wait_boost = (wait_time / 100).min(40) as i32;
+    
+    // Priority penalty for CPU usage
+    let cpu_penalty = (cpu_time / 1000).min(40) as i32;
+    
+    let dynamic = base + nice_offset + cpu_penalty - wait_boost;
+    dynamic.clamp(0, 255) as u8
+}
 
 /// Lock the process table for direct access (for syscall use)
 pub fn process_table_lock() -> spin::MutexGuard<'static, [Option<ProcessEntry>; MAX_PROCESSES]> {
@@ -80,22 +164,52 @@ pub fn update_current_user_context(user_rip: u64, user_rsp: u64, user_rflags: u6
     }
 }
 
-/// Add a process to the scheduler
+/// Add a process to the scheduler with full initialization
 pub fn add_process(process: Process, priority: u8) -> Result<(), &'static str> {
+    add_process_with_policy(process, priority, SchedPolicy::Normal, 0)
+}
+
+/// Add a process to the scheduler with policy and nice value
+pub fn add_process_with_policy(
+    process: Process,
+    priority: u8,
+    policy: SchedPolicy,
+    nice: i8,
+) -> Result<(), &'static str> {
     let mut table = PROCESS_TABLE.lock();
+    let current_tick = GLOBAL_TICK.load(Ordering::Relaxed);
 
     for slot in table.iter_mut() {
         if slot.is_none() {
+            let quantum_level = match policy {
+                SchedPolicy::Realtime => 0,  // Shortest quantum, highest priority
+                SchedPolicy::Normal => 4,    // Middle level
+                SchedPolicy::Batch => 6,     // Longer quantum, lower priority
+                SchedPolicy::Idle => 7,      // Longest quantum, lowest priority
+            };
+
             *slot = Some(ProcessEntry {
                 process,
                 priority,
-                time_slice: DEFAULT_TIME_SLICE,
+                base_priority: priority,
+                time_slice: calculate_time_slice(quantum_level),
                 total_time: 0,
+                wait_time: 0,
+                last_scheduled: current_tick,
+                cpu_burst_count: 0,
+                avg_cpu_burst: 0,
+                policy,
+                nice: nice.clamp(-20, 19),
+                quantum_level,
+                preempt_count: 0,
+                voluntary_switches: 0,
             });
             crate::kinfo!(
-                "Scheduler: Added process PID {} with priority {} (CR3={:#x})",
+                "Scheduler: Added process PID {} with priority {}, policy {:?}, nice {} (CR3={:#x})",
                 process.pid,
                 priority,
+                policy,
+                nice,
                 process.cr3
             );
             return Ok(());
@@ -229,10 +343,30 @@ pub fn set_current_pid(pid: Option<Pid>) {
     }
 }
 
-/// Round-robin scheduler: select next process to run
+/// Round-robin scheduler: select next process to run with MLFQ enhancements
+/// Uses multi-level feedback queue for better responsiveness and fairness
 pub fn schedule() -> Option<Pid> {
     let mut table = PROCESS_TABLE.lock();
     let current = *CURRENT_PID.lock();
+    let current_tick = GLOBAL_TICK.load(Ordering::Relaxed);
+
+    // Update wait times for all ready processes
+    for slot in table.iter_mut() {
+        if let Some(entry) = slot {
+            if entry.process.state == ProcessState::Ready {
+                let wait_delta = current_tick.saturating_sub(entry.last_scheduled);
+                entry.wait_time = entry.wait_time.saturating_add(wait_delta);
+                
+                // Update dynamic priority based on wait time
+                entry.priority = calculate_dynamic_priority(
+                    entry.base_priority,
+                    entry.wait_time,
+                    entry.total_time,
+                    entry.nice,
+                );
+            }
+        }
+    }
 
     // Find the current process index
     let mut start_idx = 0;
@@ -247,50 +381,93 @@ pub fn schedule() -> Option<Pid> {
         }
     }
 
-    // Round-robin: find next ready process
+    // Find next ready process using priority-based selection
+    // Priority order: Realtime > Normal > Batch > Idle
+    // Within same policy, select by dynamic priority and wait time
+    let mut best_candidate: Option<(usize, u8, SchedPolicy, u64)> = None; // (index, priority, policy, wait_time)
+
     for offset in 0..MAX_PROCESSES {
         let idx = (start_idx + offset) % MAX_PROCESSES;
         if let Some(entry) = &table[idx] {
             if entry.process.state == ProcessState::Ready {
-                let next_pid = entry.process.pid;
-
-                // Update previous process state
-                if let Some(curr_pid) = current {
-                    for slot in table.iter_mut() {
-                        if let Some(e) = slot {
-                            if e.process.pid == curr_pid && e.process.state == ProcessState::Running
-                            {
-                                e.process.state = ProcessState::Ready;
-                            }
+                let candidate = (idx, entry.priority, entry.policy, entry.wait_time);
+                
+                if let Some(best) = best_candidate {
+                    // Compare candidates: higher policy priority wins,
+                    // then lower priority value (0 is highest),
+                    // then longer wait time
+                    let should_replace = match (candidate.2, best.2) {
+                        (SchedPolicy::Realtime, SchedPolicy::Realtime) => {
+                            candidate.1 < best.1 || (candidate.1 == best.1 && candidate.3 > best.3)
                         }
-                    }
-                }
-
-                // Update next process state
-                for slot in table.iter_mut() {
-                    if let Some(e) = slot {
-                        if e.process.pid == next_pid {
-                            e.time_slice = DEFAULT_TIME_SLICE;
-                            e.process.state = ProcessState::Running;
-                            break;
+                        (SchedPolicy::Realtime, _) => true,
+                        (_, SchedPolicy::Realtime) => false,
+                        (SchedPolicy::Normal, SchedPolicy::Normal) => {
+                            candidate.1 < best.1 || (candidate.1 == best.1 && candidate.3 > best.3)
                         }
+                        (SchedPolicy::Normal, _) => true,
+                        (_, SchedPolicy::Normal) => false,
+                        (SchedPolicy::Batch, SchedPolicy::Batch) => {
+                            candidate.1 < best.1 || (candidate.1 == best.1 && candidate.3 > best.3)
+                        }
+                        (SchedPolicy::Batch, _) => true,
+                        (_, SchedPolicy::Batch) => false,
+                        (SchedPolicy::Idle, SchedPolicy::Idle) => {
+                            candidate.1 < best.1 || (candidate.1 == best.1 && candidate.3 > best.3)
+                        }
+                    };
+                    
+                    if should_replace {
+                        best_candidate = Some(candidate);
                     }
+                } else {
+                    best_candidate = Some(candidate);
                 }
-
-                drop(table);
-                *CURRENT_PID.lock() = Some(next_pid);
-                return Some(next_pid);
             }
         }
+    }
+
+    if let Some((next_idx, _, _, _)) = best_candidate {
+        let next_pid = table[next_idx].as_ref().unwrap().process.pid;
+
+        // Update previous process state
+        if let Some(curr_pid) = current {
+            for slot in table.iter_mut() {
+                if let Some(e) = slot {
+                    if e.process.pid == curr_pid && e.process.state == ProcessState::Running {
+                        e.process.state = ProcessState::Ready;
+                        e.last_scheduled = current_tick;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Update next process state
+        if let Some(entry) = table[next_idx].as_mut() {
+            entry.time_slice = calculate_time_slice(entry.quantum_level);
+            entry.process.state = ProcessState::Running;
+            entry.last_scheduled = current_tick;
+            entry.wait_time = 0; // Reset wait time when scheduled
+            entry.cpu_burst_count += 1;
+        }
+
+        drop(table);
+        *CURRENT_PID.lock() = Some(next_pid);
+        return Some(next_pid);
     }
 
     None
 }
 
 /// Timer tick handler: update time slices and trigger scheduling
+/// Implements preemptive scheduling with dynamic priority adjustments
 pub fn tick(elapsed_ms: u64) -> bool {
+    GLOBAL_TICK.fetch_add(1, Ordering::Relaxed);
+    
     let mut table = PROCESS_TABLE.lock();
     let current = *CURRENT_PID.lock();
+    let mut should_preempt = false;
 
     if let Some(curr_pid) = current {
         for slot in table.iter_mut() {
@@ -300,9 +477,81 @@ pub fn tick(elapsed_ms: u64) -> bool {
 
                     if entry.time_slice > elapsed_ms {
                         entry.time_slice -= elapsed_ms;
-                        return false; // No need to reschedule
+                        
+                        // Update average CPU burst
+                        let new_burst = entry.total_time / entry.cpu_burst_count.max(1);
+                        entry.avg_cpu_burst = (entry.avg_cpu_burst + new_burst) / 2;
+                        
+                        // Check if we should preempt based on priority changes
+                        // or if a higher priority process is waiting
+                        let current_priority = entry.priority;
+                        let current_policy = entry.policy;
+                        
+                        drop(table);
+                        table = PROCESS_TABLE.lock();
+                        
+                        // Check for higher priority ready processes
+                        for check_slot in table.iter() {
+                            if let Some(check_entry) = check_slot {
+                                if check_entry.process.state == ProcessState::Ready {
+                                    let should_preempt_for_this = match (check_entry.policy, current_policy) {
+                                        (SchedPolicy::Realtime, SchedPolicy::Realtime) => {
+                                            check_entry.priority < current_priority
+                                        }
+                                        (SchedPolicy::Realtime, _) => true,
+                                        (_, SchedPolicy::Realtime) => false,
+                                        (SchedPolicy::Normal, SchedPolicy::Normal) => {
+                                            check_entry.priority + 10 < current_priority // Significant priority difference
+                                        }
+                                        (SchedPolicy::Normal, _) => true,
+                                        (_, SchedPolicy::Normal) => false,
+                                        _ => false,
+                                    };
+                                    
+                                    if should_preempt_for_this {
+                                        should_preempt = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        
+                        if !should_preempt {
+                            return false; // Continue running current process
+                        } else {
+                            // Preemption due to higher priority process
+                            for slot in table.iter_mut() {
+                                if let Some(entry) = slot {
+                                    if entry.process.pid == curr_pid {
+                                        entry.preempt_count += 1;
+                                        
+                                        // MLFQ: Demote to lower priority level if preempted too much
+                                        if entry.preempt_count > 3 && entry.quantum_level < 7 {
+                                            entry.quantum_level += 1;
+                                            crate::kdebug!(
+                                                "Process {} demoted to quantum level {}",
+                                                curr_pid,
+                                                entry.quantum_level
+                                            );
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                            return true;
+                        }
                     } else {
                         entry.time_slice = 0;
+                        
+                        // MLFQ: Move to lower priority level after exhausting time slice
+                        if entry.quantum_level < 7 {
+                            entry.quantum_level += 1;
+                        }
+                        
+                        // Update average CPU burst
+                        let new_burst = entry.total_time / entry.cpu_burst_count.max(1);
+                        entry.avg_cpu_burst = (entry.avg_cpu_burst + new_burst) / 2;
+                        
                         return true; // Time slice expired, need to reschedule
                     }
                 }
@@ -376,33 +625,195 @@ pub fn find_child_with_state(parent_pid: Pid, target_state: ProcessState) -> Opt
     None
 }
 
-/// List all processes for debugging
+/// List all processes for debugging with extended information
 pub fn list_processes() {
     let table = PROCESS_TABLE.lock();
-    crate::kinfo!("=== Process List ===");
+    crate::kinfo!("=== Process List (Extended) ===");
+    crate::kinfo!(
+        "{:<5} {:<5} {:<12} {:<8} {:<6} {:<5} {:<10} {:<10} {:<8} {:<10}",
+        "PID", "PPID", "State", "Policy", "Nice", "QLvl", "CPU(ms)", "Wait(ms)", "Preempt", "CR3"
+    );
 
     for slot in table.iter() {
         if let Some(entry) = slot {
+            let policy_str = match entry.policy {
+                SchedPolicy::Realtime => "RT",
+                SchedPolicy::Normal => "Normal",
+                SchedPolicy::Batch => "Batch",
+                SchedPolicy::Idle => "Idle",
+            };
+            
+            let state_str = match entry.process.state {
+                ProcessState::Ready => "Ready",
+                ProcessState::Running => "Running",
+                ProcessState::Sleeping => "Sleeping",
+                ProcessState::Zombie => "Zombie",
+            };
+            
             crate::kinfo!(
-                "PID {}: {:?}, priority={}, time_slice={}ms, total_time={}ms, cr3={:#x}",
+                "{:<5} {:<5} {:<12} {:<8} {:<6} {:<5} {:<10} {:<10} {:<8} {:#010x}",
                 entry.process.pid,
-                entry.process.state,
-                entry.priority,
-                entry.time_slice,
+                entry.process.ppid,
+                state_str,
+                policy_str,
+                entry.nice,
+                entry.quantum_level,
                 entry.total_time,
+                entry.wait_time,
+                entry.preempt_count,
                 entry.process.cr3
             );
         }
     }
+    
+    let stats = SCHED_STATS.lock();
+    crate::kinfo!("=== Scheduler Statistics ===");
+    crate::kinfo!("Total context switches: {}", stats.total_context_switches);
+    crate::kinfo!("Total preemptions: {}", stats.total_preemptions);
+    crate::kinfo!("Total voluntary switches: {}", stats.total_voluntary_switches);
+    crate::kinfo!("Idle time: {}ms", stats.idle_time);
 }
 
 /// Initialize scheduler subsystem
 pub fn init() {
     crate::kinfo!(
-        "Process scheduler initialized (round-robin, {} max processes, {}ms time slice)",
+        "Advanced process scheduler initialized (MLFQ with {} priority levels, {} max processes, {}ms base quantum)",
+        NUM_PRIORITY_LEVELS,
         MAX_PROCESSES,
-        DEFAULT_TIME_SLICE
+        BASE_TIME_SLICE_MS
     );
+    crate::kinfo!(
+        "Scheduling policies: Realtime, Normal, Batch, Idle with dynamic priority adjustment"
+    );
+}
+
+/// Boost priority of a process (MLFQ priority boost mechanism)
+/// This is called periodically to prevent starvation
+pub fn boost_all_priorities() {
+    let mut table = PROCESS_TABLE.lock();
+    
+    for slot in table.iter_mut() {
+        if let Some(entry) = slot {
+            if entry.process.state != ProcessState::Zombie {
+                // Reset to highest priority level
+                entry.quantum_level = match entry.policy {
+                    SchedPolicy::Realtime => 0,
+                    SchedPolicy::Normal => 2,
+                    SchedPolicy::Batch => 4,
+                    SchedPolicy::Idle => 6,
+                };
+                
+                // Reset priority to base
+                entry.priority = entry.base_priority;
+                
+                // Reset counters
+                entry.preempt_count = 0;
+                
+                crate::kdebug!(
+                    "Boosted priority for PID {} to level {}",
+                    entry.process.pid,
+                    entry.quantum_level
+                );
+            }
+        }
+    }
+}
+
+/// Set the scheduling policy for a process
+pub fn set_process_policy(pid: Pid, policy: SchedPolicy, nice: i8) -> Result<(), &'static str> {
+    let mut table = PROCESS_TABLE.lock();
+    
+    for slot in table.iter_mut() {
+        if let Some(entry) = slot {
+            if entry.process.pid == pid {
+                entry.policy = policy;
+                entry.nice = nice.clamp(-20, 19);
+                
+                // Adjust quantum level based on new policy
+                entry.quantum_level = match policy {
+                    SchedPolicy::Realtime => 0,
+                    SchedPolicy::Normal => 4,
+                    SchedPolicy::Batch => 6,
+                    SchedPolicy::Idle => 7,
+                };
+                
+                // Recalculate time slice
+                entry.time_slice = calculate_time_slice(entry.quantum_level);
+                
+                crate::kinfo!(
+                    "Process {} policy changed to {:?}, nice={}, quantum_level={}",
+                    pid,
+                    policy,
+                    nice,
+                    entry.quantum_level
+                );
+                return Ok(());
+            }
+        }
+    }
+    
+    Err("Process not found")
+}
+
+/// Get scheduler statistics
+pub fn get_stats() -> SchedulerStats {
+    *SCHED_STATS.lock()
+}
+
+/// Get process scheduling information
+pub fn get_process_sched_info(pid: Pid) -> Option<(u8, u8, SchedPolicy, i8, u64, u64)> {
+    let table = PROCESS_TABLE.lock();
+    
+    for slot in table.iter() {
+        if let Some(entry) = slot {
+            if entry.process.pid == pid {
+                return Some((
+                    entry.priority,
+                    entry.quantum_level,
+                    entry.policy,
+                    entry.nice,
+                    entry.total_time,
+                    entry.wait_time,
+                ));
+            }
+        }
+    }
+    
+    None
+}
+
+/// Adjust process priority dynamically (for syscalls like nice())
+pub fn adjust_process_priority(pid: Pid, nice_delta: i8) -> Result<i8, &'static str> {
+    let mut table = PROCESS_TABLE.lock();
+    
+    for slot in table.iter_mut() {
+        if let Some(entry) = slot {
+            if entry.process.pid == pid {
+                let old_nice = entry.nice;
+                entry.nice = (entry.nice + nice_delta).clamp(-20, 19);
+                
+                // Recalculate priority
+                entry.priority = calculate_dynamic_priority(
+                    entry.base_priority,
+                    entry.wait_time,
+                    entry.total_time,
+                    entry.nice,
+                );
+                
+                crate::kdebug!(
+                    "Process {} nice: {} -> {}, priority: {}",
+                    pid,
+                    old_nice,
+                    entry.nice,
+                    entry.priority
+                );
+                
+                return Ok(entry.nice);
+            }
+        }
+    }
+    
+    Err("Process not found")
 }
 
 /// Get current running process PID (alias for current_pid)
@@ -499,8 +910,14 @@ unsafe extern "C" fn context_switch(
     )
 }
 
-/// Perform context switch to next ready process
+/// Perform context switch to next ready process with statistics tracking
 pub fn do_schedule() {
+    // Update scheduler statistics
+    {
+        let mut stats = SCHED_STATS.lock();
+        stats.total_context_switches += 1;
+    }
+
     // Debug: Print all process states before scheduling
     {
         let table = PROCESS_TABLE.lock();
@@ -508,8 +925,8 @@ pub fn do_schedule() {
         for slot in table.iter() {
             if let Some(entry) = slot {
                 crate::serial::_print(format_args!(
-                    "  PID {}: ppid={}, state={:?}, CR3={:#x}\n",
-                    entry.process.pid, entry.process.ppid, entry.process.state, entry.process.cr3
+                    "  PID {}: ppid={}, state={:?}, policy={:?}, CR3={:#x}\n",
+                    entry.process.pid, entry.process.ppid, entry.process.state, entry.policy, entry.process.cr3
                 ));
             }
         }
@@ -524,6 +941,7 @@ pub fn do_schedule() {
             user_rip: u64,
             user_rsp: u64,
             user_rflags: u64,
+            is_voluntary: bool,
         },
     }
 
@@ -620,27 +1038,37 @@ pub fn do_schedule() {
                 let next_context = entry.process.context;
 
                 // Check if current process is a zombie - if so, don't save its context
-                let old_context_ptr = if let Some(curr_pid) = current {
-                    table.iter_mut().find_map(|slot| {
+                let (old_context_ptr, is_voluntary) = if let Some(curr_pid) = current {
+                    let result = table.iter_mut().find_map(|slot| {
                         slot.as_mut().and_then(|candidate| {
                             if candidate.process.pid == curr_pid {
+                                // Check if this is a voluntary context switch
+                                let voluntary = candidate.process.state == ProcessState::Sleeping ||
+                                               candidate.time_slice > 0;
+                                
+                                // Update voluntary switch counter
+                                if voluntary {
+                                    candidate.voluntary_switches += 1;
+                                }
+                                
                                 // Don't save context for zombie processes
                                 if candidate.process.state == ProcessState::Zombie {
                                     crate::serial::_print(format_args!(
                                         "[do_schedule] Current PID {} is Zombie, not saving context\n",
                                         curr_pid
                                     ));
-                                    None
+                                    Some((None, voluntary))
                                 } else {
-                                    Some(&mut candidate.process.context as *mut _)
+                                    Some((Some(&mut candidate.process.context as *mut _), voluntary))
                                 }
                             } else {
                                 None
                             }
                         })
-                    })
+                    });
+                    result.unwrap_or((None, false))
                 } else {
-                    None
+                    (None, false)
                 };
 
                 Some(ScheduleDecision::Switch {
@@ -650,6 +1078,7 @@ pub fn do_schedule() {
                     user_rip,
                     user_rsp,
                     user_rflags,
+                    is_voluntary,
                 })
             }
         } else {
@@ -702,9 +1131,21 @@ pub fn do_schedule() {
             user_rip,
             user_rsp,
             user_rflags,
+            is_voluntary,
         }) => unsafe {
+            // Update statistics
+            {
+                let mut stats = SCHED_STATS.lock();
+                if is_voluntary {
+                    stats.total_voluntary_switches += 1;
+                } else {
+                    stats.total_preemptions += 1;
+                }
+            }
+            
             crate::serial::_print(format_args!(
-                "[do_schedule] Switch: user_rip={:#x}, user_rsp={:#x}, user_rflags={:#x}\n",
+                "[do_schedule] Switch ({}): user_rip={:#x}, user_rsp={:#x}, user_rflags={:#x}\n",
+                if is_voluntary { "voluntary" } else { "preempt" },
                 user_rip, user_rsp, user_rflags
             ));
             if user_rsp != 0 {
@@ -750,3 +1191,134 @@ pub fn update_process_cr3(pid: Pid, new_cr3: u64) -> Result<(), &'static str> {
 
     Ok(())
 }
+
+/// Detect potential deadlocks by analyzing process wait states
+/// Returns list of PIDs that might be in a deadlock
+pub fn detect_potential_deadlocks() -> [Option<Pid>; MAX_PROCESSES] {
+    let table = PROCESS_TABLE.lock();
+    let mut potential_deadlocks = [None; MAX_PROCESSES];
+    let mut count = 0;
+    let current_tick = GLOBAL_TICK.load(Ordering::Relaxed);
+    
+    // Threshold: if a process has been waiting for more than 10 seconds (10000 ticks)
+    const DEADLOCK_THRESHOLD_TICKS: u64 = 10000;
+    
+    for slot in table.iter() {
+        if let Some(entry) = slot {
+            // Check for processes stuck in Sleeping state for too long
+            if entry.process.state == ProcessState::Sleeping {
+                let wait_ticks = current_tick.saturating_sub(entry.last_scheduled);
+                if wait_ticks > DEADLOCK_THRESHOLD_TICKS {
+                    crate::kwarn!(
+                        "Potential deadlock: PID {} sleeping for {} ticks (>{})",
+                        entry.process.pid,
+                        wait_ticks,
+                        DEADLOCK_THRESHOLD_TICKS
+                    );
+                    if count < MAX_PROCESSES {
+                        potential_deadlocks[count] = Some(entry.process.pid);
+                        count += 1;
+                    }
+                }
+            }
+            
+            // Check for excessive wait time in Ready state (starvation)
+            if entry.process.state == ProcessState::Ready && entry.wait_time > DEADLOCK_THRESHOLD_TICKS {
+                crate::kwarn!(
+                    "Potential starvation: PID {} waiting in Ready state for {} ms",
+                    entry.process.pid,
+                    entry.wait_time
+                );
+                if count < MAX_PROCESSES {
+                    potential_deadlocks[count] = Some(entry.process.pid);
+                    count += 1;
+                }
+            }
+        }
+    }
+    
+    potential_deadlocks
+}
+
+/// Force reschedule by setting current process time slice to 0
+/// Used for explicit yield or priority inversion handling
+pub fn force_reschedule() {
+    let mut table = PROCESS_TABLE.lock();
+    let current = *CURRENT_PID.lock();
+    
+    if let Some(curr_pid) = current {
+        for slot in table.iter_mut() {
+            if let Some(entry) = slot {
+                if entry.process.pid == curr_pid {
+                    entry.time_slice = 0;
+                    crate::kdebug!("Force reschedule for PID {}", curr_pid);
+                    break;
+                }
+            }
+        }
+    }
+}
+
+/// Get total number of processes in each state
+pub fn get_process_counts() -> (usize, usize, usize, usize) {
+    let table = PROCESS_TABLE.lock();
+    let mut ready = 0;
+    let mut running = 0;
+    let mut sleeping = 0;
+    let mut zombie = 0;
+    
+    for slot in table.iter() {
+        if let Some(entry) = slot {
+            match entry.process.state {
+                ProcessState::Ready => ready += 1,
+                ProcessState::Running => running += 1,
+                ProcessState::Sleeping => sleeping += 1,
+                ProcessState::Zombie => zombie += 1,
+            }
+        }
+    }
+    
+    (ready, running, sleeping, zombie)
+}
+
+/// Calculate system load average (simplified)
+/// Returns (1-min load, 5-min load, 15-min load) - currently just returns ready+running count
+pub fn get_load_average() -> (f32, f32, f32) {
+    let (ready, running, _, _) = get_process_counts();
+    let load = (ready + running) as f32;
+    
+    // In a real implementation, these would be exponentially-weighted moving averages
+    // For now, return the same value for all three
+    (load, load, load)
+}
+
+/// Age all processes' wait times to prevent starvation
+/// Called periodically by the scheduler (e.g., every 100ms)
+pub fn age_process_priorities() {
+    let mut table = PROCESS_TABLE.lock();
+    let current_tick = GLOBAL_TICK.load(Ordering::Relaxed);
+    
+    for slot in table.iter_mut() {
+        if let Some(entry) = slot {
+            if entry.process.state == ProcessState::Ready {
+                let wait_delta = current_tick.saturating_sub(entry.last_scheduled);
+                
+                // Age: reduce priority number (increase priority) for long-waiting processes
+                if wait_delta > 100 && entry.priority > 0 {
+                    entry.priority = entry.priority.saturating_sub(1);
+                    
+                    // Also promote to higher quantum level for fairness
+                    if entry.quantum_level > 0 && wait_delta > 500 {
+                        entry.quantum_level -= 1;
+                        crate::kdebug!(
+                            "Aged process {}: promoted to quantum level {}",
+                            entry.process.pid,
+                            entry.quantum_level
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+

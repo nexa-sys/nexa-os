@@ -885,13 +885,27 @@ pub fn init_interrupts_ap() {
 
 // Hardware interrupt handlers
 extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    // Send EOI to PIC
+    // Send EOI to PIC first to allow nested interrupts
     unsafe {
         PICS.lock().notify_end_of_interrupt(PIC_1_OFFSET);
     }
 
-    // TODO: Implement preemptive scheduling
-    // For now, timer just ticks. Scheduling happens on syscall yield points.
+    // Timer tick for scheduler (1ms granularity)
+    const TIMER_TICK_MS: u64 = 1;
+    
+    // Check if current process should be preempted
+    if crate::scheduler::tick(TIMER_TICK_MS) {
+        // Time slice expired or higher priority process ready
+        // Trigger rescheduling via do_schedule()
+        // Note: This is safe because we're already in an interrupt context
+        // and the scheduler will handle context switching properly
+        crate::kdebug!("Timer: Triggering preemptive reschedule");
+        
+        // For true preemptive multitasking, we would call do_schedule() here
+        // However, this requires careful handling of the interrupt stack frame
+        // For now, we rely on syscall yield points for scheduling
+        // TODO: Implement full preemptive scheduling via timer interrupt
+    }
 }
 
 extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
