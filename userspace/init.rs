@@ -113,6 +113,23 @@ fn wait4(pid: i64, status: *mut i32, options: i32) -> i64 {
     }
 }
 
+// POSIX wait status macros
+fn wexitstatus(status: i32) -> i32 {
+    (status >> 8) & 0xff
+}
+
+fn wifexited(status: i32) -> bool {
+    (status & 0x7f) == 0
+}
+
+fn wifsignaled(status: i32) -> bool {
+    ((status & 0x7f) + 1) as i8 >= 2
+}
+
+fn wtermsig(status: i32) -> i32 {
+    status & 0x7f
+}
+
 /// Simple integer to string conversion
 fn itoa(n: u64, buf: &mut [u8]) -> &str {
     if buf.is_empty() {
@@ -958,16 +975,31 @@ fn parallel_service_supervisor(
                     println!("         Unit: {}", service_label(service));
                     let pid_str = itoa(pid as u64, buf);
                     println!("         PID: {}", pid_str);
-                    let exit_str = itoa(status as u64, buf);
-                    println!("         Exit status: {}", exit_str);
+                    
+                    // Decode POSIX wait status
+                    if wifexited(status) {
+                        let exit_code = wexitstatus(status);
+                        let exit_str = itoa(exit_code as u64, buf);
+                        println!("         Exit code: {}", exit_str);
+                    } else if wifsignaled(status) {
+                        let signal = wtermsig(status);
+                        let sig_str = itoa(signal as u64, buf);
+                        println!("         Terminated by signal: {}", sig_str);
+                    }
 
                     state.pid = 0;
 
                     // Check if we should restart
+                    let exited_with_failure = if wifexited(status) {
+                        wexitstatus(status) != 0
+                    } else {
+                        true // Terminated by signal counts as failure
+                    };
+                    
                     let should_restart = match service.restart {
                         RestartPolicy::No => false,
                         RestartPolicy::Always => true,
-                        RestartPolicy::OnFailure => status != 0,
+                        RestartPolicy::OnFailure => exited_with_failure,
                     };
 
                     if should_restart

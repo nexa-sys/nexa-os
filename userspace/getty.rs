@@ -81,6 +81,23 @@ fn wait4(pid: i64, status: *mut i32, options: i32) -> i64 {
     }
 }
 
+// POSIX wait status macros
+fn wexitstatus(status: i32) -> i32 {
+    (status >> 8) & 0xff
+}
+
+fn wifexited(status: i32) -> bool {
+    (status & 0x7f) == 0
+}
+
+fn wifsignaled(status: i32) -> bool {
+    ((status & 0x7f) + 1) as i8 >= 2
+}
+
+fn wtermsig(status: i32) -> i32 {
+    status & 0x7f
+}
+
 fn getty_main() -> ! {
     // Test output at the very beginning
     println!("GETTY_STARTING");

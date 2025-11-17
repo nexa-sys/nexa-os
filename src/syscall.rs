@@ -1887,27 +1887,80 @@ fn syscall_execve(path: *const u8, _argv: *const *const u8, _envp: *const *const
 /// POSIX wait4() system call - wait for process state change
 /// SIMPLIFIED IMPLEMENTATION: Uses busy-waiting instead of true blocking
 /// TODO: Proper implementation requires async/await or cooperative scheduling
+/// POSIX wait status macros
+/// Status is encoded as: bits 0-7: exit code, bits 8-15: signal number, bit 7: core dump flag
+const fn wexitstatus(status: i32) -> i32 {
+    (status >> 8) & 0xff
+}
+
+const fn wifexited(status: i32) -> bool {
+    (status & 0x7f) == 0
+}
+
+const fn wifsignaled(status: i32) -> bool {
+    ((status & 0x7f) + 1) as i8 >= 2
+}
+
+const fn wtermsig(status: i32) -> i32 {
+    status & 0x7f
+}
+
+const fn make_exit_status(exit_code: i32) -> i32 {
+    (exit_code & 0xff) << 8
+}
+
+const fn make_signal_status(signal: i32) -> i32 {
+    signal & 0x7f
+}
+
+/// POSIX-compliant wait4 implementation
+/// 
+/// Arguments:
+/// - pid > 0: wait for specific child with PID == pid
+/// - pid == 0: wait for any child in the same process group (not yet implemented)
+/// - pid == -1: wait for any child process
+/// - pid < -1: wait for any child in process group -pid (not yet implemented)
+/// 
+/// Returns:
+/// - On success: PID of terminated child
+/// - On WNOHANG with no change: 0
+/// - On error: -1 (as u64::MAX in unsigned context)
 fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> u64 {
-    crate::kinfo!("wait4(pid={}) called", pid);
+    crate::kinfo!("wait4(pid={}, options={:#x}) called", pid, options);
 
     // Get current process PID
     let current_pid = match crate::scheduler::get_current_pid() {
         Some(pid) => pid,
         None => {
             crate::kerror!("wait4() called but no current process");
-            posix::set_errno(posix::errno::EINVAL);
-            return u64::MAX;
+            posix::set_errno(posix::errno::ESRCH);
+            return u64::MAX; // -1
         }
     };
 
     crate::kinfo!("wait4() from PID {} waiting for pid {}", current_pid, pid);
 
-    // WNOHANG flag (non-blocking wait)
-    const WNOHANG: i32 = 1;
+    // Option flags (POSIX)
+    const WNOHANG: i32 = 1;      // Return immediately if no child has exited
+    const WUNTRACED: i32 = 2;    // Also return for stopped children (not implemented yet)
+    const WCONTINUED: i32 = 8;   // Also return for continued children (not implemented yet)
+    
     let is_nonblocking = (options & WNOHANG) != 0;
+    
+    // Validate options - we only support WNOHANG for now
+    if (options & !(WNOHANG | WUNTRACED | WCONTINUED)) != 0 {
+        crate::kerror!("wait4: unsupported options {:#x}", options);
+        posix::set_errno(posix::errno::EINVAL);
+        return u64::MAX;
+    }
 
-    // For now: implement as simple polling without context switching
-    // This is a temporary solution until we have proper async/cooperative scheduling
+    // Validate pid argument
+    if pid == 0 || pid < -1 {
+        // Process group waiting not yet implemented
+        crate::kerror!("wait4: process group waiting (pid={}) not yet implemented", pid);
+        posix::set_errno(posix::errno::ENOSYS);
+        return u64::MAX;
+    }
 
     // Keep checking child status until it transitions to Zombie. Between
     // checks, yield to the scheduler so the child can actually make
@@ -1921,9 +1974,10 @@ fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> 
         ));
 
         // Check if the specified child has exited
-        let mut found_child = false;
+        let mut found_any_child = false;
         let mut child_exited = false;
         let mut child_exit_code: Option<i32> = None;
+        let mut child_term_signal: Option<i32> = None;
         let mut wait_pid = 0u64;
 
         // Query all children and look for matching one
@@ -1932,15 +1986,21 @@ fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> 
             for check_pid in 2..32 {
                 if let Some(child_state) = crate::scheduler::get_child_state(current_pid, check_pid)
                 {
-                    found_child = true;
-                    wait_pid = check_pid;
+                    found_any_child = true;
 
                     if child_state == crate::process::ProcessState::Zombie {
+                        wait_pid = check_pid;
                         child_exited = true;
-                        let exit_code = crate::scheduler::get_process(check_pid)
-                            .map(|proc| proc.exit_code)
-                            .unwrap_or(0);
-                        child_exit_code = Some(exit_code);
+                        
+                        // Get exit code and check if terminated by signal
+                        if let Some(proc) = crate::scheduler::get_process(check_pid) {
+                            child_exit_code = Some(proc.exit_code);
+                            // TODO: track terminating signal in Process struct
+                            child_term_signal = None;
+                        } else {
+                            child_exit_code = Some(0);
+                        }
+                        
                         crate::kinfo!("wait4() found exited child PID {}", check_pid);
                         break;
                     }
@@ -1956,7 +2016,7 @@ fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> 
             }
 
             if let Some(child_state) = crate::scheduler::get_child_state(current_pid, pid as u64) {
-                found_child = true;
+                found_any_child = true;
                 wait_pid = pid as u64;
 
                 if loop_count <= 3 || (loop_count % 100 == 0) {
@@ -1968,10 +2028,16 @@ fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> 
 
                 if child_state == crate::process::ProcessState::Zombie {
                     child_exited = true;
-                    let exit_code = crate::scheduler::get_process(wait_pid)
-                        .map(|proc| proc.exit_code)
-                        .unwrap_or(0);
-                    child_exit_code = Some(exit_code);
+                    
+                    // Get exit code and check if terminated by signal
+                    if let Some(proc) = crate::scheduler::get_process(wait_pid) {
+                        child_exit_code = Some(proc.exit_code);
+                        // TODO: track terminating signal in Process struct
+                        child_term_signal = None;
+                    } else {
+                        child_exit_code = Some(0);
+                    }
+                    
                     crate::kinfo!("wait4() found exited specific child PID {}", pid);
                 }
             }
@@ -1980,15 +2046,23 @@ fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> 
         // If child has exited, clean up and return
         if child_exited {
             crate::serial::_print(format_args!(
-                "[wait4] Child {} exited, found_child={}, proceeding to cleanup\n",
-                wait_pid, found_child
+                "[wait4] Child {} exited, found_any_child={}, proceeding to cleanup\n",
+                wait_pid, found_any_child
             ));
 
-            let exit_code = child_exit_code.unwrap_or(0);
+            // Encode status according to POSIX conventions
+            let encoded_status = if let Some(signal) = child_term_signal {
+                // Child was terminated by signal
+                make_signal_status(signal)
+            } else {
+                // Child exited normally
+                let exit_code = child_exit_code.unwrap_or(0);
+                make_exit_status(exit_code)
+            };
 
             if !status.is_null() {
                 unsafe {
-                    *status = exit_code;
+                    *status = encoded_status;
                 }
             }
 
@@ -1996,12 +2070,12 @@ fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> 
                 crate::kerror!("wait4: Failed to remove process {}: {}", wait_pid, e);
             }
 
-            crate::init::handle_process_exit(wait_pid, exit_code);
+            crate::init::handle_process_exit(wait_pid, child_exit_code.unwrap_or(0));
 
             crate::kinfo!(
-                "wait4() returning child PID {} with status {}",
+                "wait4() returning child PID {} with encoded status {:#x}",
                 wait_pid,
-                exit_code
+                encoded_status
             );
             posix::set_errno(0);
             
@@ -2017,21 +2091,21 @@ fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> 
         }
 
         // If no child found at all, error
-        if !found_child {
+        if !found_any_child {
             crate::serial::_print(format_args!(
                 "[wait4] No matching child found for PID {} (pid arg={}) - returning ECHILD\n",
                 current_pid, pid
             ));
             crate::kinfo!("wait4() no matching child found");
             posix::set_errno(posix::errno::ECHILD);
-            return u64::MAX;
+            return u64::MAX; // -1
         }
 
         // If non-blocking and child hasn't exited, return immediately
         if is_nonblocking {
             crate::kinfo!("wait4() WNOHANG: child not yet exited");
             posix::set_errno(0);
-            return 0;
+            return 0; // No status change
         }
 
         // Block until the child changes state by yielding to the scheduler.

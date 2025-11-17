@@ -359,6 +359,23 @@ fn wait4(pid: i32, status: *mut i32, options: i32) -> i32 {
     syscall3(SYS_WAIT4, pid as u64, status as u64, options as u64) as i32
 }
 
+// POSIX wait status macros
+fn wexitstatus(status: i32) -> i32 {
+    (status >> 8) & 0xff
+}
+
+fn wifexited(status: i32) -> bool {
+    (status & 0x7f) == 0
+}
+
+fn wifsignaled(status: i32) -> bool {
+    ((status & 0x7f) + 1) as i8 >= 2
+}
+
+fn wtermsig(status: i32) -> i32 {
+    status & 0x7f
+}
+
 fn print_hex(val: u64) {
     let hex_chars = b"0123456789abcdef";
     let mut buf = [0u8; 16];
@@ -1658,6 +1675,21 @@ fn execute_external_command(cmd: &str, args: &[&str]) -> bool {
         println_str("wait failed");
         return false;
     }
+    
+    // Check if child exited normally or was terminated by signal
+    if wifexited(status) {
+        let exit_code = wexitstatus(status);
+        if exit_code != 0 {
+            print_str("Command exited with status ");
+            print_i32(exit_code);
+            println_str("");
+        }
+    } else if wifsignaled(status) {
+        print_str("Command terminated by signal ");
+        print_i32(wtermsig(status));
+        println_str("");
+    }
+    
     true
 }
 
