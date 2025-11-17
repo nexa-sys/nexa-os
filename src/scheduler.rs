@@ -651,10 +651,9 @@ pub fn do_schedule() {
                 "[do_schedule] Switch: user_rip={:#x}, user_rsp={:#x}, user_rflags={:#x}\n",
                 user_rip, user_rsp, user_rflags
             ));
-            // Note: We don't call restore_user_syscall_context here because:
-            // 1. context_switch already saves/restores all registers
-            // 2. The process might still be in kernel mode (e.g., in wait4 loop)
-            // 3. GS_DATA context is only needed when returning from syscall to userspace
+            if user_rsp != 0 {
+                crate::interrupts::restore_user_syscall_context(user_rip, user_rsp, user_rflags);
+            }
             crate::paging::activate_address_space(next_cr3);
             context_switch(old_context_ptr, &next_context as *const _);
         },
