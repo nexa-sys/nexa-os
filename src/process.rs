@@ -98,6 +98,7 @@ pub struct Process {
     pub signal_state: crate::signal::SignalState, // POSIX signal handling
     pub context: Context,                         // CPU context for context switching
     pub has_entered_user: bool,
+    pub is_fork_child: bool, // True if this process was created by fork (not exec/init)
     pub cr3: u64, // Page table root (for process-specific page tables) - 0 means use kernel page table
     pub tty: usize, // Controlling virtual terminal index
     pub memory_base: u64, // Physical base address of process memory (for fork)
@@ -309,6 +310,7 @@ impl Process {
             signal_state: crate::signal::SignalState::new(),
             context,
             has_entered_user: false,
+            is_fork_child: false, // Created by execve, not fork
             cr3: existing_cr3,  // Reuse existing CR3
             tty: 0,
             memory_base: phys_base,  // Reuse existing memory base
@@ -450,6 +452,7 @@ impl Process {
                     signal_state: crate::signal::SignalState::new(),
                     context,
                     has_entered_user: false,
+                    is_fork_child: false, // New process from ELF, not fork
                     cr3,
                     tty: 0,
                     memory_base: USER_PHYS_BASE,
@@ -510,6 +513,7 @@ impl Process {
             signal_state: crate::signal::SignalState::new(),
             context,
             has_entered_user: false,
+            is_fork_child: false, // New process from ELF, not fork
             cr3,
             tty: 0,
             memory_base: USER_PHYS_BASE,
@@ -545,8 +549,8 @@ impl Process {
         self.state = ProcessState::Running;
 
         crate::serial::_print(format_args!(
-            "[process::execute] PID={}, entry={:#x}, stack={:#x}, has_entered_user={}\n",
-            self.pid, self.entry_point, self.stack_top, self.has_entered_user
+            "[process::execute] PID={}, entry={:#x}, stack={:#x}, has_entered_user={}, is_fork_child={}\n",
+            self.pid, self.entry_point, self.stack_top, self.has_entered_user, self.is_fork_child
         ));
 
         crate::kinfo!(
@@ -560,8 +564,39 @@ impl Process {
 
         self.has_entered_user = true;
 
-        // Jump to user mode - this never returns
-        jump_to_usermode(self.entry_point, self.stack_top);
+        if self.is_fork_child {
+            // Fork child: Return from syscall with RAX=0
+            // Use sysret mechanism to return to userspace at syscall_return_addr
+            crate::serial::_print(format_args!(
+                "[process::execute] Fork child: returning to {:#x} with RAX=0\n",
+                self.entry_point
+            ));
+            
+            // Set up syscall return context
+            crate::interrupts::restore_user_syscall_context(
+                self.entry_point,  // user_rip (syscall return address)
+                self.stack_top,     // user_rsp
+                self.user_rflags    // user_rflags
+            );
+            
+            // Return to userspace via sysretq with RAX=0
+            unsafe {
+                core::arch::asm!(
+                    "mov rcx, {rip}",      // RCX = return RIP for sysretq
+                    "mov r11, {rflags}",   // R11 = RFLAGS for sysretq  
+                    "mov rsp, {rsp}",      // RSP = user stack
+                    "xor rax, rax",        // RAX = 0 (fork child return value)
+                    "sysretq",             // Return to Ring 3
+                    rip = in(reg) self.entry_point,
+                    rflags = in(reg) self.user_rflags,
+                    rsp = in(reg) self.stack_top,
+                    options(noreturn)
+                );
+            }
+        } else {
+            // Normal process (init/execve): Jump to entry point
+            jump_to_usermode(self.entry_point, self.stack_top);
+        }
     }
 
     pub fn set_tty(&mut self, tty: usize) {

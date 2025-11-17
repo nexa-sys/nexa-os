@@ -1348,27 +1348,34 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
     child_process.ppid = current_pid;
     child_process.state = crate::process::ProcessState::Ready;
 
-    // Forked children resume in user mode directly, so drive them through the
-    // first-run path instead of inheriting the parent's in-kernel context.
+    // CRITICAL POSIX SEMANTICS: Fork creates an EXACT copy of the running process.
+    // The child resumes execution at the instruction AFTER fork(), not at a new entry point.
+    // 
+    // Key differences from execve:
+    // - execve: loads NEW program, uses jump_to_usermode with new entry point
+    // - fork:   copies EXISTING process, must return from syscall with RAX=0
+    //
+    // To maintain POSIX semantics, we mark the child as "not yet entered user mode"
+    // so it goes through FirstRun path, but we set entry_point to syscall_return_addr
+    // which will make it resume at the correct location (after fork syscall).
     child_process.has_entered_user = false;
+    child_process.is_fork_child = true; // Mark as fork child for special handling
 
-    // Repoint entry/stack so jump_to_usermode will return at the original
-    // userspace instruction that invoked fork().
+    // Set up child to return from fork syscall with RAX=0
     child_process.entry_point = syscall_return_addr;
     child_process.stack_top = user_rsp;
-
-    // Provide a clean context block for debugging/diagnostics even though the
-    // first-run path bypasses it.
-    child_process.context = crate::process::Context::zero();
-    child_process.context.rax = 0;
-    child_process.context.rip = syscall_return_addr;
-    child_process.context.rsp = user_rsp;
     child_process.user_rip = syscall_return_addr;
     child_process.user_rsp = user_rsp;
     child_process.user_rflags = parent_process.user_rflags;
+    
+    // Initialize context for fork return (RAX=0 means "I'm the child")
+    child_process.context = crate::process::Context::zero();
+    child_process.context.rax = 0;  // fork() returns 0 in child
+    child_process.context.rip = syscall_return_addr;
+    child_process.context.rsp = user_rsp;
 
     crate::kdebug!(
-        "Child entry set to {:#x}, stack={:#x}",
+        "Child fork: entry={:#x}, stack={:#x}, will return RAX=0",
         child_process.entry_point,
         child_process.stack_top
     );

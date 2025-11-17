@@ -28,6 +28,7 @@ impl ProcessEntry {
                 signal_state: crate::signal::SignalState::new(),
                 context: crate::process::Context::zero(),
                 has_entered_user: false,
+                is_fork_child: false,
                 cr3: 0,
                 tty: 0,
                 memory_base: 0,

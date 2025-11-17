@@ -32,6 +32,7 @@ const GS_SLOT_USER_DS: usize = 6;
 const GS_SLOT_SAVED_RCX: usize = 7;
 const GS_SLOT_SAVED_RFLAGS: usize = 8;
 const GS_SLOT_USER_RSP_DEBUG: usize = 9;
+const GS_SLOT_SAVED_RAX: usize = 10; // For fork child return value
 const GS_SLOT_KERNEL_STACK_GUARD: usize = 20;
 const GS_SLOT_KERNEL_STACK_SNAPSHOT: usize = 21;
 
@@ -1186,6 +1187,9 @@ pub unsafe fn set_gs_data(entry: u64, stack: u64, user_cs: u64, user_ss: u64, us
 /// syscall paths can return with the correct RIP/RSP/RFLAGS after a context
 /// switch. This is called by the scheduler before resuming a process that has
 /// already entered userspace at least once.
+/// Restore user syscall context for process switch (used by scheduler)
+/// Sets up GS_DATA so that when we return to userspace, registers are restored correctly
+/// rax_value: the value to return in RAX register (e.g., 0 for fork child)
 pub fn restore_user_syscall_context(user_rip: u64, user_rsp: u64, user_rflags: u64) {
     unsafe {
         let gs_data_addr = &raw const crate::initramfs::GS_DATA.0 as *const _ as u64;
@@ -1197,6 +1201,8 @@ pub fn restore_user_syscall_context(user_rip: u64, user_rsp: u64, user_rflags: u
         gs_data_ptr.add(GS_SLOT_SAVED_RFLAGS).write(user_rflags);
         gs_data_ptr.add(GS_SLOT_KERNEL_STACK_GUARD).write(0);
         gs_data_ptr.add(GS_SLOT_KERNEL_STACK_SNAPSHOT).write(0);
+        // Note: RAX is NOT set here - it comes from the process context
+        // For fork children, it's set in the Context.rax field
     }
 }
 
