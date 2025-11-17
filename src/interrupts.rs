@@ -63,19 +63,15 @@ global_asm!(
     "mov gs:[120], r10", // gs slot 15 = entry CS snapshot
     "mov r10, [rsp + 32]",
     "mov gs:[128], r10", // gs slot 16 = entry SS snapshot
-    
     // CRITICAL: Save user RSP for fork() and context switching
     "mov r10, [rsp + 24]", // r10 = user RSP
     "mov gs:[0], r10",     // gs slot 0 = user RSP (GS_SLOT_USER_RSP)
-    
     // CRITICAL: Save user RIP for context switching
-    "mov r10, [rsp + 0]",  // r10 = user RIP
-    "mov gs:[56], r10",    // gs slot 7 = saved RIP (GS_SLOT_SAVED_RCX, used for syscall return address)
-    
-    // CRITICAL: Save user RFLAGS for context switching  
+    "mov r10, [rsp + 0]", // r10 = user RIP
+    "mov gs:[56], r10", // gs slot 7 = saved RIP (GS_SLOT_SAVED_RCX, used for syscall return address)
+    // CRITICAL: Save user RFLAGS for context switching
     "mov r10, [rsp + 16]", // r10 = user RFLAGS
     "mov gs:[64], r10",    // gs slot 8 = saved RFLAGS (GS_SLOT_SAVED_RFLAGS)
-    
     // Guard against nested entries while processes share a single kernel stack
     "mov r9, gs:[160]",
     "test r9, r9",
@@ -103,11 +99,11 @@ global_asm!(
     // Prepare arguments for syscall_dispatch(nr=rax, arg1=rdi, arg2=rsi, arg3=rdx, syscall_return_addr=user_rip)
     // System V x86_64 ABI: rdi, rsi, rdx, rcx, r8
     // user_rip is already in GS_DATA slot 7, load it to r8
-    "mov r8, gs:[56]",  // r8 = syscall_return_addr (from GS_SLOT_SAVED_RCX)
-    "mov rcx, rdx",     // rcx = arg3
-    "mov rdx, rsi",     // rdx = arg2
-    "mov rsi, rdi",     // rsi = arg1
-    "mov rdi, rax",     // rdi = nr
+    "mov r8, gs:[56]", // r8 = syscall_return_addr (from GS_SLOT_SAVED_RCX)
+    "mov rcx, rdx",    // rcx = arg3
+    "mov rdx, rsi",    // rdx = arg2
+    "mov rsi, rdi",    // rsi = arg1
+    "mov rdi, rax",    // rdi = nr
     "call syscall_dispatch",
     // Check if execve returned (magic value 0x4558454300000000)
     "movabs rbx, 0x4558454300000000",
@@ -893,7 +889,7 @@ extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFr
     unsafe {
         PICS.lock().notify_end_of_interrupt(PIC_1_OFFSET);
     }
-    
+
     // TODO: Implement preemptive scheduling
     // For now, timer just ticks. Scheduling happens on syscall yield points.
 }

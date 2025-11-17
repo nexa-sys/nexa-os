@@ -106,6 +106,7 @@ pub struct Process {
     pub user_rip: u64, // Saved user-mode RIP for syscall return
     pub user_rsp: u64, // Saved user-mode RSP for syscall return
     pub user_rflags: u64, // Saved user-mode RFLAGS for syscall return
+    pub exit_code: i32, // Last exit code reported by this process (if zombie)
 }
 
 static NEXT_PID: AtomicU64 = AtomicU64::new(1);
@@ -152,7 +153,8 @@ impl Process {
     ) -> Result<Self, &'static str> {
         crate::kinfo!(
             "Process::from_elf_with_args_at_base called: phys_base={:#x}, cr3={:#x}",
-            phys_base, existing_cr3
+            phys_base,
+            existing_cr3
         );
 
         if elf_data.len() < 64 {
@@ -172,8 +174,12 @@ impl Process {
         }
 
         // Clear existing memory before loading new ELF (POSIX requirement)
-        crate::kinfo!("Clearing process memory at base={:#x}, size={:#x}", phys_base, USER_REGION_SIZE);
-        
+        crate::kinfo!(
+            "Clearing process memory at base={:#x}, size={:#x}",
+            phys_base,
+            USER_REGION_SIZE
+        );
+
         // Check current CR3 before clearing memory
         let current_cr3 = {
             use x86_64::registers::control::Cr3;
@@ -184,7 +190,7 @@ impl Process {
             "[from_elf_with_args_at_base] About to clear memory, current_CR3={:#x}, target_CR3={:#x}\n",
             current_cr3, existing_cr3
         ));
-        
+
         // CRITICAL: Check if we're about to overwrite any active page tables
         // Page tables are allocated starting from 0x08000000
         // User memory starts from phys_base (typically >= 0x10000000)
@@ -193,30 +199,33 @@ impl Process {
         let pt_region_end = 0x08100000u64; // Allow 1MB for page tables
         let clear_start = phys_base;
         let clear_end = phys_base + USER_REGION_SIZE;
-        
+
         if clear_start < pt_region_end && clear_end > pt_region_start {
             crate::kfatal!(
                 "CRITICAL: About to clear memory region {:#x}-{:#x} which overlaps with \
                  page table region {:#x}-{:#x}! This would destroy active page tables!",
-                clear_start, clear_end, pt_region_start, pt_region_end
+                clear_start,
+                clear_end,
+                pt_region_start,
+                pt_region_end
             );
         }
-        
+
         unsafe {
             ptr::write_bytes(phys_base as *mut u8, 0, USER_REGION_SIZE as usize);
         }
-        
+
         crate::serial::_print(format_args!(
             "[from_elf_with_args_at_base] Memory cleared successfully\n"
         ));
 
         let loader = ElfLoader::new(elf_data)?;
-        
+
         // CRITICAL: ElfLoader writes to physical memory but returns virtual addresses
         // We need to adjust: write to phys_base but calculate addresses from USER_VIRT_BASE
         // Since kernel has identity mapping, we temporarily load at phys_base then adjust addresses
         let mut program_image = loader.load(phys_base)?;
-        
+
         // Adjust addresses: ElfLoader calculated them relative to phys_base,
         // but userspace expects them relative to USER_VIRT_BASE
         let addr_adjustment = USER_VIRT_BASE as i64 - phys_base as i64;
@@ -224,7 +233,7 @@ impl Process {
         program_image.phdr_vaddr = ((program_image.phdr_vaddr as i64) + addr_adjustment) as u64;
         program_image.base_addr = USER_VIRT_BASE;
         program_image.load_bias = USER_VIRT_BASE as i64 - program_image.first_load_vaddr as i64;
-        
+
         crate::kinfo!(
             "Program image loaded and adjusted: entry={:#x}, base={:#x}, phdr={:#x}",
             program_image.entry_point,
@@ -271,27 +280,29 @@ impl Process {
 
             if let Some(interp_data) = crate::fs::read_file_bytes(interp_path) {
                 let interp_loader = ElfLoader::new(interp_data)?;
-                
+
                 // Calculate physical address for interpreter region
                 // INTERP_BASE is virtual, need to map to physical
                 let interp_offset = INTERP_BASE - USER_VIRT_BASE;
                 let interp_phys = phys_base + interp_offset;
-                
+
                 let mut interp_image = interp_loader.load(interp_phys)?;
-                
+
                 // Adjust interpreter addresses to virtual space
                 let interp_adjustment = INTERP_BASE as i64 - interp_phys as i64;
-                interp_image.entry_point = ((interp_image.entry_point as i64) + interp_adjustment) as u64;
-                interp_image.phdr_vaddr = ((interp_image.phdr_vaddr as i64) + interp_adjustment) as u64;
+                interp_image.entry_point =
+                    ((interp_image.entry_point as i64) + interp_adjustment) as u64;
+                interp_image.phdr_vaddr =
+                    ((interp_image.phdr_vaddr as i64) + interp_adjustment) as u64;
                 interp_image.base_addr = INTERP_BASE;
                 interp_image.load_bias = INTERP_BASE as i64 - interp_image.first_load_vaddr as i64;
-                
+
                 crate::kinfo!(
                     "Interpreter loaded and adjusted: entry={:#x}, base={:#x}",
                     interp_image.entry_point,
                     interp_image.base_addr
                 );
-                
+
                 let stack = build_initial_stack(
                     final_args,
                     exec_slice,
@@ -344,13 +355,14 @@ impl Process {
             context,
             has_entered_user: false,
             is_fork_child: false, // Created by execve, not fork
-            cr3: existing_cr3,  // Reuse existing CR3
+            cr3: existing_cr3,    // Reuse existing CR3
             tty: 0,
-            memory_base: phys_base,  // Reuse existing memory base
+            memory_base: phys_base, // Reuse existing memory base
             memory_size: USER_REGION_SIZE,
             user_rip: entry_point,
             user_rsp: stack_ptr,
             user_rflags: 0x202,
+            exit_code: 0,
         })
     }
 
@@ -493,6 +505,7 @@ impl Process {
                     user_rip: interp_image.entry_point,
                     user_rsp: stack_ptr,
                     user_rflags: 0x202,
+                    exit_code: 0,
                 });
             } else {
                 crate::kwarn!(
@@ -540,6 +553,7 @@ impl Process {
             ppid: 0,
             state: ProcessState::Ready,
             entry_point: program_image.entry_point,
+            exit_code: 0,
             stack_top: stack_ptr,
             heap_start: HEAP_BASE,
             heap_end: HEAP_BASE + HEAP_SIZE,
@@ -604,19 +618,19 @@ impl Process {
                 "[process::execute] Fork child: returning to {:#x} with RAX=0\n",
                 self.entry_point
             ));
-            
+
             // Set up syscall return context
             crate::interrupts::restore_user_syscall_context(
-                self.entry_point,  // user_rip (syscall return address)
-                self.stack_top,     // user_rsp
-                self.user_rflags    // user_rflags
+                self.entry_point, // user_rip (syscall return address)
+                self.stack_top,   // user_rsp
+                self.user_rflags, // user_rflags
             );
-            
+
             // Return to userspace via sysretq with RAX=0
             unsafe {
                 core::arch::asm!(
                     "mov rcx, {rip}",      // RCX = return RIP for sysretq
-                    "mov r11, {rflags}",   // R11 = RFLAGS for sysretq  
+                    "mov r11, {rflags}",   // R11 = RFLAGS for sysretq
                     "mov rsp, {rsp}",      // RSP = user stack
                     "xor rax, rax",        // RAX = 0 (fork child return value)
                     "sysretq",             // Return to Ring 3

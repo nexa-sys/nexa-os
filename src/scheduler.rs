@@ -36,6 +36,7 @@ impl ProcessEntry {
                 user_rip: 0,
                 user_rsp: 0,
                 user_rflags: 0,
+                exit_code: 0,
             },
             priority: 128,
             time_slice: 0,
@@ -107,10 +108,7 @@ pub fn add_process(process: Process, priority: u8) -> Result<(), &'static str> {
 /// Remove a process from the scheduler
 /// This also handles cleanup of process-specific resources including page tables.
 pub fn remove_process(pid: Pid) -> Result<(), &'static str> {
-    crate::serial::_print(format_args!(
-        "[remove_process] Removing PID {}\n",
-        pid
-    ));
+    crate::serial::_print(format_args!("[remove_process] Removing PID {}\n", pid));
 
     let mut table = PROCESS_TABLE.lock();
     let mut removed_cr3 = None;
@@ -120,7 +118,7 @@ pub fn remove_process(pid: Pid) -> Result<(), &'static str> {
         if let Some(entry) = slot {
             if entry.process.pid == pid {
                 crate::kinfo!("Scheduler: Removed process PID {}", pid);
-                
+
                 // Save CR3 for cleanup after releasing the lock
                 if entry.process.cr3 != 0 {
                     removed_cr3 = Some(entry.process.cr3);
@@ -129,7 +127,7 @@ pub fn remove_process(pid: Pid) -> Result<(), &'static str> {
                         pid, entry.process.cr3
                     ));
                 }
-                
+
                 *slot = None;
                 removed = true;
                 break;
@@ -143,7 +141,7 @@ pub fn remove_process(pid: Pid) -> Result<(), &'static str> {
         if current_pid() == Some(pid) {
             set_current_pid(None);
         }
-        
+
         // Clean up process page tables if it had its own CR3
         if let Some(cr3) = removed_cr3 {
             crate::kdebug!("Freeing page tables for PID {} (CR3={:#x})", pid, cr3);
@@ -153,7 +151,7 @@ pub fn remove_process(pid: Pid) -> Result<(), &'static str> {
                 pid, cr3
             ));
         }
-        
+
         Ok(())
     } else {
         Err("Process not found")
@@ -172,6 +170,24 @@ pub fn set_process_state(pid: Pid, state: ProcessState) -> Result<(), &'static s
                     pid, entry.process.state, state
                 ));
                 entry.process.state = state;
+                return Ok(());
+            }
+        }
+    }
+
+    Err("Process not found")
+}
+
+/// Record the exit status for a process. This value is preserved while the
+/// process sits in the zombie list so that wait4() can report it to the
+/// parent.
+pub fn set_process_exit_code(pid: Pid, code: i32) -> Result<(), &'static str> {
+    let mut table = PROCESS_TABLE.lock();
+
+    for slot in table.iter_mut() {
+        if let Some(entry) = slot {
+            if entry.process.pid == pid {
+                entry.process.exit_code = code;
                 return Ok(());
             }
         }
@@ -498,7 +514,7 @@ pub fn do_schedule() {
             }
         }
     }
-    
+
     enum ScheduleDecision {
         FirstRun(crate::process::Process),
         Switch {
@@ -550,21 +566,26 @@ pub fn do_schedule() {
                             // We must copy these values to the process struct so they can be
                             // restored when this process is scheduled again.
                             unsafe {
-                                let gs_data_ptr = core::ptr::addr_of!(crate::initramfs::GS_DATA.0) as *const u64;
-                                let saved_rip = gs_data_ptr.add(crate::interrupts::GS_SLOT_SAVED_RCX).read();
-                                let saved_rsp = gs_data_ptr.add(crate::interrupts::GS_SLOT_USER_RSP).read();
-                                let saved_rflags = gs_data_ptr.add(crate::interrupts::GS_SLOT_SAVED_RFLAGS).read();
-                                
+                                let gs_data_ptr =
+                                    core::ptr::addr_of!(crate::initramfs::GS_DATA.0) as *const u64;
+                                let saved_rip =
+                                    gs_data_ptr.add(crate::interrupts::GS_SLOT_SAVED_RCX).read();
+                                let saved_rsp =
+                                    gs_data_ptr.add(crate::interrupts::GS_SLOT_USER_RSP).read();
+                                let saved_rflags = gs_data_ptr
+                                    .add(crate::interrupts::GS_SLOT_SAVED_RFLAGS)
+                                    .read();
+
                                 crate::serial::_print(format_args!(
                                     "[do_schedule] Saving syscall context for PID {}: rip={:#x}, rsp={:#x}, rflags={:#x}\n",
                                     curr_pid, saved_rip, saved_rsp, saved_rflags
                                 ));
-                                
+
                                 entry.process.user_rip = saved_rip;
                                 entry.process.user_rsp = saved_rsp;
                                 entry.process.user_rflags = saved_rflags;
                             }
-                            
+
                             entry.process.state = ProcessState::Ready;
                             break;
                         }
@@ -597,7 +618,7 @@ pub fn do_schedule() {
                 Some(ScheduleDecision::FirstRun(entry.process))
             } else {
                 let next_context = entry.process.context;
-                
+
                 // Check if current process is a zombie - if so, don't save its context
                 let old_context_ptr = if let Some(curr_pid) = current {
                     table.iter_mut().find_map(|slot| {
@@ -648,7 +669,10 @@ pub fn do_schedule() {
                 crate::kfatal!(
                     "PANIC: FirstRun for PID {} has CR3=0! This should never happen. \
                      Entry={:#x}, Stack={:#x}, MemBase={:#x}",
-                    process.pid, process.entry_point, process.stack_top, process.memory_base
+                    process.pid,
+                    process.entry_point,
+                    process.stack_top,
+                    process.memory_base
                 );
             }
 

@@ -560,12 +560,12 @@ pub fn create_process_address_space(phys_base: u64, size: u64) -> Result<u64, &'
 
 /// Activate the address space represented by the supplied CR3 physical address.
 /// Passing 0 selects the kernel's bootstrap page tables.
-/// 
+///
 /// # Safety and Validation
 /// - CR3 must be 4KB-aligned (bits 0-11 must be zero)
 /// - CR3 must point to a valid PML4 table in physical memory
 /// - This function validates CR3 before activation to prevent GP faults
-/// 
+///
 /// # Context Switching
 /// This function is called during:
 /// 1. Process execution (Process::execute)
@@ -588,10 +588,13 @@ pub fn activate_address_space(cr3_phys: u64) {
             crate::kerror!("[CRITICAL] CR3 {:#x} is not page-aligned!", cr3_phys);
             crate::kfatal!("CR3 alignment check failed - possible fork page table corruption");
         }
-        
+
         // Sanity check: CR3 should be in physical RAM, not beyond 4GB
         if cr3_phys >= 0x1_0000_0000 {
-            crate::kwarn!("[WARN] CR3 {:#x} is in very high physical address range", cr3_phys);
+            crate::kwarn!(
+                "[WARN] CR3 {:#x} is in very high physical address range",
+                cr3_phys
+            );
         }
 
         // CRITICAL: Verify page table content is valid before activating
@@ -606,7 +609,10 @@ pub fn activate_address_space(cr3_phys: u64) {
             ));
             // Check if entries look valid (present bit should be set for some entries)
             if entry0 == 0 && entry1 == 0 {
-                crate::kerror!("[CRITICAL] CR3 {:#x} points to all-zero page table!", cr3_phys);
+                crate::kerror!(
+                    "[CRITICAL] CR3 {:#x} points to all-zero page table!",
+                    cr3_phys
+                );
                 crate::kfatal!("Page table corrupted - all entries are zero");
             }
         }
@@ -626,14 +632,15 @@ pub fn activate_address_space(cr3_phys: u64) {
     let (current, _) = Cr3::read();
     crate::serial::_print(format_args!(
         "[activate_address_space] Current CR3={:#x}, Target CR3={:#x}\n",
-        current.start_address().as_u64(), target
+        current.start_address().as_u64(),
+        target
     ));
-    
+
     if current.start_address().as_u64() == target {
         crate::serial::_print(format_args!(
             "[activate_address_space] CR3 already active, returning\n"
         ));
-        return;  // Short-circuit: CR3 already active, no need to reload
+        return; // Short-circuit: CR3 already active, no need to reload
     }
 
     // Validate the frame creation - convert physical address to PhysFrame
@@ -641,12 +648,13 @@ pub fn activate_address_space(cr3_phys: u64) {
         "[activate_address_space] Creating PhysFrame from target={:#x}\n",
         target
     ));
-    let frame_result: Result<PhysFrame<Size4KiB>, _> = PhysFrame::from_start_address(PhysAddr::new(target));
+    let frame_result: Result<PhysFrame<Size4KiB>, _> =
+        PhysFrame::from_start_address(PhysAddr::new(target));
     if frame_result.is_err() {
         crate::kerror!("[CRITICAL] Cannot create PhysFrame from CR3 {:#x}", target);
         crate::kfatal!("PhysFrame creation failed - possible invalid CR3");
     }
-    
+
     let frame: PhysFrame<Size4KiB> = frame_result.expect("PhysFrame validation already checked");
 
     // Write CR3 using x86_64 crate
@@ -660,7 +668,7 @@ pub fn activate_address_space(cr3_phys: u64) {
 
 /// Read the current CR3 value from the CPU.
 /// Returns the physical address of the currently active PML4 table.
-/// 
+///
 /// # Usage
 /// This function is useful for:
 /// - Debugging page table issues
@@ -674,7 +682,7 @@ pub fn read_current_cr3() -> u64 {
 
 /// Validate that a CR3 value is well-formed and safe to use.
 /// Returns Ok(()) if valid, Err with description if invalid.
-/// 
+///
 /// # Validation Checks
 /// 1. Page alignment (4KB boundary, bits 0-11 zero)
 /// 2. Physical address sanity (not beyond reasonable RAM limit)
@@ -704,18 +712,18 @@ pub fn validate_cr3(cr3: u64, allow_zero: bool) -> Result<(), &'static str> {
 
 /// Free a process-specific address space.
 /// This should be called when a process exits to reclaim page table memory.
-/// 
+///
 /// # Safety
 /// - Must not free the kernel's page tables (cr3 == 0 or kernel_pml4_phys())
 /// - Must not free the currently active CR3 (switch to kernel PT first)
 /// - Only frees the PML4, PDP, and PD; assumes pages are managed separately
-/// 
+///
 /// # Current Limitations
 /// Currently this is a placeholder. Full implementation requires:
 /// 1. Walking the page table hierarchy
 /// 2. Freeing all allocated page table pages (PML4, PDP, PD)
 /// 3. Ensuring no dangling references exist
-/// 
+///
 /// # TODO
 /// Implement proper page table deallocation to prevent memory leaks
 pub fn free_process_address_space(cr3: u64) {
@@ -736,7 +744,7 @@ pub fn free_process_address_space(cr3: u64) {
     // TODO: Implement proper page table deallocation
     // For now, just log that we should free this
     crate::kdebug!("TODO: Free page tables at CR3 {:#x}", cr3);
-    
+
     // In a full implementation, we would:
     // 1. Walk the PML4 entries for user space (lower half)
     // 2. For each present PDP, walk its entries
@@ -750,7 +758,7 @@ pub fn free_process_address_space(cr3: u64) {
 
 /// Debug helper: print information about a CR3 value and its page table structure.
 /// This is useful for diagnosing page table corruption or misconfigurations.
-/// 
+///
 /// # Output
 /// Prints to kernel log:
 /// - CR3 physical address and validation status
@@ -759,43 +767,48 @@ pub fn free_process_address_space(cr3: u64) {
 pub fn debug_cr3_info(cr3: u64, label: &str) {
     crate::kinfo!("=== CR3 Debug Info: {} ===", label);
     crate::kinfo!("  CR3 Physical Address: {:#x}", cr3);
-    
+
     match validate_cr3(cr3, true) {
         Ok(()) => crate::kinfo!("  Validation: OK"),
         Err(e) => crate::kerror!("  Validation: FAILED - {}", e),
     }
-    
+
     if cr3 == 0 {
         crate::kinfo!("  Type: Zero (will use kernel PT)");
     } else if cr3 == kernel_pml4_phys() {
         crate::kinfo!("  Type: Kernel PML4");
     } else {
         crate::kinfo!("  Type: User process PT");
-        
+
         // Try to read PML4 entry count (careful, may not be mapped)
         let pml4 = phys_to_page_table(PhysAddr::new(cr3));
         let mut present_count = 0;
         let mut user_entries = 0;
-        
+
         for (i, entry) in pml4.iter().enumerate() {
             if !entry.is_unused() {
                 present_count += 1;
-                if i < 256 {  // Lower half = user space
+                if i < 256 {
+                    // Lower half = user space
                     user_entries += 1;
                 }
             }
         }
-        
-        crate::kinfo!("  PML4 entries: {} total, {} user space", present_count, user_entries);
+
+        crate::kinfo!(
+            "  PML4 entries: {} total, {} user space",
+            present_count,
+            user_entries
+        );
     }
-    
+
     let current = read_current_cr3();
     if cr3 == current {
         crate::kinfo!("  Status: ACTIVE (currently loaded in CPU)");
     } else {
         crate::kinfo!("  Status: Inactive (current CR3={:#x})", current);
     }
-    
+
     crate::kinfo!("=== End CR3 Debug Info ===");
 }
 
@@ -805,18 +818,21 @@ pub fn print_cr3_statistics() {
     let allocs = CR3_ALLOCATIONS.load(AtomicOrdering::Relaxed);
     let activations = CR3_ACTIVATIONS.load(AtomicOrdering::Relaxed);
     let frees = CR3_FREES.load(AtomicOrdering::Relaxed);
-    
+
     crate::kinfo!("=== CR3 Statistics ===");
     crate::kinfo!("  Total CR3 allocations: {}", allocs);
     crate::kinfo!("  Total CR3 activations: {}", activations);
     crate::kinfo!("  Total CR3 frees: {}", frees);
-    crate::kinfo!("  Active CR3s (allocs - frees): {}", allocs.saturating_sub(frees));
-    
+    crate::kinfo!(
+        "  Active CR3s (allocs - frees): {}",
+        allocs.saturating_sub(frees)
+    );
+
     if allocs > frees {
         let leaked = allocs - frees;
         crate::kwarn!("  WARNING: {} CR3(s) may be leaked!", leaked);
     }
-    
+
     crate::kinfo!("=== End CR3 Statistics ===");
 }
 

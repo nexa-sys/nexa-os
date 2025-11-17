@@ -546,15 +546,25 @@ fn syscall_read(fd: u64, buf: *mut u8, count: usize) -> u64 {
 /// Exit system call - terminate current process
 fn syscall_exit(code: i32) -> ! {
     let pid = crate::scheduler::current_pid().unwrap_or(0);
-    crate::serial::_print(format_args!("[SYS_EXIT] PID {} exiting with code: {}\n", pid, code));
+    crate::serial::_print(format_args!(
+        "[SYS_EXIT] PID {} exiting with code: {}\n",
+        pid, code
+    ));
     crate::kinfo!("Process {} exiting with code: {}", pid, code);
 
     if pid == 0 {
         crate::kpanic!("Cannot exit from kernel context (PID 0)!");
     }
 
+    if let Err(e) = crate::scheduler::set_process_exit_code(pid, code) {
+        crate::kerror!("Failed to record exit code for PID {}: {}", pid, e);
+    }
+
     // Set process state to Zombie
-    crate::serial::_print(format_args!("[SYS_EXIT] Setting PID {} to Zombie state\n", pid));
+    crate::serial::_print(format_args!(
+        "[SYS_EXIT] Setting PID {} to Zombie state\n",
+        pid
+    ));
     let _ = crate::scheduler::set_process_state(pid, crate::process::ProcessState::Zombie);
 
     // TODO: Save exit code in process structure for parent's wait4()
@@ -565,7 +575,7 @@ fn syscall_exit(code: i32) -> ! {
 
     // CRITICAL: We must give up the CPU after marking as zombie.
     // The zombie process cannot continue execution - it must be switched out.
-    // 
+    //
     // Safe approach: Call do_schedule() from syscall context (not interrupt context).
     // This is safe because:
     // 1. We're in kernel mode via syscall, not in an interrupt handler
@@ -577,7 +587,7 @@ fn syscall_exit(code: i32) -> ! {
     // 1. When do_schedule() switches to another process's CR3, we never return here
     // 2. This zombie process stays in Zombie state until parent reaps it
     // 3. No code after do_schedule() will execute in the zombie's context
-    
+
     crate::scheduler::do_schedule();
 
     // Should never reach here - do_schedule() switches to another process
@@ -1366,7 +1376,7 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
 
     // CRITICAL POSIX SEMANTICS: Fork creates an EXACT copy of the running process.
     // The child resumes execution at the instruction AFTER fork(), not at a new entry point.
-    // 
+    //
     // Key differences from execve:
     // - execve: loads NEW program, uses jump_to_usermode with new entry point
     // - fork:   copies EXISTING process, must return from syscall with RAX=0
@@ -1376,6 +1386,7 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
     // which will make it resume at the correct location (after fork syscall).
     child_process.has_entered_user = false;
     child_process.is_fork_child = true; // Mark as fork child for special handling
+    child_process.exit_code = 0;
 
     // Set up child to return from fork syscall with RAX=0
     child_process.entry_point = syscall_return_addr;
@@ -1383,10 +1394,10 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
     child_process.user_rip = syscall_return_addr;
     child_process.user_rsp = user_rsp;
     child_process.user_rflags = parent_process.user_rflags;
-    
+
     // Initialize context for fork return (RAX=0 means "I'm the child")
     child_process.context = crate::process::Context::zero();
-    child_process.context.rax = 0;  // fork() returns 0 in child
+    child_process.context.rax = 0; // fork() returns 0 in child
     child_process.context.rip = syscall_return_addr;
     child_process.context.rsp = user_rsp;
 
@@ -1478,14 +1489,16 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
         if dst_ptr as u64 + memory_size > 0x1_0000_0000 {
             crate::kerror!(
                 "fork: Child physical address {:#x} + size {:#x} exceeds physical limit!",
-                child_phys_base, memory_size
+                child_phys_base,
+                memory_size
             );
             return u64::MAX;
         }
 
         crate::serial::_print(format_args!(
             "[fork] VALIDATED: Copying from VIRT {:#x} to PHYS {:#x}, size {:#x}\n",
-            src_ptr as u64, dst_ptr as u64, memory_size));
+            src_ptr as u64, dst_ptr as u64, memory_size
+        ));
 
         core::ptr::copy_nonoverlapping(src_ptr, dst_ptr, memory_size as usize);
 
@@ -1493,11 +1506,12 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
         // Read first byte from both source and destination to ensure copy worked
         let verify_src = core::ptr::read(src_ptr);
         let verify_dst = core::ptr::read(dst_ptr);
-        
+
         if verify_src != verify_dst {
             crate::kerror!(
                 "fork: Memory copy verification FAILED! src_byte={:#x}, dst_byte={:#x}",
-                verify_src, verify_dst
+                verify_src,
+                verify_dst
             );
             crate::kfatal!("Fork memory copy corrupted");
         }
@@ -1527,14 +1541,18 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
     // Store child's physical base in the process struct
     child_process.memory_base = child_phys_base;
     child_process.memory_size = memory_size;
-    
+
     // CRITICAL FIX: Create and validate page tables for child process
     // This is where fork page tables get corrupted - we must verify the result
     match crate::paging::create_process_address_space(child_phys_base, memory_size) {
         Ok(cr3) => {
             // CRITICAL: Validate CR3 using dedicated validation function
             if let Err(e) = crate::paging::validate_cr3(cr3, false) {
-                crate::kerror!("fork: create_process_address_space() returned invalid CR3 {:#x}: {}", cr3, e);
+                crate::kerror!(
+                    "fork: create_process_address_space() returned invalid CR3 {:#x}: {}",
+                    cr3,
+                    e
+                );
                 crate::kfatal!("Failed to create valid page tables for child");
             }
 
@@ -1544,7 +1562,7 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
                 "[fork] VALIDATED CR3: {:#x} for child PID {}\n",
                 cr3, child_pid
             ));
-        },
+        }
         Err(err) => {
             crate::kerror!(
                 "fork() - failed to build page tables for child {}: {}",
@@ -1729,7 +1747,7 @@ fn syscall_execve(path: *const u8, _argv: *const *const u8, _envp: *const *const
     let (current_memory_base, current_cr3) = {
         let table = crate::scheduler::process_table_lock();
         let mut result = None;
-        
+
         for slot in table.iter() {
             if let Some(entry) = slot {
                 if entry.process.pid == current_pid {
@@ -1738,7 +1756,7 @@ fn syscall_execve(path: *const u8, _argv: *const *const u8, _envp: *const *const
                 }
             }
         }
-        
+
         match result {
             Some(values) => values,
             None => {
@@ -1808,6 +1826,7 @@ fn syscall_execve(path: *const u8, _argv: *const *const u8, _envp: *const *const
                     entry.process.user_rip = new_process.entry_point;
                     entry.process.user_rsp = new_process.stack_top;
                     entry.process.user_rflags = 0x202;
+                    entry.process.exit_code = 0;
 
                     crate::serial::_print(format_args!(
                         "[syscall_execve] Updated: entry={:#x}, stack={:#x}, cr3={:#x}, has_entered_user={}\n",
@@ -1899,7 +1918,7 @@ fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> 
         // Check if the specified child has exited
         let mut found_child = false;
         let mut child_exited = false;
-        let mut child_exit_code = 0i32;
+        let mut child_exit_code: Option<i32> = None;
         let mut wait_pid = 0u64;
 
         // Query all children and look for matching one
@@ -1913,11 +1932,11 @@ fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> 
 
                     if child_state == crate::process::ProcessState::Zombie {
                         child_exited = true;
-                        child_exit_code = 0;
-                        crate::kinfo!(
-                            "wait4() found exited child PID {}",
-                            check_pid
-                        );
+                        let exit_code = crate::scheduler::get_process(check_pid)
+                            .map(|proc| proc.exit_code)
+                            .unwrap_or(0);
+                        child_exit_code = Some(exit_code);
+                        crate::kinfo!("wait4() found exited child PID {}", check_pid);
                         break;
                     }
                 }
@@ -1930,7 +1949,7 @@ fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> 
                     loop_count, pid, current_pid
                 ));
             }
-            
+
             if let Some(child_state) = crate::scheduler::get_child_state(current_pid, pid as u64) {
                 found_child = true;
                 wait_pid = pid as u64;
@@ -1944,11 +1963,11 @@ fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> 
 
                 if child_state == crate::process::ProcessState::Zombie {
                     child_exited = true;
-                    child_exit_code = 0;
-                    crate::kinfo!(
-                        "wait4() found exited specific child PID {}",
-                        pid
-                    );
+                    let exit_code = crate::scheduler::get_process(wait_pid)
+                        .map(|proc| proc.exit_code)
+                        .unwrap_or(0);
+                    child_exit_code = Some(exit_code);
+                    crate::kinfo!("wait4() found exited specific child PID {}", pid);
                 }
             }
         }
@@ -1959,78 +1978,25 @@ fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> 
                 "[wait4] Child {} exited, found_child={}, proceeding to cleanup\n",
                 wait_pid, found_child
             ));
-            
-            let _ = crate::scheduler::remove_process(wait_pid);
+
+            let exit_code = child_exit_code.unwrap_or(0);
 
             if !status.is_null() {
                 unsafe {
-                    *status = child_exit_code;
+                    *status = exit_code;
                 }
             }
 
-            // CRITICAL FIX: Rebuild parent's page tables after child exit
-            // This ensures the parent has a fresh, valid page table when it resumes
-            // and prepares to fork again. This prevents GP faults from corrupted page tables.
-            crate::serial::_print(format_args!(
-                "[wait4] Child {} exited, rebuilding parent PID {} page tables\n",
-                wait_pid, current_pid
-            ));
-            
-            // Get parent process info
-            let parent_info: Option<(u64, u64)> = {
-                let table = crate::scheduler::process_table_lock();
-                let mut result = None;
-                
-                for slot in table.iter() {
-                    if let Some(entry) = slot {
-                        if entry.process.pid == current_pid {
-                            result = Some((entry.process.memory_base, entry.process.memory_size));
-                            break;
-                        }
-                    }
-                }
-                
-                result
-            };
-
-            if let Some((memory_base, memory_size)) = parent_info {
-                crate::serial::_print(format_args!(
-                    "[wait4] Rebuilding page tables for PID {}: base={:#x}, size={:#x}\n",
-                    current_pid, memory_base, memory_size
-                ));
-                
-                // Create new page tables for the parent process
-                match crate::paging::create_process_address_space(memory_base, memory_size) {
-                    Ok(new_cr3) => {
-                        crate::serial::_print(format_args!(
-                            "[wait4] Created new page tables, new_CR3={:#x}\n",
-                            new_cr3
-                        ));
-                        
-                        // Update the parent process's CR3 in the process table
-                        // This will also activate the new CR3 if parent is currently running
-                        if let Err(e) = crate::scheduler::update_process_cr3(current_pid, new_cr3) {
-                            crate::kerror!("wait4: Failed to update parent CR3: {}", e);
-                        } else {
-                            crate::serial::_print(format_args!(
-                                "[wait4] Successfully updated parent PID {} with new CR3={:#x}\n",
-                                current_pid, new_cr3
-                            ));
-                        }
-                    }
-                    Err(e) => {
-                        crate::kerror!("wait4: Failed to rebuild page tables for parent: {}", e);
-                        // Continue anyway - parent might still work with old page tables
-                    }
-                }
-            } else {
-                crate::kwarn!("wait4: Could not find parent process {} in table", current_pid);
+            if let Err(e) = crate::scheduler::remove_process(wait_pid) {
+                crate::kerror!("wait4: Failed to remove process {}: {}", wait_pid, e);
             }
+
+            crate::init::handle_process_exit(wait_pid, exit_code);
 
             crate::kinfo!(
                 "wait4() returning child PID {} with status {}",
                 wait_pid,
-                child_exit_code
+                exit_code
             );
             posix::set_errno(0);
             return wait_pid;
