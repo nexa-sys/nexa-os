@@ -140,6 +140,185 @@ impl Process {
         Self::from_elf_with_args(elf_data, &[], None)
     }
 
+    /// Load ELF at specified physical base and CR3 (for execve to reuse existing process memory)
+    /// This is the POSIX-compliant way: exec replaces the image but keeps the same memory region
+    pub fn from_elf_with_args_at_base(
+        elf_data: &'static [u8],
+        argv: &[&[u8]],
+        exec_path: Option<&[u8]>,
+        phys_base: u64,
+        existing_cr3: u64,
+    ) -> Result<Self, &'static str> {
+        crate::kinfo!(
+            "Process::from_elf_with_args_at_base called: phys_base={:#x}, cr3={:#x}",
+            phys_base, existing_cr3
+        );
+
+        if elf_data.len() < 64 {
+            crate::kerror!("ELF data too small: {} bytes", elf_data.len());
+            return Err("ELF data too small");
+        }
+
+        if &elf_data[0..4] != b"\x7fELF" {
+            crate::kerror!(
+                "Invalid ELF magic: {:02x} {:02x} {:02x} {:02x}",
+                elf_data[0],
+                elf_data[1],
+                elf_data[2],
+                elf_data[3]
+            );
+            return Err("Invalid ELF magic");
+        }
+
+        // Clear existing memory before loading new ELF (POSIX requirement)
+        crate::kinfo!("Clearing process memory at base={:#x}, size={:#x}", phys_base, USER_REGION_SIZE);
+        unsafe {
+            ptr::write_bytes(phys_base as *mut u8, 0, USER_REGION_SIZE as usize);
+        }
+
+        let loader = ElfLoader::new(elf_data)?;
+        
+        // CRITICAL: ElfLoader writes to physical memory but returns virtual addresses
+        // We need to adjust: write to phys_base but calculate addresses from USER_VIRT_BASE
+        // Since kernel has identity mapping, we temporarily load at phys_base then adjust addresses
+        let mut program_image = loader.load(phys_base)?;
+        
+        // Adjust addresses: ElfLoader calculated them relative to phys_base,
+        // but userspace expects them relative to USER_VIRT_BASE
+        let addr_adjustment = USER_VIRT_BASE as i64 - phys_base as i64;
+        program_image.entry_point = ((program_image.entry_point as i64) + addr_adjustment) as u64;
+        program_image.phdr_vaddr = ((program_image.phdr_vaddr as i64) + addr_adjustment) as u64;
+        program_image.base_addr = USER_VIRT_BASE;
+        program_image.load_bias = USER_VIRT_BASE as i64 - program_image.first_load_vaddr as i64;
+        
+        crate::kinfo!(
+            "Program image loaded and adjusted: entry={:#x}, base={:#x}, phdr={:#x}",
+            program_image.entry_point,
+            program_image.base_addr,
+            program_image.phdr_vaddr
+        );
+
+        // Build argument list
+        let mut arg_storage: [&[u8]; MAX_PROCESS_ARGS] = [&[]; MAX_PROCESS_ARGS];
+        let mut argc = 0usize;
+
+        if argv.is_empty() {
+            let fallback = exec_path.filter(|p| !p.is_empty()).unwrap_or(DEFAULT_ARGV0);
+            arg_storage[0] = fallback;
+            argc = 1;
+        } else {
+            for arg in argv {
+                if argc >= MAX_PROCESS_ARGS {
+                    crate::kerror!(
+                        "execve argument list exceeds MAX_PROCESS_ARGS={}",
+                        MAX_PROCESS_ARGS
+                    );
+                    return Err("Too many arguments");
+                }
+                arg_storage[argc] = *arg;
+                argc += 1;
+            }
+        }
+
+        if argc == 0 {
+            arg_storage[0] = DEFAULT_ARGV0;
+            argc = 1;
+        }
+
+        let final_args = &arg_storage[..argc];
+        let exec_slice = match exec_path {
+            Some(path) if !path.is_empty() => path,
+            _ => final_args[0],
+        };
+
+        // Handle dynamic/static executable
+        let (entry_point, stack_ptr) = if let Some(interp_path) = loader.get_interpreter() {
+            crate::kinfo!("Dynamic executable, interpreter: {}", interp_path);
+
+            if let Some(interp_data) = crate::fs::read_file_bytes(interp_path) {
+                let interp_loader = ElfLoader::new(interp_data)?;
+                
+                // Calculate physical address for interpreter region
+                // INTERP_BASE is virtual, need to map to physical
+                let interp_offset = INTERP_BASE - USER_VIRT_BASE;
+                let interp_phys = phys_base + interp_offset;
+                
+                let mut interp_image = interp_loader.load(interp_phys)?;
+                
+                // Adjust interpreter addresses to virtual space
+                let interp_adjustment = INTERP_BASE as i64 - interp_phys as i64;
+                interp_image.entry_point = ((interp_image.entry_point as i64) + interp_adjustment) as u64;
+                interp_image.phdr_vaddr = ((interp_image.phdr_vaddr as i64) + interp_adjustment) as u64;
+                interp_image.base_addr = INTERP_BASE;
+                interp_image.load_bias = INTERP_BASE as i64 - interp_image.first_load_vaddr as i64;
+                
+                crate::kinfo!(
+                    "Interpreter loaded and adjusted: entry={:#x}, base={:#x}",
+                    interp_image.entry_point,
+                    interp_image.base_addr
+                );
+                
+                let stack = build_initial_stack(
+                    final_args,
+                    exec_slice,
+                    STACK_BASE,
+                    STACK_SIZE,
+                    &program_image,
+                    Some(&interp_image),
+                )?;
+
+                (interp_image.entry_point, stack)
+            } else {
+                crate::kwarn!("Interpreter '{}' not found, trying static", interp_path);
+                let stack = build_initial_stack(
+                    final_args,
+                    exec_slice,
+                    STACK_BASE,
+                    STACK_SIZE,
+                    &program_image,
+                    None,
+                )?;
+                (program_image.entry_point, stack)
+            }
+        } else {
+            crate::kinfo!("Static executable");
+            let stack = build_initial_stack(
+                final_args,
+                exec_slice,
+                STACK_BASE,
+                STACK_SIZE,
+                &program_image,
+                None,
+            )?;
+            (program_image.entry_point, stack)
+        };
+
+        let pid = NEXT_PID.fetch_add(1, Ordering::SeqCst);
+        let mut context = Context::zero();
+        context.rip = entry_point;
+        context.rsp = stack_ptr;
+
+        Ok(Process {
+            pid,
+            ppid: 0,
+            state: ProcessState::Ready,
+            entry_point,
+            stack_top: stack_ptr,
+            heap_start: HEAP_BASE,
+            heap_end: HEAP_BASE + HEAP_SIZE,
+            signal_state: crate::signal::SignalState::new(),
+            context,
+            has_entered_user: false,
+            cr3: existing_cr3,  // Reuse existing CR3
+            tty: 0,
+            memory_base: phys_base,  // Reuse existing memory base
+            memory_size: USER_REGION_SIZE,
+            user_rip: entry_point,
+            user_rsp: stack_ptr,
+            user_rflags: 0x202,
+        })
+    }
+
     pub fn from_elf_with_args(
         elf_data: &'static [u8],
         argv: &[&[u8]],

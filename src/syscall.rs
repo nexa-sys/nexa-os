@@ -1692,30 +1692,61 @@ fn syscall_execve(path: *const u8, _argv: *const *const u8, _envp: *const *const
         }
     };
 
-    // Create new process image from ELF
-    let new_process = match crate::process::Process::from_elf_with_args(
+    // Get current process info BEFORE creating new image
+    let current_pid = match get_current_pid() {
+        Some(pid) => pid,
+        None => {
+            posix::set_errno(posix::errno::EINVAL);
+            return u64::MAX;
+        }
+    };
+
+    // CRITICAL: Get current process's physical memory base to reuse it (POSIX requirement)
+    // This ensures fork->exec chain maintains memory continuity
+    let (current_memory_base, current_cr3) = {
+        let table = crate::scheduler::process_table_lock();
+        let mut result = None;
+        
+        for slot in table.iter() {
+            if let Some(entry) = slot {
+                if entry.process.pid == current_pid {
+                    result = Some((entry.process.memory_base, entry.process.cr3));
+                    break;
+                }
+            }
+        }
+        
+        match result {
+            Some(values) => values,
+            None => {
+                posix::set_errno(posix::errno::EINVAL);
+                return u64::MAX;
+            }
+        }
+    };
+
+    crate::serial::_print(format_args!(
+        "[syscall_execve] Current process memory_base={:#x}, cr3={:#x}\n",
+        current_memory_base, current_cr3
+    ));
+
+    // Create new process image from ELF, using CURRENT process's physical memory
+    let new_process = match crate::process::Process::from_elf_with_args_at_base(
         elf_data,
         argv_list,
         Some(exec_path_bytes),
+        current_memory_base,
+        current_cr3,
     ) {
         Ok(proc) => {
             crate::serial::_print(format_args!(
-                "[syscall_execve] Successfully loaded ELF, entry={:#x}, stack={:#x}\n",
+                "[syscall_execve] Successfully loaded ELF at existing base, entry={:#x}, stack={:#x}\n",
                 proc.entry_point, proc.stack_top
             ));
             proc
         }
         Err(e) => {
             crate::serial::_print(format_args!("[syscall_execve] Error loading ELF: {}\n", e));
-            posix::set_errno(posix::errno::EINVAL);
-            return u64::MAX;
-        }
-    };
-
-    // Get current process and replace it with new image
-    let current_pid = match get_current_pid() {
-        Some(pid) => pid,
-        None => {
             posix::set_errno(posix::errno::EINVAL);
             return u64::MAX;
         }
