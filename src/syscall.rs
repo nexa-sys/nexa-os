@@ -1999,6 +1999,15 @@ fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> 
                 exit_code
             );
             posix::set_errno(0);
+            
+            // CRITICAL FIX: Don't call do_schedule() here!
+            // We're about to return to userspace via the syscall return path.
+            // The process state is already correct (Running) and syscall context
+            // is already set up in GS_DATA. Just return the PID.
+            crate::serial::_print(format_args!(
+                "[wait4] Returning to PID {} with child PID {}\n",
+                current_pid, wait_pid
+            ));
             return wait_pid;
         }
 
@@ -2021,6 +2030,8 @@ fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> 
         }
 
         // Block until the child changes state by yielding to the scheduler.
+        // IMPORTANT: After do_schedule() returns, we MUST re-check the child state
+        // immediately because the child may have exited while we were scheduled out.
         if loop_count <= 3 || (loop_count % 100 == 0) {
             crate::serial::_print(format_args!(
                 "[wait4] Loop {}: Child not ready, calling do_schedule()\n",
@@ -2030,10 +2041,12 @@ fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> 
         crate::scheduler::do_schedule();
         if loop_count <= 3 || (loop_count % 100 == 0) {
             crate::serial::_print(format_args!(
-                "[wait4] Loop {}: Returned from do_schedule(), continuing loop\n",
+                "[wait4] Loop {}: Returned from do_schedule(), re-checking child state\n",
                 loop_count
             ));
         }
+        
+        // Continue to next loop iteration to re-check child state
     }
 }
 

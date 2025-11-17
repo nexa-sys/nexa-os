@@ -961,12 +961,48 @@ pub fn do_schedule() {
         };
 
         let mut next_idx = None;
-        for offset in 0..MAX_PROCESSES {
-            let idx = (start_idx + offset) % MAX_PROCESSES;
-            if let Some(entry) = &table[idx] {
-                if entry.process.state == ProcessState::Ready {
-                    next_idx = Some(idx);
-                    break;
+        
+        // CRITICAL FIX: If current process is Zombie, prioritize its parent process
+        // This ensures wait4() promptly detects child exit and doesn't cause
+        // unnecessary scheduling of other processes (like init).
+        //
+        // When child exits (becomes Zombie) and calls do_schedule(), we want
+        // the parent (which is likely blocked in wait4) to run next so it can
+        // immediately detect the zombie child and reap it.
+        if let Some(curr_pid) = current {
+            if let Some(curr_entry) = table.iter().find(|e| e.as_ref().map_or(false, |p| p.process.pid == curr_pid)) {
+                if let Some(entry) = curr_entry {
+                    if entry.process.state == ProcessState::Zombie {
+                        let parent_pid = entry.process.ppid;
+                        if parent_pid > 0 {
+                            // Try to find parent and schedule it if Ready
+                            if let Some(parent_idx) = table.iter().position(|e| {
+                                e.as_ref().map_or(false, |p| 
+                                    p.process.pid == parent_pid && 
+                                    p.process.state == ProcessState::Ready
+                                )
+                            }) {
+                                crate::serial::_print(format_args!(
+                                    "[do_schedule] Child PID {} is Zombie, prioritizing parent PID {}\n",
+                                    curr_pid, parent_pid
+                                ));
+                                next_idx = Some(parent_idx);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Fall back to normal round-robin if no parent priority
+        if next_idx.is_none() {
+            for offset in 0..MAX_PROCESSES {
+                let idx = (start_idx + offset) % MAX_PROCESSES;
+                if let Some(entry) = &table[idx] {
+                    if entry.process.state == ProcessState::Ready {
+                        next_idx = Some(idx);
+                        break;
+                    }
                 }
             }
         }
