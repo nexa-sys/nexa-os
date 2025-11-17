@@ -92,9 +92,10 @@ pub fn add_process(process: Process, priority: u8) -> Result<(), &'static str> {
                 total_time: 0,
             });
             crate::kinfo!(
-                "Scheduler: Added process PID {} with priority {}",
+                "Scheduler: Added process PID {} with priority {} (CR3={:#x})",
                 process.pid,
-                priority
+                priority,
+                process.cr3
             );
             return Ok(());
         }
@@ -106,6 +107,11 @@ pub fn add_process(process: Process, priority: u8) -> Result<(), &'static str> {
 /// Remove a process from the scheduler
 /// This also handles cleanup of process-specific resources including page tables.
 pub fn remove_process(pid: Pid) -> Result<(), &'static str> {
+    crate::serial::_print(format_args!(
+        "[remove_process] Removing PID {}\n",
+        pid
+    ));
+
     let mut table = PROCESS_TABLE.lock();
     let mut removed_cr3 = None;
     let mut removed = false;
@@ -118,6 +124,10 @@ pub fn remove_process(pid: Pid) -> Result<(), &'static str> {
                 // Save CR3 for cleanup after releasing the lock
                 if entry.process.cr3 != 0 {
                     removed_cr3 = Some(entry.process.cr3);
+                    crate::serial::_print(format_args!(
+                        "[remove_process] PID {} had CR3={:#x}, will free page tables\n",
+                        pid, entry.process.cr3
+                    ));
                 }
                 
                 *slot = None;
@@ -138,6 +148,10 @@ pub fn remove_process(pid: Pid) -> Result<(), &'static str> {
         if let Some(cr3) = removed_cr3 {
             crate::kdebug!("Freeing page tables for PID {} (CR3={:#x})", pid, cr3);
             crate::paging::free_process_address_space(cr3);
+            crate::serial::_print(format_args!(
+                "[remove_process] Freed page tables for PID {} (CR3={:#x})\n",
+                pid, cr3
+            ));
         }
         
         Ok(())
@@ -521,6 +535,10 @@ pub fn do_schedule() {
                 // We need to set it in the process table AFTER execute() completes.
                 // But execute() never returns, so we can't do it there.
                 // The solution: set it NOW in the process table, not on the copy.
+                crate::serial::_print(format_args!(
+                    "[do_schedule] Creating FirstRun decision for PID {}, CR3={:#x}\n",
+                    entry.process.pid, entry.process.cr3
+                ));
                 Some(ScheduleDecision::FirstRun(entry.process))
             } else {
                 let next_context = entry.process.context;
@@ -555,9 +573,18 @@ pub fn do_schedule() {
     match decision {
         Some(ScheduleDecision::FirstRun(mut process)) => {
             crate::serial::_print(format_args!(
-                "[do_schedule] FirstRun: PID={}, entry={:#x}, stack={:#x}, has_entered_user={}\n",
-                process.pid, process.entry_point, process.stack_top, process.has_entered_user
+                "[do_schedule] FirstRun: PID={}, entry={:#x}, stack={:#x}, has_entered_user={}, CR3={:#x}\n",
+                process.pid, process.entry_point, process.stack_top, process.has_entered_user, process.cr3
             ));
+
+            // CRITICAL: Validate CR3 before activating address space
+            if process.cr3 == 0 {
+                crate::kfatal!(
+                    "PANIC: FirstRun for PID {} has CR3=0! This should never happen. \
+                     Entry={:#x}, Stack={:#x}, MemBase={:#x}",
+                    process.pid, process.entry_point, process.stack_top, process.memory_base
+                );
+            }
 
             // CRITICAL FIX: Mark the process as entered in the process table BEFORE execute()
             // because execute() never returns and we have a copy of the process here.

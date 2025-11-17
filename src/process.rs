@@ -173,6 +173,18 @@ impl Process {
 
         // Clear existing memory before loading new ELF (POSIX requirement)
         crate::kinfo!("Clearing process memory at base={:#x}, size={:#x}", phys_base, USER_REGION_SIZE);
+        
+        // Check current CR3 before clearing memory
+        let current_cr3 = {
+            use x86_64::registers::control::Cr3;
+            let (frame, _) = Cr3::read();
+            frame.start_address().as_u64()
+        };
+        crate::serial::_print(format_args!(
+            "[from_elf_with_args_at_base] About to clear memory, current_CR3={:#x}, target_CR3={:#x}\n",
+            current_cr3, existing_cr3
+        ));
+        
         unsafe {
             ptr::write_bytes(phys_base as *mut u8, 0, USER_REGION_SIZE as usize);
         }

@@ -574,6 +574,11 @@ pub fn create_process_address_space(phys_base: u64, size: u64) -> Result<u64, &'
 pub fn activate_address_space(cr3_phys: u64) {
     use x86_64::registers::control::{Cr3, Cr3Flags};
 
+    crate::serial::_print(format_args!(
+        "[activate_address_space] ENTRY: cr3_phys={:#x}\n",
+        cr3_phys
+    ));
+
     // CRITICAL FIX: Validate CR3 before use to catch fork-related page table errors
     // This prevents GP faults from invalid page table structures
     if cr3_phys != 0 {
@@ -594,6 +599,11 @@ pub fn activate_address_space(cr3_phys: u64) {
     } else {
         cr3_phys
     };
+
+    crate::serial::_print(format_args!(
+        "[activate_address_space] Target CR3={:#x}\n",
+        target
+    ));
 
     let (current, _) = Cr3::read();
     if current.start_address().as_u64() == target {

@@ -1769,6 +1769,11 @@ fn syscall_execve(path: *const u8, _argv: *const *const u8, _envp: *const *const
                 if entry.process.pid == current_pid {
                     found = true;
 
+                    crate::serial::_print(format_args!(
+                        "[syscall_execve] Updating PID {} in table: old_cr3={:#x}, new_cr3={:#x}\n",
+                        current_pid, entry.process.cr3, new_process.cr3
+                    ));
+
                     // Replace process image while preserving identity
                     entry.process.entry_point = new_process.entry_point;
                     entry.process.stack_top = new_process.stack_top;
@@ -1782,6 +1787,11 @@ fn syscall_execve(path: *const u8, _argv: *const *const u8, _envp: *const *const
                     entry.process.user_rip = new_process.entry_point;
                     entry.process.user_rsp = new_process.stack_top;
                     entry.process.user_rflags = 0x202;
+
+                    crate::serial::_print(format_args!(
+                        "[syscall_execve] Updated: entry={:#x}, stack={:#x}, cr3={:#x}\n",
+                        entry.process.entry_point, entry.process.stack_top, entry.process.cr3
+                    ));
 
                     // Reset signal handlers to SIG_DFL (POSIX requirement)
                     entry.process.signal_state.reset_to_default();
