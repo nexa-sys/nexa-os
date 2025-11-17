@@ -1711,6 +1711,11 @@ fn syscall_execve(path: *const u8, _argv: *const *const u8, _envp: *const *const
     let argv_list = &argv_refs[..arg_index];
 
     crate::serial::_print(format_args!("[syscall_execve] Path: {}\n", path_str));
+    crate::serial::_print(format_args!("[syscall_execve] argc={}\n", argv_list.len()));
+    for (i, arg) in argv_list.iter().enumerate() {
+        let disp = core::str::from_utf8(arg).unwrap_or("<non-utf8>");
+        crate::serial::_print(format_args!("  argv[{}] = {}\n", i, disp));
+    }
 
     let exec_path_bytes = path_slice;
 

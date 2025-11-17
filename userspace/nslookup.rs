@@ -145,6 +145,7 @@ fn print_usage() {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
+    println!("[nslookup-debug] raw args len={} args={:?}", args.len(), args);
 
     if args.len() < 2 {
         print_usage();
