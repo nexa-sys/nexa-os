@@ -572,7 +572,7 @@ pub fn create_process_address_space(phys_base: u64, size: u64) -> Result<u64, &'
 /// 2. Context switches (scheduler::do_schedule)
 /// 3. Returning to kernel space (scheduler::set_current_pid(None))
 pub fn activate_address_space(cr3_phys: u64) {
-    use x86_64::registers::control::Cr3;
+    use x86_64::registers::control::{Cr3, Cr3Flags};
     use x86_64::structures::paging::Size4KiB;
 
     crate::serial::_print(format_args!(
@@ -647,50 +647,11 @@ pub fn activate_address_space(cr3_phys: u64) {
         crate::kfatal!("PhysFrame creation failed - possible invalid CR3");
     }
     
-    let frame = frame_result.expect("PhysFrame validation already checked");
+    let frame: PhysFrame<Size4KiB> = frame_result.expect("PhysFrame validation already checked");
 
-    // CRITICAL FIX: Preserve cr3_phys parameter value across CR3 switch
-    // When we switch CR3, the current stack (which may be in user space or
-    // improperly mapped kernel space) becomes inaccessible or points to different
-    // physical memory. All stack variables and function parameters become corrupted.
-    // Solution: Use inline assembly to keep ALL values in registers only.
-    
-    let actual_cr3: u64;
-    let expected_val: u64;
-    
+    // Write CR3 using x86_64 crate
     unsafe {
-        let frame_addr = frame.start_address().as_u64();
-        // Capture cr3_phys in a register BEFORE any potential stack corruption
-        let saved_cr3 = cr3_phys;
-        
-        core::arch::asm!(
-            // Save expected value to a register first
-            "mov {expected}, {input_cr3}",
-            // Test if input was 0 (means use kernel PML4)
-            "test {input_cr3}, {input_cr3}",
-            "jnz 2f",
-            // If zero, load kernel PML4 address
-            "mov {expected}, {kernel_pml4}",
-            "2:",
-            // Now write CR3
-            "mov cr3, {frame}",
-            // Read back for verification
-            "mov {actual}, cr3",
-            input_cr3 = in(reg) saved_cr3,
-            kernel_pml4 = in(reg) kernel_pml4_phys(),
-            frame = in(reg) frame_addr,
-            expected = out(reg) expected_val,
-            actual = out(reg) actual_cr3,
-            options(nostack),
-        );
-    }
-    
-    // Now we can safely use the register-preserved values
-    if actual_cr3 != expected_val {
-        crate::serial::_print(format_args!(
-            "[activate_address_space] WARNING: CR3 mismatch! actual={:#x}, expected={:#x}\n",
-            actual_cr3, expected_val
-        ));
+        Cr3::write(frame, Cr3Flags::empty());
     }
 
     // Increment activation counter for monitoring

@@ -561,13 +561,28 @@ fn syscall_exit(code: i32) -> ! {
     // TODO: Send SIGCHLD to parent process
     // TODO: Wake up parent if it's sleeping in wait4()
 
-    crate::kinfo!("Process {} terminated, switching to next process", pid);
+    crate::kinfo!("Process {} marked as zombie, waiting for timer interrupt to schedule", pid);
 
-    // Switch to next ready process (never returns)
-    crate::scheduler::do_schedule();
+    // CRITICAL DESIGN: Do NOT call do_schedule() here!
+    // The timer interrupt will automatically switch to another process.
+    // Calling do_schedule() from a zombie process's context is dangerous because:
+    // 1. We're in the zombie's address space (its CR3)
+    // 2. Switching CR3 makes the current kernel stack inaccessible
+    // 3. This causes stack corruption and crashes
+    //
+    // Proper Unix model:
+    // 1. exit() marks process as Zombie (done above)
+    // 2. Scheduler skips zombie processes (already implemented)
+    // 3. Timer interrupt calls do_schedule() to switch out (enabled now)
+    // 4. Parent's wait4() detects zombie and calls remove_process() to cleanup
 
-    // If no other process to run, halt
-    crate::kpanic!("No other process to schedule after exit!");
+    // Return to user space and wait for timer interrupt to switch us out.
+    // The zombie process will never be scheduled again, so this acts as an infinite sleep.
+    loop {
+        unsafe {
+            core::arch::asm!("hlt");
+        }
+    }
 }
 
 fn syscall_open(path_ptr: *const u8, len: usize) -> u64 {
