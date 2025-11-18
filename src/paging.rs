@@ -79,9 +79,10 @@ static NXE_CHECKED: AtomicBool = AtomicBool::new(false);
 static NXE_AVAILABLE: AtomicBool = AtomicBool::new(false);
 
 static NEXT_PT_FRAME: AtomicU64 = AtomicU64::new(0x0800_0000);
-// Move user region start to 144MB to avoid conflict with initramfs (often loaded at ~256MB+)
-// and to leave space for page tables (starting at 128MB).
-static NEXT_USER_REGION: AtomicU64 = AtomicU64::new(0x0900_0000);
+// Move user region start to 320MB (0x1400_0000) to safely skip over the initramfs
+// which appears to be loaded around 240MB-250MB.
+// This gives us space from 320MB to 512MB (End of RAM) for user processes.
+static NEXT_USER_REGION: AtomicU64 = AtomicU64::new(0x1400_0000);
 
 // CR3 allocation statistics for debugging and monitoring
 static CR3_ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
