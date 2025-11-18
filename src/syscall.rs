@@ -110,6 +110,8 @@ pub const SYS_RECVFROM: u64 = 45; // sys_recvfrom (Linux)
 pub const SYS_CONNECT: u64 = 42; // sys_connect (Linux)
 pub const SYS_GETSOCKNAME: u64 = 51; // sys_getsockname (Linux)
 pub const SYS_GETPEERNAME: u64 = 52; // sys_getpeername (Linux)
+pub const SYS_LISTEN: u64 = 50; // sys_listen (Linux)
+pub const SYS_ACCEPT: u64 = 43; // sys_accept (Linux)
 
 // Init system calls
 pub const SYS_REBOOT: u64 = 169; // sys_reboot (Linux)
@@ -2667,20 +2669,26 @@ fn syscall_uefi_map_net_mmio(index: usize) -> u64 {
 }
 
 /// SYS_SOCKET - Create a socket
+/// Supports: AF_INET + SOCK_DGRAM (UDP)
 /// Returns: socket fd on success, -1 on error
 fn syscall_socket(domain: i32, socket_type: i32, protocol: i32) -> u64 {
+    crate::kinfo!("[SYS_SOCKET] domain={} type={} protocol={}", domain, socket_type, protocol);
+    
     // Validate parameters
     if domain != AF_INET {
-        posix::set_errno(posix::errno::ENOSYS); // Only IPv4 supported for now
+        crate::kwarn!("[SYS_SOCKET] Unsupported domain: {}", domain);
+        posix::set_errno(posix::errno::EAFNOSUPPORT);
         return u64::MAX;
     }
 
     if socket_type != SOCK_DGRAM {
-        posix::set_errno(posix::errno::ENOSYS); // Only UDP supported for now
+        crate::kwarn!("[SYS_SOCKET] Unsupported socket type: {}", socket_type);
+        posix::set_errno(posix::errno::ENOSYS); // Only UDP (SOCK_DGRAM) supported for now
         return u64::MAX;
     }
 
     if protocol != 0 && protocol != IPPROTO_UDP {
+        crate::kwarn!("[SYS_SOCKET] Unsupported protocol: {}", protocol);
         posix::set_errno(posix::errno::EINVAL);
         return u64::MAX;
     }
@@ -2689,10 +2697,10 @@ fn syscall_socket(domain: i32, socket_type: i32, protocol: i32) -> u64 {
     unsafe {
         for idx in 0..MAX_OPEN_FILES {
             if FILE_HANDLES[idx].is_none() {
-                // Socket will be created later on bind()
+                // Socket will be bound later on bind()
                 // For now, just reserve the fd with a socket handle
                 let socket_handle = SocketHandle {
-                    socket_index: usize::MAX, // Not allocated yet
+                    socket_index: usize::MAX, // Not allocated to network stack yet
                     domain,
                     socket_type,
                     protocol: IPPROTO_UDP,
@@ -2711,21 +2719,27 @@ fn syscall_socket(domain: i32, socket_type: i32, protocol: i32) -> u64 {
                 };
 
                 FILE_HANDLES[idx] = Some(handle);
+                let fd = FD_BASE + idx as u64;
+                crate::kinfo!("[SYS_SOCKET] Created UDP socket at fd {}", fd);
                 posix::set_errno(0);
-                return FD_BASE + idx as u64;
+                return fd;
             }
         }
     }
 
     // No free file descriptors
+    crate::kwarn!("[SYS_SOCKET] No free file descriptors");
     posix::set_errno(posix::errno::EMFILE);
     u64::MAX
 }
 
 /// SYS_BIND - Bind socket to local address
+/// Supports: UDP sockets (AF_INET + SOCK_DGRAM)
 /// Returns: 0 on success, -1 on error
 fn syscall_bind(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
-    if addr.is_null() || addrlen < 16 {
+    crate::kinfo!("[SYS_BIND] sockfd={} addrlen={}", sockfd, addrlen);
+    
+    if addr.is_null() || addrlen < 8 {
         posix::set_errno(posix::errno::EINVAL);
         return u64::MAX;
     }
@@ -2771,12 +2785,29 @@ fn syscall_bind(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
 
         // Extract port from sa_data (first 2 bytes, network byte order)
         let port = u16::from_be_bytes([addr_ref.sa_data[0], addr_ref.sa_data[1]]);
+        
+        // Extract IP address from sa_data (bytes 2-5)
+        let ip = [
+            addr_ref.sa_data[2],
+            addr_ref.sa_data[3],
+            addr_ref.sa_data[4],
+            addr_ref.sa_data[5],
+        ];
+
+        if port == 0 {
+            crate::kwarn!("[SYS_BIND] Invalid port 0");
+            posix::set_errno(posix::errno::EINVAL);
+            return u64::MAX;
+        }
 
         // TODO: Allocate socket in network stack and bind to port
-        // For now, just store the socket index as port for testing
+        // For now, just store the port in socket_index as a placeholder
         sock_handle.socket_index = port as usize;
 
-        crate::kinfo!("[SYS_BIND] sockfd={} bound to port {}", sockfd, port);
+        crate::kinfo!(
+            "[SYS_BIND] UDP socket fd {} bound to {}.{}.{}.{}:{}",
+            sockfd, ip[0], ip[1], ip[2], ip[3], port
+        );
         posix::set_errno(0);
         0
     }
