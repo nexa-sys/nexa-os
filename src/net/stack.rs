@@ -260,6 +260,70 @@ impl NetStack {
         Ok(())
     }
 
+    /// Connect UDP socket to remote address
+    pub fn udp_connect(
+        &mut self,
+        socket_idx: usize,
+        remote_ip: [u8; 4],
+        remote_port: u16,
+    ) -> Result<(), NetError> {
+        if socket_idx >= MAX_UDP_SOCKETS {
+            return Err(NetError::InvalidSocket);
+        }
+        if !self.udp_sockets[socket_idx].in_use {
+            return Err(NetError::InvalidSocket);
+        }
+        self.udp_sockets[socket_idx].connect(remote_ip, remote_port);
+        Ok(())
+    }
+
+    /// Disconnect UDP socket from remote address
+    pub fn udp_disconnect(&mut self, socket_idx: usize) -> Result<(), NetError> {
+        if socket_idx >= MAX_UDP_SOCKETS {
+            return Err(NetError::InvalidSocket);
+        }
+        if !self.udp_sockets[socket_idx].in_use {
+            return Err(NetError::InvalidSocket);
+        }
+        self.udp_sockets[socket_idx].disconnect();
+        Ok(())
+    }
+
+    /// Receive UDP packet from socket
+    pub fn udp_receive(
+        &mut self,
+        socket_idx: usize,
+        buffer: &mut [u8],
+    ) -> Result<UdpReceiveResult, NetError> {
+        if socket_idx >= MAX_UDP_SOCKETS {
+            return Err(NetError::InvalidSocket);
+        }
+        self.udp_sockets[socket_idx].dequeue_packet(buffer)
+    }
+
+    /// Get socket information
+    pub fn udp_get_socket_info(&self, socket_idx: usize) -> Result<(u16, Option<u16>), NetError> {
+        if socket_idx >= MAX_UDP_SOCKETS {
+            return Err(NetError::InvalidSocket);
+        }
+        if !self.udp_sockets[socket_idx].in_use {
+            return Err(NetError::InvalidSocket);
+        }
+        let socket = &self.udp_sockets[socket_idx];
+        Ok((socket.local_port, socket.remote_port))
+    }
+
+    /// Check if socket has pending data
+    pub fn udp_has_pending_data(&self, socket_idx: usize) -> Result<bool, NetError> {
+        if socket_idx >= MAX_UDP_SOCKETS {
+            return Err(NetError::InvalidSocket);
+        }
+        if !self.udp_sockets[socket_idx].in_use {
+            return Err(NetError::InvalidSocket);
+        }
+        Ok(self.udp_sockets[socket_idx].rx_len > 0)
+    }
+
     /// Send UDP datagram
     pub fn udp_send(
         &mut self,
@@ -535,6 +599,7 @@ impl NetStack {
         let checksum = u16::from_be_bytes([frame[udp_offset + 6], frame[udp_offset + 7]]);
 
         if length < 8 || length > udp_len {
+            crate::kinfo!("net: UDP packet with invalid length ({} vs {})", length, udp_len);
             return Ok(());
         }
 
@@ -542,19 +607,25 @@ impl NetStack {
         if checksum != 0 {
             let src_ip = Ipv4Address::from(&frame[26..30]);
             let dst_ip = Ipv4Address::from(&frame[30..34]);
-            let computed = UdpHeader::calculate_checksum(
-                &src_ip,
-                &dst_ip,
-                &frame[udp_offset..udp_offset + length],
-            );
-            if computed != 0 {
-                // Checksum mismatch, drop packet
+            
+            // Create temporary UDP header for validation
+            let mut temp_header = UdpHeader::new(src_port, dst_port, length - 8);
+            let payload = &frame[udp_offset + 8..udp_offset + length];
+            temp_header.checksum = checksum;
+            
+            if !temp_header.verify_checksum(&src_ip, &dst_ip, payload) {
+                crate::kwarn!(
+                    "net: UDP checksum mismatch on port {} from {}:{}",
+                    dst_port,
+                    frame[26], frame[27], src_port
+                );
                 return Ok(());
             }
         }
 
         // Find matching socket
-        for socket in &self.udp_sockets {
+        let mut socket_idx = None;
+        for (idx, socket) in self.udp_sockets.iter().enumerate() {
             if !socket.in_use {
                 continue;
             }
@@ -574,15 +645,40 @@ impl NetStack {
                 }
             }
 
-            // TODO: Queue packet for socket receive buffer
-            crate::kinfo!(
-                "net: UDP packet received on port {} from {}:{} ({} bytes)",
-                dst_port,
-                frame[26], frame[27],
-                src_port,
-                length - 8
-            );
+            socket_idx = Some(idx);
             break;
+        }
+
+        if let Some(idx) = socket_idx {
+            let payload = &frame[udp_offset + 8..udp_offset + length];
+            let src_ip_bytes = [frame[26], frame[27], frame[28], frame[29]];
+            
+            // Attempt to enqueue packet
+            match self.udp_sockets[idx].enqueue_packet(src_ip_bytes, src_port, payload) {
+                Ok(()) => {
+                    crate::kinfo!(
+                        "net: UDP datagram received on port {}, from {}:{} ({} bytes)",
+                        dst_port,
+                        frame[26], frame[27], frame[28], frame[29],
+                        src_port,
+                        payload.len()
+                    );
+                }
+                Err(e) => {
+                    crate::kwarn!(
+                        "net: Failed to queue UDP packet on port {} ({:?})",
+                        dst_port,
+                        e
+                    );
+                }
+            }
+        } else {
+            crate::kinfo!(
+                "net: UDP packet to port {} from {}:{} (no matching socket)",
+                dst_port,
+                frame[26], frame[27], frame[28], frame[29],
+                src_port
+            );
         }
 
         Ok(())

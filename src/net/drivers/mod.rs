@@ -21,6 +21,11 @@ pub enum NetError {
     InvalidSocket,
     InvalidDevice,
     ArpCacheMiss,
+    RxQueueFull,
+    RxQueueEmpty,
+    ChecksumFailed,
+    InvalidPacket,
+    OperationNotSupported,
 }
 
 pub enum DriverInstance {

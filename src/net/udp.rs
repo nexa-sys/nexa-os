@@ -1,7 +1,11 @@
 /// UDP (User Datagram Protocol) implementation
 ///
 /// This module provides structures and utilities for parsing, constructing,
-/// and handling UDP datagrams.
+/// and handling UDP datagrams, with support for:
+/// - Standard UDP header parsing and construction
+/// - Checksum calculation and verification
+/// - UDP socket options (TTL, ToS, broadcast)
+/// - Fragmentation handling
 
 use core::mem;
 
@@ -9,6 +13,49 @@ use super::ipv4::{Ipv4Address, Ipv4Header};
 
 /// UDP port number
 pub type Port = u16;
+
+/// UDP socket options
+#[derive(Clone, Copy, Debug)]
+pub struct UdpSocketOptions {
+    /// Time To Live (TTL) - default 64
+    pub ttl: u8,
+    /// Type of Service (ToS) - QoS marking
+    pub tos: u8,
+    /// Allow broadcasting
+    pub broadcast: bool,
+    /// UDP buffer size in bytes
+    pub buffer_size: u16,
+}
+
+impl UdpSocketOptions {
+    /// Create socket options with default values
+    pub fn default() -> Self {
+        Self {
+            ttl: 64,
+            tos: 0,
+            broadcast: false,
+            buffer_size: 65535,
+        }
+    }
+
+    /// Enable broadcast for this socket
+    pub fn with_broadcast(mut self) -> Self {
+        self.broadcast = true;
+        self
+    }
+
+    /// Set custom TTL
+    pub fn with_ttl(mut self, ttl: u8) -> Self {
+        self.ttl = ttl;
+        self
+    }
+
+    /// Set Type of Service
+    pub fn with_tos(mut self, tos: u8) -> Self {
+        self.tos = tos;
+        self
+    }
+}
 
 /// UDP header (8 bytes)
 #[repr(C, packed)]
@@ -50,6 +97,21 @@ impl UdpHeader {
     /// Get checksum in host byte order
     pub fn checksum(&self) -> u16 {
         u16::from_be(self.checksum)
+    }
+
+    /// Check if this is a valid UDP datagram length
+    pub fn is_valid_length(&self) -> bool {
+        self.length() >= Self::SIZE as u16
+    }
+
+    /// Get payload size from header length
+    pub fn payload_size(&self) -> Option<usize> {
+        let total = self.length() as usize;
+        if total >= Self::SIZE {
+            Some(total - Self::SIZE)
+        } else {
+            None
+        }
     }
 
     /// Calculate and set UDP checksum (including IPv4 pseudo-header)
@@ -209,6 +271,22 @@ impl<'a> UdpDatagram<'a> {
     pub fn dst_port(&self) -> Port {
         self.header().dst_port()
     }
+
+    /// Check if payload matches expected size
+    pub fn validate_length(&self) -> bool {
+        let header_len = self.header().length() as usize;
+        header_len >= UdpHeader::SIZE && self.buffer.len() >= header_len
+    }
+
+    /// Get total datagram size
+    pub fn total_size(&self) -> usize {
+        self.header().length() as usize
+    }
+
+    /// Check if datagram has valid checksum (if present)
+    pub fn has_valid_checksum(&self, src_ip: &Ipv4Address, dst_ip: &Ipv4Address) -> bool {
+        self.header().verify_checksum(src_ip, dst_ip, self.payload())
+    }
 }
 
 /// Mutable UDP datagram for construction
@@ -233,6 +311,21 @@ impl<'a> UdpDatagramMut<'a> {
         Some(Self { buffer, data_len })
     }
 
+    /// Create from an existing immutable datagram
+    pub fn from_existing(buffer: &'a mut [u8]) -> Option<Self> {
+        if buffer.len() < UdpHeader::SIZE {
+            return None;
+        }
+        let data_len = unsafe {
+            let header = &*(buffer.as_ptr() as *const UdpHeader);
+            header.length() as usize - UdpHeader::SIZE
+        };
+        if buffer.len() < UdpHeader::SIZE + data_len {
+            return None;
+        }
+        Some(Self { buffer, data_len })
+    }
+
     /// Get mutable reference to the UDP header
     pub fn header_mut(&mut self) -> &mut UdpHeader {
         unsafe { &mut *(self.buffer.as_mut_ptr() as *mut UdpHeader) }
@@ -243,6 +336,16 @@ impl<'a> UdpDatagramMut<'a> {
         &mut self.buffer[UdpHeader::SIZE..UdpHeader::SIZE + self.data_len]
     }
 
+    /// Get immutable reference to header
+    pub fn header(&self) -> &UdpHeader {
+        unsafe { &*(self.buffer.as_ptr() as *const UdpHeader) }
+    }
+
+    /// Get immutable reference to payload
+    pub fn payload(&self) -> &[u8] {
+        &self.buffer[UdpHeader::SIZE..UdpHeader::SIZE + self.data_len]
+    }
+
     /// Finalize the datagram by calculating checksum
     pub fn finalize(mut self, src_ip: &Ipv4Address, dst_ip: &Ipv4Address) -> &'a [u8] {
         let payload = &self.buffer[UdpHeader::SIZE..UdpHeader::SIZE + self.data_len];
@@ -250,9 +353,24 @@ impl<'a> UdpDatagramMut<'a> {
         &self.buffer[..UdpHeader::SIZE + self.data_len]
     }
 
+    /// Finalize without checksum (for IPv4 where checksum is optional)
+    pub fn finalize_no_checksum(self) -> &'a [u8] {
+        &self.buffer[..UdpHeader::SIZE + self.data_len]
+    }
+
     /// Get the total length (header + payload)
     pub fn total_len(&self) -> usize {
         UdpHeader::SIZE + self.data_len
+    }
+
+    /// Set source port
+    pub fn set_src_port(&mut self, port: Port) {
+        self.header_mut().src_port = port.to_be();
+    }
+
+    /// Set destination port
+    pub fn set_dst_port(&mut self, port: Port) {
+        self.header_mut().dst_port = port.to_be();
     }
 }
 
@@ -266,6 +384,18 @@ mod tests {
         assert_eq!(header.src_port(), 12345);
         assert_eq!(header.dst_port(), 80);
         assert_eq!(header.length(), 108); // 8 (header) + 100 (data)
+        assert!(header.is_valid_length());
+    }
+
+    #[test]
+    fn test_udp_socket_options() {
+        let opts = UdpSocketOptions::default();
+        assert_eq!(opts.ttl, 64);
+        assert!(!opts.broadcast);
+
+        let opts_broadcast = opts.with_broadcast().with_ttl(128);
+        assert_eq!(opts_broadcast.ttl, 128);
+        assert!(opts_broadcast.broadcast);
     }
 
     #[test]
@@ -282,5 +412,37 @@ mod tests {
         // Parse and verify
         let parsed = UdpDatagram::parse(finalized).unwrap();
         assert!(parsed.header().verify_checksum(&src_ip, &dst_ip, parsed.payload()));
+    }
+
+    #[test]
+    fn test_udp_datagram_parse() {
+        let mut buffer = [0u8; 256];
+        let payload = b"Test";
+        let mut dg = UdpDatagramMut::new(&mut buffer, 5000, 5001, payload.len()).unwrap();
+        dg.payload_mut().copy_from_slice(payload);
+        let finalized = dg.finalize_no_checksum();
+
+        let parsed = UdpDatagram::parse(finalized).unwrap();
+        assert_eq!(parsed.src_port(), 5000);
+        assert_eq!(parsed.dst_port(), 5001);
+        assert_eq!(parsed.payload(), payload);
+        assert!(parsed.validate_length());
+    }
+
+    #[test]
+    fn test_udp_header_payload_size() {
+        let header = UdpHeader::new(1234, 5678, 256);
+        assert_eq!(header.payload_size(), Some(256));
+    }
+
+    #[test]
+    fn test_udp_datagram_mut_port_update() {
+        let mut buffer = [0u8; 128];
+        let mut dg = UdpDatagramMut::new(&mut buffer, 1000, 2000, 10).unwrap();
+        dg.set_src_port(3000);
+        dg.set_dst_port(4000);
+        
+        assert_eq!(dg.header().src_port(), 3000);
+        assert_eq!(dg.header().dst_port(), 4000);
     }
 }

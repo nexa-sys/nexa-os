@@ -15,8 +15,10 @@ pub mod ethernet;
 pub mod ipv4;
 pub mod stack;
 pub mod udp;
+pub mod udp_helper;
 
 pub use drivers::NetError;
+pub use udp_helper::{UdpMessage, UdpConnectionContext, UdpStats};
 
 const MAX_NET_DEVICES: usize = 4;
 
