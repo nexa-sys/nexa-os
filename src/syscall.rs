@@ -2813,7 +2813,8 @@ fn syscall_bind(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
     }
 }
 
-/// SYS_SENDTO - Send datagram to specified address
+/// SYS_SENDTO - Send UDP datagram to specified address
+/// Parameters: sockfd, buf, len, flags, dest_addr (sockaddr), addrlen
 /// Returns: number of bytes sent on success, -1 on error
 fn syscall_sendto(
     sockfd: u64,
@@ -2823,12 +2824,19 @@ fn syscall_sendto(
     dest_addr: *const SockAddr,
     addrlen: u32,
 ) -> u64 {
+    crate::kinfo!("[SYS_SENDTO] sockfd={} len={} addrlen={}", sockfd, len, addrlen);
+    
     if buf.is_null() || len == 0 {
         posix::set_errno(posix::errno::EINVAL);
         return u64::MAX;
     }
 
-    if dest_addr.is_null() || addrlen < 16 {
+    if !user_buffer_in_range(buf as u64, len as u64) {
+        posix::set_errno(posix::errno::EFAULT);
+        return u64::MAX;
+    }
+
+    if dest_addr.is_null() || addrlen < 8 {
         posix::set_errno(posix::errno::EINVAL);
         return u64::MAX;
     }
@@ -2857,16 +2865,12 @@ fn syscall_sendto(
             return u64::MAX;
         };
 
+        // Verify it's a UDP socket
         if sock_handle.domain != AF_INET
             || sock_handle.socket_type != SOCK_DGRAM
             || sock_handle.protocol != IPPROTO_UDP
         {
             posix::set_errno(posix::errno::ENOTSUP);
-            return u64::MAX;
-        }
-
-        if sock_handle.socket_index == usize::MAX {
-            posix::set_errno(posix::errno::EINVAL);
             return u64::MAX;
         }
 
@@ -2877,8 +2881,10 @@ fn syscall_sendto(
             return u64::MAX;
         }
 
-        // Extract port and IP address
+        // Extract port from sa_data (first 2 bytes, network byte order)
         let port = u16::from_be_bytes([addr_ref.sa_data[0], addr_ref.sa_data[1]]);
+        
+        // Extract IP address from sa_data (bytes 2-5)
         let ip = [
             addr_ref.sa_data[2],
             addr_ref.sa_data[3],
@@ -2886,12 +2892,19 @@ fn syscall_sendto(
             addr_ref.sa_data[5],
         ];
 
-        // Copy user data to kernel buffer
-        let _data_slice = core::slice::from_raw_parts(buf, len);
+        // Verify destination address is valid
+        if ip.iter().all(|&b| b == 0) {
+            posix::set_errno(posix::errno::EINVAL);
+            return u64::MAX;
+        }
+
+        if port == 0 {
+            posix::set_errno(posix::errno::EINVAL);
+            return u64::MAX;
+        }
 
         crate::kinfo!(
-            "[SYS_SENDTO] sockfd={} sending {} bytes to {}.{}.{}.{}:{}",
-            sockfd,
+            "[SYS_SENDTO] Sending {} bytes to {}.{}.{}.{}:{}",
             len,
             ip[0],
             ip[1],
@@ -2901,13 +2914,14 @@ fn syscall_sendto(
         );
 
         // TODO: Actually send via network stack
-        // For now, just pretend we sent it
+        // For now, just return success (simulate sending)
         posix::set_errno(0);
         len as u64
     }
 }
 
-/// SYS_RECVFROM - Receive datagram and source address
+/// SYS_RECVFROM - Receive UDP datagram and source address
+/// Parameters: sockfd, buf, len, flags, src_addr (sockaddr), addrlen (pointer)
 /// Returns: number of bytes received on success, -1 on error
 fn syscall_recvfrom(
     sockfd: u64,
@@ -2917,8 +2931,15 @@ fn syscall_recvfrom(
     _src_addr: *mut SockAddr,
     _addrlen: *mut u32,
 ) -> u64 {
+    crate::kinfo!("[SYS_RECVFROM] sockfd={} len={}", sockfd, len);
+    
     if buf.is_null() || len == 0 {
         posix::set_errno(posix::errno::EINVAL);
+        return u64::MAX;
+    }
+
+    if !user_buffer_in_range(buf as u64, len as u64) {
+        posix::set_errno(posix::errno::EFAULT);
         return u64::MAX;
     }
 
@@ -2946,6 +2967,7 @@ fn syscall_recvfrom(
             return u64::MAX;
         };
 
+        // Verify it's a UDP socket
         if sock_handle.domain != AF_INET
             || sock_handle.socket_type != SOCK_DGRAM
             || sock_handle.protocol != IPPROTO_UDP
@@ -2956,15 +2978,19 @@ fn syscall_recvfrom(
 
         // TODO: Actually receive from network stack
         // For now, return EAGAIN (would block)
+        crate::kdebug!("[SYS_RECVFROM] No data available (would block)");
         posix::set_errno(posix::errno::EAGAIN);
         u64::MAX
     }
 }
 
-/// SYS_CONNECT - Connect socket to remote address
+/// SYS_CONNECT - Connect UDP socket to default destination
+/// For UDP, this sets the default destination for future sends
 /// Returns: 0 on success, -1 on error
 fn syscall_connect(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
-    if addr.is_null() || addrlen < 16 {
+    crate::kinfo!("[SYS_CONNECT] sockfd={} addrlen={}", sockfd, addrlen);
+    
+    if addr.is_null() || addrlen < 8 {
         posix::set_errno(posix::errno::EINVAL);
         return u64::MAX;
     }
@@ -2993,6 +3019,7 @@ fn syscall_connect(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
             return u64::MAX;
         };
 
+        // Verify it's a UDP socket
         if sock_handle.domain != AF_INET
             || sock_handle.socket_type != SOCK_DGRAM
             || sock_handle.protocol != IPPROTO_UDP
@@ -3007,6 +3034,33 @@ fn syscall_connect(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
             posix::set_errno(posix::errno::EINVAL);
             return u64::MAX;
         }
+
+        // Extract port from sa_data (first 2 bytes, network byte order)
+        let port = u16::from_be_bytes([addr_ref.sa_data[0], addr_ref.sa_data[1]]);
+        
+        // Extract IP address from sa_data (bytes 2-5)
+        let ip = [
+            addr_ref.sa_data[2],
+            addr_ref.sa_data[3],
+            addr_ref.sa_data[4],
+            addr_ref.sa_data[5],
+        ];
+
+        // Verify remote address is valid
+        if ip.iter().all(|&b| b == 0) {
+            posix::set_errno(posix::errno::EINVAL);
+            return u64::MAX;
+        }
+
+        if port == 0 {
+            posix::set_errno(posix::errno::EINVAL);
+            return u64::MAX;
+        }
+
+        crate::kinfo!(
+            "[SYS_CONNECT] UDP socket fd {} connected to {}.{}.{}.{}:{}",
+            sockfd, ip[0], ip[1], ip[2], ip[3], port
+        );
 
         // For UDP, connect() just stores the default destination
         // It doesn't actually establish a connection
