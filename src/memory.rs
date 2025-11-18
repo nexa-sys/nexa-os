@@ -55,3 +55,51 @@ fn classify_area(area_type: multiboot2::MemoryAreaTypeId) -> &'static str {
         MemoryAreaType::Custom(_) => "Custom",
     }
 }
+
+pub fn find_heap_region(boot_info: &BootInformation<'_>, min_size: u64) -> Option<(u64, u64)> {
+    let memmap = boot_info.memory_map_tag()?;
+    
+    // Find the largest available region
+    let mut best_region = None;
+    let mut max_size = 0;
+
+    for area in memmap.memory_areas() {
+        if area.typ() == MemoryAreaType::Available {
+            let start = area.start_address() as u64;
+            let end = area.end_address() as u64;
+            let size = end - start;
+
+            // Skip low memory (< 1MB) to avoid BIOS/VGA conflicts
+            if start < 0x100000 {
+                continue;
+            }
+
+            // Check for overlap with modules
+            if !is_overlap_with_modules(boot_info, start, size) {
+                if size > max_size {
+                    max_size = size;
+                    best_region = Some((start, size));
+                }
+            }
+        }
+    }
+
+    if max_size >= min_size {
+        best_region
+    } else {
+        None
+    }
+}
+
+fn is_overlap_with_modules(boot_info: &BootInformation<'_>, start: u64, size: u64) -> bool {
+    let end = start + size;
+    for module in boot_info.module_tags() {
+        let mod_start = module.start_address() as u64;
+        let mod_end = module.end_address() as u64;
+        
+        if start < mod_end && end > mod_start {
+            return true;
+        }
+    }
+    false
+}

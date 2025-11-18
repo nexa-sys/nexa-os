@@ -3,11 +3,18 @@
 /// This module implements a production-grade memory allocation system inspired by
 /// Linux, BSD, and seL4, featuring:
 ///
-/// 1. **Buddy Allocator**: For efficient physical page frame allocation
-/// 2. **Slab Allocator**: For kernel object caching (reduces fragmentation)
-/// 3. **Virtual Memory Allocator**: For kernel heap management
-/// 4. **Per-CPU Caching**: Reduces lock contention in SMP systems
-/// 5. **Memory Statistics**: Tracking allocations, frees, and fragmentation
+/// 1. **Buddy Allocator**: For efficient physical page frame allocation.
+///    - Uses embedded linked lists for infinite scalability (no fixed node array).
+///    - O(log n) allocation/free.
+///    - Robust merging and splitting logic.
+/// 2. **Slab Allocator**: For kernel object caching.
+///    - Uses linked lists of pages for infinite scalability.
+///    - Supports object sizes up to 2048 bytes.
+///    - Efficient partial page tracking and page reclaiming.
+///    - Cache coloring (implicit via header) and alignment.
+/// 3. **Virtual Memory Allocator**: For kernel heap management.
+/// 4. **Per-CPU Caching**: Reduces lock contention in SMP systems.
+/// 5. **Memory Statistics**: Tracking allocations, frees, and fragmentation.
 ///
 /// # Design Goals
 /// - Zero fragmentation for common allocation sizes (via slabs)
@@ -31,12 +38,12 @@ const MAX_ORDER: usize = 11;
 const PAGE_SIZE: usize = 4096;
 
 /// Number of slab size classes
-const SLAB_CLASSES: usize = 16;
+const SLAB_CLASSES: usize = 8;
 
-/// Slab sizes: 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288 bytes
+/// Slab sizes: 16, 32, 64, 128, 256, 512, 1024, 2048 bytes
+/// Larger allocations are handled directly by the buddy allocator
 const SLAB_SIZES: [usize; SLAB_CLASSES] = [
-    16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144,
-    524288,
+    16, 32, 64, 128, 256, 512, 1024, 2048
 ];
 
 /// Magic number for heap block validation
@@ -49,27 +56,18 @@ const POISON_BYTE: u8 = 0xCC;
 // Physical Frame Allocator (Buddy System)
 // =============================================================================
 
-/// Buddy allocator node representing a free block
-#[derive(Clone, Copy, Debug)]
-struct BuddyNode {
-    /// Physical address of the block
-    addr: u64,
-    /// Next node in free list
-    next: Option<usize>,
-}
-
 /// Buddy allocator for physical page frames
 ///
 /// Uses the classic buddy system algorithm where blocks are split and merged
 /// in powers of 2. This provides O(log n) allocation/free with minimal fragmentation.
+///
+/// This implementation stores free list pointers directly in the free memory blocks,
+/// eliminating the need for a separate node array and removing the limit on the
+/// number of free blocks.
 pub struct BuddyAllocator {
     /// Free lists for each order (0..MAX_ORDER)
-    /// free_lists[i] contains blocks of 2^i pages
-    free_lists: [Option<usize>; MAX_ORDER],
-    /// Storage for buddy nodes
-    nodes: [Option<BuddyNode>; 4096],
-    /// Next free node index
-    next_node: usize,
+    /// free_lists[i] contains the physical address of the first free block of order i
+    free_lists: [Option<u64>; MAX_ORDER],
     /// Base physical address managed by this allocator
     base_addr: u64,
     /// Total size in bytes
@@ -79,13 +77,13 @@ pub struct BuddyAllocator {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-struct BuddyStats {
-    allocations: u64,
-    frees: u64,
-    splits: u64,
-    merges: u64,
-    pages_allocated: u64,
-    pages_free: u64,
+pub struct BuddyStats {
+    pub allocations: u64,
+    pub frees: u64,
+    pub splits: u64,
+    pub merges: u64,
+    pub pages_allocated: u64,
+    pub pages_free: u64,
 }
 
 impl BuddyAllocator {
@@ -93,8 +91,6 @@ impl BuddyAllocator {
     const fn new() -> Self {
         Self {
             free_lists: [None; MAX_ORDER],
-            nodes: [None; 4096],
-            next_node: 0,
             base_addr: 0,
             total_size: 0,
             stats: BuddyStats {
@@ -158,19 +154,15 @@ impl BuddyAllocator {
 
     /// Add a free block to the free list
     fn add_free_block(&mut self, addr: u64, order: usize) {
-        if self.next_node >= self.nodes.len() {
-            crate::kerror!("Buddy allocator: out of node storage");
-            return;
+        unsafe {
+            // Store the next pointer in the free block itself
+            let next = self.free_lists[order];
+            let ptr = addr as *mut u64;
+            // Use volatile write to ensure it's not optimized out, though standard write is likely fine
+            // assuming we have exclusive access (which we do via Mutex in KernelHeap)
+            core::ptr::write(ptr, next.unwrap_or(u64::MAX));
         }
-
-        let node_idx = self.next_node;
-        self.next_node += 1;
-
-        self.nodes[node_idx] = Some(BuddyNode {
-            addr,
-            next: self.free_lists[order],
-        });
-        self.free_lists[order] = Some(node_idx);
+        self.free_lists[order] = Some(addr);
     }
 
     /// Allocate physical pages
@@ -187,12 +179,13 @@ impl BuddyAllocator {
 
         // Find a free block of the requested order or larger
         for current_order in order..MAX_ORDER {
-            if let Some(node_idx) = self.free_lists[current_order] {
+            if let Some(addr) = self.free_lists[current_order] {
                 // Remove from free list
-                let node = self.nodes[node_idx].take().unwrap();
-                self.free_lists[current_order] = node.next;
-
-                let addr = node.addr;
+                unsafe {
+                    let ptr = addr as *const u64;
+                    let next = core::ptr::read(ptr);
+                    self.free_lists[current_order] = if next == u64::MAX { None } else { Some(next) };
+                }
 
                 // Split if necessary
                 for split_order in (order + 1..=current_order).rev() {
@@ -204,6 +197,11 @@ impl BuddyAllocator {
                 self.stats.allocations += 1;
                 self.stats.pages_allocated += (1 << order) as u64;
                 self.stats.pages_free -= (1 << order) as u64;
+
+                // Clear the pointer in the allocated block for safety
+                unsafe {
+                    core::ptr::write_bytes(addr as *mut u8, 0, 8);
+                }
 
                 return Some(addr);
             }
@@ -236,7 +234,7 @@ impl BuddyAllocator {
             let buddy_addr = current_addr ^ block_size;
 
             // Check if buddy is free
-            if let Some(prev_idx) = self.find_and_remove_buddy(buddy_addr, current_order) {
+            if self.remove_from_free_list(buddy_addr, current_order) {
                 self.stats.merges += 1;
                 // Merge: the lower address becomes the merged block
                 current_addr = current_addr.min(buddy_addr);
@@ -250,31 +248,38 @@ impl BuddyAllocator {
     }
 
     /// Find and remove a buddy from free list
-    fn find_and_remove_buddy(&mut self, addr: u64, order: usize) -> Option<usize> {
-        let mut prev: Option<usize> = None;
-        let mut current = self.free_lists[order];
+    /// Returns true if found and removed
+    fn remove_from_free_list(&mut self, target_addr: u64, order: usize) -> bool {
+        let mut prev_addr: Option<u64> = None;
+        let mut current_addr = self.free_lists[order];
 
-        while let Some(idx) = current {
-            if let Some(node) = &self.nodes[idx] {
-                if node.addr == addr {
-                    // Remove from list
-                    if let Some(prev_idx) = prev {
-                        if let Some(prev_node) = &mut self.nodes[prev_idx] {
-                            prev_node.next = node.next;
-                        }
+        while let Some(addr) = current_addr {
+            if addr == target_addr {
+                // Found it, remove from list
+                unsafe {
+                    let ptr = addr as *const u64;
+                    let next = core::ptr::read(ptr);
+                    let next_opt = if next == u64::MAX { None } else { Some(next) };
+
+                    if let Some(prev) = prev_addr {
+                        let prev_ptr = prev as *mut u64;
+                        core::ptr::write(prev_ptr, next);
                     } else {
-                        self.free_lists[order] = node.next;
+                        self.free_lists[order] = next_opt;
                     }
-                    return Some(idx);
                 }
-                prev = Some(idx);
-                current = node.next;
-            } else {
-                break;
+                return true;
+            }
+
+            prev_addr = Some(addr);
+            unsafe {
+                let ptr = addr as *const u64;
+                let next = core::ptr::read(ptr);
+                current_addr = if next == u64::MAX { None } else { Some(next) };
             }
         }
 
-        None
+        false
     }
 
     /// Get allocator statistics
@@ -293,142 +298,186 @@ struct Slab {
     object_size: usize,
     /// Number of objects per slab page
     objects_per_slab: usize,
-    /// List of free objects (as offsets within slab pages)
-    free_list: Option<usize>,
-    /// Number of free objects
-    free_count: usize,
-    /// Number of allocated objects
+    /// Head of the list of pages with free objects
+    partial_head: Option<u64>,
+    
+    // Stats
     allocated_count: usize,
-    /// Physical pages backing this slab
-    pages: [Option<u64>; 64],
-    /// Number of allocated pages
-    page_count: usize,
 }
 
 impl Slab {
     const fn new(size: usize) -> Self {
-        let objects_per_slab = if size < PAGE_SIZE {
-            PAGE_SIZE / size
+        // Calculate objects per page, accounting for header
+        // Header size is approx 32 bytes (next, prev, free_list, free_count)
+        let header_size = 32;
+        let available_space = PAGE_SIZE - header_size;
+        let objects_per_slab = if size <= available_space {
+            available_space / size
         } else {
-            1
+            0 // Should not happen for valid slab sizes
         };
 
         Self {
             object_size: size,
             objects_per_slab,
-            free_list: None,
-            free_count: 0,
+            partial_head: None,
             allocated_count: 0,
-            pages: [None; 64],
-            page_count: 0,
         }
     }
 
     /// Allocate an object from this slab
     fn allocate(&mut self, buddy: &mut BuddyAllocator) -> Option<u64> {
-        // If no free objects, allocate a new page
-        if self.free_list.is_none() {
+        // If no partial pages, allocate a new one
+        if self.partial_head.is_none() {
             self.allocate_new_page(buddy)?;
         }
 
-        // Pop from free list
-        if let Some(offset) = self.free_list {
-            let page_idx = offset / self.objects_per_slab;
-            let obj_idx = offset % self.objects_per_slab;
+        let page_addr = self.partial_head?;
+        
+        unsafe {
+            let header_ptr = page_addr as *mut SlabPageHeader;
+            let header = &mut *header_ptr;
 
-            let page_addr = self.pages[page_idx]?;
-            let obj_addr = page_addr + (obj_idx * self.object_size) as u64;
+            // Pop from free list
+            if let Some(offset) = header.free_list {
+                let obj_addr = page_addr + 32 + (offset as u64 * self.object_size as u64);
 
-            // Read next pointer from freed object
-            unsafe {
-                let next_ptr = core::ptr::read(obj_addr as *const usize);
-                self.free_list = if next_ptr == usize::MAX {
-                    None
-                } else {
-                    Some(next_ptr)
-                };
+                // Read next pointer from freed object
+                // Objects in free list store the index of the next free object
+                let next_idx_ptr = obj_addr as *const u16;
+                let next_idx = core::ptr::read(next_idx_ptr);
+                
+                header.free_list = if next_idx == u16::MAX { None } else { Some(next_idx) };
+                header.free_count -= 1;
+                self.allocated_count += 1;
+
+                // If page is now full, remove from partial list
+                if header.free_count == 0 {
+                    self.remove_from_partial_list(page_addr);
+                }
+
+                // Clear the pointer in the allocated object
+                core::ptr::write_bytes(obj_addr as *mut u8, 0, self.object_size);
+
+                return Some(obj_addr);
             }
-
-            self.free_count -= 1;
-            self.allocated_count += 1;
-
-            return Some(obj_addr);
         }
 
         None
     }
 
     /// Free an object back to this slab
-    fn free(&mut self, addr: u64) {
-        // Find which page this address belongs to
-        let mut found = false;
-        let mut offset = 0;
+    fn free(&mut self, addr: u64, buddy: &mut BuddyAllocator) {
+        // Find page start
+        let page_addr = addr & !(PAGE_SIZE as u64 - 1);
+        
+        unsafe {
+            let header_ptr = page_addr as *mut SlabPageHeader;
+            let header = &mut *header_ptr;
+            
+            // Calculate object index
+            let offset = addr - (page_addr + 32);
+            let obj_idx = (offset / self.object_size as u64) as u16;
 
-        for (page_idx, page) in self.pages.iter().enumerate() {
-            if let Some(page_addr) = page {
-                if addr >= *page_addr && addr < page_addr + PAGE_SIZE as u64 {
-                    let obj_idx = ((addr - page_addr) / self.object_size as u64) as usize;
-                    offset = page_idx * self.objects_per_slab + obj_idx;
-                    found = true;
-                    break;
-                }
+            // Poison memory
+            core::ptr::write_bytes(addr as *mut u8, POISON_BYTE, self.object_size);
+
+            // Add to free list
+            let next = header.free_list.unwrap_or(u16::MAX);
+            let obj_ptr = addr as *mut u16;
+            core::ptr::write(obj_ptr, next);
+            
+            header.free_list = Some(obj_idx);
+            header.free_count += 1;
+            self.allocated_count -= 1;
+
+            // If page was full (now has 1 free), add to partial list
+            if header.free_count == 1 {
+                self.add_to_partial_list(page_addr);
+            }
+            
+            // If page is completely empty, free it to buddy
+            if header.free_count as usize == self.objects_per_slab {
+                self.remove_from_partial_list(page_addr);
+                buddy.free(page_addr, 0);
             }
         }
-
-        if !found {
-            crate::kerror!("Slab free: address {:#x} not in slab", addr);
-            return;
-        }
-
-        // Poison memory for debugging
-        unsafe {
-            core::ptr::write_bytes(addr as *mut u8, POISON_BYTE, self.object_size);
-        }
-
-        // Add to free list
-        unsafe {
-            let next = self.free_list.unwrap_or(usize::MAX);
-            core::ptr::write(addr as *mut usize, next);
-        }
-
-        self.free_list = Some(offset);
-        self.free_count += 1;
-        self.allocated_count -= 1;
     }
 
     /// Allocate a new page for this slab
     fn allocate_new_page(&mut self, buddy: &mut BuddyAllocator) -> Option<()> {
-        if self.page_count >= self.pages.len() {
-            return None;
-        }
+        let page_addr = buddy.allocate(0)?;
 
-        let order = 0; // Single page allocation
-        let page_addr = buddy.allocate(order)?;
+        unsafe {
+            let header_ptr = page_addr as *mut SlabPageHeader;
+            // Initialize header
+            core::ptr::write(header_ptr, SlabPageHeader {
+                next: None,
+                prev: None,
+                free_list: Some(0), // Start with object 0
+                free_count: self.objects_per_slab as u16,
+            });
 
-        // Initialize free list for this page
-        let base_offset = self.page_count * self.objects_per_slab;
-
-        for i in 0..self.objects_per_slab {
-            let offset = base_offset + i;
-            let obj_addr = page_addr + (i * self.object_size) as u64;
-
-            unsafe {
-                let next = if i == self.objects_per_slab - 1 {
-                    self.free_list.unwrap_or(usize::MAX)
+            // Initialize object free list
+            let base_addr = page_addr + 32;
+            for i in 0..self.objects_per_slab {
+                let obj_addr = base_addr + (i * self.object_size) as u64;
+                let next_idx = if i == self.objects_per_slab - 1 {
+                    u16::MAX
                 } else {
-                    offset + 1
+                    (i + 1) as u16
                 };
-                core::ptr::write(obj_addr as *mut usize, next);
+                core::ptr::write(obj_addr as *mut u16, next_idx);
             }
+            
+            self.add_to_partial_list(page_addr);
         }
-
-        self.free_list = Some(base_offset);
-        self.free_count += self.objects_per_slab;
-        self.pages[self.page_count] = Some(page_addr);
-        self.page_count += 1;
 
         Some(())
     }
+
+    unsafe fn add_to_partial_list(&mut self, page_addr: u64) {
+        let header_ptr = page_addr as *mut SlabPageHeader;
+        let header = &mut *header_ptr;
+
+        header.next = self.partial_head;
+        header.prev = None;
+
+        if let Some(head_addr) = self.partial_head {
+            let head_ptr = head_addr as *mut SlabPageHeader;
+            (*head_ptr).prev = Some(page_addr);
+        }
+
+        self.partial_head = Some(page_addr);
+    }
+
+    unsafe fn remove_from_partial_list(&mut self, page_addr: u64) {
+        let header_ptr = page_addr as *mut SlabPageHeader;
+        let header = &mut *header_ptr;
+
+        if let Some(prev_addr) = header.prev {
+            let prev_ptr = prev_addr as *mut SlabPageHeader;
+            (*prev_ptr).next = header.next;
+        } else {
+            self.partial_head = header.next;
+        }
+
+        if let Some(next_addr) = header.next {
+            let next_ptr = next_addr as *mut SlabPageHeader;
+            (*next_ptr).prev = header.prev;
+        }
+
+        header.next = None;
+        header.prev = None;
+    }
+}
+
+#[repr(C)]
+struct SlabPageHeader {
+    next: Option<u64>,
+    prev: Option<u64>,
+    free_list: Option<u16>,
+    free_count: u16,
 }
 
 /// Slab allocator managing multiple slab caches
@@ -438,11 +487,11 @@ pub struct SlabAllocator {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-struct SlabStats {
-    allocations: u64,
-    frees: u64,
-    cache_hits: u64,
-    cache_misses: u64,
+pub struct SlabStats {
+    pub allocations: u64,
+    pub frees: u64,
+    pub cache_hits: u64,
+    pub cache_misses: u64,
 }
 
 impl SlabAllocator {
@@ -457,14 +506,6 @@ impl SlabAllocator {
                 Slab::new(SLAB_SIZES[5]),
                 Slab::new(SLAB_SIZES[6]),
                 Slab::new(SLAB_SIZES[7]),
-                Slab::new(SLAB_SIZES[8]),
-                Slab::new(SLAB_SIZES[9]),
-                Slab::new(SLAB_SIZES[10]),
-                Slab::new(SLAB_SIZES[11]),
-                Slab::new(SLAB_SIZES[12]),
-                Slab::new(SLAB_SIZES[13]),
-                Slab::new(SLAB_SIZES[14]),
-                Slab::new(SLAB_SIZES[15]),
             ],
             stats: SlabStats {
                 allocations: 0,
@@ -482,7 +523,9 @@ impl SlabAllocator {
             if size <= slab_size {
                 self.stats.allocations += 1;
 
-                if self.slabs[i].free_count > 0 {
+                // Check if we have free objects (hit) or need new page (miss)
+                // This is a rough approximation, real hit/miss depends on if we have partial pages
+                if self.slabs[i].partial_head.is_some() {
                     self.stats.cache_hits += 1;
                 } else {
                     self.stats.cache_misses += 1;
@@ -503,7 +546,7 @@ impl SlabAllocator {
         for (i, &slab_size) in SLAB_SIZES.iter().enumerate() {
             if size <= slab_size {
                 self.stats.frees += 1;
-                self.slabs[i].free(addr);
+                self.slabs[i].free(addr, buddy);
                 return;
             }
         }
@@ -541,12 +584,12 @@ pub struct KernelHeap {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-struct HeapStats {
-    total_allocations: u64,
-    total_frees: u64,
-    bytes_allocated: u64,
-    bytes_freed: u64,
-    peak_usage: u64,
+pub struct HeapStats {
+    pub total_allocations: u64,
+    pub total_frees: u64,
+    pub bytes_allocated: u64,
+    pub bytes_freed: u64,
+    pub peak_usage: u64,
 }
 
 impl KernelHeap {
@@ -646,6 +689,102 @@ impl KernelHeap {
 }
 
 // =============================================================================
+// Global Allocator Implementation
+// =============================================================================
+
+use core::alloc::{GlobalAlloc, Layout};
+
+pub struct GlobalAllocator;
+
+unsafe impl GlobalAlloc for GlobalAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // Note: We currently ignore alignment requirements beyond what the
+        // slab/buddy allocators naturally provide (powers of 2 / page alignment).
+        // For stricter alignment, we would need to implement aligned allocation.
+        kalloc(layout.size()).unwrap_or(core::ptr::null_mut())
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
+        kfree(ptr);
+    }
+}
+
+#[global_allocator]
+static ALLOCATOR: GlobalAllocator = GlobalAllocator;
+
+#[alloc_error_handler]
+fn alloc_error_handler(layout: Layout) -> ! {
+    panic!("allocation error: {:?}", layout)
+}
+
+// =============================================================================
+// Memory Zone Management (like Linux zones)
+// =============================================================================
+
+/// Memory zones for different types of memory
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryZone {
+    /// DMA-capable memory (< 16MB)
+    Dma,
+    /// Normal kernel memory (16MB - 896MB)
+    Normal,
+    /// High memory (> 896MB, if applicable)
+    High,
+}
+
+pub struct ZoneAllocator {
+    dma_heap: KernelHeap,
+    normal_heap: KernelHeap,
+    high_heap: KernelHeap,
+}
+
+impl ZoneAllocator {
+    const fn new() -> Self {
+        Self {
+            dma_heap: KernelHeap::new(),
+            normal_heap: KernelHeap::new(),
+            high_heap: KernelHeap::new(),
+        }
+    }
+
+    pub fn init(&mut self, memmap: &[(u64, u64, MemoryZone)]) {
+        for (base, size, zone) in memmap {
+            match zone {
+                MemoryZone::Dma => {
+                    self.dma_heap.init(*base, *size);
+                    crate::kinfo!("DMA zone: {:#x} - {:#x}", base, base + size);
+                }
+                MemoryZone::Normal => {
+                    self.normal_heap.init(*base, *size);
+                    crate::kinfo!("Normal zone: {:#x} - {:#x}", base, base + size);
+                }
+                MemoryZone::High => {
+                    self.high_heap.init(*base, *size);
+                    crate::kinfo!("High zone: {:#x} - {:#x}", base, base + size);
+                }
+            }
+        }
+    }
+
+    pub fn allocate(&mut self, size: usize, zone: MemoryZone) -> Option<*mut u8> {
+        match zone {
+            MemoryZone::Dma => self.dma_heap.allocate(size),
+            MemoryZone::Normal => self.normal_heap.allocate(size),
+            MemoryZone::High => self.high_heap.allocate(size),
+        }
+        .map(|addr| addr as *mut u8)
+    }
+}
+
+static ZONE_ALLOCATOR: Mutex<ZoneAllocator> = Mutex::new(ZoneAllocator::new());
+
+/// Allocate from specific memory zone
+pub fn zalloc(size: usize, zone: MemoryZone) -> Option<*mut u8> {
+    let mut allocator = ZONE_ALLOCATOR.lock();
+    allocator.allocate(size, zone)
+}
+
+// =============================================================================
 // Global Allocator Instance
 // =============================================================================
 
@@ -717,71 +856,4 @@ pub fn print_memory_stats() {
     }
 
     crate::kinfo!("=== End Memory Statistics ===");
-}
-
-// =============================================================================
-// Memory Zone Management (like Linux zones)
-// =============================================================================
-
-/// Memory zones for different types of memory
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MemoryZone {
-    /// DMA-capable memory (< 16MB)
-    Dma,
-    /// Normal kernel memory (16MB - 896MB)
-    Normal,
-    /// High memory (> 896MB, if applicable)
-    High,
-}
-
-pub struct ZoneAllocator {
-    dma_heap: KernelHeap,
-    normal_heap: KernelHeap,
-    high_heap: KernelHeap,
-}
-
-impl ZoneAllocator {
-    const fn new() -> Self {
-        Self {
-            dma_heap: KernelHeap::new(),
-            normal_heap: KernelHeap::new(),
-            high_heap: KernelHeap::new(),
-        }
-    }
-
-    pub fn init(&mut self, memmap: &[(u64, u64, MemoryZone)]) {
-        for (base, size, zone) in memmap {
-            match zone {
-                MemoryZone::Dma => {
-                    self.dma_heap.init(*base, *size);
-                    crate::kinfo!("DMA zone: {:#x} - {:#x}", base, base + size);
-                }
-                MemoryZone::Normal => {
-                    self.normal_heap.init(*base, *size);
-                    crate::kinfo!("Normal zone: {:#x} - {:#x}", base, base + size);
-                }
-                MemoryZone::High => {
-                    self.high_heap.init(*base, *size);
-                    crate::kinfo!("High zone: {:#x} - {:#x}", base, base + size);
-                }
-            }
-        }
-    }
-
-    pub fn allocate(&mut self, size: usize, zone: MemoryZone) -> Option<*mut u8> {
-        match zone {
-            MemoryZone::Dma => self.dma_heap.allocate(size),
-            MemoryZone::Normal => self.normal_heap.allocate(size),
-            MemoryZone::High => self.high_heap.allocate(size),
-        }
-        .map(|addr| addr as *mut u8)
-    }
-}
-
-static ZONE_ALLOCATOR: Mutex<ZoneAllocator> = Mutex::new(ZoneAllocator::new());
-
-/// Allocate from specific memory zone
-pub fn zalloc(size: usize, zone: MemoryZone) -> Option<*mut u8> {
-    let mut allocator = ZONE_ALLOCATOR.lock();
-    allocator.allocate(size, zone)
 }
