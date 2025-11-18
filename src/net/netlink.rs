@@ -277,6 +277,36 @@ impl NetlinkSubsystem {
         Ok(())
     }
 
+    /// Send interface info message
+    pub fn send_ifinfo(
+        &mut self,
+        socket_idx: usize,
+        seq: u32,
+        dev_idx: usize,
+        info: &DeviceInfo,
+    ) -> Result<(), NetError> {
+        let message = self.build_ifinfo_message(dev_idx, seq, info);
+        self.send_message(socket_idx, &message)
+    }
+
+    /// Send interface address message
+    pub fn send_ifaddr(
+        &mut self,
+        socket_idx: usize,
+        seq: u32,
+        dev_idx: usize,
+        info: &DeviceInfo,
+    ) -> Result<(), NetError> {
+        let message = self.build_ifaddr_message(dev_idx, seq, info);
+        self.send_message(socket_idx, &message)
+    }
+
+    /// Send DONE message
+    pub fn send_done(&mut self, socket_idx: usize, seq: u32) -> Result<(), NetError> {
+        let message = self.build_done_message(seq);
+        self.send_message(socket_idx, &message)
+    }
+
     fn build_done_message(&self, seq: u32) -> [u8; 16] {
         let hdr = NlMsgHdr {
             nlmsg_len: 16,

@@ -44,7 +44,9 @@ const DHCP_INFORM: u8 = 8;
 
 // Netlink constants
 const RTM_GETLINK: u16 = 18;
+const RTM_NEWADDR: u16 = 20;
 const IFLA_ADDRESS: u16 = 1;
+const IFA_ADDRESS: u16 = 1;
 
 #[repr(C)]
 struct SockAddrIn {
@@ -79,6 +81,15 @@ struct IfInfoMsg {
     ifi_index: u32,
     ifi_flags: u32,
     ifi_change: u32,
+}
+
+#[repr(C)]
+struct IfAddrMsg {
+    ifa_family: u8,
+    ifa_prefixlen: u8,
+    ifa_flags: u8,
+    ifa_scope: u8,
+    ifa_index: u32,
 }
 
 #[repr(C)]
@@ -120,15 +131,15 @@ fn main() {
     println!("Starting DHCP client...");
 
     // 1. Get MAC address via Netlink
-    let mac = match get_mac_address() {
+    let (if_index, mac) = match get_mac_address() {
         Some(m) => m,
         None => {
             println!("Failed to get MAC address");
             return;
         }
     };
-    println!("Using MAC address: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}", 
-             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    println!("Using MAC address: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} (Index: {})", 
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], if_index);
 
     // 2. Create UDP socket
     let fd = unsafe { socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP) };
@@ -255,12 +266,15 @@ fn main() {
     println!("DHCP Success! Assigned IP: {}.{}.{}.{}", 
              (assigned_ip >> 24) & 0xFF, (assigned_ip >> 16) & 0xFF, (assigned_ip >> 8) & 0xFF, assigned_ip & 0xFF);
 
-    // TODO: Configure interface with IP (using netlink or syscall)
+    // Configure interface with IP
+    // Default mask 255.255.255.0 if not provided
+    let subnet_mask = 0xFFFFFF00; // TODO: Parse from options
+    configure_interface(if_index, assigned_ip, subnet_mask);
     
     unsafe { close(fd) };
 }
 
-fn get_mac_address() -> Option<[u8; 6]> {
+fn get_mac_address() -> Option<(u32, [u8; 6])> {
     let fd = unsafe { socket(AF_NETLINK, SOCK_DGRAM, 0) };
     if fd < 0 { return None; }
 
@@ -307,7 +321,8 @@ fn get_mac_address() -> Option<[u8; 6]> {
         }
 
         // Parse IfInfoMsg
-        let _ifinfo = unsafe { &*(buf.as_ptr().add(offset + 16) as *const IfInfoMsg) };
+        let ifinfo = unsafe { &*(buf.as_ptr().add(offset + 16) as *const IfInfoMsg) };
+        let if_index = ifinfo.ifi_index;
         let mut attr_offset = offset + 16 + 16; // NlMsgHdr + IfInfoMsg
         
         while attr_offset < offset + hdr.nlmsg_len as usize {
@@ -316,7 +331,7 @@ fn get_mac_address() -> Option<[u8; 6]> {
                 let mac_ptr = unsafe { buf.as_ptr().add(attr_offset + 4) };
                 let mut mac = [0u8; 6];
                 unsafe { std::ptr::copy_nonoverlapping(mac_ptr, mac.as_mut_ptr(), 6) };
-                return Some(mac);
+                return Some((if_index, mac));
             }
             attr_offset += ((attr.rta_len + 3) & !3) as usize; // Align to 4 bytes
         }
@@ -325,6 +340,95 @@ fn get_mac_address() -> Option<[u8; 6]> {
     }
 
     None
+}
+
+fn configure_interface(if_index: u32, ip: u32, mask: u32) {
+    println!("Configuring interface {} with IP...", if_index);
+    
+    let fd = unsafe { socket(AF_NETLINK, SOCK_DGRAM, 0) };
+    if fd < 0 {
+        println!("Failed to create netlink socket");
+        return;
+    }
+
+    let addr = SockAddrNl {
+        nl_family: AF_NETLINK as u16,
+        nl_pad: 0,
+        nl_pid: process::id(),
+        nl_groups: 0,
+    };
+    
+    if unsafe { bind(fd, &addr as *const _ as *const std::ffi::c_void, 12) } < 0 {
+        println!("Failed to bind netlink socket");
+        unsafe { close(fd) };
+        return;
+    }
+
+    // Calculate prefix length from mask
+    let prefix_len = mask.count_ones() as u8;
+
+    let seq = 2; // Arbitrary sequence number
+    let mut packet = [0u8; 256];
+    let mut pos = 0;
+
+    // Netlink Header
+    let hdr = NlMsgHdr {
+        nlmsg_len: 0, // Fill later
+        nlmsg_type: RTM_NEWADDR,
+        nlmsg_flags: 1 | 4, // NLM_F_REQUEST | NLM_F_CREATE
+        nlmsg_seq: seq,
+        nlmsg_pid: process::id(),
+    };
+    unsafe {
+        std::ptr::copy_nonoverlapping(&hdr as *const _ as *const u8, packet.as_mut_ptr().add(pos), mem::size_of::<NlMsgHdr>());
+    }
+    pos += mem::size_of::<NlMsgHdr>();
+
+    // IfAddrMsg
+    let ifaddr = IfAddrMsg {
+        ifa_family: AF_INET as u8,
+        ifa_prefixlen: prefix_len,
+        ifa_flags: 0,
+        ifa_scope: 0,
+        ifa_index: if_index,
+    };
+    unsafe {
+        std::ptr::copy_nonoverlapping(&ifaddr as *const _ as *const u8, packet.as_mut_ptr().add(pos), mem::size_of::<IfAddrMsg>());
+    }
+    pos += mem::size_of::<IfAddrMsg>();
+
+    // IFA_ADDRESS Attribute
+    let attr_hdr = RtAttr {
+        rta_len: (mem::size_of::<RtAttr>() + 4) as u16,
+        rta_type: IFA_ADDRESS,
+    };
+    unsafe {
+        std::ptr::copy_nonoverlapping(&attr_hdr as *const _ as *const u8, packet.as_mut_ptr().add(pos), mem::size_of::<RtAttr>());
+    }
+    pos += mem::size_of::<RtAttr>();
+    
+    let ip_bytes = ip.to_be_bytes();
+    unsafe {
+        std::ptr::copy_nonoverlapping(ip_bytes.as_ptr(), packet.as_mut_ptr().add(pos), 4);
+    }
+    pos += 4;
+    
+    // Align to 4 bytes
+    while pos % 4 != 0 { packet[pos] = 0; pos += 1; }
+
+    // Update length
+    let len = pos as u32;
+    unsafe {
+        std::ptr::copy_nonoverlapping(&len as *const _ as *const u8, packet.as_mut_ptr(), 4);
+    }
+
+    if unsafe { sendto(fd, packet.as_ptr() as *const std::ffi::c_void, pos, 0, std::ptr::null(), 0) } < 0 {
+        println!("Failed to send RTM_NEWADDR");
+    } else {
+        println!("Sent RTM_NEWADDR to configure IP");
+    }
+
+    unsafe { close(fd) };
 }
 
 fn create_dhcp_packet(msg_type: u8, mac: &[u8; 6], xid: u32) -> DhcpPacket {

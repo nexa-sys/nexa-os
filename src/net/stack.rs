@@ -720,10 +720,9 @@ impl NetStack {
     /// Handle netlink request from userspace
     pub fn netlink_handle_request(&mut self, socket_idx: usize, data: &[u8]) -> Result<(), NetError> {
         use super::netlink::{
-            NlMsgHdr, IfInfoMsg, IfAddrMsg, 
-            NLMSG_DONE, RTM_GETLINK, RTM_GETADDR, RTM_NEWLINK, RTM_NEWADDR,
-            IFLA_IFNAME, IFLA_MTU, IFLA_OPERSTATE, IFLA_ADDRESS,
-            IFA_ADDRESS, IFA_LABEL
+            NlMsgHdr, IfAddrMsg, RtAttr,
+            RTM_GETLINK, RTM_GETADDR, RTM_NEWADDR,
+            IFA_ADDRESS
         };
 
         if data.len() < core::mem::size_of::<NlMsgHdr>() {
@@ -738,15 +737,68 @@ impl NetStack {
                 for (i, dev) in self.devices.iter().enumerate() {
                     if !dev.present { continue; }
                     
-                    // Construct response... 
-                    // For now, just a placeholder implementation
-                    // In a real implementation, we would construct the full netlink message
-                    // with attributes for each interface.
+                    let info = super::netlink::DeviceInfo {
+                        mac: dev.mac,
+                        ip: dev.ip,
+                        present: dev.present,
+                    };
+                    self.netlink.send_ifinfo(socket_idx, hdr.nlmsg_seq, i, &info)?;
                 }
-                // Send DONE message
+                self.netlink.send_done(socket_idx, hdr.nlmsg_seq)?;
             }
             RTM_GETADDR => {
                 // Send address info
+                for (i, dev) in self.devices.iter().enumerate() {
+                    if !dev.present { continue; }
+                    
+                    let info = super::netlink::DeviceInfo {
+                        mac: dev.mac,
+                        ip: dev.ip,
+                        present: dev.present,
+                    };
+                    self.netlink.send_ifaddr(socket_idx, hdr.nlmsg_seq, i, &info)?;
+                }
+                self.netlink.send_done(socket_idx, hdr.nlmsg_seq)?;
+            }
+            RTM_NEWADDR => {
+                // Parse IfAddrMsg
+                if data.len() < core::mem::size_of::<NlMsgHdr>() + core::mem::size_of::<IfAddrMsg>() {
+                    return Err(NetError::InvalidPacket);
+                }
+                let ifaddr = unsafe { &*(data.as_ptr().add(core::mem::size_of::<NlMsgHdr>()) as *const IfAddrMsg) };
+                let dev_idx = ifaddr.ifa_index as usize;
+                if dev_idx == 0 || dev_idx > self.devices.len() {
+                    return Err(NetError::InvalidDevice);
+                }
+                let real_dev_idx = dev_idx - 1;
+
+                // Parse attributes
+                let mut pos = core::mem::size_of::<NlMsgHdr>() + core::mem::size_of::<IfAddrMsg>();
+                while pos + core::mem::size_of::<RtAttr>() <= hdr.nlmsg_len as usize {
+                    let attr = unsafe { &*(data.as_ptr().add(pos) as *const RtAttr) };
+                    let attr_len = attr.rta_len as usize;
+                    if pos + attr_len > hdr.nlmsg_len as usize {
+                        break;
+                    }
+
+                    if attr.rta_type == IFA_ADDRESS {
+                        if attr_len >= 4 + 4 { // Header + IPv4
+                            let ip_ptr = unsafe { data.as_ptr().add(pos + 4) };
+                            let mut ip = [0u8; 4];
+                            unsafe { core::ptr::copy_nonoverlapping(ip_ptr, ip.as_mut_ptr(), 4) };
+                            
+                            // Update IP
+                            if self.devices[real_dev_idx].present {
+                                self.devices[real_dev_idx].ip = ip;
+                                self.tcp.register_local(real_dev_idx, self.devices[real_dev_idx].mac, ip);
+                                crate::kinfo!("Netlink: Set IP for eth{} to {}.{}.{}.{}", 
+                                    real_dev_idx, ip[0], ip[1], ip[2], ip[3]);
+                            }
+                        }
+                    }
+                    
+                    pos += (attr_len + 3) & !3; // Align to 4 bytes
+                }
             }
             _ => {}
         }
