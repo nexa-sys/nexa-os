@@ -211,14 +211,20 @@ pub struct NetStack {
 }
 
 impl NetStack {
-    pub const fn new() -> Self {
-        Self {
+    pub fn new() -> Self {
+        let mut stack = Self {
             devices: [DeviceInfo::empty(); super::MAX_NET_DEVICES],
             tcp: TcpEndpoint::new(),
             udp_sockets: [UdpSocket::empty(); MAX_UDP_SOCKETS],
             netlink: NetlinkSubsystem::new(),
             arp_cache: ArpCache::new(),
-        }
+        };
+        
+        // Register default network devices
+        // For QEMU virtio-net, we typically have eth0
+        stack.register_device(0, [0x52, 0x54, 0x00, 0x12, 0x34, 0x56]); // QEMU default MAC prefix
+        
+        stack
     }
 
     pub fn register_device(&mut self, index: usize, mac: [u8; 6]) {

@@ -2886,11 +2886,6 @@ fn syscall_sendto(
         return u64::MAX;
     }
 
-    if dest_addr.is_null() || addrlen < 8 {
-        posix::set_errno(posix::errno::EINVAL);
-        return u64::MAX;
-    }
-
     // Get socket handle
     let idx = if sockfd >= FD_BASE {
         (sockfd - FD_BASE) as usize
@@ -2916,17 +2911,30 @@ fn syscall_sendto(
         };
 
         if sock_handle.domain == AF_NETLINK {
+            // Netlink doesn't require destination address
             let data = slice::from_raw_parts(buf, len);
+            crate::kinfo!("[SYS_SENDTO] Netlink sendto: socket_idx={}, data_len={}", sock_handle.socket_index, len);
             if let Some(res) = crate::net::with_net_stack(|stack| stack.netlink_send(sock_handle.socket_index, data)) {
                 match res {
-                    Ok(_) => return len as u64,
-                    Err(_) => {
+                    Ok(_) => {
+                        crate::kinfo!("[SYS_SENDTO] Netlink sendto successful");
+                        return len as u64;
+                    }
+                    Err(e) => {
+                        crate::kinfo!("[SYS_SENDTO] Netlink sendto error: {:?}", e);
                         posix::set_errno(posix::errno::EIO);
                         return u64::MAX;
                     }
                 }
             }
+            crate::kinfo!("[SYS_SENDTO] Network stack unavailable");
             posix::set_errno(posix::errno::ENETDOWN);
+            return u64::MAX;
+        }
+
+        // For UDP sockets, destination address is required
+        if dest_addr.is_null() || addrlen < 8 {
+            posix::set_errno(posix::errno::EINVAL);
             return u64::MAX;
         }
 

@@ -1237,7 +1237,15 @@ fn parallel_service_supervisor(
 
 /// Start a single service (fork and exec)
 fn start_service(service: &ServiceConfig, _buf: &mut [u8]) -> i64 {
-    eprintln!("[ni] start_service: service.exec_start='{}'", service.exec_start);
+    // 拷贝 service.exec_start 到一个本地 buffer，避免子进程访问父进程的只读数据
+    let mut exec_path_buf = [0u8; MAX_FIELD_LEN];
+    let exec_start_bytes = service.exec_start.as_bytes();
+    let exec_path_len = core::cmp::min(exec_start_bytes.len(), exec_path_buf.len() - 1);
+    exec_path_buf[..exec_path_len].copy_from_slice(&exec_start_bytes[..exec_path_len]);
+    exec_path_buf[exec_path_len] = 0; // null-terminate
+
+    let exec_path = std::str::from_utf8(&exec_path_buf[..exec_path_len]).unwrap_or("/bin/sh");
+    eprintln!("[ni] start_service: service.exec_start='{}'", exec_path);
     
     let pid = fork();
 
@@ -1251,11 +1259,11 @@ fn start_service(service: &ServiceConfig, _buf: &mut [u8]) -> i64 {
         // Child process - exec the service
         eprintln!("[ni] start_service: child process (PID 0 from fork), about to exec");
         
-        let exec_path = "/sbin/getty";
-        
+        // FIXME: For now, we hardcode the path to getty
+        // This avoids issues with service.exec_start in the child process
         // Execute the service program
         let result = execve(
-            exec_path,
+            exec_path ,
             &[0u64 as *const u8],
             &[0u64 as *const u8],
         );
