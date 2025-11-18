@@ -89,6 +89,29 @@ static CR3_ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
 static CR3_ACTIVATIONS: AtomicU64 = AtomicU64::new(0);
 static CR3_FREES: AtomicU64 = AtomicU64::new(0);
 
+/// Initialize the user region allocator with a safe start address.
+/// This should be called during kernel initialization with the end address of
+/// the kernel and all loaded modules (initramfs).
+pub fn init_user_region(start_addr: u64) {
+    // Align to 2MB
+    const ALIGN: u64 = 0x200000;
+    let aligned_start = (start_addr + ALIGN - 1) & !(ALIGN - 1);
+    
+    let current = NEXT_USER_REGION.load(AtomicOrdering::Relaxed);
+    
+    // Always update if the new start is higher.
+    // If the new start is lower, we keep the current (hardcoded safe default) 
+    // unless the hardcoded default is unreasonably high? 
+    // Actually, let's just ensure we are strictly above the requested start_addr.
+    
+    if aligned_start > current {
+        NEXT_USER_REGION.store(aligned_start, AtomicOrdering::SeqCst);
+        crate::kinfo!("paging: updated user region start to {:#x} (was {:#x})", aligned_start, current);
+    } else {
+        crate::kinfo!("paging: user region start {:#x} is safe (requested > {:#x})", current, start_addr);
+    }
+}
+
 fn allocate_extra_table() -> Option<&'static PageTableHolder> {
     let idx = EXTRA_TABLE_INDEX.fetch_add(1, AtomicOrdering::SeqCst);
     if idx >= EXTRA_TABLES.len() {

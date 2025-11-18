@@ -109,6 +109,13 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
     if magic == MULTIBOOT2_BOOTLOADER_MAGIC {
         memory::log_memory_overview(&boot_info);
 
+        // Ensure user space starts after all kernel modules (initramfs, etc.)
+        let modules_end = memory::find_modules_end(&boot_info);
+        if modules_end > 0 {
+            // Add 1MB safety padding
+            paging::init_user_region(modules_end + 0x100000);
+        }
+
         // Initialize Allocator
         // Try to find a region larger than 32MB
         if let Some((heap_start, heap_size)) = memory::find_heap_region(&boot_info, 32 * 1024 * 1024) {

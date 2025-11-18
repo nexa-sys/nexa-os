@@ -45,6 +45,17 @@ pub fn log_memory_overview(boot_info: &BootInformation<'_>) {
     }
 }
 
+pub fn find_modules_end(boot_info: &BootInformation<'_>) -> u64 {
+    let mut max_end = 0;
+    for module in boot_info.module_tags() {
+        let end = module.end_address() as u64;
+        if end > max_end {
+            max_end = end;
+        }
+    }
+    max_end
+}
+
 fn classify_area(area_type: multiboot2::MemoryAreaTypeId) -> &'static str {
     match MemoryAreaType::from(area_type) {
         MemoryAreaType::Available => "Usable",
