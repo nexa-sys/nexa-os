@@ -1251,8 +1251,6 @@ fn start_service(service: &ServiceConfig, _buf: &mut [u8]) -> i64 {
         // Child process - exec the service
         eprintln!("[ni] start_service: child process (PID 0 from fork), about to exec");
         
-        // FIXME: For now, we hardcode the path to getty
-        // This avoids issues with service.exec_start in the child process
         let exec_path = "/sbin/getty";
         
         // Execute the service program

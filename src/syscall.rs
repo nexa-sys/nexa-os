@@ -2795,12 +2795,19 @@ fn syscall_bind(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
                 return u64::MAX;
             }
             
-            let pid = u32::from_ne_bytes([addr_ref.sa_data[0], addr_ref.sa_data[1], addr_ref.sa_data[2], addr_ref.sa_data[3]]);
-            let groups = u32::from_ne_bytes([addr_ref.sa_data[4], addr_ref.sa_data[5], addr_ref.sa_data[6], addr_ref.sa_data[7]]);
+            // For netlink sockaddr: family(2) + pad(2) + pid(4) + groups(4)
+            // Mapped to sa_data: sa_data[0:2]=pad, sa_data[2:6]=pid, sa_data[6:10]=groups
+            let pid = u32::from_ne_bytes([addr_ref.sa_data[2], addr_ref.sa_data[3], addr_ref.sa_data[4], addr_ref.sa_data[5]]);
+            let groups = u32::from_ne_bytes([addr_ref.sa_data[6], addr_ref.sa_data[7], addr_ref.sa_data[8], addr_ref.sa_data[9]]);
+            
+            crate::kinfo!("[SYS_BIND] Netlink: pid={}, groups={}, addrlen={}", pid, groups, addrlen);
             
             if let Some(res) = crate::net::with_net_stack(|stack| stack.netlink_bind(sock_handle.socket_index, pid, groups)) {
                 match res {
-                    Ok(_) => return 0,
+                    Ok(_) => {
+                        crate::kinfo!("[SYS_BIND] Netlink bind successful");
+                        return 0;
+                    }
                     Err(_) => {
                         posix::set_errno(posix::errno::EADDRINUSE);
                         return u64::MAX;

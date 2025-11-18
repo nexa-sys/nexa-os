@@ -275,8 +275,13 @@ fn main() {
 }
 
 fn get_mac_address() -> Option<(u32, [u8; 6])> {
+    println!("[get_mac_address] Creating netlink socket...");
     let fd = unsafe { socket(AF_NETLINK, SOCK_DGRAM, 0) };
-    if fd < 0 { return None; }
+    if fd < 0 {
+        println!("[get_mac_address] socket() failed, fd={}", fd);
+        return None;
+    }
+    println!("[get_mac_address] Socket created, fd={}", fd);
 
     let addr = SockAddrNl {
         nl_family: AF_NETLINK as u16,
@@ -285,10 +290,13 @@ fn get_mac_address() -> Option<(u32, [u8; 6])> {
         nl_groups: 0,
     };
     
+    println!("[get_mac_address] Binding socket, pid={}", process::id());
     if unsafe { bind(fd, &addr as *const _ as *const std::ffi::c_void, 12) } < 0 {
+        println!("[get_mac_address] bind() failed");
         unsafe { close(fd) };
         return None;
     }
+    println!("[get_mac_address] Socket bound successfully");
 
     let req = NlMsgHdr {
         nlmsg_len: 16,
@@ -298,16 +306,24 @@ fn get_mac_address() -> Option<(u32, [u8; 6])> {
         nlmsg_pid: process::id(),
     };
 
+    println!("[get_mac_address] Sending RTM_GETLINK request...");
     if unsafe { sendto(fd, &req as *const _ as *const std::ffi::c_void, 16, 0, std::ptr::null(), 0) } < 0 {
+        println!("[get_mac_address] sendto() failed");
         unsafe { close(fd) };
         return None;
     }
+    println!("[get_mac_address] Request sent successfully");
 
     let mut buf = [0u8; 4096];
+    println!("[get_mac_address] Waiting for response...");
     let len = unsafe { recvfrom(fd, buf.as_mut_ptr() as *mut std::ffi::c_void, 4096, 0, std::ptr::null_mut(), std::ptr::null_mut()) };
+    println!("[get_mac_address] recvfrom returned: {}", len);
     unsafe { close(fd) };
 
-    if len < 0 { return None; }
+    if len < 0 {
+        println!("[get_mac_address] recvfrom failed, len={}", len);
+        return None;
+    }
 
     // Parse response to find IFLA_ADDRESS
     let mut offset = 16; // Skip NlMsgHdr

@@ -725,18 +725,24 @@ impl NetStack {
             IFA_ADDRESS
         };
 
+        crate::kinfo!("[netlink_handle_request] socket_idx={}, data_len={}", socket_idx, data.len());
+
         if data.len() < core::mem::size_of::<NlMsgHdr>() {
+            crate::kinfo!("[netlink_handle_request] Data too short for NlMsgHdr");
             return Err(NetError::InvalidPacket);
         }
 
         let hdr = unsafe { &*(data.as_ptr() as *const NlMsgHdr) };
+        crate::kinfo!("[netlink_handle_request] Message type: {}", hdr.nlmsg_type);
         
         match hdr.nlmsg_type {
             RTM_GETLINK => {
+                crate::kinfo!("[netlink_handle_request] RTM_GETLINK received");
                 // Send info for all devices
                 for (i, dev) in self.devices.iter().enumerate() {
                     if !dev.present { continue; }
                     
+                    crate::kinfo!("[netlink_handle_request] Sending ifinfo for device {}", i);
                     let info = super::netlink::DeviceInfo {
                         mac: dev.mac,
                         ip: dev.ip,
@@ -744,9 +750,11 @@ impl NetStack {
                     };
                     self.netlink.send_ifinfo(socket_idx, hdr.nlmsg_seq, i, &info)?;
                 }
+                crate::kinfo!("[netlink_handle_request] Sending DONE message");
                 self.netlink.send_done(socket_idx, hdr.nlmsg_seq)?;
             }
             RTM_GETADDR => {
+                crate::kinfo!("[netlink_handle_request] RTM_GETADDR received");
                 // Send address info
                 for (i, dev) in self.devices.iter().enumerate() {
                     if !dev.present { continue; }
@@ -761,6 +769,7 @@ impl NetStack {
                 self.netlink.send_done(socket_idx, hdr.nlmsg_seq)?;
             }
             RTM_NEWADDR => {
+                crate::kinfo!("[netlink_handle_request] RTM_NEWADDR received");
                 // Parse IfAddrMsg
                 if data.len() < core::mem::size_of::<NlMsgHdr>() + core::mem::size_of::<IfAddrMsg>() {
                     return Err(NetError::InvalidPacket);
@@ -800,7 +809,9 @@ impl NetStack {
                     pos += (attr_len + 3) & !3; // Align to 4 bytes
                 }
             }
-            _ => {}
+            _ => {
+                crate::kinfo!("[netlink_handle_request] Unknown message type: {}", hdr.nlmsg_type);
+            }
         }
         
         Ok(())

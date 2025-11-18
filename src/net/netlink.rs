@@ -159,10 +159,12 @@ impl NetlinkSubsystem {
 
     /// Bind socket to PID and optional multicast groups
     pub fn bind(&mut self, socket_idx: usize, pid: u32, groups: u32) -> Result<(), NetError> {
+        crate::kinfo!("[netlink::bind] socket_idx={}, pid={}, groups={}", socket_idx, pid, groups);
         if socket_idx >= MAX_NETLINK_SOCKETS {
             return Err(NetError::InvalidSocket);
         }
         if !self.sockets[socket_idx].in_use {
+            crate::kinfo!("[netlink::bind] socket {} not in_use", socket_idx);
             return Err(NetError::InvalidSocket);
         }
 
@@ -177,6 +179,7 @@ impl NetlinkSubsystem {
 
         self.sockets[socket_idx].pid = pid;
         self.sockets[socket_idx].groups = groups;
+        crate::kinfo!("[netlink::bind] Socket {} bound to PID {} successfully", socket_idx, pid);
         Ok(())
     }
 
@@ -187,15 +190,19 @@ impl NetlinkSubsystem {
 
     /// Send netlink message (queues it for the socket)
     pub fn send_message(&mut self, socket_idx: usize, message: &[u8]) -> Result<(), NetError> {
+        crate::kinfo!("[netlink::send_message] socket_idx={}, msg_len={}", socket_idx, message.len());
         if socket_idx >= MAX_NETLINK_SOCKETS {
+            crate::kinfo!("[netlink::send_message] Invalid socket index");
             return Err(NetError::InvalidSocket);
         }
         if !self.sockets[socket_idx].in_use {
+            crate::kinfo!("[netlink::send_message] Socket not in use");
             return Err(NetError::InvalidSocket);
         }
 
         let socket = &mut self.sockets[socket_idx];
         if socket.rx_queue_len >= NETLINK_RX_QUEUE_LEN {
+            crate::kinfo!("[netlink::send_message] RX queue full");
             return Err(NetError::RxQueueFull);
         }
 
@@ -206,6 +213,7 @@ impl NetlinkSubsystem {
 
         socket.rx_queue_tail = (socket.rx_queue_tail + 1) % NETLINK_RX_QUEUE_LEN;
         socket.rx_queue_len += 1;
+        crate::kinfo!("[netlink::send_message] Message queued, rx_queue_len now {}", socket.rx_queue_len);
         Ok(())
     }
 
@@ -215,15 +223,20 @@ impl NetlinkSubsystem {
         socket_idx: usize,
         buffer: &mut [u8],
     ) -> Result<usize, NetError> {
+        crate::kinfo!("[netlink::recv_message] socket_idx={}, buffer_len={}", socket_idx, buffer.len());
         if socket_idx >= MAX_NETLINK_SOCKETS {
+            crate::kinfo!("[netlink::recv_message] Invalid socket index");
             return Err(NetError::InvalidSocket);
         }
         if !self.sockets[socket_idx].in_use {
+            crate::kinfo!("[netlink::recv_message] Socket not in use");
             return Err(NetError::InvalidSocket);
         }
 
         let socket = &mut self.sockets[socket_idx];
+        crate::kinfo!("[netlink::recv_message] rx_queue_len={}", socket.rx_queue_len);
         if socket.rx_queue_len == 0 {
+            crate::kinfo!("[netlink::recv_message] RX queue empty");
             return Err(NetError::RxQueueEmpty);
         }
 
@@ -234,6 +247,7 @@ impl NetlinkSubsystem {
         socket.rx_queue_head = (socket.rx_queue_head + 1) % NETLINK_RX_QUEUE_LEN;
         socket.rx_queue_len -= 1;
 
+        crate::kinfo!("[netlink::recv_message] Returning {} bytes", len);
         Ok(len)
     }
 
@@ -286,7 +300,10 @@ impl NetlinkSubsystem {
         info: &DeviceInfo,
     ) -> Result<(), NetError> {
         let message = self.build_ifinfo_message(dev_idx, seq, info);
-        self.send_message(socket_idx, &message)
+        // Extract the actual message length from nlmsg_len field (first 4 bytes, little-endian)
+        let msg_len = u32::from_ne_bytes([message[0], message[1], message[2], message[3]]) as usize;
+        let msg_len = core::cmp::min(msg_len, 256); // Safety check
+        self.send_message(socket_idx, &message[..msg_len])
     }
 
     /// Send interface address message
@@ -298,7 +315,10 @@ impl NetlinkSubsystem {
         info: &DeviceInfo,
     ) -> Result<(), NetError> {
         let message = self.build_ifaddr_message(dev_idx, seq, info);
-        self.send_message(socket_idx, &message)
+        // Extract the actual message length from nlmsg_len field (first 4 bytes, little-endian)
+        let msg_len = u32::from_ne_bytes([message[0], message[1], message[2], message[3]]) as usize;
+        let msg_len = core::cmp::min(msg_len, 256); // Safety check
+        self.send_message(socket_idx, &message[..msg_len])
     }
 
     /// Send DONE message
