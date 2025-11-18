@@ -50,6 +50,10 @@ path = "../../userspace/login.rs"
 name = "nslookup"
 path = "../../userspace/nslookup.rs"
 
+[[bin]]
+name = "dhcp"
+path = "../../userspace/dhcp.rs"
+
 # [[bin]]
 # name = "udp_test"
 # path = "../../userspace/udp_test.rs"
@@ -149,6 +153,12 @@ RUSTFLAGS="$STD_RUSTFLAGS" \
     cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release \
     --bin ip
 
+# Build dhcp tool
+echo "Building dhcp tool with std..."
+RUSTFLAGS="$STD_RUSTFLAGS" \
+    cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release \
+    --bin dhcp
+
 # Copy binaries to rootfs
 echo "Copying binaries to rootfs..."
 cp "target/x86_64-nexaos-userspace/release/ni" "$ROOTFS_DIR/sbin/ni"
@@ -159,6 +169,7 @@ cp "target/x86_64-nexaos-userspace/release/nslookup" "$ROOTFS_DIR/bin/nslookup"
 # cp "target/x86_64-nexaos-userspace/release/udp_test" "$ROOTFS_DIR/bin/udp_test"
 cp "target/x86_64-nexaos-userspace/release/uefi-compatd" "$ROOTFS_DIR/sbin/uefi-compatd"
 cp "target/x86_64-nexaos-userspace/release/ip" "$ROOTFS_DIR/bin/ip"
+cp "target/x86_64-nexaos-userspace/release/dhcp" "$ROOTFS_DIR/bin/dhcp"
 
 # Strip symbols
 strip --strip-all "$ROOTFS_DIR/sbin/ni" 2>/dev/null || true
@@ -169,6 +180,7 @@ strip --strip-all "$ROOTFS_DIR/bin/nslookup" 2>/dev/null || true
 # strip --strip-all "$ROOTFS_DIR/bin/udp_test" 2>/dev/null || true
 strip --strip-all "$ROOTFS_DIR/sbin/uefi-compatd" 2>/dev/null || true
 strip --strip-all "$ROOTFS_DIR/bin/ip" 2>/dev/null || true
+strip --strip-all "$ROOTFS_DIR/bin/dhcp" 2>/dev/null || true
 
 # Copy dynamic linker for dynamically linked programs
 echo "Copying dynamic linker..."
