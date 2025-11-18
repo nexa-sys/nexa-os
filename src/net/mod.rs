@@ -16,6 +16,7 @@ pub mod ipv4;
 pub mod stack;
 pub mod udp;
 pub mod udp_helper;
+pub mod netlink;
 
 pub use drivers::NetError;
 pub use udp_helper::{UdpMessage, UdpConnectionContext, UdpStats};

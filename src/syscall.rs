@@ -137,8 +137,10 @@ const F_GETFL: u64 = 3;
 const F_SETFL: u64 = 4;
 
 // Socket domain and protocol constants (subset of POSIX)
-const AF_INET: i32 = 2; // IPv4
-const SOCK_DGRAM: i32 = 2; // UDP
+const AF_INET: i32 = 2;      // IPv4
+const AF_NETLINK: i32 = 16;  // Netlink
+const SOCK_DGRAM: i32 = 2;   // UDP
+const SOCK_RAW: i32 = 3;     // Raw socket
 const IPPROTO_UDP: i32 = 17; // UDP
 
 // UEFI compatibility bridge syscalls

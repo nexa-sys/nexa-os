@@ -683,6 +683,22 @@ impl NetStack {
 
         Ok(())
     }
+
+    /// Get device information for netlink queries
+    pub fn get_device_info(&self, index: usize) -> Option<super::netlink::DeviceInfo> {
+        if index >= self.devices.len() {
+            return None;
+        }
+        let device = &self.devices[index];
+        if !device.present {
+            return None;
+        }
+        Some(super::netlink::DeviceInfo {
+            mac: device.mac,
+            ip: device.ip,
+            present: device.present,
+        })
+    }
 }
 
 fn default_ip(index: usize) -> [u8; 4] {
