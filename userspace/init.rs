@@ -163,12 +163,43 @@ const DEFAULT_TARGET_NAME: &str = "multi-user.target";
 const FALLBACK_TARGET_NAME: &str = "rescue.target";
 const EMPTY_STR: &str = "";
 const MAX_FIELD_LEN: usize = 256;
-const SERVICE_FIELD_COUNT: usize = 5; // name, description, exec, after, wants
+const SERVICE_FIELD_COUNT: usize = 13; // Increased for new fields
 const FIELD_IDX_NAME: usize = 0;
 const FIELD_IDX_DESCRIPTION: usize = 1;
 const FIELD_IDX_EXEC_START: usize = 2;
-const FIELD_IDX_AFTER: usize = 3;
-const FIELD_IDX_WANTS: usize = 4;
+const FIELD_IDX_EXEC_STOP: usize = 3;
+const FIELD_IDX_AFTER: usize = 4;
+const FIELD_IDX_BEFORE: usize = 5;
+const FIELD_IDX_WANTS: usize = 6;
+const FIELD_IDX_REQUIRES: usize = 7;
+const FIELD_IDX_USER: usize = 8;
+const FIELD_IDX_GROUP: usize = 9;
+const FIELD_IDX_WORKING_DIR: usize = 10;
+const FIELD_IDX_STANDARD_OUTPUT: usize = 11;
+const FIELD_IDX_RESERVED: usize = 12;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ServiceType {
+    Simple,     // Default: service main process started directly
+    Oneshot,    // Service process terminates, init continues
+    Forking,    // Service forks, parent exits
+    Dbus,       // Service acquires D-Bus name
+    Notify,     // Service sends readiness notification
+}
+
+impl ServiceType {
+    fn from_str(raw: &str) -> Self {
+        let lower = raw.as_bytes();
+        match lower {
+            b"simple" => ServiceType::Simple,
+            b"oneshot" => ServiceType::Oneshot,
+            b"forking" => ServiceType::Forking,
+            b"dbus" => ServiceType::Dbus,
+            b"notify" => ServiceType::Notify,
+            _ => ServiceType::Simple,
+        }
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RestartPolicy {
@@ -185,6 +216,27 @@ impl RestartPolicy {
             b"on-failure" | b"onfailure" | b"failure" => RestartPolicy::OnFailure,
             b"always" | b"true" | b"yes" => RestartPolicy::Always,
             _ => RestartPolicy::Always,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ServiceState {
+    Inactive,   // Not running
+    Activating, // Being started
+    Active,     // Running
+    Deactivating, // Being stopped
+    Failed,     // Failed or exited with error
+}
+
+impl ServiceState {
+    fn as_str(&self) -> &'static str {
+        match self {
+            ServiceState::Inactive => "inactive",
+            ServiceState::Activating => "activating",
+            ServiceState::Active => "active",
+            ServiceState::Deactivating => "deactivating",
+            ServiceState::Failed => "failed",
         }
     }
 }
@@ -209,11 +261,21 @@ struct ServiceConfig {
     name: &'static str,
     description: &'static str,
     exec_start: &'static str,
+    exec_stop: &'static str,
+    service_type: ServiceType,
     restart: RestartPolicy,
     restart_settings: RestartSettings,
     restart_delay_ms: u64,
+    timeout_start_sec: u64,
+    timeout_stop_sec: u64,
     after: &'static str,
+    before: &'static str,
     wants: &'static str,
+    requires: &'static str,
+    user: &'static str,
+    group: &'static str,
+    working_dir: &'static str,
+    standard_output: &'static str,
 }
 
 impl ServiceConfig {
@@ -222,11 +284,21 @@ impl ServiceConfig {
             name: EMPTY_STR,
             description: EMPTY_STR,
             exec_start: EMPTY_STR,
+            exec_stop: EMPTY_STR,
+            service_type: ServiceType::Simple,
             restart: RestartPolicy::Always,
             restart_settings: RestartSettings::new(),
             restart_delay_ms: RESTART_DELAY_MS,
+            timeout_start_sec: 90,
+            timeout_stop_sec: 90,
             after: EMPTY_STR,
+            before: EMPTY_STR,
             wants: DEFAULT_TARGET_NAME,
+            requires: EMPTY_STR,
+            user: EMPTY_STR,
+            group: EMPTY_STR,
+            working_dir: EMPTY_STR,
+            standard_output: "journal",
         }
     }
 
@@ -460,6 +532,10 @@ fn handle_service_key_value(line: &[u8], current: &mut ServiceConfig) {
             current.description = value_trimmed;
         } else if eq_ignore_ascii_case(key_str, "ExecStart") {
             current.exec_start = value_trimmed;
+        } else if eq_ignore_ascii_case(key_str, "ExecStop") {
+            current.exec_stop = value_trimmed;
+        } else if eq_ignore_ascii_case(key_str, "Type") {
+            current.service_type = ServiceType::from_str(value_trimmed);
         } else if eq_ignore_ascii_case(key_str, "Restart") {
             current.restart = RestartPolicy::from_str(to_ascii_lower(value_trimmed));
         } else if eq_ignore_ascii_case(key_str, "RestartLimitIntervalSec") {
@@ -469,10 +545,26 @@ fn handle_service_key_value(line: &[u8], current: &mut ServiceConfig) {
         } else if eq_ignore_ascii_case(key_str, "RestartSec") {
             let seconds = parse_u64(value_trimmed, RESTART_DELAY_MS / 1000);
             current.restart_delay_ms = seconds.saturating_mul(1000);
+        } else if eq_ignore_ascii_case(key_str, "TimeoutStartSec") {
+            current.timeout_start_sec = parse_u64(value_trimmed, 90);
+        } else if eq_ignore_ascii_case(key_str, "TimeoutStopSec") {
+            current.timeout_stop_sec = parse_u64(value_trimmed, 90);
         } else if eq_ignore_ascii_case(key_str, "After") {
             current.after = value_trimmed;
+        } else if eq_ignore_ascii_case(key_str, "Before") {
+            current.before = value_trimmed;
         } else if eq_ignore_ascii_case(key_str, "WantedBy") {
             current.wants = value_trimmed;
+        } else if eq_ignore_ascii_case(key_str, "RequiredBy") {
+            current.requires = value_trimmed;
+        } else if eq_ignore_ascii_case(key_str, "User") {
+            current.user = value_trimmed;
+        } else if eq_ignore_ascii_case(key_str, "Group") {
+            current.group = value_trimmed;
+        } else if eq_ignore_ascii_case(key_str, "WorkingDirectory") {
+            current.working_dir = value_trimmed;
+        } else if eq_ignore_ascii_case(key_str, "StandardOutput") {
+            current.standard_output = value_trimmed;
         } else if eq_ignore_ascii_case(key_str, "Unit") && current.name.is_empty() {
             current.name = value_trimmed;
         }
@@ -557,8 +649,22 @@ fn finalize_service(service: &ServiceConfig, service_count: &mut usize) {
         );
         stored.exec_start =
             store_service_field(idx, FIELD_IDX_EXEC_START, stored.exec_start, "ExecStart");
+        stored.exec_stop =
+            store_service_field(idx, FIELD_IDX_EXEC_STOP, stored.exec_stop, "ExecStop");
         stored.after = store_service_field(idx, FIELD_IDX_AFTER, stored.after, "After");
+        stored.before = store_service_field(idx, FIELD_IDX_BEFORE, stored.before, "Before");
         stored.wants = store_service_field(idx, FIELD_IDX_WANTS, stored.wants, "WantedBy");
+        stored.requires = store_service_field(idx, FIELD_IDX_REQUIRES, stored.requires, "RequiredBy");
+        stored.user = store_service_field(idx, FIELD_IDX_USER, stored.user, "User");
+        stored.group = store_service_field(idx, FIELD_IDX_GROUP, stored.group, "Group");
+        stored.working_dir =
+            store_service_field(idx, FIELD_IDX_WORKING_DIR, stored.working_dir, "WorkingDirectory");
+        stored.standard_output = store_service_field(
+            idx,
+            FIELD_IDX_STANDARD_OUTPUT,
+            stored.standard_output,
+            "StandardOutput",
+        );
 
         SERVICE_CONFIGS[idx] = stored;
         *service_count += 1;
@@ -759,32 +865,79 @@ const FALLBACK_SERVICE: ServiceConfig = ServiceConfig {
     name: "fallback-shell",
     description: "Emergency fallback interactive shell",
     exec_start: "/bin/sh",
+    exec_stop: EMPTY_STR,
+    service_type: ServiceType::Simple,
     restart: RestartPolicy::Always,
     restart_settings: RestartSettings {
         burst: MAX_RESPAWN_COUNT,
         interval_sec: RESPAWN_WINDOW_SEC,
     },
     restart_delay_ms: RESTART_DELAY_MS,
+    timeout_start_sec: 90,
+    timeout_stop_sec: 90,
     after: EMPTY_STR,
+    before: EMPTY_STR,
     wants: DEFAULT_TARGET_NAME,
+    requires: EMPTY_STR,
+    user: EMPTY_STR,
+    group: EMPTY_STR,
+    working_dir: EMPTY_STR,
+    standard_output: "journal",
 };
 
-/// Service state tracking
+/// Service state tracking with lifecycle management
 #[derive(Clone, Copy)]
-struct ServiceState {
+struct UnitState {
+    state: ServiceState,
     respawn_count: u32,
     window_start: Option<Instant>,
     total_starts: u64,
     pid: i64, // Current PID of running service (0 if not running)
+    start_time: Option<Instant>,
 }
 
-impl ServiceState {
+impl UnitState {
     const fn new() -> Self {
         Self {
+            state: ServiceState::Inactive,
             respawn_count: 0,
             window_start: None,
             total_starts: 0,
             pid: 0,
+            start_time: None,
+        }
+    }
+
+    fn transition_to(&mut self, new_state: ServiceState) {
+        self.state = new_state;
+    }
+
+    fn is_running(&self) -> bool {
+        self.state == ServiceState::Active && self.pid > 0
+    }
+
+    fn set_active(&mut self, pid: i64) {
+        self.state = ServiceState::Active;
+        self.pid = pid;
+        self.start_time = Some(Instant::now());
+    }
+
+    fn set_inactive(&mut self) {
+        self.state = ServiceState::Inactive;
+        self.pid = 0;
+        self.start_time = None;
+    }
+
+    fn set_failed(&mut self) {
+        self.state = ServiceState::Failed;
+        self.pid = 0;
+        self.start_time = None;
+    }
+
+    fn uptime(&self) -> u64 {
+        match self.start_time {
+            Some(start) => start.elapsed().as_secs(),
+            None => 0,
         }
     }
 
@@ -839,7 +992,7 @@ impl ServiceState {
 #[derive(Clone, Copy)]
 struct RunningService<'a> {
     config: &'a ServiceConfig,
-    state: ServiceState,
+    state: UnitState,
 }
 
 /// systemd-style logging with colors
@@ -857,6 +1010,17 @@ fn log_fail(msg: &str) {
 
 fn log_warn(msg: &str) {
     println!("\x1b[1;33m[ WARN ]\x1b[0m {}", msg); // Yellow
+}
+
+fn log_detail(key: &str, value: &str) {
+    println!("         {} = {}", key, value);
+}
+
+fn log_state_change(unit: &str, old_state: &str, new_state: &str) {
+    println!(
+        "\x1b[1;35m[STATE ]\x1b[0m {} state: {} -> {}",
+        unit, old_state, new_state
+    ); // Magenta
 }
 
 /// Simple timestamp (just a counter for now)
@@ -898,7 +1062,7 @@ fn init_main() -> ! {
     for i in 0..service_count {
         running_services[i] = Some(RunningService {
             config: &catalog.services[i],
-            state: ServiceState::new(),
+            state: UnitState::new(),
         });
     }
 
@@ -910,7 +1074,7 @@ fn init_main() -> ! {
         // Use FALLBACK_SERVICE configuration
         running_services[0] = Some(RunningService {
             config: &FALLBACK_SERVICE,
-            state: ServiceState::new(),
+            state: UnitState::new(),
         });
         
         parallel_service_supervisor(&mut running_services, 1, &mut buf);
@@ -926,25 +1090,32 @@ fn parallel_service_supervisor(
     buf: &mut [u8],
 ) -> ! {
     // Start all services initially
+    println!("\x1b[1;34m[INIT]\x1b[0m Starting {} services", service_count);
+    println!();
+    
     for i in 0..service_count {
         if let Some(ref mut rs) = running_services[i] {
             let service = rs.config;
             let state = &mut rs.state;
 
-            log_start("Starting unit");
-            println!("         Unit: {}", service_label(service));
+            log_start(&format!("Starting unit: {}", service_label(service)));
             
             let pid = start_service(service, buf);
             
             if pid > 0 {
-                state.pid = pid;
+                state.set_active(pid);
                 state.total_starts = state.total_starts.saturating_add(1);
-                log_info("Unit started");
-                let pid_str = itoa(pid as u64, buf);
-                println!("         PID: {}", pid_str);
+                log_info(&format!("Unit started: {} (PID: {})", service_label(service), pid));
+                
+                // For oneshot services, don't wait for them
+                if service.service_type == ServiceType::Oneshot {
+                    log_detail("Type", "oneshot");
+                }
                 println!();
             } else {
-                log_fail("Failed to start unit");
+                state.set_failed();
+                log_fail(&format!("Failed to start unit: {}", service_label(service)));
+                log_detail("ExecStart", service.exec_start);
                 println!();
             }
         }
@@ -961,8 +1132,8 @@ fn parallel_service_supervisor(
             continue;
         }
 
-    let now_marker = Instant::now();
-    let uptime = uptime_seconds();
+        let now_marker = Instant::now();
+        let uptime = uptime_seconds();
 
         // Find which service exited
         for i in 0..service_count {
@@ -970,24 +1141,29 @@ fn parallel_service_supervisor(
                 if rs.state.pid == pid {
                     let service = rs.config;
                     let state = &mut rs.state;
+                    let old_state = state.state.as_str();
 
-                    log_warn("Unit terminated");
-                    println!("         Unit: {}", service_label(service));
+                    log_warn(&format!("Unit terminated: {}", service_label(service)));
                     let pid_str = itoa(pid as u64, buf);
-                    println!("         PID: {}", pid_str);
+                    log_detail("PID", pid_str);
                     
                     // Decode POSIX wait status
                     if wifexited(status) {
                         let exit_code = wexitstatus(status);
                         let exit_str = itoa(exit_code as u64, buf);
-                        println!("         Exit code: {}", exit_str);
+                        log_detail("Exit code", exit_str);
                     } else if wifsignaled(status) {
                         let signal = wtermsig(status);
                         let sig_str = itoa(signal as u64, buf);
-                        println!("         Terminated by signal: {}", sig_str);
+                        log_detail("Terminated by signal", sig_str);
                     }
 
-                    state.pid = 0;
+                    state.set_inactive();
+                    log_state_change(
+                        service_label(service),
+                        old_state,
+                        state.state.as_str(),
+                    );
 
                     // Check if we should restart
                     let exited_with_failure = if wifexited(status) {
@@ -1007,30 +1183,50 @@ fn parallel_service_supervisor(
                     {
                         delay_ms(service.restart_delay_ms);
 
-                        log_start("Restarting unit");
-                        println!("         Unit: {}", service_label(service));
+                        log_start(&format!("Restarting unit: {}", service_label(service)));
 
                         let new_pid = start_service(service, buf);
                         if new_pid > 0 {
-                            state.pid = new_pid;
-                            log_info("Unit restarted");
-                            let new_pid_str = itoa(new_pid as u64, buf);
-                            println!("         PID: {}", new_pid_str);
+                            let old_state_str = state.state.as_str();
+                            state.set_active(new_pid);
+                            log_info(&format!(
+                                "Unit restarted: {} (PID: {})",
+                                service_label(service),
+                                new_pid
+                            ));
+                            log_state_change(
+                                service_label(service),
+                                old_state_str,
+                                state.state.as_str(),
+                            );
                             println!();
                         } else {
-                            log_fail("Failed to restart unit");
+                            state.set_failed();
+                            log_fail(&format!("Failed to restart unit: {}", service_label(service)));
                             println!();
                         }
                     } else if should_restart {
-                        log_fail("Restart limit exceeded for unit");
-                        println!("         Unit: {}", service_label(service));
+                        state.set_failed();
+                        log_fail(&format!(
+                            "Restart limit exceeded for unit: {}",
+                            service_label(service)
+                        ));
+                        log_state_change(
+                            service_label(service),
+                            old_state,
+                            state.state.as_str(),
+                        );
                         println!();
                     } else {
-                        log_info("Unit will not be restarted (policy: no restart)");
+                        log_info(&format!(
+                            "Unit will not be restarted: {} (policy: no restart)",
+                            service_label(service)
+                        ));
                         println!();
                     }
 
-                    println!("         Uptime: {}s", uptime);
+                    let uptime_str = itoa(uptime, buf);
+                    log_detail("System uptime", &format!("{}s", uptime_str));
 
                     break;
                 }
