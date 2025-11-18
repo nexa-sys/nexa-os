@@ -10,6 +10,7 @@ use core::ops::{Deref, DerefMut};
 pub const MAX_PROCESSES: usize = 64;
 pub const NUM_PRIORITIES: usize = 256;
 const DEFAULT_TIME_SLICE: u64 = 10;
+const AGING_PROMOTION_MS: u64 = 100; // Every 100ms of waiting, increase priority by 1
 
 /// Global tick counter
 static GLOBAL_TICK: AtomicU64 = AtomicU64::new(0);
@@ -47,7 +48,7 @@ pub struct ProcessEntry {
 }
 
 impl ProcessEntry {
-    pub fn new(process: Process, priority: u8, policy: SchedPolicy) -> Self {
+    pub fn new(process: Process, priority: u8, policy: SchedPolicy, nice: i8) -> Self {
         Self {
             process,
             priority,
@@ -57,7 +58,7 @@ impl ProcessEntry {
             wait_time: 0,
             last_scheduled: GLOBAL_TICK.load(Ordering::Relaxed),
             policy,
-            nice: 0,
+            nice,
             preempt_count: 0,
             voluntary_switches: 0,
             next: None,
@@ -267,7 +268,7 @@ pub fn add_process_with_policy(
     }
     
     if let Some(idx) = free_idx {
-        let entry = ProcessEntry::new(process, priority, policy);
+        let entry = ProcessEntry::new(process, priority, policy, nice);
         sched.table[idx] = Some(entry);
         
         // If ready, add to queue
@@ -376,8 +377,7 @@ pub fn schedule() -> Option<Pid> {
     // do_schedule() calls schedule() logic internally usually.
     // The existing code had schedule() return Option<Pid> and update state.
     
-    let mut sched = SCHEDULER.lock();
-    let current_pid = sched.current_pid;
+    let sched = SCHEDULER.lock();
     
     // If current process is running, we need to decide if it stays running or yields.
     // If it yields (e.g. time slice expired), it goes to Ready.
@@ -405,6 +405,51 @@ pub fn tick(elapsed_ms: u64) -> bool {
     let mut sched = SCHEDULER.lock();
     let current_pid = sched.current_pid;
     
+    // Track waiting time for ready processes and promote them if needed
+    // Collect a fixed-size list of indices to promote to avoid borrowing issues
+    let mut promote_idxs: [usize; MAX_PROCESSES] = [0; MAX_PROCESSES];
+    let mut promote_count: usize = 0;
+
+    for (i, slot) in sched.table.iter_mut().enumerate() {
+        if let Some(entry) = slot {
+            if entry.process.state == ProcessState::Ready {
+                entry.wait_time = entry.wait_time.saturating_add(elapsed_ms);
+                if entry.wait_time >= AGING_PROMOTION_MS && entry.priority < u8::MAX {
+                    promote_idxs[promote_count] = i;
+                    promote_count += 1;
+                    entry.wait_time = 0;
+                }
+            } else if entry.process.state == ProcessState::Running {
+                // Reset wait time while running
+                entry.wait_time = 0;
+            }
+        }
+    }
+
+    // Apply promotions: bump priority by 1 and move them to the corresponding queue
+    for i in 0..promote_count {
+        let idx = promote_idxs[i];
+        // Read some fields immutably first
+        let (is_ready, old_prio) = {
+            if let Some(entry) = sched.table[idx].as_ref() {
+                (entry.process.state == ProcessState::Ready, entry.priority)
+            } else {
+                (false, 0u8)
+            }
+        };
+        if !is_ready { continue; }
+
+        let new_prio = old_prio.saturating_add(1);
+
+        // Now modify the queue safely
+        sched.remove_from_queue(idx);
+        if let Some(entry_mut) = sched.table[idx].as_mut() {
+            entry_mut.priority = new_prio;
+            crate::kdebug!("Aging: Promoted PID {} to priority {}", entry_mut.process.pid, entry_mut.priority);
+        }
+        sched.enqueue(idx);
+    }
+
     if let Some(pid) = current_pid {
         // Find current process
         let mut current_idx = None;
@@ -417,12 +462,12 @@ pub fn tick(elapsed_ms: u64) -> bool {
             }
         }
         
-        if let Some(idx) = current_idx {
+            if let Some(idx) = current_idx {
             let entry = sched.table[idx].as_mut().unwrap();
-            if entry.process.state == ProcessState::Running {
+                if entry.process.state == ProcessState::Running {
                 entry.total_time += elapsed_ms;
                 
-                if entry.time_slice > elapsed_ms {
+                    if entry.time_slice > elapsed_ms {
                     entry.time_slice -= elapsed_ms;
                     
                     // Check for preemption
@@ -433,7 +478,7 @@ pub fn tick(elapsed_ms: u64) -> bool {
                         }
                     }
                     return false;
-                } else {
+                    } else {
                     // Time slice expired
                     entry.time_slice = 0;
                     return true; // Reschedule
@@ -815,6 +860,9 @@ pub fn do_schedule() {
         let entry = sched.table[idx].as_mut().unwrap();
         entry.process.state = ProcessState::Running;
         entry.time_slice = DEFAULT_TIME_SLICE;
+        // Reset dynamic priority and wait time on scheduling
+        entry.priority = entry.base_priority;
+        entry.wait_time = 0;
         entry.last_scheduled = GLOBAL_TICK.load(Ordering::Relaxed);
         
         let next_pid = entry.process.pid;
