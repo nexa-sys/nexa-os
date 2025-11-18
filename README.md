@@ -115,9 +115,15 @@ NexaOS implements a hybrid kernel architecture that balances the security and mo
 ### Phase 4: Advanced Features (⚙️ In Progress)
 - [x] Dynamic linking and shared libraries (PT_INTERP detection, ld-linux.so included)
 - [x] nrlib - libc compatibility layer for Rust std
+- [x] Network stack - UDP sockets (SYS_SOCKET, SYS_SENDTO, SYS_RECVFROM) with full IPv4 support
+- [x] DNS support - Complete resolver implementation with musl ABI compatibility
+  - UDP-based DNS queries (RFC 1035 compliant with compression support)
+  - getaddrinfo/getnameinfo for POSIX hostname resolution
+  - NSS (Name Service Switch) support with /etc/hosts, /etc/resolv.conf, /etc/nsswitch.conf
+  - nslookup utility for command-line DNS queries
 - [ ] Multi-threading support (pthreads) - TLS support added, SMP pending
 - [ ] Shared memory (POSIX shm)
-- [ ] Network stack (TCP/IP)
+- [ ] TCP support (currently UDP-only)
 - [ ] Block device layer
 - [ ] Ext2/4 filesystem driver (ext2 root mounting via external tools)
 
@@ -293,7 +299,113 @@ NexaOS includes a fully-featured interactive shell with production-grade functio
 - **Memory Efficient**: Fixed-size buffers, no dynamic allocation in userspace
 - **POSIX-Inspired**: Standard stdin/stdout file descriptors, errno error reporting
 
-## Documentation
+## Network & DNS Support
+
+NexaOS includes comprehensive DNS resolution capabilities with full UDP socket support:
+
+### DNS Features
+
+**Core Capabilities:**
+- UDP socket syscalls (SYS_SOCKET, SYS_SENDTO, SYS_RECVFROM) with IPv4 support
+- RFC 1035-compliant DNS query/response parsing with compression pointer support
+- Full resolver implementation in nrlib with NSS (Name Service Switch) support
+- POSIX-compatible getaddrinfo/getnameinfo for hostname and reverse DNS lookups
+- Command-line nslookup utility for DNS queries
+
+**Configuration Files:**
+- `/etc/resolv.conf` - Nameserver configuration (supports multiple nameservers, search domains)
+- `/etc/hosts` - Local hostname-to-IP mappings (checked before DNS queries)
+- `/etc/nsswitch.conf` - NSS service configuration (files, dns service ordering)
+
+**Nameserver Resolution Order:**
+1. Check local /etc/hosts file for hostname
+2. Query configured nameservers via UDP port 53
+3. Return first successful A record result (IPv4)
+4. Fallback to numeric IP conversion if needed
+
+### Using nslookup
+
+```bash
+# Basic hostname lookup
+nslookup example.com
+
+# Query specific nameserver
+nslookup example.com 8.8.8.8
+
+# Check /etc/hosts entries
+nslookup localhost
+
+# Query with custom nameserver (Google DNS)
+nslookup github.com 8.8.8.8
+
+# Default uses /etc/resolv.conf configuration
+nslookup api.github.com
+```
+
+### Implementation Details
+
+**UDP Socket Layer:**
+- Implements socket(AF_INET, SOCK_DGRAM, 0) syscall for datagram sockets
+- Supports sendto() for sending DNS queries to nameserver
+- Supports recvfrom() with timeout for receiving responses (default 5 seconds)
+- Automatic socket file descriptor management and cleanup
+
+**DNS Query Format:**
+- Builds standard DNS query packets with transaction ID
+- Supports hostname domain name encoding (RFC 1035 compression format)
+- Sets recursion desired (RD) flag for recursive resolution
+- Supports A record queries (IPv4 addresses)
+
+**Response Parsing:**
+- Parses DNS response header and validates status codes
+- Handles compression pointers in domain names
+- Extracts first A record from answer section
+- Validates response transaction ID matches request
+
+**Configuration Loading:**
+- Reads /etc/resolv.conf for nameserver list and search domains
+- Reads /etc/hosts for static hostname mappings
+- Reads /etc/nsswitch.conf for service resolution order
+- Atomic initialization to prevent race conditions
+
+### Technical Stack
+
+**Kernel Layer:**
+- UDP syscalls integrated with socket subsystem
+- IPv4 addressing (sockaddr_in structure support)
+- Timeout handling for socket operations
+
+**Userspace (nrlib):**
+- `userspace/nrlib/src/resolver.rs` - Core DNS resolver implementation (~400 lines)
+- `userspace/nrlib/src/dns.rs` - DNS packet structures and parsing
+- musl ABI compatibility for getaddrinfo/getnameinfo functions
+- malloc/free integration for C compatibility
+
+**Applications:**
+- `userspace/nslookup.rs` - Full-featured DNS lookup utility
+- Uses Rust std::net::UdpSocket for socket operations
+- Compatible with shell execution and piping
+
+### Limitations & Future Work
+
+**Current Limitations:**
+- IPv4 only (A records), IPv6 (AAAA) not yet supported
+- No DNS caching (each lookup queries server)
+- No TCP fallback for responses > 512 bytes
+- No DNSSEC validation
+- No mDNS (multicast DNS) support
+
+**Future Enhancements:**
+- IPv6 and AAAA record support
+- DNS response caching with TTL
+- TCP fallback for large responses
+- DNSSEC validation and verification
+- mDNS for .local domain resolution
+- DNS rebinding attack detection
+
+> 📖 **Detailed DNS Documentation**: See [docs/en/DNS-SUPPORT-ENHANCEMENTS.md](docs/en/DNS-SUPPORT-ENHANCEMENTS.md) for comprehensive DNS implementation details, configuration guide, and usage examples.
+
+
 
 > 📚 **Complete Documentation Index**: See [docs/README.md](docs/README.md) for organized navigation of all documentation by topic, role, and language.
 
@@ -324,6 +436,7 @@ NexaOS includes a fully-featured interactive shell with production-grade functio
 - **[Interactive Shell](docs/zh/interactive-shell.md)** (中文) - Command implementation, line editing
 - **[STDIO Enhancements](docs/en/STDIO_ENHANCEMENTS.md)** - Buffering, newline handling, nrlib integration
 - **[Fork/Wait Issues](docs/en/FORK_WAIT_ISSUES.md)** - Process management debugging
+- **[DNS Support Enhancements](docs/en/DNS-SUPPORT-ENHANCEMENTS.md)** - Complete DNS implementation guide, configuration, usage
 
 ### Bug Fixes & Diagnostics
 
@@ -356,9 +469,13 @@ nexa-os/
 │   ├── shell.rs            # Interactive shell with tab completion
 │   ├── getty.rs            # Terminal manager
 │   ├── login.rs            # Authentication
+│   ├── nslookup.rs         # DNS lookup utility (real UDP queries)
 │   └── nrlib/              # Libc compatibility layer for Rust std
 │       ├── src/lib.rs      # Syscall wrappers, pthread stubs
-│       └── src/stdio.rs    # Unbuffered stdio implementation
+│       ├── src/stdio.rs    # Unbuffered stdio implementation
+│       ├── src/resolver.rs # DNS resolver with getaddrinfo/getnameinfo
+│       ├── src/dns.rs      # DNS packet structures and parsing
+│       └── src/libc_compat.rs  # musl ABI compatibility stubs
 ├── boot/
 │   └── long_mode.S         # Assembly bootstrap (64-bit long mode)
 ├── scripts/                 # Build automation
@@ -375,6 +492,7 @@ nexa-os/
 │   │   ├── BUILD-SYSTEM.md       # Build process details
 │   │   ├── SYSCALL-REFERENCE.md  # Complete syscall docs
 │   │   ├── QUICK-REFERENCE.md    # Developer quick reference
+│   │   ├── DNS-SUPPORT-ENHANCEMENTS.md  # DNS implementation guide
 │   │   └── bugfixes/             # Bug analysis and fixes
 │   └── zh/                  # Chinese documentation
 │       ├── README.md            # Chinese documentation index

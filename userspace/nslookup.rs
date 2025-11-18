@@ -5,13 +5,26 @@
 ///
 /// Query types: A, AAAA, MX, NS, TXT, SOA, PTR, ANY
 ///
-/// This tool uses std's networking facilities (future: std::net::UdpSocket)
-/// For now, it reads /etc configuration files and demonstrates DNS query construction.
+/// This tool uses std's UdpSocket for real DNS queries
 
 use std::env;
 use std::fs;
 use std::io::{self, BufRead};
 use std::process;
+use std::net::{UdpSocket, SocketAddr};
+use std::time::Duration;
+
+// DNS query type constants (from nrlib dns module)
+const QTYPE_A: u16 = 1;
+const QTYPE_AAAA: u16 = 28;
+const QTYPE_MX: u16 = 15;
+const QTYPE_NS: u16 = 2;
+const QTYPE_TXT: u16 = 16;
+const QTYPE_SOA: u16 = 6;
+const QTYPE_PTR: u16 = 12;
+const QTYPE_CNAME: u16 = 5;
+const QTYPE_SRV: u16 = 33;
+const QTYPE_ANY: u16 = 255;
 
 #[derive(Debug, Clone, Copy)]
 enum QueryType {
@@ -46,16 +59,16 @@ impl QueryType {
 
     fn to_code(&self) -> u16 {
         match self {
-            QueryType::A => 1,
-            QueryType::NS => 2,
-            QueryType::CNAME => 5,
-            QueryType::SOA => 6,
-            QueryType::PTR => 12,
-            QueryType::MX => 15,
-            QueryType::TXT => 16,
-            QueryType::AAAA => 28,
-            QueryType::SRV => 33,
-            QueryType::ANY => 255,
+            QueryType::A => QTYPE_A,
+            QueryType::NS => QTYPE_NS,
+            QueryType::CNAME => QTYPE_CNAME,
+            QueryType::SOA => QTYPE_SOA,
+            QueryType::PTR => QTYPE_PTR,
+            QueryType::MX => QTYPE_MX,
+            QueryType::TXT => QTYPE_TXT,
+            QueryType::AAAA => QTYPE_AAAA,
+            QueryType::SRV => QTYPE_SRV,
+            QueryType::ANY => QTYPE_ANY,
         }
     }
 }
@@ -130,6 +143,133 @@ fn lookup_hosts(hostname: &str) -> io::Result<Option<[u8; 4]>> {
     Ok(None)
 }
 
+/// Build a simple DNS query packet for A record
+fn build_dns_query(hostname: &str, qtype: QueryType) -> Vec<u8> {
+    let mut query = vec![
+        0x12, 0x34, // Transaction ID
+        0x01, 0x00, // Flags: Standard query, recursion desired
+        0x00, 0x01, // Questions: 1
+        0x00, 0x00, // Answer RRs: 0
+        0x00, 0x00, // Authority RRs: 0
+        0x00, 0x00, // Additional RRs: 0
+    ];
+
+    // Encode domain name (e.g., example.com -> 7example3com0)
+    for label in hostname.split('.') {
+        query.push(label.len() as u8);
+        query.extend_from_slice(label.as_bytes());
+    }
+    query.push(0); // Root label
+
+    // Question type (e.g., A = 1)
+    query.extend_from_slice(&qtype.to_code().to_be_bytes());
+    // Question class (IN = 1)
+    query.extend_from_slice(&1u16.to_be_bytes());
+
+    query
+}
+
+/// Parse A record from DNS response
+fn parse_dns_response_a(response: &[u8]) -> Option<[u8; 4]> {
+    if response.len() < 12 {
+        return None;
+    }
+
+    // Check if response flag is set and no error
+    let flags = u16::from_be_bytes([response[2], response[3]]);
+    if (flags & 0x8000) == 0 || (flags & 0x0F) != 0 {
+        return None;
+    }
+
+    // Get answer count
+    let answer_count = u16::from_be_bytes([response[6], response[7]]) as usize;
+    if answer_count == 0 {
+        return None;
+    }
+
+    // Skip questions section
+    let mut offset = 12;
+    let question_count = u16::from_be_bytes([response[4], response[5]]) as usize;
+    
+    for _ in 0..question_count {
+        // Skip name (look for null terminator)
+        while offset < response.len() && response[offset] != 0 {
+            let len = response[offset] as usize;
+            if len & 0xC0 == 0xC0 {
+                // Compression pointer
+                offset += 2;
+                break;
+            } else {
+                offset += 1 + len;
+            }
+        }
+        if offset < response.len() {
+            offset += 1; // Skip null terminator
+        }
+        offset += 4; // Skip type and class
+    }
+
+    // Parse answer section
+    for _ in 0..answer_count.min(1) {
+        // Skip name
+        while offset < response.len() && response[offset] != 0 {
+            let len = response[offset];
+            if len & 0xC0 == 0xC0 {
+                offset += 2;
+                break;
+            } else {
+                offset += 1 + len as usize;
+            }
+        }
+        if offset < response.len() {
+            offset += 1; // Skip null
+        }
+
+        if offset + 10 > response.len() {
+            return None;
+        }
+
+        let rtype = u16::from_be_bytes([response[offset], response[offset + 1]]);
+        let rdlength = u16::from_be_bytes([response[offset + 8], response[offset + 9]]) as usize;
+        offset += 10;
+
+        if rtype == 1 && rdlength == 4 && offset + 4 <= response.len() {
+            // A record found
+            let ip = [
+                response[offset],
+                response[offset + 1],
+                response[offset + 2],
+                response[offset + 3],
+            ];
+            return Some(ip);
+        }
+        offset += rdlength;
+    }
+
+    None
+}
+
+/// Query DNS server via UDP
+fn query_dns(hostname: &str, nameserver: [u8; 4], qtype: QueryType) -> Option<[u8; 4]> {
+    let query = build_dns_query(hostname, qtype);
+
+    let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
+
+    let ns_addr = format!(
+        "{}.{}.{}.{}:53",
+        nameserver[0], nameserver[1], nameserver[2], nameserver[3]
+    );
+    let ns_socket_addr: SocketAddr = ns_addr.parse().ok()?;
+
+    socket.send_to(&query, ns_socket_addr).ok()?;
+
+    let mut response_buf = [0u8; 512];
+    let (n, _) = socket.recv_from(&mut response_buf).ok()?;
+
+    parse_dns_response_a(&response_buf[..n])
+}
+
 fn print_usage() {
     println!("Usage: nslookup [OPTIONS] <hostname> [nameserver]");
     println!();
@@ -139,7 +279,7 @@ fn print_usage() {
     println!();
     println!("Examples:");
     println!("  nslookup example.com");
-    println!("  nslookup -type=MX example.com");
+    println!("  nslookup -type=A example.com");
     println!("  nslookup example.com 8.8.8.8");
 }
 
@@ -225,22 +365,29 @@ fn main() {
     println!("Address:\t{}.{}.{}.{}#53", ns[0], ns[1], ns[2], ns[3]);
     println!();
 
-    println!("Query: {} IN {:?}", hostname, qtype);
-    println!();
-
-    // TODO: Implement actual DNS query using std::net::UdpSocket
-    // For now, just show what we would do
-    println!("** DNS query functionality requires UDP socket support **");
-    println!("** Waiting for std::net::UdpSocket implementation in NexaOS **");
-    println!();
-    println!("Would send DNS query:");
-    println!("  - Type: {:?} (code {})", qtype, qtype.to_code());
-    println!("  - Domain: {}", hostname);
-    println!("  - Nameserver: {}.{}.{}.{}:53", ns[0], ns[1], ns[2], ns[3]);
-    println!();
-    println!("Once UDP sockets are available, this tool will:");
-    println!("  1. Open a UDP socket");
-    println!("  2. Send DNS query packet to nameserver");
-    println!("  3. Receive and parse DNS response");
-    println!("  4. Display resolved IP addresses");
+    // Perform DNS query
+    match query_dns(&hostname, ns, qtype) {
+        Some(ip) => {
+            println!("Name:\t{}", hostname);
+            println!("Address: {}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]);
+        }
+        None => {
+            eprintln!("Error: No {} record found for {}", 
+                match qtype {
+                    QueryType::A => "A",
+                    QueryType::AAAA => "AAAA",
+                    QueryType::MX => "MX",
+                    QueryType::NS => "NS",
+                    QueryType::TXT => "TXT",
+                    QueryType::SOA => "SOA",
+                    QueryType::PTR => "PTR",
+                    QueryType::CNAME => "CNAME",
+                    QueryType::SRV => "SRV",
+                    QueryType::ANY => "ANY",
+                },
+                hostname);
+            process::exit(1);
+        }
+    }
 }
+

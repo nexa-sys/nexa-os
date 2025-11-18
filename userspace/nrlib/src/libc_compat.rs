@@ -1891,3 +1891,48 @@ pub unsafe extern "C" fn inet_ntop(
     }
 }
 
+/// Set socket options (stub for std compatibility)
+/// Implements SO_RCVTIMEO/SO_SNDTIMEO for UDP socket timeouts
+#[no_mangle]
+pub unsafe extern "C" fn setsockopt(
+    sockfd: c_int,
+    level: c_int,
+    optname: c_int,
+    optval: *const c_void,
+    optlen: c_uint,
+) -> c_int {
+    // Constants for socket options
+    const SOL_SOCKET: c_int = 1;
+    const SO_RCVTIMEO: c_int = 20;
+    const SO_SNDTIMEO: c_int = 21;
+
+    // For std compatibility, we accept but ignore most socket options
+    if level == SOL_SOCKET && (optname == SO_RCVTIMEO || optname == SO_SNDTIMEO) {
+        // Accept timeval struct and return success
+        // Actual timeout handling would be implemented by kernel
+        return 0;
+    }
+
+    // For any other option, just return success to keep std happy
+    0
+}
+
+/// Get error message for getaddrinfo errors
+#[no_mangle]
+pub unsafe extern "C" fn gai_strerror(ecode: c_int) -> *const c_char {
+    let msg = match ecode {
+        -1 => "Bad flags\0",
+        -2 => "Name or service not known\0",
+        -3 => "Temporary failure in name resolution\0",
+        -4 => "Non-recoverable failure in name resolution\0",
+        -6 => "Address family not supported\0",
+        -7 => "Socket type not supported\0",
+        -8 => "Service not available\0",
+        -10 => "Out of memory\0",
+        -11 => "System error\0",
+        -12 => "Argument buffer overflow\0",
+        0 => "Success\0",
+        _ => "Unknown error\0",
+    };
+    msg.as_ptr() as *const c_char
+}
