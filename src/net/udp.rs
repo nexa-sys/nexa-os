@@ -348,8 +348,10 @@ impl<'a> UdpDatagramMut<'a> {
 
     /// Finalize the datagram by calculating checksum
     pub fn finalize(mut self, src_ip: &Ipv4Address, dst_ip: &Ipv4Address) -> &'a [u8] {
-        let payload = &self.buffer[UdpHeader::SIZE..UdpHeader::SIZE + self.data_len];
-        self.header_mut().calculate_checksum(src_ip, dst_ip, payload);
+        let (header_bytes, payload_bytes) = self.buffer.split_at_mut(UdpHeader::SIZE);
+        let header = unsafe { &mut *(header_bytes.as_mut_ptr() as *mut UdpHeader) };
+        let payload = &payload_bytes[..self.data_len];
+        header.calculate_checksum(src_ip, dst_ip, payload);
         &self.buffer[..UdpHeader::SIZE + self.data_len]
     }
 

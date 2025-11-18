@@ -587,7 +587,7 @@ fn syscall_exit(code: i32) -> ! {
     // 3. The scheduler will skip zombie processes, switching to a Ready process
     // 4. Parent's wait4() will eventually detect the zombie and call remove_process()
     //
-    // The CR3 switching problem is solved because:
+    // The CR3 switching problem
     // 1. When do_schedule() switches to another process's CR3, we never return here
     // 2. This zombie process stays in Zombie state until parent reaps it
     // 3. No code after do_schedule() will execute in the zombie's context
@@ -2677,19 +2677,19 @@ fn syscall_socket(domain: i32, socket_type: i32, protocol: i32) -> u64 {
     crate::kinfo!("[SYS_SOCKET] domain={} type={} protocol={}", domain, socket_type, protocol);
     
     // Validate parameters
-    if domain != AF_INET {
+    if domain != AF_INET && domain != AF_NETLINK {
         crate::kwarn!("[SYS_SOCKET] Unsupported domain: {}", domain);
         posix::set_errno(posix::errno::EAFNOSUPPORT);
         return u64::MAX;
     }
 
-    if socket_type != SOCK_DGRAM {
+    if socket_type != SOCK_DGRAM && socket_type != SOCK_RAW {
         crate::kwarn!("[SYS_SOCKET] Unsupported socket type: {}", socket_type);
-        posix::set_errno(posix::errno::ENOSYS); // Only UDP (SOCK_DGRAM) supported for now
+        posix::set_errno(posix::errno::ENOSYS); // Only UDP (SOCK_DGRAM) and Netlink (SOCK_RAW/DGRAM) supported
         return u64::MAX;
     }
 
-    if protocol != 0 && protocol != IPPROTO_UDP {
+    if protocol != 0 && protocol != IPPROTO_UDP && domain != AF_NETLINK {
         crate::kwarn!("[SYS_SOCKET] Unsupported protocol: {}", protocol);
         posix::set_errno(posix::errno::EINVAL);
         return u64::MAX;
@@ -2699,13 +2699,31 @@ fn syscall_socket(domain: i32, socket_type: i32, protocol: i32) -> u64 {
     unsafe {
         for idx in 0..MAX_OPEN_FILES {
             if FILE_HANDLES[idx].is_none() {
-                // Socket will be bound later on bind()
+                let mut socket_index = usize::MAX;
+                
+                // For Netlink, allocate socket immediately
+                if domain == AF_NETLINK {
+                    if let Some(res) = crate::net::with_net_stack(|stack| stack.netlink_socket()) {
+                        match res {
+                            Ok(i) => socket_index = i,
+                            Err(_) => {
+                                posix::set_errno(posix::errno::ENOMEM);
+                                return u64::MAX;
+                            }
+                        }
+                    } else {
+                        posix::set_errno(posix::errno::ENETDOWN);
+                        return u64::MAX;
+                    }
+                }
+
+                // Socket will be bound later on bind() for UDP
                 // For now, just reserve the fd with a socket handle
                 let socket_handle = SocketHandle {
-                    socket_index: usize::MAX, // Not allocated to network stack yet
+                    socket_index, 
                     domain,
                     socket_type,
-                    protocol: IPPROTO_UDP,
+                    protocol: if domain == AF_NETLINK { 0 } else { IPPROTO_UDP },
                 };
 
                 let metadata = crate::posix::Metadata::empty()
@@ -2769,6 +2787,29 @@ fn syscall_bind(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
             posix::set_errno(posix::errno::ENOTSOCK);
             return u64::MAX;
         };
+
+        if sock_handle.domain == AF_NETLINK {
+            let addr_ref = &*addr;
+            if addr_ref.sa_family != AF_NETLINK as u16 {
+                posix::set_errno(posix::errno::EINVAL);
+                return u64::MAX;
+            }
+            
+            let pid = u32::from_ne_bytes([addr_ref.sa_data[0], addr_ref.sa_data[1], addr_ref.sa_data[2], addr_ref.sa_data[3]]);
+            let groups = u32::from_ne_bytes([addr_ref.sa_data[4], addr_ref.sa_data[5], addr_ref.sa_data[6], addr_ref.sa_data[7]]);
+            
+            if let Some(res) = crate::net::with_net_stack(|stack| stack.netlink_bind(sock_handle.socket_index, pid, groups)) {
+                match res {
+                    Ok(_) => return 0,
+                    Err(_) => {
+                        posix::set_errno(posix::errno::EADDRINUSE);
+                        return u64::MAX;
+                    }
+                }
+            }
+            posix::set_errno(posix::errno::ENETDOWN);
+            return u64::MAX;
+        }
 
         if sock_handle.domain != AF_INET
             || sock_handle.socket_type != SOCK_DGRAM
@@ -2866,6 +2907,21 @@ fn syscall_sendto(
             posix::set_errno(posix::errno::ENOTSOCK);
             return u64::MAX;
         };
+
+        if sock_handle.domain == AF_NETLINK {
+            let data = slice::from_raw_parts(buf, len);
+            if let Some(res) = crate::net::with_net_stack(|stack| stack.netlink_send(sock_handle.socket_index, data)) {
+                match res {
+                    Ok(_) => return len as u64,
+                    Err(_) => {
+                        posix::set_errno(posix::errno::EIO);
+                        return u64::MAX;
+                    }
+                }
+            }
+            posix::set_errno(posix::errno::ENETDOWN);
+            return u64::MAX;
+        }
 
         // Verify it's a UDP socket
         if sock_handle.domain != AF_INET
@@ -2968,6 +3024,21 @@ fn syscall_recvfrom(
             posix::set_errno(posix::errno::ENOTSOCK);
             return u64::MAX;
         };
+
+        if sock_handle.domain == AF_NETLINK {
+            let buffer = slice::from_raw_parts_mut(buf, len);
+            if let Some(res) = crate::net::with_net_stack(|stack| stack.netlink_receive(sock_handle.socket_index, buffer)) {
+                match res {
+                    Ok(n) => return n as u64,
+                    Err(_) => {
+                        posix::set_errno(posix::errno::EAGAIN);
+                        return u64::MAX;
+                    }
+                }
+            }
+            posix::set_errno(posix::errno::ENETDOWN);
+            return u64::MAX;
+        }
 
         // Verify it's a UDP socket
         if sock_handle.domain != AF_INET

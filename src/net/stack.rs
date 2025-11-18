@@ -4,6 +4,7 @@ use super::arp::{ArpCache, ArpOperation, ArpPacket};
 use super::drivers::NetError;
 use super::ethernet::{EtherType, EthernetFrame, MacAddress};
 use super::ipv4::{IpProtocol, Ipv4Address, Ipv4Header};
+use super::netlink::{NetlinkSubsystem, NetlinkSocket};
 use super::udp::{UdpDatagram, UdpDatagramMut, UdpHeader};
 
 pub const MAX_FRAME_SIZE: usize = 1536;
@@ -205,6 +206,7 @@ pub struct NetStack {
     devices: [DeviceInfo; super::MAX_NET_DEVICES],
     tcp: TcpEndpoint,
     udp_sockets: [UdpSocket; MAX_UDP_SOCKETS],
+    pub netlink: NetlinkSubsystem,
     arp_cache: ArpCache,
 }
 
@@ -214,6 +216,7 @@ impl NetStack {
             devices: [DeviceInfo::empty(); super::MAX_NET_DEVICES],
             tcp: TcpEndpoint::new(),
             udp_sockets: [UdpSocket::empty(); MAX_UDP_SOCKETS],
+            netlink: NetlinkSubsystem::new(),
             arp_cache: ArpCache::new(),
         }
     }
@@ -396,12 +399,16 @@ impl NetStack {
 
         // Calculate UDP checksum with pseudo-header
         let src_ip_addr = Ipv4Address::from(device.ip);
-        let udp_checksum = UdpHeader::calculate_checksum(
-            &src_ip_addr,
-            &dst_ip_addr,
-            &packet[udp_offset..udp_offset + udp_len],
-        );
-        packet[udp_offset + 6..udp_offset + 8].copy_from_slice(&udp_checksum.to_be_bytes());
+        
+        // Cast the UDP header part of the packet to UdpHeader
+        let header_ptr = packet[udp_offset..].as_mut_ptr() as *mut UdpHeader;
+        let header = unsafe { &mut *header_ptr };
+        
+        // The payload is after the header
+        let payload = &packet[udp_offset + 8..udp_offset + udp_len];
+        
+        header.calculate_checksum(&src_ip_addr, &dst_ip_addr, payload);
+        // Checksum is now set in the packet buffer because header points to it.
 
         tx.push(&packet[..frame_len])?;
         Ok(())
@@ -615,9 +622,9 @@ impl NetStack {
             
             if !temp_header.verify_checksum(&src_ip, &dst_ip, payload) {
                 crate::kwarn!(
-                    "net: UDP checksum mismatch on port {} from {}:{}",
+                    "net: UDP checksum mismatch on port {} from {}.{}.{}.{}:{}",
                     dst_port,
-                    frame[26], frame[27], src_port
+                    frame[26], frame[27], frame[28], frame[29], src_port
                 );
                 return Ok(());
             }
@@ -657,7 +664,7 @@ impl NetStack {
             match self.udp_sockets[idx].enqueue_packet(src_ip_bytes, src_port, payload) {
                 Ok(()) => {
                     crate::kinfo!(
-                        "net: UDP datagram received on port {}, from {}:{} ({} bytes)",
+                        "net: UDP datagram received on port {}, from {}.{}.{}.{}:{} ({} bytes)",
                         dst_port,
                         frame[26], frame[27], frame[28], frame[29],
                         src_port,
@@ -674,13 +681,76 @@ impl NetStack {
             }
         } else {
             crate::kinfo!(
-                "net: UDP packet to port {} from {}:{} (no matching socket)",
+                "net: UDP packet to port {} from {}.{}.{}.{}:{} (no matching socket)",
                 dst_port,
                 frame[26], frame[27], frame[28], frame[29],
                 src_port
             );
         }
 
+        Ok(())
+    }
+
+    /// Create a netlink socket
+    pub fn netlink_socket(&mut self) -> Result<usize, NetError> {
+        self.netlink.create_socket()
+    }
+
+    /// Close a netlink socket
+    pub fn netlink_close(&mut self, socket_idx: usize) -> Result<(), NetError> {
+        self.netlink.close_socket(socket_idx)
+    }
+
+    /// Bind a netlink socket
+    pub fn netlink_bind(&mut self, socket_idx: usize, pid: u32, groups: u32) -> Result<(), NetError> {
+        self.netlink.bind(socket_idx, pid, groups)
+    }
+
+    /// Send a netlink message (from user to kernel)
+    /// This processes the request and queues the response
+    pub fn netlink_send(&mut self, socket_idx: usize, data: &[u8]) -> Result<(), NetError> {
+        self.netlink_handle_request(socket_idx, data)
+    }
+
+    /// Receive a netlink message (from kernel to user)
+    pub fn netlink_receive(&mut self, socket_idx: usize, buffer: &mut [u8]) -> Result<usize, NetError> {
+        self.netlink.recv_message(socket_idx, buffer)
+    }
+
+    /// Handle netlink request from userspace
+    pub fn netlink_handle_request(&mut self, socket_idx: usize, data: &[u8]) -> Result<(), NetError> {
+        use super::netlink::{
+            NlMsgHdr, IfInfoMsg, IfAddrMsg, 
+            NLMSG_DONE, RTM_GETLINK, RTM_GETADDR, RTM_NEWLINK, RTM_NEWADDR,
+            IFLA_IFNAME, IFLA_MTU, IFLA_OPERSTATE, IFLA_ADDRESS,
+            IFA_ADDRESS, IFA_LABEL
+        };
+
+        if data.len() < core::mem::size_of::<NlMsgHdr>() {
+            return Err(NetError::InvalidPacket);
+        }
+
+        let hdr = unsafe { &*(data.as_ptr() as *const NlMsgHdr) };
+        
+        match hdr.nlmsg_type {
+            RTM_GETLINK => {
+                // Send info for all devices
+                for (i, dev) in self.devices.iter().enumerate() {
+                    if !dev.present { continue; }
+                    
+                    // Construct response... 
+                    // For now, just a placeholder implementation
+                    // In a real implementation, we would construct the full netlink message
+                    // with attributes for each interface.
+                }
+                // Send DONE message
+            }
+            RTM_GETADDR => {
+                // Send address info
+            }
+            _ => {}
+        }
+        
         Ok(())
     }
 
@@ -748,12 +818,16 @@ fn tcp_checksum(src_ip: &[u8], dst_ip: &[u8], segment: &[u8]) -> u16 {
     checksum_with_initial(segment, sum as u32)
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq)]
 enum TcpState {
     Closed,
+    Listen,
     SynReceived,
     Established,
+    FinWait1,
+    FinWait2,
     Closing,
+    TimeWait,
 }
 
 struct TcpEndpoint {
@@ -764,8 +838,10 @@ struct TcpEndpoint {
     peer_mac: [u8; 6],
     peer_ip: [u8; 4],
     peer_port: u16,
-    snd_nxt: u32,
+    seq: u32,
+    ack: u32,
     snd_una: u32,
+    snd_nxt: u32,
     rcv_nxt: u32,
     last_activity: u64,
 }
@@ -773,18 +849,32 @@ struct TcpEndpoint {
 impl TcpEndpoint {
     const fn new() -> Self {
         Self {
-            state: TcpState::Closed,
+            state: TcpState::Listen,
             device_idx: None,
             local_mac: [0; 6],
             local_ip: [0; 4],
             peer_mac: [0; 6],
             peer_ip: [0; 4],
             peer_port: 0,
-            snd_nxt: 0,
+            seq: 0,
+            ack: 0,
             snd_una: 0,
+            snd_nxt: 0,
             rcv_nxt: 0,
             last_activity: 0,
         }
+    }
+
+    fn reset(&mut self) {
+        self.state = TcpState::Listen;
+        self.peer_mac = [0; 6];
+        self.peer_ip = [0; 4];
+        self.peer_port = 0;
+        self.seq = 0;
+        self.ack = 0;
+        self.snd_una = 0;
+        self.snd_nxt = 0;
+        self.rcv_nxt = 0;
     }
 
     fn register_local(&mut self, device_idx: usize, mac: [u8; 6], ip: [u8; 4]) {
@@ -974,16 +1064,5 @@ impl TcpEndpoint {
 
     fn generate_iss(&self) -> u32 {
         (logger::boot_time_us() as u32) ^ 0x1357_9BDF
-    }
-
-    fn reset(&mut self) {
-        self.state = TcpState::Closed;
-        self.device_idx = None;
-        self.peer_mac = [0; 6];
-        self.peer_ip = [0; 4];
-        self.peer_port = 0;
-        self.snd_nxt = 0;
-        self.snd_una = 0;
-        self.rcv_nxt = 0;
     }
 }

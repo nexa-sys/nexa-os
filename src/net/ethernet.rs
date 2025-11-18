@@ -45,6 +45,20 @@ impl core::fmt::Display for MacAddress {
     }
 }
 
+impl From<[u8; 6]> for MacAddress {
+    fn from(bytes: [u8; 6]) -> Self {
+        Self(bytes)
+    }
+}
+
+impl From<&[u8]> for MacAddress {
+    fn from(bytes: &[u8]) -> Self {
+        let mut arr = [0u8; 6];
+        arr.copy_from_slice(&bytes[..6]);
+        Self(arr)
+    }
+}
+
 /// EtherType values
 #[repr(u16)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

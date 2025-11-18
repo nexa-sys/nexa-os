@@ -55,6 +55,20 @@ impl core::fmt::Display for Ipv4Address {
     }
 }
 
+impl From<[u8; 4]> for Ipv4Address {
+    fn from(bytes: [u8; 4]) -> Self {
+        Self(bytes)
+    }
+}
+
+impl From<&[u8]> for Ipv4Address {
+    fn from(bytes: &[u8]) -> Self {
+        let mut arr = [0u8; 4];
+        arr.copy_from_slice(&bytes[..4]);
+        Self(arr)
+    }
+}
+
 /// IP protocol numbers
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -15,6 +15,7 @@ const SYS_GETPEERNAME: usize = 52;
 // Socket domain constants (POSIX)
 pub const AF_INET: i32 = 2;       // IPv4
 pub const AF_INET6: i32 = 10;     // IPv6
+pub const AF_NETLINK: i32 = 16;   // Netlink
 pub const AF_UNSPEC: i32 = 0;     // Unspecified
 
 // Socket type constants (POSIX)
@@ -27,6 +28,42 @@ pub const IPPROTO_IP: i32 = 0;    // Dummy protocol for TCP
 pub const IPPROTO_ICMP: i32 = 1;  // ICMP
 pub const IPPROTO_TCP: i32 = 6;   // TCP
 pub const IPPROTO_UDP: i32 = 17;  // UDP
+
+/// Netlink socket address
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct SockAddrNl {
+    pub nl_family: u16,     // AF_NETLINK
+    pub nl_pad: u16,        // Zero
+    pub nl_pid: u32,        // Port ID
+    pub nl_groups: u32,     // Multicast groups mask
+}
+
+impl SockAddrNl {
+    pub fn new(pid: u32, groups: u32) -> Self {
+        Self {
+            nl_family: AF_NETLINK as u16,
+            nl_pad: 0,
+            nl_pid: pid,
+            nl_groups: groups,
+        }
+    }
+}
+
+impl From<SockAddrNl> for SockAddr {
+    fn from(addr: SockAddrNl) -> Self {
+        let mut sa_data = [0u8; 14];
+        // nl_pid (4 bytes)
+        sa_data[0..4].copy_from_slice(&addr.nl_pid.to_ne_bytes());
+        // nl_groups (4 bytes)
+        sa_data[4..8].copy_from_slice(&addr.nl_groups.to_ne_bytes());
+        // Rest is zero padding
+        Self {
+            sa_family: addr.nl_family,
+            sa_data,
+        }
+    }
+}
 
 /// sockaddr_in structure (POSIX-compatible)
 #[repr(C)]

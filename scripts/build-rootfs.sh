@@ -58,6 +58,10 @@ path = "../../userspace/nslookup.rs"
 name = "uefi-compatd"
 path = "../../userspace/uefi_compatd.rs"
 
+[[bin]]
+name = "ip"
+path = "../../userspace/ip.rs"
+
 [profile.release]
 panic = "abort"
 opt-level = 2
@@ -139,6 +143,12 @@ RUSTFLAGS="$STD_RUSTFLAGS" \
     cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release \
     --bin uefi-compatd --no-default-features --features use-nrlib-std
 
+# Build ip tool
+echo "Building ip tool with std..."
+RUSTFLAGS="$STD_RUSTFLAGS" \
+    cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release \
+    --bin ip
+
 # Copy binaries to rootfs
 echo "Copying binaries to rootfs..."
 cp "target/x86_64-nexaos-userspace/release/ni" "$ROOTFS_DIR/sbin/ni"
@@ -148,6 +158,7 @@ cp "target/x86_64-nexaos-userspace/release/login" "$ROOTFS_DIR/bin/login"
 cp "target/x86_64-nexaos-userspace/release/nslookup" "$ROOTFS_DIR/bin/nslookup"
 # cp "target/x86_64-nexaos-userspace/release/udp_test" "$ROOTFS_DIR/bin/udp_test"
 cp "target/x86_64-nexaos-userspace/release/uefi-compatd" "$ROOTFS_DIR/sbin/uefi-compatd"
+cp "target/x86_64-nexaos-userspace/release/ip" "$ROOTFS_DIR/bin/ip"
 
 # Strip symbols
 strip --strip-all "$ROOTFS_DIR/sbin/ni" 2>/dev/null || true
@@ -157,6 +168,7 @@ strip --strip-all "$ROOTFS_DIR/bin/login" 2>/dev/null || true
 strip --strip-all "$ROOTFS_DIR/bin/nslookup" 2>/dev/null || true
 # strip --strip-all "$ROOTFS_DIR/bin/udp_test" 2>/dev/null || true
 strip --strip-all "$ROOTFS_DIR/sbin/uefi-compatd" 2>/dev/null || true
+strip --strip-all "$ROOTFS_DIR/bin/ip" 2>/dev/null || true
 
 # Copy dynamic linker for dynamically linked programs
 echo "Copying dynamic linker..."

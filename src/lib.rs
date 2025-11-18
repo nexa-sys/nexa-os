@@ -20,6 +20,7 @@ pub mod keyboard;
 pub mod lapic;
 pub mod logger;
 pub mod memory;
+pub mod net;
 pub mod paging;
 pub mod pipe;
 pub mod posix;

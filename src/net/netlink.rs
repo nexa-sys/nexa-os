@@ -13,10 +13,10 @@ pub const NLMSG_DONE: u16 = 3;
 pub const NLMSG_ERROR: u16 = 2;
 
 /// RTM message types
-pub const RTM_GETLINK: u8 = 18;    // Get link info
-pub const RTM_GETADDR: u8 = 22;    // Get address info
-pub const RTM_NEWLINK: u8 = 16;    // New link
-pub const RTM_NEWADDR: u8 = 20;    // New address
+pub const RTM_GETLINK: u16 = 18;    // Get link info
+pub const RTM_GETADDR: u16 = 22;    // Get address info
+pub const RTM_NEWLINK: u16 = 16;    // New link
+pub const RTM_NEWADDR: u16 = 20;    // New address
 
 /// Interface info attributes
 pub const IFLA_IFNAME: u16 = 3;    // Interface name

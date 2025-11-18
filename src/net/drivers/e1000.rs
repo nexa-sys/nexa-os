@@ -304,3 +304,5 @@ impl E1000 {
         unsafe { ptr::read_volatile(self.base.add(offset as usize) as *const u32) }
     }
 }
+
+unsafe impl Send for E1000 {}

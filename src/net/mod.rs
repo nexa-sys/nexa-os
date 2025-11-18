@@ -4,7 +4,7 @@ use spin::Mutex;
 
 use crate::{
     bootinfo,
-    interrupts::{self, LegacyIrqError, LegacyIrqHandler},
+    interrupts,
     logger,
     uefi_compat::NetworkDescriptor,
 };
@@ -73,6 +73,18 @@ lazy_static! {
 }
 
 const INVALID_IRQ_LINE: u8 = 0xFF;
+
+/// Access the network stack safely
+pub fn with_net_stack<F, R>(f: F) -> Option<R>
+where
+    F: FnOnce(&mut stack::NetStack) -> R,
+{
+    // We can access the stack even if not fully initialized (e.g. for socket creation)
+    // but usually we want it initialized.
+    // However, for syscalls, we might need it.
+    let mut state = NET_STATE.lock();
+    Some(f(&mut state.stack))
+}
 
 /// Called from the UEFI compatibility layer to mirror descriptors into the
 /// runtime registry.
@@ -157,6 +169,10 @@ fn register_device_irq(idx: usize, line: u8) {
         return;
     }
 
+    // IRQ registration temporarily disabled until interrupts module supports dynamic registration
+    crate::kwarn!("net: IRQ registration not supported yet, device {} will rely on polling", idx);
+    
+    /*
     let mut cookies = IRQ_COOKIES.lock();
     cookies[idx].device_index = idx;
     let cookie_ptr = &cookies[idx] as *const IrqCookie as *mut ();
@@ -183,6 +199,7 @@ fn register_device_irq(idx: usize, line: u8) {
             );
         }
     }
+    */
 }
 
 fn net_irq_trampoline(_line: u8, ctx: *mut ()) {
@@ -195,10 +212,13 @@ fn net_irq_trampoline(_line: u8, ctx: *mut ()) {
 
 /// Invoked from the shared IRQ dispatcher when the NIC asserts INTx.
 pub fn handle_irq(device_index: usize) {
-    let mut state = NET_STATE.lock();
+    let mut guard = NET_STATE.lock();
+    let state = &mut *guard;
+    let stack = &mut state.stack;
+    
     if let Some(slot) = state.slots.get_mut(device_index) {
         if let Some(driver) = slot.driver.as_mut() {
-            drain_rx(driver, &mut state, device_index);
+            drain_rx(driver, stack, device_index);
         }
     }
 }
@@ -211,18 +231,23 @@ pub fn poll() {
     }
 
     let now_ms = logger::boot_time_us() / 1_000;
-    let mut state = NET_STATE.lock();
+    let mut guard = NET_STATE.lock();
+    let state = &mut *guard;
+    
     if state.last_poll_ms == now_ms {
         return;
     }
 
+    let stack = &mut state.stack;
+    let slots = &mut state.slots;
+
     for idx in 0..MAX_NET_DEVICES {
-        if let Some(driver) = state.slots[idx].driver.as_mut() {
-            drain_rx(driver, &mut state, idx);
+        if let Some(driver) = slots[idx].driver.as_mut() {
+            drain_rx(driver, stack, idx);
             if let Err(err) = driver.maintenance() {
                 crate::kwarn!("net: maintenance error on device {} ({:?})", idx, err);
             }
-            if let Err(err) = produce_pending_frames(driver, &mut state, idx, now_ms) {
+            if let Err(err) = produce_pending_frames(driver, stack, idx, now_ms) {
                 crate::kwarn!("net: stack poll error on device {} ({:?})", idx, err);
             }
         }
@@ -230,11 +255,12 @@ pub fn poll() {
 
     state.last_poll_ms = now_ms;
 }
-fn drain_rx(driver: &mut drivers::DriverInstance, state: &mut NetState, device_index: usize) {
+
+fn drain_rx(driver: &mut drivers::DriverInstance, stack: &mut stack::NetStack, device_index: usize) {
     let mut scratch = [0u8; stack::MAX_FRAME_SIZE];
     while let Some(len) = driver.drain_rx(&mut scratch) {
         let mut responses = stack::TxBatch::new();
-        if let Err(err) = state.stack.handle_frame(device_index, &scratch[..len], &mut responses)
+        if let Err(err) = stack.handle_frame(device_index, &scratch[..len], &mut responses)
         {
             crate::kwarn!(
                 "net: frame processing failed on device {} ({:?})",
@@ -249,13 +275,12 @@ fn drain_rx(driver: &mut drivers::DriverInstance, state: &mut NetState, device_i
 
 fn produce_pending_frames(
     driver: &mut drivers::DriverInstance,
-    state: &mut NetState,
+    stack: &mut stack::NetStack,
     device_index: usize,
     now_ms: u64,
 ) -> Result<(), NetError> {
     let mut responses = stack::TxBatch::new();
-    state
-        .stack
+    stack
         .poll_device(device_index, now_ms, &mut responses)?;
     transmit_batch(driver, &responses, device_index);
     Ok(())
