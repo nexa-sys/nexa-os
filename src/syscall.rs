@@ -260,6 +260,16 @@ struct SockAddr {
     sa_data: [u8; 14], // Address data
 }
 
+/// Minimal netlink sockaddr passed from userspace (matches Linux layout)
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct SockAddrNetlink {
+    nl_family: u16,
+    nl_pad: u16,
+    nl_pid: u32,
+    nl_groups: u32,
+}
+
 /// Socket handle - references a socket in the network stack
 #[derive(Clone, Copy)]
 struct SocketHandle {
@@ -2844,26 +2854,38 @@ fn syscall_bind(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
         };
 
         if sock_handle.domain == AF_NETLINK {
-            let addr_ref = &*addr;
-            if addr_ref.sa_family != AF_NETLINK as u16 {
+            let nl_len = core::mem::size_of::<SockAddrNetlink>() as u32;
+            if addrlen < nl_len {
+                posix::set_errno(posix::errno::EINVAL);
+                return u64::MAX;
+            }
+            if !user_buffer_in_range(addr as u64, nl_len as u64) {
+                posix::set_errno(posix::errno::EFAULT);
+                return u64::MAX;
+            }
+
+            let mut addr_nl = SockAddrNetlink {
+                nl_family: 0,
+                nl_pad: 0,
+                nl_pid: 0,
+                nl_groups: 0,
+            };
+            #[allow(unused_unsafe)]
+            unsafe {
+                // SAFETY: user pointer and length were validated above, so copying is safe.
+                ptr::copy_nonoverlapping(
+                    addr as *const u8,
+                    &mut addr_nl as *mut SockAddrNetlink as *mut u8,
+                    nl_len as usize,
+                );
+            }
+            if addr_nl.nl_family != AF_NETLINK as u16 {
                 posix::set_errno(posix::errno::EINVAL);
                 return u64::MAX;
             }
 
-            // For netlink sockaddr: family(2) + pad(2) + pid(4) + groups(4)
-            // Mapped to sa_data: sa_data[0:2]=pad, sa_data[2:6]=pid, sa_data[6:10]=groups
-            let pid = u32::from_ne_bytes([
-                addr_ref.sa_data[2],
-                addr_ref.sa_data[3],
-                addr_ref.sa_data[4],
-                addr_ref.sa_data[5],
-            ]);
-            let groups = u32::from_ne_bytes([
-                addr_ref.sa_data[6],
-                addr_ref.sa_data[7],
-                addr_ref.sa_data[8],
-                addr_ref.sa_data[9],
-            ]);
+            let pid = addr_nl.nl_pid;
+            let groups = addr_nl.nl_groups;
 
             crate::kinfo!(
                 "[SYS_BIND] Netlink: pid={}, groups={}, addrlen={}",
