@@ -726,7 +726,52 @@ fn syscall_close(fd: u64) -> u64 {
     }
 
     unsafe {
-        if FILE_HANDLES[idx].is_some() {
+        if let Some(handle) = FILE_HANDLES[idx].as_ref() {
+            // If this is a network socket, attempt to close it in the network stack
+            if let FileBacking::Socket(sock_handle) = handle.backing {
+                // Only close if the underlying socket index was allocated
+                if sock_handle.socket_index != usize::MAX {
+                    // Use the net stack if available
+                    if let Some(res) = crate::net::with_net_stack(|stack| {
+                        if sock_handle.domain == AF_NETLINK {
+                            stack.netlink_close(sock_handle.socket_index)
+                        } else {
+                            stack.udp_close(sock_handle.socket_index)
+                        }
+                    }) {
+                        match res {
+                            Ok(_) => {
+                                crate::kinfo!("Closed network socket idx {} for fd {}", sock_handle.socket_index, fd);
+                            }
+                            Err(e) => {
+                                crate::kinfo!("Failed to close network socket idx {}: {:?}", sock_handle.socket_index, e);
+                                // Map some net errors to errno values
+                                match e {
+                                    crate::net::NetError::InvalidSocket => {
+                                        posix::set_errno(posix::errno::EBADF);
+                                    }
+                                    crate::net::NetError::TooManyConnections => {
+                                        posix::set_errno(posix::errno::EMFILE);
+                                    }
+                                    crate::net::NetError::AddressInUse => {
+                                        posix::set_errno(posix::errno::EADDRINUSE);
+                                    }
+                                    _ => {
+                                        posix::set_errno(posix::errno::EIO);
+                                    }
+                                }
+                                return u64::MAX;
+                            }
+                        }
+                    } else {
+                        // Network stack unavailable
+                        posix::set_errno(posix::errno::ENETDOWN);
+                        return u64::MAX;
+                    }
+                }
+            }
+
+            // Remove the file handle
             FILE_HANDLES[idx] = None;
             crate::kinfo!("Closed fd {}", fd);
             posix::set_errno(0);
