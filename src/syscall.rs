@@ -741,10 +741,18 @@ fn syscall_close(fd: u64) -> u64 {
                     }) {
                         match res {
                             Ok(_) => {
-                                crate::kinfo!("Closed network socket idx {} for fd {}", sock_handle.socket_index, fd);
+                                crate::kinfo!(
+                                    "Closed network socket idx {} for fd {}",
+                                    sock_handle.socket_index,
+                                    fd
+                                );
                             }
                             Err(e) => {
-                                crate::kinfo!("Failed to close network socket idx {}: {:?}", sock_handle.socket_index, e);
+                                crate::kinfo!(
+                                    "Failed to close network socket idx {}: {:?}",
+                                    sock_handle.socket_index,
+                                    e
+                                );
                                 // Map some net errors to errno values
                                 match e {
                                     crate::net::NetError::InvalidSocket => {
@@ -1412,7 +1420,6 @@ fn syscall_kill(pid: u64, signum: u64) -> u64 {
     posix::set_errno(0);
     0
 }
-
 
 /// POSIX fork() system call - create child process
 fn syscall_fork(syscall_return_addr: u64) -> u64 {
@@ -2850,7 +2857,9 @@ fn syscall_socket(domain: i32, socket_type: i32, protocol: i32) -> u64 {
                             if socket.socket_index != usize::MAX {
                                 match socket.domain {
                                     AF_NETLINK => {
-                                        if socket.socket_index >= crate::net::netlink::MAX_NETLINK_SOCKETS {
+                                        if socket.socket_index
+                                            >= crate::net::netlink::MAX_NETLINK_SOCKETS
+                                        {
                                             crate::kerror!(
                                                 "[SYS_SOCKET] Detected invalid netlink socket_index {} at fh idx {}",
                                                 socket.socket_index,
@@ -2859,7 +2868,8 @@ fn syscall_socket(domain: i32, socket_type: i32, protocol: i32) -> u64 {
                                         }
                                     }
                                     AF_INET => {
-                                        if socket.socket_index >= crate::net::stack::MAX_UDP_SOCKETS {
+                                        if socket.socket_index >= crate::net::stack::MAX_UDP_SOCKETS
+                                        {
                                             crate::kerror!(
                                                 "[SYS_SOCKET] Detected invalid udp socket_index {} at fh idx {}",
                                                 socket.socket_index,
@@ -3039,8 +3049,8 @@ fn syscall_bind(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
             }
 
             if let Some(res) = crate::net::with_net_stack(|stack| {
-                    stack.netlink_bind(sock_handle.socket_index, pid, groups)
-                }) {
+                stack.netlink_bind(sock_handle.socket_index, pid, groups)
+            }) {
                 match res {
                     Ok(_) => {
                         crate::kinfo!("[SYS_BIND] Netlink bind successful");
@@ -3593,7 +3603,7 @@ pub extern "C" fn syscall_dispatch(
             } else {
                 0
             }
-        },
+        }
         SYS_SCHED_YIELD => syscall_sched_yield(),
         SYS_LIST_FILES => syscall_list_files(
             arg1 as *mut u8,
@@ -3674,7 +3684,9 @@ pub extern "C" fn syscall_dispatch(
     // crate::kdebug!("syscall_dispatch return nr={} -> {:#x}", nr, result);
     // crate::kdebug!("syscall_dispatch return nr={} -> {:#x}, return_addr={:#x}", nr, result, syscall_return_addr);
     let rsp: u64;
-    unsafe { core::arch::asm!("mov {}, rsp", out(reg) rsp); }
+    unsafe {
+        core::arch::asm!("mov {}, rsp", out(reg) rsp);
+    }
     crate::kinfo!("syscall_dispatch end: rsp={:#x}", rsp);
     result
 }
@@ -3735,7 +3747,7 @@ global_asm!(
     "mov rdx, rsi", // arg2 -> rdx (param 3)
     "mov rsi, rdi", // arg1 -> rsi (param 2)
     "mov rdi, rax", // nr -> rdi (param 1)
-    
+
     "call syscall_dispatch",
     // Return value is in rax
 
@@ -3787,10 +3799,10 @@ global_asm!(
     "mov es, ax",
     "mov fs, ax",
     // Don't touch GS yet
-    
+
     "swapgs",              // Switch to User GS
     "mov gs, ax",          // Set GS selector (resets Base to 0)
-    
+
     // sysretq: rcx=rip, r11=rflags, rsp already set to user stack
     "sysretq",
     ".Lnormal_return_after_exec:",
@@ -3809,25 +3821,25 @@ global_asm!(
     "pop rsi",
     "pop rdx",
     "pop rbx",
-    
+
     // Reload selectors (DS, ES, FS)
     // Use RCX as scratch (it's on stack)
     "mov cx, 0x1B",
     "mov ds, cx",
     "mov es, cx",
     "mov fs, cx",
-    
+
     // Restore RCX and R11 for sysretq
     "pop rcx", // user return address
     "pop r11", // user rflags
-    
+
     // DEBUG: Loop here
     "1: jmp 1b",
 
     // Restore user stack and GS
     "mov rsp, gs:[0]", // Restore user RSP
     "swapgs",          // Switch to user GS
-    
+
     // Return to user mode via sysretq (RCX=rip, R11=rflags, RAX=return value)
     "sysretq"
 ,

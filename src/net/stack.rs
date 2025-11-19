@@ -256,7 +256,10 @@ impl NetStack {
 
     /// Allocate a UDP socket
     pub fn udp_socket(&mut self, local_port: u16) -> Result<usize, NetError> {
-        crate::kinfo!("NetStack::udp_socket: alloc request for port {}", local_port);
+        crate::kinfo!(
+            "NetStack::udp_socket: alloc request for port {}",
+            local_port
+        );
         // Check if port already in use
         for socket in &self.udp_sockets {
             if socket.in_use && socket.local_port == local_port {
@@ -268,7 +271,11 @@ impl NetStack {
         for (idx, socket) in self.udp_sockets.iter_mut().enumerate() {
             if !socket.in_use {
                 *socket = UdpSocket::new(local_port);
-                crate::kinfo!("NetStack::udp_socket: allocated socket idx {} for port {}", idx, local_port);
+                crate::kinfo!(
+                    "NetStack::udp_socket: allocated socket idx {} for port {}",
+                    idx,
+                    local_port
+                );
                 return Ok(idx);
             }
         }
@@ -278,7 +285,10 @@ impl NetStack {
 
     /// Close UDP socket
     pub fn udp_close(&mut self, socket_idx: usize) -> Result<(), NetError> {
-        crate::kinfo!("NetStack::udp_close: attempt to close socket idx {}", socket_idx);
+        crate::kinfo!(
+            "NetStack::udp_close: attempt to close socket idx {}",
+            socket_idx
+        );
         if socket_idx >= MAX_UDP_SOCKETS {
             return Err(NetError::InvalidSocket);
         }
@@ -791,7 +801,12 @@ impl NetStack {
         let hdr = unsafe { &*(data.as_ptr() as *const NlMsgHdr) };
         // Protect against malformed headers reporting a length larger than actual buffer
         let msg_len = core::cmp::min(hdr.nlmsg_len as usize, data.len());
-        crate::kinfo!("[netlink_handle_request] Message type: {} seq={} pid={}", hdr.nlmsg_type, hdr.nlmsg_seq, hdr.nlmsg_pid);
+        crate::kinfo!(
+            "[netlink_handle_request] Message type: {} seq={} pid={}",
+            hdr.nlmsg_type,
+            hdr.nlmsg_seq,
+            hdr.nlmsg_pid
+        );
 
         match hdr.nlmsg_type {
             RTM_GETLINK => {
@@ -854,7 +869,10 @@ impl NetStack {
                     let attr = unsafe { &*(data.as_ptr().add(pos) as *const RtAttr) };
                     let attr_len = attr.rta_len as usize;
                     if attr_len < core::mem::size_of::<RtAttr>() {
-                        crate::kinfo!("[netlink_handle_request] Invalid attribute length: {}", attr_len);
+                        crate::kinfo!(
+                            "[netlink_handle_request] Invalid attribute length: {}",
+                            attr_len
+                        );
                         break;
                     }
                     if pos + attr_len > hdr.nlmsg_len as usize {

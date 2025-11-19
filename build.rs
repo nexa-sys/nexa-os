@@ -16,12 +16,19 @@ fn main() {
         // robust if the project directory has been moved or symlinked.
         let manifest_path = PathBuf::from(&manifest_dir);
         let linker_path = manifest_path.join("linker.ld");
-        let linker_abs = std::fs::canonicalize(&linker_path)
-            .unwrap_or_else(|_| panic!("Failed to canonicalize linker.ld at {}", linker_path.display()));
+        let linker_abs = std::fs::canonicalize(&linker_path).unwrap_or_else(|_| {
+            panic!(
+                "Failed to canonicalize linker.ld at {}",
+                linker_path.display()
+            )
+        });
 
         // Emit an informational message to help debug path issues during the
         // build; cargo will display this as a warning.
-        println!("cargo:warning=Resolved linker path: {}", linker_abs.display());
+        println!(
+            "cargo:warning=Resolved linker path: {}",
+            linker_abs.display()
+        );
 
         println!(
             "cargo:rustc-link-arg-bin=nexa-os=-T{}",

@@ -194,7 +194,10 @@ impl NetlinkSubsystem {
             message.len()
         );
         if socket_idx >= MAX_NETLINK_SOCKETS {
-            crate::kinfo!("[netlink::send_message] Invalid socket index {}", socket_idx);
+            crate::kinfo!(
+                "[netlink::send_message] Invalid socket index {}",
+                socket_idx
+            );
             return Err(NetError::InvalidSocket);
         }
         if !self.sockets[socket_idx].in_use {
@@ -203,16 +206,23 @@ impl NetlinkSubsystem {
         }
 
         if self.rx_queues[socket_idx].len() >= NETLINK_RX_QUEUE_LEN {
-            crate::kinfo!("[netlink::send_message] RX queue full (len={})", self.rx_queues[socket_idx].len());
+            crate::kinfo!(
+                "[netlink::send_message] RX queue full (len={})",
+                self.rx_queues[socket_idx].len()
+            );
             return Err(NetError::RxQueueFull);
         }
 
         // If possible, use the nlmsg_len from the header to determine message length
         let mut len = core::cmp::min(message.len(), MAX_NETLINK_PAYLOAD);
         if message.len() >= 4 {
-            let hdr_len = u32::from_ne_bytes([message[0], message[1], message[2], message[3]]) as usize;
+            let hdr_len =
+                u32::from_ne_bytes([message[0], message[1], message[2], message[3]]) as usize;
             if hdr_len == 0 || hdr_len > MAX_NETLINK_PAYLOAD {
-                crate::kinfo!("[netlink::send_message] Invalid message length in header: {}", hdr_len);
+                crate::kinfo!(
+                    "[netlink::send_message] Invalid message length in header: {}",
+                    hdr_len
+                );
                 return Err(NetError::BufferTooSmall);
             }
             // Use the header length if it's less than the slice length
@@ -220,9 +230,17 @@ impl NetlinkSubsystem {
             // Try to extract type/seq/pid for more detailed diagnostics
             if message.len() >= 16 {
                 let nlmsg_type = u16::from_ne_bytes([message[4], message[5]]);
-                let nlmsg_seq = u32::from_ne_bytes([message[8], message[9], message[10], message[11]]);
-                let nlmsg_pid = u32::from_ne_bytes([message[12], message[13], message[14], message[15]]);
-                crate::kinfo!("[netlink::send_message] hdr_len={} type={} seq={} pid={}", hdr_len, nlmsg_type, nlmsg_seq, nlmsg_pid);
+                let nlmsg_seq =
+                    u32::from_ne_bytes([message[8], message[9], message[10], message[11]]);
+                let nlmsg_pid =
+                    u32::from_ne_bytes([message[12], message[13], message[14], message[15]]);
+                crate::kinfo!(
+                    "[netlink::send_message] hdr_len={} type={} seq={} pid={}",
+                    hdr_len,
+                    nlmsg_type,
+                    nlmsg_seq,
+                    nlmsg_pid
+                );
             }
         }
         let mut data = Vec::new();
@@ -230,7 +248,10 @@ impl NetlinkSubsystem {
 
         self.rx_queues[socket_idx].push_back(NetlinkRxEntry { len, data });
 
-        crate::kinfo!("[netlink::send_message] Message queued, rx_queue_len now {}", self.rx_queues[socket_idx].len());
+        crate::kinfo!(
+            "[netlink::send_message] Message queued, rx_queue_len now {}",
+            self.rx_queues[socket_idx].len()
+        );
         Ok(())
     }
 
@@ -246,7 +267,10 @@ impl NetlinkSubsystem {
             buffer.len()
         );
         if socket_idx >= MAX_NETLINK_SOCKETS {
-            crate::kinfo!("[netlink::recv_message] Invalid socket index {}", socket_idx);
+            crate::kinfo!(
+                "[netlink::recv_message] Invalid socket index {}",
+                socket_idx
+            );
             return Err(NetError::InvalidSocket);
         }
         if !self.sockets[socket_idx].in_use {
@@ -254,16 +278,28 @@ impl NetlinkSubsystem {
             return Err(NetError::InvalidSocket);
         }
 
-        crate::kinfo!("[netlink::recv_message] rx_queue_len={}", self.rx_queues[socket_idx].len());
+        crate::kinfo!(
+            "[netlink::recv_message] rx_queue_len={}",
+            self.rx_queues[socket_idx].len()
+        );
 
         if let Some(entry) = self.rx_queues[socket_idx].pop_front() {
             if entry.data.len() < entry.len {
-                crate::kinfo!("[netlink::recv_message] WARNING: entry.data.len() < entry.len ({} < {})", entry.data.len(), entry.len);
+                crate::kinfo!(
+                    "[netlink::recv_message] WARNING: entry.data.len() < entry.len ({} < {})",
+                    entry.data.len(),
+                    entry.len
+                );
             }
             let len = core::cmp::min(buffer.len(), entry.data.len());
             buffer[..len].copy_from_slice(&entry.data[..len]);
 
-            crate::kinfo!("[netlink::recv_message] Returning {} bytes (entry.len={}, data_len={})", len, entry.len, entry.data.len());
+            crate::kinfo!(
+                "[netlink::recv_message] Returning {} bytes (entry.len={}, data_len={})",
+                len,
+                entry.len,
+                entry.data.len()
+            );
             Ok(len)
         } else {
             crate::kinfo!("[netlink::recv_message] RX queue empty");
@@ -388,7 +424,10 @@ impl NetlinkSubsystem {
         if pos + core::mem::size_of::<NlMsgHdr>() <= msg.len() {
             msg[pos..pos + core::mem::size_of::<NlMsgHdr>()].copy_from_slice(hdr_bytes);
         } else {
-            crate::kinfo!("[netlink::build_ifinfo_message] buffer too small for NlMsgHdr, pos={}", pos);
+            crate::kinfo!(
+                "[netlink::build_ifinfo_message] buffer too small for NlMsgHdr, pos={}",
+                pos
+            );
             return msg;
         }
         pos += core::mem::size_of::<NlMsgHdr>();
@@ -411,7 +450,10 @@ impl NetlinkSubsystem {
         if pos + core::mem::size_of::<IfInfoMsg>() <= msg.len() {
             msg[pos..pos + core::mem::size_of::<IfInfoMsg>()].copy_from_slice(ifinfo_bytes);
         } else {
-            crate::kinfo!("[netlink::build_ifinfo_message] buffer too small for IfInfoMsg, pos={}", pos);
+            crate::kinfo!(
+                "[netlink::build_ifinfo_message] buffer too small for IfInfoMsg, pos={}",
+                pos
+            );
             // update header length and return
             let len_bytes = (pos as u32).to_ne_bytes();
             msg[0..4].copy_from_slice(&len_bytes);
@@ -433,7 +475,10 @@ impl NetlinkSubsystem {
         if pos + core::mem::size_of::<RtAttr>() <= msg.len() {
             msg[pos..pos + core::mem::size_of::<RtAttr>()].copy_from_slice(attr_bytes);
         } else {
-            crate::kinfo!("[netlink::build_ifinfo_message] buffer too small for RtAttr (MAC), pos={}", pos);
+            crate::kinfo!(
+                "[netlink::build_ifinfo_message] buffer too small for RtAttr (MAC), pos={}",
+                pos
+            );
             let len_bytes = (pos as u32).to_ne_bytes();
             msg[0..4].copy_from_slice(&len_bytes);
             return msg;
@@ -443,7 +488,10 @@ impl NetlinkSubsystem {
             msg[pos..pos + 6].copy_from_slice(&info.mac);
             pos += 6;
         } else {
-            crate::kinfo!("[netlink::build_ifinfo_message] buffer too small for MAC data, pos={}", pos);
+            crate::kinfo!(
+                "[netlink::build_ifinfo_message] buffer too small for MAC data, pos={}",
+                pos
+            );
             let len_bytes = (pos as u32).to_ne_bytes();
             msg[0..4].copy_from_slice(&len_bytes);
             return msg;
@@ -480,7 +528,10 @@ impl NetlinkSubsystem {
         if pos + core::mem::size_of::<RtAttr>() <= msg.len() {
             msg[pos..pos + core::mem::size_of::<RtAttr>()].copy_from_slice(attr_bytes);
         } else {
-            crate::kinfo!("[netlink::build_ifinfo_message] buffer too small for RtAttr (IFNAME), pos={}", pos);
+            crate::kinfo!(
+                "[netlink::build_ifinfo_message] buffer too small for RtAttr (IFNAME), pos={}",
+                pos
+            );
             let len_bytes = (pos as u32).to_ne_bytes();
             msg[0..4].copy_from_slice(&len_bytes);
             return msg;
@@ -490,7 +541,10 @@ impl NetlinkSubsystem {
         if pos + name_len > msg.len() {
             let avail = msg.len() - pos;
             if avail == 0 {
-                crate::kinfo!("[netlink::build_ifinfo_message] no room for IFNAME data, pos={}", pos);
+                crate::kinfo!(
+                    "[netlink::build_ifinfo_message] no room for IFNAME data, pos={}",
+                    pos
+                );
                 let len_bytes = (pos as u32).to_ne_bytes();
                 msg[0..4].copy_from_slice(&len_bytes);
                 return msg;
@@ -506,7 +560,11 @@ impl NetlinkSubsystem {
                 pos += write_len;
                 msg[pos] = 0;
                 pos += 1;
-                crate::kinfo!("[netlink::build_ifinfo_message] truncated IFNAME from {} to {} bytes", name_len, write_len + 1);
+                crate::kinfo!(
+                    "[netlink::build_ifinfo_message] truncated IFNAME from {} to {} bytes",
+                    name_len,
+                    write_len + 1
+                );
             }
         } else {
             msg[pos..pos + name.len()].copy_from_slice(name.as_bytes());
@@ -544,7 +602,10 @@ impl NetlinkSubsystem {
         if pos + core::mem::size_of::<NlMsgHdr>() <= msg.len() {
             msg[pos..pos + core::mem::size_of::<NlMsgHdr>()].copy_from_slice(hdr_bytes);
         } else {
-            crate::kinfo!("[netlink::build_ifaddr_message] buffer too small for NlMsgHdr, pos={}", pos);
+            crate::kinfo!(
+                "[netlink::build_ifaddr_message] buffer too small for NlMsgHdr, pos={}",
+                pos
+            );
             return msg;
         }
         pos += core::mem::size_of::<NlMsgHdr>();
@@ -566,7 +627,10 @@ impl NetlinkSubsystem {
         if pos + core::mem::size_of::<IfAddrMsg>() <= msg.len() {
             msg[pos..pos + core::mem::size_of::<IfAddrMsg>()].copy_from_slice(ifaddr_bytes);
         } else {
-            crate::kinfo!("[netlink::build_ifaddr_message] buffer too small for IfAddrMsg, pos={}", pos);
+            crate::kinfo!(
+                "[netlink::build_ifaddr_message] buffer too small for IfAddrMsg, pos={}",
+                pos
+            );
             let len_bytes = (pos as u32).to_ne_bytes();
             msg[0..4].copy_from_slice(&len_bytes);
             return msg;
@@ -587,7 +651,10 @@ impl NetlinkSubsystem {
         if pos + core::mem::size_of::<RtAttr>() <= msg.len() {
             msg[pos..pos + core::mem::size_of::<RtAttr>()].copy_from_slice(attr_bytes);
         } else {
-            crate::kinfo!("[netlink::build_ifaddr_message] buffer too small for RtAttr, pos={}", pos);
+            crate::kinfo!(
+                "[netlink::build_ifaddr_message] buffer too small for RtAttr, pos={}",
+                pos
+            );
             let len_bytes = (pos as u32).to_ne_bytes();
             msg[0..4].copy_from_slice(&len_bytes);
             return msg;
@@ -597,7 +664,10 @@ impl NetlinkSubsystem {
             msg[pos..pos + 4].copy_from_slice(&info.ip);
             pos += 4;
         } else {
-            crate::kinfo!("[netlink::build_ifaddr_message] buffer too small for IP, pos={}", pos);
+            crate::kinfo!(
+                "[netlink::build_ifaddr_message] buffer too small for IP, pos={}",
+                pos
+            );
             let len_bytes = (pos as u32).to_ne_bytes();
             msg[0..4].copy_from_slice(&len_bytes);
             return msg;
