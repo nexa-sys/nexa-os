@@ -2,6 +2,8 @@
 #![feature(abi_x86_interrupt)]
 #![feature(alloc_error_handler)]
 
+extern crate alloc;
+
 mod acpi;
 pub mod allocator;
 pub mod arch;
@@ -301,6 +303,28 @@ pub fn kernel_main_uefi(boot_info_ptr: *const BootInfo) -> ! {
 
     paging::ensure_nxe_enabled();
     configure_gs_base();
+
+    if boot_info.has_kernel_heap() {
+        let heap_start = boot_info.kernel_heap.phys_addr;
+        let heap_size = boot_info.kernel_heap.length;
+        kinfo!("Initializing kernel heap from UEFI loader: {:#x} ({} bytes)", heap_start, heap_size);
+        allocator::init_kernel_heap(heap_start, heap_size);
+        
+        // Test heap allocation
+        {
+            use alloc::vec::Vec;
+            use alloc::boxed::Box;
+            let mut v = Vec::new();
+            for i in 0..100 {
+                v.push(i);
+            }
+            kinfo!("Heap test: Vec allocated at {:p}, len={}, cap={}", v.as_ptr(), v.len(), v.capacity());
+            let b = Box::new(42);
+            kinfo!("Heap test: Box allocated at {:p}, value={}", b, *b);
+        }
+    } else {
+        kwarn!("UEFI loader did not provide a kernel heap region!");
+    }
 
     if let Some(initramfs) = bootinfo::initramfs_slice() {
         kinfo!(

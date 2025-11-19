@@ -1043,6 +1043,29 @@ fn efi_main(image: Handle, mut st: SystemTable<Boot>) -> Status {
         }
     };
 
+    // Allocate kernel heap (128 MB)
+    // We use MaxAddress(0xFFFFFFFF) to ensure the heap is within the first 4GB,
+    // which is covered by the kernel's initial identity mapping.
+    let heap_size = 128 * 1024 * 1024;
+    let heap_pages = (heap_size + 0xFFF) / 0x1000;
+    let kernel_heap_region = match bs.allocate_pages(
+        AllocateType::MaxAddress(0xFFFFFFFF),
+        MemoryType::LOADER_DATA,
+        heap_pages,
+    ) {
+        Ok(addr) => {
+            log::info!("Kernel heap allocated at {:#x}, size: {} bytes", addr, heap_size);
+            MemoryRegion {
+                phys_addr: addr,
+                length: heap_size as u64,
+            }
+        },
+        Err(status) => {
+            log::warn!("Failed to allocate kernel heap: {:?}", status);
+            MemoryRegion::empty()
+        }
+    };
+
     let boot_info_region = match stage_boot_info(
         bs,
         initramfs_region,
@@ -1054,6 +1077,7 @@ fn efi_main(image: Handle, mut st: SystemTable<Boot>) -> Status {
         loaded.actual_entry_point,
         &cmdline_bytes,
         kernel_segments_region,
+        kernel_heap_region,
     ) {
         Ok(region) => {
             log::info!("Boot info staged, addr: {:#x}, size: {}", region.phys_addr, region.length);
@@ -1786,6 +1810,7 @@ fn stage_boot_info(
     actual_entry: u64,
     cmdline: &[u8],
     kernel_segments: MemoryRegion,
+    kernel_heap: MemoryRegion,
 ) -> Result<MemoryRegion, Status> {
     let size_bytes = mem::size_of::<BootInfo>();
     debug_assert!(size_bytes <= u16::MAX as usize);
@@ -1851,6 +1876,15 @@ fn stage_boot_info(
         );
     }
 
+    if !kernel_heap.is_empty() {
+        flags_value |= nexa_boot_info::flags::HAS_KERNEL_HEAP;
+        log::info!(
+            "Setting HAS_KERNEL_HEAP flag (addr={:#x}, size={})",
+            kernel_heap.phys_addr,
+            kernel_heap.length
+        );
+    }
+
     let boot_info = BootInfo {
         signature: nexa_boot_info::BOOT_INFO_SIGNATURE,
         version: nexa_boot_info::BOOT_INFO_VERSION,
@@ -1880,7 +1914,8 @@ fn stage_boot_info(
         kernel_actual_entry: actual_entry,
         kernel_segments,
         kernel_load_offset: kernel_offset,
-        reserved: [0; 24],
+        kernel_heap,
+        reserved: [0; 8],
     };
 
     unsafe {

@@ -6,7 +6,7 @@ use core::slice;
 pub const BOOT_INFO_SIGNATURE: [u8; 8] = *b"NEXAUEFI";
 
 /// Current version of the [`BootInfo`] structure.
-pub const BOOT_INFO_VERSION: u16 = 3;
+pub const BOOT_INFO_VERSION: u16 = 4;
 
 /// Maximum number of device descriptors exported in [`BootInfo`].
 pub const MAX_DEVICE_DESCRIPTORS: usize = 32;
@@ -27,6 +27,8 @@ pub mod flags {
     pub const HAS_KERNEL_OFFSET: u32 = 1 << 5;
     /// Kernel segment layout table is populated in [`BootInfo::kernel_segments`].
     pub const HAS_KERNEL_SEGMENTS: u32 = 1 << 6;
+    /// Kernel heap region is pre-allocated and populated in [`BootInfo::kernel_heap`].
+    pub const HAS_KERNEL_HEAP: u32 = 1 << 7;
 }
 
 /// Flags describing capabilities/features of a device descriptor.
@@ -459,8 +461,11 @@ pub struct BootInfo {
     /// Kernel load offset (actual_address - expected_address).
     /// Only valid if HAS_KERNEL_OFFSET flag is set.
     pub kernel_load_offset: i64,
+    /// Pre-allocated kernel heap region.
+    /// Only valid if HAS_KERNEL_HEAP flag is set.
+    pub kernel_heap: MemoryRegion,
     /// Reserved for future extensions.
-    pub reserved: [u8; 24],
+    pub reserved: [u8; 8],
 }
 
 impl BootInfo {
@@ -528,5 +533,10 @@ impl BootInfo {
                 count,
             ))
         }
+    }
+
+    /// Returns whether the loader provided a pre-allocated kernel heap.
+    pub fn has_kernel_heap(&self) -> bool {
+        (self.flags & flags::HAS_KERNEL_HEAP) != 0 && !self.kernel_heap.is_empty()
     }
 }
