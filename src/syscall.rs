@@ -2869,10 +2869,12 @@ fn syscall_socket(domain: i32, socket_type: i32, protocol: i32) -> u64 {
                     socket_index
                 );
                 // Diagnostic: print backing inserted into file handles
+                /*
                 if let Some(saved) = FILE_HANDLES[idx] {
                         match saved.backing {
                             FileBacking::Socket(s) => {
                                 crate::kinfo!("[SYS_SOCKET] saved backing socket idx={} domain={} type={} proto={}", s.socket_index, s.domain, s.socket_type, s.protocol);
+                                crate::kdebug!("About to set errno");
                             }
                             FileBacking::StdStream(kind) => {
                                 crate::kdebug!("[SYS_SOCKET] saved backing stdstream={}", kind.fd());
@@ -2880,7 +2882,11 @@ fn syscall_socket(domain: i32, socket_type: i32, protocol: i32) -> u64 {
                             _ => {}
                         }
                     }
-                posix::set_errno(0);
+                */
+                // posix::set_errno(0);
+                crate::kinfo!("Returning fd={}", fd);
+                return fd;
+                crate::kdebug!("Errno set, returning fd={}", fd);
                 return fd;
             }
         }
@@ -3500,7 +3506,11 @@ pub extern "C" fn syscall_dispatch(
         SYS_USER_INFO => syscall_user_info(arg1 as *mut UserInfoReply),
         SYS_USER_LIST => syscall_user_list(arg1 as *mut u8, arg2 as usize),
         SYS_USER_LOGOUT => syscall_user_logout(),
-        SYS_SOCKET => syscall_socket(arg1 as i32, arg2 as i32, arg3 as i32),
+        SYS_SOCKET => {
+            let ret = syscall_socket(arg1 as i32, arg2 as i32, arg3 as i32);
+            crate::kinfo!("syscall_socket returned: {}", ret);
+            ret
+        }
         SYS_BIND => syscall_bind(arg1, arg2 as *const SockAddr, arg3 as u32),
         SYS_SENDTO => {
             let flags = syscall_arg4() as i32;
@@ -3559,12 +3569,22 @@ pub extern "C" fn syscall_dispatch(
         }
     };
     // crate::kdebug!("syscall_dispatch return nr={} -> {:#x}", nr, result);
+    // crate::kdebug!("syscall_dispatch return nr={} -> {:#x}, return_addr={:#x}", nr, result, syscall_return_addr);
+    let rsp: u64;
+    unsafe { core::arch::asm!("mov {}, rsp", out(reg) rsp); }
+    crate::kinfo!("syscall_dispatch end: rsp={:#x}", rsp);
     result
 }
 
 global_asm!(
     ".global syscall_handler",
     "syscall_handler:",
+    // 1. Switch to kernel GS and stack
+    "swapgs",                    // Switch to kernel GS
+    "mov gs:[0], rsp",           // Save user RSP to GS_DATA[0] (GS_SLOT_USER_RSP)
+    "mov rsp, gs:[8]",           // Load kernel RSP from GS_DATA[1] (GS_SLOT_KERNEL_RSP)
+
+    // 2. Save registers on KERNEL stack
     // Save user RCX (return address) and R11 (rflags) because sysretq needs them
     "push r11", // save user rflags
     "push rcx", // save user return address
@@ -3612,8 +3632,10 @@ global_asm!(
     "mov rdx, rsi", // arg2 -> rdx (param 3)
     "mov rsi, rdi", // arg1 -> rsi (param 2)
     "mov rdi, rax", // nr -> rdi (param 1)
+    
     "call syscall_dispatch",
     // Return value is in rax
+
     // Check if this is exec returning (magic value 0x4558454300000000 = "EXEC")
     // Build magic value: 0x45 58 45 43 00 00 00 00
     // "EXEC" in little endian = 0x43 0x45 0x58 0x45, then 4 zero bytes
@@ -3621,14 +3643,10 @@ global_asm!(
     // Actually: ASCII "E"=0x45, "X"=0x58, "E"=0x45, "C"=0x43
     // Little endian u64 of these bytes in order: 0x43 0x45 0x58 0x45 0x00 0x00 0x00 0x00
     // Which is: 0x0000000045584543
-    // Wait, let me recalculate: if we write "EXEC" as bytes: 'E'(0x45) 'X'(0x58) 'E'(0x45) 'C'(0x43)
+    // Wait, let me recalculate: if we write "EXEC" as bytes: 'E'(0x45) 'X'(-0x58) 'E'(0x45) 'C'(-0x43)
     // In memory (little endian): [0x43, 0x45, 0x58, 0x45, 0x00, 0x00, 0x00, 0x00]
     // As u64: 0x0000000045584543
     // But the code says: 0x4558454300000000
-    // Let me check: 0x45 = 'E', 0x58 = 'X', 0x45 = 'E', 0x43 = 'C'
-    // If we want bytes to be [0x45, 0x58, 0x45, 0x43, 0, 0, 0, 0] in memory:
-    // Little endian interprets this as: 0x00000000_43455845
-    // Hmm, this doesn't match 0x4558454300000000
     // Let me think differently:
     // Magic value 0x4558454300000000 in hex
     // High 32 bits: 0x45584543 = bytes [0x43, 0x45, 0x58, 0x45] = "CEXE" reversed = "EXEC"
@@ -3665,14 +3683,17 @@ global_asm!(
     "mov ds, ax",
     "mov es, ax",
     "mov fs, ax",
-    "mov gs, ax",
+    // Don't touch GS yet
+    
+    "swapgs",              // Switch to User GS
+    "mov gs, ax",          // Set GS selector (resets Base to 0)
+    
     // sysretq: rcx=rip, r11=rflags, rsp already set to user stack
     "sysretq",
     ".Lnormal_return_after_exec:",
     "add rsp, 32", // Clean up the 32 bytes we allocated
     ".Lnormal_return:",
     // Normal syscall return path
-    "add rsp, 8", // remove alignment padding
     "pop r15",
     "pop r14",
     "pop r13",
@@ -3685,16 +3706,25 @@ global_asm!(
     "pop rsi",
     "pop rdx",
     "pop rbx",
+    
+    // Reload selectors (DS, ES, FS)
+    // Use RCX as scratch (it's on stack)
+    "mov cx, 0x1B",
+    "mov ds, cx",
+    "mov es, cx",
+    "mov fs, cx",
+    
     // Restore RCX and R11 for sysretq
     "pop rcx", // user return address
     "pop r11", // user rflags
-    // Restore user segment registers before sysretq
-    // Note: user data segment is now entry 3 (0x18 | 3 = 0x1B)
-    "mov r8w, 0x1B", // user data segment selector (0x18 | 3)
-    "mov ds, r8w",
-    "mov es, r8w",
-    "mov fs, r8w",
-    "mov gs, r8w",
+    
+    // DEBUG: Loop here
+    "1: jmp 1b",
+
+    // Restore user stack and GS
+    "mov rsp, gs:[0]", // Restore user RSP
+    "swapgs",          // Switch to user GS
+    
     // Return to user mode via sysretq (RCX=rip, R11=rflags, RAX=return value)
     "sysretq"
 ,

@@ -12,9 +12,20 @@ fn main() {
 
     // 只有当目标不是UEFI时才应用主内核的链接参数
     if target != "x86_64-unknown-uefi" {
+        // Resolve and canonicalize linker.ld so we emit an absolute path that is
+        // robust if the project directory has been moved or symlinked.
+        let manifest_path = PathBuf::from(&manifest_dir);
+        let linker_path = manifest_path.join("linker.ld");
+        let linker_abs = std::fs::canonicalize(&linker_path)
+            .unwrap_or_else(|_| panic!("Failed to canonicalize linker.ld at {}", linker_path.display()));
+
+        // Emit an informational message to help debug path issues during the
+        // build; cargo will display this as a warning.
+        println!("cargo:warning=Resolved linker path: {}", linker_abs.display());
+
         println!(
-            "cargo:rustc-link-arg-bin=nexa-os=-T{}/linker.ld",
-            manifest_dir
+            "cargo:rustc-link-arg-bin=nexa-os=-T{}",
+            linker_abs.display()
         );
 
         cc::Build::new()

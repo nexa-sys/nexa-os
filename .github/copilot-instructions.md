@@ -1,38 +1,39 @@
 # NexaOS AI Coding Guide
+
 ### Architecture Snapshot
-- Hybrid kernel: `src/main.rs` hands off to `src/lib.rs` (6-stage boot defined in `src/boot_stages.rs`) before switching to Ring3 via `src/process.rs`.
-- Memory & scheduling: `src/paging.rs` wires identity-mapped kernel + isolated user space; `src/scheduler.rs` round-robin with priorities; keep physical vs virtual addresses straight.
-- Dual filesystem: `src/initramfs.rs` parses CPIO modules loaded by GRUB, `src/fs.rs` provides mutable in-memory runtime store; rootfs.ext2 gets mounted after stage 4.
-- Syscall surface in `src/syscall.rs` dispatches into auth/ipc/signal subsystems (`src/auth.rs`, `src/ipc.rs`, `src/signal.rs`, `src/pipe.rs`); userspace wrappers live alongside binaries in `userspace/`.
+- **Hybrid Kernel**: `src/main.rs` initializes `src/lib.rs` (6-stage boot in `src/boot_stages.rs`).
+- **Memory & Scheduling**: `src/paging.rs` (identity-mapped kernel + isolated user space), `src/scheduler.rs` (round-robin).
+- **Filesystems**: `src/initramfs.rs` (CPIO), `src/fs.rs` (VFS + in-memory), `rootfs.ext2` (mounted at stage 4).
+- **Networking**: `src/net/` implements a custom stack (ARP, IPv4, UDP, Netlink) with driver abstraction (`drivers::DriverInstance`).
+- **Bootloader**: `boot/uefi-loader` (Rust-based UEFI app) loads `KERNEL.ELF`, `INITRAMFS.CPIO`, and `ROOTFS.EXT2`, passing `BootInfo` to the kernel.
+- **Syscalls**: `src/syscall.rs` dispatches to subsystems (`auth`, `ipc`, `signal`, `pipe`, `net`).
 
 ### Key Workflows
-- **End-to-end build: `./scripts/build-all.sh`** (the CORRECT comprehensive build script that handles kernel → userspace → rootfs → ISO chain). Always use this for complete builds.
-- If splitting, run `./scripts/build-rootfs.sh` **before** `./scripts/build-iso.sh` or ISO will embed stale rootfs.
-- Kernel-only iteration: `cargo build --release --target x86_64-nexaos.json`; userspace binaries via `./scripts/build-userspace.sh`.
-- Boot/test quickly with `./scripts/run-qemu.sh`; inspect logs over serial (enabled by `src/serial.rs`). Sanity scripts: `./scripts/test-boot-stages.sh`, `./scripts/test-init.sh`, `./scripts/test-shell-exit.sh`.
-- Verify multiboot status with `grub-file --is-x86-multiboot2 target/x86_64-nexaos/release/nexa-os`.
+- **Full Build**: `./scripts/build-all.sh` (Builds RootFS → UEFI Loader → Kernel → ISO). Always use this for complete builds.
+- **Kernel Dev**: `cargo build --release --target x86_64-nexaos.json`.
+- **Userspace Dev**: `./scripts/build-userspace.sh` (builds binaries in `userspace/` and packs `initramfs.cpio`).
+- **UEFI Loader Dev**: `./scripts/build-uefi-loader.sh` (builds `BootX64.EFI`).
+- **Run/Test**: `./scripts/run-qemu.sh` (boots ISO with `rootfs.ext2` attached as `/dev/vda`).
+- **Verify Multiboot**: `grub-file --is-x86-multiboot2 target/x86_64-nexaos/release/nexa-os`.
 
 ### Coding Conventions
-- Kernel crates use the `no_std` attribute; no heap allocations—stick to fixed buffers/arrays. Use kernel log macros (`kinfo!/kerror!/kfatal!`) instead of `println!`.
-- Respect address constants in `src/process.rs` (`USER_BASE`, `STACK_BASE`); adjust paging + ELF loader together when touching memory layout.
-- Interrupts and syscall context rely on `interrupts::init_interrupts()` and the `GS_DATA` scratchpad; keep frame setup/restoration symmetrical.
-- Authentication, IPC, and signal code expect explicit error paths—propagate `Errno` equivalents rather than panicking.
+- **Kernel (`src/`)**: `no_std`, fixed buffers (no heap in critical paths), use `kinfo!`/`kerror!` macros.
+- **Userspace (`userspace/`)**: `no_std` binaries, linked against `nrlib` (libc shim).
+- **Networking**: Use `NetStack` in `src/net/stack.rs` for packet processing. Drivers implement `drivers::NetworkDriver`.
+- **Error Handling**: Propagate `Errno` (from `src/posix.rs`) for syscalls. Explicit error paths required.
+- **Memory Layout**: Respect constants in `src/process.rs` (`USER_BASE`, `STACK_BASE`).
 
-### Userspace & NRLib
-- Userspace targets `x86_64-nexaos-userspace.json` and also uses `no_std`; programs expose `_start` and build via `scripts/build-userspace.sh`.
-- `userspace/nrlib` exists solely to satisfy Rust `std` expectations (pthread, TLS, malloc, syscalls). Fix std issues inside nrlib; do not bypass `std` APIs.
-- Dynamic binaries rely on PT_INTERP loading (`/lib64/ld-linux.so`) handled in `src/elf.rs`; keep interpreter path synchronized with rootfs layout.
+### Integration Points
+- **Syscalls**: Add new syscalls in `src/syscall.rs` and `userspace/nrlib/src/syscalls.rs`.
+- **Drivers**: Register new network drivers in `src/net/mod.rs` (`DeviceSlot`).
+- **Init System**: Add services to `etc/inittab` and ensure binaries are in `userspace/`.
+- **Boot Info**: Changes to `BootInfo` struct must be synced between `boot/boot-info/` and `src/bootinfo.rs`.
 
 ### Common Pitfalls
-- Never disable logging on hot paths; use log levels instead. Losing serial output makes boot debugging painful.
-- When adding services, wire binaries into `userspace/`, ensure `scripts/build-rootfs.sh` copies them, and register via `etc/inittab`.
-- Scheduler/process changes require keeping signal delivery and IPC queues consistent; audit `ProcessState` transitions if adding new states.
-- Always rebuild rootfs before packaging ISO after touching userspace binaries or configs.
-- Treat locking as production-grade: bounded waits, backoff, and clear comments when deviating from existing patterns (`src/safety/` helpers).
-- ✅ Handle all error paths explicitly
-- ✅ Add detailed comments explaining non-obvious synchronization logic
-- ✅ Test edge cases and failure scenarios
-- ✅ Document assumptions and invariants
+- **RootFS Staleness**: Always run `./scripts/build-rootfs.sh` if you change userspace binaries or `etc/` config.
+- **UEFI Paths**: The loader expects files at `\EFI\BOOT\` in the ISO.
+- **Logging**: Serial output is vital. Don't disable `src/serial.rs` logging.
+- **Concurrency**: Use `spin::Mutex` with caution. Follow locking hierarchy to avoid deadlocks.
 
 ### Synchronization & Concurrency
 When implementing locks or synchronization primitives:
