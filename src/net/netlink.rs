@@ -4,6 +4,7 @@
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
+use alloc::vec::Vec;
 
 use super::drivers::NetError;
 use super::stack::NetStack;
@@ -120,18 +121,26 @@ impl NetlinkSocket {
 
 pub struct NetlinkSubsystem {
     sockets: [NetlinkSocket; MAX_NETLINK_SOCKETS],
-    rx_queues: [[NetlinkRxEntry; NETLINK_RX_QUEUE_LEN]; MAX_NETLINK_SOCKETS],
+    rx_queues: [Vec<NetlinkRxEntry>; MAX_NETLINK_SOCKETS],
     next_seq: AtomicUsize,
 }
 
 impl NetlinkSubsystem {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
+        let rx_queues = core::array::from_fn(|_| {
+            let mut queue = Vec::with_capacity(NETLINK_RX_QUEUE_LEN);
+            for _ in 0..NETLINK_RX_QUEUE_LEN {
+                queue.push(NetlinkRxEntry {
+                    len: 0,
+                    data: [0u8; MAX_NETLINK_PAYLOAD],
+                });
+            }
+            queue
+        });
+
         Self {
             sockets: [NetlinkSocket::empty(); MAX_NETLINK_SOCKETS],
-            rx_queues: [[NetlinkRxEntry {
-                len: 0,
-                data: [0u8; MAX_NETLINK_PAYLOAD],
-            }; NETLINK_RX_QUEUE_LEN]; MAX_NETLINK_SOCKETS],
+            rx_queues,
             next_seq: AtomicUsize::new(1),
         }
     }
