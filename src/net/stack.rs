@@ -1,4 +1,6 @@
 use crate::logger;
+use alloc::vec::Vec;
+use alloc::boxed::Box;
 
 use super::arp::{ArpCache, ArpOperation, ArpPacket};
 use super::drivers::NetError;
@@ -15,9 +17,9 @@ const PROTO_ICMP: u8 = 1;
 const PROTO_TCP: u8 = 6;
 const PROTO_UDP: u8 = 17;
 const LISTEN_PORT: u16 = 8080;
-const MAX_UDP_SOCKETS: usize = 16;
+const MAX_UDP_SOCKETS: usize = 8;
 pub const UDP_MAX_PAYLOAD: usize = MAX_FRAME_SIZE - 14 - 20 - 8;
-const UDP_RX_QUEUE_LEN: usize = 8;
+const UDP_RX_QUEUE_LEN: usize = 4;
 
 pub struct TxBatch {
     buffers: [[u8; MAX_FRAME_SIZE]; TX_BATCH_CAPACITY],
@@ -70,7 +72,7 @@ impl DeviceInfo {
 }
 
 /// UDP socket state
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct UdpSocket {
     pub local_port: u16,
     pub remote_ip: Option<[u8; 4]>,
@@ -79,7 +81,7 @@ pub struct UdpSocket {
     rx_head: usize,
     rx_tail: usize,
     rx_len: usize,
-    rx_payloads: [[u8; UDP_MAX_PAYLOAD]; UDP_RX_QUEUE_LEN],
+    rx_payloads: [Vec<u8>; UDP_RX_QUEUE_LEN],
     rx_entries: [UdpRxEntry; UDP_RX_QUEUE_LEN],
 }
 
@@ -114,7 +116,7 @@ pub struct UdpReceiveResult {
 }
 
 impl UdpSocket {
-    pub const fn empty() -> Self {
+    pub fn empty() -> Self {
         Self {
             local_port: 0,
             remote_ip: None,
@@ -123,7 +125,7 @@ impl UdpSocket {
             rx_head: 0,
             rx_tail: 0,
             rx_len: 0,
-            rx_payloads: [[0u8; UDP_MAX_PAYLOAD]; UDP_RX_QUEUE_LEN],
+            rx_payloads: core::array::from_fn(|_| Vec::new()),
             rx_entries: [UdpRxEntry::empty(); UDP_RX_QUEUE_LEN],
         }
     }
@@ -161,7 +163,10 @@ impl UdpSocket {
 
         let slot = self.rx_tail;
         let copy_len = core::cmp::min(payload.len(), UDP_MAX_PAYLOAD);
-        self.rx_payloads[slot][..copy_len].copy_from_slice(&payload[..copy_len]);
+        
+        self.rx_payloads[slot].clear();
+        self.rx_payloads[slot].extend_from_slice(&payload[..copy_len]);
+        
         self.rx_entries[slot] = UdpRxEntry {
             len: copy_len,
             payload_len: payload.len(),
@@ -205,25 +210,34 @@ impl UdpSocket {
 pub struct NetStack {
     devices: [DeviceInfo; super::MAX_NET_DEVICES],
     tcp: TcpEndpoint,
-    udp_sockets: [UdpSocket; MAX_UDP_SOCKETS],
+    udp_sockets: Vec<UdpSocket>,
     pub netlink: NetlinkSubsystem,
-    arp_cache: ArpCache,
+    arp_cache: Box<ArpCache>,
 }
 
 impl NetStack {
     pub fn new() -> Self {
+        crate::kinfo!("NetStack::new() - allocating stack structures");
+        
+        let mut udp_sockets = Vec::with_capacity(MAX_UDP_SOCKETS);
+        for _ in 0..MAX_UDP_SOCKETS {
+            udp_sockets.push(UdpSocket::empty());
+        }
+
         let mut stack = Self {
             devices: [DeviceInfo::empty(); super::MAX_NET_DEVICES],
             tcp: TcpEndpoint::new(),
-            udp_sockets: [UdpSocket::empty(); MAX_UDP_SOCKETS],
+            udp_sockets,
             netlink: NetlinkSubsystem::new(),
-            arp_cache: ArpCache::new(),
+            arp_cache: Box::new(ArpCache::new()),
         };
         
+        crate::kinfo!("NetStack::new() - registering default device");
         // Register default network devices
         // For QEMU virtio-net, we typically have eth0
         stack.register_device(0, [0x52, 0x54, 0x00, 0x12, 0x34, 0x56]); // QEMU default MAC prefix
         
+        crate::kinfo!("NetStack::new() - done");
         stack
     }
 

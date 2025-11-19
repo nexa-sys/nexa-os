@@ -1,5 +1,5 @@
 #define directives
-.set STACK_SIZE, 32768
+.set STACK_SIZE, 65536
 
 # Multiboot2 header  
 .section .boot.header,"a",@progbits

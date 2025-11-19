@@ -205,13 +205,16 @@ pub fn log(level: LogLevel, args: fmt::Arguments<'_>) {
 
     let init_started = INIT_STARTED.load(Ordering::Relaxed);
 
-    // 在 init 启动前，输出到显示器和串口；启动后，只输出到环形缓冲区
-    // Panic 总是输出到显示器和串口
+    // DEBUG: Always emit serial logs to debug allocator crash
+    let emit_serial = should_emit_serial(level);
+
+    /*
     let emit_serial = if init_started {
         level.priority() <= LogLevel::PANIC.priority()
     } else {
         should_emit_serial(level)
     };
+    */
 
     let emit_vga = if init_started {
         level.priority() <= LogLevel::PANIC.priority()

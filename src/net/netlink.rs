@@ -5,6 +5,7 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
 use alloc::vec::Vec;
+use alloc::collections::VecDeque;
 
 use super::drivers::NetError;
 use super::stack::NetStack;
@@ -77,20 +78,16 @@ pub struct NetlinkSocket {
     pub in_use: bool,
     pub pid: u32,           // Binding PID
     pub groups: u32,        // Multicast groups
-    seq: u32,               // Last sequence number
-    rx_queue_head: usize,
-    rx_queue_tail: usize,
-    rx_queue_len: usize,
 }
 
 const MAX_NETLINK_SOCKETS: usize = 4;
 const NETLINK_RX_QUEUE_LEN: usize = 16;
 const MAX_NETLINK_PAYLOAD: usize = 4096;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct NetlinkRxEntry {
     len: usize,
-    data: [u8; MAX_NETLINK_PAYLOAD],
+    data: Vec<u8>,
 }
 
 impl NetlinkSocket {
@@ -99,10 +96,6 @@ impl NetlinkSocket {
             in_use: false,
             pid: 0,
             groups: 0,
-            seq: 0,
-            rx_queue_head: 0,
-            rx_queue_tail: 0,
-            rx_queue_len: 0,
         }
     }
 
@@ -111,32 +104,19 @@ impl NetlinkSocket {
             in_use: true,
             pid: 0,
             groups: 0,
-            seq: 0,
-            rx_queue_head: 0,
-            rx_queue_tail: 0,
-            rx_queue_len: 0,
         }
     }
 }
 
 pub struct NetlinkSubsystem {
     sockets: [NetlinkSocket; MAX_NETLINK_SOCKETS],
-    rx_queues: [Vec<NetlinkRxEntry>; MAX_NETLINK_SOCKETS],
+    rx_queues: [VecDeque<NetlinkRxEntry>; MAX_NETLINK_SOCKETS],
     next_seq: AtomicUsize,
 }
 
 impl NetlinkSubsystem {
     pub fn new() -> Self {
-        let rx_queues = core::array::from_fn(|_| {
-            let mut queue = Vec::with_capacity(NETLINK_RX_QUEUE_LEN);
-            for _ in 0..NETLINK_RX_QUEUE_LEN {
-                queue.push(NetlinkRxEntry {
-                    len: 0,
-                    data: [0u8; MAX_NETLINK_PAYLOAD],
-                });
-            }
-            queue
-        });
+        let rx_queues = core::array::from_fn(|_| VecDeque::new());
 
         Self {
             sockets: [NetlinkSocket::empty(); MAX_NETLINK_SOCKETS],
@@ -162,7 +142,7 @@ impl NetlinkSubsystem {
             return Err(NetError::InvalidSocket);
         }
         self.sockets[socket_idx].in_use = false;
-        self.sockets[socket_idx].rx_queue_len = 0;
+        self.rx_queues[socket_idx].clear();
         Ok(())
     }
 
@@ -209,20 +189,21 @@ impl NetlinkSubsystem {
             return Err(NetError::InvalidSocket);
         }
 
-        let socket = &mut self.sockets[socket_idx];
-        if socket.rx_queue_len >= NETLINK_RX_QUEUE_LEN {
+        if self.rx_queues[socket_idx].len() >= NETLINK_RX_QUEUE_LEN {
             crate::kinfo!("[netlink::send_message] RX queue full");
             return Err(NetError::RxQueueFull);
         }
 
         let len = core::cmp::min(message.len(), MAX_NETLINK_PAYLOAD);
-        let slot = socket.rx_queue_tail;
-        self.rx_queues[socket_idx][slot].data[..len].copy_from_slice(&message[..len]);
-        self.rx_queues[socket_idx][slot].len = len;
+        let mut data = Vec::new();
+        data.extend_from_slice(&message[..len]);
 
-        socket.rx_queue_tail = (socket.rx_queue_tail + 1) % NETLINK_RX_QUEUE_LEN;
-        socket.rx_queue_len += 1;
-        crate::kinfo!("[netlink::send_message] Message queued, rx_queue_len now {}", socket.rx_queue_len);
+        self.rx_queues[socket_idx].push_back(NetlinkRxEntry {
+            len,
+            data,
+        });
+
+        crate::kinfo!("[netlink::send_message] Message queued, rx_queue_len now {}", self.rx_queues[socket_idx].len());
         Ok(())
     }
 
@@ -242,22 +223,18 @@ impl NetlinkSubsystem {
             return Err(NetError::InvalidSocket);
         }
 
-        let socket = &mut self.sockets[socket_idx];
-        crate::kinfo!("[netlink::recv_message] rx_queue_len={}", socket.rx_queue_len);
-        if socket.rx_queue_len == 0 {
+        crate::kinfo!("[netlink::recv_message] rx_queue_len={}", self.rx_queues[socket_idx].len());
+        
+        if let Some(entry) = self.rx_queues[socket_idx].pop_front() {
+            let len = core::cmp::min(buffer.len(), entry.len);
+            buffer[..len].copy_from_slice(&entry.data[..len]);
+            
+            crate::kinfo!("[netlink::recv_message] Returning {} bytes", len);
+            Ok(len)
+        } else {
             crate::kinfo!("[netlink::recv_message] RX queue empty");
-            return Err(NetError::RxQueueEmpty);
+            Err(NetError::RxQueueEmpty)
         }
-
-        let slot = socket.rx_queue_head;
-        let len = core::cmp::min(buffer.len(), self.rx_queues[socket_idx][slot].len);
-        buffer[..len].copy_from_slice(&self.rx_queues[socket_idx][slot].data[..len]);
-
-        socket.rx_queue_head = (socket.rx_queue_head + 1) % NETLINK_RX_QUEUE_LEN;
-        socket.rx_queue_len -= 1;
-
-        crate::kinfo!("[netlink::recv_message] Returning {} bytes", len);
-        Ok(len)
     }
 
     /// Handle RTM_GETLINK request - return interface information
