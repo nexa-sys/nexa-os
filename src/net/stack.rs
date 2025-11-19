@@ -256,6 +256,7 @@ impl NetStack {
 
     /// Allocate a UDP socket
     pub fn udp_socket(&mut self, local_port: u16) -> Result<usize, NetError> {
+        crate::kinfo!("NetStack::udp_socket: alloc request for port {}", local_port);
         // Check if port already in use
         for socket in &self.udp_sockets {
             if socket.in_use && socket.local_port == local_port {
@@ -267,6 +268,7 @@ impl NetStack {
         for (idx, socket) in self.udp_sockets.iter_mut().enumerate() {
             if !socket.in_use {
                 *socket = UdpSocket::new(local_port);
+                crate::kinfo!("NetStack::udp_socket: allocated socket idx {} for port {}", idx, local_port);
                 return Ok(idx);
             }
         }
@@ -276,10 +278,12 @@ impl NetStack {
 
     /// Close UDP socket
     pub fn udp_close(&mut self, socket_idx: usize) -> Result<(), NetError> {
+        crate::kinfo!("NetStack::udp_close: attempt to close socket idx {}", socket_idx);
         if socket_idx >= MAX_UDP_SOCKETS {
             return Err(NetError::InvalidSocket);
         }
         self.udp_sockets[socket_idx].in_use = false;
+        crate::kinfo!("NetStack::udp_close: closed socket idx {}", socket_idx);
         Ok(())
     }
 
@@ -357,6 +361,7 @@ impl NetStack {
         payload: &[u8],
         tx: &mut TxBatch,
     ) -> Result<(), NetError> {
+        crate::kinfo!("NetStack::udp_send: socket_idx={} device_index={} dst={}.{}.{}.{} dst_port={} payload_len={}", socket_idx, device_index, dst_ip[0], dst_ip[1], dst_ip[2], dst_ip[3], dst_port, payload.len());
         if socket_idx >= MAX_UDP_SOCKETS {
             return Err(NetError::InvalidSocket);
         }

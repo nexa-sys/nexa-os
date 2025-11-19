@@ -2849,8 +2849,37 @@ fn syscall_socket(domain: i32, socket_type: i32, protocol: i32) -> u64 {
                 };
 
                 FILE_HANDLES[idx] = Some(handle);
+                // Sanity check: verify no obviously invalid socket_index values got written
+                for i in 0..MAX_OPEN_FILES {
+                        if let Some(fh) = FILE_HANDLES[i] {
+                            if let FileBacking::Socket(socket) = fh.backing {
+                                if socket.socket_index != usize::MAX && socket.socket_index >= 1024 {
+                                    crate::kerror!("[SYS_SOCKET] Detected invalid socket_index {} at fh idx {}", socket.socket_index, i);
+                                }
+                            }
+                        }
+                    }
                 let fd = FD_BASE + idx as u64;
-                crate::kinfo!("[SYS_SOCKET] Created UDP socket at fd {}", fd);
+                crate::kinfo!(
+                    "[SYS_SOCKET] Created socket fd={} domain={} type={} proto={} idx={}",
+                    fd,
+                    domain,
+                    socket_type,
+                    protocol,
+                    socket_index
+                );
+                // Diagnostic: print backing inserted into file handles
+                if let Some(saved) = FILE_HANDLES[idx] {
+                        match saved.backing {
+                            FileBacking::Socket(s) => {
+                                crate::kinfo!("[SYS_SOCKET] saved backing socket idx={} domain={} type={} proto={}", s.socket_index, s.domain, s.socket_type, s.protocol);
+                            }
+                            FileBacking::StdStream(kind) => {
+                                crate::kdebug!("[SYS_SOCKET] saved backing stdstream={}", kind.fd());
+                            }
+                            _ => {}
+                        }
+                    }
                 posix::set_errno(0);
                 return fd;
             }
@@ -2893,9 +2922,12 @@ fn syscall_bind(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
             return u64::MAX;
         };
 
-        let FileBacking::Socket(ref mut sock_handle) = handle.backing else {
-            posix::set_errno(posix::errno::ENOTSOCK);
-            return u64::MAX;
+        let sock_handle = match &mut handle.backing {
+            FileBacking::Socket(sock) => sock,
+            _ => {
+                posix::set_errno(posix::errno::ENOTSOCK);
+                return u64::MAX;
+            }
         };
 
         if sock_handle.domain == AF_NETLINK {
@@ -2994,6 +3026,7 @@ fn syscall_bind(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
             match res {
                 Ok(udp_idx) => {
                     sock_handle.socket_index = udp_idx;
+                    crate::kinfo!("[SYS_BIND] saved socket_index={} in file handle", udp_idx);
                 }
                 Err(e) => {
                     crate::kinfo!("[SYS_BIND] Failed to allocate UDP socket in stack: {:?}", e);
