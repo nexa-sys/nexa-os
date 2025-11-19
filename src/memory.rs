@@ -69,7 +69,7 @@ fn classify_area(area_type: multiboot2::MemoryAreaTypeId) -> &'static str {
 
 pub fn find_heap_region(boot_info: &BootInformation<'_>, min_size: u64) -> Option<(u64, u64)> {
     let memmap = boot_info.memory_map_tag()?;
-    
+
     // Find the largest available region
     let mut best_region = None;
     let mut max_size = 0;
@@ -107,7 +107,7 @@ fn is_overlap_with_modules(boot_info: &BootInformation<'_>, start: u64, size: u6
     for module in boot_info.module_tags() {
         let mod_start = module.start_address() as u64;
         let mod_end = module.end_address() as u64;
-        
+
         if start < mod_end && end > mod_start {
             return true;
         }

@@ -2,7 +2,6 @@
 ///
 /// This module provides structures and utilities for ARP requests/replies
 /// and ARP cache management.
-
 use core::mem;
 
 use super::ethernet::MacAddress;
@@ -47,14 +46,14 @@ impl From<u16> for ArpOperation {
 /// ARP packet for Ethernet/IPv4 (28 bytes)
 #[repr(C, packed)]
 pub struct ArpPacket {
-    pub hw_type: u16,           // Hardware type (1 = Ethernet)
-    pub proto_type: u16,        // Protocol type (0x0800 = IPv4)
-    pub hw_addr_len: u8,        // Hardware address length (6 for MAC)
-    pub proto_addr_len: u8,     // Protocol address length (4 for IPv4)
-    pub operation: u16,         // Operation (1 = request, 2 = reply)
-    pub sender_hw_addr: MacAddress,   // Sender hardware address
+    pub hw_type: u16,                   // Hardware type (1 = Ethernet)
+    pub proto_type: u16,                // Protocol type (0x0800 = IPv4)
+    pub hw_addr_len: u8,                // Hardware address length (6 for MAC)
+    pub proto_addr_len: u8,             // Protocol address length (4 for IPv4)
+    pub operation: u16,                 // Operation (1 = request, 2 = reply)
+    pub sender_hw_addr: MacAddress,     // Sender hardware address
     pub sender_proto_addr: Ipv4Address, // Sender protocol address
-    pub target_hw_addr: MacAddress,   // Target hardware address
+    pub target_hw_addr: MacAddress,     // Target hardware address
     pub target_proto_addr: Ipv4Address, // Target protocol address
 }
 
@@ -177,7 +176,8 @@ impl ArpCache {
 
     /// Look up MAC address for an IP address
     pub fn lookup(&self, ip: &Ipv4Address, current_ms: u64) -> Option<MacAddress> {
-        self.entries.iter()
+        self.entries
+            .iter()
             .find(|e| e.valid && e.ip == *ip && !e.is_stale(current_ms))
             .map(|e| e.mac)
     }
@@ -239,7 +239,7 @@ mod tests {
         let target_ip = Ipv4Address::new(192, 168, 1, 1);
 
         let request = ArpPacket::new_request(sender_mac, sender_ip, target_ip);
-        
+
         assert!(request.is_valid());
         assert_eq!(request.operation(), ArpOperation::Request);
         assert_eq!(request.sender_hw_addr, sender_mac);
@@ -255,7 +255,7 @@ mod tests {
 
         cache.insert(ip, mac, 1000);
         assert_eq!(cache.lookup(&ip, 1000), Some(mac));
-        
+
         // Should be stale after 60 seconds
         assert_eq!(cache.lookup(&ip, 62000), None);
     }

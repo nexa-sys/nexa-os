@@ -1,12 +1,12 @@
 use crate::logger;
-use alloc::vec::Vec;
 use alloc::boxed::Box;
+use alloc::vec::Vec;
 
 use super::arp::{ArpCache, ArpOperation, ArpPacket};
 use super::drivers::NetError;
 use super::ethernet::{EtherType, EthernetFrame, MacAddress};
 use super::ipv4::{IpProtocol, Ipv4Address, Ipv4Header};
-use super::netlink::{NetlinkSubsystem, NetlinkSocket};
+use super::netlink::{NetlinkSocket, NetlinkSubsystem};
 use super::udp::{UdpDatagram, UdpDatagramMut, UdpHeader};
 
 pub const MAX_FRAME_SIZE: usize = 1536;
@@ -163,10 +163,10 @@ impl UdpSocket {
 
         let slot = self.rx_tail;
         let copy_len = core::cmp::min(payload.len(), UDP_MAX_PAYLOAD);
-        
+
         self.rx_payloads[slot].clear();
         self.rx_payloads[slot].extend_from_slice(&payload[..copy_len]);
-        
+
         self.rx_entries[slot] = UdpRxEntry {
             len: copy_len,
             payload_len: payload.len(),
@@ -218,7 +218,7 @@ pub struct NetStack {
 impl NetStack {
     pub fn new() -> Self {
         crate::kinfo!("NetStack::new() - allocating stack structures");
-        
+
         let mut udp_sockets = Vec::with_capacity(MAX_UDP_SOCKETS);
         for _ in 0..MAX_UDP_SOCKETS {
             udp_sockets.push(UdpSocket::empty());
@@ -231,12 +231,12 @@ impl NetStack {
             netlink: NetlinkSubsystem::new(),
             arp_cache: Box::new(ArpCache::new()),
         };
-        
+
         crate::kinfo!("NetStack::new() - registering default device");
         // Register default network devices
         // For QEMU virtio-net, we typically have eth0
         stack.register_device(0, [0x52, 0x54, 0x00, 0x12, 0x34, 0x56]); // QEMU default MAC prefix
-        
+
         crate::kinfo!("NetStack::new() - done");
         stack
     }
@@ -376,7 +376,9 @@ impl NetStack {
         // Lookup destination MAC in ARP cache
         let dst_ip_addr = Ipv4Address::from(dst_ip);
         let now_ms = logger::boot_time_us() / 1_000;
-        let dst_mac = self.arp_cache.lookup(&dst_ip_addr, now_ms)
+        let dst_mac = self
+            .arp_cache
+            .lookup(&dst_ip_addr, now_ms)
             .ok_or(NetError::ArpCacheMiss)?;
 
         // Build UDP datagram
@@ -397,11 +399,11 @@ impl NetStack {
 
         // IPv4 header
         packet[14] = 0x45; // Version 4, IHL 5
-        packet[15] = 0;    // DSCP/ECN
+        packet[15] = 0; // DSCP/ECN
         packet[16..18].copy_from_slice(&(ip_total_len as u16).to_be_bytes());
         packet[18..20].copy_from_slice(&[0, 0]); // Identification
         packet[20..22].copy_from_slice(&[0x40, 0]); // Flags, Fragment offset
-        packet[22] = 64;   // TTL
+        packet[22] = 64; // TTL
         packet[23] = PROTO_UDP;
         packet[24..26].copy_from_slice(&[0, 0]); // Checksum (will be filled)
         packet[26..30].copy_from_slice(&device.ip);
@@ -419,14 +421,14 @@ impl NetStack {
 
         // Calculate UDP checksum with pseudo-header
         let src_ip_addr = Ipv4Address::from(device.ip);
-        
+
         // Cast the UDP header part of the packet to UdpHeader
         let header_ptr = packet[udp_offset..].as_mut_ptr() as *mut UdpHeader;
         let header = unsafe { &mut *header_ptr };
-        
+
         // The payload is after the header
         let payload = &packet[udp_offset + 8..udp_offset + udp_len];
-        
+
         header.calculate_checksum(&src_ip_addr, &dst_ip_addr, payload);
         // Checksum is now set in the packet buffer because header points to it.
 
@@ -512,7 +514,7 @@ impl NetStack {
         packet[0..6].copy_from_slice(&sender_mac.0);
         packet[6..12].copy_from_slice(&device_mac.0);
         packet[12..14].copy_from_slice(&ETHERTYPE_ARP.to_be_bytes());
-        
+
         // Copy ARP packet
         unsafe {
             let arp_bytes = core::slice::from_raw_parts(
@@ -614,7 +616,7 @@ impl NetStack {
 
         let udp_offset = 14 + ihl;
         let udp_len = total_len - ihl;
-        
+
         if udp_len < 8 {
             return Ok(());
         }
@@ -626,7 +628,11 @@ impl NetStack {
         let checksum = u16::from_be_bytes([frame[udp_offset + 6], frame[udp_offset + 7]]);
 
         if length < 8 || length > udp_len {
-            crate::kinfo!("net: UDP packet with invalid length ({} vs {})", length, udp_len);
+            crate::kinfo!(
+                "net: UDP packet with invalid length ({} vs {})",
+                length,
+                udp_len
+            );
             return Ok(());
         }
 
@@ -634,17 +640,21 @@ impl NetStack {
         if checksum != 0 {
             let src_ip = Ipv4Address::from(&frame[26..30]);
             let dst_ip = Ipv4Address::from(&frame[30..34]);
-            
+
             // Create temporary UDP header for validation
             let mut temp_header = UdpHeader::new(src_port, dst_port, length - 8);
             let payload = &frame[udp_offset + 8..udp_offset + length];
             temp_header.checksum = checksum;
-            
+
             if !temp_header.verify_checksum(&src_ip, &dst_ip, payload) {
                 crate::kwarn!(
                     "net: UDP checksum mismatch on port {} from {}.{}.{}.{}:{}",
                     dst_port,
-                    frame[26], frame[27], frame[28], frame[29], src_port
+                    frame[26],
+                    frame[27],
+                    frame[28],
+                    frame[29],
+                    src_port
                 );
                 return Ok(());
             }
@@ -679,14 +689,17 @@ impl NetStack {
         if let Some(idx) = socket_idx {
             let payload = &frame[udp_offset + 8..udp_offset + length];
             let src_ip_bytes = [frame[26], frame[27], frame[28], frame[29]];
-            
+
             // Attempt to enqueue packet
             match self.udp_sockets[idx].enqueue_packet(src_ip_bytes, src_port, payload) {
                 Ok(()) => {
                     crate::kinfo!(
                         "net: UDP datagram received on port {}, from {}.{}.{}.{}:{} ({} bytes)",
                         dst_port,
-                        frame[26], frame[27], frame[28], frame[29],
+                        frame[26],
+                        frame[27],
+                        frame[28],
+                        frame[29],
                         src_port,
                         payload.len()
                     );
@@ -703,7 +716,10 @@ impl NetStack {
             crate::kinfo!(
                 "net: UDP packet to port {} from {}.{}.{}.{}:{} (no matching socket)",
                 dst_port,
-                frame[26], frame[27], frame[28], frame[29],
+                frame[26],
+                frame[27],
+                frame[28],
+                frame[29],
                 src_port
             );
         }
@@ -722,7 +738,12 @@ impl NetStack {
     }
 
     /// Bind a netlink socket
-    pub fn netlink_bind(&mut self, socket_idx: usize, pid: u32, groups: u32) -> Result<(), NetError> {
+    pub fn netlink_bind(
+        &mut self,
+        socket_idx: usize,
+        pid: u32,
+        groups: u32,
+    ) -> Result<(), NetError> {
         self.netlink.bind(socket_idx, pid, groups)
     }
 
@@ -733,19 +754,29 @@ impl NetStack {
     }
 
     /// Receive a netlink message (from kernel to user)
-    pub fn netlink_receive(&mut self, socket_idx: usize, buffer: &mut [u8]) -> Result<usize, NetError> {
+    pub fn netlink_receive(
+        &mut self,
+        socket_idx: usize,
+        buffer: &mut [u8],
+    ) -> Result<usize, NetError> {
         self.netlink.recv_message(socket_idx, buffer)
     }
 
     /// Handle netlink request from userspace
-    pub fn netlink_handle_request(&mut self, socket_idx: usize, data: &[u8]) -> Result<(), NetError> {
+    pub fn netlink_handle_request(
+        &mut self,
+        socket_idx: usize,
+        data: &[u8],
+    ) -> Result<(), NetError> {
         use super::netlink::{
-            NlMsgHdr, IfAddrMsg, RtAttr,
-            RTM_GETLINK, RTM_GETADDR, RTM_NEWADDR,
-            IFA_ADDRESS
+            IfAddrMsg, NlMsgHdr, RtAttr, IFA_ADDRESS, RTM_GETADDR, RTM_GETLINK, RTM_NEWADDR,
         };
 
-        crate::kinfo!("[netlink_handle_request] socket_idx={}, data_len={}", socket_idx, data.len());
+        crate::kinfo!(
+            "[netlink_handle_request] socket_idx={}, data_len={}",
+            socket_idx,
+            data.len()
+        );
 
         if data.len() < core::mem::size_of::<NlMsgHdr>() {
             crate::kinfo!("[netlink_handle_request] Data too short for NlMsgHdr");
@@ -754,21 +785,24 @@ impl NetStack {
 
         let hdr = unsafe { &*(data.as_ptr() as *const NlMsgHdr) };
         crate::kinfo!("[netlink_handle_request] Message type: {}", hdr.nlmsg_type);
-        
+
         match hdr.nlmsg_type {
             RTM_GETLINK => {
                 crate::kinfo!("[netlink_handle_request] RTM_GETLINK received");
                 // Send info for all devices
                 for (i, dev) in self.devices.iter().enumerate() {
-                    if !dev.present { continue; }
-                    
+                    if !dev.present {
+                        continue;
+                    }
+
                     crate::kinfo!("[netlink_handle_request] Sending ifinfo for device {}", i);
                     let info = super::netlink::DeviceInfo {
                         mac: dev.mac,
                         ip: dev.ip,
                         present: dev.present,
                     };
-                    self.netlink.send_ifinfo(socket_idx, hdr.nlmsg_seq, i, &info)?;
+                    self.netlink
+                        .send_ifinfo(socket_idx, hdr.nlmsg_seq, i, &info)?;
                 }
                 crate::kinfo!("[netlink_handle_request] Sending DONE message");
                 self.netlink.send_done(socket_idx, hdr.nlmsg_seq)?;
@@ -777,24 +811,30 @@ impl NetStack {
                 crate::kinfo!("[netlink_handle_request] RTM_GETADDR received");
                 // Send address info
                 for (i, dev) in self.devices.iter().enumerate() {
-                    if !dev.present { continue; }
-                    
+                    if !dev.present {
+                        continue;
+                    }
+
                     let info = super::netlink::DeviceInfo {
                         mac: dev.mac,
                         ip: dev.ip,
                         present: dev.present,
                     };
-                    self.netlink.send_ifaddr(socket_idx, hdr.nlmsg_seq, i, &info)?;
+                    self.netlink
+                        .send_ifaddr(socket_idx, hdr.nlmsg_seq, i, &info)?;
                 }
                 self.netlink.send_done(socket_idx, hdr.nlmsg_seq)?;
             }
             RTM_NEWADDR => {
                 crate::kinfo!("[netlink_handle_request] RTM_NEWADDR received");
                 // Parse IfAddrMsg
-                if data.len() < core::mem::size_of::<NlMsgHdr>() + core::mem::size_of::<IfAddrMsg>() {
+                if data.len() < core::mem::size_of::<NlMsgHdr>() + core::mem::size_of::<IfAddrMsg>()
+                {
                     return Err(NetError::InvalidPacket);
                 }
-                let ifaddr = unsafe { &*(data.as_ptr().add(core::mem::size_of::<NlMsgHdr>()) as *const IfAddrMsg) };
+                let ifaddr = unsafe {
+                    &*(data.as_ptr().add(core::mem::size_of::<NlMsgHdr>()) as *const IfAddrMsg)
+                };
                 let dev_idx = ifaddr.ifa_index as usize;
                 if dev_idx == 0 || dev_idx > self.devices.len() {
                     return Err(NetError::InvalidDevice);
@@ -811,29 +851,43 @@ impl NetStack {
                     }
 
                     if attr.rta_type == IFA_ADDRESS {
-                        if attr_len >= 4 + 4 { // Header + IPv4
+                        if attr_len >= 4 + 4 {
+                            // Header + IPv4
                             let ip_ptr = unsafe { data.as_ptr().add(pos + 4) };
                             let mut ip = [0u8; 4];
                             unsafe { core::ptr::copy_nonoverlapping(ip_ptr, ip.as_mut_ptr(), 4) };
-                            
+
                             // Update IP
                             if self.devices[real_dev_idx].present {
                                 self.devices[real_dev_idx].ip = ip;
-                                self.tcp.register_local(real_dev_idx, self.devices[real_dev_idx].mac, ip);
-                                crate::kinfo!("Netlink: Set IP for eth{} to {}.{}.{}.{}", 
-                                    real_dev_idx, ip[0], ip[1], ip[2], ip[3]);
+                                self.tcp.register_local(
+                                    real_dev_idx,
+                                    self.devices[real_dev_idx].mac,
+                                    ip,
+                                );
+                                crate::kinfo!(
+                                    "Netlink: Set IP for eth{} to {}.{}.{}.{}",
+                                    real_dev_idx,
+                                    ip[0],
+                                    ip[1],
+                                    ip[2],
+                                    ip[3]
+                                );
                             }
                         }
                     }
-                    
+
                     pos += (attr_len + 3) & !3; // Align to 4 bytes
                 }
             }
             _ => {
-                crate::kinfo!("[netlink_handle_request] Unknown message type: {}", hdr.nlmsg_type);
+                crate::kinfo!(
+                    "[netlink_handle_request] Unknown message type: {}",
+                    hdr.nlmsg_type
+                );
             }
         }
-        
+
         Ok(())
     }
 

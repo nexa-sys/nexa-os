@@ -394,7 +394,7 @@ impl Process {
         crate::kinfo!("ELF magic is valid");
 
         let loader = ElfLoader::new(elf_data)?;
-                crate::kinfo!("ElfLoader created successfully");
+        crate::kinfo!("ElfLoader created successfully");
 
         // Allocate memory for the process instead of using fixed USER_PHYS_BASE
         // This avoids collisions with kernel modules (initramfs) loaded in lower memory
@@ -521,21 +521,20 @@ impl Process {
         context.rip = entry_point;
         context.rsp = stack_ptr;
 
-        let cr3 =
-            match crate::paging::create_process_address_space(phys_base, USER_REGION_SIZE) {
-                Ok(cr3) => {
-                    // Validate CR3 before using it
-                    if let Err(e) = crate::paging::validate_cr3(cr3, false) {
-                        crate::kerror!("Process::from_elf: Invalid CR3 {:#x}: {}", cr3, e);
-                        return Err("Failed to create valid address space");
-                    }
-                    cr3
+        let cr3 = match crate::paging::create_process_address_space(phys_base, USER_REGION_SIZE) {
+            Ok(cr3) => {
+                // Validate CR3 before using it
+                if let Err(e) = crate::paging::validate_cr3(cr3, false) {
+                    crate::kerror!("Process::from_elf: Invalid CR3 {:#x}: {}", cr3, e);
+                    return Err("Failed to create valid address space");
                 }
-                Err(err) => {
-                    crate::kerror!("Failed to create address space for process: {}", err);
-                    return Err("Failed to create process address space");
-                }
-            };
+                cr3
+            }
+            Err(err) => {
+                crate::kerror!("Failed to create address space for process: {}", err);
+                return Err("Failed to create process address space");
+            }
+        };
 
         Ok(Process {
             pid,
@@ -549,7 +548,7 @@ impl Process {
             context,
             has_entered_user: false,
             is_fork_child: false, // Created by execve, not fork
-            cr3,    // Reuse existing CR3
+            cr3,                  // Reuse existing CR3
             tty: 0,
             memory_base: phys_base, // Reuse existing memory base
             memory_size: USER_REGION_SIZE,
@@ -558,7 +557,6 @@ impl Process {
             user_rflags: 0x202,
             exit_code: 0,
         })
-
     }
 
     /// Set parent process ID (POSIX)

@@ -35,6 +35,9 @@ pub const GS_SLOT_USER_RSP_DEBUG: usize = 9;
 pub const GS_SLOT_SAVED_RAX: usize = 10; // For fork child return value
 pub const GS_SLOT_KERNEL_STACK_GUARD: usize = 20;
 pub const GS_SLOT_KERNEL_STACK_SNAPSHOT: usize = 21;
+pub const GS_SLOT_SYSCALL_ARG4: usize = 22;
+pub const GS_SLOT_SYSCALL_ARG5: usize = 23;
+pub const GS_SLOT_SYSCALL_ARG6: usize = 24;
 
 const GUARD_SOURCE_INT_GATE: u64 = 0;
 const GUARD_SOURCE_SYSCALL: u64 = 1;
@@ -96,6 +99,11 @@ global_asm!(
     // Align stack to 16 bytes before calling into Rust (SysV ABI requires
     // %rsp % 16 == 8 at the call site so the callee observes 16-byte alignment).
     "sub rsp, 8",
+    // Int 0x81 path only provides three arguments; clear extended slots to avoid stale values
+    "xor r11, r11",
+    "mov gs:[{arg4_offset}], r11",
+    "mov gs:[{arg5_offset}], r11",
+    "mov gs:[{arg6_offset}], r11",
     // Prepare arguments for syscall_dispatch(nr=rax, arg1=rdi, arg2=rsi, arg3=rdx, syscall_return_addr=user_rip)
     // System V x86_64 ABI: rdi, rsi, rdx, rcx, r8
     // user_rip is already in GS_DATA slot 7, load it to r8
@@ -180,6 +188,10 @@ global_asm!(
     "mov gs:[112], rax", // gs slot 14 = user SS
     "mov rax, r9",       // Restore syscall return value
     "iretq"
+,
+    arg4_offset = const (GS_SLOT_SYSCALL_ARG4 * core::mem::size_of::<u64>()),
+    arg5_offset = const (GS_SLOT_SYSCALL_ARG5 * core::mem::size_of::<u64>()),
+    arg6_offset = const (GS_SLOT_SYSCALL_ARG6 * core::mem::size_of::<u64>()),
 );
 
 extern "C" {
@@ -255,6 +267,12 @@ fn encode_hex_u64(value: u64, buf: &mut [u8; 16]) {
             0..=9 => b'0' + nibble,
             _ => b'A' + (nibble - 10),
         };
+    }
+}
+
+unsafe fn write_bytes(port: &mut Port<u8>, bytes: &[u8]) {
+    for &byte in bytes {
+        port.write(byte);
     }
 }
 
@@ -540,13 +558,54 @@ extern "x86-interrupt" fn double_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: u64,
 ) -> ! {
-    crate::serial::_print(format_args!(
-        "\nDOUBLE FAULT: code={:#x} rip={:#x} rsp={:#x} ss={:#x}\n",
-        error_code,
-        stack_frame.instruction_pointer.as_u64(),
-        stack_frame.stack_pointer.as_u64(),
-        stack_frame.stack_segment.0
-    ));
+    unsafe {
+        let gs_ptr = core::ptr::addr_of!(crate::initramfs::GS_DATA.0) as *const u64;
+        let snap_rip = gs_ptr.add(10).read_volatile();
+        let snap_cs = gs_ptr.add(11).read_volatile();
+        let snap_rflags = gs_ptr.add(12).read_volatile();
+        let snap_rsp = gs_ptr.add(13).read_volatile();
+        let snap_ss = gs_ptr.add(14).read_volatile();
+        let guard_flag = gs_ptr.add(GS_SLOT_KERNEL_STACK_GUARD).read_volatile();
+        let guard_rsp = gs_ptr.add(GS_SLOT_KERNEL_STACK_SNAPSHOT).read_volatile();
+        let arg4_snapshot = gs_ptr.add(GS_SLOT_SYSCALL_ARG4).read_volatile();
+        let arg5_snapshot = gs_ptr.add(GS_SLOT_SYSCALL_ARG5).read_volatile();
+        let arg6_snapshot = gs_ptr.add(GS_SLOT_SYSCALL_ARG6).read_volatile();
+        let mut port = Port::<u8>::new(0x3F8);
+        write_bytes(&mut port, b"DF gs ");
+        write_hex_u64(&mut port, snap_rip);
+        port.write(b' ');
+        write_hex_u64(&mut port, snap_cs);
+        port.write(b' ');
+        write_hex_u64(&mut port, snap_rflags);
+        port.write(b' ');
+        write_hex_u64(&mut port, snap_rsp);
+        port.write(b' ');
+        write_hex_u64(&mut port, snap_ss);
+        port.write(b'\n');
+        write_bytes(&mut port, b"DF guard ");
+        write_hex_u64(&mut port, guard_flag);
+        port.write(b' ');
+        write_hex_u64(&mut port, guard_rsp);
+        port.write(b' ');
+        write_hex_u64(&mut port, arg4_snapshot);
+        port.write(b' ');
+        write_hex_u64(&mut port, arg5_snapshot);
+        port.write(b' ');
+        write_hex_u64(&mut port, arg6_snapshot);
+        port.write(b'\n');
+        write_bytes(&mut port, b"DF frame ");
+        write_hex_u64(&mut port, stack_frame.instruction_pointer.as_u64());
+        port.write(b' ');
+        write_hex_u64(&mut port, stack_frame.code_segment.0 as u64);
+        port.write(b' ');
+        write_hex_u64(&mut port, stack_frame.stack_pointer.as_u64());
+        port.write(b' ');
+        write_hex_u64(&mut port, stack_frame.stack_segment.0 as u64);
+        port.write(b'\n');
+        write_bytes(&mut port, b"DF err ");
+        write_hex_u64(&mut port, error_code);
+        port.write(b'\n');
+    }
     crate::kpanic!(
         "DOUBLE FAULT: code={:#x} rip={:#x} rsp={:#x} ss={:#x}",
         error_code,
@@ -741,12 +800,14 @@ lazy_static! {
                 .set_handler_addr(x86_64::VirtAddr::new_truncate(
                     syscall_interrupt_handler as u64,
                 ))
-                .set_privilege_level(PrivilegeLevel::Ring3);
+                .set_privilege_level(PrivilegeLevel::Ring3)
+                .set_present(true);
 
             // Set up ring3 switch handler at 0x80 (also callable from Ring 3)
             idt[0x80]
                 .set_handler_addr(x86_64::VirtAddr::new_truncate(ring3_switch_handler as u64))
-                .set_privilege_level(PrivilegeLevel::Ring3);
+                .set_privilege_level(PrivilegeLevel::Ring3)
+                .set_present(true);
         }
 
         idt
@@ -892,7 +953,7 @@ extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFr
 
     // Timer tick for scheduler (1ms granularity)
     const TIMER_TICK_MS: u64 = 1;
-    
+
     // Check if current process should be preempted
     if crate::scheduler::tick(TIMER_TICK_MS) {
         // Time slice expired or higher priority process ready

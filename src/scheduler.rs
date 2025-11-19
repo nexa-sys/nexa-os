@@ -1,11 +1,10 @@
 /// Robust O(1) Priority Scheduler (seL4-inspired)
 /// Implements strict priority scheduling with round-robin for equal priorities.
 /// Uses a bitmap and array of queues for O(1) complexity.
-
 use crate::process::{Pid, Process, ProcessState};
+use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicU64, Ordering};
 use spin::{Mutex, MutexGuard};
-use core::ops::{Deref, DerefMut};
 
 pub const MAX_PROCESSES: usize = 64;
 pub const NUM_PRIORITIES: usize = 256;
@@ -26,7 +25,7 @@ pub enum SchedPolicy {
 #[derive(Clone, Copy)]
 pub struct ProcessEntry {
     pub process: Process,
-    pub priority: u8,           // 0-255, 255 is highest
+    pub priority: u8, // 0-255, 255 is highest
     pub base_priority: u8,
     pub time_slice: u64,
     pub total_time: u64,
@@ -36,11 +35,11 @@ pub struct ProcessEntry {
     pub nice: i8,
     pub preempt_count: u64,
     pub voluntary_switches: u64,
-    
+
     // Intrusive linked list for ready queues
     pub next: Option<usize>,
     pub prev: Option<usize>,
-    
+
     // Stats/Legacy fields
     pub cpu_burst_count: u64,
     pub avg_cpu_burst: u64,
@@ -99,7 +98,10 @@ struct ReadyQueue {
 
 impl ReadyQueue {
     const fn new() -> Self {
-        Self { head: None, tail: None }
+        Self {
+            head: None,
+            tail: None,
+        }
     }
 }
 
@@ -126,11 +128,11 @@ impl Scheduler {
     fn enqueue(&mut self, idx: usize) {
         if let Some(entry) = &mut self.table[idx] {
             let prio = entry.priority as usize;
-            
+
             // Add to tail
             entry.next = None;
             entry.prev = self.queues[prio].tail;
-            
+
             if let Some(tail_idx) = self.queues[prio].tail {
                 if let Some(tail_entry) = &mut self.table[tail_idx] {
                     tail_entry.next = Some(idx);
@@ -149,7 +151,7 @@ impl Scheduler {
     fn dequeue(&mut self, prio: usize) -> Option<usize> {
         if let Some(head_idx) = self.queues[prio].head {
             let next_idx = self.table[head_idx].as_ref().unwrap().next;
-            
+
             if let Some(next) = next_idx {
                 self.table[next].as_mut().unwrap().prev = None;
             } else {
@@ -158,15 +160,15 @@ impl Scheduler {
                 // Clear bit in bitmap
                 self.bitmap[prio / 64] &= !(1 << (prio % 64));
             }
-            
+
             self.queues[prio].head = next_idx;
-            
+
             // Clear links in removed entry
             if let Some(entry) = &mut self.table[head_idx] {
                 entry.next = None;
                 entry.prev = None;
             }
-            
+
             Some(head_idx)
         } else {
             None
@@ -182,7 +184,7 @@ impl Scheduler {
             let prio = entry.priority as usize;
             let prev = entry.prev;
             let next = entry.next;
-            
+
             if let Some(prev_idx) = prev {
                 self.table[prev_idx].as_mut().unwrap().next = next;
             } else {
@@ -193,7 +195,7 @@ impl Scheduler {
                     self.bitmap[prio / 64] &= !(1 << (prio % 64));
                 }
             }
-            
+
             if let Some(next_idx) = next {
                 self.table[next_idx].as_mut().unwrap().prev = prev;
             } else {
@@ -201,7 +203,7 @@ impl Scheduler {
                 self.queues[prio].tail = prev;
             }
         }
-        
+
         // Clear links
         if let Some(entry) = &mut self.table[idx] {
             entry.next = None;
@@ -257,7 +259,7 @@ pub fn add_process_with_policy(
     nice: i8,
 ) -> Result<(), &'static str> {
     let mut sched = SCHEDULER.lock();
-    
+
     // Find free slot
     let mut free_idx = None;
     for (i, slot) in sched.table.iter().enumerate() {
@@ -266,17 +268,21 @@ pub fn add_process_with_policy(
             break;
         }
     }
-    
+
     if let Some(idx) = free_idx {
         let entry = ProcessEntry::new(process, priority, policy, nice);
         sched.table[idx] = Some(entry);
-        
+
         // If ready, add to queue
         if process.state == ProcessState::Ready {
             sched.enqueue(idx);
         }
-        
-        crate::kinfo!("Scheduler: Added PID {} with priority {}", process.pid, priority);
+
+        crate::kinfo!(
+            "Scheduler: Added PID {} with priority {}",
+            process.pid,
+            priority
+        );
         Ok(())
     } else {
         Err("Process table full")
@@ -287,7 +293,7 @@ pub fn remove_process(pid: Pid) -> Result<(), &'static str> {
     let mut sched = SCHEDULER.lock();
     let mut found_idx = None;
     let mut removed_cr3 = None;
-    
+
     for (i, slot) in sched.table.iter().enumerate() {
         if let Some(entry) = slot {
             if entry.process.pid == pid {
@@ -297,7 +303,7 @@ pub fn remove_process(pid: Pid) -> Result<(), &'static str> {
             }
         }
     }
-    
+
     if let Some(idx) = found_idx {
         // Remove from queue if it was in one
         // We can check if it's in a queue by checking state or just trying to remove
@@ -305,26 +311,26 @@ pub fn remove_process(pid: Pid) -> Result<(), &'static str> {
         // However, if state is Ready, it SHOULD be in queue.
         // If Running, it is NOT in queue (in this implementation).
         // If Sleeping/Zombie, NOT in queue.
-        
+
         let state = sched.table[idx].as_ref().unwrap().process.state;
         if state == ProcessState::Ready {
             sched.remove_from_queue(idx);
         }
-        
+
         sched.table[idx] = None;
-        
+
         if sched.current_pid == Some(pid) {
             sched.current_pid = None;
         }
-        
+
         drop(sched); // Release lock before freeing memory
-        
+
         if let Some(cr3) = removed_cr3 {
             if cr3 != 0 {
                 crate::paging::free_process_address_space(cr3);
             }
         }
-        
+
         Ok(())
     } else {
         Err("Process not found")
@@ -334,7 +340,7 @@ pub fn remove_process(pid: Pid) -> Result<(), &'static str> {
 pub fn set_process_state(pid: Pid, state: ProcessState) -> Result<(), &'static str> {
     let mut sched = SCHEDULER.lock();
     let mut found_idx = None;
-    
+
     for (i, slot) in sched.table.iter().enumerate() {
         if let Some(entry) = slot {
             if entry.process.pid == pid {
@@ -343,24 +349,24 @@ pub fn set_process_state(pid: Pid, state: ProcessState) -> Result<(), &'static s
             }
         }
     }
-    
+
     if let Some(idx) = found_idx {
         let old_state = sched.table[idx].as_ref().unwrap().process.state;
         if old_state == state {
             return Ok(());
         }
-        
+
         // Handle queue transitions
         if old_state == ProcessState::Ready {
             sched.remove_from_queue(idx);
         }
-        
+
         sched.table[idx].as_mut().unwrap().process.state = state;
-        
+
         if state == ProcessState::Ready {
             sched.enqueue(idx);
         }
-        
+
         Ok(())
     } else {
         Err("Process not found")
@@ -372,31 +378,31 @@ pub fn schedule() -> Option<Pid> {
     // In this O(1) implementation, we just peek at the highest priority queue.
     // But wait, schedule() in the old implementation also updated state from Running to Ready.
     // We should probably do that in do_schedule or here.
-    
+
     // Actually, schedule() returns the PID to switch to.
     // do_schedule() calls schedule() logic internally usually.
     // The existing code had schedule() return Option<Pid> and update state.
-    
+
     let sched = SCHEDULER.lock();
-    
+
     // If current process is running, we need to decide if it stays running or yields.
     // If it yields (e.g. time slice expired), it goes to Ready.
-    
+
     // But schedule() is usually called when we WANT to switch.
-    
+
     // Let's look at the highest priority ready process.
     if let Some(prio) = sched.get_highest_priority() {
         if let Some(head_idx) = sched.queues[prio].head {
             let next_pid = sched.table[head_idx].as_ref().unwrap().process.pid;
-            
+
             // If current is running and has higher or equal priority, and time slice > 0,
             // we might not want to switch unless this was called explicitly to yield.
             // But if schedule() is called, we assume a switch is requested or needed.
-            
+
             return Some(next_pid);
         }
     }
-    
+
     None
 }
 
@@ -404,7 +410,7 @@ pub fn tick(elapsed_ms: u64) -> bool {
     GLOBAL_TICK.fetch_add(1, Ordering::Relaxed);
     let mut sched = SCHEDULER.lock();
     let current_pid = sched.current_pid;
-    
+
     // Track waiting time for ready processes and promote them if needed
     // Collect a fixed-size list of indices to promote to avoid borrowing issues
     let mut promote_idxs: [usize; MAX_PROCESSES] = [0; MAX_PROCESSES];
@@ -437,7 +443,9 @@ pub fn tick(elapsed_ms: u64) -> bool {
                 (false, 0u8)
             }
         };
-        if !is_ready { continue; }
+        if !is_ready {
+            continue;
+        }
 
         let new_prio = old_prio.saturating_add(1);
 
@@ -445,7 +453,11 @@ pub fn tick(elapsed_ms: u64) -> bool {
         sched.remove_from_queue(idx);
         if let Some(entry_mut) = sched.table[idx].as_mut() {
             entry_mut.priority = new_prio;
-            crate::kdebug!("Aging: Promoted PID {} to priority {}", entry_mut.process.pid, entry_mut.priority);
+            crate::kdebug!(
+                "Aging: Promoted PID {} to priority {}",
+                entry_mut.process.pid,
+                entry_mut.priority
+            );
         }
         sched.enqueue(idx);
     }
@@ -461,15 +473,15 @@ pub fn tick(elapsed_ms: u64) -> bool {
                 }
             }
         }
-        
-            if let Some(idx) = current_idx {
+
+        if let Some(idx) = current_idx {
             let entry = sched.table[idx].as_mut().unwrap();
-                if entry.process.state == ProcessState::Running {
+            if entry.process.state == ProcessState::Running {
                 entry.total_time += elapsed_ms;
-                
-                    if entry.time_slice > elapsed_ms {
+
+                if entry.time_slice > elapsed_ms {
                     entry.time_slice -= elapsed_ms;
-                    
+
                     // Check for preemption
                     let current_prio = entry.priority as usize;
                     if let Some(highest_prio) = sched.get_highest_priority() {
@@ -478,7 +490,7 @@ pub fn tick(elapsed_ms: u64) -> bool {
                         }
                     }
                     return false;
-                    } else {
+                } else {
                     // Time slice expired
                     entry.time_slice = 0;
                     return true; // Reschedule
@@ -486,7 +498,7 @@ pub fn tick(elapsed_ms: u64) -> bool {
             }
         }
     }
-    
+
     false
 }
 
@@ -622,20 +634,20 @@ pub fn set_process_policy(pid: Pid, policy: SchedPolicy, nice: i8) -> Result<(),
             }
         }
     }
-    
+
     if let Some(idx) = found_idx {
         let _old_prio = sched.table[idx].as_ref().unwrap().priority;
         let state = sched.table[idx].as_ref().unwrap().process.state;
-        
+
         // Remove from queue if ready
         if state == ProcessState::Ready {
             sched.remove_from_queue(idx);
         }
-        
+
         let entry = sched.table[idx].as_mut().unwrap();
         entry.policy = policy;
         entry.nice = nice;
-        
+
         // Map policy to priority range
         entry.priority = match policy {
             SchedPolicy::Realtime => 200,
@@ -643,7 +655,7 @@ pub fn set_process_policy(pid: Pid, policy: SchedPolicy, nice: i8) -> Result<(),
             SchedPolicy::Batch => 50,
             SchedPolicy::Idle => 0,
         } + (nice.clamp(-20, 19) + 20) as u8; // Simple mapping
-        
+
         // Re-enqueue if ready
         if state == ProcessState::Ready {
             sched.enqueue(idx);
@@ -809,29 +821,34 @@ pub fn do_schedule() {
     // 1. Check if current process needs to be saved
     // 2. Pick next process
     // 3. Context switch
-    
+
     let mut sched = SCHEDULER.lock();
     sched.stats.total_context_switches += 1;
-    
+
     let current_pid = sched.current_pid;
     let mut current_idx = None;
-    
+
     // Handle current process
     if let Some(pid) = current_pid {
         for (i, slot) in sched.table.iter_mut().enumerate() {
             if let Some(entry) = slot {
                 if entry.process.pid == pid {
                     current_idx = Some(i);
-                    
+
                     if entry.process.state == ProcessState::Running {
                         // Save syscall context if needed (from GS_DATA)
                         unsafe {
-                            let gs_data_ptr = core::ptr::addr_of!(crate::initramfs::GS_DATA.0) as *const u64;
-                            entry.process.user_rip = gs_data_ptr.add(crate::interrupts::GS_SLOT_SAVED_RCX).read();
-                            entry.process.user_rsp = gs_data_ptr.add(crate::interrupts::GS_SLOT_USER_RSP).read();
-                            entry.process.user_rflags = gs_data_ptr.add(crate::interrupts::GS_SLOT_SAVED_RFLAGS).read();
+                            let gs_data_ptr =
+                                core::ptr::addr_of!(crate::initramfs::GS_DATA.0) as *const u64;
+                            entry.process.user_rip =
+                                gs_data_ptr.add(crate::interrupts::GS_SLOT_SAVED_RCX).read();
+                            entry.process.user_rsp =
+                                gs_data_ptr.add(crate::interrupts::GS_SLOT_USER_RSP).read();
+                            entry.process.user_rflags = gs_data_ptr
+                                .add(crate::interrupts::GS_SLOT_SAVED_RFLAGS)
+                                .read();
                         }
-                        
+
                         entry.process.state = ProcessState::Ready;
                         // Re-enqueue current process since it's still ready
                         // We need to drop the mutable borrow of entry to call enqueue
@@ -842,20 +859,20 @@ pub fn do_schedule() {
             }
         }
     }
-    
+
     if let Some(idx) = current_idx {
         if sched.table[idx].as_ref().unwrap().process.state == ProcessState::Ready {
             sched.enqueue(idx);
         }
     }
-    
+
     // Pick next process
     let next_idx = if let Some(prio) = sched.get_highest_priority() {
         sched.dequeue(prio)
     } else {
         None
     };
-    
+
     if let Some(idx) = next_idx {
         let entry = sched.table[idx].as_mut().unwrap();
         entry.process.state = ProcessState::Running;
@@ -864,7 +881,7 @@ pub fn do_schedule() {
         entry.priority = entry.base_priority;
         entry.wait_time = 0;
         entry.last_scheduled = GLOBAL_TICK.load(Ordering::Relaxed);
-        
+
         let next_pid = entry.process.pid;
         let next_cr3 = entry.process.cr3;
         let next_context = entry.process.context;
@@ -872,22 +889,26 @@ pub fn do_schedule() {
         let user_rip = entry.process.user_rip;
         let user_rsp = entry.process.user_rsp;
         let user_rflags = entry.process.user_rflags;
-        
+
         sched.current_pid = Some(next_pid);
-        
+
         // Prepare for switch
         let old_context_ptr = if let Some(curr_idx) = current_idx {
-             if let Some(entry) = sched.table[curr_idx].as_mut() {
-                 if entry.process.state != ProcessState::Zombie {
-                     Some(&mut entry.process.context as *mut _)
-                 } else {
-                     None
-                 }
-             } else { None }
-        } else { None };
-        
+            if let Some(entry) = sched.table[curr_idx].as_mut() {
+                if entry.process.state != ProcessState::Zombie {
+                    Some(&mut entry.process.context as *mut _)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         drop(sched); // Release lock
-        
+
         if first_run {
             // Handle first run
             // We need to set has_entered_user = true
@@ -904,10 +925,17 @@ pub fn do_schedule() {
         } else {
             unsafe {
                 if user_rsp != 0 {
-                    crate::interrupts::restore_user_syscall_context(user_rip, user_rsp, user_rflags);
+                    crate::interrupts::restore_user_syscall_context(
+                        user_rip,
+                        user_rsp,
+                        user_rflags,
+                    );
                 }
                 crate::paging::activate_address_space(next_cr3);
-                context_switch(old_context_ptr.unwrap_or(core::ptr::null_mut()), &next_context as *const _);
+                context_switch(
+                    old_context_ptr.unwrap_or(core::ptr::null_mut()),
+                    &next_context as *const _,
+                );
             }
         }
     } else {

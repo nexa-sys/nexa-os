@@ -1,11 +1,10 @@
+use alloc::collections::VecDeque;
+use alloc::vec::Vec;
 /// Netlink socket implementation
 /// Provides interface for user-space tools to query network configuration
 /// Implements a simplified netlink protocol for RTM_* messages
-
 use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
-use alloc::vec::Vec;
-use alloc::collections::VecDeque;
 
 use super::drivers::NetError;
 use super::stack::NetStack;
@@ -15,69 +14,69 @@ pub const NLMSG_DONE: u16 = 3;
 pub const NLMSG_ERROR: u16 = 2;
 
 /// RTM message types
-pub const RTM_GETLINK: u16 = 18;    // Get link info
-pub const RTM_GETADDR: u16 = 22;    // Get address info
-pub const RTM_NEWLINK: u16 = 16;    // New link
-pub const RTM_NEWADDR: u16 = 20;    // New address
+pub const RTM_GETLINK: u16 = 18; // Get link info
+pub const RTM_GETADDR: u16 = 22; // Get address info
+pub const RTM_NEWLINK: u16 = 16; // New link
+pub const RTM_NEWADDR: u16 = 20; // New address
 
 /// Interface info attributes
-pub const IFLA_IFNAME: u16 = 3;    // Interface name
-pub const IFLA_MTU: u16 = 4;        // MTU
+pub const IFLA_IFNAME: u16 = 3; // Interface name
+pub const IFLA_MTU: u16 = 4; // MTU
 pub const IFLA_OPERSTATE: u16 = 17; // Operational state
-pub const IFLA_ADDRESS: u16 = 1;   // MAC address
+pub const IFLA_ADDRESS: u16 = 1; // MAC address
 
 /// Address attributes
-pub const IFA_ADDRESS: u16 = 1;    // IP address
-pub const IFA_LABEL: u16 = 3;      // Interface name label
+pub const IFA_ADDRESS: u16 = 1; // IP address
+pub const IFA_LABEL: u16 = 3; // Interface name label
 
 /// Netlink message header
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct NlMsgHdr {
-    pub nlmsg_len: u32,     // Length of message including header
-    pub nlmsg_type: u16,    // Message type (RTM_*, NLMSG_*)
-    pub nlmsg_flags: u16,   // Flags (NLM_F_*)
-    pub nlmsg_seq: u32,     // Sequence number
-    pub nlmsg_pid: u32,     // Sender's PID
+    pub nlmsg_len: u32,   // Length of message including header
+    pub nlmsg_type: u16,  // Message type (RTM_*, NLMSG_*)
+    pub nlmsg_flags: u16, // Flags (NLM_F_*)
+    pub nlmsg_seq: u32,   // Sequence number
+    pub nlmsg_pid: u32,   // Sender's PID
 }
 
 /// Rtnetlink (routing netlink) message header
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct IfInfoMsg {
-    pub ifi_family: u8,     // AF_UNSPEC, AF_INET, etc.
+    pub ifi_family: u8, // AF_UNSPEC, AF_INET, etc.
     pub __pad: u8,
-    pub ifi_type: u16,      // Interface type (ARPHRD_*)
-    pub ifi_index: u32,     // Interface index
-    pub ifi_flags: u32,     // Interface flags (IFF_*)
-    pub ifi_change: u32,    // Change mask
+    pub ifi_type: u16,   // Interface type (ARPHRD_*)
+    pub ifi_index: u32,  // Interface index
+    pub ifi_flags: u32,  // Interface flags (IFF_*)
+    pub ifi_change: u32, // Change mask
 }
 
 /// Attribute header
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct RtAttr {
-    pub rta_len: u16,       // Length including header
-    pub rta_type: u16,      // Attribute type
+    pub rta_len: u16,  // Length including header
+    pub rta_type: u16, // Attribute type
 }
 
 /// Address message
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct IfAddrMsg {
-    pub ifa_family: u8,     // AF_INET, etc.
-    pub ifa_prefixlen: u8,  // Prefix length
-    pub ifa_flags: u8,      // Flags
-    pub ifa_scope: u8,      // Scope
-    pub ifa_index: u32,     // Interface index
+    pub ifa_family: u8,    // AF_INET, etc.
+    pub ifa_prefixlen: u8, // Prefix length
+    pub ifa_flags: u8,     // Flags
+    pub ifa_scope: u8,     // Scope
+    pub ifa_index: u32,    // Interface index
 }
 
 /// Netlink socket configuration
 #[derive(Clone, Copy)]
 pub struct NetlinkSocket {
     pub in_use: bool,
-    pub pid: u32,           // Binding PID
-    pub groups: u32,        // Multicast groups
+    pub pid: u32,    // Binding PID
+    pub groups: u32, // Multicast groups
 }
 
 const MAX_NETLINK_SOCKETS: usize = 4;
@@ -148,7 +147,12 @@ impl NetlinkSubsystem {
 
     /// Bind socket to PID and optional multicast groups
     pub fn bind(&mut self, socket_idx: usize, pid: u32, groups: u32) -> Result<(), NetError> {
-        crate::kinfo!("[netlink::bind] socket_idx={}, pid={}, groups={}", socket_idx, pid, groups);
+        crate::kinfo!(
+            "[netlink::bind] socket_idx={}, pid={}, groups={}",
+            socket_idx,
+            pid,
+            groups
+        );
         if socket_idx >= MAX_NETLINK_SOCKETS {
             return Err(NetError::InvalidSocket);
         }
@@ -168,7 +172,11 @@ impl NetlinkSubsystem {
 
         self.sockets[socket_idx].pid = pid;
         self.sockets[socket_idx].groups = groups;
-        crate::kinfo!("[netlink::bind] Socket {} bound to PID {} successfully", socket_idx, pid);
+        crate::kinfo!(
+            "[netlink::bind] Socket {} bound to PID {} successfully",
+            socket_idx,
+            pid
+        );
         Ok(())
     }
 
@@ -179,7 +187,11 @@ impl NetlinkSubsystem {
 
     /// Send netlink message (queues it for the socket)
     pub fn send_message(&mut self, socket_idx: usize, message: &[u8]) -> Result<(), NetError> {
-        crate::kinfo!("[netlink::send_message] socket_idx={}, msg_len={}", socket_idx, message.len());
+        crate::kinfo!(
+            "[netlink::send_message] socket_idx={}, msg_len={}",
+            socket_idx,
+            message.len()
+        );
         if socket_idx >= MAX_NETLINK_SOCKETS {
             crate::kinfo!("[netlink::send_message] Invalid socket index");
             return Err(NetError::InvalidSocket);
@@ -198,12 +210,12 @@ impl NetlinkSubsystem {
         let mut data = Vec::new();
         data.extend_from_slice(&message[..len]);
 
-        self.rx_queues[socket_idx].push_back(NetlinkRxEntry {
-            len,
-            data,
-        });
+        self.rx_queues[socket_idx].push_back(NetlinkRxEntry { len, data });
 
-        crate::kinfo!("[netlink::send_message] Message queued, rx_queue_len now {}", self.rx_queues[socket_idx].len());
+        crate::kinfo!(
+            "[netlink::send_message] Message queued, rx_queue_len now {}",
+            self.rx_queues[socket_idx].len()
+        );
         Ok(())
     }
 
@@ -213,7 +225,11 @@ impl NetlinkSubsystem {
         socket_idx: usize,
         buffer: &mut [u8],
     ) -> Result<usize, NetError> {
-        crate::kinfo!("[netlink::recv_message] socket_idx={}, buffer_len={}", socket_idx, buffer.len());
+        crate::kinfo!(
+            "[netlink::recv_message] socket_idx={}, buffer_len={}",
+            socket_idx,
+            buffer.len()
+        );
         if socket_idx >= MAX_NETLINK_SOCKETS {
             crate::kinfo!("[netlink::recv_message] Invalid socket index");
             return Err(NetError::InvalidSocket);
@@ -223,12 +239,15 @@ impl NetlinkSubsystem {
             return Err(NetError::InvalidSocket);
         }
 
-        crate::kinfo!("[netlink::recv_message] rx_queue_len={}", self.rx_queues[socket_idx].len());
-        
+        crate::kinfo!(
+            "[netlink::recv_message] rx_queue_len={}",
+            self.rx_queues[socket_idx].len()
+        );
+
         if let Some(entry) = self.rx_queues[socket_idx].pop_front() {
             let len = core::cmp::min(buffer.len(), entry.len);
             buffer[..len].copy_from_slice(&entry.data[..len]);
-            
+
             crate::kinfo!("[netlink::recv_message] Returning {} bytes", len);
             Ok(len)
         } else {
@@ -324,7 +343,10 @@ impl NetlinkSubsystem {
 
         let mut msg = [0u8; 16];
         let hdr_bytes = unsafe {
-            core::slice::from_raw_parts(&hdr as *const _ as *const u8, core::mem::size_of::<NlMsgHdr>())
+            core::slice::from_raw_parts(
+                &hdr as *const _ as *const u8,
+                core::mem::size_of::<NlMsgHdr>(),
+            )
         };
         msg[..core::mem::size_of::<NlMsgHdr>()].copy_from_slice(hdr_bytes);
         msg
@@ -343,7 +365,10 @@ impl NetlinkSubsystem {
             nlmsg_pid: 0,
         };
         let hdr_bytes = unsafe {
-            core::slice::from_raw_parts(&hdr as *const _ as *const u8, core::mem::size_of::<NlMsgHdr>())
+            core::slice::from_raw_parts(
+                &hdr as *const _ as *const u8,
+                core::mem::size_of::<NlMsgHdr>(),
+            )
         };
         msg[pos..pos + core::mem::size_of::<NlMsgHdr>()].copy_from_slice(hdr_bytes);
         pos += core::mem::size_of::<NlMsgHdr>();
@@ -352,13 +377,16 @@ impl NetlinkSubsystem {
         let ifinfo = IfInfoMsg {
             ifi_family: 0, // AF_UNSPEC
             __pad: 0,
-            ifi_type: 1,   // ARPHRD_ETHER
+            ifi_type: 1, // ARPHRD_ETHER
             ifi_index: (dev_idx + 1) as u32,
             ifi_flags: 0x41, // IFF_UP | IFF_RUNNING
             ifi_change: 0,
         };
         let ifinfo_bytes = unsafe {
-            core::slice::from_raw_parts(&ifinfo as *const _ as *const u8, core::mem::size_of::<IfInfoMsg>())
+            core::slice::from_raw_parts(
+                &ifinfo as *const _ as *const u8,
+                core::mem::size_of::<IfInfoMsg>(),
+            )
         };
         msg[pos..pos + core::mem::size_of::<IfInfoMsg>()].copy_from_slice(ifinfo_bytes);
         pos += core::mem::size_of::<IfInfoMsg>();
@@ -369,7 +397,10 @@ impl NetlinkSubsystem {
             rta_type: IFLA_ADDRESS,
         };
         let attr_bytes = unsafe {
-            core::slice::from_raw_parts(&attr_hdr as *const _ as *const u8, core::mem::size_of::<RtAttr>())
+            core::slice::from_raw_parts(
+                &attr_hdr as *const _ as *const u8,
+                core::mem::size_of::<RtAttr>(),
+            )
         };
         msg[pos..pos + core::mem::size_of::<RtAttr>()].copy_from_slice(attr_bytes);
         pos += core::mem::size_of::<RtAttr>();
@@ -390,7 +421,10 @@ impl NetlinkSubsystem {
             rta_type: IFLA_IFNAME,
         };
         let attr_bytes = unsafe {
-            core::slice::from_raw_parts(&attr_hdr as *const _ as *const u8, core::mem::size_of::<RtAttr>())
+            core::slice::from_raw_parts(
+                &attr_hdr as *const _ as *const u8,
+                core::mem::size_of::<RtAttr>(),
+            )
         };
         msg[pos..pos + core::mem::size_of::<RtAttr>()].copy_from_slice(attr_bytes);
         pos += core::mem::size_of::<RtAttr>();
@@ -419,21 +453,27 @@ impl NetlinkSubsystem {
             nlmsg_pid: 0,
         };
         let hdr_bytes = unsafe {
-            core::slice::from_raw_parts(&hdr as *const _ as *const u8, core::mem::size_of::<NlMsgHdr>())
+            core::slice::from_raw_parts(
+                &hdr as *const _ as *const u8,
+                core::mem::size_of::<NlMsgHdr>(),
+            )
         };
         msg[pos..pos + core::mem::size_of::<NlMsgHdr>()].copy_from_slice(hdr_bytes);
         pos += core::mem::size_of::<NlMsgHdr>();
 
         // Address message
         let ifaddr = IfAddrMsg {
-            ifa_family: 2,   // AF_INET
+            ifa_family: 2,     // AF_INET
             ifa_prefixlen: 24, // /24
-            ifa_flags: 0x20, // IFA_F_PERMANENT
+            ifa_flags: 0x20,   // IFA_F_PERMANENT
             ifa_scope: 0,
             ifa_index: (dev_idx + 1) as u32,
         };
         let ifaddr_bytes = unsafe {
-            core::slice::from_raw_parts(&ifaddr as *const _ as *const u8, core::mem::size_of::<IfAddrMsg>())
+            core::slice::from_raw_parts(
+                &ifaddr as *const _ as *const u8,
+                core::mem::size_of::<IfAddrMsg>(),
+            )
         };
         msg[pos..pos + core::mem::size_of::<IfAddrMsg>()].copy_from_slice(ifaddr_bytes);
         pos += core::mem::size_of::<IfAddrMsg>();
@@ -444,7 +484,10 @@ impl NetlinkSubsystem {
             rta_type: IFA_ADDRESS,
         };
         let attr_bytes = unsafe {
-            core::slice::from_raw_parts(&attr_hdr as *const _ as *const u8, core::mem::size_of::<RtAttr>())
+            core::slice::from_raw_parts(
+                &attr_hdr as *const _ as *const u8,
+                core::mem::size_of::<RtAttr>(),
+            )
         };
         msg[pos..pos + core::mem::size_of::<RtAttr>()].copy_from_slice(attr_bytes);
         pos += core::mem::size_of::<RtAttr>();

@@ -96,19 +96,27 @@ pub fn init_user_region(start_addr: u64) {
     // Align to 2MB
     const ALIGN: u64 = 0x200000;
     let aligned_start = (start_addr + ALIGN - 1) & !(ALIGN - 1);
-    
+
     let current = NEXT_USER_REGION.load(AtomicOrdering::Relaxed);
-    
+
     // Always update if the new start is higher.
-    // If the new start is lower, we keep the current (hardcoded safe default) 
-    // unless the hardcoded default is unreasonably high? 
+    // If the new start is lower, we keep the current (hardcoded safe default)
+    // unless the hardcoded default is unreasonably high?
     // Actually, let's just ensure we are strictly above the requested start_addr.
-    
+
     if aligned_start > current {
         NEXT_USER_REGION.store(aligned_start, AtomicOrdering::SeqCst);
-        crate::kinfo!("paging: updated user region start to {:#x} (was {:#x})", aligned_start, current);
+        crate::kinfo!(
+            "paging: updated user region start to {:#x} (was {:#x})",
+            aligned_start,
+            current
+        );
     } else {
-        crate::kinfo!("paging: user region start {:#x} is safe (requested > {:#x})", current, start_addr);
+        crate::kinfo!(
+            "paging: user region start {:#x} is safe (requested > {:#x})",
+            current,
+            start_addr
+        );
     }
 }
 
