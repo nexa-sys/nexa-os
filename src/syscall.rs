@@ -1413,13 +1413,6 @@ fn syscall_kill(pid: u64, signum: u64) -> u64 {
     0
 }
 
-/// POSIX getppid() system call - get parent process ID
-fn syscall_getppid() -> u64 {
-    // For now, return 0 (no parent)
-    // TODO: Implement proper parent PID tracking
-    posix::set_errno(0);
-    0
-}
 
 /// POSIX fork() system call - create child process
 fn syscall_fork(syscall_return_addr: u64) -> u64 {
@@ -2850,16 +2843,60 @@ fn syscall_socket(domain: i32, socket_type: i32, protocol: i32) -> u64 {
 
                 FILE_HANDLES[idx] = Some(handle);
                 // Sanity check: verify no obviously invalid socket_index values got written
+                // Use domain-specific upper bounds instead of a magic constant
                 for i in 0..MAX_OPEN_FILES {
-                        if let Some(fh) = FILE_HANDLES[i] {
-                            if let FileBacking::Socket(socket) = fh.backing {
-                                if socket.socket_index != usize::MAX && socket.socket_index >= 1024 {
-                                    crate::kerror!("[SYS_SOCKET] Detected invalid socket_index {} at fh idx {}", socket.socket_index, i);
+                    if let Some(fh) = FILE_HANDLES[i] {
+                        if let FileBacking::Socket(socket) = fh.backing {
+                            if socket.socket_index != usize::MAX {
+                                match socket.domain {
+                                    AF_NETLINK => {
+                                        if socket.socket_index >= crate::net::netlink::MAX_NETLINK_SOCKETS {
+                                            crate::kerror!(
+                                                "[SYS_SOCKET] Detected invalid netlink socket_index {} at fh idx {}",
+                                                socket.socket_index,
+                                                i
+                                            );
+                                        }
+                                    }
+                                    AF_INET => {
+                                        if socket.socket_index >= crate::net::stack::MAX_UDP_SOCKETS {
+                                            crate::kerror!(
+                                                "[SYS_SOCKET] Detected invalid udp socket_index {} at fh idx {}",
+                                                socket.socket_index,
+                                                i
+                                            );
+                                        }
+                                    }
+                                    _ => {
+                                        crate::kerror!(
+                                            "[SYS_SOCKET] Detected unknown domain {} for socket_index {} at fh idx {}",
+                                            socket.domain,
+                                            socket.socket_index,
+                                            i
+                                        );
+                                    }
                                 }
                             }
                         }
                     }
+                }
                 let fd = FD_BASE + idx as u64;
+                // Print debug info about the new file handle for diagnostics
+                if let Some(saved) = FILE_HANDLES[idx] {
+                    match saved.backing {
+                        FileBacking::Socket(s) => {
+                            crate::kinfo!(
+                                "[SYS_SOCKET] saved backing socket idx={} domain={} type={} proto={} fd={}",
+                                s.socket_index,
+                                s.domain,
+                                s.socket_type,
+                                s.protocol,
+                                fd
+                            );
+                        }
+                        _ => {}
+                    }
+                }
                 crate::kinfo!(
                     "[SYS_SOCKET] Created socket fd={} domain={} type={} proto={} idx={}",
                     fd,
@@ -2967,8 +3004,16 @@ fn syscall_bind(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
                 return u64::MAX;
             }
 
-            let pid = addr_nl.nl_pid;
+            let mut pid = addr_nl.nl_pid;
             let groups = addr_nl.nl_groups;
+
+            // If pid==0, use the current process PID as a safer default (userspace sometimes sends 0)
+            if pid == 0 {
+                if let Some(cur) = crate::scheduler::get_current_pid() {
+                    pid = cur as u32;
+                    crate::kinfo!("[SYS_BIND] Netlink: pid was 0, using current pid {}", pid);
+                }
+            }
 
             crate::kinfo!(
                 "[SYS_BIND] Netlink: pid={}, groups={}, addrlen={}",
@@ -2977,9 +3022,25 @@ fn syscall_bind(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
                 addrlen
             );
 
+            // Validate that socket_index is valid for netlink before attempting to bind
+            if sock_handle.socket_index == usize::MAX
+                || (sock_handle.domain == AF_NETLINK
+                    && sock_handle.socket_index >= crate::net::netlink::MAX_NETLINK_SOCKETS)
+                || (sock_handle.domain == AF_INET
+                    && sock_handle.socket_index >= crate::net::stack::MAX_UDP_SOCKETS)
+            {
+                crate::kinfo!(
+                    "[SYS_BIND] Netlink bind: invalid socket_index={} in file handle (domain={})",
+                    sock_handle.socket_index,
+                    sock_handle.domain
+                );
+                posix::set_errno(posix::errno::EBADF);
+                return u64::MAX;
+            }
+
             if let Some(res) = crate::net::with_net_stack(|stack| {
-                stack.netlink_bind(sock_handle.socket_index, pid, groups)
-            }) {
+                    stack.netlink_bind(sock_handle.socket_index, pid, groups)
+                }) {
                 match res {
                     Ok(_) => {
                         crate::kinfo!("[SYS_BIND] Netlink bind successful");
@@ -3119,6 +3180,20 @@ fn syscall_sendto(
                 sock_handle.socket_index,
                 len
             );
+            if sock_handle.socket_index == usize::MAX
+                || (sock_handle.domain == AF_NETLINK
+                    && sock_handle.socket_index >= crate::net::netlink::MAX_NETLINK_SOCKETS)
+                || (sock_handle.domain == AF_INET
+                    && sock_handle.socket_index >= crate::net::stack::MAX_UDP_SOCKETS)
+            {
+                crate::kinfo!(
+                    "[SYS_SENDTO] Netlink sendto with invalid socket_index={} in file handle (domain={})",
+                    sock_handle.socket_index,
+                    sock_handle.domain
+                );
+                posix::set_errno(posix::errno::EBADF);
+                return u64::MAX;
+            }
             if let Some(res) = crate::net::with_net_stack(|stack| {
                 stack.netlink_send(sock_handle.socket_index, data)
             }) {
@@ -3248,6 +3323,21 @@ fn syscall_recvfrom(
         };
 
         if sock_handle.domain == AF_NETLINK {
+            // Validate socket index before using net stack
+            if sock_handle.socket_index == usize::MAX
+                || (sock_handle.domain == AF_NETLINK
+                    && sock_handle.socket_index >= crate::net::netlink::MAX_NETLINK_SOCKETS)
+                || (sock_handle.domain == AF_INET
+                    && sock_handle.socket_index >= crate::net::stack::MAX_UDP_SOCKETS)
+            {
+                crate::kinfo!(
+                    "[SYS_RECVFROM] Netlink recvfrom with invalid socket_index={} in file handle (domain={})",
+                    sock_handle.socket_index,
+                    sock_handle.domain
+                );
+                posix::set_errno(posix::errno::EBADF);
+                return u64::MAX;
+            }
             let buffer = slice::from_raw_parts_mut(buf, len);
             if let Some(res) = crate::net::with_net_stack(|stack| {
                 stack.netlink_receive(sock_handle.socket_index, buffer)
@@ -3487,10 +3577,23 @@ pub extern "C" fn syscall_dispatch(
         SYS_SIGACTION => syscall_sigaction(arg1, arg2 as *const u8, arg3 as *mut u8),
         SYS_SIGPROCMASK => syscall_sigprocmask(arg1 as i32, arg2 as *const u64, arg3 as *mut u64),
         SYS_GETPID => {
-            crate::kdebug!("SYS_GETPID called");
-            1
+            if let Some(pid) = crate::scheduler::get_current_pid() {
+                pid as u64
+            } else {
+                0
+            }
         }
-        SYS_GETPPID => syscall_getppid(),
+        SYS_GETPPID => {
+            if let Some(pid) = crate::scheduler::get_current_pid() {
+                if let Some(process) = crate::scheduler::get_process(pid) {
+                    process.ppid as u64
+                } else {
+                    0
+                }
+            } else {
+                0
+            }
+        },
         SYS_SCHED_YIELD => syscall_sched_yield(),
         SYS_LIST_FILES => syscall_list_files(
             arg1 as *mut u8,

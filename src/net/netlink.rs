@@ -79,7 +79,7 @@ pub struct NetlinkSocket {
     pub groups: u32, // Multicast groups
 }
 
-const MAX_NETLINK_SOCKETS: usize = 4;
+pub const MAX_NETLINK_SOCKETS: usize = 4;
 const NETLINK_RX_QUEUE_LEN: usize = 16;
 const MAX_NETLINK_PAYLOAD: usize = 4096;
 

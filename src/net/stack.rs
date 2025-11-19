@@ -17,7 +17,7 @@ const PROTO_ICMP: u8 = 1;
 const PROTO_TCP: u8 = 6;
 const PROTO_UDP: u8 = 17;
 const LISTEN_PORT: u16 = 8080;
-const MAX_UDP_SOCKETS: usize = 8;
+pub const MAX_UDP_SOCKETS: usize = 8;
 pub const UDP_MAX_PAYLOAD: usize = MAX_FRAME_SIZE - 14 - 20 - 8;
 const UDP_RX_QUEUE_LEN: usize = 4;
 
