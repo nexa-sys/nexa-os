@@ -784,7 +784,9 @@ impl NetStack {
         }
 
         let hdr = unsafe { &*(data.as_ptr() as *const NlMsgHdr) };
-        crate::kinfo!("[netlink_handle_request] Message type: {}", hdr.nlmsg_type);
+        // Protect against malformed headers reporting a length larger than actual buffer
+        let msg_len = core::cmp::min(hdr.nlmsg_len as usize, data.len());
+        crate::kinfo!("[netlink_handle_request] Message type: {} seq={} pid={}", hdr.nlmsg_type, hdr.nlmsg_seq, hdr.nlmsg_pid);
 
         match hdr.nlmsg_type {
             RTM_GETLINK => {
@@ -843,9 +845,13 @@ impl NetStack {
 
                 // Parse attributes
                 let mut pos = core::mem::size_of::<NlMsgHdr>() + core::mem::size_of::<IfAddrMsg>();
-                while pos + core::mem::size_of::<RtAttr>() <= hdr.nlmsg_len as usize {
+                while pos + core::mem::size_of::<RtAttr>() <= msg_len {
                     let attr = unsafe { &*(data.as_ptr().add(pos) as *const RtAttr) };
                     let attr_len = attr.rta_len as usize;
+                    if attr_len < core::mem::size_of::<RtAttr>() {
+                        crate::kinfo!("[netlink_handle_request] Invalid attribute length: {}", attr_len);
+                        break;
+                    }
                     if pos + attr_len > hdr.nlmsg_len as usize {
                         break;
                     }

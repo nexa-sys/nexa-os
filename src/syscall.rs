@@ -2944,9 +2944,22 @@ fn syscall_bind(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
             return u64::MAX;
         }
 
-        // TODO: Allocate socket in network stack and bind to port
-        // For now, just store the port in socket_index as a placeholder
-        sock_handle.socket_index = port as usize;
+        // Allocate socket in network stack and bind to port
+        if let Some(res) = crate::net::with_net_stack(|stack| stack.udp_socket(port)) {
+            match res {
+                Ok(udp_idx) => {
+                    sock_handle.socket_index = udp_idx;
+                }
+                Err(e) => {
+                    crate::kinfo!("[SYS_BIND] Failed to allocate UDP socket in stack: {:?}", e);
+                    posix::set_errno(posix::errno::EADDRINUSE);
+                    return u64::MAX;
+                }
+            }
+        } else {
+            posix::set_errno(posix::errno::ENETDOWN);
+            return u64::MAX;
+        }
 
         crate::kinfo!(
             "[SYS_BIND] UDP socket fd {} bound to {}.{}.{}.{}:{}",
