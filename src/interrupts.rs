@@ -901,10 +901,8 @@ extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFr
         // and the scheduler will handle context switching properly
         crate::kdebug!("Timer: Triggering preemptive reschedule");
         
-        // For true preemptive multitasking, we would call do_schedule() here
-        // However, this requires careful handling of the interrupt stack frame
-        // For now, we rely on syscall yield points for scheduling
-        // TODO: Implement full preemptive scheduling via timer interrupt
+        // Implement full preemptive scheduling via timer interrupt
+        crate::scheduler::do_schedule_from_interrupt();
     }
 }
 
