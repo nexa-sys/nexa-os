@@ -122,6 +122,12 @@ pub struct NetlinkSubsystem {
     sockets: [NetlinkSocket; MAX_NETLINK_SOCKETS],
     rx_queues: [[NetlinkRxEntry; NETLINK_RX_QUEUE_LEN]; MAX_NETLINK_SOCKETS],
     next_seq: AtomicUsize,
+    ifinfo_buffer: [u8; 256],
+    ifaddr_buffer: [u8; 256],
+    done_buffer: [u8; 16],
+    ifinfo_len: usize,
+    ifaddr_len: usize,
+    done_len: usize,
 }
 
 impl NetlinkSubsystem {
@@ -133,6 +139,12 @@ impl NetlinkSubsystem {
                 data: [0u8; MAX_NETLINK_PAYLOAD],
             }; NETLINK_RX_QUEUE_LEN]; MAX_NETLINK_SOCKETS],
             next_seq: AtomicUsize::new(1),
+            ifinfo_buffer: [0u8; 256],
+            ifaddr_buffer: [0u8; 256],
+            done_buffer: [0u8; 16],
+            ifinfo_len: 0,
+            ifaddr_len: 0,
+            done_len: 0,
         }
     }
 
@@ -260,14 +272,12 @@ impl NetlinkSubsystem {
     ) -> Result<(), NetError> {
         for dev_idx in 0..super::MAX_NET_DEVICES {
             if let Some(info) = stack.get_device_info(dev_idx) {
-                let message = self.build_ifinfo_message(dev_idx, seq, &info);
-                self.send_message(socket_idx, &message)?;
+                self.send_ifinfo(socket_idx, seq, dev_idx, &info)?;
             }
         }
 
         // Send NLMSG_DONE
-        let done = self.build_done_message(seq);
-        self.send_message(socket_idx, &done)?;
+        self.send_done(socket_idx, seq)?;
         Ok(())
     }
 
@@ -280,14 +290,12 @@ impl NetlinkSubsystem {
     ) -> Result<(), NetError> {
         for dev_idx in 0..super::MAX_NET_DEVICES {
             if let Some(info) = stack.get_device_info(dev_idx) {
-                let message = self.build_ifaddr_message(dev_idx, seq, &info);
-                self.send_message(socket_idx, &message)?;
+                self.send_ifaddr(socket_idx, seq, dev_idx, &info)?;
             }
         }
 
         // Send NLMSG_DONE
-        let done = self.build_done_message(seq);
-        self.send_message(socket_idx, &done)?;
+        self.send_done(socket_idx, seq)?;
         Ok(())
     }
 
@@ -299,11 +307,12 @@ impl NetlinkSubsystem {
         dev_idx: usize,
         info: &DeviceInfo,
     ) -> Result<(), NetError> {
-        let message = self.build_ifinfo_message(dev_idx, seq, info);
-        // Extract the actual message length from nlmsg_len field (first 4 bytes, little-endian)
-        let msg_len = u32::from_ne_bytes([message[0], message[1], message[2], message[3]]) as usize;
+        self.build_ifinfo_message(dev_idx, seq, info);
+        let msg_len = self.ifinfo_len;
         let msg_len = core::cmp::min(msg_len, 256); // Safety check
-        self.send_message(socket_idx, &message[..msg_len])
+        let buffer_ptr = self.ifinfo_buffer.as_ptr();
+        let buffer_slice = unsafe { core::slice::from_raw_parts(buffer_ptr, msg_len) };
+        self.send_message(socket_idx, buffer_slice)
     }
 
     /// Send interface address message
@@ -314,20 +323,23 @@ impl NetlinkSubsystem {
         dev_idx: usize,
         info: &DeviceInfo,
     ) -> Result<(), NetError> {
-        let message = self.build_ifaddr_message(dev_idx, seq, info);
-        // Extract the actual message length from nlmsg_len field (first 4 bytes, little-endian)
-        let msg_len = u32::from_ne_bytes([message[0], message[1], message[2], message[3]]) as usize;
+        self.build_ifaddr_message(dev_idx, seq, info);
+        let msg_len = self.ifaddr_len;
         let msg_len = core::cmp::min(msg_len, 256); // Safety check
-        self.send_message(socket_idx, &message[..msg_len])
+        let buffer_ptr = self.ifaddr_buffer.as_ptr();
+        let buffer_slice = unsafe { core::slice::from_raw_parts(buffer_ptr, msg_len) };
+        self.send_message(socket_idx, buffer_slice)
     }
 
     /// Send DONE message
     pub fn send_done(&mut self, socket_idx: usize, seq: u32) -> Result<(), NetError> {
-        let message = self.build_done_message(seq);
-        self.send_message(socket_idx, &message)
+        self.build_done_message(seq);
+        let buffer_ptr = self.done_buffer.as_ptr();
+        let buffer_slice = unsafe { core::slice::from_raw_parts(buffer_ptr, self.done_len) };
+        self.send_message(socket_idx, buffer_slice)
     }
 
-    fn build_done_message(&self, seq: u32) -> [u8; 16] {
+    fn build_done_message(&mut self, seq: u32) {
         let hdr = NlMsgHdr {
             nlmsg_len: 16,
             nlmsg_type: NLMSG_DONE,
@@ -336,16 +348,14 @@ impl NetlinkSubsystem {
             nlmsg_pid: 0,
         };
 
-        let mut msg = [0u8; 16];
         let hdr_bytes = unsafe {
             core::slice::from_raw_parts(&hdr as *const _ as *const u8, core::mem::size_of::<NlMsgHdr>())
         };
-        msg[..core::mem::size_of::<NlMsgHdr>()].copy_from_slice(hdr_bytes);
-        msg
+        self.done_buffer[..core::mem::size_of::<NlMsgHdr>()].copy_from_slice(hdr_bytes);
+        self.done_len = 16;
     }
 
-    fn build_ifinfo_message(&self, dev_idx: usize, seq: u32, info: &DeviceInfo) -> [u8; 256] {
-        let mut msg = [0u8; 256];
+    fn build_ifinfo_message(&mut self, dev_idx: usize, seq: u32, info: &DeviceInfo) {
         let mut pos = 0;
 
         // Netlink header
@@ -359,7 +369,7 @@ impl NetlinkSubsystem {
         let hdr_bytes = unsafe {
             core::slice::from_raw_parts(&hdr as *const _ as *const u8, core::mem::size_of::<NlMsgHdr>())
         };
-        msg[pos..pos + core::mem::size_of::<NlMsgHdr>()].copy_from_slice(hdr_bytes);
+        self.ifinfo_buffer[pos..pos + core::mem::size_of::<NlMsgHdr>()].copy_from_slice(hdr_bytes);
         pos += core::mem::size_of::<NlMsgHdr>();
 
         // Interface info message
@@ -374,7 +384,7 @@ impl NetlinkSubsystem {
         let ifinfo_bytes = unsafe {
             core::slice::from_raw_parts(&ifinfo as *const _ as *const u8, core::mem::size_of::<IfInfoMsg>())
         };
-        msg[pos..pos + core::mem::size_of::<IfInfoMsg>()].copy_from_slice(ifinfo_bytes);
+        self.ifinfo_buffer[pos..pos + core::mem::size_of::<IfInfoMsg>()].copy_from_slice(ifinfo_bytes);
         pos += core::mem::size_of::<IfInfoMsg>();
 
         // IFLA_ADDRESS attribute (MAC)
@@ -385,14 +395,14 @@ impl NetlinkSubsystem {
         let attr_bytes = unsafe {
             core::slice::from_raw_parts(&attr_hdr as *const _ as *const u8, core::mem::size_of::<RtAttr>())
         };
-        msg[pos..pos + core::mem::size_of::<RtAttr>()].copy_from_slice(attr_bytes);
+        self.ifinfo_buffer[pos..pos + core::mem::size_of::<RtAttr>()].copy_from_slice(attr_bytes);
         pos += core::mem::size_of::<RtAttr>();
-        msg[pos..pos + 6].copy_from_slice(&info.mac);
+        self.ifinfo_buffer[pos..pos + 6].copy_from_slice(&info.mac);
         pos += 6;
 
         // Padding to 4-byte boundary
         while pos % 4 != 0 {
-            msg[pos] = 0;
+            self.ifinfo_buffer[pos] = 0;
             pos += 1;
         }
 
@@ -406,22 +416,20 @@ impl NetlinkSubsystem {
         let attr_bytes = unsafe {
             core::slice::from_raw_parts(&attr_hdr as *const _ as *const u8, core::mem::size_of::<RtAttr>())
         };
-        msg[pos..pos + core::mem::size_of::<RtAttr>()].copy_from_slice(attr_bytes);
+        self.ifinfo_buffer[pos..pos + core::mem::size_of::<RtAttr>()].copy_from_slice(attr_bytes);
         pos += core::mem::size_of::<RtAttr>();
-        msg[pos..pos + name.len()].copy_from_slice(name.as_bytes());
+        self.ifinfo_buffer[pos..pos + name.len()].copy_from_slice(name.as_bytes());
         pos += name.len();
-        msg[pos] = 0; // null terminate
+        self.ifinfo_buffer[pos] = 0; // null terminate
         pos += 1;
 
         // Update message length
         let len_bytes = (pos as u32).to_ne_bytes();
-        msg[0..4].copy_from_slice(&len_bytes);
-
-        msg
+        self.ifinfo_buffer[0..4].copy_from_slice(&len_bytes);
+        self.ifinfo_len = pos;
     }
 
-    fn build_ifaddr_message(&self, dev_idx: usize, seq: u32, info: &DeviceInfo) -> [u8; 256] {
-        let mut msg = [0u8; 256];
+    fn build_ifaddr_message(&mut self, dev_idx: usize, seq: u32, info: &DeviceInfo) {
         let mut pos = 0;
 
         // Netlink header
@@ -435,7 +443,7 @@ impl NetlinkSubsystem {
         let hdr_bytes = unsafe {
             core::slice::from_raw_parts(&hdr as *const _ as *const u8, core::mem::size_of::<NlMsgHdr>())
         };
-        msg[pos..pos + core::mem::size_of::<NlMsgHdr>()].copy_from_slice(hdr_bytes);
+        self.ifaddr_buffer[pos..pos + core::mem::size_of::<NlMsgHdr>()].copy_from_slice(hdr_bytes);
         pos += core::mem::size_of::<NlMsgHdr>();
 
         // Address message
@@ -449,7 +457,7 @@ impl NetlinkSubsystem {
         let ifaddr_bytes = unsafe {
             core::slice::from_raw_parts(&ifaddr as *const _ as *const u8, core::mem::size_of::<IfAddrMsg>())
         };
-        msg[pos..pos + core::mem::size_of::<IfAddrMsg>()].copy_from_slice(ifaddr_bytes);
+        self.ifaddr_buffer[pos..pos + core::mem::size_of::<IfAddrMsg>()].copy_from_slice(ifaddr_bytes);
         pos += core::mem::size_of::<IfAddrMsg>();
 
         // IFA_ADDRESS attribute (IP)
@@ -460,16 +468,15 @@ impl NetlinkSubsystem {
         let attr_bytes = unsafe {
             core::slice::from_raw_parts(&attr_hdr as *const _ as *const u8, core::mem::size_of::<RtAttr>())
         };
-        msg[pos..pos + core::mem::size_of::<RtAttr>()].copy_from_slice(attr_bytes);
+        self.ifaddr_buffer[pos..pos + core::mem::size_of::<RtAttr>()].copy_from_slice(attr_bytes);
         pos += core::mem::size_of::<RtAttr>();
-        msg[pos..pos + 4].copy_from_slice(&info.ip);
+        self.ifaddr_buffer[pos..pos + 4].copy_from_slice(&info.ip);
         pos += 4;
 
         // Update message length
         let len_bytes = (pos as u32).to_ne_bytes();
-        msg[0..4].copy_from_slice(&len_bytes);
-
-        msg
+        self.ifaddr_buffer[0..4].copy_from_slice(&len_bytes);
+        self.ifaddr_len = pos;
     }
 }
 
