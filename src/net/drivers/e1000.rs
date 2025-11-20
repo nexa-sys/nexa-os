@@ -202,7 +202,8 @@ impl E1000 {
         }
 
         let packet_len = cmp::min(desc.length as usize, scratch.len());
-        scratch[..packet_len].copy_from_slice(&self.rx_buffers[self.rx_index].0[..packet_len]);
+        scratch[..packet_len]
+            .copy_from_slice(&self.rx_buffers[self.rx_index].0[..packet_len]);
         desc.status = 0;
 
         self.rx_tail = self.rx_index;
@@ -251,10 +252,7 @@ impl E1000 {
             desc.status = 0;
         }
 
-        self.write_reg(
-            REG_RDBAL,
-            (self.rx_desc.as_ptr() as u64 & 0xFFFF_FFFF) as u32,
-        );
+        self.write_reg(REG_RDBAL, (self.rx_desc.as_ptr() as u64 & 0xFFFF_FFFF) as u32);
         self.write_reg(REG_RDBAH, (self.rx_desc.as_ptr() as u64 >> 32) as u32);
         self.write_reg(
             REG_RDLEN,
@@ -274,10 +272,7 @@ impl E1000 {
             *desc = TxDescriptor::new();
         }
 
-        self.write_reg(
-            REG_TDBAL,
-            (self.tx_desc.as_ptr() as u64 & 0xFFFF_FFFF) as u32,
-        );
+        self.write_reg(REG_TDBAL, (self.tx_desc.as_ptr() as u64 & 0xFFFF_FFFF) as u32);
         self.write_reg(REG_TDBAH, (self.tx_desc.as_ptr() as u64 >> 32) as u32);
         self.write_reg(
             REG_TDLEN,

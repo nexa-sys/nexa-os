@@ -6,6 +6,7 @@
 /// - Checksum calculation and verification
 /// - UDP socket options (TTL, ToS, broadcast)
 /// - Fragmentation handling
+
 use core::mem;
 
 use super::ipv4::{Ipv4Address, Ipv4Header};
@@ -59,10 +60,10 @@ impl UdpSocketOptions {
 /// UDP header (8 bytes)
 #[repr(C, packed)]
 pub struct UdpHeader {
-    pub src_port: u16, // Source port (network byte order)
-    pub dst_port: u16, // Destination port (network byte order)
-    pub length: u16,   // Length of UDP header + data (network byte order)
-    pub checksum: u16, // Checksum (network byte order, optional for IPv4)
+    pub src_port: u16,      // Source port (network byte order)
+    pub dst_port: u16,      // Destination port (network byte order)
+    pub length: u16,        // Length of UDP header + data (network byte order)
+    pub checksum: u16,      // Checksum (network byte order, optional for IPv4)
 }
 
 impl UdpHeader {
@@ -284,8 +285,7 @@ impl<'a> UdpDatagram<'a> {
 
     /// Check if datagram has valid checksum (if present)
     pub fn has_valid_checksum(&self, src_ip: &Ipv4Address, dst_ip: &Ipv4Address) -> bool {
-        self.header()
-            .verify_checksum(src_ip, dst_ip, self.payload())
+        self.header().verify_checksum(src_ip, dst_ip, self.payload())
     }
 }
 
@@ -297,12 +297,7 @@ pub struct UdpDatagramMut<'a> {
 
 impl<'a> UdpDatagramMut<'a> {
     /// Create a new UDP datagram in the buffer
-    pub fn new(
-        buffer: &'a mut [u8],
-        src_port: Port,
-        dst_port: Port,
-        data_len: usize,
-    ) -> Option<Self> {
+    pub fn new(buffer: &'a mut [u8], src_port: Port, dst_port: Port, data_len: usize) -> Option<Self> {
         let total_len = UdpHeader::SIZE + data_len;
         if buffer.len() < total_len {
             return None;
@@ -418,9 +413,7 @@ mod tests {
 
         // Parse and verify
         let parsed = UdpDatagram::parse(finalized).unwrap();
-        assert!(parsed
-            .header()
-            .verify_checksum(&src_ip, &dst_ip, parsed.payload()));
+        assert!(parsed.header().verify_checksum(&src_ip, &dst_ip, parsed.payload()));
     }
 
     #[test]
@@ -450,7 +443,7 @@ mod tests {
         let mut dg = UdpDatagramMut::new(&mut buffer, 1000, 2000, 10).unwrap();
         dg.set_src_port(3000);
         dg.set_dst_port(4000);
-
+        
         assert_eq!(dg.header().src_port(), 3000);
         assert_eq!(dg.header().dst_port(), 4000);
     }

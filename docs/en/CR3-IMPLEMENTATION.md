@@ -105,7 +105,7 @@ pub fn do_schedule() {
 ```rust
 // 1. Load ELF binary
 // 2. Create address space
-let cr3 = create_process_address_space(dynamic_phys_base, USER_REGION_SIZE)?;
+let cr3 = create_process_address_space(USER_PHYS_BASE, USER_REGION_SIZE)?;
 // 3. Validate CR3
 validate_cr3(cr3, false)?;
 // 4. Store in process struct

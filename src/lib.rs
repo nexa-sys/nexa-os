@@ -2,8 +2,6 @@
 #![feature(abi_x86_interrupt)]
 #![feature(alloc_error_handler)]
 
-extern crate alloc;
-
 mod acpi;
 pub mod allocator;
 pub mod arch;
@@ -111,37 +109,24 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
     if magic == MULTIBOOT2_BOOTLOADER_MAGIC {
         memory::log_memory_overview(&boot_info);
 
-        // Ensure user space starts after all kernel modules (initramfs, etc.)
-        let modules_end = memory::find_modules_end(&boot_info);
-        if modules_end > 0 {
-            // Add 1MB safety padding
-            paging::init_user_region(modules_end + 0x100000);
-        }
-
         // Initialize Allocator
         // Try to find a region larger than 32MB
-        if let Some((heap_start, heap_size)) =
-            memory::find_heap_region(&boot_info, 32 * 1024 * 1024)
-        {
+        if let Some((heap_start, heap_size)) = memory::find_heap_region(&boot_info, 32 * 1024 * 1024) {
             // Ensure we don't overwrite the kernel (loaded at 1MB).
             // We'll start the heap at least at 64MB to be safe.
-            let min_heap_addr = 64 * 1024 * 1024;
-
+            let min_heap_addr = 64 * 1024 * 1024; 
+            
             let effective_start = if heap_start < min_heap_addr {
                 min_heap_addr
             } else {
                 heap_start
             };
-
+            
             if effective_start < heap_start + heap_size {
                 let effective_size = (heap_start + heap_size) - effective_start;
                 allocator::init_kernel_heap(effective_start, effective_size);
             } else {
-                kwarn!(
-                    "Heap region {:#x} is below safe threshold {:#x}",
-                    heap_start,
-                    min_heap_addr
-                );
+                kwarn!("Heap region {:#x} is below safe threshold {:#x}", heap_start, min_heap_addr);
             }
         } else {
             kwarn!("No suitable memory region found for kernel heap!");
@@ -309,37 +294,6 @@ pub fn kernel_main_uefi(boot_info_ptr: *const BootInfo) -> ! {
 
     paging::ensure_nxe_enabled();
     configure_gs_base();
-
-    if boot_info.has_kernel_heap() {
-        let heap_start = boot_info.kernel_heap.phys_addr;
-        let heap_size = boot_info.kernel_heap.length;
-        kinfo!(
-            "Initializing kernel heap from UEFI loader: {:#x} ({} bytes)",
-            heap_start,
-            heap_size
-        );
-        allocator::init_kernel_heap(heap_start, heap_size);
-
-        // Test heap allocation
-        {
-            use alloc::boxed::Box;
-            use alloc::vec::Vec;
-            let mut v = Vec::new();
-            for i in 0..100 {
-                v.push(i);
-            }
-            kinfo!(
-                "Heap test: Vec allocated at {:p}, len={}, cap={}",
-                v.as_ptr(),
-                v.len(),
-                v.capacity()
-            );
-            let b = Box::new(42);
-            kinfo!("Heap test: Box allocated at {:p}, value={}", b, *b);
-        }
-    } else {
-        kwarn!("UEFI loader did not provide a kernel heap region!");
-    }
 
     if let Some(initramfs) = bootinfo::initramfs_slice() {
         kinfo!(

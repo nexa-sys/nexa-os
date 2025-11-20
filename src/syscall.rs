@@ -1,4 +1,3 @@
-use crate::interrupts::{GS_SLOT_SYSCALL_ARG4, GS_SLOT_SYSCALL_ARG5, GS_SLOT_SYSCALL_ARG6};
 use crate::paging;
 use crate::posix::{self, FileType};
 use crate::process::{USER_REGION_SIZE, USER_VIRT_BASE};
@@ -138,57 +137,11 @@ const F_GETFL: u64 = 3;
 const F_SETFL: u64 = 4;
 
 // Socket domain and protocol constants (subset of POSIX)
-const AF_INET: i32 = 2; // IPv4
-const AF_NETLINK: i32 = 16; // Netlink
-const SOCK_DGRAM: i32 = 2; // UDP
-const SOCK_RAW: i32 = 3; // Raw socket
+const AF_INET: i32 = 2;      // IPv4
+const AF_NETLINK: i32 = 16;  // Netlink
+const SOCK_DGRAM: i32 = 2;   // UDP
+const SOCK_RAW: i32 = 3;     // Raw socket
 const IPPROTO_UDP: i32 = 17; // UDP
-
-const SYSCALL_ARG4_OFFSET: usize = GS_SLOT_SYSCALL_ARG4 * mem::size_of::<u64>();
-const SYSCALL_ARG5_OFFSET: usize = GS_SLOT_SYSCALL_ARG5 * mem::size_of::<u64>();
-const SYSCALL_ARG6_OFFSET: usize = GS_SLOT_SYSCALL_ARG6 * mem::size_of::<u64>();
-
-#[inline(always)]
-fn syscall_arg4() -> u64 {
-    let value: u64;
-    unsafe {
-        core::arch::asm!(
-            "mov {value}, gs:[{offset}]",
-            value = out(reg) value,
-            offset = const SYSCALL_ARG4_OFFSET,
-            options(nostack, preserves_flags)
-        );
-    }
-    value
-}
-
-#[inline(always)]
-fn syscall_arg5() -> u64 {
-    let value: u64;
-    unsafe {
-        core::arch::asm!(
-            "mov {value}, gs:[{offset}]",
-            value = out(reg) value,
-            offset = const SYSCALL_ARG5_OFFSET,
-            options(nostack, preserves_flags)
-        );
-    }
-    value
-}
-
-#[inline(always)]
-fn syscall_arg6() -> u64 {
-    let value: u64;
-    unsafe {
-        core::arch::asm!(
-            "mov {value}, gs:[{offset}]",
-            value = out(reg) value,
-            offset = const SYSCALL_ARG6_OFFSET,
-            options(nostack, preserves_flags)
-        );
-    }
-    value
-}
 
 // UEFI compatibility bridge syscalls
 pub const SYS_UEFI_GET_COUNTS: u64 = 240;
@@ -258,16 +211,6 @@ struct IpcTransferRequest {
 struct SockAddr {
     sa_family: u16,    // Address family
     sa_data: [u8; 14], // Address data
-}
-
-/// Minimal netlink sockaddr passed from userspace (matches Linux layout)
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct SockAddrNetlink {
-    nl_family: u16,
-    nl_pad: u16,
-    nl_pid: u32,
-    nl_groups: u32,
 }
 
 /// Socket handle - references a socket in the network stack
@@ -726,60 +669,7 @@ fn syscall_close(fd: u64) -> u64 {
     }
 
     unsafe {
-        if let Some(handle) = FILE_HANDLES[idx].as_ref() {
-            // If this is a network socket, attempt to close it in the network stack
-            if let FileBacking::Socket(sock_handle) = handle.backing {
-                // Only close if the underlying socket index was allocated
-                if sock_handle.socket_index != usize::MAX {
-                    // Use the net stack if available
-                    if let Some(res) = crate::net::with_net_stack(|stack| {
-                        if sock_handle.domain == AF_NETLINK {
-                            stack.netlink_close(sock_handle.socket_index)
-                        } else {
-                            stack.udp_close(sock_handle.socket_index)
-                        }
-                    }) {
-                        match res {
-                            Ok(_) => {
-                                crate::kinfo!(
-                                    "Closed network socket idx {} for fd {}",
-                                    sock_handle.socket_index,
-                                    fd
-                                );
-                            }
-                            Err(e) => {
-                                crate::kinfo!(
-                                    "Failed to close network socket idx {}: {:?}",
-                                    sock_handle.socket_index,
-                                    e
-                                );
-                                // Map some net errors to errno values
-                                match e {
-                                    crate::net::NetError::InvalidSocket => {
-                                        posix::set_errno(posix::errno::EBADF);
-                                    }
-                                    crate::net::NetError::TooManyConnections => {
-                                        posix::set_errno(posix::errno::EMFILE);
-                                    }
-                                    crate::net::NetError::AddressInUse => {
-                                        posix::set_errno(posix::errno::EADDRINUSE);
-                                    }
-                                    _ => {
-                                        posix::set_errno(posix::errno::EIO);
-                                    }
-                                }
-                                return u64::MAX;
-                            }
-                        }
-                    } else {
-                        // Network stack unavailable
-                        posix::set_errno(posix::errno::ENETDOWN);
-                        return u64::MAX;
-                    }
-                }
-            }
-
-            // Remove the file handle
+        if FILE_HANDLES[idx].is_some() {
             FILE_HANDLES[idx] = None;
             crate::kinfo!("Closed fd {}", fd);
             posix::set_errno(0);
@@ -1421,6 +1311,14 @@ fn syscall_kill(pid: u64, signum: u64) -> u64 {
     0
 }
 
+/// POSIX getppid() system call - get parent process ID
+fn syscall_getppid() -> u64 {
+    // For now, return 0 (no parent)
+    // TODO: Implement proper parent PID tracking
+    posix::set_errno(0);
+    0
+}
+
 /// POSIX fork() system call - create child process
 fn syscall_fork(syscall_return_addr: u64) -> u64 {
     use crate::process::{INTERP_BASE, INTERP_REGION_SIZE, USER_VIRT_BASE};
@@ -1505,8 +1403,7 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
     child_process.context = crate::process::Context::zero();
     child_process.context.rax = 0; // fork() returns 0 in child
     child_process.context.rip = syscall_return_addr;
-    // Ensure kernel context stack is the kernel RSP, not the user RSP
-    child_process.context.rsp = crate::gdt::get_kernel_stack_top();
+    child_process.context.rsp = user_rsp;
 
     crate::kdebug!(
         "Child fork: entry={:#x}, stack={:#x}, will return RAX=0",
@@ -2021,13 +1918,13 @@ const fn make_signal_status(signal: i32) -> i32 {
 }
 
 /// POSIX-compliant wait4 implementation
-///
+/// 
 /// Arguments:
 /// - pid > 0: wait for specific child with PID == pid
 /// - pid == 0: wait for any child in the same process group (not yet implemented)
 /// - pid == -1: wait for any child process
 /// - pid < -1: wait for any child in process group -pid (not yet implemented)
-///
+/// 
 /// Returns:
 /// - On success: PID of terminated child
 /// - On WNOHANG with no change: 0
@@ -2048,12 +1945,12 @@ fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> 
     crate::kinfo!("wait4() from PID {} waiting for pid {}", current_pid, pid);
 
     // Option flags (POSIX)
-    const WNOHANG: i32 = 1; // Return immediately if no child has exited
-    const WUNTRACED: i32 = 2; // Also return for stopped children (not implemented yet)
-    const WCONTINUED: i32 = 8; // Also return for continued children (not implemented yet)
-
+    const WNOHANG: i32 = 1;      // Return immediately if no child has exited
+    const WUNTRACED: i32 = 2;    // Also return for stopped children (not implemented yet)
+    const WCONTINUED: i32 = 8;   // Also return for continued children (not implemented yet)
+    
     let is_nonblocking = (options & WNOHANG) != 0;
-
+    
     // Validate options - we only support WNOHANG for now
     if (options & !(WNOHANG | WUNTRACED | WCONTINUED)) != 0 {
         crate::kerror!("wait4: unsupported options {:#x}", options);
@@ -2064,10 +1961,7 @@ fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> 
     // Validate pid argument
     if pid == 0 || pid < -1 {
         // Process group waiting not yet implemented
-        crate::kerror!(
-            "wait4: process group waiting (pid={}) not yet implemented",
-            pid
-        );
+        crate::kerror!("wait4: process group waiting (pid={}) not yet implemented", pid);
         posix::set_errno(posix::errno::ENOSYS);
         return u64::MAX;
     }
@@ -2101,7 +1995,7 @@ fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> 
                     if child_state == crate::process::ProcessState::Zombie {
                         wait_pid = check_pid;
                         child_exited = true;
-
+                        
                         // Get exit code and check if terminated by signal
                         if let Some(proc) = crate::scheduler::get_process(check_pid) {
                             child_exit_code = Some(proc.exit_code);
@@ -2110,7 +2004,7 @@ fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> 
                         } else {
                             child_exit_code = Some(0);
                         }
-
+                        
                         crate::kinfo!("wait4() found exited child PID {}", check_pid);
                         break;
                     }
@@ -2138,7 +2032,7 @@ fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> 
 
                 if child_state == crate::process::ProcessState::Zombie {
                     child_exited = true;
-
+                    
                     // Get exit code and check if terminated by signal
                     if let Some(proc) = crate::scheduler::get_process(wait_pid) {
                         child_exit_code = Some(proc.exit_code);
@@ -2147,7 +2041,7 @@ fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> 
                     } else {
                         child_exit_code = Some(0);
                     }
-
+                    
                     crate::kinfo!("wait4() found exited specific child PID {}", pid);
                 }
             }
@@ -2176,33 +2070,6 @@ fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> 
                 }
             }
 
-            // Safety: Re-verify that the process we're about to remove is
-            // actually a child of the waiting process (race conditions between
-            // scheduling and state changes could otherwise lead to removing the
-            // wrong process). If the process isn't a child, log an error and
-            // return ECHILD to avoid accidentally reaping a parent or unrelated
-            // process.
-            if let Some(child_state) = crate::scheduler::get_child_state(current_pid, wait_pid)
-            {
-                if child_state != crate::process::ProcessState::Zombie {
-                    crate::kerror!(
-                        "wait4: expected child {} to be Zombie but state={:?}",
-                        wait_pid,
-                        child_state
-                    );
-                    posix::set_errno(posix::errno::ECHILD);
-                    return u64::MAX;
-                }
-            } else {
-                crate::kerror!(
-                    "wait4: child PID {} is not a child of PID {} - aborting reap",
-                    wait_pid,
-                    current_pid
-                );
-                posix::set_errno(posix::errno::ECHILD);
-                return u64::MAX;
-            }
-
             if let Err(e) = crate::scheduler::remove_process(wait_pid) {
                 crate::kerror!("wait4: Failed to remove process {}: {}", wait_pid, e);
             }
@@ -2215,7 +2082,7 @@ fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> 
                 encoded_status
             );
             posix::set_errno(0);
-
+            
             // CRITICAL FIX: Don't call do_schedule() here!
             // We're about to return to userspace via the syscall return path.
             // The process state is already correct (Running) and syscall context
@@ -2261,7 +2128,7 @@ fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> 
                 loop_count
             ));
         }
-
+        
         // Continue to next loop iteration to re-check child state
     }
 }
@@ -2807,13 +2674,8 @@ fn syscall_uefi_map_net_mmio(index: usize) -> u64 {
 /// Supports: AF_INET + SOCK_DGRAM (UDP)
 /// Returns: socket fd on success, -1 on error
 fn syscall_socket(domain: i32, socket_type: i32, protocol: i32) -> u64 {
-    crate::kinfo!(
-        "[SYS_SOCKET] domain={} type={} protocol={}",
-        domain,
-        socket_type,
-        protocol
-    );
-
+    crate::kinfo!("[SYS_SOCKET] domain={} type={} protocol={}", domain, socket_type, protocol);
+    
     // Validate parameters
     if domain != AF_INET && domain != AF_NETLINK {
         crate::kwarn!("[SYS_SOCKET] Unsupported domain: {}", domain);
@@ -2838,7 +2700,7 @@ fn syscall_socket(domain: i32, socket_type: i32, protocol: i32) -> u64 {
         for idx in 0..MAX_OPEN_FILES {
             if FILE_HANDLES[idx].is_none() {
                 let mut socket_index = usize::MAX;
-
+                
                 // For Netlink, allocate socket immediately
                 if domain == AF_NETLINK {
                     if let Some(res) = crate::net::with_net_stack(|stack| stack.netlink_socket()) {
@@ -2858,7 +2720,7 @@ fn syscall_socket(domain: i32, socket_type: i32, protocol: i32) -> u64 {
                 // Socket will be bound later on bind() for UDP
                 // For now, just reserve the fd with a socket handle
                 let socket_handle = SocketHandle {
-                    socket_index,
+                    socket_index, 
                     domain,
                     socket_type,
                     protocol: if domain == AF_NETLINK { 0 } else { IPPROTO_UDP },
@@ -2877,91 +2739,9 @@ fn syscall_socket(domain: i32, socket_type: i32, protocol: i32) -> u64 {
                 };
 
                 FILE_HANDLES[idx] = Some(handle);
-                // Sanity check: verify no obviously invalid socket_index values got written
-                // Use domain-specific upper bounds instead of a magic constant
-                for i in 0..MAX_OPEN_FILES {
-                    if let Some(fh) = FILE_HANDLES[i] {
-                        if let FileBacking::Socket(socket) = fh.backing {
-                            if socket.socket_index != usize::MAX {
-                                match socket.domain {
-                                    AF_NETLINK => {
-                                        if socket.socket_index
-                                            >= crate::net::netlink::MAX_NETLINK_SOCKETS
-                                        {
-                                            crate::kerror!(
-                                                "[SYS_SOCKET] Detected invalid netlink socket_index {} at fh idx {}",
-                                                socket.socket_index,
-                                                i
-                                            );
-                                        }
-                                    }
-                                    AF_INET => {
-                                        if socket.socket_index >= crate::net::stack::MAX_UDP_SOCKETS
-                                        {
-                                            crate::kerror!(
-                                                "[SYS_SOCKET] Detected invalid udp socket_index {} at fh idx {}",
-                                                socket.socket_index,
-                                                i
-                                            );
-                                        }
-                                    }
-                                    _ => {
-                                        crate::kerror!(
-                                            "[SYS_SOCKET] Detected unknown domain {} for socket_index {} at fh idx {}",
-                                            socket.domain,
-                                            socket.socket_index,
-                                            i
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
                 let fd = FD_BASE + idx as u64;
-                // Print debug info about the new file handle for diagnostics
-                if let Some(saved) = FILE_HANDLES[idx] {
-                    match saved.backing {
-                        FileBacking::Socket(s) => {
-                            crate::kinfo!(
-                                "[SYS_SOCKET] saved backing socket idx={} domain={} type={} proto={} fd={}",
-                                s.socket_index,
-                                s.domain,
-                                s.socket_type,
-                                s.protocol,
-                                fd
-                            );
-                        }
-                        _ => {}
-                    }
-                }
-                crate::kinfo!(
-                    "[SYS_SOCKET] Created socket fd={} domain={} type={} proto={} idx={}",
-                    fd,
-                    domain,
-                    socket_type,
-                    protocol,
-                    socket_index
-                );
-                // Diagnostic: print backing inserted into file handles
-                /*
-                if let Some(saved) = FILE_HANDLES[idx] {
-                        match saved.backing {
-                            FileBacking::Socket(s) => {
-                                crate::kinfo!("[SYS_SOCKET] saved backing socket idx={} domain={} type={} proto={}", s.socket_index, s.domain, s.socket_type, s.protocol);
-                                crate::kdebug!("About to set errno");
-                            }
-                            FileBacking::StdStream(kind) => {
-                                crate::kdebug!("[SYS_SOCKET] saved backing stdstream={}", kind.fd());
-                            }
-                            _ => {}
-                        }
-                    }
-                */
-                // posix::set_errno(0);
-                crate::kinfo!("Returning fd={}", fd);
-                return fd;
-                crate::kdebug!("Errno set, returning fd={}", fd);
+                crate::kinfo!("[SYS_SOCKET] Created UDP socket at fd {}", fd);
+                posix::set_errno(0);
                 return fd;
             }
         }
@@ -2978,7 +2758,7 @@ fn syscall_socket(domain: i32, socket_type: i32, protocol: i32) -> u64 {
 /// Returns: 0 on success, -1 on error
 fn syscall_bind(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
     crate::kinfo!("[SYS_BIND] sockfd={} addrlen={}", sockfd, addrlen);
-
+    
     if addr.is_null() || addrlen < 8 {
         posix::set_errno(posix::errno::EINVAL);
         return u64::MAX;
@@ -3003,82 +2783,26 @@ fn syscall_bind(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
             return u64::MAX;
         };
 
-        let sock_handle = match &mut handle.backing {
-            FileBacking::Socket(sock) => sock,
-            _ => {
-                posix::set_errno(posix::errno::ENOTSOCK);
-                return u64::MAX;
-            }
+        let FileBacking::Socket(ref mut sock_handle) = handle.backing else {
+            posix::set_errno(posix::errno::ENOTSOCK);
+            return u64::MAX;
         };
 
         if sock_handle.domain == AF_NETLINK {
-            let nl_len = core::mem::size_of::<SockAddrNetlink>() as u32;
-            if addrlen < nl_len {
+            let addr_ref = &*addr;
+            if addr_ref.sa_family != AF_NETLINK as u16 {
                 posix::set_errno(posix::errno::EINVAL);
                 return u64::MAX;
             }
-            if !user_buffer_in_range(addr as u64, nl_len as u64) {
-                posix::set_errno(posix::errno::EFAULT);
-                return u64::MAX;
-            }
-
-            let mut addr_nl = SockAddrNetlink {
-                nl_family: 0,
-                nl_pad: 0,
-                nl_pid: 0,
-                nl_groups: 0,
-            };
-            #[allow(unused_unsafe)]
-            unsafe {
-                // SAFETY: user pointer and length were validated above, so copying is safe.
-                ptr::copy_nonoverlapping(
-                    addr as *const u8,
-                    &mut addr_nl as *mut SockAddrNetlink as *mut u8,
-                    nl_len as usize,
-                );
-            }
-            if addr_nl.nl_family != AF_NETLINK as u16 {
-                posix::set_errno(posix::errno::EINVAL);
-                return u64::MAX;
-            }
-
-            let mut pid = addr_nl.nl_pid;
-            let groups = addr_nl.nl_groups;
-
-            // If pid==0, use the current process PID as a safer default (userspace sometimes sends 0)
-            if pid == 0 {
-                if let Some(cur) = crate::scheduler::get_current_pid() {
-                    pid = cur as u32;
-                    crate::kinfo!("[SYS_BIND] Netlink: pid was 0, using current pid {}", pid);
-                }
-            }
-
-            crate::kinfo!(
-                "[SYS_BIND] Netlink: pid={}, groups={}, addrlen={}",
-                pid,
-                groups,
-                addrlen
-            );
-
-            // Validate that socket_index is valid for netlink before attempting to bind
-            if sock_handle.socket_index == usize::MAX
-                || (sock_handle.domain == AF_NETLINK
-                    && sock_handle.socket_index >= crate::net::netlink::MAX_NETLINK_SOCKETS)
-                || (sock_handle.domain == AF_INET
-                    && sock_handle.socket_index >= crate::net::stack::MAX_UDP_SOCKETS)
-            {
-                crate::kinfo!(
-                    "[SYS_BIND] Netlink bind: invalid socket_index={} in file handle (domain={})",
-                    sock_handle.socket_index,
-                    sock_handle.domain
-                );
-                posix::set_errno(posix::errno::EBADF);
-                return u64::MAX;
-            }
-
-            if let Some(res) = crate::net::with_net_stack(|stack| {
-                stack.netlink_bind(sock_handle.socket_index, pid, groups)
-            }) {
+            
+            // For netlink sockaddr: family(2) + pad(2) + pid(4) + groups(4)
+            // Mapped to sa_data: sa_data[0:2]=pad, sa_data[2:6]=pid, sa_data[6:10]=groups
+            let pid = u32::from_ne_bytes([addr_ref.sa_data[2], addr_ref.sa_data[3], addr_ref.sa_data[4], addr_ref.sa_data[5]]);
+            let groups = u32::from_ne_bytes([addr_ref.sa_data[6], addr_ref.sa_data[7], addr_ref.sa_data[8], addr_ref.sa_data[9]]);
+            
+            crate::kinfo!("[SYS_BIND] Netlink: pid={}, groups={}, addrlen={}", pid, groups, addrlen);
+            
+            if let Some(res) = crate::net::with_net_stack(|stack| stack.netlink_bind(sock_handle.socket_index, pid, groups)) {
                 match res {
                     Ok(_) => {
                         crate::kinfo!("[SYS_BIND] Netlink bind successful");
@@ -3111,7 +2835,7 @@ fn syscall_bind(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
 
         // Extract port from sa_data (first 2 bytes, network byte order)
         let port = u16::from_be_bytes([addr_ref.sa_data[0], addr_ref.sa_data[1]]);
-
+        
         // Extract IP address from sa_data (bytes 2-5)
         let ip = [
             addr_ref.sa_data[2],
@@ -3126,32 +2850,13 @@ fn syscall_bind(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
             return u64::MAX;
         }
 
-        // Allocate socket in network stack and bind to port
-        if let Some(res) = crate::net::with_net_stack(|stack| stack.udp_socket(port)) {
-            match res {
-                Ok(udp_idx) => {
-                    sock_handle.socket_index = udp_idx;
-                    crate::kinfo!("[SYS_BIND] saved socket_index={} in file handle", udp_idx);
-                }
-                Err(e) => {
-                    crate::kinfo!("[SYS_BIND] Failed to allocate UDP socket in stack: {:?}", e);
-                    posix::set_errno(posix::errno::EADDRINUSE);
-                    return u64::MAX;
-                }
-            }
-        } else {
-            posix::set_errno(posix::errno::ENETDOWN);
-            return u64::MAX;
-        }
+        // TODO: Allocate socket in network stack and bind to port
+        // For now, just store the port in socket_index as a placeholder
+        sock_handle.socket_index = port as usize;
 
         crate::kinfo!(
             "[SYS_BIND] UDP socket fd {} bound to {}.{}.{}.{}:{}",
-            sockfd,
-            ip[0],
-            ip[1],
-            ip[2],
-            ip[3],
-            port
+            sockfd, ip[0], ip[1], ip[2], ip[3], port
         );
         posix::set_errno(0);
         0
@@ -3169,13 +2874,8 @@ fn syscall_sendto(
     dest_addr: *const SockAddr,
     addrlen: u32,
 ) -> u64 {
-    crate::kinfo!(
-        "[SYS_SENDTO] sockfd={} len={} addrlen={}",
-        sockfd,
-        len,
-        addrlen
-    );
-
+    crate::kinfo!("[SYS_SENDTO] sockfd={} len={} addrlen={}", sockfd, len, addrlen);
+    
     if buf.is_null() || len == 0 {
         posix::set_errno(posix::errno::EINVAL);
         return u64::MAX;
@@ -3213,28 +2913,8 @@ fn syscall_sendto(
         if sock_handle.domain == AF_NETLINK {
             // Netlink doesn't require destination address
             let data = slice::from_raw_parts(buf, len);
-            crate::kinfo!(
-                "[SYS_SENDTO] Netlink sendto: socket_idx={}, data_len={}",
-                sock_handle.socket_index,
-                len
-            );
-            if sock_handle.socket_index == usize::MAX
-                || (sock_handle.domain == AF_NETLINK
-                    && sock_handle.socket_index >= crate::net::netlink::MAX_NETLINK_SOCKETS)
-                || (sock_handle.domain == AF_INET
-                    && sock_handle.socket_index >= crate::net::stack::MAX_UDP_SOCKETS)
-            {
-                crate::kinfo!(
-                    "[SYS_SENDTO] Netlink sendto with invalid socket_index={} in file handle (domain={})",
-                    sock_handle.socket_index,
-                    sock_handle.domain
-                );
-                posix::set_errno(posix::errno::EBADF);
-                return u64::MAX;
-            }
-            if let Some(res) = crate::net::with_net_stack(|stack| {
-                stack.netlink_send(sock_handle.socket_index, data)
-            }) {
+            crate::kinfo!("[SYS_SENDTO] Netlink sendto: socket_idx={}, data_len={}", sock_handle.socket_index, len);
+            if let Some(res) = crate::net::with_net_stack(|stack| stack.netlink_send(sock_handle.socket_index, data)) {
                 match res {
                     Ok(_) => {
                         crate::kinfo!("[SYS_SENDTO] Netlink sendto successful");
@@ -3276,7 +2956,7 @@ fn syscall_sendto(
 
         // Extract port from sa_data (first 2 bytes, network byte order)
         let port = u16::from_be_bytes([addr_ref.sa_data[0], addr_ref.sa_data[1]]);
-
+        
         // Extract IP address from sa_data (bytes 2-5)
         let ip = [
             addr_ref.sa_data[2],
@@ -3325,7 +3005,7 @@ fn syscall_recvfrom(
     _addrlen: *mut u32,
 ) -> u64 {
     crate::kinfo!("[SYS_RECVFROM] sockfd={} len={}", sockfd, len);
-
+    
     if buf.is_null() || len == 0 {
         posix::set_errno(posix::errno::EINVAL);
         return u64::MAX;
@@ -3361,25 +3041,8 @@ fn syscall_recvfrom(
         };
 
         if sock_handle.domain == AF_NETLINK {
-            // Validate socket index before using net stack
-            if sock_handle.socket_index == usize::MAX
-                || (sock_handle.domain == AF_NETLINK
-                    && sock_handle.socket_index >= crate::net::netlink::MAX_NETLINK_SOCKETS)
-                || (sock_handle.domain == AF_INET
-                    && sock_handle.socket_index >= crate::net::stack::MAX_UDP_SOCKETS)
-            {
-                crate::kinfo!(
-                    "[SYS_RECVFROM] Netlink recvfrom with invalid socket_index={} in file handle (domain={})",
-                    sock_handle.socket_index,
-                    sock_handle.domain
-                );
-                posix::set_errno(posix::errno::EBADF);
-                return u64::MAX;
-            }
             let buffer = slice::from_raw_parts_mut(buf, len);
-            if let Some(res) = crate::net::with_net_stack(|stack| {
-                stack.netlink_receive(sock_handle.socket_index, buffer)
-            }) {
+            if let Some(res) = crate::net::with_net_stack(|stack| stack.netlink_receive(sock_handle.socket_index, buffer)) {
                 match res {
                     Ok(n) => return n as u64,
                     Err(_) => {
@@ -3414,7 +3077,7 @@ fn syscall_recvfrom(
 /// Returns: 0 on success, -1 on error
 fn syscall_connect(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
     crate::kinfo!("[SYS_CONNECT] sockfd={} addrlen={}", sockfd, addrlen);
-
+    
     if addr.is_null() || addrlen < 8 {
         posix::set_errno(posix::errno::EINVAL);
         return u64::MAX;
@@ -3462,7 +3125,7 @@ fn syscall_connect(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
 
         // Extract port from sa_data (first 2 bytes, network byte order)
         let port = u16::from_be_bytes([addr_ref.sa_data[0], addr_ref.sa_data[1]]);
-
+        
         // Extract IP address from sa_data (bytes 2-5)
         let ip = [
             addr_ref.sa_data[2],
@@ -3484,12 +3147,7 @@ fn syscall_connect(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
 
         crate::kinfo!(
             "[SYS_CONNECT] UDP socket fd {} connected to {}.{}.{}.{}:{}",
-            sockfd,
-            ip[0],
-            ip[1],
-            ip[2],
-            ip[3],
-            port
+            sockfd, ip[0], ip[1], ip[2], ip[3], port
         );
 
         // For UDP, connect() just stores the default destination
@@ -3615,23 +3273,10 @@ pub extern "C" fn syscall_dispatch(
         SYS_SIGACTION => syscall_sigaction(arg1, arg2 as *const u8, arg3 as *mut u8),
         SYS_SIGPROCMASK => syscall_sigprocmask(arg1 as i32, arg2 as *const u64, arg3 as *mut u64),
         SYS_GETPID => {
-            if let Some(pid) = crate::scheduler::get_current_pid() {
-                pid as u64
-            } else {
-                0
-            }
+            crate::kdebug!("SYS_GETPID called");
+            1
         }
-        SYS_GETPPID => {
-            if let Some(pid) = crate::scheduler::get_current_pid() {
-                if let Some(process) = crate::scheduler::get_process(pid) {
-                    process.ppid as u64
-                } else {
-                    0
-                }
-            } else {
-                0
-            }
-        }
+        SYS_GETPPID => syscall_getppid(),
         SYS_SCHED_YIELD => syscall_sched_yield(),
         SYS_LIST_FILES => syscall_list_files(
             arg1 as *mut u8,
@@ -3647,38 +3292,24 @@ pub extern "C" fn syscall_dispatch(
         SYS_USER_INFO => syscall_user_info(arg1 as *mut UserInfoReply),
         SYS_USER_LIST => syscall_user_list(arg1 as *mut u8, arg2 as usize),
         SYS_USER_LOGOUT => syscall_user_logout(),
-        SYS_SOCKET => {
-            let ret = syscall_socket(arg1 as i32, arg2 as i32, arg3 as i32);
-            crate::kinfo!("syscall_socket returned: {}", ret);
-            ret
-        }
+        SYS_SOCKET => syscall_socket(arg1 as i32, arg2 as i32, arg3 as i32),
         SYS_BIND => syscall_bind(arg1, arg2 as *const SockAddr, arg3 as u32),
-        SYS_SENDTO => {
-            let flags = syscall_arg4() as i32;
-            let dest_addr = syscall_arg5() as *const SockAddr;
-            let addrlen = syscall_arg6() as u32;
-            syscall_sendto(
-                arg1,
-                arg2 as *const u8,
-                arg3 as usize,
-                flags,
-                dest_addr,
-                addrlen,
-            )
-        }
-        SYS_RECVFROM => {
-            let flags = syscall_arg4() as i32;
-            let src_addr = syscall_arg5() as *mut SockAddr;
-            let addrlen_ptr = syscall_arg6() as *mut u32;
-            syscall_recvfrom(
-                arg1,
-                arg2 as *mut u8,
-                arg3 as usize,
-                flags,
-                src_addr,
-                addrlen_ptr,
-            )
-        }
+        SYS_SENDTO => syscall_sendto(
+            arg1,
+            arg2 as *const u8,
+            arg3 as usize,
+            0,                    // flags (arg4, need to access r10)
+            0 as *const SockAddr, // dest_addr (arg5, need to access r8)
+            0,                    // addrlen (arg6, need to access r9)
+        ),
+        SYS_RECVFROM => syscall_recvfrom(
+            arg1,
+            arg2 as *mut u8,
+            arg3 as usize,
+            0,                  // flags (arg4)
+            0 as *mut SockAddr, // src_addr (arg5)
+            0 as *mut u32,      // addrlen (arg6)
+        ),
         SYS_CONNECT => syscall_connect(arg1, arg2 as *const SockAddr, arg3 as u32),
         SYS_REBOOT => syscall_reboot(arg1 as i32),
         SYS_SHUTDOWN => syscall_shutdown(),
@@ -3710,24 +3341,12 @@ pub extern "C" fn syscall_dispatch(
         }
     };
     // crate::kdebug!("syscall_dispatch return nr={} -> {:#x}", nr, result);
-    // crate::kdebug!("syscall_dispatch return nr={} -> {:#x}, return_addr={:#x}", nr, result, syscall_return_addr);
-    let rsp: u64;
-    unsafe {
-        core::arch::asm!("mov {}, rsp", out(reg) rsp);
-    }
-    crate::kinfo!("syscall_dispatch end: rsp={:#x}", rsp);
     result
 }
 
 global_asm!(
     ".global syscall_handler",
     "syscall_handler:",
-    // 1. Switch to kernel GS and stack
-    "swapgs",                    // Switch to kernel GS
-    "mov gs:[0], rsp",           // Save user RSP to GS_DATA[0] (GS_SLOT_USER_RSP)
-    "mov rsp, gs:[8]",           // Load kernel RSP from GS_DATA[1] (GS_SLOT_KERNEL_RSP)
-
-    // 2. Save registers on KERNEL stack
     // Save user RCX (return address) and R11 (rflags) because sysretq needs them
     "push r11", // save user rflags
     "push rcx", // save user return address
@@ -3760,13 +3379,6 @@ global_asm!(
     // [rsp+96] = rbx
     // [rsp+104] = rcx (user return address, DO NOT OVERWRITE!) <-- THIS ONE
     // [rsp+112] = r11 (user rflags, 第一个push的)
-    // Stash extended syscall arguments (r10/r8/r9) in GS scratchpad for Rust dispatch
-    "mov r11, [rsp + 40]",
-    "mov gs:[{arg4_offset}], r11",
-    "mov r11, [rsp + 56]",
-    "mov gs:[{arg5_offset}], r11",
-    "mov r11, [rsp + 48]",
-    "mov gs:[{arg6_offset}], r11",
     "mov r8, [rsp + 104]", // Get original RCX (syscall return address) -> r8 (param 5)
     // WARNING: RCX register will be used for param 4, but we must NOT overwrite [rsp+104]!
     // Prepare arguments for syscall_dispatch:
@@ -3775,10 +3387,8 @@ global_asm!(
     "mov rdx, rsi", // arg2 -> rdx (param 3)
     "mov rsi, rdi", // arg1 -> rsi (param 2)
     "mov rdi, rax", // nr -> rdi (param 1)
-
     "call syscall_dispatch",
     // Return value is in rax
-
     // Check if this is exec returning (magic value 0x4558454300000000 = "EXEC")
     // Build magic value: 0x45 58 45 43 00 00 00 00
     // "EXEC" in little endian = 0x43 0x45 0x58 0x45, then 4 zero bytes
@@ -3786,10 +3396,14 @@ global_asm!(
     // Actually: ASCII "E"=0x45, "X"=0x58, "E"=0x45, "C"=0x43
     // Little endian u64 of these bytes in order: 0x43 0x45 0x58 0x45 0x00 0x00 0x00 0x00
     // Which is: 0x0000000045584543
-    // Wait, let me recalculate: if we write "EXEC" as bytes: 'E'(0x45) 'X'(-0x58) 'E'(0x45) 'C'(-0x43)
+    // Wait, let me recalculate: if we write "EXEC" as bytes: 'E'(0x45) 'X'(0x58) 'E'(0x45) 'C'(0x43)
     // In memory (little endian): [0x43, 0x45, 0x58, 0x45, 0x00, 0x00, 0x00, 0x00]
     // As u64: 0x0000000045584543
     // But the code says: 0x4558454300000000
+    // Let me check: 0x45 = 'E', 0x58 = 'X', 0x45 = 'E', 0x43 = 'C'
+    // If we want bytes to be [0x45, 0x58, 0x45, 0x43, 0, 0, 0, 0] in memory:
+    // Little endian interprets this as: 0x00000000_43455845
+    // Hmm, this doesn't match 0x4558454300000000
     // Let me think differently:
     // Magic value 0x4558454300000000 in hex
     // High 32 bits: 0x45584543 = bytes [0x43, 0x45, 0x58, 0x45] = "CEXE" reversed = "EXEC"
@@ -3826,17 +3440,14 @@ global_asm!(
     "mov ds, ax",
     "mov es, ax",
     "mov fs, ax",
-    // Don't touch GS yet
-
-    "swapgs",              // Switch to User GS
-    "mov gs, ax",          // Set GS selector (resets Base to 0)
-
+    "mov gs, ax",
     // sysretq: rcx=rip, r11=rflags, rsp already set to user stack
     "sysretq",
     ".Lnormal_return_after_exec:",
     "add rsp, 32", // Clean up the 32 bytes we allocated
     ".Lnormal_return:",
     // Normal syscall return path
+    "add rsp, 8", // remove alignment padding
     "pop r15",
     "pop r14",
     "pop r13",
@@ -3849,29 +3460,16 @@ global_asm!(
     "pop rsi",
     "pop rdx",
     "pop rbx",
-
-    // Reload selectors (DS, ES, FS)
-    // Use RCX as scratch (it's on stack)
-    "mov cx, 0x1B",
-    "mov ds, cx",
-    "mov es, cx",
-    "mov fs, cx",
-
     // Restore RCX and R11 for sysretq
     "pop rcx", // user return address
     "pop r11", // user rflags
-
-    // DEBUG: Loop here
-    "1: jmp 1b",
-
-    // Restore user stack and GS
-    "mov rsp, gs:[0]", // Restore user RSP
-    "swapgs",          // Switch to user GS
-
+    // Restore user segment registers before sysretq
+    // Note: user data segment is now entry 3 (0x18 | 3 = 0x1B)
+    "mov r8w, 0x1B", // user data segment selector (0x18 | 3)
+    "mov ds, r8w",
+    "mov es, r8w",
+    "mov fs, r8w",
+    "mov gs, r8w",
     // Return to user mode via sysretq (RCX=rip, R11=rflags, RAX=return value)
     "sysretq"
-,
-    arg4_offset = const (crate::interrupts::GS_SLOT_SYSCALL_ARG4 * core::mem::size_of::<u64>()),
-    arg5_offset = const (crate::interrupts::GS_SLOT_SYSCALL_ARG5 * core::mem::size_of::<u64>()),
-    arg6_offset = const (crate::interrupts::GS_SLOT_SYSCALL_ARG6 * core::mem::size_of::<u64>()),
 );

@@ -17,7 +17,8 @@ pub enum ProcessState {
 
 /// Virtual base address where userspace expects to be mapped.
 pub const USER_VIRT_BASE: u64 = 0x400000;
-// USER_PHYS_BASE is now dynamically allocated via paging::allocate_user_region()
+/// Physical base address used when copying the userspace image.
+pub const USER_PHYS_BASE: u64 = 0x400000;
 /// Virtual address chosen for the base of the userspace stack region.
 pub const STACK_BASE: u64 = 0x800000;
 /// Size of the userspace stack in bytes (must stay 2 MiB aligned for huge pages).
@@ -340,10 +341,7 @@ impl Process {
         let pid = NEXT_PID.fetch_add(1, Ordering::SeqCst);
         let mut context = Context::zero();
         context.rip = entry_point;
-        // Use kernel-mode stack for the saved kernel context (not the user RSP)
-        // Avoid storing user stack pointer into the kernel context since
-        // context_switch will load this into RSP when switching processes.
-        context.rsp = crate::gdt::get_kernel_stack_top();
+        context.rsp = stack_ptr;
 
         Ok(Process {
             pid,
@@ -399,30 +397,15 @@ impl Process {
         let loader = ElfLoader::new(elf_data)?;
         crate::kinfo!("ElfLoader created successfully");
 
-        // Allocate memory for the process instead of using fixed USER_PHYS_BASE
-        // This avoids collisions with kernel modules (initramfs) loaded in lower memory
-        let phys_base = crate::paging::allocate_user_region(USER_REGION_SIZE)
-            .ok_or("Failed to allocate memory for user process")?;
-
-        let program_image = loader.load(phys_base)?;
-
-        // Adjust addresses: ElfLoader calculated them relative to phys_base,
-        // but userspace expects them relative to USER_VIRT_BASE
-        let addr_adjustment = USER_VIRT_BASE as i64 - phys_base as i64;
-        let mut program_image = program_image; // Make mutable for adjustment
-        program_image.entry_point = ((program_image.entry_point as i64) + addr_adjustment) as u64;
-        program_image.phdr_vaddr = ((program_image.phdr_vaddr as i64) + addr_adjustment) as u64;
-        program_image.base_addr = USER_VIRT_BASE;
-        program_image.load_bias = USER_VIRT_BASE as i64 - program_image.first_load_vaddr as i64;
-
+        let program_image = loader.load(USER_PHYS_BASE)?;
         crate::kinfo!(
-            "Program image loaded and adjusted: entry={:#x}, base={:#x}, phdr={:#x}",
+            "Program image loaded: entry={:#x}, base={:#x}, bias={:+}, phdr={:#x}",
             program_image.entry_point,
             program_image.base_addr,
+            program_image.load_bias,
             program_image.phdr_vaddr
         );
 
-        // Build argument list
         let mut arg_storage: [&[u8]; MAX_PROCESS_ARGS] = [&[]; MAX_PROCESS_ARGS];
         let mut argc = 0usize;
 
@@ -455,36 +438,22 @@ impl Process {
             _ => final_args[0],
         };
 
-        // Handle dynamic/static executable
-        let (entry_point, stack_ptr) = if let Some(interp_path) = loader.get_interpreter() {
-            crate::kinfo!("Dynamic executable, interpreter: {}", interp_path);
+        if let Some(interp_path) = loader.get_interpreter() {
+            crate::kinfo!("Dynamic executable detected, interpreter: {}", interp_path);
 
             if let Some(interp_data) = crate::fs::read_file_bytes(interp_path) {
+                crate::kinfo!("Found interpreter at {}, loading it", interp_path);
+
                 let interp_loader = ElfLoader::new(interp_data)?;
-
-                // Calculate physical address for interpreter region
-                // INTERP_BASE is virtual, need to map to physical
-                let interp_offset = INTERP_BASE - USER_VIRT_BASE;
-                let interp_phys = phys_base + interp_offset;
-
-                let mut interp_image = interp_loader.load(interp_phys)?;
-
-                // Adjust interpreter addresses to virtual space
-                let interp_adjustment = INTERP_BASE as i64 - interp_phys as i64;
-                interp_image.entry_point =
-                    ((interp_image.entry_point as i64) + interp_adjustment) as u64;
-                interp_image.phdr_vaddr =
-                    ((interp_image.phdr_vaddr as i64) + interp_adjustment) as u64;
-                interp_image.base_addr = INTERP_BASE;
-                interp_image.load_bias = INTERP_BASE as i64 - interp_image.first_load_vaddr as i64;
-
+                let interp_image = interp_loader.load(INTERP_BASE)?;
                 crate::kinfo!(
-                    "Interpreter loaded and adjusted: entry={:#x}, base={:#x}",
+                    "Interpreter image loaded: entry={:#x}, base={:#x}, bias={:+}",
                     interp_image.entry_point,
-                    interp_image.base_addr
+                    interp_image.base_addr,
+                    interp_image.load_bias
                 );
 
-                let stack = build_initial_stack(
+                let stack_ptr = build_initial_stack(
                     final_args,
                     exec_slice,
                     STACK_BASE,
@@ -493,73 +462,112 @@ impl Process {
                     Some(&interp_image),
                 )?;
 
-                (interp_image.entry_point, stack)
+                let pid = NEXT_PID.fetch_add(1, Ordering::SeqCst);
+
+                let mut context = Context::zero();
+                context.rip = interp_image.entry_point;
+                context.rsp = stack_ptr;
+
+                let cr3 = match crate::paging::create_process_address_space(
+                    USER_PHYS_BASE,
+                    USER_REGION_SIZE,
+                ) {
+                    Ok(cr3) => {
+                        // Validate CR3 before using it
+                        if let Err(e) = crate::paging::validate_cr3(cr3, false) {
+                            crate::kerror!("Process::from_elf: Invalid CR3 {:#x}: {}", cr3, e);
+                            return Err("Failed to create valid address space");
+                        }
+                        cr3
+                    }
+                    Err(err) => {
+                        crate::kerror!("Failed to create address space for process: {}", err);
+                        return Err("Failed to create process address space");
+                    }
+                };
+
+                return Ok(Process {
+                    pid,
+                    ppid: 0,
+                    state: ProcessState::Ready,
+                    entry_point: interp_image.entry_point,
+                    stack_top: stack_ptr,
+                    heap_start: HEAP_BASE,
+                    heap_end: HEAP_BASE + HEAP_SIZE,
+                    signal_state: crate::signal::SignalState::new(),
+                    context,
+                    has_entered_user: false,
+                    is_fork_child: false, // New process from ELF, not fork
+                    cr3,
+                    tty: 0,
+                    memory_base: USER_PHYS_BASE,
+                    memory_size: USER_REGION_SIZE,
+                    user_rip: interp_image.entry_point,
+                    user_rsp: stack_ptr,
+                    user_rflags: 0x202,
+                    exit_code: 0,
+                });
             } else {
-                crate::kwarn!("Interpreter '{}' not found, trying static", interp_path);
-                let stack = build_initial_stack(
-                    final_args,
-                    exec_slice,
-                    STACK_BASE,
-                    STACK_SIZE,
-                    &program_image,
-                    None,
-                )?;
-                (program_image.entry_point, stack)
+                crate::kwarn!(
+                    "Interpreter '{}' not found, attempting static execution",
+                    interp_path
+                );
             }
         } else {
-            crate::kinfo!("Static executable");
-            let stack = build_initial_stack(
-                final_args,
-                exec_slice,
-                STACK_BASE,
-                STACK_SIZE,
-                &program_image,
-                None,
-            )?;
-            (program_image.entry_point, stack)
-        };
+            crate::kinfo!("Static executable detected (no PT_INTERP)");
+        }
+
+        let stack_ptr = build_initial_stack(
+            final_args,
+            exec_slice,
+            STACK_BASE,
+            STACK_SIZE,
+            &program_image,
+            None,
+        )?;
 
         let pid = NEXT_PID.fetch_add(1, Ordering::SeqCst);
-        let mut context = Context::zero();
-        context.rip = entry_point;
-        // Ensure context.rsp points to a valid kernel stack rather than user stack
-        context.rsp = crate::gdt::get_kernel_stack_top();
 
-        let cr3 = match crate::paging::create_process_address_space(phys_base, USER_REGION_SIZE) {
-            Ok(cr3) => {
-                // Validate CR3 before using it
-                if let Err(e) = crate::paging::validate_cr3(cr3, false) {
-                    crate::kerror!("Process::from_elf: Invalid CR3 {:#x}: {}", cr3, e);
-                    return Err("Failed to create valid address space");
+        let mut context = Context::zero();
+        context.rip = program_image.entry_point;
+        context.rsp = stack_ptr;
+
+        let cr3 =
+            match crate::paging::create_process_address_space(USER_PHYS_BASE, USER_REGION_SIZE) {
+                Ok(cr3) => {
+                    // Validate CR3 before using it
+                    if let Err(e) = crate::paging::validate_cr3(cr3, false) {
+                        crate::kerror!("Process::from_elf: Invalid CR3 {:#x}: {}", cr3, e);
+                        return Err("Failed to create valid address space");
+                    }
+                    cr3
                 }
-                cr3
-            }
-            Err(err) => {
-                crate::kerror!("Failed to create address space for process: {}", err);
-                return Err("Failed to create process address space");
-            }
-        };
+                Err(err) => {
+                    crate::kerror!("Failed to create address space for process: {}", err);
+                    return Err("Failed to create process address space");
+                }
+            };
 
         Ok(Process {
             pid,
             ppid: 0,
             state: ProcessState::Ready,
-            entry_point,
+            entry_point: program_image.entry_point,
+            exit_code: 0,
             stack_top: stack_ptr,
             heap_start: HEAP_BASE,
             heap_end: HEAP_BASE + HEAP_SIZE,
             signal_state: crate::signal::SignalState::new(),
             context,
             has_entered_user: false,
-            is_fork_child: false, // Created by execve, not fork
-            cr3,                  // Reuse existing CR3
+            is_fork_child: false, // New process from ELF, not fork
+            cr3,
             tty: 0,
-            memory_base: phys_base, // Reuse existing memory base
+            memory_base: USER_PHYS_BASE,
             memory_size: USER_REGION_SIZE,
-            user_rip: entry_point,
+            user_rip: program_image.entry_point,
             user_rsp: stack_ptr,
             user_rflags: 0x202,
-            exit_code: 0,
         })
     }
 

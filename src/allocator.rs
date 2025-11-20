@@ -22,6 +22,7 @@
 /// - Lock-free fast paths where possible
 /// - Comprehensive debugging and leak detection
 /// - Production-ready reliability
+
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use spin::Mutex;
 
@@ -41,7 +42,9 @@ const SLAB_CLASSES: usize = 8;
 
 /// Slab sizes: 16, 32, 64, 128, 256, 512, 1024, 2048 bytes
 /// Larger allocations are handled directly by the buddy allocator
-const SLAB_SIZES: [usize; SLAB_CLASSES] = [16, 32, 64, 128, 256, 512, 1024, 2048];
+const SLAB_SIZES: [usize; SLAB_CLASSES] = [
+    16, 32, 64, 128, 256, 512, 1024, 2048
+];
 
 /// Magic number for heap block validation
 const HEAP_MAGIC: u32 = 0xDEADBEEF;
@@ -142,13 +145,11 @@ impl BuddyAllocator {
             }
 
             let block_size = (PAGE_SIZE << order) as u64;
-
-            // crate::kinfo!("Buddy init: adding block at {:#x} order {}", addr, order);
             self.add_free_block(addr, order);
+
             addr += block_size;
             size -= block_size;
         }
-        crate::kinfo!("Buddy init complete. Free pages: {}", self.stats.pages_free);
     }
 
     /// Add a free block to the free list
@@ -183,8 +184,7 @@ impl BuddyAllocator {
                 unsafe {
                     let ptr = addr as *const u64;
                     let next = core::ptr::read(ptr);
-                    self.free_lists[current_order] =
-                        if next == u64::MAX { None } else { Some(next) };
+                    self.free_lists[current_order] = if next == u64::MAX { None } else { Some(next) };
                 }
 
                 // Split if necessary
@@ -207,15 +207,6 @@ impl BuddyAllocator {
             }
         }
 
-        crate::kerror!(
-            "BuddyAllocator: failed to allocate order {}. Free lists:",
-            order
-        );
-        for i in 0..MAX_ORDER {
-            if self.free_lists[i].is_some() {
-                crate::kerror!("  Order {}: available", i);
-            }
-        }
         None
     }
 
@@ -309,7 +300,7 @@ struct Slab {
     objects_per_slab: usize,
     /// Head of the list of pages with free objects
     partial_head: Option<u64>,
-
+    
     // Stats
     allocated_count: usize,
 }
@@ -317,9 +308,8 @@ struct Slab {
 impl Slab {
     const fn new(size: usize) -> Self {
         // Calculate objects per page, accounting for header
-        // Header size is approx 48 bytes (next, prev, free_list, free_count + padding)
-        // We use a safe margin of 64 bytes to ensure alignment and future proofing
-        let header_size = 64;
+        // Header size is approx 32 bytes (next, prev, free_list, free_count)
+        let header_size = 32;
         let available_space = PAGE_SIZE - header_size;
         let objects_per_slab = if size <= available_space {
             available_space / size
@@ -339,48 +329,37 @@ impl Slab {
     fn allocate(&mut self, buddy: &mut BuddyAllocator) -> Option<u64> {
         // If no partial pages, allocate a new one
         if self.partial_head.is_none() {
-            if self.allocate_new_page(buddy).is_none() {
-                crate::kerror!(
-                    "Slab: allocate_new_page failed for object size {}",
-                    self.object_size
-                );
-                return None;
-            }
+            self.allocate_new_page(buddy)?;
         }
 
         let page_addr = self.partial_head?;
-
+        
         unsafe {
             let header_ptr = page_addr as *mut SlabPageHeader;
             let header = &mut *header_ptr;
 
             // Pop from free list
-            if let Some(obj_idx) = header.free_list {
-                let header_size = 64;
-                let obj_addr = page_addr + header_size + (obj_idx as u64 * self.object_size as u64);
+            if let Some(offset) = header.free_list {
+                let obj_addr = page_addr + 32 + (offset as u64 * self.object_size as u64);
 
-                // Read next index from object
-                let next_idx = core::ptr::read(obj_addr as *const u16);
-
-                header.free_list = if next_idx == u16::MAX {
-                    None
-                } else {
-                    Some(next_idx)
-                };
-
+                // Read next pointer from freed object
+                // Objects in free list store the index of the next free object
+                let next_idx_ptr = obj_addr as *const u16;
+                let next_idx = core::ptr::read(next_idx_ptr);
+                
+                header.free_list = if next_idx == u16::MAX { None } else { Some(next_idx) };
                 header.free_count -= 1;
+                self.allocated_count += 1;
 
                 // If page is now full, remove from partial list
                 if header.free_count == 0 {
                     self.remove_from_partial_list(page_addr);
                 }
 
-                self.allocated_count += 1;
+                // Clear the pointer in the allocated object
+                core::ptr::write_bytes(obj_addr as *mut u8, 0, self.object_size);
+
                 return Some(obj_addr);
-            } else {
-                crate::kerror!("Slab {}: partial page {:#x} has empty free_list but was in partial_head! free_count={}", 
-                    self.object_size, page_addr, header.free_count);
-                self.remove_from_partial_list(page_addr);
             }
         }
 
@@ -391,14 +370,13 @@ impl Slab {
     fn free(&mut self, addr: u64, buddy: &mut BuddyAllocator) {
         // Find page start
         let page_addr = addr & !(PAGE_SIZE as u64 - 1);
-
+        
         unsafe {
             let header_ptr = page_addr as *mut SlabPageHeader;
             let header = &mut *header_ptr;
-
+            
             // Calculate object index
-            let header_size = 64;
-            let offset = addr - (page_addr + header_size);
+            let offset = addr - (page_addr + 32);
             let obj_idx = (offset / self.object_size as u64) as u16;
 
             // Poison memory
@@ -408,7 +386,7 @@ impl Slab {
             let next = header.free_list.unwrap_or(u16::MAX);
             let obj_ptr = addr as *mut u16;
             core::ptr::write(obj_ptr, next);
-
+            
             header.free_list = Some(obj_idx);
             header.free_count += 1;
             self.allocated_count -= 1;
@@ -417,7 +395,7 @@ impl Slab {
             if header.free_count == 1 {
                 self.add_to_partial_list(page_addr);
             }
-
+            
             // If page is completely empty, free it to buddy
             if header.free_count as usize == self.objects_per_slab {
                 self.remove_from_partial_list(page_addr);
@@ -433,19 +411,15 @@ impl Slab {
         unsafe {
             let header_ptr = page_addr as *mut SlabPageHeader;
             // Initialize header
-            core::ptr::write(
-                header_ptr,
-                SlabPageHeader {
-                    next: None,
-                    prev: None,
-                    free_list: Some(0), // Start with object 0
-                    free_count: self.objects_per_slab as u16,
-                },
-            );
+            core::ptr::write(header_ptr, SlabPageHeader {
+                next: None,
+                prev: None,
+                free_list: Some(0), // Start with object 0
+                free_count: self.objects_per_slab as u16,
+            });
 
             // Initialize object free list
-            let header_size = 64;
-            let base_addr = page_addr + header_size;
+            let base_addr = page_addr + 32;
             for i in 0..self.objects_per_slab {
                 let obj_addr = base_addr + (i * self.object_size) as u64;
                 let next_idx = if i == self.objects_per_slab - 1 {
@@ -455,7 +429,7 @@ impl Slab {
                 };
                 core::ptr::write(obj_addr as *mut u16, next_idx);
             }
-
+            
             self.add_to_partial_list(page_addr);
         }
 
@@ -557,15 +531,7 @@ impl SlabAllocator {
                     self.stats.cache_misses += 1;
                 }
 
-                let result = self.slabs[i].allocate(buddy);
-                if result.is_none() {
-                    crate::kerror!(
-                        "SlabAllocator: failed to allocate from slab {} (size {})",
-                        i,
-                        slab_size
-                    );
-                }
-                return result;
+                return self.slabs[i].allocate(buddy);
             }
         }
 
@@ -644,7 +610,11 @@ impl KernelHeap {
     /// Initialize the kernel heap
     pub fn init(&mut self, base: u64, size: u64) {
         self.buddy.init(base, size);
-        crate::kinfo!("Kernel heap initialized at {:#x}, size={:#x}", base, size);
+        crate::kinfo!(
+            "Kernel heap initialized at {:#x}, size={:#x}",
+            base,
+            size
+        );
     }
 
     /// Allocate memory from kernel heap
@@ -656,15 +626,7 @@ impl KernelHeap {
         let header_size = core::mem::size_of::<HeapBlockHeader>();
         let total_size = size + header_size;
 
-        // crate::kinfo!("kalloc: requesting {} bytes (total {})", size, total_size);
-
-        let addr = match self.slab.allocate(total_size, &mut self.buddy) {
-            Some(a) => a,
-            None => {
-                crate::kerror!("kalloc: slab allocation failed for size {}", total_size);
-                return None;
-            }
-        };
+        let addr = self.slab.allocate(total_size, &mut self.buddy)?;
 
         // Write header
         unsafe {

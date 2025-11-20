@@ -326,7 +326,7 @@ fn get_mac_address() -> Option<(u32, [u8; 6])> {
     }
 
     // Parse response to find IFLA_ADDRESS
-    let mut offset = 0;
+    let mut offset = 16; // Skip NlMsgHdr
     while offset < len as usize {
         let hdr = unsafe { &*(buf.as_ptr().add(offset) as *const NlMsgHdr) };
         if hdr.nlmsg_type == 3 { // NLMSG_DONE
@@ -336,22 +336,20 @@ fn get_mac_address() -> Option<(u32, [u8; 6])> {
             return None;
         }
 
-        if hdr.nlmsg_type == 16 { // RTM_NEWLINK
-            // Parse IfInfoMsg
-            let ifinfo = unsafe { &*(buf.as_ptr().add(offset + 16) as *const IfInfoMsg) };
-            let if_index = ifinfo.ifi_index;
-            let mut attr_offset = offset + 16 + 16; // NlMsgHdr + IfInfoMsg
-            
-            while attr_offset < offset + hdr.nlmsg_len as usize {
-                let attr = unsafe { &*(buf.as_ptr().add(attr_offset) as *const RtAttr) };
-                if attr.rta_type == IFLA_ADDRESS {
-                    let mac_ptr = unsafe { buf.as_ptr().add(attr_offset + 4) };
-                    let mut mac = [0u8; 6];
-                    unsafe { std::ptr::copy_nonoverlapping(mac_ptr, mac.as_mut_ptr(), 6) };
-                    return Some((if_index, mac));
-                }
-                attr_offset += ((attr.rta_len + 3) & !3) as usize; // Align to 4 bytes
+        // Parse IfInfoMsg
+        let ifinfo = unsafe { &*(buf.as_ptr().add(offset + 16) as *const IfInfoMsg) };
+        let if_index = ifinfo.ifi_index;
+        let mut attr_offset = offset + 16 + 16; // NlMsgHdr + IfInfoMsg
+        
+        while attr_offset < offset + hdr.nlmsg_len as usize {
+            let attr = unsafe { &*(buf.as_ptr().add(attr_offset) as *const RtAttr) };
+            if attr.rta_type == IFLA_ADDRESS {
+                let mac_ptr = unsafe { buf.as_ptr().add(attr_offset + 4) };
+                let mut mac = [0u8; 6];
+                unsafe { std::ptr::copy_nonoverlapping(mac_ptr, mac.as_mut_ptr(), 6) };
+                return Some((if_index, mac));
             }
+            attr_offset += ((attr.rta_len + 3) & !3) as usize; // Align to 4 bytes
         }
 
         offset += ((hdr.nlmsg_len + 3) & !3) as usize;

@@ -331,8 +331,8 @@ pub fn detect_potential_deadlocks() -> [Option<Pid>; MAX_PROCESSES]
 ## Future Enhancements
 
 1. **True preemptive scheduling from timer interrupt**
-   - Implemented: Timer interrupt now triggers `do_schedule()` when required, enabling preemptive scheduling across the system
-   - The kernel updates saved user context on interrupt entry and observer safe context-switching in the interrupt handler
+   - Currently limited to syscall yield points
+   - Requires careful interrupt stack frame handling
 
 2. **CPU affinity and NUMA awareness**
    - Pin processes to specific CPUs

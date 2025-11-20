@@ -89,37 +89,6 @@ static CR3_ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
 static CR3_ACTIVATIONS: AtomicU64 = AtomicU64::new(0);
 static CR3_FREES: AtomicU64 = AtomicU64::new(0);
 
-/// Initialize the user region allocator with a safe start address.
-/// This should be called during kernel initialization with the end address of
-/// the kernel and all loaded modules (initramfs).
-pub fn init_user_region(start_addr: u64) {
-    // Align to 2MB
-    const ALIGN: u64 = 0x200000;
-    let aligned_start = (start_addr + ALIGN - 1) & !(ALIGN - 1);
-
-    let current = NEXT_USER_REGION.load(AtomicOrdering::Relaxed);
-
-    // Always update if the new start is higher.
-    // If the new start is lower, we keep the current (hardcoded safe default)
-    // unless the hardcoded default is unreasonably high?
-    // Actually, let's just ensure we are strictly above the requested start_addr.
-
-    if aligned_start > current {
-        NEXT_USER_REGION.store(aligned_start, AtomicOrdering::SeqCst);
-        crate::kinfo!(
-            "paging: updated user region start to {:#x} (was {:#x})",
-            aligned_start,
-            current
-        );
-    } else {
-        crate::kinfo!(
-            "paging: user region start {:#x} is safe (requested > {:#x})",
-            current,
-            start_addr
-        );
-    }
-}
-
 fn allocate_extra_table() -> Option<&'static PageTableHolder> {
     let idx = EXTRA_TABLE_INDEX.fetch_add(1, AtomicOrdering::SeqCst);
     if idx >= EXTRA_TABLES.len() {
@@ -650,79 +619,6 @@ pub fn activate_address_space(cr3_phys: u64) {
                 crate::kfatal!("Page table corrupted - all entries are zero");
             }
         }
-        // Print debug info about the CR3 being activated for troubleshooting
-        debug_cr3_info(cr3_phys, "CR3 candidate for activation");
-
-        // Compare physical mapping of known kernel addresses between current and target
-        let code_v = 0x100000u64;
-        let stack_v = 0x19a2000u64;
-        let rip_v = 0x9f0aeu64; // observed instruction pointer in panic
-        let (current_frame, _) = Cr3::read();
-        let current_cr3 = current_frame.start_address().as_u64();
-        if let Some(cur_phys_code) = vaddr_to_phys_in_cr3(current_cr3, code_v) {
-            if let Some(targ_phys_code) = vaddr_to_phys_in_cr3(cr3_phys, code_v) {
-                crate::kinfo!(
-                    "  Kernel code physical mapping: current={:#x} target={:#x}",
-                    cur_phys_code,
-                    targ_phys_code
-                );
-                if cur_phys_code != targ_phys_code {
-                    crate::kfatal!(
-                        "[CRITICAL] Kernel code maps to different physical address under CR3 {:#x} (cur={:#x} vs targ={:#x}) - aborting activation",
-                        cr3_phys,
-                        cur_phys_code,
-                        targ_phys_code
-                    );
-                }
-            }
-        }
-        if let Some(cur_phys_stack) = vaddr_to_phys_in_cr3(current_cr3, stack_v) {
-            if let Some(targ_phys_stack) = vaddr_to_phys_in_cr3(cr3_phys, stack_v) {
-                crate::kinfo!(
-                    "  Kernel stack physical mapping: current={:#x} target={:#x}",
-                    cur_phys_stack,
-                    targ_phys_stack
-                );
-                if cur_phys_stack != targ_phys_stack {
-                    crate::kfatal!(
-                        "[CRITICAL] Kernel stack maps differently under CR3 {:#x} (cur={:#x} vs targ={:#x}) - aborting activation",
-                        cr3_phys,
-                        cur_phys_stack,
-                        targ_phys_stack
-                    );
-                }
-            }
-        }
-        if let Some(cur_phys_rip) = vaddr_to_phys_in_cr3(current_cr3, rip_v) {
-            if let Some(targ_phys_rip) = vaddr_to_phys_in_cr3(cr3_phys, rip_v) {
-                crate::kinfo!(
-                    "  RIP mapping: current={:#x} target={:#x} (rip={:#x})",
-                    cur_phys_rip,
-                    targ_phys_rip,
-                    rip_v
-                );
-                if cur_phys_rip != targ_phys_rip {
-                    crate::kfatal!(
-                        "[CRITICAL] RIP maps differently under CR3 {:#x} (cur={:#x} vs targ={:#x}) - aborting activation",
-                        cr3_phys,
-                        cur_phys_rip,
-                        targ_phys_rip
-                    );
-                }
-                // Print the first 16 bytes at the physical addresses for comparison
-                unsafe {
-                    let cur_ptr = cur_phys_rip as *const u8;
-                    let targ_ptr = targ_phys_rip as *const u8;
-                    let mut cur_bytes = [0u8; 16];
-                    let mut targ_bytes = [0u8; 16];
-                    for i in 0..16 {
-                        cur_bytes[i] = core::ptr::read_volatile(cur_ptr.add(i));
-                        targ_bytes[i] = core::ptr::read_volatile(targ_ptr.add(i));
-                    }
-                    crate::kinfo!("  RIP bytes current={:02x?} target={:02x?}", cur_bytes, targ_bytes);
-                }
-            }
-        }
     }
 
     let target = if cr3_phys == 0 {
@@ -748,21 +644,6 @@ pub fn activate_address_space(cr3_phys: u64) {
             "[activate_address_space] CR3 already active, returning\n"
         ));
         return; // Short-circuit: CR3 already active, no need to reload
-    }
-
-    // Validate kernel mapping exists in this CR3 - guard against CR3s that drop
-    // kernel identity mappings which would cause kernel execution to fault.
-    // We check a few representative kernel addresses (code & kernel stack area).
-    if cr3_phys != 0 {
-        let code_addr = 0x100000u64; // early kernel text
-        let stack_sample = 0x19a2000u64; // heuristic kernel stack region
-        if !is_virt_mapped_in_cr3(cr3_phys, code_addr) || !is_virt_mapped_in_cr3(cr3_phys, stack_sample) {
-            crate::kerror!(
-                "[CRITICAL] CR3 {:#x} does not include required kernel mappings (code/stack) - aborting activation",
-                cr3_phys
-            );
-            crate::kfatal!("CR3 candidate missing kernel mappings - possible page table corruption");
-        }
     }
 
     // Validate the frame creation - convert physical address to PhysFrame
@@ -864,9 +745,8 @@ pub fn free_process_address_space(cr3: u64) {
     CR3_FREES.fetch_add(1, AtomicOrdering::Relaxed);
 
     // TODO: Implement proper page table deallocation
-    // For now, just log that we should free this, and add more diagnostic info
+    // For now, just log that we should free this
     crate::kdebug!("TODO: Free page tables at CR3 {:#x}", cr3);
-    crate::kinfo!("free_process_address_space: Request to free CR3={:#x} (current active CR3={:#x})", cr3, read_current_cr3());
 
     // In a full implementation, we would:
     // 1. Walk the PML4 entries for user space (lower half)
@@ -923,38 +803,6 @@ pub fn debug_cr3_info(cr3: u64, label: &str) {
             present_count,
             user_entries
         );
-
-        // Additional: Check whether important kernel addresses (kernel code & stack region)
-        // are present in this CR3. This helps detect CR3s that drop kernel mapping.
-        fn is_mapped(cr3: u64, virt: u64) -> bool {
-            // Very small helper: returns true if PML4/PDP/PD/PT entries for virt are present
-            use x86_64::PhysAddr;
-            let pml4 = phys_to_page_table(PhysAddr::new(cr3));
-            let pml4_idx = ((virt >> 39) & 0x1FF) as usize;
-            if pml4[pml4_idx].is_unused() {
-                return false;
-            }
-            let pdp_addr = pml4[pml4_idx].addr();
-            let pdp = phys_to_page_table(pdp_addr);
-            let pdp_idx = ((virt >> 30) & 0x1FF) as usize;
-            if pdp[pdp_idx].is_unused() {
-                return false;
-            }
-            let pd_addr = pdp[pdp_idx].addr();
-            let pd = phys_to_page_table(pd_addr);
-            let pd_idx = ((virt >> 21) & 0x1FF) as usize;
-            if pd[pd_idx].is_unused() {
-                return false;
-            }
-            true
-        }
-
-        // Common kernel areas (heuristic): kernel low identity region & kernel heap/stack
-        let kernel_code_sample = 0x100000u64; // early kernel code virtual
-        let kernel_stack_sample = 0x19a2000u64; // runtime kernel stack seen in traces
-        let kernel_code_mapped = is_mapped(cr3, kernel_code_sample);
-        let kernel_stack_mapped = is_mapped(cr3, kernel_stack_sample);
-        crate::kinfo!("  KernelMappingCheck: code@{:#x} mapped={} stack@{:#x} mapped={}", kernel_code_sample, kernel_code_mapped, kernel_stack_sample, kernel_stack_mapped);
     }
 
     let current = read_current_cr3();
@@ -965,86 +813,6 @@ pub fn debug_cr3_info(cr3: u64, label: &str) {
     }
 
     crate::kinfo!("=== End CR3 Debug Info ===");
-}
-
-/// Utility: Check whether a virtual address is mapped in the page table rooted by CR3.
-/// Returns true if a PML4/PDP/PD entry exists and is present for the virtual address.
-pub fn is_virt_mapped_in_cr3(cr3: u64, virt: u64) -> bool {
-    if cr3 == 0 { // kernel page tables - always mapped
-        return true;
-    }
-    use x86_64::PhysAddr;
-    let pml4 = phys_to_page_table(PhysAddr::new(cr3));
-    let pml4_idx = ((virt >> 39) & 0x1FF) as usize;
-    if pml4[pml4_idx].is_unused() {
-        return false;
-    }
-    let pdp_addr = pml4[pml4_idx].addr();
-    let pdp = phys_to_page_table(pdp_addr);
-    let pdp_idx = ((virt >> 30) & 0x1FF) as usize;
-    if pdp[pdp_idx].is_unused() {
-        return false;
-    }
-    let pd_addr = pdp[pdp_idx].addr();
-    let pd = phys_to_page_table(pd_addr);
-    let pd_idx = ((virt >> 21) & 0x1FF) as usize;
-    if pd[pd_idx].is_unused() {
-        return false;
-    }
-    true
-}
-
-/// Resolve a virtual address to a physical address for a specific CR3.
-/// Returns Some(phys_addr) if mapped, otherwise None.
-pub fn vaddr_to_phys_in_cr3(cr3: u64, virt: u64) -> Option<u64> {
-    use x86_64::PhysAddr;
-    use x86_64::structures::paging::PageTableFlags;
-
-    if cr3 == 0 {
-        // Kernel PT is identity mapping - virtual == physical for test addresses
-        return Some(virt);
-    }
-
-    let pml4 = phys_to_page_table(PhysAddr::new(cr3));
-    let pml4_idx = ((virt >> 39) & 0x1FF) as usize;
-    if pml4[pml4_idx].is_unused() {
-        return None;
-    }
-    let pdp_addr = pml4[pml4_idx].addr();
-    let pdp = phys_to_page_table(pdp_addr);
-    let pdp_idx = ((virt >> 30) & 0x1FF) as usize;
-    if pdp[pdp_idx].is_unused() {
-        return None;
-    }
-    let pdp_flags = pdp[pdp_idx].flags();
-    if pdp_flags.contains(PageTableFlags::HUGE_PAGE) {
-        let base = pdp[pdp_idx].addr().as_u64();
-        let offset = virt & ((1u64 << 30) - 1);
-        return Some(base + offset);
-    }
-
-    let pd_addr = pdp[pdp_idx].addr();
-    let pd = phys_to_page_table(pd_addr);
-    let pd_idx = ((virt >> 21) & 0x1FF) as usize;
-    if pd[pd_idx].is_unused() {
-        return None;
-    }
-    let pd_flags = pd[pd_idx].flags();
-    if pd_flags.contains(PageTableFlags::HUGE_PAGE) {
-        let base = pd[pd_idx].addr().as_u64();
-        let offset = virt & ((1u64 << 21) - 1);
-        return Some(base + offset);
-    }
-
-    let pt_addr = pd[pd_idx].addr();
-    let pt = phys_to_page_table(pt_addr);
-    let pt_idx = ((virt >> 12) & 0x1FF) as usize;
-    if pt[pt_idx].is_unused() {
-        return None;
-    }
-    let base = pt[pt_idx].addr().as_u64();
-    let offset = virt & 0xFFF;
-    Some(base + offset)
 }
 
 /// Print CR3 allocation statistics.

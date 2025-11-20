@@ -2,19 +2,24 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use lazy_static::lazy_static;
 use spin::Mutex;
 
-use crate::{bootinfo, interrupts, logger, uefi_compat::NetworkDescriptor};
+use crate::{
+    bootinfo,
+    interrupts,
+    logger,
+    uefi_compat::NetworkDescriptor,
+};
 
-pub mod arp;
 mod drivers;
+pub mod arp;
 pub mod ethernet;
 pub mod ipv4;
-pub mod netlink;
 pub mod stack;
 pub mod udp;
 pub mod udp_helper;
+pub mod netlink;
 
 pub use drivers::NetError;
-pub use udp_helper::{UdpConnectionContext, UdpMessage, UdpStats};
+pub use udp_helper::{UdpMessage, UdpConnectionContext, UdpStats};
 
 const MAX_NET_DEVICES: usize = 4;
 
@@ -127,14 +132,22 @@ pub fn init() {
         match drivers::DriverInstance::new(idx, descriptor) {
             Ok(mut driver) => {
                 if let Err(err) = driver.init() {
-                    crate::kerror!("net: driver init failed for idx {} ({:?})", idx, err);
+                    crate::kerror!(
+                        "net: driver init failed for idx {} ({:?})",
+                        idx,
+                        err
+                    );
                     continue;
                 }
 
                 let mac = driver.mac_address();
                 state.stack.register_device(idx, mac);
                 register_device_irq(idx, descriptor.interrupt_line);
-                crate::kinfo!("net: device {} online mac {:02x?}", idx, mac);
+                crate::kinfo!(
+                    "net: device {} online mac {:02x?}",
+                    idx,
+                    mac
+                );
                 state.slots[idx].driver = Some(driver);
             }
             Err(err) => {
@@ -157,11 +170,8 @@ fn register_device_irq(idx: usize, line: u8) {
     }
 
     // IRQ registration temporarily disabled until interrupts module supports dynamic registration
-    crate::kwarn!(
-        "net: IRQ registration not supported yet, device {} will rely on polling",
-        idx
-    );
-
+    crate::kwarn!("net: IRQ registration not supported yet, device {} will rely on polling", idx);
+    
     /*
     let mut cookies = IRQ_COOKIES.lock();
     cookies[idx].device_index = idx;
@@ -205,7 +215,7 @@ pub fn handle_irq(device_index: usize) {
     let mut guard = NET_STATE.lock();
     let state = &mut *guard;
     let stack = &mut state.stack;
-
+    
     if let Some(slot) = state.slots.get_mut(device_index) {
         if let Some(driver) = slot.driver.as_mut() {
             drain_rx(driver, stack, device_index);
@@ -223,7 +233,7 @@ pub fn poll() {
     let now_ms = logger::boot_time_us() / 1_000;
     let mut guard = NET_STATE.lock();
     let state = &mut *guard;
-
+    
     if state.last_poll_ms == now_ms {
         return;
     }
@@ -246,15 +256,12 @@ pub fn poll() {
     state.last_poll_ms = now_ms;
 }
 
-fn drain_rx(
-    driver: &mut drivers::DriverInstance,
-    stack: &mut stack::NetStack,
-    device_index: usize,
-) {
+fn drain_rx(driver: &mut drivers::DriverInstance, stack: &mut stack::NetStack, device_index: usize) {
     let mut scratch = [0u8; stack::MAX_FRAME_SIZE];
     while let Some(len) = driver.drain_rx(&mut scratch) {
         let mut responses = stack::TxBatch::new();
-        if let Err(err) = stack.handle_frame(device_index, &scratch[..len], &mut responses) {
+        if let Err(err) = stack.handle_frame(device_index, &scratch[..len], &mut responses)
+        {
             crate::kwarn!(
                 "net: frame processing failed on device {} ({:?})",
                 device_index,
@@ -273,7 +280,8 @@ fn produce_pending_frames(
     now_ms: u64,
 ) -> Result<(), NetError> {
     let mut responses = stack::TxBatch::new();
-    stack.poll_device(device_index, now_ms, &mut responses)?;
+    stack
+        .poll_device(device_index, now_ms, &mut responses)?;
     transmit_batch(driver, &responses, device_index);
     Ok(())
 }
