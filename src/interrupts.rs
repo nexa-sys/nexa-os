@@ -654,6 +654,41 @@ extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: InterruptStackFram
             bytes_at_rsp[i] = rsp_ptr.add(i).read_volatile();
         }
     }
+    // If we faulted from user-space, convert to SIGILL for the process instead
+    // of panicking the kernel. Kernel-mode invalid opcode is fatal and will
+    // still trigger a panic with a full dump.
+    let ring = stack_frame.code_segment.0 & 3;
+    if ring == 3 {
+        // User-space fault: terminate the process with SIGILL and schedule away.
+        let pid = crate::scheduler::current_pid().unwrap_or(0);
+        crate::kerror!(
+            "INVALID OPCODE in user-mode PID={} RIP={:#x} rsp={:#x}, killing with SIGILL",
+            pid,
+            rip,
+            rsp
+        );
+        if pid != 0 {
+            // Encode signal per POSIX status encoding and set exit code
+            let sig = crate::signal::SIGILL as i32;
+            let status = (sig & 0x7f) as i32; // make_signal_status equivalent
+            let _ = crate::scheduler::set_process_exit_code(pid, status);
+            let _ = crate::scheduler::set_process_state(pid, crate::process::ProcessState::Zombie);
+        }
+        // Switch away from this process immediately
+        crate::scheduler::do_schedule();
+        // If schedule returns for some reason, continue to panic to avoid
+        // returning to the invalid instruction.
+        crate::kpanic!(
+            "EXCEPTION: INVALID OPCODE (user->kernel scheduling fallback) rip={:#x} rsp={:#x} bytes rip={:02x?} stack={:02x?}\n{:#?}",
+            rip,
+            rsp,
+            bytes_at_rip,
+            bytes_at_rsp,
+            stack_frame
+        );
+    }
+
+    // kernel mode fault - fatal
     crate::kpanic!(
         "EXCEPTION: INVALID OPCODE rip={:#x} rsp={:#x} bytes rip={:02x?} stack={:02x?}\n{:#?}",
         rip,

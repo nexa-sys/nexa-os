@@ -1505,7 +1505,8 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
     child_process.context = crate::process::Context::zero();
     child_process.context.rax = 0; // fork() returns 0 in child
     child_process.context.rip = syscall_return_addr;
-    child_process.context.rsp = user_rsp;
+    // Ensure kernel context stack is the kernel RSP, not the user RSP
+    child_process.context.rsp = crate::gdt::get_kernel_stack_top();
 
     crate::kdebug!(
         "Child fork: entry={:#x}, stack={:#x}, will return RAX=0",
@@ -2173,6 +2174,33 @@ fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> 
                 unsafe {
                     *status = encoded_status;
                 }
+            }
+
+            // Safety: Re-verify that the process we're about to remove is
+            // actually a child of the waiting process (race conditions between
+            // scheduling and state changes could otherwise lead to removing the
+            // wrong process). If the process isn't a child, log an error and
+            // return ECHILD to avoid accidentally reaping a parent or unrelated
+            // process.
+            if let Some(child_state) = crate::scheduler::get_child_state(current_pid, wait_pid)
+            {
+                if child_state != crate::process::ProcessState::Zombie {
+                    crate::kerror!(
+                        "wait4: expected child {} to be Zombie but state={:?}",
+                        wait_pid,
+                        child_state
+                    );
+                    posix::set_errno(posix::errno::ECHILD);
+                    return u64::MAX;
+                }
+            } else {
+                crate::kerror!(
+                    "wait4: child PID {} is not a child of PID {} - aborting reap",
+                    wait_pid,
+                    current_pid
+                );
+                posix::set_errno(posix::errno::ECHILD);
+                return u64::MAX;
             }
 
             if let Err(e) = crate::scheduler::remove_process(wait_pid) {

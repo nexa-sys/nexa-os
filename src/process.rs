@@ -340,7 +340,10 @@ impl Process {
         let pid = NEXT_PID.fetch_add(1, Ordering::SeqCst);
         let mut context = Context::zero();
         context.rip = entry_point;
-        context.rsp = stack_ptr;
+        // Use kernel-mode stack for the saved kernel context (not the user RSP)
+        // Avoid storing user stack pointer into the kernel context since
+        // context_switch will load this into RSP when switching processes.
+        context.rsp = crate::gdt::get_kernel_stack_top();
 
         Ok(Process {
             pid,
@@ -519,7 +522,8 @@ impl Process {
         let pid = NEXT_PID.fetch_add(1, Ordering::SeqCst);
         let mut context = Context::zero();
         context.rip = entry_point;
-        context.rsp = stack_ptr;
+        // Ensure context.rsp points to a valid kernel stack rather than user stack
+        context.rsp = crate::gdt::get_kernel_stack_top();
 
         let cr3 = match crate::paging::create_process_address_space(phys_base, USER_REGION_SIZE) {
             Ok(cr3) => {

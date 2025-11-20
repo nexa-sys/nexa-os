@@ -317,6 +317,49 @@ pub fn remove_process(pid: Pid) -> Result<(), &'static str> {
             sched.remove_from_queue(idx);
         }
 
+        // Ensure we do not remove critical system process (e.g., init PID 1)
+        if sched.table[idx].as_ref().unwrap().process.pid == 1 {
+            crate::kerror!(
+                "Attempted to remove init process (PID 1) - ignoring removal request"
+            );
+            return Err("Attempt to remove init");
+        }
+
+        // Sanity: Only remove zombies (or processes that have fully exited)
+        let proc_state = sched.table[idx].as_ref().unwrap().process.state;
+        if proc_state != ProcessState::Zombie {
+            crate::kerror!(
+                "remove_process: Removing PID {} but state={:?} (expected Zombie)",
+                pid,
+                proc_state
+            );
+        }
+
+        // Dump debug info about the process being removed
+        let removing_cr3 = sched.table[idx].as_ref().unwrap().process.cr3;
+        let removing_ppid = sched.table[idx].as_ref().unwrap().process.ppid;
+        crate::kinfo!(
+            "remove_process: Removing PID {} (ppid={}, cr3={:#x}, state={:?})",
+            pid,
+            removing_ppid,
+            removing_cr3,
+            proc_state
+        );
+
+        // Ensure only parent context may request removal (defensive - should be enforced at syscall layer)
+        let caller_pid = sched.current_pid;
+        let target_ppid = sched.table[idx].as_ref().unwrap().process.ppid;
+        if caller_pid != Some(target_ppid) {
+            crate::kerror!(
+                "remove_process: requested by caller {:?} but target PID {} has ppid={} (denying removal)",
+                caller_pid,
+                pid,
+                target_ppid
+            );
+            return Err("Caller is not parent");
+        }
+
+        // Safe to remove now
         sched.table[idx] = None;
 
         if sched.current_pid == Some(pid) {
@@ -352,6 +395,12 @@ pub fn set_process_state(pid: Pid, state: ProcessState) -> Result<(), &'static s
 
     if let Some(idx) = found_idx {
         let old_state = sched.table[idx].as_ref().unwrap().process.state;
+        crate::kinfo!(
+            "set_process_state: PID {}: {:?} -> {:?}",
+            pid,
+            old_state,
+            state
+        );
         if old_state == state {
             return Ok(());
         }
@@ -866,12 +915,54 @@ pub fn do_schedule() {
         }
     }
 
-    // Pick next process
-    let next_idx = if let Some(prio) = sched.get_highest_priority() {
-        sched.dequeue(prio)
-    } else {
-        None
-    };
+    // Pick next process that has a VALID CR3 mapping for kernel addresses.
+    // We attempt to dequeue from the highest priority queue, and if the
+    // candidate's CR3 looks invalid we skip it and try the next candidate.
+    let mut next_idx: Option<usize> = None;
+    if let Some(mut prio) = sched.get_highest_priority() {
+        while let Some(candidate_idx) = sched.dequeue(prio) {
+            if let Some(candidate_entry) = sched.table[candidate_idx].as_ref() {
+                let candidate_cr3 = candidate_entry.process.cr3;
+                // Use paging::validate_cr3 to ensure this CR3 is at least well-formed.
+                match crate::paging::validate_cr3(candidate_cr3, true) {
+                    Ok(()) => {
+                        // Further check: ensure candidate CR3 maps basic kernel addresses
+                        // to avoid scheduling a process whose PML4 drops kernel mapping.
+                        let code_addr = 0x100000u64; // early kernel text
+                        if crate::paging::is_virt_mapped_in_cr3(candidate_cr3, code_addr) {
+                            next_idx = Some(candidate_idx);
+                            break;
+                        } else {
+                            crate::kerror!(
+                                "do_schedule: Candidate PID {} CR3 {:#x} lacks kernel mapping, skipping",
+                                candidate_entry.process.pid,
+                                candidate_cr3
+                            );
+                            // Move it back to the tail of the queue so we don't remove it.
+                            // Retain priority by enqueueing it again.
+                            let _ = sched.table[candidate_idx].as_mut().unwrap();
+                            sched.enqueue(candidate_idx);
+                        }
+                    }
+                    Err(e) => {
+                        crate::kerror!(
+                            "do_schedule: Candidate PID {} has invalid CR3 {:#x}: {} - skipping",
+                            candidate_entry.process.pid,
+                            candidate_cr3,
+                            e
+                        );
+                        sched.enqueue(candidate_idx);
+                    }
+                }
+            }
+            // If we exhausted heads at this priority, get next highest priority
+            if let Some(next_prio) = sched.get_highest_priority() {
+                prio = next_prio;
+            } else {
+                break;
+            }
+        }
+    }
 
     if let Some(idx) = next_idx {
         let entry = sched.table[idx].as_mut().unwrap();
