@@ -572,7 +572,7 @@ impl SlabAllocator {
 struct HeapBlockHeader {
     magic: u32,
     size: u32,
-    #[cfg(feature = "heap-debug")]
+    freed: bool,
     alloc_tag: u64,
 }
 
@@ -633,10 +633,8 @@ impl KernelHeap {
             let header = addr as *mut HeapBlockHeader;
             (*header).magic = HEAP_MAGIC;
             (*header).size = size as u32;
-            #[cfg(feature = "heap-debug")]
-            {
-                (*header).alloc_tag = crate::scheduler::current_pid().unwrap_or(0) as u64;
-            }
+            (*header).freed = false;
+            (*header).alloc_tag = crate::scheduler::current_pid().unwrap_or(0) as u64;
         }
 
         self.stats.total_allocations += 1;
@@ -672,8 +670,17 @@ impl KernelHeap {
                 return;
             }
 
+            if (*header).freed {
+                crate::kerror!("Heap free: double free detected at {:#x}", addr);
+                return;
+            }
+
             let size = (*header).size as usize;
             let total_size = size + header_size;
+
+            // Mark as freed
+            let header_mut = header_addr as *mut HeapBlockHeader;
+            (*header_mut).freed = true;
 
             self.stats.total_frees += 1;
             self.stats.bytes_freed += size as u64;
@@ -682,8 +689,21 @@ impl KernelHeap {
         }
     }
 
+    /// Validate heap integrity (for debugging)
+    pub fn validate_heap(&self) -> bool {
+        // This is a basic validation; in a full seL4-style system,
+        // we'd have formal verification of invariants
+        let stats = &self.stats;
+        if stats.bytes_allocated < stats.bytes_freed {
+            crate::kerror!("Heap validation failed: more bytes freed than allocated");
+            return false;
+        }
+        // Additional validations can be added here
+        true
+    }
+
     /// Get heap statistics
-    pub fn stats(&self) -> (HeapStats, BuddyStats, SlabStats) {
+    pub fn get_stats(&self) -> (HeapStats, BuddyStats, SlabStats) {
         (self.stats, self.buddy.stats(), self.slab.stats())
     }
 }
@@ -815,7 +835,7 @@ pub fn kfree(ptr: *mut u8) {
 /// Print comprehensive memory statistics
 pub fn print_memory_stats() {
     let heap = KERNEL_HEAP.lock();
-    let (heap_stats, buddy_stats, slab_stats) = heap.stats();
+    let (heap_stats, buddy_stats, slab_stats) = heap.get_stats();
 
     crate::kinfo!("=== Kernel Memory Statistics ===");
     crate::kinfo!("Heap:");
