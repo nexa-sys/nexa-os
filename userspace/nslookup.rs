@@ -329,13 +329,26 @@ fn main() {
         }
     };
 
-    // Check /etc/hosts first (for A records only)
+    // Determine nameserver to use (determine early so server info is printed the same as Linux nslookup)
+    let ns = nameserver.unwrap_or_else(|| {
+        match read_resolv_conf() {
+            Ok(nameservers) if !nameservers.is_empty() => nameservers[0],
+            _ => {
+                eprintln!("Warning: No nameservers in /etc/resolv.conf, using default");
+                [8, 8, 8, 8] // Google DNS
+            }
+        }
+    });
+
+    // Print server info (always show the nameserver like Linux nslookup does)
+    println!("Server:\t\t{}.{}.{}.{}", ns[0], ns[1], ns[2], ns[3]);
+    println!("Address:\t{}.{}.{}.{}#53", ns[0], ns[1], ns[2], ns[3]);
+    println!();
+
+    // Check /etc/hosts first (for A records only) — if found, print using the normal server lines above
     if matches!(qtype, QueryType::A) {
         match lookup_hosts(&hostname) {
             Ok(Some(ip)) => {
-                println!("Server:\t\tlocal files");
-                println!("Address:\t/etc/hosts");
-                println!();
                 println!("Name:\t{}", hostname);
                 println!("Address: {}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]);
                 return;
@@ -349,21 +362,7 @@ fn main() {
         }
     }
 
-    // Determine nameserver to use
-    let ns = nameserver.unwrap_or_else(|| {
-        match read_resolv_conf() {
-            Ok(nameservers) if !nameservers.is_empty() => nameservers[0],
-            _ => {
-                eprintln!("Warning: No nameservers in /etc/resolv.conf, using default");
-                [8, 8, 8, 8] // Google DNS
-            }
-        }
-    });
-
-    // Print server info
-    println!("Server:\t\t{}.{}.{}.{}", ns[0], ns[1], ns[2], ns[3]);
-    println!("Address:\t{}.{}.{}.{}#53", ns[0], ns[1], ns[2], ns[3]);
-    println!();
+    // (Server info already printed above)
 
     // Perform DNS query
     match query_dns(&hostname, ns, qtype) {
