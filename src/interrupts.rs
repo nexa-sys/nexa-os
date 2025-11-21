@@ -970,6 +970,10 @@ extern "C" fn syscall_instruction_handler() {
         "mov rsp, gs:[8]",  // RSP    = kernel stack top
         "mov gs:[56], rcx", // GS[7]  = user return RIP (RCX)
         "mov gs:[64], r11", // GS[8]  = user RFLAGS (R11)
+        // Save additional syscall argument registers for syscalls with >3 args
+        "mov gs:[32], r10", // GS[4]  = arg4 (r10)
+        "mov gs:[40], r8",  // GS[5]  = arg5 (r8)
+        "mov gs:[48], r9",  // GS[6]  = arg6 (r9)
         "mov rcx, gs:[160]",
         "test rcx, rcx",
         "jz .Lkernel_stack_guard_set_syscall",

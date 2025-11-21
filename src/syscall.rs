@@ -3024,6 +3024,8 @@ fn syscall_sendto(
     dest_addr: *const SockAddr,
     addrlen: u32,
 ) -> u64 {
+    // Use serial output directly since kinfo! won't show after init starts
+    crate::serial::_print(format_args!("[SYS_SENDTO] sockfd={} len={} addrlen={}\n", sockfd, len, addrlen));
     crate::kinfo!("[SYS_SENDTO] sockfd={} len={} addrlen={}", sockfd, len, addrlen);
     
     if buf.is_null() || len == 0 {
@@ -3117,15 +3119,38 @@ fn syscall_sendto(
 
         // Verify destination address is valid
         if ip.iter().all(|&b| b == 0) {
+            crate::kwarn!("[SYS_SENDTO] Invalid destination address: 0.0.0.0");
             posix::set_errno(posix::errno::EINVAL);
             return u64::MAX;
         }
 
         if port == 0 {
+            crate::kwarn!("[SYS_SENDTO] Invalid destination port: 0");
             posix::set_errno(posix::errno::EINVAL);
             return u64::MAX;
         }
 
+        // Check if destination is a broadcast address
+        let is_broadcast = ip == [255, 255, 255, 255] || 
+                          (ip[3] == 255 && ip[0] != 127); // Subnet broadcast or limited broadcast
+        
+        if is_broadcast {
+            crate::serial::_print(format_args!("[SYS_SENDTO] Broadcast address detected: {}.{}.{}.{}\n", ip[0], ip[1], ip[2], ip[3]));
+            crate::kinfo!("[SYS_SENDTO] Broadcast address detected: {}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]);
+            if !sock_handle.broadcast_enabled {
+                crate::serial::_print(format_args!("[SYS_SENDTO] ERROR: Broadcast not permitted - SO_BROADCAST not set\n"));
+                crate::kwarn!("[SYS_SENDTO] Broadcast not permitted: SO_BROADCAST not set on socket");
+                posix::set_errno(posix::errno::EACCES);
+                return u64::MAX;
+            }
+            crate::serial::_print(format_args!("[SYS_SENDTO] SO_BROADCAST enabled, allowing broadcast\n"));
+            crate::kinfo!("[SYS_SENDTO] SO_BROADCAST enabled, allowing broadcast transmission");
+        }
+
+        crate::serial::_print(format_args!(
+            "[SYS_SENDTO] Sending {} bytes to {}.{}.{}.{}:{}\n",
+            len, ip[0], ip[1], ip[2], ip[3], port
+        ));
         crate::kinfo!(
             "[SYS_SENDTO] Sending {} bytes to {}.{}.{}.{}:{}",
             len,
@@ -3139,11 +3164,18 @@ fn syscall_sendto(
         // Copy payload from userspace
         let payload = slice::from_raw_parts(buf, len);
         
+        crate::serial::_print(format_args!(
+            "[SYS_SENDTO] About to send via network stack, device={}, socket={}, broadcast={}\n",
+            sock_handle.device_index, sock_handle.socket_index, sock_handle.broadcast_enabled
+        ));
         crate::kinfo!("[SYS_SENDTO] About to send via network stack, device_index={}, socket_index={}", 
                       sock_handle.device_index, sock_handle.socket_index);
+        crate::kinfo!("[SYS_SENDTO] Socket broadcast_enabled={}", sock_handle.broadcast_enabled);
         
         // Send via network stack
         if let Some(res) = crate::net::with_net_stack(|stack| {
+            crate::serial::_print(format_args!("[SYS_SENDTO] Acquired network stack lock\n"));
+            crate::kinfo!("[SYS_SENDTO] Acquired network stack lock");
             let mut tx = crate::net::stack::TxBatch::new();
             let result = stack.udp_send(
                 sock_handle.device_index,
@@ -3153,6 +3185,8 @@ fn syscall_sendto(
                 payload,
                 &mut tx,
             );
+            crate::serial::_print(format_args!("[SYS_SENDTO] udp_send returned: {:?}\n", result));
+            crate::kinfo!("[SYS_SENDTO] udp_send returned: {:?}", result);
             (result, tx)
         }) {
             let (result, tx) = res;
@@ -3160,21 +3194,25 @@ fn syscall_sendto(
                 Ok(_) => {
                     // Transmit frames
                     if let Err(e) = crate::net::send_frames(sock_handle.device_index, &tx) {
+                        crate::serial::_print(format_args!("[SYS_SENDTO] ERROR: Failed to transmit frames: {:?}\n", e));
                         crate::kwarn!("[SYS_SENDTO] Failed to transmit frames: {:?}", e);
                         posix::set_errno(posix::errno::EIO);
                         return u64::MAX;
                     }
+                    crate::serial::_print(format_args!("[SYS_SENDTO] SUCCESS: Sent {} bytes\n", len));
                     crate::kinfo!("[SYS_SENDTO] Successfully sent {} bytes", len);
                     posix::set_errno(0);
                     len as u64
                 }
-                Err(_) => {
-                    crate::kwarn!("[SYS_SENDTO] Failed to prepare packet");
+                Err(e) => {
+                    crate::serial::_print(format_args!("[SYS_SENDTO] ERROR: Failed to prepare packet: {:?}\n", e));
+                    crate::kwarn!("[SYS_SENDTO] Failed to prepare packet: {:?}", e);
                     posix::set_errno(posix::errno::EIO);
                     u64::MAX
                 }
             }
         } else {
+            crate::serial::_print(format_args!("[SYS_SENDTO] ERROR: Network stack unavailable\n"));
             crate::kwarn!("[SYS_SENDTO] Network stack unavailable");
             posix::set_errno(posix::errno::ENETDOWN);
             u64::MAX
@@ -3388,6 +3426,10 @@ fn syscall_setsockopt(
     optval: *const u8,
     optlen: u32,
 ) -> u64 {
+    crate::serial::_print(format_args!(
+        "[SYS_SETSOCKOPT] sockfd={} level={} optname={} optlen={}\n",
+        sockfd, level, optname, optlen
+    ));
     crate::kinfo!("[SYS_SETSOCKOPT] sockfd={} level={} optname={} optlen={}", sockfd, level, optname, optlen);
     
     if optval.is_null() || optlen == 0 {
@@ -3432,6 +3474,10 @@ fn syscall_setsockopt(
                     if optlen >= 4 {
                         let value = *(optval as *const i32);
                         sock_handle.broadcast_enabled = value != 0;
+                        crate::serial::_print(format_args!(
+                            "[SYS_SETSOCKOPT] SO_BROADCAST set to {} for sockfd {}\n",
+                            sock_handle.broadcast_enabled, sockfd
+                        ));
                         crate::kinfo!("[SYS_SETSOCKOPT] SO_BROADCAST set to {}", sock_handle.broadcast_enabled);
                         posix::set_errno(0);
                         return 0;
@@ -3600,22 +3646,61 @@ pub extern "C" fn syscall_dispatch(
         SYS_USER_LOGOUT => syscall_user_logout(),
         SYS_SOCKET => syscall_socket(arg1 as i32, arg2 as i32, arg3 as i32),
         SYS_BIND => syscall_bind(arg1, arg2 as *const SockAddr, arg3 as u32),
-        SYS_SENDTO => syscall_sendto(
-            arg1,
-            arg2 as *const u8,
-            arg3 as usize,
-            0,                    // flags (arg4, need to access r10)
-            0 as *const SockAddr, // dest_addr (arg5, need to access r8)
-            0,                    // addrlen (arg6, need to access r9)
-        ),
-        SYS_RECVFROM => syscall_recvfrom(
-            arg1,
-            arg2 as *mut u8,
-            arg3 as usize,
-            0,                  // flags (arg4)
-            0 as *mut SockAddr, // src_addr (arg5)
-            0 as *mut u32,      // addrlen (arg6)
-        ),
+        SYS_SENDTO => {
+            // sendto needs 6 args: sockfd, buf, len, flags, dest_addr, addrlen
+            // arg1=sockfd, arg2=buf, arg3=len
+            // Need to read r10 (arg4/flags), r8 (arg5/dest_addr) and r9 (arg6/addrlen) from saved context
+            let (arg4, arg5, arg6) = unsafe {
+                let mut r10_val: u64;
+                let mut r8_val: u64;
+                let mut r9_val: u64;
+                core::arch::asm!(
+                    "mov {0}, gs:[32]",  // r10 saved at offset 32
+                    "mov {1}, gs:[40]",  // r8 saved at offset 40
+                    "mov {2}, gs:[48]",  // r9 saved at offset 48
+                    out(reg) r10_val,
+                    out(reg) r8_val,
+                    out(reg) r9_val,
+                    options(nostack, preserves_flags)
+                );
+                (r10_val, r8_val, r9_val)
+            };
+            syscall_sendto(
+                arg1,
+                arg2 as *const u8,
+                arg3 as usize,
+                arg4 as i32,                    // flags from r10
+                arg5 as *const SockAddr,        // dest_addr from r8
+                arg6 as u32,                    // addrlen from r9
+            )
+        },
+        SYS_RECVFROM => {
+            // recvfrom needs 6 args: sockfd, buf, len, flags, src_addr, addrlen
+            // Need to read r10 (arg4/flags), r8 (arg5/src_addr) and r9 (arg6/addrlen) from saved context
+            let (arg4, arg5, arg6) = unsafe {
+                let mut r10_val: u64;
+                let mut r8_val: u64;
+                let mut r9_val: u64;
+                core::arch::asm!(
+                    "mov {0}, gs:[32]",  // r10 saved at offset 32
+                    "mov {1}, gs:[40]",  // r8 saved at offset 40
+                    "mov {2}, gs:[48]",  // r9 saved at offset 48
+                    out(reg) r10_val,
+                    out(reg) r8_val,
+                    out(reg) r9_val,
+                    options(nostack, preserves_flags)
+                );
+                (r10_val, r8_val, r9_val)
+            };
+            syscall_recvfrom(
+                arg1,
+                arg2 as *mut u8,
+                arg3 as usize,
+                arg4 as i32,                  // flags from r10
+                arg5 as *mut SockAddr,        // src_addr from r8
+                arg6 as *mut u32,             // addrlen from r9
+            )
+        },
         SYS_CONNECT => syscall_connect(arg1, arg2 as *const SockAddr, arg3 as u32),
         SYS_SETSOCKOPT => {
             // setsockopt needs 5 args: sockfd, level, optname, optval, optlen
