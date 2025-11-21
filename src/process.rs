@@ -3,6 +3,7 @@ use crate::elf::{ElfLoader, LoadResult};
 use crate::kdebug;
 use core::ptr;
 use core::sync::atomic::{AtomicU64, Ordering};
+use alloc::alloc::{alloc, dealloc, Layout};
 
 /// Process ID type
 pub type Pid = u64;
@@ -33,6 +34,12 @@ pub const INTERP_BASE: u64 = STACK_BASE + STACK_SIZE;
 pub const INTERP_REGION_SIZE: u64 = 0x600000;
 /// Total virtual span that must be mapped for the userspace image, heap, stack, and interpreter region.
 pub const USER_REGION_SIZE: u64 = (INTERP_BASE + INTERP_REGION_SIZE) - USER_VIRT_BASE;
+
+/// Kernel stack size (32 KB)
+pub const KERNEL_STACK_SIZE: usize = 32 * 1024;
+/// Kernel stack alignment
+pub const KERNEL_STACK_ALIGN: usize = 16;
+
 /// CPU context saved during context switch
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
@@ -107,6 +114,7 @@ pub struct Process {
     pub user_rsp: u64, // Saved user-mode RSP for syscall return
     pub user_rflags: u64, // Saved user-mode RFLAGS for syscall return
     pub exit_code: i32, // Last exit code reported by this process (if zombie)
+    pub kernel_stack: u64, // Pointer to kernel stack allocation (bottom)
 }
 
 static NEXT_PID: AtomicU64 = AtomicU64::new(1);
@@ -118,6 +126,7 @@ pub fn allocate_pid() -> Pid {
 
 const DEFAULT_ARGV0: &[u8] = b"nexa";
 pub const MAX_PROCESS_ARGS: usize = 32;
+pub const MAX_PROCESSES: usize = 64;
 const STACK_RANDOM_SEED: [u8; 16] = *b"NexaOSGuardSeed!";
 
 const AT_NULL: u64 = 0;
@@ -363,6 +372,7 @@ impl Process {
             user_rsp: stack_ptr,
             user_rflags: 0x202,
             exit_code: 0,
+            kernel_stack: 0, // Initialize kernel stack pointer
         })
     }
 
@@ -506,6 +516,14 @@ impl Process {
                     user_rsp: stack_ptr,
                     user_rflags: 0x202,
                     exit_code: 0,
+                    kernel_stack: {
+                        let layout = Layout::from_size_align(KERNEL_STACK_SIZE, KERNEL_STACK_ALIGN).unwrap();
+                        let ptr = unsafe { alloc(layout) } as u64;
+                        if ptr == 0 {
+                            return Err("Failed to allocate kernel stack");
+                        }
+                        ptr
+                    },
                 });
             } else {
                 crate::kwarn!(
@@ -568,6 +586,14 @@ impl Process {
             user_rip: program_image.entry_point,
             user_rsp: stack_ptr,
             user_rflags: 0x202,
+            kernel_stack: {
+                let layout = Layout::from_size_align(KERNEL_STACK_SIZE, KERNEL_STACK_ALIGN).unwrap();
+                let ptr = unsafe { alloc(layout) } as u64;
+                if ptr == 0 {
+                    return Err("Failed to allocate kernel stack");
+                }
+                ptr
+            },
         })
     }
 

@@ -1,9 +1,11 @@
 /// Advanced multi-level feedback queue (MLFQ) process scheduler for hybrid kernel
-use crate::process::{Pid, Process, ProcessState};
+use crate::process::{Process, ProcessState, MAX_PROCESSES, Pid};
+use alloc::alloc::{dealloc, Layout};
+use alloc::boxed::Box;
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 
-const MAX_PROCESSES: usize = 64; // Increased from 32
 const NUM_PRIORITY_LEVELS: usize = 8; // 0 = highest, 7 = lowest
 const BASE_TIME_SLICE_MS: u64 = 5; // Base quantum for highest priority
 
@@ -56,6 +58,7 @@ impl ProcessEntry {
                 memory_base: 0,
                 memory_size: 0,
                 user_rip: 0,
+                kernel_stack: 0,
                 user_rsp: 0,
                 user_rflags: 0,
                 exit_code: 0,
@@ -226,6 +229,7 @@ pub fn remove_process(pid: Pid) -> Result<(), &'static str> {
 
     let mut table = PROCESS_TABLE.lock();
     let mut removed_cr3 = None;
+    let mut removed_kernel_stack = 0;
     let mut removed = false;
 
     for slot in table.iter_mut() {
@@ -242,6 +246,10 @@ pub fn remove_process(pid: Pid) -> Result<(), &'static str> {
                     ));
                 }
 
+                if entry.process.kernel_stack != 0 {
+                    removed_kernel_stack = entry.process.kernel_stack;
+                }
+
                 *slot = None;
                 removed = true;
                 break;
@@ -254,6 +262,15 @@ pub fn remove_process(pid: Pid) -> Result<(), &'static str> {
     if removed {
         if current_pid() == Some(pid) {
             set_current_pid(None);
+        }
+
+        // Clean up kernel stack
+        if removed_kernel_stack != 0 {
+            let layout = Layout::from_size_align(
+                crate::process::KERNEL_STACK_SIZE,
+                crate::process::KERNEL_STACK_ALIGN
+            ).unwrap();
+            unsafe { dealloc(removed_kernel_stack as *mut u8, layout) };
         }
 
         // Clean up process page tables if it had its own CR3
@@ -950,6 +967,7 @@ fn do_schedule_internal(from_interrupt: bool) {
             user_rsp: u64,
             user_rflags: u64,
             is_voluntary: bool,
+            kernel_stack: u64,
         },
     }
 
@@ -1058,16 +1076,26 @@ fn do_schedule_internal(from_interrupt: bool) {
                 }
             }
 
-            let entry = table[next_idx].as_mut().expect("Process entry vanished");
-            entry.time_slice = DEFAULT_TIME_SLICE;
-            entry.process.state = ProcessState::Running;
+            // Extract all needed info from the next process entry in a separate scope
+            // to avoid holding a mutable borrow on `table` while we iterate it later.
+            let (first_run, next_pid, next_cr3, user_rip, user_rsp, user_rflags, next_context, kernel_stack, process_copy) = {
+                let entry = table[next_idx].as_mut().expect("Process entry vanished");
+                entry.time_slice = DEFAULT_TIME_SLICE;
+                entry.process.state = ProcessState::Running;
 
-            let first_run = !entry.process.has_entered_user;
-            let next_pid = entry.process.pid;
-            let next_cr3 = entry.process.cr3;
-            let user_rip = entry.process.user_rip;
-            let user_rsp = entry.process.user_rsp;
-            let user_rflags = entry.process.user_rflags;
+                let first_run = !entry.process.has_entered_user;
+                let next_pid = entry.process.pid;
+                let next_cr3 = entry.process.cr3;
+                let user_rip = entry.process.user_rip;
+                let user_rsp = entry.process.user_rsp;
+                let user_rflags = entry.process.user_rflags;
+                let next_context = entry.process.context;
+                let kernel_stack = entry.process.kernel_stack;
+                let process_copy = entry.process; // Process is Copy
+
+                (first_run, next_pid, next_cr3, user_rip, user_rsp, user_rflags, next_context, kernel_stack, process_copy)
+            };
+
             *current_lock = Some(next_pid);
 
             if first_run {
@@ -1078,12 +1106,10 @@ fn do_schedule_internal(from_interrupt: bool) {
                 // The solution: set it NOW in the process table, not on the copy.
                 crate::serial::_print(format_args!(
                     "[do_schedule] Creating FirstRun decision for PID {}, CR3={:#x}\n",
-                    entry.process.pid, entry.process.cr3
+                    next_pid, next_cr3
                 ));
-                Some(ScheduleDecision::FirstRun(entry.process))
+                Some(ScheduleDecision::FirstRun(process_copy))
             } else {
-                let next_context = entry.process.context;
-
                 // Check if current process is a zombie - if so, don't save its context
                 let (old_context_ptr, is_voluntary) = if let Some(curr_pid) = current {
                     let result = table.iter_mut().find_map(|slot| {
@@ -1126,6 +1152,7 @@ fn do_schedule_internal(from_interrupt: bool) {
                     user_rsp,
                     user_rflags,
                     is_voluntary,
+                    kernel_stack,
                 })
             }
         } else {
@@ -1181,7 +1208,15 @@ fn do_schedule_internal(from_interrupt: bool) {
             user_rsp,
             user_rflags,
             is_voluntary,
+            kernel_stack,
         }) => unsafe {
+            // Update kernel stack in GS
+            if kernel_stack != 0 {
+                let gs_data_ptr = core::ptr::addr_of!(crate::initramfs::GS_DATA.0) as *mut u64;
+                // GS_SLOT_KERNEL_RSP is 1
+                gs_data_ptr.add(crate::interrupts::GS_SLOT_KERNEL_RSP).write(kernel_stack + crate::process::KERNEL_STACK_SIZE as u64);
+            }
+
             // Update statistics
             {
                 let mut stats = SCHED_STATS.lock();

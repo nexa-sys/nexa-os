@@ -1,11 +1,12 @@
 use crate::paging;
 use crate::posix::{self, FileType};
-use crate::process::{USER_REGION_SIZE, USER_VIRT_BASE};
+use crate::process::{Process, USER_REGION_SIZE, USER_VIRT_BASE};
 use crate::scheduler;
 use crate::uefi_compat::{
     self, BlockDescriptor, CompatCounts, HidInputDescriptor, NetworkDescriptor, UsbHostDescriptor,
 };
 use crate::vt;
+use alloc::alloc::{alloc, dealloc, Layout};
 use core::{
     arch::global_asm,
     cmp,
@@ -360,7 +361,7 @@ fn write_to_std_stream(kind: StdStreamKind, buf: u64, count: u64) -> u64 {
 
     let tty = scheduler::get_current_pid()
         .and_then(|pid| scheduler::get_process(pid))
-        .map(|proc| proc.tty())
+        .map(|proc: Process| proc.tty())
         .unwrap_or_else(|| vt::active_terminal());
 
     let stream = match kind {
@@ -1261,7 +1262,7 @@ fn read_from_keyboard(buf: *mut u8, count: usize) -> u64 {
     let slice = unsafe { core::slice::from_raw_parts_mut(buf, count) };
     let tty = scheduler::get_current_pid()
         .and_then(|pid| scheduler::get_process(pid))
-        .map(|proc| proc.tty())
+        .map(|proc: Process| proc.tty())
         .unwrap_or_else(|| vt::active_terminal());
     let read_len = crate::keyboard::read_raw_for_tty(tty, slice, count);
 
@@ -1313,10 +1314,15 @@ fn syscall_kill(pid: u64, signum: u64) -> u64 {
 
 /// POSIX getppid() system call - get parent process ID
 fn syscall_getppid() -> u64 {
-    // For now, return 0 (no parent)
-    // TODO: Implement proper parent PID tracking
-    posix::set_errno(0);
-    0
+    if let Some(pid) = crate::scheduler::get_current_pid() {
+        if let Some(process) = crate::scheduler::get_process(pid) {
+            posix::set_errno(0);
+            return process.ppid;
+        }
+    }
+    // Should not happen for a running process
+    posix::set_errno(posix::errno::ESRCH);
+    u64::MAX
 }
 
 /// POSIX fork() system call - create child process
@@ -1391,6 +1397,18 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
     child_process.has_entered_user = false;
     child_process.is_fork_child = true; // Mark as fork child for special handling
     child_process.exit_code = 0;
+
+    // Allocate new kernel stack for child
+    let kernel_stack_layout = Layout::from_size_align(
+        crate::process::KERNEL_STACK_SIZE,
+        crate::process::KERNEL_STACK_ALIGN
+    ).unwrap();
+    let kernel_stack = unsafe { alloc(kernel_stack_layout) } as u64;
+    if kernel_stack == 0 {
+        crate::kerror!("fork() - failed to allocate kernel stack");
+        return u64::MAX;
+    }
+    child_process.kernel_stack = kernel_stack;
 
     // Set up child to return from fork syscall with RAX=0
     child_process.entry_point = syscall_return_addr;
@@ -3273,8 +3291,8 @@ pub extern "C" fn syscall_dispatch(
         SYS_SIGACTION => syscall_sigaction(arg1, arg2 as *const u8, arg3 as *mut u8),
         SYS_SIGPROCMASK => syscall_sigprocmask(arg1 as i32, arg2 as *const u64, arg3 as *mut u64),
         SYS_GETPID => {
-            crate::kdebug!("SYS_GETPID called");
-            1
+            // crate::kdebug!("SYS_GETPID called");
+            crate::scheduler::get_current_pid().unwrap_or(0)
         }
         SYS_GETPPID => syscall_getppid(),
         SYS_SCHED_YIELD => syscall_sched_yield(),
@@ -3347,6 +3365,9 @@ pub extern "C" fn syscall_dispatch(
 global_asm!(
     ".global syscall_handler",
     "syscall_handler:",
+    "swapgs",
+    "mov gs:[0], rsp", // Save user RSP
+    "mov rsp, gs:[8]", // Load kernel RSP
     // Save user RCX (return address) and R11 (rflags) because sysretq needs them
     "push r11", // save user rflags
     "push rcx", // save user return address
@@ -3440,6 +3461,7 @@ global_asm!(
     "mov ds, ax",
     "mov es, ax",
     "mov fs, ax",
+    "swapgs",
     "mov gs, ax",
     // sysretq: rcx=rip, r11=rflags, rsp already set to user stack
     "sysretq",
@@ -3469,7 +3491,8 @@ global_asm!(
     "mov ds, r8w",
     "mov es, r8w",
     "mov fs, r8w",
-    "mov gs, r8w",
+    "mov rsp, gs:[0]", // Restore user RSP
+    "swapgs",          // Restore user GS base
     // Return to user mode via sysretq (RCX=rip, R11=rflags, RAX=return value)
     "sysretq"
 );

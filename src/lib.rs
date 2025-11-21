@@ -2,6 +2,8 @@
 #![feature(abi_x86_interrupt)]
 #![feature(alloc_error_handler)]
 
+extern crate alloc;
+
 mod acpi;
 pub mod allocator;
 pub mod arch;
@@ -277,6 +279,15 @@ pub fn kernel_main_uefi(boot_info_ptr: *const BootInfo) -> ! {
             );
         }
     }
+
+    // Initialize Allocator (UEFI path)
+    // We don't have a memory map from BootInfo, so we hardcode a safe region.
+    // Kernel is at 1MB, size ~35MB.
+    // Page tables start at 128MB (0x0800_0000).
+    // So 64MB (0x0400_0000) to 128MB is a safe 64MB region.
+    let heap_start = 0x0400_0000;
+    let heap_size = 64 * 1024 * 1024; // 64MB
+    allocator::init_kernel_heap(heap_start, heap_size);
 
     if logger::tsc_frequency_is_guessed() {
         kwarn!(
@@ -624,11 +635,8 @@ macro_rules! print {
 
 #[macro_export]
 macro_rules! println {
-    () => { $crate::print!("\n") };
-    ($($arg:tt)*) => {{
-        $crate::vga_buffer::_print(format_args!($($arg)*));
-        $crate::vga_buffer::_print(format_args!("\n"));
-    }};
+    () => ($crate::print!("\n"));
+    ($($arg:tt)*) => ($crate::print!("{}\n", format_args!($($arg)*)));
 }
 
 #[macro_export]
