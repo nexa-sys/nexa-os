@@ -367,11 +367,20 @@ impl NetStack {
         let socket = &self.udp_sockets[socket_idx];
         let device = &self.devices[device_index];
 
-        // Lookup destination MAC in ARP cache
-        let dst_ip_addr = Ipv4Address::from(dst_ip);
-        let now_ms = logger::boot_time_us() / 1_000;
-        let dst_mac = self.arp_cache.lookup(&dst_ip_addr, now_ms)
-            .ok_or(NetError::ArpCacheMiss)?;
+        // Check if this is a broadcast address
+        let is_broadcast = dst_ip == [255, 255, 255, 255] || dst_ip == [10, 0, 2, 255];
+        
+        // Determine destination MAC
+        let dst_mac = if is_broadcast {
+            // Use broadcast MAC address for broadcast IPs
+            MacAddress([0xff, 0xff, 0xff, 0xff, 0xff, 0xff])
+        } else {
+            // Lookup destination MAC in ARP cache for unicast
+            let dst_ip_addr = Ipv4Address::from(dst_ip);
+            let now_ms = logger::boot_time_us() / 1_000;
+            self.arp_cache.lookup(&dst_ip_addr, now_ms)
+                .ok_or(NetError::ArpCacheMiss)?
+        };
 
         // Build UDP datagram
         let udp_len = 8 + payload.len();
@@ -413,6 +422,7 @@ impl NetStack {
 
         // Calculate UDP checksum with pseudo-header
         let src_ip_addr = Ipv4Address::from(device.ip);
+        let dst_ip_addr = Ipv4Address::from(dst_ip);
         
         // Cast the UDP header part of the packet to UdpHeader
         let header_ptr = packet[udp_offset..].as_mut_ptr() as *mut UdpHeader;
@@ -891,7 +901,7 @@ fn tcp_checksum(src_ip: &[u8], dst_ip: &[u8], segment: &[u8]) -> u16 {
     pseudo[9] = PROTO_TCP;
     pseudo[10..12].copy_from_slice(&(segment.len() as u16).to_be_bytes());
 
-    let mut sum = checksum(&pseudo);
+    let sum = checksum(&pseudo);
     checksum_with_initial(segment, sum as u32)
 }
 

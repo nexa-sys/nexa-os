@@ -90,6 +90,25 @@ where
     Some(f(&mut state.stack))
 }
 
+/// Send a batch of frames on a specific device
+pub fn send_frames(device_index: usize, batch: &stack::TxBatch) -> Result<(), drivers::NetError> {
+    if device_index >= MAX_NET_DEVICES {
+        return Err(drivers::NetError::InvalidDevice);
+    }
+    
+    let mut state = NET_STATE.lock();
+    let slot = &mut state.slots[device_index];
+    
+    if let Some(driver) = &mut slot.driver {
+        for frame in batch.frames() {
+            driver.transmit(frame)?;
+        }
+        Ok(())
+    } else {
+        Err(drivers::NetError::InvalidDevice)
+    }
+}
+
 /// Called from the UEFI compatibility layer to mirror descriptors into the
 /// runtime registry.
 pub fn ingest_boot_descriptor(index: usize, descriptor: NetworkDescriptor) {

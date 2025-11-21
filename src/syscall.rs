@@ -113,6 +113,7 @@ pub const SYS_GETSOCKNAME: u64 = 51; // sys_getsockname (Linux)
 pub const SYS_GETPEERNAME: u64 = 52; // sys_getpeername (Linux)
 pub const SYS_LISTEN: u64 = 50; // sys_listen (Linux)
 pub const SYS_ACCEPT: u64 = 43; // sys_accept (Linux)
+pub const SYS_SETSOCKOPT: u64 = 54; // sys_setsockopt (Linux)
 
 // Init system calls
 pub const SYS_REBOOT: u64 = 169; // sys_reboot (Linux)
@@ -143,6 +144,11 @@ const AF_NETLINK: i32 = 16;  // Netlink
 const SOCK_DGRAM: i32 = 2;   // UDP
 const SOCK_RAW: i32 = 3;     // Raw socket
 const IPPROTO_UDP: i32 = 17; // UDP
+
+// Socket option constants
+const SOL_SOCKET: i32 = 1;   // Socket level
+const SO_BROADCAST: i32 = 6; // Broadcast option
+const SO_REUSEADDR: i32 = 2; // Reuse address
 
 // UEFI compatibility bridge syscalls
 pub const SYS_UEFI_GET_COUNTS: u64 = 240;
@@ -221,6 +227,8 @@ struct SocketHandle {
     domain: i32,         // AF_INET, AF_INET6
     socket_type: i32,    // SOCK_STREAM, SOCK_DGRAM
     protocol: i32,       // IPPROTO_TCP, IPPROTO_UDP
+    device_index: usize, // Network device index (default 0)
+    broadcast_enabled: bool, // SO_BROADCAST option
 }
 
 #[derive(Clone, Copy)]
@@ -2742,6 +2750,8 @@ fn syscall_socket(domain: i32, socket_type: i32, protocol: i32) -> u64 {
                     domain,
                     socket_type,
                     protocol: if domain == AF_NETLINK { 0 } else { IPPROTO_UDP },
+                    device_index: 0, // Default to first network device
+                    broadcast_enabled: false,
                 };
 
                 let metadata = crate::posix::Metadata::empty()
@@ -2868,16 +2878,29 @@ fn syscall_bind(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
             return u64::MAX;
         }
 
-        // TODO: Allocate socket in network stack and bind to port
-        // For now, just store the port in socket_index as a placeholder
-        sock_handle.socket_index = port as usize;
-
-        crate::kinfo!(
-            "[SYS_BIND] UDP socket fd {} bound to {}.{}.{}.{}:{}",
-            sockfd, ip[0], ip[1], ip[2], ip[3], port
-        );
-        posix::set_errno(0);
-        0
+        // Allocate UDP socket in network stack
+        if let Some(res) = crate::net::with_net_stack(|stack| stack.udp_socket(port)) {
+            match res {
+                Ok(socket_idx) => {
+                    sock_handle.socket_index = socket_idx;
+                    crate::kinfo!(
+                        "[SYS_BIND] UDP socket fd {} bound to {}.{}.{}.{}:{} (socket_idx={})",
+                        sockfd, ip[0], ip[1], ip[2], ip[3], port, socket_idx
+                    );
+                    posix::set_errno(0);
+                    return 0;
+                }
+                Err(_) => {
+                    crate::kwarn!("[SYS_BIND] Failed to allocate UDP socket (port in use or no slots)");
+                    posix::set_errno(posix::errno::EADDRINUSE);
+                    return u64::MAX;
+                }
+            }
+        } else {
+            crate::kwarn!("[SYS_BIND] Network stack unavailable");
+            posix::set_errno(posix::errno::ENETDOWN);
+            return u64::MAX;
+        }
     }
 }
 
@@ -3004,10 +3027,46 @@ fn syscall_sendto(
             port
         );
 
-        // TODO: Actually send via network stack
-        // For now, just return success (simulate sending)
-        posix::set_errno(0);
-        len as u64
+        // Copy payload from userspace
+        let payload = slice::from_raw_parts(buf, len);
+        
+        // Send via network stack
+        if let Some(res) = crate::net::with_net_stack(|stack| {
+            let mut tx = crate::net::stack::TxBatch::new();
+            let result = stack.udp_send(
+                sock_handle.device_index,
+                sock_handle.socket_index,
+                ip,
+                port,
+                payload,
+                &mut tx,
+            );
+            (result, tx)
+        }) {
+            let (result, tx) = res;
+            match result {
+                Ok(_) => {
+                    // Transmit frames
+                    if let Err(e) = crate::net::send_frames(sock_handle.device_index, &tx) {
+                        crate::kwarn!("[SYS_SENDTO] Failed to transmit frames: {:?}", e);
+                        posix::set_errno(posix::errno::EIO);
+                        return u64::MAX;
+                    }
+                    crate::kinfo!("[SYS_SENDTO] Successfully sent {} bytes", len);
+                    posix::set_errno(0);
+                    len as u64
+                }
+                Err(_) => {
+                    crate::kwarn!("[SYS_SENDTO] Failed to prepare packet");
+                    posix::set_errno(posix::errno::EIO);
+                    u64::MAX
+                }
+            }
+        } else {
+            crate::kwarn!("[SYS_SENDTO] Network stack unavailable");
+            posix::set_errno(posix::errno::ENETDOWN);
+            u64::MAX
+        }
     }
 }
 
@@ -3082,11 +3141,43 @@ fn syscall_recvfrom(
             return u64::MAX;
         }
 
-        // TODO: Actually receive from network stack
-        // For now, return EAGAIN (would block)
-        crate::kdebug!("[SYS_RECVFROM] No data available (would block)");
-        posix::set_errno(posix::errno::EAGAIN);
-        u64::MAX
+        // Receive from network stack
+        let buffer = slice::from_raw_parts_mut(buf, len);
+        if let Some(res) = crate::net::with_net_stack(|stack| {
+            stack.udp_receive(sock_handle.socket_index, buffer)
+        }) {
+            match res {
+                Ok(result) => {
+                    crate::kinfo!(
+                        "[SYS_RECVFROM] Received {} bytes from {}.{}.{}.{}:{}",
+                        result.bytes_copied,
+                        result.src_ip[0], result.src_ip[1], result.src_ip[2], result.src_ip[3],
+                        result.src_port
+                    );
+                    
+                    // Fill source address if provided
+                    if !_src_addr.is_null() && !_addrlen.is_null() {
+                        let src_addr = &mut *_src_addr;
+                        src_addr.sa_family = AF_INET as u16;
+                        src_addr.sa_data[0..2].copy_from_slice(&result.src_port.to_be_bytes());
+                        src_addr.sa_data[2..6].copy_from_slice(&result.src_ip);
+                        *_addrlen = 16; // sizeof(sockaddr_in)
+                    }
+                    
+                    posix::set_errno(0);
+                    result.bytes_copied as u64
+                }
+                Err(_) => {
+                    crate::kdebug!("[SYS_RECVFROM] No data available (would block)");
+                    posix::set_errno(posix::errno::EAGAIN);
+                    u64::MAX
+                }
+            }
+        } else {
+            crate::kwarn!("[SYS_RECVFROM] Network stack unavailable");
+            posix::set_errno(posix::errno::ENETDOWN);
+            u64::MAX
+        }
     }
 }
 
@@ -3172,6 +3263,89 @@ fn syscall_connect(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
         // It doesn't actually establish a connection
         posix::set_errno(0);
         0
+    }
+}
+
+/// SYS_SETSOCKOPT - Set socket options
+/// Parameters: sockfd, level, optname, optval, optlen
+/// Returns: 0 on success, -1 on error
+fn syscall_setsockopt(
+    sockfd: u64,
+    level: i32,
+    optname: i32,
+    optval: *const u8,
+    optlen: u32,
+) -> u64 {
+    crate::kinfo!("[SYS_SETSOCKOPT] sockfd={} level={} optname={} optlen={}", sockfd, level, optname, optlen);
+    
+    if optval.is_null() || optlen == 0 {
+        posix::set_errno(posix::errno::EINVAL);
+        return u64::MAX;
+    }
+
+    if !user_buffer_in_range(optval as u64, optlen as u64) {
+        posix::set_errno(posix::errno::EFAULT);
+        return u64::MAX;
+    }
+
+    // Get socket handle
+    let idx = if sockfd >= FD_BASE {
+        (sockfd - FD_BASE) as usize
+    } else {
+        posix::set_errno(posix::errno::EBADF);
+        return u64::MAX;
+    };
+
+    if idx >= MAX_OPEN_FILES {
+        posix::set_errno(posix::errno::EBADF);
+        return u64::MAX;
+    }
+
+    unsafe {
+        let Some(handle) = FILE_HANDLES[idx].as_mut() else {
+            posix::set_errno(posix::errno::EBADF);
+            return u64::MAX;
+        };
+
+        let FileBacking::Socket(ref mut sock_handle) = handle.backing else {
+            posix::set_errno(posix::errno::ENOTSOCK);
+            return u64::MAX;
+        };
+
+        // Handle socket level options
+        if level == SOL_SOCKET {
+            match optname {
+                SO_BROADCAST => {
+                    // Read the option value (typically an i32)
+                    if optlen >= 4 {
+                        let value = *(optval as *const i32);
+                        sock_handle.broadcast_enabled = value != 0;
+                        crate::kinfo!("[SYS_SETSOCKOPT] SO_BROADCAST set to {}", sock_handle.broadcast_enabled);
+                        posix::set_errno(0);
+                        return 0;
+                    } else {
+                        posix::set_errno(posix::errno::EINVAL);
+                        return u64::MAX;
+                    }
+                }
+                SO_REUSEADDR => {
+                    // Accept but ignore for now (commonly used, not critical)
+                    crate::kinfo!("[SYS_SETSOCKOPT] SO_REUSEADDR accepted (ignored)");
+                    posix::set_errno(0);
+                    return 0;
+                }
+                _ => {
+                    crate::kwarn!("[SYS_SETSOCKOPT] Unsupported socket option: {}", optname);
+                    posix::set_errno(posix::errno::EINVAL);
+                    return u64::MAX;
+                }
+            }
+        }
+
+        // Unsupported level
+        crate::kwarn!("[SYS_SETSOCKOPT] Unsupported level: {}", level);
+        posix::set_errno(posix::errno::EINVAL);
+        u64::MAX
     }
 }
 
@@ -3329,6 +3503,24 @@ pub extern "C" fn syscall_dispatch(
             0 as *mut u32,      // addrlen (arg6)
         ),
         SYS_CONNECT => syscall_connect(arg1, arg2 as *const SockAddr, arg3 as u32),
+        SYS_SETSOCKOPT => {
+            // setsockopt needs 5 args: sockfd, level, optname, optval, optlen
+            // arg1=sockfd, arg2=level, arg3=optname
+            // Need to read r10 (arg4/optval) and r8 (arg5/optlen) from saved context
+            let (arg4, arg5) = unsafe {
+                let mut r10_val: u64;
+                let mut r8_val: u64;
+                core::arch::asm!(
+                    "mov {0}, gs:[32]",  // r10 saved at offset 32
+                    "mov {1}, gs:[40]",  // r8 saved at offset 40
+                    out(reg) r10_val,
+                    out(reg) r8_val,
+                    options(nostack, preserves_flags)
+                );
+                (r10_val, r8_val)
+            };
+            syscall_setsockopt(arg1, arg2 as i32, arg3 as i32, arg4 as *const u8, arg5 as u32)
+        }
         SYS_REBOOT => syscall_reboot(arg1 as i32),
         SYS_SHUTDOWN => syscall_shutdown(),
         SYS_RUNLEVEL => syscall_runlevel(arg1 as i32),
