@@ -326,9 +326,13 @@ fn get_mac_address() -> Option<(u32, [u8; 6])> {
     }
 
     // Parse response to find IFLA_ADDRESS
-    let mut offset = 16; // Skip NlMsgHdr
+    // We expect a single RTM_NEWLINK message followed by attributes
+    let mut offset = 0;
+    println!("[get_mac_address] Parsing response, len={}", len);
     while offset < len as usize {
         let hdr = unsafe { &*(buf.as_ptr().add(offset) as *const NlMsgHdr) };
+        println!("[get_mac_address] Msg at offset {}: type={}, len={}", offset, hdr.nlmsg_type, hdr.nlmsg_len);
+        
         if hdr.nlmsg_type == 3 { // NLMSG_DONE
             break;
         }
@@ -341,19 +345,33 @@ fn get_mac_address() -> Option<(u32, [u8; 6])> {
         let if_index = ifinfo.ifi_index;
         let mut attr_offset = offset + 16 + 16; // NlMsgHdr + IfInfoMsg
         
+        println!("[get_mac_address] Attributes start at {}", attr_offset);
         while attr_offset < offset + hdr.nlmsg_len as usize {
             let attr = unsafe { &*(buf.as_ptr().add(attr_offset) as *const RtAttr) };
+            println!("[get_mac_address] Attr at {}: type={}, len={}", attr_offset, attr.rta_type, attr.rta_len);
+            
             if attr.rta_type == IFLA_ADDRESS {
                 let mac_ptr = unsafe { buf.as_ptr().add(attr_offset + 4) };
                 let mut mac = [0u8; 6];
                 unsafe { std::ptr::copy_nonoverlapping(mac_ptr, mac.as_mut_ptr(), 6) };
                 return Some((if_index, mac));
             }
-            attr_offset += ((attr.rta_len + 3) & !3) as usize; // Align to 4 bytes
+            let aligned_len = ((attr.rta_len + 3) & !3) as usize;
+            if aligned_len == 0 { 
+                println!("[get_mac_address] Zero length attribute, breaking");
+                break; 
+            } // Prevent infinite loop
+            attr_offset += aligned_len;
         }
 
-        offset += ((hdr.nlmsg_len + 3) & !3) as usize;
+        let aligned_msg_len = ((hdr.nlmsg_len + 3) & !3) as usize;
+        if aligned_msg_len == 0 { 
+            println!("[get_mac_address] Zero length message, breaking");
+            break; 
+        } // Prevent infinite loop
+        offset += aligned_msg_len;
     }
+    println!("[get_mac_address] Parsing finished, not found");
 
     None
 }
