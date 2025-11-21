@@ -8,6 +8,7 @@
 use crate::{c_char, c_int, c_long, c_uint, c_ulong, c_void, size_t, ssize_t};
 use crate::time;
 use core::{
+    arch::asm,
     hint::spin_loop,
     mem,
     ptr,
@@ -1891,8 +1892,8 @@ pub unsafe extern "C" fn inet_ntop(
     }
 }
 
-/// Set socket options (stub for std compatibility)
-/// Implements SO_RCVTIMEO/SO_SNDTIMEO for UDP socket timeouts
+/// Set socket options
+/// Implements SO_BROADCAST and other socket options via syscall
 #[no_mangle]
 pub unsafe extern "C" fn setsockopt(
     sockfd: c_int,
@@ -1901,20 +1902,26 @@ pub unsafe extern "C" fn setsockopt(
     optval: *const c_void,
     optlen: c_uint,
 ) -> c_int {
-    // Constants for socket options
-    const SOL_SOCKET: c_int = 1;
-    const SO_RCVTIMEO: c_int = 20;
-    const SO_SNDTIMEO: c_int = 21;
-
-    // For std compatibility, we accept but ignore most socket options
-    if level == SOL_SOCKET && (optname == SO_RCVTIMEO || optname == SO_SNDTIMEO) {
-        // Accept timeval struct and return success
-        // Actual timeout handling would be implemented by kernel
-        return 0;
+    // Call the actual kernel syscall
+    const SYS_SETSOCKOPT: usize = 54;
+    let result: i64;
+    asm!(
+        "syscall",
+        inlateout("rax") SYS_SETSOCKOPT => result,
+        in("rdi") sockfd as u64,
+        in("rsi") level as u64,
+        in("rdx") optname as u64,
+        in("r10") optval as u64,
+        in("r8") optlen as u64,
+        lateout("rcx") _,
+        lateout("r11") _,
+        options(nostack),
+    );
+    if result == u64::MAX as i64 {
+        -1
+    } else {
+        result as i32
     }
-
-    // For any other option, just return success to keep std happy
-    0
 }
 
 /// Get error message for getaddrinfo errors

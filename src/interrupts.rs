@@ -1031,12 +1031,18 @@ extern "C" fn syscall_instruction_handler() {
         "pop r13",
         "pop r14",
         "pop r15",
-        // Restore user execution context for SYSRETQ.
+        // Clear kernel stack guard flags
         "xor rcx, rcx",
         "mov gs:[160], rcx",
         "mov gs:[168], rcx",
-        "mov rcx, gs:[56]", // rcx = user RIP
-        "mov r11, gs:[64]", // r11 = user RFLAGS snapshot
+        // Restore user execution context for SYSRETQ.
+        // IMPORTANT: Restore these BEFORE loading RCX/R11/RSP for sysretq
+        "mov r10, gs:[32]", // Restore r10 (arg4)
+        "mov r8, gs:[40]",  // Restore r8 (arg5)
+        "mov r9, gs:[48]",  // Restore r9 (arg6)
+        // Now load registers for sysretq
+        "mov rcx, gs:[56]", // rcx = user RIP (will be loaded into RIP by sysretq)
+        "mov r11, gs:[64]", // r11 = user RFLAGS (will be loaded into RFLAGS by sysretq)
         "mov rsp, gs:[0]",  // rsp = user RSP
         "sysretq",
     );

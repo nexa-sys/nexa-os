@@ -92,19 +92,28 @@ where
 
 /// Send a batch of frames on a specific device
 pub fn send_frames(device_index: usize, batch: &stack::TxBatch) -> Result<(), drivers::NetError> {
+    crate::serial::_print(format_args!("[send_frames] device_index={}, MAX_NET_DEVICES={}\n", 
+                                device_index, MAX_NET_DEVICES));
+    
     if device_index >= MAX_NET_DEVICES {
+        crate::serial::_print(format_args!("[send_frames] ERROR: device_index >= MAX_NET_DEVICES\n"));
         return Err(drivers::NetError::InvalidDevice);
     }
     
     let mut state = NET_STATE.lock();
     let slot = &mut state.slots[device_index];
     
+    crate::serial::_print(format_args!("[send_frames] driver present: {}\n", slot.driver.is_some()));
+    
     if let Some(driver) = &mut slot.driver {
+        crate::serial::_print(format_args!("[send_frames] Transmitting frames\n"));
         for frame in batch.frames() {
             driver.transmit(frame)?;
         }
+        crate::serial::_print(format_args!("[send_frames] Successfully transmitted all frames\n"));
         Ok(())
     } else {
+        crate::serial::_print(format_args!("[send_frames] ERROR: No driver for device {}\n", device_index));
         Err(drivers::NetError::InvalidDevice)
     }
 }
@@ -137,21 +146,38 @@ pub fn ingest_boot_descriptor(index: usize, descriptor: NetworkDescriptor) {
 /// Finalizes NIC drivers and the in-kernel network stack. Safe to call more
 /// than once; subsequent calls become no-ops.
 pub fn init() {
+    crate::serial::_print(format_args!("[net::init] Starting network initialization\n"));
+    
     if NET_INITIALIZED.swap(true, Ordering::SeqCst) {
+        crate::serial::_print(format_args!("[net::init] Already initialized, returning\n"));
         return;
     }
 
+    crate::serial::_print(format_args!("[net::init] Acquiring NET_STATE lock\n"));
     let mut state = NET_STATE.lock();
+    
+    crate::serial::_print(format_args!("[net::init] Scanning {} device slots\n", MAX_NET_DEVICES));
+    
     for idx in 0..MAX_NET_DEVICES {
+        crate::serial::_print(format_args!("[net::init] Checking slot {}\n", idx));
+        
         let Some(descriptor) = state.slots[idx].descriptor else {
+            crate::serial::_print(format_args!("[net::init] Slot {} has no descriptor\n", idx));
             continue;
         };
+
+        crate::serial::_print(format_args!(
+            "[net::init] Slot {} has descriptor: mmio={:#x}, irq={}\n",
+            idx, descriptor.mmio_base, descriptor.interrupt_line
+        ));
 
         if descriptor.mmio_base == 0 {
             crate::kwarn!("net: descriptor {} missing MMIO base", idx);
             continue;
         }
 
+        crate::serial::_print(format_args!("[net::init] Creating driver for slot {}\n", idx));
+        
         match drivers::DriverInstance::new(idx, descriptor) {
             Ok(mut driver) => {
                 if let Err(err) = driver.init() {

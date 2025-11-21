@@ -7,6 +7,7 @@ use crate::uefi_compat::{
 };
 use crate::vt;
 use alloc::alloc::{alloc, dealloc, Layout};
+use alloc::boxed::Box;
 use core::{
     arch::global_asm,
     cmp,
@@ -3173,10 +3174,11 @@ fn syscall_sendto(
         crate::kinfo!("[SYS_SENDTO] Socket broadcast_enabled={}", sock_handle.broadcast_enabled);
         
         // Send via network stack
-        if let Some(res) = crate::net::with_net_stack(|stack| {
+        let (udp_result, tx) = if let Some(res) = crate::net::with_net_stack(|stack| {
             crate::serial::_print(format_args!("[SYS_SENDTO] Acquired network stack lock\n"));
             crate::kinfo!("[SYS_SENDTO] Acquired network stack lock");
-            let mut tx = crate::net::stack::TxBatch::new();
+            // IMPORTANT: TxBatch is ~6KB, allocate on heap to avoid kernel stack overflow
+            let mut tx = Box::new(crate::net::stack::TxBatch::new());
             let result = stack.udp_send(
                 sock_handle.device_index,
                 sock_handle.socket_index,
@@ -3189,33 +3191,37 @@ fn syscall_sendto(
             crate::kinfo!("[SYS_SENDTO] udp_send returned: {:?}", result);
             (result, tx)
         }) {
-            let (result, tx) = res;
-            match result {
-                Ok(_) => {
-                    // Transmit frames
-                    if let Err(e) = crate::net::send_frames(sock_handle.device_index, &tx) {
-                        crate::serial::_print(format_args!("[SYS_SENDTO] ERROR: Failed to transmit frames: {:?}\n", e));
-                        crate::kwarn!("[SYS_SENDTO] Failed to transmit frames: {:?}", e);
-                        posix::set_errno(posix::errno::EIO);
-                        return u64::MAX;
-                    }
-                    crate::serial::_print(format_args!("[SYS_SENDTO] SUCCESS: Sent {} bytes\n", len));
-                    crate::kinfo!("[SYS_SENDTO] Successfully sent {} bytes", len);
-                    posix::set_errno(0);
-                    len as u64
-                }
-                Err(e) => {
-                    crate::serial::_print(format_args!("[SYS_SENDTO] ERROR: Failed to prepare packet: {:?}\n", e));
-                    crate::kwarn!("[SYS_SENDTO] Failed to prepare packet: {:?}", e);
-                    posix::set_errno(posix::errno::EIO);
-                    u64::MAX
-                }
-            }
+            res
         } else {
             crate::serial::_print(format_args!("[SYS_SENDTO] ERROR: Network stack unavailable\n"));
             crate::kwarn!("[SYS_SENDTO] Network stack unavailable");
             posix::set_errno(posix::errno::ENETDOWN);
-            u64::MAX
+            return u64::MAX;
+        };
+        
+        // Now send frames AFTER releasing the network stack lock
+        match udp_result {
+            Ok(_) => {
+                // Transmit frames
+                if let Err(e) = crate::net::send_frames(sock_handle.device_index, &tx) {
+                    crate::serial::_print(format_args!("[SYS_SENDTO] ERROR: Failed to transmit frames: {:?}\n", e));
+                    crate::kwarn!("[SYS_SENDTO] Failed to transmit frames: {:?}", e);
+                    posix::set_errno(posix::errno::EIO);
+                    return u64::MAX;
+                }
+                crate::serial::_print(format_args!("[SYS_SENDTO] SUCCESS: Sent {} bytes\n", len));
+                crate::kinfo!("[SYS_SENDTO] Successfully sent {} bytes", len);
+                posix::set_errno(0);
+                let result = len as u64;
+                crate::serial::_print(format_args!("[SYS_SENDTO] Returning {} to userspace\n", result));
+                result
+            }
+            Err(e) => {
+                crate::serial::_print(format_args!("[SYS_SENDTO] ERROR: Failed to prepare packet: {:?}\n", e));
+                crate::kwarn!("[SYS_SENDTO] Failed to prepare packet: {:?}", e);
+                posix::set_errno(posix::errno::EIO);
+                u64::MAX
+            }
         }
     }
 }

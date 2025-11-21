@@ -9,6 +9,7 @@ const SYS_BIND: usize = 49;
 const SYS_SENDTO: usize = 44;
 const SYS_RECVFROM: usize = 45;
 const SYS_CONNECT: usize = 42;
+const SYS_SETSOCKOPT: usize = 54;
 const SYS_GETSOCKNAME: usize = 51;
 const SYS_GETPEERNAME: usize = 52;
 

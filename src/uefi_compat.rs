@@ -261,6 +261,8 @@ pub fn install_device_nodes() {
                         descriptor.mmio_base,
                         descriptor.mmio_length
                     );
+                    // Pass descriptor to network subsystem
+                    crate::net::ingest_boot_descriptor(idx, descriptor);
                 }
             }
         }
