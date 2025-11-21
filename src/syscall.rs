@@ -92,6 +92,8 @@ pub const SYS_SIGACTION: u64 = 13;
 pub const SYS_SIGPROCMASK: u64 = 14;
 pub const SYS_GETPPID: u64 = 110;
 pub const SYS_SCHED_YIELD: u64 = 24;
+pub const SYS_CLOCK_GETTIME: u64 = 228; // sys_clock_gettime (Linux)
+pub const SYS_NANOSLEEP: u64 = 35; // sys_nanosleep (Linux)
 pub const SYS_LIST_FILES: u64 = 200;
 pub const SYS_GETERRNO: u64 = 201;
 pub const SYS_IPC_CREATE: u64 = 210;
@@ -137,6 +139,11 @@ const USER_FLAG_ADMIN: u64 = 0x1;
 const F_DUPFD: u64 = 0;
 const F_GETFL: u64 = 3;
 const F_SETFL: u64 = 4;
+
+// Clock IDs
+const CLOCK_REALTIME: i32 = 0;
+const CLOCK_MONOTONIC: i32 = 1;
+const CLOCK_BOOTTIME: i32 = 7;
 
 // Socket domain and protocol constants (subset of POSIX)
 const AF_INET: i32 = 2;      // IPv4
@@ -210,6 +217,13 @@ struct IpcTransferRequest {
     flags: u32,
     buffer_ptr: u64,
     buffer_len: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct TimeSpec {
+    tv_sec: i64,  // Seconds
+    tv_nsec: i64, // Nanoseconds
 }
 
 /// Generic sockaddr structure (POSIX)
@@ -2247,6 +2261,101 @@ fn syscall_sched_yield() -> u64 {
     0
 }
 
+/// Get current time from specified clock
+fn syscall_clock_gettime(clk_id: i32, tp: *mut TimeSpec) -> u64 {
+    if tp.is_null() {
+        posix::set_errno(posix::errno::EFAULT);
+        return u64::MAX;
+    }
+
+    // Validate user pointer
+    let ptr_addr = tp as usize;
+    if ptr_addr < USER_VIRT_BASE as usize
+        || ptr_addr + core::mem::size_of::<TimeSpec>() > (USER_VIRT_BASE + USER_REGION_SIZE) as usize
+    {
+        posix::set_errno(posix::errno::EFAULT);
+        return u64::MAX;
+    }
+
+    // Get boot time in microseconds from TSC
+    let time_us = crate::logger::boot_time_us();
+    
+    // Convert to seconds and nanoseconds
+    let tv_sec = (time_us / 1_000_000) as i64;
+    let tv_nsec = ((time_us % 1_000_000) * 1000) as i64;
+
+    let timespec = TimeSpec { tv_sec, tv_nsec };
+
+    unsafe {
+        *tp = timespec;
+    }
+
+    posix::set_errno(0);
+    0
+}
+
+/// Sleep for specified time
+fn syscall_nanosleep(req: *const TimeSpec, rem: *mut TimeSpec) -> u64 {
+    if req.is_null() {
+        posix::set_errno(posix::errno::EFAULT);
+        return u64::MAX;
+    }
+
+    // Validate user pointer
+    let req_addr = req as usize;
+    if req_addr < USER_VIRT_BASE as usize
+        || req_addr + core::mem::size_of::<TimeSpec>() > (USER_VIRT_BASE + USER_REGION_SIZE) as usize
+    {
+        posix::set_errno(posix::errno::EFAULT);
+        return u64::MAX;
+    }
+
+    let request = unsafe { *req };
+
+    // Validate timespec values
+    if request.tv_sec < 0 || request.tv_nsec < 0 || request.tv_nsec >= 1_000_000_000 {
+        posix::set_errno(posix::errno::EINVAL);
+        return u64::MAX;
+    }
+
+    // Convert to microseconds
+    let sleep_us = (request.tv_sec as u64 * 1_000_000) + (request.tv_nsec as u64 / 1000);
+
+    // Get current time
+    let start_us = crate::logger::boot_time_us();
+    let target_us = start_us + sleep_us;
+
+    crate::kdebug!("nanosleep: sleeping for {} us (until {})", sleep_us, target_us);
+
+    // Busy-wait sleep for now
+    // TODO: Implement proper scheduler-based sleep with wait queues
+    loop {
+        let now_us = crate::logger::boot_time_us();
+        if now_us >= target_us {
+            break;
+        }
+        
+        // Yield to scheduler to avoid monopolizing CPU
+        crate::scheduler::do_schedule();
+    }
+
+    // If rem is provided and sleep was interrupted (not implemented yet), fill it
+    if !rem.is_null() {
+        let rem_addr = rem as usize;
+        if rem_addr >= USER_VIRT_BASE as usize
+            && rem_addr + core::mem::size_of::<TimeSpec>() <= (USER_VIRT_BASE + USER_REGION_SIZE) as usize
+        {
+            unsafe {
+                (*rem).tv_sec = 0;
+                (*rem).tv_nsec = 0;
+            }
+        }
+    }
+
+    posix::set_errno(0);
+    0
+}
+
 /// System reboot - requires privilege (Linux compatible)
 /// cmd values: 0x01234567=RESTART, 0x4321FEDC=HALT, 0xCDEF0123=POWER_OFF
 fn syscall_reboot(cmd: i32) -> u64 {
@@ -3470,6 +3579,8 @@ pub extern "C" fn syscall_dispatch(
         }
         SYS_GETPPID => syscall_getppid(),
         SYS_SCHED_YIELD => syscall_sched_yield(),
+        SYS_CLOCK_GETTIME => syscall_clock_gettime(arg1 as i32, arg2 as *mut TimeSpec),
+        SYS_NANOSLEEP => syscall_nanosleep(arg1 as *const TimeSpec, arg2 as *mut TimeSpec),
         SYS_LIST_FILES => syscall_list_files(
             arg1 as *mut u8,
             arg2 as usize,

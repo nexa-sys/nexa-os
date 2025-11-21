@@ -3,6 +3,12 @@ use std::process;
 use std::ffi::CString;
 use std::mem;
 
+// Import time functions from nrlib
+extern "C" {
+    fn get_uptime() -> u64;
+    fn sleep(seconds: u32);
+}
+
 // Constants
 const AF_INET: i32 = 2;
 const AF_NETLINK: i32 = 16;
@@ -172,7 +178,7 @@ fn main() {
             }
             None => {
                 println!("Failed to acquire lease, retrying in 30 seconds...");
-                sleep(30);
+                unsafe { sleep(30) };
             }
         }
     }
@@ -315,7 +321,7 @@ fn acquire_lease(if_index: u32, mac: &[u8; 6]) -> Option<DhcpLease> {
         lease_time,
         renewal_time: lease_time / 2,      // T1: 50% of lease time
         rebinding_time: lease_time * 7 / 8, // T2: 87.5% of lease time
-        obtained_at: get_uptime(),
+        obtained_at: unsafe { get_uptime() },
     })
 }
 
@@ -323,7 +329,7 @@ fn maintain_lease(if_index: u32, mac: &[u8; 6], mut lease: DhcpLease) {
     println!("\n=== Entering lease maintenance mode ===");
     
     loop {
-        let elapsed = get_uptime() - lease.obtained_at;
+        let elapsed = unsafe { get_uptime() } - lease.obtained_at;
         
         // Check if we need to renew
         if elapsed >= lease.renewal_time as u64 {
@@ -343,7 +349,7 @@ fn maintain_lease(if_index: u32, mac: &[u8; 6], mut lease: DhcpLease) {
         }
         
         // Sleep for a while before checking again
-        sleep(10);
+        unsafe { sleep(10) };
     }
 }
 
@@ -417,33 +423,13 @@ fn renew_lease(if_index: u32, mac: &[u8; 6], current_lease: &DhcpLease) -> Optio
         lease_time,
         renewal_time: lease_time / 2,
         rebinding_time: lease_time * 7 / 8,
-        obtained_at: get_uptime(),
+        obtained_at: unsafe { get_uptime() },
     })
 }
 
 fn generate_xid() -> u32 {
-    // Simple XID generation based on uptime
-    // In production, use proper random number generator
-    (get_uptime() & 0xFFFFFFFF) as u32
-}
-
-fn get_uptime() -> u64 {
-    // TODO: Implement proper uptime syscall
-    // For now, return a dummy value
-    unsafe {
-        static mut UPTIME: u64 = 0;
-        UPTIME += 1;
-        UPTIME
-    }
-}
-
-fn sleep(seconds: u32) {
-    // TODO: Implement proper sleep syscall
-    // For now, busy wait
-    let start = get_uptime();
-    while get_uptime() - start < seconds as u64 {
-        // Busy wait
-    }
+    // XID based on uptime
+    unsafe { (get_uptime() & 0xFFFFFFFF) as u32 }
 }
 
 fn get_mac_address() -> Option<(u32, [u8; 6])> {

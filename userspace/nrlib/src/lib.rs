@@ -30,7 +30,7 @@ pub mod libc_compat;
 // Minimal stdio support (unbuffered) implemented in stdio.rs
 pub mod stdio;
 // Timekeeping utilities for libc compatibility functions
-pub(crate) mod time;
+pub mod time;
 
 // DNS and resolver modules
 pub mod dns;
@@ -45,6 +45,9 @@ pub use stdio::{
     stderr_write_str, stdin_read_line, stdin_read_line_masked, stdin_read_line_noecho,
     stdout_flush, stdout_write_all, stdout_write_fmt, stdout_write_str,
 };
+
+// Re-export time functions
+pub use time::{get_uptime, sleep};
 
 // Re-export socket types and functions
 pub use socket::{

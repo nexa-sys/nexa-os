@@ -6,6 +6,22 @@ const NSEC_PER_SEC: u128 = 1_000_000_000;
 const DEFAULT_TSC_FREQ_HZ: u64 = 1_000_000_000; // 1 GHz fallback matches kernel logger
 const MAX_SLEEP_CHUNK_NS: u64 = 100_000_000; // 100 ms per busy-wait chunk to avoid overflow
 
+// Syscall numbers
+const SYS_CLOCK_GETTIME: u64 = 228;
+const SYS_NANOSLEEP: u64 = 35;
+
+// Clock IDs
+const CLOCK_REALTIME: i32 = 0;
+const CLOCK_MONOTONIC: i32 = 1;
+const CLOCK_BOOTTIME: i32 = 7;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct TimeSpec {
+    tv_sec: i64,
+    tv_nsec: i64,
+}
+
 static TIME_INIT: AtomicBool = AtomicBool::new(false);
 static TSC_FREQ_HZ: AtomicU64 = AtomicU64::new(DEFAULT_TSC_FREQ_HZ);
 static TSC_BASE_CYCLES: AtomicU64 = AtomicU64::new(0);
@@ -71,6 +87,65 @@ fn nanos_to_cycles(ns: u64, freq: u64) -> u128 {
         return 0;
     }
     (ns as u128 * freq as u128 + (NSEC_PER_SEC - 1)) / NSEC_PER_SEC
+}
+
+/// Syscall wrapper for clock_gettime
+fn syscall_clock_gettime(clk_id: i32, tp: *mut TimeSpec) -> i64 {
+    let ret: i64;
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            in("rax") SYS_CLOCK_GETTIME,
+            in("rdi") clk_id,
+            in("rsi") tp,
+            lateout("rax") ret,
+            lateout("rcx") _,
+            lateout("r11") _,
+            options(nostack)
+        );
+    }
+    ret
+}
+
+/// Syscall wrapper for nanosleep
+fn syscall_nanosleep(req: *const TimeSpec, rem: *mut TimeSpec) -> i64 {
+    let ret: i64;
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            in("rax") SYS_NANOSLEEP,
+            in("rdi") req,
+            in("rsi") rem,
+            lateout("rax") ret,
+            lateout("rcx") _,
+            lateout("r11") _,
+            options(nostack)
+        );
+    }
+    ret
+}
+
+/// Get current uptime in seconds (uses kernel syscall)
+#[no_mangle]
+pub extern "C" fn get_uptime() -> u64 {
+    let mut ts = TimeSpec { tv_sec: 0, tv_nsec: 0 };
+    if syscall_clock_gettime(CLOCK_BOOTTIME, &mut ts as *mut TimeSpec) == 0 {
+        ts.tv_sec as u64
+    } else {
+        // Fallback to TSC-based time
+        let (sec, _) = monotonic_timespec();
+        sec as u64
+    }
+}
+
+/// Sleep for specified number of seconds (uses kernel syscall)
+#[no_mangle]
+pub extern "C" fn sleep(seconds: u32) {
+    let req = TimeSpec {
+        tv_sec: seconds as i64,
+        tv_nsec: 0,
+    };
+    syscall_nanosleep(&req as *const TimeSpec, core::ptr::null_mut());
 }
 
 fn busy_wait_ns_chunk(ns: u64) {
