@@ -3139,6 +3139,9 @@ fn syscall_sendto(
         // Copy payload from userspace
         let payload = slice::from_raw_parts(buf, len);
         
+        crate::kinfo!("[SYS_SENDTO] About to send via network stack, device_index={}, socket_index={}", 
+                      sock_handle.device_index, sock_handle.socket_index);
+        
         // Send via network stack
         if let Some(res) = crate::net::with_net_stack(|stack| {
             let mut tx = crate::net::stack::TxBatch::new();

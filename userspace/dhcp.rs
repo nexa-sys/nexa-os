@@ -187,6 +187,7 @@ fn main() {
 fn acquire_lease(if_index: u32, mac: &[u8; 6]) -> Option<DhcpLease> {
     // Create UDP socket
     let fd = unsafe { socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP) };
+    println!("[acquire_lease] socket() returned: {}", fd);
     if fd < 0 {
         println!("Failed to create UDP socket");
         return None;
@@ -194,7 +195,9 @@ fn acquire_lease(if_index: u32, mac: &[u8; 6]) -> Option<DhcpLease> {
 
     // Enable broadcast
     let broadcast: i32 = 1;
-    if unsafe { setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &broadcast as *const _ as *const std::ffi::c_void, 4) } < 0 {
+    let ret = unsafe { setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &broadcast as *const _ as *const std::ffi::c_void, 4) };
+    println!("[acquire_lease] setsockopt(SO_BROADCAST) returned: {}", ret);
+    if ret < 0 {
         println!("Failed to enable broadcast");
         unsafe { close(fd) };
         return None;
@@ -208,7 +211,9 @@ fn acquire_lease(if_index: u32, mac: &[u8; 6]) -> Option<DhcpLease> {
         sin_zero: [0; 8],
     };
 
-    if unsafe { bind(fd, &addr as *const _ as *const std::ffi::c_void, 16) } < 0 {
+    let ret = unsafe { bind(fd, &addr as *const _ as *const std::ffi::c_void, 16) };
+    println!("[acquire_lease] bind(port={}) returned: {}", DHCP_CLIENT_PORT, ret);
+    if ret < 0 {
         println!("Failed to bind to port 68");
         unsafe { close(fd) };
         return None;
@@ -220,14 +225,19 @@ fn acquire_lease(if_index: u32, mac: &[u8; 6]) -> Option<DhcpLease> {
     let dest_addr = SockAddrIn {
         sin_family: AF_INET as u16,
         sin_port: DHCP_SERVER_PORT.to_be(),
-        sin_addr: 0xFFFFFFFF, // INADDR_BROADCAST
+        sin_addr: (0xFFFFFFFFu32).to_be(), // INADDR_BROADCAST in network byte order
         sin_zero: [0; 8],
     };
 
     // Send DHCP DISCOVER
     println!("Sending DHCP DISCOVER...");
     let packet = create_dhcp_packet(DHCP_DISCOVER, mac, xid);
-    if unsafe { sendto(fd, &packet as *const _ as *const std::ffi::c_void, mem::size_of::<DhcpPacket>(), 0, &dest_addr as *const _ as *const std::ffi::c_void, 16) } < 0 {
+    let packet_size = mem::size_of::<DhcpPacket>();
+    println!("[acquire_lease] Calling sendto: fd={}, size={}, dest=255.255.255.255:{}", 
+             fd, packet_size, DHCP_SERVER_PORT);
+    let ret = unsafe { sendto(fd, &packet as *const _ as *const std::ffi::c_void, packet_size, 0, &dest_addr as *const _ as *const std::ffi::c_void, 16) };
+    println!("[acquire_lease] sendto() returned: {}", ret);
+    if ret < 0 {
         println!("Failed to send DHCP DISCOVER");
         unsafe { close(fd) };
         return None;

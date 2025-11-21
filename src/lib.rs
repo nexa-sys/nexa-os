@@ -406,6 +406,11 @@ fn proceed_after_initramfs(cmdline_opt: Option<&'static str>) -> ! {
     }
     kinfo!("Stage 3: Initramfs Stage - Complete");
 
+    // Initialize network stack (before mounting real root)
+    kinfo!("Initializing network subsystem...");
+    crate::net::init();
+    kinfo!("Network subsystem initialized");
+
     // Stage 4 & 5: Mount real root (if specified) or use initramfs
     let config = boot_stages::boot_config();
     if config.root_device.is_some() {
