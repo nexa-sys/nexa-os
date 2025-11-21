@@ -1,5 +1,4 @@
 use core::sync::atomic::{AtomicBool, Ordering};
-use lazy_static::lazy_static;
 use spin::Mutex;
 
 use crate::{
@@ -47,9 +46,14 @@ struct NetState {
 }
 
 impl NetState {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
-            slots: core::array::from_fn(|_| DeviceSlot::new()),
+            slots: [
+                DeviceSlot::new(),
+                DeviceSlot::new(),
+                DeviceSlot::new(),
+                DeviceSlot::new(),
+            ],
             stack: stack::NetStack::new(),
             activated: false,
             last_poll_ms: 0,
@@ -57,9 +61,7 @@ impl NetState {
     }
 }
 
-lazy_static! {
-    static ref NET_STATE: Mutex<NetState> = Mutex::new(NetState::new());
-}
+static NET_STATE: Mutex<NetState> = Mutex::new(NetState::new());
 
 static NET_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
@@ -67,10 +69,12 @@ struct IrqCookie {
     device_index: usize,
 }
 
-lazy_static! {
-    static ref IRQ_COOKIES: Mutex<[IrqCookie; MAX_NET_DEVICES]> =
-        Mutex::new(core::array::from_fn(|idx| IrqCookie { device_index: idx }));
-}
+static IRQ_COOKIES: Mutex<[IrqCookie; MAX_NET_DEVICES]> = Mutex::new([
+    IrqCookie { device_index: 0 },
+    IrqCookie { device_index: 1 },
+    IrqCookie { device_index: 2 },
+    IrqCookie { device_index: 3 },
+]);
 
 const INVALID_IRQ_LINE: u8 = 0xFF;
 

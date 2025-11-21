@@ -1597,6 +1597,7 @@ fn execute_external_command(cmd: &str, args: &[&str]) -> bool {
     let envp: [*const u8; 1] = [core::ptr::null()];
     
     // DEBUG: Verify path_buf contents BEFORE fork
+    /* 
     print_str("BEFORE FORK: path_buf addr=0x");
     print_hex(path_buf.as_ptr() as u64);
     print_str(", first 16 bytes: ");
@@ -1605,12 +1606,13 @@ fn execute_external_command(cmd: &str, args: &[&str]) -> bool {
         print_str(" ");
     }
     println_str("");
-    
+    */
     // Check stack pointer BEFORE any more function calls
     let sp_before: u64;
     unsafe {
         core::arch::asm!("mov {}, rsp", out(reg) sp_before);
     }
+    /* 
     print_str("Parent SP before fork: 0x");
     print_hex(sp_before);
     print_str(", path_buf offset from SP: 0x");
@@ -1618,16 +1620,16 @@ fn execute_external_command(cmd: &str, args: &[&str]) -> bool {
     println_str("");
     
     println_str("About to fork...");
-    
+    */
     // Fork and execute
     let pid = fork();
-    
+    /*
     print_str("fork returned: ");
     print_hex(pid as u64);
     println_str("");
-    
+    */
     if pid < 0 {
-        println_str("fork failed");
+        // println_str("fork failed");
         return false;
     }
     
@@ -1643,6 +1645,7 @@ fn execute_external_command(cmd: &str, args: &[&str]) -> bool {
         }
         
         // Debug output
+        /*
         print_str("Child: path_buf addr=0x");
         print_hex(path_buf.as_ptr() as u64);
         print_str(", len=");
@@ -1657,9 +1660,11 @@ fn execute_external_command(cmd: &str, args: &[&str]) -> bool {
         } else {
             println_str("<empty>");
         }
+        */
         
         // Execve with the path
         let result = execve(path_buf.as_ptr(), argv_ptrs.as_ptr(), envp.as_ptr());
+        
         
         // If we get here, execve failed
         print_str("Child: execve failed, error=");
@@ -1853,7 +1858,7 @@ fn handle_command(state: &mut ShellState, line: &str) {
 }
 
 fn shell_loop() -> ! {
-    println_str("Welcome to NexaOS shell. Type 'help' for commands.");
+    // println_str("Welcome to NexaOS shell. Type 'help' for commands.");
     let mut buffer = [0u8; 256];
     let mut state = ShellState::new();
 
