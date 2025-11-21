@@ -381,6 +381,7 @@ fn collect_network_devices(bs: &BootServices, image: Handle, table: &mut DeviceT
         }
 
         let Some(address) = pci_address_for_handle(bs, image, *handle) else {
+            log::warn!("Failed to get PCI address for network device handle");
             continue;
         };
 
@@ -395,17 +396,31 @@ fn collect_network_devices(bs: &BootServices, image: Handle, table: &mut DeviceT
             )
         };
         let Ok(snp_proto) = snp_proto else {
+            log::warn!("Failed to open SimpleNetwork protocol");
             continue;
         };
         let Some(snp) = snp_proto.get() else {
+            log::warn!("SimpleNetwork protocol returned None");
             continue;
         };
         let mode = snp.mode();
 
-        let pci_snapshot = pci_snapshot_for_handle(bs, image, *handle);
+        // Try to get PCI snapshot from the same handle first
+        let mut pci_snapshot = pci_snapshot_for_handle(bs, image, *handle);
+        
+        // If that fails, try to find PCI I/O protocol for this address
+        if pci_snapshot.is_none() {
+            log::warn!("Failed to get PCI snapshot from SimpleNetwork handle, searching by address");
+            pci_snapshot = find_pci_snapshot_by_address(bs, image, address);
+        }
+
         table.ensure_pci_entry(address, device_flags::NETWORK, |pci| {
             if let Some(snapshot) = pci_snapshot.as_ref() {
                 apply_pci_snapshot(pci, snapshot);
+                log::info!("Applied PCI snapshot: vendor={:04x}, device={:04x}", snapshot.vendor_id, snapshot.device_id);
+            } else {
+                log::warn!("No PCI snapshot available for network device at {:04x}:{:02x}:{:02x}.{}", 
+                          address.segment, address.bus, address.device, address.function);
             }
         });
 
@@ -569,6 +584,164 @@ fn pci_snapshot_for_handle(bs: &BootServices, image: Handle, handle: Handle) -> 
 
     let snapshot = pci_proto.get().and_then(|pci| read_pci_snapshot(bs, pci));
     snapshot
+}
+
+fn find_pci_snapshot_by_address(bs: &BootServices, image: Handle, target_addr: PciAddress) -> Option<PciSnapshot> {
+    // Try to enumerate all PCI I/O handles and find one matching the address
+    let Ok(handles) = bs.locate_handle_buffer(SearchType::ByProtocol(&PciIo::GUID)) else {
+        log::warn!("Failed to locate PCI I/O handles");
+        // Fallback: try using PCI Root Bridge I/O protocol
+        return read_pci_via_root_bridge(bs, target_addr);
+    };
+
+    for handle in handles.iter() {
+        let Some(addr) = pci_address_for_handle(bs, image, *handle) else {
+            continue;
+        };
+        
+        if addr.segment == target_addr.segment 
+            && addr.bus == target_addr.bus 
+            && addr.device == target_addr.device 
+            && addr.function == target_addr.function 
+        {
+            log::info!("Found matching PCI I/O handle for {:04x}:{:02x}:{:02x}.{}", 
+                      addr.segment, addr.bus, addr.device, addr.function);
+            return pci_snapshot_for_handle(bs, image, *handle);
+        }
+    }
+    
+    log::warn!("Could not find PCI I/O handle for {:04x}:{:02x}:{:02x}.{}, trying root bridge", 
+              target_addr.segment, target_addr.bus, target_addr.device, target_addr.function);
+    
+    // Fallback to PCI Root Bridge I/O protocol
+    read_pci_via_root_bridge(bs, target_addr)
+}
+
+fn read_pci_via_root_bridge(_bs: &BootServices, addr: PciAddress) -> Option<PciSnapshot> {
+    // Fallback: Direct PCI configuration space access via I/O ports
+    // This works on x86/x86_64 platforms
+    log::info!("Trying direct PCI config space access for {:04x}:{:02x}:{:02x}.{}", 
+              addr.segment, addr.bus, addr.device, addr.function);
+    
+    // Read PCI config directly without using UEFI protocols
+    read_pci_config_direct(addr)
+}
+
+fn read_pci_config_direct(addr: PciAddress) -> Option<PciSnapshot> {
+    unsafe {
+        // PCI Configuration Address Port (0xCF8) and Data Port (0xCFC)
+        let pci_addr: u32 = 0x80000000
+            | ((addr.bus as u32) << 16)
+            | ((addr.device as u32) << 11)
+            | ((addr.function as u32) << 8);
+        
+        // Read vendor_id and device_id
+        let vendor_device = read_pci_config_dword(pci_addr, 0x00)?;
+        let vendor_id = (vendor_device & 0xFFFF) as u16;
+        let device_id = (vendor_device >> 16) as u16;
+        
+        if vendor_id == 0xFFFF || vendor_id == 0x0000 {
+            return None;
+        }
+        
+        // Read class code and revision
+        let class_rev = read_pci_config_dword(pci_addr, 0x08)?;
+        let revision = (class_rev & 0xFF) as u8;
+        let prog_if = ((class_rev >> 8) & 0xFF) as u8;
+        let subclass = ((class_rev >> 16) & 0xFF) as u8;
+        let class_code = ((class_rev >> 24) & 0xFF) as u8;
+        
+        // Read header type
+        let header_misc = read_pci_config_dword(pci_addr, 0x0C)?;
+        let header_type = ((header_misc >> 16) & 0xFF) as u8;
+        
+        // Read interrupt line and pin
+        let interrupt_reg = read_pci_config_dword(pci_addr, 0x3C).unwrap_or(0);
+        let interrupt_line = (interrupt_reg & 0xFF) as u8;
+        let interrupt_pin = ((interrupt_reg >> 8) & 0xFF) as u8;
+        
+        // Read BARs
+        let mut bars = [PciBarInfo::empty(); 6];
+        let max_bars = if (header_type & 0x7F) == 0x00 { 6 } else { 2 };
+        
+        for i in 0..max_bars {
+            if let Some(bar_info) = read_pci_bar(pci_addr, i) {
+                bars[i] = bar_info;
+            }
+        }
+        
+        Some(PciSnapshot {
+            vendor_id,
+            device_id,
+            class_code,
+            subclass,
+            prog_if,
+            revision,
+            header_type,
+            interrupt_line,
+            interrupt_pin,
+            bars,
+        })
+    }
+}
+
+unsafe fn read_pci_config_dword(base_addr: u32, offset: u32) -> Option<u32> {
+    use core::arch::asm;
+    
+    let addr = base_addr | (offset & 0xFC);
+    let mut value: u32;
+    
+    // Write address to 0xCF8
+    asm!("out dx, eax", in("dx") 0xCF8u16, in("eax") addr, options(nomem, nostack));
+    
+    // Read data from 0xCFC
+    asm!("in eax, dx", in("dx") 0xCFCu16, out("eax") value, options(nomem, nostack));
+    
+    Some(value)
+}
+
+unsafe fn read_pci_bar(base_addr: u32, bar_index: usize) -> Option<PciBarInfo> {
+    let offset = 0x10 + (bar_index as u32 * 4);
+    let bar_value = read_pci_config_dword(base_addr, offset)?;
+    
+    if bar_value == 0 {
+        return Some(PciBarInfo::empty());
+    }
+    
+    let is_io = (bar_value & 0x1) != 0;
+    let is_64bit = !is_io && ((bar_value >> 1) & 0x3) == 0x2;
+    let is_prefetchable = !is_io && ((bar_value >> 3) & 0x1) != 0;
+    
+    let mut flags = 0u32;
+    if is_io {
+        flags |= bar_flags::IO_SPACE;
+    } else {
+        // Memory-mapped BAR (no specific flag needed for base MMIO)
+        if is_64bit {
+            flags |= bar_flags::MEMORY_64BIT;
+        }
+        if is_prefetchable {
+            flags |= bar_flags::PREFETCHABLE;
+        }
+    }
+    
+    let base = if is_io {
+        (bar_value & 0xFFFF_FFFC) as u64
+    } else {
+        if is_64bit && bar_index < 5 {
+            let high = read_pci_config_dword(base_addr, offset + 4).unwrap_or(0) as u64;
+            ((bar_value & 0xFFFF_FFF0) as u64) | (high << 32)
+        } else {
+            (bar_value & 0xFFFF_FFF0) as u64
+        }
+    };
+    
+    Some(PciBarInfo {
+        base,
+        length: 0, // Size detection would require writing to BAR, skip for now
+        bar_flags: flags,
+        reserved: 0,
+    })
 }
 
 fn apply_pci_snapshot(target: &mut PciDeviceInfo, snapshot: &PciSnapshot) {
