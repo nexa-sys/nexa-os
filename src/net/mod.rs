@@ -307,7 +307,11 @@ pub fn poll() {
 
 fn drain_rx(driver: &mut drivers::DriverInstance, stack: &mut stack::NetStack, device_index: usize) {
     let mut scratch = [0u8; stack::MAX_FRAME_SIZE];
+    let mut frame_count = 0;
     while let Some(len) = driver.drain_rx(&mut scratch) {
+        frame_count += 1;
+        crate::serial::_print(format_args!("[drain_rx] Received frame {} on device {}, len={}\n", 
+                                    frame_count, device_index, len));
         let mut responses = stack::TxBatch::new();
         if let Err(err) = stack.handle_frame(device_index, &scratch[..len], &mut responses)
         {
@@ -319,6 +323,10 @@ fn drain_rx(driver: &mut drivers::DriverInstance, stack: &mut stack::NetStack, d
         }
 
         transmit_batch(driver, &responses, device_index);
+    }
+    if frame_count > 0 {
+        crate::serial::_print(format_args!("[drain_rx] Processed {} frames on device {}\n", 
+                                    frame_count, device_index));
     }
 }
 

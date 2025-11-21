@@ -197,9 +197,27 @@ impl E1000 {
             // Ensure we never overflow the caller buffer
         }
         let desc = &mut self.rx_desc[self.rx_index];
+        
+        // Debug: Print descriptor status every few calls
+        static mut DEBUG_COUNTER: u32 = 0;
+        unsafe {
+            DEBUG_COUNTER += 1;
+            if DEBUG_COUNTER % 100 == 1 {
+                crate::serial::_print(format_args!(
+                    "[e1000::drain_rx] index={}, status={:#x}, DD={}\n",
+                    self.rx_index, desc.status, (desc.status & RX_STATUS_DD) != 0
+                ));
+            }
+        }
+        
         if (desc.status & RX_STATUS_DD) == 0 {
             return None;
         }
+
+        crate::serial::_print(format_args!(
+            "[e1000::drain_rx] Packet received! index={}, len={}\n",
+            self.rx_index, desc.length
+        ));
 
         let packet_len = cmp::min(desc.length as usize, scratch.len());
         scratch[..packet_len]
@@ -250,10 +268,22 @@ impl E1000 {
         for (idx, desc) in self.rx_desc.iter_mut().enumerate() {
             desc.addr = self.rx_buffers[idx].as_ptr() as u64;
             desc.status = 0;
+            if idx == 0 {
+                crate::serial::_print(format_args!(
+                    "[e1000::init_rx] desc[0].addr={:#x}\n",
+                    desc.addr
+                ));
+            }
         }
 
-        self.write_reg(REG_RDBAL, (self.rx_desc.as_ptr() as u64 & 0xFFFF_FFFF) as u32);
-        self.write_reg(REG_RDBAH, (self.rx_desc.as_ptr() as u64 >> 32) as u32);
+        let rdba = self.rx_desc.as_ptr() as u64;
+        crate::serial::_print(format_args!(
+            "[e1000::init_rx] RX descriptor base={:#x}, count={}\n",
+            rdba, RX_DESC_COUNT
+        ));
+        
+        self.write_reg(REG_RDBAL, (rdba & 0xFFFF_FFFF) as u32);
+        self.write_reg(REG_RDBAH, (rdba >> 32) as u32);
         self.write_reg(
             REG_RDLEN,
             (RX_DESC_COUNT * core::mem::size_of::<RxDescriptor>()) as u32,
@@ -264,7 +294,18 @@ impl E1000 {
         self.write_reg(REG_RDT, self.rx_tail as u32);
 
         let rctl = RCTL_EN | RCTL_BAM | RCTL_SECRC | RCTL_BSIZE_2048 | RCTL_LBM_NONE;
+        crate::serial::_print(format_args!(
+            "[e1000::init_rx] Setting RCTL={:#x}, RDT={}\n",
+            rctl, self.rx_tail
+        ));
         self.write_reg(REG_RCTL, rctl);
+        
+        // Verify configuration
+        let rctl_read = self.read_reg(REG_RCTL);
+        crate::serial::_print(format_args!(
+            "[e1000::init_rx] RCTL readback={:#x}\n",
+            rctl_read
+        ));
     }
 
     fn init_tx(&mut self) {

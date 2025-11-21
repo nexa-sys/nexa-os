@@ -937,6 +937,9 @@ pub fn do_schedule_from_interrupt() {
 }
 
 fn do_schedule_internal(from_interrupt: bool) {
+    // Poll network stack to process any incoming packets
+    crate::net::poll();
+    
     // Update scheduler statistics
     {
         let mut stats = SCHED_STATS.lock();

@@ -76,10 +76,14 @@ if [[ "$DEFAULT_BIOS_MODE" == "legacy" ]]; then
         -monitor none
         -drive file="$ROOTFS_IMG",id=rootfs,format=raw,if=none
         -device virtio-blk-pci,drive=rootfs
+        # Network: user-mode networking with DHCP server
+        -netdev user,id=net0,dhcpstart=10.0.2.15
+        -device e1000,netdev=net0,mac=52:54:00:12:34:56
     )
     
     echo "  Boot mode: Legacy BIOS"
     echo "  Virtio block device attached as /dev/vda"
+    echo "  Network: user-mode (DHCP available at 10.0.2.2)"
     echo "  Kernel parameters should include: root=/dev/vda1 rootfstype=ext2"
 else
     # UEFI 启动模式（默认）
@@ -132,10 +136,14 @@ else
         -monitor none
         -drive file="$ROOTFS_IMG",id=rootfs,format=raw,if=none
         -device virtio-blk-pci,drive=rootfs
+        # Network: user-mode networking with DHCP server
+        -netdev user,id=net0,dhcpstart=10.0.2.15
+        -device e1000,netdev=net0,mac=52:54:00:12:34:56
     )
     
     echo "  Boot mode: UEFI (default)"
     echo "  Virtio block device attached as /dev/vda"
+    echo "  Network: user-mode (DHCP available at 10.0.2.2)"
     echo "  Kernel parameters should include: root=/dev/vda1 rootfstype=ext2"
 fi
 

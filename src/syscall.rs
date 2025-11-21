@@ -3239,6 +3239,9 @@ fn syscall_recvfrom(
 ) -> u64 {
     crate::kinfo!("[SYS_RECVFROM] sockfd={} len={}", sockfd, len);
     
+    // Poll network stack to process any incoming packets before attempting receive
+    crate::net::poll();
+    
     if buf.is_null() || len == 0 {
         posix::set_errno(posix::errno::EINVAL);
         return u64::MAX;
