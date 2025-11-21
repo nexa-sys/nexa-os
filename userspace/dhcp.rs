@@ -127,8 +127,18 @@ extern "C" {
     fn close(fd: i32) -> i32;
 }
 
+struct DhcpLease {
+    ip: u32,
+    subnet_mask: u32,
+    server_ip: u32,
+    lease_time: u32,
+    renewal_time: u32,
+    rebinding_time: u32,
+    obtained_at: u64, // Timestamp when lease was obtained
+}
+
 fn main() {
-    println!("Starting DHCP client...");
+    println!("Starting DHCP client daemon...");
 
     // 1. Get MAC address via Netlink
     let (if_index, mac) = match get_mac_address() {
@@ -141,22 +151,50 @@ fn main() {
     println!("Using MAC address: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} (Index: {})", 
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], if_index);
 
-    // 2. Create UDP socket
+    // Main daemon loop
+    loop {
+        println!("\n=== Starting DHCP lease acquisition ===");
+        
+        match acquire_lease(if_index, &mac) {
+            Some(lease) => {
+                println!("Lease acquired successfully!");
+                println!("  IP: {}.{}.{}.{}", 
+                         (lease.ip >> 24) & 0xFF, (lease.ip >> 16) & 0xFF, 
+                         (lease.ip >> 8) & 0xFF, lease.ip & 0xFF);
+                println!("  Lease time: {} seconds", lease.lease_time);
+                println!("  Renewal time: {} seconds", lease.renewal_time);
+                
+                // Configure interface
+                configure_interface(if_index, lease.ip, lease.subnet_mask);
+                
+                // Enter lease maintenance loop
+                maintain_lease(if_index, &mac, lease);
+            }
+            None => {
+                println!("Failed to acquire lease, retrying in 30 seconds...");
+                sleep(30);
+            }
+        }
+    }
+}
+
+fn acquire_lease(if_index: u32, mac: &[u8; 6]) -> Option<DhcpLease> {
+    // Create UDP socket
     let fd = unsafe { socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP) };
     if fd < 0 {
         println!("Failed to create UDP socket");
-        return;
+        return None;
     }
 
-    // 3. Enable broadcast
+    // Enable broadcast
     let broadcast: i32 = 1;
     if unsafe { setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &broadcast as *const _ as *const std::ffi::c_void, 4) } < 0 {
         println!("Failed to enable broadcast");
         unsafe { close(fd) };
-        return;
+        return None;
     }
 
-    // 4. Bind to port 68
+    // Bind to port 68
     let addr = SockAddrIn {
         sin_family: AF_INET as u16,
         sin_port: DHCP_CLIENT_PORT.to_be(),
@@ -167,12 +205,11 @@ fn main() {
     if unsafe { bind(fd, &addr as *const _ as *const std::ffi::c_void, 16) } < 0 {
         println!("Failed to bind to port 68");
         unsafe { close(fd) };
-        return;
+        return None;
     }
 
-    // 5. Send DHCP DISCOVER
-    let xid: u32 = 0x12345678; // Random transaction ID
-    let mut packet = create_dhcp_packet(DHCP_DISCOVER, &mac, xid);
+    // Generate transaction ID
+    let xid: u32 = generate_xid();
     
     let dest_addr = SockAddrIn {
         sin_family: AF_INET as u16,
@@ -181,14 +218,16 @@ fn main() {
         sin_zero: [0; 8],
     };
 
+    // Send DHCP DISCOVER
     println!("Sending DHCP DISCOVER...");
+    let packet = create_dhcp_packet(DHCP_DISCOVER, mac, xid);
     if unsafe { sendto(fd, &packet as *const _ as *const std::ffi::c_void, mem::size_of::<DhcpPacket>(), 0, &dest_addr as *const _ as *const std::ffi::c_void, 16) } < 0 {
         println!("Failed to send DHCP DISCOVER");
         unsafe { close(fd) };
-        return;
+        return None;
     }
 
-    // 6. Receive DHCP OFFER
+    // Receive DHCP OFFER (with timeout)
     println!("Waiting for DHCP OFFER...");
     let mut buf = [0u8; 1024];
     let mut src_addr = SockAddrIn {
@@ -199,79 +238,212 @@ fn main() {
     };
     let mut addr_len: u32 = 16;
 
+    // TODO: Set socket timeout
     let len = unsafe { recvfrom(fd, buf.as_mut_ptr() as *mut std::ffi::c_void, 1024, 0, &mut src_addr as *mut _ as *mut std::ffi::c_void, &mut addr_len) };
     if len < 0 {
         println!("Failed to receive DHCP OFFER");
         unsafe { close(fd) };
-        return;
+        return None;
     }
 
     let offer_packet = unsafe { &*(buf.as_ptr() as *const DhcpPacket) };
     if offer_packet.xid != xid {
         println!("Received packet with wrong XID");
         unsafe { close(fd) };
-        return;
+        return None;
     }
 
     let offered_ip = u32::from_be(offer_packet.yiaddr);
-    let server_ip = u32::from_be(offer_packet.siaddr); // Usually in options, but siaddr might be set
-    
     println!("Received DHCP OFFER: IP {}.{}.{}.{}", 
              (offered_ip >> 24) & 0xFF, (offered_ip >> 16) & 0xFF, (offered_ip >> 8) & 0xFF, offered_ip & 0xFF);
 
-    // 7. Send DHCP REQUEST
+    // Send DHCP REQUEST
     println!("Sending DHCP REQUEST...");
-    packet = create_dhcp_packet(DHCP_REQUEST, &mac, xid);
-    // Add Requested IP option
+    let mut packet = create_dhcp_packet(DHCP_REQUEST, mac, xid);
     add_option(&mut packet, DHCP_OPT_REQUESTED_IP, &offered_ip.to_be_bytes());
-    // Add Server ID option (required for REQUEST)
-    // We need to find Server ID in options of OFFER, but for simplicity let's try using siaddr or just broadcast
-    // The correct way is to parse options.
     
-    // Parse options to find Server ID
-    let server_id = find_option(&buf[..len as usize], DHCP_OPT_SERVER_ID);
-    if let Some(sid) = server_id {
+    // Parse Server ID from OFFER
+    if let Some(sid) = find_option(&buf[..len as usize], DHCP_OPT_SERVER_ID) {
         add_option(&mut packet, DHCP_OPT_SERVER_ID, sid);
     } else {
-        // Fallback to siaddr if option not present (though it should be)
         add_option(&mut packet, DHCP_OPT_SERVER_ID, &offer_packet.siaddr.to_ne_bytes());
     }
 
     if unsafe { sendto(fd, &packet as *const _ as *const std::ffi::c_void, mem::size_of::<DhcpPacket>(), 0, &dest_addr as *const _ as *const std::ffi::c_void, 16) } < 0 {
         println!("Failed to send DHCP REQUEST");
         unsafe { close(fd) };
-        return;
+        return None;
     }
 
-    // 8. Receive DHCP ACK
+    // Receive DHCP ACK
     println!("Waiting for DHCP ACK...");
     let len = unsafe { recvfrom(fd, buf.as_mut_ptr() as *mut std::ffi::c_void, 1024, 0, &mut src_addr as *mut _ as *mut std::ffi::c_void, &mut addr_len) };
     if len < 0 {
         println!("Failed to receive DHCP ACK");
         unsafe { close(fd) };
-        return;
+        return None;
     }
 
     let ack_packet = unsafe { &*(buf.as_ptr() as *const DhcpPacket) };
     if ack_packet.xid != xid {
         println!("Received packet with wrong XID");
         unsafe { close(fd) };
-        return;
+        return None;
     }
 
-    // Check message type option to be sure it is ACK
-    // TODO: Parse options
-
     let assigned_ip = u32::from_be(ack_packet.yiaddr);
-    println!("DHCP Success! Assigned IP: {}.{}.{}.{}", 
-             (assigned_ip >> 24) & 0xFF, (assigned_ip >> 16) & 0xFF, (assigned_ip >> 8) & 0xFF, assigned_ip & 0xFF);
+    
+    // Parse lease options
+    let lease_time = find_option(&buf[..len as usize], DHCP_OPT_LEASE_TIME)
+        .and_then(|b| if b.len() == 4 { Some(u32::from_be_bytes([b[0], b[1], b[2], b[3]])) } else { None })
+        .unwrap_or(3600); // Default 1 hour
+    
+    let subnet_mask = find_option(&buf[..len as usize], DHCP_OPT_SUBNET_MASK)
+        .and_then(|b| if b.len() == 4 { Some(u32::from_be_bytes([b[0], b[1], b[2], b[3]])) } else { None })
+        .unwrap_or(0xFFFFFF00); // Default 255.255.255.0
+    
+    let server_ip = find_option(&buf[..len as usize], DHCP_OPT_SERVER_ID)
+        .and_then(|b| if b.len() == 4 { Some(u32::from_be_bytes([b[0], b[1], b[2], b[3]])) } else { None })
+        .unwrap_or(0);
 
-    // Configure interface with IP
-    // Default mask 255.255.255.0 if not provided
-    let subnet_mask = 0xFFFFFF00; // TODO: Parse from options
-    configure_interface(if_index, assigned_ip, subnet_mask);
+    unsafe { close(fd) };
+
+    Some(DhcpLease {
+        ip: assigned_ip,
+        subnet_mask,
+        server_ip,
+        lease_time,
+        renewal_time: lease_time / 2,      // T1: 50% of lease time
+        rebinding_time: lease_time * 7 / 8, // T2: 87.5% of lease time
+        obtained_at: get_uptime(),
+    })
+}
+
+fn maintain_lease(if_index: u32, mac: &[u8; 6], mut lease: DhcpLease) {
+    println!("\n=== Entering lease maintenance mode ===");
+    
+    loop {
+        let elapsed = get_uptime() - lease.obtained_at;
+        
+        // Check if we need to renew
+        if elapsed >= lease.renewal_time as u64 {
+            println!("Renewal time reached, attempting to renew lease...");
+            if let Some(new_lease) = renew_lease(if_index, mac, &lease) {
+                lease = new_lease;
+                continue;
+            } else {
+                println!("Renewal failed, will retry...");
+            }
+        }
+        
+        // Check if lease has expired
+        if elapsed >= lease.lease_time as u64 {
+            println!("Lease expired! Re-acquiring...");
+            return; // Exit maintenance loop to re-acquire
+        }
+        
+        // Sleep for a while before checking again
+        sleep(10);
+    }
+}
+
+fn renew_lease(if_index: u32, mac: &[u8; 6], current_lease: &DhcpLease) -> Option<DhcpLease> {
+    // Create socket for renewal
+    let fd = unsafe { socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP) };
+    if fd < 0 {
+        return None;
+    }
+
+    // Bind to current IP
+    let addr = SockAddrIn {
+        sin_family: AF_INET as u16,
+        sin_port: DHCP_CLIENT_PORT.to_be(),
+        sin_addr: current_lease.ip.to_be(),
+        sin_zero: [0; 8],
+    };
+
+    if unsafe { bind(fd, &addr as *const _ as *const std::ffi::c_void, 16) } < 0 {
+        unsafe { close(fd) };
+        return None;
+    }
+
+    let xid = generate_xid();
+    
+    // Send unicast DHCP REQUEST to server
+    let mut packet = create_dhcp_packet(DHCP_REQUEST, mac, xid);
+    packet.ciaddr = current_lease.ip.to_be(); // Set current IP
+    add_option(&mut packet, DHCP_OPT_REQUESTED_IP, &current_lease.ip.to_be_bytes());
+    add_option(&mut packet, DHCP_OPT_SERVER_ID, &current_lease.server_ip.to_be_bytes());
+
+    let dest_addr = SockAddrIn {
+        sin_family: AF_INET as u16,
+        sin_port: DHCP_SERVER_PORT.to_be(),
+        sin_addr: current_lease.server_ip.to_be(),
+        sin_zero: [0; 8],
+    };
+
+    if unsafe { sendto(fd, &packet as *const _ as *const std::ffi::c_void, mem::size_of::<DhcpPacket>(), 0, &dest_addr as *const _ as *const std::ffi::c_void, 16) } < 0 {
+        unsafe { close(fd) };
+        return None;
+    }
+
+    // Receive ACK
+    let mut buf = [0u8; 1024];
+    let mut addr_len: u32 = 16;
+    let len = unsafe { recvfrom(fd, buf.as_mut_ptr() as *mut std::ffi::c_void, 1024, 0, std::ptr::null_mut(), &mut addr_len) };
     
     unsafe { close(fd) };
+
+    if len < 0 {
+        return None;
+    }
+
+    let ack_packet = unsafe { &*(buf.as_ptr() as *const DhcpPacket) };
+    if ack_packet.xid != xid {
+        return None;
+    }
+
+    // Parse renewed lease
+    let lease_time = find_option(&buf[..len as usize], DHCP_OPT_LEASE_TIME)
+        .and_then(|b| if b.len() == 4 { Some(u32::from_be_bytes([b[0], b[1], b[2], b[3]])) } else { None })
+        .unwrap_or(current_lease.lease_time);
+
+    println!("Lease renewed! New lease time: {} seconds", lease_time);
+
+    Some(DhcpLease {
+        ip: current_lease.ip,
+        subnet_mask: current_lease.subnet_mask,
+        server_ip: current_lease.server_ip,
+        lease_time,
+        renewal_time: lease_time / 2,
+        rebinding_time: lease_time * 7 / 8,
+        obtained_at: get_uptime(),
+    })
+}
+
+fn generate_xid() -> u32 {
+    // Simple XID generation based on uptime
+    // In production, use proper random number generator
+    (get_uptime() & 0xFFFFFFFF) as u32
+}
+
+fn get_uptime() -> u64 {
+    // TODO: Implement proper uptime syscall
+    // For now, return a dummy value
+    unsafe {
+        static mut UPTIME: u64 = 0;
+        UPTIME += 1;
+        UPTIME
+    }
+}
+
+fn sleep(seconds: u32) {
+    // TODO: Implement proper sleep syscall
+    // For now, busy wait
+    let start = get_uptime();
+    while get_uptime() - start < seconds as u64 {
+        // Busy wait
+    }
 }
 
 fn get_mac_address() -> Option<(u32, [u8; 6])> {
