@@ -18,7 +18,8 @@ pub mod udp_helper;
 pub mod netlink;
 
 pub use drivers::NetError;
-pub use udp_helper::{UdpMessage, UdpConnectionContext, UdpStats};
+pub use udp_helper::{UdpConnectionContext, UdpStats};
+// UdpMessage is test-only, not exported for production use
 
 const MAX_NET_DEVICES: usize = 4;
 

@@ -6,11 +6,16 @@
 /// - Buffer management utilities
 /// - Protocol handler abstractions
 
-use super::udp::{UdpDatagram, UdpDatagramMut, UdpSocketOptions};
+#[cfg(test)]
 use super::ipv4::Ipv4Address;
+#[cfg(test)]
 use super::drivers::NetError;
 
-/// UDP message for higher-level access
+// Note: UdpMessage is not used in production code, only in tests
+// If needed in production, use references to avoid large stack allocations
+/// UDP message for higher-level access (NOT RECOMMENDED for production use)
+/// Use references or slices instead to avoid 64KB stack allocation
+#[cfg(test)]
 #[derive(Clone)]
 pub struct UdpMessage {
     pub src_ip: [u8; 4],
@@ -21,6 +26,7 @@ pub struct UdpMessage {
     pub payload_len: usize,
 }
 
+#[cfg(test)]
 impl UdpMessage {
     /// Create new UDP message
     pub fn new() -> Self {
@@ -123,7 +129,10 @@ impl UdpConnectionContext {
     }
 }
 
-/// UDP protocol handler trait
+// UdpProtocolHandler trait is deprecated - don't use in production
+// Use raw buffer processing instead to avoid large allocations
+#[cfg(test)]
+/// UDP protocol handler trait (test-only, uses large UdpMessage)
 pub trait UdpProtocolHandler {
     /// Handle incoming UDP packet
     fn handle_packet(&mut self, message: &UdpMessage) -> Result<(), NetError>;

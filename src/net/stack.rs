@@ -687,43 +687,35 @@ impl NetStack {
             let src_ip = Ipv4Address::from(&frame[26..30]);
             let dst_ip = Ipv4Address::from(&frame[30..34]);
             
-            // Create temporary UDP header for validation
-            let mut temp_header = UdpHeader::new(src_port, dst_port, length - 8);
-            let payload = &frame[udp_offset + 8..udp_offset + length];
-            temp_header.checksum = checksum;
-            
-            crate::serial::_print(format_args!(
-                "[handle_udp] Verifying checksum: src={}.{}.{}.{}:{}, dst={}.{}.{}.{}:{}, len={}, checksum={:#06x}\n",
-                src_ip.0[0], src_ip.0[1], src_ip.0[2], src_ip.0[3], src_port,
-                dst_ip.0[0], dst_ip.0[1], dst_ip.0[2], dst_ip.0[3], dst_port,
-                length, checksum
-            ));
-            
-            if !temp_header.verify_checksum(&src_ip, &dst_ip, payload) {
-                crate::serial::_print(format_args!(
-                    "[handle_udp] Checksum FAILED for port {} from {}.{}.{}.{}:{}\n",
-                    dst_port,
-                    frame[26], frame[27], frame[28], frame[29], src_port
-                ));
-                return Ok(());
+            // Parse UDP header directly from frame to avoid byte order confusion
+            // Frame already contains network byte order data
+            if udp_offset + length <= frame.len() {
+                let udp_packet_raw = &frame[udp_offset..udp_offset + length];
+                
+                // Parse header as-is from network data
+                let header_ptr = udp_packet_raw.as_ptr() as *const UdpHeader;
+                let udp_header = unsafe { &*header_ptr };
+                let payload = &udp_packet_raw[UdpHeader::SIZE..];
+                
+                if !udp_header.verify_checksum(&src_ip, &dst_ip, payload) {
+                    crate::serial::_print(format_args!(
+                        "[handle_udp] Checksum mismatch on port {} from {}.{}.{}.{}:{}\n",
+                        dst_port,
+                        frame[26], frame[27], frame[28], frame[29], src_port
+                    ));
+                    return Ok(());
+                }
             } else {
-                crate::serial::_print(format_args!("[handle_udp] Checksum verified OK\n"));
+                return Ok(()); // Invalid length
             }
-        } else {
-            crate::serial::_print(format_args!("[handle_udp] No checksum (checksum=0)\n"));
         }
 
         // Find matching socket
-        crate::serial::_print(format_args!("[handle_udp] Looking for socket on port {}\n", dst_port));
         let mut socket_idx = None;
         for (idx, socket) in self.udp_sockets.iter().enumerate() {
             if !socket.in_use {
                 continue;
             }
-            crate::serial::_print(format_args!(
-                "[handle_udp] Checking socket[{}]: local_port={}, in_use={}\n",
-                idx, socket.local_port, socket.in_use
-            ));
             if socket.local_port != dst_port {
                 continue;
             }
@@ -743,8 +735,6 @@ impl NetStack {
             socket_idx = Some(idx);
             break;
         }
-
-        crate::serial::_print(format_args!("[handle_udp] Socket match result: {:?}\n", socket_idx));
 
         if let Some(idx) = socket_idx {
             let payload = &frame[udp_offset + 8..udp_offset + length];

@@ -243,7 +243,7 @@ fn acquire_lease(if_index: u32, mac: &[u8; 6]) -> Option<DhcpLease> {
         return None;
     }
 
-    // Receive DHCP OFFER (with timeout)
+    // Receive DHCP OFFER (with retry loop)
     println!("Waiting for DHCP OFFER...");
     let mut buf = [0u8; 1024];
     let mut src_addr = SockAddrIn {
@@ -254,13 +254,25 @@ fn acquire_lease(if_index: u32, mac: &[u8; 6]) -> Option<DhcpLease> {
     };
     let mut addr_len: u32 = 16;
 
-    // TODO: Set socket timeout
-    println!("[DEBUG] About to call recvfrom: fd={}, buf_len=1024", fd);
-    let len = unsafe { recvfrom(fd, buf.as_mut_ptr() as *mut std::ffi::c_void, 1024, 0, &mut src_addr as *mut _ as *mut std::ffi::c_void, &mut addr_len) };
-    println!("[DEBUG] recvfrom returned: {}", len);
+    // Retry loop: try up to 50 times with 100ms delay between attempts (total ~5 seconds)
+    let mut len: isize = -1;
+    for attempt in 0..50 {
+        len = unsafe { recvfrom(fd, buf.as_mut_ptr() as *mut std::ffi::c_void, 1024, 0, &mut src_addr as *mut _ as *mut std::ffi::c_void, &mut addr_len) };
+        
+        if len >= 0 {
+            println!("Received DHCP OFFER after {} attempts", attempt + 1);
+            break;
+        }
+        
+        // Brief delay before retry (sleep ~100ms)
+        // Note: This is a busy-wait since we don't have proper sleep yet
+        for _ in 0..100000 {
+            unsafe { core::arch::asm!("pause"); }
+        }
+    }
     
     if len < 0 {
-        println!("Failed to receive DHCP OFFER");
+        println!("Failed to receive DHCP OFFER after retries");
         unsafe { close(fd) };
         return None;
     }
@@ -294,11 +306,25 @@ fn acquire_lease(if_index: u32, mac: &[u8; 6]) -> Option<DhcpLease> {
         return None;
     }
 
-    // Receive DHCP ACK
+    // Receive DHCP ACK (with retry loop)
     println!("Waiting for DHCP ACK...");
-    let len = unsafe { recvfrom(fd, buf.as_mut_ptr() as *mut std::ffi::c_void, 1024, 0, &mut src_addr as *mut _ as *mut std::ffi::c_void, &mut addr_len) };
+    let mut len: isize = -1;
+    for attempt in 0..50 {
+        len = unsafe { recvfrom(fd, buf.as_mut_ptr() as *mut std::ffi::c_void, 1024, 0, &mut src_addr as *mut _ as *mut std::ffi::c_void, &mut addr_len) };
+        
+        if len >= 0 {
+            println!("Received DHCP ACK after {} attempts", attempt + 1);
+            break;
+        }
+        
+        // Brief delay before retry
+        for _ in 0..100000 {
+            unsafe { core::arch::asm!("pause"); }
+        }
+    }
+    
     if len < 0 {
-        println!("Failed to receive DHCP ACK");
+        println!("Failed to receive DHCP ACK after retries");
         unsafe { close(fd) };
         return None;
     }
@@ -406,10 +432,24 @@ fn renew_lease(if_index: u32, mac: &[u8; 6], current_lease: &DhcpLease) -> Optio
         return None;
     }
 
-    // Receive ACK
+    // Receive ACK (with retry loop)
     let mut buf = [0u8; 1024];
     let mut addr_len: u32 = 16;
-    let len = unsafe { recvfrom(fd, buf.as_mut_ptr() as *mut std::ffi::c_void, 1024, 0, std::ptr::null_mut(), &mut addr_len) };
+    let mut len: isize = -1;
+    
+    for attempt in 0..50 {
+        len = unsafe { recvfrom(fd, buf.as_mut_ptr() as *mut std::ffi::c_void, 1024, 0, std::ptr::null_mut(), &mut addr_len) };
+        
+        if len >= 0 {
+            println!("Received renewal ACK after {} attempts", attempt + 1);
+            break;
+        }
+        
+        // Brief delay before retry
+        for _ in 0..100000 {
+            unsafe { core::arch::asm!("pause"); }
+        }
+    }
     
     unsafe { close(fd) };
 

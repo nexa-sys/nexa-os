@@ -1,8 +1,15 @@
+extern crate alloc;
+
 use core::fmt::{self, Write};
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 
 use crate::serial;
 use crate::vga_buffer::{self, Color};
+
+// Static buffer pool for log lines to avoid stack allocation >1KB
+// This is safe to use before heap initialization
+static mut LOG_BUFFER_POOL: [[u8; 1024]; 2] = [[0; 1024]; 2];
+static LOG_BUFFER_IN_USE: AtomicBool = AtomicBool::new(false);
 
 static LOGGER_INITIALIZED: AtomicBool = AtomicBool::new(false);
 static BOOT_TSC: AtomicU64 = AtomicU64::new(0);
@@ -234,7 +241,7 @@ pub fn log(level: LogLevel, args: fmt::Arguments<'_>) {
             serial::write_bytes(buffer.as_bytes());
         } else {
             if plain_line.is_none() {
-                plain_line = build_plain_log_line(level, timestamp_us, args.clone());
+                plain_line = build_color_log_line_vga(level, timestamp_us, args.clone());
             }
             if let Some(buffer) = plain_line.as_ref() {
                 serial::write_bytes(buffer.as_bytes());
@@ -253,7 +260,7 @@ pub fn log(level: LogLevel, args: fmt::Arguments<'_>) {
             crate::framebuffer::write_bytes(buffer.as_bytes());
         } else {
             if plain_line.is_none() {
-                plain_line = build_plain_log_line(level, timestamp_us, args.clone());
+                plain_line = build_color_log_line_vga(level, timestamp_us, args.clone());
             }
             if let Some(buffer) = plain_line.as_ref() {
                 crate::framebuffer::write_bytes(buffer.as_bytes());
@@ -263,7 +270,7 @@ pub fn log(level: LogLevel, args: fmt::Arguments<'_>) {
 
     // 总是向环形缓冲区写入日志
     if plain_line.is_none() && !emit_serial && !emit_vga {
-        plain_line = build_plain_log_line(level, timestamp_us, args);
+        plain_line = build_color_log_line_vga(level, timestamp_us, args);
     }
 
     if let Some(buffer) = plain_line.as_ref() {
@@ -376,7 +383,7 @@ fn build_color_log_line(
     timestamp_us: u64,
     args: fmt::Arguments<'_>,
 ) -> Option<LogLineBuffer> {
-    let mut buffer = LogLineBuffer::new();
+    let mut buffer = LogLineBuffer::new()?;
     if buffer.write_str(level.serial_color()).is_err() {
         return None;
     }
@@ -401,12 +408,12 @@ fn build_color_log_line(
     Some(buffer)
 }
 
-fn build_plain_log_line(
+fn build_color_log_line_vga(
     level: LogLevel,
     timestamp_us: u64,
     args: fmt::Arguments<'_>,
 ) -> Option<LogLineBuffer> {
-    let mut buffer = LogLineBuffer::new();
+    let mut buffer = LogLineBuffer::new()?;
     if write!(
         buffer,
         "[{timestamp}] [{level}] ",
@@ -530,15 +537,28 @@ impl fmt::Display for LevelDisplay {
 }
 
 struct LogLineBuffer {
-    buf: [u8; 1024],
+    buf: &'static mut [u8; 1024],
     len: usize,
 }
 
 impl LogLineBuffer {
-    const fn new() -> Self {
-        Self {
-            buf: [0; 1024],
-            len: 0,
+    fn new() -> Option<Self> {
+        // Try to acquire a static buffer from the pool
+        if LOG_BUFFER_IN_USE.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+            unsafe {
+                Some(Self {
+                    buf: &mut LOG_BUFFER_POOL[0],
+                    len: 0,
+                })
+            }
+        } else {
+            // If pool is in use, use the second buffer (for nested logging)
+            unsafe {
+                Some(Self {
+                    buf: &mut LOG_BUFFER_POOL[1],
+                    len: 0,
+                })
+            }
         }
     }
 
@@ -547,7 +567,14 @@ impl LogLineBuffer {
     }
 }
 
-impl Write for LogLineBuffer {
+impl Drop for LogLineBuffer {
+    fn drop(&mut self) {
+        // Release the buffer back to the pool
+        LOG_BUFFER_IN_USE.store(false, Ordering::Release);
+    }
+}
+
+impl fmt::Write for LogLineBuffer {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         let bytes = s.as_bytes();
         if self.len + bytes.len() > self.buf.len() {
