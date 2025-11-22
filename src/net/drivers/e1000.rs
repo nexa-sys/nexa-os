@@ -38,6 +38,8 @@ const CTRL_SLU: u32 = 1 << 6;
 const CTRL_ASDE: u32 = 1 << 5;
 
 const RCTL_EN: u32 = 1 << 1;
+const RCTL_UPE: u32 = 1 << 3;  // Unicast Promiscuous Enable
+const RCTL_MPE: u32 = 1 << 4;  // Multicast Promiscuous Enable
 const RCTL_BAM: u32 = 1 << 15;
 const RCTL_SECRC: u32 = 1 << 26;
 const RCTL_BSIZE_2048: u32 = 0b00 << 16;
@@ -162,11 +164,44 @@ impl E1000 {
     }
 
     pub fn init(&mut self) -> Result<(), NetError> {
+        crate::serial::_print(format_args!(
+            "[e1000::init] Starting initialization for device {}, MMIO base={:#x}\n",
+            self.index, self.base as u64
+        ));
+        
         self.reset();
+        
+        // Verify device is accessible
+        let status = self.read_reg(REG_STATUS);
+        crate::serial::_print(format_args!(
+            "[e1000::init] Device status after reset: {:#x}\n",
+            status
+        ));
+        
         self.program_mac();
         self.init_rx();
         self.init_tx();
         self.enable_interrupts();
+        
+        // Final status check
+        let final_status = self.read_reg(REG_STATUS);
+        let rctl = self.read_reg(REG_RCTL);
+        let tctl = self.read_reg(REG_TCTL);
+        let rdh = self.read_reg(REG_RDH);
+        let rdt = self.read_reg(REG_RDT);
+        let rdlen = self.read_reg(REG_RDLEN);
+        let rdbal = self.read_reg(REG_RDBAL);
+        let rdbah = self.read_reg(REG_RDBAH);
+        
+        crate::serial::_print(format_args!(
+            "[e1000::init] Final state - STATUS={:#x}, RCTL={:#x}, TCTL={:#x}\n",
+            final_status, rctl, tctl
+        ));
+        crate::serial::_print(format_args!(
+            "[e1000::init] RX Ring - RDBAL={:#x}, RDBAH={:#x}, RDLEN={}, RDH={}, RDT={}\n",
+            rdbal, rdbah, rdlen, rdh, rdt
+        ));
+        
         crate::kinfo!("e1000[{}]: initialized", self.index);
         Ok(())
     }
@@ -260,26 +295,53 @@ impl E1000 {
     fn program_mac(&mut self) {
         let low = u32::from_le_bytes([self.mac[2], self.mac[3], self.mac[4], self.mac[5]]);
         let high = u32::from_le_bytes([self.mac[0], self.mac[1], 0, 0]) | (1 << 31);
+        
+        crate::serial::_print(format_args!(
+            "[e1000::program_mac] Setting MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}, RAL0={:#x}, RAH0={:#x}\n",
+            self.mac[0], self.mac[1], self.mac[2], self.mac[3], self.mac[4], self.mac[5],
+            low, high
+        ));
+        
         self.write_reg(REG_RAL0, low);
         self.write_reg(REG_RAH0, high);
+        
+        // Verify
+        let ral_read = self.read_reg(REG_RAL0);
+        let rah_read = self.read_reg(REG_RAH0);
+        crate::serial::_print(format_args!(
+            "[e1000::program_mac] Readback: RAL0={:#x}, RAH0={:#x}\n",
+            ral_read, rah_read
+        ));
     }
 
     fn init_rx(&mut self) {
+        // Verify descriptor alignment (must be 16-byte aligned for E1000)
+        let desc_addr = self.rx_desc.as_ptr() as u64;
+        if desc_addr & 0xF != 0 {
+            crate::kwarn!("[e1000::init_rx] WARNING: RX descriptor base {:#x} is not 16-byte aligned!", desc_addr);
+        }
+        
         for (idx, desc) in self.rx_desc.iter_mut().enumerate() {
-            desc.addr = self.rx_buffers[idx].as_ptr() as u64;
+            let buf_addr = self.rx_buffers[idx].as_ptr() as u64;
+            desc.addr = buf_addr;
             desc.status = 0;
+            desc.length = 0;
+            desc.checksum = 0;
+            desc.errors = 0;
+            desc.special = 0;
+            
             if idx == 0 {
                 crate::serial::_print(format_args!(
-                    "[e1000::init_rx] desc[0].addr={:#x}\n",
-                    desc.addr
+                    "[e1000::init_rx] desc[0].addr={:#x}, buf alignment={}\n",
+                    desc.addr, buf_addr & 0xF
                 ));
             }
         }
 
-        let rdba = self.rx_desc.as_ptr() as u64;
+        let rdba = desc_addr;
         crate::serial::_print(format_args!(
-            "[e1000::init_rx] RX descriptor base={:#x}, count={}\n",
-            rdba, RX_DESC_COUNT
+            "[e1000::init_rx] RX descriptor base={:#x} (alignment={}), count={}\n",
+            rdba, rdba & 0xF, RX_DESC_COUNT
         ));
         
         self.write_reg(REG_RDBAL, (rdba & 0xFFFF_FFFF) as u32);
@@ -293,19 +355,26 @@ impl E1000 {
         self.rx_tail = RX_DESC_COUNT - 1;
         self.write_reg(REG_RDT, self.rx_tail as u32);
 
-        let rctl = RCTL_EN | RCTL_BAM | RCTL_SECRC | RCTL_BSIZE_2048 | RCTL_LBM_NONE;
+        // Enable promiscuous mode temporarily for debugging DHCP issues
+        // Production note: Remove UPE/MPE after DHCP is working
+        let rctl = RCTL_EN | RCTL_UPE | RCTL_MPE | RCTL_BAM | RCTL_SECRC | RCTL_BSIZE_2048 | RCTL_LBM_NONE;
         crate::serial::_print(format_args!(
-            "[e1000::init_rx] Setting RCTL={:#x}, RDT={}\n",
-            rctl, self.rx_tail
+            "[e1000::init_rx] Setting RCTL={:#x} (EN={}, UPE={}, MPE={}, BAM={}), RDT={}\n",
+            rctl, (rctl & RCTL_EN) != 0, (rctl & RCTL_UPE) != 0, 
+            (rctl & RCTL_MPE) != 0, (rctl & RCTL_BAM) != 0, self.rx_tail
         ));
         self.write_reg(REG_RCTL, rctl);
         
         // Verify configuration
         let rctl_read = self.read_reg(REG_RCTL);
-        crate::serial::_print(format_args!(
-            "[e1000::init_rx] RCTL readback={:#x}\n",
-            rctl_read
-        ));
+        if rctl_read != rctl {
+            crate::kwarn!("[e1000::init_rx] RCTL mismatch! Wrote {:#x}, read back {:#x}", rctl, rctl_read);
+        } else {
+            crate::serial::_print(format_args!(
+                "[e1000::init_rx] RCTL verified={:#x}\n",
+                rctl_read
+            ));
+        }
     }
 
     fn init_tx(&mut self) {

@@ -136,14 +136,16 @@ else
         -monitor none
         -drive file="$ROOTFS_IMG",id=rootfs,format=raw,if=none
         -device virtio-blk-pci,drive=rootfs
-        # Network: user-mode networking with DHCP server
-        -netdev user,id=net0,dhcpstart=10.0.2.15
+        # Network: user-mode networking with explicit DHCP configuration
+        -netdev user,id=net0,net=10.0.2.0/24,dhcpstart=10.0.2.15,host=10.0.2.2
         -device e1000,netdev=net0,mac=52:54:00:12:34:56
+        # Optional: Dump network traffic for debugging
+        # -object filter-dump,id=f1,netdev=net0,file=/tmp/qemu-netdump.pcap
     )
     
     echo "  Boot mode: UEFI (default)"
     echo "  Virtio block device attached as /dev/vda"
-    echo "  Network: user-mode (DHCP available at 10.0.2.2)"
+    echo "  Network: user-mode (DHCP server at 10.0.2.2, client range starts at 10.0.2.15)"
     echo "  Kernel parameters should include: root=/dev/vda1 rootfstype=ext2"
 fi
 

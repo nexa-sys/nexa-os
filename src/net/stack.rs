@@ -444,6 +444,17 @@ impl NetStack {
         frame: &[u8],
         tx: &mut TxBatch,
     ) -> Result<(), NetError> {
+        // Debug: Log received frames
+        static FRAME_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+        let count = FRAME_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        
+        if count < 10 || count % 50 == 0 {
+            crate::serial::_print(format_args!(
+                "[stack::handle_frame] Frame #{}, device={}, len={}\n",
+                count, device_index, frame.len()
+            ));
+        }
+        
         if device_index >= self.devices.len() {
             return Ok(());
         }
@@ -455,6 +466,14 @@ impl NetStack {
         }
 
         let ethertype = u16::from_be_bytes([frame[12], frame[13]]);
+        
+        if count < 10 {
+            crate::serial::_print(format_args!(
+                "[stack::handle_frame] Ethertype={:#x}\n",
+                ethertype
+            ));
+        }
+        
         match ethertype {
             ETHERTYPE_ARP => self.handle_arp(device_index, frame, tx),
             ETHERTYPE_IPV4 => self.handle_ipv4(device_index, frame, tx),

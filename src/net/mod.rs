@@ -287,6 +287,17 @@ pub fn poll() {
         return;
     }
 
+    // Debug: Check CR3 value during polling
+    static mut POLL_COUNT: u32 = 0;
+    unsafe {
+        POLL_COUNT += 1;
+        if POLL_COUNT % 200 == 1 {
+            let cr3: u64;
+            core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack));
+            crate::serial::_print(format_args!("[net::poll] CR3={:#x}\n", cr3));
+        }
+    }
+
     let stack = &mut state.stack;
     let slots = &mut state.slots;
 
