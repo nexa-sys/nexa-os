@@ -133,7 +133,7 @@ RUSTFLAGS="$STD_RUSTFLAGS" \
 echo "Building nslookup with std..."
 RUSTFLAGS="$STD_RUSTFLAGS" \
     cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release \
-    --bin nslookup --no-default-features
+    --bin nslookup --no-default-features --features use-nrlib-std
 
 # # Build udp_test with nrlib (no-std)
 # echo "Building udp_test with nrlib (no-std)..."

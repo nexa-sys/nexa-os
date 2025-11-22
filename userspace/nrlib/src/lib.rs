@@ -500,7 +500,7 @@ fn refresh_errno_from_kernel() -> i32 {
 }
 
 #[inline(always)]
-fn translate_ret_isize(ret: u64) -> isize {
+pub(crate) fn translate_ret_isize(ret: u64) -> isize {
     if ret == u64::MAX {
         refresh_errno_from_kernel();
         -1
@@ -511,7 +511,7 @@ fn translate_ret_isize(ret: u64) -> isize {
 }
 
 #[inline(always)]
-fn translate_ret_i32(ret: u64) -> i32 {
+pub(crate) fn translate_ret_i32(ret: u64) -> i32 {
     translate_ret_isize(ret) as i32
 }
 

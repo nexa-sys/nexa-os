@@ -129,27 +129,23 @@ impl From<SockAddrIn> for SockAddr {
 /// * `protocol` - Protocol number (0 for default)
 /// 
 /// # Returns
-/// Socket file descriptor on success, -1 on error
+/// Socket file descriptor on success, -1 on error (errno set)
 #[no_mangle]
 pub extern "C" fn socket(domain: i32, type_: i32, protocol: i32) -> i32 {
-    let result: i64;
-    unsafe {
-        asm!(
-            "syscall",
-            inlateout("rax") SYS_SOCKET => result,
-            in("rdi") domain as u64,
-            in("rsi") type_ as u64,
-            in("rdx") protocol as u64,
-            lateout("rcx") _,
-            lateout("r11") _,
-            options(nostack),
-        );
-    }
-    if result == u64::MAX as i64 {
-        -1
-    } else {
-        result as i32
-    }
+    // DEBUG: Print to confirm this function is being called
+    crate::stdout_write_str("[nrlib::socket] CALLED: domain=");
+    crate::stdout_write_str(if domain == 2 { "AF_INET" } else { "?" });
+    crate::stdout_write_str(", type=");
+    crate::stdout_write_str(if type_ == 2 { "SOCK_DGRAM" } else if type_ == 1 { "SOCK_STREAM" } else { "?" });
+    crate::stdout_write_str("\n");
+    
+    let ret = crate::syscall3(
+        SYS_SOCKET as u64,
+        domain as u64,
+        type_ as u64,
+        protocol as u64,
+    );
+    crate::translate_ret_i32(ret)
 }
 
 /// Bind socket to local address
@@ -160,27 +156,16 @@ pub extern "C" fn socket(domain: i32, type_: i32, protocol: i32) -> i32 {
 /// * `addrlen` - Size of address structure
 /// 
 /// # Returns
-/// 0 on success, -1 on error
+/// 0 on success, -1 on error (errno set)
 #[no_mangle]
 pub extern "C" fn bind(sockfd: i32, addr: *const SockAddr, addrlen: u32) -> i32 {
-    let result: i64;
-    unsafe {
-        asm!(
-            "syscall",
-            inlateout("rax") SYS_BIND => result,
-            in("rdi") sockfd as u64,
-            in("rsi") addr as u64,
-            in("rdx") addrlen as u64,
-            lateout("rcx") _,
-            lateout("r11") _,
-            options(nostack),
-        );
-    }
-    if result == u64::MAX as i64 {
-        -1
-    } else {
-        result as i32
-    }
+    let ret = crate::syscall3(
+        SYS_BIND as u64,
+        sockfd as u64,
+        addr as u64,
+        addrlen as u64,
+    );
+    crate::translate_ret_i32(ret)
 }
 
 /// Send datagram to specified address
@@ -279,27 +264,16 @@ pub extern "C" fn recvfrom(
 /// * `addrlen` - Size of address structure
 /// 
 /// # Returns
-/// 0 on success, -1 on error
+/// 0 on success, -1 on error (errno set)
 #[no_mangle]
 pub extern "C" fn connect(sockfd: i32, addr: *const SockAddr, addrlen: u32) -> i32 {
-    let result: i64;
-    unsafe {
-        asm!(
-            "syscall",
-            inlateout("rax") SYS_CONNECT => result,
-            in("rdi") sockfd as u64,
-            in("rsi") addr as u64,
-            in("rdx") addrlen as u64,
-            lateout("rcx") _,
-            lateout("r11") _,
-            options(nostack),
-        );
-    }
-    if result == u64::MAX as i64 {
-        -1
-    } else {
-        result as i32
-    }
+    let ret = crate::syscall3(
+        SYS_CONNECT as u64,
+        sockfd as u64,
+        addr as u64,
+        addrlen as u64,
+    );
+    crate::translate_ret_i32(ret)
 }
 
 /// Helper: Convert IPv4 address string to binary
@@ -369,6 +343,98 @@ pub fn format_ipv4(ip: [u8; 4]) -> [u8; 16] {
     }
     
     buf
+}
+
+/// Send data on a connected socket
+/// 
+/// # Arguments
+/// * `sockfd` - Socket file descriptor
+/// * `buf` - Buffer containing data to send
+/// * `len` - Length of data
+/// * `flags` - Send flags (usually 0)
+/// 
+/// # Returns
+/// Number of bytes sent on success, -1 on error
+#[no_mangle]
+pub extern "C" fn send(sockfd: i32, buf: *const u8, len: usize, flags: i32) -> isize {
+    // send() is equivalent to sendto() with dest_addr=NULL
+    sendto(sockfd, buf, len, flags, core::ptr::null(), 0)
+}
+
+/// Receive data from a connected socket
+/// 
+/// # Arguments
+/// * `sockfd` - Socket file descriptor
+/// * `buf` - Buffer to receive data
+/// * `len` - Maximum length to receive
+/// * `flags` - Receive flags (usually 0)
+/// 
+/// # Returns
+/// Number of bytes received on success, -1 on error
+#[no_mangle]
+pub extern "C" fn recv(sockfd: i32, buf: *mut u8, len: usize, flags: i32) -> isize {
+    // recv() is equivalent to recvfrom() with src_addr=NULL
+    recvfrom(sockfd, buf, len, flags, core::ptr::null_mut(), core::ptr::null_mut())
+}
+
+/// Get socket options
+/// 
+/// # Arguments
+/// * `sockfd` - Socket file descriptor
+/// * `level` - Protocol level (SOL_SOCKET, IPPROTO_TCP, etc.)
+/// * `optname` - Option name (SO_ERROR, SO_REUSEADDR, etc.)
+/// * `optval` - Pointer to buffer to receive option value
+/// * `optlen` - Pointer to size of buffer (in/out parameter)
+/// 
+/// # Returns
+/// 0 on success, -1 on error
+#[no_mangle]
+pub extern "C" fn getsockopt(
+    sockfd: i32,
+    level: i32,
+    optname: i32,
+    optval: *mut u8,
+    optlen: *mut u32,
+) -> i32 {
+    // For now, we'll implement a minimal version that handles common cases
+    // In a full implementation, this would make a syscall to the kernel
+    
+    const SOL_SOCKET: i32 = 1;
+    const SO_ERROR: i32 = 4;
+    const SO_TYPE: i32 = 3;
+    
+    unsafe {
+        if optval.is_null() || optlen.is_null() {
+            return -1;
+        }
+        
+        match (level, optname) {
+            (SOL_SOCKET, SO_ERROR) => {
+                // Return 0 (no error) for now
+                if *optlen >= 4 {
+                    *(optval as *mut i32) = 0;
+                    *optlen = 4;
+                    0
+                } else {
+                    -1
+                }
+            }
+            (SOL_SOCKET, SO_TYPE) => {
+                // Return socket type - we don't track this yet, so return DGRAM
+                if *optlen >= 4 {
+                    *(optval as *mut i32) = SOCK_DGRAM;
+                    *optlen = 4;
+                    0
+                } else {
+                    -1
+                }
+            }
+            _ => {
+                // Unsupported option
+                -1
+            }
+        }
+    }
 }
 
 #[cfg(test)]

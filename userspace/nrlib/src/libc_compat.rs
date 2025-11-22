@@ -1943,3 +1943,7 @@ pub unsafe extern "C" fn gai_strerror(ecode: c_int) -> *const c_char {
     };
     msg.as_ptr() as *const c_char
 }
+
+// Note: Network functions (socket, bind, connect, send, recv, etc.) are defined
+// in socket.rs and automatically exported via #[no_mangle] pub extern "C"
+// They are available for linking by std and other C-compatible code.
