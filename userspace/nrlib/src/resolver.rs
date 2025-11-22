@@ -258,9 +258,19 @@ impl Resolver {
     /// Perform DNS query for A record (hostname -> IPv4)
     /// Returns the first IPv4 address found in the response
     pub fn query_dns(&self, hostname: &str, nameserver_ip: [u8; 4]) -> Option<[u8; 4]> {
+        use super::socket::bind;
+        
         // Create UDP socket
         let sockfd = socket(AF_INET, SOCK_DGRAM, 0);
         if sockfd < 0 {
+            return None;
+        }
+
+        // Bind to any local address and port (0.0.0.0:0)
+        // This is essential for UDP sockets to work properly
+        let local_addr = SockAddrIn::new([0, 0, 0, 0], 0);
+        let local_sockaddr = SockAddr::from(local_addr);
+        if bind(sockfd, &local_sockaddr, mem::size_of::<SockAddr>() as u32) < 0 {
             return None;
         }
 
@@ -491,6 +501,43 @@ pub extern "C" fn getaddrinfo(
             Err(_) => return EAI_NONAME,
         };
 
+        // Parse service (port number) if provided
+        let mut port: u16 = 0;
+        if !service.is_null() {
+            let mut service_buf = [0u8; 16];
+            let mut slen = 0;
+            while slen < 15 {
+                let byte = *service.add(slen);
+                if byte == 0 {
+                    break;
+                }
+                service_buf[slen] = byte;
+                slen += 1;
+            }
+            
+            if slen > 0 {
+                if let Ok(service_str) = core::str::from_utf8(&service_buf[..slen]) {
+                    // Try to parse as numeric port
+                    if let Ok(p) = service_str.parse::<u16>() {
+                        port = p;
+                    } else {
+                        // TODO: Look up service name in /etc/services
+                        // For now, common services:
+                        port = match service_str {
+                            "http" => 80,
+                            "https" => 443,
+                            "ftp" => 21,
+                            "ssh" => 22,
+                            "telnet" => 23,
+                            "smtp" => 25,
+                            "dns" => 53,
+                            _ => return EAI_SERVICE,
+                        };
+                    }
+                }
+            }
+        }
+
         // Get resolver and ensure it's initialized
         let resolver = match get_resolver() {
             Some(r) => r,
@@ -501,6 +548,26 @@ pub extern "C" fn getaddrinfo(
         let ip = match resolver.resolve(hostname) {
             Some(ip) => ip,
             None => return EAI_NONAME,
+        };
+
+        // Determine socket type and protocol from hints
+        let (socktype, protocol) = if !hints.is_null() {
+            let hints_ref = &*hints;
+            let st = if hints_ref.ai_socktype != 0 {
+                hints_ref.ai_socktype
+            } else {
+                SOCK_STREAM // Default to TCP
+            };
+            let proto = if hints_ref.ai_protocol != 0 {
+                hints_ref.ai_protocol
+            } else if st == SOCK_STREAM {
+                6 // IPPROTO_TCP
+            } else {
+                17 // IPPROTO_UDP
+            };
+            (st, proto)
+        } else {
+            (SOCK_STREAM, 6) // Default to TCP
         };
 
         // Allocate AddrInfo structure manually (malloc)
@@ -516,15 +583,15 @@ pub extern "C" fn getaddrinfo(
             return EAI_FAIL;
         }
 
-        // Initialize SockAddrIn
-        *addr_ptr = SockAddrIn::new(ip, 0);
+        // Initialize SockAddrIn with resolved IP and port
+        *addr_ptr = SockAddrIn::new(ip, port);
 
         // Initialize AddrInfo
         let addrinfo = &mut *addrinfo_ptr;
         addrinfo.ai_flags = 0;
         addrinfo.ai_family = AF_INET;
-        addrinfo.ai_socktype = SOCK_DGRAM;
-        addrinfo.ai_protocol = 17; // IPPROTO_UDP
+        addrinfo.ai_socktype = socktype;
+        addrinfo.ai_protocol = protocol;
         addrinfo.ai_addrlen = core::mem::size_of::<SockAddrIn>() as u32;
         addrinfo.ai_addr = addr_ptr;
         addrinfo.ai_canonname = core::ptr::null_mut();

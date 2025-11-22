@@ -86,7 +86,7 @@ impl SockAddrIn {
     pub fn new(ip: [u8; 4], port: u16) -> Self {
         Self {
             sin_family: AF_INET as u16,
-            sin_port: port.to_be(),  // Host to network byte order
+            sin_port: port,  // Store port in host byte order; conversion happens in From<SockAddrIn>
             sin_addr: u32::from_be_bytes(ip),
             sin_zero: [0; 8],
         }
@@ -99,7 +99,7 @@ impl SockAddrIn {
 
     /// Get the port number in host byte order
     pub fn port(&self) -> u16 {
-        u16::from_be(self.sin_port)
+        self.sin_port
     }
 }
 
@@ -114,9 +114,9 @@ pub struct SockAddr {
 impl From<SockAddrIn> for SockAddr {
     fn from(addr: SockAddrIn) -> Self {
         let mut sa_data = [0u8; 14];
-        // Port (2 bytes)
+        // Port (2 bytes, convert to network byte order)
         sa_data[0..2].copy_from_slice(&addr.sin_port.to_be_bytes());
-        // IPv4 address (4 bytes)
+        // IPv4 address (4 bytes, already in network byte order)
         sa_data[2..6].copy_from_slice(&addr.sin_addr.to_be_bytes());
         // Rest is zero padding (matches sin_zero)
         Self {
