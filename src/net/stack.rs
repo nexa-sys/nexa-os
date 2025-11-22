@@ -6,6 +6,7 @@ use super::drivers::NetError;
 use super::ethernet::{EtherType, EthernetFrame, MacAddress};
 use super::ipv4::{IpProtocol, Ipv4Address, Ipv4Header};
 use super::netlink::{NetlinkSubsystem, NetlinkSocket};
+use super::tcp::TcpSocket;
 use super::udp::{UdpDatagram, UdpDatagramMut, UdpHeader};
 
 pub const MAX_FRAME_SIZE: usize = 1536;
@@ -17,6 +18,7 @@ const PROTO_TCP: u8 = 6;
 const PROTO_UDP: u8 = 17;
 const LISTEN_PORT: u16 = 8080;
 const MAX_UDP_SOCKETS: usize = 16;
+const MAX_TCP_SOCKETS: usize = 16;
 pub const UDP_MAX_PAYLOAD: usize = MAX_FRAME_SIZE - 14 - 20 - 8;
 const UDP_RX_QUEUE_LEN: usize = 8;
 
@@ -229,6 +231,7 @@ const MAX_PENDING_PACKETS: usize = 8;
 pub struct NetStack {
     devices: [DeviceInfo; super::MAX_NET_DEVICES],
     tcp: TcpEndpoint,
+    tcp_sockets: [TcpSocket; MAX_TCP_SOCKETS],
     udp_sockets: [UdpSocket; MAX_UDP_SOCKETS],
     pub netlink: NetlinkSubsystem,
     arp_cache: ArpCache,
@@ -256,6 +259,12 @@ impl NetStack {
         Self {
             devices,
             tcp,
+            tcp_sockets: [
+                TcpSocket::new(), TcpSocket::new(), TcpSocket::new(), TcpSocket::new(),
+                TcpSocket::new(), TcpSocket::new(), TcpSocket::new(), TcpSocket::new(),
+                TcpSocket::new(), TcpSocket::new(), TcpSocket::new(), TcpSocket::new(),
+                TcpSocket::new(), TcpSocket::new(), TcpSocket::new(), TcpSocket::new(),
+            ],
             udp_sockets: [UdpSocket::empty(); MAX_UDP_SOCKETS],
             netlink: NetlinkSubsystem::new(),
             arp_cache: ArpCache::new(),
@@ -489,6 +498,101 @@ impl NetStack {
         Ok(self.udp_sockets[socket_idx].rx_len > 0)
     }
 
+    /// Create a new TCP socket
+    pub fn tcp_socket(&mut self) -> Result<usize, NetError> {
+        for (idx, socket) in self.tcp_sockets.iter_mut().enumerate() {
+            if !socket.in_use {
+                return Ok(idx);
+            }
+        }
+        Err(NetError::TooManyConnections)
+    }
+
+    /// Connect TCP socket to remote address
+    pub fn tcp_connect(
+        &mut self,
+        socket_idx: usize,
+        device_index: usize,
+        remote_ip: [u8; 4],
+        remote_port: u16,
+        local_port: u16,
+    ) -> Result<(), NetError> {
+        if socket_idx >= MAX_TCP_SOCKETS {
+            return Err(NetError::InvalidSocket);
+        }
+        if device_index >= self.devices.len() || !self.devices[device_index].present {
+            return Err(NetError::InvalidDevice);
+        }
+
+        let device = &self.devices[device_index];
+        let socket = &mut self.tcp_sockets[socket_idx];
+
+        socket.connect(
+            Ipv4Address::from(device.ip),
+            local_port,
+            Ipv4Address::from(remote_ip),
+            remote_port,
+            MacAddress(device.mac),
+            device_index,
+        )
+    }
+
+    /// Send data on TCP socket
+    pub fn tcp_send(
+        &mut self,
+        socket_idx: usize,
+        data: &[u8],
+    ) -> Result<usize, NetError> {
+        if socket_idx >= MAX_TCP_SOCKETS {
+            return Err(NetError::InvalidSocket);
+        }
+        self.tcp_sockets[socket_idx].send(data)
+    }
+
+    /// Receive data from TCP socket
+    pub fn tcp_recv(
+        &mut self,
+        socket_idx: usize,
+        buffer: &mut [u8],
+    ) -> Result<usize, NetError> {
+        if socket_idx >= MAX_TCP_SOCKETS {
+            return Err(NetError::InvalidSocket);
+        }
+        self.tcp_sockets[socket_idx].recv(buffer)
+    }
+
+    /// Close TCP socket
+    pub fn tcp_close(&mut self, socket_idx: usize) -> Result<(), NetError> {
+        if socket_idx >= MAX_TCP_SOCKETS {
+            return Err(NetError::InvalidSocket);
+        }
+        self.tcp_sockets[socket_idx].close()
+    }
+
+    /// Check if TCP socket is connected
+    pub fn tcp_is_connected(&self, socket_idx: usize) -> Result<bool, NetError> {
+        if socket_idx >= MAX_TCP_SOCKETS {
+            return Err(NetError::InvalidSocket);
+        }
+        Ok(self.tcp_sockets[socket_idx].state == super::tcp::TcpState::Established)
+    }
+
+    /// Check if TCP socket has data available
+    pub fn tcp_has_data(&self, socket_idx: usize) -> Result<bool, NetError> {
+        if socket_idx >= MAX_TCP_SOCKETS {
+            return Err(NetError::InvalidSocket);
+        }
+        Ok(self.tcp_sockets[socket_idx].has_data())
+    }
+
+    /// Get TCP socket state
+    pub fn tcp_get_state(&self, socket_idx: usize) -> Result<super::tcp::TcpState, NetError> {
+        if socket_idx >= MAX_TCP_SOCKETS {
+            return Err(NetError::InvalidSocket);
+        }
+        Ok(self.tcp_sockets[socket_idx].state)
+    }
+
     /// Send UDP datagram
     pub fn udp_send(
         &mut self,
@@ -676,7 +780,17 @@ impl NetStack {
         now_ms: u64,
         tx: &mut TxBatch,
     ) -> Result<(), NetError> {
-        self.tcp.poll(device_index, now_ms, tx)
+        // Poll old TCP endpoint for backwards compatibility
+        self.tcp.poll(device_index, now_ms, tx)?;
+        
+        // Poll all TCP sockets
+        for socket in &mut self.tcp_sockets {
+            if socket.in_use && socket.device_idx == Some(device_index) {
+                socket.poll(tx)?;
+            }
+        }
+        
+        Ok(())
     }
 
     fn handle_arp(
@@ -809,9 +923,13 @@ impl NetStack {
 
         match proto {
             PROTO_ICMP => self.handle_icmp(device_index, frame, ihl, total_len, tx),
-            PROTO_TCP => self
-                .tcp
-                .handle_segment(device_index, frame, ihl, total_len, tx),
+            PROTO_TCP => {
+                // First handle the old TCP endpoint (for backwards compatibility)
+                self.tcp.handle_segment(device_index, frame, ihl, total_len, tx)?;
+                
+                // Then handle new TCP sockets
+                self.handle_tcp(device_index, frame, ihl, total_len, tx)
+            }
             PROTO_UDP => self.handle_udp(device_index, frame, ihl, total_len),
             _ => Ok(()),
         }
@@ -978,6 +1096,41 @@ impl NetStack {
                 frame[26], frame[27], frame[28], frame[29],
                 src_port
             );
+        }
+
+        Ok(())
+    }
+
+    fn handle_tcp(
+        &mut self,
+        device_index: usize,
+        frame: &[u8],
+        ihl: usize,
+        total_len: usize,
+        tx: &mut TxBatch,
+    ) -> Result<(), NetError> {
+        if total_len < ihl + 20 {
+            return Ok(());
+        }
+
+        let tcp_offset = 14 + ihl;
+        let tcp_data = &frame[tcp_offset..14 + total_len];
+        
+        // Extract source IP and MAC
+        let src_ip = Ipv4Address::from(&frame[26..30]);
+        let src_mac = MacAddress([frame[6], frame[7], frame[8], frame[9], frame[10], frame[11]]);
+
+        // Try to find matching socket
+        for socket in &mut self.tcp_sockets {
+            if !socket.in_use {
+                continue;
+            }
+            
+            if socket.device_idx != Some(device_index) {
+                continue;
+            }
+
+            socket.process_segment(src_ip, src_mac, tcp_data, tx)?;
         }
 
         Ok(())

@@ -147,11 +147,13 @@ const CLOCK_MONOTONIC: i32 = 1;
 const CLOCK_BOOTTIME: i32 = 7;
 
 // Socket domain and protocol constants (subset of POSIX)
-const AF_INET: i32 = 2;      // IPv4
-const AF_NETLINK: i32 = 16;  // Netlink
-const SOCK_DGRAM: i32 = 2;   // UDP
-const SOCK_RAW: i32 = 3;     // Raw socket
-const IPPROTO_UDP: i32 = 17; // UDP
+const AF_INET: i32 = 2;       // IPv4
+const AF_NETLINK: i32 = 16;   // Netlink
+const SOCK_STREAM: i32 = 1;   // TCP
+const SOCK_DGRAM: i32 = 2;    // UDP
+const SOCK_RAW: i32 = 3;      // Raw socket
+const IPPROTO_TCP: i32 = 6;   // TCP
+const IPPROTO_UDP: i32 = 17;  // UDP
 
 // Socket option constants
 const SOL_SOCKET: i32 = 1;   // Socket level
@@ -450,6 +452,41 @@ fn syscall_write(fd: u64, buf: u64, count: u64) -> u64 {
                     posix::set_errno(posix::errno::EBADF);
                     return u64::MAX;
                 }
+                FileBacking::Socket(sock_handle) => {
+                    // Handle TCP socket write
+                    if sock_handle.socket_type == SOCK_STREAM {
+                        if sock_handle.socket_index == usize::MAX {
+                            posix::set_errno(posix::errno::EBADF);
+                            return u64::MAX;
+                        }
+
+                        if !user_buffer_in_range(buf, count) {
+                            posix::set_errno(posix::errno::EFAULT);
+                            return u64::MAX;
+                        }
+
+                        let data = core::slice::from_raw_parts(buf as *const u8, count as usize);
+                        
+                        let result = crate::net::with_net_stack(|stack| {
+                            stack.tcp_send(sock_handle.socket_index, data)
+                        });
+
+                        match result {
+                            Some(Ok(bytes_sent)) => {
+                                posix::set_errno(0);
+                                return bytes_sent as u64;
+                            }
+                            Some(Err(_)) => {
+                                posix::set_errno(posix::errno::EIO);
+                                return u64::MAX;
+                            }
+                            None => {
+                                posix::set_errno(posix::errno::ENETDOWN);
+                                return u64::MAX;
+                            }
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -535,8 +572,37 @@ fn syscall_read(fd: u64, buf: *mut u8, count: usize) -> u64 {
                     posix::set_errno(posix::errno::EBADF);
                     return u64::MAX;
                 }
-                FileBacking::Socket(_) => {
-                    // Socket read not yet implemented
+                FileBacking::Socket(sock_handle) => {
+                    // Handle TCP socket read
+                    if sock_handle.socket_type == SOCK_STREAM {
+                        if sock_handle.socket_index == usize::MAX {
+                            posix::set_errno(posix::errno::EBADF);
+                            return u64::MAX;
+                        }
+
+                        let buffer = core::slice::from_raw_parts_mut(buf, count);
+                        
+                        let result = crate::net::with_net_stack(|stack| {
+                            stack.tcp_recv(sock_handle.socket_index, buffer)
+                        });
+
+                        match result {
+                            Some(Ok(bytes_recv)) => {
+                                posix::set_errno(0);
+                                return bytes_recv as u64;
+                            }
+                            Some(Err(_)) => {
+                                posix::set_errno(posix::errno::EAGAIN);
+                                return u64::MAX;
+                            }
+                            None => {
+                                posix::set_errno(posix::errno::ENETDOWN);
+                                return u64::MAX;
+                            }
+                        }
+                    }
+                    
+                    // UDP socket read not yet implemented via read()
                     posix::set_errno(posix::errno::ENOTSUP);
                     return u64::MAX;
                 }
@@ -705,6 +771,14 @@ fn syscall_close(fd: u64) -> u64 {
                         stack.netlink_close(sock_handle.socket_index)
                     }) {
                         crate::kinfo!("Closed netlink socket {} for fd {}", sock_handle.socket_index, fd);
+                    }
+                }
+                // Close TCP socket
+                else if sock_handle.socket_type == SOCK_STREAM && sock_handle.socket_index != usize::MAX {
+                    if let Some(_) = crate::net::with_net_stack(|stack| {
+                        stack.tcp_close(sock_handle.socket_index)
+                    }) {
+                        crate::kinfo!("Closed TCP socket {} for fd {}", sock_handle.socket_index, fd);
                     }
                 }
                 // Note: UDP sockets are not tracked per-fd, they're managed via port bindings
@@ -2279,7 +2353,7 @@ fn syscall_sched_yield() -> u64 {
 }
 
 /// Get current time from specified clock
-fn syscall_clock_gettime(clk_id: i32, tp: *mut TimeSpec) -> u64 {
+fn syscall_clock_gettime(_clk_id: i32, tp: *mut TimeSpec) -> u64 {
     if tp.is_null() {
         posix::set_errno(posix::errno::EFAULT);
         return u64::MAX;
@@ -2823,7 +2897,7 @@ fn syscall_uefi_map_net_mmio(index: usize) -> u64 {
 }
 
 /// SYS_SOCKET - Create a socket
-/// Supports: AF_INET + SOCK_DGRAM (UDP)
+/// Supports: AF_INET + SOCK_DGRAM (UDP) and AF_INET + SOCK_STREAM (TCP)
 /// Returns: socket fd on success, -1 on error
 fn syscall_socket(domain: i32, socket_type: i32, protocol: i32) -> u64 {
     crate::kinfo!("[SYS_SOCKET] domain={} type={} protocol={}", domain, socket_type, protocol);
@@ -2835,17 +2909,30 @@ fn syscall_socket(domain: i32, socket_type: i32, protocol: i32) -> u64 {
         return u64::MAX;
     }
 
-    if socket_type != SOCK_DGRAM && socket_type != SOCK_RAW {
+    if socket_type != SOCK_DGRAM && socket_type != SOCK_RAW && socket_type != SOCK_STREAM {
         crate::kwarn!("[SYS_SOCKET] Unsupported socket type: {}", socket_type);
-        posix::set_errno(posix::errno::ENOSYS); // Only UDP (SOCK_DGRAM) and Netlink (SOCK_RAW/DGRAM) supported
+        posix::set_errno(posix::errno::ENOSYS);
         return u64::MAX;
     }
 
-    if protocol != 0 && protocol != IPPROTO_UDP && domain != AF_NETLINK {
+    if protocol != 0 && protocol != IPPROTO_UDP && protocol != IPPROTO_TCP && domain != AF_NETLINK {
         crate::kwarn!("[SYS_SOCKET] Unsupported protocol: {}", protocol);
         posix::set_errno(posix::errno::EINVAL);
         return u64::MAX;
     }
+
+    // Determine actual protocol if not specified
+    let actual_protocol = if protocol == 0 {
+        if socket_type == SOCK_STREAM {
+            IPPROTO_TCP
+        } else if socket_type == SOCK_DGRAM {
+            IPPROTO_UDP
+        } else {
+            0
+        }
+    } else {
+        protocol
+    };
 
     // Find free file descriptor
     unsafe {
@@ -2867,6 +2954,20 @@ fn syscall_socket(domain: i32, socket_type: i32, protocol: i32) -> u64 {
                         posix::set_errno(posix::errno::ENETDOWN);
                         return u64::MAX;
                     }
+                } else if socket_type == SOCK_STREAM {
+                    // Allocate TCP socket immediately
+                    if let Some(res) = crate::net::with_net_stack(|stack| stack.tcp_socket()) {
+                        match res {
+                            Ok(i) => socket_index = i,
+                            Err(_) => {
+                                posix::set_errno(posix::errno::ENOMEM);
+                                return u64::MAX;
+                            }
+                        }
+                    } else {
+                        posix::set_errno(posix::errno::ENETDOWN);
+                        return u64::MAX;
+                    }
                 }
 
                 // Socket will be bound later on bind() for UDP
@@ -2875,7 +2976,7 @@ fn syscall_socket(domain: i32, socket_type: i32, protocol: i32) -> u64 {
                     socket_index, 
                     domain,
                     socket_type,
-                    protocol: if domain == AF_NETLINK { 0 } else { IPPROTO_UDP },
+                    protocol: if domain == AF_NETLINK { 0 } else { actual_protocol },
                     device_index: 0, // Default to first network device
                     broadcast_enabled: false,
                     recv_timeout_ms: 0, // 0 = infinite blocking
@@ -2895,7 +2996,8 @@ fn syscall_socket(domain: i32, socket_type: i32, protocol: i32) -> u64 {
 
                 FILE_HANDLES[idx] = Some(handle);
                 let fd = FD_BASE + idx as u64;
-                crate::kinfo!("[SYS_SOCKET] Created UDP socket at fd {}", fd);
+                crate::kinfo!("[SYS_SOCKET] Created {} socket at fd {}", 
+                    if socket_type == SOCK_STREAM { "TCP" } else { "UDP" }, fd);
                 posix::set_errno(0);
                 return fd;
             }
@@ -3463,11 +3565,8 @@ fn syscall_connect(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
             return u64::MAX;
         };
 
-        // Verify it's a UDP socket
-        if sock_handle.domain != AF_INET
-            || sock_handle.socket_type != SOCK_DGRAM
-            || sock_handle.protocol != IPPROTO_UDP
-        {
+        // Verify it's an IPv4 socket (UDP or TCP)
+        if sock_handle.domain != AF_INET {
             posix::set_errno(posix::errno::ENOTSUP);
             return u64::MAX;
         }
@@ -3502,14 +3601,53 @@ fn syscall_connect(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
         }
 
         crate::kinfo!(
-            "[SYS_CONNECT] UDP socket fd {} connected to {}.{}.{}.{}:{}",
+            "[SYS_CONNECT] {} socket fd {} connecting to {}.{}.{}.{}:{}",
+            if sock_handle.socket_type == SOCK_STREAM { "TCP" } else { "UDP" },
             sockfd, ip[0], ip[1], ip[2], ip[3], port
         );
 
-        // For UDP, connect() just stores the default destination
-        // It doesn't actually establish a connection
-        posix::set_errno(0);
-        0
+        if sock_handle.socket_type == SOCK_STREAM {
+            // TCP socket - actually establish connection
+            if sock_handle.socket_index == usize::MAX {
+                posix::set_errno(posix::errno::EINVAL);
+                return u64::MAX;
+            }
+
+            // Allocate ephemeral port for local side
+            let local_port = 49152 + (sock_handle.socket_index as u16 * 123) % 16384;
+
+            let result = crate::net::with_net_stack(|stack| {
+                stack.tcp_connect(
+                    sock_handle.socket_index,
+                    sock_handle.device_index,
+                    ip,
+                    port,
+                    local_port,
+                )
+            });
+
+            match result {
+                Some(Ok(())) => {
+                    crate::kinfo!("[SYS_CONNECT] TCP connection initiated");
+                    posix::set_errno(0);
+                    0
+                }
+                Some(Err(_)) => {
+                    crate::kwarn!("[SYS_CONNECT] TCP connect failed");
+                    posix::set_errno(posix::errno::ECONNREFUSED);
+                    u64::MAX
+                }
+                None => {
+                    posix::set_errno(posix::errno::ENETDOWN);
+                    u64::MAX
+                }
+            }
+        } else {
+            // UDP socket - just stores the default destination
+            // It doesn't actually establish a connection
+            posix::set_errno(0);
+            0
+        }
     }
 }
 

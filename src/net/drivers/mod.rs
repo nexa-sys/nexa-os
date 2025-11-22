@@ -26,6 +26,10 @@ pub enum NetError {
     ChecksumFailed,
     InvalidPacket,
     OperationNotSupported,
+    InvalidState,
+    ConnectionClosed,
+    WouldBlock,
+    NoDevice,
 }
 
 pub enum DriverInstance {

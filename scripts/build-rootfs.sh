@@ -66,6 +66,10 @@ path = "../../userspace/uefi_compatd.rs"
 name = "ip"
 path = "../../userspace/ip.rs"
 
+[[bin]]
+name = "nurl"
+path = "../../userspace/nurl.rs"
+
 [profile.release]
 panic = "abort"
 opt-level = 2
@@ -159,6 +163,12 @@ RUSTFLAGS="$STD_RUSTFLAGS" \
     cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release \
     --bin dhcp
 
+# Build nurl tool
+echo "Building nurl tool with std..."
+RUSTFLAGS="$STD_RUSTFLAGS" \
+    cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release \
+    --bin nurl
+
 # Copy binaries to rootfs
 echo "Copying binaries to rootfs..."
 cp "target/x86_64-nexaos-userspace/release/ni" "$ROOTFS_DIR/sbin/ni"
@@ -170,6 +180,7 @@ cp "target/x86_64-nexaos-userspace/release/nslookup" "$ROOTFS_DIR/bin/nslookup"
 cp "target/x86_64-nexaos-userspace/release/uefi-compatd" "$ROOTFS_DIR/sbin/uefi-compatd"
 cp "target/x86_64-nexaos-userspace/release/ip" "$ROOTFS_DIR/bin/ip"
 cp "target/x86_64-nexaos-userspace/release/dhcp" "$ROOTFS_DIR/bin/dhcp"
+cp "target/x86_64-nexaos-userspace/release/nurl" "$ROOTFS_DIR/bin/nurl"
 
 # Strip symbols
 strip --strip-all "$ROOTFS_DIR/sbin/ni" 2>/dev/null || true
@@ -181,6 +192,7 @@ strip --strip-all "$ROOTFS_DIR/bin/nslookup" 2>/dev/null || true
 strip --strip-all "$ROOTFS_DIR/sbin/uefi-compatd" 2>/dev/null || true
 strip --strip-all "$ROOTFS_DIR/bin/ip" 2>/dev/null || true
 strip --strip-all "$ROOTFS_DIR/bin/dhcp" 2>/dev/null || true
+strip --strip-all "$ROOTFS_DIR/bin/nurl" 2>/dev/null || true
 
 # Copy dynamic linker for dynamically linked programs
 echo "Copying dynamic linker..."

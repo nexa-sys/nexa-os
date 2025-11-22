@@ -35,6 +35,8 @@ pub mod errno {
     pub const ENETDOWN: i32 = 100; // Network is down
     pub const ENETUNREACH: i32 = 101; // Network is unreachable
     pub const ECONNRESET: i32 = 104; // Connection reset by peer
+    pub const ECONNREFUSED: i32 = 111; // Connection refused
+    pub const EINPROGRESS: i32 = 115; // Operation in progress
 }
 
 /// POSIX file type enumeration used by the VFS layer.
