@@ -171,18 +171,26 @@ fn do_addr() {
         return;
     }
 
-    // Receive link info
+    // Receive all link info messages until DONE
     let mut buf = [0u8; 4096];
-    let len = unsafe { recvfrom(fd, buf.as_mut_ptr() as *mut std::ffi::c_void, 4096, 0, std::ptr::null_mut(), std::ptr::null_mut()) };
-    
-    if len < 0 {
-        println!("Failed to receive link info");
-        unsafe { close(fd) };
-        return;
-    }
+    loop {
+        let len = unsafe { recvfrom(fd, buf.as_mut_ptr() as *mut std::ffi::c_void, 4096, 0, std::ptr::null_mut(), std::ptr::null_mut()) };
+        
+        if len < 0 {
+            println!("Failed to receive link info");
+            unsafe { close(fd) };
+            return;
+        }
 
-    // Parse link info
-    parse_link_info(&buf[..len as usize]);
+        if len >= 16 {
+            let hdr = unsafe { &*(buf.as_ptr() as *const NlMsgHdr) };
+            if hdr.nlmsg_type == 3 { // NLMSG_DONE
+                break;
+            }
+            // Parse this link info message
+            parse_link_info(&buf[..len as usize]);
+        }
+    }
 
     // Now get address information
     let req = NlMsgHdr {
@@ -199,13 +207,25 @@ fn do_addr() {
         return;
     }
 
-    // Receive address info
-    let len = unsafe { recvfrom(fd, buf.as_mut_ptr() as *mut std::ffi::c_void, 4096, 0, std::ptr::null_mut(), std::ptr::null_mut()) };
-    
-    if len < 0 {
-        println!("Failed to receive address info");
-    } else {
-        parse_addr_info(&buf[..len as usize]);
+    // Receive all address info messages until DONE
+    buf.fill(0);
+    loop {
+        let len = unsafe { recvfrom(fd, buf.as_mut_ptr() as *mut std::ffi::c_void, 4096, 0, std::ptr::null_mut(), std::ptr::null_mut()) };
+        
+        if len < 0 {
+            println!("Failed to receive address info (no response)");
+            break;
+        } else if len == 0 {
+            println!("No address information available");
+            break;
+        } else if len >= 16 {
+            let hdr = unsafe { &*(buf.as_ptr() as *const NlMsgHdr) };
+            if hdr.nlmsg_type == 3 { // NLMSG_DONE
+                break;
+            }
+            // Parse this address info message
+            parse_addr_info(&buf[..len as usize]);
+        }
     }
 
     unsafe { close(fd) };
@@ -279,7 +299,13 @@ fn parse_link_info(data: &[u8]) {
 }
 
 fn parse_addr_info(data: &[u8]) {
+    if data.is_empty() {
+        println!("    (No address data received)");
+        return;
+    }
+    
     let mut offset = 0;
+    let mut addr_count = 0;
     
     while offset + 16 <= data.len() {
         let hdr = unsafe { &*(data.as_ptr().add(offset) as *const NlMsgHdr) };
@@ -288,7 +314,7 @@ fn parse_addr_info(data: &[u8]) {
             break;
         }
         if hdr.nlmsg_type == 2 { // NLMSG_ERROR
-            println!("Netlink error in address info");
+            println!("    Netlink error in address info");
             break;
         }
         
@@ -322,6 +348,7 @@ fn parse_addr_info(data: &[u8]) {
                 
                 if !ip_addr.is_empty() {
                     println!("    inet {}/{} scope global", ip_addr, ifaddr.ifa_prefixlen);
+                    addr_count += 1;
                 }
             }
         }
@@ -329,5 +356,9 @@ fn parse_addr_info(data: &[u8]) {
         let aligned_msg_len = ((hdr.nlmsg_len + 3) & !3) as usize;
         if aligned_msg_len == 0 || offset + aligned_msg_len > data.len() { break; }
         offset += aligned_msg_len;
+    }
+    
+    if addr_count == 0 {
+        println!("    (No addresses configured)");
     }
 }

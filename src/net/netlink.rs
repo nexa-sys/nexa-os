@@ -202,7 +202,7 @@ impl NetlinkSubsystem {
 
     /// Send netlink message (queues it for the socket)
     pub fn send_message(&mut self, socket_idx: usize, message: &[u8]) -> Result<(), NetError> {
-        crate::kinfo!("[netlink::send_message] socket_idx={}, msg_len={}", socket_idx, message.len());
+        crate::serial::_print(format_args!("[netlink::send_message] socket_idx={}, msg_len={}\n", socket_idx, message.len()));
         if socket_idx >= MAX_NETLINK_SOCKETS {
             crate::kinfo!("[netlink::send_message] Invalid socket index");
             return Err(NetError::InvalidSocket);
@@ -225,7 +225,7 @@ impl NetlinkSubsystem {
 
         socket.rx_queue_tail = (socket.rx_queue_tail + 1) % NETLINK_RX_QUEUE_LEN;
         socket.rx_queue_len += 1;
-        crate::kinfo!("[netlink::send_message] Message queued, rx_queue_len now {}", socket.rx_queue_len);
+        crate::serial::_print(format_args!("[netlink::send_message] Message queued, rx_queue_len now {}\n", socket.rx_queue_len));
         Ok(())
     }
 
@@ -235,7 +235,7 @@ impl NetlinkSubsystem {
         socket_idx: usize,
         buffer: &mut [u8],
     ) -> Result<usize, NetError> {
-        crate::kinfo!("[netlink::recv_message] socket_idx={}, buffer_len={}", socket_idx, buffer.len());
+        crate::serial::_print(format_args!("[netlink::recv_message] socket_idx={}, buffer_len={}\n", socket_idx, buffer.len()));
         if socket_idx >= MAX_NETLINK_SOCKETS {
             crate::kinfo!("[netlink::recv_message] Invalid socket index");
             return Err(NetError::InvalidSocket);
@@ -246,7 +246,7 @@ impl NetlinkSubsystem {
         }
 
         let socket = &mut self.sockets[socket_idx];
-        crate::kinfo!("[netlink::recv_message] rx_queue_len={}", socket.rx_queue_len);
+        crate::serial::_print(format_args!("[netlink::recv_message] rx_queue_len={}\n", socket.rx_queue_len));
         if socket.rx_queue_len == 0 {
             crate::kinfo!("[netlink::recv_message] RX queue empty");
             return Err(NetError::RxQueueEmpty);
@@ -254,12 +254,13 @@ impl NetlinkSubsystem {
 
         let slot = socket.rx_queue_head;
         let len = core::cmp::min(buffer.len(), self.rx_queues[socket_idx][slot].len);
+        crate::serial::_print(format_args!("[netlink::recv_message] Reading from slot {}, msg_len={}\n", slot, self.rx_queues[socket_idx][slot].len));
         buffer[..len].copy_from_slice(&self.rx_queues[socket_idx][slot].data[..len]);
 
         socket.rx_queue_head = (socket.rx_queue_head + 1) % NETLINK_RX_QUEUE_LEN;
         socket.rx_queue_len -= 1;
 
-        crate::kinfo!("[netlink::recv_message] Returning {} bytes", len);
+        crate::serial::_print(format_args!("[netlink::recv_message] Returning {} bytes, rx_queue_len now {}\n", len, socket.rx_queue_len));
         Ok(len)
     }
 

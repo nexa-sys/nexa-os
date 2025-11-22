@@ -3076,24 +3076,29 @@ fn syscall_sendto(
             return u64::MAX;
         };
 
+        crate::serial::_print(format_args!("[SYS_SENDTO] Socket domain={}, type={}, index={}\n", 
+            sock_handle.domain, sock_handle.socket_type, sock_handle.socket_index));
+        crate::serial::_print(format_args!("[SYS_SENDTO] AF_NETLINK={}, domain==AF_NETLINK: {}\n", 
+            AF_NETLINK, sock_handle.domain == AF_NETLINK));
+
         if sock_handle.domain == AF_NETLINK {
             // Netlink doesn't require destination address
             let data = slice::from_raw_parts(buf, len);
-            crate::kinfo!("[SYS_SENDTO] Netlink sendto: socket_idx={}, data_len={}", sock_handle.socket_index, len);
+            crate::serial::_print(format_args!("[SYS_SENDTO] Netlink sendto: socket_idx={}, data_len={}\n", sock_handle.socket_index, len));
             if let Some(res) = crate::net::with_net_stack(|stack| stack.netlink_send(sock_handle.socket_index, data)) {
                 match res {
                     Ok(_) => {
-                        crate::kinfo!("[SYS_SENDTO] Netlink sendto successful");
+                        crate::serial::_print(format_args!("[SYS_SENDTO] Netlink sendto successful\n"));
                         return len as u64;
                     }
-                    Err(e) => {
-                        crate::kinfo!("[SYS_SENDTO] Netlink sendto error: {:?}", e);
+                    Err(_e) => {
+                        crate::serial::_print(format_args!("[SYS_SENDTO] Netlink sendto error\n"));
                         posix::set_errno(posix::errno::EIO);
                         return u64::MAX;
                     }
                 }
             }
-            crate::kinfo!("[SYS_SENDTO] Network stack unavailable");
+            crate::serial::_print(format_args!("[SYS_SENDTO] Network stack unavailable\n"));
             posix::set_errno(posix::errno::ENETDOWN);
             return u64::MAX;
         }
@@ -3292,16 +3297,22 @@ fn syscall_recvfrom(
         };
 
         if sock_handle.domain == AF_NETLINK {
+            crate::serial::_print(format_args!("[SYS_RECVFROM] Netlink receive: socket_idx={}\n", sock_handle.socket_index));
             let buffer = slice::from_raw_parts_mut(buf, len);
             if let Some(res) = crate::net::with_net_stack(|stack| stack.netlink_receive(sock_handle.socket_index, buffer)) {
                 match res {
-                    Ok(n) => return n as u64,
-                    Err(_) => {
+                    Ok(n) => {
+                        crate::serial::_print(format_args!("[SYS_RECVFROM] Netlink received {} bytes\n", n));
+                        return n as u64;
+                    }
+                    Err(e) => {
+                        crate::serial::_print(format_args!("[SYS_RECVFROM] Netlink receive error: {:?}\n", e));
                         posix::set_errno(posix::errno::EAGAIN);
                         return u64::MAX;
                     }
                 }
             }
+            crate::serial::_print(format_args!("[SYS_RECVFROM] Network stack unavailable\n"));
             posix::set_errno(posix::errno::ENETDOWN);
             return u64::MAX;
         }

@@ -789,7 +789,10 @@ impl NetStack {
     /// Send a netlink message (from user to kernel)
     /// This processes the request and queues the response
     pub fn netlink_send(&mut self, socket_idx: usize, data: &[u8]) -> Result<(), NetError> {
-        self.netlink_handle_request(socket_idx, data)
+        crate::serial::_print(format_args!("[netlink_send] socket_idx={}, data_len={}\n", socket_idx, data.len()));
+        let result = self.netlink_handle_request(socket_idx, data);
+        crate::serial::_print(format_args!("[netlink_send] result={:?}\n", result));
+        result
     }
 
     /// Receive a netlink message (from kernel to user)
@@ -805,19 +808,21 @@ impl NetStack {
             IFA_ADDRESS
         };
 
-        crate::kinfo!("[netlink_handle_request] socket_idx={}, data_len={}", socket_idx, data.len());
+        crate::serial::_print(format_args!("[netlink_handle_request] socket_idx={}, data_len={}\n", socket_idx, data.len()));
 
         if data.len() < core::mem::size_of::<NlMsgHdr>() {
-            crate::kinfo!("[netlink_handle_request] Data too short for NlMsgHdr");
+            crate::serial::_print(format_args!("[netlink_handle_request] Data too short for NlMsgHdr\n"));
             return Err(NetError::InvalidPacket);
         }
 
         let hdr = unsafe { &*(data.as_ptr() as *const NlMsgHdr) };
         crate::kinfo!("[netlink_handle_request] Message type: {}", hdr.nlmsg_type);
         
+        crate::serial::_print(format_args!("[netlink_handle_request] nlmsg_type={}\n", hdr.nlmsg_type));
+        
         match hdr.nlmsg_type {
             RTM_GETLINK => {
-                crate::kinfo!("[netlink_handle_request] RTM_GETLINK received");
+                crate::serial::_print(format_args!("[netlink_handle_request] RTM_GETLINK received\n"));
                 // Send info for all devices
                 for (i, dev) in self.devices.iter().enumerate() {
                     if !dev.present { continue; }
@@ -834,10 +839,20 @@ impl NetStack {
                 self.netlink.send_done(socket_idx, hdr.nlmsg_seq)?;
             }
             RTM_GETADDR => {
-                crate::kinfo!("[netlink_handle_request] RTM_GETADDR received");
-                // Send address info
+                crate::serial::_print(format_args!("[netlink_handle_request] RTM_GETADDR received\n"));
+                let mut addr_count = 0;
+                // Send address info only for devices with configured IP
                 for (i, dev) in self.devices.iter().enumerate() {
                     if !dev.present { continue; }
+                    
+                    // Skip devices without IP addresses (0.0.0.0)
+                    if dev.ip == [0, 0, 0, 0] {
+                        crate::serial::_print(format_args!("[netlink_handle_request] Device {} has no IP (0.0.0.0), skipping\n", i));
+                        continue;
+                    }
+                    
+                    crate::serial::_print(format_args!("[netlink_handle_request] Sending addr for dev {}: IP={}.{}.{}.{}\n", 
+                        i, dev.ip[0], dev.ip[1], dev.ip[2], dev.ip[3]));
                     
                     let info = super::netlink::DeviceInfo {
                         mac: dev.mac,
@@ -845,11 +860,13 @@ impl NetStack {
                         present: dev.present,
                     };
                     self.netlink.send_ifaddr(socket_idx, hdr.nlmsg_seq, i, &info)?;
+                    addr_count += 1;
                 }
+                crate::serial::_print(format_args!("[netlink_handle_request] Sent {} addresses, sending DONE\n", addr_count));
                 self.netlink.send_done(socket_idx, hdr.nlmsg_seq)?;
             }
             RTM_NEWADDR => {
-                crate::kinfo!("[netlink_handle_request] RTM_NEWADDR received");
+                crate::serial::_print(format_args!("[netlink_handle_request] RTM_NEWADDR received\n"));
                 // Parse IfAddrMsg
                 if data.len() < core::mem::size_of::<NlMsgHdr>() + core::mem::size_of::<IfAddrMsg>() {
                     return Err(NetError::InvalidPacket);
@@ -880,8 +897,8 @@ impl NetStack {
                             if self.devices[real_dev_idx].present {
                                 self.devices[real_dev_idx].ip = ip;
                                 self.tcp.register_local(real_dev_idx, self.devices[real_dev_idx].mac, ip);
-                                crate::kinfo!("Netlink: Set IP for eth{} to {}.{}.{}.{}", 
-                                    real_dev_idx, ip[0], ip[1], ip[2], ip[3]);
+                                crate::serial::_print(format_args!("Netlink: Set IP for eth{} to {}.{}.{}.{}\n", 
+                                    real_dev_idx, ip[0], ip[1], ip[2], ip[3]));
                             }
                         }
                     }
