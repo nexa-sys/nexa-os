@@ -9,6 +9,7 @@ use super::ethernet::MacAddress;
 use super::ipv4::Ipv4Address;
 use super::stack::{TxBatch, MAX_FRAME_SIZE};
 use super::drivers::NetError;
+use crate::process::Pid;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use core::cmp;
@@ -136,6 +137,9 @@ pub struct TcpSocket {
     rttvar: i64,       // RTT variance
     last_activity: u64, // Last activity timestamp
     
+    // Wait queue for blocking reads
+    pub wait_queue: Vec<Pid>,
+
     // Flags
     pub in_use: bool,
 }
@@ -165,6 +169,7 @@ impl TcpSocket {
             srtt: 0,
             rttvar: 0,
             last_activity: 0,
+            wait_queue: Vec::new(),
             in_use: false,
         }
     }
@@ -387,6 +392,13 @@ impl TcpSocket {
                     self.rcv_nxt = self.rcv_nxt.wrapping_add(to_recv as u32);
                     self.rcv_wnd = (RECV_BUFFER_SIZE - self.recv_buffer.len()) as u16;
                     self.send_segment(&[], TCP_ACK, tx)?;
+
+                    // Wake up waiting processes
+                    if !self.wait_queue.is_empty() {
+                        for pid in self.wait_queue.drain(..) {
+                            crate::scheduler::wake_process(pid);
+                        }
+                    }
                 }
 
                 // Handle FIN

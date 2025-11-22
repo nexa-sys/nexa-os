@@ -1,6 +1,6 @@
 use crate::paging;
 use crate::posix::{self, FileType};
-use crate::process::{Process, USER_REGION_SIZE, USER_VIRT_BASE};
+use crate::process::{Process, ProcessState, USER_REGION_SIZE, USER_VIRT_BASE};
 use crate::scheduler;
 use crate::uefi_compat::{
     self, BlockDescriptor, CompatCounts, HidInputDescriptor, NetworkDescriptor, UsbHostDescriptor,
@@ -582,22 +582,46 @@ fn syscall_read(fd: u64, buf: *mut u8, count: usize) -> u64 {
 
                         let buffer = core::slice::from_raw_parts_mut(buf, count);
                         
-                        let result = crate::net::with_net_stack(|stack| {
-                            stack.tcp_recv(sock_handle.socket_index, buffer)
-                        });
+                        // Blocking read loop
+                        loop {
+                            let mut should_block = false;
+                            let result = crate::net::with_net_stack(|stack| {
+                                match stack.tcp_recv(sock_handle.socket_index, buffer) {
+                                    Ok(bytes) => Ok(bytes),
+                                    Err(crate::net::NetError::WouldBlock) => {
+                                        // Register for wait if we are going to block
+                                        if let Some(pid) = scheduler::get_current_pid() {
+                                            let _ = stack.tcp_wait(sock_handle.socket_index, pid);
+                                            should_block = true;
+                                        }
+                                        Err(crate::net::NetError::WouldBlock)
+                                    }
+                                    Err(e) => Err(e),
+                                }
+                            });
 
-                        match result {
-                            Some(Ok(bytes_recv)) => {
-                                posix::set_errno(0);
-                                return bytes_recv as u64;
-                            }
-                            Some(Err(_)) => {
-                                posix::set_errno(posix::errno::EAGAIN);
-                                return u64::MAX;
-                            }
-                            None => {
-                                posix::set_errno(posix::errno::ENETDOWN);
-                                return u64::MAX;
+                            match result {
+                                Some(Ok(bytes_recv)) => {
+                                    posix::set_errno(0);
+                                    return bytes_recv as u64;
+                                }
+                                Some(Err(crate::net::NetError::WouldBlock)) => {
+                                    if should_block {
+                                        scheduler::set_current_process_state(ProcessState::Sleeping);
+                                        scheduler::do_schedule();
+                                        continue;
+                                    }
+                                    posix::set_errno(posix::errno::EAGAIN);
+                                    return u64::MAX;
+                                }
+                                Some(Err(_)) => {
+                                    posix::set_errno(posix::errno::EAGAIN);
+                                    return u64::MAX;
+                                }
+                                None => {
+                                    posix::set_errno(posix::errno::ENETDOWN);
+                                    return u64::MAX;
+                                }
                             }
                         }
                     }

@@ -1414,3 +1414,42 @@ pub fn age_process_priorities() {
     }
 }
 
+/// Set the state of the current process
+pub fn set_current_process_state(state: ProcessState) {
+    let mut table = PROCESS_TABLE.lock();
+    let current = *CURRENT_PID.lock();
+    
+    if let Some(curr_pid) = current {
+        for slot in table.iter_mut() {
+            if let Some(entry) = slot {
+                if entry.process.pid == curr_pid {
+                    entry.process.state = state;
+                    break;
+                }
+            }
+        }
+    }
+}
+
+/// Wake up a process by PID (set state to Ready)
+pub fn wake_process(pid: Pid) -> bool {
+    let mut table = PROCESS_TABLE.lock();
+    let mut found = false;
+    
+    for slot in table.iter_mut() {
+        if let Some(entry) = slot {
+            if entry.process.pid == pid {
+                if entry.process.state == ProcessState::Sleeping {
+                    entry.process.state = ProcessState::Ready;
+                    // Reset wait time for fairness
+                    entry.wait_time = 0;
+                    found = true;
+                }
+                break;
+            }
+        }
+    }
+    found
+}
+
+

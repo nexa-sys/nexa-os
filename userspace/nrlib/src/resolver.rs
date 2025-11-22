@@ -340,8 +340,10 @@ impl Resolver {
         // Parse answers
         let answer_count = header.answer_count();
         for _ in 0..answer_count {
-            if let Ok(Some(ip)) = response.parse_a_record() {
-                return Some(ip);
+            match response.parse_a_record() {
+                Ok(Some(ip)) => return Some(ip),
+                Ok(None) => continue,
+                Err(_) => return None,
             }
         }
 

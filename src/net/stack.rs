@@ -8,6 +8,7 @@ use super::ipv4::{IpProtocol, Ipv4Address, Ipv4Header};
 use super::netlink::{NetlinkSubsystem, NetlinkSocket};
 use super::tcp::TcpSocket;
 use super::udp::{UdpDatagram, UdpDatagramMut, UdpHeader};
+use crate::process::Pid;
 
 pub const MAX_FRAME_SIZE: usize = 1536;
 const TX_BATCH_CAPACITY: usize = 4;
@@ -591,6 +592,15 @@ impl NetStack {
             return Err(NetError::InvalidSocket);
         }
         Ok(self.tcp_sockets[socket_idx].state)
+    }
+
+    /// Register a process to wait for data on a TCP socket
+    pub fn tcp_wait(&mut self, socket_idx: usize, pid: Pid) -> Result<(), NetError> {
+        if socket_idx >= MAX_TCP_SOCKETS {
+            return Err(NetError::InvalidSocket);
+        }
+        self.tcp_sockets[socket_idx].wait_queue.push(pid);
+        Ok(())
     }
 
     /// Send UDP datagram
