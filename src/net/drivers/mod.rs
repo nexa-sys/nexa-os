@@ -46,6 +46,12 @@ impl DriverInstance {
         }
     }
 
+    pub fn update_dma_addresses(&mut self) {
+        match self {
+            DriverInstance::E1000(dev) => dev.update_dma_addresses(),
+        }
+    }
+
     pub fn transmit(&mut self, frame: &[u8]) -> Result<(), NetError> {
         match self {
             DriverInstance::E1000(dev) => dev.transmit(frame),

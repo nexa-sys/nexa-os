@@ -139,13 +139,17 @@ else
         # Network: user-mode networking with explicit DHCP configuration
         -netdev user,id=net0,net=10.0.2.0/24,dhcpstart=10.0.2.15,host=10.0.2.2
         -device e1000,netdev=net0,mac=52:54:00:12:34:56
-        # Optional: Dump network traffic for debugging
-        # -object filter-dump,id=f1,netdev=net0,file=/tmp/qemu-netdump.pcap
+        # Network packet dump for debugging
+        -object filter-dump,id=f1,netdev=net0,file=/tmp/qemu-network.pcap
+        # Enable network tracing
+        -trace "e1000*"
+        -trace "net_*"
     )
     
     echo "  Boot mode: UEFI (default)"
     echo "  Virtio block device attached as /dev/vda"
     echo "  Network: user-mode (DHCP server at 10.0.2.2, client range starts at 10.0.2.15)"
+    echo "  Network traffic dumped to: /tmp/qemu-network.pcap"
     echo "  Kernel parameters should include: root=/dev/vda1 rootfstype=ext2"
 fi
 

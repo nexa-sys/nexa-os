@@ -4,6 +4,11 @@ use crate::uefi_compat::NetworkDescriptor;
 
 use super::NetError;
 
+// PCI Configuration Space offsets
+const PCI_COMMAND: u32 = 0x04;
+const PCI_COMMAND_BUS_MASTER: u16 = 0x04;  // Bit 2: Bus Master Enable
+const PCI_COMMAND_MEMORY: u16 = 0x02;      // Bit 1: Memory Space Enable
+
 const RX_DESC_COUNT: usize = 64;
 const TX_DESC_COUNT: usize = 64;
 const RX_BUFFER_SIZE: usize = 2048;
@@ -41,8 +46,9 @@ const RCTL_EN: u32 = 1 << 1;
 const RCTL_UPE: u32 = 1 << 3;  // Unicast Promiscuous Enable
 const RCTL_MPE: u32 = 1 << 4;  // Multicast Promiscuous Enable
 const RCTL_BAM: u32 = 1 << 15;
-const RCTL_SECRC: u32 = 1 << 26;
 const RCTL_BSIZE_2048: u32 = 0b00 << 16;
+const RCTL_BSEX: u32 = 1 << 25;  // Buffer Size Extension (0 for BSIZE compatibility)
+const RCTL_SECRC: u32 = 1 << 26;
 const RCTL_LBM_NONE: u32 = 0b00 << 6;
 
 const TCTL_EN: u32 = 1 << 1;
@@ -124,6 +130,10 @@ pub struct E1000 {
     index: usize,
     base: *mut u8,
     mac: [u8; 6],
+    pci_segment: u16,
+    pci_bus: u8,
+    pci_device: u8,
+    pci_function: u8,
     rx_desc: [RxDescriptor; RX_DESC_COUNT],
     tx_desc: [TxDescriptor; TX_DESC_COUNT],
     rx_buffers: [Buffer<RX_BUFFER_SIZE>; RX_DESC_COUNT],
@@ -152,6 +162,10 @@ impl E1000 {
             index,
             base: descriptor.mmio_base as *mut u8,
             mac,
+            pci_segment: descriptor.info.pci_segment,
+            pci_bus: descriptor.info.pci_bus,
+            pci_device: descriptor.info.pci_device,
+            pci_function: descriptor.info.pci_function,
             rx_desc: core::array::from_fn(|_| RxDescriptor::new()),
             tx_desc: core::array::from_fn(|_| TxDescriptor::new()),
             rx_buffers: core::array::from_fn(|_| Buffer::new()),
@@ -168,6 +182,9 @@ impl E1000 {
             "[e1000::init] Starting initialization for device {}, MMIO base={:#x}\n",
             self.index, self.base as u64
         ));
+        
+        // CRITICAL: Enable PCI Bus Master for DMA operations
+        self.enable_pci_bus_master();
         
         self.reset();
         
@@ -206,6 +223,30 @@ impl E1000 {
         Ok(())
     }
 
+    /// Update DMA descriptor base addresses after the driver has been moved in memory.
+    /// This must be called after moving the driver to ensure hardware uses correct addresses.
+    pub fn update_dma_addresses(&mut self) {
+        // Update RX descriptor base
+        let rdba = self.rx_desc.as_ptr() as u64;
+        self.write_reg(REG_RDBAL, (rdba & 0xFFFF_FFFF) as u32);
+        self.write_reg(REG_RDBAH, (rdba >> 32) as u32);
+        
+        // Update TX descriptor base
+        let tdba = self.tx_desc.as_ptr() as u64;
+        self.write_reg(REG_TDBAL, (tdba & 0xFFFF_FFFF) as u32);
+        self.write_reg(REG_TDBAH, (tdba >> 32) as u32);
+        
+        // Update all RX descriptor buffer addresses
+        for (idx, desc) in self.rx_desc.iter_mut().enumerate() {
+            desc.addr = self.rx_buffers[idx].as_ptr() as u64;
+        }
+        
+        crate::serial::_print(format_args!(
+            "[e1000::update_dma_addresses] Updated addresses - RDBA={:#x}, TDBA={:#x}\n",
+            rdba, tdba
+        ));
+    }
+
     pub fn transmit(&mut self, frame: &[u8]) -> Result<(), NetError> {
         if frame.len() > TX_BUFFER_SIZE {
             return Err(NetError::BufferTooSmall);
@@ -216,14 +257,58 @@ impl E1000 {
             return Err(NetError::TxBusy);
         }
 
+        // Check link status before transmit
+        let status = self.read_reg(REG_STATUS);
+        let link_up = (status & 0x2) != 0;
+        
+        // Get buffer address BEFORE modifying descriptor
+        let buf_addr = self.tx_buffers[slot].as_ptr() as u64;
+        
         self.tx_desc[slot].status = 0;
         self.tx_buffers[slot].0[..frame.len()].copy_from_slice(frame);
-        self.tx_desc[slot].addr = self.tx_buffers[slot].as_ptr() as u64;
+        self.tx_desc[slot].addr = buf_addr;
         self.tx_desc[slot].length = frame.len() as u16;
         self.tx_desc[slot].cmd = TX_CMD_EOP | TX_CMD_IFCS | TX_CMD_RS;
 
-        self.tx_index = (self.tx_index + 1) % TX_DESC_COUNT;
+        // Ensure descriptor writes are visible to DMA before updating TDT
+        core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+
+        let new_tdt = (self.tx_index + 1) % TX_DESC_COUNT;
+        
+        // Debug: Log every TX packet with descriptor pointer
+        let desc_ptr = &self.tx_desc[slot] as *const TxDescriptor as usize;
+        crate::serial::_print(format_args!(
+            "[e1000::transmit] Sending {} bytes, slot={}, buf_addr={:#x}, desc_ptr={:#x}, TDT: {} -> {}, link_up={}, STATUS={:#x}\n",
+            frame.len(), slot, buf_addr, desc_ptr, self.tx_index, new_tdt, link_up, status
+        ));
+        
+        self.tx_index = new_tdt;
         self.write_reg(REG_TDT, self.tx_index as u32);
+        
+        // Verify TDT was written and check TCTL
+        let actual_tdt = self.read_reg(REG_TDT);
+        let tctl = self.read_reg(REG_TCTL);
+        
+        // Read descriptor back with volatile to see what E1000 sees
+        let desc_addr_readback = unsafe { 
+            core::ptr::read_volatile(&self.tx_desc[slot].addr as *const u64)
+        };
+        
+        crate::serial::_print(format_args!(
+            "[e1000::transmit] Verified TDT={}, TCTL={:#x}, desc[{}].addr={:#x} (readback={:#x})\n", 
+            actual_tdt, tctl, slot, self.tx_desc[slot].addr, desc_addr_readback
+        ));
+        
+        // Wait a bit and check if descriptor was processed
+        for _ in 0..1000 { core::hint::spin_loop(); }
+        let desc_status = unsafe {
+            core::ptr::read_volatile(&self.tx_desc[slot].status as *const u8)
+        };
+        crate::serial::_print(format_args!(
+            "[e1000::transmit] After spin: desc[{}].status={:#x}, DD={}\n",
+            slot, desc_status, (desc_status & TX_STATUS_DD) != 0
+        ));
+        
         Ok(())
     }
 
@@ -231,26 +316,29 @@ impl E1000 {
         if scratch.len() < RX_BUFFER_SIZE {
             // Ensure we never overflow the caller buffer
         }
-        let desc = &mut self.rx_desc[self.rx_index];
         
-        // Debug: Print descriptor status every few calls
-        static mut DEBUG_COUNTER: u32 = 0;
-        unsafe {
-            DEBUG_COUNTER += 1;
-            if DEBUG_COUNTER % 100 == 1 {
-                crate::serial::_print(format_args!(
-                    "[e1000::drain_rx] index={}, status={:#x}, DD={}\n",
-                    self.rx_index, desc.status, (desc.status & RX_STATUS_DD) != 0
-                ));
-            }
+        // Debug: Print hardware state periodically (before borrowing desc)
+        static DEBUG_COUNTER: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+        let count = DEBUG_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        
+        if count % 100 == 1 {
+            let rdh = self.read_reg(REG_RDH);
+            let rdt = self.read_reg(REG_RDT);
+            let rctl = self.read_reg(REG_RCTL);
+            let desc_status = self.rx_desc[self.rx_index].status;
+            crate::serial::_print(format_args!(
+                "[e1000::drain_rx] RX state: index={}, RDH={}, RDT={}, RCTL={:#x}, desc.status={:#x}, DD={}\n",
+                self.rx_index, rdh, rdt, rctl, desc_status, (desc_status & RX_STATUS_DD) != 0
+            ));
         }
         
+        let desc = &mut self.rx_desc[self.rx_index];
         if (desc.status & RX_STATUS_DD) == 0 {
             return None;
         }
 
         crate::serial::_print(format_args!(
-            "[e1000::drain_rx] Packet received! index={}, len={}\n",
+            "[e1000::drain_rx] *** PACKET RECEIVED! index={}, len={} ***\n",
             self.rx_index, desc.length
         ));
 
@@ -382,8 +470,13 @@ impl E1000 {
             *desc = TxDescriptor::new();
         }
 
-        self.write_reg(REG_TDBAL, (self.tx_desc.as_ptr() as u64 & 0xFFFF_FFFF) as u32);
-        self.write_reg(REG_TDBAH, (self.tx_desc.as_ptr() as u64 >> 32) as u32);
+        let tx_desc_addr = self.tx_desc.as_ptr() as u64;
+        let tx_buf0_addr = self.tx_buffers[0].as_ptr() as u64;
+        let tdbal = (tx_desc_addr & 0xFFFF_FFFF) as u32;
+        let tdbah = (tx_desc_addr >> 32) as u32;
+        
+        self.write_reg(REG_TDBAL, tdbal);
+        self.write_reg(REG_TDBAH, tdbah);
         self.write_reg(
             REG_TDLEN,
             (TX_DESC_COUNT * core::mem::size_of::<TxDescriptor>()) as u32,
@@ -396,6 +489,11 @@ impl E1000 {
         tctl |= (0x10 << TCTL_CT_SHIFT) | (0x40 << TCTL_COLD_SHIFT);
         self.write_reg(REG_TCTL, tctl);
         self.write_reg(REG_TIPG, 0x0060200A);
+        
+        crate::serial::_print(format_args!(
+            "[e1000::init_tx] TX ring: desc_addr={:#x}, buf[0]_addr={:#x}, TDBAL={:#x}, TDBAH={:#x}, TDLEN={}, TCTL={:#x}\n",
+            tx_desc_addr, tx_buf0_addr, tdbal, tdbah, TX_DESC_COUNT * core::mem::size_of::<TxDescriptor>(), tctl
+        ));
     }
 
     fn enable_interrupts(&mut self) {
@@ -412,6 +510,74 @@ impl E1000 {
 
     fn read_reg(&self, offset: u32) -> u32 {
         unsafe { ptr::read_volatile(self.base.add(offset as usize) as *const u32) }
+    }
+
+    /// Enable PCI Bus Master - CRITICAL for DMA operations
+    fn enable_pci_bus_master(&mut self) {
+        crate::serial::_print(format_args!(
+            "[e1000::enable_pci_bus_master] PCI {:04x}:{:02x}:{:02x}.{} - Enabling Bus Master\n",
+            self.pci_segment, self.pci_bus, self.pci_device, self.pci_function
+        ));
+
+        // Read current PCI command register
+        let mut command = self.pci_read_config_word(PCI_COMMAND);
+        crate::serial::_print(format_args!(
+            "[e1000::enable_pci_bus_master] Current PCI_COMMAND={:#x}\n",
+            command
+        ));
+
+        // Enable Bus Master and Memory Space
+        command |= PCI_COMMAND_BUS_MASTER | PCI_COMMAND_MEMORY;
+        self.pci_write_config_word(PCI_COMMAND, command);
+
+        // Verify
+        let command_verify = self.pci_read_config_word(PCI_COMMAND);
+        crate::serial::_print(format_args!(
+            "[e1000::enable_pci_bus_master] New PCI_COMMAND={:#x} (BM={}, MEM={})\n",
+            command_verify,
+            (command_verify & PCI_COMMAND_BUS_MASTER) != 0,
+            (command_verify & PCI_COMMAND_MEMORY) != 0
+        ));
+
+        if (command_verify & PCI_COMMAND_BUS_MASTER) == 0 {
+            crate::kwarn!("[e1000] CRITICAL: Failed to enable PCI Bus Master! DMA will not work!");
+        }
+    }
+
+    /// Read 16-bit value from PCI configuration space
+    fn pci_read_config_word(&self, offset: u32) -> u16 {
+        let address = 0x80000000u32
+            | ((self.pci_bus as u32) << 16)
+            | ((self.pci_device as u32) << 11)
+            | ((self.pci_function as u32) << 8)
+            | (offset & 0xFC);
+
+        unsafe {
+            // Write address to CONFIG_ADDRESS (0xCF8)
+            ptr::write_volatile(0xCF8 as *mut u32, address);
+            // Read from CONFIG_DATA (0xCFC), adjust for offset
+            let data = ptr::read_volatile(0xCFC as *const u32);
+            ((data >> ((offset & 2) * 8)) & 0xFFFF) as u16
+        }
+    }
+
+    /// Write 16-bit value to PCI configuration space
+    fn pci_write_config_word(&mut self, offset: u32, value: u16) {
+        let address = 0x80000000u32
+            | ((self.pci_bus as u32) << 16)
+            | ((self.pci_device as u32) << 11)
+            | ((self.pci_function as u32) << 8)
+            | (offset & 0xFC);
+
+        unsafe {
+            // Write address to CONFIG_ADDRESS (0xCF8)
+            ptr::write_volatile(0xCF8 as *mut u32, address);
+            // Read-modify-write to CONFIG_DATA (0xCFC)
+            let shift = (offset & 2) * 8;
+            let mut data = ptr::read_volatile(0xCFC as *const u32);
+            data = (data & !(0xFFFF << shift)) | ((value as u32) << shift);
+            ptr::write_volatile(0xCFC as *mut u32, data);
+        }
     }
 }
 

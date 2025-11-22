@@ -180,6 +180,7 @@ pub fn init() {
         
         match drivers::DriverInstance::new(idx, descriptor) {
             Ok(mut driver) => {
+                // First init to set up hardware state
                 if let Err(err) = driver.init() {
                     crate::kerror!(
                         "net: driver init failed for idx {} ({:?})",
@@ -189,7 +190,22 @@ pub fn init() {
                     continue;
                 }
 
-                let mac = driver.mac_address();
+                // Move driver to final location in NetState
+                state.slots[idx].driver = Some(driver);
+                
+                // CRITICAL: Update DMA descriptor base addresses after move
+                // The E1000 hardware needs pointers to descriptors in their final location
+                if let Some(ref mut final_driver) = state.slots[idx].driver {
+                    final_driver.update_dma_addresses();
+                }
+                
+                // Now get MAC address from the driver in its final location
+                let mac = if let Some(ref driver) = state.slots[idx].driver {
+                    driver.mac_address()
+                } else {
+                    continue;
+                };
+                
                 state.stack.register_device(idx, mac);
                 register_device_irq(idx, descriptor.interrupt_line);
                 crate::kinfo!(
@@ -197,7 +213,6 @@ pub fn init() {
                     idx,
                     mac
                 );
-                state.slots[idx].driver = Some(driver);
             }
             Err(err) => {
                 crate::kwarn!("net: unsupported NIC {} ({:?})", idx, err);
