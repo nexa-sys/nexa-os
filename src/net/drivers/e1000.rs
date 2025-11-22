@@ -238,12 +238,23 @@ impl E1000 {
         
         // Update all RX descriptor buffer addresses
         for (idx, desc) in self.rx_desc.iter_mut().enumerate() {
-            desc.addr = self.rx_buffers[idx].as_ptr() as u64;
+            let buf_addr = self.rx_buffers[idx].as_ptr() as u64;
+            desc.addr = buf_addr;
+            if idx < 3 {
+                crate::serial::_print(format_args!(
+                    "[update_dma] desc[{}].addr={:#x} (buffer@{:#x})\n",
+                    idx, desc.addr, buf_addr
+                ));
+            }
         }
         
+        // Reset RDT to indicate all descriptors are available
+        self.rx_tail = RX_DESC_COUNT - 1;
+        self.write_reg(REG_RDT, self.rx_tail as u32);
+        
         crate::serial::_print(format_args!(
-            "[e1000::update_dma_addresses] Updated addresses - RDBA={:#x}, TDBA={:#x}\n",
-            rdba, tdba
+            "[e1000::update_dma_addresses] Updated addresses - RDBA={:#x}, TDBA={:#x}, RDT={}\n",
+            rdba, tdba, self.rx_tail
         ));
     }
 
@@ -337,6 +348,9 @@ impl E1000 {
             return None;
         }
 
+        // Ensure descriptor status read completes before reading buffer data
+        core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
+
         crate::serial::_print(format_args!(
             "[e1000::drain_rx] *** PACKET RECEIVED! index={}, len={} ***\n",
             self.rx_index, desc.length
@@ -345,6 +359,17 @@ impl E1000 {
         let packet_len = cmp::min(desc.length as usize, scratch.len());
         scratch[..packet_len]
             .copy_from_slice(&self.rx_buffers[self.rx_index].0[..packet_len]);
+        
+        // DEBUG: Dump first 32 bytes to see ethernet header
+        if packet_len >= 14 {
+            crate::serial::_print(format_args!(
+                "[e1000::drain_rx] Header dump: [{:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}]\n",
+                scratch[0], scratch[1], scratch[2], scratch[3], scratch[4], scratch[5],
+                scratch[6], scratch[7], scratch[8], scratch[9], scratch[10], scratch[11],
+                scratch[12], scratch[13]
+            ));
+        }
+        
         desc.status = 0;
 
         self.rx_tail = self.rx_index;

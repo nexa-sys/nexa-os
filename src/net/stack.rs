@@ -215,16 +215,17 @@ impl NetStack {
         let mut devices = [DeviceInfo::empty(); super::MAX_NET_DEVICES];
         // Register default network devices
         // For QEMU virtio-net, we typically have eth0
+        // Start with 0.0.0.0 to allow DHCP discovery before IP assignment
         devices[0] = DeviceInfo {
             mac: [0x52, 0x54, 0x00, 0x12, 0x34, 0x56], // QEMU default MAC prefix
-            ip: [10, 0, 2, 15], // default_ip(0)
+            ip: [0, 0, 0, 0], // No IP yet, will be set by DHCP
             present: true,
         };
 
         let mut tcp = TcpEndpoint::new();
         tcp.device_idx = Some(0);
         tcp.local_mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
-        tcp.local_ip = [10, 0, 2, 15];
+        tcp.local_ip = [0, 0, 0, 0]; // No IP yet, will be set by DHCP
 
         Self {
             devices,
@@ -239,7 +240,13 @@ impl NetStack {
         if index >= self.devices.len() {
             return;
         }
-        let ip = default_ip(index);
+        // Preserve existing IP if already set (e.g., by DHCP or initial config)
+        // Only use default IP if device is not yet registered
+        let ip = if self.devices[index].present {
+            self.devices[index].ip
+        } else {
+            [0, 0, 0, 0] // Start with 0.0.0.0, will be set by DHCP
+        };
         self.devices[index] = DeviceInfo {
             mac,
             ip,
@@ -367,8 +374,9 @@ impl NetStack {
         let socket = &self.udp_sockets[socket_idx];
         let device = &self.devices[device_index];
 
-        // Check if this is a broadcast address
-        let is_broadcast = dst_ip == [255, 255, 255, 255] || dst_ip == [10, 0, 2, 255];
+        // Check if this is a broadcast address (global or subnet-specific)
+        let is_broadcast = dst_ip == [255, 255, 255, 255] || 
+                          (dst_ip[3] == 255 && device.ip != [0, 0, 0, 0]);
         
         // Determine destination MAC
         let dst_mac = if is_broadcast {
@@ -574,13 +582,21 @@ impl NetStack {
         
         // Accept packets destined to:
         // 1. Our IP address
-        // 2. Broadcast address (255.255.255.255 or subnet broadcast like 10.0.2.255)
+        // 2. Broadcast address (255.255.255.255)
         // 3. Any address if our IP is 0.0.0.0 (for DHCP before we have an IP)
-        let is_broadcast = dst_ip == [255, 255, 255, 255] || dst_ip == [10, 0, 2, 255];
+        // 4. Subnet broadcast (e.g., x.x.x.255 for /24 networks)
+        let is_global_broadcast = dst_ip == [255, 255, 255, 255];
         let is_our_ip = dst_ip == device.ip;
         let no_ip_yet = device.ip == [0, 0, 0, 0];
         
-        if !is_our_ip && !is_broadcast && !no_ip_yet {
+        // Check if it's a subnet broadcast (last octet is 255 for /24 networks)
+        // This handles broadcasts like 10.0.2.255, 192.168.3.255, etc.
+        let is_subnet_broadcast = dst_ip[3] == 255 && 
+                                  dst_ip[0] == device.ip[0] && 
+                                  dst_ip[1] == device.ip[1] && 
+                                  dst_ip[2] == device.ip[2];
+        
+        if !is_our_ip && !is_global_broadcast && !is_subnet_broadcast && !no_ip_yet {
             crate::serial::_print(format_args!(
                 "[handle_ipv4] Dropping packet: dst_ip={}.{}.{}.{}, device_ip={}.{}.{}.{}\n",
                 dst_ip[0], dst_ip[1], dst_ip[2], dst_ip[3],
