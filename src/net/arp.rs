@@ -177,13 +177,42 @@ impl ArpCache {
 
     /// Look up MAC address for an IP address
     pub fn lookup(&self, ip: &Ipv4Address, current_ms: u64) -> Option<MacAddress> {
-        self.entries.iter()
+        use crate::serial;
+        let valid_count = self.entries.iter().filter(|e| e.valid).count();
+        
+        serial::_print(format_args!("[ARP Cache @{:p}] LOOKUP for {} (current_ms={}, cache has {} valid entries)\n", self, ip, current_ms, valid_count));
+        
+        // Show all valid entries for debugging
+        for entry in self.entries.iter() {
+            if entry.valid {
+                let age_ms = current_ms.saturating_sub(entry.timestamp_ms);
+                let is_match = entry.ip == *ip;
+                let is_stale = entry.is_stale(current_ms);
+                serial::_print(format_args!(
+                    "  Entry: {} -> {} (age: {}ms, match={}, stale={})\n", 
+                    entry.ip, entry.mac, age_ms, is_match, is_stale
+                ));
+            }
+        }
+        
+        let result = self.entries.iter()
             .find(|e| e.valid && e.ip == *ip && !e.is_stale(current_ms))
-            .map(|e| e.mac)
+            .map(|e| e.mac);
+        
+        if result.is_some() {
+            serial::_print(format_args!("[ARP Cache] HIT for {}\n", ip));
+        } else {
+            serial::_print(format_args!("[ARP Cache] MISS for {}\n", ip));
+        }
+        
+        result
     }
 
     /// Insert or update an ARP cache entry
     pub fn insert(&mut self, ip: Ipv4Address, mac: MacAddress, timestamp_ms: u64) {
+        use crate::serial;
+        serial::_print(format_args!("[ARP Cache @{:p}] INSERT {} -> {}\n", self, ip, mac));
+        
         // Try to update existing entry
         for entry in self.entries.iter_mut() {
             if entry.valid && entry.ip == ip {
@@ -209,6 +238,13 @@ impl ArpCache {
         }
 
         self.entries[oldest_idx] = ArpEntry::new(ip, mac, timestamp_ms);
+        
+        // Verify insertion
+        let valid_count_after = self.entries.iter().filter(|e| e.valid).count();
+        serial::_print(format_args!(
+            "[ARP Cache] INSERT complete: valid_count={}, entry[{}].valid={}, entry[{}].ip={}\n",
+            valid_count_after, oldest_idx, self.entries[oldest_idx].valid, oldest_idx, self.entries[oldest_idx].ip
+        ));
     }
 
     /// Clear all entries

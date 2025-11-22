@@ -1,4 +1,5 @@
 use crate::logger;
+use crate::serial;
 
 use super::arp::{ArpCache, ArpOperation, ArpPacket};
 use super::drivers::NetError;
@@ -50,12 +51,21 @@ impl TxBatch {
     pub fn frames(&self) -> impl Iterator<Item = &[u8]> {
         (0..self.count).map(move |idx| &self.buffers[idx][..self.lengths[idx]])
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
+    pub fn len(&self) -> usize {
+        self.count
+    }
 }
 
 #[derive(Clone, Copy)]
 struct DeviceInfo {
     mac: [u8; 6],
     ip: [u8; 4],
+    gateway: [u8; 4],
     present: bool,
 }
 
@@ -64,6 +74,7 @@ impl DeviceInfo {
         Self {
             mac: [0; 6],
             ip: [0; 4],
+            gateway: [0, 0, 0, 0],
             present: false,
         }
     }
@@ -202,12 +213,26 @@ impl UdpSocket {
     }
 }
 
+// Pending packet waiting for ARP resolution
+struct PendingPacket {
+    device_index: usize,
+    socket_index: usize,
+    dst_ip: [u8; 4],
+    dst_port: u16,
+    payload: [u8; UDP_MAX_PAYLOAD],
+    payload_len: usize,
+    timestamp_ms: u64,
+}
+
+const MAX_PENDING_PACKETS: usize = 8;
+
 pub struct NetStack {
     devices: [DeviceInfo; super::MAX_NET_DEVICES],
     tcp: TcpEndpoint,
     udp_sockets: [UdpSocket; MAX_UDP_SOCKETS],
     pub netlink: NetlinkSubsystem,
     arp_cache: ArpCache,
+    pending_packets: [Option<PendingPacket>; MAX_PENDING_PACKETS],
 }
 
 impl NetStack {
@@ -219,6 +244,7 @@ impl NetStack {
         devices[0] = DeviceInfo {
             mac: [0x52, 0x54, 0x00, 0x12, 0x34, 0x56], // QEMU default MAC prefix
             ip: [0, 0, 0, 0], // No IP yet, will be set by DHCP
+            gateway: [192, 168, 3, 2], // QEMU user-mode networking default gateway
             present: true,
         };
 
@@ -233,6 +259,7 @@ impl NetStack {
             udp_sockets: [UdpSocket::empty(); MAX_UDP_SOCKETS],
             netlink: NetlinkSubsystem::new(),
             arp_cache: ArpCache::new(),
+            pending_packets: [None, None, None, None, None, None, None, None],
         }
     }
 
@@ -247,15 +274,129 @@ impl NetStack {
         } else {
             [0, 0, 0, 0] // Start with 0.0.0.0, will be set by DHCP
         };
+        let gateway = if self.devices[index].present {
+            self.devices[index].gateway
+        } else {
+            [192, 168, 3, 2] // Default QEMU gateway
+        };
         self.devices[index] = DeviceInfo {
             mac,
             ip,
+            gateway,
             present: true,
         };
         self.tcp.register_local(index, mac, ip);
     }
 
+    /// Send an ARP request for the given IP address
+    fn send_arp_request(&mut self, device_index: usize, target_ip: Ipv4Address, tx: &mut TxBatch) -> Result<(), NetError> {
+        if device_index >= self.devices.len() {
+            return Err(NetError::InvalidDevice);
+        }
+        if !self.devices[device_index].present {
+            return Err(NetError::InvalidDevice);
+        }
+
+        let device = &self.devices[device_index];
+        let device_mac = MacAddress::from(device.mac);
+        let device_ip = Ipv4Address::from(device.ip);
+
+        crate::serial::_print(format_args!("[ARP] Sending ARP request: who has {}? Tell {}\n", target_ip, device_ip));
+        crate::kinfo!("[ARP] Sending ARP request: who has {}? Tell {}", target_ip, device_ip);
+
+        let arp_request = ArpPacket::new_request(device_mac, device_ip, target_ip);
+
+        let mut packet = [0u8; 42];
+        // Ethernet header: broadcast destination
+        packet[0..6].copy_from_slice(&[0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
+        packet[6..12].copy_from_slice(&device.mac);
+        packet[12..14].copy_from_slice(&ETHERTYPE_ARP.to_be_bytes());
+        
+        // Copy ARP packet
+        unsafe {
+            let arp_bytes = core::slice::from_raw_parts(
+                &arp_request as *const ArpPacket as *const u8,
+                ArpPacket::SIZE,
+            );
+            packet[14..42].copy_from_slice(arp_bytes);
+        }
+
+        tx.push(&packet)?;
+        crate::kinfo!("[ARP] ARP request queued for transmission");
+        Ok(())
+    }
+
+    /// Set gateway for a device
+    pub fn set_gateway(&mut self, device_index: usize, gateway: [u8; 4]) {
+        if device_index < self.devices.len() && self.devices[device_index].present {
+            self.devices[device_index].gateway = gateway;
+        }
+    }
+
+    /// Process packets waiting for ARP resolution
+    fn process_pending_packets(
+        &mut self,
+        _device_index: usize,
+        resolved_ip: Ipv4Address,
+        tx: &mut TxBatch,
+    ) -> Result<(), NetError> {
+        serial::_print(format_args!("[NetStack] Processing pending packets for {}\n", resolved_ip));
+        let now_ms = logger::boot_time_us() / 1_000;
+        let resolved_ip_bytes = [resolved_ip.0[0], resolved_ip.0[1], resolved_ip.0[2], resolved_ip.0[3]];
+
+        // First pass: mark packets to send (avoid double borrow)
+        let mut send_flags = [false; MAX_PENDING_PACKETS];
+        
+        for (i, slot) in self.pending_packets.iter().enumerate() {
+            if let Some(ref pkt) = slot {
+                // Check if this packet is waiting for the resolved IP
+                let device = &self.devices[pkt.device_index];
+                let target_ip = if pkt.dst_ip[0] == device.ip[0] && pkt.dst_ip[1] == device.ip[1] && pkt.dst_ip[2] == device.ip[2] {
+                    pkt.dst_ip
+                } else if device.gateway != [0, 0, 0, 0] {
+                    device.gateway
+                } else {
+                    pkt.dst_ip
+                };
+
+                if target_ip == resolved_ip_bytes {
+                    serial::_print(format_args!("[NetStack] Queued packet matched for {}:{}\n", 
+                        Ipv4Address::from(pkt.dst_ip), pkt.dst_port));
+                    send_flags[i] = true;
+                } else if now_ms.saturating_sub(pkt.timestamp_ms) >= 5000 {
+                    // Mark expired packets for removal
+                    send_flags[i] = false;
+                }
+            }
+        }
+        
+        // Second pass: send and remove packets
+        for (i, should_send) in send_flags.iter().enumerate() {
+            if *should_send {
+                if let Some(pkt) = self.pending_packets[i].take() {
+                    serial::_print(format_args!("[NetStack] Sending queued packet to {}:{}\n", 
+                        Ipv4Address::from(pkt.dst_ip), pkt.dst_port));
+                    let _ = self.udp_send(
+                        pkt.device_index,
+                        pkt.socket_index,
+                        pkt.dst_ip,
+                        pkt.dst_port,
+                        &pkt.payload[..pkt.payload_len],
+                        tx,
+                    );
+                }
+            }
+        }
+        
+        Ok(())
+    }
+
     /// Allocate a UDP socket
+    /// Check if a UDP port is available without allocating it
+    pub fn is_udp_port_available(&self, local_port: u16) -> bool {
+        !self.udp_sockets.iter().any(|s| s.in_use && s.local_port == local_port)
+    }
+
     pub fn udp_socket(&mut self, local_port: u16) -> Result<usize, NetError> {
         // Check if port already in use
         for socket in &self.udp_sockets {
@@ -383,11 +524,51 @@ impl NetStack {
             // Use broadcast MAC address for broadcast IPs
             MacAddress([0xff, 0xff, 0xff, 0xff, 0xff, 0xff])
         } else {
-            // Lookup destination MAC in ARP cache for unicast
-            let dst_ip_addr = Ipv4Address::from(dst_ip);
+            // For unicast, determine the actual target IP for ARP lookup
+            // If destination is not on local subnet, use gateway
+            let target_ip = if dst_ip[0] == device.ip[0] && dst_ip[1] == device.ip[1] && dst_ip[2] == device.ip[2] {
+                // Same /24 subnet - direct communication
+                dst_ip
+            } else if device.gateway != [0, 0, 0, 0] {
+                // Different subnet - route through gateway
+                device.gateway
+            } else {
+                // No gateway configured, try direct anyway
+                dst_ip
+            };
+
+            let target_ip_addr = Ipv4Address::from(target_ip);
             let now_ms = logger::boot_time_us() / 1_000;
-            self.arp_cache.lookup(&dst_ip_addr, now_ms)
-                .ok_or(NetError::ArpCacheMiss)?
+            
+            // Try to lookup in ARP cache
+            match self.arp_cache.lookup(&target_ip_addr, now_ms) {
+                Some(mac) => mac,
+                None => {
+                    // ARP cache miss - queue packet and send ARP request
+                    if payload.len() <= UDP_MAX_PAYLOAD {
+                        // Find free slot in pending queue
+                        for slot in self.pending_packets.iter_mut() {
+                            if slot.is_none() {
+                                let mut pkt_payload = [0u8; UDP_MAX_PAYLOAD];
+                                pkt_payload[..payload.len()].copy_from_slice(payload);
+                                *slot = Some(PendingPacket {
+                                    device_index,
+                                    socket_index: socket_idx,
+                                    dst_ip,
+                                    dst_port,
+                                    payload: pkt_payload,
+                                    payload_len: payload.len(),
+                                    timestamp_ms: now_ms,
+                                });
+                                serial::_print(format_args!("[NetStack] Queued packet waiting for ARP\n"));
+                                break;
+                            }
+                        }
+                    }
+                    self.send_arp_request(device_index, target_ip_addr, tx)?;
+                    return Err(NetError::ArpCacheMiss);
+                }
+            }
         };
 
         // Build UDP datagram
@@ -507,7 +688,10 @@ impl NetStack {
         if frame.len() < 42 {
             return Ok(());
         }
-        let device = &self.devices[device_index];
+        // Extract values we need before any mutable operations
+        let device_mac = self.devices[device_index].mac;
+        let device_ip_bytes = self.devices[device_index].ip;
+        
         let hw_type = u16::from_be_bytes([frame[14], frame[15]]);
         let proto_type = u16::from_be_bytes([frame[16], frame[17]]);
         let hlen = frame[18] as usize;
@@ -525,18 +709,30 @@ impl NetStack {
         // Update ARP cache with sender info
         let now_ms = logger::boot_time_us() / 1_000;
         self.arp_cache.insert(sender_ip, sender_mac, now_ms);
+        
+        serial::_print(format_args!(
+            "[ARP] Received {} from {}: MAC={}\n",
+            if opcode == 1 { "request" } else if opcode == 2 { "reply" } else { "unknown" },
+            sender_ip,
+            sender_mac
+        ));
+
+        // If this is an ARP reply, check for pending packets
+        if opcode == 2 {
+            self.process_pending_packets(device_index, sender_ip, tx)?;
+        }
 
         if opcode != 1 {
             return Ok(());
         }
 
-        let device_ip = Ipv4Address::from(device.ip);
+        let device_ip = Ipv4Address::from(device_ip_bytes);
         if target_ip != device_ip {
             return Ok(());
         }
 
         // Build ARP reply
-        let device_mac = MacAddress::from(device.mac);
+        let device_mac = MacAddress::from(device_mac);
         let arp_reply = ArpPacket::new_reply(device_mac, device_ip, sender_mac, sender_ip);
 
         let mut packet = [0u8; 42];

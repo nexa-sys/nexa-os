@@ -19,10 +19,15 @@ pub const AF_INET6: i32 = 10;     // IPv6
 pub const AF_NETLINK: i32 = 16;   // Netlink
 pub const AF_UNSPEC: i32 = 0;     // Unspecified
 
-// Socket type constants (POSIX)
+/// Socket type constants (POSIX)
 pub const SOCK_STREAM: i32 = 1;   // TCP
 pub const SOCK_DGRAM: i32 = 2;    // UDP
 pub const SOCK_RAW: i32 = 3;      // Raw sockets
+
+// Socket type flags (Linux-specific)
+pub const SOCK_NONBLOCK: i32 = 0x800;      // Non-blocking mode
+pub const SOCK_CLOEXEC: i32 = 0x80000;     // Close-on-exec flag
+const SOCK_TYPE_MASK: i32 = 0xf;           // Mask to extract base type
 
 // Socket protocol constants (POSIX)
 pub const IPPROTO_IP: i32 = 0;    // Dummy protocol for TCP
@@ -132,19 +137,17 @@ impl From<SockAddrIn> for SockAddr {
 /// Socket file descriptor on success, -1 on error (errno set)
 #[no_mangle]
 pub extern "C" fn socket(domain: i32, type_: i32, protocol: i32) -> i32 {
-    // DEBUG: Print to confirm this function is being called
-    crate::stdout_write_str("[nrlib::socket] CALLED: domain=");
-    crate::stdout_write_str(if domain == 2 { "AF_INET" } else { "?" });
-    crate::stdout_write_str(", type=");
-    crate::stdout_write_str(if type_ == 2 { "SOCK_DGRAM" } else if type_ == 1 { "SOCK_STREAM" } else { "?" });
-    crate::stdout_write_str("\n");
+    // Strip flags and pass only base type to kernel
+    // Linux socket() accepts flags in type parameter, but NexaOS kernel expects clean type
+    let base_type = type_ & SOCK_TYPE_MASK;
     
     let ret = crate::syscall3(
         SYS_SOCKET as u64,
         domain as u64,
-        type_ as u64,
+        base_type as u64,  // Pass stripped type to kernel
         protocol as u64,
     );
+    
     crate::translate_ret_i32(ret)
 }
 

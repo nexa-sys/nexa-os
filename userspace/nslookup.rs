@@ -460,7 +460,9 @@ fn query_dns_udp(hostname: &str, nameserver: [u8; 4], qtype: QueryType) -> Resul
     eprintln!("[DEBUG] About to call UdpSocket::bind...");
     let socket = UdpSocket::bind("0.0.0.0:0")
         .map_err(|e| format!("Failed to create UDP socket: {}", e))?;
-    eprintln!("[DEBUG] UdpSocket::bind succeeded!");    socket.set_read_timeout(Some(Duration::from_secs(DNS_TIMEOUT_SECS)))
+    eprintln!("[DEBUG] UdpSocket::bind succeeded!");
+    
+    socket.set_read_timeout(Some(Duration::from_secs(DNS_TIMEOUT_SECS)))
         .map_err(|e| format!("Failed to set timeout: {}", e))?;
 
     let ns_addr = format!(
@@ -470,6 +472,7 @@ fn query_dns_udp(hostname: &str, nameserver: [u8; 4], qtype: QueryType) -> Resul
     let ns_socket_addr: SocketAddr = ns_addr.parse()
         .map_err(|e| format!("Invalid nameserver address: {}", e))?;
 
+    // Send query - kernel handles ARP resolution automatically
     socket.send_to(&query, ns_socket_addr)
         .map_err(|e| format!("Failed to send query: {}", e))?;
 

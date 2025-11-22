@@ -691,6 +691,11 @@ pub fn list_processes() {
     crate::kinfo!("Idle time: {}ms", stats.idle_time);
 }
 
+/// Get current global tick count (in milliseconds)
+pub fn get_tick() -> u64 {
+    GLOBAL_TICK.load(Ordering::Relaxed)
+}
+
 /// Initialize scheduler subsystem
 pub fn init() {
     crate::kinfo!(
