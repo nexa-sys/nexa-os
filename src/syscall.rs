@@ -693,7 +693,20 @@ fn syscall_close(fd: u64) -> u64 {
     }
 
     unsafe {
-        if FILE_HANDLES[idx].is_some() {
+        if let Some(handle) = FILE_HANDLES[idx].as_ref() {
+            // Clean up socket resources if this is a socket
+            if let FileBacking::Socket(ref sock_handle) = handle.backing {
+                // Close netlink socket in network stack
+                if sock_handle.domain == AF_NETLINK && sock_handle.socket_index != usize::MAX {
+                    if let Some(_) = crate::net::with_net_stack(|stack| {
+                        stack.netlink_close(sock_handle.socket_index)
+                    }) {
+                        crate::kinfo!("Closed netlink socket {} for fd {}", sock_handle.socket_index, fd);
+                    }
+                }
+                // Note: UDP sockets are not tracked per-fd, they're managed via port bindings
+            }
+            
             FILE_HANDLES[idx] = None;
             crate::kinfo!("Closed fd {}", fd);
             posix::set_errno(0);
