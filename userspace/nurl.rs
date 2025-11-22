@@ -87,26 +87,13 @@ fn main() {
         }
     };
 
-    // Resolve hostname to IP
-    let ip_str = match resolve_host(&host) {
-        Ok(ip) => format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]),
-        Err(err) => {
-            eprintln!("Error resolving host '{}': {}", host, err);
-            process::exit(1);
-        }
-    };
-
     if args.verbose {
-        eprintln!("* Resolved {} to {}", host, ip_str);
-        eprintln!("* Connecting to {}:{}...", ip_str, port);
+        eprintln!("* Connecting to {}:{}...", host, port);
     }
 
-    // Connect to server
-    let addr = format!("{}:{}", ip_str, port);
-    let mut stream = match TcpStream::connect_timeout(
-        &addr.parse().unwrap(),
-        Duration::from_secs(10),
-    ) {
+    // Connect to server (TcpStream::connect accepts &str and will use getaddrinfo for DNS)
+    let addr = format!("{}:{}", host, port);
+    let mut stream = match TcpStream::connect(&addr) {
         Ok(s) => s,
         Err(err) => {
             eprintln!("Error connecting to {}: {}", addr, err);
@@ -357,25 +344,6 @@ fn parse_url(url: &str) -> Result<(String, u16, String), String> {
     };
 
     Ok((host, port, path))
-}
-
-/// Resolve hostname to IP address
-fn resolve_host(host: &str) -> Result<[u8; 4], String> {
-    // Try to parse as IP address first
-    let parts: Vec<&str> = host.split('.').collect();
-    if parts.len() == 4 {
-        let mut ip = [0u8; 4];
-        for (i, part) in parts.iter().enumerate() {
-            ip[i] = part
-                .parse::<u8>()
-                .map_err(|_| "Invalid IP address".to_string())?;
-        }
-        return Ok(ip);
-    }
-
-    // For now, we don't support DNS resolution
-    // You could add DNS lookup here using nslookup or a DNS library
-    Err(format!("Hostname '{}' not supported - use IP address", host))
 }
 
 /// Parse HTTP response into (status_line, headers, body)
