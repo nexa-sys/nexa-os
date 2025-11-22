@@ -7,7 +7,9 @@ const SOCK_DGRAM: i32 = 2;
 
 // Netlink constants
 const RTM_GETLINK: u16 = 18;
+const RTM_NEWLINK: u16 = 16;
 const RTM_GETADDR: u16 = 22;
+const RTM_NEWADDR: u16 = 20;
 const IFLA_ADDRESS: u16 = 1;
 const IFLA_IFNAME: u16 = 3;
 const IFA_ADDRESS: u16 = 1;
@@ -223,7 +225,7 @@ fn parse_link_info(data: &[u8]) {
             break;
         }
         
-        if hdr.nlmsg_type == RTM_GETLINK + 2 { // RTM_NEWLINK = 20
+        if hdr.nlmsg_type == RTM_NEWLINK {
             let ifinfo_offset = offset + 16;
             if ifinfo_offset + 16 <= data.len() {
                 let ifinfo = unsafe { &*(data.as_ptr().add(ifinfo_offset) as *const IfInfoMsg) };
@@ -290,7 +292,7 @@ fn parse_addr_info(data: &[u8]) {
             break;
         }
         
-        if hdr.nlmsg_type == RTM_GETADDR + 2 { // RTM_NEWADDR = 24
+        if hdr.nlmsg_type == RTM_NEWADDR {
             let ifaddr_offset = offset + 16;
             if ifaddr_offset + 8 <= data.len() {
                 let ifaddr = unsafe { &*(data.as_ptr().add(ifaddr_offset) as *const IfAddrMsg) };
