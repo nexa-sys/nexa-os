@@ -255,7 +255,10 @@ fn acquire_lease(if_index: u32, mac: &[u8; 6]) -> Option<DhcpLease> {
     let mut addr_len: u32 = 16;
 
     // TODO: Set socket timeout
+    println!("[DEBUG] About to call recvfrom: fd={}, buf_len=1024", fd);
     let len = unsafe { recvfrom(fd, buf.as_mut_ptr() as *mut std::ffi::c_void, 1024, 0, &mut src_addr as *mut _ as *mut std::ffi::c_void, &mut addr_len) };
+    println!("[DEBUG] recvfrom returned: {}", len);
+    
     if len < 0 {
         println!("Failed to receive DHCP OFFER");
         unsafe { close(fd) };

@@ -571,9 +571,29 @@ impl NetStack {
 
         let proto = frame[23];
         let dst_ip = &frame[30..34];
-        if dst_ip != device.ip {
+        
+        // Accept packets destined to:
+        // 1. Our IP address
+        // 2. Broadcast address (255.255.255.255 or subnet broadcast like 10.0.2.255)
+        // 3. Any address if our IP is 0.0.0.0 (for DHCP before we have an IP)
+        let is_broadcast = dst_ip == [255, 255, 255, 255] || dst_ip == [10, 0, 2, 255];
+        let is_our_ip = dst_ip == device.ip;
+        let no_ip_yet = device.ip == [0, 0, 0, 0];
+        
+        if !is_our_ip && !is_broadcast && !no_ip_yet {
+            crate::serial::_print(format_args!(
+                "[handle_ipv4] Dropping packet: dst_ip={}.{}.{}.{}, device_ip={}.{}.{}.{}\n",
+                dst_ip[0], dst_ip[1], dst_ip[2], dst_ip[3],
+                device.ip[0], device.ip[1], device.ip[2], device.ip[3]
+            ));
             return Ok(());
         }
+        
+        crate::serial::_print(format_args!(
+            "[handle_ipv4] Accepting packet: dst_ip={}.{}.{}.{}, proto={}, our_ip={}.{}.{}.{}\n",
+            dst_ip[0], dst_ip[1], dst_ip[2], dst_ip[3], proto,
+            device.ip[0], device.ip[1], device.ip[2], device.ip[3]
+        ));
 
         match proto {
             PROTO_ICMP => self.handle_icmp(device_index, frame, ihl, total_len, tx),
@@ -648,6 +668,15 @@ impl NetStack {
         let length = u16::from_be_bytes([frame[udp_offset + 4], frame[udp_offset + 5]]) as usize;
         let checksum = u16::from_be_bytes([frame[udp_offset + 6], frame[udp_offset + 7]]);
 
+        let src_ip = &frame[26..30];
+        let dst_ip = &frame[30..34];
+        crate::serial::_print(format_args!(
+            "[handle_udp] UDP: {}.{}.{}.{}:{} -> {}.{}.{}.{}:{}, len={}, checksum={:#x}\n",
+            src_ip[0], src_ip[1], src_ip[2], src_ip[3], src_port,
+            dst_ip[0], dst_ip[1], dst_ip[2], dst_ip[3], dst_port,
+            length, checksum
+        ));
+
         if length < 8 || length > udp_len {
             crate::kinfo!("net: UDP packet with invalid length ({} vs {})", length, udp_len);
             return Ok(());
@@ -664,21 +693,30 @@ impl NetStack {
             temp_header.checksum = checksum;
             
             if !temp_header.verify_checksum(&src_ip, &dst_ip, payload) {
-                crate::kwarn!(
-                    "net: UDP checksum mismatch on port {} from {}.{}.{}.{}:{}",
+                crate::serial::_print(format_args!(
+                    "[handle_udp] Checksum mismatch on port {} from {}.{}.{}.{}:{}\n",
                     dst_port,
                     frame[26], frame[27], frame[28], frame[29], src_port
-                );
+                ));
                 return Ok(());
+            } else {
+                crate::serial::_print(format_args!("[handle_udp] Checksum verified\n"));
             }
+        } else {
+            crate::serial::_print(format_args!("[handle_udp] No checksum (checksum=0)\n"));
         }
 
         // Find matching socket
+        crate::serial::_print(format_args!("[handle_udp] Looking for socket on port {}\n", dst_port));
         let mut socket_idx = None;
         for (idx, socket) in self.udp_sockets.iter().enumerate() {
             if !socket.in_use {
                 continue;
             }
+            crate::serial::_print(format_args!(
+                "[handle_udp] Checking socket[{}]: local_port={}, in_use={}\n",
+                idx, socket.local_port, socket.in_use
+            ));
             if socket.local_port != dst_port {
                 continue;
             }
@@ -698,6 +736,8 @@ impl NetStack {
             socket_idx = Some(idx);
             break;
         }
+
+        crate::serial::_print(format_args!("[handle_udp] Socket match result: {:?}\n", socket_idx));
 
         if let Some(idx) = socket_idx {
             let payload = &frame[udp_offset + 8..udp_offset + length];

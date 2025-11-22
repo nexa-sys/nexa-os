@@ -3237,17 +3237,19 @@ fn syscall_recvfrom(
     _src_addr: *mut SockAddr,
     _addrlen: *mut u32,
 ) -> u64 {
-    crate::kinfo!("[SYS_RECVFROM] sockfd={} len={}", sockfd, len);
+    crate::serial::_print(format_args!("[SYS_RECVFROM] ENTRY: sockfd={} len={}\n", sockfd, len));
     
     // Poll network stack to process any incoming packets before attempting receive
     crate::net::poll();
     
     if buf.is_null() || len == 0 {
+        crate::serial::_print(format_args!("[SYS_RECVFROM] Invalid buf or len\n"));
         posix::set_errno(posix::errno::EINVAL);
         return u64::MAX;
     }
 
     if !user_buffer_in_range(buf as u64, len as u64) {
+        crate::serial::_print(format_args!("[SYS_RECVFROM] Buffer out of range\n"));
         posix::set_errno(posix::errno::EFAULT);
         return u64::MAX;
     }
@@ -3307,12 +3309,12 @@ fn syscall_recvfrom(
         }) {
             match res {
                 Ok(result) => {
-                    crate::kinfo!(
-                        "[SYS_RECVFROM] Received {} bytes from {}.{}.{}.{}:{}",
+                    crate::serial::_print(format_args!(
+                        "[SYS_RECVFROM] SUCCESS: Received {} bytes from {}.{}.{}.{}:{}\n",
                         result.bytes_copied,
                         result.src_ip[0], result.src_ip[1], result.src_ip[2], result.src_ip[3],
                         result.src_port
-                    );
+                    ));
                     
                     // Fill source address if provided
                     if !_src_addr.is_null() && !_addrlen.is_null() {
@@ -3326,14 +3328,14 @@ fn syscall_recvfrom(
                     posix::set_errno(0);
                     result.bytes_copied as u64
                 }
-                Err(_) => {
-                    crate::kdebug!("[SYS_RECVFROM] No data available (would block)");
+                Err(err) => {
+                    crate::serial::_print(format_args!("[SYS_RECVFROM] ERROR: No data available, err={:?}\n", err));
                     posix::set_errno(posix::errno::EAGAIN);
                     u64::MAX
                 }
             }
         } else {
-            crate::kwarn!("[SYS_RECVFROM] Network stack unavailable");
+            crate::serial::_print(format_args!("[SYS_RECVFROM] ERROR: Network stack unavailable\n"));
             posix::set_errno(posix::errno::ENETDOWN);
             u64::MAX
         }
