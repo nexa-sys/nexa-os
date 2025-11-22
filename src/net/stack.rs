@@ -692,15 +692,22 @@ impl NetStack {
             let payload = &frame[udp_offset + 8..udp_offset + length];
             temp_header.checksum = checksum;
             
+            crate::serial::_print(format_args!(
+                "[handle_udp] Verifying checksum: src={}.{}.{}.{}:{}, dst={}.{}.{}.{}:{}, len={}, checksum={:#06x}\n",
+                src_ip.0[0], src_ip.0[1], src_ip.0[2], src_ip.0[3], src_port,
+                dst_ip.0[0], dst_ip.0[1], dst_ip.0[2], dst_ip.0[3], dst_port,
+                length, checksum
+            ));
+            
             if !temp_header.verify_checksum(&src_ip, &dst_ip, payload) {
                 crate::serial::_print(format_args!(
-                    "[handle_udp] Checksum mismatch on port {} from {}.{}.{}.{}:{}\n",
+                    "[handle_udp] Checksum FAILED for port {} from {}.{}.{}.{}:{}\n",
                     dst_port,
                     frame[26], frame[27], frame[28], frame[29], src_port
                 ));
                 return Ok(());
             } else {
-                crate::serial::_print(format_args!("[handle_udp] Checksum verified\n"));
+                crate::serial::_print(format_args!("[handle_udp] Checksum verified OK\n"));
             }
         } else {
             crate::serial::_print(format_args!("[handle_udp] No checksum (checksum=0)\n"));

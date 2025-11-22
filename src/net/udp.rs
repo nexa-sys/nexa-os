@@ -200,24 +200,31 @@ impl UdpHeader {
             let word = ((dst_ip.0[i] as u16) << 8) | (dst_ip.0[i + 1] as u16);
             sum += word as u32;
         }
-        sum += 17u32;
+        sum += 17u32;  // Protocol: UDP
         sum += self.length() as u32;
 
-        // UDP header (including checksum field)
-        let header_bytes = unsafe {
-            core::slice::from_raw_parts(
-                self as *const UdpHeader as *const u8,
-                mem::size_of::<UdpHeader>(),
-            )
-        };
-        for chunk in header_bytes.chunks(2) {
-            let word = if chunk.len() == 2 {
-                ((chunk[0] as u16) << 8) | (chunk[1] as u16)
-            } else {
-                (chunk[0] as u16) << 8
-            };
-            sum += word as u32;
-        }
+        crate::serial::_print(format_args!(
+            "[UDP checksum] After pseudo-header: sum={:#010x}, length={}\n",
+            sum, self.length()
+        ));
+
+        // UDP header fields - read them as network byte order (big-endian)
+        // The struct fields are already in network byte order, so read them directly as u16
+        // Copy to local variables to avoid unaligned reference warnings
+        let src_port_be = self.src_port;
+        let dst_port_be = self.dst_port;
+        let length_be = self.length;
+        let checksum_be = self.checksum;
+        
+        sum += src_port_be as u32;
+        sum += dst_port_be as u32;
+        sum += length_be as u32;
+        sum += checksum_be as u32;
+
+        crate::serial::_print(format_args!(
+            "[UDP checksum] After header: sum={:#010x}, checksum_raw={:#06x}\n",
+            sum, checksum_be
+        ));
 
         // UDP payload
         for chunk in payload.chunks(2) {
@@ -228,10 +235,20 @@ impl UdpHeader {
             };
             sum += word as u32;
         }
+        
+        crate::serial::_print(format_args!(
+            "[UDP checksum] After payload: sum={:#010x}, payload_len={}\n",
+            sum, payload.len()
+        ));
 
         while sum > 0xFFFF {
             sum = (sum & 0xFFFF) + (sum >> 16);
         }
+
+        crate::serial::_print(format_args!(
+            "[UDP checksum] Final: sum={:#06x}, expected=0xFFFF, match={}\n",
+            sum, sum == 0xFFFF
+        ));
 
         sum == 0xFFFF
     }
