@@ -370,7 +370,12 @@ impl E1000 {
             ));
         }
         
+        // Clear descriptor status BEFORE updating RDT
         desc.status = 0;
+        desc.length = 0;
+        
+        // Ensure descriptor modifications are visible before updating tail pointer
+        core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
 
         self.rx_tail = self.rx_index;
         self.rx_index = (self.rx_index + 1) % RX_DESC_COUNT;
@@ -493,6 +498,8 @@ impl E1000 {
     fn init_tx(&mut self) {
         for desc in self.tx_desc.iter_mut() {
             *desc = TxDescriptor::new();
+            // Set DD (Descriptor Done) flag so first transmit doesn't fail
+            desc.status = TX_STATUS_DD;
         }
 
         let tx_desc_addr = self.tx_desc.as_ptr() as u64;

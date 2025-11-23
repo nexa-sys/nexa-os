@@ -710,15 +710,23 @@ impl TcpSocket {
             }
             TcpState::SynReceived => {
                 // Complete the 3-way handshake on the server side when ACK is received
-                if flags & TCP_ACK != 0 && ack == self.snd_nxt {
-                    self.snd_una = ack;
-                    // snd_nxt already advanced when we sent SYN|ACK, so do not increment again
-                    self.snd_wnd = window;
-                    self.state = TcpState::Established;
-                    serial::_print(format_args!(
-                        "[TCP process_segment] Transition SynReceived->Established for {}:{}\n",
-                        self.remote_ip, self.remote_port
-                    ));
+                if flags & TCP_ACK != 0 {
+                    // Verify ACK number is correct (should ACK our SYN)
+                    if ack == self.snd_nxt || ack == self.iss.wrapping_add(1) {
+                        self.snd_una = ack;
+                        // snd_nxt already advanced when we sent SYN|ACK, so do not increment again
+                        self.snd_wnd = window;
+                        self.state = TcpState::Established;
+                        serial::_print(format_args!(
+                            "[TCP process_segment] Transition SynReceived->Established for {}:{}\n",
+                            self.remote_ip, self.remote_port
+                        ));
+                    } else {
+                        serial::_print(format_args!(
+                            "[TCP process_segment] SynReceived: Invalid ACK {}, expected {} or {}\n",
+                            ack, self.snd_nxt, self.iss.wrapping_add(1)
+                        ));
+                    }
                 }
             }
             TcpState::Established | TcpState::FinWait1 | TcpState::FinWait2 => {
@@ -994,7 +1002,7 @@ impl TcpSocket {
         packet[tcp_offset + 12] = ((tcp_header_len / 4) as u8) << 4;
         packet[tcp_offset + 13] = flags;
         packet[tcp_offset + 14..tcp_offset + 16].copy_from_slice(&self.rcv_wnd.to_be_bytes());
-        packet[tcp_offset + 16..tcp_offset + 18].copy_from_slice(&[0, 0]); // Checksum
+        packet[tcp_offset + 16..tcp_offset + 18].copy_from_slice(&[0, 0]); // Checksum (zero before calculation)
         packet[tcp_offset + 18..tcp_offset + 20].copy_from_slice(&[0, 0]); // Urgent pointer
 
         // Copy options
@@ -1111,14 +1119,8 @@ impl TcpSocket {
                             self.ssthresh, self.cwnd
                         ));
                         
-                        // Retransmit the lost segment
-                        if let Some(segment) = self.retransmit_queue.first() {
-                            if segment.seq == ack {
-                                // This is the segment that needs retransmission
-                                // We'll mark it for retransmission
-                                return Ok(());
-                            }
-                        }
+                        // NOTE: Actual retransmission will be handled in check_retransmissions()
+                        // by the dedicated fast retransmit logic there
                     }
                 } else if self.dup_acks > 3 && self.in_recovery {
                     // Inflate cwnd for each additional duplicate ACK
@@ -1195,7 +1197,10 @@ impl TcpSocket {
                     } else {
                         seg_end
                     };
-                    seg_end.wrapping_sub(ack) > 0
+                    // Keep segment if its end sequence is after the ACK
+                    // Using wrapping arithmetic: if (ack - seg_end) wraps to a large number,
+                    // seg_end is after ack, so we keep it
+                    ack.wrapping_sub(seg_end) > (1u32 << 31)
                 });
             }
         }
@@ -1246,17 +1251,20 @@ impl TcpSocket {
         let mut to_retransmit = Vec::new();
         let mut timeout_occurred = false;
         
-        // Handle fast retransmit
-        if self.dup_acks == 3 && self.in_recovery {
+        // Handle fast retransmit when just entering recovery
+        if self.dup_acks >= 3 && self.in_recovery {
             // Fast retransmit: retransmit the first unacknowledged segment
-            if let Some(segment) = self.retransmit_queue.first() {
-                if segment.seq == self.snd_una {
-                    serial::_print(format_args!(
-                        "[TCP Fast Retransmit] Retransmitting seq={}\n",
-                        segment.seq
-                    ));
-                    let seg_clone = segment.clone();
-                    self.send_segment_internal(&seg_clone.data, seg_clone.flags, tx, Some(seg_clone.seq), false)?;
+            // Only do this once when dup_acks == 3 to avoid duplicate retransmissions
+            if self.dup_acks == 3 {
+                if let Some(segment) = self.retransmit_queue.first() {
+                    if segment.seq == self.snd_una {
+                        serial::_print(format_args!(
+                            "[TCP Fast Retransmit] Retransmitting seq={}\n",
+                            segment.seq
+                        ));
+                        let seg_clone = segment.clone();
+                        self.send_segment_internal(&seg_clone.data, seg_clone.flags, tx, Some(seg_clone.seq), false)?;
+                    }
                 }
             }
         }
