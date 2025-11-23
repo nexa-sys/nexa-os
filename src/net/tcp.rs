@@ -342,19 +342,27 @@ impl TcpSocket {
                     self.snd_nxt = self.iss;
                     self.snd_wnd = window;
                     self.state = TcpState::SynReceived;
+                    serial::_print(format_args!(
+                        "[TCP process_segment] Transition Listen->SynReceived for {}:{} (iss={}, irs={})\n",
+                        self.remote_ip, self.remote_port, self.iss, self.irs
+                    ));
                     self.send_segment(&[], TCP_SYN | TCP_ACK, tx)?;
                 }
             }
             TcpState::SynSent => {
-                if flags & TCP_ACK != 0 && ack == self.snd_nxt.wrapping_add(1) {
+                        if flags & TCP_ACK != 0 && ack == self.snd_nxt {
                     self.snd_una = ack;
                     if flags & TCP_SYN != 0 {
                         self.remote_mac = src_mac;
                         self.irs = seq;
                         self.rcv_nxt = seq.wrapping_add(1);
                         self.snd_wnd = window;
-                        self.snd_nxt = self.snd_nxt.wrapping_add(1);
+                                // snd_nxt should already be advanced by the SYN sent earlier
                         self.state = TcpState::Established;
+                        serial::_print(format_args!(
+                            "[TCP process_segment] Transition SynSent->Established for {}:{}\n",
+                            self.remote_ip, self.remote_port
+                        ));
                         self.send_segment(&[], TCP_ACK, tx)?;
                     }
                 } else if flags & TCP_SYN != 0 {
@@ -364,15 +372,24 @@ impl TcpSocket {
                     self.rcv_nxt = seq.wrapping_add(1);
                     self.snd_wnd = window;
                     self.state = TcpState::SynReceived;
+                    serial::_print(format_args!(
+                        "[TCP process_segment] Simultaneous open - SynReceived for {}:{}\n",
+                        self.remote_ip, self.remote_port
+                    ));
                     self.send_segment(&[], TCP_SYN | TCP_ACK, tx)?;
                 }
             }
             TcpState::SynReceived => {
-                if flags & TCP_ACK != 0 && ack == self.snd_nxt.wrapping_add(1) {
+                // Complete the 3-way handshake on the server side when ACK is received
+                if flags & TCP_ACK != 0 && ack == self.snd_nxt {
                     self.snd_una = ack;
-                    self.snd_nxt = self.snd_nxt.wrapping_add(1);
+                    // snd_nxt already advanced when we sent SYN|ACK, so do not increment again
                     self.snd_wnd = window;
                     self.state = TcpState::Established;
+                    serial::_print(format_args!(
+                        "[TCP process_segment] Transition SynReceived->Established for {}:{}\n",
+                        self.remote_ip, self.remote_port
+                    ));
                 }
             }
             TcpState::Established | TcpState::FinWait1 | TcpState::FinWait2 => {
@@ -547,7 +564,14 @@ impl TcpSocket {
     }
 
     /// Send a TCP segment
-    fn send_segment(&mut self, payload: &[u8], flags: u8, tx: &mut TxBatch) -> Result<(), NetError> {
+    fn send_segment_internal(
+        &mut self,
+        payload: &[u8],
+        flags: u8,
+        tx: &mut TxBatch,
+        explicit_seq: Option<u32>,
+        queue_for_retransmit: bool,
+    ) -> Result<(), NetError> {
         if self.device_idx.is_none() {
             return Err(NetError::NoDevice);
         }
@@ -597,11 +621,13 @@ impl TcpSocket {
         packet[tcp_offset..tcp_offset + 2].copy_from_slice(&self.local_port.to_be_bytes());
         packet[tcp_offset + 2..tcp_offset + 4].copy_from_slice(&self.remote_port.to_be_bytes());
         
-        let seq = if flags & TCP_SYN != 0 && self.state == TcpState::SynSent {
-            self.iss
-        } else {
-            self.snd_nxt
-        };
+        let seq = explicit_seq.unwrap_or_else(|| {
+            if flags & TCP_SYN != 0 && self.state == TcpState::SynSent {
+                self.iss
+            } else {
+                self.snd_nxt
+            }
+        });
         packet[tcp_offset + 4..tcp_offset + 8].copy_from_slice(&seq.to_be_bytes());
         packet[tcp_offset + 8..tcp_offset + 12].copy_from_slice(&self.rcv_nxt.to_be_bytes());
         
@@ -624,8 +650,8 @@ impl TcpSocket {
         packet[tcp_offset + 16..tcp_offset + 18].copy_from_slice(&tcp_checksum.to_be_bytes());
 
         serial::_print(format_args!(
-            "[TCP send_segment] Sending: flags={:02x}, seq={}, ack={}, len={}, {}:{} -> {}:{}\n",
-            flags, seq, self.rcv_nxt, total_len,
+            "[TCP send_segment] Sending: flags={:02x}, seq={}, ack={}, len={}, queue_for_retransmit={}, {}:{} -> {}:{}\n",
+            flags, seq, self.rcv_nxt, total_len, queue_for_retransmit,
             self.local_ip, self.local_port, self.remote_ip, self.remote_port
         ));
         serial::_print(format_args!(
@@ -642,7 +668,7 @@ impl TcpSocket {
             seq_advance = seq_advance.wrapping_add(1);
         }
 
-        if seq_advance > 0 && (flags & TCP_SYN != 0 || !payload.is_empty() || flags & TCP_FIN != 0) {
+        if queue_for_retransmit && seq_advance > 0 && (flags & TCP_SYN != 0 || !payload.is_empty() || flags & TCP_FIN != 0) {
             // Add to retransmit queue
             let segment = TcpSegment {
                 seq,
@@ -652,13 +678,17 @@ impl TcpSocket {
                 retransmit_count: 0,
             };
             self.retransmit_queue.push(segment);
-            
+            // Advance snd_nxt only when queuing a new segment
             self.snd_nxt = self.snd_nxt.wrapping_add(seq_advance);
         }
 
         self.last_activity = self.current_time();
 
         Ok(())
+    }
+
+    fn send_segment(&mut self, payload: &[u8], flags: u8, tx: &mut TxBatch) -> Result<(), NetError> {
+        self.send_segment_internal(payload, flags, tx, None, true)
     }
 
     /// Process ACK and update send window
@@ -699,7 +729,8 @@ impl TcpSocket {
         }
 
         for segment in to_retransmit {
-            self.send_segment(&segment.data, segment.flags, tx)?;
+            // Re-send without adding another retransmit queue entry and using original seq
+            self.send_segment_internal(&segment.data, segment.flags, tx, Some(segment.seq), false)?;
         }
 
         Ok(())
