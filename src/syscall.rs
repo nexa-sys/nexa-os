@@ -3678,8 +3678,15 @@ fn syscall_connect(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
                 )
             });
 
+            crate::serial::_print(format_args!(
+                "[SYS_CONNECT] tcp_connect returned: {:?}\n", result
+            ));
+
             match result {
                 Some(Ok(())) => {
+                    crate::serial::_print(format_args!(
+                        "[SYS_CONNECT] Entering wait loop for establishment...\n"
+                    ));
                     crate::kinfo!("[SYS_CONNECT] TCP connection initiated, waiting for establishment...");
                     
                     // Wait for connection to be established (blocking connect)

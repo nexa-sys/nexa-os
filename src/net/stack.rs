@@ -554,52 +554,57 @@ impl NetStack {
         ));
         
         // Resolve gateway MAC address via ARP before sending SYN
-        if result.is_ok() {
-            let gateway_ip = Ipv4Address::from(device.gateway);
-            let current_ms = (logger::boot_time_us() / 1000) as u64;
-            serial::_print(format_args!(
-                "[tcp_connect] Resolving gateway MAC for {}\n", gateway_ip
-            ));
-            
-            // Try to get MAC from ARP cache
-            let gateway_mac = if let Some(mac) = self.arp_cache.lookup(&gateway_ip, current_ms) {
-                serial::_print(format_args!(
-                    "[tcp_connect] Found gateway MAC in cache: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}\n",
-                    mac.0[0], mac.0[1], mac.0[2], mac.0[3], mac.0[4], mac.0[5]
-                ));
-                mac
-            } else {
-                serial::_print(format_args!(
-                    "[tcp_connect] Gateway MAC not in cache, using device gateway\n"
-                ));
-                // For now, assume gateway is on local network and will respond to ARP
-                // In real implementation, we should send ARP request and wait
-                // But for testing, let's just fail gracefully
-                return Err(NetError::ArpCacheMiss);
-            };
-            
-            // Set the remote MAC to gateway MAC
-            self.tcp_sockets[socket_idx].remote_mac = gateway_mac;
-            
-            // Send initial SYN packet immediately by calling poll
-            let mut tx_batch = TxBatch::new();
-            if let Err(e) = self.tcp_sockets[socket_idx].poll(&mut tx_batch) {
-                serial::_print(format_args!(
-                    "[tcp_connect] ERROR: poll failed: {:?}\n", e
-                ));
-            } else {
-                serial::_print(format_args!(
-                    "[tcp_connect] Poll successful, {} frames to send\n", 
-                    tx_batch.count
-                ));
-                // Send the frames
-                if tx_batch.count > 0 {
-                    crate::net::send_frames(device_index, &tx_batch).ok();
-                }
-            }
+        if result.is_err() {
+            return result;
         }
         
-        result
+        let gateway_ip = Ipv4Address::from(device.gateway);
+        let current_ms = (logger::boot_time_us() / 1000) as u64;
+        serial::_print(format_args!(
+            "[tcp_connect] Resolving gateway MAC for {}\n", gateway_ip
+        ));
+        
+        // Try to get MAC from ARP cache
+        let gateway_mac = if let Some(mac) = self.arp_cache.lookup(&gateway_ip, current_ms) {
+            serial::_print(format_args!(
+                "[tcp_connect] Found gateway MAC in cache: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}\n",
+                mac.0[0], mac.0[1], mac.0[2], mac.0[3], mac.0[4], mac.0[5]
+            ));
+            mac
+        } else {
+            serial::_print(format_args!(
+                "[tcp_connect] Gateway MAC not in cache\n"
+            ));
+            // For now, assume gateway is on local network and will respond to ARP
+            // In real implementation, we should send ARP request and wait
+            // But for testing, let's just fail gracefully
+            return Err(NetError::ArpCacheMiss);
+        };
+        
+        // Set the remote MAC to gateway MAC
+        self.tcp_sockets[socket_idx].remote_mac = gateway_mac;
+        
+        // Send initial SYN packet immediately by calling poll
+        let mut tx_batch = TxBatch::new();
+        if let Err(e) = self.tcp_sockets[socket_idx].poll(&mut tx_batch) {
+            serial::_print(format_args!(
+                "[tcp_connect] ERROR: poll failed: {:?}\n", e
+            ));
+            return Err(e);
+        }
+        
+        serial::_print(format_args!(
+            "[tcp_connect] Poll successful, {} frames to send\n", 
+            tx_batch.count
+        ));
+        
+        // Send the frames
+        if tx_batch.count > 0 {
+            crate::net::send_frames(device_index, &tx_batch).ok();
+        }
+        
+        // Return success - connection initiated
+        Ok(())
     }
 
     /// Send data on TCP socket

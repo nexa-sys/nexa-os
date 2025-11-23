@@ -459,6 +459,10 @@ impl TcpSocket {
     pub fn poll(&mut self, tx: &mut TxBatch) -> Result<(), NetError> {
         let now = self.current_time();
 
+        if self.state == TcpState::SynSent {
+             serial::_print(format_args!("[TCP poll] ENTRY SynSent last_activity={} now={}\n", self.last_activity, now));
+        }
+
         // Handle state timeouts
         match self.state {
             TcpState::TimeWait => {
@@ -468,7 +472,8 @@ impl TcpSocket {
                 return Ok(());
             }
             TcpState::SynSent | TcpState::SynReceived => {
-                if now - self.last_activity > 75000 { // 75 seconds
+                if self.last_activity != 0 && now - self.last_activity > 75000 { // 75 seconds
+                    serial::_print(format_args!("[TCP poll] TIMEOUT reset state={:?}\n", self.state));
                     self.reset();
                     return Ok(());
                 }
