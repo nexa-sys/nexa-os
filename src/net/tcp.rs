@@ -199,7 +199,8 @@ impl TcpSocket {
         self.snd_nxt = self.iss;
         self.state = TcpState::SynSent;
         self.in_use = true;
-        self.last_activity = self.current_time();
+        // Set last_activity to 0 to trigger immediate SYN send in poll()
+        self.last_activity = 0;
 
         Ok(())
     }
@@ -476,9 +477,20 @@ impl TcpSocket {
         }
 
         // Send SYN for initial connection
-        if self.state == TcpState::SynSent && now - self.last_activity > self.rto {
-            self.send_segment(&[], TCP_SYN, tx)?;
-            self.last_activity = now;
+        if self.state == TcpState::SynSent {
+            let elapsed = now.saturating_sub(self.last_activity);
+            serial::_print(format_args!(
+                "[TCP poll] SynSent state: now={}, last_activity={}, elapsed={}, rto={}\n",
+                now, self.last_activity, elapsed, self.rto
+            ));
+            if elapsed >= self.rto || self.last_activity == 0 {
+                serial::_print(format_args!("[TCP poll] Sending SYN packet\n"));
+                let result = self.send_segment(&[], TCP_SYN, tx);
+                serial::_print(format_args!("[TCP poll] send_segment result: {:?}\n", result));
+                if result.is_ok() {
+                    self.last_activity = now;
+                }
+            }
         }
 
         // Send pending data
@@ -532,6 +544,14 @@ impl TcpSocket {
     /// Send a TCP segment
     fn send_segment(&mut self, payload: &[u8], flags: u8, tx: &mut TxBatch) -> Result<(), NetError> {
         if self.device_idx.is_none() {
+            return Err(NetError::NoDevice);
+        }
+
+        // Check if we have remote MAC address
+        if self.remote_mac.0 == [0, 0, 0, 0, 0, 0] {
+            serial::_print(format_args!(
+                "[TCP send_segment] ERROR: remote_mac not set! Cannot send packet\n"
+            ));
             return Err(NetError::NoDevice);
         }
 
@@ -597,6 +617,17 @@ impl TcpSocket {
             &packet[tcp_offset..tcp_offset + tcp_header_len + payload.len()],
         );
         packet[tcp_offset + 16..tcp_offset + 18].copy_from_slice(&tcp_checksum.to_be_bytes());
+
+        serial::_print(format_args!(
+            "[TCP send_segment] Sending: flags={:02x}, seq={}, ack={}, len={}, {}:{} -> {}:{}\n",
+            flags, seq, self.rcv_nxt, total_len,
+            self.local_ip, self.local_port, self.remote_ip, self.remote_port
+        ));
+        serial::_print(format_args!(
+            "[TCP send_segment] remote_mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}\n",
+            self.remote_mac.0[0], self.remote_mac.0[1], self.remote_mac.0[2],
+            self.remote_mac.0[3], self.remote_mac.0[4], self.remote_mac.0[5]
+        ));
 
         tx.push(&packet[..total_len])?;
 

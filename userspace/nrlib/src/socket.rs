@@ -29,6 +29,9 @@ pub const SOCK_NONBLOCK: i32 = 0x800;      // Non-blocking mode
 pub const SOCK_CLOEXEC: i32 = 0x80000;     // Close-on-exec flag
 const SOCK_TYPE_MASK: i32 = 0xf;           // Mask to extract base type
 
+// Message flag constants used by libc send/recv wrappers
+const MSG_NOSIGNAL: i32 = 0x4000;
+
 // Socket protocol constants (POSIX)
 pub const IPPROTO_IP: i32 = 0;    // Dummy protocol for TCP
 pub const IPPROTO_ICMP: i32 = 1;  // ICMP
@@ -208,9 +211,11 @@ pub extern "C" fn sendto(
             options(nostack),
         );
     }
-    if result == u64::MAX as i64 {
+    if result == -1 {
+        crate::refresh_errno_from_kernel();
         -1
     } else {
+        crate::set_errno(0);
         result as isize
     }
 }
@@ -252,9 +257,11 @@ pub extern "C" fn recvfrom(
             options(nostack),
         );
     }
-    if result == u64::MAX as i64 {
+    if result == -1 {
+        crate::refresh_errno_from_kernel();
         -1
     } else {
+        crate::set_errno(0);
         result as isize
     }
 }
@@ -360,7 +367,22 @@ pub fn format_ipv4(ip: [u8; 4]) -> [u8; 16] {
 /// Number of bytes sent on success, -1 on error
 #[no_mangle]
 pub extern "C" fn send(sockfd: i32, buf: *const u8, len: usize, flags: i32) -> isize {
-    // send() is equivalent to sendto() with dest_addr=NULL
+    if buf.is_null() {
+        crate::set_errno(crate::EINVAL);
+        return -1;
+    }
+
+    if len == 0 {
+        return 0;
+    }
+
+    // Linux libc uses MSG_NOSIGNAL for TCP streams; treat it as advisory
+    let remaining_flags = flags & !MSG_NOSIGNAL;
+    if remaining_flags == 0 {
+        return crate::write(sockfd, buf as *const crate::c_void, len);
+    }
+
+    // Fallback to kernel sendto path when unsupported flags are requested
     sendto(sockfd, buf, len, flags, core::ptr::null(), 0)
 }
 
@@ -376,8 +398,29 @@ pub extern "C" fn send(sockfd: i32, buf: *const u8, len: usize, flags: i32) -> i
 /// Number of bytes received on success, -1 on error
 #[no_mangle]
 pub extern "C" fn recv(sockfd: i32, buf: *mut u8, len: usize, flags: i32) -> isize {
-    // recv() is equivalent to recvfrom() with src_addr=NULL
-    recvfrom(sockfd, buf, len, flags, core::ptr::null_mut(), core::ptr::null_mut())
+    if buf.is_null() {
+        crate::set_errno(crate::EINVAL);
+        return -1;
+    }
+
+    if len == 0 {
+        return 0;
+    }
+
+    // For blocking TCP streams, libc passes MSG_NOSIGNAL-equivalent flags (which we ignore)
+    if flags == 0 {
+        return crate::read(sockfd, buf as *mut crate::c_void, len);
+    }
+
+    // Fallback to kernel recvfrom path when flags demand special handling
+    recvfrom(
+        sockfd,
+        buf,
+        len,
+        flags,
+        core::ptr::null_mut(),
+        core::ptr::null_mut(),
+    )
 }
 
 /// Get socket options

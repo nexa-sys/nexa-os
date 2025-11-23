@@ -1917,9 +1917,11 @@ pub unsafe extern "C" fn setsockopt(
         lateout("r11") _,
         options(nostack),
     );
-    if result == u64::MAX as i64 {
+    if result == -1 {
+        crate::refresh_errno_from_kernel();
         -1
     } else {
+        crate::set_errno(0);
         result as i32
     }
 }

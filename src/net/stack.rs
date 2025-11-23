@@ -518,6 +518,12 @@ impl NetStack {
         remote_port: u16,
         local_port: u16,
     ) -> Result<(), NetError> {
+        serial::_print(format_args!(
+            "[tcp_connect] socket_idx={}, device_index={}, remote={}:{}\n",
+            socket_idx, device_index, 
+            crate::net::ipv4::Ipv4Address::from(remote_ip), remote_port
+        ));
+        
         if socket_idx >= MAX_TCP_SOCKETS {
             return Err(NetError::InvalidSocket);
         }
@@ -527,15 +533,73 @@ impl NetStack {
 
         let device = &self.devices[device_index];
         let socket = &mut self.tcp_sockets[socket_idx];
+        
+        serial::_print(format_args!(
+            "[tcp_connect] Before connect: socket state={:?}, in_use={}\n",
+            socket.state, socket.in_use
+        ));
 
-        socket.connect(
+        let result = socket.connect(
             Ipv4Address::from(device.ip),
             local_port,
             Ipv4Address::from(remote_ip),
             remote_port,
             MacAddress(device.mac),
             device_index,
-        )
+        );
+        
+        serial::_print(format_args!(
+            "[tcp_connect] After connect: result={:?}, socket state={:?}, in_use={}\n",
+            result, socket.state, socket.in_use
+        ));
+        
+        // Resolve gateway MAC address via ARP before sending SYN
+        if result.is_ok() {
+            let gateway_ip = Ipv4Address::from(device.gateway);
+            let current_ms = (logger::boot_time_us() / 1000) as u64;
+            serial::_print(format_args!(
+                "[tcp_connect] Resolving gateway MAC for {}\n", gateway_ip
+            ));
+            
+            // Try to get MAC from ARP cache
+            let gateway_mac = if let Some(mac) = self.arp_cache.lookup(&gateway_ip, current_ms) {
+                serial::_print(format_args!(
+                    "[tcp_connect] Found gateway MAC in cache: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}\n",
+                    mac.0[0], mac.0[1], mac.0[2], mac.0[3], mac.0[4], mac.0[5]
+                ));
+                mac
+            } else {
+                serial::_print(format_args!(
+                    "[tcp_connect] Gateway MAC not in cache, using device gateway\n"
+                ));
+                // For now, assume gateway is on local network and will respond to ARP
+                // In real implementation, we should send ARP request and wait
+                // But for testing, let's just fail gracefully
+                return Err(NetError::ArpCacheMiss);
+            };
+            
+            // Set the remote MAC to gateway MAC
+            self.tcp_sockets[socket_idx].remote_mac = gateway_mac;
+            
+            // Send initial SYN packet immediately by calling poll
+            let mut tx_batch = TxBatch::new();
+            if let Err(e) = self.tcp_sockets[socket_idx].poll(&mut tx_batch) {
+                serial::_print(format_args!(
+                    "[tcp_connect] ERROR: poll failed: {:?}\n", e
+                ));
+            } else {
+                serial::_print(format_args!(
+                    "[tcp_connect] Poll successful, {} frames to send\n", 
+                    tx_batch.count
+                ));
+                // Send the frames
+                if tx_batch.count > 0 {
+                    crate::net::send_frames(device_index, &tx_batch).ok();
+                }
+            }
+        }
+        
+        result
     }
 
     /// Send data on TCP socket
@@ -547,6 +611,13 @@ impl NetStack {
         if socket_idx >= MAX_TCP_SOCKETS {
             return Err(NetError::InvalidSocket);
         }
+        
+        let socket = &mut self.tcp_sockets[socket_idx];
+        serial::_print(format_args!(
+            "[tcp_send] socket_idx={}, state={:?}, in_use={}, data_len={}\n",
+            socket_idx, socket.state, socket.in_use, data.len()
+        ));
+        
         self.tcp_sockets[socket_idx].send(data)
     }
 
@@ -1130,7 +1201,13 @@ impl NetStack {
         let src_ip = Ipv4Address::from(&frame[26..30]);
         let src_mac = MacAddress([frame[6], frame[7], frame[8], frame[9], frame[10], frame[11]]);
 
+        serial::_print(format_args!(
+            "[handle_tcp] Received TCP packet from {}, tcp_data_len={}\n",
+            src_ip, tcp_data.len()
+        ));
+
         // Try to find matching socket
+        let mut found = false;
         for socket in &mut self.tcp_sockets {
             if !socket.in_use {
                 continue;
@@ -1140,7 +1217,17 @@ impl NetStack {
                 continue;
             }
 
+            serial::_print(format_args!(
+                "[handle_tcp] Trying socket: local_port={}, remote_ip={}, state={:?}\n",
+                socket.local_port, socket.remote_ip, socket.state
+            ));
+
             socket.process_segment(src_ip, src_mac, tcp_data, tx)?;
+            found = true;
+        }
+
+        if !found {
+            serial::_print(format_args!("[handle_tcp] No matching socket found\n"));
         }
 
         Ok(())

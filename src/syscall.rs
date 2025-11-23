@@ -455,12 +455,23 @@ fn syscall_write(fd: u64, buf: u64, count: u64) -> u64 {
                 FileBacking::Socket(sock_handle) => {
                     // Handle TCP socket write
                     if sock_handle.socket_type == SOCK_STREAM {
+                        crate::serial::_print(format_args!(
+                            "[SYS_WRITE] TCP socket fd={} index={} count={}\n",
+                            fd, sock_handle.socket_index, count
+                        ));
+                        
                         if sock_handle.socket_index == usize::MAX {
+                            crate::serial::_print(format_args!(
+                                "[SYS_WRITE] ERROR: Invalid socket index\n"
+                            ));
                             posix::set_errno(posix::errno::EBADF);
                             return u64::MAX;
                         }
 
                         if !user_buffer_in_range(buf, count) {
+                            crate::serial::_print(format_args!(
+                                "[SYS_WRITE] ERROR: Buffer out of range\n"
+                            ));
                             posix::set_errno(posix::errno::EFAULT);
                             return u64::MAX;
                         }
@@ -473,19 +484,35 @@ fn syscall_write(fd: u64, buf: u64, count: u64) -> u64 {
 
                         match result {
                             Some(Ok(bytes_sent)) => {
+                                crate::serial::_print(format_args!(
+                                    "[SYS_WRITE] TCP sent {} bytes\n", bytes_sent
+                                ));
                                 posix::set_errno(0);
                                 return bytes_sent as u64;
                             }
-                            Some(Err(_)) => {
+                            Some(Err(e)) => {
+                                crate::serial::_print(format_args!(
+                                    "[SYS_WRITE] ERROR: tcp_send failed: {:?}\n", e
+                                ));
                                 posix::set_errno(posix::errno::EIO);
                                 return u64::MAX;
                             }
                             None => {
+                                crate::serial::_print(format_args!(
+                                    "[SYS_WRITE] ERROR: Network stack unavailable\n"
+                                ));
                                 posix::set_errno(posix::errno::ENETDOWN);
                                 return u64::MAX;
                             }
                         }
                     }
+                    
+                    // UDP socket - not supported via write(), must use sendto()
+                    crate::serial::_print(format_args!(
+                        "[SYS_WRITE] ERROR: UDP socket cannot use write(), use sendto()\n"
+                    ));
+                    posix::set_errno(posix::errno::ENOTSUP);
+                    return u64::MAX;
                 }
                 _ => {}
             }
@@ -3554,10 +3581,11 @@ fn syscall_recvfrom(
     }
 }
 
-/// SYS_CONNECT - Connect UDP socket to default destination
-/// For UDP, this sets the default destination for future sends
+/// SYS_CONNECT - Connect socket to remote address
+/// For TCP, establishes a connection. For UDP, sets default destination.
 /// Returns: 0 on success, -1 on error
 fn syscall_connect(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
+    crate::serial::_print(format_args!("[SYS_CONNECT] ==== ENTRY ==== sockfd={} addrlen={}\n", sockfd, addrlen));
     crate::kinfo!("[SYS_CONNECT] sockfd={} addrlen={}", sockfd, addrlen);
     
     if addr.is_null() || addrlen < 8 {
@@ -3652,9 +3680,48 @@ fn syscall_connect(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
 
             match result {
                 Some(Ok(())) => {
-                    crate::kinfo!("[SYS_CONNECT] TCP connection initiated");
-                    posix::set_errno(0);
-                    0
+                    crate::kinfo!("[SYS_CONNECT] TCP connection initiated, waiting for establishment...");
+                    
+                    // Wait for connection to be established (blocking connect)
+                    // Poll the TCP state until it's Established or an error occurs
+                    let start_time_us = crate::logger::boot_time_us();
+                    let timeout_us = 30_000_000u64; // 30 second timeout
+                    
+                    loop {
+                        // Check TCP state
+                        let state = crate::net::with_net_stack(|stack| {
+                            stack.tcp_get_state(sock_handle.socket_index)
+                        });
+                        
+                        match state {
+                            Some(Ok(crate::net::tcp::TcpState::Established)) => {
+                                crate::kinfo!("[SYS_CONNECT] TCP connection established");
+                                posix::set_errno(0);
+                                return 0;
+                            }
+                            Some(Ok(crate::net::tcp::TcpState::Closed)) => {
+                                crate::kwarn!("[SYS_CONNECT] TCP connection failed (closed)");
+                                posix::set_errno(posix::errno::ECONNREFUSED);
+                                return u64::MAX;
+                            }
+                            Some(Ok(_)) => {
+                                // Still connecting, check timeout
+                                let elapsed_us = crate::logger::boot_time_us() - start_time_us;
+                                if elapsed_us > timeout_us {
+                                    crate::kwarn!("[SYS_CONNECT] TCP connection timeout");
+                                    posix::set_errno(posix::errno::ETIMEDOUT);
+                                    return u64::MAX;
+                                }
+                                // Yield CPU and try again
+                                scheduler::do_schedule();
+                            }
+                            Some(Err(_)) | None => {
+                                crate::kwarn!("[SYS_CONNECT] TCP connection failed (error)");
+                                posix::set_errno(posix::errno::ECONNREFUSED);
+                                return u64::MAX;
+                            }
+                        }
+                    }
                 }
                 Some(Err(_)) => {
                     crate::kwarn!("[SYS_CONNECT] TCP connect failed");

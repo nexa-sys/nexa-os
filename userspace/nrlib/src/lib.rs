@@ -493,7 +493,7 @@ pub fn get_errno() -> i32 {
 }
 
 #[inline(always)]
-fn refresh_errno_from_kernel() -> i32 {
+pub(crate) fn refresh_errno_from_kernel() -> i32 {
     let err = syscall1(SYS_GETERRNO, 0) as i32;
     set_errno(err);
     err
