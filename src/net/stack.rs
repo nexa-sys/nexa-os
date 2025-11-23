@@ -243,12 +243,12 @@ impl NetStack {
     pub const fn new() -> Self {
         let mut devices = [DeviceInfo::empty(); super::MAX_NET_DEVICES];
         // Register default network devices
-        // For QEMU virtio-net, we typically have eth0
-        // Start with 0.0.0.0 to allow DHCP discovery before IP assignment
+        // For QEMU user-mode networking, use standard 10.0.2.0/24 network
+        // DHCP will assign 10.0.2.15, gateway 10.0.2.2 via DHCP option 3
         devices[0] = DeviceInfo {
             mac: [0x52, 0x54, 0x00, 0x12, 0x34, 0x56], // QEMU default MAC prefix
             ip: [0, 0, 0, 0], // No IP yet, will be set by DHCP
-            gateway: [192, 168, 3, 2], // QEMU user-mode networking default gateway
+            gateway: [0, 0, 0, 0], // No gateway yet, will be set by DHCP RTM_NEWROUTE
             present: true,
         };
 
@@ -287,7 +287,7 @@ impl NetStack {
         let gateway = if self.devices[index].present {
             self.devices[index].gateway
         } else {
-            [192, 168, 3, 2] // Default QEMU gateway
+            [10, 0, 2, 2] // QEMU default gateway
         };
         self.devices[index] = DeviceInfo {
             mac,
@@ -1299,9 +1299,9 @@ impl NetStack {
     /// Handle netlink request from userspace
     pub fn netlink_handle_request(&mut self, socket_idx: usize, data: &[u8]) -> Result<(), NetError> {
         use super::netlink::{
-            NlMsgHdr, IfAddrMsg, RtAttr,
-            RTM_GETLINK, RTM_GETADDR, RTM_NEWADDR,
-            IFA_ADDRESS
+            NlMsgHdr, IfAddrMsg, RtMsg, RtAttr,
+            RTM_GETLINK, RTM_GETADDR, RTM_NEWADDR, RTM_NEWROUTE,
+            IFA_ADDRESS, RTA_GATEWAY, RTA_OIF
         };
 
         crate::serial::_print(format_args!("[netlink_handle_request] socket_idx={}, data_len={}\n", socket_idx, data.len()));
@@ -1400,6 +1400,70 @@ impl NetStack {
                     }
                     
                     pos += (attr_len + 3) & !3; // Align to 4 bytes
+                }
+            }
+            RTM_NEWROUTE => {
+                crate::serial::_print(format_args!("[netlink_handle_request] RTM_NEWROUTE received\n"));
+                // Parse RtMsg
+                if data.len() < core::mem::size_of::<NlMsgHdr>() + core::mem::size_of::<RtMsg>() {
+                    return Err(NetError::InvalidPacket);
+                }
+                let rtmsg = unsafe { &*(data.as_ptr().add(core::mem::size_of::<NlMsgHdr>()) as *const RtMsg) };
+                
+                // We only handle default routes (rtm_dst_len == 0) for now
+                if rtmsg.rtm_dst_len != 0 {
+                    crate::kinfo!("[netlink_handle_request] RTM_NEWROUTE: Non-default route ignored (dst_len={})", rtmsg.rtm_dst_len);
+                    return Ok(());
+                }
+
+                // Parse attributes to find gateway and output interface
+                let mut gateway_ip: Option<[u8; 4]> = None;
+                let mut oif_index: Option<u32> = None;
+                
+                let mut pos = core::mem::size_of::<NlMsgHdr>() + core::mem::size_of::<RtMsg>();
+                while pos + core::mem::size_of::<RtAttr>() <= hdr.nlmsg_len as usize {
+                    let attr = unsafe { &*(data.as_ptr().add(pos) as *const RtAttr) };
+                    let attr_len = attr.rta_len as usize;
+                    if pos + attr_len > hdr.nlmsg_len as usize {
+                        break;
+                    }
+
+                    if attr.rta_type == RTA_GATEWAY {
+                        if attr_len >= 4 + 4 { // Header + IPv4
+                            let ip_ptr = unsafe { data.as_ptr().add(pos + 4) };
+                            let mut ip = [0u8; 4];
+                            unsafe { core::ptr::copy_nonoverlapping(ip_ptr, ip.as_mut_ptr(), 4) };
+                            gateway_ip = Some(ip);
+                            crate::serial::_print(format_args!("[netlink_handle_request] RTM_NEWROUTE: gateway={}.{}.{}.{}\n", 
+                                ip[0], ip[1], ip[2], ip[3]));
+                        }
+                    } else if attr.rta_type == RTA_OIF {
+                        if attr_len >= 4 + 4 { // Header + u32
+                            let idx_ptr = unsafe { data.as_ptr().add(pos + 4) };
+                            let idx = unsafe { *(idx_ptr as *const u32) };
+                            oif_index = Some(idx);
+                            crate::serial::_print(format_args!("[netlink_handle_request] RTM_NEWROUTE: oif={}\n", idx));
+                        }
+                    }
+                    
+                    pos += (attr_len + 3) & !3; // Align to 4 bytes
+                }
+
+                // Apply the default route
+                if let Some(gw) = gateway_ip {
+                    if let Some(if_idx) = oif_index {
+                        let dev_idx = if_idx as usize;
+                        if dev_idx > 0 && dev_idx <= self.devices.len() {
+                            let real_dev_idx = dev_idx - 1;
+                            if self.devices[real_dev_idx].present {
+                                self.devices[real_dev_idx].gateway = gw;
+                                crate::kinfo!("[netlink_handle_request] RTM_NEWROUTE: Set default gateway for eth{} to {}.{}.{}.{}", 
+                                    real_dev_idx, gw[0], gw[1], gw[2], gw[3]);
+                                crate::serial::_print(format_args!("Netlink: Set default gateway for eth{} to {}.{}.{}.{}\n", 
+                                    real_dev_idx, gw[0], gw[1], gw[2], gw[3]));
+                            }
+                        }
+                    }
                 }
             }
             _ => {

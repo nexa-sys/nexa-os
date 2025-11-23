@@ -51,8 +51,12 @@ const DHCP_INFORM: u8 = 8;
 // Netlink constants
 const RTM_GETLINK: u16 = 18;
 const RTM_NEWADDR: u16 = 20;
+const RTM_NEWROUTE: u16 = 24;
 const IFLA_ADDRESS: u16 = 1;
 const IFA_ADDRESS: u16 = 1;
+const RTA_DST: u16 = 1;
+const RTA_GATEWAY: u16 = 5;
+const RTA_OIF: u16 = 4;
 
 #[repr(C)]
 struct SockAddrIn {
@@ -96,6 +100,19 @@ struct IfAddrMsg {
     ifa_flags: u8,
     ifa_scope: u8,
     ifa_index: u32,
+}
+
+#[repr(C)]
+struct RtMsg {
+    rtm_family: u8,
+    rtm_dst_len: u8,
+    rtm_src_len: u8,
+    rtm_tos: u8,
+    rtm_table: u8,
+    rtm_protocol: u8,
+    rtm_scope: u8,
+    rtm_type: u8,
+    rtm_flags: u32,
 }
 
 #[repr(C)]
@@ -188,6 +205,11 @@ fn main() {
                 
                 // Configure interface
                 configure_interface(if_index, lease.ip, lease.subnet_mask);
+                
+                // Configure default gateway if provided
+                if let Some(router) = lease.router {
+                    configure_default_route(if_index, router);
+                }
                 
                 // Write DNS configuration
                 write_resolv_conf(&lease.dns_servers);
@@ -355,6 +377,9 @@ fn acquire_lease(if_index: u32, mac: &[u8; 6]) -> Option<DhcpLease> {
         return None;
     }
 
+    // Debug: Print all DHCP options
+    debug_print_dhcp_options(&buf[..len as usize]);
+
     let assigned_ip = u32::from_be(ack_packet.yiaddr);
     
     // Parse lease options
@@ -371,8 +396,23 @@ fn acquire_lease(if_index: u32, mac: &[u8; 6]) -> Option<DhcpLease> {
         .unwrap_or(0);
     
     // Parse router (default gateway)
+    println!("[acquire_lease] Searching for DHCP_OPT_ROUTER (option 3)...");
     let router = find_option(&buf[..len as usize], DHCP_OPT_ROUTER)
-        .and_then(|b| if b.len() >= 4 { Some(u32::from_be_bytes([b[0], b[1], b[2], b[3]])) } else { None });
+        .and_then(|b| {
+            println!("[acquire_lease] Found router option, len={}", b.len());
+            if b.len() >= 4 {
+                let ip = u32::from_be_bytes([b[0], b[1], b[2], b[3]]);
+                println!("[acquire_lease] Parsed router IP: {}.{}.{}.{}", 
+                    (ip >> 24) & 0xFF, (ip >> 16) & 0xFF, (ip >> 8) & 0xFF, ip & 0xFF);
+                Some(ip)
+            } else {
+                println!("[acquire_lease] Router option too short!");
+                None
+            }
+        });
+    if router.is_none() {
+        println!("[acquire_lease] WARNING: No router option found in DHCP ACK!");
+    }
     
     // Parse DNS servers
     let mut dns_servers = Vec::new();
@@ -719,6 +759,116 @@ fn configure_interface(if_index: u32, ip: u32, mask: u32) {
     unsafe { close(fd) };
 }
 
+fn configure_default_route(if_index: u32, gateway: u32) {
+    println!("Configuring default route via {}.{}.{}.{}", 
+             (gateway >> 24) & 0xFF, (gateway >> 16) & 0xFF,
+             (gateway >> 8) & 0xFF, gateway & 0xFF);
+    
+    let fd = unsafe { socket(AF_NETLINK, SOCK_DGRAM, 0) };
+    if fd < 0 {
+        println!("Failed to create netlink socket for route");
+        return;
+    }
+
+    let addr = SockAddrNl {
+        nl_family: AF_NETLINK as u16,
+        nl_pad: 0,
+        nl_pid: process::id(),
+        nl_groups: 0,
+    };
+    
+    if unsafe { bind(fd, &addr as *const _ as *const std::ffi::c_void, 12) } < 0 {
+        println!("Failed to bind netlink socket for route");
+        unsafe { close(fd) };
+        return;
+    }
+
+    let seq = 3; // Arbitrary sequence number
+    let mut packet = [0u8; 256];
+    let mut pos = 0;
+
+    // Netlink Header
+    let hdr = NlMsgHdr {
+        nlmsg_len: 0, // Fill later
+        nlmsg_type: RTM_NEWROUTE,
+        nlmsg_flags: 1 | 4 | 0x100, // NLM_F_REQUEST | NLM_F_CREATE | NLM_F_REPLACE
+        nlmsg_seq: seq,
+        nlmsg_pid: process::id(),
+    };
+    unsafe {
+        std::ptr::copy_nonoverlapping(&hdr as *const _ as *const u8, packet.as_mut_ptr().add(pos), mem::size_of::<NlMsgHdr>());
+    }
+    pos += mem::size_of::<NlMsgHdr>();
+
+    // RtMsg - for default route (0.0.0.0/0)
+    let rtmsg = RtMsg {
+        rtm_family: AF_INET as u8,
+        rtm_dst_len: 0,    // /0 means default route
+        rtm_src_len: 0,
+        rtm_tos: 0,
+        rtm_table: 254,    // RT_TABLE_MAIN
+        rtm_protocol: 2,   // RTPROT_KERNEL
+        rtm_scope: 0,      // RT_SCOPE_UNIVERSE
+        rtm_type: 1,       // RTN_UNICAST
+        rtm_flags: 0,
+    };
+    unsafe {
+        std::ptr::copy_nonoverlapping(&rtmsg as *const _ as *const u8, packet.as_mut_ptr().add(pos), mem::size_of::<RtMsg>());
+    }
+    pos += mem::size_of::<RtMsg>();
+
+    // RTA_GATEWAY Attribute
+    let attr_gw = RtAttr {
+        rta_len: (mem::size_of::<RtAttr>() + 4) as u16,
+        rta_type: RTA_GATEWAY,
+    };
+    unsafe {
+        std::ptr::copy_nonoverlapping(&attr_gw as *const _ as *const u8, packet.as_mut_ptr().add(pos), mem::size_of::<RtAttr>());
+    }
+    pos += mem::size_of::<RtAttr>();
+    
+    let gw_bytes = gateway.to_be_bytes();
+    unsafe {
+        std::ptr::copy_nonoverlapping(gw_bytes.as_ptr(), packet.as_mut_ptr().add(pos), 4);
+    }
+    pos += 4;
+    
+    // Align to 4 bytes
+    while pos % 4 != 0 { packet[pos] = 0; pos += 1; }
+
+    // RTA_OIF Attribute (Output Interface)
+    let attr_oif = RtAttr {
+        rta_len: (mem::size_of::<RtAttr>() + 4) as u16,
+        rta_type: RTA_OIF,
+    };
+    unsafe {
+        std::ptr::copy_nonoverlapping(&attr_oif as *const _ as *const u8, packet.as_mut_ptr().add(pos), mem::size_of::<RtAttr>());
+    }
+    pos += mem::size_of::<RtAttr>();
+    
+    unsafe {
+        std::ptr::copy_nonoverlapping(&if_index as *const _ as *const u8, packet.as_mut_ptr().add(pos), 4);
+    }
+    pos += 4;
+    
+    // Align to 4 bytes
+    while pos % 4 != 0 { packet[pos] = 0; pos += 1; }
+
+    // Update length
+    let len = pos as u32;
+    unsafe {
+        std::ptr::copy_nonoverlapping(&len as *const _ as *const u8, packet.as_mut_ptr(), 4);
+    }
+
+    if unsafe { sendto(fd, packet.as_ptr() as *const std::ffi::c_void, pos, 0, std::ptr::null(), 0) } < 0 {
+        println!("Failed to send RTM_NEWROUTE");
+    } else {
+        println!("Successfully configured default route");
+    }
+
+    unsafe { close(fd) };
+}
+
 fn write_resolv_conf(dns_servers: &[u32]) {
     use std::io::Write;
     
@@ -818,16 +968,16 @@ fn add_option(packet: &mut DhcpPacket, code: u8, data: &[u8]) {
 }
 
 fn find_option(buf: &[u8], code: u8) -> Option<&[u8]> {
-    // Skip header
-    let options_start = mem::size_of::<DhcpPacket>() - 308;
-    if buf.len() < options_start { return None; }
+    // Magic cookie is the u32 field before options array
+    let magic_offset = mem::size_of::<DhcpPacket>() - 308 - 4;
+    if buf.len() < magic_offset + 4 { return None; }
     
-    let mut idx = options_start;
     // Check magic cookie
-    if buf[idx] != 0x63 || buf[idx+1] != 0x82 || buf[idx+2] != 0x53 || buf[idx+3] != 0x63 {
+    if buf[magic_offset] != 0x63 || buf[magic_offset+1] != 0x82 || buf[magic_offset+2] != 0x53 || buf[magic_offset+3] != 0x63 {
         return None;
     }
-    idx += 4;
+    
+    let mut idx = magic_offset + 4;  // Start after magic cookie
 
     while idx < buf.len() {
         let opt = buf[idx];
@@ -846,4 +996,59 @@ fn find_option(buf: &[u8], code: u8) -> Option<&[u8]> {
         idx += 2 + len;
     }
     None
+}
+
+fn debug_print_dhcp_options(buf: &[u8]) {
+    // DHCP packet structure: magic cookie is a separate u32 field BEFORE options array
+    // So options start at: size_of::<DhcpPacket>() - 308
+    // But the magic cookie is the u32 field just before options
+    let magic_offset = mem::size_of::<DhcpPacket>() - 308 - 4;  // magic is before options
+    if buf.len() < magic_offset + 4 { 
+        println!("[debug_dhcp_options] Buffer too short");
+        return;
+    }
+    
+    println!("[debug_dhcp_options] Buffer len={}, magic_offset={}", buf.len(), magic_offset);
+    println!("[debug_dhcp_options] Magic cookie bytes: [{:02x} {:02x} {:02x} {:02x}]", 
+        buf[magic_offset], buf[magic_offset+1], buf[magic_offset+2], buf[magic_offset+3]);
+    
+    // Check magic cookie
+    if buf[magic_offset] != 0x63 || buf[magic_offset+1] != 0x82 || buf[magic_offset+2] != 0x53 || buf[magic_offset+3] != 0x63 {
+        println!("[debug_dhcp_options] Invalid magic cookie (expected 63 82 53 63)");
+        return;
+    }
+    
+    let mut idx = magic_offset + 4;  // Start after magic cookie
+    
+    println!("[debug_dhcp_options] DHCP options in packet:");
+    while idx < buf.len() {
+        let opt = buf[idx];
+        if opt == DHCP_OPT_END { 
+            println!("  Option 255: END");
+            break; 
+        }
+        if opt == DHCP_OPT_PAD { 
+            idx += 1; 
+            continue; 
+        }
+        
+        if idx + 1 >= buf.len() { break; }
+        let len = buf[idx+1] as usize;
+        
+        if idx + 2 + len > buf.len() { break; }
+        
+        print!("  Option {}: len={}", opt, len);
+        if len <= 16 {
+            print!(", data=[");
+            for i in 0..len {
+                print!("{:02x}", buf[idx+2+i]);
+                if i < len-1 { print!(" "); }
+            }
+            println!("]");
+        } else {
+            println!(" (too long to display)");
+        }
+        
+        idx += 2 + len;
+    }
 }

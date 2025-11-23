@@ -17,6 +17,7 @@ pub const RTM_GETLINK: u16 = 18;    // Get link info
 pub const RTM_GETADDR: u16 = 22;    // Get address info
 pub const RTM_NEWLINK: u16 = 16;    // New link
 pub const RTM_NEWADDR: u16 = 20;    // New address
+pub const RTM_NEWROUTE: u16 = 24;   // New route
 
 /// Interface info attributes
 pub const IFLA_IFNAME: u16 = 3;    // Interface name
@@ -27,6 +28,11 @@ pub const IFLA_ADDRESS: u16 = 1;   // MAC address
 /// Address attributes
 pub const IFA_ADDRESS: u16 = 1;    // IP address
 pub const IFA_LABEL: u16 = 3;      // Interface name label
+
+/// Route attributes
+pub const RTA_DST: u16 = 1;        // Route destination
+pub const RTA_OIF: u16 = 4;        // Output interface
+pub const RTA_GATEWAY: u16 = 5;    // Gateway address
 
 /// Netlink message header
 #[repr(C)]
@@ -68,6 +74,21 @@ pub struct IfAddrMsg {
     pub ifa_flags: u8,      // Flags
     pub ifa_scope: u8,      // Scope
     pub ifa_index: u32,     // Interface index
+}
+
+/// Route message
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct RtMsg {
+    pub rtm_family: u8,     // AF_INET, etc.
+    pub rtm_dst_len: u8,    // Destination prefix length
+    pub rtm_src_len: u8,    // Source prefix length
+    pub rtm_tos: u8,        // Type of service
+    pub rtm_table: u8,      // Routing table ID
+    pub rtm_protocol: u8,   // Routing protocol
+    pub rtm_scope: u8,      // Scope
+    pub rtm_type: u8,       // Route type
+    pub rtm_flags: u32,     // Flags
 }
 
 /// Netlink socket configuration

@@ -240,6 +240,7 @@ impl E1000 {
         for (idx, desc) in self.rx_desc.iter_mut().enumerate() {
             let buf_addr = self.rx_buffers[idx].as_ptr() as u64;
             desc.addr = buf_addr;
+            desc.status = 0;  // Clear DD flag to make descriptor available
             if idx < 3 {
                 crate::serial::_print(format_args!(
                     "[update_dma] desc[{}].addr={:#x} (buffer@{:#x})\n",
@@ -248,13 +249,14 @@ impl E1000 {
             }
         }
         
-        // Reset RDT to indicate all descriptors are available
+        // Reset RX state to initial configuration
+        self.rx_index = 0;
         self.rx_tail = RX_DESC_COUNT - 1;
         self.write_reg(REG_RDT, self.rx_tail as u32);
         
         crate::serial::_print(format_args!(
-            "[e1000::update_dma_addresses] Updated addresses - RDBA={:#x}, TDBA={:#x}, RDT={}\n",
-            rdba, tdba, self.rx_tail
+            "[e1000::update_dma_addresses] Updated addresses - RDBA={:#x}, TDBA={:#x}, rx_index={}, RDT={}\n",
+            rdba, tdba, self.rx_index, self.rx_tail
         ));
     }
 
@@ -377,9 +379,29 @@ impl E1000 {
         // Ensure descriptor modifications are visible before updating tail pointer
         core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
 
-        self.rx_tail = self.rx_index;
+        // E1000 semantics: After processing descriptor at rx_index, we've cleared it
+        // and it's now available for hardware to reuse. We update RDT to point to this
+        // descriptor, telling hardware "you can write up to and including this descriptor"
+        let old_index = self.rx_index;
         self.rx_index = (self.rx_index + 1) % RX_DESC_COUNT;
+        
+        // Set RDT to the descriptor we just processed (now available)
+        self.rx_tail = old_index;
+        crate::serial::_print(format_args!(
+            "[e1000::drain_rx] Updating RDT: old_index={}, new rx_index={}, RDT: {} -> {}\n",
+            old_index, self.rx_index, self.read_reg(REG_RDT), self.rx_tail
+        ));
         self.write_reg(REG_RDT, self.rx_tail as u32);
+        
+        // Verify RDT was written
+        let rdt_readback = self.read_reg(REG_RDT);
+        if rdt_readback != self.rx_tail as u32 {
+            crate::serial::_print(format_args!(
+                "[e1000::drain_rx] ERROR: RDT write failed! Wrote {}, read back {}\n",
+                self.rx_tail, rdt_readback
+            ));
+        }
+        
         Some(packet_len)
     }
 

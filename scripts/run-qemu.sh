@@ -133,13 +133,10 @@ IS_WIRELESS=false
 if [[ -d "/sys/class/net/$DEFAULT_IF/wireless" ]] || iwconfig "$DEFAULT_IF" 2>/dev/null | grep -q "ESSID"; then
     IS_WIRELESS=true
     echo "Detected wireless interface - WiFi L2 bridging not supported by 802.11 protocol"
-    echo "Using QEMU user-mode networking with custom subnet (192.168.3.0/24)"
+    echo "Using QEMU user-mode networking (default 10.0.2.0/24 subnet)"
     
-    # User-mode networking: VM gets 192.168.3.15, host is 192.168.3.2, DNS at 192.168.3.3
+    # User-mode networking: VM gets DHCP (typically 10.0.2.15), gateway 10.0.2.2, DNS 10.0.2.3
     NET_MODE="user"
-    VM_IP="192.168.3.15"
-    HOST_IP="192.168.3.2"
-    DNS_IP="192.168.3.3"
     VM_MAC="52:54:00:12:34:56"
 else
     echo "Detected wired interface - using TAP bridge mode"
@@ -201,9 +198,9 @@ echo ""
 echo "Network setup complete!"
 if [[ "$NET_MODE" == "user" ]]; then
     echo "  Mode: user-mode networking (WiFi workaround)"
-    echo "  VM IP: ${VM_IP}/24 (static)"
-    echo "  Gateway: ${HOST_IP}"
-    echo "  DNS: ${DNS_IP} (forwards to host resolver)"
+    echo "  VM will receive IP via DHCP (typically 10.0.2.15)"
+    echo "  Gateway: 10.0.2.2 (via DHCP option 3)"
+    echo "  DNS: 10.0.2.3 (via DHCP option 6, forwards to host resolver)"
     echo "  Note: VM can access internet via NAT, host can access VM via port forwarding"
 else
     echo "  Mode: bridge (Ethernet)"
@@ -234,7 +231,7 @@ if [[ "$DEFAULT_BIOS_MODE" == "legacy" ]]; then
     # Add network configuration based on mode
     if [[ "$NET_MODE" == "user" ]]; then
         QEMU_CMD+=(
-            -netdev "user,id=net0,net=192.168.3.0/24,host=${HOST_IP},dhcpstart=${VM_IP},dns=${DNS_IP},restrict=off"
+            -netdev "user,id=net0"
             -device "e1000,netdev=net0,mac=${VM_MAC}"
         )
     else
@@ -262,7 +259,7 @@ else
     # Add network configuration based on mode
     if [[ "$NET_MODE" == "user" ]]; then
         QEMU_CMD+=(
-            -netdev "user,id=net0,net=192.168.3.0/24,host=${HOST_IP},dhcpstart=${VM_IP},dns=${DNS_IP},restrict=off"
+            -netdev "user,id=net0"
             -device "e1000,netdev=net0,mac=${VM_MAC}"
         )
     else
