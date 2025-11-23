@@ -338,8 +338,40 @@ fn drain_rx(driver: &mut drivers::DriverInstance, stack: &mut stack::NetStack, d
     let mut frame_count = 0;
     while let Some(len) = driver.drain_rx(&mut scratch) {
         frame_count += 1;
-        crate::serial::_print(format_args!("[drain_rx] Received frame {} on device {}, len={}\n", 
-                                    frame_count, device_index, len));
+        
+        // Dump ethernet frame info
+        if len >= 14 {
+            let ethertype = u16::from_be_bytes([scratch[12], scratch[13]]);
+            crate::serial::_print(format_args!(
+                "[drain_rx] Frame {}: len={}, ethertype=0x{:04x} ({})\n",
+                frame_count, len, ethertype,
+                match ethertype {
+                    0x0800 => "IPv4",
+                    0x0806 => "ARP",
+                    0x86DD => "IPv6",
+                    _ => "unknown"
+                }
+            ));
+            
+            // If IPv4, show protocol
+            if ethertype == 0x0800 && len >= 34 {
+                let proto = scratch[23];
+                crate::serial::_print(format_args!(
+                    "[drain_rx] IPv4 protocol={} ({})\n",
+                    proto,
+                    match proto {
+                        1 => "ICMP",
+                        6 => "TCP",
+                        17 => "UDP",
+                        _ => "other"
+                    }
+                ));
+            }
+        } else {
+            crate::serial::_print(format_args!("[drain_rx] Frame {} too short: len={}\n",
+                                        frame_count, len));
+        }
+        
         let mut responses = stack::TxBatch::new();
         if let Err(err) = stack.handle_frame(device_index, &scratch[..len], &mut responses)
         {

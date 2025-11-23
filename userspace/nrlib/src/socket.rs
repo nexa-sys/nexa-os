@@ -86,23 +86,31 @@ pub struct SockAddrIn {
 
 impl SockAddrIn {
     /// Create a new sockaddr_in for IPv4
+    /// ip: IPv4 address as [a, b, c, d] for a.b.c.d
+    /// port: Port number in HOST byte order
     pub fn new(ip: [u8; 4], port: u16) -> Self {
+        // Store port in network byte order by converting to bytes then back to u16
+        // This ensures the bytes are in the right order for the wire format
+        let port_bytes = port.to_be_bytes();
+        let port_ne = u16::from_ne_bytes(port_bytes);
+        
         Self {
             sin_family: AF_INET as u16,
-            sin_port: port,  // Store port in host byte order; conversion happens in From<SockAddrIn>
-            sin_addr: u32::from_be_bytes(ip),
+            sin_port: port_ne,
+            sin_addr: u32::from_ne_bytes(ip),
             sin_zero: [0; 8],
         }
     }
 
-    /// Get the IP address as bytes
+    /// Get the IP address as bytes in network order
     pub fn ip(&self) -> [u8; 4] {
-        self.sin_addr.to_be_bytes()
+        self.sin_addr.to_ne_bytes()
     }
 
     /// Get the port number in host byte order
     pub fn port(&self) -> u16 {
-        self.sin_port
+        let port_bytes = self.sin_port.to_ne_bytes();
+        u16::from_be_bytes(port_bytes)
     }
 }
 
@@ -117,11 +125,11 @@ pub struct SockAddr {
 impl From<SockAddrIn> for SockAddr {
     fn from(addr: SockAddrIn) -> Self {
         let mut sa_data = [0u8; 14];
-        // Port (2 bytes, convert to network byte order)
-        sa_data[0..2].copy_from_slice(&addr.sin_port.to_be_bytes());
-        // IPv4 address (4 bytes, already in network byte order)
-        sa_data[2..6].copy_from_slice(&addr.sin_addr.to_be_bytes());
-        // Rest is zero padding (matches sin_zero)
+        // Port: extract as native endian bytes (which are in network byte order)
+        sa_data[0..2].copy_from_slice(&addr.sin_port.to_ne_bytes());
+        // IPv4 address: extract as native endian bytes
+        sa_data[2..6].copy_from_slice(&addr.sin_addr.to_ne_bytes());
+        // Rest is zero padding
         Self {
             sa_family: addr.sin_family,
             sa_data,

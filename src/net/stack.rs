@@ -535,6 +535,13 @@ impl NetStack {
         let socket = &mut self.tcp_sockets[socket_idx];
         
         serial::_print(format_args!(
+            "[tcp_connect] Device info: ip={}.{}.{}.{}, mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}, gateway={}.{}.{}.{}\n",
+            device.ip[0], device.ip[1], device.ip[2], device.ip[3],
+            device.mac[0], device.mac[1], device.mac[2], device.mac[3], device.mac[4], device.mac[5],
+            device.gateway[0], device.gateway[1], device.gateway[2], device.gateway[3]
+        ));
+        
+        serial::_print(format_args!(
             "[tcp_connect] Before connect: socket state={:?}, in_use={}\n",
             socket.state, socket.in_use
         ));
@@ -1010,6 +1017,9 @@ impl NetStack {
         match proto {
             PROTO_ICMP => self.handle_icmp(device_index, frame, ihl, total_len, tx),
             PROTO_TCP => {
+                crate::serial::_print(format_args!(
+                    "[handle_ipv4] TCP packet received, forwarding to TCP handlers\n"
+                ));
                 // First handle the old TCP endpoint (for backwards compatibility)
                 self.tcp.handle_segment(device_index, frame, ihl, total_len, tx)?;
                 
@@ -1017,7 +1027,12 @@ impl NetStack {
                 self.handle_tcp(device_index, frame, ihl, total_len, tx)
             }
             PROTO_UDP => self.handle_udp(device_index, frame, ihl, total_len),
-            _ => Ok(()),
+            _ => {
+                crate::serial::_print(format_args!(
+                    "[handle_ipv4] Unknown protocol: {}\n", proto
+                ));
+                Ok(())
+            }
         }
     }
 
@@ -1202,37 +1217,51 @@ impl NetStack {
         let tcp_offset = 14 + ihl;
         let tcp_data = &frame[tcp_offset..14 + total_len];
         
-        // Extract source IP and MAC
+        // Extract source IP and MAC, and parse TCP header for debugging
         let src_ip = Ipv4Address::from(&frame[26..30]);
         let src_mac = MacAddress([frame[6], frame[7], frame[8], frame[9], frame[10], frame[11]]);
+        let src_port = u16::from_be_bytes([tcp_data[0], tcp_data[1]]);
+        let dst_port = u16::from_be_bytes([tcp_data[2], tcp_data[3]]);
+        let flags = tcp_data[13];
 
         serial::_print(format_args!(
-            "[handle_tcp] Received TCP packet from {}, tcp_data_len={}\n",
-            src_ip, tcp_data.len()
+            "[handle_tcp] Received TCP packet: {}:{} -> port {}, flags={:02x}, len={}\n",
+            src_ip, src_port, dst_port, flags, tcp_data.len()
         ));
 
         // Try to find matching socket
         let mut found = false;
-        for socket in &mut self.tcp_sockets {
+        for (idx, socket) in self.tcp_sockets.iter_mut().enumerate() {
             if !socket.in_use {
+                serial::_print(format_args!(
+                    "[handle_tcp] Socket {} not in use, skipping\n", idx
+                ));
                 continue;
             }
             
+            serial::_print(format_args!(
+                "[handle_tcp] Socket {}: in_use=true, device_idx={:?}, local_port={}, remote_ip={}, remote_port={}, state={:?}\n",
+                idx, socket.device_idx, socket.local_port, socket.remote_ip, socket.remote_port, socket.state
+            ));
+            
             if socket.device_idx != Some(device_index) {
+                serial::_print(format_args!(
+                    "[handle_tcp] Socket {} device mismatch: expected {:?}, got {}\n",
+                    idx, socket.device_idx, device_index
+                ));
                 continue;
             }
 
-            serial::_print(format_args!(
-                "[handle_tcp] Trying socket: local_port={}, remote_ip={}, state={:?}\n",
-                socket.local_port, socket.remote_ip, socket.state
-            ));
-
             socket.process_segment(src_ip, src_mac, tcp_data, tx)?;
             found = true;
+            break; // Only process on first matching socket
         }
 
         if !found {
-            serial::_print(format_args!("[handle_tcp] No matching socket found\n"));
+            serial::_print(format_args!(
+                "[handle_tcp] No matching socket found for {}:{} -> port {}\n",
+                src_ip, src_port, dst_port
+            ));
         }
 
         Ok(())

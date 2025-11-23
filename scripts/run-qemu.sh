@@ -234,7 +234,7 @@ if [[ "$DEFAULT_BIOS_MODE" == "legacy" ]]; then
     # Add network configuration based on mode
     if [[ "$NET_MODE" == "user" ]]; then
         QEMU_CMD+=(
-            -netdev "user,id=net0,net=192.168.3.0/24,host=${HOST_IP},dhcpstart=${VM_IP},dns=${DNS_IP}"
+            -netdev "user,id=net0,net=192.168.3.0/24,host=${HOST_IP},dhcpstart=${VM_IP},dns=${DNS_IP},restrict=off"
             -device "e1000,netdev=net0,mac=${VM_MAC}"
         )
     else
@@ -262,7 +262,7 @@ else
     # Add network configuration based on mode
     if [[ "$NET_MODE" == "user" ]]; then
         QEMU_CMD+=(
-            -netdev "user,id=net0,net=192.168.3.0/24,host=${HOST_IP},dhcpstart=${VM_IP},dns=${DNS_IP}"
+            -netdev "user,id=net0,net=192.168.3.0/24,host=${HOST_IP},dhcpstart=${VM_IP},dns=${DNS_IP},restrict=off"
             -device "e1000,netdev=net0,mac=${VM_MAC}"
         )
     else

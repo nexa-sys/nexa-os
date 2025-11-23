@@ -165,7 +165,7 @@ impl TcpOptions {
     pub fn generate(&self, buffer: &mut [u8]) -> usize {
         let mut offset = 0;
 
-        // MSS option
+        // MSS option (4 bytes)
         if let Some(mss) = self.mss {
             if offset + 4 <= buffer.len() {
                 buffer[offset] = TCP_OPT_MSS;
@@ -175,7 +175,7 @@ impl TcpOptions {
             }
         }
 
-        // SACK permitted option
+        // SACK permitted option (2 bytes)
         if self.sack_permitted {
             if offset + 2 <= buffer.len() {
                 buffer[offset] = TCP_OPT_SACK_PERMITTED;
@@ -184,22 +184,22 @@ impl TcpOptions {
             }
         }
 
-        // Window scale option
+        // Window scale option (3 bytes + 1 NOP = 4 bytes)
         if let Some(scale) = self.window_scale {
-            // Add NOP for alignment
-            if offset + 3 <= buffer.len() {
-                buffer[offset] = TCP_OPT_NOP;
-                offset += 1;
+            if offset + 4 <= buffer.len() {
                 buffer[offset] = TCP_OPT_WINDOW_SCALE;
                 buffer[offset + 1] = 3;
                 buffer[offset + 2] = scale;
                 offset += 3;
+                // Add NOP for alignment
+                buffer[offset] = TCP_OPT_NOP;
+                offset += 1;
             }
         }
 
-        // Timestamp option
+        // Timestamp option (10 bytes + NOPs for 4-byte alignment)
         if let Some((tsval, tsecr)) = self.timestamp {
-            // Add NOPs for alignment to 4-byte boundary
+            // Pad to 4-byte boundary before timestamp
             while offset % 4 != 0 && offset < buffer.len() {
                 buffer[offset] = TCP_OPT_NOP;
                 offset += 1;
@@ -213,7 +213,7 @@ impl TcpOptions {
             }
         }
 
-        // Padding to make header length multiple of 4 bytes
+        // Final padding to make total length multiple of 4 bytes
         while offset % 4 != 0 && offset < buffer.len() {
             buffer[offset] = TCP_OPT_END;
             offset += 1;
@@ -225,15 +225,30 @@ impl TcpOptions {
     /// Calculate the size needed for these options
     pub fn size(&self) -> usize {
         let mut size = 0;
-        if self.mss.is_some() { size += 4; }
-        if self.sack_permitted { size += 2; }
-        if self.window_scale.is_some() { size += 4; } // Including NOP
+        
+        // MSS: 4 bytes
+        if self.mss.is_some() { 
+            size += 4; 
+        }
+        
+        // SACK permitted: 2 bytes
+        if self.sack_permitted { 
+            size += 2; 
+        }
+        
+        // Window scale: 3 bytes + 1 NOP = 4 bytes
+        if self.window_scale.is_some() { 
+            size += 4; 
+        }
+        
+        // Timestamp: align to 4 bytes + 10 bytes
         if self.timestamp.is_some() {
-            // Align to 4-byte boundary + 10 bytes
+            // Pad to 4-byte boundary
             size = (size + 3) & !3;
             size += 10;
         }
-        // Round up to 4-byte boundary
+        
+        // Final padding to 4-byte boundary
         (size + 3) & !3
     }
 }
@@ -518,16 +533,33 @@ impl TcpSocket {
         let flags = tcp_data[13];
         let window = u16::from_be_bytes([tcp_data[14], tcp_data[15]]);
 
+        serial::_print(format_args!(
+            "[TCP process_segment] ENTRY: state={:?}, flags={:02x}, {}:{} -> {}:{}, seq={}, ack={}\n",
+            self.state, flags, src_ip, src_port, self.local_ip, dst_port, seq, ack
+        ));
+
         // Verify this segment is for us
         if dst_port != self.local_port {
+            serial::_print(format_args!(
+                "[TCP process_segment] Port mismatch: dst_port={}, local_port={}\n",
+                dst_port, self.local_port
+            ));
             return Ok(());
         }
 
         if self.state != TcpState::Listen && src_port != self.remote_port {
+            serial::_print(format_args!(
+                "[TCP process_segment] Remote port mismatch: src_port={}, remote_port={}\n",
+                src_port, self.remote_port
+            ));
             return Ok(());
         }
 
         if self.state != TcpState::Listen && src_ip != self.remote_ip {
+            serial::_print(format_args!(
+                "[TCP process_segment] Remote IP mismatch: src_ip={}, remote_ip={}\n",
+                src_ip, self.remote_ip
+            ));
             return Ok(());
         }
 
@@ -593,44 +625,65 @@ impl TcpSocket {
                 }
             }
             TcpState::SynSent => {
-                        if flags & TCP_ACK != 0 && ack == self.snd_nxt {
-                    self.snd_una = ack;
-                    if flags & TCP_SYN != 0 {
-                        self.remote_mac = src_mac;
-                        self.irs = seq;
-                        self.rcv_nxt = seq.wrapping_add(1);
-                        self.snd_wnd = window;
-                        
-                        // Process SYN-ACK options
-                        if let Some(peer_mss) = options.mss {
-                            self.peer_mss = peer_mss;
+                serial::_print(format_args!(
+                    "[TCP process_segment] SynSent: flags={:02x}, seq={}, ack={}, snd_nxt={}, iss={}\n",
+                    flags, seq, ack, self.snd_nxt, self.iss
+                ));
+                
+                if flags & TCP_ACK != 0 {
+                    // Check if ACK is valid (should acknowledge our SYN: iss + 1)
+                    let expected_ack = self.iss.wrapping_add(1);
+                    serial::_print(format_args!(
+                        "[TCP process_segment] ACK received: ack={}, expected_ack={}, match={}\n",
+                        ack, expected_ack, ack == expected_ack
+                    ));
+                    
+                    if ack == expected_ack {
+                        self.snd_una = ack;
+                        if flags & TCP_SYN != 0 {
+                            self.remote_mac = src_mac;
+                            self.irs = seq;
+                            self.rcv_nxt = seq.wrapping_add(1);
+                            self.snd_wnd = window;
+                            
+                            // Process SYN-ACK options
+                            if let Some(peer_mss) = options.mss {
+                                self.peer_mss = peer_mss;
+                                serial::_print(format_args!(
+                                    "[TCP] Peer MSS: {}\n", peer_mss
+                                ));
+                            }
+                            if options.sack_permitted && self.sack_permitted {
+                                self.sack_permitted = true;
+                            } else {
+                                self.sack_permitted = false;
+                            }
+                            if let Some(scale) = options.window_scale {
+                                self.peer_window_scale = scale;
+                            }
+                            if let Some((tsval, _)) = options.timestamp {
+                                self.ts_recent = tsval;
+                                self.use_timestamps = true;
+                            }
+                            
+                            self.state = TcpState::Established;
                             serial::_print(format_args!(
-                                "[TCP] Peer MSS: {}\n", peer_mss
+                                "[TCP process_segment] Transition SynSent->Established for {}:{}\n",
+                                self.remote_ip, self.remote_port
                             ));
+                            self.send_segment(&[], TCP_ACK, tx)?;
                         }
-                        if options.sack_permitted && self.sack_permitted {
-                            self.sack_permitted = true;
-                        } else {
-                            self.sack_permitted = false;
-                        }
-                        if let Some(scale) = options.window_scale {
-                            self.peer_window_scale = scale;
-                        }
-                        if let Some((tsval, _)) = options.timestamp {
-                            self.ts_recent = tsval;
-                            self.use_timestamps = true;
-                        }
-                        
-                                // snd_nxt should already be advanced by the SYN sent earlier
-                        self.state = TcpState::Established;
+                    } else {
                         serial::_print(format_args!(
-                            "[TCP process_segment] Transition SynSent->Established for {}:{}\n",
-                            self.remote_ip, self.remote_port
+                            "[TCP process_segment] Invalid ACK in SynSent, expected {}, got {}\n",
+                            expected_ack, ack
                         ));
-                        self.send_segment(&[], TCP_ACK, tx)?;
                     }
                 } else if flags & TCP_SYN != 0 {
                     // Simultaneous open
+                    serial::_print(format_args!(
+                        "[TCP process_segment] Simultaneous open detected\n"
+                    ));
                     self.remote_mac = src_mac;
                     self.irs = seq;
                     self.rcv_nxt = seq.wrapping_add(1);
@@ -875,12 +928,13 @@ impl TcpSocket {
         let mut options_buffer = [0u8; 40]; // Max TCP options size
         let options_len = if flags & TCP_SYN != 0 {
             // Include MSS, SACK permitted, and window scale on SYN
+            // NOTE: Temporarily disable timestamps and window scale for compatibility
             tcp_options.mss = Some(self.mss);
             tcp_options.sack_permitted = true;
-            tcp_options.window_scale = Some(0); // No scaling for now
-            if self.use_timestamps {
-                tcp_options.timestamp = Some((self.current_time_ms(), 0));
-            }
+            // tcp_options.window_scale = Some(0); // Disabled for now
+            // if self.use_timestamps {
+            //     tcp_options.timestamp = Some((self.current_time_ms(), 0));
+            // }
             tcp_options.generate(&mut options_buffer)
         } else if self.use_timestamps && flags & TCP_ACK != 0 {
             // Include timestamp in ACK packets
@@ -971,6 +1025,21 @@ impl TcpSocket {
             self.remote_mac.0[0], self.remote_mac.0[1], self.remote_mac.0[2],
             self.remote_mac.0[3], self.remote_mac.0[4], self.remote_mac.0[5]
         ));
+        
+        // Dump TCP packet for debugging (first 128 bytes or entire packet)
+        let dump_len = core::cmp::min(total_len, 128);
+        serial::_print(format_args!("[TCP send_segment] Packet dump ({} bytes):\n", dump_len));
+        for i in (0..dump_len).step_by(16) {
+            serial::_print(format_args!("  {:04x}: ", i));
+            for j in 0..16 {
+                if i + j < dump_len {
+                    serial::_print(format_args!("{:02x} ", packet[i + j]));
+                } else {
+                    serial::_print(format_args!("   "));
+                }
+            }
+            serial::_print(format_args!("\n"));
+        }
 
         tx.push(&packet[..total_len])?;
 
