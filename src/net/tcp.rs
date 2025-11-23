@@ -63,6 +63,181 @@ pub const TCP_PSH: u8 = 0x08;
 pub const TCP_ACK: u8 = 0x10;
 pub const TCP_URG: u8 = 0x20;
 
+// TCP option kinds
+pub const TCP_OPT_END: u8 = 0;
+pub const TCP_OPT_NOP: u8 = 1;
+pub const TCP_OPT_MSS: u8 = 2;
+pub const TCP_OPT_WINDOW_SCALE: u8 = 3;
+pub const TCP_OPT_SACK_PERMITTED: u8 = 4;
+pub const TCP_OPT_SACK: u8 = 5;
+pub const TCP_OPT_TIMESTAMP: u8 = 8;
+
+/// TCP options structure
+#[derive(Debug, Clone, Copy)]
+pub struct TcpOptions {
+    pub mss: Option<u16>,
+    pub window_scale: Option<u8>,
+    pub sack_permitted: bool,
+    pub timestamp: Option<(u32, u32)>, // (TSval, TSecr)
+}
+
+impl TcpOptions {
+    pub const fn new() -> Self {
+        Self {
+            mss: None,
+            window_scale: None,
+            sack_permitted: false,
+            timestamp: None,
+        }
+    }
+
+    /// Parse TCP options from header
+    pub fn parse(data: &[u8]) -> Self {
+        let mut opts = Self::new();
+        let mut i = 0;
+
+        while i < data.len() {
+            let kind = data[i];
+
+            match kind {
+                TCP_OPT_END => break,
+                TCP_OPT_NOP => {
+                    i += 1;
+                }
+                TCP_OPT_MSS => {
+                    if i + 3 < data.len() && data[i + 1] == 4 {
+                        opts.mss = Some(u16::from_be_bytes([data[i + 2], data[i + 3]]));
+                        i += 4;
+                    } else {
+                        break;
+                    }
+                }
+                TCP_OPT_WINDOW_SCALE => {
+                    if i + 2 < data.len() && data[i + 1] == 3 {
+                        opts.window_scale = Some(data[i + 2]);
+                        i += 3;
+                    } else {
+                        break;
+                    }
+                }
+                TCP_OPT_SACK_PERMITTED => {
+                    if i + 1 < data.len() && data[i + 1] == 2 {
+                        opts.sack_permitted = true;
+                        i += 2;
+                    } else {
+                        break;
+                    }
+                }
+                TCP_OPT_TIMESTAMP => {
+                    if i + 9 < data.len() && data[i + 1] == 10 {
+                        let tsval = u32::from_be_bytes([
+                            data[i + 2], data[i + 3], data[i + 4], data[i + 5]
+                        ]);
+                        let tsecr = u32::from_be_bytes([
+                            data[i + 6], data[i + 7], data[i + 8], data[i + 9]
+                        ]);
+                        opts.timestamp = Some((tsval, tsecr));
+                        i += 10;
+                    } else {
+                        break;
+                    }
+                }
+                _ => {
+                    // Unknown option, skip it
+                    if i + 1 < data.len() {
+                        let len = data[i + 1] as usize;
+                        if len >= 2 {
+                            i += len;
+                        } else {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+
+        opts
+    }
+
+    /// Generate options bytes for TCP header
+    pub fn generate(&self, buffer: &mut [u8]) -> usize {
+        let mut offset = 0;
+
+        // MSS option
+        if let Some(mss) = self.mss {
+            if offset + 4 <= buffer.len() {
+                buffer[offset] = TCP_OPT_MSS;
+                buffer[offset + 1] = 4;
+                buffer[offset + 2..offset + 4].copy_from_slice(&mss.to_be_bytes());
+                offset += 4;
+            }
+        }
+
+        // SACK permitted option
+        if self.sack_permitted {
+            if offset + 2 <= buffer.len() {
+                buffer[offset] = TCP_OPT_SACK_PERMITTED;
+                buffer[offset + 1] = 2;
+                offset += 2;
+            }
+        }
+
+        // Window scale option
+        if let Some(scale) = self.window_scale {
+            // Add NOP for alignment
+            if offset + 3 <= buffer.len() {
+                buffer[offset] = TCP_OPT_NOP;
+                offset += 1;
+                buffer[offset] = TCP_OPT_WINDOW_SCALE;
+                buffer[offset + 1] = 3;
+                buffer[offset + 2] = scale;
+                offset += 3;
+            }
+        }
+
+        // Timestamp option
+        if let Some((tsval, tsecr)) = self.timestamp {
+            // Add NOPs for alignment to 4-byte boundary
+            while offset % 4 != 0 && offset < buffer.len() {
+                buffer[offset] = TCP_OPT_NOP;
+                offset += 1;
+            }
+            if offset + 10 <= buffer.len() {
+                buffer[offset] = TCP_OPT_TIMESTAMP;
+                buffer[offset + 1] = 10;
+                buffer[offset + 2..offset + 6].copy_from_slice(&tsval.to_be_bytes());
+                buffer[offset + 6..offset + 10].copy_from_slice(&tsecr.to_be_bytes());
+                offset += 10;
+            }
+        }
+
+        // Padding to make header length multiple of 4 bytes
+        while offset % 4 != 0 && offset < buffer.len() {
+            buffer[offset] = TCP_OPT_END;
+            offset += 1;
+        }
+
+        offset
+    }
+
+    /// Calculate the size needed for these options
+    pub fn size(&self) -> usize {
+        let mut size = 0;
+        if self.mss.is_some() { size += 4; }
+        if self.sack_permitted { size += 2; }
+        if self.window_scale.is_some() { size += 4; } // Including NOP
+        if self.timestamp.is_some() {
+            // Align to 4-byte boundary + 10 bytes
+            size = (size + 3) & !3;
+            size += 10;
+        }
+        // Round up to 4-byte boundary
+        (size + 3) & !3
+    }
+}
+
 /// TCP connection state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TcpState {
@@ -87,6 +262,7 @@ struct TcpSegment {
     flags: u8,
     timestamp: u64,
     retransmit_count: u8,
+    rtt_measured: bool, // Whether RTT was measured for this segment (Karn's algorithm)
 }
 
 /// Maximum segment size
@@ -101,8 +277,16 @@ const RECV_BUFFER_SIZE: usize = 65535;
 const INITIAL_RTO: u64 = 1000;
 /// Maximum retransmission timeout (ms)
 const MAX_RTO: u64 = 60000;
+/// Minimum retransmission timeout (ms)
+const MIN_RTO: u64 = 200;
 /// Maximum retransmit attempts
 const MAX_RETRANSMIT: u8 = 12;
+
+// RTT estimation constants (RFC 6298)
+const ALPHA: i64 = 125; // 1/8 = 0.125 in fixed point (125/1000)
+const BETA: i64 = 250;  // 1/4 = 0.25 in fixed point (250/1000)
+const K: i64 = 4;       // RTT variance multiplier
+const G: i64 = 10;      // Clock granularity (10ms)
 
 /// TCP socket structure
 pub struct TcpSocket {
@@ -124,6 +308,24 @@ pub struct TcpSocket {
     iss: u32,      // Initial send sequence number
     irs: u32,      // Initial receive sequence number
     
+    // MSS and options
+    mss: u16,              // Maximum segment size (negotiated)
+    peer_mss: u16,         // Peer's MSS
+    window_scale: u8,      // Our window scale factor
+    peer_window_scale: u8, // Peer's window scale factor
+    sack_permitted: bool,  // Whether SACK is permitted
+    use_timestamps: bool,  // Whether to use timestamps
+    ts_recent: u32,        // Most recent timestamp from peer
+    ts_last_ack_sent: u32, // Last ACK we sent (for timestamp echo)
+    
+    // Congestion control
+    cwnd: u32,            // Congestion window (in bytes)
+    ssthresh: u32,        // Slow start threshold (in bytes)
+    dup_acks: u8,         // Count of duplicate ACKs
+    last_ack: u32,        // Last ACK number received
+    in_recovery: bool,    // Whether in fast recovery
+    recovery_point: u32,  // Sequence number to exit recovery
+    
     // Buffers
     send_buffer: VecDeque<u8>,
     recv_buffer: VecDeque<u8>,
@@ -131,11 +333,11 @@ pub struct TcpSocket {
     
     // Timers and RTT estimation
     rto: u64,          // Retransmission timeout
-    #[allow(dead_code)]
-    srtt: i64,         // Smoothed RTT
-    #[allow(dead_code)]
-    rttvar: i64,       // RTT variance
+    srtt: i64,         // Smoothed RTT (microseconds)
+    rttvar: i64,       // RTT variance (microseconds)
     last_activity: u64, // Last activity timestamp
+    rtt_seq: Option<u32>, // Sequence number for RTT measurement
+    rtt_time: u64,     // Timestamp when RTT measurement started
     
     // Wait queue for blocking reads
     pub wait_queue: Vec<Pid>,
@@ -162,6 +364,20 @@ impl TcpSocket {
             rcv_wnd: RECV_WINDOW as u16,
             iss: 0,
             irs: 0,
+            mss: MSS as u16,
+            peer_mss: 536, // Default minimum MSS
+            window_scale: 0,
+            peer_window_scale: 0,
+            sack_permitted: false,
+            use_timestamps: true,
+            ts_recent: 0,
+            ts_last_ack_sent: 0,
+            cwnd: 10 * MSS as u32, // Initial cwnd: 10 segments (RFC 6928)
+            ssthresh: 65535,       // Initial ssthresh: 64KB
+            dup_acks: 0,
+            last_ack: 0,
+            in_recovery: false,
+            recovery_point: 0,
             send_buffer: VecDeque::new(),
             recv_buffer: VecDeque::new(),
             retransmit_queue: Vec::new(),
@@ -169,6 +385,8 @@ impl TcpSocket {
             srtt: 0,
             rttvar: 0,
             last_activity: 0,
+            rtt_seq: None,
+            rtt_time: 0,
             wait_queue: Vec::new(),
             in_use: false,
         }
@@ -315,6 +533,13 @@ impl TcpSocket {
 
         self.last_activity = self.current_time();
         
+        // Parse TCP options if present
+        let options = if data_offset > 20 && data_offset <= tcp_data.len() {
+            TcpOptions::parse(&tcp_data[20..data_offset])
+        } else {
+            TcpOptions::new()
+        };
+        
         // Extract payload
         let payload = if data_offset < tcp_data.len() {
             &tcp_data[data_offset..]
@@ -341,6 +566,24 @@ impl TcpSocket {
                     self.snd_una = self.iss;
                     self.snd_nxt = self.iss;
                     self.snd_wnd = window;
+                    
+                    // Process SYN options
+                    if let Some(peer_mss) = options.mss {
+                        self.peer_mss = peer_mss;
+                        serial::_print(format_args!(
+                            "[TCP] Peer MSS: {}\n", peer_mss
+                        ));
+                    }
+                    if options.sack_permitted {
+                        self.sack_permitted = true;
+                    }
+                    if let Some(scale) = options.window_scale {
+                        self.peer_window_scale = scale;
+                    }
+                    if options.timestamp.is_some() {
+                        self.use_timestamps = true;
+                    }
+                    
                     self.state = TcpState::SynReceived;
                     serial::_print(format_args!(
                         "[TCP process_segment] Transition Listen->SynReceived for {}:{} (iss={}, irs={})\n",
@@ -357,6 +600,27 @@ impl TcpSocket {
                         self.irs = seq;
                         self.rcv_nxt = seq.wrapping_add(1);
                         self.snd_wnd = window;
+                        
+                        // Process SYN-ACK options
+                        if let Some(peer_mss) = options.mss {
+                            self.peer_mss = peer_mss;
+                            serial::_print(format_args!(
+                                "[TCP] Peer MSS: {}\n", peer_mss
+                            ));
+                        }
+                        if options.sack_permitted && self.sack_permitted {
+                            self.sack_permitted = true;
+                        } else {
+                            self.sack_permitted = false;
+                        }
+                        if let Some(scale) = options.window_scale {
+                            self.peer_window_scale = scale;
+                        }
+                        if let Some((tsval, _)) = options.timestamp {
+                            self.ts_recent = tsval;
+                            self.use_timestamps = true;
+                        }
+                        
                                 // snd_nxt should already be advanced by the SYN sent earlier
                         self.state = TcpState::Established;
                         serial::_print(format_args!(
@@ -371,6 +635,18 @@ impl TcpSocket {
                     self.irs = seq;
                     self.rcv_nxt = seq.wrapping_add(1);
                     self.snd_wnd = window;
+                    
+                    // Process SYN options for simultaneous open
+                    if let Some(peer_mss) = options.mss {
+                        self.peer_mss = peer_mss;
+                    }
+                    if options.sack_permitted {
+                        self.sack_permitted = true;
+                    }
+                    if let Some(scale) = options.window_scale {
+                        self.peer_window_scale = scale;
+                    }
+                    
                     self.state = TcpState::SynReceived;
                     serial::_print(format_args!(
                         "[TCP process_segment] Simultaneous open - SynReceived for {}:{}\n",
@@ -395,7 +671,7 @@ impl TcpSocket {
             TcpState::Established | TcpState::FinWait1 | TcpState::FinWait2 => {
                 // Update send window
                 if flags & TCP_ACK != 0 {
-                    self.process_ack(ack, window);
+                    self.process_ack(ack, window)?;
                 }
 
                 // Process payload
@@ -449,7 +725,7 @@ impl TcpSocket {
             }
             TcpState::CloseWait => {
                 if flags & TCP_ACK != 0 {
-                    self.process_ack(ack, window);
+                    self.process_ack(ack, window)?;
                 }
             }
             TcpState::Closing => {
@@ -537,15 +813,25 @@ impl TcpSocket {
     /// Send pending data from send buffer
     fn send_pending_data(&mut self, tx: &mut TxBatch) -> Result<(), NetError> {
         while !self.send_buffer.is_empty() {
-            // Check window
-            let window_available = (self.snd_una.wrapping_add(self.snd_wnd as u32))
-                .wrapping_sub(self.snd_nxt) as usize;
+            // Calculate available window (min of congestion window and receiver window)
+            let flight_size = self.snd_nxt.wrapping_sub(self.snd_una);
+            let cwnd_available = self.cwnd.saturating_sub(flight_size);
+            let rwnd_available = (self.snd_una.wrapping_add(self.snd_wnd as u32))
+                .wrapping_sub(self.snd_nxt);
+            
+            let window_available = cmp::min(cwnd_available, rwnd_available as u32) as usize;
             
             if window_available == 0 {
+                serial::_print(format_args!(
+                    "[TCP] Send blocked - cwnd={}, flight={}, rwnd={}\n",
+                    self.cwnd, flight_size, self.snd_wnd
+                ));
                 break;
             }
 
-            let to_send = cmp::min(cmp::min(self.send_buffer.len(), MSS), window_available);
+            // Use negotiated peer MSS for segmentation
+            let effective_mss = cmp::min(self.peer_mss as usize, MSS);
+            let to_send = cmp::min(cmp::min(self.send_buffer.len(), effective_mss), window_available);
             if to_send == 0 {
                 break;
             }
@@ -584,7 +870,27 @@ impl TcpSocket {
             return Err(NetError::NoDevice);
         }
 
-        let tcp_header_len = 20;
+        // Prepare TCP options for SYN packets
+        let mut tcp_options = TcpOptions::new();
+        let mut options_buffer = [0u8; 40]; // Max TCP options size
+        let options_len = if flags & TCP_SYN != 0 {
+            // Include MSS, SACK permitted, and window scale on SYN
+            tcp_options.mss = Some(self.mss);
+            tcp_options.sack_permitted = true;
+            tcp_options.window_scale = Some(0); // No scaling for now
+            if self.use_timestamps {
+                tcp_options.timestamp = Some((self.current_time_ms(), 0));
+            }
+            tcp_options.generate(&mut options_buffer)
+        } else if self.use_timestamps && flags & TCP_ACK != 0 {
+            // Include timestamp in ACK packets
+            tcp_options.timestamp = Some((self.current_time_ms(), self.ts_recent));
+            tcp_options.generate(&mut options_buffer)
+        } else {
+            0
+        };
+
+        let tcp_header_len = 20 + options_len;
         let ip_header_len = 20;
         let total_len = 14 + ip_header_len + tcp_header_len + payload.len();
 
@@ -637,6 +943,12 @@ impl TcpSocket {
         packet[tcp_offset + 16..tcp_offset + 18].copy_from_slice(&[0, 0]); // Checksum
         packet[tcp_offset + 18..tcp_offset + 20].copy_from_slice(&[0, 0]); // Urgent pointer
 
+        // Copy options
+        if options_len > 0 {
+            packet[tcp_offset + 20..tcp_offset + 20 + options_len]
+                .copy_from_slice(&options_buffer[..options_len]);
+        }
+
         // Payload
         packet[tcp_offset + tcp_header_len..tcp_offset + tcp_header_len + payload.len()]
             .copy_from_slice(payload);
@@ -676,7 +988,15 @@ impl TcpSocket {
                 flags,
                 timestamp: self.current_time(),
                 retransmit_count: 0,
+                rtt_measured: false,
             };
+            
+            // Start RTT measurement if not already measuring
+            if self.rtt_seq.is_none() && !payload.is_empty() {
+                self.rtt_seq = Some(seq);
+                self.rtt_time = self.current_time();
+            }
+            
             self.retransmit_queue.push(segment);
             // Advance snd_nxt only when queuing a new segment
             self.snd_nxt = self.snd_nxt.wrapping_add(seq_advance);
@@ -692,29 +1012,193 @@ impl TcpSocket {
     }
 
     /// Process ACK and update send window
-    fn process_ack(&mut self, ack: u32, window: u16) {
+    fn process_ack(&mut self, ack: u32, window: u16) -> Result<(), NetError> {
         if ack.wrapping_sub(self.snd_una) <= self.snd_nxt.wrapping_sub(self.snd_una) {
-            // Valid ACK
-            self.snd_una = ack;
-            self.snd_wnd = window;
+            let newly_acked = ack.wrapping_sub(self.snd_una);
+            
+            // Detect duplicate ACK
+            if ack == self.last_ack && newly_acked == 0 && !self.send_buffer.is_empty() {
+                self.dup_acks += 1;
+                serial::_print(format_args!(
+                    "[TCP Congestion] Duplicate ACK #{} for seq {}\n",
+                    self.dup_acks, ack
+                ));
+                
+                // Fast retransmit on 3 duplicate ACKs (TCP Reno)
+                if self.dup_acks == 3 {
+                    serial::_print(format_args!(
+                        "[TCP Congestion] Fast retransmit triggered\n"
+                    ));
+                    
+                    // Enter fast recovery
+                    if !self.in_recovery {
+                        self.ssthresh = cmp::max(self.cwnd / 2, 2 * self.mss as u32);
+                        self.cwnd = self.ssthresh + 3 * self.mss as u32;
+                        self.in_recovery = true;
+                        self.recovery_point = self.snd_nxt;
+                        
+                        serial::_print(format_args!(
+                            "[TCP Congestion] Enter fast recovery - ssthresh={}, cwnd={}\n",
+                            self.ssthresh, self.cwnd
+                        ));
+                        
+                        // Retransmit the lost segment
+                        if let Some(segment) = self.retransmit_queue.first() {
+                            if segment.seq == ack {
+                                // This is the segment that needs retransmission
+                                // We'll mark it for retransmission
+                                return Ok(());
+                            }
+                        }
+                    }
+                } else if self.dup_acks > 3 && self.in_recovery {
+                    // Inflate cwnd for each additional duplicate ACK
+                    self.cwnd += self.mss as u32;
+                    serial::_print(format_args!(
+                        "[TCP Congestion] Fast recovery - inflate cwnd to {}\n",
+                        self.cwnd
+                    ));
+                }
+            } else if newly_acked > 0 {
+                // New data acknowledged
+                self.dup_acks = 0;
+                self.last_ack = ack;
+                
+                // Valid ACK
+                self.snd_una = ack;
+                self.snd_wnd = window;
+                
+                // Update congestion window
+                if self.in_recovery {
+                    // Fast recovery: deflate cwnd
+                    if ack.wrapping_sub(self.recovery_point) > 0 {
+                        // Exit recovery
+                        self.in_recovery = false;
+                        self.cwnd = self.ssthresh;
+                        serial::_print(format_args!(
+                            "[TCP Congestion] Exit recovery, cwnd={}, ssthresh={}\n",
+                            self.cwnd, self.ssthresh
+                        ));
+                    }
+                } else if self.cwnd < self.ssthresh {
+                    // Slow start: exponential growth
+                    self.cwnd += newly_acked;
+                    serial::_print(format_args!(
+                        "[TCP Congestion] Slow start, cwnd={} (+{}), ssthresh={}\n",
+                        self.cwnd, newly_acked, self.ssthresh
+                    ));
+                } else {
+                    // Congestion avoidance: linear growth
+                    // Increase cwnd by MSS * (MSS / cwnd) for each ACK
+                    let increment = (self.mss as u32 * newly_acked) / self.cwnd;
+                    self.cwnd += cmp::max(increment, 1);
+                    serial::_print(format_args!(
+                        "[TCP Congestion] Congestion avoidance, cwnd={} (+{}), ssthresh={}\n",
+                        self.cwnd, increment, self.ssthresh
+                    ));
+                }
 
-            // Remove acknowledged segments from retransmit queue
-            self.retransmit_queue.retain(|seg| {
-                let seg_end = seg.seq.wrapping_add(seg.data.len() as u32);
-                seg_end.wrapping_sub(ack) > 0
-            });
+                // RTT measurement (Karn's algorithm)
+                if let Some(rtt_seq) = self.rtt_seq {
+                    // Check if the ACK covers our RTT measurement sequence
+                    if ack.wrapping_sub(rtt_seq) > 0 && ack.wrapping_sub(rtt_seq) <= newly_acked {
+                        // Measure RTT
+                        let now = self.current_time();
+                        let rtt_sample = now.saturating_sub(self.rtt_time);
+                        
+                        // Only update if this wasn't a retransmission
+                        if let Some(seg) = self.retransmit_queue.iter().find(|s| s.seq == rtt_seq) {
+                            if !seg.rtt_measured && seg.retransmit_count == 0 {
+                                self.update_rtt(rtt_sample);
+                            }
+                        }
+                        
+                        // Clear RTT measurement
+                        self.rtt_seq = None;
+                    }
+                }
+
+                // Remove acknowledged segments from retransmit queue
+                self.retransmit_queue.retain(|seg| {
+                    let seg_end = seg.seq.wrapping_add(seg.data.len() as u32);
+                    let seg_end = if seg.flags & (TCP_SYN | TCP_FIN) != 0 {
+                        seg_end.wrapping_add(1)
+                    } else {
+                        seg_end
+                    };
+                    seg_end.wrapping_sub(ack) > 0
+                });
+            }
         }
+        
+        Ok(())
+    }
+
+    /// Update RTT estimation using RFC 6298 algorithm
+    fn update_rtt(&mut self, rtt_sample: u64) {
+        let rtt_ms = rtt_sample as i64;
+        
+        if self.srtt == 0 {
+            // First RTT measurement
+            self.srtt = rtt_ms;
+            self.rttvar = rtt_ms / 2;
+            self.rto = cmp::max(
+                (self.srtt + cmp::max(G, K * self.rttvar)) as u64,
+                MIN_RTO
+            );
+        } else {
+            // Subsequent measurements
+            // RTTVAR = (1 - beta) * RTTVAR + beta * |SRTT - R'|
+            let abs_diff = (self.srtt - rtt_ms).abs();
+            self.rttvar = ((1000 - BETA) * self.rttvar + BETA * abs_diff) / 1000;
+            
+            // SRTT = (1 - alpha) * SRTT + alpha * R'
+            self.srtt = ((1000 - ALPHA) * self.srtt + ALPHA * rtt_ms) / 1000;
+            
+            // RTO = SRTT + max(G, K * RTTVAR)
+            self.rto = cmp::max(
+                (self.srtt + cmp::max(G, K * self.rttvar)) as u64,
+                MIN_RTO
+            );
+        }
+        
+        // Cap RTO at maximum
+        self.rto = cmp::min(self.rto, MAX_RTO);
+        
+        serial::_print(format_args!(
+            "[TCP RTT] sample={}ms, SRTT={}ms, RTTVAR={}ms, RTO={}ms\n",
+            rtt_ms, self.srtt, self.rttvar, self.rto
+        ));
     }
 
     /// Check and handle retransmissions
     fn check_retransmissions(&mut self, tx: &mut TxBatch) -> Result<(), NetError> {
         let now = self.current_time();
         let mut to_retransmit = Vec::new();
+        let mut timeout_occurred = false;
+        
+        // Handle fast retransmit
+        if self.dup_acks == 3 && self.in_recovery {
+            // Fast retransmit: retransmit the first unacknowledged segment
+            if let Some(segment) = self.retransmit_queue.first() {
+                if segment.seq == self.snd_una {
+                    serial::_print(format_args!(
+                        "[TCP Fast Retransmit] Retransmitting seq={}\n",
+                        segment.seq
+                    ));
+                    let seg_clone = segment.clone();
+                    self.send_segment_internal(&seg_clone.data, seg_clone.flags, tx, Some(seg_clone.seq), false)?;
+                }
+            }
+        }
 
         for segment in &mut self.retransmit_queue {
             if now - segment.timestamp > self.rto {
                 if segment.retransmit_count >= MAX_RETRANSMIT {
                     // Give up, reset connection
+                    serial::_print(format_args!(
+                        "[TCP] Max retransmit attempts reached, resetting connection\n"
+                    ));
                     self.reset();
                     return Ok(());
                 }
@@ -722,9 +1206,30 @@ impl TcpSocket {
                 to_retransmit.push(segment.clone());
                 segment.timestamp = now;
                 segment.retransmit_count += 1;
+                segment.rtt_measured = true; // Mark as retransmitted (Karn's algorithm)
+                
+                if !timeout_occurred {
+                    timeout_occurred = true;
+                    
+                    // Timeout: Enter slow start
+                    self.ssthresh = cmp::max(self.cwnd / 2, 2 * self.mss as u32);
+                    self.cwnd = self.mss as u32; // Reset to 1 MSS
+                    self.dup_acks = 0;
+                    self.in_recovery = false;
+                    
+                    serial::_print(format_args!(
+                        "[TCP Congestion] Timeout - ssthresh={}, cwnd={}\n",
+                        self.ssthresh, self.cwnd
+                    ));
+                }
                 
                 // Exponential backoff
                 self.rto = cmp::min(self.rto * 2, MAX_RTO);
+                
+                serial::_print(format_args!(
+                    "[TCP] Retransmitting segment seq={}, count={}, new RTO={}ms\n",
+                    segment.seq, segment.retransmit_count, self.rto
+                ));
             }
         }
 
@@ -744,6 +1249,11 @@ impl TcpSocket {
     /// Get current time in milliseconds
     fn current_time(&self) -> u64 {
         logger::boot_time_us() / 1000
+    }
+
+    /// Get current time as milliseconds u32 for TCP timestamps
+    fn current_time_ms(&self) -> u32 {
+        (logger::boot_time_us() / 1000) as u32
     }
 
     /// Reset socket to closed state
