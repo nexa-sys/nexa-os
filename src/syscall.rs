@@ -478,30 +478,58 @@ fn syscall_write(fd: u64, buf: u64, count: u64) -> u64 {
 
                         let data = core::slice::from_raw_parts(buf as *const u8, count as usize);
                         
-                        let result = crate::net::with_net_stack(|stack| {
-                            stack.tcp_send(sock_handle.socket_index, data)
-                        });
+                        // Send data and poll to transmit
+                        let (send_result, tx) = if let Some(res) = crate::net::with_net_stack(|stack| {
+                            // Add data to send buffer
+                            let result = stack.tcp_send(sock_handle.socket_index, data);
+                            
+                            // Poll socket to process send buffer and generate packets
+                            let mut tx = Box::new(crate::net::stack::TxBatch::new());
+                            if result.is_ok() {
+                                if let Err(e) = stack.tcp_poll(sock_handle.socket_index, &mut tx) {
+                                    crate::serial::_print(format_args!(
+                                        "[SYS_WRITE] WARNING: tcp_poll failed: {:?}\n", e
+                                    ));
+                                }
+                            }
+                            
+                            (result, tx)
+                        }) {
+                            res
+                        } else {
+                            crate::serial::_print(format_args!(
+                                "[SYS_WRITE] ERROR: Network stack unavailable\n"
+                            ));
+                            posix::set_errno(posix::errno::ENETDOWN);
+                            return u64::MAX;
+                        };
+                        
+                        // Transmit frames after releasing network stack lock
+                        if !tx.is_empty() {
+                            crate::serial::_print(format_args!(
+                                "[SYS_WRITE] Transmitting {} frame(s)\n", tx.len()
+                            ));
+                            if let Err(e) = crate::net::send_frames(sock_handle.device_index, &tx) {
+                                crate::serial::_print(format_args!(
+                                    "[SYS_WRITE] ERROR: Failed to transmit frames: {:?}\n", e
+                                ));
+                                crate::kwarn!("[SYS_WRITE] Failed to transmit frames: {:?}", e);
+                            }
+                        }
 
-                        match result {
-                            Some(Ok(bytes_sent)) => {
+                        match send_result {
+                            Ok(bytes_sent) => {
                                 crate::serial::_print(format_args!(
                                     "[SYS_WRITE] TCP sent {} bytes\n", bytes_sent
                                 ));
                                 posix::set_errno(0);
                                 return bytes_sent as u64;
                             }
-                            Some(Err(e)) => {
+                            Err(e) => {
                                 crate::serial::_print(format_args!(
                                     "[SYS_WRITE] ERROR: tcp_send failed: {:?}\n", e
                                 ));
                                 posix::set_errno(posix::errno::EIO);
-                                return u64::MAX;
-                            }
-                            None => {
-                                crate::serial::_print(format_args!(
-                                    "[SYS_WRITE] ERROR: Network stack unavailable\n"
-                                ));
-                                posix::set_errno(posix::errno::ENETDOWN);
                                 return u64::MAX;
                             }
                         }

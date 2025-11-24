@@ -678,6 +678,14 @@ impl NetStack {
         Ok(())
     }
 
+    /// Poll TCP socket to process send/receive buffers and generate packets
+    pub fn tcp_poll(&mut self, socket_idx: usize, tx: &mut TxBatch) -> Result<(), NetError> {
+        if socket_idx >= MAX_TCP_SOCKETS {
+            return Err(NetError::InvalidSocket);
+        }
+        self.tcp_sockets[socket_idx].poll(tx)
+    }
+
     /// Send UDP datagram
     pub fn udp_send(
         &mut self,
