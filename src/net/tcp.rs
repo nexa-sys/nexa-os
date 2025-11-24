@@ -480,9 +480,12 @@ impl TcpSocket {
         ));
         
         if self.recv_buffer.is_empty() {
-            if self.state == TcpState::Closed {
-                serial::_print(format_args!("[TCP recv] Connection closed\n"));
-                return Err(NetError::ConnectionClosed);
+            // If connection is closed or in CloseWait (FIN received), return EOF
+            if self.state == TcpState::Closed || self.state == TcpState::CloseWait {
+                serial::_print(format_args!(
+                    "[TCP recv] Connection closed or FIN received, returning 0 (EOF)\n"
+                ));
+                return Ok(0);  // EOF
             }
             serial::_print(format_args!("[TCP recv] Buffer empty, returning WouldBlock\n"));
             return Err(NetError::WouldBlock);
@@ -502,6 +505,18 @@ impl TcpSocket {
         self.rcv_wnd = (RECV_BUFFER_SIZE - self.recv_buffer.len()) as u16;
 
         Ok(to_recv)
+    }
+
+    /// Add a process to the wait queue
+    pub fn add_waiter(&mut self, pid: Pid) {
+        // Avoid duplicates
+        if !self.wait_queue.contains(&pid) {
+            self.wait_queue.push(pid);
+            serial::_print(format_args!(
+                "[TCP add_waiter] Added PID {} to wait queue, queue_len now={}\n",
+                pid, self.wait_queue.len()
+            ));
+        }
     }
 
     /// Close connection
@@ -577,6 +592,11 @@ impl TcpSocket {
 
         self.last_activity = self.current_time();
         
+        serial::_print(format_args!(
+            "[TCP process_segment] TCP data: total_len={}, data_offset={}, header_size={}\n",
+            tcp_data.len(), data_offset, data_offset
+        ));
+        
         // Parse TCP options if present
         let options = if data_offset > 20 && data_offset <= tcp_data.len() {
             TcpOptions::parse(&tcp_data[20..data_offset])
@@ -586,8 +606,16 @@ impl TcpSocket {
         
         // Extract payload
         let payload = if data_offset < tcp_data.len() {
+            serial::_print(format_args!(
+                "[TCP process_segment] Extracting payload: data_offset={}, tcp_data.len()={}, payload_len={}\n",
+                data_offset, tcp_data.len(), tcp_data.len() - data_offset
+            ));
             &tcp_data[data_offset..]
         } else {
+            serial::_print(format_args!(
+                "[TCP process_segment] No payload: data_offset={} >= tcp_data.len()={}\n",
+                data_offset, tcp_data.len()
+            ));
             &[]
         };
 

@@ -648,11 +648,26 @@ fn syscall_read(fd: u64, buf: *mut u8, count: usize) -> u64 {
 
                             match result {
                                 Some(Ok(bytes_recv)) => {
+                                    crate::serial::_print(format_args!(
+                                        "[syscall_read] TCP socket {}: returning {} bytes to PID {:?}\n",
+                                        sock_handle.socket_index, bytes_recv, scheduler::current_pid()
+                                    ));
                                     posix::set_errno(0);
                                     return bytes_recv as u64;
                                 }
                                 Some(Err(crate::net::NetError::WouldBlock)) => {
-                                    // No data available - mark as sleeping and yield
+                                    // No data available - add ourselves to wait queue and yield
+                                    if let Some(current_pid) = scheduler::current_pid() {
+                                        crate::kinfo!(
+                                            "sys_read: TCP socket {}: no data, adding PID {} to wait queue",
+                                            sock_handle.socket_index, current_pid
+                                        );
+                                        
+                                        let _ = crate::net::with_net_stack(|stack| {
+                                            stack.tcp_add_waiter(sock_handle.socket_index, current_pid)
+                                        });
+                                    }
+                                    
                                     scheduler::set_current_process_state(ProcessState::Sleeping);
                                     // Continue loop after wakeup
                                     continue;

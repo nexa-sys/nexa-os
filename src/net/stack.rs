@@ -637,6 +637,19 @@ impl NetStack {
         self.tcp_sockets[socket_idx].recv(buffer)
     }
 
+    /// Add process to TCP socket wait queue
+    pub fn tcp_add_waiter(
+        &mut self,
+        socket_idx: usize,
+        pid: crate::process::Pid,
+    ) -> Result<(), NetError> {
+        if socket_idx >= MAX_TCP_SOCKETS {
+            return Err(NetError::InvalidSocket);
+        }
+        self.tcp_sockets[socket_idx].add_waiter(pid);
+        Ok(())
+    }
+
     /// Close TCP socket
     pub fn tcp_close(&mut self, socket_idx: usize) -> Result<(), NetError> {
         if socket_idx >= MAX_TCP_SOCKETS {
