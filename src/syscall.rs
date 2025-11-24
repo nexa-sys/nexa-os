@@ -609,22 +609,13 @@ fn syscall_read(fd: u64, buf: *mut u8, count: usize) -> u64 {
 
                         let buffer = core::slice::from_raw_parts_mut(buf, count);
                         
-                        // Blocking read loop
+                        // Blocking TCP read
                         loop {
-                            let mut should_block = false;
+                            // Poll network to process incoming packets
+                            crate::net::poll();
+                            
                             let result = crate::net::with_net_stack(|stack| {
-                                match stack.tcp_recv(sock_handle.socket_index, buffer) {
-                                    Ok(bytes) => Ok(bytes),
-                                    Err(crate::net::NetError::WouldBlock) => {
-                                        // Register for wait if we are going to block
-                                        if let Some(pid) = scheduler::get_current_pid() {
-                                            let _ = stack.tcp_wait(sock_handle.socket_index, pid);
-                                            should_block = true;
-                                        }
-                                        Err(crate::net::NetError::WouldBlock)
-                                    }
-                                    Err(e) => Err(e),
-                                }
+                                stack.tcp_recv(sock_handle.socket_index, buffer)
                             });
 
                             match result {
@@ -633,16 +624,13 @@ fn syscall_read(fd: u64, buf: *mut u8, count: usize) -> u64 {
                                     return bytes_recv as u64;
                                 }
                                 Some(Err(crate::net::NetError::WouldBlock)) => {
-                                    if should_block {
-                                        scheduler::set_current_process_state(ProcessState::Sleeping);
-                                        scheduler::do_schedule();
-                                        continue;
-                                    }
-                                    posix::set_errno(posix::errno::EAGAIN);
-                                    return u64::MAX;
+                                    // No data available - mark as sleeping and yield
+                                    scheduler::set_current_process_state(ProcessState::Sleeping);
+                                    // Continue loop after wakeup
+                                    continue;
                                 }
                                 Some(Err(_)) => {
-                                    posix::set_errno(posix::errno::EAGAIN);
+                                    posix::set_errno(posix::errno::EIO);
                                     return u64::MAX;
                                 }
                                 None => {
@@ -3668,6 +3656,7 @@ fn syscall_connect(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
             // Allocate ephemeral port for local side
             let local_port = 49152 + (sock_handle.socket_index as u16 * 123) % 16384;
 
+            let mut tx_batch = crate::net::stack::TxBatch::new();
             let result = crate::net::with_net_stack(|stack| {
                 stack.tcp_connect(
                     sock_handle.socket_index,
@@ -3675,8 +3664,15 @@ fn syscall_connect(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
                     ip,
                     port,
                     local_port,
+                    &mut tx_batch,
                 )
             });
+
+            if let Some(Ok(())) = result {
+                if tx_batch.len() > 0 {
+                    crate::net::send_frames(sock_handle.device_index, &tx_batch).ok();
+                }
+            }
 
             crate::serial::_print(format_args!(
                 "[SYS_CONNECT] tcp_connect returned: {:?}\n", result
@@ -3685,16 +3681,18 @@ fn syscall_connect(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
             match result {
                 Some(Ok(())) => {
                     crate::serial::_print(format_args!(
-                        "[SYS_CONNECT] Entering wait loop for establishment...\n"
+                        "[SYS_CONNECT] TCP connection initiated, waiting for establishment...\n"
                     ));
                     crate::kinfo!("[SYS_CONNECT] TCP connection initiated, waiting for establishment...");
                     
-                    // Wait for connection to be established (blocking connect)
-                    // Poll the TCP state until it's Established or an error occurs
+                    // Blocking connect: wait for connection to be established
                     let start_time_us = crate::logger::boot_time_us();
                     let timeout_us = 30_000_000u64; // 30 second timeout
                     
                     loop {
+                        // Poll network to process incoming packets
+                        crate::net::poll();
+                        
                         // Check TCP state
                         let state = crate::net::with_net_stack(|stack| {
                             stack.tcp_get_state(sock_handle.socket_index)
@@ -3719,8 +3717,10 @@ fn syscall_connect(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
                                     posix::set_errno(posix::errno::ETIMEDOUT);
                                     return u64::MAX;
                                 }
-                                // Yield CPU and try again
-                                scheduler::do_schedule();
+                                // Mark process as sleeping and yield CPU
+                                scheduler::set_current_process_state(ProcessState::Sleeping);
+                                // Continue loop after wakeup
+                                continue;
                             }
                             Some(Err(_)) | None => {
                                 crate::kwarn!("[SYS_CONNECT] TCP connection failed (error)");
@@ -4108,6 +4108,27 @@ pub extern "C" fn syscall_dispatch(
     result
 }
 
+/// Check if current process should be rescheduled (called from syscall handler)
+#[no_mangle]
+extern "C" fn should_reschedule() -> bool {
+    if let Some(pid) = scheduler::get_current_pid() {
+        if let Some(process) = scheduler::get_process(pid) {
+            return process.state == ProcessState::Sleeping;
+        }
+    }
+    false
+}
+
+/// Trigger rescheduling from syscall return path
+#[no_mangle]
+extern "C" fn do_schedule_from_syscall() {
+    // Wake up the process before scheduling (it will be picked up again if still runnable)
+    if let Some(pid) = scheduler::get_current_pid() {
+        let _ = scheduler::set_process_state(pid, ProcessState::Ready);
+    }
+    scheduler::do_schedule();
+}
+
 global_asm!(
     ".global syscall_handler",
     "syscall_handler:",
@@ -4214,6 +4235,14 @@ global_asm!(
     ".Lnormal_return_after_exec:",
     "add rsp, 32", // Clean up the 32 bytes we allocated
     ".Lnormal_return:",
+    // Check if current process needs to be rescheduled (Sleeping state)
+    "call should_reschedule",
+    "test al, al",
+    "jz .Lno_reschedule",
+    // Process needs to be rescheduled - save context and switch
+    "call do_schedule_from_syscall",
+    // After returning from schedule, continue with normal return
+    ".Lno_reschedule:",
     // Normal syscall return path
     "add rsp, 8", // remove alignment padding
     "pop r15",

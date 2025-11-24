@@ -514,6 +514,7 @@ impl NetStack {
         remote_ip: [u8; 4],
         remote_port: u16,
         local_port: u16,
+        tx_batch: &mut TxBatch,
     ) -> Result<(), NetError> {
         serial::_print(format_args!(
             "[tcp_connect] socket_idx={}, device_index={}, remote={}:{}\n",
@@ -589,8 +590,7 @@ impl NetStack {
         self.tcp_sockets[socket_idx].remote_mac = gateway_mac;
         
         // Send initial SYN packet immediately by calling poll
-        let mut tx_batch = TxBatch::new();
-        if let Err(e) = self.tcp_sockets[socket_idx].poll(&mut tx_batch) {
+        if let Err(e) = self.tcp_sockets[socket_idx].poll(tx_batch) {
             serial::_print(format_args!(
                 "[tcp_connect] ERROR: poll failed: {:?}\n", e
             ));
@@ -601,11 +601,6 @@ impl NetStack {
             "[tcp_connect] Poll successful, {} frames to send\n", 
             tx_batch.len()
         ));
-        
-        // Send the frames
-        if tx_batch.len() > 0 {
-            crate::net::send_frames(device_index, &tx_batch).ok();
-        }
         
         // Return success - connection initiated
         Ok(())
@@ -1076,7 +1071,7 @@ impl NetStack {
 
     fn handle_udp(
         &mut self,
-        device_index: usize,
+        _device_index: usize,
         frame: &[u8],
         ihl: usize,
         total_len: usize,
