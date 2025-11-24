@@ -740,6 +740,12 @@ lazy_static! {
             idt[0x80]
                 .set_handler_addr(x86_64::VirtAddr::new_truncate(ring3_switch_handler as u64))
                 .set_privilege_level(PrivilegeLevel::Ring3);
+            
+            // Set up IPI handlers for SMP (vectors 0xF0-0xF3)
+            idt[0xF0].set_handler_fn(ipi_reschedule_handler);
+            idt[0xF1].set_handler_fn(ipi_tlb_flush_handler);
+            idt[0xF2].set_handler_fn(ipi_call_function_handler);
+            idt[0xF3].set_handler_fn(ipi_halt_handler);
         }
 
         idt
@@ -1414,5 +1420,79 @@ fn is_canonical_address(addr: u64) -> bool {
         upper == 0
     } else {
         upper == 0xFFFF
+    }
+}
+
+//=============================================================================
+// IPI (Inter-Processor Interrupt) Handlers for SMP Support
+//=============================================================================
+
+/// IPI handler for rescheduling requests
+/// Triggered when another CPU wants this CPU to reschedule its processes
+extern "x86-interrupt" fn ipi_reschedule_handler(_stack_frame: InterruptStackFrame) {
+    // Mark reschedule as pending for this CPU
+    if let Some(cpu_data) = crate::smp::current_cpu_data() {
+        cpu_data.reschedule_pending.store(true, core::sync::atomic::Ordering::Release);
+    }
+    
+    // Send EOI to LAPIC
+    crate::lapic::send_eoi();
+    
+    // Trigger scheduler (will check pending flag)
+    // In production, this would be deferred to a safe point
+    crate::ktrace!("IPI: Reschedule request received");
+}
+
+/// IPI handler for TLB flush requests
+/// Ensures all CPUs invalidate their TLB when page tables are modified
+extern "x86-interrupt" fn ipi_tlb_flush_handler(_stack_frame: InterruptStackFrame) {
+    use x86_64::instructions::tlb;
+    
+    // Mark TLB flush as pending
+    if let Some(cpu_data) = crate::smp::current_cpu_data() {
+        cpu_data.tlb_flush_pending.store(true, core::sync::atomic::Ordering::Release);
+    }
+    
+    // Flush entire TLB immediately
+    unsafe {
+        tlb::flush_all();
+    }
+    
+    // Send EOI to LAPIC
+    crate::lapic::send_eoi();
+    
+    crate::ktrace!("IPI: TLB flush completed");
+}
+
+/// IPI handler for function call requests
+/// Allows one CPU to execute a function on another CPU
+extern "x86-interrupt" fn ipi_call_function_handler(_stack_frame: InterruptStackFrame) {
+    // In production, this would execute a function pointer stored in per-CPU data
+    // For now, just acknowledge the IPI
+    
+    if let Some(cpu_data) = crate::smp::current_cpu_data() {
+        cpu_data.interrupts_handled.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    }
+    
+    // Send EOI to LAPIC
+    crate::lapic::send_eoi();
+    
+    crate::ktrace!("IPI: Function call request received");
+}
+
+/// IPI handler for halt requests
+/// Allows graceful shutdown of individual CPUs
+extern "x86-interrupt" fn ipi_halt_handler(_stack_frame: InterruptStackFrame) {
+    use x86_64::instructions::hlt;
+    
+    crate::kinfo!("IPI: Halt request received, stopping CPU");
+    
+    // Send EOI to LAPIC before halting
+    crate::lapic::send_eoi();
+    
+    // Disable interrupts and halt
+    x86_64::instructions::interrupts::disable();
+    loop {
+        hlt();
     }
 }

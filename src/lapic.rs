@@ -9,10 +9,38 @@ const APIC_BASE_MASK: u64 = 0xFFFFF000;
 const DEFAULT_SPURIOUS_VECTOR: u8 = 0xFF;
 
 const REG_ID: u32 = 0x20;
+const REG_VERSION: u32 = 0x30;
+const REG_TPR: u32 = 0x80;  // Task Priority Register
 const REG_EOI: u32 = 0x0B0;
+const REG_LDR: u32 = 0x0D0;  // Logical Destination Register
+const REG_DFR: u32 = 0x0E0;  // Destination Format Register
 const REG_SVR: u32 = 0x0F0;
+const REG_ISR_BASE: u32 = 0x100;  // In-Service Register
+const REG_TMR_BASE: u32 = 0x180;  // Trigger Mode Register
+const REG_IRR_BASE: u32 = 0x200;  // Interrupt Request Register
+const REG_ERROR: u32 = 0x280;
+const REG_LVT_CMCI: u32 = 0x2F0;
 const REG_ICR_LOW: u32 = 0x300;
 const REG_ICR_HIGH: u32 = 0x310;
+const REG_LVT_TIMER: u32 = 0x320;
+const REG_LVT_THERMAL: u32 = 0x330;
+const REG_LVT_PERF: u32 = 0x340;
+const REG_LVT_LINT0: u32 = 0x350;
+const REG_LVT_LINT1: u32 = 0x360;
+const REG_LVT_ERROR: u32 = 0x370;
+const REG_TIMER_INITIAL: u32 = 0x380;
+const REG_TIMER_CURRENT: u32 = 0x390;
+const REG_TIMER_DIVIDE: u32 = 0x3E0;
+
+// Timer modes
+const TIMER_MODE_ONESHOT: u32 = 0 << 17;
+const TIMER_MODE_PERIODIC: u32 = 1 << 17;
+const TIMER_MODE_TSC_DEADLINE: u32 = 2 << 17;
+
+// Delivery modes for IPI
+const DELIVERY_MODE_FIXED: u32 = 0 << 8;
+const DELIVERY_MODE_INIT: u32 = 5 << 8;
+const DELIVERY_MODE_STARTUP: u32 = 6 << 8;
 
 static LAPIC_BASE: AtomicU64 = AtomicU64::new(0);
 static LAPIC_READY: AtomicBool = AtomicBool::new(false);
@@ -39,12 +67,25 @@ pub fn bsp_apic_id() -> u32 {
     unsafe { read_register(REG_ID) >> 24 }
 }
 
+/// Get current CPU's APIC ID
+pub fn current_apic_id() -> u32 {
+    if !LAPIC_READY.load(Ordering::Acquire) {
+        return 0;
+    }
+    unsafe { read_register(REG_ID) >> 24 }
+}
+
+/// Send IPI with custom vector (public for SMP use)
+pub fn send_ipi(apic_id: u32, vector: u8) {
+    send_ipi_ex(apic_id, DELIVERY_MODE_FIXED | (vector as u32));
+}
+
 pub fn send_init_ipi(apic_id: u32) {
-    send_ipi(apic_id, 0x4500);
+    send_ipi_ex(apic_id, DELIVERY_MODE_INIT | 0x4000);  // Level triggered
 }
 
 pub fn send_startup_ipi(apic_id: u32, vector: u8) {
-    send_ipi(apic_id, 0x4600 | (vector as u32));
+    send_ipi_ex(apic_id, DELIVERY_MODE_STARTUP | (vector as u32));
 }
 
 pub fn send_eoi() {
@@ -53,31 +94,40 @@ pub fn send_eoi() {
     }
 }
 
-fn send_ipi(apic_id: u32, command: u32) {
-    crate::kinfo!("LAPIC: Sending IPI to APIC {:#x}, command {:#x}", apic_id, command);
-    unsafe {
-        if !wait_for_icr_with_timeout() {
-            crate::kwarn!("LAPIC: Timeout waiting for ICR before send");
-            return;
-        }
-        crate::kinfo!("LAPIC: Writing ICR_HIGH: {:#x}", apic_id << 24);
-        write_register(REG_ICR_HIGH, apic_id << 24);
-        crate::kinfo!("LAPIC: Writing ICR_LOW: {:#x}", command);
-        write_register(REG_ICR_LOW, command);
-        crate::kinfo!("LAPIC: Waiting for IPI delivery...");
-        if !wait_for_icr_with_timeout() {
-            crate::kwarn!("LAPIC: Timeout waiting for ICR after send");
+fn send_ipi_ex(apic_id: u32, command: u32) {
+    const MAX_RETRIES: u32 = 3;
+    const TIMEOUT_US: u32 = 100_000;
+    
+    for retry in 0..MAX_RETRIES {
+        unsafe {
+            if !wait_for_icr_with_timeout(TIMEOUT_US) {
+                if retry == MAX_RETRIES - 1 {
+                    crate::kwarn!("LAPIC: Timeout waiting for ICR before send (attempt {})", retry + 1);
+                    return;
+                }
+                continue;
+            }
+            
+            write_register(REG_ICR_HIGH, apic_id << 24);
+            write_register(REG_ICR_LOW, command);
+            
+            if wait_for_icr_with_timeout(TIMEOUT_US) {
+                return;  // Success
+            }
+            
+            if retry == MAX_RETRIES - 1 {
+                crate::kwarn!("LAPIC: Timeout waiting for ICR after send (attempt {})", retry + 1);
+            }
         }
     }
-    crate::kinfo!("LAPIC: IPI sent successfully");
 }
 
 unsafe fn wait_for_icr() {
     while (read_register(REG_ICR_LOW) & (1 << 12)) != 0 {}
 }
 
-unsafe fn wait_for_icr_with_timeout() -> bool {
-    let mut timeout = 100_000;  // Reasonable timeout
+unsafe fn wait_for_icr_with_timeout(timeout_us: u32) -> bool {
+    let mut timeout = timeout_us;
     while (read_register(REG_ICR_LOW) & (1 << 12)) != 0 {
         if timeout == 0 {
             return false;
@@ -115,5 +165,45 @@ fn enable_apic() {
         svr |= DEFAULT_SPURIOUS_VECTOR as u32;
         svr |= 1 << 8; // APIC software enable
         write_register(REG_SVR, svr);
+        
+        // Clear error status
+        write_register(REG_ERROR, 0);
+        write_register(REG_ERROR, 0);
+        
+        // Set task priority to accept all interrupts
+        write_register(REG_TPR, 0);
+    }
+}
+
+/// Initialize LAPIC timer for periodic interrupts
+pub fn init_timer(vector: u8, frequency_hz: u32) {
+    unsafe {
+        // Set divide value to 16
+        write_register(REG_TIMER_DIVIDE, 0x3);
+        
+        // Set timer mode to periodic and vector
+        let lvt = TIMER_MODE_PERIODIC | (vector as u32);
+        write_register(REG_LVT_TIMER, lvt);
+        
+        // Set initial count (calibrated value based on frequency)
+        // This is a simplified version - production should calibrate against known timer
+        let initial_count = 10_000_000 / frequency_hz;  // Rough estimate
+        write_register(REG_TIMER_INITIAL, initial_count);
+    }
+}
+
+/// Stop LAPIC timer
+pub fn stop_timer() {
+    unsafe {
+        write_register(REG_LVT_TIMER, 1 << 16);  // Mask timer
+        write_register(REG_TIMER_INITIAL, 0);
+    }
+}
+
+/// Read LAPIC error status
+pub fn read_error() -> u32 {
+    unsafe {
+        write_register(REG_ERROR, 0);
+        read_register(REG_ERROR)
     }
 }

@@ -1,5 +1,6 @@
 use crate::process::{Pid, Process, ProcessState, MAX_PROCESSES};
 /// Advanced multi-level feedback queue (MLFQ) process scheduler for hybrid kernel
+/// with SMP (Symmetric Multi-Processing) support
 use crate::{kdebug, kerror, ktrace};
 use alloc::alloc::{dealloc, Layout};
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -1634,5 +1635,5 @@ pub fn get_preferred_cpu(pid: Pid) -> u8 {
         }
     }
     
-    0 // Default to CPU 0
+    0
 }

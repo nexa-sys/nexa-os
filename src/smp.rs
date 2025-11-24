@@ -1,6 +1,6 @@
 use core::mem::{self, MaybeUninit};
 use core::ptr;
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use x86_64::instructions::tables::sgdt;
 use x86_64::instructions::{hlt as cpu_hlt, interrupts};
@@ -12,16 +12,61 @@ const TRAMPOLINE_BASE: u64 = 0x8000;
 const TRAMPOLINE_MAX_SIZE: usize = 4096;
 const AP_STACK_SIZE: usize = 16 * 4096;
 const TRAMPOLINE_VECTOR: u8 = (TRAMPOLINE_BASE >> 12) as u8;
-const STARTUP_WAIT_LOOPS: u64 = 5_000_000;
+const STARTUP_WAIT_LOOPS: u64 = 50_000_000;  // Increased for reliability
+const STARTUP_RETRY_MAX: u32 = 3;
+
+// IPI vectors
+pub const IPI_RESCHEDULE: u8 = 0xF0;
+pub const IPI_TLB_FLUSH: u8 = 0xF1;
+pub const IPI_CALL_FUNCTION: u8 = 0xF2;
+pub const IPI_HALT: u8 = 0xF3;
 
 static SMP_READY: AtomicBool = AtomicBool::new(false);
 static TRAMPOLINE_READY: AtomicBool = AtomicBool::new(false);
 static CPU_TOTAL: AtomicUsize = AtomicUsize::new(1);
+static ONLINE_CPUS: AtomicUsize = AtomicUsize::new(1);
 
 static mut AP_STACKS: [[u8; AP_STACK_SIZE]; MAX_CPUS - 1] = [[0; AP_STACK_SIZE]; MAX_CPUS - 1];
 
+/// Per-CPU runtime data - isolated to each CPU to avoid cache line contention
+#[repr(C, align(64))]  // Cache line aligned to prevent false sharing
+pub struct CpuData {
+    pub cpu_id: u8,
+    pub apic_id: u32,
+    pub current_pid: AtomicU32,  // Currently running process
+    pub idle_time: AtomicU64,    // Idle time in ticks
+    pub busy_time: AtomicU64,    // Busy time in ticks
+    pub reschedule_pending: AtomicBool,
+    pub tlb_flush_pending: AtomicBool,
+    pub context_switches: AtomicU64,
+    pub interrupts_handled: AtomicU64,
+}
+
+impl CpuData {
+    fn new(cpu_id: u8, apic_id: u32) -> Self {
+        Self {
+            cpu_id,
+            apic_id,
+            current_pid: AtomicU32::new(0),
+            idle_time: AtomicU64::new(0),
+            busy_time: AtomicU64::new(0),
+            reschedule_pending: AtomicBool::new(false),
+            tlb_flush_pending: AtomicBool::new(false),
+            context_switches: AtomicU64::new(0),
+            interrupts_handled: AtomicU64::new(0),
+        }
+    }
+}
+
+static mut CPU_DATA: [MaybeUninit<CpuData>; MAX_CPUS] = 
+    unsafe { MaybeUninit::<[MaybeUninit<CpuData>; MAX_CPUS]>::uninit().assume_init() };
+
+unsafe fn cpu_data(idx: usize) -> &'static CpuData {
+    CPU_DATA[idx].assume_init_ref()
+}
+
 #[repr(u8)]
-#[derive(Copy, Clone, PartialEq, Eq)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
 enum CpuStatus {
     Offline = 0,
     Booting = 1,
@@ -38,11 +83,14 @@ impl CpuStatus {
     }
 }
 
+#[allow(dead_code)]
 struct CpuInfo {
     apic_id: u32,
     acpi_id: u8,
     is_bsp: bool,
     status: AtomicU8,
+    startup_attempts: AtomicU32,
+    last_error: AtomicU32,  // Error code from last startup attempt
 }
 
 impl CpuInfo {
@@ -57,6 +105,8 @@ impl CpuInfo {
             acpi_id,
             is_bsp,
             status: AtomicU8::new(initial),
+            startup_attempts: AtomicU32::new(0),
+            last_error: AtomicU32::new(0),
         }
     }
 }
@@ -99,6 +149,95 @@ pub fn init() {
 
 pub fn cpu_count() -> usize {
     CPU_TOTAL.load(Ordering::SeqCst)
+}
+
+pub fn online_cpus() -> usize {
+    ONLINE_CPUS.load(Ordering::Acquire)
+}
+
+/// Get current CPU ID from LAPIC
+pub fn current_cpu_id() -> u8 {
+    if !SMP_READY.load(Ordering::Acquire) {
+        return 0;
+    }
+    let apic_id = lapic::current_apic_id();
+    unsafe {
+        for i in 0..CPU_TOTAL.load(Ordering::Relaxed) {
+            let info = cpu_info(i);
+            if info.apic_id == apic_id {
+                return i as u8;
+            }
+        }
+    }
+    0
+}
+
+/// Get per-CPU data for current CPU
+pub fn current_cpu_data() -> Option<&'static CpuData> {
+    if !SMP_READY.load(Ordering::Acquire) {
+        return None;
+    }
+    let cpu_id = current_cpu_id() as usize;
+    if cpu_id < CPU_TOTAL.load(Ordering::Relaxed) {
+        unsafe { Some(cpu_data(cpu_id)) }
+    } else {
+        None
+    }
+}
+
+/// Send reschedule IPI to a specific CPU
+pub fn send_reschedule_ipi(cpu_id: u8) {
+    if !SMP_READY.load(Ordering::Acquire) {
+        return;
+    }
+    let cpu_id = cpu_id as usize;
+    if cpu_id >= CPU_TOTAL.load(Ordering::Relaxed) {
+        return;
+    }
+    unsafe {
+        let info = cpu_info(cpu_id);
+        lapic::send_ipi(info.apic_id, IPI_RESCHEDULE);
+    }
+}
+
+/// Send TLB flush IPI to all CPUs except current
+pub fn send_tlb_flush_ipi_all() {
+    if !SMP_READY.load(Ordering::Acquire) {
+        return;
+    }
+    let current = current_cpu_id();
+    let total = CPU_TOTAL.load(Ordering::Relaxed);
+    unsafe {
+        for i in 0..total {
+            if i == current as usize {
+                continue;
+            }
+            let info = cpu_info(i);
+            if CpuStatus::from_atomic(info.status.load(Ordering::Acquire)) == CpuStatus::Online {
+                lapic::send_ipi(info.apic_id, IPI_TLB_FLUSH);
+            }
+        }
+    }
+}
+
+/// Broadcast IPI to all online CPUs except current
+pub fn send_ipi_broadcast(vector: u8) {
+    if !SMP_READY.load(Ordering::Acquire) {
+        return;
+    }
+    let current = current_cpu_id();
+    let total = CPU_TOTAL.load(Ordering::Relaxed);
+    unsafe {
+        for i in 0..total {
+            if i == current as usize {
+                continue;
+            }
+            let info = cpu_info(i);
+            if CpuStatus::from_atomic(info.status.load(Ordering::Acquire)) == CpuStatus::Online {
+                lapic::send_ipi(info.apic_id, vector);
+            }
+        }
+    }
 }
 
 fn current_online() -> usize {
@@ -149,6 +288,15 @@ unsafe fn init_inner() -> Result<(), &'static str> {
         count += 1;
     }
     CPU_TOTAL.store(count, Ordering::SeqCst);
+    
+    // Initialize BSP CPU data
+    for i in 0..count {
+        let info = cpu_info(i);
+        if info.is_bsp {
+            CPU_DATA[i].as_mut_ptr().write(CpuData::new(i as u8, info.apic_id));
+            break;
+        }
+    }
 
     crate::kinfo!(
         "SMP: Detected {} logical CPUs (BSP APIC {:#x})",
@@ -156,7 +304,21 @@ unsafe fn init_inner() -> Result<(), &'static str> {
         bsp_apic
     );
 
-    // Try to start AP cores
+    // TEMPORARY: Skip AP startup for debugging
+    crate::kwarn!("SMP: AP core startup temporarily disabled for debugging");
+    crate::kinfo!(
+        "SMP: {} / {} cores online (BSP only, {} APs skipped)",
+        current_online(),
+        CPU_TOTAL.load(Ordering::SeqCst),
+        count - 1
+    );
+    
+    return Ok(());
+    
+    // Try to start AP cores (DISABLED FOR NOW)
+    #[allow(unreachable_code)]
+    #[allow(unused_variables)]
+    {
     let mut started = 0usize;
     
     for idx in 0..count {
@@ -189,6 +351,7 @@ unsafe fn init_inner() -> Result<(), &'static str> {
         CPU_TOTAL.load(Ordering::SeqCst),
         started
     );
+    }  // End of unreachable AP startup code
 
     Ok(())
 }
@@ -288,35 +451,61 @@ fn gdt64_as_bytes(ptr: &impl Sized) -> &[u8] {
 }
 
 unsafe fn start_ap(index: usize) -> Result<(), &'static str> {
-    crate::kdebug!("SMP: Preparing AP launch for core {}", index);
-    prepare_ap_launch(index)?;
+    let info = cpu_info(index);
+    let apic_id = info.apic_id;
     
-    crate::kdebug!("SMP: Setting core {} to Booting state", index);
-    cpu_info(index)
-        .status
-        .store(CpuStatus::Booting as u8, Ordering::SeqCst);
-
-    let apic_id = cpu_info(index).apic_id;
-    
-    crate::kdebug!("SMP: Sending INIT IPI to APIC {:#x}", apic_id);
-    lapic::send_init_ipi(apic_id);
-    busy_wait(10_000);
-    
-    crate::kdebug!("SMP: Sending STARTUP IPI #1 to APIC {:#x}, vector {:#x}", apic_id, TRAMPOLINE_VECTOR);
-    lapic::send_startup_ipi(apic_id, TRAMPOLINE_VECTOR);
-    busy_wait(2_000);
-    
-    crate::kdebug!("SMP: Sending STARTUP IPI #2 to APIC {:#x}", apic_id);
-    lapic::send_startup_ipi(apic_id, TRAMPOLINE_VECTOR);
-
-    crate::kdebug!("SMP: Waiting for AP core {} to come online...", index);
-    if wait_for_online(index, STARTUP_WAIT_LOOPS) {
-        crate::kinfo!("SMP: APIC {:#x} online", apic_id);
-        Ok(())
-    } else {
-        crate::kerror!("SMP: AP core {} (APIC {:#x}) failed to signal ready within timeout", index, apic_id);
-        Err("AP failed to signal ready")
+    for attempt in 0..STARTUP_RETRY_MAX {
+        crate::kinfo!(
+            "SMP: Starting AP core {} (APIC {:#x}), attempt {}/{}",
+            index, apic_id, attempt + 1, STARTUP_RETRY_MAX
+        );
+        
+        crate::kdebug!("SMP: Preparing launch parameters for core {}...", index);
+        prepare_ap_launch(index)?;
+        
+        crate::kdebug!("SMP: Setting core {} to Booting state", index);
+        info.status.store(CpuStatus::Booting as u8, Ordering::Release);
+        info.startup_attempts.fetch_add(1, Ordering::Relaxed);
+        
+        // Ensure all writes are visible before sending IPIs
+        core::sync::atomic::fence(Ordering::SeqCst);
+        
+        // Send INIT IPI
+        crate::kdebug!("SMP: Sending INIT IPI to APIC {:#x}", apic_id);
+        lapic::send_init_ipi(apic_id);
+        busy_wait(100_000);  // 10ms delay after INIT
+        
+        // Send STARTUP IPI (twice per Intel spec)
+        crate::kdebug!("SMP: Sending STARTUP IPI #1 to APIC {:#x}, vector {:#x}", apic_id, TRAMPOLINE_VECTOR);
+        lapic::send_startup_ipi(apic_id, TRAMPOLINE_VECTOR);
+        busy_wait(20_000);   // 200us delay between SIPIs
+        
+        crate::kdebug!("SMP: Sending STARTUP IPI #2 to APIC {:#x}", apic_id);
+        lapic::send_startup_ipi(apic_id, TRAMPOLINE_VECTOR);
+        busy_wait(10_000);   // Extra delay before checking
+        
+        // Wait for AP to come online
+        crate::kdebug!("SMP: Waiting for AP core {} to signal online...", index);
+        if wait_for_online(index, STARTUP_WAIT_LOOPS) {
+            crate::kinfo!("SMP: AP core {} (APIC {:#x}) online", index, apic_id);
+            ONLINE_CPUS.fetch_add(1, Ordering::SeqCst);
+            return Ok(());
+        }
+        
+        let status = CpuStatus::from_atomic(info.status.load(Ordering::Acquire));
+        crate::kwarn!(
+            "SMP: AP core {} (APIC {:#x}) failed to start (attempt {}, status: {:?})",
+            index, apic_id, attempt + 1, status
+        );
+        
+        // Reset status for retry
+        info.status.store(CpuStatus::Offline as u8, Ordering::Release);
+        
+        // Longer delay before retry
+        busy_wait(100_000);
     }
+    
+    Err("AP failed to start after maximum retries")
 }
 
 unsafe fn prepare_ap_launch(index: usize) -> Result<(), &'static str> {
@@ -329,9 +518,11 @@ unsafe fn prepare_ap_launch(index: usize) -> Result<(), &'static str> {
     }
 
     let pml4 = paging::current_pml4_phys();
+    crate::kdebug!("SMP: PML4 for AP core {}: {:#x}", index, pml4);
     write_trampoline_bytes(&__ap_trampoline_start, &ap_pml4_ptr, &pml4.to_le_bytes())?;
 
     let stack = stack_for(index)?;
+    crate::kdebug!("SMP: Stack for AP core {}: {:#x}", index, stack);
     write_trampoline_bytes(&__ap_trampoline_start, &ap_stack_ptr, &stack.to_le_bytes())?;
 
     AP_BOOT_ARGS[index] = ApBootArgs {
@@ -339,9 +530,11 @@ unsafe fn prepare_ap_launch(index: usize) -> Result<(), &'static str> {
         apic_id: cpu_info(index).apic_id,
     };
     let arg_ptr = (&AP_BOOT_ARGS[index] as *const ApBootArgs) as u64;
+    crate::kdebug!("SMP: Boot args for AP core {}: {:#x}", index, arg_ptr);
     write_trampoline_bytes(&__ap_trampoline_start, &ap_arg_ptr, &arg_ptr.to_le_bytes())?;
 
     let entry = ap_entry as usize as u64;
+    crate::kdebug!("SMP: Entry point for AP core {}: {:#x}", index, entry);
     write_trampoline_bytes(&__ap_trampoline_start, &ap_entry_ptr, &entry.to_le_bytes())?;
 
     Ok(())
@@ -351,11 +544,12 @@ unsafe fn stack_for(index: usize) -> Result<u64, &'static str> {
     if index == 0 {
         return Err("Stack request for BSP");
     }
-    if index - 1 >= AP_STACKS.len() {
+    let stack_index = index - 1;
+    if stack_index >= MAX_CPUS - 1 {
         return Err("No AP stack slot available");
     }
-    let stack = &AP_STACKS[index - 1];
-    Ok(stack.as_ptr() as u64 + AP_STACK_SIZE as u64)
+    let stack_ptr = ptr::addr_of!(AP_STACKS) as usize + stack_index * AP_STACK_SIZE;
+    Ok(stack_ptr as u64 + AP_STACK_SIZE as u64)
 }
 
 fn busy_wait(mut iterations: u64) {
@@ -393,26 +587,61 @@ unsafe fn write_trampoline_bytes(
 
 #[no_mangle]
 extern "C" fn ap_entry(arg: *const ApBootArgs) -> ! {
+    // CRITICAL: Keep interrupts disabled during entire initialization
+    // AP cores start with interrupts disabled from trampoline
+    
     unsafe {
+        // Basic validation without logging (GS not set up yet)
         if arg.is_null() {
-            crate::kfatal!("AP entry received null args");
+            // Can't log yet, just halt
+            loop { cpu_hlt(); }
         }
+        
         let args = *arg;
-        crate::configure_gs_base();
-        gdt::init_ap();
-        idt::init_interrupts_ap();
-
         let idx = args.cpu_index as usize;
-        if idx < CPU_TOTAL.load(Ordering::SeqCst) {
+        
+        // Step 1: Configure GS base (required for logging and syscalls)
+        crate::configure_gs_base();
+        core::sync::atomic::compiler_fence(Ordering::SeqCst);
+        
+        // Step 2: Initialize GDT (required for proper segmentation)
+        gdt::init_ap();
+        core::sync::atomic::compiler_fence(Ordering::SeqCst);
+        
+        // Step 3: Load IDT (but keep interrupts disabled)
+        idt::init_interrupts_ap();
+        core::sync::atomic::compiler_fence(Ordering::SeqCst);
+        
+        // Now it's safe to log
+        crate::kinfo!("SMP: AP core {} starting (APIC {:#x})", idx, args.apic_id);
+        
+        // Step 4: Initialize per-CPU data
+        if idx < MAX_CPUS {
+            CPU_DATA[idx].as_mut_ptr().write(CpuData::new(idx as u8, args.apic_id));
+            core::sync::atomic::compiler_fence(Ordering::Release);
+        } else {
+            crate::kerror!("SMP: Invalid CPU index {}", idx);
+            loop { cpu_hlt(); }
+        }
+        
+        // Step 5: Mark CPU as online
+        if idx < CPU_TOTAL.load(Ordering::Acquire) {
             cpu_info(idx)
                 .status
-                .store(CpuStatus::Online as u8, Ordering::SeqCst);
-            crate::kinfo!("SMP: Core {} (APIC {:#x}) initialized", idx, args.apic_id);
+                .store(CpuStatus::Online as u8, Ordering::Release);
+            crate::kinfo!("SMP: Core {} (APIC {:#x}) online", idx, args.apic_id);
         } else {
-            crate::kwarn!("SMP: AP reported invalid cpu_index {}", args.cpu_index);
+            crate::kerror!("SMP: CPU index {} exceeds total count", idx);
+            loop { cpu_hlt(); }
         }
-
+        
+        // Step 6: Enable interrupts only after everything is ready
+        core::sync::atomic::compiler_fence(Ordering::SeqCst);
         interrupts::enable();
+        
+        crate::kinfo!("SMP: Core {} entering idle loop", idx);
+        
+        // Enter idle loop - scheduler will take over
         loop {
             cpu_hlt();
         }
