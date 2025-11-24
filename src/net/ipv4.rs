@@ -2,7 +2,6 @@
 ///
 /// This module provides structures and utilities for parsing and constructing
 /// IPv4 packets.
-
 use core::mem;
 
 /// IPv4 address (4 bytes)
@@ -99,16 +98,16 @@ impl From<IpProtocol> for u8 {
 /// IPv4 header (minimum 20 bytes)
 #[repr(C, packed)]
 pub struct Ipv4Header {
-    pub version_ihl: u8,        // Version (4 bits) + IHL (4 bits)
-    pub dscp_ecn: u8,           // DSCP (6 bits) + ECN (2 bits)
-    pub total_length: u16,      // Total length (header + data) in bytes
-    pub identification: u16,    // Identification
-    pub flags_fragment: u16,    // Flags (3 bits) + Fragment offset (13 bits)
-    pub ttl: u8,                // Time to live
-    pub protocol: u8,           // Protocol
-    pub header_checksum: u16,   // Header checksum
-    pub src_addr: Ipv4Address,  // Source address
-    pub dst_addr: Ipv4Address,  // Destination address
+    pub version_ihl: u8,       // Version (4 bits) + IHL (4 bits)
+    pub dscp_ecn: u8,          // DSCP (6 bits) + ECN (2 bits)
+    pub total_length: u16,     // Total length (header + data) in bytes
+    pub identification: u16,   // Identification
+    pub flags_fragment: u16,   // Flags (3 bits) + Fragment offset (13 bits)
+    pub ttl: u8,               // Time to live
+    pub protocol: u8,          // Protocol
+    pub header_checksum: u16,  // Header checksum
+    pub src_addr: Ipv4Address, // Source address
+    pub dst_addr: Ipv4Address, // Destination address
 }
 
 impl Ipv4Header {
@@ -150,10 +149,7 @@ impl Ipv4Header {
     pub fn calculate_checksum(&mut self) {
         self.header_checksum = 0;
         let header_bytes = unsafe {
-            core::slice::from_raw_parts(
-                self as *const Self as *const u8,
-                self.header_len(),
-            )
+            core::slice::from_raw_parts(self as *const Self as *const u8, self.header_len())
         };
         self.header_checksum = calculate_checksum(header_bytes).to_be();
     }
@@ -161,10 +157,7 @@ impl Ipv4Header {
     /// Verify IPv4 header checksum
     pub fn verify_checksum(&self) -> bool {
         let header_bytes = unsafe {
-            core::slice::from_raw_parts(
-                self as *const Self as *const u8,
-                self.header_len(),
-            )
+            core::slice::from_raw_parts(self as *const Self as *const u8, self.header_len())
         };
         calculate_checksum(header_bytes) == 0
     }
@@ -180,26 +173,26 @@ impl<'a> Ipv4Packet<'a> {
         if buffer.len() < Ipv4Header::MIN_SIZE {
             return None;
         }
-        
+
         let packet = Self { buffer };
         let header = packet.header();
-        
+
         // Validate version
         if header.version() != 4 {
             return None;
         }
-        
+
         // Validate IHL
         if header.ihl() < 5 {
             return None;
         }
-        
+
         // Validate total length
         let total_len = header.total_length() as usize;
         if total_len > buffer.len() {
             return None;
         }
-        
+
         Some(packet)
     }
 
@@ -277,7 +270,7 @@ impl<'a> Ipv4PacketMut<'a> {
 /// Calculate Internet checksum (RFC 1071)
 pub fn calculate_checksum(data: &[u8]) -> u16 {
     let mut sum: u32 = 0;
-    
+
     // Sum 16-bit words
     let mut i = 0;
     while i < data.len() - 1 {
@@ -285,17 +278,17 @@ pub fn calculate_checksum(data: &[u8]) -> u16 {
         sum += word as u32;
         i += 2;
     }
-    
+
     // Add remaining byte if odd length
     if i < data.len() {
         sum += (data[i] as u32) << 8;
     }
-    
+
     // Fold 32-bit sum to 16 bits
     while (sum >> 16) != 0 {
         sum = (sum & 0xFFFF) + (sum >> 16);
     }
-    
+
     // One's complement
     !sum as u16
 }

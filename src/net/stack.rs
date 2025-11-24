@@ -1,11 +1,11 @@
-use crate::{kdebug, kerror, kinfo, ktrace};
 use crate::logger;
+use crate::{kdebug, kerror, kinfo, ktrace};
 
 use super::arp::{ArpCache, ArpOperation, ArpPacket};
 use super::drivers::NetError;
 use super::ethernet::{EtherType, EthernetFrame, MacAddress};
 use super::ipv4::{IpProtocol, Ipv4Address, Ipv4Header};
-use super::netlink::{NetlinkSubsystem, NetlinkSocket};
+use super::netlink::{NetlinkSocket, NetlinkSubsystem};
 use super::tcp::TcpSocket;
 use super::udp::{UdpDatagram, UdpDatagramMut, UdpHeader};
 use crate::process::Pid;
@@ -244,7 +244,7 @@ impl NetStack {
         // DHCP will assign 10.0.2.15, gateway 10.0.2.2 via DHCP option 3
         devices[0] = DeviceInfo {
             mac: [0x52, 0x54, 0x00, 0x12, 0x34, 0x56], // QEMU default MAC prefix
-            ip: [0, 0, 0, 0], // No IP yet, will be set by DHCP
+            ip: [0, 0, 0, 0],                          // No IP yet, will be set by DHCP
             gateway: [0, 0, 0, 0], // No gateway yet, will be set by DHCP RTM_NEWROUTE
             present: true,
         };
@@ -258,10 +258,22 @@ impl NetStack {
             devices,
             tcp,
             tcp_sockets: [
-                TcpSocket::new(), TcpSocket::new(), TcpSocket::new(), TcpSocket::new(),
-                TcpSocket::new(), TcpSocket::new(), TcpSocket::new(), TcpSocket::new(),
-                TcpSocket::new(), TcpSocket::new(), TcpSocket::new(), TcpSocket::new(),
-                TcpSocket::new(), TcpSocket::new(), TcpSocket::new(), TcpSocket::new(),
+                TcpSocket::new(),
+                TcpSocket::new(),
+                TcpSocket::new(),
+                TcpSocket::new(),
+                TcpSocket::new(),
+                TcpSocket::new(),
+                TcpSocket::new(),
+                TcpSocket::new(),
+                TcpSocket::new(),
+                TcpSocket::new(),
+                TcpSocket::new(),
+                TcpSocket::new(),
+                TcpSocket::new(),
+                TcpSocket::new(),
+                TcpSocket::new(),
+                TcpSocket::new(),
             ],
             udp_sockets: [UdpSocket::empty(); MAX_UDP_SOCKETS],
             netlink: NetlinkSubsystem::new(),
@@ -296,7 +308,12 @@ impl NetStack {
     }
 
     /// Send an ARP request for the given IP address
-    fn send_arp_request(&mut self, device_index: usize, target_ip: Ipv4Address, tx: &mut TxBatch) -> Result<(), NetError> {
+    fn send_arp_request(
+        &mut self,
+        device_index: usize,
+        target_ip: Ipv4Address,
+        tx: &mut TxBatch,
+    ) -> Result<(), NetError> {
         if device_index >= self.devices.len() {
             return Err(NetError::InvalidDevice);
         }
@@ -308,7 +325,11 @@ impl NetStack {
         let device_mac = MacAddress::from(device.mac);
         let device_ip = Ipv4Address::from(device.ip);
 
-        kinfo!("[ARP] Sending ARP request: who has {}? Tell {}", target_ip, device_ip);
+        kinfo!(
+            "[ARP] Sending ARP request: who has {}? Tell {}",
+            target_ip,
+            device_ip
+        );
 
         let arp_request = ArpPacket::new_request(device_mac, device_ip, target_ip);
 
@@ -317,7 +338,7 @@ impl NetStack {
         packet[0..6].copy_from_slice(&[0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
         packet[6..12].copy_from_slice(&device.mac);
         packet[12..14].copy_from_slice(&ETHERTYPE_ARP.to_be_bytes());
-        
+
         // Copy ARP packet
         unsafe {
             let arp_bytes = core::slice::from_raw_parts(
@@ -348,16 +369,24 @@ impl NetStack {
     ) -> Result<(), NetError> {
         ktrace!("[NetStack] Processing pending packets for {}", resolved_ip);
         let now_ms = logger::boot_time_us() / 1_000;
-        let resolved_ip_bytes = [resolved_ip.0[0], resolved_ip.0[1], resolved_ip.0[2], resolved_ip.0[3]];
+        let resolved_ip_bytes = [
+            resolved_ip.0[0],
+            resolved_ip.0[1],
+            resolved_ip.0[2],
+            resolved_ip.0[3],
+        ];
 
         // First pass: mark packets to send (avoid double borrow)
         let mut send_flags = [false; MAX_PENDING_PACKETS];
-        
+
         for (i, slot) in self.pending_packets.iter().enumerate() {
             if let Some(ref pkt) = slot {
                 // Check if this packet is waiting for the resolved IP
                 let device = &self.devices[pkt.device_index];
-                let target_ip = if pkt.dst_ip[0] == device.ip[0] && pkt.dst_ip[1] == device.ip[1] && pkt.dst_ip[2] == device.ip[2] {
+                let target_ip = if pkt.dst_ip[0] == device.ip[0]
+                    && pkt.dst_ip[1] == device.ip[1]
+                    && pkt.dst_ip[2] == device.ip[2]
+                {
                     pkt.dst_ip
                 } else if device.gateway != [0, 0, 0, 0] {
                     device.gateway
@@ -366,8 +395,11 @@ impl NetStack {
                 };
 
                 if target_ip == resolved_ip_bytes {
-                    ktrace!("[NetStack] Queued packet matched for {}:{}", 
-                        Ipv4Address::from(pkt.dst_ip), pkt.dst_port);
+                    ktrace!(
+                        "[NetStack] Queued packet matched for {}:{}",
+                        Ipv4Address::from(pkt.dst_ip),
+                        pkt.dst_port
+                    );
                     send_flags[i] = true;
                 } else if now_ms.saturating_sub(pkt.timestamp_ms) >= 5000 {
                     // Mark expired packets for removal
@@ -375,13 +407,16 @@ impl NetStack {
                 }
             }
         }
-        
+
         // Second pass: send and remove packets
         for (i, should_send) in send_flags.iter().enumerate() {
             if *should_send {
                 if let Some(pkt) = self.pending_packets[i].take() {
-                    ktrace!("[NetStack] Sending queued packet to {}:{}", 
-                        Ipv4Address::from(pkt.dst_ip), pkt.dst_port);
+                    ktrace!(
+                        "[NetStack] Sending queued packet to {}:{}",
+                        Ipv4Address::from(pkt.dst_ip),
+                        pkt.dst_port
+                    );
                     let _ = self.udp_send(
                         pkt.device_index,
                         pkt.socket_index,
@@ -393,14 +428,17 @@ impl NetStack {
                 }
             }
         }
-        
+
         Ok(())
     }
 
     /// Allocate a UDP socket
     /// Check if a UDP port is available without allocating it
     pub fn is_udp_port_available(&self, local_port: u16) -> bool {
-        !self.udp_sockets.iter().any(|s| s.in_use && s.local_port == local_port)
+        !self
+            .udp_sockets
+            .iter()
+            .any(|s| s.in_use && s.local_port == local_port)
     }
 
     pub fn udp_socket(&mut self, local_port: u16) -> Result<usize, NetError> {
@@ -517,10 +555,12 @@ impl NetStack {
     ) -> Result<(), NetError> {
         ktrace!(
             "[tcp_connect] socket_idx={}, device_index={}, remote={}:{}",
-            socket_idx, device_index, 
-            crate::net::ipv4::Ipv4Address::from(remote_ip), remote_port
+            socket_idx,
+            device_index,
+            crate::net::ipv4::Ipv4Address::from(remote_ip),
+            remote_port
         );
-        
+
         if socket_idx >= MAX_TCP_SOCKETS {
             return Err(NetError::InvalidSocket);
         }
@@ -530,17 +570,18 @@ impl NetStack {
 
         let device = &self.devices[device_index];
         let socket = &mut self.tcp_sockets[socket_idx];
-        
+
         ktrace!(
             "[tcp_connect] Device info: ip={}.{}.{}.{}, mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}, gateway={}.{}.{}.{}",
             device.ip[0], device.ip[1], device.ip[2], device.ip[3],
             device.mac[0], device.mac[1], device.mac[2], device.mac[3], device.mac[4], device.mac[5],
             device.gateway[0], device.gateway[1], device.gateway[2], device.gateway[3]
         );
-        
+
         ktrace!(
             "[tcp_connect] Before connect: socket state={:?}, in_use={}",
-            socket.state, socket.in_use
+            socket.state,
+            socket.in_use
         );
 
         let result = socket.connect(
@@ -551,23 +592,23 @@ impl NetStack {
             MacAddress(device.mac),
             device_index,
         );
-        
+
         ktrace!(
             "[tcp_connect] After connect: result={:?}, socket state={:?}, in_use={}",
-            result, socket.state, socket.in_use
+            result,
+            socket.state,
+            socket.in_use
         );
-        
+
         // Resolve gateway MAC address via ARP before sending SYN
         if result.is_err() {
             return result;
         }
-        
+
         let gateway_ip = Ipv4Address::from(device.gateway);
         let current_ms = (logger::boot_time_us() / 1000) as u64;
-        ktrace!(
-            "[tcp_connect] Resolving gateway MAC for {}", gateway_ip
-        );
-        
+        ktrace!("[tcp_connect] Resolving gateway MAC for {}", gateway_ip);
+
         // Try to get MAC from ARP cache
         let gateway_mac = if let Some(mac) = self.arp_cache.lookup(&gateway_ip, current_ms) {
             ktrace!(
@@ -576,60 +617,51 @@ impl NetStack {
             );
             mac
         } else {
-            ktrace!(
-                "[tcp_connect] Gateway MAC not in cache"
-            );
+            ktrace!("[tcp_connect] Gateway MAC not in cache");
             // For now, assume gateway is on local network and will respond to ARP
             // In real implementation, we should send ARP request and wait
             // But for testing, let's just fail gracefully
             return Err(NetError::ArpCacheMiss);
         };
-        
+
         // Set the remote MAC to gateway MAC
         self.tcp_sockets[socket_idx].remote_mac = gateway_mac;
-        
+
         // Send initial SYN packet immediately by calling poll
         if let Err(e) = self.tcp_sockets[socket_idx].poll(tx_batch) {
-            ktrace!(
-                "[tcp_connect] ERROR: poll failed: {:?}", e
-            );
+            ktrace!("[tcp_connect] ERROR: poll failed: {:?}", e);
             return Err(e);
         }
-        
+
         ktrace!(
-            "[tcp_connect] Poll successful, {} frames to send", 
+            "[tcp_connect] Poll successful, {} frames to send",
             tx_batch.len()
         );
-        
+
         // Return success - connection initiated
         Ok(())
     }
 
     /// Send data on TCP socket
-    pub fn tcp_send(
-        &mut self,
-        socket_idx: usize,
-        data: &[u8],
-    ) -> Result<usize, NetError> {
+    pub fn tcp_send(&mut self, socket_idx: usize, data: &[u8]) -> Result<usize, NetError> {
         if socket_idx >= MAX_TCP_SOCKETS {
             return Err(NetError::InvalidSocket);
         }
-        
+
         let socket = &mut self.tcp_sockets[socket_idx];
         ktrace!(
             "[tcp_send] socket_idx={}, state={:?}, in_use={}, data_len={}",
-            socket_idx, socket.state, socket.in_use, data.len()
+            socket_idx,
+            socket.state,
+            socket.in_use,
+            data.len()
         );
-        
+
         self.tcp_sockets[socket_idx].send(data)
     }
 
     /// Receive data from TCP socket
-    pub fn tcp_recv(
-        &mut self,
-        socket_idx: usize,
-        buffer: &mut [u8],
-    ) -> Result<usize, NetError> {
+    pub fn tcp_recv(&mut self, socket_idx: usize, buffer: &mut [u8]) -> Result<usize, NetError> {
         if socket_idx >= MAX_TCP_SOCKETS {
             return Err(NetError::InvalidSocket);
         }
@@ -725,9 +757,9 @@ impl NetStack {
         let device = &self.devices[device_index];
 
         // Check if this is a broadcast address (global or subnet-specific)
-        let is_broadcast = dst_ip == [255, 255, 255, 255] || 
-                          (dst_ip[3] == 255 && device.ip != [0, 0, 0, 0]);
-        
+        let is_broadcast =
+            dst_ip == [255, 255, 255, 255] || (dst_ip[3] == 255 && device.ip != [0, 0, 0, 0]);
+
         // Determine destination MAC
         let dst_mac = if is_broadcast {
             // Use broadcast MAC address for broadcast IPs
@@ -735,7 +767,10 @@ impl NetStack {
         } else {
             // For unicast, determine the actual target IP for ARP lookup
             // If destination is not on local subnet, use gateway
-            let target_ip = if dst_ip[0] == device.ip[0] && dst_ip[1] == device.ip[1] && dst_ip[2] == device.ip[2] {
+            let target_ip = if dst_ip[0] == device.ip[0]
+                && dst_ip[1] == device.ip[1]
+                && dst_ip[2] == device.ip[2]
+            {
                 // Same /24 subnet - direct communication
                 dst_ip
             } else if device.gateway != [0, 0, 0, 0] {
@@ -748,7 +783,7 @@ impl NetStack {
 
             let target_ip_addr = Ipv4Address::from(target_ip);
             let now_ms = logger::boot_time_us() / 1_000;
-            
+
             // Try to lookup in ARP cache
             match self.arp_cache.lookup(&target_ip_addr, now_ms) {
                 Some(mac) => mac,
@@ -799,11 +834,11 @@ impl NetStack {
 
         // IPv4 header
         packet[14] = 0x45; // Version 4, IHL 5
-        packet[15] = 0;    // DSCP/ECN
+        packet[15] = 0; // DSCP/ECN
         packet[16..18].copy_from_slice(&(ip_total_len as u16).to_be_bytes());
         packet[18..20].copy_from_slice(&[0, 0]); // Identification
         packet[20..22].copy_from_slice(&[0x40, 0]); // Flags, Fragment offset
-        packet[22] = 64;   // TTL
+        packet[22] = 64; // TTL
         packet[23] = PROTO_UDP;
         packet[24..26].copy_from_slice(&[0, 0]); // Checksum (will be filled)
         packet[26..30].copy_from_slice(&device.ip);
@@ -822,14 +857,14 @@ impl NetStack {
         // Calculate UDP checksum with pseudo-header
         let src_ip_addr = Ipv4Address::from(device.ip);
         let dst_ip_addr = Ipv4Address::from(dst_ip);
-        
+
         // Cast the UDP header part of the packet to UdpHeader
         let header_ptr = packet[udp_offset..].as_mut_ptr() as *mut UdpHeader;
         let header = unsafe { &mut *header_ptr };
-        
+
         // The payload is after the header
         let payload = &packet[udp_offset + 8..udp_offset + udp_len];
-        
+
         header.calculate_checksum(&src_ip_addr, &dst_ip_addr, payload);
         // Checksum is now set in the packet buffer because header points to it.
 
@@ -846,14 +881,16 @@ impl NetStack {
         // Debug: Log received frames
         static FRAME_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
         let count = FRAME_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        
+
         if count < 10 || count % 50 == 0 {
             crate::serial::_print(format_args!(
                 "[stack::handle_frame] Frame #{}, device={}, len={}\n",
-                count, device_index, frame.len()
+                count,
+                device_index,
+                frame.len()
             ));
         }
-        
+
         if device_index >= self.devices.len() {
             return Ok(());
         }
@@ -865,14 +902,14 @@ impl NetStack {
         }
 
         let ethertype = u16::from_be_bytes([frame[12], frame[13]]);
-        
+
         if count < 10 {
             crate::serial::_print(format_args!(
                 "[stack::handle_frame] Ethertype={:#x}\n",
                 ethertype
             ));
         }
-        
+
         match ethertype {
             ETHERTYPE_ARP => self.handle_arp(device_index, frame, tx),
             ETHERTYPE_IPV4 => self.handle_ipv4(device_index, frame, tx),
@@ -888,14 +925,14 @@ impl NetStack {
     ) -> Result<(), NetError> {
         // Poll old TCP endpoint for backwards compatibility
         self.tcp.poll(device_index, now_ms, tx)?;
-        
+
         // Poll all TCP sockets
         for socket in &mut self.tcp_sockets {
             if socket.in_use && socket.device_idx == Some(device_index) {
                 socket.poll(tx)?;
             }
         }
-        
+
         Ok(())
     }
 
@@ -911,7 +948,7 @@ impl NetStack {
         // Extract values we need before any mutable operations
         let device_mac = self.devices[device_index].mac;
         let device_ip_bytes = self.devices[device_index].ip;
-        
+
         let hw_type = u16::from_be_bytes([frame[14], frame[15]]);
         let proto_type = u16::from_be_bytes([frame[16], frame[17]]);
         let hlen = frame[18] as usize;
@@ -929,11 +966,19 @@ impl NetStack {
         // Update ARP cache with sender info
         let now_ms = logger::boot_time_us() / 1_000;
         self.arp_cache.insert(sender_ip, sender_mac, now_ms);
-        
-        ktrace!("[ARP] Received {} from {}: MAC={}",
-            if opcode == 1 { "request" } else if opcode == 2 { "reply" } else { "unknown" },
+
+        ktrace!(
+            "[ARP] Received {} from {}: MAC={}",
+            if opcode == 1 {
+                "request"
+            } else if opcode == 2 {
+                "reply"
+            } else {
+                "unknown"
+            },
             sender_ip,
-            sender_mac);
+            sender_mac
+        );
 
         // If this is an ARP reply, check for pending packets
         if opcode == 2 {
@@ -957,7 +1002,7 @@ impl NetStack {
         packet[0..6].copy_from_slice(&sender_mac.0);
         packet[6..12].copy_from_slice(&device_mac.0);
         packet[12..14].copy_from_slice(&ETHERTYPE_ARP.to_be_bytes());
-        
+
         // Copy ARP packet
         unsafe {
             let arp_bytes = core::slice::from_raw_parts(
@@ -993,7 +1038,7 @@ impl NetStack {
 
         let proto = frame[23];
         let dst_ip = &frame[30..34];
-        
+
         // Accept packets destined to:
         // 1. Our IP address
         // 2. Broadcast address (255.255.255.255)
@@ -1002,27 +1047,40 @@ impl NetStack {
         let is_global_broadcast = dst_ip == [255, 255, 255, 255];
         let is_our_ip = dst_ip == device.ip;
         let no_ip_yet = device.ip == [0, 0, 0, 0];
-        
+
         // Check if it's a subnet broadcast (last octet is 255 for /24 networks)
         // This handles broadcasts like 10.0.2.255, 192.168.3.255, etc.
-        let is_subnet_broadcast = dst_ip[3] == 255 && 
-                                  dst_ip[0] == device.ip[0] && 
-                                  dst_ip[1] == device.ip[1] && 
-                                  dst_ip[2] == device.ip[2];
-        
+        let is_subnet_broadcast = dst_ip[3] == 255
+            && dst_ip[0] == device.ip[0]
+            && dst_ip[1] == device.ip[1]
+            && dst_ip[2] == device.ip[2];
+
         if !is_our_ip && !is_global_broadcast && !is_subnet_broadcast && !no_ip_yet {
             crate::serial::_print(format_args!(
                 "[handle_ipv4] Dropping packet: dst_ip={}.{}.{}.{}, device_ip={}.{}.{}.{}\n",
-                dst_ip[0], dst_ip[1], dst_ip[2], dst_ip[3],
-                device.ip[0], device.ip[1], device.ip[2], device.ip[3]
+                dst_ip[0],
+                dst_ip[1],
+                dst_ip[2],
+                dst_ip[3],
+                device.ip[0],
+                device.ip[1],
+                device.ip[2],
+                device.ip[3]
             ));
             return Ok(());
         }
-        
+
         crate::serial::_print(format_args!(
             "[handle_ipv4] Accepting packet: dst_ip={}.{}.{}.{}, proto={}, our_ip={}.{}.{}.{}\n",
-            dst_ip[0], dst_ip[1], dst_ip[2], dst_ip[3], proto,
-            device.ip[0], device.ip[1], device.ip[2], device.ip[3]
+            dst_ip[0],
+            dst_ip[1],
+            dst_ip[2],
+            dst_ip[3],
+            proto,
+            device.ip[0],
+            device.ip[1],
+            device.ip[2],
+            device.ip[3]
         ));
 
         match proto {
@@ -1032,16 +1090,15 @@ impl NetStack {
                     "[handle_ipv4] TCP packet received, forwarding to TCP handlers\n"
                 ));
                 // First handle the old TCP endpoint (for backwards compatibility)
-                self.tcp.handle_segment(device_index, frame, ihl, total_len, tx)?;
-                
+                self.tcp
+                    .handle_segment(device_index, frame, ihl, total_len, tx)?;
+
                 // Then handle new TCP sockets
                 self.handle_tcp(device_index, frame, ihl, total_len, tx)
             }
             PROTO_UDP => self.handle_udp(device_index, frame, ihl, total_len),
             _ => {
-                crate::serial::_print(format_args!(
-                    "[handle_ipv4] Unknown protocol: {}\n", proto
-                ));
+                crate::serial::_print(format_args!("[handle_ipv4] Unknown protocol: {}\n", proto));
                 Ok(())
             }
         }
@@ -1100,7 +1157,7 @@ impl NetStack {
 
         let udp_offset = 14 + ihl;
         let udp_len = total_len - ihl;
-        
+
         if udp_len < 8 {
             return Ok(());
         }
@@ -1115,13 +1172,26 @@ impl NetStack {
         let dst_ip = &frame[30..34];
         crate::serial::_print(format_args!(
             "[handle_udp] UDP: {}.{}.{}.{}:{} -> {}.{}.{}.{}:{}, len={}, checksum={:#x}\n",
-            src_ip[0], src_ip[1], src_ip[2], src_ip[3], src_port,
-            dst_ip[0], dst_ip[1], dst_ip[2], dst_ip[3], dst_port,
-            length, checksum
+            src_ip[0],
+            src_ip[1],
+            src_ip[2],
+            src_ip[3],
+            src_port,
+            dst_ip[0],
+            dst_ip[1],
+            dst_ip[2],
+            dst_ip[3],
+            dst_port,
+            length,
+            checksum
         ));
 
         if length < 8 || length > udp_len {
-            crate::kinfo!("net: UDP packet with invalid length ({} vs {})", length, udp_len);
+            crate::kinfo!(
+                "net: UDP packet with invalid length ({} vs {})",
+                length,
+                udp_len
+            );
             return Ok(());
         }
 
@@ -1129,22 +1199,21 @@ impl NetStack {
         if checksum != 0 {
             let src_ip = Ipv4Address::from(&frame[26..30]);
             let dst_ip = Ipv4Address::from(&frame[30..34]);
-            
+
             // Parse UDP header directly from frame to avoid byte order confusion
             // Frame already contains network byte order data
             if udp_offset + length <= frame.len() {
                 let udp_packet_raw = &frame[udp_offset..udp_offset + length];
-                
+
                 // Parse header as-is from network data
                 let header_ptr = udp_packet_raw.as_ptr() as *const UdpHeader;
                 let udp_header = unsafe { &*header_ptr };
                 let payload = &udp_packet_raw[UdpHeader::SIZE..];
-                
+
                 if !udp_header.verify_checksum(&src_ip, &dst_ip, payload) {
                     crate::serial::_print(format_args!(
                         "[handle_udp] Checksum mismatch on port {} from {}.{}.{}.{}:{}\n",
-                        dst_port,
-                        frame[26], frame[27], frame[28], frame[29], src_port
+                        dst_port, frame[26], frame[27], frame[28], frame[29], src_port
                     ));
                     return Ok(());
                 }
@@ -1182,14 +1251,17 @@ impl NetStack {
         if let Some(idx) = socket_idx {
             let payload = &frame[udp_offset + 8..udp_offset + length];
             let src_ip_bytes = [frame[26], frame[27], frame[28], frame[29]];
-            
+
             // Attempt to enqueue packet
             match self.udp_sockets[idx].enqueue_packet(src_ip_bytes, src_port, payload) {
                 Ok(()) => {
                     crate::kinfo!(
                         "net: UDP datagram received on port {}, from {}.{}.{}.{}:{} ({} bytes)",
                         dst_port,
-                        frame[26], frame[27], frame[28], frame[29],
+                        frame[26],
+                        frame[27],
+                        frame[28],
+                        frame[29],
                         src_port,
                         payload.len()
                     );
@@ -1206,7 +1278,10 @@ impl NetStack {
             crate::kinfo!(
                 "net: UDP packet to port {} from {}.{}.{}.{}:{} (no matching socket)",
                 dst_port,
-                frame[26], frame[27], frame[28], frame[29],
+                frame[26],
+                frame[27],
+                frame[28],
+                frame[29],
                 src_port
             );
         }
@@ -1228,7 +1303,7 @@ impl NetStack {
 
         let tcp_offset = 14 + ihl;
         let tcp_data = &frame[tcp_offset..14 + total_len];
-        
+
         // Extract source IP and MAC, and parse TCP header for debugging
         let src_ip = Ipv4Address::from(&frame[26..30]);
         let src_mac = MacAddress([frame[6], frame[7], frame[8], frame[9], frame[10], frame[11]]);
@@ -1238,7 +1313,11 @@ impl NetStack {
 
         ktrace!(
             "[handle_tcp] Received TCP packet: {}:{} -> port {}, flags={:02x}, len={}",
-            src_ip, src_port, dst_port, flags, tcp_data.len()
+            src_ip,
+            src_port,
+            dst_port,
+            flags,
+            tcp_data.len()
         );
 
         // Find the best matching socket
@@ -1247,21 +1326,21 @@ impl NetStack {
 
         for (idx, socket) in self.tcp_sockets.iter().enumerate() {
             if !socket.in_use {
-                ktrace!(
-                    "[handle_tcp] Socket {} not in use, skipping", idx
-                );
+                ktrace!("[handle_tcp] Socket {} not in use, skipping", idx);
                 continue;
             }
-            
+
             ktrace!(
                 "[handle_tcp] Socket {}: in_use=true, device_idx={:?}, local_port={}, remote_ip={}, remote_port={}, state={:?}",
                 idx, socket.device_idx, socket.local_port, socket.remote_ip, socket.remote_port, socket.state
             );
-            
+
             if socket.device_idx != Some(device_index) {
                 ktrace!(
                     "[handle_tcp] Socket {} device mismatch: expected {:?}, got {}",
-                    idx, socket.device_idx, device_index
+                    idx,
+                    socket.device_idx,
+                    device_index
                 );
                 continue;
             }
@@ -1287,13 +1366,16 @@ impl NetStack {
         if let Some(idx) = best_match_idx {
             ktrace!(
                 "[handle_tcp] Found matching socket {}: score={}",
-                idx, best_match_score
+                idx,
+                best_match_score
             );
             self.tcp_sockets[idx].process_segment(src_ip, src_mac, tcp_data, tx)?;
         } else {
             ktrace!(
                 "[handle_tcp] No matching socket found for {}:{} -> port {}",
-                src_ip, src_port, dst_port
+                src_ip,
+                src_port,
+                dst_port
             );
             // TODO: Send RST
         }
@@ -1312,96 +1394,144 @@ impl NetStack {
     }
 
     /// Bind a netlink socket
-    pub fn netlink_bind(&mut self, socket_idx: usize, pid: u32, groups: u32) -> Result<(), NetError> {
+    pub fn netlink_bind(
+        &mut self,
+        socket_idx: usize,
+        pid: u32,
+        groups: u32,
+    ) -> Result<(), NetError> {
         self.netlink.bind(socket_idx, pid, groups)
     }
 
     /// Send a netlink message (from user to kernel)
     /// This processes the request and queues the response
     pub fn netlink_send(&mut self, socket_idx: usize, data: &[u8]) -> Result<(), NetError> {
-        crate::serial::_print(format_args!("[netlink_send] socket_idx={}, data_len={}\n", socket_idx, data.len()));
+        crate::serial::_print(format_args!(
+            "[netlink_send] socket_idx={}, data_len={}\n",
+            socket_idx,
+            data.len()
+        ));
         let result = self.netlink_handle_request(socket_idx, data);
         crate::serial::_print(format_args!("[netlink_send] result={:?}\n", result));
         result
     }
 
     /// Receive a netlink message (from kernel to user)
-    pub fn netlink_receive(&mut self, socket_idx: usize, buffer: &mut [u8]) -> Result<usize, NetError> {
+    pub fn netlink_receive(
+        &mut self,
+        socket_idx: usize,
+        buffer: &mut [u8],
+    ) -> Result<usize, NetError> {
         self.netlink.recv_message(socket_idx, buffer)
     }
 
     /// Handle netlink request from userspace
-    pub fn netlink_handle_request(&mut self, socket_idx: usize, data: &[u8]) -> Result<(), NetError> {
+    pub fn netlink_handle_request(
+        &mut self,
+        socket_idx: usize,
+        data: &[u8],
+    ) -> Result<(), NetError> {
         use super::netlink::{
-            NlMsgHdr, IfAddrMsg, RtMsg, RtAttr,
-            RTM_GETLINK, RTM_GETADDR, RTM_NEWADDR, RTM_NEWROUTE,
-            IFA_ADDRESS, RTA_GATEWAY, RTA_OIF
+            IfAddrMsg, NlMsgHdr, RtAttr, RtMsg, IFA_ADDRESS, RTA_GATEWAY, RTA_OIF, RTM_GETADDR,
+            RTM_GETLINK, RTM_NEWADDR, RTM_NEWROUTE,
         };
 
-        crate::serial::_print(format_args!("[netlink_handle_request] socket_idx={}, data_len={}\n", socket_idx, data.len()));
+        crate::serial::_print(format_args!(
+            "[netlink_handle_request] socket_idx={}, data_len={}\n",
+            socket_idx,
+            data.len()
+        ));
 
         if data.len() < core::mem::size_of::<NlMsgHdr>() {
-            crate::serial::_print(format_args!("[netlink_handle_request] Data too short for NlMsgHdr\n"));
+            crate::serial::_print(format_args!(
+                "[netlink_handle_request] Data too short for NlMsgHdr\n"
+            ));
             return Err(NetError::InvalidPacket);
         }
 
         let hdr = unsafe { &*(data.as_ptr() as *const NlMsgHdr) };
         crate::kinfo!("[netlink_handle_request] Message type: {}", hdr.nlmsg_type);
-        
-        crate::serial::_print(format_args!("[netlink_handle_request] nlmsg_type={}\n", hdr.nlmsg_type));
-        
+
+        crate::serial::_print(format_args!(
+            "[netlink_handle_request] nlmsg_type={}\n",
+            hdr.nlmsg_type
+        ));
+
         match hdr.nlmsg_type {
             RTM_GETLINK => {
-                crate::serial::_print(format_args!("[netlink_handle_request] RTM_GETLINK received\n"));
+                crate::serial::_print(format_args!(
+                    "[netlink_handle_request] RTM_GETLINK received\n"
+                ));
                 // Send info for all devices
                 for (i, dev) in self.devices.iter().enumerate() {
-                    if !dev.present { continue; }
-                    
+                    if !dev.present {
+                        continue;
+                    }
+
                     crate::kinfo!("[netlink_handle_request] Sending ifinfo for device {}", i);
                     let info = super::netlink::DeviceInfo {
                         mac: dev.mac,
                         ip: dev.ip,
                         present: dev.present,
                     };
-                    self.netlink.send_ifinfo(socket_idx, hdr.nlmsg_seq, i, &info)?;
+                    self.netlink
+                        .send_ifinfo(socket_idx, hdr.nlmsg_seq, i, &info)?;
                 }
                 crate::kinfo!("[netlink_handle_request] Sending DONE message");
                 self.netlink.send_done(socket_idx, hdr.nlmsg_seq)?;
             }
             RTM_GETADDR => {
-                crate::serial::_print(format_args!("[netlink_handle_request] RTM_GETADDR received\n"));
+                crate::serial::_print(format_args!(
+                    "[netlink_handle_request] RTM_GETADDR received\n"
+                ));
                 let mut addr_count = 0;
                 // Send address info only for devices with configured IP
                 for (i, dev) in self.devices.iter().enumerate() {
-                    if !dev.present { continue; }
-                    
-                    // Skip devices without IP addresses (0.0.0.0)
-                    if dev.ip == [0, 0, 0, 0] {
-                        crate::serial::_print(format_args!("[netlink_handle_request] Device {} has no IP (0.0.0.0), skipping\n", i));
+                    if !dev.present {
                         continue;
                     }
-                    
-                    crate::serial::_print(format_args!("[netlink_handle_request] Sending addr for dev {}: IP={}.{}.{}.{}\n", 
-                        i, dev.ip[0], dev.ip[1], dev.ip[2], dev.ip[3]));
-                    
+
+                    // Skip devices without IP addresses (0.0.0.0)
+                    if dev.ip == [0, 0, 0, 0] {
+                        crate::serial::_print(format_args!(
+                            "[netlink_handle_request] Device {} has no IP (0.0.0.0), skipping\n",
+                            i
+                        ));
+                        continue;
+                    }
+
+                    crate::serial::_print(format_args!(
+                        "[netlink_handle_request] Sending addr for dev {}: IP={}.{}.{}.{}\n",
+                        i, dev.ip[0], dev.ip[1], dev.ip[2], dev.ip[3]
+                    ));
+
                     let info = super::netlink::DeviceInfo {
                         mac: dev.mac,
                         ip: dev.ip,
                         present: dev.present,
                     };
-                    self.netlink.send_ifaddr(socket_idx, hdr.nlmsg_seq, i, &info)?;
+                    self.netlink
+                        .send_ifaddr(socket_idx, hdr.nlmsg_seq, i, &info)?;
                     addr_count += 1;
                 }
-                crate::serial::_print(format_args!("[netlink_handle_request] Sent {} addresses, sending DONE\n", addr_count));
+                crate::serial::_print(format_args!(
+                    "[netlink_handle_request] Sent {} addresses, sending DONE\n",
+                    addr_count
+                ));
                 self.netlink.send_done(socket_idx, hdr.nlmsg_seq)?;
             }
             RTM_NEWADDR => {
-                crate::serial::_print(format_args!("[netlink_handle_request] RTM_NEWADDR received\n"));
+                crate::serial::_print(format_args!(
+                    "[netlink_handle_request] RTM_NEWADDR received\n"
+                ));
                 // Parse IfAddrMsg
-                if data.len() < core::mem::size_of::<NlMsgHdr>() + core::mem::size_of::<IfAddrMsg>() {
+                if data.len() < core::mem::size_of::<NlMsgHdr>() + core::mem::size_of::<IfAddrMsg>()
+                {
                     return Err(NetError::InvalidPacket);
                 }
-                let ifaddr = unsafe { &*(data.as_ptr().add(core::mem::size_of::<NlMsgHdr>()) as *const IfAddrMsg) };
+                let ifaddr = unsafe {
+                    &*(data.as_ptr().add(core::mem::size_of::<NlMsgHdr>()) as *const IfAddrMsg)
+                };
                 let dev_idx = ifaddr.ifa_index as usize;
                 if dev_idx == 0 || dev_idx > self.devices.len() {
                     return Err(NetError::InvalidDevice);
@@ -1418,32 +1548,43 @@ impl NetStack {
                     }
 
                     if attr.rta_type == IFA_ADDRESS {
-                        if attr_len >= 4 + 4 { // Header + IPv4
+                        if attr_len >= 4 + 4 {
+                            // Header + IPv4
                             let ip_ptr = unsafe { data.as_ptr().add(pos + 4) };
                             let mut ip = [0u8; 4];
                             unsafe { core::ptr::copy_nonoverlapping(ip_ptr, ip.as_mut_ptr(), 4) };
-                            
+
                             // Update IP
                             if self.devices[real_dev_idx].present {
                                 self.devices[real_dev_idx].ip = ip;
-                                self.tcp.register_local(real_dev_idx, self.devices[real_dev_idx].mac, ip);
-                                crate::serial::_print(format_args!("Netlink: Set IP for eth{} to {}.{}.{}.{}\n", 
-                                    real_dev_idx, ip[0], ip[1], ip[2], ip[3]));
+                                self.tcp.register_local(
+                                    real_dev_idx,
+                                    self.devices[real_dev_idx].mac,
+                                    ip,
+                                );
+                                crate::serial::_print(format_args!(
+                                    "Netlink: Set IP for eth{} to {}.{}.{}.{}\n",
+                                    real_dev_idx, ip[0], ip[1], ip[2], ip[3]
+                                ));
                             }
                         }
                     }
-                    
+
                     pos += (attr_len + 3) & !3; // Align to 4 bytes
                 }
             }
             RTM_NEWROUTE => {
-                crate::serial::_print(format_args!("[netlink_handle_request] RTM_NEWROUTE received\n"));
+                crate::serial::_print(format_args!(
+                    "[netlink_handle_request] RTM_NEWROUTE received\n"
+                ));
                 // Parse RtMsg
                 if data.len() < core::mem::size_of::<NlMsgHdr>() + core::mem::size_of::<RtMsg>() {
                     return Err(NetError::InvalidPacket);
                 }
-                let rtmsg = unsafe { &*(data.as_ptr().add(core::mem::size_of::<NlMsgHdr>()) as *const RtMsg) };
-                
+                let rtmsg = unsafe {
+                    &*(data.as_ptr().add(core::mem::size_of::<NlMsgHdr>()) as *const RtMsg)
+                };
+
                 // We only handle default routes (rtm_dst_len == 0) for now
                 if rtmsg.rtm_dst_len != 0 {
                     crate::kinfo!("[netlink_handle_request] RTM_NEWROUTE: Non-default route ignored (dst_len={})", rtmsg.rtm_dst_len);
@@ -1453,7 +1594,7 @@ impl NetStack {
                 // Parse attributes to find gateway and output interface
                 let mut gateway_ip: Option<[u8; 4]> = None;
                 let mut oif_index: Option<u32> = None;
-                
+
                 let mut pos = core::mem::size_of::<NlMsgHdr>() + core::mem::size_of::<RtMsg>();
                 while pos + core::mem::size_of::<RtAttr>() <= hdr.nlmsg_len as usize {
                     let attr = unsafe { &*(data.as_ptr().add(pos) as *const RtAttr) };
@@ -1463,23 +1604,30 @@ impl NetStack {
                     }
 
                     if attr.rta_type == RTA_GATEWAY {
-                        if attr_len >= 4 + 4 { // Header + IPv4
+                        if attr_len >= 4 + 4 {
+                            // Header + IPv4
                             let ip_ptr = unsafe { data.as_ptr().add(pos + 4) };
                             let mut ip = [0u8; 4];
                             unsafe { core::ptr::copy_nonoverlapping(ip_ptr, ip.as_mut_ptr(), 4) };
                             gateway_ip = Some(ip);
-                            crate::serial::_print(format_args!("[netlink_handle_request] RTM_NEWROUTE: gateway={}.{}.{}.{}\n", 
-                                ip[0], ip[1], ip[2], ip[3]));
+                            crate::serial::_print(format_args!(
+                                "[netlink_handle_request] RTM_NEWROUTE: gateway={}.{}.{}.{}\n",
+                                ip[0], ip[1], ip[2], ip[3]
+                            ));
                         }
                     } else if attr.rta_type == RTA_OIF {
-                        if attr_len >= 4 + 4 { // Header + u32
+                        if attr_len >= 4 + 4 {
+                            // Header + u32
                             let idx_ptr = unsafe { data.as_ptr().add(pos + 4) };
                             let idx = unsafe { *(idx_ptr as *const u32) };
                             oif_index = Some(idx);
-                            crate::serial::_print(format_args!("[netlink_handle_request] RTM_NEWROUTE: oif={}\n", idx));
+                            crate::serial::_print(format_args!(
+                                "[netlink_handle_request] RTM_NEWROUTE: oif={}\n",
+                                idx
+                            ));
                         }
                     }
-                    
+
                     pos += (attr_len + 3) & !3; // Align to 4 bytes
                 }
 
@@ -1493,18 +1641,23 @@ impl NetStack {
                                 self.devices[real_dev_idx].gateway = gw;
                                 crate::kinfo!("[netlink_handle_request] RTM_NEWROUTE: Set default gateway for eth{} to {}.{}.{}.{}", 
                                     real_dev_idx, gw[0], gw[1], gw[2], gw[3]);
-                                crate::serial::_print(format_args!("Netlink: Set default gateway for eth{} to {}.{}.{}.{}\n", 
-                                    real_dev_idx, gw[0], gw[1], gw[2], gw[3]));
+                                crate::serial::_print(format_args!(
+                                    "Netlink: Set default gateway for eth{} to {}.{}.{}.{}\n",
+                                    real_dev_idx, gw[0], gw[1], gw[2], gw[3]
+                                ));
                             }
                         }
                     }
                 }
             }
             _ => {
-                crate::kinfo!("[netlink_handle_request] Unknown message type: {}", hdr.nlmsg_type);
+                crate::kinfo!(
+                    "[netlink_handle_request] Unknown message type: {}",
+                    hdr.nlmsg_type
+                );
             }
         }
-        
+
         Ok(())
     }
 
@@ -1811,5 +1964,3 @@ impl TcpEndpoint {
         Ok(())
     }
 }
-
-

@@ -6,7 +6,6 @@
 /// - Checksum calculation and verification
 /// - UDP socket options (TTL, ToS, broadcast)
 /// - Fragmentation handling
-
 use core::mem;
 
 use super::ipv4::{Ipv4Address, Ipv4Header};
@@ -60,10 +59,10 @@ impl UdpSocketOptions {
 /// UDP header (8 bytes)
 #[repr(C, packed)]
 pub struct UdpHeader {
-    pub src_port: u16,      // Source port (network byte order)
-    pub dst_port: u16,      // Destination port (network byte order)
-    pub length: u16,        // Length of UDP header + data (network byte order)
-    pub checksum: u16,      // Checksum (network byte order, optional for IPv4)
+    pub src_port: u16, // Source port (network byte order)
+    pub dst_port: u16, // Destination port (network byte order)
+    pub length: u16,   // Length of UDP header + data (network byte order)
+    pub checksum: u16, // Checksum (network byte order, optional for IPv4)
 }
 
 impl UdpHeader {
@@ -201,8 +200,8 @@ impl UdpHeader {
             let word = ((dst_ip.0[i] as u16) << 8) | (dst_ip.0[i + 1] as u16);
             sum += word as u32;
         }
-        sum += 17u32;  // Protocol: UDP
-        
+        sum += 17u32; // Protocol: UDP
+
         // UDP length from self.length (network byte order)
         let udp_length_be = self.length;
         sum += u16::from_be(udp_length_be) as u32;
@@ -216,13 +215,13 @@ impl UdpHeader {
                 core::mem::size_of::<UdpHeader>(),
             )
         };
-        
+
         // Parse header fields as big-endian
         let src_port_be = u16::from_be_bytes([header_bytes[0], header_bytes[1]]);
         let dst_port_be = u16::from_be_bytes([header_bytes[2], header_bytes[3]]);
         let length_be = u16::from_be_bytes([header_bytes[4], header_bytes[5]]);
         let checksum_be = u16::from_be_bytes([header_bytes[6], header_bytes[7]]);
-        
+
         sum += src_port_be as u32;
         sum += dst_port_be as u32;
         sum += length_be as u32;
@@ -241,7 +240,7 @@ impl UdpHeader {
         while sum > 0xFFFF {
             sum = (sum & 0xFFFF) + (sum >> 16);
         }
-        
+
         sum == 0xFFFF
     }
 }
@@ -294,7 +293,8 @@ impl<'a> UdpDatagram<'a> {
 
     /// Check if datagram has valid checksum (if present)
     pub fn has_valid_checksum(&self, src_ip: &Ipv4Address, dst_ip: &Ipv4Address) -> bool {
-        self.header().verify_checksum(src_ip, dst_ip, self.payload())
+        self.header()
+            .verify_checksum(src_ip, dst_ip, self.payload())
     }
 }
 
@@ -306,7 +306,12 @@ pub struct UdpDatagramMut<'a> {
 
 impl<'a> UdpDatagramMut<'a> {
     /// Create a new UDP datagram in the buffer
-    pub fn new(buffer: &'a mut [u8], src_port: Port, dst_port: Port, data_len: usize) -> Option<Self> {
+    pub fn new(
+        buffer: &'a mut [u8],
+        src_port: Port,
+        dst_port: Port,
+        data_len: usize,
+    ) -> Option<Self> {
         let total_len = UdpHeader::SIZE + data_len;
         if buffer.len() < total_len {
             return None;
@@ -422,7 +427,9 @@ mod tests {
 
         // Parse and verify
         let parsed = UdpDatagram::parse(finalized).unwrap();
-        assert!(parsed.header().verify_checksum(&src_ip, &dst_ip, parsed.payload()));
+        assert!(parsed
+            .header()
+            .verify_checksum(&src_ip, &dst_ip, parsed.payload()));
     }
 
     #[test]
@@ -452,7 +459,7 @@ mod tests {
         let mut dg = UdpDatagramMut::new(&mut buffer, 1000, 2000, 10).unwrap();
         dg.set_src_port(3000);
         dg.set_dst_port(4000);
-        
+
         assert_eq!(dg.header().src_port(), 3000);
         assert_eq!(dg.header().dst_port(), 4000);
     }

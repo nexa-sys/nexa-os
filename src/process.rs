@@ -1,9 +1,9 @@
 /// Process management for user-space execution
 use crate::elf::{ElfLoader, LoadResult};
 use crate::{kdebug, ktrace};
+use alloc::alloc::{alloc, dealloc, Layout};
 use core::ptr;
 use core::sync::atomic::{AtomicU64, Ordering};
-use alloc::alloc::{alloc, dealloc, Layout};
 
 /// Process ID type
 pub type Pid = u64;
@@ -224,9 +224,7 @@ impl Process {
             ptr::write_bytes(phys_base as *mut u8, 0, USER_REGION_SIZE as usize);
         }
 
-        ktrace!(
-            "[from_elf_with_args_at_base] Memory cleared successfully"
-        );
+        ktrace!("[from_elf_with_args_at_base] Memory cleared successfully");
 
         let loader = ElfLoader::new(elf_data)?;
 
@@ -517,7 +515,8 @@ impl Process {
                     user_rflags: 0x202,
                     exit_code: 0,
                     kernel_stack: {
-                        let layout = Layout::from_size_align(KERNEL_STACK_SIZE, KERNEL_STACK_ALIGN).unwrap();
+                        let layout =
+                            Layout::from_size_align(KERNEL_STACK_SIZE, KERNEL_STACK_ALIGN).unwrap();
                         let ptr = unsafe { alloc(layout) } as u64;
                         if ptr == 0 {
                             return Err("Failed to allocate kernel stack");
@@ -587,7 +586,8 @@ impl Process {
             user_rsp: stack_ptr,
             user_rflags: 0x202,
             kernel_stack: {
-                let layout = Layout::from_size_align(KERNEL_STACK_SIZE, KERNEL_STACK_ALIGN).unwrap();
+                let layout =
+                    Layout::from_size_align(KERNEL_STACK_SIZE, KERNEL_STACK_ALIGN).unwrap();
                 let ptr = unsafe { alloc(layout) } as u64;
                 if ptr == 0 {
                     return Err("Failed to allocate kernel stack");
@@ -865,7 +865,9 @@ pub fn jump_to_usermode_with_cr3(entry: u64, stack: u64, cr3: u64) -> ! {
     // Use kdebug! macro for direct serial output
     kdebug!(
         "[jump_to_usermode_with_cr3] ENTRY: entry={:#x}, stack={:#x}, cr3={:#x}",
-        entry, stack, cr3
+        entry,
+        stack,
+        cr3
     );
 
     kdebug!(
@@ -910,9 +912,7 @@ pub fn jump_to_usermode_with_cr3(entry: u64, stack: u64, cr3: u64) -> ! {
         Msr::new(0xc0000101).write(gs_base);
     }
 
-    kdebug!(
-        "[jump_to_usermode_with_cr3] About to switch CR3 and execute sysretq"
-    );
+    kdebug!("[jump_to_usermode_with_cr3] About to switch CR3 and execute sysretq");
 
     unsafe {
         kdebug!("BEFORE_SYSRET_WITH_CR3");
@@ -949,7 +949,8 @@ pub fn jump_to_usermode(entry: u64, stack: u64) -> ! {
     // Use kdebug! macro for direct serial output
     kdebug!(
         "[jump_to_usermode] ENTRY: entry={:#x}, stack={:#x}",
-        entry, stack
+        entry,
+        stack
     );
 
     kdebug!(
@@ -993,9 +994,7 @@ pub fn jump_to_usermode(entry: u64, stack: u64) -> ! {
         Msr::new(0xc0000101).write(gs_base);
     }
 
-    kdebug!(
-        "[jump_to_usermode] About to execute sysretq"
-    );
+    kdebug!("[jump_to_usermode] About to execute sysretq");
 
     unsafe {
         kdebug!("BEFORE_SYSRET");

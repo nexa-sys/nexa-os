@@ -544,7 +544,10 @@ struct LogLineBuffer {
 impl LogLineBuffer {
     fn new() -> Option<Self> {
         // Try to acquire a static buffer from the pool
-        if LOG_BUFFER_IN_USE.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+        if LOG_BUFFER_IN_USE
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+        {
             unsafe {
                 Some(Self {
                     buf: &mut LOG_BUFFER_POOL[0],

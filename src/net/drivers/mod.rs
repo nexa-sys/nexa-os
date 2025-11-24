@@ -1,9 +1,6 @@
 mod e1000;
 
-use crate::{
-    bootinfo,
-    uefi_compat::NetworkDescriptor,
-};
+use crate::{bootinfo, uefi_compat::NetworkDescriptor};
 
 pub use e1000::E1000;
 

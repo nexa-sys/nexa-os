@@ -2,7 +2,6 @@
 ///
 /// This module provides structures and utilities for parsing and constructing
 /// Ethernet II frames.
-
 use core::mem;
 
 /// Ethernet MAC address (6 bytes)

@@ -885,7 +885,7 @@ extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFr
 
     // Timer tick for scheduler (1ms granularity)
     const TIMER_TICK_MS: u64 = 1;
-    
+
     // Check if current process should be preempted
     if crate::scheduler::tick(TIMER_TICK_MS) {
         // Time slice expired or higher priority process ready
@@ -893,7 +893,7 @@ extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFr
         // Note: This is safe because we're already in an interrupt context
         // and the scheduler will handle context switching properly
         crate::kdebug!("Timer: Triggering preemptive reschedule");
-        
+
         // Implement full preemptive scheduling via timer interrupt
         crate::scheduler::do_schedule_from_interrupt();
     }

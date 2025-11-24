@@ -1,3 +1,5 @@
+#[cfg(test)]
+use super::drivers::NetError;
 /// UDP helper utilities and higher-level abstractions
 ///
 /// This module provides:
@@ -8,8 +10,6 @@
 
 #[cfg(test)]
 use super::ipv4::Ipv4Address;
-#[cfg(test)]
-use super::drivers::NetError;
 
 // Note: UdpMessage is not used in production code, only in tests
 // If needed in production, use references to avoid large stack allocations
@@ -91,12 +91,7 @@ pub struct UdpConnectionContext {
 
 impl UdpConnectionContext {
     /// Create new connection context
-    pub fn new(
-        local_ip: [u8; 4],
-        local_port: u16,
-        remote_ip: [u8; 4],
-        remote_port: u16,
-    ) -> Self {
+    pub fn new(local_ip: [u8; 4], local_port: u16, remote_ip: [u8; 4], remote_port: u16) -> Self {
         Self {
             local_ip,
             local_port,
@@ -321,7 +316,7 @@ mod tests {
         let mut msg = UdpMessage::new();
         msg.set_src([192, 168, 1, 1], 5000);
         msg.set_dst([192, 168, 1, 254], 5001);
-        
+
         assert_eq!(msg.src_ip, [192, 168, 1, 1]);
         assert_eq!(msg.src_port, 5000);
         assert_eq!(msg.dst_ip, [192, 168, 1, 254]);
@@ -330,13 +325,10 @@ mod tests {
 
     #[test]
     fn test_udp_connection_context() {
-        let ctx = UdpConnectionContext::new(
-            [10, 0, 2, 15],
-            5000,
-            [8, 8, 8, 8],
-            53,
-        ).with_ttl(128).with_tos(0x10);
-        
+        let ctx = UdpConnectionContext::new([10, 0, 2, 15], 5000, [8, 8, 8, 8], 53)
+            .with_ttl(128)
+            .with_tos(0x10);
+
         assert!(ctx.validate());
         assert_eq!(ctx.ttl, 128);
     }
@@ -347,7 +339,7 @@ mod tests {
         stats.record_sent(100);
         stats.record_sent(200);
         stats.record_received(150);
-        
+
         assert_eq!(stats.packets_sent, 2);
         assert_eq!(stats.bytes_sent, 300);
         assert_eq!(stats.packets_received, 1);

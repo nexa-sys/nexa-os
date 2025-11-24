@@ -22,7 +22,6 @@
 /// - Lock-free fast paths where possible
 /// - Comprehensive debugging and leak detection
 /// - Production-ready reliability
-
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use spin::Mutex;
 
@@ -42,9 +41,7 @@ const SLAB_CLASSES: usize = 8;
 
 /// Slab sizes: 16, 32, 64, 128, 256, 512, 1024, 2048 bytes
 /// Larger allocations are handled directly by the buddy allocator
-const SLAB_SIZES: [usize; SLAB_CLASSES] = [
-    16, 32, 64, 128, 256, 512, 1024, 2048
-];
+const SLAB_SIZES: [usize; SLAB_CLASSES] = [16, 32, 64, 128, 256, 512, 1024, 2048];
 
 /// Magic number for heap block validation
 const HEAP_MAGIC: u32 = 0xDEADBEEF;
@@ -184,7 +181,8 @@ impl BuddyAllocator {
                 unsafe {
                     let ptr = addr as *const u64;
                     let next = core::ptr::read(ptr);
-                    self.free_lists[current_order] = if next == u64::MAX { None } else { Some(next) };
+                    self.free_lists[current_order] =
+                        if next == u64::MAX { None } else { Some(next) };
                 }
 
                 // Split if necessary
@@ -300,7 +298,7 @@ struct Slab {
     objects_per_slab: usize,
     /// Head of the list of pages with free objects
     partial_head: Option<u64>,
-    
+
     // Stats
     allocated_count: usize,
 }
@@ -332,7 +330,7 @@ impl Slab {
         }
 
         let page_addr = self.partial_head?;
-        
+
         unsafe {
             let header_ptr = page_addr as *mut SlabPageHeader;
             let header = &mut *header_ptr;
@@ -340,13 +338,15 @@ impl Slab {
             // Pop from free list
             if header.free_list != SlabPageHeader::NONE16 {
                 let header_size = core::mem::size_of::<SlabPageHeader>();
-                let obj_addr = page_addr + header_size as u64 + (header.free_list as u64 * self.object_size as u64);
+                let obj_addr = page_addr
+                    + header_size as u64
+                    + (header.free_list as u64 * self.object_size as u64);
 
                 // Read next pointer from freed object
                 // Objects in free list store the index of the next free object
                 let next_idx_ptr = obj_addr as *const u16;
                 let next_idx = core::ptr::read(next_idx_ptr);
-                
+
                 header.free_list = next_idx;
                 header.free_count -= 1;
                 self.allocated_count += 1;
@@ -370,11 +370,11 @@ impl Slab {
     fn free(&mut self, addr: u64, buddy: &mut BuddyAllocator) {
         // Find page start
         let page_addr = addr & !(PAGE_SIZE as u64 - 1);
-        
+
         unsafe {
             let header_ptr = page_addr as *mut SlabPageHeader;
             let header = &mut *header_ptr;
-            
+
             let header_size = core::mem::size_of::<SlabPageHeader>();
             // Calculate object index
             let offset = addr - (page_addr + header_size as u64);
@@ -387,7 +387,7 @@ impl Slab {
             let next = header.free_list;
             let obj_ptr = addr as *mut u16;
             core::ptr::write(obj_ptr, next);
-            
+
             header.free_list = obj_idx;
             header.free_count += 1;
             self.allocated_count -= 1;
@@ -396,7 +396,7 @@ impl Slab {
             if header.free_count == 1 {
                 self.add_to_partial_list(page_addr);
             }
-            
+
             // If page is completely empty, free it to buddy
             if header.free_count as usize == self.objects_per_slab {
                 self.remove_from_partial_list(page_addr);
@@ -412,13 +412,16 @@ impl Slab {
         unsafe {
             let header_ptr = page_addr as *mut SlabPageHeader;
             // Initialize header
-            core::ptr::write(header_ptr, SlabPageHeader {
-                next: SlabPageHeader::NONE,
-                prev: SlabPageHeader::NONE,
-                free_list: 0, // Start with object 0
-                free_count: self.objects_per_slab as u16,
-                _padding: 0,
-            });
+            core::ptr::write(
+                header_ptr,
+                SlabPageHeader {
+                    next: SlabPageHeader::NONE,
+                    prev: SlabPageHeader::NONE,
+                    free_list: 0, // Start with object 0
+                    free_count: self.objects_per_slab as u16,
+                    _padding: 0,
+                },
+            );
 
             let header_size = core::mem::size_of::<SlabPageHeader>();
             // Initialize object free list
@@ -432,7 +435,7 @@ impl Slab {
                 };
                 core::ptr::write(obj_addr as *mut u16, next_idx);
             }
-            
+
             self.add_to_partial_list(page_addr);
         }
 
@@ -485,7 +488,7 @@ struct SlabPageHeader {
     prev: u64,      // u64::MAX for None
     free_list: u16, // u16::MAX for None
     free_count: u16,
-    _padding: u32,  // Ensure 8-byte alignment and size >= 24
+    _padding: u32, // Ensure 8-byte alignment and size >= 24
 }
 
 impl SlabPageHeader {
@@ -623,11 +626,7 @@ impl KernelHeap {
     /// Initialize the kernel heap
     pub fn init(&mut self, base: u64, size: u64) {
         self.buddy.init(base, size);
-        crate::kinfo!(
-            "Kernel heap initialized at {:#x}, size={:#x}",
-            base,
-            size
-        );
+        crate::kinfo!("Kernel heap initialized at {:#x}, size={:#x}", base, size);
     }
 
     /// Allocate memory from kernel heap

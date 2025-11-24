@@ -1,15 +1,14 @@
+use super::drivers::NetError;
+use super::ethernet::MacAddress;
+use super::ipv4::Ipv4Address;
+use super::stack::{TxBatch, MAX_FRAME_SIZE};
+use crate::logger;
+use crate::process::Pid;
 /// TCP protocol implementation
 ///
 /// This module provides a complete TCP stack including connection management,
 /// reliable data transfer, flow control, and retransmission.
-
 use crate::{kdebug, kerror, ktrace};
-use crate::logger;
-use super::ethernet::MacAddress;
-use super::ipv4::Ipv4Address;
-use super::stack::{TxBatch, MAX_FRAME_SIZE};
-use super::drivers::NetError;
-use crate::process::Pid;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use core::cmp;
@@ -131,10 +130,16 @@ impl TcpOptions {
                 TCP_OPT_TIMESTAMP => {
                     if i + 9 < data.len() && data[i + 1] == 10 {
                         let tsval = u32::from_be_bytes([
-                            data[i + 2], data[i + 3], data[i + 4], data[i + 5]
+                            data[i + 2],
+                            data[i + 3],
+                            data[i + 4],
+                            data[i + 5],
                         ]);
                         let tsecr = u32::from_be_bytes([
-                            data[i + 6], data[i + 7], data[i + 8], data[i + 9]
+                            data[i + 6],
+                            data[i + 7],
+                            data[i + 8],
+                            data[i + 9],
                         ]);
                         opts.timestamp = Some((tsval, tsecr));
                         i += 10;
@@ -225,29 +230,29 @@ impl TcpOptions {
     /// Calculate the size needed for these options
     pub fn size(&self) -> usize {
         let mut size = 0;
-        
+
         // MSS: 4 bytes
-        if self.mss.is_some() { 
-            size += 4; 
+        if self.mss.is_some() {
+            size += 4;
         }
-        
+
         // SACK permitted: 2 bytes
-        if self.sack_permitted { 
-            size += 2; 
+        if self.sack_permitted {
+            size += 2;
         }
-        
+
         // Window scale: 3 bytes + 1 NOP = 4 bytes
-        if self.window_scale.is_some() { 
-            size += 4; 
+        if self.window_scale.is_some() {
+            size += 4;
         }
-        
+
         // Timestamp: align to 4 bytes + 10 bytes
         if self.timestamp.is_some() {
             // Pad to 4-byte boundary
             size = (size + 3) & !3;
             size += 10;
         }
-        
+
         // Final padding to 4-byte boundary
         (size + 3) & !3
     }
@@ -299,9 +304,9 @@ const MAX_RETRANSMIT: u8 = 12;
 
 // RTT estimation constants (RFC 6298)
 const ALPHA: i64 = 125; // 1/8 = 0.125 in fixed point (125/1000)
-const BETA: i64 = 250;  // 1/4 = 0.25 in fixed point (250/1000)
-const K: i64 = 4;       // RTT variance multiplier
-const G: i64 = 10;      // Clock granularity (10ms)
+const BETA: i64 = 250; // 1/4 = 0.25 in fixed point (250/1000)
+const K: i64 = 4; // RTT variance multiplier
+const G: i64 = 10; // Clock granularity (10ms)
 
 /// TCP socket structure
 pub struct TcpSocket {
@@ -313,16 +318,16 @@ pub struct TcpSocket {
     pub local_mac: MacAddress,
     pub remote_mac: MacAddress,
     pub device_idx: Option<usize>,
-    
+
     // Sequence numbers
-    snd_una: u32,  // Send unacknowledged
-    snd_nxt: u32,  // Send next
-    snd_wnd: u16,  // Send window
-    rcv_nxt: u32,  // Receive next
-    rcv_wnd: u16,  // Receive window
-    iss: u32,      // Initial send sequence number
-    irs: u32,      // Initial receive sequence number
-    
+    snd_una: u32, // Send unacknowledged
+    snd_nxt: u32, // Send next
+    snd_wnd: u16, // Send window
+    rcv_nxt: u32, // Receive next
+    rcv_wnd: u16, // Receive window
+    iss: u32,     // Initial send sequence number
+    irs: u32,     // Initial receive sequence number
+
     // MSS and options
     mss: u16,              // Maximum segment size (negotiated)
     peer_mss: u16,         // Peer's MSS
@@ -332,28 +337,28 @@ pub struct TcpSocket {
     use_timestamps: bool,  // Whether to use timestamps
     ts_recent: u32,        // Most recent timestamp from peer
     ts_last_ack_sent: u32, // Last ACK we sent (for timestamp echo)
-    
+
     // Congestion control
-    cwnd: u32,            // Congestion window (in bytes)
-    ssthresh: u32,        // Slow start threshold (in bytes)
-    dup_acks: u8,         // Count of duplicate ACKs
-    last_ack: u32,        // Last ACK number received
-    in_recovery: bool,    // Whether in fast recovery
-    recovery_point: u32,  // Sequence number to exit recovery
-    
+    cwnd: u32,           // Congestion window (in bytes)
+    ssthresh: u32,       // Slow start threshold (in bytes)
+    dup_acks: u8,        // Count of duplicate ACKs
+    last_ack: u32,       // Last ACK number received
+    in_recovery: bool,   // Whether in fast recovery
+    recovery_point: u32, // Sequence number to exit recovery
+
     // Buffers
     send_buffer: VecDeque<u8>,
     recv_buffer: VecDeque<u8>,
     retransmit_queue: Vec<TcpSegment>,
-    
+
     // Timers and RTT estimation
-    rto: u64,          // Retransmission timeout
-    srtt: i64,         // Smoothed RTT (microseconds)
-    rttvar: i64,       // RTT variance (microseconds)
-    last_activity: u64, // Last activity timestamp
+    rto: u64,             // Retransmission timeout
+    srtt: i64,            // Smoothed RTT (microseconds)
+    rttvar: i64,          // RTT variance (microseconds)
+    last_activity: u64,   // Last activity timestamp
     rtt_seq: Option<u32>, // Sequence number for RTT measurement
-    rtt_time: u64,     // Timestamp when RTT measurement started
-    
+    rtt_time: u64,        // Timestamp when RTT measurement started
+
     // Wait queue for blocking reads
     pub wait_queue: Vec<Pid>,
 
@@ -478,7 +483,7 @@ impl TcpSocket {
             // If connection is closed or in CloseWait (FIN received), return EOF
             if self.state == TcpState::Closed || self.state == TcpState::CloseWait {
                 ktrace!("[TCP recv] Connection closed or FIN received, returning 0 (EOF)");
-                return Ok(0);  // EOF
+                return Ok(0); // EOF
             }
             return Err(NetError::WouldBlock);
         }
@@ -488,7 +493,11 @@ impl TcpSocket {
             buffer[i] = self.recv_buffer.pop_front().unwrap();
         }
 
-        ktrace!("[TCP recv] Received {} bytes, remaining in buffer={}", to_recv, self.recv_buffer.len());
+        ktrace!(
+            "[TCP recv] Received {} bytes, remaining in buffer={}",
+            to_recv,
+            self.recv_buffer.len()
+        );
 
         // Update receive window
         self.rcv_wnd = (RECV_BUFFER_SIZE - self.recv_buffer.len()) as u16;
@@ -501,7 +510,11 @@ impl TcpSocket {
         // Avoid duplicates
         if !self.wait_queue.contains(&pid) {
             self.wait_queue.push(pid);
-            ktrace!("[TCP add_waiter] Added PID {} to wait queue, queue_len now={}", pid, self.wait_queue.len());
+            ktrace!(
+                "[TCP add_waiter] Added PID {} to wait queue, queue_len now={}",
+                pid,
+                self.wait_queue.len()
+            );
         }
     }
 
@@ -546,41 +559,72 @@ impl TcpSocket {
         let flags = tcp_data[13];
         let window = u16::from_be_bytes([tcp_data[14], tcp_data[15]]);
 
-        ktrace!("[TCP process_segment] ENTRY: state={:?}, flags={:02x}, {}:{} -> {}:{}, seq={}, ack={}", self.state, flags, src_ip, src_port, self.local_ip, dst_port, seq, ack);
+        ktrace!(
+            "[TCP process_segment] ENTRY: state={:?}, flags={:02x}, {}:{} -> {}:{}, seq={}, ack={}",
+            self.state,
+            flags,
+            src_ip,
+            src_port,
+            self.local_ip,
+            dst_port,
+            seq,
+            ack
+        );
 
         // Verify this segment is for us
         if dst_port != self.local_port {
-            ktrace!("[TCP process_segment] Port mismatch: dst_port={}, local_port={}", dst_port, self.local_port);
+            ktrace!(
+                "[TCP process_segment] Port mismatch: dst_port={}, local_port={}",
+                dst_port,
+                self.local_port
+            );
             return Ok(());
         }
 
         if self.state != TcpState::Listen && src_port != self.remote_port {
-            ktrace!("[TCP process_segment] Remote port mismatch: src_port={}, remote_port={}", src_port, self.remote_port);
+            ktrace!(
+                "[TCP process_segment] Remote port mismatch: src_port={}, remote_port={}",
+                src_port,
+                self.remote_port
+            );
             return Ok(());
         }
 
         if self.state != TcpState::Listen && src_ip != self.remote_ip {
-            ktrace!("[TCP process_segment] Remote IP mismatch: src_ip={}, remote_ip={}", src_ip, self.remote_ip);
+            ktrace!(
+                "[TCP process_segment] Remote IP mismatch: src_ip={}, remote_ip={}",
+                src_ip,
+                self.remote_ip
+            );
             return Ok(());
         }
 
         self.last_activity = self.current_time();
-        
-        ktrace!("[TCP process_segment] TCP data: total_len={}, data_offset={}, header_size={}", tcp_data.len(), data_offset, data_offset);
-        
+
+        ktrace!(
+            "[TCP process_segment] TCP data: total_len={}, data_offset={}, header_size={}",
+            tcp_data.len(),
+            data_offset,
+            data_offset
+        );
+
         // Parse TCP options if present
         let options = if data_offset > 20 && data_offset <= tcp_data.len() {
             TcpOptions::parse(&tcp_data[20..data_offset])
         } else {
             TcpOptions::new()
         };
-        
+
         // Extract payload
         let payload = if data_offset < tcp_data.len() {
             ktrace!("[TCP process_segment] Extracting payload: data_offset={}, tcp_data.len()={}, payload_len={}", data_offset, tcp_data.len(), tcp_data.len() - data_offset);
             &tcp_data[data_offset..]
         } else {
-            ktrace!("[TCP process_segment] No payload: data_offset={} >= tcp_data.len()={}", data_offset, tcp_data.len());
+            ktrace!(
+                "[TCP process_segment] No payload: data_offset={} >= tcp_data.len()={}",
+                data_offset,
+                tcp_data.len()
+            );
             &[]
         };
 
@@ -603,7 +647,7 @@ impl TcpSocket {
                     self.snd_una = self.iss;
                     self.snd_nxt = self.iss;
                     self.snd_wnd = window;
-                    
+
                     // Process SYN options
                     if let Some(peer_mss) = options.mss {
                         self.peer_mss = peer_mss;
@@ -618,7 +662,7 @@ impl TcpSocket {
                     if options.timestamp.is_some() {
                         self.use_timestamps = true;
                     }
-                    
+
                     self.state = TcpState::SynReceived;
                     kdebug!("[TCP process_segment] Transition Listen->SynReceived for {}:{} (iss={}, irs={})", self.remote_ip, self.remote_port, self.iss, self.irs);
                     self.send_segment(&[], TCP_SYN | TCP_ACK, tx)?;
@@ -626,12 +670,17 @@ impl TcpSocket {
             }
             TcpState::SynSent => {
                 ktrace!("[TCP process_segment] SynSent: flags={:02x}, seq={}, ack={}, snd_nxt={}, iss={}", flags, seq, ack, self.snd_nxt, self.iss);
-                
+
                 if flags & TCP_ACK != 0 {
                     // Check if ACK is valid (should acknowledge our SYN: iss + 1)
                     let expected_ack = self.iss.wrapping_add(1);
-                    ktrace!("[TCP process_segment] ACK received: ack={}, expected_ack={}, match={}", ack, expected_ack, ack == expected_ack);
-                    
+                    ktrace!(
+                        "[TCP process_segment] ACK received: ack={}, expected_ack={}, match={}",
+                        ack,
+                        expected_ack,
+                        ack == expected_ack
+                    );
+
                     if ack == expected_ack {
                         self.snd_una = ack;
                         if flags & TCP_SYN != 0 {
@@ -639,7 +688,7 @@ impl TcpSocket {
                             self.irs = seq;
                             self.rcv_nxt = seq.wrapping_add(1);
                             self.snd_wnd = window;
-                            
+
                             // Process SYN-ACK options
                             if let Some(peer_mss) = options.mss {
                                 self.peer_mss = peer_mss;
@@ -657,13 +706,21 @@ impl TcpSocket {
                                 self.ts_recent = tsval;
                                 self.use_timestamps = true;
                             }
-                            
+
                             self.state = TcpState::Established;
-                            kdebug!("[TCP process_segment] Transition SynSent->Established for {}:{}", self.remote_ip, self.remote_port);
+                            kdebug!(
+                                "[TCP process_segment] Transition SynSent->Established for {}:{}",
+                                self.remote_ip,
+                                self.remote_port
+                            );
                             self.send_segment(&[], TCP_ACK, tx)?;
                         }
                     } else {
-                        ktrace!("[TCP process_segment] Invalid ACK in SynSent, expected {}, got {}", expected_ack, ack);
+                        ktrace!(
+                            "[TCP process_segment] Invalid ACK in SynSent, expected {}, got {}",
+                            expected_ack,
+                            ack
+                        );
                     }
                 } else if flags & TCP_SYN != 0 {
                     // Simultaneous open
@@ -672,7 +729,7 @@ impl TcpSocket {
                     self.irs = seq;
                     self.rcv_nxt = seq.wrapping_add(1);
                     self.snd_wnd = window;
-                    
+
                     // Process SYN options for simultaneous open
                     if let Some(peer_mss) = options.mss {
                         self.peer_mss = peer_mss;
@@ -683,9 +740,13 @@ impl TcpSocket {
                     if let Some(scale) = options.window_scale {
                         self.peer_window_scale = scale;
                     }
-                    
+
                     self.state = TcpState::SynReceived;
-                    kdebug!("[TCP process_segment] Simultaneous open - SynReceived for {}:{}", self.remote_ip, self.remote_port);
+                    kdebug!(
+                        "[TCP process_segment] Simultaneous open - SynReceived for {}:{}",
+                        self.remote_ip,
+                        self.remote_port
+                    );
                     self.send_segment(&[], TCP_SYN | TCP_ACK, tx)?;
                 }
             }
@@ -698,9 +759,18 @@ impl TcpSocket {
                         // snd_nxt already advanced when we sent SYN|ACK, so do not increment again
                         self.snd_wnd = window;
                         self.state = TcpState::Established;
-                        kdebug!("[TCP process_segment] Transition SynReceived->Established for {}:{}", self.remote_ip, self.remote_port);
+                        kdebug!(
+                            "[TCP process_segment] Transition SynReceived->Established for {}:{}",
+                            self.remote_ip,
+                            self.remote_port
+                        );
                     } else {
-                        ktrace!("[TCP process_segment] SynReceived: Invalid ACK {}, expected {} or {}", ack, self.snd_nxt, self.iss.wrapping_add(1));
+                        ktrace!(
+                            "[TCP process_segment] SynReceived: Invalid ACK {}, expected {} or {}",
+                            ack,
+                            self.snd_nxt,
+                            self.iss.wrapping_add(1)
+                        );
                     }
                 }
             }
@@ -712,40 +782,52 @@ impl TcpSocket {
 
                 // Process payload
                 ktrace!("[TCP process_segment] Payload check: len={}, seq={}, rcv_nxt={}, match={}, recv_buffer_len={}", payload.len(), seq, self.rcv_nxt, seq == self.rcv_nxt, self.recv_buffer.len());
-                
+
                 if !payload.is_empty() && seq == self.rcv_nxt {
                     let space = RECV_BUFFER_SIZE - self.recv_buffer.len();
                     let to_recv = cmp::min(payload.len(), space);
-                    
-                    ktrace!("[TCP process_segment] Receiving {} bytes (space={}, payload_len={})", to_recv, space, payload.len());
-                    
+
+                    ktrace!(
+                        "[TCP process_segment] Receiving {} bytes (space={}, payload_len={})",
+                        to_recv,
+                        space,
+                        payload.len()
+                    );
+
                     for &byte in &payload[..to_recv] {
                         self.recv_buffer.push_back(byte);
                     }
-                    
+
                     self.rcv_nxt = self.rcv_nxt.wrapping_add(to_recv as u32);
                     self.rcv_wnd = (RECV_BUFFER_SIZE - self.recv_buffer.len()) as u16;
-                    
+
                     ktrace!("[TCP process_segment] Received data, new rcv_nxt={}, recv_buffer_len={}, wait_queue_len={}", self.rcv_nxt, self.recv_buffer.len(), self.wait_queue.len());
-                    
+
                     self.send_segment(&[], TCP_ACK, tx)?;
 
                     // Wake up waiting processes
                     if !self.wait_queue.is_empty() {
-                        ktrace!("[TCP process_segment] Waking {} waiting processes", self.wait_queue.len());
+                        ktrace!(
+                            "[TCP process_segment] Waking {} waiting processes",
+                            self.wait_queue.len()
+                        );
                         for pid in self.wait_queue.drain(..) {
                             crate::scheduler::wake_process(pid);
                         }
                     }
                 } else if !payload.is_empty() {
-                    ktrace!("[TCP process_segment] Payload IGNORED: seq={} != rcv_nxt={}", seq, self.rcv_nxt);
+                    ktrace!(
+                        "[TCP process_segment] Payload IGNORED: seq={} != rcv_nxt={}",
+                        seq,
+                        self.rcv_nxt
+                    );
                 }
 
                 // Handle FIN
                 if flags & TCP_FIN != 0 {
                     self.rcv_nxt = self.rcv_nxt.wrapping_add(1);
                     self.send_segment(&[], TCP_ACK, tx)?;
-                    
+
                     match self.state {
                         TcpState::Established => {
                             self.state = TcpState::CloseWait;
@@ -801,13 +883,15 @@ impl TcpSocket {
         // Handle state timeouts
         match self.state {
             TcpState::TimeWait => {
-                if now - self.last_activity > 30000 { // 30 seconds
+                if now - self.last_activity > 30000 {
+                    // 30 seconds
                     self.reset();
                 }
                 return Ok(());
             }
             TcpState::SynSent | TcpState::SynReceived => {
-                if self.last_activity != 0 && now - self.last_activity > 75000 { // 75 seconds
+                if self.last_activity != 0 && now - self.last_activity > 75000 {
+                    // 75 seconds
                     ktrace!("[TCP poll] TIMEOUT reset state={:?}", self.state);
                     self.reset();
                     return Ok(());
@@ -832,8 +916,9 @@ impl TcpSocket {
         }
 
         // Send pending data
-        if (self.state == TcpState::Established || self.state == TcpState::CloseWait) 
-            && !self.send_buffer.is_empty() {
+        if (self.state == TcpState::Established || self.state == TcpState::CloseWait)
+            && !self.send_buffer.is_empty()
+        {
             self.send_pending_data(tx)?;
         }
 
@@ -856,19 +941,27 @@ impl TcpSocket {
             // Calculate available window (min of congestion window and receiver window)
             let flight_size = self.snd_nxt.wrapping_sub(self.snd_una);
             let cwnd_available = self.cwnd.saturating_sub(flight_size);
-            let rwnd_available = (self.snd_una.wrapping_add(self.snd_wnd as u32))
-                .wrapping_sub(self.snd_nxt);
-            
+            let rwnd_available =
+                (self.snd_una.wrapping_add(self.snd_wnd as u32)).wrapping_sub(self.snd_nxt);
+
             let window_available = cmp::min(cwnd_available, rwnd_available as u32) as usize;
-            
+
             if window_available == 0 {
-                ktrace!("[TCP] Send blocked - cwnd={}, flight={}, rwnd={}", self.cwnd, flight_size, self.snd_wnd);
+                ktrace!(
+                    "[TCP] Send blocked - cwnd={}, flight={}, rwnd={}",
+                    self.cwnd,
+                    flight_size,
+                    self.snd_wnd
+                );
                 break;
             }
 
             // Use negotiated peer MSS for segmentation
             let effective_mss = cmp::min(self.peer_mss as usize, MSS);
-            let to_send = cmp::min(cmp::min(self.send_buffer.len(), effective_mss), window_available);
+            let to_send = cmp::min(
+                cmp::min(self.send_buffer.len(), effective_mss),
+                window_available,
+            );
             if to_send == 0 {
                 break;
             }
@@ -944,13 +1037,13 @@ impl TcpSocket {
 
         // IP header
         packet[14] = 0x45; // Version 4, IHL 5
-        packet[15] = 0;    // DSCP/ECN
+        packet[15] = 0; // DSCP/ECN
         let ip_total = (ip_header_len + tcp_header_len + payload.len()) as u16;
         packet[16..18].copy_from_slice(&ip_total.to_be_bytes());
         packet[18..20].copy_from_slice(&0u16.to_be_bytes()); // ID
         packet[20..22].copy_from_slice(&0x4000u16.to_be_bytes()); // Flags + Fragment
-        packet[22] = 64;   // TTL
-        packet[23] = 6;    // Protocol (TCP)
+        packet[22] = 64; // TTL
+        packet[23] = 6; // Protocol (TCP)
         packet[24..26].copy_from_slice(&[0, 0]); // Checksum (will calculate)
         packet[26..30].copy_from_slice(self.local_ip.as_bytes());
         packet[30..34].copy_from_slice(self.remote_ip.as_bytes());
@@ -963,7 +1056,7 @@ impl TcpSocket {
         let tcp_offset = 34;
         packet[tcp_offset..tcp_offset + 2].copy_from_slice(&self.local_port.to_be_bytes());
         packet[tcp_offset + 2..tcp_offset + 4].copy_from_slice(&self.remote_port.to_be_bytes());
-        
+
         let seq = explicit_seq.unwrap_or_else(|| {
             if flags & TCP_SYN != 0 && self.state == TcpState::SynSent {
                 self.iss
@@ -973,7 +1066,7 @@ impl TcpSocket {
         });
         packet[tcp_offset + 4..tcp_offset + 8].copy_from_slice(&seq.to_be_bytes());
         packet[tcp_offset + 8..tcp_offset + 12].copy_from_slice(&self.rcv_nxt.to_be_bytes());
-        
+
         packet[tcp_offset + 12] = ((tcp_header_len / 4) as u8) << 4;
         packet[tcp_offset + 13] = flags;
         packet[tcp_offset + 14..tcp_offset + 16].copy_from_slice(&self.rcv_wnd.to_be_bytes());
@@ -1001,10 +1094,16 @@ impl TcpSocket {
         ktrace!("[TCP send_segment] Sending: flags={:02x}, seq={}, ack={}, len={}, queue_for_retransmit={}, {}:{} -> {}:{}", 
             flags, seq, self.rcv_nxt, total_len, queue_for_retransmit,
             self.local_ip, self.local_port, self.remote_ip, self.remote_port);
-        ktrace!("[TCP send_segment] remote_mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-            self.remote_mac.0[0], self.remote_mac.0[1], self.remote_mac.0[2],
-            self.remote_mac.0[3], self.remote_mac.0[4], self.remote_mac.0[5]);
-        
+        ktrace!(
+            "[TCP send_segment] remote_mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+            self.remote_mac.0[0],
+            self.remote_mac.0[1],
+            self.remote_mac.0[2],
+            self.remote_mac.0[3],
+            self.remote_mac.0[4],
+            self.remote_mac.0[5]
+        );
+
         // Dump TCP packet for debugging (first 128 bytes or entire packet)
         let dump_len = core::cmp::min(total_len, 128);
         ktrace!("[TCP send_segment] Packet dump ({} bytes):", dump_len);
@@ -1028,7 +1127,10 @@ impl TcpSocket {
             seq_advance = seq_advance.wrapping_add(1);
         }
 
-        if queue_for_retransmit && seq_advance > 0 && (flags & TCP_SYN != 0 || !payload.is_empty() || flags & TCP_FIN != 0) {
+        if queue_for_retransmit
+            && seq_advance > 0
+            && (flags & TCP_SYN != 0 || !payload.is_empty() || flags & TCP_FIN != 0)
+        {
             // Add to retransmit queue
             let segment = TcpSegment {
                 seq,
@@ -1038,13 +1140,13 @@ impl TcpSocket {
                 retransmit_count: 0,
                 rtt_measured: false,
             };
-            
+
             // Start RTT measurement if not already measuring
             if self.rtt_seq.is_none() && !payload.is_empty() {
                 self.rtt_seq = Some(seq);
                 self.rtt_time = self.current_time();
             }
-            
+
             self.retransmit_queue.push(segment);
             // Advance snd_nxt only when queuing a new segment
             self.snd_nxt = self.snd_nxt.wrapping_add(seq_advance);
@@ -1055,7 +1157,12 @@ impl TcpSocket {
         Ok(())
     }
 
-    fn send_segment(&mut self, payload: &[u8], flags: u8, tx: &mut TxBatch) -> Result<(), NetError> {
+    fn send_segment(
+        &mut self,
+        payload: &[u8],
+        flags: u8,
+        tx: &mut TxBatch,
+    ) -> Result<(), NetError> {
         self.send_segment_internal(payload, flags, tx, None, true)
     }
 
@@ -1063,42 +1170,53 @@ impl TcpSocket {
     fn process_ack(&mut self, ack: u32, window: u16) -> Result<(), NetError> {
         if ack.wrapping_sub(self.snd_una) <= self.snd_nxt.wrapping_sub(self.snd_una) {
             let newly_acked = ack.wrapping_sub(self.snd_una);
-            
+
             // Detect duplicate ACK
             if ack == self.last_ack && newly_acked == 0 && !self.send_buffer.is_empty() {
                 self.dup_acks += 1;
-                ktrace!("[TCP Congestion] Duplicate ACK #{} for seq {}", self.dup_acks, ack);
-                
+                ktrace!(
+                    "[TCP Congestion] Duplicate ACK #{} for seq {}",
+                    self.dup_acks,
+                    ack
+                );
+
                 // Fast retransmit on 3 duplicate ACKs (TCP Reno)
                 if self.dup_acks == 3 {
                     kdebug!("[TCP Congestion] Fast retransmit triggered");
-                    
+
                     // Enter fast recovery
                     if !self.in_recovery {
                         self.ssthresh = cmp::max(self.cwnd / 2, 2 * self.mss as u32);
                         self.cwnd = self.ssthresh + 3 * self.mss as u32;
                         self.in_recovery = true;
                         self.recovery_point = self.snd_nxt;
-                        
-                        kdebug!("[TCP Congestion] Enter fast recovery - ssthresh={}, cwnd={}", self.ssthresh, self.cwnd);
-                        
+
+                        kdebug!(
+                            "[TCP Congestion] Enter fast recovery - ssthresh={}, cwnd={}",
+                            self.ssthresh,
+                            self.cwnd
+                        );
+
                         // NOTE: Actual retransmission will be handled in check_retransmissions()
                         // by the dedicated fast retransmit logic there
                     }
                 } else if self.dup_acks > 3 && self.in_recovery {
                     // Inflate cwnd for each additional duplicate ACK
                     self.cwnd += self.mss as u32;
-                    ktrace!("[TCP Congestion] Fast recovery - inflate cwnd to {}", self.cwnd);
+                    ktrace!(
+                        "[TCP Congestion] Fast recovery - inflate cwnd to {}",
+                        self.cwnd
+                    );
                 }
             } else if newly_acked > 0 {
                 // New data acknowledged
                 self.dup_acks = 0;
                 self.last_ack = ack;
-                
+
                 // Valid ACK
                 self.snd_una = ack;
                 self.snd_wnd = window;
-                
+
                 // Update congestion window
                 if self.in_recovery {
                     // Fast recovery: deflate cwnd
@@ -1106,18 +1224,32 @@ impl TcpSocket {
                         // Exit recovery
                         self.in_recovery = false;
                         self.cwnd = self.ssthresh;
-                        kdebug!("[TCP Congestion] Exit recovery, cwnd={}, ssthresh={}", self.cwnd, self.ssthresh);
+                        kdebug!(
+                            "[TCP Congestion] Exit recovery, cwnd={}, ssthresh={}",
+                            self.cwnd,
+                            self.ssthresh
+                        );
                     }
                 } else if self.cwnd < self.ssthresh {
                     // Slow start: exponential growth
                     self.cwnd += newly_acked;
-                    ktrace!("[TCP Congestion] Slow start, cwnd={} (+{}), ssthresh={}", self.cwnd, newly_acked, self.ssthresh);
+                    ktrace!(
+                        "[TCP Congestion] Slow start, cwnd={} (+{}), ssthresh={}",
+                        self.cwnd,
+                        newly_acked,
+                        self.ssthresh
+                    );
                 } else {
                     // Congestion avoidance: linear growth
                     // Increase cwnd by MSS * (MSS / cwnd) for each ACK
                     let increment = (self.mss as u32 * newly_acked) / self.cwnd;
                     self.cwnd += cmp::max(increment, 1);
-                    ktrace!("[TCP Congestion] Congestion avoidance, cwnd={} (+{}), ssthresh={}", self.cwnd, increment, self.ssthresh);
+                    ktrace!(
+                        "[TCP Congestion] Congestion avoidance, cwnd={} (+{}), ssthresh={}",
+                        self.cwnd,
+                        increment,
+                        self.ssthresh
+                    );
                 }
 
                 // RTT measurement (Karn's algorithm)
@@ -1127,14 +1259,14 @@ impl TcpSocket {
                         // Measure RTT
                         let now = self.current_time();
                         let rtt_sample = now.saturating_sub(self.rtt_time);
-                        
+
                         // Only update if this wasn't a retransmission
                         if let Some(seg) = self.retransmit_queue.iter().find(|s| s.seq == rtt_seq) {
                             if !seg.rtt_measured && seg.retransmit_count == 0 {
                                 self.update_rtt(rtt_sample);
                             }
                         }
-                        
+
                         // Clear RTT measurement
                         self.rtt_seq = None;
                     }
@@ -1155,42 +1287,42 @@ impl TcpSocket {
                 });
             }
         }
-        
+
         Ok(())
     }
 
     /// Update RTT estimation using RFC 6298 algorithm
     fn update_rtt(&mut self, rtt_sample: u64) {
         let rtt_ms = rtt_sample as i64;
-        
+
         if self.srtt == 0 {
             // First RTT measurement
             self.srtt = rtt_ms;
             self.rttvar = rtt_ms / 2;
-            self.rto = cmp::max(
-                (self.srtt + cmp::max(G, K * self.rttvar)) as u64,
-                MIN_RTO
-            );
+            self.rto = cmp::max((self.srtt + cmp::max(G, K * self.rttvar)) as u64, MIN_RTO);
         } else {
             // Subsequent measurements
             // RTTVAR = (1 - beta) * RTTVAR + beta * |SRTT - R'|
             let abs_diff = (self.srtt - rtt_ms).abs();
             self.rttvar = ((1000 - BETA) * self.rttvar + BETA * abs_diff) / 1000;
-            
+
             // SRTT = (1 - alpha) * SRTT + alpha * R'
             self.srtt = ((1000 - ALPHA) * self.srtt + ALPHA * rtt_ms) / 1000;
-            
+
             // RTO = SRTT + max(G, K * RTTVAR)
-            self.rto = cmp::max(
-                (self.srtt + cmp::max(G, K * self.rttvar)) as u64,
-                MIN_RTO
-            );
+            self.rto = cmp::max((self.srtt + cmp::max(G, K * self.rttvar)) as u64, MIN_RTO);
         }
-        
+
         // Cap RTO at maximum
         self.rto = cmp::min(self.rto, MAX_RTO);
-        
-        ktrace!("[TCP RTT] sample={}ms, SRTT={}ms, RTTVAR={}ms, RTO={}ms", rtt_ms, self.srtt, self.rttvar, self.rto);
+
+        ktrace!(
+            "[TCP RTT] sample={}ms, SRTT={}ms, RTTVAR={}ms, RTO={}ms",
+            rtt_ms,
+            self.srtt,
+            self.rttvar,
+            self.rto
+        );
     }
 
     /// Check and handle retransmissions
@@ -1198,7 +1330,7 @@ impl TcpSocket {
         let now = self.current_time();
         let mut to_retransmit = Vec::new();
         let mut timeout_occurred = false;
-        
+
         // Handle fast retransmit when just entering recovery
         if self.dup_acks >= 3 && self.in_recovery {
             // Fast retransmit: retransmit the first unacknowledged segment
@@ -1208,7 +1340,13 @@ impl TcpSocket {
                     if segment.seq == self.snd_una {
                         kdebug!("[TCP Fast Retransmit] Retransmitting seq={}", segment.seq);
                         let seg_clone = segment.clone();
-                        self.send_segment_internal(&seg_clone.data, seg_clone.flags, tx, Some(seg_clone.seq), false)?;
+                        self.send_segment_internal(
+                            &seg_clone.data,
+                            seg_clone.flags,
+                            tx,
+                            Some(seg_clone.seq),
+                            false,
+                        )?;
                     }
                 }
             }
@@ -1227,23 +1365,32 @@ impl TcpSocket {
                 segment.timestamp = now;
                 segment.retransmit_count += 1;
                 segment.rtt_measured = true; // Mark as retransmitted (Karn's algorithm)
-                
+
                 if !timeout_occurred {
                     timeout_occurred = true;
-                    
+
                     // Timeout: Enter slow start
                     self.ssthresh = cmp::max(self.cwnd / 2, 2 * self.mss as u32);
                     self.cwnd = self.mss as u32; // Reset to 1 MSS
                     self.dup_acks = 0;
                     self.in_recovery = false;
-                    
-                    kdebug!("[TCP Congestion] Timeout - ssthresh={}, cwnd={}", self.ssthresh, self.cwnd);
+
+                    kdebug!(
+                        "[TCP Congestion] Timeout - ssthresh={}, cwnd={}",
+                        self.ssthresh,
+                        self.cwnd
+                    );
                 }
-                
+
                 // Exponential backoff
                 self.rto = cmp::min(self.rto * 2, MAX_RTO);
-                
-                kdebug!("[TCP] Retransmitting segment seq={}, count={}, new RTO={}ms", segment.seq, segment.retransmit_count, self.rto);
+
+                kdebug!(
+                    "[TCP] Retransmitting segment seq={}, count={}, new RTO={}ms",
+                    segment.seq,
+                    segment.retransmit_count,
+                    self.rto
+                );
             }
         }
 
