@@ -89,40 +89,31 @@ where
 
 /// Send a batch of frames on a specific device
 pub fn send_frames(device_index: usize, batch: &stack::TxBatch) -> Result<(), drivers::NetError> {
-    crate::serial::_print(format_args!(
-        "[send_frames] device_index={}, MAX_NET_DEVICES={}\n",
-        device_index, MAX_NET_DEVICES
-    ));
+    crate::kdebug!(
+        "[send_frames] device_index={}, MAX_NET_DEVICES={}",
+        device_index,
+        MAX_NET_DEVICES
+    );
 
     if device_index >= MAX_NET_DEVICES {
-        crate::serial::_print(format_args!(
-            "[send_frames] ERROR: device_index >= MAX_NET_DEVICES\n"
-        ));
+        crate::kerror!("[send_frames] ERROR: device_index >= MAX_NET_DEVICES");
         return Err(drivers::NetError::InvalidDevice);
     }
 
     let mut state = NET_STATE.lock();
     let slot = &mut state.slots[device_index];
 
-    crate::serial::_print(format_args!(
-        "[send_frames] driver present: {}\n",
-        slot.driver.is_some()
-    ));
+    crate::kdebug!("[send_frames] driver present: {}", slot.driver.is_some());
 
     if let Some(driver) = &mut slot.driver {
-        crate::serial::_print(format_args!("[send_frames] Transmitting frames\n"));
+        crate::kdebug!("[send_frames] Transmitting frames");
         for frame in batch.frames() {
             driver.transmit(frame)?;
         }
-        crate::serial::_print(format_args!(
-            "[send_frames] Successfully transmitted all frames\n"
-        ));
+        crate::kdebug!("[send_frames] Successfully transmitted all frames");
         Ok(())
     } else {
-        crate::serial::_print(format_args!(
-            "[send_frames] ERROR: No driver for device {}\n",
-            device_index
-        ));
+        crate::kerror!("[send_frames] ERROR: No driver for device {}", device_index);
         Err(drivers::NetError::InvalidDevice)
     }
 }
@@ -155,45 +146,39 @@ pub fn ingest_boot_descriptor(index: usize, descriptor: NetworkDescriptor) {
 /// Finalizes NIC drivers and the in-kernel network stack. Safe to call more
 /// than once; subsequent calls become no-ops.
 pub fn init() {
-    crate::serial::_print(format_args!(
-        "[net::init] Starting network initialization\n"
-    ));
+    crate::kinfo!("[net::init] Starting network initialization");
 
     if NET_INITIALIZED.swap(true, Ordering::SeqCst) {
-        crate::serial::_print(format_args!("[net::init] Already initialized, returning\n"));
+        crate::kdebug!("[net::init] Already initialized, returning");
         return;
     }
 
-    crate::serial::_print(format_args!("[net::init] Acquiring NET_STATE lock\n"));
+    crate::kdebug!("[net::init] Acquiring NET_STATE lock");
     let mut state = NET_STATE.lock();
 
-    crate::serial::_print(format_args!(
-        "[net::init] Scanning {} device slots\n",
-        MAX_NET_DEVICES
-    ));
+    crate::kdebug!("[net::init] Scanning {} device slots", MAX_NET_DEVICES);
 
     for idx in 0..MAX_NET_DEVICES {
-        crate::serial::_print(format_args!("[net::init] Checking slot {}\n", idx));
+        crate::kdebug!("[net::init] Checking slot {}", idx);
 
         let Some(descriptor) = state.slots[idx].descriptor else {
-            crate::serial::_print(format_args!("[net::init] Slot {} has no descriptor\n", idx));
+            crate::kdebug!("[net::init] Slot {} has no descriptor", idx);
             continue;
         };
 
-        crate::serial::_print(format_args!(
-            "[net::init] Slot {} has descriptor: mmio={:#x}, irq={}\n",
-            idx, descriptor.mmio_base, descriptor.interrupt_line
-        ));
+        crate::kdebug!(
+            "[net::init] Slot {} has descriptor: mmio={:#x}, irq={}",
+            idx,
+            descriptor.mmio_base,
+            descriptor.interrupt_line
+        );
 
         if descriptor.mmio_base == 0 {
             crate::kwarn!("net: descriptor {} missing MMIO base", idx);
             continue;
         }
 
-        crate::serial::_print(format_args!(
-            "[net::init] Creating driver for slot {}\n",
-            idx
-        ));
+        crate::kdebug!("[net::init] Creating driver for slot {}", idx);
 
         match drivers::DriverInstance::new(idx, descriptor) {
             Ok(mut driver) => {
@@ -321,7 +306,7 @@ pub fn poll() {
         if POLL_COUNT % 200 == 1 {
             let cr3: u64;
             core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack));
-            crate::serial::_print(format_args!("[net::poll] CR3={:#x}\n", cr3));
+            crate::ktrace!("[net::poll] CR3={:#x}", cr3);
         }
     }
 
@@ -356,8 +341,8 @@ fn drain_rx(
         // Dump ethernet frame info
         if len >= 14 {
             let ethertype = u16::from_be_bytes([scratch[12], scratch[13]]);
-            crate::serial::_print(format_args!(
-                "[drain_rx] Frame {}: len={}, ethertype=0x{:04x} ({})\n",
+            crate::ktrace!(
+                "[drain_rx] Frame {}: len={}, ethertype=0x{:04x} ({})",
                 frame_count,
                 len,
                 ethertype,
@@ -367,13 +352,13 @@ fn drain_rx(
                     0x86DD => "IPv6",
                     _ => "unknown",
                 }
-            ));
+            );
 
             // If IPv4, show protocol
             if ethertype == 0x0800 && len >= 34 {
                 let proto = scratch[23];
-                crate::serial::_print(format_args!(
-                    "[drain_rx] IPv4 protocol={} ({})\n",
+                crate::ktrace!(
+                    "[drain_rx] IPv4 protocol={} ({})",
                     proto,
                     match proto {
                         1 => "ICMP",
@@ -381,13 +366,10 @@ fn drain_rx(
                         17 => "UDP",
                         _ => "other",
                     }
-                ));
+                );
             }
         } else {
-            crate::serial::_print(format_args!(
-                "[drain_rx] Frame {} too short: len={}\n",
-                frame_count, len
-            ));
+            crate::ktrace!("[drain_rx] Frame {} too short: len={}", frame_count, len);
         }
 
         let mut responses = stack::TxBatch::new();
@@ -402,10 +384,11 @@ fn drain_rx(
         transmit_batch(driver, &responses, device_index);
     }
     if frame_count > 0 {
-        crate::serial::_print(format_args!(
-            "[drain_rx] Processed {} frames on device {}\n",
-            frame_count, device_index
-        ));
+        crate::ktrace!(
+            "[drain_rx] Processed {} frames on device {}",
+            frame_count,
+            device_index
+        );
     }
 }
 

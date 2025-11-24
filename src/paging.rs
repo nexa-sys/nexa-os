@@ -578,10 +578,7 @@ pub fn activate_address_space(cr3_phys: u64) {
     use x86_64::registers::control::{Cr3, Cr3Flags};
     use x86_64::structures::paging::Size4KiB;
 
-    crate::serial::_print(format_args!(
-        "[activate_address_space] ENTRY: cr3_phys={:#x}\n",
-        cr3_phys
-    ));
+    crate::kdebug!("[activate_address_space] ENTRY: cr3_phys={:#x}", cr3_phys);
 
     // CRITICAL FIX: Validate CR3 before use to catch fork-related page table errors
     // This prevents GP faults from invalid page table structures
@@ -606,10 +603,11 @@ pub fn activate_address_space(cr3_phys: u64) {
         unsafe {
             let entry0 = core::ptr::read_volatile(pml4_ptr);
             let entry1 = core::ptr::read_volatile(pml4_ptr.add(1));
-            crate::serial::_print(format_args!(
-                "[activate_address_space] PML4 content check: entry[0]={:#x}, entry[1]={:#x}\n",
-                entry0, entry1
-            ));
+            crate::kdebug!(
+                "[activate_address_space] PML4 content check: entry[0]={:#x}, entry[1]={:#x}",
+                entry0,
+                entry1
+            );
             // Check if entries look valid (present bit should be set for some entries)
             if entry0 == 0 && entry1 == 0 {
                 crate::kerror!(
@@ -627,30 +625,25 @@ pub fn activate_address_space(cr3_phys: u64) {
         cr3_phys
     };
 
-    crate::serial::_print(format_args!(
-        "[activate_address_space] Target CR3={:#x}\n",
-        target
-    ));
+    crate::kdebug!("[activate_address_space] Target CR3={:#x}", target);
 
     let (current, _) = Cr3::read();
-    crate::serial::_print(format_args!(
-        "[activate_address_space] Current CR3={:#x}, Target CR3={:#x}\n",
+    crate::kdebug!(
+        "[activate_address_space] Current CR3={:#x}, Target CR3={:#x}",
         current.start_address().as_u64(),
         target
-    ));
+    );
 
     if current.start_address().as_u64() == target {
-        crate::serial::_print(format_args!(
-            "[activate_address_space] CR3 already active, returning\n"
-        ));
+        crate::kdebug!("[activate_address_space] CR3 already active, returning");
         return; // Short-circuit: CR3 already active, no need to reload
     }
 
     // Validate the frame creation - convert physical address to PhysFrame
-    crate::serial::_print(format_args!(
-        "[activate_address_space] Creating PhysFrame from target={:#x}\n",
+    crate::kdebug!(
+        "[activate_address_space] Creating PhysFrame from target={:#x}",
         target
-    ));
+    );
     let frame_result: Result<PhysFrame<Size4KiB>, _> =
         PhysFrame::from_start_address(PhysAddr::new(target));
     if frame_result.is_err() {

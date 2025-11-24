@@ -178,10 +178,11 @@ impl E1000 {
     }
 
     pub fn init(&mut self) -> Result<(), NetError> {
-        crate::serial::_print(format_args!(
-            "[e1000::init] Starting initialization for device {}, MMIO base={:#x}\n",
-            self.index, self.base as u64
-        ));
+        crate::kinfo!(
+            "[e1000::init] Starting initialization for device {}, MMIO base={:#x}",
+            self.index,
+            self.base as u64
+        );
 
         // CRITICAL: Enable PCI Bus Master for DMA operations
         self.enable_pci_bus_master();
@@ -190,10 +191,7 @@ impl E1000 {
 
         // Verify device is accessible
         let status = self.read_reg(REG_STATUS);
-        crate::serial::_print(format_args!(
-            "[e1000::init] Device status after reset: {:#x}\n",
-            status
-        ));
+        crate::kdebug!("[e1000::init] Device status after reset: {:#x}", status);
 
         self.program_mac();
         self.init_rx();
@@ -210,14 +208,20 @@ impl E1000 {
         let rdbal = self.read_reg(REG_RDBAL);
         let rdbah = self.read_reg(REG_RDBAH);
 
-        crate::serial::_print(format_args!(
-            "[e1000::init] Final state - STATUS={:#x}, RCTL={:#x}, TCTL={:#x}\n",
-            final_status, rctl, tctl
-        ));
-        crate::serial::_print(format_args!(
-            "[e1000::init] RX Ring - RDBAL={:#x}, RDBAH={:#x}, RDLEN={}, RDH={}, RDT={}\n",
-            rdbal, rdbah, rdlen, rdh, rdt
-        ));
+        crate::kdebug!(
+            "[e1000::init] Final state - STATUS={:#x}, RCTL={:#x}, TCTL={:#x}",
+            final_status,
+            rctl,
+            tctl
+        );
+        crate::kdebug!(
+            "[e1000::init] RX Ring - RDBAL={:#x}, RDBAH={:#x}, RDLEN={}, RDH={}, RDT={}",
+            rdbal,
+            rdbah,
+            rdlen,
+            rdh,
+            rdt
+        );
 
         crate::kinfo!("e1000[{}]: initialized", self.index);
         Ok(())
@@ -242,10 +246,12 @@ impl E1000 {
             desc.addr = buf_addr;
             desc.status = 0; // Clear DD flag to make descriptor available
             if idx < 3 {
-                crate::serial::_print(format_args!(
-                    "[update_dma] desc[{}].addr={:#x} (buffer@{:#x})\n",
-                    idx, desc.addr, buf_addr
-                ));
+                crate::ktrace!(
+                    "[update_dma] desc[{}].addr={:#x} (buffer@{:#x})",
+                    idx,
+                    desc.addr,
+                    buf_addr
+                );
             }
         }
 
@@ -254,10 +260,10 @@ impl E1000 {
         self.rx_tail = RX_DESC_COUNT - 1;
         self.write_reg(REG_RDT, self.rx_tail as u32);
 
-        crate::serial::_print(format_args!(
-            "[e1000::update_dma_addresses] Updated addresses - RDBA={:#x}, TDBA={:#x}, rx_index={}, RDT={}\n",
+        crate::kdebug!(
+            "[e1000::update_dma_addresses] Updated addresses - RDBA={:#x}, TDBA={:#x}, rx_index={}, RDT={}",
             rdba, tdba, self.rx_index, self.rx_tail
-        ));
+        );
     }
 
     pub fn transmit(&mut self, frame: &[u8]) -> Result<(), NetError> {
@@ -290,10 +296,10 @@ impl E1000 {
 
         // Debug: Log every TX packet with descriptor pointer
         let desc_ptr = &self.tx_desc[slot] as *const TxDescriptor as usize;
-        crate::serial::_print(format_args!(
-            "[e1000::transmit] Sending {} bytes, slot={}, buf_addr={:#x}, desc_ptr={:#x}, TDT: {} -> {}, link_up={}, STATUS={:#x}\n",
+        crate::ktrace!(
+            "[e1000::transmit] Sending {} bytes, slot={}, buf_addr={:#x}, desc_ptr={:#x}, TDT: {} -> {}, link_up={}, STATUS={:#x}",
             frame.len(), slot, buf_addr, desc_ptr, self.tx_index, new_tdt, link_up, status
-        ));
+        );
 
         self.tx_index = new_tdt;
         self.write_reg(REG_TDT, self.tx_index as u32);
@@ -306,10 +312,14 @@ impl E1000 {
         let desc_addr_readback =
             unsafe { core::ptr::read_volatile(&self.tx_desc[slot].addr as *const u64) };
 
-        crate::serial::_print(format_args!(
-            "[e1000::transmit] Verified TDT={}, TCTL={:#x}, desc[{}].addr={:#x} (readback={:#x})\n",
-            actual_tdt, tctl, slot, self.tx_desc[slot].addr, desc_addr_readback
-        ));
+        crate::ktrace!(
+            "[e1000::transmit] Verified TDT={}, TCTL={:#x}, desc[{}].addr={:#x} (readback={:#x})",
+            actual_tdt,
+            tctl,
+            slot,
+            self.tx_desc[slot].addr,
+            desc_addr_readback
+        );
 
         // Wait a bit and check if descriptor was processed
         for _ in 0..1000 {
@@ -317,12 +327,12 @@ impl E1000 {
         }
         let desc_status =
             unsafe { core::ptr::read_volatile(&self.tx_desc[slot].status as *const u8) };
-        crate::serial::_print(format_args!(
-            "[e1000::transmit] After spin: desc[{}].status={:#x}, DD={}\n",
+        crate::ktrace!(
+            "[e1000::transmit] After spin: desc[{}].status={:#x}, DD={}",
             slot,
             desc_status,
             (desc_status & TX_STATUS_DD) != 0
-        ));
+        );
 
         Ok(())
     }
@@ -341,10 +351,10 @@ impl E1000 {
             let rdt = self.read_reg(REG_RDT);
             let rctl = self.read_reg(REG_RCTL);
             let desc_status = self.rx_desc[self.rx_index].status;
-            crate::serial::_print(format_args!(
-                "[e1000::drain_rx] RX state: index={}, RDH={}, RDT={}, RCTL={:#x}, desc.status={:#x}, DD={}\n",
+            crate::ktrace!(
+                "[e1000::drain_rx] RX state: index={}, RDH={}, RDT={}, RCTL={:#x}, desc.status={:#x}, DD={}",
                 self.rx_index, rdh, rdt, rctl, desc_status, (desc_status & RX_STATUS_DD) != 0
-            ));
+            );
         }
 
         let desc = &mut self.rx_desc[self.rx_index];
@@ -355,22 +365,23 @@ impl E1000 {
         // Ensure descriptor status read completes before reading buffer data
         core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
 
-        crate::serial::_print(format_args!(
-            "[e1000::drain_rx] *** PACKET RECEIVED! index={}, len={} ***\n",
-            self.rx_index, desc.length
-        ));
+        crate::ktrace!(
+            "[e1000::drain_rx] *** PACKET RECEIVED! index={}, len={} ***",
+            self.rx_index,
+            desc.length
+        );
 
         let packet_len = cmp::min(desc.length as usize, scratch.len());
         scratch[..packet_len].copy_from_slice(&self.rx_buffers[self.rx_index].0[..packet_len]);
 
         // DEBUG: Dump first 32 bytes to see ethernet header
         if packet_len >= 14 {
-            crate::serial::_print(format_args!(
-                "[e1000::drain_rx] Header dump: [{:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}]\n",
+            crate::ktrace!(
+                "[e1000::drain_rx] Header dump: [{:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}]",
                 scratch[0], scratch[1], scratch[2], scratch[3], scratch[4], scratch[5],
                 scratch[6], scratch[7], scratch[8], scratch[9], scratch[10], scratch[11],
                 scratch[12], scratch[13]
-            ));
+            );
         }
 
         // Clear descriptor status BEFORE updating RDT
@@ -388,22 +399,23 @@ impl E1000 {
 
         // Set RDT to the descriptor we just processed (now available)
         self.rx_tail = old_index;
-        crate::serial::_print(format_args!(
-            "[e1000::drain_rx] Updating RDT: old_index={}, new rx_index={}, RDT: {} -> {}\n",
+        crate::ktrace!(
+            "[e1000::drain_rx] Updating RDT: old_index={}, new rx_index={}, RDT: {} -> {}",
             old_index,
             self.rx_index,
             self.read_reg(REG_RDT),
             self.rx_tail
-        ));
+        );
         self.write_reg(REG_RDT, self.rx_tail as u32);
 
         // Verify RDT was written
         let rdt_readback = self.read_reg(REG_RDT);
         if rdt_readback != self.rx_tail as u32 {
-            crate::serial::_print(format_args!(
-                "[e1000::drain_rx] ERROR: RDT write failed! Wrote {}, read back {}\n",
-                self.rx_tail, rdt_readback
-            ));
+            crate::kerror!(
+                "[e1000::drain_rx] ERROR: RDT write failed! Wrote {}, read back {}",
+                self.rx_tail,
+                rdt_readback
+            );
         }
 
         Some(packet_len)
@@ -440,11 +452,11 @@ impl E1000 {
         let low = u32::from_le_bytes([self.mac[2], self.mac[3], self.mac[4], self.mac[5]]);
         let high = u32::from_le_bytes([self.mac[0], self.mac[1], 0, 0]) | (1 << 31);
 
-        crate::serial::_print(format_args!(
-            "[e1000::program_mac] Setting MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}, RAL0={:#x}, RAH0={:#x}\n",
+        crate::kdebug!(
+            "[e1000::program_mac] Setting MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}, RAL0={:#x}, RAH0={:#x}",
             self.mac[0], self.mac[1], self.mac[2], self.mac[3], self.mac[4], self.mac[5],
             low, high
-        ));
+        );
 
         self.write_reg(REG_RAL0, low);
         self.write_reg(REG_RAH0, high);
@@ -452,10 +464,11 @@ impl E1000 {
         // Verify
         let ral_read = self.read_reg(REG_RAL0);
         let rah_read = self.read_reg(REG_RAH0);
-        crate::serial::_print(format_args!(
-            "[e1000::program_mac] Readback: RAL0={:#x}, RAH0={:#x}\n",
-            ral_read, rah_read
-        ));
+        crate::kdebug!(
+            "[e1000::program_mac] Readback: RAL0={:#x}, RAH0={:#x}",
+            ral_read,
+            rah_read
+        );
     }
 
     fn init_rx(&mut self) {
@@ -478,21 +491,21 @@ impl E1000 {
             desc.special = 0;
 
             if idx == 0 {
-                crate::serial::_print(format_args!(
-                    "[e1000::init_rx] desc[0].addr={:#x}, buf alignment={}\n",
+                crate::ktrace!(
+                    "[e1000::init_rx] desc[0].addr={:#x}, buf alignment={}",
                     desc.addr,
                     buf_addr & 0xF
-                ));
+                );
             }
         }
 
         let rdba = desc_addr;
-        crate::serial::_print(format_args!(
-            "[e1000::init_rx] RX descriptor base={:#x} (alignment={}), count={}\n",
+        crate::kdebug!(
+            "[e1000::init_rx] RX descriptor base={:#x} (alignment={}), count={}",
             rdba,
             rdba & 0xF,
             RX_DESC_COUNT
-        ));
+        );
 
         self.write_reg(REG_RDBAL, (rdba & 0xFFFF_FFFF) as u32);
         self.write_reg(REG_RDBAH, (rdba >> 32) as u32);
@@ -509,15 +522,15 @@ impl E1000 {
         // Production note: Remove UPE/MPE after DHCP is working
         let rctl =
             RCTL_EN | RCTL_UPE | RCTL_MPE | RCTL_BAM | RCTL_SECRC | RCTL_BSIZE_2048 | RCTL_LBM_NONE;
-        crate::serial::_print(format_args!(
-            "[e1000::init_rx] Setting RCTL={:#x} (EN={}, UPE={}, MPE={}, BAM={}), RDT={}\n",
+        crate::kdebug!(
+            "[e1000::init_rx] Setting RCTL={:#x} (EN={}, UPE={}, MPE={}, BAM={}), RDT={}",
             rctl,
             (rctl & RCTL_EN) != 0,
             (rctl & RCTL_UPE) != 0,
             (rctl & RCTL_MPE) != 0,
             (rctl & RCTL_BAM) != 0,
             self.rx_tail
-        ));
+        );
         self.write_reg(REG_RCTL, rctl);
 
         // Verify configuration
@@ -529,10 +542,7 @@ impl E1000 {
                 rctl_read
             );
         } else {
-            crate::serial::_print(format_args!(
-                "[e1000::init_rx] RCTL verified={:#x}\n",
-                rctl_read
-            ));
+            crate::kdebug!("[e1000::init_rx] RCTL verified={:#x}", rctl_read);
         }
     }
 
@@ -563,10 +573,10 @@ impl E1000 {
         self.write_reg(REG_TCTL, tctl);
         self.write_reg(REG_TIPG, 0x0060200A);
 
-        crate::serial::_print(format_args!(
-            "[e1000::init_tx] TX ring: desc_addr={:#x}, buf[0]_addr={:#x}, TDBAL={:#x}, TDBAH={:#x}, TDLEN={}, TCTL={:#x}\n",
+        crate::kdebug!(
+            "[e1000::init_tx] TX ring: desc_addr={:#x}, buf[0]_addr={:#x}, TDBAL={:#x}, TDBAH={:#x}, TDLEN={}, TCTL={:#x}",
             tx_desc_addr, tx_buf0_addr, tdbal, tdbah, TX_DESC_COUNT * core::mem::size_of::<TxDescriptor>(), tctl
-        ));
+        );
     }
 
     fn enable_interrupts(&mut self) {
@@ -587,17 +597,20 @@ impl E1000 {
 
     /// Enable PCI Bus Master - CRITICAL for DMA operations
     fn enable_pci_bus_master(&mut self) {
-        crate::serial::_print(format_args!(
-            "[e1000::enable_pci_bus_master] PCI {:04x}:{:02x}:{:02x}.{} - Enabling Bus Master\n",
-            self.pci_segment, self.pci_bus, self.pci_device, self.pci_function
-        ));
+        crate::kdebug!(
+            "[e1000::enable_pci_bus_master] PCI {:04x}:{:02x}:{:02x}.{} - Enabling Bus Master",
+            self.pci_segment,
+            self.pci_bus,
+            self.pci_device,
+            self.pci_function
+        );
 
         // Read current PCI command register
         let mut command = self.pci_read_config_word(PCI_COMMAND);
-        crate::serial::_print(format_args!(
-            "[e1000::enable_pci_bus_master] Current PCI_COMMAND={:#x}\n",
+        crate::kdebug!(
+            "[e1000::enable_pci_bus_master] Current PCI_COMMAND={:#x}",
             command
-        ));
+        );
 
         // Enable Bus Master and Memory Space
         command |= PCI_COMMAND_BUS_MASTER | PCI_COMMAND_MEMORY;
@@ -605,12 +618,12 @@ impl E1000 {
 
         // Verify
         let command_verify = self.pci_read_config_word(PCI_COMMAND);
-        crate::serial::_print(format_args!(
-            "[e1000::enable_pci_bus_master] New PCI_COMMAND={:#x} (BM={}, MEM={})\n",
+        crate::kdebug!(
+            "[e1000::enable_pci_bus_master] New PCI_COMMAND={:#x} (BM={}, MEM={})",
             command_verify,
             (command_verify & PCI_COMMAND_BUS_MASTER) != 0,
             (command_verify & PCI_COMMAND_MEMORY) != 0
-        ));
+        );
 
         if (command_verify & PCI_COMMAND_BUS_MASTER) == 0 {
             crate::kwarn!("[e1000] CRITICAL: Failed to enable PCI Bus Master! DMA will not work!");
