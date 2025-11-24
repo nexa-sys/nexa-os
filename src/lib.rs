@@ -370,9 +370,6 @@ fn proceed_after_initramfs(cmdline_opt: Option<&'static str>) -> ! {
     // TODO: Implement per-core IDT for SMP support
     crate::interrupts::init_interrupts();
 
-    // Initialize SMP and bring additional cores online before enabling interrupts
-    crate::smp::init();
-
     kinfo!("interrupts::init() completed successfully");
 
     // Enable interrupts now that essential handlers and PIC configuration are in place
@@ -391,6 +388,11 @@ fn proceed_after_initramfs(cmdline_opt: Option<&'static str>) -> ! {
     ipc::init(); // Inter-process communication
     signal::init(); // POSIX signal handling
     pipe::init(); // Pipe system
+    
+    // Initialize SMP after interrupts are enabled but before scheduler
+    // This allows AP cores to come online safely
+    crate::smp::init();
+    
     scheduler::init(); // Process scheduler
     fs::init(); // Filesystem
     init::init(); // Init system (PID 1 management)

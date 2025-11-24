@@ -243,3 +243,8 @@ pub fn kernel_entry_points() -> Option<(u64, u64)> {
 pub fn kernel_segments() -> Option<&'static [KernelSegment]> {
     with_boot_info(|info| info.kernel_segments())
 }
+
+/// Returns the ACPI RSDP physical address supplied by the UEFI loader.
+pub fn acpi_rsdp_addr() -> Option<u64> {
+    with_boot_info(|info| info.has_acpi_rsdp().then_some(info.acpi_rsdp_addr))
+}

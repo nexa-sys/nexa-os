@@ -1036,6 +1036,48 @@ fn parse_pci_address(path: &DevicePath) -> Option<PciAddress> {
     None
 }
 
+/// Get ACPI RSDP address from UEFI configuration table
+fn get_acpi_rsdp_addr(st: &SystemTable<Boot>) -> Option<u64> {
+    // ACPI 2.0+ GUID: 8868e871-e4f1-11d3-bc22-0080c73c8881
+    const ACPI_20_TABLE_GUID: uefi::Guid = uefi::Guid::from_bytes([
+        0x71, 0xe8, 0x68, 0x88,  // time_low
+        0xf1, 0xe4,              // time_mid
+        0xd3, 0x11,              // time_high_and_version
+        0xbc, 0x22,              // clock_seq
+        0x00, 0x80, 0xc7, 0x3c, 0x88, 0x81,  // node
+    ]);
+    
+    // ACPI 1.0 GUID (fallback): eb9d2d30-2d88-11d3-9a16-0090273fc14d
+    const ACPI_TABLE_GUID: uefi::Guid = uefi::Guid::from_bytes([
+        0x30, 0x2d, 0x9d, 0xeb,  // time_low
+        0x88, 0x2d,              // time_mid
+        0xd3, 0x11,              // time_high_and_version
+        0x9a, 0x16,              // clock_seq
+        0x00, 0x90, 0x27, 0x3f, 0xc1, 0x4d,  // node
+    ]);
+    
+    // Try ACPI 2.0+ first
+    for entry in st.config_table() {
+        if entry.guid == ACPI_20_TABLE_GUID {
+            let rsdp_addr = entry.address as u64;
+            log::info!("Found ACPI 2.0+ RSDP at {:#x}", rsdp_addr);
+            return Some(rsdp_addr);
+        }
+    }
+    
+    // Fall back to ACPI 1.0
+    for entry in st.config_table() {
+        if entry.guid == ACPI_TABLE_GUID {
+            let rsdp_addr = entry.address as u64;
+            log::info!("Found ACPI 1.0 RSDP at {:#x}", rsdp_addr);
+            return Some(rsdp_addr);
+        }
+    }
+    
+    log::warn!("ACPI RSDP not found in UEFI configuration table");
+    None
+}
+
 #[entry]
 fn efi_main(image: Handle, mut st: SystemTable<Boot>) -> Status {
     if let Err(e) = uefi::helpers::init(&mut st) {
@@ -1154,6 +1196,9 @@ fn efi_main(image: Handle, mut st: SystemTable<Boot>) -> Status {
     let device_table = collect_device_table(bs, image);
     log::info!("Device table collected, count: {}", device_table.count);
     
+    // 获取ACPI RSDP地址
+    let acpi_rsdp_addr = get_acpi_rsdp_addr(&st);
+    
     // 准备帧缓冲信息
     let framebuffer_info = detect_framebuffer(bs, image);
     log::info!("Framebuffer detection completed, found: {}", framebuffer_info.is_some());
@@ -1227,6 +1272,7 @@ fn efi_main(image: Handle, mut st: SystemTable<Boot>) -> Status {
         loaded.actual_entry_point,
         &cmdline_bytes,
         kernel_segments_region,
+        acpi_rsdp_addr,
     ) {
         Ok(region) => {
             log::info!("Boot info staged, addr: {:#x}, size: {}", region.phys_addr, region.length);
@@ -1959,6 +2005,7 @@ fn stage_boot_info(
     actual_entry: u64,
     cmdline: &[u8],
     kernel_segments: MemoryRegion,
+    acpi_rsdp_addr: Option<u64>,
 ) -> Result<MemoryRegion, Status> {
     let size_bytes = mem::size_of::<BootInfo>();
     debug_assert!(size_bytes <= u16::MAX as usize);
@@ -2023,6 +2070,12 @@ fn stage_boot_info(
             segment_count
         );
     }
+    
+    // 如果有ACPI RSDP地址，设置标志位
+    if acpi_rsdp_addr.is_some() {
+        flags_value |= nexa_boot_info::flags::HAS_ACPI_RSDP;
+        log::info!("Setting HAS_ACPI_RSDP flag, addr={:#x}", acpi_rsdp_addr.unwrap());
+    }
 
     let boot_info = BootInfo {
         signature: nexa_boot_info::BOOT_INFO_SIGNATURE,
@@ -2053,7 +2106,8 @@ fn stage_boot_info(
         kernel_actual_entry: actual_entry,
         kernel_segments,
         kernel_load_offset: kernel_offset,
-        reserved: [0; 24],
+        acpi_rsdp_addr: acpi_rsdp_addr.unwrap_or(0),
+        reserved: [0; 16],
     };
 
     unsafe {

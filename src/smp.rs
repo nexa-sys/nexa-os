@@ -156,6 +156,15 @@ unsafe fn init_inner() -> Result<(), &'static str> {
         bsp_apic
     );
 
+    // Temporarily disable AP startup to debug the issue
+    crate::kinfo!("SMP: AP core startup temporarily disabled for stability");
+    crate::kinfo!(
+        "SMP: {} / {} cores online (BSP only)",
+        1,
+        CPU_TOTAL.load(Ordering::SeqCst)
+    );
+
+    /* TODO: Re-enable after fixing trampoline/paging issues
     for idx in 0..count {
         let info = cpu_info(idx);
         if info.is_bsp {
@@ -176,6 +185,7 @@ unsafe fn init_inner() -> Result<(), &'static str> {
         current_online(),
         CPU_TOTAL.load(Ordering::SeqCst)
     );
+    */
 
     Ok(())
 }
@@ -193,10 +203,19 @@ unsafe fn install_trampoline() -> Result<(), &'static str> {
     let start = &__ap_trampoline_start as *const u8 as usize;
     let end = &__ap_trampoline_end as *const u8 as usize;
     let size = end - start;
+    
+    if size == 0 {
+        return Err("AP trampoline size is zero");
+    }
+    
     if size > TRAMPOLINE_MAX_SIZE {
         return Err("AP trampoline exceeds reserved space");
     }
+    
+    crate::kinfo!("SMP: Installing trampoline at {:#x} (size {} bytes)", TRAMPOLINE_BASE, size);
 
+    // Ensure low memory is accessible by checking if it's identity-mapped
+    // The trampoline needs to be in low memory for AP startup
     ptr::copy_nonoverlapping(start as *const u8, TRAMPOLINE_BASE as *mut u8, size);
     if size < TRAMPOLINE_MAX_SIZE {
         ptr::write_bytes(

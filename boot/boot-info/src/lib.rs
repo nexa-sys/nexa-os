@@ -27,6 +27,8 @@ pub mod flags {
     pub const HAS_KERNEL_OFFSET: u32 = 1 << 5;
     /// Kernel segment layout table is populated in [`BootInfo::kernel_segments`].
     pub const HAS_KERNEL_SEGMENTS: u32 = 1 << 6;
+    /// ACPI RSDP address is available.
+    pub const HAS_ACPI_RSDP: u32 = 1 << 7;
 }
 
 /// Flags describing capabilities/features of a device descriptor.
@@ -459,8 +461,11 @@ pub struct BootInfo {
     /// Kernel load offset (actual_address - expected_address).
     /// Only valid if HAS_KERNEL_OFFSET flag is set.
     pub kernel_load_offset: i64,
+    /// Physical address of ACPI RSDP (Root System Description Pointer).
+    /// Only valid if HAS_ACPI_RSDP flag is set.
+    pub acpi_rsdp_addr: u64,
     /// Reserved for future extensions.
-    pub reserved: [u8; 24],
+    pub reserved: [u8; 16],
 }
 
 impl BootInfo {
@@ -528,5 +533,10 @@ impl BootInfo {
                 count,
             ))
         }
+    }
+
+    /// Returns whether ACPI RSDP address is available.
+    pub fn has_acpi_rsdp(&self) -> bool {
+        (self.flags & flags::HAS_ACPI_RSDP) != 0 && self.acpi_rsdp_addr != 0
     }
 }

@@ -2,10 +2,10 @@ use crate::process::{Pid, Process, ProcessState, MAX_PROCESSES};
 /// Advanced multi-level feedback queue (MLFQ) process scheduler for hybrid kernel
 use crate::{kdebug, kerror, ktrace};
 use alloc::alloc::{dealloc, Layout};
-use alloc::boxed::Box;
-use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
+
+extern crate alloc;
 
 const NUM_PRIORITY_LEVELS: usize = 8; // 0 = highest, 7 = lowest
 const BASE_TIME_SLICE_MS: u64 = 5; // Base quantum for highest priority
@@ -36,6 +36,8 @@ pub struct ProcessEntry {
     pub quantum_level: u8,    // Current priority level in MLFQ (0-7)
     pub preempt_count: u64,   // Number of times preempted
     pub voluntary_switches: u64, // Number of voluntary context switches
+    pub cpu_affinity: u32,    // CPU affinity mask (bit per CPU)
+    pub last_cpu: u8,         // Last CPU this process ran on
 }
 
 impl ProcessEntry {
@@ -77,6 +79,8 @@ impl ProcessEntry {
             quantum_level: 4, // Start at middle level
             preempt_count: 0,
             voluntary_switches: 0,
+            cpu_affinity: 0xFFFFFFFF, // All CPUs by default
+            last_cpu: 0,
         }
     }
 }
@@ -102,6 +106,8 @@ pub struct SchedulerStats {
     pub total_voluntary_switches: u64,
     pub idle_time: u64,
     pub last_idle_start: u64,
+    pub load_balance_count: u64,  // Number of load balancing operations
+    pub migration_count: u64,     // Number of process migrations
 }
 
 impl SchedulerStats {
@@ -112,6 +118,8 @@ impl SchedulerStats {
             total_voluntary_switches: 0,
             idle_time: 0,
             last_idle_start: 0,
+            load_balance_count: 0,
+            migration_count: 0,
         }
     }
 }
@@ -207,6 +215,8 @@ pub fn add_process_with_policy(
                 quantum_level,
                 preempt_count: 0,
                 voluntary_switches: 0,
+                cpu_affinity: 0xFFFFFFFF, // All CPUs by default
+                last_cpu: 0,
             });
             crate::kinfo!(
                 "Scheduler: Added process PID {} with priority {}, policy {:?}, nice {} (CR3={:#x})",
@@ -1511,4 +1521,118 @@ pub fn wake_process(pid: Pid) -> bool {
         }
     }
     found
+}
+
+/// Set CPU affinity for a process
+pub fn set_cpu_affinity(pid: Pid, affinity_mask: u32) -> Result<(), &'static str> {
+    let mut table = PROCESS_TABLE.lock();
+    
+    for slot in table.iter_mut() {
+        if let Some(entry) = slot {
+            if entry.process.pid == pid {
+                entry.cpu_affinity = affinity_mask;
+                crate::kinfo!("Set CPU affinity for PID {} to {:#x}", pid, affinity_mask);
+                return Ok(());
+            }
+        }
+    }
+    
+    Err("Process not found")
+}
+
+/// Get CPU affinity for a process
+pub fn get_cpu_affinity(pid: Pid) -> Option<u32> {
+    let table = PROCESS_TABLE.lock();
+    
+    for slot in table.iter() {
+        if let Some(entry) = slot {
+            if entry.process.pid == pid {
+                return Some(entry.cpu_affinity);
+            }
+        }
+    }
+    
+    None
+}
+
+/// Perform load balancing across CPUs (called periodically)
+/// This is a simple implementation that can be enhanced later
+pub fn balance_load() {
+    let cpu_count = crate::smp::cpu_count();
+    if cpu_count <= 1 {
+        return; // No need to balance on single-CPU systems
+    }
+    
+    // Simple load balancing: distribute ready processes across CPUs
+    let mut table = PROCESS_TABLE.lock();
+    let mut stats = SCHED_STATS.lock();
+    
+    let mut ready_processes: alloc::vec::Vec<Pid> = alloc::vec::Vec::new();
+    
+    for slot in table.iter() {
+        if let Some(entry) = slot {
+            if entry.process.state == ProcessState::Ready {
+                ready_processes.push(entry.process.pid);
+            }
+        }
+    }
+    
+    if ready_processes.is_empty() {
+        return;
+    }
+    
+    // Distribute processes round-robin across CPUs
+    for (idx, &pid) in ready_processes.iter().enumerate() {
+        let target_cpu = (idx % cpu_count) as u8;
+        
+        for slot in table.iter_mut() {
+            if let Some(entry) = slot {
+                if entry.process.pid == pid {
+                    // Only migrate if the target CPU is in the affinity mask
+                    if (entry.cpu_affinity & (1 << target_cpu)) != 0 {
+                        if entry.last_cpu != target_cpu {
+                            entry.last_cpu = target_cpu;
+                            stats.migration_count += 1;
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    
+    stats.load_balance_count += 1;
+}
+
+/// Get the recommended CPU for running a process (based on affinity and load)
+pub fn get_preferred_cpu(pid: Pid) -> u8 {
+    let table = PROCESS_TABLE.lock();
+    let cpu_count = crate::smp::cpu_count();
+    
+    if cpu_count <= 1 {
+        return 0;
+    }
+    
+    for slot in table.iter() {
+        if let Some(entry) = slot {
+            if entry.process.pid == pid {
+                // Check affinity and prefer the last CPU used (cache affinity)
+                let last_cpu = entry.last_cpu;
+                if (entry.cpu_affinity & (1 << last_cpu)) != 0 {
+                    return last_cpu;
+                }
+                
+                // Find first available CPU in affinity mask
+                for cpu in 0..cpu_count.min(32) {
+                    if (entry.cpu_affinity & (1 << cpu)) != 0 {
+                        return cpu as u8;
+                    }
+                }
+                
+                return 0; // Fallback
+            }
+        }
+    }
+    
+    0 // Default to CPU 0
 }
