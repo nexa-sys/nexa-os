@@ -303,7 +303,26 @@ unsafe fn init_inner() -> Result<(), &'static str> {
         count,
         bsp_apic
     );
-
+    
+    // Stage 2: Verify trampoline installation details
+    crate::kinfo!("SMP: Stage 2 - Verifying trampoline setup");
+    crate::kinfo!("  Trampoline installed at: {:#x}", TRAMPOLINE_BASE);
+    crate::kinfo!("  Trampoline vector: {:#x}", TRAMPOLINE_VECTOR);
+    crate::kinfo!("  PML4 physical address: {:#x}", paging::current_pml4_phys());
+    
+    // Verify GDT descriptor patching
+    let descriptor = sgdt();
+    crate::kinfo!("  GDT base for APs: {:#x}, limit: {:#x}", 
+        descriptor.base.as_u64(), descriptor.limit);
+    
+    // Verify AP stacks are available
+    for i in 1..count.min(3) {  // Log first 2 APs
+        match stack_for(i) {
+            Ok(stack) => crate::kinfo!("  AP {} stack top: {:#x}", i, stack),
+            Err(e) => crate::kwarn!("  AP {} stack error: {}", i, e),
+        }
+    }
+    
     // TEMPORARY: Skip AP startup for debugging
     crate::kwarn!("SMP: AP core startup temporarily disabled for debugging");
     crate::kinfo!(
