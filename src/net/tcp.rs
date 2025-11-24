@@ -474,10 +474,17 @@ impl TcpSocket {
 
     /// Receive data (non-blocking)
     pub fn recv(&mut self, buffer: &mut [u8]) -> Result<usize, NetError> {
+        serial::_print(format_args!(
+            "[TCP recv] Called: buffer_len={}, recv_buffer_len={}, state={:?}\n",
+            buffer.len(), self.recv_buffer.len(), self.state
+        ));
+        
         if self.recv_buffer.is_empty() {
             if self.state == TcpState::Closed {
+                serial::_print(format_args!("[TCP recv] Connection closed\n"));
                 return Err(NetError::ConnectionClosed);
             }
+            serial::_print(format_args!("[TCP recv] Buffer empty, returning WouldBlock\n"));
             return Err(NetError::WouldBlock);
         }
 
@@ -485,6 +492,11 @@ impl TcpSocket {
         for i in 0..to_recv {
             buffer[i] = self.recv_buffer.pop_front().unwrap();
         }
+
+        serial::_print(format_args!(
+            "[TCP recv] Received {} bytes, remaining in buffer={}\n",
+            to_recv, self.recv_buffer.len()
+        ));
 
         // Update receive window
         self.rcv_wnd = (RECV_BUFFER_SIZE - self.recv_buffer.len()) as u16;
@@ -736,9 +748,19 @@ impl TcpSocket {
                 }
 
                 // Process payload
+                serial::_print(format_args!(
+                    "[TCP process_segment] Payload check: len={}, seq={}, rcv_nxt={}, match={}, recv_buffer_len={}\n",
+                    payload.len(), seq, self.rcv_nxt, seq == self.rcv_nxt, self.recv_buffer.len()
+                ));
+                
                 if !payload.is_empty() && seq == self.rcv_nxt {
                     let space = RECV_BUFFER_SIZE - self.recv_buffer.len();
                     let to_recv = cmp::min(payload.len(), space);
+                    
+                    serial::_print(format_args!(
+                        "[TCP process_segment] Receiving {} bytes (space={}, payload_len={})\n",
+                        to_recv, space, payload.len()
+                    ));
                     
                     for &byte in &payload[..to_recv] {
                         self.recv_buffer.push_back(byte);
@@ -746,14 +768,29 @@ impl TcpSocket {
                     
                     self.rcv_nxt = self.rcv_nxt.wrapping_add(to_recv as u32);
                     self.rcv_wnd = (RECV_BUFFER_SIZE - self.recv_buffer.len()) as u16;
+                    
+                    serial::_print(format_args!(
+                        "[TCP process_segment] Received data, new rcv_nxt={}, recv_buffer_len={}, wait_queue_len={}\n",
+                        self.rcv_nxt, self.recv_buffer.len(), self.wait_queue.len()
+                    ));
+                    
                     self.send_segment(&[], TCP_ACK, tx)?;
 
                     // Wake up waiting processes
                     if !self.wait_queue.is_empty() {
+                        serial::_print(format_args!(
+                            "[TCP process_segment] Waking {} waiting processes\n",
+                            self.wait_queue.len()
+                        ));
                         for pid in self.wait_queue.drain(..) {
                             crate::scheduler::wake_process(pid);
                         }
                     }
+                } else if !payload.is_empty() {
+                    serial::_print(format_args!(
+                        "[TCP process_segment] Payload IGNORED: seq={} != rcv_nxt={}\n",
+                        seq, self.rcv_nxt
+                    ));
                 }
 
                 // Handle FIN
