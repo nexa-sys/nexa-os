@@ -9,6 +9,7 @@ use super::netlink::{NetlinkSubsystem, NetlinkSocket};
 use super::tcp::TcpSocket;
 use super::udp::{UdpDatagram, UdpDatagramMut, UdpHeader};
 use crate::process::Pid;
+use alloc::vec::Vec;
 
 pub const MAX_FRAME_SIZE: usize = 1536;
 const TX_BATCH_CAPACITY: usize = 4;
@@ -24,43 +25,39 @@ pub const UDP_MAX_PAYLOAD: usize = MAX_FRAME_SIZE - 14 - 20 - 8;
 const UDP_RX_QUEUE_LEN: usize = 8;
 
 pub struct TxBatch {
-    buffers: [[u8; MAX_FRAME_SIZE]; TX_BATCH_CAPACITY],
-    lengths: [usize; TX_BATCH_CAPACITY],
-    count: usize,
+    buffers: Vec<Vec<u8>>,
 }
 
 impl TxBatch {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
-            buffers: [[0u8; MAX_FRAME_SIZE]; TX_BATCH_CAPACITY],
-            lengths: [0; TX_BATCH_CAPACITY],
-            count: 0,
+            buffers: Vec::with_capacity(TX_BATCH_CAPACITY),
         }
     }
 
     pub fn push(&mut self, frame: &[u8]) -> Result<(), NetError> {
-        if self.count >= TX_BATCH_CAPACITY {
+        if self.buffers.len() >= TX_BATCH_CAPACITY {
             return Err(NetError::TxBusy);
         }
         if frame.len() > MAX_FRAME_SIZE {
             return Err(NetError::BufferTooSmall);
         }
-        self.buffers[self.count][..frame.len()].copy_from_slice(frame);
-        self.lengths[self.count] = frame.len();
-        self.count += 1;
+        let mut vec = Vec::with_capacity(frame.len());
+        vec.extend_from_slice(frame);
+        self.buffers.push(vec);
         Ok(())
     }
 
     pub fn frames(&self) -> impl Iterator<Item = &[u8]> {
-        (0..self.count).map(move |idx| &self.buffers[idx][..self.lengths[idx]])
+        self.buffers.iter().map(|v| v.as_slice())
     }
 
     pub fn is_empty(&self) -> bool {
-        self.count == 0
+        self.buffers.is_empty()
     }
 
     pub fn len(&self) -> usize {
-        self.count
+        self.buffers.len()
     }
 }
 
@@ -602,11 +599,11 @@ impl NetStack {
         
         serial::_print(format_args!(
             "[tcp_connect] Poll successful, {} frames to send\n", 
-            tx_batch.count
+            tx_batch.len()
         ));
         
         // Send the frames
-        if tx_batch.count > 0 {
+        if tx_batch.len() > 0 {
             crate::net::send_frames(device_index, &tx_batch).ok();
         }
         
@@ -777,7 +774,8 @@ impl NetStack {
             return Err(NetError::BufferTooSmall);
         }
 
-        let mut packet = [0u8; MAX_FRAME_SIZE];
+        let mut packet = Vec::with_capacity(frame_len);
+        packet.resize(frame_len, 0);
 
         // Ethernet header
         packet[0..6].copy_from_slice(&dst_mac.0);
@@ -1055,7 +1053,8 @@ impl NetStack {
             return Ok(());
         }
 
-        let mut packet = [0u8; MAX_FRAME_SIZE];
+        let mut packet = Vec::with_capacity(MAX_FRAME_SIZE);
+        packet.resize(MAX_FRAME_SIZE, 0);
         let frame_len = 14 + total_len;
         packet[..frame_len].copy_from_slice(&frame[..frame_len]);
         packet[0..6].copy_from_slice(&frame[6..12]);
@@ -1496,22 +1495,7 @@ fn default_ip(index: usize) -> [u8; 4] {
     [10, 0, 2, last]
 }
 
-fn checksum(data: &[u8]) -> u16 {
-    let mut sum: u32 = 0;
-    let mut chunks = data.chunks_exact(2);
-    for chunk in chunks.by_ref() {
-        sum += u16::from_be_bytes([chunk[0], chunk[1]]) as u32;
-    }
-    if let Some(&byte) = chunks.remainder().get(0) {
-        sum += (byte as u32) << 8;
-    }
-    while (sum >> 16) != 0 {
-        sum = (sum & 0xFFFF) + (sum >> 16);
-    }
-    !(sum as u16)
-}
-
-fn checksum_with_initial(data: &[u8], initial: u32) -> u16 {
+fn raw_checksum(data: &[u8], initial: u32) -> u32 {
     let mut sum = initial;
     let mut chunks = data.chunks_exact(2);
     for chunk in chunks.by_ref() {
@@ -1523,7 +1507,11 @@ fn checksum_with_initial(data: &[u8], initial: u32) -> u16 {
     while (sum >> 16) != 0 {
         sum = (sum & 0xFFFF) + (sum >> 16);
     }
-    !(sum as u16)
+    sum
+}
+
+fn checksum(data: &[u8]) -> u16 {
+    !(raw_checksum(data, 0) as u16)
 }
 
 fn tcp_checksum(src_ip: &[u8], dst_ip: &[u8], segment: &[u8]) -> u16 {
@@ -1534,8 +1522,8 @@ fn tcp_checksum(src_ip: &[u8], dst_ip: &[u8], segment: &[u8]) -> u16 {
     pseudo[9] = PROTO_TCP;
     pseudo[10..12].copy_from_slice(&(segment.len() as u16).to_be_bytes());
 
-    let sum = checksum(&pseudo);
-    checksum_with_initial(segment, sum as u32)
+    let sum = raw_checksum(&pseudo, 0);
+    !(raw_checksum(segment, sum) as u16)
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -1595,6 +1583,10 @@ impl TcpEndpoint {
         self.snd_una = 0;
         self.snd_nxt = 0;
         self.rcv_nxt = 0;
+    }
+
+    fn generate_iss(&self) -> u32 {
+        (logger::boot_time_us() / 1000) as u32
     }
 
     fn register_local(&mut self, device_idx: usize, mac: [u8; 6], ip: [u8; 4]) {
@@ -1732,7 +1724,9 @@ impl TcpEndpoint {
             return Err(NetError::BufferTooSmall);
         }
 
-        let mut packet = [0u8; MAX_FRAME_SIZE];
+        let mut packet = Vec::with_capacity(MAX_FRAME_SIZE);
+        packet.resize(MAX_FRAME_SIZE, 0);
+
         packet[0..6].copy_from_slice(&self.peer_mac);
         packet[6..12].copy_from_slice(&self.local_mac);
         packet[12..14].copy_from_slice(&ETHERTYPE_IPV4.to_be_bytes());
@@ -1781,8 +1775,6 @@ impl TcpEndpoint {
         }
         Ok(())
     }
-
-    fn generate_iss(&self) -> u32 {
-        (logger::boot_time_us() as u32) ^ 0x1357_9BDF
-    }
 }
+
+

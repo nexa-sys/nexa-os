@@ -960,7 +960,8 @@ impl TcpSocket {
             return Err(NetError::BufferTooSmall);
         }
 
-        let mut packet = [0u8; MAX_FRAME_SIZE];
+        let mut packet = Vec::with_capacity(MAX_FRAME_SIZE);
+        packet.resize(MAX_FRAME_SIZE, 0);
 
         // Ethernet header
         packet[0..6].copy_from_slice(&self.remote_mac.0);
