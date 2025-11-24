@@ -1,6 +1,6 @@
 /// Process management for user-space execution
 use crate::elf::{ElfLoader, LoadResult};
-use crate::kdebug;
+use crate::{kdebug, ktrace};
 use core::ptr;
 use core::sync::atomic::{AtomicU64, Ordering};
 use alloc::alloc::{alloc, dealloc, Layout};
@@ -195,10 +195,10 @@ impl Process {
             let (frame, _) = Cr3::read();
             frame.start_address().as_u64()
         };
-        crate::serial::_print(format_args!(
-            "[from_elf_with_args_at_base] About to clear memory, current_CR3={:#x}, target_CR3={:#x}\n",
+        ktrace!(
+            "[from_elf_with_args_at_base] About to clear memory, current_CR3={:#x}, target_CR3={:#x}",
             current_cr3, existing_cr3
-        ));
+        );
 
         // CRITICAL: Check if we're about to overwrite any active page tables
         // Page tables are allocated starting from 0x08000000
@@ -224,9 +224,9 @@ impl Process {
             ptr::write_bytes(phys_base as *mut u8, 0, USER_REGION_SIZE as usize);
         }
 
-        crate::serial::_print(format_args!(
-            "[from_elf_with_args_at_base] Memory cleared successfully\n"
-        ));
+        ktrace!(
+            "[from_elf_with_args_at_base] Memory cleared successfully"
+        );
 
         let loader = ElfLoader::new(elf_data)?;
 
@@ -621,10 +621,10 @@ impl Process {
     pub fn execute(&mut self) {
         self.state = ProcessState::Running;
 
-        crate::serial::_print(format_args!(
-            "[process::execute] PID={}, entry={:#x}, stack={:#x}, has_entered_user={}, is_fork_child={}\n",
+        ktrace!(
+            "[process::execute] PID={}, entry={:#x}, stack={:#x}, has_entered_user={}, is_fork_child={}",
             self.pid, self.entry_point, self.stack_top, self.has_entered_user, self.is_fork_child
-        ));
+        );
 
         crate::kinfo!(
             "Executing process PID={}, entry={:#x}, stack={:#x}",
@@ -639,10 +639,10 @@ impl Process {
         if self.is_fork_child {
             // Fork child: Return from syscall with RAX=0
             // Use sysret mechanism to return to userspace at syscall_return_addr
-            crate::serial::_print(format_args!(
-                "[process::execute] Fork child: returning to {:#x} with RAX=0\n",
+            ktrace!(
+                "[process::execute] Fork child: returning to {:#x} with RAX=0",
                 self.entry_point
-            ));
+            );
 
             // Set up syscall return context
             crate::interrupts::restore_user_syscall_context(
@@ -863,10 +863,10 @@ fn build_initial_stack(
 #[inline(never)]
 pub fn jump_to_usermode_with_cr3(entry: u64, stack: u64, cr3: u64) -> ! {
     // Use kdebug! macro for direct serial output
-    crate::serial::_print(format_args!(
-        "[jump_to_usermode_with_cr3] ENTRY: entry={:#x}, stack={:#x}, cr3={:#x}\n",
+    kdebug!(
+        "[jump_to_usermode_with_cr3] ENTRY: entry={:#x}, stack={:#x}, cr3={:#x}",
         entry, stack, cr3
-    ));
+    );
 
     kdebug!(
         "[jump_to_usermode_with_cr3] entry={:#018x} stack={:#018x} cr3={:#018x}",
@@ -887,13 +887,13 @@ pub fn jump_to_usermode_with_cr3(entry: u64, stack: u64, cr3: u64) -> ! {
         user_data_sel
     );
 
-    crate::serial::_print(format_args!(
-        "[jump_to_usermode_with_cr3] Setting GS_DATA: entry={:#x}, stack={:#x}, user_cs={:#x}, user_ds={:#x}\n",
+    kdebug!(
+        "[jump_to_usermode_with_cr3] Setting GS_DATA: entry={:#x}, stack={:#x}, user_cs={:#x}, user_ds={:#x}",
         entry,
         stack,
         user_code_sel as u64 | 3,
         user_data_sel as u64 | 3
-    ));
+    );
 
     unsafe {
         crate::interrupts::set_gs_data(
@@ -910,9 +910,9 @@ pub fn jump_to_usermode_with_cr3(entry: u64, stack: u64, cr3: u64) -> ! {
         Msr::new(0xc0000101).write(gs_base);
     }
 
-    crate::serial::_print(format_args!(
-        "[jump_to_usermode_with_cr3] About to switch CR3 and execute sysretq\n"
-    ));
+    kdebug!(
+        "[jump_to_usermode_with_cr3] About to switch CR3 and execute sysretq"
+    );
 
     unsafe {
         kdebug!("BEFORE_SYSRET_WITH_CR3");
@@ -947,10 +947,10 @@ pub fn jump_to_usermode_with_cr3(entry: u64, stack: u64, cr3: u64) -> ! {
 
 pub fn jump_to_usermode(entry: u64, stack: u64) -> ! {
     // Use kdebug! macro for direct serial output
-    crate::serial::_print(format_args!(
-        "[jump_to_usermode] ENTRY: entry={:#x}, stack={:#x}\n",
+    kdebug!(
+        "[jump_to_usermode] ENTRY: entry={:#x}, stack={:#x}",
         entry, stack
-    ));
+    );
 
     kdebug!(
         "[jump_to_usermode] entry={:#018x} stack={:#018x}",
@@ -970,13 +970,13 @@ pub fn jump_to_usermode(entry: u64, stack: u64) -> ! {
         user_data_sel
     );
 
-    crate::serial::_print(format_args!(
-        "[jump_to_usermode] Setting GS_DATA: entry={:#x}, stack={:#x}, user_cs={:#x}, user_ds={:#x}\n",
+    kdebug!(
+        "[jump_to_usermode] Setting GS_DATA: entry={:#x}, stack={:#x}, user_cs={:#x}, user_ds={:#x}",
         entry,
         stack,
         user_code_sel as u64 | 3,
         user_data_sel as u64 | 3
-    ));
+    );
 
     unsafe {
         crate::interrupts::set_gs_data(
@@ -993,9 +993,9 @@ pub fn jump_to_usermode(entry: u64, stack: u64) -> ! {
         Msr::new(0xc0000101).write(gs_base);
     }
 
-    crate::serial::_print(format_args!(
-        "[jump_to_usermode] About to execute sysretq\n"
-    ));
+    kdebug!(
+        "[jump_to_usermode] About to execute sysretq"
+    );
 
     unsafe {
         kdebug!("BEFORE_SYSRET");

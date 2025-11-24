@@ -1,5 +1,5 @@
+use crate::{kdebug, kerror, kinfo, ktrace};
 use crate::logger;
-use crate::serial;
 
 use super::arp::{ArpCache, ArpOperation, ArpPacket};
 use super::drivers::NetError;
@@ -308,8 +308,7 @@ impl NetStack {
         let device_mac = MacAddress::from(device.mac);
         let device_ip = Ipv4Address::from(device.ip);
 
-        crate::serial::_print(format_args!("[ARP] Sending ARP request: who has {}? Tell {}\n", target_ip, device_ip));
-        crate::kinfo!("[ARP] Sending ARP request: who has {}? Tell {}", target_ip, device_ip);
+        kinfo!("[ARP] Sending ARP request: who has {}? Tell {}", target_ip, device_ip);
 
         let arp_request = ArpPacket::new_request(device_mac, device_ip, target_ip);
 
@@ -347,7 +346,7 @@ impl NetStack {
         resolved_ip: Ipv4Address,
         tx: &mut TxBatch,
     ) -> Result<(), NetError> {
-        serial::_print(format_args!("[NetStack] Processing pending packets for {}\n", resolved_ip));
+        ktrace!("[NetStack] Processing pending packets for {}", resolved_ip);
         let now_ms = logger::boot_time_us() / 1_000;
         let resolved_ip_bytes = [resolved_ip.0[0], resolved_ip.0[1], resolved_ip.0[2], resolved_ip.0[3]];
 
@@ -367,8 +366,8 @@ impl NetStack {
                 };
 
                 if target_ip == resolved_ip_bytes {
-                    serial::_print(format_args!("[NetStack] Queued packet matched for {}:{}\n", 
-                        Ipv4Address::from(pkt.dst_ip), pkt.dst_port));
+                    ktrace!("[NetStack] Queued packet matched for {}:{}", 
+                        Ipv4Address::from(pkt.dst_ip), pkt.dst_port);
                     send_flags[i] = true;
                 } else if now_ms.saturating_sub(pkt.timestamp_ms) >= 5000 {
                     // Mark expired packets for removal
@@ -381,8 +380,8 @@ impl NetStack {
         for (i, should_send) in send_flags.iter().enumerate() {
             if *should_send {
                 if let Some(pkt) = self.pending_packets[i].take() {
-                    serial::_print(format_args!("[NetStack] Sending queued packet to {}:{}\n", 
-                        Ipv4Address::from(pkt.dst_ip), pkt.dst_port));
+                    ktrace!("[NetStack] Sending queued packet to {}:{}", 
+                        Ipv4Address::from(pkt.dst_ip), pkt.dst_port);
                     let _ = self.udp_send(
                         pkt.device_index,
                         pkt.socket_index,
@@ -516,11 +515,11 @@ impl NetStack {
         local_port: u16,
         tx_batch: &mut TxBatch,
     ) -> Result<(), NetError> {
-        serial::_print(format_args!(
-            "[tcp_connect] socket_idx={}, device_index={}, remote={}:{}\n",
+        ktrace!(
+            "[tcp_connect] socket_idx={}, device_index={}, remote={}:{}",
             socket_idx, device_index, 
             crate::net::ipv4::Ipv4Address::from(remote_ip), remote_port
-        ));
+        );
         
         if socket_idx >= MAX_TCP_SOCKETS {
             return Err(NetError::InvalidSocket);
@@ -532,17 +531,17 @@ impl NetStack {
         let device = &self.devices[device_index];
         let socket = &mut self.tcp_sockets[socket_idx];
         
-        serial::_print(format_args!(
-            "[tcp_connect] Device info: ip={}.{}.{}.{}, mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}, gateway={}.{}.{}.{}\n",
+        ktrace!(
+            "[tcp_connect] Device info: ip={}.{}.{}.{}, mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}, gateway={}.{}.{}.{}",
             device.ip[0], device.ip[1], device.ip[2], device.ip[3],
             device.mac[0], device.mac[1], device.mac[2], device.mac[3], device.mac[4], device.mac[5],
             device.gateway[0], device.gateway[1], device.gateway[2], device.gateway[3]
-        ));
+        );
         
-        serial::_print(format_args!(
-            "[tcp_connect] Before connect: socket state={:?}, in_use={}\n",
+        ktrace!(
+            "[tcp_connect] Before connect: socket state={:?}, in_use={}",
             socket.state, socket.in_use
-        ));
+        );
 
         let result = socket.connect(
             Ipv4Address::from(device.ip),
@@ -553,10 +552,10 @@ impl NetStack {
             device_index,
         );
         
-        serial::_print(format_args!(
-            "[tcp_connect] After connect: result={:?}, socket state={:?}, in_use={}\n",
+        ktrace!(
+            "[tcp_connect] After connect: result={:?}, socket state={:?}, in_use={}",
             result, socket.state, socket.in_use
-        ));
+        );
         
         // Resolve gateway MAC address via ARP before sending SYN
         if result.is_err() {
@@ -565,21 +564,21 @@ impl NetStack {
         
         let gateway_ip = Ipv4Address::from(device.gateway);
         let current_ms = (logger::boot_time_us() / 1000) as u64;
-        serial::_print(format_args!(
-            "[tcp_connect] Resolving gateway MAC for {}\n", gateway_ip
-        ));
+        ktrace!(
+            "[tcp_connect] Resolving gateway MAC for {}", gateway_ip
+        );
         
         // Try to get MAC from ARP cache
         let gateway_mac = if let Some(mac) = self.arp_cache.lookup(&gateway_ip, current_ms) {
-            serial::_print(format_args!(
-                "[tcp_connect] Found gateway MAC in cache: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}\n",
+            ktrace!(
+                "[tcp_connect] Found gateway MAC in cache: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
                 mac.0[0], mac.0[1], mac.0[2], mac.0[3], mac.0[4], mac.0[5]
-            ));
+            );
             mac
         } else {
-            serial::_print(format_args!(
-                "[tcp_connect] Gateway MAC not in cache\n"
-            ));
+            ktrace!(
+                "[tcp_connect] Gateway MAC not in cache"
+            );
             // For now, assume gateway is on local network and will respond to ARP
             // In real implementation, we should send ARP request and wait
             // But for testing, let's just fail gracefully
@@ -591,16 +590,16 @@ impl NetStack {
         
         // Send initial SYN packet immediately by calling poll
         if let Err(e) = self.tcp_sockets[socket_idx].poll(tx_batch) {
-            serial::_print(format_args!(
-                "[tcp_connect] ERROR: poll failed: {:?}\n", e
-            ));
+            ktrace!(
+                "[tcp_connect] ERROR: poll failed: {:?}", e
+            );
             return Err(e);
         }
         
-        serial::_print(format_args!(
-            "[tcp_connect] Poll successful, {} frames to send\n", 
+        ktrace!(
+            "[tcp_connect] Poll successful, {} frames to send", 
             tx_batch.len()
-        ));
+        );
         
         // Return success - connection initiated
         Ok(())
@@ -617,10 +616,10 @@ impl NetStack {
         }
         
         let socket = &mut self.tcp_sockets[socket_idx];
-        serial::_print(format_args!(
-            "[tcp_send] socket_idx={}, state={:?}, in_use={}, data_len={}\n",
+        ktrace!(
+            "[tcp_send] socket_idx={}, state={:?}, in_use={}, data_len={}",
             socket_idx, socket.state, socket.in_use, data.len()
-        ));
+        );
         
         self.tcp_sockets[socket_idx].send(data)
     }
@@ -770,7 +769,7 @@ impl NetStack {
                                     payload_len: payload.len(),
                                     timestamp_ms: now_ms,
                                 });
-                                serial::_print(format_args!("[NetStack] Queued packet waiting for ARP\n"));
+                                ktrace!("[NetStack] Queued packet waiting for ARP");
                                 break;
                             }
                         }
@@ -931,12 +930,10 @@ impl NetStack {
         let now_ms = logger::boot_time_us() / 1_000;
         self.arp_cache.insert(sender_ip, sender_mac, now_ms);
         
-        serial::_print(format_args!(
-            "[ARP] Received {} from {}: MAC={}\n",
+        ktrace!("[ARP] Received {} from {}: MAC={}",
             if opcode == 1 { "request" } else if opcode == 2 { "reply" } else { "unknown" },
             sender_ip,
-            sender_mac
-        ));
+            sender_mac);
 
         // If this is an ARP reply, check for pending packets
         if opcode == 2 {
@@ -1239,10 +1236,10 @@ impl NetStack {
         let dst_port = u16::from_be_bytes([tcp_data[2], tcp_data[3]]);
         let flags = tcp_data[13];
 
-        serial::_print(format_args!(
-            "[handle_tcp] Received TCP packet: {}:{} -> port {}, flags={:02x}, len={}\n",
+        ktrace!(
+            "[handle_tcp] Received TCP packet: {}:{} -> port {}, flags={:02x}, len={}",
             src_ip, src_port, dst_port, flags, tcp_data.len()
-        ));
+        );
 
         // Find the best matching socket
         let mut best_match_idx = None;
@@ -1250,22 +1247,22 @@ impl NetStack {
 
         for (idx, socket) in self.tcp_sockets.iter().enumerate() {
             if !socket.in_use {
-                serial::_print(format_args!(
-                    "[handle_tcp] Socket {} not in use, skipping\n", idx
-                ));
+                ktrace!(
+                    "[handle_tcp] Socket {} not in use, skipping", idx
+                );
                 continue;
             }
             
-            serial::_print(format_args!(
-                "[handle_tcp] Socket {}: in_use=true, device_idx={:?}, local_port={}, remote_ip={}, remote_port={}, state={:?}\n",
+            ktrace!(
+                "[handle_tcp] Socket {}: in_use=true, device_idx={:?}, local_port={}, remote_ip={}, remote_port={}, state={:?}",
                 idx, socket.device_idx, socket.local_port, socket.remote_ip, socket.remote_port, socket.state
-            ));
+            );
             
             if socket.device_idx != Some(device_index) {
-                serial::_print(format_args!(
-                    "[handle_tcp] Socket {} device mismatch: expected {:?}, got {}\n",
+                ktrace!(
+                    "[handle_tcp] Socket {} device mismatch: expected {:?}, got {}",
                     idx, socket.device_idx, device_index
-                ));
+                );
                 continue;
             }
 
@@ -1288,16 +1285,16 @@ impl NetStack {
         }
 
         if let Some(idx) = best_match_idx {
-            serial::_print(format_args!(
-                "[handle_tcp] Found matching socket {}: score={}\n",
+            ktrace!(
+                "[handle_tcp] Found matching socket {}: score={}",
                 idx, best_match_score
-            ));
+            );
             self.tcp_sockets[idx].process_segment(src_ip, src_mac, tcp_data, tx)?;
         } else {
-            serial::_print(format_args!(
-                "[handle_tcp] No matching socket found for {}:{} -> port {}\n",
+            ktrace!(
+                "[handle_tcp] No matching socket found for {}:{} -> port {}",
                 src_ip, src_port, dst_port
-            ));
+            );
             // TODO: Send RST
         }
 

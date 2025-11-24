@@ -7,6 +7,7 @@ use nexa_boot_info::FramebufferInfo as BootFramebufferInfo;
 use spin::Mutex;
 
 use crate::kinfo;
+use crate::ktrace;
 
 const BASE_FONT_WIDTH: usize = 8;
 const BASE_FONT_HEIGHT: usize = 8;
@@ -268,24 +269,20 @@ impl FramebufferWriter {
         let offset = y * self.pitch + x * self.bytes_per_pixel;
         let total_bytes = self.pitch * self.height;
         if offset + self.bytes_per_pixel > total_bytes {
-            crate::serial::_print(format_args!(
-                "write_pixel oob base={:#x} offset={} total={} x={} y={} pitch={} bpp={}\n",
-                self.buffer as usize, offset, total_bytes, x, y, self.pitch, self.bytes_per_pixel
-            ));
+            ktrace!("write_pixel oob base={:#x} offset={} total={} x={} y={} pitch={} bpp={}",
+                self.buffer as usize, offset, total_bytes, x, y, self.pitch, self.bytes_per_pixel);
             return;
         }
         static LOGGED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
         if !LOGGED.swap(true, Ordering::SeqCst) {
-            crate::serial::_print(format_args!(
-                "write_pixel base={:#x} offset={} x={} y={} pitch={} bpp={} addr={:#x}\n",
+            ktrace!("write_pixel base={:#x} offset={} x={} y={} pitch={} bpp={} addr={:#x}",
                 self.buffer as usize,
                 offset,
                 x,
                 y,
                 self.pitch,
                 self.bytes_per_pixel,
-                (self.buffer as usize).wrapping_add(offset)
-            ));
+                (self.buffer as usize).wrapping_add(offset));
         }
         unsafe {
             for i in 0..self.bytes_per_pixel {
@@ -567,14 +564,10 @@ impl FramebufferWriter {
     }
 
     pub fn clear(&mut self) {
-        crate::serial::_print(format_args!(
-            "FBWRITER::clear buf={:#x} pitch={} cols={} rows={} bytes_pp={}\n",
-            self.buffer as usize, self.pitch, self.columns, self.rows, self.bytes_per_pixel
-        ));
-        crate::serial::_print(format_args!(
-            "FBWRITER::clear spec_addr={:#x} spec_pitch={}\n",
-            self.spec.address, self.spec.pitch
-        ));
+        ktrace!("FBWRITER::clear buf={:#x} pitch={} cols={} rows={} bytes_pp={}",
+            self.buffer as usize, self.pitch, self.columns, self.rows, self.bytes_per_pixel);
+        ktrace!("FBWRITER::clear spec_addr={:#x} spec_pitch={}",
+            self.spec.address, self.spec.pitch);
         for row in 0..self.rows {
             for col in 0..self.columns {
                 self.clear_cell(col, row);

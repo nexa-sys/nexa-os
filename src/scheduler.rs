@@ -1,4 +1,5 @@
 /// Advanced multi-level feedback queue (MLFQ) process scheduler for hybrid kernel
+use crate::{kdebug, kerror, ktrace};
 use crate::process::{Process, ProcessState, MAX_PROCESSES, Pid};
 use alloc::alloc::{dealloc, Layout};
 use alloc::boxed::Box;
@@ -225,7 +226,7 @@ pub fn add_process_with_policy(
 /// Remove a process from the scheduler
 /// This also handles cleanup of process-specific resources including page tables.
 pub fn remove_process(pid: Pid) -> Result<(), &'static str> {
-    crate::serial::_print(format_args!("[remove_process] Removing PID {}\n", pid));
+    kdebug!("[remove_process] Removing PID {}", pid);
 
     let mut table = PROCESS_TABLE.lock();
     let mut removed_cr3 = None;
@@ -240,10 +241,10 @@ pub fn remove_process(pid: Pid) -> Result<(), &'static str> {
                 // Save CR3 for cleanup after releasing the lock
                 if entry.process.cr3 != 0 {
                     removed_cr3 = Some(entry.process.cr3);
-                    crate::serial::_print(format_args!(
-                        "[remove_process] PID {} had CR3={:#x}, will free page tables\n",
+                    kdebug!(
+                        "[remove_process] PID {} had CR3={:#x}, will free page tables",
                         pid, entry.process.cr3
-                    ));
+                    );
                 }
 
                 if entry.process.kernel_stack != 0 {
@@ -277,10 +278,10 @@ pub fn remove_process(pid: Pid) -> Result<(), &'static str> {
         if let Some(cr3) = removed_cr3 {
             crate::kdebug!("Freeing page tables for PID {} (CR3={:#x})", pid, cr3);
             crate::paging::free_process_address_space(cr3);
-            crate::serial::_print(format_args!(
-                "[remove_process] Freed page tables for PID {} (CR3={:#x})\n",
+            kdebug!(
+                "[remove_process] Freed page tables for PID {} (CR3={:#x})",
                 pid, cr3
-            ));
+            );
         }
 
         Ok(())
@@ -296,10 +297,10 @@ pub fn set_process_state(pid: Pid, state: ProcessState) -> Result<(), &'static s
     for slot in table.iter_mut() {
         if let Some(entry) = slot {
             if entry.process.pid == pid {
-                crate::serial::_print(format_args!(
-                    "[set_process_state] PID {} state: {:?} -> {:?}\n",
+                ktrace!(
+                    "[set_process_state] PID {} state: {:?} -> {:?}",
                     pid, entry.process.state, state
-                ));
+                );
                 entry.process.state = state;
                 return Ok(());
             }
@@ -602,27 +603,27 @@ pub fn get_child_state(parent_pid: Pid, child_pid: Pid) -> Option<ProcessState> 
     for slot in table.iter() {
         if let Some(entry) = slot {
             if entry.process.pid == child_pid {
-                crate::serial::_print(format_args!(
-                    "[get_child_state] Found PID {}: ppid={}, parent_pid arg={}, state={:?}\n",
+                ktrace!(
+                    "[get_child_state] Found PID {}: ppid={}, parent_pid arg={}, state={:?}",
                     child_pid, entry.process.ppid, parent_pid, entry.process.state
-                ));
+                );
                 if entry.process.ppid == parent_pid {
                     return Some(entry.process.state);
                 } else {
-                    crate::serial::_print(format_args!(
-                        "[get_child_state] PID {} has wrong parent (ppid={}, expected={})\n",
+                    kerror!(
+                        "[get_child_state] PID {} has wrong parent (ppid={}, expected={})",
                         child_pid, entry.process.ppid, parent_pid
-                    ));
+                    );
                     return None;
                 }
             }
         }
     }
 
-    crate::serial::_print(format_args!(
-        "[get_child_state] PID {} not found in process table\n",
+    kdebug!(
+        "[get_child_state] PID {} not found in process table",
         child_pid
-    ));
+    );
     None
 }
 
@@ -954,13 +955,13 @@ fn do_schedule_internal(from_interrupt: bool) {
     // Debug: Print all process states before scheduling
     {
         let table = PROCESS_TABLE.lock();
-        crate::serial::_print(format_args!("[do_schedule] Process table snapshot:\n"));
+        ktrace!("[do_schedule] Process table snapshot:");
         for slot in table.iter() {
             if let Some(entry) = slot {
-                crate::serial::_print(format_args!(
-                    "  PID {}: ppid={}, state={:?}, policy={:?}, CR3={:#x}\n",
+                ktrace!(
+                    "  PID {}: ppid={}, state={:?}, policy={:?}, CR3={:#x}",
                     entry.process.pid, entry.process.ppid, entry.process.state, entry.policy, entry.process.cr3
-                ));
+                );
             }
         }
     }
@@ -1016,10 +1017,10 @@ fn do_schedule_internal(from_interrupt: bool) {
                                     p.process.state == ProcessState::Ready
                                 )
                             }) {
-                                crate::serial::_print(format_args!(
-                                    "[do_schedule] Child PID {} is Zombie, prioritizing parent PID {}\n",
+                                kdebug!(
+                                    "[do_schedule] Child PID {} is Zombie, prioritizing parent PID {}",
                                     curr_pid, parent_pid
-                                ));
+                                );
                                 next_idx = Some(parent_idx);
                             }
                         }
@@ -1066,10 +1067,10 @@ fn do_schedule_internal(from_interrupt: bool) {
                                         .add(crate::interrupts::GS_SLOT_SAVED_RFLAGS)
                                         .read();
 
-                                    crate::serial::_print(format_args!(
-                                        "[do_schedule] Saving syscall context for PID {}: rip={:#x}, rsp={:#x}, rflags={:#x}\n",
+                                    ktrace!(
+                                        "[do_schedule] Saving syscall context for PID {}: rip={:#x}, rsp={:#x}, rflags={:#x}",
                                         curr_pid, saved_rip, saved_rsp, saved_rflags
-                                    ));
+                                    );
 
                                     entry.process.user_rip = saved_rip;
                                     entry.process.user_rsp = saved_rsp;
@@ -1112,10 +1113,10 @@ fn do_schedule_internal(from_interrupt: bool) {
                 // We need to set it in the process table AFTER execute() completes.
                 // But execute() never returns, so we can't do it there.
                 // The solution: set it NOW in the process table, not on the copy.
-                crate::serial::_print(format_args!(
-                    "[do_schedule] Creating FirstRun decision for PID {}, CR3={:#x}\n",
+                kdebug!(
+                    "[do_schedule] Creating FirstRun decision for PID {}, CR3={:#x}",
                     next_pid, next_cr3
-                ));
+                );
                 Some(ScheduleDecision::FirstRun(process_copy))
             } else {
                 // Check if current process is a zombie - if so, don't save its context
@@ -1134,10 +1135,10 @@ fn do_schedule_internal(from_interrupt: bool) {
                                 
                                 // Don't save context for zombie processes
                                 if candidate.process.state == ProcessState::Zombie {
-                                    crate::serial::_print(format_args!(
-                                        "[do_schedule] Current PID {} is Zombie, not saving context\n",
+                                    kdebug!(
+                                        "[do_schedule] Current PID {} is Zombie, not saving context",
                                         curr_pid
-                                    ));
+                                    );
                                     Some((None, voluntary))
                                 } else {
                                     Some((Some(&mut candidate.process.context as *mut _), voluntary))
@@ -1170,10 +1171,10 @@ fn do_schedule_internal(from_interrupt: bool) {
 
     match decision {
         Some(ScheduleDecision::FirstRun(mut process)) => {
-            crate::serial::_print(format_args!(
-                "[do_schedule] FirstRun: PID={}, entry={:#x}, stack={:#x}, has_entered_user={}, CR3={:#x}\n",
+            kdebug!(
+                "[do_schedule] FirstRun: PID={}, entry={:#x}, stack={:#x}, has_entered_user={}, CR3={:#x}",
                 process.pid, process.entry_point, process.stack_top, process.has_entered_user, process.cr3
-            ));
+            );
 
             // CRITICAL: Validate CR3 before activating address space
             if process.cr3 == 0 {
@@ -1235,11 +1236,11 @@ fn do_schedule_internal(from_interrupt: bool) {
                 }
             }
             
-            crate::serial::_print(format_args!(
-                "[do_schedule] Switch ({}): user_rip={:#x}, user_rsp={:#x}, user_rflags={:#x}\n",
+            ktrace!(
+                "[do_schedule] Switch ({}): user_rip={:#x}, user_rsp={:#x}, user_rflags={:#x}",
                 if is_voluntary { "voluntary" } else { "preempt" },
                 user_rip, user_rsp, user_rflags
-            ));
+            );
             if user_rsp != 0 {
                 crate::interrupts::restore_user_syscall_context(user_rip, user_rsp, user_rflags);
             }

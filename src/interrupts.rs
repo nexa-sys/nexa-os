@@ -7,6 +7,8 @@ use x86_64::registers::model_specific::Msr;
 /// Interrupt Descriptor Table (IDT) and interrupt handlers
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
 
+use crate::{kerror, ktrace};
+
 pub const PIC_1_OFFSET: u8 = 32;
 pub const PIC_2_OFFSET: u8 = PIC_1_OFFSET + 8;
 
@@ -231,17 +233,8 @@ extern "x86-interrupt" fn page_fault_handler(
     let fault_addr = cr2.as_u64();
     let rip = stack_frame.instruction_pointer.as_u64();
 
-    let mut hex_buf = [0u8; 16];
-
-    crate::serial::write_bytes(b"EXCEPTION: PAGE FAULT at 0x");
-    encode_hex_u64(fault_addr, &mut hex_buf);
-    crate::serial::write_bytes(&hex_buf);
-    crate::serial::write_bytes(b", RIP=0x");
-    encode_hex_u64(rip, &mut hex_buf);
-    crate::serial::write_bytes(&hex_buf);
-    crate::serial::write_bytes(b"\r\n");
-
-    crate::serial::write_bytes(b"System halted due to unrecoverable page fault\r\n");
+    kerror!("EXCEPTION: PAGE FAULT at {:#x}, RIP={:#x}", fault_addr, rip);
+    kerror!("System halted due to unrecoverable page fault");
     loop {
         x86_64::instructions::hlt();
     }
@@ -540,13 +533,13 @@ extern "x86-interrupt" fn double_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: u64,
 ) -> ! {
-    crate::serial::_print(format_args!(
-        "\nDOUBLE FAULT: code={:#x} rip={:#x} rsp={:#x} ss={:#x}\n",
+    kerror!(
+        "DOUBLE FAULT: code={:#x} rip={:#x} rsp={:#x} ss={:#x}",
         error_code,
         stack_frame.instruction_pointer.as_u64(),
         stack_frame.stack_pointer.as_u64(),
         stack_frame.stack_segment.0
-    ));
+    );
     crate::kpanic!(
         "DOUBLE FAULT: code={:#x} rip={:#x} rsp={:#x} ss={:#x}",
         error_code,
@@ -1121,7 +1114,7 @@ extern "C" fn write_char_to_vga(c: u8) {
 
 #[unsafe(no_mangle)]
 extern "C" fn write_char_to_serial(c: u8) {
-    crate::serial::_print(format_args!("{}", c as char));
+    ktrace!("{}", c as char);
 }
 
 // Debug function for Ring 3 switch

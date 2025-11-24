@@ -1,3 +1,4 @@
+use crate::{kdebug, kerror, ktrace, kwarn};
 use crate::paging;
 use crate::posix::{self, FileType};
 use crate::process::{Process, ProcessState, USER_REGION_SIZE, USER_VIRT_BASE};
@@ -60,13 +61,11 @@ pub extern "C" fn get_exec_context(
                 *user_data_sel_out = user_data_sel;
             }
         }
-        crate::serial::_print(format_args!(
-            "[get_exec_context] returning entry={:#x}, stack={:#x}, user_data_sel={:#x}\n",
-            entry, stack, user_data_sel
-        ));
+        ktrace!("[get_exec_context] returning entry={:#x}, stack={:#x}, user_data_sel={:#x}", entry, stack, user_data_sel
+        );
         true
     } else {
-        crate::serial::_print(format_args!("[get_exec_context] no exec pending!\n"));
+        ktrace!("[get_exec_context] no exec pending!");
         false
     }
 }
@@ -385,7 +384,7 @@ fn write_to_std_stream(kind: StdStreamKind, buf: u64, count: u64) -> u64 {
     }
 
     let slice = unsafe { slice::from_raw_parts(buf as *const u8, count as usize) };
-    crate::serial::write_bytes(slice);
+    ktrace!("Serial write bytes: {:?}", slice);
 
     let tty = scheduler::get_current_pid()
         .and_then(|pid| scheduler::get_process(pid))
@@ -455,23 +454,17 @@ fn syscall_write(fd: u64, buf: u64, count: u64) -> u64 {
                 FileBacking::Socket(sock_handle) => {
                     // Handle TCP socket write
                     if sock_handle.socket_type == SOCK_STREAM {
-                        crate::serial::_print(format_args!(
-                            "[SYS_WRITE] TCP socket fd={} index={} count={}\n",
-                            fd, sock_handle.socket_index, count
-                        ));
+                        ktrace!("[SYS_WRITE] TCP socket fd={} index={} count={}", fd, sock_handle.socket_index, count
+                        );
                         
                         if sock_handle.socket_index == usize::MAX {
-                            crate::serial::_print(format_args!(
-                                "[SYS_WRITE] ERROR: Invalid socket index\n"
-                            ));
+                            ktrace!("[SYS_WRITE] ERROR: Invalid socket index");
                             posix::set_errno(posix::errno::EBADF);
                             return u64::MAX;
                         }
 
                         if !user_buffer_in_range(buf, count) {
-                            crate::serial::_print(format_args!(
-                                "[SYS_WRITE] ERROR: Buffer out of range\n"
-                            ));
+                            ktrace!("[SYS_WRITE] ERROR: Buffer out of range");
                             posix::set_errno(posix::errno::EFAULT);
                             return u64::MAX;
                         }
@@ -487,9 +480,8 @@ fn syscall_write(fd: u64, buf: u64, count: u64) -> u64 {
                             let mut tx = Box::new(crate::net::stack::TxBatch::new());
                             if result.is_ok() {
                                 if let Err(e) = stack.tcp_poll(sock_handle.socket_index, &mut tx) {
-                                    crate::serial::_print(format_args!(
-                                        "[SYS_WRITE] WARNING: tcp_poll failed: {:?}\n", e
-                                    ));
+                                    ktrace!("[SYS_WRITE] WARNING: tcp_poll failed: {:?}", e
+                                    );
                                 }
                             }
                             
@@ -497,38 +489,31 @@ fn syscall_write(fd: u64, buf: u64, count: u64) -> u64 {
                         }) {
                             res
                         } else {
-                            crate::serial::_print(format_args!(
-                                "[SYS_WRITE] ERROR: Network stack unavailable\n"
-                            ));
+                            ktrace!("[SYS_WRITE] ERROR: Network stack unavailable");
                             posix::set_errno(posix::errno::ENETDOWN);
                             return u64::MAX;
                         };
                         
                         // Transmit frames after releasing network stack lock
                         if !tx.is_empty() {
-                            crate::serial::_print(format_args!(
-                                "[SYS_WRITE] Transmitting {} frame(s)\n", tx.len()
-                            ));
+                            ktrace!("[SYS_WRITE] Transmitting {} frame(s)", tx.len());
                             if let Err(e) = crate::net::send_frames(sock_handle.device_index, &tx) {
-                                crate::serial::_print(format_args!(
-                                    "[SYS_WRITE] ERROR: Failed to transmit frames: {:?}\n", e
-                                ));
+                                ktrace!("[SYS_WRITE] ERROR: Failed to transmit frames: {:?}", e
+                                );
                                 crate::kwarn!("[SYS_WRITE] Failed to transmit frames: {:?}", e);
                             }
                         }
 
                         match send_result {
                             Ok(bytes_sent) => {
-                                crate::serial::_print(format_args!(
-                                    "[SYS_WRITE] TCP sent {} bytes\n", bytes_sent
-                                ));
+                                ktrace!("[SYS_WRITE] TCP sent {} bytes", bytes_sent
+                                );
                                 posix::set_errno(0);
                                 return bytes_sent as u64;
                             }
                             Err(e) => {
-                                crate::serial::_print(format_args!(
-                                    "[SYS_WRITE] ERROR: tcp_send failed: {:?}\n", e
-                                ));
+                                ktrace!("[SYS_WRITE] ERROR: tcp_send failed: {:?}", e
+                                );
                                 posix::set_errno(posix::errno::EIO);
                                 return u64::MAX;
                             }
@@ -536,9 +521,7 @@ fn syscall_write(fd: u64, buf: u64, count: u64) -> u64 {
                     }
                     
                     // UDP socket - not supported via write(), must use sendto()
-                    crate::serial::_print(format_args!(
-                        "[SYS_WRITE] ERROR: UDP socket cannot use write(), use sendto()\n"
-                    ));
+                    ktrace!("[SYS_WRITE] ERROR: UDP socket cannot use write(), use sendto()");
                     posix::set_errno(posix::errno::ENOTSUP);
                     return u64::MAX;
                 }
@@ -648,10 +631,7 @@ fn syscall_read(fd: u64, buf: *mut u8, count: usize) -> u64 {
 
                             match result {
                                 Some(Ok(bytes_recv)) => {
-                                    crate::serial::_print(format_args!(
-                                        "[syscall_read] TCP socket {}: returning {} bytes to PID {:?}\n",
-                                        sock_handle.socket_index, bytes_recv, scheduler::current_pid()
-                                    ));
+                                    ktrace!("[syscall_read] TCP socket {}: returning {} bytes to PID {:?}", sock_handle.socket_index, bytes_recv, scheduler::current_pid());
                                     posix::set_errno(0);
                                     return bytes_recv as u64;
                                 }
@@ -725,10 +705,8 @@ fn syscall_read(fd: u64, buf: *mut u8, count: usize) -> u64 {
 /// Exit system call - terminate current process
 fn syscall_exit(code: i32) -> ! {
     let pid = crate::scheduler::current_pid().unwrap_or(0);
-    crate::serial::_print(format_args!(
-        "[SYS_EXIT] PID {} exiting with code: {}\n",
-        pid, code
-    ));
+    ktrace!("[SYS_EXIT] PID {} exiting with code: {}", pid, code
+    );
     crate::kinfo!("Process {} exiting with code: {}", pid, code);
 
     if pid == 0 {
@@ -740,10 +718,8 @@ fn syscall_exit(code: i32) -> ! {
     }
 
     // Set process state to Zombie
-    crate::serial::_print(format_args!(
-        "[SYS_EXIT] Setting PID {} to Zombie state\n",
-        pid
-    ));
+    ktrace!("[SYS_EXIT] Setting PID {} to Zombie state", pid
+    );
     let _ = crate::scheduler::set_process_state(pid, crate::process::ProcessState::Zombie);
 
     // TODO: Save exit code in process structure for parent's wait4()
@@ -1540,10 +1516,8 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
         );
     }
 
-    crate::serial::_print(format_args!(
-        "[fork] Retrieved user_rsp from GS_DATA: {:#x}\n",
-        user_rsp
-    ));
+    ktrace!("[fork] Retrieved user_rsp from GS_DATA: {:#x}", user_rsp
+    );
 
     // Get current process
     let current_pid = match crate::scheduler::get_current_pid() {
@@ -1564,14 +1538,14 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
     };
 
     crate::kinfo!("fork() called from PID {}", current_pid);
-    crate::serial::_print(format_args!("[fork] PID {} calling fork\n", current_pid));
+    ktrace!("[fork] PID {} calling fork", current_pid);
 
     let parent_pid = current_pid; // Store for later use
 
     // Allocate new PID for child
     let child_pid = crate::process::allocate_pid();
 
-    crate::serial::_print(format_args!("[fork] Allocated child PID {}\n", child_pid));
+    ktrace!("[fork] Allocated child PID {}", child_pid);
 
     // Create child process - start by copying parent state
     let mut child_process = parent_process;
@@ -1624,10 +1598,8 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
         child_process.stack_top
     );
 
-    crate::serial::_print(format_args!(
-        "[fork] User RSP (from GS_DATA)={:#x}, Kernel RSP={:#x}, Child stack_top={:#x}\n",
-        user_rsp, parent_process.context.rsp, child_process.stack_top
-    ));
+    ktrace!("[fork] User RSP (from GS_DATA)={:#x}, Kernel RSP={:#x}, Child stack_top={:#x}", user_rsp, parent_process.context.rsp, child_process.stack_top
+    );
 
     // FULL FORK IMPLEMENTATION: Copy entire user space memory
     // This ensures child has its own copy of code, data, heap, and stack
@@ -1639,10 +1611,8 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
         USER_VIRT_BASE
     );
 
-    crate::serial::_print(format_args!(
-        "[fork] Copying {} KB of memory\n",
-        memory_size / 1024
-    ));
+    ktrace!("[fork] Copying {} KB of memory", memory_size / 1024
+    );
 
     // Allocate new physical memory for child process
     // We need to find a free physical region to copy parent's memory
@@ -1669,23 +1639,17 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
 
     let parent_phys_base = parent_process.memory_base;
 
-    crate::serial::_print(format_args!(
-        "[fork] Parent PID {} phys_base={:#x}, child PID {} phys_base={:#x}\n",
-        parent_pid, parent_phys_base, child_pid, child_phys_base
-    ));
-    crate::serial::_print(format_args!(
-        "[fork] Copying {} KB from parent to child\n",
-        memory_size / 1024
-    ));
+    ktrace!("[fork] Parent PID {} phys_base={:#x}, child PID {} phys_base={:#x}", parent_pid, parent_phys_base, child_pid, child_phys_base
+    );
+    ktrace!("[fork] Copying {} KB from parent to child", memory_size / 1024
+    );
 
     // DEBUG: Check parent's memory at path_buf location (0x9fe390 from shell output)
     unsafe {
         let test_addr = 0x9fe390u64 as *const u8;
         let test_bytes = core::slice::from_raw_parts(test_addr, 16);
-        crate::serial::_print(format_args!(
-            "[fork-debug] Parent mem at path_buf (0x9fe390): {:02x?}\n",
-            test_bytes
-        ));
+        ktrace!("[fork-debug] Parent mem at path_buf (0x9fe390): {:02x?}", test_bytes
+        );
     }
 
     unsafe {
@@ -1712,10 +1676,8 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
             return u64::MAX;
         }
 
-        crate::serial::_print(format_args!(
-            "[fork] VALIDATED: Copying from VIRT {:#x} to PHYS {:#x}, size {:#x}\n",
-            src_ptr as u64, dst_ptr as u64, memory_size
-        ));
+        ktrace!("[fork] VALIDATED: Copying from VIRT {:#x} to PHYS {:#x}, size {:#x}", src_ptr as u64, dst_ptr as u64, memory_size
+        );
 
         core::ptr::copy_nonoverlapping(src_ptr, dst_ptr, memory_size as usize);
 
@@ -1736,15 +1698,13 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
         // DEBUG: Verify copy worked - check path_buf address in child's physical memory
         let child_test_addr = (child_phys_base + (0x9fe390 - USER_VIRT_BASE)) as *const u8;
         let child_test_bytes = core::slice::from_raw_parts(child_test_addr, 16);
-        crate::serial::_print(format_args!(
-            "[fork-debug] Child phys mem at path_buf (0x9fe390): {:02x?}\n",
-            child_test_bytes
-        ));
+        ktrace!("[fork-debug] Child phys mem at path_buf (0x9fe390): {:02x?}", child_test_bytes
+        );
 
         // CRITICAL FIX: Flush TLB to clear any stale page cache entries
         // This prevents the CPU from using old TLB entries after we've changed page tables
         use x86_64::instructions::tlb::flush_all;
-        crate::serial::_print(format_args!("[fork] Flushing TLB after memory copy\n"));
+        ktrace!("[fork] Flushing TLB after memory copy");
         flush_all();
     }
 
@@ -1753,7 +1713,7 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
         memory_size / 1024
     );
 
-    crate::serial::_print(format_args!("[fork] Memory copied successfully\n"));
+    ktrace!("[fork] Memory copied successfully");
 
     // Store child's physical base in the process struct
     child_process.memory_base = child_phys_base;
@@ -1775,10 +1735,8 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
 
             child_process.cr3 = cr3;
 
-            crate::serial::_print(format_args!(
-                "[fork] VALIDATED CR3: {:#x} for child PID {}\n",
-                cr3, child_pid
-            ));
+            ktrace!("[fork] VALIDATED CR3: {:#x} for child PID {}", cr3, child_pid
+            );
         }
         Err(err) => {
             crate::kerror!(
@@ -1790,10 +1748,8 @@ fn syscall_fork(syscall_return_addr: u64) -> u64 {
         }
     }
 
-    crate::serial::_print(format_args!(
-        "[fork] Child memory_base={:#x}, memory_size={:#x}\n",
-        child_phys_base, memory_size
-    ));
+    ktrace!("[fork] Child memory_base={:#x}, memory_size={:#x}", child_phys_base, memory_size
+    );
 
     // Copy file descriptor table
     // For now, we share the FD table (TODO: implement proper copy)
@@ -1847,10 +1803,10 @@ fn copy_user_c_string(ptr: *const u8, buffer: &mut [u8]) -> Result<usize, ()> {
 fn syscall_execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8) -> u64 {
     use crate::scheduler::get_current_pid;
 
-    crate::serial::_print(format_args!("[syscall_execve] Called\n"));
+    ktrace!("[syscall_execve] Called");
 
     if path.is_null() {
-        crate::serial::_print(format_args!("[syscall_execve] Error: path is null\n"));
+        ktrace!("[syscall_execve] Error: path is null");
         posix::set_errno(posix::errno::EFAULT);
         return u64::MAX;
     }
@@ -1863,9 +1819,7 @@ fn syscall_execve(path: *const u8, _argv: *const *const u8, _envp: *const *const
     let path_len = match copy_user_c_string(path, &mut path_buf) {
         Ok(len) => len,
         Err(_) => {
-            crate::serial::_print(format_args!(
-                "[syscall_execve] Error: path too long or invalid\n"
-            ));
+            ktrace!("[syscall_execve] Error: path too long or invalid");
             posix::set_errno(posix::errno::EINVAL);
             return u64::MAX;
         }
@@ -1875,9 +1829,7 @@ fn syscall_execve(path: *const u8, _argv: *const *const u8, _envp: *const *const
     let path_str = match core::str::from_utf8(path_slice) {
         Ok(s) => s,
         Err(_) => {
-            crate::serial::_print(format_args!(
-                "[syscall_execve] Error: invalid UTF-8 in path\n"
-            ));
+            ktrace!("[syscall_execve] Error: invalid UTF-8 in path");
             posix::set_errno(posix::errno::EINVAL);
             return u64::MAX;
         }
@@ -1895,10 +1847,8 @@ fn syscall_execve(path: *const u8, _argv: *const *const u8, _envp: *const *const
             }
 
             if arg_index >= MAX_EXEC_ARGS {
-                crate::serial::_print(format_args!(
-                    "[syscall_execve] Error: too many arguments (> {})\n",
-                    MAX_EXEC_ARGS
-                ));
+                ktrace!("[syscall_execve] Error: too many arguments (> {})", MAX_EXEC_ARGS
+                );
                 posix::set_errno(posix::errno::E2BIG);
                 return u64::MAX;
             }
@@ -1927,11 +1877,11 @@ fn syscall_execve(path: *const u8, _argv: *const *const u8, _envp: *const *const
 
     let argv_list = &argv_refs[..arg_index];
 
-    crate::serial::_print(format_args!("[syscall_execve] Path: {}\n", path_str));
-    crate::serial::_print(format_args!("[syscall_execve] argc={}\n", argv_list.len()));
+    ktrace!("[syscall_execve] Path: {}", path_str);
+    ktrace!("[syscall_execve] argc={}", argv_list.len());
     for (i, arg) in argv_list.iter().enumerate() {
         let disp = core::str::from_utf8(arg).unwrap_or("<non-utf8>");
-        crate::serial::_print(format_args!("  argv[{}] = {}\n", i, disp));
+        ktrace!("  argv[{}] = {}", i, disp);
     }
 
     let exec_path_bytes = path_slice;
@@ -1939,17 +1889,12 @@ fn syscall_execve(path: *const u8, _argv: *const *const u8, _envp: *const *const
     // Load the ELF file from filesystem
     let elf_data = match crate::fs::read_file_bytes(path_str) {
         Some(data) => {
-            crate::serial::_print(format_args!(
-                "[syscall_execve] Found file, {} bytes\n",
-                data.len()
-            ));
+            ktrace!("[syscall_execve] Found file, {} bytes", data.len());
             data
         }
         None => {
-            crate::serial::_print(format_args!(
-                "[syscall_execve] Error: file not found: {}\n",
-                path_str
-            ));
+            ktrace!("[syscall_execve] Error: file not found: {}", path_str
+            );
             posix::set_errno(posix::errno::ENOENT);
             return u64::MAX;
         }
@@ -1988,10 +1933,8 @@ fn syscall_execve(path: *const u8, _argv: *const *const u8, _envp: *const *const
         }
     };
 
-    crate::serial::_print(format_args!(
-        "[syscall_execve] Current process memory_base={:#x}, cr3={:#x}\n",
-        current_memory_base, current_cr3
-    ));
+    ktrace!("[syscall_execve] Current process memory_base={:#x}, cr3={:#x}", current_memory_base, current_cr3
+    );
 
     // Create new process image from ELF, using CURRENT process's physical memory
     let new_process = match crate::process::Process::from_elf_with_args_at_base(
@@ -2002,14 +1945,12 @@ fn syscall_execve(path: *const u8, _argv: *const *const u8, _envp: *const *const
         current_cr3,
     ) {
         Ok(proc) => {
-            crate::serial::_print(format_args!(
-                "[syscall_execve] Successfully loaded ELF at existing base, entry={:#x}, stack={:#x}\n",
-                proc.entry_point, proc.stack_top
-            ));
+            ktrace!("[syscall_execve] Successfully loaded ELF at existing base, entry={:#x}, stack={:#x}", proc.entry_point, proc.stack_top
+            );
             proc
         }
         Err(e) => {
-            crate::serial::_print(format_args!("[syscall_execve] Error loading ELF: {}\n", e));
+            ktrace!("[syscall_execve] Error loading ELF: {}", e);
             posix::set_errno(posix::errno::EINVAL);
             return u64::MAX;
         }
@@ -2025,10 +1966,8 @@ fn syscall_execve(path: *const u8, _argv: *const *const u8, _envp: *const *const
                 if entry.process.pid == current_pid {
                     found = true;
 
-                    crate::serial::_print(format_args!(
-                        "[syscall_execve] Updating PID {} in table: old_cr3={:#x}, new_cr3={:#x}\n",
-                        current_pid, entry.process.cr3, new_process.cr3
-                    ));
+                    ktrace!("[syscall_execve] Updating PID {} in table: old_cr3={:#x}, new_cr3={:#x}", current_pid, entry.process.cr3, new_process.cr3
+                    );
 
                     // Replace process image while preserving identity
                     entry.process.entry_point = new_process.entry_point;
@@ -2050,11 +1989,9 @@ fn syscall_execve(path: *const u8, _argv: *const *const u8, _envp: *const *const
                     entry.process.user_rflags = 0x202;
                     entry.process.exit_code = 0;
 
-                    crate::serial::_print(format_args!(
-                        "[syscall_execve] Updated: entry={:#x}, stack={:#x}, cr3={:#x}, has_entered_user={}\n",
-                        entry.process.entry_point, entry.process.stack_top, entry.process.cr3,
+                    ktrace!("[syscall_execve] Updated: entry={:#x}, stack={:#x}, cr3={:#x}, has_entered_user={}", entry.process.entry_point, entry.process.stack_top, entry.process.cr3,
                         entry.process.has_entered_user
-                    ));
+                    );
 
                     // Reset signal handlers to SIG_DFL (POSIX requirement)
                     entry.process.signal_state.reset_to_default();
@@ -2185,10 +2122,8 @@ fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> 
     let mut loop_count = 0;
     loop {
         loop_count += 1;
-        crate::serial::_print(format_args!(
-            "[wait4] ===== Loop {} BEGIN: PID {} waiting for pid {} =====\n",
-            loop_count, current_pid, pid
-        ));
+        ktrace!("[wait4] ===== Loop {} BEGIN: PID {} waiting for pid {} =====", loop_count, current_pid, pid
+        );
 
         // Check if the specified child has exited
         let mut found_any_child = false;
@@ -2226,10 +2161,8 @@ fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> 
         } else if pid > 0 {
             // Wait for specific PID
             if loop_count <= 3 || (loop_count % 100 == 0) {
-                crate::serial::_print(format_args!(
-                    "[wait4] Loop {}: Checking if PID {} is child of PID {}\n",
-                    loop_count, pid, current_pid
-                ));
+                ktrace!("[wait4] Loop {}: Checking if PID {} is child of PID {}", loop_count, pid, current_pid
+                );
             }
 
             if let Some(child_state) = crate::scheduler::get_child_state(current_pid, pid as u64) {
@@ -2237,10 +2170,8 @@ fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> 
                 wait_pid = pid as u64;
 
                 if loop_count <= 3 || (loop_count % 100 == 0) {
-                    crate::serial::_print(format_args!(
-                        "[wait4] Loop {}: PID {} found, state={:?}\n",
-                        loop_count, pid, child_state
-                    ));
+                    ktrace!("[wait4] Loop {}: PID {} found, state={:?}", loop_count, pid, child_state
+                    );
                 }
 
                 if child_state == crate::process::ProcessState::Zombie {
@@ -2262,10 +2193,8 @@ fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> 
 
         // If child has exited, clean up and return
         if child_exited {
-            crate::serial::_print(format_args!(
-                "[wait4] Child {} exited, found_any_child={}, proceeding to cleanup\n",
-                wait_pid, found_any_child
-            ));
+            ktrace!("[wait4] Child {} exited, found_any_child={}, proceeding to cleanup", wait_pid, found_any_child
+            );
 
             // Encode status according to POSIX conventions
             let encoded_status = if let Some(signal) = child_term_signal {
@@ -2300,19 +2229,15 @@ fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> 
             // We're about to return to userspace via the syscall return path.
             // The process state is already correct (Running) and syscall context
             // is already set up in GS_DATA. Just return the PID.
-            crate::serial::_print(format_args!(
-                "[wait4] Returning to PID {} with child PID {}\n",
-                current_pid, wait_pid
-            ));
+            ktrace!("[wait4] Returning to PID {} with child PID {}", current_pid, wait_pid
+            );
             return wait_pid;
         }
 
         // If no child found at all, error
         if !found_any_child {
-            crate::serial::_print(format_args!(
-                "[wait4] No matching child found for PID {} (pid arg={}) - returning ECHILD\n",
-                current_pid, pid
-            ));
+            ktrace!("[wait4] No matching child found for PID {} (pid arg={}) - returning ECHILD", current_pid, pid
+            );
             crate::kinfo!("wait4() no matching child found");
             posix::set_errno(posix::errno::ECHILD);
             return u64::MAX; // -1
@@ -2329,17 +2254,13 @@ fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> 
         // IMPORTANT: After do_schedule() returns, we MUST re-check the child state
         // immediately because the child may have exited while we were scheduled out.
         if loop_count <= 3 || (loop_count % 100 == 0) {
-            crate::serial::_print(format_args!(
-                "[wait4] Loop {}: Child not ready, calling do_schedule()\n",
-                loop_count
-            ));
+            ktrace!("[wait4] Loop {}: Child not ready, calling do_schedule()", loop_count
+            );
         }
         crate::scheduler::do_schedule();
         if loop_count <= 3 || (loop_count % 100 == 0) {
-            crate::serial::_print(format_args!(
-                "[wait4] Loop {}: Returned from do_schedule(), re-checking child state\n",
-                loop_count
-            ));
+            ktrace!("[wait4] Loop {}: Returned from do_schedule(), re-checking child state", loop_count
+            );
         }
         
         // Continue to next loop iteration to re-check child state
@@ -3245,7 +3166,7 @@ fn syscall_sendto(
     addrlen: u32,
 ) -> u64 {
     // Use serial output directly since kinfo! won't show after init starts
-    crate::serial::_print(format_args!("[SYS_SENDTO] sockfd={} len={} addrlen={}\n", sockfd, len, addrlen));
+    ktrace!("[SYS_SENDTO] sockfd={} len={} addrlen={}", sockfd, len, addrlen);
     crate::kinfo!("[SYS_SENDTO] sockfd={} len={} addrlen={}", sockfd, len, addrlen);
     
     if buf.is_null() || len == 0 {
@@ -3282,29 +3203,27 @@ fn syscall_sendto(
             return u64::MAX;
         };
 
-        crate::serial::_print(format_args!("[SYS_SENDTO] Socket domain={}, type={}, index={}\n", 
-            sock_handle.domain, sock_handle.socket_type, sock_handle.socket_index));
-        crate::serial::_print(format_args!("[SYS_SENDTO] AF_NETLINK={}, domain==AF_NETLINK: {}\n", 
-            AF_NETLINK, sock_handle.domain == AF_NETLINK));
+        ktrace!("[SYS_SENDTO] Socket domain={}, type={}, index={}", sock_handle.domain, sock_handle.socket_type, sock_handle.socket_index);
+        ktrace!("[SYS_SENDTO] AF_NETLINK={}, domain==AF_NETLINK: {}", AF_NETLINK, sock_handle.domain == AF_NETLINK);
 
         if sock_handle.domain == AF_NETLINK {
             // Netlink doesn't require destination address
             let data = slice::from_raw_parts(buf, len);
-            crate::serial::_print(format_args!("[SYS_SENDTO] Netlink sendto: socket_idx={}, data_len={}\n", sock_handle.socket_index, len));
+            ktrace!("[SYS_SENDTO] Netlink sendto: socket_idx={}, data_len={}", sock_handle.socket_index, len);
             if let Some(res) = crate::net::with_net_stack(|stack| stack.netlink_send(sock_handle.socket_index, data)) {
                 match res {
                     Ok(_) => {
-                        crate::serial::_print(format_args!("[SYS_SENDTO] Netlink sendto successful\n"));
+                        ktrace!("[SYS_SENDTO] Netlink sendto successful");
                         return len as u64;
                     }
                     Err(_e) => {
-                        crate::serial::_print(format_args!("[SYS_SENDTO] Netlink sendto error\n"));
+                        ktrace!("[SYS_SENDTO] Netlink sendto error");
                         posix::set_errno(posix::errno::EIO);
                         return u64::MAX;
                     }
                 }
             }
-            crate::serial::_print(format_args!("[SYS_SENDTO] Network stack unavailable\n"));
+            ktrace!("[SYS_SENDTO] Network stack unavailable");
             posix::set_errno(posix::errno::ENETDOWN);
             return u64::MAX;
         }
@@ -3360,22 +3279,20 @@ fn syscall_sendto(
                           (ip[3] == 255 && ip[0] != 127); // Subnet broadcast or limited broadcast
         
         if is_broadcast {
-            crate::serial::_print(format_args!("[SYS_SENDTO] Broadcast address detected: {}.{}.{}.{}\n", ip[0], ip[1], ip[2], ip[3]));
+            ktrace!("[SYS_SENDTO] Broadcast address detected: {}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]);
             crate::kinfo!("[SYS_SENDTO] Broadcast address detected: {}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]);
             if !sock_handle.broadcast_enabled {
-                crate::serial::_print(format_args!("[SYS_SENDTO] ERROR: Broadcast not permitted - SO_BROADCAST not set\n"));
+                ktrace!("[SYS_SENDTO] ERROR: Broadcast not permitted - SO_BROADCAST not set");
                 crate::kwarn!("[SYS_SENDTO] Broadcast not permitted: SO_BROADCAST not set on socket");
                 posix::set_errno(posix::errno::EACCES);
                 return u64::MAX;
             }
-            crate::serial::_print(format_args!("[SYS_SENDTO] SO_BROADCAST enabled, allowing broadcast\n"));
+            ktrace!("[SYS_SENDTO] SO_BROADCAST enabled, allowing broadcast");
             crate::kinfo!("[SYS_SENDTO] SO_BROADCAST enabled, allowing broadcast transmission");
         }
 
-        crate::serial::_print(format_args!(
-            "[SYS_SENDTO] Sending {} bytes to {}.{}.{}.{}:{}\n",
-            len, ip[0], ip[1], ip[2], ip[3], port
-        ));
+        ktrace!("[SYS_SENDTO] Sending {} bytes to {}.{}.{}.{}:{}", len, ip[0], ip[1], ip[2], ip[3], port
+        );
         crate::kinfo!(
             "[SYS_SENDTO] Sending {} bytes to {}.{}.{}.{}:{}",
             len,
@@ -3389,17 +3306,15 @@ fn syscall_sendto(
         // Copy payload from userspace
         let payload = slice::from_raw_parts(buf, len);
         
-        crate::serial::_print(format_args!(
-            "[SYS_SENDTO] About to send via network stack, device={}, socket={}, broadcast={}\n",
-            sock_handle.device_index, sock_handle.socket_index, sock_handle.broadcast_enabled
-        ));
+        ktrace!("[SYS_SENDTO] About to send via network stack, device={}, socket={}, broadcast={}", sock_handle.device_index, sock_handle.socket_index, sock_handle.broadcast_enabled
+        );
         crate::kinfo!("[SYS_SENDTO] About to send via network stack, device_index={}, socket_index={}", 
                       sock_handle.device_index, sock_handle.socket_index);
         crate::kinfo!("[SYS_SENDTO] Socket broadcast_enabled={}", sock_handle.broadcast_enabled);
         
         // Send via network stack
         let (udp_result, tx) = if let Some(res) = crate::net::with_net_stack(|stack| {
-            crate::serial::_print(format_args!("[SYS_SENDTO] Acquired network stack lock\n"));
+            ktrace!("[SYS_SENDTO] Acquired network stack lock");
             crate::kinfo!("[SYS_SENDTO] Acquired network stack lock");
             // IMPORTANT: TxBatch is ~6KB, allocate on heap to avoid kernel stack overflow
             let mut tx = Box::new(crate::net::stack::TxBatch::new());
@@ -3411,13 +3326,13 @@ fn syscall_sendto(
                 payload,
                 &mut tx,
             );
-            crate::serial::_print(format_args!("[SYS_SENDTO] udp_send returned: {:?}\n", result));
+            ktrace!("[SYS_SENDTO] udp_send returned: {:?}", result);
             crate::kinfo!("[SYS_SENDTO] udp_send returned: {:?}", result);
             (result, tx)
         }) {
             res
         } else {
-            crate::serial::_print(format_args!("[SYS_SENDTO] ERROR: Network stack unavailable\n"));
+            ktrace!("[SYS_SENDTO] ERROR: Network stack unavailable");
             crate::kwarn!("[SYS_SENDTO] Network stack unavailable");
             posix::set_errno(posix::errno::ENETDOWN);
             return u64::MAX;
@@ -3427,7 +3342,7 @@ fn syscall_sendto(
         // IMPORTANT: Send frames even if udp_send failed, because ARP requests may be queued
         if !tx.is_empty() {
             if let Err(e) = crate::net::send_frames(sock_handle.device_index, &tx) {
-                crate::serial::_print(format_args!("[SYS_SENDTO] ERROR: Failed to transmit frames: {:?}\n", e));
+                ktrace!("[SYS_SENDTO] ERROR: Failed to transmit frames: {:?}", e);
                 crate::kwarn!("[SYS_SENDTO] Failed to transmit frames: {:?}", e);
                 // Continue - we still want to report the original error
             } else {
@@ -3437,11 +3352,11 @@ fn syscall_sendto(
         
         match udp_result {
             Ok(_) => {
-                crate::serial::_print(format_args!("[SYS_SENDTO] SUCCESS: Sent {} bytes\n", len));
+                ktrace!("[SYS_SENDTO] SUCCESS: Sent {} bytes", len);
                 crate::kinfo!("[SYS_SENDTO] Successfully sent {} bytes", len);
                 posix::set_errno(0);
                 let result = len as u64;
-                crate::serial::_print(format_args!("[SYS_SENDTO] Returning {} to userspace\n", result));
+                ktrace!("[SYS_SENDTO] Returning {} to userspace", result);
                 result
             }
             Err(ref e) => {
@@ -3451,12 +3366,12 @@ fn syscall_sendto(
                 if is_arp_miss {
                     // Packet queued for ARP resolution - return success to userspace
                     // This is production-grade: kernel handles ARP transparently
-                    crate::serial::_print(format_args!("[SYS_SENDTO] Packet queued for ARP, returning success\n"));
+                    ktrace!("[SYS_SENDTO] Packet queued for ARP, returning success");
                     crate::kinfo!("[SYS_SENDTO] Packet queued for ARP resolution");
                     posix::set_errno(0);
                     len as u64
                 } else {
-                    crate::serial::_print(format_args!("[SYS_SENDTO] ERROR: Failed to prepare packet: {:?}\n", e));
+                    ktrace!("[SYS_SENDTO] ERROR: Failed to prepare packet: {:?}", e);
                     crate::kwarn!("[SYS_SENDTO] Failed to prepare packet: {:?}", e);
                     posix::set_errno(posix::errno::EIO);
                     u64::MAX
@@ -3477,19 +3392,19 @@ fn syscall_recvfrom(
     _src_addr: *mut SockAddr,
     _addrlen: *mut u32,
 ) -> u64 {
-    crate::serial::_print(format_args!("[SYS_RECVFROM] ENTRY: sockfd={} len={}\n", sockfd, len));
+    ktrace!("[SYS_RECVFROM] ENTRY: sockfd={} len={}", sockfd, len);
     
     // Poll network stack to process any incoming packets before attempting receive
     crate::net::poll();
     
     if buf.is_null() || len == 0 {
-        crate::serial::_print(format_args!("[SYS_RECVFROM] Invalid buf or len\n"));
+        ktrace!("[SYS_RECVFROM] Invalid buf or len");
         posix::set_errno(posix::errno::EINVAL);
         return u64::MAX;
     }
 
     if !user_buffer_in_range(buf as u64, len as u64) {
-        crate::serial::_print(format_args!("[SYS_RECVFROM] Buffer out of range\n"));
+        ktrace!("[SYS_RECVFROM] Buffer out of range");
         posix::set_errno(posix::errno::EFAULT);
         return u64::MAX;
     }
@@ -3519,22 +3434,22 @@ fn syscall_recvfrom(
         };
 
         if sock_handle.domain == AF_NETLINK {
-            crate::serial::_print(format_args!("[SYS_RECVFROM] Netlink receive: socket_idx={}\n", sock_handle.socket_index));
+            ktrace!("[SYS_RECVFROM] Netlink receive: socket_idx={}", sock_handle.socket_index);
             let buffer = slice::from_raw_parts_mut(buf, len);
             if let Some(res) = crate::net::with_net_stack(|stack| stack.netlink_receive(sock_handle.socket_index, buffer)) {
                 match res {
                     Ok(n) => {
-                        crate::serial::_print(format_args!("[SYS_RECVFROM] Netlink received {} bytes\n", n));
+                        ktrace!("[SYS_RECVFROM] Netlink received {} bytes", n);
                         return n as u64;
                     }
                     Err(e) => {
-                        crate::serial::_print(format_args!("[SYS_RECVFROM] Netlink receive error: {:?}\n", e));
+                        ktrace!("[SYS_RECVFROM] Netlink receive error: {:?}", e);
                         posix::set_errno(posix::errno::EAGAIN);
                         return u64::MAX;
                     }
                 }
             }
-            crate::serial::_print(format_args!("[SYS_RECVFROM] Network stack unavailable\n"));
+            ktrace!("[SYS_RECVFROM] Network stack unavailable");
             posix::set_errno(posix::errno::ENETDOWN);
             return u64::MAX;
         }
@@ -3564,12 +3479,10 @@ fn syscall_recvfrom(
             }) {
                 match res {
                     Ok(result) => {
-                        crate::serial::_print(format_args!(
-                            "[SYS_RECVFROM] SUCCESS: Received {} bytes from {}.{}.{}.{}:{}\n",
-                            result.bytes_copied,
+                        ktrace!("[SYS_RECVFROM] SUCCESS: Received {} bytes from {}.{}.{}.{}:{}", result.bytes_copied,
                             result.src_ip[0], result.src_ip[1], result.src_ip[2], result.src_ip[3],
                             result.src_port
-                        ));
+                        );
                         
                         // Fill source address if provided
                         if !_src_addr.is_null() && !_addrlen.is_null() {
@@ -3588,9 +3501,8 @@ fn syscall_recvfrom(
                         if timeout_ms > 0 {
                             let elapsed_ms = crate::scheduler::get_tick() - start_tick;
                             if elapsed_ms >= timeout_ms {
-                                crate::serial::_print(format_args!(
-                                    "[SYS_RECVFROM] TIMEOUT after {}ms\n", elapsed_ms
-                                ));
+                                ktrace!("[SYS_RECVFROM] TIMEOUT after {}ms", elapsed_ms
+                                );
                                 posix::set_errno(posix::errno::EAGAIN);
                                 return u64::MAX;
                             }
@@ -3604,7 +3516,7 @@ fn syscall_recvfrom(
                     }
                 }
             } else {
-                crate::serial::_print(format_args!("[SYS_RECVFROM] ERROR: Network stack unavailable\n"));
+                ktrace!("[SYS_RECVFROM] ERROR: Network stack unavailable");
                 posix::set_errno(posix::errno::ENETDOWN);
                 return u64::MAX;
             }
@@ -3616,7 +3528,7 @@ fn syscall_recvfrom(
 /// For TCP, establishes a connection. For UDP, sets default destination.
 /// Returns: 0 on success, -1 on error
 fn syscall_connect(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
-    crate::serial::_print(format_args!("[SYS_CONNECT] ==== ENTRY ==== sockfd={} addrlen={}\n", sockfd, addrlen));
+    ktrace!("[SYS_CONNECT] ==== ENTRY ==== sockfd={} addrlen={}", sockfd, addrlen);
     crate::kinfo!("[SYS_CONNECT] sockfd={} addrlen={}", sockfd, addrlen);
     
     if addr.is_null() || addrlen < 8 {
@@ -3717,15 +3629,12 @@ fn syscall_connect(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
                 }
             }
 
-            crate::serial::_print(format_args!(
-                "[SYS_CONNECT] tcp_connect returned: {:?}\n", result
-            ));
+            ktrace!("[SYS_CONNECT] tcp_connect returned: {:?}", result
+            );
 
             match result {
                 Some(Ok(())) => {
-                    crate::serial::_print(format_args!(
-                        "[SYS_CONNECT] TCP connection initiated, waiting for establishment...\n"
-                    ));
+                    ktrace!("[SYS_CONNECT] TCP connection initiated, waiting for establishment...");
                     crate::kinfo!("[SYS_CONNECT] TCP connection initiated, waiting for establishment...");
                     
                     // Blocking connect: wait for connection to be established
@@ -3802,10 +3711,8 @@ fn syscall_setsockopt(
     optval: *const u8,
     optlen: u32,
 ) -> u64 {
-    crate::serial::_print(format_args!(
-        "[SYS_SETSOCKOPT] sockfd={} level={} optname={} optlen={}\n",
-        sockfd, level, optname, optlen
-    ));
+    ktrace!("[SYS_SETSOCKOPT] sockfd={} level={} optname={} optlen={}", sockfd, level, optname, optlen
+    );
     crate::kinfo!("[SYS_SETSOCKOPT] sockfd={} level={} optname={} optlen={}", sockfd, level, optname, optlen);
     
     if optval.is_null() || optlen == 0 {
@@ -3850,10 +3757,8 @@ fn syscall_setsockopt(
                     if optlen >= 4 {
                         let value = *(optval as *const i32);
                         sock_handle.broadcast_enabled = value != 0;
-                        crate::serial::_print(format_args!(
-                            "[SYS_SETSOCKOPT] SO_BROADCAST set to {} for sockfd {}\n",
-                            sock_handle.broadcast_enabled, sockfd
-                        ));
+                        ktrace!("[SYS_SETSOCKOPT] SO_BROADCAST set to {} for sockfd {}", sock_handle.broadcast_enabled, sockfd
+                        );
                         crate::kinfo!("[SYS_SETSOCKOPT] SO_BROADCAST set to {}", sock_handle.broadcast_enabled);
                         posix::set_errno(0);
                         return 0;

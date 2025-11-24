@@ -3,8 +3,8 @@
 /// This module provides a complete TCP stack including connection management,
 /// reliable data transfer, flow control, and retransmission.
 
+use crate::{kdebug, kerror, ktrace};
 use crate::logger;
-use crate::serial;
 use super::ethernet::MacAddress;
 use super::ipv4::Ipv4Address;
 use super::stack::{TxBatch, MAX_FRAME_SIZE};
@@ -474,20 +474,12 @@ impl TcpSocket {
 
     /// Receive data (non-blocking)
     pub fn recv(&mut self, buffer: &mut [u8]) -> Result<usize, NetError> {
-        serial::_print(format_args!(
-            "[TCP recv] Called: buffer_len={}, recv_buffer_len={}, state={:?}\n",
-            buffer.len(), self.recv_buffer.len(), self.state
-        ));
-        
         if self.recv_buffer.is_empty() {
             // If connection is closed or in CloseWait (FIN received), return EOF
             if self.state == TcpState::Closed || self.state == TcpState::CloseWait {
-                serial::_print(format_args!(
-                    "[TCP recv] Connection closed or FIN received, returning 0 (EOF)\n"
-                ));
+                ktrace!("[TCP recv] Connection closed or FIN received, returning 0 (EOF)");
                 return Ok(0);  // EOF
             }
-            serial::_print(format_args!("[TCP recv] Buffer empty, returning WouldBlock\n"));
             return Err(NetError::WouldBlock);
         }
 
@@ -496,10 +488,7 @@ impl TcpSocket {
             buffer[i] = self.recv_buffer.pop_front().unwrap();
         }
 
-        serial::_print(format_args!(
-            "[TCP recv] Received {} bytes, remaining in buffer={}\n",
-            to_recv, self.recv_buffer.len()
-        ));
+        ktrace!("[TCP recv] Received {} bytes, remaining in buffer={}", to_recv, self.recv_buffer.len());
 
         // Update receive window
         self.rcv_wnd = (RECV_BUFFER_SIZE - self.recv_buffer.len()) as u16;
@@ -512,10 +501,7 @@ impl TcpSocket {
         // Avoid duplicates
         if !self.wait_queue.contains(&pid) {
             self.wait_queue.push(pid);
-            serial::_print(format_args!(
-                "[TCP add_waiter] Added PID {} to wait queue, queue_len now={}\n",
-                pid, self.wait_queue.len()
-            ));
+            ktrace!("[TCP add_waiter] Added PID {} to wait queue, queue_len now={}", pid, self.wait_queue.len());
         }
     }
 
@@ -560,42 +546,27 @@ impl TcpSocket {
         let flags = tcp_data[13];
         let window = u16::from_be_bytes([tcp_data[14], tcp_data[15]]);
 
-        serial::_print(format_args!(
-            "[TCP process_segment] ENTRY: state={:?}, flags={:02x}, {}:{} -> {}:{}, seq={}, ack={}\n",
-            self.state, flags, src_ip, src_port, self.local_ip, dst_port, seq, ack
-        ));
+        ktrace!("[TCP process_segment] ENTRY: state={:?}, flags={:02x}, {}:{} -> {}:{}, seq={}, ack={}", self.state, flags, src_ip, src_port, self.local_ip, dst_port, seq, ack);
 
         // Verify this segment is for us
         if dst_port != self.local_port {
-            serial::_print(format_args!(
-                "[TCP process_segment] Port mismatch: dst_port={}, local_port={}\n",
-                dst_port, self.local_port
-            ));
+            ktrace!("[TCP process_segment] Port mismatch: dst_port={}, local_port={}", dst_port, self.local_port);
             return Ok(());
         }
 
         if self.state != TcpState::Listen && src_port != self.remote_port {
-            serial::_print(format_args!(
-                "[TCP process_segment] Remote port mismatch: src_port={}, remote_port={}\n",
-                src_port, self.remote_port
-            ));
+            ktrace!("[TCP process_segment] Remote port mismatch: src_port={}, remote_port={}", src_port, self.remote_port);
             return Ok(());
         }
 
         if self.state != TcpState::Listen && src_ip != self.remote_ip {
-            serial::_print(format_args!(
-                "[TCP process_segment] Remote IP mismatch: src_ip={}, remote_ip={}\n",
-                src_ip, self.remote_ip
-            ));
+            ktrace!("[TCP process_segment] Remote IP mismatch: src_ip={}, remote_ip={}", src_ip, self.remote_ip);
             return Ok(());
         }
 
         self.last_activity = self.current_time();
         
-        serial::_print(format_args!(
-            "[TCP process_segment] TCP data: total_len={}, data_offset={}, header_size={}\n",
-            tcp_data.len(), data_offset, data_offset
-        ));
+        ktrace!("[TCP process_segment] TCP data: total_len={}, data_offset={}, header_size={}", tcp_data.len(), data_offset, data_offset);
         
         // Parse TCP options if present
         let options = if data_offset > 20 && data_offset <= tcp_data.len() {
@@ -606,16 +577,10 @@ impl TcpSocket {
         
         // Extract payload
         let payload = if data_offset < tcp_data.len() {
-            serial::_print(format_args!(
-                "[TCP process_segment] Extracting payload: data_offset={}, tcp_data.len()={}, payload_len={}\n",
-                data_offset, tcp_data.len(), tcp_data.len() - data_offset
-            ));
+            ktrace!("[TCP process_segment] Extracting payload: data_offset={}, tcp_data.len()={}, payload_len={}", data_offset, tcp_data.len(), tcp_data.len() - data_offset);
             &tcp_data[data_offset..]
         } else {
-            serial::_print(format_args!(
-                "[TCP process_segment] No payload: data_offset={} >= tcp_data.len()={}\n",
-                data_offset, tcp_data.len()
-            ));
+            ktrace!("[TCP process_segment] No payload: data_offset={} >= tcp_data.len()={}", data_offset, tcp_data.len());
             &[]
         };
 
@@ -642,9 +607,7 @@ impl TcpSocket {
                     // Process SYN options
                     if let Some(peer_mss) = options.mss {
                         self.peer_mss = peer_mss;
-                        serial::_print(format_args!(
-                            "[TCP] Peer MSS: {}\n", peer_mss
-                        ));
+                        ktrace!("[TCP] Peer MSS: {}", peer_mss);
                     }
                     if options.sack_permitted {
                         self.sack_permitted = true;
@@ -657,26 +620,17 @@ impl TcpSocket {
                     }
                     
                     self.state = TcpState::SynReceived;
-                    serial::_print(format_args!(
-                        "[TCP process_segment] Transition Listen->SynReceived for {}:{} (iss={}, irs={})\n",
-                        self.remote_ip, self.remote_port, self.iss, self.irs
-                    ));
+                    kdebug!("[TCP process_segment] Transition Listen->SynReceived for {}:{} (iss={}, irs={})", self.remote_ip, self.remote_port, self.iss, self.irs);
                     self.send_segment(&[], TCP_SYN | TCP_ACK, tx)?;
                 }
             }
             TcpState::SynSent => {
-                serial::_print(format_args!(
-                    "[TCP process_segment] SynSent: flags={:02x}, seq={}, ack={}, snd_nxt={}, iss={}\n",
-                    flags, seq, ack, self.snd_nxt, self.iss
-                ));
+                ktrace!("[TCP process_segment] SynSent: flags={:02x}, seq={}, ack={}, snd_nxt={}, iss={}", flags, seq, ack, self.snd_nxt, self.iss);
                 
                 if flags & TCP_ACK != 0 {
                     // Check if ACK is valid (should acknowledge our SYN: iss + 1)
                     let expected_ack = self.iss.wrapping_add(1);
-                    serial::_print(format_args!(
-                        "[TCP process_segment] ACK received: ack={}, expected_ack={}, match={}\n",
-                        ack, expected_ack, ack == expected_ack
-                    ));
+                    ktrace!("[TCP process_segment] ACK received: ack={}, expected_ack={}, match={}", ack, expected_ack, ack == expected_ack);
                     
                     if ack == expected_ack {
                         self.snd_una = ack;
@@ -689,9 +643,7 @@ impl TcpSocket {
                             // Process SYN-ACK options
                             if let Some(peer_mss) = options.mss {
                                 self.peer_mss = peer_mss;
-                                serial::_print(format_args!(
-                                    "[TCP] Peer MSS: {}\n", peer_mss
-                                ));
+                                ktrace!("[TCP] Peer MSS: {}", peer_mss);
                             }
                             if options.sack_permitted && self.sack_permitted {
                                 self.sack_permitted = true;
@@ -707,23 +659,15 @@ impl TcpSocket {
                             }
                             
                             self.state = TcpState::Established;
-                            serial::_print(format_args!(
-                                "[TCP process_segment] Transition SynSent->Established for {}:{}\n",
-                                self.remote_ip, self.remote_port
-                            ));
+                            kdebug!("[TCP process_segment] Transition SynSent->Established for {}:{}", self.remote_ip, self.remote_port);
                             self.send_segment(&[], TCP_ACK, tx)?;
                         }
                     } else {
-                        serial::_print(format_args!(
-                            "[TCP process_segment] Invalid ACK in SynSent, expected {}, got {}\n",
-                            expected_ack, ack
-                        ));
+                        ktrace!("[TCP process_segment] Invalid ACK in SynSent, expected {}, got {}", expected_ack, ack);
                     }
                 } else if flags & TCP_SYN != 0 {
                     // Simultaneous open
-                    serial::_print(format_args!(
-                        "[TCP process_segment] Simultaneous open detected\n"
-                    ));
+                    ktrace!("[TCP process_segment] Simultaneous open detected");
                     self.remote_mac = src_mac;
                     self.irs = seq;
                     self.rcv_nxt = seq.wrapping_add(1);
@@ -741,10 +685,7 @@ impl TcpSocket {
                     }
                     
                     self.state = TcpState::SynReceived;
-                    serial::_print(format_args!(
-                        "[TCP process_segment] Simultaneous open - SynReceived for {}:{}\n",
-                        self.remote_ip, self.remote_port
-                    ));
+                    kdebug!("[TCP process_segment] Simultaneous open - SynReceived for {}:{}", self.remote_ip, self.remote_port);
                     self.send_segment(&[], TCP_SYN | TCP_ACK, tx)?;
                 }
             }
@@ -757,15 +698,9 @@ impl TcpSocket {
                         // snd_nxt already advanced when we sent SYN|ACK, so do not increment again
                         self.snd_wnd = window;
                         self.state = TcpState::Established;
-                        serial::_print(format_args!(
-                            "[TCP process_segment] Transition SynReceived->Established for {}:{}\n",
-                            self.remote_ip, self.remote_port
-                        ));
+                        kdebug!("[TCP process_segment] Transition SynReceived->Established for {}:{}", self.remote_ip, self.remote_port);
                     } else {
-                        serial::_print(format_args!(
-                            "[TCP process_segment] SynReceived: Invalid ACK {}, expected {} or {}\n",
-                            ack, self.snd_nxt, self.iss.wrapping_add(1)
-                        ));
+                        ktrace!("[TCP process_segment] SynReceived: Invalid ACK {}, expected {} or {}", ack, self.snd_nxt, self.iss.wrapping_add(1));
                     }
                 }
             }
@@ -776,19 +711,13 @@ impl TcpSocket {
                 }
 
                 // Process payload
-                serial::_print(format_args!(
-                    "[TCP process_segment] Payload check: len={}, seq={}, rcv_nxt={}, match={}, recv_buffer_len={}\n",
-                    payload.len(), seq, self.rcv_nxt, seq == self.rcv_nxt, self.recv_buffer.len()
-                ));
+                ktrace!("[TCP process_segment] Payload check: len={}, seq={}, rcv_nxt={}, match={}, recv_buffer_len={}", payload.len(), seq, self.rcv_nxt, seq == self.rcv_nxt, self.recv_buffer.len());
                 
                 if !payload.is_empty() && seq == self.rcv_nxt {
                     let space = RECV_BUFFER_SIZE - self.recv_buffer.len();
                     let to_recv = cmp::min(payload.len(), space);
                     
-                    serial::_print(format_args!(
-                        "[TCP process_segment] Receiving {} bytes (space={}, payload_len={})\n",
-                        to_recv, space, payload.len()
-                    ));
+                    ktrace!("[TCP process_segment] Receiving {} bytes (space={}, payload_len={})", to_recv, space, payload.len());
                     
                     for &byte in &payload[..to_recv] {
                         self.recv_buffer.push_back(byte);
@@ -797,28 +726,19 @@ impl TcpSocket {
                     self.rcv_nxt = self.rcv_nxt.wrapping_add(to_recv as u32);
                     self.rcv_wnd = (RECV_BUFFER_SIZE - self.recv_buffer.len()) as u16;
                     
-                    serial::_print(format_args!(
-                        "[TCP process_segment] Received data, new rcv_nxt={}, recv_buffer_len={}, wait_queue_len={}\n",
-                        self.rcv_nxt, self.recv_buffer.len(), self.wait_queue.len()
-                    ));
+                    ktrace!("[TCP process_segment] Received data, new rcv_nxt={}, recv_buffer_len={}, wait_queue_len={}", self.rcv_nxt, self.recv_buffer.len(), self.wait_queue.len());
                     
                     self.send_segment(&[], TCP_ACK, tx)?;
 
                     // Wake up waiting processes
                     if !self.wait_queue.is_empty() {
-                        serial::_print(format_args!(
-                            "[TCP process_segment] Waking {} waiting processes\n",
-                            self.wait_queue.len()
-                        ));
+                        ktrace!("[TCP process_segment] Waking {} waiting processes", self.wait_queue.len());
                         for pid in self.wait_queue.drain(..) {
                             crate::scheduler::wake_process(pid);
                         }
                     }
                 } else if !payload.is_empty() {
-                    serial::_print(format_args!(
-                        "[TCP process_segment] Payload IGNORED: seq={} != rcv_nxt={}\n",
-                        seq, self.rcv_nxt
-                    ));
+                    ktrace!("[TCP process_segment] Payload IGNORED: seq={} != rcv_nxt={}", seq, self.rcv_nxt);
                 }
 
                 // Handle FIN
@@ -878,10 +798,6 @@ impl TcpSocket {
     pub fn poll(&mut self, tx: &mut TxBatch) -> Result<(), NetError> {
         let now = self.current_time();
 
-        if self.state == TcpState::SynSent {
-             serial::_print(format_args!("[TCP poll] ENTRY SynSent last_activity={} now={}\n", self.last_activity, now));
-        }
-
         // Handle state timeouts
         match self.state {
             TcpState::TimeWait => {
@@ -892,7 +808,7 @@ impl TcpSocket {
             }
             TcpState::SynSent | TcpState::SynReceived => {
                 if self.last_activity != 0 && now - self.last_activity > 75000 { // 75 seconds
-                    serial::_print(format_args!("[TCP poll] TIMEOUT reset state={:?}\n", self.state));
+                    ktrace!("[TCP poll] TIMEOUT reset state={:?}", self.state);
                     self.reset();
                     return Ok(());
                 }
@@ -903,14 +819,12 @@ impl TcpSocket {
         // Send SYN for initial connection
         if self.state == TcpState::SynSent {
             let elapsed = now.saturating_sub(self.last_activity);
-            serial::_print(format_args!(
-                "[TCP poll] SynSent state: now={}, last_activity={}, elapsed={}, rto={}\n",
-                now, self.last_activity, elapsed, self.rto
-            ));
             if elapsed >= self.rto || self.last_activity == 0 {
-                serial::_print(format_args!("[TCP poll] Sending SYN packet\n"));
+                ktrace!("[TCP] Sending SYN (elapsed={}ms)", elapsed);
                 let result = self.send_segment(&[], TCP_SYN, tx);
-                serial::_print(format_args!("[TCP poll] send_segment result: {:?}\n", result));
+                if let Err(e) = &result {
+                    ktrace!("[TCP] SYN send failed: {:?}", e);
+                }
                 if result.is_ok() {
                     self.last_activity = now;
                 }
@@ -948,10 +862,7 @@ impl TcpSocket {
             let window_available = cmp::min(cwnd_available, rwnd_available as u32) as usize;
             
             if window_available == 0 {
-                serial::_print(format_args!(
-                    "[TCP] Send blocked - cwnd={}, flight={}, rwnd={}\n",
-                    self.cwnd, flight_size, self.snd_wnd
-                ));
+                ktrace!("[TCP] Send blocked - cwnd={}, flight={}, rwnd={}", self.cwnd, flight_size, self.snd_wnd);
                 break;
             }
 
@@ -990,9 +901,7 @@ impl TcpSocket {
 
         // Check if we have remote MAC address
         if self.remote_mac.0 == [0, 0, 0, 0, 0, 0] {
-            serial::_print(format_args!(
-                "[TCP send_segment] ERROR: remote_mac not set! Cannot send packet\n"
-            ));
+            kerror!("[TCP send_segment] ERROR: remote_mac not set! Cannot send packet");
             return Err(NetError::NoDevice);
         }
 
@@ -1089,30 +998,26 @@ impl TcpSocket {
         );
         packet[tcp_offset + 16..tcp_offset + 18].copy_from_slice(&tcp_checksum.to_be_bytes());
 
-        serial::_print(format_args!(
-            "[TCP send_segment] Sending: flags={:02x}, seq={}, ack={}, len={}, queue_for_retransmit={}, {}:{} -> {}:{}\n",
+        ktrace!("[TCP send_segment] Sending: flags={:02x}, seq={}, ack={}, len={}, queue_for_retransmit={}, {}:{} -> {}:{}", 
             flags, seq, self.rcv_nxt, total_len, queue_for_retransmit,
-            self.local_ip, self.local_port, self.remote_ip, self.remote_port
-        ));
-        serial::_print(format_args!(
-            "[TCP send_segment] remote_mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}\n",
+            self.local_ip, self.local_port, self.remote_ip, self.remote_port);
+        ktrace!("[TCP send_segment] remote_mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
             self.remote_mac.0[0], self.remote_mac.0[1], self.remote_mac.0[2],
-            self.remote_mac.0[3], self.remote_mac.0[4], self.remote_mac.0[5]
-        ));
+            self.remote_mac.0[3], self.remote_mac.0[4], self.remote_mac.0[5]);
         
         // Dump TCP packet for debugging (first 128 bytes or entire packet)
         let dump_len = core::cmp::min(total_len, 128);
-        serial::_print(format_args!("[TCP send_segment] Packet dump ({} bytes):\n", dump_len));
+        ktrace!("[TCP send_segment] Packet dump ({} bytes):", dump_len);
         for i in (0..dump_len).step_by(16) {
-            serial::_print(format_args!("  {:04x}: ", i));
+            let mut line = alloc::format!("  {:04x}: ", i);
             for j in 0..16 {
                 if i + j < dump_len {
-                    serial::_print(format_args!("{:02x} ", packet[i + j]));
+                    line.push_str(&alloc::format!("{:02x} ", packet[i + j]));
                 } else {
-                    serial::_print(format_args!("   "));
+                    line.push_str("   ");
                 }
             }
-            serial::_print(format_args!("\n"));
+            ktrace!("{}", line);
         }
 
         tx.push(&packet[..total_len])?;
@@ -1162,16 +1067,11 @@ impl TcpSocket {
             // Detect duplicate ACK
             if ack == self.last_ack && newly_acked == 0 && !self.send_buffer.is_empty() {
                 self.dup_acks += 1;
-                serial::_print(format_args!(
-                    "[TCP Congestion] Duplicate ACK #{} for seq {}\n",
-                    self.dup_acks, ack
-                ));
+                ktrace!("[TCP Congestion] Duplicate ACK #{} for seq {}", self.dup_acks, ack);
                 
                 // Fast retransmit on 3 duplicate ACKs (TCP Reno)
                 if self.dup_acks == 3 {
-                    serial::_print(format_args!(
-                        "[TCP Congestion] Fast retransmit triggered\n"
-                    ));
+                    kdebug!("[TCP Congestion] Fast retransmit triggered");
                     
                     // Enter fast recovery
                     if !self.in_recovery {
@@ -1180,10 +1080,7 @@ impl TcpSocket {
                         self.in_recovery = true;
                         self.recovery_point = self.snd_nxt;
                         
-                        serial::_print(format_args!(
-                            "[TCP Congestion] Enter fast recovery - ssthresh={}, cwnd={}\n",
-                            self.ssthresh, self.cwnd
-                        ));
+                        kdebug!("[TCP Congestion] Enter fast recovery - ssthresh={}, cwnd={}", self.ssthresh, self.cwnd);
                         
                         // NOTE: Actual retransmission will be handled in check_retransmissions()
                         // by the dedicated fast retransmit logic there
@@ -1191,10 +1088,7 @@ impl TcpSocket {
                 } else if self.dup_acks > 3 && self.in_recovery {
                     // Inflate cwnd for each additional duplicate ACK
                     self.cwnd += self.mss as u32;
-                    serial::_print(format_args!(
-                        "[TCP Congestion] Fast recovery - inflate cwnd to {}\n",
-                        self.cwnd
-                    ));
+                    ktrace!("[TCP Congestion] Fast recovery - inflate cwnd to {}", self.cwnd);
                 }
             } else if newly_acked > 0 {
                 // New data acknowledged
@@ -1212,27 +1106,18 @@ impl TcpSocket {
                         // Exit recovery
                         self.in_recovery = false;
                         self.cwnd = self.ssthresh;
-                        serial::_print(format_args!(
-                            "[TCP Congestion] Exit recovery, cwnd={}, ssthresh={}\n",
-                            self.cwnd, self.ssthresh
-                        ));
+                        kdebug!("[TCP Congestion] Exit recovery, cwnd={}, ssthresh={}", self.cwnd, self.ssthresh);
                     }
                 } else if self.cwnd < self.ssthresh {
                     // Slow start: exponential growth
                     self.cwnd += newly_acked;
-                    serial::_print(format_args!(
-                        "[TCP Congestion] Slow start, cwnd={} (+{}), ssthresh={}\n",
-                        self.cwnd, newly_acked, self.ssthresh
-                    ));
+                    ktrace!("[TCP Congestion] Slow start, cwnd={} (+{}), ssthresh={}", self.cwnd, newly_acked, self.ssthresh);
                 } else {
                     // Congestion avoidance: linear growth
                     // Increase cwnd by MSS * (MSS / cwnd) for each ACK
                     let increment = (self.mss as u32 * newly_acked) / self.cwnd;
                     self.cwnd += cmp::max(increment, 1);
-                    serial::_print(format_args!(
-                        "[TCP Congestion] Congestion avoidance, cwnd={} (+{}), ssthresh={}\n",
-                        self.cwnd, increment, self.ssthresh
-                    ));
+                    ktrace!("[TCP Congestion] Congestion avoidance, cwnd={} (+{}), ssthresh={}", self.cwnd, increment, self.ssthresh);
                 }
 
                 // RTT measurement (Karn's algorithm)
@@ -1305,10 +1190,7 @@ impl TcpSocket {
         // Cap RTO at maximum
         self.rto = cmp::min(self.rto, MAX_RTO);
         
-        serial::_print(format_args!(
-            "[TCP RTT] sample={}ms, SRTT={}ms, RTTVAR={}ms, RTO={}ms\n",
-            rtt_ms, self.srtt, self.rttvar, self.rto
-        ));
+        ktrace!("[TCP RTT] sample={}ms, SRTT={}ms, RTTVAR={}ms, RTO={}ms", rtt_ms, self.srtt, self.rttvar, self.rto);
     }
 
     /// Check and handle retransmissions
@@ -1324,10 +1206,7 @@ impl TcpSocket {
             if self.dup_acks == 3 {
                 if let Some(segment) = self.retransmit_queue.first() {
                     if segment.seq == self.snd_una {
-                        serial::_print(format_args!(
-                            "[TCP Fast Retransmit] Retransmitting seq={}\n",
-                            segment.seq
-                        ));
+                        kdebug!("[TCP Fast Retransmit] Retransmitting seq={}", segment.seq);
                         let seg_clone = segment.clone();
                         self.send_segment_internal(&seg_clone.data, seg_clone.flags, tx, Some(seg_clone.seq), false)?;
                     }
@@ -1339,9 +1218,7 @@ impl TcpSocket {
             if now - segment.timestamp > self.rto {
                 if segment.retransmit_count >= MAX_RETRANSMIT {
                     // Give up, reset connection
-                    serial::_print(format_args!(
-                        "[TCP] Max retransmit attempts reached, resetting connection\n"
-                    ));
+                    kerror!("[TCP] Max retransmit attempts reached, resetting connection");
                     self.reset();
                     return Ok(());
                 }
@@ -1360,19 +1237,13 @@ impl TcpSocket {
                     self.dup_acks = 0;
                     self.in_recovery = false;
                     
-                    serial::_print(format_args!(
-                        "[TCP Congestion] Timeout - ssthresh={}, cwnd={}\n",
-                        self.ssthresh, self.cwnd
-                    ));
+                    kdebug!("[TCP Congestion] Timeout - ssthresh={}, cwnd={}", self.ssthresh, self.cwnd);
                 }
                 
                 // Exponential backoff
                 self.rto = cmp::min(self.rto * 2, MAX_RTO);
                 
-                serial::_print(format_args!(
-                    "[TCP] Retransmitting segment seq={}, count={}, new RTO={}ms\n",
-                    segment.seq, segment.retransmit_count, self.rto
-                ));
+                kdebug!("[TCP] Retransmitting segment seq={}, count={}, new RTO={}ms", segment.seq, segment.retransmit_count, self.rto);
             }
         }
 
