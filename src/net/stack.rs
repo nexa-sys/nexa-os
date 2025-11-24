@@ -1228,9 +1228,11 @@ impl NetStack {
             src_ip, src_port, dst_port, flags, tcp_data.len()
         ));
 
-        // Try to find matching socket
-        let mut found = false;
-        for (idx, socket) in self.tcp_sockets.iter_mut().enumerate() {
+        // Find the best matching socket
+        let mut best_match_idx = None;
+        let mut best_match_score = 0; // 0: No match, 1: Listen match, 2: Exact match
+
+        for (idx, socket) in self.tcp_sockets.iter().enumerate() {
             if !socket.in_use {
                 serial::_print(format_args!(
                     "[handle_tcp] Socket {} not in use, skipping\n", idx
@@ -1251,16 +1253,36 @@ impl NetStack {
                 continue;
             }
 
-            socket.process_segment(src_ip, src_mac, tcp_data, tx)?;
-            found = true;
-            break; // Only process on first matching socket
+            if socket.local_port != dst_port {
+                continue;
+            }
+
+            // Check for exact match (remote IP and port match)
+            if socket.remote_ip == src_ip && socket.remote_port == src_port {
+                best_match_idx = Some(idx);
+                best_match_score = 2;
+                break; // Found exact match, stop searching
+            }
+
+            // Check for listen match (only if we haven't found an exact match yet)
+            if socket.state == super::tcp::TcpState::Listen && best_match_score < 1 {
+                best_match_idx = Some(idx);
+                best_match_score = 1;
+            }
         }
 
-        if !found {
+        if let Some(idx) = best_match_idx {
+            serial::_print(format_args!(
+                "[handle_tcp] Found matching socket {}: score={}\n",
+                idx, best_match_score
+            ));
+            self.tcp_sockets[idx].process_segment(src_ip, src_mac, tcp_data, tx)?;
+        } else {
             serial::_print(format_args!(
                 "[handle_tcp] No matching socket found for {}:{} -> port {}\n",
                 src_ip, src_port, dst_port
             ));
+            // TODO: Send RST
         }
 
         Ok(())

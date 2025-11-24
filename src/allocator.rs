@@ -308,8 +308,7 @@ struct Slab {
 impl Slab {
     const fn new(size: usize) -> Self {
         // Calculate objects per page, accounting for header
-        // Header size is approx 32 bytes (next, prev, free_list, free_count)
-        let header_size = 32;
+        let header_size = core::mem::size_of::<SlabPageHeader>();
         let available_space = PAGE_SIZE - header_size;
         let objects_per_slab = if size <= available_space {
             available_space / size
@@ -339,15 +338,16 @@ impl Slab {
             let header = &mut *header_ptr;
 
             // Pop from free list
-            if let Some(offset) = header.free_list {
-                let obj_addr = page_addr + 32 + (offset as u64 * self.object_size as u64);
+            if header.free_list != SlabPageHeader::NONE16 {
+                let header_size = core::mem::size_of::<SlabPageHeader>();
+                let obj_addr = page_addr + header_size as u64 + (header.free_list as u64 * self.object_size as u64);
 
                 // Read next pointer from freed object
                 // Objects in free list store the index of the next free object
                 let next_idx_ptr = obj_addr as *const u16;
                 let next_idx = core::ptr::read(next_idx_ptr);
                 
-                header.free_list = if next_idx == u16::MAX { None } else { Some(next_idx) };
+                header.free_list = next_idx;
                 header.free_count -= 1;
                 self.allocated_count += 1;
 
@@ -375,19 +375,20 @@ impl Slab {
             let header_ptr = page_addr as *mut SlabPageHeader;
             let header = &mut *header_ptr;
             
+            let header_size = core::mem::size_of::<SlabPageHeader>();
             // Calculate object index
-            let offset = addr - (page_addr + 32);
+            let offset = addr - (page_addr + header_size as u64);
             let obj_idx = (offset / self.object_size as u64) as u16;
 
             // Poison memory
             core::ptr::write_bytes(addr as *mut u8, POISON_BYTE, self.object_size);
 
             // Add to free list
-            let next = header.free_list.unwrap_or(u16::MAX);
+            let next = header.free_list;
             let obj_ptr = addr as *mut u16;
             core::ptr::write(obj_ptr, next);
             
-            header.free_list = Some(obj_idx);
+            header.free_list = obj_idx;
             header.free_count += 1;
             self.allocated_count -= 1;
 
@@ -412,18 +413,20 @@ impl Slab {
             let header_ptr = page_addr as *mut SlabPageHeader;
             // Initialize header
             core::ptr::write(header_ptr, SlabPageHeader {
-                next: None,
-                prev: None,
-                free_list: Some(0), // Start with object 0
+                next: SlabPageHeader::NONE,
+                prev: SlabPageHeader::NONE,
+                free_list: 0, // Start with object 0
                 free_count: self.objects_per_slab as u16,
+                _padding: 0,
             });
 
+            let header_size = core::mem::size_of::<SlabPageHeader>();
             // Initialize object free list
-            let base_addr = page_addr + 32;
+            let base_addr = page_addr + header_size as u64;
             for i in 0..self.objects_per_slab {
                 let obj_addr = base_addr + (i * self.object_size) as u64;
                 let next_idx = if i == self.objects_per_slab - 1 {
-                    u16::MAX
+                    SlabPageHeader::NONE16
                 } else {
                     (i + 1) as u16
                 };
@@ -440,12 +443,12 @@ impl Slab {
         let header_ptr = page_addr as *mut SlabPageHeader;
         let header = &mut *header_ptr;
 
-        header.next = self.partial_head;
-        header.prev = None;
+        header.next = self.partial_head.unwrap_or(SlabPageHeader::NONE);
+        header.prev = SlabPageHeader::NONE;
 
         if let Some(head_addr) = self.partial_head {
             let head_ptr = head_addr as *mut SlabPageHeader;
-            (*head_ptr).prev = Some(page_addr);
+            (*head_ptr).prev = page_addr;
         }
 
         self.partial_head = Some(page_addr);
@@ -455,29 +458,39 @@ impl Slab {
         let header_ptr = page_addr as *mut SlabPageHeader;
         let header = &mut *header_ptr;
 
-        if let Some(prev_addr) = header.prev {
-            let prev_ptr = prev_addr as *mut SlabPageHeader;
+        if header.prev != SlabPageHeader::NONE {
+            let prev_ptr = header.prev as *mut SlabPageHeader;
             (*prev_ptr).next = header.next;
         } else {
-            self.partial_head = header.next;
+            self.partial_head = if header.next == SlabPageHeader::NONE {
+                None
+            } else {
+                Some(header.next)
+            };
         }
 
-        if let Some(next_addr) = header.next {
-            let next_ptr = next_addr as *mut SlabPageHeader;
+        if header.next != SlabPageHeader::NONE {
+            let next_ptr = header.next as *mut SlabPageHeader;
             (*next_ptr).prev = header.prev;
         }
 
-        header.next = None;
-        header.prev = None;
+        header.next = SlabPageHeader::NONE;
+        header.prev = SlabPageHeader::NONE;
     }
 }
 
 #[repr(C)]
 struct SlabPageHeader {
-    next: Option<u64>,
-    prev: Option<u64>,
-    free_list: Option<u16>,
+    next: u64,      // u64::MAX for None
+    prev: u64,      // u64::MAX for None
+    free_list: u16, // u16::MAX for None
     free_count: u16,
+    _padding: u32,  // Ensure 8-byte alignment and size >= 24
+}
+
+impl SlabPageHeader {
+    const NONE: u64 = u64::MAX;
+    const NONE16: u16 = u16::MAX;
 }
 
 /// Slab allocator managing multiple slab caches
@@ -734,6 +747,8 @@ static ALLOCATOR: GlobalAllocator = GlobalAllocator;
 
 #[alloc_error_handler]
 fn alloc_error_handler(layout: Layout) -> ! {
+    crate::kerror!("ALLOCATION ERROR: {:?}", layout);
+    print_memory_stats();
     panic!("allocation error: {:?}", layout)
 }
 
