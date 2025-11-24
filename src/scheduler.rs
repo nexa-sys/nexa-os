@@ -1181,12 +1181,12 @@ fn do_schedule_internal(from_interrupt: bool) {
                                 // Check if this is a voluntary context switch
                                 let voluntary = candidate.process.state == ProcessState::Sleeping ||
                                                candidate.time_slice > 0;
-                                
+
                                 // Update voluntary switch counter
                                 if voluntary {
                                     candidate.voluntary_switches += 1;
                                 }
-                                
+
                                 // Don't save context for zombie processes
                                 if candidate.process.state == ProcessState::Zombie {
                                     kdebug!(
