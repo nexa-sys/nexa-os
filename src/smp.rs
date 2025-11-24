@@ -156,36 +156,39 @@ unsafe fn init_inner() -> Result<(), &'static str> {
         bsp_apic
     );
 
-    // Temporarily disable AP startup to debug the issue
-    crate::kinfo!("SMP: AP core startup temporarily disabled for stability");
-    crate::kinfo!(
-        "SMP: {} / {} cores online (BSP only)",
-        1,
-        CPU_TOTAL.load(Ordering::SeqCst)
-    );
-
-    /* TODO: Re-enable after fixing trampoline/paging issues
+    // Try to start AP cores
+    let mut started = 0usize;
+    
     for idx in 0..count {
         let info = cpu_info(idx);
         if info.is_bsp {
             continue;
         }
-        if let Err(err) = start_ap(idx) {
-            crate::kwarn!(
-                "SMP: Failed to start APIC {:#x} (index {}): {}",
-                info.apic_id,
-                idx,
-                err
-            );
+        
+        crate::kinfo!("SMP: Starting AP core {} (APIC ID {:#x})...", idx, info.apic_id);
+        
+        match start_ap(idx) {
+            Ok(()) => {
+                started += 1;
+                crate::kinfo!("SMP: AP core {} started successfully", idx);
+            }
+            Err(err) => {
+                crate::kwarn!(
+                    "SMP: Failed to start APIC {:#x} (index {}): {}",
+                    info.apic_id,
+                    idx,
+                    err
+                );
+            }
         }
     }
 
     crate::kinfo!(
-        "SMP: {} / {} cores online",
+        "SMP: {} / {} cores online (BSP + {} APs)",
         current_online(),
-        CPU_TOTAL.load(Ordering::SeqCst)
+        CPU_TOTAL.load(Ordering::SeqCst),
+        started
     );
-    */
 
     Ok(())
 }
@@ -285,22 +288,33 @@ fn gdt64_as_bytes(ptr: &impl Sized) -> &[u8] {
 }
 
 unsafe fn start_ap(index: usize) -> Result<(), &'static str> {
+    crate::kdebug!("SMP: Preparing AP launch for core {}", index);
     prepare_ap_launch(index)?;
+    
+    crate::kdebug!("SMP: Setting core {} to Booting state", index);
     cpu_info(index)
         .status
         .store(CpuStatus::Booting as u8, Ordering::SeqCst);
 
     let apic_id = cpu_info(index).apic_id;
+    
+    crate::kdebug!("SMP: Sending INIT IPI to APIC {:#x}", apic_id);
     lapic::send_init_ipi(apic_id);
     busy_wait(10_000);
+    
+    crate::kdebug!("SMP: Sending STARTUP IPI #1 to APIC {:#x}, vector {:#x}", apic_id, TRAMPOLINE_VECTOR);
     lapic::send_startup_ipi(apic_id, TRAMPOLINE_VECTOR);
     busy_wait(2_000);
+    
+    crate::kdebug!("SMP: Sending STARTUP IPI #2 to APIC {:#x}", apic_id);
     lapic::send_startup_ipi(apic_id, TRAMPOLINE_VECTOR);
 
+    crate::kdebug!("SMP: Waiting for AP core {} to come online...", index);
     if wait_for_online(index, STARTUP_WAIT_LOOPS) {
         crate::kinfo!("SMP: APIC {:#x} online", apic_id);
         Ok(())
     } else {
+        crate::kerror!("SMP: AP core {} (APIC {:#x}) failed to signal ready within timeout", index, apic_id);
         Err("AP failed to signal ready")
     }
 }

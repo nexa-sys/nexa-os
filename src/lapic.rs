@@ -54,16 +54,38 @@ pub fn send_eoi() {
 }
 
 fn send_ipi(apic_id: u32, command: u32) {
+    crate::kinfo!("LAPIC: Sending IPI to APIC {:#x}, command {:#x}", apic_id, command);
     unsafe {
-        wait_for_icr();
+        if !wait_for_icr_with_timeout() {
+            crate::kwarn!("LAPIC: Timeout waiting for ICR before send");
+            return;
+        }
+        crate::kinfo!("LAPIC: Writing ICR_HIGH: {:#x}", apic_id << 24);
         write_register(REG_ICR_HIGH, apic_id << 24);
+        crate::kinfo!("LAPIC: Writing ICR_LOW: {:#x}", command);
         write_register(REG_ICR_LOW, command);
-        wait_for_icr();
+        crate::kinfo!("LAPIC: Waiting for IPI delivery...");
+        if !wait_for_icr_with_timeout() {
+            crate::kwarn!("LAPIC: Timeout waiting for ICR after send");
+        }
     }
+    crate::kinfo!("LAPIC: IPI sent successfully");
 }
 
 unsafe fn wait_for_icr() {
     while (read_register(REG_ICR_LOW) & (1 << 12)) != 0 {}
+}
+
+unsafe fn wait_for_icr_with_timeout() -> bool {
+    let mut timeout = 100_000;  // Reasonable timeout
+    while (read_register(REG_ICR_LOW) & (1 << 12)) != 0 {
+        if timeout == 0 {
+            return false;
+        }
+        timeout -= 1;
+        core::hint::spin_loop();
+    }
+    true
 }
 
 unsafe fn read_register(offset: u32) -> u32 {
