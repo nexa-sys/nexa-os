@@ -317,7 +317,7 @@ impl VmallocAllocator {
         // Ensure PDP exists
         if pml4[pml4_idx].is_unused() {
             let pdp_phys = self.allocate_physical_page()?;
-            core::ptr::write_bytes(pdp_phys as *mut u8, 0, PAGE_SIZE as usize);
+            crate::safety::memzero(pdp_phys as *mut u8, PAGE_SIZE as usize);
             pml4[pml4_idx].set_addr(
                 PhysAddr::new(pdp_phys),
                 x86_64::structures::paging::PageTableFlags::PRESENT
@@ -331,7 +331,7 @@ impl VmallocAllocator {
         // Ensure PD exists
         if pdp[pdp_idx].is_unused() {
             let pd_phys = self.allocate_physical_page()?;
-            core::ptr::write_bytes(pd_phys as *mut u8, 0, PAGE_SIZE as usize);
+            crate::safety::memzero(pd_phys as *mut u8, PAGE_SIZE as usize);
             pdp[pdp_idx].set_addr(
                 PhysAddr::new(pd_phys),
                 x86_64::structures::paging::PageTableFlags::PRESENT
@@ -345,7 +345,7 @@ impl VmallocAllocator {
         // Ensure PT exists
         if pd[pd_idx].is_unused() {
             let pt_phys = self.allocate_physical_page()?;
-            core::ptr::write_bytes(pt_phys as *mut u8, 0, PAGE_SIZE as usize);
+            crate::safety::memzero(pt_phys as *mut u8, PAGE_SIZE as usize);
             pd[pd_idx].set_addr(
                 PhysAddr::new(pt_phys),
                 x86_64::structures::paging::PageTableFlags::PRESENT

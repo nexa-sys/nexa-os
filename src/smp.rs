@@ -5,6 +5,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize
 use x86_64::instructions::tables::sgdt;
 use x86_64::instructions::{hlt as cpu_hlt, interrupts};
 
+use crate::safety::{serial_debug_byte, serial_debug_hex};
 use crate::{acpi, bootinfo, gdt, lapic, paging};
 
 // Per-CPU GS data (same layout as initramfs::GsData)
@@ -1089,71 +1090,61 @@ extern "C" fn ap_entry_inner(arg: *const ApBootArgs) -> ! {
 
     unsafe {
         // Debug: Signal entry and check RSP alignment
-        use x86_64::instructions::port::Port;
-        let mut serial = Port::<u8>::new(0x3F8);
-        serial.write(b'E'); // Entry
+        serial_debug_byte(b'E'); // Entry
 
-        // Check RSP alignment
-        let rsp: u64;
-        core::arch::asm!("mov {}, rsp", out(reg) rsp);
+        // Check RSP alignment using safety abstraction
+        let rsp = crate::safety::read_rsp();
         // Output RSP low nibble to check alignment (should be 8 for correct ABI)
-        let align_byte = (rsp & 0xF) as u8;
-        serial.write(if align_byte < 10 {
-            b'0' + align_byte
-        } else {
-            b'A' + align_byte - 10
-        });
+        serial_debug_hex(rsp & 0xF, 1);
 
         // Validate argument pointer
         if arg.is_null() {
-            serial.write(b'N'); // Null arg
+            serial_debug_byte(b'N'); // Null arg
             loop {
                 cpu_hlt();
             }
         }
-        serial.write(b'1'); // Arg not null
+        serial_debug_byte(b'1'); // Arg not null
 
         let args = *arg;
-        serial.write(b'2'); // Args copied
+        serial_debug_byte(b'2'); // Args copied
 
         let idx = args.cpu_index as usize;
-        serial.write(b'3'); // Index extracted
+        serial_debug_byte(b'3'); // Index extracted
 
         if idx >= MAX_CPUS {
-            serial.write(b'X'); // Index too large
+            serial_debug_byte(b'X'); // Index too large
             loop {
                 cpu_hlt();
             }
         }
-        serial.write(b'4'); // Index valid
+        serial_debug_byte(b'4'); // Index valid
 
         // Signal arrival for debugging
         AP_ARRIVED[idx].store(0xDEADBEEF, Ordering::SeqCst);
-        serial.write(b'5'); // Arrival flag set
+        serial_debug_byte(b'5'); // Arrival flag set
 
         // Step 1: Configure GS base with this CPU's dedicated GS data
         // NOTE: Static variable addresses don't need relocation - they use link-time
         // addresses which are identity-mapped in the page tables
         let gs_data_addr = &raw const AP_GS_DATA[idx] as *const _ as u64;
-        serial.write(b'6'); // GS addr calculated
+        serial_debug_byte(b'6'); // GS addr calculated
 
         use x86_64::registers::model_specific::Msr;
         Msr::new(0xc0000101).write(gs_data_addr);
-        serial.write(b'7'); // GS written
+        serial_debug_byte(b'7'); // GS written
 
         core::sync::atomic::compiler_fence(Ordering::SeqCst);
-        serial.write(b'8'); // Fence done
+        serial_debug_byte(b'8'); // Fence done
 
         // Step 2: Initialize GDT (required for proper segmentation)
-        serial.write(b'9'); // About to call gdt::init_ap
+        serial_debug_byte(b'9'); // About to call gdt::init_ap
 
         // Initialize GDT and TSS for this AP core
         gdt::init_ap(idx);
 
         // Use unique markers that won't appear in other logs
-        for byte in b"AP_GDT_OK\n" {
-            serial.write(*byte);
-        }
+        crate::safety::serial_debug_str("AP_GDT_OK\n");
         core::sync::atomic::compiler_fence(Ordering::SeqCst);
 
         // Now we can log safely
@@ -1174,59 +1165,38 @@ extern "C" fn ap_entry_inner(arg: *const ApBootArgs) -> ! {
         let total = CPU_TOTAL.load(Ordering::SeqCst);
 
         // Debug: Output CPU_TOTAL value and address
-        serial.write(b'T');
+        serial_debug_byte(b'T');
         let t_digit = if total < 10 { b'0' + total as u8 } else { b'?' };
-        serial.write(t_digit);
-        serial.write(b'@');
+        serial_debug_byte(t_digit);
+        serial_debug_byte(b'@');
 
         // Output CPU_TOTAL address (link-time address used by AP)
         let cpu_total_addr = &CPU_TOTAL as *const _ as u64;
-        for i in (0..8).rev() {
-            let nibble = ((cpu_total_addr >> (i * 4)) & 0xF) as u8;
-            serial.write(if nibble < 10 {
-                b'0' + nibble
-            } else {
-                b'A' + nibble - 10
-            });
-        }
+        serial_debug_hex(cpu_total_addr, 8);
 
         // For comparison, use relocated address (where BSP actually wrote)
         // The relocation offset moves data from link address to load address
-        serial.write(b'|');
+        serial_debug_byte(b'|');
         let reloc_offset = get_kernel_relocation_offset().unwrap_or(0);
 
         // Debug: output the relocation offset value
-        serial.write(b'[');
-        for i in (0..8).rev() {
-            let nibble = ((reloc_offset as u64 >> (i * 4)) & 0xF) as u8;
-            serial.write(if nibble < 10 {
-                b'0' + nibble
-            } else {
-                b'A' + nibble - 10
-            });
-        }
-        serial.write(b']');
+        serial_debug_byte(b'[');
+        serial_debug_hex(reloc_offset as u64, 8);
+        serial_debug_byte(b']');
 
         // BSP uses addresses that are reloc_offset higher than link addresses
         // So to read what BSP wrote, we need: link_addr + reloc_offset
         let bsp_addr = cpu_total_addr.wrapping_add(reloc_offset as u64);
-        for i in (0..8).rev() {
-            let nibble = ((bsp_addr >> (i * 4)) & 0xF) as u8;
-            serial.write(if nibble < 10 {
-                b'0' + nibble
-            } else {
-                b'A' + nibble - 10
-            });
-        }
-        serial.write(b'=');
+        serial_debug_hex(bsp_addr, 8);
+        serial_debug_byte(b'=');
         let bsp_value = core::ptr::read_volatile(bsp_addr as *const usize);
         let bsp_digit = if bsp_value < 10 {
             b'0' + bsp_value as u8
         } else {
             b'?'
         };
-        serial.write(bsp_digit);
-        serial.write(b'/');
+        serial_debug_byte(bsp_digit);
+        serial_debug_byte(b'/');
 
         // Use the BSP's view of CPU_TOTAL for the comparison
         let actual_total = bsp_value;
@@ -1234,9 +1204,7 @@ extern "C" fn ap_entry_inner(arg: *const ApBootArgs) -> ! {
             cpu_info(idx)
                 .status
                 .store(CpuStatus::Online as u8, Ordering::Release);
-            for byte in b"AP_ONLINE\n" {
-                serial.write(*byte);
-            }
+            crate::safety::serial_debug_str("AP_ONLINE\n");
         } else {
             crate::kerror!("SMP: CPU index {} exceeds total count", idx);
             loop {
@@ -1248,9 +1216,7 @@ extern "C" fn ap_entry_inner(arg: *const ApBootArgs) -> ! {
         core::sync::atomic::compiler_fence(Ordering::SeqCst);
         x86_64::instructions::interrupts::enable();
 
-        for byte in b"AP_IDLE_LOOP\n" {
-            serial.write(*byte);
-        }
+        crate::safety::serial_debug_str("AP_IDLE_LOOP\n");
         crate::kinfo!("SMP: Core {} entering idle loop", idx);
 
         // Enter idle loop - scheduler will take over

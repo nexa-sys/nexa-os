@@ -388,3 +388,156 @@ pub fn invlpg(addr: u64) {
         );
     }
 }
+
+/// Flush the entire TLB by reloading CR3.
+#[inline]
+pub fn flush_tlb() {
+    let cr3 = read_cr3();
+    // SAFETY: We're just reloading the same CR3 to flush TLB
+    unsafe {
+        write_cr3(cr3);
+    }
+}
+
+// ============================================================================
+// Stack Pointer Operations
+// ============================================================================
+
+/// Read the current stack pointer (RSP).
+#[inline]
+pub fn read_rsp() -> u64 {
+    let value: u64;
+    unsafe {
+        asm!(
+            "mov {0}, rsp",
+            out(reg) value,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+    value
+}
+
+/// Check if stack pointer is 16-byte aligned (required for SSE).
+#[inline]
+pub fn is_stack_aligned() -> bool {
+    (read_rsp() & 0xF) == 0
+}
+
+/// Get stack alignment offset (0-15).
+#[inline]
+pub fn stack_alignment_offset() -> u8 {
+    (read_rsp() & 0xF) as u8
+}
+
+// ============================================================================
+// Serial Port Debug Output
+// ============================================================================
+
+/// Write a single byte to COM1 serial port (0x3F8) for early boot debugging.
+#[inline]
+pub fn serial_debug_byte(byte: u8) {
+    outb(0x3F8, byte);
+}
+
+/// Write a string to COM1 serial port for early boot debugging.
+#[inline]
+pub fn serial_debug_str(s: &str) {
+    for byte in s.bytes() {
+        serial_debug_byte(byte);
+    }
+}
+
+/// Write a hex value to COM1 serial port.
+#[inline]
+pub fn serial_debug_hex(value: u64, digits: usize) {
+    let digits = digits.min(16);
+    for i in (0..digits).rev() {
+        let nibble = ((value >> (i * 4)) & 0xF) as u8;
+        let char = if nibble < 10 {
+            b'0' + nibble
+        } else {
+            b'A' + nibble - 10
+        };
+        serial_debug_byte(char);
+    }
+}
+
+// ============================================================================
+// Memory Copy Operations
+// ============================================================================
+
+/// Copy memory from source to destination.
+/// 
+/// # Safety
+/// - Both `src` and `dst` must be valid for `count` bytes
+/// - `src` and `dst` must not overlap
+/// - Both pointers must be properly aligned for byte access
+#[inline]
+pub unsafe fn memcpy(dst: *mut u8, src: *const u8, count: usize) {
+    core::ptr::copy_nonoverlapping(src, dst, count);
+}
+
+/// Set memory to a specific byte value.
+/// 
+/// # Safety
+/// - `dst` must be valid for `count` bytes
+/// - `dst` must be properly aligned for byte access
+#[inline]
+pub unsafe fn memset(dst: *mut u8, value: u8, count: usize) {
+    core::ptr::write_bytes(dst, value, count);
+}
+
+/// Zero-initialize a memory region.
+/// 
+/// # Safety
+/// - `dst` must be valid for `count` bytes
+#[inline]
+pub unsafe fn memzero(dst: *mut u8, count: usize) {
+    memset(dst, 0, count);
+}
+
+// ============================================================================
+// Trampoline/Low Memory Operations
+// ============================================================================
+
+/// Write bytes to low memory (below 1MB) for trampoline setup.
+/// 
+/// # Safety
+/// - The destination address must be valid low memory
+/// - The memory must be identity-mapped
+#[inline]
+pub unsafe fn write_low_memory(addr: u64, data: &[u8]) {
+    let dst = addr as *mut u8;
+    core::ptr::copy_nonoverlapping(data.as_ptr(), dst, data.len());
+}
+
+/// Read bytes from low memory.
+/// 
+/// # Safety
+/// - The source address must be valid low memory
+/// - The memory must be identity-mapped
+#[inline]
+pub unsafe fn read_low_memory(addr: u64, buffer: &mut [u8]) {
+    let src = addr as *const u8;
+    core::ptr::copy_nonoverlapping(src, buffer.as_mut_ptr(), buffer.len());
+}
+
+/// Read a u64 from a physical address (must be identity-mapped).
+/// 
+/// # Safety
+/// - Address must be valid and identity-mapped
+/// - Address should be 8-byte aligned for best performance
+#[inline]
+pub unsafe fn read_phys_u64(addr: u64) -> u64 {
+    core::ptr::read_volatile(addr as *const u64)
+}
+
+/// Write a u64 to a physical address (must be identity-mapped).
+/// 
+/// # Safety
+/// - Address must be valid and identity-mapped
+/// - Address should be 8-byte aligned for best performance
+#[inline]
+pub unsafe fn write_phys_u64(addr: u64, value: u64) {
+    core::ptr::write_volatile(addr as *mut u64, value);
+}

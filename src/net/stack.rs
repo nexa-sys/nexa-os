@@ -1545,7 +1545,9 @@ impl NetStack {
                             // Header + IPv4
                             let ip_ptr = unsafe { data.as_ptr().add(pos + 4) };
                             let mut ip = [0u8; 4];
-                            unsafe { core::ptr::copy_nonoverlapping(ip_ptr, ip.as_mut_ptr(), 4) };
+                            // SAFETY: ip_ptr points to a valid 4-byte IPv4 address in the packet
+                            // and ip is a 4-byte array
+                            unsafe { crate::safety::memcpy(ip.as_mut_ptr(), ip_ptr, 4) };
 
                             // Update IP
                             if self.devices[real_dev_idx].present {
@@ -1603,7 +1605,8 @@ impl NetStack {
                             // Header + IPv4
                             let ip_ptr = unsafe { data.as_ptr().add(pos + 4) };
                             let mut ip = [0u8; 4];
-                            unsafe { core::ptr::copy_nonoverlapping(ip_ptr, ip.as_mut_ptr(), 4) };
+                            // SAFETY: ip_ptr points to a valid 4-byte gateway IP in the packet
+                            unsafe { crate::safety::memcpy(ip.as_mut_ptr(), ip_ptr, 4) };
                             gateway_ip = Some(ip);
                             crate::ktrace!(
                                 "[netlink_handle_request] RTM_NEWROUTE: gateway={}.{}.{}.{}",

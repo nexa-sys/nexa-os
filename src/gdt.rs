@@ -6,6 +6,8 @@ use x86_64::structures::gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector
 use x86_64::structures::tss::TaskStateSegment;
 use x86_64::VirtAddr;
 
+use crate::safety::{serial_debug_byte, serial_debug_hex, read_rsp, stack_alignment_offset};
+
 const STACK_SIZE: usize = 4096 * 5;
 
 #[repr(align(16))]
@@ -197,7 +199,6 @@ pub fn init() {
 
 /// Initialize GDT for a specific CPU
 fn init_cpu(cpu_id: usize) {
-    use x86_64::instructions::port::Port;
     use x86_64::instructions::segmentation::{Segment, CS, DS};
     use x86_64::instructions::tables::load_tss;
 
@@ -208,20 +209,11 @@ fn init_cpu(cpu_id: usize) {
     unsafe {
         // Debug for AP - check current RSP
         if cpu_id > 0 {
-            let current_rsp: u64;
-            core::arch::asm!("mov {}, rsp", out(reg) current_rsp);
-            let mut s = Port::<u8>::new(0x3F8);
-            s.write(b'a'); // Entry
-                           // Output RSP as hex (low 3 bytes should be enough to see offset)
-            for i in (0..6).rev() {
-                let nibble = ((current_rsp >> (i * 4)) & 0xF) as u8;
-                s.write(if nibble < 10 {
-                    b'0' + nibble
-                } else {
-                    b'A' + nibble - 10
-                });
-            }
-            s.write(b'/');
+            let current_rsp = read_rsp();
+            serial_debug_byte(b'a'); // Entry
+            // Output RSP as hex (low 3 bytes should be enough to see offset)
+            serial_debug_hex(current_rsp, 6);
+            serial_debug_byte(b'/');
         }
 
         let df_base =
@@ -239,22 +231,19 @@ fn init_cpu(cpu_id: usize) {
 
         // Setup TSS for this CPU
         if cpu_id > 0 {
-            let mut s = Port::<u8>::new(0x3F8);
-            s.write(b'b'); // Before TSS setup
+            serial_debug_byte(b'b'); // Before TSS setup
         }
 
         let tss = &mut PER_CPU_TSS[cpu_id].tss;
 
         if cpu_id > 0 {
-            let mut s = Port::<u8>::new(0x3F8);
-            s.write(b'c'); // Got TSS reference
+            serial_debug_byte(b'c'); // Got TSS reference
         }
 
         tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = df_top_aligned;
 
         if cpu_id > 0 {
-            let mut s = Port::<u8>::new(0x3F8);
-            s.write(b'd'); // After IST[DOUBLE_FAULT]
+            serial_debug_byte(b'd'); // After IST[DOUBLE_FAULT]
         }
 
         if cpu_id == 0 {
@@ -267,8 +256,7 @@ fn init_cpu(cpu_id: usize) {
 
         // Debug: before error_code stack access
         if cpu_id > 0 {
-            let mut s = Port::<u8>::new(0x3F8);
-            s.write(b'D'); // Before error_code_stack
+            serial_debug_byte(b'D'); // Before error_code_stack
         }
 
         // Provide a dedicated IST for any exception that pushes an error code
@@ -277,16 +265,14 @@ fn init_cpu(cpu_id: usize) {
 
         // Debug: after error_code stack calculation
         if cpu_id > 0 {
-            let mut s = Port::<u8>::new(0x3F8);
-            s.write(b'E'); // After error_code stack calculation
+            serial_debug_byte(b'E'); // After error_code stack calculation
         }
 
         tss.interrupt_stack_table[ERROR_CODE_IST_INDEX as usize] = ec_top_aligned;
 
         // Debug: after writing IST entry
         if cpu_id > 0 {
-            let mut s = Port::<u8>::new(0x3F8);
-            s.write(b'F'); // After writing IST[ERROR_CODE]
+            serial_debug_byte(b'F'); // After writing IST[ERROR_CODE]
         }
 
         if cpu_id == 0 {
@@ -299,8 +285,7 @@ fn init_cpu(cpu_id: usize) {
 
         // Debug: before privilege stack setup
         if cpu_id > 0 {
-            let mut s = Port::<u8>::new(0x3F8);
-            s.write(b'P'); // Before privilege_stack_table
+            serial_debug_byte(b'P'); // Before privilege_stack_table
         }
 
         // Setup privilege stack for syscall (RSP0 for Ring 0)
@@ -309,8 +294,7 @@ fn init_cpu(cpu_id: usize) {
 
         // Debug: after privilege stack setup
         if cpu_id > 0 {
-            let mut s = Port::<u8>::new(0x3F8);
-            s.write(b'Q'); // After privilege_stack_table
+            serial_debug_byte(b'Q'); // After privilege_stack_table
         }
 
         if cpu_id == 0 {
@@ -323,29 +307,19 @@ fn init_cpu(cpu_id: usize) {
 
         // Debug: before GDT creation
         if cpu_id > 0 {
-            let mut s = Port::<u8>::new(0x3F8);
-            s.write(b'R'); // Before GDT creation
+            serial_debug_byte(b'R'); // Before GDT creation
 
             // Force 16-byte RSP alignment before calling GlobalDescriptorTable::new()
             // SSE instructions like movaps require 16-byte alignment
-            let rsp: u64;
-            core::arch::asm!("mov {}, rsp", out(reg) rsp);
-            let align_nibble = (rsp & 0xF) as u8;
-            s.write(if align_nibble < 10 {
-                b'0' + align_nibble
-            } else {
-                b'A' + align_nibble - 10
-            });
+            serial_debug_hex(stack_alignment_offset() as u64, 1);
         }
 
         // Ensure 16-byte stack alignment before GDT creation
         // This is critical for AP cores where SSE instructions may be generated
-        unsafe {
-            core::arch::asm!(
-                "and rsp, ~0xF", // Align RSP to 16 bytes
-                options(nomem, nostack)
-            );
-        }
+        core::arch::asm!(
+            "and rsp, ~0xF", // Align RSP to 16 bytes
+            options(nomem, nostack)
+        );
 
         // Create GDT for this CPU directly without temp variables to avoid move issues
         // (Move of GlobalDescriptorTable containing AtomicU64 was causing #GP on AP)
@@ -353,8 +327,7 @@ fn init_cpu(cpu_id: usize) {
 
         // Debug: after GDT::new()
         if cpu_id > 0 {
-            let mut s = Port::<u8>::new(0x3F8);
-            s.write(b'S'); // After GDT::new
+            serial_debug_byte(b'S'); // After GDT::new
         }
 
         // Entry 0: Null descriptor (required)
@@ -363,8 +336,7 @@ fn init_cpu(cpu_id: usize) {
 
         // Debug: after kernel_code
         if cpu_id > 0 {
-            let mut s = Port::<u8>::new(0x3F8);
-            s.write(b'T'); // After kernel_code
+            serial_debug_byte(b'T'); // After kernel_code
         }
 
         // Entry 2: Kernel data segment
@@ -372,8 +344,7 @@ fn init_cpu(cpu_id: usize) {
 
         // Debug: after kernel_data
         if cpu_id > 0 {
-            let mut s = Port::<u8>::new(0x3F8);
-            s.write(b'U'); // After kernel_data
+            serial_debug_byte(b'U'); // After kernel_data
         }
 
         // Entry 3: User data segment (DPL=3) - MUST come before user code for SYSRET!
@@ -383,8 +354,7 @@ fn init_cpu(cpu_id: usize) {
 
         // Debug: before TSS segment
         if cpu_id > 0 {
-            let mut s = Port::<u8>::new(0x3F8);
-            s.write(b'V'); // Before TSS segment
+            serial_debug_byte(b'V'); // Before TSS segment
         }
 
         // Entry 5: TSS (per-CPU)
@@ -392,16 +362,14 @@ fn init_cpu(cpu_id: usize) {
 
         // Debug: got tss_ptr
         if cpu_id > 0 {
-            let mut s = Port::<u8>::new(0x3F8);
-            s.write(b'W'); // Got tss_ptr
+            serial_debug_byte(b'W'); // Got tss_ptr
         }
 
         let tss_sel = gdt.append(Descriptor::tss_segment(&*tss_ptr));
 
         // Debug: after TSS segment
         if cpu_id > 0 {
-            let mut s = Port::<u8>::new(0x3F8);
-            s.write(b'X'); // After TSS segment
+            serial_debug_byte(b'X'); // After TSS segment
         }
 
         // On BSP (CPU 0), store selectors for all CPUs to use
@@ -430,8 +398,7 @@ fn init_cpu(cpu_id: usize) {
         PER_CPU_GDT_READY[cpu_id].store(true, Ordering::SeqCst);
 
         if cpu_id > 0 {
-            let mut s = Port::<u8>::new(0x3F8);
-            s.write(b'e'); // After GDT write
+            serial_debug_byte(b'e'); // After GDT write
         }
 
         // Load GDT
@@ -444,38 +411,32 @@ fn init_cpu(cpu_id: usize) {
         }
 
         if cpu_id > 0 {
-            let mut s = Port::<u8>::new(0x3F8);
-            s.write(b'f'); // Before GDT load
+            serial_debug_byte(b'f'); // Before GDT load
         }
 
         gdt_ref.load();
 
         if cpu_id > 0 {
-            let mut s = Port::<u8>::new(0x3F8);
-            s.write(b'g'); // After GDT load
+            serial_debug_byte(b'g'); // After GDT load
         }
 
         // Load segment selectors
         if let Some(selectors) = selectors_ref() {
             if cpu_id > 0 {
-                let mut s = Port::<u8>::new(0x3F8);
-                s.write(b'h'); // Before CS::set_reg
+                serial_debug_byte(b'h'); // Before CS::set_reg
             }
             CS::set_reg(selectors.code_selector);
             if cpu_id > 0 {
-                let mut s = Port::<u8>::new(0x3F8);
-                s.write(b'i'); // After CS::set_reg
+                serial_debug_byte(b'i'); // After CS::set_reg
             }
             DS::set_reg(selectors.data_selector);
             if cpu_id > 0 {
-                let mut s = Port::<u8>::new(0x3F8);
-                s.write(b'j'); // After DS::set_reg
+                serial_debug_byte(b'j'); // After DS::set_reg
             }
             // Each CPU needs its own TSS loaded
             load_tss(selectors.tss_selector);
             if cpu_id > 0 {
-                let mut s = Port::<u8>::new(0x3F8);
-                s.write(b'k'); // After load_tss
+                serial_debug_byte(b'k'); // After load_tss
             }
         }
     }
@@ -489,66 +450,29 @@ fn init_cpu(cpu_id: usize) {
 /// Load the per-CPU GDT/TSS on an application processor after BSP setup.
 /// cpu_id must be obtained from smp module
 pub fn init_ap(cpu_id: usize) {
-    use x86_64::instructions::port::Port;
+    // Debug: Entry to init_ap - check RSP alignment
+    serial_debug_byte(b'I'); // init_ap entry
 
-    unsafe {
-        // Debug: Entry to init_ap - check RSP alignment
-        let mut s = Port::<u8>::new(0x3F8);
-        s.write(b'I'); // init_ap entry
+    // Output RSP alignment (should end in 8 for correct ABI)
+    serial_debug_hex(stack_alignment_offset() as u64, 1);
 
-        // Check RSP alignment
-        let rsp: u64;
-        core::arch::asm!("mov {}, rsp", out(reg) rsp);
-        // Output RSP low byte to check alignment (should end in 8 for correct ABI)
-        let align_byte = (rsp & 0xF) as u8;
-        s.write(if align_byte < 10 {
-            b'0' + align_byte
-        } else {
-            b'A' + align_byte - 10
-        });
-
-        // Print cpu_id as hex
-        let nibble = ((cpu_id >> 4) & 0xF) as u8;
-        s.write(if nibble < 10 {
-            b'0' + nibble
-        } else {
-            b'A' + nibble - 10
-        });
-        let nibble = (cpu_id & 0xF) as u8;
-        s.write(if nibble < 10 {
-            b'0' + nibble
-        } else {
-            b'A' + nibble - 10
-        });
-    }
+    // Print cpu_id as hex
+    serial_debug_hex(cpu_id as u64, 2);
 
     if cpu_id == 0 {
-        unsafe {
-            let mut s = Port::<u8>::new(0x3F8);
-            s.write(b'Z'); // BSP error
-        }
+        serial_debug_byte(b'Z'); // BSP error
         loop {
-            unsafe {
-                core::arch::asm!("hlt");
-            }
+            crate::safety::hlt();
         }
     }
     if cpu_id >= MAX_CPUS {
-        unsafe {
-            let mut s = Port::<u8>::new(0x3F8);
-            s.write(b'M'); // Max exceeded
-        }
+        serial_debug_byte(b'M'); // Max exceeded
         loop {
-            unsafe {
-                core::arch::asm!("hlt");
-            }
+            crate::safety::hlt();
         }
     }
 
-    unsafe {
-        let mut s = Port::<u8>::new(0x3F8);
-        s.write(b'G'); // About to call init_cpu
-    }
+    serial_debug_byte(b'G'); // About to call init_cpu
 
     // Initialize this CPU's GDT and TSS
     init_cpu(cpu_id);
