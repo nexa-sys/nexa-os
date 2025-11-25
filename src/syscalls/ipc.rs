@@ -7,7 +7,7 @@ use crate::posix;
 use core::slice;
 
 /// IPC create channel system call
-pub fn syscall_ipc_create() -> u64 {
+pub fn ipc_create() -> u64 {
     match crate::ipc::create_channel() {
         Ok(id) => {
             posix::set_errno(0);
@@ -21,7 +21,7 @@ pub fn syscall_ipc_create() -> u64 {
 }
 
 /// IPC send system call
-pub fn syscall_ipc_send(request_ptr: *const IpcTransferRequest) -> u64 {
+pub fn ipc_send(request_ptr: *const IpcTransferRequest) -> u64 {
     if request_ptr.is_null() {
         posix::set_errno(posix::errno::EINVAL);
         return u64::MAX;
@@ -49,7 +49,7 @@ pub fn syscall_ipc_send(request_ptr: *const IpcTransferRequest) -> u64 {
 }
 
 /// IPC receive system call
-pub fn syscall_ipc_recv(request_ptr: *const IpcTransferRequest) -> u64 {
+pub fn ipc_recv(request_ptr: *const IpcTransferRequest) -> u64 {
     if request_ptr.is_null() {
         posix::set_errno(posix::errno::EINVAL);
         return u64::MAX;

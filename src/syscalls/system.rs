@@ -10,7 +10,7 @@ use core::str;
 
 /// SYS_REBOOT - System reboot (requires privilege)
 /// cmd values: 0x01234567=RESTART, 0x4321FEDC=HALT, 0xCDEF0123=POWER_OFF
-pub fn syscall_reboot(cmd: i32) -> u64 {
+pub fn reboot(cmd: i32) -> u64 {
     crate::kinfo!("reboot(cmd={:#x}) called", cmd);
 
     // Check if caller is root (UID 0) or has CAP_SYS_BOOT
@@ -52,7 +52,7 @@ pub fn syscall_reboot(cmd: i32) -> u64 {
 }
 
 /// SYS_SHUTDOWN - System shutdown (power off the system)
-pub fn syscall_shutdown() -> u64 {
+pub fn shutdown() -> u64 {
     crate::kinfo!("shutdown() called");
 
     // Check privilege
@@ -73,7 +73,7 @@ pub fn syscall_shutdown() -> u64 {
 /// SYS_RUNLEVEL - Get or set system runlevel
 /// arg < 0: get current runlevel (return value)
 /// arg >= 0: set runlevel (requires root)
-pub fn syscall_runlevel(level: i32) -> u64 {
+pub fn runlevel(level: i32) -> u64 {
     if level < 0 {
         // Get current runlevel
         let current = crate::init::current_runlevel();
@@ -128,7 +128,7 @@ pub fn syscall_runlevel(level: i32) -> u64 {
 /// - Filesystem drivers (ext2, ext4, etc.)
 /// - Mount point tracking
 /// - VFS integration
-pub fn syscall_mount(req_ptr: *const MountRequest) -> u64 {
+pub fn mount(req_ptr: *const MountRequest) -> u64 {
     crate::kinfo!("syscall: mount");
 
     // Check privilege
@@ -202,7 +202,7 @@ pub fn syscall_mount(req_ptr: *const MountRequest) -> u64 {
 }
 
 /// SYS_UMOUNT - Unmount a filesystem
-pub fn syscall_umount(target_ptr: *const u8, target_len: usize) -> u64 {
+pub fn umount(target_ptr: *const u8, target_len: usize) -> u64 {
     crate::kinfo!("syscall: umount");
 
     // Check privilege
@@ -235,7 +235,7 @@ pub fn syscall_umount(target_ptr: *const u8, target_len: usize) -> u64 {
 }
 
 /// SYS_CHROOT - Change root directory
-pub fn syscall_chroot(path_ptr: *const u8, path_len: usize) -> u64 {
+pub fn chroot(path_ptr: *const u8, path_len: usize) -> u64 {
     crate::kinfo!("syscall: chroot");
 
     // Check privilege
@@ -276,7 +276,7 @@ pub fn syscall_chroot(path_ptr: *const u8, path_len: usize) -> u64 {
 /// - Mount point migration
 /// - Process root directory updates
 /// - Initramfs memory cleanup
-pub fn syscall_pivot_root(req_ptr: *const PivotRootRequest) -> u64 {
+pub fn pivot_root(req_ptr: *const PivotRootRequest) -> u64 {
     crate::kinfo!("syscall: pivot_root");
 
     // Check privilege

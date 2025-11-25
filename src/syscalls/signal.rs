@@ -6,7 +6,7 @@ use crate::posix;
 use crate::kinfo;
 
 /// POSIX sigaction() system call - examine and change signal action
-pub fn syscall_sigaction(signum: u64, _act: *const u8, _oldact: *mut u8) -> u64 {
+pub fn sigaction(signum: u64, _act: *const u8, _oldact: *mut u8) -> u64 {
     if signum >= crate::signal::NSIG as u64 {
         posix::set_errno(posix::errno::EINVAL);
         return u64::MAX;
@@ -19,7 +19,7 @@ pub fn syscall_sigaction(signum: u64, _act: *const u8, _oldact: *mut u8) -> u64 
 }
 
 /// POSIX sigprocmask() system call - examine and change blocked signals
-pub fn syscall_sigprocmask(_how: i32, _set: *const u64, _oldset: *mut u64) -> u64 {
+pub fn sigprocmask(_how: i32, _set: *const u64, _oldset: *mut u64) -> u64 {
     // TODO: Implement signal masking
     kinfo!("sigprocmask() called");
     posix::set_errno(0);

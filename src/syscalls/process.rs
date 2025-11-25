@@ -12,7 +12,7 @@ use alloc::alloc::{alloc, dealloc, Layout};
 use core::sync::atomic::Ordering;
 
 /// Exit system call - terminate current process
-pub fn syscall_exit(code: i32) -> ! {
+pub fn exit(code: i32) -> ! {
     let pid = crate::scheduler::current_pid().unwrap_or(0);
     ktrace!("[SYS_EXIT] PID {} exiting with code: {}", pid, code);
     kinfo!("Process {} exiting with code: {}", pid, code);
@@ -36,7 +36,7 @@ pub fn syscall_exit(code: i32) -> ! {
 }
 
 /// POSIX getppid() system call - get parent process ID
-pub fn syscall_getppid() -> u64 {
+pub fn getppid() -> u64 {
     if let Some(pid) = crate::scheduler::get_current_pid() {
         if let Some(process) = crate::scheduler::get_process(pid) {
             posix::set_errno(0);
@@ -48,7 +48,7 @@ pub fn syscall_getppid() -> u64 {
 }
 
 /// POSIX fork() system call - create child process
-pub fn syscall_fork(syscall_return_addr: u64) -> u64 {
+pub fn fork(syscall_return_addr: u64) -> u64 {
     use crate::process::{INTERP_BASE, INTERP_REGION_SIZE, USER_VIRT_BASE};
 
     kdebug!(
@@ -306,7 +306,7 @@ fn copy_user_c_string(ptr: *const u8, buffer: &mut [u8]) -> Result<usize, ()> {
 }
 
 /// POSIX execve() system call - execute program
-pub fn syscall_execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8) -> u64 {
+pub fn execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8) -> u64 {
     use crate::scheduler::get_current_pid;
 
     ktrace!("[syscall_execve] Called");
@@ -527,7 +527,7 @@ pub fn syscall_execve(path: *const u8, _argv: *const *const u8, _envp: *const *c
 }
 
 /// POSIX wait4() system call - wait for process state change
-pub fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> u64 {
+pub fn wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> u64 {
     kinfo!("wait4(pid={}, options={:#x}) called", pid, options);
 
     let current_pid = match crate::scheduler::get_current_pid() {
@@ -713,7 +713,7 @@ pub fn syscall_wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8)
 }
 
 /// POSIX kill() system call - send signal to process
-pub fn syscall_kill(pid: u64, signum: u64) -> u64 {
+pub fn kill(pid: u64, signum: u64) -> u64 {
     if signum >= crate::signal::NSIG as u64 {
         posix::set_errno(posix::errno::EINVAL);
         return u64::MAX;

@@ -6,7 +6,7 @@ use super::types::*;
 use crate::posix;
 
 /// POSIX dup() system call - duplicate file descriptor
-pub fn syscall_dup(oldfd: u64) -> u64 {
+pub fn dup(oldfd: u64) -> u64 {
     let handle = match handle_for_fd(oldfd) {
         Ok(handle) => handle,
         Err(errno) => {
@@ -28,7 +28,7 @@ pub fn syscall_dup(oldfd: u64) -> u64 {
 }
 
 /// POSIX dup2() system call - duplicate file descriptor to specific FD
-pub fn syscall_dup2(oldfd: u64, newfd: u64) -> u64 {
+pub fn dup2(oldfd: u64, newfd: u64) -> u64 {
     if oldfd == newfd {
         posix::set_errno(0);
         return newfd;
@@ -62,7 +62,7 @@ pub fn syscall_dup2(oldfd: u64, newfd: u64) -> u64 {
 }
 
 /// POSIX pipe() system call - creates a pipe
-pub fn syscall_pipe(pipefd: *mut [i32; 2]) -> u64 {
+pub fn pipe(pipefd: *mut [i32; 2]) -> u64 {
     if pipefd.is_null() {
         posix::set_errno(posix::errno::EFAULT);
         return u64::MAX;

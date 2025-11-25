@@ -53,33 +53,19 @@ use types::*;
 
 // Import all syscall implementations
 use exec::set_exec_context;
-use fd::{syscall_dup, syscall_dup2, syscall_pipe};
-use file::{
-    syscall_close, syscall_fcntl, syscall_fstat, syscall_get_errno, syscall_list_files,
-    syscall_lseek, syscall_open, syscall_read, syscall_stat, syscall_write,
-};
-use ipc::{syscall_ipc_create, syscall_ipc_recv, syscall_ipc_send};
-use network::{
-    syscall_bind, syscall_connect, syscall_recvfrom, syscall_sendto, syscall_setsockopt,
-    syscall_socket,
-};
-use process::{
-    syscall_execve, syscall_exit, syscall_fork, syscall_getppid, syscall_kill, syscall_wait4,
-};
-use signal::{syscall_sigaction, syscall_sigprocmask};
-use system::{
-    syscall_chroot, syscall_mount, syscall_pivot_root, syscall_reboot, syscall_runlevel,
-    syscall_shutdown, syscall_umount,
-};
-use time::{syscall_clock_gettime, syscall_nanosleep, syscall_sched_yield};
+use fd::{dup, dup2, pipe};
+use file::{close, fcntl, fstat, get_errno, list_files, lseek, open, read, stat, write};
+use ipc::{ipc_create, ipc_recv, ipc_send};
+use network::{bind, connect, recvfrom, sendto, setsockopt, socket};
+use process::{execve, exit, fork, getppid, kill, wait4};
+use signal::{sigaction, sigprocmask};
+use system::{chroot, mount, pivot_root, reboot, runlevel, shutdown, umount};
+use time::{clock_gettime, nanosleep, sched_yield};
 use uefi::{
-    syscall_uefi_get_block_info, syscall_uefi_get_counts, syscall_uefi_get_fb_info,
-    syscall_uefi_get_hid_info, syscall_uefi_get_net_info, syscall_uefi_get_usb_info,
-    syscall_uefi_map_net_mmio, syscall_uefi_map_usb_mmio,
+    uefi_get_block_info, uefi_get_counts, uefi_get_fb_info, uefi_get_hid_info, uefi_get_net_info,
+    uefi_get_usb_info, uefi_map_net_mmio, uefi_map_usb_mmio,
 };
-use user::{
-    syscall_user_add, syscall_user_info, syscall_user_list, syscall_user_login, syscall_user_logout,
-};
+use user::{user_add, user_info, user_list, user_login, user_logout};
 
 /// Main syscall dispatcher
 #[no_mangle]
@@ -106,49 +92,45 @@ pub extern "C" fn syscall_dispatch(
     scheduler::update_current_user_context(syscall_return_addr, user_rsp, user_rflags);
 
     let result = match nr {
-        SYS_WRITE => syscall_write(arg1, arg2, arg3),
-        SYS_READ => syscall_read(arg1, arg2 as *mut u8, arg3 as usize),
-        SYS_OPEN => syscall_open(arg1 as *const u8, arg2 as usize),
-        SYS_CLOSE => syscall_close(arg1),
-        SYS_STAT => syscall_stat(arg1 as *const u8, arg2 as usize, arg3 as *mut posix::Stat),
-        SYS_FSTAT => syscall_fstat(arg1, arg2 as *mut posix::Stat),
-        SYS_LSEEK => syscall_lseek(arg1, arg2 as i64, arg3),
-        SYS_FCNTL => syscall_fcntl(arg1, arg2, arg3),
-        SYS_PIPE => syscall_pipe(arg1 as *mut [i32; 2]),
-        SYS_DUP => syscall_dup(arg1),
-        SYS_DUP2 => syscall_dup2(arg1, arg2),
-        SYS_FORK => syscall_fork(syscall_return_addr),
-        SYS_EXECVE => syscall_execve(
+        SYS_WRITE => write(arg1, arg2, arg3),
+        SYS_READ => read(arg1, arg2 as *mut u8, arg3 as usize),
+        SYS_OPEN => open(arg1 as *const u8, arg2 as usize),
+        SYS_CLOSE => close(arg1),
+        SYS_STAT => stat(arg1 as *const u8, arg2 as usize, arg3 as *mut posix::Stat),
+        SYS_FSTAT => fstat(arg1, arg2 as *mut posix::Stat),
+        SYS_LSEEK => lseek(arg1, arg2 as i64, arg3),
+        SYS_FCNTL => fcntl(arg1, arg2, arg3),
+        SYS_PIPE => pipe(arg1 as *mut [i32; 2]),
+        SYS_DUP => dup(arg1),
+        SYS_DUP2 => dup2(arg1, arg2),
+        SYS_FORK => fork(syscall_return_addr),
+        SYS_EXECVE => execve(
             arg1 as *const u8,
             arg2 as *const *const u8,
             arg3 as *const *const u8,
         ),
-        SYS_EXIT => syscall_exit(arg1 as i32),
-        SYS_WAIT4 => syscall_wait4(arg1 as i64, arg2 as *mut i32, arg3 as i32, 0 as *mut u8),
-        SYS_KILL => syscall_kill(arg1, arg2),
-        SYS_SIGACTION => syscall_sigaction(arg1, arg2 as *const u8, arg3 as *mut u8),
-        SYS_SIGPROCMASK => syscall_sigprocmask(arg1 as i32, arg2 as *const u64, arg3 as *mut u64),
+        SYS_EXIT => exit(arg1 as i32),
+        SYS_WAIT4 => wait4(arg1 as i64, arg2 as *mut i32, arg3 as i32, 0 as *mut u8),
+        SYS_KILL => kill(arg1, arg2),
+        SYS_SIGACTION => sigaction(arg1, arg2 as *const u8, arg3 as *mut u8),
+        SYS_SIGPROCMASK => sigprocmask(arg1 as i32, arg2 as *const u64, arg3 as *mut u64),
         SYS_GETPID => crate::scheduler::get_current_pid().unwrap_or(0),
-        SYS_GETPPID => syscall_getppid(),
-        SYS_SCHED_YIELD => syscall_sched_yield(),
-        SYS_CLOCK_GETTIME => syscall_clock_gettime(arg1 as i32, arg2 as *mut TimeSpec),
-        SYS_NANOSLEEP => syscall_nanosleep(arg1 as *const TimeSpec, arg2 as *mut TimeSpec),
-        SYS_LIST_FILES => syscall_list_files(
-            arg1 as *mut u8,
-            arg2 as usize,
-            arg3 as *const ListDirRequest,
-        ),
-        SYS_GETERRNO => syscall_get_errno(),
-        SYS_IPC_CREATE => syscall_ipc_create(),
-        SYS_IPC_SEND => syscall_ipc_send(arg1 as *const IpcTransferRequest),
-        SYS_IPC_RECV => syscall_ipc_recv(arg1 as *const IpcTransferRequest),
-        SYS_USER_ADD => syscall_user_add(arg1 as *const UserRequest),
-        SYS_USER_LOGIN => syscall_user_login(arg1 as *const UserRequest),
-        SYS_USER_INFO => syscall_user_info(arg1 as *mut UserInfoReply),
-        SYS_USER_LIST => syscall_user_list(arg1 as *mut u8, arg2 as usize),
-        SYS_USER_LOGOUT => syscall_user_logout(),
-        SYS_SOCKET => syscall_socket(arg1 as i32, arg2 as i32, arg3 as i32),
-        SYS_BIND => syscall_bind(arg1, arg2 as *const SockAddr, arg3 as u32),
+        SYS_GETPPID => getppid(),
+        SYS_SCHED_YIELD => sched_yield(),
+        SYS_CLOCK_GETTIME => clock_gettime(arg1 as i32, arg2 as *mut TimeSpec),
+        SYS_NANOSLEEP => nanosleep(arg1 as *const TimeSpec, arg2 as *mut TimeSpec),
+        SYS_LIST_FILES => list_files(arg1 as *mut u8, arg2 as usize, arg3 as *const ListDirRequest),
+        SYS_GETERRNO => get_errno(),
+        SYS_IPC_CREATE => ipc_create(),
+        SYS_IPC_SEND => ipc_send(arg1 as *const IpcTransferRequest),
+        SYS_IPC_RECV => ipc_recv(arg1 as *const IpcTransferRequest),
+        SYS_USER_ADD => user_add(arg1 as *const UserRequest),
+        SYS_USER_LOGIN => user_login(arg1 as *const UserRequest),
+        SYS_USER_INFO => user_info(arg1 as *mut UserInfoReply),
+        SYS_USER_LIST => user_list(arg1 as *mut u8, arg2 as usize),
+        SYS_USER_LOGOUT => user_logout(),
+        SYS_SOCKET => socket(arg1 as i32, arg2 as i32, arg3 as i32),
+        SYS_BIND => bind(arg1, arg2 as *const SockAddr, arg3 as u32),
         SYS_SENDTO => {
             // sendto needs 6 args: sockfd, buf, len, flags, dest_addr, addrlen
             let (arg4, arg5, arg6) = unsafe {
@@ -166,7 +148,7 @@ pub extern "C" fn syscall_dispatch(
                 );
                 (r10_val, r8_val, r9_val)
             };
-            syscall_sendto(
+            sendto(
                 arg1,
                 arg2 as *const u8,
                 arg3 as usize,
@@ -192,7 +174,7 @@ pub extern "C" fn syscall_dispatch(
                 );
                 (r10_val, r8_val, r9_val)
             };
-            syscall_recvfrom(
+            recvfrom(
                 arg1,
                 arg2 as *mut u8,
                 arg3 as usize,
@@ -201,7 +183,7 @@ pub extern "C" fn syscall_dispatch(
                 arg6 as *mut u32,
             )
         }
-        SYS_CONNECT => syscall_connect(arg1, arg2 as *const SockAddr, arg3 as u32),
+        SYS_CONNECT => connect(arg1, arg2 as *const SockAddr, arg3 as u32),
         SYS_SETSOCKOPT => {
             // setsockopt needs 5 args: sockfd, level, optname, optval, optlen
             let (arg4, arg5) = unsafe {
@@ -216,31 +198,23 @@ pub extern "C" fn syscall_dispatch(
                 );
                 (r10_val, r8_val)
             };
-            syscall_setsockopt(arg1, arg2 as i32, arg3 as i32, arg4 as *const u8, arg5 as u32)
+            setsockopt(arg1, arg2 as i32, arg3 as i32, arg4 as *const u8, arg5 as u32)
         }
-        SYS_REBOOT => syscall_reboot(arg1 as i32),
-        SYS_SHUTDOWN => syscall_shutdown(),
-        SYS_RUNLEVEL => syscall_runlevel(arg1 as i32),
-        SYS_MOUNT => syscall_mount(arg1 as *const MountRequest),
-        SYS_UMOUNT => syscall_umount(arg1 as *const u8, arg2 as usize),
-        SYS_CHROOT => syscall_chroot(arg1 as *const u8, arg2 as usize),
-        SYS_PIVOT_ROOT => syscall_pivot_root(arg1 as *const PivotRootRequest),
-        SYS_UEFI_GET_COUNTS => syscall_uefi_get_counts(arg1 as *mut CompatCounts),
-        SYS_UEFI_GET_FB_INFO => syscall_uefi_get_fb_info(arg1 as *mut FramebufferInfo),
-        SYS_UEFI_GET_NET_INFO => {
-            syscall_uefi_get_net_info(arg1 as usize, arg2 as *mut NetworkDescriptor)
-        }
-        SYS_UEFI_GET_BLOCK_INFO => {
-            syscall_uefi_get_block_info(arg1 as usize, arg2 as *mut BlockDescriptor)
-        }
-        SYS_UEFI_MAP_NET_MMIO => syscall_uefi_map_net_mmio(arg1 as usize),
-        SYS_UEFI_GET_USB_INFO => {
-            syscall_uefi_get_usb_info(arg1 as usize, arg2 as *mut UsbHostDescriptor)
-        }
-        SYS_UEFI_GET_HID_INFO => {
-            syscall_uefi_get_hid_info(arg1 as usize, arg2 as *mut HidInputDescriptor)
-        }
-        SYS_UEFI_MAP_USB_MMIO => syscall_uefi_map_usb_mmio(arg1 as usize),
+        SYS_REBOOT => reboot(arg1 as i32),
+        SYS_SHUTDOWN => shutdown(),
+        SYS_RUNLEVEL => runlevel(arg1 as i32),
+        SYS_MOUNT => mount(arg1 as *const MountRequest),
+        SYS_UMOUNT => umount(arg1 as *const u8, arg2 as usize),
+        SYS_CHROOT => chroot(arg1 as *const u8, arg2 as usize),
+        SYS_PIVOT_ROOT => pivot_root(arg1 as *const PivotRootRequest),
+        SYS_UEFI_GET_COUNTS => uefi_get_counts(arg1 as *mut CompatCounts),
+        SYS_UEFI_GET_FB_INFO => uefi_get_fb_info(arg1 as *mut FramebufferInfo),
+        SYS_UEFI_GET_NET_INFO => uefi_get_net_info(arg1 as usize, arg2 as *mut NetworkDescriptor),
+        SYS_UEFI_GET_BLOCK_INFO => uefi_get_block_info(arg1 as usize, arg2 as *mut BlockDescriptor),
+        SYS_UEFI_MAP_NET_MMIO => uefi_map_net_mmio(arg1 as usize),
+        SYS_UEFI_GET_USB_INFO => uefi_get_usb_info(arg1 as usize, arg2 as *mut UsbHostDescriptor),
+        SYS_UEFI_GET_HID_INFO => uefi_get_hid_info(arg1 as usize, arg2 as *mut HidInputDescriptor),
+        SYS_UEFI_MAP_USB_MMIO => uefi_map_usb_mmio(arg1 as usize),
         _ => {
             crate::kwarn!("Unknown syscall: {}", nr);
             posix::set_errno(posix::errno::ENOSYS);

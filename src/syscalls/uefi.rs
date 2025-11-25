@@ -16,7 +16,7 @@ use core::ptr;
 use nexa_boot_info::FramebufferInfo;
 
 /// SYS_UEFI_GET_COUNTS - Get UEFI compatibility layer device counts
-pub fn syscall_uefi_get_counts(out: *mut CompatCounts) -> u64 {
+pub fn uefi_get_counts(out: *mut CompatCounts) -> u64 {
     if out.is_null() {
         posix::set_errno(posix::errno::EFAULT);
         return u64::MAX;
@@ -36,7 +36,7 @@ pub fn syscall_uefi_get_counts(out: *mut CompatCounts) -> u64 {
 }
 
 /// SYS_UEFI_GET_FB_INFO - Get framebuffer information
-pub fn syscall_uefi_get_fb_info(out: *mut FramebufferInfo) -> u64 {
+pub fn uefi_get_fb_info(out: *mut FramebufferInfo) -> u64 {
     if out.is_null() {
         posix::set_errno(posix::errno::EFAULT);
         return u64::MAX;
@@ -60,7 +60,7 @@ pub fn syscall_uefi_get_fb_info(out: *mut FramebufferInfo) -> u64 {
 }
 
 /// SYS_UEFI_GET_NET_INFO - Get network device information
-pub fn syscall_uefi_get_net_info(index: usize, out: *mut NetworkDescriptor) -> u64 {
+pub fn uefi_get_net_info(index: usize, out: *mut NetworkDescriptor) -> u64 {
     if out.is_null() {
         posix::set_errno(posix::errno::EFAULT);
         return u64::MAX;
@@ -85,7 +85,7 @@ pub fn syscall_uefi_get_net_info(index: usize, out: *mut NetworkDescriptor) -> u
 }
 
 /// SYS_UEFI_GET_BLOCK_INFO - Get block device information
-pub fn syscall_uefi_get_block_info(index: usize, out: *mut BlockDescriptor) -> u64 {
+pub fn uefi_get_block_info(index: usize, out: *mut BlockDescriptor) -> u64 {
     if out.is_null() {
         posix::set_errno(posix::errno::EFAULT);
         return u64::MAX;
@@ -110,7 +110,7 @@ pub fn syscall_uefi_get_block_info(index: usize, out: *mut BlockDescriptor) -> u
 }
 
 /// SYS_UEFI_MAP_NET_MMIO - Map network device MMIO region to userspace
-pub fn syscall_uefi_map_net_mmio(index: usize) -> u64 {
+pub fn uefi_map_net_mmio(index: usize) -> u64 {
     let Some(descriptor) = uefi_compat::network_descriptor(index) else {
         posix::set_errno(posix::errno::ENODEV);
         return u64::MAX;
@@ -144,7 +144,7 @@ pub fn syscall_uefi_map_net_mmio(index: usize) -> u64 {
 }
 
 /// SYS_UEFI_GET_USB_INFO - Get USB host controller information
-pub fn syscall_uefi_get_usb_info(index: usize, out: *mut UsbHostDescriptor) -> u64 {
+pub fn uefi_get_usb_info(index: usize, out: *mut UsbHostDescriptor) -> u64 {
     if out.is_null() {
         posix::set_errno(posix::errno::EINVAL);
         return u64::MAX;
@@ -163,7 +163,7 @@ pub fn syscall_uefi_get_usb_info(index: usize, out: *mut UsbHostDescriptor) -> u
 }
 
 /// SYS_UEFI_GET_HID_INFO - Get HID input device information
-pub fn syscall_uefi_get_hid_info(index: usize, out: *mut HidInputDescriptor) -> u64 {
+pub fn uefi_get_hid_info(index: usize, out: *mut HidInputDescriptor) -> u64 {
     if out.is_null() {
         posix::set_errno(posix::errno::EINVAL);
         return u64::MAX;
@@ -182,7 +182,7 @@ pub fn syscall_uefi_get_hid_info(index: usize, out: *mut HidInputDescriptor) -> 
 }
 
 /// SYS_UEFI_MAP_USB_MMIO - Map USB host controller MMIO region to userspace
-pub fn syscall_uefi_map_usb_mmio(index: usize) -> u64 {
+pub fn uefi_map_usb_mmio(index: usize) -> u64 {
     let Some(descriptor) = uefi_compat::usb_host_descriptor(index) else {
         posix::set_errno(posix::errno::ENODEV);
         return u64::MAX;

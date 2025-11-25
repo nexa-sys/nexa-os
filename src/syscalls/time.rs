@@ -7,7 +7,7 @@ use crate::posix;
 use crate::process::{USER_REGION_SIZE, USER_VIRT_BASE};
 
 /// SYS_SCHED_YIELD - Yield CPU to scheduler
-pub fn syscall_sched_yield() -> u64 {
+pub fn sched_yield() -> u64 {
     crate::kinfo!("sched_yield() - yielding CPU to scheduler");
 
     // Perform context switch to next ready process
@@ -18,7 +18,7 @@ pub fn syscall_sched_yield() -> u64 {
 }
 
 /// SYS_CLOCK_GETTIME - Get current time from specified clock
-pub fn syscall_clock_gettime(_clk_id: i32, tp: *mut TimeSpec) -> u64 {
+pub fn clock_gettime(_clk_id: i32, tp: *mut TimeSpec) -> u64 {
     if tp.is_null() {
         posix::set_errno(posix::errno::EFAULT);
         return u64::MAX;
@@ -52,7 +52,7 @@ pub fn syscall_clock_gettime(_clk_id: i32, tp: *mut TimeSpec) -> u64 {
 }
 
 /// SYS_NANOSLEEP - Sleep for specified time
-pub fn syscall_nanosleep(req: *const TimeSpec, rem: *mut TimeSpec) -> u64 {
+pub fn nanosleep(req: *const TimeSpec, rem: *mut TimeSpec) -> u64 {
     if req.is_null() {
         posix::set_errno(posix::errno::EFAULT);
         return u64::MAX;

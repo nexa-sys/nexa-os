@@ -11,7 +11,7 @@ use alloc::boxed::Box;
 use core::slice;
 
 /// SYS_SOCKET - Create a socket
-pub fn syscall_socket(domain: i32, socket_type: i32, protocol: i32) -> u64 {
+pub fn socket(domain: i32, socket_type: i32, protocol: i32) -> u64 {
     kinfo!(
         "[SYS_SOCKET] domain={} type={} protocol={}",
         domain,
@@ -131,7 +131,7 @@ pub fn syscall_socket(domain: i32, socket_type: i32, protocol: i32) -> u64 {
 }
 
 /// SYS_BIND - Bind socket to local address
-pub fn syscall_bind(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
+pub fn bind(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
     kinfo!("[SYS_BIND] sockfd={} addrlen={}", sockfd, addrlen);
 
     if addr.is_null() || addrlen < 8 {
@@ -285,7 +285,7 @@ pub fn syscall_bind(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
 }
 
 /// SYS_SENDTO - Send UDP datagram to specified address
-pub fn syscall_sendto(
+pub fn sendto(
     sockfd: u64,
     buf: *const u8,
     len: usize,
@@ -543,7 +543,7 @@ pub fn syscall_sendto(
 }
 
 /// SYS_RECVFROM - Receive UDP datagram and source address
-pub fn syscall_recvfrom(
+pub fn recvfrom(
     sockfd: u64,
     buf: *mut u8,
     len: usize,
@@ -681,7 +681,7 @@ pub fn syscall_recvfrom(
 }
 
 /// SYS_CONNECT - Connect socket to remote address
-pub fn syscall_connect(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
+pub fn connect(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
     ktrace!(
         "[SYS_CONNECT] ==== ENTRY ==== sockfd={} addrlen={}",
         sockfd,
@@ -853,7 +853,7 @@ pub fn syscall_connect(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 
 }
 
 /// SYS_SETSOCKOPT - Set socket options
-pub fn syscall_setsockopt(
+pub fn setsockopt(
     sockfd: u64,
     level: i32,
     optname: i32,

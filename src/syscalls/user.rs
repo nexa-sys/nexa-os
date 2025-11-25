@@ -8,7 +8,7 @@ use crate::kinfo;
 use core::{fmt::Write, ptr, slice, str};
 
 /// User add system call
-pub fn syscall_user_add(request_ptr: *const UserRequest) -> u64 {
+pub fn user_add(request_ptr: *const UserRequest) -> u64 {
     if request_ptr.is_null() {
         posix::set_errno(posix::errno::EINVAL);
         return u64::MAX;
@@ -67,7 +67,7 @@ pub fn syscall_user_add(request_ptr: *const UserRequest) -> u64 {
 }
 
 /// User login system call
-pub fn syscall_user_login(request_ptr: *const UserRequest) -> u64 {
+pub fn user_login(request_ptr: *const UserRequest) -> u64 {
     if request_ptr.is_null() {
         posix::set_errno(posix::errno::EINVAL);
         return u64::MAX;
@@ -142,7 +142,7 @@ pub fn syscall_user_login(request_ptr: *const UserRequest) -> u64 {
 }
 
 /// User info system call
-pub fn syscall_user_info(info_ptr: *mut UserInfoReply) -> u64 {
+pub fn user_info(info_ptr: *mut UserInfoReply) -> u64 {
     if info_ptr.is_null() {
         posix::set_errno(posix::errno::EINVAL);
         return u64::MAX;
@@ -168,7 +168,7 @@ pub fn syscall_user_info(info_ptr: *mut UserInfoReply) -> u64 {
 }
 
 /// User list system call
-pub fn syscall_user_list(buf_ptr: *mut u8, count: usize) -> u64 {
+pub fn user_list(buf_ptr: *mut u8, count: usize) -> u64 {
     if buf_ptr.is_null() || count == 0 {
         posix::set_errno(posix::errno::EINVAL);
         return u64::MAX;
@@ -201,7 +201,7 @@ pub fn syscall_user_list(buf_ptr: *mut u8, count: usize) -> u64 {
 }
 
 /// User logout system call
-pub fn syscall_user_logout() -> u64 {
+pub fn user_logout() -> u64 {
     match crate::auth::logout() {
         Ok(_) => {
             posix::set_errno(0);

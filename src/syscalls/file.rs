@@ -60,7 +60,7 @@ pub fn write_to_std_stream(kind: StdStreamKind, buf: u64, count: u64) -> u64 {
 }
 
 /// Write system call
-pub fn syscall_write(fd: u64, buf: u64, count: u64) -> u64 {
+pub fn write(fd: u64, buf: u64, count: u64) -> u64 {
     if count == 0 {
         posix::set_errno(0);
         return 0;
@@ -219,7 +219,7 @@ pub fn read_from_keyboard(buf: *mut u8, count: usize) -> u64 {
 }
 
 /// Read system call
-pub fn syscall_read(fd: u64, buf: *mut u8, count: usize) -> u64 {
+pub fn read(fd: u64, buf: *mut u8, count: usize) -> u64 {
     kinfo!("sys_read(fd={}, count={})", fd, count);
     if buf.is_null() {
         posix::set_errno(posix::errno::EFAULT);
@@ -358,7 +358,7 @@ pub fn syscall_read(fd: u64, buf: *mut u8, count: usize) -> u64 {
 }
 
 /// Open system call
-pub fn syscall_open(path_ptr: *const u8, len: usize) -> u64 {
+pub fn open(path_ptr: *const u8, len: usize) -> u64 {
     if path_ptr.is_null() || len == 0 {
         posix::set_errno(posix::errno::EINVAL);
         return u64::MAX;
@@ -418,7 +418,7 @@ pub fn syscall_open(path_ptr: *const u8, len: usize) -> u64 {
 }
 
 /// Close system call
-pub fn syscall_close(fd: u64) -> u64 {
+pub fn close(fd: u64) -> u64 {
     if fd < FD_BASE {
         posix::set_errno(posix::errno::EBADF);
         return u64::MAX;
@@ -473,7 +473,7 @@ pub fn syscall_close(fd: u64) -> u64 {
 }
 
 /// List files system call
-pub fn syscall_list_files(buf: *mut u8, count: usize, request_ptr: *const ListDirRequest) -> u64 {
+pub fn list_files(buf: *mut u8, count: usize, request_ptr: *const ListDirRequest) -> u64 {
     if buf.is_null() || count == 0 {
         posix::set_errno(posix::errno::EINVAL);
         return u64::MAX;
@@ -554,7 +554,7 @@ pub fn syscall_list_files(buf: *mut u8, count: usize, request_ptr: *const ListDi
 }
 
 /// Stat system call
-pub fn syscall_stat(path_ptr: *const u8, len: usize, stat_buf: *mut posix::Stat) -> u64 {
+pub fn stat(path_ptr: *const u8, len: usize, stat_buf: *mut posix::Stat) -> u64 {
     if path_ptr.is_null() || stat_buf.is_null() || len == 0 {
         posix::set_errno(posix::errno::EINVAL);
         return u64::MAX;
@@ -588,7 +588,7 @@ pub fn syscall_stat(path_ptr: *const u8, len: usize, stat_buf: *mut posix::Stat)
 }
 
 /// Fstat system call
-pub fn syscall_fstat(fd: u64, stat_buf: *mut posix::Stat) -> u64 {
+pub fn fstat(fd: u64, stat_buf: *mut posix::Stat) -> u64 {
     if stat_buf.is_null() {
         posix::set_errno(posix::errno::EINVAL);
         return u64::MAX;
@@ -610,7 +610,7 @@ pub fn syscall_fstat(fd: u64, stat_buf: *mut posix::Stat) -> u64 {
 }
 
 /// Lseek system call
-pub fn syscall_lseek(fd: u64, offset: i64, whence: u64) -> u64 {
+pub fn lseek(fd: u64, offset: i64, whence: u64) -> u64 {
     if fd < FD_BASE {
         posix::set_errno(posix::errno::EBADF);
         return u64::MAX;
@@ -660,7 +660,7 @@ pub fn syscall_lseek(fd: u64, offset: i64, whence: u64) -> u64 {
 }
 
 /// Fcntl system call
-pub fn syscall_fcntl(fd: u64, cmd: u64, arg: u64) -> u64 {
+pub fn fcntl(fd: u64, cmd: u64, arg: u64) -> u64 {
     match cmd {
         F_DUPFD => {
             let handle = match handle_for_fd(fd) {
@@ -702,6 +702,6 @@ pub fn syscall_fcntl(fd: u64, cmd: u64, arg: u64) -> u64 {
 }
 
 /// Get errno system call
-pub fn syscall_get_errno() -> u64 {
+pub fn get_errno() -> u64 {
     posix::errno() as u64
 }
