@@ -16,13 +16,14 @@ pub fn set_cpu_affinity(pid: Pid, affinity_mask: u32) -> Result<(), &'static str
     let mut table = PROCESS_TABLE.lock();
 
     for slot in table.iter_mut() {
-        if let Some(entry) = slot {
-            if entry.process.pid == pid {
-                entry.cpu_affinity = affinity_mask;
-                crate::kinfo!("Set CPU affinity for PID {} to {:#x}", pid, affinity_mask);
-                return Ok(());
-            }
+        let Some(entry) = slot else { continue };
+        if entry.process.pid != pid {
+            continue;
         }
+
+        entry.cpu_affinity = affinity_mask;
+        crate::kinfo!("Set CPU affinity for PID {} to {:#x}", pid, affinity_mask);
+        return Ok(());
     }
 
     Err("Process not found")
@@ -33,38 +34,61 @@ pub fn get_cpu_affinity(pid: Pid) -> Option<u32> {
     let table = PROCESS_TABLE.lock();
 
     for slot in table.iter() {
-        if let Some(entry) = slot {
-            if entry.process.pid == pid {
-                return Some(entry.cpu_affinity);
-            }
+        let Some(entry) = slot else { continue };
+        if entry.process.pid == pid {
+            return Some(entry.cpu_affinity);
         }
     }
 
     None
 }
 
+/// Collect PIDs of all ready processes
+fn collect_ready_pids(table: &[Option<super::types::ProcessEntry>; crate::process::MAX_PROCESSES]) -> Vec<Pid> {
+    table.iter()
+        .filter_map(|slot| slot.as_ref())
+        .filter(|entry| entry.process.state == ProcessState::Ready)
+        .map(|entry| entry.process.pid)
+        .collect()
+}
+
+/// Migrate a process to a target CPU if allowed by affinity
+fn try_migrate_process(
+    table: &mut [Option<super::types::ProcessEntry>; crate::process::MAX_PROCESSES],
+    pid: Pid,
+    target_cpu: u8,
+    stats: &mut super::types::SchedulerStats,
+) {
+    for slot in table.iter_mut() {
+        let Some(entry) = slot else { continue };
+        if entry.process.pid != pid {
+            continue;
+        }
+
+        // Only migrate if the target CPU is in the affinity mask
+        if (entry.cpu_affinity & (1 << target_cpu)) == 0 {
+            break;
+        }
+
+        if entry.last_cpu != target_cpu {
+            entry.last_cpu = target_cpu;
+            stats.migration_count += 1;
+        }
+        break;
+    }
+}
+
 /// Perform load balancing across CPUs (called periodically)
-/// This is a simple implementation that can be enhanced later
 pub fn balance_load() {
     let cpu_count = crate::smp::cpu_count();
     if cpu_count <= 1 {
-        return; // No need to balance on single-CPU systems
+        return;
     }
 
-    // Simple load balancing: distribute ready processes across CPUs
     let mut table = PROCESS_TABLE.lock();
     let mut stats = SCHED_STATS.lock();
 
-    let mut ready_processes: Vec<Pid> = Vec::new();
-
-    for slot in table.iter() {
-        if let Some(entry) = slot {
-            if entry.process.state == ProcessState::Ready {
-                ready_processes.push(entry.process.pid);
-            }
-        }
-    }
-
+    let ready_processes = collect_ready_pids(&table);
     if ready_processes.is_empty() {
         return;
     }
@@ -72,21 +96,7 @@ pub fn balance_load() {
     // Distribute processes round-robin across CPUs
     for (idx, &pid) in ready_processes.iter().enumerate() {
         let target_cpu = (idx % cpu_count) as u8;
-
-        for slot in table.iter_mut() {
-            if let Some(entry) = slot {
-                if entry.process.pid == pid {
-                    // Only migrate if the target CPU is in the affinity mask
-                    if (entry.cpu_affinity & (1 << target_cpu)) != 0 {
-                        if entry.last_cpu != target_cpu {
-                            entry.last_cpu = target_cpu;
-                            stats.migration_count += 1;
-                        }
-                    }
-                    break;
-                }
-            }
-        }
+        try_migrate_process(&mut table, pid, target_cpu, &mut stats);
     }
 
     stats.load_balance_count += 1;
@@ -94,32 +104,32 @@ pub fn balance_load() {
 
 /// Get the recommended CPU for running a process (based on affinity and load)
 pub fn get_preferred_cpu(pid: Pid) -> u8 {
-    let table = PROCESS_TABLE.lock();
     let cpu_count = crate::smp::cpu_count();
-
     if cpu_count <= 1 {
         return 0;
     }
 
+    let table = PROCESS_TABLE.lock();
+
     for slot in table.iter() {
-        if let Some(entry) = slot {
-            if entry.process.pid == pid {
-                // Check affinity and prefer the last CPU used (cache affinity)
-                let last_cpu = entry.last_cpu;
-                if (entry.cpu_affinity & (1 << last_cpu)) != 0 {
-                    return last_cpu;
-                }
+        let Some(entry) = slot else { continue };
+        if entry.process.pid != pid {
+            continue;
+        }
 
-                // Find first available CPU in affinity mask
-                for cpu in 0..cpu_count.min(32) {
-                    if (entry.cpu_affinity & (1 << cpu)) != 0 {
-                        return cpu as u8;
-                    }
-                }
+        // Prefer the last CPU used (cache affinity)
+        if (entry.cpu_affinity & (1 << entry.last_cpu)) != 0 {
+            return entry.last_cpu;
+        }
 
-                return 0; // Fallback
+        // Find first available CPU in affinity mask
+        for cpu in 0..cpu_count.min(32) {
+            if (entry.cpu_affinity & (1 << cpu)) != 0 {
+                return cpu as u8;
             }
         }
+
+        return 0;
     }
 
     0

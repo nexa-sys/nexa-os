@@ -28,6 +28,107 @@ pub fn init() {
     );
 }
 
+/// Compare two candidate processes for scheduling priority.
+/// Returns true if `candidate` should replace `best`.
+#[inline]
+fn should_replace_candidate(
+    candidate: (usize, u8, SchedPolicy, u64),
+    best: (usize, u8, SchedPolicy, u64),
+) -> bool {
+    // Compare by priority within same policy class
+    let same_policy_compare = |c_pri: u8, c_wait: u64, b_pri: u8, b_wait: u64| -> bool {
+        c_pri < b_pri || (c_pri == b_pri && c_wait > b_wait)
+    };
+
+    match (candidate.2, best.2) {
+        (SchedPolicy::Realtime, SchedPolicy::Realtime) => {
+            same_policy_compare(candidate.1, candidate.3, best.1, best.3)
+        }
+        (SchedPolicy::Realtime, _) => true,
+        (_, SchedPolicy::Realtime) => false,
+        (SchedPolicy::Normal, SchedPolicy::Normal) => {
+            same_policy_compare(candidate.1, candidate.3, best.1, best.3)
+        }
+        (SchedPolicy::Normal, _) => true,
+        (_, SchedPolicy::Normal) => false,
+        (SchedPolicy::Batch, SchedPolicy::Batch) => {
+            same_policy_compare(candidate.1, candidate.3, best.1, best.3)
+        }
+        (SchedPolicy::Batch, _) => true,
+        (_, SchedPolicy::Batch) => false,
+        (SchedPolicy::Idle, SchedPolicy::Idle) => {
+            same_policy_compare(candidate.1, candidate.3, best.1, best.3)
+        }
+    }
+}
+
+/// Update wait times and dynamic priorities for all ready processes
+fn update_ready_process_priorities(
+    table: &mut [Option<super::types::ProcessEntry>; MAX_PROCESSES],
+    current_tick: u64,
+) {
+    for slot in table.iter_mut() {
+        let Some(entry) = slot else { continue };
+        if entry.process.state != ProcessState::Ready {
+            continue;
+        }
+
+        let wait_delta = current_tick.saturating_sub(entry.last_scheduled);
+        entry.wait_time = entry.wait_time.saturating_add(wait_delta);
+        entry.priority = calculate_dynamic_priority(
+            entry.base_priority,
+            entry.wait_time,
+            entry.total_time,
+            entry.nice,
+        );
+    }
+}
+
+/// Find the starting index for round-robin scheduling
+fn find_start_index(
+    table: &[Option<super::types::ProcessEntry>; MAX_PROCESSES],
+    current_pid: Option<Pid>,
+) -> usize {
+    let Some(curr_pid) = current_pid else {
+        return 0;
+    };
+
+    for (idx, slot) in table.iter().enumerate() {
+        let Some(entry) = slot else { continue };
+        if entry.process.pid == curr_pid {
+            return (idx + 1) % MAX_PROCESSES;
+        }
+    }
+    0
+}
+
+/// Find the best ready process candidate for scheduling
+fn find_best_candidate(
+    table: &[Option<super::types::ProcessEntry>; MAX_PROCESSES],
+    start_idx: usize,
+) -> Option<(usize, u8, SchedPolicy, u64)> {
+    let mut best_candidate: Option<(usize, u8, SchedPolicy, u64)> = None;
+
+    for offset in 0..MAX_PROCESSES {
+        let idx = (start_idx + offset) % MAX_PROCESSES;
+        let Some(entry) = &table[idx] else { continue };
+        if entry.process.state != ProcessState::Ready {
+            continue;
+        }
+
+        let candidate = (idx, entry.priority, entry.policy, entry.wait_time);
+        let should_use = best_candidate
+            .map(|best| should_replace_candidate(candidate, best))
+            .unwrap_or(true);
+
+        if should_use {
+            best_candidate = Some(candidate);
+        }
+    }
+
+    best_candidate
+}
+
 /// Round-robin scheduler: select next process to run with MLFQ enhancements
 /// Uses multi-level feedback queue for better responsiveness and fairness
 pub fn schedule() -> Option<Pid> {
@@ -35,113 +136,120 @@ pub fn schedule() -> Option<Pid> {
     let current = *CURRENT_PID.lock();
     let current_tick = GLOBAL_TICK.load(Ordering::Relaxed);
 
-    // Update wait times for all ready processes
-    for slot in table.iter_mut() {
-        if let Some(entry) = slot {
-            if entry.process.state == ProcessState::Ready {
-                let wait_delta = current_tick.saturating_sub(entry.last_scheduled);
-                entry.wait_time = entry.wait_time.saturating_add(wait_delta);
+    update_ready_process_priorities(&mut table, current_tick);
+    let start_idx = find_start_index(&table, current);
+    let best_candidate = find_best_candidate(&table, start_idx);
 
-                // Update dynamic priority based on wait time
-                entry.priority = calculate_dynamic_priority(
-                    entry.base_priority,
-                    entry.wait_time,
-                    entry.total_time,
-                    entry.nice,
-                );
-            }
-        }
-    }
+    let Some((next_idx, _, _, _)) = best_candidate else {
+        return None;
+    };
 
-    // Find the current process index
-    let mut start_idx = 0;
+    let next_pid = table[next_idx].as_ref().unwrap().process.pid;
+
+    // Update previous process state
     if let Some(curr_pid) = current {
-        for (idx, slot) in table.iter().enumerate() {
-            if let Some(entry) = slot {
-                if entry.process.pid == curr_pid {
-                    start_idx = (idx + 1) % MAX_PROCESSES;
-                    break;
-                }
-            }
-        }
+        update_previous_process_state(&mut table, curr_pid, current_tick);
     }
 
-    // Find next ready process using priority-based selection
-    // Priority order: Realtime > Normal > Batch > Idle
-    // Within same policy, select by dynamic priority and wait time
-    let mut best_candidate: Option<(usize, u8, SchedPolicy, u64)> = None; // (index, priority, policy, wait_time)
-
-    for offset in 0..MAX_PROCESSES {
-        let idx = (start_idx + offset) % MAX_PROCESSES;
-        if let Some(entry) = &table[idx] {
-            if entry.process.state == ProcessState::Ready {
-                let candidate = (idx, entry.priority, entry.policy, entry.wait_time);
-
-                if let Some(best) = best_candidate {
-                    // Compare candidates: higher policy priority wins,
-                    // then lower priority value (0 is highest),
-                    // then longer wait time
-                    let should_replace = match (candidate.2, best.2) {
-                        (SchedPolicy::Realtime, SchedPolicy::Realtime) => {
-                            candidate.1 < best.1 || (candidate.1 == best.1 && candidate.3 > best.3)
-                        }
-                        (SchedPolicy::Realtime, _) => true,
-                        (_, SchedPolicy::Realtime) => false,
-                        (SchedPolicy::Normal, SchedPolicy::Normal) => {
-                            candidate.1 < best.1 || (candidate.1 == best.1 && candidate.3 > best.3)
-                        }
-                        (SchedPolicy::Normal, _) => true,
-                        (_, SchedPolicy::Normal) => false,
-                        (SchedPolicy::Batch, SchedPolicy::Batch) => {
-                            candidate.1 < best.1 || (candidate.1 == best.1 && candidate.3 > best.3)
-                        }
-                        (SchedPolicy::Batch, _) => true,
-                        (_, SchedPolicy::Batch) => false,
-                        (SchedPolicy::Idle, SchedPolicy::Idle) => {
-                            candidate.1 < best.1 || (candidate.1 == best.1 && candidate.3 > best.3)
-                        }
-                    };
-
-                    if should_replace {
-                        best_candidate = Some(candidate);
-                    }
-                } else {
-                    best_candidate = Some(candidate);
-                }
-            }
-        }
+    // Update next process state
+    if let Some(entry) = table[next_idx].as_mut() {
+        entry.time_slice = calculate_time_slice(entry.quantum_level);
+        entry.process.state = ProcessState::Running;
+        entry.last_scheduled = current_tick;
+        entry.wait_time = 0;
+        entry.cpu_burst_count += 1;
     }
 
-    if let Some((next_idx, _, _, _)) = best_candidate {
-        let next_pid = table[next_idx].as_ref().unwrap().process.pid;
+    drop(table);
+    *CURRENT_PID.lock() = Some(next_pid);
+    Some(next_pid)
+}
 
-        // Update previous process state
-        if let Some(curr_pid) = current {
-            for slot in table.iter_mut() {
-                if let Some(e) = slot {
-                    if e.process.pid == curr_pid && e.process.state == ProcessState::Running {
-                        e.process.state = ProcessState::Ready;
-                        e.last_scheduled = current_tick;
-                        break;
-                    }
-                }
-            }
+/// Update state of the previous running process to Ready
+fn update_previous_process_state(
+    table: &mut [Option<super::types::ProcessEntry>; MAX_PROCESSES],
+    curr_pid: Pid,
+    current_tick: u64,
+) {
+    for slot in table.iter_mut() {
+        let Some(entry) = slot else { continue };
+        if entry.process.pid != curr_pid || entry.process.state != ProcessState::Running {
+            continue;
         }
-
-        // Update next process state
-        if let Some(entry) = table[next_idx].as_mut() {
-            entry.time_slice = calculate_time_slice(entry.quantum_level);
-            entry.process.state = ProcessState::Running;
-            entry.last_scheduled = current_tick;
-            entry.wait_time = 0; // Reset wait time when scheduled
-            entry.cpu_burst_count += 1;
-        }
-
-        drop(table);
-        *CURRENT_PID.lock() = Some(next_pid);
-        return Some(next_pid);
+        entry.process.state = ProcessState::Ready;
+        entry.last_scheduled = current_tick;
+        break;
     }
+}
 
+/// Check if a ready process should preempt the current running process
+#[inline]
+fn should_preempt_for(ready_policy: SchedPolicy, ready_priority: u8, 
+                       current_policy: SchedPolicy, current_priority: u8) -> bool {
+    match (ready_policy, current_policy) {
+        (SchedPolicy::Realtime, SchedPolicy::Realtime) => ready_priority < current_priority,
+        (SchedPolicy::Realtime, _) => true,
+        (_, SchedPolicy::Realtime) => false,
+        (SchedPolicy::Normal, SchedPolicy::Normal) => ready_priority + 10 < current_priority,
+        (SchedPolicy::Normal, _) => true,
+        (_, SchedPolicy::Normal) => false,
+        _ => false,
+    }
+}
+
+/// Check if any ready process has higher priority than the current one
+fn has_higher_priority_ready_process(
+    table: &[Option<super::types::ProcessEntry>; MAX_PROCESSES],
+    current_policy: SchedPolicy,
+    current_priority: u8,
+) -> bool {
+    for slot in table.iter() {
+        let Some(entry) = slot else { continue };
+        if entry.process.state != ProcessState::Ready {
+            continue;
+        }
+        if should_preempt_for(entry.policy, entry.priority, current_policy, current_priority) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Handle preemption: update preempt count and potentially demote quantum level
+fn handle_preemption(
+    table: &mut [Option<super::types::ProcessEntry>; MAX_PROCESSES],
+    curr_pid: Pid,
+) {
+    for slot in table.iter_mut() {
+        let Some(entry) = slot else { continue };
+        if entry.process.pid != curr_pid {
+            continue;
+        }
+        entry.preempt_count += 1;
+        // MLFQ: Demote to lower priority level if preempted too much
+        if entry.preempt_count > 3 && entry.quantum_level < 7 {
+            entry.quantum_level += 1;
+            crate::kdebug!(
+                "Process {} demoted to quantum level {}",
+                curr_pid,
+                entry.quantum_level
+            );
+        }
+        break;
+    }
+}
+
+/// Find the entry for the currently running process
+fn find_current_running_entry_mut<'a>(
+    table: &'a mut [Option<super::types::ProcessEntry>; MAX_PROCESSES],
+    curr_pid: Pid,
+) -> Option<&'a mut super::types::ProcessEntry> {
+    for slot in table.iter_mut() {
+        let Some(entry) = slot else { continue };
+        if entry.process.pid == curr_pid && entry.process.state == ProcessState::Running {
+            return Some(entry);
+        }
+    }
     None
 }
 
@@ -152,101 +260,53 @@ pub fn tick(elapsed_ms: u64) -> bool {
 
     let mut table = PROCESS_TABLE.lock();
     let current = *CURRENT_PID.lock();
-    let mut should_preempt = false;
 
-    if let Some(curr_pid) = current {
-        for slot in table.iter_mut() {
-            if let Some(entry) = slot {
-                if entry.process.pid == curr_pid && entry.process.state == ProcessState::Running {
-                    entry.total_time += elapsed_ms;
+    let Some(curr_pid) = current else {
+        return false;
+    };
 
-                    if entry.time_slice > elapsed_ms {
-                        entry.time_slice -= elapsed_ms;
+    // Find and update the current running process
+    let Some(entry) = find_current_running_entry_mut(&mut table, curr_pid) else {
+        return false;
+    };
 
-                        // Update average CPU burst
-                        let new_burst = entry.total_time / entry.cpu_burst_count.max(1);
-                        entry.avg_cpu_burst = (entry.avg_cpu_burst + new_burst) / 2;
+    entry.total_time += elapsed_ms;
 
-                        // Check if we should preempt based on priority changes
-                        // or if a higher priority process is waiting
-                        let current_priority = entry.priority;
-                        let current_policy = entry.policy;
-
-                        drop(table);
-                        table = PROCESS_TABLE.lock();
-
-                        // Check for higher priority ready processes
-                        for check_slot in table.iter() {
-                            if let Some(check_entry) = check_slot {
-                                if check_entry.process.state == ProcessState::Ready {
-                                    let should_preempt_for_this =
-                                        match (check_entry.policy, current_policy) {
-                                            (SchedPolicy::Realtime, SchedPolicy::Realtime) => {
-                                                check_entry.priority < current_priority
-                                            }
-                                            (SchedPolicy::Realtime, _) => true,
-                                            (_, SchedPolicy::Realtime) => false,
-                                            (SchedPolicy::Normal, SchedPolicy::Normal) => {
-                                                check_entry.priority + 10 < current_priority
-                                                // Significant priority difference
-                                            }
-                                            (SchedPolicy::Normal, _) => true,
-                                            (_, SchedPolicy::Normal) => false,
-                                            _ => false,
-                                        };
-
-                                    if should_preempt_for_this {
-                                        should_preempt = true;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-
-                        if !should_preempt {
-                            return false; // Continue running current process
-                        } else {
-                            // Preemption due to higher priority process
-                            for slot in table.iter_mut() {
-                                if let Some(entry) = slot {
-                                    if entry.process.pid == curr_pid {
-                                        entry.preempt_count += 1;
-
-                                        // MLFQ: Demote to lower priority level if preempted too much
-                                        if entry.preempt_count > 3 && entry.quantum_level < 7 {
-                                            entry.quantum_level += 1;
-                                            crate::kdebug!(
-                                                "Process {} demoted to quantum level {}",
-                                                curr_pid,
-                                                entry.quantum_level
-                                            );
-                                        }
-                                        break;
-                                    }
-                                }
-                            }
-                            return true;
-                        }
-                    } else {
-                        entry.time_slice = 0;
-
-                        // MLFQ: Move to lower priority level after exhausting time slice
-                        if entry.quantum_level < 7 {
-                            entry.quantum_level += 1;
-                        }
-
-                        // Update average CPU burst
-                        let new_burst = entry.total_time / entry.cpu_burst_count.max(1);
-                        entry.avg_cpu_burst = (entry.avg_cpu_burst + new_burst) / 2;
-
-                        return true; // Time slice expired, need to reschedule
-                    }
-                }
-            }
+    // Time slice exhausted - need to reschedule
+    if entry.time_slice <= elapsed_ms {
+        entry.time_slice = 0;
+        // MLFQ: Move to lower priority level after exhausting time slice
+        if entry.quantum_level < 7 {
+            entry.quantum_level += 1;
         }
+        // Update average CPU burst
+        let new_burst = entry.total_time / entry.cpu_burst_count.max(1);
+        entry.avg_cpu_burst = (entry.avg_cpu_burst + new_burst) / 2;
+        return true;
     }
 
-    false
+    // Time slice not exhausted - decrement and check for preemption
+    entry.time_slice -= elapsed_ms;
+
+    // Update average CPU burst
+    let new_burst = entry.total_time / entry.cpu_burst_count.max(1);
+    entry.avg_cpu_burst = (entry.avg_cpu_burst + new_burst) / 2;
+
+    let current_priority = entry.priority;
+    let current_policy = entry.policy;
+
+    // Release and re-acquire lock to check for higher priority processes
+    drop(table);
+    let mut table = PROCESS_TABLE.lock();
+
+    // Check for higher priority ready processes
+    if !has_higher_priority_ready_process(&table, current_policy, current_priority) {
+        return false; // Continue running current process
+    }
+
+    // Preemption due to higher priority process
+    handle_preemption(&mut table, curr_pid);
+    true
 }
 
 /// Perform context switch to next ready process with statistics tracking
@@ -258,348 +318,326 @@ pub fn do_schedule_from_interrupt() {
     do_schedule_internal(true);
 }
 
+enum ScheduleDecision {
+    FirstRun(crate::process::Process),
+    Switch {
+        old_context_ptr: *mut crate::process::Context,
+        next_context: crate::process::Context,
+        next_cr3: u64,
+        user_rip: u64,
+        user_rsp: u64,
+        user_rflags: u64,
+        is_voluntary: bool,
+        kernel_stack: u64,
+    },
+}
+
+/// Print process table snapshot for debugging
+fn debug_print_process_table(table: &[Option<super::types::ProcessEntry>; MAX_PROCESSES]) {
+    ktrace!("[do_schedule] Process table snapshot:");
+    for slot in table.iter() {
+        let Some(entry) = slot else { continue };
+        ktrace!(
+            "  PID {}: ppid={}, state={:?}, policy={:?}, CR3={:#x}",
+            entry.process.pid,
+            entry.process.ppid,
+            entry.process.state,
+            entry.policy,
+            entry.process.cr3
+        );
+    }
+}
+
+/// Find index of parent process to prioritize when child is zombie
+fn find_zombie_parent_index(
+    table: &[Option<super::types::ProcessEntry>; MAX_PROCESSES],
+    curr_pid: Pid,
+) -> Option<usize> {
+    // Find current process entry
+    let curr_entry = table.iter().find_map(|slot| {
+        slot.as_ref().filter(|e| e.process.pid == curr_pid)
+    })?;
+
+    // Only proceed if current process is zombie
+    if curr_entry.process.state != ProcessState::Zombie {
+        return None;
+    }
+
+    let parent_pid = curr_entry.process.ppid;
+    if parent_pid == 0 {
+        return None;
+    }
+
+    // Find ready parent
+    table.iter().position(|slot| {
+        slot.as_ref().map_or(false, |e| {
+            e.process.pid == parent_pid && e.process.state == ProcessState::Ready
+        })
+    }).map(|idx| {
+        kdebug!(
+            "[do_schedule] Child PID {} is Zombie, prioritizing parent PID {}",
+            curr_pid, parent_pid
+        );
+        idx
+    })
+}
+
+/// Find next ready process index using round-robin
+fn find_next_ready_index(
+    table: &[Option<super::types::ProcessEntry>; MAX_PROCESSES],
+    start_idx: usize,
+) -> Option<usize> {
+    for offset in 0..MAX_PROCESSES {
+        let idx = (start_idx + offset) % MAX_PROCESSES;
+        let Some(entry) = &table[idx] else { continue };
+        if entry.process.state == ProcessState::Ready {
+            return Some(idx);
+        }
+    }
+    None
+}
+
+/// Save syscall context from GS_DATA to process entry
+unsafe fn save_syscall_context_to_entry(entry: &mut super::types::ProcessEntry, curr_pid: Pid) {
+    let gs_data_ptr = core::ptr::addr_of!(crate::initramfs::GS_DATA.0) as *const u64;
+    let saved_rip = gs_data_ptr.add(crate::interrupts::GS_SLOT_SAVED_RCX).read();
+    let saved_rsp = gs_data_ptr.add(crate::interrupts::GS_SLOT_USER_RSP).read();
+    let saved_rflags = gs_data_ptr.add(crate::interrupts::GS_SLOT_SAVED_RFLAGS).read();
+
+    ktrace!(
+        "[do_schedule] Saving syscall context for PID {}: rip={:#x}, rsp={:#x}, rflags={:#x}",
+        curr_pid, saved_rip, saved_rsp, saved_rflags
+    );
+
+    entry.process.user_rip = saved_rip;
+    entry.process.user_rsp = saved_rsp;
+    entry.process.user_rflags = saved_rflags;
+}
+
+/// Transition current running process to Ready state
+fn transition_current_to_ready(
+    table: &mut [Option<super::types::ProcessEntry>; MAX_PROCESSES],
+    curr_pid: Pid,
+    from_interrupt: bool,
+) {
+    for slot in table.iter_mut() {
+        let Some(entry) = slot else { continue };
+        if entry.process.pid != curr_pid || entry.process.state != ProcessState::Running {
+            continue;
+        }
+
+        // Save syscall context if not from interrupt
+        if !from_interrupt {
+            unsafe { save_syscall_context_to_entry(entry, curr_pid) };
+        }
+
+        entry.process.state = ProcessState::Ready;
+        break;
+    }
+}
+
+/// Extract process info for context switch
+fn extract_next_process_info(
+    entry: &mut super::types::ProcessEntry,
+) -> (bool, Pid, u64, u64, u64, u64, crate::process::Context, u64, crate::process::Process) {
+    entry.time_slice = DEFAULT_TIME_SLICE;
+    entry.process.state = ProcessState::Running;
+
+    (
+        !entry.process.has_entered_user,
+        entry.process.pid,
+        entry.process.cr3,
+        entry.process.user_rip,
+        entry.process.user_rsp,
+        entry.process.user_rflags,
+        entry.process.context,
+        entry.process.kernel_stack,
+        entry.process, // Process is Copy
+    )
+}
+
+/// Get old context pointer and voluntary flag for current process
+fn get_old_context_info(
+    table: &mut [Option<super::types::ProcessEntry>; MAX_PROCESSES],
+    curr_pid: Option<Pid>,
+) -> (Option<*mut crate::process::Context>, bool) {
+    let Some(pid) = curr_pid else {
+        return (None, false);
+    };
+
+    for slot in table.iter_mut() {
+        let Some(candidate) = slot else { continue };
+        if candidate.process.pid != pid {
+            continue;
+        }
+
+        let voluntary = candidate.process.state == ProcessState::Sleeping || candidate.time_slice > 0;
+        if voluntary {
+            candidate.voluntary_switches += 1;
+        }
+
+        // Don't save context for zombie processes
+        if candidate.process.state == ProcessState::Zombie {
+            kdebug!("[do_schedule] Current PID {} is Zombie, not saving context", pid);
+            return (None, voluntary);
+        }
+
+        return (Some(&mut candidate.process.context as *mut _), voluntary);
+    }
+
+    (None, false)
+}
+
+/// Mark process as entered user mode in the process table
+fn mark_process_entered_user(pid: Pid) {
+    let mut table = PROCESS_TABLE.lock();
+    for slot in table.iter_mut() {
+        let Some(entry) = slot else { continue };
+        if entry.process.pid == pid {
+            entry.process.has_entered_user = true;
+            break;
+        }
+    }
+}
+
+/// Execute first-run process
+fn execute_first_run(mut process: crate::process::Process) {
+    kdebug!(
+        "[do_schedule] FirstRun: PID={}, entry={:#x}, stack={:#x}, has_entered_user={}, CR3={:#x}",
+        process.pid, process.entry_point, process.stack_top, process.has_entered_user, process.cr3
+    );
+
+    if process.cr3 == 0 {
+        crate::kfatal!(
+            "PANIC: FirstRun for PID {} has CR3=0! Entry={:#x}, Stack={:#x}, MemBase={:#x}",
+            process.pid, process.entry_point, process.stack_top, process.memory_base
+        );
+    }
+
+    mark_process_entered_user(process.pid);
+    process.execute();
+    crate::kfatal!("process::execute returned unexpectedly");
+}
+
+/// Execute context switch to next process
+unsafe fn execute_context_switch(
+    old_context_ptr: *mut crate::process::Context,
+    next_context: &crate::process::Context,
+    next_cr3: u64,
+    user_rip: u64,
+    user_rsp: u64,
+    user_rflags: u64,
+    is_voluntary: bool,
+    kernel_stack: u64,
+) {
+    // Update kernel stack in GS
+    if kernel_stack != 0 {
+        let gs_data_ptr = core::ptr::addr_of!(crate::initramfs::GS_DATA.0) as *mut u64;
+        gs_data_ptr
+            .add(crate::interrupts::GS_SLOT_KERNEL_RSP)
+            .write(kernel_stack + crate::process::KERNEL_STACK_SIZE as u64);
+    }
+
+    // Update statistics
+    {
+        let mut stats = SCHED_STATS.lock();
+        if is_voluntary {
+            stats.total_voluntary_switches += 1;
+        } else {
+            stats.total_preemptions += 1;
+        }
+    }
+
+    ktrace!(
+        "[do_schedule] Switch ({}): user_rip={:#x}, user_rsp={:#x}, user_rflags={:#x}",
+        if is_voluntary { "voluntary" } else { "preempt" },
+        user_rip, user_rsp, user_rflags
+    );
+
+    if user_rsp != 0 {
+        crate::interrupts::restore_user_syscall_context(user_rip, user_rsp, user_rflags);
+    }
+    crate::paging::activate_address_space(next_cr3);
+    context_switch(old_context_ptr, next_context as *const _);
+}
+
 fn do_schedule_internal(from_interrupt: bool) {
-    // Poll network stack to process any incoming packets
     crate::net::poll();
 
-    // Update scheduler statistics
     {
         let mut stats = SCHED_STATS.lock();
         stats.total_context_switches += 1;
     }
 
-    // Debug: Print all process states before scheduling
     {
         let table = PROCESS_TABLE.lock();
-        ktrace!("[do_schedule] Process table snapshot:");
-        for slot in table.iter() {
-            if let Some(entry) = slot {
-                ktrace!(
-                    "  PID {}: ppid={}, state={:?}, policy={:?}, CR3={:#x}",
-                    entry.process.pid,
-                    entry.process.ppid,
-                    entry.process.state,
-                    entry.policy,
-                    entry.process.cr3
-                );
-            }
-        }
+        debug_print_process_table(&table);
     }
 
-    enum ScheduleDecision {
-        FirstRun(crate::process::Process),
-        Switch {
-            old_context_ptr: *mut crate::process::Context,
-            next_context: crate::process::Context,
-            next_cr3: u64,
-            user_rip: u64,
-            user_rsp: u64,
-            user_rflags: u64,
-            is_voluntary: bool,
-            kernel_stack: u64,
-        },
-    }
-
-    let decision: Option<ScheduleDecision> = {
-        let mut table = PROCESS_TABLE.lock();
-        let mut current_lock = CURRENT_PID.lock();
-        let current = *current_lock;
-
-        let start_idx = if let Some(pid) = current {
-            table
-                .iter()
-                .position(|entry| entry.as_ref().map_or(false, |e| e.process.pid == pid))
-                .map(|i| (i + 1) % MAX_PROCESSES)
-                .unwrap_or(0)
-        } else {
-            0
-        };
-
-        let mut next_idx = None;
-
-        // CRITICAL FIX: If current process is Zombie, prioritize its parent process
-        // This ensures wait4() promptly detects child exit and doesn't cause
-        // unnecessary scheduling of other processes (like init).
-        //
-        // When child exits (becomes Zombie) and calls do_schedule(), we want
-        // the parent (which is likely blocked in wait4) to run next so it can
-        // immediately detect the zombie child and reap it.
-        if let Some(curr_pid) = current {
-            if let Some(curr_entry) = table
-                .iter()
-                .find(|e| e.as_ref().map_or(false, |p| p.process.pid == curr_pid))
-            {
-                if let Some(entry) = curr_entry {
-                    if entry.process.state == ProcessState::Zombie {
-                        let parent_pid = entry.process.ppid;
-                        if parent_pid > 0 {
-                            // Try to find parent and schedule it if Ready
-                            if let Some(parent_idx) = table.iter().position(|e| {
-                                e.as_ref().map_or(false, |p| {
-                                    p.process.pid == parent_pid
-                                        && p.process.state == ProcessState::Ready
-                                })
-                            }) {
-                                kdebug!(
-                                    "[do_schedule] Child PID {} is Zombie, prioritizing parent PID {}",
-                                    curr_pid, parent_pid
-                                );
-                                next_idx = Some(parent_idx);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Fall back to normal round-robin if no parent priority
-        if next_idx.is_none() {
-            for offset in 0..MAX_PROCESSES {
-                let idx = (start_idx + offset) % MAX_PROCESSES;
-                if let Some(entry) = &table[idx] {
-                    if entry.process.state == ProcessState::Ready {
-                        next_idx = Some(idx);
-                        break;
-                    }
-                }
-            }
-        }
-
-        if let Some(next_idx) = next_idx {
-            if let Some(curr_pid) = current {
-                for slot in table.iter_mut() {
-                    if let Some(entry) = slot {
-                        if entry.process.pid == curr_pid
-                            && entry.process.state == ProcessState::Running
-                        {
-                            // CRITICAL: Save syscall context from GS_DATA before yielding CPU
-                            // When a process calls syscall (like wait4) and yields via do_schedule(),
-                            // the syscall handler saved RIP/RSP/RFLAGS in GS_DATA.
-                            // We must copy these values to the process struct so they can be
-                            // restored when this process is scheduled again.
-                            // Skip this in interrupt context as syscall context may not be valid
-                            if !from_interrupt {
-                                unsafe {
-                                    let gs_data_ptr =
-                                        core::ptr::addr_of!(crate::initramfs::GS_DATA.0)
-                                            as *const u64;
-                                    let saved_rip = gs_data_ptr
-                                        .add(crate::interrupts::GS_SLOT_SAVED_RCX)
-                                        .read();
-                                    let saved_rsp =
-                                        gs_data_ptr.add(crate::interrupts::GS_SLOT_USER_RSP).read();
-                                    let saved_rflags = gs_data_ptr
-                                        .add(crate::interrupts::GS_SLOT_SAVED_RFLAGS)
-                                        .read();
-
-                                    ktrace!(
-                                        "[do_schedule] Saving syscall context for PID {}: rip={:#x}, rsp={:#x}, rflags={:#x}",
-                                        curr_pid, saved_rip, saved_rsp, saved_rflags
-                                    );
-
-                                    entry.process.user_rip = saved_rip;
-                                    entry.process.user_rsp = saved_rsp;
-                                    entry.process.user_rflags = saved_rflags;
-                                }
-                            }
-
-                            entry.process.state = ProcessState::Ready;
-                            break;
-                        }
-                    }
-                }
-            }
-
-            // Extract all needed info from the next process entry in a separate scope
-            // to avoid holding a mutable borrow on `table` while we iterate it later.
-            let (
-                first_run,
-                next_pid,
-                next_cr3,
-                user_rip,
-                user_rsp,
-                user_rflags,
-                next_context,
-                kernel_stack,
-                process_copy,
-            ) = {
-                let entry = table[next_idx].as_mut().expect("Process entry vanished");
-                entry.time_slice = DEFAULT_TIME_SLICE;
-                entry.process.state = ProcessState::Running;
-
-                let first_run = !entry.process.has_entered_user;
-                let next_pid = entry.process.pid;
-                let next_cr3 = entry.process.cr3;
-                let user_rip = entry.process.user_rip;
-                let user_rsp = entry.process.user_rsp;
-                let user_rflags = entry.process.user_rflags;
-                let next_context = entry.process.context;
-                let kernel_stack = entry.process.kernel_stack;
-                let process_copy = entry.process; // Process is Copy
-
-                (
-                    first_run,
-                    next_pid,
-                    next_cr3,
-                    user_rip,
-                    user_rsp,
-                    user_rflags,
-                    next_context,
-                    kernel_stack,
-                    process_copy,
-                )
-            };
-
-            *current_lock = Some(next_pid);
-
-            if first_run {
-                // CRITICAL: Don't set has_entered_user here!
-                // We return a COPY of the process, and execute() will set it on the copy.
-                // We need to set it in the process table AFTER execute() completes.
-                // But execute() never returns, so we can't do it there.
-                // The solution: set it NOW in the process table, not on the copy.
-                kdebug!(
-                    "[do_schedule] Creating FirstRun decision for PID {}, CR3={:#x}",
-                    next_pid,
-                    next_cr3
-                );
-                Some(ScheduleDecision::FirstRun(process_copy))
-            } else {
-                // Check if current process is a zombie - if so, don't save its context
-                let (old_context_ptr, is_voluntary) = if let Some(curr_pid) = current {
-                    let result = table.iter_mut().find_map(|slot| {
-                        slot.as_mut().and_then(|candidate| {
-                            if candidate.process.pid == curr_pid {
-                                // Check if this is a voluntary context switch
-                                let voluntary = candidate.process.state == ProcessState::Sleeping ||
-                                               candidate.time_slice > 0;
-
-                                // Update voluntary switch counter
-                                if voluntary {
-                                    candidate.voluntary_switches += 1;
-                                }
-
-                                // Don't save context for zombie processes
-                                if candidate.process.state == ProcessState::Zombie {
-                                    kdebug!(
-                                        "[do_schedule] Current PID {} is Zombie, not saving context",
-                                        curr_pid
-                                    );
-                                    Some((None, voluntary))
-                                } else {
-                                    Some((Some(&mut candidate.process.context as *mut _), voluntary))
-                                }
-                            } else {
-                                None
-                            }
-                        })
-                    });
-                    result.unwrap_or((None, false))
-                } else {
-                    (None, false)
-                };
-
-                Some(ScheduleDecision::Switch {
-                    old_context_ptr: old_context_ptr.unwrap_or(core::ptr::null_mut()),
-                    next_context,
-                    next_cr3,
-                    user_rip,
-                    user_rsp,
-                    user_rflags,
-                    is_voluntary,
-                    kernel_stack,
-                })
-            }
-        } else {
-            None
-        }
-    };
+    let decision = compute_schedule_decision(from_interrupt);
 
     match decision {
-        Some(ScheduleDecision::FirstRun(mut process)) => {
-            kdebug!(
-                "[do_schedule] FirstRun: PID={}, entry={:#x}, stack={:#x}, has_entered_user={}, CR3={:#x}",
-                process.pid, process.entry_point, process.stack_top, process.has_entered_user, process.cr3
-            );
-
-            // CRITICAL: Validate CR3 before activating address space
-            if process.cr3 == 0 {
-                crate::kfatal!(
-                    "PANIC: FirstRun for PID {} has CR3=0! This should never happen. \
-                     Entry={:#x}, Stack={:#x}, MemBase={:#x}",
-                    process.pid,
-                    process.entry_point,
-                    process.stack_top,
-                    process.memory_base
-                );
-            }
-
-            // CRITICAL FIX: Mark the process as entered in the process table BEFORE execute()
-            // because execute() never returns and we have a copy of the process here.
-            let pid = process.pid;
-            {
-                let mut table = PROCESS_TABLE.lock();
-                for slot in table.iter_mut() {
-                    if let Some(entry) = slot {
-                        if entry.process.pid == pid {
-                            entry.process.has_entered_user = true;
-                            break;
-                        }
-                    }
-                }
-            }
-
-            // CRITICAL: Do NOT call activate_address_space here!
-            // process.execute() will switch CR3 atomically with entering usermode
-            // to avoid accessing kernel stack after address space switch.
-            process.execute();
-            crate::kfatal!("process::execute returned unexpectedly");
-        }
+        Some(ScheduleDecision::FirstRun(process)) => execute_first_run(process),
         Some(ScheduleDecision::Switch {
-            old_context_ptr,
-            next_context,
-            next_cr3,
-            user_rip,
-            user_rsp,
-            user_rflags,
-            is_voluntary,
-            kernel_stack,
+            old_context_ptr, next_context, next_cr3,
+            user_rip, user_rsp, user_rflags, is_voluntary, kernel_stack,
         }) => unsafe {
-            // Update kernel stack in GS
-            if kernel_stack != 0 {
-                let gs_data_ptr = core::ptr::addr_of!(crate::initramfs::GS_DATA.0) as *mut u64;
-                // GS_SLOT_KERNEL_RSP is 1
-                gs_data_ptr
-                    .add(crate::interrupts::GS_SLOT_KERNEL_RSP)
-                    .write(kernel_stack + crate::process::KERNEL_STACK_SIZE as u64);
-            }
-
-            // Update statistics
-            {
-                let mut stats = SCHED_STATS.lock();
-                if is_voluntary {
-                    stats.total_voluntary_switches += 1;
-                } else {
-                    stats.total_preemptions += 1;
-                }
-            }
-
-            ktrace!(
-                "[do_schedule] Switch ({}): user_rip={:#x}, user_rsp={:#x}, user_rflags={:#x}",
-                if is_voluntary { "voluntary" } else { "preempt" },
-                user_rip,
-                user_rsp,
-                user_rflags
+            execute_context_switch(
+                old_context_ptr, &next_context, next_cr3,
+                user_rip, user_rsp, user_rflags, is_voluntary, kernel_stack,
             );
-            if user_rsp != 0 {
-                crate::interrupts::restore_user_syscall_context(user_rip, user_rsp, user_rflags);
-            }
-            crate::paging::activate_address_space(next_cr3);
-            context_switch(old_context_ptr, &next_context as *const _);
         },
         None => {
             set_current_pid(None);
             crate::kwarn!("do_schedule(): No ready process found, returning to caller");
         }
     }
+}
+
+/// Compute the scheduling decision: which process to run next
+fn compute_schedule_decision(from_interrupt: bool) -> Option<ScheduleDecision> {
+    let mut table = PROCESS_TABLE.lock();
+    let mut current_lock = CURRENT_PID.lock();
+    let current = *current_lock;
+
+    let start_idx = current
+        .and_then(|pid| {
+            table.iter().position(|e| e.as_ref().map_or(false, |p| p.process.pid == pid))
+        })
+        .map(|i| (i + 1) % MAX_PROCESSES)
+        .unwrap_or(0);
+
+    // Try to prioritize parent of zombie child first
+    let next_idx = current
+        .and_then(|pid| find_zombie_parent_index(&table, pid))
+        .or_else(|| find_next_ready_index(&table, start_idx))?;
+
+    // Transition current process to Ready
+    if let Some(curr_pid) = current {
+        transition_current_to_ready(&mut table, curr_pid, from_interrupt);
+    }
+
+    let entry = table[next_idx].as_mut().expect("Process entry vanished");
+    let (first_run, next_pid, next_cr3, user_rip, user_rsp, user_rflags, next_context, kernel_stack, process_copy) =
+        extract_next_process_info(entry);
+
+    *current_lock = Some(next_pid);
+
+    if first_run {
+        kdebug!("[do_schedule] Creating FirstRun decision for PID {}, CR3={:#x}", next_pid, next_cr3);
+        return Some(ScheduleDecision::FirstRun(process_copy));
+    }
+
+    let (old_context_opt, is_voluntary) = get_old_context_info(&mut table, current);
+
+    Some(ScheduleDecision::Switch {
+        old_context_ptr: old_context_opt.unwrap_or(core::ptr::null_mut()),
+        next_context,
+        next_cr3,
+        user_rip,
+        user_rsp,
+        user_rflags,
+        is_voluntary,
+        kernel_stack,
+    })
 }

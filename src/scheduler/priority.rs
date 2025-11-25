@@ -40,29 +40,26 @@ pub fn boost_all_priorities() {
     let mut table = PROCESS_TABLE.lock();
 
     for slot in table.iter_mut() {
-        if let Some(entry) = slot {
-            if entry.process.state != ProcessState::Zombie {
-                // Reset to highest priority level
-                entry.quantum_level = match entry.policy {
-                    SchedPolicy::Realtime => 0,
-                    SchedPolicy::Normal => 2,
-                    SchedPolicy::Batch => 4,
-                    SchedPolicy::Idle => 6,
-                };
-
-                // Reset priority to base
-                entry.priority = entry.base_priority;
-
-                // Reset counters
-                entry.preempt_count = 0;
-
-                crate::kdebug!(
-                    "Boosted priority for PID {} to level {}",
-                    entry.process.pid,
-                    entry.quantum_level
-                );
-            }
+        let Some(entry) = slot else { continue };
+        if entry.process.state == ProcessState::Zombie {
+            continue;
         }
+
+        // Reset to highest priority level
+        entry.quantum_level = match entry.policy {
+            SchedPolicy::Realtime => 0,
+            SchedPolicy::Normal => 2,
+            SchedPolicy::Batch => 4,
+            SchedPolicy::Idle => 6,
+        };
+
+        entry.priority = entry.base_priority;
+        entry.preempt_count = 0;
+
+        crate::kdebug!(
+            "Boosted priority for PID {} to level {}",
+            entry.process.pid, entry.quantum_level
+        );
     }
 }
 
@@ -71,32 +68,28 @@ pub fn set_process_policy(pid: Pid, policy: SchedPolicy, nice: i8) -> Result<(),
     let mut table = PROCESS_TABLE.lock();
 
     for slot in table.iter_mut() {
-        if let Some(entry) = slot {
-            if entry.process.pid == pid {
-                entry.policy = policy;
-                entry.nice = nice.clamp(-20, 19);
-
-                // Adjust quantum level based on new policy
-                entry.quantum_level = match policy {
-                    SchedPolicy::Realtime => 0,
-                    SchedPolicy::Normal => 4,
-                    SchedPolicy::Batch => 6,
-                    SchedPolicy::Idle => 7,
-                };
-
-                // Recalculate time slice
-                entry.time_slice = calculate_time_slice(entry.quantum_level);
-
-                crate::kinfo!(
-                    "Process {} policy changed to {:?}, nice={}, quantum_level={}",
-                    pid,
-                    policy,
-                    nice,
-                    entry.quantum_level
-                );
-                return Ok(());
-            }
+        let Some(entry) = slot else { continue };
+        if entry.process.pid != pid {
+            continue;
         }
+
+        entry.policy = policy;
+        entry.nice = nice.clamp(-20, 19);
+
+        entry.quantum_level = match policy {
+            SchedPolicy::Realtime => 0,
+            SchedPolicy::Normal => 4,
+            SchedPolicy::Batch => 6,
+            SchedPolicy::Idle => 7,
+        };
+
+        entry.time_slice = calculate_time_slice(entry.quantum_level);
+
+        crate::kinfo!(
+            "Process {} policy changed to {:?}, nice={}, quantum_level={}",
+            pid, policy, nice, entry.quantum_level
+        );
+        return Ok(());
     }
 
     Err("Process not found")
@@ -107,18 +100,19 @@ pub fn get_process_sched_info(pid: Pid) -> Option<(u8, u8, SchedPolicy, i8, u64,
     let table = PROCESS_TABLE.lock();
 
     for slot in table.iter() {
-        if let Some(entry) = slot {
-            if entry.process.pid == pid {
-                return Some((
-                    entry.priority,
-                    entry.quantum_level,
-                    entry.policy,
-                    entry.nice,
-                    entry.total_time,
-                    entry.wait_time,
-                ));
-            }
+        let Some(entry) = slot else { continue };
+        if entry.process.pid != pid {
+            continue;
         }
+
+        return Some((
+            entry.priority,
+            entry.quantum_level,
+            entry.policy,
+            entry.nice,
+            entry.total_time,
+            entry.wait_time,
+        ));
     }
 
     None
@@ -129,30 +123,27 @@ pub fn adjust_process_priority(pid: Pid, nice_delta: i8) -> Result<i8, &'static 
     let mut table = PROCESS_TABLE.lock();
 
     for slot in table.iter_mut() {
-        if let Some(entry) = slot {
-            if entry.process.pid == pid {
-                let old_nice = entry.nice;
-                entry.nice = (entry.nice + nice_delta).clamp(-20, 19);
-
-                // Recalculate priority
-                entry.priority = calculate_dynamic_priority(
-                    entry.base_priority,
-                    entry.wait_time,
-                    entry.total_time,
-                    entry.nice,
-                );
-
-                crate::kdebug!(
-                    "Process {} nice: {} -> {}, priority: {}",
-                    pid,
-                    old_nice,
-                    entry.nice,
-                    entry.priority
-                );
-
-                return Ok(entry.nice);
-            }
+        let Some(entry) = slot else { continue };
+        if entry.process.pid != pid {
+            continue;
         }
+
+        let old_nice = entry.nice;
+        entry.nice = (entry.nice + nice_delta).clamp(-20, 19);
+
+        entry.priority = calculate_dynamic_priority(
+            entry.base_priority,
+            entry.wait_time,
+            entry.total_time,
+            entry.nice,
+        );
+
+        crate::kdebug!(
+            "Process {} nice: {} -> {}, priority: {}",
+            pid, old_nice, entry.nice, entry.priority
+        );
+
+        return Ok(entry.nice);
     }
 
     Err("Process not found")
@@ -165,25 +156,24 @@ pub fn age_process_priorities() {
     let current_tick = GLOBAL_TICK.load(Ordering::Relaxed);
 
     for slot in table.iter_mut() {
-        if let Some(entry) = slot {
-            if entry.process.state == ProcessState::Ready {
-                let wait_delta = current_tick.saturating_sub(entry.last_scheduled);
+        let Some(entry) = slot else { continue };
+        if entry.process.state != ProcessState::Ready {
+            continue;
+        }
 
-                // Age: reduce priority number (increase priority) for long-waiting processes
-                if wait_delta > 100 && entry.priority > 0 {
-                    entry.priority = entry.priority.saturating_sub(1);
+        let wait_delta = current_tick.saturating_sub(entry.last_scheduled);
+        if wait_delta <= 100 || entry.priority == 0 {
+            continue;
+        }
 
-                    // Also promote to higher quantum level for fairness
-                    if entry.quantum_level > 0 && wait_delta > 500 {
-                        entry.quantum_level -= 1;
-                        crate::kdebug!(
-                            "Aged process {}: promoted to quantum level {}",
-                            entry.process.pid,
-                            entry.quantum_level
-                        );
-                    }
-                }
-            }
+        entry.priority = entry.priority.saturating_sub(1);
+
+        if entry.quantum_level > 0 && wait_delta > 500 {
+            entry.quantum_level -= 1;
+            crate::kdebug!(
+                "Aged process {}: promoted to quantum level {}",
+                entry.process.pid, entry.quantum_level
+            );
         }
     }
 }
@@ -191,18 +181,18 @@ pub fn age_process_priorities() {
 /// Force reschedule by setting current process time slice to 0
 /// Used for explicit yield or priority inversion handling
 pub fn force_reschedule() {
-    let mut table = PROCESS_TABLE.lock();
-    let current = *super::table::CURRENT_PID.lock();
+    let Some(curr_pid) = *super::table::CURRENT_PID.lock() else {
+        return;
+    };
 
-    if let Some(curr_pid) = current {
-        for slot in table.iter_mut() {
-            if let Some(entry) = slot {
-                if entry.process.pid == curr_pid {
-                    entry.time_slice = 0;
-                    crate::kdebug!("Force reschedule for PID {}", curr_pid);
-                    break;
-                }
-            }
+    let mut table = PROCESS_TABLE.lock();
+
+    for slot in table.iter_mut() {
+        let Some(entry) = slot else { continue };
+        if entry.process.pid == curr_pid {
+            entry.time_slice = 0;
+            crate::kdebug!("Force reschedule for PID {}", curr_pid);
+            break;
         }
     }
 }

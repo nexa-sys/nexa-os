@@ -73,20 +73,19 @@ pub fn get_current_pid() -> Option<Pid> {
 
 /// Update the saved user-mode return context for the currently running process.
 pub fn update_current_user_context(user_rip: u64, user_rsp: u64, user_rflags: u64) {
-    let current = current_pid();
+    let Some(pid) = current_pid() else {
+        return;
+    };
 
-    if let Some(pid) = current {
-        let mut table = PROCESS_TABLE.lock();
+    let mut table = PROCESS_TABLE.lock();
 
-        for slot in table.iter_mut() {
-            if let Some(entry) = slot {
-                if entry.process.pid == pid {
-                    entry.process.user_rip = user_rip;
-                    entry.process.user_rsp = user_rsp;
-                    entry.process.user_rflags = user_rflags;
-                    break;
-                }
-            }
+    for slot in table.iter_mut() {
+        let Some(entry) = slot else { continue };
+        if entry.process.pid == pid {
+            entry.process.user_rip = user_rip;
+            entry.process.user_rsp = user_rsp;
+            entry.process.user_rflags = user_rflags;
+            break;
         }
     }
 }
@@ -96,10 +95,9 @@ pub fn get_process_from_table(pid: Pid) -> Option<Process> {
     let table = PROCESS_TABLE.lock();
 
     for slot in table.iter() {
-        if let Some(entry) = slot {
-            if entry.process.pid == pid {
-                return Some(entry.process);
-            }
+        let Some(entry) = slot else { continue };
+        if entry.process.pid == pid {
+            return Some(entry.process);
         }
     }
 

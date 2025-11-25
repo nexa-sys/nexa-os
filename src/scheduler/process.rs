@@ -75,69 +75,56 @@ pub fn add_process_with_policy(
 pub fn remove_process(pid: Pid) -> Result<(), &'static str> {
     kdebug!("[remove_process] Removing PID {}", pid);
 
-    let mut table = PROCESS_TABLE.lock();
-    let mut removed_cr3 = None;
-    let mut removed_kernel_stack = 0;
-    let mut removed = false;
+    let removal_result = {
+        let mut table = PROCESS_TABLE.lock();
 
-    for slot in table.iter_mut() {
-        if let Some(entry) = slot {
-            if entry.process.pid == pid {
-                crate::kinfo!("Scheduler: Removed process PID {}", pid);
+        let slot_idx = table.iter().position(|slot| {
+            slot.as_ref().map_or(false, |e| e.process.pid == pid)
+        });
 
-                // Save CR3 for cleanup after releasing the lock
-                if entry.process.cr3 != 0 {
-                    removed_cr3 = Some(entry.process.cr3);
-                    kdebug!(
-                        "[remove_process] PID {} had CR3={:#x}, will free page tables",
-                        pid,
-                        entry.process.cr3
-                    );
-                }
+        let Some(idx) = slot_idx else {
+            return Err("Process not found");
+        };
 
-                if entry.process.kernel_stack != 0 {
-                    removed_kernel_stack = entry.process.kernel_stack;
-                }
+        let entry = table[idx].as_ref().unwrap();
+        crate::kinfo!("Scheduler: Removed process PID {}", pid);
 
-                *slot = None;
-                removed = true;
-                break;
-            }
-        }
+        let cr3 = if entry.process.cr3 != 0 {
+            kdebug!("[remove_process] PID {} had CR3={:#x}, will free page tables", pid, entry.process.cr3);
+            Some(entry.process.cr3)
+        } else {
+            None
+        };
+
+        let kernel_stack = entry.process.kernel_stack;
+        table[idx] = None;
+        (cr3, kernel_stack)
+    };
+
+    let (removed_cr3, removed_kernel_stack) = removal_result;
+
+    if current_pid() == Some(pid) {
+        set_current_pid(None);
     }
 
-    drop(table);
-
-    if removed {
-        if current_pid() == Some(pid) {
-            set_current_pid(None);
-        }
-
-        // Clean up kernel stack
-        if removed_kernel_stack != 0 {
-            let layout = Layout::from_size_align(
-                crate::process::KERNEL_STACK_SIZE,
-                crate::process::KERNEL_STACK_ALIGN,
-            )
-            .unwrap();
-            unsafe { dealloc(removed_kernel_stack as *mut u8, layout) };
-        }
-
-        // Clean up process page tables if it had its own CR3
-        if let Some(cr3) = removed_cr3 {
-            crate::kdebug!("Freeing page tables for PID {} (CR3={:#x})", pid, cr3);
-            crate::paging::free_process_address_space(cr3);
-            kdebug!(
-                "[remove_process] Freed page tables for PID {} (CR3={:#x})",
-                pid,
-                cr3
-            );
-        }
-
-        Ok(())
-    } else {
-        Err("Process not found")
+    // Clean up kernel stack
+    if removed_kernel_stack != 0 {
+        let layout = Layout::from_size_align(
+            crate::process::KERNEL_STACK_SIZE,
+            crate::process::KERNEL_STACK_ALIGN,
+        )
+        .unwrap();
+        unsafe { dealloc(removed_kernel_stack as *mut u8, layout) };
     }
+
+    // Clean up process page tables if it had its own CR3
+    if let Some(cr3) = removed_cr3 {
+        crate::kdebug!("Freeing page tables for PID {} (CR3={:#x})", pid, cr3);
+        crate::paging::free_process_address_space(cr3);
+        kdebug!("[remove_process] Freed page tables for PID {} (CR3={:#x})", pid, cr3);
+    }
+
+    Ok(())
 }
 
 /// Update process state
@@ -145,18 +132,14 @@ pub fn set_process_state(pid: Pid, state: ProcessState) -> Result<(), &'static s
     let mut table = PROCESS_TABLE.lock();
 
     for slot in table.iter_mut() {
-        if let Some(entry) = slot {
-            if entry.process.pid == pid {
-                ktrace!(
-                    "[set_process_state] PID {} state: {:?} -> {:?}",
-                    pid,
-                    entry.process.state,
-                    state
-                );
-                entry.process.state = state;
-                return Ok(());
-            }
+        let Some(entry) = slot else { continue };
+        if entry.process.pid != pid {
+            continue;
         }
+
+        ktrace!("[set_process_state] PID {} state: {:?} -> {:?}", pid, entry.process.state, state);
+        entry.process.state = state;
+        return Ok(());
     }
 
     Err("Process not found")
@@ -169,12 +152,13 @@ pub fn set_process_exit_code(pid: Pid, code: i32) -> Result<(), &'static str> {
     let mut table = PROCESS_TABLE.lock();
 
     for slot in table.iter_mut() {
-        if let Some(entry) = slot {
-            if entry.process.pid == pid {
-                entry.process.exit_code = code;
-                return Ok(());
-            }
+        let Some(entry) = slot else { continue };
+        if entry.process.pid != pid {
+            continue;
         }
+
+        entry.process.exit_code = code;
+        return Ok(());
     }
 
     Err("Process not found")
@@ -191,34 +175,28 @@ pub fn get_child_state(parent_pid: Pid, child_pid: Pid) -> Option<ProcessState> 
     let table = PROCESS_TABLE.lock();
 
     for slot in table.iter() {
-        if let Some(entry) = slot {
-            if entry.process.pid == child_pid {
-                ktrace!(
-                    "[get_child_state] Found PID {}: ppid={}, parent_pid arg={}, state={:?}",
-                    child_pid,
-                    entry.process.ppid,
-                    parent_pid,
-                    entry.process.state
-                );
-                if entry.process.ppid == parent_pid {
-                    return Some(entry.process.state);
-                } else {
-                    kerror!(
-                        "[get_child_state] PID {} has wrong parent (ppid={}, expected={})",
-                        child_pid,
-                        entry.process.ppid,
-                        parent_pid
-                    );
-                    return None;
-                }
-            }
+        let Some(entry) = slot else { continue };
+        if entry.process.pid != child_pid {
+            continue;
         }
+
+        ktrace!(
+            "[get_child_state] Found PID {}: ppid={}, parent_pid arg={}, state={:?}",
+            child_pid, entry.process.ppid, parent_pid, entry.process.state
+        );
+
+        if entry.process.ppid == parent_pid {
+            return Some(entry.process.state);
+        }
+
+        kerror!(
+            "[get_child_state] PID {} has wrong parent (ppid={}, expected={})",
+            child_pid, entry.process.ppid, parent_pid
+        );
+        return None;
     }
 
-    kdebug!(
-        "[get_child_state] PID {} not found in process table",
-        child_pid
-    );
+    kdebug!("[get_child_state] PID {} not found in process table", child_pid);
     None
 }
 
@@ -228,10 +206,9 @@ pub fn find_child_with_state(parent_pid: Pid, target_state: ProcessState) -> Opt
     let table = PROCESS_TABLE.lock();
 
     for slot in table.iter() {
-        if let Some(entry) = slot {
-            if entry.process.ppid == parent_pid && entry.process.state == target_state {
-                return Some(entry.process.pid);
-            }
+        let Some(entry) = slot else { continue };
+        if entry.process.ppid == parent_pid && entry.process.state == target_state {
+            return Some(entry.process.pid);
         }
     }
 
@@ -240,20 +217,17 @@ pub fn find_child_with_state(parent_pid: Pid, target_state: ProcessState) -> Opt
 
 /// Mark a process as a forked child (will return 0 from fork when it runs)
 pub fn mark_process_as_forked_child(pid: Pid) {
-    // In a real implementation, we'd set a flag on the process
-    // For now, this is a placeholder - the fork return value handling
-    // will be done differently (see fork implementation notes)
     let mut table = PROCESS_TABLE.lock();
 
     for slot in table.iter_mut() {
-        if let Some(entry) = slot {
-            if entry.process.pid == pid {
-                // Child process is marked as Ready, will be scheduled later
-                entry.process.state = ProcessState::Ready;
-                crate::kdebug!("Marked PID {} as forked child", pid);
-                return;
-            }
+        let Some(entry) = slot else { continue };
+        if entry.process.pid != pid {
+            continue;
         }
+
+        entry.process.state = ProcessState::Ready;
+        crate::kdebug!("Marked PID {} as forked child", pid);
+        return;
     }
 }
 
@@ -262,23 +236,17 @@ pub fn mark_process_as_forked_child(pid: Pid) {
 /// so the new address space takes effect without waiting for the next context
 /// switch.
 pub fn update_process_cr3(pid: Pid, new_cr3: u64) -> Result<(), &'static str> {
-    let mut table = PROCESS_TABLE.lock();
-    let mut found = false;
+    {
+        let mut table = PROCESS_TABLE.lock();
 
-    for slot in table.iter_mut() {
-        if let Some(entry) = slot {
-            if entry.process.pid == pid {
-                entry.process.cr3 = new_cr3;
-                found = true;
-                break;
-            }
-        }
-    }
+        let entry = table.iter_mut()
+            .find_map(|slot| slot.as_mut().filter(|e| e.process.pid == pid));
 
-    drop(table);
+        let Some(entry) = entry else {
+            return Err("Process not found");
+        };
 
-    if !found {
-        return Err("Process not found");
+        entry.process.cr3 = new_cr3;
     }
 
     if current_pid() == Some(pid) {
@@ -290,17 +258,17 @@ pub fn update_process_cr3(pid: Pid, new_cr3: u64) -> Result<(), &'static str> {
 
 /// Set the state of the current process
 pub fn set_current_process_state(state: ProcessState) {
-    let mut table = PROCESS_TABLE.lock();
-    let current = *CURRENT_PID.lock();
+    let Some(curr_pid) = *CURRENT_PID.lock() else {
+        return;
+    };
 
-    if let Some(curr_pid) = current {
-        for slot in table.iter_mut() {
-            if let Some(entry) = slot {
-                if entry.process.pid == curr_pid {
-                    entry.process.state = state;
-                    break;
-                }
-            }
+    let mut table = PROCESS_TABLE.lock();
+
+    for slot in table.iter_mut() {
+        let Some(entry) = slot else { continue };
+        if entry.process.pid == curr_pid {
+            entry.process.state = state;
+            break;
         }
     }
 }
@@ -308,20 +276,19 @@ pub fn set_current_process_state(state: ProcessState) {
 /// Wake up a process by PID (set state to Ready)
 pub fn wake_process(pid: Pid) -> bool {
     let mut table = PROCESS_TABLE.lock();
-    let mut found = false;
 
     for slot in table.iter_mut() {
-        if let Some(entry) = slot {
-            if entry.process.pid == pid {
-                if entry.process.state == ProcessState::Sleeping {
-                    entry.process.state = ProcessState::Ready;
-                    // Reset wait time for fairness
-                    entry.wait_time = 0;
-                    found = true;
-                }
-                break;
-            }
+        let Some(entry) = slot else { continue };
+        if entry.process.pid != pid {
+            continue;
         }
+
+        if entry.process.state == ProcessState::Sleeping {
+            entry.process.state = ProcessState::Ready;
+            entry.wait_time = 0;
+            return true;
+        }
+        return false;
     }
-    found
+    false
 }
