@@ -384,8 +384,8 @@ unsafe fn init_inner() -> Result<(), &'static str> {
         }
     }
     
-    // Stage 3: Try starting a single AP core for testing
-    crate::kinfo!("SMP: Stage 3 - Attempting to start single AP core (CPU 1)");
+    // Stage 3: Start all AP cores
+    crate::kinfo!("SMP: Stage 3 - Attempting to start all remaining AP cores");
     
     if !ENABLE_AP_STARTUP {
         crate::kwarn!("SMP: AP startup disabled by ENABLE_AP_STARTUP flag");
@@ -402,59 +402,27 @@ unsafe fn init_inner() -> Result<(), &'static str> {
         return Ok(());
     }
     
-    if count > 1 {
-        let test_cpu_idx = 1;  // Start only CPU 1
-        let info = cpu_info(test_cpu_idx);
-        
-        crate::kinfo!("SMP: Starting test AP core {} (APIC ID {:#x})...", 
-            test_cpu_idx, info.apic_id);
-        
-        match start_ap(test_cpu_idx) {
-            Ok(()) => {
-                crate::kinfo!("SMP: ✓ Test AP core {} started successfully!", test_cpu_idx);
-                ONLINE_CPUS.fetch_add(1, Ordering::SeqCst);
-            }
-            Err(err) => {
-                crate::kwarn!("SMP: ✗ Failed to start test AP core {}: {}", test_cpu_idx, err);
-                crate::kwarn!("SMP: Continuing with BSP only");
-            }
-        }
-    }
-    
-    crate::kinfo!(
-        "SMP: {} / {} cores online",
-        current_online(),
-        CPU_TOTAL.load(Ordering::SeqCst)
-    );
-    
-    return Ok(());
-    
-    // Try to start AP cores (DISABLED FOR NOW)
-    #[allow(unreachable_code)]
-    #[allow(unused_variables)]
-    {
+    // Start all AP cores
     let mut started = 0usize;
     
-    for idx in 0..count {
+    for idx in 1..count {
         let info = cpu_info(idx);
-        if info.is_bsp {
-            continue;
-        }
         
         crate::kinfo!("SMP: Starting AP core {} (APIC ID {:#x})...", idx, info.apic_id);
         
         match start_ap(idx) {
             Ok(()) => {
                 started += 1;
-                crate::kinfo!("SMP: AP core {} started successfully", idx);
+                crate::kinfo!("SMP: ✓ AP core {} started successfully!", idx);
             }
             Err(err) => {
                 crate::kwarn!(
-                    "SMP: Failed to start APIC {:#x} (index {}): {}",
-                    info.apic_id,
+                    "SMP: ✗ Failed to start AP core {} (APIC {:#x}): {}",
                     idx,
+                    info.apic_id,
                     err
                 );
+                // Continue trying other cores even if one fails
             }
         }
     }
@@ -465,8 +433,7 @@ unsafe fn init_inner() -> Result<(), &'static str> {
         CPU_TOTAL.load(Ordering::SeqCst),
         started
     );
-    }  // End of unreachable AP startup code
-
+    
     Ok(())
 }
 
