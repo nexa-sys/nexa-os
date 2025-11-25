@@ -1,10 +1,10 @@
 use core::fmt::{self, Write};
-use core::ptr;
 use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 
 use crate::framebuffer;
 use crate::kinfo;
+use crate::safety::{volatile_read, volatile_write};
 
 const BUFFER_HEIGHT: usize = 25;
 const BUFFER_WIDTH: usize = 80;
@@ -198,12 +198,14 @@ impl Writer {
 
     unsafe fn write_at(&mut self, row: usize, col: usize, character: ScreenChar) {
         let index = row * BUFFER_WIDTH + col;
-        ptr::write_volatile(self.buffer_ptr.add(index), character);
+        // SAFETY: buffer_ptr points to valid VGA memory, index is bounded by caller
+        volatile_write(self.buffer_ptr.add(index), character);
     }
 
     unsafe fn read_at(&self, row: usize, col: usize) -> ScreenChar {
         let index = row * BUFFER_WIDTH + col;
-        ptr::read_volatile(self.buffer_ptr.add(index))
+        // SAFETY: buffer_ptr points to valid VGA memory, index is bounded by caller
+        volatile_read(self.buffer_ptr.add(index))
     }
 }
 

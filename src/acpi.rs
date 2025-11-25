@@ -1,7 +1,8 @@
 use core::mem;
-use core::ptr;
-use core::slice;
+use core::ptr::{self, addr_of, addr_of_mut};
 use core::sync::atomic::{AtomicBool, Ordering};
+
+use crate::safety::static_slice;
 
 const RSDP_SIGNATURE: &[u8; 8] = b"RSD PTR ";
 const MADT_SIGNATURE: &[u8; 4] = b"APIC";
@@ -94,10 +95,13 @@ pub fn init() -> Result<(), &'static str> {
         crate::kinfo!("ACPI: RSDP located (revision {})", rsdp.revision);
         let madt = locate_madt(rsdp).ok_or("MADT not found")?;
         parse_madt(madt)?;
+        // Use addr_of! to avoid creating references to static mut
+        let lapic = ptr::read(addr_of!(LAPIC_BASE));
+        let cpu_cnt = ptr::read(addr_of!(CPU_COUNT));
         crate::kinfo!(
             "ACPI: MADT reports LAPIC at {:#x} ({} CPUs)",
-            LAPIC_BASE,
-            CPU_COUNT
+            lapic,
+            cpu_cnt
         );
     }
 
@@ -109,7 +113,8 @@ pub fn lapic_base() -> Option<u64> {
     if !INIT_DONE.load(Ordering::SeqCst) {
         return None;
     }
-    Some(unsafe { LAPIC_BASE })
+    // SAFETY: LAPIC_BASE is only modified during init() which runs once.
+    Some(unsafe { ptr::read(addr_of!(LAPIC_BASE)) })
 }
 
 pub fn cpus() -> &'static [CpuDescriptor] {
@@ -117,7 +122,13 @@ pub fn cpus() -> &'static [CpuDescriptor] {
         return &[];
     }
 
-    unsafe { slice::from_raw_parts(CPU_LIST.as_ptr(), CPU_COUNT) }
+    // SAFETY: CPU_COUNT and CPU_LIST are only modified during init() which runs once.
+    // After INIT_DONE is set, these values are stable.
+    unsafe {
+        let count = ptr::read(addr_of!(CPU_COUNT));
+        let ptr = addr_of!(CPU_LIST) as *const CpuDescriptor;
+        static_slice(ptr, count)
+    }
 }
 
 unsafe fn validate_rsdp(addr: u64) -> Result<&'static RsdpV2, &'static str> {
@@ -237,7 +248,8 @@ unsafe fn scan_sdt(addr: u64, is_xsdt: bool) -> Option<&'static SdtHeader> {
 
 unsafe fn parse_madt(madt: &Madt) -> Result<(), &'static str> {
     let mut count = 0usize;
-    LAPIC_BASE = madt.lapic_address as u64;
+    // Use addr_of_mut! to avoid creating references to static mut
+    ptr::write(addr_of_mut!(LAPIC_BASE), madt.lapic_address as u64);
 
     let entries_start = (madt as *const Madt as *const u8).add(mem::size_of::<Madt>());
     let entries_len = madt
@@ -261,12 +273,16 @@ unsafe fn parse_madt(madt: &Madt) -> Result<(), &'static str> {
             }
             let lapic = &*(entry_ptr as *const MadtLocalApic);
             let enabled = (lapic.flags & 1) != 0;
-            if enabled && count < CPU_LIST.len() {
-                CPU_LIST[count] = CpuDescriptor {
-                    acpi_processor_id: lapic.acpi_processor_id,
-                    apic_id: lapic.apic_id,
-                    enabled,
-                };
+            if enabled && count < MAX_CPUS {
+                let cpu_list_ptr = addr_of_mut!(CPU_LIST) as *mut CpuDescriptor;
+                ptr::write(
+                    cpu_list_ptr.add(count),
+                    CpuDescriptor {
+                        acpi_processor_id: lapic.acpi_processor_id,
+                        apic_id: lapic.apic_id,
+                        enabled,
+                    },
+                );
                 count += 1;
             }
         }
@@ -278,7 +294,7 @@ unsafe fn parse_madt(madt: &Madt) -> Result<(), &'static str> {
         return Err("MADT contains no enabled processors");
     }
 
-    CPU_COUNT = count;
+    ptr::write(addr_of_mut!(CPU_COUNT), count);
     Ok(())
 }
 

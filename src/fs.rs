@@ -1,7 +1,9 @@
+use core::ptr::addr_of_mut;
 use spin::Mutex;
 
 use crate::bootinfo;
 use crate::posix::{self, FileType, Metadata};
+use crate::safety::{static_slice_from_raw_parts, StaticBufferAccessor};
 
 pub mod ext2;
 
@@ -350,7 +352,9 @@ where
 
 pub fn list_files() -> &'static [Option<File>] {
     let files = FILES.lock();
-    unsafe { core::slice::from_raw_parts(files.as_ptr(), MAX_FILES) }
+    // SAFETY: FILES is a static Mutex, its backing array has 'static lifetime.
+    // The pointer remains valid and the data is Copy, so this is safe.
+    static_slice_from_raw_parts(files.as_ptr(), MAX_FILES)
 }
 
 pub fn read_file_bytes(name: &str) -> Option<&'static [u8]> {
@@ -374,28 +378,34 @@ pub fn read_file_bytes(name: &str) -> Option<&'static [u8]> {
             }
 
             let _guard = EXT2_READ_CACHE_LOCK.lock();
-            unsafe {
-                let dest = &mut EXT2_READ_CACHE.data[..size];
-                let mut offset = 0usize;
+            // SAFETY: We hold EXT2_READ_CACHE_LOCK, guaranteeing exclusive access.
+            // Using addr_of_mut! to safely get a pointer to the static mut buffer.
+            let mut accessor = unsafe {
+                StaticBufferAccessor::<EXT2_READ_CACHE_SIZE>::from_raw_ptr(
+                    addr_of_mut!(EXT2_READ_CACHE.data),
+                )
+            };
 
-                while offset < size {
-                    let read = file_ref.read_at(offset, &mut dest[offset..]);
-                    if read == 0 {
-                        crate::kwarn!(
-                            "short read while loading '{}' from ext2 (offset {} of {})",
-                            name,
-                            offset,
-                            size
-                        );
-                        return None;
-                    }
-                    offset += read;
+            let dest = accessor.slice_mut(size)?;
+            let mut read_offset = 0usize;
+
+            while read_offset < size {
+                let read = file_ref.read_at(read_offset, &mut dest[read_offset..]);
+                if read == 0 {
+                    crate::kwarn!(
+                        "short read while loading '{}' from ext2 (offset {} of {})",
+                        name,
+                        read_offset,
+                        size
+                    );
+                    return None;
                 }
-
-                #[allow(static_mut_refs)]
-                let slice = core::slice::from_raw_parts(EXT2_READ_CACHE.data.as_ptr(), size);
-                Some(slice)
+                read_offset += read;
             }
+
+            // SAFETY: We still hold the lock, buffer content is valid for 'static
+            // as long as the lock protocol is followed by all callers.
+            unsafe { accessor.as_static_slice(size) }
         }
     }
 }

@@ -105,3 +105,73 @@ impl<'a> RawReader<'a> {
         }
     }
 }
+
+/// Create a `'static` slice from a raw pointer and length.
+///
+/// # Safety
+/// This function encapsulates the unsafe operation of creating a slice from raw parts.
+/// The caller must ensure:
+/// - `ptr` is valid for reads for `len` bytes
+/// - `ptr` points to memory that lives for the `'static` lifetime
+/// - The memory is properly initialized
+#[inline]
+pub fn static_slice_from_raw_parts<T>(ptr: *const T, len: usize) -> &'static [T] {
+    // SAFETY: Caller guarantees pointer validity and lifetime requirements
+    unsafe { slice::from_raw_parts(ptr, len) }
+}
+
+/// Wrapper for accessing a static mutable buffer with bounds checking.
+///
+/// This provides a safe interface for reading from and writing to static mutable
+/// buffers commonly used in kernel code for caching purposes.
+pub struct StaticBufferAccessor<const N: usize> {
+    ptr: *mut u8,
+}
+
+impl<const N: usize> StaticBufferAccessor<N> {
+    /// Create a new accessor from a raw pointer to a buffer.
+    ///
+    /// # Safety
+    /// The caller must ensure:
+    /// - `ptr` points to a valid buffer of at least N bytes
+    /// - Exclusive access to the buffer for the accessor's lifetime
+    /// - The buffer remains valid for the accessor's lifetime
+    #[inline]
+    pub const unsafe fn from_raw_ptr(ptr: *mut [u8; N]) -> Self {
+        Self {
+            ptr: ptr as *mut u8,
+        }
+    }
+
+    /// Get a mutable slice of the buffer up to `len` bytes.
+    /// Returns `None` if `len` exceeds buffer capacity.
+    #[inline]
+    pub fn slice_mut(&mut self, len: usize) -> Option<&mut [u8]> {
+        if len <= N {
+            // SAFETY: We have exclusive access (guaranteed by caller), len <= N
+            Some(unsafe { slice::from_raw_parts_mut(self.ptr, len) })
+        } else {
+            None
+        }
+    }
+
+    /// Get a static reference to the first `len` bytes of the buffer.
+    ///
+    /// # Safety
+    /// The caller must ensure the buffer content remains valid and unchanged
+    /// for the returned slice's lifetime.
+    #[inline]
+    pub unsafe fn as_static_slice(&self, len: usize) -> Option<&'static [u8]> {
+        if len <= N {
+            Some(static_slice_from_raw_parts(self.ptr as *const u8, len))
+        } else {
+            None
+        }
+    }
+
+    /// Get the buffer capacity.
+    #[inline]
+    pub const fn capacity(&self) -> usize {
+        N
+    }
+}

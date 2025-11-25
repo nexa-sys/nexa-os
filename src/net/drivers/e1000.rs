@@ -1,5 +1,6 @@
-use core::{cmp, ptr};
+use core::cmp;
 
+use crate::safety::{outl, inl, volatile_read, volatile_write};
 use crate::uefi_compat::NetworkDescriptor;
 
 use super::NetError;
@@ -586,13 +587,15 @@ impl E1000 {
     }
 
     fn write_reg(&mut self, offset: u32, value: u32) {
+        // SAFETY: base points to valid MMIO memory for this device
         unsafe {
-            ptr::write_volatile(self.base.add(offset as usize) as *mut u32, value);
+            volatile_write(self.base.add(offset as usize) as *mut u32, value);
         }
     }
 
     fn read_reg(&self, offset: u32) -> u32 {
-        unsafe { ptr::read_volatile(self.base.add(offset as usize) as *const u32) }
+        // SAFETY: base points to valid MMIO memory for this device
+        unsafe { volatile_read(self.base.add(offset as usize) as *const u32) }
     }
 
     /// Enable PCI Bus Master - CRITICAL for DMA operations
@@ -638,13 +641,11 @@ impl E1000 {
             | ((self.pci_function as u32) << 8)
             | (offset & 0xFC);
 
-        unsafe {
-            // Write address to CONFIG_ADDRESS (0xCF8)
-            ptr::write_volatile(0xCF8 as *mut u32, address);
-            // Read from CONFIG_DATA (0xCFC), adjust for offset
-            let data = ptr::read_volatile(0xCFC as *const u32);
-            ((data >> ((offset & 2) * 8)) & 0xFFFF) as u16
-        }
+        // Write address to CONFIG_ADDRESS (0xCF8)
+        outl(0xCF8, address);
+        // Read from CONFIG_DATA (0xCFC), adjust for offset
+        let data = inl(0xCFC);
+        ((data >> ((offset & 2) * 8)) & 0xFFFF) as u16
     }
 
     /// Write 16-bit value to PCI configuration space
@@ -655,15 +656,13 @@ impl E1000 {
             | ((self.pci_function as u32) << 8)
             | (offset & 0xFC);
 
-        unsafe {
-            // Write address to CONFIG_ADDRESS (0xCF8)
-            ptr::write_volatile(0xCF8 as *mut u32, address);
-            // Read-modify-write to CONFIG_DATA (0xCFC)
-            let shift = (offset & 2) * 8;
-            let mut data = ptr::read_volatile(0xCFC as *const u32);
-            data = (data & !(0xFFFF << shift)) | ((value as u32) << shift);
-            ptr::write_volatile(0xCFC as *mut u32, data);
-        }
+        // Write address to CONFIG_ADDRESS (0xCF8)
+        outl(0xCF8, address);
+        // Read-modify-write to CONFIG_DATA (0xCFC)
+        let shift = (offset & 2) * 8;
+        let mut data = inl(0xCFC);
+        data = (data & !(0xFFFF << shift)) | ((value as u32) << shift);
+        outl(0xCFC, data);
     }
 }
 

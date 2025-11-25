@@ -1,8 +1,10 @@
 extern crate alloc;
 
 use core::fmt::{self, Write};
+use core::ptr::addr_of_mut;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 
+use crate::safety::rdtsc;
 use crate::serial;
 use crate::vga_buffer::{self, Color};
 
@@ -471,7 +473,7 @@ pub fn ringbuffer_write_pos() -> usize {
 }
 
 fn read_tsc() -> u64 {
-    unsafe { core::arch::x86_64::_rdtsc() }
+    rdtsc()
 }
 
 fn detect_tsc_frequency() -> Option<u64> {
@@ -552,20 +554,20 @@ impl LogLineBuffer {
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_ok()
         {
-            unsafe {
-                Some(Self {
-                    buf: &mut LOG_BUFFER_POOL[0],
-                    len: 0,
-                })
-            }
+            // SAFETY: We acquired the lock, so we have exclusive access to buffer 0
+            let buf_ptr = unsafe { addr_of_mut!(LOG_BUFFER_POOL[0]) };
+            Some(Self {
+                buf: unsafe { &mut *buf_ptr },
+                len: 0,
+            })
         } else {
             // If pool is in use, use the second buffer (for nested logging)
-            unsafe {
-                Some(Self {
-                    buf: &mut LOG_BUFFER_POOL[1],
-                    len: 0,
-                })
-            }
+            // SAFETY: Buffer 1 is used for nested logging
+            let buf_ptr = unsafe { addr_of_mut!(LOG_BUFFER_POOL[1]) };
+            Some(Self {
+                buf: unsafe { &mut *buf_ptr },
+                len: 0,
+            })
         }
     }
 
