@@ -1,235 +1,238 @@
 # NexaOS English Documentation
 
-Welcome to the NexaOS English documentation center! Here you'll find comprehensive technical documentation for the NexaOS hybrid-kernel operating system.
+**Language**: English | [中文](../zh/README.md)
 
-## 📖 Documentation Navigator
-
-### 🚀 Quick Start
-- [QUICK-REFERENCE.md](QUICK-REFERENCE.md) - Developer cheat sheet for common tasks
-- [Building the System](BUILD-SYSTEM.md) - Complete build process guide
-- [System Overview](SYSTEM-OVERVIEW.md) - High-level system description
-
-### 🏗️ Architecture & Design
-- [Architecture](ARCHITECTURE.md) - Kernel architecture, memory model, process management
-- [System Overview](SYSTEM-OVERVIEW.md) - Complete system walkthrough (6-stage boot, components)
-- [Boot Process Details](../zh/启动流程.md) - 6-stage boot phases explained
-
-### 💻 Development Topics
-- [Syscall Reference](SYSCALL-REFERENCE.md) - Complete 38+ syscall API documentation
-- [Dynamic Linking](DYNAMIC_LINKING.md) - ELF loading, PT_INTERP, linking support
-- [Build System](BUILD-SYSTEM.md) - Build automation, Cargo, custom targets
-- [Kernel Logging System](kernel-logging-system.md) - TSC-based kernel logging with nanosecond precision
-
-### ⚙️ Subsystems
-- [Init System (PID 1)](../zh/init系统/概述.md) - System V init, runlevels, service management (see Chinese docs)
-- [Interactive Shell](../zh/shell与用户空间/交互式Shell.md) - Shell features, 19 commands (see Chinese docs)
-- [Root Filesystem Boot](ROOTFS-BOOT-IMPLEMENTATION.md) - Ext2 rootfs implementation
-
-### 📊 Debugging & Troubleshooting
-- [Debug Build Guide](DEBUG-BUILD.md) - Debug builds and techniques
-- [Rust Stdout Hang Diagnosis](RUST_STDOUT_HANG_DIAGNOSIS.md) - I/O deadlock analysis
-- [Stdio Println Deadlock Fix](stdio-println-deadlock-fix.md) - Println! deadlock resolution
-- [Stdio Enhancements](STDIO_ENHANCEMENTS.md) - Stdio improvements and fixes
-- [Bug Fixes & Testing](bugfixes/testing-guide.md) - Testing procedures
-
-### 🔍 Advanced Topics
-- [Fork RIP Fix](FORK_RIP_FIX.md) - Fork instruction pointer issue
-- [Fork/Wait Issues](FORK_WAIT_ISSUES.md) - Process creation and synchronization problems
-- [Configuration System](CONFIG_SYSTEM_SUMMARY.md) - Init configuration details
-
-## 📚 Documentation by Role
-
-### 👨‍💻 Kernel Developers
-**Start here**:
-1. [ARCHITECTURE.md](ARCHITECTURE.md) - Understand the kernel design
-2. [SYSCALL-REFERENCE.md](SYSCALL-REFERENCE.md) - Learn the syscall interface
-3. [BUILD-SYSTEM.md](BUILD-SYSTEM.md) - Master the build process
-4. [kernel-logging-system.md](kernel-logging-system.md) - Use logging in your code
-
-**Recommended Path**: QUICK-REFERENCE → ARCHITECTURE → SYSTEM-OVERVIEW → specific modules
-
-### 🔧 Userspace Developers
-**Start here**:
-1. [SYSCALL-REFERENCE.md](SYSCALL-REFERENCE.md) - Understand available system calls
-2. [DYNAMIC_LINKING.md](DYNAMIC_LINKING.md) - Learn how programs are loaded
-3. [BUILD-SYSTEM.md](BUILD-SYSTEM.md) - Build your programs
-4. [QUICK-REFERENCE.md](QUICK-REFERENCE.md) - Quick lookup
-
-**Recommended Path**: QUICK-REFERENCE → SYSCALL-REFERENCE → DYNAMIC_LINKING → BUILD-SYSTEM
-
-### 🧪 System Testers
-**Start here**:
-1. [BUILD-SYSTEM.md](BUILD-SYSTEM.md) - Build the system
-2. [bugfixes/testing-guide.md](bugfixes/testing-guide.md) - Test procedures
-3. [DEBUG-BUILD.md](DEBUG-BUILD.md) - Debug failing tests
-4. [RUST_STDOUT_HANG_DIAGNOSIS.md](RUST_STDOUT_HANG_DIAGNOSIS.md) - Diagnose I/O issues
-
-**Recommended Path**: BUILD-SYSTEM → testing-guide → specific issues
-
-### 📖 Documentation Readers
-**Start here**:
-1. [SYSTEM-OVERVIEW.md](SYSTEM-OVERVIEW.md) - Understand the big picture
-2. [ARCHITECTURE.md](ARCHITECTURE.md) - Deep dive into design
-3. [QUICK-REFERENCE.md](QUICK-REFERENCE.md) - Find specific information
-4. Other modules as needed
-
-**Recommended Path**: SYSTEM-OVERVIEW → ARCHITECTURE → topic of interest
-
-## 📋 Complete File Listing
-
-### Core Documentation
-- ✅ `ARCHITECTURE.md` - Hybrid kernel architecture, memory model, process management
-- ✅ `SYSTEM-OVERVIEW.md` - Complete system guide (6-stage boot, subsystems, performance)
-- ✅ `BUILD-SYSTEM.md` - Build process, scripts, compilation
-- ✅ `SYSCALL-REFERENCE.md` - 38+ system call complete reference with C signatures
-- ✅ `QUICK-REFERENCE.md` - Developer cheat sheet for quick lookup
-
-### Technical Deep Dives
-- ✅ `kernel-logging-system.md` - TSC-based logging, nanosecond timestamps
-- ✅ `DYNAMIC_LINKING.md` - ELF loading, PT_INTERP, linking support
-- ✅ `ROOTFS-BOOT-IMPLEMENTATION.md` - Ext2 root filesystem in initramfs
-- ✅ `STDIO_ENHANCEMENTS.md` - Userspace stdio improvements
-- ✅ `DEBUG-BUILD.md` - Debug build configuration and techniques
-
-### Bug Analysis & Fixes
-- ✅ `RUST_STDOUT_HANG_DIAGNOSIS.md` - Rust stdout deadlock analysis
-- ✅ `stdio-println-deadlock-fix.md` - Println deadlock resolution
-- ✅ `FORK_RIP_FIX.md` - Fork instruction pointer issue
-- ✅ `FORK_WAIT_ISSUES.md` - Process creation synchronization
-- ✅ `CONFIG_SYSTEM_SUMMARY.md` - Configuration system details
-
-### Testing & Validation
-- ✅ `bugfixes/testing-guide.md` - System testing procedures
-- ✅ `bugfixes/release-build-buffer-error.md` - Release build error analysis
-- ✅ `bugfixes/newline-flush-fix.md` - Line buffering fixes
-
-## 🔗 Key Links
-
-### Core Resources
-- **Main Repository**: https://github.com/nexa-sys/nexa-os
-- **Issue Tracker**: https://github.com/nexa-sys/nexa-os/issues
-- **Discussions**: https://github.com/nexa-sys/nexa-os/discussions
-- **Build Scripts**: ../../scripts/
-- **Source Code**: ../../src/
-
-### Build Commands
-```bash
-# Complete system build
-./scripts/build-all.sh
-
-# Run in QEMU
-./scripts/run-qemu.sh
-
-# Debug build
-./scripts/build-rootfs-debug.sh
-
-# Monitor QEMU serial output
-tail -f /tmp/qemu-serial.log
-```
-
-### Related Chinese Documentation
-For implementation details and learning materials in Chinese, see:
-- [Chinese Docs Index](../zh/README.md) - Complete Chinese documentation center
-- [Architecture (Chinese)](../zh/架构设计.md) - Architecture in Chinese
-- [Init System (Chinese)](../zh/init系统/概述.md) - Init system detailed guide
-- [Shell Guide (Chinese)](../zh/shell与用户空间/交互式Shell.md) - Shell complete guide
-
-## 🛠️ Documentation Structure
-
-```
-docs/
-├── README.md                          # Main navigation (this file)
-│
-├── en/                                # English documentation
-│   ├── ARCHITECTURE.md                # Kernel architecture
-│   ├── BUILD-SYSTEM.md                # Build process
-│   ├── SYSCALL-REFERENCE.md           # Syscall API reference
-│   ├── SYSTEM-OVERVIEW.md             # System complete guide
-│   ├── QUICK-REFERENCE.md             # Developer cheat sheet
-│   │
-│   ├── kernel-logging-system.md       # Kernel logging
-│   ├── DYNAMIC_LINKING.md             # ELF loading
-│   ├── ROOTFS-BOOT-IMPLEMENTATION.md  # Root filesystem
-│   ├── STDIO_ENHANCEMENTS.md          # Stdio improvements
-│   ├── DEBUG-BUILD.md                 # Debug guide
-│   │
-│   ├── RUST_STDOUT_HANG_DIAGNOSIS.md  # Diagnosis
-│   ├── stdio-println-deadlock-fix.md  # Deadlock fix
-│   ├── FORK_RIP_FIX.md                # Fork RIP
-│   ├── FORK_WAIT_ISSUES.md            # Fork/Wait issues
-│   │
-│   ├── CONFIG_SYSTEM_SUMMARY.md       # Configuration
-│   │
-│   └── bugfixes/                      # Bug fixes and testing
-│       ├── testing-guide.md
-│       ├── release-build-buffer-error.md
-│       └── newline-flush-fix.md
-│
-├── zh/                                # Chinese documentation
-│   ├── README.md                      # Chinese index
-│   ├── 快速开始.md                    # Quick start
-│   ├── 系统概览.md                    # System overview
-│   ├── 架构设计.md                    # Architecture
-│   │
-│   ├── init系统/                      # Init subsystem
-│   ├── shell与用户空间/               # Shell & userspace
-│   ├── 内核开发/                      # Kernel development
-│   │
-│   ├── 故障排除/                      # Troubleshooting
-│   └── 开发报告/                      # Development reports
-│
-└── (legacy files)                     # To be archived
-```
-
-## 📝 Documentation Standards
-
-### Format Requirements
-- Use **H1** (`#`) for document titles
-- Use **H2** (`##`) and **H3** (`###`) for sections
-- Use code fences with language tags: ` ```rust`, ` ```bash`, etc.
-- Use relative links for internal references
-- Include **table of contents** for long documents
-
-### Content Requirements
-- **Clear structure**: Introduction → Concepts → Details → Examples → Summary
-- **Examples**: Provide working code samples when applicable
-- **Cross-references**: Link to related documents for context
-- **Clarity**: Avoid excessive jargon; define technical terms
-- **Accuracy**: Verify against actual implementation in source code
-
-### File Naming
-- Use **kebab-case** for file names: `kernel-logging-system.md`
-- Use **descriptive names**: `SYSCALL-REFERENCE.md` not `syscalls.md`
-- Use **UPPERCASE.md** for major documents, `lowercase.md` for secondary
-
-## ✏️ How to Contribute
-
-### Found an Error?
-1. Open an [Issue](https://github.com/nexa-sys/nexa-os/issues)
-2. Or submit a Pull Request with corrections
-
-### Want to Add Documentation?
-1. Create the file in appropriate directory (`docs/en/` or `docs/zh/`)
-2. Follow documentation standards (see above)
-3. Update navigation in `docs/README.md` and `docs/en/README.md`
-4. Ensure all links are correct (relative paths)
-
-### Translation Policy
-- **English documents** go in `docs/en/`
-- **Chinese documents** go in `docs/zh/`
-- Consider translating major documents to make content accessible
-- Always maintain documentation in the original language first
-
-## 📞 Support & Feedback
-
-- **Questions about documentation?** → Open [Issue](https://github.com/nexa-sys/nexa-os/issues)
-- **Suggestions?** → Use [Discussions](https://github.com/nexa-sys/nexa-os/discussions)
-- **Want to help?** → Check [Chinese Index](../zh/开发报告/完成度报告.md) for TODO items
+> **Platform**: x86_64  
+> **Status**: Production-grade hybrid kernel OS  
+> **Standards**: POSIX.1-2017, Unix-like semantics
 
 ---
 
-**Documentation Status**: ✅ Structure complete, 95% content ready  
-**Last Updated**: 2025-11-12  
+## 📚 Documentation Index
+
+### Quick Start for New Developers
+
+- **[QUICK-REFERENCE.md](QUICK-REFERENCE.md)** - Essential commands and syscall reference
+- **[BUILD-SYSTEM.md](BUILD-SYSTEM.md)** - Complete build process and scripts
+- **[SYSTEM-OVERVIEW.md](SYSTEM-OVERVIEW.md)** - High-level system architecture and features
+
+### Core Architecture & Design
+
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** - Detailed hybrid kernel design, memory management, process model
+- **[SYSCALL-REFERENCE.md](SYSCALL-REFERENCE.md)** - Complete 38+ system call API reference with examples
+- **[DYNAMIC_LINKING.md](DYNAMIC_LINKING.md)** - ELF loading, PT_INTERP, dynamic linker implementation
+- **[Kernel Logging System](kernel-logging-system.md)** - TSC timestamps, kinfo!/kdebug!/kerror! macros
+- **[ADVANCED-SCHEDULER.md](ADVANCED-SCHEDULER.md)** - Scheduler design, process states, priority handling
+
+### Boot & Initialization
+
+- **[ROOTFS-BOOT-IMPLEMENTATION.md](ROOTFS-BOOT-IMPLEMENTATION.md)** - ext2 root filesystem mounting and init process
+- **[UEFI_COMPAT_BOOT_FLOW.md](UEFI_COMPAT_BOOT_FLOW.md)** - UEFI loader, fallback driver, network boot
+- **[CONFIG_SYSTEM_SUMMARY.md](CONFIG_SYSTEM_SUMMARY.md)** - Configuration system and boot parameters
+- **[CR3-IMPLEMENTATION.md](CR3-IMPLEMENTATION.md)** - Page table management and virtual memory
+
+### Standard I/O & User Libraries
+
+- **[STDIO_ENHANCEMENTS.md](STDIO_ENHANCEMENTS.md)** - stdin/stdout implementation, buffering, synchronization
+- **[RUST_STDOUT_HANG_DIAGNOSIS.md](RUST_STDOUT_HANG_DIAGNOSIS.md)** - Debugging printf/println hangs
+- **[stdio-println-deadlock-fix.md](stdio-println-deadlock-fix.md)** - Deadlock prevention in libc/nrlib
+- **[NRLIB_STD_USAGE_GUIDE.md](NRLIB_STD_USAGE_GUIDE.md)** - Using std library in userspace, pthread/TLS setup
+
+### File System
+
+- **[EXT2-WRITE-SUPPORT.md](EXT2-WRITE-SUPPORT.md)** - ext2 filesystem write implementation
+- **[EXT2-WRITE-IMPLEMENTATION.md](EXT2-WRITE-IMPLEMENTATION.md)** - Detailed implementation notes
+- **[README-EXT2-WRITE.md](README-EXT2-WRITE.md)** - Quickstart for ext2 operations
+
+### Process Management & Debugging
+
+- **[FORK_RIP_FIX.md](FORK_RIP_FIX.md)** - RIP corruption fix in fork syscall
+- **[FORK_WAIT_ISSUES.md](FORK_WAIT_ISSUES.md)** - wait4, SIGCHLD handling, zombie processes
+- **[EXTERNAL-COMMAND-EXECUTION.md](EXTERNAL-COMMAND-EXECUTION.md)** - Shell command execution, child process management
+- **[EXTERNAL-COMMAND-STATUS.md](EXTERNAL-COMMAND-STATUS.md)** - Exit status and error handling
+- **[EXECVE-GP-FAULT-BUG.md](EXECVE-GP-FAULT-BUG.md)** - General protection fault debugging in execve
+
+### Networking (UDP/TCP)
+
+- **[UDP-SYSCALL-SUPPORT.md](UDP-SYSCALL-SUPPORT.md)** - UDP socket syscalls and protocol implementation
+- **[UDP_NETWORK_STACK.md](UDP_NETWORK_STACK.md)** - Network stack architecture
+- **[UEFI_COMPAT_NETWORK_TCP.md](UEFI_COMPAT_NETWORK_TCP.md)** - TCP support in UEFI compatibility layer
+- **[DNS-IMPLEMENTATION-SUMMARY.md](DNS-IMPLEMENTATION-SUMMARY.md)** - DNS implementation overview
+- **[DNS-SUPPORT-ENHANCEMENTS.md](DNS-SUPPORT-ENHANCEMENTS.md)** - DNS resolver and nslookup utility
+- **[NSLOOKUP-IMPROVEMENTS.md](NSLOOKUP-IMPROVEMENTS.md)** - Query types, caching, performance
+
+### Debugging & Build Variants
+
+- **[DEBUG-BUILD.md](DEBUG-BUILD.md)** - Debug mode compilation, logging levels, GDB setup
+- **[bugfixes/stdio-println-deadlock-fix.md](bugfixes/stdio-println-deadlock-fix.md)** - Detailed fix for libc deadlock
+- **[bugfixes/release-build-buffer-error.md](bugfixes/release-build-buffer-error.md)** - Release mode buffer issues
+- **[bugfixes/testing-guide.md](bugfixes/testing-guide.md)** - Testing procedures and validation
+
+### Legacy & Reference
+
+- **[UEFI_COMPAT_FALLBACK_DRIVER.md](UEFI_COMPAT_FALLBACK_DRIVER.md)** - UEFI fallback driver design
+
+---
+
+## 📖 Documentation by Role
+
+### 👨‍💻 For Kernel Developers
+
+**Recommended Reading Order**:
+1. [QUICK-REFERENCE.md](QUICK-REFERENCE.md) - Essential commands (5 min)
+2. [ARCHITECTURE.md](ARCHITECTURE.md) - Deep architecture dive (30 min)
+3. [SYSCALL-REFERENCE.md](SYSCALL-REFERENCE.md) - API reference (20 min)
+4. [kernel-logging-system.md](kernel-logging-system.md) - Logging in code (10 min)
+5. [ADVANCED-SCHEDULER.md](ADVANCED-SCHEDULER.md) - Process scheduling (20 min)
+
+**Problem-Specific Docs**:
+- Stuck on boot? → [ROOTFS-BOOT-IMPLEMENTATION.md](ROOTFS-BOOT-IMPLEMENTATION.md)
+- Syscall failing? → [SYSCALL-REFERENCE.md](SYSCALL-REFERENCE.md)
+- Memory issues? → [CR3-IMPLEMENTATION.md](CR3-IMPLEMENTATION.md)
+- Fork problems? → [FORK_RIP_FIX.md](FORK_RIP_FIX.md)
+
+### 💻 For Userspace Developers
+
+**Recommended Reading Order**:
+1. [QUICK-REFERENCE.md](QUICK-REFERENCE.md) - Quick start (5 min)
+2. [SYSCALL-REFERENCE.md](SYSCALL-REFERENCE.md) - Available syscalls (20 min)
+3. [DYNAMIC_LINKING.md](DYNAMIC_LINKING.md) - Program loading (15 min)
+4. [NRLIB_STD_USAGE_GUIDE.md](NRLIB_STD_USAGE_GUIDE.md) - Using std in userspace (15 min)
+5. [BUILD-SYSTEM.md](BUILD-SYSTEM.md) - Build your programs (10 min)
+
+**Quick Answers**:
+- How do I call a syscall? → [SYSCALL-REFERENCE.md](SYSCALL-REFERENCE.md)
+- My program won't load? → [DYNAMIC_LINKING.md](DYNAMIC_LINKING.md)
+- I/O is hanging? → [RUST_STDOUT_HANG_DIAGNOSIS.md](RUST_STDOUT_HANG_DIAGNOSIS.md)
+
+### 🧪 For System Testers & QA
+
+**Recommended Reading Order**:
+1. [QUICK-REFERENCE.md](QUICK-REFERENCE.md) - Start here (5 min)
+2. [BUILD-SYSTEM.md](BUILD-SYSTEM.md) - Build the system (10 min)
+3. [bugfixes/testing-guide.md](bugfixes/testing-guide.md) - Test procedures (15 min)
+4. [DEBUG-BUILD.md](DEBUG-BUILD.md) - Debug mode (10 min)
+5. Issue-specific docs as needed
+
+---
+
+## 🗂️ Documentation by Problem
+
+| Problem | Solution |
+|---------|----------|
+| "How do I build?" | [BUILD-SYSTEM.md](BUILD-SYSTEM.md) |
+| "Build fails" | [BUILD-SYSTEM.md](BUILD-SYSTEM.md) → relevant bugfix docs |
+| "System won't boot" | [ROOTFS-BOOT-IMPLEMENTATION.md](ROOTFS-BOOT-IMPLEMENTATION.md) |
+| "System hangs" | [DEBUG-BUILD.md](DEBUG-BUILD.md) |
+| "Syscall not working" | [SYSCALL-REFERENCE.md](SYSCALL-REFERENCE.md) |
+| "Shell command hangs" | [EXTERNAL-COMMAND-EXECUTION.md](EXTERNAL-COMMAND-EXECUTION.md) |
+| "printf/println hangs" | [RUST_STDOUT_HANG_DIAGNOSIS.md](RUST_STDOUT_HANG_DIAGNOSIS.md) |
+| "Child process issues" | [FORK_RIP_FIX.md](FORK_RIP_FIX.md) + [FORK_WAIT_ISSUES.md](FORK_WAIT_ISSUES.md) |
+| "File operations fail" | [EXT2-WRITE-SUPPORT.md](EXT2-WRITE-SUPPORT.md) |
+| "Network not working" | [UDP_NETWORK_STACK.md](UDP_NETWORK_STACK.md) |
+
+---
+
+## 🔗 Cross-Links & Resources
+
+### Quick Commands
+
+```bash
+./scripts/build-all.sh        # Complete system build
+./scripts/run-qemu.sh         # Run in QEMU
+cargo build --release         # Kernel only
+./scripts/build-userspace.sh  # Userspace only
+./scripts/build-rootfs.sh     # Root filesystem only
+```
+
+### Related Documentation
+
+- **[Main Docs](../README.md)** - Bilingual navigation
+- **[Chinese Docs](../zh/README.md)** - Complete Chinese documentation center
+- **[Project README](../../README.md)** - Main project description
+- **[Build Scripts](../../scripts/)** - Automation scripts
+- **[Source Code](../../src/)** - Kernel source
+
+---
+
+## 📋 Complete File Listing
+
+### Navigation & Index
+- `README.md` - This file (navigation hub)
+- `../README.md` - Bilingual navigation
+
+### Core System
+- `ARCHITECTURE.md` - Kernel architecture
+- `SYSTEM-OVERVIEW.md` - Complete system walkthrough
+- `BUILD-SYSTEM.md` - Build process
+- `QUICK-REFERENCE.md` - Commands cheat sheet
+- `SYSCALL-REFERENCE.md` - 38+ syscall API
+
+### Boot & Memory
+- `ROOTFS-BOOT-IMPLEMENTATION.md` - Root filesystem boot
+- `CR3-IMPLEMENTATION.md` - Virtual memory
+- `DYNAMIC_LINKING.md` - ELF loading
+- `CONFIG_SYSTEM_SUMMARY.md` - Boot configuration
+
+### Subsystems
+- `kernel-logging-system.md` - TSC-based logging
+- `STDIO_ENHANCEMENTS.md` - Standard I/O
+- `UEFI_COMPAT_BOOT_FLOW.md` - UEFI compatibility
+- `ADVANCED-SCHEDULER.md` - Process scheduling
+
+### Networking
+- `UDP_NETWORK_STACK.md` - Network architecture
+- `UDP-SYSCALL-SUPPORT.md` - UDP syscalls
+- `DNS-IMPLEMENTATION-SUMMARY.md` - DNS resolver
+- `DNS-SUPPORT-ENHANCEMENTS.md` - DNS features
+- `NSLOOKUP-IMPROVEMENTS.md` - Nslookup utility
+
+### Debugging & Issues
+- `DEBUG-BUILD.md` - Debug mode and tools
+- `RUST_STDOUT_HANG_DIAGNOSIS.md` - I/O deadlock
+- `stdio-println-deadlock-fix.md` - Deadlock fixes
+- `FORK_RIP_FIX.md` - Fork instruction pointer
+- `FORK_WAIT_ISSUES.md` - Process wait issues
+- `EXTERNAL-COMMAND-EXECUTION.md` - Shell execution
+- `EXTERNAL-COMMAND-STATUS.md` - Exit status
+- `EXECVE-GP-FAULT-BUG.md` - General protection fault
+- `NRLIB_STD_USAGE_GUIDE.md` - Userspace std
+
+### File System
+- `EXT2-WRITE-SUPPORT.md` - Ext2 write capability
+- `EXT2-WRITE-IMPLEMENTATION.md` - Implementation details
+- `README-EXT2-WRITE.md` - Quick reference
+
+### Testing & Bug Reports
+- `bugfixes/testing-guide.md` - Test procedures
+- `bugfixes/release-build-buffer-error.md` - Release issues
+- `bugfixes/newline-flush-fix.md` - Line buffering fixes
+
+---
+
+## ✏️ Contributing
+
+### Found an Error?
+1. Open an [Issue](https://github.com/nexa-sys/nexa-os/issues)
+2. Or submit a Pull Request
+
+### Want to Add Documentation?
+1. Create file in `docs/en/`
+2. Follow format standards (see below)
+3. Update this README with entry
+4. Ensure all relative links work
+
+### Format Standards
+- Use **H1** (`#`) for titles only
+- Use **H2** (`##`), **H3** (`###`) for sections
+- Use code fences with language: ` ```rust`, ` ```bash`
+- Use relative links for internal references
+- Include TOC for documents >500 lines
+
+---
+
+**Documentation Status**: ✅ Complete  
+**Last Updated**: 2025-11-25  
 **Maintained by**: NexaOS Development Community
 
-Happy learning and developing! 🚀
+🚀 Happy coding!

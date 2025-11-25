@@ -1,199 +1,221 @@
 # NexaOS 中文文档中心
 
-欢迎来到 NexaOS 中文文档！这里提供了关于 NexaOS 混合内核操作系统的详细中文说明。
+**语言**: 中文 | [English](../en/README.md)
 
-## 📖 文档导航
-
-### 🚀 新手快速开始
-- [快速开始](快速开始.md) - 环境设置、构建和运行系统
-- [基本概念](概念.md) - 理解操作系统基础
-- [项目结构](../en/QUICK-REFERENCE.md) - 快速参考表
-
-### 🏗️ 系统架构与设计
-- [系统概览](系统概览.md) - NexaOS 完整功能和特性
-- [架构设计](架构设计.md) - 混合内核、内存、进程管理详解
-- [启动流程](启动流程.md) - 6 阶段启动过程详析
-- [内存管理](内存管理.md) - 虚拟内存、分页、地址空间
-
-### ⚙️ Init 系统（PID 1）
-- [Init 系统概述](init系统/概述.md) - init/ni 进程详解
-- [实现总结](init系统/实现总结.md) - 当前实现的技术细节
-- [System V 服务管理](init系统/服务管理.md) - runlevel 和服务监管
-- [inittab 配置指南](init系统/配置指南.md) - `/etc/inittab` 语法和例子
-
-### 💻 Shell 与用户空间开发
-- [交互式 Shell](shell与用户空间/交互式Shell.md) - Shell 功能详解
-- [Shell 命令参考](shell与用户空间/命令参考.md) - 19 个内置命令完整文档
-- [行编辑功能](shell与用户空间/行编辑.md) - Tab 补全、历史、快捷键
-- [用户空间编程](shell与用户空间/编程指南.md) - 开发用户程序的指南
-
-### 🔧 内核开发和增强
-- [动态链接支持](动态链接支持.md) - ELF 加载、PT_INTERP、链接器
-- [系统调用完全参考](../en/SYSCALL-REFERENCE.md) - 38+ 系统调用 API（英文）
-- [进程管理](进程管理.md) - fork/execve/wait4 详解
-- [信号处理](信号处理.md) - POSIX 信号、信号掩码、处理
-- [IPC 机制](ipc机制.md) - 管道、消息通道、套接字
-
-### 📊 日志和调试
-- [内核日志系统](内核日志系统.md) - kinfo!, kdebug!, kerror! 宏
-- [TSC 时间戳](../en/kernel-logging-system.md) - 纳秒级时间测量（英文）
-- [调试技巧](调试技巧.md) - QEMU 调试、GDB 设置
-
-### 🛠️ 构建系统
-- [完整构建指南](../en/BUILD-SYSTEM.md) - 脚本详解（英文）
-- [构建流程图](构建流程.md) - 可视化的构建过程
-- [自定义编译](自定义编译.md) - 修改配置、调试模式、优化
-
-### 🐛 故障排除
-- [常见问题 FAQ](故障排除/常见问题.md) - Q&A 集合
-- [构建错误排查](故障排除/构建错误.md) - 编译失败的解决方案
-- [启动问题排查](故障排除/启动问题.md) - 内核不启动？如何调试
-- [Rust Stdout 死锁](../en/RUST_STDOUT_HANG_DIAGNOSIS.md) - I/O 问题诊断（英文）
-- [性能调优](故障排除/性能调优.md) - 系统优化建议
-
-### 📚 开发参考和报告
-- [实现完成度报告](开发报告/完成度报告.md) - 功能清单和状态
-- [技术实现报告](开发报告/实现报告.md) - 详细的实现细节
-- [内核日志实现](开发报告/日志系统实现.md) - 日志子系统技术总结
-- [测试指南](../en/bugfixes/testing-guide.md) - 系统测试流程（英文）
-
-## 🎯 按用户角色分类
-
-### 👨‍💻 我是系统开发者
-**你需要**:
-1. 理解架构 → 阅读 [架构设计](架构设计.md)
-2. 掌握构建过程 → 参考 [构建流程](构建流程.md)
-3. 学习内核开发 → 查看 [内核开发](动态链接支持.md) 系列
-4. 研究进程管理 → 深入 [进程管理](进程管理.md)
-5. 贡献代码 → 遵循 [开发规范](开发规范.md)
-
-**推荐路径**: 快速开始 → 架构设计 → 系统概览 → 特定模块 → 代码实现
-
-### 🧑‍🎓 我是学生/学习者
-**你需要**:
-1. 理解操作系统基础 → 开始 [基本概念](概念.md)
-2. 了解 NexaOS 功能 → 学习 [系统概览](系统概览.md)
-3. 深入特定模块 → 选择感兴趣的主题
-4. 阅读源代码 → 配合文档查看 `src/` 代码
-5. 做实验项目 → 参考 [项目实践](项目实践.md)
-
-**推荐路径**: 基本概念 → 系统概览 → 启动流程 → 逐一学习各模块
-
-### 🔧 我是系统管理员
-**你需要**:
-1. 快速启动系统 → [快速开始](快速开始.md)
-2. 配置服务 → [inittab 配置指南](init系统/配置指南.md)
-3. 管理进程 → [Init 系统概述](init系统/概述.md)
-4. 故障排除 → [常见问题 FAQ](故障排除/常见问题.md)
-5. 性能调优 → [性能调优](故障排除/性能调优.md)
-
-**推荐路径**: 快速开始 → Init 系统 → 常见问题 → 按需查询
-
-### 🚀 我想对项目贡献
-**你需要**:
-1. 了解项目状态 → [完成度报告](开发报告/完成度报告.md)
-2. 学习代码规范 → [开发规范](开发规范.md)
-3. 理解架构和设计 → [架构设计](架构设计.md)
-4. 学会构建和测试 → [构建流程](构建流程.md) + [测试指南](../en/bugfixes/testing-guide.md)
-5. 阅读相关的问题和讨论 → GitHub Issues/Discussions
-
-**推荐路径**: 完成度报告 → 架构设计 → 感兴趣的模块 → 修改代码 → 测试 → 提交 PR
-
-## 📋 文档完整清单
-
-### 快速参考
-- ✅ [快速开始](快速开始.md) - 3 分钟入门
-- ✅ [基本概念](概念.md) - 核心术语解释
-- ✅ [系统概览](系统概览.md) - 功能全景
-
-### 架构和设计
-- ✅ [架构设计](架构设计.md) - 混合内核、子系统
-- ✅ [启动流程](启动流程.md) - 6 阶段详解
-- ✅ [内存管理](内存管理.md) - 虚拟内存、分页
-- ✅ [进程管理](进程管理.md) - 进程、调度、切换
-- ✅ [信号处理](信号处理.md) - POSIX 信号
-- ✅ [IPC 机制](ipc机制.md) - 进程通信
-
-### 功能模块
-- ✅ [Init 系统](init系统/概述.md) - PID 1、System V runlevel
-- ✅ [Shell 和命令](shell与用户空间/交互式Shell.md) - 19 个命令
-- ✅ [动态链接](动态链接支持.md) - ELF 加载、链接
-
-### 开发和构建
-- ✅ [构建流程](构建流程.md) - 脚本、步骤
-- ✅ [自定义编译](自定义编译.md) - 配置、优化
-- ✅ [内核日志系统](内核日志系统.md) - 日志宏
-
-### 故障排除和参考
-- ✅ [常见问题 FAQ](故障排除/常见问题.md)
-- ✅ [构建错误排查](故障排除/构建错误.md)
-- ✅ [启动问题排查](故障排除/启动问题.md)
-- ✅ [性能调优](故障排除/性能调优.md)
-
-### 开发报告
-- ✅ [完成度报告](开发报告/完成度报告.md) - 功能清单
-- ✅ [实现报告](开发报告/实现报告.md) - 技术细节
-- ✅ [日志系统实现](开发报告/日志系统实现.md) - 实现细节
-
-## 🔗 关键链接
-
-### 项目资源
-- **主项目仓库**: [GitHub - NexaOS](https://github.com/nexa-sys/nexa-os)
-- **英文文档**: [docs/en/](../en/)
-- **构建脚本**: [scripts/](../../scripts/)
-- **源代码**: [src/](../../src/)
-
-### 工具和命令
-```bash
-# 快速构建
-./scripts/build-all.sh
-
-# 运行 QEMU
-./scripts/run-qemu.sh
-
-# 构建调试版本
-./scripts/build-rootfs-debug.sh
-
-# 查看QEMU输出
-tail -f /tmp/qemu-serial.log
-```
-
-### 相关的英文文档
-如果你需要技术深度，参考这些英文文档：
-- [Architecture - EN](../en/ARCHITECTURE.md) - 完整的架构说明
-- [Build System - EN](../en/BUILD-SYSTEM.md) - 构建系统详解
-- [Syscall Reference - EN](../en/SYSCALL-REFERENCE.md) - 系统调用 API
-- [System Overview - EN](../en/SYSTEM-OVERVIEW.md) - 系统全景
-
-## ✏️ 如何贡献文档
-
-### 发现错误或遗漏？
-1. 在 [GitHub Issues](https://github.com/nexa-sys/nexa-os/issues) 中报告
-2. 或者直接提交改进的 Pull Request
-
-### 想要添加新文档？
-1. 在相应目录中创建新文件
-2. 遵循 Markdown 格式和命名规范
-3. 在本 README 中添加导航条目
-4. 确保链接正确
-
-### 文档规范
-- **标题**: 使用 H1 (`#`) 和 H2 (`##`)
-- **格式**: 使用清晰的 Markdown，包括代码块和列表
-- **链接**: 相对路径指向同一文档集
-- **示例**: 提供具体的命令和代码示例
-- **语言**: 中文应该简洁、清晰，避免过度技术术语
-
-## 📞 获取帮助
-
-- **文档不清楚？** → 提交 [Issue](https://github.com/nexa-sys/nexa-os/issues)
-- **有建议？** → 参加 [讨论](https://github.com/nexa-sys/nexa-os/discussions)
-- **想要贡献？** → 查看 [完成度报告](开发报告/完成度报告.md)，寻找 TODO 项目
+> **平台**: x86_64  
+> **状态**: 生产级混合内核操作系统  
+> **标准**: POSIX.1-2017, Unix-like 语义
 
 ---
 
-**文档状态**: 📝 正在完善中  
-**最后更新**: 2025-11-12  
+## 📚 文档导航
+
+### 🚀 新手快速入门
+
+- **[快速开始.md](快速开始.md)** - 环境设置、构建和运行系统
+- **[../en/BUILD-SYSTEM.md](../en/BUILD-SYSTEM.md)** - 完整构建流程（英文）
+- **[系统概览.md](系统概览.md)** - NexaOS 系统架构和功能概览
+
+### 🏗️ 系统架构与设计
+
+- **[架构设计.md](架构设计.md)** - 混合内核架构、内存管理、进程模型详解
+- **[../en/SYSCALL-REFERENCE.md](../en/SYSCALL-REFERENCE.md)** - 38+ 系统调用完整参考（英文）
+- **[../en/ARCHITECTURE.md](../en/ARCHITECTURE.md)** - 详细架构文档（英文）
+- **[../en/kernel-logging-system.md](../en/kernel-logging-system.md)** - 内核日志系统（英文）
+- **[../en/ADVANCED-SCHEDULER.md](../en/ADVANCED-SCHEDULER.md)** - 进程调度器设计（英文）
+
+### ⚙️ Init 系统（PID 1）
+
+- **[init系统/概述.md](init系统/概述.md)** - Init/ni 进程架构
+- **[init系统/实现总结.md](init系统/实现总结.md)** - 实现技术细节
+- **[init系统/服务管理.md](init系统/服务管理.md)** - System V init、runlevel、服务监管
+- **[init系统/配置指南.md](init系统/配置指南.md)** - /etc/inittab 配置语法和示例
+
+### 💻 Shell 与用户空间
+
+- **[shell与用户空间/交互式Shell.md](shell与用户空间/交互式Shell.md)** - Shell 功能详解
+- **[shell与用户空间/命令参考.md](shell与用户空间/命令参考.md)** - 19 个内置命令完整参考
+- **[shell与用户空间/行编辑.md](shell与用户空间/行编辑.md)** - Tab 补全、历史、快捷键
+- **[../en/NRLIB_STD_USAGE_GUIDE.md](../en/NRLIB_STD_USAGE_GUIDE.md)** - 在用户空间使用 std（英文）
+
+### 🔧 内核开发与增强
+
+- **[../en/DYNAMIC_LINKING.md](../en/DYNAMIC_LINKING.md)** - ELF 加载、PT_INTERP、动态链接（英文）
+- **[../en/ROOTFS-BOOT-IMPLEMENTATION.md](../en/ROOTFS-BOOT-IMPLEMENTATION.md)** - 根文件系统启动（英文）
+- **[../en/CR3-IMPLEMENTATION.md](../en/CR3-IMPLEMENTATION.md)** - 虚拟内存和分页管理（英文）
+- **[../en/CONFIG_SYSTEM_SUMMARY.md](../en/CONFIG_SYSTEM_SUMMARY.md)** - 启动配置系统（英文）
+
+### 📡 网络与通信
+
+- **[../en/UDP_NETWORK_STACK.md](../en/UDP_NETWORK_STACK.md)** - 网络栈架构（英文）
+- **[../en/UDP-SYSCALL-SUPPORT.md](../en/UDP-SYSCALL-SUPPORT.md)** - UDP 套接字系统调用（英文）
+- **[../en/DNS-IMPLEMENTATION-SUMMARY.md](../en/DNS-IMPLEMENTATION-SUMMARY.md)** - DNS 实现概览（英文）
+- **[../en/DNS-SUPPORT-ENHANCEMENTS.md](../en/DNS-SUPPORT-ENHANCEMENTS.md)** - DNS 解析器和 nslookup（英文）
+
+### 📊 标准 I/O 与用户库
+
+- **[../en/STDIO_ENHANCEMENTS.md](../en/STDIO_ENHANCEMENTS.md)** - 标准 I/O 实现（英文）
+- **[../en/RUST_STDOUT_HANG_DIAGNOSIS.md](../en/RUST_STDOUT_HANG_DIAGNOSIS.md)** - printf/println 死锁诊断（英文）
+- **[../en/stdio-println-deadlock-fix.md](../en/stdio-println-deadlock-fix.md)** - 死锁修复方案（英文）
+
+### 🐛 调试与故障排除
+
+- **[../en/DEBUG-BUILD.md](../en/DEBUG-BUILD.md)** - 调试构建指南（英文）
+- **[故障排除/常见问题.md](故障排除/常见问题.md)** - 常见问题 FAQ
+- **[故障排除/构建错误.md](故障排除/构建错误.md)** - 编译失败的解决方案
+- **[故障排除/启动问题.md](故障排除/启动问题.md)** - 内核启动故障排查
+- **[../en/FORK_RIP_FIX.md](../en/FORK_RIP_FIX.md)** - Fork 指令指针问题（英文）
+- **[../en/FORK_WAIT_ISSUES.md](../en/FORK_WAIT_ISSUES.md)** - Fork/wait 问题（英文）
+- **[../en/EXTERNAL-COMMAND-EXECUTION.md](../en/EXTERNAL-COMMAND-EXECUTION.md)** - Shell 命令执行（英文）
+- **[../en/EXECVE-GP-FAULT-BUG.md](../en/EXECVE-GP-FAULT-BUG.md)** - execve 常规保护故障（英文）
+
+### 📁 文件系统
+
+- **[../en/EXT2-WRITE-SUPPORT.md](../en/EXT2-WRITE-SUPPORT.md)** - ext2 文件系统写支持（英文）
+- **[../en/EXT2-WRITE-IMPLEMENTATION.md](../en/EXT2-WRITE-IMPLEMENTATION.md)** - 实现细节（英文）
+- **[../en/README-EXT2-WRITE.md](../en/README-EXT2-WRITE.md)** - ext2 快速参考（英文）
+
+### 🧪 测试与验证
+
+- **[../en/bugfixes/testing-guide.md](../en/bugfixes/testing-guide.md)** - 测试程序和流程（英文）
+- **[../en/bugfixes/release-build-buffer-error.md](../en/bugfixes/release-build-buffer-error.md)** - 发布构建错误（英文）
+
+---
+
+## 👥 按角色推荐阅读
+
+### 👨‍💻 内核开发者
+
+**推荐阅读顺序**:
+1. [../en/QUICK-REFERENCE.md](../en/QUICK-REFERENCE.md) - 快速参考（5 分钟）
+2. [架构设计.md](架构设计.md) 或 [../en/ARCHITECTURE.md](../en/ARCHITECTURE.md) - 架构深度分析（30 分钟）
+3. [../en/SYSCALL-REFERENCE.md](../en/SYSCALL-REFERENCE.md) - API 参考（20 分钟）
+4. [../en/kernel-logging-system.md](../en/kernel-logging-system.md) - 日志系统（10 分钟）
+5. [../en/ADVANCED-SCHEDULER.md](../en/ADVANCED-SCHEDULER.md) - 进程调度（20 分钟）
+
+**问题排查**:
+- 启动失败？→ [../en/ROOTFS-BOOT-IMPLEMENTATION.md](../en/ROOTFS-BOOT-IMPLEMENTATION.md)
+- 系统调用失败？→ [../en/SYSCALL-REFERENCE.md](../en/SYSCALL-REFERENCE.md)
+- 内存问题？→ [../en/CR3-IMPLEMENTATION.md](../en/CR3-IMPLEMENTATION.md)
+- Fork 问题？→ [../en/FORK_RIP_FIX.md](../en/FORK_RIP_FIX.md)
+
+### 💻 用户空间开发者
+
+**推荐阅读顺序**:
+1. [快速开始.md](快速开始.md) - 快速开始（10 分钟）
+2. [../en/SYSCALL-REFERENCE.md](../en/SYSCALL-REFERENCE.md) - 可用系统调用（20 分钟）
+3. [../en/DYNAMIC_LINKING.md](../en/DYNAMIC_LINKING.md) - 程序加载（15 分钟）
+4. [../en/NRLIB_STD_USAGE_GUIDE.md](../en/NRLIB_STD_USAGE_GUIDE.md) - 在用户空间使用 std（15 分钟）
+5. [../en/BUILD-SYSTEM.md](../en/BUILD-SYSTEM.md) - 构建你的程序（10 分钟）
+
+**快速答案**:
+- 如何调用系统调用？→ [../en/SYSCALL-REFERENCE.md](../en/SYSCALL-REFERENCE.md)
+- 程序无法加载？→ [../en/DYNAMIC_LINKING.md](../en/DYNAMIC_LINKING.md)
+- I/O 挂起？→ [../en/RUST_STDOUT_HANG_DIAGNOSIS.md](../en/RUST_STDOUT_HANG_DIAGNOSIS.md)
+
+### 🧪 系统测试员
+
+**推荐阅读顺序**:
+1. [../en/QUICK-REFERENCE.md](../en/QUICK-REFERENCE.md) - 从这里开始（5 分钟）
+2. [../en/BUILD-SYSTEM.md](../en/BUILD-SYSTEM.md) - 构建系统（10 分钟）
+3. [../en/bugfixes/testing-guide.md](../en/bugfixes/testing-guide.md) - 测试程序（15 分钟）
+4. [../en/DEBUG-BUILD.md](../en/DEBUG-BUILD.md) - 调试模式（10 分钟）
+5. 根据需要查看具体问题文档
+
+---
+
+## 🗂️ 按问题类型查找
+
+| 问题 | 解决方案 |
+|------|--------|
+| "如何构建？" | [../en/BUILD-SYSTEM.md](../en/BUILD-SYSTEM.md) |
+| "构建失败" | [../en/BUILD-SYSTEM.md](../en/BUILD-SYSTEM.md) → 相关故障排查 |
+| "系统无法启动" | [../en/ROOTFS-BOOT-IMPLEMENTATION.md](../en/ROOTFS-BOOT-IMPLEMENTATION.md) |
+| "系统挂起" | [../en/DEBUG-BUILD.md](../en/DEBUG-BUILD.md) |
+| "系统调用不工作" | [../en/SYSCALL-REFERENCE.md](../en/SYSCALL-REFERENCE.md) |
+| "Shell 命令挂起" | [../en/EXTERNAL-COMMAND-EXECUTION.md](../en/EXTERNAL-COMMAND-EXECUTION.md) |
+| "printf/println 挂起" | [../en/RUST_STDOUT_HANG_DIAGNOSIS.md](../en/RUST_STDOUT_HANG_DIAGNOSIS.md) |
+| "子进程问题" | [../en/FORK_RIP_FIX.md](../en/FORK_RIP_FIX.md) + [../en/FORK_WAIT_ISSUES.md](../en/FORK_WAIT_ISSUES.md) |
+| "文件操作失败" | [../en/EXT2-WRITE-SUPPORT.md](../en/EXT2-WRITE-SUPPORT.md) |
+| "网络不工作" | [../en/UDP_NETWORK_STACK.md](../en/UDP_NETWORK_STACK.md) |
+
+---
+
+## 🔗 快速命令
+
+```bash
+./scripts/build-all.sh        # 完整系统构建
+./scripts/run-qemu.sh         # 在 QEMU 运行
+cargo build --release         # 仅内核
+./scripts/build-userspace.sh  # 仅用户空间
+./scripts/build-rootfs.sh     # 仅根文件系统
+```
+
+---
+
+## 📋 完整文件列表
+
+### 导航与索引
+- `README.md` - 本文件（导航中心）
+- `../README.md` - 双语导航
+- `../en/README.md` - 英文文档索引
+
+### 核心系统
+- `系统概览.md` - 系统完整功能介绍
+- `架构设计.md` - 架构深入分析
+- `快速开始.md` - 新手快速入门
+
+### Init 系统
+- `init系统/概述.md` - Init 进程架构
+- `init系统/实现总结.md` - 实现细节
+- `init系统/服务管理.md` - 服务和 runlevel
+- `init系统/配置指南.md` - inittab 配置
+
+### Shell 与用户空间
+- `shell与用户空间/交互式Shell.md` - Shell 完整指南
+- `shell与用户空间/命令参考.md` - 19 个命令参考
+- `shell与用户空间/行编辑.md` - 编辑和补全功能
+
+### 故障排除
+- `故障排除/常见问题.md` - 常见问题 FAQ
+- `故障排除/构建错误.md` - 编译错误解决
+- `故障排除/启动问题.md` - 启动故障排查
+
+---
+
+## ✏️ 如何贡献
+
+### 发现错误？
+1. 打开 [Issue](https://github.com/nexa-sys/nexa-os/issues)
+2. 或提交 Pull Request 修正
+
+### 想添加文档？
+1. 在 `docs/zh/` 创建文件
+2. 遵循格式标准（见下）
+3. 更新本 README 中的条目
+4. 确保所有相对链接正确
+
+### 格式标准
+- 使用 **H1** (`#`) 作为标题
+- 使用 **H2** (`##`)、**H3** (`###`) 作为章节
+- 代码块使用语言标签：` ```rust`、` ```bash`
+- 内部链接使用相对路径
+- 长文档（>500 行）包含目录
+
+---
+
+## 🔗 相关资源
+
+- **[英文文档](../en/README.md)** - 完整英文文档索引
+- **[主文档](../README.md)** - 双语导航中心
+- **[项目 README](../../README.md)** - 项目主页
+- **[构建脚本](../../scripts/)** - 自动化脚本
+- **[源代码](../../src/)** - 内核源码
+
+---
+
+**文档状态**: ✅ 完整  
+**最后更新**: 2025-11-25  
 **维护者**: NexaOS 开发社区
 
-祝你学习和开发愉快！ 🚀
+🚀 祝你开发愉快！
