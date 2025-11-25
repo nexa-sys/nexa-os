@@ -1,0 +1,89 @@
+//! IPI (Inter-Processor Interrupt) Handlers for SMP Support
+//!
+//! This module contains handlers for IPIs used in multi-core systems.
+//! These include reschedule requests, TLB flush notifications, function
+//! calls, and halt requests between CPU cores.
+
+use x86_64::structures::idt::InterruptStackFrame;
+
+/// IPI Vector constants
+pub const IPI_RESCHEDULE: u8 = 0xF0;
+pub const IPI_TLB_FLUSH: u8 = 0xF1;
+pub const IPI_CALL_FUNCTION: u8 = 0xF2;
+pub const IPI_HALT: u8 = 0xF3;
+
+/// IPI handler for rescheduling requests
+/// Triggered when another CPU wants this CPU to reschedule its processes
+pub extern "x86-interrupt" fn ipi_reschedule_handler(_stack_frame: InterruptStackFrame) {
+    // Mark reschedule as pending for this CPU
+    if let Some(cpu_data) = crate::smp::current_cpu_data() {
+        cpu_data
+            .reschedule_pending
+            .store(true, core::sync::atomic::Ordering::Release);
+    }
+
+    // Send EOI to LAPIC
+    crate::lapic::send_eoi();
+
+    // Trigger scheduler (will check pending flag)
+    // In production, this would be deferred to a safe point
+    crate::ktrace!("IPI: Reschedule request received");
+}
+
+/// IPI handler for TLB flush requests
+/// Ensures all CPUs invalidate their TLB when page tables are modified
+pub extern "x86-interrupt" fn ipi_tlb_flush_handler(_stack_frame: InterruptStackFrame) {
+    use x86_64::instructions::tlb;
+
+    // Mark TLB flush as pending
+    if let Some(cpu_data) = crate::smp::current_cpu_data() {
+        cpu_data
+            .tlb_flush_pending
+            .store(true, core::sync::atomic::Ordering::Release);
+    }
+
+    // Flush entire TLB immediately
+    unsafe {
+        tlb::flush_all();
+    }
+
+    // Send EOI to LAPIC
+    crate::lapic::send_eoi();
+
+    crate::ktrace!("IPI: TLB flush completed");
+}
+
+/// IPI handler for function call requests
+/// Allows one CPU to execute a function on another CPU
+pub extern "x86-interrupt" fn ipi_call_function_handler(_stack_frame: InterruptStackFrame) {
+    // In production, this would execute a function pointer stored in per-CPU data
+    // For now, just acknowledge the IPI
+
+    if let Some(cpu_data) = crate::smp::current_cpu_data() {
+        cpu_data
+            .interrupts_handled
+            .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    }
+
+    // Send EOI to LAPIC
+    crate::lapic::send_eoi();
+
+    crate::ktrace!("IPI: Function call request received");
+}
+
+/// IPI handler for halt requests
+/// Allows graceful shutdown of individual CPUs
+pub extern "x86-interrupt" fn ipi_halt_handler(_stack_frame: InterruptStackFrame) {
+    use x86_64::instructions::hlt;
+
+    crate::kinfo!("IPI: Halt request received, stopping CPU");
+
+    // Send EOI to LAPIC before halting
+    crate::lapic::send_eoi();
+
+    // Disable interrupts and halt
+    x86_64::instructions::interrupts::disable();
+    loop {
+        hlt();
+    }
+}
