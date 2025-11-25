@@ -119,7 +119,11 @@ pub extern "C" fn syscall_dispatch(
         SYS_SCHED_YIELD => sched_yield(),
         SYS_CLOCK_GETTIME => clock_gettime(arg1 as i32, arg2 as *mut TimeSpec),
         SYS_NANOSLEEP => nanosleep(arg1 as *const TimeSpec, arg2 as *mut TimeSpec),
-        SYS_LIST_FILES => list_files(arg1 as *mut u8, arg2 as usize, arg3 as *const ListDirRequest),
+        SYS_LIST_FILES => list_files(
+            arg1 as *mut u8,
+            arg2 as usize,
+            arg3 as *const ListDirRequest,
+        ),
         SYS_GETERRNO => get_errno(),
         SYS_IPC_CREATE => ipc_create(),
         SYS_IPC_SEND => ipc_send(arg1 as *const IpcTransferRequest),
@@ -198,7 +202,13 @@ pub extern "C" fn syscall_dispatch(
                 );
                 (r10_val, r8_val)
             };
-            setsockopt(arg1, arg2 as i32, arg3 as i32, arg4 as *const u8, arg5 as u32)
+            setsockopt(
+                arg1,
+                arg2 as i32,
+                arg3 as i32,
+                arg4 as *const u8,
+                arg5 as u32,
+            )
         }
         SYS_REBOOT => reboot(arg1 as i32),
         SYS_SHUTDOWN => shutdown(),
@@ -299,7 +309,7 @@ global_asm!(
     "jne .Lnormal_return", // Not exec, normal return
     // Exec return: call get_exec_context to get entry/stack
     ".Lexec_return:",
-    "sub rsp, 32", // Keep 16-byte alignment: 32 is divisible by 16
+    "sub rsp, 32",         // Keep 16-byte alignment: 32 is divisible by 16
     "lea rdi, [rsp + 24]", // entry_out = rsp+24 (first parameter)
     "lea rsi, [rsp + 16]", // stack_out = rsp+16 (second parameter)
     "lea rdx, [rsp + 8]",  // user_data_sel_out = rsp+8 (third parameter)

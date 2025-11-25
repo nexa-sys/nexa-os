@@ -520,7 +520,11 @@ pub fn execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8)
         sel | 3
     };
 
-    set_exec_context(new_process.entry_point, new_process.stack_top, user_data_sel);
+    set_exec_context(
+        new_process.entry_point,
+        new_process.stack_top,
+        user_data_sel,
+    );
 
     // Return magic value to signal exec
     0x4558454300000000

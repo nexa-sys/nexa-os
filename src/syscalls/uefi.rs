@@ -8,8 +8,7 @@ use super::types::*;
 use crate::paging;
 use crate::posix;
 use crate::uefi_compat::{
-    self, BlockDescriptor, CompatCounts, HidInputDescriptor, NetworkDescriptor,
-    UsbHostDescriptor,
+    self, BlockDescriptor, CompatCounts, HidInputDescriptor, NetworkDescriptor, UsbHostDescriptor,
 };
 use core::mem;
 use core::ptr;

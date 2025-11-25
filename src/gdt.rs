@@ -29,14 +29,54 @@ struct AlignedTss {
 }
 
 static mut PER_CPU_TSS: [AlignedTss; MAX_CPUS] = [
-    AlignedTss { tss: TaskStateSegment::new() }, AlignedTss { tss: TaskStateSegment::new() },
-    AlignedTss { tss: TaskStateSegment::new() }, AlignedTss { tss: TaskStateSegment::new() },
-    AlignedTss { tss: TaskStateSegment::new() }, AlignedTss { tss: TaskStateSegment::new() },
-    AlignedTss { tss: TaskStateSegment::new() }, AlignedTss { tss: TaskStateSegment::new() },
-    AlignedTss { tss: TaskStateSegment::new() }, AlignedTss { tss: TaskStateSegment::new() },
-    AlignedTss { tss: TaskStateSegment::new() }, AlignedTss { tss: TaskStateSegment::new() },
-    AlignedTss { tss: TaskStateSegment::new() }, AlignedTss { tss: TaskStateSegment::new() },
-    AlignedTss { tss: TaskStateSegment::new() }, AlignedTss { tss: TaskStateSegment::new() },
+    AlignedTss {
+        tss: TaskStateSegment::new(),
+    },
+    AlignedTss {
+        tss: TaskStateSegment::new(),
+    },
+    AlignedTss {
+        tss: TaskStateSegment::new(),
+    },
+    AlignedTss {
+        tss: TaskStateSegment::new(),
+    },
+    AlignedTss {
+        tss: TaskStateSegment::new(),
+    },
+    AlignedTss {
+        tss: TaskStateSegment::new(),
+    },
+    AlignedTss {
+        tss: TaskStateSegment::new(),
+    },
+    AlignedTss {
+        tss: TaskStateSegment::new(),
+    },
+    AlignedTss {
+        tss: TaskStateSegment::new(),
+    },
+    AlignedTss {
+        tss: TaskStateSegment::new(),
+    },
+    AlignedTss {
+        tss: TaskStateSegment::new(),
+    },
+    AlignedTss {
+        tss: TaskStateSegment::new(),
+    },
+    AlignedTss {
+        tss: TaskStateSegment::new(),
+    },
+    AlignedTss {
+        tss: TaskStateSegment::new(),
+    },
+    AlignedTss {
+        tss: TaskStateSegment::new(),
+    },
+    AlignedTss {
+        tss: TaskStateSegment::new(),
+    },
 ];
 
 /// Per-CPU Global Descriptor Table (stored as raw bytes since GDT is not Copy)
@@ -47,10 +87,22 @@ static mut PER_CPU_GDT: [MaybeUninit<GlobalDescriptorTable>; MAX_CPUS] = unsafe 
 
 /// Per-CPU GDT initialized flags
 static PER_CPU_GDT_READY: [AtomicBool; MAX_CPUS] = [
-    AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false),
-    AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false),
-    AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false),
-    AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
 ];
 
 /// Segment selectors (shared across all CPUs - same values, different TSS)
@@ -75,9 +127,15 @@ struct PerCpuStacks {
 }
 
 const EMPTY_PERCPU_STACKS: PerCpuStacks = PerCpuStacks {
-    kernel_stack: AlignedStack { bytes: [0; STACK_SIZE] },
-    double_fault_stack: AlignedStack { bytes: [0; STACK_SIZE] },
-    error_code_stack: AlignedStack { bytes: [0; STACK_SIZE] },
+    kernel_stack: AlignedStack {
+        bytes: [0; STACK_SIZE],
+    },
+    double_fault_stack: AlignedStack {
+        bytes: [0; STACK_SIZE],
+    },
+    error_code_stack: AlignedStack {
+        bytes: [0; STACK_SIZE],
+    },
 };
 
 static mut PER_CPU_STACKS: [PerCpuStacks; MAX_CPUS] = [EMPTY_PERCPU_STACKS; MAX_CPUS];
@@ -139,9 +197,9 @@ pub fn init() {
 
 /// Initialize GDT for a specific CPU
 fn init_cpu(cpu_id: usize) {
+    use x86_64::instructions::port::Port;
     use x86_64::instructions::segmentation::{Segment, CS, DS};
     use x86_64::instructions::tables::load_tss;
-    use x86_64::instructions::port::Port;
 
     if cpu_id >= MAX_CPUS {
         crate::kpanic!("CPU ID {} exceeds MAX_CPUS {}", cpu_id, MAX_CPUS);
@@ -153,18 +211,24 @@ fn init_cpu(cpu_id: usize) {
             let current_rsp: u64;
             core::arch::asm!("mov {}, rsp", out(reg) current_rsp);
             let mut s = Port::<u8>::new(0x3F8);
-            s.write(b'a');  // Entry
-            // Output RSP as hex (low 3 bytes should be enough to see offset)
+            s.write(b'a'); // Entry
+                           // Output RSP as hex (low 3 bytes should be enough to see offset)
             for i in (0..6).rev() {
                 let nibble = ((current_rsp >> (i * 4)) & 0xF) as u8;
-                s.write(if nibble < 10 { b'0' + nibble } else { b'A' + nibble - 10 });
+                s.write(if nibble < 10 {
+                    b'0' + nibble
+                } else {
+                    b'A' + nibble - 10
+                });
             }
             s.write(b'/');
         }
-        
-        let df_base = ptr::addr_of!(PER_CPU_STACKS[cpu_id].double_fault_stack.bytes).cast::<u8>() as u64;
-        let df_top_aligned = aligned_ist_stack_top(ptr::addr_of!(PER_CPU_STACKS[cpu_id].double_fault_stack));
-        
+
+        let df_base =
+            ptr::addr_of!(PER_CPU_STACKS[cpu_id].double_fault_stack.bytes).cast::<u8>() as u64;
+        let df_top_aligned =
+            aligned_ist_stack_top(ptr::addr_of!(PER_CPU_STACKS[cpu_id].double_fault_stack));
+
         if cpu_id == 0 {
             crate::kinfo!(
                 "Double fault stack base={:#x}, aligned_top={:#x}",
@@ -176,21 +240,21 @@ fn init_cpu(cpu_id: usize) {
         // Setup TSS for this CPU
         if cpu_id > 0 {
             let mut s = Port::<u8>::new(0x3F8);
-            s.write(b'b');  // Before TSS setup
+            s.write(b'b'); // Before TSS setup
         }
-        
+
         let tss = &mut PER_CPU_TSS[cpu_id].tss;
-        
+
         if cpu_id > 0 {
             let mut s = Port::<u8>::new(0x3F8);
-            s.write(b'c');  // Got TSS reference
+            s.write(b'c'); // Got TSS reference
         }
-        
+
         tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = df_top_aligned;
-        
+
         if cpu_id > 0 {
             let mut s = Port::<u8>::new(0x3F8);
-            s.write(b'd');  // After IST[DOUBLE_FAULT]
+            s.write(b'd'); // After IST[DOUBLE_FAULT]
         }
 
         if cpu_id == 0 {
@@ -204,26 +268,27 @@ fn init_cpu(cpu_id: usize) {
         // Debug: before error_code stack access
         if cpu_id > 0 {
             let mut s = Port::<u8>::new(0x3F8);
-            s.write(b'D');  // Before error_code_stack
+            s.write(b'D'); // Before error_code_stack
         }
 
         // Provide a dedicated IST for any exception that pushes an error code
-        let ec_top_aligned = aligned_error_code_stack_top(ptr::addr_of!(PER_CPU_STACKS[cpu_id].error_code_stack));
-        
+        let ec_top_aligned =
+            aligned_error_code_stack_top(ptr::addr_of!(PER_CPU_STACKS[cpu_id].error_code_stack));
+
         // Debug: after error_code stack calculation
         if cpu_id > 0 {
             let mut s = Port::<u8>::new(0x3F8);
-            s.write(b'E');  // After error_code stack calculation
+            s.write(b'E'); // After error_code stack calculation
         }
-        
+
         tss.interrupt_stack_table[ERROR_CODE_IST_INDEX as usize] = ec_top_aligned;
-        
+
         // Debug: after writing IST entry
         if cpu_id > 0 {
             let mut s = Port::<u8>::new(0x3F8);
-            s.write(b'F');  // After writing IST[ERROR_CODE]
+            s.write(b'F'); // After writing IST[ERROR_CODE]
         }
-        
+
         if cpu_id == 0 {
             crate::kinfo!(
                 "CPU {}: Error-code IST pointer set to {:#x}",
@@ -235,18 +300,19 @@ fn init_cpu(cpu_id: usize) {
         // Debug: before privilege stack setup
         if cpu_id > 0 {
             let mut s = Port::<u8>::new(0x3F8);
-            s.write(b'P');  // Before privilege_stack_table
+            s.write(b'P'); // Before privilege_stack_table
         }
-        
+
         // Setup privilege stack for syscall (RSP0 for Ring 0)
-        tss.privilege_stack_table[0] = aligned_privilege_stack_top(ptr::addr_of!(PER_CPU_STACKS[cpu_id].kernel_stack));
-        
-        // Debug: after privilege stack setup  
+        tss.privilege_stack_table[0] =
+            aligned_privilege_stack_top(ptr::addr_of!(PER_CPU_STACKS[cpu_id].kernel_stack));
+
+        // Debug: after privilege stack setup
         if cpu_id > 0 {
             let mut s = Port::<u8>::new(0x3F8);
-            s.write(b'Q');  // After privilege_stack_table
+            s.write(b'Q'); // After privilege_stack_table
         }
-        
+
         if cpu_id == 0 {
             crate::kinfo!(
                 "CPU {}: Kernel privilege stack (RSP0) set to {:#x}",
@@ -258,21 +324,25 @@ fn init_cpu(cpu_id: usize) {
         // Debug: before GDT creation
         if cpu_id > 0 {
             let mut s = Port::<u8>::new(0x3F8);
-            s.write(b'R');  // Before GDT creation
-            
+            s.write(b'R'); // Before GDT creation
+
             // Force 16-byte RSP alignment before calling GlobalDescriptorTable::new()
             // SSE instructions like movaps require 16-byte alignment
             let rsp: u64;
             core::arch::asm!("mov {}, rsp", out(reg) rsp);
             let align_nibble = (rsp & 0xF) as u8;
-            s.write(if align_nibble < 10 { b'0' + align_nibble } else { b'A' + align_nibble - 10 });
+            s.write(if align_nibble < 10 {
+                b'0' + align_nibble
+            } else {
+                b'A' + align_nibble - 10
+            });
         }
-        
+
         // Ensure 16-byte stack alignment before GDT creation
         // This is critical for AP cores where SSE instructions may be generated
         unsafe {
             core::arch::asm!(
-                "and rsp, ~0xF",  // Align RSP to 16 bytes
+                "and rsp, ~0xF", // Align RSP to 16 bytes
                 options(nomem, nostack)
             );
         }
@@ -284,54 +354,54 @@ fn init_cpu(cpu_id: usize) {
         // Debug: after GDT::new()
         if cpu_id > 0 {
             let mut s = Port::<u8>::new(0x3F8);
-            s.write(b'S');  // After GDT::new
+            s.write(b'S'); // After GDT::new
         }
 
         // Entry 0: Null descriptor (required)
         // Entry 1: Kernel code segment
         let kernel_code = gdt.append(Descriptor::kernel_code_segment());
-        
+
         // Debug: after kernel_code
         if cpu_id > 0 {
             let mut s = Port::<u8>::new(0x3F8);
-            s.write(b'T');  // After kernel_code
+            s.write(b'T'); // After kernel_code
         }
-        
+
         // Entry 2: Kernel data segment
         let kernel_data = gdt.append(Descriptor::kernel_data_segment());
-        
+
         // Debug: after kernel_data
         if cpu_id > 0 {
             let mut s = Port::<u8>::new(0x3F8);
-            s.write(b'U');  // After kernel_data
+            s.write(b'U'); // After kernel_data
         }
-        
+
         // Entry 3: User data segment (DPL=3) - MUST come before user code for SYSRET!
         let user_data_sel = gdt.append(Descriptor::user_data_segment());
         // Entry 4: User code segment (DPL=3) - MUST come after user data for SYSRET!
         let user_code_sel = gdt.append(Descriptor::user_code_segment());
-        
+
         // Debug: before TSS segment
         if cpu_id > 0 {
             let mut s = Port::<u8>::new(0x3F8);
-            s.write(b'V');  // Before TSS segment
+            s.write(b'V'); // Before TSS segment
         }
-        
+
         // Entry 5: TSS (per-CPU)
         let tss_ptr = &raw const PER_CPU_TSS[cpu_id].tss;
-        
+
         // Debug: got tss_ptr
         if cpu_id > 0 {
             let mut s = Port::<u8>::new(0x3F8);
-            s.write(b'W');  // Got tss_ptr
+            s.write(b'W'); // Got tss_ptr
         }
-        
+
         let tss_sel = gdt.append(Descriptor::tss_segment(&*tss_ptr));
-        
+
         // Debug: after TSS segment
         if cpu_id > 0 {
             let mut s = Port::<u8>::new(0x3F8);
-            s.write(b'X');  // After TSS segment
+            s.write(b'X'); // After TSS segment
         }
 
         // On BSP (CPU 0), store selectors for all CPUs to use
@@ -358,54 +428,54 @@ fn init_cpu(cpu_id: usize) {
         // Store GDT for this CPU
         PER_CPU_GDT[cpu_id].write(gdt);
         PER_CPU_GDT_READY[cpu_id].store(true, Ordering::SeqCst);
-        
+
         if cpu_id > 0 {
             let mut s = Port::<u8>::new(0x3F8);
-            s.write(b'e');  // After GDT write
+            s.write(b'e'); // After GDT write
         }
 
         // Load GDT
         let gdt_ref = PER_CPU_GDT[cpu_id].assume_init_ref();
-        
+
         if cpu_id == 0 {
             for (idx, entry) in gdt_ref.entries().iter().enumerate() {
                 crate::kinfo!("CPU {}: GDT[{}] = {:#018x}", cpu_id, idx, entry.raw());
             }
         }
-        
+
         if cpu_id > 0 {
             let mut s = Port::<u8>::new(0x3F8);
-            s.write(b'f');  // Before GDT load
+            s.write(b'f'); // Before GDT load
         }
-        
+
         gdt_ref.load();
-        
+
         if cpu_id > 0 {
             let mut s = Port::<u8>::new(0x3F8);
-            s.write(b'g');  // After GDT load
+            s.write(b'g'); // After GDT load
         }
 
         // Load segment selectors
         if let Some(selectors) = selectors_ref() {
             if cpu_id > 0 {
                 let mut s = Port::<u8>::new(0x3F8);
-                s.write(b'h');  // Before CS::set_reg
+                s.write(b'h'); // Before CS::set_reg
             }
             CS::set_reg(selectors.code_selector);
             if cpu_id > 0 {
                 let mut s = Port::<u8>::new(0x3F8);
-                s.write(b'i');  // After CS::set_reg
+                s.write(b'i'); // After CS::set_reg
             }
             DS::set_reg(selectors.data_selector);
             if cpu_id > 0 {
                 let mut s = Port::<u8>::new(0x3F8);
-                s.write(b'j');  // After DS::set_reg
+                s.write(b'j'); // After DS::set_reg
             }
             // Each CPU needs its own TSS loaded
             load_tss(selectors.tss_selector);
             if cpu_id > 0 {
                 let mut s = Port::<u8>::new(0x3F8);
-                s.write(b'k');  // After load_tss
+                s.write(b'k'); // After load_tss
             }
         }
     }
@@ -420,46 +490,66 @@ fn init_cpu(cpu_id: usize) {
 /// cpu_id must be obtained from smp module
 pub fn init_ap(cpu_id: usize) {
     use x86_64::instructions::port::Port;
-    
+
     unsafe {
         // Debug: Entry to init_ap - check RSP alignment
         let mut s = Port::<u8>::new(0x3F8);
-        s.write(b'I');  // init_ap entry
-        
+        s.write(b'I'); // init_ap entry
+
         // Check RSP alignment
         let rsp: u64;
         core::arch::asm!("mov {}, rsp", out(reg) rsp);
         // Output RSP low byte to check alignment (should end in 8 for correct ABI)
         let align_byte = (rsp & 0xF) as u8;
-        s.write(if align_byte < 10 { b'0' + align_byte } else { b'A' + align_byte - 10 });
-        
+        s.write(if align_byte < 10 {
+            b'0' + align_byte
+        } else {
+            b'A' + align_byte - 10
+        });
+
         // Print cpu_id as hex
         let nibble = ((cpu_id >> 4) & 0xF) as u8;
-        s.write(if nibble < 10 { b'0' + nibble } else { b'A' + nibble - 10 });
+        s.write(if nibble < 10 {
+            b'0' + nibble
+        } else {
+            b'A' + nibble - 10
+        });
         let nibble = (cpu_id & 0xF) as u8;
-        s.write(if nibble < 10 { b'0' + nibble } else { b'A' + nibble - 10 });
+        s.write(if nibble < 10 {
+            b'0' + nibble
+        } else {
+            b'A' + nibble - 10
+        });
     }
-    
+
     if cpu_id == 0 {
         unsafe {
             let mut s = Port::<u8>::new(0x3F8);
-            s.write(b'Z');  // BSP error
+            s.write(b'Z'); // BSP error
         }
-        loop { unsafe { core::arch::asm!("hlt"); } }
+        loop {
+            unsafe {
+                core::arch::asm!("hlt");
+            }
+        }
     }
     if cpu_id >= MAX_CPUS {
         unsafe {
             let mut s = Port::<u8>::new(0x3F8);
-            s.write(b'M');  // Max exceeded
+            s.write(b'M'); // Max exceeded
         }
-        loop { unsafe { core::arch::asm!("hlt"); } }
+        loop {
+            unsafe {
+                core::arch::asm!("hlt");
+            }
+        }
     }
-    
+
     unsafe {
         let mut s = Port::<u8>::new(0x3F8);
-        s.write(b'G');  // About to call init_cpu
+        s.write(b'G'); // About to call init_cpu
     }
-    
+
     // Initialize this CPU's GDT and TSS
     init_cpu(cpu_id);
 }
@@ -502,5 +592,7 @@ pub unsafe fn get_privilege_stack(cpu_id: usize, index: usize) -> u64 {
 }
 
 pub fn get_kernel_stack_top(cpu_id: usize) -> u64 {
-    unsafe { aligned_privilege_stack_top(ptr::addr_of!(PER_CPU_STACKS[cpu_id].kernel_stack)).as_u64() }
+    unsafe {
+        aligned_privilege_stack_top(ptr::addr_of!(PER_CPU_STACKS[cpu_id].kernel_stack)).as_u64()
+    }
 }

@@ -2,8 +2,8 @@
 //!
 //! Implements: sigaction, sigprocmask
 
-use crate::posix;
 use crate::kinfo;
+use crate::posix;
 
 /// POSIX sigaction() system call - examine and change signal action
 pub fn sigaction(signum: u64, _act: *const u8, _oldact: *mut u8) -> u64 {

@@ -269,9 +269,7 @@ pub fn bind(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
                     return 0;
                 }
                 Err(_) => {
-                    kwarn!(
-                        "[SYS_BIND] Failed to allocate UDP socket (port in use or no slots)"
-                    );
+                    kwarn!("[SYS_BIND] Failed to allocate UDP socket (port in use or no slots)");
                     posix::set_errno(posix::errno::EADDRINUSE);
                     return u64::MAX;
                 }
@@ -431,9 +429,7 @@ pub fn sendto(
             );
             if !sock_handle.broadcast_enabled {
                 ktrace!("[SYS_SENDTO] ERROR: Broadcast not permitted - SO_BROADCAST not set");
-                kwarn!(
-                    "[SYS_SENDTO] Broadcast not permitted: SO_BROADCAST not set on socket"
-                );
+                kwarn!("[SYS_SENDTO] Broadcast not permitted: SO_BROADCAST not set on socket");
                 posix::set_errno(posix::errno::EACCES);
                 return u64::MAX;
             }
@@ -792,9 +788,7 @@ pub fn connect(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
             match result {
                 Some(Ok(())) => {
                     ktrace!("[SYS_CONNECT] TCP connection initiated, waiting for establishment...");
-                    kinfo!(
-                        "[SYS_CONNECT] TCP connection initiated, waiting for establishment..."
-                    );
+                    kinfo!("[SYS_CONNECT] TCP connection initiated, waiting for establishment...");
 
                     let start_time_us = crate::logger::boot_time_us();
                     let timeout_us = 30_000_000u64;
@@ -853,13 +847,7 @@ pub fn connect(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
 }
 
 /// SYS_SETSOCKOPT - Set socket options
-pub fn setsockopt(
-    sockfd: u64,
-    level: i32,
-    optname: i32,
-    optval: *const u8,
-    optlen: u32,
-) -> u64 {
+pub fn setsockopt(sockfd: u64, level: i32, optname: i32, optval: *const u8, optlen: u32) -> u64 {
     ktrace!(
         "[SYS_SETSOCKOPT] sockfd={} level={} optname={} optlen={}",
         sockfd,

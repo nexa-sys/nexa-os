@@ -3,8 +3,8 @@
 //! This module handles the exec context that allows execve to communicate
 //! with the syscall handler assembly code.
 
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use crate::ktrace;
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// Exec context - stores entry/stack/segments for exec syscall
 /// Protected by atomics with release/acquire ordering for safety
@@ -30,7 +30,9 @@ pub fn set_exec_context(entry: u64, stack: u64, user_data_sel: u64) {
     // Store stack second
     EXEC_CONTEXT.stack.store(stack, Ordering::SeqCst);
     // Store user data segment selector for syscall fast path to restore
-    EXEC_CONTEXT.user_data_sel.store(user_data_sel, Ordering::SeqCst);
+    EXEC_CONTEXT
+        .user_data_sel
+        .store(user_data_sel, Ordering::SeqCst);
     // Finally, signal that exec context is ready
     // SeqCst ensures all prior stores are visible before this store
     EXEC_CONTEXT.pending.store(true, Ordering::SeqCst);

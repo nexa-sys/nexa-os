@@ -90,7 +90,7 @@ pub fn init() -> Result<(), &'static str> {
             crate::kinfo!("ACPI: Scanning memory for RSDP (legacy boot)");
             find_rsdp().ok_or("RSDP not found")?
         };
-        
+
         crate::kinfo!("ACPI: RSDP located (revision {})", rsdp.revision);
         let madt = locate_madt(rsdp).ok_or("MADT not found")?;
         parse_madt(madt)?;
@@ -122,23 +122,23 @@ pub fn cpus() -> &'static [CpuDescriptor] {
 
 unsafe fn validate_rsdp(addr: u64) -> Result<&'static RsdpV2, &'static str> {
     let rsdp = &*(addr as *const RsdpV2);
-    
+
     // Verify signature
     if &rsdp.signature != RSDP_SIGNATURE {
         return Err("Invalid RSDP signature");
     }
-    
+
     // Verify checksum
     let length = if rsdp.revision >= 2 && rsdp.length as usize >= mem::size_of::<RsdpV2>() {
         rsdp.length as usize
     } else {
         20
     };
-    
+
     if checksum(rsdp as *const _ as *const u8, length) != 0 {
         return Err("RSDP checksum validation failed");
     }
-    
+
     Ok(rsdp)
 }
 

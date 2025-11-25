@@ -3,8 +3,8 @@
 //! Implements: user_add, user_login, user_info, user_list, user_logout
 
 use super::types::*;
-use crate::posix;
 use crate::kinfo;
+use crate::posix;
 use core::{fmt::Write, ptr, slice, str};
 
 /// User add system call

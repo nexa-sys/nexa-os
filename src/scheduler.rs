@@ -107,8 +107,8 @@ pub struct SchedulerStats {
     pub total_voluntary_switches: u64,
     pub idle_time: u64,
     pub last_idle_start: u64,
-    pub load_balance_count: u64,  // Number of load balancing operations
-    pub migration_count: u64,     // Number of process migrations
+    pub load_balance_count: u64, // Number of load balancing operations
+    pub migration_count: u64,    // Number of process migrations
 }
 
 impl SchedulerStats {
@@ -1527,7 +1527,7 @@ pub fn wake_process(pid: Pid) -> bool {
 /// Set CPU affinity for a process
 pub fn set_cpu_affinity(pid: Pid, affinity_mask: u32) -> Result<(), &'static str> {
     let mut table = PROCESS_TABLE.lock();
-    
+
     for slot in table.iter_mut() {
         if let Some(entry) = slot {
             if entry.process.pid == pid {
@@ -1537,14 +1537,14 @@ pub fn set_cpu_affinity(pid: Pid, affinity_mask: u32) -> Result<(), &'static str
             }
         }
     }
-    
+
     Err("Process not found")
 }
 
 /// Get CPU affinity for a process
 pub fn get_cpu_affinity(pid: Pid) -> Option<u32> {
     let table = PROCESS_TABLE.lock();
-    
+
     for slot in table.iter() {
         if let Some(entry) = slot {
             if entry.process.pid == pid {
@@ -1552,7 +1552,7 @@ pub fn get_cpu_affinity(pid: Pid) -> Option<u32> {
             }
         }
     }
-    
+
     None
 }
 
@@ -1563,13 +1563,13 @@ pub fn balance_load() {
     if cpu_count <= 1 {
         return; // No need to balance on single-CPU systems
     }
-    
+
     // Simple load balancing: distribute ready processes across CPUs
     let mut table = PROCESS_TABLE.lock();
     let mut stats = SCHED_STATS.lock();
-    
+
     let mut ready_processes: alloc::vec::Vec<Pid> = alloc::vec::Vec::new();
-    
+
     for slot in table.iter() {
         if let Some(entry) = slot {
             if entry.process.state == ProcessState::Ready {
@@ -1577,15 +1577,15 @@ pub fn balance_load() {
             }
         }
     }
-    
+
     if ready_processes.is_empty() {
         return;
     }
-    
+
     // Distribute processes round-robin across CPUs
     for (idx, &pid) in ready_processes.iter().enumerate() {
         let target_cpu = (idx % cpu_count) as u8;
-        
+
         for slot in table.iter_mut() {
             if let Some(entry) = slot {
                 if entry.process.pid == pid {
@@ -1601,7 +1601,7 @@ pub fn balance_load() {
             }
         }
     }
-    
+
     stats.load_balance_count += 1;
 }
 
@@ -1609,11 +1609,11 @@ pub fn balance_load() {
 pub fn get_preferred_cpu(pid: Pid) -> u8 {
     let table = PROCESS_TABLE.lock();
     let cpu_count = crate::smp::cpu_count();
-    
+
     if cpu_count <= 1 {
         return 0;
     }
-    
+
     for slot in table.iter() {
         if let Some(entry) = slot {
             if entry.process.pid == pid {
@@ -1622,18 +1622,18 @@ pub fn get_preferred_cpu(pid: Pid) -> u8 {
                 if (entry.cpu_affinity & (1 << last_cpu)) != 0 {
                     return last_cpu;
                 }
-                
+
                 // Find first available CPU in affinity mask
                 for cpu in 0..cpu_count.min(32) {
                     if (entry.cpu_affinity & (1 << cpu)) != 0 {
                         return cpu as u8;
                     }
                 }
-                
+
                 return 0; // Fallback
             }
         }
     }
-    
+
     0
 }
