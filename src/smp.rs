@@ -341,6 +341,14 @@ unsafe fn init_inner() -> Result<(), &'static str> {
         count += 1;
     }
     CPU_TOTAL.store(count, Ordering::SeqCst);
+    core::sync::atomic::fence(Ordering::SeqCst);  // Full memory barrier
+    
+    // Verify the store worked by reading back
+    let read_back = CPU_TOTAL.load(Ordering::SeqCst);
+    
+    // Debug: Log CPU_TOTAL address (BSP view)
+    let cpu_total_addr = &CPU_TOTAL as *const _ as u64;
+    crate::kinfo!("SMP: CPU_TOTAL={} stored at address {:#x}, read_back={}", count, cpu_total_addr, read_back);
     
     // Initialize BSP CPU data
     for i in 0..count {
@@ -1046,7 +1054,55 @@ extern "C" fn ap_entry_inner(arg: *const ApBootArgs) -> ! {
         core::sync::atomic::compiler_fence(Ordering::Release);
         
         // Step 4: Mark CPU as online
-        if idx < CPU_TOTAL.load(Ordering::Acquire) {
+        // CRITICAL: Full memory fence before reading any shared state
+        // AP cores may have stale cache lines from before BSP wrote to memory
+        core::sync::atomic::fence(Ordering::SeqCst);
+        
+        // Read CPU_TOTAL and debug output it
+        let total = CPU_TOTAL.load(Ordering::SeqCst);
+        
+        // Debug: Output CPU_TOTAL value and address
+        serial.write(b'T');
+        let t_digit = if total < 10 { b'0' + total as u8 } else { b'?' };
+        serial.write(t_digit);
+        serial.write(b'@');
+        
+        // Output CPU_TOTAL address (link-time address used by AP)
+        let cpu_total_addr = &CPU_TOTAL as *const _ as u64;
+        for i in (0..8).rev() {
+            let nibble = ((cpu_total_addr >> (i * 4)) & 0xF) as u8;
+            serial.write(if nibble < 10 { b'0' + nibble } else { b'A' + nibble - 10 });
+        }
+        
+        // For comparison, use relocated address (where BSP actually wrote)
+        // The relocation offset moves data from link address to load address
+        serial.write(b'|');
+        let reloc_offset = get_kernel_relocation_offset().unwrap_or(0);
+        
+        // Debug: output the relocation offset value
+        serial.write(b'[');
+        for i in (0..8).rev() {
+            let nibble = ((reloc_offset as u64 >> (i * 4)) & 0xF) as u8;
+            serial.write(if nibble < 10 { b'0' + nibble } else { b'A' + nibble - 10 });
+        }
+        serial.write(b']');
+        
+        // BSP uses addresses that are reloc_offset higher than link addresses
+        // So to read what BSP wrote, we need: link_addr + reloc_offset
+        let bsp_addr = cpu_total_addr.wrapping_add(reloc_offset as u64);
+        for i in (0..8).rev() {
+            let nibble = ((bsp_addr >> (i * 4)) & 0xF) as u8;
+            serial.write(if nibble < 10 { b'0' + nibble } else { b'A' + nibble - 10 });
+        }
+        serial.write(b'=');
+        let bsp_value = core::ptr::read_volatile(bsp_addr as *const usize);
+        let bsp_digit = if bsp_value < 10 { b'0' + bsp_value as u8 } else { b'?' };
+        serial.write(bsp_digit);
+        serial.write(b'/');
+        
+        // Use the BSP's view of CPU_TOTAL for the comparison
+        let actual_total = bsp_value;
+        if idx < actual_total {
             cpu_info(idx)
                 .status
                 .store(CpuStatus::Online as u8, Ordering::Release);
