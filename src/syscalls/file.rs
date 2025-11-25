@@ -91,7 +91,7 @@ pub fn write(fd: u64, buf: u64, count: u64) -> u64 {
     }
 
     unsafe {
-        if let Some(handle) = FILE_HANDLES[idx] {
+        if let Some(handle) = get_file_handle(idx) {
             match handle.backing {
                 FileBacking::StdStream(StdStreamKind::Stdout) => {
                     return write_to_std_stream(StdStreamKind::Stdout, buf, count);
@@ -252,7 +252,7 @@ pub fn read(fd: u64, buf: *mut u8, count: usize) -> u64 {
     }
 
     unsafe {
-        if let Some(handle) = FILE_HANDLES[idx].as_mut() {
+        if let Some(handle) = get_file_handle(idx) {
             match handle.backing {
                 FileBacking::StdStream(StdStreamKind::Stdin) => {
                     return read_from_keyboard(buf, count);
@@ -331,7 +331,8 @@ pub fn read(fd: u64, buf: *mut u8, count: usize) -> u64 {
                     }
                     let to_copy = cmp::min(remaining, count);
                     ptr::copy_nonoverlapping(data.as_ptr().add(handle.position), buf, to_copy);
-                    handle.position += to_copy;
+                    // Update position using accessor function
+                    update_file_handle_position(idx, handle.position + to_copy);
                     posix::set_errno(0);
                     return to_copy as u64;
                 }
@@ -345,7 +346,8 @@ pub fn read(fd: u64, buf: *mut u8, count: usize) -> u64 {
                     let to_read = cmp::min(remaining, count);
                     let dest = slice::from_raw_parts_mut(buf, to_read);
                     let read = file_ref.read_at(handle.position, dest);
-                    handle.position = handle.position.saturating_add(read);
+                    // Update position using accessor function
+                    update_file_handle_position(idx, handle.position.saturating_add(read));
                     posix::set_errno(0);
                     return read as u64;
                 }
@@ -393,18 +395,19 @@ pub fn open(path_ptr: *const u8, len: usize) -> u64 {
         };
 
         unsafe {
-            for index in 0..MAX_OPEN_FILES {
-                if FILE_HANDLES[index].is_none() {
-                    FILE_HANDLES[index] = Some(FileHandle {
+            if let Some(index) = find_empty_file_handle_slot() {
+                set_file_handle(
+                    index,
+                    Some(FileHandle {
                         backing,
                         position: 0,
                         metadata,
-                    });
-                    posix::set_errno(0);
-                    let fd = FD_BASE + index as u64;
-                    kinfo!("Opened file '{}' as fd {}", normalized, fd);
-                    return fd;
-                }
+                    }),
+                );
+                posix::set_errno(0);
+                let fd = FD_BASE + index as u64;
+                kinfo!("Opened file '{}' as fd {}", normalized, fd);
+                return fd;
             }
         }
         posix::set_errno(posix::errno::EMFILE);
@@ -430,7 +433,7 @@ pub fn close(fd: u64) -> u64 {
     }
 
     unsafe {
-        if let Some(handle) = FILE_HANDLES[idx].as_ref() {
+        if let Some(handle) = get_file_handle(idx) {
             // Clean up socket resources if this is a socket
             if let FileBacking::Socket(ref sock_handle) = handle.backing {
                 // Close netlink socket in network stack
@@ -461,7 +464,7 @@ pub fn close(fd: u64) -> u64 {
                 }
             }
 
-            FILE_HANDLES[idx] = None;
+            clear_file_handle(idx);
             kinfo!("Closed fd {}", fd);
             posix::set_errno(0);
             return 0;
@@ -622,7 +625,7 @@ pub fn lseek(fd: u64, offset: i64, whence: u64) -> u64 {
     }
 
     unsafe {
-        if let Some(handle) = FILE_HANDLES[idx].as_mut() {
+        if let Some(handle) = get_file_handle(idx) {
             match handle.backing {
                 FileBacking::StdStream(_) => {
                     posix::set_errno(posix::errno::ESPIPE);
@@ -649,7 +652,7 @@ pub fn lseek(fd: u64, offset: i64, whence: u64) -> u64 {
 
             let new_pos_u64 = new_pos as u64;
             let limited = new_pos_u64.min(usize::MAX as u64);
-            handle.position = limited as usize;
+            update_file_handle_position(idx, limited as usize);
             posix::set_errno(0);
             return new_pos_u64;
         }

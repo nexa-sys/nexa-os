@@ -3,6 +3,7 @@ use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use spin::Mutex;
 
 use crate::framebuffer;
+use crate::safety::volatile_write;
 use crate::vga_buffer::{self, Color};
 
 const BUFFER_HEIGHT: usize = 25;
@@ -273,12 +274,11 @@ fn write_hw_cell(row: usize, col: usize, cell: Cell) {
         return;
     }
 
-    unsafe {
-        let ptr = VGA_BUFFER_ADDR as *mut u16;
-        let index = row * BUFFER_WIDTH + col;
-        let value = ((cell.color as u16) << 8) | cell.ascii as u16;
-        ptr.add(index).write_volatile(value);
-    }
+    let ptr = VGA_BUFFER_ADDR as *mut u16;
+    let index = row * BUFFER_WIDTH + col;
+    let value = ((cell.color as u16) << 8) | cell.ascii as u16;
+    // SAFETY: VGA buffer is always mapped at this address when VGA is ready
+    unsafe { volatile_write(ptr.add(index), value) };
 }
 
 fn forward_to_framebuffer(bytes: &[u8]) {

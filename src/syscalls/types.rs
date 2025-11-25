@@ -5,6 +5,7 @@
 use crate::posix::{self, FileType};
 use crate::vt;
 use crate::{kdebug, kerror, ktrace, kwarn};
+use core::ptr::{addr_of, addr_of_mut};
 use core::{cmp, ptr, slice, str};
 
 // File descriptor constants
@@ -173,6 +174,72 @@ pub struct FileHandle {
 
 /// Global file handle table
 pub static mut FILE_HANDLES: [Option<FileHandle>; MAX_OPEN_FILES] = [None; MAX_OPEN_FILES];
+
+// Safe accessor functions for FILE_HANDLES to avoid creating references to static mut
+
+/// Get a file handle by index (read-only copy)
+///
+/// # Safety
+/// This must be called from a context where FILE_HANDLES is not being modified.
+#[inline]
+pub unsafe fn get_file_handle(idx: usize) -> Option<FileHandle> {
+    if idx >= MAX_OPEN_FILES {
+        return None;
+    }
+    let handles_ptr = addr_of!(FILE_HANDLES) as *const [Option<FileHandle>; MAX_OPEN_FILES];
+    ptr::read((*handles_ptr).as_ptr().add(idx))
+}
+
+/// Set a file handle by index
+///
+/// # Safety
+/// This must be called from a context where no other code is accessing FILE_HANDLES.
+#[inline]
+pub unsafe fn set_file_handle(idx: usize, handle: Option<FileHandle>) {
+    if idx >= MAX_OPEN_FILES {
+        return;
+    }
+    let handles_ptr = addr_of_mut!(FILE_HANDLES) as *mut [Option<FileHandle>; MAX_OPEN_FILES];
+    ptr::write((*handles_ptr).as_mut_ptr().add(idx), handle);
+}
+
+/// Check if a file handle slot is empty
+#[inline]
+pub unsafe fn is_file_handle_empty(idx: usize) -> bool {
+    get_file_handle(idx).is_none()
+}
+
+/// Update the position field of a file handle
+///
+/// # Safety
+/// This must be called from a context where no other code is accessing FILE_HANDLES.
+#[inline]
+pub unsafe fn update_file_handle_position(idx: usize, new_position: usize) {
+    if idx >= MAX_OPEN_FILES {
+        return;
+    }
+    if let Some(mut handle) = get_file_handle(idx) {
+        handle.position = new_position;
+        set_file_handle(idx, Some(handle));
+    }
+}
+
+/// Clear a file handle slot (set to None)
+#[inline]
+pub unsafe fn clear_file_handle(idx: usize) {
+    set_file_handle(idx, None);
+}
+
+/// Find the first empty slot and return its index
+#[inline]
+pub unsafe fn find_empty_file_handle_slot() -> Option<usize> {
+    for idx in 0..MAX_OPEN_FILES {
+        if is_file_handle_empty(idx) {
+            return Some(idx);
+        }
+    }
+    None
+}
 
 /// Create metadata for standard streams
 pub fn std_stream_metadata(kind: StdStreamKind) -> crate::posix::Metadata {

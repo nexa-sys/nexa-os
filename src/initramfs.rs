@@ -3,6 +3,7 @@
 ///
 /// 初始 RAM 文件系统支持（initramfs）
 /// 从内核嵌入的 CPIO 归档加载文件，用于启动阶段提供最小用户态程序和资源。
+use core::ptr::{self, addr_of_mut};
 use core::slice;
 
 #[allow(dead_code)]
@@ -402,8 +403,8 @@ pub unsafe fn init(base: *const u8, size: usize) {
     // 假设 GRUB 或引导程序已经将 initramfs 模块映射到内存中并传递了基地址/大小
 
     if size == 0 {
-        INITRAMFS_PRESENT = false;
-        INITRAMFS_INSTANCE = Initramfs::empty();
+        ptr::write(addr_of_mut!(INITRAMFS_PRESENT), false);
+        ptr::write(addr_of_mut!(INITRAMFS_INSTANCE), Initramfs::empty());
         crate::kwarn!("Initramfs module reported size 0; skipping load");
         return;
     }
@@ -412,8 +413,8 @@ pub unsafe fn init(base: *const u8, size: usize) {
     let module_end = match module_addr.checked_add(size as u64) {
         Some(end) => end,
         None => {
-            INITRAMFS_PRESENT = false;
-            INITRAMFS_INSTANCE = Initramfs::empty();
+            ptr::write(addr_of_mut!(INITRAMFS_PRESENT), false);
+            ptr::write(addr_of_mut!(INITRAMFS_INSTANCE), Initramfs::empty());
             crate::kfatal!(
                 "Initramfs module size causes address overflow: start={:#x}, size={} bytes",
                 module_addr,
@@ -443,8 +444,8 @@ pub unsafe fn init(base: *const u8, size: usize) {
                 ptr as *const u8
             }
             Err(err) => {
-                INITRAMFS_PRESENT = false;
-                INITRAMFS_INSTANCE = Initramfs::empty();
+                ptr::write(addr_of_mut!(INITRAMFS_PRESENT), false);
+                ptr::write(addr_of_mut!(INITRAMFS_INSTANCE), Initramfs::empty());
                 crate::kfatal!(
                     "Failed to map initramfs module [{:#x}, {:#x}): {:?}",
                     module_addr,
@@ -458,20 +459,20 @@ pub unsafe fn init(base: *const u8, size: usize) {
 
     // If the module fits into our kernel-owned buffer, copy it there
     if size <= INITRAMFS_COPY_BUF_SIZE {
-        let dst = core::ptr::addr_of_mut!(INITRAMFS_COPY_BUF).cast::<u8>();
-        core::ptr::copy_nonoverlapping(mapped_base, dst, size);
-        INITRAMFS_INSTANCE = Initramfs::new(dst as *const u8, size);
+        let dst = addr_of_mut!(INITRAMFS_COPY_BUF).cast::<u8>();
+        ptr::copy_nonoverlapping(mapped_base, dst, size);
+        ptr::write(addr_of_mut!(INITRAMFS_INSTANCE), Initramfs::new(dst as *const u8, size));
         crate::kinfo!("Initramfs copied into kernel buffer ({} bytes)", size);
     } else {
         // Fallback: reference original (now safely mapped) module memory
-        INITRAMFS_INSTANCE = Initramfs::new(mapped_base, size);
+        ptr::write(addr_of_mut!(INITRAMFS_INSTANCE), Initramfs::new(mapped_base, size));
         crate::kwarn!(
             "Initramfs module too large to copy ({} bytes), using mapped pointer",
             size
         );
     }
 
-    INITRAMFS_PRESENT = true;
+    ptr::write(addr_of_mut!(INITRAMFS_PRESENT), true);
 
     crate::kinfo!(
         "Initramfs initialized at {:#x}, size {} bytes",

@@ -1036,10 +1036,12 @@ static mut USER_STACK: u64 = 0;
 
 /// Get the stored user entry point
 pub unsafe fn get_user_entry() -> u64 {
-    USER_ENTRY
+    use core::ptr::addr_of;
+    core::ptr::read(addr_of!(USER_ENTRY))
 }
 
 /// Get the stored user stack
 pub unsafe fn get_user_stack() -> u64 {
-    USER_STACK
+    use core::ptr::addr_of;
+    core::ptr::read(addr_of!(USER_STACK))
 }
