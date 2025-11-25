@@ -153,10 +153,24 @@ if [ -f "$ROOT_DIR/build/BootX64.EFI" ]; then
     if [ -n "$EFI_IMG" ] && [ -f "$EFI_IMG" ]; then
         echo "  Found original ESP: $EFI_IMG"
         
-        # Create fresh 50MB ESP (bootloader 1MB + kernel 32MB + initramfs 400KB + overhead)
+        # Calculate required ESP size dynamically
+        KERNEL_SIZE=$(stat -c%s "$KERNEL_BIN")
+        BOOTLOADER_SIZE=$(stat -c%s "$ROOT_DIR/build/BootX64.EFI")
+        INITRAMFS_SIZE=0
+        if [ -f "$ROOT_DIR/build/initramfs.cpio" ]; then
+            INITRAMFS_SIZE=$(stat -c%s "$ROOT_DIR/build/initramfs.cpio")
+        fi
+        
+        # Total needed: files + 20% overhead for FAT filesystem, minimum 16MB
+        TOTAL_BYTES=$((KERNEL_SIZE + BOOTLOADER_SIZE + INITRAMFS_SIZE))
+        ESP_SIZE_MB=$(( (TOTAL_BYTES * 120 / 100 + 1048575) / 1048576 ))  # +20% and round up
+        [ "$ESP_SIZE_MB" -lt 16 ] && ESP_SIZE_MB=16
+        
+        echo "  Kernel: $((KERNEL_SIZE / 1048576))MB, Bootloader: $((BOOTLOADER_SIZE / 1024))KB, Initramfs: $((INITRAMFS_SIZE / 1024))KB"
+        echo "  Creating ${ESP_SIZE_MB}MB ESP..."
+        
         NEW_ESP="$ROOT_DIR/build/new_efi.img"
-        echo "  Creating 50MB ESP..."
-        dd if=/dev/zero of="$NEW_ESP" bs=1M count=50 status=none
+        dd if=/dev/zero of="$NEW_ESP" bs=1M count="$ESP_SIZE_MB" status=none
         mkfs.vfat -F 12 -n "UEFI" "$NEW_ESP" >/dev/null 2>&1
         
         # Create directory structure

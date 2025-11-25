@@ -44,10 +44,24 @@ use uefi::Identify;
 use uefi::Error;
 use uefi::{cstr16, Handle, Status};
 
+// Primary paths for EFI System Partition
 const KERNEL_PATH: &uefi::CStr16 = cstr16!("\\EFI\\BOOT\\KERNEL.ELF");
 const INITRAMFS_PATH: &uefi::CStr16 = cstr16!("\\EFI\\BOOT\\INITRAMFS.CPIO");
 const ROOTFS_PATH: &uefi::CStr16 = cstr16!("\\EFI\\BOOT\\ROOTFS.EXT2");
 const CMDLINE_PATH: &uefi::CStr16 = cstr16!("\\EFI\\BOOT\\cmdline.txt");
+
+// Fallback paths for ISO 9660 filesystem
+const KERNEL_PATH_ISO: &uefi::CStr16 = cstr16!("\\boot\\KERNEL.ELF");
+const INITRAMFS_PATH_ISO: &uefi::CStr16 = cstr16!("\\boot\\INITRAMFS.CPIO");
+const ROOTFS_PATH_ISO: &uefi::CStr16 = cstr16!("\\rootfs.ext2");
+const CMDLINE_PATH_ISO: &uefi::CStr16 = cstr16!("\\cmdline.txt");
+
+// Additional fallback paths (lowercase variants)
+const KERNEL_PATH_ISO_LOWER: &uefi::CStr16 = cstr16!("\\boot\\kernel.elf");
+const INITRAMFS_PATH_ISO_LOWER: &uefi::CStr16 = cstr16!("\\boot\\initramfs.cpio");
+const ROOTFS_PATH_ISO_LOWER: &uefi::CStr16 = cstr16!("\\rootfs.ext2");
+const CMDLINE_PATH_ISO_LOWER: &uefi::CStr16 = cstr16!("\\cmdline.txt");
+
 // Rootfs 优先从 ESP 缓存，若缺失则回退到块设备读取
 const MAX_PHYS_ADDR: u64 = 0x0000FFFF_FFFF;
 const BOOT_INFO_PREF_MAX_ADDR: u64 = 0x03FF_FFFF; // Prefer BootInfo below 64 MiB
@@ -1101,6 +1115,11 @@ fn efi_main(image: Handle, mut st: SystemTable<Boot>) -> Status {
         }
     };
 
+    // Debug: List all files in EFI/BOOT to see what's actually there
+    if let Ok(()) = list_directory(&mut root, cstr16!("\\EFI\\BOOT")) {
+        log::info!("Listed EFI\\BOOT directory successfully");
+    }
+
     // List root directory
     log::info!("=== Listing root directory ===");
     let _ = list_directory(&mut root, cstr16!("\\"));
@@ -1113,7 +1132,7 @@ fn efi_main(image: Handle, mut st: SystemTable<Boot>) -> Status {
     log::info!("=== Listing \\EFI\\BOOT directory ===");
     let _ = list_directory(&mut root, cstr16!("\\EFI\\BOOT"));
 
-    let kernel_bytes = match read_file(&mut root, KERNEL_PATH) {
+    let kernel_bytes = match read_file_multi(&mut root, KERNEL_PATH, KERNEL_PATH_ISO) {
         Ok(data) => {
             log::info!("Kernel image loaded, size: {} bytes", data.len());
             data
@@ -1124,7 +1143,7 @@ fn efi_main(image: Handle, mut st: SystemTable<Boot>) -> Status {
         }
     };
 
-    let initramfs_bytes = match read_file(&mut root, INITRAMFS_PATH) {
+    let initramfs_bytes = match read_file_multi(&mut root, INITRAMFS_PATH, INITRAMFS_PATH_ISO) {
         Ok(data) => {
             log::info!("Initramfs loaded, size: {} bytes", data.len());
             data
@@ -1139,17 +1158,17 @@ fn efi_main(image: Handle, mut st: SystemTable<Boot>) -> Status {
         }
     };
 
-    let mut rootfs_bytes = match read_file(&mut root, ROOTFS_PATH) {
+    let mut rootfs_bytes = match read_file_multi(&mut root, ROOTFS_PATH, ROOTFS_PATH_ISO) {
         Ok(data) => {
-            log::info!("Rootfs image loaded from ESP, size: {} bytes", data.len());
+            log::info!("Rootfs image loaded, size: {} bytes", data.len());
             Some(data)
         }
         Err(status) if status == Status::NOT_FOUND => {
-            log::info!("Rootfs image not present on ESP; will probe block devices");
+            log::info!("Rootfs image not present; will probe block devices");
             None
         }
         Err(status) => {
-            log::warn!("Failed to load rootfs from ESP: {:?}", status);
+            log::warn!("Failed to load rootfs: {:?}", status);
             None
         }
     };
@@ -1426,6 +1445,8 @@ fn open_boot_volume(bs: &BootServices, image: Handle) -> Result<Directory, Statu
     
     log::info!("Found {} device(s) with SimpleFileSystem protocol", handles.len());
     
+    let mut first_valid_volume = None;
+    
     // 尝试每个文件系统设备，找到包含内核文件的那个
     for (index, &device_handle) in handles.iter().enumerate() {
         log::info!("Trying device {} ({:?})", index, device_handle);
@@ -1459,23 +1480,59 @@ fn open_boot_volume(bs: &BootServices, image: Handle) -> Result<Directory, Statu
             }
         };
         
+        // Save first valid volume as fallback
+        if first_valid_volume.is_none() {
+            first_valid_volume = Some((index, device_handle));
+        }
+        
         // 尝试打开内核文件来验证这是正确的卷
         log::info!("  Checking for kernel file on device {}", index);
-        let test_result = volume.open(KERNEL_PATH, FileMode::Read, FileAttribute::empty());
         
-        match test_result {
-            Ok(_) => {
-                log::info!("  Found kernel file on device {}! Using this volume.", index);
-                return Ok(volume);
-            }
-            Err(e) => {
-                log::info!("  Kernel file not found on device {}: {:?}", index, e.status());
-                // 继续尝试下一个设备
+        // Try primary path first
+        let primary_result = volume.open(KERNEL_PATH, FileMode::Read, FileAttribute::empty());
+        if primary_result.is_ok() {
+            log::info!("  Found kernel file on device {} (primary path)! Using this volume.", index);
+            return Ok(volume);
+        }
+        
+        // Try fallback ISO path
+        let fallback_result = volume.open(KERNEL_PATH_ISO, FileMode::Read, FileAttribute::empty());
+        if fallback_result.is_ok() {
+            log::info!("  Found kernel file on device {} (fallback ISO path)! Using this volume.", index);
+            return Ok(volume);
+        }
+        
+        // Neither path found
+        log::info!("  Kernel file not found on device {} (tried both {:?} and {:?})", index, KERNEL_PATH, KERNEL_PATH_ISO);
+    }
+    
+    // If we couldn't find a device with the kernel file, use the first valid volume
+    // and rely on read_file_multi() to find the file via fallback paths
+    if let Some((idx, device_handle)) = first_valid_volume {
+        log::warn!("Could not find kernel file on any device, using first valid volume (device {}) as fallback", idx);
+        
+        let fs = unsafe {
+            bs.open_protocol::<SimpleFileSystem>(
+                OpenProtocolParams {
+                    handle: device_handle,
+                    agent: image,
+                    controller: None,
+                },
+                OpenProtocolAttributes::GetProtocol,
+            )
+        };
+        
+        if let Ok(fs) = fs {
+            if let Some(file_system) = fs.get_mut() {
+                if let Ok(volume) = file_system.open_volume() {
+                    log::info!("Attempting to use device {} anyway - will try all known file paths", idx);
+                    return Ok(volume);
+                }
             }
         }
     }
     
-    log::error!("Could not find boot volume with kernel file at {:?}", KERNEL_PATH);
+    log::error!("Could not find any boot volume with SimpleFileSystem protocol");
     Err(Status::NOT_FOUND)
 }
 
@@ -1530,6 +1587,39 @@ fn read_file(root: &mut Directory, path: &uefi::CStr16) -> Result<Vec<u8>, Statu
     read_entire_file(file)
 }
 
+/// Try to read a file from multiple possible paths (ESP and ISO 9660)
+fn read_file_multi(root: &mut Directory, primary_path: &uefi::CStr16, fallback_path: &uefi::CStr16) -> Result<Vec<u8>, Status> {
+    // Try primary path first
+    match read_file(root, primary_path) {
+        Ok(data) => {
+            log::info!("Successfully read from primary path: {:?}", primary_path);
+            return Ok(data);
+        }
+        Err(Status::NOT_FOUND) => {
+            log::warn!("Primary path not found: {:?}, trying fallback", primary_path);
+        }
+        Err(e) => {
+            log::warn!("Error reading from primary path {:?}: {:?}, trying fallback", primary_path, e);
+        }
+    }
+    
+    // Try fallback path
+    match read_file(root, fallback_path) {
+        Ok(data) => {
+            log::info!("Successfully read from fallback path: {:?}", fallback_path);
+            return Ok(data);
+        }
+        Err(e) => {
+            log::warn!("Fallback path also failed: {:?}", e);
+        }
+    }
+    
+    // If both failed, return error
+    log::error!("Failed to read file from all attempted paths");
+    Err(Status::NOT_FOUND)
+}
+
+
 fn read_entire_file(mut file: RegularFile) -> Result<Vec<u8>, Status> {
     let mut buffer = Vec::new();
     let mut chunk = [0u8; 4096];
@@ -1546,7 +1636,7 @@ fn read_entire_file(mut file: RegularFile) -> Result<Vec<u8>, Status> {
 }
 
 fn load_kernel_cmdline(root: &mut Directory) -> Vec<u8> {
-    match read_file(root, CMDLINE_PATH) {
+    match read_file_multi(root, CMDLINE_PATH, CMDLINE_PATH_ISO) {
         Ok(mut data) => {
             while matches!(data.last(), Some(b' ') | Some(b'\n') | Some(b'\r') | Some(&0)) {
                 data.pop();
