@@ -32,7 +32,7 @@ pub mod scheduler;
 pub mod serial;
 pub mod signal;
 pub mod smp;
-pub mod syscall;
+pub mod syscalls;
 pub mod uefi_compat;
 pub mod vga_buffer;
 pub mod vt;

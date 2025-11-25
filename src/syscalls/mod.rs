@@ -1,0 +1,389 @@
+//! Syscall subsystem
+//!
+//! This module provides the system call interface for NexaOS.
+//! It is organized into submodules by functionality:
+//!
+//! - `numbers`: Syscall number constants
+//! - `types`: Shared types and data structures
+//! - `exec`: Exec context for syscall/execve communication
+//! - `file`: File I/O syscalls (read, write, open, close, stat, etc.)
+//! - `process`: Process management syscalls (fork, execve, exit, wait4, etc.)
+//! - `signal`: Signal handling syscalls (sigaction, sigprocmask)
+//! - `fd`: File descriptor syscalls (dup, dup2, pipe)
+//! - `ipc`: IPC syscalls (ipc_create, ipc_send, ipc_recv)
+//! - `user`: User management syscalls (user_add, user_login, etc.)
+//! - `network`: Network socket syscalls (socket, bind, connect, sendto, recvfrom)
+//! - `time`: Time related syscalls (clock_gettime, nanosleep, sched_yield)
+//! - `system`: System management syscalls (reboot, shutdown, runlevel, mount)
+//! - `uefi`: UEFI compatibility syscalls
+
+mod exec;
+mod fd;
+mod file;
+mod ipc;
+mod network;
+mod numbers;
+mod process;
+mod signal;
+mod system;
+mod time;
+mod types;
+mod uefi;
+mod user;
+
+// Re-export syscall numbers for external use
+pub use numbers::*;
+
+// Re-export exec context function for assembly
+pub use exec::get_exec_context;
+
+// Internal imports
+use crate::posix;
+use crate::process::{Process, ProcessState};
+use crate::scheduler;
+use crate::uefi_compat::{
+    BlockDescriptor, CompatCounts, HidInputDescriptor, NetworkDescriptor, UsbHostDescriptor,
+};
+use crate::vt;
+use core::arch::global_asm;
+use nexa_boot_info::FramebufferInfo;
+
+// Re-export types for syscall_dispatch
+use types::*;
+
+// Import all syscall implementations
+use exec::set_exec_context;
+use fd::{syscall_dup, syscall_dup2, syscall_pipe};
+use file::{
+    syscall_close, syscall_fcntl, syscall_fstat, syscall_get_errno, syscall_list_files,
+    syscall_lseek, syscall_open, syscall_read, syscall_stat, syscall_write,
+};
+use ipc::{syscall_ipc_create, syscall_ipc_recv, syscall_ipc_send};
+use network::{
+    syscall_bind, syscall_connect, syscall_recvfrom, syscall_sendto, syscall_setsockopt,
+    syscall_socket,
+};
+use process::{
+    syscall_execve, syscall_exit, syscall_fork, syscall_getppid, syscall_kill, syscall_wait4,
+};
+use signal::{syscall_sigaction, syscall_sigprocmask};
+use system::{
+    syscall_chroot, syscall_mount, syscall_pivot_root, syscall_reboot, syscall_runlevel,
+    syscall_shutdown, syscall_umount,
+};
+use time::{syscall_clock_gettime, syscall_nanosleep, syscall_sched_yield};
+use uefi::{
+    syscall_uefi_get_block_info, syscall_uefi_get_counts, syscall_uefi_get_fb_info,
+    syscall_uefi_get_hid_info, syscall_uefi_get_net_info, syscall_uefi_get_usb_info,
+    syscall_uefi_map_net_mmio, syscall_uefi_map_usb_mmio,
+};
+use user::{
+    syscall_user_add, syscall_user_info, syscall_user_list, syscall_user_login, syscall_user_logout,
+};
+
+/// Main syscall dispatcher
+#[no_mangle]
+pub extern "C" fn syscall_dispatch(
+    nr: u64,
+    arg1: u64,
+    arg2: u64,
+    arg3: u64,
+    syscall_return_addr: u64,
+) -> u64 {
+    let (user_rsp, user_rflags) = unsafe {
+        let mut rsp_out: u64;
+        let mut rflags_out: u64;
+        core::arch::asm!(
+            "mov {0}, gs:[0]",
+            "mov {1}, gs:[64]",
+            out(reg) rsp_out,
+            out(reg) rflags_out,
+            options(nostack, preserves_flags)
+        );
+        (rsp_out, rflags_out)
+    };
+
+    scheduler::update_current_user_context(syscall_return_addr, user_rsp, user_rflags);
+
+    let result = match nr {
+        SYS_WRITE => syscall_write(arg1, arg2, arg3),
+        SYS_READ => syscall_read(arg1, arg2 as *mut u8, arg3 as usize),
+        SYS_OPEN => syscall_open(arg1 as *const u8, arg2 as usize),
+        SYS_CLOSE => syscall_close(arg1),
+        SYS_STAT => syscall_stat(arg1 as *const u8, arg2 as usize, arg3 as *mut posix::Stat),
+        SYS_FSTAT => syscall_fstat(arg1, arg2 as *mut posix::Stat),
+        SYS_LSEEK => syscall_lseek(arg1, arg2 as i64, arg3),
+        SYS_FCNTL => syscall_fcntl(arg1, arg2, arg3),
+        SYS_PIPE => syscall_pipe(arg1 as *mut [i32; 2]),
+        SYS_DUP => syscall_dup(arg1),
+        SYS_DUP2 => syscall_dup2(arg1, arg2),
+        SYS_FORK => syscall_fork(syscall_return_addr),
+        SYS_EXECVE => syscall_execve(
+            arg1 as *const u8,
+            arg2 as *const *const u8,
+            arg3 as *const *const u8,
+        ),
+        SYS_EXIT => syscall_exit(arg1 as i32),
+        SYS_WAIT4 => syscall_wait4(arg1 as i64, arg2 as *mut i32, arg3 as i32, 0 as *mut u8),
+        SYS_KILL => syscall_kill(arg1, arg2),
+        SYS_SIGACTION => syscall_sigaction(arg1, arg2 as *const u8, arg3 as *mut u8),
+        SYS_SIGPROCMASK => syscall_sigprocmask(arg1 as i32, arg2 as *const u64, arg3 as *mut u64),
+        SYS_GETPID => crate::scheduler::get_current_pid().unwrap_or(0),
+        SYS_GETPPID => syscall_getppid(),
+        SYS_SCHED_YIELD => syscall_sched_yield(),
+        SYS_CLOCK_GETTIME => syscall_clock_gettime(arg1 as i32, arg2 as *mut TimeSpec),
+        SYS_NANOSLEEP => syscall_nanosleep(arg1 as *const TimeSpec, arg2 as *mut TimeSpec),
+        SYS_LIST_FILES => syscall_list_files(
+            arg1 as *mut u8,
+            arg2 as usize,
+            arg3 as *const ListDirRequest,
+        ),
+        SYS_GETERRNO => syscall_get_errno(),
+        SYS_IPC_CREATE => syscall_ipc_create(),
+        SYS_IPC_SEND => syscall_ipc_send(arg1 as *const IpcTransferRequest),
+        SYS_IPC_RECV => syscall_ipc_recv(arg1 as *const IpcTransferRequest),
+        SYS_USER_ADD => syscall_user_add(arg1 as *const UserRequest),
+        SYS_USER_LOGIN => syscall_user_login(arg1 as *const UserRequest),
+        SYS_USER_INFO => syscall_user_info(arg1 as *mut UserInfoReply),
+        SYS_USER_LIST => syscall_user_list(arg1 as *mut u8, arg2 as usize),
+        SYS_USER_LOGOUT => syscall_user_logout(),
+        SYS_SOCKET => syscall_socket(arg1 as i32, arg2 as i32, arg3 as i32),
+        SYS_BIND => syscall_bind(arg1, arg2 as *const SockAddr, arg3 as u32),
+        SYS_SENDTO => {
+            // sendto needs 6 args: sockfd, buf, len, flags, dest_addr, addrlen
+            let (arg4, arg5, arg6) = unsafe {
+                let mut r10_val: u64;
+                let mut r8_val: u64;
+                let mut r9_val: u64;
+                core::arch::asm!(
+                    "mov {0}, gs:[32]",
+                    "mov {1}, gs:[40]",
+                    "mov {2}, gs:[48]",
+                    out(reg) r10_val,
+                    out(reg) r8_val,
+                    out(reg) r9_val,
+                    options(nostack, preserves_flags)
+                );
+                (r10_val, r8_val, r9_val)
+            };
+            syscall_sendto(
+                arg1,
+                arg2 as *const u8,
+                arg3 as usize,
+                arg4 as i32,
+                arg5 as *const SockAddr,
+                arg6 as u32,
+            )
+        }
+        SYS_RECVFROM => {
+            // recvfrom needs 6 args: sockfd, buf, len, flags, src_addr, addrlen
+            let (arg4, arg5, arg6) = unsafe {
+                let mut r10_val: u64;
+                let mut r8_val: u64;
+                let mut r9_val: u64;
+                core::arch::asm!(
+                    "mov {0}, gs:[32]",
+                    "mov {1}, gs:[40]",
+                    "mov {2}, gs:[48]",
+                    out(reg) r10_val,
+                    out(reg) r8_val,
+                    out(reg) r9_val,
+                    options(nostack, preserves_flags)
+                );
+                (r10_val, r8_val, r9_val)
+            };
+            syscall_recvfrom(
+                arg1,
+                arg2 as *mut u8,
+                arg3 as usize,
+                arg4 as i32,
+                arg5 as *mut SockAddr,
+                arg6 as *mut u32,
+            )
+        }
+        SYS_CONNECT => syscall_connect(arg1, arg2 as *const SockAddr, arg3 as u32),
+        SYS_SETSOCKOPT => {
+            // setsockopt needs 5 args: sockfd, level, optname, optval, optlen
+            let (arg4, arg5) = unsafe {
+                let mut r10_val: u64;
+                let mut r8_val: u64;
+                core::arch::asm!(
+                    "mov {0}, gs:[32]",
+                    "mov {1}, gs:[40]",
+                    out(reg) r10_val,
+                    out(reg) r8_val,
+                    options(nostack, preserves_flags)
+                );
+                (r10_val, r8_val)
+            };
+            syscall_setsockopt(arg1, arg2 as i32, arg3 as i32, arg4 as *const u8, arg5 as u32)
+        }
+        SYS_REBOOT => syscall_reboot(arg1 as i32),
+        SYS_SHUTDOWN => syscall_shutdown(),
+        SYS_RUNLEVEL => syscall_runlevel(arg1 as i32),
+        SYS_MOUNT => syscall_mount(arg1 as *const MountRequest),
+        SYS_UMOUNT => syscall_umount(arg1 as *const u8, arg2 as usize),
+        SYS_CHROOT => syscall_chroot(arg1 as *const u8, arg2 as usize),
+        SYS_PIVOT_ROOT => syscall_pivot_root(arg1 as *const PivotRootRequest),
+        SYS_UEFI_GET_COUNTS => syscall_uefi_get_counts(arg1 as *mut CompatCounts),
+        SYS_UEFI_GET_FB_INFO => syscall_uefi_get_fb_info(arg1 as *mut FramebufferInfo),
+        SYS_UEFI_GET_NET_INFO => {
+            syscall_uefi_get_net_info(arg1 as usize, arg2 as *mut NetworkDescriptor)
+        }
+        SYS_UEFI_GET_BLOCK_INFO => {
+            syscall_uefi_get_block_info(arg1 as usize, arg2 as *mut BlockDescriptor)
+        }
+        SYS_UEFI_MAP_NET_MMIO => syscall_uefi_map_net_mmio(arg1 as usize),
+        SYS_UEFI_GET_USB_INFO => {
+            syscall_uefi_get_usb_info(arg1 as usize, arg2 as *mut UsbHostDescriptor)
+        }
+        SYS_UEFI_GET_HID_INFO => {
+            syscall_uefi_get_hid_info(arg1 as usize, arg2 as *mut HidInputDescriptor)
+        }
+        SYS_UEFI_MAP_USB_MMIO => syscall_uefi_map_usb_mmio(arg1 as usize),
+        _ => {
+            crate::kwarn!("Unknown syscall: {}", nr);
+            posix::set_errno(posix::errno::ENOSYS);
+            0
+        }
+    };
+    result
+}
+
+/// Check if current process should be rescheduled (called from syscall handler)
+#[no_mangle]
+extern "C" fn should_reschedule() -> bool {
+    if let Some(pid) = scheduler::get_current_pid() {
+        if let Some(process) = scheduler::get_process(pid) {
+            return process.state == ProcessState::Sleeping;
+        }
+    }
+    false
+}
+
+/// Trigger rescheduling from syscall return path
+#[no_mangle]
+extern "C" fn do_schedule_from_syscall() {
+    // Wake up the process before scheduling (it will be picked up again if still runnable)
+    if let Some(pid) = scheduler::get_current_pid() {
+        let _ = scheduler::set_process_state(pid, ProcessState::Ready);
+    }
+    scheduler::do_schedule();
+}
+
+global_asm!(
+    ".global syscall_handler",
+    "syscall_handler:",
+    "swapgs",
+    "mov gs:[0], rsp", // Save user RSP
+    "mov rsp, gs:[8]", // Load kernel RSP
+    // Save user RCX (return address) and R11 (rflags) because sysretq needs them
+    "push r11", // save user rflags
+    "push rcx", // save user return address
+    "push rbx",
+    "push rdx",
+    "push rsi",
+    "push rdi",
+    "push rbp",
+    "push r8",
+    "push r9",
+    "push r10",
+    "push r12",
+    "push r13",
+    "push r14",
+    "push r15",
+    "sub rsp, 8", // maintain 16-byte stack alignment before calling into Rust
+    // Stack layout after sub rsp,8:
+    // [rsp+0] = alignment padding
+    // [rsp+8] = r15 (最后push的)
+    // [rsp+16] = r14
+    // [rsp+24] = r13
+    // [rsp+32] = r12
+    // [rsp+40] = r10
+    // [rsp+48] = r9
+    // [rsp+56] = r8
+    // [rsp+64] = rbp
+    // [rsp+72] = rdi
+    // [rsp+80] = rsi
+    // [rsp+88] = rdx
+    // [rsp+96] = rbx
+    // [rsp+104] = rcx (user return address, DO NOT OVERWRITE!) <-- THIS ONE
+    // [rsp+112] = r11 (user rflags, 第一个push的)
+    "mov r8, [rsp + 104]", // Get original RCX (syscall return address) -> r8 (param 5)
+    // WARNING: RCX register will be used for param 4, but we must NOT overwrite [rsp+104]!
+    // Prepare arguments for syscall_dispatch:
+    // RDI = nr, RSI = arg1, RDX = arg2, RCX = arg3, R8 = syscall_return_addr
+    "mov rcx, rdx", // arg3 -> rcx (param 4) - THIS OVERWRITES RCX REGISTER BUT NOT STACK
+    "mov rdx, rsi", // arg2 -> rdx (param 3)
+    "mov rsi, rdi", // arg1 -> rsi (param 2)
+    "mov rdi, rax", // nr -> rdi (param 1)
+    "call syscall_dispatch",
+    // Return value is in rax
+    // Check if this is exec returning (magic value 0x4558454300000000 = "EXEC")
+    "movabs rbx, 0x4558454300000000",
+    "cmp rax, rbx",
+    "jne .Lnormal_return", // Not exec, normal return
+    // Exec return: call get_exec_context to get entry/stack
+    ".Lexec_return:",
+    "sub rsp, 32", // Keep 16-byte alignment: 32 is divisible by 16
+    "lea rdi, [rsp + 24]", // entry_out = rsp+24 (first parameter)
+    "lea rsi, [rsp + 16]", // stack_out = rsp+16 (second parameter)
+    "lea rdx, [rsp + 8]",  // user_data_sel_out = rsp+8 (third parameter)
+    "call get_exec_context",
+    "test al, al",                   // Check if exec was pending
+    "jz .Lnormal_return_after_exec", // Not exec, treat as normal
+    // Exec successful: load new entry, stack, and user_data_sel
+    "mov rcx, [rsp + 24]", // Load entry -> RCX (for sysretq)
+    "mov r8, [rsp + 16]",  // Load stack -> R8 (temp, we'll move to RSP)
+    "mov r9, [rsp + 8]",   // Load user_data_sel -> R9 (temp for segment selector)
+    "mov rsp, r8",         // Switch to new user stack
+    "mov r11, 0x202",      // User rflags (IF=1, reserved bit=1)
+    "xor rax, rax",        // Clear return value for exec
+    // Set user segment selectors from user_data_sel (in R9)
+    "mov ax, r9w", // user data segment selector
+    "mov ds, ax",
+    "mov es, ax",
+    "mov fs, ax",
+    "swapgs",
+    "mov gs, ax",
+    // sysretq: rcx=rip, r11=rflags, rsp already set to user stack
+    "sysretq",
+    ".Lnormal_return_after_exec:",
+    "add rsp, 32", // Clean up the 32 bytes we allocated
+    ".Lnormal_return:",
+    // Check if current process needs to be rescheduled (Sleeping state)
+    "call should_reschedule",
+    "test al, al",
+    "jz .Lno_reschedule",
+    // Process needs to be rescheduled - save context and switch
+    "call do_schedule_from_syscall",
+    // After returning from schedule, continue with normal return
+    ".Lno_reschedule:",
+    // Normal syscall return path
+    "add rsp, 8", // remove alignment padding
+    "pop r15",
+    "pop r14",
+    "pop r13",
+    "pop r12",
+    "pop r10",
+    "pop r9",
+    "pop r8",
+    "pop rbp",
+    "pop rdi",
+    "pop rsi",
+    "pop rdx",
+    "pop rbx",
+    // Restore RCX and R11 for sysretq
+    "pop rcx", // user return address
+    "pop r11", // user rflags
+    // Restore user segment registers before sysretq
+    // Note: user data segment is now entry 3 (0x18 | 3 = 0x1B)
+    "mov r8w, 0x1B", // user data segment selector (0x18 | 3)
+    "mov ds, r8w",
+    "mov es, r8w",
+    "mov fs, r8w",
+    "mov rsp, gs:[0]", // Restore user RSP
+    "swapgs",          // Restore user GS base
+    // Return to user mode via sysretq (RCX=rip, R11=rflags, RAX=return value)
+    "sysretq"
+);
