@@ -1189,8 +1189,8 @@ extern "C" fn ring3_debug_print2() {
 
 /// Set GS data for Ring 3 switch
 pub unsafe fn set_gs_data(entry: u64, stack: u64, user_cs: u64, user_ss: u64, user_ds: u64) {
-    // Get kernel stack from TSS privilege stack table
-    let kernel_stack = crate::gdt::get_kernel_stack_top();
+    // Get kernel stack from TSS privilege stack table (BSP = CPU 0)
+    let kernel_stack = crate::gdt::get_kernel_stack_top(0);
 
     // Get GS_DATA address without creating a reference that might corrupt nearby statics
     let gs_data_addr = &raw const crate::initramfs::GS_DATA.0 as *const _ as u64;
@@ -1337,7 +1337,7 @@ pub fn setup_syscall() {
         let gs_data_ptr = gs_data_addr as *mut u64;
         gs_data_ptr
             .add(GS_SLOT_KERNEL_RSP)
-            .write(crate::gdt::get_kernel_stack_top());
+            .write(crate::gdt::get_kernel_stack_top(0));  // BSP = CPU 0
 
         let selectors = crate::gdt::get_selectors();
         let user_cs = (selectors.user_code_selector.0 | 0x3) as u64;

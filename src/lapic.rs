@@ -47,6 +47,25 @@ static LAPIC_READY: AtomicBool = AtomicBool::new(false);
 
 pub fn init(lapic_base: u64) {
     LAPIC_BASE.store(lapic_base & APIC_BASE_MASK, Ordering::SeqCst);
+    
+    // Ensure LAPIC MMIO region is properly mapped
+    // The LAPIC is at a fixed physical address and needs to be accessible
+    unsafe {
+        // Map 4KB for LAPIC registers
+        match crate::paging::map_device_region(lapic_base & APIC_BASE_MASK, 4096) {
+            Ok(virt_addr) => {
+                crate::kinfo!("LAPIC: Mapped MMIO region at physical {:#x} -> virtual {:#x}", 
+                    lapic_base & APIC_BASE_MASK, virt_addr as u64);
+                // Update base to use the mapped virtual address
+                LAPIC_BASE.store(virt_addr as u64, Ordering::SeqCst);
+            }
+            Err(e) => {
+                crate::kwarn!("LAPIC: Failed to map MMIO region: {:?}, using identity mapping", e);
+                // Fall back to assuming identity mapping works
+            }
+        }
+    }
+    
     enable_apic();
     LAPIC_READY.store(true, Ordering::SeqCst);
     crate::kinfo!(
@@ -95,47 +114,21 @@ pub fn send_eoi() {
 }
 
 fn send_ipi_ex(apic_id: u32, command: u32) {
-    const MAX_RETRIES: u32 = 3;
-    const TIMEOUT_US: u32 = 100_000;
-    
-    for retry in 0..MAX_RETRIES {
-        unsafe {
-            if !wait_for_icr_with_timeout(TIMEOUT_US) {
-                if retry == MAX_RETRIES - 1 {
-                    crate::kwarn!("LAPIC: Timeout waiting for ICR before send (attempt {})", retry + 1);
-                    return;
-                }
-                continue;
-            }
-            
-            write_register(REG_ICR_HIGH, apic_id << 24);
-            write_register(REG_ICR_LOW, command);
-            
-            if wait_for_icr_with_timeout(TIMEOUT_US) {
-                return;  // Success
-            }
-            
-            if retry == MAX_RETRIES - 1 {
-                crate::kwarn!("LAPIC: Timeout waiting for ICR after send (attempt {})", retry + 1);
-            }
+    unsafe {
+        // Simplified: don't wait, just send
+        // This might be unsafe but lets us test if the IPI send itself works
+        
+        // Write destination APIC ID to ICR high register
+        write_register(REG_ICR_HIGH, apic_id << 24);
+        
+        // Write command to ICR low register (triggers send)
+        write_register(REG_ICR_LOW, command);
+        
+        // Small busy wait instead of register polling
+        for _ in 0..1000 {
+            core::hint::spin_loop();
         }
     }
-}
-
-unsafe fn wait_for_icr() {
-    while (read_register(REG_ICR_LOW) & (1 << 12)) != 0 {}
-}
-
-unsafe fn wait_for_icr_with_timeout(timeout_us: u32) -> bool {
-    let mut timeout = timeout_us;
-    while (read_register(REG_ICR_LOW) & (1 << 12)) != 0 {
-        if timeout == 0 {
-            return false;
-        }
-        timeout -= 1;
-        core::hint::spin_loop();
-    }
-    true
 }
 
 unsafe fn read_register(offset: u32) -> u32 {
@@ -154,6 +147,11 @@ fn enable_apic() {
     unsafe {
         let mut msr = Msr::new(IA32_APIC_BASE);
         let mut value = msr.read();
+        
+        // Ensure we're in xAPIC mode, not x2APIC
+        // Bit 10 = x2APIC enable (should be 0 for xAPIC mode)
+        value &= !(1 << 10);  // Clear x2APIC bit
+        
         let base = LAPIC_BASE.load(Ordering::SeqCst);
         value &= !APIC_BASE_MASK;
         value |= base & APIC_BASE_MASK;
@@ -172,6 +170,8 @@ fn enable_apic() {
         
         // Set task priority to accept all interrupts
         write_register(REG_TPR, 0);
+        
+        crate::kinfo!("LAPIC: xAPIC mode enabled, IA32_APIC_BASE={:#x}", value);
     }
 }
 

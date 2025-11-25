@@ -1309,11 +1309,33 @@ fn efi_main(image: Handle, mut st: SystemTable<Boot>) -> Status {
                     "Boot info mirrored to expected address {:#x}",
                     boot_info_ptr
                 );
+                
+                // Clear the kernel_load_offset in the mirrored boot_info since kernel
+                // is now running at link-time addresses after mirroring
+                unsafe {
+                    let boot_info = expected_ptr as *mut nexa_boot_info::BootInfo;
+                    (*boot_info).kernel_load_offset = 0;
+                    // Clear the HAS_KERNEL_OFFSET flag
+                    (*boot_info).flags &= !nexa_boot_info::flags::HAS_KERNEL_OFFSET;
+                    log::info!(
+                        "Cleared kernel_load_offset in mirrored boot_info (kernel now at link addresses)"
+                    );
+                }
             } else {
                 log::warn!(
                     "Failed to mirror boot info block; continuing with relocated pointer {:#x}",
                     boot_info_ptr
                 );
+                // Even if boot_info wasn't mirrored, clear the offset in the original boot_info
+                // since kernel code is now at link-time addresses
+                unsafe {
+                    let boot_info = boot_info_ptr as *mut nexa_boot_info::BootInfo;
+                    (*boot_info).kernel_load_offset = 0;
+                    (*boot_info).flags &= !nexa_boot_info::flags::HAS_KERNEL_OFFSET;
+                    log::info!(
+                        "Cleared kernel_load_offset in original boot_info (kernel now at link addresses)"
+                    );
+                }
             }
         } else {
             log::warn!(
