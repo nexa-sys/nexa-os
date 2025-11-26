@@ -240,11 +240,17 @@ pub fn get_ap_stack_top(cpu_index: usize) -> Result<u64, &'static str> {
     
     match &resources.ap_stacks[stack_index] {
         Some(stack) => {
-            let stack_base = stack.0.as_ptr() as usize;
-            let stack_top = stack_base + AP_STACK_SIZE;
-            // Align to 16 bytes
-            let aligned_top = stack_top & !0xF;
-            Ok(aligned_top as u64)
+            let stack_base = stack.0.as_ptr() as u64;
+            let stack_top = stack_base.wrapping_add(AP_STACK_SIZE as u64);
+            // IMPORTANT: Align DOWN to 16 bytes (stack must be 16-byte aligned before call)
+            // Note: GlobalAllocator ignores alignment, so Box may not respect align(16)
+            // Use core::hint::black_box to prevent compiler from optimizing away the alignment
+            let aligned_top = core::hint::black_box(stack_top) & !0xFu64;
+            crate::kinfo!(
+                "SMP: Dynamic stack for CPU {}: base={:#x}, top={:#x}, aligned={:#x}",
+                cpu_index, stack_base, stack_top, aligned_top
+            );
+            Ok(aligned_top)
         }
         None => Err("Stack not allocated for this CPU"),
     }

@@ -171,11 +171,7 @@ unsafe fn prepare_ap_launch(index: usize) -> Result<(), &'static str> {
     
     // Prepare boot arguments
     let info = cpu_info(index);
-    AP_BOOT_ARGS[index] = ApBootArgs {
-        cpu_index: index as u32,
-        apic_id: info.apic_id,
-    };
-    let arg_ptr = (&AP_BOOT_ARGS[index] as *const ApBootArgs) as u64;
+    let arg_ptr = get_boot_args_ptr(index, info.apic_id)?;
     crate::kinfo!("SMP: [{}] Boot args at: {:#x}", index, arg_ptr);
     
     // Calculate entry point
@@ -221,6 +217,8 @@ unsafe fn prepare_ap_launch(index: usize) -> Result<(), &'static str> {
 
 /// Get the stack top address for an AP
 unsafe fn stack_for(index: usize) -> Result<u64, &'static str> {
+    use super::types::STATIC_CPU_COUNT;
+    
     if index == 0 {
         return Err("Stack request for BSP");
     }
@@ -228,11 +226,20 @@ unsafe fn stack_for(index: usize) -> Result<u64, &'static str> {
     if stack_index >= MAX_CPUS - 1 {
         return Err("No AP stack slot available");
     }
-    // Access aligned stack, stack grows downward so return top address
-    // Ensure stack top is 16-byte aligned as required by x86_64 ABI
-    let stack_base = ptr::addr_of!(AP_STACKS[stack_index].0) as usize;
-    let stack_top = stack_base + AP_STACK_SIZE;
-    let aligned_top = stack_top & !0xF; // Align down to 16 bytes
+    
+    // Use static array for CPUs 1..STATIC_CPU_COUNT, dynamic allocation for the rest
+    let aligned_top = if index < STATIC_CPU_COUNT {
+        // Access aligned stack, stack grows downward so return top address
+        // Ensure stack top is 16-byte aligned as required by x86_64 ABI
+        let stack_base = ptr::addr_of!(AP_STACKS[stack_index].0) as usize;
+        let stack_top = stack_base + AP_STACK_SIZE;
+        stack_top & !0xF // Align down to 16 bytes
+    } else {
+        // Use dynamically allocated stack for CPUs >= STATIC_CPU_COUNT
+        let stack_top = super::alloc::get_ap_stack_top(index)
+            .map_err(|_| "Failed to get dynamic AP stack")?;
+        stack_top as usize
+    };
 
     // NOTE: Static variable addresses don't need relocation because:
     // 1. The kernel code accesses them using link-time addresses
@@ -241,6 +248,37 @@ unsafe fn stack_for(index: usize) -> Result<u64, &'static str> {
     crate::kinfo!("SMP: [{}] Stack top: {:#x}", index, aligned_top);
 
     Ok(aligned_top as u64)
+}
+
+/// Get boot arguments pointer for an AP
+/// Uses static array for CPUs < STATIC_CPU_COUNT, dynamic allocation for the rest
+unsafe fn get_boot_args_ptr(index: usize, apic_id: u32) -> Result<u64, &'static str> {
+    use super::types::STATIC_CPU_COUNT;
+    
+    if index >= MAX_CPUS {
+        return Err("CPU index out of bounds");
+    }
+    
+    let arg_ptr = if index < STATIC_CPU_COUNT {
+        // Use static array
+        AP_BOOT_ARGS[index] = ApBootArgs {
+            cpu_index: index as u32,
+            apic_id,
+        };
+        (&AP_BOOT_ARGS[index] as *const ApBootArgs) as u64
+    } else {
+        // Use dynamically allocated boot args
+        let ptr = super::alloc::get_boot_args_ptr(index)
+            .map_err(|_| "Failed to get dynamic boot args")?;
+        // Initialize the boot args
+        (*ptr) = ApBootArgs {
+            cpu_index: index as u32,
+            apic_id,
+        };
+        ptr as u64
+    };
+    
+    Ok(arg_ptr)
 }
 
 /// Busy wait for a number of iterations
@@ -576,11 +614,13 @@ pub unsafe fn prepare_all_aps(count: usize) -> Result<usize, &'static str> {
         };
 
         // Prepare boot arguments
-        AP_BOOT_ARGS[index] = ApBootArgs {
-            cpu_index: index as u32,
-            apic_id: info.apic_id,
+        let arg_ptr = match get_boot_args_ptr(index, info.apic_id) {
+            Ok(ptr) => ptr,
+            Err(e) => {
+                crate::kwarn!("SMP: [Parallel] Skip AP {} - boot args error: {}", index, e);
+                continue;
+            }
         };
-        let arg_ptr = (&AP_BOOT_ARGS[index] as *const ApBootArgs) as u64;
 
         // Write per-CPU trampoline data
         let per_cpu_data = PerCpuTrampolineData {
