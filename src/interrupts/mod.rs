@@ -32,4 +32,4 @@ pub use gs_context::{
     GS_SLOT_USER_RSP_DEBUG, GS_SLOT_USER_SS, GS_SLOT_USER_STACK,
 };
 pub use handlers::{PIC_1_OFFSET, PIC_2_OFFSET, PICS};
-pub use idt::{init_interrupts, init_interrupts_ap, is_idt_initialized, setup_syscall};
+pub use idt::{init_interrupts, init_interrupts_ap, is_idt_initialized, is_cpu_idt_initialized, setup_syscall};

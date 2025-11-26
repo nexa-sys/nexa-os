@@ -2,6 +2,17 @@
 //!
 //! This module contains type definitions for SMP (Symmetric Multi-Processing) support,
 //! including per-CPU data structures, CPU status, and boot argument types.
+//!
+//! # Per-CPU Architecture
+//!
+//! Each CPU (BSP and APs) has dedicated per-CPU resources:
+//! - **GDT/TSS**: Per-CPU Global Descriptor Table and Task State Segment (see `gdt.rs`)
+//! - **IDT**: Per-CPU Interrupt Descriptor Table (see `interrupts/idt.rs`)
+//! - **GS data**: Per-CPU segment data for syscall/interrupt handling
+//! - **Stacks**: Kernel stack, double fault stack, error code stack per CPU
+//! - **Runtime data**: `CpuData` structure for scheduling and statistics
+//!
+//! This isolation ensures true SMP safety without shared mutable state contention.
 
 use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8};

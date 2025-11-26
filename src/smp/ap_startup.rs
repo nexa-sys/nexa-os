@@ -389,6 +389,12 @@ extern "C" fn ap_entry_inner(arg: *const ApBootArgs) -> ! {
         crate::safety::serial_debug_str("AP_GDT_OK\n");
         core::sync::atomic::compiler_fence(Ordering::SeqCst);
 
+        // Step 2b: Initialize per-CPU IDT for this AP core
+        // This replaces the shared BSP IDT with a dedicated per-CPU IDT
+        crate::interrupts::init_interrupts_ap(idx);
+        crate::safety::serial_debug_str("AP_IDT_OK\n");
+        core::sync::atomic::compiler_fence(Ordering::SeqCst);
+
         // Now we can log safely
         crate::kinfo!("SMP: AP core {} online (APIC {:#x})", idx, args.apic_id);
 

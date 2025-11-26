@@ -3,13 +3,27 @@
 //! This module handles the Interrupt Descriptor Table (IDT) setup,
 //! including exception handlers, hardware interrupt handlers, and
 //! syscall gates.
+//!
+//! # Per-CPU IDT Architecture
+//!
+//! Each CPU (BSP and APs) has its own dedicated IDT to enable:
+//! - Per-CPU IST stack configuration for isolation
+//! - Independent interrupt handling without cross-core contention
+//! - True SMP safety with no shared mutable state
+//!
+//! The BSP's IDT is initialized via `init_interrupts()`, while AP cores
+//! initialize their own IDTs via `init_interrupts_ap(cpu_id)`.
 
+use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use lazy_static::lazy_static;
 use x86_64::instructions::port::Port;
 use x86_64::registers::model_specific::Msr;
 use x86_64::structures::idt::InterruptDescriptorTable;
 use x86_64::PrivilegeLevel;
+
+/// Maximum number of CPUs supported (must match acpi::MAX_CPUS)
+const MAX_CPUS: usize = 16;
 
 use crate::interrupts::exceptions::*;
 use crate::interrupts::gs_context::GS_SLOT_KERNEL_RSP;
@@ -32,35 +46,43 @@ const ENABLE_SYSCALL_MSRS: bool = true;
 
 /// SMP/Multi-core IDT Strategy Documentation
 ///
-/// CURRENT IMPLEMENTATION (Single-core):
-/// - This IDT is shared across all cores (if SMP is enabled in future)
-/// - Initialization happens on the BSP (Bootstrap Processor) only
-/// - APs (Application Processors) will load the same IDT via IDT.load()
-/// - This is safe for read-only operations but limits per-core customization
+/// CURRENT IMPLEMENTATION (Per-CPU IDT):
+/// - Each CPU (BSP and APs) has its own dedicated IDT
+/// - BSP uses the lazy_static IDT (index 0 in per-CPU array)
+/// - APs initialize their own IDT via init_interrupts_ap(cpu_id)
+/// - Each IDT can have independent IST stack configurations
 ///
-/// ASSUMPTIONS:
-/// 1. IDT initialization completes on BSP before any AP starts
-/// 2. All cores share the same interrupt handlers (no per-core handlers yet)
-/// 3. IST (Interrupt Stack Table) entries point to BSP stacks (NOT per-core)
-/// 4. No concurrent modifications to IDT after initialization
+/// BENEFITS:
+/// 1. True per-CPU isolation - no shared mutable IDT state
+/// 2. Per-CPU IST stacks prevent stack corruption in multi-core scenarios
+/// 3. Independent interrupt handling without cross-core cache contention
+/// 4. Future: Per-CPU interrupt affinity and customization
 ///
-/// FUTURE SMP IMPROVEMENTS (TODO):
-/// - Implement per-core IDT tables for true isolation
-/// - Per-core IST stacks to avoid stack corruption in multi-core scenarios
-/// - Per-core interrupt affinity and load balancing
-/// - Spinlock protection for any runtime IDT modifications
-/// - Proper APIC initialization and IPI handling
-///
-/// TEMPORARY PROTECTION:
-/// - IDT_INITIALIZED flag prevents re-initialization
-/// - lazy_static ensures single initialization even with concurrent access
+/// SAFETY GUARANTEES:
+/// - Per-CPU IDT initialized flags prevent re-initialization
+/// - Each CPU's IDT is only modified by that CPU during init
 /// - interrupts::disable() during init prevents race conditions
+/// - Memory barriers ensure visibility across cores
 ///
 /// See: https://wiki.osdev.org/SMP for SMP initialization sequence
 /// See: https://wiki.osdev.org/APIC for advanced interrupt routing
 
-/// Flag to track if IDT has been initialized (prevents re-initialization)
+/// Flag to track if BSP IDT has been initialized (prevents re-initialization)
 static IDT_INITIALIZED: AtomicBool = AtomicBool::new(false);
+
+/// Per-CPU IDT initialized flags
+static PER_CPU_IDT_INITIALIZED: [AtomicBool; MAX_CPUS] = [
+    AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false),
+    AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false),
+    AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false),
+    AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false),
+];
+
+/// Per-CPU IDT storage (CPU 0/BSP uses the lazy_static IDT, APs use this array)
+/// Using MaybeUninit to avoid requiring Default/Copy for InterruptDescriptorTable
+static mut PER_CPU_IDT: [MaybeUninit<InterruptDescriptorTable>; MAX_CPUS] = unsafe {
+    MaybeUninit::uninit().assume_init()
+};
 
 lazy_static! {
     /// Global IDT instance - using lazy_static to avoid stack overflow
@@ -238,22 +260,149 @@ pub fn is_idt_initialized() -> bool {
     IDT_INITIALIZED.load(AtomicOrdering::SeqCst)
 }
 
-/// Load IDT on an AP (Application Processor) core
+/// Initialize and load a per-CPU IDT on an AP (Application Processor) core
 ///
-/// This function should be called by AP cores after BSP has initialized
-/// the shared IDT. It only loads the IDT without re-initializing PICs.
+/// This function creates a dedicated IDT for the specified AP core, configuring
+/// per-CPU IST stacks for exception handlers. Each AP gets its own IDT to enable:
+/// - True isolation from other cores
+/// - Per-CPU IST stacks to prevent stack corruption
+/// - Independent interrupt handling
+///
+/// # Arguments
+/// * `cpu_id` - The CPU index (1..MAX_CPUS for APs, 0 is BSP)
+///
+/// # Safety
+/// Must be called with interrupts disabled. The cpu_id must be valid and
+/// correspond to the currently executing CPU. The SMP initialization sequence
+/// must ensure BSP's IDT is initialized before starting APs.
 ///
 /// REQUIREMENTS:
-/// - BSP must have called init_interrupts() first
-/// - Interrupts should be disabled before calling
-/// - PICs are already initialized by BSP
+/// - Interrupts must be disabled before calling
+/// - cpu_id must be > 0 (APs only) and < MAX_CPUS
+/// - SMP startup sequence must ensure proper ordering (BSP IDT before AP startup)
 ///
-/// TODO: In future SMP implementation, this should:
-/// - Load per-core IDT instead of shared IDT
-/// - Set up per-core APIC instead of PIC
-/// - Configure per-core IST stacks
+/// NOTE: Due to kernel relocation, we cannot reliably check IDT_INITIALIZED from AP
+/// cores (they may see stale values). The SMP startup sequence guarantees ordering.
 #[allow(dead_code)]
-pub fn init_interrupts_ap() {
+pub fn init_interrupts_ap(cpu_id: usize) {
+    // Ensure interrupts are disabled
+    x86_64::instructions::interrupts::disable();
+
+    // Validate cpu_id
+    if cpu_id == 0 {
+        crate::kpanic!("init_interrupts_ap called for BSP (cpu_id=0), use init_interrupts instead");
+    }
+    if cpu_id >= MAX_CPUS {
+        crate::kpanic!("init_interrupts_ap: cpu_id {} exceeds MAX_CPUS {}", cpu_id, MAX_CPUS);
+    }
+
+    // NOTE: We skip checking IDT_INITIALIZED because AP cores may see stale values
+    // due to kernel relocation (AP runs at link-time addresses, BSP at relocated).
+    // The SMP startup sequence guarantees BSP's init_interrupts() completes before
+    // any AP reaches this point (AP startup IPIs are sent after init_interrupts()).
+
+    // Check if this AP's IDT is already initialized (using per-CPU flag at link address)
+    // This check is valid because we're checking the per-CPU flag which is set by this
+    // same AP, not by BSP
+    if PER_CPU_IDT_INITIALIZED[cpu_id].load(AtomicOrdering::SeqCst) {
+        crate::kwarn!("init_interrupts_ap: CPU {} IDT already initialized, skipping", cpu_id);
+        return;
+    }
+
+    crate::kinfo!("init_interrupts_ap: Initializing per-CPU IDT for AP core {}", cpu_id);
+
+    // Get IST indices (same as BSP)
+    let error_code_ist = crate::gdt::ERROR_CODE_IST_INDEX as u16;
+
+    unsafe {
+        // Create a new IDT for this AP
+        let idt = PER_CPU_IDT[cpu_id].as_mut_ptr();
+        
+        // Initialize with a new InterruptDescriptorTable
+        core::ptr::write(idt, InterruptDescriptorTable::new());
+        let idt_ref = &mut *idt;
+
+        // Set up exception handlers (same as BSP)
+        idt_ref.breakpoint.set_handler_fn(breakpoint_handler);
+        idt_ref.page_fault
+            .set_handler_fn(page_fault_handler)
+            .set_stack_index(error_code_ist);
+        idt_ref.general_protection_fault
+            .set_handler_fn(general_protection_fault_handler)
+            .set_stack_index(error_code_ist);
+        idt_ref.divide_error.set_handler_fn(divide_error_handler);
+        idt_ref.double_fault
+            .set_handler_fn(double_fault_handler)
+            .set_stack_index(crate::gdt::DOUBLE_FAULT_IST_INDEX as u16);
+        idt_ref.segment_not_present
+            .set_handler_fn(segment_not_present_handler)
+            .set_stack_index(error_code_ist);
+        idt_ref.invalid_opcode.set_handler_fn(invalid_opcode_handler);
+        idt_ref.invalid_tss
+            .set_handler_fn(segment_not_present_handler)
+            .set_stack_index(error_code_ist);
+        idt_ref.stack_segment_fault
+            .set_handler_fn(segment_not_present_handler)
+            .set_stack_index(error_code_ist);
+
+        // Set up hardware interrupts (APs also need these for timer, etc.)
+        idt_ref[PIC_1_OFFSET].set_handler_fn(timer_interrupt_handler);
+        idt_ref[PIC_1_OFFSET + 1].set_handler_fn(keyboard_interrupt_handler);
+        idt_ref[PIC_1_OFFSET + 2].set_handler_fn(spurious_irq2_handler);
+        idt_ref[PIC_1_OFFSET + 3].set_handler_fn(spurious_irq3_handler);
+        idt_ref[PIC_1_OFFSET + 4].set_handler_fn(spurious_irq4_handler);
+        idt_ref[PIC_1_OFFSET + 5].set_handler_fn(spurious_irq5_handler);
+        idt_ref[PIC_1_OFFSET + 6].set_handler_fn(spurious_irq6_handler);
+        idt_ref[PIC_1_OFFSET + 7].set_handler_fn(spurious_irq7_handler);
+
+        idt_ref[PIC_2_OFFSET].set_handler_fn(spurious_irq8_handler);
+        idt_ref[PIC_2_OFFSET + 1].set_handler_fn(spurious_irq9_handler);
+        idt_ref[PIC_2_OFFSET + 2].set_handler_fn(spurious_irq10_handler);
+        idt_ref[PIC_2_OFFSET + 3].set_handler_fn(spurious_irq11_handler);
+        idt_ref[PIC_2_OFFSET + 4].set_handler_fn(spurious_irq12_handler);
+        idt_ref[PIC_2_OFFSET + 5].set_handler_fn(spurious_irq13_handler);
+        idt_ref[PIC_2_OFFSET + 6].set_handler_fn(spurious_irq14_handler);
+        idt_ref[PIC_2_OFFSET + 7].set_handler_fn(spurious_irq15_handler);
+
+        // Set up syscall interrupt handler at 0x81 (callable from Ring 3)
+        idt_ref[0x81]
+            .set_handler_addr(x86_64::VirtAddr::new_truncate(
+                syscall_interrupt_handler as u64,
+            ))
+            .set_privilege_level(PrivilegeLevel::Ring3);
+
+        // Set up ring3 switch handler at 0x80 (also callable from Ring 3)
+        idt_ref[0x80]
+            .set_handler_addr(x86_64::VirtAddr::new_truncate(ring3_switch_handler as u64))
+            .set_privilege_level(PrivilegeLevel::Ring3);
+
+        // Set up IPI handlers for SMP (vectors 0xF0-0xF3)
+        idt_ref[0xF0].set_handler_fn(ipi_reschedule_handler);
+        idt_ref[0xF1].set_handler_fn(ipi_tlb_flush_handler);
+        idt_ref[0xF2].set_handler_fn(ipi_call_function_handler);
+        idt_ref[0xF3].set_handler_fn(ipi_halt_handler);
+
+        // Mark as initialized before loading
+        PER_CPU_IDT_INITIALIZED[cpu_id].store(true, AtomicOrdering::SeqCst);
+
+        // Ensure all writes are visible
+        core::sync::atomic::compiler_fence(AtomicOrdering::SeqCst);
+
+        // Load the per-CPU IDT
+        idt_ref.load();
+
+        // Ensure load completes
+        core::sync::atomic::compiler_fence(AtomicOrdering::SeqCst);
+    }
+
+    crate::kinfo!("init_interrupts_ap: Per-CPU IDT loaded for AP core {}", cpu_id);
+}
+
+/// Legacy wrapper for backward compatibility - loads shared BSP IDT on AP
+/// Deprecated: Use init_interrupts_ap(cpu_id) for proper per-CPU IDT support
+#[allow(dead_code)]
+#[deprecated(note = "Use init_interrupts_ap(cpu_id) for per-CPU IDT support")]
+pub fn init_interrupts_ap_legacy() {
     // Ensure interrupts are disabled
     x86_64::instructions::interrupts::disable();
 
@@ -262,14 +411,27 @@ pub fn init_interrupts_ap() {
         crate::kpanic!("AP attempted to load IDT before BSP initialization");
     }
 
-    crate::kinfo!("init_interrupts_ap: Loading IDT on AP core");
+    crate::kwarn!("init_interrupts_ap_legacy: Loading shared BSP IDT (not recommended)");
 
     // Load the shared IDT on this core
     core::sync::atomic::compiler_fence(AtomicOrdering::SeqCst);
     IDT.load();
     core::sync::atomic::compiler_fence(AtomicOrdering::SeqCst);
 
-    crate::kinfo!("init_interrupts_ap: IDT loaded on AP core");
+    crate::kinfo!("init_interrupts_ap_legacy: Shared IDT loaded on AP core");
+}
+
+/// Check if a specific CPU's IDT has been initialized
+#[allow(dead_code)]
+pub fn is_cpu_idt_initialized(cpu_id: usize) -> bool {
+    if cpu_id >= MAX_CPUS {
+        return false;
+    }
+    if cpu_id == 0 {
+        IDT_INITIALIZED.load(AtomicOrdering::SeqCst)
+    } else {
+        PER_CPU_IDT_INITIALIZED[cpu_id].load(AtomicOrdering::SeqCst)
+    }
 }
 
 /// Set up SYSCALL/SYSRET MSRs for fast system call handling
