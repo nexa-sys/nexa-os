@@ -674,15 +674,15 @@ impl Inode {
     }
 }
 
-impl super::FileSystem for Ext2Filesystem {
+impl super::vfs::FileSystem for Ext2Filesystem {
     fn name(&self) -> &'static str {
         "ext2"
     }
 
-    fn read(&self, path: &str) -> Option<super::OpenFile> {
+    fn read(&self, path: &str) -> Option<super::vfs::OpenFile> {
         let file_ref = self.lookup(path)?;
-        Some(super::OpenFile {
-            content: super::FileContent::Ext2(file_ref),
+        Some(super::vfs::OpenFile {
+            content: super::vfs::FileContent::Ext2(file_ref),
             metadata: file_ref.metadata(),
         })
     }

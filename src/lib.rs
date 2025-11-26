@@ -4,39 +4,72 @@
 
 extern crate alloc;
 
-mod acpi;
-pub mod allocator;
+// Core architecture and hardware
 pub mod arch;
-pub mod auth;
-pub mod boot_stages;
-pub mod bootinfo;
-pub mod elf;
-pub mod framebuffer;
+pub mod drivers;
+
+// Boot and initialization
+pub mod boot;
+
+// Memory management
+pub mod mm;
+
+// Filesystem
 pub mod fs;
-pub mod gdt;
-pub mod init;
-pub mod initramfs;
-pub mod interrupts;
+
+// Inter-process communication
 pub mod ipc;
-pub mod keyboard;
-pub mod lapic;
-pub mod logger;
-pub mod memory;
-pub mod net;
-pub mod numa;
-pub mod paging;
-pub mod pipe;
-pub mod posix;
+
+// Terminal/TTY
+pub mod tty;
+
+// Security
+pub mod security;
+
+// Process and scheduling
 pub mod process;
-pub mod safety;
 pub mod scheduler;
-pub mod serial;
-pub mod signal;
-pub mod smp;
+
+// Interrupts and system calls
+pub mod interrupts;
 pub mod syscalls;
-pub mod uefi_compat;
-pub mod vga_buffer;
-pub mod vt;
+
+// Networking
+pub mod net;
+
+// SMP (Symmetric Multi-Processing)
+pub mod smp;
+
+// Safety utilities
+pub mod safety;
+
+// Logging and POSIX compatibility
+pub mod logger;
+pub mod posix;
+
+// Module aliases for backward compatibility
+pub use boot::info as bootinfo;
+pub use boot::init;
+pub use boot::stages as boot_stages;
+pub use boot::uefi as uefi_compat;
+pub use drivers::acpi;
+pub use drivers::framebuffer;
+pub use drivers::keyboard;
+pub use drivers::serial;
+pub use drivers::vga as vga_buffer;
+pub use fs::initramfs;
+pub use ipc::pipe;
+pub use ipc::signal;
+pub use mm::allocator;
+pub use mm::memory;
+pub use mm::numa;
+pub use mm::paging;
+pub use mm::vmalloc;
+pub use security::auth;
+pub use security::elf;
+pub use tty::vt;
+pub use arch::gdt;
+pub use arch::lapic;
 
 use core::panic::PanicInfo;
 use multiboot2::{BootInformation, BootInformationHeader};

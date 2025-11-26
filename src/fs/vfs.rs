@@ -5,7 +5,7 @@ use crate::bootinfo;
 use crate::posix::{self, FileType, Metadata};
 use crate::safety::{static_slice_from_raw_parts, StaticBufferAccessor};
 
-pub mod ext2;
+use super::ext2;
 
 // Default ni configuration shipped when initramfs does not provide one.
 // The format mirrors a minimal subset of systemd units with an Init section

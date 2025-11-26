@@ -225,33 +225,45 @@ impl VmallocAllocator {
 
     /// Free virtual memory
     pub fn free(&mut self, virt_addr: u64) {
-        // Find and remove area
-        for slot in self.areas.iter_mut() {
+        // Find the area first and collect information we need
+        let mut found_idx = None;
+        let mut area_size = 0u64;
+        let mut area_virt_start = 0u64;
+        let mut phys_pages_to_free: [Option<u64>; 256] = [None; 256];
+
+        for (idx, slot) in self.areas.iter().enumerate() {
             if let Some(area) = slot {
                 if area.virt_start == virt_addr {
-                    self.stats.frees += 1;
-                    self.stats.bytes_freed += area.size;
-
-                    // Unmap pages
-                    self.unmap_area(area.virt_start, area.size);
-
-                    // Free physical pages
-                    for phys_page in area.phys_pages.iter() {
-                        if let Some(phys) = phys_page {
-                            self.free_physical_page(*phys);
-                        }
-                    }
-
-                    *slot = None;
-                    self.area_count -= 1;
-
-                    crate::kdebug!("vmalloc: freed {:#x} bytes at {:#x}", area.size, virt_addr);
-                    return;
+                    found_idx = Some(idx);
+                    area_size = area.size;
+                    area_virt_start = area.virt_start;
+                    phys_pages_to_free.copy_from_slice(&area.phys_pages);
+                    break;
                 }
             }
         }
 
-        crate::kerror!("vmalloc: attempted to free invalid address {:#x}", virt_addr);
+        if let Some(idx) = found_idx {
+            self.stats.frees += 1;
+            self.stats.bytes_freed += area_size;
+
+            // Unmap pages
+            self.unmap_area(area_virt_start, area_size);
+
+            // Free physical pages
+            for phys_page in phys_pages_to_free.iter() {
+                if let Some(phys) = phys_page {
+                    self.free_physical_page(*phys);
+                }
+            }
+
+            self.areas[idx] = None;
+            self.area_count -= 1;
+
+            crate::kdebug!("vmalloc: freed {:#x} bytes at {:#x}", area_size, virt_addr);
+        } else {
+            crate::kerror!("vmalloc: attempted to free invalid address {:#x}", virt_addr);
+        }
     }
 
     /// Map physical pages to virtual area
@@ -437,52 +449,67 @@ impl VmallocAllocator {
 
     /// Handle page fault for lazy allocation
     pub fn handle_page_fault(&mut self, virt_addr: u64) -> Result<(), &'static str> {
-        // Find area containing this address
-        for slot in self.areas.iter_mut() {
+        // First pass: find the area and collect necessary information
+        let mut found_idx = None;
+        let mut page_idx = 0usize;
+        let mut area_flags = VmFlags::NONE;
+        let mut is_lazy = false;
+        let mut already_mapped = false;
+        let mut area_virt_start = 0u64;
+
+        for (idx, slot) in self.areas.iter().enumerate() {
             if let Some(area) = slot {
                 if virt_addr >= area.virt_start && virt_addr < area.virt_start + area.size {
-                    if !area.flags.contains(VmFlags::LAZY) {
+                    is_lazy = area.flags.contains(VmFlags::LAZY);
+                    if !is_lazy {
                         return Err("Page fault in non-lazy area");
                     }
 
-                    // Calculate page index
                     let page_offset = virt_addr - area.virt_start;
-                    let page_idx = (page_offset / PAGE_SIZE) as usize;
+                    page_idx = (page_offset / PAGE_SIZE) as usize;
 
                     if page_idx >= area.phys_pages.len() {
                         return Err("Page index out of bounds");
                     }
 
-                    // Check if already mapped
-                    if area.phys_pages[page_idx].is_some() {
+                    already_mapped = area.phys_pages[page_idx].is_some();
+                    if already_mapped {
                         return Ok(());
                     }
 
-                    // Allocate and map page
-                    let phys = self.allocate_physical_page()?;
-                    let virt_page = area.virt_start + (page_idx as u64 * PAGE_SIZE);
-
-                    unsafe {
-                        self.map_page(virt_page, phys, area.flags)?;
-                    }
-
-                    area.phys_pages[page_idx] = Some(phys);
-                    area.mapped_pages += 1;
-
-                    self.stats.lazy_faults += 1;
-
-                    crate::kdebug!(
-                        "vmalloc: lazy fault handled at {:#x}, mapped phys {:#x}",
-                        virt_addr,
-                        phys
-                    );
-
-                    return Ok(());
+                    found_idx = Some(idx);
+                    area_flags = area.flags;
+                    area_virt_start = area.virt_start;
+                    break;
                 }
             }
         }
 
-        Err("Address not in any vmalloc area")
+        let idx = found_idx.ok_or("Address not in any vmalloc area")?;
+
+        // Second pass: allocate and map page
+        let phys = self.allocate_physical_page()?;
+        let virt_page = area_virt_start + (page_idx as u64 * PAGE_SIZE);
+
+        unsafe {
+            self.map_page(virt_page, phys, area_flags)?;
+        }
+
+        // Update the area
+        if let Some(area) = &mut self.areas[idx] {
+            area.phys_pages[page_idx] = Some(phys);
+            area.mapped_pages += 1;
+        }
+
+        self.stats.lazy_faults += 1;
+
+        crate::kdebug!(
+            "vmalloc: lazy fault handled at {:#x}, mapped phys {:#x}",
+            virt_addr,
+            phys
+        );
+
+        Ok(())
     }
 
     /// Get statistics
