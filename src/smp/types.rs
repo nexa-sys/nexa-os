@@ -209,11 +209,23 @@ pub static mut BSP_APIC_ID: u32 = 0;
 // ============================================================================
 
 /// Get CPU data by index (unsafe - caller must ensure index is valid)
+/// Automatically handles static vs dynamic allocation based on CPU index.
 pub unsafe fn cpu_data(idx: usize) -> &'static CpuData {
-    CPU_DATA[idx].assume_init_ref()
+    if idx < STATIC_CPU_COUNT {
+        CPU_DATA[idx].assume_init_ref()
+    } else {
+        // Use dynamic allocation for CPUs beyond static limit
+        super::alloc::get_cpu_data(idx).expect("CPU data not allocated")
+    }
 }
 
 /// Get CPU info by index (unsafe - caller must ensure index is valid)
+/// Automatically handles static vs dynamic allocation based on CPU index.
 pub unsafe fn cpu_info(idx: usize) -> &'static CpuInfo {
-    CPU_INFOS[idx].assume_init_ref()
+    if idx < STATIC_CPU_COUNT {
+        CPU_INFOS[idx].assume_init_ref()
+    } else {
+        // Use dynamic allocation for CPUs beyond static limit
+        super::alloc::get_cpu_info(idx).expect("CPU info not allocated")
+    }
 }
