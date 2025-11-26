@@ -62,7 +62,11 @@ pub use priority::{
 pub use core::{do_schedule, do_schedule_from_interrupt, init, schedule, tick};
 
 // Re-export SMP functions
-pub use smp::{balance_load, get_cpu_affinity, get_preferred_cpu, set_cpu_affinity};
+pub use smp::{
+    balance_load, get_cpu_affinity, get_preferred_cpu, set_cpu_affinity,
+    // NUMA-aware functions
+    get_numa_preferred_node, set_numa_policy, set_numa_preferred_node,
+};
 
 // Re-export statistics functions
 pub use stats::{

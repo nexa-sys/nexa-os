@@ -78,6 +78,9 @@ pub fn add_process_with_policy(
                 voluntary_switches: 0,
                 cpu_affinity: 0xFFFFFFFF, // All CPUs by default
                 last_cpu: 0,
+                // NUMA fields
+                numa_preferred_node: crate::numa::NUMA_NO_NODE,
+                numa_policy: crate::numa::NumaPolicy::Local,
             });
             
             drop(table);

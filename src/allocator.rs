@@ -766,6 +766,209 @@ pub enum MemoryZone {
     High,
 }
 
+// =============================================================================
+// NUMA-Aware Memory Allocation
+// =============================================================================
+
+/// Per-NUMA node heap allocator
+pub struct NumaNodeAllocator {
+    /// NUMA node ID
+    node_id: u32,
+    /// Heap for this node
+    heap: KernelHeap,
+    /// Whether this node is initialized
+    initialized: bool,
+}
+
+impl NumaNodeAllocator {
+    const fn new() -> Self {
+        Self {
+            node_id: 0,
+            heap: KernelHeap::new(),
+            initialized: false,
+        }
+    }
+
+    fn init(&mut self, node_id: u32, base: u64, size: u64) {
+        self.node_id = node_id;
+        self.heap.init(base, size);
+        self.initialized = true;
+        crate::kinfo!(
+            "NUMA node {} allocator: {:#x} - {:#x} ({} MB)",
+            node_id,
+            base,
+            base + size,
+            size / (1024 * 1024)
+        );
+    }
+
+    fn allocate(&mut self, size: usize) -> Option<u64> {
+        if !self.initialized {
+            return None;
+        }
+        self.heap.allocate(size)
+    }
+
+    fn free(&mut self, addr: u64) {
+        if !self.initialized {
+            return;
+        }
+        self.heap.free(addr);
+    }
+}
+
+/// NUMA-aware allocator managing per-node heaps
+pub struct NumaAllocator {
+    /// Per-node allocators
+    nodes: [NumaNodeAllocator; crate::numa::MAX_NUMA_NODES],
+    /// Whether NUMA allocation is active
+    active: bool,
+}
+
+impl NumaAllocator {
+    const fn new() -> Self {
+        Self {
+            nodes: [const { NumaNodeAllocator::new() }; crate::numa::MAX_NUMA_NODES],
+            active: false,
+        }
+    }
+
+    /// Initialize NUMA allocator from NUMA topology
+    pub fn init(&mut self) {
+        if !crate::numa::is_initialized() {
+            crate::kinfo!("NUMA allocator: NUMA not available, using UMA mode");
+            return;
+        }
+
+        let node_count = crate::numa::node_count();
+        if node_count <= 1 {
+            crate::kinfo!("NUMA allocator: Single node, using UMA mode");
+            return;
+        }
+
+        // Initialize allocators for each NUMA node based on memory affinity
+        for entry in crate::numa::memory_affinity_entries() {
+            if entry.numa_node < crate::numa::MAX_NUMA_NODES as u32 {
+                let node_idx = entry.numa_node as usize;
+                if !self.nodes[node_idx].initialized {
+                    self.nodes[node_idx].init(entry.numa_node, entry.base, entry.size);
+                }
+            }
+        }
+
+        self.active = true;
+        crate::kinfo!("NUMA allocator initialized with {} nodes", node_count);
+    }
+
+    /// Allocate memory on a specific NUMA node
+    pub fn allocate_on_node(&mut self, size: usize, node: u32) -> Option<*mut u8> {
+        if !self.active {
+            return None;
+        }
+
+        if node >= crate::numa::MAX_NUMA_NODES as u32 {
+            return None;
+        }
+
+        self.nodes[node as usize]
+            .allocate(size)
+            .map(|addr| addr as *mut u8)
+    }
+
+    /// Allocate memory with NUMA policy
+    pub fn allocate_with_policy(
+        &mut self,
+        size: usize,
+        policy: crate::numa::NumaPolicy,
+    ) -> Option<*mut u8> {
+        if !self.active {
+            return None;
+        }
+
+        let target_node = crate::numa::best_node_for_policy(policy);
+        self.allocate_on_node(size, target_node)
+    }
+
+    /// Free memory (determines node from address)
+    pub fn free(&mut self, addr: u64) {
+        if !self.active {
+            return;
+        }
+
+        // Determine which node this address belongs to
+        let node = crate::numa::addr_to_node(addr);
+        if node < crate::numa::MAX_NUMA_NODES as u32 {
+            self.nodes[node as usize].free(addr);
+        }
+    }
+
+    /// Check if NUMA allocation is active
+    pub fn is_active(&self) -> bool {
+        self.active
+    }
+}
+
+static NUMA_ALLOCATOR: Mutex<NumaAllocator> = Mutex::new(NumaAllocator::new());
+
+/// Initialize the NUMA-aware allocator
+pub fn init_numa_allocator() {
+    let mut allocator = NUMA_ALLOCATOR.lock();
+    allocator.init();
+}
+
+/// Allocate memory on the local NUMA node (where current CPU is)
+pub fn numa_alloc_local(size: usize) -> Option<*mut u8> {
+    let mut allocator = NUMA_ALLOCATOR.lock();
+    if !allocator.is_active() {
+        // Fall back to regular allocation
+        return kalloc(size);
+    }
+    let local_node = crate::numa::current_node();
+    allocator.allocate_on_node(size, local_node).or_else(|| {
+        // Fall back to regular allocation if node allocation fails
+        drop(allocator);
+        kalloc(size)
+    })
+}
+
+/// Allocate memory on a specific NUMA node
+pub fn numa_alloc_on_node(size: usize, node: u32) -> Option<*mut u8> {
+    let mut allocator = NUMA_ALLOCATOR.lock();
+    if !allocator.is_active() {
+        return kalloc(size);
+    }
+    allocator.allocate_on_node(size, node).or_else(|| {
+        drop(allocator);
+        kalloc(size)
+    })
+}
+
+/// Allocate memory with a NUMA policy
+pub fn numa_alloc_policy(size: usize, policy: crate::numa::NumaPolicy) -> Option<*mut u8> {
+    let mut allocator = NUMA_ALLOCATOR.lock();
+    if !allocator.is_active() {
+        return kalloc(size);
+    }
+    allocator.allocate_with_policy(size, policy).or_else(|| {
+        drop(allocator);
+        kalloc(size)
+    })
+}
+
+/// Free NUMA-allocated memory
+pub fn numa_free(ptr: *mut u8) {
+    if ptr.is_null() {
+        return;
+    }
+    let mut allocator = NUMA_ALLOCATOR.lock();
+    if allocator.is_active() {
+        allocator.free(ptr as u64);
+    } else {
+        drop(allocator);
+        kfree(ptr);
+    }
+}
+
 pub struct ZoneAllocator {
     dma_heap: KernelHeap,
     normal_heap: KernelHeap,

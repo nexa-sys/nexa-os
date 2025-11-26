@@ -1,7 +1,7 @@
 //! SMP (Symmetric Multi-Processing) and CPU affinity functions
 //!
 //! This module contains functions for managing CPU affinity and load balancing
-//! across multiple CPUs.
+//! across multiple CPUs with NUMA awareness.
 
 extern crate alloc;
 
@@ -107,6 +107,7 @@ fn try_migrate_process(
 }
 
 /// Perform load balancing across CPUs (called periodically)
+/// NUMA-aware: Prefers migration within the same NUMA node
 pub fn balance_load() {
     let cpu_count = crate::smp::cpu_count();
     if cpu_count <= 1 {
@@ -121,16 +122,126 @@ pub fn balance_load() {
         return;
     }
 
-    // Distribute processes round-robin across CPUs
-    for (idx, &pid) in ready_processes.iter().enumerate() {
-        let target_cpu = (idx % cpu_count) as u8;
-        try_migrate_process(&mut table, pid, target_cpu, &mut stats);
+    // NUMA-aware load balancing:
+    // 1. First try to distribute within NUMA nodes
+    // 2. Then balance across nodes if needed
+    let numa_node_count = crate::numa::node_count();
+
+    if numa_node_count <= 1 {
+        // Non-NUMA or single node: simple round-robin
+        for (idx, &pid) in ready_processes.iter().enumerate() {
+            let target_cpu = (idx % cpu_count) as u8;
+            try_migrate_process(&mut table, pid, target_cpu, &mut stats);
+        }
+    } else {
+        // NUMA-aware distribution
+        for &pid in ready_processes.iter() {
+            let preferred_node = get_preferred_numa_node(pid, &table);
+            let target_cpu = get_least_loaded_cpu_on_node(preferred_node);
+            try_migrate_process(&mut table, pid, target_cpu, &mut stats);
+        }
     }
 
     stats.load_balance_count += 1;
 }
 
-/// Get the recommended CPU for running a process (based on affinity and load)
+/// Get preferred NUMA node for a process based on its memory locality
+fn get_preferred_numa_node(
+    pid: Pid,
+    table: &[Option<super::types::ProcessEntry>; crate::process::MAX_PROCESSES],
+) -> u32 {
+    for slot in table.iter() {
+        let Some(entry) = slot else { continue };
+        if entry.process.pid != pid {
+            continue;
+        }
+
+        // Check if process has a preferred NUMA node set
+        if entry.numa_preferred_node != crate::numa::NUMA_NO_NODE {
+            return entry.numa_preferred_node;
+        }
+
+        // Otherwise, prefer the NUMA node of the last CPU used
+        if crate::numa::is_initialized() {
+            let last_cpu_apic = get_cpu_apic_id(entry.last_cpu);
+            return crate::numa::cpu_to_node(last_cpu_apic);
+        }
+
+        return 0;
+    }
+
+    0
+}
+
+/// Get the APIC ID for a given CPU index
+fn get_cpu_apic_id(cpu_index: u8) -> u32 {
+    let cpus = crate::acpi::cpus();
+    if (cpu_index as usize) < cpus.len() {
+        cpus[cpu_index as usize].apic_id as u32
+    } else {
+        0
+    }
+}
+
+/// Get the least loaded CPU on a specific NUMA node
+fn get_least_loaded_cpu_on_node(node: u32) -> u8 {
+    let cpu_count = crate::smp::cpu_count();
+    if cpu_count == 0 {
+        return 0;
+    }
+
+    // Collect CPUs on this node
+    let mut best_cpu = 0u8;
+    let mut min_load = u64::MAX;
+    let mut found_on_node = false;
+
+    for cpu_idx in 0..cpu_count {
+        let apic_id = get_cpu_apic_id(cpu_idx as u8);
+        let cpu_node = crate::numa::cpu_to_node(apic_id);
+
+        if cpu_node == node {
+            found_on_node = true;
+            // Get load for this CPU (simple count of processes assigned)
+            let load = count_processes_on_cpu(cpu_idx as u8);
+            if load < min_load {
+                min_load = load;
+                best_cpu = cpu_idx as u8;
+            }
+        }
+    }
+
+    // If no CPU found on node, fall back to any least loaded CPU
+    if !found_on_node {
+        for cpu_idx in 0..cpu_count {
+            let load = count_processes_on_cpu(cpu_idx as u8);
+            if load < min_load {
+                min_load = load;
+                best_cpu = cpu_idx as u8;
+            }
+        }
+    }
+
+    best_cpu
+}
+
+/// Count processes currently assigned to a CPU
+fn count_processes_on_cpu(cpu: u8) -> u64 {
+    let table = PROCESS_TABLE.lock();
+    let mut count = 0u64;
+
+    for slot in table.iter() {
+        let Some(entry) = slot else { continue };
+        if entry.process.state == ProcessState::Ready || entry.process.state == ProcessState::Running {
+            if entry.last_cpu == cpu {
+                count += 1;
+            }
+        }
+    }
+
+    count
+}
+
+/// Get the recommended CPU for running a process (based on affinity, NUMA, and load)
 pub fn get_preferred_cpu(pid: Pid) -> u8 {
     let cpu_count = crate::smp::cpu_count();
     if cpu_count <= 1 {
@@ -145,12 +256,25 @@ pub fn get_preferred_cpu(pid: Pid) -> u8 {
             continue;
         }
 
-        // Prefer the last CPU used (cache affinity)
+        // 1. Prefer the last CPU used (cache affinity) if allowed
         if (entry.cpu_affinity & (1 << entry.last_cpu)) != 0 {
             return entry.last_cpu;
         }
 
-        // Find first available CPU in affinity mask
+        // 2. Try to find a CPU on the preferred NUMA node
+        if entry.numa_preferred_node != crate::numa::NUMA_NO_NODE {
+            for cpu in 0..cpu_count.min(32) {
+                if (entry.cpu_affinity & (1 << cpu)) == 0 {
+                    continue;
+                }
+                let apic_id = get_cpu_apic_id(cpu as u8);
+                if crate::numa::cpu_to_node(apic_id) == entry.numa_preferred_node {
+                    return cpu as u8;
+                }
+            }
+        }
+
+        // 3. Find first available CPU in affinity mask
         for cpu in 0..cpu_count.min(32) {
             if (entry.cpu_affinity & (1 << cpu)) != 0 {
                 return cpu as u8;
@@ -161,4 +285,59 @@ pub fn get_preferred_cpu(pid: Pid) -> u8 {
     }
 
     0
+}
+
+/// Set the preferred NUMA node for a process
+pub fn set_numa_preferred_node(pid: Pid, node: u32) -> Result<(), &'static str> {
+    let mut table = PROCESS_TABLE.lock();
+
+    for slot in table.iter_mut() {
+        let Some(entry) = slot else { continue };
+        if entry.process.pid != pid {
+            continue;
+        }
+
+        // Validate node ID
+        if node != crate::numa::NUMA_NO_NODE && node >= crate::numa::node_count() {
+            return Err("Invalid NUMA node");
+        }
+
+        entry.numa_preferred_node = node;
+        crate::kinfo!("Set NUMA preferred node for PID {} to {}", pid, node);
+        return Ok(());
+    }
+
+    Err("Process not found")
+}
+
+/// Get the preferred NUMA node for a process
+pub fn get_numa_preferred_node(pid: Pid) -> Option<u32> {
+    let table = PROCESS_TABLE.lock();
+
+    for slot in table.iter() {
+        let Some(entry) = slot else { continue };
+        if entry.process.pid == pid {
+            return Some(entry.numa_preferred_node);
+        }
+    }
+
+    None
+}
+
+/// Set NUMA memory policy for a process
+pub fn set_numa_policy(pid: Pid, policy: crate::numa::NumaPolicy) -> Result<(), &'static str> {
+    let mut table = PROCESS_TABLE.lock();
+
+    for slot in table.iter_mut() {
+        let Some(entry) = slot else { continue };
+        if entry.process.pid != pid {
+            continue;
+        }
+
+        entry.numa_policy = policy;
+        crate::kdebug!("Set NUMA policy for PID {} to {:?}", pid, policy);
+        return Ok(());
+    }
+
+    Err("Process not found")
 }

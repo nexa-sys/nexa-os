@@ -23,6 +23,7 @@ pub mod lapic;
 pub mod logger;
 pub mod memory;
 pub mod net;
+pub mod numa;
 pub mod paging;
 pub mod pipe;
 pub mod posix;
@@ -392,6 +393,15 @@ fn proceed_after_initramfs(cmdline_opt: Option<&'static str>) -> ! {
     // Initialize SMP after interrupts are enabled but before scheduler
     // This allows AP cores to come online safely
     crate::smp::init();
+
+    // Initialize NUMA topology detection after SMP/ACPI init
+    // This must come before scheduler for NUMA-aware load balancing
+    if let Err(e) = numa::init() {
+        kwarn!("NUMA initialization failed: {}", e);
+    }
+
+    // Initialize NUMA-aware memory allocator (uses NUMA topology)
+    allocator::init_numa_allocator();
 
     scheduler::init(); // Process scheduler
     fs::init(); // Filesystem

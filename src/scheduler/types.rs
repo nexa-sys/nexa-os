@@ -90,6 +90,12 @@ pub struct ProcessEntry {
     pub voluntary_switches: u64, // Number of voluntary context switches
     pub cpu_affinity: u32,       // CPU affinity mask (bit per CPU)
     pub last_cpu: u8,            // Last CPU this process ran on
+    
+    // === NUMA fields ===
+    /// Preferred NUMA node for this process (NUMA_NO_NODE = no preference)
+    pub numa_preferred_node: u32,
+    /// NUMA policy for memory allocation
+    pub numa_policy: crate::numa::NumaPolicy,
 }
 
 impl ProcessEntry {
@@ -142,6 +148,9 @@ impl ProcessEntry {
             voluntary_switches: 0,
             cpu_affinity: 0xFFFFFFFF, // All CPUs by default
             last_cpu: 0,
+            // NUMA fields
+            numa_preferred_node: crate::numa::NUMA_NO_NODE,
+            numa_policy: crate::numa::NumaPolicy::Local,
         }
     }
 }
