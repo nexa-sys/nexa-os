@@ -6,8 +6,10 @@
 //! - Framebuffer (GOP/VBE)
 //! - VGA text mode buffer
 //! - ACPI table parsing
+//! - Parallel display compositor
 
 pub mod acpi;
+pub mod compositor;
 pub mod framebuffer;
 pub mod keyboard;
 pub mod serial;
@@ -37,3 +39,12 @@ pub use vga::{
 
 // Re-export from acpi
 pub use acpi::{cpus as acpi_cpus, init as init_acpi, lapic_base, CpuDescriptor, MAX_CPUS};
+
+// Re-export from compositor
+pub use compositor::{
+    compose as compositor_compose, debug_info as compositor_debug_info,
+    fill_rect as compositor_fill_rect, init as init_compositor,
+    is_initialized as compositor_is_initialized, stats as compositor_stats,
+    worker_count as compositor_worker_count, BlendMode, CompositionLayer, CompositionRegion,
+    CompositorStats,
+};

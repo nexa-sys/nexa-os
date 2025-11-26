@@ -436,6 +436,14 @@ fn proceed_after_initramfs(cmdline_opt: Option<&'static str>) -> ! {
     // Initialize NUMA-aware memory allocator (uses NUMA topology)
     allocator::init_numa_allocator();
 
+    // Initialize parallel display compositor after SMP and NUMA
+    // This enables multi-core accelerated display rendering
+    drivers::compositor::init();
+    kinfo!(
+        "Compositor: {} worker(s) ready for parallel rendering",
+        drivers::compositor::worker_count()
+    );
+
     scheduler::init(); // Process scheduler
     fs::init(); // Filesystem
     init::init(); // Init system (PID 1 management)
