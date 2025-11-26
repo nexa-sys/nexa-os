@@ -221,6 +221,8 @@ if [[ "$DEFAULT_BIOS_MODE" == "legacy" ]]; then
         -m 512M
         -serial stdio
         -smp "$SMP_CORES"
+        -vga std
+        -display gtk,window-close=on
         -cdrom "$ISO_PATH"
         -d guest_errors
         -monitor none
@@ -246,6 +248,8 @@ else
         -m 512M
         -serial stdio
         -smp "$SMP_CORES"
+        -vga std
+        -display gtk,window-close=on
         # UEFI firmware: code (readonly) and writable vars copy
         -drive if=pflash,format=raw,readonly=on,file="$UEFI_CODE"
         -drive if=pflash,format=raw,file="$UEFI_VARS_COPY"

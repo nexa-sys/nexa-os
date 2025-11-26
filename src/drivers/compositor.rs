@@ -1339,7 +1339,7 @@ fn clear_rows_fast(
 
 /// Parallel memory fill for large regions
 /// 
-/// Uses multiple cores to fill large framebuffer regions
+/// Uses multiple cores to fill large framebuffer regions via IPI dispatch
 pub fn parallel_fill(
     buffer: *mut u8,
     pitch: usize,
@@ -1357,17 +1357,48 @@ pub fn parallel_fill(
         return;
     }
     
-    // Parallel fill using stripe-based distribution
-    let rows_per_worker = (height + workers - 1) / workers;
-    let rows_per_worker = rows_per_worker.max(16); // Minimum 16 rows per worker
-    
-    // For now, BSP does all work (TODO: IPI dispatch)
-    let mut row = 0;
-    while row < height {
-        let end_row = (row + rows_per_worker).min(height);
-        clear_rows_fast(buffer, pitch, width, bpp, row, end_row - row, color);
-        row = end_row;
+    // Minimum rows for parallel to be worthwhile
+    if height < workers * 16 {
+        clear_rows_fast(buffer, pitch, width, bpp, 0, height, color);
+        return;
     }
+    
+    // === Parallel fill path - dispatch to all cores ===
+    
+    // Set work type first (before parameters)
+    WORK_TYPE.store(WorkType::Fill as u8, Ordering::Release);
+    
+    // Setup fill parameters for workers
+    FILL_BUFFER_ADDR.store(buffer as u64, Ordering::Release);
+    FILL_PITCH.store(pitch, Ordering::Release);
+    FILL_WIDTH.store(width, Ordering::Release);
+    FILL_BPP.store(bpp, Ordering::Release);
+    FILL_COLOR.store(color, Ordering::Release);
+    FILL_NEXT_ROW.store(0, Ordering::Release);
+    FILL_TOTAL_ROWS.store(height, Ordering::Release);
+    FILL_ROWS_DONE.store(0, Ordering::Release);
+    
+    // Memory fence to ensure all stores are visible to AP cores
+    core::sync::atomic::fence(Ordering::SeqCst);
+    
+    // Dispatch work to AP cores via IPI
+    dispatch_to_ap_cores();
+    
+    // BSP also participates in the work
+    fill_worker();
+    
+    // Wait for all rows to complete (AP cores may still be working)
+    let mut backoff = 1u32;
+    while FILL_ROWS_DONE.load(Ordering::Acquire) < height {
+        for _ in 0..backoff {
+            core::hint::spin_loop();
+        }
+        backoff = (backoff * 2).min(1024);
+    }
+    
+    // Clear work available flag
+    WORK_AVAILABLE.store(false, Ordering::Release);
+    WORK_TYPE.store(WorkType::None as u8, Ordering::Release);
 }
 
 /// Print compositor debug information
