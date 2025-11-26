@@ -141,6 +141,23 @@ static FILL_NEXT_ROW: AtomicUsize = AtomicUsize::new(0);
 static FILL_TOTAL_ROWS: AtomicUsize = AtomicUsize::new(0);
 static FILL_ROWS_DONE: AtomicUsize = AtomicUsize::new(0);
 
+/// Composition operation state for parallel rendering
+static COMPOSE_DST_BUFFER: AtomicU64 = AtomicU64::new(0);
+static COMPOSE_DST_PITCH: AtomicUsize = AtomicUsize::new(0);
+static COMPOSE_DST_BPP: AtomicUsize = AtomicUsize::new(0);
+static COMPOSE_SCREEN_WIDTH: AtomicUsize = AtomicUsize::new(0);
+static COMPOSE_TOTAL_ROWS: AtomicUsize = AtomicUsize::new(0);
+static COMPOSE_STRIPE_HEIGHT: AtomicUsize = AtomicUsize::new(0);
+static COMPOSE_STRIPES_DONE: AtomicUsize = AtomicUsize::new(0);
+
+/// Layer storage for parallel composition (fixed-size array for no_std)
+/// AP cores read this during composition work
+static mut COMPOSE_LAYERS: [CompositionLayer; MAX_LAYERS] = {
+    const INIT: CompositionLayer = CompositionLayer::empty();
+    [INIT; MAX_LAYERS]
+};
+static COMPOSE_LAYER_COUNT: AtomicUsize = AtomicUsize::new(0);
+
 // =============================================================================
 // Composition Region
 // =============================================================================
@@ -406,6 +423,25 @@ pub fn stats() -> CompositorStats {
     }
 }
 
+/// Reset compositor statistics for benchmarking
+/// 
+/// Clears all per-CPU stripe counters and operation counters.
+/// Useful for measuring performance of specific rendering operations.
+pub fn reset_stats() {
+    TOTAL_COMPOSITIONS.store(0, Ordering::Relaxed);
+    COMPOSE_STRIPES_DONE.store(0, Ordering::Relaxed);
+    SCROLL_ROWS_DONE.store(0, Ordering::Relaxed);
+    FILL_ROWS_DONE.store(0, Ordering::Relaxed);
+    
+    // Reset per-CPU stats
+    let online = smp::online_cpus();
+    unsafe {
+        for i in 0..online.min(smp::MAX_CPUS) {
+            CPU_WORK_STATES[i].stripes_completed.store(0, Ordering::Relaxed);
+        }
+    }
+}
+
 // =============================================================================
 // AP Core Work Entry Point
 // =============================================================================
@@ -445,13 +481,67 @@ pub fn ap_work_entry() {
             fill_worker();
         }
         WorkType::Compose => {
-            // Execute composition work (placeholder for future)
-            // compose_worker();
+            // Execute composition work - parallel rendering
+            compose_worker_internal();
         }
         WorkType::None => {
             // No work to do
         }
     }
+}
+
+/// Internal compose worker called by AP cores during parallel composition
+/// 
+/// This worker claims stripes atomically and composites them using the
+/// shared layer data stored in COMPOSE_LAYERS.
+fn compose_worker_internal() -> usize {
+    let dst_buffer = COMPOSE_DST_BUFFER.load(Ordering::Acquire) as *mut u8;
+    let dst_pitch = COMPOSE_DST_PITCH.load(Ordering::Acquire);
+    let dst_bpp = COMPOSE_DST_BPP.load(Ordering::Acquire);
+    let screen_width = COMPOSE_SCREEN_WIDTH.load(Ordering::Acquire);
+    let total_rows = COMPOSE_TOTAL_ROWS.load(Ordering::Acquire);
+    let stripe_height = COMPOSE_STRIPE_HEIGHT.load(Ordering::Acquire);
+    let layer_count = COMPOSE_LAYER_COUNT.load(Ordering::Acquire);
+    
+    // Safety: layers are set up before work is dispatched and not modified until completion
+    let layers = unsafe { &COMPOSE_LAYERS[..layer_count] };
+    
+    let cpu_id = smp::current_cpu_id() as usize;
+    let mut stripes_done = 0;
+    
+    // Update CPU work state
+    unsafe {
+        if cpu_id < smp::MAX_CPUS {
+            CPU_WORK_STATES[cpu_id].working.store(true, Ordering::Release);
+        }
+    }
+    
+    // Process stripes until none remain
+    while let Some((_stripe_idx, start_row, end_row)) = claim_work_stripe(stripe_height, total_rows) {
+        compose_stripe(
+            dst_buffer,
+            dst_pitch,
+            dst_bpp,
+            start_row,
+            end_row,
+            layers,
+            screen_width,
+        );
+        
+        complete_stripe();
+        COMPOSE_STRIPES_DONE.fetch_add(1, Ordering::AcqRel);
+        stripes_done += 1;
+    }
+    
+    // Update CPU work state
+    unsafe {
+        if cpu_id < smp::MAX_CPUS {
+            CPU_WORK_STATES[cpu_id].working.store(false, Ordering::Release);
+            CPU_WORK_STATES[cpu_id].stripes_completed.fetch_add(stripes_done, Ordering::Relaxed);
+        }
+    }
+    
+    stripes_done
 }
 
 /// Internal scroll worker - claims and processes rows
@@ -996,8 +1086,32 @@ pub fn compose(
     }
     
     // Calculate stripe height for good load balancing
+    // Aim for 4x more stripes than workers for dynamic load balancing
     let stripe_height = DEFAULT_STRIPE_HEIGHT.max(height / (workers * 4));
     let total_stripes = (height + stripe_height - 1) / stripe_height;
+    
+    // Copy layers to static storage for AP cores to access
+    // Safety: we hold exclusive access during setup phase before dispatching
+    let layer_count = layers.len().min(MAX_LAYERS);
+    unsafe {
+        for i in 0..layer_count {
+            COMPOSE_LAYERS[i] = layers[i];
+        }
+        // Clear remaining slots
+        for i in layer_count..MAX_LAYERS {
+            COMPOSE_LAYERS[i] = CompositionLayer::empty();
+        }
+    }
+    COMPOSE_LAYER_COUNT.store(layer_count, Ordering::Release);
+    
+    // Setup composition parameters for AP cores
+    COMPOSE_DST_BUFFER.store(dst_buffer as u64, Ordering::Release);
+    COMPOSE_DST_PITCH.store(dst_pitch, Ordering::Release);
+    COMPOSE_DST_BPP.store(dst_bpp, Ordering::Release);
+    COMPOSE_SCREEN_WIDTH.store(width, Ordering::Release);
+    COMPOSE_TOTAL_ROWS.store(height, Ordering::Release);
+    COMPOSE_STRIPE_HEIGHT.store(stripe_height, Ordering::Release);
+    COMPOSE_STRIPES_DONE.store(0, Ordering::Release);
     
     // Initialize work distribution
     WORK_NEXT_STRIPE.store(0, Ordering::Release);
@@ -1005,28 +1119,27 @@ pub fn compose(
     WORK_COMPLETED.store(0, Ordering::Release);
     WORK_IN_PROGRESS.store(true, Ordering::Release);
     
+    // Set work type for AP cores
+    WORK_TYPE.store(WorkType::Compose as u8, Ordering::Release);
+    
     // Increment generation for this composition
     COMPOSITION_GEN.fetch_add(1, Ordering::SeqCst);
     
-    // TODO: Send IPIs to wake up worker CPUs
-    // For now, BSP does all the work
-    // In a full implementation, AP cores would be waiting for work
-    // and we would use IPI_CALL_FUNCTION to dispatch them
+    // Memory fence to ensure all parameters are visible to AP cores
+    core::sync::atomic::fence(Ordering::SeqCst);
     
-    // BSP participates in work
-    let bsp_stripes = worker_compose(
-        dst_buffer,
-        dst_pitch,
-        dst_bpp,
-        height,
-        layers,
-        width,
-        stripe_height,
-    );
+    // Dispatch work to AP cores via IPI
+    dispatch_to_ap_cores();
     
-    // Wait for all work to complete (in case APs were participating)
+    // BSP participates in work (using internal worker that reads shared params)
+    let bsp_stripes = compose_worker_internal();
+    
+    // Wait for all work to complete
     wait_for_completion();
     
+    // Clear work flags
+    WORK_AVAILABLE.store(false, Ordering::Release);
+    WORK_TYPE.store(WorkType::None as u8, Ordering::Release);
     WORK_IN_PROGRESS.store(false, Ordering::Release);
     TOTAL_COMPOSITIONS.fetch_add(1, Ordering::Relaxed);
     
@@ -1414,14 +1527,25 @@ pub fn debug_info() {
     crate::kinfo!("  Total compositions: {}", stats.total_compositions);
     crate::kinfo!("  Parallel enabled: {}", stats.parallel_enabled);
     crate::kinfo!("  NUMA nodes: {}", numa::node_count());
+    crate::kinfo!("  Default stripe height: {} rows", DEFAULT_STRIPE_HEIGHT);
+    
+    // Last operation stats
+    let compose_stripes = COMPOSE_STRIPES_DONE.load(Ordering::Relaxed);
+    let scroll_rows = SCROLL_ROWS_DONE.load(Ordering::Relaxed);
+    let fill_rows = FILL_ROWS_DONE.load(Ordering::Relaxed);
+    crate::kinfo!("  Last compose stripes: {}", compose_stripes);
+    crate::kinfo!("  Last scroll rows: {}", scroll_rows);
+    crate::kinfo!("  Last fill rows: {}", fill_rows);
     
     // Per-CPU stats
     let online = smp::online_cpus();
+    let mut total_stripes = 0usize;
     for i in 0..online.min(smp::MAX_CPUS) {
         unsafe {
             let state = &CPU_WORK_STATES[i];
             let node = state.numa_node.load(Ordering::Relaxed);
             let stripes = state.stripes_completed.load(Ordering::Relaxed);
+            total_stripes += stripes;
             let node_str = if node == numa::NUMA_NO_NODE {
                 "N/A"
             } else {
@@ -1430,6 +1554,12 @@ pub fn debug_info() {
             };
             crate::kinfo!("  CPU {}: {} stripes, NUMA node {}", i, stripes, node_str);
         }
+    }
+    
+    // Work distribution summary
+    if online > 1 && total_stripes > 0 {
+        let avg_stripes = total_stripes / online;
+        crate::kinfo!("  Avg stripes/CPU: {}", avg_stripes);
     }
 }
 
