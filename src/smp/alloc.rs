@@ -1,11 +1,12 @@
 //! SMP Dynamic Allocation
 //!
-//! This module handles dynamic allocation of per-CPU resources for AP cores.
-//! BSP (CPU 0) uses statically allocated resources, while AP cores get their
-//! resources dynamically allocated during SMP initialization.
+//! This module handles dynamic allocation of per-CPU resources for all AP cores.
+//! Only BSP (CPU 0) uses statically allocated resources (STATIC_CPU_COUNT = 1).
+//! All AP cores (CPU 1..MAX_CPUS) get their resources dynamically allocated
+//! during SMP initialization.
 //!
-//! This approach dramatically reduces the kernel image size by only allocating
-//! resources for CPUs that actually exist, rather than pre-allocating for MAX_CPUS.
+//! This approach supports up to MAX_CPUS (1024) cores while keeping the kernel
+//! image size minimal - resources are only allocated for CPUs that actually exist.
 
 extern crate alloc;
 
@@ -16,10 +17,24 @@ use spin::Mutex;
 use x86_64::structures::tss::TaskStateSegment;
 use x86_64::structures::gdt::GlobalDescriptorTable;
 
-use super::types::{AlignedApStack, ApBootArgs, CpuData, CpuInfo, PerCpuGsData, AP_STACK_SIZE, STATIC_CPU_COUNT};
+use super::types::{AlignedApStack, ApBootArgs, CpuData, CpuInfo, PerCpuGsData, AP_STACK_SIZE, STATIC_CPU_COUNT, MAX_CPUS};
+use crate::safety::serial_debug_byte;
 
 /// GDT stack size - matches gdt.rs STACK_SIZE (4096 * 5 = 20KB)
 pub const GDT_STACK_SIZE: usize = 4096 * 5;
+
+/// Simple static array to store GS data pointers for APs
+/// This avoids Mutex/Vec complexity during early AP startup
+pub static mut GS_DATA_PTRS: [u64; MAX_CPUS] = [0; MAX_CPUS];
+
+/// Simple static array to store TSS pointers for APs
+pub static mut TSS_PTRS: [u64; MAX_CPUS] = [0; MAX_CPUS];
+
+/// Simple static array to store GDT pointers for APs
+pub static mut GDT_PTRS: [u64; MAX_CPUS] = [0; MAX_CPUS];
+
+/// Simple static array to store GDT stack pointers for APs
+pub static mut GDT_STACKS_PTRS: [u64; MAX_CPUS] = [0; MAX_CPUS];
 
 /// Aligned stack matching gdt.rs AlignedStack type
 #[repr(C, align(16))]
@@ -56,19 +71,19 @@ impl AlignedGdtStacks {
 struct DynamicCpuResources {
     /// Dynamically allocated AP stacks (indexed by cpu_index - 1, since BSP doesn't need one)
     ap_stacks: Vec<Option<Box<AlignedApStack>>>,
-    /// Dynamically allocated CPU data
+    /// Dynamically allocated CPU data (for all CPUs, though BSP may use static)
     cpu_data: Vec<Option<Box<CpuData>>>,
-    /// Dynamically allocated CPU info
+    /// Dynamically allocated CPU info (for all CPUs, though BSP may use static)
     cpu_infos: Vec<Option<Box<CpuInfo>>>,
     /// Dynamically allocated GS data for APs
     gs_data: Vec<Option<Box<PerCpuGsData>>>,
     /// Dynamically allocated boot args
     boot_args: Vec<Option<Box<ApBootArgs>>>,
-    /// Dynamically allocated TSS for CPUs >= STATIC_CPU_COUNT
+    /// Dynamically allocated TSS for all APs (CPU >= 1)
     tss: Vec<Option<Box<TaskStateSegment>>>,
-    /// Dynamically allocated GDT for CPUs >= STATIC_CPU_COUNT
+    /// Dynamically allocated GDT for all APs (CPU >= 1)
     gdt: Vec<Option<Box<GlobalDescriptorTable>>>,
-    /// Dynamically allocated GDT stacks for CPUs >= STATIC_CPU_COUNT
+    /// Dynamically allocated GDT stacks for all APs (CPU >= 1)
     gdt_stacks: Vec<Option<Box<AlignedGdtStacks>>>,
     /// Number of CPUs resources have been allocated for
     allocated_count: usize,
@@ -139,7 +154,8 @@ pub fn allocate_for_cpus(cpu_count: usize) -> Result<(), &'static str> {
     // AP stacks: cpu_count - 1 (BSP doesn't need one)
     let ap_stack_count = cpu_count.saturating_sub(1);
     
-    // Number of dynamically allocated GDT resources (for CPUs >= STATIC_CPU_COUNT)
+    // Number of dynamically allocated GDT resources (for all APs, i.e., CPU >= 1)
+    // With STATIC_CPU_COUNT = 1, this equals ap_stack_count
     let dynamic_gdt_count = cpu_count.saturating_sub(STATIC_CPU_COUNT);
     
     // Extend vectors with None values
@@ -158,7 +174,7 @@ pub fn allocate_for_cpus(cpu_count: usize) -> Result<(), &'static str> {
     while resources.boot_args.len() < cpu_count {
         resources.boot_args.push(None);
     }
-    // GDT resources for CPUs >= STATIC_CPU_COUNT
+    // GDT resources for all APs (CPU >= 1)
     while resources.tss.len() < dynamic_gdt_count {
         resources.tss.push(None);
     }
@@ -189,23 +205,34 @@ pub fn allocate_for_cpus(cpu_count: usize) -> Result<(), &'static str> {
     // Pre-allocate GS data
     for i in 0..cpu_count {
         if resources.gs_data[i].is_none() {
-            resources.gs_data[i] = Some(Box::new(PerCpuGsData::new()));
+            let mut gs_data = Box::new(PerCpuGsData::new());
+            // Store pointer in static array for lock-free access by APs
+            unsafe { GS_DATA_PTRS[i] = &mut *gs_data as *mut _ as u64; }
+            resources.gs_data[i] = Some(gs_data);
         }
     }
     
     // Pre-allocate GDT resources for dynamic CPUs
     for i in 0..dynamic_gdt_count {
+        let cpu_idx = i + STATIC_CPU_COUNT;
+        
         if resources.tss[i].is_none() {
-            resources.tss[i] = Some(Box::new(TaskStateSegment::new()));
-            crate::kdebug!("SMP: Allocated TSS for CPU {}", i + STATIC_CPU_COUNT);
+            let mut tss = Box::new(TaskStateSegment::new());
+            unsafe { TSS_PTRS[cpu_idx] = &mut *tss as *mut _ as u64; }
+            resources.tss[i] = Some(tss);
+            crate::kdebug!("SMP: Allocated TSS for CPU {}", cpu_idx);
         }
         if resources.gdt[i].is_none() {
-            resources.gdt[i] = Some(Box::new(GlobalDescriptorTable::new()));
-            crate::kdebug!("SMP: Allocated GDT for CPU {}", i + STATIC_CPU_COUNT);
+            let mut gdt = Box::new(GlobalDescriptorTable::new());
+            unsafe { GDT_PTRS[cpu_idx] = &mut *gdt as *mut _ as u64; }
+            resources.gdt[i] = Some(gdt);
+            crate::kdebug!("SMP: Allocated GDT for CPU {}", cpu_idx);
         }
         if resources.gdt_stacks[i].is_none() {
-            resources.gdt_stacks[i] = Some(Box::new(AlignedGdtStacks::new()));
-            crate::kdebug!("SMP: Allocated GDT stacks for CPU {}", i + STATIC_CPU_COUNT);
+            let mut stacks = Box::new(AlignedGdtStacks::new());
+            unsafe { GDT_STACKS_PTRS[cpu_idx] = &mut *stacks as *mut _ as u64; }
+            resources.gdt_stacks[i] = Some(stacks);
+            crate::kdebug!("SMP: Allocated GDT stacks for CPU {}", cpu_idx);
         }
     }
 
@@ -337,16 +364,17 @@ pub fn get_cpu_data(cpu_index: usize) -> Result<&'static CpuData, &'static str> 
 
 /// Get GS data pointer for a CPU
 pub fn get_gs_data_ptr(cpu_index: usize) -> Result<*mut PerCpuGsData, &'static str> {
-    let mut resources = DYNAMIC_RESOURCES.lock();
-    
-    if cpu_index >= resources.gs_data.len() {
+    // Use the static array instead of Mutex/Vec to avoid lock contention/initialization issues
+    if cpu_index >= MAX_CPUS {
         return Err("CPU index out of range");
     }
     
-    match &mut resources.gs_data[cpu_index] {
-        Some(data) => Ok(&mut **data as *mut PerCpuGsData),
-        None => Err("GS data not allocated"),
+    let ptr = unsafe { GS_DATA_PTRS[cpu_index] };
+    if ptr == 0 {
+        return Err("GS data not allocated");
     }
+    
+    Ok(ptr as *mut PerCpuGsData)
 }
 
 /// Get boot args for a CPU
@@ -379,21 +407,16 @@ pub fn get_dynamic_tss_mut(cpu_index: usize) -> Result<&'static mut TaskStateSeg
         return Err("CPU uses static TSS allocation");
     }
     
-    let dyn_index = cpu_index - STATIC_CPU_COUNT;
-    let mut resources = DYNAMIC_RESOURCES.lock();
-    
-    if dyn_index >= resources.tss.len() {
-        return Err("TSS not allocated for this CPU");
+    if cpu_index >= MAX_CPUS {
+        return Err("CPU index out of range");
     }
     
-    match &mut resources.tss[dyn_index] {
-        Some(tss) => {
-            // SAFETY: The Box lives for 'static since we never remove it
-            let ptr = &mut **tss as *mut TaskStateSegment;
-            Ok(unsafe { &mut *ptr })
-        }
-        None => Err("TSS not allocated"),
+    let ptr = unsafe { TSS_PTRS[cpu_index] };
+    if ptr == 0 {
+        return Err("TSS not allocated");
     }
+    
+    Ok(unsafe { &mut *(ptr as *mut TaskStateSegment) })
 }
 
 /// Get TSS reference for a dynamically allocated CPU (const version)
@@ -402,20 +425,16 @@ pub fn get_dynamic_tss(cpu_index: usize) -> Result<&'static TaskStateSegment, &'
         return Err("CPU uses static TSS allocation");
     }
     
-    let dyn_index = cpu_index - STATIC_CPU_COUNT;
-    let resources = DYNAMIC_RESOURCES.lock();
-    
-    if dyn_index >= resources.tss.len() {
-        return Err("TSS not allocated for this CPU");
+    if cpu_index >= MAX_CPUS {
+        return Err("CPU index out of range");
     }
     
-    match &resources.tss[dyn_index] {
-        Some(tss) => {
-            let ptr = &**tss as *const TaskStateSegment;
-            Ok(unsafe { &*ptr })
-        }
-        None => Err("TSS not allocated"),
+    let ptr = unsafe { TSS_PTRS[cpu_index] };
+    if ptr == 0 {
+        return Err("TSS not allocated");
     }
+    
+    Ok(unsafe { &*(ptr as *const TaskStateSegment) })
 }
 
 /// Get mutable GDT reference for a dynamically allocated CPU
@@ -424,20 +443,16 @@ pub fn get_dynamic_gdt_mut(cpu_index: usize) -> Result<&'static mut GlobalDescri
         return Err("CPU uses static GDT allocation");
     }
     
-    let dyn_index = cpu_index - STATIC_CPU_COUNT;
-    let mut resources = DYNAMIC_RESOURCES.lock();
-    
-    if dyn_index >= resources.gdt.len() {
-        return Err("GDT not allocated for this CPU");
+    if cpu_index >= MAX_CPUS {
+        return Err("CPU index out of range");
     }
     
-    match &mut resources.gdt[dyn_index] {
-        Some(gdt) => {
-            let ptr = &mut **gdt as *mut GlobalDescriptorTable;
-            Ok(unsafe { &mut *ptr })
-        }
-        None => Err("GDT not allocated"),
+    let ptr = unsafe { GDT_PTRS[cpu_index] };
+    if ptr == 0 {
+        return Err("GDT not allocated");
     }
+    
+    Ok(unsafe { &mut *(ptr as *mut GlobalDescriptorTable) })
 }
 
 /// Get GDT stacks for a dynamically allocated CPU
@@ -446,20 +461,16 @@ pub fn get_dynamic_gdt_stacks(cpu_index: usize) -> Result<&'static AlignedGdtSta
         return Err("CPU uses static GDT stack allocation");
     }
     
-    let dyn_index = cpu_index - STATIC_CPU_COUNT;
-    let resources = DYNAMIC_RESOURCES.lock();
+    if cpu_index >= MAX_CPUS {
+        return Err("CPU index out of range");
+    }
     
-    if dyn_index >= resources.gdt_stacks.len() {
+    let ptr = unsafe { GDT_STACKS_PTRS[cpu_index] };
+    if ptr == 0 {
         return Err("GDT stacks not allocated for this CPU");
     }
     
-    match &resources.gdt_stacks[dyn_index] {
-        Some(stacks) => {
-            let ptr = &**stacks as *const AlignedGdtStacks;
-            Ok(unsafe { &*ptr })
-        }
-        None => Err("GDT stacks not allocated"),
-    }
+    Ok(unsafe { &*(ptr as *const AlignedGdtStacks) })
 }
 
 /// Check if a CPU uses dynamic allocation

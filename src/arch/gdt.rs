@@ -24,8 +24,9 @@ pub const ERROR_CODE_IST_INDEX: u16 = 1;
 /// Maximum number of CPUs supported (must match acpi::MAX_CPUS)
 const MAX_CPUS: usize = crate::acpi::MAX_CPUS;
 
-/// Static fallback count for early boot (before dynamic allocation)
-const STATIC_CPU_COUNT: usize = 4;
+/// Static allocation only for BSP (CPU 0)
+/// All AP cores (1..MAX_CPUS) use fully dynamic allocation
+const STATIC_CPU_COUNT: usize = 1;
 
 /// Per-CPU Task State Segment (must be 16-byte aligned for performance)
 /// Using MaybeUninit to support large CPU counts without manual array initialization

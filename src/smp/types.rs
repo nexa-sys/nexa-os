@@ -170,13 +170,14 @@ impl PerCpuTrampolineData {
 pub struct AlignedApStack(pub [u8; AP_STACK_SIZE]);
 
 // ============================================================================
-// Global static data (minimal - most data is dynamically allocated)
+// Global static data (minimal - BSP only, all APs use dynamic allocation)
 // ============================================================================
 
-/// Static fallback count for BSP-only operation when dynamic alloc unavailable
-pub const STATIC_CPU_COUNT: usize = 4;
+/// Static allocation only for BSP (CPU 0)
+/// All AP cores (1..MAX_CPUS) use fully dynamic allocation
+pub const STATIC_CPU_COUNT: usize = 1;
 
-/// GS data - small static array for early boot, rest is dynamic
+/// GS data - only BSP uses static, all APs use dynamic
 pub static mut AP_GS_DATA: [PerCpuGsData; STATIC_CPU_COUNT] = [PerCpuGsData::new(); STATIC_CPU_COUNT];
 
 /// Debug: AP arrival flags (non-zero = arrived) - keep static for atomic access
@@ -185,20 +186,20 @@ pub static AP_ARRIVED: [AtomicU32; MAX_CPUS] = {
     [INIT; MAX_CPUS]
 };
 
-/// AP stacks - small static array for early boot, rest is dynamic
-/// Only allocate for STATIC_CPU_COUNT - 1 APs statically
-pub static mut AP_STACKS: [AlignedApStack; STATIC_CPU_COUNT - 1] =
-    unsafe { MaybeUninit::<[AlignedApStack; STATIC_CPU_COUNT - 1]>::zeroed().assume_init() };
+/// AP stacks - all AP stacks are now dynamically allocated
+/// BSP doesn't need an AP stack (it uses its own boot stack)
+/// This empty array is kept for compatibility but is never used
+pub static mut AP_STACKS: [AlignedApStack; 0] = [];
 
-/// Per-CPU data array - small static array for early boot
+/// Per-CPU data array - only BSP uses static
 pub static mut CPU_DATA: [MaybeUninit<CpuData>; STATIC_CPU_COUNT] =
     unsafe { MaybeUninit::<[MaybeUninit<CpuData>; STATIC_CPU_COUNT]>::uninit().assume_init() };
 
-/// CPU information array - small static array for early boot
+/// CPU information array - only BSP uses static
 pub static mut CPU_INFOS: [MaybeUninit<CpuInfo>; STATIC_CPU_COUNT] =
     unsafe { MaybeUninit::<[MaybeUninit<CpuInfo>; STATIC_CPU_COUNT]>::uninit().assume_init() };
 
-/// AP boot arguments - small static array
+/// AP boot arguments - only BSP uses static (though BSP doesn't use boot args)
 pub static mut AP_BOOT_ARGS: [ApBootArgs; STATIC_CPU_COUNT] = [ApBootArgs::new(); STATIC_CPU_COUNT];
 
 /// BSP APIC ID

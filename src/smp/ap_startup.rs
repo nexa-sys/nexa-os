@@ -6,7 +6,6 @@
 //! Supports parallel AP initialization by providing each AP core with
 //! its own independent startup data region to avoid race conditions.
 
-use core::ptr;
 use core::sync::atomic::Ordering;
 
 use x86_64::instructions::hlt as cpu_hlt;
@@ -18,8 +17,8 @@ use crate::{gdt, lapic, paging};
 use super::state::{CPU_TOTAL, ENABLE_AP_STARTUP, ONLINE_CPUS};
 use super::trampoline::{get_kernel_relocation_offset, write_trampoline_bytes, write_per_cpu_data, set_apic_to_index_mapping};
 use super::types::{
-    cpu_info, AlignedApStack, ApBootArgs, CpuData, CpuStatus, PerCpuGsData, PerCpuTrampolineData,
-    AP_ARRIVED, AP_BOOT_ARGS, AP_GS_DATA, AP_STACK_SIZE, AP_STACKS, CPU_DATA,
+    cpu_info, ApBootArgs, CpuData, CpuStatus, PerCpuTrampolineData,
+    AP_ARRIVED, AP_GS_DATA, CPU_DATA, STATIC_CPU_COUNT,
     MAX_CPUS, STARTUP_RETRY_MAX, STARTUP_WAIT_LOOPS, TRAMPOLINE_BASE, TRAMPOLINE_VECTOR,
 };
 
@@ -216,58 +215,49 @@ unsafe fn prepare_ap_launch(index: usize) -> Result<(), &'static str> {
 }
 
 /// Get the stack top address for an AP
+/// All AP stacks are dynamically allocated (STATIC_CPU_COUNT = 1 means only BSP uses static)
 unsafe fn stack_for(index: usize) -> Result<u64, &'static str> {
-    use super::types::STATIC_CPU_COUNT;
-    
     if index == 0 {
         return Err("Stack request for BSP");
     }
-    let stack_index = index - 1;
-    if stack_index >= MAX_CPUS - 1 {
+    if index >= MAX_CPUS {
         return Err("No AP stack slot available");
     }
     
-    // Use static array for CPUs 1..STATIC_CPU_COUNT, dynamic allocation for the rest
-    let aligned_top = if index < STATIC_CPU_COUNT {
-        // Access aligned stack, stack grows downward so return top address
-        // Ensure stack top is 16-byte aligned as required by x86_64 ABI
-        let stack_base = ptr::addr_of!(AP_STACKS[stack_index].0) as usize;
-        let stack_top = stack_base + AP_STACK_SIZE;
-        stack_top & !0xF // Align down to 16 bytes
-    } else {
-        // Use dynamically allocated stack for CPUs >= STATIC_CPU_COUNT
-        let stack_top = super::alloc::get_ap_stack_top(index)
-            .map_err(|_| "Failed to get dynamic AP stack")?;
-        stack_top as usize
-    };
+    // All AP cores use dynamically allocated stacks
+    let stack_top = super::alloc::get_ap_stack_top(index)
+        .map_err(|_| "Failed to get dynamic AP stack")?;
+    let aligned_top = stack_top as usize;
 
-    // NOTE: Static variable addresses don't need relocation because:
-    // 1. The kernel code accesses them using link-time addresses
-    // 2. Low memory (link-time addresses) is identity-mapped in page tables
-    // 3. AP cores use the same page tables, so they can access these addresses
+    // NOTE: Dynamic allocation addresses are in kernel heap space
+    // which is accessible by AP cores through the shared page tables
     crate::kinfo!("SMP: [{}] Stack top: {:#x}", index, aligned_top);
 
     Ok(aligned_top as u64)
 }
 
 /// Get boot arguments pointer for an AP
-/// Uses static array for CPUs < STATIC_CPU_COUNT, dynamic allocation for the rest
+/// All AP boot args are dynamically allocated (STATIC_CPU_COUNT = 1 means only BSP uses static)
 unsafe fn get_boot_args_ptr(index: usize, apic_id: u32) -> Result<u64, &'static str> {
-    use super::types::STATIC_CPU_COUNT;
-    
     if index >= MAX_CPUS {
         return Err("CPU index out of bounds");
     }
     
-    let arg_ptr = if index < STATIC_CPU_COUNT {
-        // Use static array
-        AP_BOOT_ARGS[index] = ApBootArgs {
-            cpu_index: index as u32,
-            apic_id,
-        };
-        (&AP_BOOT_ARGS[index] as *const ApBootArgs) as u64
+    // BSP (index 0) uses static array, all APs use dynamic allocation
+    let arg_ptr = if index == 0 {
+        // BSP doesn't really need boot args, but keep for consistency
+        use super::types::{AP_BOOT_ARGS, STATIC_CPU_COUNT};
+        if index < STATIC_CPU_COUNT {
+            AP_BOOT_ARGS[index] = ApBootArgs {
+                cpu_index: index as u32,
+                apic_id,
+            };
+            (&AP_BOOT_ARGS[index] as *const ApBootArgs) as u64
+        } else {
+            return Err("BSP index out of static bounds - unexpected");
+        }
     } else {
-        // Use dynamically allocated boot args
+        // All APs use dynamically allocated boot args
         let ptr = super::alloc::get_boot_args_ptr(index)
             .map_err(|_| "Failed to get dynamic boot args")?;
         // Initialize the boot args
@@ -406,9 +396,21 @@ extern "C" fn ap_entry_inner(arg: *const ApBootArgs) -> ! {
         serial_debug_byte(b'5'); // Arrival flag set
 
         // Step 1: Configure GS base with this CPU's dedicated GS data
-        // NOTE: Static variable addresses don't need relocation - they use link-time
-        // addresses which are identity-mapped in the page tables
-        let gs_data_addr = &raw const AP_GS_DATA[idx] as *const _ as u64;
+        // BSP (idx=0) uses static array, all APs use dynamic allocation
+        let gs_data_addr = if idx < STATIC_CPU_COUNT {
+            // Static allocation for BSP
+            &raw const AP_GS_DATA[idx] as *const _ as u64
+        } else {
+            // Dynamic allocation for all APs
+            match super::alloc::get_gs_data_ptr(idx) {
+                Ok(ptr) => ptr as u64,
+                Err(_) => {
+                    serial_debug_byte(b'G'); // GS alloc failed
+                    serial_debug_byte(b'!');
+                    loop { cpu_hlt(); }
+                }
+            }
+        };
         serial_debug_byte(b'6'); // GS addr calculated
 
         Msr::new(0xc0000101).write(gs_data_addr);
@@ -437,9 +439,17 @@ extern "C" fn ap_entry_inner(arg: *const ApBootArgs) -> ! {
         crate::kinfo!("SMP: AP core {} online (APIC {:#x})", idx, args.apic_id);
 
         // Step 3: Initialize per-CPU data
-        CPU_DATA[idx]
-            .as_mut_ptr()
-            .write(CpuData::new(idx as u16, args.apic_id));
+        // BSP (idx=0) uses static array, all APs use dynamic allocation
+        if idx < STATIC_CPU_COUNT {
+            CPU_DATA[idx]
+                .as_mut_ptr()
+                .write(CpuData::new(idx as u16, args.apic_id));
+        } else {
+            // Use dynamic allocation for all APs
+            if let Err(e) = super::alloc::init_cpu_data(idx, idx as u16, args.apic_id) {
+                crate::kerror!("SMP: Failed to init CPU {} data: {}", idx, e);
+            }
+        }
         core::sync::atomic::compiler_fence(Ordering::Release);
 
         // Step 4: Mark CPU as online
@@ -459,33 +469,11 @@ extern "C" fn ap_entry_inner(arg: *const ApBootArgs) -> ! {
         // Output CPU_TOTAL address (link-time address used by AP)
         let cpu_total_addr = &CPU_TOTAL as *const _ as u64;
         serial_debug_hex(cpu_total_addr, 8);
+        serial_debug_byte(b'\n');
 
-        // For comparison, use relocated address (where BSP actually wrote)
-        // The relocation offset moves data from link address to load address
-        serial_debug_byte(b'|');
-        let reloc_offset = get_kernel_relocation_offset().unwrap_or(0);
-
-        // Debug: output the relocation offset value
-        serial_debug_byte(b'[');
-        serial_debug_hex(reloc_offset as u64, 8);
-        serial_debug_byte(b']');
-
-        // BSP uses addresses that are reloc_offset higher than link addresses
-        // So to read what BSP wrote, we need: link_addr + reloc_offset
-        let bsp_addr = cpu_total_addr.wrapping_add(reloc_offset as u64);
-        serial_debug_hex(bsp_addr, 8);
-        serial_debug_byte(b'=');
-        let bsp_value = core::ptr::read_volatile(bsp_addr as *const usize);
-        let bsp_digit = if bsp_value < 10 {
-            b'0' + bsp_value as u8
-        } else {
-            b'?'
-        };
-        serial_debug_byte(bsp_digit);
-        serial_debug_byte(b'/');
-
-        // Use the BSP's view of CPU_TOTAL for the comparison
-        let actual_total = bsp_value;
+        // Use the standard atomic load which resolves to the correct address
+        // (The BSP writes to the address resolved by &CPU_TOTAL, so we should read from there too)
+        let actual_total = total;
         if idx < actual_total {
             cpu_info(idx)
                 .status

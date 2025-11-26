@@ -70,9 +70,9 @@ unsafe fn init_inner() -> Result<(), &'static str> {
     smp_alloc::init();
     if let Err(e) = smp_alloc::allocate_for_cpus(count) {
         crate::kwarn!("SMP: Failed to allocate dynamic resources: {}", e);
-        // Fall back to static allocation only
+        // With STATIC_CPU_COUNT = 1, we can only run BSP if dynamic alloc fails
         count = count.min(STATIC_CPU_COUNT);
-        crate::kwarn!("SMP: Falling back to {} CPUs (static limit)", count);
+        crate::kwarn!("SMP: Falling back to {} CPUs (BSP only)", count);
     }
 
     // Now populate CPU info structures
@@ -84,15 +84,16 @@ unsafe fn init_inner() -> Result<(), &'static str> {
         
         let is_bsp = desc.apic_id as u32 == bsp_apic;
         
-        // Use static array for first STATIC_CPU_COUNT CPUs, dynamic for rest
+        // BSP (index 0) uses static array, all APs use dynamic allocation
         if idx < STATIC_CPU_COUNT {
+            // Only BSP uses static allocation
             CPU_INFOS[idx].as_mut_ptr().write(CpuInfo::new(
                 desc.apic_id as u32,
                 desc.acpi_processor_id,
                 is_bsp,
             ));
         } else {
-            // Use dynamic allocation
+            // All APs use dynamic allocation
             if let Err(e) = smp_alloc::init_cpu_info(
                 idx,
                 desc.apic_id as u32,
@@ -120,15 +121,17 @@ unsafe fn init_inner() -> Result<(), &'static str> {
         read_back
     );
 
-    // Initialize BSP CPU data
+    // Initialize BSP CPU data (BSP is always index 0 and uses static allocation)
     for i in 0..count {
         let info = get_cpu_info_safe(i)?;
         if info.is_bsp {
+            // BSP should always be at index 0 and use static allocation
             if i < STATIC_CPU_COUNT {
                 CPU_DATA[i]
                     .as_mut_ptr()
                     .write(CpuData::new(i as u16, info.apic_id));
             } else {
+                // Unexpected: BSP at index >= 1 would need dynamic alloc
                 if let Err(e) = smp_alloc::init_cpu_data(i, i as u16, info.apic_id) {
                     crate::kwarn!("SMP: Failed to init BSP CPU data: {}", e);
                 }
@@ -270,32 +273,25 @@ unsafe fn init_inner() -> Result<(), &'static str> {
     Ok(())
 }
 
+
 /// Get stack address for debug logging (simplified version)
+/// All AP stacks are dynamically allocated
 unsafe fn stack_for_debug(index: usize) -> Result<u64, &'static str> {
-    use core::ptr;
-    use super::types::{AP_STACKS, AP_STACK_SIZE};
-    
     if index == 0 {
         return Err("Stack request for BSP");
     }
-    let stack_index = index - 1;
-    // Use dynamic allocation for stacks beyond static limit
-    if stack_index >= STATIC_CPU_COUNT - 1 {
-        return smp_alloc::get_ap_stack_top(index).map_err(|_| "No AP stack slot available");
-    }
-    let stack_base = ptr::addr_of!(AP_STACKS[stack_index].0) as usize;
-    let stack_top = stack_base + AP_STACK_SIZE;
-    let aligned_top = stack_top & !0xF;
-    Ok(aligned_top as u64)
+    // All AP stacks are dynamically allocated
+    smp_alloc::get_ap_stack_top(index).map_err(|_| "No AP stack slot available")
 }
 
 /// Safe wrapper to get CPU info that handles both static and dynamic allocation
+/// BSP (index 0) uses static, all APs use dynamic
 unsafe fn get_cpu_info_safe(idx: usize) -> Result<&'static CpuInfo, &'static str> {
     if idx < STATIC_CPU_COUNT {
-        // Use static array
+        // BSP uses static array
         Ok(CPU_INFOS[idx].assume_init_ref())
     } else {
-        // Use dynamic allocation
+        // All APs use dynamic allocation
         smp_alloc::get_cpu_info(idx)
     }
 }
