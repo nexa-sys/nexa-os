@@ -16,6 +16,9 @@ pub const TRAMPOLINE_BASE: u64 = 0x8000;
 pub const TRAMPOLINE_MAX_SIZE: usize = 4096;
 pub const TRAMPOLINE_VECTOR: u8 = (TRAMPOLINE_BASE >> 12) as u8;
 
+/// Per-CPU data structure size: 3 * 8 bytes = 24 bytes (stack_ptr, entry_ptr, arg_ptr)
+pub const PER_CPU_DATA_SIZE: usize = 24;
+
 /// AP stack configuration
 pub const AP_STACK_SIZE: usize = 16 * 4096;
 
@@ -125,6 +128,26 @@ impl ApBootArgs {
         Self {
             cpu_index: 0,
             apic_id: 0,
+        }
+    }
+}
+
+/// Per-CPU trampoline data structure (matches assembly layout)
+/// Layout: [stack_ptr:8][entry_ptr:8][arg_ptr:8] = 24 bytes per CPU
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct PerCpuTrampolineData {
+    pub stack_ptr: u64,     // Offset 0: Stack top address
+    pub entry_ptr: u64,     // Offset 8: Entry function address
+    pub arg_ptr: u64,       // Offset 16: Boot arguments pointer
+}
+
+impl PerCpuTrampolineData {
+    pub const fn new() -> Self {
+        Self {
+            stack_ptr: 0,
+            entry_ptr: 0,
+            arg_ptr: 0,
         }
     }
 }

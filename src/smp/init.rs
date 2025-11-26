@@ -10,9 +10,9 @@ use x86_64::instructions::tables::sgdt;
 
 use crate::{acpi, bootinfo, lapic, paging};
 
-use super::ap_startup::start_ap;
+use super::ap_startup::{start_ap, start_all_aps_parallel};
 use super::cpu::current_online;
-use super::state::{CPU_TOTAL, ENABLE_AP_STARTUP, SMP_READY};
+use super::state::{CPU_TOTAL, ENABLE_AP_STARTUP, SMP_READY, PARALLEL_AP_STARTUP};
 use super::trampoline::{install_trampoline, patch_gdt_descriptors};
 use super::types::{
     cpu_info, CpuData, CpuInfo, BSP_APIC_ID, CPU_DATA, CPU_INFOS, MAX_CPUS,
@@ -140,40 +140,78 @@ unsafe fn init_inner() -> Result<(), &'static str> {
         return Ok(());
     }
 
-    // Start all AP cores
-    let mut started = 0usize;
-
-    for idx in 1..count {
-        let info = cpu_info(idx);
-
-        crate::kinfo!(
-            "SMP: Starting AP core {} (APIC ID {:#x})...",
-            idx,
-            info.apic_id
-        );
-
-        match start_ap(idx) {
-            Ok(()) => {
-                started += 1;
-                crate::kinfo!("SMP: ✓ AP core {} started successfully!", idx);
+    // Choose startup mode based on configuration
+    if PARALLEL_AP_STARTUP {
+        // === Parallel AP Startup Mode ===
+        // All APs are started simultaneously, each with independent data regions
+        crate::kinfo!("SMP: Using PARALLEL AP startup mode");
+        
+        match start_all_aps_parallel(count) {
+            Ok(started) => {
+                crate::kinfo!(
+                    "SMP: ✓ Parallel startup completed: {} APs online",
+                    started
+                );
             }
             Err(err) => {
-                crate::kwarn!(
-                    "SMP: ✗ Failed to start AP core {} (APIC {:#x}): {}",
-                    idx,
-                    info.apic_id,
-                    err
-                );
-                // Continue trying other cores even if one fails
+                crate::kwarn!("SMP: Parallel startup failed: {}", err);
+                crate::kwarn!("SMP: Falling back to sequential startup...");
+                
+                // Fallback to sequential startup
+                let mut started = 0usize;
+                for idx in 1..count {
+                    match start_ap(idx) {
+                        Ok(()) => started += 1,
+                        Err(e) => crate::kwarn!("SMP: Failed to start AP {}: {}", idx, e),
+                    }
+                }
+                crate::kinfo!("SMP: Sequential fallback: {} APs started", started);
             }
         }
+    } else {
+        // === Sequential AP Startup Mode (Original) ===
+        crate::kinfo!("SMP: Using SEQUENTIAL AP startup mode");
+        
+        let mut started = 0usize;
+        
+        for idx in 1..count {
+            let info = cpu_info(idx);
+
+            crate::kinfo!(
+                "SMP: Starting AP core {} (APIC ID {:#x})...",
+                idx,
+                info.apic_id
+            );
+
+            match start_ap(idx) {
+                Ok(()) => {
+                    started += 1;
+                    crate::kinfo!("SMP: ✓ AP core {} started successfully!", idx);
+                }
+                Err(err) => {
+                    crate::kwarn!(
+                        "SMP: ✗ Failed to start AP core {} (APIC {:#x}): {}",
+                        idx,
+                        info.apic_id,
+                        err
+                    );
+                    // Continue trying other cores even if one fails
+                }
+            }
+        }
+
+        crate::kinfo!(
+            "SMP: {} / {} cores online (BSP + {} APs)",
+            current_online(),
+            CPU_TOTAL.load(Ordering::SeqCst),
+            started
+        );
     }
 
     crate::kinfo!(
-        "SMP: {} / {} cores online (BSP + {} APs)",
+        "SMP: Final status: {} / {} cores online",
         current_online(),
-        CPU_TOTAL.load(Ordering::SeqCst),
-        started
+        CPU_TOTAL.load(Ordering::SeqCst)
     );
 
     Ok(())

@@ -22,3 +22,8 @@ pub static ONLINE_CPUS: AtomicUsize = AtomicUsize::new(1);
 /// The crash was caused by sending IPI with unregistered vector, causing GP fault!
 /// Now using correct IPI_RESCHEDULE (0xF0) which has handler in interrupts.rs
 pub const ENABLE_AP_STARTUP: bool = true; // Re-enabled after disabling ALGN check
+
+/// Configuration: Use parallel AP startup mode
+/// When true, all APs are started simultaneously using per-CPU data regions
+/// When false, APs are started sequentially (original behavior)
+pub const PARALLEL_AP_STARTUP: bool = true;

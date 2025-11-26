@@ -9,10 +9,13 @@ use core::sync::atomic::Ordering;
 
 use x86_64::instructions::tables::sgdt;
 
-use crate::{bootinfo, paging};
+use crate::bootinfo;
 
 use super::state::TRAMPOLINE_READY;
-use super::types::{TRAMPOLINE_BASE, TRAMPOLINE_MAX_SIZE};
+use super::types::{
+    PerCpuTrampolineData, TRAMPOLINE_BASE, TRAMPOLINE_MAX_SIZE,
+    PER_CPU_DATA_SIZE, MAX_CPUS,
+};
 
 /// Get kernel relocation offset using multiple fallback methods.
 /// Returns None if kernel was not relocated or offset cannot be determined.
@@ -233,4 +236,108 @@ pub unsafe fn write_trampoline_bytes(
     let dest = (TRAMPOLINE_BASE as usize + offset) as *mut u8;
     ptr::copy_nonoverlapping(data.as_ptr(), dest, data.len());
     Ok(())
+}
+
+// ============================================================================
+// Per-CPU Data for Parallel AP Initialization
+// ============================================================================
+
+/// Write per-CPU trampoline data for a specific CPU index
+/// This allows each AP to have its own independent startup parameters
+/// enabling parallel initialization without data races.
+pub unsafe fn write_per_cpu_data(
+    cpu_index: usize,
+    data: &PerCpuTrampolineData,
+) -> Result<(), &'static str> {
+    extern "C" {
+        static __ap_trampoline_start: u8;
+        static ap_per_cpu_data: u8;
+    }
+    
+    if cpu_index >= MAX_CPUS {
+        return Err("CPU index out of range");
+    }
+    
+    // Calculate offset of ap_per_cpu_data from trampoline start
+    let per_cpu_base_offset = (&ap_per_cpu_data as *const u8 as usize)
+        - (&__ap_trampoline_start as *const u8 as usize);
+    
+    // Calculate address: TRAMPOLINE_BASE + per_cpu_base_offset + cpu_index * PER_CPU_DATA_SIZE
+    let per_cpu_addr = TRAMPOLINE_BASE as usize + per_cpu_base_offset + cpu_index * PER_CPU_DATA_SIZE;
+    
+    // Write the per-CPU data structure
+    let dest = per_cpu_addr as *mut PerCpuTrampolineData;
+    ptr::write_volatile(dest, *data);
+    
+    // Memory fence to ensure write is visible to other cores
+    core::sync::atomic::fence(Ordering::SeqCst);
+    
+    crate::kinfo!(
+        "SMP: Per-CPU data for CPU {} at {:#x}: stack={:#x}, entry={:#x}, arg={:#x}",
+        cpu_index, per_cpu_addr, data.stack_ptr, data.entry_ptr, data.arg_ptr
+    );
+    
+    Ok(())
+}
+
+/// Set the APIC ID to CPU index mapping
+/// This mapping is used by AP cores to find their per-CPU data
+pub unsafe fn set_apic_to_index_mapping(apic_id: u32, cpu_index: u8) -> Result<(), &'static str> {
+    extern "C" {
+        static __ap_trampoline_start: u8;
+        static ap_apic_to_index: u8;
+    }
+    
+    if apic_id > 255 {
+        return Err("APIC ID out of range (max 255)");
+    }
+    
+    // Calculate offset of ap_apic_to_index table in trampoline
+    let offset = (&ap_apic_to_index as *const u8 as usize) 
+        - (&__ap_trampoline_start as *const u8 as usize);
+    
+    // Write to the mapping table at TRAMPOLINE_BASE + offset + apic_id
+    let mapping_addr = (TRAMPOLINE_BASE as usize + offset + apic_id as usize) as *mut u8;
+    ptr::write_volatile(mapping_addr, cpu_index);
+    
+    crate::kinfo!(
+        "SMP: APIC ID {} -> CPU index {} (mapping at {:#x})",
+        apic_id, cpu_index, mapping_addr as usize
+    );
+    
+    Ok(())
+}
+
+/// Initialize all APIC-to-index mappings for detected CPUs
+pub unsafe fn init_apic_mappings(cpus: &[(u32, u8)]) -> Result<(), &'static str> {
+    for &(apic_id, cpu_index) in cpus {
+        set_apic_to_index_mapping(apic_id, cpu_index)?;
+    }
+    Ok(())
+}
+
+/// Prepare all per-CPU data for parallel startup
+/// Returns the number of CPUs prepared
+pub unsafe fn prepare_all_per_cpu_data<F>(
+    cpu_count: usize,
+    mut data_fn: F,
+) -> Result<usize, &'static str>
+where
+    F: FnMut(usize) -> Result<PerCpuTrampolineData, &'static str>,
+{
+    let mut prepared = 0;
+    
+    for idx in 0..cpu_count {
+        match data_fn(idx) {
+            Ok(data) => {
+                write_per_cpu_data(idx, &data)?;
+                prepared += 1;
+            }
+            Err(e) => {
+                crate::kwarn!("SMP: Failed to prepare data for CPU {}: {}", idx, e);
+            }
+        }
+    }
+    
+    Ok(prepared)
 }

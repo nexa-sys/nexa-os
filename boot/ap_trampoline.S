@@ -1,4 +1,9 @@
 .set TRAMPOLINE_BASE, 0x8000
+.set MAX_CPUS, 16
+# Per-CPU data structure size: 3 * 8 bytes = 24 bytes (stack_ptr, entry_ptr, arg_ptr)
+.set PER_CPU_DATA_SIZE, 24
+# Per-CPU data array starts at a fixed offset after trampoline code
+.set PER_CPU_DATA_OFFSET, 0x800   # At trampoline base + 2KB
 
 .section .ap_trampoline,"ax",@progbits
 .code16
@@ -8,9 +13,14 @@
 .globl ap_gdt64_ptr
 .globl ap_idt_ptr
 .globl ap_pml4_ptr
+# Legacy single-AP pointers (kept for backward compatibility, used for fallback)
 .globl ap_stack_ptr
 .globl ap_entry_ptr
 .globl ap_arg_ptr
+# New per-CPU data array
+.globl ap_per_cpu_data
+# APIC ID to CPU index mapping table
+.globl ap_apic_to_index
 
 __ap_trampoline_start:
     cli
@@ -75,6 +85,29 @@ protected_mode_entry:
     mov %ax, %gs
 
     mov $TRAMPOLINE_BASE, %ebx
+
+    # === Read APIC ID for per-CPU data lookup ===
+    # APIC ID is at LAPIC base + 0x20, bits 24-31
+    # Use xAPIC MMIO access (LAPIC base is usually 0xFEE00000)
+    mov $0xFEE00020, %eax        # LAPIC ID register address
+    mov (%eax), %eax             # Read LAPIC ID register
+    shr $24, %eax                # APIC ID is in bits 24-31
+    mov %eax, %esi               # Save APIC ID in ESI for later use
+    
+    # Debug: 'A' followed by hex digit of APIC ID low nibble
+    mov $0x3F8, %dx
+    mov $'A', %al
+    out %al, %dx
+    mov %esi, %eax
+    and $0xF, %eax
+    cmp $10, %eax
+    jb .apic_digit
+    add $('A' - 10), %al
+    jmp .apic_out
+.apic_digit:
+    add $'0', %al
+.apic_out:
+    out %al, %dx
 
     # Debug: '4' for CR4 about to be set
     mov $0x3F8, %dx
@@ -167,102 +200,127 @@ long_mode_entry:
     mov $'I', %al
     out %al, %dx
 
+    # === PARALLEL INIT: Read APIC ID and lookup per-CPU data ===
+    # ESI still contains APIC ID from 32-bit mode (preserved across mode switch)
+    # But in 64-bit mode, we need to re-read it to be safe
+    mov $0xFEE00020, %eax        # LAPIC ID register (32-bit address fits in eax)
+    mov (%rax), %eax             # Read LAPIC ID register
+    shr $24, %eax                # APIC ID is in bits 24-31
+    mov %eax, %r12d              # Save APIC ID in r12 (callee-saved)
+    
+    # Debug: Output APIC ID
+    mov $0x3F8, %dx
+    mov $'#', %al
+    out %al, %dx
+    mov %r12d, %eax
+    and $0xF, %eax
+    cmp $10, %eax
+    jb .apic_id_digit
+    add $('A' - 10), %al
+    jmp .apic_id_out
+.apic_id_digit:
+    add $'0', %al
+.apic_id_out:
+    out %al, %dx
+
+    # === Look up CPU index from APIC ID using mapping table ===
+    # ap_apic_to_index[apic_id] contains CPU index
     movabs $TRAMPOLINE_BASE, %rax
-    movabs $(ap_stack_ptr - __ap_trampoline_start), %rcx
+    movabs $(ap_apic_to_index - __ap_trampoline_start), %rcx
     add %rcx, %rax
-    mov (%rax), %rsp
+    # r12d = APIC ID, use it as index (each entry is 1 byte)
+    mov %r12d, %r13d            # Zero-extend r12d to r13 (mov clears upper bits)
+    add %r13, %rax              # Address of ap_apic_to_index[apic_id]
+    movzbl (%rax), %r13d        # r13 = CPU index (0-255)
+    
+    # Debug: Output CPU index
+    mov $0x3F8, %dx
+    mov $':', %al
+    out %al, %dx
+    mov %r13d, %eax
+    and $0xF, %eax
+    cmp $10, %eax
+    jb .idx_digit
+    add $('A' - 10), %al
+    jmp .idx_out
+.idx_digit:
+    add $'0', %al
+.idx_out:
+    out %al, %dx
+
+    # Check if CPU index is valid (0xFF means invalid)
+    cmp $0xFF, %r13d
+    jne .valid_cpu_index
+    # Invalid CPU index - halt
+    mov $'X', %al
+    out %al, %dx
+    hlt
+    jmp . - 1
+
+.valid_cpu_index:
+    # === Calculate per-CPU data address ===
+    # Per-CPU data is at: TRAMPOLINE_BASE + (ap_per_cpu_data - __ap_trampoline_start) + cpu_index * PER_CPU_DATA_SIZE
+    # Structure: [stack_ptr:8][entry_ptr:8][arg_ptr:8] = 24 bytes per CPU
+    movabs $TRAMPOLINE_BASE, %rax
+    movabs $(ap_per_cpu_data - __ap_trampoline_start), %rcx
+    add %rcx, %rax                   # rax = base of per-CPU data array
+    mov %r13d, %ecx
+    imul $PER_CPU_DATA_SIZE, %ecx   # ecx = cpu_index * 24
+    add %rcx, %rax                   # rax = per-CPU data base address for this CPU
+    mov %rax, %r14                   # Save per-CPU data address in r14
+    
+    # Debug: '>' before loading per-CPU data
+    mov $0x3F8, %dx
+    mov $'>', %al
+    out %al, %dx
+
+    # Load stack pointer from per-CPU data
+    mov 0(%r14), %rsp               # stack_ptr is at offset 0
     mov %rsp, %rbp
 
     # Debug: 'T' for sTack set
-    mov $0x3F8, %dx
     mov $'T', %al
     out %al, %dx
 
-    movabs $TRAMPOLINE_BASE, %rax
-    movabs $(ap_arg_ptr - __ap_trampoline_start), %rcx
-    add %rcx, %rax
-    mov (%rax), %rdi
+    # Load arg pointer from per-CPU data
+    mov 16(%r14), %rdi              # arg_ptr is at offset 16
 
     # Debug: 'A' for Args loaded
-    mov $0x3F8, %dx
     mov $'A', %al
     out %al, %dx
 
-    movabs $TRAMPOLINE_BASE, %rax
-    movabs $(ap_entry_ptr - __ap_trampoline_start), %rcx
-    add %rcx, %rax
+    # Load entry pointer from per-CPU data
+    mov 8(%r14), %rax               # entry_ptr is at offset 8
+    mov %rax, %r10                  # Save entry address in r10
     
-    # Debug: output the address we're about to read from
-    # rax now contains the address to read entry from
-    mov %rax, %r9    # Save address in r9
-    
-    # Output 'P' then address in hex (all 8 nibbles of low 32 bits)
+    # Debug: output the entry address
     mov $'P', %al
     out %al, %dx
     mov $'{', %al
     out %al, %dx
     
-    # Output low 32 bits of r9 as 8 hex digits
-    mov %r9d, %ecx
+    # Output low 32 bits of r10 as 8 hex digits
+    mov %r10d, %ecx
     mov $8, %r8d
-.output_ptr_hex:
+.output_entry_hex:
     rol $4, %ecx
     mov %ecx, %eax
     and $0xF, %eax
     cmp $10, %eax
-    jb .ptr_is_digit
+    jb .entry_is_digit
     add $('A' - 10), %al
-    jmp .ptr_output_char
-.ptr_is_digit:
+    jmp .entry_output_char
+.entry_is_digit:
     add $'0', %al
-.ptr_output_char:
+.entry_output_char:
     out %al, %dx
     dec %r8d
-    jnz .output_ptr_hex
+    jnz .output_entry_hex
     
     mov $'}', %al
     out %al, %dx
     
-    # Now read from the address in r9
-    mov (%r9), %rax
-    
-    # Save target address IMMEDIATELY before any register modifications
-    mov %rax, %rbx
-    
-    # Debug: 'J' for Jump, then output target address in hex
-    mov $0x3F8, %dx
-    mov $'J', %al
-    out %al, %dx
-    
-    # Output '[' then 8 hex digits of address then ']'
-    mov $'[', %al
-    out %al, %dx
-    
-    # Output high nibbles of address (bits 31-0, 8 hex digits)
-    mov %ebx, %ecx
-    mov $8, %r8d           # 8 hex digits
-.output_hex_loop:
-    rol $4, %ecx           # Rotate left to get next nibble
-    mov %ecx, %eax
-    and $0xF, %eax
-    cmp $10, %eax
-    jb .is_digit
-    add $('A' - 10), %al
-    jmp .output_char
-.is_digit:
-    add $'0', %al
-.output_char:
-    out %al, %dx
-    dec %r8d
-    jnz .output_hex_loop
-    
-    mov $']', %al
-    out %al, %dx
-    
-    # Restore target address to r10 (we'll use this for the jump)
-    mov %rbx, %r10
-    
-    # Final debug before jump - use r11 as temp to preserve r10
+    # Final debug before jump
     mov $0x3F8, %dx
     mov $'!', %al
     out %al, %dx
@@ -296,7 +354,7 @@ long_mode_entry:
 .rsp_after_out:
     out %al, %dx
     
-    # Jump to the Rust AP entry point (use r10 which has the unmodified address)
+    # Jump to the Rust AP entry point (use r10 which has the entry address)
     jmp *%r10
     
     # Should never reach here
@@ -337,6 +395,7 @@ ap_idt_ptr:
 ap_pml4_ptr:
     .quad 0
 
+# Legacy single-AP pointers (kept for backward compatibility)
 .align 8
 ap_stack_ptr:
     .quad 0
@@ -348,5 +407,22 @@ ap_entry_ptr:
 .align 8
 ap_arg_ptr:
     .quad 0
+
+# === APIC ID to CPU index mapping table ===
+# Supports up to 256 different APIC IDs
+# Each entry is 1 byte: ap_apic_to_index[apic_id] = cpu_index (0xFF = invalid)
+.align 8
+ap_apic_to_index:
+    .fill 256, 1, 0xFF          # Initialize all entries to invalid (0xFF)
+
+# === Per-CPU data array ===
+# Located after APIC mapping table
+# Each CPU has 24 bytes: [stack_ptr:8][entry_ptr:8][arg_ptr:8]
+# The offset is dynamically calculated: ap_per_cpu_data - __ap_trampoline_start
+# Rust code MUST use this actual offset, not the hardcoded PER_CPU_DATA_OFFSET
+# However, for simplicity, we pad to ensure alignment at 0x800 offset
+.align 64
+ap_per_cpu_data:
+    .fill MAX_CPUS * PER_CPU_DATA_SIZE, 1, 0   # 16 CPUs * 24 bytes = 384 bytes
 
 __ap_trampoline_end:
