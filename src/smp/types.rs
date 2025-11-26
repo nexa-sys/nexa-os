@@ -24,7 +24,9 @@ pub const MAX_CPUS: usize = acpi::MAX_CPUS;
 
 /// Trampoline configuration
 pub const TRAMPOLINE_BASE: u64 = 0x8000;
-pub const TRAMPOLINE_MAX_SIZE: usize = 4096;
+/// Maximum trampoline size: code (~2KB) + APIC mapping (256B) + per-CPU data (1024*24=24KB) + padding
+/// Total: ~32KB should be sufficient for 1024 CPUs
+pub const TRAMPOLINE_MAX_SIZE: usize = 32 * 1024;
 pub const TRAMPOLINE_VECTOR: u8 = (TRAMPOLINE_BASE >> 12) as u8;
 
 /// Per-CPU data structure size: 3 * 8 bytes = 24 bytes (stack_ptr, entry_ptr, arg_ptr)
@@ -168,46 +170,36 @@ impl PerCpuTrampolineData {
 pub struct AlignedApStack(pub [u8; AP_STACK_SIZE]);
 
 // ============================================================================
-// Global static data
+// Global static data (minimal - most data is dynamically allocated)
 // ============================================================================
 
-/// GS data for each CPU (BSP uses initramfs::GS_DATA, APs use these)
-pub static mut AP_GS_DATA: [PerCpuGsData; MAX_CPUS] = [PerCpuGsData::new(); MAX_CPUS];
+/// Static fallback count for BSP-only operation when dynamic alloc unavailable
+pub const STATIC_CPU_COUNT: usize = 4;
 
-/// Debug: AP arrival flags (non-zero = arrived)
-pub static AP_ARRIVED: [AtomicU32; MAX_CPUS] = [
-    AtomicU32::new(0),
-    AtomicU32::new(0),
-    AtomicU32::new(0),
-    AtomicU32::new(0),
-    AtomicU32::new(0),
-    AtomicU32::new(0),
-    AtomicU32::new(0),
-    AtomicU32::new(0),
-    AtomicU32::new(0),
-    AtomicU32::new(0),
-    AtomicU32::new(0),
-    AtomicU32::new(0),
-    AtomicU32::new(0),
-    AtomicU32::new(0),
-    AtomicU32::new(0),
-    AtomicU32::new(0),
-];
+/// GS data - small static array for early boot, rest is dynamic
+pub static mut AP_GS_DATA: [PerCpuGsData; STATIC_CPU_COUNT] = [PerCpuGsData::new(); STATIC_CPU_COUNT];
 
-/// AP stacks
-pub static mut AP_STACKS: [AlignedApStack; MAX_CPUS - 1] =
-    unsafe { MaybeUninit::<[AlignedApStack; MAX_CPUS - 1]>::zeroed().assume_init() };
+/// Debug: AP arrival flags (non-zero = arrived) - keep static for atomic access
+pub static AP_ARRIVED: [AtomicU32; MAX_CPUS] = {
+    const INIT: AtomicU32 = AtomicU32::new(0);
+    [INIT; MAX_CPUS]
+};
 
-/// Per-CPU data array
-pub static mut CPU_DATA: [MaybeUninit<CpuData>; MAX_CPUS] =
-    unsafe { MaybeUninit::<[MaybeUninit<CpuData>; MAX_CPUS]>::uninit().assume_init() };
+/// AP stacks - small static array for early boot, rest is dynamic
+/// Only allocate for STATIC_CPU_COUNT - 1 APs statically
+pub static mut AP_STACKS: [AlignedApStack; STATIC_CPU_COUNT - 1] =
+    unsafe { MaybeUninit::<[AlignedApStack; STATIC_CPU_COUNT - 1]>::zeroed().assume_init() };
 
-/// CPU information array
-pub static mut CPU_INFOS: [MaybeUninit<CpuInfo>; MAX_CPUS] =
-    unsafe { MaybeUninit::<[MaybeUninit<CpuInfo>; MAX_CPUS]>::uninit().assume_init() };
+/// Per-CPU data array - small static array for early boot
+pub static mut CPU_DATA: [MaybeUninit<CpuData>; STATIC_CPU_COUNT] =
+    unsafe { MaybeUninit::<[MaybeUninit<CpuData>; STATIC_CPU_COUNT]>::uninit().assume_init() };
 
-/// AP boot arguments
-pub static mut AP_BOOT_ARGS: [ApBootArgs; MAX_CPUS] = [ApBootArgs::new(); MAX_CPUS];
+/// CPU information array - small static array for early boot
+pub static mut CPU_INFOS: [MaybeUninit<CpuInfo>; STATIC_CPU_COUNT] =
+    unsafe { MaybeUninit::<[MaybeUninit<CpuInfo>; STATIC_CPU_COUNT]>::uninit().assume_init() };
+
+/// AP boot arguments - small static array
+pub static mut AP_BOOT_ARGS: [ApBootArgs; STATIC_CPU_COUNT] = [ApBootArgs::new(); STATIC_CPU_COUNT];
 
 /// BSP APIC ID
 pub static mut BSP_APIC_ID: u32 = 0;

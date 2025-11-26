@@ -21,91 +21,66 @@ pub const DOUBLE_FAULT_IST_INDEX: u16 = 0;
 /// IST slot dedicated to exceptions that push an error code (e.g. #PF, #GP)
 pub const ERROR_CODE_IST_INDEX: u16 = 1;
 
-/// Maximum number of CPUs (must match smp::MAX_CPUS)
-const MAX_CPUS: usize = 16;
+/// Maximum number of CPUs supported (must match acpi::MAX_CPUS)
+const MAX_CPUS: usize = crate::acpi::MAX_CPUS;
+
+/// Static fallback count for early boot (before dynamic allocation)
+const STATIC_CPU_COUNT: usize = 4;
 
 /// Per-CPU Task State Segment (must be 16-byte aligned for performance)
+/// Using MaybeUninit to support large CPU counts without manual array initialization
 #[repr(align(16))]
 struct AlignedTss {
-    tss: TaskStateSegment,
+    tss: MaybeUninit<TaskStateSegment>,
 }
 
-static mut PER_CPU_TSS: [AlignedTss; MAX_CPUS] = [
-    AlignedTss {
-        tss: TaskStateSegment::new(),
-    },
-    AlignedTss {
-        tss: TaskStateSegment::new(),
-    },
-    AlignedTss {
-        tss: TaskStateSegment::new(),
-    },
-    AlignedTss {
-        tss: TaskStateSegment::new(),
-    },
-    AlignedTss {
-        tss: TaskStateSegment::new(),
-    },
-    AlignedTss {
-        tss: TaskStateSegment::new(),
-    },
-    AlignedTss {
-        tss: TaskStateSegment::new(),
-    },
-    AlignedTss {
-        tss: TaskStateSegment::new(),
-    },
-    AlignedTss {
-        tss: TaskStateSegment::new(),
-    },
-    AlignedTss {
-        tss: TaskStateSegment::new(),
-    },
-    AlignedTss {
-        tss: TaskStateSegment::new(),
-    },
-    AlignedTss {
-        tss: TaskStateSegment::new(),
-    },
-    AlignedTss {
-        tss: TaskStateSegment::new(),
-    },
-    AlignedTss {
-        tss: TaskStateSegment::new(),
-    },
-    AlignedTss {
-        tss: TaskStateSegment::new(),
-    },
-    AlignedTss {
-        tss: TaskStateSegment::new(),
-    },
-];
+impl AlignedTss {
+    const fn uninit() -> Self {
+        Self {
+            tss: MaybeUninit::uninit(),
+        }
+    }
+    
+    /// Initialize the TSS with a new TaskStateSegment
+    unsafe fn init(&mut self) {
+        self.tss.write(TaskStateSegment::new());
+    }
+    
+    /// Get a mutable reference to the TSS (must be initialized first)
+    unsafe fn get_mut(&mut self) -> &mut TaskStateSegment {
+        self.tss.assume_init_mut()
+    }
+    
+    /// Get a reference to the TSS (must be initialized first)
+    unsafe fn get_ref(&self) -> &TaskStateSegment {
+        self.tss.assume_init_ref()
+    }
+}
 
-/// Per-CPU Global Descriptor Table (stored as raw bytes since GDT is not Copy)
-static mut PER_CPU_GDT: [MaybeUninit<GlobalDescriptorTable>; MAX_CPUS] = unsafe {
+/// Per-CPU TSS array - static allocation for first STATIC_CPU_COUNT CPUs
+/// Additional CPUs use dynamic allocation
+static mut PER_CPU_TSS: [AlignedTss; STATIC_CPU_COUNT] = {
+    const UNINIT: AlignedTss = AlignedTss::uninit();
+    [UNINIT; STATIC_CPU_COUNT]
+};
+
+/// Track which TSS entries have been initialized
+static PER_CPU_TSS_READY: [AtomicBool; MAX_CPUS] = {
+    const INIT: AtomicBool = AtomicBool::new(false);
+    [INIT; MAX_CPUS]
+};
+
+/// Per-CPU Global Descriptor Table - static allocation for first STATIC_CPU_COUNT CPUs
+static mut PER_CPU_GDT: [MaybeUninit<GlobalDescriptorTable>; STATIC_CPU_COUNT] = unsafe {
     // SAFETY: MaybeUninit::uninit() is safe for any type
     MaybeUninit::uninit().assume_init()
 };
 
 /// Per-CPU GDT initialized flags
-static PER_CPU_GDT_READY: [AtomicBool; MAX_CPUS] = [
-    AtomicBool::new(false),
-    AtomicBool::new(false),
-    AtomicBool::new(false),
-    AtomicBool::new(false),
-    AtomicBool::new(false),
-    AtomicBool::new(false),
-    AtomicBool::new(false),
-    AtomicBool::new(false),
-    AtomicBool::new(false),
-    AtomicBool::new(false),
-    AtomicBool::new(false),
-    AtomicBool::new(false),
-    AtomicBool::new(false),
-    AtomicBool::new(false),
-    AtomicBool::new(false),
-    AtomicBool::new(false),
-];
+static PER_CPU_GDT_READY: [AtomicBool; MAX_CPUS] = {
+    const INIT: AtomicBool = AtomicBool::new(false);
+    [INIT; MAX_CPUS]
+};
 
 /// Segment selectors (shared across all CPUs - same values, different TSS)
 pub struct Selectors {
@@ -140,7 +115,7 @@ const EMPTY_PERCPU_STACKS: PerCpuStacks = PerCpuStacks {
     },
 };
 
-static mut PER_CPU_STACKS: [PerCpuStacks; MAX_CPUS] = [EMPTY_PERCPU_STACKS; MAX_CPUS];
+static mut PER_CPU_STACKS: [PerCpuStacks; STATIC_CPU_COUNT] = [EMPTY_PERCPU_STACKS; STATIC_CPU_COUNT];
 
 #[inline(always)]
 unsafe fn stack_top(stack: *const AlignedStack) -> VirtAddr {
@@ -192,6 +167,14 @@ unsafe fn aligned_error_code_stack_top(stack: *const AlignedStack) -> VirtAddr {
     VirtAddr::new(top - 8)
 }
 
+/// Get aligned stack top for dynamic AlignedStack from smp::alloc
+#[inline(always)]
+unsafe fn aligned_stack_top_dyn(stack: &crate::smp::alloc::AlignedStack) -> VirtAddr {
+    let base = stack.bytes.as_ptr() as u64;
+    let top = base + crate::smp::alloc::GDT_STACK_SIZE as u64;
+    VirtAddr::new(top & !0xFu64)
+}
+
 /// Initialize GDT with kernel and user segments (BSP = CPU 0)
 pub fn init() {
     init_cpu(0);
@@ -205,6 +188,9 @@ fn init_cpu(cpu_id: usize) {
     if cpu_id >= MAX_CPUS {
         crate::kpanic!("CPU ID {} exceeds MAX_CPUS {}", cpu_id, MAX_CPUS);
     }
+    
+    // Determine if this CPU uses dynamic allocation
+    let uses_dynamic = cpu_id >= STATIC_CPU_COUNT;
 
     unsafe {
         // Debug for AP - check current RSP
@@ -214,17 +200,40 @@ fn init_cpu(cpu_id: usize) {
             // Output RSP as hex (low 3 bytes should be enough to see offset)
             serial_debug_hex(current_rsp, 6);
             serial_debug_byte(b'/');
+            if uses_dynamic {
+                serial_debug_byte(b'D'); // Dynamic mode indicator
+            }
         }
 
-        let df_base =
-            ptr::addr_of!(PER_CPU_STACKS[cpu_id].double_fault_stack.bytes).cast::<u8>() as u64;
-        let df_top_aligned =
-            aligned_ist_stack_top(ptr::addr_of!(PER_CPU_STACKS[cpu_id].double_fault_stack));
+        // Get stack pointers - either from static or dynamic allocation
+        let (df_top_aligned, ec_top_aligned, kernel_stack_top): (VirtAddr, VirtAddr, VirtAddr) = if uses_dynamic {
+            // Dynamic allocation path
+            let gdt_stacks = crate::smp::alloc::get_dynamic_gdt_stacks(cpu_id)
+                .expect("Dynamic GDT stacks not allocated");
+            
+            let df_top = aligned_stack_top_dyn(&gdt_stacks.double_fault_stack);
+            // Error code stack needs -8 bias like static version
+            let ec_top = {
+                let top = aligned_stack_top_dyn(&gdt_stacks.error_code_stack).as_u64();
+                VirtAddr::new(top - 8)
+            };
+            // Kernel stack also needs -8 bias for privilege stack
+            let ks_top = {
+                let top = aligned_stack_top_dyn(&gdt_stacks.kernel_stack).as_u64();
+                VirtAddr::new(top - 8)
+            };
+            (df_top, ec_top, ks_top)
+        } else {
+            // Static allocation path  
+            let df_top = aligned_ist_stack_top(ptr::addr_of!(PER_CPU_STACKS[cpu_id].double_fault_stack));
+            let ec_top = aligned_error_code_stack_top(ptr::addr_of!(PER_CPU_STACKS[cpu_id].error_code_stack));
+            let ks_top = aligned_privilege_stack_top(ptr::addr_of!(PER_CPU_STACKS[cpu_id].kernel_stack));
+            (df_top, ec_top, ks_top)
+        };
 
         if cpu_id == 0 {
             crate::kinfo!(
-                "Double fault stack base={:#x}, aligned_top={:#x}",
-                df_base,
+                "Double fault stack aligned_top={:#x}",
                 df_top_aligned.as_u64()
             );
         }
@@ -234,7 +243,18 @@ fn init_cpu(cpu_id: usize) {
             serial_debug_byte(b'b'); // Before TSS setup
         }
 
-        let tss = &mut PER_CPU_TSS[cpu_id].tss;
+        // Get TSS - either from static or dynamic allocation
+        let tss: &mut TaskStateSegment = if uses_dynamic {
+            crate::smp::alloc::get_dynamic_tss_mut(cpu_id)
+                .expect("Dynamic TSS not allocated")
+        } else {
+            // Initialize TSS if not already done
+            if !PER_CPU_TSS_READY[cpu_id].load(Ordering::Acquire) {
+                PER_CPU_TSS[cpu_id].init();
+                PER_CPU_TSS_READY[cpu_id].store(true, Ordering::Release);
+            }
+            PER_CPU_TSS[cpu_id].get_mut()
+        };
 
         if cpu_id > 0 {
             serial_debug_byte(b'c'); // Got TSS reference
@@ -258,10 +278,6 @@ fn init_cpu(cpu_id: usize) {
         if cpu_id > 0 {
             serial_debug_byte(b'D'); // Before error_code_stack
         }
-
-        // Provide a dedicated IST for any exception that pushes an error code
-        let ec_top_aligned =
-            aligned_error_code_stack_top(ptr::addr_of!(PER_CPU_STACKS[cpu_id].error_code_stack));
 
         // Debug: after error_code stack calculation
         if cpu_id > 0 {
@@ -289,8 +305,7 @@ fn init_cpu(cpu_id: usize) {
         }
 
         // Setup privilege stack for syscall (RSP0 for Ring 0)
-        tss.privilege_stack_table[0] =
-            aligned_privilege_stack_top(ptr::addr_of!(PER_CPU_STACKS[cpu_id].kernel_stack));
+        tss.privilege_stack_table[0] = kernel_stack_top;
 
         // Debug: after privilege stack setup
         if cpu_id > 0 {
@@ -321,88 +336,117 @@ fn init_cpu(cpu_id: usize) {
             options(nomem, nostack)
         );
 
-        // Create GDT for this CPU directly without temp variables to avoid move issues
-        // (Move of GlobalDescriptorTable containing AtomicU64 was causing #GP on AP)
-        let mut gdt = GlobalDescriptorTable::new();
-
-        // Debug: after GDT::new()
-        if cpu_id > 0 {
-            serial_debug_byte(b'S'); // After GDT::new
-        }
-
-        // Entry 0: Null descriptor (required)
-        // Entry 1: Kernel code segment
-        let kernel_code = gdt.append(Descriptor::kernel_code_segment());
-
-        // Debug: after kernel_code
-        if cpu_id > 0 {
-            serial_debug_byte(b'T'); // After kernel_code
-        }
-
-        // Entry 2: Kernel data segment
-        let kernel_data = gdt.append(Descriptor::kernel_data_segment());
-
-        // Debug: after kernel_data
-        if cpu_id > 0 {
-            serial_debug_byte(b'U'); // After kernel_data
-        }
-
-        // Entry 3: User data segment (DPL=3) - MUST come before user code for SYSRET!
-        let user_data_sel = gdt.append(Descriptor::user_data_segment());
-        // Entry 4: User code segment (DPL=3) - MUST come after user data for SYSRET!
-        let user_code_sel = gdt.append(Descriptor::user_code_segment());
-
-        // Debug: before TSS segment
-        if cpu_id > 0 {
-            serial_debug_byte(b'V'); // Before TSS segment
-        }
-
-        // Entry 5: TSS (per-CPU)
-        let tss_ptr = &raw const PER_CPU_TSS[cpu_id].tss;
-
-        // Debug: got tss_ptr
-        if cpu_id > 0 {
-            serial_debug_byte(b'W'); // Got tss_ptr
-        }
-
-        let tss_sel = gdt.append(Descriptor::tss_segment(&*tss_ptr));
-
-        // Debug: after TSS segment
-        if cpu_id > 0 {
-            serial_debug_byte(b'X'); // After TSS segment
-        }
-
-        // On BSP (CPU 0), store selectors for all CPUs to use
-        if cpu_id == 0 {
-            let selectors = Selectors {
-                code_selector: kernel_code,
-                data_selector: kernel_data,
-                user_code_selector: user_code_sel,
-                user_data_selector: user_data_sel,
-                tss_selector: tss_sel,
-            };
-
-            crate::kinfo!("GDT selectors calculated: kernel_code={:#x}, kernel_data={:#x}, user_code={:#x}, user_data={:#x}, tss={:#x}",
-                kernel_code.0, kernel_data.0, user_code_sel.0, user_data_sel.0, tss_sel.0);
-
-            #[allow(static_mut_refs)]
-            {
-                SELECTORS.write(selectors);
+        // Get GDT reference - either static or dynamic
+        let gdt_ref: &'static GlobalDescriptorTable = if uses_dynamic {
+            // For dynamic allocation, we need to populate the GDT
+            let gdt = crate::smp::alloc::get_dynamic_gdt_mut(cpu_id)
+                .expect("Dynamic GDT not allocated");
+            
+            // The GDT is freshly allocated, we need to set it up
+            // Entry 0: Null descriptor (required) - already present in new()
+            // Entry 1: Kernel code segment
+            let kernel_code = gdt.append(Descriptor::kernel_code_segment());
+            // Entry 2: Kernel data segment
+            let kernel_data = gdt.append(Descriptor::kernel_data_segment());
+            // Entry 3: User data segment (DPL=3) - MUST come before user code for SYSRET!
+            let _user_data_sel = gdt.append(Descriptor::user_data_segment());
+            // Entry 4: User code segment (DPL=3) - MUST come after user data for SYSRET!
+            let _user_code_sel = gdt.append(Descriptor::user_code_segment());
+            
+            // Entry 5: TSS (per-CPU) - use the dynamically allocated TSS
+            let tss_ptr = tss as *const TaskStateSegment;
+            let _tss_sel = gdt.append(Descriptor::tss_segment(&*tss_ptr));
+            
+            if cpu_id > 0 {
+                serial_debug_byte(b'X'); // After TSS segment
             }
-            SELECTORS_READY.store(true, Ordering::SeqCst);
-            crate::kinfo!("GDT selectors stored and ready");
-        }
+            
+            // Return static reference (safe because dynamic allocation lives forever)
+            &*(gdt as *const GlobalDescriptorTable)
+        } else {
+            // Static allocation path
+            // Create GDT for this CPU directly without temp variables to avoid move issues
+            let mut gdt = GlobalDescriptorTable::new();
 
-        // Store GDT for this CPU
-        PER_CPU_GDT[cpu_id].write(gdt);
-        PER_CPU_GDT_READY[cpu_id].store(true, Ordering::SeqCst);
+            // Debug: after GDT::new()
+            if cpu_id > 0 {
+                serial_debug_byte(b'S'); // After GDT::new
+            }
 
-        if cpu_id > 0 {
-            serial_debug_byte(b'e'); // After GDT write
-        }
+            // Entry 0: Null descriptor (required)
+            // Entry 1: Kernel code segment
+            let kernel_code = gdt.append(Descriptor::kernel_code_segment());
 
-        // Load GDT
-        let gdt_ref = PER_CPU_GDT[cpu_id].assume_init_ref();
+            // Debug: after kernel_code
+            if cpu_id > 0 {
+                serial_debug_byte(b'T'); // After kernel_code
+            }
+
+            // Entry 2: Kernel data segment
+            let kernel_data = gdt.append(Descriptor::kernel_data_segment());
+
+            // Debug: after kernel_data
+            if cpu_id > 0 {
+                serial_debug_byte(b'U'); // After kernel_data
+            }
+
+            // Entry 3: User data segment (DPL=3) - MUST come before user code for SYSRET!
+            let user_data_sel = gdt.append(Descriptor::user_data_segment());
+            // Entry 4: User code segment (DPL=3) - MUST come after user data for SYSRET!
+            let user_code_sel = gdt.append(Descriptor::user_code_segment());
+
+            // Debug: before TSS segment
+            if cpu_id > 0 {
+                serial_debug_byte(b'V'); // Before TSS segment
+            }
+
+            // Entry 5: TSS (per-CPU)
+            let tss_ptr: *const TaskStateSegment = PER_CPU_TSS[cpu_id].get_ref();
+
+            // Debug: got tss_ptr
+            if cpu_id > 0 {
+                serial_debug_byte(b'W'); // Got tss_ptr
+            }
+
+            let tss_sel = gdt.append(Descriptor::tss_segment(&*tss_ptr));
+
+            // Debug: after TSS segment
+            if cpu_id > 0 {
+                serial_debug_byte(b'X'); // After TSS segment
+            }
+
+            // On BSP (CPU 0), store selectors for all CPUs to use
+            if cpu_id == 0 {
+                let selectors = Selectors {
+                    code_selector: kernel_code,
+                    data_selector: kernel_data,
+                    user_code_selector: user_code_sel,
+                    user_data_selector: user_data_sel,
+                    tss_selector: tss_sel,
+                };
+
+                crate::kinfo!("GDT selectors calculated: kernel_code={:#x}, kernel_data={:#x}, user_code={:#x}, user_data={:#x}, tss={:#x}",
+                    kernel_code.0, kernel_data.0, user_code_sel.0, user_data_sel.0, tss_sel.0);
+
+                #[allow(static_mut_refs)]
+                {
+                    SELECTORS.write(selectors);
+                }
+                SELECTORS_READY.store(true, Ordering::SeqCst);
+                crate::kinfo!("GDT selectors stored and ready");
+            }
+
+            // Store GDT for this CPU
+            PER_CPU_GDT[cpu_id].write(gdt);
+            PER_CPU_GDT_READY[cpu_id].store(true, Ordering::SeqCst);
+
+            if cpu_id > 0 {
+                serial_debug_byte(b'e'); // After GDT write
+            }
+
+            // Return reference to stored GDT
+            PER_CPU_GDT[cpu_id].assume_init_ref()
+        };
 
         if cpu_id == 0 {
             for (idx, entry) in gdt_ref.entries().iter().enumerate() {
@@ -512,7 +556,7 @@ pub unsafe fn get_privilege_stack(cpu_id: usize, index: usize) -> u64 {
     if cpu_id >= MAX_CPUS {
         crate::kpanic!("CPU ID {} exceeds MAX_CPUS {}", cpu_id, MAX_CPUS);
     }
-    PER_CPU_TSS[cpu_id].tss.privilege_stack_table[index].as_u64()
+    PER_CPU_TSS[cpu_id].get_ref().privilege_stack_table[index].as_u64()
 }
 
 pub fn get_kernel_stack_top(cpu_id: usize) -> u64 {

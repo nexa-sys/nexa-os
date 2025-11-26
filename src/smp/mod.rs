@@ -15,7 +15,9 @@
 //! - `trampoline`: AP trampoline installation and configuration
 //! - `ap_startup`: AP core startup logic
 //! - `init`: SMP subsystem initialization
+//! - `alloc`: Dynamic allocation for per-CPU resources
 
+pub mod alloc;
 mod ap_startup;
 mod cpu;
 mod init;

@@ -1,5 +1,6 @@
 .set TRAMPOLINE_BASE, 0x8000
-.set MAX_CPUS, 16
+# Maximum number of CPUs supported (must match acpi::MAX_CPUS = 1024)
+.set MAX_CPUS, 1024
 # Per-CPU data structure size: 3 * 8 bytes = 24 bytes (stack_ptr, entry_ptr, arg_ptr)
 .set PER_CPU_DATA_SIZE, 24
 # Per-CPU data array starts at a fixed offset after trampoline code
@@ -423,6 +424,6 @@ ap_apic_to_index:
 # However, for simplicity, we pad to ensure alignment at 0x800 offset
 .align 64
 ap_per_cpu_data:
-    .fill MAX_CPUS * PER_CPU_DATA_SIZE, 1, 0   # 16 CPUs * 24 bytes = 384 bytes
+    .fill MAX_CPUS * PER_CPU_DATA_SIZE, 1, 0   # 1024 CPUs * 24 bytes = 24576 bytes
 
 __ap_trampoline_end:

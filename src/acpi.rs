@@ -10,7 +10,8 @@ const EBDA_PTR: usize = 0x40E;
 const EBDA_SEARCH_SIZE: usize = 1024;
 const BIOS_SEARCH_START: usize = 0xE0000;
 const BIOS_SEARCH_END: usize = 0x100000;
-pub const MAX_CPUS: usize = 16;
+/// Maximum number of CPUs supported (1024 for future-proofing large SMP systems)
+pub const MAX_CPUS: usize = 1024;
 
 #[repr(C, packed)]
 struct RsdpV2 {

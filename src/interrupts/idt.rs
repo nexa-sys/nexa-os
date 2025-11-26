@@ -23,7 +23,7 @@ use x86_64::structures::idt::InterruptDescriptorTable;
 use x86_64::PrivilegeLevel;
 
 /// Maximum number of CPUs supported (must match acpi::MAX_CPUS)
-const MAX_CPUS: usize = 16;
+const MAX_CPUS: usize = crate::acpi::MAX_CPUS;
 
 use crate::interrupts::exceptions::*;
 use crate::interrupts::gs_context::GS_SLOT_KERNEL_RSP;
@@ -71,12 +71,10 @@ const ENABLE_SYSCALL_MSRS: bool = true;
 static IDT_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 /// Per-CPU IDT initialized flags
-static PER_CPU_IDT_INITIALIZED: [AtomicBool; MAX_CPUS] = [
-    AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false),
-    AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false),
-    AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false),
-    AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false),
-];
+static PER_CPU_IDT_INITIALIZED: [AtomicBool; MAX_CPUS] = {
+    const INIT: AtomicBool = AtomicBool::new(false);
+    [INIT; MAX_CPUS]
+};
 
 /// Per-CPU IDT storage (CPU 0/BSP uses the lazy_static IDT, APs use this array)
 /// Using MaybeUninit to avoid requiring Default/Copy for InterruptDescriptorTable
