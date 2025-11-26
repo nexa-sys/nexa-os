@@ -16,8 +16,17 @@ pub fn cpu_count() -> usize {
 }
 
 /// Get the number of CPUs currently online
+/// Uses trampoline status array for accurate count after SMP initialization
 pub fn online_cpus() -> usize {
-    ONLINE_CPUS.load(Ordering::Acquire)
+    // During boot, ONLINE_CPUS atomic may not be fully updated by all AP cores yet.
+    // Use current_online() which reads from trampoline status array for accuracy.
+    if SMP_READY.load(Ordering::Acquire) {
+        // After SMP is ready, read the authoritative count from trampoline
+        current_online()
+    } else {
+        // Before SMP init, only BSP is online
+        ONLINE_CPUS.load(Ordering::Acquire)
+    }
 }
 
 /// Get current CPU ID from LAPIC (supports up to 1024 CPUs)
