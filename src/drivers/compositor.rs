@@ -41,11 +41,12 @@ pub const MAX_LAYERS: usize = 16;
 pub const MAX_TASKS_PER_CPU: usize = 32;
 
 /// Minimum rows per worker for effective parallelization
-pub const MIN_ROWS_PER_WORKER: usize = 32;
+/// Reduced to enable parallelism on smaller regions
+pub const MIN_ROWS_PER_WORKER: usize = 16;
 
 /// Default stripe height for parallel composition
-/// Increased for 2.5K+ screens to improve cache locality (64KB L1 cache line efficiency)
-pub const DEFAULT_STRIPE_HEIGHT: usize = 64;
+/// Reduced from 64 to 32 for finer-grained parallelism on high-core-count systems
+pub const DEFAULT_STRIPE_HEIGHT: usize = 32;
 
 /// Threshold for using fast memset-style fill (in pixels)
 const FAST_FILL_THRESHOLD: usize = 8;
@@ -67,7 +68,11 @@ const PREFETCH_DISTANCE: usize = 8;
 
 /// Threshold for parallel scroll (in total bytes to move)
 /// For 2.5K (2560x1440x4bpp ≈ 14MB), always use parallel
-const PARALLEL_SCROLL_THRESHOLD: usize = 512 * 1024; // 512KB (reduced for better parallelism)
+/// Reduced to 256KB for more aggressive parallelization
+const PARALLEL_SCROLL_THRESHOLD: usize = 256 * 1024; // 256KB - more aggressive parallelism
+
+/// Threshold for parallel fill (in total bytes)
+const PARALLEL_FILL_THRESHOLD: usize = 128 * 1024; // 128KB
 
 // =============================================================================
 // Multi-Core Work Distribution
@@ -147,6 +152,8 @@ static FILL_COLOR: AtomicU32 = AtomicU32::new(0);
 static FILL_NEXT_ROW: AtomicUsize = AtomicUsize::new(0);
 static FILL_TOTAL_ROWS: AtomicUsize = AtomicUsize::new(0);
 static FILL_ROWS_DONE: AtomicUsize = AtomicUsize::new(0);
+static FILL_TEMPLATE_ROW: AtomicUsize = AtomicUsize::new(0);
+static FILL_X_OFFSET: AtomicUsize = AtomicUsize::new(0);
 
 /// Composition operation state for parallel rendering
 static COMPOSE_DST_BUFFER: AtomicU64 = AtomicU64::new(0);
@@ -608,6 +615,44 @@ fn fill_worker() -> usize {
     rows_done
 }
 
+/// Optimized fill worker that copies from template row (faster than per-pixel fill)
+fn fill_worker_copy() -> usize {
+    let buffer = FILL_BUFFER_ADDR.load(Ordering::Acquire) as *mut u8;
+    let pitch = FILL_PITCH.load(Ordering::Acquire);
+    let width = FILL_WIDTH.load(Ordering::Acquire);
+    let bpp = FILL_BPP.load(Ordering::Acquire);
+    let total_rows = FILL_TOTAL_ROWS.load(Ordering::Acquire);
+    let template_row = FILL_TEMPLATE_ROW.load(Ordering::Acquire);
+    let x_offset = FILL_X_OFFSET.load(Ordering::Acquire);
+    let start_row = FILL_NEXT_ROW.load(Ordering::Acquire);
+    
+    let row_bytes = width * bpp;
+    // More aggressive batching for copy (cheaper than fill)
+    let batch_size = 64;
+    let mut rows_done = 0;
+    
+    while let Some((start, end)) = claim_fill_rows(batch_size, total_rows) {
+        // Skip rows before our start
+        if end <= start_row {
+            continue;
+        }
+        let actual_start = start.max(start_row);
+        
+        // Copy template row to each row in batch
+        unsafe {
+            let template_ptr = buffer.add(template_row * pitch + x_offset * bpp);
+            for row in actual_start..end {
+                let dst_ptr = buffer.add(row * pitch + x_offset * bpp);
+                core::ptr::copy_nonoverlapping(template_ptr, dst_ptr, row_bytes);
+            }
+        }
+        rows_done += end - actual_start;
+        FILL_ROWS_DONE.fetch_add(end - actual_start, Ordering::AcqRel);
+    }
+    
+    rows_done
+}
+
 /// Claim a batch of rows for fill operation
 #[inline(always)]
 fn claim_fill_rows(batch_size: usize, total: usize) -> Option<(usize, usize)> {
@@ -691,8 +736,14 @@ fn dispatch_to_ap_cores() {
 fn claim_work_stripe(stripe_height: usize, total_rows: usize) -> Option<(usize, usize, usize)> {
     let total_stripes = (total_rows + stripe_height - 1) / stripe_height;
     
-    // Adaptive batch size: claim 2 stripes if many available
-    let batch_size = if total_stripes > 32 { 2 } else { 1 };
+    // Adaptive batch size: claim more stripes when many available to reduce contention
+    let batch_size = if total_stripes > 64 {
+        4  // Very large work: claim 4 at once
+    } else if total_stripes > 24 {
+        2  // Large work: claim 2 at once
+    } else {
+        1  // Small work: claim 1 at a time
+    };
     
     let mut attempts = 0;
     loop {
@@ -1251,7 +1302,7 @@ pub fn compose(
     
     // Check if parallel composition is beneficial
     let workers = worker_count();
-    if workers <= 1 || height < MIN_ROWS_PER_WORKER * 2 {
+    if workers <= 1 || height < MIN_ROWS_PER_WORKER {
         // Single-threaded is more efficient for small regions
         compose_stripe(dst_buffer, dst_pitch, dst_bpp, 0, height, layers, width);
         TOTAL_COMPOSITIONS.fetch_add(1, Ordering::Relaxed);
@@ -1259,8 +1310,12 @@ pub fn compose(
     }
     
     // Calculate stripe height for good load balancing
-    // Aim for 4x more stripes than workers for dynamic load balancing
-    let stripe_height = DEFAULT_STRIPE_HEIGHT.max(height / (workers * 4));
+    // Aim for 8x more stripes than workers for better dynamic load balancing
+    // Use smaller stripes on high-core systems for finer granularity
+    let target_stripes = workers * 8;
+    let computed_height = height / target_stripes.max(1);
+    // Clamp between MIN_ROWS_PER_WORKER and DEFAULT_STRIPE_HEIGHT
+    let stripe_height = computed_height.clamp(MIN_ROWS_PER_WORKER, DEFAULT_STRIPE_HEIGHT);
     let total_stripes = (height + stripe_height - 1) / stripe_height;
     
     // Copy layers to static storage for AP cores to access
@@ -1322,6 +1377,7 @@ pub fn compose(
 /// Fill a region with a solid color (parallel version)
 /// 
 /// Optimized with:
+/// - Multi-core parallel filling for large regions
 /// - Row-level batch filling using write_bytes/copy_nonoverlapping
 /// - First row as template for subsequent rows
 /// - Reduced volatile writes (only first row is volatile)
@@ -1342,6 +1398,7 @@ pub fn fill_rect(
     }
     
     let row_bytes = width * dst_bpp;
+    let total_bytes = row_bytes * height;
     let color_bytes = color.to_le_bytes();
     
     // For small fills or non-32bit formats, use simple loop
@@ -1360,20 +1417,80 @@ pub fn fill_rect(
         return;
     }
     
-    // Fast path: fill first row, then copy to remaining rows
-    unsafe {
-        let first_row_ptr = dst_buffer.add(y * dst_pitch + x * dst_bpp);
-        
-        // Fill first row with 32-bit writes (assuming BGRA format)
-        let pixel_ptr = first_row_ptr as *mut u32;
-        for col in 0..width {
-            pixel_ptr.add(col).write_volatile(color);
+    // Check if parallel fill is beneficial
+    let workers = worker_count();
+    let use_parallel = is_initialized() 
+        && workers > 1 
+        && total_bytes >= PARALLEL_FILL_THRESHOLD
+        && height >= workers * 8;  // At least 8 rows per worker
+    
+    if use_parallel {
+        // === Parallel fill path ===
+        // First, fill a template row that workers will copy from
+        unsafe {
+            let first_row_ptr = dst_buffer.add(y * dst_pitch + x * dst_bpp);
+            let pixel_ptr = first_row_ptr as *mut u32;
+            for col in 0..width {
+                pixel_ptr.add(col).write_volatile(color);
+            }
         }
         
-        // Copy first row to remaining rows (much faster than pixel-by-pixel)
-        for row in 1..height {
-            let dst_row_ptr = dst_buffer.add((y + row) * dst_pitch + x * dst_bpp);
-            core::ptr::copy_nonoverlapping(first_row_ptr, dst_row_ptr, row_bytes);
+        // Setup fill parameters for workers (fill remaining rows)
+        FILL_BUFFER_ADDR.store(dst_buffer as u64, Ordering::Release);
+        FILL_PITCH.store(dst_pitch, Ordering::Release);
+        FILL_WIDTH.store(width, Ordering::Release);
+        FILL_BPP.store(dst_bpp, Ordering::Release);
+        FILL_COLOR.store(color, Ordering::Release);
+        FILL_NEXT_ROW.store(y + 1, Ordering::Release);  // Start from second row
+        FILL_TOTAL_ROWS.store(y + height, Ordering::Release);
+        FILL_ROWS_DONE.store(0, Ordering::Release);
+        
+        // Store template row info for workers
+        FILL_TEMPLATE_ROW.store(y, Ordering::Release);
+        FILL_X_OFFSET.store(x, Ordering::Release);
+        
+        // Set work type
+        WORK_TYPE.store(WorkType::Fill as u8, Ordering::Release);
+        
+        // Memory fence
+        core::sync::atomic::fence(Ordering::SeqCst);
+        
+        // Dispatch to AP cores
+        dispatch_to_ap_cores();
+        
+        // BSP participates
+        fill_worker_copy();
+        
+        // Wait for completion
+        let rows_to_fill = height - 1;  // Excluding template row
+        let mut backoff = 1u32;
+        while FILL_ROWS_DONE.load(Ordering::Acquire) < rows_to_fill {
+            for _ in 0..backoff {
+                core::hint::spin_loop();
+            }
+            backoff = (backoff * 2).min(1024);
+        }
+        
+        // Clear work flags
+        WORK_AVAILABLE.store(false, Ordering::Release);
+        WORK_TYPE.store(WorkType::None as u8, Ordering::Release);
+    } else {
+        // === Single-core fast path ===
+        // Fill first row, then copy to remaining rows
+        unsafe {
+            let first_row_ptr = dst_buffer.add(y * dst_pitch + x * dst_bpp);
+            
+            // Fill first row with 32-bit writes (assuming BGRA format)
+            let pixel_ptr = first_row_ptr as *mut u32;
+            for col in 0..width {
+                pixel_ptr.add(col).write_volatile(color);
+            }
+            
+            // Copy first row to remaining rows (much faster than pixel-by-pixel)
+            for row in 1..height {
+                let dst_row_ptr = dst_buffer.add((y + row) * dst_pitch + x * dst_bpp);
+                core::ptr::copy_nonoverlapping(first_row_ptr, dst_row_ptr, row_bytes);
+            }
         }
     }
 }
@@ -1496,7 +1613,7 @@ pub fn scroll_up_fast(
     let use_parallel = is_initialized() 
         && workers > 1 
         && total_bytes >= PARALLEL_SCROLL_THRESHOLD
-        && rows_to_copy >= workers * 32;  // At least 32 rows per worker
+        && rows_to_copy >= workers * 16;  // At least 16 rows per worker (reduced for more parallelism)
     
     if use_parallel {
         // === Parallel scroll path - dispatch to all cores ===
