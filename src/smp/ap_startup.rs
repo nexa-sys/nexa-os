@@ -460,14 +460,21 @@ extern "C" fn ap_entry_inner(arg: *const ApBootArgs) -> ! {
             }
         }
 
-        // Step 5: Enable interrupts
+        // Step 5: Initialize LAPIC timer for this AP core
+        // This provides the periodic timer interrupt for scheduler on this core
+        // Using vector 0xEC (LAPIC_TIMER_VECTOR) and 1000 Hz frequency
+        crate::kinfo!("SMP: Core {} initializing LAPIC timer", idx);
+        crate::lapic::init_timer(crate::interrupts::handlers::LAPIC_TIMER_VECTOR, 1000);
+        crate::safety::serial_debug_str("AP_LAPIC_TIMER_OK\n");
+
+        // Step 6: Enable interrupts
         core::sync::atomic::compiler_fence(Ordering::SeqCst);
         x86_64::instructions::interrupts::enable();
 
         crate::safety::serial_debug_str("AP_IDLE_LOOP\n");
-        crate::kinfo!("SMP: Core {} entering idle loop", idx);
+        crate::kinfo!("SMP: Core {} entering idle loop (scheduler will take over)", idx);
 
-        // Enter idle loop - scheduler will take over
+        // Enter idle loop - LAPIC timer interrupts will trigger scheduler
         loop {
             cpu_hlt();
         }

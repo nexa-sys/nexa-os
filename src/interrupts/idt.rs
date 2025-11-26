@@ -158,6 +158,10 @@ lazy_static! {
             idt[0xF1].set_handler_fn(ipi_tlb_flush_handler);
             idt[0xF2].set_handler_fn(ipi_call_function_handler);
             idt[0xF3].set_handler_fn(ipi_halt_handler);
+
+            // Set up LAPIC timer handler (vector 0xEC = 236)
+            // This is primarily for AP cores but also registered on BSP for consistency
+            idt[LAPIC_TIMER_VECTOR].set_handler_fn(lapic_timer_handler);
         }
 
         idt
@@ -381,6 +385,10 @@ pub fn init_interrupts_ap(cpu_id: usize) {
         idt_ref[0xF1].set_handler_fn(ipi_tlb_flush_handler);
         idt_ref[0xF2].set_handler_fn(ipi_call_function_handler);
         idt_ref[0xF3].set_handler_fn(ipi_halt_handler);
+
+        // Set up LAPIC timer handler for AP cores (vector 0xEC = 236)
+        // This provides the timer tick for scheduling on non-BSP cores
+        idt_ref[LAPIC_TIMER_VECTOR].set_handler_fn(lapic_timer_handler);
 
         // Mark as initialized before loading
         PER_CPU_IDT_INITIALIZED[cpu_id].store(true, AtomicOrdering::SeqCst);

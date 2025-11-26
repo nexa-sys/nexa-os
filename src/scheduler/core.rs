@@ -127,15 +127,25 @@ fn find_start_index(
 
 /// Find the best ready process using EEVDF algorithm
 /// Selects the eligible process with the earliest virtual deadline
+/// Only considers processes that can run on the current CPU (affinity check)
 fn find_best_candidate(
     table: &[Option<super::types::ProcessEntry>; MAX_PROCESSES],
     _start_idx: usize,
 ) -> Option<EevdfCandidate> {
     let mut best_candidate: Option<EevdfCandidate> = None;
+    
+    // Get current CPU ID for affinity check
+    let current_cpu = crate::smp::current_cpu_id() as u32;
+    let cpu_mask = 1u32 << current_cpu;
 
     for (idx, slot) in table.iter().enumerate() {
         let Some(entry) = slot else { continue };
         if entry.process.state != ProcessState::Ready {
+            continue;
+        }
+        
+        // Check CPU affinity - skip if process cannot run on this CPU
+        if (entry.cpu_affinity & cpu_mask) == 0 {
             continue;
         }
 
@@ -429,16 +439,26 @@ fn find_zombie_parent_index(
 }
 
 /// Find next ready process index using round-robin
+/// Only considers processes that can run on the current CPU (affinity check)
 fn find_next_ready_index(
     table: &[Option<super::types::ProcessEntry>; MAX_PROCESSES],
     start_idx: usize,
 ) -> Option<usize> {
+    // Get current CPU ID for affinity check
+    let current_cpu = crate::smp::current_cpu_id() as u32;
+    let cpu_mask = 1u32 << current_cpu;
+
     for offset in 0..MAX_PROCESSES {
         let idx = (start_idx + offset) % MAX_PROCESSES;
         let Some(entry) = &table[idx] else { continue };
-        if entry.process.state == ProcessState::Ready {
-            return Some(idx);
+        if entry.process.state != ProcessState::Ready {
+            continue;
         }
+        // Check CPU affinity - skip if process cannot run on this CPU
+        if (entry.cpu_affinity & cpu_mask) == 0 {
+            continue;
+        }
+        return Some(idx);
     }
     None
 }
@@ -488,6 +508,9 @@ fn extract_next_process_info(
 ) -> (bool, Pid, u64, u64, u64, u64, crate::process::Context, u64, crate::process::Process) {
     entry.time_slice = DEFAULT_TIME_SLICE;
     entry.process.state = ProcessState::Running;
+    
+    // Update last_cpu to record which CPU is running this process
+    entry.last_cpu = crate::smp::current_cpu_id();
 
     (
         !entry.process.has_entered_user,

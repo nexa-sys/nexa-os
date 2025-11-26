@@ -78,6 +78,26 @@ macro_rules! define_spurious_irq {
 define_spurious_irq!(spurious_irq2_handler, PIC_1_OFFSET + 2);
 define_spurious_irq!(spurious_irq3_handler, PIC_1_OFFSET + 3);
 define_spurious_irq!(spurious_irq4_handler, PIC_1_OFFSET + 4);
+
+/// LAPIC timer interrupt vector for AP cores
+/// Using vector 0xEC (236) which is above PIC range and below IPI vectors
+pub const LAPIC_TIMER_VECTOR: u8 = 0xEC;
+
+/// LAPIC timer interrupt handler for AP cores
+/// This provides the timer tick for scheduling on non-BSP cores
+pub extern "x86-interrupt" fn lapic_timer_handler(_stack_frame: InterruptStackFrame) {
+    // Send EOI to LAPIC first
+    crate::lapic::send_eoi();
+
+    // Timer tick for scheduler (1ms granularity)
+    const TIMER_TICK_MS: u64 = 1;
+
+    // Check if current process should be preempted
+    if crate::scheduler::tick(TIMER_TICK_MS) {
+        crate::kdebug!("LAPIC Timer: Triggering preemptive reschedule on AP");
+        crate::scheduler::do_schedule_from_interrupt();
+    }
+}
 define_spurious_irq!(spurious_irq5_handler, PIC_1_OFFSET + 5);
 define_spurious_irq!(spurious_irq6_handler, PIC_1_OFFSET + 6);
 define_spurious_irq!(spurious_irq7_handler, PIC_1_OFFSET + 7);

@@ -22,12 +22,14 @@ pub extern "x86-interrupt" fn ipi_reschedule_handler(_stack_frame: InterruptStac
             .store(true, core::sync::atomic::Ordering::Release);
     }
 
-    // Send EOI to LAPIC
+    // Send EOI to LAPIC first to allow nested interrupts
     crate::lapic::send_eoi();
 
-    // Trigger scheduler (will check pending flag)
-    // In production, this would be deferred to a safe point
-    crate::ktrace!("IPI: Reschedule request received");
+    crate::ktrace!("IPI: Reschedule request received, triggering scheduler");
+
+    // Actually trigger the scheduler to perform a context switch
+    // This allows AP cores to pick up ready processes
+    crate::scheduler::do_schedule_from_interrupt();
 }
 
 /// IPI handler for TLB flush requests
