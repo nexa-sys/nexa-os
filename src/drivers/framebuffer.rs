@@ -6,6 +6,7 @@ use multiboot2::{BootInformation, FramebufferField, FramebufferTag, FramebufferT
 use nexa_boot_info::FramebufferInfo as BootFramebufferInfo;
 use spin::Mutex;
 
+use crate::drivers::compositor;
 use crate::kinfo;
 use crate::ktrace;
 
@@ -203,7 +204,13 @@ impl FramebufferWriter {
     fn newline(&mut self) {
         self.cursor_x = 0;
         if self.cursor_y + 1 >= self.rows {
-            self.scroll_up();
+            // 多核心软渲染器初始化之前，清屏代替滚屏以提升早期启动性能
+            // 多核心软渲染器初始化后才使用滚屏
+            if compositor::is_initialized() {
+                self.scroll_up();
+            } else {
+                self.clear();
+            }
         } else {
             self.cursor_y += 1;
         }

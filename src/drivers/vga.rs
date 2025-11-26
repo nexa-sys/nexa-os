@@ -2,6 +2,7 @@ use core::fmt::{self, Write};
 use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 
+use crate::drivers::compositor;
 use crate::framebuffer;
 use crate::kinfo;
 use crate::safety::{volatile_read, volatile_write};
@@ -172,16 +173,22 @@ impl Writer {
     }
 
     fn new_line(&mut self) {
-        for row in 1..BUFFER_HEIGHT {
-            for col in 0..BUFFER_WIDTH {
-                unsafe {
-                    let character = self.read_at(row, col);
-                    self.write_at(row - 1, col, character);
+        // 多核心软渲染器初始化之前，清屏代替滚屏以提升早期启动性能
+        // 多核心软渲染器初始化后才使用滚屏
+        if compositor::is_initialized() {
+            for row in 1..BUFFER_HEIGHT {
+                for col in 0..BUFFER_WIDTH {
+                    unsafe {
+                        let character = self.read_at(row, col);
+                        self.write_at(row - 1, col, character);
+                    }
                 }
             }
+            self.clear_row(BUFFER_HEIGHT - 1);
+            self.column_position = 0;
+        } else {
+            self.clear_screen();
         }
-        self.clear_row(BUFFER_HEIGHT - 1);
-        self.column_position = 0;
     }
 
     fn clear_row(&mut self, row: usize) {
