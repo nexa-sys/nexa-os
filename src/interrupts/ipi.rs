@@ -57,20 +57,24 @@ pub extern "x86-interrupt" fn ipi_tlb_flush_handler(_stack_frame: InterruptStack
 
 /// IPI handler for function call requests
 /// Allows one CPU to execute a function on another CPU
+/// 
+/// This is the core mechanism for parallel display operations.
+/// When compositor needs multi-core rendering, it sends this IPI
+/// to all AP cores which then call into compositor::ap_work_entry().
 pub extern "x86-interrupt" fn ipi_call_function_handler(_stack_frame: InterruptStackFrame) {
-    // In production, this would execute a function pointer stored in per-CPU data
-    // For now, just acknowledge the IPI
-
+    // Update interrupt counter for this CPU
     if let Some(cpu_data) = crate::smp::current_cpu_data() {
         cpu_data
             .interrupts_handled
             .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     }
 
+    // Execute compositor work if available
+    // This is the primary use case for IPI_CALL_FUNCTION
+    crate::drivers::compositor::ap_work_entry();
+
     // Send EOI to LAPIC
     crate::lapic::send_eoi();
-
-    crate::ktrace!("IPI: Function call request received");
 }
 
 /// IPI handler for halt requests

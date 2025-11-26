@@ -25,7 +25,7 @@
 //! - Per-CPU rendering queues to minimize contention
 //! - Stripe-based parallelization for cache efficiency
 
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use crate::smp;
 use crate::numa;
@@ -41,16 +41,64 @@ pub const MAX_LAYERS: usize = 16;
 pub const MAX_TASKS_PER_CPU: usize = 32;
 
 /// Minimum rows per worker for effective parallelization
-pub const MIN_ROWS_PER_WORKER: usize = 16;
+pub const MIN_ROWS_PER_WORKER: usize = 32;
 
 /// Default stripe height for parallel composition
-pub const DEFAULT_STRIPE_HEIGHT: usize = 32;
+/// Increased for 2.5K+ screens to improve cache locality (64KB L1 cache line efficiency)
+pub const DEFAULT_STRIPE_HEIGHT: usize = 64;
 
 /// Threshold for using fast memset-style fill (in pixels)
 const FAST_FILL_THRESHOLD: usize = 8;
 
 /// Threshold for using batch pixel processing
 const BATCH_BLEND_THRESHOLD: usize = 4;
+
+/// Cache line size for memory alignment (64 bytes on x86-64)
+/// Used for future alignment optimizations
+#[allow(dead_code)]
+const CACHE_LINE_SIZE: usize = 64;
+
+/// Threshold for parallel scroll (in total bytes to move)
+/// For 2.5K (2560x1440x4bpp ≈ 14MB), always use parallel
+const PARALLEL_SCROLL_THRESHOLD: usize = 1024 * 1024; // 1MB
+
+// =============================================================================
+// Multi-Core Work Distribution
+// =============================================================================
+
+/// Work type for parallel operations
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum WorkType {
+    /// No work pending
+    None = 0,
+    /// Scroll memory copy operation
+    Scroll = 1,
+    /// Fill memory operation
+    Fill = 2,
+    /// Composition operation
+    Compose = 3,
+}
+
+impl WorkType {
+    fn from_u8(v: u8) -> Self {
+        match v {
+            1 => WorkType::Scroll,
+            2 => WorkType::Fill,
+            3 => WorkType::Compose,
+            _ => WorkType::None,
+        }
+    }
+}
+
+/// Global work type indicator for AP cores
+static WORK_TYPE: AtomicU8 = AtomicU8::new(0);
+
+/// Number of workers that have joined current work
+static WORKERS_JOINED: AtomicUsize = AtomicUsize::new(0);
+
+/// Signal that work is available and AP cores should wake
+static WORK_AVAILABLE: AtomicBool = AtomicBool::new(false);
 
 // =============================================================================
 // Compositor State
@@ -73,6 +121,25 @@ static WORK_NEXT_STRIPE: AtomicUsize = AtomicUsize::new(0);
 static WORK_TOTAL_STRIPES: AtomicUsize = AtomicUsize::new(0);
 static WORK_COMPLETED: AtomicUsize = AtomicUsize::new(0);
 static WORK_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+/// Scroll operation state for parallel processing
+static SCROLL_SRC_ADDR: AtomicU64 = AtomicU64::new(0);
+static SCROLL_DST_ADDR: AtomicU64 = AtomicU64::new(0);
+static SCROLL_ROW_BYTES: AtomicUsize = AtomicUsize::new(0);
+static SCROLL_PITCH: AtomicUsize = AtomicUsize::new(0);
+static SCROLL_NEXT_ROW: AtomicUsize = AtomicUsize::new(0);
+static SCROLL_TOTAL_ROWS: AtomicUsize = AtomicUsize::new(0);
+static SCROLL_ROWS_DONE: AtomicUsize = AtomicUsize::new(0);
+
+/// Fill operation state
+static FILL_BUFFER_ADDR: AtomicU64 = AtomicU64::new(0);
+static FILL_PITCH: AtomicUsize = AtomicUsize::new(0);
+static FILL_WIDTH: AtomicUsize = AtomicUsize::new(0);
+static FILL_BPP: AtomicUsize = AtomicUsize::new(0);
+static FILL_COLOR: AtomicU32 = AtomicU32::new(0);
+static FILL_NEXT_ROW: AtomicUsize = AtomicUsize::new(0);
+static FILL_TOTAL_ROWS: AtomicUsize = AtomicUsize::new(0);
+static FILL_ROWS_DONE: AtomicUsize = AtomicUsize::new(0);
 
 // =============================================================================
 // Composition Region
@@ -337,6 +404,187 @@ pub fn stats() -> CompositorStats {
         last_stripes: WORK_TOTAL_STRIPES.load(Ordering::Relaxed),
         parallel_enabled: worker_count() > 1,
     }
+}
+
+// =============================================================================
+// AP Core Work Entry Point
+// =============================================================================
+
+/// Entry point for AP cores when receiving IPI_CALL_FUNCTION
+/// 
+/// This function is called from the IPI handler to participate in parallel work.
+/// AP cores will claim work atomically and process it until all work is done.
+/// 
+/// # Safety
+/// 
+/// This function accesses global mutable state but uses atomic operations
+/// for synchronization. It must only be called from the IPI handler context.
+pub fn ap_work_entry() {
+    // Check if compositor is ready and work is available
+    if !COMPOSITOR_INITIALIZED.load(Ordering::Acquire) {
+        return;
+    }
+    
+    if !WORK_AVAILABLE.load(Ordering::Acquire) {
+        return;
+    }
+    
+    // Mark this worker as joined
+    WORKERS_JOINED.fetch_add(1, Ordering::AcqRel);
+    
+    // Get work type and execute appropriate handler
+    let work_type = WorkType::from_u8(WORK_TYPE.load(Ordering::Acquire));
+    
+    match work_type {
+        WorkType::Scroll => {
+            // Execute scroll work
+            scroll_worker();
+        }
+        WorkType::Fill => {
+            // Execute fill work
+            fill_worker();
+        }
+        WorkType::Compose => {
+            // Execute composition work (placeholder for future)
+            // compose_worker();
+        }
+        WorkType::None => {
+            // No work to do
+        }
+    }
+}
+
+/// Internal scroll worker - claims and processes rows
+fn scroll_worker() -> usize {
+    let src_base = SCROLL_SRC_ADDR.load(Ordering::Acquire) as *const u8;
+    let dst_base = SCROLL_DST_ADDR.load(Ordering::Acquire) as *mut u8;
+    let row_bytes = SCROLL_ROW_BYTES.load(Ordering::Acquire);
+    let pitch = SCROLL_PITCH.load(Ordering::Acquire);
+    
+    // Process rows in batches for better cache utilization
+    // Batch size tuned for L2 cache (256KB typical)
+    let batch_size = (256 * 1024) / row_bytes.max(1);
+    let batch_size = batch_size.max(16).min(128);
+    
+    let mut rows_done = 0;
+    
+    while let Some((start, end)) = claim_scroll_rows(batch_size) {
+        // Copy rows in this batch
+        for row in start..end {
+            let offset = row * pitch;
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    src_base.add(offset),
+                    dst_base.add(offset),
+                    row_bytes,
+                );
+            }
+        }
+        rows_done += end - start;
+        SCROLL_ROWS_DONE.fetch_add(end - start, Ordering::AcqRel);
+    }
+    
+    rows_done
+}
+
+/// Internal fill worker - claims and processes rows  
+fn fill_worker() -> usize {
+    let buffer = FILL_BUFFER_ADDR.load(Ordering::Acquire) as *mut u8;
+    let pitch = FILL_PITCH.load(Ordering::Acquire);
+    let width = FILL_WIDTH.load(Ordering::Acquire);
+    let bpp = FILL_BPP.load(Ordering::Acquire);
+    let color = FILL_COLOR.load(Ordering::Acquire);
+    let total_rows = FILL_TOTAL_ROWS.load(Ordering::Acquire);
+    
+    let batch_size = 32; // Fixed batch for fill
+    let mut rows_done = 0;
+    
+    while let Some((start, end)) = claim_fill_rows(batch_size, total_rows) {
+        // Fill rows in this batch
+        for row in start..end {
+            fill_single_row(buffer, pitch, width, bpp, row, color);
+        }
+        rows_done += end - start;
+        FILL_ROWS_DONE.fetch_add(end - start, Ordering::AcqRel);
+    }
+    
+    rows_done
+}
+
+/// Claim a batch of rows for fill operation
+#[inline(always)]
+fn claim_fill_rows(batch_size: usize, total: usize) -> Option<(usize, usize)> {
+    loop {
+        let current = FILL_NEXT_ROW.load(Ordering::Acquire);
+        if current >= total {
+            return None;
+        }
+        
+        let end = (current + batch_size).min(total);
+        if FILL_NEXT_ROW
+            .compare_exchange_weak(current, end, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+        {
+            return Some((current, end));
+        }
+        core::hint::spin_loop();
+    }
+}
+
+/// Fill a single row with color
+#[inline(always)]
+fn fill_single_row(buffer: *mut u8, pitch: usize, width: usize, bpp: usize, row: usize, color: u32) {
+    let row_offset = row * pitch;
+    
+    if bpp == 4 {
+        // Fast path: 32-bit color, use 64-bit writes
+        let color64 = (color as u64) | ((color as u64) << 32);
+        let qwords = width / 2;
+        let remainder = width % 2;
+        
+        unsafe {
+            let qword_ptr = buffer.add(row_offset) as *mut u64;
+            for i in 0..qwords {
+                qword_ptr.add(i).write(color64);
+            }
+            if remainder > 0 {
+                let dword_ptr = buffer.add(row_offset + qwords * 8) as *mut u32;
+                dword_ptr.write(color);
+            }
+        }
+    } else {
+        // Generic path
+        let color_bytes = color.to_le_bytes();
+        unsafe {
+            for x in 0..width {
+                let pixel_ptr = buffer.add(row_offset + x * bpp);
+                for c in 0..bpp.min(4) {
+                    pixel_ptr.add(c).write(color_bytes[c]);
+                }
+            }
+        }
+    }
+}
+
+/// Dispatch work to AP cores and wait for completion
+/// 
+/// This sends IPI_CALL_FUNCTION to all online AP cores and waits
+/// until all work is completed.
+fn dispatch_to_ap_cores() {
+    let workers = worker_count();
+    if workers <= 1 {
+        return; // No AP cores to dispatch to
+    }
+    
+    // Signal that work is available
+    WORK_AVAILABLE.store(true, Ordering::Release);
+    WORKERS_JOINED.store(0, Ordering::Release);
+    
+    // Memory fence to ensure all work parameters are visible
+    core::sync::atomic::fence(Ordering::SeqCst);
+    
+    // Send IPI to all AP cores
+    smp::send_ipi_broadcast(smp::IPI_CALL_FUNCTION);
 }
 
 /// Request a stripe of work to process
@@ -895,6 +1143,230 @@ pub fn copy_rect(
                 row_bytes,
             );
         }
+    }
+}
+
+// =============================================================================
+// High-Performance Scroll Operations
+// =============================================================================
+
+/// Claim a batch of rows for parallel scroll processing
+/// Returns (start_row, end_row) or None if no more work
+#[inline(always)]
+fn claim_scroll_rows(batch_size: usize) -> Option<(usize, usize)> {
+    let total = SCROLL_TOTAL_ROWS.load(Ordering::Acquire);
+    
+    loop {
+        let current = SCROLL_NEXT_ROW.load(Ordering::Acquire);
+        if current >= total {
+            return None;
+        }
+        
+        let end = (current + batch_size).min(total);
+        if SCROLL_NEXT_ROW
+            .compare_exchange_weak(current, end, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+        {
+            return Some((current, end));
+        }
+        core::hint::spin_loop();
+    }
+}
+
+/// High-performance scroll up operation
+/// 
+/// This is optimized for large screens (2.5K+) with:
+/// - Multi-core parallel row copying
+/// - Cache-aware batch sizing
+/// - Reduced memory barrier overhead
+/// 
+/// # Arguments
+/// * `buffer` - Framebuffer address
+/// * `pitch` - Bytes per row (including padding)
+/// * `width` - Width in pixels
+/// * `height` - Total height in pixels  
+/// * `bpp` - Bytes per pixel
+/// * `scroll_rows` - Number of rows to scroll up
+/// * `clear_color` - Color to fill newly exposed area (packed u32)
+pub fn scroll_up_fast(
+    buffer: *mut u8,
+    pitch: usize,
+    width: usize,
+    height: usize,
+    bpp: usize,
+    scroll_rows: usize,
+    clear_color: u32,
+) {
+    if scroll_rows == 0 || scroll_rows >= height {
+        return;
+    }
+    
+    let row_bytes = width * bpp;
+    let total_bytes = (height - scroll_rows) * pitch;
+    let rows_to_copy = height - scroll_rows;
+    
+    // Decide between single-core and parallel based on data size
+    let workers = worker_count();
+    let use_parallel = is_initialized() 
+        && workers > 1 
+        && total_bytes >= PARALLEL_SCROLL_THRESHOLD
+        && rows_to_copy >= workers * 32;  // At least 32 rows per worker
+    
+    if use_parallel {
+        // === Parallel scroll path - dispatch to all cores ===
+        
+        // Setup scroll parameters for workers
+        let src_addr = unsafe { buffer.add(scroll_rows * pitch) as u64 };
+        let dst_addr = buffer as u64;
+        
+        // Set work type first (before parameters)
+        WORK_TYPE.store(WorkType::Scroll as u8, Ordering::Release);
+        
+        SCROLL_SRC_ADDR.store(src_addr, Ordering::Release);
+        SCROLL_DST_ADDR.store(dst_addr, Ordering::Release);
+        SCROLL_ROW_BYTES.store(row_bytes, Ordering::Release);
+        SCROLL_PITCH.store(pitch, Ordering::Release);
+        SCROLL_NEXT_ROW.store(0, Ordering::Release);
+        SCROLL_TOTAL_ROWS.store(rows_to_copy, Ordering::Release);
+        SCROLL_ROWS_DONE.store(0, Ordering::Release);
+        
+        // Memory fence to ensure all stores are visible to AP cores
+        core::sync::atomic::fence(Ordering::SeqCst);
+        
+        // Dispatch work to AP cores via IPI
+        dispatch_to_ap_cores();
+        
+        // BSP also participates in the work
+        scroll_worker();
+        
+        // Wait for all rows to complete (AP cores may still be working)
+        let mut backoff = 1u32;
+        while SCROLL_ROWS_DONE.load(Ordering::Acquire) < rows_to_copy {
+            for _ in 0..backoff {
+                core::hint::spin_loop();
+            }
+            backoff = (backoff * 2).min(1024);
+        }
+        
+        // Clear work available flag
+        WORK_AVAILABLE.store(false, Ordering::Release);
+        WORK_TYPE.store(WorkType::None as u8, Ordering::Release);
+    } else {
+        // === Single-core optimized path ===
+        // Use large block copy for better memory bandwidth
+        unsafe {
+            let src = buffer.add(scroll_rows * pitch);
+            core::ptr::copy(src, buffer, total_bytes);
+        }
+    }
+    
+    // Clear the newly exposed area at bottom
+    // This is always relatively small, so single-threaded is fine
+    let clear_start_row = height - scroll_rows;
+    clear_rows_fast(buffer, pitch, width, bpp, clear_start_row, scroll_rows, clear_color);
+}
+
+/// Fast row clearing using 64-bit writes
+/// 
+/// Optimized for clearing the bottom portion after scroll
+#[inline(always)]
+fn clear_rows_fast(
+    buffer: *mut u8,
+    pitch: usize,
+    width: usize,
+    bpp: usize,
+    start_row: usize,
+    num_rows: usize,
+    color: u32,
+) {
+    if num_rows == 0 {
+        return;
+    }
+    
+    let row_bytes = width * bpp;
+    
+    // For 32-bit color, use 64-bit writes (2 pixels at a time)
+    if bpp == 4 {
+        // Create 64-bit pattern (2 pixels)
+        let color64 = (color as u64) | ((color as u64) << 32);
+        let qwords_per_row = row_bytes / 8;
+        let remainder_bytes = row_bytes % 8;
+        
+        unsafe {
+            // Fill first row
+            let first_row_ptr = buffer.add(start_row * pitch);
+            let qword_ptr = first_row_ptr as *mut u64;
+            
+            // Write 64-bit patterns
+            for i in 0..qwords_per_row {
+                qword_ptr.add(i).write_volatile(color64);
+            }
+            
+            // Handle remainder (0-7 bytes)
+            if remainder_bytes >= 4 {
+                let dword_ptr = first_row_ptr.add(qwords_per_row * 8) as *mut u32;
+                dword_ptr.write_volatile(color);
+            }
+            
+            // Copy first row to remaining rows
+            for row in 1..num_rows {
+                let dst_row_ptr = buffer.add((start_row + row) * pitch);
+                core::ptr::copy_nonoverlapping(first_row_ptr, dst_row_ptr, row_bytes);
+            }
+        }
+    } else {
+        // Generic path for other formats
+        let color_bytes = color.to_le_bytes();
+        unsafe {
+            let first_row_ptr = buffer.add(start_row * pitch);
+            
+            // Fill first row pixel by pixel
+            for x in 0..width {
+                let pixel_ptr = first_row_ptr.add(x * bpp);
+                for c in 0..bpp.min(4) {
+                    pixel_ptr.add(c).write_volatile(color_bytes[c]);
+                }
+            }
+            
+            // Copy to remaining rows
+            for row in 1..num_rows {
+                let dst_row_ptr = buffer.add((start_row + row) * pitch);
+                core::ptr::copy_nonoverlapping(first_row_ptr, dst_row_ptr, row_bytes);
+            }
+        }
+    }
+}
+
+/// Parallel memory fill for large regions
+/// 
+/// Uses multiple cores to fill large framebuffer regions
+pub fn parallel_fill(
+    buffer: *mut u8,
+    pitch: usize,
+    width: usize,
+    height: usize,
+    bpp: usize,
+    color: u32,
+) {
+    let total_bytes = height * pitch;
+    let workers = worker_count();
+    
+    // For small regions or single core, use simple fill
+    if !is_initialized() || workers <= 1 || total_bytes < PARALLEL_SCROLL_THRESHOLD {
+        clear_rows_fast(buffer, pitch, width, bpp, 0, height, color);
+        return;
+    }
+    
+    // Parallel fill using stripe-based distribution
+    let rows_per_worker = (height + workers - 1) / workers;
+    let rows_per_worker = rows_per_worker.max(16); // Minimum 16 rows per worker
+    
+    // For now, BSP does all work (TODO: IPI dispatch)
+    let mut row = 0;
+    while row < height {
+        let end_row = (row + rows_per_worker).min(height);
+        clear_rows_fast(buffer, pitch, width, bpp, row, end_row - row, color);
+        row = end_row;
     }
 }
 

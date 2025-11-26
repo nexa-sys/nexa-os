@@ -1,5 +1,4 @@
 use core::fmt::{self, Write};
-use core::ptr;
 use core::sync::atomic::{AtomicBool, Ordering};
 use font8x8::legacy::BASIC_LEGACY;
 use multiboot2::{BootInformation, FramebufferField, FramebufferTag, FramebufferType};
@@ -222,33 +221,20 @@ impl FramebufferWriter {
         if total <= row_size {
             return;
         }
-        unsafe {
-            ptr::copy(self.buffer.add(row_size), self.buffer, total - row_size);
-            let clear_start = self.buffer.add(total - row_size);
-            self.fill_raw_block(clear_start, row_size, &self.bg);
-        }
-    }
-
-    fn fill_raw_block(&self, start: *mut u8, len: usize, color: &PackedColor) {
-        let mut offset = 0;
-        while offset + self.bytes_per_pixel <= len {
-            unsafe {
-                for i in 0..self.bytes_per_pixel {
-                    let value = if i < color.len { color.bytes[i] } else { 0 };
-                    start.add(offset + i).write_volatile(value);
-                }
-            }
-            offset += self.bytes_per_pixel;
-        }
-
-        while offset < len {
-            let idx = offset % self.bytes_per_pixel;
-            let value = if idx < color.len { color.bytes[idx] } else { 0 };
-            unsafe {
-                start.add(offset).write_volatile(value);
-            }
-            offset += 1;
-        }
+        
+        // Use high-performance parallel scroll from compositor
+        // Pack background color as u32 for clear operation
+        let bg_color = u32::from_le_bytes(self.bg.bytes);
+        
+        compositor::scroll_up_fast(
+            self.buffer,
+            self.pitch,
+            self.width,
+            self.height,
+            self.bytes_per_pixel,
+            CELL_HEIGHT,  // scroll by one text row
+            bg_color,
+        );
     }
 
     fn draw_cell(&mut self, col: usize, row: usize, glyph: &[u8; BASE_FONT_HEIGHT]) {
