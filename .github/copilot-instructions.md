@@ -1,64 +1,64 @@
 # NexaOS AI Coding Guide
-### Architecture Snapshot
-- Hybrid kernel: `src/main.rs` hands off to `src/lib.rs` (6-stage boot defined in `src/boot_stages.rs`) before switching to Ring3 via `src/process.rs`.
-- Memory & scheduling: `src/paging.rs` wires identity-mapped kernel + isolated user space; `src/scheduler.rs` round-robin with priorities; keep physical vs virtual addresses straight.
-- Dual filesystem: `src/initramfs.rs` parses CPIO modules loaded by GRUB, `src/fs.rs` provides mutable in-memory runtime store; rootfs.ext2 gets mounted after stage 4.
-- Syscall surface in `src/syscall.rs` dispatches into auth/ipc/signal subsystems (`src/auth.rs`, `src/ipc.rs`, `src/signal.rs`, `src/pipe.rs`); userspace wrappers live alongside binaries in `userspace/`.
 
-### Key Workflows
-- **End-to-end build: `./scripts/build-all.sh`** (the CORRECT comprehensive build script that handles kernel → userspace → rootfs → ISO chain). Always use this for complete builds.
-- If splitting, run `./scripts/build-rootfs.sh` **before** `./scripts/build-iso.sh` or ISO will embed stale rootfs.
-- Kernel-only iteration: `cargo build --release --target x86_64-nexaos.json`; userspace binaries via `./scripts/build-userspace.sh`.
-- Boot/test quickly with `./scripts/run-qemu.sh`; inspect logs over serial (enabled by `src/serial.rs`). Sanity scripts: `./scripts/test-boot-stages.sh`, `./scripts/test-init.sh`, `./scripts/test-shell-exit.sh`.
-- Verify multiboot status with `grub-file --is-x86-multiboot2 target/x86_64-nexaos/release/nexa-os`.
+## Architecture Overview
+NexaOS is a Rust `no_std` hybrid kernel with 6-stage boot (`src/boot_stages.rs`): Bootloader → KernelInit → Initramfs → RootSwitch → RealRoot → UserSpace.
 
-### Coding Conventions
-- Kernel crates use the `no_std` attribute; no heap allocations—stick to fixed buffers/arrays. Use kernel log macros (`kinfo!/kerror!/kfatal!`) instead of `println!`.
-- Respect address constants in `src/process.rs` (`USER_BASE`, `STACK_BASE`); adjust paging + ELF loader together when touching memory layout.
-- Interrupts and syscall context rely on `interrupts::init_interrupts()` and the `GS_DATA` scratchpad; keep frame setup/restoration symmetrical.
-- Authentication, IPC, and signal code expect explicit error paths—propagate `Errno` equivalents rather than panicking.
+### Key Subsystems
+| Component | Location | Purpose |
+|-----------|----------|---------|
+| Boot entry | `src/main.rs` → `src/lib.rs` | Multiboot2 → kernel_main |
+| Memory | `src/paging.rs`, `src/process/types.rs` | Identity-mapped kernel, isolated userspace |
+| Scheduler | `src/scheduler/` | Round-robin with priorities |
+| Syscalls | `src/syscalls/` | 38+ POSIX syscalls, organized by domain |
+| Filesystems | `src/initramfs.rs`, `src/fs.rs` | CPIO initramfs + ext2 rootfs after stage 4 |
+| Safety helpers | `src/safety/` | Centralized unsafe wrappers (volatile, MMIO, port I/O) |
 
-### Userspace & NRLib
-- Userspace targets `x86_64-nexaos-userspace.json` and also uses `no_std`; programs expose `_start` and build via `scripts/build-userspace.sh`.
-- `userspace/nrlib` exists solely to satisfy Rust `std` expectations (pthread, TLS, malloc, syscalls). Fix std issues inside nrlib; do not bypass `std` APIs.
-- Dynamic binaries rely on PT_INTERP loading (`/lib64/ld-linux.so`) handled in `src/elf.rs`; keep interpreter path synchronized with rootfs layout.
+### Memory Layout Constants (`src/process/types.rs`)
+```rust
+USER_VIRT_BASE: 0x400000   // Userspace code base
+STACK_BASE:     0x800000   // User stack region
+HEAP_BASE:      0x600000   // User heap region
+INTERP_BASE:    0xA00000   // Dynamic linker region
+```
+**Critical**: Changes to these require coordinated updates in paging + ELF loader.
 
-### Common Pitfalls
-- Never disable logging on hot paths; use log levels instead. Losing serial output makes boot debugging painful.
-- When adding services, wire binaries into `userspace/`, ensure `scripts/build-rootfs.sh` copies them, and register via `etc/inittab`.
-- Scheduler/process changes require keeping signal delivery and IPC queues consistent; audit `ProcessState` transitions if adding new states.
-- Always rebuild rootfs before packaging ISO after touching userspace binaries or configs.
-- Treat locking as production-grade: bounded waits, backoff, and clear comments when deviating from existing patterns (`src/safety/` helpers).
-- ✅ Handle all error paths explicitly
-- ✅ Add detailed comments explaining non-obvious synchronization logic
-- ✅ Test edge cases and failure scenarios
-- ✅ Document assumptions and invariants
+## Build & Test Workflows
+```bash
+./scripts/build-all.sh      # Full: kernel → userspace → rootfs → ISO (always use this)
+./scripts/run-qemu.sh       # Boot in QEMU with serial console
+cargo build --release --target x86_64-nexaos.json  # Kernel-only iteration
+./scripts/build-rootfs.sh   # After userspace changes (BEFORE build-iso.sh!)
+```
+**Build order matters**: `build-rootfs.sh` → `build-iso.sh`, or ISO embeds stale rootfs.
 
-### Synchronization & Concurrency
-When implementing locks or synchronization primitives:
-1. **Always include timeout/bailout mechanisms** - prevent infinite hangs
-2. **Use atomic operations with Acquire/Release semantics** - ensure memory consistency
-3. **Implement exponential backoff** - reduce CPU contention
-4. **Detect re-entrancy issues** - prevent deadlocks from nested lock attempts
-5. **Add safety checks** - validate lock state and detect anomalies
-6. **Test with load** - verify behavior under contention and stress
+## Coding Conventions
 
-### Debugging & Observability
-- **Never disable logging in critical paths** - instead, use conditional compilation or log levels
-- **If a diagnostic tool breaks functionality** (e.g., debug_log causing deadlock), fix the underlying issue, don't just disable it
-- **Maintain tracing capability** - system state must be observable for production debugging
-- **Document why things are the way they are** - future maintainers need to understand design decisions
+### Kernel Code (`src/`)
+- **`no_std` only** — no heap allocations; use fixed-size buffers/arrays
+- **Logging**: Use `kinfo!`, `kwarn!`, `kerror!`, `kdebug!`, `kfatal!` (not `println!`)
+- **Error handling**: Propagate `Errno` equivalents; never panic in syscall paths
+- **Unsafe code**: Route through `src/safety/` helpers when possible
 
-### System Reliability
-- **Buffer overflows must never occur** - use bounds checking everywhere
-- **Syscall failures must be handled** - every syscall can fail, check return values
-- **Process state must be consistent** - scheduler, memory, and permission state must always be coherent
-- **Recovery must be automatic where possible** - systems should heal themselves, not get stuck
-- **Failures must be detectable** - use panic, assertions, or error logging to catch problems early
+### Userspace (`userspace/`)
+- Target: `x86_64-nexaos-userspace.json`
+- Programs expose `_start`; build via `scripts/build-userspace.sh`
+- `userspace/nrlib/` — libc shim for Rust `std` (pthread stubs, TLS, syscall wrappers)
+- Adding services: create binary in `userspace/`, add to `scripts/build-rootfs.sh`, register in `etc/inittab`
 
-Remember: This is production-grade code targeting real systems. Every design decision impacts system reliability and debuggability.
-- Runtime filesystem handles dynamic content and temporary files
-- Root filesystem (ext2) contains full system after boot stage 4
-- Virtual filesystems (/proc, /sys, /dev) mounted during initramfs stage
+### Synchronization
+Use `src/safety/` patterns with:
+- Timeout/bailout mechanisms (prevent infinite hangs)
+- Atomic Acquire/Release semantics
+- Exponential backoff under contention
+- Re-entrancy detection
 
-Remember: This is experimental code. Changes can break the entire system. Always test builds with `./scripts/build-all.sh` and boot with `./scripts/run-qemu.sh` after modifications. Use `git bisect` for regression hunting, and verify all boot stages complete successfully.
+## Critical Pitfalls
+- **Never disable logging** — use log levels; serial output is essential for boot debugging
+- **ProcessState consistency** — scheduler, signals, and IPC must stay synchronized when adding states
+- **Dynamic linking** — PT_INTERP path (`/lib64/ld-linux.so`) must match rootfs layout
+- **Rebuild rootfs** after touching `userspace/` or `etc/` before ISO packaging
+
+## Debugging
+- Serial console: enabled via `src/serial.rs`, logs to QEMU terminal
+- Boot verification: `grub-file --is-x86-multiboot2 target/x86_64-nexaos/release/nexa-os`
+- Use `git bisect` for regression hunting; verify all 6 boot stages complete

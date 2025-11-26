@@ -9,9 +9,10 @@ use core::ptr;
 use crate::elf::ElfLoader;
 use crate::{kerror, kinfo, ktrace, kwarn};
 
+use super::pid_tree::allocate_pid;
 use super::stack::build_initial_stack;
 use super::types::{
-    allocate_pid, Context, Process, ProcessState, DEFAULT_ARGV0, HEAP_BASE, HEAP_SIZE, INTERP_BASE,
+    Context, Process, ProcessState, DEFAULT_ARGV0, HEAP_BASE, HEAP_SIZE, INTERP_BASE,
     KERNEL_STACK_ALIGN, KERNEL_STACK_SIZE, MAX_PROCESS_ARGS, STACK_BASE, STACK_SIZE,
     USER_PHYS_BASE, USER_REGION_SIZE, USER_VIRT_BASE,
 };

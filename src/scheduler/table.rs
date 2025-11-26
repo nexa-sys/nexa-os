@@ -90,10 +90,23 @@ pub fn update_current_user_context(user_rip: u64, user_rsp: u64, user_rflags: u6
     }
 }
 
-/// Get process by PID
+/// Get process by PID using radix tree for O(log N) lookup
 pub fn get_process_from_table(pid: Pid) -> Option<Process> {
     let table = PROCESS_TABLE.lock();
 
+    // Try radix tree lookup first (O(log N))
+    if let Some(idx) = crate::process::lookup_pid(pid) {
+        let idx = idx as usize;
+        if idx < table.len() {
+            if let Some(entry) = &table[idx] {
+                if entry.process.pid == pid {
+                    return Some(entry.process);
+                }
+            }
+        }
+    }
+
+    // Fallback to linear scan if radix tree lookup fails
     for slot in table.iter() {
         let Some(entry) = slot else { continue };
         if entry.process.pid == pid {

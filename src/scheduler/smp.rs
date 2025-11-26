@@ -11,10 +11,25 @@ use crate::process::{Pid, ProcessState};
 
 use super::table::{PROCESS_TABLE, SCHED_STATS};
 
-/// Set CPU affinity for a process
+/// Set CPU affinity for a process using radix tree for O(log N) lookup
 pub fn set_cpu_affinity(pid: Pid, affinity_mask: u32) -> Result<(), &'static str> {
     let mut table = PROCESS_TABLE.lock();
 
+    // Try radix tree lookup first (O(log N))
+    if let Some(idx) = crate::process::lookup_pid(pid) {
+        let idx = idx as usize;
+        if idx < table.len() {
+            if let Some(entry) = &mut table[idx] {
+                if entry.process.pid == pid {
+                    entry.cpu_affinity = affinity_mask;
+                    crate::kinfo!("Set CPU affinity for PID {} to {:#x}", pid, affinity_mask);
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    // Fallback to linear scan
     for slot in table.iter_mut() {
         let Some(entry) = slot else { continue };
         if entry.process.pid != pid {
@@ -29,10 +44,23 @@ pub fn set_cpu_affinity(pid: Pid, affinity_mask: u32) -> Result<(), &'static str
     Err("Process not found")
 }
 
-/// Get CPU affinity for a process
+/// Get CPU affinity for a process using radix tree for O(log N) lookup
 pub fn get_cpu_affinity(pid: Pid) -> Option<u32> {
     let table = PROCESS_TABLE.lock();
 
+    // Try radix tree lookup first (O(log N))
+    if let Some(idx) = crate::process::lookup_pid(pid) {
+        let idx = idx as usize;
+        if idx < table.len() {
+            if let Some(entry) = &table[idx] {
+                if entry.process.pid == pid {
+                    return Some(entry.cpu_affinity);
+                }
+            }
+        }
+    }
+
+    // Fallback to linear scan
     for slot in table.iter() {
         let Some(entry) = slot else { continue };
         if entry.process.pid == pid {

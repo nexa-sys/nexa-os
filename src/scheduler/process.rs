@@ -28,7 +28,7 @@ pub fn add_process_with_policy(
     let mut table = PROCESS_TABLE.lock();
     let current_tick = GLOBAL_TICK.load(Ordering::Relaxed);
 
-    for slot in table.iter_mut() {
+    for (idx, slot) in table.iter_mut().enumerate() {
         if slot.is_none() {
             let quantum_level = match policy {
                 SchedPolicy::Realtime => 0, // Shortest quantum, highest priority
@@ -36,6 +36,13 @@ pub fn add_process_with_policy(
                 SchedPolicy::Batch => 6,    // Longer quantum, lower priority
                 SchedPolicy::Idle => 7,     // Longest quantum, lowest priority
             };
+
+            // Register PID in the radix tree for O(log N) lookup
+            let pid = process.pid;
+            if !crate::process::register_pid_mapping(pid, idx as u16) {
+                kerror!("Failed to register PID {} in radix tree", pid);
+                // Continue anyway - linear fallback will still work
+            }
 
             *slot = Some(ProcessEntry {
                 process,
@@ -57,7 +64,7 @@ pub fn add_process_with_policy(
             });
             crate::kinfo!(
                 "Scheduler: Added process PID {} with priority {}, policy {:?}, nice {} (CR3={:#x})",
-                process.pid,
+                pid,
                 priority,
                 policy,
                 nice,
@@ -78,9 +85,16 @@ pub fn remove_process(pid: Pid) -> Result<(), &'static str> {
     let removal_result = {
         let mut table = PROCESS_TABLE.lock();
 
-        let slot_idx = table.iter().position(|slot| {
-            slot.as_ref().map_or(false, |e| e.process.pid == pid)
-        });
+        // Try radix tree lookup first (O(log N)), fall back to linear scan
+        let slot_idx = crate::process::lookup_pid(pid)
+            .map(|idx| idx as usize)
+            .filter(|&idx| idx < table.len() && table[idx].as_ref().map_or(false, |e| e.process.pid == pid))
+            .or_else(|| {
+                // Fallback to linear search if radix tree lookup fails or is stale
+                table.iter().position(|slot| {
+                    slot.as_ref().map_or(false, |e| e.process.pid == pid)
+                })
+            });
 
         let Some(idx) = slot_idx else {
             return Err("Process not found");
@@ -124,13 +138,32 @@ pub fn remove_process(pid: Pid) -> Result<(), &'static str> {
         kdebug!("[remove_process] Freed page tables for PID {} (CR3={:#x})", pid, cr3);
     }
 
+    // Free the PID for reuse (removes from radix tree and marks as available)
+    crate::process::free_pid(pid);
+    kdebug!("[remove_process] Freed PID {} for reuse", pid);
+
     Ok(())
 }
 
-/// Update process state
+/// Update process state using radix tree for O(log N) lookup
 pub fn set_process_state(pid: Pid, state: ProcessState) -> Result<(), &'static str> {
     let mut table = PROCESS_TABLE.lock();
 
+    // Try radix tree lookup first (O(log N))
+    if let Some(idx) = crate::process::lookup_pid(pid) {
+        let idx = idx as usize;
+        if idx < table.len() {
+            if let Some(entry) = &mut table[idx] {
+                if entry.process.pid == pid {
+                    ktrace!("[set_process_state] PID {} state: {:?} -> {:?}", pid, entry.process.state, state);
+                    entry.process.state = state;
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    // Fallback to linear scan
     for slot in table.iter_mut() {
         let Some(entry) = slot else { continue };
         if entry.process.pid != pid {
@@ -145,12 +178,26 @@ pub fn set_process_state(pid: Pid, state: ProcessState) -> Result<(), &'static s
     Err("Process not found")
 }
 
-/// Record the exit status for a process. This value is preserved while the
-/// process sits in the zombie list so that wait4() can report it to the
-/// parent.
+/// Record the exit status for a process using radix tree for O(log N) lookup.
+/// This value is preserved while the process sits in the zombie list so that
+/// wait4() can report it to the parent.
 pub fn set_process_exit_code(pid: Pid, code: i32) -> Result<(), &'static str> {
     let mut table = PROCESS_TABLE.lock();
 
+    // Try radix tree lookup first (O(log N))
+    if let Some(idx) = crate::process::lookup_pid(pid) {
+        let idx = idx as usize;
+        if idx < table.len() {
+            if let Some(entry) = &mut table[idx] {
+                if entry.process.pid == pid {
+                    entry.process.exit_code = code;
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    // Fallback to linear scan
     for slot in table.iter_mut() {
         let Some(entry) = slot else { continue };
         if entry.process.pid != pid {
@@ -216,9 +263,25 @@ pub fn find_child_with_state(parent_pid: Pid, target_state: ProcessState) -> Opt
 }
 
 /// Mark a process as a forked child (will return 0 from fork when it runs)
+/// Uses radix tree for O(log N) lookup
 pub fn mark_process_as_forked_child(pid: Pid) {
     let mut table = PROCESS_TABLE.lock();
 
+    // Try radix tree lookup first (O(log N))
+    if let Some(idx) = crate::process::lookup_pid(pid) {
+        let idx = idx as usize;
+        if idx < table.len() {
+            if let Some(entry) = &mut table[idx] {
+                if entry.process.pid == pid {
+                    entry.process.state = ProcessState::Ready;
+                    crate::kdebug!("Marked PID {} as forked child", pid);
+                    return;
+                }
+            }
+        }
+    }
+
+    // Fallback to linear scan
     for slot in table.iter_mut() {
         let Some(entry) = slot else { continue };
         if entry.process.pid != pid {
@@ -231,22 +294,46 @@ pub fn mark_process_as_forked_child(pid: Pid) {
     }
 }
 
-/// Update the CR3 (page table root) associated with a process. When the target
-/// process is currently running, the CPU's CR3 register is switched immediately
-/// so the new address space takes effect without waiting for the next context
-/// switch.
+/// Update the CR3 (page table root) associated with a process using radix tree
+/// for O(log N) lookup. When the target process is currently running, the CPU's
+/// CR3 register is switched immediately so the new address space takes effect
+/// without waiting for the next context switch.
 pub fn update_process_cr3(pid: Pid, new_cr3: u64) -> Result<(), &'static str> {
     {
         let mut table = PROCESS_TABLE.lock();
 
-        let entry = table.iter_mut()
-            .find_map(|slot| slot.as_mut().filter(|e| e.process.pid == pid));
-
-        let Some(entry) = entry else {
-            return Err("Process not found");
+        // Try radix tree lookup first (O(log N))
+        let found = if let Some(idx) = crate::process::lookup_pid(pid) {
+            let idx = idx as usize;
+            if idx < table.len() {
+                if let Some(entry) = &mut table[idx] {
+                    if entry.process.pid == pid {
+                        entry.process.cr3 = new_cr3;
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
         };
 
-        entry.process.cr3 = new_cr3;
+        // Fallback to linear scan if radix tree lookup failed
+        if !found {
+            let entry = table.iter_mut()
+                .find_map(|slot| slot.as_mut().filter(|e| e.process.pid == pid));
+
+            let Some(entry) = entry else {
+                return Err("Process not found");
+            };
+
+            entry.process.cr3 = new_cr3;
+        }
     }
 
     if current_pid() == Some(pid) {
@@ -256,7 +343,7 @@ pub fn update_process_cr3(pid: Pid, new_cr3: u64) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Set the state of the current process
+/// Set the state of the current process using radix tree for O(log N) lookup
 pub fn set_current_process_state(state: ProcessState) {
     let Some(curr_pid) = *CURRENT_PID.lock() else {
         return;
@@ -264,6 +351,20 @@ pub fn set_current_process_state(state: ProcessState) {
 
     let mut table = PROCESS_TABLE.lock();
 
+    // Try radix tree lookup first (O(log N))
+    if let Some(idx) = crate::process::lookup_pid(curr_pid) {
+        let idx = idx as usize;
+        if idx < table.len() {
+            if let Some(entry) = &mut table[idx] {
+                if entry.process.pid == curr_pid {
+                    entry.process.state = state;
+                    return;
+                }
+            }
+        }
+    }
+
+    // Fallback to linear scan
     for slot in table.iter_mut() {
         let Some(entry) = slot else { continue };
         if entry.process.pid == curr_pid {
@@ -273,10 +374,28 @@ pub fn set_current_process_state(state: ProcessState) {
     }
 }
 
-/// Wake up a process by PID (set state to Ready)
+/// Wake up a process by PID (set state to Ready) using radix tree for O(log N) lookup
 pub fn wake_process(pid: Pid) -> bool {
     let mut table = PROCESS_TABLE.lock();
 
+    // Try radix tree lookup first (O(log N))
+    if let Some(idx) = crate::process::lookup_pid(pid) {
+        let idx = idx as usize;
+        if idx < table.len() {
+            if let Some(entry) = &mut table[idx] {
+                if entry.process.pid == pid {
+                    if entry.process.state == ProcessState::Sleeping {
+                        entry.process.state = ProcessState::Ready;
+                        entry.wait_time = 0;
+                        return true;
+                    }
+                    return false;
+                }
+            }
+        }
+    }
+
+    // Fallback to linear scan
     for slot in table.iter_mut() {
         let Some(entry) = slot else { continue };
         if entry.process.pid != pid {

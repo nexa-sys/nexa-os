@@ -489,8 +489,24 @@ fn get_old_context_info(
 }
 
 /// Mark process as entered user mode in the process table
+/// Uses radix tree for O(log N) lookup
 fn mark_process_entered_user(pid: Pid) {
     let mut table = PROCESS_TABLE.lock();
+
+    // Try radix tree lookup first (O(log N))
+    if let Some(idx) = crate::process::lookup_pid(pid) {
+        let idx = idx as usize;
+        if idx < table.len() {
+            if let Some(entry) = &mut table[idx] {
+                if entry.process.pid == pid {
+                    entry.process.has_entered_user = true;
+                    return;
+                }
+            }
+        }
+    }
+
+    // Fallback to linear scan
     for slot in table.iter_mut() {
         let Some(entry) = slot else { continue };
         if entry.process.pid == pid {
