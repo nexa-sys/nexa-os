@@ -1,7 +1,14 @@
-//! Core scheduling algorithms
+//! Core scheduling algorithms - EEVDF Implementation
 //!
-//! This module contains the main scheduling algorithms including the MLFQ
-//! scheduler, timer tick handler, and context switch logic.
+//! This module implements the EEVDF (Earliest Eligible Virtual Deadline First)
+//! scheduler, as used in Linux 6.6+. It provides fair CPU time distribution
+//! with good latency guarantees.
+//!
+//! ## EEVDF Key Properties:
+//! - Virtual runtime tracks weighted CPU consumption
+//! - Virtual deadlines provide latency guarantees  
+//! - Eligibility check ensures fairness (lag >= 0)
+//! - Among eligible processes, earliest deadline wins
 
 use core::sync::atomic::Ordering;
 
@@ -9,64 +16,80 @@ use crate::process::{Pid, ProcessState, MAX_PROCESSES};
 use crate::{kdebug, ktrace};
 
 use super::context::context_switch;
-use super::priority::{calculate_dynamic_priority, calculate_time_slice};
+use super::priority::{
+    calc_vdeadline, is_eligible, ms_to_ns, 
+    replenish_slice, update_curr, update_min_vruntime,
+};
 use super::table::{
     current_pid, set_current_pid, CURRENT_PID, GLOBAL_TICK, PROCESS_TABLE, SCHED_STATS,
 };
-use super::types::{SchedPolicy, DEFAULT_TIME_SLICE, NUM_PRIORITY_LEVELS, BASE_TIME_SLICE_MS};
+use super::types::{SchedPolicy, DEFAULT_TIME_SLICE, BASE_SLICE_NS};
 
 /// Initialize scheduler subsystem
 pub fn init() {
     crate::kinfo!(
-        "Advanced process scheduler initialized (MLFQ with {} priority levels, {} max processes, {}ms base quantum)",
-        NUM_PRIORITY_LEVELS,
+        "EEVDF scheduler initialized ({} max processes, {}ms base slice)",
         MAX_PROCESSES,
-        BASE_TIME_SLICE_MS
+        BASE_SLICE_NS / 1_000_000
     );
     crate::kinfo!(
-        "Scheduling policies: Realtime, Normal, Batch, Idle with dynamic priority adjustment"
+        "Scheduling: Earliest Eligible Virtual Deadline First with lag-based fairness"
     );
 }
 
-/// Compare two candidate processes for scheduling priority.
-/// Returns true if `candidate` should replace `best`.
-#[inline]
-fn should_replace_candidate(
-    candidate: (usize, u8, SchedPolicy, u64),
-    best: (usize, u8, SchedPolicy, u64),
-) -> bool {
-    // Compare by priority within same policy class
-    let same_policy_compare = |c_pri: u8, c_wait: u64, b_pri: u8, b_wait: u64| -> bool {
-        c_pri < b_pri || (c_pri == b_pri && c_wait > b_wait)
-    };
+/// EEVDF candidate info: (index, vdeadline, policy, is_eligible, priority)
+type EevdfCandidate = (usize, u64, SchedPolicy, bool, u8);
 
-    match (candidate.2, best.2) {
+/// Compare two candidate processes using EEVDF rules.
+/// Returns true if `candidate` should replace `best`.
+/// 
+/// EEVDF selection rules:
+/// 1. Realtime processes always beat non-realtime
+/// 2. Among realtime: lower priority number wins
+/// 3. Among non-realtime eligible: earliest deadline wins
+/// 4. Non-eligible processes are only chosen if no eligible ones exist
+#[inline]
+fn should_replace_candidate(candidate: EevdfCandidate, best: EevdfCandidate) -> bool {
+    let (_, c_vdl, c_policy, c_eligible, c_pri) = candidate;
+    let (_, b_vdl, b_policy, b_eligible, b_pri) = best;
+
+    // Policy class comparison
+    match (c_policy, b_policy) {
         (SchedPolicy::Realtime, SchedPolicy::Realtime) => {
-            same_policy_compare(candidate.1, candidate.3, best.1, best.3)
+            // Among realtime: lower priority wins
+            c_pri < b_pri
         }
-        (SchedPolicy::Realtime, _) => true,
-        (_, SchedPolicy::Realtime) => false,
-        (SchedPolicy::Normal, SchedPolicy::Normal) => {
-            same_policy_compare(candidate.1, candidate.3, best.1, best.3)
-        }
-        (SchedPolicy::Normal, _) => true,
-        (_, SchedPolicy::Normal) => false,
-        (SchedPolicy::Batch, SchedPolicy::Batch) => {
-            same_policy_compare(candidate.1, candidate.3, best.1, best.3)
-        }
-        (SchedPolicy::Batch, _) => true,
-        (_, SchedPolicy::Batch) => false,
+        (SchedPolicy::Realtime, _) => true,  // Realtime beats all
+        (_, SchedPolicy::Realtime) => false, // Non-realtime loses to realtime
         (SchedPolicy::Idle, SchedPolicy::Idle) => {
-            same_policy_compare(candidate.1, candidate.3, best.1, best.3)
+            // Idle: use deadline
+            c_vdl < b_vdl
+        }
+        (_, SchedPolicy::Idle) => true,  // Non-idle beats idle
+        (SchedPolicy::Idle, _) => false, // Idle loses to non-idle
+        _ => {
+            // EEVDF: eligible processes with earlier deadline win
+            match (c_eligible, b_eligible) {
+                (true, false) => true,   // Eligible beats non-eligible
+                (false, true) => false,  // Non-eligible loses
+                _ => c_vdl < b_vdl,      // Both same eligibility: earliest deadline wins
+            }
         }
     }
 }
 
-/// Update wait times and dynamic priorities for all ready processes
-fn update_ready_process_priorities(
+/// Update EEVDF state for ready processes (lag accumulation for waiting)
+fn update_ready_process_eevdf(
     table: &mut [Option<super::types::ProcessEntry>; MAX_PROCESSES],
     current_tick: u64,
 ) {
+    // Calculate total weight of runnable processes
+    let total_weight: u64 = table.iter()
+        .filter_map(|s| s.as_ref())
+        .filter(|e| e.process.state == ProcessState::Ready || e.process.state == ProcessState::Running)
+        .map(|e| e.weight)
+        .sum();
+
     for slot in table.iter_mut() {
         let Some(entry) = slot else { continue };
         if entry.process.state != ProcessState::Ready {
@@ -75,12 +98,12 @@ fn update_ready_process_priorities(
 
         let wait_delta = current_tick.saturating_sub(entry.last_scheduled);
         entry.wait_time = entry.wait_time.saturating_add(wait_delta);
-        entry.priority = calculate_dynamic_priority(
-            entry.base_priority,
-            entry.wait_time,
-            entry.total_time,
-            entry.nice,
-        );
+        
+        // Increase lag for waiting processes (they deserve more CPU)
+        if wait_delta > 0 && total_weight > 0 {
+            let lag_credit = (ms_to_ns(wait_delta) as i64 * entry.weight as i64) / total_weight as i64;
+            entry.lag = entry.lag.saturating_add(lag_credit);
+        }
     }
 }
 
@@ -102,21 +125,29 @@ fn find_start_index(
     0
 }
 
-/// Find the best ready process candidate for scheduling
+/// Find the best ready process using EEVDF algorithm
+/// Selects the eligible process with the earliest virtual deadline
 fn find_best_candidate(
     table: &[Option<super::types::ProcessEntry>; MAX_PROCESSES],
-    start_idx: usize,
-) -> Option<(usize, u8, SchedPolicy, u64)> {
-    let mut best_candidate: Option<(usize, u8, SchedPolicy, u64)> = None;
+    _start_idx: usize,
+) -> Option<EevdfCandidate> {
+    let mut best_candidate: Option<EevdfCandidate> = None;
 
-    for offset in 0..MAX_PROCESSES {
-        let idx = (start_idx + offset) % MAX_PROCESSES;
-        let Some(entry) = &table[idx] else { continue };
+    for (idx, slot) in table.iter().enumerate() {
+        let Some(entry) = slot else { continue };
         if entry.process.state != ProcessState::Ready {
             continue;
         }
 
-        let candidate = (idx, entry.priority, entry.policy, entry.wait_time);
+        let eligible = is_eligible(entry);
+        let candidate: EevdfCandidate = (
+            idx,
+            entry.vdeadline,
+            entry.policy,
+            eligible,
+            entry.priority,
+        );
+        
         let should_use = best_candidate
             .map(|best| should_replace_candidate(candidate, best))
             .unwrap_or(true);
@@ -129,18 +160,18 @@ fn find_best_candidate(
     best_candidate
 }
 
-/// Round-robin scheduler: select next process to run with MLFQ enhancements
-/// Uses multi-level feedback queue for better responsiveness and fairness
+/// EEVDF Scheduler: select the eligible process with earliest virtual deadline
+/// Provides fair CPU time distribution with latency guarantees
 pub fn schedule() -> Option<Pid> {
     let mut table = PROCESS_TABLE.lock();
     let current = *CURRENT_PID.lock();
     let current_tick = GLOBAL_TICK.load(Ordering::Relaxed);
 
-    update_ready_process_priorities(&mut table, current_tick);
+    update_ready_process_eevdf(&mut table, current_tick);
     let start_idx = find_start_index(&table, current);
     let best_candidate = find_best_candidate(&table, start_idx);
 
-    let Some((next_idx, _, _, _)) = best_candidate else {
+    let Some((next_idx, _, _, _, _)) = best_candidate else {
         return None;
     };
 
@@ -151,17 +182,31 @@ pub fn schedule() -> Option<Pid> {
         update_previous_process_state(&mut table, curr_pid, current_tick);
     }
 
-    // Update next process state
+    // Update next process state (EEVDF)
     if let Some(entry) = table[next_idx].as_mut() {
-        entry.time_slice = calculate_time_slice(entry.quantum_level);
+        // Replenish slice if exhausted
+        if entry.slice_remaining_ns == 0 {
+            replenish_slice(entry);
+        }
+        
         entry.process.state = ProcessState::Running;
         entry.last_scheduled = current_tick;
         entry.wait_time = 0;
         entry.cpu_burst_count += 1;
+        
+        // Reset lag when scheduled (consumed their fair share of waiting)
+        entry.lag = 0;
+        
+        // Recalculate deadline based on current vruntime
+        entry.vdeadline = calc_vdeadline(entry.vruntime, entry.slice_ns, entry.weight);
     }
 
     drop(table);
     *CURRENT_PID.lock() = Some(next_pid);
+    
+    // Update global min_vruntime
+    update_min_vruntime();
+    
     Some(next_pid)
 }
 
@@ -182,40 +227,53 @@ fn update_previous_process_state(
     }
 }
 
-/// Check if a ready process should preempt the current running process
+/// Check if a ready process should preempt the current running process (EEVDF)
 #[inline]
-fn should_preempt_for(ready_policy: SchedPolicy, ready_priority: u8, 
-                       current_policy: SchedPolicy, current_priority: u8) -> bool {
-    match (ready_policy, current_policy) {
-        (SchedPolicy::Realtime, SchedPolicy::Realtime) => ready_priority < current_priority,
-        (SchedPolicy::Realtime, _) => true,
-        (_, SchedPolicy::Realtime) => false,
-        (SchedPolicy::Normal, SchedPolicy::Normal) => ready_priority + 10 < current_priority,
-        (SchedPolicy::Normal, _) => true,
-        (_, SchedPolicy::Normal) => false,
-        _ => false,
+fn should_preempt_for_eevdf(
+    ready_entry: &super::types::ProcessEntry,
+    curr_entry: &super::types::ProcessEntry,
+) -> bool {
+    // Realtime always preempts non-realtime
+    if ready_entry.policy == SchedPolicy::Realtime && curr_entry.policy != SchedPolicy::Realtime {
+        return true;
     }
+    if curr_entry.policy == SchedPolicy::Realtime {
+        return false; // Can't preempt realtime unless also realtime
+    }
+    
+    // Non-idle beats idle
+    if ready_entry.policy != SchedPolicy::Idle && curr_entry.policy == SchedPolicy::Idle {
+        return true;
+    }
+    
+    // EEVDF: eligible process with significantly earlier deadline preempts
+    if is_eligible(ready_entry) {
+        let deadline_diff = curr_entry.vdeadline.saturating_sub(ready_entry.vdeadline);
+        // Only preempt if deadline difference is significant (avoid thrashing)
+        return deadline_diff > super::types::SCHED_GRANULARITY_NS;
+    }
+    
+    false
 }
 
-/// Check if any ready process has higher priority than the current one
-fn has_higher_priority_ready_process(
+/// Check if any ready process should preempt the current one (EEVDF)
+fn should_preempt_current(
     table: &[Option<super::types::ProcessEntry>; MAX_PROCESSES],
-    current_policy: SchedPolicy,
-    current_priority: u8,
+    curr_entry: &super::types::ProcessEntry,
 ) -> bool {
     for slot in table.iter() {
         let Some(entry) = slot else { continue };
         if entry.process.state != ProcessState::Ready {
             continue;
         }
-        if should_preempt_for(entry.policy, entry.priority, current_policy, current_priority) {
+        if should_preempt_for_eevdf(entry, curr_entry) {
             return true;
         }
     }
     false
 }
 
-/// Handle preemption: update preempt count and potentially demote quantum level
+/// Handle preemption in EEVDF: just increment counter
 fn handle_preemption(
     table: &mut [Option<super::types::ProcessEntry>; MAX_PROCESSES],
     curr_pid: Pid,
@@ -226,15 +284,10 @@ fn handle_preemption(
             continue;
         }
         entry.preempt_count += 1;
-        // MLFQ: Demote to lower priority level if preempted too much
-        if entry.preempt_count > 3 && entry.quantum_level < 7 {
-            entry.quantum_level += 1;
-            crate::kdebug!(
-                "Process {} demoted to quantum level {}",
-                curr_pid,
-                entry.quantum_level
-            );
-        }
+        crate::kdebug!(
+            "EEVDF: PID {} preempted (vrt={}, vdl={}, lag={})",
+            curr_pid, entry.vruntime, entry.vdeadline, entry.lag
+        );
         break;
     }
 }
@@ -253,8 +306,8 @@ fn find_current_running_entry_mut<'a>(
     None
 }
 
-/// Timer tick handler: update time slices and trigger scheduling
-/// Implements preemptive scheduling with dynamic priority adjustments
+/// Timer tick handler: EEVDF scheduler tick
+/// Updates vruntime and checks for preemption based on virtual deadlines
 pub fn tick(elapsed_ms: u64) -> bool {
     GLOBAL_TICK.fetch_add(1, Ordering::Relaxed);
 
@@ -270,43 +323,36 @@ pub fn tick(elapsed_ms: u64) -> bool {
         return false;
     };
 
-    entry.total_time += elapsed_ms;
+    // Convert elapsed_ms to nanoseconds for EEVDF calculations
+    let elapsed_ns = ms_to_ns(elapsed_ms);
+    
+    // Update EEVDF state
+    update_curr(entry, elapsed_ns);
 
-    // Time slice exhausted - need to reschedule
-    if entry.time_slice <= elapsed_ms {
-        entry.time_slice = 0;
-        // MLFQ: Move to lower priority level after exhausting time slice
-        if entry.quantum_level < 7 {
-            entry.quantum_level += 1;
-        }
-        // Update average CPU burst
-        let new_burst = entry.total_time / entry.cpu_burst_count.max(1);
-        entry.avg_cpu_burst = (entry.avg_cpu_burst + new_burst) / 2;
-        return true;
-    }
-
-    // Time slice not exhausted - decrement and check for preemption
-    entry.time_slice -= elapsed_ms;
-
+    // Update legacy total_time (already done in update_curr via ns_to_ms)
     // Update average CPU burst
     let new_burst = entry.total_time / entry.cpu_burst_count.max(1);
     entry.avg_cpu_burst = (entry.avg_cpu_burst + new_burst) / 2;
 
-    let current_priority = entry.priority;
-    let current_policy = entry.policy;
-
-    // Release and re-acquire lock to check for higher priority processes
-    drop(table);
-    let mut table = PROCESS_TABLE.lock();
-
-    // Check for higher priority ready processes
-    if !has_higher_priority_ready_process(&table, current_policy, current_priority) {
-        return false; // Continue running current process
+    // Time slice exhausted - need to reschedule
+    if entry.slice_remaining_ns == 0 {
+        crate::kdebug!(
+            "EEVDF: PID {} slice exhausted (vrt={}, vdl={})",
+            curr_pid, entry.vruntime, entry.vdeadline
+        );
+        return true;
     }
 
-    // Preemption due to higher priority process
-    handle_preemption(&mut table, curr_pid);
-    true
+    // Save current entry info for preemption check
+    let curr_entry_copy = *entry;
+    
+    // Check for preemption by eligible process with earlier deadline
+    if should_preempt_current(&table, &curr_entry_copy) {
+        handle_preemption(&mut table, curr_pid);
+        return true;
+    }
+
+    false
 }
 
 /// Perform context switch to next ready process with statistics tracking

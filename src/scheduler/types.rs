@@ -1,42 +1,91 @@
 //! Scheduler type definitions
 //!
 //! This module contains all type definitions used by the scheduler subsystem.
+//! Implements EEVDF (Earliest Eligible Virtual Deadline First) scheduling.
 
 use crate::process::{Process, ProcessState};
 
-/// Number of priority levels in the MLFQ scheduler
-pub const NUM_PRIORITY_LEVELS: usize = 8; // 0 = highest, 7 = lowest
+/// Minimum granularity - minimum time slice a process can get (in ns)
+pub const SCHED_GRANULARITY_NS: u64 = 1_000_000; // 1ms
 
-/// Base time slice for the highest priority level
-pub const BASE_TIME_SLICE_MS: u64 = 5; // Base quantum for highest priority
+/// Default time slice in nanoseconds (for EEVDF request size)
+pub const BASE_SLICE_NS: u64 = 4_000_000; // 4ms
 
-/// Default time slice in milliseconds
-pub const DEFAULT_TIME_SLICE: u64 = 10;
+/// Default time slice in milliseconds (legacy compatibility)
+pub const DEFAULT_TIME_SLICE: u64 = 4;
+
+/// Base time slice for the highest priority level (legacy compatibility)
+pub const BASE_TIME_SLICE_MS: u64 = 4;
+
+/// Number of priority levels (legacy compatibility)
+pub const NUM_PRIORITY_LEVELS: usize = 8;
+
+/// Weight for nice value 0 (base weight)
+pub const NICE_0_WEIGHT: u64 = 1024;
+
+/// Precomputed weights for nice values -20 to +19
+/// Formula: weight = 1024 * 1.25^(-nice)
+/// Nice -20 has highest weight, Nice +19 has lowest
+pub const NICE_TO_WEIGHT: [u64; 40] = [
+    // -20 to -11
+    88761, 71755, 56483, 46273, 36291, 29154, 23254, 18705, 14949, 11916,
+    // -10 to -1
+    9548, 7620, 6100, 4904, 3906, 3121, 2501, 1991, 1586, 1277,
+    // 0 to 9
+    1024, 820, 655, 526, 423, 335, 272, 215, 172, 137,
+    // 10 to 19
+    110, 87, 70, 56, 45, 36, 29, 23, 18, 15,
+];
+
+/// Get weight for a nice value (-20 to +19)
+#[inline]
+pub const fn nice_to_weight(nice: i8) -> u64 {
+    let idx = nice as i32 + 20;
+    let idx = if idx < 0 { 0 } else if idx > 39 { 39 } else { idx as usize };
+    NICE_TO_WEIGHT[idx]
+}
 
 /// Scheduling policy for a process
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SchedPolicy {
-    Normal,   // Standard priority-based scheduling
-    Realtime, // Real-time priority (higher than normal)
-    Batch,    // Background batch processing (lower priority)
-    Idle,     // Only runs when nothing else is ready
+    Normal,   // SCHED_NORMAL: Standard CFS/EEVDF scheduling
+    Realtime, // SCHED_FIFO/RR: Real-time priority (bypasses EEVDF)
+    Batch,    // SCHED_BATCH: Background batch processing (longer slices)
+    Idle,     // SCHED_IDLE: Only runs when nothing else is ready
 }
 
-/// Process control block with advanced scheduling info
+/// Process control block with EEVDF scheduling info
 #[derive(Clone, Copy)]
 pub struct ProcessEntry {
     pub process: Process,
-    pub priority: u8,            // Current dynamic priority (0 = highest, 255 = lowest)
+    
+    // === EEVDF core fields ===
+    /// Virtual runtime - accumulated weighted CPU time (in nanoseconds)
+    pub vruntime: u64,
+    /// Virtual deadline - vruntime + request/weight (in nanoseconds)
+    pub vdeadline: u64,
+    /// Lag - difference between ideal and actual CPU time (can be negative)
+    /// Positive lag means the process deserves more CPU time
+    pub lag: i64,
+    /// Weight based on nice value (higher weight = more CPU share)
+    pub weight: u64,
+    /// Current time slice request (in nanoseconds)
+    pub slice_ns: u64,
+    /// Time slice remaining (in nanoseconds)
+    pub slice_remaining_ns: u64,
+    
+    // === Legacy/compatibility fields ===
+    pub priority: u8,            // Mapped from nice for backward compatibility
     pub base_priority: u8,       // Base static priority
-    pub time_slice: u64,         // Remaining time slice in ms
+    pub time_slice: u64,         // Remaining time slice in ms (for compatibility)
     pub total_time: u64,         // Total CPU time used in ms
     pub wait_time: u64,          // Time spent waiting in ready queue
     pub last_scheduled: u64,     // Last time this process was scheduled (in ticks)
     pub cpu_burst_count: u64,    // Number of CPU bursts
-    pub avg_cpu_burst: u64,      // Average CPU burst length (for I/O vs CPU bound detection)
+    pub avg_cpu_burst: u64,      // Average CPU burst length
     pub policy: SchedPolicy,     // Scheduling policy
     pub nice: i8,                // Nice value (-20 to 19, POSIX compatible)
-    pub quantum_level: u8,       // Current priority level in MLFQ (0-7)
+    pub quantum_level: u8,       // Kept for compatibility, not used in EEVDF
     pub preempt_count: u64,      // Number of times preempted
     pub voluntary_switches: u64, // Number of voluntary context switches
     pub cpu_affinity: u32,       // CPU affinity mask (bit per CPU)
@@ -70,9 +119,17 @@ impl ProcessEntry {
                 user_rflags: 0,
                 exit_code: 0,
             },
+            // EEVDF fields
+            vruntime: 0,
+            vdeadline: 0,
+            lag: 0,
+            weight: NICE_0_WEIGHT, // Nice 0 weight
+            slice_ns: BASE_SLICE_NS,
+            slice_remaining_ns: BASE_SLICE_NS,
+            // Legacy fields
             priority: 128,
             base_priority: 128,
-            time_slice: 0,
+            time_slice: DEFAULT_TIME_SLICE,
             total_time: 0,
             wait_time: 0,
             last_scheduled: 0,
@@ -80,7 +137,7 @@ impl ProcessEntry {
             avg_cpu_burst: 0,
             policy: SchedPolicy::Normal,
             nice: 0,
-            quantum_level: 4, // Start at middle level
+            quantum_level: 0,
             preempt_count: 0,
             voluntary_switches: 0,
             cpu_affinity: 0xFFFFFFFF, // All CPUs by default

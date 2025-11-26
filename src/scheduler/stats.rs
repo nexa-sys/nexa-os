@@ -1,7 +1,7 @@
 //! Scheduler statistics and debugging functions
 //!
 //! This module contains functions for gathering statistics, debugging,
-//! and monitoring the scheduler.
+//! and monitoring the EEVDF scheduler.
 
 use core::sync::atomic::Ordering;
 
@@ -35,29 +35,29 @@ fn state_str(state: ProcessState) -> &'static str {
     }
 }
 
-/// List all processes for debugging with extended information
+/// List all processes for debugging with EEVDF information
 pub fn list_processes() {
     let table = PROCESS_TABLE.lock();
-    crate::kinfo!("=== Process List (Extended) ===");
+    crate::kinfo!("=== EEVDF Process List ===");
     crate::kinfo!(
-        "{:<5} {:<5} {:<12} {:<8} {:<6} {:<5} {:<10} {:<10} {:<8} {:<10}",
-        "PID", "PPID", "State", "Policy", "Nice", "QLvl", "CPU(ms)", "Wait(ms)", "Preempt", "CR3"
+        "{:<5} {:<5} {:<10} {:<7} {:<5} {:<8} {:<12} {:<12} {:<8} {:<10}",
+        "PID", "PPID", "State", "Policy", "Nice", "Weight", "VRuntime", "VDeadline", "Lag", "CR3"
     );
 
     for slot in table.iter() {
         let Some(entry) = slot else { continue };
 
         crate::kinfo!(
-            "{:<5} {:<5} {:<12} {:<8} {:<6} {:<5} {:<10} {:<10} {:<8} {:#010x}",
+            "{:<5} {:<5} {:<10} {:<7} {:<5} {:<8} {:<12} {:<12} {:<8} {:#010x}",
             entry.process.pid,
             entry.process.ppid,
             state_str(entry.process.state),
             policy_str(entry.policy),
             entry.nice,
-            entry.quantum_level,
-            entry.total_time,
-            entry.wait_time,
-            entry.preempt_count,
+            entry.weight,
+            entry.vruntime / 1_000_000,  // Convert to ms for readability
+            entry.vdeadline / 1_000_000,
+            entry.lag / 1_000_000,
             entry.process.cr3
         );
     }

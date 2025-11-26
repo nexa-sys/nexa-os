@@ -1,7 +1,7 @@
 //! Process management functions
 //!
 //! This module contains functions for adding, removing, and managing processes
-//! in the scheduler.
+//! in the EEVDF scheduler.
 
 use alloc::alloc::{dealloc, Layout};
 use core::sync::atomic::Ordering;
@@ -9,16 +9,16 @@ use core::sync::atomic::Ordering;
 use crate::process::{Pid, Process, ProcessState, MAX_PROCESSES};
 use crate::{kdebug, kerror, ktrace};
 
-use super::priority::calculate_time_slice;
+use super::priority::{get_min_vruntime, calc_vdeadline, update_min_vruntime};
 use super::table::{current_pid, set_current_pid, CURRENT_PID, GLOBAL_TICK, PROCESS_TABLE};
-use super::types::{ProcessEntry, SchedPolicy};
+use super::types::{nice_to_weight, ProcessEntry, SchedPolicy, BASE_SLICE_NS, DEFAULT_TIME_SLICE};
 
 /// Add a process to the scheduler with full initialization
 pub fn add_process(process: Process, priority: u8) -> Result<(), &'static str> {
     add_process_with_policy(process, priority, SchedPolicy::Normal, 0)
 }
 
-/// Add a process to the scheduler with policy and nice value
+/// Add a process to the scheduler with EEVDF initialization
 pub fn add_process_with_policy(
     process: Process,
     priority: u8,
@@ -27,16 +27,10 @@ pub fn add_process_with_policy(
 ) -> Result<(), &'static str> {
     let mut table = PROCESS_TABLE.lock();
     let current_tick = GLOBAL_TICK.load(Ordering::Relaxed);
+    let min_vrt = get_min_vruntime();
 
     for (idx, slot) in table.iter_mut().enumerate() {
         if slot.is_none() {
-            let quantum_level = match policy {
-                SchedPolicy::Realtime => 0, // Shortest quantum, highest priority
-                SchedPolicy::Normal => 4,   // Middle level
-                SchedPolicy::Batch => 6,    // Longer quantum, lower priority
-                SchedPolicy::Idle => 7,     // Longest quantum, lowest priority
-            };
-
             // Register PID in the radix tree for O(log N) lookup
             let pid = process.pid;
             if !crate::process::register_pid_mapping(pid, idx as u16) {
@@ -44,31 +38,54 @@ pub fn add_process_with_policy(
                 // Continue anyway - linear fallback will still work
             }
 
+            let nice_clamped = nice.clamp(-20, 19);
+            let weight = nice_to_weight(nice_clamped);
+            
+            // EEVDF: Calculate initial time slice based on policy
+            let slice_ns = match policy {
+                SchedPolicy::Realtime => BASE_SLICE_NS * 2,
+                SchedPolicy::Normal => BASE_SLICE_NS,
+                SchedPolicy::Batch => BASE_SLICE_NS * 4,
+                SchedPolicy::Idle => BASE_SLICE_NS,
+            };
+            
+            // New processes start at min_vruntime to prevent starvation
+            let initial_vruntime = min_vrt;
+            let initial_deadline = calc_vdeadline(initial_vruntime, slice_ns, weight);
+
             *slot = Some(ProcessEntry {
                 process,
+                // EEVDF fields
+                vruntime: initial_vruntime,
+                vdeadline: initial_deadline,
+                lag: 0, // New processes start with neutral lag
+                weight,
+                slice_ns,
+                slice_remaining_ns: slice_ns,
+                // Legacy fields
                 priority,
                 base_priority: priority,
-                time_slice: calculate_time_slice(quantum_level),
+                time_slice: DEFAULT_TIME_SLICE,
                 total_time: 0,
                 wait_time: 0,
                 last_scheduled: current_tick,
                 cpu_burst_count: 0,
                 avg_cpu_burst: 0,
                 policy,
-                nice: nice.clamp(-20, 19),
-                quantum_level,
+                nice: nice_clamped,
+                quantum_level: 0, // Not used in EEVDF
                 preempt_count: 0,
                 voluntary_switches: 0,
                 cpu_affinity: 0xFFFFFFFF, // All CPUs by default
                 last_cpu: 0,
             });
+            
+            drop(table);
+            update_min_vruntime();
+            
             crate::kinfo!(
-                "Scheduler: Added process PID {} with priority {}, policy {:?}, nice {} (CR3={:#x})",
-                pid,
-                priority,
-                policy,
-                nice,
-                process.cr3
+                "EEVDF: Added PID {} (weight={}, vrt={}, vdl={}, policy={:?})",
+                pid, weight, initial_vruntime, initial_deadline, policy
             );
             return Ok(());
         }
@@ -374,8 +391,9 @@ pub fn set_current_process_state(state: ProcessState) {
     }
 }
 
-/// Wake up a process by PID (set state to Ready) using radix tree for O(log N) lookup
+/// Wake up a process by PID (EEVDF: adjust vruntime for waking process)
 pub fn wake_process(pid: Pid) -> bool {
+    let min_vrt = get_min_vruntime();
     let mut table = PROCESS_TABLE.lock();
 
     // Try radix tree lookup first (O(log N))
@@ -387,6 +405,17 @@ pub fn wake_process(pid: Pid) -> bool {
                     if entry.process.state == ProcessState::Sleeping {
                         entry.process.state = ProcessState::Ready;
                         entry.wait_time = 0;
+                        
+                        // EEVDF: Adjust vruntime for waking process
+                        // Give some credit but not too much to prevent unfair advantage
+                        if entry.vruntime < min_vrt {
+                            let credit = super::types::BASE_SLICE_NS / 2;
+                            entry.vruntime = min_vrt.saturating_sub(credit);
+                        }
+                        // Recalculate deadline
+                        entry.vdeadline = calc_vdeadline(entry.vruntime, entry.slice_ns, entry.weight);
+                        entry.lag = 0; // Reset lag on wake
+                        
                         return true;
                     }
                     return false;
@@ -405,6 +434,15 @@ pub fn wake_process(pid: Pid) -> bool {
         if entry.process.state == ProcessState::Sleeping {
             entry.process.state = ProcessState::Ready;
             entry.wait_time = 0;
+            
+            // EEVDF: Adjust vruntime for waking process
+            if entry.vruntime < min_vrt {
+                let credit = super::types::BASE_SLICE_NS / 2;
+                entry.vruntime = min_vrt.saturating_sub(credit);
+            }
+            entry.vdeadline = calc_vdeadline(entry.vruntime, entry.slice_ns, entry.weight);
+            entry.lag = 0;
+            
             return true;
         }
         return false;
