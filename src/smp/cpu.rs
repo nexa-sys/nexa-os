@@ -8,7 +8,7 @@ use core::sync::atomic::Ordering;
 use crate::lapic;
 
 use super::state::{CPU_TOTAL, ONLINE_CPUS, SMP_READY};
-use super::types::{cpu_data, cpu_info, CpuData, CpuStatus, MAX_CPUS};
+use super::types::{cpu_data, cpu_info, CpuData};
 
 /// Get the total number of CPUs detected
 pub fn cpu_count() -> usize {
@@ -51,14 +51,21 @@ pub fn current_cpu_data() -> Option<&'static CpuData> {
 }
 
 /// Count the number of CPUs currently online
+/// Uses trampoline status array which is reliably accessible from all cores
 pub fn current_online() -> usize {
     unsafe {
         let total = CPU_TOTAL.load(Ordering::SeqCst);
         let mut online = 0;
         for idx in 0..total {
-            let status = CpuStatus::from_atomic(cpu_info(idx).status.load(Ordering::SeqCst));
-            if status == CpuStatus::Online {
+            // Use trampoline status array instead of dynamically allocated CpuInfo
+            // BSP (idx=0) is always online if we got here
+            if idx == 0 {
                 online += 1;
+            } else {
+                let status = super::trampoline::get_cpu_status_from_trampoline(idx);
+                if status == super::trampoline::CPU_STATUS_ONLINE {
+                    online += 1;
+                }
             }
         }
         online

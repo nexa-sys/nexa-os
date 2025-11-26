@@ -237,7 +237,15 @@ pub fn allocate_for_cpus(cpu_count: usize) -> Result<(), &'static str> {
     }
 
     resources.allocated_count = cpu_count;
+    
+    // Full memory fence to ensure all allocations are visible before updating the atomic
+    // This is critical for AP cores to see the correct data when they read ALLOCATED_CPU_COUNT
+    core::sync::atomic::fence(Ordering::SeqCst);
+    
     ALLOCATED_CPU_COUNT.store(cpu_count, Ordering::SeqCst);
+    
+    // Additional fence after store to ensure AP cores see the updated count
+    core::sync::atomic::fence(Ordering::SeqCst);
 
     let total_stack_mem = ap_stack_count * AP_STACK_SIZE;
     let total_gdt_stack_mem = dynamic_gdt_count * 2 * GDT_STACK_SIZE;
@@ -334,10 +342,23 @@ pub fn get_cpu_info(cpu_index: usize) -> Result<&'static CpuInfo, &'static str> 
 
 /// Initialize CpuData for a CPU
 pub fn init_cpu_data(cpu_index: usize, cpu_id: u16, apic_id: u32) -> Result<(), &'static str> {
+    // Read CPU total from trampoline - this is reliable for AP cores
+    // because it's in a fixed low memory location that doesn't get relocated
+    let cpu_total = unsafe { super::trampoline::get_cpu_total_from_trampoline() };
+    
+    if cpu_index >= cpu_total {
+        // CPU index exceeds the total count written by BSP
+        return Err("CPU index exceeds CPU total");
+    }
+    
+    // Memory fence to ensure we see the latest Vec data after allocation
+    core::sync::atomic::fence(Ordering::SeqCst);
+    
     let mut resources = DYNAMIC_RESOURCES.lock();
     
+    // Double-check the Vec length (should match allocated count)
     if cpu_index >= resources.cpu_data.len() {
-        return Err("CPU index out of range");
+        return Err("CPU index out of range (Vec not ready)");
     }
     
     resources.cpu_data[cpu_index] = Some(Box::new(CpuData::new(cpu_id, apic_id)));

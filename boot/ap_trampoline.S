@@ -409,6 +409,23 @@ ap_entry_ptr:
 ap_arg_ptr:
     .quad 0
 
+# === CPU count for AP validation ===
+# BSP writes the total CPU count here before starting APs
+# APs read this value to validate their CPU index
+.align 8
+.globl ap_cpu_total
+ap_cpu_total:
+    .quad 0
+
+# === Per-CPU online status array ===
+# Each CPU has 1 byte status: 0=offline, 1=booting, 2=online
+# APs write their status here; BSP reads to check if APs are online
+# This avoids needing to access dynamically allocated CpuInfo structures
+.align 8
+.globl ap_cpu_status
+ap_cpu_status:
+    .fill MAX_CPUS, 1, 0        # All CPUs start as offline (0)
+
 # === APIC ID to CPU index mapping table ===
 # Supports up to 256 different APIC IDs
 # Each entry is 1 byte: ap_apic_to_index[apic_id] = cpu_index (0xFF = invalid)

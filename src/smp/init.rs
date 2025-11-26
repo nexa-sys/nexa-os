@@ -109,6 +109,13 @@ unsafe fn init_inner() -> Result<(), &'static str> {
     CPU_TOTAL.store(count, Ordering::SeqCst);
     core::sync::atomic::fence(Ordering::SeqCst); // Full memory barrier
 
+    // Write CPU count to trampoline for AP cores to read
+    // This is critical because AP cores may not see updates to static variables
+    // due to kernel relocation - they need to read from fixed low memory addresses
+    if let Err(e) = super::trampoline::set_cpu_total_in_trampoline(count) {
+        crate::kwarn!("SMP: Failed to write CPU total to trampoline: {}", e);
+    }
+
     // Verify the store worked by reading back
     let read_back = CPU_TOTAL.load(Ordering::SeqCst);
 

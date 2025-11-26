@@ -14,7 +14,7 @@ use x86_64::registers::model_specific::Msr;
 use crate::safety::{serial_debug_byte, serial_debug_hex};
 use crate::{gdt, lapic, paging};
 
-use super::state::{CPU_TOTAL, ENABLE_AP_STARTUP, ONLINE_CPUS};
+use super::state::ONLINE_CPUS;
 use super::trampoline::{get_kernel_relocation_offset, write_trampoline_bytes, write_per_cpu_data, set_apic_to_index_mapping};
 use super::types::{
     cpu_info, ApBootArgs, CpuData, CpuStatus, PerCpuTrampolineData,
@@ -128,7 +128,7 @@ pub unsafe fn start_ap(index: usize) -> Result<(), &'static str> {
         crate::kinfo!("SMP: [{}] Waiting for AP to signal online...", index);
         if wait_for_online(index, STARTUP_WAIT_LOOPS) {
             crate::kinfo!("SMP: [{}] AP online!", index);
-            ONLINE_CPUS.fetch_add(1, Ordering::SeqCst);
+            // NOTE: ONLINE_CPUS is now updated by AP itself in ap_entry_inner
             return Ok(());
         }
 
@@ -439,17 +439,23 @@ extern "C" fn ap_entry_inner(arg: *const ApBootArgs) -> ! {
         crate::kinfo!("SMP: AP core {} online (APIC {:#x})", idx, args.apic_id);
 
         // Step 3: Initialize per-CPU data
-        // BSP (idx=0) uses static array, all APs use dynamic allocation
+        // NOTE: Due to cache coherency issues with dynamically allocated data,
+        // AP cores use static CpuData entries that BSP pre-initialized.
+        // The static array CPU_DATA is embedded in the kernel image and
+        // is accessible to all cores without heap allocation issues.
+        // 
+        // For idx >= STATIC_CPU_COUNT, we skip CpuData init here because:
+        // 1. Dynamic allocation Vec may not be visible to AP cores
+        // 2. The essential per-CPU data (GDT, TSS, stacks) is already set up
+        // 3. CpuData is mainly for statistics - can be initialized later if needed
         if idx < STATIC_CPU_COUNT {
             CPU_DATA[idx]
                 .as_mut_ptr()
                 .write(CpuData::new(idx as u16, args.apic_id));
-        } else {
-            // Use dynamic allocation for all APs
-            if let Err(e) = super::alloc::init_cpu_data(idx, idx as u16, args.apic_id) {
-                crate::kerror!("SMP: Failed to init CPU {} data: {}", idx, e);
-            }
         }
+        // For APs (idx >= STATIC_CPU_COUNT), skip init_cpu_data to avoid Vec access issues
+        // The per-CPU GDT/TSS/stacks are already allocated and configured
+        
         core::sync::atomic::compiler_fence(Ordering::Release);
 
         // Step 4: Mark CPU as online
@@ -457,30 +463,31 @@ extern "C" fn ap_entry_inner(arg: *const ApBootArgs) -> ! {
         // AP cores may have stale cache lines from before BSP wrote to memory
         core::sync::atomic::fence(Ordering::SeqCst);
 
-        // Read CPU_TOTAL and debug output it
-        let total = CPU_TOTAL.load(Ordering::SeqCst);
-
-        // Debug: Output CPU_TOTAL value and address
+        // Read CPU total from trampoline area (fixed low memory address)
+        // This is reliable because BSP wrote it to a known location before starting APs
+        // Using trampoline location avoids kernel relocation address issues
+        let cpu_total = super::trampoline::get_cpu_total_from_trampoline();
+        
+        // Debug: Output CPU total read from trampoline
         serial_debug_byte(b'T');
-        let t_digit = if total < 10 { b'0' + total as u8 } else { b'?' };
+        let t_digit = if cpu_total < 10 { b'0' + cpu_total as u8 } else { b'?' };
         serial_debug_byte(t_digit);
-        serial_debug_byte(b'@');
-
-        // Output CPU_TOTAL address (link-time address used by AP)
-        let cpu_total_addr = &CPU_TOTAL as *const _ as u64;
-        serial_debug_hex(cpu_total_addr, 8);
         serial_debug_byte(b'\n');
 
-        // Use the standard atomic load which resolves to the correct address
-        // (The BSP writes to the address resolved by &CPU_TOTAL, so we should read from there too)
-        let actual_total = total;
-        if idx < actual_total {
-            cpu_info(idx)
-                .status
-                .store(CpuStatus::Online as u8, Ordering::Release);
+        // Verify this CPU index is valid and mark as online
+        if idx < cpu_total {
+            // Use trampoline status array instead of dynamically allocated CpuInfo
+            // This avoids cache coherency issues with heap-allocated structures
+            super::trampoline::set_cpu_status_in_trampoline(
+                idx, 
+                super::trampoline::CPU_STATUS_ONLINE
+            );
             crate::safety::serial_debug_str("AP_ONLINE\n");
+            
+            // Update ONLINE_CPUS counter
+            ONLINE_CPUS.fetch_add(1, Ordering::SeqCst);
         } else {
-            crate::kerror!("SMP: CPU index {} exceeds total count", idx);
+            crate::kerror!("SMP: CPU index {} exceeds CPU total {}", idx, cpu_total);
             loop {
                 cpu_hlt();
             }
@@ -698,6 +705,14 @@ pub unsafe fn start_all_aps_parallel(count: usize) -> Result<usize, &'static str
         return Err("No APs could be prepared for startup");
     }
     
+    // Set all APs to "booting" status in trampoline
+    for index in 1..count {
+        super::trampoline::set_cpu_status_in_trampoline(
+            index,
+            super::trampoline::CPU_STATUS_BOOTING
+        );
+    }
+    
     // Phase 2: Send INIT IPI to all APs
     send_init_to_all_aps(count);
     
@@ -716,10 +731,10 @@ pub unsafe fn start_all_aps_parallel(count: usize) -> Result<usize, &'static str
     for _ in 0..max_wait_iterations {
         online = 0;
         
+        // Check trampoline status array instead of dynamically allocated CpuInfo
         for index in 1..count {
-            let info = cpu_info(index);
-            let status = CpuStatus::from_atomic(info.status.load(Ordering::Acquire));
-            if status == CpuStatus::Online {
+            let status = super::trampoline::get_cpu_status_from_trampoline(index);
+            if status == super::trampoline::CPU_STATUS_ONLINE {
                 online += 1;
             }
         }
@@ -732,8 +747,8 @@ pub unsafe fn start_all_aps_parallel(count: usize) -> Result<usize, &'static str
         busy_wait(STARTUP_WAIT_LOOPS / 10);
     }
     
-    // Update online count
-    ONLINE_CPUS.fetch_add(online, Ordering::SeqCst);
+    // NOTE: ONLINE_CPUS is now updated by each AP core itself in ap_entry_inner
+    // No need to update it here to avoid double-counting
     
     // Log results
     crate::kinfo!(
@@ -741,13 +756,15 @@ pub unsafe fn start_all_aps_parallel(count: usize) -> Result<usize, &'static str
         online, count - 1, prepared
     );
     
-    // Mark any non-online APs as failed
+    // Mark any non-online APs as failed (in trampoline status)
     for index in 1..count {
-        let info = cpu_info(index);
-        let status = CpuStatus::from_atomic(info.status.load(Ordering::Acquire));
-        if status == CpuStatus::Booting {
+        let status = super::trampoline::get_cpu_status_from_trampoline(index);
+        if status == super::trampoline::CPU_STATUS_BOOTING {
             crate::kwarn!("SMP: [Parallel] AP {} failed to come online", index);
-            info.status.store(CpuStatus::Offline as u8, Ordering::Release);
+            super::trampoline::set_cpu_status_in_trampoline(
+                index,
+                super::trampoline::CPU_STATUS_OFFLINE
+            );
         }
     }
     

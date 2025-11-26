@@ -308,6 +308,96 @@ pub unsafe fn set_apic_to_index_mapping(apic_id: u32, cpu_index: u8) -> Result<(
     Ok(())
 }
 
+/// Write the CPU total count to the trampoline area
+/// This value is written by BSP and read by AP cores for validation
+/// Uses a fixed location in low memory that AP cores can reliably access
+pub unsafe fn set_cpu_total_in_trampoline(cpu_count: usize) -> Result<(), &'static str> {
+    extern "C" {
+        static __ap_trampoline_start: u8;
+        static ap_cpu_total: u8;
+    }
+    
+    // Calculate offset of ap_cpu_total in trampoline
+    let offset = (&ap_cpu_total as *const u8 as usize) 
+        - (&__ap_trampoline_start as *const u8 as usize);
+    
+    // Write to TRAMPOLINE_BASE + offset
+    let addr = (TRAMPOLINE_BASE as usize + offset) as *mut u64;
+    ptr::write_volatile(addr, cpu_count as u64);
+    
+    // Memory fence to ensure write is visible
+    core::sync::atomic::fence(Ordering::SeqCst);
+    
+    crate::kinfo!(
+        "SMP: CPU total {} written to trampoline at {:#x}",
+        cpu_count, addr as usize
+    );
+    
+    Ok(())
+}
+
+/// Read the CPU total count from the trampoline area
+/// This function is called by AP cores to get the validated CPU count
+/// Returns the CPU count from the fixed trampoline location
+pub unsafe fn get_cpu_total_from_trampoline() -> usize {
+    extern "C" {
+        static __ap_trampoline_start: u8;
+        static ap_cpu_total: u8;
+    }
+    
+    // Calculate offset of ap_cpu_total in trampoline
+    let offset = (&ap_cpu_total as *const u8 as usize) 
+        - (&__ap_trampoline_start as *const u8 as usize);
+    
+    // Read from TRAMPOLINE_BASE + offset
+    let addr = (TRAMPOLINE_BASE as usize + offset) as *const u64;
+    let count = ptr::read_volatile(addr) as usize;
+    
+    count
+}
+
+/// CPU status values for trampoline status array
+pub const CPU_STATUS_OFFLINE: u8 = 0;
+pub const CPU_STATUS_BOOTING: u8 = 1;
+pub const CPU_STATUS_ONLINE: u8 = 2;
+
+/// Set CPU status in trampoline area
+/// This is used by both BSP (to set booting) and AP (to set online)
+pub unsafe fn set_cpu_status_in_trampoline(cpu_index: usize, status: u8) {
+    extern "C" {
+        static __ap_trampoline_start: u8;
+        static ap_cpu_status: u8;
+    }
+    
+    // Calculate offset of ap_cpu_status array
+    let offset = (&ap_cpu_status as *const u8 as usize) 
+        - (&__ap_trampoline_start as *const u8 as usize);
+    
+    // Write to TRAMPOLINE_BASE + offset + cpu_index
+    let addr = (TRAMPOLINE_BASE as usize + offset + cpu_index) as *mut u8;
+    ptr::write_volatile(addr, status);
+    
+    // Memory fence
+    core::sync::atomic::fence(Ordering::SeqCst);
+}
+
+/// Get CPU status from trampoline area
+/// Returns the status byte for the given CPU index
+pub unsafe fn get_cpu_status_from_trampoline(cpu_index: usize) -> u8 {
+    extern "C" {
+        static __ap_trampoline_start: u8;
+        static ap_cpu_status: u8;
+    }
+    
+    // Calculate offset of ap_cpu_status array
+    let offset = (&ap_cpu_status as *const u8 as usize) 
+        - (&__ap_trampoline_start as *const u8 as usize);
+    
+    // Read from TRAMPOLINE_BASE + offset + cpu_index
+    let addr = (TRAMPOLINE_BASE as usize + offset + cpu_index) as *const u8;
+    ptr::read_volatile(addr)
+}
+
 /// Initialize all APIC-to-index mappings for detected CPUs
 pub unsafe fn init_apic_mappings(cpus: &[(u32, u8)]) -> Result<(), &'static str> {
     for &(apic_id, cpu_index) in cpus {
