@@ -10,9 +10,10 @@ use alloc::vec::Vec;
 use crate::process::{Pid, ProcessState};
 
 use super::table::{PROCESS_TABLE, SCHED_STATS};
+use super::types::CpuMask;
 
 /// Set CPU affinity for a process using radix tree for O(log N) lookup
-pub fn set_cpu_affinity(pid: Pid, affinity_mask: u32) -> Result<(), &'static str> {
+pub fn set_cpu_affinity(pid: Pid, affinity_mask: CpuMask) -> Result<(), &'static str> {
     let mut table = PROCESS_TABLE.lock();
 
     // Try radix tree lookup first (O(log N))
@@ -22,7 +23,7 @@ pub fn set_cpu_affinity(pid: Pid, affinity_mask: u32) -> Result<(), &'static str
             if let Some(entry) = &mut table[idx] {
                 if entry.process.pid == pid {
                     entry.cpu_affinity = affinity_mask;
-                    crate::kinfo!("Set CPU affinity for PID {} to {:#x}", pid, affinity_mask);
+                    crate::kinfo!("Set CPU affinity for PID {} to {:?}", pid, affinity_mask);
                     return Ok(());
                 }
             }
@@ -37,7 +38,7 @@ pub fn set_cpu_affinity(pid: Pid, affinity_mask: u32) -> Result<(), &'static str
         }
 
         entry.cpu_affinity = affinity_mask;
-        crate::kinfo!("Set CPU affinity for PID {} to {:#x}", pid, affinity_mask);
+        crate::kinfo!("Set CPU affinity for PID {} to {:?}", pid, affinity_mask);
         return Ok(());
     }
 
@@ -45,7 +46,7 @@ pub fn set_cpu_affinity(pid: Pid, affinity_mask: u32) -> Result<(), &'static str
 }
 
 /// Get CPU affinity for a process using radix tree for O(log N) lookup
-pub fn get_cpu_affinity(pid: Pid) -> Option<u32> {
+pub fn get_cpu_affinity(pid: Pid) -> Option<CpuMask> {
     let table = PROCESS_TABLE.lock();
 
     // Try radix tree lookup first (O(log N))
@@ -84,7 +85,7 @@ fn collect_ready_pids(table: &[Option<super::types::ProcessEntry>; crate::proces
 fn try_migrate_process(
     table: &mut [Option<super::types::ProcessEntry>; crate::process::MAX_PROCESSES],
     pid: Pid,
-    target_cpu: u8,
+    target_cpu: u16,
     stats: &mut super::types::SchedulerStats,
 ) {
     for slot in table.iter_mut() {
@@ -94,7 +95,7 @@ fn try_migrate_process(
         }
 
         // Only migrate if the target CPU is in the affinity mask
-        if (entry.cpu_affinity & (1 << target_cpu)) == 0 {
+        if !entry.cpu_affinity.is_set(target_cpu as usize) {
             break;
         }
 
@@ -130,7 +131,7 @@ pub fn balance_load() {
     if numa_node_count <= 1 {
         // Non-NUMA or single node: simple round-robin
         for (idx, &pid) in ready_processes.iter().enumerate() {
-            let target_cpu = (idx % cpu_count) as u8;
+            let target_cpu = (idx % cpu_count) as u16;
             try_migrate_process(&mut table, pid, target_cpu, &mut stats);
         }
     } else {
@@ -174,7 +175,7 @@ fn get_preferred_numa_node(
 }
 
 /// Get the APIC ID for a given CPU index
-fn get_cpu_apic_id(cpu_index: u8) -> u32 {
+fn get_cpu_apic_id(cpu_index: u16) -> u32 {
     let cpus = crate::acpi::cpus();
     if (cpu_index as usize) < cpus.len() {
         cpus[cpu_index as usize].apic_id as u32
@@ -184,28 +185,28 @@ fn get_cpu_apic_id(cpu_index: u8) -> u32 {
 }
 
 /// Get the least loaded CPU on a specific NUMA node
-fn get_least_loaded_cpu_on_node(node: u32) -> u8 {
+fn get_least_loaded_cpu_on_node(node: u32) -> u16 {
     let cpu_count = crate::smp::cpu_count();
     if cpu_count == 0 {
         return 0;
     }
 
     // Collect CPUs on this node
-    let mut best_cpu = 0u8;
+    let mut best_cpu = 0u16;
     let mut min_load = u64::MAX;
     let mut found_on_node = false;
 
     for cpu_idx in 0..cpu_count {
-        let apic_id = get_cpu_apic_id(cpu_idx as u8);
+        let apic_id = get_cpu_apic_id(cpu_idx as u16);
         let cpu_node = crate::numa::cpu_to_node(apic_id);
 
         if cpu_node == node {
             found_on_node = true;
             // Get load for this CPU (simple count of processes assigned)
-            let load = count_processes_on_cpu(cpu_idx as u8);
+            let load = count_processes_on_cpu(cpu_idx as u16);
             if load < min_load {
                 min_load = load;
-                best_cpu = cpu_idx as u8;
+                best_cpu = cpu_idx as u16;
             }
         }
     }
@@ -213,10 +214,10 @@ fn get_least_loaded_cpu_on_node(node: u32) -> u8 {
     // If no CPU found on node, fall back to any least loaded CPU
     if !found_on_node {
         for cpu_idx in 0..cpu_count {
-            let load = count_processes_on_cpu(cpu_idx as u8);
+            let load = count_processes_on_cpu(cpu_idx as u16);
             if load < min_load {
                 min_load = load;
-                best_cpu = cpu_idx as u8;
+                best_cpu = cpu_idx as u16;
             }
         }
     }
@@ -225,7 +226,7 @@ fn get_least_loaded_cpu_on_node(node: u32) -> u8 {
 }
 
 /// Count processes currently assigned to a CPU
-fn count_processes_on_cpu(cpu: u8) -> u64 {
+fn count_processes_on_cpu(cpu: u16) -> u64 {
     let table = PROCESS_TABLE.lock();
     let mut count = 0u64;
 
@@ -242,7 +243,7 @@ fn count_processes_on_cpu(cpu: u8) -> u64 {
 }
 
 /// Get the recommended CPU for running a process (based on affinity, NUMA, and load)
-pub fn get_preferred_cpu(pid: Pid) -> u8 {
+pub fn get_preferred_cpu(pid: Pid) -> u16 {
     let cpu_count = crate::smp::cpu_count();
     if cpu_count <= 1 {
         return 0;
@@ -257,27 +258,27 @@ pub fn get_preferred_cpu(pid: Pid) -> u8 {
         }
 
         // 1. Prefer the last CPU used (cache affinity) if allowed
-        if (entry.cpu_affinity & (1 << entry.last_cpu)) != 0 {
+        if entry.cpu_affinity.is_set(entry.last_cpu as usize) {
             return entry.last_cpu;
         }
 
         // 2. Try to find a CPU on the preferred NUMA node
         if entry.numa_preferred_node != crate::numa::NUMA_NO_NODE {
-            for cpu in 0..cpu_count.min(32) {
-                if (entry.cpu_affinity & (1 << cpu)) == 0 {
-                    continue;
+            for cpu in entry.cpu_affinity.iter_set() {
+                if cpu >= cpu_count {
+                    break;
                 }
-                let apic_id = get_cpu_apic_id(cpu as u8);
+                let apic_id = get_cpu_apic_id(cpu as u16);
                 if crate::numa::cpu_to_node(apic_id) == entry.numa_preferred_node {
-                    return cpu as u8;
+                    return cpu as u16;
                 }
             }
         }
 
         // 3. Find first available CPU in affinity mask
-        for cpu in 0..cpu_count.min(32) {
-            if (entry.cpu_affinity & (1 << cpu)) != 0 {
-                return cpu as u8;
+        if let Some(first_cpu) = entry.cpu_affinity.first_set() {
+            if first_cpu < cpu_count {
+                return first_cpu as u16;
             }
         }
 

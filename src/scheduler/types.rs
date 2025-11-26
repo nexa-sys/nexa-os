@@ -3,7 +3,161 @@
 //! This module contains all type definitions used by the scheduler subsystem.
 //! Implements EEVDF (Earliest Eligible Virtual Deadline First) scheduling.
 
+use crate::acpi::MAX_CPUS;
 use crate::process::{Process, ProcessState};
+
+/// Number of u64 words needed to represent MAX_CPUS bits (1024 CPUs = 16 u64s)
+const CPU_MASK_WORDS: usize = (MAX_CPUS + 63) / 64;
+
+/// CPU affinity mask supporting up to MAX_CPUS (1024) processors
+/// 
+/// This is a bitmap where each bit represents a CPU core.
+/// Bit N being set means the process can run on CPU N.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct CpuMask {
+    bits: [u64; CPU_MASK_WORDS],
+}
+
+impl CpuMask {
+    /// Create a new empty CPU mask (no CPUs allowed)
+    pub const fn empty() -> Self {
+        Self {
+            bits: [0; CPU_MASK_WORDS],
+        }
+    }
+
+    /// Create a CPU mask with all CPUs allowed
+    pub const fn all() -> Self {
+        Self {
+            bits: [u64::MAX; CPU_MASK_WORDS],
+        }
+    }
+
+    /// Create a CPU mask from a u32 (for backward compatibility, supports CPUs 0-31)
+    pub const fn from_u32(mask: u32) -> Self {
+        let mut bits = [0u64; CPU_MASK_WORDS];
+        bits[0] = mask as u64;
+        Self { bits }
+    }
+
+    /// Set a specific CPU bit
+    #[inline]
+    pub fn set(&mut self, cpu: usize) {
+        if cpu < MAX_CPUS {
+            let word = cpu / 64;
+            let bit = cpu % 64;
+            self.bits[word] |= 1u64 << bit;
+        }
+    }
+
+    /// Clear a specific CPU bit
+    #[inline]
+    pub fn clear(&mut self, cpu: usize) {
+        if cpu < MAX_CPUS {
+            let word = cpu / 64;
+            let bit = cpu % 64;
+            self.bits[word] &= !(1u64 << bit);
+        }
+    }
+
+    /// Check if a specific CPU is set
+    #[inline]
+    pub const fn is_set(&self, cpu: usize) -> bool {
+        if cpu >= MAX_CPUS {
+            return false;
+        }
+        let word = cpu / 64;
+        let bit = cpu % 64;
+        (self.bits[word] & (1u64 << bit)) != 0
+    }
+
+    /// Check if the mask is empty (no CPUs allowed)
+    pub const fn is_empty(&self) -> bool {
+        let mut i = 0;
+        while i < CPU_MASK_WORDS {
+            if self.bits[i] != 0 {
+                return false;
+            }
+            i += 1;
+        }
+        true
+    }
+
+    /// Count the number of CPUs set in the mask
+    pub const fn count(&self) -> usize {
+        let mut count = 0;
+        let mut i = 0;
+        while i < CPU_MASK_WORDS {
+            count += self.bits[i].count_ones() as usize;
+            i += 1;
+        }
+        count
+    }
+
+    /// Find the first set CPU (returns None if empty)
+    pub const fn first_set(&self) -> Option<usize> {
+        let mut i = 0;
+        while i < CPU_MASK_WORDS {
+            if self.bits[i] != 0 {
+                return Some(i * 64 + self.bits[i].trailing_zeros() as usize);
+            }
+            i += 1;
+        }
+        None
+    }
+
+    /// Get the raw bits for display/debug purposes (first 64 CPUs)
+    pub const fn as_u64(&self) -> u64 {
+        self.bits[0]
+    }
+
+    /// Iterate over all set CPU indices
+    pub fn iter_set(&self) -> impl Iterator<Item = usize> + '_ {
+        CpuMaskIter {
+            mask: self,
+            current_word: 0,
+            current_bits: self.bits[0],
+        }
+    }
+}
+
+impl Default for CpuMask {
+    fn default() -> Self {
+        Self::all()
+    }
+}
+
+impl core::fmt::Debug for CpuMask {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "CpuMask({:#018x}...)", self.bits[0])
+    }
+}
+
+/// Iterator over set CPU indices in a CpuMask
+struct CpuMaskIter<'a> {
+    mask: &'a CpuMask,
+    current_word: usize,
+    current_bits: u64,
+}
+
+impl<'a> Iterator for CpuMaskIter<'a> {
+    type Item = usize;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.current_bits == 0 {
+            self.current_word += 1;
+            if self.current_word >= CPU_MASK_WORDS {
+                return None;
+            }
+            self.current_bits = self.mask.bits[self.current_word];
+        }
+        
+        let bit = self.current_bits.trailing_zeros() as usize;
+        self.current_bits &= self.current_bits - 1; // Clear lowest set bit
+        Some(self.current_word * 64 + bit)
+    }
+}
 
 /// Minimum granularity - minimum time slice a process can get (in ns)
 pub const SCHED_GRANULARITY_NS: u64 = 1_000_000; // 1ms
@@ -88,8 +242,8 @@ pub struct ProcessEntry {
     pub quantum_level: u8,       // Kept for compatibility, not used in EEVDF
     pub preempt_count: u64,      // Number of times preempted
     pub voluntary_switches: u64, // Number of voluntary context switches
-    pub cpu_affinity: u32,       // CPU affinity mask (bit per CPU)
-    pub last_cpu: u8,            // Last CPU this process ran on
+    pub cpu_affinity: CpuMask,   // CPU affinity mask (supports up to 1024 CPUs)
+    pub last_cpu: u16,           // Last CPU this process ran on (u16 for 1024 CPUs)
     
     // === NUMA fields ===
     /// Preferred NUMA node for this process (NUMA_NO_NODE = no preference)
@@ -146,7 +300,7 @@ impl ProcessEntry {
             quantum_level: 0,
             preempt_count: 0,
             voluntary_switches: 0,
-            cpu_affinity: 0xFFFFFFFF, // All CPUs by default
+            cpu_affinity: CpuMask::all(), // All CPUs by default
             last_cpu: 0,
             // NUMA fields
             numa_preferred_node: crate::numa::NUMA_NO_NODE,

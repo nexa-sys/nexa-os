@@ -134,9 +134,8 @@ fn find_best_candidate(
 ) -> Option<EevdfCandidate> {
     let mut best_candidate: Option<EevdfCandidate> = None;
     
-    // Get current CPU ID for affinity check
-    let current_cpu = crate::smp::current_cpu_id() as u32;
-    let cpu_mask = 1u32 << current_cpu;
+    // Get current CPU ID for affinity check (supports up to 1024 CPUs)
+    let current_cpu = crate::smp::current_cpu_id() as usize;
 
     for (idx, slot) in table.iter().enumerate() {
         let Some(entry) = slot else { continue };
@@ -145,7 +144,7 @@ fn find_best_candidate(
         }
         
         // Check CPU affinity - skip if process cannot run on this CPU
-        if (entry.cpu_affinity & cpu_mask) == 0 {
+        if !entry.cpu_affinity.is_set(current_cpu) {
             continue;
         }
 
@@ -444,9 +443,8 @@ fn find_next_ready_index(
     table: &[Option<super::types::ProcessEntry>; MAX_PROCESSES],
     start_idx: usize,
 ) -> Option<usize> {
-    // Get current CPU ID for affinity check
-    let current_cpu = crate::smp::current_cpu_id() as u32;
-    let cpu_mask = 1u32 << current_cpu;
+    // Get current CPU ID for affinity check (supports up to 1024 CPUs)
+    let current_cpu = crate::smp::current_cpu_id() as usize;
 
     for offset in 0..MAX_PROCESSES {
         let idx = (start_idx + offset) % MAX_PROCESSES;
@@ -455,7 +453,7 @@ fn find_next_ready_index(
             continue;
         }
         // Check CPU affinity - skip if process cannot run on this CPU
-        if (entry.cpu_affinity & cpu_mask) == 0 {
+        if !entry.cpu_affinity.is_set(current_cpu) {
             continue;
         }
         return Some(idx);
@@ -510,7 +508,7 @@ fn extract_next_process_info(
     entry.process.state = ProcessState::Running;
     
     // Update last_cpu to record which CPU is running this process
-    entry.last_cpu = crate::smp::current_cpu_id();
+    entry.last_cpu = crate::smp::current_cpu_id() as u16;
 
     (
         !entry.process.has_entered_user,

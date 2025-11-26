@@ -300,7 +300,7 @@ pub fn get_cpu_info(cpu_index: usize) -> Result<&'static CpuInfo, &'static str> 
 }
 
 /// Initialize CpuData for a CPU
-pub fn init_cpu_data(cpu_index: usize, cpu_id: u8, apic_id: u32) -> Result<(), &'static str> {
+pub fn init_cpu_data(cpu_index: usize, cpu_id: u16, apic_id: u32) -> Result<(), &'static str> {
     let mut resources = DYNAMIC_RESOURCES.lock();
     
     if cpu_index >= resources.cpu_data.len() {

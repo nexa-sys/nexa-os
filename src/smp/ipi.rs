@@ -30,8 +30,8 @@ pub const IPI_HALT: u8 = 0xF3;
 // IPI Send Functions
 // ============================================================================
 
-/// Send reschedule IPI to a specific CPU
-pub fn send_reschedule_ipi(cpu_id: u8) {
+/// Send reschedule IPI to a specific CPU (supports up to 1024 CPUs)
+pub fn send_reschedule_ipi(cpu_id: u16) {
     if !SMP_READY.load(Ordering::Acquire) {
         return;
     }

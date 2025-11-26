@@ -85,7 +85,7 @@ unsafe fn init_inner() -> Result<(), &'static str> {
         if info.is_bsp {
             CPU_DATA[i]
                 .as_mut_ptr()
-                .write(CpuData::new(i as u8, info.apic_id));
+                .write(CpuData::new(i as u16, info.apic_id));
             break;
         }
     }

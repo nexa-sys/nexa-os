@@ -20,8 +20,8 @@ pub fn online_cpus() -> usize {
     ONLINE_CPUS.load(Ordering::Acquire)
 }
 
-/// Get current CPU ID from LAPIC
-pub fn current_cpu_id() -> u8 {
+/// Get current CPU ID from LAPIC (supports up to 1024 CPUs)
+pub fn current_cpu_id() -> u16 {
     if !SMP_READY.load(Ordering::Acquire) {
         return 0;
     }
@@ -30,7 +30,7 @@ pub fn current_cpu_id() -> u8 {
         for i in 0..CPU_TOTAL.load(Ordering::Relaxed) {
             let info = cpu_info(i);
             if info.apic_id == apic_id {
-                return i as u8;
+                return i as u16;
             }
         }
     }

@@ -53,7 +53,7 @@ impl PerCpuGsData {
 /// Per-CPU runtime data - isolated to each CPU to avoid cache line contention
 #[repr(C, align(64))] // Cache line aligned to prevent false sharing
 pub struct CpuData {
-    pub cpu_id: u8,
+    pub cpu_id: u16,  // Supports up to 1024 CPUs
     pub apic_id: u32,
     pub current_pid: AtomicU32, // Currently running process
     pub idle_time: AtomicU64,   // Idle time in ticks
@@ -65,7 +65,7 @@ pub struct CpuData {
 }
 
 impl CpuData {
-    pub fn new(cpu_id: u8, apic_id: u32) -> Self {
+    pub fn new(cpu_id: u16, apic_id: u32) -> Self {
         Self {
             cpu_id,
             apic_id,

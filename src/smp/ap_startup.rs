@@ -401,7 +401,7 @@ extern "C" fn ap_entry_inner(arg: *const ApBootArgs) -> ! {
         // Step 3: Initialize per-CPU data
         CPU_DATA[idx]
             .as_mut_ptr()
-            .write(CpuData::new(idx as u8, args.apic_id));
+            .write(CpuData::new(idx as u16, args.apic_id));
         core::sync::atomic::compiler_fence(Ordering::Release);
 
         // Step 4: Mark CPU as online
