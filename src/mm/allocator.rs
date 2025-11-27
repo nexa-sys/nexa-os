@@ -1027,6 +1027,13 @@ pub fn zalloc(size: usize, zone: MemoryZone) -> Option<*mut u8> {
 
 static KERNEL_HEAP: Mutex<KernelHeap> = Mutex::new(KernelHeap::new());
 
+/// Get memory statistics from the kernel heap
+/// Returns (HeapStats, BuddyStats, SlabStats)
+pub fn get_memory_stats() -> (HeapStats, BuddyStats, SlabStats) {
+    let heap = KERNEL_HEAP.lock();
+    heap.get_stats()
+}
+
 /// Initialize the global kernel heap
 pub fn init_kernel_heap(base: u64, size: u64) {
     let mut heap = KERNEL_HEAP.lock();

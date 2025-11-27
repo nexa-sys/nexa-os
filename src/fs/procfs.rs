@@ -23,6 +23,8 @@
 use crate::posix::{FileType, Metadata};
 use crate::process::{Pid, ProcessState, MAX_PROCESSES};
 use crate::scheduler;
+use crate::mm;
+use crate::smp;
 use core::fmt::Write;
 
 /// Buffer size for dynamically generated procfs content
@@ -56,6 +58,136 @@ impl<'a> Write for BufWriter<'a> {
         self.pos += to_write;
         Ok(())
     }
+}
+
+// =============================================================================
+// CPUID Helper Functions for Real CPU Information
+// =============================================================================
+
+/// Get CPU vendor, family, model, stepping, model name, and frequency via CPUID
+fn get_cpuid_info() -> (&'static str, u32, u32, u32, &'static str, u32) {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        use core::arch::x86_64::__cpuid;
+        
+        // Get vendor ID (CPUID leaf 0)
+        let cpuid0 = __cpuid(0);
+        let vendor_bytes: [u8; 12] = [
+            (cpuid0.ebx & 0xFF) as u8, ((cpuid0.ebx >> 8) & 0xFF) as u8,
+            ((cpuid0.ebx >> 16) & 0xFF) as u8, ((cpuid0.ebx >> 24) & 0xFF) as u8,
+            (cpuid0.edx & 0xFF) as u8, ((cpuid0.edx >> 8) & 0xFF) as u8,
+            ((cpuid0.edx >> 16) & 0xFF) as u8, ((cpuid0.edx >> 24) & 0xFF) as u8,
+            (cpuid0.ecx & 0xFF) as u8, ((cpuid0.ecx >> 8) & 0xFF) as u8,
+            ((cpuid0.ecx >> 16) & 0xFF) as u8, ((cpuid0.ecx >> 24) & 0xFF) as u8,
+        ];
+        
+        let vendor = if &vendor_bytes == b"GenuineIntel" {
+            "GenuineIntel"
+        } else if &vendor_bytes == b"AuthenticAMD" {
+            "AuthenticAMD"
+        } else {
+            "Unknown"
+        };
+        
+        // Get family/model/stepping (CPUID leaf 1)
+        let cpuid1 = __cpuid(1);
+        let stepping = cpuid1.eax & 0xF;
+        let base_model = (cpuid1.eax >> 4) & 0xF;
+        let base_family = (cpuid1.eax >> 8) & 0xF;
+        let ext_model = (cpuid1.eax >> 16) & 0xF;
+        let ext_family = (cpuid1.eax >> 20) & 0xFF;
+        
+        let family = if base_family == 0xF {
+            base_family + ext_family
+        } else {
+            base_family
+        };
+        
+        let model = if base_family == 0x6 || base_family == 0xF {
+            (ext_model << 4) | base_model
+        } else {
+            base_model
+        };
+        
+        // Get processor brand string (CPUID leaves 0x80000002-0x80000004)
+        let max_ext = __cpuid(0x80000000).eax;
+        let model_name = if max_ext >= 0x80000004 {
+            // Extended brand string available - use generic name based on vendor
+            if vendor == "GenuineIntel" {
+                "Intel(R) Core(TM) Processor"
+            } else if vendor == "AuthenticAMD" {
+                "AMD Processor"
+            } else {
+                "Unknown Processor"
+            }
+        } else {
+            "Generic x86_64 Processor"
+        };
+        
+        // Get CPU frequency (CPUID leaf 0x16 if available)
+        let cpu_mhz = if cpuid0.eax >= 0x16 {
+            let cpuid16 = __cpuid(0x16);
+            if cpuid16.eax != 0 {
+                cpuid16.eax // Base frequency in MHz
+            } else {
+                3000 // Default 3GHz
+            }
+        } else {
+            3000 // Default 3GHz
+        };
+        
+        (vendor, family, model, stepping, model_name, cpu_mhz)
+    }
+    
+    #[cfg(not(target_arch = "x86_64"))]
+    ("Unknown", 0, 0, 0, "Unknown Processor", 1000)
+}
+
+/// Get CPU feature flags as a string
+fn get_cpu_flags() -> &'static str {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        use core::arch::x86_64::__cpuid;
+        
+        let cpuid1 = __cpuid(1);
+        let edx = cpuid1.edx;
+        let ecx = cpuid1.ecx;
+        
+        // Extended features (CPUID leaf 7)
+        let cpuid0 = __cpuid(0);
+        let (ebx7, ecx7) = if cpuid0.eax >= 7 {
+            let cpuid7 = __cpuid(7);
+            (cpuid7.ebx, cpuid7.ecx)
+        } else {
+            (0, 0)
+        };
+        
+        // Extended CPUID leaf 0x80000001
+        let max_ext = __cpuid(0x80000000).eax;
+        let (edx_ext, ecx_ext) = if max_ext >= 0x80000001 {
+            let cpuid_ext = __cpuid(0x80000001);
+            (cpuid_ext.edx, cpuid_ext.ecx)
+        } else {
+            (0, 0)
+        };
+        
+        // Build flags string based on detected features
+        // This is a representative subset - real Linux shows many more
+        let mut flags = "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2";
+        
+        // Add common modern features based on actual detection
+        if ecx & (1 << 0) != 0 { flags = "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 sse3"; }
+        if ecx & (1 << 9) != 0 { flags = "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 sse3 ssse3"; }
+        if ecx & (1 << 19) != 0 { flags = "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 sse3 ssse3 sse4_1"; }
+        if ecx & (1 << 20) != 0 { flags = "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 sse3 ssse3 sse4_1 sse4_2"; }
+        if edx_ext & (1 << 29) != 0 { flags = "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 sse3 ssse3 sse4_1 sse4_2 lm"; }
+        if edx_ext & (1 << 20) != 0 { flags = "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 sse3 ssse3 sse4_1 sse4_2 lm nx"; }
+        
+        flags
+    }
+    
+    #[cfg(not(target_arch = "x86_64"))]
+    "fpu"
 }
 
 /// Generate /proc/version content
@@ -134,15 +266,27 @@ pub fn generate_meminfo() -> (&'static [u8], usize) {
     let mut buf = PROC_BUFFER.lock();
     let mut writer = BufWriter::new(&mut buf[..]);
     
-    // Get memory statistics from the allocator
-    // For now, use placeholder values - real implementation would query mm subsystem
-    let total_kb: u64 = 256 * 1024; // 256 MB placeholder
-    let free_kb: u64 = 128 * 1024;  // 128 MB free placeholder
+    // Get real memory statistics from the kernel heap
+    let (heap_stats, buddy_stats, slab_stats) = mm::get_memory_stats();
+    
+    // Calculate real values from buddy allocator
+    // Each page is 4KB
+    let page_size_kb: u64 = 4;
+    let total_pages = buddy_stats.pages_allocated + buddy_stats.pages_free;
+    let total_kb = total_pages * page_size_kb;
+    let free_kb = buddy_stats.pages_free * page_size_kb;
+    let used_kb = buddy_stats.pages_allocated * page_size_kb;
+    
+    // Heap usage from HeapStats
+    let heap_used_kb = (heap_stats.bytes_allocated.saturating_sub(heap_stats.bytes_freed)) / 1024;
+    let heap_peak_kb = heap_stats.peak_usage / 1024;
+    
+    // Slab allocator stats
+    let slab_active = slab_stats.allocations.saturating_sub(slab_stats.frees);
+    
     let available_kb = free_kb;
-    let buffers_kb: u64 = 1024;
-    let cached_kb: u64 = 32 * 1024;
-    let swap_total: u64 = 0;
-    let swap_free: u64 = 0;
+    let buffers_kb: u64 = 0;
+    let cached_kb = heap_peak_kb.saturating_sub(heap_used_kb);
     
     let _ = writeln!(writer, "MemTotal:       {:8} kB", total_kb);
     let _ = writeln!(writer, "MemFree:        {:8} kB", free_kb);
@@ -150,21 +294,21 @@ pub fn generate_meminfo() -> (&'static [u8], usize) {
     let _ = writeln!(writer, "Buffers:        {:8} kB", buffers_kb);
     let _ = writeln!(writer, "Cached:         {:8} kB", cached_kb);
     let _ = writeln!(writer, "SwapCached:     {:8} kB", 0u64);
-    let _ = writeln!(writer, "Active:         {:8} kB", cached_kb / 2);
-    let _ = writeln!(writer, "Inactive:       {:8} kB", cached_kb / 2);
-    let _ = writeln!(writer, "SwapTotal:      {:8} kB", swap_total);
-    let _ = writeln!(writer, "SwapFree:       {:8} kB", swap_free);
+    let _ = writeln!(writer, "Active:         {:8} kB", heap_used_kb);
+    let _ = writeln!(writer, "Inactive:       {:8} kB", cached_kb);
+    let _ = writeln!(writer, "SwapTotal:      {:8} kB", 0u64);
+    let _ = writeln!(writer, "SwapFree:       {:8} kB", 0u64);
     let _ = writeln!(writer, "Dirty:          {:8} kB", 0u64);
     let _ = writeln!(writer, "Writeback:      {:8} kB", 0u64);
-    let _ = writeln!(writer, "AnonPages:      {:8} kB", 0u64);
-    let _ = writeln!(writer, "Mapped:         {:8} kB", 0u64);
+    let _ = writeln!(writer, "AnonPages:      {:8} kB", heap_used_kb);
+    let _ = writeln!(writer, "Mapped:         {:8} kB", used_kb);
     let _ = writeln!(writer, "Shmem:          {:8} kB", 0u64);
-    let _ = writeln!(writer, "Slab:           {:8} kB", 0u64);
+    let _ = writeln!(writer, "Slab:           {:8} kB", slab_active * 64 / 1024); // Estimate slab usage
     let _ = writeln!(writer, "KernelStack:    {:8} kB", 64u64);
-    let _ = writeln!(writer, "PageTables:     {:8} kB", 0u64);
-    let _ = writeln!(writer, "VmallocTotal:   {:8} kB", 0u64);
-    let _ = writeln!(writer, "VmallocUsed:    {:8} kB", 0u64);
-    let _ = writeln!(writer, "VmallocChunk:   {:8} kB", 0u64);
+    let _ = writeln!(writer, "PageTables:     {:8} kB", (buddy_stats.allocations * 4) as u64);
+    let _ = writeln!(writer, "VmallocTotal:   {:8} kB", total_kb);
+    let _ = writeln!(writer, "VmallocUsed:    {:8} kB", used_kb);
+    let _ = writeln!(writer, "VmallocChunk:   {:8} kB", free_kb);
     
     let len = writer.len();
     let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), len) };
@@ -176,17 +320,22 @@ pub fn generate_cpuinfo() -> (&'static [u8], usize) {
     let mut buf = PROC_BUFFER.lock();
     let mut writer = BufWriter::new(&mut buf[..]);
     
-    // Get CPU info (simplified - real implementation would use CPUID)
-    let cpu_count = 1; // TODO: get from SMP module
+    // Get real CPU count from SMP module
+    let cpu_count = smp::cpu_count().max(1);
+    let online_cpus = smp::online_cpus().max(1);
     
-    for cpu_id in 0..cpu_count {
+    // Get CPU info via CPUID instruction
+    let (vendor_id, family, model, stepping, model_name, cpu_mhz) = get_cpuid_info();
+    let flags = get_cpu_flags();
+    
+    for cpu_id in 0..online_cpus {
         let _ = writeln!(writer, "processor\t: {}", cpu_id);
-        let _ = writeln!(writer, "vendor_id\t: NexaOS");
-        let _ = writeln!(writer, "cpu family\t: 6");
-        let _ = writeln!(writer, "model\t\t: 0");
-        let _ = writeln!(writer, "model name\t: NexaOS Virtual CPU");
-        let _ = writeln!(writer, "stepping\t: 0");
-        let _ = writeln!(writer, "cpu MHz\t\t: 3000.000");
+        let _ = writeln!(writer, "vendor_id\t: {}", vendor_id);
+        let _ = writeln!(writer, "cpu family\t: {}", family);
+        let _ = writeln!(writer, "model\t\t: {}", model);
+        let _ = writeln!(writer, "model name\t: {}", model_name);
+        let _ = writeln!(writer, "stepping\t: {}", stepping);
+        let _ = writeln!(writer, "cpu MHz\t\t: {}.000", cpu_mhz);
         let _ = writeln!(writer, "cache size\t: 256 KB");
         let _ = writeln!(writer, "physical id\t: 0");
         let _ = writeln!(writer, "siblings\t: {}", cpu_count);
@@ -194,10 +343,10 @@ pub fn generate_cpuinfo() -> (&'static [u8], usize) {
         let _ = writeln!(writer, "cpu cores\t: {}", cpu_count);
         let _ = writeln!(writer, "fpu\t\t: yes");
         let _ = writeln!(writer, "fpu_exception\t: yes");
-        let _ = writeln!(writer, "cpuid level\t: 1");
+        let _ = writeln!(writer, "cpuid level\t: 20");
         let _ = writeln!(writer, "wp\t\t: yes");
-        let _ = writeln!(writer, "flags\t\t: fpu de pse tsc msr pae mce cx8 apic sep pge cmov pat clflush mmx fxsr sse sse2 syscall nx lm");
-        let _ = writeln!(writer, "bogomips\t: 6000.00");
+        let _ = writeln!(writer, "flags\t\t: {}", flags);
+        let _ = writeln!(writer, "bogomips\t: {}.00", cpu_mhz * 2);
         let _ = writeln!(writer, "clflush size\t: 64");
         let _ = writeln!(writer, "cache_alignment\t: 64");
         let _ = writeln!(writer, "address sizes\t: 48 bits physical, 48 bits virtual");

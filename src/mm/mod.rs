@@ -15,7 +15,7 @@ pub mod vmalloc;
 
 // Re-export commonly used items from allocator
 pub use allocator::{
-    init_kernel_heap, init_numa_allocator, kalloc, kfree, numa_alloc_local, numa_alloc_on_node,
+    get_memory_stats, init_kernel_heap, init_numa_allocator, kalloc, kfree, numa_alloc_local, numa_alloc_on_node,
     numa_alloc_policy, numa_free, print_memory_stats, zalloc, BuddyAllocator, BuddyStats,
     GlobalAllocator, HeapStats, KernelHeap, MemoryZone, NumaAllocator, NumaNodeAllocator,
     SlabAllocator, SlabStats, ZoneAllocator,

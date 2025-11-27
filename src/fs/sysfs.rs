@@ -341,13 +341,26 @@ pub fn generate_net_address(device: &str) -> Option<(&'static [u8], usize)> {
     let mut buf = SYS_BUFFER.lock();
     let mut writer = BufWriter::new(&mut buf[..]);
     
-    let mac = match device {
-        "lo" => "00:00:00:00:00:00",
-        "eth0" => "52:54:00:12:34:56",
+    match device {
+        "lo" => {
+            let _ = write!(writer, "00:00:00:00:00:00\n");
+        }
+        "eth0" => {
+            // Get real MAC address from network stack
+            let mac = crate::net::with_net_stack(|stack| {
+                stack.get_device_info(0).map(|info| info.mac)
+            }).flatten();
+            
+            if let Some(mac) = mac {
+                let _ = write!(writer, "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}\n",
+                    mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+            } else {
+                // Fallback to QEMU default if stack not ready
+                let _ = write!(writer, "52:54:00:12:34:56\n");
+            }
+        }
         _ => return None,
     };
-    
-    let _ = write!(writer, "{}\n", mac);
     
     let len = writer.len();
     let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), len) };
