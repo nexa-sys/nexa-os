@@ -1,11 +1,11 @@
 [build]
-target = "x86_64-nexaos.json"
+target = "targets/x86_64-nexaos.json"
 
 [unstable]
 build-std = ["core", "compiler_builtins", "alloc"]
 build-std-features = ["compiler-builtins-mem"]
 
-[target."x86_64-nexaos.json"]
+[target."targets/x86_64-nexaos.json"]
 linker = "scripts/linker.sh"
 rustflags = [
     "-Clinker-flavor=ld",

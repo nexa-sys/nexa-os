@@ -76,7 +76,7 @@ mkdir -p "$BUILD_DIR/userspace-build-debug/sysroot/lib"
 echo "Building nrlib staticlib for libc compatibility..."
 cd "$PROJECT_ROOT/userspace/nrlib"
 RUSTFLAGS="-C opt-level=2 -C panic=abort" \
-    cargo build -Z build-std=core --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release
+    cargo build -Z build-std=core --target "$PROJECT_ROOT/targets/x86_64-nexaos-userspace.json" --release
     
 # Copy nrlib staticlib as libc.a and libunwind.a
 cp "$PROJECT_ROOT/userspace/nrlib/target/x86_64-nexaos-userspace/release/libnrlib.a" \
@@ -88,13 +88,13 @@ ar crs "$BUILD_DIR/userspace-build-debug/sysroot/lib/libunwind.a"
 # Now build ni with std, linking against our nrlib-based libc
 cd "$BUILD_DIR/userspace-build-debug"
 RUSTFLAGS="-C opt-level=2 -C panic=abort -C linker=rust-lld -C link-arg=--image-base=0x00400000 -C link-arg=--entry=_start -L $BUILD_DIR/userspace-build-debug/sysroot/lib -C link-arg=-upthread_mutexattr_settype -C link-arg=-upthread_mutexattr_init -C link-arg=-upthread_mutexattr_destroy -C link-arg=-upthread_mutex_init -C link-arg=-upthread_mutex_lock -C link-arg=-upthread_mutex_unlock -C link-arg=-upthread_mutex_destroy -C link-arg=-upthread_once -C link-arg=-u__libc_single_threaded" \
-    cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release \
+    cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/targets/x86_64-nexaos-userspace.json" --release \
     --bin ni --no-default-features
 
 # Build other binaries with nrlib (no_std)
 echo "Building other userspace programs (no_std + nrlib)..."
 RUSTFLAGS="-C opt-level=2 -C panic=abort -C linker=rust-lld -C link-arg=--image-base=0x00400000" \
-    cargo build -Z build-std=core --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release \
+    cargo build -Z build-std=core --target "$PROJECT_ROOT/targets/x86_64-nexaos-userspace.json" --release \
     --bin sh --bin getty --bin login --features use-nrlib
 
 # Copy binaries to rootfs

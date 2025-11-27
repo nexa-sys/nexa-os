@@ -70,6 +70,10 @@ path = "../../userspace/ip.rs"
 name = "nurl"
 path = "../../userspace/nurl.rs"
 
+[[bin]]
+name = "hello"
+path = "../../userspace/hello_dynamic.rs"
+
 [profile.release]
 panic = "abort"
 opt-level = 2
@@ -99,7 +103,7 @@ mkdir -p "$BUILD_DIR/userspace-build/sysroot/lib"
 echo "Building nrlib staticlib for libc compatibility..."
 cd "$PROJECT_ROOT/userspace/nrlib"
 RUSTFLAGS="-C opt-level=2 -C panic=abort" \
-    cargo build -Z build-std=core --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release
+    cargo build -Z build-std=core --target "$PROJECT_ROOT/targets/x86_64-nexaos-userspace.json" --release
     
 # Copy nrlib staticlib as libc.a and libunwind.a
 cp "$PROJECT_ROOT/userspace/nrlib/target/x86_64-nexaos-userspace/release/libnrlib.a" \
@@ -112,7 +116,7 @@ ar crs "$BUILD_DIR/userspace-build/sysroot/lib/libunwind.a"
 echo "Building nrlib shared library (libnrlib.so) for dynamic linking..."
 cd "$PROJECT_ROOT/userspace/nrlib"
 RUSTFLAGS="-C opt-level=2 -C panic=abort -C relocation-model=pic" \
-    cargo build -Z build-std=core --target "$PROJECT_ROOT/x86_64-nexaos-userspace-pic.json" --release
+    cargo build -Z build-std=core --target "$PROJECT_ROOT/targets/x86_64-nexaos-userspace-pic.json" --release
 
 # Copy shared library to sysroot and rootfs
 cp "$PROJECT_ROOT/userspace/nrlib/target/x86_64-nexaos-userspace-pic/release/libnrlib.so" \
@@ -152,7 +156,7 @@ cd "$BUILD_DIR/ld-nrlib-build"
 RUSTFLAGS="-C opt-level=s -C panic=abort -C linker=rust-lld \
            -C link-arg=--pie -C link-arg=-e_start -C link-arg=--no-dynamic-linker \
            -C link-arg=-soname=ld-nrlib-x86_64.so.1" \
-    cargo build -Z build-std=core --target "$PROJECT_ROOT/x86_64-nexaos-ld.json" --release
+    cargo build -Z build-std=core --target "$PROJECT_ROOT/targets/x86_64-nexaos-ld.json" --release
 
 # Copy and install the dynamic linker
 cp "target/x86_64-nexaos-ld/release/ld-nrlib" "$ROOTFS_DIR/lib64/ld-nrlib-x86_64.so.1"
@@ -178,62 +182,68 @@ echo "    libc.musl-x86_64.so.1 -> libnrlib.so"
 cd "$BUILD_DIR/userspace-build"
 STD_RUSTFLAGS="-C opt-level=2 -C panic=abort -C linker=rust-lld -C link-arg=--image-base=0x00400000 -C link-arg=--entry=_start -L $BUILD_DIR/userspace-build/sysroot/lib -C link-arg=-upthread_mutexattr_settype -C link-arg=-upthread_mutexattr_init -C link-arg=-upthread_mutexattr_destroy -C link-arg=-upthread_mutex_init -C link-arg=-upthread_mutex_lock -C link-arg=-upthread_mutex_unlock -C link-arg=-upthread_mutex_destroy -C link-arg=-upthread_once -C link-arg=-u__libc_single_threaded"
 RUSTFLAGS="$STD_RUSTFLAGS" \
-    cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release \
+    cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/targets/x86_64-nexaos-userspace.json" --release \
     --bin ni --no-default-features
 
 # Build getty with std to leverage std::io printing
 echo "Building getty with std..."
 RUSTFLAGS="$STD_RUSTFLAGS" \
-    cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release \
+    cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/targets/x86_64-nexaos-userspace.json" --release \
     --bin getty --no-default-features
 
 # Build shell with std
 echo "Building sh (shell) with std..."
 RUSTFLAGS="$STD_RUSTFLAGS" \
-    cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release \
+    cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/targets/x86_64-nexaos-userspace.json" --release \
     --bin sh
 
 # Build login with std
 echo "Building login with std..."
 RUSTFLAGS="$STD_RUSTFLAGS" \
-    cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release \
+    cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/targets/x86_64-nexaos-userspace.json" --release \
     --bin login
 
 # Build nslookup with std
 echo "Building nslookup with std..."
 RUSTFLAGS="$STD_RUSTFLAGS" \
-    cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release \
+    cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/targets/x86_64-nexaos-userspace.json" --release \
     --bin nslookup --no-default-features --features use-nrlib-std
 
 # # Build udp_test with nrlib (no-std)
 # echo "Building udp_test with nrlib (no-std)..."
 # RUSTFLAGS="-C opt-level=2 -C panic=abort -C linker=rust-lld -C link-arg=--image-base=0x00400000 -C link-arg=--entry=_start" \
-#     cargo build -Z build-std=core --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release \
+#     cargo build -Z build-std=core --target "$PROJECT_ROOT/targets/x86_64-nexaos-userspace.json" --release \
 #     --bin udp_test --features use-nrlib
 
 # Build uefi-compatd
 echo "Building uefi-compatd with std..."
 RUSTFLAGS="$STD_RUSTFLAGS" \
-    cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release \
+    cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/targets/x86_64-nexaos-userspace.json" --release \
     --bin uefi-compatd --no-default-features --features use-nrlib-std
 
 # Build ip tool
 echo "Building ip tool with std..."
 RUSTFLAGS="$STD_RUSTFLAGS" \
-    cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release \
+    cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/targets/x86_64-nexaos-userspace.json" --release \
     --bin ip
 
 # Build dhcp tool
 echo "Building dhcp tool with std..."
 RUSTFLAGS="$STD_RUSTFLAGS" \
-    cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release \
+    cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/targets/x86_64-nexaos-userspace.json" --release \
     --bin dhcp
 
 # Build nurl tool
 echo "Building nurl tool with std..."
 RUSTFLAGS="$STD_RUSTFLAGS" \
-    cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release \
+    cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/targets/x86_64-nexaos-userspace.json" --release \
     --bin nurl
+
+# Build hello (dynamic linking test) - uses dynamic target
+echo "Building hello (dynamic linking test)..."
+RUSTFLAGS="$STD_RUSTFLAGS" \
+    cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/targets/x86_64-nexaos-userspace-dynamic.json" --release \
+    --bin hello
 
 # Copy binaries to rootfs
 echo "Copying binaries to rootfs..."
@@ -247,6 +257,7 @@ cp "target/x86_64-nexaos-userspace/release/uefi-compatd" "$ROOTFS_DIR/sbin/uefi-
 cp "target/x86_64-nexaos-userspace/release/ip" "$ROOTFS_DIR/bin/ip"
 cp "target/x86_64-nexaos-userspace/release/dhcp" "$ROOTFS_DIR/bin/dhcp"
 cp "target/x86_64-nexaos-userspace/release/nurl" "$ROOTFS_DIR/bin/nurl"
+cp "target/x86_64-nexaos-userspace-dynamic/release/hello" "$ROOTFS_DIR/bin/hello"
 
 # Strip symbols
 strip --strip-all "$ROOTFS_DIR/sbin/ni" 2>/dev/null || true
@@ -259,6 +270,7 @@ strip --strip-all "$ROOTFS_DIR/sbin/uefi-compatd" 2>/dev/null || true
 strip --strip-all "$ROOTFS_DIR/bin/ip" 2>/dev/null || true
 strip --strip-all "$ROOTFS_DIR/bin/dhcp" 2>/dev/null || true
 strip --strip-all "$ROOTFS_DIR/bin/nurl" 2>/dev/null || true
+strip --strip-all "$ROOTFS_DIR/bin/hello" 2>/dev/null || true
 
 # Copy dynamic linker for dynamically linked programs
 # Note: We now have our own ld-nrlib-x86_64.so.1, but also keep compatibility

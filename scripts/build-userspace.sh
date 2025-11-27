@@ -43,7 +43,7 @@ echo "Building nrlib staticlib for shell..."
 mkdir -p "$PROJECT_ROOT/build/initramfs-build/sysroot/lib"
 cd "$PROJECT_ROOT/userspace/nrlib"
 RUSTFLAGS="-C opt-level=2 -C panic=abort" \
-    cargo build -Z build-std=core --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release
+    cargo build -Z build-std=core --target "$PROJECT_ROOT/targets/x86_64-nexaos-userspace.json" --release
 
 # Copy nrlib staticlib as libc.a
 cp "$PROJECT_ROOT/userspace/nrlib/target/x86_64-nexaos-userspace/release/libnrlib.a" \
@@ -56,7 +56,7 @@ ar crs "$PROJECT_ROOT/build/initramfs-build/sysroot/lib/libunwind.a"
 echo "Building nrlib shared library (libnrlib.so) for initramfs..."
 cd "$PROJECT_ROOT/userspace/nrlib"
 RUSTFLAGS="-C opt-level=2 -C panic=abort -C relocation-model=pic" \
-    cargo build -Z build-std=core --target "$PROJECT_ROOT/x86_64-nexaos-userspace-pic.json" --release
+    cargo build -Z build-std=core --target "$PROJECT_ROOT/targets/x86_64-nexaos-userspace-pic.json" --release
 # Copy shared library to initramfs lib64
 cp "$PROJECT_ROOT/userspace/nrlib/target/x86_64-nexaos-userspace-pic/release/libnrlib.so" \
    "$BUILD_DIR/lib64/libnrlib.so"
@@ -92,7 +92,7 @@ cd "$PROJECT_ROOT/build/ld-nrlib-initramfs-build"
 RUSTFLAGS="-C opt-level=s -C panic=abort -C linker=rust-lld \
            -C link-arg=--pie -C link-arg=-e_start -C link-arg=--no-dynamic-linker \
            -C link-arg=-soname=ld-nrlib-x86_64.so.1" \
-    cargo build -Z build-std=core --target "$PROJECT_ROOT/x86_64-nexaos-ld.json" --release
+    cargo build -Z build-std=core --target "$PROJECT_ROOT/targets/x86_64-nexaos-ld.json" --release
 
 # Copy and install the dynamic linker to initramfs
 cp "target/x86_64-nexaos-ld/release/ld-nrlib" "$BUILD_DIR/lib64/ld-nrlib-x86_64.so.1"
@@ -112,7 +112,7 @@ echo "✓ ld-nrlib-x86_64.so.1 installed to initramfs /lib64 ($LD_SIZE bytes)"
 cd "$PROJECT_ROOT/build/initramfs-build"
 STD_RUSTFLAGS="-C opt-level=2 -C panic=abort -C linker=rust-lld -C link-arg=--image-base=0x00400000 -C link-arg=--entry=_start -L $PROJECT_ROOT/build/initramfs-build/sysroot/lib -C link-arg=-upthread_mutexattr_settype -C link-arg=-upthread_mutexattr_init -C link-arg=-upthread_mutexattr_destroy -C link-arg=-upthread_mutex_init -C link-arg=-upthread_mutex_lock -C link-arg=-upthread_mutex_unlock -C link-arg=-upthread_mutex_destroy -C link-arg=-upthread_once -C link-arg=-u__libc_single_threaded"
 RUSTFLAGS="$STD_RUSTFLAGS" \
-    cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/x86_64-nexaos-userspace.json" --release
+    cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/targets/x86_64-nexaos-userspace.json" --release
 
 # Copy emergency shell to initramfs
 cp "target/x86_64-nexaos-userspace/release/sh" "$BUILD_DIR/bin/sh"
