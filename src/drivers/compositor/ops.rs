@@ -308,9 +308,10 @@ pub fn parallel_fill(
     WORK_TYPE.store(WorkType::None as u8, Ordering::Release);
 }
 
-/// Fast row clearing using 64-bit writes
+/// Fast row clearing using 64-bit writes with optimized row replication
 /// 
-/// Optimized for clearing the bottom portion after scroll
+/// Optimized for clearing the bottom portion after scroll.
+/// Uses REP MOVSQ for row replication when clearing many rows.
 #[inline(always)]
 pub fn clear_rows_fast(
     buffer: *mut u8,
@@ -335,25 +336,66 @@ pub fn clear_rows_fast(
         let remainder_bytes = row_bytes % 8;
         
         unsafe {
-            // Fill first row
+            // Fill first row with unrolled 64-bit writes
             let first_row_ptr = buffer.add(start_row * pitch);
             let qword_ptr = first_row_ptr as *mut u64;
             
-            // Write 64-bit patterns
-            for i in 0..qwords_per_row {
-                qword_ptr.add(i).write_volatile(color64);
+            // Unrolled loop: 8 qwords at a time for better throughput
+            let batches = qwords_per_row / 8;
+            let batch_rem = qwords_per_row % 8;
+            
+            for batch in 0..batches {
+                let base = batch * 8;
+                qword_ptr.add(base).write(color64);
+                qword_ptr.add(base + 1).write(color64);
+                qword_ptr.add(base + 2).write(color64);
+                qword_ptr.add(base + 3).write(color64);
+                qword_ptr.add(base + 4).write(color64);
+                qword_ptr.add(base + 5).write(color64);
+                qword_ptr.add(base + 6).write(color64);
+                qword_ptr.add(base + 7).write(color64);
+            }
+            
+            // Remaining qwords
+            let base = batches * 8;
+            for i in 0..batch_rem {
+                qword_ptr.add(base + i).write(color64);
             }
             
             // Handle remainder (0-7 bytes)
             if remainder_bytes >= 4 {
                 let dword_ptr = first_row_ptr.add(qwords_per_row * 8) as *mut u32;
-                dword_ptr.write_volatile(color);
+                dword_ptr.write(color);
             }
             
-            // Copy first row to remaining rows
-            for row in 1..num_rows {
-                let dst_row_ptr = buffer.add((start_row + row) * pitch);
-                core::ptr::copy_nonoverlapping(first_row_ptr, dst_row_ptr, row_bytes);
+            // Copy first row to remaining rows using optimized method
+            if num_rows > 1 {
+                if row_bytes >= 4096 && num_rows >= 8 {
+                    // Large rows: use REP MOVSQ for efficiency
+                    for row in 1..num_rows {
+                        let dst_row_ptr = buffer.add((start_row + row) * pitch);
+                        super::memory::rep_movsq_copy(first_row_ptr, dst_row_ptr, row_bytes);
+                    }
+                } else {
+                    // Smaller rows: unrolled copy
+                    let mut row = 1;
+                    while row + 4 <= num_rows {
+                        let dst0 = buffer.add((start_row + row) * pitch);
+                        let dst1 = buffer.add((start_row + row + 1) * pitch);
+                        let dst2 = buffer.add((start_row + row + 2) * pitch);
+                        let dst3 = buffer.add((start_row + row + 3) * pitch);
+                        core::ptr::copy_nonoverlapping(first_row_ptr, dst0, row_bytes);
+                        core::ptr::copy_nonoverlapping(first_row_ptr, dst1, row_bytes);
+                        core::ptr::copy_nonoverlapping(first_row_ptr, dst2, row_bytes);
+                        core::ptr::copy_nonoverlapping(first_row_ptr, dst3, row_bytes);
+                        row += 4;
+                    }
+                    while row < num_rows {
+                        let dst_row_ptr = buffer.add((start_row + row) * pitch);
+                        core::ptr::copy_nonoverlapping(first_row_ptr, dst_row_ptr, row_bytes);
+                        row += 1;
+                    }
+                }
             }
         }
     } else {
@@ -445,6 +487,8 @@ pub fn copy_rect(
 /// 
 /// This is optimized for large screens (2.5K+) with:
 /// - Multi-core parallel row copying
+/// - REP MOVSQ for large contiguous copies
+/// - Non-temporal stores for very large framebuffers
 /// - Cache-aware batch sizing
 /// - Reduced memory barrier overhead
 /// 
@@ -475,11 +519,11 @@ pub fn scroll_up_fast(
     
     // Decide between single-core and parallel based on data size
     let workers = worker_count();
-    // For multi-core with sufficient data, use parallel copy
+    // Lower parallel threshold for better utilization on large displays
     let use_parallel = is_initialized() 
         && workers > 1 
         && total_bytes >= PARALLEL_SCROLL_THRESHOLD
-        && rows_to_copy >= workers * 32;  // At least 32 rows per worker for better efficiency
+        && rows_to_copy >= workers * 16;  // Reduced from 32 for better parallelization
     
     // Check if rows are contiguous (no padding)
     let contiguous = pitch == row_bytes;
@@ -513,13 +557,14 @@ pub fn scroll_up_fast(
         // BSP also participates in the work
         scroll_worker();
         
-        // Wait for all rows to complete (AP cores may still be working)
+        // Wait for all rows to complete with reduced backoff
         let mut backoff = 1u32;
         while SCROLL_ROWS_DONE.load(Ordering::Acquire) < rows_to_copy {
             for _ in 0..backoff {
                 core::hint::spin_loop();
             }
-            backoff = (backoff * 2).min(1024);
+            // Faster backoff growth for scroll (time-critical operation)
+            backoff = (backoff * 2).min(256);
         }
         
         // Clear work available flag
@@ -527,37 +572,82 @@ pub fn scroll_up_fast(
         WORK_TYPE.store(WorkType::None as u8, Ordering::Release);
     } else {
         // === Single-core optimized path ===
-        // Use chunked copy_nonoverlapping for better performance than memmove
-        // When scrolling up, src > dst, so we can safely copy in forward direction
-        // in chunks of scroll_rows to avoid overlap within each chunk
+        // Use REP MOVSQ or streaming stores based on copy size
         unsafe {
             let src = buffer.add(scroll_rows * pitch);
             
             if contiguous {
-                // Fast path: copy in chunks of scroll_rows (no overlap within chunk)
-                let chunk_bytes = scroll_rows * pitch;
-                let mut copied = 0;
-                
-                while copied + chunk_bytes <= total_bytes {
-                    core::ptr::copy_nonoverlapping(
-                        src.add(copied),
-                        buffer.add(copied),
-                        chunk_bytes,
-                    );
-                    copied += chunk_bytes;
-                }
-                
-                // Copy remaining bytes
-                if copied < total_bytes {
-                    core::ptr::copy_nonoverlapping(
-                        src.add(copied),
-                        buffer.add(copied),
-                        total_bytes - copied,
-                    );
+                // Fast path for contiguous rows
+                // Choose between REP MOVSQ and chunked copy based on size
+                if total_bytes >= 128 * 1024 {
+                    // Very large copy: use REP MOVSQ with chunking to avoid overlap
+                    let chunk_bytes = scroll_rows * pitch;
+                    let mut copied = 0;
+                    
+                    while copied + chunk_bytes <= total_bytes {
+                        super::memory::rep_movsq_copy(
+                            src.add(copied),
+                            buffer.add(copied),
+                            chunk_bytes,
+                        );
+                        copied += chunk_bytes;
+                    }
+                    
+                    // Copy remaining bytes
+                    if copied < total_bytes {
+                        super::memory::rep_movsq_copy(
+                            src.add(copied),
+                            buffer.add(copied),
+                            total_bytes - copied,
+                        );
+                    }
+                } else {
+                    // Medium-sized copy: chunked copy_nonoverlapping
+                    let chunk_bytes = scroll_rows * pitch;
+                    let mut copied = 0;
+                    
+                    while copied + chunk_bytes <= total_bytes {
+                        core::ptr::copy_nonoverlapping(
+                            src.add(copied),
+                            buffer.add(copied),
+                            chunk_bytes,
+                        );
+                        copied += chunk_bytes;
+                    }
+                    
+                    // Copy remaining bytes
+                    if copied < total_bytes {
+                        core::ptr::copy_nonoverlapping(
+                            src.add(copied),
+                            buffer.add(copied),
+                            total_bytes - copied,
+                        );
+                    }
                 }
             } else {
-                // Non-contiguous: use row-by-row copy with unrolling
+                // Non-contiguous: use row-by-row copy with 8x unrolling
                 let mut row = 0;
+                while row + 8 <= rows_to_copy {
+                    let offset0 = row * pitch;
+                    let offset1 = (row + 1) * pitch;
+                    let offset2 = (row + 2) * pitch;
+                    let offset3 = (row + 3) * pitch;
+                    let offset4 = (row + 4) * pitch;
+                    let offset5 = (row + 5) * pitch;
+                    let offset6 = (row + 6) * pitch;
+                    let offset7 = (row + 7) * pitch;
+                    
+                    core::ptr::copy_nonoverlapping(src.add(offset0), buffer.add(offset0), row_bytes);
+                    core::ptr::copy_nonoverlapping(src.add(offset1), buffer.add(offset1), row_bytes);
+                    core::ptr::copy_nonoverlapping(src.add(offset2), buffer.add(offset2), row_bytes);
+                    core::ptr::copy_nonoverlapping(src.add(offset3), buffer.add(offset3), row_bytes);
+                    core::ptr::copy_nonoverlapping(src.add(offset4), buffer.add(offset4), row_bytes);
+                    core::ptr::copy_nonoverlapping(src.add(offset5), buffer.add(offset5), row_bytes);
+                    core::ptr::copy_nonoverlapping(src.add(offset6), buffer.add(offset6), row_bytes);
+                    core::ptr::copy_nonoverlapping(src.add(offset7), buffer.add(offset7), row_bytes);
+                    row += 8;
+                }
+                // Handle remaining rows with 4x unroll
                 while row + 4 <= rows_to_copy {
                     let offset0 = row * pitch;
                     let offset1 = (row + 1) * pitch;

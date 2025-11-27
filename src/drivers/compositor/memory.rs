@@ -183,3 +183,159 @@ pub fn calculate_optimal_stripe_height(width: usize, height: usize, bpp: usize, 
     // Round down to multiple of 8 for SIMD alignment benefits
     (computed / 8) * 8
 }
+
+// =============================================================================
+// Ultra-fast Bulk Memory Copy (REP MOVSQ based)
+// =============================================================================
+
+/// Ultra-fast bulk memory copy using REP MOVSQ
+/// 
+/// For scroll operations with large contiguous blocks, REP MOVSQ is often
+/// the fastest approach as it enables hardware memory copy optimizations.
+/// Requires 8-byte aligned pointers for best performance.
+/// 
+/// # Safety
+/// Caller must ensure src and dst don't overlap, or dst < src for forward copy.
+#[inline(always)]
+pub unsafe fn rep_movsq_copy(src: *const u8, dst: *mut u8, len_bytes: usize) {
+    let qwords = len_bytes / 8;
+    let remainder = len_bytes % 8;
+    
+    if qwords > 0 {
+        // Use REP MOVSQ for bulk copy (8 bytes at a time)
+        core::arch::asm!(
+            "rep movsq",
+            inout("rcx") qwords => _,
+            inout("rsi") src => _,
+            inout("rdi") dst => _,
+            options(nostack, preserves_flags)
+        );
+    }
+    
+    // Handle remaining bytes (0-7)
+    if remainder > 0 {
+        let src_rem = src.add(qwords * 8);
+        let dst_rem = dst.add(qwords * 8);
+        core::ptr::copy_nonoverlapping(src_rem, dst_rem, remainder);
+    }
+}
+
+/// Ultra-fast bulk memory copy with non-temporal stores
+/// 
+/// Uses MOVNTQ streaming stores to bypass cache for very large copies.
+/// Best for framebuffer operations where we don't need data in cache.
+/// 
+/// Performance characteristics:
+/// - Avoids cache pollution for large copies
+/// - Better for write-combining memory regions (framebuffers)
+/// - Uses 64-byte batches (cache line aligned)
+#[inline(always)]
+pub unsafe fn streaming_copy(src: *const u8, dst: *mut u8, len_bytes: usize) {
+    // For smaller copies, use regular copy (cache is beneficial)
+    if len_bytes < 64 * 1024 {
+        rep_movsq_copy(src, dst, len_bytes);
+        return;
+    }
+    
+    let qwords = len_bytes / 8;
+    let remainder = len_bytes % 8;
+    
+    let src64 = src as *const u64;
+    let dst64 = dst as *mut u64;
+    
+    // Process 8 qwords (64 bytes) at a time for cache line efficiency
+    let batches = qwords / 8;
+    let batch_rem = qwords % 8;
+    
+    for batch in 0..batches {
+        let base = batch * 8;
+        
+        // Prefetch source data (non-temporal hint since we won't reuse)
+        if batch + 2 < batches {
+            core::arch::x86_64::_mm_prefetch::<{core::arch::x86_64::_MM_HINT_NTA}>(
+                src.add((base + 16) * 8) as *const i8
+            );
+        }
+        
+        // Read 8 qwords and write using non-temporal stores (MOVNTQ)
+        // This bypasses the cache to avoid polluting it with data we won't reuse
+        let dst_ptr = dst64.add(base) as *mut u64;
+        let src_ptr = src64.add(base) as *const u64;
+        
+        // Use inline asm for MOVNTQ (non-temporal 64-bit store)
+        let v0 = src_ptr.read();
+        let v1 = src_ptr.add(1).read();
+        let v2 = src_ptr.add(2).read();
+        let v3 = src_ptr.add(3).read();
+        let v4 = src_ptr.add(4).read();
+        let v5 = src_ptr.add(5).read();
+        let v6 = src_ptr.add(6).read();
+        let v7 = src_ptr.add(7).read();
+        
+        // MOVNTI: Non-temporal store hint for 64-bit integers
+        core::arch::asm!(
+            "movnti [{dst}], {v}",
+            dst = in(reg) dst_ptr,
+            v = in(reg) v0,
+            options(nostack, preserves_flags)
+        );
+        core::arch::asm!(
+            "movnti [{dst}], {v}",
+            dst = in(reg) dst_ptr.add(1),
+            v = in(reg) v1,
+            options(nostack, preserves_flags)
+        );
+        core::arch::asm!(
+            "movnti [{dst}], {v}",
+            dst = in(reg) dst_ptr.add(2),
+            v = in(reg) v2,
+            options(nostack, preserves_flags)
+        );
+        core::arch::asm!(
+            "movnti [{dst}], {v}",
+            dst = in(reg) dst_ptr.add(3),
+            v = in(reg) v3,
+            options(nostack, preserves_flags)
+        );
+        core::arch::asm!(
+            "movnti [{dst}], {v}",
+            dst = in(reg) dst_ptr.add(4),
+            v = in(reg) v4,
+            options(nostack, preserves_flags)
+        );
+        core::arch::asm!(
+            "movnti [{dst}], {v}",
+            dst = in(reg) dst_ptr.add(5),
+            v = in(reg) v5,
+            options(nostack, preserves_flags)
+        );
+        core::arch::asm!(
+            "movnti [{dst}], {v}",
+            dst = in(reg) dst_ptr.add(6),
+            v = in(reg) v6,
+            options(nostack, preserves_flags)
+        );
+        core::arch::asm!(
+            "movnti [{dst}], {v}",
+            dst = in(reg) dst_ptr.add(7),
+            v = in(reg) v7,
+            options(nostack, preserves_flags)
+        );
+    }
+    
+    // Remaining qwords with regular stores
+    let base = batches * 8;
+    for i in 0..batch_rem {
+        dst64.add(base + i).write(src64.add(base + i).read());
+    }
+    
+    // Remaining bytes
+    if remainder > 0 {
+        let src_rem = src.add(qwords * 8);
+        let dst_rem = dst.add(qwords * 8);
+        core::ptr::copy_nonoverlapping(src_rem, dst_rem, remainder);
+    }
+    
+    // SFENCE: Ensure all non-temporal stores are globally visible
+    core::arch::asm!("sfence", options(nostack, preserves_flags));
+}

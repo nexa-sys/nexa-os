@@ -172,10 +172,12 @@ pub fn worker_compose(
 /// 
 /// This is the core composition function that processes one horizontal stripe.
 /// Optimized with:
+/// - Fast path for single opaque layer (common case)
 /// - Layer pre-filtering with cached intersection data
 /// - Aggressive prefetching (2 cache lines ahead)
 /// - Reduced branching via pre-computed row ranges
 /// - Cache-aligned processing where possible
+/// - Loop unrolling for multi-row processing
 pub(crate) fn compose_stripe(
     dst_buffer: *mut u8,
     dst_pitch: usize,
@@ -195,6 +197,8 @@ pub(crate) fn compose_stripe(
         actual_width: usize,
         src_pitch: usize,      // Cache buffer pitch
         buffer_addr: usize,    // Cache buffer address as usize
+        is_opaque: bool,       // Cache blend mode check
+        is_full_width: bool,   // Cache full-width check
     }
     
     let mut active_layers: [Option<LayerCache>; MAX_LAYERS] = [None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None];
@@ -218,6 +222,11 @@ pub(crate) fn compose_stripe(
             }
             let actual_width = layer_width.min(screen_width - layer_x);
             
+            // Pre-compute blend mode flags
+            let is_opaque = matches!(layer.blend_mode, BlendMode::Opaque) 
+                || (matches!(layer.blend_mode, BlendMode::Alpha) && layer.alpha == 255);
+            let is_full_width = layer_x == 0 && actual_width == screen_width;
+            
             active_layers[active_count] = Some(LayerCache {
                 layer,
                 start_y: layer_start_y,
@@ -226,6 +235,8 @@ pub(crate) fn compose_stripe(
                 actual_width,
                 src_pitch: layer.buffer_pitch as usize,
                 buffer_addr: layer.buffer_addr as usize,
+                is_opaque,
+                is_full_width,
             });
             active_count += 1;
         }
@@ -235,18 +246,83 @@ pub(crate) fn compose_stripe(
         return;
     }
     
+    // === FAST PATH: Single full-width opaque layer ===
+    // This is the common case for terminal scrolling and full-screen updates
+    if active_count == 1 {
+        if let Some(ref cache) = active_layers[0] {
+            if cache.is_opaque && cache.is_full_width {
+                // Intersection of stripe and layer bounds
+                let copy_start = start_row.max(cache.start_y);
+                let copy_end = end_row.min(cache.end_y);
+                
+                if copy_start < copy_end {
+                    let total_rows = copy_end - copy_start;
+                    let row_bytes = cache.actual_width * dst_bpp;
+                    
+                    // Large bulk copy using REP MOVSQ when beneficial
+                    if row_bytes >= 4096 && total_rows >= 4 {
+                        unsafe {
+                            let mut row = copy_start;
+                            // Process 4 rows at a time for better throughput
+                            while row + 4 <= copy_end {
+                                let src_row0 = row - cache.start_y;
+                                for i in 0..4 {
+                                    let src_offset = (src_row0 + i) * cache.src_pitch;
+                                    let dst_offset = (row + i) * dst_pitch;
+                                    super::memory::rep_movsq_copy(
+                                        (cache.buffer_addr + src_offset) as *const u8,
+                                        dst_buffer.add(dst_offset),
+                                        row_bytes,
+                                    );
+                                }
+                                row += 4;
+                            }
+                            // Remaining rows
+                            while row < copy_end {
+                                let src_row = row - cache.start_y;
+                                let src_offset = src_row * cache.src_pitch;
+                                let dst_offset = row * dst_pitch;
+                                super::memory::rep_movsq_copy(
+                                    (cache.buffer_addr + src_offset) as *const u8,
+                                    dst_buffer.add(dst_offset),
+                                    row_bytes,
+                                );
+                                row += 1;
+                            }
+                        }
+                    } else {
+                        // Standard copy for smaller regions
+                        unsafe {
+                            for row in copy_start..copy_end {
+                                let src_row = row - cache.start_y;
+                                let src_offset = src_row * cache.src_pitch;
+                                let dst_offset = row * dst_pitch;
+                                core::ptr::copy_nonoverlapping(
+                                    (cache.buffer_addr + src_offset) as *const u8,
+                                    dst_buffer.add(dst_offset),
+                                    row_bytes,
+                                );
+                            }
+                        }
+                    }
+                }
+                return;
+            }
+        }
+    }
+    
+    // === GENERAL PATH: Multiple layers or complex blend modes ===
     // Pre-compute row stride for destination buffer
     let dst_row_stride = dst_pitch;
-    let prefetch_ahead = 2; // Prefetch 2 rows ahead for better memory latency hiding
     
     // For each row in our stripe
     for row in start_row..end_row {
         let row_offset = row * dst_row_stride;
         
-        // Aggressive prefetching: 2 rows ahead for destination
-        if row + prefetch_ahead < end_row {
+        // Prefetch destination 2 rows ahead
+        if row + 2 < end_row {
             unsafe {
-                let prefetch_offset = (row + prefetch_ahead) * dst_row_stride;
+                let prefetch_offset = (row + 2) * dst_row_stride;
                 core::arch::x86_64::_mm_prefetch::<{core::arch::x86_64::_MM_HINT_T0}>(
                     dst_buffer.add(prefetch_offset) as *const i8
                 );
@@ -274,13 +350,12 @@ pub(crate) fn compose_stripe(
                 let src_row_start = cache.buffer_addr + src_row_offset;
                 let actual_width = cache.actual_width;
                 
-                // Aggressive prefetching: source data and 2 rows ahead
+                // Prefetch source data
                 unsafe {
-                    // Prefetch current source row (T0 = L1 cache)
                     core::arch::x86_64::_mm_prefetch::<{core::arch::x86_64::_MM_HINT_T0}>(
                         src_row_start as *const i8
                     );
-                    // Prefetch 2 source rows ahead (T1 = L2 cache) for better latency hiding
+                    // Prefetch 2 source rows ahead for better latency hiding
                     if row + 2 < cache.end_y {
                         let far_src = src_row_start + src_pitch * 2;
                         core::arch::x86_64::_mm_prefetch::<{core::arch::x86_64::_MM_HINT_T1}>(
@@ -289,57 +364,51 @@ pub(crate) fn compose_stripe(
                     }
                 }
                 
-                // Composite based on blend mode (access via cache.layer)
-                match cache.layer.blend_mode {
-                    BlendMode::Opaque => {
-                        // Direct copy (fast path)
-                        unsafe {
-                            core::ptr::copy_nonoverlapping(
-                                src_row_start as *const u8,
-                                dst_row_start,
-                                actual_width * dst_bpp,
-                            );
-                        }
+                // Composite based on blend mode (use cached is_opaque)
+                if cache.is_opaque {
+                    // Direct copy (fast path)
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(
+                            src_row_start as *const u8,
+                            dst_row_start,
+                            actual_width * dst_bpp,
+                        );
                     }
-                    BlendMode::Alpha => {
-                        // Alpha blending
-                        let alpha = cache.layer.alpha;
-                        if alpha == 255 {
-                            // Full opacity - same as opaque
-                            unsafe {
-                                core::ptr::copy_nonoverlapping(
+                } else {
+                    match cache.layer.blend_mode {
+                        BlendMode::Alpha => {
+                            let alpha = cache.layer.alpha;
+                            if alpha > 0 {
+                                blend_row_alpha(
                                     src_row_start as *const u8,
                                     dst_row_start,
-                                    actual_width * dst_bpp,
+                                    actual_width,
+                                    dst_bpp,
+                                    alpha,
                                 );
                             }
-                        } else if alpha > 0 {
-                            // Actual alpha blending
-                            blend_row_alpha(
+                            // alpha == 0 -> skip entirely (handled by should_render)
+                        }
+                        BlendMode::Additive => {
+                            blend_row_additive(
                                 src_row_start as *const u8,
                                 dst_row_start,
                                 actual_width,
                                 dst_bpp,
-                                alpha,
                             );
                         }
-                        // alpha == 0 -> skip entirely
-                    }
-                    BlendMode::Additive => {
-                        blend_row_additive(
-                            src_row_start as *const u8,
-                            dst_row_start,
-                            actual_width,
-                            dst_bpp,
-                        );
-                    }
-                    BlendMode::Multiply => {
-                        blend_row_multiply(
-                            src_row_start as *const u8,
-                            dst_row_start,
-                            actual_width,
-                            dst_bpp,
-                        );
+                        BlendMode::Multiply => {
+                            blend_row_multiply(
+                                src_row_start as *const u8,
+                                dst_row_start,
+                                actual_width,
+                                dst_bpp,
+                            );
+                        }
+                        BlendMode::Opaque => {
+                            // Already handled by is_opaque check above
+                            unreachable!()
+                        }
                     }
                 }
             }
@@ -355,9 +424,10 @@ pub(crate) fn compose_stripe(
 /// 
 /// GPU-inspired optimizations for 2.5K+ displays:
 /// - Larger batch sizes tuned for L2 cache (256KB)
-/// - Bulk memory copy for contiguous rows
+/// - Bulk memory copy for contiguous rows using REP MOVSQ
 /// - Prefetching to hide memory latency
 /// - Adaptive batch sizing based on remaining work
+/// - Reduced atomic operations in hot path
 /// 
 /// Memory safety for scroll-up (src > dst):
 /// When scrolling up, src_base = buffer + scroll_rows * pitch, dst_base = buffer.
@@ -365,11 +435,13 @@ pub(crate) fn compose_stripe(
 /// Since scroll_rows >= 1 and we copy row_bytes <= pitch per row,
 /// individual row copies NEVER overlap.
 pub(crate) fn scroll_worker() -> usize {
+    // Load all parameters once at start (reduces atomic ops in hot loop)
     let src_base = SCROLL_SRC_ADDR.load(Ordering::Acquire) as *const u8;
     let dst_base = SCROLL_DST_ADDR.load(Ordering::Acquire) as *mut u8;
     let row_bytes = SCROLL_ROW_BYTES.load(Ordering::Acquire);
     let pitch = SCROLL_PITCH.load(Ordering::Acquire);
     let scroll_distance = SCROLL_DISTANCE.load(Ordering::Acquire);
+    let total_rows = SCROLL_TOTAL_ROWS.load(Ordering::Acquire);
     
     // For scroll_distance == 0, something is wrong - use safe path
     if scroll_distance == 0 {
@@ -379,14 +451,16 @@ pub(crate) fn scroll_worker() -> usize {
     // Optimized batch size for 2.5K displays:
     // 2560 * 4 = 10240 bytes/row
     // L2 cache = 256KB = ~25 rows
-    // Use larger batches for better throughput
+    // Use larger batches for better throughput, but cap at scroll_distance for safety
     let rows_per_256kb = (256 * 1024) / pitch.max(1);
-    let batch_size = rows_per_256kb.max(32).min(128);
+    let batch_size = rows_per_256kb.max(32).min(256).min(scroll_distance);
     
     let mut rows_done = 0;
     let contiguous = pitch == row_bytes;
+    // Use REP MOVSQ for large contiguous copies (threshold: ~32KB)
+    let use_rep_movsq = contiguous && pitch >= 4096;
     
-    while let Some((start, end)) = claim_scroll_rows(batch_size) {
+    while let Some((start, end)) = claim_scroll_rows_fast(batch_size, total_rows) {
         let batch_rows = end - start;
         
         if contiguous && batch_rows <= scroll_distance {
@@ -394,20 +468,30 @@ pub(crate) fn scroll_worker() -> usize {
             let src_offset = start * pitch;
             let total_bytes = batch_rows * pitch;
             
-            // Prefetch next batch
             unsafe {
-                if end < SCROLL_TOTAL_ROWS.load(Ordering::Relaxed) {
-                    let prefetch_offset = end * pitch;
+                // Prefetch next batch (2 batches ahead for latency hiding)
+                let prefetch_row = end + batch_size;
+                if prefetch_row < total_rows {
+                    let prefetch_offset = prefetch_row * pitch;
                     core::arch::x86_64::_mm_prefetch::<{core::arch::x86_64::_MM_HINT_T0}>(
                         src_base.add(prefetch_offset) as *const i8
                     );
                 }
                 
-                core::ptr::copy_nonoverlapping(
-                    src_base.add(src_offset),
-                    dst_base.add(src_offset),
-                    total_bytes,
-                );
+                if use_rep_movsq && total_bytes >= 32768 {
+                    // Use REP MOVSQ for very large copies
+                    super::memory::rep_movsq_copy(
+                        src_base.add(src_offset),
+                        dst_base.add(src_offset),
+                        total_bytes,
+                    );
+                } else {
+                    core::ptr::copy_nonoverlapping(
+                        src_base.add(src_offset),
+                        dst_base.add(src_offset),
+                        total_bytes,
+                    );
+                }
             }
         } else if contiguous {
             // Large batch exceeds scroll_distance, split into safe chunks
@@ -677,6 +761,43 @@ pub(crate) fn claim_fill_rows(batch_size: usize, total: usize) -> Option<(usize,
             return Some((current, end));
         }
         core::hint::spin_loop();
+    }
+}
+
+/// Fast claim for scroll rows - reduced overhead version
+/// 
+/// Optimized for scroll operations where we already have total_rows.
+/// Avoids repeated atomic load of total rows.
+#[inline(always)]
+pub(crate) fn claim_scroll_rows_fast(batch_size: usize, total: usize) -> Option<(usize, usize)> {
+    let mut attempts = 0;
+    loop {
+        let current = SCROLL_NEXT_ROW.load(Ordering::Acquire);
+        if current >= total {
+            return None;
+        }
+        
+        // Adaptive batch size: claim more when lots of work remains
+        let remaining = total - current;
+        let adaptive_batch = if remaining > batch_size * 4 {
+            batch_size * 2  // Double batch when plenty of work
+        } else {
+            batch_size
+        };
+        
+        let end = (current + adaptive_batch).min(total);
+        if SCROLL_NEXT_ROW
+            .compare_exchange_weak(current, end, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+        {
+            return Some((current, end));
+        }
+        
+        // Minimal backoff - scroll is time-critical
+        attempts += 1;
+        if attempts > 3 {
+            core::hint::spin_loop();
+        }
     }
 }
 
