@@ -135,10 +135,17 @@ const SYS_EXIT: u64 = 60;
 const SYS_WAIT4: u64 = 61;
 const SYS_FCNTL: u64 = 72;
 const SYS_FUTEX: u64 = 98;
+const SYS_ARCH_PRCTL: u64 = 158;
 const SYS_GETTID: u64 = 186;
 const SYS_SET_TID_ADDRESS: u64 = 218;
 const SYS_SET_ROBUST_LIST: u64 = 273;
 const SYS_GET_ROBUST_LIST: u64 = 274;
+
+// arch_prctl codes
+pub const ARCH_SET_GS: i32 = 0x1001;
+pub const ARCH_SET_FS: i32 = 0x1002;
+pub const ARCH_GET_FS: i32 = 0x1003;
+pub const ARCH_GET_GS: i32 = 0x1004;
 
 #[no_mangle]
 pub extern "C" fn pipe(pipefd: *mut i32) -> i32 {
@@ -278,6 +285,7 @@ impl Default for UefiHidInputDescriptor {
 
 pub(crate) const EINVAL: i32 = 22;
 pub(crate) const ENOENT: i32 = 2;
+pub(crate) const ESRCH: i32 = 3;
 pub(crate) const EAGAIN: i32 = 11;
 pub(crate) const ENOMEM: i32 = 12;
 pub(crate) const ENOSYS: i32 = 38;
@@ -810,6 +818,12 @@ pub extern "C" fn getpid() -> i32 {
 #[no_mangle]
 pub extern "C" fn getppid() -> i32 {
     translate_ret_i32(syscall0(SYS_GETPPID))
+}
+
+/// arch_prctl - Set/get architecture-specific thread state (TLS)
+#[no_mangle]
+pub unsafe extern "C" fn arch_prctl(code: i32, addr: u64) -> i32 {
+    translate_ret_i32(syscall2(SYS_ARCH_PRCTL, code as u64, addr))
 }
 
 #[no_mangle]

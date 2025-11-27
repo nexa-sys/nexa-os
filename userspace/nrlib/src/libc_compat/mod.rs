@@ -43,6 +43,7 @@ pub mod elf;
 pub mod rtld;
 pub mod symbol;
 pub mod reloc;
+pub mod loader;
 pub mod dl;
 
 // Re-export all public items from submodules

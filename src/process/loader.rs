@@ -244,6 +244,7 @@ impl Process {
             user_rflags: 0x202,
             exit_code: 0,
             kernel_stack: 0, // Initialize kernel stack pointer
+            fs_base: 0, // Initialize TLS base (will be set by CLONE_SETTLS or arch_prctl)
         })
     }
 
@@ -397,6 +398,7 @@ impl Process {
                         }
                         ptr
                     },
+                    fs_base: 0, // Initialize TLS base
                 });
             } else {
                 kwarn!(
@@ -468,6 +470,7 @@ impl Process {
                 }
                 ptr
             },
+            fs_base: 0, // Initialize TLS base
         })
     }
 }

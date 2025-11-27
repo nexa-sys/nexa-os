@@ -61,7 +61,7 @@ use network::{bind, connect, recvfrom, sendto, setsockopt, socket, socketpair};
 use process::{execve, exit, fork, getppid, kill, wait4};
 use signal::{sigaction, sigprocmask};
 use system::{chroot, mount, pivot_root, reboot, runlevel, shutdown, umount};
-use thread::{clone, futex, gettid, set_tid_address, set_robust_list, get_robust_list};
+use thread::{clone, futex, gettid, set_tid_address, set_robust_list, get_robust_list, arch_prctl};
 use time::{clock_gettime, nanosleep, sched_yield};
 use uefi::{
     uefi_get_block_info, uefi_get_counts, uefi_get_fb_info, uefi_get_hid_info, uefi_get_net_info,
@@ -179,6 +179,7 @@ pub extern "C" fn syscall_dispatch(
         SYS_SET_TID_ADDRESS => set_tid_address(arg1),
         SYS_SET_ROBUST_LIST => set_robust_list(arg1, arg2 as usize),
         SYS_GET_ROBUST_LIST => get_robust_list(arg1, arg2, arg3),
+        SYS_ARCH_PRCTL => arch_prctl(arg1 as i32, arg2),
         SYS_SCHED_YIELD => sched_yield(),
         SYS_CLOCK_GETTIME => clock_gettime(arg1 as i32, arg2 as *mut TimeSpec),
         SYS_NANOSLEEP => nanosleep(arg1 as *const TimeSpec, arg2 as *mut TimeSpec),

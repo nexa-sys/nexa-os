@@ -122,6 +122,7 @@ pub struct Process {
     pub user_rflags: u64, // Saved user-mode RFLAGS for syscall return
     pub exit_code: i32, // Last exit code reported by this process (if zombie)
     pub kernel_stack: u64, // Pointer to kernel stack allocation (bottom)
+    pub fs_base: u64, // FS segment base for TLS (Thread Local Storage)
 }
 
 /// Legacy global PID counter (kept for reference, use pid_tree::allocate_pid instead)

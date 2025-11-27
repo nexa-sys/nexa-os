@@ -99,16 +99,6 @@ pub fn mmap(
     // Check for anonymous mapping
     let is_anonymous = (flags & MAP_ANONYMOUS) != 0;
 
-    // For now, we only support anonymous mappings
-    if !is_anonymous {
-        // File-backed mappings would require:
-        // 1. Validating the file descriptor
-        // 2. Reading file contents into the mapped region
-        // 3. Tracking the mapping for synchronization
-        kwarn!("[mmap] File-backed mappings not fully implemented, treating as anonymous");
-        // Fall through to anonymous handling for now
-    }
-
     // Determine mapping address
     let map_addr = if (flags & MAP_FIXED) != 0 {
         // MAP_FIXED: Use the exact address specified
@@ -146,20 +136,25 @@ pub fn mmap(
         return MAP_FAILED;
     }
 
-    // For anonymous mappings, zero the memory
-    // In a real implementation, this would involve:
-    // 1. Allocating physical pages
-    // 2. Creating page table entries with appropriate permissions
-    // 3. Optionally pre-faulting pages (MAP_POPULATE)
-    
-    // For now, we rely on the existing page table setup
-    // The memory should already be accessible in the user region
-    
-    // Zero the memory if it's a new anonymous mapping
+    // Handle the mapping based on whether it's anonymous or file-backed
     if is_anonymous {
+        // Zero the memory for anonymous mappings
         unsafe {
-            // Safety: We've validated the address and length
-            // In a real kernel, we'd check page table permissions
+            core::ptr::write_bytes(map_addr as *mut u8, 0, aligned_length as usize);
+        }
+    } else if fd >= 0 {
+        // File-backed mapping: read file contents into the mapped region
+        ktrace!("[mmap] File-backed mapping: fd={}, offset={:#x}", fd, offset);
+        
+        // Read file contents into the mapped region
+        if let Err(e) = read_file_into_mapping(fd as u64, offset, map_addr, aligned_length) {
+            kerror!("[mmap] Failed to read file into mapping: {}", e);
+            // Still return success - the mapping exists, just empty
+            // In a real implementation, we'd handle page faults lazily
+        }
+    } else {
+        // Anonymous mapping with invalid fd - just zero the memory
+        unsafe {
             core::ptr::write_bytes(map_addr as *mut u8, 0, aligned_length as usize);
         }
     }
@@ -171,6 +166,103 @@ pub fn mmap(
 
     posix::set_errno(0);
     map_addr
+}
+
+/// Read file contents into a mapped memory region
+/// 
+/// # Arguments
+/// * `fd` - File descriptor
+/// * `offset` - Offset in file to start reading
+/// * `dest_addr` - Destination address in memory
+/// * `length` - Number of bytes to read
+fn read_file_into_mapping(fd: u64, offset: u64, dest_addr: u64, length: u64) -> Result<usize, &'static str> {
+    use super::types::{FD_BASE, MAX_OPEN_FILES, FileBacking, get_file_handle};
+    
+    // Validate file descriptor
+    if fd < FD_BASE {
+        return Err("Invalid file descriptor");
+    }
+    
+    let idx = (fd - FD_BASE) as usize;
+    if idx >= MAX_OPEN_FILES {
+        return Err("Invalid file descriptor");
+    }
+    
+    // Get file handle and read content
+    unsafe {
+        let handle = match get_file_handle(idx) {
+            Some(h) => h,
+            None => return Err("File not open"),
+        };
+        
+        // Determine file size
+        let file_size = handle.metadata.size as u64;
+        
+        // Calculate how much to read
+        let read_start = offset.min(file_size);
+        let available = file_size.saturating_sub(read_start);
+        let to_read = length.min(available) as usize;
+        
+        if to_read == 0 {
+            // Nothing to read, just zero the memory
+            core::ptr::write_bytes(dest_addr as *mut u8, 0, length as usize);
+            return Ok(0);
+        }
+        
+        // Read file content based on backing type
+        match &handle.backing {
+            FileBacking::Inline(data) => {
+                let start = read_start as usize;
+                let end = (read_start as usize + to_read).min(data.len());
+                if start < data.len() {
+                    let copy_len = end - start;
+                    core::ptr::copy_nonoverlapping(
+                        data[start..].as_ptr(),
+                        dest_addr as *mut u8,
+                        copy_len,
+                    );
+                    // Zero remaining
+                    if copy_len < length as usize {
+                        core::ptr::write_bytes(
+                            (dest_addr + copy_len as u64) as *mut u8,
+                            0,
+                            length as usize - copy_len,
+                        );
+                    }
+                    return Ok(copy_len);
+                }
+            }
+            FileBacking::Ext2(file_ref) => {
+                // Read from ext2 file
+                let dest_slice = core::slice::from_raw_parts_mut(
+                    dest_addr as *mut u8,
+                    to_read,
+                );
+                let bytes_read = file_ref.read_at(read_start as usize, dest_slice);
+                
+                // Zero remaining
+                if bytes_read < length as usize {
+                    core::ptr::write_bytes(
+                        (dest_addr + bytes_read as u64) as *mut u8,
+                        0,
+                        length as usize - bytes_read,
+                    );
+                }
+                return Ok(bytes_read);
+            }
+            _ => {
+                // Other backing types (sockets, etc.) - just zero the memory
+                core::ptr::write_bytes(dest_addr as *mut u8, 0, length as usize);
+                return Err("Unsupported file backing type for mmap");
+            }
+        }
+    }
+    
+    // Zero the memory if we couldn't read
+    unsafe {
+        core::ptr::write_bytes(dest_addr as *mut u8, 0, length as usize);
+    }
+    Ok(0)
 }
 
 /// Allocate a new mmap address using bump allocator

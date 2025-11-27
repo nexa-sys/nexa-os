@@ -384,6 +384,7 @@ enum ScheduleDecision {
         user_rflags: u64,
         is_voluntary: bool,
         kernel_stack: u64,
+        fs_base: u64,
     },
 }
 
@@ -503,7 +504,7 @@ fn transition_current_to_ready(
 /// Extract process info for context switch
 fn extract_next_process_info(
     entry: &mut super::types::ProcessEntry,
-) -> (bool, Pid, u64, u64, u64, u64, crate::process::Context, u64, crate::process::Process) {
+) -> (bool, Pid, u64, u64, u64, u64, crate::process::Context, u64, u64, crate::process::Process) {
     entry.time_slice = DEFAULT_TIME_SLICE;
     entry.process.state = ProcessState::Running;
     
@@ -519,6 +520,7 @@ fn extract_next_process_info(
         entry.process.user_rflags,
         entry.process.context,
         entry.process.kernel_stack,
+        entry.process.fs_base,
         entry.process, // Process is Copy
     )
 }
@@ -612,6 +614,7 @@ unsafe fn execute_context_switch(
     user_rflags: u64,
     is_voluntary: bool,
     kernel_stack: u64,
+    fs_base: u64,
 ) {
     // Update kernel stack in GS
     if kernel_stack != 0 {
@@ -619,6 +622,12 @@ unsafe fn execute_context_switch(
         gs_data_ptr
             .add(crate::interrupts::GS_SLOT_KERNEL_RSP)
             .write(kernel_stack + crate::process::KERNEL_STACK_SIZE as u64);
+    }
+
+    // Restore FS base for TLS if set
+    if fs_base != 0 {
+        use x86_64::registers::model_specific::Msr;
+        Msr::new(crate::safety::x86::MSR_IA32_FS_BASE).write(fs_base);
     }
 
     // Update statistics
@@ -663,11 +672,11 @@ fn do_schedule_internal(from_interrupt: bool) {
         Some(ScheduleDecision::FirstRun(process)) => execute_first_run(process),
         Some(ScheduleDecision::Switch {
             old_context_ptr, next_context, next_cr3,
-            user_rip, user_rsp, user_rflags, is_voluntary, kernel_stack,
+            user_rip, user_rsp, user_rflags, is_voluntary, kernel_stack, fs_base,
         }) => unsafe {
             execute_context_switch(
                 old_context_ptr, &next_context, next_cr3,
-                user_rip, user_rsp, user_rflags, is_voluntary, kernel_stack,
+                user_rip, user_rsp, user_rflags, is_voluntary, kernel_stack, fs_base,
             );
         },
         None => {
@@ -701,7 +710,7 @@ fn compute_schedule_decision(from_interrupt: bool) -> Option<ScheduleDecision> {
     }
 
     let entry = table[next_idx].as_mut().expect("Process entry vanished");
-    let (first_run, next_pid, next_cr3, user_rip, user_rsp, user_rflags, next_context, kernel_stack, process_copy) =
+    let (first_run, next_pid, next_cr3, user_rip, user_rsp, user_rflags, next_context, kernel_stack, fs_base, process_copy) =
         extract_next_process_info(entry);
 
     *current_lock = Some(next_pid);
@@ -722,5 +731,6 @@ fn compute_schedule_decision(from_interrupt: bool) -> Option<ScheduleDecision> {
         user_rflags,
         is_voluntary,
         kernel_stack,
+        fs_base,
     })
 }

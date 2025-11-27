@@ -160,23 +160,199 @@ unsafe fn do_dlopen(filename: *const i8, flags: c_int) -> *mut c_void {
         }
     };
 
-    // Resolve the library path
-    let resolved_path: [u8; MAX_LIB_PATH] = resolve_library_path(path);
+    // Resolve the library path - search standard library paths if not absolute
+    let maybe_resolved: Option<[u8; MAX_LIB_PATH]> = if is_absolute_path(path) {
+        let mut buf = [0u8; MAX_LIB_PATH];
+        let len = core::cmp::min(path.len(), MAX_LIB_PATH - 1);
+        buf[..len].copy_from_slice(&path[..len]);
+        Some(buf)
+    } else {
+        super::loader::search_library(path)
+    };
 
-    // Try to load the library from filesystem
-    // This is a simplified implementation - in a real system, we would:
-    // 1. Open the file
-    // 2. Read and validate the ELF header
-    // 3. Map the segments into memory
-    // 4. Parse the dynamic section
-    // 5. Process relocations
+    let resolved_path: [u8; MAX_LIB_PATH] = match maybe_resolved {
+        Some(p) => p,
+        None => {
+            set_dlerror_from_error(DlError::FileNotFound, Some(path));
+            return ptr::null_mut();
+        }
+    };
 
-    // For now, since NexaOS doesn't have full mmap support for files,
-    // we'll implement a stub that returns an error
-    // TODO: Implement actual file loading when mmap is available
+    // Load the ELF file
+    let path_len = resolved_path.iter().position(|&c| c == 0).unwrap_or(resolved_path.len());
+    let load_result = match super::loader::load_elf_file(&resolved_path[..path_len]) {
+        Ok(result) => result,
+        Err(load_err) => {
+            set_dlerror(load_err.as_bytes());
+            return ptr::null_mut();
+        }
+    };
 
-    set_dlerror_from_error(DlError::LoadFailed, Some(b"file loading not yet implemented"));
-    ptr::null_mut()
+    // Initialize the library entry
+    let lib = &mut mgr.libraries[slot_idx];
+    lib.state = LibraryState::Loading;
+    lib.set_path(&resolved_path[..path_len]);
+    lib.base_addr = load_result.base_addr;
+    lib.mem_size = load_result.total_size;
+    lib.load_bias = load_result.load_bias;
+    lib.entry = load_result.entry;
+    lib.phdr_addr = load_result.phdr_addr;
+    lib.phnum = load_result.phnum;
+    lib.dynamic_addr = load_result.dynamic_addr;
+    lib.dynamic_count = load_result.dynamic_count;
+    lib.refcount = 1;
+    lib.flags = flags;
+    lib.index = slot_idx;
+
+    // Parse the dynamic section
+    if load_result.dynamic_addr != 0 {
+        parse_dynamic_section(lib);
+    }
+
+    // Process DT_NEEDED dependencies (recursive loading)
+    if !load_dependencies(lib, flags) {
+        // Failed to load dependencies - clean up
+        lib.state = LibraryState::Free;
+        set_dlerror_from_error(DlError::DependencyFailed, None);
+        return ptr::null_mut();
+    }
+
+    // Process relocations
+    if process_relocations_for_lib(lib).is_err() {
+        lib.state = LibraryState::Free;
+        set_dlerror_from_error(DlError::RelocationFailed, None);
+        return ptr::null_mut();
+    }
+
+    // Initialize PLT/GOT for lazy binding
+    init_plt_got(lib);
+
+    lib.state = LibraryState::Loaded;
+    mgr.count = mgr.count.max(slot_idx + 1);
+
+    // Call initialization functions
+    if lib.dyn_info.init != 0 || lib.dyn_info.init_array != 0 {
+        call_init_functions(lib);
+    }
+
+    lib.state = LibraryState::Initialized;
+
+    slot_idx as *mut c_void
+}
+
+/// Parse the dynamic section of a loaded library
+unsafe fn parse_dynamic_section(lib: &mut LoadedLibrary) {
+    if lib.dynamic_addr == 0 || lib.dynamic_count == 0 {
+        return;
+    }
+
+    let dyn_entries = core::slice::from_raw_parts(
+        lib.dynamic_addr as *const Elf64Dyn,
+        lib.dynamic_count,
+    );
+
+    for entry in dyn_entries {
+        if entry.d_tag == DT_NULL {
+            break;
+        }
+
+        match entry.d_tag {
+            DT_STRTAB => lib.dyn_info.strtab = entry.d_val,
+            DT_STRSZ => lib.dyn_info.strsz = entry.d_val,
+            DT_SYMTAB => lib.dyn_info.symtab = entry.d_val,
+            DT_SYMENT => lib.dyn_info.syment = entry.d_val,
+            DT_RELA => lib.dyn_info.rela = entry.d_val,
+            DT_RELASZ => lib.dyn_info.relasz = entry.d_val,
+            DT_RELAENT => lib.dyn_info.relaent = entry.d_val,
+            DT_REL => lib.dyn_info.rel = entry.d_val,
+            DT_RELSZ => lib.dyn_info.relsz = entry.d_val,
+            DT_RELENT => lib.dyn_info.relent = entry.d_val,
+            DT_JMPREL => lib.dyn_info.jmprel = entry.d_val,
+            DT_PLTRELSZ => lib.dyn_info.pltrelsz = entry.d_val,
+            DT_PLTREL => lib.dyn_info.pltrel = entry.d_val,
+            DT_PLTGOT => lib.dyn_info.pltgot = entry.d_val,
+            DT_INIT => lib.dyn_info.init = entry.d_val,
+            DT_FINI => lib.dyn_info.fini = entry.d_val,
+            DT_INIT_ARRAY => lib.dyn_info.init_array = entry.d_val,
+            DT_INIT_ARRAYSZ => lib.dyn_info.init_arraysz = entry.d_val,
+            DT_FINI_ARRAY => lib.dyn_info.fini_array = entry.d_val,
+            DT_FINI_ARRAYSZ => lib.dyn_info.fini_arraysz = entry.d_val,
+            DT_HASH => lib.dyn_info.hash = entry.d_val,
+            DT_GNU_HASH => lib.dyn_info.gnu_hash = entry.d_val,
+            DT_FLAGS => lib.dyn_info.flags = entry.d_val,
+            DT_FLAGS_1 => lib.dyn_info.flags_1 = entry.d_val,
+            DT_RELACOUNT => lib.dyn_info.relacount = entry.d_val,
+            DT_RELCOUNT => lib.dyn_info.relcount = entry.d_val,
+            DT_VERSYM => lib.dyn_info.versym = entry.d_val,
+            DT_VERNEED => lib.dyn_info.verneed = entry.d_val,
+            DT_VERNEEDNUM => lib.dyn_info.verneednum = entry.d_val,
+            DT_SONAME => lib.soname_offset = entry.d_val as u32,
+            DT_RPATH => lib.dyn_info.rpath = entry.d_val,
+            DT_RUNPATH => lib.dyn_info.runpath = entry.d_val,
+            DT_NEEDED => {
+                // Record dependency
+                if lib.needed_count < MAX_NEEDED {
+                    lib.needed[lib.needed_count] = entry.d_val as u32;
+                    lib.needed_count += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Load all dependencies (DT_NEEDED entries)
+unsafe fn load_dependencies(lib: &mut LoadedLibrary, flags: c_int) -> bool {
+    if lib.needed_count == 0 {
+        return true;
+    }
+
+    let strtab = lib.strtab();
+    if strtab.is_null() {
+        return true;
+    }
+
+    for i in 0..lib.needed_count {
+        let name_offset = lib.needed[i];
+        let dep_name = get_string(strtab, name_offset);
+        
+        if dep_name.is_empty() {
+            continue;
+        }
+
+        // Try to load the dependency (recursively)
+        let mgr = get_library_manager_mut();
+        
+        // Check if already loaded
+        if let Some(idx) = mgr.find_by_path(dep_name).or_else(|| mgr.find_by_soname(dep_name)) {
+            mgr.libraries[idx].refcount += 1;
+            lib.needed_libs[i] = idx;
+            continue;
+        }
+
+        // Build null-terminated path
+        let mut path_buf = [0u8; MAX_LIB_PATH];
+        let len = core::cmp::min(dep_name.len(), MAX_LIB_PATH - 1);
+        path_buf[..len].copy_from_slice(&dep_name[..len]);
+
+        // Load dependency with same flags (except RTLD_NOLOAD)
+        let dep_handle = do_dlopen(path_buf.as_ptr() as *const i8, flags & !RTLD_NOLOAD);
+        if dep_handle.is_null() {
+            return false;
+        }
+
+        lib.needed_libs[i] = dep_handle as usize;
+    }
+
+    true
+}
+
+/// Process relocations for a library
+unsafe fn process_relocations_for_lib(lib: &LoadedLibrary) -> Result<(), ()> {
+    match process_relocations(lib) {
+        Ok(()) => Ok(()),
+        Err(_) => Err(()),
+    }
 }
 
 /// Resolve library search path

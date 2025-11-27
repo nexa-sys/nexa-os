@@ -47,6 +47,9 @@ pub const SYS_SET_TID_ADDRESS: u64 = 218;
 pub const SYS_SET_ROBUST_LIST: u64 = 273;
 pub const SYS_GET_ROBUST_LIST: u64 = 274;
 
+// Architecture-specific (TLS support)
+pub const SYS_ARCH_PRCTL: u64 = 158;
+
 // Network socket calls (POSIX-compatible)
 pub const SYS_SOCKET: u64 = 41;
 pub const SYS_CONNECT: u64 = 42;

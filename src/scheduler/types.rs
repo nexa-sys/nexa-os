@@ -278,6 +278,7 @@ impl ProcessEntry {
                 user_rsp: 0,
                 user_rflags: 0,
                 exit_code: 0,
+                fs_base: 0,
             },
             // EEVDF fields
             vruntime: 0,

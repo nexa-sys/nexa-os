@@ -572,6 +572,356 @@ pub unsafe extern "C" fn __pthread_mutex_unlock(mutex: *mut pthread_mutex_t) -> 
 // Thread Functions
 // ============================================================================
 
+/// Default thread stack size (1MB)
+const DEFAULT_STACK_SIZE: usize = 1 * 1024 * 1024;
+
+/// Thread stack guard size
+const STACK_GUARD_SIZE: usize = 4096;
+
+/// Clone flags for creating a thread
+const CLONE_THREAD_FLAGS: c_int = super::types::CLONE_VM
+    | super::types::CLONE_FS
+    | super::types::CLONE_FILES
+    | super::types::CLONE_SIGHAND
+    | super::types::CLONE_THREAD
+    | super::types::CLONE_SYSVSEM
+    | super::types::CLONE_SETTLS
+    | super::types::CLONE_PARENT_SETTID
+    | super::types::CLONE_CHILD_CLEARTID;
+
+/// Thread control block - stores thread state
+/// This structure is pointed to by the FS register for TLS access
+#[repr(C)]
+struct ThreadControlBlock {
+    /// Self pointer (for TLS access via %fs:0)
+    self_ptr: *mut ThreadControlBlock,
+    /// Thread ID (set after clone)
+    tid: AtomicUsize,
+    /// Start routine
+    start_routine: extern "C" fn(*mut c_void) -> *mut c_void,
+    /// Argument to start routine
+    arg: *mut c_void,
+    /// Return value from thread
+    retval: *mut c_void,
+    /// Stack base address
+    stack_base: *mut c_void,
+    /// Stack size
+    stack_size: usize,
+    /// Joinable flag
+    joinable: bool,
+    /// Detached flag
+    detached: bool,
+    /// Exit flag
+    exited: AtomicUsize,
+    /// TID address for futex wake on exit
+    tid_address: *mut c_int,
+    /// Thread-specific data (pthread_key values)
+    tls_data: [*mut c_void; MAX_TLS_KEYS],
+}
+
+/// Maximum TLS keys per thread
+const MAX_TLS_KEYS: usize = 128;
+
+/// Maximum number of threads
+const MAX_THREADS: usize = 64;
+
+/// Thread table
+static mut THREAD_TABLE: [Option<*mut ThreadControlBlock>; MAX_THREADS] = [None; MAX_THREADS];
+static THREAD_TABLE_LOCK: AtomicUsize = AtomicUsize::new(0);
+
+/// Allocate a thread slot
+unsafe fn alloc_thread_slot(tcb: *mut ThreadControlBlock) -> Option<usize> {
+    // Acquire lock
+    while THREAD_TABLE_LOCK.compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed).is_err() {
+        spin_loop();
+    }
+    
+    for i in 0..MAX_THREADS {
+        if THREAD_TABLE[i].is_none() {
+            THREAD_TABLE[i] = Some(tcb);
+            THREAD_TABLE_LOCK.store(0, Ordering::Release);
+            return Some(i);
+        }
+    }
+    
+    THREAD_TABLE_LOCK.store(0, Ordering::Release);
+    None
+}
+
+/// Free a thread slot
+unsafe fn free_thread_slot(slot: usize) {
+    while THREAD_TABLE_LOCK.compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed).is_err() {
+        spin_loop();
+    }
+    
+    if slot < MAX_THREADS {
+        THREAD_TABLE[slot] = None;
+    }
+    
+    THREAD_TABLE_LOCK.store(0, Ordering::Release);
+}
+
+/// Thread entry point - called by clone
+#[no_mangle]
+unsafe extern "C" fn __thread_entry(tcb_ptr: *mut c_void) -> ! {
+    let tcb = &mut *(tcb_ptr as *mut ThreadControlBlock);
+    
+    // Call the user's start routine
+    let retval = (tcb.start_routine)(tcb.arg);
+    tcb.retval = retval;
+    
+    // Mark as exited
+    tcb.exited.store(1, Ordering::Release);
+    
+    // Wake any threads waiting to join
+    if !tcb.tid_address.is_null() {
+        // Clear the tid address
+        *tcb.tid_address = 0;
+        // Wake waiters (futex wake)
+        crate::syscall6(
+            crate::SYS_FUTEX,
+            tcb.tid_address as u64,
+            super::types::FUTEX_WAKE_OP as u64,
+            1,
+            0,
+            0,
+            0,
+        );
+    }
+    
+    // Exit thread
+    crate::syscall1(crate::SYS_EXIT, 0);
+    
+    // Should never reach here
+    loop { spin_loop(); }
+}
+
+/// Create a new thread
+#[no_mangle]
+pub unsafe extern "C" fn pthread_create(
+    thread: *mut pthread_t,
+    attr: *const pthread_attr_t,
+    start_routine: extern "C" fn(*mut c_void) -> *mut c_void,
+    arg: *mut c_void,
+) -> c_int {
+    let msg = b"[nrlib] pthread_create called\n";
+    let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
+    
+    if thread.is_null() {
+        return crate::EINVAL;
+    }
+    
+    // Get stack size from attributes or use default
+    let stack_size = if !attr.is_null() {
+        DEFAULT_STACK_SIZE // TODO: parse from attr
+    } else {
+        DEFAULT_STACK_SIZE
+    };
+    
+    let total_stack = stack_size + STACK_GUARD_SIZE;
+    
+    // Allocate stack using mmap
+    let stack = crate::syscall6(
+        crate::SYS_MMAP,
+        0,
+        total_stack as u64,
+        (super::types::PROT_READ | super::types::PROT_WRITE) as u64,
+        (super::types::MAP_PRIVATE | super::types::MAP_ANONYMOUS) as u64,
+        u64::MAX, // -1 for anonymous
+        0,
+    );
+    
+    if stack == u64::MAX || stack == 0 {
+        let msg = b"[nrlib] pthread_create: mmap failed\n";
+        let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
+        return crate::ENOMEM;
+    }
+    
+    // Calculate stack top (stack grows downward on x86_64)
+    // Leave space for TCB at top of stack
+    let stack_top = stack + total_stack as u64 - 128; // Reserve for TCB and alignment
+    let tcb_addr = stack_top as *mut ThreadControlBlock;
+    
+    // Initialize TCB
+    let tcb = &mut *tcb_addr;
+    tcb.self_ptr = tcb_addr; // Self pointer for TLS access
+    tcb.tid = AtomicUsize::new(0);
+    tcb.start_routine = start_routine;
+    tcb.arg = arg;
+    tcb.retval = ptr::null_mut();
+    tcb.stack_base = stack as *mut c_void;
+    tcb.stack_size = total_stack;
+    tcb.joinable = true;
+    tcb.detached = false;
+    tcb.exited = AtomicUsize::new(0);
+    
+    // Initialize TLS data to null
+    for i in 0..MAX_TLS_KEYS {
+        tcb.tls_data[i] = ptr::null_mut();
+    }
+    
+    // Allocate TID address in TCB for CLONE_CHILD_CLEARTID
+    let tid_storage = &mut tcb.tid as *mut AtomicUsize as *mut c_int;
+    tcb.tid_address = tid_storage;
+    
+    // Allocate a thread slot
+    let slot = match alloc_thread_slot(tcb_addr) {
+        Some(s) => s,
+        None => {
+            // Free the stack
+            crate::syscall2(crate::SYS_MUNMAP, stack, total_stack as u64);
+            return crate::EAGAIN;
+        }
+    };
+    
+    // Calculate usable stack pointer (16-byte aligned, below TCB)
+    let child_stack = (stack_top - mem::size_of::<ThreadControlBlock>() as u64 - 16) & !0xF;
+    
+    // Set up stack for the child thread
+    // Push the TCB pointer onto the stack (as argument to __thread_entry)
+    let stack_ptr = child_stack as *mut u64;
+    
+    let msg = b"[nrlib] pthread_create: calling clone\n";
+    let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
+    
+    // Call clone syscall
+    // On x86_64, when child returns from clone, it will start executing at __thread_entry
+    // The clone flags include CLONE_CHILD_SETTID and CLONE_CHILD_CLEARTID
+    let parent_tid: c_int = 0;
+    let child_tid: c_int = 0;
+    
+    let ret = crate::syscall5(
+        crate::SYS_CLONE,
+        CLONE_THREAD_FLAGS as u64,
+        child_stack,
+        &parent_tid as *const c_int as u64,
+        tid_storage as u64,
+        tcb_addr as u64, // TLS pointer = TCB
+    );
+    
+    if ret == u64::MAX || ret as i64 == -1 {
+        let msg = b"[nrlib] pthread_create: clone failed\n";
+        let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
+        // Clean up
+        free_thread_slot(slot);
+        crate::syscall2(crate::SYS_MUNMAP, stack, total_stack as u64);
+        crate::refresh_errno_from_kernel();
+        return crate::EAGAIN;
+    }
+    
+    if ret == 0 {
+        // Child process - call thread entry point
+        __thread_entry(tcb_addr as *mut c_void);
+        // Never returns
+    }
+    
+    // Parent: ret is child TID
+    tcb.tid.store(ret as usize, Ordering::Release);
+    *thread = ret as pthread_t;
+    
+    let msg = b"[nrlib] pthread_create: thread created successfully\n";
+    let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
+    
+    0
+}
+
+/// Join a thread
+#[no_mangle]
+pub unsafe extern "C" fn pthread_join(thread: pthread_t, retval: *mut *mut c_void) -> c_int {
+    let msg = b"[nrlib] pthread_join called\n";
+    let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
+    
+    // Find the thread in our table
+    while THREAD_TABLE_LOCK.compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed).is_err() {
+        spin_loop();
+    }
+    
+    let mut found_tcb: *mut ThreadControlBlock = ptr::null_mut();
+    let mut found_slot: usize = MAX_THREADS;
+    
+    for i in 0..MAX_THREADS {
+        if let Some(tcb) = THREAD_TABLE[i] {
+            if (*tcb).tid.load(Ordering::Acquire) == thread as usize {
+                found_tcb = tcb;
+                found_slot = i;
+                break;
+            }
+        }
+    }
+    
+    THREAD_TABLE_LOCK.store(0, Ordering::Release);
+    
+    if found_tcb.is_null() {
+        return crate::ESRCH;
+    }
+    
+    let tcb = &*found_tcb;
+    
+    if tcb.detached {
+        return crate::EINVAL;
+    }
+    
+    // Wait for thread to exit using futex
+    while tcb.exited.load(Ordering::Acquire) == 0 {
+        // Wait on the tid address
+        crate::syscall6(
+            crate::SYS_FUTEX,
+            tcb.tid_address as u64,
+            super::types::FUTEX_WAIT_OP as u64,
+            tcb.tid.load(Ordering::Acquire) as u64,
+            0, // No timeout
+            0,
+            0,
+        );
+    }
+    
+    // Get return value
+    if !retval.is_null() {
+        *retval = (*found_tcb).retval;
+    }
+    
+    // Free resources
+    let stack_base = (*found_tcb).stack_base as u64;
+    let stack_size = (*found_tcb).stack_size as u64;
+    
+    free_thread_slot(found_slot);
+    
+    // Unmap the stack
+    crate::syscall2(crate::SYS_MUNMAP, stack_base, stack_size);
+    
+    0
+}
+
+/// Detach a thread
+#[no_mangle]
+pub unsafe extern "C" fn pthread_detach(thread: pthread_t) -> c_int {
+    while THREAD_TABLE_LOCK.compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed).is_err() {
+        spin_loop();
+    }
+    
+    for i in 0..MAX_THREADS {
+        if let Some(tcb) = THREAD_TABLE[i] {
+            if (*tcb).tid.load(Ordering::Acquire) == thread as usize {
+                (*tcb).detached = true;
+                THREAD_TABLE_LOCK.store(0, Ordering::Release);
+                return 0;
+            }
+        }
+    }
+    
+    THREAD_TABLE_LOCK.store(0, Ordering::Release);
+    crate::ESRCH
+}
+
+/// Exit current thread
+#[no_mangle]
+pub unsafe extern "C" fn pthread_exit(retval: *mut c_void) -> ! {
+    // TODO: Find current thread's TCB and set return value
+    // For now, just exit
+    crate::syscall1(crate::SYS_EXIT, 0);
+    loop { spin_loop(); }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn pthread_self() -> pthread_t {
     let slot = PTHREAD_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
