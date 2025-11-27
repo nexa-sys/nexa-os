@@ -176,6 +176,39 @@ pub fn write(fd: u64, buf: u64, count: u64) -> u64 {
                     posix::set_errno(posix::errno::ENOTSUP);
                     return u64::MAX;
                 }
+                FileBacking::Socketpair(sp_handle) => {
+                    ktrace!(
+                        "[SYS_WRITE] Socketpair fd={} pair_id={}.{} count={}",
+                        fd,
+                        sp_handle.pair_id,
+                        sp_handle.end,
+                        count
+                    );
+
+                    if !user_buffer_in_range(buf, count) {
+                        ktrace!("[SYS_WRITE] ERROR: Buffer out of range");
+                        posix::set_errno(posix::errno::EFAULT);
+                        return u64::MAX;
+                    }
+
+                    let data = core::slice::from_raw_parts(buf as *const u8, count as usize);
+
+                    match crate::ipc::socketpair_write(sp_handle.pair_id, sp_handle.end, data) {
+                        Ok(bytes_written) => {
+                            ktrace!(
+                                "[SYS_WRITE] Socketpair wrote {} bytes",
+                                bytes_written
+                            );
+                            posix::set_errno(0);
+                            return bytes_written as u64;
+                        }
+                        Err(_) => {
+                            ktrace!("[SYS_WRITE] ERROR: Socketpair write failed (peer closed)");
+                            posix::set_errno(posix::errno::EPIPE);
+                            return u64::MAX;
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -323,6 +356,28 @@ pub fn read(fd: u64, buf: *mut u8, count: usize) -> u64 {
                     posix::set_errno(posix::errno::ENOTSUP);
                     return u64::MAX;
                 }
+                FileBacking::Socketpair(sp_handle) => {
+                    let buffer = core::slice::from_raw_parts_mut(buf, count);
+
+                    // Non-blocking read from socketpair
+                    match crate::ipc::socketpair_read(sp_handle.pair_id, sp_handle.end, buffer) {
+                        Ok(bytes_read) => {
+                            ktrace!(
+                                "[sys_read] Socketpair {}.{}: read {} bytes",
+                                sp_handle.pair_id,
+                                sp_handle.end,
+                                bytes_read
+                            );
+                            posix::set_errno(0);
+                            return bytes_read as u64;
+                        }
+                        Err(_) => {
+                            // Socketpair closed or error
+                            posix::set_errno(posix::errno::EPIPE);
+                            return u64::MAX;
+                        }
+                    }
+                }
                 FileBacking::Inline(data) => {
                     let remaining = data.len().saturating_sub(handle.position);
                     if remaining == 0 {
@@ -461,6 +516,24 @@ pub fn close(fd: u64) -> u64 {
                             fd
                         );
                     }
+                }
+            }
+            // Clean up socketpair resources
+            else if let FileBacking::Socketpair(ref sp_handle) = handle.backing {
+                if let Err(_) = crate::ipc::close_socketpair_end(sp_handle.pair_id, sp_handle.end) {
+                    kinfo!(
+                        "Warning: Failed to close socketpair {}.{} for fd {}",
+                        sp_handle.pair_id,
+                        sp_handle.end,
+                        fd
+                    );
+                } else {
+                    kinfo!(
+                        "Closed socketpair {}.{} for fd {}",
+                        sp_handle.pair_id,
+                        sp_handle.end,
+                        fd
+                    );
                 }
             }
 

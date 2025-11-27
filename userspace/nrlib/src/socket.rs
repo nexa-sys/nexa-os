@@ -9,11 +9,14 @@ const SYS_BIND: usize = 49;
 const SYS_SENDTO: usize = 44;
 const SYS_RECVFROM: usize = 45;
 const SYS_CONNECT: usize = 42;
+const SYS_SOCKETPAIR: usize = 53;
 const SYS_SETSOCKOPT: usize = 54;
 const SYS_GETSOCKNAME: usize = 51;
 const SYS_GETPEERNAME: usize = 52;
 
 // Socket domain constants (POSIX)
+pub const AF_UNIX: i32 = 1;       // Unix domain sockets
+pub const AF_LOCAL: i32 = 1;      // Alias for AF_UNIX
 pub const AF_INET: i32 = 2;       // IPv4
 pub const AF_INET6: i32 = 10;     // IPv6
 pub const AF_NETLINK: i32 = 16;   // Netlink
@@ -160,6 +163,48 @@ pub extern "C" fn socket(domain: i32, type_: i32, protocol: i32) -> i32 {
     );
     
     crate::translate_ret_i32(ret)
+}
+
+/// Create a pair of connected sockets (Unix domain)
+/// 
+/// # Arguments
+/// * `domain` - Protocol family (must be AF_UNIX/AF_LOCAL)
+/// * `type_` - Socket type (SOCK_STREAM or SOCK_DGRAM)
+/// * `protocol` - Protocol number (must be 0)
+/// * `sv` - Array of two integers to receive socket file descriptors
+/// 
+/// # Returns
+/// 0 on success, -1 on error (errno set)
+#[no_mangle]
+pub extern "C" fn socketpair(domain: i32, type_: i32, protocol: i32, sv: *mut i32) -> i32 {
+    if sv.is_null() {
+        crate::set_errno(crate::EINVAL);
+        return -1;
+    }
+
+    // Strip flags and pass only base type to kernel
+    let base_type = type_ & SOCK_TYPE_MASK;
+
+    let mut fds = [0i32; 2];
+    let ret = crate::syscall4(
+        SYS_SOCKETPAIR as u64,
+        domain as u64,
+        base_type as u64,
+        protocol as u64,
+        &mut fds as *mut [i32; 2] as u64,
+    );
+
+    if ret == u64::MAX {
+        crate::refresh_errno_from_kernel();
+        -1
+    } else {
+        unsafe {
+            *sv.add(0) = fds[0];
+            *sv.add(1) = fds[1];
+        }
+        crate::set_errno(0);
+        0
+    }
 }
 
 /// Bind socket to local address

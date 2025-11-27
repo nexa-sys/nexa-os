@@ -2275,20 +2275,7 @@ pub extern "C" fn pipe2(pipefd: *mut c_int, _flags: c_int) -> c_int {
     crate::pipe(pipefd)
 }
 
-/// socketpair - create a pair of connected sockets
-#[no_mangle]
-pub extern "C" fn socketpair(_domain: c_int, _type_: c_int, _protocol: c_int, sv: *mut c_int) -> c_int {
-    // Stub: socketpair not implemented in NexaOS kernel yet
-    // Return error
-    if !sv.is_null() {
-        unsafe {
-            *sv = -1;
-            *sv.add(1) = -1;
-        }
-    }
-    crate::set_errno(crate::ENOSYS);
-    -1
-}
+// Note: socketpair is implemented in socket.rs with #[no_mangle]
 
 /// sendmsg - send a message on a socket
 #[no_mangle]

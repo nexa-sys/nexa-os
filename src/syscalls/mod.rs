@@ -56,7 +56,7 @@ use exec::set_exec_context;
 use fd::{dup, dup2, pipe};
 use file::{close, fcntl, fstat, get_errno, list_files, lseek, open, read, stat, write};
 use ipc::{ipc_create, ipc_recv, ipc_send};
-use network::{bind, connect, recvfrom, sendto, setsockopt, socket};
+use network::{bind, connect, recvfrom, sendto, setsockopt, socket, socketpair};
 use process::{execve, exit, fork, getppid, kill, wait4};
 use signal::{sigaction, sigprocmask};
 use system::{chroot, mount, pivot_root, reboot, runlevel, shutdown, umount};
@@ -134,6 +134,19 @@ pub extern "C" fn syscall_dispatch(
         SYS_USER_LIST => user_list(arg1 as *mut u8, arg2 as usize),
         SYS_USER_LOGOUT => user_logout(),
         SYS_SOCKET => socket(arg1 as i32, arg2 as i32, arg3 as i32),
+        SYS_SOCKETPAIR => {
+            // socketpair needs 4 args: domain, type, protocol, sv
+            let arg4 = unsafe {
+                let mut r10_val: u64;
+                core::arch::asm!(
+                    "mov {0}, gs:[32]",
+                    out(reg) r10_val,
+                    options(nostack, preserves_flags)
+                );
+                r10_val
+            };
+            socketpair(arg1 as i32, arg2 as i32, arg3 as i32, arg4 as *mut [i32; 2])
+        }
         SYS_BIND => bind(arg1, arg2 as *const SockAddr, arg3 as u32),
         SYS_SENDTO => {
             // sendto needs 6 args: sockfd, buf, len, flags, dest_addr, addrlen

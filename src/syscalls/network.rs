@@ -960,3 +960,147 @@ pub fn setsockopt(sockfd: u64, level: i32, optname: i32, optval: *const u8, optl
         u64::MAX
     }
 }
+
+/// SYS_SOCKETPAIR - Create a pair of connected sockets
+pub fn socketpair(domain: i32, socket_type: i32, protocol: i32, sv: *mut [i32; 2]) -> u64 {
+    kinfo!(
+        "[SYS_SOCKETPAIR] domain={} type={} protocol={}",
+        domain,
+        socket_type,
+        protocol
+    );
+
+    // Validate sv pointer
+    if sv.is_null() {
+        kwarn!("[SYS_SOCKETPAIR] NULL sv pointer");
+        posix::set_errno(posix::errno::EFAULT);
+        return u64::MAX;
+    }
+
+    // Only AF_UNIX (AF_LOCAL) is supported for socketpair
+    if domain != AF_UNIX {
+        kwarn!(
+            "[SYS_SOCKETPAIR] Unsupported domain: {} (only AF_UNIX=1 supported)",
+            domain
+        );
+        posix::set_errno(posix::errno::EAFNOSUPPORT);
+        return u64::MAX;
+    }
+
+    // Support SOCK_STREAM and SOCK_DGRAM for AF_UNIX
+    if socket_type != SOCK_STREAM && socket_type != SOCK_DGRAM {
+        kwarn!(
+            "[SYS_SOCKETPAIR] Unsupported socket type: {} (only SOCK_STREAM/SOCK_DGRAM supported)",
+            socket_type
+        );
+        posix::set_errno(posix::errno::ENOSYS);
+        return u64::MAX;
+    }
+
+    // Protocol must be 0 for AF_UNIX
+    if protocol != 0 {
+        kwarn!(
+            "[SYS_SOCKETPAIR] Unsupported protocol: {} (must be 0 for AF_UNIX)",
+            protocol
+        );
+        posix::set_errno(posix::errno::EINVAL);
+        return u64::MAX;
+    }
+
+    // Create the socketpair in the IPC subsystem
+    let pair_id = match crate::ipc::create_socketpair() {
+        Ok(id) => id,
+        Err(_) => {
+            kwarn!("[SYS_SOCKETPAIR] Failed to create socketpair - too many open");
+            posix::set_errno(posix::errno::EMFILE);
+            return u64::MAX;
+        }
+    };
+
+    // Allocate two file descriptors
+    let mut fd0: u64 = 0;
+    let mut fd1: u64 = 0;
+
+    unsafe {
+        // Find first free slot for socket 0
+        let mut idx0 = usize::MAX;
+        for idx in 0..MAX_OPEN_FILES {
+            if FILE_HANDLES[idx].is_none() {
+                idx0 = idx;
+                break;
+            }
+        }
+
+        if idx0 == usize::MAX {
+            // No free slot - close the socketpair and return error
+            let _ = crate::ipc::close_socketpair_end(pair_id, 0);
+            let _ = crate::ipc::close_socketpair_end(pair_id, 1);
+            kwarn!("[SYS_SOCKETPAIR] No free file descriptors for socket 0");
+            posix::set_errno(posix::errno::EMFILE);
+            return u64::MAX;
+        }
+
+        // Find second free slot for socket 1
+        let mut idx1 = usize::MAX;
+        for idx in 0..MAX_OPEN_FILES {
+            if idx != idx0 && FILE_HANDLES[idx].is_none() {
+                idx1 = idx;
+                break;
+            }
+        }
+
+        if idx1 == usize::MAX {
+            // No free slot - close the socketpair and return error
+            let _ = crate::ipc::close_socketpair_end(pair_id, 0);
+            let _ = crate::ipc::close_socketpair_end(pair_id, 1);
+            kwarn!("[SYS_SOCKETPAIR] No free file descriptors for socket 1");
+            posix::set_errno(posix::errno::EMFILE);
+            return u64::MAX;
+        }
+
+        // Create file handles for both ends
+        let metadata = crate::posix::Metadata::empty()
+            .with_type(crate::posix::FileType::Socket)
+            .with_uid(0)
+            .with_gid(0)
+            .with_mode(0o0600);
+
+        let handle0 = FileHandle {
+            backing: FileBacking::Socketpair(SocketpairHandle {
+                pair_id,
+                end: 0,
+                socket_type,
+            }),
+            position: 0,
+            metadata,
+        };
+
+        let handle1 = FileHandle {
+            backing: FileBacking::Socketpair(SocketpairHandle {
+                pair_id,
+                end: 1,
+                socket_type,
+            }),
+            position: 0,
+            metadata,
+        };
+
+        FILE_HANDLES[idx0] = Some(handle0);
+        FILE_HANDLES[idx1] = Some(handle1);
+
+        fd0 = FD_BASE + idx0 as u64;
+        fd1 = FD_BASE + idx1 as u64;
+
+        // Write file descriptors to user buffer
+        (*sv)[0] = fd0 as i32;
+        (*sv)[1] = fd1 as i32;
+    }
+
+    kinfo!(
+        "[SYS_SOCKETPAIR] Created socketpair: sv[0]={}, sv[1]={}",
+        fd0,
+        fd1
+    );
+    posix::set_errno(0);
+    0
+}

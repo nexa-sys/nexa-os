@@ -18,6 +18,12 @@ pub use pipe::{
     PipeId,
 };
 
+// Re-export socketpair functions
+pub use pipe::{
+    close_socketpair_end, create_socketpair, socketpair_has_data, socketpair_read,
+    socketpair_write, SocketpairId,
+};
+
 // Re-export from signal
 pub use signal::{
     default_signal_action, init as init_signal, SignalAction, SignalState, NSIG, SIGABRT,

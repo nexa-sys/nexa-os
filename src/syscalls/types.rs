@@ -32,6 +32,8 @@ pub const CLOCK_MONOTONIC: i32 = 1;
 pub const CLOCK_BOOTTIME: i32 = 7;
 
 // Socket domain and protocol constants (subset of POSIX)
+pub const AF_UNIX: i32 = 1;
+pub const AF_LOCAL: i32 = 1; // Alias for AF_UNIX
 pub const AF_INET: i32 = 2;
 pub const AF_NETLINK: i32 = 16;
 pub const SOCK_STREAM: i32 = 1;
@@ -137,6 +139,14 @@ pub struct SocketHandle {
     pub recv_timeout_ms: u64,
 }
 
+/// Socketpair handle - references a socketpair in the IPC subsystem
+#[derive(Clone, Copy)]
+pub struct SocketpairHandle {
+    pub pair_id: usize,
+    pub end: usize, // 0 or 1
+    pub socket_type: i32,
+}
+
 /// File backing type
 #[derive(Clone, Copy)]
 pub enum FileBacking {
@@ -144,6 +154,7 @@ pub enum FileBacking {
     Ext2(crate::fs::ext2::FileRef),
     StdStream(StdStreamKind),
     Socket(SocketHandle),
+    Socketpair(SocketpairHandle),
 }
 
 /// Standard stream kind

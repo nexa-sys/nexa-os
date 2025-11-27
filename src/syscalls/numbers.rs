@@ -44,6 +44,7 @@ pub const SYS_LISTEN: u64 = 50;
 pub const SYS_GETSOCKNAME: u64 = 51;
 pub const SYS_GETPEERNAME: u64 = 52;
 pub const SYS_SETSOCKOPT: u64 = 54;
+pub const SYS_SOCKETPAIR: u64 = 53;
 
 // Filesystem management
 pub const SYS_PIVOT_ROOT: u64 = 155;

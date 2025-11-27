@@ -51,9 +51,9 @@ pub use time::{get_uptime, sleep};
 
 // Re-export socket types and functions
 pub use socket::{
-    bind, connect, recvfrom, sendto, socket,
+    bind, connect, recvfrom, sendto, socket, socketpair,
     format_ipv4, parse_ipv4, SockAddr, SockAddrIn,
-    AF_INET, AF_INET6, AF_UNSPEC,
+    AF_INET, AF_INET6, AF_UNSPEC, AF_UNIX, AF_LOCAL,
     SOCK_STREAM, SOCK_DGRAM, SOCK_RAW,
     IPPROTO_IP, IPPROTO_ICMP, IPPROTO_TCP, IPPROTO_UDP,
 };
@@ -248,6 +248,25 @@ pub(crate) const ENODEV: i32 = 19;
 pub(crate) const ENOSPC: i32 = 28;
 
 // Minimal syscall wrappers that match the userspace convention (int 0x81)
+#[inline(always)]
+pub fn syscall4(n: u64, a1: u64, a2: u64, a3: u64, a4: u64) -> u64 {
+    let ret: u64;
+    unsafe {
+        asm!(
+            "int 0x81",
+            in("rax") n,
+            in("rdi") a1,
+            in("rsi") a2,
+            in("rdx") a3,
+            in("r10") a4,
+            lateout("rax") ret,
+            clobber_abi("sysv64"),
+            options(nostack)
+        );
+    }
+    ret
+}
+
 #[inline(always)]
 pub fn syscall3(n: u64, a1: u64, a2: u64, a3: u64) -> u64 {
     let ret: u64;

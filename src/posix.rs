@@ -26,6 +26,7 @@ pub mod errno {
     pub const ENOSPC: i32 = 28; // No space left on device
     pub const ESPIPE: i32 = 29; // Illegal seek
     pub const ENODEV: i32 = 19; // No such device
+    pub const EPIPE: i32 = 32; // Broken pipe
     pub const ENOSYS: i32 = 38; // Function not implemented
     pub const ENOTSUP: i32 = 95; // Operation not supported
     pub const ENOTSOCK: i32 = 88; // Socket operation on non-socket
