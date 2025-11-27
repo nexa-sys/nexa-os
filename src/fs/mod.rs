@@ -4,9 +4,13 @@
 //! - Virtual File System (VFS) layer
 //! - ext2 filesystem support
 //! - Initial RAM filesystem (initramfs/CPIO)
+//! - procfs pseudo-filesystem (Linux-compatible /proc)
+//! - sysfs pseudo-filesystem (Linux-compatible /sys)
 
 pub mod ext2;
 pub mod initramfs;
+pub mod procfs;
+pub mod sysfs;
 pub mod vfs;
 
 // Re-export commonly used items from vfs

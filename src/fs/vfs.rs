@@ -326,9 +326,494 @@ pub fn add_file_with_metadata(
     );
 }
 
+/// Handle procfs virtual file reads
+fn handle_procfs_read(path: &str) -> Option<OpenFile> {
+    use super::procfs;
+    
+    let path = path.trim_start_matches('/');
+    
+    // Global procfs files
+    match path {
+        "proc/version" => {
+            let (content, len) = procfs::generate_version();
+            return Some(OpenFile {
+                content: FileContent::Inline(content),
+                metadata: procfs::proc_file_metadata(len as u64),
+            });
+        }
+        "proc/uptime" => {
+            let (content, len) = procfs::generate_uptime();
+            return Some(OpenFile {
+                content: FileContent::Inline(content),
+                metadata: procfs::proc_file_metadata(len as u64),
+            });
+        }
+        "proc/loadavg" => {
+            let (content, len) = procfs::generate_loadavg();
+            return Some(OpenFile {
+                content: FileContent::Inline(content),
+                metadata: procfs::proc_file_metadata(len as u64),
+            });
+        }
+        "proc/meminfo" => {
+            let (content, len) = procfs::generate_meminfo();
+            return Some(OpenFile {
+                content: FileContent::Inline(content),
+                metadata: procfs::proc_file_metadata(len as u64),
+            });
+        }
+        "proc/cpuinfo" => {
+            let (content, len) = procfs::generate_cpuinfo();
+            return Some(OpenFile {
+                content: FileContent::Inline(content),
+                metadata: procfs::proc_file_metadata(len as u64),
+            });
+        }
+        "proc/stat" => {
+            let (content, len) = procfs::generate_stat();
+            return Some(OpenFile {
+                content: FileContent::Inline(content),
+                metadata: procfs::proc_file_metadata(len as u64),
+            });
+        }
+        "proc/filesystems" => {
+            let (content, len) = procfs::generate_filesystems();
+            return Some(OpenFile {
+                content: FileContent::Inline(content),
+                metadata: procfs::proc_file_metadata(len as u64),
+            });
+        }
+        "proc/mounts" => {
+            let (content, len) = procfs::generate_mounts();
+            return Some(OpenFile {
+                content: FileContent::Inline(content),
+                metadata: procfs::proc_file_metadata(len as u64),
+            });
+        }
+        "proc/cmdline" => {
+            let (content, len) = procfs::generate_cmdline();
+            return Some(OpenFile {
+                content: FileContent::Inline(content),
+                metadata: procfs::proc_file_metadata(len as u64),
+            });
+        }
+        "proc/self" => {
+            let (content, _len) = procfs::generate_self();
+            return Some(OpenFile {
+                content: FileContent::Inline(content),
+                metadata: procfs::proc_link_metadata(),
+            });
+        }
+        _ => {}
+    }
+    
+    // Per-process files: /proc/[pid]/...
+    if path.starts_with("proc/") {
+        let rest = &path[5..]; // Remove "proc/"
+        if let Some(slash_pos) = rest.find('/') {
+            let pid_str = &rest[..slash_pos];
+            let file_path = &rest[slash_pos + 1..];
+            
+            if let Ok(pid) = pid_str.parse::<u64>() {
+                if procfs::pid_exists(pid) {
+                    match file_path {
+                        "status" => {
+                            if let Some((content, len)) = procfs::generate_pid_status(pid) {
+                                return Some(OpenFile {
+                                    content: FileContent::Inline(content),
+                                    metadata: procfs::proc_file_metadata(len as u64),
+                                });
+                            }
+                        }
+                        "stat" => {
+                            if let Some((content, len)) = procfs::generate_pid_stat(pid) {
+                                return Some(OpenFile {
+                                    content: FileContent::Inline(content),
+                                    metadata: procfs::proc_file_metadata(len as u64),
+                                });
+                            }
+                        }
+                        "cmdline" => {
+                            if let Some((content, len)) = procfs::generate_pid_cmdline(pid) {
+                                return Some(OpenFile {
+                                    content: FileContent::Inline(content),
+                                    metadata: procfs::proc_file_metadata(len as u64),
+                                });
+                            }
+                        }
+                        "maps" => {
+                            if let Some((content, len)) = procfs::generate_pid_maps(pid) {
+                                return Some(OpenFile {
+                                    content: FileContent::Inline(content),
+                                    metadata: procfs::proc_file_metadata(len as u64),
+                                });
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    
+    None
+}
+
+/// Handle sysfs virtual file reads
+fn handle_sysfs_read(path: &str) -> Option<OpenFile> {
+    use super::sysfs;
+    
+    let path = path.trim_start_matches('/');
+    
+    // Kernel info files
+    match path {
+        "sys/kernel/version" => {
+            let (content, len) = sysfs::generate_kernel_version();
+            return Some(OpenFile {
+                content: FileContent::Inline(content),
+                metadata: sysfs::sys_file_metadata(len as u64),
+            });
+        }
+        "sys/kernel/ostype" => {
+            let (content, len) = sysfs::generate_kernel_ostype();
+            return Some(OpenFile {
+                content: FileContent::Inline(content),
+                metadata: sysfs::sys_file_metadata(len as u64),
+            });
+        }
+        "sys/kernel/osrelease" => {
+            let (content, len) = sysfs::generate_kernel_osrelease();
+            return Some(OpenFile {
+                content: FileContent::Inline(content),
+                metadata: sysfs::sys_file_metadata(len as u64),
+            });
+        }
+        "sys/kernel/hostname" => {
+            let (content, len) = sysfs::generate_kernel_hostname();
+            return Some(OpenFile {
+                content: FileContent::Inline(content),
+                metadata: sysfs::sys_file_metadata(len as u64),
+            });
+        }
+        "sys/kernel/ngroups_max" => {
+            let (content, len) = sysfs::generate_kernel_ngroups_max();
+            return Some(OpenFile {
+                content: FileContent::Inline(content),
+                metadata: sysfs::sys_file_metadata(len as u64),
+            });
+        }
+        "sys/kernel/pid_max" => {
+            let (content, len) = sysfs::generate_kernel_pid_max();
+            return Some(OpenFile {
+                content: FileContent::Inline(content),
+                metadata: sysfs::sys_file_metadata(len as u64),
+            });
+        }
+        "sys/kernel/threads-max" => {
+            let (content, len) = sysfs::generate_kernel_threads_max();
+            return Some(OpenFile {
+                content: FileContent::Inline(content),
+                metadata: sysfs::sys_file_metadata(len as u64),
+            });
+        }
+        "sys/kernel/random/entropy_avail" => {
+            let (content, len) = sysfs::generate_random_entropy_avail();
+            return Some(OpenFile {
+                content: FileContent::Inline(content),
+                metadata: sysfs::sys_file_metadata(len as u64),
+            });
+        }
+        "sys/kernel/random/poolsize" => {
+            let (content, len) = sysfs::generate_random_poolsize();
+            return Some(OpenFile {
+                content: FileContent::Inline(content),
+                metadata: sysfs::sys_file_metadata(len as u64),
+            });
+        }
+        "sys/kernel/random/uuid" => {
+            let (content, len) = sysfs::generate_random_uuid();
+            return Some(OpenFile {
+                content: FileContent::Inline(content),
+                metadata: sysfs::sys_file_metadata(len as u64),
+            });
+        }
+        "sys/power/state" => {
+            let (content, len) = sysfs::generate_power_state();
+            return Some(OpenFile {
+                content: FileContent::Inline(content),
+                metadata: sysfs::sys_file_metadata(len as u64),
+            });
+        }
+        "sys/power/mem_sleep" => {
+            let (content, len) = sysfs::generate_power_mem_sleep();
+            return Some(OpenFile {
+                content: FileContent::Inline(content),
+                metadata: sysfs::sys_file_metadata(len as u64),
+            });
+        }
+        _ => {}
+    }
+    
+    // Block device files: /sys/block/[device]/...
+    if path.starts_with("sys/block/") {
+        let rest = &path[10..]; // Remove "sys/block/"
+        if let Some(slash_pos) = rest.find('/') {
+            let device = &rest[..slash_pos];
+            let file_path = &rest[slash_pos + 1..];
+            
+            match file_path {
+                "size" => {
+                    if let Some((content, len)) = sysfs::generate_block_size(device) {
+                        return Some(OpenFile {
+                            content: FileContent::Inline(content),
+                            metadata: sysfs::sys_file_metadata(len as u64),
+                        });
+                    }
+                }
+                "stat" => {
+                    if let Some((content, len)) = sysfs::generate_block_stat(device) {
+                        return Some(OpenFile {
+                            content: FileContent::Inline(content),
+                            metadata: sysfs::sys_file_metadata(len as u64),
+                        });
+                    }
+                }
+                "device/model" => {
+                    if let Some((content, len)) = sysfs::generate_block_model(device) {
+                        return Some(OpenFile {
+                            content: FileContent::Inline(content),
+                            metadata: sysfs::sys_file_metadata(len as u64),
+                        });
+                    }
+                }
+                "device/vendor" => {
+                    if let Some((content, len)) = sysfs::generate_block_vendor(device) {
+                        return Some(OpenFile {
+                            content: FileContent::Inline(content),
+                            metadata: sysfs::sys_file_metadata(len as u64),
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    
+    // Network device files: /sys/class/net/[device]/...
+    if path.starts_with("sys/class/net/") {
+        let rest = &path[14..]; // Remove "sys/class/net/"
+        if let Some(slash_pos) = rest.find('/') {
+            let device = &rest[..slash_pos];
+            let file_path = &rest[slash_pos + 1..];
+            
+            match file_path {
+                "address" => {
+                    if let Some((content, len)) = sysfs::generate_net_address(device) {
+                        return Some(OpenFile {
+                            content: FileContent::Inline(content),
+                            metadata: sysfs::sys_file_metadata(len as u64),
+                        });
+                    }
+                }
+                "mtu" => {
+                    if let Some((content, len)) = sysfs::generate_net_mtu(device) {
+                        return Some(OpenFile {
+                            content: FileContent::Inline(content),
+                            metadata: sysfs::sys_file_metadata(len as u64),
+                        });
+                    }
+                }
+                "operstate" => {
+                    if let Some((content, len)) = sysfs::generate_net_operstate(device) {
+                        return Some(OpenFile {
+                            content: FileContent::Inline(content),
+                            metadata: sysfs::sys_file_metadata(len as u64),
+                        });
+                    }
+                }
+                "type" => {
+                    if let Some((content, len)) = sysfs::generate_net_type(device) {
+                        return Some(OpenFile {
+                            content: FileContent::Inline(content),
+                            metadata: sysfs::sys_file_metadata(len as u64),
+                        });
+                    }
+                }
+                "flags" => {
+                    if let Some((content, len)) = sysfs::generate_net_flags(device) {
+                        return Some(OpenFile {
+                            content: FileContent::Inline(content),
+                            metadata: sysfs::sys_file_metadata(len as u64),
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    
+    None
+}
+
 pub fn open(path: &str) -> Option<OpenFile> {
+    // Check for procfs paths first
+    if path.starts_with("/proc") || path.starts_with("proc") {
+        if let Some(result) = handle_procfs_read(path) {
+            return Some(result);
+        }
+    }
+    
+    // Check for sysfs paths
+    if path.starts_with("/sys") || path.starts_with("sys") {
+        if let Some(result) = handle_sysfs_read(path) {
+            return Some(result);
+        }
+    }
+    
     let (fs, relative) = resolve_mount(path)?;
     fs.read(relative)
+}
+
+/// Handle procfs virtual directory stat
+fn handle_procfs_stat(path: &str) -> Option<Metadata> {
+    use super::procfs;
+    
+    let path = path.trim_start_matches('/');
+    
+    // Directory entries
+    match path {
+        "proc" => return Some(procfs::proc_dir_metadata()),
+        "proc/self" => return Some(procfs::proc_link_metadata()),
+        _ => {}
+    }
+    
+    // Global procfs files
+    match path {
+        "proc/version" | "proc/uptime" | "proc/loadavg" | "proc/meminfo" |
+        "proc/cpuinfo" | "proc/stat" | "proc/filesystems" | "proc/mounts" |
+        "proc/cmdline" => {
+            return Some(procfs::proc_file_metadata(0)); // Size determined at read time
+        }
+        _ => {}
+    }
+    
+    // Per-process directories and files
+    if path.starts_with("proc/") {
+        let rest = &path[5..];
+        
+        // Check if it's a PID directory
+        if let Some(slash_pos) = rest.find('/') {
+            let pid_str = &rest[..slash_pos];
+            let file_path = &rest[slash_pos + 1..];
+            
+            if let Ok(pid) = pid_str.parse::<u64>() {
+                if procfs::pid_exists(pid) {
+                    match file_path {
+                        "status" | "stat" | "cmdline" | "maps" => {
+                            return Some(procfs::proc_file_metadata(0));
+                        }
+                        "fd" => return Some(procfs::proc_dir_metadata()),
+                        _ => {}
+                    }
+                }
+            }
+        } else {
+            // Just a PID directory
+            if let Ok(pid) = rest.parse::<u64>() {
+                if procfs::pid_exists(pid) {
+                    return Some(procfs::proc_dir_metadata());
+                }
+            }
+        }
+    }
+    
+    None
+}
+
+/// Handle sysfs virtual directory stat
+fn handle_sysfs_stat(path: &str) -> Option<Metadata> {
+    use super::sysfs;
+    
+    let path = path.trim_start_matches('/');
+    
+    // Directory entries
+    match path {
+        "sys" | "sys/kernel" | "sys/kernel/random" | "sys/class" |
+        "sys/class/tty" | "sys/class/block" | "sys/class/net" |
+        "sys/block" | "sys/devices" | "sys/bus" | "sys/fs" | "sys/power" => {
+            return Some(sysfs::sys_dir_metadata());
+        }
+        _ => {}
+    }
+    
+    // Kernel info files
+    match path {
+        "sys/kernel/version" | "sys/kernel/ostype" | "sys/kernel/osrelease" |
+        "sys/kernel/hostname" | "sys/kernel/ngroups_max" | "sys/kernel/pid_max" |
+        "sys/kernel/threads-max" | "sys/kernel/random/entropy_avail" |
+        "sys/kernel/random/poolsize" | "sys/kernel/random/uuid" |
+        "sys/power/state" | "sys/power/mem_sleep" => {
+            return Some(sysfs::sys_file_metadata(0));
+        }
+        _ => {}
+    }
+    
+    // Block device directories and files
+    if path.starts_with("sys/block/") {
+        let rest = &path[10..];
+        for dev in sysfs::get_block_devices() {
+            if rest == *dev {
+                return Some(sysfs::sys_dir_metadata());
+            }
+            if rest.starts_with(dev) {
+                let suffix = &rest[dev.len()..];
+                if suffix.starts_with('/') {
+                    let file = &suffix[1..];
+                    match file {
+                        "size" | "stat" | "device/model" | "device/vendor" => {
+                            return Some(sysfs::sys_file_metadata(0));
+                        }
+                        "device" => return Some(sysfs::sys_dir_metadata()),
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    
+    // Network device directories and files
+    if path.starts_with("sys/class/net/") {
+        let rest = &path[14..];
+        for dev in sysfs::get_net_devices() {
+            if rest == *dev {
+                return Some(sysfs::sys_dir_metadata());
+            }
+            if rest.starts_with(dev) {
+                let suffix = &rest[dev.len()..];
+                if suffix.starts_with('/') {
+                    let file = &suffix[1..];
+                    match file {
+                        "address" | "mtu" | "operstate" | "type" | "flags" => {
+                            return Some(sysfs::sys_file_metadata(0));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    
+    // TTY device directories
+    if path.starts_with("sys/class/tty/") {
+        let rest = &path[14..];
+        for dev in sysfs::get_tty_devices() {
+            if rest == *dev {
+                return Some(sysfs::sys_dir_metadata());
+            }
+        }
+    }
+    
+    None
 }
 
 pub fn stat(path: &str) -> Option<Metadata> {
@@ -337,14 +822,221 @@ pub fn stat(path: &str) -> Option<Metadata> {
         return Some(default_dir_meta());
     }
 
+    // Check for procfs paths first
+    if normalized.starts_with("/proc") || normalized.starts_with("proc") {
+        if let Some(meta) = handle_procfs_stat(normalized) {
+            return Some(meta);
+        }
+    }
+    
+    // Check for sysfs paths
+    if normalized.starts_with("/sys") || normalized.starts_with("sys") {
+        if let Some(meta) = handle_sysfs_stat(normalized) {
+            return Some(meta);
+        }
+    }
+
     let (fs, relative) = resolve_mount(normalized)?;
     fs.metadata(relative)
+}
+
+/// Handle procfs directory listing
+fn handle_procfs_list<F>(path: &str, cb: &mut F) -> bool
+where
+    F: FnMut(&'static str, Metadata),
+{
+    use super::procfs;
+    
+    let path = path.trim_start_matches('/').trim_end_matches('/');
+    
+    match path {
+        "proc" | "" => {
+            // Root /proc directory - list global files and process directories
+            cb("version", procfs::proc_file_metadata(0));
+            cb("uptime", procfs::proc_file_metadata(0));
+            cb("loadavg", procfs::proc_file_metadata(0));
+            cb("meminfo", procfs::proc_file_metadata(0));
+            cb("cpuinfo", procfs::proc_file_metadata(0));
+            cb("stat", procfs::proc_file_metadata(0));
+            cb("filesystems", procfs::proc_file_metadata(0));
+            cb("mounts", procfs::proc_file_metadata(0));
+            cb("cmdline", procfs::proc_file_metadata(0));
+            cb("self", procfs::proc_link_metadata());
+            
+            // List all process directories
+            // We need static strings for the callback
+            static PID_STRINGS: [&str; 64] = [
+                "1", "2", "3", "4", "5", "6", "7", "8", "9", "10",
+                "11", "12", "13", "14", "15", "16", "17", "18", "19", "20",
+                "21", "22", "23", "24", "25", "26", "27", "28", "29", "30",
+                "31", "32", "33", "34", "35", "36", "37", "38", "39", "40",
+                "41", "42", "43", "44", "45", "46", "47", "48", "49", "50",
+                "51", "52", "53", "54", "55", "56", "57", "58", "59", "60",
+                "61", "62", "63", "64",
+            ];
+            
+            let pids = procfs::get_all_pids();
+            for pid_opt in pids.iter() {
+                if let Some(pid) = pid_opt {
+                    let idx = (*pid as usize).saturating_sub(1);
+                    if idx < PID_STRINGS.len() {
+                        cb(PID_STRINGS[idx], procfs::proc_dir_metadata());
+                    }
+                }
+            }
+            return true;
+        }
+        _ => {}
+    }
+    
+    // Per-process directory listing
+    if path.starts_with("proc/") {
+        let rest = &path[5..];
+        if let Ok(pid) = rest.parse::<u64>() {
+            if procfs::pid_exists(pid) {
+                cb("status", procfs::proc_file_metadata(0));
+                cb("stat", procfs::proc_file_metadata(0));
+                cb("cmdline", procfs::proc_file_metadata(0));
+                cb("maps", procfs::proc_file_metadata(0));
+                cb("fd", procfs::proc_dir_metadata());
+                return true;
+            }
+        }
+    }
+    
+    false
+}
+
+/// Handle sysfs directory listing
+fn handle_sysfs_list<F>(path: &str, cb: &mut F) -> bool
+where
+    F: FnMut(&'static str, Metadata),
+{
+    use super::sysfs;
+    
+    let path = path.trim_start_matches('/').trim_end_matches('/');
+    
+    match path {
+        "sys" | "" => {
+            cb("kernel", sysfs::sys_dir_metadata());
+            cb("class", sysfs::sys_dir_metadata());
+            cb("block", sysfs::sys_dir_metadata());
+            cb("devices", sysfs::sys_dir_metadata());
+            cb("bus", sysfs::sys_dir_metadata());
+            cb("fs", sysfs::sys_dir_metadata());
+            cb("power", sysfs::sys_dir_metadata());
+            return true;
+        }
+        "sys/kernel" => {
+            cb("version", sysfs::sys_file_metadata(0));
+            cb("ostype", sysfs::sys_file_metadata(0));
+            cb("osrelease", sysfs::sys_file_metadata(0));
+            cb("hostname", sysfs::sys_file_metadata(0));
+            cb("ngroups_max", sysfs::sys_file_metadata(0));
+            cb("pid_max", sysfs::sys_file_metadata(0));
+            cb("threads-max", sysfs::sys_file_metadata(0));
+            cb("random", sysfs::sys_dir_metadata());
+            return true;
+        }
+        "sys/kernel/random" => {
+            cb("entropy_avail", sysfs::sys_file_metadata(0));
+            cb("poolsize", sysfs::sys_file_metadata(0));
+            cb("uuid", sysfs::sys_file_metadata(0));
+            return true;
+        }
+        "sys/class" => {
+            cb("tty", sysfs::sys_dir_metadata());
+            cb("block", sysfs::sys_dir_metadata());
+            cb("net", sysfs::sys_dir_metadata());
+            return true;
+        }
+        "sys/class/tty" => {
+            for dev in sysfs::get_tty_devices() {
+                cb(dev, sysfs::sys_dir_metadata());
+            }
+            return true;
+        }
+        "sys/class/block" => {
+            for dev in sysfs::get_block_devices() {
+                cb(dev, sysfs::sys_dir_metadata());
+            }
+            return true;
+        }
+        "sys/class/net" => {
+            for dev in sysfs::get_net_devices() {
+                cb(dev, sysfs::sys_dir_metadata());
+            }
+            return true;
+        }
+        "sys/block" => {
+            for dev in sysfs::get_block_devices() {
+                cb(dev, sysfs::sys_dir_metadata());
+            }
+            return true;
+        }
+        "sys/power" => {
+            cb("state", sysfs::sys_file_metadata(0));
+            cb("mem_sleep", sysfs::sys_file_metadata(0));
+            return true;
+        }
+        _ => {}
+    }
+    
+    // Block device subdirectories
+    if path.starts_with("sys/block/") {
+        let rest = &path[10..];
+        for dev in sysfs::get_block_devices() {
+            if rest == *dev {
+                cb("size", sysfs::sys_file_metadata(0));
+                cb("stat", sysfs::sys_file_metadata(0));
+                cb("device", sysfs::sys_dir_metadata());
+                return true;
+            }
+            let dev_device = alloc::format!("{}/device", dev);
+            if rest == dev_device {
+                cb("model", sysfs::sys_file_metadata(0));
+                cb("vendor", sysfs::sys_file_metadata(0));
+                return true;
+            }
+        }
+    }
+    
+    // Network device subdirectories
+    if path.starts_with("sys/class/net/") {
+        let rest = &path[14..];
+        for dev in sysfs::get_net_devices() {
+            if rest == *dev {
+                cb("address", sysfs::sys_file_metadata(0));
+                cb("mtu", sysfs::sys_file_metadata(0));
+                cb("operstate", sysfs::sys_file_metadata(0));
+                cb("type", sysfs::sys_file_metadata(0));
+                cb("flags", sysfs::sys_file_metadata(0));
+                return true;
+            }
+        }
+    }
+    
+    false
 }
 
 pub fn list_directory<F>(path: &str, mut cb: F)
 where
     F: FnMut(&'static str, Metadata),
 {
+    // Check for procfs paths first
+    if path.starts_with("/proc") || path.starts_with("proc") || path == "/proc" {
+        if handle_procfs_list(path, &mut cb) {
+            return;
+        }
+    }
+    
+    // Check for sysfs paths
+    if path.starts_with("/sys") || path.starts_with("sys") || path == "/sys" {
+        if handle_sysfs_list(path, &mut cb) {
+            return;
+        }
+    }
+    
     if let Some((fs, relative)) = resolve_mount(path) {
         fs.list(relative, &mut cb);
     }
