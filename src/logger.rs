@@ -461,6 +461,9 @@ pub fn mark_init_started() {
 }
 
 /// 读取内核日志环形缓冲区
+/// 注意：此函数返回64KB数组副本，在内核栈上使用会导致栈溢出！
+/// 请使用 read_ringbuffer_to_slice() 替代
+#[allow(dead_code)]
 pub fn read_ringbuffer() -> [u8; RINGBUF_SIZE] {
     let ringbuf = RINGBUF.lock();
     ringbuf.buf
@@ -470,6 +473,57 @@ pub fn read_ringbuffer() -> [u8; RINGBUF_SIZE] {
 pub fn ringbuffer_write_pos() -> usize {
     let ringbuf = RINGBUF.lock();
     ringbuf.write_pos
+}
+
+/// 直接从环形缓冲区读取数据到目标切片，避免栈上分配大数组
+/// 返回 (实际复制的字节数, 缓冲区中有效数据的总长度)
+pub fn read_ringbuffer_to_slice(dest: &mut [u8]) -> (usize, usize) {
+    let ringbuf = RINGBUF.lock();
+    let write_pos = ringbuf.write_pos;
+    let buf = &ringbuf.buf;
+    
+    // Calculate how many valid bytes we have
+    let valid_len = if write_pos == 0 {
+        // Check if buffer is empty or full
+        if buf[0] == 0 {
+            0 // Empty buffer
+        } else {
+            RINGBUF_SIZE // Full buffer, wrapped around
+        }
+    } else {
+        // Check if we've wrapped around
+        let has_wrapped = buf[write_pos % RINGBUF_SIZE] != 0
+            && write_pos > 0
+            && buf[(write_pos.wrapping_sub(1)) % RINGBUF_SIZE] != 0;
+        if has_wrapped && buf[0] != 0 {
+            RINGBUF_SIZE
+        } else {
+            write_pos
+        }
+    };
+    
+    if valid_len == 0 {
+        return (0, 0);
+    }
+    
+    let copy_len = core::cmp::min(dest.len(), valid_len);
+    
+    if write_pos >= valid_len {
+        // Linear data from start
+        dest[..copy_len].copy_from_slice(&buf[..copy_len]);
+    } else {
+        // Wrapped buffer: oldest data starts at write_pos
+        let start_pos = write_pos;
+        let first_chunk_len = core::cmp::min(copy_len, RINGBUF_SIZE - start_pos);
+        dest[..first_chunk_len].copy_from_slice(&buf[start_pos..start_pos + first_chunk_len]);
+        
+        if copy_len > first_chunk_len {
+            let second_chunk_len = copy_len - first_chunk_len;
+            dest[first_chunk_len..copy_len].copy_from_slice(&buf[..second_chunk_len]);
+        }
+    }
+    
+    (copy_len, valid_len)
 }
 
 fn read_tsc() -> u64 {

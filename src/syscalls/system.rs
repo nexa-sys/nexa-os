@@ -370,61 +370,10 @@ pub fn syslog(type_: i32, buf_ptr: *mut u8, len: usize) -> u64 {
             crate::logger::RINGBUF_SIZE as u64
         }
         SYSLOG_ACTION_READ | SYSLOG_ACTION_READ_ALL => {
-            // Read from ring buffer
-            let ringbuf_data = crate::logger::read_ringbuffer();
-            let write_pos = crate::logger::ringbuffer_write_pos();
-
-            // Calculate how many valid bytes we have
-            // If write_pos has wrapped around, we have the full buffer
-            // Otherwise, we have write_pos bytes
-            let valid_len = if write_pos == 0 {
-                // Check if buffer is empty or full
-                if ringbuf_data[0] == 0 {
-                    0 // Empty buffer
-                } else {
-                    ringbuf_data.len() // Full buffer, wrapped around
-                }
-            } else {
-                // Simple case: write_pos indicates how much data we have
-                // If we've wrapped, use full buffer
-                let has_wrapped = ringbuf_data[write_pos % ringbuf_data.len()] != 0
-                    && write_pos > 0
-                    && ringbuf_data[(write_pos.wrapping_sub(1)) % ringbuf_data.len()] != 0;
-                if has_wrapped && ringbuf_data[0] != 0 {
-                    ringbuf_data.len()
-                } else {
-                    write_pos
-                }
-            };
-
-            if valid_len == 0 {
-                posix::set_errno(0);
-                return 0;
-            }
-
-            // Calculate bytes to copy
-            let copy_len = core::cmp::min(len, valid_len);
-
-            // Copy data to user buffer
-            // For simplicity, copy from the start of the buffer (oldest data first)
-            let user_buf = unsafe { slice::from_raw_parts_mut(buf_ptr, copy_len) };
-            
-            if write_pos >= valid_len {
-                // Linear data from start
-                user_buf.copy_from_slice(&ringbuf_data[..copy_len]);
-            } else {
-                // Wrapped buffer: oldest data starts at write_pos
-                let start_pos = write_pos;
-                let first_chunk_len = core::cmp::min(copy_len, ringbuf_data.len() - start_pos);
-                user_buf[..first_chunk_len]
-                    .copy_from_slice(&ringbuf_data[start_pos..start_pos + first_chunk_len]);
-
-                if copy_len > first_chunk_len {
-                    let second_chunk_len = copy_len - first_chunk_len;
-                    user_buf[first_chunk_len..copy_len]
-                        .copy_from_slice(&ringbuf_data[..second_chunk_len]);
-                }
-            }
+            // Read from ring buffer directly to user buffer
+            // This avoids allocating 64KB on the kernel stack which would cause overflow
+            let user_buf = unsafe { slice::from_raw_parts_mut(buf_ptr, len) };
+            let (copy_len, _valid_len) = crate::logger::read_ringbuffer_to_slice(user_buf);
 
             posix::set_errno(0);
             copy_len as u64
