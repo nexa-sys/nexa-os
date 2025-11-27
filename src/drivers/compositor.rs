@@ -142,6 +142,8 @@ static SCROLL_PITCH: AtomicUsize = AtomicUsize::new(0);
 static SCROLL_NEXT_ROW: AtomicUsize = AtomicUsize::new(0);
 static SCROLL_TOTAL_ROWS: AtomicUsize = AtomicUsize::new(0);
 static SCROLL_ROWS_DONE: AtomicUsize = AtomicUsize::new(0);
+/// Scroll distance in rows (for determining safe batch size)
+static SCROLL_DISTANCE: AtomicUsize = AtomicUsize::new(0);
 
 /// Fill operation state
 static FILL_BUFFER_ADDR: AtomicU64 = AtomicU64::new(0);
@@ -559,33 +561,178 @@ fn compose_worker_internal() -> usize {
 }
 
 /// Internal scroll worker - claims and processes rows
+/// 
+/// Optimized with bulk memory copy instead of per-row copy:
+/// - Copies entire batch as contiguous memory block when pitch == row_bytes
+/// - Falls back to per-row copy only when there's padding between rows
+/// - Significantly reduces function call overhead and improves cache utilization
+/// 
+/// Memory safety for scroll-up (src > dst):
+/// When scrolling up, src_base = buffer + scroll_rows * pitch, dst_base = buffer.
+/// For any row N: src[N] and dst[N] are separated by scroll_rows * pitch bytes.
+/// Since scroll_rows >= 1 and we copy row_bytes <= pitch per row,
+/// individual row copies NEVER overlap. We can safely use copy_nonoverlapping
+/// for each row, and for bulk copies of contiguous rows.
+/// 
+/// The key insight: src[N] to src[N+k] doesn't overlap with dst[N] to dst[N+k]
+/// as long as they're separated by scroll_distance rows, which is always true
+/// for scroll operations.
 fn scroll_worker() -> usize {
     let src_base = SCROLL_SRC_ADDR.load(Ordering::Acquire) as *const u8;
     let dst_base = SCROLL_DST_ADDR.load(Ordering::Acquire) as *mut u8;
     let row_bytes = SCROLL_ROW_BYTES.load(Ordering::Acquire);
     let pitch = SCROLL_PITCH.load(Ordering::Acquire);
+    let scroll_distance = SCROLL_DISTANCE.load(Ordering::Acquire);
     
-    // Process rows in batches for better cache utilization
+    // For scroll_distance == 0, something is wrong - use safe path
+    if scroll_distance == 0 {
+        return scroll_worker_safe();
+    }
+    
+    // Process rows in large batches for better cache utilization
     // Batch size tuned for L2 cache (256KB typical)
-    let batch_size = (256 * 1024) / row_bytes.max(1);
-    let batch_size = batch_size.max(16).min(128);
+    // No need to limit by scroll_distance since row-by-row copies don't overlap
+    let batch_size = (512 * 1024) / pitch.max(1);
+    let batch_size = batch_size.max(64).min(256);
     
     let mut rows_done = 0;
     
+    // Check if rows are contiguous in memory (no padding between rows)
+    let contiguous = pitch == row_bytes;
+    
     while let Some((start, end)) = claim_scroll_rows(batch_size) {
-        // Copy rows in this batch
-        for row in start..end {
-            let offset = row * pitch;
+        let batch_rows = end - start;
+        
+        if contiguous && batch_rows <= scroll_distance {
+            // FASTEST PATH: bulk copy entire batch as single memory block
+            // Safe because the entire batch's src and dst regions don't overlap
+            // src region: [src_base + start*pitch, src_base + end*pitch)
+            // dst region: [dst_base + start*pitch, dst_base + end*pitch)
+            // Gap between them: scroll_distance * pitch bytes
+            let src_offset = start * pitch;
+            let total_bytes = batch_rows * pitch;
             unsafe {
                 core::ptr::copy_nonoverlapping(
-                    src_base.add(offset),
-                    dst_base.add(offset),
-                    row_bytes,
+                    src_base.add(src_offset),
+                    dst_base.add(src_offset),
+                    total_bytes,
                 );
             }
+        } else if contiguous {
+            // Large batch exceeds scroll_distance, split into safe chunks
+            // Copy in chunks of scroll_distance rows at a time
+            let mut chunk_start = start;
+            while chunk_start < end {
+                let chunk_end = (chunk_start + scroll_distance).min(end);
+                let chunk_rows = chunk_end - chunk_start;
+                let src_offset = chunk_start * pitch;
+                let total_bytes = chunk_rows * pitch;
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        src_base.add(src_offset),
+                        dst_base.add(src_offset),
+                        total_bytes,
+                    );
+                }
+                chunk_start = chunk_end;
+            }
+        } else {
+            // Non-contiguous: copy row by row with unrolling
+            // Each individual row copy is safe (row_bytes <= pitch < scroll_distance * pitch)
+            let mut row = start;
+            
+            // Unrolled loop: process 4 rows at a time
+            while row + 4 <= end {
+                unsafe {
+                    let offset0 = row * pitch;
+                    let offset1 = (row + 1) * pitch;
+                    let offset2 = (row + 2) * pitch;
+                    let offset3 = (row + 3) * pitch;
+                    
+                    core::ptr::copy_nonoverlapping(
+                        src_base.add(offset0),
+                        dst_base.add(offset0),
+                        row_bytes,
+                    );
+                    core::ptr::copy_nonoverlapping(
+                        src_base.add(offset1),
+                        dst_base.add(offset1),
+                        row_bytes,
+                    );
+                    core::ptr::copy_nonoverlapping(
+                        src_base.add(offset2),
+                        dst_base.add(offset2),
+                        row_bytes,
+                    );
+                    core::ptr::copy_nonoverlapping(
+                        src_base.add(offset3),
+                        dst_base.add(offset3),
+                        row_bytes,
+                    );
+                }
+                row += 4;
+            }
+            
+            // Handle remaining rows
+            while row < end {
+                let offset = row * pitch;
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        src_base.add(offset),
+                        dst_base.add(offset),
+                        row_bytes,
+                    );
+                }
+                row += 1;
+            }
         }
-        rows_done += end - start;
-        SCROLL_ROWS_DONE.fetch_add(end - start, Ordering::AcqRel);
+        
+        rows_done += batch_rows;
+        SCROLL_ROWS_DONE.fetch_add(batch_rows, Ordering::AcqRel);
+    }
+    
+    rows_done
+}
+
+/// Safe scroll worker using memmove - fallback for edge cases
+fn scroll_worker_safe() -> usize {
+    let src_base = SCROLL_SRC_ADDR.load(Ordering::Acquire) as *const u8;
+    let dst_base = SCROLL_DST_ADDR.load(Ordering::Acquire) as *mut u8;
+    let row_bytes = SCROLL_ROW_BYTES.load(Ordering::Acquire);
+    let pitch = SCROLL_PITCH.load(Ordering::Acquire);
+    
+    let batch_size = 64;
+    let mut rows_done = 0;
+    let contiguous = pitch == row_bytes;
+    
+    while let Some((start, end)) = claim_scroll_rows(batch_size) {
+        let batch_rows = end - start;
+        
+        if contiguous {
+            let src_offset = start * pitch;
+            let total_bytes = batch_rows * pitch;
+            unsafe {
+                core::ptr::copy(
+                    src_base.add(src_offset),
+                    dst_base.add(src_offset),
+                    total_bytes,
+                );
+            }
+        } else {
+            for row in start..end {
+                let offset = row * pitch;
+                unsafe {
+                    core::ptr::copy(
+                        src_base.add(offset),
+                        dst_base.add(offset),
+                        row_bytes,
+                    );
+                }
+            }
+        }
+        
+        rows_done += batch_rows;
+        SCROLL_ROWS_DONE.fetch_add(batch_rows, Ordering::AcqRel);
     }
     
     rows_done
@@ -1555,24 +1702,46 @@ pub fn copy_rect(
 
 /// Claim a batch of rows for parallel scroll processing
 /// Returns (start_row, end_row) or None if no more work
+/// 
+/// Optimized with adaptive batch claiming to reduce contention:
+/// - Claims larger batches when many rows remain
+/// - Exponential backoff on contention
 #[inline(always)]
 fn claim_scroll_rows(batch_size: usize) -> Option<(usize, usize)> {
     let total = SCROLL_TOTAL_ROWS.load(Ordering::Acquire);
     
+    let mut attempts = 0;
     loop {
         let current = SCROLL_NEXT_ROW.load(Ordering::Acquire);
         if current >= total {
             return None;
         }
         
-        let end = (current + batch_size).min(total);
+        // Adaptive batch size: claim more when lots of work remains
+        let remaining = total - current;
+        let adaptive_batch = if remaining > batch_size * 4 {
+            batch_size * 2  // Double batch when plenty of work
+        } else {
+            batch_size
+        };
+        
+        let end = (current + adaptive_batch).min(total);
         if SCROLL_NEXT_ROW
             .compare_exchange_weak(current, end, Ordering::AcqRel, Ordering::Relaxed)
             .is_ok()
         {
             return Some((current, end));
         }
-        core::hint::spin_loop();
+        
+        // Exponential backoff to reduce contention
+        attempts += 1;
+        if attempts > 4 {
+            for _ in 0..(1 << (attempts - 4).min(6)) {
+                core::hint::spin_loop();
+            }
+        } else {
+            core::hint::spin_loop();
+        }
     }
 }
 
@@ -1610,10 +1779,14 @@ pub fn scroll_up_fast(
     
     // Decide between single-core and parallel based on data size
     let workers = worker_count();
+    // For multi-core with sufficient data, use parallel copy
     let use_parallel = is_initialized() 
         && workers > 1 
         && total_bytes >= PARALLEL_SCROLL_THRESHOLD
-        && rows_to_copy >= workers * 16;  // At least 16 rows per worker (reduced for more parallelism)
+        && rows_to_copy >= workers * 32;  // At least 32 rows per worker for better efficiency
+    
+    // Check if rows are contiguous (no padding)
+    let contiguous = pitch == row_bytes;
     
     if use_parallel {
         // === Parallel scroll path - dispatch to all cores ===
@@ -1632,6 +1805,8 @@ pub fn scroll_up_fast(
         SCROLL_NEXT_ROW.store(0, Ordering::Release);
         SCROLL_TOTAL_ROWS.store(rows_to_copy, Ordering::Release);
         SCROLL_ROWS_DONE.store(0, Ordering::Release);
+        // Store scroll distance for workers to determine safe batch size
+        SCROLL_DISTANCE.store(scroll_rows, Ordering::Release);
         
         // Memory fence to ensure all stores are visible to AP cores
         core::sync::atomic::fence(Ordering::SeqCst);
@@ -1656,10 +1831,55 @@ pub fn scroll_up_fast(
         WORK_TYPE.store(WorkType::None as u8, Ordering::Release);
     } else {
         // === Single-core optimized path ===
-        // Use large block copy for better memory bandwidth
+        // Use chunked copy_nonoverlapping for better performance than memmove
+        // When scrolling up, src > dst, so we can safely copy in forward direction
+        // in chunks of scroll_rows to avoid overlap within each chunk
         unsafe {
             let src = buffer.add(scroll_rows * pitch);
-            core::ptr::copy(src, buffer, total_bytes);
+            
+            if contiguous {
+                // Fast path: copy in chunks of scroll_rows (no overlap within chunk)
+                let chunk_bytes = scroll_rows * pitch;
+                let mut copied = 0;
+                
+                while copied + chunk_bytes <= total_bytes {
+                    core::ptr::copy_nonoverlapping(
+                        src.add(copied),
+                        buffer.add(copied),
+                        chunk_bytes,
+                    );
+                    copied += chunk_bytes;
+                }
+                
+                // Copy remaining bytes
+                if copied < total_bytes {
+                    core::ptr::copy_nonoverlapping(
+                        src.add(copied),
+                        buffer.add(copied),
+                        total_bytes - copied,
+                    );
+                }
+            } else {
+                // Non-contiguous: use row-by-row copy with unrolling
+                let mut row = 0;
+                while row + 4 <= rows_to_copy {
+                    let offset0 = row * pitch;
+                    let offset1 = (row + 1) * pitch;
+                    let offset2 = (row + 2) * pitch;
+                    let offset3 = (row + 3) * pitch;
+                    
+                    core::ptr::copy_nonoverlapping(src.add(offset0), buffer.add(offset0), row_bytes);
+                    core::ptr::copy_nonoverlapping(src.add(offset1), buffer.add(offset1), row_bytes);
+                    core::ptr::copy_nonoverlapping(src.add(offset2), buffer.add(offset2), row_bytes);
+                    core::ptr::copy_nonoverlapping(src.add(offset3), buffer.add(offset3), row_bytes);
+                    row += 4;
+                }
+                while row < rows_to_copy {
+                    let offset = row * pitch;
+                    core::ptr::copy_nonoverlapping(src.add(offset), buffer.add(offset), row_bytes);
+                    row += 1;
+                }
+            }
         }
     }
     
