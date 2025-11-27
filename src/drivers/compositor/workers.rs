@@ -258,9 +258,47 @@ pub(crate) fn compose_stripe(
                 if copy_start < copy_end {
                     let total_rows = copy_end - copy_start;
                     let row_bytes = cache.actual_width * dst_bpp;
+                    let total_copy_bytes = total_rows * row_bytes;
                     
-                    // Large bulk copy using REP MOVSQ when beneficial
-                    if row_bytes >= 4096 && total_rows >= 4 {
+                    // Choose copy strategy based on size:
+                    // - Streaming copy for very large regions (>128KB) to avoid cache pollution
+                    // - REP MOVSQ for large regions (>16KB)
+                    // - Standard copy for smaller regions
+                    if total_copy_bytes >= 128 * 1024 && total_rows >= 8 {
+                        // Very large region: use streaming copy
+                        unsafe {
+                            let mut row = copy_start;
+                            // Process 8 rows at a time for better throughput
+                            while row + 8 <= copy_end {
+                                let src_row0 = row - cache.start_y;
+                                for i in 0..8 {
+                                    let src_offset = (src_row0 + i) * cache.src_pitch;
+                                    let dst_offset = (row + i) * dst_pitch;
+                                    super::memory::streaming_copy(
+                                        (cache.buffer_addr + src_offset) as *const u8,
+                                        dst_buffer.add(dst_offset),
+                                        row_bytes,
+                                    );
+                                }
+                                row += 8;
+                            }
+                            // Remaining rows with standard copy
+                            while row < copy_end {
+                                let src_row = row - cache.start_y;
+                                let src_offset = src_row * cache.src_pitch;
+                                let dst_offset = row * dst_pitch;
+                                super::memory::rep_movsq_copy(
+                                    (cache.buffer_addr + src_offset) as *const u8,
+                                    dst_buffer.add(dst_offset),
+                                    row_bytes,
+                                );
+                                row += 1;
+                            }
+                            // Ensure streaming stores complete
+                            core::arch::asm!("sfence", options(nostack, preserves_flags));
+                        }
+                    } else if row_bytes >= 4096 && total_rows >= 4 {
+                        // Large region: use REP MOVSQ
                         unsafe {
                             let mut row = copy_start;
                             // Process 4 rows at a time for better throughput
@@ -424,10 +462,10 @@ pub(crate) fn compose_stripe(
 /// 
 /// GPU-inspired optimizations for 2.5K+ displays:
 /// - Larger batch sizes tuned for L2 cache (256KB)
-/// - Bulk memory copy for contiguous rows using REP MOVSQ
-/// - Prefetching to hide memory latency
+/// - Streaming stores (non-temporal) for large copies to avoid cache pollution
+/// - Ultra-aggressive prefetching (4 cache lines ahead)
 /// - Adaptive batch sizing based on remaining work
-/// - Reduced atomic operations in hot path
+/// - Minimal atomic operations in hot path
 /// 
 /// Memory safety for scroll-up (src > dst):
 /// When scrolling up, src_base = buffer + scroll_rows * pitch, dst_base = buffer.
@@ -448,17 +486,20 @@ pub(crate) fn scroll_worker() -> usize {
         return scroll_worker_safe();
     }
     
-    // Optimized batch size for 2.5K displays:
+    // Optimized batch size for 2.5K+ displays:
     // 2560 * 4 = 10240 bytes/row
     // L2 cache = 256KB = ~25 rows
     // Use larger batches for better throughput, but cap at scroll_distance for safety
+    // Increased base batch for reduced atomic contention
     let rows_per_256kb = (256 * 1024) / pitch.max(1);
-    let batch_size = rows_per_256kb.max(32).min(256).min(scroll_distance);
+    let batch_size = rows_per_256kb.max(48).min(384).min(scroll_distance);
     
     let mut rows_done = 0;
     let contiguous = pitch == row_bytes;
-    // Use REP MOVSQ for large contiguous copies (threshold: ~32KB)
-    let use_rep_movsq = contiguous && pitch >= 4096;
+    // Use streaming copy for very large framebuffers (>128KB) to avoid cache pollution
+    // This is critical for smooth scrolling - data won't be reused immediately
+    let use_streaming = contiguous && pitch >= 4096 && total_rows * pitch >= 128 * 1024;
+    let use_rep_movsq = contiguous && pitch >= 4096 && !use_streaming;
     
     while let Some((start, end)) = claim_scroll_rows_fast(batch_size, total_rows) {
         let batch_rows = end - start;
@@ -469,17 +510,33 @@ pub(crate) fn scroll_worker() -> usize {
             let total_bytes = batch_rows * pitch;
             
             unsafe {
-                // Prefetch next batch (2 batches ahead for latency hiding)
-                let prefetch_row = end + batch_size;
+                // Ultra-aggressive prefetch: 4 batches ahead for DDR4 latency hiding
+                let prefetch_row = end + batch_size * 2;
                 if prefetch_row < total_rows {
                     let prefetch_offset = prefetch_row * pitch;
-                    core::arch::x86_64::_mm_prefetch::<{core::arch::x86_64::_MM_HINT_T0}>(
+                    // Use non-temporal hint since we're streaming through data
+                    core::arch::x86_64::_mm_prefetch::<{core::arch::x86_64::_MM_HINT_NTA}>(
                         src_base.add(prefetch_offset) as *const i8
                     );
+                    // Prefetch even further ahead
+                    let far_prefetch = prefetch_row + batch_size * 2;
+                    if far_prefetch < total_rows {
+                        core::arch::x86_64::_mm_prefetch::<{core::arch::x86_64::_MM_HINT_NTA}>(
+                            src_base.add(far_prefetch * pitch) as *const i8
+                        );
+                    }
                 }
                 
-                if use_rep_movsq && total_bytes >= 32768 {
-                    // Use REP MOVSQ for very large copies
+                if use_streaming && total_bytes >= 65536 {
+                    // Use streaming (non-temporal) stores for very large copies
+                    // This avoids cache pollution - critical for smooth scrolling
+                    super::memory::streaming_copy(
+                        src_base.add(src_offset),
+                        dst_base.add(src_offset),
+                        total_bytes,
+                    );
+                } else if use_rep_movsq && total_bytes >= 32768 {
+                    // Use REP MOVSQ for large copies
                     super::memory::rep_movsq_copy(
                         src_base.add(src_offset),
                         dst_base.add(src_offset),
@@ -767,7 +824,7 @@ pub(crate) fn claim_fill_rows(batch_size: usize, total: usize) -> Option<(usize,
 /// Fast claim for scroll rows - reduced overhead version
 /// 
 /// Optimized for scroll operations where we already have total_rows.
-/// Avoids repeated atomic load of total rows.
+/// Uses aggressive batch claiming to minimize atomic contention.
 #[inline(always)]
 pub(crate) fn claim_scroll_rows_fast(batch_size: usize, total: usize) -> Option<(usize, usize)> {
     let mut attempts = 0;
@@ -777,10 +834,15 @@ pub(crate) fn claim_scroll_rows_fast(batch_size: usize, total: usize) -> Option<
             return None;
         }
         
-        // Adaptive batch size: claim more when lots of work remains
+        // More aggressive adaptive batch sizing for reduced contention:
+        // - 4x batch when >75% work remains (minimize atomics in hot phase)
+        // - 2x batch when >50% work remains
+        // - 1x batch for final work items (better load balancing at end)
         let remaining = total - current;
-        let adaptive_batch = if remaining > batch_size * 4 {
-            batch_size * 2  // Double batch when plenty of work
+        let adaptive_batch = if remaining > batch_size * 8 {
+            batch_size * 4  // Quadruple batch when lots of work
+        } else if remaining > batch_size * 4 {
+            batch_size * 2  // Double batch for medium work
         } else {
             batch_size
         };
@@ -793,9 +855,9 @@ pub(crate) fn claim_scroll_rows_fast(batch_size: usize, total: usize) -> Option<
             return Some((current, end));
         }
         
-        // Minimal backoff - scroll is time-critical
+        // Ultra-minimal backoff - scroll is extremely time-critical
         attempts += 1;
-        if attempts > 3 {
+        if attempts > 2 {
             core::hint::spin_loop();
         }
     }
@@ -850,22 +912,25 @@ pub(crate) fn claim_scroll_rows(batch_size: usize) -> Option<(usize, usize)> {
 /// 
 /// Returns (stripe_index, start_row, end_row) or None if no work available
 /// Optimized with:
-/// - Adaptive batch claiming based on remaining work
-/// - Exponential backoff to reduce contention
-/// - NUMA-aware stripe selection when possible
+/// - Aggressive adaptive batch claiming for minimal contention
+/// - Fast-path for single remaining stripe
+/// - Reduced atomic operations in hot path
 pub(crate) fn claim_work_stripe(stripe_height: usize, total_rows: usize) -> Option<(usize, usize, usize)> {
     let total_stripes = (total_rows + stripe_height - 1) / stripe_height;
     
-    // Adaptive batch size: claim more stripes when many available to reduce contention
-    // Tuned for 4-16 core systems typical in workstations
-    let batch_size = if total_stripes > 128 {
-        8  // Very large work: claim 8 at once for reduced contention
-    } else if total_stripes > 64 {
-        4  // Large work: claim 4 at once
-    } else if total_stripes > 24 {
-        2  // Medium work: claim 2 at once
+    // More aggressive adaptive batch sizing for reduced atomic contention
+    // The key insight: claiming more stripes upfront dramatically reduces
+    // contention on multi-core systems during scroll operations
+    let batch_size = if total_stripes > 256 {
+        16  // Very large work: claim 16 at once
+    } else if total_stripes > 128 {
+        8   // Large work: claim 8 at once
+    } else if total_stripes > 48 {
+        4   // Medium work: claim 4 at once
+    } else if total_stripes > 16 {
+        2   // Smaller work: claim 2 at once
     } else {
-        1  // Small work: claim 1 at a time
+        1   // Small work: claim 1 at a time for load balancing
     };
     
     let mut attempts = 0;
@@ -875,8 +940,20 @@ pub(crate) fn claim_work_stripe(stripe_height: usize, total_rows: usize) -> Opti
             return None;
         }
         
+        // Calculate adaptive claim size based on remaining work
+        let remaining = total_stripes - current;
+        let claim_size = if remaining <= batch_size {
+            // Claim all remaining for this worker
+            remaining
+        } else if remaining > batch_size * 4 {
+            // Lots of work: claim larger batch
+            batch_size * 2
+        } else {
+            batch_size
+        };
+        
         // Claim batch_size stripes, but only process the first one now
-        let next = (current + batch_size).min(total_stripes);
+        let next = (current + claim_size).min(total_stripes);
         if WORK_NEXT_STRIPE
             .compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Relaxed)
             .is_ok()

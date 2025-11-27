@@ -311,7 +311,8 @@ pub fn parallel_fill(
 /// Fast row clearing using 64-bit writes with optimized row replication
 /// 
 /// Optimized for clearing the bottom portion after scroll.
-/// Uses REP MOVSQ for row replication when clearing many rows.
+/// Uses streaming stores for large clears to avoid cache pollution.
+/// Critical for smooth scrolling - the cleared area should not pollute cache.
 #[inline(always)]
 pub fn clear_rows_fast(
     buffer: *mut u8,
@@ -327,6 +328,7 @@ pub fn clear_rows_fast(
     }
     
     let row_bytes = width * bpp;
+    let total_clear_bytes = row_bytes * num_rows;
     
     // For 32-bit color, use 64-bit writes (2 pixels at a time)
     if bpp == 4 {
@@ -370,7 +372,17 @@ pub fn clear_rows_fast(
             
             // Copy first row to remaining rows using optimized method
             if num_rows > 1 {
-                if row_bytes >= 4096 && num_rows >= 8 {
+                // Use streaming copy for large clears to avoid cache pollution
+                // This is critical after scroll - cleared area won't be read immediately
+                if total_clear_bytes >= 64 * 1024 && num_rows >= 16 {
+                    // Very large clear: use streaming stores
+                    for row in 1..num_rows {
+                        let dst_row_ptr = buffer.add((start_row + row) * pitch);
+                        super::memory::streaming_copy(first_row_ptr, dst_row_ptr, row_bytes);
+                    }
+                    // Ensure all non-temporal stores are visible
+                    core::arch::asm!("sfence", options(nostack, preserves_flags));
+                } else if row_bytes >= 4096 && num_rows >= 8 {
                     // Large rows: use REP MOVSQ for efficiency
                     for row in 1..num_rows {
                         let dst_row_ptr = buffer.add((start_row + row) * pitch);
@@ -557,14 +569,19 @@ pub fn scroll_up_fast(
         // BSP also participates in the work
         scroll_worker();
         
-        // Wait for all rows to complete with reduced backoff
+        // Wait for all rows to complete with ultra-fast polling
+        // Scroll is time-critical, use aggressive polling
         let mut backoff = 1u32;
+        let mut checks = 0u32;
         while SCROLL_ROWS_DONE.load(Ordering::Acquire) < rows_to_copy {
-            for _ in 0..backoff {
-                core::hint::spin_loop();
+            checks += 1;
+            // Only add backoff after many rapid checks
+            if checks > 64 {
+                for _ in 0..backoff {
+                    core::hint::spin_loop();
+                }
+                backoff = (backoff * 2).min(128);
             }
-            // Faster backoff growth for scroll (time-critical operation)
-            backoff = (backoff * 2).min(256);
         }
         
         // Clear work available flag
@@ -572,15 +589,38 @@ pub fn scroll_up_fast(
         WORK_TYPE.store(WorkType::None as u8, Ordering::Release);
     } else {
         // === Single-core optimized path ===
-        // Use REP MOVSQ or streaming stores based on copy size
+        // Use streaming stores for large copies to avoid cache pollution
+        // This is critical for smooth scrolling performance
         unsafe {
             let src = buffer.add(scroll_rows * pitch);
             
             if contiguous {
                 // Fast path for contiguous rows
-                // Choose between REP MOVSQ and chunked copy based on size
-                if total_bytes >= 128 * 1024 {
-                    // Very large copy: use REP MOVSQ with chunking to avoid overlap
+                // Use streaming copy for very large framebuffers (>256KB)
+                if total_bytes >= 256 * 1024 {
+                    // Very large copy: use streaming stores to avoid cache pollution
+                    let chunk_bytes = scroll_rows * pitch;
+                    let mut copied = 0;
+                    
+                    while copied + chunk_bytes <= total_bytes {
+                        super::memory::streaming_copy(
+                            src.add(copied),
+                            buffer.add(copied),
+                            chunk_bytes,
+                        );
+                        copied += chunk_bytes;
+                    }
+                    
+                    // Copy remaining bytes
+                    if copied < total_bytes {
+                        super::memory::streaming_copy(
+                            src.add(copied),
+                            buffer.add(copied),
+                            total_bytes - copied,
+                        );
+                    }
+                } else if total_bytes >= 64 * 1024 {
+                    // Medium-large copy: use REP MOVSQ with chunking
                     let chunk_bytes = scroll_rows * pitch;
                     let mut copied = 0;
                     
@@ -602,7 +642,7 @@ pub fn scroll_up_fast(
                         );
                     }
                 } else {
-                    // Medium-sized copy: chunked copy_nonoverlapping
+                    // Smaller copy: chunked copy_nonoverlapping
                     let chunk_bytes = scroll_rows * pitch;
                     let mut copied = 0;
                     
