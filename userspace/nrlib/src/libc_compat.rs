@@ -2257,3 +2257,168 @@ pub extern "C" fn kill(_pid: crate::pid_t, _sig: c_int) -> c_int {
     // Stub: signals not fully implemented
     0
 }
+
+// ============================================================================
+// Additional Functions Required by std::process::Command
+// ============================================================================
+
+/// wait3 - wait for process to change state (BSD-style)
+#[no_mangle]
+pub unsafe extern "C" fn wait3(status: *mut c_int, options: c_int, _rusage: *mut c_void) -> crate::pid_t {
+    crate::wait4(-1, status, options, ptr::null_mut())
+}
+
+/// pipe2 - create pipe with flags
+#[no_mangle]
+pub extern "C" fn pipe2(pipefd: *mut c_int, _flags: c_int) -> c_int {
+    // For now, ignore flags and just call pipe
+    crate::pipe(pipefd)
+}
+
+/// socketpair - create a pair of connected sockets
+#[no_mangle]
+pub extern "C" fn socketpair(_domain: c_int, _type_: c_int, _protocol: c_int, sv: *mut c_int) -> c_int {
+    // Stub: socketpair not implemented in NexaOS kernel yet
+    // Return error
+    if !sv.is_null() {
+        unsafe {
+            *sv = -1;
+            *sv.add(1) = -1;
+        }
+    }
+    crate::set_errno(crate::ENOSYS);
+    -1
+}
+
+/// sendmsg - send a message on a socket
+#[no_mangle]
+pub extern "C" fn sendmsg(_sockfd: c_int, _msg: *const c_void, _flags: c_int) -> ssize_t {
+    // Stub: sendmsg not implemented
+    crate::set_errno(crate::ENOSYS);
+    -1
+}
+
+/// recvmsg - receive a message from a socket
+#[no_mangle]
+pub extern "C" fn recvmsg(_sockfd: c_int, _msg: *mut c_void, _flags: c_int) -> ssize_t {
+    // Stub: recvmsg not implemented
+    crate::set_errno(crate::ENOSYS);
+    -1
+}
+
+/// chdir - change working directory
+#[no_mangle]
+pub extern "C" fn chdir(_path: *const c_char) -> c_int {
+    // Stub: chdir not implemented in NexaOS yet
+    // Return success for now to allow process spawning
+    0
+}
+
+/// chroot - change root directory
+#[no_mangle]
+pub extern "C" fn chroot(_path: *const c_char) -> c_int {
+    // Stub: chroot not implemented
+    crate::set_errno(crate::ENOSYS);
+    -1
+}
+
+/// setgroups - set supplementary group IDs
+#[no_mangle]
+pub extern "C" fn setgroups(_size: size_t, _list: *const crate::gid_t) -> c_int {
+    // Stub: setgroups not implemented
+    // Return success to allow process spawning
+    0
+}
+
+/// execvp - execute program (search PATH)
+#[no_mangle]
+pub extern "C" fn execvp(file: *const c_char, argv: *const *const c_char) -> c_int {
+    // For now, just call execve with the file as-is (no PATH search)
+    // This is a simplification - real implementation would search PATH
+    crate::execve(file as *const u8, argv as *const *const u8, ptr::null())
+}
+
+/// posix_spawn_file_actions_addchdir_np - add chdir action to file_actions (non-portable)
+#[no_mangle]
+pub unsafe extern "C" fn posix_spawn_file_actions_addchdir_np(
+    _file_actions: *mut posix_spawn_file_actions_t,
+    _path: *const c_char,
+) -> c_int {
+    // Stub: we don't actually track file actions yet
+    0
+}
+
+/// posix_spawnattr_setpgroup - set process group in spawn attributes
+#[no_mangle]
+pub unsafe extern "C" fn posix_spawnattr_setpgroup(
+    _attr: *mut posix_spawnattr_t,
+    _pgroup: crate::pid_t,
+) -> c_int {
+    0
+}
+
+// idtype_t for waitid
+pub const P_PID: c_int = 1;
+pub const P_PGID: c_int = 2;
+pub const P_ALL: c_int = 0;
+
+// Additional wait options
+pub const WEXITED: c_int = 4;
+pub const WSTOPPED: c_int = 2;
+pub const WNOWAIT: c_int = 0x01000000;
+
+/// siginfo_t structure (simplified)
+#[repr(C)]
+pub struct siginfo_t {
+    pub si_signo: c_int,
+    pub si_errno: c_int,
+    pub si_code: c_int,
+    pub _pad: [c_int; 29], // Padding to match glibc size
+}
+
+/// waitid - wait for a process to change state (POSIX)
+#[no_mangle]
+pub unsafe extern "C" fn waitid(
+    idtype: c_int,
+    id: crate::pid_t,
+    infop: *mut siginfo_t,
+    options: c_int,
+) -> c_int {
+    // Convert waitid to waitpid for simplicity
+    let pid = match idtype {
+        P_PID => id,
+        P_PGID => -(id as i32),
+        P_ALL => -1,
+        _ => {
+            crate::set_errno(crate::EINVAL);
+            return -1;
+        }
+    };
+    
+    let wait_options = if (options & WNOHANG) != 0 { WNOHANG } else { 0 };
+    
+    let mut status: c_int = 0;
+    let result = crate::wait4(pid, &mut status, wait_options, ptr::null_mut());
+    
+    if result < 0 {
+        return -1;
+    }
+    
+    if !infop.is_null() {
+        // Fill in siginfo_t based on wait status
+        (*infop).si_signo = 17; // SIGCHLD
+        (*infop).si_errno = 0;
+        
+        if wifexited(status) {
+            (*infop).si_code = 1; // CLD_EXITED
+        } else if wifsignaled(status) {
+            (*infop).si_code = 2; // CLD_KILLED
+        } else if wifstopped(status) {
+            (*infop).si_code = 5; // CLD_STOPPED
+        } else {
+            (*infop).si_code = 0;
+        }
+    }
+    
+    0
+}
