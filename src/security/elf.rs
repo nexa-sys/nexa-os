@@ -498,7 +498,9 @@ impl ElfLoader {
 
             if p_type != PhType::Load as u32 {
                 if phdr_runtime.is_none() && p_type == PhType::Phdr as u32 {
-                    let target_addr = base_addr + (p_vaddr - first_load_vaddr);
+                    // Use signed arithmetic to avoid overflow when p_vaddr < first_load_vaddr
+                    let offset = p_vaddr as i64 - first_load_vaddr as i64;
+                    let target_addr = (base_addr as i64 + offset) as u64;
                     phdr_runtime = Some(target_addr);
                 }
                 continue;
@@ -571,7 +573,11 @@ impl ElfLoader {
             "Malformed ELF header"
         })?;
 
-        let relocated_entry = base_addr + (e_entry - first_load_vaddr);
+        // Calculate load_bias first (using signed arithmetic to avoid overflow)
+        let load_bias = base_addr as i64 - first_load_vaddr as i64;
+
+        // Use load_bias to relocate entry point safely
+        let relocated_entry = (e_entry as i64 + load_bias) as u64;
 
         if phdr_runtime.is_none() {
             let ph_table_offset = header.e_phoff as u64;
@@ -586,8 +592,6 @@ impl ElfLoader {
         }
 
         let phdr_vaddr = phdr_runtime.ok_or("Failed to locate program headers in memory")?;
-
-        let load_bias = base_addr as i64 - first_load_vaddr as i64;
 
         Ok(LoadResult {
             entry_point: relocated_entry,
