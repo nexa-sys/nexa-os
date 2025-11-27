@@ -21,11 +21,13 @@ mod exec;
 mod fd;
 mod file;
 mod ipc;
+mod memory;
 mod network;
 mod numbers;
 mod process;
 mod signal;
 mod system;
+mod thread;
 mod time;
 mod types;
 mod uefi;
@@ -39,12 +41,11 @@ pub use exec::get_exec_context;
 
 // Internal imports
 use crate::posix;
-use crate::process::{Process, ProcessState};
+use crate::process::ProcessState;
 use crate::scheduler;
 use crate::uefi_compat::{
     BlockDescriptor, CompatCounts, HidInputDescriptor, NetworkDescriptor, UsbHostDescriptor,
 };
-use crate::vt;
 use core::arch::global_asm;
 use nexa_boot_info::FramebufferInfo;
 
@@ -52,14 +53,15 @@ use nexa_boot_info::FramebufferInfo;
 use types::*;
 
 // Import all syscall implementations
-use exec::set_exec_context;
 use fd::{dup, dup2, pipe};
 use file::{close, fcntl, fstat, get_errno, list_files, lseek, open, read, stat, write};
 use ipc::{ipc_create, ipc_recv, ipc_send};
+use memory::{brk, mmap, mprotect, munmap};
 use network::{bind, connect, recvfrom, sendto, setsockopt, socket, socketpair};
 use process::{execve, exit, fork, getppid, kill, wait4};
 use signal::{sigaction, sigprocmask};
 use system::{chroot, mount, pivot_root, reboot, runlevel, shutdown, umount};
+use thread::{clone, futex, gettid, set_tid_address, set_robust_list, get_robust_list};
 use time::{clock_gettime, nanosleep, sched_yield};
 use uefi::{
     uefi_get_block_info, uefi_get_counts, uefi_get_fb_info, uefi_get_hid_info, uefi_get_net_info,
@@ -99,10 +101,48 @@ pub extern "C" fn syscall_dispatch(
         SYS_STAT => stat(arg1 as *const u8, arg2 as usize, arg3 as *mut posix::Stat),
         SYS_FSTAT => fstat(arg1, arg2 as *mut posix::Stat),
         SYS_LSEEK => lseek(arg1, arg2 as i64, arg3),
+        SYS_MMAP => {
+            // mmap needs 6 args: addr, length, prot, flags, fd, offset
+            let (arg4, arg5, arg6) = unsafe {
+                let mut r10_val: u64;
+                let mut r8_val: u64;
+                let mut r9_val: u64;
+                core::arch::asm!(
+                    "mov {0}, gs:[32]",
+                    "mov {1}, gs:[40]",
+                    "mov {2}, gs:[48]",
+                    out(reg) r10_val,
+                    out(reg) r8_val,
+                    out(reg) r9_val,
+                    options(nostack, preserves_flags)
+                );
+                (r10_val, r8_val, r9_val)
+            };
+            mmap(arg1, arg2, arg3, arg4, arg5 as i64, arg6)
+        }
+        SYS_MPROTECT => mprotect(arg1, arg2, arg3),
+        SYS_MUNMAP => munmap(arg1, arg2),
+        SYS_BRK => brk(arg1),
         SYS_FCNTL => fcntl(arg1, arg2, arg3),
         SYS_PIPE => pipe(arg1 as *mut [i32; 2]),
         SYS_DUP => dup(arg1),
         SYS_DUP2 => dup2(arg1, arg2),
+        SYS_CLONE => {
+            // clone needs 5 args: flags, stack, parent_tid, child_tid, tls
+            let (arg4, arg5) = unsafe {
+                let mut r10_val: u64;
+                let mut r8_val: u64;
+                core::arch::asm!(
+                    "mov {0}, gs:[32]",
+                    "mov {1}, gs:[40]",
+                    out(reg) r10_val,
+                    out(reg) r8_val,
+                    options(nostack, preserves_flags)
+                );
+                (r10_val, r8_val)
+            };
+            clone(arg1, arg2, arg3, arg4, arg5, syscall_return_addr)
+        }
         SYS_FORK => fork(syscall_return_addr),
         SYS_EXECVE => execve(
             arg1 as *const u8,
@@ -116,6 +156,29 @@ pub extern "C" fn syscall_dispatch(
         SYS_SIGPROCMASK => sigprocmask(arg1 as i32, arg2 as *const u64, arg3 as *mut u64),
         SYS_GETPID => crate::scheduler::get_current_pid().unwrap_or(0),
         SYS_GETPPID => getppid(),
+        SYS_GETTID => gettid(),
+        SYS_FUTEX => {
+            // futex needs 6 args: uaddr, op, val, timeout, uaddr2, val3
+            let (arg4, arg5, arg6) = unsafe {
+                let mut r10_val: u64;
+                let mut r8_val: u64;
+                let mut r9_val: u64;
+                core::arch::asm!(
+                    "mov {0}, gs:[32]",
+                    "mov {1}, gs:[40]",
+                    "mov {2}, gs:[48]",
+                    out(reg) r10_val,
+                    out(reg) r8_val,
+                    out(reg) r9_val,
+                    options(nostack, preserves_flags)
+                );
+                (r10_val, r8_val, r9_val)
+            };
+            futex(arg1, arg2 as i32, arg3 as i32, arg4, arg5, arg6 as i32)
+        }
+        SYS_SET_TID_ADDRESS => set_tid_address(arg1),
+        SYS_SET_ROBUST_LIST => set_robust_list(arg1, arg2 as usize),
+        SYS_GET_ROBUST_LIST => get_robust_list(arg1, arg2, arg3),
         SYS_SCHED_YIELD => sched_yield(),
         SYS_CLOCK_GETTIME => clock_gettime(arg1 as i32, arg2 as *mut TimeSpec),
         SYS_NANOSLEEP => nanosleep(arg1 as *const TimeSpec, arg2 as *mut TimeSpec),

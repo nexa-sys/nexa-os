@@ -12,6 +12,12 @@ pub const SYS_STAT: u64 = 4;
 pub const SYS_FSTAT: u64 = 5;
 pub const SYS_LSEEK: u64 = 8;
 
+// Memory management (Linux-compatible)
+pub const SYS_MMAP: u64 = 9;
+pub const SYS_MPROTECT: u64 = 10;
+pub const SYS_MUNMAP: u64 = 11;
+pub const SYS_BRK: u64 = 12;
+
 // Signal handling
 pub const SYS_SIGACTION: u64 = 13;
 pub const SYS_SIGPROCMASK: u64 = 14;
@@ -25,6 +31,7 @@ pub const SYS_NANOSLEEP: u64 = 35;
 
 // Process management
 pub const SYS_GETPID: u64 = 39;
+pub const SYS_CLONE: u64 = 56;
 pub const SYS_FORK: u64 = 57;
 pub const SYS_EXECVE: u64 = 59;
 pub const SYS_EXIT: u64 = 60;
@@ -32,6 +39,13 @@ pub const SYS_WAIT4: u64 = 61;
 pub const SYS_KILL: u64 = 62;
 pub const SYS_FCNTL: u64 = 72;
 pub const SYS_GETPPID: u64 = 110;
+
+// Thread management (Linux-compatible)
+pub const SYS_GETTID: u64 = 186;
+pub const SYS_FUTEX: u64 = 98;  // Linux x86_64 uses 202, but we avoid conflict with NexaOS custom syscalls
+pub const SYS_SET_TID_ADDRESS: u64 = 218;
+pub const SYS_SET_ROBUST_LIST: u64 = 273;
+pub const SYS_GET_ROBUST_LIST: u64 = 274;
 
 // Network socket calls (POSIX-compatible)
 pub const SYS_SOCKET: u64 = 41;
