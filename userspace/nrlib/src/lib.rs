@@ -80,6 +80,13 @@ pub use libc_compat::{
     FUTEX_WAIT_OP, FUTEX_WAKE_OP, FUTEX_PRIVATE, FUTEX_CLOCK_REALTIME_FLAG,
 };
 
+// Re-export dynamic linker types and functions
+pub use libc_compat::rtld::{
+    RTLD_LAZY, RTLD_NOW, RTLD_GLOBAL, RTLD_LOCAL, RTLD_NODELETE,
+    RTLD_NOLOAD, RTLD_DEEPBIND, RTLD_DEFAULT, RTLD_NEXT,
+    DlInfo, DlError, rtld_init, rtld_is_initialized,
+};
+
 // Re-export resolver types
 pub use resolver::Resolver;
 

@@ -11,11 +11,15 @@
 //! - `env` - Environment functions (getenv, getcwd, etc.)
 //! - `unwind` - Stack unwinding stubs for panic handling
 //! - `signal` - Signal handling stubs
-//! - `dl` - Dynamic linker stubs
+//! - `dl` - Dynamic linker API (dlopen, dlsym, dlclose, etc.)
 //! - `clone` - Clone, futex, and thread ID functions
 //! - `network` - Network functions (inet_*, byte order conversion)
 //! - `process` - Process control (posix_spawn, wait, exec, etc.)
 //! - `syscall_wrapper` - Variadic syscall function
+//! - `elf` - ELF format definitions and parsing
+//! - `rtld` - Runtime dynamic linker (library manager)
+//! - `symbol` - Symbol lookup and resolution
+//! - `reloc` - Relocation processing
 //!
 //! Note: Basic functions (read, write, open, close, exit, getpid, memcpy, etc.)
 //! are already defined in lib.rs. This module only adds additional functions
@@ -29,11 +33,17 @@ pub mod time_compat;
 pub mod env;
 pub mod unwind;
 pub mod signal;
-pub mod dl;
 pub mod clone;
 pub mod network;
 pub mod process;
 pub mod syscall_wrapper;
+
+// Dynamic linking support modules
+pub mod elf;
+pub mod rtld;
+pub mod symbol;
+pub mod reloc;
+pub mod dl;
 
 // Re-export all public items from submodules
 pub use types::*;
