@@ -4,7 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [lib]
-crate-type = ["rlib", "staticlib"]
+# rlib: Rust library format for Rust dependencies
+# staticlib: Static library (libnrlib.a) for static linking as libc.a
+# cdylib: Dynamic shared object (libnrlib.so) for dynamic linking as libc.so
+crate-type = ["rlib", "staticlib", "cdylib"]
 
 [profile.release]
 panic = "abort"

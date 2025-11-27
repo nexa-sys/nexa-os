@@ -52,6 +52,19 @@ cp "$PROJECT_ROOT/userspace/nrlib/target/x86_64-nexaos-userspace/release/libnrli
 # Create an empty libunwind.a
 ar crs "$PROJECT_ROOT/build/initramfs-build/sysroot/lib/libunwind.a"
 
+# Build nrlib as shared library for dynamic linking
+echo "Building nrlib shared library (libnrlib.so) for initramfs..."
+cd "$PROJECT_ROOT/userspace/nrlib"
+RUSTFLAGS="-C opt-level=2 -C panic=abort -C relocation-model=pic" \
+    cargo build -Z build-std=core --target "$PROJECT_ROOT/x86_64-nexaos-userspace-pic.json" --release
+# Copy shared library to initramfs lib64
+cp "$PROJECT_ROOT/userspace/nrlib/target/x86_64-nexaos-userspace-pic/release/libnrlib.so" \
+   "$BUILD_DIR/lib64/libnrlib.so"
+ln -sf libnrlib.so "$BUILD_DIR/lib64/libc.so"
+ln -sf libnrlib.so "$BUILD_DIR/lib64/libc.so.6"
+strip --strip-all "$BUILD_DIR/lib64/libnrlib.so" 2>/dev/null || true
+echo "✓ libnrlib.so installed to initramfs /lib64"
+
 # Build shell with std
 cd "$PROJECT_ROOT/build/initramfs-build"
 STD_RUSTFLAGS="-C opt-level=2 -C panic=abort -C linker=rust-lld -C link-arg=--image-base=0x00400000 -C link-arg=--entry=_start -L $PROJECT_ROOT/build/initramfs-build/sysroot/lib -C link-arg=-upthread_mutexattr_settype -C link-arg=-upthread_mutexattr_init -C link-arg=-upthread_mutexattr_destroy -C link-arg=-upthread_mutex_init -C link-arg=-upthread_mutex_lock -C link-arg=-upthread_mutex_unlock -C link-arg=-upthread_mutex_destroy -C link-arg=-upthread_once -C link-arg=-u__libc_single_threaded"

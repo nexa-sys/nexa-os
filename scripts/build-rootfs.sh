@@ -108,6 +108,23 @@ cp "$PROJECT_ROOT/userspace/nrlib/target/x86_64-nexaos-userspace/release/libnrli
 # Create an empty libunwind.a (std has its own unwind implementation)
 ar crs "$BUILD_DIR/userspace-build/sysroot/lib/libunwind.a"
 
+# Build nrlib as shared library (cdylib) with PIC for dynamic linking
+echo "Building nrlib shared library (libnrlib.so) for dynamic linking..."
+cd "$PROJECT_ROOT/userspace/nrlib"
+RUSTFLAGS="-C opt-level=2 -C panic=abort -C relocation-model=pic" \
+    cargo build -Z build-std=core --target "$PROJECT_ROOT/x86_64-nexaos-userspace-pic.json" --release
+
+# Copy shared library to sysroot and rootfs
+cp "$PROJECT_ROOT/userspace/nrlib/target/x86_64-nexaos-userspace-pic/release/libnrlib.so" \
+   "$BUILD_DIR/userspace-build/sysroot/lib/libnrlib.so"
+cp "$PROJECT_ROOT/userspace/nrlib/target/x86_64-nexaos-userspace-pic/release/libnrlib.so" \
+   "$ROOTFS_DIR/lib64/libnrlib.so"
+# Also create a symlink as libc.so for compatibility
+ln -sf libnrlib.so "$ROOTFS_DIR/lib64/libc.so"
+ln -sf libnrlib.so "$ROOTFS_DIR/lib64/libc.so.6"
+strip --strip-all "$ROOTFS_DIR/lib64/libnrlib.so" 2>/dev/null || true
+echo "✓ libnrlib.so built and installed to /lib64"
+
 # Now build ni with std, linking against our nrlib-based libc
 cd "$BUILD_DIR/userspace-build"
 STD_RUSTFLAGS="-C opt-level=2 -C panic=abort -C linker=rust-lld -C link-arg=--image-base=0x00400000 -C link-arg=--entry=_start -L $BUILD_DIR/userspace-build/sysroot/lib -C link-arg=-upthread_mutexattr_settype -C link-arg=-upthread_mutexattr_init -C link-arg=-upthread_mutexattr_destroy -C link-arg=-upthread_mutex_init -C link-arg=-upthread_mutex_lock -C link-arg=-upthread_mutex_unlock -C link-arg=-upthread_mutex_destroy -C link-arg=-upthread_once -C link-arg=-u__libc_single_threaded"
