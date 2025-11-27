@@ -64,6 +64,22 @@ pub use libc_compat::{
     WNOHANG, WUNTRACED, WCONTINUED,
 };
 
+// Re-export memory management functions
+pub use libc_compat::{
+    mmap, mmap64, munmap, mprotect, brk, sbrk,
+    PROT_NONE, PROT_READ, PROT_WRITE, PROT_EXEC,
+    MAP_SHARED, MAP_PRIVATE, MAP_FIXED, MAP_ANONYMOUS, MAP_ANON,
+    MAP_NORESERVE, MAP_POPULATE, MAP_FAILED,
+};
+
+// Re-export thread management functions
+pub use libc_compat::{
+    clone_syscall, gettid, set_tid_address, set_robust_list, get_robust_list, futex,
+    CLONE_VM, CLONE_FS, CLONE_FILES, CLONE_SIGHAND, CLONE_THREAD,
+    CLONE_SETTLS, CLONE_PARENT_SETTID, CLONE_CHILD_CLEARTID, CLONE_CHILD_SETTID, CLONE_VFORK,
+    FUTEX_WAIT_OP, FUTEX_WAKE_OP, FUTEX_PRIVATE, FUTEX_CLOCK_REALTIME_FLAG,
+};
+
 // Re-export resolver types
 pub use resolver::Resolver;
 
@@ -89,18 +105,33 @@ const SYS_READ: u64 = 0;
 const SYS_WRITE: u64 = 1;
 const SYS_OPEN: u64 = 2;
 const SYS_CLOSE: u64 = 3;
-const SYS_DUP: u64 = 32;
+const SYS_STAT: u64 = 4;
+const SYS_FSTAT: u64 = 5;
+const SYS_LSEEK: u64 = 8;
+
+// Memory management syscalls (Linux-compatible)
+const SYS_MMAP: u64 = 9;
+const SYS_MPROTECT: u64 = 10;
+const SYS_MUNMAP: u64 = 11;
+const SYS_BRK: u64 = 12;
+
 const SYS_PIPE: u64 = 22;
+const SYS_DUP: u64 = 32;
 const SYS_DUP2: u64 = 33;
+const SYS_GETPID: u64 = 39;
+
+// Thread management syscalls (Linux-compatible)
+const SYS_CLONE: u64 = 56;
 const SYS_FORK: u64 = 57;
 const SYS_EXECVE: u64 = 59;
 const SYS_EXIT: u64 = 60;
 const SYS_WAIT4: u64 = 61;
-const SYS_GETPID: u64 = 39;
-const SYS_STAT: u64 = 4;
-const SYS_FSTAT: u64 = 5;
-const SYS_LSEEK: u64 = 8;
 const SYS_FCNTL: u64 = 72;
+const SYS_FUTEX: u64 = 98;
+const SYS_GETTID: u64 = 186;
+const SYS_SET_TID_ADDRESS: u64 = 218;
+const SYS_SET_ROBUST_LIST: u64 = 273;
+const SYS_GET_ROBUST_LIST: u64 = 274;
 
 #[no_mangle]
 pub extern "C" fn pipe(pipefd: *mut i32) -> i32 {
@@ -259,6 +290,47 @@ pub fn syscall4(n: u64, a1: u64, a2: u64, a3: u64, a4: u64) -> u64 {
             in("rsi") a2,
             in("rdx") a3,
             in("r10") a4,
+            lateout("rax") ret,
+            clobber_abi("sysv64"),
+            options(nostack)
+        );
+    }
+    ret
+}
+
+#[inline(always)]
+pub fn syscall5(n: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> u64 {
+    let ret: u64;
+    unsafe {
+        asm!(
+            "int 0x81",
+            in("rax") n,
+            in("rdi") a1,
+            in("rsi") a2,
+            in("rdx") a3,
+            in("r10") a4,
+            in("r8") a5,
+            lateout("rax") ret,
+            clobber_abi("sysv64"),
+            options(nostack)
+        );
+    }
+    ret
+}
+
+#[inline(always)]
+pub fn syscall6(n: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, a6: u64) -> u64 {
+    let ret: u64;
+    unsafe {
+        asm!(
+            "int 0x81",
+            in("rax") n,
+            in("rdi") a1,
+            in("rsi") a2,
+            in("rdx") a3,
+            in("r10") a4,
+            in("r8") a5,
+            in("r9") a6,
             lateout("rax") ret,
             clobber_abi("sysv64"),
             options(nostack)

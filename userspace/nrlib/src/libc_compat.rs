@@ -1429,29 +1429,353 @@ pub unsafe extern "C" fn dlerror() -> *mut i8 {
 }
 
 // ============================================================================
-// Memory Mapping Stubs
+// Memory Mapping - musl ABI compatible
 // ============================================================================
 
+/// MMAP protection flags (POSIX)
+pub const PROT_NONE: c_int = 0x0;
+pub const PROT_READ: c_int = 0x1;
+pub const PROT_WRITE: c_int = 0x2;
+pub const PROT_EXEC: c_int = 0x4;
+
+/// MMAP flags (POSIX)
+pub const MAP_SHARED: c_int = 0x01;
+pub const MAP_PRIVATE: c_int = 0x02;
+pub const MAP_FIXED: c_int = 0x10;
+pub const MAP_ANONYMOUS: c_int = 0x20;
+pub const MAP_ANON: c_int = MAP_ANONYMOUS;
+pub const MAP_NORESERVE: c_int = 0x4000;
+pub const MAP_POPULATE: c_int = 0x8000;
+
+/// MAP_FAILED return value
+pub const MAP_FAILED: *mut c_void = (-1isize) as *mut c_void;
+
+/// SYS_MMAP - Memory map
+/// Maps memory region with specified protection and flags
 #[no_mangle]
 pub unsafe extern "C" fn mmap(
-    _addr: *mut c_void,
-    _length: size_t,
-    _prot: c_int,
-    _flags: c_int,
-    _fd: c_int,
-    _offset: i64,
+    addr: *mut c_void,
+    length: size_t,
+    prot: c_int,
+    flags: c_int,
+    fd: c_int,
+    offset: i64,
 ) -> *mut c_void {
-    (-1isize) as *mut c_void
+    let ret = crate::syscall6(
+        crate::SYS_MMAP,
+        addr as u64,
+        length as u64,
+        prot as u64,
+        flags as u64,
+        fd as i64 as u64,
+        offset as u64,
+    );
+    
+    if ret == u64::MAX {
+        crate::refresh_errno_from_kernel();
+        MAP_FAILED
+    } else {
+        crate::set_errno(0);
+        ret as *mut c_void
+    }
 }
 
+/// mmap64 - 64-bit version (same as mmap on 64-bit systems)
 #[no_mangle]
-pub unsafe extern "C" fn munmap(_addr: *mut c_void, _length: size_t) -> c_int {
+pub unsafe extern "C" fn mmap64(
+    addr: *mut c_void,
+    length: size_t,
+    prot: c_int,
+    flags: c_int,
+    fd: c_int,
+    offset: i64,
+) -> *mut c_void {
+    mmap(addr, length, prot, flags, fd, offset)
+}
+
+/// SYS_MUNMAP - Unmap memory region
+#[no_mangle]
+pub unsafe extern "C" fn munmap(addr: *mut c_void, length: size_t) -> c_int {
+    let ret = crate::syscall2(crate::SYS_MUNMAP, addr as u64, length as u64);
+    
+    if ret == u64::MAX {
+        crate::refresh_errno_from_kernel();
+        -1
+    } else {
+        crate::set_errno(0);
+        0
+    }
+}
+
+/// SYS_MPROTECT - Change memory protection
+#[no_mangle]
+pub unsafe extern "C" fn mprotect(addr: *mut c_void, len: size_t, prot: c_int) -> c_int {
+    let ret = crate::syscall3(crate::SYS_MPROTECT, addr as u64, len as u64, prot as u64);
+    
+    if ret == u64::MAX {
+        crate::refresh_errno_from_kernel();
+        -1
+    } else {
+        crate::set_errno(0);
+        0
+    }
+}
+
+/// SYS_BRK - Change data segment size (heap management)
+/// Returns new program break on success, current break on failure
+#[no_mangle]
+pub unsafe extern "C" fn brk(addr: *mut c_void) -> c_int {
+    let ret = crate::syscall1(crate::SYS_BRK, addr as u64);
+    
+    // brk returns the new/current break address
+    // On success, it should equal the requested address
+    // On failure, it returns the current break (not the requested)
+    if ret == addr as u64 {
+        crate::set_errno(0);
+        0
+    } else {
+        crate::set_errno(crate::ENOMEM);
+        -1
+    }
+}
+
+/// sbrk - Increment data space by increment bytes
+/// Returns previous program break on success, (void*)-1 on failure
+static mut CURRENT_BRK: *mut c_void = ptr::null_mut();
+
+#[no_mangle]
+pub unsafe extern "C" fn sbrk(increment: isize) -> *mut c_void {
+    // Get current break if not yet initialized
+    if CURRENT_BRK.is_null() {
+        let ret = crate::syscall1(crate::SYS_BRK, 0);
+        if ret == u64::MAX {
+            crate::refresh_errno_from_kernel();
+            return (-1isize) as *mut c_void;
+        }
+        CURRENT_BRK = ret as *mut c_void;
+    }
+    
+    let old_brk = CURRENT_BRK;
+    
+    if increment == 0 {
+        return old_brk;
+    }
+    
+    // Calculate new break
+    let new_brk = if increment > 0 {
+        (old_brk as usize).checked_add(increment as usize)
+    } else {
+        (old_brk as usize).checked_sub((-increment) as usize)
+    };
+    
+    let new_brk = match new_brk {
+        Some(addr) => addr as *mut c_void,
+        None => {
+            crate::set_errno(crate::ENOMEM);
+            return (-1isize) as *mut c_void;
+        }
+    };
+    
+    // Request new break
+    let ret = crate::syscall1(crate::SYS_BRK, new_brk as u64);
+    
+    if ret == new_brk as u64 {
+        CURRENT_BRK = new_brk;
+        crate::set_errno(0);
+        old_brk
+    } else {
+        crate::set_errno(crate::ENOMEM);
+        (-1isize) as *mut c_void
+    }
+}
+
+// ============================================================================
+// Thread Management - musl ABI compatible
+// ============================================================================
+
+/// Clone flags (subset of Linux clone flags)
+pub const CLONE_VM: c_int = 0x00000100;           // Share virtual memory
+pub const CLONE_FS: c_int = 0x00000200;           // Share filesystem info
+pub const CLONE_FILES: c_int = 0x00000400;        // Share file descriptors
+pub const CLONE_SIGHAND: c_int = 0x00000800;      // Share signal handlers
+pub const CLONE_THREAD: c_int = 0x00010000;       // Same thread group
+pub const CLONE_NEWNS: c_int = 0x00020000;        // New mount namespace
+pub const CLONE_SYSVSEM: c_int = 0x00040000;      // Share System V SEM_UNDO
+pub const CLONE_SETTLS: c_int = 0x00080000;       // Set TLS
+pub const CLONE_PARENT_SETTID: c_int = 0x00100000; // Store TID in parent
+pub const CLONE_CHILD_CLEARTID: c_int = 0x00200000; // Clear TID in child on exit
+pub const CLONE_DETACHED: c_int = 0x00400000;     // Unused
+pub const CLONE_UNTRACED: c_int = 0x00800000;     // Tracing doesn't follow
+pub const CLONE_CHILD_SETTID: c_int = 0x01000000; // Store TID in child
+pub const CLONE_VFORK: c_int = 0x00004000;        // Parent sleeps until child exits
+
+/// SYS_CLONE - Create a new process/thread
+/// 
+/// # Arguments
+/// * `flags` - Clone flags (CLONE_VM, CLONE_FILES, etc.)
+/// * `stack` - New stack pointer for child (0 to use default)
+/// * `parent_tid` - Pointer to store parent TID (if CLONE_PARENT_SETTID)
+/// * `child_tid` - Pointer to store child TID (if CLONE_CHILD_SETTID)
+/// * `tls` - TLS descriptor (if CLONE_SETTLS)
+///
+/// # Returns
+/// * Child PID in parent, 0 in child on success
+/// * -1 on error with errno set
+#[no_mangle]
+pub unsafe extern "C" fn clone_syscall(
+    flags: c_int,
+    stack: *mut c_void,
+    parent_tid: *mut c_int,
+    child_tid: *mut c_int,
+    tls: *mut c_void,
+) -> c_int {
+    let ret = crate::syscall5(
+        crate::SYS_CLONE,
+        flags as u64,
+        stack as u64,
+        parent_tid as u64,
+        child_tid as u64,
+        tls as u64,
+    );
+    
+    if ret == u64::MAX {
+        crate::refresh_errno_from_kernel();
+        -1
+    } else {
+        crate::set_errno(0);
+        ret as c_int
+    }
+}
+
+/// __clone - musl libc clone wrapper
+/// Note: Different argument order from raw clone syscall
+#[no_mangle]
+pub unsafe extern "C" fn __clone(
+    func: extern "C" fn(*mut c_void) -> c_int,
+    stack: *mut c_void,
+    flags: c_int,
+    arg: *mut c_void,
+    parent_tid: *mut c_int,
+    tls: *mut c_void,
+    child_tid: *mut c_int,
+) -> c_int {
+    // In single-threaded environment, clone for threads is not fully supported
+    // Return error to indicate threads cannot be created
+    let _ = (func, stack, flags, arg, parent_tid, tls, child_tid);
+    crate::set_errno(crate::ENOSYS);
     -1
 }
 
+/// SYS_GETTID - Get thread ID
 #[no_mangle]
-pub unsafe extern "C" fn mprotect(_addr: *mut c_void, _len: size_t, _prot: c_int) -> c_int {
-    -1
+pub unsafe extern "C" fn gettid() -> c_int {
+    let ret = crate::syscall0(crate::SYS_GETTID);
+    crate::set_errno(0);
+    ret as c_int
+}
+
+/// SYS_SET_TID_ADDRESS - Set pointer to thread ID
+/// Returns the caller's thread ID
+#[no_mangle]
+pub unsafe extern "C" fn set_tid_address(tidptr: *mut c_int) -> c_int {
+    let ret = crate::syscall1(crate::SYS_SET_TID_ADDRESS, tidptr as u64);
+    crate::set_errno(0);
+    ret as c_int
+}
+
+/// SYS_SET_ROBUST_LIST - Set robust futex list head
+#[no_mangle]
+pub unsafe extern "C" fn set_robust_list(head: *mut c_void, len: size_t) -> c_int {
+    let ret = crate::syscall2(crate::SYS_SET_ROBUST_LIST, head as u64, len as u64);
+    
+    if ret == u64::MAX {
+        crate::refresh_errno_from_kernel();
+        -1
+    } else {
+        crate::set_errno(0);
+        0
+    }
+}
+
+/// SYS_GET_ROBUST_LIST - Get robust futex list
+#[no_mangle]
+pub unsafe extern "C" fn get_robust_list(
+    pid: c_int,
+    head_ptr: *mut *mut c_void,
+    len_ptr: *mut size_t,
+) -> c_int {
+    let ret = crate::syscall3(
+        crate::SYS_GET_ROBUST_LIST,
+        pid as u64,
+        head_ptr as u64,
+        len_ptr as u64,
+    );
+    
+    if ret == u64::MAX {
+        crate::refresh_errno_from_kernel();
+        -1
+    } else {
+        crate::set_errno(0);
+        0
+    }
+}
+
+/// Futex operations
+pub const FUTEX_WAIT_OP: c_int = 0;
+pub const FUTEX_WAKE_OP: c_int = 1;
+pub const FUTEX_FD_OP: c_int = 2;
+pub const FUTEX_REQUEUE_OP: c_int = 3;
+pub const FUTEX_CMP_REQUEUE_OP: c_int = 4;
+pub const FUTEX_WAKE_OP_OP: c_int = 5;
+pub const FUTEX_LOCK_PI_OP: c_int = 6;
+pub const FUTEX_UNLOCK_PI_OP: c_int = 7;
+pub const FUTEX_TRYLOCK_PI_OP: c_int = 8;
+pub const FUTEX_WAIT_BITSET_OP: c_int = 9;
+pub const FUTEX_WAKE_BITSET_OP: c_int = 10;
+
+/// Futex flags
+pub const FUTEX_PRIVATE: c_int = 128;
+pub const FUTEX_CLOCK_REALTIME_FLAG: c_int = 256;
+
+/// SYS_FUTEX - Fast userspace mutex operations
+///
+/// # Arguments
+/// * `uaddr` - Pointer to the futex word
+/// * `op` - Futex operation
+/// * `val` - Value for operation  
+/// * `timeout` - Optional timeout (NULL for no timeout)
+/// * `uaddr2` - Second futex address (for requeue operations)
+/// * `val3` - Third value (for some operations)
+///
+/// # Returns
+/// * Depends on operation
+/// * -1 on error with errno set
+#[no_mangle]
+pub unsafe extern "C" fn futex(
+    uaddr: *mut c_int,
+    op: c_int,
+    val: c_int,
+    timeout: *const timespec,
+    uaddr2: *mut c_int,
+    val3: c_int,
+) -> c_int {
+    let ret = crate::syscall6(
+        crate::SYS_FUTEX,
+        uaddr as u64,
+        op as u64,
+        val as u64,
+        timeout as u64,
+        uaddr2 as u64,
+        val3 as u64,
+    );
+    
+    if ret == u64::MAX {
+        crate::refresh_errno_from_kernel();
+        -1
+    } else {
+        crate::set_errno(0);
+        ret as c_int
+    }
 }
 
 // ============================================================================
