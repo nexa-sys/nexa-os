@@ -23,7 +23,7 @@ static VGA_RUNTIME_ENABLED: AtomicBool = AtomicBool::new(true);
 static INIT_STARTED: AtomicBool = AtomicBool::new(false);
 
 // 环形缓冲区用于存储内核日志（64KB）
-const RINGBUF_SIZE: usize = 65536;
+pub const RINGBUF_SIZE: usize = 65536;
 static RINGBUF: Mutex<RingBuffer> = Mutex::new(RingBuffer::new());
 
 use spin::Mutex;

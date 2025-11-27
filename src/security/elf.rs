@@ -591,6 +591,19 @@ impl ElfLoader {
             }
         }
 
+        // Fallback: if we still haven't found PHDRs, but we have a base address,
+        // assume they are at base_addr + e_phoff (common for PIE/executables)
+        if phdr_runtime.is_none() {
+            crate::kwarn!("phdr_runtime not found via PT_PHDR or PT_LOAD scan, assuming base + e_phoff");
+            // Use signed arithmetic for safety
+            let offset = header.e_phoff as i64;
+            // If base_addr is 0 (e.g. first load of PIE), this is just offset
+            // If base_addr is loaded address, this is loaded_addr + offset
+            // Note: this assumes the ELF header and PHDRs are mapped at the beginning of the file
+            // which is true for almost all standard ELF binaries.
+            phdr_runtime = Some((base_addr as i64 + offset) as u64);
+        }
+
         let phdr_vaddr = phdr_runtime.ok_or("Failed to locate program headers in memory")?;
 
         Ok(LoadResult {

@@ -210,6 +210,9 @@ pub fn switch_to(target: usize) {
 }
 
 pub fn write_bytes(tty: usize, bytes: &[u8], stream: StreamKind) {
+    // Always mirror userspace output to serial console for debugging
+    crate::serial::write_bytes(bytes);
+
     if !INITIALIZED.load(Ordering::Acquire) {
         legacy_write(bytes);
         return;

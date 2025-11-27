@@ -100,3 +100,6 @@ pub const SYS_UEFI_MAP_NET_MMIO: u64 = 244;
 pub const SYS_UEFI_GET_USB_INFO: u64 = 245;
 pub const SYS_UEFI_GET_HID_INFO: u64 = 246;
 pub const SYS_UEFI_MAP_USB_MMIO: u64 = 247;
+
+// Kernel log syscalls
+pub const SYS_SYSLOG: u64 = 250;

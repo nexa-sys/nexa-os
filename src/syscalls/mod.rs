@@ -60,7 +60,7 @@ use memory::{brk, mmap, mprotect, munmap};
 use network::{bind, connect, recvfrom, sendto, setsockopt, socket, socketpair};
 use process::{execve, exit, fork, getppid, kill, wait4};
 use signal::{sigaction, sigprocmask};
-use system::{chroot, mount, pivot_root, reboot, runlevel, shutdown, umount};
+use system::{chroot, mount, pivot_root, reboot, runlevel, shutdown, syslog, umount};
 use thread::{clone, futex, gettid, set_tid_address, set_robust_list, get_robust_list, arch_prctl};
 use time::{clock_gettime, nanosleep, sched_yield};
 use uefi::{
@@ -294,6 +294,7 @@ pub extern "C" fn syscall_dispatch(
         SYS_UMOUNT => umount(arg1 as *const u8, arg2 as usize),
         SYS_CHROOT => chroot(arg1 as *const u8, arg2 as usize),
         SYS_PIVOT_ROOT => pivot_root(arg1 as *const PivotRootRequest),
+        SYS_SYSLOG => syslog(arg1 as i32, arg2 as *mut u8, arg3 as usize),
         SYS_UEFI_GET_COUNTS => uefi_get_counts(arg1 as *mut CompatCounts),
         SYS_UEFI_GET_FB_INFO => uefi_get_fb_info(arg1 as *mut FramebufferInfo),
         SYS_UEFI_GET_NET_INFO => uefi_get_net_info(arg1 as usize, arg2 as *mut NetworkDescriptor),

@@ -29,21 +29,50 @@ const AT_RANDOM: u64 = 25;
 const AT_EXECFN: u64 = 31;
 
 /// Helper struct for building the initial user stack
+/// 
+/// This builder handles the case where the virtual address (what userspace sees)
+/// differs from the physical address (where we actually write in the kernel).
 pub(crate) struct UserStackBuilder {
+    /// Current cursor position (virtual address for userspace)
     cursor: u64,
+    /// Lower bound of virtual address space
     lower_bound: u64,
+    /// Offset to add to virtual address to get physical address for writing
+    /// write_addr = cursor + phys_offset
+    phys_offset: i64,
 }
 
 impl UserStackBuilder {
     /// Create a new stack builder with given base address and size
+    /// This version assumes identity mapping (phys == virt)
     pub fn new(base: u64, size: u64) -> Self {
         Self {
             cursor: base + size,
             lower_bound: base,
+            phys_offset: 0,
         }
     }
 
-    /// Get the current stack pointer position
+    /// Create a new stack builder with separate virtual and physical addresses
+    /// 
+    /// - `virt_base`: Virtual base address (what userspace will see)
+    /// - `size`: Size of the stack region
+    /// - `phys_base`: Physical base address (where kernel writes)
+    pub fn new_with_phys(virt_base: u64, size: u64, phys_base: u64) -> Self {
+        Self {
+            cursor: virt_base + size,
+            lower_bound: virt_base,
+            phys_offset: phys_base as i64 - virt_base as i64,
+        }
+    }
+
+    /// Convert virtual address to physical address for writing
+    #[inline]
+    fn virt_to_phys(&self, virt: u64) -> u64 {
+        (virt as i64 + self.phys_offset) as u64
+    }
+
+    /// Get the current stack pointer position (virtual address)
     pub fn current_ptr(&self) -> u64 {
         self.cursor
     }
@@ -68,7 +97,8 @@ impl UserStackBuilder {
         }
 
         unsafe {
-            ptr::write_bytes(self.cursor as *mut u8, 0, padding as usize);
+            let phys_addr = self.virt_to_phys(self.cursor);
+            ptr::write_bytes(phys_addr as *mut u8, 0, padding as usize);
         }
 
         Ok(())
@@ -87,7 +117,8 @@ impl UserStackBuilder {
         }
 
         unsafe {
-            ptr::copy_nonoverlapping(bytes.as_ptr(), self.cursor as *mut u8, bytes.len());
+            let phys_addr = self.virt_to_phys(self.cursor);
+            ptr::copy_nonoverlapping(bytes.as_ptr(), phys_addr as *mut u8, bytes.len());
         }
 
         Ok(self.cursor)
@@ -110,7 +141,8 @@ impl UserStackBuilder {
             return Err("Stack overflow");
         }
         unsafe {
-            (self.cursor as *mut u64).write(value);
+            let phys_addr = self.virt_to_phys(self.cursor);
+            (phys_addr as *mut u64).write(value);
         }
         Ok(self.cursor)
     }
@@ -125,15 +157,25 @@ impl UserStackBuilder {
 /// - auxiliary vectors (ELF aux info)
 /// - argument strings
 /// - random bytes for AT_RANDOM
+///
+/// Arguments:
+/// - `argv`: Command line arguments
+/// - `exec_path`: Path to the executable
+/// - `stack_virt_base`: Virtual base address of the stack (what userspace sees)
+/// - `stack_size`: Size of the stack region
+/// - `stack_phys_base`: Physical base address of the stack (where kernel writes)
+/// - `program`: Load result for the main program
+/// - `interpreter`: Optional load result for the dynamic linker
 pub fn build_initial_stack(
     argv: &[&[u8]],
     exec_path: &[u8],
-    stack_base: u64,
+    stack_virt_base: u64,
     stack_size: u64,
+    stack_phys_base: u64,
     program: &LoadResult,
     interpreter: Option<&LoadResult>,
 ) -> Result<u64, &'static str> {
-    let mut builder = UserStackBuilder::new(stack_base, stack_size);
+    let mut builder = UserStackBuilder::new_with_phys(stack_virt_base, stack_size, stack_phys_base);
 
     if argv.len() > MAX_PROCESS_ARGS {
         return Err("Too many arguments");

@@ -74,6 +74,10 @@ path = "../../userspace/nurl.rs"
 name = "hello"
 path = "../../userspace/hello_dynamic.rs"
 
+[[bin]]
+name = "dmesg"
+path = "../../userspace/dmesg.rs"
+
 [profile.release]
 panic = "abort"
 opt-level = 2
@@ -239,6 +243,12 @@ RUSTFLAGS="$STD_RUSTFLAGS" \
     cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/targets/x86_64-nexaos-userspace.json" --release \
     --bin nurl
 
+# Build dmesg tool
+echo "Building dmesg tool with std..."
+RUSTFLAGS="$STD_RUSTFLAGS" \
+    cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/targets/x86_64-nexaos-userspace.json" --release \
+    --bin dmesg
+
 # Build hello (dynamic linking test) - uses dynamic target
 echo "Building hello (dynamic linking test)..."
 RUSTFLAGS="$STD_RUSTFLAGS" \
@@ -257,6 +267,7 @@ cp "target/x86_64-nexaos-userspace/release/uefi-compatd" "$ROOTFS_DIR/sbin/uefi-
 cp "target/x86_64-nexaos-userspace/release/ip" "$ROOTFS_DIR/bin/ip"
 cp "target/x86_64-nexaos-userspace/release/dhcp" "$ROOTFS_DIR/bin/dhcp"
 cp "target/x86_64-nexaos-userspace/release/nurl" "$ROOTFS_DIR/bin/nurl"
+cp "target/x86_64-nexaos-userspace/release/dmesg" "$ROOTFS_DIR/bin/dmesg"
 cp "target/x86_64-nexaos-userspace-dynamic/release/hello" "$ROOTFS_DIR/bin/hello"
 
 # Strip symbols
@@ -270,6 +281,7 @@ strip --strip-all "$ROOTFS_DIR/sbin/uefi-compatd" 2>/dev/null || true
 strip --strip-all "$ROOTFS_DIR/bin/ip" 2>/dev/null || true
 strip --strip-all "$ROOTFS_DIR/bin/dhcp" 2>/dev/null || true
 strip --strip-all "$ROOTFS_DIR/bin/nurl" 2>/dev/null || true
+strip --strip-all "$ROOTFS_DIR/bin/dmesg" 2>/dev/null || true
 strip --strip-all "$ROOTFS_DIR/bin/hello" 2>/dev/null || true
 
 # Copy dynamic linker for dynamically linked programs

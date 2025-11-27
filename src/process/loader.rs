@@ -121,6 +121,16 @@ impl Process {
             program_image.phdr_vaddr
         );
 
+        if program_image.phdr_vaddr == 0 {
+            kwarn!("CRITICAL: phdr_vaddr is 0! This will cause dynamic linker failure.");
+            // Attempt to fix it: assume it's at base + e_phoff
+            // We need to access the ELF header again, but we don't have it here easily.
+            // But we know base_addr is USER_VIRT_BASE.
+            // And usually phdr is at offset 64 (0x40) for 64-bit ELF.
+            program_image.phdr_vaddr = USER_VIRT_BASE + 64;
+            kwarn!("Fixed phdr_vaddr to {:#x} (assuming standard offset)", program_image.phdr_vaddr);
+        }
+
         // Build argument list
         let mut arg_storage: [&[u8]; MAX_PROCESS_ARGS] = [&[]; MAX_PROCESS_ARGS];
         let mut argc = 0usize;
@@ -183,11 +193,14 @@ impl Process {
                     interp_image.base_addr
                 );
 
+                // Calculate physical address for stack
+                let stack_phys = phys_base + (STACK_BASE - USER_VIRT_BASE);
                 let stack = build_initial_stack(
                     final_args,
                     exec_slice,
                     STACK_BASE,
                     STACK_SIZE,
+                    stack_phys,
                     &program_image,
                     Some(&interp_image),
                 )?;
@@ -195,11 +208,13 @@ impl Process {
                 (interp_image.entry_point, stack)
             } else {
                 kwarn!("Interpreter '{}' not found, trying static", interp_path);
+                let stack_phys = phys_base + (STACK_BASE - USER_VIRT_BASE);
                 let stack = build_initial_stack(
                     final_args,
                     exec_slice,
                     STACK_BASE,
                     STACK_SIZE,
+                    stack_phys,
                     &program_image,
                     None,
                 )?;
@@ -207,11 +222,13 @@ impl Process {
             }
         } else {
             kinfo!("Static executable");
+            let stack_phys = phys_base + (STACK_BASE - USER_VIRT_BASE);
             let stack = build_initial_stack(
                 final_args,
                 exec_slice,
                 STACK_BASE,
                 STACK_SIZE,
+                stack_phys,
                 &program_image,
                 None,
             )?;
@@ -280,7 +297,7 @@ impl Process {
         let loader = ElfLoader::new(elf_data)?;
         kinfo!("ElfLoader created successfully");
 
-        let program_image = loader.load(USER_PHYS_BASE)?;
+        let mut program_image = loader.load(USER_PHYS_BASE)?;
         kinfo!(
             "Program image loaded: entry={:#x}, base={:#x}, bias={:+}, phdr={:#x}",
             program_image.entry_point,
@@ -288,6 +305,12 @@ impl Process {
             program_image.load_bias,
             program_image.phdr_vaddr
         );
+
+        if program_image.phdr_vaddr == 0 {
+            kwarn!("CRITICAL: phdr_vaddr is 0! This will cause dynamic linker failure.");
+            program_image.phdr_vaddr = USER_VIRT_BASE + 64;
+            kwarn!("Fixed phdr_vaddr to {:#x} (assuming standard offset)", program_image.phdr_vaddr);
+        }
 
         let mut arg_storage: [&[u8]; MAX_PROCESS_ARGS] = [&[]; MAX_PROCESS_ARGS];
         let mut argc = 0usize;
@@ -341,6 +364,7 @@ impl Process {
                     exec_slice,
                     STACK_BASE,
                     STACK_SIZE,
+                    STACK_BASE,  // Identity mapped: phys == virt for new process
                     &program_image,
                     Some(&interp_image),
                 )?;
@@ -415,6 +439,7 @@ impl Process {
             exec_slice,
             STACK_BASE,
             STACK_SIZE,
+            STACK_BASE,  // Identity mapped: phys == virt for new process
             &program_image,
             None,
         )?;

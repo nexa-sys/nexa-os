@@ -457,8 +457,12 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
     print_str("\n");
 
     // Find the dynamic section of the main executable
-    if aux_info.at_phdr == 0 || aux_info.at_phnum == 0 {
-        print_str("[ld-nrlib] ERROR: No program headers from kernel\n");
+    if aux_info.at_phdr == 0 {
+        print_str("[ld-nrlib] ERROR: AT_PHDR is 0! Kernel did not pass program headers.\n");
+        exit(127);
+    }
+    if aux_info.at_phnum == 0 {
+        print_str("[ld-nrlib] ERROR: AT_PHNUM is 0!\n");
         exit(127);
     }
 
