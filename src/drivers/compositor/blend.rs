@@ -39,9 +39,13 @@ pub fn blend_row_alpha(
         let src_u32 = src as *const u32;
         let dst_u32 = dst as *mut u32;
         
-        // Process 4 pixels at a time (16 bytes) for register efficiency
-        let quad_count = pixels / 4;
-        let remainder = pixels % 4;
+        // Use 64-bit operations for better throughput (2 pixels at a time)
+        let src_u64 = src as *const u64;
+        let dst_u64 = dst as *mut u64;
+        
+        // Process 8 pixels at a time (4 x 64-bit = 32 bytes) for optimal cache line usage
+        let octet_count = pixels / 8;
+        let remainder = pixels % 8;
         
         // Prefetch first two cache lines
         if pixels >= 16 {
@@ -53,12 +57,12 @@ pub fn blend_row_alpha(
             );
         }
         
-        for quad in 0..quad_count {
-            let base = quad * 4;
+        for octet in 0..octet_count {
+            let base = octet * 4; // 4 x 64-bit words = 8 pixels
             
             // Prefetch 2 cache lines ahead (128 bytes = 32 pixels)
-            if quad % 8 == 0 && base + 32 < pixels {
-                let prefetch_offset = (base + 32) * 4;
+            if octet % 4 == 0 && (octet + 4) * 8 < pixels {
+                let prefetch_offset = (octet + 4) * 32;  // 4 octets * 32 bytes
                 core::arch::x86_64::_mm_prefetch::<{core::arch::x86_64::_MM_HINT_T0}>(
                     src.add(prefetch_offset) as *const i8
                 );
@@ -67,62 +71,86 @@ pub fn blend_row_alpha(
                 );
             }
             
-            // Process 4 pixels with full unroll
-            // Pixel 0
-            let s0 = src_u32.add(base).read_unaligned();
-            let d0 = dst_u32.add(base).read_unaligned();
-            dst_u32.add(base).write_unaligned(blend_pixel_fast(s0, d0, alpha32, inv_alpha32));
+            // Process 8 pixels (4 pairs) with full unroll using 64-bit operations
+            // Pair 0-1 (pixels 0-1)
+            let sp0 = src_u64.add(base).read_unaligned();
+            let dp0 = dst_u64.add(base).read_unaligned();
+            dst_u64.add(base).write_unaligned(blend_pixel_pair_fast(sp0, dp0, alpha32, inv_alpha32));
             
-            // Pixel 1
-            let s1 = src_u32.add(base + 1).read_unaligned();
-            let d1 = dst_u32.add(base + 1).read_unaligned();
-            dst_u32.add(base + 1).write_unaligned(blend_pixel_fast(s1, d1, alpha32, inv_alpha32));
+            // Pair 2-3 (pixels 2-3)
+            let sp1 = src_u64.add(base + 1).read_unaligned();
+            let dp1 = dst_u64.add(base + 1).read_unaligned();
+            dst_u64.add(base + 1).write_unaligned(blend_pixel_pair_fast(sp1, dp1, alpha32, inv_alpha32));
             
-            // Pixel 2
-            let s2 = src_u32.add(base + 2).read_unaligned();
-            let d2 = dst_u32.add(base + 2).read_unaligned();
-            dst_u32.add(base + 2).write_unaligned(blend_pixel_fast(s2, d2, alpha32, inv_alpha32));
+            // Pair 4-5 (pixels 4-5)
+            let sp2 = src_u64.add(base + 2).read_unaligned();
+            let dp2 = dst_u64.add(base + 2).read_unaligned();
+            dst_u64.add(base + 2).write_unaligned(blend_pixel_pair_fast(sp2, dp2, alpha32, inv_alpha32));
             
-            // Pixel 3
-            let s3 = src_u32.add(base + 3).read_unaligned();
-            let d3 = dst_u32.add(base + 3).read_unaligned();
-            dst_u32.add(base + 3).write_unaligned(blend_pixel_fast(s3, d3, alpha32, inv_alpha32));
+            // Pair 6-7 (pixels 6-7)
+            let sp3 = src_u64.add(base + 3).read_unaligned();
+            let dp3 = dst_u64.add(base + 3).read_unaligned();
+            dst_u64.add(base + 3).write_unaligned(blend_pixel_pair_fast(sp3, dp3, alpha32, inv_alpha32));
         }
         
-        // Handle remaining pixels (0-3)
-        let rem_base = quad_count * 4;
-        for i in 0..remainder {
-            let s = src_u32.add(rem_base + i).read_unaligned();
-            let d = dst_u32.add(rem_base + i).read_unaligned();
-            dst_u32.add(rem_base + i).write_unaligned(blend_pixel_fast(s, d, alpha32, inv_alpha32));
+        // Handle remaining pixels (0-7)
+        let rem_base = octet_count * 8;
+        // First handle pairs
+        let rem_pairs = remainder / 2;
+        for i in 0..rem_pairs {
+            let idx = rem_base / 2 + i;
+            let sp = src_u64.add(idx).read_unaligned();
+            let dp = dst_u64.add(idx).read_unaligned();
+            dst_u64.add(idx).write_unaligned(blend_pixel_pair_fast(sp, dp, alpha32, inv_alpha32));
+        }
+        // Handle final odd pixel if any
+        if remainder % 2 == 1 {
+            let idx = rem_base + remainder - 1;
+            let s = src_u32.add(idx).read_unaligned();
+            let d = dst_u32.add(idx).read_unaligned();
+            dst_u32.add(idx).write_unaligned(blend_pixel_fast(s, d, alpha32, inv_alpha32));
         }
     }
 }
 
-/// Fast single pixel alpha blend using 32-bit arithmetic
+/// Fast single pixel alpha blend using 32-bit arithmetic with SWAR optimization
 /// 
 /// Uses the formula: result = (src * alpha + dst * inv_alpha) / 255
-/// Approximated as: (src * alpha + dst * inv_alpha + 128) >> 8
+/// Optimized with SWAR (SIMD Within A Register) technique:
+/// - Process R+B channels together in one 32-bit word
+/// - Process G+A channels together in another 32-bit word
 /// Error is at most 1/255, visually imperceptible
 #[inline(always)]
 pub fn blend_pixel_fast(src: u32, dst: u32, alpha: u32, inv_alpha: u32) -> u32 {
-    // Extract components (BGRA format)
-    let sb = src & 0xFF;
-    let sg = (src >> 8) & 0xFF;
-    let sr = (src >> 16) & 0xFF;
+    // SWAR technique: process pairs of channels in parallel
+    // This reduces the number of operations from 12 to 6
     
-    let db = dst & 0xFF;
-    let dg = (dst >> 8) & 0xFF;
-    let dr = (dst >> 16) & 0xFF;
+    // Extract R and B channels (bits 0-7 and 16-23)
+    let src_rb = src & 0x00FF00FF;
+    let dst_rb = dst & 0x00FF00FF;
     
-    // Blend each channel: (s * a + d * (255-a) + 128) / 256
-    // The +128 provides rounding
-    let rb = (sb * alpha + db * inv_alpha + 128) >> 8;
-    let rg = (sg * alpha + dg * inv_alpha + 128) >> 8;
-    let rr = (sr * alpha + dr * inv_alpha + 128) >> 8;
+    // Extract G and A channels (bits 8-15 and 24-31)
+    let src_ga = (src >> 8) & 0x00FF00FF;
+    let dst_ga = (dst >> 8) & 0x00FF00FF;
     
-    // Pack result, preserving alpha channel from destination
-    rb | (rg << 8) | (rr << 16) | (dst & 0xFF000000)
+    // Blend R+B channels in parallel: (src * alpha + dst * inv_alpha + 128) >> 8
+    let rb = ((src_rb * alpha + dst_rb * inv_alpha + 0x00800080) >> 8) & 0x00FF00FF;
+    
+    // Blend G channel, preserve A from destination
+    let g_blended = ((src_ga & 0xFF) * alpha + (dst_ga & 0xFF) * inv_alpha + 128) >> 8;
+    
+    // Pack result: RB + G + original A
+    rb | (g_blended << 8) | (dst & 0xFF000000)
+}
+
+/// Blend two pixels at once using 64-bit operations (for aligned data)
+/// 
+/// Processes 2 pixels simultaneously for better throughput on 64-bit CPUs
+#[inline(always)]
+pub fn blend_pixel_pair_fast(src_pair: u64, dst_pair: u64, alpha: u32, inv_alpha: u32) -> u64 {
+    let p0 = blend_pixel_fast(src_pair as u32, dst_pair as u32, alpha, inv_alpha);
+    let p1 = blend_pixel_fast((src_pair >> 32) as u32, (dst_pair >> 32) as u32, alpha, inv_alpha);
+    (p0 as u64) | ((p1 as u64) << 32)
 }
 
 /// Scalar fallback for alpha blending (non-32bit or small regions)
@@ -157,7 +185,7 @@ pub fn blend_row_alpha_scalar(
 
 /// Additive blend a row of pixels
 /// 
-/// Optimized with saturating addition and 16-pixel batch processing
+/// Optimized with saturating addition and 32-bit word processing
 #[inline(always)]
 pub fn blend_row_additive(
     src: *const u8,
@@ -171,11 +199,13 @@ pub fn blend_row_additive(
     }
     
     unsafe {
+        let src_u32 = src as *const u32;
+        let dst_u32 = dst as *mut u32;
         let batch_count = pixels / SIMD_BATCH_SIZE;
         let remainder = pixels % SIMD_BATCH_SIZE;
         
         for batch in 0..batch_count {
-            let base_offset = batch * SIMD_BATCH_SIZE * 4;
+            let base = batch * SIMD_BATCH_SIZE;
             
             // Prefetch next batch
             if batch + 1 < batch_count {
@@ -185,29 +215,48 @@ pub fn blend_row_additive(
                 );
             }
             
+            // Process pixels using 32-bit saturating add emulation
             for p in 0..SIMD_BATCH_SIZE {
-                let offset = base_offset + p * 4;
-                let r = (*src.add(offset)).saturating_add(*dst.add(offset));
-                let g = (*src.add(offset + 1)).saturating_add(*dst.add(offset + 1));
-                let b = (*src.add(offset + 2)).saturating_add(*dst.add(offset + 2));
-                *dst.add(offset) = r;
-                *dst.add(offset + 1) = g;
-                *dst.add(offset + 2) = b;
+                let s = src_u32.add(base + p).read_unaligned();
+                let d = dst_u32.add(base + p).read_unaligned();
+                // Saturating add per channel using SWAR
+                let result = additive_blend_pixel(s, d);
+                dst_u32.add(base + p).write_unaligned(result);
             }
         }
         
         // Handle remainder
-        let remainder_offset = batch_count * SIMD_BATCH_SIZE * 4;
+        let rem_base = batch_count * SIMD_BATCH_SIZE;
         for i in 0..remainder {
-            let offset = remainder_offset + i * 4;
-            let r = (*src.add(offset)).saturating_add(*dst.add(offset));
-            let g = (*src.add(offset + 1)).saturating_add(*dst.add(offset + 1));
-            let b = (*src.add(offset + 2)).saturating_add(*dst.add(offset + 2));
-            *dst.add(offset) = r;
-            *dst.add(offset + 1) = g;
-            *dst.add(offset + 2) = b;
+            let s = src_u32.add(rem_base + i).read_unaligned();
+            let d = dst_u32.add(rem_base + i).read_unaligned();
+            dst_u32.add(rem_base + i).write_unaligned(additive_blend_pixel(s, d));
         }
     }
+}
+
+/// Fast additive blend for a single pixel using SWAR technique
+#[inline(always)]
+fn additive_blend_pixel(src: u32, dst: u32) -> u32 {
+    // Saturating add using SWAR: detect overflow per byte
+    // If any channel overflows, clamp to 255
+    let sum = src.wrapping_add(dst);
+    
+    // Detect overflow: if sum < src for any byte, that byte overflowed
+    // Use the fact that (a + b) < a implies overflow in unsigned arithmetic
+    // We check this per-byte using masking
+    
+    // Extract overflow indicators per channel
+    let overflow_mask = ((!sum & src) | (!sum & dst)) & 0x80808080;
+    
+    // For each byte with overflow bit set, set all bits to 1
+    // overflow_mask has bit 7 set for each overflowed byte
+    // We want to set all 8 bits of those bytes to 1
+    let saturate = overflow_mask | (overflow_mask >> 1) | (overflow_mask >> 2) | 
+                   (overflow_mask >> 3) | (overflow_mask >> 4) | (overflow_mask >> 5) | 
+                   (overflow_mask >> 6) | (overflow_mask >> 7);
+    
+    sum | saturate
 }
 
 /// Scalar fallback for additive blending
@@ -236,7 +285,7 @@ pub fn blend_row_additive_scalar(
 
 /// Multiply blend a row of pixels
 /// 
-/// Optimized with approximate division and 16-pixel batch processing
+/// Optimized with 32-bit SWAR-style processing
 #[inline(always)]
 pub fn blend_row_multiply(
     src: *const u8,
@@ -250,11 +299,13 @@ pub fn blend_row_multiply(
     }
     
     unsafe {
+        let src_u32 = src as *const u32;
+        let dst_u32 = dst as *mut u32;
         let batch_count = pixels / SIMD_BATCH_SIZE;
         let remainder = pixels % SIMD_BATCH_SIZE;
         
         for batch in 0..batch_count {
-            let base_offset = batch * SIMD_BATCH_SIZE * 4;
+            let base = batch * SIMD_BATCH_SIZE;
             
             // Prefetch next batch
             if batch + 1 < batch_count {
@@ -264,39 +315,48 @@ pub fn blend_row_multiply(
                 );
             }
             
+            // Process pixels using optimized multiply
             for p in 0..SIMD_BATCH_SIZE {
-                let offset = base_offset + p * 4;
-                let s0 = *src.add(offset) as u16;
-                let d0 = *dst.add(offset) as u16;
-                *dst.add(offset) = ((s0 * d0 + 128) >> 8) as u8;
-                
-                let s1 = *src.add(offset + 1) as u16;
-                let d1 = *dst.add(offset + 1) as u16;
-                *dst.add(offset + 1) = ((s1 * d1 + 128) >> 8) as u8;
-                
-                let s2 = *src.add(offset + 2) as u16;
-                let d2 = *dst.add(offset + 2) as u16;
-                *dst.add(offset + 2) = ((s2 * d2 + 128) >> 8) as u8;
+                let s = src_u32.add(base + p).read_unaligned();
+                let d = dst_u32.add(base + p).read_unaligned();
+                dst_u32.add(base + p).write_unaligned(multiply_blend_pixel(s, d));
             }
         }
         
         // Handle remainder
-        let remainder_offset = batch_count * SIMD_BATCH_SIZE * 4;
+        let rem_base = batch_count * SIMD_BATCH_SIZE;
         for i in 0..remainder {
-            let offset = remainder_offset + i * 4;
-            let s0 = *src.add(offset) as u16;
-            let d0 = *dst.add(offset) as u16;
-            *dst.add(offset) = ((s0 * d0 + 128) >> 8) as u8;
-            
-            let s1 = *src.add(offset + 1) as u16;
-            let d1 = *dst.add(offset + 1) as u16;
-            *dst.add(offset + 1) = ((s1 * d1 + 128) >> 8) as u8;
-            
-            let s2 = *src.add(offset + 2) as u16;
-            let d2 = *dst.add(offset + 2) as u16;
-            *dst.add(offset + 2) = ((s2 * d2 + 128) >> 8) as u8;
+            let s = src_u32.add(rem_base + i).read_unaligned();
+            let d = dst_u32.add(rem_base + i).read_unaligned();
+            dst_u32.add(rem_base + i).write_unaligned(multiply_blend_pixel(s, d));
         }
     }
+}
+
+/// Fast multiply blend for a single pixel
+/// Uses SWAR to process R+B and G+A channel pairs
+#[inline(always)]
+fn multiply_blend_pixel(src: u32, dst: u32) -> u32 {
+    // Extract R and B channels (bits 0-7 and 16-23)
+    let src_rb = src & 0x00FF00FF;
+    let dst_rb = dst & 0x00FF00FF;
+    
+    // Extract G channel (bits 8-15), preserve A from dst
+    let src_g = (src >> 8) & 0xFF;
+    let dst_g = (dst >> 8) & 0xFF;
+    
+    // Multiply R and B channels: (src * dst + 128) >> 8
+    // Process them in parallel using 32-bit arithmetic
+    // src_rb * dst_rb would overflow, so we need to be careful
+    let rb_lo = (src_rb & 0xFF) * (dst_rb & 0xFF);
+    let rb_hi = ((src_rb >> 16) & 0xFF) * ((dst_rb >> 16) & 0xFF);
+    let rb = (((rb_lo + 128) >> 8) & 0xFF) | ((((rb_hi + 128) >> 8) & 0xFF) << 16);
+    
+    // Multiply G channel
+    let g = ((src_g * dst_g + 128) >> 8) & 0xFF;
+    
+    // Pack result: RB + G + original A
+    rb | (g << 8) | (dst & 0xFF000000)
 }
 
 /// Scalar fallback for multiply blending

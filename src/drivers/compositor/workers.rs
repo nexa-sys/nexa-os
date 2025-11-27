@@ -8,7 +8,7 @@ use core::sync::atomic::Ordering;
 use crate::smp;
 
 use super::blend::{blend_row_alpha, blend_row_additive, blend_row_multiply};
-use super::config::{MAX_LAYERS, DEFAULT_STRIPE_HEIGHT};
+use super::config::MAX_LAYERS;
 use super::state::*;
 use super::types::{BlendMode, CompositionLayer, WorkType, CPU_WORK_STATES, COMPOSE_LAYERS};
 
@@ -171,7 +171,7 @@ pub fn worker_compose(
 /// Compose a single stripe of the framebuffer
 /// 
 /// This is the core composition function that processes one horizontal stripe.
-/// Optimized with prefetching and reduced branching in inner loops.
+/// Optimized with prefetching, reduced branching, and layer-row intersection caching.
 pub(crate) fn compose_stripe(
     dst_buffer: *mut u8,
     dst_pitch: usize,
@@ -181,13 +181,44 @@ pub(crate) fn compose_stripe(
     layers: &[CompositionLayer],
     screen_width: usize,
 ) {
-    // Pre-filter layers to avoid repeated checks (use fixed-size array for no_std)
-    let mut active_layers: [Option<&CompositionLayer>; MAX_LAYERS] = [None; MAX_LAYERS];
+    // Pre-filter and cache layer metadata to avoid repeated checks
+    // Store: (layer_ref, start_y, end_y, layer_x, actual_width)
+    struct LayerCache<'a> {
+        layer: &'a CompositionLayer,
+        start_y: usize,
+        end_y: usize,
+        layer_x: usize,
+        actual_width: usize,
+    }
+    
+    let mut active_layers: [Option<LayerCache>; MAX_LAYERS] = [None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None];
     let mut active_count = 0;
     
     for layer in layers.iter() {
         if layer.should_render() && active_count < MAX_LAYERS {
-            active_layers[active_count] = Some(layer);
+            let layer_start_y = layer.dst_region.y as usize;
+            let layer_end_y = layer_start_y + layer.dst_region.height as usize;
+            let layer_x = layer.dst_region.x as usize;
+            let layer_width = layer.dst_region.width as usize;
+            
+            // Skip layers that don't intersect our stripe at all
+            if layer_end_y <= start_row || layer_start_y >= end_row {
+                continue;
+            }
+            
+            // Pre-compute bounds-checked width
+            if layer_x >= screen_width {
+                continue;
+            }
+            let actual_width = layer_width.min(screen_width - layer_x);
+            
+            active_layers[active_count] = Some(LayerCache {
+                layer,
+                start_y: layer_start_y,
+                end_y: layer_end_y,
+                layer_x,
+                actual_width,
+            });
             active_count += 1;
         }
     }
@@ -212,39 +243,38 @@ pub(crate) fn compose_stripe(
         
         // Process each active layer from bottom to top (by z_order)
         for i in 0..active_count {
-            if let Some(layer) = active_layers[i] {
-                // Check if this row intersects the layer's destination
-                let layer_start_y = layer.dst_region.y as usize;
-                let layer_end_y = layer_start_y + layer.dst_region.height as usize;
-                
-                if row < layer_start_y || row >= layer_end_y {
+            if let Some(ref cache) = active_layers[i] {
+                // Fast row intersection check using cached bounds
+                if row < cache.start_y || row >= cache.end_y {
                     continue;
                 }
                 
-                // Calculate source row in layer buffer
-                let src_row = row - layer_start_y;
-                let layer_x = layer.dst_region.x as usize;
-                let layer_width = layer.dst_region.width as usize;
+                let layer = cache.layer;
                 
-                // Bounds check
-                if layer_x >= screen_width {
-                    continue;
-                }
-                let actual_width = layer_width.min(screen_width - layer_x);
+                // Calculate source row in layer buffer using cached values
+                let src_row = row - cache.start_y;
                 
-                // Calculate buffer addresses
+                // Calculate buffer addresses using cached width
                 let dst_row_start = unsafe { 
-                    dst_buffer.add(row_offset + layer_x * dst_bpp) 
+                    dst_buffer.add(row_offset + cache.layer_x * dst_bpp) 
                 };
                 
                 let src_row_offset = src_row * layer.buffer_pitch as usize;
                 let src_row_start = layer.buffer_addr as usize + src_row_offset;
+                let actual_width = cache.actual_width;
                 
-                // Prefetch source data
+                // Prefetch source data and next row
                 unsafe {
                     core::arch::x86_64::_mm_prefetch::<{core::arch::x86_64::_MM_HINT_T0}>(
                         src_row_start as *const i8
                     );
+                    // Prefetch next source row if within layer bounds
+                    if row + 1 < cache.end_y {
+                        let next_src = src_row_start + layer.buffer_pitch as usize;
+                        core::arch::x86_64::_mm_prefetch::<{core::arch::x86_64::_MM_HINT_T1}>(
+                            next_src as *const i8
+                        );
+                    }
                 }
                 
                 // Composite based on blend mode

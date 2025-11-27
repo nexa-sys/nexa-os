@@ -22,16 +22,20 @@ pub const DEFAULT_STRIPE_HEIGHT: usize = 24;
 pub(crate) const FAST_FILL_THRESHOLD: usize = 4;
 
 /// Threshold for using batch pixel processing
-/// Reduced to 8 for better SIMD utilization
-pub(crate) const BATCH_BLEND_THRESHOLD: usize = 8;
+/// Reduced to 4 for better SIMD utilization on small regions
+pub(crate) const BATCH_BLEND_THRESHOLD: usize = 4;
 
-/// SIMD batch size - process 8 pixels at a time for better register pressure
-/// 8 pixels = 32 bytes = 2 cache line halves (good for unaligned access)
-pub(crate) const SIMD_BATCH_SIZE: usize = 8;
+/// SIMD batch size - process 16 pixels at a time for better instruction pipelining
+/// 16 pixels = 64 bytes = 1 full cache line (optimal for streaming)
+pub(crate) const SIMD_BATCH_SIZE: usize = 16;
 
 /// Large SIMD batch for aligned bulk operations (32 pixels = 128 bytes)
 #[allow(dead_code)]
 pub(crate) const SIMD_LARGE_BATCH: usize = 32;
+
+/// Use 64-bit writes for double-pixel operations (2 pixels = 8 bytes)
+#[allow(dead_code)]
+pub(crate) const PIXEL_PAIR_SIZE: usize = 2;
 
 /// Cache line size for memory alignment (64 bytes on x86-64)
 #[allow(dead_code)]

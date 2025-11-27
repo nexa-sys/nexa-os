@@ -8,7 +8,7 @@ use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize
 use crate::smp;
 use crate::numa;
 
-use super::types::{CompositorStats, WorkType, CPU_WORK_STATES};
+use super::types::{CompositorStats, CPU_WORK_STATES};
 
 // =============================================================================
 // Multi-Core Work Distribution State
