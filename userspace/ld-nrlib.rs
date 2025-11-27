@@ -406,12 +406,28 @@ pub unsafe extern "C" fn _start_c() -> ! {
 unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
     print_str("[ld-nrlib] Dynamic linker starting...\n");
 
+    // Debug: print stack pointer
+    print_str("[ld-nrlib] stack_ptr=");
+    print_hex(stack_ptr as u64);
+    print_str("\n");
+
     // Parse the stack to get argc, argv, envp, auxv
     let argc = *stack_ptr as usize;
+    
+    // Debug: print argc
+    print_str("[ld-nrlib] argc=");
+    print_hex(argc as u64);
+    print_str("\n");
+    
     let argv = stack_ptr.add(1) as *const *const u8;
     
     // Skip past argv (argc+1 entries including NULL terminator)
     let mut ptr = argv.add(argc + 1) as *const *const u8;
+    
+    // Debug: print ptr after argv
+    print_str("[ld-nrlib] ptr after argv=");
+    print_hex(ptr as u64);
+    print_str("\n");
     
     // Skip past envp (until NULL)
     while !(*ptr).is_null() {
@@ -419,8 +435,21 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
     }
     ptr = ptr.add(1); // Skip NULL terminator
     
+    // Debug: print auxv pointer
+    print_str("[ld-nrlib] auxv ptr=");
+    print_hex(ptr as u64);
+    print_str("\n");
+    
     // Now ptr points to auxv
     let auxv = ptr as *const AuxEntry;
+    
+    // Debug: print first auxv entry raw bytes
+    print_str("[ld-nrlib] auxv[0].a_type=");
+    print_hex((*auxv).a_type);
+    print_str("\n");
+    print_str("[ld-nrlib] auxv[0].a_val=");
+    print_hex((*auxv).a_val);
+    print_str("\n");
     
     // Parse auxiliary vector
     let mut aux_info = AuxInfo::new();

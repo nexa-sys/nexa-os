@@ -4,7 +4,7 @@
 //! Implements EEVDF (Earliest Eligible Virtual Deadline First) scheduling.
 
 use crate::acpi::MAX_CPUS;
-use crate::process::{Process, ProcessState};
+use crate::process::{Process, ProcessState, MAX_CMDLINE_SIZE};
 
 /// Number of u64 words needed to represent MAX_CPUS bits (1024 CPUs = 16 u64s)
 const CPU_MASK_WORDS: usize = (MAX_CPUS + 63) / 64;
@@ -279,6 +279,8 @@ impl ProcessEntry {
                 user_rflags: 0,
                 exit_code: 0,
                 fs_base: 0,
+                cmdline: [0u8; MAX_CMDLINE_SIZE],
+                cmdline_len: 0,
             },
             // EEVDF fields
             vruntime: 0,

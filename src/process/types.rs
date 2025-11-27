@@ -46,6 +46,8 @@ pub const KERNEL_STACK_ALIGN: usize = 16;
 pub const MAX_PROCESSES: usize = 64;
 /// Maximum number of arguments for a process
 pub const MAX_PROCESS_ARGS: usize = 32;
+/// Maximum size of command line storage per process (null-separated arguments)
+pub const MAX_CMDLINE_SIZE: usize = 1024;
 
 /// CPU context saved during context switch
 #[derive(Clone, Copy, Debug)]
@@ -123,6 +125,8 @@ pub struct Process {
     pub exit_code: i32, // Last exit code reported by this process (if zombie)
     pub kernel_stack: u64, // Pointer to kernel stack allocation (bottom)
     pub fs_base: u64, // FS segment base for TLS (Thread Local Storage)
+    pub cmdline: [u8; MAX_CMDLINE_SIZE], // Command line arguments (null-separated, double-null terminated)
+    pub cmdline_len: usize, // Actual length of command line data
 }
 
 /// Legacy global PID counter (kept for reference, use pid_tree::allocate_pid instead)
@@ -140,3 +144,29 @@ pub fn allocate_pid_legacy() -> Pid {
 
 /// Default argv[0] value when none provided
 pub const DEFAULT_ARGV0: &[u8] = b"nexa";
+
+/// Build a cmdline buffer from argv array.
+/// Returns (buffer, actual_length).
+/// Format: null-separated arguments, double-null terminated.
+pub fn build_cmdline(argv: &[&[u8]]) -> ([u8; MAX_CMDLINE_SIZE], usize) {
+    let mut buffer = [0u8; MAX_CMDLINE_SIZE];
+    let mut pos = 0usize;
+
+    for arg in argv {
+        if pos + arg.len() + 1 > MAX_CMDLINE_SIZE {
+            break; // Truncate if too long
+        }
+        buffer[pos..pos + arg.len()].copy_from_slice(arg);
+        pos += arg.len();
+        buffer[pos] = 0; // Null separator
+        pos += 1;
+    }
+
+    // If we have at least one argument, the buffer ends with one null.
+    // Add an extra null for double-null termination if there's room.
+    if pos < MAX_CMDLINE_SIZE {
+        buffer[pos] = 0;
+    }
+
+    (buffer, pos)
+}

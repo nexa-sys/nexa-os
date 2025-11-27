@@ -14,7 +14,7 @@ use super::stack::build_initial_stack;
 use super::types::{
     Context, Process, ProcessState, DEFAULT_ARGV0, HEAP_BASE, HEAP_SIZE, INTERP_BASE,
     KERNEL_STACK_ALIGN, KERNEL_STACK_SIZE, MAX_PROCESS_ARGS, STACK_BASE, STACK_SIZE,
-    USER_PHYS_BASE, USER_REGION_SIZE, USER_VIRT_BASE,
+    USER_PHYS_BASE, USER_REGION_SIZE, USER_VIRT_BASE, build_cmdline,
 };
 
 impl Process {
@@ -240,6 +240,9 @@ impl Process {
         context.rip = entry_point;
         context.rsp = stack_ptr;
 
+        // Build cmdline from arguments
+        let (cmdline, cmdline_len) = build_cmdline(final_args);
+
         Ok(Process {
             pid,
             ppid: 0,
@@ -262,6 +265,8 @@ impl Process {
             exit_code: 0,
             kernel_stack: 0, // Initialize kernel stack pointer
             fs_base: 0, // Initialize TLS base (will be set by CLONE_SETTLS or arch_prctl)
+            cmdline,
+            cmdline_len,
         })
     }
 
@@ -393,6 +398,9 @@ impl Process {
                     }
                 };
 
+                // Build cmdline from arguments
+                let (cmdline, cmdline_len) = build_cmdline(final_args);
+
                 return Ok(Process {
                     pid,
                     ppid: 0,
@@ -423,6 +431,8 @@ impl Process {
                         ptr
                     },
                     fs_base: 0, // Initialize TLS base
+                    cmdline,
+                    cmdline_len,
                 });
             } else {
                 kwarn!(
@@ -466,6 +476,9 @@ impl Process {
                 }
             };
 
+        // Build cmdline from arguments
+        let (cmdline, cmdline_len) = build_cmdline(final_args);
+
         Ok(Process {
             pid,
             ppid: 0,
@@ -496,6 +509,8 @@ impl Process {
                 ptr
             },
             fs_base: 0, // Initialize TLS base
+            cmdline,
+            cmdline_len,
         })
     }
 }

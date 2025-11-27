@@ -540,22 +540,17 @@ pub fn generate_pid_stat(pid: Pid) -> Option<(&'static [u8], usize)> {
 
 /// Generate /proc/[pid]/cmdline content
 pub fn generate_pid_cmdline(pid: Pid) -> Option<(&'static [u8], usize)> {
-    let _process = scheduler::get_process(pid)?;
+    let process = scheduler::get_process(pid)?;
     
     let mut buf = PROC_BUFFER.lock();
-    // cmdline is null-separated arguments
-    // For now, return a placeholder
-    buf[0] = b'p';
-    buf[1] = b'r';
-    buf[2] = b'o';
-    buf[3] = b'c';
-    buf[4] = b'e';
-    buf[5] = b's';
-    buf[6] = b's';
-    buf[7] = 0;
     
-    let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), 8) };
-    Some((slice, 8))
+    // Copy the process cmdline to the buffer
+    let len = process.cmdline_len.min(PROC_BUF_SIZE);
+    buf[..len].copy_from_slice(&process.cmdline[..len]);
+    
+    // Return the slice with actual cmdline data
+    let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), len) };
+    Some((slice, len))
 }
 
 /// Generate /proc/[pid]/maps content

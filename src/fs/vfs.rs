@@ -422,6 +422,48 @@ fn handle_procfs_read(path: &str) -> Option<OpenFile> {
         }
         _ => {}
     }
+
+    // Handle /proc/self/... by resolving to current PID
+    if path.starts_with("proc/self/") {
+        let file_path = &path[10..]; // Remove "proc/self/"
+        if let Some(current_pid) = crate::scheduler::get_current_pid() {
+            match file_path {
+                "cmdline" => {
+                    if let Some((content, len)) = procfs::generate_pid_cmdline(current_pid) {
+                        return Some(OpenFile {
+                            content: FileContent::Inline(content),
+                            metadata: procfs::proc_file_metadata(len as u64),
+                        });
+                    }
+                }
+                "status" => {
+                    if let Some((content, len)) = procfs::generate_pid_status(current_pid) {
+                        return Some(OpenFile {
+                            content: FileContent::Inline(content),
+                            metadata: procfs::proc_file_metadata(len as u64),
+                        });
+                    }
+                }
+                "stat" => {
+                    if let Some((content, len)) = procfs::generate_pid_stat(current_pid) {
+                        return Some(OpenFile {
+                            content: FileContent::Inline(content),
+                            metadata: procfs::proc_file_metadata(len as u64),
+                        });
+                    }
+                }
+                "maps" => {
+                    if let Some((content, len)) = procfs::generate_pid_maps(current_pid) {
+                        return Some(OpenFile {
+                            content: FileContent::Inline(content),
+                            metadata: procfs::proc_file_metadata(len as u64),
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
     
     // Per-process files: /proc/[pid]/...
     if path.starts_with("proc/") {

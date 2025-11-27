@@ -493,6 +493,9 @@ pub fn execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8)
                     entry.process.user_rsp = new_process.stack_top;
                     entry.process.user_rflags = 0x202;
                     entry.process.exit_code = 0;
+                    // Update cmdline from new process
+                    entry.process.cmdline = new_process.cmdline;
+                    entry.process.cmdline_len = new_process.cmdline_len;
 
                     ktrace!(
                         "[syscall_execve] Updated: entry={:#x}, stack={:#x}, cr3={:#x}, has_entered_user={}",

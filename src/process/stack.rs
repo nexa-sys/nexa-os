@@ -252,6 +252,11 @@ pub fn build_initial_stack(
         builder.push_u64(*key)?;
     }
 
+    // Final 16-byte alignment BEFORE pushing argc/argv/envp
+    // This ensures the entire argc/argv/envp block is properly aligned
+    // and there's no padding between argc and argv[0]
+    builder.pad_to_alignment(16)?;
+
     // Push envp NULL terminator (no environment variables for now)
     builder.push_u64(0)?;
 
@@ -263,8 +268,7 @@ pub fn build_initial_stack(
         builder.push_u64(arg_ptrs[i])?;
     }
 
-    // Final alignment and push argc
-    builder.pad_to_alignment(16)?;
+    // Push argc (must be immediately before argv with no padding!)
     builder.push_u64(argc as u64)?;
 
     Ok(builder.current_ptr())

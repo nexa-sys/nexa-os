@@ -5,80 +5,37 @@
 //!
 //! Usage:
 //!   dmesg           - Display all kernel log messages
-//!   dmesg -c        - Clear the ring buffer after reading (not implemented)
-//!   dmesg -n LEVEL  - Set log level (not implemented)
 //!   dmesg -s SIZE   - Use SIZE for ring buffer query size
 //!   dmesg -h        - Show help
 
 use std::arch::asm;
+use std::env;
+use std::io::{self, Write};
+use std::process;
 
-// Syscall numbers
-const SYS_WRITE: u64 = 1;
-const SYS_EXIT: u64 = 60;
+// Syscall number for syslog (NexaOS specific)
 const SYS_SYSLOG: u64 = 250;
 
-// Syslog action types
+// Syslog action types (Linux compatible)
 const SYSLOG_ACTION_READ_ALL: i32 = 3;
-const SYSLOG_ACTION_SIZE_BUFFER: i32 = 10;
 
 // Default buffer size for reading logs (64KB max)
 const DEFAULT_BUFFER_SIZE: usize = 65536;
 
-fn syscall3(n: u64, a1: u64, a2: u64, a3: u64) -> u64 {
+/// Raw syscall wrapper for syslog
+fn syscall_syslog(action: i32, buf: &mut [u8]) -> i64 {
     let ret: u64;
     unsafe {
         asm!(
             "int 0x81",
-            in("rax") n,
-            in("rdi") a1,
-            in("rsi") a2,
-            in("rdx") a3,
+            in("rax") SYS_SYSLOG,
+            in("rdi") action as u64,
+            in("rsi") buf.as_mut_ptr() as u64,
+            in("rdx") buf.len() as u64,
             lateout("rax") ret,
             clobber_abi("sysv64")
         );
     }
-    ret
-}
-
-fn syscall1(n: u64, a1: u64) -> u64 {
-    syscall3(n, a1, 0, 0)
-}
-
-fn write_stdout(s: &str) {
-    syscall3(SYS_WRITE, 1, s.as_ptr() as u64, s.len() as u64);
-}
-
-fn write_bytes(fd: u64, buf: &[u8]) {
-    syscall3(SYS_WRITE, fd, buf.as_ptr() as u64, buf.len() as u64);
-}
-
-fn exit(code: i32) -> ! {
-    syscall1(SYS_EXIT, code as u64);
-    loop {}
-}
-
-fn syslog(action: i32, buf: &mut [u8]) -> i64 {
-    let ret = syscall3(
-        SYS_SYSLOG,
-        action as u64,
-        buf.as_mut_ptr() as u64,
-        buf.len() as u64,
-    );
-    if ret == u64::MAX {
-        -1
-    } else {
-        ret as i64
-    }
-}
-
-fn syslog_get_size() -> i64 {
-    let mut dummy = [0u8; 1];
-    let ret = syscall3(
-        SYS_SYSLOG,
-        SYSLOG_ACTION_SIZE_BUFFER as u64,
-        dummy.as_mut_ptr() as u64,
-        0,
-    );
     if ret == u64::MAX {
         -1
     } else {
@@ -87,95 +44,80 @@ fn syslog_get_size() -> i64 {
 }
 
 fn print_usage() {
-    write_stdout("dmesg - Print kernel ring buffer log\n");
-    write_stdout("\n");
-    write_stdout("Usage: dmesg [OPTIONS]\n");
-    write_stdout("\n");
-    write_stdout("Options:\n");
-    write_stdout("  -s SIZE  Buffer size for reading (default: 65536)\n");
-    write_stdout("  -h       Show this help message\n");
-    write_stdout("\n");
-    write_stdout("Examples:\n");
-    write_stdout("  dmesg          Display kernel messages\n");
-    write_stdout("  dmesg -s 8192  Read up to 8KB of log\n");
-}
-
-fn parse_number(s: &[u8]) -> Option<usize> {
-    let mut result: usize = 0;
-    for &c in s {
-        if c >= b'0' && c <= b'9' {
-            result = result.checked_mul(10)?;
-            result = result.checked_add((c - b'0') as usize)?;
-        } else {
-            return None;
-        }
-    }
-    Some(result)
+    println!("dmesg - Print kernel ring buffer log");
+    println!();
+    println!("Usage: dmesg [OPTIONS]");
+    println!();
+    println!("Options:");
+    println!("  -s SIZE  Buffer size for reading (default: 65536)");
+    println!("  -h       Show this help message");
+    println!();
+    println!("Examples:");
+    println!("  dmesg          Display kernel messages");
+    println!("  dmesg -s 8192  Read up to 8KB of log");
 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
+    let args: Vec<String> = env::args().collect();
     let mut buffer_size = DEFAULT_BUFFER_SIZE;
-    let mut i = 1;
 
     // Parse arguments
+    let mut i = 1;
     while i < args.len() {
         let arg = &args[i];
         if arg == "-h" || arg == "--help" {
             print_usage();
-            exit(0);
+            process::exit(0);
         } else if arg == "-s" {
             i += 1;
             if i >= args.len() {
-                write_stdout("dmesg: -s requires a size argument\n");
-                exit(1);
+                eprintln!("dmesg: -s requires a size argument");
+                process::exit(1);
             }
-            if let Some(size) = parse_number(args[i].as_bytes()) {
-                buffer_size = size;
-                if buffer_size > DEFAULT_BUFFER_SIZE {
-                    buffer_size = DEFAULT_BUFFER_SIZE;
+            match args[i].parse::<usize>() {
+                Ok(size) if size > 0 => {
+                    buffer_size = size.min(DEFAULT_BUFFER_SIZE);
                 }
-                if buffer_size == 0 {
-                    buffer_size = DEFAULT_BUFFER_SIZE;
+                Ok(_) => {
+                    eprintln!("dmesg: size must be positive");
+                    process::exit(1);
                 }
-            } else {
-                write_stdout("dmesg: invalid size\n");
-                exit(1);
+                Err(_) => {
+                    eprintln!("dmesg: invalid size '{}'", args[i]);
+                    process::exit(1);
+                }
             }
-        } else if arg.starts_with("-") {
-            write_stdout("dmesg: unknown option: ");
-            write_stdout(arg);
-            write_stdout("\n");
+        } else if arg.starts_with('-') {
+            eprintln!("dmesg: unknown option: {}", arg);
             print_usage();
-            exit(1);
+            process::exit(1);
         }
         i += 1;
     }
 
-    // Allocate buffer
+    // Allocate buffer and read kernel log
     let mut buffer = vec![0u8; buffer_size];
-
-    // Read kernel log
-    let bytes_read = syslog(SYSLOG_ACTION_READ_ALL, &mut buffer);
+    let bytes_read = syscall_syslog(SYSLOG_ACTION_READ_ALL, &mut buffer);
 
     if bytes_read < 0 {
-        write_stdout("dmesg: failed to read kernel log\n");
-        exit(1);
+        eprintln!("dmesg: failed to read kernel log");
+        process::exit(1);
     }
 
     if bytes_read == 0 {
         // No log data available
-        exit(0);
+        process::exit(0);
     }
 
     // Write log to stdout
-    let data_len = bytes_read as usize;
-    write_bytes(1, &buffer[..data_len]);
+    let data = &buffer[..bytes_read as usize];
+    io::stdout().write_all(data).unwrap_or_else(|e| {
+        eprintln!("dmesg: write error: {}", e);
+        process::exit(1);
+    });
 
-    // Ensure we end with a newline if there isn't one
-    if data_len > 0 && buffer[data_len - 1] != b'\n' {
-        write_stdout("\n");
+    // Ensure we end with a newline
+    if !data.is_empty() && data[data.len() - 1] != b'\n' {
+        println!();
     }
-
-    exit(0);
 }

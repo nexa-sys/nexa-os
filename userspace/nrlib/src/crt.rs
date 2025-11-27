@@ -42,7 +42,6 @@ global_asm!(
 #[no_mangle]
 unsafe extern "C" fn __nexa_crt_start(stack_ptr: *const usize) -> ! {
     if stack_ptr.is_null() {
-        // Extremely defensive: behave like a zero-argument program.
         let exit_code = main(0, core::ptr::null());
         sys_exit(exit_code)
     }
