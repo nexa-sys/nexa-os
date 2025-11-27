@@ -125,6 +125,55 @@ ln -sf libnrlib.so "$ROOTFS_DIR/lib64/libc.so.6"
 strip --strip-all "$ROOTFS_DIR/lib64/libnrlib.so" 2>/dev/null || true
 echo "✓ libnrlib.so built and installed to /lib64"
 
+# Build the standalone dynamic linker (ld-nrlib)
+echo "Building standalone dynamic linker (ld-nrlib-x86_64.so.1)..."
+mkdir -p "$BUILD_DIR/ld-nrlib-build"
+
+cat > "$BUILD_DIR/ld-nrlib-build/Cargo.toml" << 'EOF'
+[package]
+name = "ld-nrlib"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "ld-nrlib"
+path = "../../userspace/ld-nrlib.rs"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+lto = true
+EOF
+
+cd "$BUILD_DIR/ld-nrlib-build"
+
+# Build ld-nrlib as a PIE executable (which can serve as interpreter)
+# Using the special x86_64-nexaos-ld.json target which allows executables with PIC
+RUSTFLAGS="-C opt-level=s -C panic=abort -C linker=rust-lld \
+           -C link-arg=--pie -C link-arg=-e_start -C link-arg=--no-dynamic-linker \
+           -C link-arg=-soname=ld-nrlib-x86_64.so.1" \
+    cargo build -Z build-std=core --target "$PROJECT_ROOT/x86_64-nexaos-ld.json" --release
+
+# Copy and install the dynamic linker
+cp "target/x86_64-nexaos-ld/release/ld-nrlib" "$ROOTFS_DIR/lib64/ld-nrlib-x86_64.so.1"
+strip --strip-all "$ROOTFS_DIR/lib64/ld-nrlib-x86_64.so.1" 2>/dev/null || true
+chmod +x "$ROOTFS_DIR/lib64/ld-nrlib-x86_64.so.1"
+
+# Create compatibility symlinks for the dynamic linker
+# ld-musl-x86_64.so.1 -> ld-nrlib-x86_64.so.1 (musl compatibility)
+ln -sf ld-nrlib-x86_64.so.1 "$ROOTFS_DIR/lib64/ld-musl-x86_64.so.1"
+# libc.musl-x86_64.so.1 -> libnrlib.so (musl uses this as both ld and libc)
+ln -sf libnrlib.so "$ROOTFS_DIR/lib64/libc.musl-x86_64.so.1"
+# ld-nexaos.so.1 -> ld-nrlib-x86_64.so.1 (NexaOS native name)
+ln -sf ld-nrlib-x86_64.so.1 "$ROOTFS_DIR/lib64/ld-nexaos.so.1"
+
+LD_SIZE=$(stat -c%s "$ROOTFS_DIR/lib64/ld-nrlib-x86_64.so.1")
+echo "✓ ld-nrlib-x86_64.so.1 built and installed to /lib64 ($LD_SIZE bytes)"
+echo "  Symlinks created:"
+echo "    ld-musl-x86_64.so.1 -> ld-nrlib-x86_64.so.1"
+echo "    ld-nexaos.so.1 -> ld-nrlib-x86_64.so.1"
+echo "    libc.musl-x86_64.so.1 -> libnrlib.so"
+
 # Now build ni with std, linking against our nrlib-based libc
 cd "$BUILD_DIR/userspace-build"
 STD_RUSTFLAGS="-C opt-level=2 -C panic=abort -C linker=rust-lld -C link-arg=--image-base=0x00400000 -C link-arg=--entry=_start -L $BUILD_DIR/userspace-build/sysroot/lib -C link-arg=-upthread_mutexattr_settype -C link-arg=-upthread_mutexattr_init -C link-arg=-upthread_mutexattr_destroy -C link-arg=-upthread_mutex_init -C link-arg=-upthread_mutex_lock -C link-arg=-upthread_mutex_unlock -C link-arg=-upthread_mutex_destroy -C link-arg=-upthread_once -C link-arg=-u__libc_single_threaded"
@@ -212,13 +261,12 @@ strip --strip-all "$ROOTFS_DIR/bin/dhcp" 2>/dev/null || true
 strip --strip-all "$ROOTFS_DIR/bin/nurl" 2>/dev/null || true
 
 # Copy dynamic linker for dynamically linked programs
-echo "Copying dynamic linker..."
-if [ -f "/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2" ]; then
-    cp "/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2" "$ROOTFS_DIR/lib64/"
-    echo "✓ Added dynamic linker ld-linux-x86-64.so.2"
-else
-    echo "⚠ Warning: System dynamic linker not found, dynamically linked programs won't work"
-fi
+# Note: We now have our own ld-nrlib-x86_64.so.1, but also keep compatibility
+# with binaries that expect ld-linux-x86-64.so.2
+echo "Setting up dynamic linker symlinks..."
+# Create ld-linux-x86-64.so.2 symlink pointing to our linker for glibc-style binaries
+ln -sf ld-nrlib-x86_64.so.1 "$ROOTFS_DIR/lib64/ld-linux-x86-64.so.2"
+echo "✓ ld-linux-x86-64.so.2 -> ld-nrlib-x86_64.so.1 (glibc compatibility)"
 
 # Copy configuration files
 echo "Copying configuration files..."

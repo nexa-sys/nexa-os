@@ -65,6 +65,49 @@ ln -sf libnrlib.so "$BUILD_DIR/lib64/libc.so.6"
 strip --strip-all "$BUILD_DIR/lib64/libnrlib.so" 2>/dev/null || true
 echo "✓ libnrlib.so installed to initramfs /lib64"
 
+# Build the standalone dynamic linker (ld-nrlib) for initramfs
+echo "Building standalone dynamic linker (ld-nrlib-x86_64.so.1) for initramfs..."
+mkdir -p "$PROJECT_ROOT/build/ld-nrlib-initramfs-build"
+
+cat > "$PROJECT_ROOT/build/ld-nrlib-initramfs-build/Cargo.toml" << 'EOF'
+[package]
+name = "ld-nrlib"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "ld-nrlib"
+path = "../../userspace/ld-nrlib.rs"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+lto = true
+EOF
+
+cd "$PROJECT_ROOT/build/ld-nrlib-initramfs-build"
+
+# Build ld-nrlib as a PIE executable (which can serve as interpreter)
+# Using the special x86_64-nexaos-ld.json target
+RUSTFLAGS="-C opt-level=s -C panic=abort -C linker=rust-lld \
+           -C link-arg=--pie -C link-arg=-e_start -C link-arg=--no-dynamic-linker \
+           -C link-arg=-soname=ld-nrlib-x86_64.so.1" \
+    cargo build -Z build-std=core --target "$PROJECT_ROOT/x86_64-nexaos-ld.json" --release
+
+# Copy and install the dynamic linker to initramfs
+cp "target/x86_64-nexaos-ld/release/ld-nrlib" "$BUILD_DIR/lib64/ld-nrlib-x86_64.so.1"
+strip --strip-all "$BUILD_DIR/lib64/ld-nrlib-x86_64.so.1" 2>/dev/null || true
+chmod +x "$BUILD_DIR/lib64/ld-nrlib-x86_64.so.1"
+
+# Create compatibility symlinks for the dynamic linker in initramfs
+ln -sf ld-nrlib-x86_64.so.1 "$BUILD_DIR/lib64/ld-musl-x86_64.so.1"
+ln -sf libnrlib.so "$BUILD_DIR/lib64/libc.musl-x86_64.so.1"
+ln -sf ld-nrlib-x86_64.so.1 "$BUILD_DIR/lib64/ld-nexaos.so.1"
+ln -sf ld-nrlib-x86_64.so.1 "$BUILD_DIR/lib64/ld-linux-x86-64.so.2"
+
+LD_SIZE=$(stat -c%s "$BUILD_DIR/lib64/ld-nrlib-x86_64.so.1")
+echo "✓ ld-nrlib-x86_64.so.1 installed to initramfs /lib64 ($LD_SIZE bytes)"
+
 # Build shell with std
 cd "$PROJECT_ROOT/build/initramfs-build"
 STD_RUSTFLAGS="-C opt-level=2 -C panic=abort -C linker=rust-lld -C link-arg=--image-base=0x00400000 -C link-arg=--entry=_start -L $PROJECT_ROOT/build/initramfs-build/sysroot/lib -C link-arg=-upthread_mutexattr_settype -C link-arg=-upthread_mutexattr_init -C link-arg=-upthread_mutexattr_destroy -C link-arg=-upthread_mutex_init -C link-arg=-upthread_mutex_lock -C link-arg=-upthread_mutex_unlock -C link-arg=-upthread_mutex_destroy -C link-arg=-upthread_once -C link-arg=-u__libc_single_threaded"
@@ -77,15 +120,8 @@ strip --strip-all "$BUILD_DIR/bin/sh" 2>/dev/null || true
 
 echo "✓ Emergency shell built: $(stat -c%s "$BUILD_DIR/bin/sh") bytes"
 
-# Copy dynamic linker for dynamically linked programs
-echo "Copying dynamic linker to initramfs..."
-if [ -f "/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2" ]; then
-    cp "/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2" "$BUILD_DIR/lib64/"
-    LINKER_SIZE=$(stat -c%s "$BUILD_DIR/lib64/ld-linux-x86-64.so.2")
-    echo "✓ Added dynamic linker: $LINKER_SIZE bytes"
-else
-    echo "⚠ Warning: System dynamic linker not found at /lib/x86_64-linux-gnu/ld-linux-x86-64.so.2"
-fi
+# Dynamic linker is already built above (ld-nrlib-x86_64.so.1)
+echo "Dynamic linker setup complete for initramfs"
 
 # Create init script for initramfs
 # This script is executed by the kernel early in the boot process
@@ -170,9 +206,19 @@ cp "$BUILD_DIR/init" "$STAGING_DIR/"
 cp "$BUILD_DIR/README.txt" "$STAGING_DIR/"
 cp "$BUILD_DIR/bin/sh" "$STAGING_DIR/bin/"
 
-# Copy dynamic linker if it exists
-if [ -f "$BUILD_DIR/lib64/ld-linux-x86-64.so.2" ]; then
-    cp "$BUILD_DIR/lib64/ld-linux-x86-64.so.2" "$STAGING_DIR/lib64/"
+# Copy dynamic linker and libraries
+if [ -f "$BUILD_DIR/lib64/ld-nrlib-x86_64.so.1" ]; then
+    cp "$BUILD_DIR/lib64/ld-nrlib-x86_64.so.1" "$STAGING_DIR/lib64/"
+    # Create all the compatibility symlinks
+    ln -sf ld-nrlib-x86_64.so.1 "$STAGING_DIR/lib64/ld-linux-x86-64.so.2"
+    ln -sf ld-nrlib-x86_64.so.1 "$STAGING_DIR/lib64/ld-musl-x86_64.so.1"
+    ln -sf ld-nrlib-x86_64.so.1 "$STAGING_DIR/lib64/ld-nexaos.so.1"
+fi
+if [ -f "$BUILD_DIR/lib64/libnrlib.so" ]; then
+    cp "$BUILD_DIR/lib64/libnrlib.so" "$STAGING_DIR/lib64/"
+    ln -sf libnrlib.so "$STAGING_DIR/lib64/libc.so"
+    ln -sf libnrlib.so "$STAGING_DIR/lib64/libc.so.6"
+    ln -sf libnrlib.so "$STAGING_DIR/lib64/libc.musl-x86_64.so.1"
 fi
 
 # Note: Root filesystem images are no longer embedded here.
