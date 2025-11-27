@@ -504,3 +504,9 @@ pub fn proc_link_metadata() -> Metadata {
     meta.nlink = 1;
     meta
 }
+
+/// Convert a PID to a String for directory listing
+/// Works with radix tree PIDs (up to 262143)
+pub fn get_pid_string(pid: Pid) -> alloc::string::String {
+    alloc::format!("{}", pid)
+}

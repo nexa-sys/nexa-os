@@ -81,15 +81,37 @@ pub struct OpenFile {
 
 #[derive(Clone, Copy)]
 struct ListedEntry {
-    name: &'static str,
+    name: [u8; 256],
+    name_len: usize,
     metadata: Metadata,
+}
+
+impl ListedEntry {
+    fn new(name: &str, metadata: Metadata) -> Self {
+        let mut buf = [0u8; 256];
+        let len = name.len().min(255);
+        buf[..len].copy_from_slice(&name.as_bytes()[..len]);
+        Self {
+            name: buf,
+            name_len: len,
+            metadata,
+        }
+    }
+    
+    fn name_str(&self) -> &str {
+        core::str::from_utf8(&self.name[..self.name_len]).unwrap_or("")
+    }
+    
+    fn matches(&self, other: &str) -> bool {
+        self.name_str() == other
+    }
 }
 
 pub trait FileSystem: Sync {
     fn name(&self) -> &'static str;
     fn read(&self, path: &str) -> Option<OpenFile>;
     fn metadata(&self, path: &str) -> Option<Metadata>;
-    fn list(&self, path: &str, cb: &mut dyn FnMut(&'static str, Metadata));
+    fn list(&self, path: &str, cb: &mut dyn FnMut(&str, Metadata));
 
     // Optional write support - default implementation returns error
     fn write(&self, _path: &str, _data: &[u8]) -> Result<usize, &'static str> {
@@ -141,17 +163,14 @@ fn default_dir_meta() -> Metadata {
     meta
 }
 
-fn emit_unique(entries: &mut [Option<ListedEntry>; MAX_FILES], name: &'static str, meta: Metadata) {
+fn emit_unique(entries: &mut [Option<ListedEntry>; MAX_FILES], name: &str, meta: Metadata) {
     for slot in entries.iter_mut() {
         if let Some(existing) = slot {
-            if existing.name == name {
+            if existing.matches(name) {
                 if existing.metadata.file_type != FileType::Directory
                     && meta.file_type == FileType::Directory
                 {
-                    *slot = Some(ListedEntry {
-                        name,
-                        metadata: meta,
-                    });
+                    *slot = Some(ListedEntry::new(name, meta));
                 }
                 return;
             }
@@ -159,10 +178,7 @@ fn emit_unique(entries: &mut [Option<ListedEntry>; MAX_FILES], name: &'static st
     }
 
     if let Some(slot) = entries.iter_mut().find(|slot| slot.is_none()) {
-        *slot = Some(ListedEntry {
-            name,
-            metadata: meta,
-        });
+        *slot = Some(ListedEntry::new(name, meta));
     }
 }
 
@@ -843,7 +859,7 @@ pub fn stat(path: &str) -> Option<Metadata> {
 /// Handle procfs directory listing
 fn handle_procfs_list<F>(path: &str, cb: &mut F) -> bool
 where
-    F: FnMut(&'static str, Metadata),
+    F: FnMut(&str, Metadata),
 {
     use super::procfs;
     
@@ -864,24 +880,12 @@ where
             cb("self", procfs::proc_link_metadata());
             
             // List all process directories
-            // We need static strings for the callback
-            static PID_STRINGS: [&str; 64] = [
-                "1", "2", "3", "4", "5", "6", "7", "8", "9", "10",
-                "11", "12", "13", "14", "15", "16", "17", "18", "19", "20",
-                "21", "22", "23", "24", "25", "26", "27", "28", "29", "30",
-                "31", "32", "33", "34", "35", "36", "37", "38", "39", "40",
-                "41", "42", "43", "44", "45", "46", "47", "48", "49", "50",
-                "51", "52", "53", "54", "55", "56", "57", "58", "59", "60",
-                "61", "62", "63", "64",
-            ];
-            
+            // PIDs are managed by radix tree and can be any value up to MAX_PID
             let pids = procfs::get_all_pids();
             for pid_opt in pids.iter() {
                 if let Some(pid) = pid_opt {
-                    let idx = (*pid as usize).saturating_sub(1);
-                    if idx < PID_STRINGS.len() {
-                        cb(PID_STRINGS[idx], procfs::proc_dir_metadata());
-                    }
+                    let pid_str = procfs::get_pid_string(*pid);
+                    cb(&pid_str, procfs::proc_dir_metadata());
                 }
             }
             return true;
@@ -910,7 +914,7 @@ where
 /// Handle sysfs directory listing
 fn handle_sysfs_list<F>(path: &str, cb: &mut F) -> bool
 where
-    F: FnMut(&'static str, Metadata),
+    F: FnMut(&str, Metadata),
 {
     use super::sysfs;
     
@@ -1021,7 +1025,7 @@ where
 
 pub fn list_directory<F>(path: &str, mut cb: F)
 where
-    F: FnMut(&'static str, Metadata),
+    F: FnMut(&str, Metadata),
 {
     // Check for procfs paths first
     if path.starts_with("/proc") || path.starts_with("proc") || path == "/proc" {
@@ -1304,7 +1308,7 @@ impl FileSystem for InitramfsFilesystem {
         metas[idx]
     }
 
-    fn list(&self, path: &str, cb: &mut dyn FnMut(&'static str, Metadata)) {
+    fn list(&self, path: &str, cb: &mut dyn FnMut(&str, Metadata)) {
         let target = normalize_component(path);
         let files_guard = FILES.lock();
         let metas_guard = FILE_METADATA.lock();
@@ -1366,7 +1370,7 @@ impl FileSystem for InitramfsFilesystem {
         drop(files_guard);
 
         for entry in emitted.iter().flatten() {
-            cb(entry.name, entry.metadata);
+            cb(entry.name_str(), entry.metadata);
         }
     }
 

@@ -238,7 +238,7 @@ impl Ext2Filesystem {
 
     pub fn list_directory<F>(&self, path: &str, mut cb: F)
     where
-        F: FnMut(&'static str, Metadata),
+        F: FnMut(&str, Metadata),
     {
         let static_self = self.as_static();
         if let Some(file_ref) = static_self.lookup(path) {
@@ -342,7 +342,7 @@ impl Ext2Filesystem {
 
     fn for_each_dir_entry<F>(&self, inode: &Inode, mut cb: F)
     where
-        F: FnMut(&'static str, u32, u8),
+        F: FnMut(&str, u32, u8),
     {
         let block_size = self.block_size;
         for &block in inode.block.iter().take(EXT2_NDIR_BLOCKS) {
@@ -691,7 +691,7 @@ impl super::vfs::FileSystem for Ext2Filesystem {
         self.metadata_for_path(path)
     }
 
-    fn list(&self, path: &str, cb: &mut dyn FnMut(&'static str, Metadata)) {
+    fn list(&self, path: &str, cb: &mut dyn FnMut(&str, Metadata)) {
         self.list_directory(path, cb);
     }
 
