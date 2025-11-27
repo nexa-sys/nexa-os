@@ -1853,15 +1853,12 @@ pub unsafe extern "C" fn nanosleep(req: *const timespec, rem: *mut timespec) -> 
 const SYS_SCHED_YIELD: i64 = 24;
 const SYS_NANOSLEEP: i64 = 35;
 const SYS_GETPID: i64 = 39;
-const SYS_GETTID: i64 = 186;
-const SYS_FUTEX: i64 = 202;
+const SYS_GETTID_NR: i64 = 186;
+const SYS_FUTEX_NR: i64 = 98;  // NexaOS uses 98, not Linux's 202
+const SYS_SET_TID_ADDRESS_NR: i64 = 218;
 const SYS_GETRANDOM: i64 = 318;
 
-const FUTEX_WAIT: i32 = 0;
-const FUTEX_WAKE: i32 = 1;
-const FUTEX_CMD_MASK: i32 = 0x7;
-const FUTEX_PRIVATE_FLAG: i32 = 128;
-
+#[allow(dead_code)]
 static FUTEX_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 #[no_mangle]
@@ -1873,9 +1870,9 @@ pub unsafe extern "C" fn syscall(number: i64, mut args: ...) -> i64 {
             crate::set_errno(0);
             crate::getpid() as i64
         }
-        SYS_GETTID => {
+        SYS_GETTID_NR => {
             crate::set_errno(0);
-            crate::getpid() as i64
+            gettid() as i64
         }
         SYS_SCHED_YIELD => {
             // Single-threaded for now – nothing to schedule.
@@ -1899,90 +1896,20 @@ pub unsafe extern "C" fn syscall(number: i64, mut args: ...) -> i64 {
                 res as i64
             }
         }
-        SYS_FUTEX => {
+        SYS_SET_TID_ADDRESS_NR => {
+            let tidptr: *mut c_int = args.arg();
+            set_tid_address(tidptr) as i64
+        }
+        SYS_FUTEX_NR => {
             let uaddr: *mut i32 = args.arg();
-            let mut op: i32 = args.arg();
+            let op: i32 = args.arg();
             let val: i32 = args.arg();
-            let _timeout: *const timespec = args.arg();
-            let _uaddr2: *mut i32 = args.arg();
-            let _val3: i32 = args.arg();
-
-            if uaddr.is_null() {
-                crate::set_errno(crate::EINVAL);
-                return -1;
-            }
-
-            op &= !(FUTEX_PRIVATE_FLAG);
-            let cmd = op & FUTEX_CMD_MASK;
-
-            let log_slot = FUTEX_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
-            if log_slot < 999 {  // Increased from 128 to see more logs
-                let mut buf = [0u8; 128];
-                let prefix = if cmd == FUTEX_WAIT {
-                    b"[nrlib] futex wait op\n"
-                } else {
-                    b"[nrlib] futex wake op\n"
-                };
-                let len = prefix.len().min(buf.len());
-                buf[..len].copy_from_slice(&prefix[..len]);
-                let _ = crate::syscall3(SYS_WRITE_NR, 2, buf.as_ptr() as u64, len as u64);
-            }
-
-            match cmd {
-                FUTEX_WAIT => {
-                    // Check if the value at uaddr matches the expected value
-                    let current = core::ptr::read_volatile(uaddr);
-                    if current != val {
-                        // Value already changed, no need to wait
-                        crate::set_errno(crate::EAGAIN);
-                        return -1;
-                    }
-
-                    // CRITICAL FIX for single-threaded environment:
-                    // In single-threaded, we can't block because no other thread can wake us.
-                    // std's Once/OnceLock pattern expects:
-                    // - If state != COMPLETE, try to acquire initialization lock
-                    // - If can't acquire (another thread initializing), WAIT
-                    // - When initialization done, state = COMPLETE, WAKE all
-                    //
-                    // In single-threaded:
-                    // - Only ONE "thread" (execution flow) exists
-                    // - If we reach FUTEX_WAIT, it means:
-                    //   a) State was checked and found incomplete
-                    //   b) Lock acquisition attempted and "failed"
-                    //   c) Caller wants to wait for completion
-                    //
-                    // Since single-threaded, if state is incomplete when we check,
-                    // it means WE are the initializer! No other thread exists.
-                    // So FUTEX_WAIT should never happen in correct single-threaded Once.
-                    //
-                    // However, if we DO get here (bug in caller or racy check),
-                    // returning EAGAIN causes infinite retry loop!
-                    //
-                    // Solution: Return 0 (success) immediately.
-                    // This makes the caller think the wait completed and re-check state.
-                    // If state is now COMPLETE (initialization finished), good!
-                    // If state still incomplete, caller will retry initialization.
-                    //
-                    // This breaks deadlock while maintaining Once semantics.
-                    crate::set_errno(0);
-                    0  // Return success to break wait loop
-                }
-                FUTEX_WAKE => {
-                    // In single-threaded environment, just return success
-                    // In multi-threaded, this would wake up waiting threads
-                    crate::set_errno(0);
-                    if val > 0 {
-                        1
-                    } else {
-                        0
-                    }
-                }
-                _ => {
-                    crate::set_errno(crate::ENOSYS);
-                    -1
-                }
-            }
+            let timeout: *const timespec = args.arg();
+            let uaddr2: *mut i32 = args.arg();
+            let val3: i32 = args.arg();
+            
+            // Call our futex implementation which routes to kernel
+            futex(uaddr as *mut c_int, op, val, timeout, uaddr2 as *mut c_int, val3) as i64
         }
         _ => {
             crate::set_errno(crate::ENOSYS);
