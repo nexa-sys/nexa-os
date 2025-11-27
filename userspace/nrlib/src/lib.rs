@@ -58,6 +58,12 @@ pub use socket::{
     IPPROTO_IP, IPPROTO_ICMP, IPPROTO_TCP, IPPROTO_UDP,
 };
 
+// Re-export process control functions and wait status macros
+pub use libc_compat::{
+    wexitstatus, wifexited, wifsignaled, wtermsig, wifstopped, wstopsig,
+    WNOHANG, WUNTRACED, WCONTINUED,
+};
+
 // Re-export resolver types
 pub use resolver::Resolver;
 
