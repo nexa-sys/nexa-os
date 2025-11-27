@@ -15,15 +15,17 @@ pub const MIN_ROWS_PER_WORKER: usize = 8;
 /// Default stripe height for parallel composition
 /// Optimized for L2 cache (256KB typical):
 /// For 2560px width @ 4bpp = 10240 bytes/row
-/// 24 rows = 245KB ≈ fits in L2 cache
-pub const DEFAULT_STRIPE_HEIGHT: usize = 24;
+/// 16 rows = 164KB, leaves room for source data in L2
+/// Smaller stripes = better load balancing on many-core systems
+pub const DEFAULT_STRIPE_HEIGHT: usize = 16;
 
 /// Threshold for using fast memset-style fill (in pixels)
 pub(crate) const FAST_FILL_THRESHOLD: usize = 4;
 
 /// Threshold for using batch pixel processing
-/// Reduced to 4 for better SIMD utilization on small regions
-pub(crate) const BATCH_BLEND_THRESHOLD: usize = 4;
+/// Set to 8 to ensure enough pixels for efficient 64-bit operations
+/// (8 pixels = 32 bytes, half a cache line)
+pub(crate) const BATCH_BLEND_THRESHOLD: usize = 8;
 
 /// SIMD batch size - process 16 pixels at a time for better instruction pipelining
 /// 16 pixels = 64 bytes = 1 full cache line (optimal for streaming)
