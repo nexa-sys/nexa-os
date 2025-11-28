@@ -250,8 +250,12 @@ RUSTFLAGS="$STD_RUSTFLAGS" \
     --bin dmesg
 
 # Build hello (dynamic linking test) - uses dynamic target
+# For dynamic linking, we still need _start from libc.a, but link dynamically against libnrlib.so
+# CRITICAL: --undefined=_start forces the linker to pull _start from libc.a (entry point)
+# Without this, e_entry will be 0 and dynamic linker must do symbol lookup
 echo "Building hello (dynamic linking test)..."
-RUSTFLAGS="$STD_RUSTFLAGS" \
+DYN_RUSTFLAGS="-C opt-level=2 -C panic=abort -C linker=rust-lld -C link-arg=--image-base=0x00400000 -C link-arg=--entry=_start -L $BUILD_DIR/userspace-build/sysroot/lib -C link-arg=--undefined=_start -C link-arg=-lc -C link-arg=--undefined=pthread_mutexattr_settype -C link-arg=--undefined=pthread_mutexattr_init -C link-arg=--undefined=pthread_mutexattr_destroy -C link-arg=--undefined=pthread_mutex_init -C link-arg=--undefined=pthread_mutex_lock -C link-arg=--undefined=pthread_mutex_unlock -C link-arg=--undefined=pthread_mutex_destroy -C link-arg=--undefined=pthread_once -C link-arg=--undefined=__libc_single_threaded"
+RUSTFLAGS="$DYN_RUSTFLAGS" \
     cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/targets/x86_64-nexaos-userspace-dynamic.json" --release \
     --bin hello
 
