@@ -56,18 +56,14 @@ pub extern "x86-interrupt" fn page_fault_handler(
     if is_user_mode {
         // User-mode page fault - terminate the process gracefully
         if let Some(pid) = crate::scheduler::current_pid() {
-            // Print coredump info using serial (avoids log system deadlock)
-            crate::serial_println!("=== COREDUMP (PID {}) ===", pid);
-            crate::serial_println!("  Signal: SIGSEGV (Segmentation fault)");
-            crate::serial_println!("  Fault addr: {:#x}", fault_addr);
-            crate::serial_println!("  RIP: {:#x}", rip);
-            crate::serial_println!("  CS: {:#x}", stack_frame.code_segment.0);
-            crate::serial_println!("  Error code: {:?}", error_code);
-            crate::serial_println!("=== END COREDUMP ===");
+            // Debug log for kernel developers (only visible in kernel log, not user terminal)
+            kdebug!(
+                "SIGSEGV: PID {} fault at {:#x}, RIP={:#x}",
+                pid, fault_addr, rip
+            );
             
-            // Set exit code to 128 + SIGSEGV (11) = 139 (standard Unix convention)
-            let exit_code = 128 + crate::ipc::signal::SIGSEGV as i32;
-            let _ = crate::scheduler::set_process_exit_code(pid, exit_code);
+            // Set termination signal (SIGSEGV = 11) so wait4() returns correct status
+            let _ = crate::scheduler::set_process_term_signal(pid, crate::ipc::signal::SIGSEGV as i32);
             
             // Mark the process as zombie
             let _ = crate::scheduler::set_process_state(pid, crate::process::ProcessState::Zombie);
@@ -116,7 +112,7 @@ pub extern "x86-interrupt" fn general_protection_fault_handler(
     //   slot 13 (gs:[104]) = user RSP
     //   slot 14 (gs:[112]) = user SS
     let (gs_user_rsp_slot0, gs_user_cs_slot4, iret_user_rip, iret_user_cs, iret_user_rsp) = unsafe {
-        let gs_ptr = core::ptr::addr_of!(crate::initramfs::GS_DATA.0) as *const u64;
+        let gs_ptr = crate::smp::current_gs_data_ptr() as *const u64;
         (
             gs_ptr.add(GS_SLOT_USER_RSP).read_volatile(),    // slot 0: USER_RSP (syscall entry)
             gs_ptr.add(GS_SLOT_USER_CS).read_volatile(),     // slot 4: USER_CS (syscall entry)
@@ -141,34 +137,20 @@ pub extern "x86-interrupt" fn general_protection_fault_handler(
         let pid = current_pid.unwrap();
         
         // User-mode related GPF - terminate the process, not the kernel
-        kerror!(
-            "GPF: User process {} crashed, error_code={:#x}",
-            pid, error_code
+        // Debug log for kernel developers
+        kdebug!(
+            "SIGSEGV/GPF: PID {} at RIP={:#x}, error_code={:#x}",
+            pid, rip, error_code
         );
         
-        // Log coredump-style information
-        kerror!("=== COREDUMP INFO FOR PID {} (GPF) ===", pid);
-        kerror!("  Exception RIP: {:#x}", rip);
-        kerror!("  Exception RSP: {:#x}", rsp);
-        kerror!("  Exception CS: {:#x} (Ring {})", stack_frame.code_segment.0, ring);
-        kerror!("  IRET target RIP: {:#x}", iret_user_rip);
-        kerror!("  IRET target CS: {:#x} (Ring {})", iret_user_cs, iret_user_ring);
-        kerror!("  IRET target RSP: {:#x}", iret_user_rsp);
-        kerror!("  Syscall entry RSP: {:#x}", gs_user_rsp_slot0);
-        kerror!("  RFLAGS at exception: {:#x}", stack_frame.cpu_flags.bits());
-        kerror!("  Error Code: {:#x}", error_code);
-        kerror!("=== END COREDUMP INFO ===");
-        
-        // Set exit code to 128 + SIGSEGV (11) = 139 (standard Unix convention)
-        let exit_code = 128 + crate::ipc::signal::SIGSEGV as i32;
-        if let Err(e) = crate::scheduler::set_process_exit_code(pid, exit_code) {
-            kerror!("Failed to set exit code for PID {}: {}", pid, e);
-        }
+        // Set termination signal (SIGSEGV = 11) so wait4() returns correct status
+        let _ = crate::scheduler::set_process_term_signal(pid, crate::ipc::signal::SIGSEGV as i32);
         
         // Mark the process as zombie
         let _ = crate::scheduler::set_process_state(pid, crate::process::ProcessState::Zombie);
         
-        kinfo!("Process {} terminated with signal SIGSEGV/GPF (exit code {})", pid, exit_code);
+        // Schedule the next process
+        crate::scheduler::do_schedule_from_interrupt();
         
         // Schedule the next process
         crate::scheduler::do_schedule_from_interrupt();
@@ -270,7 +252,7 @@ pub extern "x86-interrupt" fn general_protection_fault_handler(
         sysret_rflags,
         sysret_rsp,
     ) = unsafe {
-        let gs_ptr = core::ptr::addr_of!(crate::initramfs::GS_DATA.0) as *const u64;
+        let gs_ptr = crate::smp::current_gs_data_ptr() as *const u64;
         (
             gs_ptr.add(0).read_volatile(),
             gs_ptr.add(9).read_volatile(),

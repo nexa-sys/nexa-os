@@ -269,6 +269,7 @@ impl Process {
             user_rsp: stack_ptr,
             user_rflags: 0x202,
             exit_code: 0,
+            term_signal: None,
             kernel_stack: 0, // Initialize kernel stack pointer
             fs_base: 0, // Initialize TLS base (will be set by CLONE_SETTLS or arch_prctl)
             cmdline,
@@ -427,6 +428,7 @@ impl Process {
                     user_rsp: stack_ptr,
                     user_rflags: 0x202,
                     exit_code: 0,
+                    term_signal: None,
                     kernel_stack: {
                         let layout =
                             Layout::from_size_align(KERNEL_STACK_SIZE, KERNEL_STACK_ALIGN).unwrap();
@@ -491,6 +493,7 @@ impl Process {
             state: ProcessState::Ready,
             entry_point: program_image.entry_point,
             exit_code: 0,
+            term_signal: None,
             stack_top: stack_ptr,
             heap_start: HEAP_BASE,
             heap_end: HEAP_BASE + HEAP_SIZE,

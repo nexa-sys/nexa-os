@@ -592,7 +592,7 @@ pub fn wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> u64 
 
                         if let Some(proc) = crate::scheduler::get_process(check_pid) {
                             child_exit_code = Some(proc.exit_code);
-                            child_term_signal = None;
+                            child_term_signal = proc.term_signal;
                         } else {
                             child_exit_code = Some(0);
                         }
@@ -630,7 +630,7 @@ pub fn wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> u64 
 
                     if let Some(proc) = crate::scheduler::get_process(wait_pid) {
                         child_exit_code = Some(proc.exit_code);
-                        child_term_signal = None;
+                        child_term_signal = proc.term_signal;
                     } else {
                         child_exit_code = Some(0);
                     }

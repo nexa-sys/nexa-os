@@ -36,7 +36,7 @@ pub use ipi::{IPI_CALL_FUNCTION, IPI_HALT, IPI_RESCHEDULE, IPI_TLB_FLUSH};
 pub use ipi::{send_ipi_broadcast, send_reschedule_ipi, send_tlb_flush_ipi_all};
 
 // Re-export CPU functions
-pub use cpu::{cpu_count, current_cpu_data, current_cpu_id, online_cpus};
+pub use cpu::{cpu_count, current_cpu_data, current_cpu_id, current_gs_data_ptr, gs_data_ptr_for_cpu, online_cpus};
 
 // Re-export initialization
 pub use init::init;

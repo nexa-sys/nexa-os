@@ -350,11 +350,11 @@ pub fn user_buffer_in_range(buf: u64, count: u64) -> bool {
     in_high_region || in_low_region
 }
 
-/// Get current stack bounds from GS_DATA
+/// Get current stack bounds from GS_DATA (per-CPU)
 #[inline(always)]
 pub fn current_stack_bounds() -> (u64, u64) {
     unsafe {
-        let gs_ptr = core::ptr::addr_of!(crate::initramfs::GS_DATA.0) as *const u64;
+        let gs_ptr = crate::smp::current_gs_data_ptr() as *const u64;
         let stack_top = gs_ptr.add(3).read();
         if stack_top == 0 {
             (0, 0)

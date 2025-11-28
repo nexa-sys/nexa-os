@@ -278,6 +278,7 @@ impl ProcessEntry {
                 user_rsp: 0,
                 user_rflags: 0,
                 exit_code: 0,
+                term_signal: None,
                 fs_base: 0,
                 cmdline: [0u8; MAX_CMDLINE_SIZE],
                 cmdline_len: 0,

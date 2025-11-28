@@ -80,3 +80,64 @@ pub fn current_online() -> usize {
         online
     }
 }
+
+/// Get the GS_DATA pointer for the current CPU
+/// 
+/// Returns the address of the GS_DATA structure that should be used by the current CPU.
+/// - BSP (CPU 0) uses the static `initramfs::GS_DATA` before SMP init
+/// - After SMP init, each CPU uses its own per-CPU GS_DATA
+/// 
+/// # Safety
+/// This function returns a raw pointer. The caller must ensure proper synchronization
+/// when accessing the GS_DATA structure.
+pub fn current_gs_data_ptr() -> *mut u64 {
+    if !SMP_READY.load(Ordering::Acquire) {
+        // Before SMP init, only BSP is running, use static GS_DATA
+        return unsafe { 
+            core::ptr::addr_of!(crate::initramfs::GS_DATA.0) as *mut u64 
+        };
+    }
+    
+    let cpu_id = current_cpu_id() as usize;
+    
+    // Try to get per-CPU GS_DATA pointer
+    match super::alloc::get_gs_data_ptr(cpu_id) {
+        Ok(ptr) => ptr as *mut u64,
+        Err(_) => {
+            // Fallback to static GS_DATA (this shouldn't happen in normal operation)
+            unsafe { 
+                core::ptr::addr_of!(crate::initramfs::GS_DATA.0) as *mut u64 
+            }
+        }
+    }
+}
+
+/// Get the GS_DATA pointer for a specific CPU
+/// 
+/// Returns the address of the GS_DATA structure for the specified CPU index.
+/// 
+/// # Arguments
+/// * `cpu_index` - The CPU index (0 for BSP, 1+ for APs)
+/// 
+/// # Safety
+/// This function returns a raw pointer. The caller must ensure proper synchronization
+/// when accessing the GS_DATA structure.
+pub fn gs_data_ptr_for_cpu(cpu_index: usize) -> *mut u64 {
+    if cpu_index == 0 && !SMP_READY.load(Ordering::Acquire) {
+        // BSP before SMP init
+        return unsafe { 
+            core::ptr::addr_of!(crate::initramfs::GS_DATA.0) as *mut u64 
+        };
+    }
+    
+    // Try to get per-CPU GS_DATA pointer
+    match super::alloc::get_gs_data_ptr(cpu_index) {
+        Ok(ptr) => ptr as *mut u64,
+        Err(_) => {
+            // Fallback to static GS_DATA
+            unsafe { 
+                core::ptr::addr_of!(crate::initramfs::GS_DATA.0) as *mut u64 
+            }
+        }
+    }
+}

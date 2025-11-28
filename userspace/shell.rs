@@ -1676,10 +1676,25 @@ fn execute_external_command(cmd: &str, args: &[&str]) -> bool {
     // Parent process - wait for child
     let mut status: i32 = 0;
     let wait_result = wait4(pid, &mut status as *mut i32, 0);
+    
+    // Debug: show wait result and status
+    print_str("[shell] wait4 returned ");
+    print_i32(wait_result);
+    print_str(", status=");
+    print_hex(status as u64);
+    println_str("");
+    
     if wait_result < 0 {
         println_str("wait failed");
         return false;
     }
+    
+    // Debug: show status check results
+    print_str("[shell] wifexited=");
+    if wifexited(status) { print_str("true"); } else { print_str("false"); }
+    print_str(", wifsignaled=");
+    if wifsignaled(status) { print_str("true"); } else { print_str("false"); }
+    println_str("");
     
     // Check if child exited normally or was terminated by signal
     if wifexited(status) {
@@ -1690,8 +1705,13 @@ fn execute_external_command(cmd: &str, args: &[&str]) -> bool {
             println_str("");
         }
     } else if wifsignaled(status) {
-        print_str("Command terminated by signal ");
-        print_i32(wtermsig(status));
+        let sig = wtermsig(status);
+        print_str("Segmentation fault");
+        if sig != 11 {
+            print_str(" (signal ");
+            print_i32(sig);
+            print_str(")");
+        }
         println_str("");
     }
     

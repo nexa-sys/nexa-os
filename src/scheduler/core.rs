@@ -464,7 +464,7 @@ fn find_next_ready_index(
 
 /// Save syscall context from GS_DATA to process entry
 unsafe fn save_syscall_context_to_entry(entry: &mut super::types::ProcessEntry, curr_pid: Pid) {
-    let gs_data_ptr = core::ptr::addr_of!(crate::initramfs::GS_DATA.0) as *const u64;
+    let gs_data_ptr = crate::smp::current_gs_data_ptr() as *const u64;
     let saved_rip = gs_data_ptr.add(crate::interrupts::GS_SLOT_SAVED_RCX).read();
     let saved_rsp = gs_data_ptr.add(crate::interrupts::GS_SLOT_USER_RSP).read();
     let saved_rflags = gs_data_ptr.add(crate::interrupts::GS_SLOT_SAVED_RFLAGS).read();
@@ -505,6 +505,12 @@ fn transition_current_to_ready(
 fn extract_next_process_info(
     entry: &mut super::types::ProcessEntry,
 ) -> (bool, Pid, u64, u64, u64, u64, crate::process::Context, u64, u64, crate::process::Process) {
+    // Debug: log the entry state before modification
+    crate::serial_println!(
+        "EXTRACT: PID={} has_entered_user={} state={:?}",
+        entry.process.pid, entry.process.has_entered_user, entry.process.state
+    );
+    
     entry.time_slice = DEFAULT_TIME_SLICE;
     entry.process.state = ProcessState::Running;
     
@@ -616,9 +622,9 @@ unsafe fn execute_context_switch(
     kernel_stack: u64,
     fs_base: u64,
 ) {
-    // Update kernel stack in GS
+    // Update kernel stack in GS (per-CPU GS_DATA)
     if kernel_stack != 0 {
-        let gs_data_ptr = core::ptr::addr_of!(crate::initramfs::GS_DATA.0) as *mut u64;
+        let gs_data_ptr = crate::smp::current_gs_data_ptr();
         gs_data_ptr
             .add(crate::interrupts::GS_SLOT_KERNEL_RSP)
             .write(kernel_stack + crate::process::KERNEL_STACK_SIZE as u64);
@@ -723,6 +729,12 @@ fn compute_schedule_decision(from_interrupt: bool) -> Option<ScheduleDecision> {
         extract_next_process_info(entry);
 
     *current_lock = Some(next_pid);
+
+    // Debug: log scheduling decision
+    crate::serial_println!(
+        "SCHED_DECISION: PID={} first_run={} rip={:#x} rsp={:#x}",
+        next_pid, first_run, user_rip, user_rsp
+    );
 
     if first_run {
         kdebug!("[do_schedule] Creating FirstRun decision for PID {}, CR3={:#x}", next_pid, next_cr3);

@@ -146,9 +146,9 @@ pub fn jump_to_usermode_with_cr3(entry: u64, stack: u64, cr3: u64) -> ! {
             user_data_sel as u64 | 3,
         );
 
-        // Set GS base to point to GS_DATA for both kernel and user mode
+        // Set GS base to point to per-CPU GS_DATA for both kernel and user mode
         use x86_64::registers::model_specific::Msr;
-        let gs_base = &raw const crate::initramfs::GS_DATA.0 as *const _ as u64;
+        let gs_base = crate::smp::current_gs_data_ptr() as u64;
         Msr::new(0xc0000101).write(gs_base);
     }
 
@@ -230,9 +230,9 @@ pub fn jump_to_usermode(entry: u64, stack: u64) -> ! {
             user_data_sel as u64 | 3,
         );
 
-        // Set GS base to point to GS_DATA for both kernel and user mode
+        // Set GS base to point to per-CPU GS_DATA for both kernel and user mode
         use x86_64::registers::model_specific::Msr;
-        let gs_base = &raw const crate::initramfs::GS_DATA.0 as *const _ as u64;
+        let gs_base = crate::smp::current_gs_data_ptr() as u64;
         Msr::new(0xc0000101).write(gs_base);
     }
 

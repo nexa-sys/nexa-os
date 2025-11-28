@@ -231,6 +231,38 @@ pub fn set_process_exit_code(pid: Pid, code: i32) -> Result<(), &'static str> {
     Err("Process not found")
 }
 
+/// Set the termination signal for a process (for signal-terminated processes)
+/// This is used to properly encode the wait status for wait4()
+pub fn set_process_term_signal(pid: Pid, signal: i32) -> Result<(), &'static str> {
+    let mut table = PROCESS_TABLE.lock();
+
+    // Try radix tree lookup first (O(log N))
+    if let Some(idx) = crate::process::lookup_pid(pid) {
+        let idx = idx as usize;
+        if idx < table.len() {
+            if let Some(entry) = &mut table[idx] {
+                if entry.process.pid == pid {
+                    entry.process.term_signal = Some(signal);
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    // Fallback to linear scan
+    for slot in table.iter_mut() {
+        let Some(entry) = slot else { continue };
+        if entry.process.pid != pid {
+            continue;
+        }
+
+        entry.process.term_signal = Some(signal);
+        return Ok(());
+    }
+
+    Err("Process not found")
+}
+
 /// Get process by PID
 pub fn get_process(pid: Pid) -> Option<Process> {
     super::table::get_process_from_table(pid)

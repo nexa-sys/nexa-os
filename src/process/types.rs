@@ -124,6 +124,7 @@ pub struct Process {
     pub user_rsp: u64, // Saved user-mode RSP for syscall return
     pub user_rflags: u64, // Saved user-mode RFLAGS for syscall return
     pub exit_code: i32, // Last exit code reported by this process (if zombie)
+    pub term_signal: Option<i32>, // Signal that terminated this process (None = normal exit)
     pub kernel_stack: u64, // Pointer to kernel stack allocation (bottom)
     pub fs_base: u64, // FS segment base for TLS (Thread Local Storage)
     pub cmdline: [u8; MAX_CMDLINE_SIZE], // Command line arguments (null-separated, double-null terminated)

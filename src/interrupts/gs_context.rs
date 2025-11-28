@@ -48,13 +48,14 @@ pub fn encode_hex_u64(value: u64, buf: &mut [u8; 16]) {
 }
 
 /// Set GS data for Ring 3 switch
+/// Uses the current CPU's GS_DATA structure
 pub unsafe fn set_gs_data(entry: u64, stack: u64, user_cs: u64, user_ss: u64, user_ds: u64) {
-    // Get kernel stack from TSS privilege stack table (BSP = CPU 0)
-    let kernel_stack = crate::gdt::get_kernel_stack_top(0);
+    // Get kernel stack from TSS privilege stack table for current CPU
+    let cpu_id = crate::smp::current_cpu_id() as usize;
+    let kernel_stack = crate::gdt::get_kernel_stack_top(cpu_id);
 
-    // Get GS_DATA address without creating a reference that might corrupt nearby statics
-    let gs_data_addr = &raw const crate::initramfs::GS_DATA.0 as *const _ as u64;
-    let gs_data_ptr = gs_data_addr as *mut u64;
+    // Get per-CPU GS_DATA pointer
+    let gs_data_ptr = crate::smp::current_gs_data_ptr();
 
     unsafe {
         gs_data_ptr.add(GS_SLOT_USER_RSP).write(stack);
@@ -82,8 +83,8 @@ pub unsafe fn set_gs_data(entry: u64, stack: u64, user_cs: u64, user_ss: u64, us
 /// rax_value: the value to return in RAX register (e.g., 0 for fork child)
 pub fn restore_user_syscall_context(user_rip: u64, user_rsp: u64, user_rflags: u64) {
     unsafe {
-        let gs_data_addr = &raw const crate::initramfs::GS_DATA.0 as *const _ as u64;
-        let gs_data_ptr = gs_data_addr as *mut u64;
+        // Use per-CPU GS_DATA
+        let gs_data_ptr = crate::smp::current_gs_data_ptr();
 
         gs_data_ptr.add(GS_SLOT_USER_RSP).write(user_rsp);
         gs_data_ptr.add(GS_SLOT_USER_RSP_DEBUG).write(user_rsp);
@@ -101,7 +102,8 @@ pub fn restore_user_syscall_context(user_rip: u64, user_rsp: u64, user_rflags: u
 #[cold]
 #[no_mangle]
 pub extern "C" fn kernel_stack_guard_reentry_fail(source: u64) -> ! {
-    let base_ptr = unsafe { core::ptr::addr_of!(crate::initramfs::GS_DATA.0) as *const u64 };
+    // Use per-CPU GS_DATA
+    let base_ptr = crate::smp::current_gs_data_ptr() as *const u64;
     let guard_val = unsafe { base_ptr.add(GS_SLOT_KERNEL_STACK_GUARD).read_volatile() };
     let snapshot = unsafe { base_ptr.add(GS_SLOT_KERNEL_STACK_SNAPSHOT).read_volatile() };
     let pid = crate::scheduler::current_pid();
