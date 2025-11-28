@@ -39,15 +39,58 @@ pub extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFram
 /// Page fault exception handler (#PF, vector 14)
 pub extern "x86-interrupt" fn page_fault_handler(
     stack_frame: InterruptStackFrame,
-    _error_code: PageFaultErrorCode,
+    error_code: PageFaultErrorCode,
 ) {
     use x86_64::registers::control::Cr2;
+    
     let cr2 = Cr2::read().unwrap_or_else(|_| x86_64::VirtAddr::new(0));
     let fault_addr = cr2.as_u64();
     let rip = stack_frame.instruction_pointer.as_u64();
+    
+    // Check if this is a user-mode page fault using the error code's USER_MODE bit
+    // This is more reliable than checking CS because:
+    // 1. The error code USER_MODE bit directly indicates if the access was from user mode
+    // 2. CS in the stack frame might be kernel CS if we're in an IST handler
+    let is_user_mode = error_code.contains(PageFaultErrorCode::USER_MODE);
 
-    kerror!("EXCEPTION: PAGE FAULT at {:#x}, RIP={:#x}", fault_addr, rip);
-    kerror!("System halted due to unrecoverable page fault");
+    if is_user_mode {
+        // User-mode page fault - terminate the process gracefully
+        if let Some(pid) = crate::scheduler::current_pid() {
+            // Print coredump info using serial (avoids log system deadlock)
+            crate::serial_println!("=== COREDUMP (PID {}) ===", pid);
+            crate::serial_println!("  Signal: SIGSEGV (Segmentation fault)");
+            crate::serial_println!("  Fault addr: {:#x}", fault_addr);
+            crate::serial_println!("  RIP: {:#x}", rip);
+            crate::serial_println!("  CS: {:#x}", stack_frame.code_segment.0);
+            crate::serial_println!("  Error code: {:?}", error_code);
+            crate::serial_println!("=== END COREDUMP ===");
+            
+            // Set exit code to 128 + SIGSEGV (11) = 139 (standard Unix convention)
+            let exit_code = 128 + crate::ipc::signal::SIGSEGV as i32;
+            let _ = crate::scheduler::set_process_exit_code(pid, exit_code);
+            
+            // Mark the process as zombie
+            let _ = crate::scheduler::set_process_state(pid, crate::process::ProcessState::Zombie);
+            
+            // Schedule the next process
+            crate::scheduler::do_schedule_from_interrupt();
+            
+            // If we return here, something went wrong
+            kerror!("FATAL: do_schedule_from_interrupt returned after SIGSEGV termination");
+        } else {
+            kerror!("User-mode page fault but no current process - this should not happen!");
+        }
+        
+        // Fallback: halt if we can't recover
+        loop {
+            x86_64::instructions::hlt();
+        }
+    }
+
+    // Kernel-mode page fault - this is a serious error
+    kerror!("EXCEPTION: KERNEL PAGE FAULT at {:#x}, RIP={:#x}", fault_addr, rip);
+    kerror!("Error code: {:?}", error_code);
+    kerror!("System halted due to unrecoverable kernel page fault");
     loop {
         x86_64::instructions::hlt();
     }
@@ -59,7 +102,87 @@ pub extern "x86-interrupt" fn general_protection_fault_handler(
     error_code: u64,
 ) {
     use x86_64::instructions::interrupts;
+    use crate::interrupts::gs_context::{GS_SLOT_USER_RSP, GS_SLOT_USER_CS};
+    
+    let ring = stack_frame.code_segment.0 & 3;
+    let rip = stack_frame.instruction_pointer.as_u64();
+    let rsp = stack_frame.stack_pointer.as_u64();
+    
+    // Read saved user context from GS_DATA
+    // Slots 10-14 are set by syscall return path (iretq preparation):
+    //   slot 10 (gs:[80]) = user RIP
+    //   slot 11 (gs:[88]) = user CS  
+    //   slot 12 (gs:[96]) = user RFLAGS
+    //   slot 13 (gs:[104]) = user RSP
+    //   slot 14 (gs:[112]) = user SS
+    let (gs_user_rsp_slot0, gs_user_cs_slot4, iret_user_rip, iret_user_cs, iret_user_rsp) = unsafe {
+        let gs_ptr = core::ptr::addr_of!(crate::initramfs::GS_DATA.0) as *const u64;
+        (
+            gs_ptr.add(GS_SLOT_USER_RSP).read_volatile(),    // slot 0: USER_RSP (syscall entry)
+            gs_ptr.add(GS_SLOT_USER_CS).read_volatile(),     // slot 4: USER_CS (syscall entry)
+            gs_ptr.add(10).read_volatile(),                   // slot 10: iret user RIP
+            gs_ptr.add(11).read_volatile(),                   // slot 11: iret user CS
+            gs_ptr.add(13).read_volatile(),                   // slot 13: iret user RSP
+        )
+    };
+    
+    // Check if this GPF is related to a user process:
+    // 1. Direct user-mode GPF: ring == 3
+    // 2. GPF during syscall/iret for a user process: iret_user_cs or gs_user_cs indicates user mode
+    let iret_user_ring = (iret_user_cs & 3) as u8;
+    let gs_user_ring = (gs_user_cs_slot4 & 3) as u8;
+    let is_user_related = ring == 3 || iret_user_ring == 3 || gs_user_ring == 3;
+    
+    // Also check if we have a current user process running
+    let current_pid = crate::scheduler::current_pid();
+    let has_user_process = current_pid.is_some() && current_pid != Some(0);
+    
+    if is_user_related && has_user_process {
+        let pid = current_pid.unwrap();
+        
+        // User-mode related GPF - terminate the process, not the kernel
+        kerror!(
+            "GPF: User process {} crashed, error_code={:#x}",
+            pid, error_code
+        );
+        
+        // Log coredump-style information
+        kerror!("=== COREDUMP INFO FOR PID {} (GPF) ===", pid);
+        kerror!("  Exception RIP: {:#x}", rip);
+        kerror!("  Exception RSP: {:#x}", rsp);
+        kerror!("  Exception CS: {:#x} (Ring {})", stack_frame.code_segment.0, ring);
+        kerror!("  IRET target RIP: {:#x}", iret_user_rip);
+        kerror!("  IRET target CS: {:#x} (Ring {})", iret_user_cs, iret_user_ring);
+        kerror!("  IRET target RSP: {:#x}", iret_user_rsp);
+        kerror!("  Syscall entry RSP: {:#x}", gs_user_rsp_slot0);
+        kerror!("  RFLAGS at exception: {:#x}", stack_frame.cpu_flags.bits());
+        kerror!("  Error Code: {:#x}", error_code);
+        kerror!("=== END COREDUMP INFO ===");
+        
+        // Set exit code to 128 + SIGSEGV (11) = 139 (standard Unix convention)
+        let exit_code = 128 + crate::ipc::signal::SIGSEGV as i32;
+        if let Err(e) = crate::scheduler::set_process_exit_code(pid, exit_code) {
+            kerror!("Failed to set exit code for PID {}: {}", pid, e);
+        }
+        
+        // Mark the process as zombie
+        let _ = crate::scheduler::set_process_state(pid, crate::process::ProcessState::Zombie);
+        
+        kinfo!("Process {} terminated with signal SIGSEGV/GPF (exit code {})", pid, exit_code);
+        
+        // Schedule the next process
+        crate::scheduler::do_schedule_from_interrupt();
+        
+        // If we return here, something went wrong
+        kerror!("FATAL: do_schedule_from_interrupt returned after GPF termination");
+        
+        // Fallback: halt if we can't recover
+        loop {
+            x86_64::instructions::hlt();
+        }
+    }
 
+    // Kernel-mode GPF with no user process involved - dump detailed debugging info
     let handler_rsp: u64;
     let (
         reg_rax,
@@ -354,12 +477,44 @@ pub extern "x86-interrupt" fn double_fault_handler(
 
 /// Divide error exception handler (#DE, vector 0)
 pub extern "x86-interrupt" fn divide_error_handler(stack_frame: InterruptStackFrame) {
+    let ring = stack_frame.code_segment.0 & 3;
+    let rip = stack_frame.instruction_pointer.as_u64();
+    
     // Low-level marker for divide error
     unsafe {
         let mut port = Port::new(0x3F8u16);
         port.write(b'D');
     }
-    kpanic!("EXCEPTION: DIVIDE ERROR\n{:#?}", stack_frame);
+    
+    // Check if this is a user-mode divide error (Ring 3)
+    if ring == 3 {
+        kerror!("DIV/0: User process divide error at RIP={:#x}", rip);
+        
+        if let Some(pid) = crate::scheduler::current_pid() {
+            kerror!("Process {} crashed with SIGFPE (divide by zero)", pid);
+            kerror!("=== COREDUMP INFO FOR PID {} (DIV/0) ===", pid);
+            kerror!("  Instruction Pointer: {:#x}", rip);
+            kerror!("  Stack Pointer: {:#x}", stack_frame.stack_pointer.as_u64());
+            kerror!("  RFLAGS: {:#x}", stack_frame.cpu_flags.bits());
+            kerror!("=== END COREDUMP INFO ===");
+            
+            // Set exit code to 128 + SIGFPE (8) = 136
+            let exit_code = 128 + crate::ipc::signal::SIGFPE as i32;
+            let _ = crate::scheduler::set_process_exit_code(pid, exit_code);
+            let _ = crate::scheduler::set_process_state(pid, crate::process::ProcessState::Zombie);
+            
+            kinfo!("Process {} terminated with signal SIGFPE (exit code {})", pid, exit_code);
+            crate::scheduler::do_schedule_from_interrupt();
+            
+            kerror!("FATAL: do_schedule_from_interrupt returned after DIV/0 termination");
+        }
+        
+        loop {
+            x86_64::instructions::hlt();
+        }
+    }
+    
+    kpanic!("EXCEPTION: KERNEL DIVIDE ERROR\n{:#?}", stack_frame);
 }
 
 /// Segment not present exception handler (#NP, vector 11)
@@ -367,8 +522,33 @@ pub extern "x86-interrupt" fn segment_not_present_handler(
     stack_frame: InterruptStackFrame,
     error_code: u64,
 ) {
+    let ring = stack_frame.code_segment.0 & 3;
+    let rip = stack_frame.instruction_pointer.as_u64();
+    
+    // Check if this is a user-mode exception (Ring 3)
+    if ring == 3 {
+        kerror!("SEGNP: User process segment not present at RIP={:#x}, error={:#x}", rip, error_code);
+        
+        if let Some(pid) = crate::scheduler::current_pid() {
+            kerror!("Process {} crashed with SIGSEGV (segment not present)", pid);
+            
+            let exit_code = 128 + crate::ipc::signal::SIGSEGV as i32;
+            let _ = crate::scheduler::set_process_exit_code(pid, exit_code);
+            let _ = crate::scheduler::set_process_state(pid, crate::process::ProcessState::Zombie);
+            
+            kinfo!("Process {} terminated with signal SIGSEGV (exit code {})", pid, exit_code);
+            crate::scheduler::do_schedule_from_interrupt();
+            
+            kerror!("FATAL: do_schedule_from_interrupt returned after SEGNP termination");
+        }
+        
+        loop {
+            x86_64::instructions::hlt();
+        }
+    }
+    
     kpanic!(
-        "EXCEPTION: SEGMENT NOT PRESENT (error: {})\n{:#?}",
+        "EXCEPTION: KERNEL SEGMENT NOT PRESENT (error: {})\n{:#?}",
         error_code,
         stack_frame
     );
@@ -376,26 +556,66 @@ pub extern "x86-interrupt" fn segment_not_present_handler(
 
 /// Invalid opcode exception handler (#UD, vector 6)
 pub extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: InterruptStackFrame) {
+    let ring = stack_frame.code_segment.0 & 3;
+    let rip = stack_frame.instruction_pointer.as_u64();
+    let rsp = stack_frame.stack_pointer.as_u64();
+    
     // Low-level marker for invalid opcode
     unsafe {
         let mut port = Port::new(0x3F8u16);
         port.write(b'I');
     }
-    let rip = stack_frame.instruction_pointer.as_u64();
-    let rsp = stack_frame.stack_pointer.as_u64();
+    
+    // Check if this is a user-mode exception (Ring 3)
+    if ring == 3 {
+        kerror!("UD: User process invalid opcode at RIP={:#x}", rip);
+        
+        if let Some(pid) = crate::scheduler::current_pid() {
+            kerror!("Process {} crashed with SIGILL (invalid opcode)", pid);
+            kerror!("=== COREDUMP INFO FOR PID {} (UD) ===", pid);
+            kerror!("  Instruction Pointer: {:#x}", rip);
+            kerror!("  Stack Pointer: {:#x}", rsp);
+            
+            // Try to read bytes at RIP for debugging
+            let mut bytes_at_rip: [u8; 16] = [0; 16];
+            unsafe {
+                let rip_ptr = rip as *const u8;
+                for i in 0..16 {
+                    bytes_at_rip[i] = rip_ptr.add(i).read_volatile();
+                }
+            }
+            kerror!("  Bytes at RIP: {:02x?}", bytes_at_rip);
+            kerror!("=== END COREDUMP INFO ===");
+            
+            // Set exit code to 128 + SIGILL (4) = 132
+            let exit_code = 128 + crate::ipc::signal::SIGILL as i32;
+            let _ = crate::scheduler::set_process_exit_code(pid, exit_code);
+            let _ = crate::scheduler::set_process_state(pid, crate::process::ProcessState::Zombie);
+            
+            kinfo!("Process {} terminated with signal SIGILL (exit code {})", pid, exit_code);
+            crate::scheduler::do_schedule_from_interrupt();
+            
+            kerror!("FATAL: do_schedule_from_interrupt returned after UD termination");
+        }
+        
+        loop {
+            x86_64::instructions::hlt();
+        }
+    }
+    
+    // Kernel-mode invalid opcode - this is a serious error
     let mut bytes_at_rip: [u8; 16] = [0; 16];
     let mut bytes_at_rsp: [u8; 16] = [0; 16];
     unsafe {
         let rip_ptr = rip as *const u8;
         let rsp_ptr = rsp as *const u8;
         for i in 0..16 {
-            // Use read_volatile so the compiler does not optimise the loads away
             bytes_at_rip[i] = rip_ptr.add(i).read_volatile();
             bytes_at_rsp[i] = rsp_ptr.add(i).read_volatile();
         }
     }
     kpanic!(
-        "EXCEPTION: INVALID OPCODE rip={:#x} rsp={:#x} bytes rip={:02x?} stack={:02x?}\n{:#?}",
+        "EXCEPTION: KERNEL INVALID OPCODE rip={:#x} rsp={:#x} bytes rip={:02x?} stack={:02x?}\n{:#?}",
         rip,
         rsp,
         bytes_at_rip,

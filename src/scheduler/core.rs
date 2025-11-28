@@ -654,17 +654,26 @@ unsafe fn execute_context_switch(
 }
 
 fn do_schedule_internal(from_interrupt: bool) {
+    // Debug output for exception handler troubleshooting
+    crate::serial_println!("SCHED_INTERNAL_ENTRY");
+    
     crate::net::poll();
+    
+    crate::serial_println!("SCHED_AFTER_POLL");
 
     {
         let mut stats = SCHED_STATS.lock();
         stats.total_context_switches += 1;
     }
+    
+    crate::serial_println!("SCHED_AFTER_STATS");
 
     {
         let table = PROCESS_TABLE.lock();
         debug_print_process_table(&table);
     }
+    
+    crate::serial_println!("SCHED_COMPUTING_DECISION");
 
     let decision = compute_schedule_decision(from_interrupt);
 

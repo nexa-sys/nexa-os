@@ -821,19 +821,12 @@ unsafe fn lookup_symbol_in_lib(lib: &LoadedLib, name: &[u8]) -> u64 {
         // Get symbol name from string table
         let sym_name_ptr = (dyn_info.strtab + sym.st_name as u64) as *const u8;
         
-        // Compare names
+        // Compare names - name is a slice without null terminator
         let mut j = 0;
         let mut match_found = true;
         while j < name.len() {
             let c = *sym_name_ptr.add(j);
             let target = name[j];
-            if target == 0 {
-                // Check if sym_name also ends here
-                if c != 0 {
-                    match_found = false;
-                }
-                break;
-            }
             if c != target {
                 match_found = false;
                 break;
@@ -841,10 +834,11 @@ unsafe fn lookup_symbol_in_lib(lib: &LoadedLib, name: &[u8]) -> u64 {
             j += 1;
         }
         
-        // Also check that symbol name ends at j
+        // Check that symbol name ends at the same position (sym_name[j] should be 0)
         if match_found {
             let c = *sym_name_ptr.add(j);
-            if c != 0 && j < name.len() && name[j] != 0 {
+            if c != 0 {
+                // Symbol name is longer, not a match
                 match_found = false;
             }
         }
@@ -1278,20 +1272,34 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
             entry = (e_entry as i64 + load_bias) as u64;
         } else {
             // e_entry is also 0, need to find entry point via symbol lookup
-            // Standard order: _start -> __libc_start_main -> main
+            // For dynamically linked executables, the CRT entry point (_start/__nexa_crt_start)
+            // is typically in the shared library (libnrlib.so), not the main executable.
+            // We need to search both the main executable AND loaded libraries.
             print_str("[ld-nrlib] e_entry is 0, looking for entry symbols...\n");
             
+            // First, try finding _start in main executable
             if dyn_addr != 0 {
-                // Try _start first (standard C runtime entry point)
                 let start_addr = find_symbol_by_name(dyn_addr, load_bias, b"_start\0");
                 if start_addr != 0 {
-                    print_str("[ld-nrlib] Found _start at: ");
+                    print_str("[ld-nrlib] Found _start in main at: ");
+                    print_hex(start_addr);
+                    print_str("\n");
+                    entry = start_addr;
+                }
+            }
+            
+            // If not found, search in loaded libraries (global symbol table)
+            if entry == 0 {
+                // Try _start from any loaded library (typically libnrlib.so)
+                let start_addr = global_symbol_lookup(b"_start");
+                if start_addr != 0 {
+                    print_str("[ld-nrlib] Found _start in library at: ");
                     print_hex(start_addr);
                     print_str("\n");
                     entry = start_addr;
                 } else {
                     // Try __nexa_crt_start (NexaOS nrlib entry point)
-                    let crt_addr = find_symbol_by_name(dyn_addr, load_bias, b"__nexa_crt_start\0");
+                    let crt_addr = global_symbol_lookup(b"__nexa_crt_start");
                     if crt_addr != 0 {
                         print_str("[ld-nrlib] Found __nexa_crt_start at: ");
                         print_hex(crt_addr);
@@ -1300,12 +1308,21 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
                     } else {
                         // Last resort: look for main and call it directly
                         // This works for simple C programs but NOT for Rust std programs
-                        let main_addr = find_symbol_by_name(dyn_addr, load_bias, b"main\0");
-                        if main_addr != 0 {
+                        let main_addr = global_symbol_lookup(b"main");
+                        if main_addr == 0 && dyn_addr != 0 {
+                            // Try in main executable's symbol table directly
+                            let main_addr = find_symbol_by_name(dyn_addr, load_bias, b"main\0");
+                            if main_addr != 0 {
+                                print_str("[ld-nrlib] Found main at: ");
+                                print_hex(main_addr);
+                                print_str("\n");
+                                // Call main directly with C calling convention
+                                call_main_directly(main_addr, stack_ptr);
+                            }
+                        } else if main_addr != 0 {
                             print_str("[ld-nrlib] Found main at: ");
                             print_hex(main_addr);
                             print_str("\n");
-                            // Call main directly with C calling convention
                             call_main_directly(main_addr, stack_ptr);
                         }
                     }
@@ -1468,6 +1485,14 @@ unsafe fn process_rela_with_symtab(rela_addr: u64, relasz: u64, relaent: u64, lo
                     if !sym_name.is_null() {
                         let sym_addr = global_symbol_lookup_cstr(sym_name);
                         if sym_addr != 0 {
+                            // Debug: print symbol resolution for 'main'
+                            if *sym_name == b'm' && *sym_name.add(1) == b'a' && *sym_name.add(2) == b'i' && *sym_name.add(3) == b'n' && *sym_name.add(4) == 0 {
+                                print_str("[ld-nrlib] Resolving 'main': target=");
+                                print_hex(target as u64);
+                                print_str(" value=");
+                                print_hex(sym_addr);
+                                print_str("\n");
+                            }
                             *target = sym_addr;
                         } else {
                             // Symbol not found - print warning
@@ -1562,6 +1587,8 @@ unsafe fn process_rela(rela_addr: u64, relasz: u64, relaent: u64, load_bias: i64
 }
 
 /// Jump to the entry point of the main executable
+/// For _start (assembly): reads argc/argv from [rsp]
+/// For __nexa_crt_start (C function): receives stack_ptr in rdi
 #[inline(never)]
 unsafe fn jump_to_entry(entry: u64, stack_ptr: *const u64) -> ! {
     asm!(
@@ -1572,7 +1599,7 @@ unsafe fn jump_to_entry(entry: u64, stack_ptr: *const u64) -> ! {
         "xor rcx, rcx",
         "xor rdx, rdx",
         "xor rsi, rsi",
-        "xor rdi, rdi",
+        "mov rdi, rsp",           // Pass stack pointer as first argument (for C entry)
         "xor r8, r8",
         "xor r9, r9",
         "xor r10, r10",

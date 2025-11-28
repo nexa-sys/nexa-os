@@ -78,6 +78,10 @@ path = "../../userspace/hello_dynamic.rs"
 name = "dmesg"
 path = "../../userspace/dmesg.rs"
 
+[[bin]]
+name = "crashtest"
+path = "../../userspace/crashtest.rs"
+
 [profile.release]
 panic = "abort"
 opt-level = 2
@@ -249,6 +253,13 @@ RUSTFLAGS="$STD_RUSTFLAGS" \
     cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/targets/x86_64-nexaos-userspace.json" --release \
     --bin dmesg
 
+# Build crashtest (no-std, simple test for segfault handling)
+echo "Building crashtest (no-std)..."
+CRASHTEST_RUSTFLAGS="-C opt-level=2 -C panic=abort -C linker=rust-lld -C link-arg=--image-base=0x00400000 -C link-arg=--entry=_start"
+RUSTFLAGS="$CRASHTEST_RUSTFLAGS" \
+    cargo build -Z build-std=core --target "$PROJECT_ROOT/targets/x86_64-nexaos-userspace.json" --release \
+    --bin crashtest
+
 # Build hello (dynamic linking test) - uses dynamic target
 # For dynamic linking, we still need _start from libc.a, but link dynamically against libnrlib.so
 # CRITICAL: --undefined=_start forces the linker to pull _start from libc.a (entry point)
@@ -272,6 +283,7 @@ cp "target/x86_64-nexaos-userspace/release/ip" "$ROOTFS_DIR/bin/ip"
 cp "target/x86_64-nexaos-userspace/release/dhcp" "$ROOTFS_DIR/bin/dhcp"
 cp "target/x86_64-nexaos-userspace/release/nurl" "$ROOTFS_DIR/bin/nurl"
 cp "target/x86_64-nexaos-userspace/release/dmesg" "$ROOTFS_DIR/bin/dmesg"
+cp "target/x86_64-nexaos-userspace/release/crashtest" "$ROOTFS_DIR/bin/crashtest"
 cp "target/x86_64-nexaos-userspace-dynamic/release/hello" "$ROOTFS_DIR/bin/hello"
 
 # Strip symbols
@@ -286,6 +298,7 @@ strip --strip-all "$ROOTFS_DIR/bin/ip" 2>/dev/null || true
 strip --strip-all "$ROOTFS_DIR/bin/dhcp" 2>/dev/null || true
 strip --strip-all "$ROOTFS_DIR/bin/nurl" 2>/dev/null || true
 strip --strip-all "$ROOTFS_DIR/bin/dmesg" 2>/dev/null || true
+strip --strip-all "$ROOTFS_DIR/bin/crashtest" 2>/dev/null || true
 strip --strip-all "$ROOTFS_DIR/bin/hello" 2>/dev/null || true
 
 # Copy dynamic linker for dynamically linked programs
