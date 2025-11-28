@@ -449,6 +449,8 @@ fn proceed_after_initramfs(cmdline_opt: Option<&'static str>) -> ! {
 
     scheduler::init(); // Process scheduler
     fs::init(); // Filesystem
+    kmod::init(); // Kernel module system
+    kmod::load_initramfs_modules(); // Load .nkm modules from /lib/modules
     init::init(); // Init system (PID 1 management)
 
     let elapsed_us = logger::boot_time_us();

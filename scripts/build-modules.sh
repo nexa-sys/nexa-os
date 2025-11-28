@@ -1,6 +1,12 @@
 #!/bin/bash
 # Build kernel modules (.nkm files) for NexaOS
-# This script generates .nkm module files that can be loaded by the kernel
+# 
+# This script builds loadable kernel modules that can be loaded at runtime.
+# For ELF-based modules, it compiles Rust code as a staticlib, then extracts
+# the object file which contains relocatable code.
+#
+# Output: build/modules/*.nkm
+# Installation: build/initramfs/lib/modules/*.nkm
 
 set -e
 
@@ -8,36 +14,30 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 BUILD_DIR="$PROJECT_ROOT/build"
 MODULES_DIR="$BUILD_DIR/modules"
+INITRAMFS_MODULES="$BUILD_DIR/initramfs/lib/modules"
+TARGET_JSON="$PROJECT_ROOT/targets/x86_64-nexaos-module.json"
+KERNEL_TARGET_JSON="$PROJECT_ROOT/targets/x86_64-nexaos.json"
 
 echo "========================================"
-echo "Building NexaOS kernel modules (.nkm)"
+echo "Building NexaOS Kernel Modules (.nkm)"
 echo "========================================"
 
 mkdir -p "$MODULES_DIR"
+mkdir -p "$INITRAMFS_MODULES"
 
-# NKM file format constants
-NKM_MAGIC="NKM"
-NKM_VERSION=1
-
-# Function to create an NKM file
-# Arguments: name, type (1=fs, 2=blk, 3=chr, 4=net, 255=other), version, description, output_file
-create_nkm() {
+# Function to create a simple NKM metadata file
+# Arguments: name, type (1=fs, 2=blk, 3=chr, 4=net), version, description, output_file
+create_simple_nkm() {
     local name="$1"
     local type="$2"
     local version="$3"
     local description="$4"
     local output="$5"
 
-    echo "Creating module: $name (type=$type, version=$version)"
-
-    # Create a temporary file for the NKM
-    local tmpfile=$(mktemp)
-
-    # Write NKM header using Python for precise binary control
     python3 << EOF
 import struct
 
-# Header format (80 bytes total):
+# NKM Header format (80 bytes total):
 # 0-3:   magic "NKM\x01"
 # 4:     version (u8)
 # 5:     module_type (u8)
@@ -58,69 +58,114 @@ version_str = b"$version"
 description_str = b"$description"
 module_type = $type
 
-# Calculate string table
 string_table = version_str + b'\x00' + description_str + b'\x00'
-header_size = 80  # Total header is 80 bytes
+header_size = 80
 string_table_offset = header_size
 string_table_size = len(string_table)
 
-with open("$tmpfile", "wb") as f:
-    # Magic
+with open("$output", "wb") as f:
     f.write(b'NKM\x01')
-    # Version (format version, not module version)
-    f.write(struct.pack('B', 1))
-    # Module type
+    f.write(struct.pack('B', 1))  # format version
     f.write(struct.pack('B', module_type))
-    # Dep count
-    f.write(struct.pack('B', 0))
-    # Flags
-    f.write(struct.pack('B', 0))
-    # Code offset (points to string table for now since we don't have code)
-    f.write(struct.pack('<I', header_size))
-    # Code size
-    f.write(struct.pack('<I', string_table_size))
-    # Init offset
-    f.write(struct.pack('<I', header_size))
-    # Init size
-    f.write(struct.pack('<I', string_table_size))
-    # Reserved
-    f.write(b'\x00' * 8)
-    # String table offset and size
+    f.write(struct.pack('B', 0))  # dep_count
+    f.write(struct.pack('B', 0))  # flags
+    f.write(struct.pack('<I', header_size))  # code_offset
+    f.write(struct.pack('<I', string_table_size))  # code_size
+    f.write(struct.pack('<I', header_size))  # init_offset
+    f.write(struct.pack('<I', string_table_size))  # init_size
+    f.write(b'\x00' * 8)  # reserved
     f.write(struct.pack('<I', string_table_offset))
     f.write(struct.pack('<I', string_table_size))
-    # Module name (32 bytes, null-padded)
     name_padded = name[:31] + b'\x00' * (32 - min(len(name), 31))
     f.write(name_padded)
-    # Padding to reach 80 bytes (we're at 72 bytes after name)
-    f.write(b'\x00' * 8)
-    # String table
+    f.write(b'\x00' * 8)  # padding
     f.write(string_table)
 
-print(f"Created NKM file: $output ({header_size + len(string_table)} bytes)")
+print(f"  Created simple NKM: $output ({header_size + len(string_table)} bytes)")
 EOF
-
-    mv "$tmpfile" "$output"
-    echo "✓ Module $name created: $output"
 }
 
 # Build ext2 filesystem module
-echo ""
-echo "Building ext2 filesystem module..."
-create_nkm "ext2" 1 "1.0.0" "ext2 filesystem driver" "$MODULES_DIR/ext2.nkm"
+build_ext2_module() {
+    echo ""
+    echo "Building ext2 filesystem module..."
+    
+    local MODULE_SRC="$PROJECT_ROOT/modules/ext2"
+    
+    if [ ! -d "$MODULE_SRC" ]; then
+        echo "Error: ext2 module source not found at $MODULE_SRC"
+        return 1
+    fi
+    
+    cd "$MODULE_SRC"
+    
+    # Clean previous builds
+    cargo clean 2>/dev/null || true
+    
+    # Build as staticlib using the kernel target
+    # This will produce a .a file with relocatable object files
+    echo "  Compiling ext2 module as staticlib..."
+    
+    if RUSTFLAGS="-C relocation-model=pic -C panic=abort" \
+        cargo +nightly build \
+            -Z build-std=core,alloc \
+            --target "$KERNEL_TARGET_JSON" \
+            --release 2>&1; then
+        
+        echo "  Cargo build succeeded, looking for artifacts..."
+        
+        # Find the built staticlib
+        local STATICLIB=$(find "$MODULE_SRC/target" -name "libext2_module.a" 2>/dev/null | head -1)
+        
+        if [ -n "$STATICLIB" ] && [ -f "$STATICLIB" ]; then
+            echo "  Found staticlib: $STATICLIB"
+            
+            # Extract the module's object file from the staticlib
+            # We need to find the right .o file (ext2_module-*.o)
+            cd "$MODULES_DIR"
+            rm -f *.o 2>/dev/null || true  # Clean up old files
+            ar x "$STATICLIB" 2>/dev/null || true
+            
+            # Find the ext2 module object file (not core or compiler_builtins)
+            local OBJ_FILE=$(ls -1 *.o 2>/dev/null | grep -i 'ext2_module' | head -1)
+            
+            if [ -n "$OBJ_FILE" ] && [ -f "$OBJ_FILE" ]; then
+                # Rename to .nkm
+                mv "$OBJ_FILE" "ext2.nkm"
+                rm -f *.o 2>/dev/null || true  # Clean up other extracted files
+                echo "  ✓ Built ELF module: $MODULES_DIR/ext2.nkm ($(stat -c%s "$MODULES_DIR/ext2.nkm") bytes)"
+            else
+                # Fallback: copy the staticlib as-is
+                cp "$STATICLIB" "$MODULES_DIR/ext2.nkm"
+                echo "  ✓ Built staticlib module: $MODULES_DIR/ext2.nkm ($(stat -c%s "$MODULES_DIR/ext2.nkm") bytes)"
+            fi
+        else
+            echo "  Warning: No staticlib found, creating metadata-only module"
+            create_simple_nkm "ext2" 1 "1.0.0" "ext2 filesystem driver (built-in)" "$MODULES_DIR/ext2.nkm"
+        fi
+    else
+        echo "  Warning: Cargo build failed, creating metadata-only module"
+        create_simple_nkm "ext2" 1 "1.0.0" "ext2 filesystem driver (built-in)" "$MODULES_DIR/ext2.nkm"
+    fi
+    
+    # Install to initramfs
+    cp "$MODULES_DIR/ext2.nkm" "$INITRAMFS_MODULES/ext2.nkm"
+    echo "  ✓ Installed to initramfs: /lib/modules/ext2.nkm"
+}
 
-# Future modules can be added here:
-# create_nkm "ext4" 1 "1.0.0" "ext4 filesystem driver" "$MODULES_DIR/ext4.nkm"
-# create_nkm "virtio_blk" 2 "1.0.0" "VirtIO block device driver" "$MODULES_DIR/virtio_blk.nkm"
-# create_nkm "e1000" 4 "1.0.0" "Intel e1000 network driver" "$MODULES_DIR/e1000.nkm"
+# Build all modules
+build_ext2_module
 
 echo ""
 echo "========================================"
-echo "Kernel modules built successfully!"
+echo "Kernel Modules Build Complete"
 echo "========================================"
 echo ""
-echo "Modules:"
-ls -lh "$MODULES_DIR"/*.nkm 2>/dev/null || echo "  (no modules built)"
+echo "Built modules:"
+ls -lh "$MODULES_DIR"/*.nkm 2>/dev/null || echo "  (no modules)"
 echo ""
-echo "To include modules in initramfs:"
-echo "  1. Run ./scripts/build-userspace.sh"
-echo "  2. Run ./scripts/build-iso.sh"
+echo "Initramfs modules:"
+ls -lh "$INITRAMFS_MODULES"/*.nkm 2>/dev/null || echo "  (no modules installed)"
+echo ""
+echo "Note: Modules will be loaded automatically during kernel boot"
+echo "      from /lib/modules/*.nkm in the initramfs."

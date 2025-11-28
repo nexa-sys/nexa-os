@@ -5,19 +5,32 @@
 //!
 //! # NKM File Format
 //!
-//! The NKM (Nexa Kernel Module) format consists of:
-//! - Header with magic number, version, and metadata
-//! - Module code (position-independent code)
+//! NexaOS supports two module formats:
+//!
+//! ## Simple NKM Format (metadata-only)
+//! - Header with magic number "NKM\x01", version, and metadata
+//! - Used for built-in modules that are already linked into the kernel
+//!
+//! ## ELF-based NKM Format (loadable code)
+//! - Standard ELF relocatable object (.o) or shared object
+//! - Position-independent code with relocations
 //! - Symbol table for kernel API bindings
-//! - Dependency list
+//! - Loaded and dynamically linked at runtime
 //!
 //! # Module Lifecycle
 //!
 //! 1. Load: Read .nkm from initramfs or filesystem
-//! 2. Verify: Check magic, version, and dependencies
-//! 3. Register: Add to kernel module list
-//! 4. Init: Call module's init function
-//! 5. Unload (optional): Call cleanup and remove
+//! 2. Verify: Check format (ELF or simple NKM)
+//! 3. For ELF modules:
+//!    a. Allocate memory for code/data sections
+//!    b. Load sections and apply relocations
+//!    c. Resolve external symbols from kernel symbol table
+//! 4. Register: Add to kernel module list
+//! 5. Init: Call module's init function
+//! 6. Unload (optional): Call cleanup and remove
+
+pub mod elf;
+pub mod symbols;
 
 use spin::Mutex;
 
@@ -319,15 +332,125 @@ pub enum ModuleError {
     InitFailed,
     /// Invalid module format
     InvalidFormat,
+    /// Symbol not found during relocation
+    SymbolNotFound,
+    /// Memory allocation failed
+    AllocationFailed,
+    /// Relocation failed
+    RelocationFailed,
+}
+
+impl From<elf::LoaderError> for ModuleError {
+    fn from(e: elf::LoaderError) -> Self {
+        match e {
+            elf::LoaderError::InvalidMagic => ModuleError::InvalidMagic,
+            elf::LoaderError::InvalidClass => ModuleError::InvalidFormat,
+            elf::LoaderError::InvalidMachine => ModuleError::InvalidFormat,
+            elf::LoaderError::InvalidType => ModuleError::InvalidFormat,
+            elf::LoaderError::SectionOutOfBounds => ModuleError::InvalidFormat,
+            elf::LoaderError::SymbolNotFound => ModuleError::SymbolNotFound,
+            elf::LoaderError::RelocationFailed => ModuleError::RelocationFailed,
+            elf::LoaderError::AllocationFailed => ModuleError::AllocationFailed,
+            elf::LoaderError::InvalidSection => ModuleError::InvalidFormat,
+            elf::LoaderError::UnsupportedRelocation => ModuleError::RelocationFailed,
+        }
+    }
 }
 
 /// Initialize the kmod subsystem
 pub fn init() {
+    // Initialize kernel symbol table first
+    symbols::init();
     crate::kinfo!("Kernel module system initialized (max {} modules)", MAX_MODULES);
 }
 
-/// Load a kernel module from NKM data
+/// Check if data is an ELF file
+fn is_elf(data: &[u8]) -> bool {
+    data.len() >= 4 && data[0..4] == [0x7F, b'E', b'L', b'F']
+}
+
+/// Load a kernel module from NKM data (supports both simple NKM and ELF formats)
 pub fn load_module(data: &[u8]) -> Result<(), ModuleError> {
+    if data.len() < 4 {
+        return Err(ModuleError::FileTooSmall);
+    }
+
+    // Check if this is an ELF module
+    if is_elf(data) {
+        return load_elf_module(data);
+    }
+
+    // Otherwise, try simple NKM format
+    load_simple_nkm(data)
+}
+
+/// Load an ELF-based kernel module
+fn load_elf_module(data: &[u8]) -> Result<(), ModuleError> {
+    crate::kinfo!("Loading ELF kernel module ({} bytes)", data.len());
+
+    // Load the ELF module
+    let loaded = elf::load_elf_module(data)?;
+    
+    crate::kinfo!(
+        "ELF module loaded at {:#x}, size {} bytes",
+        loaded.base,
+        loaded.size
+    );
+
+    // Create module info
+    let mut info = ModuleInfo::empty();
+    
+    // Try to extract module name from special section or use default
+    let name = b"elf_module";
+    let name_len = name.len().min(MAX_MODULE_NAME - 1);
+    info.name[..name_len].copy_from_slice(&name[..name_len]);
+    info.module_type = ModuleType::Other;
+    info.state = ModuleState::Loaded;
+    info.data_ptr = loaded.base;
+
+    // Copy version
+    let version = b"1.0.0";
+    info.version[..version.len()].copy_from_slice(version);
+
+    // Register module
+    let _idx = MODULE_REGISTRY.lock().register(info)?;
+
+    // Call module init function if present
+    if loaded.init_fn.is_some() {
+        crate::kinfo!("Calling module init function...");
+        match loaded.init() {
+            Ok(ret) => {
+                if ret != 0 {
+                    crate::kwarn!("Module init returned error code: {}", ret);
+                    return Err(ModuleError::InitFailed);
+                }
+                crate::kinfo!("Module init completed successfully");
+            }
+            Err(_) => {
+                crate::kwarn!("Module has no init function");
+            }
+        }
+    }
+
+    // Mark as running
+    {
+        let mut registry = MODULE_REGISTRY.lock();
+        for slot in registry.modules.iter_mut() {
+            if let Some(mod_info) = slot {
+                if mod_info.data_ptr == loaded.base {
+                    mod_info.state = ModuleState::Running;
+                    break;
+                }
+            }
+        }
+    }
+
+    crate::kinfo!("ELF module loaded successfully");
+    Ok(())
+}
+
+/// Load a simple NKM format module (metadata only)
+fn load_simple_nkm(data: &[u8]) -> Result<(), ModuleError> {
     // Parse header
     let header = NkmHeader::parse(data).ok_or(ModuleError::InvalidFormat)?;
 
@@ -371,10 +494,6 @@ pub fn load_module(data: &[u8]) -> Result<(), ModuleError> {
 
     // Register module
     let _idx = MODULE_REGISTRY.lock().register(info)?;
-
-    // For now, we don't execute code from modules - they are descriptive only
-    // The actual filesystem implementation remains in the kernel
-    // This is a "soft" module system for tracking and organization
 
     // Mark as running
     if let Some(mod_info) = MODULE_REGISTRY.lock().find_mut(header.name_str()) {

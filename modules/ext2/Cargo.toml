@@ -2,11 +2,11 @@
 name = "ext2-module"
 version = "1.0.0"
 edition = "2021"
-description = "ext2 filesystem driver for NexaOS"
+description = "ext2 filesystem driver for NexaOS (loadable kernel module)"
 
 [lib]
 name = "ext2_module"
-crate-type = ["staticlib"]
+crate-type = ["staticlib"]  # Static library for kernel module (we extract .o from it)
 path = "src/lib.rs"
 
 [dependencies]
@@ -14,4 +14,8 @@ path = "src/lib.rs"
 [profile.release]
 panic = "abort"
 opt-level = 2
-lto = true
+lto = false  # Disable LTO for relocatable modules
+codegen-units = 1
+
+[profile.dev]
+panic = "abort"
