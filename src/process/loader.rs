@@ -192,6 +192,12 @@ impl Process {
                     interp_image.entry_point,
                     interp_image.base_addr
                 );
+                
+                kinfo!(
+                    "DYNAMIC LINK DEBUG: program_image.entry_point={:#x}, program_image.phdr_vaddr={:#x}",
+                    program_image.entry_point,
+                    program_image.phdr_vaddr
+                );
 
                 // Calculate physical address for stack
                 let stack_phys = phys_base + (STACK_BASE - USER_VIRT_BASE);

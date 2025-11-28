@@ -6,6 +6,7 @@
 use core::ptr;
 
 use crate::elf::LoadResult;
+use crate::kinfo;
 
 use super::types::MAX_PROCESS_ARGS;
 
@@ -222,6 +223,15 @@ pub fn build_initial_stack(
 
     aux_entries[aux_len] = (AT_FLAGS, 0);
     aux_len += 1;
+    
+    kinfo!(
+        "build_initial_stack: program.entry_point={:#x}, phdr_vaddr={:#x}, phnum={}, phentsize={}",
+        program.entry_point,
+        program.phdr_vaddr,
+        program.phnum,
+        program.phentsize
+    );
+    
     aux_entries[aux_len] = (AT_ENTRY, program.entry_point);
     aux_len += 1;
     aux_entries[aux_len] = (AT_UID, 0);

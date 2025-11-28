@@ -307,6 +307,7 @@ fn copy_user_c_string(ptr: *const u8, buffer: &mut [u8]) -> Result<usize, ()> {
 
 /// POSIX execve() system call - execute program
 pub fn execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8) -> u64 {
+    use alloc::vec::Vec;
     use crate::scheduler::get_current_pid;
 
     ktrace!("[syscall_execve] Called");
@@ -341,11 +342,11 @@ pub fn execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8)
         }
     };
 
-    let mut argv_storage = [[0u8; MAX_EXEC_ARG_LEN]; MAX_EXEC_ARGS];
-    let mut arg_lengths = [0usize; MAX_EXEC_ARGS];
-    let mut arg_index = 0usize;
+    // Use heap allocation instead of large stack arrays to avoid stack overflow
+    let mut argv_storage: Vec<Vec<u8>> = Vec::new();
 
     if !_argv.is_null() {
+        let mut arg_index = 0usize;
         loop {
             let arg_ptr = unsafe { *_argv.add(arg_index) };
             if arg_ptr.is_null() {
@@ -361,29 +362,23 @@ pub fn execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8)
                 return u64::MAX;
             }
 
-            let len;
-            {
-                let storage = &mut argv_storage[arg_index];
-                len = match copy_user_c_string(arg_ptr, storage) {
-                    Ok(len) => len,
-                    Err(_) => {
-                        posix::set_errno(posix::errno::E2BIG);
-                        return u64::MAX;
-                    }
-                };
-            }
+            let mut arg_buf = [0u8; MAX_EXEC_ARG_LEN];
+            let len = match copy_user_c_string(arg_ptr, &mut arg_buf) {
+                Ok(len) => len,
+                Err(_) => {
+                    posix::set_errno(posix::errno::E2BIG);
+                    return u64::MAX;
+                }
+            };
 
-            arg_lengths[arg_index] = len;
+            argv_storage.push(arg_buf[..len].to_vec());
             arg_index += 1;
         }
     }
 
-    let mut argv_refs: [&[u8]; MAX_EXEC_ARGS] = [&[]; MAX_EXEC_ARGS];
-    for i in 0..arg_index {
-        argv_refs[i] = &argv_storage[i][..arg_lengths[i]];
-    }
-
-    let argv_list = &argv_refs[..arg_index];
+    // Build references for downstream code
+    let argv_refs: Vec<&[u8]> = argv_storage.iter().map(|v| v.as_slice()).collect();
+    let argv_list = argv_refs.as_slice();
 
     ktrace!("[syscall_execve] Path: {}", path_str);
     ktrace!("[syscall_execve] argc={}", argv_list.len());

@@ -443,13 +443,24 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
     // Now ptr points to auxv
     let auxv = ptr as *const AuxEntry;
     
-    // Debug: print first auxv entry raw bytes
-    print_str("[ld-nrlib] auxv[0].a_type=");
-    print_hex((*auxv).a_type);
-    print_str("\n");
-    print_str("[ld-nrlib] auxv[0].a_val=");
-    print_hex((*auxv).a_val);
-    print_str("\n");
+    // Debug: dump entire auxv array
+    print_str("[ld-nrlib] === DUMPING AUXV ===\n");
+    let mut dump_ptr = auxv;
+    for i in 0..20 {
+        let entry = *dump_ptr;
+        print_str("[ld-nrlib] auxv[");
+        print_hex(i as u64);
+        print_str("].type=");
+        print_hex(entry.a_type);
+        print_str(" val=");
+        print_hex(entry.a_val);
+        print_str("\n");
+        if entry.a_type == AT_NULL {
+            break;
+        }
+        dump_ptr = dump_ptr.add(1);
+    }
+    print_str("[ld-nrlib] === END AUXV DUMP ===\n");
     
     // Parse auxiliary vector
     let mut aux_info = AuxInfo::new();
