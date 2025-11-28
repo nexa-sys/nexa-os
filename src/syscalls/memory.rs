@@ -56,9 +56,11 @@ const MAX_MMAP_REGIONS: usize = 64;
 static mut MMAP_REGIONS: [MmapRegion; MAX_MMAP_REGIONS] = [MmapRegion::empty(); MAX_MMAP_REGIONS];
 
 /// Next available mmap address (bump allocator for anonymous mappings)
-/// Starts after interpreter region to avoid conflicts
+/// Use a lazy initialization approach - start within userspace region
 use core::sync::atomic::{AtomicU64, Ordering};
-static NEXT_MMAP_ADDR: AtomicU64 = AtomicU64::new(0x1000_0000); // Start at 256MB
+// NOTE: This value will be dynamically adjusted on first mmap call
+// to fit within the current user address space bounds
+static NEXT_MMAP_ADDR: AtomicU64 = AtomicU64::new(0);
 
 /// SYS_MMAP - Memory map system call
 ///
@@ -267,9 +269,25 @@ fn read_file_into_mapping(fd: u64, offset: u64, dest_addr: u64, length: u64) -> 
 
 /// Allocate a new mmap address using bump allocator
 fn allocate_mmap_address(size: u64) -> u64 {
-    use crate::process::{USER_VIRT_BASE, USER_REGION_SIZE};
+    use crate::process::{USER_VIRT_BASE, USER_REGION_SIZE, INTERP_BASE};
     
     let user_end = USER_VIRT_BASE + USER_REGION_SIZE;
+    
+    // Lazy initialize: start after interpreter base + some offset for ld itself
+    // The dynamic linker is loaded at INTERP_BASE, so start mmap allocations
+    // after it (at INTERP_BASE + 0x100000 to leave 1MB for ld)
+    let mmap_start = INTERP_BASE + 0x100000; // 0xB00000
+    
+    let current = NEXT_MMAP_ADDR.load(Ordering::SeqCst);
+    if current == 0 || current < mmap_start {
+        // First allocation - initialize to start of mmap region
+        let _ = NEXT_MMAP_ADDR.compare_exchange(
+            current,
+            mmap_start,
+            Ordering::SeqCst,
+            Ordering::SeqCst
+        );
+    }
     
     // Try to allocate from the bump allocator
     let addr = NEXT_MMAP_ADDR.fetch_add(size, Ordering::SeqCst);
@@ -277,6 +295,7 @@ fn allocate_mmap_address(size: u64) -> u64 {
     // Check bounds
     if addr + size > user_end {
         // Out of virtual address space
+        kerror!("[mmap] Out of address space: addr={:#x} size={:#x} user_end={:#x}", addr, size, user_end);
         return MAP_FAILED;
     }
     
