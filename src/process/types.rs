@@ -32,8 +32,9 @@ pub const HEAP_BASE: u64 = USER_VIRT_BASE + 0x200000;
 pub const HEAP_SIZE: u64 = 0x200000;
 /// Virtual base where the dynamic loader and shared objects are staged.
 pub const INTERP_BASE: u64 = STACK_BASE + STACK_SIZE;
-/// Reserved size for the dynamic loader and dependent shared objects (multiple of 2 MiB).
-pub const INTERP_REGION_SIZE: u64 = 0x600000;
+/// Reserved size for the dynamic loader and dependent shared objects.
+/// 16MB should be sufficient for several shared libraries.
+pub const INTERP_REGION_SIZE: u64 = 0x1000000; // 16MB (was 6MB)
 /// Total virtual span that must be mapped for the userspace image, heap, stack, and interpreter region.
 pub const USER_REGION_SIZE: u64 = (INTERP_BASE + INTERP_REGION_SIZE) - USER_VIRT_BASE;
 
