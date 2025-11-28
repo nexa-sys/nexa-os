@@ -178,6 +178,85 @@ impl Initramfs {
         crate::ktrace!("File '{}' not found in initramfs", path);
         None
     }
+
+    /// Lookup an entry by path (alias for find)
+    pub fn lookup(&self, path: &str) -> Option<InitramfsEntry> {
+        self.find(path)
+    }
+
+    /// Iterate over entries in a directory
+    ///
+    /// Calls the callback for each entry whose path starts with the given directory prefix.
+    pub fn for_each<F>(&self, dir_path: &str, mut cb: F)
+    where
+        F: FnMut(&str, crate::posix::Metadata),
+    {
+        let dir_prefix = if dir_path.starts_with('/') {
+            &dir_path[1..]
+        } else {
+            dir_path
+        };
+        let dir_prefix = if dir_prefix.ends_with('/') {
+            dir_prefix
+        } else if dir_prefix.is_empty() {
+            ""
+        } else {
+            // We need to check for entries in this directory
+            dir_prefix
+        };
+
+        for entry in self.entries() {
+            let entry_path = entry.name;
+
+            // Check if entry is in the requested directory
+            let is_in_dir = if dir_prefix.is_empty() {
+                // Root directory - only include top-level entries
+                !entry_path.contains('/')
+            } else {
+                // Check if entry starts with dir_prefix/
+                entry_path.starts_with(dir_prefix)
+                    && entry_path.len() > dir_prefix.len()
+                    && entry_path.as_bytes()[dir_prefix.len()] == b'/'
+                    && !entry_path[dir_prefix.len() + 1..].contains('/')
+            };
+
+            if is_in_dir {
+                // Extract just the filename
+                let name = if dir_prefix.is_empty() {
+                    entry_path
+                } else {
+                    &entry_path[dir_prefix.len() + 1..]
+                };
+
+                // Create metadata
+                let file_type = if entry.mode & 0o170000 == 0o040000 {
+                    crate::posix::FileType::Directory
+                } else {
+                    crate::posix::FileType::Regular
+                };
+
+                let metadata = crate::posix::Metadata {
+                    mode: entry.mode as u16,
+                    uid: 0,
+                    gid: 0,
+                    size: entry.data.len() as u64,
+                    mtime: 0,
+                    file_type,
+                    nlink: 1,
+                    blocks: 0,
+                };
+
+                cb(name, metadata);
+            }
+        }
+    }
+}
+
+impl InitramfsEntry {
+    /// Get the data content of this entry
+    pub fn data(&self) -> &'static [u8] {
+        self.data
+    }
 }
 
 pub struct InitramfsIter {

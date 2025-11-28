@@ -43,6 +43,9 @@ pub mod smp;
 // Safety utilities
 pub mod safety;
 
+// Kernel module support
+pub mod kmod;
+
 // Logging and POSIX compatibility
 pub mod logger;
 pub mod posix;

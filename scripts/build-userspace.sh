@@ -199,7 +199,7 @@ echo "Creating initramfs CPIO archive..."
 # Create a clean staging directory to avoid including build artifacts
 STAGING_DIR="$BUILD_DIR/staging"
 rm -rf "$STAGING_DIR"
-mkdir -p "$STAGING_DIR"/{bin,dev,proc,sys,sysroot,lib64}
+mkdir -p "$STAGING_DIR"/{bin,dev,proc,sys,sysroot,lib64,lib/modules}
 
 # Copy only the essential files
 cp "$BUILD_DIR/init" "$STAGING_DIR/"
@@ -219,6 +219,20 @@ if [ -f "$BUILD_DIR/lib64/libnrlib.so" ]; then
     ln -sf libnrlib.so "$STAGING_DIR/lib64/libc.so"
     ln -sf libnrlib.so "$STAGING_DIR/lib64/libc.so.6"
     ln -sf libnrlib.so "$STAGING_DIR/lib64/libc.musl-x86_64.so.1"
+fi
+
+# Build and copy kernel modules (.nkm files)
+echo "Building kernel modules..."
+"$SCRIPT_DIR/build-modules.sh"
+
+# Copy kernel modules to initramfs
+if [ -d "$PROJECT_ROOT/build/modules" ]; then
+    for nkm_file in "$PROJECT_ROOT/build/modules"/*.nkm; do
+        if [ -f "$nkm_file" ]; then
+            cp "$nkm_file" "$STAGING_DIR/lib/modules/"
+            echo "✓ Added kernel module: $(basename "$nkm_file")"
+        fi
+    done
 fi
 
 # Note: Root filesystem images are no longer embedded here.

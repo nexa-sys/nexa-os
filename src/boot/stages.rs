@@ -228,6 +228,11 @@ pub fn initramfs_stage() -> Result<(), &'static str> {
 
     crate::kinfo!("Virtual filesystems mounted successfully");
 
+    // Load kernel modules from initramfs
+    // This is similar to Linux's initramfs module loading
+    crate::kinfo!("Loading kernel modules from initramfs...");
+    crate::kmod::load_initramfs_modules();
+
     // Wait for root device to appear (simplified - no actual udev)
     // In a real system, this would use udevadm settle
     let config = boot_config();

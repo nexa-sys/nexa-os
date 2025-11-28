@@ -1,0 +1,17 @@
+[package]
+name = "ext2-module"
+version = "1.0.0"
+edition = "2021"
+description = "ext2 filesystem driver for NexaOS"
+
+[lib]
+name = "ext2_module"
+crate-type = ["staticlib"]
+path = "src/lib.rs"
+
+[dependencies]
+
+[profile.release]
+panic = "abort"
+opt-level = 2
+lto = true
