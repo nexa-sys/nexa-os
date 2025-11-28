@@ -5,7 +5,7 @@
 //!
 //! Usage:
 //!   dmesg           - Display all kernel log messages
-//!   dmesg -s SIZE   - Use SIZE for ring buffer query size
+//!   dmesg -s SIZE   - Display last SIZE bytes of log (tail)
 //!   dmesg -h        - Show help
 
 use std::arch::asm;
@@ -49,17 +49,17 @@ fn print_usage() {
     println!("Usage: dmesg [OPTIONS]");
     println!();
     println!("Options:");
-    println!("  -s SIZE  Buffer size for reading (default: 65536)");
+    println!("  -s SIZE  Display last SIZE bytes of log (tail)");
     println!("  -h       Show this help message");
     println!();
     println!("Examples:");
-    println!("  dmesg          Display kernel messages");
-    println!("  dmesg -s 8192  Read up to 8KB of log");
+    println!("  dmesg          Display all kernel messages");
+    println!("  dmesg -s 1024  Display last 1024 bytes of log");
 }
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    let mut buffer_size = DEFAULT_BUFFER_SIZE;
+    let mut tail_size: Option<usize> = None;
 
     // Parse arguments
     let mut i = 1;
@@ -76,7 +76,7 @@ fn main() {
             }
             match args[i].parse::<usize>() {
                 Ok(size) if size > 0 => {
-                    buffer_size = size.min(DEFAULT_BUFFER_SIZE);
+                    tail_size = Some(size);
                 }
                 Ok(_) => {
                     eprintln!("dmesg: size must be positive");
@@ -95,8 +95,8 @@ fn main() {
         i += 1;
     }
 
-    // Allocate buffer and read kernel log
-    let mut buffer = vec![0u8; buffer_size];
+    // Always read all logs first
+    let mut buffer = vec![0u8; DEFAULT_BUFFER_SIZE];
     let bytes_read = syscall_syslog(SYSLOG_ACTION_READ_ALL, &mut buffer);
 
     if bytes_read < 0 {
@@ -109,8 +109,36 @@ fn main() {
         process::exit(0);
     }
 
+    let total_len = bytes_read as usize;
+    
+    // Determine the slice to output
+    let data = if let Some(size) = tail_size {
+        // -s SIZE: show the last SIZE bytes (tail)
+        if size >= total_len {
+            // If requested size is larger than available data, show all
+            &buffer[..total_len]
+        } else {
+            // Find a good starting point (try to start at a newline)
+            let start_offset = total_len - size;
+            // Look for a newline after start_offset to begin at a clean line
+            let adjusted_start = buffer[start_offset..total_len]
+                .iter()
+                .position(|&b| b == b'\n')
+                .map(|pos| start_offset + pos + 1)
+                .unwrap_or(start_offset);
+            
+            if adjusted_start < total_len {
+                &buffer[adjusted_start..total_len]
+            } else {
+                &buffer[start_offset..total_len]
+            }
+        }
+    } else {
+        // No -s option: show all
+        &buffer[..total_len]
+    };
+
     // Write log to stdout
-    let data = &buffer[..bytes_read as usize];
     io::stdout().write_all(data).unwrap_or_else(|e| {
         eprintln!("dmesg: write error: {}", e);
         process::exit(1);
