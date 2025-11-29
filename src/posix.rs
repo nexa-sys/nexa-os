@@ -12,12 +12,14 @@ pub mod errno {
     pub const ESRCH: i32 = 3; // No such process
     pub const EIO: i32 = 5; // I/O error
     pub const E2BIG: i32 = 7; // Argument list too long
+    pub const ENOEXEC: i32 = 8; // Exec format error
     pub const EBADF: i32 = 9; // Bad file descriptor
     pub const ECHILD: i32 = 10; // No child processes
     pub const EAGAIN: i32 = 11; // Try again
     pub const ENOMEM: i32 = 12; // Out of memory
     pub const EACCES: i32 = 13; // Permission denied
     pub const EFAULT: i32 = 14; // Bad address
+    pub const EBUSY: i32 = 16; // Device or resource busy
     pub const EEXIST: i32 = 17; // File exists
     pub const ENOTDIR: i32 = 20; // Not a directory
     pub const EISDIR: i32 = 21; // Is a directory
@@ -39,6 +41,7 @@ pub mod errno {
     pub const ETIMEDOUT: i32 = 110; // Connection timed out
     pub const ECONNREFUSED: i32 = 111; // Connection refused
     pub const EINPROGRESS: i32 = 115; // Operation in progress
+    pub const ELOOP: i32 = 40; // Too many symbolic links
 }
 
 /// POSIX file type enumeration used by the VFS layer.

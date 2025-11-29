@@ -28,11 +28,22 @@
 //! 4. Register: Add to kernel module list
 //! 5. Init: Call module's init function
 //! 6. Unload (optional): Call cleanup and remove
+//!
+//! # Module Features
+//!
+//! - **Dependency Management**: Modules can declare dependencies on other modules
+//! - **Parameters**: Modules can accept parameters at load time
+//! - **Reference Counting**: Prevents unloading modules still in use
+//! - **License Tracking**: Modules declare their license for compatibility
+//! - **Tainting**: Non-GPL modules taint the kernel
 
 pub mod elf;
 pub mod symbols;
 
+use alloc::string::String;
+use alloc::vec::Vec;
 use spin::Mutex;
+use core::sync::atomic::{AtomicU32, AtomicBool, Ordering};
 
 /// NKM file magic number: "NKM\x01"
 pub const NKM_MAGIC: [u8; 4] = [b'N', b'K', b'M', 0x01];
@@ -40,8 +51,11 @@ pub const NKM_MAGIC: [u8; 4] = [b'N', b'K', b'M', 0x01];
 /// NKM format version
 pub const NKM_VERSION: u8 = 1;
 
+/// Extended NKM format version (with parameters and dependencies)
+pub const NKM_VERSION_EXT: u8 = 2;
+
 /// Maximum number of loaded modules
-pub const MAX_MODULES: usize = 32;
+pub const MAX_MODULES: usize = 64;
 
 /// Maximum module name length
 pub const MAX_MODULE_NAME: usize = 32;
@@ -49,17 +63,33 @@ pub const MAX_MODULE_NAME: usize = 32;
 /// Maximum module dependencies
 pub const MAX_DEPENDENCIES: usize = 8;
 
+/// Maximum module parameters
+pub const MAX_PARAMETERS: usize = 16;
+
+/// Maximum parameter name length
+pub const MAX_PARAM_NAME: usize = 32;
+
+/// Maximum parameter value length
+pub const MAX_PARAM_VALUE: usize = 128;
+
+/// Maximum author/license string length
+pub const MAX_INFO_STRING: usize = 64;
+
 /// Module state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModuleState {
     /// Module is loaded but not initialized
     Loaded,
+    /// Module is being initialized
+    Initializing,
     /// Module is initialized and running
     Running,
     /// Module is being unloaded
     Unloading,
     /// Module encountered an error
     Error,
+    /// Module is waiting for dependencies
+    WaitingDeps,
 }
 
 /// Module type
@@ -74,6 +104,14 @@ pub enum ModuleType {
     CharDevice = 3,
     /// Network driver
     Network = 4,
+    /// Input driver
+    Input = 5,
+    /// Graphics driver
+    Graphics = 6,
+    /// Sound driver
+    Sound = 7,
+    /// Security module
+    Security = 8,
     /// Other module type
     Other = 255,
 }
@@ -85,7 +123,118 @@ impl ModuleType {
             2 => ModuleType::BlockDevice,
             3 => ModuleType::CharDevice,
             4 => ModuleType::Network,
+            5 => ModuleType::Input,
+            6 => ModuleType::Graphics,
+            7 => ModuleType::Sound,
+            8 => ModuleType::Security,
             _ => ModuleType::Other,
+        }
+    }
+}
+
+/// Module license type
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ModuleLicense {
+    /// GPL v2
+    GPL = 1,
+    /// GPL v2 or later
+    GPLPlus = 2,
+    /// Dual BSD/GPL
+    DualBsdGpl = 3,
+    /// Dual MIT/GPL
+    DualMitGpl = 4,
+    /// Dual MPL/GPL
+    DualMplGpl = 5,
+    /// Proprietary
+    Proprietary = 6,
+    /// Unknown license
+    Unknown = 255,
+}
+
+impl ModuleLicense {
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "GPL" | "GPL v2" => ModuleLicense::GPL,
+            "GPL v2+" | "GPL+" => ModuleLicense::GPLPlus,
+            "Dual BSD/GPL" => ModuleLicense::DualBsdGpl,
+            "Dual MIT/GPL" => ModuleLicense::DualMitGpl,
+            "Dual MPL/GPL" => ModuleLicense::DualMplGpl,
+            "Proprietary" => ModuleLicense::Proprietary,
+            _ => ModuleLicense::Unknown,
+        }
+    }
+
+    pub fn is_gpl_compatible(&self) -> bool {
+        matches!(
+            self,
+            ModuleLicense::GPL
+                | ModuleLicense::GPLPlus
+                | ModuleLicense::DualBsdGpl
+                | ModuleLicense::DualMitGpl
+                | ModuleLicense::DualMplGpl
+        )
+    }
+}
+
+/// Module parameter type
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ParamType {
+    /// Boolean parameter
+    Bool = 1,
+    /// Integer parameter
+    Int = 2,
+    /// Unsigned integer parameter
+    UInt = 3,
+    /// String parameter
+    String = 4,
+}
+
+/// Module parameter definition
+#[derive(Clone, Copy)]
+pub struct ModuleParam {
+    /// Parameter name
+    pub name: [u8; MAX_PARAM_NAME],
+    /// Parameter type
+    pub param_type: ParamType,
+    /// Current value (stored as bytes)
+    pub value: [u8; MAX_PARAM_VALUE],
+    /// Value length
+    pub value_len: usize,
+    /// Description
+    pub description: [u8; 64],
+}
+
+impl ModuleParam {
+    pub const fn empty() -> Self {
+        Self {
+            name: [0; MAX_PARAM_NAME],
+            param_type: ParamType::Int,
+            value: [0; MAX_PARAM_VALUE],
+            value_len: 0,
+            description: [0; 64],
+        }
+    }
+
+    pub fn name_str(&self) -> &str {
+        let end = self.name.iter().position(|&c| c == 0).unwrap_or(MAX_PARAM_NAME);
+        core::str::from_utf8(&self.name[..end]).unwrap_or("")
+    }
+
+    pub fn value_str(&self) -> &str {
+        core::str::from_utf8(&self.value[..self.value_len]).unwrap_or("")
+    }
+
+    pub fn value_as_int(&self) -> Option<i64> {
+        self.value_str().parse().ok()
+    }
+
+    pub fn value_as_bool(&self) -> Option<bool> {
+        match self.value_str() {
+            "1" | "true" | "yes" | "Y" | "y" => Some(true),
+            "0" | "false" | "no" | "N" | "n" => Some(false),
+            _ => None,
         }
     }
 }
@@ -192,23 +341,60 @@ pub struct ModuleInfo {
     pub version: [u8; 16],
     /// Module description
     pub description: [u8; 64],
+    /// Module author
+    pub author: [u8; MAX_INFO_STRING],
+    /// Module license
+    pub license: ModuleLicense,
     /// Module type
     pub module_type: ModuleType,
     /// Current state
     pub state: ModuleState,
     /// Data pointer (for module-specific data)
     pub data_ptr: usize,
+    /// Module size in memory
+    pub size: usize,
+    /// Reference count (number of users)
+    pub refcount: u32,
+    /// Dependencies (module names)
+    pub dependencies: [[u8; MAX_MODULE_NAME]; MAX_DEPENDENCIES],
+    /// Number of dependencies
+    pub dep_count: u8,
+    /// Module parameters
+    pub params: [ModuleParam; MAX_PARAMETERS],
+    /// Number of parameters
+    pub param_count: u8,
+    /// Init function address
+    pub init_fn: Option<u64>,
+    /// Exit function address
+    pub exit_fn: Option<u64>,
+    /// Whether this module taints the kernel
+    pub taints_kernel: bool,
+    /// Load timestamp (ticks since boot)
+    pub load_time: u64,
 }
 
 impl ModuleInfo {
     const fn empty() -> Self {
+        const EMPTY_DEP: [u8; MAX_MODULE_NAME] = [0; MAX_MODULE_NAME];
         Self {
             name: [0; MAX_MODULE_NAME],
             version: [0; 16],
             description: [0; 64],
+            author: [0; MAX_INFO_STRING],
+            license: ModuleLicense::Unknown,
             module_type: ModuleType::Other,
             state: ModuleState::Loaded,
             data_ptr: 0,
+            size: 0,
+            refcount: 0,
+            dependencies: [EMPTY_DEP; MAX_DEPENDENCIES],
+            dep_count: 0,
+            params: [ModuleParam::empty(); MAX_PARAMETERS],
+            param_count: 0,
+            init_fn: None,
+            exit_fn: None,
+            taints_kernel: false,
+            load_time: 0,
         }
     }
 
@@ -229,12 +415,72 @@ impl ModuleInfo {
         let end = self.description.iter().position(|&c| c == 0).unwrap_or(64);
         core::str::from_utf8(&self.description[..end]).unwrap_or("")
     }
+
+    /// Get author as string
+    pub fn author_str(&self) -> &str {
+        let end = self.author.iter().position(|&c| c == 0).unwrap_or(MAX_INFO_STRING);
+        core::str::from_utf8(&self.author[..end]).unwrap_or("")
+    }
+
+    /// Get dependency name by index
+    pub fn dependency_str(&self, idx: usize) -> Option<&str> {
+        if idx >= self.dep_count as usize {
+            return None;
+        }
+        let end = self.dependencies[idx].iter().position(|&c| c == 0).unwrap_or(MAX_MODULE_NAME);
+        Some(core::str::from_utf8(&self.dependencies[idx][..end]).unwrap_or(""))
+    }
+
+    /// Increment reference count
+    pub fn get(&mut self) -> u32 {
+        self.refcount += 1;
+        self.refcount
+    }
+
+    /// Decrement reference count
+    pub fn put(&mut self) -> u32 {
+        if self.refcount > 0 {
+            self.refcount -= 1;
+        }
+        self.refcount
+    }
+
+    /// Check if module can be unloaded
+    pub fn can_unload(&self) -> bool {
+        self.refcount == 0 && self.state == ModuleState::Running
+    }
+
+    /// Set parameter value
+    pub fn set_param(&mut self, name: &str, value: &str) -> Result<(), ModuleError> {
+        for i in 0..self.param_count as usize {
+            if self.params[i].name_str() == name {
+                let value_bytes = value.as_bytes();
+                let len = value_bytes.len().min(MAX_PARAM_VALUE);
+                self.params[i].value[..len].copy_from_slice(&value_bytes[..len]);
+                self.params[i].value_len = len;
+                return Ok(());
+            }
+        }
+        Err(ModuleError::ParamNotFound)
+    }
+
+    /// Get parameter value
+    pub fn get_param(&self, name: &str) -> Option<&str> {
+        for i in 0..self.param_count as usize {
+            if self.params[i].name_str() == name {
+                return Some(self.params[i].value_str());
+            }
+        }
+        None
+    }
 }
 
-/// Module registry
+/// Extended module registry with dependency tracking
 struct ModuleRegistry {
     modules: [Option<ModuleInfo>; MAX_MODULES],
     count: usize,
+    /// Kernel tainted flag (set when non-GPL module loads)
+    tainted: bool,
 }
 
 impl ModuleRegistry {
@@ -243,6 +489,7 @@ impl ModuleRegistry {
         Self {
             modules: [NONE; MAX_MODULES],
             count: 0,
+            tainted: false,
         }
     }
 
@@ -338,6 +585,16 @@ pub enum ModuleError {
     AllocationFailed,
     /// Relocation failed
     RelocationFailed,
+    /// Parameter not found
+    ParamNotFound,
+    /// Module still in use (refcount > 0)
+    ModuleInUse,
+    /// Dependency cycle detected
+    DependencyCycle,
+    /// Permission denied
+    PermissionDenied,
+    /// Invalid parameter
+    InvalidParam,
 }
 
 impl From<elf::LoaderError> for ModuleError {
@@ -519,17 +776,78 @@ pub fn get_module_info(name: &str) -> Option<ModuleInfo> {
     MODULE_REGISTRY.lock().find(name).copied()
 }
 
-/// Unload a module
+/// Increment module reference count
+pub fn module_get(name: &str) -> Result<u32, ModuleError> {
+    let mut registry = MODULE_REGISTRY.lock();
+    if let Some(info) = registry.find_mut(name) {
+        Ok(info.get())
+    } else {
+        Err(ModuleError::NotFound)
+    }
+}
+
+/// Decrement module reference count
+pub fn module_put(name: &str) -> Result<u32, ModuleError> {
+    let mut registry = MODULE_REGISTRY.lock();
+    if let Some(info) = registry.find_mut(name) {
+        Ok(info.put())
+    } else {
+        Err(ModuleError::NotFound)
+    }
+}
+
+/// Unload a module with safety checks
 pub fn unload_module(name: &str) -> Result<(), ModuleError> {
-    crate::kinfo!("Unloading kernel module: {}", name);
+    unload_module_with_flags(name, false)
+}
+
+/// Force unload a module (ignores refcount)
+pub fn force_unload_module(name: &str) -> Result<(), ModuleError> {
+    unload_module_with_flags(name, true)
+}
+
+/// Unload a module with optional force flag
+fn unload_module_with_flags(name: &str, force: bool) -> Result<(), ModuleError> {
+    crate::kinfo!("Unloading kernel module: {} (force={})", name, force);
+
+    // Check if module can be unloaded
+    {
+        let registry = MODULE_REGISTRY.lock();
+        if let Some(info) = registry.find(name) {
+            if !force && info.refcount > 0 {
+                crate::kwarn!("Module '{}' still in use (refcount={})", name, info.refcount);
+                return Err(ModuleError::ModuleInUse);
+            }
+            if info.state == ModuleState::Unloading {
+                crate::kwarn!("Module '{}' is already being unloaded", name);
+                return Err(ModuleError::NotFound);
+            }
+        } else {
+            return Err(ModuleError::NotFound);
+        }
+    }
+
+    // Call module exit function if present
+    {
+        let registry = MODULE_REGISTRY.lock();
+        if let Some(info) = registry.find(name) {
+            if let Some(exit_addr) = info.exit_fn {
+                let exit: extern "C" fn() -> i32 = unsafe {
+                    core::mem::transmute(exit_addr)
+                };
+                let ret = exit();
+                if ret != 0 {
+                    crate::kwarn!("Module '{}' exit function returned {}", name, ret);
+                }
+            }
+        }
+    }
 
     // Set state to unloading
     {
         let mut registry = MODULE_REGISTRY.lock();
         if let Some(info) = registry.find_mut(name) {
             info.state = ModuleState::Unloading;
-        } else {
-            return Err(ModuleError::NotFound);
         }
     }
 
@@ -619,6 +937,126 @@ pub fn load_initramfs_modules() {
         );
     } else {
         crate::kwarn!("Initramfs not available, skipping module load");
+    }
+}
+
+/// Load module with parameters
+/// Parameters are passed as "param1=value1 param2=value2" string
+pub fn load_module_with_params(data: &[u8], params: &str) -> Result<(), ModuleError> {
+    // First load the module
+    load_module(data)?;
+    
+    // Then set parameters
+    // Parse params string
+    if !params.is_empty() {
+        // Get the module name from the loaded modules (it's the last one)
+        let module_name = {
+            let registry = MODULE_REGISTRY.lock();
+            let mut name = [0u8; MAX_MODULE_NAME];
+            for slot in registry.modules.iter() {
+                if let Some(info) = slot {
+                    if info.state == ModuleState::Running || info.state == ModuleState::Loaded {
+                        name.copy_from_slice(&info.name);
+                        break;
+                    }
+                }
+            }
+            name
+        };
+        
+        let name_str = {
+            let end = module_name.iter().position(|&c| c == 0).unwrap_or(MAX_MODULE_NAME);
+            core::str::from_utf8(&module_name[..end]).unwrap_or("")
+        };
+        
+        for param_pair in params.split_whitespace() {
+            if let Some(eq_pos) = param_pair.find('=') {
+                let key = &param_pair[..eq_pos];
+                let value = &param_pair[eq_pos + 1..];
+                if let Err(e) = set_module_param(name_str, key, value) {
+                    crate::kwarn!("Failed to set parameter {}={}: {:?}", key, value, e);
+                }
+            }
+        }
+    }
+    
+    Ok(())
+}
+
+/// Set a module parameter
+pub fn set_module_param(module_name: &str, param_name: &str, value: &str) -> Result<(), ModuleError> {
+    let mut registry = MODULE_REGISTRY.lock();
+    if let Some(info) = registry.find_mut(module_name) {
+        info.set_param(param_name, value)
+    } else {
+        Err(ModuleError::NotFound)
+    }
+}
+
+/// Get a module parameter
+pub fn get_module_param(module_name: &str, param_name: &str) -> Result<alloc::string::String, ModuleError> {
+    let registry = MODULE_REGISTRY.lock();
+    if let Some(info) = registry.find(module_name) {
+        if let Some(value) = info.get_param(param_name) {
+            Ok(alloc::string::String::from(value))
+        } else {
+            Err(ModuleError::ParamNotFound)
+        }
+    } else {
+        Err(ModuleError::NotFound)
+    }
+}
+
+/// Check if all dependencies of a module are loaded
+pub fn check_dependencies(module_name: &str) -> Result<(), ModuleError> {
+    let registry = MODULE_REGISTRY.lock();
+    if let Some(info) = registry.find(module_name) {
+        for i in 0..info.dep_count as usize {
+            if let Some(dep_name) = info.dependency_str(i) {
+                if !dep_name.is_empty() && registry.find(dep_name).is_none() {
+                    crate::kwarn!("Module '{}' missing dependency: {}", module_name, dep_name);
+                    return Err(ModuleError::MissingDependency);
+                }
+            }
+        }
+        Ok(())
+    } else {
+        Err(ModuleError::NotFound)
+    }
+}
+
+/// Get number of loaded modules
+pub fn module_count() -> usize {
+    MODULE_REGISTRY.lock().count
+}
+
+/// Check if kernel is tainted by non-GPL modules
+pub fn is_kernel_tainted() -> bool {
+    MODULE_REGISTRY.lock().tainted
+}
+
+/// Get module state
+pub fn get_module_state(name: &str) -> Option<ModuleState> {
+    MODULE_REGISTRY.lock().find(name).map(|info| info.state)
+}
+
+/// Get module reference count
+pub fn get_module_refcount(name: &str) -> Option<u32> {
+    MODULE_REGISTRY.lock().find(name).map(|info| info.refcount)
+}
+
+/// Request to use a module (increments refcount if module exists and is running)
+pub fn try_module_get(name: &str) -> Result<(), ModuleError> {
+    let mut registry = MODULE_REGISTRY.lock();
+    if let Some(info) = registry.find_mut(name) {
+        if info.state == ModuleState::Running {
+            info.get();
+            Ok(())
+        } else {
+            Err(ModuleError::NotFound)
+        }
+    } else {
+        Err(ModuleError::NotFound)
     }
 }
 

@@ -391,7 +391,7 @@ pub fn read(fd: u64, buf: *mut u8, count: usize) -> u64 {
                     posix::set_errno(0);
                     return to_copy as u64;
                 }
-                FileBacking::Ext2(file_ref) => {
+                FileBacking::Dynamic(file_ref) => {
                     let total = handle.metadata.size as usize;
                     if handle.position >= total {
                         posix::set_errno(0);
@@ -446,7 +446,7 @@ pub fn open(path_ptr: *const u8, len: usize) -> u64 {
         let crate::fs::OpenFile { content, metadata } = opened;
         let backing = match content {
             crate::fs::FileContent::Inline(data) => FileBacking::Inline(data),
-            crate::fs::FileContent::Ext2(file_ref) => FileBacking::Ext2(file_ref),
+            crate::fs::FileContent::Dynamic(file_ref) => FileBacking::Dynamic(file_ref),
         };
 
         unsafe {

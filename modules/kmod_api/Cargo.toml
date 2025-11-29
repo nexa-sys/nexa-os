@@ -1,0 +1,14 @@
+[package]
+name = "kmod_api"
+version = "0.1.0"
+edition = "2021"
+description = "Kernel Module API for NexaOS kernel modules"
+license = "MIT"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+
+[features]
+default = []

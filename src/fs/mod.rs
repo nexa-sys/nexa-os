@@ -4,15 +4,15 @@
 //! - Virtual File System (VFS) layer
 //! - Filesystem abstraction traits (for pluggable filesystem support)
 //! - Bridge adapters for trait interoperability
-//! - ext2 filesystem support
-//! - ext2 adapter for abstract filesystem interface
+//! - Dynamic filesystem driver registration (for kernel modules like ext2)
 //! - Initial RAM filesystem (initramfs/CPIO)
 //! - procfs pseudo-filesystem (Linux-compatible /proc)
 //! - sysfs pseudo-filesystem (Linux-compatible /sys)
+//!
+//! Note: ext2 filesystem support is now provided as a loadable kernel module.
+//! See modules/ext2/ for the ext2 module implementation.
 
 pub mod bridge;
-pub mod ext2;
-pub mod ext2_adapter;
 pub mod initramfs;
 pub mod procfs;
 pub mod sysfs;
@@ -32,20 +32,11 @@ pub use initramfs::{
     GsData, GS_DATA,
 };
 
-// Re-export from ext2
-pub use ext2::{
-    global as ext2_global, register_global as ext2_register_global, Ext2Error, Ext2Filesystem,
-    Ext2Stats, FileRef as Ext2FileRef,
-};
-
 // Re-export filesystem abstraction traits
 pub use traits::{
-    BlockFileSystem, DirEntry, FileSystemExt, FsError, FsFileHandle, FsResult, FsStats,
-    WritableFileSystem,
+    BlockFileSystem, DirEntry, DynamicFileRef, FileSystemExt, FsDriverRegistry, FsError,
+    FsFileHandle, FsOps, FsResult, FsStats, WritableFileSystem, FS_DRIVER_REGISTRY,
 };
-
-// Re-export ext2 adapter
-pub use ext2_adapter::{create_ext2_adapter, global_ext2_adapter, Ext2Adapter};
 
 // Re-export bridge adapters
 pub use bridge::{BlockFsVfsAdapter, VfsBlockFsAdapter};

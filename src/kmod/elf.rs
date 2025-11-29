@@ -2,6 +2,14 @@
 //!
 //! This module handles loading ELF relocatable objects (.o files)
 //! and shared objects (.so files) as kernel modules.
+//!
+//! # Supported Features
+//!
+//! - ELF64 relocatable objects and shared objects
+//! - x86-64 relocation types (R_X86_64_64, R_X86_64_PC32, etc.)
+//! - Symbol resolution from kernel symbol table
+//! - Module metadata extraction (.modinfo section)
+//! - GOT/PLT relocation support
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -24,13 +32,16 @@ const SHT_PROGBITS: u32 = 1;
 const SHT_SYMTAB: u32 = 2;
 const SHT_STRTAB: u32 = 3;
 const SHT_RELA: u32 = 4;
+const SHT_NOTE: u32 = 7;
 const SHT_NOBITS: u32 = 8;
 const SHT_REL: u32 = 9;
+const SHT_DYNSYM: u32 = 11;
 
 /// Section flags
 const SHF_WRITE: u64 = 0x1;
 const SHF_ALLOC: u64 = 0x2;
 const SHF_EXECINSTR: u64 = 0x4;
+const SHF_INFO_LINK: u64 = 0x40;
 
 /// Symbol binding
 const STB_LOCAL: u8 = 0;
@@ -42,15 +53,35 @@ const STT_NOTYPE: u8 = 0;
 const STT_OBJECT: u8 = 1;
 const STT_FUNC: u8 = 2;
 const STT_SECTION: u8 = 3;
+const STT_FILE: u8 = 4;
+
+/// Special section indices
+const SHN_UNDEF: u16 = 0;
+const SHN_ABS: u16 = 0xFFF1;
+const SHN_COMMON: u16 = 0xFFF2;
 
 /// x86-64 relocation types
 const R_X86_64_NONE: u32 = 0;
-const R_X86_64_64: u32 = 1;
-const R_X86_64_PC32: u32 = 2;
-const R_X86_64_GOT32: u32 = 3;
-const R_X86_64_PLT32: u32 = 4;
-const R_X86_64_32: u32 = 10;
-const R_X86_64_32S: u32 = 11;
+const R_X86_64_64: u32 = 1;         // S + A (absolute 64-bit)
+const R_X86_64_PC32: u32 = 2;       // S + A - P (PC-relative 32-bit)
+const R_X86_64_GOT32: u32 = 3;      // G + A (GOT entry)
+const R_X86_64_PLT32: u32 = 4;      // L + A - P (PLT entry)
+const R_X86_64_COPY: u32 = 5;       // Copy symbol at runtime
+const R_X86_64_GLOB_DAT: u32 = 6;   // S (Create GOT entry)
+const R_X86_64_JUMP_SLOT: u32 = 7;  // S (Create PLT entry)
+const R_X86_64_RELATIVE: u32 = 8;   // B + A (Relative to base)
+const R_X86_64_GOTPCREL: u32 = 9;   // G + GOT + A - P
+const R_X86_64_32: u32 = 10;        // S + A (absolute 32-bit, zero-extend)
+const R_X86_64_32S: u32 = 11;       // S + A (absolute 32-bit, sign-extend)
+const R_X86_64_16: u32 = 12;        // S + A (absolute 16-bit)
+const R_X86_64_PC16: u32 = 13;      // S + A - P (PC-relative 16-bit)
+const R_X86_64_8: u32 = 14;         // S + A (absolute 8-bit)
+const R_X86_64_PC8: u32 = 15;       // S + A - P (PC-relative 8-bit)
+const R_X86_64_PC64: u32 = 24;      // S + A - P (PC-relative 64-bit)
+const R_X86_64_GOTOFF64: u32 = 25;  // S + A - GOT
+const R_X86_64_GOTPC32: u32 = 26;   // GOT + A - P
+const R_X86_64_SIZE32: u32 = 32;    // Z + A (symbol size)
+const R_X86_64_SIZE64: u32 = 33;    // Z + A (symbol size)
 
 /// ELF64 Header
 #[repr(C, packed)]
@@ -161,6 +192,10 @@ pub struct ModuleLoader<'a> {
     section_bases: Vec<usize>, // Runtime base address for each section
     total_size: usize,
     module_base: usize,
+    // Simple GOT implementation for GOTPCREL relocations
+    got_base: usize,      // Base address of GOT entries
+    got_next: usize,      // Next available GOT slot
+    got_capacity: usize,  // Total GOT capacity
 }
 
 impl<'a> ModuleLoader<'a> {
@@ -206,6 +241,9 @@ impl<'a> ModuleLoader<'a> {
             section_bases: Vec::new(),
             total_size: 0,
             module_base: 0,
+            got_base: 0,
+            got_next: 0,
+            got_capacity: 0,
         })
     }
 
@@ -277,6 +315,14 @@ impl<'a> ModuleLoader<'a> {
                 total += shdr.sh_size as usize;
             }
         }
+        
+        // Reserve space for simple GOT (64 entries * 8 bytes = 512 bytes)
+        // This is used for GOTPCREL relocations
+        total = (total + 7) & !7; // 8-byte align
+        self.got_capacity = 64;
+        // got_base will be set relative to total, updated in allocate()
+        let got_size = self.got_capacity * 8;
+        total += got_size;
 
         self.total_size = total;
         Ok(total)
@@ -312,6 +358,11 @@ impl<'a> ModuleLoader<'a> {
                 *base += self.module_base;
             }
         }
+        
+        // Set up GOT region (at the end of module memory)
+        let got_size = self.got_capacity * 8;
+        self.got_base = self.module_base + self.total_size - got_size;
+        self.got_next = self.got_base;
 
         Ok(self.module_base)
     }
@@ -387,8 +438,13 @@ impl<'a> ModuleLoader<'a> {
                 .map_err(|_| LoaderError::SymbolNotFound)?;
 
             // Look up in kernel symbol table
-            super::symbols::lookup_symbol(name)
-                .ok_or(LoaderError::SymbolNotFound)
+            match super::symbols::lookup_symbol(name) {
+                Some(addr) => Ok(addr),
+                None => {
+                    crate::kerror!("kmod: undefined symbol '{}' not found in kernel symbol table", name);
+                    Err(LoaderError::SymbolNotFound)
+                }
+            }
         } else if sym.st_shndx < self.section_bases.len() as u16 {
             // Symbol in a loaded section
             let section_base = self.section_bases[sym.st_shndx as usize];
@@ -400,7 +456,7 @@ impl<'a> ModuleLoader<'a> {
     }
 
     /// Apply relocations
-    pub fn apply_relocations(&self) -> Result<(), LoaderError> {
+    pub fn apply_relocations(&mut self) -> Result<(), LoaderError> {
         // Find symbol table
         let (symtab_idx, strtab_idx) = self.find_symtab()?;
         let symtab_data = self.get_section_data(symtab_idx)?;
@@ -408,6 +464,10 @@ impl<'a> ModuleLoader<'a> {
 
         let sym_size = core::mem::size_of::<Elf64Sym>();
         let sym_count = symtab_data.len() / sym_size;
+        
+        // Copy GOT state to avoid borrow conflicts
+        let mut got_next = self.got_next;
+        let got_end = self.got_base + self.got_capacity * 8;
 
         // Process each relocation section
         for i in 0..self.ehdr.e_shnum as usize {
@@ -450,7 +510,24 @@ impl<'a> ModuleLoader<'a> {
                 };
 
                 // Get symbol value
-                let sym_val = self.get_symbol_value(&sym, strtab_data)?;
+                let sym_val = match self.get_symbol_value(&sym, strtab_data) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        // Debug: show which symbol failed
+                        let sym_name_idx = sym.st_name;
+                        let sym_shndx = sym.st_shndx;
+                        let name_start = sym_name_idx as usize;
+                        let name_end = strtab_data[name_start..]
+                            .iter()
+                            .position(|&c| c == 0)
+                            .map(|p| name_start + p)
+                            .unwrap_or(strtab_data.len());
+                        if let Ok(name) = core::str::from_utf8(&strtab_data[name_start..name_end]) {
+                            crate::kerror!("kmod: relocation failed for symbol '{}', shndx={}", name, sym_shndx);
+                        }
+                        return Err(e);
+                    }
+                };
 
                 // Calculate relocation address
                 let rel_addr = target_base + rela.r_offset as usize;
@@ -471,6 +548,37 @@ impl<'a> ModuleLoader<'a> {
                     R_X86_64_PC32 | R_X86_64_PLT32 => {
                         // S + A - P (PC-relative 32-bit)
                         let value = (sym_val as i64 + addend - rel_addr as i64) as i32;
+                        unsafe {
+                            ptr::write_unaligned(rel_addr as *mut i32, value);
+                        }
+                    }
+                    
+                    R_X86_64_GOTPCREL => {
+                        // G + GOT + A - P
+                        // The instruction expects to read from [rip + offset] which should
+                        // contain the 64-bit address of the symbol.
+                        // We allocate a GOT entry, write the symbol address there, and
+                        // return the PC-relative offset to that entry.
+                        
+                        // Check if we have space in GOT
+                        if got_next >= got_end {
+                            crate::kerror!("kmod: GOT overflow");
+                            return Err(LoaderError::RelocationFailed);
+                        }
+                        
+                        // Allocate GOT entry and write symbol address
+                        let got_entry = got_next;
+                        got_next += 8;
+                        unsafe {
+                            ptr::write_unaligned(got_entry as *mut u64, sym_val);
+                        }
+                        
+                        // Calculate PC-relative offset to the GOT entry
+                        // The instruction will be: mov reg, [rip + offset]
+                        // where offset = got_entry - (rel_addr + 4) + addend
+                        // But the standard formula is: G + GOT + A - P where G is offset in GOT from GOT base
+                        // Since we store absolute address in got_entry, just compute: got_entry + A - P
+                        let value = (got_entry as i64 + addend - rel_addr as i64) as i32;
                         unsafe {
                             ptr::write_unaligned(rel_addr as *mut i32, value);
                         }
@@ -503,6 +611,9 @@ impl<'a> ModuleLoader<'a> {
                 }
             }
         }
+        
+        // Write back updated GOT state
+        self.got_next = got_next;
 
         Ok(())
     }
@@ -560,6 +671,100 @@ impl<'a> ModuleLoader<'a> {
     pub fn sections(&self) -> &[LoadedSection] {
         &self.sections
     }
+
+    /// Find a section by name
+    fn find_section_by_name(&self, target_name: &str) -> Option<usize> {
+        for i in 0..self.ehdr.e_shnum as usize {
+            if let Ok(shdr) = self.get_section(i) {
+                if let Ok(name) = self.get_section_name(&shdr) {
+                    if name == target_name {
+                        return Some(i);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Parse module metadata from .modinfo section
+    /// The .modinfo section contains null-terminated key=value pairs
+    pub fn parse_modinfo(&self) -> ModuleMetadata {
+        let mut metadata = ModuleMetadata::default();
+
+        // Find .modinfo section
+        let modinfo_idx = match self.find_section_by_name(".modinfo") {
+            Some(idx) => idx,
+            None => {
+                // Try alternative names
+                self.find_section_by_name("__modinfo")
+                    .or_else(|| self.find_section_by_name(".rodata.modinfo"))
+                    .unwrap_or_else(|| {
+                        crate::kdebug!("No .modinfo section found in module");
+                        return usize::MAX;
+                    })
+            }
+        };
+
+        if modinfo_idx == usize::MAX {
+            return metadata;
+        }
+
+        // Get section data
+        let data = match self.get_section_data(modinfo_idx) {
+            Ok(d) => d,
+            Err(_) => return metadata,
+        };
+
+        // Parse key=value pairs separated by null bytes
+        let mut pos = 0;
+        while pos < data.len() {
+            // Find end of current entry
+            let end = data[pos..]
+                .iter()
+                .position(|&b| b == 0)
+                .map(|p| pos + p)
+                .unwrap_or(data.len());
+
+            if end > pos {
+                let entry = &data[pos..end];
+                self.parse_modinfo_entry(entry, &mut metadata);
+            }
+
+            pos = end + 1;
+        }
+
+        metadata
+    }
+
+    /// Parse a single modinfo entry (key=value format)
+    fn parse_modinfo_entry(&self, entry: &[u8], metadata: &mut ModuleMetadata) {
+        // Find '=' separator
+        let eq_pos = match entry.iter().position(|&b| b == b'=') {
+            Some(p) => p,
+            None => return, // Invalid entry
+        };
+
+        let key = &entry[..eq_pos];
+        let value = &entry[eq_pos + 1..];
+
+        match key {
+            b"name" => ModuleMetadata::copy_to_buf(&mut metadata.name, value),
+            b"version" => ModuleMetadata::copy_to_buf(&mut metadata.version, value),
+            b"author" => ModuleMetadata::copy_to_buf(&mut metadata.author, value),
+            b"description" => ModuleMetadata::copy_to_buf(&mut metadata.description, value),
+            b"license" => ModuleMetadata::copy_to_buf(&mut metadata.license, value),
+            b"depends" => ModuleMetadata::copy_to_buf(&mut metadata.depends, value),
+            b"vermagic" => ModuleMetadata::copy_to_buf(&mut metadata.vermagic, value),
+            b"srcversion" => ModuleMetadata::copy_to_buf(&mut metadata.srcversion, value),
+            b"alias" => ModuleMetadata::copy_to_buf(&mut metadata.alias, value),
+            _ => {
+                // Unknown key, log for debugging
+                if let Ok(key_str) = core::str::from_utf8(key) {
+                    crate::kdebug!("Unknown modinfo key: {}", key_str);
+                }
+            }
+        }
+    }
 }
 
 /// Load an ELF module and return its entry points
@@ -579,6 +784,9 @@ pub fn load_elf_module(data: &[u8]) -> Result<LoadedModule, LoaderError> {
     // Apply relocations
     loader.apply_relocations()?;
     
+    // Parse module metadata from .modinfo section
+    let metadata = loader.parse_modinfo();
+    
     // Find module entry points
     let init_fn = loader.find_symbol("module_init")
         .or_else(|_| loader.find_symbol("ext2_module_init"))
@@ -593,7 +801,92 @@ pub fn load_elf_module(data: &[u8]) -> Result<LoadedModule, LoaderError> {
         size: loader.size(),
         init_fn,
         exit_fn,
+        metadata,
     })
+}
+
+/// Module metadata extracted from .modinfo section
+#[derive(Debug, Clone)]
+pub struct ModuleMetadata {
+    /// Module name
+    pub name: [u8; 64],
+    /// Module version string
+    pub version: [u8; 32],
+    /// Module author
+    pub author: [u8; 128],
+    /// Module description
+    pub description: [u8; 256],
+    /// Module license (GPL, MIT, etc.)
+    pub license: [u8; 32],
+    /// Module dependencies (comma-separated)
+    pub depends: [u8; 256],
+    /// Kernel version compatibility (vermagic)
+    pub vermagic: [u8; 64],
+    /// Source version hash
+    pub srcversion: [u8; 32],
+    /// Module alias for auto-loading
+    pub alias: [u8; 128],
+}
+
+impl Default for ModuleMetadata {
+    fn default() -> Self {
+        Self {
+            name: [0u8; 64],
+            version: [0u8; 32],
+            author: [0u8; 128],
+            description: [0u8; 256],
+            license: [0u8; 32],
+            depends: [0u8; 256],
+            vermagic: [0u8; 64],
+            srcversion: [0u8; 32],
+            alias: [0u8; 128],
+        }
+    }
+}
+
+impl ModuleMetadata {
+    /// Get module name as string slice
+    pub fn name_str(&self) -> &str {
+        Self::bytes_to_str(&self.name)
+    }
+
+    /// Get module version as string slice
+    pub fn version_str(&self) -> &str {
+        Self::bytes_to_str(&self.version)
+    }
+
+    /// Get module author as string slice
+    pub fn author_str(&self) -> &str {
+        Self::bytes_to_str(&self.author)
+    }
+
+    /// Get module description as string slice
+    pub fn description_str(&self) -> &str {
+        Self::bytes_to_str(&self.description)
+    }
+
+    /// Get module license as string slice
+    pub fn license_str(&self) -> &str {
+        Self::bytes_to_str(&self.license)
+    }
+
+    /// Get module dependencies as string slice
+    pub fn depends_str(&self) -> &str {
+        Self::bytes_to_str(&self.depends)
+    }
+
+    /// Helper to convert null-terminated bytes to str
+    fn bytes_to_str(bytes: &[u8]) -> &str {
+        let len = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+        core::str::from_utf8(&bytes[..len]).unwrap_or("")
+    }
+
+    /// Copy string into fixed-size buffer
+    fn copy_to_buf(dest: &mut [u8], src: &[u8]) {
+        let len = src.len().min(dest.len() - 1);
+        dest[..len].copy_from_slice(&src[..len]);
+        dest[len] = 0;
+    }
 }
 
 /// Loaded module information
@@ -603,6 +896,8 @@ pub struct LoadedModule {
     pub size: usize,
     pub init_fn: Option<u64>,
     pub exit_fn: Option<u64>,
+    /// Module metadata extracted from ELF
+    pub metadata: ModuleMetadata,
 }
 
 impl LoadedModule {
@@ -628,5 +923,19 @@ impl LoadedModule {
         } else {
             Ok(0)
         }
+    }
+
+    /// Check if module has valid metadata
+    pub fn has_metadata(&self) -> bool {
+        self.metadata.name[0] != 0
+    }
+
+    /// Check if module license is GPL compatible
+    pub fn is_gpl_compatible(&self) -> bool {
+        let license = self.metadata.license_str();
+        matches!(license, 
+            "GPL" | "GPL v2" | "GPL and additional rights" |
+            "Dual BSD/GPL" | "Dual MIT/GPL" | "Dual MPL/GPL"
+        )
     }
 }

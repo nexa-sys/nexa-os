@@ -151,7 +151,7 @@ pub struct SocketpairHandle {
 #[derive(Clone, Copy)]
 pub enum FileBacking {
     Inline(&'static [u8]),
-    Ext2(crate::fs::ext2::FileRef),
+    Dynamic(crate::fs::DynamicFileRef),
     StdStream(StdStreamKind),
     Socket(SocketHandle),
     Socketpair(SocketpairHandle),

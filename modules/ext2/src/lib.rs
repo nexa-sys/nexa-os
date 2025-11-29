@@ -1,4 +1,4 @@
-//! ext2 Filesystem Kernel Module for NexaOS
+ //! ext2 Filesystem Kernel Module for NexaOS
 //!
 //! This is a loadable kernel module (.nkm) that provides ext2 filesystem support.
 //! It is loaded from initramfs during boot and dynamically linked to the kernel.
@@ -18,7 +18,112 @@
 #![no_std]
 #![allow(dead_code)]
 
-use core::cmp;
+// NOTE: This module avoids using core library functions that would introduce
+// symbol dependencies. Instead, we use kernel-provided APIs or local implementations.
+
+// ============================================================================
+// Helper functions - replacements for core library functions
+// ============================================================================
+
+/// Local min function to avoid core::cmp dependency
+#[inline(always)]
+const fn min_usize(a: usize, b: usize) -> usize {
+    if a < b { a } else { b }
+}
+
+/// Compare two byte slices for equality (replaces slice == slice)
+#[inline(always)]
+fn bytes_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < a.len() {
+        if a[i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+// ============================================================================
+// Rust panic/intrinsics support - call kernel's kmod_panic
+// These functions are required by Rust's core library for bounds checking,
+// division by zero, etc. We provide them to avoid undefined symbol errors.
+// ============================================================================
+
+extern "C" {
+    fn kmod_panic(msg: *const u8, len: usize) -> !;
+}
+
+/// Helper to call kernel panic with a static message
+#[inline(always)]
+fn do_panic(msg: &[u8]) -> ! {
+    unsafe { kmod_panic(msg.as_ptr(), msg.len()) }
+}
+
+// Bounds check panic - called by Rust compiler for array/slice indexing
+#[no_mangle]
+#[export_name = "_ZN4core9panicking18panic_bounds_check17h423523315369be23E"]
+pub extern "C" fn panic_bounds_check(_: usize, _: usize) -> ! {
+    do_panic(b"index out of bounds")
+}
+
+// Slice index bounds check failure - exact symbol name from compiler
+#[no_mangle]
+#[export_name = "_ZN4core5slice5index16slice_index_fail17ha90d967cc5a41c62E"]
+pub extern "C" fn slice_index_fail(_: usize, _: usize) -> ! {
+    do_panic(b"slice index out of bounds")
+}
+
+// More slice failures with common hash suffixes
+#[no_mangle]
+pub extern "C" fn _ZN4core5slice5index24slice_end_index_len_fail17h3f46tried62E(_: usize, _: usize) -> ! {
+    do_panic(b"slice end index out of bounds")
+}
+
+#[no_mangle]
+pub extern "C" fn _ZN4core5slice5index26slice_start_index_len_fail17h3f46tried62E(_: usize, _: usize) -> ! {
+    do_panic(b"slice start index out of bounds")
+}
+
+#[no_mangle]
+pub extern "C" fn _ZN4core5slice5index22slice_index_order_fail17h3f46tried62E(_: usize, _: usize) -> ! {
+    do_panic(b"slice index order invalid")
+}
+
+// Division by zero and overflow panics
+#[no_mangle]
+pub extern "C" fn _ZN4core9panicking11panic_const23panic_const_div_by_zero17hc2227f4d6d9d4d9cE() -> ! {
+    do_panic(b"attempt to divide by zero")
+}
+
+#[no_mangle]
+pub extern "C" fn _ZN4core9panicking11panic_const26panic_const_rem_by_zero17hc2227f4d6d9d4d9cE() -> ! {
+    do_panic(b"attempt to calculate remainder with zero divisor")
+}
+
+#[no_mangle]
+pub extern "C" fn _ZN4core9panicking11panic_const28panic_const_add_overflow17hc2227f4d6d9d4d9cE() -> ! {
+    do_panic(b"attempt to add with overflow")
+}
+
+#[no_mangle]
+pub extern "C" fn _ZN4core9panicking11panic_const28panic_const_sub_overflow17hc2227f4d6d9d4d9cE() -> ! {
+    do_panic(b"attempt to subtract with overflow")
+}
+
+#[no_mangle]
+pub extern "C" fn _ZN4core9panicking11panic_const28panic_const_mul_overflow17hc2227f4d6d9d4d9cE() -> ! {
+    do_panic(b"attempt to multiply with overflow")
+}
+
+// Generic panic entry points (catch-all for any mangled panic symbols)
+#[no_mangle]
+pub extern "C" fn rust_begin_unwind(_: &core::panic::PanicInfo) -> ! {
+    do_panic(b"panic in kernel module")
+}
 
 // ============================================================================
 // Module Metadata
@@ -48,6 +153,74 @@ extern "C" {
     fn kmod_unregister_fs(name: *const u8, name_len: usize) -> i32;
     fn kmod_memcpy(dest: *mut u8, src: *const u8, n: usize) -> *mut u8;
     fn kmod_memset(dest: *mut u8, c: i32, n: usize) -> *mut u8;
+    // New VFS driver registration API
+    fn register_fs_driver(name: *const u8, name_len: usize, ops: *const FsOps) -> i32;
+    fn unregister_fs_driver(name: *const u8, name_len: usize) -> i32;
+}
+
+// ============================================================================
+// VFS Driver Operations Structure (must match kernel's FsOps)
+// ============================================================================
+
+/// Filesystem driver operations - C ABI compatible
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct FsOps {
+    /// Initialize filesystem from image data, returns opaque fs handle
+    pub init: Option<unsafe extern "C" fn(image: *const u8, size: usize) -> *mut core::ffi::c_void>,
+    /// Lookup a file by path, fills DynamicFileRef structure, returns 0 on success
+    pub lookup: Option<unsafe extern "C" fn(
+        fs: *mut core::ffi::c_void,
+        path: *const u8,
+        path_len: usize,
+        out_ref: *mut DynamicFileRef,
+    ) -> i32>,
+    /// Read file data at offset
+    pub read: Option<unsafe extern "C" fn(
+        fs: *mut core::ffi::c_void,
+        inode: u32,
+        offset: usize,
+        buf: *mut u8,
+        buf_len: usize,
+    ) -> isize>,
+    /// List directory entries
+    pub readdir: Option<unsafe extern "C" fn(
+        fs: *mut core::ffi::c_void,
+        path: *const u8,
+        path_len: usize,
+        callback: unsafe extern "C" fn(*const u8, usize, *const DynamicFileRef, *mut core::ffi::c_void),
+        user_data: *mut core::ffi::c_void,
+    ) -> i32>,
+    /// Get filesystem name
+    pub name: Option<unsafe extern "C" fn() -> *const u8>,
+}
+
+/// Dynamic file reference - C ABI compatible (must match kernel's DynamicFileRef)
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct DynamicFileRef {
+    /// Filesystem handle (opaque pointer)
+    pub fs_handle: *mut core::ffi::c_void,
+    /// Inode number
+    pub inode: u32,
+    /// File size in bytes
+    pub size: u64,
+    /// File mode (permissions and type)
+    pub mode: u16,
+    /// Number of 512-byte blocks
+    pub blocks: u64,
+    /// Last modification time (Unix timestamp)
+    pub mtime: u64,
+    /// Number of hard links
+    pub nlink: u32,
+    /// User ID
+    pub uid: u16,
+    /// Group ID
+    pub gid: u16,
+    /// Filesystem driver index (for looking up ops)
+    pub driver_idx: u8,
+    /// Padding for alignment
+    pub _pad: [u8; 5],
 }
 
 // ============================================================================
@@ -264,18 +437,36 @@ pub extern "C" fn module_init() -> i32 {
             return 0;
         }
         
-        // Register with the kernel's VFS
+        // Create FsOps structure for the new VFS driver API
+        let ops = FsOps {
+            init: Some(ext2_fs_init_wrapper),
+            lookup: Some(ext2_lookup_wrapper),
+            read: Some(ext2_read_wrapper),
+            readdir: None, // TODO: implement readdir
+            name: Some(ext2_name),
+        };
+        
+        // Register with the kernel's VFS using new driver API
         let name = b"ext2";
-        let result = kmod_register_fs(
+        let result = register_fs_driver(
             name.as_ptr(),
             name.len(),
-            ext2_fs_init as usize,
-            ext2_lookup as usize,
+            &ops as *const FsOps,
         );
         
-        if result != 0 {
-            mod_error!(b"ext2 module: failed to register filesystem");
-            return -1;
+        if result < 0 {
+            // Fall back to legacy registration
+            mod_warn!(b"ext2 module: new API failed, trying legacy...");
+            let legacy_result = kmod_register_fs(
+                name.as_ptr(),
+                name.len(),
+                ext2_fs_init as usize,
+                ext2_lookup as usize,
+            );
+            if legacy_result != 0 {
+                mod_error!(b"ext2 module: failed to register filesystem");
+                return -1;
+            }
         }
         
         MODULE_INITIALIZED = true;
@@ -318,6 +509,78 @@ pub extern "C" fn ext2_module_init() -> i32 {
 #[no_mangle]
 pub extern "C" fn ext2_module_exit() -> i32 {
     module_exit()
+}
+
+// ============================================================================
+// New VFS Driver API Wrappers
+// ============================================================================
+
+/// Wrapper for init function compatible with FsOps
+unsafe extern "C" fn ext2_fs_init_wrapper(image: *const u8, size: usize) -> *mut core::ffi::c_void {
+    ext2_fs_init(image, size) as *mut core::ffi::c_void
+}
+
+/// Wrapper for lookup function compatible with FsOps
+unsafe extern "C" fn ext2_lookup_wrapper(
+    fs: *mut core::ffi::c_void,
+    path: *const u8,
+    path_len: usize,
+    out_ref: *mut DynamicFileRef,
+) -> i32 {
+    if fs.is_null() || path.is_null() || out_ref.is_null() {
+        return -1;
+    }
+
+    let fs_ptr = fs as *const Ext2Filesystem;
+    let mut file_ref = FileRef {
+        fs: fs_ptr,
+        inode: 0,
+        size: 0,
+        mode: 0,
+        blocks: 0,
+        mtime: 0,
+        nlink: 0,
+        uid: 0,
+        gid: 0,
+    };
+
+    let result = ext2_lookup(fs_ptr, path, path_len, &mut file_ref as *mut FileRef);
+    
+    if result == 0 {
+        // Convert FileRef to DynamicFileRef
+        (*out_ref) = DynamicFileRef {
+            fs_handle: fs,
+            inode: file_ref.inode,
+            size: file_ref.size,
+            mode: file_ref.mode,
+            blocks: file_ref.blocks,
+            mtime: file_ref.mtime,
+            nlink: file_ref.nlink,
+            uid: file_ref.uid,
+            gid: file_ref.gid,
+            driver_idx: 0, // Will be set by kernel
+            _pad: [0; 5],
+        };
+        0
+    } else {
+        -1
+    }
+}
+
+/// Wrapper for read function compatible with FsOps
+unsafe extern "C" fn ext2_read_wrapper(
+    fs: *mut core::ffi::c_void,
+    inode: u32,
+    offset: usize,
+    buf: *mut u8,
+    buf_len: usize,
+) -> isize {
+    ext2_read(fs as *const Ext2Filesystem, inode, offset, buf, buf_len)
+}
+
+/// Get filesystem name
+unsafe extern "C" fn ext2_name() -> *const u8 {
+    b"ext2\0".as_ptr()
 }
 
 // ============================================================================
@@ -402,12 +665,10 @@ pub extern "C" fn ext2_lookup(
 
     let fs = unsafe { &*fs };
     let path_bytes = unsafe { core::slice::from_raw_parts(path, path_len) };
-    let path_str = match core::str::from_utf8(path_bytes) {
-        Ok(s) => s,
-        Err(_) => return -1,
-    };
+    // Use raw bytes directly instead of converting to str
+    // This avoids core::str::from_utf8 symbol dependency
 
-    match fs.lookup_internal(path_str) {
+    match fs.lookup_internal_bytes(path_bytes) {
         Some(file_ref) => {
             unsafe { *out_ref = file_ref };
             0
@@ -478,8 +739,19 @@ impl Ext2Filesystem {
         unsafe { core::slice::from_raw_parts(self.image_base, self.image_size) }
     }
 
-    fn lookup_internal(&self, path: &str) -> Option<FileRef> {
-        let trimmed = path.trim_matches('/');
+    /// Lookup using raw bytes instead of &str to avoid core::str dependencies
+    fn lookup_internal_bytes(&self, path: &[u8]) -> Option<FileRef> {
+        // Trim leading/trailing slashes manually
+        let mut start = 0;
+        let mut end = path.len();
+        while start < end && path[start] == b'/' {
+            start += 1;
+        }
+        while end > start && path[end - 1] == b'/' {
+            end -= 1;
+        }
+        let trimmed = &path[start..end];
+        
         let mut inode_number = 2u32; // root inode
 
         if trimmed.is_empty() {
@@ -488,16 +760,28 @@ impl Ext2Filesystem {
 
         let mut inode = self.load_inode(inode_number).ok()?;
 
-        for segment in trimmed.split('/') {
-            if segment.is_empty() {
-                continue;
+        // Manual path segment iteration (split by '/')
+        let mut seg_start = 0;
+        let mut i = 0;
+        while i <= trimmed.len() {
+            if i == trimmed.len() || trimmed[i] == b'/' {
+                if i > seg_start {
+                    let segment = &trimmed[seg_start..i];
+                    let next_inode = self.find_in_directory_bytes(&inode, segment)?;
+                    inode_number = next_inode;
+                    inode = self.load_inode(inode_number).ok()?;
+                }
+                seg_start = i + 1;
             }
-            let next_inode = self.find_in_directory(&inode, segment)?;
-            inode_number = next_inode;
-            inode = self.load_inode(inode_number).ok()?;
+            i += 1;
         }
 
         self.file_ref_from_inode(inode_number)
+    }
+    
+    /// Legacy lookup for &str (converts to bytes)
+    fn lookup_internal(&self, path: &str) -> Option<FileRef> {
+        self.lookup_internal_bytes(path.as_bytes())
     }
 
     fn file_ref_from_inode(&self, inode: u32) -> Option<FileRef> {
@@ -570,18 +854,24 @@ impl Ext2Filesystem {
     }
 
     fn find_in_directory(&self, inode: &Inode, target: &str) -> Option<u32> {
+        self.find_in_directory_bytes(inode, target.as_bytes())
+    }
+    
+    /// Find directory entry by raw bytes (avoids str conversion)
+    fn find_in_directory_bytes(&self, inode: &Inode, target: &[u8]) -> Option<u32> {
         let mut found = None;
-        self.for_each_dir_entry(inode, |name, inode_num, _file_type| {
-            if name == target {
+        self.for_each_dir_entry_bytes(inode, |name_bytes, inode_num, _file_type| {
+            if bytes_eq(name_bytes, target) {
                 found = Some(inode_num);
             }
         });
         found
     }
 
-    fn for_each_dir_entry<F>(&self, inode: &Inode, mut cb: F)
+    /// Iterate directory entries using raw bytes (avoids core::str::from_utf8)
+    fn for_each_dir_entry_bytes<F>(&self, inode: &Inode, mut cb: F)
     where
-        F: FnMut(&str, u32, u8),
+        F: FnMut(&[u8], u32, u8),
     {
         let block_size = self.block_size;
         for &block in inode.block.iter().take(EXT2_NDIR_BLOCKS) {
@@ -607,11 +897,9 @@ impl Ext2Filesystem {
                         break;
                     }
                     if entry_inode != 0 && name_len > 0 {
-                        if let Ok(name) =
-                            core::str::from_utf8(&data[offset + 8..offset + 8 + name_len])
-                        {
-                            cb(name, entry_inode, file_type);
-                        }
+                        // Use raw bytes directly - no UTF-8 conversion needed
+                        let name_bytes = &data[offset + 8..offset + 8 + name_len];
+                        cb(name_bytes, entry_inode, file_type);
                     }
                     offset += rec_len;
                 }
@@ -638,7 +926,7 @@ impl Ext2Filesystem {
             return 0;
         }
 
-        let mut remaining = cmp::min(buf.len(), file_size - offset);
+        let mut remaining = min_usize(buf.len(), file_size - offset);
         let mut written = 0usize;
         let block_size = self.block_size;
         let mut current_offset = offset;
@@ -655,7 +943,7 @@ impl Ext2Filesystem {
             let Some(block) = self.read_block(block_number) else {
                 break;
             };
-            let available = cmp::min(block_size - within_block, remaining);
+            let available = min_usize(block_size - within_block, remaining);
             buf[written..written + available]
                 .copy_from_slice(&block[within_block..within_block + available]);
             written += available;
@@ -764,10 +1052,11 @@ impl Inode {
 }
 
 // ============================================================================
-// Panic handler for module
+// Panic handler for module - calls kernel's kmod_panic (wraps kpanic! macro)
 // ============================================================================
 
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
-    loop {}
+    // Simple panic message - avoid using Display trait which requires core library symbols
+    unsafe { kmod_panic(b"ext2 module panic".as_ptr(), 17) }
 }

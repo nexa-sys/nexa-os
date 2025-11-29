@@ -205,7 +205,7 @@ pub fn exec_init_process(init_path: &str) -> ! {
     proc.execute(); // Never returns
 
     // This line should never be reached, but the compiler doesn't know proc.execute() is divergent
-    crate::arch::halt_loop()
+    crate::kpanic!("Init process returned unexpectedly")
 }
 
 /// Change system runlevel

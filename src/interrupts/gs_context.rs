@@ -119,7 +119,7 @@ pub extern "C" fn kernel_stack_guard_reentry_fail(source: u64) -> ! {
         core::arch::asm!("mov {}, rsp", out(reg) current_rsp, options(nostack, preserves_flags));
     }
 
-    crate::kfatal!(
+    crate::kpanic!(
         "Kernel stack guard violation detected on {} (pid={:?}, guard={}, snapshot={:#x}, rsp={:#x})",
         source_desc,
         pid,
@@ -127,8 +127,4 @@ pub extern "C" fn kernel_stack_guard_reentry_fail(source: u64) -> ! {
         snapshot,
         current_rsp
     );
-
-    loop {
-        x86_64::instructions::hlt();
-    }
 }

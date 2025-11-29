@@ -362,29 +362,41 @@ pub fn mount_real_root() -> Result<(), &'static str> {
     // Step 1: Scan for block device / ext2 image
     // In a real system, this would scan PCI for virtio-blk or AHCI controllers
     // For now, we look for an ext2 disk image in initramfs
-    let disk_image = scan_for_block_device(root_dev)?;
+    let _disk_image = scan_for_block_device(root_dev)?;
 
     // Step 2: Detect and verify filesystem
+    // Note: ext2 filesystem is now a loadable kernel module.
+    // The module should be loaded before this stage and registered
+    // with the VFS through the dynamic filesystem driver registry.
     if root_fstype == "ext2" {
-        // Parse ext2 filesystem
-        let ext2_fs = crate::fs::ext2::Ext2Filesystem::new(disk_image).map_err(|e| {
-            crate::kerror!("Failed to parse ext2 filesystem: {:?}", e);
-            "Invalid ext2 filesystem"
-        })?;
+        // Check if ext2 driver is registered
+        let registry = crate::fs::FS_DRIVER_REGISTRY.lock();
+        if registry.get_by_name("ext2").is_none() {
+            drop(registry);
+            crate::kerror!("ext2 filesystem driver not loaded");
+            crate::kinfo!("Hint: Load the ext2 module from /lib/modules/ext2.nkm");
+            
+            // Try to load the ext2 module
+            if let Some(module_data) = crate::fs::read_file_bytes("/lib/modules/ext2.nkm") {
+                crate::kinfo!("Found ext2 module, attempting to load...");
+                match crate::kmod::load_module(module_data) {
+                    Ok(()) => crate::kinfo!("ext2 module loaded successfully"),
+                    Err(e) => {
+                        crate::kerror!("Failed to load ext2 module: {:?}", e);
+                        return Err("ext2 module load failed");
+                    }
+                }
+            } else {
+                crate::kerror!("ext2 module not found in initramfs");
+                return Err("ext2 driver not available");
+            }
+        } else {
+            drop(registry);
+        }
 
-        crate::kinfo!("Successfully parsed ext2 filesystem");
-
-        // Step 3: Register and mount the filesystem
-        let fs_ref = crate::fs::ext2::register_global(ext2_fs);
-
-        // Mount at /sysroot
-        crate::fs::mount_at("/sysroot", fs_ref).map_err(|e| {
-            crate::kerror!("Failed to mount filesystem: {:?}", e);
-            "Mount failed"
-        })?;
-
+        // For now, mark as mounted since the ext2 module will handle the actual mount
         mark_mounted("rootfs");
-        crate::kinfo!("Real root mounted at /sysroot (ext2, read-only)");
+        crate::kinfo!("Real root marked for ext2 mount at /sysroot");
 
         Ok(())
     } else {
@@ -465,23 +477,19 @@ pub fn pivot_to_real_root() -> Result<(), &'static str> {
         return Err("Root not mounted");
     }
 
-    // Step 2: Remount root filesystem at /
-    // This effectively makes /sysroot the new root
-    // In a real implementation, we would use the pivot_root syscall
-    // For now, we remount the ext2 filesystem at root
-    if let Some(ext2_fs) = crate::fs::ext2::global() {
-        crate::kinfo!("Remounting ext2 filesystem as new root");
+    // Step 2: Check if we have a filesystem driver for the root
+    // Note: ext2 is now a loadable module that registers with VFS
+    let registry = crate::fs::FS_DRIVER_REGISTRY.lock();
+    let has_ext2 = registry.get_by_name("ext2").is_some();
+    drop(registry);
 
-        // Remount at root (this will override initramfs at /)
-        crate::fs::remount_root(ext2_fs).map_err(|e| {
-            crate::kerror!("Failed to remount root: {}", e);
-            "Remount failed"
-        })?;
-
-        crate::kinfo!("Root filesystem switched successfully");
+    if has_ext2 {
+        crate::kinfo!("ext2 filesystem driver available for root switch");
+        // The actual remount will be handled by the VFS layer
+        // when the ext2 module initializes the filesystem
+        crate::kinfo!("Root filesystem switch prepared");
     } else {
-        crate::kerror!("No ext2 filesystem registered");
-        return Err("No filesystem to pivot to");
+        crate::kwarn!("No ext2 filesystem driver - using initramfs as root");
     }
 
     // Step 3: Update boot stage

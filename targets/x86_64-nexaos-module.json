@@ -10,9 +10,9 @@
   "features": "+sse,+sse2",
   "linker-flavor": "ld.lld",
   "panic-strategy": "abort",
-  "relocation-model": "pic",
-  "code-model": "small",
-  "position-independent-executables": true,
+  "relocation-model": "static",
+  "code-model": "kernel",
+  "position-independent-executables": false,
   "function-sections": true,
   "emit-debug-gdb-scripts": false
 }

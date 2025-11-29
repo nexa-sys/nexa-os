@@ -103,3 +103,13 @@ pub const SYS_UEFI_MAP_USB_MMIO: u64 = 247;
 
 // Kernel log syscalls
 pub const SYS_SYSLOG: u64 = 250;
+
+// Module management syscalls (Linux-compatible numbers)
+pub const SYS_INIT_MODULE: u64 = 175;
+pub const SYS_DELETE_MODULE: u64 = 176;
+pub const SYS_FINIT_MODULE: u64 = 313;
+
+// NexaOS custom module syscalls
+pub const SYS_MODULE_INFO: u64 = 260;
+pub const SYS_MODULE_LIST: u64 = 261;
+pub const SYS_MODULE_PARAM: u64 = 262;

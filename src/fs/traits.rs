@@ -384,3 +384,330 @@ pub trait FileSystemExt: BlockFileSystem {
 
 // Blanket implementation for all BlockFileSystem types
 impl<T: BlockFileSystem + ?Sized> FileSystemExt for T {}
+
+// ============================================================================
+// Dynamic Filesystem Registry (for kernel modules)
+// ============================================================================
+
+use spin::Mutex;
+
+/// Maximum number of registered filesystem drivers
+pub const MAX_FS_DRIVERS: usize = 16;
+
+/// Filesystem driver operations - C ABI compatible for kernel modules
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct FsOps {
+    /// Initialize filesystem from image data, returns opaque fs handle
+    pub init: Option<unsafe extern "C" fn(image: *const u8, size: usize) -> *mut core::ffi::c_void>,
+    /// Lookup a file by path, fills FileRef structure, returns 0 on success
+    pub lookup: Option<unsafe extern "C" fn(
+        fs: *mut core::ffi::c_void,
+        path: *const u8,
+        path_len: usize,
+        out_ref: *mut DynamicFileRef,
+    ) -> i32>,
+    /// Read file data at offset
+    pub read: Option<unsafe extern "C" fn(
+        fs: *mut core::ffi::c_void,
+        inode: u32,
+        offset: usize,
+        buf: *mut u8,
+        buf_len: usize,
+    ) -> isize>,
+    /// List directory entries
+    pub readdir: Option<unsafe extern "C" fn(
+        fs: *mut core::ffi::c_void,
+        path: *const u8,
+        path_len: usize,
+        callback: unsafe extern "C" fn(*const u8, usize, *const DynamicFileRef, *mut core::ffi::c_void),
+        user_data: *mut core::ffi::c_void,
+    ) -> i32>,
+    /// Get filesystem name
+    pub name: Option<unsafe extern "C" fn() -> *const u8>,
+}
+
+impl Default for FsOps {
+    fn default() -> Self {
+        Self {
+            init: None,
+            lookup: None,
+            read: None,
+            readdir: None,
+            name: None,
+        }
+    }
+}
+
+/// Dynamic file reference - C ABI compatible
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct DynamicFileRef {
+    /// Filesystem handle (opaque pointer)
+    pub fs_handle: *mut core::ffi::c_void,
+    /// Inode number
+    pub inode: u32,
+    /// File size in bytes
+    pub size: u64,
+    /// File mode (permissions and type)
+    pub mode: u16,
+    /// Number of 512-byte blocks
+    pub blocks: u64,
+    /// Last modification time (Unix timestamp)
+    pub mtime: u64,
+    /// Number of hard links
+    pub nlink: u32,
+    /// User ID
+    pub uid: u16,
+    /// Group ID
+    pub gid: u16,
+    /// Filesystem driver index (for looking up ops)
+    pub driver_idx: u8,
+    /// Padding for alignment
+    pub _pad: [u8; 5],
+}
+
+impl DynamicFileRef {
+    /// Create a new empty file reference
+    pub const fn empty() -> Self {
+        Self {
+            fs_handle: core::ptr::null_mut(),
+            inode: 0,
+            size: 0,
+            mode: 0,
+            blocks: 0,
+            mtime: 0,
+            nlink: 0,
+            uid: 0,
+            gid: 0,
+            driver_idx: 0,
+            _pad: [0; 5],
+        }
+    }
+
+    /// Read data from this file at the given offset
+    pub fn read_at(&self, offset: usize, buf: &mut [u8]) -> usize {
+        if buf.is_empty() || self.fs_handle.is_null() {
+            return 0;
+        }
+
+        let registry = FS_DRIVER_REGISTRY.lock();
+        if let Some(driver) = registry.get_driver(self.driver_idx as usize) {
+            if let Some(read_fn) = driver.ops.read {
+                let result = unsafe {
+                    read_fn(
+                        self.fs_handle,
+                        self.inode,
+                        offset,
+                        buf.as_mut_ptr(),
+                        buf.len(),
+                    )
+                };
+                if result >= 0 {
+                    return result as usize;
+                }
+            }
+        }
+        0
+    }
+
+    /// Get file metadata
+    pub fn metadata(&self) -> crate::posix::Metadata {
+        use crate::posix::FileType;
+        
+        let file_type = match self.mode & 0o170000 {
+            0o040000 => FileType::Directory,
+            0o100000 => FileType::Regular,
+            0o120000 => FileType::Symlink,
+            0o020000 => FileType::Character,
+            0o060000 => FileType::Block,
+            0o010000 => FileType::Fifo,
+            0o140000 => FileType::Socket,
+            other => FileType::Unknown(other as u16),
+        };
+
+        crate::posix::Metadata {
+            mode: self.mode,
+            uid: self.uid as u32,
+            gid: self.gid as u32,
+            size: self.size,
+            mtime: self.mtime,
+            file_type,
+            nlink: self.nlink,
+            blocks: self.blocks,
+        }
+        .normalize()
+    }
+}
+
+/// Registered filesystem driver
+#[derive(Clone, Copy)]
+pub struct FsDriver {
+    /// Driver name (null-terminated)
+    pub name: [u8; 32],
+    /// Driver operations
+    pub ops: FsOps,
+    /// Whether this driver is active
+    pub active: bool,
+}
+
+impl FsDriver {
+    const fn empty() -> Self {
+        Self {
+            name: [0; 32],
+            ops: FsOps {
+                init: None,
+                lookup: None,
+                read: None,
+                readdir: None,
+                name: None,
+            },
+            active: false,
+        }
+    }
+
+    /// Get driver name as string
+    pub fn name_str(&self) -> &str {
+        let end = self.name.iter().position(|&c| c == 0).unwrap_or(32);
+        core::str::from_utf8(&self.name[..end]).unwrap_or("")
+    }
+}
+
+/// Filesystem driver registry
+pub struct FsDriverRegistry {
+    drivers: [FsDriver; MAX_FS_DRIVERS],
+    count: usize,
+}
+
+impl FsDriverRegistry {
+    const fn new() -> Self {
+        const EMPTY: FsDriver = FsDriver::empty();
+        Self {
+            drivers: [EMPTY; MAX_FS_DRIVERS],
+            count: 0,
+        }
+    }
+
+    /// Register a new filesystem driver
+    pub fn register(&mut self, name: &str, ops: FsOps) -> Result<usize, FsError> {
+        if self.count >= MAX_FS_DRIVERS {
+            return Err(FsError::NoSpace);
+        }
+
+        // Check for duplicate
+        for driver in self.drivers.iter() {
+            if driver.active && driver.name_str() == name {
+                return Err(FsError::AlreadyExists);
+            }
+        }
+
+        // Find empty slot
+        for (idx, driver) in self.drivers.iter_mut().enumerate() {
+            if !driver.active {
+                let name_bytes = name.as_bytes();
+                let len = name_bytes.len().min(31);
+                driver.name[..len].copy_from_slice(&name_bytes[..len]);
+                driver.name[len] = 0;
+                driver.ops = ops;
+                driver.active = true;
+                self.count += 1;
+                return Ok(idx);
+            }
+        }
+
+        Err(FsError::NoSpace)
+    }
+
+    /// Unregister a filesystem driver
+    pub fn unregister(&mut self, name: &str) -> Result<(), FsError> {
+        for driver in self.drivers.iter_mut() {
+            if driver.active && driver.name_str() == name {
+                driver.active = false;
+                driver.name = [0; 32];
+                driver.ops = FsOps::default();
+                self.count -= 1;
+                return Ok(());
+            }
+        }
+        Err(FsError::NotFound)
+    }
+
+    /// Get a driver by name
+    pub fn get_by_name(&self, name: &str) -> Option<&FsDriver> {
+        for driver in self.drivers.iter() {
+            if driver.active && driver.name_str() == name {
+                return Some(driver);
+            }
+        }
+        None
+    }
+
+    /// Get a driver by index
+    pub fn get_driver(&self, idx: usize) -> Option<&FsDriver> {
+        if idx < MAX_FS_DRIVERS && self.drivers[idx].active {
+            Some(&self.drivers[idx])
+        } else {
+            None
+        }
+    }
+
+    /// Get driver index by name
+    pub fn get_driver_index(&self, name: &str) -> Option<usize> {
+        for (idx, driver) in self.drivers.iter().enumerate() {
+            if driver.active && driver.name_str() == name {
+                return Some(idx);
+            }
+        }
+        None
+    }
+}
+
+/// Global filesystem driver registry
+pub static FS_DRIVER_REGISTRY: Mutex<FsDriverRegistry> = Mutex::new(FsDriverRegistry::new());
+
+/// Register a filesystem driver from a kernel module
+/// Returns the driver index on success, -1 on failure
+#[no_mangle]
+pub extern "C" fn register_fs_driver(
+    name: *const u8,
+    name_len: usize,
+    ops: *const FsOps,
+) -> i32 {
+    if name.is_null() || ops.is_null() || name_len == 0 {
+        return -1;
+    }
+
+    let name_bytes = unsafe { core::slice::from_raw_parts(name, name_len) };
+    let name_str = match core::str::from_utf8(name_bytes) {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
+
+    let ops = unsafe { *ops };
+    let mut registry = FS_DRIVER_REGISTRY.lock();
+    
+    match registry.register(name_str, ops) {
+        Ok(idx) => idx as i32,
+        Err(_) => -1,
+    }
+}
+
+/// Unregister a filesystem driver
+#[no_mangle]
+pub extern "C" fn unregister_fs_driver(name: *const u8, name_len: usize) -> i32 {
+    if name.is_null() || name_len == 0 {
+        return -1;
+    }
+
+    let name_bytes = unsafe { core::slice::from_raw_parts(name, name_len) };
+    let name_str = match core::str::from_utf8(name_bytes) {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
+
+    let mut registry = FS_DRIVER_REGISTRY.lock();
+    match registry.unregister(name_str) {
+        Ok(()) => 0,
+        Err(_) => -1,
+    }
+}

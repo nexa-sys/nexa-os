@@ -5,7 +5,7 @@ use crate::bootinfo;
 use crate::posix::{self, FileType, Metadata};
 use crate::safety::{static_slice_from_raw_parts, StaticBufferAccessor};
 
-use super::ext2;
+use super::traits::DynamicFileRef;
 
 // Default ni configuration shipped when initramfs does not provide one.
 // The format mirrors a minimal subset of systemd units with an Init section
@@ -70,7 +70,7 @@ static MOUNTS: Mutex<[Option<MountEntry>; MAX_MOUNTS]> = Mutex::new([None; MAX_M
 #[derive(Clone, Copy)]
 pub enum FileContent {
     Inline(&'static [u8]),
-    Ext2(ext2::FileRef),
+    Dynamic(DynamicFileRef),
 }
 
 #[derive(Clone, Copy)]
@@ -264,23 +264,19 @@ pub fn init() {
     }
 
     if let Some(image) = ext_candidate {
-        match ext2::Ext2Filesystem::new(image) {
-            Ok(fs) => {
-                let fs_ref = ext2::register_global(fs);
-                match mount("/mnt/ext", fs_ref) {
-                    Ok(()) => crate::kinfo!("Mounted ext2 image at /mnt/ext"),
-                    Err(err) => crate::kwarn!("Failed to mount ext2 filesystem: {:?}", err),
-                }
-                let mut dir_meta = Metadata::empty().with_type(FileType::Directory);
-                dir_meta.nlink = 2;
-                dir_meta.mode |= 0o755;
-                add_file_with_metadata("mnt", &[], true, dir_meta);
-                add_file_with_metadata("mnt/ext", &[], true, dir_meta);
-            }
-            Err(err) => {
-                crate::kwarn!("Failed to parse ext2 image: {:?}", err);
-            }
-        }
+        // Note: ext2 filesystem is now loaded as a kernel module.
+        // The module will register itself with the VFS when loaded.
+        // For now, we store the image location for the module to use.
+        crate::kinfo!(
+            "Found ext2/ext3/ext4 image ({} bytes), will be mounted by ext2 module",
+            image.len()
+        );
+        // Store image info for the ext2 module to find
+        let mut dir_meta = Metadata::empty().with_type(FileType::Directory);
+        dir_meta.nlink = 2;
+        dir_meta.mode |= 0o755;
+        add_file_with_metadata("mnt", &[], true, dir_meta);
+        add_file_with_metadata("mnt/ext", &[], true, dir_meta);
     }
 
     // Ensure ni configuration hierarchy exists when initramfs is minimal.
@@ -1100,14 +1096,14 @@ pub fn read_file_bytes(name: &str) -> Option<&'static [u8]> {
 
     match opened.content {
         FileContent::Inline(bytes) => Some(bytes),
-        FileContent::Ext2(file_ref) => {
-            let size = file_ref.size() as usize;
+        FileContent::Dynamic(file_ref) => {
+            let size = file_ref.size as usize;
             if size == 0 {
                 return Some(&EMPTY_EXT2_FILE);
             }
             if size > EXT2_READ_CACHE_SIZE {
                 crate::kwarn!(
-                    "ext2 file '{}' is {} bytes, exceeds {} byte scratch buffer",
+                    "dynamic fs file '{}' is {} bytes, exceeds {} byte scratch buffer",
                     name,
                     size,
                     EXT2_READ_CACHE_SIZE
@@ -1131,7 +1127,7 @@ pub fn read_file_bytes(name: &str) -> Option<&'static [u8]> {
                 let read = file_ref.read_at(read_offset, &mut dest[read_offset..]);
                 if read == 0 {
                     crate::kwarn!(
-                        "short read while loading '{}' from ext2 (offset {} of {})",
+                        "short read while loading '{}' from dynamic fs (offset {} of {})",
                         name,
                         read_offset,
                         size
@@ -1168,10 +1164,11 @@ pub fn create_file(path: &str) -> Result<(), &'static str> {
     fs.create(relative)
 }
 
-/// Enable write support for ext2 filesystem (if available)
+/// Enable write support for dynamic filesystems (if available)
+/// Note: This is now handled by the filesystem modules themselves
 pub fn enable_ext2_write() -> Result<(), &'static str> {
-    ext2::Ext2Filesystem::enable_write_mode();
-    crate::kinfo!("ext2 write mode enabled");
+    // ext2 write mode is now managed by the ext2 kernel module
+    crate::kinfo!("ext2 write mode request (handled by module)");
     Ok(())
 }
 

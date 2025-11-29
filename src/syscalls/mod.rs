@@ -16,12 +16,14 @@
 //! - `time`: Time related syscalls (clock_gettime, nanosleep, sched_yield)
 //! - `system`: System management syscalls (reboot, shutdown, runlevel, mount)
 //! - `uefi`: UEFI compatibility syscalls
+//! - `module`: Kernel module management syscalls (init_module, delete_module)
 
 mod exec;
 mod fd;
 mod file;
 mod ipc;
 mod memory;
+mod module;
 mod network;
 mod numbers;
 mod process;
@@ -57,6 +59,7 @@ use fd::{dup, dup2, pipe};
 use file::{close, fcntl, fstat, get_errno, list_files, lseek, open, read, stat, write};
 use ipc::{ipc_create, ipc_recv, ipc_send};
 use memory::{brk, mmap, mprotect, munmap};
+use module::{init_module, delete_module, finit_module, module_info, module_list, module_param};
 use network::{bind, connect, recvfrom, sendto, setsockopt, socket, socketpair};
 use process::{execve, exit, fork, getppid, kill, wait4};
 use signal::{sigaction, sigprocmask};
@@ -303,6 +306,13 @@ pub extern "C" fn syscall_dispatch(
         SYS_UEFI_GET_USB_INFO => uefi_get_usb_info(arg1 as usize, arg2 as *mut UsbHostDescriptor),
         SYS_UEFI_GET_HID_INFO => uefi_get_hid_info(arg1 as usize, arg2 as *mut HidInputDescriptor),
         SYS_UEFI_MAP_USB_MMIO => uefi_map_usb_mmio(arg1 as usize),
+        // Module management syscalls
+        SYS_INIT_MODULE => init_module(arg1 as *const module::InitModuleRequest),
+        SYS_DELETE_MODULE => delete_module(arg1 as *const module::DeleteModuleRequest),
+        SYS_FINIT_MODULE => finit_module(arg1, arg2 as *const u8, arg3),
+        SYS_MODULE_INFO => module_info(arg1 as *const u8, arg2 as usize, arg3 as *mut module::ModuleInfoResponse),
+        SYS_MODULE_LIST => module_list(arg1 as *mut module::ModuleListEntry, arg2 as usize),
+        SYS_MODULE_PARAM => module_param(arg1 as *const module::ModuleParamRequest),
         _ => {
             crate::kwarn!("Unknown syscall: {}", nr);
             posix::set_errno(posix::errno::ENOSYS);

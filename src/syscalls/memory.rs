@@ -234,8 +234,8 @@ fn read_file_into_mapping(fd: u64, offset: u64, dest_addr: u64, length: u64) -> 
                     return Ok(copy_len);
                 }
             }
-            FileBacking::Ext2(file_ref) => {
-                // Read from ext2 file
+            FileBacking::Dynamic(file_ref) => {
+                // Read from dynamic filesystem file
                 let dest_slice = core::slice::from_raw_parts_mut(
                     dest_addr as *mut u8,
                     to_read,
