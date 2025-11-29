@@ -125,6 +125,11 @@ pub fn global() -> Option<&'static Ext2Filesystem> {
 }
 
 impl FileRef {
+    /// Get the inode number for this file reference
+    pub fn inode(&self) -> u32 {
+        self.inode
+    }
+
     pub fn read_at(&self, offset: usize, buf: &mut [u8]) -> usize {
         self.fs.read_file_into(self.inode, offset, buf)
     }
@@ -593,6 +598,44 @@ impl Ext2Filesystem {
             state.lock().writable = true;
         }
     }
+
+    /// Check if write mode is enabled globally (public version)
+    pub fn is_writable_mode() -> bool {
+        Self::is_writable()
+    }
+
+    /// Lookup a file by inode number directly
+    pub fn lookup_by_inode(&self, inode: u32) -> Option<FileRef> {
+        let static_self = self.as_static();
+        static_self.file_ref_from_inode(inode).ok()
+    }
+
+    /// Get filesystem statistics from the superblock
+    pub fn get_stats(&self) -> Ext2Stats {
+        Ext2Stats {
+            inodes_count: self.superblock.inodes_count,
+            blocks_count: self.superblock.blocks_count,
+            free_blocks_count: 0, // Would need to scan bitmap for accurate count
+            free_inodes_count: 0, // Would need to scan bitmap for accurate count
+            block_size: self.block_size as u32,
+            blocks_per_group: self.blocks_per_group,
+            inodes_per_group: self.inodes_per_group,
+            mtime: self.superblock.mtime,
+        }
+    }
+}
+
+/// Filesystem statistics returned by get_stats()
+#[derive(Debug, Clone, Copy)]
+pub struct Ext2Stats {
+    pub inodes_count: u32,
+    pub blocks_count: u32,
+    pub free_blocks_count: u32,
+    pub free_inodes_count: u32,
+    pub block_size: u32,
+    pub blocks_per_group: u32,
+    pub inodes_per_group: u32,
+    pub mtime: u32,
 }
 
 impl Superblock {
