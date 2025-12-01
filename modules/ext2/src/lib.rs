@@ -43,11 +43,20 @@ extern "C" {
     fn kmod_log_warn(msg: *const u8, len: usize);
     fn kmod_log_debug(msg: *const u8, len: usize);
     fn kmod_alloc(size: usize, align: usize) -> *mut u8;
+    fn kmod_zalloc(size: usize, align: usize) -> *mut u8;
     fn kmod_dealloc(ptr: *mut u8, size: usize, align: usize);
     fn kmod_register_fs(name: *const u8, name_len: usize, init_fn: usize, lookup_fn: usize) -> i32;
     fn kmod_unregister_fs(name: *const u8, name_len: usize) -> i32;
     fn kmod_memcpy(dest: *mut u8, src: *const u8, n: usize) -> *mut u8;
     fn kmod_memset(dest: *mut u8, c: i32, n: usize) -> *mut u8;
+    fn kmod_memmove(dest: *mut u8, src: *const u8, n: usize) -> *mut u8;
+    fn kmod_strlen(s: *const u8) -> usize;
+    fn kmod_strcmp(s1: *const u8, s2: *const u8) -> i32;
+    fn kmod_strncmp(s1: *const u8, s2: *const u8, n: usize) -> i32;
+    fn kmod_spinlock_init(lock: *mut u64);
+    fn kmod_spinlock_lock(lock: *mut u64);
+    fn kmod_spinlock_unlock(lock: *mut u64);
+    fn kmod_spinlock_trylock(lock: *mut u64) -> i32;
 }
 
 // ============================================================================

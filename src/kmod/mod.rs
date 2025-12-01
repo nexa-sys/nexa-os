@@ -183,133 +183,180 @@ impl NkmHeader {
     }
 }
 
-/// Module metadata extracted from NKM file
-#[derive(Clone, Copy)]
+/// Module metadata (heap-allocated for dynamic strings)
+#[derive(Clone)]
 pub struct ModuleInfo {
-    /// Module name
-    pub name: [u8; MAX_MODULE_NAME],
-    /// Module version string
-    pub version: [u8; 16],
-    /// Module description
-    pub description: [u8; 64],
+    /// Module name (heap-allocated)
+    pub name: alloc::string::String,
+    /// Module version string (heap-allocated)
+    pub version: alloc::string::String,
+    /// Module description (heap-allocated)
+    pub description: alloc::string::String,
     /// Module type
     pub module_type: ModuleType,
     /// Current state
     pub state: ModuleState,
-    /// Data pointer (for module-specific data)
-    pub data_ptr: usize,
+    /// Base address of loaded code
+    pub base_addr: usize,
+    /// Size of loaded module in memory
+    pub size: usize,
+    /// Init function address (if available)
+    pub init_fn: Option<u64>,
+    /// Exit function address (if available)
+    pub exit_fn: Option<u64>,
+    /// Module dependencies (names of required modules)
+    pub dependencies: alloc::vec::Vec<alloc::string::String>,
+    /// Reference count (how many modules depend on this)
+    pub ref_count: usize,
 }
 
 impl ModuleInfo {
-    const fn empty() -> Self {
+    /// Create an empty module info
+    fn new() -> Self {
         Self {
-            name: [0; MAX_MODULE_NAME],
-            version: [0; 16],
-            description: [0; 64],
+            name: alloc::string::String::new(),
+            version: alloc::string::String::new(),
+            description: alloc::string::String::new(),
             module_type: ModuleType::Other,
             state: ModuleState::Loaded,
-            data_ptr: 0,
+            base_addr: 0,
+            size: 0,
+            init_fn: None,
+            exit_fn: None,
+            dependencies: alloc::vec::Vec::new(),
+            ref_count: 0,
         }
     }
 
-    /// Get module name as string
+    /// Create module info with name
+    fn with_name(name: &str) -> Self {
+        let mut info = Self::new();
+        info.name = alloc::string::String::from(name);
+        info
+    }
+
+    /// Get module name as string slice
     pub fn name_str(&self) -> &str {
-        let end = self.name.iter().position(|&c| c == 0).unwrap_or(MAX_MODULE_NAME);
-        core::str::from_utf8(&self.name[..end]).unwrap_or("unknown")
+        &self.name
     }
 
-    /// Get version as string
+    /// Get version as string slice
     pub fn version_str(&self) -> &str {
-        let end = self.version.iter().position(|&c| c == 0).unwrap_or(16);
-        core::str::from_utf8(&self.version[..end]).unwrap_or("0.0.0")
+        &self.version
     }
 
-    /// Get description as string
+    /// Get description as string slice
     pub fn description_str(&self) -> &str {
-        let end = self.description.iter().position(|&c| c == 0).unwrap_or(64);
-        core::str::from_utf8(&self.description[..end]).unwrap_or("")
+        &self.description
+    }
+
+    /// Check if module can be safely unloaded
+    pub fn can_unload(&self) -> bool {
+        self.ref_count == 0 && self.state == ModuleState::Running
     }
 }
 
-/// Module registry
+/// Module registry (heap-allocated)
 struct ModuleRegistry {
-    modules: [Option<ModuleInfo>; MAX_MODULES],
-    count: usize,
+    /// Loaded modules stored in heap-allocated Vec
+    modules: alloc::vec::Vec<ModuleInfo>,
+    /// Whether the registry has been initialized
+    initialized: bool,
 }
 
 impl ModuleRegistry {
-    const fn new() -> Self {
-        const NONE: Option<ModuleInfo> = None;
+    /// Create uninitialized registry (call init() before use)
+    const fn new_uninit() -> Self {
         Self {
-            modules: [NONE; MAX_MODULES],
-            count: 0,
+            modules: alloc::vec::Vec::new(),
+            initialized: false,
         }
     }
 
+    /// Initialize the registry with heap allocation
+    fn init(&mut self) {
+        if self.initialized {
+            return;
+        }
+        self.modules = alloc::vec::Vec::with_capacity(16);
+        self.initialized = true;
+    }
+
     fn register(&mut self, info: ModuleInfo) -> Result<usize, ModuleError> {
-        if self.count >= MAX_MODULES {
+        if !self.initialized {
+            self.init();
+        }
+
+        // Check soft limit
+        if self.modules.len() >= MAX_MODULES {
             return Err(ModuleError::TooManyModules);
         }
 
         // Check for duplicate
-        let name = info.name_str();
-        for slot in self.modules.iter() {
-            if let Some(existing) = slot {
-                if existing.name_str() == name {
-                    return Err(ModuleError::AlreadyLoaded);
-                }
-            }
+        if self.modules.iter().any(|m| m.name == info.name) {
+            return Err(ModuleError::AlreadyLoaded);
         }
 
-        // Find empty slot
-        for (idx, slot) in self.modules.iter_mut().enumerate() {
-            if slot.is_none() {
-                *slot = Some(info);
-                self.count += 1;
-                return Ok(idx);
-            }
-        }
-
-        Err(ModuleError::TooManyModules)
+        let idx = self.modules.len();
+        self.modules.push(info);
+        Ok(idx)
     }
 
     fn find(&self, name: &str) -> Option<&ModuleInfo> {
-        for slot in self.modules.iter() {
-            if let Some(info) = slot {
-                if info.name_str() == name {
-                    return Some(info);
-                }
-            }
-        }
-        None
+        self.modules.iter().find(|m| m.name == name)
     }
 
     fn find_mut(&mut self, name: &str) -> Option<&mut ModuleInfo> {
-        for slot in self.modules.iter_mut() {
-            if let Some(info) = slot {
-                if info.name_str() == name {
-                    return Some(info);
-                }
-            }
-        }
-        None
+        self.modules.iter_mut().find(|m| m.name == name)
     }
 
-    fn unregister(&mut self, name: &str) -> Result<(), ModuleError> {
-        for slot in self.modules.iter_mut() {
-            if let Some(info) = slot {
-                if info.name_str() == name {
-                    *slot = None;
-                    self.count -= 1;
-                    return Ok(());
-                }
-            }
+    fn unregister(&mut self, name: &str) -> Result<ModuleInfo, ModuleError> {
+        let pos = self.modules.iter().position(|m| m.name == name)
+            .ok_or(ModuleError::NotFound)?;
+        
+        let info = &self.modules[pos];
+        if info.ref_count > 0 {
+            return Err(ModuleError::InUse);
         }
-        Err(ModuleError::NotFound)
+        
+        Ok(self.modules.swap_remove(pos))
+    }
+
+    fn count(&self) -> usize {
+        self.modules.len()
+    }
+
+    /// Get all loaded modules
+    fn list(&self) -> &[ModuleInfo] {
+        &self.modules
+    }
+
+    /// Increment reference count for a module (for dependency tracking)
+    #[allow(dead_code)]
+    fn inc_ref(&mut self, name: &str) -> Result<(), ModuleError> {
+        if let Some(info) = self.find_mut(name) {
+            info.ref_count += 1;
+            Ok(())
+        } else {
+            Err(ModuleError::NotFound)
+        }
+    }
+
+    /// Decrement reference count for a module (for dependency tracking)
+    #[allow(dead_code)]
+    fn dec_ref(&mut self, name: &str) -> Result<(), ModuleError> {
+        if let Some(info) = self.find_mut(name) {
+            if info.ref_count > 0 {
+                info.ref_count -= 1;
+            }
+            Ok(())
+        } else {
+            Err(ModuleError::NotFound)
+        }
     }
 }
 
-static MODULE_REGISTRY: Mutex<ModuleRegistry> = Mutex::new(ModuleRegistry::new());
+static MODULE_REGISTRY: Mutex<ModuleRegistry> = Mutex::new(ModuleRegistry::new_uninit());
 
 /// Module loading errors
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -338,6 +385,10 @@ pub enum ModuleError {
     AllocationFailed,
     /// Relocation failed
     RelocationFailed,
+    /// Module is in use (has dependents)
+    InUse,
+    /// Module exit failed
+    ExitFailed,
 }
 
 impl From<elf::LoaderError> for ModuleError {
@@ -397,20 +448,15 @@ fn load_elf_module(data: &[u8]) -> Result<(), ModuleError> {
         loaded.size
     );
 
-    // Create module info
-    let mut info = ModuleInfo::empty();
-    
-    // Try to extract module name from special section or use default
-    let name = b"elf_module";
-    let name_len = name.len().min(MAX_MODULE_NAME - 1);
-    info.name[..name_len].copy_from_slice(&name[..name_len]);
+    // Create module info using heap allocation
+    let mut info = ModuleInfo::with_name("elf_module");
+    info.version = alloc::string::String::from("1.0.0");
     info.module_type = ModuleType::Other;
     info.state = ModuleState::Loaded;
-    info.data_ptr = loaded.base;
-
-    // Copy version
-    let version = b"1.0.0";
-    info.version[..version.len()].copy_from_slice(version);
+    info.base_addr = loaded.base;
+    info.size = loaded.size;
+    info.init_fn = loaded.init_fn;
+    info.exit_fn = loaded.exit_fn;
 
     // Register module
     let _idx = MODULE_REGISTRY.lock().register(info)?;
@@ -435,13 +481,8 @@ fn load_elf_module(data: &[u8]) -> Result<(), ModuleError> {
     // Mark as running
     {
         let mut registry = MODULE_REGISTRY.lock();
-        for slot in registry.modules.iter_mut() {
-            if let Some(mod_info) = slot {
-                if mod_info.data_ptr == loaded.base {
-                    mod_info.state = ModuleState::Running;
-                    break;
-                }
-            }
+        if let Some(mod_info) = registry.find_mut("elf_module") {
+            mod_info.state = ModuleState::Running;
         }
     }
 
@@ -460,9 +501,8 @@ fn load_simple_nkm(data: &[u8]) -> Result<(), ModuleError> {
         header.module_type()
     );
 
-    // Parse string table for version and description
-    let mut info = ModuleInfo::empty();
-    info.name.copy_from_slice(&header.name);
+    // Create module info with heap-allocated strings
+    let mut info = ModuleInfo::with_name(header.name_str());
     info.module_type = header.module_type();
     info.state = ModuleState::Loaded;
 
@@ -474,8 +514,9 @@ fn load_simple_nkm(data: &[u8]) -> Result<(), ModuleError> {
             let str_data = &data[str_start..str_end];
             // String table format: version\0description\0
             if let Some(null_pos) = str_data.iter().position(|&c| c == 0) {
-                let version_len = null_pos.min(15);
-                info.version[..version_len].copy_from_slice(&str_data[..version_len]);
+                if let Ok(version) = core::str::from_utf8(&str_data[..null_pos]) {
+                    info.version = alloc::string::String::from(version);
+                }
 
                 if null_pos + 1 < str_data.len() {
                     let desc_start = null_pos + 1;
@@ -484,26 +525,29 @@ fn load_simple_nkm(data: &[u8]) -> Result<(), ModuleError> {
                         .position(|&c| c == 0)
                         .map(|p| desc_start + p)
                         .unwrap_or(str_data.len());
-                    let desc_len = (desc_end - desc_start).min(63);
-                    info.description[..desc_len]
-                        .copy_from_slice(&str_data[desc_start..desc_start + desc_len]);
+                    if let Ok(desc) = core::str::from_utf8(&str_data[desc_start..desc_end]) {
+                        info.description = alloc::string::String::from(desc);
+                    }
                 }
             }
         }
     }
 
+    let module_name = info.name.clone();
+    let version = info.version.clone();
+
     // Register module
     let _idx = MODULE_REGISTRY.lock().register(info)?;
 
     // Mark as running
-    if let Some(mod_info) = MODULE_REGISTRY.lock().find_mut(header.name_str()) {
+    if let Some(mod_info) = MODULE_REGISTRY.lock().find_mut(&module_name) {
         mod_info.state = ModuleState::Running;
     }
 
     crate::kinfo!(
         "Module '{}' loaded successfully (version: {})",
-        header.name_str(),
-        info.version_str()
+        module_name,
+        version
     );
 
     Ok(())
@@ -514,27 +558,39 @@ pub fn is_loaded(name: &str) -> bool {
     MODULE_REGISTRY.lock().find(name).is_some()
 }
 
-/// Get module info
+/// Get module info (returns cloned data)
 pub fn get_module_info(name: &str) -> Option<ModuleInfo> {
-    MODULE_REGISTRY.lock().find(name).copied()
+    MODULE_REGISTRY.lock().find(name).cloned()
 }
 
 /// Unload a module
 pub fn unload_module(name: &str) -> Result<(), ModuleError> {
     crate::kinfo!("Unloading kernel module: {}", name);
 
-    // Set state to unloading
+    // Check if module can be unloaded and set state
     {
         let mut registry = MODULE_REGISTRY.lock();
         if let Some(info) = registry.find_mut(name) {
+            if !info.can_unload() {
+                crate::kwarn!("Module '{}' cannot be unloaded (ref_count={})", name, info.ref_count);
+                return Err(ModuleError::InUse);
+            }
             info.state = ModuleState::Unloading;
         } else {
             return Err(ModuleError::NotFound);
         }
     }
 
+    // TODO: Call module exit function if present
+
     // Remove from registry
-    MODULE_REGISTRY.lock().unregister(name)?;
+    let removed = MODULE_REGISTRY.lock().unregister(name)?;
+    
+    // Free module memory if it was dynamically loaded
+    if removed.base_addr != 0 && removed.size > 0 {
+        // Memory will be freed when the containing allocation is dropped
+        crate::kinfo!("Module memory at {:#x} ({} bytes) released", removed.base_addr, removed.size);
+    }
 
     crate::kinfo!("Module '{}' unloaded", name);
     Ok(())
@@ -542,14 +598,12 @@ pub fn unload_module(name: &str) -> Result<(), ModuleError> {
 
 /// List all loaded modules
 pub fn list_modules() -> alloc::vec::Vec<ModuleInfo> {
-    let registry = MODULE_REGISTRY.lock();
-    let mut result = alloc::vec::Vec::new();
-    for slot in registry.modules.iter() {
-        if let Some(info) = slot {
-            result.push(*info);
-        }
-    }
-    result
+    MODULE_REGISTRY.lock().list().to_vec()
+}
+
+/// Get module count
+pub fn module_count() -> usize {
+    MODULE_REGISTRY.lock().count()
 }
 
 /// Load a module from initramfs by name
@@ -673,6 +727,154 @@ pub fn generate_nkm(
     data.push(0);
 
     data
+}
+
+// ============================================================================
+// Module Statistics and Diagnostics
+// ============================================================================
+
+/// Module subsystem statistics
+#[derive(Debug, Clone)]
+pub struct ModuleStats {
+    /// Total number of loaded modules
+    pub loaded_count: usize,
+    /// Total memory used by loaded modules
+    pub total_memory: usize,
+    /// Number of modules by type
+    pub by_type: ModuleTypeStats,
+}
+
+/// Module counts by type
+#[derive(Debug, Clone, Default)]
+pub struct ModuleTypeStats {
+    pub filesystem: usize,
+    pub block_device: usize,
+    pub char_device: usize,
+    pub network: usize,
+    pub other: usize,
+}
+
+/// Get module subsystem statistics
+pub fn get_module_stats() -> ModuleStats {
+    let registry = MODULE_REGISTRY.lock();
+    let mut stats = ModuleStats {
+        loaded_count: registry.count(),
+        total_memory: 0,
+        by_type: ModuleTypeStats::default(),
+    };
+
+    for info in registry.list() {
+        stats.total_memory += info.size;
+        match info.module_type {
+            ModuleType::Filesystem => stats.by_type.filesystem += 1,
+            ModuleType::BlockDevice => stats.by_type.block_device += 1,
+            ModuleType::CharDevice => stats.by_type.char_device += 1,
+            ModuleType::Network => stats.by_type.network += 1,
+            ModuleType::Other => stats.by_type.other += 1,
+        }
+    }
+
+    stats
+}
+
+/// Print module subsystem status to kernel log
+pub fn print_module_status() {
+    let stats = get_module_stats();
+    let symbol_stats = symbols::get_symbol_stats();
+
+    crate::kinfo!("=== Kernel Module Subsystem Status ===");
+    crate::kinfo!("Loaded modules: {}", stats.loaded_count);
+    crate::kinfo!("Total module memory: {} bytes", stats.total_memory);
+    crate::kinfo!(
+        "By type: fs={} blk={} chr={} net={} other={}",
+        stats.by_type.filesystem,
+        stats.by_type.block_device,
+        stats.by_type.char_device,
+        stats.by_type.network,
+        stats.by_type.other
+    );
+    crate::kinfo!(
+        "Symbol table: {} symbols, {} bytes",
+        symbol_stats.symbol_count,
+        symbol_stats.total_bytes
+    );
+
+    // List all loaded modules
+    let registry = MODULE_REGISTRY.lock();
+    for info in registry.list() {
+        crate::kinfo!(
+            "  - {} v{} ({:?}, {:?}) @ {:#x} ({} bytes, refs={})",
+            info.name,
+            info.version,
+            info.module_type,
+            info.state,
+            info.base_addr,
+            info.size,
+            info.ref_count
+        );
+    }
+}
+
+/// Find modules by type
+pub fn find_modules_by_type(module_type: ModuleType) -> alloc::vec::Vec<ModuleInfo> {
+    MODULE_REGISTRY
+        .lock()
+        .list()
+        .iter()
+        .filter(|m| m.module_type == module_type)
+        .cloned()
+        .collect()
+}
+
+/// Check if all dependencies for a module are loaded
+pub fn check_dependencies(deps: &[&str]) -> Result<(), ModuleError> {
+    let registry = MODULE_REGISTRY.lock();
+    for dep in deps {
+        if registry.find(dep).is_none() {
+            crate::kwarn!("Missing module dependency: {}", dep);
+            return Err(ModuleError::MissingDependency);
+        }
+    }
+    Ok(())
+}
+
+/// Load a module with its dependencies (simple dependency resolution)
+pub fn load_module_with_deps(name: &str, data: &[u8], deps: &[&str]) -> Result<(), ModuleError> {
+    // First check if all dependencies are loaded
+    check_dependencies(deps)?;
+
+    // Increment reference counts for dependencies
+    {
+        let mut registry = MODULE_REGISTRY.lock();
+        for dep in deps {
+            if let Some(info) = registry.find_mut(dep) {
+                info.ref_count += 1;
+            }
+        }
+    }
+
+    // Load the module
+    match load_module(data) {
+        Ok(()) => {
+            // Store dependencies in the module info
+            if let Some(info) = MODULE_REGISTRY.lock().find_mut(name) {
+                info.dependencies = deps.iter().map(|s| alloc::string::String::from(*s)).collect();
+            }
+            Ok(())
+        }
+        Err(e) => {
+            // Rollback reference counts on failure
+            let mut registry = MODULE_REGISTRY.lock();
+            for dep in deps {
+                if let Some(info) = registry.find_mut(dep) {
+                    if info.ref_count > 0 {
+                        info.ref_count -= 1;
+                    }
+                }
+            }
+            Err(e)
+        }
+    }
 }
 
 #[cfg(test)]

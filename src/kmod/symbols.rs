@@ -2,167 +2,290 @@
 //!
 //! This module exports kernel APIs that loadable modules can use.
 //! Similar to Linux's EXPORT_SYMBOL mechanism.
+//!
+//! # Memory Management
+//!
+//! The symbol table uses heap allocation for the string table to avoid
+//! bloating the kernel binary with large static buffers. Symbol entries
+//! are stored in a Vec for dynamic growth.
 
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::ptr;
+use spin::Mutex;
 
-/// Symbol table entry
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
+/// Symbol table entry (heap-allocated)
+#[derive(Debug, Clone)]
 pub struct KernelSymbol {
-    /// Symbol name (null-terminated in the string table)
-    pub name_offset: u32,
+    /// Symbol name (heap-allocated string)
+    pub name: String,
     /// Symbol address
     pub address: u64,
     /// Symbol type
     pub sym_type: SymbolType,
+    /// Symbol visibility
+    pub visibility: SymbolVisibility,
 }
 
 /// Symbol types
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SymbolType {
+    /// Function symbol
     Function = 1,
+    /// Data symbol
     Data = 2,
+    /// Weak symbol (can be overridden)
+    Weak = 3,
 }
 
-/// Maximum number of exported symbols
-const MAX_SYMBOLS: usize = 256;
+/// Symbol visibility
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SymbolVisibility {
+    /// Symbol is globally visible to all modules
+    Global = 0,
+    /// Symbol is only visible to modules with explicit dependency
+    Protected = 1,
+    /// Symbol is internal (not exported)
+    Hidden = 2,
+}
 
-/// Kernel symbol registry
+/// Initial capacity for symbol table
+const INITIAL_SYMBOL_CAPACITY: usize = 64;
+
+/// Maximum symbols (soft limit, can grow)
+const MAX_SYMBOLS_SOFT_LIMIT: usize = 512;
+
+/// Kernel symbol registry (heap-allocated)
 pub struct SymbolTable {
-    symbols: [Option<KernelSymbol>; MAX_SYMBOLS],
-    names: [u8; 8192], // String table for symbol names
-    name_offset: usize,
-    count: usize,
+    /// Symbols stored in heap-allocated Vec
+    symbols: Vec<KernelSymbol>,
+    /// Whether the table has been initialized
+    initialized: bool,
 }
 
 impl SymbolTable {
-    const fn new() -> Self {
-        const NONE: Option<KernelSymbol> = None;
+    /// Create an uninitialized symbol table
+    /// Must call init() before use to allocate heap memory
+    const fn new_uninit() -> Self {
         Self {
-            symbols: [NONE; MAX_SYMBOLS],
-            names: [0; 8192],
-            name_offset: 0,
-            count: 0,
+            symbols: Vec::new(),
+            initialized: false,
         }
     }
 
-    /// Register a new symbol
+    /// Initialize the symbol table with heap allocation
+    pub fn init(&mut self) {
+        if self.initialized {
+            return;
+        }
+        self.symbols = Vec::with_capacity(INITIAL_SYMBOL_CAPACITY);
+        self.initialized = true;
+    }
+
+    /// Register a new symbol with default global visibility
     pub fn register(&mut self, name: &str, address: u64, sym_type: SymbolType) -> bool {
-        if self.count >= MAX_SYMBOLS {
+        self.register_with_visibility(name, address, sym_type, SymbolVisibility::Global)
+    }
+
+    /// Register a symbol with specified visibility
+    pub fn register_with_visibility(
+        &mut self,
+        name: &str,
+        address: u64,
+        sym_type: SymbolType,
+        visibility: SymbolVisibility,
+    ) -> bool {
+        if !self.initialized {
             return false;
         }
 
-        let name_len = name.len();
-        if self.name_offset + name_len + 1 > self.names.len() {
+        // Check soft limit but allow growth if needed
+        if self.symbols.len() >= MAX_SYMBOLS_SOFT_LIMIT {
+            crate::kwarn!("Symbol table approaching limit: {} symbols", self.symbols.len());
+        }
+
+        // Check for duplicate
+        if self.symbols.iter().any(|s| s.name == name) {
+            crate::kwarn!("Duplicate symbol registration: {}", name);
             return false;
         }
 
-        // Store name in string table
-        let name_start = self.name_offset;
-        self.names[name_start..name_start + name_len].copy_from_slice(name.as_bytes());
-        self.names[name_start + name_len] = 0; // null terminator
-        self.name_offset += name_len + 1;
-
-        // Add symbol entry
-        self.symbols[self.count] = Some(KernelSymbol {
-            name_offset: name_start as u32,
+        // Add symbol entry (heap-allocated)
+        self.symbols.push(KernelSymbol {
+            name: String::from(name),
             address,
             sym_type,
+            visibility,
         });
-        self.count += 1;
 
         true
     }
 
     /// Lookup a symbol by name
     pub fn lookup(&self, name: &str) -> Option<u64> {
-        for i in 0..self.count {
-            if let Some(sym) = &self.symbols[i] {
-                let sym_name = self.get_name(sym.name_offset as usize);
-                if sym_name == name {
-                    return Some(sym.address);
-                }
-            }
-        }
-        None
+        self.symbols
+            .iter()
+            .find(|sym| sym.name == name && sym.visibility != SymbolVisibility::Hidden)
+            .map(|sym| sym.address)
     }
 
-    /// Get symbol name from string table
-    fn get_name(&self, offset: usize) -> &str {
-        let start = offset;
-        let mut end = start;
-        while end < self.names.len() && self.names[end] != 0 {
-            end += 1;
-        }
-        core::str::from_utf8(&self.names[start..end]).unwrap_or("")
+    /// Lookup a symbol and return full info
+    pub fn lookup_full(&self, name: &str) -> Option<&KernelSymbol> {
+        self.symbols
+            .iter()
+            .find(|sym| sym.name == name && sym.visibility != SymbolVisibility::Hidden)
     }
 
     /// Get all registered symbols
     pub fn iter(&self) -> impl Iterator<Item = (&str, u64)> + '_ {
-        (0..self.count).filter_map(move |i| {
-            self.symbols[i].as_ref().map(|sym| {
-                (self.get_name(sym.name_offset as usize), sym.address)
-            })
-        })
+        self.symbols
+            .iter()
+            .filter(|sym| sym.visibility != SymbolVisibility::Hidden)
+            .map(|sym| (sym.name.as_str(), sym.address))
+    }
+
+    /// Get symbol count
+    pub fn count(&self) -> usize {
+        self.symbols.len()
+    }
+
+    /// Check if initialized
+    pub fn is_initialized(&self) -> bool {
+        self.initialized
+    }
+
+    /// Unregister a symbol by name
+    pub fn unregister(&mut self, name: &str) -> bool {
+        if let Some(pos) = self.symbols.iter().position(|sym| sym.name == name) {
+            self.symbols.swap_remove(pos);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Get memory usage statistics
+    pub fn memory_usage(&self) -> SymbolTableStats {
+        let string_bytes: usize = self.symbols.iter().map(|s| s.name.len()).sum();
+        let entry_bytes = self.symbols.len() * core::mem::size_of::<KernelSymbol>();
+        SymbolTableStats {
+            symbol_count: self.symbols.len(),
+            string_bytes,
+            entry_bytes,
+            total_bytes: string_bytes + entry_bytes,
+        }
     }
 }
 
-static mut KERNEL_SYMBOLS: SymbolTable = SymbolTable::new();
+/// Symbol table memory statistics
+#[derive(Debug, Clone, Copy)]
+pub struct SymbolTableStats {
+    pub symbol_count: usize,
+    pub string_bytes: usize,
+    pub entry_bytes: usize,
+    pub total_bytes: usize,
+}
+
+/// Global kernel symbol table (protected by Mutex)
+static KERNEL_SYMBOLS: Mutex<SymbolTable> = Mutex::new(SymbolTable::new_uninit());
 
 /// Initialize the kernel symbol table with exported APIs
 pub fn init() {
-    unsafe {
-        // Logging functions
-        register_symbol("kmod_log_info", kmod_log_info as *const () as u64, SymbolType::Function);
-        register_symbol("kmod_log_error", kmod_log_error as *const () as u64, SymbolType::Function);
-        register_symbol("kmod_log_warn", kmod_log_warn as *const () as u64, SymbolType::Function);
-        register_symbol("kmod_log_debug", kmod_log_debug as *const () as u64, SymbolType::Function);
-        
-        // Memory allocation functions
-        register_symbol("kmod_alloc", kmod_alloc as *const () as u64, SymbolType::Function);
-        register_symbol("kmod_dealloc", kmod_dealloc as *const () as u64, SymbolType::Function);
-        register_symbol("kmod_realloc", kmod_realloc as *const () as u64, SymbolType::Function);
-        
-        // Filesystem registration
-        register_symbol("kmod_register_fs", kmod_register_fs as *const () as u64, SymbolType::Function);
-        register_symbol("kmod_unregister_fs", kmod_unregister_fs as *const () as u64, SymbolType::Function);
-        
-        // Spinlock functions
-        register_symbol("kmod_spinlock_init", kmod_spinlock_init as *const () as u64, SymbolType::Function);
-        register_symbol("kmod_spinlock_lock", kmod_spinlock_lock as *const () as u64, SymbolType::Function);
-        register_symbol("kmod_spinlock_unlock", kmod_spinlock_unlock as *const () as u64, SymbolType::Function);
-        
-        // Memory operations
-        register_symbol("kmod_memcpy", kmod_memcpy as *const () as u64, SymbolType::Function);
-        register_symbol("kmod_memset", kmod_memset as *const () as u64, SymbolType::Function);
-        register_symbol("kmod_memcmp", kmod_memcmp as *const () as u64, SymbolType::Function);
+    // Initialize the symbol table (allocates heap memory)
+    {
+        let mut table = KERNEL_SYMBOLS.lock();
+        table.init();
     }
+
+    // Register logging functions
+    register_symbol("kmod_log_info", kmod_log_info as *const () as u64, SymbolType::Function);
+    register_symbol("kmod_log_error", kmod_log_error as *const () as u64, SymbolType::Function);
+    register_symbol("kmod_log_warn", kmod_log_warn as *const () as u64, SymbolType::Function);
+    register_symbol("kmod_log_debug", kmod_log_debug as *const () as u64, SymbolType::Function);
+
+    // Register memory allocation functions
+    register_symbol("kmod_alloc", kmod_alloc as *const () as u64, SymbolType::Function);
+    register_symbol("kmod_dealloc", kmod_dealloc as *const () as u64, SymbolType::Function);
+    register_symbol("kmod_realloc", kmod_realloc as *const () as u64, SymbolType::Function);
+    register_symbol("kmod_zalloc", kmod_zalloc as *const () as u64, SymbolType::Function);
+
+    // Register filesystem functions
+    register_symbol("kmod_register_fs", kmod_register_fs as *const () as u64, SymbolType::Function);
+    register_symbol("kmod_unregister_fs", kmod_unregister_fs as *const () as u64, SymbolType::Function);
+
+    // Register spinlock functions
+    register_symbol("kmod_spinlock_init", kmod_spinlock_init as *const () as u64, SymbolType::Function);
+    register_symbol("kmod_spinlock_lock", kmod_spinlock_lock as *const () as u64, SymbolType::Function);
+    register_symbol("kmod_spinlock_unlock", kmod_spinlock_unlock as *const () as u64, SymbolType::Function);
+    register_symbol("kmod_spinlock_trylock", kmod_spinlock_trylock as *const () as u64, SymbolType::Function);
+
+    // Register memory operations
+    register_symbol("kmod_memcpy", kmod_memcpy as *const () as u64, SymbolType::Function);
+    register_symbol("kmod_memset", kmod_memset as *const () as u64, SymbolType::Function);
+    register_symbol("kmod_memcmp", kmod_memcmp as *const () as u64, SymbolType::Function);
+    register_symbol("kmod_memmove", kmod_memmove as *const () as u64, SymbolType::Function);
+
+    // Register string operations
+    register_symbol("kmod_strlen", kmod_strlen as *const () as u64, SymbolType::Function);
+    register_symbol("kmod_strcmp", kmod_strcmp as *const () as u64, SymbolType::Function);
+    register_symbol("kmod_strncmp", kmod_strncmp as *const () as u64, SymbolType::Function);
+
+    // Register misc kernel APIs
+    register_symbol("kmod_get_ticks", kmod_get_ticks as *const () as u64, SymbolType::Function);
+    register_symbol("kmod_yield", kmod_yield as *const () as u64, SymbolType::Function);
 
     crate::kinfo!("Kernel symbol table initialized with {} symbols", symbol_count());
 }
 
 /// Register a kernel symbol
 pub fn register_symbol(name: &str, address: u64, sym_type: SymbolType) -> bool {
-    unsafe { KERNEL_SYMBOLS.register(name, address, sym_type) }
+    KERNEL_SYMBOLS.lock().register(name, address, sym_type)
+}
+
+/// Register a symbol with visibility
+pub fn register_symbol_with_visibility(
+    name: &str,
+    address: u64,
+    sym_type: SymbolType,
+    visibility: SymbolVisibility,
+) -> bool {
+    KERNEL_SYMBOLS.lock().register_with_visibility(name, address, sym_type, visibility)
 }
 
 /// Lookup a kernel symbol by name
 pub fn lookup_symbol(name: &str) -> Option<u64> {
-    unsafe { KERNEL_SYMBOLS.lookup(name) }
+    KERNEL_SYMBOLS.lock().lookup(name)
+}
+
+/// Lookup a kernel symbol with full info
+pub fn lookup_symbol_full(name: &str) -> Option<KernelSymbol> {
+    KERNEL_SYMBOLS.lock().lookup_full(name).cloned()
 }
 
 /// Get the number of registered symbols
 pub fn symbol_count() -> usize {
-    unsafe { KERNEL_SYMBOLS.count }
+    KERNEL_SYMBOLS.lock().count()
 }
 
-/// List all exported symbols
-pub fn list_symbols() -> Vec<(&'static str, u64)> {
-    unsafe {
-        KERNEL_SYMBOLS.iter().collect()
-    }
+/// Unregister a kernel symbol
+pub fn unregister_symbol(name: &str) -> bool {
+    KERNEL_SYMBOLS.lock().unregister(name)
+}
+
+/// List all exported symbols (returns owned data to avoid lifetime issues)
+pub fn list_symbols() -> Vec<(String, u64)> {
+    KERNEL_SYMBOLS
+        .lock()
+        .iter()
+        .map(|(name, addr)| (String::from(name), addr))
+        .collect()
+}
+
+/// Get symbol table memory usage statistics
+pub fn get_symbol_stats() -> SymbolTableStats {
+    KERNEL_SYMBOLS.lock().memory_usage()
 }
 
 // ============================================================================
@@ -409,4 +532,128 @@ pub extern "C" fn kmod_memcmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
         }
         0
     }
+}
+
+// ============================================================================
+// Additional Kernel APIs
+// ============================================================================
+
+/// Allocate zeroed memory for a module
+#[no_mangle]
+pub extern "C" fn kmod_zalloc(size: usize, align: usize) -> *mut u8 {
+    use alloc::alloc::{alloc_zeroed, Layout};
+    
+    if size == 0 {
+        return ptr::null_mut();
+    }
+    
+    let align = if align == 0 { 8 } else { align };
+    if let Ok(layout) = Layout::from_size_align(size, align) {
+        unsafe { alloc_zeroed(layout) }
+    } else {
+        ptr::null_mut()
+    }
+}
+
+/// Try to acquire a spinlock without blocking
+/// Returns 0 if lock acquired, -1 if lock was already held
+#[no_mangle]
+pub extern "C" fn kmod_spinlock_trylock(lock: *mut u64) -> i32 {
+    if lock.is_null() {
+        return -1;
+    }
+    
+    use core::sync::atomic::{AtomicU64, Ordering};
+    unsafe {
+        let atomic = &*(lock as *const AtomicU64);
+        if atomic.compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+            0
+        } else {
+            -1
+        }
+    }
+}
+
+/// Memory move (handles overlapping regions)
+#[no_mangle]
+pub extern "C" fn kmod_memmove(dest: *mut u8, src: *const u8, n: usize) -> *mut u8 {
+    if dest.is_null() || src.is_null() {
+        return dest;
+    }
+    
+    unsafe {
+        ptr::copy(src, dest, n);
+    }
+    dest
+}
+
+/// Get string length (null-terminated)
+#[no_mangle]
+pub extern "C" fn kmod_strlen(s: *const u8) -> usize {
+    if s.is_null() {
+        return 0;
+    }
+    
+    let mut len = 0;
+    unsafe {
+        while *s.add(len) != 0 {
+            len += 1;
+        }
+    }
+    len
+}
+
+/// Compare two null-terminated strings
+#[no_mangle]
+pub extern "C" fn kmod_strcmp(s1: *const u8, s2: *const u8) -> i32 {
+    if s1.is_null() || s2.is_null() {
+        return if s1.is_null() && s2.is_null() { 0 } else { -1 };
+    }
+    
+    unsafe {
+        let mut i = 0;
+        loop {
+            let c1 = *s1.add(i);
+            let c2 = *s2.add(i);
+            if c1 != c2 || c1 == 0 {
+                return (c1 as i32) - (c2 as i32);
+            }
+            i += 1;
+        }
+    }
+}
+
+/// Compare two strings up to n bytes
+#[no_mangle]
+pub extern "C" fn kmod_strncmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
+    if s1.is_null() || s2.is_null() || n == 0 {
+        return 0;
+    }
+    
+    unsafe {
+        for i in 0..n {
+            let c1 = *s1.add(i);
+            let c2 = *s2.add(i);
+            if c1 != c2 || c1 == 0 {
+                return (c1 as i32) - (c2 as i32);
+            }
+        }
+        0
+    }
+}
+
+/// Get current kernel tick count (for timing)
+#[no_mangle]
+pub extern "C" fn kmod_get_ticks() -> u64 {
+    // Read TSC for timing
+    unsafe {
+        core::arch::x86_64::_rdtsc()
+    }
+}
+
+/// Yield to scheduler (give up CPU time slice)
+#[no_mangle]
+pub extern "C" fn kmod_yield() {
+    // Use pause instruction to hint the CPU we're in a spin-wait
+    core::hint::spin_loop();
 }
