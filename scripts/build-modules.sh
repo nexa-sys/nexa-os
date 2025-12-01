@@ -104,11 +104,13 @@ build_ext2_module() {
     
     # Build as staticlib using the kernel target
     # This will produce a .a file with relocatable object files
+    # Use static relocation model to avoid GOT/PLT which requires special handling
     echo "  Compiling ext2 module as staticlib..."
     
-    if RUSTFLAGS="-C relocation-model=pic -C panic=abort" \
+    if RUSTFLAGS="-C relocation-model=static -C code-model=kernel -C panic=abort" \
         cargo +nightly build \
-            -Z build-std=core,alloc \
+            -Z build-std=core,alloc,compiler_builtins \
+            -Z build-std-features=compiler-builtins-mem \
             --target "$KERNEL_TARGET_JSON" \
             --release 2>&1; then
         
@@ -120,24 +122,46 @@ build_ext2_module() {
         if [ -n "$STATICLIB" ] && [ -f "$STATICLIB" ]; then
             echo "  Found staticlib: $STATICLIB"
             
-            # Extract the module's object file from the staticlib
-            # We need to find the right .o file (ext2_module-*.o)
+            # Create a relocatable ELF by partially linking all objects from the staticlib
+            # This includes compiler_builtins and core symbols the module needs
             cd "$MODULES_DIR"
-            rm -f *.o 2>/dev/null || true  # Clean up old files
+            rm -f *.o ext2_combined.o 2>/dev/null || true
+            
+            # Extract all object files
             ar x "$STATICLIB" 2>/dev/null || true
             
-            # Find the ext2 module object file (not core or compiler_builtins)
-            local OBJ_FILE=$(ls -1 *.o 2>/dev/null | grep -i 'ext2_module' | head -1)
+            # Link all .o files into a single relocatable object with garbage collection
+            # -r = relocatable, --gc-sections = remove unused sections
+            local OBJ_FILES=$(ls -1 *.o 2>/dev/null | tr '\n' ' ')
             
-            if [ -n "$OBJ_FILE" ] && [ -f "$OBJ_FILE" ]; then
-                # Rename to .nkm
-                mv "$OBJ_FILE" "ext2.nkm"
-                rm -f *.o 2>/dev/null || true  # Clean up other extracted files
-                echo "  ✓ Built ELF module: $MODULES_DIR/ext2.nkm ($(stat -c%s "$MODULES_DIR/ext2.nkm") bytes)"
+            if [ -n "$OBJ_FILES" ]; then
+                echo "  Linking $(echo $OBJ_FILES | wc -w) object files into relocatable module..."
+                
+                # Use ld to create a single relocatable object with gc-sections to strip unused
+                ld.lld -r --gc-sections -o ext2.nkm $OBJ_FILES 2>/dev/null || \
+                ld -r --gc-sections -o ext2.nkm $OBJ_FILES 2>/dev/null || \
+                ld.lld -r -o ext2.nkm $OBJ_FILES 2>/dev/null || \
+                ld -r -o ext2.nkm $OBJ_FILES 2>/dev/null || {
+                    # Fallback: just use the main module object
+                    local MAIN_OBJ=$(ls -1 *.o 2>/dev/null | grep -i 'ext2_module' | head -1)
+                    if [ -n "$MAIN_OBJ" ]; then
+                        mv "$MAIN_OBJ" "ext2.nkm"
+                    fi
+                }
+                
+                rm -f *.o 2>/dev/null || true  # Clean up extracted files
+                
+                if [ -f "ext2.nkm" ]; then
+                    # Strip debug info to reduce size
+                    strip --strip-debug ext2.nkm 2>/dev/null || true
+                    echo "  ✓ Built ELF module: $MODULES_DIR/ext2.nkm ($(stat -c%s "$MODULES_DIR/ext2.nkm") bytes)"
+                else
+                    echo "  Error: Failed to create ext2.nkm"
+                    return 1
+                fi
             else
-                # Fallback: copy the staticlib as-is
-                cp "$STATICLIB" "$MODULES_DIR/ext2.nkm"
-                echo "  ✓ Built staticlib module: $MODULES_DIR/ext2.nkm ($(stat -c%s "$MODULES_DIR/ext2.nkm") bytes)"
+                echo "  Warning: No object files found in staticlib"
+                return 1
             fi
         else
             echo "  Warning: No staticlib found, creating metadata-only module"

@@ -310,8 +310,19 @@ impl Process {
         kinfo!("ElfLoader created successfully");
 
         let mut program_image = loader.load(USER_PHYS_BASE)?;
+        
+        // CRITICAL FIX: Adjust addresses from physical to virtual space
+        // ElfLoader wrote data to USER_PHYS_BASE but calculated addresses relative to it.
+        // Userspace expects addresses relative to USER_VIRT_BASE since that's what
+        // the page tables map.
+        let addr_adjustment = USER_VIRT_BASE as i64 - USER_PHYS_BASE as i64;
+        program_image.entry_point = ((program_image.entry_point as i64) + addr_adjustment) as u64;
+        program_image.phdr_vaddr = ((program_image.phdr_vaddr as i64) + addr_adjustment) as u64;
+        program_image.base_addr = USER_VIRT_BASE;
+        program_image.load_bias = USER_VIRT_BASE as i64 - program_image.first_load_vaddr as i64;
+        
         kinfo!(
-            "Program image loaded: entry={:#x}, base={:#x}, bias={:+}, phdr={:#x}",
+            "Program image loaded and adjusted: entry={:#x}, base={:#x}, bias={:+}, phdr={:#x}",
             program_image.entry_point,
             program_image.base_addr,
             program_image.load_bias,
@@ -371,12 +382,14 @@ impl Process {
                     interp_image.load_bias
                 );
 
+                // Calculate physical address for stack based on our memory layout
+                let stack_phys = USER_PHYS_BASE + (STACK_BASE - USER_VIRT_BASE);
                 let stack_ptr = build_initial_stack(
                     final_args,
                     exec_slice,
                     STACK_BASE,
                     STACK_SIZE,
-                    STACK_BASE,  // Identity mapped: phys == virt for new process
+                    stack_phys,  // Correct physical address for stack
                     &program_image,
                     Some(&interp_image),
                 )?;
@@ -452,12 +465,15 @@ impl Process {
             kinfo!("Static executable detected (no PT_INTERP)");
         }
 
+        // Calculate physical address for stack based on our memory layout:
+        // Virtual STACK_BASE maps to physical USER_PHYS_BASE + (STACK_BASE - USER_VIRT_BASE)
+        let stack_phys = USER_PHYS_BASE + (STACK_BASE - USER_VIRT_BASE);
         let stack_ptr = build_initial_stack(
             final_args,
             exec_slice,
             STACK_BASE,
             STACK_SIZE,
-            STACK_BASE,  // Identity mapped: phys == virt for new process
+            stack_phys,  // Correct physical address for stack
             &program_image,
             None,
         )?;

@@ -366,25 +366,32 @@ pub fn mount_real_root() -> Result<(), &'static str> {
 
     // Step 2: Detect and verify filesystem
     if root_fstype == "ext2" {
-        // Parse ext2 filesystem
-        let ext2_fs = crate::fs::ext2::Ext2Filesystem::new(disk_image).map_err(|e| {
+        // Check if ext2 module is loaded
+        if !crate::fs::ext2_is_module_loaded() {
+            crate::kerror!("ext2 module not loaded, cannot mount root filesystem");
+            return Err("ext2 module not loaded");
+        }
+
+        // Initialize ext2 filesystem via module
+        crate::fs::ext2_new(disk_image).map_err(|e| {
             crate::kerror!("Failed to parse ext2 filesystem: {:?}", e);
             "Invalid ext2 filesystem"
         })?;
 
-        crate::kinfo!("Successfully parsed ext2 filesystem");
+        crate::kinfo!("Successfully parsed ext2 filesystem via module");
 
-        // Step 3: Register and mount the filesystem
-        let fs_ref = crate::fs::ext2::register_global(ext2_fs);
-
-        // Mount at /sysroot
-        crate::fs::mount_at("/sysroot", fs_ref).map_err(|e| {
+        // Mount the modular ext2 filesystem at /sysroot
+        // The Ext2ModularFs is a zero-sized type that delegates to the module
+        static EXT2_MODULAR_FS: crate::fs::ext2_modular::Ext2ModularFs = 
+            crate::fs::ext2_modular::Ext2ModularFs;
+        
+        crate::fs::mount_at("/sysroot", &EXT2_MODULAR_FS).map_err(|e| {
             crate::kerror!("Failed to mount filesystem: {:?}", e);
             "Mount failed"
         })?;
 
         mark_mounted("rootfs");
-        crate::kinfo!("Real root mounted at /sysroot (ext2, read-only)");
+        crate::kinfo!("Real root mounted at /sysroot (ext2 via module, read-only)");
 
         Ok(())
     } else {
@@ -469,18 +476,22 @@ pub fn pivot_to_real_root() -> Result<(), &'static str> {
     // This effectively makes /sysroot the new root
     // In a real implementation, we would use the pivot_root syscall
     // For now, we remount the ext2 filesystem at root
-    if let Some(ext2_fs) = crate::fs::ext2::global() {
-        crate::kinfo!("Remounting ext2 filesystem as new root");
+    if crate::fs::ext2_is_module_loaded() && crate::fs::ext2_global().is_some() {
+        crate::kinfo!("Remounting ext2 filesystem as new root (via module)");
+
+        // Use the modular ext2 filesystem
+        static EXT2_MODULAR_FS: crate::fs::ext2_modular::Ext2ModularFs = 
+            crate::fs::ext2_modular::Ext2ModularFs;
 
         // Remount at root (this will override initramfs at /)
-        crate::fs::remount_root(ext2_fs).map_err(|e| {
+        crate::fs::remount_root(&EXT2_MODULAR_FS).map_err(|e| {
             crate::kerror!("Failed to remount root: {}", e);
             "Remount failed"
         })?;
 
         crate::kinfo!("Root filesystem switched successfully");
     } else {
-        crate::kerror!("No ext2 filesystem registered");
+        crate::kerror!("No ext2 filesystem registered (module not loaded or not initialized)");
         return Err("No filesystem to pivot to");
     }
 

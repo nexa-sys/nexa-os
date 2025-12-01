@@ -49,8 +49,15 @@ const R_X86_64_64: u32 = 1;
 const R_X86_64_PC32: u32 = 2;
 const R_X86_64_GOT32: u32 = 3;
 const R_X86_64_PLT32: u32 = 4;
+const R_X86_64_COPY: u32 = 5;
+const R_X86_64_GLOB_DAT: u32 = 6;
+const R_X86_64_JUMP_SLOT: u32 = 7;
+const R_X86_64_RELATIVE: u32 = 8;
+const R_X86_64_GOTPCREL: u32 = 9;
 const R_X86_64_32: u32 = 10;
 const R_X86_64_32S: u32 = 11;
+const R_X86_64_GOTPCRELX: u32 = 41;
+const R_X86_64_REX_GOTPCRELX: u32 = 42;
 
 /// ELF64 Header
 #[repr(C, packed)]
@@ -387,8 +394,13 @@ impl<'a> ModuleLoader<'a> {
                 .map_err(|_| LoaderError::SymbolNotFound)?;
 
             // Look up in kernel symbol table
-            super::symbols::lookup_symbol(name)
-                .ok_or(LoaderError::SymbolNotFound)
+            match super::symbols::lookup_symbol(name) {
+                Some(addr) => Ok(addr),
+                None => {
+                    crate::kerror!("kmod: undefined symbol not found: '{}'", name);
+                    Err(LoaderError::SymbolNotFound)
+                }
+            }
         } else if sym.st_shndx < self.section_bases.len() as u16 {
             // Symbol in a loaded section
             let section_base = self.section_bases[sym.st_shndx as usize];
@@ -489,6 +501,24 @@ impl<'a> ModuleLoader<'a> {
                         let value = (sym_val as i64 + addend) as i32;
                         unsafe {
                             ptr::write_unaligned(rel_addr as *mut i32, value);
+                        }
+                    }
+                    
+                    R_X86_64_GOTPCREL | R_X86_64_GOTPCRELX | R_X86_64_REX_GOTPCRELX => {
+                        // G + GOT + A - P (PC-relative GOT entry)
+                        // For kernel modules without GOT, treat as PC-relative to symbol
+                        // This works because we're doing static linking effectively
+                        let value = (sym_val as i64 + addend - rel_addr as i64) as i32;
+                        unsafe {
+                            ptr::write_unaligned(rel_addr as *mut i32, value);
+                        }
+                    }
+                    
+                    R_X86_64_RELATIVE => {
+                        // B + A (base + addend, for position-independent code)
+                        let value = (self.module_base as i64 + addend) as u64;
+                        unsafe {
+                            ptr::write_unaligned(rel_addr as *mut u64, value);
                         }
                     }
                     

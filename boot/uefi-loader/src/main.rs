@@ -1303,7 +1303,37 @@ fn efi_main(image: Handle, mut st: SystemTable<Boot>) -> Status {
         }
     };
 
-    log::info!("About to exit boot services");
+    log::info!("About to exit boot services, kernel_offset={:#x}", loaded.kernel_offset);
+    log::info!("Segments to mirror: {}", loaded.segments.len());
+    for (i, seg) in loaded.segments.iter().enumerate() {
+        log::info!("  Segment {}: expected={:#x}, actual={:#x}, memsz={:#x}",
+            i, seg.expected_addr, seg.actual_addr, seg.memsz);
+    }
+    
+    // If we need to mirror segments, allocate the expected memory regions BEFORE exiting boot services
+    if loaded.kernel_offset != 0 {
+        log::info!("Allocating expected memory regions for mirroring...");
+        for seg in &loaded.segments {
+            if seg.expected_addr == seg.actual_addr || seg.memsz == 0 {
+                continue;
+            }
+            let pages = ((seg.memsz + 0xFFF) / 0x1000) as usize;
+            match bs.allocate_pages(
+                AllocateType::Address(seg.expected_addr),
+                MemoryType::LOADER_DATA,
+                pages,
+            ) {
+                Ok(_) => {
+                    log::info!("  Allocated {:#x} ({} pages) for mirroring", seg.expected_addr, pages);
+                }
+                Err(e) => {
+                    log::warn!("  Cannot allocate {:#x} for mirroring: {:?}", seg.expected_addr, e.status());
+                    // Try to continue anyway - memory might still be accessible after exit_boot_services
+                }
+            }
+        }
+    }
+    
     let _ = st.exit_boot_services(MemoryType::LOADER_DATA);
     log::info!("Exit boot services completed");
 
@@ -2028,11 +2058,6 @@ fn mirror_segments_to_expected(segments: &[LoadedSegment]) -> bool {
         }
 
         if seg.memsz > usize::MAX as u64 {
-            log::error!(
-                "Segment at expected {:#x} exceeds addressable size ({} bytes)",
-                seg.expected_addr,
-                seg.memsz
-            );
             all_ok = false;
             continue;
         }

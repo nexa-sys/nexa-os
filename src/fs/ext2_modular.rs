@@ -1,0 +1,617 @@
+//! Modular ext2 Filesystem Support
+//!
+//! This module provides the kernel-side interface for the ext2 filesystem driver
+//! which is loaded as a kernel module (.nkm) rather than being compiled into the kernel.
+//!
+//! # Architecture
+//!
+//! ```text
+//! ┌─────────────┐     ┌─────────────────┐     ┌────────────────┐
+//! │   VFS/App   │────▶│  ext2_modular   │────▶│  ext2.nkm      │
+//! │   Layer     │     │  (this module)  │     │  (loadable)    │
+//! └─────────────┘     └─────────────────┘     └────────────────┘
+//!                            │
+//!                            ▼
+//!                     ┌─────────────────┐
+//!                     │  Module Ops     │
+//!                     │  (FFI callbacks)│
+//!                     └─────────────────┘
+//! ```
+//!
+//! The ext2 module registers its operations through `kmod_ext2_register()` when loaded.
+//! The kernel then routes all ext2 operations through these registered callbacks.
+
+#![allow(dead_code)]
+
+use crate::posix::{FileType, Metadata};
+use alloc::string::String;
+use core::ptr;
+use spin::Mutex;
+
+// ============================================================================
+// Error Types
+// ============================================================================
+
+/// ext2 filesystem errors (matches module's error type)
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[repr(i32)]
+pub enum Ext2Error {
+    BadMagic = -1,
+    ImageTooSmall = -2,
+    UnsupportedInodeSize = -3,
+    InvalidGroupDescriptor = -4,
+    InodeOutOfBounds = -5,
+    NoSpaceLeft = -6,
+    ReadOnly = -7,
+    InvalidInode = -8,
+    InvalidBlockNumber = -9,
+    ModuleNotLoaded = -100,
+    InvalidOperation = -101,
+}
+
+impl Ext2Error {
+    /// Convert from module return code
+    pub fn from_code(code: i32) -> Option<Self> {
+        match code {
+            -1 => Some(Self::BadMagic),
+            -2 => Some(Self::ImageTooSmall),
+            -3 => Some(Self::UnsupportedInodeSize),
+            -4 => Some(Self::InvalidGroupDescriptor),
+            -5 => Some(Self::InodeOutOfBounds),
+            -6 => Some(Self::NoSpaceLeft),
+            -7 => Some(Self::ReadOnly),
+            -8 => Some(Self::InvalidInode),
+            -9 => Some(Self::InvalidBlockNumber),
+            -100 => Some(Self::ModuleNotLoaded),
+            -101 => Some(Self::InvalidOperation),
+            _ => None,
+        }
+    }
+}
+
+// ============================================================================
+// FFI Types for Module Callbacks
+// ============================================================================
+
+/// Opaque handle to an ext2 filesystem instance (managed by module)
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct Ext2Handle(pub *mut u8);
+
+impl Ext2Handle {
+    pub fn is_null(&self) -> bool {
+        self.0.is_null()
+    }
+}
+
+// SAFETY: Ext2Handle is just a pointer that the module manages
+unsafe impl Send for Ext2Handle {}
+unsafe impl Sync for Ext2Handle {}
+
+/// Opaque handle to a file reference
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct FileRefHandle {
+    /// Filesystem handle
+    pub fs: Ext2Handle,
+    /// Inode number
+    pub inode: u32,
+    /// File size
+    pub size: u64,
+    /// File mode (permissions + type)
+    pub mode: u16,
+    /// Block count
+    pub blocks: u64,
+    /// Modification time
+    pub mtime: u64,
+    /// Link count
+    pub nlink: u32,
+    /// User ID
+    pub uid: u16,
+    /// Group ID
+    pub gid: u16,
+}
+
+impl FileRefHandle {
+    pub fn is_valid(&self) -> bool {
+        !self.fs.is_null() && self.inode != 0
+    }
+
+    /// Read file content at specified offset
+    pub fn read_at(&self, offset: usize, buf: &mut [u8]) -> usize {
+        read_at(self, offset, buf)
+    }
+
+    pub fn metadata(&self) -> Metadata {
+        let file_type = match self.mode & 0o170000 {
+            0o040000 => FileType::Directory,
+            0o100000 => FileType::Regular,
+            0o120000 => FileType::Symlink,
+            0o020000 => FileType::Character,
+            0o060000 => FileType::Block,
+            0o010000 => FileType::Fifo,
+            0o140000 => FileType::Socket,
+            other => FileType::Unknown(other as u16),
+        };
+
+        Metadata {
+            mode: self.mode,
+            uid: self.uid as u32,
+            gid: self.gid as u32,
+            size: self.size,
+            mtime: self.mtime,
+            file_type,
+            nlink: self.nlink,
+            blocks: self.blocks,
+        }
+        .normalize()
+    }
+}
+
+/// Directory entry callback type
+pub type DirEntryCallback = extern "C" fn(name: *const u8, name_len: usize, inode: u32, file_type: u8, ctx: *mut u8);
+
+/// Filesystem statistics
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Ext2Stats {
+    pub inodes_count: u32,
+    pub blocks_count: u32,
+    pub free_blocks_count: u32,
+    pub free_inodes_count: u32,
+    pub block_size: u32,
+    pub blocks_per_group: u32,
+    pub inodes_per_group: u32,
+    pub mtime: u32,
+}
+
+// ============================================================================
+// Module Operations Table (registered by ext2.nkm)
+// ============================================================================
+
+/// Function pointer types for module operations
+pub type FnExt2New = extern "C" fn(image: *const u8, size: usize) -> Ext2Handle;
+pub type FnExt2Destroy = extern "C" fn(handle: Ext2Handle);
+pub type FnExt2Lookup = extern "C" fn(handle: Ext2Handle, path: *const u8, path_len: usize, out: *mut FileRefHandle) -> i32;
+pub type FnExt2ReadAt = extern "C" fn(file: *const FileRefHandle, offset: usize, buf: *mut u8, len: usize) -> i32;
+pub type FnExt2WriteAt = extern "C" fn(file: *const FileRefHandle, offset: usize, data: *const u8, len: usize) -> i32;
+pub type FnExt2ListDir = extern "C" fn(handle: Ext2Handle, path: *const u8, path_len: usize, cb: DirEntryCallback, ctx: *mut u8) -> i32;
+pub type FnExt2GetStats = extern "C" fn(handle: Ext2Handle, stats: *mut Ext2Stats) -> i32;
+pub type FnExt2SetWritable = extern "C" fn(writable: bool);
+pub type FnExt2IsWritable = extern "C" fn() -> bool;
+
+/// Module operations table
+#[repr(C)]
+pub struct Ext2ModuleOps {
+    /// Create a new ext2 filesystem from image data
+    pub new: Option<FnExt2New>,
+    /// Destroy an ext2 filesystem handle
+    pub destroy: Option<FnExt2Destroy>,
+    /// Lookup a file/directory by path
+    pub lookup: Option<FnExt2Lookup>,
+    /// Read data from a file at offset
+    pub read_at: Option<FnExt2ReadAt>,
+    /// Write data to a file at offset
+    pub write_at: Option<FnExt2WriteAt>,
+    /// List directory entries
+    pub list_dir: Option<FnExt2ListDir>,
+    /// Get filesystem statistics
+    pub get_stats: Option<FnExt2GetStats>,
+    /// Set write mode
+    pub set_writable: Option<FnExt2SetWritable>,
+    /// Check if writable
+    pub is_writable: Option<FnExt2IsWritable>,
+}
+
+impl Ext2ModuleOps {
+    const fn empty() -> Self {
+        Self {
+            new: None,
+            destroy: None,
+            lookup: None,
+            read_at: None,
+            write_at: None,
+            list_dir: None,
+            get_stats: None,
+            set_writable: None,
+            is_writable: None,
+        }
+    }
+
+    fn is_valid(&self) -> bool {
+        self.new.is_some()
+            && self.lookup.is_some()
+            && self.read_at.is_some()
+            && self.list_dir.is_some()
+    }
+}
+
+// ============================================================================
+// Global State
+// ============================================================================
+
+/// Registered module operations
+static EXT2_OPS: Mutex<Ext2ModuleOps> = Mutex::new(Ext2ModuleOps::empty());
+
+/// Global ext2 filesystem instance (after mounting)
+static EXT2_GLOBAL: Mutex<Option<Ext2Handle>> = Mutex::new(None);
+
+/// Global image reference (kept alive for filesystem)
+static EXT2_IMAGE: Mutex<Option<&'static [u8]>> = Mutex::new(None);
+
+/// Write mode flag
+static EXT2_WRITABLE: Mutex<bool> = Mutex::new(false);
+
+// ============================================================================
+// Module Registration API (called by ext2.nkm)
+// ============================================================================
+
+/// Register ext2 module operations
+/// Called by ext2.nkm during module_init
+#[no_mangle]
+pub extern "C" fn kmod_ext2_register(ops: *const Ext2ModuleOps) -> i32 {
+    if ops.is_null() {
+        crate::kerror!("ext2_modular: null ops pointer");
+        return -1;
+    }
+
+    let ops = unsafe { &*ops };
+    
+    // Validate required operations
+    if ops.new.is_none() {
+        crate::kerror!("ext2_modular: missing 'new' operation");
+        return -1;
+    }
+    if ops.lookup.is_none() {
+        crate::kerror!("ext2_modular: missing 'lookup' operation");
+        return -1;
+    }
+    if ops.read_at.is_none() {
+        crate::kerror!("ext2_modular: missing 'read_at' operation");
+        return -1;
+    }
+
+    {
+        let mut global_ops = EXT2_OPS.lock();
+        global_ops.new = ops.new;
+        global_ops.destroy = ops.destroy;
+        global_ops.lookup = ops.lookup;
+        global_ops.read_at = ops.read_at;
+        global_ops.write_at = ops.write_at;
+        global_ops.list_dir = ops.list_dir;
+        global_ops.get_stats = ops.get_stats;
+        global_ops.set_writable = ops.set_writable;
+        global_ops.is_writable = ops.is_writable;
+    }
+
+    crate::kinfo!("ext2_modular: module registered successfully");
+    0
+}
+
+/// Unregister ext2 module operations
+/// Called by ext2.nkm during module_exit
+#[no_mangle]
+pub extern "C" fn kmod_ext2_unregister() -> i32 {
+    // Destroy any existing filesystem instance
+    {
+        let mut global = EXT2_GLOBAL.lock();
+        if let Some(handle) = global.take() {
+            let ops = EXT2_OPS.lock();
+            if let Some(destroy) = ops.destroy {
+                destroy(handle);
+            }
+        }
+    }
+
+    // Clear image reference
+    *EXT2_IMAGE.lock() = None;
+
+    // Clear operations
+    *EXT2_OPS.lock() = Ext2ModuleOps::empty();
+
+    crate::kinfo!("ext2_modular: module unregistered");
+    0
+}
+
+// ============================================================================
+// Kernel API (used by VFS and boot stages)
+// ============================================================================
+
+/// Check if ext2 module is loaded and ready
+pub fn is_module_loaded() -> bool {
+    EXT2_OPS.lock().is_valid()
+}
+
+/// Create a new ext2 filesystem from image data
+pub fn new(image: &'static [u8]) -> Result<(), Ext2Error> {
+    let ops = EXT2_OPS.lock();
+    let new_fn = ops.new.ok_or(Ext2Error::ModuleNotLoaded)?;
+    drop(ops);
+
+    let handle = new_fn(image.as_ptr(), image.len());
+    if handle.is_null() {
+        return Err(Ext2Error::BadMagic);
+    }
+
+    // Store globally
+    *EXT2_IMAGE.lock() = Some(image);
+    *EXT2_GLOBAL.lock() = Some(handle);
+
+    crate::kinfo!("ext2_modular: filesystem initialized ({} bytes)", image.len());
+    Ok(())
+}
+
+/// Register a global ext2 filesystem (compatibility with old API)
+pub fn register_global(image: &'static [u8]) -> Result<(), Ext2Error> {
+    new(image)
+}
+
+/// Get the global ext2 filesystem handle
+pub fn global() -> Option<Ext2Handle> {
+    *EXT2_GLOBAL.lock()
+}
+
+/// Lookup a file by path
+pub fn lookup(path: &str) -> Option<FileRefHandle> {
+    let ops = EXT2_OPS.lock();
+    let lookup_fn = ops.lookup?;
+    let handle = (*EXT2_GLOBAL.lock())?;
+    drop(ops);
+
+    let mut file_ref = FileRefHandle {
+        fs: Ext2Handle(ptr::null_mut()),
+        inode: 0,
+        size: 0,
+        mode: 0,
+        blocks: 0,
+        mtime: 0,
+        nlink: 0,
+        uid: 0,
+        gid: 0,
+    };
+
+    let ret = lookup_fn(handle, path.as_ptr(), path.len(), &mut file_ref);
+    if ret == 0 && file_ref.is_valid() {
+        Some(file_ref)
+    } else {
+        None
+    }
+}
+
+/// Read data from a file
+pub fn read_at(file: &FileRefHandle, offset: usize, buf: &mut [u8]) -> usize {
+    let ops = EXT2_OPS.lock();
+    let read_fn = match ops.read_at {
+        Some(f) => f,
+        None => return 0,
+    };
+    drop(ops);
+
+    let ret = read_fn(file, offset, buf.as_mut_ptr(), buf.len());
+    if ret >= 0 {
+        ret as usize
+    } else {
+        0
+    }
+}
+
+/// Write data to a file
+pub fn write_at(file: &FileRefHandle, offset: usize, data: &[u8]) -> Result<usize, Ext2Error> {
+    if !is_writable() {
+        return Err(Ext2Error::ReadOnly);
+    }
+
+    let ops = EXT2_OPS.lock();
+    let write_fn = ops.write_at.ok_or(Ext2Error::InvalidOperation)?;
+    drop(ops);
+
+    let ret = write_fn(file, offset, data.as_ptr(), data.len());
+    if ret >= 0 {
+        Ok(ret as usize)
+    } else {
+        Err(Ext2Error::from_code(ret).unwrap_or(Ext2Error::InvalidOperation))
+    }
+}
+
+/// List directory entries
+pub fn list_directory<F>(path: &str, mut callback: F)
+where
+    F: FnMut(&str, Metadata),
+{
+    let ops = EXT2_OPS.lock();
+    let list_fn = match ops.list_dir {
+        Some(f) => f,
+        None => return,
+    };
+    let handle = match *EXT2_GLOBAL.lock() {
+        Some(h) => h,
+        None => return,
+    };
+    drop(ops);
+
+    // Create a closure context
+    struct CallbackContext<'a, F: FnMut(&str, Metadata)> {
+        callback: &'a mut F,
+    }
+
+    extern "C" fn dir_entry_trampoline<F: FnMut(&str, Metadata)>(
+        name: *const u8,
+        name_len: usize,
+        inode: u32,
+        file_type: u8,
+        ctx: *mut u8,
+    ) {
+        if name.is_null() || ctx.is_null() {
+            return;
+        }
+
+        unsafe {
+            let ctx = &mut *(ctx as *mut CallbackContext<F>);
+            let name_slice = core::slice::from_raw_parts(name, name_len);
+            if let Ok(name_str) = core::str::from_utf8(name_slice) {
+                // Skip . and ..
+                if name_str == "." || name_str == ".." {
+                    return;
+                }
+
+                // Create basic metadata from file_type
+                let ft = match file_type {
+                    2 => FileType::Directory,
+                    1 => FileType::Regular,
+                    7 => FileType::Symlink,
+                    3 => FileType::Character,
+                    4 => FileType::Block,
+                    5 => FileType::Fifo,
+                    6 => FileType::Socket,
+                    _ => FileType::Unknown(0),
+                };
+
+                let meta = Metadata::empty().with_type(ft);
+                (ctx.callback)(name_str, meta);
+            }
+        }
+    }
+
+    let mut ctx = CallbackContext {
+        callback: &mut callback,
+    };
+
+    list_fn(
+        handle,
+        path.as_ptr(),
+        path.len(),
+        dir_entry_trampoline::<F>,
+        &mut ctx as *mut _ as *mut u8,
+    );
+}
+
+/// Get filesystem metadata for a path
+pub fn metadata_for_path(path: &str) -> Option<Metadata> {
+    lookup(path).map(|f| f.metadata())
+}
+
+/// Get filesystem statistics
+pub fn get_stats() -> Option<Ext2Stats> {
+    let ops = EXT2_OPS.lock();
+    let get_stats_fn = ops.get_stats?;
+    let handle = (*EXT2_GLOBAL.lock())?;
+    drop(ops);
+
+    let mut stats = Ext2Stats::default();
+    let ret = get_stats_fn(handle, &mut stats);
+    if ret == 0 {
+        Some(stats)
+    } else {
+        None
+    }
+}
+
+/// Enable write mode
+pub fn enable_write_mode() {
+    *EXT2_WRITABLE.lock() = true;
+    
+    let ops = EXT2_OPS.lock();
+    if let Some(set_writable) = ops.set_writable {
+        set_writable(true);
+    }
+}
+
+/// Check if write mode is enabled
+pub fn is_writable() -> bool {
+    *EXT2_WRITABLE.lock()
+}
+
+/// Filesystem name
+pub fn name() -> &'static str {
+    "ext2"
+}
+
+// ============================================================================
+// VFS FileSystem trait implementation
+// ============================================================================
+
+use super::vfs::{FileContent, FileSystem, OpenFile};
+
+/// Wrapper that implements FileSystem trait for the modular ext2
+pub struct Ext2ModularFs;
+
+impl Ext2ModularFs {
+    pub fn new() -> Option<Self> {
+        if is_module_loaded() && global().is_some() {
+            Some(Self)
+        } else {
+            None
+        }
+    }
+}
+
+impl FileSystem for Ext2ModularFs {
+    fn name(&self) -> &'static str {
+        "ext2"
+    }
+
+    fn read(&self, path: &str) -> Option<OpenFile> {
+        let file_ref = lookup(path)?;
+        Some(OpenFile {
+            content: FileContent::Ext2Modular(file_ref),
+            metadata: file_ref.metadata(),
+        })
+    }
+
+    fn metadata(&self, path: &str) -> Option<Metadata> {
+        metadata_for_path(path)
+    }
+
+    fn list(&self, path: &str, cb: &mut dyn FnMut(&str, Metadata)) {
+        list_directory(path, cb);
+    }
+
+    fn write(&self, path: &str, data: &[u8]) -> Result<usize, &'static str> {
+        if !is_writable() {
+            return Err("ext2 filesystem is read-only");
+        }
+
+        let file_ref = lookup(path).ok_or("file not found")?;
+        write_at(&file_ref, 0, data).map_err(|_| "write failed")
+    }
+
+    fn create(&self, _path: &str) -> Result<(), &'static str> {
+        if !is_writable() {
+            return Err("ext2 filesystem is read-only");
+        }
+        Err("file creation not yet implemented")
+    }
+}
+
+// ============================================================================
+// Symbol Table Registration
+// ============================================================================
+
+/// Register ext2 module API symbols
+pub fn register_symbols() {
+    use crate::kmod::symbols::{register_symbol, SymbolType};
+
+    register_symbol(
+        "kmod_ext2_register",
+        kmod_ext2_register as *const () as u64,
+        SymbolType::Function,
+    );
+    register_symbol(
+        "kmod_ext2_unregister",
+        kmod_ext2_unregister as *const () as u64,
+        SymbolType::Function,
+    );
+
+    crate::kinfo!("ext2_modular: kernel symbols registered");
+}
+
+// ============================================================================
+// Initialization
+// ============================================================================
+
+/// Initialize the ext2 modular support
+/// Called early in boot, before module loading
+pub fn init() {
+    register_symbols();
+    crate::kinfo!("ext2_modular: subsystem initialized (waiting for module)");
+}

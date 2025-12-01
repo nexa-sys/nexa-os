@@ -1,11 +1,11 @@
-use core::ptr::addr_of_mut;
 use spin::Mutex;
+use alloc::vec::Vec;
 
 use crate::bootinfo;
 use crate::posix::{self, FileType, Metadata};
-use crate::safety::{static_slice_from_raw_parts, StaticBufferAccessor};
+use crate::safety::static_slice_from_raw_parts;
 
-use super::ext2;
+use super::ext2_modular::{self, FileRefHandle};
 
 // Default ni configuration shipped when initramfs does not provide one.
 // The format mirrors a minimal subset of systemd units with an Init section
@@ -31,25 +31,50 @@ ExecStart=/sbin/uefi-compatd\n\
 Restart=no\n\
 WantedBy=multi-user.target rescue.target\n";
 
-const EXT2_READ_CACHE_SIZE: usize = 8 * 1024 * 1024; // 8 MiB scratch buffer for ext2 reads
+const EXT2_READ_CACHE_SIZE: usize = 8 * 1024 * 1024; // 8 MiB max file read size
 
-#[repr(align(4096))]
-struct Ext2CacheBuffer {
-    data: [u8; EXT2_READ_CACHE_SIZE],
+/// Heap-allocated ext2 read cache (allocated on demand)
+struct Ext2ReadCache {
+    buffer: Option<Vec<u8>>,
 }
 
-impl Ext2CacheBuffer {
+impl Ext2ReadCache {
     const fn new() -> Self {
-        Self {
-            data: [0; EXT2_READ_CACHE_SIZE],
+        Self { buffer: None }
+    }
+
+    /// Get or allocate a buffer of the required size
+    fn get_buffer(&mut self, size: usize) -> Option<&mut [u8]> {
+        if size > EXT2_READ_CACHE_SIZE {
+            return None;
         }
+        
+        // Allocate or resize buffer as needed
+        if self.buffer.is_none() || self.buffer.as_ref().unwrap().len() < size {
+            // Allocate with some headroom to avoid frequent reallocations
+            let alloc_size = size.max(64 * 1024); // At least 64KB
+            let mut new_buf = Vec::new();
+            if new_buf.try_reserve_exact(alloc_size).is_err() {
+                crate::kwarn!("Failed to allocate {} bytes for ext2 read cache", alloc_size);
+                return None;
+            }
+            new_buf.resize(alloc_size, 0);
+            self.buffer = Some(new_buf);
+        }
+        
+        self.buffer.as_mut().map(|b| &mut b[..size])
+    }
+    
+    /// Get a static slice reference to the cached data
+    /// SAFETY: Caller must ensure the lock is held and data won't be modified
+    unsafe fn as_static_slice(&self, size: usize) -> Option<&'static [u8]> {
+        self.buffer.as_ref().map(|b| {
+            core::slice::from_raw_parts(b.as_ptr(), size)
+        })
     }
 }
 
-static EXT2_READ_CACHE_LOCK: Mutex<()> = Mutex::new(());
-
-#[link_section = ".kernel_cache"]
-static mut EXT2_READ_CACHE: Ext2CacheBuffer = Ext2CacheBuffer::new();
+static EXT2_READ_CACHE: Mutex<Ext2ReadCache> = Mutex::new(Ext2ReadCache::new());
 static EMPTY_EXT2_FILE: [u8; 0] = [];
 
 #[derive(Clone, Copy)]
@@ -70,7 +95,7 @@ static MOUNTS: Mutex<[Option<MountEntry>; MAX_MOUNTS]> = Mutex::new([None; MAX_M
 #[derive(Clone, Copy)]
 pub enum FileContent {
     Inline(&'static [u8]),
-    Ext2(ext2::FileRef),
+    Ext2Modular(FileRefHandle),
 }
 
 #[derive(Clone, Copy)]
@@ -264,22 +289,23 @@ pub fn init() {
     }
 
     if let Some(image) = ext_candidate {
-        match ext2::Ext2Filesystem::new(image) {
-            Ok(fs) => {
-                let fs_ref = ext2::register_global(fs);
-                match mount("/mnt/ext", fs_ref) {
-                    Ok(()) => crate::kinfo!("Mounted ext2 image at /mnt/ext"),
-                    Err(err) => crate::kwarn!("Failed to mount ext2 filesystem: {:?}", err),
+        // Check if ext2 module is loaded
+        if ext2_modular::is_module_loaded() {
+            match ext2_modular::new(image) {
+                Ok(()) => {
+                    crate::kinfo!("Mounted ext2 image at /mnt/ext via module");
+                    let mut dir_meta = Metadata::empty().with_type(FileType::Directory);
+                    dir_meta.nlink = 2;
+                    dir_meta.mode |= 0o755;
+                    add_file_with_metadata("mnt", &[], true, dir_meta);
+                    add_file_with_metadata("mnt/ext", &[], true, dir_meta);
                 }
-                let mut dir_meta = Metadata::empty().with_type(FileType::Directory);
-                dir_meta.nlink = 2;
-                dir_meta.mode |= 0o755;
-                add_file_with_metadata("mnt", &[], true, dir_meta);
-                add_file_with_metadata("mnt/ext", &[], true, dir_meta);
+                Err(err) => {
+                    crate::kwarn!("Failed to parse ext2 image: {:?}", err);
+                }
             }
-            Err(err) => {
-                crate::kwarn!("Failed to parse ext2 image: {:?}", err);
-            }
+        } else {
+            crate::kwarn!("ext2 module not loaded, cannot mount ext2 image");
         }
     }
 
@@ -1100,14 +1126,14 @@ pub fn read_file_bytes(name: &str) -> Option<&'static [u8]> {
 
     match opened.content {
         FileContent::Inline(bytes) => Some(bytes),
-        FileContent::Ext2(file_ref) => {
-            let size = file_ref.size() as usize;
+        FileContent::Ext2Modular(file_ref) => {
+            let size = file_ref.size as usize;
             if size == 0 {
                 return Some(&EMPTY_EXT2_FILE);
             }
             if size > EXT2_READ_CACHE_SIZE {
                 crate::kwarn!(
-                    "ext2 file '{}' is {} bytes, exceeds {} byte scratch buffer",
+                    "ext2 file '{}' is {} bytes, exceeds {} byte limit",
                     name,
                     size,
                     EXT2_READ_CACHE_SIZE
@@ -1115,20 +1141,13 @@ pub fn read_file_bytes(name: &str) -> Option<&'static [u8]> {
                 return None;
             }
 
-            let _guard = EXT2_READ_CACHE_LOCK.lock();
-            // SAFETY: We hold EXT2_READ_CACHE_LOCK, guaranteeing exclusive access.
-            // Using addr_of_mut! to safely get a pointer to the static mut buffer.
-            let mut accessor = unsafe {
-                StaticBufferAccessor::<EXT2_READ_CACHE_SIZE>::from_raw_ptr(
-                    addr_of_mut!(EXT2_READ_CACHE.data),
-                )
-            };
-
-            let dest = accessor.slice_mut(size)?;
+            // Lock the cache and get/allocate buffer
+            let mut cache = EXT2_READ_CACHE.lock();
+            let dest = cache.get_buffer(size)?;
+            
             let mut read_offset = 0usize;
-
             while read_offset < size {
-                let read = file_ref.read_at(read_offset, &mut dest[read_offset..]);
+                let read = ext2_modular::read_at(&file_ref, read_offset, &mut dest[read_offset..]);
                 if read == 0 {
                     crate::kwarn!(
                         "short read while loading '{}' from ext2 (offset {} of {})",
@@ -1141,9 +1160,10 @@ pub fn read_file_bytes(name: &str) -> Option<&'static [u8]> {
                 read_offset += read;
             }
 
-            // SAFETY: We still hold the lock, buffer content is valid for 'static
+            // SAFETY: We hold the lock, buffer content is valid for 'static
             // as long as the lock protocol is followed by all callers.
-            unsafe { accessor.as_static_slice(size) }
+            // The buffer persists in the static Mutex.
+            unsafe { cache.as_static_slice(size) }
         }
     }
 }
@@ -1170,7 +1190,10 @@ pub fn create_file(path: &str) -> Result<(), &'static str> {
 
 /// Enable write support for ext2 filesystem (if available)
 pub fn enable_ext2_write() -> Result<(), &'static str> {
-    ext2::Ext2Filesystem::enable_write_mode();
+    if !ext2_modular::is_module_loaded() {
+        return Err("ext2 module not loaded");
+    }
+    ext2_modular::enable_write_mode();
     crate::kinfo!("ext2 write mode enabled");
     Ok(())
 }

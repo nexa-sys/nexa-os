@@ -593,9 +593,9 @@ fn mark_process_entered_user(pid: Pid) {
 
 /// Execute first-run process
 fn execute_first_run(mut process: crate::process::Process) {
-    kdebug!(
-        "[do_schedule] FirstRun: PID={}, entry={:#x}, stack={:#x}, has_entered_user={}, CR3={:#x}",
-        process.pid, process.entry_point, process.stack_top, process.has_entered_user, process.cr3
+    crate::serial_println!(
+        "FIRST_RUN: PID={} entry={:#x} stack={:#x} cr3={:#x}",
+        process.pid, process.entry_point, process.stack_top, process.cr3
     );
 
     if process.cr3 == 0 {
@@ -606,6 +606,7 @@ fn execute_first_run(mut process: crate::process::Process) {
     }
 
     mark_process_entered_user(process.pid);
+    crate::serial_println!("FIRST_RUN: About to call process.execute()");
     process.execute();
     crate::kfatal!("process::execute returned unexpectedly");
 }

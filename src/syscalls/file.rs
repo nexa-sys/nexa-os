@@ -446,7 +446,7 @@ pub fn open(path_ptr: *const u8, len: usize) -> u64 {
         let crate::fs::OpenFile { content, metadata } = opened;
         let backing = match content {
             crate::fs::FileContent::Inline(data) => FileBacking::Inline(data),
-            crate::fs::FileContent::Ext2(file_ref) => FileBacking::Ext2(file_ref),
+            crate::fs::FileContent::Ext2Modular(file_ref) => FileBacking::Ext2(file_ref),
         };
 
         unsafe {

@@ -4,15 +4,13 @@
 //! - Virtual File System (VFS) layer
 //! - Filesystem abstraction traits (for pluggable filesystem support)
 //! - Bridge adapters for trait interoperability
-//! - ext2 filesystem support
-//! - ext2 adapter for abstract filesystem interface
+//! - Modular ext2 filesystem support (loaded via kmod)
 //! - Initial RAM filesystem (initramfs/CPIO)
 //! - procfs pseudo-filesystem (Linux-compatible /proc)
 //! - sysfs pseudo-filesystem (Linux-compatible /sys)
 
 pub mod bridge;
-pub mod ext2;
-pub mod ext2_adapter;
+pub mod ext2_modular;
 pub mod initramfs;
 pub mod procfs;
 pub mod sysfs;
@@ -32,10 +30,15 @@ pub use initramfs::{
     GsData, GS_DATA,
 };
 
-// Re-export from ext2
-pub use ext2::{
-    global as ext2_global, register_global as ext2_register_global, Ext2Error, Ext2Filesystem,
-    Ext2Stats, FileRef as Ext2FileRef,
+// Re-export from ext2_modular (modular ext2 via kmod)
+pub use ext2_modular::{
+    global as ext2_global, register_global as ext2_register_global, 
+    new as ext2_new, lookup as ext2_lookup, read_at as ext2_read_at,
+    write_at as ext2_write_at, list_directory as ext2_list_directory,
+    metadata_for_path as ext2_metadata_for_path, get_stats as ext2_get_stats,
+    enable_write_mode as ext2_enable_write_mode, is_writable as ext2_is_writable,
+    is_module_loaded as ext2_is_module_loaded, init as ext2_modular_init,
+    Ext2Error, Ext2Stats, Ext2Handle, FileRefHandle, Ext2ModularFs,
 };
 
 // Re-export filesystem abstraction traits
@@ -43,9 +46,6 @@ pub use traits::{
     BlockFileSystem, DirEntry, FileSystemExt, FsError, FsFileHandle, FsResult, FsStats,
     WritableFileSystem,
 };
-
-// Re-export ext2 adapter
-pub use ext2_adapter::{create_ext2_adapter, global_ext2_adapter, Ext2Adapter};
 
 // Re-export bridge adapters
 pub use bridge::{BlockFsVfsAdapter, VfsBlockFsAdapter};

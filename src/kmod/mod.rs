@@ -412,6 +412,10 @@ impl From<elf::LoaderError> for ModuleError {
 pub fn init() {
     // Initialize kernel symbol table first
     symbols::init();
+    
+    // Register ext2 modular filesystem symbols
+    crate::fs::ext2_modular::init();
+    
     crate::kinfo!("Kernel module system initialized (max {} modules)", MAX_MODULES);
 }
 

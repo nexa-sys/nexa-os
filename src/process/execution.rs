@@ -30,6 +30,7 @@ impl Process {
 
     /// Execute the process in user mode (Ring 3)
     pub fn execute(&mut self) {
+        crate::serial_println!("EXEC_ENTER: PID={} entry={:#x} stack={:#x}", self.pid, self.entry_point, self.stack_top);
         self.state = ProcessState::Running;
 
         ktrace!(
@@ -102,6 +103,7 @@ impl Process {
 /// This function never returns - execution continues in user space
 #[inline(never)]
 pub fn jump_to_usermode_with_cr3(entry: u64, stack: u64, cr3: u64) -> ! {
+    crate::serial_println!("J2U: entry={:#x} stack={:#x} cr3={:#x}", entry, stack, cr3);
     // Use kdebug! macro for direct serial output
     kdebug!(
         "[jump_to_usermode_with_cr3] ENTRY: entry={:#x}, stack={:#x}, cr3={:#x}",
@@ -152,34 +154,109 @@ pub fn jump_to_usermode_with_cr3(entry: u64, stack: u64, cr3: u64) -> ! {
         Msr::new(0xc0000101).write(gs_base);
     }
 
-    kdebug!("[jump_to_usermode_with_cr3] About to switch CR3 and execute sysretq");
+    crate::serial_println!("J2U_PRE_SYSRET: cr3={:#x} entry={:#x} stack={:#x}", cr3, entry, stack);
+
+    // Verify STAR MSR is set correctly for sysretq
+    unsafe {
+        use x86_64::registers::model_specific::Msr;
+        let star_val = Msr::new(0xC0000081).read();
+        crate::serial_println!("STAR MSR: {:#018x}", star_val);
+    }
+
+    // Verify IDT[0x81] is still correctly configured before entering userspace
+    unsafe {
+        use x86_64::instructions::tables::sidt;
+        let idtr = sidt();
+        let idt_base = idtr.base.as_u64();
+        let entry_0x81 = (idt_base + 0x81 * 16) as *const u64;
+        let low = *entry_0x81;
+        let high = *entry_0x81.add(1);
+        let handler = (low & 0xFFFF) | ((low >> 48) << 16) | ((high as u64 & 0xFFFFFFFF) << 32);
+        let dpl = ((low >> 32) >> 13) & 0x3;
+        let present = ((low >> 32) >> 15) & 0x1;
+        crate::serial_println!("PRE_SYSRET IDT[0x81]: base={:#x} handler={:#x} dpl={} present={}", 
+            idt_base, handler, dpl, present);
+    }
 
     unsafe {
-        kdebug!("BEFORE_SYSRET_WITH_CR3");
+        crate::serial_println!("J2U_SYSRET_NOW");
 
-        // CRITICAL FIX: Switch CR3 and jump to usermode atomically
-        // We MUST switch CR3 in the same assembly block as sysretq
-        // to avoid accessing kernel stack after address space switch
-        //
-        // The sequence is:
-        // 1. Disable interrupts (cli)
-        // 2. Switch CR3 to user address space
-        // 3. Set up sysretq registers (RCX, R11, RSP)
-        // 4. Execute sysretq
-        //
-        // No Rust code can execute between steps 2 and 4, otherwise
-        // we would access kernel stack through user page tables!
+        // Debug: dump first few bytes at physical USER_PHYS_BASE (where we loaded the ELF)
+        let user_phys_base = 0x1000000u64;
+        let code_ptr = user_phys_base as *const u8;
+        crate::serial_print!("CODE@{:#x}: ", user_phys_base);
+        for i in 0..16 {
+            crate::serial_print!("{:02x} ", *code_ptr.add(i));
+        }
+        crate::serial_println!();
+
+        // Also dump bytes at entry point offset
+        let entry_offset = entry - 0x400000;  // entry is virtual, convert to offset from base
+        let entry_phys = user_phys_base + entry_offset;
+        let entry_ptr = entry_phys as *const u8;
+        crate::serial_print!("ENTRY@{:#x}: ", entry_phys);
+        for i in 0..16 {
+            crate::serial_print!("{:02x} ", *entry_ptr.add(i));
+        }
+        crate::serial_println!();
+        
+        // Dump stack content (physical address)
+        // stack is virtual, need physical address
+        let stack_virt = stack;
+        let stack_offset = stack_virt - crate::process::USER_VIRT_BASE;  // offset from USER_VIRT_BASE
+        let stack_phys = user_phys_base + stack_offset;
+        crate::serial_println!("STACK: virt={:#x} phys={:#x}", stack_virt, stack_phys);
+        let stack_ptr = stack_phys as *const u64;
+        for i in 0..8 {
+            let val = *stack_ptr.add(i);
+            crate::serial_println!("  [RSP+{}]: {:#018x}", i*8, val);
+        }
+
+        // Debug: dump the actual values we're passing
+        crate::serial_println!("SYSRET_ARGS: cr3={:#x} entry={:#x} stack={:#x}", cr3, entry, stack);
+
+        // Store values in known memory locations for debugging
+        let entry_val = entry;
+        let stack_val = stack;
+        let cr3_val = cr3;
+        
+        // Print values again to make sure they haven't changed
+        crate::serial_println!("VERIFY: cr3={:#x} entry={:#x} stack={:#x}", cr3_val, entry_val, stack_val);
+
+        // CRITICAL FIX: Use explicit registers to avoid compiler interference
+        // The compiler might reuse registers in unexpected ways with inline asm
         core::arch::asm!(
-            "cli",                 // Mask interrupts during the transition
-            "mov cr3, {cr3}",      // Switch to user address space
-            "mov rcx, {entry}",    // RCX = user RIP for sysretq
-            "mov rsp, {stack}",    // Set user stack (safe after CR3 switch)
-            "mov r11d, 0x202",     // User RFLAGS with IF=1, reserved bit=1
-            "xor rax, rax",        // Clear return value
-            "sysretq",             // Return to Ring 3
-            cr3 = in(reg) cr3,
-            entry = in(reg) entry,
-            stack = in(reg) stack,
+            "cli",
+            // First, save our values to scratch registers that won't be clobbered
+            "mov r12, {entry}",    // Save entry point
+            "mov r13, {stack}",    // Save stack pointer
+            "mov r14, {cr3}",      // Save CR3
+            // Now switch CR3
+            "mov cr3, r14",
+            // Print 'O' to confirm CR3 switch
+            "mov dx, 0x3f8",
+            "mov al, 79",
+            "out dx, al",
+            "mov al, 75",          // 'K'
+            "out dx, al",
+            "mov al, 10",
+            "out dx, al",
+            // Set up sysret registers
+            "mov rcx, r12",        // RCX = entry point (from saved r12)
+            "mov rsp, r13",        // RSP = stack (from saved r13)
+            "mov r11d, 0x202",     // R11 = RFLAGS (IF set)
+            "xor rax, rax",        // RAX = 0
+            // Print 'G' right before sysretq
+            "mov dx, 0x3f8",
+            "mov al, 71",          // 'G'
+            "out dx, al",
+            "mov al, 10",
+            "out dx, al",
+            // Execute sysretq
+            "sysretq",
+            entry = in(reg) entry_val,
+            stack = in(reg) stack_val,
+            cr3 = in(reg) cr3_val,
             options(noreturn)
         );
     }

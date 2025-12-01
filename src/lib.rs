@@ -208,6 +208,13 @@ pub fn kernel_main(multiboot_info_address: u64, magic: u32) -> ! {
 }
 
 pub fn kernel_main_uefi(boot_info_ptr: *const BootInfo) -> ! {
+    // Print current instruction pointer to verify kernel is running at expected address
+    let rip: u64;
+    unsafe {
+        core::arch::asm!("lea {}, [rip]", out(reg) rip);
+    }
+    kinfo!("kernel_main_uefi: RIP={:#x}", rip);
+    
     if boot_info_ptr.is_null() {
         kpanic!("UEFI entry invoked with null boot info pointer");
     }
@@ -266,7 +273,36 @@ pub fn kernel_main_uefi(boot_info_ptr: *const BootInfo) -> ! {
 
     if let Some(offset) = bootinfo::kernel_load_offset() {
         kinfo!("Kernel relocation offset reported by loader: {:#x}", offset);
+    } else {
+        kinfo!("Kernel running at link-time addresses (no relocation offset)");
     }
+    
+    // Verify that mirroring worked by comparing known symbol to runtime address
+    let expected_syscall_handler = 0x136c80u64; // From symbol table
+    let runtime_syscall_handler: u64;
+    unsafe {
+        core::arch::asm!(
+            "lea {}, [rip + syscall_interrupt_handler]",
+            out(reg) runtime_syscall_handler,
+            options(nostack, nomem)
+        );
+    }
+    kinfo!("syscall_interrupt_handler: expected={:#x}, runtime={:#x}",
+        expected_syscall_handler, runtime_syscall_handler);
+    
+    // Also verify memory at expected address
+    let bytes_at_expected: [u8; 8] = unsafe {
+        *(expected_syscall_handler as *const [u8; 8])
+    };
+    let bytes_at_runtime: [u8; 8] = unsafe {
+        *(runtime_syscall_handler as *const [u8; 8])
+    };
+    kinfo!("Bytes at expected {:#x}: {:02x?}", expected_syscall_handler, bytes_at_expected);
+    kinfo!("Bytes at runtime {:#x}: {:02x?}", runtime_syscall_handler, bytes_at_runtime);
+    
+    // Expected bytes for syscall_interrupt_handler should be: 4c 8b 54 24 08 (mov 0x8(%rsp),%r10)
+    let expected_bytes: [u8; 5] = [0x4c, 0x8b, 0x54, 0x24, 0x08];
+    
     if let Some((expected, actual)) = bootinfo::kernel_entry_points() {
         kdebug!(
             "Kernel entry points -> expected: {:#x}, actual: {:#x}",

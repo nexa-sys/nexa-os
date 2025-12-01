@@ -19,11 +19,17 @@ pub enum ProcessState {
 }
 
 /// Virtual base address where userspace expects to be mapped.
-pub const USER_VIRT_BASE: u64 = 0x400000;
+/// IMPORTANT: Must be placed AFTER the kernel's BSS section end (around 0x840000).
+/// Using 16MB (0x1000000) to safely avoid overlap with kernel memory regions
+/// including IDT, GDT, and other kernel data structures.
+pub const USER_VIRT_BASE: u64 = 0x1000000;
 /// Physical base address used when copying the userspace image.
-pub const USER_PHYS_BASE: u64 = 0x400000;
+/// Must be placed after the kernel image (kernel .bss ends around 0x83f000)
+/// Using 16MB (0x1000000) to provide safe margin from kernel memory.
+pub const USER_PHYS_BASE: u64 = 0x1000000;
 /// Virtual address chosen for the base of the userspace stack region.
-pub const STACK_BASE: u64 = 0x800000;
+/// Adjusted to be after USER_VIRT_BASE: USER_VIRT_BASE + 4MB = 0x1400000
+pub const STACK_BASE: u64 = 0x1400000;
 /// Size of the userspace stack in bytes (must stay 2 MiB aligned for huge pages).
 pub const STACK_SIZE: u64 = 0x200000;
 /// Virtual address where the heap begins in userspace.

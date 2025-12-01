@@ -214,10 +214,13 @@ pub fn fork(syscall_return_addr: u64) -> u64 {
             kfatal!("Fork memory copy corrupted");
         }
 
-        let child_test_addr = (child_phys_base + (0x9fe390 - USER_VIRT_BASE)) as *const u8;
+        // Debug: dump some bytes from child's memory (use stack area which is within mapped region)
+        let child_stack_area = child_phys_base + (crate::process::STACK_BASE - USER_VIRT_BASE);
+        let child_test_addr = child_stack_area as *const u8;
         let child_test_bytes = core::slice::from_raw_parts(child_test_addr, 16);
         ktrace!(
-            "[fork-debug] Child phys mem at path_buf (0x9fe390): {:02x?}",
+            "[fork-debug] Child phys mem at stack area ({:#x}): {:02x?}",
+            child_stack_area,
             child_test_bytes
         );
 

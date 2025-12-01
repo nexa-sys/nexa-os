@@ -535,21 +535,30 @@ fn selectors_ref() -> Option<&'static Selectors> {
 
 #[allow(static_mut_refs)]
 pub unsafe fn get_selectors() -> &'static Selectors {
-    selectors_ref().expect("GDT not initialized")
+    match selectors_ref() {
+        Some(s) => s,
+        None => {
+            let cpu_id = crate::smp::current_cpu_id();
+            crate::kpanic!("GDT not initialized on CPU {}", cpu_id);
+        }
+    }
 }
 
 /// Debug helper to dump selector values when tracking corruption
 pub fn debug_dump_selectors(tag: &str) {
-    let selectors = unsafe { get_selectors() };
-    crate::kinfo!(
-        "[selectors:{}] kernel_code={:#x}, kernel_data={:#x}, user_code={:#x}, user_data={:#x}, tss={:#x}",
-        tag,
-        selectors.code_selector.0,
-        selectors.data_selector.0,
-        selectors.user_code_selector.0,
-        selectors.user_data_selector.0,
-        selectors.tss_selector.0
-    );
+    if let Some(selectors) = selectors_ref() {
+        crate::kinfo!(
+            "[selectors:{}] kernel_code={:#x}, kernel_data={:#x}, user_code={:#x}, user_data={:#x}, tss={:#x}",
+            tag,
+            selectors.code_selector.0,
+            selectors.data_selector.0,
+            selectors.user_code_selector.0,
+            selectors.user_data_selector.0,
+            selectors.tss_selector.0
+        );
+    } else {
+        crate::kwarn!("[selectors:{}] GDT not yet initialized!", tag);
+    }
 }
 
 /// Get privilege stack for the given CPU and index

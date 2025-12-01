@@ -188,7 +188,7 @@ echo "    libc.musl-x86_64.so.1 -> libnrlib.so"
 
 # Now build ni with std, linking against our nrlib-based libc
 cd "$BUILD_DIR/userspace-build"
-STD_RUSTFLAGS="-C opt-level=2 -C panic=abort -C linker=rust-lld -C link-arg=--image-base=0x00400000 -C link-arg=--entry=_start -L $BUILD_DIR/userspace-build/sysroot/lib -C link-arg=-upthread_mutexattr_settype -C link-arg=-upthread_mutexattr_init -C link-arg=-upthread_mutexattr_destroy -C link-arg=-upthread_mutex_init -C link-arg=-upthread_mutex_lock -C link-arg=-upthread_mutex_unlock -C link-arg=-upthread_mutex_destroy -C link-arg=-upthread_once -C link-arg=-u__libc_single_threaded"
+STD_RUSTFLAGS="-C opt-level=2 -C panic=abort -C linker=rust-lld -C link-arg=--image-base=0x01000000 -C link-arg=--entry=_start -L $BUILD_DIR/userspace-build/sysroot/lib -C link-arg=-upthread_mutexattr_settype -C link-arg=-upthread_mutexattr_init -C link-arg=-upthread_mutexattr_destroy -C link-arg=-upthread_mutex_init -C link-arg=-upthread_mutex_lock -C link-arg=-upthread_mutex_unlock -C link-arg=-upthread_mutex_destroy -C link-arg=-upthread_once -C link-arg=-u__libc_single_threaded"
 RUSTFLAGS="$STD_RUSTFLAGS" \
     cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/targets/x86_64-nexaos-userspace.json" --release \
     --bin ni --no-default-features
@@ -219,7 +219,7 @@ RUSTFLAGS="$STD_RUSTFLAGS" \
 
 # # Build udp_test with nrlib (no-std)
 # echo "Building udp_test with nrlib (no-std)..."
-# RUSTFLAGS="-C opt-level=2 -C panic=abort -C linker=rust-lld -C link-arg=--image-base=0x00400000 -C link-arg=--entry=_start" \
+# RUSTFLAGS="-C opt-level=2 -C panic=abort -C linker=rust-lld -C link-arg=--image-base=0x01000000 -C link-arg=--entry=_start" \
 #     cargo build -Z build-std=core --target "$PROJECT_ROOT/targets/x86_64-nexaos-userspace.json" --release \
 #     --bin udp_test --features use-nrlib
 
@@ -255,7 +255,7 @@ RUSTFLAGS="$STD_RUSTFLAGS" \
 
 # Build crashtest (no-std, simple test for segfault handling)
 echo "Building crashtest (no-std)..."
-CRASHTEST_RUSTFLAGS="-C opt-level=2 -C panic=abort -C linker=rust-lld -C link-arg=--image-base=0x00400000 -C link-arg=--entry=_start"
+CRASHTEST_RUSTFLAGS="-C opt-level=2 -C panic=abort -C linker=rust-lld -C link-arg=--image-base=0x01000000 -C link-arg=--entry=_start"
 RUSTFLAGS="$CRASHTEST_RUSTFLAGS" \
     cargo build -Z build-std=core --target "$PROJECT_ROOT/targets/x86_64-nexaos-userspace.json" --release \
     --bin crashtest
@@ -265,7 +265,7 @@ RUSTFLAGS="$CRASHTEST_RUSTFLAGS" \
 # CRITICAL: --undefined=_start forces the linker to pull _start from libc.a (entry point)
 # Without this, e_entry will be 0 and dynamic linker must do symbol lookup
 echo "Building hello (dynamic linking test)..."
-DYN_RUSTFLAGS="-C opt-level=2 -C panic=abort -C linker=rust-lld -C link-arg=--image-base=0x00400000 -C link-arg=--entry=_start -L $BUILD_DIR/userspace-build/sysroot/lib -C link-arg=--undefined=_start -C link-arg=-lc -C link-arg=--undefined=pthread_mutexattr_settype -C link-arg=--undefined=pthread_mutexattr_init -C link-arg=--undefined=pthread_mutexattr_destroy -C link-arg=--undefined=pthread_mutex_init -C link-arg=--undefined=pthread_mutex_lock -C link-arg=--undefined=pthread_mutex_unlock -C link-arg=--undefined=pthread_mutex_destroy -C link-arg=--undefined=pthread_once -C link-arg=--undefined=__libc_single_threaded"
+DYN_RUSTFLAGS="-C opt-level=2 -C panic=abort -C linker=rust-lld -C link-arg=--image-base=0x01000000 -C link-arg=--entry=_start -L $BUILD_DIR/userspace-build/sysroot/lib -C link-arg=--undefined=_start -C link-arg=-lc -C link-arg=--undefined=pthread_mutexattr_settype -C link-arg=--undefined=pthread_mutexattr_init -C link-arg=--undefined=pthread_mutexattr_destroy -C link-arg=--undefined=pthread_mutex_init -C link-arg=--undefined=pthread_mutex_lock -C link-arg=--undefined=pthread_mutex_unlock -C link-arg=--undefined=pthread_mutex_destroy -C link-arg=--undefined=pthread_once -C link-arg=--undefined=__libc_single_threaded"
 RUSTFLAGS="$DYN_RUSTFLAGS" \
     cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/targets/x86_64-nexaos-userspace-dynamic.json" --release \
     --bin hello

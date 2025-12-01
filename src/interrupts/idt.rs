@@ -140,15 +140,32 @@ lazy_static! {
             idt[PIC_2_OFFSET + 7].set_handler_fn(spurious_irq15_handler);
 
             // Set up syscall interrupt handler at 0x81 (callable from Ring 3)
+            // Use inline asm with RIP-relative addressing to get the correct runtime address
+            // regardless of where the kernel is loaded
+            let handler_addr: u64;
+            unsafe {
+                core::arch::asm!(
+                    "lea {}, [rip + syscall_interrupt_handler]",
+                    out(reg) handler_addr,
+                    options(nostack, nomem)
+                );
+            }
+            crate::kinfo!("syscall_interrupt_handler: using RIP-relative addr {:#x}", handler_addr);
             idt[0x81]
-                .set_handler_addr(x86_64::VirtAddr::new_truncate(
-                    syscall_interrupt_handler as u64,
-                ))
+                .set_handler_addr(x86_64::VirtAddr::new_truncate(handler_addr))
                 .set_privilege_level(PrivilegeLevel::Ring3);
 
-            // Set up ring3 switch handler at 0x80 (also callable from Ring 3)
+            // Similarly fix ring3_switch_handler
+            let ring3_addr: u64;
+            unsafe {
+                core::arch::asm!(
+                    "lea {}, [rip + ring3_switch_handler]",
+                    out(reg) ring3_addr,
+                    options(nostack, nomem)
+                );
+            }
             idt[0x80]
-                .set_handler_addr(x86_64::VirtAddr::new_truncate(ring3_switch_handler as u64))
+                .set_handler_addr(x86_64::VirtAddr::new_truncate(ring3_addr))
                 .set_privilege_level(PrivilegeLevel::Ring3);
 
             // Set up IPI handlers for SMP (vectors 0xF0-0xF3)
@@ -222,10 +239,31 @@ pub fn init_interrupts() {
 
     // Ensure IDT structure is fully written before loading
     core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+    let idt_addr = &*IDT as *const InterruptDescriptorTable as u64;
+    crate::kinfo!("init_interrupts: BSP IDT address = {:#x}", idt_addr);
     IDT.load();
     // Ensure load completes before continuing
     core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
     crate::kinfo!("init_interrupts: IDT loaded successfully");
+    
+    // Debug: Print IDT[0x81] entry details
+    {
+        let idt_ptr = &*IDT as *const InterruptDescriptorTable as *const u8;
+        // Each IDT entry is 16 bytes
+        let entry_0x81 = unsafe { idt_ptr.add(0x81 * 16) as *const u64 };
+        let low = unsafe { *entry_0x81 };
+        let high = unsafe { *entry_0x81.add(1) };
+        crate::kinfo!("IDT[0x81] raw: low={:#018x} high={:#018x}", low, high);
+        // Parse the entry
+        let handler_addr = (low & 0xFFFF) | ((low >> 48) << 16) | (high << 32);
+        let cs_sel = ((low >> 16) & 0xFFFF) as u16;
+        let options = ((low >> 32) & 0xFFFF) as u16;
+        let dpl = (options >> 13) & 0x3;
+        let present = (options >> 15) & 0x1;
+        let gate_type = (options >> 8) & 0xF;
+        crate::kinfo!("IDT[0x81] parsed: handler={:#x} cs={:#x} dpl={} present={} gate_type={:#x}",
+            handler_addr, cs_sel, dpl, present, gate_type);
+    }
 
     // Now set final PIC masks - unmask only keyboard IRQ
     unsafe {
@@ -367,15 +405,27 @@ pub fn init_interrupts_ap(cpu_id: usize) {
         idt_ref[PIC_2_OFFSET + 7].set_handler_fn(spurious_irq15_handler);
 
         // Set up syscall interrupt handler at 0x81 (callable from Ring 3)
+        // Use RIP-relative addressing to get correct runtime address
+        let syscall_handler_addr: u64;
+        core::arch::asm!(
+            "lea {}, [rip + syscall_interrupt_handler]",
+            out(reg) syscall_handler_addr,
+            options(nostack, nomem)
+        );
+        crate::kinfo!("AP {}: syscall_interrupt_handler RIP-relative addr 0x{:x}", cpu_id, syscall_handler_addr);
         idt_ref[0x81]
-            .set_handler_addr(x86_64::VirtAddr::new_truncate(
-                syscall_interrupt_handler as u64,
-            ))
+            .set_handler_addr(x86_64::VirtAddr::new_truncate(syscall_handler_addr))
             .set_privilege_level(PrivilegeLevel::Ring3);
 
         // Set up ring3 switch handler at 0x80 (also callable from Ring 3)
+        let ring3_switch_addr: u64;
+        core::arch::asm!(
+            "lea {}, [rip + ring3_switch_handler]",
+            out(reg) ring3_switch_addr,
+            options(nostack, nomem)
+        );
         idt_ref[0x80]
-            .set_handler_addr(x86_64::VirtAddr::new_truncate(ring3_switch_handler as u64))
+            .set_handler_addr(x86_64::VirtAddr::new_truncate(ring3_switch_addr))
             .set_privilege_level(PrivilegeLevel::Ring3);
 
         // Set up IPI handlers for SMP (vectors 0xF0-0xF3)

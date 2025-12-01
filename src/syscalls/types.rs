@@ -2,9 +2,8 @@
 //!
 //! This module contains all the common types used across syscall implementations.
 
-use crate::posix::{self, FileType};
-use crate::vt;
-use crate::{kdebug, kerror, ktrace, kwarn};
+use crate::fs::ext2_modular::FileRefHandle;
+use crate::posix;
 use core::ptr::{addr_of, addr_of_mut};
 use core::{cmp, ptr, slice, str};
 
@@ -151,7 +150,7 @@ pub struct SocketpairHandle {
 #[derive(Clone, Copy)]
 pub enum FileBacking {
     Inline(&'static [u8]),
-    Ext2(crate::fs::ext2::FileRef),
+    Ext2(FileRefHandle),
     StdStream(StdStreamKind),
     Socket(SocketHandle),
     Socketpair(SocketpairHandle),

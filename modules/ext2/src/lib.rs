@@ -57,6 +57,10 @@ extern "C" {
     fn kmod_spinlock_lock(lock: *mut u64);
     fn kmod_spinlock_unlock(lock: *mut u64);
     fn kmod_spinlock_trylock(lock: *mut u64) -> i32;
+    
+    // New ext2 modular API
+    fn kmod_ext2_register(ops: *const Ext2ModuleOps) -> i32;
+    fn kmod_ext2_unregister() -> i32;
 }
 
 // ============================================================================
@@ -97,6 +101,58 @@ const EXT2_SUPER_MAGIC: u16 = 0xEF53;
 const EXT2_NDIR_BLOCKS: usize = 12;
 const EXT2_IND_BLOCK: usize = 12;
 const EXT2_BLOCK_POINTER_SIZE: usize = core::mem::size_of::<u32>();
+
+// ============================================================================
+// Module Operations Table (for kmod_ext2_register)
+// ============================================================================
+
+/// Opaque handle type for the kernel
+pub type Ext2Handle = *mut u8;
+
+/// File reference handle for the kernel (matches kernel's FileRefHandle)
+#[repr(C)]
+pub struct FileRefHandle {
+    pub fs: Ext2Handle,
+    pub inode: u32,
+    pub size: u64,
+    pub mode: u16,
+    pub blocks: u64,
+    pub mtime: u64,
+    pub nlink: u32,
+    pub uid: u16,
+    pub gid: u16,
+}
+
+/// Directory entry callback type
+pub type DirEntryCallback = extern "C" fn(name: *const u8, name_len: usize, inode: u32, file_type: u8, ctx: *mut u8);
+
+/// Filesystem statistics
+#[repr(C)]
+#[derive(Default)]
+pub struct Ext2Stats {
+    pub inodes_count: u32,
+    pub blocks_count: u32,
+    pub free_blocks_count: u32,
+    pub free_inodes_count: u32,
+    pub block_size: u32,
+    pub blocks_per_group: u32,
+    pub inodes_per_group: u32,
+    pub mtime: u32,
+}
+
+/// Module operations table - must match kernel's Ext2ModuleOps
+#[repr(C)]
+pub struct Ext2ModuleOps {
+    pub new: Option<extern "C" fn(image: *const u8, size: usize) -> Ext2Handle>,
+    pub destroy: Option<extern "C" fn(handle: Ext2Handle)>,
+    pub lookup: Option<extern "C" fn(handle: Ext2Handle, path: *const u8, path_len: usize, out: *mut FileRefHandle) -> i32>,
+    pub read_at: Option<extern "C" fn(file: *const FileRefHandle, offset: usize, buf: *mut u8, len: usize) -> i32>,
+    pub write_at: Option<extern "C" fn(file: *const FileRefHandle, offset: usize, data: *const u8, len: usize) -> i32>,
+    pub list_dir: Option<extern "C" fn(handle: Ext2Handle, path: *const u8, path_len: usize, cb: DirEntryCallback, ctx: *mut u8) -> i32>,
+    pub get_stats: Option<extern "C" fn(handle: Ext2Handle, stats: *mut Ext2Stats) -> i32>,
+    pub set_writable: Option<extern "C" fn(writable: bool)>,
+    pub is_writable: Option<extern "C" fn() -> bool>,
+}
 
 // ============================================================================
 // Error types
@@ -273,17 +329,24 @@ pub extern "C" fn module_init() -> i32 {
             return 0;
         }
         
-        // Register with the kernel's VFS
-        let name = b"ext2";
-        let result = kmod_register_fs(
-            name.as_ptr(),
-            name.len(),
-            ext2_fs_init as usize,
-            ext2_lookup as usize,
-        );
+        // Create the operations table
+        let ops = Ext2ModuleOps {
+            new: Some(ext2_mod_new),
+            destroy: Some(ext2_mod_destroy),
+            lookup: Some(ext2_mod_lookup),
+            read_at: Some(ext2_mod_read_at),
+            write_at: None, // Not implemented yet
+            list_dir: Some(ext2_mod_list_dir),
+            get_stats: Some(ext2_mod_get_stats),
+            set_writable: None,
+            is_writable: None,
+        };
+        
+        // Register with the kernel's ext2 modular layer
+        let result = kmod_ext2_register(&ops);
         
         if result != 0 {
-            mod_error!(b"ext2 module: failed to register filesystem");
+            mod_error!(b"ext2 module: failed to register with kernel");
             return -1;
         }
         
@@ -305,9 +368,8 @@ pub extern "C" fn module_exit() -> i32 {
             return 0;
         }
         
-        // Unregister from VFS
-        let name = b"ext2";
-        kmod_unregister_fs(name.as_ptr(), name.len());
+        // Unregister from kernel
+        kmod_ext2_unregister();
         
         // Clean up instance
         EXT2_FS_INSTANCE = None;
@@ -327,6 +389,153 @@ pub extern "C" fn ext2_module_init() -> i32 {
 #[no_mangle]
 pub extern "C" fn ext2_module_exit() -> i32 {
     module_exit()
+}
+
+// ============================================================================
+// Module Operation Functions (for Ext2ModuleOps table)
+// ============================================================================
+
+/// Create new ext2 filesystem instance from image
+extern "C" fn ext2_mod_new(image: *const u8, size: usize) -> Ext2Handle {
+    let fs = ext2_new(image, size);
+    fs as Ext2Handle
+}
+
+/// Destroy ext2 filesystem instance
+extern "C" fn ext2_mod_destroy(_handle: Ext2Handle) {
+    // Clean up the global instance
+    unsafe {
+        EXT2_FS_INSTANCE = None;
+    }
+}
+
+/// Lookup file by path
+extern "C" fn ext2_mod_lookup(
+    handle: Ext2Handle,
+    path: *const u8,
+    path_len: usize,
+    out: *mut FileRefHandle,
+) -> i32 {
+    if handle.is_null() || path.is_null() || out.is_null() {
+        return -1;
+    }
+
+    let fs = handle as *const Ext2Filesystem;
+    let mut file_ref = FileRef {
+        fs,
+        inode: 0,
+        size: 0,
+        mode: 0,
+        blocks: 0,
+        mtime: 0,
+        nlink: 0,
+        uid: 0,
+        gid: 0,
+    };
+
+    let result = ext2_lookup(fs, path, path_len, &mut file_ref as *mut FileRef);
+    if result != 0 {
+        return result;
+    }
+
+    // Convert FileRef to FileRefHandle
+    unsafe {
+        (*out).fs = handle;
+        (*out).inode = file_ref.inode;
+        (*out).size = file_ref.size;
+        (*out).mode = file_ref.mode;
+        (*out).blocks = file_ref.blocks;
+        (*out).mtime = file_ref.mtime;
+        (*out).nlink = file_ref.nlink;
+        (*out).uid = file_ref.uid;
+        (*out).gid = file_ref.gid;
+    }
+
+    0
+}
+
+/// Read file content at offset
+extern "C" fn ext2_mod_read_at(
+    file: *const FileRefHandle,
+    offset: usize,
+    buf: *mut u8,
+    len: usize,
+) -> i32 {
+    if file.is_null() || buf.is_null() {
+        return -1;
+    }
+
+    let file_ref = unsafe { &*file };
+    let fs = file_ref.fs as *const Ext2Filesystem;
+    
+    let bytes_read = ext2_read(fs, file_ref.inode, offset, buf, len);
+    bytes_read as i32
+}
+
+/// List directory entries
+extern "C" fn ext2_mod_list_dir(
+    handle: Ext2Handle,
+    path: *const u8,
+    path_len: usize,
+    cb: DirEntryCallback,
+    ctx: *mut u8,
+) -> i32 {
+    if handle.is_null() || path.is_null() {
+        return -1;
+    }
+
+    let fs = unsafe { &*(handle as *const Ext2Filesystem) };
+    let path_bytes = unsafe { core::slice::from_raw_parts(path, path_len) };
+    let path_str = match core::str::from_utf8(path_bytes) {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
+
+    // Look up the directory
+    let file_ref = match fs.lookup_internal(path_str) {
+        Some(fr) => fr,
+        None => return -1,
+    };
+
+    // Check if it's a directory
+    let mode = file_ref.mode;
+    if (mode & 0o170000) != 0o040000 {
+        return -1; // Not a directory
+    }
+
+    // Load the inode and iterate entries
+    let inode = match fs.load_inode(file_ref.inode) {
+        Ok(i) => i,
+        Err(_) => return -1,
+    };
+
+    fs.for_each_dir_entry(&inode, |name, entry_inode, file_type| {
+        cb(name.as_ptr(), name.len(), entry_inode, file_type, ctx);
+    });
+
+    0
+}
+
+/// Get filesystem statistics
+extern "C" fn ext2_mod_get_stats(handle: Ext2Handle, stats: *mut Ext2Stats) -> i32 {
+    if handle.is_null() || stats.is_null() {
+        return -1;
+    }
+
+    let fs = unsafe { &*(handle as *const Ext2Filesystem) };
+    
+    unsafe {
+        (*stats).inodes_count = fs.sb_inodes_count;
+        (*stats).blocks_count = fs.sb_blocks_count;
+        (*stats).free_blocks_count = 0; // Would need to parse group descriptors
+        (*stats).free_inodes_count = 0;
+        (*stats).block_size = fs.block_size as u32;
+        (*stats).blocks_per_group = fs.blocks_per_group;
+        (*stats).inodes_per_group = fs.inodes_per_group;
+        (*stats).mtime = 0;
+    }
+
+    0
 }
 
 // ============================================================================
