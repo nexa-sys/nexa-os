@@ -384,7 +384,14 @@ pub fn lookup(path: &str) -> Option<FileRefHandle> {
         gid: 0,
     };
 
-    // CRITICAL FIX: Switch to kernel CR3 before calling into ext2 module
+    // CRITICAL FIX: Copy path to kernel stack buffer BEFORE switching CR3
+    // The path may point to user-space memory which is not accessible under kernel CR3
+    const PATH_BUF_SIZE: usize = 256;
+    let mut path_buf: [u8; PATH_BUF_SIZE] = [0u8; PATH_BUF_SIZE];
+    let path_len = path.len().min(PATH_BUF_SIZE);
+    path_buf[..path_len].copy_from_slice(&path.as_bytes()[..path_len]);
+
+    // Switch to kernel CR3 before calling into ext2 module
     let kernel_cr3 = crate::paging::kernel_pml4_phys();
     let saved_cr3: u64;
     unsafe {
@@ -395,7 +402,7 @@ pub fn lookup(path: &str) -> Option<FileRefHandle> {
         }
     }
 
-    let ret = lookup_fn(handle, path.as_ptr(), path.len(), &mut file_ref);
+    let ret = lookup_fn(handle, path_buf.as_ptr(), path_len, &mut file_ref);
     
     // Restore original CR3
     unsafe {
@@ -482,15 +489,24 @@ where
     };
     drop(ops);
 
+    // CRITICAL FIX: Copy path to kernel stack buffer BEFORE switching CR3
+    // The path may point to user-space memory which is not accessible under kernel CR3
+    const PATH_BUF_SIZE: usize = 256;
+    let mut path_buf: [u8; PATH_BUF_SIZE] = [0u8; PATH_BUF_SIZE];
+    let path_len = path.len().min(PATH_BUF_SIZE);
+    path_buf[..path_len].copy_from_slice(&path.as_bytes()[..path_len]);
+
     // Create a closure context
     struct CallbackContext<'a, F: FnMut(&str, Metadata)> {
         callback: &'a mut F,
+        saved_cr3: u64,
+        kernel_cr3: u64,
     }
 
     extern "C" fn dir_entry_trampoline<F: FnMut(&str, Metadata)>(
         name: *const u8,
         name_len: usize,
-        inode: u32,
+        _inode: u32,
         file_type: u8,
         ctx: *mut u8,
     ) {
@@ -500,42 +516,83 @@ where
 
         unsafe {
             let ctx = &mut *(ctx as *mut CallbackContext<F>);
+            
+            // Copy name to a local buffer while still in kernel CR3
+            let mut name_copy: [u8; 256] = [0u8; 256];
+            let name_len = name_len.min(255);
             let name_slice = core::slice::from_raw_parts(name, name_len);
-            if let Ok(name_str) = core::str::from_utf8(name_slice) {
-                // Skip . and ..
-                if name_str == "." || name_str == ".." {
-                    return;
-                }
-
-                // Create basic metadata from file_type
-                let ft = match file_type {
-                    2 => FileType::Directory,
-                    1 => FileType::Regular,
-                    7 => FileType::Symlink,
-                    3 => FileType::Character,
-                    4 => FileType::Block,
-                    5 => FileType::Fifo,
-                    6 => FileType::Socket,
-                    _ => FileType::Unknown(0),
-                };
-
-                let meta = Metadata::empty().with_type(ft);
-                (ctx.callback)(name_str, meta);
+            name_copy[..name_len].copy_from_slice(name_slice);
+            
+            // Parse name as UTF-8
+            let name_str = match core::str::from_utf8(&name_copy[..name_len]) {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+            
+            // Skip . and ..
+            if name_str == "." || name_str == ".." {
+                return;
             }
+
+            // Create basic metadata from file_type
+            let ft = match file_type {
+                2 => FileType::Directory,
+                1 => FileType::Regular,
+                7 => FileType::Symlink,
+                3 => FileType::Character,
+                4 => FileType::Block,
+                5 => FileType::Fifo,
+                6 => FileType::Socket,
+                _ => FileType::Unknown(0),
+            };
+
+            let meta = Metadata::empty().with_type(ft);
+            
+            // Temporarily restore user CR3 to call the callback
+            // which may write to user-space memory
+            if ctx.saved_cr3 != ctx.kernel_cr3 {
+                core::arch::asm!("mov cr3, {}", in(reg) ctx.saved_cr3, options(nostack));
+            }
+            
+            (ctx.callback)(name_str, meta);
+            
+            // Switch back to kernel CR3 for the next iteration
+            if ctx.saved_cr3 != ctx.kernel_cr3 {
+                core::arch::asm!("mov cr3, {}", in(reg) ctx.kernel_cr3, options(nostack));
+            }
+        }
+    }
+
+    // Switch to kernel CR3 before calling into ext2 module
+    let kernel_cr3 = crate::paging::kernel_pml4_phys();
+    let saved_cr3: u64;
+    unsafe {
+        core::arch::asm!("mov {}, cr3", out(reg) saved_cr3, options(nomem, nostack));
+        if saved_cr3 != kernel_cr3 {
+            core::arch::asm!("mov cr3, {}", in(reg) kernel_cr3, options(nostack));
         }
     }
 
     let mut ctx = CallbackContext {
         callback: &mut callback,
+        saved_cr3,
+        kernel_cr3,
     };
 
     list_fn(
         handle,
-        path.as_ptr(),
-        path.len(),
+        path_buf.as_ptr(),
+        path_len,
         dir_entry_trampoline::<F>,
         &mut ctx as *mut _ as *mut u8,
     );
+
+    // Restore original CR3
+    unsafe {
+        if saved_cr3 != kernel_cr3 {
+            core::arch::asm!("mov cr3, {}", in(reg) saved_cr3, options(nostack));
+        }
+    }
 }
 
 /// Get filesystem metadata for a path
