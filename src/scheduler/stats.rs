@@ -154,3 +154,127 @@ pub fn get_load_average() -> (f32, f32, f32) {
     // In a real implementation, these would be exponentially-weighted moving averages
     (load, load, load)
 }
+
+/// Per-CPU statistics for monitoring
+#[derive(Clone, Copy, Debug)]
+pub struct PerCpuStats {
+    pub cpu_id: u16,
+    pub numa_node: u32,
+    pub local_ticks: u64,
+    pub context_switches: u64,
+    pub voluntary_switches: u64,
+    pub preemptions: u64,
+    pub interrupts_handled: u64,
+    pub syscalls_handled: u64,
+    pub ipi_received: u64,
+    pub ipi_sent: u64,
+    pub idle_ns: u64,
+    pub busy_ns: u64,
+    pub is_idle: bool,
+    pub in_interrupt: bool,
+    pub preempt_disabled: bool,
+    pub current_pid: u32,
+    pub runqueue_len: usize,
+}
+
+impl PerCpuStats {
+    pub const fn empty() -> Self {
+        Self {
+            cpu_id: 0,
+            numa_node: 0,
+            local_ticks: 0,
+            context_switches: 0,
+            voluntary_switches: 0,
+            preemptions: 0,
+            interrupts_handled: 0,
+            syscalls_handled: 0,
+            ipi_received: 0,
+            ipi_sent: 0,
+            idle_ns: 0,
+            busy_ns: 0,
+            is_idle: true,
+            in_interrupt: false,
+            preempt_disabled: false,
+            current_pid: 0,
+            runqueue_len: 0,
+        }
+    }
+}
+
+/// Get per-CPU statistics for a specific CPU
+pub fn get_percpu_stats(cpu_id: usize) -> Option<PerCpuStats> {
+    // Use the safe get_cpu_data function from smp module
+    let cpu_data = crate::smp::get_cpu_data(cpu_id)?;
+    
+    // Get scheduler data if available
+    let rq_len = crate::scheduler::get_percpu_sched(cpu_id)
+        .map(|s| s.run_queue.lock().len())
+        .unwrap_or(0);
+    
+    Some(PerCpuStats {
+        cpu_id: cpu_data.cpu_id,
+        numa_node: cpu_data.numa_node,
+        local_ticks: cpu_data.local_tick.load(Ordering::Relaxed),
+        context_switches: cpu_data.context_switches.load(Ordering::Relaxed),
+        voluntary_switches: cpu_data.voluntary_switches.load(Ordering::Relaxed),
+        preemptions: cpu_data.preemptions.load(Ordering::Relaxed),
+        interrupts_handled: cpu_data.interrupts_handled.load(Ordering::Relaxed),
+        syscalls_handled: cpu_data.syscalls_handled.load(Ordering::Relaxed),
+        ipi_received: cpu_data.ipi_received.load(Ordering::Relaxed),
+        ipi_sent: cpu_data.ipi_sent.load(Ordering::Relaxed),
+        idle_ns: cpu_data.idle_time.load(Ordering::Relaxed),
+        busy_ns: cpu_data.busy_time.load(Ordering::Relaxed),
+        is_idle: false, // Would need is_idle from PerCpuSchedData
+        in_interrupt: cpu_data.in_interrupt.load(Ordering::Relaxed),
+        preempt_disabled: cpu_data.preempt_count.load(Ordering::Relaxed) > 0,
+        current_pid: cpu_data.current_pid.load(Ordering::Relaxed),
+        runqueue_len: rq_len,
+    })
+}
+
+/// Print per-CPU statistics for all CPUs
+pub fn list_percpu_stats() {
+    let cpu_count = crate::smp::cpu_count();
+    let online = crate::smp::online_cpus();
+    
+    crate::kinfo!("=== Per-CPU Statistics ({}/{} CPUs online) ===", online, cpu_count);
+    crate::kinfo!(
+        "{:<4} {:<4} {:<8} {:<10} {:<8} {:<8} {:<8} {:<8} {:<6} {:<6} Flags",
+        "CPU", "NUMA", "Ticks", "CtxSwitch", "Preempt", "Intrs", "Syscalls", "IPIs", "RQ", "PID"
+    );
+    
+    for cpu in 0..cpu_count {
+        if let Some(stats) = get_percpu_stats(cpu) {
+            // Build flags without format! macro
+            let int_flag: &str = if stats.in_interrupt { "I" } else { "-" };
+            let pre_flag: &str = if stats.preempt_disabled { "P" } else { "-" };
+            
+            crate::kinfo!(
+                "{:<4} {:<4} {:<8} {:<10} {:<8} {:<8} {:<8} {:<8} {:<6} {:<6} {}{}",
+                stats.cpu_id,
+                stats.numa_node,
+                stats.local_ticks,
+                stats.context_switches,
+                stats.preemptions,
+                stats.interrupts_handled,
+                stats.syscalls_handled,
+                stats.ipi_received,
+                stats.runqueue_len,
+                stats.current_pid,
+                int_flag,
+                pre_flag
+            );
+        } else {
+            crate::kinfo!("{:<4} (offline)", cpu);
+        }
+    }
+    
+    // Print global scheduler stats as well
+    let stats = SCHED_STATS.lock();
+    crate::kinfo!("=== Global Scheduler Statistics ===");
+    crate::kinfo!("Total context switches: {}", stats.total_context_switches);
+    crate::kinfo!("Total preemptions: {}", stats.total_preemptions);
+    crate::kinfo!("Total voluntary switches: {}", stats.total_voluntary_switches);
+    crate::kinfo!("Load balance operations: {}", stats.load_balance_count);
+    crate::kinfo!("Process migrations: {}", stats.migration_count);
+}

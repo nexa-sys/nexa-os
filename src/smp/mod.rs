@@ -3,8 +3,18 @@
 //! This module provides multi-core CPU support for NexaOS, including:
 //! - AP (Application Processor) startup and initialization
 //! - IPI (Inter-Processor Interrupt) mechanisms
-//! - Per-CPU data structures
+//! - Per-CPU data structures and isolation
 //! - CPU identification and management
+//! - Preemption control and interrupt context tracking
+//!
+//! # Per-CPU Isolation
+//!
+//! Each CPU has dedicated resources to minimize lock contention:
+//! - Per-CPU GDT/TSS for independent segment handling
+//! - Per-CPU IDT for interrupt isolation
+//! - Per-CPU run queues for scheduler scalability
+//! - Per-CPU statistics (context switches, interrupts, etc.)
+//! - Per-CPU preemption and interrupt state
 //!
 //! # Module Organization
 //!
@@ -36,7 +46,17 @@ pub use ipi::{IPI_CALL_FUNCTION, IPI_HALT, IPI_RESCHEDULE, IPI_TLB_FLUSH};
 pub use ipi::{send_ipi_broadcast, send_reschedule_ipi, send_tlb_flush_ipi_all};
 
 // Re-export CPU functions
-pub use cpu::{cpu_count, current_cpu_data, current_cpu_id, current_gs_data_ptr, gs_data_ptr_for_cpu, online_cpus};
+pub use cpu::{cpu_count, current_cpu_data, current_cpu_id, current_gs_data_ptr, get_cpu_data, gs_data_ptr_for_cpu, online_cpus};
+
+// Re-export per-CPU preemption and interrupt state management
+pub use cpu::{
+    preempt_disable, preempt_enable, preempt_disabled,
+    in_interrupt, can_preempt,
+    enter_interrupt, leave_interrupt,
+    set_need_resched, clear_need_resched, need_resched,
+    record_interrupt, record_syscall,
+    current_numa_node,
+};
 
 // Re-export initialization
 pub use init::init;

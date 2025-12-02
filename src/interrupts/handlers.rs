@@ -2,6 +2,13 @@
 //!
 //! This module contains handlers for hardware interrupts (IRQs) from the PIC,
 //! including timer, keyboard, and spurious interrupt handlers.
+//!
+//! ## Per-CPU Interrupt Tracking
+//!
+//! All interrupt handlers use per-CPU state to track:
+//! - Interrupt context (to disable preemption)
+//! - Interrupt statistics (for load monitoring)
+//! - Reschedule requests (for deferred scheduling)
 
 use pic8259::ChainedPics;
 use spin;
@@ -15,30 +22,51 @@ pub static PICS: spin::Mutex<ChainedPics> =
     spin::Mutex::new(unsafe { ChainedPics::new(PIC_1_OFFSET, PIC_2_OFFSET) });
 
 /// Timer interrupt handler (IRQ0, vector 32)
+/// 
+/// This is the main scheduling tick for BSP. It:
+/// 1. Marks the CPU as in interrupt context
+/// 2. Updates per-CPU tick counter
+/// 3. Checks for preemption
+/// 4. Triggers reschedule if needed
 pub extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
+    // Mark entering interrupt context (disables preemption)
+    crate::smp::enter_interrupt();
+    
     // Send EOI to PIC first to allow nested interrupts
     unsafe {
         PICS.lock().notify_end_of_interrupt(PIC_1_OFFSET);
+    }
+    
+    // Record interrupt on per-CPU statistics
+    crate::smp::record_interrupt();
+    
+    // Update per-CPU local tick counter
+    if let Some(cpu_data) = crate::smp::current_cpu_data() {
+        cpu_data.local_tick.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     }
 
     // Timer tick for scheduler (1ms granularity)
     const TIMER_TICK_MS: u64 = 1;
 
     // Check if current process should be preempted
-    if crate::scheduler::tick(TIMER_TICK_MS) {
+    let should_resched = crate::scheduler::tick(TIMER_TICK_MS);
+    
+    // Mark leaving interrupt context and check for pending reschedule
+    let resched_pending = crate::smp::leave_interrupt();
+    
+    if should_resched || resched_pending {
         // Time slice expired or higher priority process ready
         // Trigger rescheduling via do_schedule()
-        // Note: This is safe because we're already in an interrupt context
-        // and the scheduler will handle context switching properly
         crate::kdebug!("Timer: Triggering preemptive reschedule");
-
-        // Implement full preemptive scheduling via timer interrupt
         crate::scheduler::do_schedule_from_interrupt();
     }
 }
 
 /// Keyboard interrupt handler (IRQ1, vector 33)
 pub extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
+    // Mark entering interrupt context
+    crate::smp::enter_interrupt();
+    
     let mut port = Port::new(0x60);
     let scancode: u8 = unsafe { port.read() };
 
@@ -48,6 +76,10 @@ pub extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: Interrupt
     unsafe {
         PICS.lock().notify_end_of_interrupt(PIC_1_OFFSET + 1);
     }
+    
+    // Record interrupt and leave context
+    crate::smp::record_interrupt();
+    let _ = crate::smp::leave_interrupt();
 }
 
 /// Macro to define spurious IRQ handlers that mask the interrupt line
@@ -84,16 +116,34 @@ define_spurious_irq!(spurious_irq4_handler, PIC_1_OFFSET + 4);
 pub const LAPIC_TIMER_VECTOR: u8 = 0xEC;
 
 /// LAPIC timer interrupt handler for AP cores
-/// This provides the timer tick for scheduling on non-BSP cores
+/// 
+/// This provides the timer tick for scheduling on non-BSP cores.
+/// Uses per-CPU state tracking for interrupt context and statistics.
 pub extern "x86-interrupt" fn lapic_timer_handler(_stack_frame: InterruptStackFrame) {
+    // Mark entering interrupt context (disables preemption)
+    crate::smp::enter_interrupt();
+    
     // Send EOI to LAPIC first
     crate::lapic::send_eoi();
+    
+    // Record interrupt on per-CPU statistics
+    crate::smp::record_interrupt();
+    
+    // Update per-CPU local tick counter
+    if let Some(cpu_data) = crate::smp::current_cpu_data() {
+        cpu_data.local_tick.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    }
 
     // Timer tick for scheduler (1ms granularity)
     const TIMER_TICK_MS: u64 = 1;
 
     // Check if current process should be preempted
-    if crate::scheduler::tick(TIMER_TICK_MS) {
+    let should_resched = crate::scheduler::tick(TIMER_TICK_MS);
+    
+    // Mark leaving interrupt context and check for pending reschedule
+    let resched_pending = crate::smp::leave_interrupt();
+    
+    if should_resched || resched_pending {
         crate::kdebug!("LAPIC Timer: Triggering preemptive reschedule on AP");
         crate::scheduler::do_schedule_from_interrupt();
     }

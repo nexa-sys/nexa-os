@@ -15,7 +15,7 @@
 //! This isolation ensures true SMP safety without shared mutable state contention.
 
 use core::mem::MaybeUninit;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 
 use crate::acpi;
 
@@ -51,32 +51,122 @@ impl PerCpuGsData {
 }
 
 /// Per-CPU runtime data - isolated to each CPU to avoid cache line contention
+/// 
+/// This structure is carefully cache-line aligned (64 bytes) to prevent
+/// false sharing between CPUs. Each CPU has its own dedicated instance.
+/// 
+/// ## Memory Layout
+/// The structure is split into hot (frequently accessed) and cold fields:
+/// - First cache line: Identification and frequently updated atomics
+/// - Second cache line: Statistics and less frequently accessed data
 #[repr(C, align(64))] // Cache line aligned to prevent false sharing
 pub struct CpuData {
-    pub cpu_id: u16,  // Supports up to 1024 CPUs
+    // === First cache line: Hot data (frequently accessed) ===
+    pub cpu_id: u16,              // Supports up to 1024 CPUs
     pub apic_id: u32,
-    pub current_pid: AtomicU32, // Currently running process
-    pub idle_time: AtomicU64,   // Idle time in ticks
-    pub busy_time: AtomicU64,   // Busy time in ticks
+    pub numa_node: u32,           // NUMA node this CPU belongs to
+    pub current_pid: AtomicU32,   // Currently running process
     pub reschedule_pending: AtomicBool,
     pub tlb_flush_pending: AtomicBool,
+    pub in_interrupt: AtomicBool, // Whether CPU is handling interrupt
+    pub preempt_count: AtomicU32, // Preemption disable count (0 = preemptible)
+    
+    // Local timer state
+    pub local_tick: AtomicU64,    // Per-CPU tick counter
+    pub last_tick_tsc: AtomicU64, // TSC value at last tick (for accurate timing)
+    
+    // === Second cache line: Statistics (less frequently accessed) ===
+    pub idle_time: AtomicU64,     // Idle time in nanoseconds
+    pub busy_time: AtomicU64,     // Busy time in nanoseconds
     pub context_switches: AtomicU64,
+    pub voluntary_switches: AtomicU64,
+    pub preemptions: AtomicU64,
     pub interrupts_handled: AtomicU64,
+    pub syscalls_handled: AtomicU64,
+    pub ipi_received: AtomicU64,  // IPIs received on this CPU
+    pub ipi_sent: AtomicU64,      // IPIs sent from this CPU
 }
 
 impl CpuData {
-    pub fn new(cpu_id: u16, apic_id: u32) -> Self {
+    pub const fn new(cpu_id: u16, apic_id: u32) -> Self {
         Self {
             cpu_id,
             apic_id,
+            numa_node: 0,
             current_pid: AtomicU32::new(0),
-            idle_time: AtomicU64::new(0),
-            busy_time: AtomicU64::new(0),
             reschedule_pending: AtomicBool::new(false),
             tlb_flush_pending: AtomicBool::new(false),
+            in_interrupt: AtomicBool::new(false),
+            preempt_count: AtomicU32::new(0),
+            local_tick: AtomicU64::new(0),
+            last_tick_tsc: AtomicU64::new(0),
+            idle_time: AtomicU64::new(0),
+            busy_time: AtomicU64::new(0),
             context_switches: AtomicU64::new(0),
+            voluntary_switches: AtomicU64::new(0),
+            preemptions: AtomicU64::new(0),
             interrupts_handled: AtomicU64::new(0),
+            syscalls_handled: AtomicU64::new(0),
+            ipi_received: AtomicU64::new(0),
+            ipi_sent: AtomicU64::new(0),
         }
+    }
+    
+    /// Increment preempt_count to disable preemption on this CPU
+    #[inline]
+    pub fn preempt_disable(&self) {
+        self.preempt_count.fetch_add(1, Ordering::Relaxed);
+    }
+    
+    /// Decrement preempt_count, returns true if preemption is now enabled
+    #[inline]
+    pub fn preempt_enable(&self) -> bool {
+        let prev = self.preempt_count.fetch_sub(1, Ordering::Relaxed);
+        prev == 1 // Was 1, now 0 = preemption enabled
+    }
+    
+    /// Check if preemption is currently disabled
+    #[inline]
+    pub fn preempt_disabled(&self) -> bool {
+        self.preempt_count.load(Ordering::Relaxed) > 0
+    }
+    
+    /// Check if this CPU is currently handling an interrupt
+    #[inline]
+    pub fn in_interrupt_context(&self) -> bool {
+        self.in_interrupt.load(Ordering::Relaxed)
+    }
+    
+    /// Enter interrupt context
+    #[inline]
+    pub fn enter_interrupt(&self) {
+        self.in_interrupt.store(true, Ordering::Release);
+        self.preempt_disable(); // Disable preemption during interrupt
+    }
+    
+    /// Leave interrupt context, returns true if reschedule is needed
+    #[inline]
+    pub fn leave_interrupt(&self) -> bool {
+        self.preempt_enable();
+        self.in_interrupt.store(false, Ordering::Release);
+        
+        // Check if reschedule was requested during interrupt
+        self.reschedule_pending.load(Ordering::Acquire)
+    }
+    
+    /// Record a context switch
+    pub fn record_context_switch(&self, voluntary: bool) {
+        self.context_switches.fetch_add(1, Ordering::Relaxed);
+        if voluntary {
+            self.voluntary_switches.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.preemptions.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    
+    /// Set the NUMA node for this CPU
+    pub fn set_numa_node(&mut self, node: u32) {
+        self.numa_node = node;
     }
 }
 

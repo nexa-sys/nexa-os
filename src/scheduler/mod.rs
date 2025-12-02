@@ -10,10 +10,19 @@
 //! - **Lag**: Measures fairness (ideal_time - actual_time)
 //! - **Eligibility**: Only processes with lag >= 0 can preempt
 //!
+//! ## Per-CPU Architecture
+//!
+//! The scheduler uses per-CPU run queues to minimize lock contention:
+//! - Each CPU maintains its own run queue of runnable processes
+//! - Processes are assigned to CPUs based on affinity and load balancing
+//! - Per-CPU statistics track context switches, idle time, etc.
+//! - IPI is used for cross-CPU rescheduling requests
+//!
 //! ## Module Organization
 //!
 //! - `types`: Type definitions (SchedPolicy, ProcessEntry, EEVDF constants)
 //! - `table`: Process table and global state management
+//! - `percpu`: Per-CPU run queues and scheduler state
 //! - `process`: Process management functions (add, remove, state changes)
 //! - `priority`: EEVDF core algorithms (vruntime, deadline, eligibility)
 //! - `core`: Main scheduling loop (schedule, tick, do_schedule)
@@ -25,6 +34,7 @@ extern crate alloc;
 
 mod context;
 mod core;
+pub mod percpu;
 mod priority;
 mod process;
 mod smp;
@@ -68,7 +78,16 @@ pub use smp::{
     get_numa_preferred_node, set_numa_policy, set_numa_preferred_node,
 };
 
+// Re-export per-CPU scheduler functions
+pub use percpu::{
+    init_percpu_sched, get_percpu_sched, current_percpu_sched,
+    get_cpu_load, find_least_loaded_cpu, balance_runqueues,
+    set_need_resched, check_need_resched,
+};
+
 // Re-export statistics functions
 pub use stats::{
     detect_potential_deadlocks, get_load_average, get_process_counts, get_stats, list_processes,
+    // Per-CPU stats
+    PerCpuStats, get_percpu_stats, list_percpu_stats,
 };

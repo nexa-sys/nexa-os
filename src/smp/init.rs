@@ -277,6 +277,13 @@ unsafe fn init_inner() -> Result<(), &'static str> {
         CPU_TOTAL.load(Ordering::SeqCst)
     );
 
+    // Initialize per-CPU scheduler data for all online CPUs
+    crate::kinfo!("SMP: Initializing per-CPU scheduler data...");
+    for cpu in 0..count {
+        crate::scheduler::init_percpu_sched(cpu);
+    }
+    crate::kinfo!("SMP: Per-CPU scheduler initialization complete");
+
     Ok(())
 }
 

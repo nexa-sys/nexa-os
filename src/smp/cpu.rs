@@ -59,6 +59,24 @@ pub fn current_cpu_data() -> Option<&'static CpuData> {
     }
 }
 
+/// Get per-CPU data for a specific CPU (read-only access)
+/// 
+/// Returns the CpuData for the specified CPU index if it exists.
+/// This allows reading per-CPU statistics from any CPU.
+/// 
+/// # Arguments
+/// * `cpu_id` - The CPU index (0-based)
+pub fn get_cpu_data(cpu_id: usize) -> Option<&'static CpuData> {
+    if !SMP_READY.load(Ordering::Acquire) && cpu_id != 0 {
+        return None;
+    }
+    if cpu_id < CPU_TOTAL.load(Ordering::Relaxed) {
+        unsafe { Some(cpu_data(cpu_id)) }
+    } else {
+        None
+    }
+}
+
 /// Count the number of CPUs currently online
 /// Uses trampoline status array which is reliably accessible from all cores
 pub fn current_online() -> usize {
@@ -140,4 +158,146 @@ pub fn gs_data_ptr_for_cpu(cpu_index: usize) -> *mut u64 {
             }
         }
     }
+}
+
+// ============================================================================
+// Per-CPU Preemption Control
+// ============================================================================
+
+/// Disable preemption on current CPU
+/// 
+/// Increments the preempt_count to prevent context switches.
+/// Call preempt_enable() when done with the critical section.
+/// 
+/// # Note
+/// This is a counting semaphore - each disable must be matched with an enable.
+#[inline]
+pub fn preempt_disable() {
+    if let Some(data) = current_cpu_data() {
+        data.preempt_disable();
+    }
+}
+
+/// Enable preemption on current CPU
+/// 
+/// Decrements the preempt_count. When it reaches zero, checks if
+/// rescheduling is needed.
+/// 
+/// # Returns
+/// true if preemption is now enabled and rescheduling might be needed
+#[inline]
+pub fn preempt_enable() -> bool {
+    if let Some(data) = current_cpu_data() {
+        data.preempt_enable()
+    } else {
+        false
+    }
+}
+
+/// Check if preemption is currently disabled on this CPU
+#[inline]
+pub fn preempt_disabled() -> bool {
+    current_cpu_data()
+        .map(|d| d.preempt_disabled())
+        .unwrap_or(false)
+}
+
+/// Check if current CPU is in interrupt context
+#[inline]
+pub fn in_interrupt() -> bool {
+    current_cpu_data()
+        .map(|d| d.in_interrupt_context())
+        .unwrap_or(false)
+}
+
+/// Check if current code can be preempted
+/// 
+/// Returns false if:
+/// - Preemption is disabled (preempt_count > 0)
+/// - CPU is in interrupt context
+/// - Interrupts are disabled
+#[inline]
+pub fn can_preempt() -> bool {
+    // Check if interrupts are enabled
+    let interrupts_enabled = x86_64::instructions::interrupts::are_enabled();
+    
+    // Check CPU state
+    let cpu_allows = current_cpu_data()
+        .map(|d| !d.preempt_disabled() && !d.in_interrupt_context())
+        .unwrap_or(true); // If no CPU data, assume preemptible (during early boot)
+    
+    interrupts_enabled && cpu_allows
+}
+
+/// Mark current CPU as entering interrupt context
+/// 
+/// Called at the start of interrupt handlers.
+/// This disables preemption and marks the interrupt state.
+#[inline]
+pub fn enter_interrupt() {
+    if let Some(data) = current_cpu_data() {
+        data.enter_interrupt();
+    }
+}
+
+/// Mark current CPU as leaving interrupt context
+/// 
+/// Called at the end of interrupt handlers.
+/// Returns true if rescheduling was requested during the interrupt.
+#[inline]
+pub fn leave_interrupt() -> bool {
+    current_cpu_data()
+        .map(|d| d.leave_interrupt())
+        .unwrap_or(false)
+}
+
+/// Request a reschedule on current CPU
+/// 
+/// Sets the reschedule_pending flag. The actual reschedule will happen
+/// when returning from interrupt context or when preemption is re-enabled.
+#[inline]
+pub fn set_need_resched() {
+    if let Some(data) = current_cpu_data() {
+        data.reschedule_pending.store(true, Ordering::Release);
+    }
+}
+
+/// Clear the reschedule request on current CPU
+#[inline]
+pub fn clear_need_resched() {
+    if let Some(data) = current_cpu_data() {
+        data.reschedule_pending.store(false, Ordering::Release);
+    }
+}
+
+/// Check if reschedule is pending on current CPU
+#[inline]
+pub fn need_resched() -> bool {
+    current_cpu_data()
+        .map(|d| d.reschedule_pending.load(Ordering::Acquire))
+        .unwrap_or(false)
+}
+
+/// Record interrupt handled on current CPU
+#[inline]
+pub fn record_interrupt() {
+    if let Some(data) = current_cpu_data() {
+        data.interrupts_handled.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Record syscall handled on current CPU
+#[inline]
+pub fn record_syscall() {
+    if let Some(data) = current_cpu_data() {
+        data.syscalls_handled.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Get NUMA node for current CPU
+#[inline]
+pub fn current_numa_node() -> u32 {
+    current_cpu_data()
+        .map(|d| d.numa_node)
+        .unwrap_or(0)
 }
