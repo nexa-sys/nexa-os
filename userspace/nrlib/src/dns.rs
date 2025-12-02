@@ -111,6 +111,12 @@ pub struct DnsQuery {
     length: usize,
 }
 
+impl Default for DnsQuery {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DnsQuery {
     pub fn new() -> Self {
         Self {
@@ -121,19 +127,33 @@ impl DnsQuery {
 
     /// Build a DNS query packet
     pub fn build(&mut self, id: u16, domain: &str, qtype: QType) -> Result<&[u8], &'static str> {
+        // Validate domain length (max 253 chars for full domain name)
+        if domain.is_empty() {
+            return Err("Domain name is empty");
+        }
         if domain.len() > 253 {
             return Err("Domain name too long");
         }
 
-        // DNS header
-        let header = DnsHeader::new_query(id, true);
-        unsafe {
-            let header_bytes = core::slice::from_raw_parts(
-                &header as *const DnsHeader as *const u8,
-                DnsHeader::SIZE,
-            );
-            self.buffer[..DnsHeader::SIZE].copy_from_slice(header_bytes);
+        // Validate domain contains only valid characters
+        for b in domain.bytes() {
+            if !matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'.' | b'_') {
+                return Err("Invalid character in domain name");
+            }
         }
+
+        // Reset buffer
+        self.buffer = [0u8; 512];
+        self.length = 0;
+
+        // DNS header - manually serialize to avoid alignment issues
+        let header = DnsHeader::new_query(id, true);
+        self.buffer[0..2].copy_from_slice(&header.id.to_be_bytes());
+        self.buffer[2..4].copy_from_slice(&header.flags.to_be_bytes());
+        self.buffer[4..6].copy_from_slice(&header.qdcount.to_be_bytes());
+        self.buffer[6..8].copy_from_slice(&header.ancount.to_be_bytes());
+        self.buffer[8..10].copy_from_slice(&header.nscount.to_be_bytes());
+        self.buffer[10..12].copy_from_slice(&header.arcount.to_be_bytes());
         self.length = DnsHeader::SIZE;
 
         // Encode domain name
@@ -152,14 +172,31 @@ impl DnsQuery {
 
     /// Encode domain name in DNS format (length-prefixed labels)
     fn encode_domain(&mut self, domain: &str) -> Result<(), &'static str> {
+        // Handle trailing dot (FQDN notation)
+        let domain = domain.trim_end_matches('.');
+        
+        if domain.is_empty() {
+            // Root domain - just the null terminator
+            if self.length >= 512 {
+                return Err("Buffer overflow");
+            }
+            self.buffer[self.length] = 0;
+            self.length += 1;
+            return Ok(());
+        }
+
         for label in domain.split('.') {
             if label.is_empty() {
                 continue;
             }
             if label.len() > 63 {
-                return Err("Label too long");
+                return Err("Label too long (max 63 characters)");
             }
-            if self.length + 1 + label.len() > 512 {
+            // Check label doesn't start or end with hyphen
+            if label.starts_with('-') || label.ends_with('-') {
+                return Err("Label cannot start or end with hyphen");
+            }
+            if self.length + 1 + label.len() > 511 {
                 return Err("Buffer overflow");
             }
 
@@ -427,15 +464,123 @@ mod tests {
     }
 
     #[test]
+    fn test_dns_query_default() {
+        let query = DnsQuery::default();
+        assert_eq!(query.length, 0);
+    }
+
+    #[test]
     fn test_domain_encoding() {
         let mut query = DnsQuery::new();
+        query.length = DnsHeader::SIZE; // Skip header
         query.encode_domain("example.com").unwrap();
 
+        let offset = DnsHeader::SIZE;
         // Check encoded format: 7example3com0
-        assert_eq!(query.buffer[0], 7); // "example"
-        assert_eq!(&query.buffer[1..8], b"example");
-        assert_eq!(query.buffer[8], 3); // "com"
-        assert_eq!(&query.buffer[9..12], b"com");
-        assert_eq!(query.buffer[12], 0); // null terminator
+        assert_eq!(query.buffer[offset], 7); // "example"
+        assert_eq!(&query.buffer[offset + 1..offset + 8], b"example");
+        assert_eq!(query.buffer[offset + 8], 3); // "com"
+        assert_eq!(&query.buffer[offset + 9..offset + 12], b"com");
+        assert_eq!(query.buffer[offset + 12], 0); // null terminator
+    }
+
+    #[test]
+    fn test_domain_encoding_trailing_dot() {
+        let mut query = DnsQuery::new();
+        query.length = DnsHeader::SIZE;
+        query.encode_domain("example.com.").unwrap();
+
+        let offset = DnsHeader::SIZE;
+        assert_eq!(query.buffer[offset], 7); // "example"
+        assert_eq!(&query.buffer[offset + 1..offset + 8], b"example");
+        assert_eq!(query.buffer[offset + 8], 3); // "com"
+    }
+
+    #[test]
+    fn test_domain_too_long() {
+        let mut query = DnsQuery::new();
+        let long_domain = "a".repeat(254);
+        assert!(query.build(0x1234, &long_domain, QType::A).is_err());
+    }
+
+    #[test]
+    fn test_empty_domain() {
+        let mut query = DnsQuery::new();
+        assert!(query.build(0x1234, "", QType::A).is_err());
+    }
+
+    #[test]
+    fn test_label_too_long() {
+        let mut query = DnsQuery::new();
+        let long_label = "a".repeat(64) + ".com";
+        assert!(query.build(0x1234, &long_label, QType::A).is_err());
+    }
+
+    #[test]
+    fn test_invalid_characters() {
+        let mut query = DnsQuery::new();
+        assert!(query.build(0x1234, "exam ple.com", QType::A).is_err());
+        assert!(query.build(0x1234, "example@.com", QType::A).is_err());
+    }
+
+    #[test]
+    fn test_hyphen_validation() {
+        let mut query = DnsQuery::new();
+        // Hyphen in middle is OK
+        assert!(query.build(0x1234, "exam-ple.com", QType::A).is_ok());
+        // Hyphen at start of label is not OK
+        assert!(query.build(0x1234, "-example.com", QType::A).is_err());
+        // Hyphen at end of label is not OK
+        assert!(query.build(0x1234, "example-.com", QType::A).is_err());
+    }
+
+    #[test]
+    fn test_dns_header() {
+        let header = DnsHeader::new_query(0x1234, true);
+        assert_eq!(header.transaction_id(), 0x1234);
+        assert!(!header.is_response()); // QR bit should be 0 for query
+        assert_eq!(header.rcode(), 0);
+        assert_eq!(header.question_count(), 1);
+        assert_eq!(header.answer_count(), 0);
+    }
+
+    #[test]
+    fn test_resolver_config() {
+        let mut config = ResolverConfig::new();
+        assert_eq!(config.nameserver_count, 0);
+        assert_eq!(config.timeout_ms, 5000);
+        assert_eq!(config.attempts, 2);
+
+        config.add_nameserver([8, 8, 8, 8]).unwrap();
+        assert_eq!(config.nameserver_count, 1);
+        assert_eq!(config.nameservers[0], [8, 8, 8, 8]);
+
+        config.add_search_domain("example.com").unwrap();
+        assert_eq!(config.search_domain_count, 1);
+    }
+
+    #[test]
+    fn test_resolver_config_limits() {
+        let mut config = ResolverConfig::new();
+        
+        // Add max nameservers
+        config.add_nameserver([1, 1, 1, 1]).unwrap();
+        config.add_nameserver([8, 8, 8, 8]).unwrap();
+        config.add_nameserver([9, 9, 9, 9]).unwrap();
+        assert!(config.add_nameserver([1, 0, 0, 1]).is_err());
+
+        // Add max search domains
+        for i in 0..6 {
+            config.add_search_domain(&format!("d{}.com", i)).unwrap();
+        }
+        assert!(config.add_search_domain("extra.com").is_err());
+    }
+
+    #[test]
+    fn test_qtype_from_u16() {
+        assert_eq!(QType::from(1), QType::A);
+        assert_eq!(QType::from(5), QType::CNAME);
+        assert_eq!(QType::from(28), QType::AAAA);
+        assert_eq!(QType::from(999), QType::A); // Unknown defaults to A
     }
 }

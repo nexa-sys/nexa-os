@@ -7,11 +7,16 @@ use super::dns::{DnsQuery, QType, ResolverConfig};
 use super::socket::{socket, sendto, recvfrom, SockAddr, SockAddrIn, AF_INET, SOCK_STREAM, SOCK_DGRAM, parse_ipv4};
 use crate::get_system_dns_servers;
 use core::mem;
+use core::sync::atomic::{AtomicU16, Ordering};
 
 const MAX_HOSTNAME: usize = 256;
 const DNS_PORT: u16 = 53;
 const KERNEL_DNS_QUERY_CAP: usize = 3;
-const MAX_CNAME_DEPTH: u8 = 5;
+const MAX_CNAME_DEPTH: u8 = 8;
+const MAX_DNS_RETRIES: u8 = 3;
+
+/// Atomic counter for generating unique DNS transaction IDs
+static DNS_TRANSACTION_COUNTER: AtomicU16 = AtomicU16::new(0x1337);
 
 /// AI flags for getaddrinfo
 pub const AI_PASSIVE: i32 = 0x01;
@@ -259,11 +264,58 @@ impl Resolver {
 
     /// Perform DNS query for A record (hostname -> IPv4)
     /// Returns the first IPv4 address found in the response
+    /// Tries the hostname as-is first, then with search domains appended
     pub fn query_dns(&self, hostname: &str, nameserver_ip: [u8; 4]) -> Option<[u8; 4]> {
-        self.query_dns_recursive(hostname, nameserver_ip, 0)
+        // First try the hostname as given
+        if let Some(ip) = self.query_dns_with_retry(hostname, nameserver_ip, 0) {
+            return Some(ip);
+        }
+
+        // If hostname doesn't contain a dot, try appending search domains
+        if !hostname.contains('.') {
+            for i in 0..self.config.search_domain_count {
+                let domain = &self.config.search_domains[i];
+                // Find the actual length of the search domain
+                let domain_len = domain.iter().position(|&b| b == 0).unwrap_or(domain.len());
+                if domain_len == 0 {
+                    continue;
+                }
+
+                // Build FQDN: hostname.searchdomain
+                let mut fqdn_buf = [0u8; MAX_HOSTNAME];
+                let hostname_bytes = hostname.as_bytes();
+                if hostname_bytes.len() + 1 + domain_len >= MAX_HOSTNAME {
+                    continue;
+                }
+
+                fqdn_buf[..hostname_bytes.len()].copy_from_slice(hostname_bytes);
+                fqdn_buf[hostname_bytes.len()] = b'.';
+                fqdn_buf[hostname_bytes.len() + 1..hostname_bytes.len() + 1 + domain_len]
+                    .copy_from_slice(&domain[..domain_len]);
+
+                if let Ok(fqdn) = core::str::from_utf8(&fqdn_buf[..hostname_bytes.len() + 1 + domain_len]) {
+                    if let Some(ip) = self.query_dns_with_retry(fqdn, nameserver_ip, 0) {
+                        return Some(ip);
+                    }
+                }
+            }
+        }
+
+        None
     }
 
-    fn query_dns_recursive(&self, hostname: &str, nameserver_ip: [u8; 4], depth: u8) -> Option<[u8; 4]> {
+    /// Perform DNS query with retry logic
+    fn query_dns_with_retry(&self, hostname: &str, nameserver_ip: [u8; 4], depth: u8) -> Option<[u8; 4]> {
+        let max_attempts = self.config.attempts.max(1).min(MAX_DNS_RETRIES);
+        for _attempt in 0..max_attempts {
+            if let Some(ip) = self.query_dns_internal(hostname, nameserver_ip, depth) {
+                return Some(ip);
+            }
+        }
+        None
+    }
+
+    fn query_dns_internal(&self, hostname: &str, nameserver_ip: [u8; 4], depth: u8) -> Option<[u8; 4]> {
         use super::socket::bind;
         use crate::close;
 
@@ -312,9 +364,13 @@ impl Resolver {
             return None;
         }
 
-        // Build DNS query packet
+        // Build DNS query packet with unique transaction ID
         let mut query = DnsQuery::new();
-        let query_id = 0x1337u16.wrapping_add(depth as u16);
+        // Generate unique transaction ID using atomic counter and some entropy
+        let base_id = DNS_TRANSACTION_COUNTER.fetch_add(1, Ordering::Relaxed);
+        // Mix in some pseudo-randomness from hostname hash and depth
+        let hostname_hash = hostname.bytes().fold(0u16, |acc, b| acc.wrapping_add(b as u16).rotate_left(3));
+        let query_id = base_id.wrapping_add(hostname_hash).wrapping_add((depth as u16) << 8);
         let query_packet = match query.build(query_id, hostname, QType::A) {
             Ok(pkt) => pkt,
             Err(_) => return None,
@@ -369,10 +425,15 @@ impl Resolver {
                     return None;
                 }
                 let cname = core::str::from_utf8(&cname_buf[..len]).ok()?;
+                // Prevent CNAME loops by checking if we've seen this name
                 if cname.eq_ignore_ascii_case(hostname) {
                     return None;
                 }
-                self.query_dns_recursive(cname, nameserver_ip, depth + 1)
+                // Validate CNAME is a proper hostname
+                if cname.is_empty() || cname.len() > 253 {
+                    return None;
+                }
+                self.query_dns_internal(cname, nameserver_ip, depth + 1)
             }
             DnsParseOutcome::NoAnswer => None,
         }
@@ -671,6 +732,25 @@ pub extern "C" fn freeaddrinfo(res: *mut AddrInfo) {
     }
 }
 
+/// Convert error code to static string slice (Rust-friendly version)
+/// Note: C-compatible gai_strerror is provided in libc_compat/network.rs
+pub fn gai_strerror_str(errcode: i32) -> &'static str {
+    match errcode {
+        0 => "Success",
+        EAI_BADFLAGS => "Invalid flags",
+        EAI_NONAME => "Name or service not known",
+        EAI_AGAIN => "Temporary failure in name resolution",
+        EAI_FAIL => "Non-recoverable failure in name resolution",
+        EAI_FAMILY => "Address family not supported",
+        EAI_SOCKTYPE => "Socket type not supported",
+        EAI_SERVICE => "Service not supported for socket type",
+        EAI_MEMORY => "Memory allocation failure",
+        EAI_SYSTEM => "System error",
+        EAI_OVERFLOW => "Buffer overflow",
+        _ => "Unknown error",
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 enum DnsParseOutcome {
     Address([u8; 4]),
@@ -684,24 +764,39 @@ fn parse_dns_response(
     cname_buf: &mut [u8],
     scratch_buf: &mut [u8],
 ) -> Result<DnsParseOutcome, &'static str> {
+    // Minimum DNS response: 12 byte header
     if data.len() < 12 {
         return Err("dns response too short");
     }
 
+    // Validate transaction ID matches our query
     let transaction_id = u16::from_be_bytes([data[0], data[1]]);
     if transaction_id != expected_id {
         return Err("dns transaction id mismatch");
     }
 
     let flags = u16::from_be_bytes([data[2], data[3]]);
+    
+    // QR bit (bit 15) must be 1 for response
     if flags & 0x8000 == 0 {
         return Err("dns packet is not a response");
     }
+    
+    // TC bit (bit 9) indicates truncation - response may be incomplete
     if flags & 0x0200 != 0 {
         return Err("dns response truncated");
     }
-    if flags & 0x000F != 0 {
-        return Err("dns server returned error");
+    
+    // RCODE (bits 0-3) should be 0 for success
+    let rcode = flags & 0x000F;
+    match rcode {
+        0 => {} // NOERROR - success
+        1 => return Err("dns format error"),
+        2 => return Err("dns server failure"),
+        3 => return Err("dns name does not exist"), // NXDOMAIN
+        4 => return Err("dns not implemented"),
+        5 => return Err("dns query refused"),
+        _ => return Err("dns server returned error"),
     }
 
     let question_count = u16::from_be_bytes([data[4], data[5]]) as usize;
@@ -709,7 +804,14 @@ fn parse_dns_response(
     let authority_count = u16::from_be_bytes([data[8], data[9]]) as usize;
     let additional_count = u16::from_be_bytes([data[10], data[11]]) as usize;
 
+    // Sanity check: prevent excessive iteration
+    if question_count > 64 || answer_count > 256 || authority_count > 256 || additional_count > 256 {
+        return Err("dns response has too many records");
+    }
+
     let mut offset = 12;
+    
+    // Skip question section
     for _ in 0..question_count {
         skip_name(data, &mut offset)?;
         if offset + 4 > data.len() {
@@ -732,8 +834,12 @@ fn parse_dns_response(
             return Err("dns answer data overflow");
         }
 
+        // Save rdata start position for CNAME parsing
+        let rdata_start = offset;
+
         match rtype {
             1 => {
+                // A record (IPv4 address)
                 if rdlength != 4 {
                     return Err("invalid A record length");
                 }
@@ -742,11 +848,24 @@ fn parse_dns_response(
                 return Ok(DnsParseOutcome::Address(ip));
             }
             5 => {
-                let len = read_name_into(data, &mut offset, cname_buf)?;
+                // CNAME record - read the canonical name
+                // Note: read_name_into updates offset, but we need to ensure
+                // we advance by exactly rdlength for proper packet parsing
+                let mut temp_offset = rdata_start;
+                let len = read_name_into(data, &mut temp_offset, cname_buf)?;
                 last_cname_len = Some(len);
+                // Skip past the entire rdata section
+                offset = rdata_start + rdlength;
                 continue;
             }
-            _ => {}
+            28 => {
+                // AAAA record (IPv6) - skip for now, we only support IPv4
+                offset += rdlength;
+                continue;
+            }
+            _ => {
+                // Unknown record type - skip
+            }
         }
         offset += rdlength;
     }
@@ -813,12 +932,15 @@ fn skip_name(data: &[u8], offset: &mut usize) -> Result<(), &'static str> {
             return Err("dns name exceeds packet");
         }
         let len = data[pos];
+        
+        // Check for compression pointer (top 2 bits = 11)
         if len & 0xC0 == 0xC0 {
             if pos + 1 >= data.len() {
                 return Err("dns name pointer overflow");
             }
             let ptr = (((len & 0x3F) as usize) << 8) | (data[pos + 1] as usize);
-            if ptr >= data.len() {
+            // Pointer must point to earlier in the packet (forward references not allowed)
+            if ptr >= data.len() || ptr >= pos {
                 return Err("dns name pointer out of bounds");
             }
             if !jumped {
@@ -827,10 +949,16 @@ fn skip_name(data: &[u8], offset: &mut usize) -> Result<(), &'static str> {
             pos = ptr;
             jumped = true;
             steps += 1;
-            if steps > data.len() {
+            // Limit pointer hops to prevent infinite loops
+            if steps > 128 {
                 return Err("dns name pointer loop");
             }
             continue;
+        }
+        
+        // Check for reserved label type (top 2 bits = 01 or 10)
+        if len & 0xC0 != 0 {
+            return Err("dns invalid label type");
         }
 
         if len == 0 {
@@ -856,18 +984,22 @@ fn read_name_into(data: &[u8], offset: &mut usize, out: &mut [u8]) -> Result<usi
     let mut jumped = false;
     let mut steps = 0;
     let mut buf_pos = 0;
+    let mut total_len = 0usize; // Track total name length
 
     loop {
         if pos >= data.len() {
             return Err("dns name exceeds packet");
         }
         let len = data[pos];
+        
+        // Check for compression pointer
         if len & 0xC0 == 0xC0 {
             if pos + 1 >= data.len() {
                 return Err("dns name pointer overflow");
             }
             let ptr = (((len & 0x3F) as usize) << 8) | (data[pos + 1] as usize);
-            if ptr >= data.len() {
+            // Pointer must point to earlier in the packet
+            if ptr >= data.len() || ptr >= pos {
                 return Err("dns name pointer out of bounds");
             }
             if !jumped {
@@ -876,10 +1008,15 @@ fn read_name_into(data: &[u8], offset: &mut usize, out: &mut [u8]) -> Result<usi
             pos = ptr;
             jumped = true;
             steps += 1;
-            if steps > data.len() {
+            if steps > 128 {
                 return Err("dns name pointer loop");
             }
             continue;
+        }
+        
+        // Check for reserved label type
+        if len & 0xC0 != 0 {
+            return Err("dns invalid label type");
         }
 
         if len == 0 {
@@ -890,6 +1027,12 @@ fn read_name_into(data: &[u8], offset: &mut usize, out: &mut [u8]) -> Result<usi
                 out[buf_pos] = 0;
             }
             return Ok(buf_pos);
+        }
+        
+        // Validate total name length won't exceed DNS limit (253 chars)
+        total_len += len as usize + 1; // +1 for dot separator
+        if total_len > 254 {
+            return Err("dns name too long");
         }
 
         pos += 1;
@@ -938,6 +1081,68 @@ fn to_ascii_lower(byte: u8) -> u8 {
     }
 }
 
+/// Format IPv4 address to string in buffer
+/// Returns the length written (excluding null terminator), or 0 on overflow
+#[inline]
+fn format_ipv4_to_buffer(ip: [u8; 4], buf: *mut u8, buf_len: usize) -> usize {
+    if buf_len < 8 {
+        // Minimum: "0.0.0.0\0" = 8 bytes
+        return 0;
+    }
+
+    let mut pos = 0;
+
+    for (i, octet) in ip.iter().enumerate() {
+        let mut n = *octet as usize;
+        let mut digits = [0u8; 3];
+        let mut digit_count = 0;
+
+        // Convert number to digits (reversed)
+        if n == 0 {
+            digits[0] = b'0';
+            digit_count = 1;
+        } else {
+            while n > 0 {
+                digits[digit_count] = (n % 10) as u8 + b'0';
+                n /= 10;
+                digit_count += 1;
+            }
+        }
+
+        // Write digits in correct order
+        for j in 0..digit_count {
+            if pos >= buf_len - 1 {
+                return 0;
+            }
+            unsafe {
+                *buf.add(pos) = digits[digit_count - 1 - j];
+            }
+            pos += 1;
+        }
+
+        // Add dot separator (except after last octet)
+        if i < 3 {
+            if pos >= buf_len - 1 {
+                return 0;
+            }
+            unsafe {
+                *buf.add(pos) = b'.';
+            }
+            pos += 1;
+        }
+    }
+
+    // Null terminate
+    if pos >= buf_len {
+        return 0;
+    }
+    unsafe {
+        *buf.add(pos) = 0;
+    }
+
+    pos
+}
+
 /// Musl-compatible getnameinfo implementation (reverse DNS lookup)
 #[no_mangle]
 pub extern "C" fn getnameinfo(
@@ -971,48 +1176,11 @@ pub extern "C" fn getnameinfo(
 
         // Handle NI_NUMERICHOST flag
         if (flags & NI_NUMERICHOST) != 0 {
-            // Convert IP to string format
-            let mut buf = [0u8; 16];
-            let mut pos = 0;
-            
-            for (i, octet) in ip.iter().enumerate() {
-                // Convert octet to string
-                let mut n = *octet as usize;
-                let mut digits = [0u8; 3];
-                let mut digit_count = 0;
-                
-                if n == 0 {
-                    digits[0] = b'0';
-                    digit_count = 1;
-                } else {
-                    while n > 0 && digit_count < 3 {
-                        digits[digit_count] = (n % 10) as u8 + b'0';
-                        n /= 10;
-                        digit_count += 1;
-                    }
-                    // Reverse digits
-                    for j in 0..digit_count {
-                        if pos >= hostlen as usize {
-                            return EAI_OVERFLOW;
-                        }
-                        *host.add(pos) = digits[digit_count - 1 - j];
-                        pos += 1;
-                    }
-                }
-                
-                if i < 3 {
-                    if pos >= hostlen as usize {
-                        return EAI_OVERFLOW;
-                    }
-                    *host.add(pos) = b'.';
-                    pos += 1;
-                }
-            }
-            
-            if pos >= hostlen as usize {
+            // Convert IP to string format using helper function
+            let len = format_ipv4_to_buffer(ip, host, hostlen as usize);
+            if len == 0 {
                 return EAI_OVERFLOW;
             }
-            *host.add(pos) = 0;
         } else {
             // Try reverse DNS lookup
             let resolver = match get_resolver() {
@@ -1028,47 +1196,15 @@ pub extern "C" fn getnameinfo(
                 core::ptr::copy_nonoverlapping(hostname_bytes.as_ptr(), host, hostname_bytes.len());
                 *host.add(hostname_bytes.len()) = 0;
             } else {
-                // No reverse entry found, use numeric form
-                let mut buf = [0u8; 16];
-                let mut pos = 0;
-                
-                for (i, octet) in ip.iter().enumerate() {
-                    let mut n = *octet as usize;
-                    let mut digits = [0u8; 3];
-                    let mut digit_count = 0;
-                    
-                    if n == 0 {
-                        digits[0] = b'0';
-                        digit_count = 1;
-                    } else {
-                        while n > 0 && digit_count < 3 {
-                            digits[digit_count] = (n % 10) as u8 + b'0';
-                            n /= 10;
-                            digit_count += 1;
-                        }
-                        for j in 0..digit_count {
-                            if pos >= hostlen as usize {
-                                return EAI_OVERFLOW;
-                            }
-                            buf[pos] = digits[digit_count - 1 - j];
-                            pos += 1;
-                        }
-                    }
-                    
-                    if i < 3 {
-                        if pos >= hostlen as usize {
-                            return EAI_OVERFLOW;
-                        }
-                        buf[pos] = b'.';
-                        pos += 1;
-                    }
+                // NI_NAMEREQD requires a name to be found
+                if (flags & NI_NAMEREQD) != 0 {
+                    return EAI_NONAME;
                 }
-                
-                if pos + 1 > hostlen as usize {
+                // No reverse entry found, use numeric form
+                let len = format_ipv4_to_buffer(ip, host, hostlen as usize);
+                if len == 0 {
                     return EAI_OVERFLOW;
                 }
-                buf[pos] = 0;
-                core::ptr::copy_nonoverlapping(buf.as_ptr(), host, pos + 1);
             }
         }
 
@@ -1108,6 +1244,7 @@ pub extern "C" fn getnameinfo(
 
     0
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1116,8 +1253,15 @@ mod tests {
     fn test_parse_ipv4() {
         assert_eq!(parse_ipv4("192.168.1.1"), Some([192, 168, 1, 1]));
         assert_eq!(parse_ipv4("8.8.8.8"), Some([8, 8, 8, 8]));
+        assert_eq!(parse_ipv4("0.0.0.0"), Some([0, 0, 0, 0]));
+        assert_eq!(parse_ipv4("255.255.255.255"), Some([255, 255, 255, 255]));
         assert_eq!(parse_ipv4("invalid"), None);
         assert_eq!(parse_ipv4("256.0.0.1"), None);
+        assert_eq!(parse_ipv4("1.2.3"), None);
+        assert_eq!(parse_ipv4("1.2.3.4.5"), None);
+        assert_eq!(parse_ipv4(""), None);
+        assert_eq!(parse_ipv4("1.2.3."), None);
+        assert_eq!(parse_ipv4(".1.2.3"), None);
     }
 
     #[test]
@@ -1129,6 +1273,28 @@ mod tests {
         assert_eq!(resolver.config.nameserver_count, 2);
         assert_eq!(resolver.config.nameservers[0], [8, 8, 8, 8]);
         assert_eq!(resolver.config.nameservers[1], [1, 1, 1, 1]);
+        assert_eq!(resolver.config.search_domain_count, 1);
+    }
+
+    #[test]
+    fn test_parse_resolv_conf_with_options() {
+        let mut resolver = Resolver::new();
+        let content = "nameserver 8.8.8.8\noptions timeout:3 attempts:5\n";
+        resolver.parse_resolv_conf(content);
+
+        assert_eq!(resolver.config.nameserver_count, 1);
+        assert_eq!(resolver.config.timeout_ms, 3000);
+        assert_eq!(resolver.config.attempts, 5);
+    }
+
+    #[test]
+    fn test_parse_resolv_conf_comments() {
+        let mut resolver = Resolver::new();
+        let content = "# This is a comment\nnameserver 8.8.8.8\n# Another comment\n";
+        resolver.parse_resolv_conf(content);
+
+        assert_eq!(resolver.config.nameserver_count, 1);
+        assert_eq!(resolver.config.nameservers[0], [8, 8, 8, 8]);
     }
 
     #[test]
@@ -1140,6 +1306,62 @@ mod tests {
         assert_eq!(resolver.hosts_count, 2);
         assert_eq!(resolver.lookup_hosts("localhost"), Some([127, 0, 0, 1]));
         assert_eq!(resolver.lookup_hosts("myhost"), Some([192, 168, 1, 100]));
+        // Case insensitive matching
+        assert_eq!(resolver.lookup_hosts("LOCALHOST"), Some([127, 0, 0, 1]));
+        assert_eq!(resolver.lookup_hosts("MyHost"), Some([192, 168, 1, 100]));
+    }
+
+    #[test]
+    fn test_parse_hosts_multiple_aliases() {
+        let mut resolver = Resolver::new();
+        let content = "127.0.0.1 localhost loopback\n";
+        resolver.parse_hosts(content);
+
+        assert_eq!(resolver.hosts_count, 2);
+        assert_eq!(resolver.lookup_hosts("localhost"), Some([127, 0, 0, 1]));
+        assert_eq!(resolver.lookup_hosts("loopback"), Some([127, 0, 0, 1]));
+    }
+
+    #[test]
+    fn test_parse_nsswitch() {
+        let mut resolver = Resolver::new();
+        let content = "hosts: files dns\n";
+        resolver.parse_nsswitch(content);
+
+        assert_eq!(resolver.nsswitch_count, 2);
+        assert_eq!(resolver.nsswitch_hosts[0], NssSource::Files);
+        assert_eq!(resolver.nsswitch_hosts[1], NssSource::Dns);
+    }
+
+    #[test]
+    fn test_gai_strerror() {
+        assert_eq!(gai_strerror_str(0), "Success");
+        assert_eq!(gai_strerror_str(EAI_NONAME), "Name or service not known");
+        assert_eq!(gai_strerror_str(EAI_AGAIN), "Temporary failure in name resolution");
+        assert_eq!(gai_strerror_str(-999), "Unknown error");
+    }
+
+    #[test]
+    fn test_format_ipv4_to_buffer() {
+        let mut buf = [0u8; 16];
+        let len = format_ipv4_to_buffer([192, 168, 1, 1], buf.as_mut_ptr(), 16);
+        assert!(len > 0);
+        assert_eq!(&buf[..len], b"192.168.1.1");
+        
+        let len = format_ipv4_to_buffer([0, 0, 0, 0], buf.as_mut_ptr(), 16);
+        assert!(len > 0);
+        assert_eq!(&buf[..len], b"0.0.0.0");
+        
+        let len = format_ipv4_to_buffer([255, 255, 255, 255], buf.as_mut_ptr(), 16);
+        assert!(len > 0);
+        assert_eq!(&buf[..len], b"255.255.255.255");
+    }
+
+    #[test]
+    fn test_format_ipv4_buffer_too_small() {
+        let mut buf = [0u8; 4];
+        let len = format_ipv4_to_buffer([192, 168, 1, 1], buf.as_mut_ptr(), 4);
+        assert_eq!(len, 0); // Should fail due to buffer too small
     }
 
     #[test]
@@ -1161,6 +1383,46 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_dns_response_wrong_id() {
+        let response: [u8; 45] = [
+            0x30, 0x30, 0x85, 0x80, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+            0x05, b'b', b'a', b'i', b'd', b'u', 0x03, b'c', b'o', b'm', 0x00,
+            0x00, 0x01, 0x00, 0x01,
+            0xC0, 0x0C, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x04,
+            0xC6, 0x12, 0x00, 0x65,
+        ];
+
+        let mut cname = [0u8; MAX_HOSTNAME];
+        let mut scratch = [0u8; MAX_HOSTNAME];
+        let result = parse_dns_response(&response, 0x1234, &mut cname, &mut scratch);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_dns_response_nxdomain() {
+        // NXDOMAIN response (RCODE = 3)
+        let response: [u8; 25] = [
+            0x12, 0x34, 0x81, 0x83, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x04, b't', b'e', b's', b't', 0x03, b'c', b'o', b'm', 0x00,
+            0x00, 0x01, 0x00, 0x01,
+        ];
+
+        let mut cname = [0u8; MAX_HOSTNAME];
+        let mut scratch = [0u8; MAX_HOSTNAME];
+        let result = parse_dns_response(&response, 0x1234, &mut cname, &mut scratch);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_dns_response_too_short() {
+        let response: [u8; 8] = [0x12, 0x34, 0x85, 0x80, 0x00, 0x01, 0x00, 0x01];
+        let mut cname = [0u8; MAX_HOSTNAME];
+        let mut scratch = [0u8; MAX_HOSTNAME];
+        let result = parse_dns_response(&response, 0x1234, &mut cname, &mut scratch);
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn test_parse_dns_response_cname_with_glue() {
         let response: [u8; 87] = [
             0x11, 0x11, 0x85, 0x80, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, // header
@@ -1179,5 +1441,14 @@ mod tests {
             DnsParseOutcome::Address(ip) => assert_eq!(ip, [1, 2, 3, 4]),
             other => panic!("unexpected parse result: {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_dns_name_equals() {
+        assert!(dns_name_equals(b"example.com", b"example.com"));
+        assert!(dns_name_equals(b"EXAMPLE.COM", b"example.com"));
+        assert!(dns_name_equals(b"Example.Com", b"EXAMPLE.COM"));
+        assert!(!dns_name_equals(b"example.com", b"example.org"));
+        assert!(!dns_name_equals(b"example.com", b"example.co"));
     }
 }

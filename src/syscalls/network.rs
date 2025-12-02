@@ -326,12 +326,20 @@ pub fn set_dns_servers(ptr: *const u32, count: u32) -> u64 {
             return u64::MAX;
         }
 
+        // Check pointer alignment (u32 requires 4-byte alignment)
+        if (ptr as usize) % core::mem::align_of::<u32>() != 0 {
+            kwarn!("[set_dns_servers] Pointer {:p} not aligned for u32", ptr);
+            posix::set_errno(posix::errno::EFAULT);
+            return u64::MAX;
+        }
+
         let byte_len = (count as usize).saturating_mul(mem::size_of::<u32>());
         if !user_buffer_in_range(ptr as u64, byte_len as u64) {
             posix::set_errno(posix::errno::EFAULT);
             return u64::MAX;
         }
 
+        // Safe: we've verified pointer is non-null, aligned, and in valid user range
         let input = unsafe { slice::from_raw_parts(ptr, count as usize) };
         let mut entries = [[0u8; 4]; MAX_DNS_SERVERS];
         for idx in 0..(count as usize) {
@@ -361,12 +369,20 @@ pub fn get_dns_servers(ptr: *mut u32, capacity: u32) -> u64 {
             return u64::MAX;
         }
 
+        // Check pointer alignment (u32 requires 4-byte alignment)
+        if (ptr as usize) % core::mem::align_of::<u32>() != 0 {
+            kwarn!("[get_dns_servers] Pointer {:p} not aligned for u32", ptr);
+            posix::set_errno(posix::errno::EFAULT);
+            return u64::MAX;
+        }
+
         let byte_len = (capacity as usize).saturating_mul(mem::size_of::<u32>());
         if !user_buffer_in_range(ptr as u64, byte_len as u64) {
             posix::set_errno(posix::errno::EFAULT);
             return u64::MAX;
         }
 
+        // Safe: we've verified pointer is non-null, aligned, and in valid user range
         let output = unsafe { slice::from_raw_parts_mut(ptr, capacity as usize) };
         for idx in 0..available {
             output[idx] = u32::from_be_bytes(guard.servers[idx]);
