@@ -29,13 +29,13 @@ impl DirtyRegionTracker {
             full_repaint: false,
         }
     }
-    
+
     /// Mark a region as dirty
     pub fn mark_dirty(&mut self, region: CompositionRegion) {
         if self.full_repaint || !region.is_valid() {
             return;
         }
-        
+
         // Try to merge with existing region
         for i in 0..self.count {
             if self.regions[i].intersects(&region) {
@@ -52,7 +52,7 @@ impl DirtyRegionTracker {
                 return;
             }
         }
-        
+
         // Add new region if space available
         if self.count < MAX_DIRTY_REGIONS {
             self.regions[self.count] = region;
@@ -62,17 +62,17 @@ impl DirtyRegionTracker {
             self.full_repaint = true;
         }
     }
-    
+
     /// Mark entire screen as dirty
     pub fn mark_full_repaint(&mut self) {
         self.full_repaint = true;
     }
-    
+
     /// Check if full repaint is needed
     pub fn needs_full_repaint(&self) -> bool {
         self.full_repaint
     }
-    
+
     /// Get dirty regions for rendering
     pub fn get_dirty_regions(&self) -> &[CompositionRegion] {
         if self.full_repaint {
@@ -81,29 +81,29 @@ impl DirtyRegionTracker {
             &self.regions[..self.count]
         }
     }
-    
+
     /// Clear all dirty regions after rendering
     pub fn clear(&mut self) {
         self.count = 0;
         self.full_repaint = false;
     }
-    
+
     /// Check if any regions are dirty
     pub fn is_dirty(&self) -> bool {
         self.full_repaint || self.count > 0
     }
-    
+
     /// Get the number of tracked dirty regions
     pub fn region_count(&self) -> usize {
         self.count
     }
-    
+
     /// Get the total area of all dirty regions (for statistics)
     pub fn total_dirty_area(&self) -> u64 {
         if self.full_repaint {
             return u64::MAX; // Indicate full repaint
         }
-        
+
         let mut total = 0u64;
         for i in 0..self.count {
             total += self.regions[i].area();

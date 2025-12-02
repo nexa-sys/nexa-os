@@ -103,7 +103,10 @@ impl SymbolTable {
 
         // Check soft limit but allow growth if needed
         if self.symbols.len() >= MAX_SYMBOLS_SOFT_LIMIT {
-            crate::kwarn!("Symbol table approaching limit: {} symbols", self.symbols.len());
+            crate::kwarn!(
+                "Symbol table approaching limit: {} symbols",
+                self.symbols.len()
+            );
         }
 
         // Check for duplicate
@@ -200,49 +203,160 @@ pub fn init() {
     }
 
     // Register logging functions
-    register_symbol("kmod_log_info", kmod_log_info as *const () as u64, SymbolType::Function);
-    register_symbol("kmod_log_error", kmod_log_error as *const () as u64, SymbolType::Function);
-    register_symbol("kmod_log_warn", kmod_log_warn as *const () as u64, SymbolType::Function);
-    register_symbol("kmod_log_debug", kmod_log_debug as *const () as u64, SymbolType::Function);
+    register_symbol(
+        "kmod_log_info",
+        kmod_log_info as *const () as u64,
+        SymbolType::Function,
+    );
+    register_symbol(
+        "kmod_log_error",
+        kmod_log_error as *const () as u64,
+        SymbolType::Function,
+    );
+    register_symbol(
+        "kmod_log_warn",
+        kmod_log_warn as *const () as u64,
+        SymbolType::Function,
+    );
+    register_symbol(
+        "kmod_log_debug",
+        kmod_log_debug as *const () as u64,
+        SymbolType::Function,
+    );
 
     // Register memory allocation functions
-    register_symbol("kmod_alloc", kmod_alloc as *const () as u64, SymbolType::Function);
-    register_symbol("kmod_dealloc", kmod_dealloc as *const () as u64, SymbolType::Function);
-    register_symbol("kmod_realloc", kmod_realloc as *const () as u64, SymbolType::Function);
-    register_symbol("kmod_zalloc", kmod_zalloc as *const () as u64, SymbolType::Function);
+    register_symbol(
+        "kmod_alloc",
+        kmod_alloc as *const () as u64,
+        SymbolType::Function,
+    );
+    register_symbol(
+        "kmod_dealloc",
+        kmod_dealloc as *const () as u64,
+        SymbolType::Function,
+    );
+    register_symbol(
+        "kmod_realloc",
+        kmod_realloc as *const () as u64,
+        SymbolType::Function,
+    );
+    register_symbol(
+        "kmod_zalloc",
+        kmod_zalloc as *const () as u64,
+        SymbolType::Function,
+    );
 
     // Register filesystem functions
-    register_symbol("kmod_register_fs", kmod_register_fs as *const () as u64, SymbolType::Function);
-    register_symbol("kmod_unregister_fs", kmod_unregister_fs as *const () as u64, SymbolType::Function);
+    register_symbol(
+        "kmod_register_fs",
+        kmod_register_fs as *const () as u64,
+        SymbolType::Function,
+    );
+    register_symbol(
+        "kmod_unregister_fs",
+        kmod_unregister_fs as *const () as u64,
+        SymbolType::Function,
+    );
 
     // Register spinlock functions
-    register_symbol("kmod_spinlock_init", kmod_spinlock_init as *const () as u64, SymbolType::Function);
-    register_symbol("kmod_spinlock_lock", kmod_spinlock_lock as *const () as u64, SymbolType::Function);
-    register_symbol("kmod_spinlock_unlock", kmod_spinlock_unlock as *const () as u64, SymbolType::Function);
-    register_symbol("kmod_spinlock_trylock", kmod_spinlock_trylock as *const () as u64, SymbolType::Function);
+    register_symbol(
+        "kmod_spinlock_init",
+        kmod_spinlock_init as *const () as u64,
+        SymbolType::Function,
+    );
+    register_symbol(
+        "kmod_spinlock_lock",
+        kmod_spinlock_lock as *const () as u64,
+        SymbolType::Function,
+    );
+    register_symbol(
+        "kmod_spinlock_unlock",
+        kmod_spinlock_unlock as *const () as u64,
+        SymbolType::Function,
+    );
+    register_symbol(
+        "kmod_spinlock_trylock",
+        kmod_spinlock_trylock as *const () as u64,
+        SymbolType::Function,
+    );
 
     // Register memory operations
-    register_symbol("kmod_memcpy", kmod_memcpy as *const () as u64, SymbolType::Function);
-    register_symbol("kmod_memset", kmod_memset as *const () as u64, SymbolType::Function);
-    register_symbol("kmod_memcmp", kmod_memcmp as *const () as u64, SymbolType::Function);
-    register_symbol("kmod_memmove", kmod_memmove as *const () as u64, SymbolType::Function);
+    register_symbol(
+        "kmod_memcpy",
+        kmod_memcpy as *const () as u64,
+        SymbolType::Function,
+    );
+    register_symbol(
+        "kmod_memset",
+        kmod_memset as *const () as u64,
+        SymbolType::Function,
+    );
+    register_symbol(
+        "kmod_memcmp",
+        kmod_memcmp as *const () as u64,
+        SymbolType::Function,
+    );
+    register_symbol(
+        "kmod_memmove",
+        kmod_memmove as *const () as u64,
+        SymbolType::Function,
+    );
 
     // Register string operations
-    register_symbol("kmod_strlen", kmod_strlen as *const () as u64, SymbolType::Function);
-    register_symbol("kmod_strcmp", kmod_strcmp as *const () as u64, SymbolType::Function);
-    register_symbol("kmod_strncmp", kmod_strncmp as *const () as u64, SymbolType::Function);
+    register_symbol(
+        "kmod_strlen",
+        kmod_strlen as *const () as u64,
+        SymbolType::Function,
+    );
+    register_symbol(
+        "kmod_strcmp",
+        kmod_strcmp as *const () as u64,
+        SymbolType::Function,
+    );
+    register_symbol(
+        "kmod_strncmp",
+        kmod_strncmp as *const () as u64,
+        SymbolType::Function,
+    );
 
     // Register misc kernel APIs
-    register_symbol("kmod_get_ticks", kmod_get_ticks as *const () as u64, SymbolType::Function);
-    register_symbol("kmod_yield", kmod_yield as *const () as u64, SymbolType::Function);
+    register_symbol(
+        "kmod_get_ticks",
+        kmod_get_ticks as *const () as u64,
+        SymbolType::Function,
+    );
+    register_symbol(
+        "kmod_yield",
+        kmod_yield as *const () as u64,
+        SymbolType::Function,
+    );
 
     // Register taint/license APIs
-    register_symbol("kmod_add_taint", kmod_add_taint as *const () as u64, SymbolType::Function);
-    register_symbol("kmod_get_taint", kmod_get_taint as *const () as u64, SymbolType::Function);
-    register_symbol("kmod_is_tainted", kmod_is_tainted as *const () as u64, SymbolType::Function);
-    register_symbol("kmod_set_license", kmod_set_license as *const () as u64, SymbolType::Function);
+    register_symbol(
+        "kmod_add_taint",
+        kmod_add_taint as *const () as u64,
+        SymbolType::Function,
+    );
+    register_symbol(
+        "kmod_get_taint",
+        kmod_get_taint as *const () as u64,
+        SymbolType::Function,
+    );
+    register_symbol(
+        "kmod_is_tainted",
+        kmod_is_tainted as *const () as u64,
+        SymbolType::Function,
+    );
+    register_symbol(
+        "kmod_set_license",
+        kmod_set_license as *const () as u64,
+        SymbolType::Function,
+    );
 
-    crate::kinfo!("Kernel symbol table initialized with {} symbols", symbol_count());
+    crate::kinfo!(
+        "Kernel symbol table initialized with {} symbols",
+        symbol_count()
+    );
 }
 
 /// Register a kernel symbol
@@ -257,7 +371,9 @@ pub fn register_symbol_with_visibility(
     sym_type: SymbolType,
     visibility: SymbolVisibility,
 ) -> bool {
-    KERNEL_SYMBOLS.lock().register_with_visibility(name, address, sym_type, visibility)
+    KERNEL_SYMBOLS
+        .lock()
+        .register_with_visibility(name, address, sym_type, visibility)
 }
 
 /// Lookup a kernel symbol by name
@@ -358,11 +474,11 @@ pub extern "C" fn kmod_log_debug(msg: *const u8, len: usize) {
 #[no_mangle]
 pub extern "C" fn kmod_alloc(size: usize, align: usize) -> *mut u8 {
     use alloc::alloc::{alloc, Layout};
-    
+
     if size == 0 {
         return ptr::null_mut();
     }
-    
+
     let align = if align == 0 { 8 } else { align };
     if let Ok(layout) = Layout::from_size_align(size, align) {
         unsafe { alloc(layout) }
@@ -375,11 +491,11 @@ pub extern "C" fn kmod_alloc(size: usize, align: usize) -> *mut u8 {
 #[no_mangle]
 pub extern "C" fn kmod_dealloc(ptr: *mut u8, size: usize, align: usize) {
     use alloc::alloc::{dealloc, Layout};
-    
+
     if ptr.is_null() || size == 0 {
         return;
     }
-    
+
     let align = if align == 0 { 8 } else { align };
     if let Ok(layout) = Layout::from_size_align(size, align) {
         unsafe { dealloc(ptr, layout) }
@@ -388,18 +504,23 @@ pub extern "C" fn kmod_dealloc(ptr: *mut u8, size: usize, align: usize) {
 
 /// Reallocate memory for a module
 #[no_mangle]
-pub extern "C" fn kmod_realloc(ptr: *mut u8, old_size: usize, new_size: usize, align: usize) -> *mut u8 {
+pub extern "C" fn kmod_realloc(
+    ptr: *mut u8,
+    old_size: usize,
+    new_size: usize,
+    align: usize,
+) -> *mut u8 {
     use alloc::alloc::{realloc, Layout};
-    
+
     if new_size == 0 {
         kmod_dealloc(ptr, old_size, align);
         return ptr::null_mut();
     }
-    
+
     if ptr.is_null() {
         return kmod_alloc(new_size, align);
     }
-    
+
     let align = if align == 0 { 8 } else { align };
     if let Ok(layout) = Layout::from_size_align(old_size, align) {
         unsafe { realloc(ptr, layout, new_size) }
@@ -423,7 +544,7 @@ pub extern "C" fn kmod_register_fs(
     if name.is_null() || name_len == 0 {
         return -1;
     }
-    
+
     unsafe {
         let name_bytes = core::slice::from_raw_parts(name, name_len);
         if let Ok(fs_name) = core::str::from_utf8(name_bytes) {
@@ -444,7 +565,7 @@ pub extern "C" fn kmod_unregister_fs(name: *const u8, name_len: usize) -> i32 {
     if name.is_null() || name_len == 0 {
         return -1;
     }
-    
+
     unsafe {
         let name_bytes = core::slice::from_raw_parts(name, name_len);
         if let Ok(fs_name) = core::str::from_utf8(name_bytes) {
@@ -460,7 +581,9 @@ pub extern "C" fn kmod_unregister_fs(name: *const u8, name_len: usize) -> i32 {
 #[no_mangle]
 pub extern "C" fn kmod_spinlock_init(lock: *mut u64) {
     if !lock.is_null() {
-        unsafe { *lock = 0; }
+        unsafe {
+            *lock = 0;
+        }
     }
 }
 
@@ -470,11 +593,14 @@ pub extern "C" fn kmod_spinlock_lock(lock: *mut u64) {
     if lock.is_null() {
         return;
     }
-    
+
     use core::sync::atomic::{AtomicU64, Ordering};
     unsafe {
         let atomic = &*(lock as *const AtomicU64);
-        while atomic.compare_exchange_weak(0, 1, Ordering::Acquire, Ordering::Relaxed).is_err() {
+        while atomic
+            .compare_exchange_weak(0, 1, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
             core::hint::spin_loop();
         }
     }
@@ -486,7 +612,7 @@ pub extern "C" fn kmod_spinlock_unlock(lock: *mut u64) {
     if lock.is_null() {
         return;
     }
-    
+
     use core::sync::atomic::{AtomicU64, Ordering};
     unsafe {
         let atomic = &*(lock as *const AtomicU64);
@@ -500,7 +626,7 @@ pub extern "C" fn kmod_memcpy(dest: *mut u8, src: *const u8, n: usize) -> *mut u
     if dest.is_null() || src.is_null() {
         return dest;
     }
-    
+
     unsafe {
         ptr::copy_nonoverlapping(src, dest, n);
     }
@@ -513,7 +639,7 @@ pub extern "C" fn kmod_memset(dest: *mut u8, c: i32, n: usize) -> *mut u8 {
     if dest.is_null() {
         return dest;
     }
-    
+
     unsafe {
         ptr::write_bytes(dest, c as u8, n);
     }
@@ -526,11 +652,11 @@ pub extern "C" fn kmod_memcmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
     if s1.is_null() || s2.is_null() {
         return 0;
     }
-    
+
     unsafe {
         let slice1 = core::slice::from_raw_parts(s1, n);
         let slice2 = core::slice::from_raw_parts(s2, n);
-        
+
         for (a, b) in slice1.iter().zip(slice2.iter()) {
             if a != b {
                 return (*a as i32) - (*b as i32);
@@ -548,11 +674,11 @@ pub extern "C" fn kmod_memcmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
 #[no_mangle]
 pub extern "C" fn kmod_zalloc(size: usize, align: usize) -> *mut u8 {
     use alloc::alloc::{alloc_zeroed, Layout};
-    
+
     if size == 0 {
         return ptr::null_mut();
     }
-    
+
     let align = if align == 0 { 8 } else { align };
     if let Ok(layout) = Layout::from_size_align(size, align) {
         unsafe { alloc_zeroed(layout) }
@@ -568,11 +694,14 @@ pub extern "C" fn kmod_spinlock_trylock(lock: *mut u64) -> i32 {
     if lock.is_null() {
         return -1;
     }
-    
+
     use core::sync::atomic::{AtomicU64, Ordering};
     unsafe {
         let atomic = &*(lock as *const AtomicU64);
-        if atomic.compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+        if atomic
+            .compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+        {
             0
         } else {
             -1
@@ -586,7 +715,7 @@ pub extern "C" fn kmod_memmove(dest: *mut u8, src: *const u8, n: usize) -> *mut 
     if dest.is_null() || src.is_null() {
         return dest;
     }
-    
+
     unsafe {
         ptr::copy(src, dest, n);
     }
@@ -599,7 +728,7 @@ pub extern "C" fn kmod_strlen(s: *const u8) -> usize {
     if s.is_null() {
         return 0;
     }
-    
+
     let mut len = 0;
     unsafe {
         while *s.add(len) != 0 {
@@ -615,7 +744,7 @@ pub extern "C" fn kmod_strcmp(s1: *const u8, s2: *const u8) -> i32 {
     if s1.is_null() || s2.is_null() {
         return if s1.is_null() && s2.is_null() { 0 } else { -1 };
     }
-    
+
     unsafe {
         let mut i = 0;
         loop {
@@ -635,7 +764,7 @@ pub extern "C" fn kmod_strncmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
     if s1.is_null() || s2.is_null() || n == 0 {
         return 0;
     }
-    
+
     unsafe {
         for i in 0..n {
             let c1 = *s1.add(i);
@@ -652,9 +781,7 @@ pub extern "C" fn kmod_strncmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
 #[no_mangle]
 pub extern "C" fn kmod_get_ticks() -> u64 {
     // Read TSC for timing
-    unsafe {
-        core::arch::x86_64::_rdtsc()
-    }
+    unsafe { core::arch::x86_64::_rdtsc() }
 }
 
 /// Yield to scheduler (give up CPU time slice)
@@ -669,7 +796,7 @@ pub extern "C" fn kmod_yield() {
 // ============================================================================
 
 /// Add a taint flag from a module
-/// 
+///
 /// Taint flags (same as Linux):
 /// - 1: Proprietary module (P)
 /// - 2: Forced load (F)
@@ -678,7 +805,7 @@ pub extern "C" fn kmod_yield() {
 #[no_mangle]
 pub extern "C" fn kmod_add_taint(flag: u32) {
     use super::{add_taint, TaintFlag};
-    
+
     // Map integer flags to TaintFlag enum
     let taint = match flag {
         1 => Some(TaintFlag::ProprietaryModule),
@@ -702,7 +829,7 @@ pub extern "C" fn kmod_add_taint(flag: u32) {
         262144 => Some(TaintFlag::Aux),
         _ => None,
     };
-    
+
     if let Some(t) = taint {
         add_taint(t);
     }
@@ -721,31 +848,34 @@ pub extern "C" fn kmod_is_tainted(flag: u32) -> bool {
 }
 
 /// Set module license and check for tainting
-/// 
+///
 /// Known GPL-compatible licenses that don't taint:
 /// - "GPL", "GPL v2", "GPL v2+", "Dual MIT/GPL", "Dual BSD/GPL"
-/// 
+///
 /// Returns 1 if license taints kernel, 0 otherwise
 #[no_mangle]
 pub extern "C" fn kmod_set_license(license: *const u8, len: usize) -> i32 {
     use super::{add_taint, LicenseType, TaintFlag};
-    
+
     if license.is_null() || len == 0 {
         // Unknown license taints kernel
         add_taint(TaintFlag::ProprietaryModule);
         return 1;
     }
-    
+
     let license_str = unsafe {
         let slice = core::slice::from_raw_parts(license, len);
         core::str::from_utf8(slice).unwrap_or("Unknown")
     };
-    
+
     let license_type = LicenseType::from_string(license_str);
-    
+
     if !license_type.is_gpl_compatible() {
         add_taint(TaintFlag::ProprietaryModule);
-        crate::kinfo!("Module license '{}' is not GPL-compatible, tainting kernel", license_str);
+        crate::kinfo!(
+            "Module license '{}' is not GPL-compatible, tainting kernel",
+            license_str
+        );
         1
     } else {
         crate::kinfo!("Module license '{}' is GPL-compatible", license_str);

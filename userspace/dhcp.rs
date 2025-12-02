@@ -148,6 +148,7 @@ extern "C" {
     fn recvfrom(sockfd: i32, buf: *mut std::ffi::c_void, len: usize, flags: i32, src_addr: *mut std::ffi::c_void, addrlen: *mut u32) -> isize;
     fn setsockopt(sockfd: i32, level: i32, optname: i32, optval: *const std::ffi::c_void, optlen: u32) -> i32;
     fn close(fd: i32) -> i32;
+    fn net_set_dns_servers(servers: *const u32, count: usize) -> i32;
 }
 
 struct DhcpLease {
@@ -201,6 +202,19 @@ fn main() {
                                (dns >> 8) & 0xFF, dns & 0xFF);
                     }
                     println!();
+                }
+
+                let publish_slice = if lease.dns_servers.len() > 3 {
+                    &lease.dns_servers[..3]
+                } else {
+                    &lease.dns_servers[..]
+                };
+
+                let publish_status = unsafe {
+                    net_set_dns_servers(publish_slice.as_ptr(), publish_slice.len())
+                };
+                if publish_status < 0 {
+                    println!("Failed to update kernel DNS server table");
                 }
                 
                 // Configure interface

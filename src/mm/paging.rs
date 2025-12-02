@@ -533,27 +533,27 @@ pub fn create_process_address_space(phys_base: u64, size: u64) -> Result<u64, &'
             kernel_pd_addr.as_u64(),
             pd_phys.as_u64()
         );
-        
+
         // Debug: show raw entry values for PD[163] before clone
         crate::kinfo!(
             "  BEFORE clone: kernel_pd[163].addr = {:#x}, flags = {:#x}",
             kernel_pd[163].addr().as_u64(),
             kernel_pd[163].flags().bits()
         );
-        
+
         clone_table(pd, kernel_pd);
-        
+
         // Debug: show raw entry values for PD[163] after clone
         crate::kinfo!(
             "  AFTER clone: pd[163].addr = {:#x}, flags = {:#x}",
             pd[163].addr().as_u64(),
             pd[163].flags().bits()
         );
-        
+
         // Debug: verify kernel mappings are preserved
         // Kernel heap PD index = 32, rootfs PD index = 155, module PD index = 62
         let kernel_heap_pd_idx = 32usize;
-        let module_pd_idx = 62usize;  // 0x7d00000 >> 21 = 62
+        let module_pd_idx = 62usize; // 0x7d00000 >> 21 = 62
         let rootfs_pd_idx = 155usize;
         let rootfs_inode_pd_idx = 163usize; // 0x1473a000 >> 21 = 163 (where inodes live)
         crate::kinfo!(
@@ -584,7 +584,7 @@ pub fn create_process_address_space(phys_base: u64, size: u64) -> Result<u64, &'
             rootfs_inode_pd_idx,
             pd[rootfs_inode_pd_idx].addr().as_u64()
         );
-        
+
         // Debug: check PD[171] which is where 0x1573a000 lives
         let pd_171_idx = 171usize;
         crate::kinfo!(

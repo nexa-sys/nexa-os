@@ -46,16 +46,16 @@ pub use ipi::{IPI_CALL_FUNCTION, IPI_HALT, IPI_RESCHEDULE, IPI_TLB_FLUSH};
 pub use ipi::{send_ipi_broadcast, send_reschedule_ipi, send_tlb_flush_ipi_all};
 
 // Re-export CPU functions
-pub use cpu::{cpu_count, current_cpu_data, current_cpu_id, current_gs_data_ptr, get_cpu_data, gs_data_ptr_for_cpu, online_cpus};
+pub use cpu::{
+    cpu_count, current_cpu_data, current_cpu_id, current_gs_data_ptr, get_cpu_data,
+    gs_data_ptr_for_cpu, online_cpus,
+};
 
 // Re-export per-CPU preemption and interrupt state management
 pub use cpu::{
-    preempt_disable, preempt_enable, preempt_disabled,
-    in_interrupt, can_preempt,
-    enter_interrupt, leave_interrupt,
-    set_need_resched, clear_need_resched, need_resched,
-    record_interrupt, record_syscall,
-    current_numa_node,
+    can_preempt, clear_need_resched, current_numa_node, enter_interrupt, in_interrupt,
+    leave_interrupt, need_resched, preempt_disable, preempt_disabled, preempt_enable,
+    record_interrupt, record_syscall, set_need_resched,
 };
 
 // Re-export initialization

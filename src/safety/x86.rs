@@ -467,7 +467,7 @@ pub fn serial_debug_hex(value: u64, digits: usize) {
 // ============================================================================
 
 /// Copy memory from source to destination.
-/// 
+///
 /// # Safety
 /// - Both `src` and `dst` must be valid for `count` bytes
 /// - `src` and `dst` must not overlap
@@ -478,7 +478,7 @@ pub unsafe fn memcpy(dst: *mut u8, src: *const u8, count: usize) {
 }
 
 /// Set memory to a specific byte value.
-/// 
+///
 /// # Safety
 /// - `dst` must be valid for `count` bytes
 /// - `dst` must be properly aligned for byte access
@@ -488,7 +488,7 @@ pub unsafe fn memset(dst: *mut u8, value: u8, count: usize) {
 }
 
 /// Zero-initialize a memory region.
-/// 
+///
 /// # Safety
 /// - `dst` must be valid for `count` bytes
 #[inline]
@@ -501,7 +501,7 @@ pub unsafe fn memzero(dst: *mut u8, count: usize) {
 // ============================================================================
 
 /// Write bytes to low memory (below 1MB) for trampoline setup.
-/// 
+///
 /// # Safety
 /// - The destination address must be valid low memory
 /// - The memory must be identity-mapped
@@ -512,7 +512,7 @@ pub unsafe fn write_low_memory(addr: u64, data: &[u8]) {
 }
 
 /// Read bytes from low memory.
-/// 
+///
 /// # Safety
 /// - The source address must be valid low memory
 /// - The memory must be identity-mapped
@@ -523,7 +523,7 @@ pub unsafe fn read_low_memory(addr: u64, buffer: &mut [u8]) {
 }
 
 /// Read a u64 from a physical address (must be identity-mapped).
-/// 
+///
 /// # Safety
 /// - Address must be valid and identity-mapped
 /// - Address should be 8-byte aligned for best performance
@@ -533,7 +533,7 @@ pub unsafe fn read_phys_u64(addr: u64) -> u64 {
 }
 
 /// Write a u64 to a physical address (must be identity-mapped).
-/// 
+///
 /// # Safety
 /// - Address must be valid and identity-mapped
 /// - Address should be 8-byte aligned for best performance

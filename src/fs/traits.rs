@@ -53,25 +53,25 @@ impl FsError {
     /// Convert to POSIX errno value
     pub fn to_errno(&self) -> i32 {
         match self {
-            FsError::NotFound => -2,           // ENOENT
-            FsError::PermissionDenied => -13,  // EACCES
-            FsError::InvalidArgument => -22,   // EINVAL
-            FsError::AlreadyExists => -17,     // EEXIST
-            FsError::NotEmpty => -39,          // ENOTEMPTY
-            FsError::NotADirectory => -20,     // ENOTDIR
-            FsError::IsADirectory => -21,      // EISDIR
-            FsError::NoSpace => -28,           // ENOSPC
-            FsError::ReadOnly => -30,          // EROFS
-            FsError::IoError => -5,            // EIO
-            FsError::InvalidReference => -5,   // EIO
-            FsError::FsSpecific(_) => -5,      // EIO
-            FsError::NotSupported => -95,      // ENOTSUP
-            FsError::NameTooLong => -36,       // ENAMETOOLONG
-            FsError::TooManySymlinks => -40,   // ELOOP
-            FsError::CrossDevice => -18,       // EXDEV
-            FsError::BadFd => -9,              // EBADF
-            FsError::WouldBlock => -11,        // EAGAIN
-            FsError::FileTooLarge => -27,      // EFBIG
+            FsError::NotFound => -2,          // ENOENT
+            FsError::PermissionDenied => -13, // EACCES
+            FsError::InvalidArgument => -22,  // EINVAL
+            FsError::AlreadyExists => -17,    // EEXIST
+            FsError::NotEmpty => -39,         // ENOTEMPTY
+            FsError::NotADirectory => -20,    // ENOTDIR
+            FsError::IsADirectory => -21,     // EISDIR
+            FsError::NoSpace => -28,          // ENOSPC
+            FsError::ReadOnly => -30,         // EROFS
+            FsError::IoError => -5,           // EIO
+            FsError::InvalidReference => -5,  // EIO
+            FsError::FsSpecific(_) => -5,     // EIO
+            FsError::NotSupported => -95,     // ENOTSUP
+            FsError::NameTooLong => -36,      // ENAMETOOLONG
+            FsError::TooManySymlinks => -40,  // ELOOP
+            FsError::CrossDevice => -18,      // EXDEV
+            FsError::BadFd => -9,             // EBADF
+            FsError::WouldBlock => -11,       // EAGAIN
+            FsError::FileTooLarge => -27,     // EFBIG
         }
     }
 }
@@ -205,7 +205,7 @@ impl DirEntry {
 }
 
 /// Core trait for filesystem implementations
-/// 
+///
 /// This trait defines the minimal interface that any filesystem must implement
 /// to be usable by the VFS layer. It supports both read-only and read-write
 /// filesystems through optional methods.

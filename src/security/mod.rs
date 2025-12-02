@@ -14,8 +14,8 @@ pub use auth::{
 };
 
 // Re-export from elf
+pub use elf::ph_flags;
 pub use elf::{
     Elf64Header, Elf64ProgramHeader, ElfClass, ElfData, ElfLoader, ElfType, LoadResult, PhType,
     ELF_MAGIC,
 };
-pub use elf::ph_flags;

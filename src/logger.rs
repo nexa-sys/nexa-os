@@ -481,7 +481,7 @@ pub fn read_ringbuffer_to_slice(dest: &mut [u8]) -> (usize, usize) {
     let ringbuf = RINGBUF.lock();
     let write_pos = ringbuf.write_pos;
     let buf = &ringbuf.buf;
-    
+
     // Calculate how many valid bytes we have
     let valid_len = if write_pos == 0 {
         // Check if buffer is empty or full
@@ -501,13 +501,13 @@ pub fn read_ringbuffer_to_slice(dest: &mut [u8]) -> (usize, usize) {
             write_pos
         }
     };
-    
+
     if valid_len == 0 {
         return (0, 0);
     }
-    
+
     let copy_len = core::cmp::min(dest.len(), valid_len);
-    
+
     if write_pos >= valid_len {
         // Linear data from start
         dest[..copy_len].copy_from_slice(&buf[..copy_len]);
@@ -516,13 +516,13 @@ pub fn read_ringbuffer_to_slice(dest: &mut [u8]) -> (usize, usize) {
         let start_pos = write_pos;
         let first_chunk_len = core::cmp::min(copy_len, RINGBUF_SIZE - start_pos);
         dest[..first_chunk_len].copy_from_slice(&buf[start_pos..start_pos + first_chunk_len]);
-        
+
         if copy_len > first_chunk_len {
             let second_chunk_len = copy_len - first_chunk_len;
             dest[first_chunk_len..copy_len].copy_from_slice(&buf[..second_chunk_len]);
         }
     }
-    
+
     (copy_len, valid_len)
 }
 

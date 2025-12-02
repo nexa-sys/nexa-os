@@ -24,9 +24,9 @@
 #![allow(dead_code)]
 
 use crate::posix::{FileType, Metadata};
+use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::boxed::Box;
 use core::ptr;
 use spin::Mutex;
 
@@ -151,7 +151,8 @@ impl FileRefHandle {
 }
 
 /// Directory entry callback type
-pub type DirEntryCallback = extern "C" fn(name: *const u8, name_len: usize, inode: u32, file_type: u8, ctx: *mut u8);
+pub type DirEntryCallback =
+    extern "C" fn(name: *const u8, name_len: usize, inode: u32, file_type: u8, ctx: *mut u8);
 
 /// Filesystem statistics
 #[repr(C)]
@@ -174,10 +175,23 @@ pub struct Ext2Stats {
 /// Function pointer types for module operations
 pub type FnExt2New = extern "C" fn(image: *const u8, size: usize) -> Ext2Handle;
 pub type FnExt2Destroy = extern "C" fn(handle: Ext2Handle);
-pub type FnExt2Lookup = extern "C" fn(handle: Ext2Handle, path: *const u8, path_len: usize, out: *mut FileRefHandle) -> i32;
-pub type FnExt2ReadAt = extern "C" fn(file: *const FileRefHandle, offset: usize, buf: *mut u8, len: usize) -> i32;
-pub type FnExt2WriteAt = extern "C" fn(file: *const FileRefHandle, offset: usize, data: *const u8, len: usize) -> i32;
-pub type FnExt2ListDir = extern "C" fn(handle: Ext2Handle, path: *const u8, path_len: usize, cb: DirEntryCallback, ctx: *mut u8) -> i32;
+pub type FnExt2Lookup = extern "C" fn(
+    handle: Ext2Handle,
+    path: *const u8,
+    path_len: usize,
+    out: *mut FileRefHandle,
+) -> i32;
+pub type FnExt2ReadAt =
+    extern "C" fn(file: *const FileRefHandle, offset: usize, buf: *mut u8, len: usize) -> i32;
+pub type FnExt2WriteAt =
+    extern "C" fn(file: *const FileRefHandle, offset: usize, data: *const u8, len: usize) -> i32;
+pub type FnExt2ListDir = extern "C" fn(
+    handle: Ext2Handle,
+    path: *const u8,
+    path_len: usize,
+    cb: DirEntryCallback,
+    ctx: *mut u8,
+) -> i32;
 pub type FnExt2GetStats = extern "C" fn(handle: Ext2Handle, stats: *mut Ext2Stats) -> i32;
 pub type FnExt2SetWritable = extern "C" fn(writable: bool);
 pub type FnExt2IsWritable = extern "C" fn() -> bool;
@@ -258,7 +272,7 @@ pub extern "C" fn kmod_ext2_register(ops: *const Ext2ModuleOps) -> i32 {
     }
 
     let ops = unsafe { &*ops };
-    
+
     // Validate required operations
     if ops.new.is_none() {
         crate::kerror!("ext2_modular: missing 'new' operation");
@@ -339,7 +353,10 @@ pub fn new(image: &'static [u8]) -> Result<(), Ext2Error> {
     *EXT2_IMAGE.lock() = Some(image);
     *EXT2_GLOBAL.lock() = Some(handle);
 
-    crate::kinfo!("ext2_modular: filesystem initialized ({} bytes)", image.len());
+    crate::kinfo!(
+        "ext2_modular: filesystem initialized ({} bytes)",
+        image.len()
+    );
     Ok(())
 }
 
@@ -356,7 +373,7 @@ pub fn global() -> Option<Ext2Handle> {
 /// Lookup a file by path
 pub fn lookup(path: &str) -> Option<FileRefHandle> {
     crate::kdebug!("ext2_modular::lookup called for: {}", path);
-    
+
     let ops = EXT2_OPS.lock();
     let lookup_fn = match ops.lookup {
         Some(f) => f,
@@ -395,8 +412,13 @@ pub fn lookup(path: &str) -> Option<FileRefHandle> {
     // NOTE: No CR3 switch needed - user page tables include kernel mappings
 
     let ret = lookup_fn(handle, path_buf.as_ptr(), path_len, &mut file_ref);
-    
-    crate::ktrace!("ext2_modular::lookup: lookup_fn returned {}, file_ref.inode={}, size={}", ret, file_ref.inode, file_ref.size);
+
+    crate::ktrace!(
+        "ext2_modular::lookup: lookup_fn returned {}, file_ref.inode={}, size={}",
+        ret,
+        file_ref.inode,
+        file_ref.size
+    );
     if ret == 0 && file_ref.is_valid() {
         Some(file_ref)
     } else {
@@ -416,7 +438,7 @@ pub fn read_at(file: &FileRefHandle, offset: usize, buf: &mut [u8]) -> usize {
 
     // NOTE: No CR3 switch needed - user page tables include kernel mappings
     let ret = read_fn(file, offset, buf.as_mut_ptr(), buf.len());
-    
+
     if ret >= 0 {
         ret as usize
     } else {
@@ -457,10 +479,13 @@ where
         None => return,
     };
     drop(ops);
-    
+
     // DEBUG: Print function pointer value via serial
-    crate::serial_println!("EXT2_LIST_DIR: list_fn={:#x}, handle={:#x}", 
-        list_fn as *const () as u64, handle.0 as u64);
+    crate::serial_println!(
+        "EXT2_LIST_DIR: list_fn={:#x}, handle={:#x}",
+        list_fn as *const () as u64,
+        handle.0 as u64
+    );
 
     // CRITICAL FIX: Copy path to a HEAP buffer BEFORE switching CR3
     // The path may point to user-space memory which is not accessible under kernel CR3
@@ -472,7 +497,7 @@ where
     // Create a closure context with heap-allocated name buffer
     struct CallbackContext<'a, F: FnMut(&str, Metadata)> {
         callback: &'a mut F,
-        name_buf: Box<[u8; 256]>,  // Heap-allocated buffer to avoid stack overflow
+        name_buf: Box<[u8; 256]>, // Heap-allocated buffer to avoid stack overflow
     }
 
     extern "C" fn dir_entry_trampoline<F: FnMut(&str, Metadata)>(
@@ -483,25 +508,25 @@ where
         ctx: *mut u8,
     ) {
         crate::serial_println!("TRAMPOLINE: entry name_len={}", name_len);
-        
+
         if name.is_null() || ctx.is_null() {
             return;
         }
 
         unsafe {
             let ctx = &mut *(ctx as *mut CallbackContext<F>);
-            
+
             // Copy name to the heap-allocated buffer to avoid stack overflow
             let name_len = name_len.min(255);
             let name_slice = core::slice::from_raw_parts(name, name_len);
             ctx.name_buf[..name_len].copy_from_slice(name_slice);
-            
+
             // Parse name as UTF-8
             let name_str = match core::str::from_utf8(&ctx.name_buf[..name_len]) {
                 Ok(s) => s,
                 Err(_) => return,
             };
-            
+
             // Skip . and ..
             if name_str == "." || name_str == ".." {
                 return;
@@ -520,14 +545,14 @@ where
             };
 
             let meta = Metadata::empty().with_type(ft);
-            
+
             // NOTE: The callback is kernel code that writes to user-space memory.
             // We stay in kernel CR3 here because:
             // 1. The callback code is in kernel space
             // 2. User memory writes are done via the syscall buffer which is already
             //    accessible from kernel CR3 (kernel has identity mapping of user phys memory)
             // DO NOT switch to user CR3 here - it would cause kernel code to become inaccessible!
-            
+
             (ctx.callback)(name_str, meta);
         }
     }
@@ -543,9 +568,11 @@ where
         name_buf: Box::new([0u8; 256]),
     };
 
-    crate::serial_println!("EXT2_LIST_DIR: calling list_fn, trampoline={:#x}, ctx={:#x}", 
-        dir_entry_trampoline::<F> as *const () as u64, 
-        &ctx as *const _ as u64);
+    crate::serial_println!(
+        "EXT2_LIST_DIR: calling list_fn, trampoline={:#x}, ctx={:#x}",
+        dir_entry_trampoline::<F> as *const () as u64,
+        &ctx as *const _ as u64
+    );
 
     list_fn(
         handle,
@@ -582,7 +609,7 @@ pub fn get_stats() -> Option<Ext2Stats> {
 /// Enable write mode
 pub fn enable_write_mode() {
     *EXT2_WRITABLE.lock() = true;
-    
+
     let ops = EXT2_OPS.lock();
     if let Some(set_writable) = ops.set_writable {
         set_writable(true);

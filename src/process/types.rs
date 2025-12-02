@@ -134,7 +134,7 @@ pub struct Process {
     pub kernel_stack: u64, // Pointer to kernel stack allocation (bottom)
     pub fs_base: u64, // FS segment base for TLS (Thread Local Storage)
     pub cmdline: [u8; MAX_CMDLINE_SIZE], // Command line arguments (null-separated, double-null terminated)
-    pub cmdline_len: usize, // Actual length of command line data
+    pub cmdline_len: usize,              // Actual length of command line data
 }
 
 /// Legacy global PID counter (kept for reference, use pid_tree::allocate_pid instead)
@@ -144,7 +144,10 @@ static NEXT_PID: AtomicU64 = AtomicU64::new(1);
 /// Legacy PID allocation function
 /// NOTE: This is deprecated. Use crate::process::allocate_pid() from pid_tree module instead,
 /// which provides radix tree based PID management with O(log N) operations and PID recycling.
-#[deprecated(since = "0.1.0", note = "Use crate::process::allocate_pid() from pid_tree module instead")]
+#[deprecated(
+    since = "0.1.0",
+    note = "Use crate::process::allocate_pid() from pid_tree module instead"
+)]
 #[allow(dead_code)]
 pub fn allocate_pid_legacy() -> Pid {
     NEXT_PID.fetch_add(1, Ordering::SeqCst)

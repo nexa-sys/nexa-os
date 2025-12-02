@@ -5,11 +5,13 @@
 
 use super::dns::{DnsQuery, DnsResponse, QType, ResolverConfig};
 use super::socket::{socket, sendto, recvfrom, SockAddr, SockAddrIn, AF_INET, AF_INET6, AF_UNSPEC, SOCK_STREAM, SOCK_DGRAM, parse_ipv4, format_ipv4};
+use crate::get_system_dns_servers;
 use core::mem;
 
 const MAX_HOSTNAME: usize = 256;
 const DNS_PORT: u16 = 53;
 const DNS_TIMEOUT_MS: u32 = 5000;
+const KERNEL_DNS_QUERY_CAP: usize = 3;
 
 /// AI flags for getaddrinfo
 pub const AI_PASSIVE: i32 = 0x01;
@@ -259,12 +261,22 @@ impl Resolver {
     /// Returns the first IPv4 address found in the response
     pub fn query_dns(&self, hostname: &str, nameserver_ip: [u8; 4]) -> Option<[u8; 4]> {
         use super::socket::bind;
+        use crate::close;
         
         // Create UDP socket
         let sockfd = socket(AF_INET, SOCK_DGRAM, 0);
         if sockfd < 0 {
             return None;
         }
+
+        // Helper to close socket on return
+        struct SocketGuard(i32);
+        impl Drop for SocketGuard {
+            fn drop(&mut self) {
+                let _ = close(self.0);
+            }
+        }
+        let _guard = SocketGuard(sockfd);
 
         // Bind to any local address and port (0.0.0.0:0)
         // This is essential for UDP sockets to work properly
@@ -429,8 +441,20 @@ pub extern "C" fn resolver_init() -> i32 {
         if let Ok(content) = core::str::from_utf8(&resolv_buf[..len]) {
             resolver.parse_resolv_conf(content);
         }
-    } else {
-        // Set default nameserver if no resolv.conf
+    }
+
+    if resolver.config.nameserver_count == 0 {
+        let mut kernel_dns = [0u32; KERNEL_DNS_QUERY_CAP];
+        if let Ok(count) = get_system_dns_servers(&mut kernel_dns) {
+            for idx in 0..count {
+                let ip_bytes = kernel_dns[idx].to_be_bytes();
+                let _ = resolver.config.add_nameserver(ip_bytes);
+            }
+        }
+    }
+
+    if resolver.config.nameserver_count == 0 {
+        let _ = resolver.config.add_nameserver([10, 0, 2, 3]);
         let _ = resolver.config.add_nameserver([8, 8, 8, 8]);
     }
 

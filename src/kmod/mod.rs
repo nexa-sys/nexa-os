@@ -81,11 +81,13 @@ pub mod pkcs7;
 pub mod symbols;
 
 // Re-export commonly used items from submodules
-pub use crypto::{sha256, add_trusted_key, find_trusted_key, is_key_trusted, trusted_key_count, RsaPublicKey};
+pub use crypto::{
+    add_trusted_key, find_trusted_key, is_key_trusted, sha256, trusted_key_count, RsaPublicKey,
+};
 pub use pkcs7::{
-    verify_module_signature as verify_pkcs7_signature,
     extract_module_signature, parse_pkcs7_signed_data,
-    SignatureVerifyResult, ModuleSigInfo, Pkcs7SignedData, SignerInfo,
+    verify_module_signature as verify_pkcs7_signature, ModuleSigInfo, Pkcs7SignedData,
+    SignatureVerifyResult, SignerInfo,
 };
 
 use spin::Mutex;
@@ -216,7 +218,7 @@ pub fn get_taint_string() -> alloc::string::String {
 
     let mut s = alloc::string::String::from("Tainted: ");
     let flags = [
-        (TaintFlag::ProprietaryModule, 'P', 'G'),  // G = GPL'd
+        (TaintFlag::ProprietaryModule, 'P', 'G'), // G = GPL'd
         (TaintFlag::ForcedLoad, 'F', ' '),
         (TaintFlag::Smp, 'S', ' '),
         (TaintFlag::ForcedUnload, 'R', ' '),
@@ -370,17 +372,17 @@ impl SignatureStatus {
 pub use pkcs7::MODULE_SIG_MAGIC;
 
 /// Verify module signature using PKCS#7
-/// 
+///
 /// This function performs full cryptographic verification of signed modules:
 /// 1. Extracts PKCS#7 signature from module data
 /// 2. Parses PKCS#7 SignedData structure
 /// 3. Verifies digest matches module content
 /// 4. Validates RSA signature against trusted keyring
-/// 
+///
 /// Returns SignatureStatus indicating verification result.
 fn verify_module_signature(data: &[u8]) -> SignatureStatus {
     let result = pkcs7::verify_module_signature(data);
-    
+
     // Log detailed verification result
     match result {
         pkcs7::SignatureVerifyResult::Valid => {
@@ -393,7 +395,7 @@ fn verify_module_signature(data: &[u8]) -> SignatureStatus {
             crate::kwarn!("Module signature verification failed: {}", result.as_str());
         }
     }
-    
+
     result.to_signature_status()
 }
 
@@ -521,7 +523,11 @@ impl NkmHeader {
 
     /// Get module name as string
     pub fn name_str(&self) -> &str {
-        let end = self.name.iter().position(|&c| c == 0).unwrap_or(MAX_MODULE_NAME);
+        let end = self
+            .name
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(MAX_MODULE_NAME);
         core::str::from_utf8(&self.name[..end]).unwrap_or("unknown")
     }
 
@@ -679,7 +685,9 @@ impl ModuleInfo {
 
     /// Check if module taints the kernel
     pub fn will_taint(&self) -> bool {
-        self.taints_kernel || !self.license.is_gpl_compatible() || self.sig_status == SignatureStatus::Unsigned
+        self.taints_kernel
+            || !self.license.is_gpl_compatible()
+            || self.sig_status == SignatureStatus::Unsigned
     }
 
     /// Get taint flags this module would add
@@ -779,14 +787,17 @@ impl ModuleRegistry {
     }
 
     fn unregister(&mut self, name: &str) -> Result<ModuleInfo, ModuleError> {
-        let pos = self.modules.iter().position(|m| m.name == name)
+        let pos = self
+            .modules
+            .iter()
+            .position(|m| m.name == name)
             .ok_or(ModuleError::NotFound)?;
-        
+
         let info = &self.modules[pos];
         if info.ref_count > 0 {
             return Err(ModuleError::InUse);
         }
-        
+
         Ok(self.modules.swap_remove(pos))
     }
 
@@ -886,18 +897,24 @@ impl From<elf::LoaderError> for ModuleError {
 pub fn init() {
     // Initialize kernel symbol table first
     symbols::init();
-    
+
     // Initialize PKCS#7 signature verification subsystem
     pkcs7::init();
-    
+
     // Load embedded signing keys into trusted keyring
     let key_count = embedded_keys::init();
-    crate::kinfo!("Loaded {} embedded signing key(s) into trusted keyring", key_count);
-    
+    crate::kinfo!(
+        "Loaded {} embedded signing key(s) into trusted keyring",
+        key_count
+    );
+
     // Register ext2 modular filesystem symbols
     crate::fs::ext2_modular::init();
-    
-    crate::kinfo!("Kernel module system initialized (max {} modules)", MAX_MODULES);
+
+    crate::kinfo!(
+        "Kernel module system initialized (max {} modules)",
+        MAX_MODULES
+    );
     crate::kinfo!("Module signature verification: PKCS#7/CMS with SHA-256/RSA");
 }
 
@@ -957,7 +974,7 @@ fn load_elf_module(data: &[u8]) -> Result<(), ModuleError> {
 
     // Load the ELF module
     let loaded = elf::load_elf_module(data)?;
-    
+
     crate::kinfo!(
         "ELF module loaded at {:#x}, size {} bytes",
         loaded.base,
@@ -983,7 +1000,7 @@ fn load_elf_module(data: &[u8]) -> Result<(), ModuleError> {
     if taint_flags != 0 {
         info.taints_kernel = true;
         info.taint_flags = taint_flags;
-        
+
         // Apply taint to kernel
         if taint_flags & (TaintFlag::ProprietaryModule as u32) != 0 {
             add_taint(TaintFlag::ProprietaryModule);
@@ -994,7 +1011,7 @@ fn load_elf_module(data: &[u8]) -> Result<(), ModuleError> {
         if taint_flags & (TaintFlag::OutOfTreeModule as u32) != 0 {
             add_taint(TaintFlag::OutOfTreeModule);
         }
-        
+
         crate::kwarn!("Module taints kernel: {:#x}", taint_flags);
     }
 
@@ -1051,21 +1068,33 @@ fn load_simple_nkm(data: &[u8]) -> Result<(), ModuleError> {
             crate::kinfo!("Module signature verified successfully");
         }
         SignatureStatus::Unsigned => {
-            crate::kerror!("SECURITY: Module '{}' is not signed - loading DENIED", header.name_str());
+            crate::kerror!(
+                "SECURITY: Module '{}' is not signed - loading DENIED",
+                header.name_str()
+            );
             crate::kerror!("All kernel modules must be signed with a trusted key.");
             crate::kerror!("Use 'scripts/sign-module.sh' to sign the module.");
             return Err(ModuleError::SignatureRequired);
         }
         SignatureStatus::Invalid => {
-            crate::kerror!("SECURITY: Module '{}' signature is INVALID - loading DENIED", header.name_str());
+            crate::kerror!(
+                "SECURITY: Module '{}' signature is INVALID - loading DENIED",
+                header.name_str()
+            );
             return Err(ModuleError::SignatureInvalid);
         }
         SignatureStatus::KeyNotFound => {
-            crate::kerror!("SECURITY: Signing key for '{}' not in trusted keyring - loading DENIED", header.name_str());
+            crate::kerror!(
+                "SECURITY: Signing key for '{}' not in trusted keyring - loading DENIED",
+                header.name_str()
+            );
             return Err(ModuleError::SigningKeyNotFound);
         }
         SignatureStatus::UnknownFormat => {
-            crate::kerror!("SECURITY: Unknown signature format for '{}' - loading DENIED", header.name_str());
+            crate::kerror!(
+                "SECURITY: Unknown signature format for '{}' - loading DENIED",
+                header.name_str()
+            );
             return Err(ModuleError::SignatureInvalid);
         }
     }
@@ -1145,7 +1174,11 @@ pub fn unload_module(name: &str) -> Result<(), ModuleError> {
         let mut registry = MODULE_REGISTRY.lock();
         if let Some(info) = registry.find_mut(name) {
             if !info.can_unload() {
-                crate::kwarn!("Module '{}' cannot be unloaded (ref_count={})", name, info.ref_count);
+                crate::kwarn!(
+                    "Module '{}' cannot be unloaded (ref_count={})",
+                    name,
+                    info.ref_count
+                );
                 return Err(ModuleError::InUse);
             }
             info.state = ModuleState::Unloading;
@@ -1158,11 +1191,15 @@ pub fn unload_module(name: &str) -> Result<(), ModuleError> {
 
     // Remove from registry
     let removed = MODULE_REGISTRY.lock().unregister(name)?;
-    
+
     // Free module memory if it was dynamically loaded
     if removed.base_addr != 0 && removed.size > 0 {
         // Memory will be freed when the containing allocation is dropped
-        crate::kinfo!("Module memory at {:#x} ({} bytes) released", removed.base_addr, removed.size);
+        crate::kinfo!(
+            "Module memory at {:#x} ({} bytes) released",
+            removed.base_addr,
+            removed.size
+        );
     }
 
     crate::kinfo!("Module '{}' unloaded", name);
@@ -1199,7 +1236,8 @@ pub fn load_from_initramfs(name: &str) -> Result<(), ModuleError> {
     path_buf[prefix_len..prefix_len + name_len].copy_from_slice(&name.as_bytes()[..name_len]);
     path_buf[prefix_len + name_len..total_len].copy_from_slice(suffix);
 
-    let path = core::str::from_utf8(&path_buf[..total_len]).map_err(|_| ModuleError::InvalidFormat)?;
+    let path =
+        core::str::from_utf8(&path_buf[..total_len]).map_err(|_| ModuleError::InvalidFormat)?;
 
     crate::kinfo!("Loading module from initramfs: {}", path);
 
@@ -1422,8 +1460,9 @@ pub fn print_module_details(name: &str) {
         if !info.params.is_empty() {
             crate::kinfo!("Parameters:");
             for param in &info.params {
-                crate::kinfo!("  {}: {:?} = {} ({})", 
-                    param.name, 
+                crate::kinfo!(
+                    "  {}: {:?} = {} ({})",
+                    param.name,
                     param.param_type,
                     param.value,
                     if param.writable { "rw" } else { "ro" }
@@ -1478,7 +1517,10 @@ pub fn load_module_with_deps(name: &str, data: &[u8], deps: &[&str]) -> Result<(
         Ok(()) => {
             // Store dependencies in the module info
             if let Some(info) = MODULE_REGISTRY.lock().find_mut(name) {
-                info.dependencies = deps.iter().map(|s| alloc::string::String::from(*s)).collect();
+                info.dependencies = deps
+                    .iter()
+                    .map(|s| alloc::string::String::from(*s))
+                    .collect();
             }
             Ok(())
         }
@@ -1521,7 +1563,7 @@ pub fn force_load_module(data: &[u8]) -> Result<(), ModuleError> {
     // Add forced load taint
     add_taint(TaintFlag::ForcedLoad);
     crate::kwarn!("Force loading module - kernel will be tainted");
-    
+
     load_module(data)
 }
 
@@ -1530,51 +1572,70 @@ pub fn force_unload_module(name: &str) -> Result<(), ModuleError> {
     // Add forced unload taint
     add_taint(TaintFlag::ForcedUnload);
     crate::kwarn!("Force unloading module '{}' - kernel will be tainted", name);
-    
+
     // Force set ref_count to 0
     {
         let mut registry = MODULE_REGISTRY.lock();
         if let Some(info) = registry.find_mut(name) {
             if info.ref_count > 0 {
-                crate::kwarn!("Module '{}' has {} references, forcing unload", name, info.ref_count);
+                crate::kwarn!(
+                    "Module '{}' has {} references, forcing unload",
+                    name,
+                    info.ref_count
+                );
                 info.ref_count = 0;
             }
         }
     }
-    
+
     unload_module(name)
 }
 
 /// Load module with custom options
-pub fn load_module_with_options(data: &[u8], options: &ModuleLoadOptions) -> Result<(), ModuleError> {
+pub fn load_module_with_options(
+    data: &[u8],
+    options: &ModuleLoadOptions,
+) -> Result<(), ModuleError> {
     if options.force {
         add_taint(TaintFlag::ForcedLoad);
         crate::kwarn!("Force loading module with options");
     }
-    
+
     // Load the module
     load_module(data)?;
-    
+
     // Apply parameters if specified
     // Note: This is a simplified implementation; actual param handling would need module name
     if !options.params.is_empty() {
         crate::kinfo!("Module parameters specified: {:?}", options.params);
         // TODO: Apply parameters after loading
     }
-    
+
     Ok(())
 }
 
 /// Set a module parameter at runtime
-pub fn set_module_param(module_name: &str, param_name: &str, value: &str) -> Result<(), ModuleError> {
+pub fn set_module_param(
+    module_name: &str,
+    param_name: &str,
+    value: &str,
+) -> Result<(), ModuleError> {
     let mut registry = MODULE_REGISTRY.lock();
     if let Some(info) = registry.find_mut(module_name) {
         if info.set_param(param_name, value) {
-            crate::kinfo!("Set module '{}' param '{}' = '{}'", module_name, param_name, value);
+            crate::kinfo!(
+                "Set module '{}' param '{}' = '{}'",
+                module_name,
+                param_name,
+                value
+            );
             Ok(())
         } else {
-            crate::kwarn!("Failed to set param '{}' on module '{}' (not found or read-only)", 
-                param_name, module_name);
+            crate::kwarn!(
+                "Failed to set param '{}' on module '{}' (not found or read-only)",
+                param_name,
+                module_name
+            );
             Err(ModuleError::InvalidFormat)
         }
     } else {
@@ -1599,15 +1660,19 @@ pub fn set_module_license(module_name: &str, license: &str) -> Result<(), Module
         let license_type = LicenseType::from_string(license);
         let old_taints = !info.license.is_gpl_compatible();
         info.license = license_type;
-        
+
         // Check if taint status changed
         let new_taints = !license_type.is_gpl_compatible();
         if new_taints && !old_taints {
             drop(registry); // Release lock before adding taint
             add_taint(TaintFlag::ProprietaryModule);
         }
-        
-        crate::kinfo!("Module '{}' license set to {}", module_name, license_type.as_str());
+
+        crate::kinfo!(
+            "Module '{}' license set to {}",
+            module_name,
+            license_type.as_str()
+        );
         Ok(())
     } else {
         Err(ModuleError::NotFound)
@@ -1664,10 +1729,12 @@ pub fn get_tainting_module_count() -> usize {
 /// Check if kernel is tainted by any module
 pub fn is_kernel_tainted_by_modules() -> bool {
     let taint = get_taint();
-    (taint & (TaintFlag::ProprietaryModule as u32 
-            | TaintFlag::UnsignedModule as u32 
-            | TaintFlag::OutOfTreeModule as u32 
-            | TaintFlag::ForcedLoad as u32)) != 0
+    (taint
+        & (TaintFlag::ProprietaryModule as u32
+            | TaintFlag::UnsignedModule as u32
+            | TaintFlag::OutOfTreeModule as u32
+            | TaintFlag::ForcedLoad as u32))
+        != 0
 }
 
 #[cfg(test)]
@@ -1676,7 +1743,12 @@ mod tests {
 
     #[test]
     fn test_generate_and_parse_nkm() {
-        let data = generate_nkm("ext2", ModuleType::Filesystem, "1.0.0", "ext2 filesystem driver");
+        let data = generate_nkm(
+            "ext2",
+            ModuleType::Filesystem,
+            "1.0.0",
+            "ext2 filesystem driver",
+        );
         let header = NkmHeader::parse(&data).expect("parse failed");
         assert_eq!(header.name_str(), "ext2");
         assert_eq!(header.module_type(), ModuleType::Filesystem);

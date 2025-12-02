@@ -19,9 +19,7 @@ pub mod vga;
 pub use serial::{init as init_serial, try_read_byte, write_byte, write_bytes, write_str};
 
 // Re-export from keyboard
-pub use keyboard::{
-    add_scancode, read_char, read_line, read_raw, read_raw_for_tty, try_read_char,
-};
+pub use keyboard::{add_scancode, read_char, read_line, read_raw, read_raw_for_tty, try_read_char};
 
 // Re-export from framebuffer
 pub use framebuffer::{
@@ -34,7 +32,7 @@ pub use framebuffer::{
 // Re-export from vga
 pub use vga::{
     clear_screen, init as init_vga, is_vga_ready, print_char, set_vga_ready, try_with_writer,
-    with_writer, Color, ColorCode, Writer, WRITER, VGA_READY, VGA_WRITER,
+    with_writer, Color, ColorCode, Writer, VGA_READY, VGA_WRITER, WRITER,
 };
 
 // Re-export from acpi

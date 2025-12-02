@@ -75,17 +75,15 @@ static NEXT_MMAP_ADDR: AtomicU64 = AtomicU64::new(0);
 /// # Returns
 /// * Starting address of mapped region on success
 /// * MAP_FAILED (-1) on error with errno set
-pub fn mmap(
-    addr: u64,
-    length: u64,
-    prot: u64,
-    flags: u64,
-    fd: i64,
-    offset: u64,
-) -> u64 {
+pub fn mmap(addr: u64, length: u64, prot: u64, flags: u64, fd: i64, offset: u64) -> u64 {
     ktrace!(
         "[mmap] addr={:#x}, length={:#x}, prot={:#x}, flags={:#x}, fd={}, offset={:#x}",
-        addr, length, prot, flags, fd, offset
+        addr,
+        length,
+        prot,
+        flags,
+        fd,
+        offset
     );
 
     // Validate length
@@ -146,8 +144,12 @@ pub fn mmap(
         }
     } else if fd >= 0 {
         // File-backed mapping: read file contents into the mapped region
-        ktrace!("[mmap] File-backed mapping: fd={}, offset={:#x}", fd, offset);
-        
+        ktrace!(
+            "[mmap] File-backed mapping: fd={}, offset={:#x}",
+            fd,
+            offset
+        );
+
         // Read file contents into the mapped region
         if let Err(e) = read_file_into_mapping(fd as u64, offset, map_addr, aligned_length) {
             kerror!("[mmap] Failed to read file into mapping: {}", e);
@@ -163,7 +165,10 @@ pub fn mmap(
 
     kinfo!(
         "[mmap] Mapped {:#x} bytes at {:#x} (prot={:#x}, flags={:#x})",
-        aligned_length, map_addr, prot, flags
+        aligned_length,
+        map_addr,
+        prot,
+        flags
     );
 
     posix::set_errno(0);
@@ -171,46 +176,51 @@ pub fn mmap(
 }
 
 /// Read file contents into a mapped memory region
-/// 
+///
 /// # Arguments
 /// * `fd` - File descriptor
 /// * `offset` - Offset in file to start reading
 /// * `dest_addr` - Destination address in memory
 /// * `length` - Number of bytes to read
-fn read_file_into_mapping(fd: u64, offset: u64, dest_addr: u64, length: u64) -> Result<usize, &'static str> {
-    use super::types::{FD_BASE, MAX_OPEN_FILES, FileBacking, get_file_handle};
-    
+fn read_file_into_mapping(
+    fd: u64,
+    offset: u64,
+    dest_addr: u64,
+    length: u64,
+) -> Result<usize, &'static str> {
+    use super::types::{get_file_handle, FileBacking, FD_BASE, MAX_OPEN_FILES};
+
     // Validate file descriptor
     if fd < FD_BASE {
         return Err("Invalid file descriptor");
     }
-    
+
     let idx = (fd - FD_BASE) as usize;
     if idx >= MAX_OPEN_FILES {
         return Err("Invalid file descriptor");
     }
-    
+
     // Get file handle and read content
     unsafe {
         let handle = match get_file_handle(idx) {
             Some(h) => h,
             None => return Err("File not open"),
         };
-        
+
         // Determine file size
         let file_size = handle.metadata.size as u64;
-        
+
         // Calculate how much to read
         let read_start = offset.min(file_size);
         let available = file_size.saturating_sub(read_start);
         let to_read = length.min(available) as usize;
-        
+
         if to_read == 0 {
             // Nothing to read, just zero the memory
             core::ptr::write_bytes(dest_addr as *mut u8, 0, length as usize);
             return Ok(0);
         }
-        
+
         // Read file content based on backing type
         match &handle.backing {
             FileBacking::Inline(data) => {
@@ -236,12 +246,9 @@ fn read_file_into_mapping(fd: u64, offset: u64, dest_addr: u64, length: u64) -> 
             }
             FileBacking::Ext2(file_ref) => {
                 // Read from ext2 file
-                let dest_slice = core::slice::from_raw_parts_mut(
-                    dest_addr as *mut u8,
-                    to_read,
-                );
+                let dest_slice = core::slice::from_raw_parts_mut(dest_addr as *mut u8, to_read);
                 let bytes_read = file_ref.read_at(read_start as usize, dest_slice);
-                
+
                 // Zero remaining
                 if bytes_read < length as usize {
                     core::ptr::write_bytes(
@@ -259,7 +266,7 @@ fn read_file_into_mapping(fd: u64, offset: u64, dest_addr: u64, length: u64) -> 
             }
         }
     }
-    
+
     // Zero the memory if we couldn't read
     unsafe {
         core::ptr::write_bytes(dest_addr as *mut u8, 0, length as usize);
@@ -269,15 +276,15 @@ fn read_file_into_mapping(fd: u64, offset: u64, dest_addr: u64, length: u64) -> 
 
 /// Allocate a new mmap address using bump allocator
 fn allocate_mmap_address(size: u64) -> u64 {
-    use crate::process::{USER_VIRT_BASE, USER_REGION_SIZE, INTERP_BASE};
-    
+    use crate::process::{INTERP_BASE, USER_REGION_SIZE, USER_VIRT_BASE};
+
     let user_end = USER_VIRT_BASE + USER_REGION_SIZE;
-    
+
     // Lazy initialize: start after interpreter base + some offset for ld itself
     // The dynamic linker is loaded at INTERP_BASE, so start mmap allocations
     // after it (at INTERP_BASE + 0x100000 to leave 1MB for ld)
     let mmap_start = INTERP_BASE + 0x100000; // 0xB00000
-    
+
     let current = NEXT_MMAP_ADDR.load(Ordering::SeqCst);
     if current == 0 || current < mmap_start {
         // First allocation - initialize to start of mmap region
@@ -285,27 +292,32 @@ fn allocate_mmap_address(size: u64) -> u64 {
             current,
             mmap_start,
             Ordering::SeqCst,
-            Ordering::SeqCst
+            Ordering::SeqCst,
         );
     }
-    
+
     // Try to allocate from the bump allocator
     let addr = NEXT_MMAP_ADDR.fetch_add(size, Ordering::SeqCst);
-    
+
     // Check bounds
     if addr + size > user_end {
         // Out of virtual address space
-        kerror!("[mmap] Out of address space: addr={:#x} size={:#x} user_end={:#x}", addr, size, user_end);
+        kerror!(
+            "[mmap] Out of address space: addr={:#x} size={:#x} user_end={:#x}",
+            addr,
+            size,
+            user_end
+        );
         return MAP_FAILED;
     }
-    
+
     addr
 }
 
 /// Check if we can map at a given address (simple check)
 fn can_map_at(addr: u64, _size: u64) -> bool {
-    use crate::process::{USER_VIRT_BASE, USER_REGION_SIZE};
-    
+    use crate::process::{USER_REGION_SIZE, USER_VIRT_BASE};
+
     // Basic bounds check
     let user_end = USER_VIRT_BASE + USER_REGION_SIZE;
     addr >= USER_VIRT_BASE && addr < user_end
@@ -373,7 +385,10 @@ pub fn munmap(addr: u64, length: u64) -> u64 {
 
     // Region not found - this is not necessarily an error in POSIX
     // munmap on non-mapped memory is allowed
-    kdebug!("[munmap] No mapping found at {:#x}, returning success", addr);
+    kdebug!(
+        "[munmap] No mapping found at {:#x}, returning success",
+        addr
+    );
     posix::set_errno(0);
     0
 }
@@ -389,7 +404,12 @@ pub fn munmap(addr: u64, length: u64) -> u64 {
 /// * 0 on success
 /// * -1 on error with errno set
 pub fn mprotect(addr: u64, length: u64, prot: u64) -> u64 {
-    ktrace!("[mprotect] addr={:#x}, length={:#x}, prot={:#x}", addr, length, prot);
+    ktrace!(
+        "[mprotect] addr={:#x}, length={:#x}, prot={:#x}",
+        addr,
+        length,
+        prot
+    );
 
     // Validate address alignment
     if (addr & (PAGE_SIZE - 1)) != 0 {
@@ -409,13 +429,16 @@ pub fn mprotect(addr: u64, length: u64, prot: u64) -> u64 {
     // 1. Find the affected memory regions
     // 2. Split regions if necessary
     // 3. Update page table entries with new permissions
-    
+
     // For now, just update our tracking and return success
     unsafe {
         for region in MMAP_REGIONS.iter_mut() {
             if region.in_use && region.start <= addr && addr < region.start + region.size {
                 region.prot = prot;
-                kdebug!("[mprotect] Updated protection for region at {:#x}", region.start);
+                kdebug!(
+                    "[mprotect] Updated protection for region at {:#x}",
+                    region.start
+                );
             }
         }
     }
@@ -434,51 +457,46 @@ pub fn mprotect(addr: u64, length: u64, prot: u64) -> u64 {
 /// * 0 on error (historically, brk returns 0 on failure)
 pub fn brk(addr: u64) -> u64 {
     use crate::process::{HEAP_BASE, HEAP_SIZE};
-    
+
     // Get current process heap bounds
     let heap_start = HEAP_BASE;
     let heap_max = HEAP_BASE + HEAP_SIZE;
-    
+
     // Track current break per process (simplified - using static for now)
     static CURRENT_BRK: AtomicU64 = AtomicU64::new(0);
-    
+
     // Initialize break to heap start if not set
-    let _ = CURRENT_BRK.compare_exchange(
-        0,
-        heap_start,
-        Ordering::SeqCst,
-        Ordering::Relaxed
-    );
-    
+    let _ = CURRENT_BRK.compare_exchange(0, heap_start, Ordering::SeqCst, Ordering::Relaxed);
+
     if addr == 0 {
         // Query current break
         let current = CURRENT_BRK.load(Ordering::SeqCst);
         ktrace!("[brk] Query: current={:#x}", current);
         return current;
     }
-    
+
     // Validate new break address
     if addr < heap_start || addr > heap_max {
-        kerror!("[brk] Address {:#x} out of heap bounds [{:#x}, {:#x}]", 
-                addr, heap_start, heap_max);
+        kerror!(
+            "[brk] Address {:#x} out of heap bounds [{:#x}, {:#x}]",
+            addr,
+            heap_start,
+            heap_max
+        );
         posix::set_errno(errno::ENOMEM);
         return CURRENT_BRK.load(Ordering::SeqCst);
     }
-    
+
     // Update break
     let old_brk = CURRENT_BRK.swap(addr, Ordering::SeqCst);
-    
+
     // Zero new memory if expanding
     if addr > old_brk {
         unsafe {
-            core::ptr::write_bytes(
-                old_brk as *mut u8,
-                0,
-                (addr - old_brk) as usize
-            );
+            core::ptr::write_bytes(old_brk as *mut u8, 0, (addr - old_brk) as usize);
         }
     }
-    
+
     ktrace!("[brk] Set: old={:#x}, new={:#x}", old_brk, addr);
     posix::set_errno(0);
     addr

@@ -20,10 +20,10 @@
 //! - /proc/mounts - Current mounts
 //! - /proc/cmdline - Kernel command line
 
+use crate::mm;
 use crate::posix::{FileType, Metadata};
 use crate::process::{Pid, ProcessState, MAX_PROCESSES};
 use crate::scheduler;
-use crate::mm;
 use crate::smp;
 use core::fmt::Write;
 
@@ -69,18 +69,24 @@ fn get_cpuid_info() -> (&'static str, u32, u32, u32, &'static str, u32) {
     #[cfg(target_arch = "x86_64")]
     unsafe {
         use core::arch::x86_64::__cpuid;
-        
+
         // Get vendor ID (CPUID leaf 0)
         let cpuid0 = __cpuid(0);
         let vendor_bytes: [u8; 12] = [
-            (cpuid0.ebx & 0xFF) as u8, ((cpuid0.ebx >> 8) & 0xFF) as u8,
-            ((cpuid0.ebx >> 16) & 0xFF) as u8, ((cpuid0.ebx >> 24) & 0xFF) as u8,
-            (cpuid0.edx & 0xFF) as u8, ((cpuid0.edx >> 8) & 0xFF) as u8,
-            ((cpuid0.edx >> 16) & 0xFF) as u8, ((cpuid0.edx >> 24) & 0xFF) as u8,
-            (cpuid0.ecx & 0xFF) as u8, ((cpuid0.ecx >> 8) & 0xFF) as u8,
-            ((cpuid0.ecx >> 16) & 0xFF) as u8, ((cpuid0.ecx >> 24) & 0xFF) as u8,
+            (cpuid0.ebx & 0xFF) as u8,
+            ((cpuid0.ebx >> 8) & 0xFF) as u8,
+            ((cpuid0.ebx >> 16) & 0xFF) as u8,
+            ((cpuid0.ebx >> 24) & 0xFF) as u8,
+            (cpuid0.edx & 0xFF) as u8,
+            ((cpuid0.edx >> 8) & 0xFF) as u8,
+            ((cpuid0.edx >> 16) & 0xFF) as u8,
+            ((cpuid0.edx >> 24) & 0xFF) as u8,
+            (cpuid0.ecx & 0xFF) as u8,
+            ((cpuid0.ecx >> 8) & 0xFF) as u8,
+            ((cpuid0.ecx >> 16) & 0xFF) as u8,
+            ((cpuid0.ecx >> 24) & 0xFF) as u8,
         ];
-        
+
         let vendor = if &vendor_bytes == b"GenuineIntel" {
             "GenuineIntel"
         } else if &vendor_bytes == b"AuthenticAMD" {
@@ -88,7 +94,7 @@ fn get_cpuid_info() -> (&'static str, u32, u32, u32, &'static str, u32) {
         } else {
             "Unknown"
         };
-        
+
         // Get family/model/stepping (CPUID leaf 1)
         let cpuid1 = __cpuid(1);
         let stepping = cpuid1.eax & 0xF;
@@ -96,19 +102,19 @@ fn get_cpuid_info() -> (&'static str, u32, u32, u32, &'static str, u32) {
         let base_family = (cpuid1.eax >> 8) & 0xF;
         let ext_model = (cpuid1.eax >> 16) & 0xF;
         let ext_family = (cpuid1.eax >> 20) & 0xFF;
-        
+
         let family = if base_family == 0xF {
             base_family + ext_family
         } else {
             base_family
         };
-        
+
         let model = if base_family == 0x6 || base_family == 0xF {
             (ext_model << 4) | base_model
         } else {
             base_model
         };
-        
+
         // Get processor brand string (CPUID leaves 0x80000002-0x80000004)
         let max_ext = __cpuid(0x80000000).eax;
         let model_name = if max_ext >= 0x80000004 {
@@ -123,7 +129,7 @@ fn get_cpuid_info() -> (&'static str, u32, u32, u32, &'static str, u32) {
         } else {
             "Generic x86_64 Processor"
         };
-        
+
         // Get CPU frequency (CPUID leaf 0x16 if available)
         let cpu_mhz = if cpuid0.eax >= 0x16 {
             let cpuid16 = __cpuid(0x16);
@@ -135,10 +141,10 @@ fn get_cpuid_info() -> (&'static str, u32, u32, u32, &'static str, u32) {
         } else {
             3000 // Default 3GHz
         };
-        
+
         (vendor, family, model, stepping, model_name, cpu_mhz)
     }
-    
+
     #[cfg(not(target_arch = "x86_64"))]
     ("Unknown", 0, 0, 0, "Unknown Processor", 1000)
 }
@@ -148,11 +154,11 @@ fn get_cpu_flags() -> &'static str {
     #[cfg(target_arch = "x86_64")]
     unsafe {
         use core::arch::x86_64::__cpuid;
-        
+
         let cpuid1 = __cpuid(1);
         let edx = cpuid1.edx;
         let ecx = cpuid1.ecx;
-        
+
         // Extended features (CPUID leaf 7)
         let cpuid0 = __cpuid(0);
         let (ebx7, ecx7) = if cpuid0.eax >= 7 {
@@ -161,7 +167,7 @@ fn get_cpu_flags() -> &'static str {
         } else {
             (0, 0)
         };
-        
+
         // Extended CPUID leaf 0x80000001
         let max_ext = __cpuid(0x80000000).eax;
         let (edx_ext, ecx_ext) = if max_ext >= 0x80000001 {
@@ -170,22 +176,34 @@ fn get_cpu_flags() -> &'static str {
         } else {
             (0, 0)
         };
-        
+
         // Build flags string based on detected features
         // This is a representative subset - real Linux shows many more
         let mut flags = "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2";
-        
+
         // Add common modern features based on actual detection
-        if ecx & (1 << 0) != 0 { flags = "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 sse3"; }
-        if ecx & (1 << 9) != 0 { flags = "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 sse3 ssse3"; }
-        if ecx & (1 << 19) != 0 { flags = "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 sse3 ssse3 sse4_1"; }
-        if ecx & (1 << 20) != 0 { flags = "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 sse3 ssse3 sse4_1 sse4_2"; }
-        if edx_ext & (1 << 29) != 0 { flags = "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 sse3 ssse3 sse4_1 sse4_2 lm"; }
-        if edx_ext & (1 << 20) != 0 { flags = "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 sse3 ssse3 sse4_1 sse4_2 lm nx"; }
-        
+        if ecx & (1 << 0) != 0 {
+            flags = "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 sse3";
+        }
+        if ecx & (1 << 9) != 0 {
+            flags = "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 sse3 ssse3";
+        }
+        if ecx & (1 << 19) != 0 {
+            flags = "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 sse3 ssse3 sse4_1";
+        }
+        if ecx & (1 << 20) != 0 {
+            flags = "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 sse3 ssse3 sse4_1 sse4_2";
+        }
+        if edx_ext & (1 << 29) != 0 {
+            flags = "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 sse3 ssse3 sse4_1 sse4_2 lm";
+        }
+        if edx_ext & (1 << 20) != 0 {
+            flags = "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 sse3 ssse3 sse4_1 sse4_2 lm nx";
+        }
+
         flags
     }
-    
+
     #[cfg(not(target_arch = "x86_64"))]
     "fpu"
 }
@@ -194,12 +212,12 @@ fn get_cpu_flags() -> &'static str {
 pub fn generate_version() -> (&'static [u8], usize) {
     let mut buf = PROC_BUFFER.lock();
     let mut writer = BufWriter::new(&mut buf[..]);
-    
+
     let _ = writeln!(
         writer,
         "NexaOS version 0.1.0 (rust@nexaos) (rustc 1.75.0) #1 SMP PREEMPT_DYNAMIC"
     );
-    
+
     let len = writer.len();
     // SAFETY: Buffer has static lifetime, content is valid until next call
     let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), len) };
@@ -210,18 +228,22 @@ pub fn generate_version() -> (&'static [u8], usize) {
 pub fn generate_uptime() -> (&'static [u8], usize) {
     let mut buf = PROC_BUFFER.lock();
     let mut writer = BufWriter::new(&mut buf[..]);
-    
+
     // Get tick count (in ms), convert to seconds
     let tick_ms = scheduler::get_tick();
     let uptime_secs = tick_ms / 1000;
     let uptime_frac = (tick_ms % 1000) / 10; // Two decimal places
-    
+
     // Idle time (simplified - assume 10% idle)
     let idle_secs = uptime_secs / 10;
     let idle_frac = uptime_frac / 10;
-    
-    let _ = writeln!(writer, "{}.{:02} {}.{:02}", uptime_secs, uptime_frac, idle_secs, idle_frac);
-    
+
+    let _ = writeln!(
+        writer,
+        "{}.{:02} {}.{:02}",
+        uptime_secs, uptime_frac, idle_secs, idle_frac
+    );
+
     let len = writer.len();
     let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), len) };
     (slice, len)
@@ -231,11 +253,11 @@ pub fn generate_uptime() -> (&'static [u8], usize) {
 pub fn generate_loadavg() -> (&'static [u8], usize) {
     let mut buf = PROC_BUFFER.lock();
     let mut writer = BufWriter::new(&mut buf[..]);
-    
+
     let (load1, load5, load15) = scheduler::get_load_average();
     let (ready, running, _sleeping, _zombie) = scheduler::get_process_counts();
     let total_procs = ready + running;
-    
+
     // Format: load1 load5 load15 running/total last_pid
     // Load averages are floats, convert to integer parts
     let load1_int = load1 as u32;
@@ -244,18 +266,21 @@ pub fn generate_loadavg() -> (&'static [u8], usize) {
     let load5_frac = ((load5 - load5_int as f32) * 100.0) as u32;
     let load15_int = load15 as u32;
     let load15_frac = ((load15 - load15_int as f32) * 100.0) as u32;
-    
+
     let _ = writeln!(
         writer,
         "{}.{:02} {}.{:02} {}.{:02} {}/{} {}",
-        load1_int, load1_frac,
-        load5_int, load5_frac,
-        load15_int, load15_frac,
+        load1_int,
+        load1_frac,
+        load5_int,
+        load5_frac,
+        load15_int,
+        load15_frac,
         running,
         total_procs,
         scheduler::get_current_pid().unwrap_or(0)
     );
-    
+
     let len = writer.len();
     let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), len) };
     (slice, len)
@@ -265,10 +290,10 @@ pub fn generate_loadavg() -> (&'static [u8], usize) {
 pub fn generate_meminfo() -> (&'static [u8], usize) {
     let mut buf = PROC_BUFFER.lock();
     let mut writer = BufWriter::new(&mut buf[..]);
-    
+
     // Get real memory statistics from the kernel heap
     let (heap_stats, buddy_stats, slab_stats) = mm::get_memory_stats();
-    
+
     // Calculate real values from buddy allocator
     // Each page is 4KB
     let page_size_kb: u64 = 4;
@@ -276,18 +301,21 @@ pub fn generate_meminfo() -> (&'static [u8], usize) {
     let total_kb = total_pages * page_size_kb;
     let free_kb = buddy_stats.pages_free * page_size_kb;
     let used_kb = buddy_stats.pages_allocated * page_size_kb;
-    
+
     // Heap usage from HeapStats
-    let heap_used_kb = (heap_stats.bytes_allocated.saturating_sub(heap_stats.bytes_freed)) / 1024;
+    let heap_used_kb = (heap_stats
+        .bytes_allocated
+        .saturating_sub(heap_stats.bytes_freed))
+        / 1024;
     let heap_peak_kb = heap_stats.peak_usage / 1024;
-    
+
     // Slab allocator stats
     let slab_active = slab_stats.allocations.saturating_sub(slab_stats.frees);
-    
+
     let available_kb = free_kb;
     let buffers_kb: u64 = 0;
     let cached_kb = heap_peak_kb.saturating_sub(heap_used_kb);
-    
+
     let _ = writeln!(writer, "MemTotal:       {:8} kB", total_kb);
     let _ = writeln!(writer, "MemFree:        {:8} kB", free_kb);
     let _ = writeln!(writer, "MemAvailable:   {:8} kB", available_kb);
@@ -305,11 +333,15 @@ pub fn generate_meminfo() -> (&'static [u8], usize) {
     let _ = writeln!(writer, "Shmem:          {:8} kB", 0u64);
     let _ = writeln!(writer, "Slab:           {:8} kB", slab_active * 64 / 1024); // Estimate slab usage
     let _ = writeln!(writer, "KernelStack:    {:8} kB", 64u64);
-    let _ = writeln!(writer, "PageTables:     {:8} kB", (buddy_stats.allocations * 4) as u64);
+    let _ = writeln!(
+        writer,
+        "PageTables:     {:8} kB",
+        (buddy_stats.allocations * 4) as u64
+    );
     let _ = writeln!(writer, "VmallocTotal:   {:8} kB", total_kb);
     let _ = writeln!(writer, "VmallocUsed:    {:8} kB", used_kb);
     let _ = writeln!(writer, "VmallocChunk:   {:8} kB", free_kb);
-    
+
     let len = writer.len();
     let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), len) };
     (slice, len)
@@ -319,15 +351,15 @@ pub fn generate_meminfo() -> (&'static [u8], usize) {
 pub fn generate_cpuinfo() -> (&'static [u8], usize) {
     let mut buf = PROC_BUFFER.lock();
     let mut writer = BufWriter::new(&mut buf[..]);
-    
+
     // Get real CPU count from SMP module
     let cpu_count = smp::cpu_count().max(1);
     let online_cpus = smp::online_cpus().max(1);
-    
+
     // Get CPU info via CPUID instruction
     let (vendor_id, family, model, stepping, model_name, cpu_mhz) = get_cpuid_info();
     let flags = get_cpu_flags();
-    
+
     for cpu_id in 0..online_cpus {
         let _ = writeln!(writer, "processor\t: {}", cpu_id);
         let _ = writeln!(writer, "vendor_id\t: {}", vendor_id);
@@ -352,7 +384,7 @@ pub fn generate_cpuinfo() -> (&'static [u8], usize) {
         let _ = writeln!(writer, "address sizes\t: 48 bits physical, 48 bits virtual");
         let _ = writeln!(writer, "");
     }
-    
+
     let len = writer.len();
     let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), len) };
     (slice, len)
@@ -362,31 +394,39 @@ pub fn generate_cpuinfo() -> (&'static [u8], usize) {
 pub fn generate_stat() -> (&'static [u8], usize) {
     let mut buf = PROC_BUFFER.lock();
     let mut writer = BufWriter::new(&mut buf[..]);
-    
+
     let tick = scheduler::get_tick();
     let stats = scheduler::get_stats();
     let (ready, running, sleeping, zombie) = scheduler::get_process_counts();
-    
+
     // CPU statistics (simplified)
     // Format: cpu user nice system idle iowait irq softirq steal guest guest_nice
     let user_time = tick / 2;
     let system_time = tick / 4;
     let idle_time = tick / 4;
-    
-    let _ = writeln!(writer, "cpu  {} 0 {} {} 0 0 0 0 0 0", user_time, system_time, idle_time);
-    let _ = writeln!(writer, "cpu0 {} 0 {} {} 0 0 0 0 0 0", user_time, system_time, idle_time);
-    
+
+    let _ = writeln!(
+        writer,
+        "cpu  {} 0 {} {} 0 0 0 0 0 0",
+        user_time, system_time, idle_time
+    );
+    let _ = writeln!(
+        writer,
+        "cpu0 {} 0 {} {} 0 0 0 0 0 0",
+        user_time, system_time, idle_time
+    );
+
     // Context switches
     let _ = writeln!(writer, "ctxt {}", stats.total_context_switches);
-    
+
     // Boot time (placeholder)
     let _ = writeln!(writer, "btime 0");
-    
+
     // Processes
     let _ = writeln!(writer, "processes {}", ready + running + sleeping + zombie);
     let _ = writeln!(writer, "procs_running {}", running);
     let _ = writeln!(writer, "procs_blocked {}", sleeping);
-    
+
     let len = writer.len();
     let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), len) };
     (slice, len)
@@ -396,7 +436,7 @@ pub fn generate_stat() -> (&'static [u8], usize) {
 pub fn generate_filesystems() -> (&'static [u8], usize) {
     let mut buf = PROC_BUFFER.lock();
     let mut writer = BufWriter::new(&mut buf[..]);
-    
+
     let _ = writeln!(writer, "nodev\tproc");
     let _ = writeln!(writer, "nodev\tsysfs");
     let _ = writeln!(writer, "nodev\tdevtmpfs");
@@ -404,7 +444,7 @@ pub fn generate_filesystems() -> (&'static [u8], usize) {
     let _ = writeln!(writer, "\text2");
     let _ = writeln!(writer, "\text3");
     let _ = writeln!(writer, "\text4");
-    
+
     let len = writer.len();
     let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), len) };
     (slice, len)
@@ -414,13 +454,22 @@ pub fn generate_filesystems() -> (&'static [u8], usize) {
 pub fn generate_mounts() -> (&'static [u8], usize) {
     let mut buf = PROC_BUFFER.lock();
     let mut writer = BufWriter::new(&mut buf[..]);
-    
+
     // Format: device mountpoint fstype options dump pass
     let _ = writeln!(writer, "rootfs / rootfs rw 0 0");
-    let _ = writeln!(writer, "proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0");
-    let _ = writeln!(writer, "sysfs /sys sysfs rw,nosuid,nodev,noexec,relatime 0 0");
-    let _ = writeln!(writer, "devtmpfs /dev devtmpfs rw,nosuid,relatime,size=0k,nr_inodes=0,mode=755 0 0");
-    
+    let _ = writeln!(
+        writer,
+        "proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0"
+    );
+    let _ = writeln!(
+        writer,
+        "sysfs /sys sysfs rw,nosuid,nodev,noexec,relatime 0 0"
+    );
+    let _ = writeln!(
+        writer,
+        "devtmpfs /dev devtmpfs rw,nosuid,relatime,size=0k,nr_inodes=0,mode=755 0 0"
+    );
+
     let len = writer.len();
     let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), len) };
     (slice, len)
@@ -430,10 +479,10 @@ pub fn generate_mounts() -> (&'static [u8], usize) {
 pub fn generate_cmdline() -> (&'static [u8], usize) {
     let mut buf = PROC_BUFFER.lock();
     let mut writer = BufWriter::new(&mut buf[..]);
-    
+
     // Kernel command line (placeholder)
     let _ = writeln!(writer, "root=/dev/vda1 console=ttyS0 quiet");
-    
+
     let len = writer.len();
     let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), len) };
     (slice, len)
@@ -443,10 +492,10 @@ pub fn generate_cmdline() -> (&'static [u8], usize) {
 pub fn generate_self() -> (&'static [u8], usize) {
     let mut buf = PROC_BUFFER.lock();
     let mut writer = BufWriter::new(&mut buf[..]);
-    
+
     let pid = scheduler::get_current_pid().unwrap_or(1);
     let _ = write!(writer, "{}", pid);
-    
+
     let len = writer.len();
     let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), len) };
     (slice, len)
@@ -455,24 +504,24 @@ pub fn generate_self() -> (&'static [u8], usize) {
 /// Generate /proc/[pid]/status content
 pub fn generate_pid_status(pid: Pid) -> Option<(&'static [u8], usize)> {
     let process = scheduler::get_process(pid)?;
-    
+
     let mut buf = PROC_BUFFER.lock();
     let mut writer = BufWriter::new(&mut buf[..]);
-    
+
     let state_char = match process.state {
         ProcessState::Running => 'R',
         ProcessState::Ready => 'R',
         ProcessState::Sleeping => 'S',
         ProcessState::Zombie => 'Z',
     };
-    
+
     let state_name = match process.state {
         ProcessState::Running => "running",
         ProcessState::Ready => "runnable",
         ProcessState::Sleeping => "sleeping",
         ProcessState::Zombie => "zombie",
     };
-    
+
     let _ = writeln!(writer, "Name:\tprocess");
     let _ = writeln!(writer, "Umask:\t0022");
     let _ = writeln!(writer, "State:\t{} ({})", state_char, state_name);
@@ -488,7 +537,11 @@ pub fn generate_pid_status(pid: Pid) -> Option<(&'static [u8], usize)> {
     let _ = writeln!(writer, "VmPeak:\t{} kB", process.memory_size / 1024);
     let _ = writeln!(writer, "VmSize:\t{} kB", process.memory_size / 1024);
     let _ = writeln!(writer, "VmRSS:\t{} kB", process.memory_size / 1024);
-    let _ = writeln!(writer, "VmData:\t{} kB", (process.heap_end - process.heap_start) / 1024);
+    let _ = writeln!(
+        writer,
+        "VmData:\t{} kB",
+        (process.heap_end - process.heap_start) / 1024
+    );
     let _ = writeln!(writer, "VmStk:\t{} kB", crate::process::STACK_SIZE / 1024);
     let _ = writeln!(writer, "VmExe:\t0 kB");
     let _ = writeln!(writer, "VmLib:\t0 kB");
@@ -500,7 +553,7 @@ pub fn generate_pid_status(pid: Pid) -> Option<(&'static [u8], usize)> {
     let _ = writeln!(writer, "SigCgt:\t{:016x}", 0u64);
     let _ = writeln!(writer, "voluntary_ctxt_switches:\t0");
     let _ = writeln!(writer, "nonvoluntary_ctxt_switches:\t0");
-    
+
     let len = writer.len();
     let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), len) };
     Some((slice, len))
@@ -509,17 +562,17 @@ pub fn generate_pid_status(pid: Pid) -> Option<(&'static [u8], usize)> {
 /// Generate /proc/[pid]/stat content (single line format)
 pub fn generate_pid_stat(pid: Pid) -> Option<(&'static [u8], usize)> {
     let process = scheduler::get_process(pid)?;
-    
+
     let mut buf = PROC_BUFFER.lock();
     let mut writer = BufWriter::new(&mut buf[..]);
-    
+
     let state_char = match process.state {
         ProcessState::Running => 'R',
         ProcessState::Ready => 'R',
         ProcessState::Sleeping => 'S',
         ProcessState::Zombie => 'Z',
     };
-    
+
     // Format: pid (comm) state ppid pgrp session tty_nr tpgid flags ...
     let _ = writeln!(
         writer,
@@ -532,7 +585,7 @@ pub fn generate_pid_stat(pid: Pid) -> Option<(&'static [u8], usize)> {
         0,   // tty_nr
         process.memory_size
     );
-    
+
     let len = writer.len();
     let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), len) };
     Some((slice, len))
@@ -541,13 +594,13 @@ pub fn generate_pid_stat(pid: Pid) -> Option<(&'static [u8], usize)> {
 /// Generate /proc/[pid]/cmdline content
 pub fn generate_pid_cmdline(pid: Pid) -> Option<(&'static [u8], usize)> {
     let process = scheduler::get_process(pid)?;
-    
+
     let mut buf = PROC_BUFFER.lock();
-    
+
     // Copy the process cmdline to the buffer
     let len = process.cmdline_len.min(PROC_BUF_SIZE);
     buf[..len].copy_from_slice(&process.cmdline[..len]);
-    
+
     // Return the slice with actual cmdline data
     let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), len) };
     Some((slice, len))
@@ -556,45 +609,42 @@ pub fn generate_pid_cmdline(pid: Pid) -> Option<(&'static [u8], usize)> {
 /// Generate /proc/[pid]/maps content
 pub fn generate_pid_maps(pid: Pid) -> Option<(&'static [u8], usize)> {
     let process = scheduler::get_process(pid)?;
-    
+
     let mut buf = PROC_BUFFER.lock();
     let mut writer = BufWriter::new(&mut buf[..]);
-    
+
     // Memory mapping format:
     // address           perms offset  dev   inode pathname
     // 00400000-00452000 r-xp 00000000 08:02 173521 /usr/bin/dbus-daemon
-    
-    use crate::process::{USER_VIRT_BASE, STACK_BASE, STACK_SIZE};
-    
+
+    use crate::process::{STACK_BASE, STACK_SIZE, USER_VIRT_BASE};
+
     // Code segment
     let code_end = process.heap_start;
     let _ = writeln!(
         writer,
         "{:08x}-{:08x} r-xp 00000000 00:00 0 [text]",
-        USER_VIRT_BASE,
-        code_end
+        USER_VIRT_BASE, code_end
     );
-    
+
     // Heap
     if process.heap_end > process.heap_start {
         let _ = writeln!(
             writer,
             "{:08x}-{:08x} rw-p 00000000 00:00 0 [heap]",
-            process.heap_start,
-            process.heap_end
+            process.heap_start, process.heap_end
         );
     }
-    
+
     // Stack
     let stack_bottom = STACK_BASE;
     let stack_top = STACK_BASE + STACK_SIZE;
     let _ = writeln!(
         writer,
         "{:08x}-{:08x} rw-p 00000000 00:00 0 [stack]",
-        stack_bottom,
-        stack_top
+        stack_bottom, stack_top
     );
-    
+
     let len = writer.len();
     let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), len) };
     Some((slice, len))
@@ -610,7 +660,7 @@ pub fn get_all_pids() -> [Option<Pid>; MAX_PROCESSES] {
     let mut pids = [None; MAX_PROCESSES];
     let table = scheduler::process_table_lock();
     let mut idx = 0;
-    
+
     for slot in table.iter() {
         if let Some(entry) = slot {
             if idx < MAX_PROCESSES {
@@ -619,7 +669,7 @@ pub fn get_all_pids() -> [Option<Pid>; MAX_PROCESSES] {
             }
         }
     }
-    
+
     pids
 }
 

@@ -3,10 +3,10 @@
 //! This module contains all atomic state variables used for parallel
 //! work coordination between CPU cores.
 
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 
-use crate::smp;
 use crate::numa;
+use crate::smp;
 
 use super::types::{CompositorStats, CPU_WORK_STATES};
 
@@ -172,7 +172,7 @@ pub fn stats() -> CompositorStats {
 }
 
 /// Reset compositor statistics for benchmarking
-/// 
+///
 /// Clears all per-CPU stripe counters and operation counters.
 /// Useful for measuring performance of specific rendering operations.
 pub fn reset_stats() {
@@ -180,12 +180,14 @@ pub fn reset_stats() {
     COMPOSE_STRIPES_DONE.store(0, Ordering::Relaxed);
     SCROLL_ROWS_DONE.store(0, Ordering::Relaxed);
     FILL_ROWS_DONE.store(0, Ordering::Relaxed);
-    
+
     // Reset per-CPU stats
     let online = smp::online_cpus();
     unsafe {
         for i in 0..online.min(smp::MAX_CPUS) {
-            CPU_WORK_STATES[i].stripes_completed.store(0, Ordering::Relaxed);
+            CPU_WORK_STATES[i]
+                .stripes_completed
+                .store(0, Ordering::Relaxed);
         }
     }
 }
@@ -208,11 +210,13 @@ pub fn init() {
     unsafe {
         for i in 0..online_cpus.min(smp::MAX_CPUS) {
             CPU_WORK_STATES[i].reset();
-            
+
             // Get NUMA node for this CPU
             if numa::is_initialized() {
                 let node_id = numa::cpu_to_node(i as u32);
-                CPU_WORK_STATES[i].numa_node.store(node_id, Ordering::Release);
+                CPU_WORK_STATES[i]
+                    .numa_node
+                    .store(node_id, Ordering::Release);
             }
         }
     }
@@ -232,15 +236,18 @@ pub fn debug_info() {
         crate::kinfo!("Compositor: Not initialized");
         return;
     }
-    
+
     let stats = stats();
     crate::kinfo!("Compositor Status:");
     crate::kinfo!("  Workers: {}", stats.last_worker_count);
     crate::kinfo!("  Total compositions: {}", stats.total_compositions);
     crate::kinfo!("  Parallel enabled: {}", stats.parallel_enabled);
     crate::kinfo!("  NUMA nodes: {}", numa::node_count());
-    crate::kinfo!("  Default stripe height: {} rows", super::config::DEFAULT_STRIPE_HEIGHT);
-    
+    crate::kinfo!(
+        "  Default stripe height: {} rows",
+        super::config::DEFAULT_STRIPE_HEIGHT
+    );
+
     // Last operation stats
     let compose_stripes = COMPOSE_STRIPES_DONE.load(Ordering::Relaxed);
     let scroll_rows = SCROLL_ROWS_DONE.load(Ordering::Relaxed);
@@ -248,7 +255,7 @@ pub fn debug_info() {
     crate::kinfo!("  Last compose stripes: {}", compose_stripes);
     crate::kinfo!("  Last scroll rows: {}", scroll_rows);
     crate::kinfo!("  Last fill rows: {}", fill_rows);
-    
+
     // Per-CPU stats
     let online = smp::online_cpus();
     let mut total_stripes = 0usize;
@@ -267,7 +274,7 @@ pub fn debug_info() {
             crate::kinfo!("  CPU {}: {} stripes, NUMA node {}", i, stripes, node_str);
         }
     }
-    
+
     // Work distribution summary
     if online > 1 && total_stripes > 0 {
         let avg_stripes = total_stripes / online;

@@ -60,10 +60,10 @@ pub fn current_cpu_data() -> Option<&'static CpuData> {
 }
 
 /// Get per-CPU data for a specific CPU (read-only access)
-/// 
+///
 /// Returns the CpuData for the specified CPU index if it exists.
 /// This allows reading per-CPU statistics from any CPU.
-/// 
+///
 /// # Arguments
 /// * `cpu_id` - The CPU index (0-based)
 pub fn get_cpu_data(cpu_id: usize) -> Option<&'static CpuData> {
@@ -100,62 +100,54 @@ pub fn current_online() -> usize {
 }
 
 /// Get the GS_DATA pointer for the current CPU
-/// 
+///
 /// Returns the address of the GS_DATA structure that should be used by the current CPU.
 /// - BSP (CPU 0) uses the static `initramfs::GS_DATA` before SMP init
 /// - After SMP init, each CPU uses its own per-CPU GS_DATA
-/// 
+///
 /// # Safety
 /// This function returns a raw pointer. The caller must ensure proper synchronization
 /// when accessing the GS_DATA structure.
 pub fn current_gs_data_ptr() -> *mut u64 {
     if !SMP_READY.load(Ordering::Acquire) {
         // Before SMP init, only BSP is running, use static GS_DATA
-        return unsafe { 
-            core::ptr::addr_of!(crate::initramfs::GS_DATA.0) as *mut u64 
-        };
+        return unsafe { core::ptr::addr_of!(crate::initramfs::GS_DATA.0) as *mut u64 };
     }
-    
+
     let cpu_id = current_cpu_id() as usize;
-    
+
     // Try to get per-CPU GS_DATA pointer
     match super::alloc::get_gs_data_ptr(cpu_id) {
         Ok(ptr) => ptr as *mut u64,
         Err(_) => {
             // Fallback to static GS_DATA (this shouldn't happen in normal operation)
-            unsafe { 
-                core::ptr::addr_of!(crate::initramfs::GS_DATA.0) as *mut u64 
-            }
+            unsafe { core::ptr::addr_of!(crate::initramfs::GS_DATA.0) as *mut u64 }
         }
     }
 }
 
 /// Get the GS_DATA pointer for a specific CPU
-/// 
+///
 /// Returns the address of the GS_DATA structure for the specified CPU index.
-/// 
+///
 /// # Arguments
 /// * `cpu_index` - The CPU index (0 for BSP, 1+ for APs)
-/// 
+///
 /// # Safety
 /// This function returns a raw pointer. The caller must ensure proper synchronization
 /// when accessing the GS_DATA structure.
 pub fn gs_data_ptr_for_cpu(cpu_index: usize) -> *mut u64 {
     if cpu_index == 0 && !SMP_READY.load(Ordering::Acquire) {
         // BSP before SMP init
-        return unsafe { 
-            core::ptr::addr_of!(crate::initramfs::GS_DATA.0) as *mut u64 
-        };
+        return unsafe { core::ptr::addr_of!(crate::initramfs::GS_DATA.0) as *mut u64 };
     }
-    
+
     // Try to get per-CPU GS_DATA pointer
     match super::alloc::get_gs_data_ptr(cpu_index) {
         Ok(ptr) => ptr as *mut u64,
         Err(_) => {
             // Fallback to static GS_DATA
-            unsafe { 
-                core::ptr::addr_of!(crate::initramfs::GS_DATA.0) as *mut u64 
-            }
+            unsafe { core::ptr::addr_of!(crate::initramfs::GS_DATA.0) as *mut u64 }
         }
     }
 }
@@ -165,10 +157,10 @@ pub fn gs_data_ptr_for_cpu(cpu_index: usize) -> *mut u64 {
 // ============================================================================
 
 /// Disable preemption on current CPU
-/// 
+///
 /// Increments the preempt_count to prevent context switches.
 /// Call preempt_enable() when done with the critical section.
-/// 
+///
 /// # Note
 /// This is a counting semaphore - each disable must be matched with an enable.
 #[inline]
@@ -179,10 +171,10 @@ pub fn preempt_disable() {
 }
 
 /// Enable preemption on current CPU
-/// 
+///
 /// Decrements the preempt_count. When it reaches zero, checks if
 /// rescheduling is needed.
-/// 
+///
 /// # Returns
 /// true if preemption is now enabled and rescheduling might be needed
 #[inline]
@@ -211,7 +203,7 @@ pub fn in_interrupt() -> bool {
 }
 
 /// Check if current code can be preempted
-/// 
+///
 /// Returns false if:
 /// - Preemption is disabled (preempt_count > 0)
 /// - CPU is in interrupt context
@@ -220,17 +212,17 @@ pub fn in_interrupt() -> bool {
 pub fn can_preempt() -> bool {
     // Check if interrupts are enabled
     let interrupts_enabled = x86_64::instructions::interrupts::are_enabled();
-    
+
     // Check CPU state
     let cpu_allows = current_cpu_data()
         .map(|d| !d.preempt_disabled() && !d.in_interrupt_context())
         .unwrap_or(true); // If no CPU data, assume preemptible (during early boot)
-    
+
     interrupts_enabled && cpu_allows
 }
 
 /// Mark current CPU as entering interrupt context
-/// 
+///
 /// Called at the start of interrupt handlers.
 /// This disables preemption and marks the interrupt state.
 #[inline]
@@ -241,7 +233,7 @@ pub fn enter_interrupt() {
 }
 
 /// Mark current CPU as leaving interrupt context
-/// 
+///
 /// Called at the end of interrupt handlers.
 /// Returns true if rescheduling was requested during the interrupt.
 #[inline]
@@ -252,7 +244,7 @@ pub fn leave_interrupt() -> bool {
 }
 
 /// Request a reschedule on current CPU
-/// 
+///
 /// Sets the reschedule_pending flag. The actual reschedule will happen
 /// when returning from interrupt context or when preemption is re-enabled.
 #[inline]
@@ -297,7 +289,5 @@ pub fn record_syscall() {
 /// Get NUMA node for current CPU
 #[inline]
 pub fn current_numa_node() -> u32 {
-    current_cpu_data()
-        .map(|d| d.numa_node)
-        .unwrap_or(0)
+    current_cpu_data().map(|d| d.numa_node).unwrap_or(0)
 }

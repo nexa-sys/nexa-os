@@ -594,7 +594,9 @@ impl ElfLoader {
         // Fallback: if we still haven't found PHDRs, but we have a base address,
         // assume they are at base_addr + e_phoff (common for PIE/executables)
         if phdr_runtime.is_none() {
-            crate::kwarn!("phdr_runtime not found via PT_PHDR or PT_LOAD scan, assuming base + e_phoff");
+            crate::kwarn!(
+                "phdr_runtime not found via PT_PHDR or PT_LOAD scan, assuming base + e_phoff"
+            );
             // Use signed arithmetic for safety
             let offset = header.e_phoff as i64;
             // If base_addr is 0 (e.g. first load of PIE), this is just offset

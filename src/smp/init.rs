@@ -10,9 +10,9 @@ use x86_64::instructions::tables::sgdt;
 use crate::{acpi, lapic, paging};
 
 use super::alloc as smp_alloc;
-use super::ap_startup::{start_ap, start_all_aps_parallel};
+use super::ap_startup::{start_all_aps_parallel, start_ap};
 use super::cpu::current_online;
-use super::state::{CPU_TOTAL, ENABLE_AP_STARTUP, SMP_READY, PARALLEL_AP_STARTUP};
+use super::state::{CPU_TOTAL, ENABLE_AP_STARTUP, PARALLEL_AP_STARTUP, SMP_READY};
 use super::trampoline::{install_trampoline, patch_gdt_descriptors};
 use super::types::{
     CpuData, CpuInfo, BSP_APIC_ID, CPU_DATA, CPU_INFOS, MAX_CPUS, STATIC_CPU_COUNT,
@@ -55,7 +55,7 @@ unsafe fn init_inner() -> Result<(), &'static str> {
         }
         count += 1;
     }
-    
+
     if count > MAX_CPUS {
         crate::kwarn!(
             "SMP: Limiting CPU count to {} (hardware reports {})",
@@ -81,9 +81,9 @@ unsafe fn init_inner() -> Result<(), &'static str> {
         if idx >= count {
             break;
         }
-        
+
         let is_bsp = desc.apic_id as u32 == bsp_apic;
-        
+
         // BSP (index 0) uses static array, all APs use dynamic allocation
         if idx < STATIC_CPU_COUNT {
             // Only BSP uses static allocation
@@ -94,18 +94,15 @@ unsafe fn init_inner() -> Result<(), &'static str> {
             ));
         } else {
             // All APs use dynamic allocation
-            if let Err(e) = smp_alloc::init_cpu_info(
-                idx,
-                desc.apic_id as u32,
-                desc.acpi_processor_id,
-                is_bsp,
-            ) {
+            if let Err(e) =
+                smp_alloc::init_cpu_info(idx, desc.apic_id as u32, desc.acpi_processor_id, is_bsp)
+            {
                 crate::kwarn!("SMP: Failed to init CPU {} info: {}", idx, e);
             }
         }
         idx += 1;
     }
-    
+
     CPU_TOTAL.store(count, Ordering::SeqCst);
     core::sync::atomic::fence(Ordering::SeqCst); // Full memory barrier
 
@@ -155,8 +152,14 @@ unsafe fn init_inner() -> Result<(), &'static str> {
 
     // Stage 2: Verify trampoline installation details
     crate::kinfo!("SMP: Stage 2 - Verifying trampoline setup");
-    crate::kinfo!("  Trampoline installed at: {:#x}", super::types::TRAMPOLINE_BASE);
-    crate::kinfo!("  Trampoline vector: {:#x}", super::types::TRAMPOLINE_VECTOR);
+    crate::kinfo!(
+        "  Trampoline installed at: {:#x}",
+        super::types::TRAMPOLINE_BASE
+    );
+    crate::kinfo!(
+        "  Trampoline vector: {:#x}",
+        super::types::TRAMPOLINE_VECTOR
+    );
     crate::kinfo!(
         "  PML4 physical address: {:#x}",
         paging::current_pml4_phys()
@@ -202,18 +205,15 @@ unsafe fn init_inner() -> Result<(), &'static str> {
         // === Parallel AP Startup Mode ===
         // All APs are started simultaneously, each with independent data regions
         crate::kinfo!("SMP: Using PARALLEL AP startup mode");
-        
+
         match start_all_aps_parallel(count) {
             Ok(started) => {
-                crate::kinfo!(
-                    "SMP: ✓ Parallel startup completed: {} APs online",
-                    started
-                );
+                crate::kinfo!("SMP: ✓ Parallel startup completed: {} APs online", started);
             }
             Err(err) => {
                 crate::kwarn!("SMP: Parallel startup failed: {}", err);
                 crate::kwarn!("SMP: Falling back to sequential startup...");
-                
+
                 // Fallback to sequential startup
                 let mut started = 0usize;
                 for idx in 1..count {
@@ -228,9 +228,9 @@ unsafe fn init_inner() -> Result<(), &'static str> {
     } else {
         // === Sequential AP Startup Mode (Original) ===
         crate::kinfo!("SMP: Using SEQUENTIAL AP startup mode");
-        
+
         let mut started = 0usize;
-        
+
         for idx in 1..count {
             let info = match get_cpu_info_safe(idx) {
                 Ok(info) => info,
@@ -286,7 +286,6 @@ unsafe fn init_inner() -> Result<(), &'static str> {
 
     Ok(())
 }
-
 
 /// Get stack address for debug logging (simplified version)
 /// All AP stacks are dynamically allocated

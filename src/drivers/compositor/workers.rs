@@ -7,22 +7,22 @@ use core::sync::atomic::Ordering;
 
 use crate::smp;
 
-use super::blend::{blend_row_alpha, blend_row_additive, blend_row_multiply};
+use super::blend::{blend_row_additive, blend_row_alpha, blend_row_multiply};
 use super::config::MAX_LAYERS;
 use super::state::*;
-use super::types::{BlendMode, CompositionLayer, WorkType, CPU_WORK_STATES, COMPOSE_LAYERS};
+use super::types::{BlendMode, CompositionLayer, WorkType, COMPOSE_LAYERS, CPU_WORK_STATES};
 
 // =============================================================================
 // AP Core Entry Point
 // =============================================================================
 
 /// Entry point for AP cores when receiving IPI_CALL_FUNCTION
-/// 
+///
 /// This function is called from the IPI handler to participate in parallel work.
 /// AP cores will claim work atomically and process it until all work is done.
-/// 
+///
 /// # Safety
-/// 
+///
 /// This function accesses global mutable state but uses atomic operations
 /// for synchronization. It must only be called from the IPI handler context.
 pub fn ap_work_entry() {
@@ -30,17 +30,17 @@ pub fn ap_work_entry() {
     if !COMPOSITOR_INITIALIZED.load(Ordering::Acquire) {
         return;
     }
-    
+
     if !WORK_AVAILABLE.load(Ordering::Acquire) {
         return;
     }
-    
+
     // Mark this worker as joined
     WORKERS_JOINED.fetch_add(1, Ordering::AcqRel);
-    
+
     // Get work type and execute appropriate handler
     let work_type = WorkType::from_u8(WORK_TYPE.load(Ordering::Acquire));
-    
+
     match work_type {
         WorkType::Scroll => {
             // Execute scroll work
@@ -65,7 +65,7 @@ pub fn ap_work_entry() {
 // =============================================================================
 
 /// Internal compose worker called by AP cores during parallel composition
-/// 
+///
 /// This worker claims stripes atomically and composites them using the
 /// shared layer data stored in COMPOSE_LAYERS.
 pub(crate) fn compose_worker_internal() -> usize {
@@ -76,22 +76,25 @@ pub(crate) fn compose_worker_internal() -> usize {
     let total_rows = COMPOSE_TOTAL_ROWS.load(Ordering::Acquire);
     let stripe_height = COMPOSE_STRIPE_HEIGHT.load(Ordering::Acquire);
     let layer_count = COMPOSE_LAYER_COUNT.load(Ordering::Acquire);
-    
+
     // Safety: layers are set up before work is dispatched and not modified until completion
     let layers = unsafe { &COMPOSE_LAYERS[..layer_count] };
-    
+
     let cpu_id = smp::current_cpu_id() as usize;
     let mut stripes_done = 0;
-    
+
     // Update CPU work state
     unsafe {
         if cpu_id < smp::MAX_CPUS {
-            CPU_WORK_STATES[cpu_id].working.store(true, Ordering::Release);
+            CPU_WORK_STATES[cpu_id]
+                .working
+                .store(true, Ordering::Release);
         }
     }
-    
+
     // Process stripes until none remain
-    while let Some((_stripe_idx, start_row, end_row)) = claim_work_stripe(stripe_height, total_rows) {
+    while let Some((_stripe_idx, start_row, end_row)) = claim_work_stripe(stripe_height, total_rows)
+    {
         compose_stripe(
             dst_buffer,
             dst_pitch,
@@ -101,25 +104,29 @@ pub(crate) fn compose_worker_internal() -> usize {
             layers,
             screen_width,
         );
-        
+
         complete_stripe();
         COMPOSE_STRIPES_DONE.fetch_add(1, Ordering::AcqRel);
         stripes_done += 1;
     }
-    
+
     // Update CPU work state
     unsafe {
         if cpu_id < smp::MAX_CPUS {
-            CPU_WORK_STATES[cpu_id].working.store(false, Ordering::Release);
-            CPU_WORK_STATES[cpu_id].stripes_completed.fetch_add(stripes_done, Ordering::Relaxed);
+            CPU_WORK_STATES[cpu_id]
+                .working
+                .store(false, Ordering::Release);
+            CPU_WORK_STATES[cpu_id]
+                .stripes_completed
+                .fetch_add(stripes_done, Ordering::Relaxed);
         }
     }
-    
+
     stripes_done
 }
 
 /// Worker function for parallel composition
-/// 
+///
 /// This is called by each CPU participating in composition.
 /// Each worker claims stripes atomically until all work is done.
 pub fn worker_compose(
@@ -133,16 +140,19 @@ pub fn worker_compose(
 ) -> usize {
     let cpu_id = smp::current_cpu_id() as usize;
     let mut stripes_done = 0;
-    
+
     // Update CPU work state
     unsafe {
         if cpu_id < smp::MAX_CPUS {
-            CPU_WORK_STATES[cpu_id].working.store(true, Ordering::Release);
+            CPU_WORK_STATES[cpu_id]
+                .working
+                .store(true, Ordering::Release);
         }
     }
-    
+
     // Process stripes until none remain
-    while let Some((_stripe_idx, start_row, end_row)) = claim_work_stripe(stripe_height, total_rows) {
+    while let Some((_stripe_idx, start_row, end_row)) = claim_work_stripe(stripe_height, total_rows)
+    {
         compose_stripe(
             dst_buffer,
             dst_pitch,
@@ -152,24 +162,28 @@ pub fn worker_compose(
             layers,
             screen_width,
         );
-        
+
         complete_stripe();
         stripes_done += 1;
     }
-    
+
     // Update CPU work state
     unsafe {
         if cpu_id < smp::MAX_CPUS {
-            CPU_WORK_STATES[cpu_id].working.store(false, Ordering::Release);
-            CPU_WORK_STATES[cpu_id].stripes_completed.fetch_add(stripes_done, Ordering::Relaxed);
+            CPU_WORK_STATES[cpu_id]
+                .working
+                .store(false, Ordering::Release);
+            CPU_WORK_STATES[cpu_id]
+                .stripes_completed
+                .fetch_add(stripes_done, Ordering::Relaxed);
         }
     }
-    
+
     stripes_done
 }
 
 /// Compose a single stripe of the framebuffer
-/// 
+///
 /// This is the core composition function that processes one horizontal stripe.
 /// Optimized with:
 /// - Fast path for single opaque layer (common case)
@@ -195,38 +209,41 @@ pub(crate) fn compose_stripe(
         end_y: usize,
         layer_x: usize,
         actual_width: usize,
-        src_pitch: usize,      // Cache buffer pitch
-        buffer_addr: usize,    // Cache buffer address as usize
-        is_opaque: bool,       // Cache blend mode check
-        is_full_width: bool,   // Cache full-width check
+        src_pitch: usize,    // Cache buffer pitch
+        buffer_addr: usize,  // Cache buffer address as usize
+        is_opaque: bool,     // Cache blend mode check
+        is_full_width: bool, // Cache full-width check
     }
-    
-    let mut active_layers: [Option<LayerCache>; MAX_LAYERS] = [None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None];
+
+    let mut active_layers: [Option<LayerCache>; MAX_LAYERS] = [
+        None, None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+        None,
+    ];
     let mut active_count = 0;
-    
+
     for layer in layers.iter() {
         if layer.should_render() && active_count < MAX_LAYERS {
             let layer_start_y = layer.dst_region.y as usize;
             let layer_end_y = layer_start_y + layer.dst_region.height as usize;
             let layer_x = layer.dst_region.x as usize;
             let layer_width = layer.dst_region.width as usize;
-            
+
             // Skip layers that don't intersect our stripe at all
             if layer_end_y <= start_row || layer_start_y >= end_row {
                 continue;
             }
-            
+
             // Pre-compute bounds-checked width
             if layer_x >= screen_width {
                 continue;
             }
             let actual_width = layer_width.min(screen_width - layer_x);
-            
+
             // Pre-compute blend mode flags
-            let is_opaque = matches!(layer.blend_mode, BlendMode::Opaque) 
+            let is_opaque = matches!(layer.blend_mode, BlendMode::Opaque)
                 || (matches!(layer.blend_mode, BlendMode::Alpha) && layer.alpha == 255);
             let is_full_width = layer_x == 0 && actual_width == screen_width;
-            
+
             active_layers[active_count] = Some(LayerCache {
                 layer,
                 start_y: layer_start_y,
@@ -241,11 +258,11 @@ pub(crate) fn compose_stripe(
             active_count += 1;
         }
     }
-    
+
     if active_count == 0 {
         return;
     }
-    
+
     // === FAST PATH: Single full-width opaque layer ===
     // This is the common case for terminal scrolling and full-screen updates
     if active_count == 1 {
@@ -254,12 +271,12 @@ pub(crate) fn compose_stripe(
                 // Intersection of stripe and layer bounds
                 let copy_start = start_row.max(cache.start_y);
                 let copy_end = end_row.min(cache.end_y);
-                
+
                 if copy_start < copy_end {
                     let total_rows = copy_end - copy_start;
                     let row_bytes = cache.actual_width * dst_bpp;
                     let total_copy_bytes = total_rows * row_bytes;
-                    
+
                     // Choose copy strategy based on size:
                     // - Streaming copy for very large regions (>128KB) to avoid cache pollution
                     // - REP MOVSQ for large regions (>16KB)
@@ -348,25 +365,25 @@ pub(crate) fn compose_stripe(
             }
         }
     }
-    
+
     // === GENERAL PATH: Multiple layers or complex blend modes ===
     // Pre-compute row stride for destination buffer
     let dst_row_stride = dst_pitch;
-    
+
     // For each row in our stripe
     for row in start_row..end_row {
         let row_offset = row * dst_row_stride;
-        
+
         // Prefetch destination 2 rows ahead
         if row + 2 < end_row {
             unsafe {
                 let prefetch_offset = (row + 2) * dst_row_stride;
-                core::arch::x86_64::_mm_prefetch::<{core::arch::x86_64::_MM_HINT_T0}>(
-                    dst_buffer.add(prefetch_offset) as *const i8
+                core::arch::x86_64::_mm_prefetch::<{ core::arch::x86_64::_MM_HINT_T0 }>(
+                    dst_buffer.add(prefetch_offset) as *const i8,
                 );
             }
         }
-        
+
         // Process each active layer from bottom to top (by z_order)
         for i in 0..active_count {
             if let Some(ref cache) = active_layers[i] {
@@ -374,34 +391,32 @@ pub(crate) fn compose_stripe(
                 if row < cache.start_y || row >= cache.end_y {
                     continue;
                 }
-                
+
                 // Use cached values to minimize per-pixel overhead
                 let src_row = row - cache.start_y;
                 let src_pitch = cache.src_pitch;
-                
+
                 // Calculate buffer addresses using pre-cached values
-                let dst_row_start = unsafe { 
-                    dst_buffer.add(row_offset + cache.layer_x * dst_bpp) 
-                };
-                
+                let dst_row_start = unsafe { dst_buffer.add(row_offset + cache.layer_x * dst_bpp) };
+
                 let src_row_offset = src_row * src_pitch;
                 let src_row_start = cache.buffer_addr + src_row_offset;
                 let actual_width = cache.actual_width;
-                
+
                 // Prefetch source data
                 unsafe {
-                    core::arch::x86_64::_mm_prefetch::<{core::arch::x86_64::_MM_HINT_T0}>(
-                        src_row_start as *const i8
+                    core::arch::x86_64::_mm_prefetch::<{ core::arch::x86_64::_MM_HINT_T0 }>(
+                        src_row_start as *const i8,
                     );
                     // Prefetch 2 source rows ahead for better latency hiding
                     if row + 2 < cache.end_y {
                         let far_src = src_row_start + src_pitch * 2;
-                        core::arch::x86_64::_mm_prefetch::<{core::arch::x86_64::_MM_HINT_T1}>(
-                            far_src as *const i8
+                        core::arch::x86_64::_mm_prefetch::<{ core::arch::x86_64::_MM_HINT_T1 }>(
+                            far_src as *const i8,
                         );
                     }
                 }
-                
+
                 // Composite based on blend mode (use cached is_opaque)
                 if cache.is_opaque {
                     // Direct copy (fast path)
@@ -459,14 +474,14 @@ pub(crate) fn compose_stripe(
 // =============================================================================
 
 /// Internal scroll worker - claims and processes rows
-/// 
+///
 /// GPU-inspired optimizations for 2.5K+ displays:
 /// - Larger batch sizes tuned for L2 cache (256KB)
 /// - Streaming stores (non-temporal) for large copies to avoid cache pollution
 /// - Ultra-aggressive prefetching (4 cache lines ahead)
 /// - Adaptive batch sizing based on remaining work
 /// - Minimal atomic operations in hot path
-/// 
+///
 /// Memory safety for scroll-up (src > dst):
 /// When scrolling up, src_base = buffer + scroll_rows * pitch, dst_base = buffer.
 /// For any row N: src[N] and dst[N] are separated by scroll_rows * pitch bytes.
@@ -480,12 +495,12 @@ pub(crate) fn scroll_worker() -> usize {
     let pitch = SCROLL_PITCH.load(Ordering::Acquire);
     let scroll_distance = SCROLL_DISTANCE.load(Ordering::Acquire);
     let total_rows = SCROLL_TOTAL_ROWS.load(Ordering::Acquire);
-    
+
     // For scroll_distance == 0, something is wrong - use safe path
     if scroll_distance == 0 {
         return scroll_worker_safe();
     }
-    
+
     // Optimized batch size for 2.5K+ displays:
     // 2560 * 4 = 10240 bytes/row
     // L2 cache = 256KB = ~25 rows
@@ -493,40 +508,40 @@ pub(crate) fn scroll_worker() -> usize {
     // Increased base batch for reduced atomic contention
     let rows_per_256kb = (256 * 1024) / pitch.max(1);
     let batch_size = rows_per_256kb.max(48).min(384).min(scroll_distance);
-    
+
     let mut rows_done = 0;
     let contiguous = pitch == row_bytes;
     // Use streaming copy for very large framebuffers (>128KB) to avoid cache pollution
     // This is critical for smooth scrolling - data won't be reused immediately
     let use_streaming = contiguous && pitch >= 4096 && total_rows * pitch >= 128 * 1024;
     let use_rep_movsq = contiguous && pitch >= 4096 && !use_streaming;
-    
+
     while let Some((start, end)) = claim_scroll_rows_fast(batch_size, total_rows) {
         let batch_rows = end - start;
-        
+
         if contiguous && batch_rows <= scroll_distance {
             // FASTEST PATH: bulk copy entire batch as single memory block
             let src_offset = start * pitch;
             let total_bytes = batch_rows * pitch;
-            
+
             unsafe {
                 // Ultra-aggressive prefetch: 4 batches ahead for DDR4 latency hiding
                 let prefetch_row = end + batch_size * 2;
                 if prefetch_row < total_rows {
                     let prefetch_offset = prefetch_row * pitch;
                     // Use non-temporal hint since we're streaming through data
-                    core::arch::x86_64::_mm_prefetch::<{core::arch::x86_64::_MM_HINT_NTA}>(
-                        src_base.add(prefetch_offset) as *const i8
+                    core::arch::x86_64::_mm_prefetch::<{ core::arch::x86_64::_MM_HINT_NTA }>(
+                        src_base.add(prefetch_offset) as *const i8,
                     );
                     // Prefetch even further ahead
                     let far_prefetch = prefetch_row + batch_size * 2;
                     if far_prefetch < total_rows {
-                        core::arch::x86_64::_mm_prefetch::<{core::arch::x86_64::_MM_HINT_NTA}>(
-                            src_base.add(far_prefetch * pitch) as *const i8
+                        core::arch::x86_64::_mm_prefetch::<{ core::arch::x86_64::_MM_HINT_NTA }>(
+                            src_base.add(far_prefetch * pitch) as *const i8,
                         );
                     }
                 }
-                
+
                 if use_streaming && total_bytes >= 65536 {
                     // Use streaming (non-temporal) stores for very large copies
                     // This avoids cache pollution - critical for smooth scrolling
@@ -571,7 +586,7 @@ pub(crate) fn scroll_worker() -> usize {
             // Non-contiguous: copy row by row with unrolling
             // Each individual row copy is safe (row_bytes <= pitch < scroll_distance * pitch)
             let mut row = start;
-            
+
             // Unrolled loop: process 4 rows at a time
             while row + 4 <= end {
                 unsafe {
@@ -579,7 +594,7 @@ pub(crate) fn scroll_worker() -> usize {
                     let offset1 = (row + 1) * pitch;
                     let offset2 = (row + 2) * pitch;
                     let offset3 = (row + 3) * pitch;
-                    
+
                     core::ptr::copy_nonoverlapping(
                         src_base.add(offset0),
                         dst_base.add(offset0),
@@ -603,7 +618,7 @@ pub(crate) fn scroll_worker() -> usize {
                 }
                 row += 4;
             }
-            
+
             // Handle remaining rows
             while row < end {
                 let offset = row * pitch;
@@ -617,11 +632,11 @@ pub(crate) fn scroll_worker() -> usize {
                 row += 1;
             }
         }
-        
+
         rows_done += batch_rows;
         SCROLL_ROWS_DONE.fetch_add(batch_rows, Ordering::AcqRel);
     }
-    
+
     rows_done
 }
 
@@ -631,14 +646,14 @@ fn scroll_worker_safe() -> usize {
     let dst_base = SCROLL_DST_ADDR.load(Ordering::Acquire) as *mut u8;
     let row_bytes = SCROLL_ROW_BYTES.load(Ordering::Acquire);
     let pitch = SCROLL_PITCH.load(Ordering::Acquire);
-    
+
     let batch_size = 64;
     let mut rows_done = 0;
     let contiguous = pitch == row_bytes;
-    
+
     while let Some((start, end)) = claim_scroll_rows(batch_size) {
         let batch_rows = end - start;
-        
+
         if contiguous {
             let src_offset = start * pitch;
             let total_bytes = batch_rows * pitch;
@@ -653,19 +668,15 @@ fn scroll_worker_safe() -> usize {
             for row in start..end {
                 let offset = row * pitch;
                 unsafe {
-                    core::ptr::copy(
-                        src_base.add(offset),
-                        dst_base.add(offset),
-                        row_bytes,
-                    );
+                    core::ptr::copy(src_base.add(offset), dst_base.add(offset), row_bytes);
                 }
             }
         }
-        
+
         rows_done += batch_rows;
         SCROLL_ROWS_DONE.fetch_add(batch_rows, Ordering::AcqRel);
     }
-    
+
     rows_done
 }
 
@@ -674,7 +685,7 @@ fn scroll_worker_safe() -> usize {
 // =============================================================================
 
 /// Internal fill worker - claims and processes rows  
-/// 
+///
 /// Optimized with larger batch sizes for reduced contention
 pub(crate) fn fill_worker() -> usize {
     let buffer = FILL_BUFFER_ADDR.load(Ordering::Acquire) as *mut u8;
@@ -683,11 +694,11 @@ pub(crate) fn fill_worker() -> usize {
     let bpp = FILL_BPP.load(Ordering::Acquire);
     let color = FILL_COLOR.load(Ordering::Acquire);
     let total_rows = FILL_TOTAL_ROWS.load(Ordering::Acquire);
-    
+
     // Larger batch size reduces atomic contention
     let batch_size = 48;
     let mut rows_done = 0;
-    
+
     while let Some((start, end)) = claim_fill_rows(batch_size, total_rows) {
         // Fill rows in this batch
         for row in start..end {
@@ -696,7 +707,7 @@ pub(crate) fn fill_worker() -> usize {
         rows_done += end - start;
         FILL_ROWS_DONE.fetch_add(end - start, Ordering::AcqRel);
     }
-    
+
     rows_done
 }
 
@@ -710,19 +721,19 @@ pub(crate) fn fill_worker_copy() -> usize {
     let template_row = FILL_TEMPLATE_ROW.load(Ordering::Acquire);
     let x_offset = FILL_X_OFFSET.load(Ordering::Acquire);
     let start_row = FILL_NEXT_ROW.load(Ordering::Acquire);
-    
+
     let row_bytes = width * bpp;
     // More aggressive batching for copy (cheaper than fill)
     let batch_size = 64;
     let mut rows_done = 0;
-    
+
     while let Some((start, end)) = claim_fill_rows(batch_size, total_rows) {
         // Skip rows before our start
         if end <= start_row {
             continue;
         }
         let actual_start = start.max(start_row);
-        
+
         // Copy template row to each row in batch
         unsafe {
             let template_ptr = buffer.add(template_row * pitch + x_offset * bpp);
@@ -734,32 +745,39 @@ pub(crate) fn fill_worker_copy() -> usize {
         rows_done += end - actual_start;
         FILL_ROWS_DONE.fetch_add(end - actual_start, Ordering::AcqRel);
     }
-    
+
     rows_done
 }
 
 /// Fill a single row with color
-/// 
+///
 /// Optimized with:
 /// - 64-bit writes for 2 pixels at a time
 /// - 4-pixel loop unrolling for better ILP
 /// - Reduced loop overhead
 #[inline(always)]
-pub(crate) fn fill_single_row(buffer: *mut u8, pitch: usize, width: usize, bpp: usize, row: usize, color: u32) {
+pub(crate) fn fill_single_row(
+    buffer: *mut u8,
+    pitch: usize,
+    width: usize,
+    bpp: usize,
+    row: usize,
+    color: u32,
+) {
     let row_offset = row * pitch;
-    
+
     if bpp == 4 {
         // Fast path: 32-bit color, use 64-bit writes with unrolling
         let color64 = (color as u64) | ((color as u64) << 32);
-        
+
         unsafe {
             let qword_ptr = buffer.add(row_offset) as *mut u64;
             let qwords = width / 2;
-            
+
             // Process 4 qwords (8 pixels) at a time for better throughput
             let quads = qwords / 4;
             let mut i = 0;
-            
+
             // Unrolled loop: 4 qwords per iteration
             while i < quads {
                 let base = i * 4;
@@ -769,14 +787,14 @@ pub(crate) fn fill_single_row(buffer: *mut u8, pitch: usize, width: usize, bpp: 
                 qword_ptr.add(base + 3).write(color64);
                 i += 1;
             }
-            
+
             // Handle remaining qwords (0-3)
             let remaining_qwords = qwords % 4;
             let remaining_base = quads * 4;
             for j in 0..remaining_qwords {
                 qword_ptr.add(remaining_base + j).write(color64);
             }
-            
+
             // Handle odd pixel at end if width is odd
             if width % 2 == 1 {
                 let dword_ptr = buffer.add(row_offset + qwords * 8) as *mut u32;
@@ -809,7 +827,7 @@ pub(crate) fn claim_fill_rows(batch_size: usize, total: usize) -> Option<(usize,
         if current >= total {
             return None;
         }
-        
+
         let end = (current + batch_size).min(total);
         if FILL_NEXT_ROW
             .compare_exchange_weak(current, end, Ordering::AcqRel, Ordering::Relaxed)
@@ -822,7 +840,7 @@ pub(crate) fn claim_fill_rows(batch_size: usize, total: usize) -> Option<(usize,
 }
 
 /// Fast claim for scroll rows - reduced overhead version
-/// 
+///
 /// Optimized for scroll operations where we already have total_rows.
 /// Uses aggressive batch claiming to minimize atomic contention.
 #[inline(always)]
@@ -833,20 +851,20 @@ pub(crate) fn claim_scroll_rows_fast(batch_size: usize, total: usize) -> Option<
         if current >= total {
             return None;
         }
-        
+
         // More aggressive adaptive batch sizing for reduced contention:
         // - 4x batch when >75% work remains (minimize atomics in hot phase)
         // - 2x batch when >50% work remains
         // - 1x batch for final work items (better load balancing at end)
         let remaining = total - current;
         let adaptive_batch = if remaining > batch_size * 8 {
-            batch_size * 4  // Quadruple batch when lots of work
+            batch_size * 4 // Quadruple batch when lots of work
         } else if remaining > batch_size * 4 {
-            batch_size * 2  // Double batch for medium work
+            batch_size * 2 // Double batch for medium work
         } else {
             batch_size
         };
-        
+
         let end = (current + adaptive_batch).min(total);
         if SCROLL_NEXT_ROW
             .compare_exchange_weak(current, end, Ordering::AcqRel, Ordering::Relaxed)
@@ -854,7 +872,7 @@ pub(crate) fn claim_scroll_rows_fast(batch_size: usize, total: usize) -> Option<
         {
             return Some((current, end));
         }
-        
+
         // Ultra-minimal backoff - scroll is extremely time-critical
         attempts += 1;
         if attempts > 2 {
@@ -865,29 +883,29 @@ pub(crate) fn claim_scroll_rows_fast(batch_size: usize, total: usize) -> Option<
 
 /// Claim a batch of rows for parallel scroll processing
 /// Returns (start_row, end_row) or None if no more work
-/// 
+///
 /// Optimized with adaptive batch claiming to reduce contention:
 /// - Claims larger batches when many rows remain
 /// - Exponential backoff on contention
 #[inline(always)]
 pub(crate) fn claim_scroll_rows(batch_size: usize) -> Option<(usize, usize)> {
     let total = SCROLL_TOTAL_ROWS.load(Ordering::Acquire);
-    
+
     let mut attempts = 0;
     loop {
         let current = SCROLL_NEXT_ROW.load(Ordering::Acquire);
         if current >= total {
             return None;
         }
-        
+
         // Adaptive batch size: claim more when lots of work remains
         let remaining = total - current;
         let adaptive_batch = if remaining > batch_size * 4 {
-            batch_size * 2  // Double batch when plenty of work
+            batch_size * 2 // Double batch when plenty of work
         } else {
             batch_size
         };
-        
+
         let end = (current + adaptive_batch).min(total);
         if SCROLL_NEXT_ROW
             .compare_exchange_weak(current, end, Ordering::AcqRel, Ordering::Relaxed)
@@ -895,7 +913,7 @@ pub(crate) fn claim_scroll_rows(batch_size: usize) -> Option<(usize, usize)> {
         {
             return Some((current, end));
         }
-        
+
         // Exponential backoff to reduce contention
         attempts += 1;
         if attempts > 4 {
@@ -909,37 +927,40 @@ pub(crate) fn claim_scroll_rows(batch_size: usize) -> Option<(usize, usize)> {
 }
 
 /// Request a stripe of work to process
-/// 
+///
 /// Returns (stripe_index, start_row, end_row) or None if no work available
 /// Optimized with:
 /// - Aggressive adaptive batch claiming for minimal contention
 /// - Fast-path for single remaining stripe
 /// - Reduced atomic operations in hot path
-pub(crate) fn claim_work_stripe(stripe_height: usize, total_rows: usize) -> Option<(usize, usize, usize)> {
+pub(crate) fn claim_work_stripe(
+    stripe_height: usize,
+    total_rows: usize,
+) -> Option<(usize, usize, usize)> {
     let total_stripes = (total_rows + stripe_height - 1) / stripe_height;
-    
+
     // More aggressive adaptive batch sizing for reduced atomic contention
     // The key insight: claiming more stripes upfront dramatically reduces
     // contention on multi-core systems during scroll operations
     let batch_size = if total_stripes > 256 {
-        16  // Very large work: claim 16 at once
+        16 // Very large work: claim 16 at once
     } else if total_stripes > 128 {
-        8   // Large work: claim 8 at once
+        8 // Large work: claim 8 at once
     } else if total_stripes > 48 {
-        4   // Medium work: claim 4 at once
+        4 // Medium work: claim 4 at once
     } else if total_stripes > 16 {
-        2   // Smaller work: claim 2 at once
+        2 // Smaller work: claim 2 at once
     } else {
-        1   // Small work: claim 1 at a time for load balancing
+        1 // Small work: claim 1 at a time for load balancing
     };
-    
+
     let mut attempts = 0;
     loop {
         let current = WORK_NEXT_STRIPE.load(Ordering::Acquire);
         if current >= total_stripes {
             return None;
         }
-        
+
         // Calculate adaptive claim size based on remaining work
         let remaining = total_stripes - current;
         let claim_size = if remaining <= batch_size {
@@ -951,7 +972,7 @@ pub(crate) fn claim_work_stripe(stripe_height: usize, total_rows: usize) -> Opti
         } else {
             batch_size
         };
-        
+
         // Claim batch_size stripes, but only process the first one now
         let next = (current + claim_size).min(total_stripes);
         if WORK_NEXT_STRIPE
@@ -962,7 +983,7 @@ pub(crate) fn claim_work_stripe(stripe_height: usize, total_rows: usize) -> Opti
             let end_row = ((current + 1) * stripe_height).min(total_rows);
             return Some((current, start_row, end_row));
         }
-        
+
         // Exponential backoff to reduce contention
         attempts += 1;
         if attempts > 10 {
@@ -984,7 +1005,7 @@ pub(crate) fn complete_stripe() {
 /// Wait for all stripes to complete
 pub(crate) fn wait_for_completion() {
     let total = WORK_TOTAL_STRIPES.load(Ordering::Acquire);
-    
+
     // Spin wait with backoff
     let mut backoff = 1u32;
     loop {
@@ -992,7 +1013,7 @@ pub(crate) fn wait_for_completion() {
         if completed >= total {
             break;
         }
-        
+
         // Exponential backoff with cap
         for _ in 0..backoff {
             core::hint::spin_loop();
@@ -1002,7 +1023,7 @@ pub(crate) fn wait_for_completion() {
 }
 
 /// Dispatch work to AP cores and wait for completion
-/// 
+///
 /// This sends IPI_CALL_FUNCTION to all online AP cores and waits
 /// until all work is completed.
 pub(crate) fn dispatch_to_ap_cores() {
@@ -1010,14 +1031,14 @@ pub(crate) fn dispatch_to_ap_cores() {
     if workers <= 1 {
         return; // No AP cores to dispatch to
     }
-    
+
     // Signal that work is available
     WORK_AVAILABLE.store(true, Ordering::Release);
     WORKERS_JOINED.store(0, Ordering::Release);
-    
+
     // Memory fence to ensure all work parameters are visible
     core::sync::atomic::fence(Ordering::SeqCst);
-    
+
     // Send IPI to all AP cores
     smp::send_ipi_broadcast(smp::IPI_CALL_FUNCTION);
 }

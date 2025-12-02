@@ -37,15 +37,15 @@
 //! - `double_buffer` - Double buffering support
 //! - `dirty_region` - Dirty region tracking
 
-pub mod config;
-pub mod types;
-pub mod state;
 pub mod blend;
-pub mod workers;
-pub mod ops;
-pub mod memory;
-pub mod double_buffer;
+pub mod config;
 pub mod dirty_region;
+pub mod double_buffer;
+pub mod memory;
+pub mod ops;
+pub mod state;
+pub mod types;
+pub mod workers;
 
 // =============================================================================
 // Re-exports for backward compatibility
@@ -53,63 +53,31 @@ pub mod dirty_region;
 
 // Configuration constants
 pub use config::{
-    MAX_LAYERS,
-    MAX_TASKS_PER_CPU,
-    MIN_ROWS_PER_WORKER,
-    DEFAULT_STRIPE_HEIGHT,
-    TILE_SIZE,
+    DEFAULT_STRIPE_HEIGHT, MAX_LAYERS, MAX_TASKS_PER_CPU, MIN_ROWS_PER_WORKER, TILE_SIZE,
 };
 
 // Core types
 pub use types::{
-    WorkType,
-    CompositionRegion,
-    BlendMode,
-    CompositionLayer,
-    CpuWorkState,
-    CompositorStats,
+    BlendMode, CompositionLayer, CompositionRegion, CompositorStats, CpuWorkState, WorkType,
 };
 
 // State and initialization
-pub use state::{
-    init,
-    is_initialized,
-    worker_count,
-    stats,
-    reset_stats,
-    debug_info,
-};
+pub use state::{debug_info, init, is_initialized, reset_stats, stats, worker_count};
 
 // High-level operations
 pub use ops::{
-    compose,
-    fill_rect,
-    copy_rect,
+    clear_rows_fast, compose, copy_rect, fill_rect, optimal_stripe_height, parallel_fill,
     scroll_up_fast,
-    parallel_fill,
-    clear_rows_fast,
-    optimal_stripe_height,
 };
 
 // Worker functions (for direct use if needed)
-pub use workers::{
-    ap_work_entry,
-    worker_compose,
-};
+pub use workers::{ap_work_entry, worker_compose};
 
 // Memory operations
-pub use memory::{
-    fast_fill_u64,
-    fast_copy_prefetch,
-    streaming_fill_32,
-};
+pub use memory::{fast_copy_prefetch, fast_fill_u64, streaming_fill_32};
 
 // Double buffering
-pub use double_buffer::{
-    DoubleBuffer,
-    DOUBLE_BUFFER,
-    copy_to_front,
-};
+pub use double_buffer::{copy_to_front, DoubleBuffer, DOUBLE_BUFFER};
 
 // Dirty region tracking
 pub use dirty_region::DirtyRegionTracker;

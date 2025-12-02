@@ -30,7 +30,12 @@ impl Process {
 
     /// Execute the process in user mode (Ring 3)
     pub fn execute(&mut self) {
-        crate::serial_println!("EXEC_ENTER: PID={} entry={:#x} stack={:#x}", self.pid, self.entry_point, self.stack_top);
+        crate::serial_println!(
+            "EXEC_ENTER: PID={} entry={:#x} stack={:#x}",
+            self.pid,
+            self.entry_point,
+            self.stack_top
+        );
         self.state = ProcessState::Running;
 
         ktrace!(
@@ -154,7 +159,12 @@ pub fn jump_to_usermode_with_cr3(entry: u64, stack: u64, cr3: u64) -> ! {
         Msr::new(0xc0000101).write(gs_base);
     }
 
-    crate::serial_println!("J2U_PRE_SYSRET: cr3={:#x} entry={:#x} stack={:#x}", cr3, entry, stack);
+    crate::serial_println!(
+        "J2U_PRE_SYSRET: cr3={:#x} entry={:#x} stack={:#x}",
+        cr3,
+        entry,
+        stack
+    );
 
     // Verify STAR MSR is set correctly for sysretq
     unsafe {
@@ -174,8 +184,13 @@ pub fn jump_to_usermode_with_cr3(entry: u64, stack: u64, cr3: u64) -> ! {
         let handler = (low & 0xFFFF) | ((low >> 48) << 16) | ((high as u64 & 0xFFFFFFFF) << 32);
         let dpl = ((low >> 32) >> 13) & 0x3;
         let present = ((low >> 32) >> 15) & 0x1;
-        crate::serial_println!("PRE_SYSRET IDT[0x81]: base={:#x} handler={:#x} dpl={} present={}", 
-            idt_base, handler, dpl, present);
+        crate::serial_println!(
+            "PRE_SYSRET IDT[0x81]: base={:#x} handler={:#x} dpl={} present={}",
+            idt_base,
+            handler,
+            dpl,
+            present
+        );
     }
 
     unsafe {
@@ -191,7 +206,7 @@ pub fn jump_to_usermode_with_cr3(entry: u64, stack: u64, cr3: u64) -> ! {
         crate::serial_println!();
 
         // Also dump bytes at entry point offset
-        let entry_offset = entry - 0x400000;  // entry is virtual, convert to offset from base
+        let entry_offset = entry - 0x400000; // entry is virtual, convert to offset from base
         let entry_phys = user_phys_base + entry_offset;
         let entry_ptr = entry_phys as *const u8;
         crate::serial_print!("ENTRY@{:#x}: ", entry_phys);
@@ -199,29 +214,39 @@ pub fn jump_to_usermode_with_cr3(entry: u64, stack: u64, cr3: u64) -> ! {
             crate::serial_print!("{:02x} ", *entry_ptr.add(i));
         }
         crate::serial_println!();
-        
+
         // Dump stack content (physical address)
         // stack is virtual, need physical address
         let stack_virt = stack;
-        let stack_offset = stack_virt - crate::process::USER_VIRT_BASE;  // offset from USER_VIRT_BASE
+        let stack_offset = stack_virt - crate::process::USER_VIRT_BASE; // offset from USER_VIRT_BASE
         let stack_phys = user_phys_base + stack_offset;
         crate::serial_println!("STACK: virt={:#x} phys={:#x}", stack_virt, stack_phys);
         let stack_ptr = stack_phys as *const u64;
         for i in 0..8 {
             let val = *stack_ptr.add(i);
-            crate::serial_println!("  [RSP+{}]: {:#018x}", i*8, val);
+            crate::serial_println!("  [RSP+{}]: {:#018x}", i * 8, val);
         }
 
         // Debug: dump the actual values we're passing
-        crate::serial_println!("SYSRET_ARGS: cr3={:#x} entry={:#x} stack={:#x}", cr3, entry, stack);
+        crate::serial_println!(
+            "SYSRET_ARGS: cr3={:#x} entry={:#x} stack={:#x}",
+            cr3,
+            entry,
+            stack
+        );
 
         // Store values in known memory locations for debugging
         let entry_val = entry;
         let stack_val = stack;
         let cr3_val = cr3;
-        
+
         // Print values again to make sure they haven't changed
-        crate::serial_println!("VERIFY: cr3={:#x} entry={:#x} stack={:#x}", cr3_val, entry_val, stack_val);
+        crate::serial_println!(
+            "VERIFY: cr3={:#x} entry={:#x} stack={:#x}",
+            cr3_val,
+            entry_val,
+            stack_val
+        );
 
         // CRITICAL FIX: Use explicit registers to avoid compiler interference
         // The compiler might reuse registers in unexpected ways with inline asm

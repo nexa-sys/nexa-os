@@ -17,7 +17,7 @@
 //! - `system`: System management syscalls (reboot, shutdown, runlevel, mount)
 //! - `uefi`: UEFI compatibility syscalls
 
-use crate::{kinfo, kerror};
+use crate::{kerror, kinfo};
 
 mod exec;
 mod fd;
@@ -59,11 +59,14 @@ use fd::{dup, dup2, pipe};
 use file::{close, fcntl, fstat, get_errno, list_files, lseek, open, read, stat, write};
 use ipc::{ipc_create, ipc_recv, ipc_send};
 use memory::{brk, mmap, mprotect, munmap};
-use network::{bind, connect, recvfrom, sendto, setsockopt, socket, socketpair};
+use network::{
+    bind, connect, get_dns_servers, recvfrom, sendto, set_dns_servers, setsockopt, socket,
+    socketpair,
+};
 use process::{execve, exit, fork, getppid, kill, wait4};
 use signal::{sigaction, sigprocmask};
 use system::{chroot, mount, pivot_root, reboot, runlevel, shutdown, syslog, umount};
-use thread::{clone, futex, gettid, set_tid_address, set_robust_list, get_robust_list, arch_prctl};
+use thread::{arch_prctl, clone, futex, get_robust_list, gettid, set_robust_list, set_tid_address};
 use time::{clock_gettime, nanosleep, sched_yield};
 use uefi::{
     uefi_get_block_info, uefi_get_counts, uefi_get_fb_info, uefi_get_hid_info, uefi_get_net_info,
@@ -87,9 +90,14 @@ pub extern "C" fn syscall_dispatch(
         unsafe {
             core::arch::asm!("mov {}, cr3", out(reg) current_cr3, options(nomem, nostack));
         }
-        kinfo!("[syscall_dispatch] ENTRY: nr={}, CR3={:#x}, kernel_CR3={:#x}", nr, current_cr3, kernel_cr3);
+        kinfo!(
+            "[syscall_dispatch] ENTRY: nr={}, CR3={:#x}, kernel_CR3={:#x}",
+            nr,
+            current_cr3,
+            kernel_cr3
+        );
     }
-    
+
     let (user_rsp, user_rflags) = unsafe {
         let mut rsp_out: u64;
         let mut rflags_out: u64;
@@ -162,7 +170,11 @@ pub extern "C" fn syscall_dispatch(
             unsafe {
                 core::arch::asm!("mov {}, cr3", out(reg) current_cr3, options(nomem, nostack));
             }
-            kinfo!("[syscall_dispatch] SYS_EXECVE called, arg1={:#x}, CR3={:#x}", arg1, current_cr3);
+            kinfo!(
+                "[syscall_dispatch] SYS_EXECVE called, arg1={:#x}, CR3={:#x}",
+                arg1,
+                current_cr3
+            );
             execve(
                 arg1 as *const u8,
                 arg2 as *const *const u8,
@@ -232,6 +244,8 @@ pub extern "C" fn syscall_dispatch(
             socketpair(arg1 as i32, arg2 as i32, arg3 as i32, arg4 as *mut [i32; 2])
         }
         SYS_BIND => bind(arg1, arg2 as *const SockAddr, arg3 as u32),
+        SYS_NET_SET_DNS => set_dns_servers(arg1 as *const u32, arg2 as u32),
+        SYS_NET_GET_DNS => get_dns_servers(arg1 as *mut u32, arg2 as u32),
         SYS_SENDTO => {
             // sendto needs 6 args: sockfd, buf, len, flags, dest_addr, addrlen
             let (arg4, arg5, arg6) = unsafe {

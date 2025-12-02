@@ -73,8 +73,11 @@ pub fn get_cpu_affinity(pid: Pid) -> Option<CpuMask> {
 }
 
 /// Collect PIDs of all ready processes
-fn collect_ready_pids(table: &[Option<super::types::ProcessEntry>; crate::process::MAX_PROCESSES]) -> Vec<Pid> {
-    table.iter()
+fn collect_ready_pids(
+    table: &[Option<super::types::ProcessEntry>; crate::process::MAX_PROCESSES],
+) -> Vec<Pid> {
+    table
+        .iter()
         .filter_map(|slot| slot.as_ref())
         .filter(|entry| entry.process.state == ProcessState::Ready)
         .map(|entry| entry.process.pid)
@@ -232,7 +235,9 @@ fn count_processes_on_cpu(cpu: u16) -> u64 {
 
     for slot in table.iter() {
         let Some(entry) = slot else { continue };
-        if entry.process.state == ProcessState::Ready || entry.process.state == ProcessState::Running {
+        if entry.process.state == ProcessState::Ready
+            || entry.process.state == ProcessState::Running
+        {
             if entry.last_cpu == cpu {
                 count += 1;
             }

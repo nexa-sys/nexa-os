@@ -10,7 +10,7 @@ use crate::process::{Process, ProcessState, MAX_CMDLINE_SIZE};
 const CPU_MASK_WORDS: usize = (MAX_CPUS + 63) / 64;
 
 /// CPU affinity mask supporting up to MAX_CPUS (1024) processors
-/// 
+///
 /// This is a bitmap where each bit represents a CPU core.
 /// Bit N being set means the process can run on CPU N.
 #[derive(Clone, Copy)]
@@ -152,7 +152,7 @@ impl<'a> Iterator for CpuMaskIter<'a> {
             }
             self.current_bits = self.mask.bits[self.current_word];
         }
-        
+
         let bit = self.current_bits.trailing_zeros() as usize;
         self.current_bits &= self.current_bits - 1; // Clear lowest set bit
         Some(self.current_word * 64 + bit)
@@ -182,12 +182,9 @@ pub const NICE_0_WEIGHT: u64 = 1024;
 /// Nice -20 has highest weight, Nice +19 has lowest
 pub const NICE_TO_WEIGHT: [u64; 40] = [
     // -20 to -11
-    88761, 71755, 56483, 46273, 36291, 29154, 23254, 18705, 14949, 11916,
-    // -10 to -1
-    9548, 7620, 6100, 4904, 3906, 3121, 2501, 1991, 1586, 1277,
-    // 0 to 9
-    1024, 820, 655, 526, 423, 335, 272, 215, 172, 137,
-    // 10 to 19
+    88761, 71755, 56483, 46273, 36291, 29154, 23254, 18705, 14949, 11916, // -10 to -1
+    9548, 7620, 6100, 4904, 3906, 3121, 2501, 1991, 1586, 1277, // 0 to 9
+    1024, 820, 655, 526, 423, 335, 272, 215, 172, 137, // 10 to 19
     110, 87, 70, 56, 45, 36, 29, 23, 18, 15,
 ];
 
@@ -195,7 +192,13 @@ pub const NICE_TO_WEIGHT: [u64; 40] = [
 #[inline]
 pub const fn nice_to_weight(nice: i8) -> u64 {
     let idx = nice as i32 + 20;
-    let idx = if idx < 0 { 0 } else if idx > 39 { 39 } else { idx as usize };
+    let idx = if idx < 0 {
+        0
+    } else if idx > 39 {
+        39
+    } else {
+        idx as usize
+    };
     NICE_TO_WEIGHT[idx]
 }
 
@@ -212,7 +215,7 @@ pub enum SchedPolicy {
 #[derive(Clone, Copy)]
 pub struct ProcessEntry {
     pub process: Process,
-    
+
     // === EEVDF core fields ===
     /// Virtual runtime - accumulated weighted CPU time (in nanoseconds)
     pub vruntime: u64,
@@ -227,7 +230,7 @@ pub struct ProcessEntry {
     pub slice_ns: u64,
     /// Time slice remaining (in nanoseconds)
     pub slice_remaining_ns: u64,
-    
+
     // === Legacy/compatibility fields ===
     pub priority: u8,            // Mapped from nice for backward compatibility
     pub base_priority: u8,       // Base static priority
@@ -244,7 +247,7 @@ pub struct ProcessEntry {
     pub voluntary_switches: u64, // Number of voluntary context switches
     pub cpu_affinity: CpuMask,   // CPU affinity mask (supports up to 1024 CPUs)
     pub last_cpu: u16,           // Last CPU this process ran on (u16 for 1024 CPUs)
-    
+
     // === NUMA fields ===
     /// Preferred NUMA node for this process (NUMA_NO_NODE = no preference)
     pub numa_preferred_node: u32,

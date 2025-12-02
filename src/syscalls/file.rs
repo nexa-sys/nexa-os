@@ -195,10 +195,7 @@ pub fn write(fd: u64, buf: u64, count: u64) -> u64 {
 
                     match crate::ipc::socketpair_write(sp_handle.pair_id, sp_handle.end, data) {
                         Ok(bytes_written) => {
-                            ktrace!(
-                                "[SYS_WRITE] Socketpair wrote {} bytes",
-                                bytes_written
-                            );
+                            ktrace!("[SYS_WRITE] Socketpair wrote {} bytes", bytes_written);
                             posix::set_errno(0);
                             return bytes_written as u64;
                         }
@@ -517,6 +514,20 @@ pub fn close(fd: u64) -> u64 {
                         );
                     }
                 }
+                // Close UDP socket
+                else if sock_handle.socket_type == SOCK_DGRAM
+                    && sock_handle.socket_index != usize::MAX
+                {
+                    if let Some(_) = crate::net::with_net_stack(|stack| {
+                        stack.udp_close(sock_handle.socket_index)
+                    }) {
+                        kinfo!(
+                            "Closed UDP socket {} for fd {}",
+                            sock_handle.socket_index,
+                            fd
+                        );
+                    }
+                }
             }
             // Clean up socketpair resources
             else if let FileBacking::Socketpair(ref sp_handle) = handle.backing {
@@ -550,9 +561,13 @@ pub fn close(fd: u64) -> u64 {
 
 /// List files system call
 pub fn list_files(buf: *mut u8, count: usize, request_ptr: *const ListDirRequest) -> u64 {
-    crate::serial_println!("SYSCALL_LIST_FILES: buf={:#x} count={} req={:#x}", 
-        buf as u64, count, request_ptr as u64);
-    
+    crate::serial_println!(
+        "SYSCALL_LIST_FILES: buf={:#x} count={} req={:#x}",
+        buf as u64,
+        count,
+        request_ptr as u64
+    );
+
     if buf.is_null() || count == 0 {
         posix::set_errno(posix::errno::EINVAL);
         return u64::MAX;
@@ -585,8 +600,11 @@ pub fn list_files(buf: *mut u8, count: usize, request_ptr: *const ListDirRequest
 
     let normalized = if path.is_empty() { "/" } else { path };
 
-    crate::serial_println!("SYSCALL_LIST_FILES: normalized='{}' (is_root={})", 
-        normalized, normalized == "/");
+    crate::serial_println!(
+        "SYSCALL_LIST_FILES: normalized='{}' (is_root={})",
+        normalized,
+        normalized == "/"
+    );
 
     if normalized != "/" {
         crate::serial_println!("SYSCALL_LIST_FILES: calling stat('{}')", normalized);
@@ -608,7 +626,10 @@ pub fn list_files(buf: *mut u8, count: usize, request_ptr: *const ListDirRequest
     let mut written = 0usize;
     let mut overflow = false;
 
-    crate::serial_println!("SYSCALL_LIST_FILES: calling list_directory path='{}'", normalized);
+    crate::serial_println!(
+        "SYSCALL_LIST_FILES: calling list_directory path='{}'",
+        normalized
+    );
 
     crate::fs::list_directory(normalized, |name, _meta| {
         if overflow {
@@ -630,7 +651,7 @@ pub fn list_files(buf: *mut u8, count: usize, request_ptr: *const ListDirRequest
             written += 1;
         }
     });
-    
+
     crate::serial_println!("SYSCALL_LIST_FILES: done, written={}", written);
 
     if overflow {

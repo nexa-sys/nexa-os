@@ -193,10 +193,7 @@ pub fn validate_cr3(cr3: u64) -> bool {
     // Should be within reasonable physical memory (< 4GB for typical systems)
     if cr3 >= 0x1_0000_0000 {
         // Warn but don't fail - some systems may have higher addresses
-        crate::kwarn!(
-            "CR3 {:#x} is in high physical memory range (>4GB)",
-            cr3
-        );
+        crate::kwarn!("CR3 {:#x} is in high physical memory range (>4GB)", cr3);
     }
 
     true

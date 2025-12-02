@@ -38,11 +38,11 @@ impl<F: BlockFileSystem + 'static> FileSystem for BlockFsVfsAdapter<F> {
         // Note: We can't return an Ext2 FileContent here as we don't have
         // the specific type. This adapter is primarily for new filesystem types
         // that aren't ext2. For ext2, use the Ext2Filesystem directly.
-        // 
+        //
         // For a complete solution, we would need to either:
         // 1. Add a new FileContent variant for BlockFileSystem
         // 2. Or cache the file data and return it as Inline
-        
+
         // For now, return None for actual file content - this adapter is
         // primarily useful for metadata operations
         Some(OpenFile {
@@ -86,14 +86,12 @@ impl<F: BlockFileSystem + 'static> FileSystem for BlockFsVfsAdapter<F> {
 
     fn write(&self, path: &str, data: &[u8]) -> Result<usize, &'static str> {
         let handle = self.inner.lookup(path).map_err(|_| "file not found")?;
-        self.inner
-            .write(&handle, 0, data)
-            .map_err(|e| match e {
-                FsError::ReadOnly => "filesystem is read-only",
-                FsError::NoSpace => "no space left on device",
-                FsError::PermissionDenied => "permission denied",
-                _ => "write error",
-            })
+        self.inner.write(&handle, 0, data).map_err(|e| match e {
+            FsError::ReadOnly => "filesystem is read-only",
+            FsError::NoSpace => "no space left on device",
+            FsError::PermissionDenied => "permission denied",
+            _ => "write error",
+        })
     }
 
     fn create(&self, path: &str) -> Result<(), &'static str> {
@@ -137,10 +135,10 @@ impl<'a> BlockFileSystem for VfsBlockFsAdapter<'a> {
 
     fn lookup(&self, path: &str) -> FsResult<FsFileHandle> {
         let meta = self.inner.metadata(path).ok_or(FsError::NotFound)?;
-        
+
         // VFS doesn't have inode numbers, use a hash of the path
         let id = simple_path_hash(path);
-        
+
         Ok(FsFileHandle::new(
             id,
             meta.size,
@@ -167,24 +165,25 @@ impl<'a> BlockFileSystem for VfsBlockFsAdapter<'a> {
 
     fn readdir(&self, path: &str, callback: &mut dyn FnMut(DirEntry)) -> FsResult<()> {
         let meta = self.inner.metadata(path).ok_or(FsError::NotFound)?;
-        
+
         if meta.file_type != crate::posix::FileType::Directory {
             return Err(FsError::NotADirectory);
         }
 
-        self.inner.list(path, &mut |name: &str, entry_meta: Metadata| {
-            let file_type = match entry_meta.file_type {
-                crate::posix::FileType::Regular => 1,
-                crate::posix::FileType::Directory => 2,
-                crate::posix::FileType::Character => 3,
-                crate::posix::FileType::Block => 4,
-                crate::posix::FileType::Fifo => 5,
-                crate::posix::FileType::Socket => 6,
-                crate::posix::FileType::Symlink => 7,
-                _ => 0,
-            };
-            callback(DirEntry::new(0, name, file_type));
-        });
+        self.inner
+            .list(path, &mut |name: &str, entry_meta: Metadata| {
+                let file_type = match entry_meta.file_type {
+                    crate::posix::FileType::Regular => 1,
+                    crate::posix::FileType::Directory => 2,
+                    crate::posix::FileType::Character => 3,
+                    crate::posix::FileType::Block => 4,
+                    crate::posix::FileType::Fifo => 5,
+                    crate::posix::FileType::Socket => 6,
+                    crate::posix::FileType::Symlink => 7,
+                    _ => 0,
+                };
+                callback(DirEntry::new(0, name, file_type));
+            });
 
         Ok(())
     }

@@ -10,20 +10,20 @@ use alloc::alloc::{alloc, Layout};
 use core::sync::atomic::{AtomicU64, Ordering};
 
 /// Clone flags (subset of Linux clone flags)
-pub const CLONE_VM: u64 = 0x00000100;           // Share virtual memory
-pub const CLONE_FS: u64 = 0x00000200;           // Share filesystem info
-pub const CLONE_FILES: u64 = 0x00000400;        // Share file descriptors
-pub const CLONE_SIGHAND: u64 = 0x00000800;      // Share signal handlers
-pub const CLONE_THREAD: u64 = 0x00010000;       // Same thread group
-pub const CLONE_NEWNS: u64 = 0x00020000;        // New mount namespace
-pub const CLONE_SYSVSEM: u64 = 0x00040000;      // Share System V SEM_UNDO
-pub const CLONE_SETTLS: u64 = 0x00080000;       // Set TLS
+pub const CLONE_VM: u64 = 0x00000100; // Share virtual memory
+pub const CLONE_FS: u64 = 0x00000200; // Share filesystem info
+pub const CLONE_FILES: u64 = 0x00000400; // Share file descriptors
+pub const CLONE_SIGHAND: u64 = 0x00000800; // Share signal handlers
+pub const CLONE_THREAD: u64 = 0x00010000; // Same thread group
+pub const CLONE_NEWNS: u64 = 0x00020000; // New mount namespace
+pub const CLONE_SYSVSEM: u64 = 0x00040000; // Share System V SEM_UNDO
+pub const CLONE_SETTLS: u64 = 0x00080000; // Set TLS
 pub const CLONE_PARENT_SETTID: u64 = 0x00100000; // Store TID in parent
 pub const CLONE_CHILD_CLEARTID: u64 = 0x00200000; // Clear TID in child on exit
-pub const CLONE_DETACHED: u64 = 0x00400000;     // Unused
-pub const CLONE_UNTRACED: u64 = 0x00800000;     // Tracing doesn't follow
+pub const CLONE_DETACHED: u64 = 0x00400000; // Unused
+pub const CLONE_UNTRACED: u64 = 0x00800000; // Tracing doesn't follow
 pub const CLONE_CHILD_SETTID: u64 = 0x01000000; // Store TID in child
-pub const CLONE_VFORK: u64 = 0x00004000;        // Parent sleeps until child exits
+pub const CLONE_VFORK: u64 = 0x00004000; // Parent sleeps until child exits
 
 /// arch_prctl operations
 pub const ARCH_SET_GS: i32 = 0x1001;
@@ -58,8 +58,8 @@ const MAX_FUTEX_WAITERS: usize = 64;
 /// Simple futex wait queue entry
 #[derive(Clone, Copy)]
 struct FutexWaiter {
-    uaddr: u64,      // Address being waited on
-    pid: u64,        // Waiting process/thread ID
+    uaddr: u64, // Address being waited on
+    pid: u64,   // Waiting process/thread ID
     in_use: bool,
 }
 
@@ -74,7 +74,8 @@ impl FutexWaiter {
 }
 
 /// Global futex wait queue (simplified)
-static mut FUTEX_WAITERS: [FutexWaiter; MAX_FUTEX_WAITERS] = [FutexWaiter::empty(); MAX_FUTEX_WAITERS];
+static mut FUTEX_WAITERS: [FutexWaiter; MAX_FUTEX_WAITERS] =
+    [FutexWaiter::empty(); MAX_FUTEX_WAITERS];
 
 /// SYS_CLONE - Create a new process/thread
 ///
@@ -101,7 +102,11 @@ pub fn clone(
 ) -> u64 {
     ktrace!(
         "[clone] flags={:#x}, stack={:#x}, parent_tid={:#x}, child_tid={:#x}, tls={:#x}",
-        flags, stack, parent_tid, child_tid, tls
+        flags,
+        stack,
+        parent_tid,
+        child_tid,
+        tls
     );
 
     // Get current process info
@@ -158,7 +163,7 @@ pub fn clone(
         crate::process::KERNEL_STACK_ALIGN,
     )
     .unwrap();
-    
+
     let kernel_stack = unsafe { alloc(kernel_stack_layout) } as u64;
     if kernel_stack == 0 {
         kerror!("[clone] Failed to allocate kernel stack");
@@ -186,13 +191,16 @@ pub fn clone(
         child_process.cr3 = parent_process.cr3;
         child_process.memory_base = parent_process.memory_base;
         child_process.memory_size = parent_process.memory_size;
-        kdebug!("[clone] CLONE_VM: Sharing address space (CR3={:#x})", parent_process.cr3);
+        kdebug!(
+            "[clone] CLONE_VM: Sharing address space (CR3={:#x})",
+            parent_process.cr3
+        );
     } else {
         // For fork-like behavior, copy memory
         use crate::process::{INTERP_BASE, INTERP_REGION_SIZE, USER_VIRT_BASE};
-        
+
         let memory_size = (INTERP_BASE + INTERP_REGION_SIZE) - USER_VIRT_BASE;
-        
+
         let child_phys_base = match crate::paging::allocate_user_region(memory_size) {
             Some(addr) => addr,
             None => {
@@ -231,7 +239,11 @@ pub fn clone(
         unsafe {
             *(parent_tid as *mut u32) = child_pid as u32;
         }
-        ktrace!("[clone] Stored child TID {} at parent_tid {:#x}", child_pid, parent_tid);
+        ktrace!(
+            "[clone] Stored child TID {} at parent_tid {:#x}",
+            child_pid,
+            parent_tid
+        );
     }
 
     // Handle CLONE_CHILD_SETTID
@@ -239,7 +251,11 @@ pub fn clone(
         unsafe {
             *(child_tid as *mut u32) = child_pid as u32;
         }
-        ktrace!("[clone] Stored child TID {} at child_tid {:#x}", child_pid, child_tid);
+        ktrace!(
+            "[clone] Stored child TID {} at child_tid {:#x}",
+            child_pid,
+            child_tid
+        );
     }
 
     // Handle CLONE_CHILD_CLEARTID
@@ -266,7 +282,9 @@ pub fn clone(
 
     kinfo!(
         "[clone] Created child PID {} from parent PID {} (flags={:#x})",
-        child_pid, current_pid, flags
+        child_pid,
+        current_pid,
+        flags
     );
 
     posix::set_errno(0);
@@ -286,20 +304,17 @@ pub fn clone(
 /// # Returns
 /// * Depends on operation
 /// * -1 on error with errno set
-pub fn futex(
-    uaddr: u64,
-    op: i32,
-    val: i32,
-    timeout: u64,
-    _uaddr2: u64,
-    _val3: i32,
-) -> u64 {
+pub fn futex(uaddr: u64, op: i32, val: i32, timeout: u64, _uaddr2: u64, _val3: i32) -> u64 {
     // Mask off private and clock flags
     let cmd = op & FUTEX_CMD_MASK;
 
     ktrace!(
         "[futex] uaddr={:#x}, op={} (cmd={}), val={}, timeout={:#x}",
-        uaddr, op, cmd, val, timeout
+        uaddr,
+        op,
+        cmd,
+        val,
+        timeout
     );
 
     // Validate address
@@ -338,13 +353,16 @@ pub fn futex(
 /// FUTEX_WAIT - Wait if *uaddr == val
 fn futex_wait(uaddr: u64, val: i32, timeout: u64) -> u64 {
     let current_pid = scheduler::get_current_pid().unwrap_or(0);
-    
+
     // Read the current value at uaddr
     let current_val = unsafe { *(uaddr as *const i32) };
-    
+
     ktrace!(
         "[futex_wait] PID {} waiting on {:#x}, expected={}, actual={}",
-        current_pid, uaddr, val, current_val
+        current_pid,
+        uaddr,
+        val,
+        current_val
     );
 
     // If value doesn't match, return EAGAIN
@@ -356,18 +374,18 @@ fn futex_wait(uaddr: u64, val: i32, timeout: u64) -> u64 {
 
     // In a single-threaded environment, waiting would deadlock.
     // For compatibility with std::sync primitives, we need to handle this gracefully.
-    
+
     // For FUTEX_WAIT in single-threaded mode:
     // - If the value matches, the caller expects to wait for a FUTEX_WAKE
     // - Since we're single-threaded, no other thread can wake us
     // - Return EAGAIN to prevent deadlock, letting the caller retry
-    
+
     // In a multi-threaded implementation, we would:
     // 1. Add current process to wait queue
     // 2. Set process state to Sleeping
     // 3. Call scheduler
     // 4. On wake, check value again
-    
+
     // For now, simulate a brief wait and return
     if timeout != 0 {
         // There's a timeout, honor it by doing a short yield
@@ -404,7 +422,7 @@ fn futex_wake(uaddr: u64, val: i32) -> u64 {
     // 1. Find all processes waiting on this address
     // 2. Wake up to 'val' of them
     // 3. Set their state to Ready
-    
+
     unsafe {
         for waiter in FUTEX_WAITERS.iter_mut() {
             if waiter.in_use && waiter.uaddr == uaddr {
@@ -415,7 +433,7 @@ fn futex_wake(uaddr: u64, val: i32) -> u64 {
                     woken += 1;
                     waiter.in_use = false;
                 }
-                
+
                 if woken >= val as u64 {
                     break;
                 }
@@ -446,7 +464,7 @@ pub fn gettid() -> u64 {
 /// * Current thread ID
 pub fn set_tid_address(tidptr: u64) -> u64 {
     let tid = scheduler::get_current_pid().unwrap_or(0);
-    
+
     if tidptr != 0 {
         unsafe {
             CLEAR_CHILD_TID = tidptr;
@@ -454,7 +472,7 @@ pub fn set_tid_address(tidptr: u64) -> u64 {
         }
         ktrace!("[set_tid_address] Set tidptr={:#x} to {}", tidptr, tid);
     }
-    
+
     posix::set_errno(0);
     tid
 }
@@ -490,7 +508,7 @@ pub fn get_robust_list(_pid: u64, _head_ptr: u64, _len_ptr: u64) -> u64 {
 /// * -1 on error with errno set
 pub fn arch_prctl(code: i32, addr: u64) -> u64 {
     use x86_64::registers::model_specific::Msr;
-    
+
     let current_pid = match scheduler::get_current_pid() {
         Some(pid) => pid,
         None => {
@@ -503,60 +521,56 @@ pub fn arch_prctl(code: i32, addr: u64) -> u64 {
     match code {
         ARCH_SET_FS => {
             ktrace!("[arch_prctl] ARCH_SET_FS: setting fs_base to {:#x}", addr);
-            
+
             // Set FS base in MSR immediately
             unsafe {
                 Msr::new(crate::safety::x86::MSR_IA32_FS_BASE).write(addr);
             }
-            
+
             // Also update the process structure via scheduler
             set_process_fs_base(current_pid, addr);
-            
+
             posix::set_errno(0);
             0
         }
         ARCH_GET_FS => {
             ktrace!("[arch_prctl] ARCH_GET_FS: reading fs_base");
-            
+
             // Read current FS base from MSR
-            let fs_base = unsafe {
-                Msr::new(crate::safety::x86::MSR_IA32_FS_BASE).read()
-            };
-            
+            let fs_base = unsafe { Msr::new(crate::safety::x86::MSR_IA32_FS_BASE).read() };
+
             // Store result at addr
             if addr != 0 {
                 unsafe {
                     *(addr as *mut u64) = fs_base;
                 }
             }
-            
+
             posix::set_errno(0);
             0
         }
         ARCH_SET_GS => {
             ktrace!("[arch_prctl] ARCH_SET_GS: setting gs_base to {:#x}", addr);
-            
+
             // Note: GS is typically reserved for kernel use, but we support it
             unsafe {
                 Msr::new(crate::safety::x86::MSR_IA32_GS_BASE).write(addr);
             }
-            
+
             posix::set_errno(0);
             0
         }
         ARCH_GET_GS => {
             ktrace!("[arch_prctl] ARCH_GET_GS: reading gs_base");
-            
-            let gs_base = unsafe {
-                Msr::new(crate::safety::x86::MSR_IA32_GS_BASE).read()
-            };
-            
+
+            let gs_base = unsafe { Msr::new(crate::safety::x86::MSR_IA32_GS_BASE).read() };
+
             if addr != 0 {
                 unsafe {
                     *(addr as *mut u64) = gs_base;
                 }
             }
-            
+
             posix::set_errno(0);
             0
         }
@@ -572,7 +586,7 @@ pub fn arch_prctl(code: i32, addr: u64) -> u64 {
 fn set_process_fs_base(pid: u64, fs_base: u64) {
     // Use the scheduler's process table lock mechanism
     let table = scheduler::process_table_lock();
-    
+
     // Try radix tree lookup first
     if let Some(idx) = crate::process::lookup_pid(pid) {
         let idx = idx as usize;
@@ -582,9 +596,13 @@ fn set_process_fs_base(pid: u64, fs_base: u64) {
             // since we already set the MSR above
         }
     }
-    
+
     // The MSR is already set in arch_prctl, and fs_base in Process struct
     // is primarily for context switch restoration. For now, the MSR setting
     // is the important part - the scheduler will use the MSR value when switching.
-    ktrace!("[set_process_fs_base] Set fs_base for PID {} to {:#x}", pid, fs_base);
+    ktrace!(
+        "[set_process_fs_base] Set fs_base for PID {} to {:#x}",
+        pid,
+        fs_base
+    );
 }

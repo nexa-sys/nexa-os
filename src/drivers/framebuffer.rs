@@ -222,24 +222,24 @@ impl FramebufferWriter {
         if total <= row_size {
             return;
         }
-        
+
         // Use high-performance parallel scroll from compositor
         // Pack background color as u32 for clear operation
         let bg_color = u32::from_le_bytes(self.bg.bytes);
-        
+
         compositor::scroll_up_fast(
             self.buffer,
             self.pitch,
             self.width,
             self.height,
             self.bytes_per_pixel,
-            CELL_HEIGHT,  // scroll by one text row
+            CELL_HEIGHT, // scroll by one text row
             bg_color,
         );
     }
 
     /// 高性能字符渲染 - GPU风格的批量写入
-    /// 
+    ///
     /// 优化策略 (参考现代GPU):
     /// 1. 预计算整行像素数据到临时缓冲区 (类似GPU的tile buffer)
     /// 2. 使用128位写入批量拷贝到framebuffer (类似GPU的burst write)
@@ -248,12 +248,12 @@ impl FramebufferWriter {
     fn draw_cell(&mut self, col: usize, row: usize, glyph: &[u8; BASE_FONT_HEIGHT]) {
         let pixel_x = col * CELL_WIDTH;
         let pixel_y = row * CELL_HEIGHT;
-        
+
         // 边界检查 - 只在开始时检查一次
         if pixel_x + CELL_WIDTH > self.width || pixel_y + CELL_HEIGHT > self.height {
             return;
         }
-        
+
         // 4 字节/像素时使用优化路径
         if self.bytes_per_pixel == 4 {
             self.draw_cell_fast_32bpp(pixel_x, pixel_y, glyph);
@@ -261,31 +261,36 @@ impl FramebufferWriter {
             self.draw_cell_generic(pixel_x, pixel_y, glyph);
         }
     }
-    
+
     /// 32bpp 快速字符渲染 - 使用预计算行缓冲和批量写入
-    /// 
+    ///
     /// GPU-inspired optimizations:
     /// - 预计算完整行数据 (类似GPU tile rasterization)
     /// - 使用非volatile写入到临时缓冲，最后一次性写出
     /// - 128位写入 (4像素一次) 利用内存总线带宽
     /// - 复制相同的行而不是重新计算
     #[inline(always)]
-    fn draw_cell_fast_32bpp(&mut self, pixel_x: usize, pixel_y: usize, glyph: &[u8; BASE_FONT_HEIGHT]) {
+    fn draw_cell_fast_32bpp(
+        &mut self,
+        pixel_x: usize,
+        pixel_y: usize,
+        glyph: &[u8; BASE_FONT_HEIGHT],
+    ) {
         let fg_u32 = u32::from_le_bytes(self.fg.bytes);
         let bg_u32 = u32::from_le_bytes(self.bg.bytes);
-        
+
         // 预计算每行像素数据 (CELL_WIDTH = 16 像素 = 64 字节)
         // 使用栈上的小缓冲区避免堆分配
         let mut row_buffer: [u32; CELL_WIDTH] = [0; CELL_WIDTH];
-        
+
         // 创建64位pattern用于快速填充
         let fg_u64 = (fg_u32 as u64) | ((fg_u32 as u64) << 32);
         let bg_u64 = (bg_u32 as u64) | ((bg_u32 as u64) << 32);
-        
+
         for (glyph_row, bits) in glyph.iter().enumerate() {
             // 使用64位操作预计算行数据 - 2像素一次
             let row_ptr64 = row_buffer.as_mut_ptr() as *mut u64;
-            
+
             // 展开循环: 8个字体像素 -> 16个显示像素 -> 8个u64
             // bit 0 -> pixels 0,1 (u64 index 0)
             // bit 1 -> pixels 2,3 (u64 index 1)
@@ -297,23 +302,23 @@ impl FramebufferWriter {
                     row_ptr64.add(bit_idx).write(color64);
                 }
             }
-            
+
             // 写入 SCALE_Y 行 (通常 = 2)
             // 第一行直接写入，第二行复制第一行 (避免重复计算)
             let first_row_y = pixel_y + glyph_row * SCALE_Y;
             let first_row_offset = first_row_y * self.pitch + pixel_x * 4;
-            
+
             unsafe {
                 // 第一行: 使用128位写入 (4像素 = 16字节)
                 // CELL_WIDTH = 16, 所以是4个128位写入
                 let dst = self.buffer.add(first_row_offset);
                 let src = row_buffer.as_ptr() as *const u8;
-                
+
                 // 使用64位写入，一次写2个像素
                 // 这样可以更好地利用写合并缓冲区
                 let dst64 = dst as *mut u64;
                 let src64 = src as *const u64;
-                
+
                 // 展开8个u64写入 (64字节 = 1个cache line)
                 dst64.write(*src64);
                 dst64.add(1).write(*src64.add(1));
@@ -323,7 +328,7 @@ impl FramebufferWriter {
                 dst64.add(5).write(*src64.add(5));
                 dst64.add(6).write(*src64.add(6));
                 dst64.add(7).write(*src64.add(7));
-                
+
                 // 剩余行: 直接从第一行复制 (比重新计算快)
                 for sy in 1..SCALE_Y {
                     let target_y = first_row_y + sy;
@@ -333,22 +338,27 @@ impl FramebufferWriter {
             }
         }
     }
-    
+
     /// 通用字符渲染 (非 32bpp) - 优化版本
     #[inline(always)]
-    fn draw_cell_generic(&mut self, pixel_x: usize, pixel_y: usize, glyph: &[u8; BASE_FONT_HEIGHT]) {
+    fn draw_cell_generic(
+        &mut self,
+        pixel_x: usize,
+        pixel_y: usize,
+        glyph: &[u8; BASE_FONT_HEIGHT],
+    ) {
         // 预计算一行的像素数据
         let row_bytes = CELL_WIDTH * self.bytes_per_pixel;
         // 使用固定大小的栈缓冲区 (最大 64 字节 for 32bpp)
         let mut row_buffer: [u8; 64] = [0; 64];
-        
+
         for (glyph_row_idx, bits) in glyph.iter().enumerate() {
             // 填充行缓冲区
             for col_offset in 0..BASE_FONT_WIDTH {
                 let mask = 1u8 << col_offset;
                 let color = if bits & mask != 0 { &self.fg } else { &self.bg };
                 let base_x = col_offset * SCALE_X;
-                
+
                 // SCALE_X = 2 的展开
                 for sx in 0..SCALE_X {
                     let pixel_idx = (base_x + sx) * self.bytes_per_pixel;
@@ -357,16 +367,16 @@ impl FramebufferWriter {
                     }
                 }
             }
-            
+
             // 写入 SCALE_Y 行
             let first_row_y = pixel_y + glyph_row_idx * SCALE_Y;
             let first_row_offset = first_row_y * self.pitch + pixel_x * self.bytes_per_pixel;
-            
+
             unsafe {
                 // 第一行直接写入
                 let dst = self.buffer.add(first_row_offset);
                 core::ptr::copy_nonoverlapping(row_buffer.as_ptr(), dst, row_bytes);
-                
+
                 // 剩余行复制
                 for sy in 1..SCALE_Y {
                     let target_y = first_row_y + sy;
@@ -422,12 +432,12 @@ impl FramebufferWriter {
     fn clear_cell(&mut self, col: usize, row: usize) {
         let pixel_x = col * CELL_WIDTH;
         let pixel_y = row * CELL_HEIGHT;
-        
+
         // 边界检查
         if pixel_x + CELL_WIDTH > self.width || pixel_y + CELL_HEIGHT > self.height {
             return;
         }
-        
+
         // 使用优化的 fill_rect
         self.fill_rect(pixel_x, pixel_y, CELL_WIDTH, CELL_HEIGHT, self.bg);
     }
@@ -611,27 +621,29 @@ impl FramebufferWriter {
     }
 
     /// 清除文本行区域
-    /// 
+    ///
     /// 使用 compositor 多核填充整个区域
     fn clear_area(&mut self, start_row: usize, end_row: usize) {
         if start_row >= end_row {
             return;
         }
-        
+
         let pixel_y_start = start_row * CELL_HEIGHT;
         let pixel_y_end = end_row * CELL_HEIGHT;
-        let height = pixel_y_end.saturating_sub(pixel_y_start).min(self.height - pixel_y_start);
-        
+        let height = pixel_y_end
+            .saturating_sub(pixel_y_start)
+            .min(self.height - pixel_y_start);
+
         if height == 0 {
             return;
         }
-        
+
         // 使用优化的 fill_rect，它会自动使用多核填充
         self.fill_rect(0, pixel_y_start, self.width, height, self.bg);
     }
 
     /// 高性能矩形填充
-    /// 
+    ///
     /// 优化策略:
     /// 1. 使用 64 位写入批量填充
     /// 2. 先填充第一行，然后复制到其他行
@@ -646,17 +658,17 @@ impl FramebufferWriter {
         if width == 0 || height == 0 {
             return;
         }
-        
+
         // 边界检查
         let end_x = start_x.saturating_add(width).min(self.width);
         let end_y = start_y.saturating_add(height).min(self.height);
         let actual_width = end_x.saturating_sub(start_x);
         let actual_height = end_y.saturating_sub(start_y);
-        
+
         if actual_width == 0 || actual_height == 0 {
             return;
         }
-        
+
         // 32bpp 快速路径
         if self.bytes_per_pixel == 4 {
             self.fill_rect_fast_32bpp(start_x, start_y, actual_width, actual_height, color);
@@ -664,9 +676,9 @@ impl FramebufferWriter {
             self.fill_rect_generic(start_x, start_y, actual_width, actual_height, color);
         }
     }
-    
+
     /// 32bpp 快速矩形填充 - GPU风格优化
-    /// 
+    ///
     /// GPU-inspired optimizations:
     /// - 大区域使用compositor多核并行填充
     /// - 小区域使用展开的64位写入
@@ -683,15 +695,15 @@ impl FramebufferWriter {
     ) {
         let color_u32 = u32::from_le_bytes(color.bytes);
         let total_pixels = width * height;
-        
+
         // 对于2.5K分辨率，降低并行阈值至1024像素 (约1行的1/3)
         // 全屏宽度的区域阈值进一步降低
         let parallel_threshold = if start_x == 0 && width == self.width {
-            1024  // 全宽度行：更激进的并行化
+            1024 // 全宽度行：更激进的并行化
         } else {
-            2048  // 非全宽：稍高阈值避免并行开销
+            2048 // 非全宽：稍高阈值避免并行开销
         };
-        
+
         // 使用 compositor 多核填充
         if total_pixels >= parallel_threshold && height >= 4 {
             // 对于非全宽区域，需要使用fill_rect而非parallel_fill
@@ -711,30 +723,37 @@ impl FramebufferWriter {
             }
             return;
         }
-        
+
         // 小区域快速路径
         self.fill_rect_optimized(start_x, start_y, width, height, color_u32);
     }
-    
+
     /// 优化的单核矩形填充 - 用于小区域或非对齐区域
     #[inline(always)]
-    fn fill_rect_optimized(&mut self, start_x: usize, start_y: usize, width: usize, height: usize, color_u32: u32) {
+    fn fill_rect_optimized(
+        &mut self,
+        start_x: usize,
+        start_y: usize,
+        width: usize,
+        height: usize,
+        color_u32: u32,
+    ) {
         let color_u64 = (color_u32 as u64) | ((color_u32 as u64) << 32);
         let row_bytes = width * 4;
-        
+
         let first_row_offset = start_y * self.pitch + start_x * 4;
         unsafe {
             let first_row_ptr = self.buffer.add(first_row_offset);
-            
+
             // 使用展开的64位写入填充第一行
             let qwords = width / 2;
             let remainder = width % 2;
             let qword_ptr = first_row_ptr as *mut u64;
-            
+
             // 展开循环: 4个u64一组 (8像素)
             let batches = qwords / 4;
             let batch_remainder = qwords % 4;
-            
+
             for batch in 0..batches {
                 let base = batch * 4;
                 qword_ptr.add(base).write(color_u64);
@@ -742,18 +761,18 @@ impl FramebufferWriter {
                 qword_ptr.add(base + 2).write(color_u64);
                 qword_ptr.add(base + 3).write(color_u64);
             }
-            
+
             // 处理剩余的qwords
             let batch_base = batches * 4;
             for i in 0..batch_remainder {
                 qword_ptr.add(batch_base + i).write(color_u64);
             }
-            
+
             if remainder > 0 {
                 let dword_ptr = first_row_ptr.add(qwords * 8) as *mut u32;
                 dword_ptr.write(color_u32);
             }
-            
+
             // 复制第一行到其他行 - 使用展开的复制
             for row in 1..height {
                 let dst_offset = (start_y + row) * self.pitch + start_x * 4;
@@ -765,7 +784,7 @@ impl FramebufferWriter {
             }
         }
     }
-    
+
     /// 通用矩形填充 (非 32bpp)
     #[inline(always)]
     fn fill_rect_generic(
@@ -777,12 +796,12 @@ impl FramebufferWriter {
         color: PackedColor,
     ) {
         let row_bytes = width * self.bytes_per_pixel;
-        
+
         // 填充第一行
         let first_row_offset = start_y * self.pitch + start_x * self.bytes_per_pixel;
         unsafe {
             let first_row_ptr = self.buffer.add(first_row_offset);
-            
+
             // 逐像素填充第一行
             for x in 0..width {
                 let pixel_ptr = first_row_ptr.add(x * self.bytes_per_pixel);
@@ -790,7 +809,7 @@ impl FramebufferWriter {
                     pixel_ptr.add(i).write_volatile(color.bytes[i]);
                 }
             }
-            
+
             // 复制第一行到其他行
             for row in 1..height {
                 let dst_offset = (start_y + row) * self.pitch + start_x * self.bytes_per_pixel;
@@ -865,7 +884,7 @@ impl FramebufferWriter {
     }
 
     /// 高性能清屏
-    /// 
+    ///
     /// 使用整屏幕快速填充代替逐单元格清除
     pub fn clear(&mut self) {
         ktrace!(
@@ -881,23 +900,23 @@ impl FramebufferWriter {
             self.spec.address,
             self.spec.pitch
         );
-        
+
         // 使用快速整屏填充代替逐单元格清除
         self.fast_clear_screen();
-        
+
         self.cursor_x = 0;
         self.cursor_y = 0;
         self.reset_colors();
         self.ansi_state = AnsiState::Ground;
         self.ansi_param_len = 0;
     }
-    
+
     /// 快速整屏清除
-    /// 
+    ///
     /// 使用 compositor 的多核 parallel_fill 快速填充整个屏幕
     fn fast_clear_screen(&mut self) {
         let bg_u32 = u32::from_le_bytes(self.bg.bytes);
-        
+
         // 使用 compositor 的多核并行填充
         compositor::parallel_fill(
             self.buffer,

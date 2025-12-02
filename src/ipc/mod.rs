@@ -26,7 +26,7 @@ pub use pipe::{
 
 // Re-export from signal
 pub use signal::{
-    default_signal_action, init as init_signal, SignalAction, SignalState, NSIG, SIGABRT,
-    SIGALRM, SIGBUS, SIGCHLD, SIGCONT, SIGFPE, SIGHUP, SIGILL, SIGINT, SIGKILL, SIGPIPE,
-    SIGQUIT, SIGSEGV, SIGSTOP, SIGTERM, SIGTSTP, SIGTRAP, SIGUSR1, SIGUSR2,
+    default_signal_action, init as init_signal, SignalAction, SignalState, NSIG, SIGABRT, SIGALRM,
+    SIGBUS, SIGCHLD, SIGCONT, SIGFPE, SIGHUP, SIGILL, SIGINT, SIGKILL, SIGPIPE, SIGQUIT, SIGSEGV,
+    SIGSTOP, SIGTERM, SIGTRAP, SIGTSTP, SIGUSR1, SIGUSR2,
 };

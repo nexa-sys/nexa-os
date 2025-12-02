@@ -3,9 +3,9 @@
 //! This module handles loading ELF relocatable objects (.o files)
 //! and shared objects (.so files) as kernel modules.
 
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
-use alloc::string::String;
 use core::ptr;
 
 /// ELF magic number
@@ -15,8 +15,8 @@ const ELF_MAGIC: u32 = 0x464C457F;
 const EM_X86_64: u16 = 0x3E;
 
 /// ELF types
-const ET_REL: u16 = 1;  // Relocatable
-const ET_DYN: u16 = 3;  // Shared object
+const ET_REL: u16 = 1; // Relocatable
+const ET_DYN: u16 = 3; // Shared object
 
 /// Section types
 const SHT_NULL: u32 = 0;
@@ -250,7 +250,7 @@ impl<'a> ModuleLoader<'a> {
     fn get_section_name(&self, shdr: &Elf64Shdr) -> Result<&str, LoaderError> {
         let strtab_shdr = self.get_section(self.ehdr.e_shstrndx as usize)?;
         let strtab_data = &self.data[strtab_shdr.sh_offset as usize..];
-        
+
         let name_start = shdr.sh_name as usize;
         let name_end = strtab_data[name_start..]
             .iter()
@@ -269,7 +269,7 @@ impl<'a> ModuleLoader<'a> {
 
         for i in 0..self.ehdr.e_shnum as usize {
             let shdr = self.get_section(i)?;
-            
+
             // Only allocate for sections that need to be loaded
             if (shdr.sh_flags & SHF_ALLOC) != 0 {
                 // Align section
@@ -279,7 +279,7 @@ impl<'a> ModuleLoader<'a> {
                     1
                 };
                 total = (total + align - 1) & !(align - 1);
-                
+
                 self.section_bases[i] = total;
                 total += shdr.sh_size as usize;
             }
@@ -302,17 +302,17 @@ impl<'a> ModuleLoader<'a> {
         // Allocate executable memory for the module
         // In a real kernel, this would use vmalloc with executable permissions
         use alloc::alloc::{alloc_zeroed, Layout};
-        
+
         let layout = Layout::from_size_align(self.total_size, 4096)
             .map_err(|_| LoaderError::AllocationFailed)?;
-        
+
         let ptr = unsafe { alloc_zeroed(layout) };
         if ptr.is_null() {
             return Err(LoaderError::AllocationFailed);
         }
 
         self.module_base = ptr as usize;
-        
+
         // Update section bases to absolute addresses
         for base in self.section_bases.iter_mut() {
             if *base != 0 || self.total_size > 0 {
@@ -327,13 +327,14 @@ impl<'a> ModuleLoader<'a> {
     pub fn load_sections(&mut self) -> Result<(), LoaderError> {
         for i in 0..self.ehdr.e_shnum as usize {
             let shdr = self.get_section(i)?;
-            
+
             if (shdr.sh_flags & SHF_ALLOC) == 0 {
                 continue;
             }
 
             let base = self.section_bases[i];
-            let name = self.get_section_name(&shdr)
+            let name = self
+                .get_section_name(&shdr)
                 .map(|s| String::from(s))
                 .unwrap_or_else(|_| String::from(""));
 
@@ -355,7 +356,7 @@ impl<'a> ModuleLoader<'a> {
                         section_data.len(),
                     );
                 }
-                
+
                 self.sections.push(LoadedSection {
                     name,
                     base,
@@ -389,7 +390,7 @@ impl<'a> ModuleLoader<'a> {
                 .position(|&c| c == 0)
                 .map(|p| name_start + p)
                 .unwrap_or(strtab.len());
-            
+
             let name = core::str::from_utf8(&strtab[name_start..name_end])
                 .map_err(|_| LoaderError::SymbolNotFound)?;
 
@@ -424,7 +425,7 @@ impl<'a> ModuleLoader<'a> {
         // Process each relocation section
         for i in 0..self.ehdr.e_shnum as usize {
             let shdr = self.get_section(i)?;
-            
+
             if shdr.sh_type != SHT_RELA {
                 continue;
             }
@@ -432,7 +433,7 @@ impl<'a> ModuleLoader<'a> {
             // Get target section
             let target_idx = shdr.sh_info as usize;
             let target_shdr = self.get_section(target_idx)?;
-            
+
             // Skip if target section wasn't loaded
             if (target_shdr.sh_flags & SHF_ALLOC) == 0 {
                 continue;
@@ -445,9 +446,7 @@ impl<'a> ModuleLoader<'a> {
 
             for j in 0..rela_count {
                 let rela = unsafe {
-                    ptr::read_unaligned(
-                        rela_data.as_ptr().add(j * rela_size) as *const Elf64Rela
-                    )
+                    ptr::read_unaligned(rela_data.as_ptr().add(j * rela_size) as *const Elf64Rela)
                 };
 
                 let sym_idx = rela.sym() as usize;
@@ -471,7 +470,7 @@ impl<'a> ModuleLoader<'a> {
                 // Apply relocation based on type
                 match rela.rel_type() {
                     R_X86_64_NONE => {}
-                    
+
                     R_X86_64_64 => {
                         // S + A (absolute 64-bit)
                         let value = (sym_val as i64 + addend) as u64;
@@ -479,7 +478,7 @@ impl<'a> ModuleLoader<'a> {
                             ptr::write_unaligned(rel_addr as *mut u64, value);
                         }
                     }
-                    
+
                     R_X86_64_PC32 | R_X86_64_PLT32 => {
                         // S + A - P (PC-relative 32-bit)
                         let value = (sym_val as i64 + addend - rel_addr as i64) as i32;
@@ -487,7 +486,7 @@ impl<'a> ModuleLoader<'a> {
                             ptr::write_unaligned(rel_addr as *mut i32, value);
                         }
                     }
-                    
+
                     R_X86_64_32 => {
                         // S + A (absolute 32-bit, zero-extend)
                         let value = (sym_val as i64 + addend) as u32;
@@ -495,7 +494,7 @@ impl<'a> ModuleLoader<'a> {
                             ptr::write_unaligned(rel_addr as *mut u32, value);
                         }
                     }
-                    
+
                     R_X86_64_32S => {
                         // S + A (absolute 32-bit, sign-extend)
                         let value = (sym_val as i64 + addend) as i32;
@@ -503,7 +502,7 @@ impl<'a> ModuleLoader<'a> {
                             ptr::write_unaligned(rel_addr as *mut i32, value);
                         }
                     }
-                    
+
                     R_X86_64_GOTPCREL | R_X86_64_GOTPCRELX | R_X86_64_REX_GOTPCRELX => {
                         // G + GOT + A - P (PC-relative GOT entry)
                         // For kernel modules without GOT, treat as PC-relative to symbol
@@ -513,7 +512,7 @@ impl<'a> ModuleLoader<'a> {
                             ptr::write_unaligned(rel_addr as *mut i32, value);
                         }
                     }
-                    
+
                     R_X86_64_RELATIVE => {
                         // B + A (base + addend, for position-independent code)
                         let value = (self.module_base as i64 + addend) as u64;
@@ -521,7 +520,7 @@ impl<'a> ModuleLoader<'a> {
                             ptr::write_unaligned(rel_addr as *mut u64, value);
                         }
                     }
-                    
+
                     _ => {
                         crate::kwarn!(
                             "Unsupported relocation type: {} at {:#x}",
@@ -548,9 +547,7 @@ impl<'a> ModuleLoader<'a> {
 
         for i in 0..sym_count {
             let sym = unsafe {
-                ptr::read_unaligned(
-                    symtab_data.as_ptr().add(i * sym_size) as *const Elf64Sym
-                )
+                ptr::read_unaligned(symtab_data.as_ptr().add(i * sym_size) as *const Elf64Sym)
             };
 
             // Skip local symbols and undefined symbols
@@ -595,26 +592,32 @@ impl<'a> ModuleLoader<'a> {
 /// Load an ELF module and return its entry points
 pub fn load_elf_module(data: &[u8]) -> Result<LoadedModule, LoaderError> {
     let mut loader = ModuleLoader::new(data)?;
-    
+
     // Calculate memory requirements
     loader.calculate_size()?;
-    
+
     // Allocate memory
     let base = loader.allocate()?;
-    crate::kinfo!("Module allocated at {:#x}, size {} bytes", base, loader.size());
-    
+    crate::kinfo!(
+        "Module allocated at {:#x}, size {} bytes",
+        base,
+        loader.size()
+    );
+
     // Load sections
     loader.load_sections()?;
-    
+
     // Apply relocations
     loader.apply_relocations()?;
-    
+
     // Find module entry points
-    let init_fn = loader.find_symbol("module_init")
+    let init_fn = loader
+        .find_symbol("module_init")
         .or_else(|_| loader.find_symbol("ext2_module_init"))
         .ok();
-    
-    let exit_fn = loader.find_symbol("module_exit")
+
+    let exit_fn = loader
+        .find_symbol("module_exit")
         .or_else(|_| loader.find_symbol("ext2_module_exit"))
         .ok();
 
@@ -639,9 +642,7 @@ impl LoadedModule {
     /// Call the module's init function
     pub fn init(&self) -> Result<i32, LoaderError> {
         if let Some(init_addr) = self.init_fn {
-            let init: extern "C" fn() -> i32 = unsafe {
-                core::mem::transmute(init_addr)
-            };
+            let init: extern "C" fn() -> i32 = unsafe { core::mem::transmute(init_addr) };
             Ok(init())
         } else {
             Ok(0)
@@ -651,9 +652,7 @@ impl LoadedModule {
     /// Call the module's exit function
     pub fn exit(&self) -> Result<i32, LoaderError> {
         if let Some(exit_addr) = self.exit_fn {
-            let exit: extern "C" fn() -> i32 = unsafe {
-                core::mem::transmute(exit_addr)
-            };
+            let exit: extern "C" fn() -> i32 = unsafe { core::mem::transmute(exit_addr) };
             Ok(exit())
         } else {
             Ok(0)

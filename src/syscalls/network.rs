@@ -8,7 +8,38 @@ use crate::process::{ProcessState, USER_REGION_SIZE, USER_VIRT_BASE};
 use crate::scheduler;
 use crate::{kinfo, ktrace, kwarn};
 use alloc::boxed::Box;
-use core::slice;
+use core::{mem, slice};
+use spin::Mutex;
+
+const MAX_DNS_SERVERS: usize = 3;
+
+#[derive(Clone, Copy)]
+struct DnsConfig {
+    servers: [[u8; 4]; MAX_DNS_SERVERS],
+    count: usize,
+}
+
+impl DnsConfig {
+    const fn new() -> Self {
+        Self {
+            servers: [[0; 4]; MAX_DNS_SERVERS],
+            count: 0,
+        }
+    }
+
+    fn update(&mut self, entries: &[[u8; 4]]) {
+        let count = entries.len().min(MAX_DNS_SERVERS);
+        for idx in 0..count {
+            self.servers[idx] = entries[idx];
+        }
+        for idx in count..MAX_DNS_SERVERS {
+            self.servers[idx] = [0; 4];
+        }
+        self.count = count;
+    }
+}
+
+static DNS_CONFIG: Mutex<DnsConfig> = Mutex::new(DnsConfig::new());
 
 /// SYS_SOCKET - Create a socket
 pub fn socket(domain: i32, socket_type: i32, protocol: i32) -> u64 {
@@ -280,6 +311,70 @@ pub fn bind(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
             return u64::MAX;
         }
     }
+}
+
+/// Update the kernel-maintained DNS server list
+pub fn set_dns_servers(ptr: *const u32, count: u32) -> u64 {
+    if count as usize > MAX_DNS_SERVERS {
+        posix::set_errno(posix::errno::EINVAL);
+        return u64::MAX;
+    }
+
+    if count > 0 {
+        if ptr.is_null() {
+            posix::set_errno(posix::errno::EFAULT);
+            return u64::MAX;
+        }
+
+        let byte_len = (count as usize).saturating_mul(mem::size_of::<u32>());
+        if !user_buffer_in_range(ptr as u64, byte_len as u64) {
+            posix::set_errno(posix::errno::EFAULT);
+            return u64::MAX;
+        }
+
+        let input = unsafe { slice::from_raw_parts(ptr, count as usize) };
+        let mut entries = [[0u8; 4]; MAX_DNS_SERVERS];
+        for idx in 0..(count as usize) {
+            entries[idx] = input[idx].to_be_bytes();
+        }
+
+        let mut config = DNS_CONFIG.lock();
+        config.update(&entries[..count as usize]);
+    } else {
+        let mut config = DNS_CONFIG.lock();
+        config.update(&[]);
+    }
+
+    posix::set_errno(0);
+    0
+}
+
+/// Retrieve DNS servers previously published via [`set_dns_servers`]
+pub fn get_dns_servers(ptr: *mut u32, capacity: u32) -> u64 {
+    let capacity = capacity.min(MAX_DNS_SERVERS as u32);
+    let guard = DNS_CONFIG.lock();
+    let available = guard.count.min(capacity as usize);
+
+    if available > 0 {
+        if ptr.is_null() {
+            posix::set_errno(posix::errno::EFAULT);
+            return u64::MAX;
+        }
+
+        let byte_len = (capacity as usize).saturating_mul(mem::size_of::<u32>());
+        if !user_buffer_in_range(ptr as u64, byte_len as u64) {
+            posix::set_errno(posix::errno::EFAULT);
+            return u64::MAX;
+        }
+
+        let output = unsafe { slice::from_raw_parts_mut(ptr, capacity as usize) };
+        for idx in 0..available {
+            output[idx] = u32::from_be_bytes(guard.servers[idx]);
+        }
+    }
+
+    posix::set_errno(0);
+    available as u64
 }
 
 /// SYS_SENDTO - Send UDP datagram to specified address
@@ -795,20 +890,26 @@ pub fn connect(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
                     Some(Err(crate::net::NetError::ArpCacheMiss)) => {
                         arp_retry_count += 1;
                         let elapsed_us = crate::logger::boot_time_us() - arp_start_time_us;
-                        
+
                         if elapsed_us > arp_timeout_us || arp_retry_count > MAX_ARP_RETRIES {
-                            kwarn!("[SYS_CONNECT] ARP resolution timeout after {} retries", arp_retry_count);
+                            kwarn!(
+                                "[SYS_CONNECT] ARP resolution timeout after {} retries",
+                                arp_retry_count
+                            );
                             break Some(Err(crate::net::NetError::ArpCacheMiss));
                         }
-                        
-                        ktrace!("[SYS_CONNECT] ARP cache miss, waiting for resolution (retry {})", arp_retry_count);
-                        
+
+                        ktrace!(
+                            "[SYS_CONNECT] ARP cache miss, waiting for resolution (retry {})",
+                            arp_retry_count
+                        );
+
                         // Poll network to receive ARP reply
                         for _ in 0..50 {
                             crate::net::poll();
                             // Small delay - poll a few times to give ARP time to resolve
                         }
-                        
+
                         // Yield to scheduler briefly
                         scheduler::set_current_process_state(ProcessState::Sleeping);
                         continue;

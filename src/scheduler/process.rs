@@ -9,7 +9,7 @@ use core::sync::atomic::Ordering;
 use crate::process::{Pid, Process, ProcessState, MAX_PROCESSES};
 use crate::{kdebug, kerror, ktrace};
 
-use super::priority::{get_min_vruntime, calc_vdeadline, update_min_vruntime};
+use super::priority::{calc_vdeadline, get_min_vruntime, update_min_vruntime};
 use super::table::{current_pid, set_current_pid, CURRENT_PID, GLOBAL_TICK, PROCESS_TABLE};
 use super::types::{nice_to_weight, ProcessEntry, SchedPolicy, BASE_SLICE_NS, DEFAULT_TIME_SLICE};
 
@@ -40,7 +40,7 @@ pub fn add_process_with_policy(
 
             let nice_clamped = nice.clamp(-20, 19);
             let weight = nice_to_weight(nice_clamped);
-            
+
             // EEVDF: Calculate initial time slice based on policy
             let slice_ns = match policy {
                 SchedPolicy::Realtime => BASE_SLICE_NS * 2,
@@ -48,7 +48,7 @@ pub fn add_process_with_policy(
                 SchedPolicy::Batch => BASE_SLICE_NS * 4,
                 SchedPolicy::Idle => BASE_SLICE_NS,
             };
-            
+
             // New processes start at min_vruntime to prevent starvation
             let initial_vruntime = min_vrt;
             let initial_deadline = calc_vdeadline(initial_vruntime, slice_ns, weight);
@@ -82,13 +82,17 @@ pub fn add_process_with_policy(
                 numa_preferred_node: crate::numa::NUMA_NO_NODE,
                 numa_policy: crate::numa::NumaPolicy::Local,
             });
-            
+
             drop(table);
             update_min_vruntime();
-            
+
             crate::kinfo!(
                 "EEVDF: Added PID {} (weight={}, vrt={}, vdl={}, policy={:?})",
-                pid, weight, initial_vruntime, initial_deadline, policy
+                pid,
+                weight,
+                initial_vruntime,
+                initial_deadline,
+                policy
             );
             return Ok(());
         }
@@ -108,12 +112,14 @@ pub fn remove_process(pid: Pid) -> Result<(), &'static str> {
         // Try radix tree lookup first (O(log N)), fall back to linear scan
         let slot_idx = crate::process::lookup_pid(pid)
             .map(|idx| idx as usize)
-            .filter(|&idx| idx < table.len() && table[idx].as_ref().map_or(false, |e| e.process.pid == pid))
+            .filter(|&idx| {
+                idx < table.len() && table[idx].as_ref().map_or(false, |e| e.process.pid == pid)
+            })
             .or_else(|| {
                 // Fallback to linear search if radix tree lookup fails or is stale
-                table.iter().position(|slot| {
-                    slot.as_ref().map_or(false, |e| e.process.pid == pid)
-                })
+                table
+                    .iter()
+                    .position(|slot| slot.as_ref().map_or(false, |e| e.process.pid == pid))
             });
 
         let Some(idx) = slot_idx else {
@@ -124,7 +130,11 @@ pub fn remove_process(pid: Pid) -> Result<(), &'static str> {
         crate::kinfo!("Scheduler: Removed process PID {}", pid);
 
         let cr3 = if entry.process.cr3 != 0 {
-            kdebug!("[remove_process] PID {} had CR3={:#x}, will free page tables", pid, entry.process.cr3);
+            kdebug!(
+                "[remove_process] PID {} had CR3={:#x}, will free page tables",
+                pid,
+                entry.process.cr3
+            );
             Some(entry.process.cr3)
         } else {
             None
@@ -155,7 +165,11 @@ pub fn remove_process(pid: Pid) -> Result<(), &'static str> {
     if let Some(cr3) = removed_cr3 {
         crate::kdebug!("Freeing page tables for PID {} (CR3={:#x})", pid, cr3);
         crate::paging::free_process_address_space(cr3);
-        kdebug!("[remove_process] Freed page tables for PID {} (CR3={:#x})", pid, cr3);
+        kdebug!(
+            "[remove_process] Freed page tables for PID {} (CR3={:#x})",
+            pid,
+            cr3
+        );
     }
 
     // Free the PID for reuse (removes from radix tree and marks as available)
@@ -175,7 +189,12 @@ pub fn set_process_state(pid: Pid, state: ProcessState) -> Result<(), &'static s
         if idx < table.len() {
             if let Some(entry) = &mut table[idx] {
                 if entry.process.pid == pid {
-                    ktrace!("[set_process_state] PID {} state: {:?} -> {:?}", pid, entry.process.state, state);
+                    ktrace!(
+                        "[set_process_state] PID {} state: {:?} -> {:?}",
+                        pid,
+                        entry.process.state,
+                        state
+                    );
                     entry.process.state = state;
                     return Ok(());
                 }
@@ -190,7 +209,12 @@ pub fn set_process_state(pid: Pid, state: ProcessState) -> Result<(), &'static s
             continue;
         }
 
-        ktrace!("[set_process_state] PID {} state: {:?} -> {:?}", pid, entry.process.state, state);
+        ktrace!(
+            "[set_process_state] PID {} state: {:?} -> {:?}",
+            pid,
+            entry.process.state,
+            state
+        );
         entry.process.state = state;
         return Ok(());
     }
@@ -281,7 +305,10 @@ pub fn get_child_state(parent_pid: Pid, child_pid: Pid) -> Option<ProcessState> 
 
         ktrace!(
             "[get_child_state] Found PID {}: ppid={}, parent_pid arg={}, state={:?}",
-            child_pid, entry.process.ppid, parent_pid, entry.process.state
+            child_pid,
+            entry.process.ppid,
+            parent_pid,
+            entry.process.state
         );
 
         if entry.process.ppid == parent_pid {
@@ -290,12 +317,17 @@ pub fn get_child_state(parent_pid: Pid, child_pid: Pid) -> Option<ProcessState> 
 
         kerror!(
             "[get_child_state] PID {} has wrong parent (ppid={}, expected={})",
-            child_pid, entry.process.ppid, parent_pid
+            child_pid,
+            entry.process.ppid,
+            parent_pid
         );
         return None;
     }
 
-    kdebug!("[get_child_state] PID {} not found in process table", child_pid);
+    kdebug!(
+        "[get_child_state] PID {} not found in process table",
+        child_pid
+    );
     None
 }
 
@@ -377,7 +409,8 @@ pub fn update_process_cr3(pid: Pid, new_cr3: u64) -> Result<(), &'static str> {
 
         // Fallback to linear scan if radix tree lookup failed
         if !found {
-            let entry = table.iter_mut()
+            let entry = table
+                .iter_mut()
                 .find_map(|slot| slot.as_mut().filter(|e| e.process.pid == pid));
 
             let Some(entry) = entry else {
@@ -440,7 +473,7 @@ pub fn wake_process(pid: Pid) -> bool {
                     if entry.process.state == ProcessState::Sleeping {
                         entry.process.state = ProcessState::Ready;
                         entry.wait_time = 0;
-                        
+
                         // EEVDF: Adjust vruntime for waking process
                         // Give some credit but not too much to prevent unfair advantage
                         if entry.vruntime < min_vrt {
@@ -448,9 +481,10 @@ pub fn wake_process(pid: Pid) -> bool {
                             entry.vruntime = min_vrt.saturating_sub(credit);
                         }
                         // Recalculate deadline
-                        entry.vdeadline = calc_vdeadline(entry.vruntime, entry.slice_ns, entry.weight);
+                        entry.vdeadline =
+                            calc_vdeadline(entry.vruntime, entry.slice_ns, entry.weight);
                         entry.lag = 0; // Reset lag on wake
-                        
+
                         return true;
                     }
                     return false;
@@ -469,7 +503,7 @@ pub fn wake_process(pid: Pid) -> bool {
         if entry.process.state == ProcessState::Sleeping {
             entry.process.state = ProcessState::Ready;
             entry.wait_time = 0;
-            
+
             // EEVDF: Adjust vruntime for waking process
             if entry.vruntime < min_vrt {
                 let credit = super::types::BASE_SLICE_NS / 2;
@@ -477,7 +511,7 @@ pub fn wake_process(pid: Pid) -> bool {
             }
             entry.vdeadline = calc_vdeadline(entry.vruntime, entry.slice_ns, entry.weight);
             entry.lag = 0;
-            
+
             return true;
         }
         return false;

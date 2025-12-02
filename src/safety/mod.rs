@@ -41,20 +41,25 @@ pub use ptr::{
 
 // x86 operations
 pub use x86::{
-    cpuid, cpuid_count, flush_tlb, hlt, inb, inl, inw, invlpg, is_stack_aligned, lfence, memcpy,
-    memset, memzero, mfence, outb, outl, outw, pause, pci_config_read32, pci_config_write32,
-    read_cr3, read_low_memory, read_phys_u64, read_rsp, rdtsc, serial_debug_byte, serial_debug_hex,
+    cpuid, cpuid_count, flush_tlb, hlt, inb, inl, invlpg, inw, is_stack_aligned, lfence, memcpy,
+    memset, memzero, mfence, outb, outl, outw, pause, pci_config_read32, pci_config_write32, rdtsc,
+    read_cr3, read_low_memory, read_phys_u64, read_rsp, serial_debug_byte, serial_debug_hex,
     serial_debug_str, sfence, stack_alignment_offset, write_low_memory, write_phys_u64,
 };
 
 // Allocation
-pub use alloc::{allocate, allocate_zeroed, deallocate, layout_array, layout_of, TrackedAllocation};
+pub use alloc::{
+    allocate, allocate_zeroed, deallocate, layout_array, layout_of, TrackedAllocation,
+};
 
 // Static data access
 pub use static_data::{StaticArray, StaticMut};
 
 // Packet handling
-pub use packet::{cast_header, cast_header_mut, read_header_unaligned, write_header_unaligned, FromBytes, PacketBuffer, PacketBufferMut};
+pub use packet::{
+    cast_header, cast_header_mut, read_header_unaligned, write_header_unaligned, FromBytes,
+    PacketBuffer, PacketBufferMut,
+};
 
 // Page table operations
 pub use paging::{

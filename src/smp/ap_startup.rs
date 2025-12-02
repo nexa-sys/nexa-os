@@ -2,7 +2,7 @@
 //!
 //! This module handles the startup sequence for secondary CPU cores,
 //! including sending INIT/STARTUP IPIs and waiting for cores to come online.
-//! 
+//!
 //! Supports parallel AP initialization by providing each AP core with
 //! its own independent startup data region to avoid race conditions.
 
@@ -15,11 +15,14 @@ use crate::safety::{serial_debug_byte, serial_debug_hex};
 use crate::{gdt, lapic, paging};
 
 use super::state::ONLINE_CPUS;
-use super::trampoline::{get_kernel_relocation_offset, write_trampoline_bytes, write_per_cpu_data, set_apic_to_index_mapping};
+use super::trampoline::{
+    get_kernel_relocation_offset, set_apic_to_index_mapping, write_per_cpu_data,
+    write_trampoline_bytes,
+};
 use super::types::{
-    cpu_info, ApBootArgs, CpuData, CpuStatus, PerCpuTrampolineData,
-    AP_ARRIVED, AP_GS_DATA, CPU_DATA, STATIC_CPU_COUNT,
-    MAX_CPUS, STARTUP_RETRY_MAX, STARTUP_WAIT_LOOPS, TRAMPOLINE_BASE, TRAMPOLINE_VECTOR,
+    cpu_info, ApBootArgs, CpuData, CpuStatus, PerCpuTrampolineData, AP_ARRIVED, AP_GS_DATA,
+    CPU_DATA, MAX_CPUS, STARTUP_RETRY_MAX, STARTUP_WAIT_LOOPS, STATIC_CPU_COUNT, TRAMPOLINE_BASE,
+    TRAMPOLINE_VECTOR,
 };
 
 /// Start a single AP core
@@ -167,20 +170,21 @@ unsafe fn prepare_ap_launch(index: usize) -> Result<(), &'static str> {
     // Get stack for this AP
     let stack = stack_for(index)?;
     crate::kinfo!("SMP: [{}] Stack: {:#x}", index, stack);
-    
+
     // Prepare boot arguments
     let info = cpu_info(index);
     let arg_ptr = get_boot_args_ptr(index, info.apic_id)?;
     crate::kinfo!("SMP: [{}] Boot args at: {:#x}", index, arg_ptr);
-    
+
     // Calculate entry point
     let entry_raw = ap_entry as usize as u64;
     let reloc_offset = get_kernel_relocation_offset();
-    
+
     let entry = if entry_raw > 0x1000000 {
         crate::kinfo!(
             "SMP: [{}] Entry appears already relocated, using as-is: {:#x}",
-            index, entry_raw
+            index,
+            entry_raw
         );
         entry_raw
     } else if let Some(offset) = reloc_offset {
@@ -188,18 +192,29 @@ unsafe fn prepare_ap_launch(index: usize) -> Result<(), &'static str> {
             let relocated = (entry_raw as i64 + offset) as u64;
             crate::kinfo!(
                 "SMP: [{}] Entry point: {:#x} + offset {:#x} = {:#x}",
-                index, entry_raw, offset, relocated
+                index,
+                entry_raw,
+                offset,
+                relocated
             );
             relocated
         } else {
-            crate::kinfo!("SMP: [{}] Entry point: {:#x} (no relocation)", index, entry_raw);
+            crate::kinfo!(
+                "SMP: [{}] Entry point: {:#x} (no relocation)",
+                index,
+                entry_raw
+            );
             entry_raw
         }
     } else {
-        crate::kinfo!("SMP: [{}] Entry point: {:#x} (no offset info)", index, entry_raw);
+        crate::kinfo!(
+            "SMP: [{}] Entry point: {:#x} (no offset info)",
+            index,
+            entry_raw
+        );
         entry_raw
     };
-    
+
     // Write per-CPU trampoline data
     let per_cpu_data = PerCpuTrampolineData {
         stack_ptr: stack,
@@ -207,7 +222,7 @@ unsafe fn prepare_ap_launch(index: usize) -> Result<(), &'static str> {
         arg_ptr,
     };
     write_per_cpu_data(index, &per_cpu_data)?;
-    
+
     // Set APIC ID to CPU index mapping
     set_apic_to_index_mapping(info.apic_id, index as u8)?;
 
@@ -223,10 +238,10 @@ unsafe fn stack_for(index: usize) -> Result<u64, &'static str> {
     if index >= MAX_CPUS {
         return Err("No AP stack slot available");
     }
-    
+
     // All AP cores use dynamically allocated stacks
-    let stack_top = super::alloc::get_ap_stack_top(index)
-        .map_err(|_| "Failed to get dynamic AP stack")?;
+    let stack_top =
+        super::alloc::get_ap_stack_top(index).map_err(|_| "Failed to get dynamic AP stack")?;
     let aligned_top = stack_top as usize;
 
     // NOTE: Dynamic allocation addresses are in kernel heap space
@@ -242,7 +257,7 @@ unsafe fn get_boot_args_ptr(index: usize, apic_id: u32) -> Result<u64, &'static 
     if index >= MAX_CPUS {
         return Err("CPU index out of bounds");
     }
-    
+
     // BSP (index 0) uses static array, all APs use dynamic allocation
     let arg_ptr = if index == 0 {
         // BSP doesn't really need boot args, but keep for consistency
@@ -267,7 +282,7 @@ unsafe fn get_boot_args_ptr(index: usize, apic_id: u32) -> Result<u64, &'static 
         };
         ptr as u64
     };
-    
+
     Ok(arg_ptr)
 }
 
@@ -407,7 +422,9 @@ extern "C" fn ap_entry_inner(arg: *const ApBootArgs) -> ! {
                 Err(_) => {
                     serial_debug_byte(b'G'); // GS alloc failed
                     serial_debug_byte(b'!');
-                    loop { cpu_hlt(); }
+                    loop {
+                        cpu_hlt();
+                    }
                 }
             }
         };
@@ -443,7 +460,7 @@ extern "C" fn ap_entry_inner(arg: *const ApBootArgs) -> ! {
         // AP cores use static CpuData entries that BSP pre-initialized.
         // The static array CPU_DATA is embedded in the kernel image and
         // is accessible to all cores without heap allocation issues.
-        // 
+        //
         // For idx >= STATIC_CPU_COUNT, we skip CpuData init here because:
         // 1. Dynamic allocation Vec may not be visible to AP cores
         // 2. The essential per-CPU data (GDT, TSS, stacks) is already set up
@@ -455,7 +472,7 @@ extern "C" fn ap_entry_inner(arg: *const ApBootArgs) -> ! {
         }
         // For APs (idx >= STATIC_CPU_COUNT), skip init_cpu_data to avoid Vec access issues
         // The per-CPU GDT/TSS/stacks are already allocated and configured
-        
+
         core::sync::atomic::compiler_fence(Ordering::Release);
 
         // Step 4: Mark CPU as online
@@ -467,10 +484,14 @@ extern "C" fn ap_entry_inner(arg: *const ApBootArgs) -> ! {
         // This is reliable because BSP wrote it to a known location before starting APs
         // Using trampoline location avoids kernel relocation address issues
         let cpu_total = super::trampoline::get_cpu_total_from_trampoline();
-        
+
         // Debug: Output CPU total read from trampoline
         serial_debug_byte(b'T');
-        let t_digit = if cpu_total < 10 { b'0' + cpu_total as u8 } else { b'?' };
+        let t_digit = if cpu_total < 10 {
+            b'0' + cpu_total as u8
+        } else {
+            b'?'
+        };
         serial_debug_byte(t_digit);
         serial_debug_byte(b'\n');
 
@@ -479,11 +500,11 @@ extern "C" fn ap_entry_inner(arg: *const ApBootArgs) -> ! {
             // Use trampoline status array instead of dynamically allocated CpuInfo
             // This avoids cache coherency issues with heap-allocated structures
             super::trampoline::set_cpu_status_in_trampoline(
-                idx, 
-                super::trampoline::CPU_STATUS_ONLINE
+                idx,
+                super::trampoline::CPU_STATUS_ONLINE,
             );
             crate::safety::serial_debug_str("AP_ONLINE\n");
-            
+
             // Update ONLINE_CPUS counter
             ONLINE_CPUS.fetch_add(1, Ordering::SeqCst);
         } else {
@@ -505,7 +526,10 @@ extern "C" fn ap_entry_inner(arg: *const ApBootArgs) -> ! {
         x86_64::instructions::interrupts::enable();
 
         crate::safety::serial_debug_str("AP_IDLE_LOOP\n");
-        crate::kinfo!("SMP: Core {} entering idle loop (scheduler will take over)", idx);
+        crate::kinfo!(
+            "SMP: Core {} entering idle loop (scheduler will take over)",
+            idx
+        );
 
         // Enter idle loop - LAPIC timer interrupts will trigger scheduler
         loop {
@@ -579,7 +603,7 @@ pub unsafe fn prepare_all_aps(count: usize) -> Result<usize, &'static str> {
     // Calculate entry point (same for all APs)
     let entry_raw = ap_entry as usize as u64;
     let reloc_offset = get_kernel_relocation_offset();
-    
+
     let entry = if entry_raw > 0x1000000 {
         entry_raw
     } else if let Some(offset) = reloc_offset {
@@ -598,7 +622,7 @@ pub unsafe fn prepare_all_aps(count: usize) -> Result<usize, &'static str> {
     // Prepare per-CPU data for each AP (skip BSP at index 0)
     for index in 1..count {
         let info = cpu_info(index);
-        
+
         // Get stack for this AP
         let stack = match stack_for(index) {
             Ok(s) => s,
@@ -623,20 +647,29 @@ pub unsafe fn prepare_all_aps(count: usize) -> Result<usize, &'static str> {
             entry_ptr: entry,
             arg_ptr,
         };
-        
+
         if let Err(e) = write_per_cpu_data(index, &per_cpu_data) {
-            crate::kwarn!("SMP: [Parallel] Failed to write per-CPU data for AP {}: {}", index, e);
+            crate::kwarn!(
+                "SMP: [Parallel] Failed to write per-CPU data for AP {}: {}",
+                index,
+                e
+            );
             continue;
         }
 
         // Set APIC ID to CPU index mapping
         if let Err(e) = set_apic_to_index_mapping(info.apic_id, index as u8) {
-            crate::kwarn!("SMP: [Parallel] Failed to set APIC mapping for AP {}: {}", index, e);
+            crate::kwarn!(
+                "SMP: [Parallel] Failed to set APIC mapping for AP {}: {}",
+                index,
+                e
+            );
             continue;
         }
 
         // Mark as ready to boot
-        info.status.store(CpuStatus::Booting as u8, Ordering::Release);
+        info.status
+            .store(CpuStatus::Booting as u8, Ordering::Release);
         prepared += 1;
     }
 
@@ -650,18 +683,22 @@ pub unsafe fn prepare_all_aps(count: usize) -> Result<usize, &'static str> {
 /// Send INIT IPI to all AP cores simultaneously
 pub unsafe fn send_init_to_all_aps(count: usize) {
     crate::kinfo!("SMP: [Parallel] Sending INIT IPI to all APs...");
-    
+
     for index in 1..count {
         let info = cpu_info(index);
         let status = CpuStatus::from_atomic(info.status.load(Ordering::Acquire));
-        
+
         // Only send to cores that are in Booting state (prepared)
         if status == CpuStatus::Booting {
-            crate::kinfo!("SMP: [Parallel] INIT IPI -> AP {} (APIC {:#x})", index, info.apic_id);
+            crate::kinfo!(
+                "SMP: [Parallel] INIT IPI -> AP {} (APIC {:#x})",
+                index,
+                info.apic_id
+            );
             lapic::send_init_ipi(info.apic_id);
         }
     }
-    
+
     // Wait 10ms after INIT (per Intel spec)
     busy_wait(100_000);
 }
@@ -669,25 +706,25 @@ pub unsafe fn send_init_to_all_aps(count: usize) {
 /// Send STARTUP IPI to all AP cores simultaneously
 pub unsafe fn send_startup_to_all_aps(count: usize) {
     crate::kinfo!("SMP: [Parallel] Sending STARTUP IPI #1 to all APs...");
-    
+
     for index in 1..count {
         let info = cpu_info(index);
         let status = CpuStatus::from_atomic(info.status.load(Ordering::Acquire));
-        
+
         if status == CpuStatus::Booting {
             lapic::send_startup_ipi(info.apic_id, TRAMPOLINE_VECTOR);
         }
     }
-    
+
     // Wait 200us between SIPIs
     busy_wait(20_000);
-    
+
     crate::kinfo!("SMP: [Parallel] Sending STARTUP IPI #2 to all APs...");
-    
+
     for index in 1..count {
         let info = cpu_info(index);
         let status = CpuStatus::from_atomic(info.status.load(Ordering::Acquire));
-        
+
         if status == CpuStatus::Booting {
             lapic::send_startup_ipi(info.apic_id, TRAMPOLINE_VECTOR);
         }
@@ -697,40 +734,43 @@ pub unsafe fn send_startup_to_all_aps(count: usize) {
 /// Start all AP cores in parallel
 /// This is the main entry point for parallel AP initialization
 pub unsafe fn start_all_aps_parallel(count: usize) -> Result<usize, &'static str> {
-    crate::kinfo!("SMP: Starting parallel AP initialization for {} cores", count);
-    
+    crate::kinfo!(
+        "SMP: Starting parallel AP initialization for {} cores",
+        count
+    );
+
     // Phase 1: Prepare all APs with their per-CPU data
     let prepared = prepare_all_aps(count)?;
     if prepared == 0 {
         return Err("No APs could be prepared for startup");
     }
-    
+
     // Set all APs to "booting" status in trampoline
     for index in 1..count {
         super::trampoline::set_cpu_status_in_trampoline(
             index,
-            super::trampoline::CPU_STATUS_BOOTING
+            super::trampoline::CPU_STATUS_BOOTING,
         );
     }
-    
+
     // Phase 2: Send INIT IPI to all APs
     send_init_to_all_aps(count);
-    
+
     // Phase 3: Send STARTUP IPIs to all APs
     send_startup_to_all_aps(count);
-    
+
     // Extra delay to let APs boot
     busy_wait(50_000);
-    
+
     // Phase 4: Wait for all APs to come online
     crate::kinfo!("SMP: [Parallel] Waiting for APs to come online...");
-    
+
     let mut online = 0;
     let max_wait_iterations = 10;
-    
+
     for _ in 0..max_wait_iterations {
         online = 0;
-        
+
         // Check trampoline status array instead of dynamically allocated CpuInfo
         for index in 1..count {
             let status = super::trampoline::get_cpu_status_from_trampoline(index);
@@ -738,24 +778,26 @@ pub unsafe fn start_all_aps_parallel(count: usize) -> Result<usize, &'static str
                 online += 1;
             }
         }
-        
+
         if online == prepared {
             break;
         }
-        
+
         // Wait and try again
         busy_wait(STARTUP_WAIT_LOOPS / 10);
     }
-    
+
     // NOTE: ONLINE_CPUS is now updated by each AP core itself in ap_entry_inner
     // No need to update it here to avoid double-counting
-    
+
     // Log results
     crate::kinfo!(
         "SMP: [Parallel] {} / {} APs came online (prepared: {})",
-        online, count - 1, prepared
+        online,
+        count - 1,
+        prepared
     );
-    
+
     // Mark any non-online APs as failed (in trampoline status)
     for index in 1..count {
         let status = super::trampoline::get_cpu_status_from_trampoline(index);
@@ -763,10 +805,10 @@ pub unsafe fn start_all_aps_parallel(count: usize) -> Result<usize, &'static str
             crate::kwarn!("SMP: [Parallel] AP {} failed to come online", index);
             super::trampoline::set_cpu_status_in_trampoline(
                 index,
-                super::trampoline::CPU_STATUS_OFFLINE
+                super::trampoline::CPU_STATUS_OFFLINE,
             );
         }
     }
-    
+
     Ok(online)
 }

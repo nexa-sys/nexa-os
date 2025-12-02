@@ -61,12 +61,22 @@ pub struct CompositionRegion {
 impl CompositionRegion {
     /// Create a new composition region
     pub const fn new(x: u32, y: u32, width: u32, height: u32) -> Self {
-        Self { x, y, width, height }
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
     }
 
     /// Create a region covering the entire screen
     pub const fn full_screen(width: u32, height: u32) -> Self {
-        Self { x: 0, y: 0, width, height }
+        Self {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        }
     }
 
     /// Check if region is valid (non-zero area)
@@ -192,7 +202,7 @@ impl CompositionLayer {
 // =============================================================================
 
 /// Per-CPU compositor work state
-#[repr(C, align(64))]  // Cache-line aligned to avoid false sharing
+#[repr(C, align(64))] // Cache-line aligned to avoid false sharing
 pub struct CpuWorkState {
     /// Current work generation this CPU is working on
     pub current_gen: AtomicU64,

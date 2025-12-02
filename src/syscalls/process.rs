@@ -222,7 +222,9 @@ pub fn fork(syscall_return_addr: u64) -> u64 {
                 src_ptr as u64,
                 dst_ptr as u64
             );
-            kwarn!("Fork memory copy may be corrupted - this may indicate insufficient QEMU memory");
+            kwarn!(
+                "Fork memory copy may be corrupted - this may indicate insufficient QEMU memory"
+            );
         }
 
         // Flush TLB after memory copy
@@ -311,8 +313,8 @@ fn copy_user_c_string(ptr: *const u8, buffer: &mut [u8]) -> Result<usize, ()> {
 
 /// POSIX execve() system call - execute program
 pub fn execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8) -> u64 {
-    use alloc::vec::Vec;
     use crate::scheduler::get_current_pid;
+    use alloc::vec::Vec;
 
     kinfo!("[syscall_execve] Called");
 
@@ -337,7 +339,7 @@ pub fn execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8)
             return u64::MAX;
         }
     };
-    
+
     // Also copy argv BEFORE CR3 switch
     let mut argv_storage: Vec<Vec<u8>> = Vec::new();
     if !_argv.is_null() {
@@ -370,7 +372,7 @@ pub fn execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8)
             arg_index += 1;
         }
     }
-    
+
     // CRITICAL FIX: Switch to kernel CR3 for the rest of execve
     // This ensures that all memory allocations (EXT2_READ_CACHE, heap buffers, etc.)
     // are accessed consistently under the same page tables
@@ -379,7 +381,11 @@ pub fn execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8)
     unsafe {
         core::arch::asm!("mov {}, cr3", out(reg) saved_cr3, options(nomem, nostack));
         if saved_cr3 != kernel_cr3 {
-            kinfo!("[syscall_execve] Switching CR3 from {:#x} to kernel {:#x}", saved_cr3, kernel_cr3);
+            kinfo!(
+                "[syscall_execve] Switching CR3 from {:#x} to kernel {:#x}",
+                saved_cr3,
+                kernel_cr3
+            );
             core::arch::asm!("mov cr3, {}", in(reg) kernel_cr3, options(nostack));
         }
     }
@@ -582,7 +588,10 @@ pub fn execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8)
     // Note: The process will be scheduled with its new CR3 when it runs
     unsafe {
         if saved_cr3 != kernel_cr3 {
-            kinfo!("[syscall_execve] Restoring CR3 to {:#x} before returning", saved_cr3);
+            kinfo!(
+                "[syscall_execve] Restoring CR3 to {:#x} before returning",
+                saved_cr3
+            );
             core::arch::asm!("mov cr3, {}", in(reg) saved_cr3, options(nostack));
         }
     }

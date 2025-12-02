@@ -35,7 +35,9 @@ const WAKEUP_PREEMPT_THRESH_NS: u64 = 500_000; // 500us
 use crate::process::{Pid, ProcessState, MAX_PROCESSES};
 
 use super::table::{GLOBAL_TICK, PROCESS_TABLE};
-use super::types::{nice_to_weight, SchedPolicy, BASE_SLICE_NS, NICE_0_WEIGHT, SCHED_GRANULARITY_NS};
+use super::types::{
+    nice_to_weight, SchedPolicy, BASE_SLICE_NS, NICE_0_WEIGHT, SCHED_GRANULARITY_NS,
+};
 
 /// Minimum vruntime in the system (used to prevent new processes from starving)
 static MIN_VRUNTIME: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
@@ -51,14 +53,21 @@ const INV_WEIGHT: [u64; 40] = [
     // 0 to 9
     4194304, 5237765, 6557202, 8165337, 10153587, 12820798, 15790321, 19976592, 24970740, 31350126,
     // 10 to 19 (low priority, high inverse weight)
-    39045157, 49367440, 61356676, 76695844, 95443717, 119304647, 148102320, 186737708, 238609294, 286331153,
+    39045157, 49367440, 61356676, 76695844, 95443717, 119304647, 148102320, 186737708, 238609294,
+    286331153,
 ];
 
 /// Get precomputed inverse weight for a nice value
 #[inline(always)]
 const fn nice_to_inv_weight(nice: i8) -> u64 {
     let idx = nice as i32 + 20;
-    let idx = if idx < 0 { 0 } else if idx > 39 { 39 } else { idx as usize };
+    let idx = if idx < 0 {
+        0
+    } else if idx > 39 {
+        39
+    } else {
+        idx as usize
+    };
     INV_WEIGHT[idx]
 }
 
@@ -164,9 +173,9 @@ pub fn get_min_vruntime() -> u64 {
 /// Update the global minimum vruntime
 pub fn update_min_vruntime() {
     let table = PROCESS_TABLE.lock();
-    
+
     let mut min_vrt = u64::MAX;
-    
+
     for slot in table.iter() {
         let Some(entry) = slot else { continue };
         if entry.process.state == ProcessState::Zombie {
@@ -176,7 +185,7 @@ pub fn update_min_vruntime() {
             min_vrt = entry.vruntime;
         }
     }
-    
+
     if min_vrt != u64::MAX {
         MIN_VRUNTIME.store(min_vrt, Ordering::Relaxed);
     }
@@ -186,7 +195,7 @@ pub fn update_min_vruntime() {
 /// Sets initial vruntime to prevent new processes from starving existing ones
 pub fn place_entity(entry: &mut super::types::ProcessEntry, is_new: bool) {
     let min_vrt = get_min_vruntime();
-    
+
     if is_new {
         // New processes start at min_vruntime to get fair share quickly
         // but not zero (which would let them monopolize CPU)
@@ -201,7 +210,7 @@ pub fn place_entity(entry: &mut super::types::ProcessEntry, is_new: bool) {
             entry.vruntime = min_vrt.saturating_sub(credit);
         }
     }
-    
+
     // Calculate initial deadline
     entry.vdeadline = calc_vdeadline(entry.vruntime, entry.slice_ns, entry.weight);
 }
@@ -211,13 +220,13 @@ pub fn update_curr(entry: &mut super::types::ProcessEntry, delta_exec_ns: u64) {
     // Update vruntime
     let delta_vrt = calc_delta_vruntime(delta_exec_ns, entry.weight);
     entry.vruntime = entry.vruntime.saturating_add(delta_vrt);
-    
+
     // Decrease remaining slice
     entry.slice_remaining_ns = entry.slice_remaining_ns.saturating_sub(delta_exec_ns);
-    
+
     // Decrease lag (we consumed CPU time)
     entry.lag = entry.lag.saturating_sub(delta_exec_ns as i64);
-    
+
     // Update legacy fields
     entry.total_time = entry.total_time.saturating_add(ns_to_ms(delta_exec_ns));
     entry.time_slice = ns_to_ms(entry.slice_remaining_ns);
@@ -233,12 +242,12 @@ pub fn check_preempt_curr(
     if curr_entry.slice_remaining_ns == 0 {
         return true;
     }
-    
+
     // Check for realtime processes
     if curr_entry.policy == SchedPolicy::Realtime {
         return false; // Realtime processes are not preempted by non-realtime
     }
-    
+
     // Find if there's an eligible process with earlier deadline
     for slot in table.iter() {
         let Some(entry) = slot else { continue };
@@ -248,12 +257,12 @@ pub fn check_preempt_curr(
         if entry.process.pid == curr_entry.process.pid {
             continue;
         }
-        
+
         // Realtime processes preempt normal processes
         if entry.policy == SchedPolicy::Realtime && curr_entry.policy != SchedPolicy::Realtime {
             return true;
         }
-        
+
         // Check eligibility and deadline for EEVDF
         if is_eligible(entry) && entry.vdeadline < curr_entry.vdeadline {
             // Only preempt if difference is significant (avoid thrashing)
@@ -263,7 +272,7 @@ pub fn check_preempt_curr(
             }
         }
     }
-    
+
     false
 }
 
@@ -272,12 +281,12 @@ pub fn check_preempt_curr(
 pub fn replenish_slice(entry: &mut super::types::ProcessEntry) {
     // Base slice from policy
     let base_slice = match entry.policy {
-        SchedPolicy::Realtime => BASE_SLICE_NS * 2,     // Longer slices for realtime
+        SchedPolicy::Realtime => BASE_SLICE_NS * 2, // Longer slices for realtime
         SchedPolicy::Normal => BASE_SLICE_NS,
-        SchedPolicy::Batch => BASE_SLICE_NS * 4,       // Much longer for batch
+        SchedPolicy::Batch => BASE_SLICE_NS * 4, // Much longer for batch
         SchedPolicy::Idle => BASE_SLICE_NS,
     };
-    
+
     // Dynamic slice adjustment based on process behavior
     // Interactive processes (low avg_cpu_burst) get shorter slices for better latency
     // CPU-bound processes (high avg_cpu_burst) get longer slices to reduce overhead
@@ -298,7 +307,7 @@ pub fn replenish_slice(entry: &mut super::types::ProcessEntry) {
     } else {
         base_slice
     };
-    
+
     // Apply nice value adjustment: high priority processes get slightly longer slices
     let slice = if entry.nice < 0 {
         // Negative nice (higher priority): up to 25% longer slice
@@ -311,11 +320,11 @@ pub fn replenish_slice(entry: &mut super::types::ProcessEntry) {
     } else {
         slice
     };
-    
+
     entry.slice_ns = slice;
     entry.slice_remaining_ns = slice;
     entry.time_slice = ns_to_ms(slice);
-    
+
     // Recalculate deadline with new slice
     entry.vdeadline = calc_vdeadline(entry.vruntime, entry.slice_ns, entry.weight);
 }
@@ -324,27 +333,29 @@ pub fn replenish_slice(entry: &mut super::types::ProcessEntry) {
 /// In EEVDF, we reset lag values periodically to prevent permanent starvation
 pub fn boost_all_priorities() {
     let mut table = PROCESS_TABLE.lock();
-    
+
     for slot in table.iter_mut() {
         let Some(entry) = slot else { continue };
         if entry.process.state == ProcessState::Zombie {
             continue;
         }
-        
+
         // Reset lag to give everyone a fair chance
         entry.lag = 0;
-        
+
         // Ensure process has a valid time slice
         if entry.slice_remaining_ns == 0 {
             replenish_slice(entry);
         }
-        
+
         crate::kdebug!(
             "EEVDF boost: PID {} vrt={}, vdl={}, lag=0",
-            entry.process.pid, entry.vruntime, entry.vdeadline
+            entry.process.pid,
+            entry.vruntime,
+            entry.vdeadline
         );
     }
-    
+
     update_min_vruntime();
 }
 
@@ -362,16 +373,20 @@ pub fn set_process_policy(pid: Pid, policy: SchedPolicy, nice: i8) -> Result<(),
         entry.policy = policy;
         entry.nice = nice.clamp(-20, 19);
         entry.weight = nice_to_weight(entry.nice);
-        
+
         // Recalculate deadline with new weight
         entry.vdeadline = calc_vdeadline(entry.vruntime, entry.slice_ns, entry.weight);
-        
+
         // Update priority for backward compatibility
         entry.priority = calculate_dynamic_priority(entry.base_priority, 0, 0, entry.nice);
 
         crate::kinfo!(
             "EEVDF: PID {} policy={:?}, nice={}, weight {} -> {}",
-            pid, policy, nice, old_weight, entry.weight
+            pid,
+            policy,
+            nice,
+            old_weight,
+            entry.weight
         );
         return Ok(());
     }
@@ -414,17 +429,21 @@ pub fn adjust_process_priority(pid: Pid, nice_delta: i8) -> Result<i8, &'static 
 
         let old_nice = entry.nice;
         let old_weight = entry.weight;
-        
+
         entry.nice = (entry.nice + nice_delta).clamp(-20, 19);
         entry.weight = nice_to_weight(entry.nice);
         entry.priority = calculate_dynamic_priority(entry.base_priority, 0, 0, entry.nice);
-        
+
         // Recalculate deadline with new weight
         entry.vdeadline = calc_vdeadline(entry.vruntime, entry.slice_ns, entry.weight);
 
         crate::kdebug!(
             "EEVDF nice: PID {} nice {} -> {}, weight {} -> {}",
-            pid, old_nice, entry.nice, old_weight, entry.weight
+            pid,
+            old_nice,
+            entry.nice,
+            old_weight,
+            entry.weight
         );
 
         return Ok(entry.nice);
@@ -440,9 +459,12 @@ pub fn age_process_priorities() {
     let current_tick = GLOBAL_TICK.load(Ordering::Relaxed);
 
     // Calculate total weight of all runnable processes
-    let total_weight: u64 = table.iter()
+    let total_weight: u64 = table
+        .iter()
         .filter_map(|slot| slot.as_ref())
-        .filter(|e| e.process.state == ProcessState::Ready || e.process.state == ProcessState::Running)
+        .filter(|e| {
+            e.process.state == ProcessState::Ready || e.process.state == ProcessState::Running
+        })
         .map(|e| e.weight)
         .sum();
 
@@ -456,12 +478,13 @@ pub fn age_process_priorities() {
         if wait_delta == 0 {
             continue;
         }
-        
+
         // Increase lag for waiting (they're being starved of CPU time)
         // The longer they wait, the more eligible they become
-        let lag_credit = ms_to_ns(wait_delta) as i64 * entry.weight as i64 / total_weight.max(1) as i64;
+        let lag_credit =
+            ms_to_ns(wait_delta) as i64 * entry.weight as i64 / total_weight.max(1) as i64;
         entry.lag = entry.lag.saturating_add(lag_credit);
-        
+
         // Update wait time for statistics
         entry.wait_time = entry.wait_time.saturating_add(wait_delta);
     }
@@ -496,12 +519,7 @@ pub fn get_eevdf_info(pid: Pid) -> Option<(u64, u64, i64, u64)> {
             continue;
         }
 
-        return Some((
-            entry.vruntime,
-            entry.vdeadline,
-            entry.lag,
-            entry.weight,
-        ));
+        return Some((entry.vruntime, entry.vdeadline, entry.lag, entry.weight));
     }
 
     None

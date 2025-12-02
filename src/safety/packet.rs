@@ -182,10 +182,7 @@ impl<'a> PacketBufferMut<'a> {
         }
         // SAFETY: We've verified space is available
         unsafe {
-            core::ptr::write_unaligned(
-                self.data.as_mut_ptr().add(self.offset) as *mut T,
-                *header,
-            );
+            core::ptr::write_unaligned(self.data.as_mut_ptr().add(self.offset) as *mut T, *header);
         }
         self.offset += T::SIZE;
         true

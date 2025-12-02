@@ -23,11 +23,15 @@ pub const IPI_HALT: u8 = 0xF3;
 pub extern "x86-interrupt" fn ipi_reschedule_handler(_stack_frame: InterruptStackFrame) {
     // Enter interrupt context
     crate::smp::enter_interrupt();
-    
+
     // Track IPI received on this CPU
     if let Some(cpu_data) = crate::smp::current_cpu_data() {
-        cpu_data.ipi_received.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        cpu_data.reschedule_pending.store(true, core::sync::atomic::Ordering::Release);
+        cpu_data
+            .ipi_received
+            .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        cpu_data
+            .reschedule_pending
+            .store(true, core::sync::atomic::Ordering::Release);
     }
 
     // Send EOI to LAPIC first to allow nested interrupts
@@ -47,14 +51,18 @@ pub extern "x86-interrupt" fn ipi_reschedule_handler(_stack_frame: InterruptStac
 /// Ensures all CPUs invalidate their TLB when page tables are modified
 pub extern "x86-interrupt" fn ipi_tlb_flush_handler(_stack_frame: InterruptStackFrame) {
     use x86_64::instructions::tlb;
-    
+
     // Enter interrupt context
     crate::smp::enter_interrupt();
-    
+
     // Track IPI received and mark TLB flush pending
     if let Some(cpu_data) = crate::smp::current_cpu_data() {
-        cpu_data.ipi_received.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        cpu_data.tlb_flush_pending.store(true, core::sync::atomic::Ordering::Release);
+        cpu_data
+            .ipi_received
+            .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        cpu_data
+            .tlb_flush_pending
+            .store(true, core::sync::atomic::Ordering::Release);
     }
 
     // Flush entire TLB immediately
@@ -64,25 +72,29 @@ pub extern "x86-interrupt" fn ipi_tlb_flush_handler(_stack_frame: InterruptStack
     crate::lapic::send_eoi();
 
     crate::ktrace!("IPI: TLB flush completed");
-    
+
     // Leave interrupt context
     let _ = crate::smp::leave_interrupt();
 }
 
 /// IPI handler for function call requests
 /// Allows one CPU to execute a function on another CPU
-/// 
+///
 /// This is the core mechanism for parallel display operations.
 /// When compositor needs multi-core rendering, it sends this IPI
 /// to all AP cores which then call into compositor::ap_work_entry().
 pub extern "x86-interrupt" fn ipi_call_function_handler(_stack_frame: InterruptStackFrame) {
     // Enter interrupt context
     crate::smp::enter_interrupt();
-    
+
     // Track IPI received and update interrupt counter
     if let Some(cpu_data) = crate::smp::current_cpu_data() {
-        cpu_data.ipi_received.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        cpu_data.interrupts_handled.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        cpu_data
+            .ipi_received
+            .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        cpu_data
+            .interrupts_handled
+            .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     }
 
     // Execute compositor work if available
@@ -91,7 +103,7 @@ pub extern "x86-interrupt" fn ipi_call_function_handler(_stack_frame: InterruptS
 
     // Send EOI to LAPIC
     crate::lapic::send_eoi();
-    
+
     // Leave interrupt context
     let _ = crate::smp::leave_interrupt();
 }
@@ -100,10 +112,12 @@ pub extern "x86-interrupt" fn ipi_call_function_handler(_stack_frame: InterruptS
 /// Allows graceful shutdown of individual CPUs
 pub extern "x86-interrupt" fn ipi_halt_handler(_stack_frame: InterruptStackFrame) {
     use x86_64::instructions::hlt;
-    
+
     // Track IPI received
     if let Some(cpu_data) = crate::smp::current_cpu_data() {
-        cpu_data.ipi_received.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        cpu_data
+            .ipi_received
+            .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     }
 
     crate::kinfo!("IPI: Halt request received, stopping CPU");

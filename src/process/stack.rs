@@ -30,7 +30,7 @@ const AT_RANDOM: u64 = 25;
 const AT_EXECFN: u64 = 31;
 
 /// Helper struct for building the initial user stack
-/// 
+///
 /// This builder handles the case where the virtual address (what userspace sees)
 /// differs from the physical address (where we actually write in the kernel).
 pub(crate) struct UserStackBuilder {
@@ -55,7 +55,7 @@ impl UserStackBuilder {
     }
 
     /// Create a new stack builder with separate virtual and physical addresses
-    /// 
+    ///
     /// - `virt_base`: Virtual base address (what userspace will see)
     /// - `size`: Size of the stack region
     /// - `phys_base`: Physical base address (where kernel writes)
@@ -223,7 +223,7 @@ pub fn build_initial_stack(
 
     aux_entries[aux_len] = (AT_FLAGS, 0);
     aux_len += 1;
-    
+
     kinfo!(
         "build_initial_stack: program.entry_point={:#x}, phdr_vaddr={:#x}, phnum={}, phentsize={}",
         program.entry_point,
@@ -231,7 +231,7 @@ pub fn build_initial_stack(
         program.phnum,
         program.phentsize
     );
-    
+
     aux_entries[aux_len] = (AT_ENTRY, program.entry_point);
     aux_len += 1;
     aux_entries[aux_len] = (AT_UID, 0);

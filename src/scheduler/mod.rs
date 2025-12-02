@@ -43,9 +43,9 @@ mod table;
 mod types;
 
 // Re-export types for external use
+pub use types::{nice_to_weight, BASE_SLICE_NS, NICE_0_WEIGHT, SCHED_GRANULARITY_NS};
 pub use types::{CpuMask, ProcessEntry, SchedPolicy, SchedulerStats};
 pub use types::{BASE_TIME_SLICE_MS, DEFAULT_TIME_SLICE, NUM_PRIORITY_LEVELS};
-pub use types::{BASE_SLICE_NS, NICE_0_WEIGHT, SCHED_GRANULARITY_NS, nice_to_weight};
 
 // Re-export table functions
 pub use table::{
@@ -62,10 +62,17 @@ pub use process::{
 
 // Re-export priority functions (EEVDF core)
 pub use priority::{
-    adjust_process_priority, age_process_priorities, boost_all_priorities, force_reschedule,
-    get_process_sched_info, set_process_policy,
+    adjust_process_priority,
+    age_process_priorities,
+    boost_all_priorities,
+    calc_vdeadline,
+    force_reschedule,
     // EEVDF specific exports
-    get_eevdf_info, get_min_vruntime, is_eligible, calc_vdeadline,
+    get_eevdf_info,
+    get_min_vruntime,
+    get_process_sched_info,
+    is_eligible,
+    set_process_policy,
 };
 
 // Re-export core scheduling functions
@@ -73,24 +80,37 @@ pub use core::{do_schedule, do_schedule_from_interrupt, init, schedule, tick};
 
 // Re-export SMP functions
 pub use smp::{
-    balance_load, get_cpu_affinity, get_preferred_cpu, set_cpu_affinity,
+    balance_load,
+    get_cpu_affinity,
     // NUMA-aware functions
-    get_numa_preferred_node, set_numa_policy, set_numa_preferred_node,
+    get_numa_preferred_node,
+    get_preferred_cpu,
+    set_cpu_affinity,
+    set_numa_policy,
+    set_numa_preferred_node,
 };
 
 // Re-export per-CPU scheduler functions
 pub use percpu::{
-    init_percpu_sched, get_percpu_sched, current_percpu_sched,
-    get_cpu_load, get_cpu_queue_len, find_least_loaded_cpu, find_best_cpu_numa,
-    balance_runqueues, update_all_load_averages,
-    set_need_resched, check_need_resched,
+    balance_runqueues, check_need_resched, current_percpu_sched, find_best_cpu_numa,
+    find_least_loaded_cpu, get_cpu_load, get_cpu_queue_len, get_percpu_sched, init_percpu_sched,
+    set_need_resched, update_all_load_averages,
 };
 
 // Re-export statistics functions
 pub use stats::{
-    detect_potential_deadlocks, get_load_average, get_process_counts, get_stats, list_processes,
-    // Per-CPU stats
-    PerCpuStats, get_percpu_stats, list_percpu_stats,
+    detect_potential_deadlocks,
+    get_eevdf_stats,
+    get_load_average,
+    get_percpu_stats,
+    get_process_counts,
+    get_stats,
+    list_percpu_stats,
+    list_processes,
+    print_eevdf_stats,
+    print_process_eevdf_info,
     // EEVDF-specific stats
-    EevdfStats, get_eevdf_stats, print_eevdf_stats, print_process_eevdf_info,
+    EevdfStats,
+    // Per-CPU stats
+    PerCpuStats,
 };

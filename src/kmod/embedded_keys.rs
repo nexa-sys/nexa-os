@@ -7,7 +7,10 @@
 //! and embedded at compile time via `include!()`.
 
 // Include the auto-generated key data from certs/embedded_key.rs
-include!(concat!(env!("CARGO_MANIFEST_DIR"), "/certs/embedded_key.rs"));
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/certs/embedded_key.rs"
+));
 
 /// Initialize embedded signing keys
 ///
@@ -19,22 +22,22 @@ include!(concat!(env!("CARGO_MANIFEST_DIR"), "/certs/embedded_key.rs"));
 /// The number of keys successfully loaded.
 pub fn init() -> usize {
     let mut loaded = 0;
-    
+
     // Load the primary embedded signing key
     let key_id = &KEY_FINGERPRINT[..core::cmp::min(32, KEY_FINGERPRINT.len())];
-    
+
     if super::crypto::add_trusted_key(key_id, RSA_MODULUS, RSA_EXPONENT) {
         loaded += 1;
         crate::kinfo!(
             "Loaded embedded signing key: {:02X}{:02X}{:02X}{:02X}...",
             KEY_FINGERPRINT[0],
-            KEY_FINGERPRINT[1], 
+            KEY_FINGERPRINT[1],
             KEY_FINGERPRINT[2],
             KEY_FINGERPRINT[3]
         );
     } else {
         crate::kwarn!("Failed to load embedded signing key");
     }
-    
+
     loaded
 }

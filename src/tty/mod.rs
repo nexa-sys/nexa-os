@@ -8,6 +8,6 @@ pub mod vt;
 
 // Re-export commonly used items
 pub use vt::{
-    active_terminal, echo_input_backspace, echo_input_byte, echo_input_newline, init,
-    switch_to, terminal_count, write_bytes, StreamKind,
+    active_terminal, echo_input_backspace, echo_input_byte, echo_input_newline, init, switch_to,
+    terminal_count, write_bytes, StreamKind,
 };

@@ -4,7 +4,7 @@
 //! multiprocessor scalability by reducing global lock contention.
 //!
 //! ## Architecture
-//! 
+//!
 //! Each CPU maintains:
 //! - Local run queue for processes with affinity to this CPU
 //! - Per-CPU statistics (context switches, idle time, etc.)
@@ -24,7 +24,7 @@ use spin::Mutex;
 use crate::acpi::MAX_CPUS;
 use crate::process::{Pid, ProcessState, MAX_PROCESSES};
 
-use super::types::{ProcessEntry, SchedPolicy, SchedulerStats, CpuMask};
+use super::types::{CpuMask, ProcessEntry, SchedPolicy, SchedulerStats};
 
 // ============================================================================
 // Per-CPU Run Queue
@@ -69,7 +69,7 @@ impl RunQueueEntry {
 }
 
 /// Per-CPU run queue
-/// 
+///
 /// Maintains a sorted list of runnable processes for this CPU.
 /// The queue is kept sorted by virtual deadline for EEVDF scheduling.
 pub struct PerCpuRunQueue {
@@ -189,7 +189,9 @@ impl PerCpuRunQueue {
         let mut best_entry: Option<&RunQueueEntry> = None;
 
         for i in 0..self.count {
-            let Some(entry) = &self.entries[i] else { continue };
+            let Some(entry) = &self.entries[i] else {
+                continue;
+            };
 
             // Realtime processes always come first
             if entry.policy == SchedPolicy::Realtime {
@@ -350,53 +352,53 @@ impl PerCpuRunQueue {
 // ============================================================================
 
 /// Extended per-CPU scheduler data
-/// 
+///
 /// This extends the basic CpuData with scheduler-specific state.
 /// Cache-line aligned to prevent false sharing between CPUs.
 #[repr(C, align(64))]
 pub struct PerCpuSchedData {
     /// Run queue for this CPU (protected by local lock)
     pub run_queue: Mutex<PerCpuRunQueue>,
-    
+
     /// Local tick counter (independent of global tick)
     pub local_tick: AtomicU64,
-    
+
     /// Time of last scheduler tick (in ns, from TSC or other source)
     pub last_tick_ns: AtomicU64,
-    
+
     /// Accumulated idle time (in nanoseconds)
     pub idle_ns: AtomicU64,
-    
+
     /// Context switches on this CPU
     pub context_switches: AtomicU64,
-    
+
     /// Voluntary context switches on this CPU
     pub voluntary_switches: AtomicU64,
-    
+
     /// Preemptions on this CPU
     pub preemptions: AtomicU64,
-    
+
     /// Number of processes migrated away from this CPU
     pub migrations_out: AtomicU64,
-    
+
     /// Number of processes migrated to this CPU
     pub migrations_in: AtomicU64,
-    
+
     /// Load average (fixed-point, scaled by 1024)
     pub load_avg: AtomicU64,
-    
+
     /// Whether this CPU is idle
     pub is_idle: AtomicBool,
-    
+
     /// Idle timestamp (when CPU became idle, for statistics)
     pub idle_start: AtomicU64,
-    
+
     /// CPU index
     pub cpu_id: u16,
-    
+
     /// NUMA node this CPU belongs to
     pub numa_node: u32,
-    
+
     /// Padding to fill cache line
     _pad: [u8; 8],
 }
@@ -437,7 +439,7 @@ impl PerCpuSchedData {
         self.load_avg.store(0, Ordering::Relaxed);
         self.is_idle.store(true, Ordering::Relaxed);
         self.idle_start.store(0, Ordering::Relaxed);
-        
+
         self.run_queue.lock().init(cpu_id, numa_node);
     }
 
@@ -463,7 +465,8 @@ impl PerCpuSchedData {
         if was_idle {
             let start = self.idle_start.load(Ordering::Relaxed);
             if current_ns > start {
-                self.idle_ns.fetch_add(current_ns - start, Ordering::Relaxed);
+                self.idle_ns
+                    .fetch_add(current_ns - start, Ordering::Relaxed);
             }
         }
     }
@@ -480,13 +483,13 @@ impl PerCpuSchedData {
     pub fn update_load_average(&self) {
         let rq_len = self.run_queue.lock().len() as u64;
         let is_running = !self.is_idle.load(Ordering::Relaxed);
-        
+
         // Current load = number of runnable + currently running
         let current_load = rq_len + if is_running { 1 } else { 0 };
-        
+
         // Scale by 1024 for fixed-point arithmetic
         let current_scaled = current_load * 1024;
-        
+
         // Exponential moving average: new = old * 0.875 + current * 0.125
         // Using integer arithmetic: new = (old * 7 + current) / 8
         let old = self.load_avg.load(Ordering::Relaxed);
@@ -541,7 +544,11 @@ pub fn init_percpu_sched(cpu_id: usize) {
     }
 
     PERCPU_SCHED_READY[cpu_id].store(true, Ordering::Release);
-    crate::kinfo!("Per-CPU scheduler initialized for CPU {} (NUMA node {})", cpu_id, numa_node);
+    crate::kinfo!(
+        "Per-CPU scheduler initialized for CPU {} (NUMA node {})",
+        cpu_id,
+        numa_node
+    );
 }
 
 /// Get per-CPU scheduler data for a CPU
@@ -573,7 +580,7 @@ pub fn current_percpu_sched() -> Option<&'static PerCpuSchedData> {
 /// Enqueue a process on its preferred CPU's run queue
 pub fn percpu_enqueue(entry: &ProcessEntry) -> Result<u16, &'static str> {
     let cpu_count = crate::smp::cpu_count();
-    
+
     // Determine target CPU
     let target_cpu = if entry.cpu_affinity.is_empty() {
         0
@@ -588,8 +595,7 @@ pub fn percpu_enqueue(entry: &ProcessEntry) -> Result<u16, &'static str> {
 
     let target_cpu = (target_cpu as usize).min(cpu_count.saturating_sub(1)) as u16;
 
-    let sched = get_percpu_sched(target_cpu as usize)
-        .ok_or("Per-CPU scheduler not initialized")?;
+    let sched = get_percpu_sched(target_cpu as usize).ok_or("Per-CPU scheduler not initialized")?;
 
     let rq_entry = RunQueueEntry {
         pid: entry.process.pid,
@@ -672,34 +678,38 @@ pub fn find_best_cpu_numa(affinity: &CpuMask, preferred_node: u32) -> u16 {
     let cpu_count = crate::smp::cpu_count();
     let mut best_cpu = 0u16;
     let mut best_score = u64::MAX;
-    
+
     for cpu in affinity.iter_set() {
         if cpu >= cpu_count {
             break;
         }
-        
+
         // Get CPU's NUMA node
         let cpu_node = if let Some(sched) = get_percpu_sched(cpu) {
             sched.numa_node
         } else {
             continue;
         };
-        
+
         // Calculate score: lower is better
         // NUMA locality bonus: prefer CPUs on same node
-        let numa_penalty = if cpu_node == preferred_node { 0u64 } else { 100 };
-        
+        let numa_penalty = if cpu_node == preferred_node {
+            0u64
+        } else {
+            100
+        };
+
         // Load factor
         let load = get_cpu_load(cpu as u16) as u64;
-        
+
         let score = numa_penalty + load;
-        
+
         if score < best_score {
             best_score = score;
             best_cpu = cpu as u16;
         }
     }
-    
+
     best_cpu
 }
 
@@ -719,18 +729,18 @@ pub fn balance_runqueues() -> usize {
     }
 
     let migrations = 0usize;
-    
+
     // Collect load information for all CPUs
     let mut loads: [usize; MAX_CPUS] = [0; MAX_CPUS];
     let mut total_load = 0usize;
-    
+
     for cpu in 0..cpu_count {
         if let Some(sched) = get_percpu_sched(cpu) {
             loads[cpu] = sched.run_queue.lock().len();
             total_load += loads[cpu];
         }
     }
-    
+
     let avg_load = total_load / cpu_count;
 
     // Find overloaded (donors) and underloaded (recipients) CPUs
@@ -738,7 +748,7 @@ pub fn balance_runqueues() -> usize {
     let mut recipients: [Option<usize>; MAX_CPUS] = [None; MAX_CPUS];
     let mut donor_count = 0usize;
     let mut recipient_count = 0usize;
-    
+
     for cpu in 0..cpu_count {
         if loads[cpu] > avg_load + MIN_IMBALANCE {
             donors[donor_count] = Some(cpu);
@@ -755,14 +765,16 @@ pub fn balance_runqueues() -> usize {
     // 2. Find a migratable process (check affinity)
     // 3. Update process's last_cpu and move to recipient's queue
     // 4. Send IPI to recipient if it's idle
-    
+
     // Log imbalance for debugging
     if donor_count > 0 && recipient_count > 0 {
         crate::kdebug!(
             "Load balance: {} donors, {} recipients, avg_load={}",
-            donor_count, recipient_count, avg_load
+            donor_count,
+            recipient_count,
+            avg_load
         );
-        
+
         // Update statistics
         if let Some(sched) = current_percpu_sched() {
             // Note: actual migration would increment this

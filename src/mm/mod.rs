@@ -15,10 +15,10 @@ pub mod vmalloc;
 
 // Re-export commonly used items from allocator
 pub use allocator::{
-    get_memory_stats, init_kernel_heap, init_numa_allocator, kalloc, kfree, numa_alloc_local, numa_alloc_on_node,
-    numa_alloc_policy, numa_free, print_memory_stats, zalloc, BuddyAllocator, BuddyStats,
-    GlobalAllocator, HeapStats, KernelHeap, MemoryZone, NumaAllocator, NumaNodeAllocator,
-    SlabAllocator, SlabStats, ZoneAllocator,
+    get_memory_stats, init_kernel_heap, init_numa_allocator, kalloc, kfree, numa_alloc_local,
+    numa_alloc_on_node, numa_alloc_policy, numa_free, print_memory_stats, zalloc, BuddyAllocator,
+    BuddyStats, GlobalAllocator, HeapStats, KernelHeap, MemoryZone, NumaAllocator,
+    NumaNodeAllocator, SlabAllocator, SlabStats, ZoneAllocator,
 };
 
 // Re-export from memory
@@ -27,10 +27,9 @@ pub use memory::{find_heap_region, log_memory_overview};
 // Re-export from numa
 pub use numa::{
     addr_to_node, best_node_for_policy, cpu_to_node, cpus_on_node, current_node, get_node,
-    init as init_numa, is_initialized as numa_is_initialized, memory_affinity_entries,
-    node_count, node_distance, online_nodes, CpuNumaMapping, MemoryNumaMapping, NumaNode,
-    NumaPolicy, LOCAL_DISTANCE, MAX_NUMA_NODES, NUMA_NO_NODE, REMOTE_DISTANCE,
-    UNREACHABLE_DISTANCE,
+    init as init_numa, is_initialized as numa_is_initialized, memory_affinity_entries, node_count,
+    node_distance, online_nodes, CpuNumaMapping, MemoryNumaMapping, NumaNode, NumaPolicy,
+    LOCAL_DISTANCE, MAX_NUMA_NODES, NUMA_NO_NODE, REMOTE_DISTANCE, UNREACHABLE_DISTANCE,
 };
 
 // Re-export from paging

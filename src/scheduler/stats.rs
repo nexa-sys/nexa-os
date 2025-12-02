@@ -41,7 +41,16 @@ pub fn list_processes() {
     crate::kinfo!("=== EEVDF Process List ===");
     crate::kinfo!(
         "{:<5} {:<5} {:<10} {:<7} {:<5} {:<8} {:<12} {:<12} {:<8} {:<10}",
-        "PID", "PPID", "State", "Policy", "Nice", "Weight", "VRuntime", "VDeadline", "Lag", "CR3"
+        "PID",
+        "PPID",
+        "State",
+        "Policy",
+        "Nice",
+        "Weight",
+        "VRuntime",
+        "VDeadline",
+        "Lag",
+        "CR3"
     );
 
     for slot in table.iter() {
@@ -55,7 +64,7 @@ pub fn list_processes() {
             policy_str(entry.policy),
             entry.nice,
             entry.weight,
-            entry.vruntime / 1_000_000,  // Convert to ms for readability
+            entry.vruntime / 1_000_000, // Convert to ms for readability
             entry.vdeadline / 1_000_000,
             entry.lag / 1_000_000,
             entry.process.cr3
@@ -66,12 +75,19 @@ pub fn list_processes() {
     crate::kinfo!("=== Scheduler Statistics ===");
     crate::kinfo!("Total context switches: {}", stats.total_context_switches);
     crate::kinfo!("Total preemptions: {}", stats.total_preemptions);
-    crate::kinfo!("Total voluntary switches: {}", stats.total_voluntary_switches);
+    crate::kinfo!(
+        "Total voluntary switches: {}",
+        stats.total_voluntary_switches
+    );
     crate::kinfo!("Idle time: {}ms", stats.idle_time);
 }
 
 /// Check if a process is potentially deadlocked (stuck in Sleeping)
-fn check_sleeping_deadlock(entry: &super::types::ProcessEntry, current_tick: u64, threshold: u64) -> Option<Pid> {
+fn check_sleeping_deadlock(
+    entry: &super::types::ProcessEntry,
+    current_tick: u64,
+    threshold: u64,
+) -> Option<Pid> {
     if entry.process.state != ProcessState::Sleeping {
         return None;
     }
@@ -83,7 +99,9 @@ fn check_sleeping_deadlock(entry: &super::types::ProcessEntry, current_tick: u64
 
     crate::kwarn!(
         "Potential deadlock: PID {} sleeping for {} ticks (>{})",
-        entry.process.pid, wait_ticks, threshold
+        entry.process.pid,
+        wait_ticks,
+        threshold
     );
     Some(entry.process.pid)
 }
@@ -96,7 +114,8 @@ fn check_ready_starvation(entry: &super::types::ProcessEntry, threshold: u64) ->
 
     crate::kwarn!(
         "Potential starvation: PID {} waiting in Ready state for {} ms",
-        entry.process.pid, entry.wait_time
+        entry.process.pid,
+        entry.wait_time
     );
     Some(entry.process.pid)
 }
@@ -205,12 +224,12 @@ impl PerCpuStats {
 pub fn get_percpu_stats(cpu_id: usize) -> Option<PerCpuStats> {
     // Use the safe get_cpu_data function from smp module
     let cpu_data = crate::smp::get_cpu_data(cpu_id)?;
-    
+
     // Get scheduler data if available
     let rq_len = crate::scheduler::get_percpu_sched(cpu_id)
         .map(|s| s.run_queue.lock().len())
         .unwrap_or(0);
-    
+
     Some(PerCpuStats {
         cpu_id: cpu_data.cpu_id,
         numa_node: cpu_data.numa_node,
@@ -236,19 +255,32 @@ pub fn get_percpu_stats(cpu_id: usize) -> Option<PerCpuStats> {
 pub fn list_percpu_stats() {
     let cpu_count = crate::smp::cpu_count();
     let online = crate::smp::online_cpus();
-    
-    crate::kinfo!("=== Per-CPU Statistics ({}/{} CPUs online) ===", online, cpu_count);
+
+    crate::kinfo!(
+        "=== Per-CPU Statistics ({}/{} CPUs online) ===",
+        online,
+        cpu_count
+    );
     crate::kinfo!(
         "{:<4} {:<4} {:<8} {:<10} {:<8} {:<8} {:<8} {:<8} {:<6} {:<6} Flags",
-        "CPU", "NUMA", "Ticks", "CtxSwitch", "Preempt", "Intrs", "Syscalls", "IPIs", "RQ", "PID"
+        "CPU",
+        "NUMA",
+        "Ticks",
+        "CtxSwitch",
+        "Preempt",
+        "Intrs",
+        "Syscalls",
+        "IPIs",
+        "RQ",
+        "PID"
     );
-    
+
     for cpu in 0..cpu_count {
         if let Some(stats) = get_percpu_stats(cpu) {
             // Build flags without format! macro
             let int_flag: &str = if stats.in_interrupt { "I" } else { "-" };
             let pre_flag: &str = if stats.preempt_disabled { "P" } else { "-" };
-            
+
             crate::kinfo!(
                 "{:<4} {:<4} {:<8} {:<10} {:<8} {:<8} {:<8} {:<8} {:<6} {:<6} {}{}",
                 stats.cpu_id,
@@ -268,13 +300,16 @@ pub fn list_percpu_stats() {
             crate::kinfo!("{:<4} (offline)", cpu);
         }
     }
-    
+
     // Print global scheduler stats as well
     let stats = SCHED_STATS.lock();
     crate::kinfo!("=== Global Scheduler Statistics ===");
     crate::kinfo!("Total context switches: {}", stats.total_context_switches);
     crate::kinfo!("Total preemptions: {}", stats.total_preemptions);
-    crate::kinfo!("Total voluntary switches: {}", stats.total_voluntary_switches);
+    crate::kinfo!(
+        "Total voluntary switches: {}",
+        stats.total_voluntary_switches
+    );
     crate::kinfo!("Load balance operations: {}", stats.load_balance_count);
     crate::kinfo!("Process migrations: {}", stats.migration_count);
 }
@@ -307,26 +342,27 @@ pub struct EevdfStats {
 /// Gather EEVDF-specific statistics for analysis
 pub fn get_eevdf_stats() -> EevdfStats {
     let table = PROCESS_TABLE.lock();
-    
+
     let mut stats = EevdfStats::default();
     stats.min_vruntime_ns = u64::MAX;
     stats.max_negative_lag_ns = i64::MAX;
-    
+
     let mut vruntime_sum: u128 = 0;
     let mut slice_sum: u64 = 0;
     let mut count = 0usize;
-    
+
     for slot in table.iter() {
         let Some(entry) = slot else { continue };
-        
+
         // Only count runnable processes
-        if entry.process.state != ProcessState::Ready && 
-           entry.process.state != ProcessState::Running {
+        if entry.process.state != ProcessState::Ready
+            && entry.process.state != ProcessState::Running
+        {
             continue;
         }
-        
+
         count += 1;
-        
+
         // Track vruntime range
         if entry.vruntime < stats.min_vruntime_ns {
             stats.min_vruntime_ns = entry.vruntime;
@@ -335,14 +371,14 @@ pub fn get_eevdf_stats() -> EevdfStats {
             stats.max_vruntime_ns = entry.vruntime;
         }
         vruntime_sum += entry.vruntime as u128;
-        
+
         // Track eligibility
         if entry.lag >= 0 {
             stats.eligible_count += 1;
         } else {
             stats.non_eligible_count += 1;
         }
-        
+
         // Track lag
         stats.total_lag_ns = stats.total_lag_ns.saturating_add(entry.lag);
         if entry.lag > stats.max_positive_lag_ns {
@@ -351,31 +387,31 @@ pub fn get_eevdf_stats() -> EevdfStats {
         if entry.lag < stats.max_negative_lag_ns {
             stats.max_negative_lag_ns = entry.lag;
         }
-        
+
         // Track weight and slice
         stats.total_weight += entry.weight;
         slice_sum += entry.slice_remaining_ns;
     }
-    
+
     if count > 0 {
         stats.avg_vruntime_ns = (vruntime_sum / count as u128) as u64;
         stats.avg_slice_remaining_ns = slice_sum / count as u64;
     }
-    
+
     if stats.min_vruntime_ns == u64::MAX {
         stats.min_vruntime_ns = 0;
     }
     if stats.max_negative_lag_ns == i64::MAX {
         stats.max_negative_lag_ns = 0;
     }
-    
+
     stats
 }
 
 /// Print EEVDF statistics for debugging
 pub fn print_eevdf_stats() {
     let stats = get_eevdf_stats();
-    
+
     crate::kinfo!("=== EEVDF Scheduler Statistics ===");
     crate::kinfo!(
         "Vruntime: min={}ms, max={}ms, avg={}ms (spread: {}ms)",
@@ -405,15 +441,20 @@ pub fn print_eevdf_stats() {
 /// Print detailed EEVDF info for a specific process
 pub fn print_process_eevdf_info(pid: Pid) {
     let table = PROCESS_TABLE.lock();
-    
+
     for slot in table.iter() {
         let Some(entry) = slot else { continue };
         if entry.process.pid != pid {
             continue;
         }
-        
+
         crate::kinfo!("=== EEVDF Info for PID {} ===", pid);
-        crate::kinfo!("Policy: {:?}, Nice: {}, Weight: {}", entry.policy, entry.nice, entry.weight);
+        crate::kinfo!(
+            "Policy: {:?}, Nice: {}, Weight: {}",
+            entry.policy,
+            entry.nice,
+            entry.weight
+        );
         crate::kinfo!(
             "Vruntime: {}ms, Vdeadline: {}ms",
             entry.vruntime / 1_000_000,
@@ -422,7 +463,11 @@ pub fn print_process_eevdf_info(pid: Pid) {
         crate::kinfo!(
             "Lag: {}ms ({})",
             entry.lag / 1_000_000,
-            if entry.lag >= 0 { "eligible" } else { "non-eligible" }
+            if entry.lag >= 0 {
+                "eligible"
+            } else {
+                "non-eligible"
+            }
         );
         crate::kinfo!(
             "Slice: {}ms total, {}ms remaining",
@@ -447,6 +492,6 @@ pub fn print_process_eevdf_info(pid: Pid) {
         );
         return;
     }
-    
+
     crate::kwarn!("Process {} not found", pid);
 }

@@ -78,9 +78,8 @@ static PER_CPU_IDT_INITIALIZED: [AtomicBool; MAX_CPUS] = {
 
 /// Per-CPU IDT storage (CPU 0/BSP uses the lazy_static IDT, APs use this array)
 /// Using MaybeUninit to avoid requiring Default/Copy for InterruptDescriptorTable
-static mut PER_CPU_IDT: [MaybeUninit<InterruptDescriptorTable>; MAX_CPUS] = unsafe {
-    MaybeUninit::uninit().assume_init()
-};
+static mut PER_CPU_IDT: [MaybeUninit<InterruptDescriptorTable>; MAX_CPUS] =
+    unsafe { MaybeUninit::uninit().assume_init() };
 
 lazy_static! {
     /// Global IDT instance - using lazy_static to avoid stack overflow
@@ -245,7 +244,7 @@ pub fn init_interrupts() {
     // Ensure load completes before continuing
     core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
     crate::kinfo!("init_interrupts: IDT loaded successfully");
-    
+
     // Debug: Print IDT[0x81] entry details
     {
         let idt_ptr = &*IDT as *const InterruptDescriptorTable as *const u8;
@@ -261,8 +260,14 @@ pub fn init_interrupts() {
         let dpl = (options >> 13) & 0x3;
         let present = (options >> 15) & 0x1;
         let gate_type = (options >> 8) & 0xF;
-        crate::kinfo!("IDT[0x81] parsed: handler={:#x} cs={:#x} dpl={} present={} gate_type={:#x}",
-            handler_addr, cs_sel, dpl, present, gate_type);
+        crate::kinfo!(
+            "IDT[0x81] parsed: handler={:#x} cs={:#x} dpl={} present={} gate_type={:#x}",
+            handler_addr,
+            cs_sel,
+            dpl,
+            present,
+            gate_type
+        );
     }
 
     // Now set final PIC masks - unmask only keyboard IRQ
@@ -333,7 +338,11 @@ pub fn init_interrupts_ap(cpu_id: usize) {
         crate::kpanic!("init_interrupts_ap called for BSP (cpu_id=0), use init_interrupts instead");
     }
     if cpu_id >= MAX_CPUS {
-        crate::kpanic!("init_interrupts_ap: cpu_id {} exceeds MAX_CPUS {}", cpu_id, MAX_CPUS);
+        crate::kpanic!(
+            "init_interrupts_ap: cpu_id {} exceeds MAX_CPUS {}",
+            cpu_id,
+            MAX_CPUS
+        );
     }
 
     // NOTE: We skip checking IDT_INITIALIZED because AP cores may see stale values
@@ -345,11 +354,17 @@ pub fn init_interrupts_ap(cpu_id: usize) {
     // This check is valid because we're checking the per-CPU flag which is set by this
     // same AP, not by BSP
     if PER_CPU_IDT_INITIALIZED[cpu_id].load(AtomicOrdering::SeqCst) {
-        crate::kwarn!("init_interrupts_ap: CPU {} IDT already initialized, skipping", cpu_id);
+        crate::kwarn!(
+            "init_interrupts_ap: CPU {} IDT already initialized, skipping",
+            cpu_id
+        );
         return;
     }
 
-    crate::kinfo!("init_interrupts_ap: Initializing per-CPU IDT for AP core {}", cpu_id);
+    crate::kinfo!(
+        "init_interrupts_ap: Initializing per-CPU IDT for AP core {}",
+        cpu_id
+    );
 
     // Get IST indices (same as BSP)
     let error_code_ist = crate::gdt::ERROR_CODE_IST_INDEX as u16;
@@ -357,31 +372,39 @@ pub fn init_interrupts_ap(cpu_id: usize) {
     unsafe {
         // Create a new IDT for this AP
         let idt = PER_CPU_IDT[cpu_id].as_mut_ptr();
-        
+
         // Initialize with a new InterruptDescriptorTable
         core::ptr::write(idt, InterruptDescriptorTable::new());
         let idt_ref = &mut *idt;
 
         // Set up exception handlers (same as BSP)
         idt_ref.breakpoint.set_handler_fn(breakpoint_handler);
-        idt_ref.page_fault
+        idt_ref
+            .page_fault
             .set_handler_fn(page_fault_handler)
             .set_stack_index(error_code_ist);
-        idt_ref.general_protection_fault
+        idt_ref
+            .general_protection_fault
             .set_handler_fn(general_protection_fault_handler)
             .set_stack_index(error_code_ist);
         idt_ref.divide_error.set_handler_fn(divide_error_handler);
-        idt_ref.double_fault
+        idt_ref
+            .double_fault
             .set_handler_fn(double_fault_handler)
             .set_stack_index(crate::gdt::DOUBLE_FAULT_IST_INDEX as u16);
-        idt_ref.segment_not_present
+        idt_ref
+            .segment_not_present
             .set_handler_fn(segment_not_present_handler)
             .set_stack_index(error_code_ist);
-        idt_ref.invalid_opcode.set_handler_fn(invalid_opcode_handler);
-        idt_ref.invalid_tss
+        idt_ref
+            .invalid_opcode
+            .set_handler_fn(invalid_opcode_handler);
+        idt_ref
+            .invalid_tss
             .set_handler_fn(segment_not_present_handler)
             .set_stack_index(error_code_ist);
-        idt_ref.stack_segment_fault
+        idt_ref
+            .stack_segment_fault
             .set_handler_fn(segment_not_present_handler)
             .set_stack_index(error_code_ist);
 
@@ -412,7 +435,11 @@ pub fn init_interrupts_ap(cpu_id: usize) {
             out(reg) syscall_handler_addr,
             options(nostack, nomem)
         );
-        crate::kinfo!("AP {}: syscall_interrupt_handler RIP-relative addr 0x{:x}", cpu_id, syscall_handler_addr);
+        crate::kinfo!(
+            "AP {}: syscall_interrupt_handler RIP-relative addr 0x{:x}",
+            cpu_id,
+            syscall_handler_addr
+        );
         idt_ref[0x81]
             .set_handler_addr(x86_64::VirtAddr::new_truncate(syscall_handler_addr))
             .set_privilege_level(PrivilegeLevel::Ring3);
@@ -451,7 +478,10 @@ pub fn init_interrupts_ap(cpu_id: usize) {
         core::sync::atomic::compiler_fence(AtomicOrdering::SeqCst);
     }
 
-    crate::kinfo!("init_interrupts_ap: Per-CPU IDT loaded for AP core {}", cpu_id);
+    crate::kinfo!(
+        "init_interrupts_ap: Per-CPU IDT loaded for AP core {}",
+        cpu_id
+    );
 }
 
 /// Legacy wrapper for backward compatibility - loads shared BSP IDT on AP

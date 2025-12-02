@@ -13,6 +13,7 @@ use core::{
     ffi::c_void,
     mem,
     ptr,
+    slice,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use nexa_boot_info::{BlockDeviceInfo, FramebufferInfo, NetworkDeviceInfo};
@@ -173,6 +174,8 @@ const SYS_RUNLEVEL: u64 = 231;
 const SYS_USER_ADD: u64 = 220;
 const SYS_USER_LOGIN: u64 = 221;
 const SYS_GETERRNO: u64 = 201;
+const SYS_NET_SET_DNS: u64 = 260;
+const SYS_NET_GET_DNS: u64 = 261;
 const SYS_UEFI_GET_COUNTS: u64 = 240;
 const SYS_UEFI_GET_FB_INFO: u64 = 241;
 const SYS_UEFI_GET_NET_INFO: u64 = 242;
@@ -288,10 +291,13 @@ pub(crate) const ENOENT: i32 = 2;
 pub(crate) const ESRCH: i32 = 3;
 pub(crate) const EAGAIN: i32 = 11;
 pub(crate) const ENOMEM: i32 = 12;
+pub(crate) const EFAULT: i32 = 14;
 pub(crate) const ENOSYS: i32 = 38;
 pub(crate) const ENOTTY: i32 = 25;
 pub(crate) const ENODEV: i32 = 19;
 pub(crate) const ENOSPC: i32 = 28;
+
+const MAX_KERNEL_DNS_SERVERS: usize = 3;
 
 // Minimal syscall wrappers that match the userspace convention (int 0x81)
 #[inline(always)]
@@ -311,6 +317,116 @@ pub fn syscall4(n: u64, a1: u64, a2: u64, a3: u64, a4: u64) -> u64 {
         );
     }
     ret
+}
+
+fn kernel_net_set_dns_servers(servers: &[u32]) -> Result<(), i32> {
+    if servers.len() > MAX_KERNEL_DNS_SERVERS {
+        return Err(EINVAL);
+    }
+
+    let ptr = if servers.is_empty() {
+        core::ptr::null()
+    } else {
+        servers.as_ptr()
+    };
+
+    let ret = syscall3(SYS_NET_SET_DNS, ptr as u64, servers.len() as u64, 0);
+    if ret == u64::MAX {
+        Err(refresh_errno_from_kernel())
+    } else {
+        set_errno(0);
+        Ok(())
+    }
+}
+
+fn kernel_net_get_dns_servers(buffer: &mut [u32]) -> Result<usize, i32> {
+    let cap = buffer.len().min(MAX_KERNEL_DNS_SERVERS);
+    let ptr = if cap == 0 {
+        core::ptr::null_mut()
+    } else {
+        buffer.as_mut_ptr()
+    };
+
+    let ret = syscall3(SYS_NET_GET_DNS, ptr as u64, cap as u64, 0);
+    if ret == u64::MAX {
+        Err(refresh_errno_from_kernel())
+    } else {
+        set_errno(0);
+        Ok(ret as usize)
+    }
+}
+
+pub(crate) fn get_system_dns_servers(buffer: &mut [u32]) -> Result<usize, i32> {
+    kernel_net_get_dns_servers(buffer)
+}
+
+pub fn publish_system_dns_servers(servers: &[u32]) -> Result<(), i32> {
+    kernel_net_set_dns_servers(servers)
+}
+
+#[no_mangle]
+pub extern "C" fn net_set_dns_servers(servers: *const u32, count: usize) -> i32 {
+    if count > MAX_KERNEL_DNS_SERVERS {
+        set_errno(EINVAL);
+        return -1;
+    }
+
+    if count == 0 {
+        return match kernel_net_set_dns_servers(&[]) {
+            Ok(()) => 0,
+            Err(errno) => {
+                set_errno(errno);
+                -1
+            }
+        };
+    }
+
+    if servers.is_null() {
+        set_errno(EFAULT);
+        return -1;
+    }
+
+    let slice = unsafe { slice::from_raw_parts(servers, count) };
+    match kernel_net_set_dns_servers(slice) {
+        Ok(()) => 0,
+        Err(errno) => {
+            set_errno(errno);
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn net_get_dns_servers(out: *mut u32, capacity: usize) -> isize {
+    if capacity > MAX_KERNEL_DNS_SERVERS {
+        set_errno(EINVAL);
+        return -1;
+    }
+
+    if capacity == 0 {
+        let mut empty: [u32; 0] = [];
+        return match kernel_net_get_dns_servers(&mut empty) {
+            Ok(_) => 0,
+            Err(errno) => {
+                set_errno(errno);
+                -1
+            }
+        };
+    }
+
+    if out.is_null() {
+        set_errno(EFAULT);
+        return -1;
+    }
+
+    let slice = unsafe { slice::from_raw_parts_mut(out, capacity) };
+    match kernel_net_get_dns_servers(slice) {
+        Ok(written) => written as isize,
+        Err(errno) => {
+            set_errno(errno);
+            -1
+        }
+    }
 }
 
 #[inline(always)]

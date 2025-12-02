@@ -74,9 +74,9 @@ const NEXAOS_HOSTNAME: &str = "nexaos";
 pub fn generate_kernel_version() -> (&'static [u8], usize) {
     let mut buf = SYS_BUFFER.lock();
     let mut writer = BufWriter::new(&mut buf[..]);
-    
+
     let _ = write!(writer, "{}\n", NEXAOS_VERSION);
-    
+
     let len = writer.len();
     let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), len) };
     (slice, len)
@@ -86,9 +86,9 @@ pub fn generate_kernel_version() -> (&'static [u8], usize) {
 pub fn generate_kernel_ostype() -> (&'static [u8], usize) {
     let mut buf = SYS_BUFFER.lock();
     let mut writer = BufWriter::new(&mut buf[..]);
-    
+
     let _ = write!(writer, "{}\n", NEXAOS_OSTYPE);
-    
+
     let len = writer.len();
     let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), len) };
     (slice, len)
@@ -98,9 +98,9 @@ pub fn generate_kernel_ostype() -> (&'static [u8], usize) {
 pub fn generate_kernel_osrelease() -> (&'static [u8], usize) {
     let mut buf = SYS_BUFFER.lock();
     let mut writer = BufWriter::new(&mut buf[..]);
-    
+
     let _ = write!(writer, "{}\n", NEXAOS_VERSION);
-    
+
     let len = writer.len();
     let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), len) };
     (slice, len)
@@ -110,9 +110,9 @@ pub fn generate_kernel_osrelease() -> (&'static [u8], usize) {
 pub fn generate_kernel_hostname() -> (&'static [u8], usize) {
     let mut buf = SYS_BUFFER.lock();
     let mut writer = BufWriter::new(&mut buf[..]);
-    
+
     let _ = write!(writer, "{}\n", NEXAOS_HOSTNAME);
-    
+
     let len = writer.len();
     let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), len) };
     (slice, len)
@@ -122,9 +122,9 @@ pub fn generate_kernel_hostname() -> (&'static [u8], usize) {
 pub fn generate_kernel_ngroups_max() -> (&'static [u8], usize) {
     let mut buf = SYS_BUFFER.lock();
     let mut writer = BufWriter::new(&mut buf[..]);
-    
+
     let _ = write!(writer, "65536\n");
-    
+
     let len = writer.len();
     let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), len) };
     (slice, len)
@@ -134,10 +134,10 @@ pub fn generate_kernel_ngroups_max() -> (&'static [u8], usize) {
 pub fn generate_kernel_pid_max() -> (&'static [u8], usize) {
     let mut buf = SYS_BUFFER.lock();
     let mut writer = BufWriter::new(&mut buf[..]);
-    
+
     // Use MAX_PROCESSES from process module
     let _ = write!(writer, "{}\n", crate::process::MAX_PROCESSES);
-    
+
     let len = writer.len();
     let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), len) };
     (slice, len)
@@ -147,9 +147,9 @@ pub fn generate_kernel_pid_max() -> (&'static [u8], usize) {
 pub fn generate_kernel_threads_max() -> (&'static [u8], usize) {
     let mut buf = SYS_BUFFER.lock();
     let mut writer = BufWriter::new(&mut buf[..]);
-    
+
     let _ = write!(writer, "{}\n", crate::process::MAX_PROCESSES * 4);
-    
+
     let len = writer.len();
     let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), len) };
     (slice, len)
@@ -163,10 +163,10 @@ pub fn generate_kernel_threads_max() -> (&'static [u8], usize) {
 pub fn generate_random_entropy_avail() -> (&'static [u8], usize) {
     let mut buf = SYS_BUFFER.lock();
     let mut writer = BufWriter::new(&mut buf[..]);
-    
+
     // Placeholder entropy value
     let _ = write!(writer, "256\n");
-    
+
     let len = writer.len();
     let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), len) };
     (slice, len)
@@ -176,9 +176,9 @@ pub fn generate_random_entropy_avail() -> (&'static [u8], usize) {
 pub fn generate_random_poolsize() -> (&'static [u8], usize) {
     let mut buf = SYS_BUFFER.lock();
     let mut writer = BufWriter::new(&mut buf[..]);
-    
+
     let _ = write!(writer, "4096\n");
-    
+
     let len = writer.len();
     let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), len) };
     (slice, len)
@@ -188,7 +188,7 @@ pub fn generate_random_poolsize() -> (&'static [u8], usize) {
 pub fn generate_random_uuid() -> (&'static [u8], usize) {
     let mut buf = SYS_BUFFER.lock();
     let mut writer = BufWriter::new(&mut buf[..]);
-    
+
     // Generate a simple pseudo-random UUID based on tick counter
     let tick = crate::scheduler::get_tick();
     let _ = write!(
@@ -200,7 +200,7 @@ pub fn generate_random_uuid() -> (&'static [u8], usize) {
         0x8000 | ((tick >> 48) & 0x3FFF) as u16,
         tick & 0xFFFFFFFFFFFF
     );
-    
+
     let len = writer.len();
     let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), len) };
     (slice, len)
@@ -214,10 +214,10 @@ pub fn generate_random_uuid() -> (&'static [u8], usize) {
 pub fn generate_power_state() -> (&'static [u8], usize) {
     let mut buf = SYS_BUFFER.lock();
     let mut writer = BufWriter::new(&mut buf[..]);
-    
+
     // Available power states
     let _ = write!(writer, "freeze mem disk\n");
-    
+
     let len = writer.len();
     let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), len) };
     (slice, len)
@@ -227,10 +227,10 @@ pub fn generate_power_state() -> (&'static [u8], usize) {
 pub fn generate_power_mem_sleep() -> (&'static [u8], usize) {
     let mut buf = SYS_BUFFER.lock();
     let mut writer = BufWriter::new(&mut buf[..]);
-    
+
     // Available sleep states, current in brackets
     let _ = write!(writer, "s2idle [deep]\n");
-    
+
     let len = writer.len();
     let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), len) };
     (slice, len)
@@ -266,16 +266,16 @@ pub fn get_net_devices() -> &'static [&'static str] {
 pub fn generate_block_size(device: &str) -> Option<(&'static [u8], usize)> {
     let mut buf = SYS_BUFFER.lock();
     let mut writer = BufWriter::new(&mut buf[..]);
-    
+
     // Return a reasonable size for virtual disk (256MB in sectors)
     let sectors: u64 = match device {
-        "vda" => 256 * 1024 * 2, // 256 MB
+        "vda" => 256 * 1024 * 2,  // 256 MB
         "vda1" => 255 * 1024 * 2, // Slightly smaller for partition
         _ => return None,
     };
-    
+
     let _ = write!(writer, "{}\n", sectors);
-    
+
     let len = writer.len();
     let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), len) };
     Some((slice, len))
@@ -286,15 +286,15 @@ pub fn generate_block_stat(device: &str) -> Option<(&'static [u8], usize)> {
     if !["vda", "vda1"].contains(&device) {
         return None;
     }
-    
+
     let mut buf = SYS_BUFFER.lock();
     let mut writer = BufWriter::new(&mut buf[..]);
-    
+
     // Block device statistics format:
     // read_ios read_merges read_sectors read_ticks write_ios write_merges write_sectors write_ticks
     // in_flight io_ticks time_in_queue discard_ios discard_merges discard_sectors discard_ticks
     let _ = write!(writer, "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n");
-    
+
     let len = writer.len();
     let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), len) };
     Some((slice, len))
@@ -305,12 +305,12 @@ pub fn generate_block_model(device: &str) -> Option<(&'static [u8], usize)> {
     if !["vda", "vda1"].contains(&device) {
         return None;
     }
-    
+
     let mut buf = SYS_BUFFER.lock();
     let mut writer = BufWriter::new(&mut buf[..]);
-    
+
     let _ = write!(writer, "NexaOS Virtual Disk\n");
-    
+
     let len = writer.len();
     let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), len) };
     Some((slice, len))
@@ -321,12 +321,12 @@ pub fn generate_block_vendor(device: &str) -> Option<(&'static [u8], usize)> {
     if !["vda", "vda1"].contains(&device) {
         return None;
     }
-    
+
     let mut buf = SYS_BUFFER.lock();
     let mut writer = BufWriter::new(&mut buf[..]);
-    
+
     let _ = write!(writer, "NexaOS\n");
-    
+
     let len = writer.len();
     let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), len) };
     Some((slice, len))
@@ -340,20 +340,23 @@ pub fn generate_block_vendor(device: &str) -> Option<(&'static [u8], usize)> {
 pub fn generate_net_address(device: &str) -> Option<(&'static [u8], usize)> {
     let mut buf = SYS_BUFFER.lock();
     let mut writer = BufWriter::new(&mut buf[..]);
-    
+
     match device {
         "lo" => {
             let _ = write!(writer, "00:00:00:00:00:00\n");
         }
         "eth0" => {
             // Get real MAC address from network stack
-            let mac = crate::net::with_net_stack(|stack| {
-                stack.get_device_info(0).map(|info| info.mac)
-            }).flatten();
-            
+            let mac =
+                crate::net::with_net_stack(|stack| stack.get_device_info(0).map(|info| info.mac))
+                    .flatten();
+
             if let Some(mac) = mac {
-                let _ = write!(writer, "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}\n",
-                    mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+                let _ = write!(
+                    writer,
+                    "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}\n",
+                    mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+                );
             } else {
                 // Fallback to QEMU default if stack not ready
                 let _ = write!(writer, "52:54:00:12:34:56\n");
@@ -361,7 +364,7 @@ pub fn generate_net_address(device: &str) -> Option<(&'static [u8], usize)> {
         }
         _ => return None,
     };
-    
+
     let len = writer.len();
     let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), len) };
     Some((slice, len))
@@ -371,15 +374,15 @@ pub fn generate_net_address(device: &str) -> Option<(&'static [u8], usize)> {
 pub fn generate_net_mtu(device: &str) -> Option<(&'static [u8], usize)> {
     let mut buf = SYS_BUFFER.lock();
     let mut writer = BufWriter::new(&mut buf[..]);
-    
+
     let mtu = match device {
         "lo" => 65536,
         "eth0" => 1500,
         _ => return None,
     };
-    
+
     let _ = write!(writer, "{}\n", mtu);
-    
+
     let len = writer.len();
     let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), len) };
     Some((slice, len))
@@ -389,15 +392,15 @@ pub fn generate_net_mtu(device: &str) -> Option<(&'static [u8], usize)> {
 pub fn generate_net_operstate(device: &str) -> Option<(&'static [u8], usize)> {
     let mut buf = SYS_BUFFER.lock();
     let mut writer = BufWriter::new(&mut buf[..]);
-    
+
     let state = match device {
         "lo" => "unknown",
         "eth0" => "up",
         _ => return None,
     };
-    
+
     let _ = write!(writer, "{}\n", state);
-    
+
     let len = writer.len();
     let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), len) };
     Some((slice, len))
@@ -407,15 +410,15 @@ pub fn generate_net_operstate(device: &str) -> Option<(&'static [u8], usize)> {
 pub fn generate_net_type(device: &str) -> Option<(&'static [u8], usize)> {
     let mut buf = SYS_BUFFER.lock();
     let mut writer = BufWriter::new(&mut buf[..]);
-    
+
     let dev_type = match device {
-        "lo" => 772,    // ARPHRD_LOOPBACK
-        "eth0" => 1,    // ARPHRD_ETHER
+        "lo" => 772, // ARPHRD_LOOPBACK
+        "eth0" => 1, // ARPHRD_ETHER
         _ => return None,
     };
-    
+
     let _ = write!(writer, "{}\n", dev_type);
-    
+
     let len = writer.len();
     let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), len) };
     Some((slice, len))
@@ -425,15 +428,15 @@ pub fn generate_net_type(device: &str) -> Option<(&'static [u8], usize)> {
 pub fn generate_net_flags(device: &str) -> Option<(&'static [u8], usize)> {
     let mut buf = SYS_BUFFER.lock();
     let mut writer = BufWriter::new(&mut buf[..]);
-    
+
     let flags = match device {
         "lo" => 0x49,     // IFF_UP | IFF_LOOPBACK | IFF_RUNNING
         "eth0" => 0x1003, // IFF_UP | IFF_BROADCAST | IFF_RUNNING
         _ => return None,
     };
-    
+
     let _ = write!(writer, "0x{:x}\n", flags);
-    
+
     let len = writer.len();
     let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), len) };
     Some((slice, len))

@@ -12,9 +12,9 @@ use crate::{kdebug, kerror, kinfo, ktrace, kwarn};
 use super::pid_tree::allocate_pid;
 use super::stack::build_initial_stack;
 use super::types::{
-    Context, Process, ProcessState, DEFAULT_ARGV0, HEAP_BASE, HEAP_SIZE, INTERP_BASE,
-    KERNEL_STACK_ALIGN, KERNEL_STACK_SIZE, MAX_PROCESS_ARGS, STACK_BASE, STACK_SIZE,
-    USER_PHYS_BASE, USER_REGION_SIZE, USER_VIRT_BASE, build_cmdline,
+    build_cmdline, Context, Process, ProcessState, DEFAULT_ARGV0, HEAP_BASE, HEAP_SIZE,
+    INTERP_BASE, KERNEL_STACK_ALIGN, KERNEL_STACK_SIZE, MAX_PROCESS_ARGS, STACK_BASE, STACK_SIZE,
+    USER_PHYS_BASE, USER_REGION_SIZE, USER_VIRT_BASE,
 };
 
 impl Process {
@@ -128,7 +128,10 @@ impl Process {
             // But we know base_addr is USER_VIRT_BASE.
             // And usually phdr is at offset 64 (0x40) for 64-bit ELF.
             program_image.phdr_vaddr = USER_VIRT_BASE + 64;
-            kwarn!("Fixed phdr_vaddr to {:#x} (assuming standard offset)", program_image.phdr_vaddr);
+            kwarn!(
+                "Fixed phdr_vaddr to {:#x} (assuming standard offset)",
+                program_image.phdr_vaddr
+            );
         }
 
         // Build argument list
@@ -192,7 +195,7 @@ impl Process {
                     interp_image.entry_point,
                     interp_image.base_addr
                 );
-                
+
                 ktrace!(
                     "DYNAMIC LINK DEBUG: program_image.entry_point={:#x}, program_image.phdr_vaddr={:#x}",
                     program_image.entry_point,
@@ -271,7 +274,7 @@ impl Process {
             exit_code: 0,
             term_signal: None,
             kernel_stack: 0, // Initialize kernel stack pointer
-            fs_base: 0, // Initialize TLS base (will be set by CLONE_SETTLS or arch_prctl)
+            fs_base: 0,      // Initialize TLS base (will be set by CLONE_SETTLS or arch_prctl)
             cmdline,
             cmdline_len,
         })
@@ -310,7 +313,7 @@ impl Process {
         kdebug!("ElfLoader created successfully");
 
         let mut program_image = loader.load(USER_PHYS_BASE)?;
-        
+
         // CRITICAL FIX: Adjust addresses from physical to virtual space
         // ElfLoader wrote data to USER_PHYS_BASE but calculated addresses relative to it.
         // Userspace expects addresses relative to USER_VIRT_BASE since that's what
@@ -320,7 +323,7 @@ impl Process {
         program_image.phdr_vaddr = ((program_image.phdr_vaddr as i64) + addr_adjustment) as u64;
         program_image.base_addr = USER_VIRT_BASE;
         program_image.load_bias = USER_VIRT_BASE as i64 - program_image.first_load_vaddr as i64;
-        
+
         kdebug!(
             "Program image loaded and adjusted: entry={:#x}, base={:#x}, bias={:+}, phdr={:#x}",
             program_image.entry_point,
@@ -332,7 +335,10 @@ impl Process {
         if program_image.phdr_vaddr == 0 {
             kwarn!("CRITICAL: phdr_vaddr is 0! This will cause dynamic linker failure.");
             program_image.phdr_vaddr = USER_VIRT_BASE + 64;
-            kwarn!("Fixed phdr_vaddr to {:#x} (assuming standard offset)", program_image.phdr_vaddr);
+            kwarn!(
+                "Fixed phdr_vaddr to {:#x} (assuming standard offset)",
+                program_image.phdr_vaddr
+            );
         }
 
         let mut arg_storage: [&[u8]; MAX_PROCESS_ARGS] = [&[]; MAX_PROCESS_ARGS];
@@ -389,7 +395,7 @@ impl Process {
                     exec_slice,
                     STACK_BASE,
                     STACK_SIZE,
-                    stack_phys,  // Correct physical address for stack
+                    stack_phys, // Correct physical address for stack
                     &program_image,
                     Some(&interp_image),
                 )?;
@@ -473,7 +479,7 @@ impl Process {
             exec_slice,
             STACK_BASE,
             STACK_SIZE,
-            stack_phys,  // Correct physical address for stack
+            stack_phys, // Correct physical address for stack
             &program_image,
             None,
         )?;

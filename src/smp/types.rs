@@ -51,10 +51,10 @@ impl PerCpuGsData {
 }
 
 /// Per-CPU runtime data - isolated to each CPU to avoid cache line contention
-/// 
+///
 /// This structure is carefully cache-line aligned (64 bytes) to prevent
 /// false sharing between CPUs. Each CPU has its own dedicated instance.
-/// 
+///
 /// ## Memory Layout
 /// The structure is split into hot (frequently accessed) and cold fields:
 /// - First cache line: Identification and frequently updated atomics
@@ -62,29 +62,29 @@ impl PerCpuGsData {
 #[repr(C, align(64))] // Cache line aligned to prevent false sharing
 pub struct CpuData {
     // === First cache line: Hot data (frequently accessed) ===
-    pub cpu_id: u16,              // Supports up to 1024 CPUs
+    pub cpu_id: u16, // Supports up to 1024 CPUs
     pub apic_id: u32,
-    pub numa_node: u32,           // NUMA node this CPU belongs to
-    pub current_pid: AtomicU32,   // Currently running process
+    pub numa_node: u32,         // NUMA node this CPU belongs to
+    pub current_pid: AtomicU32, // Currently running process
     pub reschedule_pending: AtomicBool,
     pub tlb_flush_pending: AtomicBool,
     pub in_interrupt: AtomicBool, // Whether CPU is handling interrupt
     pub preempt_count: AtomicU32, // Preemption disable count (0 = preemptible)
-    
+
     // Local timer state
     pub local_tick: AtomicU64,    // Per-CPU tick counter
     pub last_tick_tsc: AtomicU64, // TSC value at last tick (for accurate timing)
-    
+
     // === Second cache line: Statistics (less frequently accessed) ===
-    pub idle_time: AtomicU64,     // Idle time in nanoseconds
-    pub busy_time: AtomicU64,     // Busy time in nanoseconds
+    pub idle_time: AtomicU64, // Idle time in nanoseconds
+    pub busy_time: AtomicU64, // Busy time in nanoseconds
     pub context_switches: AtomicU64,
     pub voluntary_switches: AtomicU64,
     pub preemptions: AtomicU64,
     pub interrupts_handled: AtomicU64,
     pub syscalls_handled: AtomicU64,
-    pub ipi_received: AtomicU64,  // IPIs received on this CPU
-    pub ipi_sent: AtomicU64,      // IPIs sent from this CPU
+    pub ipi_received: AtomicU64, // IPIs received on this CPU
+    pub ipi_sent: AtomicU64,     // IPIs sent from this CPU
 }
 
 impl CpuData {
@@ -111,49 +111,49 @@ impl CpuData {
             ipi_sent: AtomicU64::new(0),
         }
     }
-    
+
     /// Increment preempt_count to disable preemption on this CPU
     #[inline]
     pub fn preempt_disable(&self) {
         self.preempt_count.fetch_add(1, Ordering::Relaxed);
     }
-    
+
     /// Decrement preempt_count, returns true if preemption is now enabled
     #[inline]
     pub fn preempt_enable(&self) -> bool {
         let prev = self.preempt_count.fetch_sub(1, Ordering::Relaxed);
         prev == 1 // Was 1, now 0 = preemption enabled
     }
-    
+
     /// Check if preemption is currently disabled
     #[inline]
     pub fn preempt_disabled(&self) -> bool {
         self.preempt_count.load(Ordering::Relaxed) > 0
     }
-    
+
     /// Check if this CPU is currently handling an interrupt
     #[inline]
     pub fn in_interrupt_context(&self) -> bool {
         self.in_interrupt.load(Ordering::Relaxed)
     }
-    
+
     /// Enter interrupt context
     #[inline]
     pub fn enter_interrupt(&self) {
         self.in_interrupt.store(true, Ordering::Release);
         self.preempt_disable(); // Disable preemption during interrupt
     }
-    
+
     /// Leave interrupt context, returns true if reschedule is needed
     #[inline]
     pub fn leave_interrupt(&self) -> bool {
         self.preempt_enable();
         self.in_interrupt.store(false, Ordering::Release);
-        
+
         // Check if reschedule was requested during interrupt
         self.reschedule_pending.load(Ordering::Acquire)
     }
-    
+
     /// Record a context switch
     pub fn record_context_switch(&self, voluntary: bool) {
         self.context_switches.fetch_add(1, Ordering::Relaxed);
@@ -163,7 +163,7 @@ impl CpuData {
             self.preemptions.fetch_add(1, Ordering::Relaxed);
         }
     }
-    
+
     /// Set the NUMA node for this CPU
     pub fn set_numa_node(&mut self, node: u32) {
         self.numa_node = node;
@@ -240,9 +240,9 @@ impl ApBootArgs {
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
 pub struct PerCpuTrampolineData {
-    pub stack_ptr: u64,     // Offset 0: Stack top address
-    pub entry_ptr: u64,     // Offset 8: Entry function address
-    pub arg_ptr: u64,       // Offset 16: Boot arguments pointer
+    pub stack_ptr: u64, // Offset 0: Stack top address
+    pub entry_ptr: u64, // Offset 8: Entry function address
+    pub arg_ptr: u64,   // Offset 16: Boot arguments pointer
 }
 
 impl PerCpuTrampolineData {
@@ -268,7 +268,8 @@ pub struct AlignedApStack(pub [u8; AP_STACK_SIZE]);
 pub const STATIC_CPU_COUNT: usize = 1;
 
 /// GS data - only BSP uses static, all APs use dynamic
-pub static mut AP_GS_DATA: [PerCpuGsData; STATIC_CPU_COUNT] = [PerCpuGsData::new(); STATIC_CPU_COUNT];
+pub static mut AP_GS_DATA: [PerCpuGsData; STATIC_CPU_COUNT] =
+    [PerCpuGsData::new(); STATIC_CPU_COUNT];
 
 /// Debug: AP arrival flags (non-zero = arrived) - keep static for atomic access
 pub static AP_ARRIVED: [AtomicU32; MAX_CPUS] = {

@@ -1,5 +1,5 @@
-use spin::Mutex;
 use alloc::vec::Vec;
+use spin::Mutex;
 
 use crate::bootinfo;
 use crate::posix::{self, FileType, Metadata};
@@ -48,29 +48,32 @@ impl Ext2ReadCache {
         if size > EXT2_READ_CACHE_SIZE {
             return None;
         }
-        
+
         // Allocate or resize buffer as needed
         if self.buffer.is_none() || self.buffer.as_ref().unwrap().len() < size {
             // Allocate with some headroom to avoid frequent reallocations
             let alloc_size = size.max(64 * 1024); // At least 64KB
             let mut new_buf = Vec::new();
             if new_buf.try_reserve_exact(alloc_size).is_err() {
-                crate::kwarn!("Failed to allocate {} bytes for ext2 read cache", alloc_size);
+                crate::kwarn!(
+                    "Failed to allocate {} bytes for ext2 read cache",
+                    alloc_size
+                );
                 return None;
             }
             new_buf.resize(alloc_size, 0);
             self.buffer = Some(new_buf);
         }
-        
+
         self.buffer.as_mut().map(|b| &mut b[..size])
     }
-    
+
     /// Get a static slice reference to the cached data
     /// SAFETY: Caller must ensure the lock is held and data won't be modified
     unsafe fn as_static_slice(&self, size: usize) -> Option<&'static [u8]> {
-        self.buffer.as_ref().map(|b| {
-            core::slice::from_raw_parts(b.as_ptr(), size)
-        })
+        self.buffer
+            .as_ref()
+            .map(|b| core::slice::from_raw_parts(b.as_ptr(), size))
     }
 }
 
@@ -122,11 +125,11 @@ impl ListedEntry {
             metadata,
         }
     }
-    
+
     fn name_str(&self) -> &str {
         core::str::from_utf8(&self.name[..self.name_len]).unwrap_or("")
     }
-    
+
     fn matches(&self, other: &str) -> bool {
         self.name_str() == other
     }
@@ -371,9 +374,9 @@ pub fn add_file_with_metadata(
 /// Handle procfs virtual file reads
 fn handle_procfs_read(path: &str) -> Option<OpenFile> {
     use super::procfs;
-    
+
     let path = path.trim_start_matches('/');
-    
+
     // Global procfs files
     match path {
         "proc/version" => {
@@ -490,14 +493,14 @@ fn handle_procfs_read(path: &str) -> Option<OpenFile> {
             }
         }
     }
-    
+
     // Per-process files: /proc/[pid]/...
     if path.starts_with("proc/") {
         let rest = &path[5..]; // Remove "proc/"
         if let Some(slash_pos) = rest.find('/') {
             let pid_str = &rest[..slash_pos];
             let file_path = &rest[slash_pos + 1..];
-            
+
             if let Ok(pid) = pid_str.parse::<u64>() {
                 if procfs::pid_exists(pid) {
                     match file_path {
@@ -539,16 +542,16 @@ fn handle_procfs_read(path: &str) -> Option<OpenFile> {
             }
         }
     }
-    
+
     None
 }
 
 /// Handle sysfs virtual file reads
 fn handle_sysfs_read(path: &str) -> Option<OpenFile> {
     use super::sysfs;
-    
+
     let path = path.trim_start_matches('/');
-    
+
     // Kernel info files
     match path {
         "sys/kernel/version" => {
@@ -637,14 +640,14 @@ fn handle_sysfs_read(path: &str) -> Option<OpenFile> {
         }
         _ => {}
     }
-    
+
     // Block device files: /sys/block/[device]/...
     if path.starts_with("sys/block/") {
         let rest = &path[10..]; // Remove "sys/block/"
         if let Some(slash_pos) = rest.find('/') {
             let device = &rest[..slash_pos];
             let file_path = &rest[slash_pos + 1..];
-            
+
             match file_path {
                 "size" => {
                     if let Some((content, len)) = sysfs::generate_block_size(device) {
@@ -682,14 +685,14 @@ fn handle_sysfs_read(path: &str) -> Option<OpenFile> {
             }
         }
     }
-    
+
     // Network device files: /sys/class/net/[device]/...
     if path.starts_with("sys/class/net/") {
         let rest = &path[14..]; // Remove "sys/class/net/"
         if let Some(slash_pos) = rest.find('/') {
             let device = &rest[..slash_pos];
             let file_path = &rest[slash_pos + 1..];
-            
+
             match file_path {
                 "address" => {
                     if let Some((content, len)) = sysfs::generate_net_address(device) {
@@ -735,7 +738,7 @@ fn handle_sysfs_read(path: &str) -> Option<OpenFile> {
             }
         }
     }
-    
+
     None
 }
 
@@ -746,14 +749,14 @@ pub fn open(path: &str) -> Option<OpenFile> {
             return Some(result);
         }
     }
-    
+
     // Check for sysfs paths
     if path.starts_with("/sys") || path.starts_with("sys") {
         if let Some(result) = handle_sysfs_read(path) {
             return Some(result);
         }
     }
-    
+
     let (fs, relative) = resolve_mount(path)?;
     fs.read(relative)
 }
@@ -761,35 +764,34 @@ pub fn open(path: &str) -> Option<OpenFile> {
 /// Handle procfs virtual directory stat
 fn handle_procfs_stat(path: &str) -> Option<Metadata> {
     use super::procfs;
-    
+
     let path = path.trim_start_matches('/');
-    
+
     // Directory entries
     match path {
         "proc" => return Some(procfs::proc_dir_metadata()),
         "proc/self" => return Some(procfs::proc_link_metadata()),
         _ => {}
     }
-    
+
     // Global procfs files
     match path {
-        "proc/version" | "proc/uptime" | "proc/loadavg" | "proc/meminfo" |
-        "proc/cpuinfo" | "proc/stat" | "proc/filesystems" | "proc/mounts" |
-        "proc/cmdline" => {
+        "proc/version" | "proc/uptime" | "proc/loadavg" | "proc/meminfo" | "proc/cpuinfo"
+        | "proc/stat" | "proc/filesystems" | "proc/mounts" | "proc/cmdline" => {
             return Some(procfs::proc_file_metadata(0)); // Size determined at read time
         }
         _ => {}
     }
-    
+
     // Per-process directories and files
     if path.starts_with("proc/") {
         let rest = &path[5..];
-        
+
         // Check if it's a PID directory
         if let Some(slash_pos) = rest.find('/') {
             let pid_str = &rest[..slash_pos];
             let file_path = &rest[slash_pos + 1..];
-            
+
             if let Ok(pid) = pid_str.parse::<u64>() {
                 if procfs::pid_exists(pid) {
                     match file_path {
@@ -810,38 +812,45 @@ fn handle_procfs_stat(path: &str) -> Option<Metadata> {
             }
         }
     }
-    
+
     None
 }
 
 /// Handle sysfs virtual directory stat
 fn handle_sysfs_stat(path: &str) -> Option<Metadata> {
     use super::sysfs;
-    
+
     let path = path.trim_start_matches('/');
-    
+
     // Directory entries
     match path {
-        "sys" | "sys/kernel" | "sys/kernel/random" | "sys/class" |
-        "sys/class/tty" | "sys/class/block" | "sys/class/net" |
-        "sys/block" | "sys/devices" | "sys/bus" | "sys/fs" | "sys/power" => {
+        "sys" | "sys/kernel" | "sys/kernel/random" | "sys/class" | "sys/class/tty"
+        | "sys/class/block" | "sys/class/net" | "sys/block" | "sys/devices" | "sys/bus"
+        | "sys/fs" | "sys/power" => {
             return Some(sysfs::sys_dir_metadata());
         }
         _ => {}
     }
-    
+
     // Kernel info files
     match path {
-        "sys/kernel/version" | "sys/kernel/ostype" | "sys/kernel/osrelease" |
-        "sys/kernel/hostname" | "sys/kernel/ngroups_max" | "sys/kernel/pid_max" |
-        "sys/kernel/threads-max" | "sys/kernel/random/entropy_avail" |
-        "sys/kernel/random/poolsize" | "sys/kernel/random/uuid" |
-        "sys/power/state" | "sys/power/mem_sleep" => {
+        "sys/kernel/version"
+        | "sys/kernel/ostype"
+        | "sys/kernel/osrelease"
+        | "sys/kernel/hostname"
+        | "sys/kernel/ngroups_max"
+        | "sys/kernel/pid_max"
+        | "sys/kernel/threads-max"
+        | "sys/kernel/random/entropy_avail"
+        | "sys/kernel/random/poolsize"
+        | "sys/kernel/random/uuid"
+        | "sys/power/state"
+        | "sys/power/mem_sleep" => {
             return Some(sysfs::sys_file_metadata(0));
         }
         _ => {}
     }
-    
+
     // Block device directories and files
     if path.starts_with("sys/block/") {
         let rest = &path[10..];
@@ -864,7 +873,7 @@ fn handle_sysfs_stat(path: &str) -> Option<Metadata> {
             }
         }
     }
-    
+
     // Network device directories and files
     if path.starts_with("sys/class/net/") {
         let rest = &path[14..];
@@ -886,7 +895,7 @@ fn handle_sysfs_stat(path: &str) -> Option<Metadata> {
             }
         }
     }
-    
+
     // TTY device directories
     if path.starts_with("sys/class/tty/") {
         let rest = &path[14..];
@@ -896,7 +905,7 @@ fn handle_sysfs_stat(path: &str) -> Option<Metadata> {
             }
         }
     }
-    
+
     None
 }
 
@@ -912,7 +921,7 @@ pub fn stat(path: &str) -> Option<Metadata> {
             return Some(meta);
         }
     }
-    
+
     // Check for sysfs paths
     if normalized.starts_with("/sys") || normalized.starts_with("sys") {
         if let Some(meta) = handle_sysfs_stat(normalized) {
@@ -930,9 +939,9 @@ where
     F: FnMut(&str, Metadata),
 {
     use super::procfs;
-    
+
     let path = path.trim_start_matches('/').trim_end_matches('/');
-    
+
     match path {
         "proc" | "" => {
             // Root /proc directory - list global files and process directories
@@ -946,7 +955,7 @@ where
             cb("mounts", procfs::proc_file_metadata(0));
             cb("cmdline", procfs::proc_file_metadata(0));
             cb("self", procfs::proc_link_metadata());
-            
+
             // List all process directories
             // PIDs are managed by radix tree and can be any value up to MAX_PID
             let pids = procfs::get_all_pids();
@@ -960,7 +969,7 @@ where
         }
         _ => {}
     }
-    
+
     // Per-process directory listing
     if path.starts_with("proc/") {
         let rest = &path[5..];
@@ -975,7 +984,7 @@ where
             }
         }
     }
-    
+
     false
 }
 
@@ -985,9 +994,9 @@ where
     F: FnMut(&str, Metadata),
 {
     use super::sysfs;
-    
+
     let path = path.trim_start_matches('/').trim_end_matches('/');
-    
+
     match path {
         "sys" | "" => {
             cb("kernel", sysfs::sys_dir_metadata());
@@ -1053,7 +1062,7 @@ where
         }
         _ => {}
     }
-    
+
     // Block device subdirectories
     if path.starts_with("sys/block/") {
         let rest = &path[10..];
@@ -1072,7 +1081,7 @@ where
             }
         }
     }
-    
+
     // Network device subdirectories
     if path.starts_with("sys/class/net/") {
         let rest = &path[14..];
@@ -1087,7 +1096,7 @@ where
             }
         }
     }
-    
+
     false
 }
 
@@ -1101,14 +1110,14 @@ where
             return;
         }
     }
-    
+
     // Check for sysfs paths
     if path.starts_with("/sys") || path.starts_with("sys") || path == "/sys" {
         if handle_sysfs_list(path, &mut cb) {
             return;
         }
     }
-    
+
     if let Some((fs, relative)) = resolve_mount(path) {
         fs.list(relative, &mut cb);
     }
@@ -1132,8 +1141,12 @@ pub fn read_file_bytes(name: &str) -> Option<&'static [u8]> {
             Some(bytes)
         }
         FileContent::Ext2Modular(file_ref) => {
-            crate::kinfo!("read_file_bytes: Ext2Modular content, inode={}, size={}", file_ref.inode, file_ref.size);
-            
+            crate::kinfo!(
+                "read_file_bytes: Ext2Modular content, inode={}, size={}",
+                file_ref.inode,
+                file_ref.size
+            );
+
             // CRITICAL FIX: Switch to kernel CR3 before accessing EXT2_READ_CACHE
             // The cache buffer is allocated in kernel address space (heap at ~0x7cc0000)
             // which may not be mapped in user process page tables.
@@ -1143,11 +1156,15 @@ pub fn read_file_bytes(name: &str) -> Option<&'static [u8]> {
             unsafe {
                 core::arch::asm!("mov {}, cr3", out(reg) saved_cr3, options(nomem, nostack));
                 if saved_cr3 != kernel_cr3 {
-                    crate::kinfo!("read_file_bytes: switching CR3 from {:#x} to kernel {:#x}", saved_cr3, kernel_cr3);
+                    crate::kinfo!(
+                        "read_file_bytes: switching CR3 from {:#x} to kernel {:#x}",
+                        saved_cr3,
+                        kernel_cr3
+                    );
                     core::arch::asm!("mov cr3, {}", in(reg) kernel_cr3, options(nostack));
                 }
             }
-            
+
             let size = file_ref.size as usize;
             if size == 0 {
                 // Restore CR3 before returning
@@ -1189,8 +1206,12 @@ pub fn read_file_bytes(name: &str) -> Option<&'static [u8]> {
                     return None;
                 }
             };
-            crate::kinfo!("read_file_bytes: got buffer at {:#x}, size {}", dest.as_ptr() as u64, size);
-            
+            crate::kinfo!(
+                "read_file_bytes: got buffer at {:#x}, size {}",
+                dest.as_ptr() as u64,
+                size
+            );
+
             let mut read_offset = 0usize;
             while read_offset < size {
                 let read = ext2_modular::read_at(&file_ref, read_offset, &mut dest[read_offset..]);
@@ -1212,17 +1233,21 @@ pub fn read_file_bytes(name: &str) -> Option<&'static [u8]> {
                 }
                 read_offset += read;
             }
-            
+
             // Debug: log first 16 bytes
             let n = core::cmp::min(16, size);
-            crate::kinfo!("read_file_bytes: complete, first {} bytes: {:02x?}", n, &dest[..n]);
+            crate::kinfo!(
+                "read_file_bytes: complete, first {} bytes: {:02x?}",
+                n,
+                &dest[..n]
+            );
 
             // SAFETY: We hold the lock, buffer content is valid for 'static
             // as long as the lock protocol is followed by all callers.
             // The buffer persists in the static Mutex.
             let result = unsafe { cache.as_static_slice(size) };
             drop(cache);
-            
+
             // Restore CR3 after all operations complete
             unsafe {
                 if saved_cr3 != kernel_cr3 {
@@ -1230,7 +1255,7 @@ pub fn read_file_bytes(name: &str) -> Option<&'static [u8]> {
                     core::arch::asm!("mov cr3, {}", in(reg) saved_cr3, options(nostack));
                 }
             }
-            
+
             result
         }
     }
@@ -1392,7 +1417,11 @@ fn resolve_mount(path: &str) -> Option<(&'static dyn FileSystem, &str)> {
     }
 
     if let Some((fs, rel, _)) = best {
-        crate::kinfo!("resolve_mount: resolved to fs='{}', rel='{}'", fs.name(), rel);
+        crate::kinfo!(
+            "resolve_mount: resolved to fs='{}', rel='{}'",
+            fs.name(),
+            rel
+        );
     } else {
         crate::kinfo!("resolve_mount: no mount found for '{}'", path);
     }

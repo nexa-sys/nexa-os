@@ -6,7 +6,7 @@ use x86_64::structures::gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector
 use x86_64::structures::tss::TaskStateSegment;
 use x86_64::VirtAddr;
 
-use crate::safety::{serial_debug_byte, serial_debug_hex, read_rsp, stack_alignment_offset};
+use crate::safety::{read_rsp, serial_debug_byte, serial_debug_hex, stack_alignment_offset};
 
 const STACK_SIZE: usize = 4096 * 5;
 
@@ -41,17 +41,17 @@ impl AlignedTss {
             tss: MaybeUninit::uninit(),
         }
     }
-    
+
     /// Initialize the TSS with a new TaskStateSegment
     unsafe fn init(&mut self) {
         self.tss.write(TaskStateSegment::new());
     }
-    
+
     /// Get a mutable reference to the TSS (must be initialized first)
     unsafe fn get_mut(&mut self) -> &mut TaskStateSegment {
         self.tss.assume_init_mut()
     }
-    
+
     /// Get a reference to the TSS (must be initialized first)
     unsafe fn get_ref(&self) -> &TaskStateSegment {
         self.tss.assume_init_ref()
@@ -116,7 +116,8 @@ const EMPTY_PERCPU_STACKS: PerCpuStacks = PerCpuStacks {
     },
 };
 
-static mut PER_CPU_STACKS: [PerCpuStacks; STATIC_CPU_COUNT] = [EMPTY_PERCPU_STACKS; STATIC_CPU_COUNT];
+static mut PER_CPU_STACKS: [PerCpuStacks; STATIC_CPU_COUNT] =
+    [EMPTY_PERCPU_STACKS; STATIC_CPU_COUNT];
 
 #[inline(always)]
 unsafe fn stack_top(stack: *const AlignedStack) -> VirtAddr {
@@ -189,7 +190,7 @@ fn init_cpu(cpu_id: usize) {
     if cpu_id >= MAX_CPUS {
         crate::kpanic!("CPU ID {} exceeds MAX_CPUS {}", cpu_id, MAX_CPUS);
     }
-    
+
     // Determine if this CPU uses dynamic allocation
     let uses_dynamic = cpu_id >= STATIC_CPU_COUNT;
 
@@ -198,7 +199,7 @@ fn init_cpu(cpu_id: usize) {
         if cpu_id > 0 {
             let current_rsp = read_rsp();
             serial_debug_byte(b'a'); // Entry
-            // Output RSP as hex (low 3 bytes should be enough to see offset)
+                                     // Output RSP as hex (low 3 bytes should be enough to see offset)
             serial_debug_hex(current_rsp, 6);
             serial_debug_byte(b'/');
             if uses_dynamic {
@@ -207,30 +208,35 @@ fn init_cpu(cpu_id: usize) {
         }
 
         // Get stack pointers - either from static or dynamic allocation
-        let (df_top_aligned, ec_top_aligned, kernel_stack_top): (VirtAddr, VirtAddr, VirtAddr) = if uses_dynamic {
-            // Dynamic allocation path
-            let gdt_stacks = crate::smp::alloc::get_dynamic_gdt_stacks(cpu_id)
-                .expect("Dynamic GDT stacks not allocated");
-            
-            let df_top = aligned_stack_top_dyn(&gdt_stacks.double_fault_stack);
-            // Error code stack needs -8 bias like static version
-            let ec_top = {
-                let top = aligned_stack_top_dyn(&gdt_stacks.error_code_stack).as_u64();
-                VirtAddr::new(top - 8)
+        let (df_top_aligned, ec_top_aligned, kernel_stack_top): (VirtAddr, VirtAddr, VirtAddr) =
+            if uses_dynamic {
+                // Dynamic allocation path
+                let gdt_stacks = crate::smp::alloc::get_dynamic_gdt_stacks(cpu_id)
+                    .expect("Dynamic GDT stacks not allocated");
+
+                let df_top = aligned_stack_top_dyn(&gdt_stacks.double_fault_stack);
+                // Error code stack needs -8 bias like static version
+                let ec_top = {
+                    let top = aligned_stack_top_dyn(&gdt_stacks.error_code_stack).as_u64();
+                    VirtAddr::new(top - 8)
+                };
+                // Kernel stack also needs -8 bias for privilege stack
+                let ks_top = {
+                    let top = aligned_stack_top_dyn(&gdt_stacks.kernel_stack).as_u64();
+                    VirtAddr::new(top - 8)
+                };
+                (df_top, ec_top, ks_top)
+            } else {
+                // Static allocation path
+                let df_top =
+                    aligned_ist_stack_top(ptr::addr_of!(PER_CPU_STACKS[cpu_id].double_fault_stack));
+                let ec_top = aligned_error_code_stack_top(ptr::addr_of!(
+                    PER_CPU_STACKS[cpu_id].error_code_stack
+                ));
+                let ks_top =
+                    aligned_privilege_stack_top(ptr::addr_of!(PER_CPU_STACKS[cpu_id].kernel_stack));
+                (df_top, ec_top, ks_top)
             };
-            // Kernel stack also needs -8 bias for privilege stack
-            let ks_top = {
-                let top = aligned_stack_top_dyn(&gdt_stacks.kernel_stack).as_u64();
-                VirtAddr::new(top - 8)
-            };
-            (df_top, ec_top, ks_top)
-        } else {
-            // Static allocation path  
-            let df_top = aligned_ist_stack_top(ptr::addr_of!(PER_CPU_STACKS[cpu_id].double_fault_stack));
-            let ec_top = aligned_error_code_stack_top(ptr::addr_of!(PER_CPU_STACKS[cpu_id].error_code_stack));
-            let ks_top = aligned_privilege_stack_top(ptr::addr_of!(PER_CPU_STACKS[cpu_id].kernel_stack));
-            (df_top, ec_top, ks_top)
-        };
 
         if cpu_id == 0 {
             crate::kinfo!(
@@ -246,8 +252,7 @@ fn init_cpu(cpu_id: usize) {
 
         // Get TSS - either from static or dynamic allocation
         let tss: &mut TaskStateSegment = if uses_dynamic {
-            crate::smp::alloc::get_dynamic_tss_mut(cpu_id)
-                .expect("Dynamic TSS not allocated")
+            crate::smp::alloc::get_dynamic_tss_mut(cpu_id).expect("Dynamic TSS not allocated")
         } else {
             // Initialize TSS if not already done
             if !PER_CPU_TSS_READY[cpu_id].load(Ordering::Acquire) {
@@ -340,9 +345,9 @@ fn init_cpu(cpu_id: usize) {
         // Get GDT reference - either static or dynamic
         let gdt_ref: &'static GlobalDescriptorTable = if uses_dynamic {
             // For dynamic allocation, we need to populate the GDT
-            let gdt = crate::smp::alloc::get_dynamic_gdt_mut(cpu_id)
-                .expect("Dynamic GDT not allocated");
-            
+            let gdt =
+                crate::smp::alloc::get_dynamic_gdt_mut(cpu_id).expect("Dynamic GDT not allocated");
+
             // The GDT is freshly allocated, we need to set it up
             // Entry 0: Null descriptor (required) - already present in new()
             // Entry 1: Kernel code segment
@@ -353,15 +358,15 @@ fn init_cpu(cpu_id: usize) {
             let _user_data_sel = gdt.append(Descriptor::user_data_segment());
             // Entry 4: User code segment (DPL=3) - MUST come after user data for SYSRET!
             let _user_code_sel = gdt.append(Descriptor::user_code_segment());
-            
+
             // Entry 5: TSS (per-CPU) - use the dynamically allocated TSS
             let tss_ptr = tss as *const TaskStateSegment;
             let _tss_sel = gdt.append(Descriptor::tss_segment(&*tss_ptr));
-            
+
             if cpu_id > 0 {
                 serial_debug_byte(b'X'); // After TSS segment
             }
-            
+
             // Return static reference (safe because dynamic allocation lives forever)
             &*(gdt as *const GlobalDescriptorTable)
         } else {

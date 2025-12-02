@@ -13,8 +13,7 @@ use crate::bootinfo;
 
 use super::state::TRAMPOLINE_READY;
 use super::types::{
-    PerCpuTrampolineData, TRAMPOLINE_BASE, TRAMPOLINE_MAX_SIZE,
-    PER_CPU_DATA_SIZE, MAX_CPUS,
+    PerCpuTrampolineData, MAX_CPUS, PER_CPU_DATA_SIZE, TRAMPOLINE_BASE, TRAMPOLINE_MAX_SIZE,
 };
 
 /// Get kernel relocation offset using multiple fallback methods.
@@ -253,30 +252,35 @@ pub unsafe fn write_per_cpu_data(
         static __ap_trampoline_start: u8;
         static ap_per_cpu_data: u8;
     }
-    
+
     if cpu_index >= MAX_CPUS {
         return Err("CPU index out of range");
     }
-    
+
     // Calculate offset of ap_per_cpu_data from trampoline start
-    let per_cpu_base_offset = (&ap_per_cpu_data as *const u8 as usize)
-        - (&__ap_trampoline_start as *const u8 as usize);
-    
+    let per_cpu_base_offset =
+        (&ap_per_cpu_data as *const u8 as usize) - (&__ap_trampoline_start as *const u8 as usize);
+
     // Calculate address: TRAMPOLINE_BASE + per_cpu_base_offset + cpu_index * PER_CPU_DATA_SIZE
-    let per_cpu_addr = TRAMPOLINE_BASE as usize + per_cpu_base_offset + cpu_index * PER_CPU_DATA_SIZE;
-    
+    let per_cpu_addr =
+        TRAMPOLINE_BASE as usize + per_cpu_base_offset + cpu_index * PER_CPU_DATA_SIZE;
+
     // Write the per-CPU data structure
     let dest = per_cpu_addr as *mut PerCpuTrampolineData;
     ptr::write_volatile(dest, *data);
-    
+
     // Memory fence to ensure write is visible to other cores
     core::sync::atomic::fence(Ordering::SeqCst);
-    
+
     crate::kinfo!(
         "SMP: Per-CPU data for CPU {} at {:#x}: stack={:#x}, entry={:#x}, arg={:#x}",
-        cpu_index, per_cpu_addr, data.stack_ptr, data.entry_ptr, data.arg_ptr
+        cpu_index,
+        per_cpu_addr,
+        data.stack_ptr,
+        data.entry_ptr,
+        data.arg_ptr
     );
-    
+
     Ok(())
 }
 
@@ -287,24 +291,26 @@ pub unsafe fn set_apic_to_index_mapping(apic_id: u32, cpu_index: u8) -> Result<(
         static __ap_trampoline_start: u8;
         static ap_apic_to_index: u8;
     }
-    
+
     if apic_id > 255 {
         return Err("APIC ID out of range (max 255)");
     }
-    
+
     // Calculate offset of ap_apic_to_index table in trampoline
-    let offset = (&ap_apic_to_index as *const u8 as usize) 
-        - (&__ap_trampoline_start as *const u8 as usize);
-    
+    let offset =
+        (&ap_apic_to_index as *const u8 as usize) - (&__ap_trampoline_start as *const u8 as usize);
+
     // Write to the mapping table at TRAMPOLINE_BASE + offset + apic_id
     let mapping_addr = (TRAMPOLINE_BASE as usize + offset + apic_id as usize) as *mut u8;
     ptr::write_volatile(mapping_addr, cpu_index);
-    
+
     crate::kinfo!(
         "SMP: APIC ID {} -> CPU index {} (mapping at {:#x})",
-        apic_id, cpu_index, mapping_addr as usize
+        apic_id,
+        cpu_index,
+        mapping_addr as usize
     );
-    
+
     Ok(())
 }
 
@@ -316,23 +322,24 @@ pub unsafe fn set_cpu_total_in_trampoline(cpu_count: usize) -> Result<(), &'stat
         static __ap_trampoline_start: u8;
         static ap_cpu_total: u8;
     }
-    
+
     // Calculate offset of ap_cpu_total in trampoline
-    let offset = (&ap_cpu_total as *const u8 as usize) 
-        - (&__ap_trampoline_start as *const u8 as usize);
-    
+    let offset =
+        (&ap_cpu_total as *const u8 as usize) - (&__ap_trampoline_start as *const u8 as usize);
+
     // Write to TRAMPOLINE_BASE + offset
     let addr = (TRAMPOLINE_BASE as usize + offset) as *mut u64;
     ptr::write_volatile(addr, cpu_count as u64);
-    
+
     // Memory fence to ensure write is visible
     core::sync::atomic::fence(Ordering::SeqCst);
-    
+
     crate::kinfo!(
         "SMP: CPU total {} written to trampoline at {:#x}",
-        cpu_count, addr as usize
+        cpu_count,
+        addr as usize
     );
-    
+
     Ok(())
 }
 
@@ -344,15 +351,15 @@ pub unsafe fn get_cpu_total_from_trampoline() -> usize {
         static __ap_trampoline_start: u8;
         static ap_cpu_total: u8;
     }
-    
+
     // Calculate offset of ap_cpu_total in trampoline
-    let offset = (&ap_cpu_total as *const u8 as usize) 
-        - (&__ap_trampoline_start as *const u8 as usize);
-    
+    let offset =
+        (&ap_cpu_total as *const u8 as usize) - (&__ap_trampoline_start as *const u8 as usize);
+
     // Read from TRAMPOLINE_BASE + offset
     let addr = (TRAMPOLINE_BASE as usize + offset) as *const u64;
     let count = ptr::read_volatile(addr) as usize;
-    
+
     count
 }
 
@@ -368,15 +375,15 @@ pub unsafe fn set_cpu_status_in_trampoline(cpu_index: usize, status: u8) {
         static __ap_trampoline_start: u8;
         static ap_cpu_status: u8;
     }
-    
+
     // Calculate offset of ap_cpu_status array
-    let offset = (&ap_cpu_status as *const u8 as usize) 
-        - (&__ap_trampoline_start as *const u8 as usize);
-    
+    let offset =
+        (&ap_cpu_status as *const u8 as usize) - (&__ap_trampoline_start as *const u8 as usize);
+
     // Write to TRAMPOLINE_BASE + offset + cpu_index
     let addr = (TRAMPOLINE_BASE as usize + offset + cpu_index) as *mut u8;
     ptr::write_volatile(addr, status);
-    
+
     // Memory fence
     core::sync::atomic::fence(Ordering::SeqCst);
 }
@@ -388,11 +395,11 @@ pub unsafe fn get_cpu_status_from_trampoline(cpu_index: usize) -> u8 {
         static __ap_trampoline_start: u8;
         static ap_cpu_status: u8;
     }
-    
+
     // Calculate offset of ap_cpu_status array
-    let offset = (&ap_cpu_status as *const u8 as usize) 
-        - (&__ap_trampoline_start as *const u8 as usize);
-    
+    let offset =
+        (&ap_cpu_status as *const u8 as usize) - (&__ap_trampoline_start as *const u8 as usize);
+
     // Read from TRAMPOLINE_BASE + offset + cpu_index
     let addr = (TRAMPOLINE_BASE as usize + offset + cpu_index) as *const u8;
     ptr::read_volatile(addr)
@@ -416,7 +423,7 @@ where
     F: FnMut(usize) -> Result<PerCpuTrampolineData, &'static str>,
 {
     let mut prepared = 0;
-    
+
     for idx in 0..cpu_count {
         match data_fn(idx) {
             Ok(data) => {
@@ -428,6 +435,6 @@ where
             }
         }
     }
-    
+
     Ok(prepared)
 }

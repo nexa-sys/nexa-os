@@ -86,8 +86,8 @@ struct Srat {
 /// SRAT Local APIC/SAPIC Affinity Structure (Type 0)
 #[repr(C, packed)]
 struct SratLocalApicAffinity {
-    entry_type: u8,        // 0
-    length: u8,            // 16
+    entry_type: u8,          // 0
+    length: u8,              // 16
     proximity_domain_lo: u8, // Low byte of proximity domain
     apic_id: u8,
     flags: u32,
@@ -99,8 +99,8 @@ struct SratLocalApicAffinity {
 /// SRAT Memory Affinity Structure (Type 1)
 #[repr(C, packed)]
 struct SratMemoryAffinity {
-    entry_type: u8,       // 1
-    length: u8,           // 40
+    entry_type: u8, // 1
+    length: u8,     // 40
     proximity_domain: u32,
     reserved1: u16,
     base_address_lo: u32,
@@ -115,8 +115,8 @@ struct SratMemoryAffinity {
 /// SRAT x2APIC Affinity Structure (Type 2)
 #[repr(C, packed)]
 struct SratX2ApicAffinity {
-    entry_type: u8,  // 2
-    length: u8,      // 24
+    entry_type: u8, // 2
+    length: u8,     // 24
     reserved1: u16,
     proximity_domain: u32,
     x2apic_id: u32,
@@ -353,9 +353,7 @@ pub fn node_distance(from: u32, to: u32) -> u8 {
     if from >= MAX_NUMA_NODES as u32 || to >= MAX_NUMA_NODES as u32 {
         return UNREACHABLE_DISTANCE;
     }
-    unsafe {
-        DISTANCE_MATRIX[from as usize * MAX_NUMA_NODES + to as usize]
-    }
+    unsafe { DISTANCE_MATRIX[from as usize * MAX_NUMA_NODES + to as usize] }
 }
 
 /// Get all online NUMA nodes
@@ -376,9 +374,7 @@ pub fn memory_affinity_entries() -> &'static [MemoryNumaMapping] {
         return &[];
     }
 
-    unsafe {
-        static_slice(&MEMORY_AFFINITY[0], MEMORY_AFFINITY_COUNT)
-    }
+    unsafe { static_slice(&MEMORY_AFFINITY[0], MEMORY_AFFINITY_COUNT) }
 }
 
 /// Get the preferred NUMA node for the current CPU
@@ -413,7 +409,8 @@ fn parse_srat() -> Result<u32, &'static str> {
         let srat = &*(srat as *const Srat);
 
         let entries_start = (srat as *const Srat as *const u8).add(core::mem::size_of::<Srat>());
-        let entries_len = (srat.header.length as usize).saturating_sub(core::mem::size_of::<Srat>());
+        let entries_len =
+            (srat.header.length as usize).saturating_sub(core::mem::size_of::<Srat>());
 
         let mut offset = 0usize;
         let mut max_node = 0u32;
@@ -529,11 +526,7 @@ unsafe fn register_cpu_affinity(apic_id: u32, proximity_domain: u32) {
     CPU_TO_NODE[apic_id as usize] = proximity_domain;
     NUMA_NODES[proximity_domain as usize].cpu_count += 1;
 
-    crate::kdebug!(
-        "NUMA: CPU APIC {} -> Node {}",
-        apic_id,
-        proximity_domain
-    );
+    crate::kdebug!("NUMA: CPU APIC {} -> Node {}", apic_id, proximity_domain);
 }
 
 /// Register memory affinity from SRAT

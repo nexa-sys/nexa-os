@@ -1,6 +1,6 @@
 use core::cmp;
 
-use crate::safety::{outl, inl, volatile_read, volatile_write};
+use crate::safety::{inl, outl, volatile_read, volatile_write};
 use crate::uefi_compat::NetworkDescriptor;
 
 use super::NetError;

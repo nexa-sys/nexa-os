@@ -42,7 +42,7 @@ pub const SYS_GETPPID: u64 = 110;
 
 // Thread management (Linux-compatible)
 pub const SYS_GETTID: u64 = 186;
-pub const SYS_FUTEX: u64 = 98;  // Linux x86_64 uses 202, but we avoid conflict with NexaOS custom syscalls
+pub const SYS_FUTEX: u64 = 98; // Linux x86_64 uses 202, but we avoid conflict with NexaOS custom syscalls
 pub const SYS_SET_TID_ADDRESS: u64 = 218;
 pub const SYS_SET_ROBUST_LIST: u64 = 273;
 pub const SYS_GET_ROBUST_LIST: u64 = 274;
@@ -103,3 +103,7 @@ pub const SYS_UEFI_MAP_USB_MMIO: u64 = 247;
 
 // Kernel log syscalls
 pub const SYS_SYSLOG: u64 = 250;
+
+// Network configuration helpers
+pub const SYS_NET_SET_DNS: u64 = 260;
+pub const SYS_NET_GET_DNS: u64 = 261;

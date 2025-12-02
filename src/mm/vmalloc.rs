@@ -11,7 +11,6 @@
 /// - Guard pages for overflow detection
 /// - TLB management
 /// - Memory-mapped I/O support
-
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use spin::Mutex;
 
@@ -262,7 +261,10 @@ impl VmallocAllocator {
 
             crate::kdebug!("vmalloc: freed {:#x} bytes at {:#x}", area_size, virt_addr);
         } else {
-            crate::kerror!("vmalloc: attempted to free invalid address {:#x}", virt_addr);
+            crate::kerror!(
+                "vmalloc: attempted to free invalid address {:#x}",
+                virt_addr
+            );
         }
     }
 
@@ -562,14 +564,8 @@ pub fn print_vmalloc_stats() {
     crate::kinfo!("=== Vmalloc Statistics ===");
     crate::kinfo!("  Allocations: {}", stats.allocations);
     crate::kinfo!("  Frees: {}", stats.frees);
-    crate::kinfo!(
-        "  Active regions: {}",
-        stats.allocations - stats.frees
-    );
-    crate::kinfo!(
-        "  Bytes allocated: {} KB",
-        stats.bytes_allocated / 1024
-    );
+    crate::kinfo!("  Active regions: {}", stats.allocations - stats.frees);
+    crate::kinfo!("  Bytes allocated: {} KB", stats.bytes_allocated / 1024);
     crate::kinfo!("  Bytes freed: {} KB", stats.bytes_freed / 1024);
     crate::kinfo!(
         "  Current usage: {} KB",

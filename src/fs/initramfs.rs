@@ -540,11 +540,17 @@ pub unsafe fn init(base: *const u8, size: usize) {
     if size <= INITRAMFS_COPY_BUF_SIZE {
         let dst = addr_of_mut!(INITRAMFS_COPY_BUF).cast::<u8>();
         ptr::copy_nonoverlapping(mapped_base, dst, size);
-        ptr::write(addr_of_mut!(INITRAMFS_INSTANCE), Initramfs::new(dst as *const u8, size));
+        ptr::write(
+            addr_of_mut!(INITRAMFS_INSTANCE),
+            Initramfs::new(dst as *const u8, size),
+        );
         crate::kinfo!("Initramfs copied into kernel buffer ({} bytes)", size);
     } else {
         // Fallback: reference original (now safely mapped) module memory
-        ptr::write(addr_of_mut!(INITRAMFS_INSTANCE), Initramfs::new(mapped_base, size));
+        ptr::write(
+            addr_of_mut!(INITRAMFS_INSTANCE),
+            Initramfs::new(mapped_base, size),
+        );
         crate::kwarn!(
             "Initramfs module too large to copy ({} bytes), using mapped pointer",
             size
