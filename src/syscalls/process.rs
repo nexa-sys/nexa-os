@@ -723,9 +723,11 @@ pub fn wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> u64 
                 }
             }
 
+            crate::serial_println!("WAIT4: About to remove_process({})", wait_pid);
             if let Err(e) = crate::scheduler::remove_process(wait_pid) {
                 kerror!("wait4: Failed to remove process {}: {}", wait_pid, e);
             }
+            crate::serial_println!("WAIT4: remove_process({}) done", wait_pid);
 
             crate::init::handle_process_exit(wait_pid, child_exit_code.unwrap_or(0));
 

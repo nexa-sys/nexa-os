@@ -550,6 +550,9 @@ pub fn close(fd: u64) -> u64 {
 
 /// List files system call
 pub fn list_files(buf: *mut u8, count: usize, request_ptr: *const ListDirRequest) -> u64 {
+    crate::serial_println!("SYSCALL_LIST_FILES: buf={:#x} count={} req={:#x}", 
+        buf as u64, count, request_ptr as u64);
+    
     if buf.is_null() || count == 0 {
         posix::set_errno(posix::errno::EINVAL);
         return u64::MAX;
@@ -582,7 +585,11 @@ pub fn list_files(buf: *mut u8, count: usize, request_ptr: *const ListDirRequest
 
     let normalized = if path.is_empty() { "/" } else { path };
 
+    crate::serial_println!("SYSCALL_LIST_FILES: normalized='{}' (is_root={})", 
+        normalized, normalized == "/");
+
     if normalized != "/" {
+        crate::serial_println!("SYSCALL_LIST_FILES: calling stat('{}')", normalized);
         match crate::fs::stat(normalized) {
             Some(meta) => {
                 if meta.file_type != FileType::Directory {
@@ -595,10 +602,13 @@ pub fn list_files(buf: *mut u8, count: usize, request_ptr: *const ListDirRequest
                 return u64::MAX;
             }
         }
+        crate::serial_println!("SYSCALL_LIST_FILES: stat done");
     }
 
     let mut written = 0usize;
     let mut overflow = false;
+
+    crate::serial_println!("SYSCALL_LIST_FILES: calling list_directory path='{}'", normalized);
 
     crate::fs::list_directory(normalized, |name, _meta| {
         if overflow {
@@ -620,6 +630,8 @@ pub fn list_files(buf: *mut u8, count: usize, request_ptr: *const ListDirRequest
             written += 1;
         }
     });
+    
+    crate::serial_println!("SYSCALL_LIST_FILES: done, written={}", written);
 
     if overflow {
         posix::set_errno(posix::errno::EAGAIN);

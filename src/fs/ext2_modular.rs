@@ -25,6 +25,8 @@
 
 use crate::posix::{FileType, Metadata};
 use alloc::string::String;
+use alloc::vec::Vec;
+use alloc::boxed::Box;
 use core::ptr;
 use spin::Mutex;
 
@@ -384,32 +386,15 @@ pub fn lookup(path: &str) -> Option<FileRefHandle> {
         gid: 0,
     };
 
-    // CRITICAL FIX: Copy path to kernel stack buffer BEFORE switching CR3
-    // The path may point to user-space memory which is not accessible under kernel CR3
+    // Copy path to a local buffer in case the caller's buffer is in user space
     const PATH_BUF_SIZE: usize = 256;
     let mut path_buf: [u8; PATH_BUF_SIZE] = [0u8; PATH_BUF_SIZE];
     let path_len = path.len().min(PATH_BUF_SIZE);
     path_buf[..path_len].copy_from_slice(&path.as_bytes()[..path_len]);
 
-    // Switch to kernel CR3 before calling into ext2 module
-    let kernel_cr3 = crate::paging::kernel_pml4_phys();
-    let saved_cr3: u64;
-    unsafe {
-        core::arch::asm!("mov {}, cr3", out(reg) saved_cr3, options(nomem, nostack));
-        if saved_cr3 != kernel_cr3 {
-            crate::ktrace!("ext2_modular::lookup: switching CR3 from {:#x} to kernel {:#x}", saved_cr3, kernel_cr3);
-            core::arch::asm!("mov cr3, {}", in(reg) kernel_cr3, options(nostack));
-        }
-    }
+    // NOTE: No CR3 switch needed - user page tables include kernel mappings
 
     let ret = lookup_fn(handle, path_buf.as_ptr(), path_len, &mut file_ref);
-    
-    // Restore original CR3
-    unsafe {
-        if saved_cr3 != kernel_cr3 {
-            core::arch::asm!("mov cr3, {}", in(reg) saved_cr3, options(nostack));
-        }
-    }
     
     crate::ktrace!("ext2_modular::lookup: lookup_fn returned {}, file_ref.inode={}, size={}", ret, file_ref.inode, file_ref.size);
     if ret == 0 && file_ref.is_valid() {
@@ -429,24 +414,8 @@ pub fn read_at(file: &FileRefHandle, offset: usize, buf: &mut [u8]) -> usize {
     };
     drop(ops);
 
-    // Switch to kernel CR3 before calling into ext2 module
-    let kernel_cr3 = crate::paging::kernel_pml4_phys();
-    let saved_cr3: u64;
-    unsafe {
-        core::arch::asm!("mov {}, cr3", out(reg) saved_cr3, options(nomem, nostack));
-        if saved_cr3 != kernel_cr3 {
-            core::arch::asm!("mov cr3, {}", in(reg) kernel_cr3, options(nostack));
-        }
-    }
-
+    // NOTE: No CR3 switch needed - user page tables include kernel mappings
     let ret = read_fn(file, offset, buf.as_mut_ptr(), buf.len());
-    
-    // Restore original CR3
-    unsafe {
-        if saved_cr3 != kernel_cr3 {
-            core::arch::asm!("mov cr3, {}", in(reg) saved_cr3, options(nostack));
-        }
-    }
     
     if ret >= 0 {
         ret as usize
@@ -488,19 +457,22 @@ where
         None => return,
     };
     drop(ops);
+    
+    // DEBUG: Print function pointer value via serial
+    crate::serial_println!("EXT2_LIST_DIR: list_fn={:#x}, handle={:#x}", 
+        list_fn as *const () as u64, handle.0 as u64);
 
-    // CRITICAL FIX: Copy path to kernel stack buffer BEFORE switching CR3
+    // CRITICAL FIX: Copy path to a HEAP buffer BEFORE switching CR3
     // The path may point to user-space memory which is not accessible under kernel CR3
-    const PATH_BUF_SIZE: usize = 256;
-    let mut path_buf: [u8; PATH_BUF_SIZE] = [0u8; PATH_BUF_SIZE];
-    let path_len = path.len().min(PATH_BUF_SIZE);
-    path_buf[..path_len].copy_from_slice(&path.as_bytes()[..path_len]);
+    // Using heap allocation instead of stack to prevent stack overflow
+    let path_len = path.len().min(256);
+    let mut path_buf: Vec<u8> = Vec::with_capacity(path_len);
+    path_buf.extend_from_slice(&path.as_bytes()[..path_len]);
 
-    // Create a closure context
+    // Create a closure context with heap-allocated name buffer
     struct CallbackContext<'a, F: FnMut(&str, Metadata)> {
         callback: &'a mut F,
-        saved_cr3: u64,
-        kernel_cr3: u64,
+        name_buf: Box<[u8; 256]>,  // Heap-allocated buffer to avoid stack overflow
     }
 
     extern "C" fn dir_entry_trampoline<F: FnMut(&str, Metadata)>(
@@ -510,6 +482,8 @@ where
         file_type: u8,
         ctx: *mut u8,
     ) {
+        crate::serial_println!("TRAMPOLINE: entry name_len={}", name_len);
+        
         if name.is_null() || ctx.is_null() {
             return;
         }
@@ -517,14 +491,13 @@ where
         unsafe {
             let ctx = &mut *(ctx as *mut CallbackContext<F>);
             
-            // Copy name to a local buffer while still in kernel CR3
-            let mut name_copy: [u8; 256] = [0u8; 256];
+            // Copy name to the heap-allocated buffer to avoid stack overflow
             let name_len = name_len.min(255);
             let name_slice = core::slice::from_raw_parts(name, name_len);
-            name_copy[..name_len].copy_from_slice(name_slice);
+            ctx.name_buf[..name_len].copy_from_slice(name_slice);
             
             // Parse name as UTF-8
-            let name_str = match core::str::from_utf8(&name_copy[..name_len]) {
+            let name_str = match core::str::from_utf8(&ctx.name_buf[..name_len]) {
                 Ok(s) => s,
                 Err(_) => return,
             };
@@ -548,36 +521,31 @@ where
 
             let meta = Metadata::empty().with_type(ft);
             
-            // Temporarily restore user CR3 to call the callback
-            // which may write to user-space memory
-            if ctx.saved_cr3 != ctx.kernel_cr3 {
-                core::arch::asm!("mov cr3, {}", in(reg) ctx.saved_cr3, options(nostack));
-            }
+            // NOTE: The callback is kernel code that writes to user-space memory.
+            // We stay in kernel CR3 here because:
+            // 1. The callback code is in kernel space
+            // 2. User memory writes are done via the syscall buffer which is already
+            //    accessible from kernel CR3 (kernel has identity mapping of user phys memory)
+            // DO NOT switch to user CR3 here - it would cause kernel code to become inaccessible!
             
             (ctx.callback)(name_str, meta);
-            
-            // Switch back to kernel CR3 for the next iteration
-            if ctx.saved_cr3 != ctx.kernel_cr3 {
-                core::arch::asm!("mov cr3, {}", in(reg) ctx.kernel_cr3, options(nostack));
-            }
         }
     }
 
-    // Switch to kernel CR3 before calling into ext2 module
-    let kernel_cr3 = crate::paging::kernel_pml4_phys();
-    let saved_cr3: u64;
-    unsafe {
-        core::arch::asm!("mov {}, cr3", out(reg) saved_cr3, options(nomem, nostack));
-        if saved_cr3 != kernel_cr3 {
-            core::arch::asm!("mov cr3, {}", in(reg) kernel_cr3, options(nostack));
-        }
-    }
+    // NOTE: We do NOT switch CR3 here anymore.
+    // The user page tables already include kernel mappings (cloned during process creation),
+    // so the ext2 module code and data are accessible from the user CR3.
+    // Switching to kernel CR3 would make user-space addresses (like the syscall buffer)
+    // inaccessible, causing the callback to fail when writing results.
 
     let mut ctx = CallbackContext {
         callback: &mut callback,
-        saved_cr3,
-        kernel_cr3,
+        name_buf: Box::new([0u8; 256]),
     };
+
+    crate::serial_println!("EXT2_LIST_DIR: calling list_fn, trampoline={:#x}, ctx={:#x}", 
+        dir_entry_trampoline::<F> as *const () as u64, 
+        &ctx as *const _ as u64);
 
     list_fn(
         handle,
@@ -587,12 +555,7 @@ where
         &mut ctx as *mut _ as *mut u8,
     );
 
-    // Restore original CR3
-    unsafe {
-        if saved_cr3 != kernel_cr3 {
-            core::arch::asm!("mov cr3, {}", in(reg) saved_cr3, options(nostack));
-        }
-    }
+    crate::serial_println!("EXT2_LIST_DIR: list_fn returned");
 }
 
 /// Get filesystem metadata for a path
