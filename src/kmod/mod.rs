@@ -76,11 +76,12 @@
 
 pub mod crypto;
 pub mod elf;
+pub mod embedded_keys;
 pub mod pkcs7;
 pub mod symbols;
 
 // Re-export commonly used items from submodules
-pub use crypto::{sha256, add_trusted_key, find_trusted_key, trusted_key_count, RsaPublicKey};
+pub use crypto::{sha256, add_trusted_key, find_trusted_key, is_key_trusted, trusted_key_count, RsaPublicKey};
 pub use pkcs7::{
     verify_module_signature as verify_pkcs7_signature,
     extract_module_signature, parse_pkcs7_signed_data,
@@ -856,6 +857,12 @@ pub enum ModuleError {
     InUse,
     /// Module exit failed
     ExitFailed,
+    /// Module signature is missing (required)
+    SignatureRequired,
+    /// Module signature verification failed
+    SignatureInvalid,
+    /// Signing key not found in trusted keyring
+    SigningKeyNotFound,
 }
 
 impl From<elf::LoaderError> for ModuleError {
@@ -882,6 +889,10 @@ pub fn init() {
     
     // Initialize PKCS#7 signature verification subsystem
     pkcs7::init();
+    
+    // Load embedded signing keys into trusted keyring
+    let key_count = embedded_keys::init();
+    crate::kinfo!("Loaded {} embedded signing key(s) into trusted keyring", key_count);
     
     // Register ext2 modular filesystem symbols
     crate::fs::ext2_modular::init();
@@ -914,9 +925,35 @@ pub fn load_module(data: &[u8]) -> Result<(), ModuleError> {
 fn load_elf_module(data: &[u8]) -> Result<(), ModuleError> {
     crate::kinfo!("Loading ELF kernel module ({} bytes)", data.len());
 
-    // Verify module signature
+    // Verify module signature (REQUIRED)
     let sig_status = verify_module_signature(data);
     crate::kinfo!("Module signature status: {}", sig_status.as_str());
+
+    // Enforce signature requirement
+    match sig_status {
+        SignatureStatus::Valid => {
+            crate::kinfo!("Module signature verified successfully");
+        }
+        SignatureStatus::Unsigned => {
+            crate::kerror!("SECURITY: Module is not signed - loading DENIED");
+            crate::kerror!("All kernel modules must be signed with a trusted key.");
+            crate::kerror!("Use 'scripts/sign-module.sh' to sign the module.");
+            return Err(ModuleError::SignatureRequired);
+        }
+        SignatureStatus::Invalid => {
+            crate::kerror!("SECURITY: Module signature is INVALID - loading DENIED");
+            return Err(ModuleError::SignatureInvalid);
+        }
+        SignatureStatus::KeyNotFound => {
+            crate::kerror!("SECURITY: Signing key not in trusted keyring - loading DENIED");
+            crate::kerror!("Add the signing key to the kernel's trusted keyring.");
+            return Err(ModuleError::SigningKeyNotFound);
+        }
+        SignatureStatus::UnknownFormat => {
+            crate::kerror!("SECURITY: Unknown signature format - loading DENIED");
+            return Err(ModuleError::SignatureInvalid);
+        }
+    }
 
     // Load the ELF module
     let loaded = elf::load_elf_module(data)?;
@@ -1004,8 +1041,34 @@ fn load_simple_nkm(data: &[u8]) -> Result<(), ModuleError> {
         header.module_type()
     );
 
-    // Verify module signature
+    // Verify module signature (REQUIRED)
     let sig_status = verify_module_signature(data);
+    crate::kinfo!("Module signature status: {}", sig_status.as_str());
+
+    // Enforce signature requirement
+    match sig_status {
+        SignatureStatus::Valid => {
+            crate::kinfo!("Module signature verified successfully");
+        }
+        SignatureStatus::Unsigned => {
+            crate::kerror!("SECURITY: Module '{}' is not signed - loading DENIED", header.name_str());
+            crate::kerror!("All kernel modules must be signed with a trusted key.");
+            crate::kerror!("Use 'scripts/sign-module.sh' to sign the module.");
+            return Err(ModuleError::SignatureRequired);
+        }
+        SignatureStatus::Invalid => {
+            crate::kerror!("SECURITY: Module '{}' signature is INVALID - loading DENIED", header.name_str());
+            return Err(ModuleError::SignatureInvalid);
+        }
+        SignatureStatus::KeyNotFound => {
+            crate::kerror!("SECURITY: Signing key for '{}' not in trusted keyring - loading DENIED", header.name_str());
+            return Err(ModuleError::SigningKeyNotFound);
+        }
+        SignatureStatus::UnknownFormat => {
+            crate::kerror!("SECURITY: Unknown signature format for '{}' - loading DENIED", header.name_str());
+            return Err(ModuleError::SignatureInvalid);
+        }
+    }
 
     // Create module info with heap-allocated strings
     let mut info = ModuleInfo::with_name(header.name_str());

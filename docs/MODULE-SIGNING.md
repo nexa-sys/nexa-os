@@ -107,26 +107,28 @@ crypto::add_trusted_key(
 
 ## Security Levels
 
-### Strict Mode (Recommended for Production)
+### Strict Mode (Default - Production Ready)
 
-Only signed modules from trusted keyring are loaded:
+**NexaOS enforces mandatory module signing.** All kernel modules must be signed
+with a trusted key before they can be loaded. Unsigned modules are rejected:
 
-```rust
-// In ModuleLoadOptions
-pub struct ModuleLoadOptions {
-    pub require_signature: bool,  // Set to true
-    pub allow_unsigned: false,
-    // ...
-}
+```
+SECURITY: Module 'ext2' is not signed - loading DENIED
+All kernel modules must be signed with a trusted key.
+Use 'scripts/sign-module.sh' to sign the module.
 ```
 
-### Permissive Mode (Development)
+This provides strong protection against:
+- Malicious kernel modules
+- Tampered or corrupted modules
+- Unauthorized code execution in kernel space
 
-Unsigned modules can be loaded but taint the kernel:
+### Development Mode (Not Recommended)
 
-```rust
-// Default behavior - unsigned modules set TaintFlag::UnsignedModule
-```
+For development purposes only, you can modify the kernel to allow unsigned modules.
+This is **strongly discouraged** for production use.
+
+**Warning**: Loading unsigned modules compromises system security.
 
 ## Signature Info Structure
 

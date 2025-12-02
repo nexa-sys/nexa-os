@@ -242,7 +242,7 @@ pub const MAX_RSA_BYTES: usize = MAX_RSA_BITS / 8;
 const MAX_RSA_LIMBS: usize = MAX_RSA_BYTES / 8;
 
 /// Big integer for RSA operations (fixed-size array)
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct BigInt {
     /// Little-endian limbs
     limbs: [u64; MAX_RSA_LIMBS],
@@ -391,6 +391,7 @@ impl BigInt {
     }
 
     /// Left shift by one bit
+    #[allow(dead_code)]
     fn shl1(&mut self) {
         let mut carry = 0u64;
         for i in 0..self.len {
@@ -450,8 +451,7 @@ impl BigInt {
             return self.clone();
         }
         
-        // Simple repeated subtraction for now
-        // (A proper implementation would use Montgomery reduction)
+        // For values larger than modulus, use subtraction
         let mut result = self.clone();
         while result.ge(modulus) {
             result = result.sub(modulus);
@@ -459,45 +459,219 @@ impl BigInt {
         result
     }
 
-    /// Modular multiplication: (a * b) mod modulus
-    fn mod_mul(a: &Self, b: &Self, modulus: &Self) -> Self {
-        // Use schoolbook multiplication followed by reduction
-        let mut result = Self::zero();
+    /// Full multiplication: a * b, result can be up to 2*MAX_RSA_LIMBS
+    fn full_mul(a: &Self, b: &Self) -> [u64; MAX_RSA_LIMBS * 2] {
+        let mut result = [0u64; MAX_RSA_LIMBS * 2];
         
-        for i in (0..b.len).rev() {
-            let limb = b.limbs[i];
-            for bit in (0..64).rev() {
-                result.shl1();
-                if result.ge(modulus) {
-                    result = result.sub(modulus);
-                }
-                
-                if (limb >> bit) & 1 != 0 {
-                    // Add a
-                    let mut carry = 0u64;
-                    let max_len = core::cmp::max(result.len, a.len);
-                    for j in 0..max_len {
-                        let r = if j < result.len { result.limbs[j] } else { 0 };
-                        let av = if j < a.len { a.limbs[j] } else { 0 };
-                        let (sum, c1) = r.overflowing_add(av);
-                        let (sum2, c2) = sum.overflowing_add(carry);
-                        result.limbs[j] = sum2;
-                        carry = (c1 as u64) + (c2 as u64);
-                    }
-                    if carry != 0 && max_len < MAX_RSA_LIMBS {
-                        result.limbs[max_len] = carry;
-                        result.len = max_len + 1;
-                    } else {
-                        result.len = max_len;
-                    }
-                    result.normalize();
-                    
-                    if result.ge(modulus) {
-                        result = result.sub(modulus);
-                    }
-                }
+        for i in 0..a.len {
+            let mut carry = 0u128;
+            for j in 0..b.len {
+                let product = (a.limbs[i] as u128) * (b.limbs[j] as u128) 
+                            + (result[i + j] as u128) + carry;
+                result[i + j] = product as u64;
+                carry = product >> 64;
+            }
+            // Propagate remaining carry
+            let mut k = i + b.len;
+            while carry != 0 && k < MAX_RSA_LIMBS * 2 {
+                let sum = (result[k] as u128) + carry;
+                result[k] = sum as u64;
+                carry = sum >> 64;
+                k += 1;
             }
         }
+        
+        result
+    }
+    
+    /// Count leading zeros in extended result
+    #[allow(dead_code)]
+    fn extended_clz(limbs: &[u64; MAX_RSA_LIMBS * 2], len: usize) -> usize {
+        for i in (0..len).rev() {
+            if limbs[i] != 0 {
+                return (len - 1 - i) * 64 + limbs[i].leading_zeros() as usize;
+            }
+        }
+        len * 64
+    }
+    
+    /// Left shift extended result by n bits
+    fn extended_shl(limbs: &mut [u64; MAX_RSA_LIMBS * 2], len: usize, n: usize) {
+        if n == 0 { return; }
+        let word_shift = n / 64;
+        let bit_shift = n % 64;
+        
+        if word_shift >= len { 
+            for i in 0..len { limbs[i] = 0; }
+            return; 
+        }
+        
+        if bit_shift == 0 {
+            for i in (word_shift..len).rev() {
+                limbs[i] = limbs[i - word_shift];
+            }
+        } else {
+            for i in (word_shift + 1..len).rev() {
+                limbs[i] = (limbs[i - word_shift] << bit_shift) 
+                         | (limbs[i - word_shift - 1] >> (64 - bit_shift));
+            }
+            limbs[word_shift] = limbs[0] << bit_shift;
+        }
+        for i in 0..word_shift { limbs[i] = 0; }
+    }
+    
+    /// Compare extended with modulus
+    #[allow(dead_code)]
+    fn extended_ge_mod(limbs: &[u64; MAX_RSA_LIMBS * 2], m: &Self) -> bool {
+        // Check if any limb beyond modulus length is non-zero
+        for i in (m.len..MAX_RSA_LIMBS * 2).rev() {
+            if limbs[i] != 0 { return true; }
+        }
+        // Compare within modulus length
+        for i in (0..m.len).rev() {
+            if limbs[i] > m.limbs[i] { return true; }
+            if limbs[i] < m.limbs[i] { return false; }
+        }
+        true // equal
+    }
+    
+    /// Subtract modulus from extended (assumes extended >= m)
+    #[allow(dead_code)]
+    fn extended_sub_mod(limbs: &mut [u64; MAX_RSA_LIMBS * 2], m: &Self) {
+        let mut borrow = 0u64;
+        for i in 0..m.len {
+            let (diff, b1) = limbs[i].overflowing_sub(m.limbs[i]);
+            let (diff2, b2) = diff.overflowing_sub(borrow);
+            limbs[i] = diff2;
+            borrow = (b1 as u64) + (b2 as u64);
+        }
+        // Propagate borrow
+        let mut i = m.len;
+        while borrow != 0 && i < MAX_RSA_LIMBS * 2 {
+            let (diff, b) = limbs[i].overflowing_sub(borrow);
+            limbs[i] = diff;
+            borrow = b as u64;
+            i += 1;
+        }
+    }
+    
+    /// Modular multiplication using schoolbook multiply then reduce
+    fn mod_mul(a: &Self, b: &Self, modulus: &Self) -> Self {
+        if a.is_zero() || b.is_zero() {
+            return Self::zero();
+        }
+        
+        // Step 1: Full multiplication a * b
+        let mut product = Self::full_mul(a, b);
+        let prod_len = MAX_RSA_LIMBS * 2;
+        
+        // Step 2: Modular reduction using bit-by-bit subtraction
+        // Find effective length of product
+        let mut eff_len = prod_len;
+        while eff_len > 0 && product[eff_len - 1] == 0 {
+            eff_len -= 1;
+        }
+        if eff_len == 0 {
+            return Self::zero();
+        }
+        
+        // Count bits in modulus
+        let mod_bits = modulus.len * 64 - modulus.limbs[modulus.len - 1].leading_zeros() as usize;
+        
+        // Repeatedly subtract shifted modulus
+        loop {
+            // Count bits in product
+            let prod_bits = eff_len * 64 - product[eff_len - 1].leading_zeros() as usize;
+            
+            if prod_bits < mod_bits {
+                break;
+            }
+            
+            let shift = prod_bits - mod_bits;
+            
+            // Create shifted modulus
+            let mut shifted_mod = [0u64; MAX_RSA_LIMBS * 2];
+            for i in 0..modulus.len {
+                shifted_mod[i] = modulus.limbs[i];
+            }
+            Self::extended_shl(&mut shifted_mod, prod_len, shift);
+            
+            // Check if product >= shifted_mod
+            let mut can_subtract = false;
+            for i in (0..prod_len).rev() {
+                if product[i] > shifted_mod[i] { can_subtract = true; break; }
+                if product[i] < shifted_mod[i] { break; }
+            }
+            // If equal, can also subtract
+            if !can_subtract {
+                let mut equal = true;
+                for i in 0..prod_len {
+                    if product[i] != shifted_mod[i] { equal = false; break; }
+                }
+                if equal { can_subtract = true; }
+            }
+            
+            if !can_subtract {
+                if shift == 0 { break; }
+                // Try with one less shift
+                let shift = shift - 1;
+                let mut shifted_mod = [0u64; MAX_RSA_LIMBS * 2];
+                for i in 0..modulus.len {
+                    shifted_mod[i] = modulus.limbs[i];
+                }
+                Self::extended_shl(&mut shifted_mod, prod_len, shift);
+                
+                // Check again
+                for i in (0..prod_len).rev() {
+                    if product[i] > shifted_mod[i] { can_subtract = true; break; }
+                    if product[i] < shifted_mod[i] { break; }
+                }
+                if !can_subtract {
+                    let mut equal = true;
+                    for i in 0..prod_len {
+                        if product[i] != shifted_mod[i] { equal = false; break; }
+                    }
+                    if equal { can_subtract = true; }
+                }
+                
+                if !can_subtract { break; }
+                
+                // Subtract
+                let mut borrow = 0u64;
+                for i in 0..prod_len {
+                    let (diff, b1) = product[i].overflowing_sub(shifted_mod[i]);
+                    let (diff2, b2) = diff.overflowing_sub(borrow);
+                    product[i] = diff2;
+                    borrow = (b1 as u64) + (b2 as u64);
+                }
+            } else {
+                // Subtract shifted modulus
+                let mut borrow = 0u64;
+                for i in 0..prod_len {
+                    let (diff, b1) = product[i].overflowing_sub(shifted_mod[i]);
+                    let (diff2, b2) = diff.overflowing_sub(borrow);
+                    product[i] = diff2;
+                    borrow = (b1 as u64) + (b2 as u64);
+                }
+            }
+            
+            // Update effective length
+            while eff_len > 0 && product[eff_len - 1] == 0 {
+                eff_len -= 1;
+            }
+            if eff_len == 0 {
+                return Self::zero();
+            }
+        }
+        
+        // Copy result
+        let mut result = Self::zero();
+        let copy_len = core::cmp::min(eff_len, MAX_RSA_LIMBS);
+        for i in 0..copy_len {
+            result.limbs[i] = product[i];
+        }
+        result.len = copy_len;
+        result.normalize();
         
         result
     }
@@ -538,12 +712,33 @@ impl RsaPublicKey {
         // Convert signature to BigInt
         let sig = match BigInt::from_bytes_be(signature) {
             Some(s) => s,
-            None => return false,
+            None => {
+                crate::kinfo!("RSA: failed to parse signature");
+                return false;
+            }
         };
+        
+        // Log key info
+        let n_bytes = self.n.to_bytes_be();
+        let e_bytes = self.e.to_bytes_be();
+        crate::kinfo!("RSA verify: n={} bytes ({:02X}{:02X}...), e={} bytes ({:02X?}), sig={} bytes",
+            n_bytes.len(), 
+            n_bytes.get(0).copied().unwrap_or(0),
+            n_bytes.get(1).copied().unwrap_or(0),
+            e_bytes.len(),
+            &e_bytes[..],
+            signature.len());
         
         // RSA verification: m = s^e mod n
         let decrypted = BigInt::mod_exp(&sig, &self.e, &self.n);
         let decrypted_bytes = decrypted.to_bytes_be();
+        
+        crate::kinfo!("RSA: decrypted {} bytes, first 4: {:02X}{:02X}{:02X}{:02X}",
+            decrypted_bytes.len(),
+            decrypted_bytes.get(0).copied().unwrap_or(0),
+            decrypted_bytes.get(1).copied().unwrap_or(0),
+            decrypted_bytes.get(2).copied().unwrap_or(0),
+            decrypted_bytes.get(3).copied().unwrap_or(0));
         
         // Expected PKCS#1 v1.5 structure for SHA-256:
         // 0x00 0x01 [padding 0xFF] 0x00 [DigestInfo] [hash]
@@ -689,6 +884,25 @@ pub fn find_trusted_key(id: &[u8]) -> Option<RsaPublicKey> {
     }
     
     None
+}
+
+/// Check if a public key is in the trusted keyring by comparing modulus
+/// 
+/// This is used when we extract a key from a certificate and need to verify
+/// it matches one of our trusted keys.
+pub fn is_key_trusted(key: &RsaPublicKey) -> bool {
+    let keys = TRUSTED_KEYS.lock();
+    
+    for slot in keys.iter() {
+        if slot.used {
+            // Compare modulus (n) - if modulus matches, it's the same key
+            if slot.key.n == key.n && slot.key.e == key.e {
+                return true;
+            }
+        }
+    }
+    
+    false
 }
 
 /// Get number of trusted keys

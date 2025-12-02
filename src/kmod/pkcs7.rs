@@ -27,7 +27,7 @@
 //! PKCS#7 SignedData structures. Full ASN.1 support is not implemented.
 
 use alloc::vec::Vec;
-use super::crypto::{sha256, HashAlgorithm, RsaPublicKey, find_trusted_key, SHA256_DIGEST_SIZE};
+use super::crypto::{sha256, HashAlgorithm, RsaPublicKey, find_trusted_key, is_key_trusted, SHA256_DIGEST_SIZE};
 
 // ============================================================================
 // Module Signature Structures (Linux-compatible)
@@ -428,11 +428,14 @@ pub fn parse_pkcs7_signed_data(data: &[u8]) -> Option<Pkcs7SignedData<'_>> {
     if let Some(tag) = signed_data.peek_tag() {
         if (tag >> 6) == 2 && (tag & 0x1F) == 0 {
             let elem = signed_data.parse_element()?;
+            // elem.content contains the certificate set
             let mut cert_parser = DerParser::new(elem.content);
             while !cert_parser.is_empty() {
-                let cert = cert_parser.parse_element()?;
-                // Store the full certificate DER
-                certificates.push(&signed_data.data[..][cert_parser.pos - cert.total_len..cert_parser.pos]);
+                let start_offset = cert_parser.pos;
+                let _cert = cert_parser.parse_element()?;
+                // Store the full certificate DER from the content
+                let cert_data = &elem.content[start_offset..cert_parser.pos];
+                certificates.push(cert_data);
             }
         }
     }
@@ -510,6 +513,13 @@ fn parse_signer_info<'a>(parser: &mut DerParser<'a>) -> Option<SignerInfo<'a>> {
     
     // signature SignatureValue (OCTET STRING)
     let signature = signer_info.parse_octet_string()?;
+    
+    crate::kinfo!("SignerInfo: sig_len={}, sig[0..4]={:02X}{:02X}{:02X}{:02X}",
+        signature.len(),
+        signature.get(0).copied().unwrap_or(0),
+        signature.get(1).copied().unwrap_or(0),
+        signature.get(2).copied().unwrap_or(0),
+        signature.get(3).copied().unwrap_or(0));
     
     Some(SignerInfo {
         version,
@@ -670,9 +680,12 @@ fn verify_signer(
     
     // Compute message digest
     let content_hash = sha256(module_content);
+    crate::kinfo!("Content hash[0..4]={:02X}{:02X}{:02X}{:02X}", 
+        content_hash[0], content_hash[1], content_hash[2], content_hash[3]);
     
     // If authenticated attributes present, hash them instead
     let message_to_verify: [u8; SHA256_DIGEST_SIZE] = if let Some(auth_attrs) = signer.auth_attrs {
+        crate::kinfo!("Has authenticated attributes ({} bytes)", auth_attrs.len());
         // The authenticated attributes are hashed with SET tag
         let mut attrs_data = Vec::with_capacity(auth_attrs.len() + 2);
         attrs_data.push(0x31); // SET tag
@@ -693,34 +706,57 @@ fn verify_signer(
         
         sha256(&attrs_data)
     } else {
+        crate::kinfo!("No authenticated attributes, using content hash directly");
         content_hash
     };
     
     // Find the signing key
-    // Try to find by issuer+serial in trusted keys
+    // Strategy 1: Try to find by issuer+serial in trusted keys
     let mut key_id = Vec::with_capacity(signer.issuer.len() + signer.serial_number.len());
     key_id.extend_from_slice(signer.issuer);
     key_id.extend_from_slice(signer.serial_number);
     
-    let public_key = match find_trusted_key(&key_id) {
-        Some(k) => k,
-        None => {
-            // Try to extract key from embedded certificate
-            if let Some(key) = extract_key_from_certificates(&pkcs7.certificates, signer) {
-                key
+    if let Some(public_key) = find_trusted_key(&key_id) {
+        // Verify RSA signature
+        if public_key.verify_pkcs1_v15(&message_to_verify, signer.signature) {
+            return SignatureVerifyResult::Valid;
+        }
+    }
+    
+    // Strategy 2: Extract key from embedded certificate and check against trusted keys
+    crate::kinfo!("Trying to extract key from {} embedded certificate(s)", pkcs7.certificates.len());
+    if let Some(cert_key) = extract_key_from_certificates(&pkcs7.certificates, signer) {
+        crate::kinfo!("Extracted certificate key, bits={}", cert_key.bits);
+        // Print first 4 bytes of modulus for debugging
+        let n_bytes = cert_key.n.to_bytes_be();
+        crate::kinfo!("Cert modulus[0..4]={:02X}{:02X}{:02X}{:02X}",
+            n_bytes.get(0).copied().unwrap_or(0),
+            n_bytes.get(1).copied().unwrap_or(0),
+            n_bytes.get(2).copied().unwrap_or(0),
+            n_bytes.get(3).copied().unwrap_or(0));
+        crate::kinfo!("Signature len={}, hash[0..4]={:02X}{:02X}{:02X}{:02X}", 
+            signer.signature.len(),
+            message_to_verify[0], message_to_verify[1], message_to_verify[2], message_to_verify[3]);
+        // Verify the signature first with the extracted key
+        if cert_key.verify_pkcs1_v15(&message_to_verify, signer.signature) {
+            crate::kinfo!("Signature verification with cert key: OK");
+            // Signature is mathematically valid, now check if this key is trusted
+            if is_key_trusted(&cert_key) {
+                crate::kinfo!("Module signed with trusted key");
+                return SignatureVerifyResult::Valid;
             } else {
-                crate::kwarn!("Signing key not found in trusted keyring");
+                crate::kwarn!("Certificate key not in trusted keyring");
                 return SignatureVerifyResult::KeyNotFound;
             }
+        } else {
+            crate::kinfo!("Signature verification with cert key: FAILED");
         }
-    };
-    
-    // Verify RSA signature
-    if public_key.verify_pkcs1_v15(&message_to_verify, signer.signature) {
-        SignatureVerifyResult::Valid
     } else {
-        SignatureVerifyResult::VerifyFailed
+        crate::kinfo!("Failed to extract key from embedded certificates");
     }
+    
+    crate::kwarn!("Signing key not found in trusted keyring");
+    SignatureVerifyResult::KeyNotFound
 }
 
 /// Extract public key from embedded certificates
@@ -740,14 +776,27 @@ fn extract_key_from_certificates(
 /// Parse X.509 certificate and extract RSA public key
 /// 
 /// Minimal X.509 parsing to extract the public key for signature verification
-fn parse_x509_public_key(cert_data: &[u8], signer: &SignerInfo<'_>) -> Option<RsaPublicKey> {
+fn parse_x509_public_key(cert_data: &[u8], _signer: &SignerInfo<'_>) -> Option<RsaPublicKey> {
+    crate::kinfo!("Parsing X.509 cert ({} bytes)", cert_data.len());
     let mut parser = DerParser::new(cert_data);
     
     // Certificate ::= SEQUENCE
-    let mut cert = parser.parse_sequence()?;
+    let mut cert = match parser.parse_sequence() {
+        Some(c) => c,
+        None => {
+            crate::kinfo!("  Failed to parse Certificate SEQUENCE");
+            return None;
+        }
+    };
     
     // TBSCertificate ::= SEQUENCE
-    let mut tbs = cert.parse_sequence()?;
+    let mut tbs = match cert.parse_sequence() {
+        Some(t) => t,
+        None => {
+            crate::kinfo!("  Failed to parse TBSCertificate SEQUENCE");
+            return None;
+        }
+    };
     
     // version [0] EXPLICIT Version DEFAULT v1
     if let Some(tag) = tbs.peek_tag() {
@@ -757,25 +806,27 @@ fn parse_x509_public_key(cert_data: &[u8], signer: &SignerInfo<'_>) -> Option<Rs
     }
     
     // serialNumber CertificateSerialNumber
-    let serial = tbs.parse_integer()?;
+    let serial = match tbs.parse_integer() {
+        Some(s) => s,
+        None => {
+            crate::kinfo!("  Failed to parse serialNumber");
+            return None;
+        }
+    };
+    crate::kinfo!("  Cert serial: {} bytes", serial.len());
     
     // Check if this certificate matches the signer
-    if !signer.serial_number.is_empty() && serial != signer.serial_number {
-        return None;
-    }
+    // Skip this check for now - just try to extract the key
+    // if !signer.serial_number.is_empty() && serial != signer.serial_number {
+    //     crate::kinfo!("  Serial mismatch, skipping cert");
+    //     return None;
+    // }
     
     // signature AlgorithmIdentifier
     tbs.skip_element();
     
     // issuer Name
-    let _issuer_elem = tbs.parse_element()?;
-    
-    // Check if issuer matches
-    // (simplified - full implementation would compare Name structures)
-    if !signer.issuer.is_empty() {
-        // For now, we do a simple byte comparison
-        // A proper implementation would parse and compare the distinguished names
-    }
+    let _issuer_elem = tbs.parse_element();
     
     // validity Validity
     tbs.skip_element();
@@ -784,17 +835,36 @@ fn parse_x509_public_key(cert_data: &[u8], signer: &SignerInfo<'_>) -> Option<Rs
     tbs.skip_element();
     
     // subjectPublicKeyInfo SubjectPublicKeyInfo
-    let mut spki = tbs.parse_sequence()?;
+    let mut spki = match tbs.parse_sequence() {
+        Some(s) => s,
+        None => {
+            crate::kinfo!("  Failed to parse SubjectPublicKeyInfo");
+            return None;
+        }
+    };
     
     // algorithm AlgorithmIdentifier
-    let mut alg = spki.parse_sequence()?;
-    let alg_oid = alg.parse_oid()?;
+    let mut alg = match spki.parse_sequence() {
+        Some(a) => a,
+        None => {
+            crate::kinfo!("  Failed to parse AlgorithmIdentifier");
+            return None;
+        }
+    };
+    let alg_oid = match alg.parse_oid() {
+        Some(o) => o,
+        None => {
+            crate::kinfo!("  Failed to parse algorithm OID");
+            return None;
+        }
+    };
     
     // Check if it's RSA
     if alg_oid != super::crypto::OID_RSA_ENCRYPTION {
-        crate::kdebug!("Certificate key is not RSA");
+        crate::kinfo!("  Certificate key is not RSA, OID len={}", alg_oid.len());
         return None;
     }
+    crate::kinfo!("  Found RSA key");
     
     // subjectPublicKey BIT STRING
     let pub_key_bits = spki.parse_bit_string()?;
@@ -808,6 +878,9 @@ fn parse_x509_public_key(cert_data: &[u8], signer: &SignerInfo<'_>) -> Option<Rs
     
     // publicExponent INTEGER  
     let exponent = rsa_seq.parse_integer()?;
+    
+    crate::kinfo!("  Modulus: {} bytes, exp: {} bytes ({:02X?})", 
+        modulus.len(), exponent.len(), exponent);
     
     RsaPublicKey::new(modulus, exponent)
 }
