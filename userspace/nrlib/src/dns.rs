@@ -3,7 +3,6 @@
 /// This module provides DNS query construction, parsing, and resolution
 /// services compatible with POSIX getaddrinfo/getnameinfo APIs.
 
-use core::mem;
 
 /// DNS header structure (12 bytes)
 #[repr(C, packed)]
@@ -183,11 +182,13 @@ impl DnsQuery {
 }
 
 /// DNS response parser
+#[allow(dead_code)]
 pub struct DnsResponse<'a> {
     data: &'a [u8],
     offset: usize,
 }
 
+#[allow(dead_code)]
 impl<'a> DnsResponse<'a> {
     pub fn new(data: &'a [u8]) -> Self {
         Self { data, offset: 0 }
