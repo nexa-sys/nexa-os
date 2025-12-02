@@ -98,7 +98,8 @@ impl Metadata {
     }
 
     pub fn with_mode(mut self, mode: u16) -> Self {
-        self.mode = mode;
+        // Preserve file type bits (top 4 bits) and set permission bits (low 12 bits)
+        self.mode = (self.mode & 0o170000) | (mode & 0o7777);
         self
     }
 
