@@ -236,6 +236,12 @@ pub fn init() {
     register_symbol("kmod_get_ticks", kmod_get_ticks as *const () as u64, SymbolType::Function);
     register_symbol("kmod_yield", kmod_yield as *const () as u64, SymbolType::Function);
 
+    // Register taint/license APIs
+    register_symbol("kmod_add_taint", kmod_add_taint as *const () as u64, SymbolType::Function);
+    register_symbol("kmod_get_taint", kmod_get_taint as *const () as u64, SymbolType::Function);
+    register_symbol("kmod_is_tainted", kmod_is_tainted as *const () as u64, SymbolType::Function);
+    register_symbol("kmod_set_license", kmod_set_license as *const () as u64, SymbolType::Function);
+
     crate::kinfo!("Kernel symbol table initialized with {} symbols", symbol_count());
 }
 
@@ -656,4 +662,93 @@ pub extern "C" fn kmod_get_ticks() -> u64 {
 pub extern "C" fn kmod_yield() {
     // Use pause instruction to hint the CPU we're in a spin-wait
     core::hint::spin_loop();
+}
+
+// ============================================================================
+// Taint and License APIs for Modules
+// ============================================================================
+
+/// Add a taint flag from a module
+/// 
+/// Taint flags (same as Linux):
+/// - 1: Proprietary module (P)
+/// - 2: Forced load (F)
+/// - 16384: Unsigned module (E)
+/// - 32768: Out-of-tree module (O)
+#[no_mangle]
+pub extern "C" fn kmod_add_taint(flag: u32) {
+    use super::{add_taint, TaintFlag};
+    
+    // Map integer flags to TaintFlag enum
+    let taint = match flag {
+        1 => Some(TaintFlag::ProprietaryModule),
+        2 => Some(TaintFlag::ForcedLoad),
+        4 => Some(TaintFlag::Smp),
+        8 => Some(TaintFlag::ForcedUnload),
+        16 => Some(TaintFlag::MachineCheck),
+        32 => Some(TaintFlag::BadPage),
+        64 => Some(TaintFlag::UserRequest),
+        128 => Some(TaintFlag::Die),
+        256 => Some(TaintFlag::OverriddenAcpiTable),
+        512 => Some(TaintFlag::Warn),
+        1024 => Some(TaintFlag::LivePatch),
+        2048 => Some(TaintFlag::UnsupportedHardware),
+        4096 => Some(TaintFlag::Softlockup),
+        8192 => Some(TaintFlag::FirmwareBug),
+        16384 => Some(TaintFlag::UnsignedModule),
+        32768 => Some(TaintFlag::OutOfTreeModule),
+        65536 => Some(TaintFlag::StagingDriver),
+        131072 => Some(TaintFlag::RandomizeTampered),
+        262144 => Some(TaintFlag::Aux),
+        _ => None,
+    };
+    
+    if let Some(t) = taint {
+        add_taint(t);
+    }
+}
+
+/// Get current kernel taint value
+#[no_mangle]
+pub extern "C" fn kmod_get_taint() -> u32 {
+    super::get_taint()
+}
+
+/// Check if a specific taint flag is set
+#[no_mangle]
+pub extern "C" fn kmod_is_tainted(flag: u32) -> bool {
+    (super::get_taint() & flag) != 0
+}
+
+/// Set module license and check for tainting
+/// 
+/// Known GPL-compatible licenses that don't taint:
+/// - "GPL", "GPL v2", "GPL v2+", "Dual MIT/GPL", "Dual BSD/GPL"
+/// 
+/// Returns 1 if license taints kernel, 0 otherwise
+#[no_mangle]
+pub extern "C" fn kmod_set_license(license: *const u8, len: usize) -> i32 {
+    use super::{add_taint, LicenseType, TaintFlag};
+    
+    if license.is_null() || len == 0 {
+        // Unknown license taints kernel
+        add_taint(TaintFlag::ProprietaryModule);
+        return 1;
+    }
+    
+    let license_str = unsafe {
+        let slice = core::slice::from_raw_parts(license, len);
+        core::str::from_utf8(slice).unwrap_or("Unknown")
+    };
+    
+    let license_type = LicenseType::from_string(license_str);
+    
+    if !license_type.is_gpl_compatible() {
+        add_taint(TaintFlag::ProprietaryModule);
+        crate::kinfo!("Module license '{}' is not GPL-compatible, tainting kernel", license_str);
+        1
+    } else {
+        crate::kinfo!("Module license '{}' is GPL-compatible", license_str);
+        0
+    }
 }

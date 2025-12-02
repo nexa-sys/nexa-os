@@ -796,10 +796,14 @@ macro_rules! kpanic {
             format_args!("Kernel panic - not syncing: {}", message)
         );
 
+        // Get kernel taint status
+        let taint_string = $crate::kmod::get_taint_string();
+
         $crate::klog!(
             $crate::logger::LogLevel::PANIC,
-            "CPU: {cpu} PID: 0 Comm: kernel Tainted: N/A",
-            cpu = cpu_id
+            "CPU: {cpu} PID: 0 Comm: kernel {taint}",
+            cpu = cpu_id,
+            taint = taint_string
         );
 
         $crate::klog!(

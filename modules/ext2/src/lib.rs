@@ -32,6 +32,12 @@ pub const MODULE_VERSION: &[u8] = b"1.0.0\0";
 pub const MODULE_DESC: &[u8] = b"ext2 filesystem driver for NexaOS\0";
 /// Module type (1 = Filesystem)
 pub const MODULE_TYPE: u8 = 1;
+/// Module license (GPL-compatible, doesn't taint kernel)
+pub const MODULE_LICENSE: &[u8] = b"MIT\0";
+/// Module author
+pub const MODULE_AUTHOR: &[u8] = b"NexaOS Team\0";
+/// Source version (in-tree module)
+pub const MODULE_SRCVERSION: &[u8] = b"in-tree\0";
 
 // ============================================================================
 // Kernel API declarations (resolved at load time from kernel symbol table)

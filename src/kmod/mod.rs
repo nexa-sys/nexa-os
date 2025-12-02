@@ -21,13 +21,58 @@
 //!
 //! 1. Load: Read .nkm from initramfs or filesystem
 //! 2. Verify: Check format (ELF or simple NKM)
-//! 3. For ELF modules:
+//! 3. Signature check: Verify module signature (if signed)
+//! 4. For ELF modules:
 //!    a. Allocate memory for code/data sections
 //!    b. Load sections and apply relocations
 //!    c. Resolve external symbols from kernel symbol table
-//! 4. Register: Add to kernel module list
-//! 5. Init: Call module's init function
-//! 6. Unload (optional): Call cleanup and remove
+//! 5. Taint check: Apply kernel taint flags if needed
+//! 6. Register: Add to kernel module list
+//! 7. Init: Call module's init function
+//! 8. Unload (optional): Call cleanup and remove
+//!
+//! # Kernel Taint Flags (Linux-compatible)
+//!
+//! NexaOS implements Linux-compatible kernel taint flags:
+//!
+//! | Flag | Char | Description |
+//! |------|------|-------------|
+//! | P    | 1    | Proprietary module was loaded |
+//! | F    | 2    | Module was force loaded |
+//! | R    | 8    | User forced a module unload |
+//! | U    | 64   | User requested taint |
+//! | E    | 16384| Unsigned module was loaded |
+//! | O    | 32768| Out-of-tree module was loaded |
+//! | C    | 65536| Staging driver was loaded |
+//!
+//! # Module Licenses
+//!
+//! GPL-compatible licenses (don't taint kernel):
+//! - GPL, GPL v2, GPL v2+
+//! - Dual MIT/GPL, Dual BSD/GPL, Dual MPL/GPL
+//!
+//! Non-GPL licenses (taint kernel with P flag):
+//! - BSD, MIT (standalone), Apache-2.0, Proprietary
+//!
+//! # Module Signatures
+//!
+//! Modules can be cryptographically signed. Unsigned modules taint the
+//! kernel with the E flag. Signature format: append `~Module sig~` magic
+//! at end of module file followed by signature data.
+//!
+//! # Examples
+//!
+//! ```ignore
+//! // Load module from initramfs
+//! kmod::load_from_initramfs("ext2")?;
+//!
+//! // Check kernel taint status
+//! let taint = kmod::get_taint_string();
+//! println!("Kernel: {}", taint);
+//!
+//! // Force unload a module
+//! kmod::force_unload_module("ext2")?; // Taints kernel with R
+//! ```
 
 pub mod elf;
 pub mod symbols;
@@ -48,6 +93,287 @@ pub const MAX_MODULE_NAME: usize = 32;
 
 /// Maximum module dependencies
 pub const MAX_DEPENDENCIES: usize = 8;
+
+/// Maximum license string length
+pub const MAX_LICENSE_LEN: usize = 32;
+
+/// Maximum author string length
+pub const MAX_AUTHOR_LEN: usize = 64;
+
+// ============================================================================
+// Kernel Taint Flags (Linux-compatible)
+// ============================================================================
+
+use core::sync::atomic::{AtomicU32, Ordering};
+
+/// Global kernel taint flags
+static KERNEL_TAINT: AtomicU32 = AtomicU32::new(0);
+
+/// Taint flag bits (compatible with Linux kernel)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum TaintFlag {
+    /// Proprietary module was loaded (P)
+    ProprietaryModule = 1 << 0,
+    /// Module was force loaded (F)
+    ForcedLoad = 1 << 1,
+    /// SMP with CPUs not designed for SMP (S)
+    Smp = 1 << 2,
+    /// User forced a module unload (R)
+    ForcedUnload = 1 << 3,
+    /// System experienced a machine check exception (M)
+    MachineCheck = 1 << 4,
+    /// Page-release function has been replaced (B)
+    BadPage = 1 << 5,
+    /// User requested for taint (U)
+    UserRequest = 1 << 6,
+    /// Kernel died recently, i.e., OOPS or BUG (D)
+    Die = 1 << 7,
+    /// ACPI table overridden by user (A)
+    OverriddenAcpiTable = 1 << 8,
+    /// Taint on warning (W)
+    Warn = 1 << 9,
+    /// Kernel is live patched (K)
+    LivePatch = 1 << 10,
+    /// Hardware is unsupported (H)
+    UnsupportedHardware = 1 << 11,
+    /// Soft lockup previously occurred (L)
+    Softlockup = 1 << 12,
+    /// Firmware issues (I)
+    FirmwareBug = 1 << 13,
+    /// Unsigned module was loaded (E)
+    UnsignedModule = 1 << 14,
+    /// Out-of-tree module was loaded (O)
+    OutOfTreeModule = 1 << 15,
+    /// Staging driver was loaded (C)
+    StagingDriver = 1 << 16,
+    /// Hardware random number generator tampered with (T)
+    RandomizeTampered = 1 << 17,
+    /// Auxiliary taint, for distro use (X)
+    Aux = 1 << 18,
+}
+
+impl TaintFlag {
+    /// Get the character representation of this taint flag (Linux-compatible)
+    pub fn as_char(self) -> char {
+        match self {
+            TaintFlag::ProprietaryModule => 'P',
+            TaintFlag::ForcedLoad => 'F',
+            TaintFlag::Smp => 'S',
+            TaintFlag::ForcedUnload => 'R',
+            TaintFlag::MachineCheck => 'M',
+            TaintFlag::BadPage => 'B',
+            TaintFlag::UserRequest => 'U',
+            TaintFlag::Die => 'D',
+            TaintFlag::OverriddenAcpiTable => 'A',
+            TaintFlag::Warn => 'W',
+            TaintFlag::LivePatch => 'K',
+            TaintFlag::UnsupportedHardware => 'H',
+            TaintFlag::Softlockup => 'L',
+            TaintFlag::FirmwareBug => 'I',
+            TaintFlag::UnsignedModule => 'E',
+            TaintFlag::OutOfTreeModule => 'O',
+            TaintFlag::StagingDriver => 'C',
+            TaintFlag::RandomizeTampered => 'T',
+            TaintFlag::Aux => 'X',
+        }
+    }
+}
+
+/// Add a taint flag to the kernel
+pub fn add_taint(flag: TaintFlag) {
+    KERNEL_TAINT.fetch_or(flag as u32, Ordering::SeqCst);
+    crate::kwarn!("Kernel tainted: {} ({})", flag.as_char(), flag as u32);
+}
+
+/// Check if a specific taint flag is set
+pub fn is_tainted(flag: TaintFlag) -> bool {
+    (KERNEL_TAINT.load(Ordering::SeqCst) & (flag as u32)) != 0
+}
+
+/// Get the current taint value
+pub fn get_taint() -> u32 {
+    KERNEL_TAINT.load(Ordering::SeqCst)
+}
+
+/// Get taint flags as a string (Linux-compatible format)
+pub fn get_taint_string() -> alloc::string::String {
+    let taint = KERNEL_TAINT.load(Ordering::SeqCst);
+    if taint == 0 {
+        return alloc::string::String::from("Not tainted");
+    }
+
+    let mut s = alloc::string::String::from("Tainted: ");
+    let flags = [
+        (TaintFlag::ProprietaryModule, 'P', 'G'),  // G = GPL'd
+        (TaintFlag::ForcedLoad, 'F', ' '),
+        (TaintFlag::Smp, 'S', ' '),
+        (TaintFlag::ForcedUnload, 'R', ' '),
+        (TaintFlag::MachineCheck, 'M', ' '),
+        (TaintFlag::BadPage, 'B', ' '),
+        (TaintFlag::UserRequest, 'U', ' '),
+        (TaintFlag::Die, 'D', ' '),
+        (TaintFlag::OverriddenAcpiTable, 'A', ' '),
+        (TaintFlag::Warn, 'W', ' '),
+        (TaintFlag::LivePatch, 'K', ' '),
+        (TaintFlag::UnsupportedHardware, 'H', ' '),
+        (TaintFlag::Softlockup, 'L', ' '),
+        (TaintFlag::FirmwareBug, 'I', ' '),
+        (TaintFlag::UnsignedModule, 'E', ' '),
+        (TaintFlag::OutOfTreeModule, 'O', ' '),
+        (TaintFlag::StagingDriver, 'C', ' '),
+        (TaintFlag::RandomizeTampered, 'T', ' '),
+        (TaintFlag::Aux, 'X', ' '),
+    ];
+
+    for (flag, tainted_char, clean_char) in flags {
+        if (taint & (flag as u32)) != 0 {
+            s.push(tainted_char);
+        } else if clean_char != ' ' {
+            s.push(clean_char);
+        }
+    }
+
+    s
+}
+
+// ============================================================================
+// Module License Types
+// ============================================================================
+
+/// Known module license types
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum LicenseType {
+    /// Unknown or unspecified license
+    Unknown = 0,
+    /// GPL v2
+    Gpl2 = 1,
+    /// GPL v2 or later
+    Gpl2Plus = 2,
+    /// Dual MIT/GPL
+    DualMitGpl = 3,
+    /// Dual BSD/GPL
+    DualBsdGpl = 4,
+    /// Dual MPL/GPL
+    DualMplGpl = 5,
+    /// GPL and additional rights
+    GplExtra = 6,
+    /// BSD license
+    Bsd = 7,
+    /// MIT license
+    Mit = 8,
+    /// Apache 2.0
+    Apache2 = 9,
+    /// Proprietary
+    Proprietary = 255,
+}
+
+impl LicenseType {
+    /// Check if this license is GPL-compatible (doesn't taint kernel)
+    pub fn is_gpl_compatible(self) -> bool {
+        matches!(
+            self,
+            LicenseType::Gpl2
+                | LicenseType::Gpl2Plus
+                | LicenseType::DualMitGpl
+                | LicenseType::DualBsdGpl
+                | LicenseType::DualMplGpl
+                | LicenseType::GplExtra
+        )
+    }
+
+    /// Parse license string to LicenseType
+    pub fn from_string(s: &str) -> Self {
+        match s.trim() {
+            "GPL" | "GPL v2" | "GPLv2" => LicenseType::Gpl2,
+            "GPL v2+" | "GPL-2.0+" | "GPL-2.0-or-later" => LicenseType::Gpl2Plus,
+            "Dual MIT/GPL" | "MIT/GPL" => LicenseType::DualMitGpl,
+            "Dual BSD/GPL" | "BSD/GPL" => LicenseType::DualBsdGpl,
+            "Dual MPL/GPL" | "MPL/GPL" => LicenseType::DualMplGpl,
+            "GPL with additional rights" => LicenseType::GplExtra,
+            "BSD" | "BSD-3-Clause" | "BSD-2-Clause" => LicenseType::Bsd,
+            "MIT" => LicenseType::Mit,
+            "Apache-2.0" | "Apache 2.0" => LicenseType::Apache2,
+            "Proprietary" | "PROPRIETARY" => LicenseType::Proprietary,
+            _ => LicenseType::Unknown,
+        }
+    }
+
+    /// Get license string representation
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LicenseType::Unknown => "Unknown",
+            LicenseType::Gpl2 => "GPL v2",
+            LicenseType::Gpl2Plus => "GPL v2+",
+            LicenseType::DualMitGpl => "Dual MIT/GPL",
+            LicenseType::DualBsdGpl => "Dual BSD/GPL",
+            LicenseType::DualMplGpl => "Dual MPL/GPL",
+            LicenseType::GplExtra => "GPL+extra",
+            LicenseType::Bsd => "BSD",
+            LicenseType::Mit => "MIT",
+            LicenseType::Apache2 => "Apache-2.0",
+            LicenseType::Proprietary => "Proprietary",
+        }
+    }
+}
+
+// ============================================================================
+// Module Signature Verification
+// ============================================================================
+
+/// Module signature status
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignatureStatus {
+    /// Module is not signed
+    Unsigned,
+    /// Signature verification passed
+    Valid,
+    /// Signature verification failed
+    Invalid,
+    /// Signature format is unknown
+    UnknownFormat,
+    /// Key not found in keyring
+    KeyNotFound,
+}
+
+impl SignatureStatus {
+    /// Check if the signature is considered good (module can be loaded)
+    pub fn is_ok(self) -> bool {
+        matches!(self, SignatureStatus::Valid)
+    }
+
+    /// Get human-readable status
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SignatureStatus::Unsigned => "unsigned",
+            SignatureStatus::Valid => "valid",
+            SignatureStatus::Invalid => "INVALID",
+            SignatureStatus::UnknownFormat => "unknown format",
+            SignatureStatus::KeyNotFound => "key not found",
+        }
+    }
+}
+
+/// Module signature magic at end of module
+const MODULE_SIG_MAGIC: &[u8; 12] = b"~Module sig~";
+
+/// Verify module signature (placeholder for future crypto implementation)
+fn verify_module_signature(_data: &[u8]) -> SignatureStatus {
+    // Check for signature magic at end of module
+    if _data.len() < MODULE_SIG_MAGIC.len() {
+        return SignatureStatus::Unsigned;
+    }
+    
+    let sig_offset = _data.len() - MODULE_SIG_MAGIC.len();
+    if &_data[sig_offset..] == MODULE_SIG_MAGIC {
+        // TODO: Implement actual signature verification
+        // For now, assume signed modules are valid
+        SignatureStatus::Valid
+    } else {
+        SignatureStatus::Unsigned
+    }
+}
 
 /// Module state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -208,6 +534,60 @@ pub struct ModuleInfo {
     pub dependencies: alloc::vec::Vec<alloc::string::String>,
     /// Reference count (how many modules depend on this)
     pub ref_count: usize,
+    /// Module license type
+    pub license: LicenseType,
+    /// Module author(s)
+    pub author: alloc::string::String,
+    /// Source location (e.g., "in-tree", "out-of-tree", path)
+    pub srcversion: alloc::string::String,
+    /// Signature verification status
+    pub sig_status: SignatureStatus,
+    /// Whether this module taints the kernel
+    pub taints_kernel: bool,
+    /// Taint flags this module adds
+    pub taint_flags: u32,
+    /// Module load timestamp (ticks since boot)
+    pub load_time: u64,
+    /// CRC of module text section (for vermagic-like checks)
+    pub text_crc: u32,
+    /// Kernel version this module was built for
+    pub vermagic: alloc::string::String,
+    /// Module parameters
+    pub params: alloc::vec::Vec<ModuleParam>,
+}
+
+/// Module parameter
+#[derive(Clone, Debug)]
+pub struct ModuleParam {
+    /// Parameter name
+    pub name: alloc::string::String,
+    /// Parameter type
+    pub param_type: ParamType,
+    /// Parameter value (as string)
+    pub value: alloc::string::String,
+    /// Parameter description
+    pub description: alloc::string::String,
+    /// Whether this parameter can be changed at runtime
+    pub writable: bool,
+}
+
+/// Module parameter types
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParamType {
+    /// Boolean parameter
+    Bool,
+    /// Integer parameter
+    Int,
+    /// Unsigned integer parameter
+    UInt,
+    /// Long integer
+    Long,
+    /// Unsigned long
+    ULong,
+    /// String parameter
+    String,
+    /// Array of integers
+    IntArray,
 }
 
 impl ModuleInfo {
@@ -225,6 +605,16 @@ impl ModuleInfo {
             exit_fn: None,
             dependencies: alloc::vec::Vec::new(),
             ref_count: 0,
+            license: LicenseType::Unknown,
+            author: alloc::string::String::new(),
+            srcversion: alloc::string::String::new(),
+            sig_status: SignatureStatus::Unsigned,
+            taints_kernel: false,
+            taint_flags: 0,
+            load_time: 0,
+            text_crc: 0,
+            vermagic: alloc::string::String::new(),
+            params: alloc::vec::Vec::new(),
         }
     }
 
@@ -253,6 +643,62 @@ impl ModuleInfo {
     /// Check if module can be safely unloaded
     pub fn can_unload(&self) -> bool {
         self.ref_count == 0 && self.state == ModuleState::Running
+    }
+
+    /// Get license as string
+    pub fn license_str(&self) -> &'static str {
+        self.license.as_str()
+    }
+
+    /// Get author as string slice
+    pub fn author_str(&self) -> &str {
+        &self.author
+    }
+
+    /// Check if module taints the kernel
+    pub fn will_taint(&self) -> bool {
+        self.taints_kernel || !self.license.is_gpl_compatible() || self.sig_status == SignatureStatus::Unsigned
+    }
+
+    /// Get taint flags this module would add
+    pub fn get_taint_flags(&self) -> u32 {
+        let mut flags = self.taint_flags;
+        if !self.license.is_gpl_compatible() {
+            flags |= TaintFlag::ProprietaryModule as u32;
+        }
+        if self.sig_status == SignatureStatus::Unsigned {
+            flags |= TaintFlag::UnsignedModule as u32;
+        }
+        if self.srcversion.contains("out-of-tree") {
+            flags |= TaintFlag::OutOfTreeModule as u32;
+        }
+        flags
+    }
+
+    /// Get signature status as string
+    pub fn sig_status_str(&self) -> &'static str {
+        self.sig_status.as_str()
+    }
+
+    /// Add a parameter to this module
+    pub fn add_param(&mut self, param: ModuleParam) {
+        self.params.push(param);
+    }
+
+    /// Get a parameter value by name
+    pub fn get_param(&self, name: &str) -> Option<&ModuleParam> {
+        self.params.iter().find(|p| p.name == name)
+    }
+
+    /// Set a parameter value by name
+    pub fn set_param(&mut self, name: &str, value: &str) -> bool {
+        if let Some(param) = self.params.iter_mut().find(|p| p.name == name) {
+            if param.writable {
+                param.value = alloc::string::String::from(value);
+                return true;
+            }
+        }
+        false
     }
 }
 
@@ -443,6 +889,10 @@ pub fn load_module(data: &[u8]) -> Result<(), ModuleError> {
 fn load_elf_module(data: &[u8]) -> Result<(), ModuleError> {
     crate::kinfo!("Loading ELF kernel module ({} bytes)", data.len());
 
+    // Verify module signature
+    let sig_status = verify_module_signature(data);
+    crate::kinfo!("Module signature status: {}", sig_status.as_str());
+
     // Load the ELF module
     let loaded = elf::load_elf_module(data)?;
     
@@ -461,6 +911,30 @@ fn load_elf_module(data: &[u8]) -> Result<(), ModuleError> {
     info.size = loaded.size;
     info.init_fn = loaded.init_fn;
     info.exit_fn = loaded.exit_fn;
+    info.sig_status = sig_status;
+    info.srcversion = alloc::string::String::from("in-tree");
+    info.license = LicenseType::Mit; // Default for NexaOS modules
+    info.load_time = crate::safety::rdtsc();
+
+    // Check and apply taint flags
+    let taint_flags = info.get_taint_flags();
+    if taint_flags != 0 {
+        info.taints_kernel = true;
+        info.taint_flags = taint_flags;
+        
+        // Apply taint to kernel
+        if taint_flags & (TaintFlag::ProprietaryModule as u32) != 0 {
+            add_taint(TaintFlag::ProprietaryModule);
+        }
+        if taint_flags & (TaintFlag::UnsignedModule as u32) != 0 {
+            add_taint(TaintFlag::UnsignedModule);
+        }
+        if taint_flags & (TaintFlag::OutOfTreeModule as u32) != 0 {
+            add_taint(TaintFlag::OutOfTreeModule);
+        }
+        
+        crate::kwarn!("Module taints kernel: {:#x}", taint_flags);
+    }
 
     // Register module
     let _idx = MODULE_REGISTRY.lock().register(info)?;
@@ -505,10 +979,17 @@ fn load_simple_nkm(data: &[u8]) -> Result<(), ModuleError> {
         header.module_type()
     );
 
+    // Verify module signature
+    let sig_status = verify_module_signature(data);
+
     // Create module info with heap-allocated strings
     let mut info = ModuleInfo::with_name(header.name_str());
     info.module_type = header.module_type();
     info.state = ModuleState::Loaded;
+    info.sig_status = sig_status;
+    info.srcversion = alloc::string::String::from("in-tree");
+    info.license = LicenseType::Mit; // Default for NexaOS modules
+    info.load_time = crate::safety::rdtsc();
 
     // Extract version and description from string table if present
     if header.string_table_offset > 0 && header.string_table_size > 0 {
@@ -785,8 +1266,10 @@ pub fn get_module_stats() -> ModuleStats {
 pub fn print_module_status() {
     let stats = get_module_stats();
     let symbol_stats = symbols::get_symbol_stats();
+    let taint_string = get_taint_string();
 
     crate::kinfo!("=== Kernel Module Subsystem Status ===");
+    crate::kinfo!("Kernel: {}", taint_string);
     crate::kinfo!("Loaded modules: {}", stats.loaded_count);
     crate::kinfo!("Total module memory: {} bytes", stats.total_memory);
     crate::kinfo!(
@@ -803,19 +1286,64 @@ pub fn print_module_status() {
         symbol_stats.total_bytes
     );
 
-    // List all loaded modules
+    // List all loaded modules with extended info
     let registry = MODULE_REGISTRY.lock();
     for info in registry.list() {
+        let taint_marker = if info.taints_kernel { "(+)" } else { "" };
         crate::kinfo!(
-            "  - {} v{} ({:?}, {:?}) @ {:#x} ({} bytes, refs={})",
+            "  - {} v{} ({:?}, {:?}) @ {:#x} ({} bytes, refs={}) [{}] {}{}",
             info.name,
             info.version,
             info.module_type,
             info.state,
             info.base_addr,
             info.size,
-            info.ref_count
+            info.ref_count,
+            info.license_str(),
+            info.sig_status_str(),
+            taint_marker
         );
+    }
+}
+
+/// Print detailed module information
+pub fn print_module_details(name: &str) {
+    let registry = MODULE_REGISTRY.lock();
+    if let Some(info) = registry.find(name) {
+        crate::kinfo!("=== Module: {} ===", info.name);
+        crate::kinfo!("Version: {}", info.version);
+        crate::kinfo!("Description: {}", info.description);
+        crate::kinfo!("Type: {:?}", info.module_type);
+        crate::kinfo!("State: {:?}", info.state);
+        crate::kinfo!("License: {}", info.license_str());
+        crate::kinfo!("Author: {}", info.author);
+        crate::kinfo!("Source: {}", info.srcversion);
+        crate::kinfo!("Signature: {}", info.sig_status_str());
+        crate::kinfo!("Base address: {:#x}", info.base_addr);
+        crate::kinfo!("Size: {} bytes", info.size);
+        crate::kinfo!("References: {}", info.ref_count);
+        crate::kinfo!("Taints kernel: {}", info.taints_kernel);
+        if info.taints_kernel {
+            crate::kinfo!("Taint flags: {:#x}", info.taint_flags);
+        }
+        crate::kinfo!("Load time (TSC): {}", info.load_time);
+        crate::kinfo!("Vermagic: {}", info.vermagic);
+        if !info.dependencies.is_empty() {
+            crate::kinfo!("Dependencies: {:?}", info.dependencies);
+        }
+        if !info.params.is_empty() {
+            crate::kinfo!("Parameters:");
+            for param in &info.params {
+                crate::kinfo!("  {}: {:?} = {} ({})", 
+                    param.name, 
+                    param.param_type,
+                    param.value,
+                    if param.writable { "rw" } else { "ro" }
+                );
+            }
+        }
+    } else {
+        crate::kwarn!("Module '{}' not found", name);
     }
 }
 
@@ -879,6 +1407,179 @@ pub fn load_module_with_deps(name: &str, data: &[u8], deps: &[&str]) -> Result<(
             Err(e)
         }
     }
+}
+
+// ============================================================================
+// Force Loading and Advanced Module Control
+// ============================================================================
+
+/// Module loading options
+#[derive(Debug, Clone, Default)]
+pub struct ModuleLoadOptions {
+    /// Force load even if signature verification fails
+    pub force: bool,
+    /// Skip version/vermagic checks
+    pub skip_version_check: bool,
+    /// Override license (for testing only)
+    pub override_license: Option<LicenseType>,
+    /// Module parameters to set
+    pub params: alloc::vec::Vec<(alloc::string::String, alloc::string::String)>,
+    /// Allow loading even if module taints kernel
+    pub allow_taint: bool,
+}
+
+/// Force load a module (taints kernel)
+pub fn force_load_module(data: &[u8]) -> Result<(), ModuleError> {
+    // Add forced load taint
+    add_taint(TaintFlag::ForcedLoad);
+    crate::kwarn!("Force loading module - kernel will be tainted");
+    
+    load_module(data)
+}
+
+/// Force unload a module (taints kernel)
+pub fn force_unload_module(name: &str) -> Result<(), ModuleError> {
+    // Add forced unload taint
+    add_taint(TaintFlag::ForcedUnload);
+    crate::kwarn!("Force unloading module '{}' - kernel will be tainted", name);
+    
+    // Force set ref_count to 0
+    {
+        let mut registry = MODULE_REGISTRY.lock();
+        if let Some(info) = registry.find_mut(name) {
+            if info.ref_count > 0 {
+                crate::kwarn!("Module '{}' has {} references, forcing unload", name, info.ref_count);
+                info.ref_count = 0;
+            }
+        }
+    }
+    
+    unload_module(name)
+}
+
+/// Load module with custom options
+pub fn load_module_with_options(data: &[u8], options: &ModuleLoadOptions) -> Result<(), ModuleError> {
+    if options.force {
+        add_taint(TaintFlag::ForcedLoad);
+        crate::kwarn!("Force loading module with options");
+    }
+    
+    // Load the module
+    load_module(data)?;
+    
+    // Apply parameters if specified
+    // Note: This is a simplified implementation; actual param handling would need module name
+    if !options.params.is_empty() {
+        crate::kinfo!("Module parameters specified: {:?}", options.params);
+        // TODO: Apply parameters after loading
+    }
+    
+    Ok(())
+}
+
+/// Set a module parameter at runtime
+pub fn set_module_param(module_name: &str, param_name: &str, value: &str) -> Result<(), ModuleError> {
+    let mut registry = MODULE_REGISTRY.lock();
+    if let Some(info) = registry.find_mut(module_name) {
+        if info.set_param(param_name, value) {
+            crate::kinfo!("Set module '{}' param '{}' = '{}'", module_name, param_name, value);
+            Ok(())
+        } else {
+            crate::kwarn!("Failed to set param '{}' on module '{}' (not found or read-only)", 
+                param_name, module_name);
+            Err(ModuleError::InvalidFormat)
+        }
+    } else {
+        Err(ModuleError::NotFound)
+    }
+}
+
+/// Get module parameter value
+pub fn get_module_param(module_name: &str, param_name: &str) -> Option<alloc::string::String> {
+    let registry = MODULE_REGISTRY.lock();
+    if let Some(info) = registry.find(module_name) {
+        info.get_param(param_name).map(|p| p.value.clone())
+    } else {
+        None
+    }
+}
+
+/// Update module license information
+pub fn set_module_license(module_name: &str, license: &str) -> Result<(), ModuleError> {
+    let mut registry = MODULE_REGISTRY.lock();
+    if let Some(info) = registry.find_mut(module_name) {
+        let license_type = LicenseType::from_string(license);
+        let old_taints = !info.license.is_gpl_compatible();
+        info.license = license_type;
+        
+        // Check if taint status changed
+        let new_taints = !license_type.is_gpl_compatible();
+        if new_taints && !old_taints {
+            drop(registry); // Release lock before adding taint
+            add_taint(TaintFlag::ProprietaryModule);
+        }
+        
+        crate::kinfo!("Module '{}' license set to {}", module_name, license_type.as_str());
+        Ok(())
+    } else {
+        Err(ModuleError::NotFound)
+    }
+}
+
+/// Update module author information
+pub fn set_module_author(module_name: &str, author: &str) -> Result<(), ModuleError> {
+    let mut registry = MODULE_REGISTRY.lock();
+    if let Some(info) = registry.find_mut(module_name) {
+        info.author = alloc::string::String::from(author);
+        Ok(())
+    } else {
+        Err(ModuleError::NotFound)
+    }
+}
+
+/// Mark module as out-of-tree (taints kernel)
+pub fn set_module_out_of_tree(module_name: &str) -> Result<(), ModuleError> {
+    let mut registry = MODULE_REGISTRY.lock();
+    if let Some(info) = registry.find_mut(module_name) {
+        info.srcversion = alloc::string::String::from("out-of-tree");
+        info.taints_kernel = true;
+        info.taint_flags |= TaintFlag::OutOfTreeModule as u32;
+        drop(registry);
+        add_taint(TaintFlag::OutOfTreeModule);
+        Ok(())
+    } else {
+        Err(ModuleError::NotFound)
+    }
+}
+
+/// Get modules that taint the kernel
+pub fn get_tainting_modules() -> alloc::vec::Vec<ModuleInfo> {
+    MODULE_REGISTRY
+        .lock()
+        .list()
+        .iter()
+        .filter(|m| m.taints_kernel)
+        .cloned()
+        .collect()
+}
+
+/// Get count of tainting modules
+pub fn get_tainting_module_count() -> usize {
+    MODULE_REGISTRY
+        .lock()
+        .list()
+        .iter()
+        .filter(|m| m.taints_kernel)
+        .count()
+}
+
+/// Check if kernel is tainted by any module
+pub fn is_kernel_tainted_by_modules() -> bool {
+    let taint = get_taint();
+    (taint & (TaintFlag::ProprietaryModule as u32 
+            | TaintFlag::UnsignedModule as u32 
+            | TaintFlag::OutOfTreeModule as u32 
+            | TaintFlag::ForcedLoad as u32)) != 0
 }
 
 #[cfg(test)]
