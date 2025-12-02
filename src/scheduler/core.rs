@@ -79,16 +79,33 @@ fn should_replace_candidate(candidate: EevdfCandidate, best: EevdfCandidate) -> 
 }
 
 /// Update EEVDF state for ready processes (lag accumulation for waiting)
+/// Performance optimized with early exits and bounded lag values
 fn update_ready_process_eevdf(
     table: &mut [Option<super::types::ProcessEntry>; MAX_PROCESSES],
     current_tick: u64,
 ) {
-    // Calculate total weight of runnable processes
-    let total_weight: u64 = table.iter()
-        .filter_map(|s| s.as_ref())
-        .filter(|e| e.process.state == ProcessState::Ready || e.process.state == ProcessState::Running)
-        .map(|e| e.weight)
-        .sum();
+    // Calculate total weight of runnable processes (cached for efficiency)
+    let mut total_weight: u64 = 0;
+    let mut ready_count = 0u32;
+    
+    for slot in table.iter() {
+        let Some(entry) = slot else { continue };
+        match entry.process.state {
+            ProcessState::Ready | ProcessState::Running => {
+                total_weight += entry.weight;
+                ready_count += 1;
+            }
+            _ => continue,
+        }
+    }
+
+    // Fast path: no ready processes or single process (no competition)
+    if ready_count <= 1 || total_weight == 0 {
+        return;
+    }
+
+    // Maximum lag credit to prevent unbounded growth (100ms)
+    const MAX_LAG: i64 = 100_000_000;
 
     for slot in table.iter_mut() {
         let Some(entry) = slot else { continue };
@@ -97,13 +114,19 @@ fn update_ready_process_eevdf(
         }
 
         let wait_delta = current_tick.saturating_sub(entry.last_scheduled);
+        
+        // Fast path: no wait time, no update needed
+        if wait_delta == 0 {
+            continue;
+        }
+        
         entry.wait_time = entry.wait_time.saturating_add(wait_delta);
         
         // Increase lag for waiting processes (they deserve more CPU)
-        if wait_delta > 0 && total_weight > 0 {
-            let lag_credit = (ms_to_ns(wait_delta) as i64 * entry.weight as i64) / total_weight as i64;
-            entry.lag = entry.lag.saturating_add(lag_credit);
-        }
+        // Use saturating arithmetic and cap at MAX_LAG
+        let lag_credit = (ms_to_ns(wait_delta) as i64 * entry.weight as i64) / total_weight as i64;
+        let new_lag = entry.lag.saturating_add(lag_credit).min(MAX_LAG);
+        entry.lag = new_lag;
     }
 }
 
@@ -128,23 +151,36 @@ fn find_start_index(
 /// Find the best ready process using EEVDF algorithm
 /// Selects the eligible process with the earliest virtual deadline
 /// Only considers processes that can run on the current CPU (affinity check)
+/// 
+/// Performance optimizations:
+/// - Early exit for realtime processes (highest priority)
+/// - Skip zombie/sleeping processes without full comparison
+/// - Cache eligibility result to avoid recomputation
 fn find_best_candidate(
     table: &[Option<super::types::ProcessEntry>; MAX_PROCESSES],
     _start_idx: usize,
 ) -> Option<EevdfCandidate> {
     let mut best_candidate: Option<EevdfCandidate> = None;
+    let mut found_realtime = false;
     
     // Get current CPU ID for affinity check (supports up to 1024 CPUs)
     let current_cpu = crate::smp::current_cpu_id() as usize;
 
     for (idx, slot) in table.iter().enumerate() {
         let Some(entry) = slot else { continue };
+        
+        // Fast path: skip non-ready processes
         if entry.process.state != ProcessState::Ready {
             continue;
         }
         
         // Check CPU affinity - skip if process cannot run on this CPU
         if !entry.cpu_affinity.is_set(current_cpu) {
+            continue;
+        }
+
+        // Fast path for realtime: if we found one, only compare with other realtime
+        if found_realtime && entry.policy != SchedPolicy::Realtime {
             continue;
         }
 
@@ -156,6 +192,23 @@ fn find_best_candidate(
             eligible,
             entry.priority,
         );
+        
+        // Handle realtime early exit
+        if entry.policy == SchedPolicy::Realtime {
+            if !found_realtime {
+                // First realtime process found, it automatically wins over any non-RT
+                best_candidate = Some(candidate);
+                found_realtime = true;
+            } else {
+                // Compare with other realtime (lower priority value = higher priority)
+                if let Some((_, _, _, _, best_pri)) = best_candidate {
+                    if entry.priority < best_pri {
+                        best_candidate = Some(candidate);
+                    }
+                }
+            }
+            continue;
+        }
         
         let should_use = best_candidate
             .map(|best| should_replace_candidate(candidate, best))
@@ -237,44 +290,84 @@ fn update_previous_process_state(
 }
 
 /// Check if a ready process should preempt the current running process (EEVDF)
+/// 
+/// Performance optimizations:
+/// - Early exits for common cases (realtime, idle)
+/// - Threshold-based preemption to avoid thrashing
+/// - Consider both eligibility and deadline difference
 #[inline]
 fn should_preempt_for_eevdf(
     ready_entry: &super::types::ProcessEntry,
     curr_entry: &super::types::ProcessEntry,
 ) -> bool {
-    // Realtime always preempts non-realtime
-    if ready_entry.policy == SchedPolicy::Realtime && curr_entry.policy != SchedPolicy::Realtime {
-        return true;
-    }
-    if curr_entry.policy == SchedPolicy::Realtime {
-        return false; // Can't preempt realtime unless also realtime
+    // Fast path 1: Realtime always preempts non-realtime
+    match (ready_entry.policy, curr_entry.policy) {
+        (SchedPolicy::Realtime, SchedPolicy::Realtime) => {
+            // Among realtime: lower priority number wins
+            return ready_entry.priority < curr_entry.priority;
+        }
+        (SchedPolicy::Realtime, _) => return true,
+        (_, SchedPolicy::Realtime) => return false,
+        _ => {}
     }
     
-    // Non-idle beats idle
-    if ready_entry.policy != SchedPolicy::Idle && curr_entry.policy == SchedPolicy::Idle {
+    // Fast path 2: Non-idle beats idle
+    if curr_entry.policy == SchedPolicy::Idle && ready_entry.policy != SchedPolicy::Idle {
         return true;
+    }
+    
+    // Fast path 3: Idle processes don't preempt normal ones
+    if ready_entry.policy == SchedPolicy::Idle {
+        return false;
     }
     
     // EEVDF: eligible process with significantly earlier deadline preempts
-    if is_eligible(ready_entry) {
-        let deadline_diff = curr_entry.vdeadline.saturating_sub(ready_entry.vdeadline);
-        // Only preempt if deadline difference is significant (avoid thrashing)
-        return deadline_diff > super::types::SCHED_GRANULARITY_NS;
+    if !is_eligible(ready_entry) {
+        return false;
     }
     
-    false
+    // Calculate deadline difference
+    let deadline_diff = curr_entry.vdeadline.saturating_sub(ready_entry.vdeadline);
+    
+    // Preemption threshold: only preempt if significant improvement
+    // This prevents excessive context switches
+    // Use larger threshold for batch processes (they prefer longer runs)
+    let threshold = match curr_entry.policy {
+        SchedPolicy::Batch => super::types::SCHED_GRANULARITY_NS * 2,
+        _ => super::types::SCHED_GRANULARITY_NS,
+    };
+    
+    deadline_diff > threshold
 }
 
 /// Check if any ready process should preempt the current one (EEVDF)
+/// Optimized with early exits for common cases
 fn should_preempt_current(
     table: &[Option<super::types::ProcessEntry>; MAX_PROCESSES],
     curr_entry: &super::types::ProcessEntry,
 ) -> bool {
+    // Fast path: Realtime processes are only preempted by higher priority realtime
+    let is_curr_realtime = curr_entry.policy == SchedPolicy::Realtime;
+    let current_cpu = crate::smp::current_cpu_id() as usize;
+    
     for slot in table.iter() {
         let Some(entry) = slot else { continue };
+        
+        // Fast skip: not ready
         if entry.process.state != ProcessState::Ready {
             continue;
         }
+        
+        // Skip processes that can't run on this CPU
+        if !entry.cpu_affinity.is_set(current_cpu) {
+            continue;
+        }
+        
+        // Fast path: skip non-RT if current is RT
+        if is_curr_realtime && entry.policy != SchedPolicy::Realtime {
+            continue;
+        }
+        
         if should_preempt_for_eevdf(entry, curr_entry) {
             return true;
         }

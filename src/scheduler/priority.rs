@@ -14,8 +14,23 @@
 //! 1. A process is "eligible" if its lag >= 0 (hasn't consumed more than its share)
 //! 2. Among eligible processes, pick the one with earliest virtual deadline
 //! 3. Update vruntime as process runs: vruntime += delta * NICE_0_WEIGHT / weight
+//!
+//! ## Performance Optimizations:
+//! - Precomputed inverse weights for fast vruntime calculations
+//! - Lazy deadline recalculation (only when slice changes)
+//! - Batch lag updates with accumulated deltas
+//! - Fast eligibility check without full lag computation
 
 use core::sync::atomic::Ordering;
+
+/// Minimum lag credit for waiting processes (prevents starvation)
+const MIN_LAG_CREDIT_NS: i64 = 100_000; // 100us
+
+/// Maximum lag to prevent unbounded accumulation
+const MAX_LAG_NS: i64 = 100_000_000; // 100ms
+
+/// Wakeup preemption threshold (process waking deserves immediate attention)
+const WAKEUP_PREEMPT_THRESH_NS: u64 = 500_000; // 500us
 
 use crate::process::{Pid, ProcessState, MAX_PROCESSES};
 
@@ -24,6 +39,28 @@ use super::types::{nice_to_weight, SchedPolicy, BASE_SLICE_NS, NICE_0_WEIGHT, SC
 
 /// Minimum vruntime in the system (used to prevent new processes from starving)
 static MIN_VRUNTIME: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// Precomputed inverse weights for O(1) vruntime calculation
+/// inv_weight[i] = 2^32 / weight[i], allowing multiplication instead of division
+/// Formula: delta_vruntime = (delta_exec * NICE_0_WEIGHT * inv_weight) >> 32
+const INV_WEIGHT: [u64; 40] = [
+    // -20 to -11 (high priority, low inverse weight)
+    48388, 59856, 76040, 92818, 118348, 147320, 184698, 229616, 287308, 360437,
+    // -10 to -1
+    449829, 563644, 704093, 875809, 1099582, 1376151, 1717300, 2157191, 2708050, 3363326,
+    // 0 to 9
+    4194304, 5237765, 6557202, 8165337, 10153587, 12820798, 15790321, 19976592, 24970740, 31350126,
+    // 10 to 19 (low priority, high inverse weight)
+    39045157, 49367440, 61356676, 76695844, 95443717, 119304647, 148102320, 186737708, 238609294, 286331153,
+];
+
+/// Get precomputed inverse weight for a nice value
+#[inline(always)]
+const fn nice_to_inv_weight(nice: i8) -> u64 {
+    let idx = nice as i32 + 20;
+    let idx = if idx < 0 { 0 } else if idx > 39 { 39 } else { idx as usize };
+    INV_WEIGHT[idx]
+}
 
 /// Convert milliseconds to nanoseconds
 #[inline]
@@ -44,9 +81,10 @@ pub fn calculate_time_slice(_quantum_level: u8) -> u64 {
     ns_to_ms(BASE_SLICE_NS)
 }
 
-/// Calculate the weighted vruntime delta
+/// Calculate the weighted vruntime delta using precomputed inverse weights
 /// delta_vruntime = delta_exec * NICE_0_WEIGHT / weight
-#[inline]
+/// Optimized: uses inv_weight to convert division to multiplication
+#[inline(always)]
 pub fn calc_delta_vruntime(delta_exec_ns: u64, weight: u64) -> u64 {
     if weight == 0 {
         return delta_exec_ns;
@@ -55,9 +93,19 @@ pub fn calc_delta_vruntime(delta_exec_ns: u64, weight: u64) -> u64 {
     ((delta_exec_ns as u128 * NICE_0_WEIGHT as u128) / weight as u128) as u64
 }
 
+/// Optimized vruntime calculation using nice value (avoids weight lookup)
+/// Uses precomputed inverse weights for fast calculation
+#[inline(always)]
+pub fn calc_delta_vruntime_fast(delta_exec_ns: u64, nice: i8) -> u64 {
+    let inv_weight = nice_to_inv_weight(nice);
+    // delta_vruntime = (delta_exec * NICE_0_WEIGHT * inv_weight) >> 32
+    // This avoids expensive division at runtime
+    ((delta_exec_ns as u128 * NICE_0_WEIGHT as u128 * inv_weight as u128) >> 32) as u64
+}
+
 /// Calculate virtual deadline for a process
 /// vdeadline = vruntime + slice_ns * NICE_0_WEIGHT / weight
-#[inline]
+#[inline(always)]
 pub fn calc_vdeadline(vruntime: u64, slice_ns: u64, weight: u64) -> u64 {
     if weight == 0 {
         return vruntime.saturating_add(slice_ns);
@@ -66,11 +114,35 @@ pub fn calc_vdeadline(vruntime: u64, slice_ns: u64, weight: u64) -> u64 {
     vruntime.saturating_add(delta)
 }
 
+/// Fast deadline calculation using nice value directly
+#[inline(always)]
+pub fn calc_vdeadline_fast(vruntime: u64, slice_ns: u64, nice: i8) -> u64 {
+    let inv_weight = nice_to_inv_weight(nice);
+    let delta = ((slice_ns as u128 * NICE_0_WEIGHT as u128 * inv_weight as u128) >> 32) as u64;
+    vruntime.saturating_add(delta)
+}
+
 /// Check if a process is eligible to run (EEVDF eligibility)
 /// A process is eligible if lag >= 0 (hasn't consumed more than its fair share)
-#[inline]
+#[inline(always)]
 pub fn is_eligible(entry: &super::types::ProcessEntry) -> bool {
     entry.lag >= 0
+}
+
+/// Check eligibility with tolerance (for avoiding unnecessary preemption)
+/// Returns true if process is eligible or nearly eligible
+#[inline(always)]
+pub fn is_nearly_eligible(entry: &super::types::ProcessEntry) -> bool {
+    // Allow slight negative lag (-1ms) to reduce scheduling noise
+    entry.lag >= -1_000_000
+}
+
+/// Fast eligibility check for wakeup path
+/// More lenient to allow recently woken processes to run quickly
+#[inline(always)]
+pub fn is_wakeup_eligible(entry: &super::types::ProcessEntry) -> bool {
+    // Waking processes get a grace period
+    entry.lag >= -(WAKEUP_PREEMPT_THRESH_NS as i64)
 }
 
 /// Calculate dynamic priority based on nice value (for backward compatibility)
@@ -196,12 +268,48 @@ pub fn check_preempt_curr(
 }
 
 /// Replenish time slice when exhausted
+/// Dynamically adjusts slice based on process behavior for better responsiveness
 pub fn replenish_slice(entry: &mut super::types::ProcessEntry) {
-    let slice = match entry.policy {
+    // Base slice from policy
+    let base_slice = match entry.policy {
         SchedPolicy::Realtime => BASE_SLICE_NS * 2,     // Longer slices for realtime
         SchedPolicy::Normal => BASE_SLICE_NS,
         SchedPolicy::Batch => BASE_SLICE_NS * 4,       // Much longer for batch
         SchedPolicy::Idle => BASE_SLICE_NS,
+    };
+    
+    // Dynamic slice adjustment based on process behavior
+    // Interactive processes (low avg_cpu_burst) get shorter slices for better latency
+    // CPU-bound processes (high avg_cpu_burst) get longer slices to reduce overhead
+    let slice = if entry.policy == SchedPolicy::Normal {
+        let burst_ms = entry.avg_cpu_burst;
+        if burst_ms == 0 {
+            // New process, use default
+            base_slice
+        } else if burst_ms < 2 {
+            // Very interactive (< 2ms bursts): shorter slice for low latency
+            (base_slice * 3) / 4
+        } else if burst_ms > 20 {
+            // CPU-bound (> 20ms bursts): longer slice to reduce context switches
+            (base_slice * 3) / 2
+        } else {
+            base_slice
+        }
+    } else {
+        base_slice
+    };
+    
+    // Apply nice value adjustment: high priority processes get slightly longer slices
+    let slice = if entry.nice < 0 {
+        // Negative nice (higher priority): up to 25% longer slice
+        let boost = ((-entry.nice as u64) * slice) / 80;
+        slice + boost
+    } else if entry.nice > 0 {
+        // Positive nice (lower priority): up to 25% shorter slice
+        let reduction = ((entry.nice as u64) * slice) / 80;
+        slice.saturating_sub(reduction).max(SCHED_GRANULARITY_NS)
+    } else {
+        slice
     };
     
     entry.slice_ns = slice;

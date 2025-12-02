@@ -278,3 +278,175 @@ pub fn list_percpu_stats() {
     crate::kinfo!("Load balance operations: {}", stats.load_balance_count);
     crate::kinfo!("Process migrations: {}", stats.migration_count);
 }
+
+/// EEVDF-specific statistics for debugging and tuning
+#[derive(Clone, Copy, Debug, Default)]
+pub struct EevdfStats {
+    /// Minimum vruntime across all processes
+    pub min_vruntime_ns: u64,
+    /// Maximum vruntime across all processes
+    pub max_vruntime_ns: u64,
+    /// Average vruntime
+    pub avg_vruntime_ns: u64,
+    /// Number of eligible processes
+    pub eligible_count: usize,
+    /// Number of non-eligible processes
+    pub non_eligible_count: usize,
+    /// Total lag across all processes (signed)
+    pub total_lag_ns: i64,
+    /// Maximum positive lag (most deserving process)
+    pub max_positive_lag_ns: i64,
+    /// Maximum negative lag (most over-scheduled process)
+    pub max_negative_lag_ns: i64,
+    /// Total weight of runnable processes
+    pub total_weight: u64,
+    /// Average slice remaining
+    pub avg_slice_remaining_ns: u64,
+}
+
+/// Gather EEVDF-specific statistics for analysis
+pub fn get_eevdf_stats() -> EevdfStats {
+    let table = PROCESS_TABLE.lock();
+    
+    let mut stats = EevdfStats::default();
+    stats.min_vruntime_ns = u64::MAX;
+    stats.max_negative_lag_ns = i64::MAX;
+    
+    let mut vruntime_sum: u128 = 0;
+    let mut slice_sum: u64 = 0;
+    let mut count = 0usize;
+    
+    for slot in table.iter() {
+        let Some(entry) = slot else { continue };
+        
+        // Only count runnable processes
+        if entry.process.state != ProcessState::Ready && 
+           entry.process.state != ProcessState::Running {
+            continue;
+        }
+        
+        count += 1;
+        
+        // Track vruntime range
+        if entry.vruntime < stats.min_vruntime_ns {
+            stats.min_vruntime_ns = entry.vruntime;
+        }
+        if entry.vruntime > stats.max_vruntime_ns {
+            stats.max_vruntime_ns = entry.vruntime;
+        }
+        vruntime_sum += entry.vruntime as u128;
+        
+        // Track eligibility
+        if entry.lag >= 0 {
+            stats.eligible_count += 1;
+        } else {
+            stats.non_eligible_count += 1;
+        }
+        
+        // Track lag
+        stats.total_lag_ns = stats.total_lag_ns.saturating_add(entry.lag);
+        if entry.lag > stats.max_positive_lag_ns {
+            stats.max_positive_lag_ns = entry.lag;
+        }
+        if entry.lag < stats.max_negative_lag_ns {
+            stats.max_negative_lag_ns = entry.lag;
+        }
+        
+        // Track weight and slice
+        stats.total_weight += entry.weight;
+        slice_sum += entry.slice_remaining_ns;
+    }
+    
+    if count > 0 {
+        stats.avg_vruntime_ns = (vruntime_sum / count as u128) as u64;
+        stats.avg_slice_remaining_ns = slice_sum / count as u64;
+    }
+    
+    if stats.min_vruntime_ns == u64::MAX {
+        stats.min_vruntime_ns = 0;
+    }
+    if stats.max_negative_lag_ns == i64::MAX {
+        stats.max_negative_lag_ns = 0;
+    }
+    
+    stats
+}
+
+/// Print EEVDF statistics for debugging
+pub fn print_eevdf_stats() {
+    let stats = get_eevdf_stats();
+    
+    crate::kinfo!("=== EEVDF Scheduler Statistics ===");
+    crate::kinfo!(
+        "Vruntime: min={}ms, max={}ms, avg={}ms (spread: {}ms)",
+        stats.min_vruntime_ns / 1_000_000,
+        stats.max_vruntime_ns / 1_000_000,
+        stats.avg_vruntime_ns / 1_000_000,
+        stats.max_vruntime_ns.saturating_sub(stats.min_vruntime_ns) / 1_000_000
+    );
+    crate::kinfo!(
+        "Eligibility: {} eligible, {} non-eligible (total lag: {}ms)",
+        stats.eligible_count,
+        stats.non_eligible_count,
+        stats.total_lag_ns / 1_000_000
+    );
+    crate::kinfo!(
+        "Lag range: max_positive={}ms, max_negative={}ms",
+        stats.max_positive_lag_ns / 1_000_000,
+        stats.max_negative_lag_ns / 1_000_000
+    );
+    crate::kinfo!(
+        "Total runnable weight: {}, avg slice remaining: {}ms",
+        stats.total_weight,
+        stats.avg_slice_remaining_ns / 1_000_000
+    );
+}
+
+/// Print detailed EEVDF info for a specific process
+pub fn print_process_eevdf_info(pid: Pid) {
+    let table = PROCESS_TABLE.lock();
+    
+    for slot in table.iter() {
+        let Some(entry) = slot else { continue };
+        if entry.process.pid != pid {
+            continue;
+        }
+        
+        crate::kinfo!("=== EEVDF Info for PID {} ===", pid);
+        crate::kinfo!("Policy: {:?}, Nice: {}, Weight: {}", entry.policy, entry.nice, entry.weight);
+        crate::kinfo!(
+            "Vruntime: {}ms, Vdeadline: {}ms",
+            entry.vruntime / 1_000_000,
+            entry.vdeadline / 1_000_000
+        );
+        crate::kinfo!(
+            "Lag: {}ms ({})",
+            entry.lag / 1_000_000,
+            if entry.lag >= 0 { "eligible" } else { "non-eligible" }
+        );
+        crate::kinfo!(
+            "Slice: {}ms total, {}ms remaining",
+            entry.slice_ns / 1_000_000,
+            entry.slice_remaining_ns / 1_000_000
+        );
+        crate::kinfo!(
+            "CPU usage: total_time={}ms, wait_time={}ms, preempts={}",
+            entry.total_time,
+            entry.wait_time,
+            entry.preempt_count
+        );
+        crate::kinfo!(
+            "Bursts: count={}, avg={}ms",
+            entry.cpu_burst_count,
+            entry.avg_cpu_burst
+        );
+        crate::kinfo!(
+            "Affinity: {:?}, last_cpu={}",
+            entry.cpu_affinity,
+            entry.last_cpu
+        );
+        return;
+    }
+    
+    crate::kwarn!("Process {} not found", pid);
+}

@@ -81,7 +81,8 @@ pub use smp::{
 // Re-export per-CPU scheduler functions
 pub use percpu::{
     init_percpu_sched, get_percpu_sched, current_percpu_sched,
-    get_cpu_load, find_least_loaded_cpu, balance_runqueues,
+    get_cpu_load, get_cpu_queue_len, find_least_loaded_cpu, find_best_cpu_numa,
+    balance_runqueues, update_all_load_averages,
     set_need_resched, check_need_resched,
 };
 
@@ -90,4 +91,6 @@ pub use stats::{
     detect_potential_deadlocks, get_load_average, get_process_counts, get_stats, list_processes,
     // Per-CPU stats
     PerCpuStats, get_percpu_stats, list_percpu_stats,
+    // EEVDF-specific stats
+    EevdfStats, get_eevdf_stats, print_eevdf_stats, print_process_eevdf_info,
 };

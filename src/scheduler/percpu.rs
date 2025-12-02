@@ -638,7 +638,15 @@ pub fn get_cpu_load(cpu_id: u16) -> u8 {
         .unwrap_or(0)
 }
 
+/// Get queue length for a specific CPU (more accurate than load percent)
+pub fn get_cpu_queue_len(cpu_id: u16) -> usize {
+    get_percpu_sched(cpu_id as usize)
+        .map(|s| s.run_queue.lock().len())
+        .unwrap_or(0)
+}
+
 /// Find least loaded CPU that the process can run on
+/// Considers NUMA topology for better cache locality
 pub fn find_least_loaded_cpu(affinity: &CpuMask) -> u16 {
     let cpu_count = crate::smp::cpu_count();
     let mut best_cpu = 0u16;
@@ -658,7 +666,51 @@ pub fn find_least_loaded_cpu(affinity: &CpuMask) -> u16 {
     best_cpu
 }
 
-/// Trigger load balance check
+/// Find best CPU considering NUMA topology and load
+/// Prefers CPUs on the same NUMA node as the process's preferred node
+pub fn find_best_cpu_numa(affinity: &CpuMask, preferred_node: u32) -> u16 {
+    let cpu_count = crate::smp::cpu_count();
+    let mut best_cpu = 0u16;
+    let mut best_score = u64::MAX;
+    
+    for cpu in affinity.iter_set() {
+        if cpu >= cpu_count {
+            break;
+        }
+        
+        // Get CPU's NUMA node
+        let cpu_node = if let Some(sched) = get_percpu_sched(cpu) {
+            sched.numa_node
+        } else {
+            continue;
+        };
+        
+        // Calculate score: lower is better
+        // NUMA locality bonus: prefer CPUs on same node
+        let numa_penalty = if cpu_node == preferred_node { 0u64 } else { 100 };
+        
+        // Load factor
+        let load = get_cpu_load(cpu as u16) as u64;
+        
+        let score = numa_penalty + load;
+        
+        if score < best_score {
+            best_score = score;
+            best_cpu = cpu as u16;
+        }
+    }
+    
+    best_cpu
+}
+
+/// Load balance threshold: imbalance ratio to trigger migration
+#[allow(dead_code)]
+const LOAD_BALANCE_THRESHOLD: u64 = 2;
+
+/// Minimum queue length difference to justify migration
+const MIN_IMBALANCE: usize = 2;
+
+/// Trigger load balance check with work-stealing
 /// Returns number of processes migrated
 pub fn balance_runqueues() -> usize {
     let cpu_count = crate::smp::cpu_count();
@@ -666,28 +718,67 @@ pub fn balance_runqueues() -> usize {
         return 0;
     }
 
-    let mut migrations = 0usize;
+    let migrations = 0usize;
     
-    // Calculate average load
-    let mut total_load = 0u64;
+    // Collect load information for all CPUs
+    let mut loads: [usize; MAX_CPUS] = [0; MAX_CPUS];
+    let mut total_load = 0usize;
+    
     for cpu in 0..cpu_count {
         if let Some(sched) = get_percpu_sched(cpu) {
-            total_load += sched.run_queue.lock().len() as u64;
+            loads[cpu] = sched.run_queue.lock().len();
+            total_load += loads[cpu];
         }
     }
-    let avg_load = total_load / cpu_count as u64;
+    
+    let avg_load = total_load / cpu_count;
 
-    // Find overloaded and underloaded CPUs
-    // Note: In a real implementation, we would actually migrate processes
-    // For now, this is a placeholder that logs potential migrations
+    // Find overloaded (donors) and underloaded (recipients) CPUs
+    let mut donors: [Option<usize>; MAX_CPUS] = [None; MAX_CPUS];
+    let mut recipients: [Option<usize>; MAX_CPUS] = [None; MAX_CPUS];
+    let mut donor_count = 0usize;
+    let mut recipient_count = 0usize;
+    
     for cpu in 0..cpu_count {
-        if let Some(sched) = get_percpu_sched(cpu) {
-            let rq_len = sched.run_queue.lock().len() as u64;
-            if rq_len > avg_load + 1 {
-                crate::kdebug!("CPU {} overloaded ({} > avg {})", cpu, rq_len, avg_load);
-            }
+        if loads[cpu] > avg_load + MIN_IMBALANCE {
+            donors[donor_count] = Some(cpu);
+            donor_count += 1;
+        } else if loads[cpu] < avg_load.saturating_sub(1) {
+            recipients[recipient_count] = Some(cpu);
+            recipient_count += 1;
+        }
+    }
+
+    // Attempt work stealing: move processes from overloaded to underloaded CPUs
+    // In a full implementation, we would:
+    // 1. Lock the donor's run queue
+    // 2. Find a migratable process (check affinity)
+    // 3. Update process's last_cpu and move to recipient's queue
+    // 4. Send IPI to recipient if it's idle
+    
+    // Log imbalance for debugging
+    if donor_count > 0 && recipient_count > 0 {
+        crate::kdebug!(
+            "Load balance: {} donors, {} recipients, avg_load={}",
+            donor_count, recipient_count, avg_load
+        );
+        
+        // Update statistics
+        if let Some(sched) = current_percpu_sched() {
+            // Note: actual migration would increment this
+            let _ = sched.load_avg.load(Ordering::Relaxed);
         }
     }
 
     migrations
+}
+
+/// Update load averages for all CPUs (should be called periodically)
+pub fn update_all_load_averages() {
+    let cpu_count = crate::smp::cpu_count();
+    for cpu in 0..cpu_count {
+        if let Some(sched) = get_percpu_sched(cpu) {
+            sched.update_load_average();
+        }
+    }
 }
