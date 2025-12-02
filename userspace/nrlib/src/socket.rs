@@ -342,29 +342,43 @@ pub extern "C" fn connect(sockfd: i32, addr: *const SockAddr, addrlen: u32) -> i
 /// Helper: Convert IPv4 address string to binary
 /// Format: "192.168.1.1" -> [192, 168, 1, 1]
 pub fn parse_ipv4(s: &str) -> Option<[u8; 4]> {
+    // Reject empty strings
+    if s.is_empty() {
+        return None;
+    }
+    
     let mut octets = [0u8; 4];
     let mut idx = 0;
     let mut current = 0u16;
+    let mut digit_count = 0u8; // Track digits in current octet
     
     for ch in s.chars() {
         if ch == '.' {
-            if idx >= 4 || current > 255 {
+            // Check for empty octet or overflow
+            if idx >= 3 || digit_count == 0 || current > 255 {
                 return None;
             }
             octets[idx] = current as u8;
             idx += 1;
             current = 0;
+            digit_count = 0;
         } else if ch.is_ascii_digit() {
+            // Prevent overflow during parsing
+            if digit_count >= 3 {
+                return None; // Too many digits in one octet
+            }
             current = current * 10 + (ch as u16 - '0' as u16);
             if current > 255 {
                 return None;
             }
+            digit_count += 1;
         } else {
             return None;
         }
     }
     
-    if idx != 3 || current > 255 {
+    // Check final octet: must have exactly 3 dots, last octet has digits, value <= 255
+    if idx != 3 || digit_count == 0 || current > 255 {
         return None;
     }
     octets[3] = current as u8;
@@ -384,15 +398,15 @@ pub fn format_ipv4(ip: [u8; 4]) -> [u8; 16] {
         let mut digit_count = 0;
         
         if n == 0 {
-            digits[0] = b'0';
-            digit_count = 1;
+            buf[pos] = b'0';
+            pos += 1;
         } else {
             while n > 0 && digit_count < 3 {
                 digits[digit_count] = (n % 10) as u8 + b'0';
                 n /= 10;
                 digit_count += 1;
             }
-            // Reverse digits
+            // Reverse digits and write to buffer
             for j in 0..digit_count {
                 buf[pos] = digits[digit_count - 1 - j];
                 pos += 1;

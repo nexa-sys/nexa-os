@@ -147,13 +147,15 @@ impl DnsQuery {
         self.length = 0;
 
         // DNS header - manually serialize to avoid alignment issues
+        // Note: DnsHeader stores fields already in network byte order (big-endian)
+        // so we just need to copy the raw bytes without additional conversion
         let header = DnsHeader::new_query(id, true);
-        self.buffer[0..2].copy_from_slice(&header.id.to_be_bytes());
-        self.buffer[2..4].copy_from_slice(&header.flags.to_be_bytes());
-        self.buffer[4..6].copy_from_slice(&header.qdcount.to_be_bytes());
-        self.buffer[6..8].copy_from_slice(&header.ancount.to_be_bytes());
-        self.buffer[8..10].copy_from_slice(&header.nscount.to_be_bytes());
-        self.buffer[10..12].copy_from_slice(&header.arcount.to_be_bytes());
+        self.buffer[0..2].copy_from_slice(&header.id.to_ne_bytes());
+        self.buffer[2..4].copy_from_slice(&header.flags.to_ne_bytes());
+        self.buffer[4..6].copy_from_slice(&header.qdcount.to_ne_bytes());
+        self.buffer[6..8].copy_from_slice(&header.ancount.to_ne_bytes());
+        self.buffer[8..10].copy_from_slice(&header.nscount.to_ne_bytes());
+        self.buffer[10..12].copy_from_slice(&header.arcount.to_ne_bytes());
         self.length = DnsHeader::SIZE;
 
         // Encode domain name
@@ -306,29 +308,60 @@ impl<'a> DnsResponse<'a> {
 
     /// Skip a DNS name (with compression support)
     fn skip_name(&mut self) -> Result<(), &'static str> {
+        let mut pointer_hops = 0;
+        let initial_offset = self.offset;
+        let mut pos = self.offset;
+        let mut jumped = false;
+        
         loop {
-            if self.offset >= self.data.len() {
+            if pos >= self.data.len() {
                 return Err("Unexpected end of data");
             }
 
-            let len = self.data[self.offset];
+            let len = self.data[pos];
 
             // Check for compression pointer
             if len & 0xC0 == 0xC0 {
-                if self.offset + 1 >= self.data.len() {
+                if pos + 1 >= self.data.len() {
                     return Err("Invalid compression pointer");
                 }
-                self.offset += 2;
-                return Ok(());
+                let ptr = (((len & 0x3F) as usize) << 8) | (self.data[pos + 1] as usize);
+                // Prevent forward references and self-references
+                if ptr >= self.data.len() || ptr >= initial_offset || ptr == pos {
+                    return Err("Invalid compression pointer target");
+                }
+                if !jumped {
+                    self.offset = pos + 2;
+                }
+                pos = ptr;
+                jumped = true;
+                pointer_hops += 1;
+                if pointer_hops > 128 {
+                    return Err("Too many compression pointer hops");
+                }
+                continue;
+            }
+            
+            // Check for reserved label type
+            if len & 0xC0 != 0 {
+                return Err("Invalid label type");
             }
 
             // Regular label
             if len == 0 {
-                self.offset += 1;
+                if !jumped {
+                    self.offset = pos + 1;
+                }
                 return Ok(());
             }
 
-            self.offset += 1 + len as usize;
+            pos += 1 + len as usize;
+            if pos > self.data.len() {
+                return Err("Label extends beyond data");
+            }
+            if !jumped {
+                self.offset = pos;
+            }
         }
     }
 
@@ -338,6 +371,8 @@ impl<'a> DnsResponse<'a> {
         let mut pos = self.offset;
         let mut jumped = false;
         let mut first_label = true;
+        let mut pointer_hops = 0;
+        let initial_offset = self.offset;
 
         loop {
             if pos >= self.data.len() {
@@ -355,9 +390,23 @@ impl<'a> DnsResponse<'a> {
                     self.offset = pos + 2;
                 }
                 let offset = (((len & 0x3F) as usize) << 8) | (self.data[pos + 1] as usize);
+                // Prevent forward references and self-references
+                if offset >= self.data.len() || offset >= initial_offset || offset == pos {
+                    return Err("Invalid compression pointer target");
+                }
                 pos = offset;
                 jumped = true;
+                pointer_hops += 1;
+                // Prevent infinite loops
+                if pointer_hops > 128 {
+                    return Err("Too many compression pointer hops");
+                }
                 continue;
+            }
+            
+            // Check for reserved label type
+            if len & 0xC0 != 0 {
+                return Err("Invalid label type");
             }
 
             // End of name
@@ -365,7 +414,9 @@ impl<'a> DnsResponse<'a> {
                 if !jumped {
                     self.offset = pos + 1;
                 }
-                buffer[buf_pos] = 0;
+                if buf_pos < buffer.len() {
+                    buffer[buf_pos] = 0;
+                }
                 return Ok(buf_pos);
             }
 

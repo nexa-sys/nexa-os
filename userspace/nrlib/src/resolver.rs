@@ -408,6 +408,11 @@ impl Resolver {
         if received <= 0 {
             return None;
         }
+        
+        // Minimum DNS response size check (header only is 12 bytes)
+        if (received as usize) < 12 {
+            return None;
+        }
 
         // Parse DNS response
         let response_data = &response_buf[..received as usize];
@@ -764,9 +769,15 @@ fn parse_dns_response(
     cname_buf: &mut [u8],
     scratch_buf: &mut [u8],
 ) -> Result<DnsParseOutcome, &'static str> {
-    // Minimum DNS response: 12 byte header
+    // Minimum DNS response: 12 byte header + at least minimal question
     if data.len() < 12 {
         return Err("dns response too short");
+    }
+    
+    // Maximum reasonable DNS response size (RFC 6891 recommends 4096 for EDNS)
+    // But we only support 512 byte UDP responses without EDNS
+    if data.len() > 512 {
+        return Err("dns response too large");
     }
 
     // Validate transaction ID matches our query
@@ -783,9 +794,8 @@ fn parse_dns_response(
     }
     
     // TC bit (bit 9) indicates truncation - response may be incomplete
-    if flags & 0x0200 != 0 {
-        return Err("dns response truncated");
-    }
+    // For UDP we cannot recover from this, but we can try to parse what we have
+    let truncated = flags & 0x0200 != 0;
     
     // RCODE (bits 0-3) should be 0 for success
     let rcode = flags & 0x000F;
@@ -807,6 +817,11 @@ fn parse_dns_response(
     // Sanity check: prevent excessive iteration
     if question_count > 64 || answer_count > 256 || authority_count > 256 || additional_count > 256 {
         return Err("dns response has too many records");
+    }
+    
+    // If truncated and no answers, we can't proceed
+    if truncated && answer_count == 0 {
+        return Err("dns response truncated with no answers");
     }
 
     let mut offset = 12;
@@ -876,16 +891,27 @@ fn parse_dns_response(
 
     if let Some(len) = last_cname_len {
         let cname = &cname_buf[..len];
+        // Try to find a matching A record in additional section
+        // This optimization avoids an extra DNS query for the CNAME target
         for _ in 0..additional_count {
-            let name_len = read_name_into(data, &mut offset, scratch_buf)?;
+            let name_len = match read_name_into(data, &mut offset, scratch_buf) {
+                Ok(l) => l,
+                Err(_) => {
+                    // If we can't parse additional records, just return CNAME
+                    // The caller will do a followup query
+                    return Ok(DnsParseOutcome::Cname(len));
+                }
+            };
             if offset + 10 > data.len() {
-                return Err("dns additional header overflow");
+                // Truncated additional section, return CNAME for followup
+                return Ok(DnsParseOutcome::Cname(len));
             }
             let rtype = u16::from_be_bytes([data[offset], data[offset + 1]]);
             let rdlength = u16::from_be_bytes([data[offset + 8], data[offset + 9]]) as usize;
             offset += 10;
             if offset + rdlength > data.len() {
-                return Err("dns additional data overflow");
+                // Truncated data, return CNAME for followup
+                return Ok(DnsParseOutcome::Cname(len));
             }
             if rtype == 1
                 && rdlength == 4
@@ -900,6 +926,9 @@ fn parse_dns_response(
         }
         return Ok(DnsParseOutcome::Cname(len));
     }
+    
+    // Skip additional section if we didn't find any answers
+    // (already skipped if we had a CNAME)
 
     for _ in 0..additional_count {
         skip_resource_record(data, &mut offset)?;
@@ -926,6 +955,7 @@ fn skip_name(data: &[u8], offset: &mut usize) -> Result<(), &'static str> {
     let mut pos = *offset;
     let mut jumped = false;
     let mut steps = 0;
+    let initial_offset = *offset;
 
     loop {
         if pos >= data.len() {
@@ -940,7 +970,8 @@ fn skip_name(data: &[u8], offset: &mut usize) -> Result<(), &'static str> {
             }
             let ptr = (((len & 0x3F) as usize) << 8) | (data[pos + 1] as usize);
             // Pointer must point to earlier in the packet (forward references not allowed)
-            if ptr >= data.len() || ptr >= pos {
+            // Also prevent self-referencing pointers
+            if ptr >= data.len() || ptr >= initial_offset || ptr == pos {
                 return Err("dns name pointer out of bounds");
             }
             if !jumped {
@@ -985,6 +1016,7 @@ fn read_name_into(data: &[u8], offset: &mut usize, out: &mut [u8]) -> Result<usi
     let mut steps = 0;
     let mut buf_pos = 0;
     let mut total_len = 0usize; // Track total name length
+    let initial_offset = *offset;
 
     loop {
         if pos >= data.len() {
@@ -998,8 +1030,8 @@ fn read_name_into(data: &[u8], offset: &mut usize, out: &mut [u8]) -> Result<usi
                 return Err("dns name pointer overflow");
             }
             let ptr = (((len & 0x3F) as usize) << 8) | (data[pos + 1] as usize);
-            // Pointer must point to earlier in the packet
-            if ptr >= data.len() || ptr >= pos {
+            // Pointer must point to earlier in the packet (prevent forward and self references)
+            if ptr >= data.len() || ptr >= initial_offset || ptr == pos {
                 return Err("dns name pointer out of bounds");
             }
             if !jumped {
@@ -1228,10 +1260,11 @@ pub extern "C" fn getnameinfo(
                     p /= 10;
                     digit_count += 1;
                 }
-                for j in 0..digit_count {
-                    port_buf[port_pos] = digits[digit_count - 1 - j];
-                    port_pos += 1;
-                }
+            }
+            // Write digits in correct order
+            for j in 0..digit_count {
+                port_buf[port_pos] = digits[digit_count - 1 - j];
+                port_pos += 1;
             }
             
             if port_pos + 1 > servlen as usize {
@@ -1450,5 +1483,61 @@ mod tests {
         assert!(dns_name_equals(b"Example.Com", b"EXAMPLE.COM"));
         assert!(!dns_name_equals(b"example.com", b"example.org"));
         assert!(!dns_name_equals(b"example.com", b"example.co"));
+    }
+
+    #[test]
+    fn test_parse_ipv4_edge_cases() {
+        // Empty octets should be rejected
+        assert_eq!(parse_ipv4("1..2.3"), None);
+        assert_eq!(parse_ipv4("1.2..3"), None);
+        // Leading/trailing dots
+        assert_eq!(parse_ipv4(".1.2.3.4"), None);
+        assert_eq!(parse_ipv4("1.2.3.4."), None);
+        // Too many octets
+        assert_eq!(parse_ipv4("1.2.3.4.5"), None);
+        // Valid cases
+        assert_eq!(parse_ipv4("10.0.2.3"), Some([10, 0, 2, 3]));
+        assert_eq!(parse_ipv4("127.0.0.1"), Some([127, 0, 0, 1]));
+    }
+
+    #[test]
+    fn test_host_entry_matches() {
+        let mut entry = HostEntry::empty();
+        entry.name[..9].copy_from_slice(b"localhost");
+        entry.name_len = 9;
+        entry.ip = [127, 0, 0, 1];
+
+        assert!(entry.matches("localhost"));
+        assert!(entry.matches("LOCALHOST"));
+        assert!(entry.matches("LocalHost"));
+        assert!(!entry.matches("localhosts"));
+        assert!(!entry.matches("localhos"));
+    }
+
+    #[test]
+    fn test_resolver_nss_sources() {
+        let mut resolver = Resolver::new();
+        // Default should be files, dns
+        assert_eq!(resolver.nsswitch_count, 2);
+        assert_eq!(resolver.nsswitch_hosts[0], NssSource::Files);
+        assert_eq!(resolver.nsswitch_hosts[1], NssSource::Dns);
+
+        // Parse custom nsswitch
+        resolver.parse_nsswitch("hosts: dns files\n");
+        assert_eq!(resolver.nsswitch_count, 2);
+        assert_eq!(resolver.nsswitch_hosts[0], NssSource::Dns);
+        assert_eq!(resolver.nsswitch_hosts[1], NssSource::Files);
+    }
+
+    #[test]
+    fn test_format_ipv4_with_zeros() {
+        let mut buf = [0u8; 16];
+        let len = format_ipv4_to_buffer([0, 0, 0, 0], buf.as_mut_ptr(), 16);
+        assert!(len > 0);
+        assert_eq!(&buf[..len], b"0.0.0.0");
+
+        let len = format_ipv4_to_buffer([10, 0, 0, 1], buf.as_mut_ptr(), 16);
+        assert!(len > 0);
+        assert_eq!(&buf[..len], b"10.0.0.1");
     }
 }
