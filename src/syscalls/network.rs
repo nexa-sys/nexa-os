@@ -765,27 +765,59 @@ pub fn connect(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
 
             let local_port = 49152 + (sock_handle.socket_index as u16 * 123) % 16384;
 
-            let mut tx_batch = crate::net::stack::TxBatch::new();
-            let result = crate::net::with_net_stack(|stack| {
-                stack.tcp_connect(
-                    sock_handle.socket_index,
-                    sock_handle.device_index,
-                    ip,
-                    port,
-                    local_port,
-                    &mut tx_batch,
-                )
-            });
+            // Retry loop for ARP resolution
+            let arp_start_time_us = crate::logger::boot_time_us();
+            let arp_timeout_us = 5_000_000u64; // 5 second timeout for ARP
+            let mut arp_retry_count = 0;
+            const MAX_ARP_RETRIES: u32 = 10;
 
-            if let Some(Ok(())) = result {
+            let tcp_connect_result = loop {
+                let mut tx_batch = crate::net::stack::TxBatch::new();
+                let result = crate::net::with_net_stack(|stack| {
+                    stack.tcp_connect(
+                        sock_handle.socket_index,
+                        sock_handle.device_index,
+                        ip,
+                        port,
+                        local_port,
+                        &mut tx_batch,
+                    )
+                });
+
+                // Send any pending frames (including ARP requests)
                 if tx_batch.len() > 0 {
                     crate::net::send_frames(sock_handle.device_index, &tx_batch).ok();
                 }
-            }
 
-            ktrace!("[SYS_CONNECT] tcp_connect returned: {:?}", result);
+                ktrace!("[SYS_CONNECT] tcp_connect returned: {:?}", result);
 
-            match result {
+                match result {
+                    Some(Err(crate::net::NetError::ArpCacheMiss)) => {
+                        arp_retry_count += 1;
+                        let elapsed_us = crate::logger::boot_time_us() - arp_start_time_us;
+                        
+                        if elapsed_us > arp_timeout_us || arp_retry_count > MAX_ARP_RETRIES {
+                            kwarn!("[SYS_CONNECT] ARP resolution timeout after {} retries", arp_retry_count);
+                            break Some(Err(crate::net::NetError::ArpCacheMiss));
+                        }
+                        
+                        ktrace!("[SYS_CONNECT] ARP cache miss, waiting for resolution (retry {})", arp_retry_count);
+                        
+                        // Poll network to receive ARP reply
+                        for _ in 0..50 {
+                            crate::net::poll();
+                            // Small delay - poll a few times to give ARP time to resolve
+                        }
+                        
+                        // Yield to scheduler briefly
+                        scheduler::set_current_process_state(ProcessState::Sleeping);
+                        continue;
+                    }
+                    _ => break result,
+                }
+            };
+
+            match tcp_connect_result {
                 Some(Ok(())) => {
                     ktrace!("[SYS_CONNECT] TCP connection initiated, waiting for establishment...");
                     kinfo!("[SYS_CONNECT] TCP connection initiated, waiting for establishment...");
@@ -828,6 +860,11 @@ pub fn connect(sockfd: u64, addr: *const SockAddr, addrlen: u32) -> u64 {
                             }
                         }
                     }
+                }
+                Some(Err(crate::net::NetError::ArpCacheMiss)) => {
+                    kwarn!("[SYS_CONNECT] TCP connect failed: ARP resolution failed");
+                    posix::set_errno(posix::errno::ENETUNREACH);
+                    u64::MAX
                 }
                 Some(Err(_)) => {
                     kwarn!("[SYS_CONNECT] TCP connect failed");

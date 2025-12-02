@@ -569,7 +569,6 @@ impl NetStack {
         }
 
         let device = &self.devices[device_index];
-        let socket = &mut self.tcp_sockets[socket_idx];
 
         ktrace!(
             "[tcp_connect] Device info: ip={}.{}.{}.{}, mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}, gateway={}.{}.{}.{}",
@@ -578,33 +577,8 @@ impl NetStack {
             device.gateway[0], device.gateway[1], device.gateway[2], device.gateway[3]
         );
 
-        ktrace!(
-            "[tcp_connect] Before connect: socket state={:?}, in_use={}",
-            socket.state,
-            socket.in_use
-        );
-
-        let result = socket.connect(
-            Ipv4Address::from(device.ip),
-            local_port,
-            Ipv4Address::from(remote_ip),
-            remote_port,
-            MacAddress(device.mac),
-            device_index,
-        );
-
-        ktrace!(
-            "[tcp_connect] After connect: result={:?}, socket state={:?}, in_use={}",
-            result,
-            socket.state,
-            socket.in_use
-        );
-
-        // Resolve gateway MAC address via ARP before sending SYN
-        if result.is_err() {
-            return result;
-        }
-
+        // FIRST: Resolve gateway MAC address via ARP before changing socket state
+        // This allows us to retry on ARP cache miss without corrupting socket state
         let gateway_ip = Ipv4Address::from(device.gateway);
         let current_ms = (logger::boot_time_us() / 1000) as u64;
         ktrace!("[tcp_connect] Resolving gateway MAC for {}", gateway_ip);
@@ -617,12 +591,48 @@ impl NetStack {
             );
             mac
         } else {
-            ktrace!("[tcp_connect] Gateway MAC not in cache");
-            // For now, assume gateway is on local network and will respond to ARP
-            // In real implementation, we should send ARP request and wait
-            // But for testing, let's just fail gracefully
+            ktrace!("[tcp_connect] Gateway MAC not in cache, sending ARP request");
+            // Send ARP request for gateway
+            if let Err(e) = self.send_arp_request(device_index, gateway_ip, tx_batch) {
+                ktrace!("[tcp_connect] Failed to send ARP request: {:?}", e);
+            }
+            // Return ArpCacheMiss so caller can retry after waiting
+            // Socket state is NOT modified yet, so retry will work
             return Err(NetError::ArpCacheMiss);
         };
+
+        // Now that we have gateway MAC, proceed with socket connect
+        let socket = &mut self.tcp_sockets[socket_idx];
+
+        ktrace!(
+            "[tcp_connect] Before connect: socket state={:?}, in_use={}",
+            socket.state,
+            socket.in_use
+        );
+
+        // Extract device info before calling socket.connect
+        let device_ip = Ipv4Address::from(device.ip);
+        let device_mac = MacAddress(device.mac);
+
+        let result = socket.connect(
+            device_ip,
+            local_port,
+            Ipv4Address::from(remote_ip),
+            remote_port,
+            device_mac,
+            device_index,
+        );
+
+        ktrace!(
+            "[tcp_connect] After connect: result={:?}, socket state={:?}, in_use={}",
+            result,
+            socket.state,
+            socket.in_use
+        );
+
+        if result.is_err() {
+            return result;
+        }
 
         // Set the remote MAC to gateway MAC
         self.tcp_sockets[socket_idx].remote_mac = gateway_mac;
