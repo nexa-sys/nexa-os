@@ -353,9 +353,23 @@ pub fn global() -> Option<Ext2Handle> {
 
 /// Lookup a file by path
 pub fn lookup(path: &str) -> Option<FileRefHandle> {
+    crate::kdebug!("ext2_modular::lookup called for: {}", path);
+    
     let ops = EXT2_OPS.lock();
-    let lookup_fn = ops.lookup?;
-    let handle = (*EXT2_GLOBAL.lock())?;
+    let lookup_fn = match ops.lookup {
+        Some(f) => f,
+        None => {
+            crate::kwarn!("ext2_modular::lookup: no lookup function registered");
+            return None;
+        }
+    };
+    let handle = match *EXT2_GLOBAL.lock() {
+        Some(h) => h,
+        None => {
+            crate::kwarn!("ext2_modular::lookup: no global handle");
+            return None;
+        }
+    };
     drop(ops);
 
     let mut file_ref = FileRefHandle {
@@ -370,10 +384,31 @@ pub fn lookup(path: &str) -> Option<FileRefHandle> {
         gid: 0,
     };
 
+    // CRITICAL FIX: Switch to kernel CR3 before calling into ext2 module
+    let kernel_cr3 = crate::paging::kernel_pml4_phys();
+    let saved_cr3: u64;
+    unsafe {
+        core::arch::asm!("mov {}, cr3", out(reg) saved_cr3, options(nomem, nostack));
+        if saved_cr3 != kernel_cr3 {
+            crate::ktrace!("ext2_modular::lookup: switching CR3 from {:#x} to kernel {:#x}", saved_cr3, kernel_cr3);
+            core::arch::asm!("mov cr3, {}", in(reg) kernel_cr3, options(nostack));
+        }
+    }
+
     let ret = lookup_fn(handle, path.as_ptr(), path.len(), &mut file_ref);
+    
+    // Restore original CR3
+    unsafe {
+        if saved_cr3 != kernel_cr3 {
+            core::arch::asm!("mov cr3, {}", in(reg) saved_cr3, options(nostack));
+        }
+    }
+    
+    crate::ktrace!("ext2_modular::lookup: lookup_fn returned {}, file_ref.inode={}, size={}", ret, file_ref.inode, file_ref.size);
     if ret == 0 && file_ref.is_valid() {
         Some(file_ref)
     } else {
+        crate::kdebug!("ext2_modular::lookup: failed for path '{}'", path);
         None
     }
 }
@@ -387,7 +422,25 @@ pub fn read_at(file: &FileRefHandle, offset: usize, buf: &mut [u8]) -> usize {
     };
     drop(ops);
 
+    // Switch to kernel CR3 before calling into ext2 module
+    let kernel_cr3 = crate::paging::kernel_pml4_phys();
+    let saved_cr3: u64;
+    unsafe {
+        core::arch::asm!("mov {}, cr3", out(reg) saved_cr3, options(nomem, nostack));
+        if saved_cr3 != kernel_cr3 {
+            core::arch::asm!("mov cr3, {}", in(reg) kernel_cr3, options(nostack));
+        }
+    }
+
     let ret = read_fn(file, offset, buf.as_mut_ptr(), buf.len());
+    
+    // Restore original CR3
+    unsafe {
+        if saved_cr3 != kernel_cr3 {
+            core::arch::asm!("mov cr3, {}", in(reg) saved_cr3, options(nostack));
+        }
+    }
+    
     if ret >= 0 {
         ret as usize
     } else {

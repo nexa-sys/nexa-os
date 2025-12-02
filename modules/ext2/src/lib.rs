@@ -91,6 +91,34 @@ macro_rules! mod_debug {
     };
 }
 
+// Helper to print a u64 as hex string (DEBUG level)
+fn log_hex(prefix: &[u8], value: u64) {
+    // Format: "prefix0x1234567890ABCDEF\n"
+    let mut buf = [0u8; 64];
+    let prefix_len = prefix.len().min(40);
+    unsafe {
+        core::ptr::copy_nonoverlapping(prefix.as_ptr(), buf.as_mut_ptr(), prefix_len);
+    }
+    buf[prefix_len] = b'0';
+    buf[prefix_len + 1] = b'x';
+    
+    let hex_chars = b"0123456789abcdef";
+    let mut pos = prefix_len + 2;
+    let mut started = false;
+    for i in (0..16).rev() {
+        let nibble = ((value >> (i * 4)) & 0xF) as usize;
+        if nibble != 0 || started || i == 0 {
+            buf[pos] = hex_chars[nibble];
+            pos += 1;
+            started = true;
+        }
+    }
+    buf[pos] = b'\n';
+    pos += 1;
+    
+    unsafe { kmod_log_debug(buf.as_ptr(), pos); }
+}
+
 // ============================================================================
 // Constants
 // ============================================================================
@@ -614,7 +642,23 @@ pub extern "C" fn ext2_lookup(
     path_len: usize,
     out_ref: *mut FileRef,
 ) -> i32 {
-    if fs.is_null() || path.is_null() || out_ref.is_null() {
+    // Debug: log entry
+    let debug_msg = b"ext2_lookup called";
+    unsafe { kmod_log_info(debug_msg.as_ptr(), debug_msg.len()); }
+    
+    if fs.is_null() {
+        let msg = b"ext2_lookup: fs is null";
+        unsafe { kmod_log_error(msg.as_ptr(), msg.len()); }
+        return -1;
+    }
+    if path.is_null() {
+        let msg = b"ext2_lookup: path is null";
+        unsafe { kmod_log_error(msg.as_ptr(), msg.len()); }
+        return -1;
+    }
+    if out_ref.is_null() {
+        let msg = b"ext2_lookup: out_ref is null";
+        unsafe { kmod_log_error(msg.as_ptr(), msg.len()); }
         return -1;
     }
 
@@ -622,7 +666,11 @@ pub extern "C" fn ext2_lookup(
     let path_bytes = unsafe { core::slice::from_raw_parts(path, path_len) };
     let path_str = match core::str::from_utf8(path_bytes) {
         Ok(s) => s,
-        Err(_) => return -1,
+        Err(_) => {
+            let msg = b"ext2_lookup: invalid UTF-8";
+            unsafe { kmod_log_error(msg.as_ptr(), msg.len()); }
+            return -1;
+        }
     };
 
     match fs.lookup_internal(path_str) {
@@ -630,7 +678,12 @@ pub extern "C" fn ext2_lookup(
             unsafe { *out_ref = file_ref };
             0
         }
-        None => -1,
+        None => {
+            // Debug: log failure
+            let msg = b"ext2_lookup: lookup_internal returned None";
+            unsafe { kmod_log_warn(msg.as_ptr(), msg.len()); }
+            -1
+        }
     }
 }
 
@@ -693,6 +746,17 @@ pub extern "C" fn ext2_metadata(file_ref: *const FileRef, out_meta: *mut Metadat
 
 impl Ext2Filesystem {
     fn image(&self) -> &[u8] {
+        // Debug: check image pointer validity
+        if self.image_base.is_null() {
+            let msg = b"Ext2Filesystem::image: image_base is NULL!";
+            unsafe { kmod_log_error(msg.as_ptr(), msg.len()); }
+            return &[];
+        }
+        if self.image_size == 0 {
+            let msg = b"Ext2Filesystem::image: image_size is 0!";
+            unsafe { kmod_log_error(msg.as_ptr(), msg.len()); }
+            return &[];
+        }
         unsafe { core::slice::from_raw_parts(self.image_base, self.image_size) }
     }
 
@@ -704,15 +768,60 @@ impl Ext2Filesystem {
             return self.file_ref_from_inode(inode_number);
         }
 
-        let mut inode = self.load_inode(inode_number).ok()?;
+        // Check if image is still valid
+        let image = self.image();
+        if image.is_empty() {
+            let msg = b"lookup_internal: image is empty!";
+            unsafe { kmod_log_error(msg.as_ptr(), msg.len()); }
+            return None;
+        }
+
+        // Debug: check magic number
+        let magic_offset = 1024 + 56;
+        if magic_offset + 2 <= image.len() {
+            let magic = u16::from_le_bytes([image[magic_offset], image[magic_offset + 1]]);
+            if magic != 0xEF53 {
+                let msg = b"lookup_internal: bad ext2 magic!";
+                unsafe { kmod_log_error(msg.as_ptr(), msg.len()); }
+                return None;
+            }
+        } else {
+            let msg = b"lookup_internal: image too small for superblock";
+            unsafe { kmod_log_error(msg.as_ptr(), msg.len()); }
+            return None;
+        }
+
+        let mut inode = match self.load_inode(inode_number) {
+            Ok(i) => i,
+            Err(_) => {
+                let msg = b"lookup_internal: failed to load root inode";
+                unsafe { kmod_log_error(msg.as_ptr(), msg.len()); }
+                return None;
+            }
+        };
 
         for segment in trimmed.split('/') {
             if segment.is_empty() {
                 continue;
             }
-            let next_inode = self.find_in_directory(&inode, segment)?;
+            let next_inode = match self.find_in_directory(&inode, segment) {
+                Some(n) => n,
+                None => {
+                    // Debug: log which segment failed
+                    let msg = b"lookup_internal: segment not found";
+                    unsafe { kmod_log_warn(msg.as_ptr(), msg.len()); }
+                    return None;
+                }
+            };
             inode_number = next_inode;
-            inode = self.load_inode(inode_number).ok()?;
+            inode = match self.load_inode(inode_number) {
+                Ok(i) => i,
+                Err(_) => {
+                    let msg = b"lookup_internal: failed to load inode";
+                    unsafe { kmod_log_error(msg.as_ptr(), msg.len()); }
+                    return None;
+                }
+            };
         }
 
         self.file_ref_from_inode(inode_number)
@@ -753,7 +862,7 @@ impl Ext2Filesystem {
         if inode_offset + self.inode_size > image.len() {
             return Err(Ext2Error::ImageTooSmall);
         }
-
+        
         Inode::parse(&image[inode_offset..inode_offset + self.inode_size])
     }
 
@@ -781,7 +890,10 @@ impl Ext2Filesystem {
         }
         let offset = block_number as usize * self.block_size;
         let image = self.image();
-        if offset + self.block_size > image.len() {
+        let image_len = image.len();
+        
+        if offset + self.block_size > image_len {
+            mod_warn!(b"read_block: block out of bounds");
             return None;
         }
         Some(&image[offset..offset + self.block_size])
@@ -802,12 +914,18 @@ impl Ext2Filesystem {
         F: FnMut(&str, u32, u8),
     {
         let block_size = self.block_size;
+        let mut block_count = 0u32;
+        
         for &block in inode.block.iter().take(EXT2_NDIR_BLOCKS) {
             if block == 0 {
                 continue;
             }
+            block_count += 1;
+            
             if let Some(data) = self.read_block(block) {
                 let mut offset = 0usize;
+                let mut entry_count = 0u32;
+                
                 while offset + 8 <= block_size {
                     let entry_inode = u32::from_le_bytes([
                         data[offset],
@@ -825,6 +943,7 @@ impl Ext2Filesystem {
                         break;
                     }
                     if entry_inode != 0 && name_len > 0 {
+                        entry_count += 1;
                         if let Ok(name) =
                             core::str::from_utf8(&data[offset + 8..offset + 8 + name_len])
                         {
@@ -833,7 +952,23 @@ impl Ext2Filesystem {
                     }
                     offset += rec_len;
                 }
+                
+                // Debug: log if no entries found in block
+                if entry_count == 0 {
+                    let msg = b"for_each_dir_entry: no valid entries in block";
+                    unsafe { kmod_log_warn(msg.as_ptr(), msg.len()); }
+                }
+            } else {
+                // Debug: log if read_block failed
+                let msg = b"for_each_dir_entry: read_block returned None";
+                unsafe { kmod_log_warn(msg.as_ptr(), msg.len()); }
             }
+        }
+        
+        // Debug: log total blocks processed
+        if block_count == 0 {
+            let msg = b"for_each_dir_entry: no blocks in directory inode!";
+            unsafe { kmod_log_warn(msg.as_ptr(), msg.len()); }
         }
     }
 
@@ -844,10 +979,14 @@ impl Ext2Filesystem {
 
         let inode = match self.load_inode(inode_num) {
             Ok(inode) => inode,
-            Err(_) => return 0,
+            Err(_) => {
+                mod_error!(b"read_file_internal: load_inode failed");
+                return 0;
+            }
         };
-
+        
         if !inode.is_regular_file() {
+            mod_error!(b"read_file_internal: not a regular file");
             return 0;
         }
 
@@ -865,22 +1004,26 @@ impl Ext2Filesystem {
             let block_index = current_offset / block_size;
             let within_block = current_offset % block_size;
             let Some(block_number) = self.block_number(&inode, block_index) else {
+                mod_error!(b"read_file_internal: block_number returned None");
                 break;
             };
             if block_number == 0 {
                 break;
             }
+            
             let Some(block) = self.read_block(block_number) else {
                 break;
             };
+            
             let available = cmp::min(block_size - within_block, remaining);
             buf[written..written + available]
                 .copy_from_slice(&block[within_block..within_block + available]);
+            
             written += available;
             remaining -= available;
             current_offset += available;
         }
-
+        
         written
     }
 

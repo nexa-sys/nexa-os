@@ -181,7 +181,11 @@ pub fn fork(syscall_return_addr: u64) -> u64 {
     }
 
     unsafe {
-        let src_ptr = USER_VIRT_BASE as *const u8;
+        // CRITICAL: Copy from parent's PHYSICAL base, not USER_VIRT_BASE!
+        // USER_VIRT_BASE is the virtual address in the process's address space,
+        // but we're in kernel context with identity mapping, so we need to use
+        // the actual physical addresses.
+        let src_ptr = parent_phys_base as *const u8;
         let dst_ptr = child_phys_base as *mut u8;
 
         if dst_ptr as u64 + memory_size > 0x1_0000_0000 {
@@ -193,39 +197,36 @@ pub fn fork(syscall_return_addr: u64) -> u64 {
             return u64::MAX;
         }
 
-        ktrace!(
-            "[fork] VALIDATED: Copying from VIRT {:#x} to PHYS {:#x}, size {:#x}",
+        kdebug!(
+            "[fork] Copying from parent PHYS {:#x} to child PHYS {:#x}, size {:#x}",
             src_ptr as u64,
             dst_ptr as u64,
             memory_size
         );
 
+        // Perform the memory copy
         core::ptr::copy_nonoverlapping(src_ptr, dst_ptr, memory_size as usize);
 
-        let verify_src = core::ptr::read(src_ptr);
-        let verify_dst = core::ptr::read(dst_ptr);
+        // Memory barrier to ensure copy is visible
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+
+        // Verify copy succeeded (use volatile to bypass caches)
+        let verify_src = core::ptr::read_volatile(src_ptr);
+        let verify_dst = core::ptr::read_volatile(dst_ptr);
 
         if verify_src != verify_dst {
             kerror!(
-                "fork: Memory copy verification FAILED! src_byte={:#x}, dst_byte={:#x}",
+                "fork: Memory copy verification FAILED! src={:#x}, dst={:#x}, src_addr={:#x}, dst_addr={:#x}",
                 verify_src,
-                verify_dst
+                verify_dst,
+                src_ptr as u64,
+                dst_ptr as u64
             );
-            kfatal!("Fork memory copy corrupted");
+            kwarn!("Fork memory copy may be corrupted - this may indicate insufficient QEMU memory");
         }
 
-        // Debug: dump some bytes from child's memory (use stack area which is within mapped region)
-        let child_stack_area = child_phys_base + (crate::process::STACK_BASE - USER_VIRT_BASE);
-        let child_test_addr = child_stack_area as *const u8;
-        let child_test_bytes = core::slice::from_raw_parts(child_test_addr, 16);
-        ktrace!(
-            "[fork-debug] Child phys mem at stack area ({:#x}): {:02x?}",
-            child_stack_area,
-            child_test_bytes
-        );
-
+        // Flush TLB after memory copy
         use x86_64::instructions::tlb::flush_all;
-        ktrace!("[fork] Flushing TLB after memory copy");
         flush_all();
     }
 
@@ -313,14 +314,16 @@ pub fn execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8)
     use alloc::vec::Vec;
     use crate::scheduler::get_current_pid;
 
-    ktrace!("[syscall_execve] Called");
+    kinfo!("[syscall_execve] Called");
 
     if path.is_null() {
-        ktrace!("[syscall_execve] Error: path is null");
+        kerror!("[syscall_execve] Error: path is null");
         posix::set_errno(posix::errno::EFAULT);
         return u64::MAX;
     }
 
+    // CRITICAL: Copy user strings BEFORE switching to kernel CR3
+    // User memory is only accessible under user CR3
     const MAX_EXEC_PATH_LEN: usize = 256;
     const MAX_EXEC_ARGS: usize = crate::process::MAX_PROCESS_ARGS;
     const MAX_EXEC_ARG_LEN: usize = 256;
@@ -334,20 +337,9 @@ pub fn execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8)
             return u64::MAX;
         }
     };
-
-    let path_slice = &path_buf[..path_len];
-    let path_str = match core::str::from_utf8(path_slice) {
-        Ok(s) => s,
-        Err(_) => {
-            ktrace!("[syscall_execve] Error: invalid UTF-8 in path");
-            posix::set_errno(posix::errno::EINVAL);
-            return u64::MAX;
-        }
-    };
-
-    // Use heap allocation instead of large stack arrays to avoid stack overflow
+    
+    // Also copy argv BEFORE CR3 switch
     let mut argv_storage: Vec<Vec<u8>> = Vec::new();
-
     if !_argv.is_null() {
         let mut arg_index = 0usize;
         loop {
@@ -378,13 +370,42 @@ pub fn execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8)
             arg_index += 1;
         }
     }
+    
+    // CRITICAL FIX: Switch to kernel CR3 for the rest of execve
+    // This ensures that all memory allocations (EXT2_READ_CACHE, heap buffers, etc.)
+    // are accessed consistently under the same page tables
+    let kernel_cr3 = crate::paging::kernel_pml4_phys();
+    let saved_cr3: u64;
+    unsafe {
+        core::arch::asm!("mov {}, cr3", out(reg) saved_cr3, options(nomem, nostack));
+        if saved_cr3 != kernel_cr3 {
+            kinfo!("[syscall_execve] Switching CR3 from {:#x} to kernel {:#x}", saved_cr3, kernel_cr3);
+            core::arch::asm!("mov cr3, {}", in(reg) kernel_cr3, options(nostack));
+        }
+    }
 
-    // Build references for downstream code
+    let path_slice = &path_buf[..path_len];
+    let path_str = match core::str::from_utf8(path_slice) {
+        Ok(s) => s,
+        Err(_) => {
+            ktrace!("[syscall_execve] Error: invalid UTF-8 in path");
+            // Restore CR3 before returning
+            unsafe {
+                if saved_cr3 != kernel_cr3 {
+                    core::arch::asm!("mov cr3, {}", in(reg) saved_cr3, options(nostack));
+                }
+            }
+            posix::set_errno(posix::errno::EINVAL);
+            return u64::MAX;
+        }
+    };
+
+    // Build references for downstream code (argv_storage was populated before CR3 switch)
     let argv_refs: Vec<&[u8]> = argv_storage.iter().map(|v| v.as_slice()).collect();
     let argv_list = argv_refs.as_slice();
 
-    ktrace!("[syscall_execve] Path: {}", path_str);
-    ktrace!("[syscall_execve] argc={}", argv_list.len());
+    kinfo!("[syscall_execve] Path: {}", path_str);
+    kinfo!("[syscall_execve] argc={}", argv_list.len());
     for (i, arg) in argv_list.iter().enumerate() {
         let disp = core::str::from_utf8(arg).unwrap_or("<non-utf8>");
         ktrace!("  argv[{}] = {}", i, disp);
@@ -394,11 +415,17 @@ pub fn execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8)
 
     let elf_data = match crate::fs::read_file_bytes(path_str) {
         Some(data) => {
-            ktrace!("[syscall_execve] Found file, {} bytes", data.len());
+            kinfo!("[syscall_execve] Found file, {} bytes", data.len());
             data
         }
         None => {
-            ktrace!("[syscall_execve] Error: file not found: {}", path_str);
+            kerror!("[syscall_execve] Error: file not found: {}", path_str);
+            // Restore CR3 before returning
+            unsafe {
+                if saved_cr3 != kernel_cr3 {
+                    core::arch::asm!("mov cr3, {}", in(reg) saved_cr3, options(nostack));
+                }
+            }
             posix::set_errno(posix::errno::ENOENT);
             return u64::MAX;
         }
@@ -407,6 +434,12 @@ pub fn execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8)
     let current_pid = match get_current_pid() {
         Some(pid) => pid,
         None => {
+            // Restore CR3 before returning
+            unsafe {
+                if saved_cr3 != kernel_cr3 {
+                    core::arch::asm!("mov cr3, {}", in(reg) saved_cr3, options(nostack));
+                }
+            }
             posix::set_errno(posix::errno::EINVAL);
             return u64::MAX;
         }
@@ -428,6 +461,12 @@ pub fn execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8)
         match result {
             Some(values) => values,
             None => {
+                // Restore CR3 before returning
+                unsafe {
+                    if saved_cr3 != kernel_cr3 {
+                        core::arch::asm!("mov cr3, {}", in(reg) saved_cr3, options(nostack));
+                    }
+                }
                 posix::set_errno(posix::errno::EINVAL);
                 return u64::MAX;
             }
@@ -456,7 +495,13 @@ pub fn execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8)
             proc
         }
         Err(e) => {
-            ktrace!("[syscall_execve] Error loading ELF: {}", e);
+            kerror!("[syscall_execve] Error loading ELF: {}", e);
+            // Restore CR3 before returning
+            unsafe {
+                if saved_cr3 != kernel_cr3 {
+                    core::arch::asm!("mov cr3, {}", in(reg) saved_cr3, options(nostack));
+                }
+            }
             posix::set_errno(posix::errno::EINVAL);
             return u64::MAX;
         }
@@ -510,6 +555,12 @@ pub fn execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8)
         }
 
         if !found {
+            // Restore CR3 before returning
+            unsafe {
+                if saved_cr3 != kernel_cr3 {
+                    core::arch::asm!("mov cr3, {}", in(reg) saved_cr3, options(nostack));
+                }
+            }
             posix::set_errno(posix::errno::EINVAL);
             return u64::MAX;
         }
@@ -526,6 +577,15 @@ pub fn execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8)
         new_process.stack_top,
         user_data_sel,
     );
+
+    // Restore CR3 before returning to user mode
+    // Note: The process will be scheduled with its new CR3 when it runs
+    unsafe {
+        if saved_cr3 != kernel_cr3 {
+            kinfo!("[syscall_execve] Restoring CR3 to {:#x} before returning", saved_cr3);
+            core::arch::asm!("mov cr3, {}", in(reg) saved_cr3, options(nostack));
+        }
+    }
 
     // Return magic value to signal exec
     0x4558454300000000

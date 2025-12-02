@@ -218,7 +218,7 @@ echo ""
 if [[ "$DEFAULT_BIOS_MODE" == "legacy" ]]; then
     QEMU_CMD=(
         qemu-system-x86_64
-        -m 512M
+        -m 1G
         -serial stdio
         -smp "$SMP_CORES"
         -vga std
@@ -245,7 +245,7 @@ if [[ "$DEFAULT_BIOS_MODE" == "legacy" ]]; then
 else
     QEMU_CMD=(
         qemu-system-x86_64
-        -m 512M
+        -m 1G
         -serial stdio
         -smp "$SMP_CORES"
         -vga std

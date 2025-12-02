@@ -1122,13 +1122,40 @@ pub fn list_files() -> &'static [Option<File>] {
 }
 
 pub fn read_file_bytes(name: &str) -> Option<&'static [u8]> {
+    crate::kinfo!("read_file_bytes: opening '{}'", name);
     let opened = open(name)?;
+    crate::kinfo!("read_file_bytes: opened, checking content type");
 
     match opened.content {
-        FileContent::Inline(bytes) => Some(bytes),
+        FileContent::Inline(bytes) => {
+            crate::kinfo!("read_file_bytes: Inline content, {} bytes", bytes.len());
+            Some(bytes)
+        }
         FileContent::Ext2Modular(file_ref) => {
+            crate::kinfo!("read_file_bytes: Ext2Modular content, inode={}, size={}", file_ref.inode, file_ref.size);
+            
+            // CRITICAL FIX: Switch to kernel CR3 before accessing EXT2_READ_CACHE
+            // The cache buffer is allocated in kernel address space (heap at ~0x7cc0000)
+            // which may not be mapped in user process page tables.
+            // We must be in kernel CR3 for both buffer allocation AND data reading.
+            let kernel_cr3 = crate::paging::kernel_pml4_phys();
+            let saved_cr3: u64;
+            unsafe {
+                core::arch::asm!("mov {}, cr3", out(reg) saved_cr3, options(nomem, nostack));
+                if saved_cr3 != kernel_cr3 {
+                    crate::kinfo!("read_file_bytes: switching CR3 from {:#x} to kernel {:#x}", saved_cr3, kernel_cr3);
+                    core::arch::asm!("mov cr3, {}", in(reg) kernel_cr3, options(nostack));
+                }
+            }
+            
             let size = file_ref.size as usize;
             if size == 0 {
+                // Restore CR3 before returning
+                unsafe {
+                    if saved_cr3 != kernel_cr3 {
+                        core::arch::asm!("mov cr3, {}", in(reg) saved_cr3, options(nostack));
+                    }
+                }
                 return Some(&EMPTY_EXT2_FILE);
             }
             if size > EXT2_READ_CACHE_SIZE {
@@ -1138,12 +1165,31 @@ pub fn read_file_bytes(name: &str) -> Option<&'static [u8]> {
                     size,
                     EXT2_READ_CACHE_SIZE
                 );
+                // Restore CR3 before returning
+                unsafe {
+                    if saved_cr3 != kernel_cr3 {
+                        core::arch::asm!("mov cr3, {}", in(reg) saved_cr3, options(nostack));
+                    }
+                }
                 return None;
             }
 
-            // Lock the cache and get/allocate buffer
+            // Lock the cache and get/allocate buffer (now in kernel CR3)
             let mut cache = EXT2_READ_CACHE.lock();
-            let dest = cache.get_buffer(size)?;
+            let dest = match cache.get_buffer(size) {
+                Some(d) => d,
+                None => {
+                    drop(cache);
+                    // Restore CR3 before returning
+                    unsafe {
+                        if saved_cr3 != kernel_cr3 {
+                            core::arch::asm!("mov cr3, {}", in(reg) saved_cr3, options(nostack));
+                        }
+                    }
+                    return None;
+                }
+            };
+            crate::kinfo!("read_file_bytes: got buffer at {:#x}, size {}", dest.as_ptr() as u64, size);
             
             let mut read_offset = 0usize;
             while read_offset < size {
@@ -1155,15 +1201,37 @@ pub fn read_file_bytes(name: &str) -> Option<&'static [u8]> {
                         read_offset,
                         size
                     );
+                    drop(cache);
+                    // Restore CR3 before returning
+                    unsafe {
+                        if saved_cr3 != kernel_cr3 {
+                            core::arch::asm!("mov cr3, {}", in(reg) saved_cr3, options(nostack));
+                        }
+                    }
                     return None;
                 }
                 read_offset += read;
             }
+            
+            // Debug: log first 16 bytes
+            let n = core::cmp::min(16, size);
+            crate::kinfo!("read_file_bytes: complete, first {} bytes: {:02x?}", n, &dest[..n]);
 
             // SAFETY: We hold the lock, buffer content is valid for 'static
             // as long as the lock protocol is followed by all callers.
             // The buffer persists in the static Mutex.
-            unsafe { cache.as_static_slice(size) }
+            let result = unsafe { cache.as_static_slice(size) };
+            drop(cache);
+            
+            // Restore CR3 after all operations complete
+            unsafe {
+                if saved_cr3 != kernel_cr3 {
+                    crate::kinfo!("read_file_bytes: restoring CR3 to {:#x}", saved_cr3);
+                    core::arch::asm!("mov cr3, {}", in(reg) saved_cr3, options(nostack));
+                }
+            }
+            
+            result
         }
     }
 }
@@ -1297,6 +1365,12 @@ fn resolve_mount(path: &str) -> Option<(&'static dyn FileSystem, &str)> {
     let mut best: Option<(&'static dyn FileSystem, &str, usize)> = None;
     let mounts = MOUNTS.lock();
 
+    // Debug: log available mounts
+    crate::kinfo!("resolve_mount('{}') - checking mounts:", path);
+    for entry in mounts.iter().flatten() {
+        crate::kinfo!("  mount: '{}' -> fs={}", entry.mount_point, entry.fs.name());
+    }
+
     for entry in mounts.iter().flatten() {
         if entry.mount_point == "/" {
             let relative = if is_absolute {
@@ -1315,6 +1389,12 @@ fn resolve_mount(path: &str) -> Option<(&'static dyn FileSystem, &str)> {
                 best = Some((entry.fs, relative, mp_len));
             }
         }
+    }
+
+    if let Some((fs, rel, _)) = best {
+        crate::kinfo!("resolve_mount: resolved to fs='{}', rel='{}'", fs.name(), rel);
+    } else {
+        crate::kinfo!("resolve_mount: no mount found for '{}'", path);
     }
 
     best.map(|(fs, rel, _)| (fs, rel))

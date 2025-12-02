@@ -17,6 +17,8 @@
 //! - `system`: System management syscalls (reboot, shutdown, runlevel, mount)
 //! - `uefi`: UEFI compatibility syscalls
 
+use crate::{kinfo, kerror};
+
 mod exec;
 mod fd;
 mod file;
@@ -78,6 +80,16 @@ pub extern "C" fn syscall_dispatch(
     arg3: u64,
     syscall_return_addr: u64,
 ) -> u64 {
+    // Debug: log CR3 at syscall entry for execve
+    if nr == SYS_EXECVE {
+        let current_cr3: u64;
+        let kernel_cr3 = crate::paging::kernel_pml4_phys();
+        unsafe {
+            core::arch::asm!("mov {}, cr3", out(reg) current_cr3, options(nomem, nostack));
+        }
+        kinfo!("[syscall_dispatch] ENTRY: nr={}, CR3={:#x}, kernel_CR3={:#x}", nr, current_cr3, kernel_cr3);
+    }
+    
     let (user_rsp, user_rflags) = unsafe {
         let mut rsp_out: u64;
         let mut rflags_out: u64;
@@ -144,11 +156,19 @@ pub extern "C" fn syscall_dispatch(
             clone(arg1, arg2, arg3, arg4, arg5, syscall_return_addr)
         }
         SYS_FORK => fork(syscall_return_addr),
-        SYS_EXECVE => execve(
-            arg1 as *const u8,
-            arg2 as *const *const u8,
-            arg3 as *const *const u8,
-        ),
+        SYS_EXECVE => {
+            // Debug: log current CR3
+            let current_cr3: u64;
+            unsafe {
+                core::arch::asm!("mov {}, cr3", out(reg) current_cr3, options(nomem, nostack));
+            }
+            kinfo!("[syscall_dispatch] SYS_EXECVE called, arg1={:#x}, CR3={:#x}", arg1, current_cr3);
+            execve(
+                arg1 as *const u8,
+                arg2 as *const *const u8,
+                arg3 as *const *const u8,
+            )
+        }
         SYS_EXIT => exit(arg1 as i32),
         SYS_WAIT4 => wait4(arg1 as i64, arg2 as *mut i32, arg3 as i32, 0 as *mut u8),
         SYS_KILL => kill(arg1, arg2),

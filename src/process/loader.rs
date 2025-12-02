@@ -7,7 +7,7 @@ use alloc::alloc::{alloc, Layout};
 use core::ptr;
 
 use crate::elf::ElfLoader;
-use crate::{kerror, kinfo, ktrace, kwarn};
+use crate::{kdebug, kerror, kinfo, ktrace, kwarn};
 
 use super::pid_tree::allocate_pid;
 use super::stack::build_initial_stack;
@@ -33,7 +33,7 @@ impl Process {
         phys_base: u64,
         existing_cr3: u64,
     ) -> Result<Self, &'static str> {
-        kinfo!(
+        kdebug!(
             "Process::from_elf_with_args_at_base called: phys_base={:#x}, cr3={:#x}",
             phys_base,
             existing_cr3
@@ -56,7 +56,7 @@ impl Process {
         }
 
         // Clear existing memory before loading new ELF (POSIX requirement)
-        kinfo!(
+        ktrace!(
             "Clearing process memory at base={:#x}, size={:#x}",
             phys_base,
             USER_REGION_SIZE
@@ -114,7 +114,7 @@ impl Process {
         program_image.base_addr = USER_VIRT_BASE;
         program_image.load_bias = USER_VIRT_BASE as i64 - program_image.first_load_vaddr as i64;
 
-        kinfo!(
+        kdebug!(
             "Program image loaded and adjusted: entry={:#x}, base={:#x}, phdr={:#x}",
             program_image.entry_point,
             program_image.base_addr,
@@ -166,7 +166,7 @@ impl Process {
 
         // Handle dynamic/static executable
         let (entry_point, stack_ptr) = if let Some(interp_path) = loader.get_interpreter() {
-            kinfo!("Dynamic executable, interpreter: {}", interp_path);
+            kdebug!("Dynamic executable, interpreter: {}", interp_path);
 
             if let Some(interp_data) = crate::fs::read_file_bytes(interp_path) {
                 let interp_loader = ElfLoader::new(interp_data)?;
@@ -187,13 +187,13 @@ impl Process {
                 interp_image.base_addr = INTERP_BASE;
                 interp_image.load_bias = INTERP_BASE as i64 - interp_image.first_load_vaddr as i64;
 
-                kinfo!(
+                kdebug!(
                     "Interpreter loaded and adjusted: entry={:#x}, base={:#x}",
                     interp_image.entry_point,
                     interp_image.base_addr
                 );
                 
-                kinfo!(
+                ktrace!(
                     "DYNAMIC LINK DEBUG: program_image.entry_point={:#x}, program_image.phdr_vaddr={:#x}",
                     program_image.entry_point,
                     program_image.phdr_vaddr
@@ -227,7 +227,7 @@ impl Process {
                 (program_image.entry_point, stack)
             }
         } else {
-            kinfo!("Static executable");
+            kdebug!("Static executable");
             let stack_phys = phys_base + (STACK_BASE - USER_VIRT_BASE);
             let stack = build_initial_stack(
                 final_args,
@@ -283,7 +283,7 @@ impl Process {
         argv: &[&[u8]],
         exec_path: Option<&[u8]>,
     ) -> Result<Self, &'static str> {
-        kinfo!(
+        kdebug!(
             "Process::from_elf called with {} bytes of ELF data",
             elf_data.len()
         );
@@ -307,7 +307,7 @@ impl Process {
         kinfo!("ELF magic is valid");
 
         let loader = ElfLoader::new(elf_data)?;
-        kinfo!("ElfLoader created successfully");
+        kdebug!("ElfLoader created successfully");
 
         let mut program_image = loader.load(USER_PHYS_BASE)?;
         
@@ -321,7 +321,7 @@ impl Process {
         program_image.base_addr = USER_VIRT_BASE;
         program_image.load_bias = USER_VIRT_BASE as i64 - program_image.first_load_vaddr as i64;
         
-        kinfo!(
+        kdebug!(
             "Program image loaded and adjusted: entry={:#x}, base={:#x}, bias={:+}, phdr={:#x}",
             program_image.entry_point,
             program_image.base_addr,
@@ -368,14 +368,14 @@ impl Process {
         };
 
         if let Some(interp_path) = loader.get_interpreter() {
-            kinfo!("Dynamic executable detected, interpreter: {}", interp_path);
+            kdebug!("Dynamic executable detected, interpreter: {}", interp_path);
 
             if let Some(interp_data) = crate::fs::read_file_bytes(interp_path) {
-                kinfo!("Found interpreter at {}, loading it", interp_path);
+                ktrace!("Found interpreter at {}, loading it", interp_path);
 
                 let interp_loader = ElfLoader::new(interp_data)?;
                 let interp_image = interp_loader.load(INTERP_BASE)?;
-                kinfo!(
+                kdebug!(
                     "Interpreter image loaded: entry={:#x}, base={:#x}, bias={:+}",
                     interp_image.entry_point,
                     interp_image.base_addr,
@@ -462,7 +462,7 @@ impl Process {
                 );
             }
         } else {
-            kinfo!("Static executable detected (no PT_INTERP)");
+            kdebug!("Static executable detected (no PT_INTERP)");
         }
 
         // Calculate physical address for stack based on our memory layout:

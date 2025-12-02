@@ -82,7 +82,7 @@ static NEXT_PT_FRAME: AtomicU64 = AtomicU64::new(0x0800_0000);
 // Move user region start to 320MB (0x1400_0000) to safely skip over the initramfs
 // which appears to be loaded around 240MB-250MB.
 // This gives us space from 320MB to 512MB (End of RAM) for user processes.
-static NEXT_USER_REGION: AtomicU64 = AtomicU64::new(0x1400_0000);
+static NEXT_USER_REGION: AtomicU64 = AtomicU64::new(0x2000_0000); // Start at 512MB, after rootfs (which ends at ~361MB)
 
 // CR3 allocation statistics for debugging and monitoring
 static CR3_ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
@@ -526,8 +526,74 @@ pub fn create_process_address_space(phys_base: u64, size: u64) -> Result<u64, &'
     let pd = phys_to_page_table_mut(pd_phys);
 
     if !pdp[user_pdp_index].is_unused() {
-        let kernel_pd = phys_to_page_table(pdp[user_pdp_index].addr());
+        let kernel_pd_addr = pdp[user_pdp_index].addr();
+        let kernel_pd = phys_to_page_table(kernel_pd_addr);
+        crate::kinfo!(
+            "create_process_address_space: cloning from kernel_pd at {:#x} to new pd at {:#x}",
+            kernel_pd_addr.as_u64(),
+            pd_phys.as_u64()
+        );
+        
+        // Debug: show raw entry values for PD[163] before clone
+        crate::kinfo!(
+            "  BEFORE clone: kernel_pd[163].addr = {:#x}, flags = {:#x}",
+            kernel_pd[163].addr().as_u64(),
+            kernel_pd[163].flags().bits()
+        );
+        
         clone_table(pd, kernel_pd);
+        
+        // Debug: show raw entry values for PD[163] after clone
+        crate::kinfo!(
+            "  AFTER clone: pd[163].addr = {:#x}, flags = {:#x}",
+            pd[163].addr().as_u64(),
+            pd[163].flags().bits()
+        );
+        
+        // Debug: verify kernel mappings are preserved
+        // Kernel heap PD index = 32, rootfs PD index = 155, module PD index = 62
+        let kernel_heap_pd_idx = 32usize;
+        let module_pd_idx = 62usize;  // 0x7d00000 >> 21 = 62
+        let rootfs_pd_idx = 155usize;
+        let rootfs_inode_pd_idx = 163usize; // 0x1473a000 >> 21 = 163 (where inodes live)
+        crate::kinfo!(
+            "create_process_address_space: kernel PD[{}] (heap) = {:#x}, PD[{}] (module) = {:#x}, PD[{}] (rootfs) = {:#x}",
+            kernel_heap_pd_idx,
+            kernel_pd[kernel_heap_pd_idx].addr().as_u64(),
+            module_pd_idx,
+            kernel_pd[module_pd_idx].addr().as_u64(),
+            rootfs_pd_idx,
+            kernel_pd[rootfs_pd_idx].addr().as_u64()
+        );
+        crate::kinfo!(
+            "create_process_address_space: kernel PD[{}] (rootfs inode area) = {:#x}",
+            rootfs_inode_pd_idx,
+            kernel_pd[rootfs_inode_pd_idx].addr().as_u64()
+        );
+        crate::kinfo!(
+            "create_process_address_space: cloned PD[{}] (heap) = {:#x}, PD[{}] (module) = {:#x}, PD[{}] (rootfs) = {:#x}",
+            kernel_heap_pd_idx,
+            pd[kernel_heap_pd_idx].addr().as_u64(),
+            module_pd_idx,
+            pd[module_pd_idx].addr().as_u64(),
+            rootfs_pd_idx,
+            pd[rootfs_pd_idx].addr().as_u64()
+        );
+        crate::kinfo!(
+            "create_process_address_space: cloned PD[{}] (rootfs inode area) = {:#x}",
+            rootfs_inode_pd_idx,
+            pd[rootfs_inode_pd_idx].addr().as_u64()
+        );
+        
+        // Debug: check PD[171] which is where 0x1573a000 lives
+        let pd_171_idx = 171usize;
+        crate::kinfo!(
+            "create_process_address_space: kernel PD[{}] = {:#x}, cloned PD[{}] = {:#x}",
+            pd_171_idx,
+            kernel_pd[pd_171_idx].addr().as_u64(),
+            pd_171_idx,
+            pd[pd_171_idx].addr().as_u64()
+        );
     }
 
     let mut pdp_flags = pdp[user_pdp_index].flags();

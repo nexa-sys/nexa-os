@@ -56,10 +56,10 @@ pub extern "x86-interrupt" fn page_fault_handler(
     if is_user_mode {
         // User-mode page fault - terminate the process gracefully
         if let Some(pid) = crate::scheduler::current_pid() {
-            // Debug log for kernel developers (only visible in kernel log, not user terminal)
-            kdebug!(
-                "SIGSEGV: PID {} fault at {:#x}, RIP={:#x}",
-                pid, fault_addr, rip
+            // Log for kernel developers
+            kerror!(
+                "SIGSEGV: PID {} segfault at {:#x}, RIP={:#x}, error={:?}",
+                pid, fault_addr, rip, error_code
             );
             
             // Set termination signal (SIGSEGV = 11) so wait4() returns correct status
