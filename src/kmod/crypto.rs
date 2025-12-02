@@ -370,6 +370,7 @@ impl BigInt {
     }
 
     /// Multiply and add: self = self + a * b
+    #[allow(dead_code)]
     fn mul_add_limb(&mut self, a: &Self, b: u64) {
         let mut carry = 0u128;
         
@@ -404,6 +405,7 @@ impl BigInt {
     }
 
     /// Right shift by one bit
+    #[allow(dead_code)]
     fn shr1(&mut self) {
         let mut carry = 0u64;
         for i in (0..self.len).rev() {

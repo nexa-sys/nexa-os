@@ -177,8 +177,46 @@ build_ext2_module() {
     echo "  ✓ Installed to initramfs: /lib/modules/ext2.nkm"
 }
 
+# Sign modules if signing key is available
+sign_modules() {
+    local SIGN_SCRIPT="$SCRIPT_DIR/sign-module.sh"
+    local KEY_FILE="$PROJECT_ROOT/certs/signing_key.pem"
+    
+    if [ ! -x "$SIGN_SCRIPT" ]; then
+        echo "  Note: Module signing script not found"
+        return 0
+    fi
+    
+    if [ ! -f "$KEY_FILE" ]; then
+        echo "  Note: No signing key found at $KEY_FILE"
+        echo "  Modules will be loaded unsigned (kernel will be tainted)"
+        echo "  To generate a key: ./scripts/sign-module.sh --generate-key"
+        return 0
+    fi
+    
+    echo ""
+    echo "Signing kernel modules..."
+    
+    for nkm in "$MODULES_DIR"/*.nkm; do
+        if [ -f "$nkm" ]; then
+            local name=$(basename "$nkm")
+            echo "  Signing: $name"
+            if "$SIGN_SCRIPT" -i "$nkm" 2>/dev/null; then
+                echo "    ✓ Signed successfully"
+                # Also update initramfs copy
+                cp "$nkm" "$INITRAMFS_MODULES/$name"
+            else
+                echo "    ⚠ Signing failed (module will load unsigned)"
+            fi
+        fi
+    done
+}
+
 # Build all modules
 build_ext2_module
+
+# Sign modules if key is available
+sign_modules
 
 echo ""
 echo "========================================"
@@ -193,3 +231,9 @@ ls -lh "$INITRAMFS_MODULES"/*.nkm 2>/dev/null || echo "  (no modules installed)"
 echo ""
 echo "Note: Modules will be loaded automatically during kernel boot"
 echo "      from /lib/modules/*.nkm in the initramfs."
+echo ""
+if [ -f "$PROJECT_ROOT/certs/signing_key.pem" ]; then
+    echo "Module signing: ENABLED (key found)"
+else
+    echo "Module signing: DISABLED (no key - run ./scripts/sign-module.sh --generate-key)"
+fi

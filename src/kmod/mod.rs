@@ -74,8 +74,18 @@
 //! kmod::force_unload_module("ext2")?; // Taints kernel with R
 //! ```
 
+pub mod crypto;
 pub mod elf;
+pub mod pkcs7;
 pub mod symbols;
+
+// Re-export commonly used items from submodules
+pub use crypto::{sha256, add_trusted_key, find_trusted_key, trusted_key_count, RsaPublicKey};
+pub use pkcs7::{
+    verify_module_signature as verify_pkcs7_signature,
+    extract_module_signature, parse_pkcs7_signed_data,
+    SignatureVerifyResult, ModuleSigInfo, Pkcs7SignedData, SignerInfo,
+};
 
 use spin::Mutex;
 
@@ -355,24 +365,35 @@ impl SignatureStatus {
     }
 }
 
-/// Module signature magic at end of module
-const MODULE_SIG_MAGIC: &[u8; 12] = b"~Module sig~";
+/// Module signature magic at end of module (re-exported from pkcs7)
+pub use pkcs7::MODULE_SIG_MAGIC;
 
-/// Verify module signature (placeholder for future crypto implementation)
-fn verify_module_signature(_data: &[u8]) -> SignatureStatus {
-    // Check for signature magic at end of module
-    if _data.len() < MODULE_SIG_MAGIC.len() {
-        return SignatureStatus::Unsigned;
+/// Verify module signature using PKCS#7
+/// 
+/// This function performs full cryptographic verification of signed modules:
+/// 1. Extracts PKCS#7 signature from module data
+/// 2. Parses PKCS#7 SignedData structure
+/// 3. Verifies digest matches module content
+/// 4. Validates RSA signature against trusted keyring
+/// 
+/// Returns SignatureStatus indicating verification result.
+fn verify_module_signature(data: &[u8]) -> SignatureStatus {
+    let result = pkcs7::verify_module_signature(data);
+    
+    // Log detailed verification result
+    match result {
+        pkcs7::SignatureVerifyResult::Valid => {
+            crate::kinfo!("Module signature verified successfully");
+        }
+        pkcs7::SignatureVerifyResult::Unsigned => {
+            crate::kdebug!("Module is not signed");
+        }
+        _ => {
+            crate::kwarn!("Module signature verification failed: {}", result.as_str());
+        }
     }
     
-    let sig_offset = _data.len() - MODULE_SIG_MAGIC.len();
-    if &_data[sig_offset..] == MODULE_SIG_MAGIC {
-        // TODO: Implement actual signature verification
-        // For now, assume signed modules are valid
-        SignatureStatus::Valid
-    } else {
-        SignatureStatus::Unsigned
-    }
+    result.to_signature_status()
 }
 
 /// Module state
@@ -859,10 +880,14 @@ pub fn init() {
     // Initialize kernel symbol table first
     symbols::init();
     
+    // Initialize PKCS#7 signature verification subsystem
+    pkcs7::init();
+    
     // Register ext2 modular filesystem symbols
     crate::fs::ext2_modular::init();
     
     crate::kinfo!("Kernel module system initialized (max {} modules)", MAX_MODULES);
+    crate::kinfo!("Module signature verification: PKCS#7/CMS with SHA-256/RSA");
 }
 
 /// Check if data is an ELF file

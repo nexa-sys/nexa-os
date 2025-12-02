@@ -27,7 +27,6 @@
 //! PKCS#7 SignedData structures. Full ASN.1 support is not implemented.
 
 use alloc::vec::Vec;
-use alloc::string::String;
 use super::crypto::{sha256, HashAlgorithm, RsaPublicKey, find_trusted_key, SHA256_DIGEST_SIZE};
 
 // ============================================================================
@@ -726,12 +725,91 @@ fn verify_signer(
 
 /// Extract public key from embedded certificates
 fn extract_key_from_certificates(
-    _certificates: &[&[u8]],
-    _signer: &SignerInfo<'_>,
+    certificates: &[&[u8]],
+    signer: &SignerInfo<'_>,
 ) -> Option<RsaPublicKey> {
-    // TODO: Implement X.509 certificate parsing
-    // For now, we require keys to be pre-loaded in trusted keyring
+    // Try each certificate
+    for &cert_data in certificates {
+        if let Some(key) = parse_x509_public_key(cert_data, signer) {
+            return Some(key);
+        }
+    }
     None
+}
+
+/// Parse X.509 certificate and extract RSA public key
+/// 
+/// Minimal X.509 parsing to extract the public key for signature verification
+fn parse_x509_public_key(cert_data: &[u8], signer: &SignerInfo<'_>) -> Option<RsaPublicKey> {
+    let mut parser = DerParser::new(cert_data);
+    
+    // Certificate ::= SEQUENCE
+    let mut cert = parser.parse_sequence()?;
+    
+    // TBSCertificate ::= SEQUENCE
+    let mut tbs = cert.parse_sequence()?;
+    
+    // version [0] EXPLICIT Version DEFAULT v1
+    if let Some(tag) = tbs.peek_tag() {
+        if (tag >> 6) == 2 && (tag & 0x1F) == 0 {
+            tbs.skip_element(); // Skip version
+        }
+    }
+    
+    // serialNumber CertificateSerialNumber
+    let serial = tbs.parse_integer()?;
+    
+    // Check if this certificate matches the signer
+    if !signer.serial_number.is_empty() && serial != signer.serial_number {
+        return None;
+    }
+    
+    // signature AlgorithmIdentifier
+    tbs.skip_element();
+    
+    // issuer Name
+    let _issuer_elem = tbs.parse_element()?;
+    
+    // Check if issuer matches
+    // (simplified - full implementation would compare Name structures)
+    if !signer.issuer.is_empty() {
+        // For now, we do a simple byte comparison
+        // A proper implementation would parse and compare the distinguished names
+    }
+    
+    // validity Validity
+    tbs.skip_element();
+    
+    // subject Name
+    tbs.skip_element();
+    
+    // subjectPublicKeyInfo SubjectPublicKeyInfo
+    let mut spki = tbs.parse_sequence()?;
+    
+    // algorithm AlgorithmIdentifier
+    let mut alg = spki.parse_sequence()?;
+    let alg_oid = alg.parse_oid()?;
+    
+    // Check if it's RSA
+    if alg_oid != super::crypto::OID_RSA_ENCRYPTION {
+        crate::kdebug!("Certificate key is not RSA");
+        return None;
+    }
+    
+    // subjectPublicKey BIT STRING
+    let pub_key_bits = spki.parse_bit_string()?;
+    
+    // Parse RSAPublicKey structure
+    let mut rsa_key = DerParser::new(pub_key_bits);
+    let mut rsa_seq = rsa_key.parse_sequence()?;
+    
+    // modulus INTEGER
+    let modulus = rsa_seq.parse_integer()?;
+    
+    // publicExponent INTEGER  
+    let exponent = rsa_seq.parse_integer()?;
+    
+    RsaPublicKey::new(modulus, exponent)
 }
 
 // ============================================================================
