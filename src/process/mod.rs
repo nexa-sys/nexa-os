@@ -10,9 +10,11 @@
 //! - `loader`: ELF loading for process creation
 //! - `execution`: Process execution and user-mode transition
 //! - `pid_tree`: Radix tree based PID management with O(log N) operations
+//! - `coredump`: Core dump generation for crashed processes
 
 extern crate alloc;
 
+pub mod coredump;
 mod execution;
 mod loader;
 pub mod pid_tree;

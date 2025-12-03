@@ -449,6 +449,28 @@ fn handle_procfs_read(path: &str) -> Option<OpenFile> {
                 metadata: procfs::proc_link_metadata(),
             });
         }
+        // /proc/sys/kernel/ entries (core dump configuration)
+        "proc/sys/kernel/core_pattern" => {
+            let (content, len) = crate::process::coredump::generate_core_pattern_content();
+            return Some(OpenFile {
+                content: FileContent::Inline(content),
+                metadata: procfs::proc_file_metadata(len as u64),
+            });
+        }
+        "proc/sys/kernel/core_pipe_limit" => {
+            let (content, len) = crate::process::coredump::generate_core_pipe_limit_content();
+            return Some(OpenFile {
+                content: FileContent::Inline(content),
+                metadata: procfs::proc_file_metadata(len as u64),
+            });
+        }
+        "proc/sys/kernel/core_uses_pid" => {
+            let (content, len) = crate::process::coredump::generate_core_uses_pid_content();
+            return Some(OpenFile {
+                content: FileContent::Inline(content),
+                metadata: procfs::proc_file_metadata(len as u64),
+            });
+        }
         _ => {}
     }
 
@@ -771,6 +793,7 @@ fn handle_procfs_stat(path: &str) -> Option<Metadata> {
     match path {
         "proc" => return Some(procfs::proc_dir_metadata()),
         "proc/self" => return Some(procfs::proc_link_metadata()),
+        "proc/sys" | "proc/sys/kernel" => return Some(procfs::proc_dir_metadata()),
         _ => {}
     }
 
@@ -779,6 +802,11 @@ fn handle_procfs_stat(path: &str) -> Option<Metadata> {
         "proc/version" | "proc/uptime" | "proc/loadavg" | "proc/meminfo" | "proc/cpuinfo"
         | "proc/stat" | "proc/filesystems" | "proc/mounts" | "proc/cmdline" => {
             return Some(procfs::proc_file_metadata(0)); // Size determined at read time
+        }
+        // /proc/sys/kernel/ entries (writable)
+        "proc/sys/kernel/core_pattern" | "proc/sys/kernel/core_pipe_limit"
+        | "proc/sys/kernel/core_uses_pid" => {
+            return Some(procfs::proc_file_metadata(0).with_mode(0o644));
         }
         _ => {}
     }
@@ -955,6 +983,7 @@ where
             cb("mounts", procfs::proc_file_metadata(0));
             cb("cmdline", procfs::proc_file_metadata(0));
             cb("self", procfs::proc_link_metadata());
+            cb("sys", procfs::proc_dir_metadata()); // /proc/sys directory
 
             // List all process directories
             // PIDs are managed by radix tree and can be any value up to MAX_PID
@@ -965,6 +994,16 @@ where
                     cb(&pid_str, procfs::proc_dir_metadata());
                 }
             }
+            return true;
+        }
+        "proc/sys" => {
+            cb("kernel", procfs::proc_dir_metadata());
+            return true;
+        }
+        "proc/sys/kernel" => {
+            cb("core_pattern", procfs::proc_file_metadata(0).with_mode(0o644));
+            cb("core_pipe_limit", procfs::proc_file_metadata(0).with_mode(0o644));
+            cb("core_uses_pid", procfs::proc_file_metadata(0).with_mode(0o644));
             return true;
         }
         _ => {}
@@ -1269,8 +1308,48 @@ pub fn file_exists(name: &str) -> bool {
     stat(name).is_some()
 }
 
+/// Handle procfs virtual file writes
+fn handle_procfs_write(path: &str, data: &[u8]) -> Option<Result<usize, &'static str>> {
+    let path = path.trim_start_matches('/');
+
+    match path {
+        "proc/sys/kernel/core_pattern" => {
+            if let Ok(pattern) = core::str::from_utf8(data) {
+                match crate::process::coredump::set_core_pattern(pattern) {
+                    Ok(()) => Some(Ok(data.len())),
+                    Err(e) => Some(Err(e)),
+                }
+            } else {
+                Some(Err("invalid UTF-8 in core_pattern"))
+            }
+        }
+        "proc/sys/kernel/core_pipe_limit" => {
+            if let Ok(s) = core::str::from_utf8(data) {
+                if let Ok(limit) = s.trim().parse::<u32>() {
+                    match crate::process::coredump::set_core_pipe_limit(limit) {
+                        Ok(()) => Some(Ok(data.len())),
+                        Err(e) => Some(Err(e)),
+                    }
+                } else {
+                    Some(Err("invalid number for core_pipe_limit"))
+                }
+            } else {
+                Some(Err("invalid UTF-8 in core_pipe_limit"))
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Write data to a file
 pub fn write_file(path: &str, data: &[u8]) -> Result<usize, &'static str> {
+    // Handle procfs writes specially
+    if path.starts_with("/proc") || path.starts_with("proc") {
+        if let Some(result) = handle_procfs_write(path, data) {
+            return result;
+        }
+    }
+
     let (fs, relative) = resolve_mount(path).ok_or("path not found")?;
     fs.write(relative, data)
 }

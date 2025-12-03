@@ -9,6 +9,13 @@ use x86_64::structures::idt::{InterruptStackFrame, PageFaultErrorCode};
 use crate::interrupts::gs_context::{encode_hex_u64, write_hex_u64};
 use crate::{kdebug, kerror, kinfo, kpanic, kwarn};
 
+/// Extract executable name from cmdline buffer (first null-terminated string)
+fn get_exe_name_from_cmdline(cmdline: &[u8]) -> &str {
+    // Find the first null terminator or end of slice
+    let end = cmdline.iter().position(|&b| b == 0).unwrap_or(cmdline.len());
+    core::str::from_utf8(&cmdline[..end]).unwrap_or("unknown")
+}
+
 /// Breakpoint exception handler (#BP, vector 3)
 pub extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
     let ring = stack_frame.code_segment.0 & 3;
@@ -42,10 +49,13 @@ pub extern "x86-interrupt" fn page_fault_handler(
     error_code: PageFaultErrorCode,
 ) {
     use x86_64::registers::control::Cr2;
+    use crate::process::coredump::{CoreDumpInfo, dump_core, should_dump_core};
 
     let cr2 = Cr2::read().unwrap_or_else(|_| x86_64::VirtAddr::new(0));
     let fault_addr = cr2.as_u64();
     let rip = stack_frame.instruction_pointer.as_u64();
+    let rsp = stack_frame.stack_pointer.as_u64();
+    let rflags = stack_frame.cpu_flags.bits();
 
     // Check if this is a user-mode page fault using the error code's USER_MODE bit
     // This is more reliable than checking CS because:
@@ -56,6 +66,8 @@ pub extern "x86-interrupt" fn page_fault_handler(
     if is_user_mode {
         // User-mode page fault - terminate the process gracefully
         if let Some(pid) = crate::scheduler::current_pid() {
+            let signal = crate::ipc::signal::SIGSEGV;
+
             // Use serial_println! to ensure output is visible (kerror! is filtered after init starts)
             crate::serial_println!(
                 "SIGSEGV: PID {} segfault at {:#x}, RIP={:#x}, error={:?}",
@@ -73,9 +85,31 @@ pub extern "x86-interrupt" fn page_fault_handler(
                 error_code
             );
 
+            // Generate core dump if enabled and signal requires it
+            if should_dump_core(signal) {
+                let mut core_info = CoreDumpInfo::new(pid);
+                core_info.signal = signal;
+                core_info.rip = rip;
+                core_info.rsp = rsp;
+                core_info.rflags = rflags;
+                core_info.cr2 = fault_addr;
+                core_info.error_code = error_code.bits();
+
+                // Get process info for core dump
+                if let Some(process) = crate::scheduler::get_process(pid) {
+                    core_info.memory_base = process.memory_base;
+                    core_info.memory_size = crate::process::USER_REGION_SIZE as usize;
+                    // Get executable name from cmdline (first null-terminated string)
+                    let exe_name = get_exe_name_from_cmdline(&process.cmdline);
+                    let _ = dump_core(&core_info, exe_name);
+                } else {
+                    let _ = dump_core(&core_info, "unknown");
+                }
+            }
+
             // Set termination signal (SIGSEGV = 11) so wait4() returns correct status
             let result1 =
-                crate::scheduler::set_process_term_signal(pid, crate::ipc::signal::SIGSEGV as i32);
+                crate::scheduler::set_process_term_signal(pid, signal as i32);
             crate::serial_println!("SIGSEGV: set_process_term_signal({}, 11) = {:?}", pid, result1);
 
             // Mark the process as zombie
@@ -490,8 +524,12 @@ pub extern "x86-interrupt" fn double_fault_handler(
 
 /// Divide error exception handler (#DE, vector 0)
 pub extern "x86-interrupt" fn divide_error_handler(stack_frame: InterruptStackFrame) {
+    use crate::process::coredump::{CoreDumpInfo, dump_core, should_dump_core};
+
     let ring = stack_frame.code_segment.0 & 3;
     let rip = stack_frame.instruction_pointer.as_u64();
+    let rsp = stack_frame.stack_pointer.as_u64();
+    let rflags = stack_frame.cpu_flags.bits();
 
     // Low-level marker for divide error
     unsafe {
@@ -504,16 +542,31 @@ pub extern "x86-interrupt" fn divide_error_handler(stack_frame: InterruptStackFr
         kerror!("DIV/0: User process divide error at RIP={:#x}", rip);
 
         if let Some(pid) = crate::scheduler::current_pid() {
+            let signal = crate::ipc::signal::SIGFPE;
             kerror!("Process {} crashed with SIGFPE (divide by zero)", pid);
-            kerror!("=== COREDUMP INFO FOR PID {} (DIV/0) ===", pid);
-            kerror!("  Instruction Pointer: {:#x}", rip);
-            kerror!("  Stack Pointer: {:#x}", stack_frame.stack_pointer.as_u64());
-            kerror!("  RFLAGS: {:#x}", stack_frame.cpu_flags.bits());
-            kerror!("=== END COREDUMP INFO ===");
+
+            // Generate core dump if enabled
+            if should_dump_core(signal) {
+                let mut core_info = CoreDumpInfo::new(pid);
+                core_info.signal = signal;
+                core_info.rip = rip;
+                core_info.rsp = rsp;
+                core_info.rflags = rflags;
+
+                if let Some(process) = crate::scheduler::get_process(pid) {
+                    core_info.memory_base = process.memory_base;
+                    core_info.memory_size = crate::process::USER_REGION_SIZE as usize;
+                    let exe_name = get_exe_name_from_cmdline(&process.cmdline);
+                    let _ = dump_core(&core_info, exe_name);
+                } else {
+                    let _ = dump_core(&core_info, "unknown");
+                }
+            }
 
             // Set exit code to 128 + SIGFPE (8) = 136
-            let exit_code = 128 + crate::ipc::signal::SIGFPE as i32;
+            let exit_code = 128 + signal as i32;
             let _ = crate::scheduler::set_process_exit_code(pid, exit_code);
+            let _ = crate::scheduler::set_process_term_signal(pid, signal as i32);
             let _ = crate::scheduler::set_process_state(pid, crate::process::ProcessState::Zombie);
 
             kinfo!(
@@ -585,9 +638,12 @@ pub extern "x86-interrupt" fn segment_not_present_handler(
 
 /// Invalid opcode exception handler (#UD, vector 6)
 pub extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: InterruptStackFrame) {
+    use crate::process::coredump::{CoreDumpInfo, dump_core, should_dump_core};
+
     let ring = stack_frame.code_segment.0 & 3;
     let rip = stack_frame.instruction_pointer.as_u64();
     let rsp = stack_frame.stack_pointer.as_u64();
+    let rflags = stack_frame.cpu_flags.bits();
 
     // Low-level marker for invalid opcode
     unsafe {
@@ -600,25 +656,31 @@ pub extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: InterruptStack
         kerror!("UD: User process invalid opcode at RIP={:#x}", rip);
 
         if let Some(pid) = crate::scheduler::current_pid() {
+            let signal = crate::ipc::signal::SIGILL;
             kerror!("Process {} crashed with SIGILL (invalid opcode)", pid);
-            kerror!("=== COREDUMP INFO FOR PID {} (UD) ===", pid);
-            kerror!("  Instruction Pointer: {:#x}", rip);
-            kerror!("  Stack Pointer: {:#x}", rsp);
 
-            // Try to read bytes at RIP for debugging
-            let mut bytes_at_rip: [u8; 16] = [0; 16];
-            unsafe {
-                let rip_ptr = rip as *const u8;
-                for i in 0..16 {
-                    bytes_at_rip[i] = rip_ptr.add(i).read_volatile();
+            // Generate core dump if enabled
+            if should_dump_core(signal) {
+                let mut core_info = CoreDumpInfo::new(pid);
+                core_info.signal = signal;
+                core_info.rip = rip;
+                core_info.rsp = rsp;
+                core_info.rflags = rflags;
+
+                if let Some(process) = crate::scheduler::get_process(pid) {
+                    core_info.memory_base = process.memory_base;
+                    core_info.memory_size = crate::process::USER_REGION_SIZE as usize;
+                    let exe_name = get_exe_name_from_cmdline(&process.cmdline);
+                    let _ = dump_core(&core_info, exe_name);
+                } else {
+                    let _ = dump_core(&core_info, "unknown");
                 }
             }
-            kerror!("  Bytes at RIP: {:02x?}", bytes_at_rip);
-            kerror!("=== END COREDUMP INFO ===");
 
             // Set exit code to 128 + SIGILL (4) = 132
-            let exit_code = 128 + crate::ipc::signal::SIGILL as i32;
+            let exit_code = 128 + signal as i32;
             let _ = crate::scheduler::set_process_exit_code(pid, exit_code);
+            let _ = crate::scheduler::set_process_term_signal(pid, signal as i32);
             let _ = crate::scheduler::set_process_state(pid, crate::process::ProcessState::Zombie);
 
             kinfo!(
