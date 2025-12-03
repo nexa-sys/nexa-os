@@ -3,8 +3,8 @@
 //! This shell now uses more std functionality thanks to the enhanced nrlib
 //! musl ABI compatibility layer.
 
-use std::{arch::asm, cell::UnsafeCell};
-use std::io::{self, Read, Write};
+use std::arch::asm;
+use std::io::{self, Write};
 use core::matches;
 use core::marker::Sync;
 use core::marker::Copy;
@@ -41,27 +41,8 @@ const USER_FLAG_ADMIN: u64 = 0x1;
 
 const HOSTNAME: &str = "nexa";
 const MAX_PATH: usize = 256;
-const PRINT_SCRATCH_SIZE: usize = 128;
 
-struct ScratchBuffer<const N: usize> {
-    inner: UnsafeCell<[u8; N]>,
-}
-
-impl<const N: usize> ScratchBuffer<N> {
-    const fn new() -> Self {
-        Self {
-            inner: UnsafeCell::new([0; N]),
-        }
-    }
-
-    unsafe fn get(&self) -> &mut [u8; N] {
-        &mut *self.inner.get()
-    }
-}
-
-unsafe impl<const N: usize> Sync for ScratchBuffer<N> {}
-
-static PRINT_SCRATCH: ScratchBuffer<PRINT_SCRATCH_SIZE> = ScratchBuffer::new();
+// Note: PRINT_SCRATCH removed - now using std::io for simpler output;
 
 fn syscall3(n: u64, a1: u64, a2: u64, a3: u64) -> u64 {
     // Route all syscalls via int 0x81 so the CPU saves/restores SS:RSP for Ring3 safely.
@@ -333,12 +314,25 @@ fn errno() -> i32 {
     syscall1(SYS_GETERRNO, 0) as i32
 }
 
-fn write(fd: u64, buf: *const u8, count: usize) {
-    syscall3(SYS_WRITE, fd, buf as u64, count as u64);
-}
-
 fn read(fd: u64, buf: *mut u8, count: usize) -> usize {
     syscall3(SYS_READ, fd, buf as u64, count as u64) as usize
+}
+
+/// Write bytes to stdout using std::io
+fn write_stdout(data: &[u8]) {
+    let _ = io::stdout().write_all(data);
+    let _ = io::stdout().flush();
+}
+
+/// Write a string to stdout using std::io
+fn write_stdout_str(s: &str) {
+    write_stdout(s.as_bytes());
+}
+
+/// Write a line to stdout using std::io
+fn writeln_stdout(s: &str) {
+    write_stdout_str(s);
+    write_stdout(b"\n");
 }
 
 
@@ -372,111 +366,41 @@ fn wtermsig(status: i32) -> i32 {
 }
 
 fn print_hex(val: u64) {
-    let hex_chars = b"0123456789abcdef";
-    let mut buf = [0u8; 16];
-    for i in 0..16 {
-        let nibble = ((val >> (60 - i * 4)) & 0xf) as usize;
-        buf[i] = hex_chars[nibble];
-    }
-    write(1, buf.as_ptr(), buf.len());
+    let _ = write!(io::stdout(), "{:016x}", val);
+    let _ = io::stdout().flush();
 }
 
 fn print_bytes(bytes: &[u8]) {
-    const USER_BASE: u64 = 0x400000;
-    const USER_END: u64 = 0xA00000; // exclusive upper bound
-
-    if bytes.is_empty() {
-        return;
-    }
-
-    let ptr = bytes.as_ptr() as u64;
-    let len = bytes.len() as u64;
-
-    let in_user_range = ptr >= USER_BASE
-        && ptr.checked_add(len).map_or(false, |end| end <= USER_END);
-
-    if in_user_range {
-        write(1, bytes.as_ptr(), bytes.len());
-        return;
-    }
-
-    let mut offset = 0usize;
-    while offset < bytes.len() {
-        let chunk = core::cmp::min(PRINT_SCRATCH_SIZE, bytes.len() - offset);
-        unsafe {
-            let scratch = PRINT_SCRATCH.get();
-            core::ptr::copy_nonoverlapping(
-                bytes.as_ptr().add(offset),
-                scratch.as_mut_ptr(),
-                chunk,
-            );
-            write(1, scratch.as_ptr(), chunk);
-        }
-        offset += chunk;
-    }
+    // Use std::io for simpler and safer output
+    write_stdout(bytes);
 }
 
 fn print_str(s: &str) {
-    print_bytes(s.as_bytes());
+    write_stdout_str(s);
 }
 
 fn println_str(s: &str) {
-    print_str(s);
-    print_bytes(b"\n");
+    writeln_stdout(s);
 }
 
-fn print_u64(mut value: u64) {
-    if value == 0 {
-        print_bytes(b"0");
-        return;
-    }
-    let mut buf = [0u8; 20];
-    let mut idx = 0;
-    while value > 0 {
-        buf[idx] = b'0' + (value % 10) as u8;
-        value /= 10;
-        idx += 1;
-    }
-    while idx > 0 {
-        idx -= 1;
-        print_bytes(&buf[idx..idx + 1]);
-    }
+fn print_u64(value: u64) {
+    let _ = write!(io::stdout(), "{}", value);
+    let _ = io::stdout().flush();
 }
 
 fn print_i64(value: i64) {
-    if value < 0 {
-        print_bytes(b"-");
-        print_u64((-value) as u64);
-    } else {
-        print_u64(value as u64);
-    }
+    let _ = write!(io::stdout(), "{}", value);
+    let _ = io::stdout().flush();
 }
 
 fn print_i32(value: i32) {
-    if value < 0 {
-        print_bytes(b"-");
-        print_u64((-value) as u64);
-    } else {
-        print_u64(value as u64);
-    }
+    let _ = write!(io::stdout(), "{}", value);
+    let _ = io::stdout().flush();
 }
 
-fn print_octal(mut value: u32) {
-    let mut buf = [0u8; 12];
-    let mut idx = 0;
-    if value == 0 {
-        print_bytes(b"0");
-        return;
-    }
-    while value > 0 {
-        buf[idx] = b'0' + (value & 0x7) as u8;
-        value >>= 3;
-        idx += 1;
-    }
-    while idx > 0 {
-        idx -= 1;
-        print_bytes(&buf[idx..idx + 1]);
-    }
+fn print_octal(value: u32) {
+    let _ = write!(io::stdout(), "{:o}", value);
+    let _ = io::stdout().flush();
 }
 
 fn println_errno(err: i32) {
