@@ -449,30 +449,6 @@ impl E1000Driver {
             return -1;
         }
 
-        // Debug: print self pointer and descriptor addresses
-        let self_ptr = self as *const Self as u64;
-        let rx_desc_ptr = self.rx_desc.as_ptr() as u64;
-        let rx_buf_ptr = self.rx_buffers[0].0.as_ptr() as u64;
-        let tx_desc_ptr = self.tx_desc.as_ptr() as u64;
-        let tx_buf_ptr = self.tx_buffers[0].0.as_ptr() as u64;
-        
-        // Debug: print descriptor sizes and array stride
-        let rx_desc_size = core::mem::size_of::<RxDescriptor>();
-        let rx_desc_stride = if RX_DESC_COUNT > 1 {
-            (&self.rx_desc[1] as *const _ as u64) - (&self.rx_desc[0] as *const _ as u64)
-        } else {
-            0
-        };
-        mod_log_hex!(b"e1000: sizeof(RxDesc)=", rx_desc_size as u64);
-        mod_log_hex!(b"e1000: RxDesc stride=", rx_desc_stride);
-        
-        // Log addresses as hex
-        mod_log_hex!(b"e1000: self=", self_ptr);
-        mod_log_hex!(b"e1000: rx_desc=", rx_desc_ptr);
-        mod_log_hex!(b"e1000: rx_buf[0]=", rx_buf_ptr);
-        mod_log_hex!(b"e1000: tx_desc=", tx_desc_ptr);
-        mod_log_hex!(b"e1000: tx_buf[0]=", tx_buf_ptr);
-        
         // Log MAC address
         mod_log_mac!(b"e1000: MAC=", &self.mac);
 
@@ -486,31 +462,11 @@ impl E1000Driver {
         // Enable interrupts
         self.enable_interrupts();
 
-        // Read back and log critical register values
-        let ctrl_val = self.read_reg(REG_CTRL);
-        let status_val = self.read_reg(REG_STATUS);
-        let rctl_val = self.read_reg(REG_RCTL);
-        let rdh_val = self.read_reg(REG_RDH);
-        let rdt_val = self.read_reg(REG_RDT);
-        let rdbal_val = self.read_reg(REG_RDBAL);
-        let rdlen_val = self.read_reg(REG_RDLEN);
-        
-        mod_log_hex!(b"e1000: CTRL=", ctrl_val as u64);
-        mod_log_hex!(b"e1000: STATUS=", status_val as u64);
-        mod_log_hex!(b"e1000: RCTL=", rctl_val as u64);
-        mod_log_hex!(b"e1000: RDH=", rdh_val as u64);
-        mod_log_hex!(b"e1000: RDT=", rdt_val as u64);
-        mod_log_hex!(b"e1000: RDBAL=", rdbal_val as u64);
-        mod_log_hex!(b"e1000: RDLEN=", rdlen_val as u64);
-        mod_log_hex!(b"e1000: desc[0].addr=", self.rx_desc[0].addr);
-
         mod_info!(b"e1000: initialization complete\n");
         0
     }
 
     fn update_dma_addresses(&mut self) {
-        mod_info!(b"e1000: update_dma_addresses called\n");
-        
         // Update RX descriptor base
         let rdba = self.rx_desc.as_ptr() as u64;
         self.write_reg(REG_RDBAL, (rdba & 0xFFFF_FFFF) as u32);
@@ -532,14 +488,6 @@ impl E1000Driver {
         self.rx_index = 0;
         self.rx_tail = RX_DESC_COUNT - 1;
         self.write_reg(REG_RDT, self.rx_tail as u32);
-        
-        // Debug: read back state after update
-        let rdh_after = self.read_reg(REG_RDH);
-        let rdt_after = self.read_reg(REG_RDT);
-        let rctl_after = self.read_reg(REG_RCTL);
-        mod_log_hex!(b"e1000: after_update RDH=", rdh_after as u64);
-        mod_log_hex!(b"e1000: after_update RDT=", rdt_after as u64);
-        mod_log_hex!(b"e1000: after_update RCTL=", rctl_after as u64);
     }
 
     fn transmit(&mut self, frame: &[u8]) -> i32 {
@@ -574,25 +522,7 @@ impl E1000Driver {
     }
 
     fn drain_rx(&mut self, buf: &mut [u8]) -> i32 {
-        // Debug: periodically log RX state (every 100 calls)
-        static mut DRAIN_RX_COUNT: u64 = 0;
-        unsafe {
-            DRAIN_RX_COUNT += 1;
-            if DRAIN_RX_COUNT % 100 == 1 {
-                let rdh = self.read_reg(REG_RDH);
-                let rdt = self.read_reg(REG_RDT);
-                let rctl = self.read_reg(REG_RCTL);
-                // Use volatile read for status since hardware updates it
-                let status0 = core::ptr::read_volatile(&self.rx_desc[0].status);
-                mod_log_hex!(b"e1000: drain_rx RDH=", rdh as u64);
-                mod_log_hex!(b"e1000: drain_rx RDT=", rdt as u64);
-                mod_log_hex!(b"e1000: drain_rx RCTL=", rctl as u64);
-                mod_log_hex!(b"e1000: drain_rx desc[0].status=", status0 as u64);
-                mod_log_hex!(b"e1000: drain_rx desc[0].addr=", self.rx_desc[0].addr);
-            }
-        }
-        
-        // CRITICAL: Use volatile read for status - hardware updates this via DMA
+        // Use volatile read for status - hardware updates this via DMA
         let desc_ptr = &self.rx_desc[self.rx_index] as *const RxDescriptor;
         let status = unsafe { core::ptr::read_volatile(&(*desc_ptr).status) };
         if (status & RX_STATUS_DD) == 0 {
@@ -627,19 +557,7 @@ impl E1000Driver {
     }
 
     fn maintenance(&mut self) -> i32 {
-        // Debug: periodically log RX state
-        static mut MAINT_COUNT: u64 = 0;
-        unsafe {
-            MAINT_COUNT += 1;
-            if MAINT_COUNT % 50 == 1 {
-                let rdh = self.read_reg(REG_RDH);
-                let rdt = self.read_reg(REG_RDT);
-                mod_log_hex!(b"e1000: maint RDH=", rdh as u64);
-                mod_log_hex!(b"e1000: maint RDT=", rdt as u64);
-                mod_log_hex!(b"e1000: maint rx_index=", self.rx_index as u64);
-            }
-        }
-        
+        // Check link status
         let status = self.read_reg(REG_STATUS);
         let link_bit = (status & (1 << 1)) != 0;
         if link_bit != self.link_up {
