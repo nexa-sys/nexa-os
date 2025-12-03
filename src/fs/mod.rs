@@ -8,12 +8,16 @@
 //! - Initial RAM filesystem (initramfs/CPIO)
 //! - procfs pseudo-filesystem (Linux-compatible /proc)
 //! - sysfs pseudo-filesystem (Linux-compatible /sys)
+//! - tmpfs in-memory filesystem
+//! - fstab mount configuration parser
 
 pub mod bridge;
 pub mod ext2_modular;
+pub mod fstab;
 pub mod initramfs;
 pub mod procfs;
 pub mod sysfs;
+pub mod tmpfs;
 pub mod traits;
 pub mod vfs;
 
@@ -48,3 +52,19 @@ pub use traits::{
 
 // Re-export bridge adapters
 pub use bridge::{BlockFsVfsAdapter, VfsBlockFsAdapter};
+
+// Re-export tmpfs
+pub use tmpfs::{
+    is_tmpfs_mounted, list_tmpfs_mounts, mount_tmpfs, tmpfs_create_directory, tmpfs_create_file,
+    tmpfs_read_file, tmpfs_remove, tmpfs_stat, tmpfs_stats, tmpfs_write_file, unmount_tmpfs,
+    TmpfsInstance, TmpfsMountOptions, TmpfsVfsAdapter,
+};
+
+// Re-export fstab
+pub use fstab::{
+    add_entry as fstab_add_entry, default_fstab, find_by_device as fstab_find_by_device,
+    find_by_mount_point as fstab_find_by_mount_point, get_auto_mount_entries,
+    get_entries as fstab_get_entries, get_entries_by_pass, get_mounts as fstab_get_mounts,
+    load_fstab, mount_all as fstab_mount_all, mount_entry as fstab_mount_entry, parse_fstab,
+    FstabEntry, MountInfo,
+};

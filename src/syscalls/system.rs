@@ -125,14 +125,14 @@ pub fn runlevel(level: i32) -> u64 {
     }
 }
 
-/// SYS_MOUNT - Mount a filesystem (simplified implementation)
+/// SYS_MOUNT - Mount a filesystem
 ///
-/// TODO: This is a placeholder that validates arguments but doesn't perform actual mounting.
-/// Real implementation requires:
-/// - Block device layer for accessing storage
-/// - Filesystem drivers (ext2, ext4, etc.)
-/// - Mount point tracking
-/// - VFS integration
+/// Supports mounting various filesystem types including:
+/// - tmpfs: In-memory temporary filesystem
+/// - proc: Process information pseudo-filesystem
+/// - sysfs: System information pseudo-filesystem
+/// - devtmpfs: Device pseudo-filesystem
+/// - ext2/ext3/ext4: Block device filesystems (limited support)
 pub fn mount(req_ptr: *const MountRequest) -> u64 {
     crate::kinfo!("syscall: mount");
 
@@ -195,15 +195,83 @@ pub fn mount(req_ptr: *const MountRequest) -> u64 {
         fstype
     );
 
-    // PLACEHOLDER: Return not implemented
-    // Real implementation would:
-    // 1. Open block device at 'source'
-    // 2. Detect/verify filesystem type
-    // 3. Create VFS mount structure
-    // 4. Add to mount table
-    crate::kwarn!("mount syscall not fully implemented, returning ENOSYS");
-    posix::set_errno(posix::errno::ENOSYS);
-    u64::MAX
+    // Handle different filesystem types
+    match fstype {
+        "tmpfs" => {
+            // Create mount point if it doesn't exist
+            if !crate::fs::file_exists(target) {
+                crate::fs::add_directory(leak_str(target));
+            }
+
+            // Mount tmpfs with default options
+            let options = crate::fs::TmpfsMountOptions::default();
+            match crate::fs::mount_tmpfs(leak_str(target), options) {
+                Ok(()) => {
+                    crate::kinfo!("mount: tmpfs mounted at {}", target);
+                    posix::set_errno(0);
+                    0
+                }
+                Err(_) => {
+                    crate::kwarn!("mount: failed to mount tmpfs at {}", target);
+                    posix::set_errno(posix::errno::EBUSY);
+                    u64::MAX
+                }
+            }
+        }
+
+        "proc" => {
+            // Create mount point if it doesn't exist
+            if !crate::fs::file_exists(target) {
+                crate::fs::add_directory(leak_str(target));
+            }
+            crate::boot::stages::mark_mounted("proc");
+            crate::kinfo!("mount: proc mounted at {}", target);
+            posix::set_errno(0);
+            0
+        }
+
+        "sysfs" => {
+            // Create mount point if it doesn't exist
+            if !crate::fs::file_exists(target) {
+                crate::fs::add_directory(leak_str(target));
+            }
+            crate::boot::stages::mark_mounted("sys");
+            crate::kinfo!("mount: sysfs mounted at {}", target);
+            posix::set_errno(0);
+            0
+        }
+
+        "devtmpfs" | "devfs" => {
+            // Create mount point if it doesn't exist
+            if !crate::fs::file_exists(target) {
+                crate::fs::add_directory(leak_str(target));
+            }
+            crate::boot::stages::mark_mounted("dev");
+            crate::kinfo!("mount: devtmpfs mounted at {}", target);
+            posix::set_errno(0);
+            0
+        }
+
+        "ext2" | "ext3" | "ext4" => {
+            // Block device filesystem - requires block device access
+            crate::kwarn!("mount: ext2/3/4 mount requires block device access");
+            crate::kwarn!("mount: use boot configuration for root filesystem");
+            posix::set_errno(posix::errno::ENOSYS);
+            u64::MAX
+        }
+
+        _ => {
+            crate::kwarn!("mount: unsupported filesystem type: {}", fstype);
+            posix::set_errno(posix::errno::ENODEV);
+            u64::MAX
+        }
+    }
+}
+
+/// Leak a &str to get a &'static str for VFS paths
+fn leak_str(s: &str) -> &'static str {
+    use alloc::string::String;
+    alloc::boxed::Box::leak(String::from(s).into_boxed_str())
 }
 
 /// SYS_UMOUNT - Unmount a filesystem
@@ -233,8 +301,24 @@ pub fn umount(target_ptr: *const u8, target_len: usize) -> u64 {
 
     crate::kinfo!("umount: target='{}'", target);
 
-    // PLACEHOLDER: Return not implemented
-    crate::kwarn!("umount syscall not fully implemented, returning ENOSYS");
+    // Try to unmount tmpfs
+    if crate::fs::is_tmpfs_mounted(target) {
+        match crate::fs::unmount_tmpfs(target) {
+            Ok(()) => {
+                crate::kinfo!("umount: successfully unmounted tmpfs at {}", target);
+                posix::set_errno(0);
+                return 0;
+            }
+            Err(_) => {
+                crate::kwarn!("umount: failed to unmount tmpfs at {}", target);
+                posix::set_errno(posix::errno::EBUSY);
+                return u64::MAX;
+            }
+        }
+    }
+
+    // Other filesystems not yet supported for unmount
+    crate::kwarn!("umount: unmounting non-tmpfs not yet supported");
     posix::set_errno(posix::errno::ENOSYS);
     u64::MAX
 }

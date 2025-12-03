@@ -456,19 +456,62 @@ pub fn generate_mounts() -> (&'static [u8], usize) {
     let mut writer = BufWriter::new(&mut buf[..]);
 
     // Format: device mountpoint fstype options dump pass
+
+    // Base mounts that are always present
     let _ = writeln!(writer, "rootfs / rootfs rw 0 0");
-    let _ = writeln!(
-        writer,
-        "proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0"
-    );
-    let _ = writeln!(
-        writer,
-        "sysfs /sys sysfs rw,nosuid,nodev,noexec,relatime 0 0"
-    );
-    let _ = writeln!(
-        writer,
-        "devtmpfs /dev devtmpfs rw,nosuid,relatime,size=0k,nr_inodes=0,mode=755 0 0"
-    );
+
+    // Check boot stage mount status for pseudo-filesystems
+    if crate::boot::stages::is_mounted("proc") {
+        let _ = writeln!(
+            writer,
+            "proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0"
+        );
+    }
+    if crate::boot::stages::is_mounted("sys") {
+        let _ = writeln!(
+            writer,
+            "sysfs /sys sysfs rw,nosuid,nodev,noexec,relatime 0 0"
+        );
+    }
+    if crate::boot::stages::is_mounted("dev") {
+        let _ = writeln!(
+            writer,
+            "devtmpfs /dev devtmpfs rw,nosuid,relatime,size=0k,nr_inodes=0,mode=755 0 0"
+        );
+    }
+
+    // Add tmpfs mounts from the tmpfs registry
+    for mount_point in crate::fs::list_tmpfs_mounts().iter().flatten() {
+        if let Ok(stats) = crate::fs::tmpfs_stats(mount_point) {
+            let size_kb = (stats.total_blocks * stats.block_size as u64) / 1024;
+            let _ = writeln!(
+                writer,
+                "tmpfs {} tmpfs rw,nosuid,nodev,relatime,size={}k,mode=1777 0 0",
+                mount_point, size_kb
+            );
+        }
+    }
+
+    // Add mounts tracked by fstab module
+    for mount in crate::fs::fstab_get_mounts() {
+        // Skip already-handled pseudo-filesystems
+        if mount.mount_point == "/" 
+            || mount.mount_point == "/proc" 
+            || mount.mount_point == "/sys" 
+            || mount.mount_point == "/dev" 
+        {
+            continue;
+        }
+        // Skip tmpfs (already handled above)
+        if mount.fs_type == "tmpfs" {
+            continue;
+        }
+        let _ = writeln!(
+            writer,
+            "{} {} {} {} 0 0",
+            mount.device, mount.mount_point, mount.fs_type, mount.options
+        );
+    }
 
     let len = writer.len();
     let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), len) };

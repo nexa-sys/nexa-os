@@ -1,0 +1,20 @@
+# /etc/fstab: static file system information
+# NexaOS filesystem table
+#
+# <device>      <mount_point>  <fs_type>  <options>       <dump>  <pass>
+
+# Root filesystem (mounted by kernel during boot)
+/dev/vda1       /              ext2       defaults        0       1
+
+# Virtual filesystems (mounted automatically by kernel)
+proc            /proc          proc       defaults        0       0
+sysfs           /sys           sysfs      defaults        0       0
+devtmpfs        /dev           devtmpfs   defaults        0       0
+
+# Temporary filesystems (RAM-based, contents lost on reboot)
+tmpfs           /tmp           tmpfs      defaults,mode=1777,size=64M    0       0
+tmpfs           /run           tmpfs      defaults,mode=0755,size=32M    0       0
+tmpfs           /dev/shm       tmpfs      defaults,mode=1777,size=64M    0       0
+
+# Optional: /var/tmp for larger temporary files
+# tmpfs         /var/tmp       tmpfs      defaults,mode=1777,size=128M   0       0

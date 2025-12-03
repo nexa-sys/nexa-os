@@ -524,8 +524,94 @@ pub fn start_real_root_init() -> Result<(), &'static str> {
         crate::kinfo!("Remounting root as read-write");
     }
 
+    // Load and process /etc/fstab
+    process_fstab();
+
     crate::kinfo!("Real root initialization complete");
     advance_stage(BootStage::UserSpace);
 
     Ok(())
 }
+
+/// Process /etc/fstab and mount configured filesystems
+fn process_fstab() {
+    crate::kinfo!("Processing /etc/fstab...");
+
+    // Try to load fstab
+    match crate::fs::load_fstab() {
+        Ok(count) => {
+            if count > 0 {
+                crate::kinfo!("Loaded {} fstab entries", count);
+
+                // Mount all auto-mount filesystems
+                match crate::fs::fstab_mount_all() {
+                    Ok(mounted) => {
+                        crate::kinfo!("Successfully mounted {} filesystems from fstab", mounted);
+                    }
+                    Err(e) => {
+                        crate::kwarn!("Error mounting filesystems from fstab: {}", e);
+                    }
+                }
+            } else {
+                crate::kinfo!("No fstab entries found, using built-in defaults");
+                mount_default_tmpfs();
+            }
+        }
+        Err(e) => {
+            crate::kwarn!("Failed to load fstab: {}, using defaults", e);
+            mount_default_tmpfs();
+        }
+    }
+}
+
+/// Mount default tmpfs filesystems when fstab is not available
+fn mount_default_tmpfs() {
+    use crate::fs::{mount_tmpfs, TmpfsMountOptions};
+
+    crate::kinfo!("Mounting default tmpfs filesystems...");
+
+    // /tmp - temporary files
+    if !crate::fs::file_exists("/tmp") {
+        crate::fs::add_directory("/tmp");
+    }
+    let tmp_opts = TmpfsMountOptions {
+        size: 64 * 1024 * 1024, // 64 MiB
+        mode: 0o1777,           // sticky bit
+        uid: 0,
+        gid: 0,
+    };
+    if let Err(e) = mount_tmpfs("/tmp", tmp_opts) {
+        crate::kwarn!("Failed to mount /tmp: {:?}", e);
+    }
+
+    // /run - runtime data
+    if !crate::fs::file_exists("/run") {
+        crate::fs::add_directory("/run");
+    }
+    let run_opts = TmpfsMountOptions {
+        size: 32 * 1024 * 1024, // 32 MiB
+        mode: 0o0755,
+        uid: 0,
+        gid: 0,
+    };
+    if let Err(e) = mount_tmpfs("/run", run_opts) {
+        crate::kwarn!("Failed to mount /run: {:?}", e);
+    }
+
+    // /dev/shm - shared memory
+    if !crate::fs::file_exists("/dev/shm") {
+        crate::fs::add_directory("/dev/shm");
+    }
+    let shm_opts = TmpfsMountOptions {
+        size: 64 * 1024 * 1024, // 64 MiB
+        mode: 0o1777,           // sticky bit
+        uid: 0,
+        gid: 0,
+    };
+    if let Err(e) = mount_tmpfs("/dev/shm", shm_opts) {
+        crate::kwarn!("Failed to mount /dev/shm: {:?}", e);
+    }
+
+    crate::kinfo!("Default tmpfs filesystems mounted");
+}
+

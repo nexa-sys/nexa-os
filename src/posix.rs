@@ -18,6 +18,7 @@ pub mod errno {
     pub const ENOMEM: i32 = 12; // Out of memory
     pub const EACCES: i32 = 13; // Permission denied
     pub const EFAULT: i32 = 14; // Bad address
+    pub const EBUSY: i32 = 16; // Device or resource busy
     pub const EEXIST: i32 = 17; // File exists
     pub const ENODEV: i32 = 19; // No such device
     pub const ENOTDIR: i32 = 20; // Not a directory
