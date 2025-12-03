@@ -603,24 +603,37 @@ pub fn execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8)
 
 /// POSIX wait4() system call - wait for process state change
 pub fn wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> u64 {
+    // Use serial_println for debugging (kinfo is filtered after init starts)
+    crate::serial_println!("WAIT4_ENTRY: pid={}, options={:#x}", pid, options);
     kinfo!("wait4(pid={}, options={:#x}) called", pid, options);
 
     let current_pid = match crate::scheduler::get_current_pid() {
         Some(pid) => pid,
         None => {
+            crate::serial_println!("WAIT4_ERROR: no current process");
             kerror!("wait4() called but no current process");
             posix::set_errno(posix::errno::ESRCH);
             return u64::MAX;
         }
     };
 
+    crate::serial_println!("WAIT4: from PID {} waiting for pid {}", current_pid, pid);
     kinfo!("wait4() from PID {} waiting for pid {}", current_pid, pid);
 
     const WNOHANG: i32 = 1;
     const WUNTRACED: i32 = 2;
     const WCONTINUED: i32 = 8;
 
-    let is_nonblocking = (options & WNOHANG) != 0;
+    // Force is_nonblocking to false if options is 0, just to be safe
+    // DEBUG: Force blocking to investigate why wait4 returns 0 (WNOHANG behavior) when options=0
+    let is_nonblocking = false; 
+    /*
+    let is_nonblocking = if options == 0 {
+        false
+    } else {
+        (options & WNOHANG) != 0
+    };
+    */
 
     if (options & !(WNOHANG | WUNTRACED | WCONTINUED)) != 0 {
         kerror!("wait4: unsupported options {:#x}", options);
@@ -666,6 +679,7 @@ pub fn wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> u64 
                         if let Some(proc) = crate::scheduler::get_process(check_pid) {
                             child_exit_code = Some(proc.exit_code);
                             child_term_signal = proc.term_signal;
+                            kinfo!("wait4: found zombie PID {}, term_signal={:?}", check_pid, child_term_signal);
                         } else {
                             child_exit_code = Some(0);
                         }
@@ -689,6 +703,16 @@ pub fn wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> u64 
                 found_any_child = true;
                 wait_pid = pid as u64;
 
+                // Debug output every iteration
+                if loop_count <= 10 {
+                    crate::serial_println!(
+                        "WAIT4_LOOP: iter={}, pid={}, state={:?}",
+                        loop_count,
+                        pid,
+                        child_state
+                    );
+                }
+
                 if loop_count <= 3 || (loop_count % 100 == 0) {
                     ktrace!(
                         "[wait4] Loop {}: PID {} found, state={:?}",
@@ -700,10 +724,17 @@ pub fn wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> u64 
 
                 if child_state == crate::process::ProcessState::Zombie {
                     child_exited = true;
+                    crate::serial_println!("WAIT4_ZOMBIE: pid={} is zombie!", pid);
 
                     if let Some(proc) = crate::scheduler::get_process(wait_pid) {
                         child_exit_code = Some(proc.exit_code);
                         child_term_signal = proc.term_signal;
+                        crate::serial_println!(
+                            "WAIT4_ZOMBIE_INFO: exit_code={}, term_signal={:?}",
+                            proc.exit_code,
+                            proc.term_signal
+                        );
+                        kinfo!("wait4: found zombie PID {}, term_signal={:?}", wait_pid, child_term_signal);
                     } else {
                         child_exit_code = Some(0);
                     }
@@ -753,10 +784,12 @@ pub fn wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> u64 
                 current_pid,
                 wait_pid
             );
+            crate::serial_println!("WAIT4_RETURN: pid={}, status={:#x}", wait_pid, encoded_status);
             return wait_pid;
         }
 
         if !found_any_child {
+            crate::serial_println!("WAIT4_ECHILD: no child found for parent={}, arg={}", current_pid, pid);
             ktrace!(
                 "[wait4] No matching child found for PID {} (pid arg={}) - returning ECHILD",
                 current_pid,
@@ -768,6 +801,7 @@ pub fn wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> u64 
         }
 
         if is_nonblocking {
+            crate::serial_println!("WAIT4_WNOHANG: returning 0");
             kinfo!("wait4() WNOHANG: child not yet exited");
             posix::set_errno(0);
             return 0;

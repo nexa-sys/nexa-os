@@ -56,6 +56,14 @@ pub extern "x86-interrupt" fn page_fault_handler(
     if is_user_mode {
         // User-mode page fault - terminate the process gracefully
         if let Some(pid) = crate::scheduler::current_pid() {
+            // Use serial_println! to ensure output is visible (kerror! is filtered after init starts)
+            crate::serial_println!(
+                "SIGSEGV: PID {} segfault at {:#x}, RIP={:#x}, error={:?}",
+                pid,
+                fault_addr,
+                rip,
+                error_code
+            );
             // Log for kernel developers
             kerror!(
                 "SIGSEGV: PID {} segfault at {:#x}, RIP={:#x}, error={:?}",
@@ -66,11 +74,13 @@ pub extern "x86-interrupt" fn page_fault_handler(
             );
 
             // Set termination signal (SIGSEGV = 11) so wait4() returns correct status
-            let _ =
+            let result1 =
                 crate::scheduler::set_process_term_signal(pid, crate::ipc::signal::SIGSEGV as i32);
+            crate::serial_println!("SIGSEGV: set_process_term_signal({}, 11) = {:?}", pid, result1);
 
             // Mark the process as zombie
-            let _ = crate::scheduler::set_process_state(pid, crate::process::ProcessState::Zombie);
+            let result2 = crate::scheduler::set_process_state(pid, crate::process::ProcessState::Zombie);
+            crate::serial_println!("SIGSEGV: set_process_state({}, Zombie) = {:?}", pid, result2);
 
             // CRITICAL: Ensure GS base points to kernel GS_DATA before calling scheduler.
             // When CPU enters kernel via interrupt gate from user mode, it does NOT execute

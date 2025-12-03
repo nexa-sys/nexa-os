@@ -876,9 +876,15 @@ unsafe extern "C" fn switch_return_trampoline() {
 }
 
 /// Execute context switch to next process
+/// 
+/// There are two cases:
+/// 1. Process was switched out while in kernel (context_valid=true, has valid saved context)
+///    -> Restore the saved kernel context directly, let it continue where it left off
+/// 2. Process needs to return to userspace (preempted from userspace or first syscall return)
+///    -> Use trampoline to sysretq back to userspace
 unsafe fn execute_context_switch(
     old_context_ptr: *mut crate::process::Context,
-    _next_context: &crate::process::Context,  // No longer used directly
+    next_context: &crate::process::Context,
     next_cr3: u64,
     user_rip: u64,
     user_rsp: u64,
@@ -915,30 +921,64 @@ unsafe fn execute_context_switch(
         Msr::new(crate::safety::x86::MSR_IA32_FS_BASE).write(fs_base);
     }
 
-    // Create a context that jumps to our return trampoline, using kernel stack
-    let mut trampoline_context = crate::process::Context::zero();
-    trampoline_context.rip = switch_return_trampoline as usize as u64;
-    // Stack: -16 for 16-byte alignment
-    trampoline_context.rsp = kernel_stack + crate::process::KERNEL_STACK_SIZE as u64 - 16;
-    trampoline_context.rflags = 0x202; // IF=1
+    // Check if next_context has a valid kernel RIP (was switched out while in kernel)
+    // If the saved context's RIP is in kernel space, restore it directly.
+    // This happens when a process called do_schedule() voluntarily from kernel code.
+    let next_rip = next_context.rip;
+    let is_kernel_context = next_rip != 0 && next_rip < 0x400000; // Kernel is below 4MB
     
-    // Pass user context via callee-saved registers to the trampoline
-    // This avoids using global variables which are not SMP-safe and race-prone
-    trampoline_context.r12 = user_rip;
-    trampoline_context.r13 = user_rsp;
-    trampoline_context.r14 = user_rflags;
-    trampoline_context.r15 = next_cr3;
-    
-    context_switch(old_context_ptr, &trampoline_context as *const _);
-    
-    // Reached when this process is restored - restore our CR3
-    if let Some(pid) = *CURRENT_PID.lock() {
-        let table = PROCESS_TABLE.lock();
-        for slot in table.iter() {
-            if let Some(entry) = slot {
-                if entry.process.pid == pid {
-                    crate::mm::paging::activate_address_space(entry.process.cr3);
-                    break;
+    if is_kernel_context {
+        // Process was in kernel (e.g., in wait4 loop calling do_schedule)
+        // Restore its kernel context directly - it will continue from context_switch return
+        // First activate the process's address space
+        crate::mm::paging::activate_address_space(next_cr3);
+        
+        // Restore user syscall context to GS_DATA so when the process eventually
+        // returns to userspace via sysretq, it has the correct values
+        crate::interrupts::restore_user_syscall_context(user_rip, user_rsp, user_rflags);
+        
+        // Direct context switch to saved kernel context
+        context_switch(old_context_ptr, next_context as *const _);
+        
+        // Reached when this process is restored - restore our CR3
+        if let Some(pid) = *CURRENT_PID.lock() {
+            let table = PROCESS_TABLE.lock();
+            for slot in table.iter() {
+                if let Some(entry) = slot {
+                    if entry.process.pid == pid {
+                        crate::mm::paging::activate_address_space(entry.process.cr3);
+                        break;
+                    }
+                }
+            }
+        }
+    } else {
+        // Process needs to return to userspace via trampoline
+        // Create a context that jumps to our return trampoline, using kernel stack
+        let mut trampoline_context = crate::process::Context::zero();
+        trampoline_context.rip = switch_return_trampoline as usize as u64;
+        // Stack: -16 for 16-byte alignment
+        trampoline_context.rsp = kernel_stack + crate::process::KERNEL_STACK_SIZE as u64 - 16;
+        trampoline_context.rflags = 0x202; // IF=1
+        
+        // Pass user context via callee-saved registers to the trampoline
+        // This avoids using global variables which are not SMP-safe and race-prone
+        trampoline_context.r12 = user_rip;
+        trampoline_context.r13 = user_rsp;
+        trampoline_context.r14 = user_rflags;
+        trampoline_context.r15 = next_cr3;
+        
+        context_switch(old_context_ptr, &trampoline_context as *const _);
+        
+        // Reached when this process is restored - restore our CR3
+        if let Some(pid) = *CURRENT_PID.lock() {
+            let table = PROCESS_TABLE.lock();
+            for slot in table.iter() {
+                if let Some(entry) = slot {
+                    if entry.process.pid == pid {
+                        crate::mm::paging::activate_address_space(entry.process.cr3);
+                        break;
+                    }
                 }
             }
         }
