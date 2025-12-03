@@ -24,12 +24,21 @@ INTERP_BASE:    0xA00000   // Dynamic linker region
 
 ## Build & Test Workflows
 ```bash
-./scripts/build-all.sh      # Full: kernel → userspace → rootfs → ISO (always use this)
+./scripts/build.sh all      # Full: kernel → userspace → rootfs → ISO (always use this)
 ./scripts/run-qemu.sh       # Boot in QEMU with serial console
-cargo build --release --target x86_64-nexaos.json  # Kernel-only iteration
-./scripts/build-rootfs.sh   # After userspace changes (BEFORE build-iso.sh!)
+./scripts/build.sh kernel   # Kernel-only iteration
+./scripts/build.sh userspace rootfs iso  # After userspace changes
 ```
-**Build order matters**: `build-rootfs.sh` → `build-iso.sh`, or ISO embeds stale rootfs.
+
+### Environment Variables
+```bash
+BUILD_TYPE=debug ./scripts/build.sh all   # Debug build (default, stable)
+BUILD_TYPE=release ./scripts/build.sh all # Release build (smaller, may have fork/exec issues)
+LOG_LEVEL=info ./scripts/build.sh kernel  # Set kernel log level
+```
+
+**Build order matters**: Use `./scripts/build.sh all` or specify steps in order.
+**Important**: Debug builds are recommended. Release builds (O3) may cause fork/exec crashes.
 
 ## Coding Conventions
 
@@ -40,10 +49,10 @@ cargo build --release --target x86_64-nexaos.json  # Kernel-only iteration
 - **Unsafe code**: Route through `src/safety/` helpers when possible
 
 ### Userspace (`userspace/`)
-- Target: `x86_64-nexaos-userspace.json`
-- Programs expose `_start`; build via `scripts/build-userspace.sh`
+- Target: `targets/x86_64-nexaos-userspace.json`
+- Programs expose `_start`; build via `./scripts/build.sh userspace`
 - `userspace/nrlib/` — libc shim for Rust `std` (pthread stubs, TLS, syscall wrappers)
-- Adding services: create binary in `userspace/`, add to `scripts/build-rootfs.sh`, register in `etc/inittab`
+- Adding services: create binary in `userspace/`, update build scripts, register in `etc/inittab`
 
 ### Synchronization
 Use `src/safety/` patterns with:

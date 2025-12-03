@@ -1,268 +1,247 @@
 # NexaOS Build Scripts
 
-This directory contains scripts for building and running NexaOS.
+This directory contains the modular build system for NexaOS.
 
 ## Quick Start
 
 ```bash
-# Build everything (recommended for first time)
-./scripts/build-all.sh
+# Build everything (kernel, userspace, rootfs, ISO)
+./scripts/build.sh
 
 # Run in QEMU
 ./scripts/run-qemu.sh
 ```
 
-## Individual Scripts
+## Main Build Script
 
-### `build-all.sh` - Complete Build
+### `build.sh` - Unified Build System
 
-Builds the entire system in the correct order:
-
-```bash
-./scripts/build-all.sh
-```
-
-This runs:
-1. `cargo build --release` - Builds kernel
-2. `build-userspace.sh` - Builds minimal initramfs
-3. `build-rootfs.sh` - Builds ext2 root filesystem
-4. `build-iso.sh release` - Creates bootable ISO
-
-**Output:**
-- `target/x86_64-nexaos/release/nexa-os` - Kernel binary
-- `build/initramfs.cpio` - Minimal initramfs (~40KB)
-- `build/rootfs.ext2` - Full root filesystem (50MB)
-- `dist/nexaos.iso` - Bootable ISO
-
-### `build-userspace.sh` - Minimal Initramfs
-
-Builds a minimal initramfs for early boot:
+The main entry point for all build operations:
 
 ```bash
-./scripts/build-userspace.sh
+# Full build (default)
+./scripts/build.sh
+
+# Quick build (skip modules)
+./scripts/build.sh quick
+
+# Build specific components
+./scripts/build.sh kernel          # Kernel only
+./scripts/build.sh userspace       # Userspace programs only
+./scripts/build.sh modules         # Kernel modules only
+./scripts/build.sh rootfs          # Root filesystem only
+./scripts/build.sh iso             # ISO image only
+
+# Build multiple components
+./scripts/build.sh kernel userspace rootfs iso
+
+# Clean build
+./scripts/build.sh clean           # Clean all artifacts
+./scripts/build.sh clean-build     # Clean build/ directory only
 ```
 
-**Contents:**
-- `/init` - Early boot script
-- `/bin/sh` - Emergency shell
-- Mount points: `/dev`, `/proc`, `/sys`, `/sysroot`
-
-**Output:** `build/initramfs.cpio` (~40KB)
-
-### `build-rootfs.sh` - Full Root Filesystem
-
-Creates a complete ext2 root filesystem:
-
+**Environment Variables:**
 ```bash
-./scripts/build-rootfs.sh
+BUILD_TYPE=debug|release   # Build mode (default: debug)
+LOG_LEVEL=debug|info|warn  # Kernel log level (default: debug)
 ```
 
-**Requirements:**
-- `mkfs.ext2` (e2fsprogs package)
-- `sudo` (for loop mounting)
-
-**Contents:**
-- All userspace binaries (`/sbin/ni`, `/bin/sh`, etc.)
-- Configuration files (`/etc/ni/ni.conf`, `/etc/inittab`)
-- Full directory structure
-
-**Output:** `build/rootfs.ext2` (50MB ext2 image)
-
-### `build-iso.sh` - Bootable ISO
-
-Creates a bootable ISO image with GRUB:
-
+**Example:**
 ```bash
-# Release build (recommended)
-./scripts/build-iso.sh release
-
-# Debug build
-./scripts/build-iso.sh debug
+BUILD_TYPE=release LOG_LEVEL=info ./scripts/build.sh
 ```
 
-**Requirements:**
-- `grub-mkrescue`
-- `xorriso`
+## Directory Structure
 
-**What it does:**
-- Builds kernel (if needed)
-- Builds initramfs
-- Creates GRUB config with boot parameters
-- Packages into ISO
-
-**Boot parameters:** `root=/dev/vda1 rootfstype=ext2 loglevel=info`
-
-**Output:** `dist/nexaos.iso`
-
-### `run-qemu.sh` - Run in QEMU
-
-Runs NexaOS in QEMU with proper configuration:
-
-```bash
-# Run with default options
-./scripts/run-qemu.sh
-
-# Pass additional QEMU args (example: start GDB server and pause CPUs)
-./scripts/run-qemu.sh -S -s
-
-# Use `--` to separate script args from QEMU args if needed
-./scripts/run-qemu.sh -- -S -s
+```
+scripts/
+├── build.sh                    # Main entry point
+├── run-qemu.sh                 # QEMU launcher
+├── build-uefi-loader.sh        # UEFI loader builder
+├── sign-module.sh              # Module signing tool
+├── lib/
+│   └── common.sh               # Shared functions and variables
+└── steps/
+    ├── build-kernel.sh         # Kernel compilation
+    ├── build-nrlib.sh          # nrlib (libc shim) compilation
+    ├── build-userspace-programs.sh  # Userspace programs
+    ├── build-modules.sh        # Kernel modules (.nkm)
+    ├── build-initramfs.sh      # Minimal initramfs
+    ├── build-rootfs.sh         # ext2 root filesystem
+    └── build-iso.sh            # Bootable ISO creation
 ```
 
-**What it does:**
-- Boots from ISO (kernel + initramfs)
-- Attaches `rootfs.ext2` as virtio disk (`/dev/vda`)
-- Allocates 512MB RAM
-- Enables serial console
+## Build Components
 
-**Requirements:**
-- ISO built: `dist/nexaos.iso`
-- Root filesystem: `build/rootfs.ext2` (optional, will warn if missing)
+### Kernel (`build.sh kernel`)
+
+Builds the NexaOS kernel:
+- Target: `x86_64-nexaos.json`
+- Output: `target/x86_64-nexaos/debug/nexa-os`
+
+### Userspace (`build.sh userspace`)
+
+Builds all userspace components:
+1. **nrlib** - Rust libc shim library
+   - `lib64/libnrlib.so` - Shared library
+   - `lib64/ld-nrlib-x86_64.so.1` - Dynamic linker
+2. **Programs** - Shell, init, utilities
+   - `/sbin/ni` - Init system
+   - `/bin/sh` - Shell
+   - `/bin/dhcp`, `/bin/login`, etc.
+
+### Modules (`build.sh modules`)
+
+Builds loadable kernel modules:
+- `ext2.nkm` - ext2 filesystem driver
+- `e1000.nkm` - Intel E1000 network driver
+
+Modules are signed with PKCS#7/CMS signatures.
+
+### Rootfs (`build.sh rootfs`)
+
+Creates a 50MB ext2 root filesystem image:
+- Output: `build/rootfs.ext2`
+- Contains all binaries, libraries, and configs
+- Attached as virtio disk in QEMU (`/dev/vda`)
+
+### ISO (`build.sh iso`)
+
+Creates a bootable ISO with GRUB:
+- Output: `dist/nexaos.iso`
+- Supports both BIOS and UEFI boot
+- Contains kernel, initramfs, and UEFI loader
 
 ## Common Workflows
 
 ### First Time Build
 
 ```bash
-./scripts/build-all.sh
+./scripts/build.sh
 ./scripts/run-qemu.sh
 ```
 
-### Rebuild After Kernel Changes
+### After Kernel Changes
 
 ```bash
-cargo build --release
-./scripts/build-iso.sh release
+./scripts/build.sh kernel iso
 ./scripts/run-qemu.sh
 ```
 
-### Rebuild After Userspace Changes
+### After Userspace Changes
 
 ```bash
-./scripts/build-rootfs.sh
+./scripts/build.sh userspace rootfs
 ./scripts/run-qemu.sh
 ```
 
-### Test with Different Boot Parameters
-
-Edit `scripts/build-iso.sh` and change `GRUB_CMDLINE`:
+### After Module Changes
 
 ```bash
-GRUB_CMDLINE="root=/dev/vda1 rootfstype=ext2 emergency loglevel=debug"
-```
-
-Then rebuild ISO:
-
-```bash
-./scripts/build-iso.sh release
+./scripts/build.sh modules initramfs
 ./scripts/run-qemu.sh
 ```
 
-## Troubleshooting
-
-### "ISO image not found"
-
-Run `./scripts/build-iso.sh release` first.
-
-### "Root filesystem not found"
-
-Run `./scripts/build-rootfs.sh` to create the ext2 disk.
-
-### "No init program found"
-
-The initramfs is minimal and doesn't contain init. The kernel should mount the root filesystem from `rootfs.ext2`. Check that:
-1. `build/rootfs.ext2` exists
-2. GRUB cmdline includes `root=/dev/vda1 rootfstype=ext2`
-3. Kernel logs show root mounting
-
-### "Command line parsing empty"
-
-The GRUB configuration wasn't generated correctly. Rebuild the ISO:
+### Clean Rebuild
 
 ```bash
-./scripts/build-iso.sh release
+./scripts/build.sh clean
+./scripts/build.sh
 ```
 
-### Rebuild Everything from Scratch
+## Running in QEMU
 
 ```bash
-# Clean build artifacts
-rm -rf build/ dist/ target/iso/
+# Default run
+./scripts/run-qemu.sh
 
-# Rebuild
-./scripts/build-all.sh
+# With additional QEMU options
+./scripts/run-qemu.sh -S -s  # GDB server + pause
+```
+
+**QEMU Configuration:**
+- 512MB RAM
+- 4 CPU cores
+- Virtio disk: `build/rootfs.ext2` → `/dev/vda`
+- Serial console output
+- Network: User-mode or bridge (auto-detected)
+
+## Boot Parameters
+
+Default GRUB command line:
+```
+root=/dev/vda1 rootfstype=ext2 loglevel=debug
+```
+
+To change, set `LOG_LEVEL` before building:
+```bash
+LOG_LEVEL=info ./scripts/build.sh iso
 ```
 
 ## Build Requirements
 
-### Kernel
-- Rust nightly toolchain
-- `rust-src` component
-- `llvm-tools-preview` component
+### Rust Toolchain
+- Rust nightly
+- Components: `rust-src`, `llvm-tools-preview`
 
-### Userspace
-- Same as kernel
+### System Tools
+- `grub-mkrescue`, `xorriso` - ISO creation
+- `mkfs.ext2` (e2fsprogs) - Filesystem creation
+- `qemu-system-x86_64` - Emulation
+- `openssl` - Module signing
 
-### Root Filesystem
-- `mkfs.ext2` (e2fsprogs)
-- `sudo` access (for loop mounting)
-- `strip` (binutils)
+## Troubleshooting
 
-### ISO
-- `grub-mkrescue` (grub-pc-bin or grub-efi-amd64-bin)
-- `xorriso`
-
-### QEMU
-- `qemu-system-x86_64`
-
-## Debug vs Release
-
-**Debug build:**
-- Faster compile time
-- Larger binary (~2MB)
-- More logging
-- Use for development
-
-**Release build:**
-- Optimized binary (~380KB)
-- Faster execution
-- Use for testing and demos
-
-To switch:
+### "Kernel not found"
 ```bash
-# Debug
-./scripts/build-iso.sh debug
+./scripts/build.sh kernel
+```
 
-# Release
-./scripts/build-iso.sh release
+### "Root filesystem not found"
+```bash
+./scripts/build.sh rootfs
+```
+
+### "ISO image not found"
+```bash
+./scripts/build.sh iso
+```
+
+### Fork/exec crashes in userspace
+Ensure kernel is built in debug mode (default). Release mode with O3 optimization causes issues:
+```bash
+BUILD_TYPE=debug ./scripts/build.sh kernel iso
+```
+
+### Clean everything and rebuild
+```bash
+./scripts/build.sh clean
+rm -rf target/
+./scripts/build.sh
 ```
 
 ## Boot Flow
 
 ```
-1. GRUB loads kernel from ISO
+1. GRUB/UEFI loads kernel + initramfs
    ↓
-2. GRUB loads minimal initramfs from ISO
+2. Kernel parses: root=/dev/vda rootfstype=ext2
    ↓
-3. GRUB passes: root=/dev/vda1 rootfstype=ext2
+3. Kernel mounts virtual filesystems (/proc, /sys, /dev)
    ↓
-4. Kernel parses boot parameters
+4. Kernel loads modules from initramfs (ext2.nkm, e1000.nkm)
    ↓
-5. Kernel mounts /proc, /sys, /dev
+5. Kernel mounts rootfs.ext2 at /sysroot
    ↓
-6. Kernel scans for root device
+6. Kernel performs pivot_root to real root
    ↓
-7. Kernel finds rootfs.ext2 in initramfs
+7. Kernel starts /sbin/ni (init system)
    ↓
-8. Kernel mounts ext2 at /sysroot
-   ↓
-9. Kernel performs pivot_root
-   ↓
-10. Kernel starts init from real root
+8. Init reads /etc/inittab and starts services
 ```
 
 ## See Also
 
 - `../docs/BUILD-SYSTEM.md` - Detailed build system documentation
-- `../docs/zh/rootfs-boot-process.md` - Chinese boot process guide
+- `../docs/zh/rootfs-boot-process.md` - Boot process guide (Chinese)
 - `../README.md` - Project overview

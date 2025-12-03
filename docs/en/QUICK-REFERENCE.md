@@ -3,7 +3,7 @@
 > **Version**: 1.0 Production  
 > **Platform**: x86_64  
 > **Type**: Hybrid Kernel OS (POSIX.1-2017 compliant)  
-> **Updated**: 2025-11-25
+> **Updated**: 2025-12-04
 
 ---
 
@@ -23,17 +23,29 @@
 
 ### Build & Run Complete System
 ```bash
-./scripts/build-all.sh      # Complete build (kernel + rootfs + ISO)
+./scripts/build.sh all      # Complete build (kernel + rootfs + ISO)
 ./scripts/run-qemu.sh       # Run in QEMU with serial output
 ```
 
 ### Build Individual Components
 ```bash
-cargo build --release --target x86_64-nexaos.json    # Kernel only
-./scripts/build-userspace.sh                         # Userspace binaries
-./scripts/build-rootfs.sh                            # ext2 root filesystem
-./scripts/build-iso.sh                               # Bootable ISO
-./scripts/build-rootfs-debug.sh                      # Debug rootfs
+./scripts/build.sh kernel       # Kernel only
+./scripts/build.sh userspace    # nrlib + userspace binaries
+./scripts/build.sh modules      # Kernel modules
+./scripts/build.sh initramfs    # Initial RAM filesystem
+./scripts/build.sh rootfs       # ext2 root filesystem
+./scripts/build.sh iso          # Bootable ISO
+
+# Combine steps:
+./scripts/build.sh kernel iso               # Just kernel and ISO
+./scripts/build.sh userspace rootfs iso     # Userspace chain
+```
+
+### Environment Variables
+```bash
+BUILD_TYPE=release ./scripts/build.sh all   # Release build (faster, smaller)
+BUILD_TYPE=debug ./scripts/build.sh all     # Debug build (default, stable)
+LOG_LEVEL=info ./scripts/build.sh kernel    # Set kernel log level
 ```
 
 ### Monitor & Debug
@@ -47,18 +59,21 @@ tail -f /tmp/qemu-serial.log    # Monitor kernel logs (in another terminal)
 ## Build Process
 
 ### Complete Build Order
-1. Compile kernel: `cargo build --release`
-2. Build userspace: `./scripts/build-userspace.sh`
-3. Create rootfs: `./scripts/build-rootfs.sh`
-4. Package ISO: `./scripts/build-iso.sh`
+1. Compile kernel: `./scripts/build.sh kernel`
+2. Build nrlib: (included in userspace)
+3. Build userspace: `./scripts/build.sh userspace`
+4. Build modules: `./scripts/build.sh modules`
+5. Create initramfs: `./scripts/build.sh initramfs`
+6. Create rootfs: `./scripts/build.sh rootfs`
+7. Package ISO: `./scripts/build.sh iso`
 
-**Or all at once**: `./scripts/build-all.sh`
+**Or all at once**: `./scripts/build.sh all`
 
 ### Build Output Artifacts
-- **Kernel**: `target/x86_64-nexaos/release/nexa-os` (main binary)
+- **Kernel**: `target/x86_64-nexaos/debug/nexa-os` (main binary, debug default)
 - **Initramfs**: `build/initramfs.cpio` (bootstrap environment)
 - **Root FS**: `build/rootfs.ext2` (full system filesystem)
-- **ISO**: `dist/nexaos.iso` (bootable image)
+- **ISO**: `target/iso/nexaos.iso` (bootable image)
 
 ---
 

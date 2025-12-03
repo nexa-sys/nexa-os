@@ -174,18 +174,20 @@ git clone https://github.com/nexa-sys/nexa-os.git
 cd nexa-os
 
 # Build complete system (kernel + initramfs + rootfs + ISO)
-./scripts/build-all.sh
+./scripts/build.sh all
 
 # Run in QEMU
 ./scripts/run-qemu.sh
 ```
 
 **What happens during build**:
-1. Compile kernel ELF (`target/x86_64-nexaos/release/nexa-os`)
-2. Build userspace programs (ni, shell, getty, login)
-3. Create ext2 root filesystem (`build/rootfs.ext2`, 50 MB)
-4. Generate initramfs CPIO archive (`build/initramfs.cpio`, ~40 KB)
-5. Create bootable ISO with GRUB (`dist/nexaos.iso`)
+1. Compile kernel ELF (`target/x86_64-nexaos/debug/nexa-os`)
+2. Build nrlib (runtime library)
+3. Build userspace programs (ni, shell, getty, login, etc.)
+4. Build kernel modules
+5. Create initramfs CPIO archive (`build/initramfs.cpio`)
+6. Create ext2 root filesystem (`build/rootfs.ext2`, 50 MB)
+7. Create bootable ISO with GRUB (`target/iso/nexaos.iso`)
 
 **Boot sequence**:
 ```
@@ -197,20 +199,21 @@ GRUB → Kernel → Initramfs → Mount ext2 root → Start init (ni) → Getty 
 ### Alternative Build Options
 
 ```bash
-# Build kernel only
-cargo build --release
+# Build individual components
+./scripts/build.sh kernel       # Kernel only
+./scripts/build.sh userspace    # nrlib + userspace programs
+./scripts/build.sh modules      # Kernel modules
+./scripts/build.sh initramfs    # Initial RAM filesystem
+./scripts/build.sh rootfs       # Root filesystem
+./scripts/build.sh iso          # Bootable ISO
 
-# Build initramfs only (emergency boot environment)
-./scripts/build-userspace.sh
+# Combine steps
+./scripts/build.sh kernel iso               # Kernel + ISO
+./scripts/build.sh userspace rootfs iso     # Userspace chain
 
-# Build root filesystem only (full system)
-./scripts/build-rootfs.sh
-
-# Build ISO (combines all components)
-./scripts/build-iso.sh
-
-# Debug build (with symbols and verbose logging)
-./scripts/build-rootfs-debug.sh
+# Environment variables
+BUILD_TYPE=release ./scripts/build.sh all   # Release build (smaller, may have issues)
+LOG_LEVEL=info ./scripts/build.sh kernel    # Set kernel log level
 ```
 
 ### Troubleshooting
@@ -224,12 +227,16 @@ cargo build --release
 **Build fails**:
 - Ensure Rust nightly is active: `rustup override set nightly`
 - Check components: `rustup component add rust-src llvm-tools-preview`
-- Verify custom target exists: `x86_64-nexaos.json` in repo root
+- Verify custom target exists: `targets/x86_64-nexaos.json`
 
 **QEMU won't boot**:
-- Verify ISO exists: `dist/nexaos.iso`
+- Verify ISO exists: `target/iso/nexaos.iso`
 - Check QEMU version: `qemu-system-x86_64 --version` (need ≥ 4.0)
 - Try without KVM: Edit `scripts/run-qemu.sh`, remove `-enable-kvm`
+
+**Fork/exec crashes in release mode**:
+- Use debug builds (default): `./scripts/build.sh all`
+- If you used release mode, switch back: `BUILD_TYPE=debug ./scripts/build.sh all`
 
 **Serial output missing**:
 - Check QEMU command includes `-serial stdio`
