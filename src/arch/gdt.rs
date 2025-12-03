@@ -579,3 +579,36 @@ pub fn get_kernel_stack_top(cpu_id: usize) -> u64 {
         aligned_privilege_stack_top(ptr::addr_of!(PER_CPU_STACKS[cpu_id].kernel_stack)).as_u64()
     }
 }
+
+/// Update TSS RSP0 (privilege level 0 stack) for the current CPU.
+/// This should be called during context switch to set the kernel stack
+/// for the next process. When an interrupt/syscall occurs from Ring 3,
+/// the CPU will use this stack.
+///
+/// # Safety
+/// - `new_rsp0` must be a valid kernel stack pointer (top of stack)
+/// - Must be called with interrupts disabled
+pub unsafe fn update_tss_rsp0(cpu_id: usize, new_rsp0: u64) {
+    use x86_64::VirtAddr;
+    
+    if cpu_id >= MAX_CPUS {
+        return; // Silently ignore invalid CPU IDs in release mode
+    }
+    
+    // Determine if this CPU uses dynamic or static TSS
+    let uses_dynamic = cpu_id >= STATIC_CPU_COUNT;
+    
+    let tss: &mut x86_64::structures::tss::TaskStateSegment = if uses_dynamic {
+        match crate::smp::alloc::get_dynamic_tss_mut(cpu_id) {
+            Ok(t) => t,
+            Err(_) => return, // Dynamic TSS not allocated yet
+        }
+    } else {
+        if !PER_CPU_TSS_READY[cpu_id].load(core::sync::atomic::Ordering::Acquire) {
+            return; // TSS not initialized yet
+        }
+        PER_CPU_TSS[cpu_id].get_mut()
+    };
+    
+    tss.privilege_stack_table[0] = VirtAddr::new(new_rsp0);
+}
