@@ -1,4 +1,4 @@
-use std::{arch::asm, cell::UnsafeCell, panic};
+use std::{arch::asm, cell::UnsafeCell};
 use core::matches;
 use core::marker::Sync;
 use core::marker::Copy;
@@ -18,7 +18,6 @@ const SYS_CLOSE: u64 = 3;
 const SYS_STAT: u64 = 4;
 const SYS_FORK: u64 = 57;
 const SYS_EXECVE: u64 = 59;
-const SYS_EXIT: u64 = 60;
 const SYS_WAIT4: u64 = 61;
 const SYS_LIST_FILES: u64 = 200;
 const SYS_GETERRNO: u64 = 201;
@@ -57,12 +56,6 @@ impl<const N: usize> ScratchBuffer<N> {
 unsafe impl<const N: usize> Sync for ScratchBuffer<N> {}
 
 static PRINT_SCRATCH: ScratchBuffer<PRINT_SCRATCH_SIZE> = ScratchBuffer::new();
-
-fn install_panic_hook() {
-    panic::set_hook(Box::new(|_info| {
-        exit(1);
-    }));
-}
 
 fn syscall3(n: u64, a1: u64, a2: u64, a3: u64) -> u64 {
     // Route all syscalls via int 0x81 so the CPU saves/restores SS:RSP for Ring3 safely.
@@ -342,10 +335,6 @@ fn read(fd: u64, buf: *mut u8, count: usize) -> usize {
     syscall3(SYS_READ, fd, buf as u64, count as u64) as usize
 }
 
-fn exit(code: i32) {
-    syscall1(SYS_EXIT, code as u64);
-    loop {} // Should not reach here
-}
 
 fn fork() -> i32 {
     syscall0(SYS_FORK) as i32
@@ -1004,7 +993,7 @@ fn read_line(state: &ShellState, buf: &mut [u8]) -> usize {
             0x04 => {
                 if len == 0 {
                     println_str("exit");
-                    exit(0);
+                    std::process::exit(0);
                 } else {
                     beep();
                 }
@@ -1670,7 +1659,7 @@ fn execute_external_command(cmd: &str, args: &[&str]) -> bool {
         print_str("Child: execve failed, error=");
         print_hex(result as u64);
         println_str("");
-        exit(1);
+        std::process::exit(1);
     }
     
     // Parent process - wait for child
@@ -1865,7 +1854,7 @@ fn handle_command(state: &mut ShellState, line: &str) {
         "clear" => clear_screen(),
         "exit" => {
             println_str("Bye!");
-            exit(0);
+            std::process::exit(0);
         }
         _ => {
             // Try to execute as external command
@@ -1899,6 +1888,5 @@ fn shell_loop() -> ! {
 }
 
 fn main() -> ! {
-    install_panic_hook();
     shell_loop()
 }
