@@ -25,6 +25,7 @@ TARGET_DIR="$PROJECT_ROOT/target"
 # NOTE: Default to debug for kernel - release (O3) causes fork/exec issues
 # The original build-iso.sh used debug mode. Keep this for compatibility.
 BUILD_TYPE="${BUILD_TYPE:-debug}"
+LOG_LEVEL="${LOG_LEVEL:-debug}"
 KERNEL_TARGET_DIR="$TARGET_DIR/x86_64-nexaos/$BUILD_TYPE"
 USERSPACE_TARGET_DIR="$BUILD_DIR/userspace-build/target/x86_64-nexaos-userspace/$BUILD_TYPE"
 
