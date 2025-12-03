@@ -489,16 +489,18 @@ pub extern "C" fn kmod_alloc(size: usize, align: usize) -> *mut u8 {
 
 /// Deallocate memory from a module
 #[no_mangle]
-pub extern "C" fn kmod_dealloc(ptr: *mut u8, size: usize, align: usize) {
-    use alloc::alloc::{dealloc, Layout};
+pub extern "C" fn kmod_dealloc(ptr: *mut u8, _size: usize, _align: usize) {
+    use crate::mm::allocator::kfree;
 
-    if ptr.is_null() || size == 0 {
+    if ptr.is_null() {
         return;
     }
 
-    let align = if align == 0 { 8 } else { align };
-    if let Ok(layout) = Layout::from_size_align(size, align) {
-        unsafe { dealloc(ptr, layout) }
+    // The original pointer is stored just before the aligned address
+    unsafe {
+        let ptr_storage = (ptr as usize - 8) as *const *mut u8;
+        let raw_ptr = *ptr_storage;
+        kfree(raw_ptr);
     }
 }
 
@@ -670,21 +672,47 @@ pub extern "C" fn kmod_memcmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
 // Additional Kernel APIs
 // ============================================================================
 
-/// Allocate zeroed memory for a module
+/// Allocate zeroed memory for a module with proper alignment
+/// 
+/// Note: The kernel's global allocator doesn't respect alignment requirements,
+/// so we handle alignment manually by over-allocating and storing the original
+/// pointer before the aligned address.
 #[no_mangle]
 pub extern "C" fn kmod_zalloc(size: usize, align: usize) -> *mut u8 {
-    use alloc::alloc::{alloc_zeroed, Layout};
-
+    use crate::mm::allocator::kalloc;
+    
     if size == 0 {
         return ptr::null_mut();
     }
 
-    let align = if align == 0 { 8 } else { align };
-    if let Ok(layout) = Layout::from_size_align(size, align) {
-        unsafe { alloc_zeroed(layout) }
-    } else {
-        ptr::null_mut()
+    let align = if align == 0 || align < 8 { 8 } else { align.next_power_of_two() };
+    
+    // Allocate extra space for alignment and to store the original pointer
+    // We need:
+    // - size bytes for the actual data
+    // - up to (align - 1) bytes for alignment padding
+    // - 8 bytes to store the original pointer before the aligned address
+    let total_size = size + align - 1 + 8;
+    
+    let raw_ptr = match kalloc(total_size) {
+        Some(p) => p,
+        None => return ptr::null_mut(),
+    };
+    
+    // Calculate aligned address, leaving room for the original pointer storage
+    let raw_addr = raw_ptr as usize;
+    let aligned_addr = (raw_addr + 8 + align - 1) & !(align - 1);
+    
+    // Store the original pointer just before the aligned address
+    unsafe {
+        let ptr_storage = (aligned_addr - 8) as *mut *mut u8;
+        *ptr_storage = raw_ptr;
+        
+        // Zero the memory
+        ptr::write_bytes(aligned_addr as *mut u8, 0, size);
     }
+    
+    aligned_addr as *mut u8
 }
 
 /// Try to acquire a spinlock without blocking

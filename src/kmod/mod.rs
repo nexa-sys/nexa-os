@@ -928,13 +928,18 @@ fn is_elf(data: &[u8]) -> bool {
 
 /// Load a kernel module from NKM data (supports both simple NKM and ELF formats)
 pub fn load_module(data: &[u8]) -> Result<(), ModuleError> {
+    load_module_named(data, None)
+}
+
+/// Load a kernel module with an explicit name
+pub fn load_module_named(data: &[u8], name: Option<&str>) -> Result<(), ModuleError> {
     if data.len() < 4 {
         return Err(ModuleError::FileTooSmall);
     }
 
     // Check if this is an ELF module
     if is_elf(data) {
-        return load_elf_module(data);
+        return load_elf_module_named(data, name);
     }
 
     // Otherwise, try simple NKM format
@@ -943,6 +948,11 @@ pub fn load_module(data: &[u8]) -> Result<(), ModuleError> {
 
 /// Load an ELF-based kernel module
 fn load_elf_module(data: &[u8]) -> Result<(), ModuleError> {
+    load_elf_module_named(data, None)
+}
+
+/// Load an ELF-based kernel module with an explicit name
+fn load_elf_module_named(data: &[u8], name: Option<&str>) -> Result<(), ModuleError> {
     crate::kinfo!("Loading ELF kernel module ({} bytes)", data.len());
 
     // Verify module signature (REQUIRED)
@@ -985,7 +995,18 @@ fn load_elf_module(data: &[u8]) -> Result<(), ModuleError> {
     );
 
     // Create module info using heap allocation
-    let mut info = ModuleInfo::with_name("elf_module");
+    // Use provided name or default to "elf_module"
+    let module_name = name.unwrap_or("elf_module");
+    
+    // Check if module is already loaded
+    {
+        let registry = MODULE_REGISTRY.lock();
+        if registry.find(module_name).is_some() {
+            return Err(ModuleError::AlreadyLoaded);
+        }
+    }
+    
+    let mut info = ModuleInfo::with_name(module_name);
     info.version = alloc::string::String::from("1.0.0");
     info.module_type = ModuleType::Other;
     info.state = ModuleState::Loaded;
@@ -1041,7 +1062,7 @@ fn load_elf_module(data: &[u8]) -> Result<(), ModuleError> {
     // Mark as running
     {
         let mut registry = MODULE_REGISTRY.lock();
-        if let Some(mod_info) = registry.find_mut("elf_module") {
+        if let Some(mod_info) = registry.find_mut(module_name) {
             mod_info.state = ModuleState::Running;
         }
     }
@@ -1247,7 +1268,7 @@ pub fn load_from_initramfs(name: &str) -> Result<(), ModuleError> {
     // Try to read from initramfs
     if let Some(initramfs) = crate::fs::get_initramfs() {
         if let Some(entry) = initramfs.lookup(path) {
-            return load_module(entry.data());
+            return load_module_named(entry.data(), Some(name));
         }
     }
 

@@ -658,6 +658,7 @@ pub fn recvfrom(
     _src_addr: *mut SockAddr,
     _addrlen: *mut u32,
 ) -> u64 {
+    kinfo!("[SYS_RECVFROM] ENTRY: sockfd={} len={}", sockfd, len);
     ktrace!("[SYS_RECVFROM] ENTRY: sockfd={} len={}", sockfd, len);
 
     crate::net::poll();
@@ -727,14 +728,26 @@ pub fn recvfrom(
             || sock_handle.socket_type != SOCK_DGRAM
             || sock_handle.protocol != IPPROTO_UDP
         {
+            kinfo!("[SYS_RECVFROM] not UDP: domain={} type={} proto={}", 
+                sock_handle.domain, sock_handle.socket_type, sock_handle.protocol);
             posix::set_errno(posix::errno::ENOTSUP);
             return u64::MAX;
         }
+        
+        kinfo!("[SYS_RECVFROM] UDP recv loop starting");
 
         let timeout_ms = sock_handle.recv_timeout_ms;
         let start_tick = crate::scheduler::get_tick();
 
+        static mut RECVFROM_LOOP_COUNT: u64 = 0;
         loop {
+            unsafe {
+                RECVFROM_LOOP_COUNT += 1;
+                let cnt = RECVFROM_LOOP_COUNT;
+                if cnt % 100 == 1 {
+                    kinfo!("[SYS_RECVFROM] loop #{}", cnt);
+                }
+            }
             crate::net::poll();
 
             let buffer = slice::from_raw_parts_mut(buf, len);

@@ -300,14 +300,16 @@ pub fn poll() {
         return;
     }
 
-    // Debug: Check CR3 value during polling
+    // Debug: Check poll activity
     static mut POLL_COUNT: u32 = 0;
+    static mut LAST_DEBUG_MS: u64 = 0;
     unsafe {
         POLL_COUNT += 1;
-        if POLL_COUNT % 200 == 1 {
-            let cr3: u64;
-            core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack));
-            crate::ktrace!("[net::poll] CR3={:#x}", cr3);
+        let cnt = POLL_COUNT;
+        // Log every 1000ms instead of every 200 calls
+        if now_ms >= LAST_DEBUG_MS + 1000 {
+            crate::kinfo!("[net::poll] poll #{}, now_ms={}", cnt, now_ms);
+            LAST_DEBUG_MS = now_ms;
         }
     }
 
@@ -334,6 +336,18 @@ fn drain_rx(
     stack: &mut stack::NetStack,
     device_index: usize,
 ) {
+    use core::sync::atomic::{AtomicU64, Ordering};
+    static DRAIN_RX_CALLS: AtomicU64 = AtomicU64::new(0);
+    static LAST_DRAIN_DEBUG_MS: AtomicU64 = AtomicU64::new(0);
+    
+    let call_count = DRAIN_RX_CALLS.fetch_add(1, Ordering::Relaxed) + 1;
+    let now_ms = logger::boot_time_us() / 1_000;
+    let last_debug = LAST_DRAIN_DEBUG_MS.load(Ordering::Relaxed);
+    if now_ms >= last_debug + 2000 {
+        crate::kinfo!("[drain_rx] device {} call #{}", device_index, call_count);
+        LAST_DRAIN_DEBUG_MS.store(now_ms, Ordering::Relaxed);
+    }
+    
     let mut scratch = [0u8; stack::MAX_FRAME_SIZE];
     let mut frame_count = 0;
     while let Some(len) = driver.drain_rx(&mut scratch) {

@@ -273,6 +273,7 @@ pub extern "C" fn syscall_dispatch(
             )
         }
         SYS_RECVFROM => {
+            kinfo!("[syscall] SYS_RECVFROM called: arg1={}", arg1);
             // recvfrom needs 6 args: sockfd, buf, len, flags, src_addr, addrlen
             let (arg4, arg5, arg6) = unsafe {
                 let mut r10_val: u64;
