@@ -1,4 +1,10 @@
+//! NexaOS Shell - A simple command-line shell
+//!
+//! This shell now uses more std functionality thanks to the enhanced nrlib
+//! musl ABI compatibility layer.
+
 use std::{arch::asm, cell::UnsafeCell};
+use std::io::{self, Read, Write};
 use core::matches;
 use core::marker::Sync;
 use core::marker::Copy;

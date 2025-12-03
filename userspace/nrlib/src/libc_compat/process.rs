@@ -377,13 +377,8 @@ pub extern "C" fn setgroups(_size: size_t, _list: *const crate::gid_t) -> c_int 
 
 // ============================================================================
 // Directory Change Functions (stubs)
+// Note: chdir is now implemented in fs.rs
 // ============================================================================
-
-/// chdir - change working directory
-#[no_mangle]
-pub extern "C" fn chdir(_path: *const c_char) -> c_int {
-    0
-}
 
 /// chroot - change root directory
 #[no_mangle]

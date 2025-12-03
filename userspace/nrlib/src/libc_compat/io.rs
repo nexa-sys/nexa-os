@@ -237,17 +237,8 @@ pub unsafe extern "C" fn readlinkat(
 }
 
 // ============================================================================
-// Directory Reading
+// Directory Reading - moved to fs.rs
 // ============================================================================
-
-#[no_mangle]
-pub unsafe extern "C" fn getdents64(fd: c_int, dirp: *mut c_void, count: c_uint) -> c_int {
-    let _ = fd;
-    let _ = dirp;
-    let _ = count;
-    crate::set_errno(38); // ENOSYS
-    -1
-}
 
 // ============================================================================
 // Poll

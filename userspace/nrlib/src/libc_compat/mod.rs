@@ -20,6 +20,8 @@
 //! - `rtld` - Runtime dynamic linker (library manager)
 //! - `symbol` - Symbol lookup and resolution
 //! - `reloc` - Relocation processing
+//! - `fs` - Filesystem operations (mkdir, rmdir, getcwd, chdir, etc.)
+//! - `string` - String functions and error handling (strerror, strcpy, etc.)
 //!
 //! Note: Basic functions (read, write, open, close, exit, getpid, memcpy, etc.)
 //! are already defined in lib.rs. This module only adds additional functions
@@ -37,6 +39,8 @@ pub mod clone;
 pub mod network;
 pub mod process;
 pub mod syscall_wrapper;
+pub mod fs;
+pub mod string;
 
 // Dynamic linking support modules
 pub mod elf;
@@ -60,3 +64,5 @@ pub use clone::*;
 pub use network::*;
 pub use process::*;
 pub use syscall_wrapper::*;
+pub use fs::*;
+pub use string::*;
