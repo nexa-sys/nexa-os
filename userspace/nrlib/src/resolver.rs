@@ -6,6 +6,7 @@
 use super::dns::{DnsQuery, QType, ResolverConfig};
 use super::socket::{socket, sendto, recvfrom, SockAddr, SockAddrIn, AF_INET, SOCK_STREAM, SOCK_DGRAM, parse_ipv4};
 use crate::get_system_dns_servers;
+use core::hint::black_box;
 use core::mem;
 use core::sync::atomic::{AtomicU16, Ordering};
 
@@ -319,20 +320,15 @@ impl Resolver {
         use super::socket::bind;
         use crate::close;
 
-        crate::stderr_write_str("[query_dns_internal] called\n");
-
         if depth >= MAX_CNAME_DEPTH {
-            crate::stderr_write_str("[query_dns_internal] max depth reached\n");
             return None;
         }
 
         // Create UDP socket
         let sockfd = socket(AF_INET, SOCK_DGRAM, 0);
         if sockfd < 0 {
-            crate::stderr_write_str("[query_dns_internal] socket() failed\n");
             return None;
         }
-        crate::stderr_write_str("[query_dns_internal] socket created\n");
 
         // Helper to close socket on return
         struct SocketGuard(i32);
@@ -366,10 +362,8 @@ impl Resolver {
         let local_addr = SockAddrIn::new([0, 0, 0, 0], 0);
         let local_sockaddr = SockAddr::from(local_addr);
         if bind(sockfd, &local_sockaddr, mem::size_of::<SockAddr>() as u32) < 0 {
-            crate::stderr_write_str("[query_dns_internal] bind() failed\n");
             return None;
         }
-        crate::stderr_write_str("[query_dns_internal] bind succeeded\n");
 
         // Build DNS query packet with unique transaction ID
         let mut query = DnsQuery::new();
@@ -381,29 +375,13 @@ impl Resolver {
         let query_packet = match query.build(query_id, hostname, QType::A) {
             Ok(pkt) => pkt,
             Err(_) => {
-                crate::stderr_write_str("[query_dns_internal] query build failed\n");
                 return None;
             }
         };
-        crate::stderr_write_str("[query_dns_internal] query built, len=");
-        crate::stderr_write_usize(query_packet.len());
-        crate::stderr_write_str("\n");
 
         // Create destination address (nameserver at port 53)
         let dest_addr = SockAddrIn::new(nameserver_ip, DNS_PORT);
         let dest_sockaddr = SockAddr::from(dest_addr);
-        
-        crate::stderr_write_str("[query_dns_internal] dest: ");
-        let mut ip_buf = [0u8; 16];
-        let ip_len = format_ip_simple(&nameserver_ip, &mut ip_buf);
-        let _ = crate::stderr_write_all(&ip_buf[..ip_len]);
-        crate::stderr_write_str(":53\n");
-        
-        crate::stderr_write_str("[query_dns_internal] sockaddr size=");
-        crate::stderr_write_usize(mem::size_of::<SockAddr>());
-        crate::stderr_write_str(", sockaddr_in size=");
-        crate::stderr_write_usize(mem::size_of::<SockAddrIn>());
-        crate::stderr_write_str("\n");
 
         // Send DNS query
         let sent = sendto(
@@ -415,18 +393,12 @@ impl Resolver {
             mem::size_of::<SockAddr>() as u32,
         );
 
-        crate::stderr_write_str("[query_dns_internal] sendto returned: ");
-        crate::stderr_write_isize(sent);
-        crate::stderr_write_str(", errno=");
-        let errno_val = crate::get_errno();
-        crate::stderr_write_i32(errno_val);
-        crate::stderr_write_str("\n");
+        // Prevent optimizer from eliding the syscall result check
+        let sent = black_box(sent);
 
         if sent < 0 || sent as usize != query_packet.len() {
-            crate::stderr_write_str("[query_dns_internal] sendto failed\n");
             return None;
         }
-        crate::stderr_write_str("[query_dns_internal] sendto succeeded\n");
 
         // Receive DNS response (allocate buffer on stack)
         let mut response_buf = [0u8; 512];
@@ -439,15 +411,15 @@ impl Resolver {
             core::ptr::null_mut(),
         );
 
+        // Prevent optimizer from eliding the syscall result check
+        let received = black_box(received);
+
         if received <= 0 {
-            crate::stderr_write_str("[query_dns_internal] recvfrom failed or timeout\n");
             return None;
         }
-        crate::stderr_write_str("[query_dns_internal] recvfrom succeeded\n");
         
         // Minimum DNS response size check (header only is 12 bytes)
         if (received as usize) < 12 {
-            crate::stderr_write_str("[query_dns_internal] response too short\n");
             return None;
         }
 
@@ -484,42 +456,18 @@ impl Resolver {
     /// Resolve hostname to IPv4 address using NSS sources
     /// First checks /etc/hosts (if Files is in nsswitch), then DNS (if Dns is in nsswitch)
     pub fn resolve(&self, hostname: &str) -> Option<[u8; 4]> {
-        crate::stderr_write_str("[resolve] called for: ");
-        crate::stderr_write_str(hostname);
-        crate::stderr_write_str("\n");
-        crate::stderr_write_str("[resolve] nameserver_count=");
-        // Print count as single digit
-        let count = self.config.nameserver_count;
-        if count < 10 {
-            let digit = (count as u8) + b'0';
-            let buf = [digit, b'\n'];
-            if let Ok(s) = core::str::from_utf8(&buf) {
-                crate::stderr_write_str(s);
-            }
-        }
-        
         // Try each NSS source in order
         for source in self.nss_sources() {
             match source {
                 NssSource::Files => {
-                    crate::stderr_write_str("[resolve] trying Files\n");
                     if let Some(ip) = self.lookup_hosts(hostname) {
                         return Some(ip);
                     }
                 }
                 NssSource::Dns => {
-                    crate::stderr_write_str("[resolve] trying DNS\n");
                     // Try each configured nameserver
                     for i in 0..self.config.nameserver_count {
                         let ns = self.config.nameservers[i];
-                        crate::stderr_write_str("[resolve] querying nameserver: ");
-                        let mut ip_str = [0u8; 16];
-                        let ip_len = format_ip_simple(&ns, &mut ip_str);
-                        if let Ok(s) = core::str::from_utf8(&ip_str[..ip_len]) {
-                            crate::stderr_write_str(s);
-                        }
-                        crate::stderr_write_str("\n");
-                        
                         if let Some(ip) = self.query_dns(hostname, ns) {
                             return Some(ip);
                         }
@@ -534,7 +482,6 @@ impl Resolver {
             }
         }
 
-        crate::stderr_write_str("[resolve] all sources failed\n");
         None
     }
 }
@@ -574,43 +521,31 @@ fn read_file_content(path: &str, buf: &mut [u8]) -> Option<usize> {
 /// Initialize global resolver (call once at program startup)
 #[no_mangle]
 pub extern "C" fn resolver_init() -> i32 {
-    crate::stderr_write_str("[resolver_init] called\n");
-    
     if RESOLVER_INIT.load(core::sync::atomic::Ordering::Acquire) {
-        crate::stderr_write_str("[resolver_init] already initialized\n");
         return 0; // Already initialized
     }
 
     let mut resolver = Resolver::new();
 
     // Try to load /etc/resolv.conf
-    crate::stderr_write_str("[resolver_init] trying /etc/resolv.conf\n");
     let mut resolv_buf = [0u8; 2048];
     if let Some(len) = read_file_content("/etc/resolv.conf", &mut resolv_buf) {
-        crate::stderr_write_str("[resolver_init] /etc/resolv.conf loaded\n");
         if let Ok(content) = core::str::from_utf8(&resolv_buf[..len]) {
             resolver.parse_resolv_conf(content);
         }
-    } else {
-        crate::stderr_write_str("[resolver_init] /etc/resolv.conf not found\n");
     }
 
     if resolver.config.nameserver_count == 0 {
-        crate::stderr_write_str("[resolver_init] trying kernel DNS servers\n");
         let mut kernel_dns = [0u32; KERNEL_DNS_QUERY_CAP];
         if let Ok(count) = get_system_dns_servers(&mut kernel_dns) {
-            crate::stderr_write_str("[resolver_init] got kernel DNS servers\n");
             for idx in 0..count {
                 let ip_bytes = kernel_dns[idx].to_be_bytes();
                 let _ = resolver.config.add_nameserver(ip_bytes);
             }
-        } else {
-            crate::stderr_write_str("[resolver_init] kernel DNS query failed\n");
         }
     }
 
     if resolver.config.nameserver_count == 0 {
-        crate::stderr_write_str("[resolver_init] using default DNS servers\n");
         let _ = resolver.config.add_nameserver([10, 0, 2, 3]);
         let _ = resolver.config.add_nameserver([8, 8, 8, 8]);
     }
@@ -648,6 +583,7 @@ fn get_resolver() -> Option<&'static Resolver> {
 }
 
 /// Simple IP address formatting (without allocation)
+#[allow(dead_code)]
 fn format_ip_simple(ip: &[u8; 4], buf: &mut [u8; 16]) -> usize {
     let mut pos = 0;
     for (i, &octet) in ip.iter().enumerate() {
@@ -687,16 +623,11 @@ pub extern "C" fn getaddrinfo(
     hints: *const AddrInfo,
     res: *mut *mut AddrInfo,
 ) -> i32 {
-    // Debug: print entry
-    crate::stderr_write_str("[getaddrinfo] called\n");
-    
     if res.is_null() {
-        crate::stderr_write_str("[getaddrinfo] res is null\n");
         return EAI_FAIL;
     }
 
     if node.is_null() {
-        crate::stderr_write_str("[getaddrinfo] node is null\n");
         return EAI_NONAME;
     }
 
@@ -717,15 +648,9 @@ pub extern "C" fn getaddrinfo(
         let hostname = match core::str::from_utf8(&hostname_buf[..len]) {
             Ok(s) => s,
             Err(_) => {
-                crate::stderr_write_str("[getaddrinfo] invalid UTF-8 hostname\n");
                 return EAI_NONAME;
             }
         };
-        
-        // Debug: print hostname
-        crate::stderr_write_str("[getaddrinfo] hostname: ");
-        crate::stderr_write_str(hostname);
-        crate::stderr_write_str("\n");
 
         // Parse service (port number) if provided
         let mut port: u16 = 0;
@@ -767,34 +692,20 @@ pub extern "C" fn getaddrinfo(
         // First, try to parse hostname as a numeric IP address
         // This avoids unnecessary DNS queries for addresses like "192.168.1.1"
         let ip = if let Some(numeric_ip) = parse_ipv4(hostname) {
-            crate::stderr_write_str("[getaddrinfo] parsed as numeric IP\n");
             numeric_ip
         } else {
-            crate::stderr_write_str("[getaddrinfo] attempting DNS resolution\n");
             // Get resolver and ensure it's initialized
             let resolver = match get_resolver() {
                 Some(r) => r,
                 None => {
-                    crate::stderr_write_str("[getaddrinfo] failed to get resolver\n");
                     return EAI_FAIL;
                 }
             };
 
             // Try to resolve hostname via DNS
             match resolver.resolve(hostname) {
-                Some(ip) => {
-                    crate::stderr_write_str("[getaddrinfo] DNS resolved to: ");
-                    // Print IP address
-                    let mut ip_str = [0u8; 16];
-                    let ip_len = format_ip_simple(&ip, &mut ip_str);
-                    if let Ok(s) = core::str::from_utf8(&ip_str[..ip_len]) {
-                        crate::stderr_write_str(s);
-                    }
-                    crate::stderr_write_str("\n");
-                    ip
-                }
+                Some(ip) => ip,
                 None => {
-                    crate::stderr_write_str("[getaddrinfo] DNS resolution failed\n");
                     return EAI_NONAME;
                 }
             }
