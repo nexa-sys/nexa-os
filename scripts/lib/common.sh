@@ -181,8 +181,10 @@ get_nrlib_rustflags() {
 }
 
 # RUSTFLAGS for PIC (shared libraries)
+# Export _start and _start_c symbols so they appear in .dynsym for dynamic linking
+# Use -u to keep symbols referenced and --export-dynamic to make them visible
 get_pic_rustflags() {
-    echo "-C opt-level=2 -C panic=abort -C relocation-model=pic"
+    echo "-C opt-level=2 -C panic=abort -C relocation-model=pic -C link-arg=-u_start -C link-arg=-u_start_c -C link-arg=--export-dynamic"
 }
 
 # RUSTFLAGS for dynamic linker

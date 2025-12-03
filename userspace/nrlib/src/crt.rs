@@ -16,10 +16,12 @@ extern "C" {
 // Raw entry point reached immediately after the kernel jumps into the binary.
 // Defined in hand-written assembly so we can preserve the initial stack pointer
 // before Rust emits any prologue.
+// Note: We use .protected visibility to ensure symbol is exported in shared library
 #[cfg(target_arch = "x86_64")]
 global_asm!(
     ".section .text.startup,\"ax\",@progbits",
     ".globl _start",
+    ".protected _start",
     ".type _start,@function",
     "_start:",
     "\t.cfi_startproc",
@@ -32,11 +34,30 @@ global_asm!(
     "\t.cfi_endproc",
     "\t.size _start, .-_start",
     ".globl _start_c",
+    ".protected _start_c",
     ".type _start_c,@function",
     "_start_c:",
     "\tjmp _start",
     "\t.size _start_c, .-_start_c",
 );
+
+// Force the linker to export _start and _start_c by referencing them
+extern "C" {
+    fn _start() -> !;
+    fn _start_c() -> !;
+}
+
+/// Get the address of _start (for dynamic linker to find the entry point)
+#[no_mangle]
+pub extern "C" fn __nexa_get_start_addr() -> usize {
+    unsafe { _start as usize }
+}
+
+/// Get the address of _start_c (for compatibility)
+#[no_mangle]
+pub extern "C" fn __nexa_get_start_c_addr() -> usize {
+    unsafe { _start_c as usize }
+}
 
 /// Decode argc/argv/envp from the preserved userspace stack and invoke `main`.
 #[no_mangle]

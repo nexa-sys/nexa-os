@@ -53,7 +53,9 @@ build_nrlib_shared() {
     
     if [ -f "$sharedlib" ]; then
         cp "$sharedlib" "$dest_dir/libnrlib.so"
-        strip --strip-all "$dest_dir/libnrlib.so" 2>/dev/null || true
+        # Use --strip-unneeded instead of --strip-all to preserve _start and other 
+        # symbols that might be needed for dynamic linking
+        strip --strip-unneeded "$dest_dir/libnrlib.so" 2>/dev/null || true
         
         # Create compatibility symlinks
         ln -sf libnrlib.so "$dest_dir/libc.so"

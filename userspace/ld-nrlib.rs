@@ -1214,6 +1214,15 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
                 continue;
             }
             
+            // Process RELA relocations (includes GLOB_DAT) with symbol lookup
+            if lib.dyn_info.rela != 0 && lib.dyn_info.relasz > 0 {
+                print_str("[ld-nrlib] Processing library ");
+                print_hex(i as u64);
+                print_str(" RELA relocations (with symtab)...\n");
+                process_rela_with_symtab(lib.dyn_info.rela, lib.dyn_info.relasz, lib.dyn_info.relaent, lib.load_bias, &lib.dyn_info);
+            }
+            
+            // Process PLT/JMPREL relocations
             if lib.dyn_info.jmprel != 0 && lib.dyn_info.pltrelsz > 0 {
                 print_str("[ld-nrlib] Processing library ");
                 print_hex(i as u64);
@@ -1298,7 +1307,27 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
                     print_str("\n");
                     entry = start_addr;
                 } else {
-                    // Try __nexa_crt_start (NexaOS nrlib entry point)
+                    // Try __nexa_get_start_addr to get _start address indirectly
+                    // This is needed because _start is a local symbol in shared library
+                    let get_start_fn = global_symbol_lookup(b"__nexa_get_start_addr");
+                    if get_start_fn != 0 {
+                        print_str("[ld-nrlib] Found __nexa_get_start_addr at: ");
+                        print_hex(get_start_fn);
+                        print_str("\n");
+                        // Call the function to get _start address
+                        let get_start: extern "C" fn() -> usize = core::mem::transmute(get_start_fn);
+                        let start_addr = get_start() as u64;
+                        if start_addr != 0 {
+                            print_str("[ld-nrlib] _start address: ");
+                            print_hex(start_addr);
+                            print_str("\n");
+                            entry = start_addr;
+                        }
+                    }
+                }
+                
+                // Try __nexa_crt_start (NexaOS nrlib entry point) as fallback
+                if entry == 0 {
                     let crt_addr = global_symbol_lookup(b"__nexa_crt_start");
                     if crt_addr != 0 {
                         print_str("[ld-nrlib] Found __nexa_crt_start at: ");
@@ -1591,10 +1620,19 @@ unsafe fn process_rela(rela_addr: u64, relasz: u64, relaent: u64, load_bias: i64
 /// For __nexa_crt_start (C function): receives stack_ptr in rdi
 #[inline(never)]
 unsafe fn jump_to_entry(entry: u64, stack_ptr: *const u64) -> ! {
+    // CRITICAL: We must use explicit register assignments to prevent the compiler
+    // from allocating entry/stack to registers that get cleared later.
+    // - r14: entry point address (preserved across register clearing)
+    // - r15: stack pointer (preserved across register clearing)
     asm!(
-        "mov rsp, {stack}",       // Restore original stack pointer
+        // First, save our inputs to callee-saved registers before clearing anything
+        "mov r14, {entry}",       // Save entry point to r14
+        "mov r15, {stack}",       // Save stack pointer to r15
+        // Now set up the stack
+        "mov rsp, r15",           // Restore original stack pointer
         "xor rbp, rbp",           // Clear frame pointer
-        "xor rax, rax",           // Clear registers
+        // Clear general purpose registers (but not r14/r15 yet)
+        "xor rax, rax",
         "xor rbx, rbx",
         "xor rcx, rcx",
         "xor rdx, rdx",
@@ -1606,9 +1644,8 @@ unsafe fn jump_to_entry(entry: u64, stack_ptr: *const u64) -> ! {
         "xor r11, r11",
         "xor r12, r12",
         "xor r13, r13",
-        "xor r14, r14",
-        "xor r15, r15",
-        "jmp {entry}",            // Jump to entry point
+        // Jump to entry point (r14 still holds the address)
+        "jmp r14",
         stack = in(reg) stack_ptr,
         entry = in(reg) entry,
         options(noreturn)
