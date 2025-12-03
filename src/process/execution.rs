@@ -62,11 +62,13 @@ impl Process {
             );
 
             // Set up syscall return context
-            crate::interrupts::restore_user_syscall_context(
-                self.entry_point, // user_rip (syscall return address)
-                self.stack_top,   // user_rsp
-                self.user_rflags, // user_rflags
-            );
+            unsafe {
+                crate::interrupts::restore_user_syscall_context(
+                    self.entry_point, // user_rip (syscall return address)
+                    self.stack_top,   // user_rsp
+                    self.user_rflags, // user_rflags
+                );
+            }
 
             // CRITICAL: Switch CR3 and return to userspace atomically
             // We must switch CR3 in the same assembly block that does sysretq

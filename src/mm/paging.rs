@@ -640,7 +640,7 @@ pub fn create_process_address_space(phys_base: u64, size: u64) -> Result<u64, &'
 /// 1. Process execution (Process::execute)
 /// 2. Context switches (scheduler::do_schedule)
 /// 3. Returning to kernel space (scheduler::set_current_pid(None))
-pub fn activate_address_space(cr3_phys: u64) {
+pub extern "C" fn activate_address_space(cr3_phys: u64) {
     use x86_64::registers::control::{Cr3, Cr3Flags};
     use x86_64::structures::paging::Size4KiB;
 

@@ -836,56 +836,44 @@ unsafe fn execute_first_run_via_context_switch(
 }
 
 /// Trampoline for Switch path - returns to userspace via sysretq
-#[inline(never)]
-extern "C" fn switch_return_trampoline() {
-    // crate::serial_println!("[SRT] ENTERED switch_return_trampoline");
-    
-    // CRITICAL: Ensure GS base points to kernel GS_DATA before using gs:[xxx].
-    // This is necessary because we may have gotten here from an exception handler
-    // (Page Fault, GPF, etc.) where the CPU entered kernel without swapgs.
-    // The ensure_kernel_gs_base() call in exception handlers may not be sufficient
-    // if the context switch itself was executed with wrong GS base.
-    crate::smp::ensure_kernel_gs_base();
-    // crate::serial_println!("[SRT] ensure_kernel_gs_base done");
-
-    // Get saved user context from globals
-    let (user_rip, user_rsp, user_rflags, cr3) = unsafe {
-        (SWITCH_USER_RIP, SWITCH_USER_RSP, SWITCH_USER_RFLAGS, SWITCH_CR3)
-    };
-    
-    // DEBUG: crate::serial_println!("[SRT] Trampoline: rip={:#x} rsp={:#x} cr3={:#x}", 
-    //     user_rip, user_rsp, cr3);
-    
-    // Activate address space and return to userspace
-    crate::paging::activate_address_space(cr3);
-    crate::interrupts::restore_user_syscall_context(user_rip, user_rsp, user_rflags);
-    
-    // sysretq to return to userspace
-    // GS_SLOT offsets: USER_RSP=0, SAVED_RCX=7*8=0x38, SAVED_RFLAGS=8*8=0x40
-    // Note: No swapgs needed - userspace uses FS for TLS, not GS
-    // Kernel GS base stays active (like normal syscall return path)
-    unsafe {
-        core::arch::asm!(
-            "cli",
-            // Clear kernel stack guard flags before returning
-            "xor rax, rax",
-            "mov gs:[160], rax",  // GS_SLOT_KERNEL_STACK_GUARD * 8
-            "mov gs:[168], rax",  // GS_SLOT_KERNEL_STACK_SNAPSHOT * 8
-            // Load sysretq parameters from GS_DATA
-            "mov rcx, gs:[0x38]",  // GS_SLOT_SAVED_RCX = 7, * 8 = 0x38 -> user RIP
-            "mov r11, gs:[0x40]",  // GS_SLOT_SAVED_RFLAGS = 8, * 8 = 0x40 -> user RFLAGS
-            "mov rsp, gs:[0x00]",  // GS_SLOT_USER_RSP = 0, * 8 = 0x00 -> user RSP
-            "sysretq",
-            options(noreturn)
-        );
-    }
+#[unsafe(naked)]
+unsafe extern "C" fn switch_return_trampoline() {
+    core::arch::naked_asm!(
+        // r12 = user_rip
+        // r13 = user_rsp
+        // r14 = user_rflags
+        // r15 = cr3
+        
+        // Ensure GS base is correct (using callee-saved registers to preserve context)
+        "call {ensure_kernel_gs_base}",
+        
+        // Activate address space
+        "mov rdi, r15", // cr3
+        "call {activate_address_space}",
+        
+        // Restore user syscall context
+        "mov rdi, r12", // rip
+        "mov rsi, r13", // rsp
+        "mov rdx, r14", // rflags
+        "call {restore_user_syscall_context}",
+        
+        // sysretq to return to userspace
+        "cli",
+        // Clear kernel stack guard flags before returning
+        "xor rax, rax",
+        "mov gs:[160], rax",  // GS_SLOT_KERNEL_STACK_GUARD * 8
+        "mov gs:[168], rax",  // GS_SLOT_KERNEL_STACK_SNAPSHOT * 8
+        // Load sysretq parameters from GS_DATA
+        "mov rcx, gs:[0x38]",  // GS_SLOT_SAVED_RCX = 7, * 8 = 0x38 -> user RIP
+        "mov r11, gs:[0x40]",  // GS_SLOT_SAVED_RFLAGS = 8, * 8 = 0x40 -> user RFLAGS
+        "mov rsp, gs:[0x00]",  // GS_SLOT_USER_RSP = 0, * 8 = 0x00 -> user RSP
+        "sysretq",
+        
+        ensure_kernel_gs_base = sym crate::smp::ensure_kernel_gs_base,
+        activate_address_space = sym crate::mm::paging::activate_address_space,
+        restore_user_syscall_context = sym crate::interrupts::restore_user_syscall_context,
+    );
 }
-
-// Globals for switch_return_trampoline
-static mut SWITCH_USER_RIP: u64 = 0;
-static mut SWITCH_USER_RSP: u64 = 0;
-static mut SWITCH_USER_RFLAGS: u64 = 0;
-static mut SWITCH_CR3: u64 = 0;
 
 /// Execute context switch to next process
 unsafe fn execute_context_switch(
@@ -895,7 +883,7 @@ unsafe fn execute_context_switch(
     user_rip: u64,
     user_rsp: u64,
     user_rflags: u64,
-    is_voluntary: bool,
+    _is_voluntary: bool,
     kernel_stack: u64,
     fs_base: u64,
 ) {
@@ -927,28 +915,20 @@ unsafe fn execute_context_switch(
         Msr::new(crate::safety::x86::MSR_IA32_FS_BASE).write(fs_base);
     }
 
-    // Update statistics - SKIP for now to test
-    // {
-    //     let mut stats = SCHED_STATS.lock();
-    //     if is_voluntary {
-    //         stats.total_voluntary_switches += 1;
-    //     } else {
-    //         stats.total_preemptions += 1;
-    //     }
-    // }
-
-    // Store user context in globals for the trampoline
-    SWITCH_USER_RIP = user_rip;
-    SWITCH_USER_RSP = user_rsp;
-    SWITCH_USER_RFLAGS = user_rflags;
-    SWITCH_CR3 = next_cr3;
-
     // Create a context that jumps to our return trampoline, using kernel stack
     let mut trampoline_context = crate::process::Context::zero();
     trampoline_context.rip = switch_return_trampoline as usize as u64;
     // Stack: -16 for 16-byte alignment
     trampoline_context.rsp = kernel_stack + crate::process::KERNEL_STACK_SIZE as u64 - 16;
     trampoline_context.rflags = 0x202; // IF=1
+    
+    // Pass user context via callee-saved registers to the trampoline
+    // This avoids using global variables which are not SMP-safe and race-prone
+    trampoline_context.r12 = user_rip;
+    trampoline_context.r13 = user_rsp;
+    trampoline_context.r14 = user_rflags;
+    trampoline_context.r15 = next_cr3;
+    
     context_switch(old_context_ptr, &trampoline_context as *const _);
     
     // Reached when this process is restored - restore our CR3
@@ -957,7 +937,7 @@ unsafe fn execute_context_switch(
         for slot in table.iter() {
             if let Some(entry) = slot {
                 if entry.process.pid == pid {
-                    crate::paging::activate_address_space(entry.process.cr3);
+                    crate::mm::paging::activate_address_space(entry.process.cr3);
                     break;
                 }
             }

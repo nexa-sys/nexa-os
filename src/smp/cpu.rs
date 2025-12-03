@@ -310,7 +310,7 @@ pub fn current_numa_node() -> u32 {
 /// This writes to MSR_IA32_GS_BASE which affects all subsequent GS-based memory accesses.
 /// Only call this when you know GS base may be incorrect (i.e., from user-mode exception handlers).
 #[inline]
-pub fn ensure_kernel_gs_base() {
+pub extern "C" fn ensure_kernel_gs_base() {
     let gs_data_addr = current_gs_data_ptr() as u64;
     unsafe {
         crate::safety::x86::wrmsr(crate::safety::x86::MSR_IA32_GS_BASE, gs_data_addr);

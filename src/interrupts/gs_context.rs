@@ -73,28 +73,22 @@ pub unsafe fn set_gs_data(entry: u64, stack: u64, user_cs: u64, user_ss: u64, us
     }
 }
 
-/// Restore saved user-mode return context to the GS data block so the fast
-/// syscall paths can return with the correct RIP/RSP/RFLAGS after a context
-/// switch. This is called by the scheduler before resuming a process that has
-/// already entered userspace at least once.
+/// Set GS data for Ring 3 switch
 ///
-/// Restore user syscall context for process switch (used by scheduler)
-/// Sets up GS_DATA so that when we return to userspace, registers are restored correctly
-/// rax_value: the value to return in RAX register (e.g., 0 for fork child)
-pub fn restore_user_syscall_context(user_rip: u64, user_rsp: u64, user_rflags: u64) {
-    unsafe {
-        // Use per-CPU GS_DATA
-        let gs_data_ptr = crate::smp::current_gs_data_ptr();
-
-        gs_data_ptr.add(GS_SLOT_USER_RSP).write(user_rsp);
-        gs_data_ptr.add(GS_SLOT_USER_RSP_DEBUG).write(user_rsp);
-        gs_data_ptr.add(GS_SLOT_SAVED_RCX).write(user_rip);
-        gs_data_ptr.add(GS_SLOT_SAVED_RFLAGS).write(user_rflags);
-        gs_data_ptr.add(GS_SLOT_KERNEL_STACK_GUARD).write(0);
-        gs_data_ptr.add(GS_SLOT_KERNEL_STACK_SNAPSHOT).write(0);
-        // Note: RAX is NOT set here - it comes from the process context
-        // For fork children, it's set in the Context.rax field
-    }
+/// This function is called by the scheduler to prepare the GS_DATA structure
+/// for a return to userspace via sysretq.
+///
+/// # Safety
+/// This function writes to the GS_DATA structure which is used by the CPU
+/// for syscall/sysret operations. Incorrect values can cause kernel crashes.
+pub unsafe extern "C" fn restore_user_syscall_context(rip: u64, rsp: u64, rflags: u64) {
+    let gs_ptr = crate::smp::current_gs_data_ptr() as *mut u64;
+    gs_ptr.add(GS_SLOT_SAVED_RCX).write(rip);
+    gs_ptr.add(GS_SLOT_USER_RSP).write(rsp);
+    gs_ptr.add(GS_SLOT_USER_RSP_DEBUG).write(rsp);
+    gs_ptr.add(GS_SLOT_SAVED_RFLAGS).write(rflags);
+    gs_ptr.add(GS_SLOT_KERNEL_STACK_GUARD).write(0);
+    gs_ptr.add(GS_SLOT_KERNEL_STACK_SNAPSHOT).write(0);
 }
 
 /// Called when the kernel stack guard detects a re-entry condition
