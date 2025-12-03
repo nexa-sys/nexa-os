@@ -206,7 +206,52 @@ pub fn write(fd: u64, buf: u64, count: u64) -> u64 {
                         }
                     }
                 }
-                _ => {}
+                FileBacking::Ext2(file_ref) => {
+                    ktrace!(
+                        "[SYS_WRITE] Ext2 file fd={} inode={} count={} position={}",
+                        fd,
+                        file_ref.inode,
+                        count,
+                        handle.position
+                    );
+
+                    // Check if ext2 is writable
+                    if !crate::fs::ext2_is_writable() {
+                        ktrace!("[SYS_WRITE] ERROR: ext2 filesystem is read-only");
+                        posix::set_errno(posix::errno::EROFS);
+                        return u64::MAX;
+                    }
+
+                    if !user_buffer_in_range(buf, count) {
+                        ktrace!("[SYS_WRITE] ERROR: Buffer out of range");
+                        posix::set_errno(posix::errno::EFAULT);
+                        return u64::MAX;
+                    }
+
+                    let data = core::slice::from_raw_parts(buf as *const u8, count as usize);
+
+                    // Write to ext2 file at current position
+                    match crate::fs::ext2_write_at(&file_ref, handle.position, data) {
+                        Ok(bytes_written) => {
+                            // Update position
+                            update_file_handle_position(idx, handle.position + bytes_written);
+                            ktrace!("[SYS_WRITE] Ext2 wrote {} bytes", bytes_written);
+                            posix::set_errno(0);
+                            return bytes_written as u64;
+                        }
+                        Err(e) => {
+                            ktrace!("[SYS_WRITE] ERROR: Ext2 write failed: {:?}", e);
+                            posix::set_errno(posix::errno::EIO);
+                            return u64::MAX;
+                        }
+                    }
+                }
+                FileBacking::Inline(_) => {
+                    // Inline files (from initramfs) are read-only
+                    ktrace!("[SYS_WRITE] ERROR: Inline file is read-only");
+                    posix::set_errno(posix::errno::EROFS);
+                    return u64::MAX;
+                }
             }
         }
     }

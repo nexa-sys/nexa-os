@@ -325,6 +325,7 @@ pub struct FileRef {
 
 static mut EXT2_FS_INSTANCE: Option<Ext2Filesystem> = None;
 static mut MODULE_INITIALIZED: bool = false;
+static mut EXT2_WRITABLE: bool = false;
 
 /// Module entry point table - used to prevent linker from removing entry functions
 #[used]
@@ -369,11 +370,11 @@ pub extern "C" fn module_init() -> i32 {
             destroy: Some(ext2_mod_destroy),
             lookup: Some(ext2_mod_lookup),
             read_at: Some(ext2_mod_read_at),
-            write_at: None, // Not implemented yet
+            write_at: Some(ext2_mod_write_at),
             list_dir: Some(ext2_mod_list_dir),
             get_stats: Some(ext2_mod_get_stats),
-            set_writable: None,
-            is_writable: None,
+            set_writable: Some(ext2_mod_set_writable),
+            is_writable: Some(ext2_mod_is_writable),
         };
         
         // Register with the kernel's ext2 modular layer
@@ -572,6 +573,57 @@ extern "C" fn ext2_mod_get_stats(handle: Ext2Handle, stats: *mut Ext2Stats) -> i
     0
 }
 
+/// Write data to a file at offset
+extern "C" fn ext2_mod_write_at(
+    file: *const FileRefHandle,
+    offset: usize,
+    data: *const u8,
+    len: usize,
+) -> i32 {
+    if file.is_null() || data.is_null() {
+        return -1;
+    }
+
+    // Check if write mode is enabled
+    unsafe {
+        if !EXT2_WRITABLE {
+            mod_warn!(b"ext2: write denied - filesystem is read-only");
+            return Ext2Error::ReadOnly as i32;
+        }
+    }
+
+    let file_ref = unsafe { &*file };
+    let fs = file_ref.fs as *const Ext2Filesystem;
+    
+    if fs.is_null() {
+        return -1;
+    }
+
+    let data_slice = unsafe { core::slice::from_raw_parts(data, len) };
+    
+    match ext2_write_internal(fs, file_ref.inode, offset, data_slice) {
+        Ok(bytes_written) => bytes_written as i32,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Set writable mode for the filesystem
+extern "C" fn ext2_mod_set_writable(writable: bool) {
+    unsafe {
+        EXT2_WRITABLE = writable;
+        if writable {
+            mod_info!(b"ext2: write mode ENABLED");
+        } else {
+            mod_info!(b"ext2: write mode DISABLED");
+        }
+    }
+}
+
+/// Check if filesystem is writable
+extern "C" fn ext2_mod_is_writable() -> bool {
+    unsafe { EXT2_WRITABLE }
+}
+
 // ============================================================================
 // Filesystem operations (exported to kernel)
 // ============================================================================
@@ -746,6 +798,112 @@ pub extern "C" fn ext2_metadata(file_ref: *const FileRef, out_meta: *mut Metadat
     0
 }
 
+/// Internal write function
+fn ext2_write_internal(
+    fs: *const Ext2Filesystem,
+    inode_num: u32,
+    offset: usize,
+    data: &[u8],
+) -> Result<usize, Ext2Error> {
+    if fs.is_null() || data.is_empty() {
+        return Ok(0);
+    }
+
+    let fs = unsafe { &*fs };
+    
+    // Load the inode
+    let inode = fs.load_inode(inode_num)?;
+    
+    // Check if it's a regular file
+    if !inode.is_regular_file() {
+        mod_warn!(b"ext2_write: not a regular file");
+        return Err(Ext2Error::InvalidInode);
+    }
+    
+    let file_size = inode.size() as usize;
+    let block_size = fs.block_size;
+    
+    // Calculate the end position of the write
+    let write_end = offset + data.len();
+    
+    // Determine how much we can actually write
+    // For existing blocks: can write within already-allocated blocks
+    // Calculate maximum writable size based on allocated blocks
+    let max_block_index = if file_size == 0 {
+        0
+    } else {
+        (file_size + block_size - 1) / block_size
+    };
+    let max_writable_offset = max_block_index * block_size;
+    
+    // If offset is beyond allocated blocks, we can't write (no block allocation yet)
+    if offset >= max_writable_offset && file_size > 0 {
+        mod_warn!(b"ext2_write: offset beyond allocated blocks");
+        return Ok(0);
+    }
+    
+    // Calculate actual write length - limited by allocated blocks
+    let actual_write_len = if write_end > max_writable_offset {
+        if max_writable_offset > offset {
+            max_writable_offset - offset
+        } else {
+            data.len().min(block_size) // For empty files, try to write at least one block
+        }
+    } else {
+        data.len()
+    };
+    
+    if actual_write_len == 0 {
+        return Ok(0);
+    }
+    
+    let mut written = 0usize;
+    let mut current_offset = offset;
+    
+    while written < actual_write_len {
+        let block_index = current_offset / block_size;
+        let within_block = current_offset % block_size;
+        
+        // Get the block number for this index
+        let block_number = match fs.block_number(&inode, block_index) {
+            Some(bn) if bn != 0 => bn,
+            _ => {
+                mod_warn!(b"ext2_write: no block allocated at index");
+                break;
+            }
+        };
+        
+        // Calculate how much to write in this block
+        let available_in_block = block_size - within_block;
+        let remaining = actual_write_len - written;
+        let to_write = cmp::min(available_in_block, remaining);
+        
+        // Write to the block
+        match fs.write_block(block_number, within_block, &data[written..written + to_write]) {
+            Ok(_) => {
+                written += to_write;
+                current_offset += to_write;
+            }
+            Err(e) => {
+                mod_error!(b"ext2_write: write_block failed");
+                return Err(e);
+            }
+        }
+    }
+    
+    // Update file size if we extended beyond the original size
+    let new_size = offset + written;
+    if new_size > file_size {
+        if let Err(_) = fs.update_inode_size(inode_num, new_size as u64) {
+            mod_warn!(b"ext2_write: failed to update inode size");
+            // Continue anyway - data was written
+        }
+    }
+    
+    mod_info!(b"ext2_write: successfully wrote bytes");
+    Ok(written)
+}
+
 // ============================================================================
 // Internal implementation
 // ============================================================================
@@ -903,6 +1061,78 @@ impl Ext2Filesystem {
             return None;
         }
         Some(&image[offset..offset + self.block_size])
+    }
+
+    /// Write data to a block at a specific offset within the block
+    fn write_block(&self, block_number: u32, offset_in_block: usize, data: &[u8]) -> Result<(), Ext2Error> {
+        if block_number == 0 {
+            return Err(Ext2Error::InvalidBlockNumber);
+        }
+        
+        if offset_in_block + data.len() > self.block_size {
+            return Err(Ext2Error::InvalidBlockNumber);
+        }
+        
+        let block_offset = block_number as usize * self.block_size;
+        let write_offset = block_offset + offset_in_block;
+        
+        if write_offset + data.len() > self.image_size {
+            return Err(Ext2Error::ImageTooSmall);
+        }
+        
+        // SAFETY: We're writing to the in-memory ext2 image.
+        // The image is a mutable buffer in memory (not actually on disk in this implementation).
+        // This is a direct memory write to the image buffer.
+        unsafe {
+            let dest = (self.image_base as *mut u8).add(write_offset);
+            core::ptr::copy_nonoverlapping(data.as_ptr(), dest, data.len());
+        }
+        
+        Ok(())
+    }
+
+    /// Update the size field in an inode
+    fn update_inode_size(&self, inode_num: u32, new_size: u64) -> Result<(), Ext2Error> {
+        if inode_num == 0 {
+            return Err(Ext2Error::InodeOutOfBounds);
+        }
+
+        let inode_index = inode_num - 1;
+        let group = inode_index / self.inodes_per_group;
+        if group >= self.total_groups {
+            return Err(Ext2Error::InodeOutOfBounds);
+        }
+        let index_in_group = inode_index % self.inodes_per_group;
+        let desc = self.group_descriptor(group)?;
+        let inode_table_block = desc.inode_table_block;
+        let inode_table_offset = inode_table_block as usize * self.block_size;
+        let inode_offset = inode_table_offset + index_in_group as usize * self.inode_size;
+
+        if inode_offset + self.inode_size > self.image_size {
+            return Err(Ext2Error::ImageTooSmall);
+        }
+
+        // Write the low 32 bits of size at offset 4 in the inode
+        let size_lo = (new_size & 0xFFFFFFFF) as u32;
+        let size_lo_bytes = size_lo.to_le_bytes();
+        
+        // Write the high 32 bits of size at offset 108 in the inode (for large files)
+        let size_hi = ((new_size >> 32) & 0xFFFFFFFF) as u32;
+        let size_hi_bytes = size_hi.to_le_bytes();
+
+        unsafe {
+            // Write size_lo at inode+4
+            let dest_lo = (self.image_base as *mut u8).add(inode_offset + 4);
+            core::ptr::copy_nonoverlapping(size_lo_bytes.as_ptr(), dest_lo, 4);
+            
+            // Write size_hi at inode+108 (for ext2 revision 1+)
+            if self.sb_rev_level >= 1 {
+                let dest_hi = (self.image_base as *mut u8).add(inode_offset + 108);
+                core::ptr::copy_nonoverlapping(size_hi_bytes.as_ptr(), dest_hi, 4);
+            }
+        }
+
+        Ok(())
     }
 
     fn find_in_directory(&self, inode: &Inode, target: &str) -> Option<u32> {

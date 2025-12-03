@@ -302,6 +302,10 @@ pub fn init() {
                     dir_meta.mode |= 0o755;
                     add_file_with_metadata("mnt", &[], true, dir_meta);
                     add_file_with_metadata("mnt/ext", &[], true, dir_meta);
+                    
+                    // Enable ext2 write mode automatically for log support
+                    ext2_modular::enable_write_mode();
+                    crate::kinfo!("ext2 write mode enabled for filesystem operations");
                 }
                 Err(err) => {
                     crate::kwarn!("Failed to parse ext2 image: {:?}", err);
