@@ -843,14 +843,20 @@ extern "C" fn switch_return_trampoline() {
     crate::interrupts::restore_user_syscall_context(user_rip, user_rsp, user_rflags);
     
     // sysretq to return to userspace
+    // GS_SLOT offsets: USER_RSP=0, SAVED_RCX=7*8=0x38, SAVED_RFLAGS=8*8=0x40
+    // Note: No swapgs needed - userspace uses FS for TLS, not GS
+    // Kernel GS base stays active (like normal syscall return path)
     unsafe {
         core::arch::asm!(
             "cli",
-            "swapgs",
-            "mov rcx, gs:[0x18]",  // GS_SLOT_SAVED_RCX = 3, * 8 = 0x18
-            "mov r11, gs:[0x28]",  // GS_SLOT_SAVED_RFLAGS = 5, * 8 = 0x28
-            "mov rsp, gs:[0x10]",  // GS_SLOT_USER_RSP = 2, * 8 = 0x10
-            "swapgs",
+            // Clear kernel stack guard flags before returning
+            "xor rax, rax",
+            "mov gs:[160], rax",  // GS_SLOT_KERNEL_STACK_GUARD * 8
+            "mov gs:[168], rax",  // GS_SLOT_KERNEL_STACK_SNAPSHOT * 8
+            // Load sysretq parameters from GS_DATA
+            "mov rcx, gs:[0x38]",  // GS_SLOT_SAVED_RCX = 7, * 8 = 0x38 -> user RIP
+            "mov r11, gs:[0x40]",  // GS_SLOT_SAVED_RFLAGS = 8, * 8 = 0x40 -> user RFLAGS
+            "mov rsp, gs:[0x00]",  // GS_SLOT_USER_RSP = 0, * 8 = 0x00 -> user RSP
             "sysretq",
             options(noreturn)
         );
