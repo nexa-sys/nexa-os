@@ -796,7 +796,7 @@ macro_rules! kpanic {
 
         $crate::klog!(
             $crate::logger::LogLevel::PANIC,
-            "------------[ cut here ]------------"
+            "============[ KERNEL PANIC ]============"
         );
 
         $crate::logger::log(
@@ -807,10 +807,20 @@ macro_rules! kpanic {
         // Get kernel taint status
         let taint_string = $crate::kmod::get_taint_string();
 
+        // Get current process info
+        let current_pid = $crate::scheduler::get_current_pid().map(|p| p as u64).unwrap_or(0);
+        
+        // Get uptime in ticks (milliseconds)
+        let uptime_ticks = $crate::scheduler::get_tick();
+        let uptime_secs = uptime_ticks / 1000;
+        let uptime_mins = uptime_secs / 60;
+        let uptime_hrs = uptime_mins / 60;
+
         $crate::klog!(
             $crate::logger::LogLevel::PANIC,
-            "CPU: {cpu} PID: 0 Comm: kernel {taint}",
+            "CPU: {cpu} PID: {pid} Comm: kernel {taint}",
             cpu = cpu_id,
+            pid = current_pid,
             taint = taint_string
         );
 
@@ -821,12 +831,164 @@ macro_rules! kpanic {
 
         $crate::klog!(
             $crate::logger::LogLevel::PANIC,
-            "Call Trace: <panic> at {file}:{line}:{column}",
+            "Uptime: {}:{:02}:{:02} ({} ms total)",
+            uptime_hrs,
+            uptime_mins % 60,
+            uptime_secs % 60,
+            uptime_ticks
+        );
+
+        // Get process counts
+        let (ready, running, sleeping, zombie) = $crate::scheduler::get_process_counts();
+        $crate::klog!(
+            $crate::logger::LogLevel::PANIC,
+            "Processes: {} total (ready={}, running={}, sleeping={}, zombie={})",
+            ready + running + sleeping + zombie,
+            ready,
+            running,
+            sleeping,
+            zombie
+        );
+
+        // Get memory statistics
+        let (heap_stats, _buddy_stats, _slab_stats) = $crate::mm::get_memory_stats();
+        let mem_used_kb = (heap_stats.bytes_allocated.saturating_sub(heap_stats.bytes_freed)) / 1024;
+        let allocs_active = heap_stats.total_allocations.saturating_sub(heap_stats.total_frees);
+        $crate::klog!(
+            $crate::logger::LogLevel::PANIC,
+            "Memory: {} KB in use, {} active allocations",
+            mem_used_kb,
+            allocs_active
+        );
+
+        // Get loaded modules count
+        let modules = $crate::kmod::list_modules();
+        $crate::klog!(
+            $crate::logger::LogLevel::PANIC,
+            "Modules: {} loaded",
+            modules.len()
+        );
+
+        $crate::klog!(
+            $crate::logger::LogLevel::PANIC,
+            "------------[ Call Trace ]------------"
+        );
+
+        $crate::klog!(
+            $crate::logger::LogLevel::PANIC,
+            " <PANIC> at {file}:{line}:{column}",
             file = loc.file(),
             line = loc.line(),
             column = loc.column(),
         );
 
+        $crate::klog!(
+            $crate::logger::LogLevel::PANIC,
+            "------------[ Registers ]------------"
+        );
+
+        // Capture general purpose registers
+        unsafe {
+            let rax: u64;
+            let rbx: u64;
+            let rcx: u64;
+            let rdx: u64;
+            let rsi: u64;
+            let rdi: u64;
+            let r8: u64;
+            let r9: u64;
+            let r10: u64;
+            let r11: u64;
+            let r12: u64;
+            let r13: u64;
+            let r14: u64;
+            let r15: u64;
+            asm!(
+                "mov {rax}, rax",
+                "mov {rbx}, rbx", 
+                "mov {rcx}, rcx",
+                "mov {rdx}, rdx",
+                "mov {rsi}, rsi",
+                "mov {rdi}, rdi",
+                "mov {r8}, r8",
+                "mov {r9}, r9",
+                "mov {r10}, r10",
+                "mov {r11}, r11",
+                "mov {r12}, r12",
+                "mov {r13}, r13",
+                "mov {r14}, r14",
+                "mov {r15}, r15",
+                rax = out(reg) rax,
+                rbx = out(reg) rbx,
+                rcx = out(reg) rcx,
+                rdx = out(reg) rdx,
+                rsi = out(reg) rsi,
+                rdi = out(reg) rdi,
+                r8 = out(reg) r8,
+                r9 = out(reg) r9,
+                r10 = out(reg) r10,
+                r11 = out(reg) r11,
+                r12 = out(reg) r12,
+                r13 = out(reg) r13,
+                r14 = out(reg) r14,
+                r15 = out(reg) r15,
+            );
+            $crate::klog!(
+                $crate::logger::LogLevel::PANIC,
+                "RAX: {:#018x} RBX: {:#018x} RCX: {:#018x}",
+                rax, rbx, rcx
+            );
+            $crate::klog!(
+                $crate::logger::LogLevel::PANIC,
+                "RDX: {:#018x} RSI: {:#018x} RDI: {:#018x}",
+                rdx, rsi, rdi
+            );
+            $crate::klog!(
+                $crate::logger::LogLevel::PANIC,
+                "R8:  {:#018x} R9:  {:#018x} R10: {:#018x}",
+                r8, r9, r10
+            );
+            $crate::klog!(
+                $crate::logger::LogLevel::PANIC,
+                "R11: {:#018x} R12: {:#018x} R13: {:#018x}",
+                r11, r12, r13
+            );
+            $crate::klog!(
+                $crate::logger::LogLevel::PANIC,
+                "R14: {:#018x} R15: {:#018x}",
+                r14, r15
+            );
+        }
+
+        // Stack pointer and instruction pointer
+        {
+            let (rip, rsp, rbp, rflags): (u64, u64, u64, u64);
+            unsafe {
+                asm!("lea {0}, [rip + 0]", out(reg) rip);
+                asm!("mov {0}, rsp", out(reg) rsp);
+                asm!("mov {0}, rbp", out(reg) rbp);
+                asm!("pushf; pop {0}", out(reg) rflags);
+            }
+            let interrupt_enabled = (rflags & (1 << 9)) != 0;
+            let direction_flag = (rflags & (1 << 10)) != 0;
+            let overflow_flag = (rflags & (1 << 11)) != 0;
+            let carry_flag = (rflags & 1) != 0;
+            let zero_flag = (rflags & (1 << 6)) != 0;
+            let sign_flag = (rflags & (1 << 7)) != 0;
+
+            $crate::klog!(
+                $crate::logger::LogLevel::PANIC,
+                "RIP: {:#018x} RSP: {:#018x} RBP: {:#018x}",
+                rip, rsp, rbp
+            );
+            $crate::klog!(
+                $crate::logger::LogLevel::PANIC,
+                "RFLAGS: {:#018x} [IF={} DF={} OF={} CF={} ZF={} SF={}]",
+                rflags, interrupt_enabled, direction_flag, overflow_flag, carry_flag, zero_flag, sign_flag
+            );
+        }
+
+        // Control registers
         unsafe {
             let cr0: u64;
             let cr2: u64;
@@ -838,37 +1000,88 @@ macro_rules! kpanic {
             asm!("mov {0}, cr4", out(reg) cr4);
             $crate::klog!(
                 $crate::logger::LogLevel::PANIC,
-                "Control: CR0={cr0:#018x} CR2={cr2:#018x} CR3={cr3:#018x} CR4={cr4:#018x}",
-                cr0 = cr0,
-                cr2 = cr2,
-                cr3 = cr3,
-                cr4 = cr4,
+                "CR0: {:#018x} CR2: {:#018x}",
+                cr0, cr2
+            );
+            $crate::klog!(
+                $crate::logger::LogLevel::PANIC,
+                "CR3: {:#018x} CR4: {:#018x}",
+                cr3, cr4
+            );
+            
+            // Decode CR0 flags
+            let pe = (cr0 & 1) != 0;           // Protection Enable
+            let pg = (cr0 & (1 << 31)) != 0;   // Paging
+            let wp = (cr0 & (1 << 16)) != 0;   // Write Protect
+            $crate::klog!(
+                $crate::logger::LogLevel::PANIC,
+                "CR0 flags: PE={} PG={} WP={}",
+                pe, pg, wp
+            );
+            
+            // CR2 is the page fault linear address
+            if cr2 != 0 {
+                $crate::klog!(
+                    $crate::logger::LogLevel::PANIC,
+                    "CR2 (Last page fault addr): {:#018x}",
+                    cr2
+                );
+            }
+        }
+
+        // Segment registers
+        unsafe {
+            let cs: u16;
+            let ds: u16;
+            let es: u16;
+            let fs: u16;
+            let gs: u16;
+            let ss: u16;
+            asm!("mov {0:x}, cs", out(reg) cs);
+            asm!("mov {0:x}, ds", out(reg) ds);
+            asm!("mov {0:x}, es", out(reg) es);
+            asm!("mov {0:x}, fs", out(reg) fs);
+            asm!("mov {0:x}, gs", out(reg) gs);
+            asm!("mov {0:x}, ss", out(reg) ss);
+            $crate::klog!(
+                $crate::logger::LogLevel::PANIC,
+                "CS: {:#06x} DS: {:#06x} ES: {:#06x} FS: {:#06x} GS: {:#06x} SS: {:#06x}",
+                cs, ds, es, fs, gs, ss
             );
         }
 
-        {
-            let (rip, rsp, rbp, rflags): (u64, u64, u64, u64);
-            unsafe {
-                asm!("lea {0}, [rip + 0]", out(reg) rip);
-                asm!("mov {0}, rsp", out(reg) rsp);
-                asm!("mov {0}, rbp", out(reg) rbp);
-                asm!("pushf; pop {0}", out(reg) rflags);
+        // Stack dump (first 8 qwords from current stack)
+        $crate::klog!(
+            $crate::logger::LogLevel::PANIC,
+            "------------[ Stack Dump ]------------"
+        );
+        unsafe {
+            let rsp: u64;
+            asm!("mov {0}, rsp", out(reg) rsp);
+            let stack_ptr = rsp as *const u64;
+            // Dump 8 stack entries if accessible
+            for i in 0..8u64 {
+                let addr = rsp.wrapping_add(i * 8);
+                // Simple bounds check - avoid reading unmapped memory
+                if addr < 0xFFFF_FFFF_8000_0000 || addr > 0xFFFF_FFFF_FFFF_FFF0 {
+                    continue;
+                }
+                let val = core::ptr::read_volatile(stack_ptr.add(i as usize));
+                $crate::klog!(
+                    $crate::logger::LogLevel::PANIC,
+                    " [{:#018x}]: {:#018x}",
+                    addr, val
+                );
             }
-            let interrupt_enabled = (rflags & (1 << 9)) != 0;
-            $crate::klog!(
-                $crate::logger::LogLevel::PANIC,
-                "RIP: {rip:#018x} RSP: {rsp:#018x} RBP: {rbp:#018x} RFLAGS: {rflags:#018x} (IF={})",
-                interrupt_enabled,
-                rip = rip,
-                rsp = rsp,
-                rbp = rbp,
-                rflags = rflags,
-            );
         }
 
         $crate::klog!(
             $crate::logger::LogLevel::PANIC,
-            "------------[ end Kernel panic ]------------"
+            "======[ END KERNEL PANIC ]======"
+        );
+        $crate::klog!(
+            $crate::logger::LogLevel::PANIC,
+            "---[ System halted. Please reboot. ]---"
         );
         $crate::arch::halt_loop()
     }};
