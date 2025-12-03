@@ -43,7 +43,8 @@ pub mod socket;
 // Re-export commonly used stdio helpers for convenience
 pub use stdio::{
     fflush, fprintf, fread, fwrite, getchar, printf, putchar, puts, stderr_write_all,
-    stderr_write_str, stdin_read_line, stdin_read_line_masked, stdin_read_line_noecho,
+    stderr_write_str, stderr_write_usize, stderr_write_isize, stderr_write_i32,
+    stdin_read_line, stdin_read_line_masked, stdin_read_line_noecho,
     stdout_flush, stdout_write_all, stdout_write_fmt, stdout_write_str,
 };
 

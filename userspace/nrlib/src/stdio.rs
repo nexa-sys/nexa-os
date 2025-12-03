@@ -742,6 +742,55 @@ pub fn stderr_write_str(s: &str) -> Result<(), i32> {
     stderr_write_all(s.as_bytes())
 }
 
+pub fn stderr_write_usize(val: usize) -> Result<(), i32> {
+    let mut buf = [0u8; 20];
+    let s = format_usize(val, &mut buf);
+    stderr_write_str(s)
+}
+
+pub fn stderr_write_isize(val: isize) -> Result<(), i32> {
+    let mut buf = [0u8; 21];
+    let s = format_isize(val, &mut buf);
+    stderr_write_str(s)
+}
+
+pub fn stderr_write_i32(val: i32) -> Result<(), i32> {
+    stderr_write_isize(val as isize)
+}
+
+fn format_usize(val: usize, buf: &mut [u8]) -> &str {
+    if val == 0 {
+        return "0";
+    }
+    let mut n = val;
+    let mut idx = buf.len();
+    while n > 0 && idx > 0 {
+        idx -= 1;
+        buf[idx] = b'0' + (n % 10) as u8;
+        n /= 10;
+    }
+    unsafe { core::str::from_utf8_unchecked(&buf[idx..]) }
+}
+
+fn format_isize(val: isize, buf: &mut [u8]) -> &str {
+    if val == 0 {
+        return "0";
+    }
+    let neg = val < 0;
+    let mut n = if neg { (val as i64).abs() as usize } else { val as usize };
+    let mut idx = buf.len();
+    while n > 0 && idx > 0 {
+        idx -= 1;
+        buf[idx] = b'0' + (n % 10) as u8;
+        n /= 10;
+    }
+    if neg && idx > 0 {
+        idx -= 1;
+        buf[idx] = b'-';
+    }
+    unsafe { core::str::from_utf8_unchecked(&buf[idx..]) }
+}
+
 pub fn stdin_read_line(buf: &mut [u8], skip_empty: bool) -> Result<usize, i32> {
     read_line_internal(buf, EchoMode::Plain, skip_empty)
 }
