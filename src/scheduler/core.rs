@@ -830,6 +830,16 @@ unsafe fn execute_first_run_via_context_switch(
 /// Trampoline for Switch path - returns to userspace via sysretq
 #[inline(never)]
 extern "C" fn switch_return_trampoline() {
+    crate::serial_println!("[SRT] ENTERED switch_return_trampoline");
+    
+    // CRITICAL: Ensure GS base points to kernel GS_DATA before using gs:[xxx].
+    // This is necessary because we may have gotten here from an exception handler
+    // (Page Fault, GPF, etc.) where the CPU entered kernel without swapgs.
+    // The ensure_kernel_gs_base() call in exception handlers may not be sufficient
+    // if the context switch itself was executed with wrong GS base.
+    crate::smp::ensure_kernel_gs_base();
+    crate::serial_println!("[SRT] ensure_kernel_gs_base done");
+
     // Get saved user context from globals
     let (user_rip, user_rsp, user_rflags, cr3) = unsafe {
         (SWITCH_USER_RIP, SWITCH_USER_RSP, SWITCH_USER_RFLAGS, SWITCH_CR3)
@@ -881,6 +891,8 @@ unsafe fn execute_context_switch(
     kernel_stack: u64,
     fs_base: u64,
 ) {
+    crate::serial_println!("[EXEC_CTX] ENTERED execute_context_switch");
+    
     // Update kernel stack in GS (per-CPU GS_DATA)
     if kernel_stack != 0 {
         let gs_data_ptr = crate::smp::current_gs_data_ptr();

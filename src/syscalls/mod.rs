@@ -371,9 +371,15 @@ global_asm!(
     ".global syscall_handler",
     "syscall_handler:",
     "swapgs",
-    "mov gs:[0], rsp", // Save user RSP
+    "mov gs:[0], rsp", // Save user RSP to GS_SLOT_USER_RSP
+    // CRITICAL: Save user RCX (return address) and R11 (rflags) to GS_DATA
+    // This is required for context switching during syscall handling (e.g., timer interrupt)
+    // GS_SLOT_SAVED_RCX = 7, offset = 7 * 8 = 56
+    // GS_SLOT_SAVED_RFLAGS = 8, offset = 8 * 8 = 64
+    "mov gs:[56], rcx", // Save user RIP to GS_SLOT_SAVED_RCX for context switch
+    "mov gs:[64], r11", // Save user RFLAGS to GS_SLOT_SAVED_RFLAGS for context switch
     "mov rsp, gs:[8]", // Load kernel RSP
-    // Save user RCX (return address) and R11 (rflags) because sysretq needs them
+    // Also push to stack for sysretq restore
     "push r11", // save user rflags
     "push rcx", // save user return address
     "push rbx",

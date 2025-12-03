@@ -1706,13 +1706,13 @@ fn execute_external_command(cmd: &str, args: &[&str]) -> bool {
         }
     } else if wifsignaled(status) {
         let sig = wtermsig(status);
-        print_str("Segmentation fault");
-        if sig != 11 {
-            print_str(" (signal ");
+        if sig == 11 {
+            println_str("Segmentation fault (core dumped)");
+        } else {
+            print_str("Terminated (signal ");
             print_i32(sig);
-            print_str(")");
+            println_str(")");
         }
-        println_str("");
     }
     
     true

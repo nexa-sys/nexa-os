@@ -253,11 +253,10 @@ RUSTFLAGS="$STD_RUSTFLAGS" \
     cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/targets/x86_64-nexaos-userspace.json" --release \
     --bin dmesg
 
-# Build crashtest (no-std, simple test for segfault handling)
-echo "Building crashtest (no-std)..."
-CRASHTEST_RUSTFLAGS="-C opt-level=2 -C panic=abort -C linker=rust-lld -C link-arg=--image-base=0x01000000 -C link-arg=--entry=_start"
-RUSTFLAGS="$CRASHTEST_RUSTFLAGS" \
-    cargo build -Z build-std=core --target "$PROJECT_ROOT/targets/x86_64-nexaos-userspace.json" --release \
+# Build crashtest (std, simple test for segfault handling)
+echo "Building crashtest (std)..."
+RUSTFLAGS="$STD_RUSTFLAGS" \
+    cargo build -Z build-std=std,panic_abort --target "$PROJECT_ROOT/targets/x86_64-nexaos-userspace.json" --release \
     --bin crashtest
 
 # Build hello (dynamic linking test) - uses dynamic target

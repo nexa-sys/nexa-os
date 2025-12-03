@@ -60,6 +60,11 @@ pub extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptSta
         // Time slice expired or higher priority process ready
         // Trigger rescheduling via do_schedule()
         crate::kdebug!("Timer: Triggering preemptive reschedule");
+        // CRITICAL: Ensure GS base points to kernel GS_DATA before calling scheduler.
+        // When timer interrupt occurs while CPU is executing user-mode code, the CPU enters
+        // kernel via interrupt gate WITHOUT swapgs. The scheduler's switch_return_trampoline
+        // uses gs:[xxx] to read sysretq parameters, which would read garbage if GS base is wrong.
+        crate::smp::ensure_kernel_gs_base();
         crate::scheduler::do_schedule_from_interrupt();
     }
 }
@@ -149,6 +154,8 @@ pub extern "x86-interrupt" fn lapic_timer_handler(_stack_frame: InterruptStackFr
 
     if should_resched || resched_pending {
         crate::kdebug!("LAPIC Timer: Triggering preemptive reschedule on AP");
+        // CRITICAL: Ensure GS base points to kernel GS_DATA before calling scheduler.
+        crate::smp::ensure_kernel_gs_base();
         crate::scheduler::do_schedule_from_interrupt();
     }
 }

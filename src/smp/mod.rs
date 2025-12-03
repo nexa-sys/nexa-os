@@ -53,8 +53,8 @@ pub use cpu::{
 
 // Re-export per-CPU preemption and interrupt state management
 pub use cpu::{
-    can_preempt, clear_need_resched, current_numa_node, enter_interrupt, in_interrupt,
-    leave_interrupt, need_resched, preempt_disable, preempt_disabled, preempt_enable,
+    can_preempt, clear_need_resched, current_numa_node, ensure_kernel_gs_base, enter_interrupt,
+    in_interrupt, leave_interrupt, need_resched, preempt_disable, preempt_disabled, preempt_enable,
     record_interrupt, record_syscall, set_need_resched,
 };
 

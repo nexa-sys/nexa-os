@@ -291,3 +291,28 @@ pub fn record_syscall() {
 pub fn current_numa_node() -> u32 {
     current_cpu_data().map(|d| d.numa_node).unwrap_or(0)
 }
+
+/// Ensure GS base MSR points to the correct kernel GS_DATA for the current CPU.
+///
+/// This is critical when entering kernel from user mode via exceptions (Page Fault, GPF, etc.)
+/// where the CPU does NOT perform `swapgs` automatically (unlike syscall entry which uses
+/// a custom assembly handler that handles GS).
+///
+/// The problem: when a user-mode exception occurs, the CPU enters kernel via interrupt gate
+/// but GS base remains pointing to user-mode value (0 or user TLS pointer). If the exception
+/// handler calls the scheduler (e.g., to terminate a faulting process), and the scheduler
+/// uses `gs:[xxx]` to read syscall context, it reads garbage data.
+///
+/// This function fixes GS base by looking up the correct GS_DATA address via LAPIC ID
+/// (which doesn't depend on GS register) and writing it to the GS_BASE MSR.
+///
+/// # Safety
+/// This writes to MSR_IA32_GS_BASE which affects all subsequent GS-based memory accesses.
+/// Only call this when you know GS base may be incorrect (i.e., from user-mode exception handlers).
+#[inline]
+pub fn ensure_kernel_gs_base() {
+    let gs_data_addr = current_gs_data_ptr() as u64;
+    unsafe {
+        crate::safety::x86::wrmsr(crate::safety::x86::MSR_IA32_GS_BASE, gs_data_addr);
+    }
+}

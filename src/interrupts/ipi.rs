@@ -42,6 +42,10 @@ pub extern "x86-interrupt" fn ipi_reschedule_handler(_stack_frame: InterruptStac
     // Leave interrupt context - will trigger reschedule due to pending flag
     let _ = crate::smp::leave_interrupt();
 
+    // CRITICAL: Ensure GS base points to kernel GS_DATA before calling scheduler.
+    // When IPI interrupts a user-mode process, GS base may still point to user value.
+    crate::smp::ensure_kernel_gs_base();
+
     // Actually trigger the scheduler to perform a context switch
     // This allows AP cores to pick up ready processes
     crate::scheduler::do_schedule_from_interrupt();

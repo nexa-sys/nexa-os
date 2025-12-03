@@ -72,6 +72,13 @@ pub extern "x86-interrupt" fn page_fault_handler(
             // Mark the process as zombie
             let _ = crate::scheduler::set_process_state(pid, crate::process::ProcessState::Zombie);
 
+            // CRITICAL: Ensure GS base points to kernel GS_DATA before calling scheduler.
+            // When CPU enters kernel via interrupt gate from user mode, it does NOT execute
+            // swapgs, so GS base may still point to user-mode value (0 or user TLS).
+            // The scheduler's switch_return_trampoline uses gs:[xxx] to read sysretq parameters,
+            // which would read garbage if GS base is wrong.
+            crate::smp::ensure_kernel_gs_base();
+
             // Schedule the next process
             crate::scheduler::do_schedule_from_interrupt();
 
@@ -159,10 +166,14 @@ pub extern "x86-interrupt" fn general_protection_fault_handler(
         // Mark the process as zombie
         let _ = crate::scheduler::set_process_state(pid, crate::process::ProcessState::Zombie);
 
-        // Schedule the next process
-        crate::scheduler::do_schedule_from_interrupt();
+        // CRITICAL: Ensure GS base points to kernel GS_DATA before calling scheduler.
+        // When CPU enters kernel via interrupt gate from user mode, it does NOT execute
+        // swapgs, so GS base may still point to user-mode value (0 or user TLS).
+        // The scheduler's switch_return_trampoline uses gs:[xxx] to read sysretq parameters,
+        // which would read garbage if GS base is wrong.
+        crate::smp::ensure_kernel_gs_base();
 
-        // Schedule the next process
+        // Schedule the next process - this should switch to the parent waiting in wait4()
         crate::scheduler::do_schedule_from_interrupt();
 
         // If we return here, something went wrong
@@ -500,6 +511,8 @@ pub extern "x86-interrupt" fn divide_error_handler(stack_frame: InterruptStackFr
                 pid,
                 exit_code
             );
+            // CRITICAL: Ensure GS base points to kernel GS_DATA before calling scheduler.
+            crate::smp::ensure_kernel_gs_base();
             crate::scheduler::do_schedule_from_interrupt();
 
             kerror!("FATAL: do_schedule_from_interrupt returned after DIV/0 termination");
@@ -541,6 +554,8 @@ pub extern "x86-interrupt" fn segment_not_present_handler(
                 pid,
                 exit_code
             );
+            // CRITICAL: Ensure GS base points to kernel GS_DATA before calling scheduler.
+            crate::smp::ensure_kernel_gs_base();
             crate::scheduler::do_schedule_from_interrupt();
 
             kerror!("FATAL: do_schedule_from_interrupt returned after SEGNP termination");
@@ -601,6 +616,8 @@ pub extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: InterruptStack
                 pid,
                 exit_code
             );
+            // CRITICAL: Ensure GS base points to kernel GS_DATA before calling scheduler.
+            crate::smp::ensure_kernel_gs_base();
             crate::scheduler::do_schedule_from_interrupt();
 
             kerror!("FATAL: do_schedule_from_interrupt returned after UD termination");
