@@ -7,6 +7,7 @@ pub mod arp;
 mod drivers;
 pub mod ethernet;
 pub mod ipv4;
+pub mod modular;
 pub mod netlink;
 pub mod stack;
 pub mod tcp;

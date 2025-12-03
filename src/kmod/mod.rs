@@ -911,6 +911,9 @@ pub fn init() {
     // Register ext2 modular filesystem symbols
     crate::fs::ext2_modular::init();
 
+    // Register network modular driver symbols
+    crate::net::modular::register_symbols();
+
     crate::kinfo!(
         "Kernel module system initialized (max {} modules)",
         MAX_MODULES

@@ -177,6 +177,90 @@ build_ext2_module() {
     echo "  ✓ Installed to initramfs: /lib/modules/ext2.nkm"
 }
 
+# Build e1000 network driver module
+build_e1000_module() {
+    echo ""
+    echo "Building e1000 network driver module..."
+    
+    local MODULE_SRC="$PROJECT_ROOT/modules/e1000"
+    
+    if [ ! -d "$MODULE_SRC" ]; then
+        echo "Error: e1000 module source not found at $MODULE_SRC"
+        return 1
+    fi
+    
+    cd "$MODULE_SRC"
+    
+    # Clean previous builds
+    cargo clean 2>/dev/null || true
+    
+    # Build as staticlib using the kernel target
+    echo "  Compiling e1000 module as staticlib..."
+    
+    if RUSTFLAGS="-C relocation-model=static -C code-model=kernel -C panic=abort" \
+        cargo +nightly build \
+            -Z build-std=core,alloc,compiler_builtins \
+            -Z build-std-features=compiler-builtins-mem \
+            --target "$KERNEL_TARGET_JSON" \
+            --release 2>&1; then
+        
+        echo "  Cargo build succeeded, looking for artifacts..."
+        
+        # Find the built staticlib
+        local STATICLIB=$(find "$MODULE_SRC/target" -name "libe1000_module.a" 2>/dev/null | head -1)
+        
+        if [ -n "$STATICLIB" ] && [ -f "$STATICLIB" ]; then
+            echo "  Found staticlib: $STATICLIB"
+            
+            cd "$MODULES_DIR"
+            rm -f *.o e1000_combined.o 2>/dev/null || true
+            
+            # Extract all object files
+            ar x "$STATICLIB" 2>/dev/null || true
+            
+            # Link all .o files into a single relocatable object
+            local OBJ_FILES=$(ls -1 *.o 2>/dev/null | tr '\n' ' ')
+            
+            if [ -n "$OBJ_FILES" ]; then
+                echo "  Linking $(echo $OBJ_FILES | wc -w) object files into relocatable module..."
+                
+                ld.lld -r --gc-sections -o e1000.nkm $OBJ_FILES 2>/dev/null || \
+                ld -r --gc-sections -o e1000.nkm $OBJ_FILES 2>/dev/null || \
+                ld.lld -r -o e1000.nkm $OBJ_FILES 2>/dev/null || \
+                ld -r -o e1000.nkm $OBJ_FILES 2>/dev/null || {
+                    local MAIN_OBJ=$(ls -1 *.o 2>/dev/null | grep -i 'e1000_module' | head -1)
+                    if [ -n "$MAIN_OBJ" ]; then
+                        mv "$MAIN_OBJ" "e1000.nkm"
+                    fi
+                }
+                
+                rm -f *.o 2>/dev/null || true
+                
+                if [ -f "e1000.nkm" ]; then
+                    strip --strip-debug e1000.nkm 2>/dev/null || true
+                    echo "  ✓ Built ELF module: $MODULES_DIR/e1000.nkm ($(stat -c%s "$MODULES_DIR/e1000.nkm") bytes)"
+                else
+                    echo "  Error: Failed to create e1000.nkm"
+                    return 1
+                fi
+            else
+                echo "  Warning: No object files found in staticlib"
+                return 1
+            fi
+        else
+            echo "  Warning: No staticlib found, creating metadata-only module"
+            create_simple_nkm "e1000" 4 "1.0.0" "Intel E1000 network driver (built-in)" "$MODULES_DIR/e1000.nkm"
+        fi
+    else
+        echo "  Warning: Cargo build failed, creating metadata-only module"
+        create_simple_nkm "e1000" 4 "1.0.0" "Intel E1000 network driver (built-in)" "$MODULES_DIR/e1000.nkm"
+    fi
+    
+    # Install to initramfs
+    cp "$MODULES_DIR/e1000.nkm" "$INITRAMFS_MODULES/e1000.nkm"
+    echo "  ✓ Installed to initramfs: /lib/modules/e1000.nkm"
+}
+
 # Sign modules if signing key is available
 sign_modules() {
     local SIGN_SCRIPT="$SCRIPT_DIR/sign-module.sh"
@@ -214,6 +298,7 @@ sign_modules() {
 
 # Build all modules
 build_ext2_module
+build_e1000_module
 
 # Sign modules if key is available
 sign_modules
