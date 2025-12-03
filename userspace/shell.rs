@@ -1878,7 +1878,7 @@ fn handle_command(state: &mut ShellState, line: &str) {
 }
 
 fn shell_loop() -> ! {
-    // println_str("Welcome to NexaOS shell. Type 'help' for commands.");
+    println_str("Welcome to NexaOS shell. Type 'help' for commands.");
     let mut buffer = [0u8; 256];
     let mut state = ShellState::new();
 

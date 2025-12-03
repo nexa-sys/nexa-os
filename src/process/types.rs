@@ -121,6 +121,7 @@ pub struct Process {
     pub signal_state: crate::signal::SignalState, // POSIX signal handling
     pub context: Context,                         // CPU context for context switching
     pub has_entered_user: bool,
+    pub context_valid: bool, // True if context was saved by context_switch (valid for Switch restore)
     pub is_fork_child: bool, // True if this process was created by fork (not exec/init)
     pub cr3: u64, // Page table root (for process-specific page tables) - 0 means use kernel page table
     pub tty: usize, // Controlling virtual terminal index

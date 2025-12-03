@@ -263,6 +263,7 @@ impl Process {
             signal_state: crate::signal::SignalState::new(),
             context,
             has_entered_user: false,
+            context_valid: false, // Not yet saved by context_switch
             is_fork_child: false, // Created by execve, not fork
             cr3: existing_cr3,    // Reuse existing CR3
             tty: 0,
@@ -438,6 +439,7 @@ impl Process {
                     signal_state: crate::signal::SignalState::new(),
                     context,
                     has_entered_user: false,
+                    context_valid: false, // Not yet saved by context_switch
                     is_fork_child: false, // New process from ELF, not fork
                     cr3,
                     tty: 0,
@@ -522,6 +524,7 @@ impl Process {
             signal_state: crate::signal::SignalState::new(),
             context,
             has_entered_user: false,
+            context_valid: false, // Not yet saved by context_switch
             is_fork_child: false, // New process from ELF, not fork
             cr3,
             tty: 0,

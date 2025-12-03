@@ -95,6 +95,7 @@ pub fn fork(syscall_return_addr: u64) -> u64 {
     child_process.ppid = current_pid;
     child_process.state = crate::process::ProcessState::Ready;
     child_process.has_entered_user = false;
+    child_process.context_valid = false; // Context not yet saved by context_switch
     child_process.is_fork_child = true;
     child_process.exit_code = 0;
 

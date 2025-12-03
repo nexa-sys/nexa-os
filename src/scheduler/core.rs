@@ -464,7 +464,13 @@ pub fn do_schedule_from_interrupt() {
 }
 
 enum ScheduleDecision {
-    FirstRun(crate::process::Process),
+    FirstRun {
+        process: crate::process::Process,
+        old_context_ptr: *mut crate::process::Context,
+        next_cr3: u64,
+        kernel_stack: u64,
+        fs_base: u64,
+    },
     Switch {
         old_context_ptr: *mut crate::process::Context,
         next_context: crate::process::Context,
@@ -476,22 +482,6 @@ enum ScheduleDecision {
         kernel_stack: u64,
         fs_base: u64,
     },
-}
-
-/// Print process table snapshot for debugging
-fn debug_print_process_table(table: &[Option<super::types::ProcessEntry>; MAX_PROCESSES]) {
-    ktrace!("[do_schedule] Process table snapshot:");
-    for slot in table.iter() {
-        let Some(entry) = slot else { continue };
-        ktrace!(
-            "  PID {}: ppid={}, state={:?}, policy={:?}, CR3={:#x}",
-            entry.process.pid,
-            entry.process.ppid,
-            entry.process.state,
-            entry.policy,
-            entry.process.cr3
-        );
-    }
 }
 
 /// Find index of parent process to prioritize when child is zombie
@@ -615,22 +605,16 @@ fn extract_next_process_info(
     u64,
     crate::process::Process,
 ) {
-    // Debug: log the entry state before modification
-    crate::serial_println!(
-        "EXTRACT: PID={} has_entered_user={} state={:?}",
-        entry.process.pid,
-        entry.process.has_entered_user,
-        entry.process.state
-    );
-
     entry.time_slice = DEFAULT_TIME_SLICE;
     entry.process.state = ProcessState::Running;
 
     // Update last_cpu to record which CPU is running this process
     entry.last_cpu = crate::smp::current_cpu_id() as u16;
 
+    // first_run = true if context was never saved by context_switch
+    // This means we need to use FirstRun path (trampoline) instead of Switch path
     (
-        !entry.process.has_entered_user,
+        !entry.process.context_valid,
         entry.process.pid,
         entry.process.cr3,
         entry.process.user_rip,
@@ -649,6 +633,7 @@ fn get_old_context_info(
     curr_pid: Option<Pid>,
 ) -> (Option<*mut crate::process::Context>, bool) {
     let Some(pid) = curr_pid else {
+        crate::serial_println!("[OLD_CTX] curr_pid is None");
         return (None, false);
     };
 
@@ -666,16 +651,24 @@ fn get_old_context_info(
 
         // Don't save context for zombie processes
         if candidate.process.state == ProcessState::Zombie {
-            kdebug!(
-                "[do_schedule] Current PID {} is Zombie, not saving context",
-                pid
-            );
+            crate::serial_println!("[OLD_CTX] PID {} is Zombie, not saving", pid);
             return (None, voluntary);
         }
+
+        // Don't save context for processes that haven't entered userspace yet
+        // Their context structure contains invalid data
+        if !candidate.process.has_entered_user {
+            crate::serial_println!("[OLD_CTX] PID {} has_entered_user=false, not saving", pid);
+            return (None, voluntary);
+        }
+
+        // Mark context as valid since we're about to save to it via context_switch
+        candidate.process.context_valid = true;
 
         return (Some(&mut candidate.process.context as *mut _), voluntary);
     }
 
+    crate::serial_println!("[OLD_CTX] PID {} not found in table!", pid);
     (None, false)
 }
 
@@ -707,7 +700,8 @@ fn mark_process_entered_user(pid: Pid) {
     }
 }
 
-/// Execute first-run process
+/// Execute first-run process (unused, kept for reference)
+#[allow(dead_code)]
 fn execute_first_run(mut process: crate::process::Process) {
     crate::serial_println!(
         "FIRST_RUN: PID={} entry={:#x} stack={:#x} cr3={:#x}",
@@ -733,10 +727,146 @@ fn execute_first_run(mut process: crate::process::Process) {
     crate::kfatal!("process::execute returned unexpectedly");
 }
 
+/// Global storage for first-run process info (used by trampoline)
+/// This is safe because we only use it with interrupts disabled during context switch
+static mut FIRST_RUN_PROCESS: Option<crate::process::Process> = None;
+/// Global storage for the new process's CR3 (used by trampoline to switch address space)
+static mut FIRST_RUN_CR3: u64 = 0;
+
+/// Trampoline function called after context switch to first-run process
+/// This function never returns - it jumps to userspace via process.execute()
+#[no_mangle]
+extern "C" fn first_run_trampoline() -> ! {
+    // Switch to the new process's address space first
+    let cr3 = unsafe { FIRST_RUN_CR3 };
+    if cr3 != 0 {
+        crate::paging::activate_address_space(cr3);
+    }
+    
+    // Get the process from global storage
+    let mut process = unsafe {
+        FIRST_RUN_PROCESS.take().expect("first_run_trampoline called without process")
+    };
+
+    if process.cr3 == 0 {
+        crate::kpanic!(
+            "FirstRun PID {} has CR3=0",
+            process.pid
+        );
+    }
+
+    mark_process_entered_user(process.pid);
+    process.execute();
+    // process.execute() never returns, but compiler doesn't know
+    unreachable!("process.execute() returned");
+}
+
+/// Execute first-run process via context_switch
+/// This properly saves the old process context before switching
+unsafe fn execute_first_run_via_context_switch(
+    process: crate::process::Process,
+    old_context_ptr: *mut crate::process::Context,
+    next_cr3: u64,
+    kernel_stack: u64,
+    fs_base: u64,
+) {
+    crate::serial_println!("[FRVCS] PID={} kstack={:#x}", process.pid, kernel_stack);
+    
+    // Store process and CR3 in globals for the trampoline to pick up
+    FIRST_RUN_PROCESS = Some(process);
+    FIRST_RUN_CR3 = next_cr3;
+
+    // Update kernel stack in GS (per-CPU GS_DATA)
+    if kernel_stack != 0 {
+        let gs_data_ptr = crate::smp::current_gs_data_ptr();
+        gs_data_ptr
+            .add(crate::interrupts::GS_SLOT_KERNEL_RSP)
+            .write(kernel_stack + crate::process::KERNEL_STACK_SIZE as u64);
+    }
+
+    // Restore FS base for TLS if set
+    if fs_base != 0 {
+        use x86_64::registers::model_specific::Msr;
+        Msr::new(crate::safety::x86::MSR_IA32_FS_BASE).write(fs_base);
+    }
+
+    // Create a context for the new process that will call first_run_trampoline
+    let mut new_context = crate::process::Context::zero();
+    new_context.rip = first_run_trampoline as usize as u64;
+    // Stack: -16 for 16-byte alignment (RSP % 16 == 8 after push rip; ret)
+    new_context.rsp = kernel_stack + crate::process::KERNEL_STACK_SIZE as u64 - 16;
+    new_context.rflags = 0x202; // IF=1
+
+    // Context switch: saves old process context and jumps to trampoline
+    // Print old_context_ptr address before switch
+    if !old_context_ptr.is_null() {
+        crate::serial_println!("[FRV] old_ctx_ptr={:#x}, pre rip={:#x}",
+            old_context_ptr as u64, (*old_context_ptr).rip);
+    }
+    context_switch(old_context_ptr, &new_context as *const _);
+    
+    // Reached when this process is restored
+    // Print debug: what RIP was restored?
+    let restored_rip: u64;
+    core::arch::asm!("lea {}, [rip]", out(reg) restored_rip, options(nomem, nostack));
+    crate::serial_println!("[FRV] RESTORED: rip~{:#x}", restored_rip);
+    
+    // Restore our CR3
+    if let Some(pid) = *CURRENT_PID.lock() {
+        let table = PROCESS_TABLE.lock();
+        for slot in table.iter() {
+            if let Some(entry) = slot {
+                if entry.process.pid == pid {
+                    crate::serial_println!("[FRV] Restoring CR3 for PID {}: {:#x}", pid, entry.process.cr3);
+                    crate::paging::activate_address_space(entry.process.cr3);
+                    break;
+                }
+            }
+        }
+    }
+    crate::serial_println!("[FRV] About to return from execute_first_run_via_context_switch");
+}
+
+/// Trampoline for Switch path - returns to userspace via sysretq
+#[inline(never)]
+extern "C" fn switch_return_trampoline() {
+    // Get saved user context from globals
+    let (user_rip, user_rsp, user_rflags, cr3) = unsafe {
+        (SWITCH_USER_RIP, SWITCH_USER_RSP, SWITCH_USER_RFLAGS, SWITCH_CR3)
+    };
+    
+    crate::serial_println!("[SRT] Trampoline: rip={:#x} rsp={:#x} cr3={:#x}", 
+        user_rip, user_rsp, cr3);
+    
+    // Activate address space and return to userspace
+    crate::paging::activate_address_space(cr3);
+    crate::interrupts::restore_user_syscall_context(user_rip, user_rsp, user_rflags);
+    
+    // sysretq to return to userspace
+    unsafe {
+        core::arch::asm!(
+            "cli",
+            "swapgs",
+            "mov rcx, gs:[0x18]",  // GS_SLOT_SAVED_RCX = 3, * 8 = 0x18
+            "mov r11, gs:[0x28]",  // GS_SLOT_SAVED_RFLAGS = 5, * 8 = 0x28
+            "mov rsp, gs:[0x10]",  // GS_SLOT_USER_RSP = 2, * 8 = 0x10
+            "swapgs",
+            "sysretq",
+            options(noreturn)
+        );
+    }
+}
+
+// Globals for switch_return_trampoline
+static mut SWITCH_USER_RIP: u64 = 0;
+static mut SWITCH_USER_RSP: u64 = 0;
+static mut SWITCH_USER_RFLAGS: u64 = 0;
+static mut SWITCH_CR3: u64 = 0;
+
 /// Execute context switch to next process
 unsafe fn execute_context_switch(
     old_context_ptr: *mut crate::process::Context,
-    next_context: &crate::process::Context,
+    _next_context: &crate::process::Context,  // No longer used directly
     next_cr3: u64,
     user_rip: u64,
     user_rsp: u64,
@@ -777,39 +907,63 @@ unsafe fn execute_context_switch(
         user_rflags
     );
 
-    if user_rsp != 0 {
-        crate::interrupts::restore_user_syscall_context(user_rip, user_rsp, user_rflags);
+    // Store user context in globals for the trampoline
+    SWITCH_USER_RIP = user_rip;
+    SWITCH_USER_RSP = user_rsp;
+    SWITCH_USER_RFLAGS = user_rflags;
+    SWITCH_CR3 = next_cr3;
+
+    // Create a context that jumps to our return trampoline, using kernel stack
+    let mut trampoline_context = crate::process::Context::zero();
+    trampoline_context.rip = switch_return_trampoline as usize as u64;
+    // Stack: -16 for 16-byte alignment
+    trampoline_context.rsp = kernel_stack + crate::process::KERNEL_STACK_SIZE as u64 - 16;
+    trampoline_context.rflags = 0x202; // IF=1
+
+    // Print old_context_ptr info before switch
+    crate::serial_println!("[CTX] old_ctx_ptr={:?}", old_context_ptr);
+    if !old_context_ptr.is_null() {
+        crate::serial_println!("[CTX] old_ctx pre rip={:#x}",
+            (*old_context_ptr).rip);
     }
-    crate::paging::activate_address_space(next_cr3);
-    context_switch(old_context_ptr, next_context as *const _);
+    crate::serial_println!("[CTX] CALLING context_switch to trampoline rip={:#x} rsp={:#x}",
+        trampoline_context.rip, trampoline_context.rsp);
+    context_switch(old_context_ptr, &trampoline_context as *const _);
+    
+    // Print debug after context is restored
+    let restored_rip: u64;
+    core::arch::asm!("lea {}, [rip]", out(reg) restored_rip, options(nomem, nostack));
+    crate::serial_println!("[CTX] RESTORED: rip~{:#x}", restored_rip);
+    
+    // Reached when this process is restored - restore our CR3
+    if let Some(pid) = *CURRENT_PID.lock() {
+        let table = PROCESS_TABLE.lock();
+        for slot in table.iter() {
+            if let Some(entry) = slot {
+                if entry.process.pid == pid {
+                    crate::paging::activate_address_space(entry.process.cr3);
+                    break;
+                }
+            }
+        }
+    }
 }
 
 fn do_schedule_internal(from_interrupt: bool) {
-    // Debug output for exception handler troubleshooting
-    crate::serial_println!("SCHED_INTERNAL_ENTRY");
-
     crate::net::poll();
-
-    crate::serial_println!("SCHED_AFTER_POLL");
 
     {
         let mut stats = SCHED_STATS.lock();
         stats.total_context_switches += 1;
     }
 
-    crate::serial_println!("SCHED_AFTER_STATS");
-
-    {
-        let table = PROCESS_TABLE.lock();
-        debug_print_process_table(&table);
-    }
-
-    crate::serial_println!("SCHED_COMPUTING_DECISION");
-
     let decision = compute_schedule_decision(from_interrupt);
 
     match decision {
-        Some(ScheduleDecision::FirstRun(process)) => execute_first_run(process),
+        Some(ScheduleDecision::FirstRun { process, old_context_ptr, next_cr3, kernel_stack, fs_base }) => unsafe {
+            crate::serial_println!("[SCHED] Decision: FirstRun PID={}", process.pid);
+            execute_first_run_via_context_switch(process, old_context_ptr, next_cr3, kernel_stack, fs_base);
+        }
         Some(ScheduleDecision::Switch {
             old_context_ptr,
             next_context,
@@ -821,6 +975,7 @@ fn do_schedule_internal(from_interrupt: bool) {
             kernel_stack,
             fs_base,
         }) => unsafe {
+            crate::serial_println!("[SCHED] Decision: Switch to rip={:#x}", next_context.rip);
             execute_context_switch(
                 old_context_ptr,
                 &next_context,
@@ -881,14 +1036,9 @@ fn compute_schedule_decision(from_interrupt: bool) -> Option<ScheduleDecision> {
 
     *current_lock = Some(next_pid);
 
-    // Debug: log scheduling decision
-    crate::serial_println!(
-        "SCHED_DECISION: PID={} first_run={} rip={:#x} rsp={:#x}",
-        next_pid,
-        first_run,
-        user_rip,
-        user_rsp
-    );
+    // Always get old context info to save current process state
+    let (old_context_opt, is_voluntary) = get_old_context_info(&mut table, current);
+    let old_context_ptr = old_context_opt.unwrap_or(core::ptr::null_mut());
 
     if first_run {
         kdebug!(
@@ -896,13 +1046,22 @@ fn compute_schedule_decision(from_interrupt: bool) -> Option<ScheduleDecision> {
             next_pid,
             next_cr3
         );
-        return Some(ScheduleDecision::FirstRun(process_copy));
+        return Some(ScheduleDecision::FirstRun {
+            process: process_copy,
+            old_context_ptr,
+            next_cr3,
+            kernel_stack,
+            fs_base,
+        });
     }
 
-    let (old_context_opt, is_voluntary) = get_old_context_info(&mut table, current);
+    crate::serial_println!(
+        "[SWITCH_DBG] curr={:?} -> next={} ctx.rip={:#x} ctx.rsp={:#x}",
+        current, next_pid, next_context.rip, next_context.rsp
+    );
 
     Some(ScheduleDecision::Switch {
-        old_context_ptr: old_context_opt.unwrap_or(core::ptr::null_mut()),
+        old_context_ptr,
         next_context,
         next_cr3,
         user_rip,
@@ -913,3 +1072,4 @@ fn compute_schedule_decision(from_interrupt: bool) -> Option<ScheduleDecision> {
         fs_base,
     })
 }
+

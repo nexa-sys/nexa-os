@@ -271,6 +271,7 @@ impl ProcessEntry {
                 signal_state: crate::signal::SignalState::new(),
                 context: crate::process::Context::zero(),
                 has_entered_user: false,
+                context_valid: false,
                 is_fork_child: false,
                 cr3: 0,
                 tty: 0,
