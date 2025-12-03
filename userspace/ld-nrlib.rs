@@ -517,19 +517,8 @@ unsafe fn lseek(fd: i32, offset: i64, whence: i32) -> i64 {
 /// Load a shared library from path
 /// Returns (base_addr, load_bias, dyn_info) or (0, 0, DynInfo::new()) on failure
 unsafe fn load_shared_library(path: *const u8) -> (u64, i64, DynInfo) {
-    print_str("[ld-nrlib] Loading shared library: ");
-    // Print path
-    let mut p = path;
-    while *p != 0 {
-        let buf = [*p];
-        print(&buf);
-        p = p.add(1);
-    }
-    print_str("\n");
-    
     let fd = open_file(path);
     if fd < 0 {
-        print_str("[ld-nrlib] Failed to open library\n");
         return (0, 0, DynInfo::new());
     }
     
@@ -537,7 +526,6 @@ unsafe fn load_shared_library(path: *const u8) -> (u64, i64, DynInfo) {
     let mut ehdr_buf = [0u8; 64];
     let bytes_read = read_bytes(fd as i32, ehdr_buf.as_mut_ptr(), 64);
     if bytes_read < 64 {
-        print_str("[ld-nrlib] Failed to read ELF header\n");
         close_file(fd as i32);
         return (0, 0, DynInfo::new());
     }
@@ -547,14 +535,12 @@ unsafe fn load_shared_library(path: *const u8) -> (u64, i64, DynInfo) {
     // Validate ELF magic
     if ehdr.e_ident[0] != 0x7f || ehdr.e_ident[1] != b'E' || 
        ehdr.e_ident[2] != b'L' || ehdr.e_ident[3] != b'F' {
-        print_str("[ld-nrlib] Invalid ELF magic\n");
         close_file(fd as i32);
         return (0, 0, DynInfo::new());
     }
     
     // Must be shared object (ET_DYN = 3)
     if ehdr.e_type != 3 {
-        print_str("[ld-nrlib] Not a shared object\n");
         close_file(fd as i32);
         return (0, 0, DynInfo::new());
     }
@@ -562,7 +548,6 @@ unsafe fn load_shared_library(path: *const u8) -> (u64, i64, DynInfo) {
     // Read program headers
     let phdr_size = (ehdr.e_phentsize as usize) * (ehdr.e_phnum as usize);
     if phdr_size > 2048 {
-        print_str("[ld-nrlib] Program headers too large\n");
         close_file(fd as i32);
         return (0, 0, DynInfo::new());
     }
@@ -571,7 +556,6 @@ unsafe fn load_shared_library(path: *const u8) -> (u64, i64, DynInfo) {
     let mut phdr_buf = [0u8; 2048];
     let bytes_read = read_bytes(fd as i32, phdr_buf.as_mut_ptr(), phdr_size);
     if bytes_read < phdr_size as isize {
-        print_str("[ld-nrlib] Failed to read program headers\n");
         close_file(fd as i32);
         return (0, 0, DynInfo::new());
     }
@@ -603,16 +587,11 @@ unsafe fn load_shared_library(path: *const u8) -> (u64, i64, DynInfo) {
     }
     
     if load_addr_min == u64::MAX {
-        print_str("[ld-nrlib] No loadable segments\n");
         close_file(fd as i32);
         return (0, 0, DynInfo::new());
     }
     
     let total_size = load_addr_max - load_addr_min;
-    
-    print_str("[ld-nrlib] Allocating ");
-    print_hex(total_size);
-    print_str(" bytes for library\n");
     
     // Allocate memory for the library
     // For MAP_ANONYMOUS, fd should be -1 (passed as u64 representation of -1)
@@ -626,28 +605,11 @@ unsafe fn load_shared_library(path: *const u8) -> (u64, i64, DynInfo) {
         0,                          // offset
     );
     
-    print_str("[ld-nrlib] mmap returned: ");
-    print_hex(base_addr);
-    print_str("\n");
-    
-    // Check for mmap failure - MAP_FAILED is u64::MAX (0xFFFF_FFFF_FFFF_FFFF)
-    // But also handle if kernel returns a small negative errno value cast to u64
-    // Values above 0xFFFF_FFFF_FFFF_F000 are likely error codes
-    if base_addr >= 0xFFFF_FFFF_FFFF_F000 {
-        print_str("[ld-nrlib] mmap failed (error code)\n");
+    // Check for mmap failure
+    if base_addr >= 0xFFFF_FFFF_FFFF_F000 || base_addr == 0 {
         close_file(fd as i32);
         return (0, 0, DynInfo::new());
     }
-    
-    if base_addr == 0 {
-        print_str("[ld-nrlib] mmap returned NULL\n");
-        close_file(fd as i32);
-        return (0, 0, DynInfo::new());
-    }
-    
-    print_str("[ld-nrlib] Library base: ");
-    print_hex(base_addr);
-    print_str("\n");
     
     let load_bias = base_addr as i64 - load_addr_min as i64;
     
@@ -691,7 +653,6 @@ unsafe fn load_shared_library(path: *const u8) -> (u64, i64, DynInfo) {
         parse_dynamic_section(dyn_addr, load_bias, &mut dyn_info);
     }
     
-    print_str("[ld-nrlib] Library loaded successfully\n");
     (base_addr, load_bias, dyn_info)
 }
 
@@ -915,30 +876,12 @@ pub unsafe extern "C" fn _start_c() -> ! {
 /// Main dynamic linker entry point
 #[no_mangle]
 unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
-    print_str("[ld-nrlib] Dynamic linker starting...\n");
-
-    // Debug: print stack pointer
-    print_str("[ld-nrlib] stack_ptr=");
-    print_hex(stack_ptr as u64);
-    print_str("\n");
-
     // Parse the stack to get argc, argv, envp, auxv
     let argc = *stack_ptr as usize;
-    
-    // Debug: print argc
-    print_str("[ld-nrlib] argc=");
-    print_hex(argc as u64);
-    print_str("\n");
-    
     let argv = stack_ptr.add(1) as *const *const u8;
     
     // Skip past argv (argc+1 entries including NULL terminator)
     let mut ptr = argv.add(argc + 1) as *const *const u8;
-    
-    // Debug: print ptr after argv
-    print_str("[ld-nrlib] ptr after argv=");
-    print_hex(ptr as u64);
-    print_str("\n");
     
     // Skip past envp (until NULL)
     while !(*ptr).is_null() {
@@ -946,32 +889,8 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
     }
     ptr = ptr.add(1); // Skip NULL terminator
     
-    // Debug: print auxv pointer
-    print_str("[ld-nrlib] auxv ptr=");
-    print_hex(ptr as u64);
-    print_str("\n");
-    
     // Now ptr points to auxv
     let auxv = ptr as *const AuxEntry;
-    
-    // Debug: dump entire auxv array
-    print_str("[ld-nrlib] === DUMPING AUXV ===\n");
-    let mut dump_ptr = auxv;
-    for i in 0..20 {
-        let entry = *dump_ptr;
-        print_str("[ld-nrlib] auxv[");
-        print_hex(i as u64);
-        print_str("].type=");
-        print_hex(entry.a_type);
-        print_str(" val=");
-        print_hex(entry.a_val);
-        print_str("\n");
-        if entry.a_type == AT_NULL {
-            break;
-        }
-        dump_ptr = dump_ptr.add(1);
-    }
-    print_str("[ld-nrlib] === END AUXV DUMP ===\n");
     
     // Parse auxiliary vector
     let mut aux_info = AuxInfo::new();
@@ -994,26 +913,9 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
         aux_ptr = aux_ptr.add(1);
     }
 
-    print_str("[ld-nrlib] AT_PHDR:  ");
-    print_hex(aux_info.at_phdr);
-    print_str("\n");
-    print_str("[ld-nrlib] AT_PHNUM: ");
-    print_hex(aux_info.at_phnum);
-    print_str("\n");
-    print_str("[ld-nrlib] AT_ENTRY: ");
-    print_hex(aux_info.at_entry);
-    print_str("\n");
-    print_str("[ld-nrlib] AT_BASE:  ");
-    print_hex(aux_info.at_base);
-    print_str("\n");
-
     // Find the dynamic section of the main executable
-    if aux_info.at_phdr == 0 {
-        print_str("[ld-nrlib] ERROR: AT_PHDR is 0! Kernel did not pass program headers.\n");
-        exit(127);
-    }
-    if aux_info.at_phnum == 0 {
-        print_str("[ld-nrlib] ERROR: AT_PHNUM is 0!\n");
+    if aux_info.at_phdr == 0 || aux_info.at_phnum == 0 {
+        print_str("[ld-nrlib] ERROR: Invalid auxv\n");
         exit(127);
     }
 
@@ -1049,18 +951,11 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
             }
         }
     }
-    
-    print_str("[ld-nrlib] Load bias: ");
-    print_hex(load_bias as u64);
-    print_str("\n");
 
     // Parse main executable's dynamic section first
     let mut main_dyn_info = DynInfo::new();
     if dyn_addr != 0 {
         dyn_addr = (dyn_addr as i64 + load_bias) as u64;
-        print_str("[ld-nrlib] PT_DYNAMIC at: ");
-        print_hex(dyn_addr);
-        print_str("\n");
         
         // Parse dynamic section (including DT_NEEDED)
         parse_dynamic_section(dyn_addr, load_bias, &mut main_dyn_info);
@@ -1073,12 +968,9 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
         main_lib.valid = true;
         GLOBAL_SYMTAB.lib_count = 1;
         
-        print_str("[ld-nrlib] Main executable registered in symbol table\n");
-        
         // ================================================================
         // Step 1: Load libnrlib.so first (always needed)
         // ================================================================
-        print_str("[ld-nrlib] === Loading libnrlib.so ===\n");
         
         // Try to load libnrlib.so
         let libnrlib_path = b"/lib64/libnrlib.so\0";
@@ -1095,25 +987,18 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
                 lib.valid = true;
                 GLOBAL_SYMTAB.lib_count = lib_idx + 1;
                 
-                print_str("[ld-nrlib] libnrlib.so registered (index ");
-                print_hex(lib_idx as u64);
-                print_str(")\n");
-                
                 // Process libnrlib.so's RELATIVE relocations first
                 if lib_dyn_info.rela != 0 && lib_dyn_info.relasz > 0 {
-                    print_str("[ld-nrlib] Processing libnrlib.so RELA relocations...\n");
                     process_rela(lib_dyn_info.rela, lib_dyn_info.relasz, lib_dyn_info.relaent, lib_bias);
                 }
                 
                 // Call libnrlib.so init functions
                 if lib_dyn_info.init != 0 {
-                    print_str("[ld-nrlib] Calling libnrlib.so DT_INIT\n");
                     let init_fn: extern "C" fn() = core::mem::transmute(lib_dyn_info.init);
                     init_fn();
                 }
                 
                 if lib_dyn_info.init_array != 0 && lib_dyn_info.init_arraysz > 0 {
-                    print_str("[ld-nrlib] Calling libnrlib.so DT_INIT_ARRAY...\n");
                     let count = lib_dyn_info.init_arraysz / 8;
                     let array = lib_dyn_info.init_array as *const u64;
                     for i in 0..count {
@@ -1125,34 +1010,21 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
                     }
                 }
             }
-        } else {
-            print_str("[ld-nrlib] Warning: Could not load libnrlib.so\n");
         }
         
         // ================================================================
         // Step 2: Load other DT_NEEDED libraries
         // ================================================================
         if main_dyn_info.needed_count > 0 {
-            print_str("[ld-nrlib] === Loading DT_NEEDED libraries ===\n");
             
             for i in 0..main_dyn_info.needed_count {
                 let name_offset = main_dyn_info.needed[i];
                 let name_ptr = (main_dyn_info.strtab + name_offset) as *const u8;
                 
-                print_str("[ld-nrlib] DT_NEEDED: ");
-                let mut p = name_ptr;
-                while *p != 0 {
-                    let buf = [*p];
-                    print(&buf);
-                    p = p.add(1);
-                }
-                print_str("\n");
-                
                 // Skip if this is libnrlib.so (already loaded)
                 if is_same_library_name(name_ptr, b"libnrlib.so\0".as_ptr()) ||
                    is_same_library_name(name_ptr, b"libc.so\0".as_ptr()) ||
                    is_same_library_name(name_ptr, b"libc.so.6\0".as_ptr()) {
-                    print_str("[ld-nrlib] (already loaded as libnrlib.so)\n");
                     continue;
                 }
                 
@@ -1178,8 +1050,6 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
                             }
                         }
                     }
-                } else {
-                    print_str("[ld-nrlib] Warning: library not found\n");
                 }
             }
         }
@@ -1187,27 +1057,20 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
         // ================================================================
         // Step 3: Now process main executable's relocations with symbol lookup
         // ================================================================
-        print_str("[ld-nrlib] === Processing main executable relocations ===\n");
-        print_str("[ld-nrlib] Total libraries in symbol table: ");
-        print_hex(GLOBAL_SYMTAB.lib_count as u64);
-        print_str("\n");
         
         // Process RELA relocations with full symbol lookup
         if main_dyn_info.rela != 0 && main_dyn_info.relasz > 0 {
-            print_str("[ld-nrlib] Processing main RELA relocations...\n");
             process_rela_with_symtab(main_dyn_info.rela, main_dyn_info.relasz, main_dyn_info.relaent, load_bias, &main_dyn_info);
         }
         
         // Process PLT/JMPREL relocations with full symbol lookup
         if main_dyn_info.jmprel != 0 && main_dyn_info.pltrelsz > 0 {
-            print_str("[ld-nrlib] Processing main PLT relocations...\n");
             process_rela_with_symtab(main_dyn_info.jmprel, main_dyn_info.pltrelsz, 24, load_bias, &main_dyn_info);
         }
         
         // ================================================================
         // Step 4: Process library relocations that need main executable symbols
         // ================================================================
-        print_str("[ld-nrlib] === Processing library GLOB_DAT/JUMP_SLOT relocations ===\n");
         for i in 1..GLOBAL_SYMTAB.lib_count {
             let lib = &GLOBAL_SYMTAB.libs[i];
             if !lib.valid {
@@ -1216,17 +1079,11 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
             
             // Process RELA relocations (includes GLOB_DAT) with symbol lookup
             if lib.dyn_info.rela != 0 && lib.dyn_info.relasz > 0 {
-                print_str("[ld-nrlib] Processing library ");
-                print_hex(i as u64);
-                print_str(" RELA relocations (with symtab)...\n");
                 process_rela_with_symtab(lib.dyn_info.rela, lib.dyn_info.relasz, lib.dyn_info.relaent, lib.load_bias, &lib.dyn_info);
             }
             
             // Process PLT/JMPREL relocations
             if lib.dyn_info.jmprel != 0 && lib.dyn_info.pltrelsz > 0 {
-                print_str("[ld-nrlib] Processing library ");
-                print_hex(i as u64);
-                print_str(" PLT relocations...\n");
                 process_rela_with_symtab(lib.dyn_info.jmprel, lib.dyn_info.pltrelsz, 24, lib.load_bias, &lib.dyn_info);
             }
         }
@@ -1235,15 +1092,11 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
         // Step 5: Call init functions for main executable
         // ================================================================
         if main_dyn_info.init != 0 {
-            print_str("[ld-nrlib] Calling DT_INIT at ");
-            print_hex(main_dyn_info.init);
-            print_str("\n");
             let init_fn: extern "C" fn() = core::mem::transmute(main_dyn_info.init);
             init_fn();
         }
 
         if main_dyn_info.init_array != 0 && main_dyn_info.init_arraysz > 0 {
-            print_str("[ld-nrlib] Calling DT_INIT_ARRAY...\n");
             let count = main_dyn_info.init_arraysz / 8;
             let array = main_dyn_info.init_array as *const u64;
             for i in 0..count {
@@ -1262,37 +1115,21 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
     // For PIE executables, AT_ENTRY might be 0 (relative entry point)
     // In this case, we need to read e_entry from ELF header and apply load_bias
     if entry == 0 {
-        print_str("[ld-nrlib] AT_ENTRY is 0, reading e_entry from ELF header...\n");
-        
         // The ELF header is at the start of the first PT_LOAD segment
-        // For PIE, first_load_vaddr is typically 0x400000 or similar
-        // The actual loaded address is first_load_vaddr + load_bias
         let elf_header_addr = (first_load_vaddr as i64 + load_bias) as u64;
         
         // Read e_entry from offset 24 in ELF header
         let e_entry = *((elf_header_addr + 24) as *const u64);
-        
-        print_str("[ld-nrlib] ELF e_entry: ");
-        print_hex(e_entry);
-        print_str("\n");
         
         if e_entry != 0 {
             // Apply load_bias to get actual entry point
             entry = (e_entry as i64 + load_bias) as u64;
         } else {
             // e_entry is also 0, need to find entry point via symbol lookup
-            // For dynamically linked executables, the CRT entry point (_start/__nexa_crt_start)
-            // is typically in the shared library (libnrlib.so), not the main executable.
-            // We need to search both the main executable AND loaded libraries.
-            print_str("[ld-nrlib] e_entry is 0, looking for entry symbols...\n");
-            
             // First, try finding _start in main executable
             if dyn_addr != 0 {
                 let start_addr = find_symbol_by_name(dyn_addr, load_bias, b"_start\0");
                 if start_addr != 0 {
-                    print_str("[ld-nrlib] Found _start in main at: ");
-                    print_hex(start_addr);
-                    print_str("\n");
                     entry = start_addr;
                 }
             }
@@ -1302,25 +1139,15 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
                 // Try _start from any loaded library (typically libnrlib.so)
                 let start_addr = global_symbol_lookup(b"_start");
                 if start_addr != 0 {
-                    print_str("[ld-nrlib] Found _start in library at: ");
-                    print_hex(start_addr);
-                    print_str("\n");
                     entry = start_addr;
                 } else {
                     // Try __nexa_get_start_addr to get _start address indirectly
-                    // This is needed because _start is a local symbol in shared library
                     let get_start_fn = global_symbol_lookup(b"__nexa_get_start_addr");
                     if get_start_fn != 0 {
-                        print_str("[ld-nrlib] Found __nexa_get_start_addr at: ");
-                        print_hex(get_start_fn);
-                        print_str("\n");
                         // Call the function to get _start address
                         let get_start: extern "C" fn() -> usize = core::mem::transmute(get_start_fn);
                         let start_addr = get_start() as u64;
                         if start_addr != 0 {
-                            print_str("[ld-nrlib] _start address: ");
-                            print_hex(start_addr);
-                            print_str("\n");
                             entry = start_addr;
                         }
                     }
@@ -1330,48 +1157,28 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
                 if entry == 0 {
                     let crt_addr = global_symbol_lookup(b"__nexa_crt_start");
                     if crt_addr != 0 {
-                        print_str("[ld-nrlib] Found __nexa_crt_start at: ");
-                        print_hex(crt_addr);
-                        print_str("\n");
                         entry = crt_addr;
                     } else {
                         // Last resort: look for main and call it directly
-                        // This works for simple C programs but NOT for Rust std programs
                         let main_addr = global_symbol_lookup(b"main");
                         if main_addr == 0 && dyn_addr != 0 {
-                            // Try in main executable's symbol table directly
                             let main_addr = find_symbol_by_name(dyn_addr, load_bias, b"main\0");
                             if main_addr != 0 {
-                                print_str("[ld-nrlib] Found main at: ");
-                                print_hex(main_addr);
-                                print_str("\n");
-                                // Call main directly with C calling convention
                                 call_main_directly(main_addr, stack_ptr);
                             }
                         } else if main_addr != 0 {
-                            print_str("[ld-nrlib] Found main at: ");
-                            print_hex(main_addr);
-                            print_str("\n");
                             call_main_directly(main_addr, stack_ptr);
                         }
                     }
                 }
             }
         }
-        
-        print_str("[ld-nrlib] Calculated entry: ");
-        print_hex(entry);
-        print_str("\n");
     }
     
     if entry == 0 {
         print_str("[ld-nrlib] ERROR: No entry point\n");
         exit(127);
     }
-
-    print_str("[ld-nrlib] Jumping to entry point: ");
-    print_hex(entry);
-    print_str("\n");
 
     // Jump to the entry point with the original stack
     // The main executable expects the same stack layout as if it was started directly
@@ -1462,12 +1269,6 @@ unsafe fn call_main_directly(main_addr: u64, stack_ptr: *const u64) -> ! {
     let argc = *stack_ptr as i32;
     let argv = stack_ptr.add(1) as *const *const u8;
     
-    print_str("[ld-nrlib] Calling main(");
-    print_hex(argc as u64);
-    print_str(", ");
-    print_hex(argv as u64);
-    print_str(")\n");
-    
     // Call main with C calling convention
     let main_fn: extern "C" fn(i32, *const *const u8) -> i32 = core::mem::transmute(main_addr);
     let ret = main_fn(argc, argv);
@@ -1514,25 +1315,7 @@ unsafe fn process_rela_with_symtab(rela_addr: u64, relasz: u64, relaent: u64, lo
                     if !sym_name.is_null() {
                         let sym_addr = global_symbol_lookup_cstr(sym_name);
                         if sym_addr != 0 {
-                            // Debug: print symbol resolution for 'main'
-                            if *sym_name == b'm' && *sym_name.add(1) == b'a' && *sym_name.add(2) == b'i' && *sym_name.add(3) == b'n' && *sym_name.add(4) == 0 {
-                                print_str("[ld-nrlib] Resolving 'main': target=");
-                                print_hex(target as u64);
-                                print_str(" value=");
-                                print_hex(sym_addr);
-                                print_str("\n");
-                            }
                             *target = sym_addr;
-                        } else {
-                            // Symbol not found - print warning
-                            print_str("[ld-nrlib] Warning: unresolved symbol: ");
-                            let mut p = sym_name;
-                            while *p != 0 {
-                                let buf = [*p];
-                                print(&buf);
-                                p = p.add(1);
-                            }
-                            print_str("\n");
                         }
                     }
                 }
@@ -1557,12 +1340,7 @@ unsafe fn process_rela_with_symtab(rela_addr: u64, relasz: u64, relaent: u64, lo
                 }
             }
             R_X86_64_NONE => {}
-            _ => {
-                // Unknown relocation type - print debug info
-                print_str("[ld-nrlib] Unknown reloc type: ");
-                print_hex(rel_type as u64);
-                print_str("\n");
-            }
+            _ => {}
         }
     }
 }
