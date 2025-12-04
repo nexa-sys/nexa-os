@@ -73,6 +73,11 @@ impl Process {
             // CRITICAL: Switch CR3 and return to userspace atomically
             // We must switch CR3 in the same assembly block that does sysretq
             // to avoid accessing kernel stack after address space switch
+            // 
+            // IMPORTANT: Restore CALLEE-SAVED registers (RBX, RBP, R12-R15) from context
+            // These are the registers that the compiler expects to be preserved across
+            // the fork() syscall. The caller-saved registers (RDI, RSI, etc.) don't need
+            // to be restored because the syscall wrapper already clobbered them.
             unsafe {
                 core::arch::asm!(
                     "cli",                 // Disable interrupts during transition
@@ -80,12 +85,26 @@ impl Process {
                     "mov rcx, {rip}",      // RCX = return RIP for sysretq
                     "mov r11, {rflags}",   // R11 = RFLAGS for sysretq
                     "mov rsp, {rsp}",      // RSP = user stack
+                    // Restore CALLEE-SAVED registers from context
+                    // These are critical for the fork() caller to work correctly
+                    "mov rbx, {rbx}",      // Restore RBX (callee-saved)
+                    "mov rbp, {rbp}",      // Restore RBP (callee-saved, frame pointer)
+                    "mov r12, {r12}",      // Restore R12 (callee-saved)
+                    "mov r13, {r13}",      // Restore R13 (callee-saved)
+                    "mov r14, {r14}",      // Restore R14 (callee-saved)
+                    "mov r15, {r15}",      // Restore R15 (callee-saved)
                     "xor rax, rax",        // RAX = 0 (fork child return value)
                     "sysretq",             // Return to Ring 3
                     cr3 = in(reg) self.cr3,
                     rip = in(reg) self.entry_point,
                     rflags = in(reg) self.user_rflags,
                     rsp = in(reg) self.stack_top,
+                    rbx = in(reg) self.context.rbx,
+                    rbp = in(reg) self.context.rbp,
+                    r12 = in(reg) self.context.r12,
+                    r13 = in(reg) self.context.r13,
+                    r14 = in(reg) self.context.r14,
+                    r15 = in(reg) self.context.r15,
                     options(noreturn)
                 );
             }

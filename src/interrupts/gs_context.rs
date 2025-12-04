@@ -20,8 +20,29 @@ pub const GS_SLOT_SAVED_RCX: usize = 7;
 pub const GS_SLOT_SAVED_RFLAGS: usize = 8;
 pub const GS_SLOT_USER_RSP_DEBUG: usize = 9;
 pub const GS_SLOT_SAVED_RAX: usize = 10; // For fork child return value
+// Slots 11-19: User registers saved for fork() - allows child process to inherit parent's register state
+// (These are used by syscall instruction path in syscalls/mod.rs)
+pub const GS_SLOT_SAVED_RDI: usize = 11;
+pub const GS_SLOT_SAVED_RSI: usize = 12;
+pub const GS_SLOT_SAVED_RDX: usize = 13;
+pub const GS_SLOT_SAVED_RBX: usize = 14;
+pub const GS_SLOT_SAVED_RBP: usize = 15;
+pub const GS_SLOT_SAVED_R8: usize = 16;
+pub const GS_SLOT_SAVED_R9: usize = 17;
+pub const GS_SLOT_SAVED_R10: usize = 18;
+pub const GS_SLOT_SAVED_R12: usize = 19;
+// More slots if needed
 pub const GS_SLOT_KERNEL_STACK_GUARD: usize = 20;
 pub const GS_SLOT_KERNEL_STACK_SNAPSHOT: usize = 21;
+// Slots 22-27: Callee-saved registers from int 0x81 path (syscall_interrupt_handler)
+// These preserve the ORIGINAL register values before syscall wrapper modified them
+// offset 176 = slot 22, 184 = slot 23, etc.
+pub const GS_SLOT_INT81_RBX: usize = 22;  // offset 176
+pub const GS_SLOT_INT81_RBP: usize = 23;  // offset 184
+pub const GS_SLOT_INT81_R12: usize = 24;  // offset 192
+pub const GS_SLOT_INT81_R13: usize = 25;  // offset 200
+pub const GS_SLOT_INT81_R14: usize = 26;  // offset 208
+pub const GS_SLOT_INT81_R15: usize = 27;  // offset 216
 
 pub const GUARD_SOURCE_INT_GATE: u64 = 0;
 pub const GUARD_SOURCE_SYSCALL: u64 = 1;

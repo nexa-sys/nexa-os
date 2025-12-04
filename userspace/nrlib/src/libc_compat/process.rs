@@ -274,7 +274,12 @@ pub unsafe extern "C" fn posix_spawn(
 ) -> c_int {
     if path.is_null() || pid.is_null() {
         return crate::EINVAL;
-    }
+    } 
+
+    // DEBUG: Print path pointer before fork
+    crate::debug_log_message(b"[posix_spawn] BEFORE fork, path_ptr=0x");
+    crate::debug_log_hex(path as u64);
+    crate::debug_log_message(b"\n");
 
     let child_pid = crate::fork();
     if child_pid < 0 {
@@ -283,6 +288,11 @@ pub unsafe extern "C" fn posix_spawn(
 
     if child_pid == 0 {
         // Child process - exec the program
+        // DEBUG: Print path pointer after fork in child
+        crate::debug_log_message(b"[posix_spawn] CHILD after fork, path_ptr=0x");
+        crate::debug_log_hex(path as u64);
+        crate::debug_log_message(b"\n");
+        
         let ret = crate::execve(
             path as *const u8,
             argv as *const *const u8,

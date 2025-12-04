@@ -382,6 +382,25 @@ global_asm!(
     // GS_SLOT_SAVED_RFLAGS = 8, offset = 8 * 8 = 64
     "mov gs:[56], rcx", // Save user RIP to GS_SLOT_SAVED_RCX for context switch
     "mov gs:[64], r11", // Save user RFLAGS to GS_SLOT_SAVED_RFLAGS for context switch
+    // Save more user registers to GS_DATA for fork() to access
+    // GS_SLOT_SAVED_RDI = 11, offset = 11 * 8 = 88
+    // GS_SLOT_SAVED_RSI = 12, offset = 12 * 8 = 96
+    // GS_SLOT_SAVED_RDX = 13, offset = 13 * 8 = 104
+    // GS_SLOT_SAVED_RBX = 14, offset = 14 * 8 = 112
+    // GS_SLOT_SAVED_RBP = 15, offset = 15 * 8 = 120
+    // GS_SLOT_SAVED_R8 = 16, offset = 16 * 8 = 128
+    // GS_SLOT_SAVED_R9 = 17, offset = 17 * 8 = 136
+    // GS_SLOT_SAVED_R10 = 18, offset = 18 * 8 = 144
+    // GS_SLOT_SAVED_R12 = 19, offset = 19 * 8 = 152
+    "mov gs:[88], rdi",  // Save user RDI (syscall arg1)
+    "mov gs:[96], rsi",  // Save user RSI (syscall arg2)
+    "mov gs:[104], rdx", // Save user RDX (syscall arg3)
+    "mov gs:[112], rbx", // Save user RBX (callee-saved)
+    "mov gs:[120], rbp", // Save user RBP (callee-saved)
+    "mov gs:[128], r8",  // Save user R8 (syscall arg5)
+    "mov gs:[136], r9",  // Save user R9 (syscall arg6)
+    "mov gs:[144], r10", // Save user R10
+    "mov gs:[152], r12", // Save user R12 (callee-saved)
     "mov rsp, gs:[8]", // Load kernel RSP
     // Also push to stack for sysretq restore
     "push r11", // save user rflags

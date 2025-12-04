@@ -20,6 +20,17 @@ global_asm!(
     //   [rsp+24] = user RSP
     //   [rsp+32] = SS
 
+    // CRITICAL: Save callee-saved registers to GS_DATA BEFORE they are modified
+    // These are needed for fork() to properly restore child's registers
+    // GS_SLOT_SAVED_RBX = 14, offset = 14 * 8 = 112 (but 112/120/128 are used for CS/SS snapshot)
+    // Use new slots: 176 for RBX, 184 for RBP, 192 for R12, 200 for R13, 208 for R14, 216 for R15
+    "mov gs:[176], rbx", // Save callee-saved RBX
+    "mov gs:[184], rbp", // Save callee-saved RBP
+    "mov gs:[192], r12", // Save callee-saved R12
+    "mov gs:[200], r13", // Save callee-saved R13
+    "mov gs:[208], r14", // Save callee-saved R14
+    "mov gs:[216], r15", // Save callee-saved R15
+    
     // Record the incoming CS/SS pair for diagnostics
     "mov r10, [rsp + 8]",
     "mov gs:[120], r10", // gs slot 15 = entry CS snapshot

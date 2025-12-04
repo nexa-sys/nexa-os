@@ -117,10 +117,67 @@ pub fn fork(syscall_return_addr: u64) -> u64 {
     child_process.user_rsp = user_rsp;
     child_process.user_rflags = parent_process.user_rflags;
 
+    // CRITICAL: Copy parent's CALLEE-SAVED registers to child's context
+    // These were saved to GS_DATA by syscall_interrupt_handler at int 0x81 entry
+    // BEFORE the syscall wrapper modified them for argument passing.
+    // The child must inherit these registers for the fork() call to work correctly.
+    // 
+    // Note: We use slots 22-27 (offset 176-216) which are set in syscall_interrupt_handler
+    // These contain the ORIGINAL callee-saved register values, not the syscall args.
+    let (saved_rbx, saved_rbp, saved_r12, saved_r13, saved_r14, saved_r15) = unsafe {
+        let rbx: u64;
+        let rbp: u64;
+        let r12: u64;
+        let r13: u64;
+        let r14: u64;
+        let r15: u64;
+        core::arch::asm!(
+            "mov {0}, gs:[176]",  // GS_SLOT_INT81_RBX (slot 22)
+            "mov {1}, gs:[184]",  // GS_SLOT_INT81_RBP (slot 23)
+            "mov {2}, gs:[192]",  // GS_SLOT_INT81_R12 (slot 24)
+            "mov {3}, gs:[200]",  // GS_SLOT_INT81_R13 (slot 25)
+            "mov {4}, gs:[208]",  // GS_SLOT_INT81_R14 (slot 26)
+            "mov {5}, gs:[216]",  // GS_SLOT_INT81_R15 (slot 27)
+            out(reg) rbx,
+            out(reg) rbp,
+            out(reg) r12,
+            out(reg) r13,
+            out(reg) r14,
+            out(reg) r15,
+            options(nostack, preserves_flags)
+        );
+        (rbx, rbp, r12, r13, r14, r15)
+    };
+    
+    // Also get saved RFLAGS
+    let saved_rflags = unsafe {
+        let rflags: u64;
+        core::arch::asm!(
+            "mov {0}, gs:[64]",   // GS_SLOT_SAVED_RFLAGS
+            out(reg) rflags,
+            options(nostack, preserves_flags)
+        );
+        rflags
+    };
+
     child_process.context = crate::process::Context::zero();
-    child_process.context.rax = 0;
+    child_process.context.rax = 0;  // fork returns 0 in child
     child_process.context.rip = syscall_return_addr;
     child_process.context.rsp = user_rsp;
+    // Restore callee-saved registers (these are what the compiler expects to be preserved)
+    child_process.context.rbx = saved_rbx;
+    child_process.context.rbp = saved_rbp;
+    child_process.context.r12 = saved_r12;
+    child_process.context.r13 = saved_r13;
+    child_process.context.r14 = saved_r14;
+    child_process.context.r15 = saved_r15;
+    // Also update user_rflags
+    child_process.user_rflags = saved_rflags;
+
+    crate::serial_println!(
+        "[fork] Child callee-saved regs: rbx={:#x}, rbp={:#x}, r12={:#x}, r13={:#x}, r14={:#x}, r15={:#x}",
+        saved_rbx, saved_rbp, saved_r12, saved_r13, saved_r14, saved_r15
+    );
 
     kdebug!(
         "Child fork: entry={:#x}, stack={:#x}, will return RAX=0",
@@ -153,12 +210,27 @@ pub fn fork(syscall_return_addr: u64) -> u64 {
         }
     };
 
+    // DEBUG: Always print for debugging fork issues
+    crate::serial_println!(
+        "[fork] PID {} -> child: phys_base={:#x}, parent_phys_base will be read next",
+        current_pid,
+        child_phys_base
+    );
+
     kdebug!(
         "fork() - allocated child memory at physical {:#x}",
         child_phys_base
     );
 
     let parent_phys_base = parent_process.memory_base;
+
+    // DEBUG: Always print parent memory_base for tracing
+    crate::serial_println!(
+        "[fork] Parent PID {} memory_base={:#x}, child will get phys_base={:#x}",
+        parent_pid,
+        parent_phys_base,
+        child_phys_base
+    );
 
     ktrace!(
         "[fork] Parent PID {} phys_base={:#x}, child PID {} phys_base={:#x}",
@@ -181,6 +253,17 @@ pub fn fork(syscall_return_addr: u64) -> u64 {
         );
     }
 
+    // DEBUG: Print a sample byte from parent memory to verify it's accessible
+    unsafe {
+        // Read first few bytes at a known offset to verify parent memory is accessible
+        let sample_byte = core::ptr::read_volatile(parent_phys_base as *const u8);
+        crate::serial_println!(
+            "[fork] Parent phys_base={:#x}, first byte={:#x}",
+            parent_phys_base,
+            sample_byte
+        );
+    }
+
     unsafe {
         // CRITICAL: Copy from parent's PHYSICAL base, not USER_VIRT_BASE!
         // USER_VIRT_BASE is the virtual address in the process's address space,
@@ -198,6 +281,14 @@ pub fn fork(syscall_return_addr: u64) -> u64 {
             return u64::MAX;
         }
 
+        // DEBUG: Always print for tracing
+        crate::serial_println!(
+            "[fork] Copying from parent PHYS {:#x} to child PHYS {:#x}, size {:#x}",
+            src_ptr as u64,
+            dst_ptr as u64,
+            memory_size
+        );
+
         kdebug!(
             "[fork] Copying from parent PHYS {:#x} to child PHYS {:#x}, size {:#x}",
             src_ptr as u64,
@@ -210,6 +301,14 @@ pub fn fork(syscall_return_addr: u64) -> u64 {
 
         // Memory barrier to ensure copy is visible
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+
+        // DEBUG: Read a sample byte from child memory to verify copy
+        let sample_byte_child = core::ptr::read_volatile(child_phys_base as *const u8);
+        crate::serial_println!(
+            "[fork] Child phys_base={:#x}, first byte after copy={:#x}",
+            child_phys_base,
+            sample_byte_child
+        );
 
         // Verify copy succeeded (use volatile to bypass caches)
         let verify_src = core::ptr::read_volatile(src_ptr);
@@ -319,9 +418,14 @@ pub fn execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8)
     use crate::scheduler::get_current_pid;
     use alloc::vec::Vec;
 
+    // DEBUG: Always print to serial to track execve calls
+    let current_pid = get_current_pid().unwrap_or(0);
+    crate::serial_println!("[execve] PID={} path_ptr={:#x}", current_pid, path as u64);
+
     kinfo!("[syscall_execve] Called");
 
     if path.is_null() {
+        crate::serial_println!("[execve] PID={} ERROR: path is null", current_pid);
         kerror!("[syscall_execve] Error: path is null");
         posix::set_errno(posix::errno::EFAULT);
         return u64::MAX;
@@ -335,8 +439,12 @@ pub fn execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8)
 
     let mut path_buf = [0u8; MAX_EXEC_PATH_LEN];
     let path_len = match copy_user_c_string(path, &mut path_buf) {
-        Ok(len) => len,
+        Ok(len) => {
+            crate::serial_println!("[execve] PID={} path copied, len={}", current_pid, len);
+            len
+        }
         Err(_) => {
+            crate::serial_println!("[execve] PID={} ERROR: path copy failed", current_pid);
             ktrace!("[syscall_execve] Error: path too long or invalid");
             posix::set_errno(posix::errno::EINVAL);
             return u64::MAX;
@@ -395,8 +503,12 @@ pub fn execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8)
 
     let path_slice = &path_buf[..path_len];
     let path_str = match core::str::from_utf8(path_slice) {
-        Ok(s) => s,
+        Ok(s) => {
+            crate::serial_println!("[execve] PID={} path={}", current_pid, s);
+            s
+        }
         Err(_) => {
+            crate::serial_println!("[execve] PID={} ERROR: invalid UTF-8", current_pid);
             ktrace!("[syscall_execve] Error: invalid UTF-8 in path");
             // Restore CR3 before returning
             unsafe {
@@ -424,10 +536,12 @@ pub fn execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8)
 
     let elf_data = match crate::fs::read_file_bytes(path_str) {
         Some(data) => {
+            crate::serial_println!("[execve] PID={} file found, {} bytes", current_pid, data.len());
             kinfo!("[syscall_execve] Found file, {} bytes", data.len());
             data
         }
         None => {
+            crate::serial_println!("[execve] PID={} ERROR: file not found: {}", current_pid, path_str);
             kerror!("[syscall_execve] Error: file not found: {}", path_str);
             // Restore CR3 before returning
             unsafe {

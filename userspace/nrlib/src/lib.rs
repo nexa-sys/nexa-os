@@ -639,10 +639,23 @@ fn debug_log_flush(mut buf: [u8; 80], len: usize) {
     let _ = syscall3(SYS_WRITE, STDERR_FD, buf.as_mut_ptr() as u64, len as u64);
 }
 
-// Debug logging - disabled by default for clean output
+// Debug logging - ENABLED for debugging posix_spawn issue
 #[allow(dead_code)]
-fn debug_log_message(_msg: &[u8]) {
-    // Disabled: let _ = syscall3(SYS_WRITE, STDERR_FD, msg.as_ptr() as u64, msg.len() as u64);
+pub fn debug_log_message(msg: &[u8]) {
+    let _ = syscall3(SYS_WRITE, STDERR_FD, msg.as_ptr() as u64, msg.len() as u64);
+}
+
+// Debug: output a u64 as hex
+#[allow(dead_code)]
+pub fn debug_log_hex(value: u64) {
+    let hex_chars = b"0123456789abcdef";
+    let mut buf = [0u8; 16];
+    let mut v = value;
+    for i in (0..16).rev() {
+        buf[i] = hex_chars[(v & 0xf) as usize];
+        v >>= 4;
+    }
+    let _ = syscall3(SYS_WRITE, STDERR_FD, buf.as_ptr() as u64, 16);
 }
 
 fn debug_log_write_start(fd: i32, count: usize) -> DebugWriteContext {
@@ -826,7 +839,7 @@ pub extern "C" fn fork() -> i32 {
 #[no_mangle]
 pub extern "C" fn execve(path: *const u8, argv: *const *const u8, envp: *const *const u8) -> i32 {
     if path.is_null() {
-        set_errno(ENOENT);
+        set_errno(ENOENT);  
         return -1;
     }
     translate_ret_i32(syscall3(SYS_EXECVE, path as u64, argv as u64, envp as u64))
