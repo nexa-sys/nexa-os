@@ -4,7 +4,7 @@
 
 use std::vec::Vec;
 
-use crate::hash::{sha256, sha512, hmac_sha256, Sha256, HmacSha256, SHA256_DIGEST_SIZE};
+use crate::hash::{sha512, hmac_sha256, HmacSha256, SHA256_DIGEST_SIZE};
 
 // ============================================================================
 // HKDF (HMAC-based Key Derivation Function)
@@ -123,7 +123,7 @@ pub fn pbkdf2_sha512(password: &[u8], salt: &[u8], iterations: u32, dk_len: usiz
 
 /// HMAC-SHA512 helper
 fn hmac_sha512(key: &[u8], data: &[u8]) -> Vec<u8> {
-    use crate::hash::{Sha512, SHA512_BLOCK_SIZE, SHA512_DIGEST_SIZE};
+    use crate::hash::{Sha512, SHA512_BLOCK_SIZE};
     
     let mut padded_key = vec![0u8; SHA512_BLOCK_SIZE];
     

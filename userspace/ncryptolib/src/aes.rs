@@ -318,7 +318,7 @@ fn inv_shift_rows(state: &mut [u8; 16]) {
 
 #[inline]
 fn xtime(x: u8) -> u8 {
-    ((x << 1) ^ (((x >> 7) & 1) * 0x1b))
+    (x << 1) ^ (((x >> 7) & 1) * 0x1b)
 }
 
 #[inline]

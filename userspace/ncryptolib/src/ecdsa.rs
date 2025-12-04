@@ -177,7 +177,7 @@ impl EcdsaPublicKey {
 
     /// Verify ECDSA signature with pre-hashed message
     pub fn verify_prehashed(&self, hash: &[u8], signature: &EcdsaSignature) -> bool {
-        let (n, p, coord_size) = match self.curve {
+        let (n, _p, _coord_size) = match self.curve {
             EcdsaCurve::P256 => (
                 BigInt::from_bytes_be(p256::N).unwrap(),
                 BigInt::from_bytes_be(p256::P).unwrap(),
@@ -194,7 +194,7 @@ impl EcdsaPublicKey {
         let s = &signature.s;
 
         // Check r, s in range [1, n-1]
-        let one = BigInt::from_u64(1);
+        let _one = BigInt::from_u64(1);
         if r.is_zero() || r >= &n || s.is_zero() || s >= &n {
             return false;
         }
@@ -210,10 +210,10 @@ impl EcdsaPublicKey {
         };
 
         // u1 = z * w mod n
-        let u1 = z.mul(&w).mod_reduce(&n);
+        let _u1 = z.mul(&w).mod_reduce(&n);
 
         // u2 = r * w mod n
-        let u2 = r.mul(&w).mod_reduce(&n);
+        let _u2 = r.mul(&w).mod_reduce(&n);
 
         // Point multiplication would be implemented here
         // (u1 * G + u2 * Q).x mod n == r

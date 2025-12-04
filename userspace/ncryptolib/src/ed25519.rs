@@ -312,7 +312,7 @@ impl GeP3 {
         let f = e.sub(&c);
         let g = e.add(&c);
         
-        let h = b.sub(&a);
+        let _h = b.sub(&a);
         let i = b.add(&a);
         
         let x3 = self.x.add(&self.y).mul(&other.x.add(&other.y)).sub(&i);

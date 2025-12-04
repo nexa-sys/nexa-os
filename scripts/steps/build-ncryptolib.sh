@@ -25,7 +25,7 @@ build_ncryptolib_static() {
     
     # Build static library with std support
     RUSTFLAGS="-C opt-level=2 -C panic=abort" \
-        cargo build -Z build-std=std,core,alloc --target "$TARGET_LIB" --release
+        cargo build -Z build-std=std,core,alloc,panic_abort --target "$TARGET_LIB" --release
     
     local staticlib="$PROJECT_ROOT/userspace/target/x86_64-nexaos-userspace-lib/release/libncryptolib.a"
     
@@ -49,7 +49,7 @@ build_ncryptolib_shared() {
     
     # Build shared library with PIC and std support
     RUSTFLAGS="-C opt-level=2 -C panic=abort -C relocation-model=pic" \
-        cargo build -Z build-std=std,core,alloc --target "$TARGET_LIB" --release
+        cargo build -Z build-std=std,core,alloc,panic_abort --target "$TARGET_LIB" --release
     
     local sharedlib="$PROJECT_ROOT/userspace/target/x86_64-nexaos-userspace-lib/release/libncryptolib.so"
     

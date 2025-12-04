@@ -59,7 +59,7 @@ impl Fe {
 
     /// Convert to little-endian bytes
     fn to_bytes(&self) -> [u8; 32] {
-        let mut reduced = self.reduce();
+        let reduced = self.reduce();
         let mut bytes = [0u8; 32];
         for i in 0..4 {
             let b = reduced.0[i].to_le_bytes();
@@ -200,7 +200,7 @@ impl Fe {
     fn invert(&self) -> Self {
         // p - 2 = 2^255 - 21
         let mut result = Fe::one();
-        let mut base = *self;
+        let base = *self;
         
         // Square-and-multiply with p-2
         // p-2 = ...11111111111111111111111111111111111111111111111111111111111101011
@@ -250,7 +250,7 @@ fn x25519_scalar_mult(scalar: &[u8; 32], point: &[u8; 32]) -> [u8; 32] {
     let u = Fe::from_bytes(point);
     
     // Montgomery ladder
-    let mut x1 = u;
+    let x1 = u;
     let mut x2 = Fe::one();
     let mut z2 = Fe::zero();
     let mut x3 = u;
