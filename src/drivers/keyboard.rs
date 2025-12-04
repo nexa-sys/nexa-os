@@ -279,6 +279,7 @@ fn read_line_for_tty(tty: usize, buf: &mut [u8]) -> usize {
 }
 
 /// Read raw bytes from keyboard (no echo, for userspace control)
+/// Returns as soon as at least 1 byte is available (non-line-buffered mode)
 pub fn read_raw(buf: &mut [u8], count: usize) -> usize {
     read_raw_for_tty(vt::active_terminal(), buf, count)
 }
@@ -287,6 +288,12 @@ pub fn read_raw_for_tty(tty: usize, buf: &mut [u8], count: usize) -> usize {
     let mut pos = 0;
     let max_read = core::cmp::min(buf.len(), count);
 
+    if max_read == 0 {
+        return 0;
+    }
+
+    // Wait for at least one character, then return immediately
+    // This enables raw/character-by-character input mode
     while pos < max_read {
         if tty != vt::active_terminal() {
             x86_64::instructions::hlt();
@@ -296,9 +303,9 @@ pub fn read_raw_for_tty(tty: usize, buf: &mut [u8], count: usize) -> usize {
         if let Some(ch) = try_read_char() {
             buf[pos] = ch as u8;
             pos += 1;
-            if ch == '\n' {
-                break;
-            }
+            // Return immediately after getting at least one character
+            // This allows single-character reads for shell line editing
+            break;
         } else {
             x86_64::instructions::hlt();
         }
