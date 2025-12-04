@@ -166,6 +166,13 @@ fn u64_to_hex(mut n: u64, buf: &mut [u8]) -> &[u8] {
     &buf[..i]
 }
 
+/// Print a hex value to stderr
+fn print_hex_u64(val: u64) {
+    let mut buf = [0u8; 16];
+    let hex = u64_to_hex(val, &mut buf);
+    let _ = crate::syscall3(SYS_WRITE_NR, 2, hex.as_ptr() as u64, hex.len() as u64);
+}
+
 #[inline(always)]
 fn log_mutex(msg: &[u8]) {
     let slot = PTHREAD_MUTEX_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -591,31 +598,49 @@ const CLONE_THREAD_FLAGS: c_int = super::types::CLONE_VM
 
 /// Thread control block - stores thread state
 /// This structure is pointed to by the FS register for TLS access
+/// Layout must be compatible with musl's pthread structure for std compatibility
 #[repr(C)]
 struct ThreadControlBlock {
-    /// Self pointer (for TLS access via %fs:0)
+    /// Self pointer (for TLS access via %fs:0) - offset 0
     self_ptr: *mut ThreadControlBlock,
-    /// Thread ID (set after clone)
+    /// DTV (Dynamic Thread Vector) for TLS - offset 8
+    /// Points to an array of pointers to TLS blocks
+    dtv: *mut usize,
+    /// Previous thread in list - offset 16 (unused but needed for layout)
+    prev: *mut ThreadControlBlock,
+    /// Next thread in list - offset 24 (unused but needed for layout)
+    next: *mut ThreadControlBlock,
+    /// sysinfo - offset 32 (unused)
+    sysinfo: usize,
+    /// Stack canary - offset 40
+    canary: usize,
+    /// Thread ID (set after clone) - offset 48
     tid: AtomicUsize,
-    /// Start routine
+    /// errno location - offset 56
+    errno_val: i32,
+    /// Padding to align - offset 60
+    _pad1: i32,
+    /// Start routine - offset 64
     start_routine: extern "C" fn(*mut c_void) -> *mut c_void,
-    /// Argument to start routine
+    /// Argument to start routine - offset 72
     arg: *mut c_void,
-    /// Return value from thread
+    /// Return value from thread - offset 80
     retval: *mut c_void,
-    /// Stack base address
+    /// Stack base address - offset 88
     stack_base: *mut c_void,
-    /// Stack size
+    /// Stack size - offset 96
     stack_size: usize,
-    /// Joinable flag
+    /// Joinable flag - offset 104
     joinable: bool,
-    /// Detached flag
+    /// Detached flag - offset 105
     detached: bool,
-    /// Exit flag
+    /// Padding
+    _pad2: [u8; 6],
+    /// Exit flag - offset 112
     exited: AtomicUsize,
-    /// TID address for futex wake on exit
+    /// TID address for futex wake on exit - offset 120
     tid_address: *mut c_int,
-    /// Thread-specific data (pthread_key values)
+    /// Thread-specific data (pthread_key values) - offset 128
     tls_data: [*mut c_void; MAX_TLS_KEYS],
 }
 
@@ -676,9 +701,45 @@ pub unsafe extern "C" fn __thread_entry() -> ! {
     let msg = b"[nrlib] __thread_entry: starting thread\n";
     let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
     
+    // Debug: print tcb_ptr
+    let msg = b"[nrlib] __thread_entry: tcb_ptr=0x";
+    let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
+    print_hex_u64(tcb_ptr as u64);
+    let _ = crate::syscall3(SYS_WRITE_NR, 2, b"\n".as_ptr() as u64, 1);
+    
+    if tcb_ptr.is_null() {
+        let msg = b"[nrlib] __thread_entry: ERROR tcb_ptr is NULL!\n";
+        let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
+        crate::syscall1(crate::SYS_EXIT, 1);
+        loop { spin_loop(); }
+    }
+    
     let tcb = &mut *tcb_ptr;
     
+    // Debug: print start_routine
+    {
+        let msg: &[u8] = b"[nrlib] __thread_entry: start_routine=0x";
+        let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
+        print_hex_u64(tcb.start_routine as u64);
+        let newline: &[u8] = b"\n";
+        let _ = crate::syscall3(SYS_WRITE_NR, 2, newline.as_ptr() as u64, newline.len() as u64);
+    }
+    
+    // Debug: print arg
+    {
+        let msg: &[u8] = b"[nrlib] __thread_entry: arg=0x";
+        let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
+        print_hex_u64(tcb.arg as u64);
+        let newline: &[u8] = b"\n";
+        let _ = crate::syscall3(SYS_WRITE_NR, 2, newline.as_ptr() as u64, newline.len() as u64);
+    }
+    
     // Call the user's start routine
+    {
+        let msg: &[u8] = b"[nrlib] __thread_entry: calling start_routine\n";
+        let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
+    }
+    
     let retval = (tcb.start_routine)(tcb.arg);
     tcb.retval = retval;
     
@@ -743,6 +804,12 @@ pub unsafe extern "C" fn pthread_create(
         0,
     );
     
+    // Debug: print mmap result
+    let msg = b"[nrlib] pthread_create: mmap returned stack=0x";
+    let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
+    print_hex_u64(stack);
+    let _ = crate::syscall3(SYS_WRITE_NR, 2, b"\n".as_ptr() as u64, 1);
+    
     if stack == u64::MAX || stack == 0 {
         let msg = b"[nrlib] pthread_create: mmap failed\n";
         let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
@@ -770,10 +837,23 @@ pub unsafe extern "C" fn pthread_create(
     let tcb_addr = (stack_top - tcb_size) & !0xF; // 16-byte aligned
     let tcb_ptr = tcb_addr as *mut ThreadControlBlock;
     
+    // Debug: print tcb_addr
+    let msg = b"[nrlib] pthread_create: tcb_addr=0x";
+    let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
+    print_hex_u64(tcb_addr);
+    let _ = crate::syscall3(SYS_WRITE_NR, 2, b"\n".as_ptr() as u64, 1);
+    
     // Initialize TCB
     let tcb = &mut *tcb_ptr;
     tcb.self_ptr = tcb_ptr; // Self pointer for TLS access (%fs:0)
+    tcb.dtv = ptr::null_mut(); // No dynamic TLS for now
+    tcb.prev = ptr::null_mut();
+    tcb.next = ptr::null_mut();
+    tcb.sysinfo = 0;
+    tcb.canary = 0; // TODO: randomize for security
     tcb.tid = AtomicUsize::new(0);
+    tcb.errno_val = 0;
+    tcb._pad1 = 0;
     tcb.start_routine = start_routine;
     tcb.arg = arg;
     tcb.retval = ptr::null_mut();
@@ -781,6 +861,7 @@ pub unsafe extern "C" fn pthread_create(
     tcb.stack_size = total_stack;
     tcb.joinable = true;
     tcb.detached = false;
+    tcb._pad2 = [0; 6];
     tcb.exited = AtomicUsize::new(0);
     
     // Initialize TLS data to null
@@ -979,9 +1060,23 @@ pub unsafe extern "C" fn pthread_exit(retval: *mut c_void) -> ! {
 
 #[no_mangle]
 pub unsafe extern "C" fn pthread_self() -> pthread_t {
-    // Get the current thread ID via gettid syscall
-    let tid = crate::syscall0(crate::SYS_GETTID) as pthread_t;
-    tid
+    // In musl ABI, pthread_self returns the TCB pointer (from FS base)
+    // which is what Rust std expects for TLS access
+    let tcb_ptr: usize;
+    core::arch::asm!(
+        "mov {}, fs:0",
+        out(reg) tcb_ptr,
+        options(nostack, preserves_flags)
+    );
+    
+    // If we have a valid TCB, return it
+    // Otherwise fall back to TID
+    if tcb_ptr != 0 {
+        tcb_ptr as pthread_t
+    } else {
+        // Fallback for main thread or threads without TCB
+        crate::syscall0(crate::SYS_GETTID) as pthread_t
+    }
 }
 
 #[no_mangle]

@@ -290,7 +290,7 @@ pub fn clone(
     if (flags & CLONE_SETTLS) != 0 && tls != 0 {
         // Set the FS base for TLS in the child process
         child_process.fs_base = tls;
-        ktrace!("[clone] CLONE_SETTLS: Set fs_base to {:#x}", tls);
+        kinfo!("[clone] CLONE_SETTLS: Set fs_base to {:#x} for child PID {}", tls, child_pid);
     }
 
     // Add child to scheduler

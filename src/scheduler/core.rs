@@ -795,6 +795,7 @@ unsafe fn execute_first_run_via_context_switch(
     // Restore FS base for TLS if set
     if fs_base != 0 {
         use x86_64::registers::model_specific::Msr;
+        crate::serial_println!("[SCHED] Setting FS base to {:#x}", fs_base);
         Msr::new(crate::safety::x86::MSR_IA32_FS_BASE).write(fs_base);
     }
 

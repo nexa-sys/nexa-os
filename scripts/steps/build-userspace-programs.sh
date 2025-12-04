@@ -29,6 +29,7 @@ STD_PROGRAMS=(
     "dmesg:bin:dmesg.rs:"
     "crashtest:bin:crashtest.rs:"
     "thread_test:bin:thread_test.rs:"
+    "pthread_test:bin:pthread_test.rs:--no-default-features --features use-nrlib-std"
 )
 
 # Programs to build with dynamic linking
@@ -104,6 +105,10 @@ path = "../../userspace/crashtest.rs"
 [[bin]]
 name = "thread_test"
 path = "../../userspace/thread_test.rs"
+
+[[bin]]
+name = "pthread_test"
+path = "../../userspace/pthread_test.rs"
 
 [profile.release]
 panic = "abort"

@@ -20,6 +20,12 @@ global_asm!(
     //   [rsp+24] = user RSP
     //   [rsp+32] = SS
 
+    // CRITICAL: Save additional syscall argument registers for syscalls with >3 args
+    // This must be done FIRST before any register is modified!
+    "mov gs:[32], r10", // GS[4]  = arg4 (r10)
+    "mov gs:[40], r8",  // GS[5]  = arg5 (r8)
+    "mov gs:[48], r9",  // GS[6]  = arg6 (r9)
+    
     // CRITICAL: Save callee-saved registers to GS_DATA BEFORE they are modified
     // These are needed for fork() to properly restore child's registers
     // GS_SLOT_SAVED_RBX = 14, offset = 14 * 8 = 112 (but 112/120/128 are used for CS/SS snapshot)
