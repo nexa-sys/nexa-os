@@ -1,1227 +1,648 @@
 //! NexaOS Shell - A simple command-line shell
 //!
-//! This shell uses std functionality via the nrlib musl ABI compatibility layer.
+//! This shell uses Rust std functionality for clean, idiomatic code.
+//! NexaOS-specific syscalls are used only where std cannot provide the functionality.
 
-use std::arch::asm;
-use std::io::{self, Write};
+use std::fs;
+use std::io::{self, Read, Write};
+use std::os::unix::fs::MetadataExt;
+use std::path::{Path, PathBuf};
+use std::process::{self, Command, Stdio};
 
-const SYS_READ: u64 = 0;
-const SYS_WRITE: u64 = 1;
-const SYS_OPEN: u64 = 2;
-const SYS_CLOSE: u64 = 3;
-const SYS_STAT: u64 = 4;
-const SYS_FORK: u64 = 57;
-const SYS_EXECVE: u64 = 59;
-const SYS_WAIT4: u64 = 61;
-const SYS_LIST_FILES: u64 = 200;
-const SYS_GETERRNO: u64 = 201;
-const SYS_IPC_CREATE: u64 = 210;
-const SYS_IPC_SEND: u64 = 211;
-const SYS_IPC_RECV: u64 = 212;
-const SYS_USER_ADD: u64 = 220;
-const SYS_USER_LOGIN: u64 = 221;
-const SYS_USER_INFO: u64 = 222;
-const SYS_USER_LIST: u64 = 223;
-const SYS_USER_LOGOUT: u64 = 224;
+// ============================================================================
+// NexaOS-specific syscalls (not available in std)
+// ============================================================================
 
-const LIST_FLAG_INCLUDE_HIDDEN: u64 = 0x1;
-const USER_FLAG_ADMIN: u64 = 0x1;
+mod nexaos {
+    use std::arch::asm;
+
+    pub const SYS_LIST_FILES: u64 = 200;
+    pub const SYS_GETERRNO: u64 = 201;
+    pub const SYS_IPC_CREATE: u64 = 210;
+    pub const SYS_IPC_SEND: u64 = 211;
+    pub const SYS_IPC_RECV: u64 = 212;
+    pub const SYS_USER_ADD: u64 = 220;
+    pub const SYS_USER_LOGIN: u64 = 221;
+    pub const SYS_USER_INFO: u64 = 222;
+    pub const SYS_USER_LIST: u64 = 223;
+    pub const SYS_USER_LOGOUT: u64 = 224;
+
+    pub const LIST_FLAG_INCLUDE_HIDDEN: u64 = 0x1;
+    pub const USER_FLAG_ADMIN: u64 = 0x1;
+
+    #[inline(always)]
+    pub fn syscall3(n: u64, a1: u64, a2: u64, a3: u64) -> u64 {
+        let ret: u64;
+        unsafe {
+            asm!(
+                "int 0x81",
+                in("rax") n,
+                in("rdi") a1,
+                in("rsi") a2,
+                in("rdx") a3,
+                lateout("rax") ret,
+                clobber_abi("sysv64")
+            );
+        }
+        ret
+    }
+
+    #[inline(always)]
+    pub fn syscall1(n: u64, a1: u64) -> u64 {
+        syscall3(n, a1, 0, 0)
+    }
+
+    #[inline(always)]
+    pub fn syscall0(n: u64) -> u64 {
+        syscall3(n, 0, 0, 0)
+    }
+
+    pub fn errno() -> i32 {
+        syscall1(SYS_GETERRNO, 0) as i32
+    }
+
+    #[repr(C)]
+    pub struct ListDirRequest {
+        pub path_ptr: u64,
+        pub path_len: u64,
+        pub flags: u64,
+    }
+
+    #[repr(C)]
+    pub struct UserRequest {
+        pub username_ptr: u64,
+        pub username_len: u64,
+        pub password_ptr: u64,
+        pub password_len: u64,
+        pub flags: u64,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct UserInfo {
+        pub username: [u8; 32],
+        pub username_len: u64,
+        pub uid: u32,
+        pub gid: u32,
+        pub is_admin: u32,
+    }
+
+    #[repr(C)]
+    pub struct IpcTransferRequest {
+        pub channel_id: u32,
+        pub flags: u32,
+        pub buffer_ptr: u64,
+        pub buffer_len: u64,
+    }
+
+    /// List files in a directory using NexaOS syscall
+    pub fn list_files(path: Option<&str>, include_hidden: bool) -> Result<String, i32> {
+        let mut request = ListDirRequest {
+            path_ptr: 0,
+            path_len: 0,
+            flags: if include_hidden { LIST_FLAG_INCLUDE_HIDDEN } else { 0 },
+        };
+
+        if let Some(p) = path {
+            if p != "/" {
+                request.path_ptr = p.as_ptr() as u64;
+                request.path_len = p.len() as u64;
+            }
+        }
+
+        let req_ptr = if request.path_len == 0 && request.flags == 0 {
+            0
+        } else {
+            &request as *const ListDirRequest as u64
+        };
+
+        let mut buf = vec![0u8; 4096];
+        let written = syscall3(SYS_LIST_FILES, buf.as_mut_ptr() as u64, buf.len() as u64, req_ptr);
+        
+        if written == u64::MAX {
+            return Err(errno());
+        }
+
+        buf.truncate(written as usize);
+        String::from_utf8(buf).map_err(|_| -1)
+    }
+
+    /// Get current user info
+    pub fn get_user_info() -> Option<UserInfo> {
+        let mut info = UserInfo::default();
+        let ret = syscall3(SYS_USER_INFO, &mut info as *mut UserInfo as u64, 0, 0);
+        if ret != u64::MAX { Some(info) } else { None }
+    }
+
+    /// Login user
+    pub fn login(username: &str, password: &str) -> Result<(), i32> {
+        let request = UserRequest {
+            username_ptr: username.as_ptr() as u64,
+            username_len: username.len() as u64,
+            password_ptr: password.as_ptr() as u64,
+            password_len: password.len() as u64,
+            flags: 0,
+        };
+        let ret = syscall3(SYS_USER_LOGIN, &request as *const UserRequest as u64, 0, 0);
+        if ret == u64::MAX { Err(errno()) } else { Ok(()) }
+    }
+
+    /// Add user
+    pub fn add_user(username: &str, password: &str, admin: bool) -> Result<(), i32> {
+        let request = UserRequest {
+            username_ptr: username.as_ptr() as u64,
+            username_len: username.len() as u64,
+            password_ptr: password.as_ptr() as u64,
+            password_len: password.len() as u64,
+            flags: if admin { USER_FLAG_ADMIN } else { 0 },
+        };
+        let ret = syscall3(SYS_USER_ADD, &request as *const UserRequest as u64, 0, 0);
+        if ret == u64::MAX { Err(errno()) } else { Ok(()) }
+    }
+
+    /// Logout user
+    pub fn logout() -> Result<(), i32> {
+        let ret = syscall1(SYS_USER_LOGOUT, 0);
+        if ret == u64::MAX { Err(errno()) } else { Ok(()) }
+    }
+
+    /// List all users
+    pub fn list_users() -> Result<String, i32> {
+        let mut buffer = vec![0u8; 512];
+        let written = syscall3(SYS_USER_LIST, buffer.as_mut_ptr() as u64, buffer.len() as u64, 0);
+        if written == u64::MAX {
+            return Err(errno());
+        }
+        buffer.truncate(written as usize);
+        String::from_utf8(buffer).map_err(|_| -1)
+    }
+
+    /// Create IPC channel
+    pub fn ipc_create() -> Result<u64, i32> {
+        let id = syscall0(SYS_IPC_CREATE);
+        if id == u64::MAX { Err(errno()) } else { Ok(id) }
+    }
+
+    /// Send IPC message
+    pub fn ipc_send(channel: u32, message: &str) -> Result<(), i32> {
+        let request = IpcTransferRequest {
+            channel_id: channel,
+            flags: 0,
+            buffer_ptr: message.as_ptr() as u64,
+            buffer_len: message.len() as u64,
+        };
+        let ret = syscall3(SYS_IPC_SEND, &request as *const IpcTransferRequest as u64, 0, 0);
+        if ret == u64::MAX { Err(errno()) } else { Ok(()) }
+    }
+
+    /// Receive IPC message
+    pub fn ipc_recv(channel: u32) -> Result<String, i32> {
+        let mut buffer = vec![0u8; 256];
+        let request = IpcTransferRequest {
+            channel_id: channel,
+            flags: 0,
+            buffer_ptr: buffer.as_mut_ptr() as u64,
+            buffer_len: buffer.len() as u64,
+        };
+        let ret = syscall3(SYS_IPC_RECV, &request as *const IpcTransferRequest as u64, 0, 0);
+        if ret == u64::MAX {
+            return Err(errno());
+        }
+        buffer.truncate(ret as usize);
+        String::from_utf8(buffer).map_err(|_| -1)
+    }
+}
+
+// ============================================================================
+// Shell Configuration
+// ============================================================================
 
 const HOSTNAME: &str = "nexa";
-const MAX_PATH: usize = 256;
+const SEARCH_PATHS: &[&str] = &["/bin", "/sbin", "/usr/bin", "/usr/sbin"];
 
-// Note: PRINT_SCRATCH removed - now using std::io for simpler output;
+const BUILTIN_COMMANDS: &[&str] = &[
+    "help", "ls", "cat", "stat", "pwd", "cd", "echo", "uname", "mkdir",
+    "login", "whoami", "users", "logout", "adduser",
+    "ipc-create", "ipc-send", "ipc-recv", "clear", "exit",
+];
 
-fn syscall3(n: u64, a1: u64, a2: u64, a3: u64) -> u64 {
-    // Route all syscalls via int 0x81 so the CPU saves/restores SS:RSP for Ring3 safely.
-    // Kernel handler expects: rax=nr, rdi=arg1, rsi=arg2, rdx=arg3 (SysV order).
-    let ret: u64;
-    unsafe {
-        asm!(
-            "int 0x81",
-            in("rax") n,
-            in("rdi") a1,
-            in("rsi") a2,
-            in("rdx") a3,
-            lateout("rax") ret,
-            clobber_abi("sysv64")
-        );
-    }
-    ret
-}
-
-fn syscall0(n: u64) -> u64 { syscall3(n, 0, 0, 0) }
-fn syscall1(n: u64, a1: u64) -> u64 { syscall3(n, a1, 0, 0) }
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct Stat {
-    st_dev: u64,
-    st_ino: u64,
-    st_mode: u32,
-    st_nlink: u32,
-    st_uid: u32,
-    st_gid: u32,
-    st_rdev: u64,
-    st_size: i64,
-    st_blksize: i64,
-    st_blocks: i64,
-    st_atime: i64,
-    st_atime_nsec: i64,
-    st_mtime: i64,
-    st_mtime_nsec: i64,
-    st_ctime: i64,
-    st_ctime_nsec: i64,
-    st_reserved: [i64; 3],
-}
-
-impl Stat {
-    const fn zero() -> Self {
-        Self {
-            st_dev: 0,
-            st_ino: 0,
-            st_mode: 0,
-            st_nlink: 0,
-            st_uid: 0,
-            st_gid: 0,
-            st_rdev: 0,
-            st_size: 0,
-            st_blksize: 0,
-            st_blocks: 0,
-            st_atime: 0,
-            st_atime_nsec: 0,
-            st_mtime: 0,
-            st_mtime_nsec: 0,
-            st_ctime: 0,
-            st_ctime_nsec: 0,
-            st_reserved: [0; 3],
-        }
-    }
-}
-
-#[repr(C)]
-struct ListDirRequest {
-    path_ptr: u64,
-    path_len: u64,
-    flags: u64,
-}
-
-#[repr(C)]
-struct UserRequest {
-    username_ptr: u64,
-    username_len: u64,
-    password_ptr: u64,
-    password_len: u64,
-    flags: u64,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct UserInfo {
-    username: [u8; 32],
-    username_len: u64,
-    uid: u32,
-    gid: u32,
-    is_admin: u32,
-}
-
-impl UserInfo {
-    const fn zero() -> Self {
-        Self {
-            username: [0; 32],
-            username_len: 0,
-            uid: 0,
-            gid: 0,
-            is_admin: 0,
-        }
-    }
-}
+// ============================================================================
+// Shell State
+// ============================================================================
 
 struct ShellState {
-    path: [u8; MAX_PATH],
-    len: usize,
+    cwd: PathBuf,
 }
 
 impl ShellState {
     fn new() -> Self {
-        let mut path = [0u8; MAX_PATH];
-        path[0] = b'/';
-        Self { path, len: 1 }
-    }
-
-    fn current_path(&self) -> &str {
-        core::str::from_utf8(&self.path[..self.len]).unwrap_or("/")
-    }
-
-    fn set_path(&mut self, path: &str) {
-        let bytes = path.as_bytes();
-        let mut len = core::cmp::min(bytes.len(), MAX_PATH);
-        while len > 1 && bytes[len - 1] == b'/' {
-            len -= 1;
+        Self {
+            cwd: PathBuf::from("/"),
         }
-        if len == 0 {
-            self.path[0] = b'/';
-            self.len = 1;
+    }
+
+    fn current_path(&self) -> &Path {
+        &self.cwd
+    }
+
+    fn current_path_str(&self) -> &str {
+        self.cwd.to_str().unwrap_or("/")
+    }
+
+    fn set_path(&mut self, path: impl AsRef<Path>) {
+        self.cwd = path.as_ref().to_path_buf();
+    }
+
+    /// Resolve a path relative to cwd
+    fn resolve(&self, input: &str) -> PathBuf {
+        if input.starts_with('/') {
+            normalize_path(Path::new(input))
         } else {
-            self.path[..len].copy_from_slice(&bytes[..len]);
-            self.len = len;
+            normalize_path(&self.cwd.join(input))
         }
-    }
-
-    fn resolve<'a>(&self, input: &str, out: &'a mut [u8]) -> Option<&'a str> {
-        normalize_path(self.current_path(), input, out)
     }
 }
 
-const COMMANDS: [&str; 19] = [
-    "help",
-    "ls",
-    "cat",
-    "stat",
-    "pwd",
-    "cd",
-    "echo",
-    "uname",
-    "mkdir",
-    "login",
-    "whoami",
-    "users",
-    "logout",
-    "adduser",
-    "ipc-create",
-    "ipc-send",
-    "ipc-recv",
-    "clear",
-    "exit",
-];
-
-const MAX_COMPLETIONS: usize = 32;
-const COMPLETION_BUFFER_SIZE: usize = 2048;
-
-fn trim_line<'a>(buf: &'a [u8], mut len: usize) -> &'a str {
-    while len > 0 && matches!(buf[len - 1], b'\n' | b'\r' | 0) {
-        len -= 1;
-    }
-    core::str::from_utf8(&buf[..len]).unwrap_or("")
-}
-
-fn normalize_path<'a>(base: &str, input: &str, out: &'a mut [u8]) -> Option<&'a str> {
-    if out.is_empty() {
-        return None;
-    }
-
-    if input.is_empty() {
-        let bytes = base.as_bytes();
-        if bytes.len() > out.len() {
-            return None;
+/// Normalize a path by resolving . and ..
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut components = Vec::new();
+    
+    for component in path.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                components.pop();
+            }
+            std::path::Component::CurDir => {}
+            c => components.push(c),
         }
-        out[..bytes.len()].copy_from_slice(bytes);
-        return core::str::from_utf8(&out[..bytes.len()]).ok();
     }
-
-    let mut path_len;
-    let mut remaining = input;
-
-    if remaining.starts_with('/') {
-        out[0] = b'/';
-        path_len = 1;
-        remaining = remaining.trim_start_matches('/');
+    
+    if components.is_empty() {
+        PathBuf::from("/")
     } else {
-        let base_bytes = base.as_bytes();
-        if base_bytes.len() > out.len() {
-            return None;
-        }
-        path_len = base_bytes.len();
-        out[..path_len].copy_from_slice(base_bytes);
-    }
-
-    for part in remaining.split('/') {
-        if part.is_empty() || part == "." {
-            continue;
-        }
-        if part == ".." {
-            if path_len > 1 {
-                if out[path_len - 1] == b'/' && path_len > 1 {
-                    path_len -= 1;
-                }
-                while path_len > 0 && out[path_len - 1] != b'/' {
-                    path_len -= 1;
-                }
-                if path_len == 0 {
-                    out[0] = b'/';
-                    path_len = 1;
-                }
-            }
-            continue;
-        }
-
-        if path_len > 1 && out[path_len - 1] != b'/' {
-            if path_len >= out.len() {
-                return None;
-            }
-            out[path_len] = b'/';
-            path_len += 1;
-        } else if path_len == 0 {
-            out[path_len] = b'/';
-            path_len += 1;
-        }
-
-        let bytes = part.as_bytes();
-        if path_len + bytes.len() > out.len() {
-            return None;
-        }
-        out[path_len..path_len + bytes.len()].copy_from_slice(bytes);
-        path_len += bytes.len();
-    }
-
-    if path_len > 1 && out[path_len - 1] == b'/' {
-        path_len -= 1;
-    }
-
-    if path_len == 0 {
-        out[0] = b'/';
-        path_len = 1;
-    }
-
-    core::str::from_utf8(&out[..path_len]).ok()
-}
-
-fn is_directory(mode: u32) -> bool {
-    (mode & 0o170000) == 0o040000
-}
-
-#[repr(C)]
-struct IpcTransferRequest {
-    channel_id: u32,
-    flags: u32,
-    buffer_ptr: u64,
-    buffer_len: u64,
-}
-
-fn errno() -> i32 {
-    syscall1(SYS_GETERRNO, 0) as i32
-}
-
-fn read(fd: u64, buf: *mut u8, count: usize) -> usize {
-    syscall3(SYS_READ, fd, buf as u64, count as u64) as usize
-}
-
-/// Write bytes to stdout
-fn write_stdout(data: &[u8]) {
-    let _ = io::stdout().write_all(data);
-    let _ = io::stdout().flush();
-}
-
-
-fn fork() -> i32 {
-    syscall0(SYS_FORK) as i32
-}
-
-fn execve(path: *const u8, argv: *const *const u8, envp: *const *const u8) -> i32 {
-    syscall3(SYS_EXECVE, path as u64, argv as u64, envp as u64) as i32
-}
-
-fn wait4(pid: i32, status: *mut i32, options: i32) -> i32 {
-    syscall3(SYS_WAIT4, pid as u64, status as u64, options as u64) as i32
-}
-
-// POSIX wait status macros
-fn wexitstatus(status: i32) -> i32 {
-    (status >> 8) & 0xff
-}
-
-fn wifexited(status: i32) -> bool {
-    (status & 0x7f) == 0
-}
-
-fn wifsignaled(status: i32) -> bool {
-    ((status & 0x7f) + 1) as i8 >= 2
-}
-
-fn wtermsig(status: i32) -> i32 {
-    status & 0x7f
-}
-
-fn print_bytes(bytes: &[u8]) {
-    write_stdout(bytes);
-}
-
-fn println_errno(err: i32) {
-    println!("errno: {}", err);
-}
-
-fn fetch_stat(path: &str, out: &mut Stat) -> bool {
-    if path.is_empty() {
-        return false;
-    }
-    let ret = syscall3(
-        SYS_STAT,
-        path.as_ptr() as u64,
-        path.len() as u64,
-        out as *mut Stat as u64,
-    );
-    ret != u64::MAX
-}
-
-fn format_child_path<'a>(base: &'a str, child: &'a str, out: &'a mut [u8]) -> Option<&'a str> {
-    if child.is_empty() {
-        return None;
-    }
-    normalize_path(base, child, out)
-}
-
-fn refresh_current_user(info: &mut UserInfo) -> bool {
-    let ret = syscall3(
-        SYS_USER_INFO,
-        info as *mut UserInfo as u64,
-        0,
-        0,
-    );
-    ret != u64::MAX
-}
-
-fn print_mode_short(mode: u32) {
-    let file_type = match mode & 0o170000 {
-        0o040000 => b'd',
-        0o100000 => b'-',
-        0o120000 => b'l',
-        0o020000 => b'c',
-        0o060000 => b'b',
-        0o010000 => b'p',
-        0o140000 => b's',
-        _ => b'?',
-    };
-    let mut buf = [0u8; 10];
-    buf[0] = file_type;
-    let perms = [
-        (mode >> 6) & 0o7,
-        (mode >> 3) & 0o7,
-        mode & 0o7,
-    ];
-    for i in 0..3 {
-        let p = perms[i as usize];
-        buf[1 + i * 3] = if (p & 0o4) != 0 { b'r' } else { b'-' };
-        buf[2 + i * 3] = if (p & 0o2) != 0 { b'w' } else { b'-' };
-        buf[3 + i * 3] = if (p & 0o1) != 0 { b'x' } else { b'-' };
-    }
-    print_bytes(&buf);
-}
-
-fn report_stdin_error(err: i32) {
-    println!("stdin read failed (errno {})", err);
-}
-
-fn read_line_raw(buf: &mut [u8]) -> usize {
-    loop {
-        let len = read(0, buf.as_mut_ptr(), buf.len());
-        if len == usize::MAX {
-            let err = errno();
-            if err != 0 {
-                report_stdin_error(err);
-            }
-            continue;
-        }
-
-        if len == 0 {
-            let err = errno();
-            if err != 0 {
-                report_stdin_error(err);
-            }
-            return 0;
-        }
-
-        let mut end = len;
-        while end > 0 && (buf[end - 1] == b'\n' || buf[end - 1] == b'\r') {
-            end -= 1;
-        }
-        return end;
+        components.iter().collect()
     }
 }
 
-fn append_to_buffer(buf: &mut [u8], len: &mut usize, text: &[u8]) -> bool {
-    if *len + text.len() > buf.len() {
-        return false;
-    }
-    buf[*len..*len + text.len()].copy_from_slice(text);
-    *len += text.len();
-    true
+// ============================================================================
+// Terminal Input Handling
+// ============================================================================
+
+struct LineEditor {
+    buffer: String,
+    stdout: io::Stdout,
 }
 
-fn beep() {
-    print_bytes(b"\x07");
-}
-
-fn erase_last_char(buf: &mut [u8], len: &mut usize) -> bool {
-    if *len == 0 {
-        return false;
-    }
-    *len -= 1;
-    buf[*len] = 0;
-    print_bytes(b"\x08 \x08");
-    true
-}
-
-fn erase_last_word(buf: &mut [u8], len: &mut usize) {
-    while *len > 0 && buf[*len - 1].is_ascii_whitespace() {
-        if !erase_last_char(buf, len) {
-            return;
-        }
-    }
-    while *len > 0 && !buf[*len - 1].is_ascii_whitespace() {
-        if !erase_last_char(buf, len) {
-            break;
-        }
-    }
-}
-
-fn longest_common_prefix<'a>(items: &[&'a str]) -> &'a str {
-    if items.is_empty() {
-        return "";
-    }
-    let first = items[0].as_bytes();
-    let mut prefix_len = first.len();
-    for item in &items[1..] {
-        let bytes = item.as_bytes();
-        let mut i = 0;
-        let limit = core::cmp::min(prefix_len, bytes.len());
-        while i < limit && first[i] == bytes[i] {
-            i += 1;
-        }
-        prefix_len = i;
-        if prefix_len == 0 {
-            break;
-        }
-    }
-    core::str::from_utf8(&first[..prefix_len]).unwrap_or("")
-}
-
-fn command_accepts_path(command: &str, token_index: usize) -> bool {
-    if token_index == 0 {
-        return false;
-    }
-    matches!(command, "ls" | "cat" | "stat" | "cd" | "mkdir")
-}
-
-fn complete_commands(state: &ShellState, buffer: &mut [u8], len: &mut usize, prefix: &str) {
-    let mut matches = [""; COMMANDS.len()];
-    let mut count = 0usize;
-
-    for &cmd in COMMANDS.iter() {
-        if cmd.starts_with(prefix) {
-            if count < matches.len() {
-                matches[count] = cmd;
-                count += 1;
-            }
+impl LineEditor {
+    fn new() -> Self {
+        Self {
+            buffer: String::with_capacity(256),
+            stdout: io::stdout(),
         }
     }
 
-    if count == 0 {
-        beep();
-        return;
+    fn beep(&mut self) {
+        let _ = self.stdout.write_all(b"\x07");
+        let _ = self.stdout.flush();
     }
 
-    let prefix_len = prefix.len();
+    fn write(&mut self, data: &[u8]) {
+        let _ = self.stdout.write_all(data);
+        let _ = self.stdout.flush();
+    }
 
-    if count == 1 {
-        let candidate = matches[0];
-        let addition = &candidate.as_bytes()[prefix_len..];
-        if append_to_buffer(buffer, len, addition) {
-            print_bytes(addition);
-            if append_to_buffer(buffer, len, b" ") {
-                print_bytes(b" ");
-            }
+    fn erase_char(&mut self) -> bool {
+        if self.buffer.pop().is_some() {
+            self.write(b"\x08 \x08");
+            true
         } else {
-            beep();
-        }
-        return;
-    }
-
-    let lcp = longest_common_prefix(&matches[..count]);
-    if lcp.len() > prefix_len {
-        let addition = &lcp.as_bytes()[prefix_len..];
-        if append_to_buffer(buffer, len, addition) {
-            print_bytes(addition);
-            return;
-        }
-        beep();
-        return;
-    }
-
-    print!("\n");
-    for idx in 0..count {
-        println!("{}", matches[idx]);
-    }
-    prompt(state);
-    print_bytes(&buffer[..*len]);
-}
-
-fn complete_path(state: &ShellState, buffer: &mut [u8], len: &mut usize, prefix: &str) {
-    let (dir_input, name_prefix) = match prefix.rfind('/') {
-        Some(idx) => (&prefix[..=idx], &prefix[idx + 1..]),
-        None => ("", prefix),
-    };
-
-    let mut resolved_dir_buf = [0u8; MAX_PATH];
-    let directory = if prefix.starts_with('/') {
-        if dir_input.is_empty() {
-            "/"
-        } else if let Some(abs) = normalize_path("/", dir_input, &mut resolved_dir_buf) {
-            abs
-        } else {
-            beep();
-            return;
-        }
-    } else if dir_input.is_empty() {
-        state.current_path()
-    } else if let Some(abs) = state.resolve(dir_input, &mut resolved_dir_buf) {
-        abs
-    } else {
-        beep();
-        return;
-    };
-
-    let show_hidden = name_prefix.starts_with('.');
-    let mut request = ListDirRequest {
-        path_ptr: 0,
-        path_len: 0,
-        flags: 0,
-    };
-
-    if show_hidden {
-        request.flags |= LIST_FLAG_INCLUDE_HIDDEN;
-    }
-
-    if directory != "/" {
-        request.path_ptr = directory.as_ptr() as u64;
-        request.path_len = directory.len() as u64;
-    }
-
-    let req_ptr = if request.path_len == 0 && request.flags == 0 {
-        0
-    } else {
-        &request as *const ListDirRequest as u64
-    };
-
-    let mut list_buf = [0u8; COMPLETION_BUFFER_SIZE];
-    let written = syscall3(
-        SYS_LIST_FILES,
-        list_buf.as_mut_ptr() as u64,
-        list_buf.len() as u64,
-        req_ptr,
-    );
-    if written == u64::MAX {
-        beep();
-        return;
-    }
-
-    let list_len = written as usize;
-    let list = match core::str::from_utf8(&list_buf[..list_len]) {
-        Ok(text) => text,
-        Err(_) => {
-            beep();
-            return;
-        }
-    };
-
-    let mut matches = [""; MAX_COMPLETIONS];
-    let mut match_is_dir = [false; MAX_COMPLETIONS];
-    let mut count = 0usize;
-    let mut path_buf = [0u8; MAX_PATH];
-
-    for entry in list.lines() {
-        if entry.is_empty() {
-            continue;
-        }
-        if !show_hidden && entry.starts_with('.') {
-            continue;
-        }
-        if name_prefix.is_empty() && (entry == "." || entry == "..") {
-            continue;
-        }
-        if entry.starts_with(name_prefix) {
-            if count < matches.len() {
-                matches[count] = entry;
-                if let Some(full_path) = format_child_path(directory, entry, &mut path_buf) {
-                    let mut stat = Stat::zero();
-                    if fetch_stat(full_path, &mut stat) && is_directory(stat.st_mode) {
-                        match_is_dir[count] = true;
-                    }
-                }
-                count += 1;
-            }
+            false
         }
     }
 
-    if count == 0 {
-        beep();
-        return;
-    }
-
-    let prefix_len = name_prefix.len();
-
-    if count == 1 {
-        let candidate = matches[0];
-        let addition = &candidate.as_bytes()[prefix_len..];
-        if !append_to_buffer(buffer, len, addition) {
-            beep();
-            return;
+    fn erase_word(&mut self) {
+        // Remove trailing whitespace
+        while self.buffer.ends_with(char::is_whitespace) {
+            if !self.erase_char() { return; }
         }
-        print_bytes(addition);
-        if match_is_dir[0] {
-            if append_to_buffer(buffer, len, b"/") {
-                print_bytes(b"/");
-            }
-        } else if append_to_buffer(buffer, len, b" ") {
-            print_bytes(b" ");
-        }
-        return;
-    }
-
-    let lcp = longest_common_prefix(&matches[..count]);
-    let mut appended = false;
-    if lcp.len() > name_prefix.len() {
-        let addition = &lcp.as_bytes()[name_prefix.len()..];
-        if append_to_buffer(buffer, len, addition) {
-            print_bytes(addition);
-            appended = true;
-        } else {
-            beep();
-            return;
+        // Remove word
+        while !self.buffer.is_empty() && !self.buffer.ends_with(char::is_whitespace) {
+            if !self.erase_char() { break; }
         }
     }
 
-    if !appended {
-        print!("\n");
-        for idx in 0..count {
-            print!("{}{}", dir_input, matches[idx]);
-            if match_is_dir[idx] {
-                print!("/");
-            }
-            print!("\n");
-        }
-        prompt(state);
-        print_bytes(&buffer[..*len]);
-    }
-}
-
-fn handle_tab_completion(state: &ShellState, buffer: &mut [u8], len: &mut usize) {
-    if core::str::from_utf8(&buffer[..*len]).is_err() {
-        beep();
-        return;
+    fn clear_line(&mut self) {
+        while self.erase_char() {}
     }
 
-    let mut token_end = *len;
-    while token_end > 0 && buffer[token_end - 1].is_ascii_whitespace() {
-        token_end -= 1;
-    }
-    let has_trailing_whitespace = token_end != *len;
-
-    let mut token_start = token_end;
-    while token_start > 0 && !buffer[token_start - 1].is_ascii_whitespace() {
-        token_start -= 1;
+    fn append(&mut self, s: &str) {
+        self.buffer.push_str(s);
+        self.write(s.as_bytes());
     }
 
-    if has_trailing_whitespace {
-        token_start = *len;
-        token_end = *len;
-    }
+    fn read_line(&mut self, state: &ShellState) -> String {
+        self.buffer.clear();
+        print_prompt(state);
 
-    let prefix_len = token_end - token_start;
-    if prefix_len > MAX_PATH {
-        beep();
-        return;
-    }
+        // Use raw byte reading for terminal control
+        let stdin = io::stdin();
+        let mut stdin_lock = stdin.lock();
+        let mut byte_buf = [0u8; 1];
 
-    let mut prefix_buf = [0u8; MAX_PATH];
-    if prefix_len > 0 {
-        prefix_buf[..prefix_len].copy_from_slice(&buffer[token_start..token_end]);
-    }
-    let prefix = match core::str::from_utf8(&prefix_buf[..prefix_len]) {
-        Ok(p) => p,
-        Err(_) => {
-            beep();
-            return;
-        }
-    };
-
-    let mut token_index = 0usize;
-    let mut i = 0usize;
-    while i < token_start {
-        while i < token_start && buffer[i].is_ascii_whitespace() {
-            i += 1;
-        }
-        if i >= token_start {
-            break;
-        }
-        token_index += 1;
-        while i < token_start && !buffer[i].is_ascii_whitespace() {
-            i += 1;
-        }
-    }
-
-    let mut command_buf = [0u8; MAX_PATH];
-    let mut command_len = 0usize;
-    let mut j = 0usize;
-    while j < *len && buffer[j].is_ascii_whitespace() {
-        j += 1;
-    }
-    let command_start = j;
-    while j < *len && !buffer[j].is_ascii_whitespace() {
-        j += 1;
-    }
-    if j > command_start {
-        command_len = j - command_start;
-        if command_len > MAX_PATH {
-            beep();
-            return;
-        }
-        command_buf[..command_len].copy_from_slice(&buffer[command_start..j]);
-    }
-
-    if token_index == 0 {
-        complete_commands(state, buffer, len, prefix);
-        return;
-    }
-
-    if command_len == 0 {
-        beep();
-        return;
-    }
-
-    let command = match core::str::from_utf8(&command_buf[..command_len]) {
-        Ok(c) => c,
-        Err(_) => {
-            beep();
-            return;
-        }
-    };
-
-    if command_accepts_path(command, token_index) {
-        complete_path(state, buffer, len, prefix);
-    } else {
-        beep();
-    }
-}
-
-fn discard_escape_sequence() {
-    let mut consumed = 0;
-    loop {
-        let mut ch = 0u8;
-        let read_len = read(0, &mut ch as *mut u8, 1);
-        if read_len != 1 {
-            break;
-        }
-        consumed += 1;
-        if (0x40..=0x7e).contains(&ch) || consumed >= 4 {
-            break;
-        }
-    }
-}
-
-fn read_byte_blocking() -> Option<u8> {
-    loop {
-        let mut ch = 0u8;
-        let read_len = read(0, &mut ch as *mut u8, 1);
-        if read_len == usize::MAX {
-            let err = errno();
-            if err != 0 {
-                report_stdin_error(err);
-                continue;
-            }
-            return None;
-        }
-        if read_len == 0 {
-            continue;
-        }
-        return Some(ch);
-    }
-}
-
-fn read_line(state: &ShellState, buf: &mut [u8]) -> usize {
-    prompt(state);
-    let mut len = 0usize;
-
-    loop {
-        let Some(ch) = read_byte_blocking() else {
-            continue;
-        };
-
-        match ch {
-            b'\r' | b'\n' => {
-                print_bytes(b"\n");
-                return len;
-            }
-            0x03 => {
-                for idx in 0..len {
-                    buf[idx] = 0;
-                }
-                print_bytes(b"^C\n");
-                return 0;
-            }
-            0x04 => {
-                if len == 0 {
-                    println!("exit");
-                    std::process::exit(0);
-                } else {
-                    beep();
-                }
-            }
-            0x08 | 0x7f => {
-                if !erase_last_char(buf, &mut len) {
-                    beep();
-                }
-            }
-            b'\t' => {
-                handle_tab_completion(state, buf, &mut len);
-            }
-            0x15 => {
-                while erase_last_char(buf, &mut len) {}
-            }
-            0x17 => {
-                erase_last_word(buf, &mut len);
-            }
-            0x0c => {
-                clear_screen();
-                prompt(state);
-                if len > 0 {
-                    print_bytes(&buf[..len]);
-                }
-            }
-            0x1b => {
-                discard_escape_sequence();
-            }
-            ch if ch < 0x20 => {
-                beep();
-            }
-            _ => {
-                if len < buf.len() {
-                    buf[len] = ch;
-                    len += 1;
-                    print_bytes(&[ch]);
-                } else {
-                    beep();
-                }
-            }
-        }
-    }
-}
-
-fn open_file(path: &str) -> Option<u64> {
-    let fd = syscall3(SYS_OPEN, path.as_ptr() as u64, path.len() as u64, 0);
-    if fd == u64::MAX {
-        None
-    } else {
-        Some(fd)
-    }
-}
-
-fn parse_u32(value: &str) -> Option<u32> {
-    if value.is_empty() {
-        return None;
-    }
-    let mut acc: u32 = 0;
-    for &b in value.as_bytes() {
-        if b < b'0' || b > b'9' {
-            return None;
-        }
-        acc = acc.checked_mul(10)?;
-        acc = acc.checked_add((b - b'0') as u32)?;
-    }
-    Some(acc)
-}
-
-fn close_file(fd: u64) {
-    syscall3(SYS_CLOSE, fd, 0, 0);
-}
-
-fn list_directory_entries(state: &ShellState, path: &str, show_all: bool, long_format: bool) {
-    let mut resolved_buf = [0u8; MAX_PATH];
-    let effective = if path.is_empty() {
-        state.current_path()
-    } else {
-        match state.resolve(path, &mut resolved_buf) {
-            Some(p) => p,
-            None => {
-                println!("ls: invalid path");
-                return;
-            }
-        }
-    };
-    let mut request = ListDirRequest {
-        path_ptr: 0,
-        path_len: 0,
-        flags: 0,
-    };
-
-    if show_all {
-        request.flags |= LIST_FLAG_INCLUDE_HIDDEN;
-    }
-
-    if effective != "/" {
-        request.path_ptr = effective.as_ptr() as u64;
-        request.path_len = effective.len() as u64;
-    }
-
-    let req_ptr = if request.path_len == 0 && request.flags == 0 {
-        0
-    } else {
-        &request as *const ListDirRequest as u64
-    };
-
-    let mut buf = [0u8; 1024];
-    let written = syscall3(SYS_LIST_FILES, buf.as_mut_ptr() as u64, buf.len() as u64, req_ptr);
-    if written == u64::MAX {
-        println!("ls: failed to read directory");
-        println_errno(errno());
-        return;
-    }
-
-    let len = written as usize;
-    if len == 0 {
-        println!("(empty)");
-        return;
-    }
-
-    if let Ok(list) = core::str::from_utf8(&buf[..len]) {
-        let mut path_buf = [0u8; MAX_PATH];
-        for entry in list.lines() {
-            if entry.is_empty() {
-                continue;
-            }
-            if !show_all && entry.starts_with('.') {
-                continue;
-            }
-
-            if long_format {
-                if let Some(full_path) = format_child_path(effective, entry, &mut path_buf) {
-                    let mut stat = Stat::zero();
-                    if fetch_stat(full_path, &mut stat) {
-                        print_mode_short(stat.st_mode);
-                        println!(" {} {} {} {}", stat.st_uid, stat.st_gid, stat.st_size, entry);
-                        continue;
-                    }
-                }
-            }
-
-            println!("{}", entry);
-        }
-    } else {
-        println!("ls: kernel returned invalid UTF-8");
-    }
-}
-
-fn stat_path(state: &ShellState, path: &str) {
-    let mut buf = [0u8; MAX_PATH];
-    let Some(full_path) = state.resolve(path, &mut buf) else {
-        println!("stat: invalid path");
-        return;
-    };
-
-    let mut stat = Stat::zero();
-    if !fetch_stat(full_path, &mut stat) {
-        println!("stat: failed");
-        println_errno(errno());
-        return;
-    }
-
-    println!("File statistics:");
-    println!("  size: {} bytes", stat.st_size);
-    println!("  blocks: {}", stat.st_blocks);
-    println!("  mode: 0o{:o}", stat.st_mode);
-    println!("  links: {}", stat.st_nlink);
-}
-
-fn login_user(username: &str) {
-    if username.is_empty() {
-        println!("login: missing user name");
-        return;
-    }
-
-    print!("password: ");
-    let _ = io::stdout().flush();
-    let mut buffer = [0u8; 64];
-    let len = read_line_raw(&mut buffer);
-    let password = trim_line(&buffer, len);
-
-    let request = UserRequest {
-        username_ptr: username.as_ptr() as u64,
-        username_len: username.len() as u64,
-        password_ptr: password.as_ptr() as u64,
-        password_len: password.len() as u64,
-        flags: 0,
-    };
-
-    let ret = syscall3(SYS_USER_LOGIN, &request as *const UserRequest as u64, 0, 0);
-    if ret == u64::MAX {
-        println!("login failed");
-        println_errno(errno());
-    } else {
-        println!("login successful");
-    }
-}
-
-fn add_user(username: &str, admin: bool) {
-    if username.is_empty() {
-        println!("adduser: missing user name");
-        return;
-    }
-    print!("new password: ");
-    let _ = io::stdout().flush();
-    let mut buffer = [0u8; 64];
-    let len = read_line_raw(&mut buffer);
-    let password = trim_line(&buffer, len);
-
-    let request = UserRequest {
-        username_ptr: username.as_ptr() as u64,
-        username_len: username.len() as u64,
-        password_ptr: password.as_ptr() as u64,
-        password_len: password.len() as u64,
-        flags: if admin { USER_FLAG_ADMIN } else { 0 },
-    };
-
-    let ret = syscall3(SYS_USER_ADD, &request as *const UserRequest as u64, 0, 0);
-    if ret == u64::MAX {
-        println!("adduser: failed");
-        println_errno(errno());
-    } else {
-        println!("adduser: user created");
-    }
-}
-
-fn whoami() {
-    let mut info = UserInfo::zero();
-    if refresh_current_user(&mut info) {
-        let len = info.username_len as usize;
-        if len == 0 {
-            println!("(anonymous)");
-        } else if let Ok(name) = core::str::from_utf8(&info.username[..len]) {
-            println!("{}", name);
-        } else {
-            println!("(invalid username)");
-        }
-    } else {
-        println!("whoami: failed");
-        println_errno(errno());
-    }
-}
-
-fn list_users() {
-    let mut buffer = [0u8; 512];
-    let written = syscall3(
-        SYS_USER_LIST,
-        buffer.as_mut_ptr() as u64,
-        buffer.len() as u64,
-        0,
-    );
-    if written == u64::MAX {
-        println!("users: failed");
-        println_errno(errno());
-        return;
-    }
-
-    let len = written as usize;
-    if len == 0 {
-        println!("(no users)");
-        return;
-    }
-
-    if let Ok(text) = core::str::from_utf8(&buffer[..len]) {
-        print!("{}", text);
-    } else {
-        println!("users: invalid data");
-    }
-}
-
-fn logout_user() {
-    let ret = syscall1(SYS_USER_LOGOUT, 0);
-    if ret == u64::MAX {
-        println!("logout: failed");
-        println_errno(errno());
-    } else {
-        println!("logged out");
-    }
-}
-
-fn ipc_create_channel() {
-    let id = syscall3(SYS_IPC_CREATE, 0, 0, 0);
-    if id == u64::MAX {
-        println!("ipc-create: failed");
-        println_errno(errno());
-    } else {
-        println!("channel {} created", id);
-    }
-}
-
-fn ipc_send_message(channel: u32, message: &str) {
-    if message.is_empty() {
-        println!("ipc-send: message cannot be empty");
-        return;
-    }
-    let request = IpcTransferRequest {
-        channel_id: channel,
-        flags: 0,
-        buffer_ptr: message.as_ptr() as u64,
-        buffer_len: message.len() as u64,
-    };
-
-    let ret = syscall3(SYS_IPC_SEND, &request as *const IpcTransferRequest as u64, 0, 0);
-    if ret == u64::MAX {
-        println!("ipc-send: failed");
-        println_errno(errno());
-    } else {
-        println!("ipc-send: message queued");
-    }
-}
-
-fn ipc_receive_message(channel: u32) {
-    let mut buffer = [0u8; 256];
-    let request = IpcTransferRequest {
-        channel_id: channel,
-        flags: 0,
-        buffer_ptr: buffer.as_mut_ptr() as u64,
-        buffer_len: buffer.len() as u64,
-    };
-
-    let ret = syscall3(SYS_IPC_RECV, &request as *const IpcTransferRequest as u64, 0, 0);
-    if ret == u64::MAX {
-        println!("ipc-recv: failed");
-        println_errno(errno());
-        return;
-    }
-
-    let len = ret as usize;
-    if let Ok(text) = core::str::from_utf8(&buffer[..len]) {
-        println!("ipc-recv: {}", text);
-    } else {
-        println!("ipc-recv: <binary data>");
-    }
-}
-
-fn cat(state: &ShellState, path: &str) {
-    let mut buf = [0u8; MAX_PATH];
-    let Some(full_path) = state.resolve(path, &mut buf) else {
-        println!("cat: invalid path");
-        return;
-    };
-
-    if let Some(fd) = open_file(full_path) {
-        let mut chunk = [0u8; 256];
         loop {
-            let read = syscall3(SYS_READ, fd, chunk.as_mut_ptr() as u64, chunk.len() as u64) as usize;
-            if read == 0 {
+            if stdin_lock.read(&mut byte_buf).unwrap_or(0) != 1 {
+                continue;
+            }
+            let ch = byte_buf[0];
+
+            match ch {
+                b'\r' | b'\n' => {
+                    println!();
+                    return std::mem::take(&mut self.buffer);
+                }
+                0x03 => { // Ctrl-C
+                    self.buffer.clear();
+                    self.write(b"^C\n");
+                    return String::new();
+                }
+                0x04 => { // Ctrl-D
+                    if self.buffer.is_empty() {
+                        println!("exit");
+                        process::exit(0);
+                    } else {
+                        self.beep();
+                    }
+                }
+                0x08 | 0x7f => { // Backspace
+                    if !self.erase_char() {
+                        self.beep();
+                    }
+                }
+                b'\t' => { // Tab completion
+                    self.handle_tab_completion(state);
+                }
+                0x15 => { // Ctrl-U
+                    self.clear_line();
+                }
+                0x17 => { // Ctrl-W
+                    self.erase_word();
+                }
+                0x0c => { // Ctrl-L
+                    clear_screen();
+                    print_prompt(state);
+                    let buf_copy = self.buffer.clone();
+                    self.write(buf_copy.as_bytes());
+                }
+                0x1b => { // Escape sequence
+                    self.discard_escape_sequence(&mut stdin_lock);
+                }
+                ch if ch < 0x20 => {
+                    self.beep();
+                }
+                _ => {
+                    self.buffer.push(ch as char);
+                    self.write(&[ch]);
+                }
+            }
+        }
+    }
+
+    fn discard_escape_sequence(&mut self, stdin: &mut io::StdinLock) {
+        let mut buf = [0u8; 1];
+        for _ in 0..4 {
+            if stdin.read(&mut buf).unwrap_or(0) != 1 {
                 break;
             }
-            print_bytes(&chunk[..read]);
+            if (0x40..=0x7e).contains(&buf[0]) {
+                break;
+            }
         }
-        close_file(fd);
+    }
+
+    fn handle_tab_completion(&mut self, state: &ShellState) {
+        let parts: Vec<String> = self.buffer.split_whitespace().map(String::from).collect();
+        let has_trailing_space = self.buffer.ends_with(' ');
+
+        if parts.is_empty() || (parts.len() == 1 && !has_trailing_space) {
+            // Complete command name
+            let prefix = parts.first().map(|s| s.as_str()).unwrap_or("").to_string();
+            self.complete_command(&prefix, state);
+        } else {
+            // Complete path argument
+            let cmd = parts[0].clone();
+            let prefix = if has_trailing_space { 
+                String::new() 
+            } else { 
+                parts.last().cloned().unwrap_or_default()
+            };
+            
+            if command_accepts_path(&cmd) {
+                self.complete_path(&prefix, state);
+            } else {
+                self.beep();
+            }
+        }
+    }
+
+    fn complete_command(&mut self, prefix: &str, state: &ShellState) {
+        let matches: Vec<&str> = BUILTIN_COMMANDS.iter()
+            .filter(|cmd| cmd.starts_with(prefix))
+            .copied()
+            .collect();
+
+        self.apply_completion(&matches, prefix, state);
+    }
+
+    fn complete_path(&mut self, prefix: &str, state: &ShellState) {
+        let (dir_part, name_prefix) = if let Some(idx) = prefix.rfind('/') {
+            (&prefix[..=idx], &prefix[idx + 1..])
+        } else {
+            ("", prefix)
+        };
+
+        let directory = if prefix.starts_with('/') {
+            if dir_part.is_empty() { PathBuf::from("/") } else { normalize_path(Path::new(dir_part)) }
+        } else if dir_part.is_empty() {
+            state.cwd.clone()
+        } else {
+            state.resolve(dir_part)
+        };
+
+        let show_hidden = name_prefix.starts_with('.');
+        
+        // Use NexaOS syscall for directory listing
+        let list = match nexaos::list_files(Some(directory.to_str().unwrap_or("/")), show_hidden) {
+            Ok(l) => l,
+            Err(_) => {
+                self.beep();
+                return;
+            }
+        };
+
+        let mut matches: Vec<String> = Vec::new();
+        let mut is_dir: Vec<bool> = Vec::new();
+
+        for entry in list.lines() {
+            if entry.is_empty() { continue; }
+            if !show_hidden && entry.starts_with('.') { continue; }
+            if name_prefix.is_empty() && (entry == "." || entry == "..") { continue; }
+            
+            if entry.starts_with(name_prefix) {
+                let full_path = directory.join(entry);
+                let dir = fs::metadata(&full_path).map(|m| m.is_dir()).unwrap_or(false);
+                matches.push(entry.to_string());
+                is_dir.push(dir);
+            }
+        }
+
+        if matches.is_empty() {
+            self.beep();
+            return;
+        }
+
+        if matches.len() == 1 {
+            let suffix = &matches[0][name_prefix.len()..];
+            self.append(suffix);
+            if is_dir[0] {
+                self.append("/");
+            } else {
+                self.append(" ");
+            }
+            return;
+        }
+
+        // Find longest common prefix
+        let lcp = longest_common_prefix(&matches);
+        if lcp.len() > name_prefix.len() {
+            self.append(&lcp[name_prefix.len()..]);
+            return;
+        }
+
+        // Show all matches
         println!();
-    } else {
-        println!("cat: file not found");
-        println_errno(errno());
+        for (i, entry) in matches.iter().enumerate() {
+            print!("{}{}{}", dir_part, entry, if is_dir[i] { "/" } else { "" });
+            println!();
+        }
+        print_prompt(state);
+        let buf_copy = self.buffer.clone();
+        self.write(buf_copy.as_bytes());
+    }
+
+    fn apply_completion(&mut self, matches: &[&str], prefix: &str, state: &ShellState) {
+        if matches.is_empty() {
+            self.beep();
+            return;
+        }
+
+        if matches.len() == 1 {
+            let suffix = &matches[0][prefix.len()..];
+            self.append(suffix);
+            self.append(" ");
+            return;
+        }
+
+        let lcp = longest_common_prefix_str(matches);
+        if lcp.len() > prefix.len() {
+            self.append(&lcp[prefix.len()..]);
+            return;
+        }
+
+        // Show all matches
+        println!();
+        for m in matches {
+            println!("{}", m);
+        }
+        print_prompt(state);
+        let buf_copy = self.buffer.clone();
+        self.write(buf_copy.as_bytes());
     }
 }
 
-fn show_help() {
+fn command_accepts_path(cmd: &str) -> bool {
+    matches!(cmd, "ls" | "cat" | "stat" | "cd" | "mkdir")
+}
+
+fn longest_common_prefix(items: &[String]) -> String {
+    if items.is_empty() { return String::new(); }
+    let first = &items[0];
+    let mut len = first.len();
+    for item in &items[1..] {
+        len = first.chars().zip(item.chars())
+            .take_while(|(a, b)| a == b)
+            .count()
+            .min(len);
+        if len == 0 { break; }
+    }
+    first[..len].to_string()
+}
+
+fn longest_common_prefix_str(items: &[&str]) -> String {
+    if items.is_empty() { return String::new(); }
+    let first = items[0];
+    let mut len = first.len();
+    for item in &items[1..] {
+        len = first.chars().zip(item.chars())
+            .take_while(|(a, b)| a == b)
+            .count()
+            .min(len);
+        if len == 0 { break; }
+    }
+    first[..len].to_string()
+}
+
+// ============================================================================
+// Output Helpers
+// ============================================================================
+
+fn print_prompt(state: &ShellState) {
+    let username = nexaos::get_user_info()
+        .and_then(|info| {
+            let len = info.username_len as usize;
+            if len == 0 { None }
+            else { std::str::from_utf8(&info.username[..len]).ok().map(String::from) }
+        })
+        .unwrap_or_else(|| "anonymous".to_string());
+
+    print!("{}@{}:{}$ ", username, HOSTNAME, state.current_path_str());
+    let _ = io::stdout().flush();
+}
+
+fn clear_screen() {
+    print!("\x1b[2J\x1b[H");
+    let _ = io::stdout().flush();
+}
+
+fn format_mode(mode: u32) -> String {
+    let file_type = match mode & 0o170000 {
+        0o040000 => 'd',
+        0o100000 => '-',
+        0o120000 => 'l',
+        0o020000 => 'c',
+        0o060000 => 'b',
+        0o010000 => 'p',
+        0o140000 => 's',
+        _ => '?',
+    };
+
+    let mut result = String::with_capacity(10);
+    result.push(file_type);
+    
+    for shift in [6, 3, 0] {
+        let p = (mode >> shift) & 0o7;
+        result.push(if (p & 0o4) != 0 { 'r' } else { '-' });
+        result.push(if (p & 0o2) != 0 { 'w' } else { '-' });
+        result.push(if (p & 0o1) != 0 { 'x' } else { '-' });
+    }
+    
+    result
+}
+
+// ============================================================================
+// Built-in Commands
+// ============================================================================
+
+fn cmd_help() {
     println!("Available commands:");
     println!("  help              Show this message");
     println!("  ls [-a] [-l] [p]  List directory contents");
@@ -1253,11 +674,116 @@ fn show_help() {
     println!("  Ctrl-L            Refresh screen");
 }
 
-fn clear_screen() {
-    print_bytes(b"\x1b[2J\x1b[H");
+fn cmd_pwd(state: &ShellState) {
+    println!("{}", state.current_path_str());
 }
 
-fn show_uname(all: bool) {
+fn cmd_cd(state: &mut ShellState, path: Option<&str>) {
+    let target = path.unwrap_or("/");
+    let resolved = state.resolve(target);
+    
+    match fs::metadata(&resolved) {
+        Ok(meta) if meta.is_dir() => {
+            state.set_path(resolved);
+        }
+        Ok(_) => {
+            println!("cd: not a directory: {}", target);
+        }
+        Err(e) => {
+            println!("cd: {}: {}", target, e);
+        }
+    }
+}
+
+fn cmd_ls(state: &ShellState, args: &[&str]) {
+    let mut show_all = false;
+    let mut long_format = false;
+    let mut target = None;
+
+    for arg in args {
+        if arg.starts_with('-') {
+            for c in arg[1..].chars() {
+                match c {
+                    'a' => show_all = true,
+                    'l' => long_format = true,
+                    _ => println!("ls: unknown option -{}", c),
+                }
+            }
+        } else {
+            target = Some(*arg);
+        }
+    }
+
+    let path = target.map(|t| state.resolve(t)).unwrap_or_else(|| state.cwd.clone());
+
+    match nexaos::list_files(Some(path.to_str().unwrap_or("/")), show_all) {
+        Ok(list) => {
+            for entry in list.lines() {
+                if entry.is_empty() { continue; }
+                if !show_all && entry.starts_with('.') { continue; }
+
+                if long_format {
+                    let full_path = path.join(entry);
+                    if let Ok(meta) = fs::metadata(&full_path) {
+                        let mode = format_mode(meta.mode());
+                        println!("{} {} {} {} {}", mode, meta.uid(), meta.gid(), meta.len(), entry);
+                        continue;
+                    }
+                }
+                println!("{}", entry);
+            }
+        }
+        Err(e) => {
+            println!("ls: failed to read directory (errno {})", e);
+        }
+    }
+}
+
+fn cmd_cat(state: &ShellState, path: &str) {
+    let resolved = state.resolve(path);
+    
+    match fs::read_to_string(&resolved) {
+        Ok(contents) => {
+            print!("{}", contents);
+            if !contents.ends_with('\n') {
+                println!();
+            }
+        }
+        Err(e) => {
+            // Try reading as binary
+            match fs::read(&resolved) {
+                Ok(bytes) => {
+                    let _ = io::stdout().write_all(&bytes);
+                    println!();
+                }
+                Err(_) => println!("cat: {}: {}", path, e),
+            }
+        }
+    }
+}
+
+fn cmd_stat(state: &ShellState, path: &str) {
+    let resolved = state.resolve(path);
+    
+    match fs::metadata(&resolved) {
+        Ok(meta) => {
+            println!("File statistics:");
+            println!("  size: {} bytes", meta.len());
+            println!("  blocks: {}", meta.blocks());
+            println!("  mode: 0o{:o}", meta.mode());
+            println!("  links: {}", meta.nlink());
+        }
+        Err(e) => {
+            println!("stat: {}: {}", path, e);
+        }
+    }
+}
+
+fn cmd_echo(text: &str) {
+    println!("{}", text);
+}
+
+fn cmd_uname(all: bool) {
     if all {
         println!("NexaOS 0.1.0 x86_64 (experimental hybrid kernel)");
     } else {
@@ -1265,397 +791,253 @@ fn show_uname(all: bool) {
     }
 }
 
-fn cmd_pwd(state: &ShellState) {
-    println!("{}", state.current_path());
-}
-
-fn cmd_cd(state: &mut ShellState, path: &str) {
-    if path.is_empty() {
-        state.set_path("/");
-        return;
-    }
-
-    let mut buf = [0u8; MAX_PATH];
-    let Some(resolved) = state.resolve(path, &mut buf) else {
-        println!("cd: invalid path");
-        return;
-    };
-
-    let mut stat = Stat::zero();
-    if !fetch_stat(resolved, &mut stat) {
-        println!("cd: path not found");
-        return;
-    }
-
-    if !is_directory(stat.st_mode) {
-        println!("cd: not a directory");
-        return;
-    }
-
-    state.set_path(resolved);
-}
-
-fn cmd_echo(args: &str) {
-    println!("{}", args);
-}
-
-fn cmd_mkdir(state: &ShellState, path: &str) {
+fn cmd_mkdir(_state: &ShellState, path: &str) {
     if path.is_empty() {
         println!("mkdir: missing operand");
         return;
     }
-
-    let mut buf = [0u8; MAX_PATH];
-    let Some(_resolved) = state.resolve(path, &mut buf) else {
-        println!("mkdir: invalid path");
-        return;
-    };
-
     println!("mkdir: not yet implemented (filesystem is read-only)");
 }
 
-// Helper function to check if a file exists and is executable
-fn file_exists(path: &str) -> bool {
-    let mut path_bytes = [0u8; MAX_PATH];
-    let bytes = path.as_bytes();
-    if bytes.len() >= MAX_PATH {
-        return false;
+fn cmd_login(username: &str) {
+    if username.is_empty() {
+        println!("login: missing user name");
+        return;
     }
-    path_bytes[..bytes.len()].copy_from_slice(bytes);
-    path_bytes[bytes.len()] = 0; // null terminate
 
-    let mut stat_buf = Stat::zero();
-    let result = syscall3(
-        SYS_STAT,
-        path_bytes.as_ptr() as u64,
-        bytes.len() as u64,
-        &mut stat_buf as *mut Stat as u64,
-    );
-    result == 0
+    print!("password: ");
+    let _ = io::stdout().flush();
+    
+    let mut password = String::new();
+    if io::stdin().read_line(&mut password).is_err() {
+        println!("login: failed to read password");
+        return;
+    }
+    let password = password.trim();
+
+    match nexaos::login(username, password) {
+        Ok(()) => println!("login successful"),
+        Err(e) => println!("login failed (errno {})", e),
+    }
 }
 
-// Search for an executable in standard paths
-fn find_executable(cmd: &str) -> Option<[u8; MAX_PATH]> {
-    const PATHS: &[&str] = &["/bin", "/sbin", "/usr/bin", "/usr/sbin"];
+fn cmd_adduser(username: &str, admin: bool) {
+    if username.is_empty() {
+        println!("adduser: missing user name");
+        return;
+    }
+
+    print!("new password: ");
+    let _ = io::stdout().flush();
     
-    for dir in PATHS {
-        let dir_bytes = dir.as_bytes();
-        let cmd_bytes = cmd.as_bytes();
-        
-        // Build path: /dir/cmd
-        let total_len = dir_bytes.len() + 1 + cmd_bytes.len();
-        if total_len >= MAX_PATH {
-            continue;
-        }
-        
-        // Create a fresh buffer for each iteration to avoid contamination
-        let mut full_path = [0u8; MAX_PATH];
-        full_path[..dir_bytes.len()].copy_from_slice(dir_bytes);
-        full_path[dir_bytes.len()] = b'/';
-        full_path[dir_bytes.len() + 1..dir_bytes.len() + 1 + cmd_bytes.len()]
-            .copy_from_slice(cmd_bytes);
-        full_path[total_len] = 0; // null terminate
-        
-        // Check if file exists
-        if let Ok(path_str) = core::str::from_utf8(&full_path[..total_len]) {
-            if file_exists(path_str) {
-                return Some(full_path);
+    let mut password = String::new();
+    if io::stdin().read_line(&mut password).is_err() {
+        println!("adduser: failed to read password");
+        return;
+    }
+    let password = password.trim();
+
+    match nexaos::add_user(username, password, admin) {
+        Ok(()) => println!("adduser: user created"),
+        Err(e) => println!("adduser: failed (errno {})", e),
+    }
+}
+
+fn cmd_whoami() {
+    match nexaos::get_user_info() {
+        Some(info) => {
+            let len = info.username_len as usize;
+            if len == 0 {
+                println!("(anonymous)");
+            } else if let Ok(name) = std::str::from_utf8(&info.username[..len]) {
+                println!("{}", name);
+            } else {
+                println!("(invalid username)");
             }
         }
+        None => println!("whoami: failed"),
     }
-    
+}
+
+fn cmd_users() {
+    match nexaos::list_users() {
+        Ok(list) => {
+            if list.is_empty() {
+                println!("(no users)");
+            } else {
+                print!("{}", list);
+            }
+        }
+        Err(e) => println!("users: failed (errno {})", e),
+    }
+}
+
+fn cmd_logout() {
+    match nexaos::logout() {
+        Ok(()) => println!("logged out"),
+        Err(e) => println!("logout: failed (errno {})", e),
+    }
+}
+
+fn cmd_ipc_create() {
+    match nexaos::ipc_create() {
+        Ok(id) => println!("channel {} created", id),
+        Err(e) => println!("ipc-create: failed (errno {})", e),
+    }
+}
+
+fn cmd_ipc_send(channel: u32, message: &str) {
+    if message.is_empty() {
+        println!("ipc-send: message cannot be empty");
+        return;
+    }
+    match nexaos::ipc_send(channel, message) {
+        Ok(()) => println!("ipc-send: message queued"),
+        Err(e) => println!("ipc-send: failed (errno {})", e),
+    }
+}
+
+fn cmd_ipc_recv(channel: u32) {
+    match nexaos::ipc_recv(channel) {
+        Ok(msg) => println!("ipc-recv: {}", msg),
+        Err(e) => println!("ipc-recv: failed (errno {})", e),
+    }
+}
+
+// ============================================================================
+// External Command Execution
+// ============================================================================
+
+fn find_executable(cmd: &str) -> Option<PathBuf> {
+    for dir in SEARCH_PATHS {
+        let path = Path::new(dir).join(cmd);
+        if fs::metadata(&path).is_ok() {
+            return Some(path);
+        }
+    }
     None
 }
 
-// Execute an external command
 fn execute_external_command(cmd: &str, args: &[&str]) -> bool {
-    // Try to find the executable
-    let path_buf = match find_executable(cmd) {
+    let path = match find_executable(cmd) {
         Some(p) => p,
         None => {
             println!("Command not found: {}", cmd);
             return false;
         }
     };
-    
-    // Find the actual length of the path (until first null byte)
-    let mut path_len = 0;
-    while path_len < MAX_PATH && path_buf[path_len] != 0 {
-        path_len += 1;
-    }
-    
-    // Verify we found a valid null-terminated string
-    if path_len == 0 {
-        println!("Error: empty path");
-        return false;
-    }
-    if path_len >= MAX_PATH {
-        println!("Error: path too long");
-        return false;
-    }
-    // path_buf[path_len] should be 0 (null terminator)
-    
-    // Debug: print the path we found
-    if let Ok(path_str) = core::str::from_utf8(&path_buf[..path_len]) {
-        println!("Executing: {}", path_str);
-    } else {
-        println!("Executing: <invalid UTF-8>");
-        return false;
-    }
-    
-    // Prepare argv array (cmd + args + NULL)
-    let mut argv_ptrs: [*const u8; 32] = [core::ptr::null(); 32];
-    let mut argv_storage: [[u8; 64]; 32] = [[0; 64]; 32];
-    
-    // First argument is the command itself (just the command name, not full path)
-    let cmd_bytes = cmd.as_bytes();
-    let cmd_len = core::cmp::min(cmd_bytes.len(), 63);
-    argv_storage[0][..cmd_len].copy_from_slice(&cmd_bytes[..cmd_len]);
-    argv_storage[0][cmd_len] = 0; // Null terminate
-    argv_ptrs[0] = argv_storage[0].as_ptr();
-    
-    // Copy additional arguments
-    let mut arg_count = 1;
-    for (i, arg) in args.iter().enumerate() {
-        if arg_count >= 31 {
-            break;
+
+    println!("Executing: {}", path.display());
+
+    match Command::new(&path)
+        .args(args)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+    {
+        Ok(status) => {
+            if !status.success() {
+                if let Some(code) = status.code() {
+                    println!("Command exited with status {}", code);
+                } else {
+                    println!("Command terminated by signal");
+                }
+            }
+            true
         }
-        let arg_bytes = arg.as_bytes();
-        let arg_len = core::cmp::min(arg_bytes.len(), 63);
-        argv_storage[arg_count][..arg_len].copy_from_slice(&arg_bytes[..arg_len]);
-        argv_storage[arg_count][arg_len] = 0; // Null terminate
-        argv_ptrs[arg_count] = argv_storage[arg_count].as_ptr();
-        arg_count += 1;
-    }
-    // argv_ptrs[arg_count] is already null (array initialized with nulls)
-    
-    // Empty environment for now
-    let envp: [*const u8; 1] = [core::ptr::null()];
-    
-    // DEBUG: Verify path_buf contents BEFORE fork
-    /* 
-    print!("BEFORE FORK: path_buf addr=0x{:016x}, first 16 bytes: ", path_buf.as_ptr() as u64);
-    for i in 0..16 {
-        print!("{:016x} ", path_buf[i] as u64);
-    }
-    println!();
-    */
-    // Check stack pointer BEFORE any more function calls
-    let sp_before: u64;
-    unsafe {
-        core::arch::asm!("mov {}, rsp", out(reg) sp_before);
-    }
-    /* 
-    println!("Parent SP before fork: 0x{:016x}, path_buf offset from SP: 0x{:016x}",
-        sp_before, (path_buf.as_ptr() as u64).wrapping_sub(sp_before));
-    println!("About to fork...");
-    */
-    // Fork and execute
-    let pid = fork();
-    /*
-    println!("fork returned: {:016x}", pid as u64);
-    */
-    if pid < 0 {
-        // println!("fork failed");
-        return false;
-    }
-    
-    if pid == 0 {
-        // Child process - execute the command
-        // path_buf is a [u8; 256] array on stack that was copied by fork
-        
-        // CRITICAL: path_len is a local variable that may not be valid after fork!
-        // Recalculate it from path_buf
-        let mut actual_path_len = 0;
-        while actual_path_len < MAX_PATH && path_buf[actual_path_len] != 0 {
-            actual_path_len += 1;
-        }
-        
-        // Debug output
-        /*
-        println!("Child: path_buf addr=0x{:016x}, len={}, path={}",
-            path_buf.as_ptr() as u64,
-            actual_path_len,
-            if actual_path_len > 0 {
-                core::str::from_utf8(&path_buf[..actual_path_len]).unwrap_or("<invalid UTF-8>")
-            } else {
-                "<empty>"
-            });
-        */
-        
-        // Execve with the path
-        let result = execve(path_buf.as_ptr(), argv_ptrs.as_ptr(), envp.as_ptr());
-        
-        
-        // If we get here, execve failed
-        println!("Child: execve failed, error={:016x}", result as u64);
-        std::process::exit(1);
-    }
-    
-    // Parent process - wait for child
-    let mut status: i32 = 0;
-    let wait_result = wait4(pid, &mut status as *mut i32, 0);
-    
-    // Debug: show wait result and status
-    println!("[shell] wait4 returned {}, status={:016x}", wait_result, status as u64);
-    
-    if wait_result < 0 {
-        println!("wait failed");
-        return false;
-    }
-    
-    // Debug: show status check results
-    println!("[shell] wifexited={}, wifsignaled={}", wifexited(status), wifsignaled(status));
-    
-    // Check if child exited normally or was terminated by signal
-    if wifexited(status) {
-        let exit_code = wexitstatus(status);
-        if exit_code != 0 {
-            println!("Command exited with status {}", exit_code);
-        }
-    } else if wifsignaled(status) {
-        let sig = wtermsig(status);
-        if sig == 11 {
-            println!("Segmentation fault (core dumped)");
-        } else {
-            println!("Terminated (signal {})", sig);
+        Err(e) => {
+            println!("Failed to execute command: {}", e);
+            false
         }
     }
-    
-    true
 }
 
-fn prompt(state: &ShellState) {
-    let mut info = UserInfo::zero();
-    let username = if refresh_current_user(&mut info) {
-        let len = info.username_len as usize;
-        if len == 0 {
-
-            "anonymous"
-        } else {
-            core::str::from_utf8(&info.username[..len]).unwrap_or("nexa")
-        }
-    } else {
-        "unknown"
-    };
-    print!("{}@{}:{}$ ", username, HOSTNAME, state.current_path());
-    let _ = io::stdout().flush();
-}
+// ============================================================================
+// Command Dispatcher
+// ============================================================================
 
 fn handle_command(state: &mut ShellState, line: &str) {
-    let mut parts = line.split_whitespace();
-    let Some(cmd) = parts.next() else { return; };
+    let parts: Vec<&str> = line.split_whitespace().collect();
+    let cmd = match parts.first() {
+        Some(c) => *c,
+        None => return,
+    };
+    let args = &parts[1..];
 
     match cmd {
-        "help" => {
-            show_help();
-        }
-        "pwd" => {
-            cmd_pwd(state);
-        }
-        "cd" => {
-            if let Some(path) = parts.next() {
-                cmd_cd(state, path);
-            } else {
-                cmd_cd(state, "/");
-            }
-        }
+        "help" => cmd_help(),
+        "pwd" => cmd_pwd(state),
+        "cd" => cmd_cd(state, args.first().copied()),
         "echo" => {
-            let rest = line.strip_prefix("echo").unwrap_or("").trim();
-            cmd_echo(rest);
+            let text = line.strip_prefix("echo").unwrap_or("").trim();
+            cmd_echo(text);
         }
-        "uname" => {
-            let show_all = parts.next().map_or(false, |arg| arg == "-a");
-            show_uname(show_all);
-        }
+        "uname" => cmd_uname(args.first().map_or(false, |a| *a == "-a")),
         "mkdir" => {
-            if let Some(path) = parts.next() {
+            if let Some(path) = args.first() {
                 cmd_mkdir(state, path);
             } else {
                 println!("mkdir: missing operand");
             }
         }
-        "ls" => {
-            let mut show_all = false;
-            let mut long_format = false;
-            let mut target = "";
-            while let Some(arg) = parts.next() {
-                if let Some(rest) = arg.strip_prefix('-') {
-                    for flag in rest.as_bytes() {
-                        match flag {
-                            b'a' => show_all = true,
-                            b'l' => long_format = true,
-                            other => {
-                                println!("ls: unknown option -{}", *other as char);
-                            }
-                        }
-                    }
-                } else {
-                    target = arg;
-                }
-            }
-            list_directory_entries(state, target, show_all, long_format);
-        }
+        "ls" => cmd_ls(state, args),
         "cat" => {
-            if let Some(arg) = parts.next() {
-                cat(state, arg);
+            if let Some(path) = args.first() {
+                cmd_cat(state, path);
             } else {
                 println!("cat: missing file name");
             }
         }
         "stat" => {
-            if let Some(arg) = parts.next() {
-                stat_path(state, arg);
+            if let Some(path) = args.first() {
+                cmd_stat(state, path);
             } else {
                 println!("stat: missing file name");
             }
         }
         "login" => {
-            if let Some(user) = parts.next() {
-                login_user(user);
+            if let Some(user) = args.first() {
+                cmd_login(user);
             } else {
                 println!("login: missing user name");
             }
         }
-        "whoami" => whoami(),
-        "users" => list_users(),
-        "logout" => logout_user(),
+        "whoami" => cmd_whoami(),
+        "users" => cmd_users(),
+        "logout" => cmd_logout(),
         "adduser" => {
             let mut admin = false;
-            let mut username: Option<&str> = None;
-            while let Some(arg) = parts.next() {
-                if arg == "-a" {
+            let mut username = None;
+            for arg in args {
+                if *arg == "-a" {
                     admin = true;
                 } else {
-                    username = Some(arg);
+                    username = Some(*arg);
                 }
             }
             if let Some(user) = username {
-                add_user(user, admin);
+                cmd_adduser(user, admin);
             } else {
                 println!("adduser: missing user name");
             }
         }
-        "ipc-create" => ipc_create_channel(),
+        "ipc-create" => cmd_ipc_create(),
         "ipc-send" => {
-            if let Some(chan) = parts.next() {
-                if let Some(id) = parse_u32(chan) {
-                    if let Some(msg) = parts.next() {
-                        ipc_send_message(id, msg);
-                    } else {
-                        println!("ipc-send: missing message");
-                    }
+            if args.len() >= 2 {
+                if let Ok(channel) = args[0].parse::<u32>() {
+                    cmd_ipc_send(channel, args[1]);
                 } else {
                     println!("ipc-send: invalid channel");
                 }
             } else {
-                println!("ipc-send: missing channel");
+                println!("ipc-send: missing channel or message");
             }
         }
         "ipc-recv" => {
-            if let Some(chan) = parts.next() {
-                if let Some(id) = parse_u32(chan) {
-                    ipc_receive_message(id);
+            if let Some(chan) = args.first() {
+                if let Ok(channel) = chan.parse::<u32>() {
+                    cmd_ipc_recv(channel);
                 } else {
                     println!("ipc-recv: invalid channel");
                 }
@@ -1666,39 +1048,31 @@ fn handle_command(state: &mut ShellState, line: &str) {
         "clear" => clear_screen(),
         "exit" => {
             println!("Bye!");
-            std::process::exit(0);
+            process::exit(0);
         }
         _ => {
-            // Try to execute as external command
-            let args: std::vec::Vec<&str> = parts.collect();
-            if !execute_external_command(cmd, &args) {
-                // execute_external_command already prints error if command not found
-            }
+            // Try external command
+            let args: Vec<&str> = args.to_vec();
+            execute_external_command(cmd, &args);
         }
     }
 }
 
-fn shell_loop() -> ! {
-    println!("Welcome to NexaOS shell. Type 'help' for commands.");
-    let mut buffer = [0u8; 256];
-    let mut state = ShellState::new();
-
-    loop {
-        let len = read_line(&state, &mut buffer);
-        if len == 0 {
-            continue;
-        }
-        if let Ok(line) = core::str::from_utf8(&buffer[..len]) {
-            let trimmed = line.trim();
-            if !trimmed.is_empty() {
-                handle_command(&mut state, trimmed);
-            }
-        } else {
-            println!("Invalid UTF-8 input");
-        }
-    }
-}
+// ============================================================================
+// Main Entry Point
+// ============================================================================
 
 fn main() -> ! {
-    shell_loop()
+    println!("Welcome to NexaOS shell. Type 'help' for commands.");
+    
+    let mut state = ShellState::new();
+    let mut editor = LineEditor::new();
+
+    loop {
+        let line = editor.read_line(&state);
+        let trimmed = line.trim();
+        if !trimmed.is_empty() {
+            handle_command(&mut state, trimmed);
+        }
+    }
 }
