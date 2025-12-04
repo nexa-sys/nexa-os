@@ -162,6 +162,9 @@ pub struct Process {
     pub user_rip: u64, // Saved user-mode RIP for syscall return
     pub user_rsp: u64, // Saved user-mode RSP for syscall return
     pub user_rflags: u64, // Saved user-mode RFLAGS for syscall return
+    pub user_r10: u64, // Saved user-mode R10 (syscall arg4) for context switch
+    pub user_r8: u64,  // Saved user-mode R8 (syscall arg5) for context switch
+    pub user_r9: u64,  // Saved user-mode R9 (syscall arg6) for context switch
     pub exit_code: i32, // Last exit code reported by this process (if zombie)
     pub term_signal: Option<i32>, // Signal that terminated this process (None = normal exit)
     pub kernel_stack: u64, // Pointer to kernel stack allocation (bottom)

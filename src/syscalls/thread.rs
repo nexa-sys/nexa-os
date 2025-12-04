@@ -644,24 +644,24 @@ pub fn arch_prctl(code: i32, addr: u64) -> u64 {
 /// Helper to set process fs_base
 fn set_process_fs_base(pid: u64, fs_base: u64) {
     // Use the scheduler's process table lock mechanism
-    let table = scheduler::process_table_lock();
+    let mut table = scheduler::process_table_lock();
 
-    // Try radix tree lookup first
-    if let Some(idx) = crate::process::lookup_pid(pid) {
-        let idx = idx as usize;
-        if idx < table.len() {
-            // We need mutable access, but process_table_lock returns shared lock
-            // So we'll update it via scheduler functions or direct MSR is sufficient
-            // since we already set the MSR above
+    // Update fs_base in the Process struct so it can be restored on context switch
+    for slot in table.iter_mut() {
+        let Some(entry) = slot else { continue };
+        if entry.process.pid == pid {
+            entry.process.fs_base = fs_base;
+            ktrace!(
+                "[set_process_fs_base] Set fs_base for PID {} to {:#x}",
+                pid,
+                fs_base
+            );
+            return;
         }
     }
 
-    // The MSR is already set in arch_prctl, and fs_base in Process struct
-    // is primarily for context switch restoration. For now, the MSR setting
-    // is the important part - the scheduler will use the MSR value when switching.
-    ktrace!(
-        "[set_process_fs_base] Set fs_base for PID {} to {:#x}",
-        pid,
-        fs_base
+    kwarn!(
+        "[set_process_fs_base] PID {} not found in process table",
+        pid
     );
 }

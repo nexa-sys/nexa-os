@@ -287,6 +287,9 @@ pub fn set_process_exit_code(pid: Pid, code: i32) -> Result<(), &'static str> {
 /// Set the termination signal for a process (for signal-terminated processes)
 /// This is used to properly encode the wait status for wait4()
 pub fn set_process_term_signal(pid: Pid, signal: i32) -> Result<(), &'static str> {
+    // DEBUG: Print who is setting what signal
+    crate::serial_println!("SET_TERM_SIGNAL: pid={}, signal={}", pid, signal);
+    
     let mut table = PROCESS_TABLE.lock();
 
     // Try radix tree lookup first (O(log N))

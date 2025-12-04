@@ -112,6 +112,28 @@ pub unsafe extern "C" fn restore_user_syscall_context(rip: u64, rsp: u64, rflags
     gs_ptr.add(GS_SLOT_KERNEL_STACK_SNAPSHOT).write(0);
 }
 
+/// Extended version of restore_user_syscall_context that also restores
+/// syscall argument registers r10, r8, r9.
+///
+/// # Safety
+/// This function writes to the GS_DATA structure which is used by the CPU
+/// for syscall/sysret operations. Incorrect values can cause kernel crashes.
+pub unsafe extern "C" fn restore_user_syscall_context_full(
+    rip: u64, rsp: u64, rflags: u64, r10: u64, r8: u64, r9: u64
+) {
+    let gs_ptr = crate::smp::current_gs_data_ptr() as *mut u64;
+    gs_ptr.add(GS_SLOT_SAVED_RCX).write(rip);
+    gs_ptr.add(GS_SLOT_USER_RSP).write(rsp);
+    gs_ptr.add(GS_SLOT_USER_RSP_DEBUG).write(rsp);
+    gs_ptr.add(GS_SLOT_SAVED_RFLAGS).write(rflags);
+    gs_ptr.add(GS_SLOT_KERNEL_STACK_GUARD).write(0);
+    gs_ptr.add(GS_SLOT_KERNEL_STACK_SNAPSHOT).write(0);
+    // Restore syscall argument registers (slots 4, 5, 6)
+    gs_ptr.add(4).write(r10);  // GS[4] = r10 (syscall arg4)
+    gs_ptr.add(5).write(r8);   // GS[5] = r8 (syscall arg5)
+    gs_ptr.add(6).write(r9);   // GS[6] = r9 (syscall arg6)
+}
+
 /// Called when the kernel stack guard detects a re-entry condition
 /// This is a fatal error - the system cannot recover from this state
 #[cold]

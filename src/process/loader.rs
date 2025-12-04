@@ -274,6 +274,9 @@ impl Process {
             user_rip: entry_point,
             user_rsp: stack_ptr,
             user_rflags: 0x202,
+            user_r10: 0,  // Syscall arg4 - initialized to 0
+            user_r8: 0,   // Syscall arg5 - initialized to 0
+            user_r9: 0,   // Syscall arg6 - initialized to 0
             exit_code: 0,
             term_signal: None,
             kernel_stack: 0, // Initialize kernel stack pointer
@@ -456,6 +459,9 @@ impl Process {
                     user_rip: interp_image.entry_point,
                     user_rsp: stack_ptr,
                     user_rflags: 0x202,
+                    user_r10: 0,  // Syscall arg4 - initialized to 0
+                    user_r8: 0,   // Syscall arg5 - initialized to 0
+                    user_r9: 0,   // Syscall arg6 - initialized to 0
                     exit_code: 0,
                     term_signal: None,
                     kernel_stack: {
@@ -546,6 +552,9 @@ impl Process {
             user_rip: program_image.entry_point,
             user_rsp: stack_ptr,
             user_rflags: 0x202,
+            user_r10: 0,  // Syscall arg4 - initialized to 0
+            user_r8: 0,   // Syscall arg5 - initialized to 0
+            user_r9: 0,   // Syscall arg6 - initialized to 0
             kernel_stack: {
                 let layout =
                     Layout::from_size_align(KERNEL_STACK_SIZE, KERNEL_STACK_ALIGN).unwrap();

@@ -141,12 +141,24 @@ global_asm!(
     // At this point, stack pointer is back to where the interrupt frame starts
     // The interrupt frame (RIP, CS, RFLAGS, RSP, SS) is still intact on the stack
 
+    // CRITICAL: Restore syscall argument registers from GS_DATA
+    // These were saved at syscall entry and must be restored before iretq
+    // because they may have been overwritten by kernel code or other processes
+    "push rax",           // Save syscall return value
+    "mov rax, gs:[32]",
+    "mov r10, rax",       // Restore r10 (arg4) from GS[4]
+    "mov rax, gs:[40]",
+    "mov r8, rax",        // Restore r8 (arg5) from GS[5]
+    "mov rax, gs:[48]",
+    "mov r9, rax",        // Restore r9 (arg6) from GS[6]
+    "pop rax",            // Restore syscall return value
+
     // Snapshot the user-mode frame before we hand control back, so faults can
     // report the exact values that iretq attempted to restore.
-    "xor r10, r10",
-    "mov gs:[160], r10",
-    "mov gs:[168], r10",
-    "mov r9, rax", // Save syscall return value temporarily
+    "xor r11, r11",
+    "mov gs:[160], r11",
+    "mov gs:[168], r11",
+    "mov r11, rax", // Save syscall return value temporarily
     "mov rax, [rsp]",
     "mov gs:[80], rax", // gs slot 10 = user RIP
     "mov rax, [rsp + 8]",
@@ -157,7 +169,7 @@ global_asm!(
     "mov gs:[104], rax", // gs slot 13 = user RSP
     "mov rax, [rsp + 32]",
     "mov gs:[112], rax", // gs slot 14 = user SS
-    "mov rax, r9",       // Restore syscall return value
+    "mov rax, r11",       // Restore syscall return value
     "iretq"
 );
 

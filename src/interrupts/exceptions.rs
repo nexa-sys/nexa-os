@@ -247,11 +247,12 @@ pub extern "x86-interrupt" fn general_protection_fault_handler(
         let pid = current_pid.unwrap();
 
         // User-mode related GPF - terminate the process, not the kernel
-        // Debug log for kernel developers
-        kdebug!(
-            "SIGSEGV/GPF: PID {} at RIP={:#x}, error_code={:#x}",
+        // Debug log for kernel developers - use serial_println to ensure visibility
+        crate::serial_println!(
+            "GPF_SIGSEGV: PID {} at RIP={:#x}, RSP={:#x}, error_code={:#x}",
             pid,
             rip,
+            rsp,
             error_code
         );
 

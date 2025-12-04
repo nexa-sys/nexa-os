@@ -478,6 +478,9 @@ enum ScheduleDecision {
         user_rip: u64,
         user_rsp: u64,
         user_rflags: u64,
+        user_r10: u64,
+        user_r8: u64,
+        user_r9: u64,
         is_voluntary: bool,
         kernel_stack: u64,
         fs_base: u64,
@@ -547,6 +550,9 @@ fn find_next_ready_index(
 }
 
 /// Save syscall context from GS_DATA to process entry
+/// This saves the user-mode registers that were stored in GS_DATA when the process
+/// entered the kernel via syscall. This includes rip, rsp, rflags, and the syscall
+/// argument registers r10, r8, r9 which are restored on syscall return.
 unsafe fn save_syscall_context_to_entry(entry: &mut super::types::ProcessEntry, curr_pid: Pid) {
     let gs_data_ptr = crate::smp::current_gs_data_ptr() as *const u64;
     let saved_rip = gs_data_ptr.add(crate::interrupts::GS_SLOT_SAVED_RCX).read();
@@ -554,6 +560,13 @@ unsafe fn save_syscall_context_to_entry(entry: &mut super::types::ProcessEntry, 
     let saved_rflags = gs_data_ptr
         .add(crate::interrupts::GS_SLOT_SAVED_RFLAGS)
         .read();
+    // CRITICAL: Also save syscall argument registers r10, r8, r9
+    // These are stored in GS_DATA slots 4, 5, 6 (offsets 32, 40, 48) by syscall entry
+    // and are restored on syscall return. Without saving these, context switches
+    // during syscalls (e.g., wait4 -> do_schedule) would corrupt these registers.
+    let saved_r10 = gs_data_ptr.add(4).read(); // GS[4] = r10 (syscall arg4)
+    let saved_r8 = gs_data_ptr.add(5).read();  // GS[5] = r8 (syscall arg5)
+    let saved_r9 = gs_data_ptr.add(6).read();  // GS[6] = r9 (syscall arg6)
 
     ktrace!(
         "[do_schedule] Saving syscall context for PID {}: rip={:#x}, rsp={:#x}, rflags={:#x}",
@@ -566,6 +579,9 @@ unsafe fn save_syscall_context_to_entry(entry: &mut super::types::ProcessEntry, 
     entry.process.user_rip = saved_rip;
     entry.process.user_rsp = saved_rsp;
     entry.process.user_rflags = saved_rflags;
+    entry.process.user_r10 = saved_r10;
+    entry.process.user_r8 = saved_r8;
+    entry.process.user_r9 = saved_r9;
 }
 
 /// Transition current running process to Ready state
@@ -603,6 +619,9 @@ fn extract_next_process_info(
     u64,
     u64,
     u64,
+    u64,
+    u64,
+    u64,
     crate::process::Context,
     u64,
     u64,
@@ -623,6 +642,9 @@ fn extract_next_process_info(
         entry.process.user_rip,
         entry.process.user_rsp,
         entry.process.user_rflags,
+        entry.process.user_r10,
+        entry.process.user_r8,
+        entry.process.user_r9,
         entry.process.context,
         entry.process.kernel_stack,
         entry.process.fs_base,
@@ -663,6 +685,16 @@ fn get_old_context_info(
         if !candidate.process.has_entered_user {
             // crate::serial_println!("[OLD_CTX] PID {} has_entered_user=false, not saving", pid);
             return (None, voluntary);
+        }
+
+        // Save current FS base from MSR to Process struct
+        // This is critical for TLS preservation across context switches
+        let current_fs_base = unsafe {
+            use x86_64::registers::model_specific::Msr;
+            Msr::new(crate::safety::x86::MSR_IA32_FS_BASE).read()
+        };
+        if current_fs_base != 0 {
+            candidate.process.fs_base = current_fs_base;
         }
 
         // Mark context as valid since we're about to save to it via context_switch
@@ -844,19 +876,42 @@ unsafe extern "C" fn switch_return_trampoline() {
         // r13 = user_rsp
         // r14 = user_rflags
         // r15 = cr3
+        // rbx = user_r10
+        // rbp = user_r8
+        // [rsp] = user_r9 (on stack)
+        
+        // Pop user_r9 from stack into a temporary location (use rax, will be clobbered anyway)
+        "pop rax",  // rax = user_r9
         
         // Ensure GS base is correct (using callee-saved registers to preserve context)
+        // Save r8/r9 values before the call since they may be clobbered
+        "push rax",  // save user_r9
+        "push rbx",  // save user_r10
+        "push rbp",  // save user_r8
         "call {ensure_kernel_gs_base}",
+        "pop rbp",   // restore user_r8
+        "pop rbx",   // restore user_r10
+        "pop rax",   // restore user_r9
         
-        // Activate address space
+        // Activate address space (r15 = cr3, preserved across call)
+        "push rax",
+        "push rbx",
+        "push rbp",
         "mov rdi, r15", // cr3
         "call {activate_address_space}",
+        "pop rbp",
+        "pop rbx",
+        "pop rax",
         
-        // Restore user syscall context
-        "mov rdi, r12", // rip
-        "mov rsi, r13", // rsp
-        "mov rdx, r14", // rflags
-        "call {restore_user_syscall_context}",
+        // Restore user syscall context with full register set
+        // rdi = rip, rsi = rsp, rdx = rflags, rcx = r10, r8 = r8, r9 = r9
+        "mov rdi, r12",  // rip
+        "mov rsi, r13",  // rsp
+        "mov rdx, r14",  // rflags
+        "mov rcx, rbx",  // r10 (from rbx)
+        "mov r8, rbp",   // r8 (from rbp)
+        "mov r9, rax",   // r9 (from rax)
+        "call {restore_user_syscall_context_full}",
         
         // sysretq to return to userspace
         "cli",
@@ -872,7 +927,7 @@ unsafe extern "C" fn switch_return_trampoline() {
         
         ensure_kernel_gs_base = sym crate::smp::ensure_kernel_gs_base,
         activate_address_space = sym crate::mm::paging::activate_address_space,
-        restore_user_syscall_context = sym crate::interrupts::restore_user_syscall_context,
+        restore_user_syscall_context_full = sym crate::interrupts::restore_user_syscall_context_full,
     );
 }
 
@@ -890,6 +945,9 @@ unsafe fn execute_context_switch(
     user_rip: u64,
     user_rsp: u64,
     user_rflags: u64,
+    user_r10: u64,
+    user_r8: u64,
+    user_r9: u64,
     _is_voluntary: bool,
     kernel_stack: u64,
     fs_base: u64,
@@ -936,7 +994,10 @@ unsafe fn execute_context_switch(
         
         // Restore user syscall context to GS_DATA so when the process eventually
         // returns to userspace via sysretq, it has the correct values
-        crate::interrupts::restore_user_syscall_context(user_rip, user_rsp, user_rflags);
+        // Use the full version to also restore r10, r8, r9 syscall argument registers
+        crate::interrupts::restore_user_syscall_context_full(
+            user_rip, user_rsp, user_rflags, user_r10, user_r8, user_r9
+        );
         
         // Direct context switch to saved kernel context
         context_switch(old_context_ptr, next_context as *const _);
@@ -968,6 +1029,18 @@ unsafe fn execute_context_switch(
         trampoline_context.r13 = user_rsp;
         trampoline_context.r14 = user_rflags;
         trampoline_context.r15 = next_cr3;
+        // Pass syscall argument registers via additional callee-saved registers
+        trampoline_context.rbx = user_r10;
+        trampoline_context.rbp = user_r8;
+        // We need another register for user_r9 - use the unused portion of rflags slot
+        // Actually, let's store it on stack since we're using kernel stack
+        // Simpler approach: push to stack before context switch, pop in trampoline
+        // Even simpler: Use the stack directly since trampoline runs on kernel stack
+        // Store user_r9 at a known stack offset
+        let stack_top = kernel_stack + crate::process::KERNEL_STACK_SIZE as u64 - 16;
+        let user_r9_slot = (stack_top - 8) as *mut u64;
+        core::ptr::write_volatile(user_r9_slot, user_r9);
+        trampoline_context.rsp = stack_top - 8; // Adjust stack to include user_r9
         
         context_switch(old_context_ptr, &trampoline_context as *const _);
         
@@ -1009,6 +1082,9 @@ fn do_schedule_internal(from_interrupt: bool) {
             user_rip,
             user_rsp,
             user_rflags,
+            user_r10,
+            user_r8,
+            user_r9,
             is_voluntary,
             kernel_stack,
             fs_base,
@@ -1021,6 +1097,9 @@ fn do_schedule_internal(from_interrupt: bool) {
                 user_rip,
                 user_rsp,
                 user_rflags,
+                user_r10,
+                user_r8,
+                user_r9,
                 is_voluntary,
                 kernel_stack,
                 fs_base,
@@ -1069,6 +1148,9 @@ fn compute_schedule_decision(from_interrupt: bool) -> Option<ScheduleDecision> {
         user_rip,
         user_rsp,
         user_rflags,
+        user_r10,
+        user_r8,
+        user_r9,
         next_context,
         kernel_stack,
         fs_base,
@@ -1108,6 +1190,9 @@ fn compute_schedule_decision(from_interrupt: bool) -> Option<ScheduleDecision> {
         user_rip,
         user_rsp,
         user_rflags,
+        user_r10,
+        user_r8,
+        user_r9,
         is_voluntary,
         kernel_stack,
         fs_base,

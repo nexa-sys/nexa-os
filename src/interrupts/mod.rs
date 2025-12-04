@@ -25,7 +25,7 @@ pub mod syscall_asm;
 
 // Re-export commonly used items at module level
 pub use gs_context::{
-    encode_hex_u64, restore_user_syscall_context, set_gs_data, write_hex_u64, GS_SLOT_KERNEL_RSP,
+    encode_hex_u64, restore_user_syscall_context, restore_user_syscall_context_full, set_gs_data, write_hex_u64, GS_SLOT_KERNEL_RSP,
     GS_SLOT_KERNEL_STACK_GUARD, GS_SLOT_KERNEL_STACK_SNAPSHOT, GS_SLOT_SAVED_RAX,
     GS_SLOT_SAVED_RCX, GS_SLOT_SAVED_RFLAGS, GS_SLOT_USER_CS, GS_SLOT_USER_DS, GS_SLOT_USER_ENTRY,
     GS_SLOT_USER_RSP, GS_SLOT_USER_RSP_DEBUG, GS_SLOT_USER_SS, GS_SLOT_USER_STACK,
