@@ -4,6 +4,7 @@ resolver = "2"
 members = [
     "nrlib",
     "ld-nrlib",
+    "ncryptolib",
     "programs/init",
     "programs/shell",
     "programs/getty",

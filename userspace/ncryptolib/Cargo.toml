@@ -1,0 +1,22 @@
+[package]
+name = "ncryptolib"
+version = "0.1.0"
+edition = "2021"
+description = "NexaOS Cryptographic Library - libcrypto.so ABI compatible, modern standards only"
+
+[lib]
+# cdylib: Dynamic shared object (libcrypto.so) for dynamic linking
+# staticlib: Static library (libcrypto.a) for static linking
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[profile.release]
+panic = "abort"
+opt-level = 2
+lto = false
+
+[features]
+default = []
+# Enable hardware acceleration (AES-NI, SHA extensions)
+hw-accel = []
+
+[dependencies]

@@ -63,6 +63,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ncryptolib"
+version = "0.1.0"
+
+[[package]]
 name = "nexa_boot_info"
 version = "0.1.0"
 
