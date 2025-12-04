@@ -1,0 +1,17 @@
+[package]
+name = "getty"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "getty"
+path = "src/main.rs"
+
+[dependencies]
+nrlib = { workspace = true, optional = true }
+nexa_boot_info.workspace = true
+
+[features]
+default = []
+use-nrlib = ["nrlib", "nrlib/panic-handler"]
+use-nrlib-std = ["nrlib", "nrlib/std"]

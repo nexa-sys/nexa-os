@@ -32,7 +32,7 @@ edition = "2021"
 
 [[bin]]
 name = "sh"
-path = "../../userspace/shell.rs"
+path = "../../userspace/programs/shell/src/main.rs"
 
 [profile.release]
 panic = "abort"
@@ -108,7 +108,8 @@ build_initramfs_shell() {
     RUSTFLAGS="$(get_nrlib_rustflags)" \
         cargo build -Z build-std=core --target "$TARGET_USERSPACE" --release
     
-    cp "$PROJECT_ROOT/userspace/nrlib/target/x86_64-nexaos-userspace/release/libnrlib.a" \
+    # Workspace builds output to workspace root's target directory
+    cp "$PROJECT_ROOT/userspace/target/x86_64-nexaos-userspace/release/libnrlib.a" \
        "$INITRAMFS_BUILD/sysroot/lib/libc.a"
     ar crs "$INITRAMFS_BUILD/sysroot/lib/libunwind.a"
     
@@ -139,7 +140,8 @@ build_initramfs_libs() {
     RUSTFLAGS="$(get_pic_rustflags)" \
         cargo build -Z build-std=core --target "$TARGET_USERSPACE_PIC" --release
     
-    cp "$PROJECT_ROOT/userspace/nrlib/target/x86_64-nexaos-userspace-pic/release/libnrlib.so" \
+    # Workspace builds output to workspace root's target directory
+    cp "$PROJECT_ROOT/userspace/target/x86_64-nexaos-userspace-pic/release/libnrlib.so" \
        "$INITRAMFS_DIR/lib64/"
     strip --strip-all "$INITRAMFS_DIR/lib64/libnrlib.so" 2>/dev/null || true
     

@@ -27,7 +27,8 @@ build_nrlib_static() {
     RUSTFLAGS="$(get_nrlib_rustflags)" \
         cargo build -Z build-std=core --target "$TARGET_USERSPACE" --release
     
-    local staticlib="$NRLIB_SRC/target/x86_64-nexaos-userspace/release/libnrlib.a"
+    # Workspace builds output to workspace root's target directory
+    local staticlib="$PROJECT_ROOT/userspace/target/x86_64-nexaos-userspace/release/libnrlib.a"
     
     if [ -f "$staticlib" ]; then
         cp "$staticlib" "$SYSROOT_DIR/lib/libc.a"
@@ -46,7 +47,7 @@ build_nrlib_static() {
     RUSTFLAGS="-C opt-level=2 -C panic=abort -C relocation-model=pic" \
         cargo build -Z build-std=core --target "$TARGET_USERSPACE_PIC" --release
     
-    local staticlib_pic="$NRLIB_SRC/target/x86_64-nexaos-userspace-pic/release/libnrlib.a"
+    local staticlib_pic="$PROJECT_ROOT/userspace/target/x86_64-nexaos-userspace-pic/release/libnrlib.a"
     
     if [ -f "$staticlib_pic" ]; then
         # Install PIC version as libc.a in the PIC sysroot
@@ -76,7 +77,8 @@ build_nrlib_shared() {
     RUSTFLAGS="$(get_pic_rustflags)" \
         cargo build -Z build-std=core --target "$TARGET_USERSPACE_PIC" --release
     
-    local sharedlib="$NRLIB_SRC/target/x86_64-nexaos-userspace-pic/release/libnrlib.so"
+    # Workspace builds output to workspace root's target directory
+    local sharedlib="$PROJECT_ROOT/userspace/target/x86_64-nexaos-userspace-pic/release/libnrlib.so"
     
     if [ -f "$sharedlib" ]; then
         cp "$sharedlib" "$dest_dir/libnrlib.so"
@@ -98,34 +100,19 @@ build_nrlib_shared() {
 
 build_dynamic_linker() {
     local dest_dir="${1:-$SYSROOT_DIR/lib}"
-    local build_dir="$BUILD_DIR/ld-nrlib-build"
+    local ld_src_dir="$PROJECT_ROOT/userspace/ld-nrlib"
     
     log_step "Building dynamic linker (ld-nrlib-x86_64.so.1)..."
     
-    ensure_dir "$dest_dir" "$build_dir"
+    ensure_dir "$dest_dir"
     
-    cat > "$build_dir/Cargo.toml" << 'EOF'
-[package]
-name = "ld-nrlib"
-version = "0.1.0"
-edition = "2021"
-
-[[bin]]
-name = "ld-nrlib"
-path = "../../userspace/ld-nrlib.rs"
-
-[profile.release]
-panic = "abort"
-opt-level = "s"
-lto = true
-EOF
-
-    cd "$build_dir"
+    cd "$ld_src_dir"
     
     RUSTFLAGS="$(get_ld_rustflags)" \
         cargo build -Z build-std=core --target "$TARGET_LD" --release
     
-    local ld_bin="$build_dir/target/x86_64-nexaos-ld/release/ld-nrlib"
+    # Workspace builds output to workspace root's target directory
+    local ld_bin="$PROJECT_ROOT/userspace/target/x86_64-nexaos-ld/release/ld-nrlib"
     
     if [ -f "$ld_bin" ]; then
         cp "$ld_bin" "$dest_dir/ld-nrlib-x86_64.so.1"
