@@ -89,6 +89,15 @@ static CR3_ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
 static CR3_ACTIVATIONS: AtomicU64 = AtomicU64::new(0);
 static CR3_FREES: AtomicU64 = AtomicU64::new(0);
 
+// Simple free list for user regions
+// Each entry is (base_address, size) - we use 0 to indicate an empty slot
+const MAX_FREE_REGIONS: usize = 64;
+static FREE_USER_REGIONS: spin::Mutex<[(u64, u64); MAX_FREE_REGIONS]> =
+    spin::Mutex::new([(0, 0); MAX_FREE_REGIONS]);
+// Statistics for user region allocation
+static USER_REGIONS_ALLOCATED: AtomicU64 = AtomicU64::new(0);
+static USER_REGIONS_FREED: AtomicU64 = AtomicU64::new(0);
+
 fn allocate_extra_table() -> Option<&'static PageTableHolder> {
     let idx = EXTRA_TABLE_INDEX.fetch_add(1, AtomicOrdering::SeqCst);
     if idx >= EXTRA_TABLES.len() {
@@ -899,6 +908,7 @@ pub fn print_cr3_statistics() {
 }
 
 /// Simple bump allocator for user-visible physical regions.
+/// First checks the free list for a suitable region, then falls back to bump allocation.
 pub fn allocate_user_region(size: u64) -> Option<u64> {
     if size == 0 {
         return None;
@@ -906,6 +916,41 @@ pub fn allocate_user_region(size: u64) -> Option<u64> {
 
     const ALIGN: u64 = 0x200000; // 2 MiB pages
     let aligned_size = (size + ALIGN - 1) & !(ALIGN - 1);
+
+    // First, try to find a suitable region in the free list
+    {
+        let mut free_list = FREE_USER_REGIONS.lock();
+        for slot in free_list.iter_mut() {
+            if slot.0 != 0 && slot.1 >= aligned_size {
+                let base = slot.0;
+                let old_size = slot.1;
+
+                if old_size == aligned_size {
+                    // Exact match - remove from free list
+                    *slot = (0, 0);
+                } else {
+                    // Partial match - shrink the free region
+                    slot.0 += aligned_size;
+                    slot.1 -= aligned_size;
+                }
+
+                // Zero the memory before returning
+                unsafe {
+                    core::ptr::write_bytes(base as *mut u8, 0, aligned_size as usize);
+                }
+
+                USER_REGIONS_ALLOCATED.fetch_add(1, AtomicOrdering::Relaxed);
+                crate::kinfo!(
+                    "allocate_user_region: reused {} bytes at {:#x} from free list",
+                    aligned_size,
+                    base
+                );
+                return Some(base);
+            }
+        }
+    }
+
+    // No suitable free region found, use bump allocator
     let base = NEXT_USER_REGION.fetch_add(aligned_size, AtomicOrdering::SeqCst);
     if base.checked_add(aligned_size).unwrap_or(u64::MAX) > 0x1_0000_0000 {
         crate::kerror!("allocate_user_region: out of physical memory");
@@ -916,6 +961,7 @@ pub fn allocate_user_region(size: u64) -> Option<u64> {
         core::ptr::write_bytes(base as *mut u8, 0, aligned_size as usize);
     }
 
+    USER_REGIONS_ALLOCATED.fetch_add(1, AtomicOrdering::Relaxed);
     crate::kdebug!(
         "allocate_user_region: allocated {} bytes at {:#x}",
         aligned_size,
@@ -923,4 +969,76 @@ pub fn allocate_user_region(size: u64) -> Option<u64> {
     );
 
     Some(base)
+}
+
+/// Free a user region back to the free list for reuse.
+/// The memory should no longer be in use by any process.
+pub fn free_user_region(base: u64, size: u64) {
+    if base == 0 || size == 0 {
+        return;
+    }
+
+    // Don't free the initial shared USER_PHYS_BASE region (used by first process)
+    if base == crate::process::USER_PHYS_BASE {
+        crate::kdebug!(
+            "free_user_region: skipping initial USER_PHYS_BASE {:#x}",
+            base
+        );
+        return;
+    }
+
+    const ALIGN: u64 = 0x200000; // 2 MiB pages
+    let aligned_size = (size + ALIGN - 1) & !(ALIGN - 1);
+
+    let mut free_list = FREE_USER_REGIONS.lock();
+
+    // Try to find an empty slot in the free list
+    for slot in free_list.iter_mut() {
+        if slot.0 == 0 {
+            *slot = (base, aligned_size);
+            USER_REGIONS_FREED.fetch_add(1, AtomicOrdering::Relaxed);
+            crate::kinfo!(
+                "free_user_region: freed {} bytes at {:#x}",
+                aligned_size,
+                base
+            );
+            return;
+        }
+    }
+
+    // Free list is full - log a warning but don't leak memory tracking
+    // The memory is still "freed" in the sense that we won't use it,
+    // but we can't reuse it until a slot opens up
+    crate::kwarn!(
+        "free_user_region: free list full, cannot track freed region at {:#x} ({} bytes)",
+        base,
+        aligned_size
+    );
+}
+
+/// Print user region allocation statistics
+pub fn print_user_region_statistics() {
+    let allocated = USER_REGIONS_ALLOCATED.load(AtomicOrdering::Relaxed);
+    let freed = USER_REGIONS_FREED.load(AtomicOrdering::Relaxed);
+
+    crate::kinfo!("=== User Region Statistics ===");
+    crate::kinfo!("  Total allocations: {}", allocated);
+    crate::kinfo!("  Total frees: {}", freed);
+    crate::kinfo!("  Active regions: {}", allocated.saturating_sub(freed));
+
+    let free_list = FREE_USER_REGIONS.lock();
+    let mut free_count = 0;
+    let mut free_bytes = 0u64;
+    for slot in free_list.iter() {
+        if slot.0 != 0 {
+            free_count += 1;
+            free_bytes += slot.1;
+        }
+    }
+    crate::kinfo!(
+        "  Free list: {} entries, {} bytes available",
+        free_count,
+        free_bytes
+    );
+    crate::kinfo!("=== End User Region Statistics ===");
 }

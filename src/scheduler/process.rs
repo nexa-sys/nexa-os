@@ -142,11 +142,13 @@ pub fn remove_process(pid: Pid) -> Result<(), &'static str> {
 
         let kernel_stack = entry.process.kernel_stack;
         let open_fds = entry.process.open_fds;
+        let memory_base = entry.process.memory_base;
+        let memory_size = entry.process.memory_size;
         table[idx] = None;
-        (cr3, kernel_stack, open_fds)
+        (cr3, kernel_stack, open_fds, memory_base, memory_size)
     };
 
-    let (removed_cr3, removed_kernel_stack, removed_open_fds) = removal_result;
+    let (removed_cr3, removed_kernel_stack, removed_open_fds, removed_memory_base, removed_memory_size) = removal_result;
 
     if current_pid() == Some(pid) {
         set_current_pid(None);
@@ -170,6 +172,11 @@ pub fn remove_process(pid: Pid) -> Result<(), &'static str> {
         )
         .unwrap();
         unsafe { dealloc(removed_kernel_stack as *mut u8, layout) };
+        kdebug!(
+            "[remove_process] Freed kernel stack for PID {} at {:#x}",
+            pid,
+            removed_kernel_stack
+        );
     }
 
     // Clean up process page tables if it had its own CR3
@@ -181,6 +188,17 @@ pub fn remove_process(pid: Pid) -> Result<(), &'static str> {
             pid,
             cr3
         );
+    }
+
+    // Free the user-space physical memory region
+    if removed_memory_base != 0 && removed_memory_size != 0 {
+        crate::kinfo!(
+            "[remove_process] Freeing user memory for PID {}: base={:#x}, size={:#x}",
+            pid,
+            removed_memory_base,
+            removed_memory_size
+        );
+        crate::paging::free_user_region(removed_memory_base, removed_memory_size);
     }
 
     // Free the PID for reuse (removes from radix tree and marks as available)

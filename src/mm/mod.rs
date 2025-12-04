@@ -35,8 +35,9 @@ pub use numa::{
 // Re-export from paging
 pub use paging::{
     activate_address_space, allocate_user_region, create_process_address_space, current_pml4_phys,
-    debug_cr3_info, ensure_nxe_enabled, free_process_address_space, init, kernel_pml4_phys,
-    print_cr3_statistics, read_current_cr3, validate_cr3, MapDeviceError,
+    debug_cr3_info, ensure_nxe_enabled, free_process_address_space, free_user_region, init,
+    kernel_pml4_phys, print_cr3_statistics, print_user_region_statistics, read_current_cr3,
+    validate_cr3, MapDeviceError,
 };
 
 // Re-export from vmalloc
