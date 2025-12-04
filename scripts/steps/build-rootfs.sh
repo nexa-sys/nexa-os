@@ -60,7 +60,11 @@ EOF
 install_libs() {
     log_step "Installing libraries to rootfs..."
     
+    # Build and install nrlib (libc)
     bash "$SCRIPT_DIR/build-nrlib.sh" all "$ROOTFS_DIR/lib64"
+    
+    # Build and install ncryptolib (libcrypto)
+    bash "$SCRIPT_DIR/build-ncryptolib.sh" shared "$ROOTFS_DIR/lib64"
 }
 
 # ============================================================================

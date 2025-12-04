@@ -71,6 +71,7 @@ build_userspace_only() {
     log_section "Building Userspace"
     
     timed_run "Building nrlib" bash "$STEPS_DIR/build-nrlib.sh" all
+    timed_run "Building ncryptolib" bash "$STEPS_DIR/build-ncryptolib.sh" all
     timed_run "Building programs" bash "$STEPS_DIR/build-userspace-programs.sh" all
 }
 
@@ -113,6 +114,10 @@ clean_all() {
     
     # Clean userspace nrlib
     cd "$PROJECT_ROOT/userspace/nrlib"
+    cargo clean 2>/dev/null || true
+    
+    # Clean userspace ncryptolib
+    cd "$PROJECT_ROOT/userspace/ncryptolib"
     cargo clean 2>/dev/null || true
     
     # Clean modules
