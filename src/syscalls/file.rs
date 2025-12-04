@@ -11,6 +11,58 @@ use crate::{kdebug, kerror, kinfo, ktrace, kwarn};
 use alloc::boxed::Box;
 use core::{cmp, ptr, slice, str};
 
+/// Mark a file descriptor as open in the current process's open_fds bitmap
+pub fn mark_fd_open(fd: u64) {
+    if fd < FD_BASE {
+        return; // Don't track stdin/stdout/stderr
+    }
+    let bit = (fd - FD_BASE) as usize;
+    if bit >= MAX_OPEN_FILES {
+        return;
+    }
+
+    if let Some(pid) = scheduler::get_current_pid() {
+        let mut table = scheduler::process_table_lock();
+        if let Some(idx) = crate::process::lookup_pid(pid) {
+            let idx = idx as usize;
+            if idx < table.len() {
+                if let Some(entry) = &mut table[idx] {
+                    if entry.process.pid == pid {
+                        entry.process.open_fds |= 1 << bit;
+                        ktrace!("[mark_fd_open] PID {} fd {} marked open, open_fds={:#06x}", pid, fd, entry.process.open_fds);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Mark a file descriptor as closed in the current process's open_fds bitmap
+pub fn mark_fd_closed(fd: u64) {
+    if fd < FD_BASE {
+        return; // Don't track stdin/stdout/stderr
+    }
+    let bit = (fd - FD_BASE) as usize;
+    if bit >= MAX_OPEN_FILES {
+        return;
+    }
+
+    if let Some(pid) = scheduler::get_current_pid() {
+        let mut table = scheduler::process_table_lock();
+        if let Some(idx) = crate::process::lookup_pid(pid) {
+            let idx = idx as usize;
+            if idx < table.len() {
+                if let Some(entry) = &mut table[idx] {
+                    if entry.process.pid == pid {
+                        entry.process.open_fds &= !(1 << bit);
+                        ktrace!("[mark_fd_closed] PID {} fd {} marked closed, open_fds={:#06x}", pid, fd, entry.process.open_fds);
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Write to standard stream (stdout/stderr)
 pub fn write_to_std_stream(kind: StdStreamKind, buf: u64, count: u64) -> u64 {
     if !user_buffer_in_range(buf, count) {
@@ -503,6 +555,7 @@ pub fn open(path_ptr: *const u8, len: usize) -> u64 {
                 );
                 posix::set_errno(0);
                 let fd = FD_BASE + index as u64;
+                mark_fd_open(fd); // Track this FD as open for the current process
                 kinfo!("Opened file '{}' as fd {}", normalized, fd);
                 return fd;
             }
@@ -594,6 +647,7 @@ pub fn close(fd: u64) -> u64 {
             }
 
             clear_file_handle(idx);
+            mark_fd_closed(fd); // Track this FD as closed for the current process
             kinfo!("Closed fd {}", fd);
             posix::set_errno(0);
             return 0;
@@ -833,9 +887,10 @@ pub fn fcntl(fd: u64, cmd: u64, arg: u64) -> u64 {
 
             let min_fd = requested_min.max(FD_BASE as i64) as u64;
             match allocate_duplicate_slot(min_fd, handle) {
-                Ok(fd) => {
+                Ok(new_fd) => {
+                    mark_fd_open(new_fd); // Track the new FD as open
                     posix::set_errno(0);
-                    fd
+                    new_fd
                 }
                 Err(errno) => {
                     posix::set_errno(errno);
@@ -858,4 +913,90 @@ pub fn fcntl(fd: u64, cmd: u64, arg: u64) -> u64 {
 /// Get errno system call
 pub fn get_errno() -> u64 {
     posix::errno() as u64
+}
+
+/// Close all file descriptors for a process based on its open_fds bitmask.
+/// This is called when a process exits to clean up its resources.
+///
+/// # Safety
+/// This function modifies global FILE_HANDLES state and must be called
+/// when it's safe to do so (e.g., during process cleanup).
+pub fn close_all_fds_for_process(open_fds: u16) {
+    use crate::kinfo;
+
+    if open_fds == 0 {
+        return; // No open file descriptors
+    }
+
+    kinfo!("Closing all FDs for process, open_fds bitmap: {:#06x}", open_fds);
+
+    for bit in 0..MAX_OPEN_FILES {
+        if (open_fds & (1 << bit)) != 0 {
+            let fd = FD_BASE + bit as u64;
+            kinfo!("Auto-closing fd {} (bit {})", fd, bit);
+
+            // Perform close without checking current process ownership
+            // since this is called during process cleanup
+            unsafe {
+                if let Some(handle) = get_file_handle(bit) {
+                    // Clean up socket resources if this is a socket
+                    if let FileBacking::Socket(ref sock_handle) = handle.backing {
+                        // Close netlink socket in network stack
+                        if sock_handle.domain == AF_NETLINK && sock_handle.socket_index != usize::MAX {
+                            if let Some(_) = crate::net::with_net_stack(|stack| {
+                                stack.netlink_close(sock_handle.socket_index)
+                            }) {
+                                kinfo!(
+                                    "Auto-closed netlink socket {} for fd {}",
+                                    sock_handle.socket_index,
+                                    fd
+                                );
+                            }
+                        }
+                        // Close TCP socket
+                        else if sock_handle.socket_type == SOCK_STREAM
+                            && sock_handle.socket_index != usize::MAX
+                        {
+                            if let Some(_) = crate::net::with_net_stack(|stack| {
+                                stack.tcp_close(sock_handle.socket_index)
+                            }) {
+                                kinfo!(
+                                    "Auto-closed TCP socket {} for fd {}",
+                                    sock_handle.socket_index,
+                                    fd
+                                );
+                            }
+                        }
+                        // Close UDP socket
+                        else if sock_handle.socket_type == SOCK_DGRAM
+                            && sock_handle.socket_index != usize::MAX
+                        {
+                            if let Some(_) = crate::net::with_net_stack(|stack| {
+                                stack.udp_close(sock_handle.socket_index)
+                            }) {
+                                kinfo!(
+                                    "Auto-closed UDP socket {} for fd {}",
+                                    sock_handle.socket_index,
+                                    fd
+                                );
+                            }
+                        }
+                    }
+                    // Clean up socketpair resources
+                    else if let FileBacking::Socketpair(ref sp_handle) = handle.backing {
+                        let _ = crate::ipc::close_socketpair_end(sp_handle.pair_id, sp_handle.end);
+                        kinfo!(
+                            "Auto-closed socketpair {}.{} for fd {}",
+                            sp_handle.pair_id,
+                            sp_handle.end,
+                            fd
+                        );
+                    }
+
+                    clear_file_handle(bit);
+                    kinfo!("Auto-closed fd {} during process cleanup", fd);
+                }
+            }
+        }
+    }
 }

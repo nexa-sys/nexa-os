@@ -74,6 +74,9 @@ use uefi::{
 };
 use user::{user_add, user_info, user_list, user_login, user_logout};
 
+// Re-export file descriptor tracking and cleanup functions
+pub use file::{close_all_fds_for_process, mark_fd_closed, mark_fd_open};
+
 /// Main syscall dispatcher
 #[no_mangle]
 pub extern "C" fn syscall_dispatch(

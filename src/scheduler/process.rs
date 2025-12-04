@@ -141,14 +141,25 @@ pub fn remove_process(pid: Pid) -> Result<(), &'static str> {
         };
 
         let kernel_stack = entry.process.kernel_stack;
+        let open_fds = entry.process.open_fds;
         table[idx] = None;
-        (cr3, kernel_stack)
+        (cr3, kernel_stack, open_fds)
     };
 
-    let (removed_cr3, removed_kernel_stack) = removal_result;
+    let (removed_cr3, removed_kernel_stack, removed_open_fds) = removal_result;
 
     if current_pid() == Some(pid) {
         set_current_pid(None);
+    }
+
+    // Clean up file descriptors for this process
+    if removed_open_fds != 0 {
+        crate::kinfo!(
+            "[remove_process] Cleaning up {} open FDs for PID {}",
+            removed_open_fds.count_ones(),
+            pid
+        );
+        crate::syscalls::close_all_fds_for_process(removed_open_fds);
     }
 
     // Clean up kernel stack

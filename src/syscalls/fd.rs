@@ -17,6 +17,7 @@ pub fn dup(oldfd: u64) -> u64 {
 
     match allocate_duplicate_slot(FD_BASE, handle) {
         Ok(fd) => {
+            super::file::mark_fd_open(fd); // Track the new FD as open
             posix::set_errno(0);
             fd
         }
@@ -54,7 +55,12 @@ pub fn dup2(oldfd: u64, newfd: u64) -> u64 {
     }
 
     unsafe {
+        // If newfd was open, it should be implicitly closed
+        if FILE_HANDLES[idx].is_some() {
+            super::file::mark_fd_closed(newfd);
+        }
         FILE_HANDLES[idx] = Some(handle);
+        super::file::mark_fd_open(newfd); // Track newfd as open
     }
 
     posix::set_errno(0);
@@ -70,6 +76,9 @@ pub fn pipe(pipefd: *mut [i32; 2]) -> u64 {
 
     match crate::pipe::create_pipe() {
         Ok((read_fd, write_fd)) => {
+            // Track both pipe FDs as open
+            super::file::mark_fd_open(read_fd as u64);
+            super::file::mark_fd_open(write_fd as u64);
             unsafe {
                 (*pipefd)[0] = read_fd as i32;
                 (*pipefd)[1] = write_fd as i32;

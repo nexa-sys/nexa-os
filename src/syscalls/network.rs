@@ -141,6 +141,7 @@ pub fn socket(domain: i32, socket_type: i32, protocol: i32) -> u64 {
 
                 FILE_HANDLES[idx] = Some(handle);
                 let fd = FD_BASE + idx as u64;
+                super::file::mark_fd_open(fd); // Track this FD as open for the current process
                 kinfo!(
                     "[SYS_SOCKET] Created {} socket at fd {}",
                     if socket_type == SOCK_STREAM {
@@ -1257,6 +1258,10 @@ pub fn socketpair(domain: i32, socket_type: i32, protocol: i32, sv: *mut [i32; 2
 
         fd0 = FD_BASE + idx0 as u64;
         fd1 = FD_BASE + idx1 as u64;
+
+        // Track these FDs as open for the current process
+        super::file::mark_fd_open(fd0);
+        super::file::mark_fd_open(fd1);
 
         // Write file descriptors to user buffer
         (*sv)[0] = fd0 as i32;

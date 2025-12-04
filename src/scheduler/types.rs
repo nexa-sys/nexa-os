@@ -286,6 +286,7 @@ impl ProcessEntry {
                 fs_base: 0,
                 cmdline: [0u8; MAX_CMDLINE_SIZE],
                 cmdline_len: 0,
+                open_fds: 0,
             },
             // EEVDF fields
             vruntime: 0,

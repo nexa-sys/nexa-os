@@ -136,6 +136,7 @@ pub struct Process {
     pub fs_base: u64, // FS segment base for TLS (Thread Local Storage)
     pub cmdline: [u8; MAX_CMDLINE_SIZE], // Command line arguments (null-separated, double-null terminated)
     pub cmdline_len: usize,              // Actual length of command line data
+    pub open_fds: u16, // Bitmask of open file descriptors (bits 0-15 correspond to fd 3-18)
 }
 
 /// Legacy global PID counter (kept for reference, use pid_tree::allocate_pid instead)

@@ -278,6 +278,7 @@ impl Process {
             fs_base: 0,      // Initialize TLS base (will be set by CLONE_SETTLS or arch_prctl)
             cmdline,
             cmdline_len,
+            open_fds: 0, // No open file descriptors initially
         })
     }
 
@@ -462,6 +463,7 @@ impl Process {
                     fs_base: 0, // Initialize TLS base
                     cmdline,
                     cmdline_len,
+                    open_fds: 0, // No open file descriptors initially
                 });
             } else {
                 kwarn!(
@@ -545,6 +547,7 @@ impl Process {
             fs_base: 0, // Initialize TLS base
             cmdline,
             cmdline_len,
+            open_fds: 0, // No open file descriptors initially
         })
     }
 }
