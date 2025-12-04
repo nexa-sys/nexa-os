@@ -243,8 +243,9 @@ pub fn fork(syscall_return_addr: u64) -> u64 {
     child_process.memory_base = child_phys_base;
     child_process.memory_size = memory_size;
 
-    // Fork: use immediate mapping (demand_paging=false) because memory is already copied
-    match crate::paging::create_process_address_space(child_phys_base, memory_size, false) {
+    // Fork: use demand paging - child process pages will be mapped on first access
+    // Physical memory is already copied, but page table entries are cleared
+    match crate::paging::create_process_address_space(child_phys_base, memory_size, true) {
         Ok(cr3) => {
             if let Err(e) = crate::paging::validate_cr3(cr3, false) {
                 kerror!(
