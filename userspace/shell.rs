@@ -1,21 +1,9 @@
 //! NexaOS Shell - A simple command-line shell
 //!
-//! This shell now uses more std functionality thanks to the enhanced nrlib
-//! musl ABI compatibility layer.
+//! This shell uses std functionality via the nrlib musl ABI compatibility layer.
 
 use std::arch::asm;
 use std::io::{self, Write};
-use core::matches;
-use core::marker::Sync;
-use core::marker::Copy;
-use core::result::Result::Err;
-use core::result::Result::Ok;
-use core::option::Option::Some;
-use core::option::Option::None;
-use core::option::Option;
-use core::prelude::rust_2024::derive;
-use core::iter::Iterator;
-use core::clone::Clone;
 
 const SYS_READ: u64 = 0;
 const SYS_WRITE: u64 = 1;
@@ -318,21 +306,10 @@ fn read(fd: u64, buf: *mut u8, count: usize) -> usize {
     syscall3(SYS_READ, fd, buf as u64, count as u64) as usize
 }
 
-/// Write bytes to stdout using std::io
+/// Write bytes to stdout
 fn write_stdout(data: &[u8]) {
     let _ = io::stdout().write_all(data);
     let _ = io::stdout().flush();
-}
-
-/// Write a string to stdout using std::io
-fn write_stdout_str(s: &str) {
-    write_stdout(s.as_bytes());
-}
-
-/// Write a line to stdout using std::io
-fn writeln_stdout(s: &str) {
-    write_stdout_str(s);
-    write_stdout(b"\n");
 }
 
 
@@ -365,48 +342,12 @@ fn wtermsig(status: i32) -> i32 {
     status & 0x7f
 }
 
-fn print_hex(val: u64) {
-    let _ = write!(io::stdout(), "{:016x}", val);
-    let _ = io::stdout().flush();
-}
-
 fn print_bytes(bytes: &[u8]) {
-    // Use std::io for simpler and safer output
     write_stdout(bytes);
 }
 
-fn print_str(s: &str) {
-    write_stdout_str(s);
-}
-
-fn println_str(s: &str) {
-    writeln_stdout(s);
-}
-
-fn print_u64(value: u64) {
-    let _ = write!(io::stdout(), "{}", value);
-    let _ = io::stdout().flush();
-}
-
-fn print_i64(value: i64) {
-    let _ = write!(io::stdout(), "{}", value);
-    let _ = io::stdout().flush();
-}
-
-fn print_i32(value: i32) {
-    let _ = write!(io::stdout(), "{}", value);
-    let _ = io::stdout().flush();
-}
-
-fn print_octal(value: u32) {
-    let _ = write!(io::stdout(), "{:o}", value);
-    let _ = io::stdout().flush();
-}
-
 fn println_errno(err: i32) {
-    print_str("errno: ");
-    print_i64(err as i64);
-    println_str("");
+    println!("errno: {}", err);
 }
 
 fn fetch_stat(path: &str, out: &mut Stat) -> bool {
@@ -467,9 +408,7 @@ fn print_mode_short(mode: u32) {
 }
 
 fn report_stdin_error(err: i32) {
-    print_str("stdin read failed (errno ");
-    print_i64(err as i64);
-    println_str(")");
+    println!("stdin read failed (errno {})", err);
 }
 
 fn read_line_raw(buf: &mut [u8]) -> usize {
@@ -608,9 +547,9 @@ fn complete_commands(state: &ShellState, buffer: &mut [u8], len: &mut usize, pre
         return;
     }
 
-    print_bytes(b"\n");
+    print!("\n");
     for idx in 0..count {
-        println_str(matches[idx]);
+        println!("{}", matches[idx]);
     }
     prompt(state);
     print_bytes(&buffer[..*len]);
@@ -752,14 +691,13 @@ fn complete_path(state: &ShellState, buffer: &mut [u8], len: &mut usize, prefix:
     }
 
     if !appended {
-        print_bytes(b"\n");
+        print!("\n");
         for idx in 0..count {
-            print_str(dir_input);
-            print_str(matches[idx]);
+            print!("{}{}", dir_input, matches[idx]);
             if match_is_dir[idx] {
-                print_bytes(b"/");
+                print!("/");
             }
-            print_bytes(b"\n");
+            print!("\n");
         }
         prompt(state);
         print_bytes(&buffer[..*len]);
@@ -922,7 +860,7 @@ fn read_line(state: &ShellState, buf: &mut [u8]) -> usize {
             }
             0x04 => {
                 if len == 0 {
-                    println_str("exit");
+                    println!("exit");
                     std::process::exit(0);
                 } else {
                     beep();
@@ -1004,7 +942,7 @@ fn list_directory_entries(state: &ShellState, path: &str, show_all: bool, long_f
         match state.resolve(path, &mut resolved_buf) {
             Some(p) => p,
             None => {
-                println_str("ls: invalid path");
+                println!("ls: invalid path");
                 return;
             }
         }
@@ -1033,14 +971,14 @@ fn list_directory_entries(state: &ShellState, path: &str, show_all: bool, long_f
     let mut buf = [0u8; 1024];
     let written = syscall3(SYS_LIST_FILES, buf.as_mut_ptr() as u64, buf.len() as u64, req_ptr);
     if written == u64::MAX {
-        println_str("ls: failed to read directory");
+        println!("ls: failed to read directory");
         println_errno(errno());
         return;
     }
 
     let len = written as usize;
     if len == 0 {
-        println_str("(empty)");
+        println!("(empty)");
         return;
     }
 
@@ -1059,65 +997,48 @@ fn list_directory_entries(state: &ShellState, path: &str, show_all: bool, long_f
                     let mut stat = Stat::zero();
                     if fetch_stat(full_path, &mut stat) {
                         print_mode_short(stat.st_mode);
-                        print_bytes(b" ");
-                        print_u64(stat.st_uid as u64);
-                        print_bytes(b" ");
-                        print_u64(stat.st_gid as u64);
-                        print_bytes(b" ");
-                        print_i64(stat.st_size);
-                        print_bytes(b" ");
-                        println_str(entry);
+                        println!(" {} {} {} {}", stat.st_uid, stat.st_gid, stat.st_size, entry);
                         continue;
                     }
                 }
             }
 
-            println_str(entry);
+            println!("{}", entry);
         }
     } else {
-        println_str("ls: kernel returned invalid UTF-8");
+        println!("ls: kernel returned invalid UTF-8");
     }
 }
 
 fn stat_path(state: &ShellState, path: &str) {
     let mut buf = [0u8; MAX_PATH];
     let Some(full_path) = state.resolve(path, &mut buf) else {
-        println_str("stat: invalid path");
+        println!("stat: invalid path");
         return;
     };
 
     let mut stat = Stat::zero();
     if !fetch_stat(full_path, &mut stat) {
-        println_str("stat: failed");
+        println!("stat: failed");
         println_errno(errno());
         return;
     }
 
-    println_str("File statistics:");
-    print_str("  size: ");
-    print_i64(stat.st_size);
-    println_str(" bytes");
-
-    print_str("  blocks: ");
-    print_i64(stat.st_blocks);
-    println_str("");
-
-    print_str("  mode: 0o");
-    print_octal(stat.st_mode as u32);
-    println_str("");
-
-    print_str("  links: ");
-    print_u64(stat.st_nlink as u64);
-    println_str("");
+    println!("File statistics:");
+    println!("  size: {} bytes", stat.st_size);
+    println!("  blocks: {}", stat.st_blocks);
+    println!("  mode: 0o{:o}", stat.st_mode);
+    println!("  links: {}", stat.st_nlink);
 }
 
 fn login_user(username: &str) {
     if username.is_empty() {
-        println_str("login: missing user name");
+        println!("login: missing user name");
         return;
     }
 
-    print_str("password: ");
+    print!("password: ");
+    let _ = io::stdout().flush();
     let mut buffer = [0u8; 64];
     let len = read_line_raw(&mut buffer);
     let password = trim_line(&buffer, len);
@@ -1132,19 +1053,20 @@ fn login_user(username: &str) {
 
     let ret = syscall3(SYS_USER_LOGIN, &request as *const UserRequest as u64, 0, 0);
     if ret == u64::MAX {
-        println_str("login failed");
+        println!("login failed");
         println_errno(errno());
     } else {
-        println_str("login successful");
+        println!("login successful");
     }
 }
 
 fn add_user(username: &str, admin: bool) {
     if username.is_empty() {
-        println_str("adduser: missing user name");
+        println!("adduser: missing user name");
         return;
     }
-    print_str("new password: ");
+    print!("new password: ");
+    let _ = io::stdout().flush();
     let mut buffer = [0u8; 64];
     let len = read_line_raw(&mut buffer);
     let password = trim_line(&buffer, len);
@@ -1159,10 +1081,10 @@ fn add_user(username: &str, admin: bool) {
 
     let ret = syscall3(SYS_USER_ADD, &request as *const UserRequest as u64, 0, 0);
     if ret == u64::MAX {
-        println_str("adduser: failed");
+        println!("adduser: failed");
         println_errno(errno());
     } else {
-        println_str("adduser: user created");
+        println!("adduser: user created");
     }
 }
 
@@ -1171,14 +1093,14 @@ fn whoami() {
     if refresh_current_user(&mut info) {
         let len = info.username_len as usize;
         if len == 0 {
-            println_str("(anonymous)");
+            println!("(anonymous)");
         } else if let Ok(name) = core::str::from_utf8(&info.username[..len]) {
-            println_str(name);
+            println!("{}", name);
         } else {
-            println_str("(invalid username)");
+            println!("(invalid username)");
         }
     } else {
-        println_str("whoami: failed");
+        println!("whoami: failed");
         println_errno(errno());
     }
 }
@@ -1192,49 +1114,47 @@ fn list_users() {
         0,
     );
     if written == u64::MAX {
-        println_str("users: failed");
+        println!("users: failed");
         println_errno(errno());
         return;
     }
 
     let len = written as usize;
     if len == 0 {
-        println_str("(no users)");
+        println!("(no users)");
         return;
     }
 
     if let Ok(text) = core::str::from_utf8(&buffer[..len]) {
-        print_str(text);
+        print!("{}", text);
     } else {
-        println_str("users: invalid data");
+        println!("users: invalid data");
     }
 }
 
 fn logout_user() {
     let ret = syscall1(SYS_USER_LOGOUT, 0);
     if ret == u64::MAX {
-        println_str("logout: failed");
+        println!("logout: failed");
         println_errno(errno());
     } else {
-        println_str("logged out");
+        println!("logged out");
     }
 }
 
 fn ipc_create_channel() {
     let id = syscall3(SYS_IPC_CREATE, 0, 0, 0);
     if id == u64::MAX {
-        println_str("ipc-create: failed");
+        println!("ipc-create: failed");
         println_errno(errno());
     } else {
-        print_str("channel ");
-        print_u64(id);
-        println_str(" created");
+        println!("channel {} created", id);
     }
 }
 
 fn ipc_send_message(channel: u32, message: &str) {
     if message.is_empty() {
-        println_str("ipc-send: message cannot be empty");
+        println!("ipc-send: message cannot be empty");
         return;
     }
     let request = IpcTransferRequest {
@@ -1246,10 +1166,10 @@ fn ipc_send_message(channel: u32, message: &str) {
 
     let ret = syscall3(SYS_IPC_SEND, &request as *const IpcTransferRequest as u64, 0, 0);
     if ret == u64::MAX {
-        println_str("ipc-send: failed");
+        println!("ipc-send: failed");
         println_errno(errno());
     } else {
-        println_str("ipc-send: message queued");
+        println!("ipc-send: message queued");
     }
 }
 
@@ -1264,24 +1184,23 @@ fn ipc_receive_message(channel: u32) {
 
     let ret = syscall3(SYS_IPC_RECV, &request as *const IpcTransferRequest as u64, 0, 0);
     if ret == u64::MAX {
-        println_str("ipc-recv: failed");
+        println!("ipc-recv: failed");
         println_errno(errno());
         return;
     }
 
     let len = ret as usize;
     if let Ok(text) = core::str::from_utf8(&buffer[..len]) {
-        print_str("ipc-recv: ");
-        println_str(text);
+        println!("ipc-recv: {}", text);
     } else {
-        println_str("ipc-recv: <binary data>");
+        println!("ipc-recv: <binary data>");
     }
 }
 
 fn cat(state: &ShellState, path: &str) {
     let mut buf = [0u8; MAX_PATH];
     let Some(full_path) = state.resolve(path, &mut buf) else {
-        println_str("cat: invalid path");
+        println!("cat: invalid path");
         return;
     };
 
@@ -1295,43 +1214,43 @@ fn cat(state: &ShellState, path: &str) {
             print_bytes(&chunk[..read]);
         }
         close_file(fd);
-        print_bytes(b"\n");
+        println!();
     } else {
-        println_str("cat: file not found");
+        println!("cat: file not found");
         println_errno(errno());
     }
 }
 
 fn show_help() {
-    println_str("Available commands:");
-    println_str("  help              Show this message");
-    println_str("  ls [-a] [-l] [p]  List directory contents");
-    println_str("  cat <file>        Print file contents");
-    println_str("  stat <file>       Show file metadata");
-    println_str("  pwd               Print working directory");
-    println_str("  cd <path>         Change directory");
-    println_str("  echo [text...]    Print text to output");
-    println_str("  uname [-a]        Show system information");
-    println_str("  mkdir <path>      Create directory (stub)");
-    println_str("  login <user>      Switch active user");
-    println_str("  whoami            Show current user");
-    println_str("  users             List registered users");
-    println_str("  logout            Log out current user");
-    println_str("  adduser [-a] <u>  Create a new user (-a for admin)");
-    println_str("  ipc-create        Allocate IPC channel");
-    println_str("  ipc-send <c> <m>  Send IPC message");
-    println_str("  ipc-recv <c>      Receive IPC message");
-    println_str("  clear             Clear the screen");
-    println_str("  exit              Exit the shell");
-    println_str("");
-    println_str("Editing keys:");
-    println_str("  Tab               Complete command/path");
-    println_str("  Backspace         Delete character");
-    println_str("  Ctrl-C            Cancel line");
-    println_str("  Ctrl-D            Exit (on empty line)");
-    println_str("  Ctrl-U            Clear line");
-    println_str("  Ctrl-W            Delete word");
-    println_str("  Ctrl-L            Refresh screen");
+    println!("Available commands:");
+    println!("  help              Show this message");
+    println!("  ls [-a] [-l] [p]  List directory contents");
+    println!("  cat <file>        Print file contents");
+    println!("  stat <file>       Show file metadata");
+    println!("  pwd               Print working directory");
+    println!("  cd <path>         Change directory");
+    println!("  echo [text...]    Print text to output");
+    println!("  uname [-a]        Show system information");
+    println!("  mkdir <path>      Create directory (stub)");
+    println!("  login <user>      Switch active user");
+    println!("  whoami            Show current user");
+    println!("  users             List registered users");
+    println!("  logout            Log out current user");
+    println!("  adduser [-a] <u>  Create a new user (-a for admin)");
+    println!("  ipc-create        Allocate IPC channel");
+    println!("  ipc-send <c> <m>  Send IPC message");
+    println!("  ipc-recv <c>      Receive IPC message");
+    println!("  clear             Clear the screen");
+    println!("  exit              Exit the shell");
+    println!();
+    println!("Editing keys:");
+    println!("  Tab               Complete command/path");
+    println!("  Backspace         Delete character");
+    println!("  Ctrl-C            Cancel line");
+    println!("  Ctrl-D            Exit (on empty line)");
+    println!("  Ctrl-U            Clear line");
+    println!("  Ctrl-W            Delete word");
+    println!("  Ctrl-L            Refresh screen");
 }
 
 fn clear_screen() {
@@ -1340,14 +1259,14 @@ fn clear_screen() {
 
 fn show_uname(all: bool) {
     if all {
-        println_str("NexaOS 0.1.0 x86_64 (experimental hybrid kernel)");
+        println!("NexaOS 0.1.0 x86_64 (experimental hybrid kernel)");
     } else {
-        println_str("NexaOS");
+        println!("NexaOS");
     }
 }
 
 fn cmd_pwd(state: &ShellState) {
-    println_str(state.current_path());
+    println!("{}", state.current_path());
 }
 
 fn cmd_cd(state: &mut ShellState, path: &str) {
@@ -1358,18 +1277,18 @@ fn cmd_cd(state: &mut ShellState, path: &str) {
 
     let mut buf = [0u8; MAX_PATH];
     let Some(resolved) = state.resolve(path, &mut buf) else {
-        println_str("cd: invalid path");
+        println!("cd: invalid path");
         return;
     };
 
     let mut stat = Stat::zero();
     if !fetch_stat(resolved, &mut stat) {
-        println_str("cd: path not found");
+        println!("cd: path not found");
         return;
     }
 
     if !is_directory(stat.st_mode) {
-        println_str("cd: not a directory");
+        println!("cd: not a directory");
         return;
     }
 
@@ -1377,22 +1296,22 @@ fn cmd_cd(state: &mut ShellState, path: &str) {
 }
 
 fn cmd_echo(args: &str) {
-    println_str(args);
+    println!("{}", args);
 }
 
 fn cmd_mkdir(state: &ShellState, path: &str) {
     if path.is_empty() {
-        println_str("mkdir: missing operand");
+        println!("mkdir: missing operand");
         return;
     }
 
     let mut buf = [0u8; MAX_PATH];
     let Some(_resolved) = state.resolve(path, &mut buf) else {
-        println_str("mkdir: invalid path");
+        println!("mkdir: invalid path");
         return;
     };
 
-    println_str("mkdir: not yet implemented (filesystem is read-only)");
+    println!("mkdir: not yet implemented (filesystem is read-only)");
 }
 
 // Helper function to check if a file exists and is executable
@@ -1454,8 +1373,7 @@ fn execute_external_command(cmd: &str, args: &[&str]) -> bool {
     let path_buf = match find_executable(cmd) {
         Some(p) => p,
         None => {
-            print_str("Command not found: ");
-            println_str(cmd);
+            println!("Command not found: {}", cmd);
             return false;
         }
     };
@@ -1468,21 +1386,20 @@ fn execute_external_command(cmd: &str, args: &[&str]) -> bool {
     
     // Verify we found a valid null-terminated string
     if path_len == 0 {
-        println_str("Error: empty path");
+        println!("Error: empty path");
         return false;
     }
     if path_len >= MAX_PATH {
-        println_str("Error: path too long");
+        println!("Error: path too long");
         return false;
     }
     // path_buf[path_len] should be 0 (null terminator)
     
     // Debug: print the path we found
-    print_str("Executing: ");
     if let Ok(path_str) = core::str::from_utf8(&path_buf[..path_len]) {
-        println_str(path_str);
+        println!("Executing: {}", path_str);
     } else {
-        println_str("<invalid UTF-8>");
+        println!("Executing: <invalid UTF-8>");
         return false;
     }
     
@@ -1517,14 +1434,11 @@ fn execute_external_command(cmd: &str, args: &[&str]) -> bool {
     
     // DEBUG: Verify path_buf contents BEFORE fork
     /* 
-    print_str("BEFORE FORK: path_buf addr=0x");
-    print_hex(path_buf.as_ptr() as u64);
-    print_str(", first 16 bytes: ");
+    print!("BEFORE FORK: path_buf addr=0x{:016x}, first 16 bytes: ", path_buf.as_ptr() as u64);
     for i in 0..16 {
-        print_hex(path_buf[i] as u64);
-        print_str(" ");
+        print!("{:016x} ", path_buf[i] as u64);
     }
-    println_str("");
+    println!();
     */
     // Check stack pointer BEFORE any more function calls
     let sp_before: u64;
@@ -1532,23 +1446,17 @@ fn execute_external_command(cmd: &str, args: &[&str]) -> bool {
         core::arch::asm!("mov {}, rsp", out(reg) sp_before);
     }
     /* 
-    print_str("Parent SP before fork: 0x");
-    print_hex(sp_before);
-    print_str(", path_buf offset from SP: 0x");
-    print_hex((path_buf.as_ptr() as u64).wrapping_sub(sp_before));
-    println_str("");
-    
-    println_str("About to fork...");
+    println!("Parent SP before fork: 0x{:016x}, path_buf offset from SP: 0x{:016x}",
+        sp_before, (path_buf.as_ptr() as u64).wrapping_sub(sp_before));
+    println!("About to fork...");
     */
     // Fork and execute
     let pid = fork();
     /*
-    print_str("fork returned: ");
-    print_hex(pid as u64);
-    println_str("");
+    println!("fork returned: {:016x}", pid as u64);
     */
     if pid < 0 {
-        // println_str("fork failed");
+        // println!("fork failed");
         return false;
     }
     
@@ -1565,20 +1473,14 @@ fn execute_external_command(cmd: &str, args: &[&str]) -> bool {
         
         // Debug output
         /*
-        print_str("Child: path_buf addr=0x");
-        print_hex(path_buf.as_ptr() as u64);
-        print_str(", len=");
-        print_hex(actual_path_len as u64);
-        print_str(", path=");
-        if actual_path_len > 0 {
-            if let Ok(s) = core::str::from_utf8(&path_buf[..actual_path_len]) {
-                println_str(s);
+        println!("Child: path_buf addr=0x{:016x}, len={}, path={}",
+            path_buf.as_ptr() as u64,
+            actual_path_len,
+            if actual_path_len > 0 {
+                core::str::from_utf8(&path_buf[..actual_path_len]).unwrap_or("<invalid UTF-8>")
             } else {
-                println_str("<invalid UTF-8>");
-            }
-        } else {
-            println_str("<empty>");
-        }
+                "<empty>"
+            });
         */
         
         // Execve with the path
@@ -1586,9 +1488,7 @@ fn execute_external_command(cmd: &str, args: &[&str]) -> bool {
         
         
         // If we get here, execve failed
-        print_str("Child: execve failed, error=");
-        print_hex(result as u64);
-        println_str("");
+        println!("Child: execve failed, error={:016x}", result as u64);
         std::process::exit(1);
     }
     
@@ -1597,40 +1497,28 @@ fn execute_external_command(cmd: &str, args: &[&str]) -> bool {
     let wait_result = wait4(pid, &mut status as *mut i32, 0);
     
     // Debug: show wait result and status
-    print_str("[shell] wait4 returned ");
-    print_i32(wait_result);
-    print_str(", status=");
-    print_hex(status as u64);
-    println_str("");
+    println!("[shell] wait4 returned {}, status={:016x}", wait_result, status as u64);
     
     if wait_result < 0 {
-        println_str("wait failed");
+        println!("wait failed");
         return false;
     }
     
     // Debug: show status check results
-    print_str("[shell] wifexited=");
-    if wifexited(status) { print_str("true"); } else { print_str("false"); }
-    print_str(", wifsignaled=");
-    if wifsignaled(status) { print_str("true"); } else { print_str("false"); }
-    println_str("");
+    println!("[shell] wifexited={}, wifsignaled={}", wifexited(status), wifsignaled(status));
     
     // Check if child exited normally or was terminated by signal
     if wifexited(status) {
         let exit_code = wexitstatus(status);
         if exit_code != 0 {
-            print_str("Command exited with status ");
-            print_i32(exit_code);
-            println_str("");
+            println!("Command exited with status {}", exit_code);
         }
     } else if wifsignaled(status) {
         let sig = wtermsig(status);
         if sig == 11 {
-            println_str("Segmentation fault (core dumped)");
+            println!("Segmentation fault (core dumped)");
         } else {
-            print_str("Terminated (signal ");
-            print_i32(sig);
-            println_str(")");
+            println!("Terminated (signal {})", sig);
         }
     }
     
@@ -1650,12 +1538,8 @@ fn prompt(state: &ShellState) {
     } else {
         "unknown"
     };
-    print_str(username);
-    print_str("@");
-    print_str(HOSTNAME);
-    print_str(":");
-    print_str(state.current_path());
-    print_str("$ ");
+    print!("{}@{}:{}$ ", username, HOSTNAME, state.current_path());
+    let _ = io::stdout().flush();
 }
 
 fn handle_command(state: &mut ShellState, line: &str) {
@@ -1688,7 +1572,7 @@ fn handle_command(state: &mut ShellState, line: &str) {
             if let Some(path) = parts.next() {
                 cmd_mkdir(state, path);
             } else {
-                println_str("mkdir: missing operand");
+                println!("mkdir: missing operand");
             }
         }
         "ls" => {
@@ -1702,9 +1586,7 @@ fn handle_command(state: &mut ShellState, line: &str) {
                             b'a' => show_all = true,
                             b'l' => long_format = true,
                             other => {
-                                print_str("ls: unknown option -");
-                                print_bytes(&[*other]);
-                                println_str("");
+                                println!("ls: unknown option -{}", *other as char);
                             }
                         }
                     }
@@ -1718,21 +1600,21 @@ fn handle_command(state: &mut ShellState, line: &str) {
             if let Some(arg) = parts.next() {
                 cat(state, arg);
             } else {
-                println_str("cat: missing file name");
+                println!("cat: missing file name");
             }
         }
         "stat" => {
             if let Some(arg) = parts.next() {
                 stat_path(state, arg);
             } else {
-                println_str("stat: missing file name");
+                println!("stat: missing file name");
             }
         }
         "login" => {
             if let Some(user) = parts.next() {
                 login_user(user);
             } else {
-                println_str("login: missing user name");
+                println!("login: missing user name");
             }
         }
         "whoami" => whoami(),
@@ -1751,7 +1633,7 @@ fn handle_command(state: &mut ShellState, line: &str) {
             if let Some(user) = username {
                 add_user(user, admin);
             } else {
-                println_str("adduser: missing user name");
+                println!("adduser: missing user name");
             }
         }
         "ipc-create" => ipc_create_channel(),
@@ -1761,13 +1643,13 @@ fn handle_command(state: &mut ShellState, line: &str) {
                     if let Some(msg) = parts.next() {
                         ipc_send_message(id, msg);
                     } else {
-                        println_str("ipc-send: missing message");
+                        println!("ipc-send: missing message");
                     }
                 } else {
-                    println_str("ipc-send: invalid channel");
+                    println!("ipc-send: invalid channel");
                 }
             } else {
-                println_str("ipc-send: missing channel");
+                println!("ipc-send: missing channel");
             }
         }
         "ipc-recv" => {
@@ -1775,15 +1657,15 @@ fn handle_command(state: &mut ShellState, line: &str) {
                 if let Some(id) = parse_u32(chan) {
                     ipc_receive_message(id);
                 } else {
-                    println_str("ipc-recv: invalid channel");
+                    println!("ipc-recv: invalid channel");
                 }
             } else {
-                println_str("ipc-recv: missing channel");
+                println!("ipc-recv: missing channel");
             }
         }
         "clear" => clear_screen(),
         "exit" => {
-            println_str("Bye!");
+            println!("Bye!");
             std::process::exit(0);
         }
         _ => {
@@ -1797,7 +1679,7 @@ fn handle_command(state: &mut ShellState, line: &str) {
 }
 
 fn shell_loop() -> ! {
-    println_str("Welcome to NexaOS shell. Type 'help' for commands.");
+    println!("Welcome to NexaOS shell. Type 'help' for commands.");
     let mut buffer = [0u8; 256];
     let mut state = ShellState::new();
 
@@ -1812,7 +1694,7 @@ fn shell_loop() -> ! {
                 handle_command(&mut state, trimmed);
             }
         } else {
-            println_str("Invalid UTF-8 input");
+            println!("Invalid UTF-8 input");
         }
     }
 }
