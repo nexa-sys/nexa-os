@@ -255,6 +255,7 @@ impl Process {
         Ok(Process {
             pid,
             ppid: 0,
+            tgid: pid, // Main thread: tgid equals pid
             state: ProcessState::Ready,
             entry_point,
             stack_top: stack_ptr,
@@ -265,6 +266,7 @@ impl Process {
             has_entered_user: false,
             context_valid: false, // Not yet saved by context_switch
             is_fork_child: false, // Created by execve, not fork
+            is_thread: false,     // Not a thread, main process
             cr3: existing_cr3,    // Reuse existing CR3
             tty: 0,
             memory_base: phys_base, // Reuse existing memory base
@@ -276,6 +278,7 @@ impl Process {
             term_signal: None,
             kernel_stack: 0, // Initialize kernel stack pointer
             fs_base: 0,      // Initialize TLS base (will be set by CLONE_SETTLS or arch_prctl)
+            clear_child_tid: 0, // No clear_child_tid set
             cmdline,
             cmdline_len,
             open_fds: 0, // No open file descriptors initially
@@ -434,6 +437,7 @@ impl Process {
                 return Ok(Process {
                     pid,
                     ppid: 0,
+                    tgid: pid, // Main thread: tgid equals pid
                     state: ProcessState::Ready,
                     entry_point: interp_image.entry_point,
                     stack_top: stack_ptr,
@@ -444,6 +448,7 @@ impl Process {
                     has_entered_user: false,
                     context_valid: false, // Not yet saved by context_switch
                     is_fork_child: false, // New process from ELF, not fork
+                    is_thread: false,     // Not a thread, main process
                     cr3,
                     tty: 0,
                     memory_base: USER_PHYS_BASE,
@@ -463,6 +468,7 @@ impl Process {
                         ptr
                     },
                     fs_base: 0, // Initialize TLS base
+                    clear_child_tid: 0, // No clear_child_tid set
                     cmdline,
                     cmdline_len,
                     open_fds: 0, // No open file descriptors initially
@@ -519,6 +525,7 @@ impl Process {
         Ok(Process {
             pid,
             ppid: 0,
+            tgid: pid, // Main thread: tgid equals pid
             state: ProcessState::Ready,
             entry_point: program_image.entry_point,
             exit_code: 0,
@@ -531,6 +538,7 @@ impl Process {
             has_entered_user: false,
             context_valid: false, // Not yet saved by context_switch
             is_fork_child: false, // New process from ELF, not fork
+            is_thread: false,     // Not a thread, main process
             cr3,
             tty: 0,
             memory_base: USER_PHYS_BASE,
@@ -548,6 +556,7 @@ impl Process {
                 ptr
             },
             fs_base: 0, // Initialize TLS base
+            clear_child_tid: 0, // No clear_child_tid set
             cmdline,
             cmdline_len,
             open_fds: 0, // No open file descriptors initially

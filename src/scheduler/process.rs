@@ -547,3 +547,184 @@ pub fn wake_process(pid: Pid) -> bool {
     }
     false
 }
+
+// ============================================================================
+// Thread Group Management (LWP Support)
+// ============================================================================
+
+/// Get the thread group ID (tgid) for a process/thread
+pub fn get_tgid(pid: Pid) -> Option<Pid> {
+    let table = PROCESS_TABLE.lock();
+    
+    // Try radix tree lookup first
+    if let Some(idx) = crate::process::lookup_pid(pid) {
+        let idx = idx as usize;
+        if idx < table.len() {
+            if let Some(entry) = &table[idx] {
+                if entry.process.pid == pid {
+                    return Some(entry.process.tgid);
+                }
+            }
+        }
+    }
+    
+    // Fallback to linear scan
+    for slot in table.iter() {
+        if let Some(entry) = slot {
+            if entry.process.pid == pid {
+                return Some(entry.process.tgid);
+            }
+        }
+    }
+    
+    None
+}
+
+/// Check if a process is a thread (part of a thread group with a different leader)
+pub fn is_thread(pid: Pid) -> bool {
+    let table = PROCESS_TABLE.lock();
+    
+    // Try radix tree lookup first
+    if let Some(idx) = crate::process::lookup_pid(pid) {
+        let idx = idx as usize;
+        if idx < table.len() {
+            if let Some(entry) = &table[idx] {
+                if entry.process.pid == pid {
+                    return entry.process.is_thread;
+                }
+            }
+        }
+    }
+    
+    // Fallback
+    for slot in table.iter() {
+        if let Some(entry) = slot {
+            if entry.process.pid == pid {
+                return entry.process.is_thread;
+            }
+        }
+    }
+    
+    false
+}
+
+/// Count the number of threads in a thread group
+pub fn thread_group_count(tgid: Pid) -> usize {
+    let table = PROCESS_TABLE.lock();
+    let mut count = 0;
+    
+    for slot in table.iter() {
+        if let Some(entry) = slot {
+            if entry.process.tgid == tgid {
+                count += 1;
+            }
+        }
+    }
+    
+    count
+}
+
+/// Get all thread PIDs in a thread group
+/// Returns up to `max_threads` PIDs
+pub fn get_thread_group_members(tgid: Pid, buffer: &mut [Pid]) -> usize {
+    let table = PROCESS_TABLE.lock();
+    let mut count = 0;
+    
+    for slot in table.iter() {
+        if let Some(entry) = slot {
+            if entry.process.tgid == tgid && count < buffer.len() {
+                buffer[count] = entry.process.pid;
+                count += 1;
+            }
+        }
+    }
+    
+    count
+}
+
+/// Handle thread exit - perform cleanup for CLONE_CHILD_CLEARTID
+/// Returns the futex address to wake, if any
+pub fn handle_thread_exit(pid: Pid) -> Option<u64> {
+    let mut table = PROCESS_TABLE.lock();
+    
+    // Find the process/thread
+    let slot_idx = crate::process::lookup_pid(pid)
+        .map(|idx| idx as usize)
+        .filter(|&idx| {
+            idx < table.len() && table[idx].as_ref().map_or(false, |e| e.process.pid == pid)
+        })
+        .or_else(|| {
+            table.iter().position(|slot| {
+                slot.as_ref().map_or(false, |e| e.process.pid == pid)
+            })
+        });
+    
+    let Some(idx) = slot_idx else {
+        return None;
+    };
+    
+    let entry = table[idx].as_ref().unwrap();
+    let clear_child_tid = entry.process.clear_child_tid;
+    
+    if clear_child_tid != 0 {
+        // Clear the TID at the specified address
+        unsafe {
+            core::ptr::write_volatile(clear_child_tid as *mut u32, 0);
+        }
+        ktrace!(
+            "[handle_thread_exit] Cleared TID at {:#x} for PID {}",
+            clear_child_tid,
+            pid
+        );
+        return Some(clear_child_tid);
+    }
+    
+    None
+}
+
+/// Terminate all threads in a thread group (for exit_group)
+pub fn terminate_thread_group(tgid: Pid, exit_code: i32) {
+    let table = PROCESS_TABLE.lock();
+    
+    // Collect all PIDs in the thread group first
+    let mut pids_to_terminate = [0u64; MAX_PROCESSES];
+    let mut count = 0;
+    
+    for slot in table.iter() {
+        if let Some(entry) = slot {
+            if entry.process.tgid == tgid && count < MAX_PROCESSES {
+                pids_to_terminate[count] = entry.process.pid;
+                count += 1;
+            }
+        }
+    }
+    
+    drop(table);
+    
+    // Now terminate each thread
+    for i in 0..count {
+        let pid = pids_to_terminate[i];
+        crate::kinfo!(
+            "[terminate_thread_group] Terminating PID {} (tgid={})",
+            pid,
+            tgid
+        );
+        
+        // Handle thread exit (clear_child_tid and futex wake)
+        if let Some(futex_addr) = handle_thread_exit(pid) {
+            // Wake any threads waiting on this futex
+            // We call into the syscall via the public interface
+            crate::syscalls::futex_wake_internal(futex_addr, i32::MAX);
+        }
+        
+        // Set exit code and mark as zombie
+        if let Err(e) = set_process_exit_code(pid, exit_code) {
+            ktrace!("[terminate_thread_group] Failed to set exit code for PID {}: {}", pid, e);
+        }
+        
+        if let Err(e) = set_process_state(pid, ProcessState::Zombie) {
+            ktrace!("[terminate_thread_group] Failed to set zombie state for PID {}: {}", pid, e);
+        }
+    }
+}
+

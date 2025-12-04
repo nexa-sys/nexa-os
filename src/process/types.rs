@@ -108,11 +108,42 @@ impl Context {
     }
 }
 
+/// Clone flags for thread creation (matching Linux)
+pub mod clone_flags {
+    /// Share virtual memory with parent
+    pub const CLONE_VM: u64 = 0x00000100;
+    /// Share filesystem info with parent
+    pub const CLONE_FS: u64 = 0x00000200;
+    /// Share file descriptors with parent
+    pub const CLONE_FILES: u64 = 0x00000400;
+    /// Share signal handlers with parent
+    pub const CLONE_SIGHAND: u64 = 0x00000800;
+    /// Create in same thread group (true thread)
+    pub const CLONE_THREAD: u64 = 0x00010000;
+    /// Share System V SEM_UNDO semantics
+    pub const CLONE_SYSVSEM: u64 = 0x00040000;
+    /// Set TLS for the new thread
+    pub const CLONE_SETTLS: u64 = 0x00080000;
+    /// Store child TID at parent_tid location
+    pub const CLONE_PARENT_SETTID: u64 = 0x00100000;
+    /// Clear child TID at child_tid location on exit
+    pub const CLONE_CHILD_CLEARTID: u64 = 0x00200000;
+    /// Store child TID at child_tid location
+    pub const CLONE_CHILD_SETTID: u64 = 0x01000000;
+}
+
 /// Process structure
+/// 
+/// In NexaOS, threads are implemented as lightweight processes (LWP) that share
+/// resources with their parent. When CLONE_THREAD is used, the new process:
+/// - Shares the same thread group ID (tgid) as the parent
+/// - Shares virtual memory (cr3), file descriptors, and signal handlers
+/// - Has its own PID (thread ID) but belongs to the parent's thread group
 #[derive(Clone, Copy)]
 pub struct Process {
     pub pid: Pid,
     pub ppid: Pid, // Parent process ID (POSIX)
+    pub tgid: Pid, // Thread group ID (equals pid for main thread, leader's pid for other threads)
     pub state: ProcessState,
     pub entry_point: u64,
     pub stack_top: u64,
@@ -123,6 +154,7 @@ pub struct Process {
     pub has_entered_user: bool,
     pub context_valid: bool, // True if context was saved by context_switch (valid for Switch restore)
     pub is_fork_child: bool, // True if this process was created by fork (not exec/init)
+    pub is_thread: bool,     // True if this is a thread (created with CLONE_THREAD)
     pub cr3: u64, // Page table root (for process-specific page tables) - 0 means use kernel page table
     pub tty: usize, // Controlling virtual terminal index
     pub memory_base: u64, // Physical base address of process memory (for fork)
@@ -134,6 +166,7 @@ pub struct Process {
     pub term_signal: Option<i32>, // Signal that terminated this process (None = normal exit)
     pub kernel_stack: u64, // Pointer to kernel stack allocation (bottom)
     pub fs_base: u64, // FS segment base for TLS (Thread Local Storage)
+    pub clear_child_tid: u64, // Address to clear and futex wake on thread exit (CLONE_CHILD_CLEARTID)
     pub cmdline: [u8; MAX_CMDLINE_SIZE], // Command line arguments (null-separated, double-null terminated)
     pub cmdline_len: usize,              // Actual length of command line data
     pub open_fds: u16, // Bitmask of open file descriptors (bits 0-15 correspond to fd 3-18)

@@ -58,6 +58,9 @@ pub use process::{
     add_process, add_process_with_policy, find_child_with_state, get_child_state, get_process,
     mark_process_as_forked_child, remove_process, set_current_process_state, set_process_exit_code,
     set_process_state, set_process_term_signal, update_process_cr3, wake_process,
+    // Thread management functions
+    get_tgid, is_thread, thread_group_count, get_thread_group_members,
+    handle_thread_exit, terminate_thread_group,
 };
 
 // Re-export priority functions (EEVDF core)

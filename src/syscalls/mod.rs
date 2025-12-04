@@ -77,6 +77,9 @@ use user::{user_add, user_info, user_list, user_login, user_logout};
 // Re-export file descriptor tracking and cleanup functions
 pub use file::{close_all_fds_for_process, mark_fd_closed, mark_fd_open};
 
+// Re-export thread-related functions for internal kernel use
+pub use thread::{futex_wake_internal, FUTEX_WAKE};
+
 /// Main syscall dispatcher
 #[no_mangle]
 pub extern "C" fn syscall_dispatch(

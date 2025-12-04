@@ -28,6 +28,7 @@ STD_PROGRAMS=(
     "nurl:bin:nurl.rs:"
     "dmesg:bin:dmesg.rs:"
     "crashtest:bin:crashtest.rs:"
+    "thread_test:bin:thread_test.rs:"
 )
 
 # Programs to build with dynamic linking
@@ -99,6 +100,10 @@ path = "../../userspace/dmesg.rs"
 [[bin]]
 name = "crashtest"
 path = "../../userspace/crashtest.rs"
+
+[[bin]]
+name = "thread_test"
+path = "../../userspace/thread_test.rs"
 
 [profile.release]
 panic = "abort"

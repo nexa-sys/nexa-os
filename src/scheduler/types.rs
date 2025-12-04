@@ -263,6 +263,7 @@ impl ProcessEntry {
             process: Process {
                 pid: 0,
                 ppid: 0,
+                tgid: 0,        // Thread group ID (0 for empty)
                 state: ProcessState::Ready,
                 entry_point: 0,
                 stack_top: 0,
@@ -273,6 +274,7 @@ impl ProcessEntry {
                 has_entered_user: false,
                 context_valid: false,
                 is_fork_child: false,
+                is_thread: false,       // Not a thread
                 cr3: 0,
                 tty: 0,
                 memory_base: 0,
@@ -284,6 +286,7 @@ impl ProcessEntry {
                 exit_code: 0,
                 term_signal: None,
                 fs_base: 0,
+                clear_child_tid: 0,     // No clear_child_tid
                 cmdline: [0u8; MAX_CMDLINE_SIZE],
                 cmdline_len: 0,
                 open_fds: 0,

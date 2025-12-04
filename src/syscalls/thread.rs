@@ -151,12 +151,29 @@ pub fn clone(
     // Create child process structure
     let mut child_process = parent_process;
     child_process.pid = child_pid;
-    child_process.ppid = current_pid;
     child_process.state = ProcessState::Ready;
     child_process.has_entered_user = false;
     child_process.context_valid = false; // Context not yet saved by context_switch
     child_process.is_fork_child = true;
     child_process.exit_code = 0;
+
+    // Handle CLONE_THREAD - create a thread in the same thread group
+    if (flags & CLONE_THREAD) != 0 {
+        // Thread: share thread group with parent
+        child_process.tgid = parent_process.tgid;
+        child_process.ppid = parent_process.ppid; // Threads share parent
+        child_process.is_thread = true;
+        kinfo!(
+            "[clone] CLONE_THREAD: Creating thread {} in thread group {}",
+            child_pid,
+            parent_process.tgid
+        );
+    } else {
+        // New process: new thread group
+        child_process.tgid = child_pid;
+        child_process.ppid = current_pid;
+        child_process.is_thread = false;
+    }
 
     // Allocate kernel stack for child
     let kernel_stack_layout = Layout::from_size_align(
@@ -262,10 +279,11 @@ pub fn clone(
 
     // Handle CLONE_CHILD_CLEARTID
     if (flags & CLONE_CHILD_CLEARTID) != 0 && child_tid != 0 {
-        unsafe {
-            CLEAR_CHILD_TID = child_tid;
-        }
+        // Store the address in the process struct - will be cleared and woken on exit
+        child_process.clear_child_tid = child_tid;
         ktrace!("[clone] Set clear_child_tid to {:#x}", child_tid);
+    } else {
+        child_process.clear_child_tid = 0;
     }
 
     // Handle CLONE_SETTLS (TLS setup)
@@ -353,11 +371,16 @@ pub fn futex(uaddr: u64, op: i32, val: i32, timeout: u64, _uaddr2: u64, _val3: i
 }
 
 /// FUTEX_WAIT - Wait if *uaddr == val
-fn futex_wait(uaddr: u64, val: i32, timeout: u64) -> u64 {
+/// 
+/// Puts the calling thread to sleep if the value at uaddr equals val.
+/// The thread will be woken by FUTEX_WAKE or when the timeout expires.
+fn futex_wait(uaddr: u64, val: i32, _timeout: u64) -> u64 {
     let current_pid = scheduler::get_current_pid().unwrap_or(0);
 
-    // Read the current value at uaddr
-    let current_val = unsafe { *(uaddr as *const i32) };
+    // Read the current value at uaddr atomically
+    let current_val = unsafe { 
+        core::ptr::read_volatile(uaddr as *const i32) 
+    };
 
     ktrace!(
         "[futex_wait] PID {} waiting on {:#x}, expected={}, actual={}",
@@ -367,44 +390,72 @@ fn futex_wait(uaddr: u64, val: i32, timeout: u64) -> u64 {
         current_val
     );
 
-    // If value doesn't match, return EAGAIN
+    // If value doesn't match, return EAGAIN (spurious wakeup handling)
     if current_val != val {
         kdebug!("[futex_wait] Value mismatch, returning EAGAIN");
         posix::set_errno(errno::EAGAIN);
         return u64::MAX;
     }
 
-    // In a single-threaded environment, waiting would deadlock.
-    // For compatibility with std::sync primitives, we need to handle this gracefully.
-
-    // For FUTEX_WAIT in single-threaded mode:
-    // - If the value matches, the caller expects to wait for a FUTEX_WAKE
-    // - Since we're single-threaded, no other thread can wake us
-    // - Return EAGAIN to prevent deadlock, letting the caller retry
-
-    // In a multi-threaded implementation, we would:
-    // 1. Add current process to wait queue
-    // 2. Set process state to Sleeping
-    // 3. Call scheduler
-    // 4. On wake, check value again
-
-    // For now, simulate a brief wait and return
-    if timeout != 0 {
-        // There's a timeout, honor it by doing a short yield
-        let _ = scheduler::set_process_state(current_pid, ProcessState::Ready);
-        scheduler::do_schedule();
+    // Add current thread to the futex wait queue
+    let mut added = false;
+    unsafe {
+        for waiter in FUTEX_WAITERS.iter_mut() {
+            if !waiter.in_use {
+                waiter.uaddr = uaddr;
+                waiter.pid = current_pid;
+                waiter.in_use = true;
+                added = true;
+                ktrace!(
+                    "[futex_wait] PID {} added to wait queue for {:#x}",
+                    current_pid,
+                    uaddr
+                );
+                break;
+            }
+        }
     }
 
-    // After "waiting", check the value again
-    let new_val = unsafe { *(uaddr as *const i32) };
-    if new_val != val {
-        // Value changed, we were "woken"
-        posix::set_errno(0);
-        return 0;
+    if !added {
+        // Wait queue is full
+        kwarn!("[futex_wait] Wait queue full, cannot add PID {}", current_pid);
+        posix::set_errno(errno::EAGAIN);
+        return u64::MAX;
     }
 
-    // Value still matches - in single-threaded mode, return success
-    // to prevent spinning. The caller should check conditions and retry if needed.
+    // Put the thread to sleep
+    if let Err(e) = scheduler::set_process_state(current_pid, ProcessState::Sleeping) {
+        kwarn!("[futex_wait] Failed to set sleeping state for PID {}: {}", current_pid, e);
+        // Remove from wait queue
+        unsafe {
+            for waiter in FUTEX_WAITERS.iter_mut() {
+                if waiter.in_use && waiter.pid == current_pid && waiter.uaddr == uaddr {
+                    waiter.in_use = false;
+                    break;
+                }
+            }
+        }
+        posix::set_errno(errno::EAGAIN);
+        return u64::MAX;
+    }
+
+    // Yield to scheduler - will not return until woken
+    scheduler::do_schedule();
+
+    // We've been woken up - remove from wait queue if still there
+    unsafe {
+        for waiter in FUTEX_WAITERS.iter_mut() {
+            if waiter.in_use && waiter.pid == current_pid && waiter.uaddr == uaddr {
+                waiter.in_use = false;
+                break;
+            }
+        }
+    }
+
+    // Check if we were woken due to timeout (not implemented yet) or FUTEX_WAKE
+    // For now, assume we were properly woken
+    ktrace!("[futex_wait] PID {} woken from futex wait", current_pid);
+    
     posix::set_errno(0);
     0
 }
@@ -446,6 +497,12 @@ fn futex_wake(uaddr: u64, val: i32) -> u64 {
     ktrace!("[futex_wake] Woke {} processes", woken);
     posix::set_errno(0);
     woken
+}
+
+/// Public interface for waking futex waiters (for use by scheduler and other kernel modules)
+/// This is a simplified wrapper around futex_wake for internal kernel use.
+pub fn futex_wake_internal(uaddr: u64, max_waiters: i32) -> u64 {
+    futex_wake(uaddr, max_waiters)
 }
 
 /// SYS_GETTID - Get thread ID

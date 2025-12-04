@@ -661,10 +661,22 @@ unsafe fn free_thread_slot(slot: usize) {
     THREAD_TABLE_LOCK.store(0, Ordering::Release);
 }
 
-/// Thread entry point - called by clone
+/// Thread entry point - called by clone when ret == 0 (child thread)
+/// This function never returns; it calls the user's start routine and then exits.
 #[no_mangle]
-unsafe extern "C" fn __thread_entry(tcb_ptr: *mut c_void) -> ! {
-    let tcb = &mut *(tcb_ptr as *mut ThreadControlBlock);
+pub unsafe extern "C" fn __thread_entry() -> ! {
+    // Get TLS/TCB pointer from FS base
+    let tcb_ptr: *mut ThreadControlBlock;
+    core::arch::asm!(
+        "mov {}, fs:0",
+        out(reg) tcb_ptr,
+        options(nostack, preserves_flags)
+    );
+    
+    let msg = b"[nrlib] __thread_entry: starting thread\n";
+    let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
+    
+    let tcb = &mut *tcb_ptr;
     
     // Call the user's start routine
     let retval = (tcb.start_routine)(tcb.arg);
@@ -682,14 +694,14 @@ unsafe extern "C" fn __thread_entry(tcb_ptr: *mut c_void) -> ! {
             crate::SYS_FUTEX,
             tcb.tid_address as u64,
             super::types::FUTEX_WAKE_OP as u64,
-            1,
+            i32::MAX as u64, // Wake all waiters
             0,
             0,
             0,
         );
     }
     
-    // Exit thread
+    // Exit thread (not process)
     crate::syscall1(crate::SYS_EXIT, 0);
     
     // Should never reach here
@@ -737,14 +749,30 @@ pub unsafe extern "C" fn pthread_create(
         return crate::ENOMEM;
     }
     
-    // Calculate stack top (stack grows downward on x86_64)
-    // Leave space for TCB at top of stack
-    let stack_top = stack + total_stack as u64 - 128; // Reserve for TCB and alignment
-    let tcb_addr = stack_top as *mut ThreadControlBlock;
+    // Calculate TCB location at top of stack
+    // Stack layout (high to low):
+    //   +---------------------+ <- stack + total_stack
+    //   |  Thread Control     |
+    //   |  Block (TCB)        |
+    //   +---------------------+ <- tcb_addr
+    //   |  [padding]          |
+    //   +---------------------+ <- child_stack (16-byte aligned)
+    //   |                     |
+    //   |  Thread stack       |
+    //   |  (grows downward)   |
+    //   |                     |
+    //   +---------------------+ <- stack + STACK_GUARD_SIZE
+    //   |  Guard page         |
+    //   +---------------------+ <- stack
+    
+    let stack_top = stack + total_stack as u64;
+    let tcb_size = mem::size_of::<ThreadControlBlock>() as u64;
+    let tcb_addr = (stack_top - tcb_size) & !0xF; // 16-byte aligned
+    let tcb_ptr = tcb_addr as *mut ThreadControlBlock;
     
     // Initialize TCB
-    let tcb = &mut *tcb_addr;
-    tcb.self_ptr = tcb_addr; // Self pointer for TLS access
+    let tcb = &mut *tcb_ptr;
+    tcb.self_ptr = tcb_ptr; // Self pointer for TLS access (%fs:0)
     tcb.tid = AtomicUsize::new(0);
     tcb.start_routine = start_routine;
     tcb.arg = arg;
@@ -760,12 +788,12 @@ pub unsafe extern "C" fn pthread_create(
         tcb.tls_data[i] = ptr::null_mut();
     }
     
-    // Allocate TID address in TCB for CLONE_CHILD_CLEARTID
+    // Set TID address for CLONE_CHILD_CLEARTID
     let tid_storage = &mut tcb.tid as *mut AtomicUsize as *mut c_int;
     tcb.tid_address = tid_storage;
     
     // Allocate a thread slot
-    let slot = match alloc_thread_slot(tcb_addr) {
+    let slot = match alloc_thread_slot(tcb_ptr) {
         Some(s) => s,
         None => {
             // Free the stack
@@ -774,29 +802,35 @@ pub unsafe extern "C" fn pthread_create(
         }
     };
     
-    // Calculate usable stack pointer (16-byte aligned, below TCB)
-    let child_stack = (stack_top - mem::size_of::<ThreadControlBlock>() as u64 - 16) & !0xF;
+    // Calculate child stack pointer (16-byte aligned, below TCB)
+    // Leave space for a return address (though it won't be used)
+    let child_stack = (tcb_addr - 8) & !0xF;
     
-    // Set up stack for the child thread
-    // Push the TCB pointer onto the stack (as argument to __thread_entry)
-    let stack_ptr = child_stack as *mut u64;
+    // Set up the stack so when the child thread starts, __thread_entry gets called
+    // Put the return address (entry point) on the stack
+    let stack_frame = child_stack as *mut u64;
+    *stack_frame = __thread_entry as u64; // Return address
     
     let msg = b"[nrlib] pthread_create: calling clone\n";
     let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
     
-    // Call clone syscall
-    // On x86_64, when child returns from clone, it will start executing at __thread_entry
-    // The clone flags include CLONE_CHILD_SETTID and CLONE_CHILD_CLEARTID
-    let parent_tid: c_int = 0;
-    let child_tid: c_int = 0;
+    // Clone flags for thread creation
+    let clone_flags = CLONE_THREAD_FLAGS as u64;
     
+    // Call clone syscall
+    // Arguments:
+    //   - flags: CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD | ...
+    //   - stack: child_stack (will be used as RSP)
+    //   - parent_tid: not used (NULL)
+    //   - child_tid: address to store TID and clear on exit
+    //   - tls: TCB address (set as FS base)
     let ret = crate::syscall5(
         crate::SYS_CLONE,
-        CLONE_THREAD_FLAGS as u64,
+        clone_flags,
         child_stack,
-        &parent_tid as *const c_int as u64,
-        tid_storage as u64,
-        tcb_addr as u64, // TLS pointer = TCB
+        0, // parent_tid - not needed
+        tid_storage as u64, // child_tid for CLONE_CHILD_CLEARTID
+        tcb_addr, // TLS pointer = TCB address
     );
     
     if ret == u64::MAX || ret as i64 == -1 {
@@ -810,8 +844,11 @@ pub unsafe extern "C" fn pthread_create(
     }
     
     if ret == 0 {
-        // Child process - call thread entry point
-        __thread_entry(tcb_addr as *mut c_void);
+        // We are the child thread!
+        // This code path should not execute in the parent's flow.
+        // The child will start with a fresh stack and should call __thread_entry.
+        // However, because clone() returns here, we need to jump to the entry point.
+        __thread_entry();
         // Never returns
     }
     
@@ -819,8 +856,26 @@ pub unsafe extern "C" fn pthread_create(
     tcb.tid.store(ret as usize, Ordering::Release);
     *thread = ret as pthread_t;
     
-    let msg = b"[nrlib] pthread_create: thread created successfully\n";
+    let msg = b"[nrlib] pthread_create: thread created with TID ";
     let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
+    
+    // Print TID
+    let mut tid_buf = [0u8; 20];
+    let mut tid_val = ret;
+    let mut i = 0;
+    if tid_val == 0 {
+        tid_buf[0] = b'0';
+        i = 1;
+    } else {
+        while tid_val > 0 && i < 20 {
+            tid_buf[19 - i] = b'0' + (tid_val % 10) as u8;
+            tid_val /= 10;
+            i += 1;
+        }
+    }
+    let tid_str = if ret == 0 { &tid_buf[0..1] } else { &tid_buf[20-i..20] };
+    let _ = crate::syscall3(SYS_WRITE_NR, 2, tid_str.as_ptr() as u64, tid_str.len() as u64);
+    let _ = crate::syscall3(SYS_WRITE_NR, 2, b"\n".as_ptr() as u64, 1);
     
     0
 }
@@ -924,12 +979,9 @@ pub unsafe extern "C" fn pthread_exit(retval: *mut c_void) -> ! {
 
 #[no_mangle]
 pub unsafe extern "C" fn pthread_self() -> pthread_t {
-    let slot = PTHREAD_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
-    if slot < 32 {
-        let msg = b"[nrlib] pthread_self\n";
-        let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
-    }
-    1 // Always return 1 for single-threaded
+    // Get the current thread ID via gettid syscall
+    let tid = crate::syscall0(crate::SYS_GETTID) as pthread_t;
+    tid
 }
 
 #[no_mangle]
@@ -938,6 +990,29 @@ pub unsafe extern "C" fn pthread_getattr_np(
     _attr: *mut pthread_attr_t,
 ) -> c_int {
     trace_fn!("pthread_getattr_np");
+    0
+}
+
+/// Set thread name (stub - NexaOS doesn't support thread names yet)
+#[no_mangle]
+pub unsafe extern "C" fn pthread_setname_np(_thread: pthread_t, _name: *const i8) -> c_int {
+    trace_fn!("pthread_setname_np");
+    // Silently succeed - thread naming is a nice-to-have feature
+    0
+}
+
+/// Get thread name (stub)
+#[no_mangle]
+pub unsafe extern "C" fn pthread_getname_np(
+    _thread: pthread_t,
+    name: *mut i8,
+    len: size_t,
+) -> c_int {
+    trace_fn!("pthread_getname_np");
+    // Return empty string
+    if !name.is_null() && len > 0 {
+        *name = 0;
+    }
     0
 }
 

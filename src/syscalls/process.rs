@@ -11,7 +11,15 @@ use crate::{kdebug, kerror, kfatal, kinfo, kpanic, ktrace, kwarn};
 use alloc::alloc::{alloc, dealloc, Layout};
 use core::sync::atomic::Ordering;
 
-/// Exit system call - terminate current process
+/// Exit system call - terminate current process or thread
+/// 
+/// For threads (created with CLONE_THREAD):
+/// - Only terminates the calling thread, not the entire process
+/// - Handles CLONE_CHILD_CLEARTID: clears tid at clear_child_tid address
+/// - Wakes any threads waiting on that futex (for pthread_join)
+///
+/// For processes (main thread or non-threaded process):
+/// - Terminates the entire process
 pub fn exit(code: i32) -> ! {
     let pid = crate::scheduler::current_pid().unwrap_or(0);
     ktrace!("[SYS_EXIT] PID {} exiting with code: {}", pid, code);
@@ -21,11 +29,21 @@ pub fn exit(code: i32) -> ! {
         kpanic!("Cannot exit from kernel context (PID 0)!");
     }
 
+    // Handle thread exit: clear_child_tid and futex wake
+    if let Some(futex_addr) = crate::scheduler::handle_thread_exit(pid) {
+        // Wake any threads waiting on this futex (e.g., pthread_join)
+        kinfo!("[SYS_EXIT] Waking waiters on futex {:#x} for PID {}", futex_addr, pid);
+        super::thread::futex_wake_internal(futex_addr, i32::MAX);
+    }
+
+    // Check if this is a thread or the main process
+    let is_thread = crate::scheduler::is_thread(pid);
+    
     if let Err(e) = crate::scheduler::set_process_exit_code(pid, code) {
         kerror!("Failed to record exit code for PID {}: {}", pid, e);
     }
 
-    ktrace!("[SYS_EXIT] Setting PID {} to Zombie state", pid);
+    ktrace!("[SYS_EXIT] Setting PID {} to Zombie state (is_thread={})", pid, is_thread);
     let _ = crate::scheduler::set_process_state(pid, crate::process::ProcessState::Zombie);
 
     kinfo!("Process {} marked as zombie, yielding to scheduler", pid);
@@ -93,11 +111,14 @@ pub fn fork(syscall_return_addr: u64) -> u64 {
     let mut child_process = parent_process;
     child_process.pid = child_pid;
     child_process.ppid = current_pid;
+    child_process.tgid = child_pid;    // Fork creates new process: tgid equals pid
     child_process.state = crate::process::ProcessState::Ready;
     child_process.has_entered_user = false;
     child_process.context_valid = false; // Context not yet saved by context_switch
     child_process.is_fork_child = true;
+    child_process.is_thread = false;     // Fork creates new process, not thread
     child_process.exit_code = 0;
+    child_process.clear_child_tid = 0;   // No clear_child_tid for fork
 
     let kernel_stack_layout = Layout::from_size_align(
         crate::process::KERNEL_STACK_SIZE,
