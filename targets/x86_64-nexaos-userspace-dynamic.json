@@ -24,5 +24,9 @@
   "position-independent-executables": true,
   "pre-link-args": {
     "ld.lld": ["--dynamic-linker=/lib64/ld-nrlib-x86_64.so.1"]
-  }
+  },
+  "post-link-args": {
+    "ld.lld": ["--as-needed"]
+  },
+  "no-default-libraries": true
 }

@@ -170,9 +170,12 @@ get_std_rustflags() {
 }
 
 # RUSTFLAGS for dynamic linking
+# Uses sysroot-pic which contains PIC-compiled libc.a for PIE executables
 get_dyn_rustflags() {
-    local sysroot_lib="${1:-$BUILD_DIR/userspace-build/sysroot/lib}"
-    echo "-C opt-level=2 -C panic=abort -C linker=rust-lld -C link-arg=--image-base=0x01000000 -C link-arg=--entry=_start -L $sysroot_lib -C link-arg=--undefined=_start -C link-arg=-lc -C link-arg=--undefined=pthread_mutexattr_settype -C link-arg=--undefined=pthread_mutexattr_init -C link-arg=--undefined=pthread_mutexattr_destroy -C link-arg=--undefined=pthread_mutex_init -C link-arg=--undefined=pthread_mutex_lock -C link-arg=--undefined=pthread_mutex_unlock -C link-arg=--undefined=pthread_mutex_destroy -C link-arg=--undefined=pthread_once -C link-arg=--undefined=__libc_single_threaded"
+    local sysroot_pic_lib="${1:-$BUILD_DIR/userspace-build/sysroot-pic/lib}"
+    # Use the PIC sysroot which has libc.a compiled with -fPIC
+    # This is necessary because PIE executables need all code to be position-independent
+    echo "-C opt-level=2 -C panic=abort -C linker=rust-lld -C link-arg=--image-base=0x01000000 -C link-arg=--entry=_start -L $sysroot_pic_lib -C link-arg=--undefined=_start -C link-arg=-lc -C link-arg=--undefined=pthread_mutexattr_settype -C link-arg=--undefined=pthread_mutexattr_init -C link-arg=--undefined=pthread_mutexattr_destroy -C link-arg=--undefined=pthread_mutex_init -C link-arg=--undefined=pthread_mutex_lock -C link-arg=--undefined=pthread_mutex_unlock -C link-arg=--undefined=pthread_mutex_destroy -C link-arg=--undefined=pthread_once -C link-arg=--undefined=__libc_single_threaded"
 }
 
 # RUSTFLAGS for nrlib no-std

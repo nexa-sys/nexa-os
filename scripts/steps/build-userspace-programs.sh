@@ -13,6 +13,7 @@ init_build_env
 
 USERSPACE_BUILD_DIR="$BUILD_DIR/userspace-build"
 SYSROOT_LIB="$USERSPACE_BUILD_DIR/sysroot/lib"
+SYSROOT_PIC_LIB="$USERSPACE_BUILD_DIR/sysroot-pic/lib"
 
 # Programs to build with std
 STD_PROGRAMS=(
@@ -153,7 +154,8 @@ build_dyn_program() {
     cd "$USERSPACE_BUILD_DIR"
     
     local rustflags
-    rustflags="$(get_dyn_rustflags "$SYSROOT_LIB")"
+    # Use PIC sysroot for dynamic/PIE programs
+    rustflags="$(get_dyn_rustflags "$SYSROOT_PIC_LIB")"
     
     # shellcheck disable=SC2086
     RUSTFLAGS="$rustflags" \
@@ -232,8 +234,8 @@ build_userspace_programs() {
     
     log_section "Building Userspace Programs"
     
-    # Ensure nrlib is built first
-    if [ ! -f "$SYSROOT_LIB/libc.a" ]; then
+    # Ensure nrlib is built first (both static and PIC versions)
+    if [ ! -f "$SYSROOT_LIB/libc.a" ] || [ ! -f "$SYSROOT_PIC_LIB/libc.a" ]; then
         log_info "Building nrlib first..."
         bash "$SCRIPT_DIR/build-nrlib.sh" all
     fi
@@ -251,7 +253,8 @@ build_single() {
     local name="$1"
     local dest_dir="${2:-$BUILD_DIR/rootfs}"
     
-    if [ ! -f "$SYSROOT_LIB/libc.a" ]; then
+    # Ensure nrlib is built first (both static and PIC versions)
+    if [ ! -f "$SYSROOT_LIB/libc.a" ] || [ ! -f "$SYSROOT_PIC_LIB/libc.a" ]; then
         log_info "Building nrlib first..."
         bash "$SCRIPT_DIR/build-nrlib.sh" all
     fi

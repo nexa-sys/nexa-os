@@ -13,14 +13,17 @@ init_build_env
 
 NRLIB_SRC="$PROJECT_ROOT/userspace/nrlib"
 SYSROOT_DIR="$BUILD_DIR/userspace-build/sysroot"
+SYSROOT_PIC_DIR="$BUILD_DIR/userspace-build/sysroot-pic"
 
 build_nrlib_static() {
     log_step "Building nrlib staticlib (libc.a)..."
     
     ensure_dir "$SYSROOT_DIR/lib"
+    ensure_dir "$SYSROOT_PIC_DIR/lib"
     
     cd "$NRLIB_SRC"
     
+    # Build non-PIC version for static linking
     RUSTFLAGS="$(get_nrlib_rustflags)" \
         cargo build -Z build-std=core --target "$TARGET_USERSPACE" --release
     
@@ -33,6 +36,30 @@ build_nrlib_static() {
         log_success "libc.a installed to sysroot ($(file_size "$staticlib"))"
     else
         log_error "Failed to build nrlib staticlib"
+        return 1
+    fi
+    
+    # Build PIC version for dynamic linking (PIE executables need PIC code)
+    # This goes into a separate sysroot-pic directory so that -lc finds it
+    log_step "Building nrlib staticlib with PIC for PIE executables..."
+    
+    RUSTFLAGS="-C opt-level=2 -C panic=abort -C relocation-model=pic" \
+        cargo build -Z build-std=core --target "$TARGET_USERSPACE_PIC" --release
+    
+    local staticlib_pic="$NRLIB_SRC/target/x86_64-nexaos-userspace-pic/release/libnrlib.a"
+    
+    if [ -f "$staticlib_pic" ]; then
+        # Install PIC version as libc.a in the PIC sysroot
+        # This way PIE executables can use -L sysroot-pic/lib and -lc will find PIC version
+        cp "$staticlib_pic" "$SYSROOT_PIC_DIR/lib/libc.a"
+        # Also create empty libunwind.a and libgcc_s.a (not needed with panic=abort)
+        ar crs "$SYSROOT_PIC_DIR/lib/libunwind.a"
+        ar crs "$SYSROOT_PIC_DIR/lib/libgcc_s.a"
+        # Keep a copy as libc_pic.a in main sysroot for reference
+        cp "$staticlib_pic" "$SYSROOT_DIR/lib/libc_pic.a"
+        log_success "PIC libc.a installed to sysroot-pic ($(file_size "$staticlib_pic"))"
+    else
+        log_error "Failed to build nrlib PIC staticlib"
         return 1
     fi
 }
