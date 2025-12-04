@@ -71,47 +71,52 @@ pub extern "x86-interrupt" fn page_fault_handler(
     // 2. CS in the stack frame might be kernel CS if we're in an IST handler
     let is_user_mode = error_code.contains(PageFaultErrorCode::USER_MODE);
 
-    if is_user_mode {
-        // User-mode page fault - first try demand paging before terminating
+    // CRITICAL: Also handle kernel-mode page faults for user addresses!
+    // When kernel code runs with user CR3 (e.g., during fork/exec memory operations),
+    // it may trigger page faults on demand-paged user memory.
+    // We should handle these the same way as user-mode faults.
+    let is_not_present = !error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION);
+    let is_user_address = crate::mm::is_user_demand_page_address(fault_addr);
+
+    // Try demand paging for:
+    // 1. User-mode faults in user address space
+    // 2. Kernel-mode faults in user address space (kernel accessing user memory with user CR3)
+    if is_not_present && is_user_address {
         if let Some(pid) = crate::scheduler::current_pid() {
-            // Check if this is a demand paging fault (page not present, in user region)
-            // Error code bit 0 (PROTECTION_VIOLATION) = 0 means page not present
-            // Error code bit 0 = 1 means page present but protection violation
-            let is_not_present = !error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION);
+            if let Some(process) = crate::scheduler::get_process(pid) {
+                let cr3 = process.cr3;
+                let memory_base = process.memory_base;
 
-            // Try demand paging for not-present faults in the user region
-            if is_not_present && crate::mm::is_user_demand_page_address(fault_addr) {
-                // Get process info for demand paging
-                if let Some(process) = crate::scheduler::get_process(pid) {
-                    let cr3 = process.cr3;
-                    let memory_base = process.memory_base;
-
-                    // Try to handle the demand fault
-                    match crate::mm::handle_user_demand_fault(fault_addr, pid, cr3, memory_base) {
-                        Ok(()) => {
-                            // Successfully mapped the page, return to user mode
-                            // Use serial_println! to ensure visibility after init starts
-                            crate::serial_println!(
-                                "demand_fault: PID {} fault at {:#x} handled OK",
-                                pid,
-                                fault_addr
-                            );
-                            return; // Continue execution
-                        }
-                        Err(e) => {
-                            // Demand paging failed, fall through to SIGSEGV
-                            crate::serial_println!(
-                                "demand_fault: PID {} fault at {:#x} failed: {}",
-                                pid,
-                                fault_addr,
-                                e
-                            );
-                        }
+                // Try to handle the demand fault
+                match crate::mm::handle_user_demand_fault(fault_addr, pid, cr3, memory_base) {
+                    Ok(()) => {
+                        // Successfully mapped the page, return to continue execution
+                        crate::serial_println!(
+                            "demand_fault: PID {} fault at {:#x} handled OK (kernel_mode={})",
+                            pid,
+                            fault_addr,
+                            !is_user_mode
+                        );
+                        return; // Continue execution
+                    }
+                    Err(e) => {
+                        // Demand paging failed, fall through to error handling
+                        crate::serial_println!(
+                            "demand_fault: PID {} fault at {:#x} failed: {}",
+                            pid,
+                            fault_addr,
+                            e
+                        );
                     }
                 }
             }
+        }
+    }
 
-            // Demand paging not applicable or failed - terminate with SIGSEGV
+    if is_user_mode {
+        // User-mode page fault that wasn't handled by demand paging
+        // Terminate the process with SIGSEGV
+        if let Some(pid) = crate::scheduler::current_pid() {
             let signal = crate::ipc::signal::SIGSEGV;
 
             // Use serial_println! to ensure output is visible (kerror! is filtered after init starts)

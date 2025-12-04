@@ -408,12 +408,11 @@ impl Process {
                 context.rip = interp_image.entry_point;
                 context.rsp = stack_ptr;
 
-                // New process: use demand paging (pages mapped on first access)
-                // TEMP: disabled demand paging for debugging
+                // New process (init): use demand paging (pages mapped on first access)
                 let cr3 = match crate::paging::create_process_address_space(
                     USER_PHYS_BASE,
                     USER_REGION_SIZE,
-                    false, // demand_paging DISABLED for debugging
+                    true, // demand_paging=true for init process
                 ) {
                     Ok(cr3) => {
                         // Validate CR3 before using it
@@ -497,10 +496,9 @@ impl Process {
         context.rip = program_image.entry_point;
         context.rsp = stack_ptr;
 
-        // New process: use demand paging (pages mapped on first access)
-        // TEMP: disabled demand paging for debugging
+        // New process (init): use demand paging (pages mapped on first access)
         let cr3 =
-            match crate::paging::create_process_address_space(USER_PHYS_BASE, USER_REGION_SIZE, false) {
+            match crate::paging::create_process_address_space(USER_PHYS_BASE, USER_REGION_SIZE, true) {
                 Ok(cr3) => {
                     // Validate CR3 before using it
                     if let Err(e) = crate::paging::validate_cr3(cr3, false) {
