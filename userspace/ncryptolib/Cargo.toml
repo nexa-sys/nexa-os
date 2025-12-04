@@ -7,6 +7,7 @@ description = "NexaOS Cryptographic Library - libcrypto.so ABI compatible, moder
 [lib]
 # cdylib: Dynamic shared object (libcrypto.so) for dynamic linking
 # staticlib: Static library (libcrypto.a) for static linking
+# rlib: Rust library for Rust consumers
 crate-type = ["cdylib", "staticlib", "rlib"]
 
 [profile.release]
