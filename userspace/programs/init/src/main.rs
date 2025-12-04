@@ -1259,13 +1259,18 @@ fn start_service(service: &ServiceConfig, _buf: &mut [u8]) -> i64 {
         // Child process - exec the service
         eprintln!("[ni] start_service: child process (PID 0 from fork), about to exec");
         
-        // FIXME: For now, we hardcode the path to getty
-        // This avoids issues with service.exec_start in the child process
-        // Execute the service program
+        // Build argv with program path as argv[0] and NULL terminator
+        // argv must be: [program_path, NULL]
+        let argv: [*const u8; 2] = [
+            exec_path_buf.as_ptr(),  // argv[0] = program path
+            core::ptr::null(),       // argv[1] = NULL terminator
+        ];
+        let envp: [*const u8; 1] = [core::ptr::null()];
+        
         let result = execve(
-            exec_path ,
-            &[0u64 as *const u8],
-            &[0u64 as *const u8],
+            exec_path,
+            &argv,
+            &envp,
         );
         
         // If execve returns, it failed

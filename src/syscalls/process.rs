@@ -181,6 +181,34 @@ pub fn fork(syscall_return_addr: u64) -> u64 {
         rflags
     };
 
+    // CRITICAL FIX: Also restore CALLER-SAVED registers (rdi, rsi, rdx, r8, r9, r10)
+    // These were saved to GS_DATA at syscall entry (before syscall_dispatch modified them)
+    // Without these, function arguments like argv/envp are lost after fork!
+    let (saved_rdi, saved_rsi, saved_rdx, saved_r8, saved_r9, saved_r10) = unsafe {
+        let rdi: u64;
+        let rsi: u64;
+        let rdx: u64;
+        let r8: u64;
+        let r9: u64;
+        let r10: u64;
+        core::arch::asm!(
+            "mov {0}, gs:[88]",   // GS_SLOT_SAVED_RDI (syscall entry value)
+            "mov {1}, gs:[96]",   // GS_SLOT_SAVED_RSI
+            "mov {2}, gs:[104]",  // GS_SLOT_SAVED_RDX
+            "mov {3}, gs:[128]",  // GS_SLOT_SAVED_R8
+            "mov {4}, gs:[136]",  // GS_SLOT_SAVED_R9
+            "mov {5}, gs:[144]",  // GS_SLOT_SAVED_R10
+            out(reg) rdi,
+            out(reg) rsi,
+            out(reg) rdx,
+            out(reg) r8,
+            out(reg) r9,
+            out(reg) r10,
+            options(nostack, preserves_flags)
+        );
+        (rdi, rsi, rdx, r8, r9, r10)
+    };
+
     child_process.context = crate::process::Context::zero();
     child_process.context.rax = 0;  // fork returns 0 in child
     child_process.context.rip = syscall_return_addr;
@@ -192,12 +220,23 @@ pub fn fork(syscall_return_addr: u64) -> u64 {
     child_process.context.r13 = saved_r13;
     child_process.context.r14 = saved_r14;
     child_process.context.r15 = saved_r15;
+    // CRITICAL FIX: Also restore caller-saved registers for proper function continuation
+    child_process.context.rdi = saved_rdi;
+    child_process.context.rsi = saved_rsi;
+    child_process.context.rdx = saved_rdx;
+    child_process.context.r8 = saved_r8;
+    child_process.context.r9 = saved_r9;
+    child_process.context.r10 = saved_r10;
     // Also update user_rflags
     child_process.user_rflags = saved_rflags;
 
     crate::serial_println!(
         "[fork] Child callee-saved regs: rbx={:#x}, rbp={:#x}, r12={:#x}, r13={:#x}, r14={:#x}, r15={:#x}",
         saved_rbx, saved_rbp, saved_r12, saved_r13, saved_r14, saved_r15
+    );
+    crate::serial_println!(
+        "[fork] Child caller-saved regs: rdi={:#x}, rsi={:#x}, rdx={:#x}, r8={:#x}, r9={:#x}, r10={:#x}",
+        saved_rdi, saved_rsi, saved_rdx, saved_r8, saved_r9, saved_r10
     );
 
     kdebug!(
@@ -474,10 +513,12 @@ pub fn execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8)
 
     // Also copy argv BEFORE CR3 switch
     let mut argv_storage: Vec<Vec<u8>> = Vec::new();
+    crate::serial_println!("[execve] PID={} _argv={:#x}", current_pid, _argv as u64);
     if !_argv.is_null() {
         let mut arg_index = 0usize;
         loop {
             let arg_ptr = unsafe { *_argv.add(arg_index) };
+            crate::serial_println!("[execve] PID={} argv[{}]={:#x}", current_pid, arg_index, arg_ptr as u64);
             if arg_ptr.is_null() {
                 break;
             }
@@ -499,11 +540,14 @@ pub fn execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8)
                     return u64::MAX;
                 }
             };
+            
+            crate::serial_println!("[execve] PID={} argv[{}] copied: len={}", current_pid, arg_index, len);
 
             argv_storage.push(arg_buf[..len].to_vec());
             arg_index += 1;
         }
     }
+    crate::serial_println!("[execve] PID={} total argc={}", current_pid, argv_storage.len());
 
     // CRITICAL FIX: Switch to kernel CR3 for the rest of execve
     // This ensures that all memory allocations (EXT2_READ_CACHE, heap buffers, etc.)

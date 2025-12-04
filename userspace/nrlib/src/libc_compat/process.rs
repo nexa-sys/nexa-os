@@ -276,9 +276,33 @@ pub unsafe extern "C" fn posix_spawn(
         return crate::EINVAL;
     } 
 
+    // CRITICAL FIX: Force parameters to be saved on stack before fork
+    // Without this, the compiler may keep them in caller-saved registers
+    // which are not preserved across fork in NexaOS.
+    // Using volatile read/write to prevent the compiler from optimizing away
+    let path_copy: *const c_char;
+    let argv_copy: *const *mut c_char;
+    let envp_copy: *const *mut c_char;
+    
+    // Force stack storage using inline assembly memory barrier
+    core::arch::asm!(
+        "",
+        in("rdi") path,
+        in("rsi") argv,
+        in("rdx") envp,
+        options(nomem, nostack, preserves_flags)
+    );
+    
+    // Copy to stack variables
+    path_copy = core::ptr::read_volatile(&path);
+    argv_copy = core::ptr::read_volatile(&argv);
+    envp_copy = core::ptr::read_volatile(&envp);
+
     // DEBUG: Print path pointer before fork
     crate::debug_log_message(b"[posix_spawn] BEFORE fork, path_ptr=0x");
-    crate::debug_log_hex(path as u64);
+    crate::debug_log_hex(path_copy as u64);
+    crate::debug_log_message(b", argv_ptr=0x");
+    crate::debug_log_hex(argv_copy as u64);
     crate::debug_log_message(b"\n");
 
     let child_pid = crate::fork();
@@ -288,15 +312,22 @@ pub unsafe extern "C" fn posix_spawn(
 
     if child_pid == 0 {
         // Child process - exec the program
+        // Re-read from stack variables (compiler should have saved them)
+        let path_for_exec = core::ptr::read_volatile(&path_copy);
+        let argv_for_exec = core::ptr::read_volatile(&argv_copy);
+        let envp_for_exec = core::ptr::read_volatile(&envp_copy);
+        
         // DEBUG: Print path pointer after fork in child
         crate::debug_log_message(b"[posix_spawn] CHILD after fork, path_ptr=0x");
-        crate::debug_log_hex(path as u64);
+        crate::debug_log_hex(path_for_exec as u64);
+        crate::debug_log_message(b", argv_ptr=0x");
+        crate::debug_log_hex(argv_for_exec as u64);
         crate::debug_log_message(b"\n");
         
         let ret = crate::execve(
-            path as *const u8,
-            argv as *const *const u8,
-            envp as *const *const u8,
+            path_for_exec as *const u8,
+            argv_for_exec as *const *const u8,
+            envp_for_exec as *const *const u8,
         );
         // If execve returns, it failed
         crate::_exit(if ret < 0 { 127 } else { ret });
