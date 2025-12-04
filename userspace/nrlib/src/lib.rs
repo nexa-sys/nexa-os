@@ -1168,11 +1168,16 @@ pub extern "C" fn abort() -> ! {
 
 // Thread-local storage (TLS) support ----------------------------------------
 // std expects pthread_key_create/delete/setspecific/getspecific
-// We provide a minimal fake implementation (single-threaded for now)
+// Now uses per-thread TCB storage for proper multi-threading support
 
 const MAX_TLS_KEYS: usize = 128;
-static mut TLS_KEYS: [Option<*mut c_void>; MAX_TLS_KEYS] = [None; MAX_TLS_KEYS];
+// Global key allocation tracking (which keys are in use)
+static mut TLS_KEY_USED: [bool; MAX_TLS_KEYS] = [false; MAX_TLS_KEYS];
 static mut TLS_NEXT_KEY: usize = 0;
+static mut TLS_DESTRUCTORS: [Option<unsafe extern "C" fn(*mut c_void)>; MAX_TLS_KEYS] = [None; MAX_TLS_KEYS];
+
+// Fallback global storage for when TCB is not available (early init)
+static mut TLS_FALLBACK: [*mut c_void; MAX_TLS_KEYS] = [ptr::null_mut(); MAX_TLS_KEYS];
 
 pub type pthread_key_t = c_uint;
 
@@ -1181,63 +1186,76 @@ type PthreadDestructor = Option<unsafe extern "C" fn(*mut c_void)>;
 #[no_mangle]
 pub unsafe extern "C" fn pthread_key_create(
     key: *mut pthread_key_t,
-    _destructor: PthreadDestructor,
+    destructor: PthreadDestructor,
 ) -> i32 {
-    // let slot = PTHREAD_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
-    // if slot < 32 {
-    //     debug_log_message(b"[nrlib] pthread_key_create\n");
-    // }
+    // Find a free key slot
     if TLS_NEXT_KEY >= MAX_TLS_KEYS {
-        set_errno(EINVAL);
-        return -1;
+        // Try to find a deleted slot
+        for i in 0..MAX_TLS_KEYS {
+            if !TLS_KEY_USED[i] {
+                TLS_KEY_USED[i] = true;
+                TLS_DESTRUCTORS[i] = destructor;
+                *key = i as pthread_key_t;
+                return 0;
+            }
+        }
+        set_errno(EAGAIN);
+        return EAGAIN;
     }
     let k = TLS_NEXT_KEY;
     TLS_NEXT_KEY += 1;
-    TLS_KEYS[k] = None;
+    TLS_KEY_USED[k] = true;
+    TLS_DESTRUCTORS[k] = destructor;
     *key = k as pthread_key_t;
     0
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn pthread_key_delete(_key: pthread_key_t) -> i32 {
-    let idx = _key as usize;
-    if idx < MAX_TLS_KEYS {
-        TLS_KEYS[idx] = None;
+pub unsafe extern "C" fn pthread_key_delete(key: pthread_key_t) -> i32 {
+    let idx = key as usize;
+    if idx < MAX_TLS_KEYS && TLS_KEY_USED[idx] {
+        TLS_KEY_USED[idx] = false;
+        TLS_DESTRUCTORS[idx] = None;
         0
     } else {
         set_errno(EINVAL);
-        -1
+        EINVAL
     }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn pthread_getspecific(key: pthread_key_t) -> *mut c_void {
-    // let slot = PTHREAD_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
-    // if slot < 32 {
-    //     debug_log_message(b"[nrlib] pthread_getspecific\n");
-    // }
     let idx = key as usize;
-    if idx < MAX_TLS_KEYS {
-        TLS_KEYS[idx].unwrap_or(ptr::null_mut())
-    } else {
-        ptr::null_mut()
+    if idx >= MAX_TLS_KEYS {
+        return ptr::null_mut();
     }
+    
+    // Try to get from per-thread TCB first
+    let value = libc_compat::pthread::get_thread_tls_data(idx);
+    if !value.is_null() {
+        return value;
+    }
+    
+    // Fallback to global storage (for early init or if TCB not set)
+    TLS_FALLBACK[idx]
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn pthread_setspecific(key: pthread_key_t, value: *const c_void) -> i32 {
-    // let slot = PTHREAD_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
-    // if slot < 32 {
-    //     debug_log_message(b"[nrlib] pthread_setspecific\n");
-    // }
     let idx = key as usize;
-    if idx < MAX_TLS_KEYS {
-        TLS_KEYS[idx] = Some(value as *mut c_void);
-        0
-    } else {
+    if idx >= MAX_TLS_KEYS {
         set_errno(EINVAL);
-        -1
+        return EINVAL;
     }
+    
+    // Try to set in per-thread TCB first
+    if libc_compat::pthread::set_thread_tls_data(idx, value as *mut c_void) {
+        return 0;
+    }
+    
+    // Fallback to global storage (for early init or if TCB not set)
+    TLS_FALLBACK[idx] = value as *mut c_void;
+    0
 }
 
 // Allocator support for std::alloc::System ----------------------------------

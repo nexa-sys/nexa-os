@@ -1,7 +1,8 @@
 //! Direct pthread test - bypasses std::thread completely
 //! Uses raw pthread_create to test the underlying threading implementation
 
-use std::sync::atomic::{AtomicU32, Ordering};
+// Global flag to verify thread ran - using raw atomic operation
+static mut THREAD_RESULT: u32 = 0;
 
 // pthread types (must match nrlib)
 type pthread_t = u64;
@@ -20,9 +21,6 @@ extern "C" {
     fn pthread_join(thread: pthread_t, retval: *mut *mut c_void) -> c_int;
 }
 
-// Global flag to verify thread ran
-static THREAD_RESULT: AtomicU32 = AtomicU32::new(0);
-
 // Use raw syscall for output to avoid any TLS issues
 fn raw_print(s: &[u8]) {
     unsafe {
@@ -40,14 +38,17 @@ fn raw_print_hex(val: u64) {
 }
 
 // Thread function - completely standalone, no std dependencies inside
+// Use volatile write to avoid any atomic machinery
 extern "C" fn thread_func(arg: *mut c_void) -> *mut c_void {
     raw_print(b"\n[pthread_test] ==== THREAD RUNNING ====\n");
     raw_print(b"[pthread_test] arg = 0x");
     raw_print_hex(arg as u64);
     raw_print(b"\n");
     
-    // Store result to prove we ran
-    THREAD_RESULT.store(0xDEADBEEF, Ordering::SeqCst);
+    // Store result using volatile write to avoid any std atomic machinery
+    unsafe {
+        core::ptr::write_volatile(&mut THREAD_RESULT, 0xDEADBEEF);
+    }
     
     raw_print(b"[pthread_test] Thread completing successfully!\n");
     
@@ -70,7 +71,7 @@ fn main() {
     let ret = unsafe {
         pthread_create(
             &mut thread_id,
-            std::ptr::null(),
+            core::ptr::null(),
             thread_func,
             test_arg,
         )
@@ -91,7 +92,7 @@ fn main() {
     
     raw_print(b"[pthread_test] Calling pthread_join...\n");
     
-    let mut retval: *mut c_void = std::ptr::null_mut();
+    let mut retval: *mut c_void = core::ptr::null_mut();
     let join_ret = unsafe {
         pthread_join(thread_id, &mut retval)
     };
@@ -104,8 +105,8 @@ fn main() {
     raw_print_hex(retval as u64);
     raw_print(b"\n");
     
-    // Check the global flag
-    let result = THREAD_RESULT.load(Ordering::SeqCst);
+    // Check the global flag using volatile read
+    let result = unsafe { core::ptr::read_volatile(&THREAD_RESULT) };
     raw_print(b"[pthread_test] THREAD_RESULT: 0x");
     raw_print_hex(result as u64);
     raw_print(b"\n");

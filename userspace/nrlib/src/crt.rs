@@ -62,6 +62,10 @@ pub extern "C" fn __nexa_get_start_c_addr() -> usize {
 /// Decode argc/argv/envp from the preserved userspace stack and invoke `main`.
 #[no_mangle]
 unsafe extern "C" fn __nexa_crt_start(stack_ptr: *const usize) -> ! {
+    // Initialize TLS for main thread FIRST, before anything else
+    // This is critical for proper std support
+    crate::libc_compat::pthread::__nrlib_init_main_thread_tls();
+    
     if stack_ptr.is_null() {
         let exit_code = main(0, core::ptr::null());
         sys_exit(exit_code)

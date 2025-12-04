@@ -599,49 +599,78 @@ const CLONE_THREAD_FLAGS: c_int = super::types::CLONE_VM
 /// Thread control block - stores thread state
 /// This structure is pointed to by the FS register for TLS access
 /// Layout must be compatible with musl's pthread structure for std compatibility
+/// CRITICAL: Field order determines offsets. Verified layout:
+///   offset 0:  self_ptr (8 bytes)
+///   offset 8:  dtv (8 bytes)
+///   offset 16: prev (8 bytes)
+///   offset 24: next (8 bytes)
+///   offset 32: sysinfo (8 bytes)
+///   offset 40: start_routine (8 bytes)
+///   offset 48: arg (8 bytes)
+///   offset 56: retval (8 bytes)
+///   offset 64: stack_base (8 bytes)
+///   offset 72: stack_size (8 bytes)
+///   offset 80: tid (8 bytes)
+///   offset 88: errno_val (4 bytes)
+///   offset 92: flags (4 bytes) - joinable/detached packed
+///   offset 96: exited (8 bytes)
+///   offset 104: tid_address (8 bytes)
+///   offset 112: canary (8 bytes)
+///   offset 120: padding (8 bytes)
+///   offset 128: tls_data (128 * 8 = 1024 bytes)
 #[repr(C)]
 struct ThreadControlBlock {
     /// Self pointer (for TLS access via %fs:0) - offset 0
     self_ptr: *mut ThreadControlBlock,
     /// DTV (Dynamic Thread Vector) for TLS - offset 8
-    /// Points to an array of pointers to TLS blocks
     dtv: *mut usize,
-    /// Previous thread in list - offset 16 (unused but needed for layout)
+    /// Previous thread in list - offset 16
     prev: *mut ThreadControlBlock,
-    /// Next thread in list - offset 24 (unused but needed for layout)
+    /// Next thread in list - offset 24
     next: *mut ThreadControlBlock,
-    /// sysinfo - offset 32 (unused)
+    /// sysinfo - offset 32
     sysinfo: usize,
-    /// Stack canary - offset 40
-    canary: usize,
-    /// Thread ID (set after clone) - offset 48
-    tid: AtomicUsize,
-    /// errno location - offset 56
-    errno_val: i32,
-    /// Padding to align - offset 60
-    _pad1: i32,
-    /// Start routine - offset 64
+    /// Start routine - offset 40
     start_routine: extern "C" fn(*mut c_void) -> *mut c_void,
-    /// Argument to start routine - offset 72
+    /// Argument to start routine - offset 48
     arg: *mut c_void,
-    /// Return value from thread - offset 80
+    /// Return value from thread - offset 56
     retval: *mut c_void,
-    /// Stack base address - offset 88
+    /// Stack base address - offset 64
     stack_base: *mut c_void,
-    /// Stack size - offset 96
+    /// Stack size - offset 72
     stack_size: usize,
-    /// Joinable flag - offset 104
-    joinable: bool,
-    /// Detached flag - offset 105
-    detached: bool,
-    /// Padding
-    _pad2: [u8; 6],
-    /// Exit flag - offset 112
+    /// Thread ID (set after clone) - offset 80
+    tid: AtomicUsize,
+    /// errno location - offset 88
+    errno_val: i32,
+    /// Flags: bit 0 = joinable, bit 1 = detached - offset 92
+    flags: u32,
+    /// Exit flag - offset 96
     exited: AtomicUsize,
-    /// TID address for futex wake on exit - offset 120
+    /// TID address for futex wake on exit - offset 104
     tid_address: *mut c_int,
+    /// Stack canary - offset 112
+    canary: usize,
+    /// Padding to align tls_data to 128 - offset 120
+    _pad: usize,
     /// Thread-specific data (pthread_key values) - offset 128
     tls_data: [*mut c_void; MAX_TLS_KEYS],
+}
+
+impl ThreadControlBlock {
+    fn is_joinable(&self) -> bool {
+        (self.flags & 1) != 0
+    }
+    fn set_joinable(&mut self, v: bool) {
+        if v { self.flags |= 1; } else { self.flags &= !1; }
+    }
+    fn is_detached(&self) -> bool {
+        (self.flags & 2) != 0
+    }
+    fn set_detached(&mut self, v: bool) {
+        if v { self.flags |= 2; } else { self.flags &= !2; }
+    }
 }
 
 /// Maximum TLS keys per thread
@@ -653,6 +682,120 @@ const MAX_THREADS: usize = 64;
 /// Thread table
 static mut THREAD_TABLE: [Option<*mut ThreadControlBlock>; MAX_THREADS] = [None; MAX_THREADS];
 static THREAD_TABLE_LOCK: AtomicUsize = AtomicUsize::new(0);
+
+/// Static storage for main thread's TCB (avoid dynamic allocation at startup)
+#[repr(C, align(16))]
+struct MainThreadTcbStorage {
+    tcb: ThreadControlBlock,
+}
+
+static mut MAIN_THREAD_TCB: MainThreadTcbStorage = MainThreadTcbStorage {
+    tcb: ThreadControlBlock {
+        self_ptr: ptr::null_mut(),
+        dtv: ptr::null_mut(),
+        prev: ptr::null_mut(),
+        next: ptr::null_mut(),
+        sysinfo: 0,
+        start_routine: main_thread_dummy_start,
+        arg: ptr::null_mut(),
+        retval: ptr::null_mut(),
+        stack_base: ptr::null_mut(),
+        stack_size: 0,
+        tid: AtomicUsize::new(0),
+        errno_val: 0,
+        flags: 1, // joinable
+        exited: AtomicUsize::new(0),
+        tid_address: ptr::null_mut(),
+        canary: 0,
+        _pad: 0,
+        tls_data: [ptr::null_mut(); MAX_TLS_KEYS],
+    },
+};
+
+/// Flag to track if main thread TLS has been initialized
+static MAIN_TLS_INITIALIZED: AtomicUsize = AtomicUsize::new(0);
+
+/// Dummy start routine for main thread (never called)
+extern "C" fn main_thread_dummy_start(_arg: *mut c_void) -> *mut c_void {
+    ptr::null_mut()
+}
+
+/// Initialize TLS for the main thread.
+/// This must be called early in program startup before any TLS operations.
+/// It sets up the TCB and FS base register for the main thread.
+#[no_mangle]
+pub unsafe extern "C" fn __nrlib_init_main_thread_tls() {
+    // Only initialize once
+    if MAIN_TLS_INITIALIZED.compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        return;
+    }
+    
+    // Get pointer to the static TCB storage
+    let tcb_ptr = &mut MAIN_THREAD_TCB.tcb as *mut ThreadControlBlock;
+    
+    // Initialize self-pointer (critical for %fs:0 access)
+    (*tcb_ptr).self_ptr = tcb_ptr;
+    
+    // Get main thread's TID
+    let tid = crate::syscall0(crate::SYS_GETTID) as usize;
+    (*tcb_ptr).tid.store(tid, Ordering::SeqCst);
+    
+    // Register in thread table (slot 0 for main thread)
+    THREAD_TABLE[0] = Some(tcb_ptr);
+    
+    // Set FS base to point to the TCB using arch_prctl
+    // ARCH_SET_FS = 0x1002
+    let ret = crate::syscall2(crate::SYS_ARCH_PRCTL, 0x1002, tcb_ptr as u64);
+    if ret != 0 {
+        // Log error but continue - some operations may still work
+        let msg = b"[nrlib] WARNING: Failed to set FS base for main thread\n";
+        let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
+    }
+}
+
+/// Get the current thread's TCB pointer from FS base.
+/// Returns None if TLS is not initialized.
+#[inline]
+pub unsafe fn get_current_tcb() -> Option<*mut ThreadControlBlock> {
+    let tcb_ptr: *mut ThreadControlBlock;
+    core::arch::asm!(
+        "mov {}, fs:0",
+        out(reg) tcb_ptr,
+        options(nostack, preserves_flags, readonly)
+    );
+    
+    if tcb_ptr.is_null() {
+        None
+    } else {
+        Some(tcb_ptr)
+    }
+}
+
+/// Get TLS data for the current thread at the given key index.
+/// Falls back to global storage if TLS is not initialized.
+#[inline]
+pub unsafe fn get_thread_tls_data(key: usize) -> *mut c_void {
+    if let Some(tcb) = get_current_tcb() {
+        if key < MAX_TLS_KEYS {
+            return (*tcb).tls_data[key];
+        }
+    }
+    // Fallback: return null if no TCB or key out of range
+    ptr::null_mut()
+}
+
+/// Set TLS data for the current thread at the given key index.
+/// Falls back to global storage if TLS is not initialized.
+#[inline]
+pub unsafe fn set_thread_tls_data(key: usize, value: *mut c_void) -> bool {
+    if let Some(tcb) = get_current_tcb() {
+        if key < MAX_TLS_KEYS {
+            (*tcb).tls_data[key] = value;
+            return true;
+        }
+    }
+    false
+}
 
 /// Allocate a thread slot
 unsafe fn alloc_thread_slot(tcb: *mut ThreadControlBlock) -> Option<usize> {
@@ -714,6 +857,43 @@ pub unsafe extern "C" fn __thread_entry() -> ! {
         loop { spin_loop(); }
     }
     
+    // Debug: dump raw TCB memory to verify offsets
+    {
+        let msg = b"[nrlib] __thread_entry: dumping TCB offsets\n";
+        let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
+        
+        // Read raw bytes at each offset
+        let base = tcb_ptr as *const u8;
+        
+        // Offset 64 (start_routine)
+        let msg = b"[nrlib] offset64=0x";
+        let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
+        let val64 = *(base.add(64) as *const u64);
+        print_hex_u64(val64);
+        let _ = crate::syscall3(SYS_WRITE_NR, 2, b"\n".as_ptr() as u64, 1);
+        
+        // Offset 72 (arg)
+        let msg = b"[nrlib] offset72=0x";
+        let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
+        let val72 = *(base.add(72) as *const u64);
+        print_hex_u64(val72);
+        let _ = crate::syscall3(SYS_WRITE_NR, 2, b"\n".as_ptr() as u64, 1);
+        
+        // Print actual field addresses using offset_of would be ideal, but let's use ptr math
+        let msg = b"[nrlib] &tcb.start_routine offset=";
+        let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
+        let tcb = &*tcb_ptr;
+        let start_offset = (&tcb.start_routine as *const _ as usize) - (tcb_ptr as usize);
+        print_hex_u64(start_offset as u64);
+        let _ = crate::syscall3(SYS_WRITE_NR, 2, b"\n".as_ptr() as u64, 1);
+        
+        let msg = b"[nrlib] &tcb.arg offset=";
+        let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
+        let arg_offset = (&tcb.arg as *const _ as usize) - (tcb_ptr as usize);
+        print_hex_u64(arg_offset as u64);
+        let _ = crate::syscall3(SYS_WRITE_NR, 2, b"\n".as_ptr() as u64, 1);
+    }
+    
     let tcb = &mut *tcb_ptr;
     
     // Debug: print start_routine
@@ -736,11 +916,28 @@ pub unsafe extern "C" fn __thread_entry() -> ! {
     
     // Call the user's start routine
     {
-        let msg: &[u8] = b"[nrlib] __thread_entry: calling start_routine\n";
+        let msg: &[u8] = b"[nrlib] __thread_entry: calling start_routine at 0x";
         let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
+        print_hex_u64(tcb.start_routine as u64);
+        let msg: &[u8] = b" with arg 0x";
+        let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
+        print_hex_u64(tcb.arg as u64);
+        let _ = crate::syscall3(SYS_WRITE_NR, 2, b"\n".as_ptr() as u64, 1);
     }
     
-    let retval = (tcb.start_routine)(tcb.arg);
+    // Actually call the start routine
+    let start_fn = tcb.start_routine;
+    let start_arg = tcb.arg;
+    let retval = (start_fn)(start_arg);
+    
+    // We reached here - thread function returned
+    {
+        let msg: &[u8] = b"[nrlib] __thread_entry: start_routine returned 0x";
+        let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
+        print_hex_u64(retval as u64);
+        let _ = crate::syscall3(SYS_WRITE_NR, 2, b"\n".as_ptr() as u64, 1);
+    }
+    
     tcb.retval = retval;
     
     // Mark as exited
@@ -850,19 +1047,33 @@ pub unsafe extern "C" fn pthread_create(
     tcb.prev = ptr::null_mut();
     tcb.next = ptr::null_mut();
     tcb.sysinfo = 0;
-    tcb.canary = 0; // TODO: randomize for security
-    tcb.tid = AtomicUsize::new(0);
-    tcb.errno_val = 0;
-    tcb._pad1 = 0;
     tcb.start_routine = start_routine;
     tcb.arg = arg;
     tcb.retval = ptr::null_mut();
     tcb.stack_base = stack as *mut c_void;
     tcb.stack_size = total_stack;
-    tcb.joinable = true;
-    tcb.detached = false;
-    tcb._pad2 = [0; 6];
+    tcb.tid = AtomicUsize::new(0);
+    tcb.errno_val = 0;
+    tcb.flags = 1; // joinable = true, detached = false
     tcb.exited = AtomicUsize::new(0);
+    tcb.tid_address = ptr::null_mut();
+    tcb.canary = 0; // TODO: randomize for security
+    tcb._pad = 0;
+    
+    // Debug: verify we stored arg correctly
+    {
+        let msg = b"[nrlib] pthread_create: arg stored=0x";
+        let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
+        print_hex_u64(tcb.arg as u64);
+        let _ = crate::syscall3(SYS_WRITE_NR, 2, b"\n".as_ptr() as u64, 1);
+        
+        // Print actual offset of arg field
+        let msg = b"[nrlib] pthread_create: &tcb.arg offset=";
+        let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
+        let arg_offset = (&tcb.arg as *const _ as usize) - (tcb_ptr as usize);
+        print_hex_u64(arg_offset as u64);
+        let _ = crate::syscall3(SYS_WRITE_NR, 2, b"\n".as_ptr() as u64, 1);
+    }
     
     // Initialize TLS data to null
     for i in 0..MAX_TLS_KEYS {
@@ -993,7 +1204,7 @@ pub unsafe extern "C" fn pthread_join(thread: pthread_t, retval: *mut *mut c_voi
     
     let tcb = &*found_tcb;
     
-    if tcb.detached {
+    if tcb.is_detached() {
         return crate::EINVAL;
     }
     
@@ -1038,7 +1249,7 @@ pub unsafe extern "C" fn pthread_detach(thread: pthread_t) -> c_int {
     for i in 0..MAX_THREADS {
         if let Some(tcb) = THREAD_TABLE[i] {
             if (*tcb).tid.load(Ordering::Acquire) == thread as usize {
-                (*tcb).detached = true;
+                (*tcb).set_detached(true);
                 THREAD_TABLE_LOCK.store(0, Ordering::Release);
                 return 0;
             }
