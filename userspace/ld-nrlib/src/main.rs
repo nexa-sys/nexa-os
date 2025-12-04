@@ -880,27 +880,6 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
     let argc = *stack_ptr as usize;
     let argv = stack_ptr.add(1) as *const *const u8;
     
-    // Debug: print argc and stack_ptr
-    print_str("[ld-nrlib] stack_ptr=");
-    print_hex(stack_ptr as u64);
-    print_str(" argc=");
-    print_hex(argc as u64);
-    print_str("\n");
-    
-    // Debug: print argv
-    for i in 0..argc {
-        let arg = *argv.add(i);
-        if !arg.is_null() {
-            print_str("[ld-nrlib] argv[");
-            print_hex(i as u64);
-            print_str("]=");
-            let arg_len = cstr_len(arg);
-            let arg_slice = core::slice::from_raw_parts(arg, arg_len);
-            print(arg_slice);
-            print_str("\n");
-        }
-    }
-    
     // Skip past argv (argc+1 entries including NULL terminator)
     let mut ptr = argv.add(argc + 1) as *const *const u8;
     
@@ -1200,15 +1179,6 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
         print_str("[ld-nrlib] ERROR: No entry point\n");
         exit(127);
     }
-
-    // Debug: print entry point and stack_ptr before jump
-    print_str("[ld-nrlib] jumping to entry=");
-    print_hex(entry);
-    print_str(" stack_ptr=");
-    print_hex(stack_ptr as u64);
-    print_str(" argc_at_stack=");
-    print_hex(*stack_ptr);
-    print_str("\n");
 
     // Jump to the entry point with the original stack
     // The main executable expects the same stack layout as if it was started directly

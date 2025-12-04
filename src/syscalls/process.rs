@@ -513,12 +513,10 @@ pub fn execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8)
 
     // Also copy argv BEFORE CR3 switch
     let mut argv_storage: Vec<Vec<u8>> = Vec::new();
-    crate::serial_println!("[execve] PID={} _argv={:#x}", current_pid, _argv as u64);
     if !_argv.is_null() {
         let mut arg_index = 0usize;
         loop {
             let arg_ptr = unsafe { *_argv.add(arg_index) };
-            crate::serial_println!("[execve] PID={} argv[{}]={:#x}", current_pid, arg_index, arg_ptr as u64);
             if arg_ptr.is_null() {
                 break;
             }
@@ -540,14 +538,11 @@ pub fn execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8)
                     return u64::MAX;
                 }
             };
-            
-            crate::serial_println!("[execve] PID={} argv[{}] copied: len={}", current_pid, arg_index, len);
 
             argv_storage.push(arg_buf[..len].to_vec());
             arg_index += 1;
         }
     }
-    crate::serial_println!("[execve] PID={} total argc={}", current_pid, argv_storage.len());
 
     // CRITICAL FIX: Switch to kernel CR3 for the rest of execve
     // This ensures that all memory allocations (EXT2_READ_CACHE, heap buffers, etc.)
