@@ -222,7 +222,8 @@ pub fn clone(
         child_process.memory_size = memory_size;
 
         // Create page tables for child
-        match crate::paging::create_process_address_space(child_phys_base, memory_size) {
+        // Clone: use immediate mapping (demand_paging=false) because memory is already copied
+        match crate::paging::create_process_address_space(child_phys_base, memory_size, false) {
             Ok(cr3) => {
                 child_process.cr3 = cr3;
                 ktrace!("[clone] Created page tables (CR3={:#x})", cr3);

@@ -198,57 +198,10 @@ pub fn jump_to_usermode_with_cr3(entry: u64, stack: u64, cr3: u64) -> ! {
     unsafe {
         crate::serial_println!("J2U_SYSRET_NOW");
 
-        // Debug: dump first few bytes at physical USER_PHYS_BASE (where we loaded the ELF)
-        let user_phys_base = 0x1000000u64;
-        let code_ptr = user_phys_base as *const u8;
-        crate::serial_print!("CODE@{:#x}: ", user_phys_base);
-        for i in 0..16 {
-            crate::serial_print!("{:02x} ", *code_ptr.add(i));
-        }
-        crate::serial_println!();
-
-        // Also dump bytes at entry point offset
-        let entry_offset = entry - 0x400000; // entry is virtual, convert to offset from base
-        let entry_phys = user_phys_base + entry_offset;
-        let entry_ptr = entry_phys as *const u8;
-        crate::serial_print!("ENTRY@{:#x}: ", entry_phys);
-        for i in 0..16 {
-            crate::serial_print!("{:02x} ", *entry_ptr.add(i));
-        }
-        crate::serial_println!();
-
-        // Dump stack content (physical address)
-        // stack is virtual, need physical address
-        let stack_virt = stack;
-        let stack_offset = stack_virt - crate::process::USER_VIRT_BASE; // offset from USER_VIRT_BASE
-        let stack_phys = user_phys_base + stack_offset;
-        crate::serial_println!("STACK: virt={:#x} phys={:#x}", stack_virt, stack_phys);
-        let stack_ptr = stack_phys as *const u64;
-        for i in 0..8 {
-            let val = *stack_ptr.add(i);
-            crate::serial_println!("  [RSP+{}]: {:#018x}", i * 8, val);
-        }
-
-        // Debug: dump the actual values we're passing
-        crate::serial_println!(
-            "SYSRET_ARGS: cr3={:#x} entry={:#x} stack={:#x}",
-            cr3,
-            entry,
-            stack
-        );
-
-        // Store values in known memory locations for debugging
+        // Store values for asm block
         let entry_val = entry;
         let stack_val = stack;
         let cr3_val = cr3;
-
-        // Print values again to make sure they haven't changed
-        crate::serial_println!(
-            "VERIFY: cr3={:#x} entry={:#x} stack={:#x}",
-            cr3_val,
-            entry_val,
-            stack_val
-        );
 
         // CRITICAL FIX: Use explicit registers to avoid compiler interference
         // The compiler might reuse registers in unexpected ways with inline asm

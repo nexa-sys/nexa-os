@@ -89,6 +89,10 @@ static CR3_ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
 static CR3_ACTIVATIONS: AtomicU64 = AtomicU64::new(0);
 static CR3_FREES: AtomicU64 = AtomicU64::new(0);
 
+// Demand paging statistics
+static DEMAND_PAGE_FAULTS: AtomicU64 = AtomicU64::new(0);
+static DEMAND_PAGES_ALLOCATED: AtomicU64 = AtomicU64::new(0);
+
 // Simple free list for user regions
 // Each entry is (base_address, size) - we use 0 to indicate an empty slot
 const MAX_FREE_REGIONS: usize = 64;
@@ -493,7 +497,17 @@ fn clone_table(dst: &mut PageTable, src: &PageTable) {
 }
 
 /// Create a process-specific address space rooted at a new PML4.
-pub fn create_process_address_space(phys_base: u64, size: u64) -> Result<u64, &'static str> {
+///
+/// # Arguments
+/// * `phys_base` - Physical base address for user memory
+/// * `size` - Size of user memory region
+/// * `demand_paging` - If true, pages are mapped on-demand via page faults.
+///                     If false, all pages are mapped immediately (required for fork).
+pub fn create_process_address_space(
+    phys_base: u64,
+    size: u64,
+    demand_paging: bool,
+) -> Result<u64, &'static str> {
     use crate::process::USER_VIRT_BASE;
     use x86_64::structures::paging::PageTableFlags;
 
@@ -612,22 +626,52 @@ pub fn create_process_address_space(phys_base: u64, size: u64) -> Result<u64, &'
 
     let page_count = ((aligned_size + HUGE_PAGE_SIZE - 1) / HUGE_PAGE_SIZE).max(1);
 
-    for page in 0..page_count {
-        let offset = page * HUGE_PAGE_SIZE;
-        let virt_addr = USER_VIRT_BASE + offset;
-        let phys_addr = phys_base + offset;
-        let pd_index = ((virt_addr >> 21) & 0x1FF) as usize;
-
-        let flags = PageTableFlags::PRESENT
-            | PageTableFlags::WRITABLE
-            | PageTableFlags::USER_ACCESSIBLE
-            | PageTableFlags::HUGE_PAGE;
-
-        if nxe_supported() {
-            // Leave executable for now; future work can toggle NO_EXECUTE per segment.
+    if demand_paging {
+        // DEMAND PAGING MODE (按需分配模式):
+        // Don't map pages immediately. Instead, clear PD entries so page faults
+        // will trigger on first access. The page fault handler will map pages
+        // on-demand via handle_user_demand_fault().
+        //
+        // Clear user region PD entries to ensure "not present" page faults
+        // USER_VIRT_BASE = 0x1000000, PD index = 8
+        // Clear entries 8 through 8+page_count to cover the user region
+        let user_pd_start = ((USER_VIRT_BASE >> 21) & 0x1FF) as usize; // = 8
+        for i in 0..(page_count as usize) {
+            let pd_idx = user_pd_start + i;
+            if pd_idx < 512 {
+                // Clear the entry - no PRESENT flag means page fault on access
+                pd[pd_idx].set_addr(PhysAddr::new(0), PageTableFlags::empty());
+            }
         }
 
-        pd[pd_index].set_addr(PhysAddr::new(phys_addr), flags);
+        crate::serial_println!(
+            "create_process_address_space: DEMAND PAGING mode, {} pages will be mapped on-demand (phys_base={:#x})",
+            page_count,
+            phys_base
+        );
+    } else {
+        // IMMEDIATE MAPPING MODE (立即映射模式):
+        // Map all pages immediately. Required for fork() where memory has already
+        // been copied to physical addresses.
+        for page in 0..page_count {
+            let offset = page * HUGE_PAGE_SIZE;
+            let virt_addr = USER_VIRT_BASE + offset;
+            let phys_addr = phys_base + offset;
+            let pd_index = ((virt_addr >> 21) & 0x1FF) as usize;
+
+            let flags = PageTableFlags::PRESENT
+                | PageTableFlags::WRITABLE
+                | PageTableFlags::USER_ACCESSIBLE
+                | PageTableFlags::HUGE_PAGE;
+
+            pd[pd_index].set_addr(PhysAddr::new(phys_addr), flags);
+        }
+
+        crate::serial_println!(
+            "create_process_address_space: IMMEDIATE mode, {} pages mapped (phys_base={:#x})",
+            page_count,
+            phys_base
+        );
     }
 
     // Increment allocation counter for monitoring
@@ -1041,4 +1085,154 @@ pub fn print_user_region_statistics() {
         free_bytes
     );
     crate::kinfo!("=== End User Region Statistics ===");
+}
+
+// =============================================================================
+// Demand Paging (按需分配) Implementation
+// =============================================================================
+
+/// Check if a virtual address is within the user space region that supports demand paging.
+/// Returns true if the address is in the user region (USER_VIRT_BASE to USER_VIRT_BASE + USER_REGION_SIZE).
+pub fn is_user_demand_page_address(virt_addr: u64) -> bool {
+    use crate::process::{USER_VIRT_BASE, USER_REGION_SIZE};
+    virt_addr >= USER_VIRT_BASE && virt_addr < USER_VIRT_BASE + USER_REGION_SIZE
+}
+
+/// Handle a user-space page fault for demand paging.
+/// This function is called from the page fault handler when a user-mode process
+/// accesses an unmapped page in its address space.
+///
+/// # Arguments
+/// * `fault_addr` - The virtual address that caused the page fault
+/// * `pid` - The process ID of the faulting process
+/// * `cr3` - The CR3 (page table root) of the process
+/// * `memory_base` - The physical base address of the process's pre-allocated memory region
+///
+/// # Returns
+/// * `Ok(())` - If the page was successfully mapped
+/// * `Err(&'static str)` - If the page could not be mapped (e.g., out of bounds)
+///
+/// # Safety
+/// This function modifies page tables and must only be called from the page fault handler
+/// in an appropriate context (interrupts may be disabled).
+pub fn handle_user_demand_fault(
+    fault_addr: u64,
+    pid: u64,
+    cr3: u64,
+    memory_base: u64,
+) -> Result<(), &'static str> {
+    use crate::process::{USER_VIRT_BASE, USER_REGION_SIZE};
+
+    // Validate the fault address is within user space
+    if !is_user_demand_page_address(fault_addr) {
+        return Err("Fault address not in user demand page region");
+    }
+
+    // Calculate the page-aligned virtual address
+    const HUGE_PAGE_SIZE: u64 = 0x200000; // 2 MiB
+    let page_virt = fault_addr & !(HUGE_PAGE_SIZE - 1);
+
+    // Calculate the offset from USER_VIRT_BASE
+    let offset = page_virt - USER_VIRT_BASE;
+
+    // Ensure the offset is within the allocated region
+    if offset >= USER_REGION_SIZE {
+        return Err("Demand fault offset exceeds user region size");
+    }
+
+    // Calculate the corresponding physical address
+    // The physical memory is pre-allocated at memory_base, so we just need
+    // to map the virtual page to the corresponding physical page
+    let page_phys = memory_base + offset;
+
+    // Use serial_println! to ensure visibility after init starts
+    crate::serial_println!(
+        "demand_fault: PID {} virt {:#x} -> phys {:#x}",
+        pid,
+        page_virt,
+        page_phys
+    );
+
+    // Map the page in the process's page table
+    unsafe {
+        map_user_page_in_cr3(cr3, page_virt, page_phys)?;
+    }
+
+    // Update statistics
+    DEMAND_PAGE_FAULTS.fetch_add(1, AtomicOrdering::Relaxed);
+    DEMAND_PAGES_ALLOCATED.fetch_add(1, AtomicOrdering::Relaxed);
+
+    // Flush the TLB entry for this address
+    use x86_64::instructions::tlb;
+    use x86_64::VirtAddr;
+    tlb::flush(VirtAddr::new(page_virt));
+
+    Ok(())
+}
+
+/// Map a single 2 MiB huge page in the specified CR3's page table.
+/// This is used for demand paging to map pages on-demand.
+///
+/// # Safety
+/// - cr3 must point to a valid PML4 table
+/// - The page table structure for the user region must already exist (PML4 -> PDP -> PD)
+unsafe fn map_user_page_in_cr3(cr3: u64, virt_addr: u64, phys_addr: u64) -> Result<(), &'static str> {
+    use x86_64::structures::paging::{PageTable, PageTableFlags};
+
+    let pml4 = &mut *(cr3 as *mut PageTable);
+
+    // Calculate page table indices
+    let pml4_index = ((virt_addr >> 39) & 0x1FF) as usize;
+    let pdp_index = ((virt_addr >> 30) & 0x1FF) as usize;
+    let pd_index = ((virt_addr >> 21) & 0x1FF) as usize;
+
+    // Navigate to PDP
+    if pml4[pml4_index].is_unused() {
+        return Err("PML4 entry for user region is not present");
+    }
+    let pdp = &mut *(pml4[pml4_index].addr().as_u64() as *mut PageTable);
+
+    // Navigate to PD
+    if pdp[pdp_index].is_unused() {
+        return Err("PDP entry for user region is not present");
+    }
+    let pd = &mut *(pdp[pdp_index].addr().as_u64() as *mut PageTable);
+
+    // Check if already mapped (should not happen for demand paging)
+    if !pd[pd_index].is_unused() {
+        crate::kwarn!(
+            "demand_fault: page at {:#x} already mapped to {:#x}",
+            virt_addr,
+            pd[pd_index].addr().as_u64()
+        );
+        return Ok(()); // Already mapped, nothing to do
+    }
+
+    // Set up the page table entry with user-accessible huge page
+    let flags = PageTableFlags::PRESENT
+        | PageTableFlags::WRITABLE
+        | PageTableFlags::USER_ACCESSIBLE
+        | PageTableFlags::HUGE_PAGE;
+
+    pd[pd_index].set_addr(PhysAddr::new(phys_addr), flags);
+
+    crate::kdebug!(
+        "demand_fault: mapped PD[{}] = virt {:#x} -> phys {:#x}",
+        pd_index,
+        virt_addr,
+        phys_addr
+    );
+
+    Ok(())
+}
+
+/// Print demand paging statistics
+pub fn print_demand_paging_statistics() {
+    let faults = DEMAND_PAGE_FAULTS.load(AtomicOrdering::Relaxed);
+    let allocated = DEMAND_PAGES_ALLOCATED.load(AtomicOrdering::Relaxed);
+
+    crate::kinfo!("=== Demand Paging Statistics ===");
+    crate::kinfo!("  Total page faults handled: {}", faults);
+    crate::kinfo!("  Total pages allocated on-demand: {}", allocated);
+    crate::kinfo!("=== End Demand Paging Statistics ===");
 }

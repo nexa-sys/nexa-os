@@ -57,6 +57,14 @@ pub extern "x86-interrupt" fn page_fault_handler(
     let rsp = stack_frame.stack_pointer.as_u64();
     let rflags = stack_frame.cpu_flags.bits();
 
+    // Debug: always print page fault info to serial
+    crate::serial_println!(
+        "PF: addr={:#x} rip={:#x} err={:?}",
+        fault_addr,
+        rip,
+        error_code
+    );
+
     // Check if this is a user-mode page fault using the error code's USER_MODE bit
     // This is more reliable than checking CS because:
     // 1. The error code USER_MODE bit directly indicates if the access was from user mode
@@ -64,8 +72,46 @@ pub extern "x86-interrupt" fn page_fault_handler(
     let is_user_mode = error_code.contains(PageFaultErrorCode::USER_MODE);
 
     if is_user_mode {
-        // User-mode page fault - terminate the process gracefully
+        // User-mode page fault - first try demand paging before terminating
         if let Some(pid) = crate::scheduler::current_pid() {
+            // Check if this is a demand paging fault (page not present, in user region)
+            // Error code bit 0 (PROTECTION_VIOLATION) = 0 means page not present
+            // Error code bit 0 = 1 means page present but protection violation
+            let is_not_present = !error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION);
+
+            // Try demand paging for not-present faults in the user region
+            if is_not_present && crate::mm::is_user_demand_page_address(fault_addr) {
+                // Get process info for demand paging
+                if let Some(process) = crate::scheduler::get_process(pid) {
+                    let cr3 = process.cr3;
+                    let memory_base = process.memory_base;
+
+                    // Try to handle the demand fault
+                    match crate::mm::handle_user_demand_fault(fault_addr, pid, cr3, memory_base) {
+                        Ok(()) => {
+                            // Successfully mapped the page, return to user mode
+                            // Use serial_println! to ensure visibility after init starts
+                            crate::serial_println!(
+                                "demand_fault: PID {} fault at {:#x} handled OK",
+                                pid,
+                                fault_addr
+                            );
+                            return; // Continue execution
+                        }
+                        Err(e) => {
+                            // Demand paging failed, fall through to SIGSEGV
+                            crate::serial_println!(
+                                "demand_fault: PID {} fault at {:#x} failed: {}",
+                                pid,
+                                fault_addr,
+                                e
+                            );
+                        }
+                    }
+                }
+            }
+
+            // Demand paging not applicable or failed - terminate with SIGSEGV
             let signal = crate::ipc::signal::SIGSEGV;
 
             // Use serial_println! to ensure output is visible (kerror! is filtered after init starts)
