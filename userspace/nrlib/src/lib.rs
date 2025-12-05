@@ -89,6 +89,14 @@ pub use libc_compat::rtld::{
     DlInfo, DlError, rtld_init, rtld_is_initialized,
 };
 
+// Re-export directory operations
+pub use libc_compat::dirent::{
+    opendir, readdir, readdir64, readdir_r, closedir, rewinddir,
+    seekdir, telldir, dirfd, fdopendir, alphasort, versionsort,
+    dirent, dirent64, DIR,
+    DT_UNKNOWN, DT_FIFO, DT_CHR, DT_DIR, DT_BLK, DT_REG, DT_LNK, DT_SOCK, DT_WHT,
+};
+
 // Re-export resolver types
 pub use resolver::Resolver;
 

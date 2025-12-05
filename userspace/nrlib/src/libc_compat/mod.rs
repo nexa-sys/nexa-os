@@ -50,6 +50,9 @@ pub mod reloc;
 pub mod loader;
 pub mod dl;
 
+// Directory operations
+pub mod dirent;
+
 // Re-export all public items from submodules
 pub use types::*;
 pub use pthread::*;
@@ -66,3 +69,4 @@ pub use process::*;
 pub use syscall_wrapper::*;
 pub use fs::*;
 pub use string::*;
+pub use dirent::*;

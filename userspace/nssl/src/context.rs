@@ -242,8 +242,8 @@ impl SslContext {
 
     /// Set default CA certificate paths
     pub fn set_default_verify_paths(&mut self) -> bool {
-        // Standard CA paths (files only, as directory traversal may not be supported)
-        let paths = [
+        // Standard CA certificate bundle files (try these first)
+        let bundle_files = [
             "/etc/ssl/certs/ca-certificates.crt",
             "/etc/pki/tls/certs/ca-bundle.crt",
             "/etc/ssl/ca-bundle.pem",
@@ -251,15 +251,30 @@ impl SslContext {
             "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
         ];
         
-        for path in &paths {
+        let mut loaded = false;
+        
+        // Try loading CA bundle files
+        for path in &bundle_files {
             if self.cert_store.load_file(path) {
-                return true;
+                loaded = true;
+                break;
             }
         }
         
-        // Note: Directory loading (/etc/ssl/certs) requires opendir/readdir
-        // which may not be available on all targets
-        false
+        // Also try loading from CA certificate directories
+        let ca_dirs = [
+            "/etc/ssl/certs",
+            "/etc/pki/tls/certs",
+            "/etc/pki/ca-trust/extracted/pem",
+        ];
+        
+        for dir in &ca_dirs {
+            if self.cert_store.load_path(dir) {
+                loaded = true;
+            }
+        }
+        
+        loaded
     }
 
     /// Set ALPN protocols
