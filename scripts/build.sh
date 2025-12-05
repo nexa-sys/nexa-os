@@ -71,8 +71,13 @@ build_userspace_only() {
     log_section "Building Userspace"
     
     timed_run "Building nrlib" bash "$STEPS_DIR/build-nrlib.sh" all
-    timed_run "Building ncryptolib" bash "$STEPS_DIR/build-ncryptolib.sh" all
+    timed_run "Building libraries" bash "$STEPS_DIR/build-libs.sh" all
     timed_run "Building programs" bash "$STEPS_DIR/build-userspace-programs.sh" all
+}
+
+# Libraries only (ncryptolib, nssl, etc.)
+build_libs_only() {
+    timed_run "Building libraries" bash "$STEPS_DIR/build-libs.sh" all
 }
 
 # ISO only (assumes kernel exists)
@@ -191,6 +196,7 @@ Commands:
   quick, q        Quick build (kernel + initramfs + ISO, no rootfs)
   kernel, k       Build kernel only
   userspace, u    Build userspace programs only
+  libs, l         Build libraries only (ncryptolib, nssl, etc.)
   modules, m      Build kernel modules only
   initramfs, i    Build initramfs only
   rootfs, r       Build root filesystem only
@@ -245,6 +251,9 @@ run_step() {
             ;;
         userspace|u)
             build_userspace_only
+            ;;
+        libs|l)
+            build_libs_only
             ;;
         modules|m)
             build_modules_only
