@@ -10,8 +10,10 @@ path = "src/main.rs"
 [dependencies]
 nrlib = { workspace = true, optional = true, features = ["panic-handler"] }
 nexa_boot_info.workspace = true
+nssl = { path = "../../nssl", optional = true }
 
 [features]
-default = ["use-nrlib"]
+default = ["use-nrlib", "https"]
 use-nrlib = ["nrlib"]
 use-nrlib-std = ["nrlib", "nrlib/std"]
+https = ["nssl"]
