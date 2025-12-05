@@ -113,6 +113,49 @@ impl RecordLayer {
         self.write_record(ContentType::Handshake, data, wbio)
     }
 
+    /// Write ChangeCipherSpec message
+    pub fn write_ccs(&mut self, data: &[u8], wbio: *mut Bio) -> bool {
+        self.write_record(ContentType::ChangeCipherSpec, data, wbio)
+    }
+
+    /// Read ChangeCipherSpec message
+    pub fn read_ccs(&mut self, rbio: *mut Bio) -> bool {
+        if rbio.is_null() {
+            return false;
+        }
+
+        // Read header
+        let mut header_buf = [0u8; 5];
+        unsafe {
+            let n = (*rbio).read(header_buf.as_mut_ptr(), 5);
+            if n != 5 {
+                return false;
+            }
+        }
+
+        let header = match RecordHeader::from_bytes(&header_buf) {
+            Some(h) => h,
+            None => return false,
+        };
+
+        // Check content type
+        if header.content_type != ContentType::ChangeCipherSpec as u8 {
+            return false;
+        }
+
+        // Read record data (should be 1 byte: 0x01)
+        let mut data = vec![0u8; header.length as usize];
+        unsafe {
+            let n = (*rbio).read(data.as_mut_ptr(), header.length as i32);
+            if n != header.length as i32 {
+                return false;
+            }
+        }
+
+        // Verify CCS content
+        data.len() == 1 && data[0] == 1
+    }
+
     /// Write application data
     pub fn write_application_data(&mut self, data: &[u8], wbio: *mut Bio) -> bool {
         // Split into records if necessary
