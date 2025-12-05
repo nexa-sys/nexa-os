@@ -154,6 +154,14 @@ pub enum FileBacking {
     StdStream(StdStreamKind),
     Socket(SocketHandle),
     Socketpair(SocketpairHandle),
+    /// /dev/random - blocking random device
+    DevRandom,
+    /// /dev/urandom - non-blocking random device
+    DevUrandom,
+    /// /dev/null - discard writes, return EOF on read
+    DevNull,
+    /// /dev/zero - return zero bytes on read
+    DevZero,
 }
 
 /// Standard stream kind

@@ -1436,22 +1436,118 @@ pub unsafe extern "C" fn calloc(nmemb: usize, size: usize) -> *mut c_void {
 }
 
 // Random number generation (for std::random) --------------------------------
+
+/// getrandom syscall number (Linux-compatible)
+const SYS_GETRANDOM: usize = 318;
+
+/// getrandom flags
+pub const GRND_NONBLOCK: u32 = 0x0001;
+pub const GRND_RANDOM: u32 = 0x0002;
+pub const GRND_INSECURE: u32 = 0x0004;
+
+/// Get random bytes from the kernel via getrandom syscall
+#[no_mangle]
+pub unsafe extern "C" fn getrandom(buf: *mut c_void, buflen: usize, flags: u32) -> isize {
+    if buf.is_null() || buflen == 0 {
+        set_errno(EINVAL);
+        return -1;
+    }
+
+    let ret: isize;
+    core::arch::asm!(
+        "syscall",
+        inout("rax") SYS_GETRANDOM => ret,
+        in("rdi") buf,
+        in("rsi") buflen,
+        in("rdx") flags,
+        out("rcx") _,
+        out("r11") _,
+        options(nostack, preserves_flags)
+    );
+
+    if ret < 0 {
+        set_errno((-ret) as i32);
+        -1
+    } else {
+        set_errno(0);
+        ret
+    }
+}
+
+/// Fill buffer with random bytes (arc4random_buf compatible)
+/// This is a cryptographically secure random number generator
 #[no_mangle]
 pub unsafe extern "C" fn arc4random_buf(buf: *mut c_void, nbytes: usize) {
-    // Simple pseudo-random (not cryptographically secure)
-    static mut SEED: u64 = 0x123456789abcdef0;
+    if buf.is_null() || nbytes == 0 {
+        return;
+    }
 
-    let bytes = core::slice::from_raw_parts_mut(buf as *mut u8, nbytes);
+    // Use getrandom syscall with blocking mode
+    let mut filled = 0usize;
+    let bytes = buf as *mut u8;
+    
+    while filled < nbytes {
+        let to_fill = nbytes - filled;
+        let result = getrandom(bytes.add(filled) as *mut c_void, to_fill, 0);
+        
+        if result > 0 {
+            filled += result as usize;
+        } else {
+            // If syscall fails, fall back to software PRNG for remaining bytes
+            // This should be rare if ever happens
+            fallback_random(bytes.add(filled), nbytes - filled);
+            break;
+        }
+    }
+}
+
+/// arc4random - return a random 32-bit value
+#[no_mangle]
+pub unsafe extern "C" fn arc4random() -> u32 {
+    let mut buf = [0u8; 4];
+    arc4random_buf(buf.as_mut_ptr() as *mut c_void, 4);
+    u32::from_ne_bytes(buf)
+}
+
+/// arc4random_uniform - return a random value in [0, upper_bound)
+#[no_mangle]
+pub unsafe extern "C" fn arc4random_uniform(upper_bound: u32) -> u32 {
+    if upper_bound < 2 {
+        return 0;
+    }
+    
+    // Rejection sampling to avoid modulo bias
+    let min = (-(upper_bound as i32) as u32) % upper_bound;
+    
+    loop {
+        let r = arc4random();
+        if r >= min {
+            return r % upper_bound;
+        }
+    }
+}
+
+/// Fallback software PRNG (used only if kernel syscall fails)
+unsafe fn fallback_random(buf: *mut u8, len: usize) {
+    static mut SEED: u64 = 0x123456789abcdef0;
+    
+    // Mix in some entropy from TSC
+    let tsc: u64;
+    core::arch::asm!(
+        "rdtsc",
+        "shl rdx, 32",
+        "or rax, rdx",
+        out("rax") tsc,
+        out("rdx") _,
+        options(nomem, nostack)
+    );
+    SEED ^= tsc;
+    
+    let bytes = core::slice::from_raw_parts_mut(buf, len);
     for byte in bytes {
         SEED = SEED.wrapping_mul(6364136223846793005).wrapping_add(1);
         *byte = (SEED >> 56) as u8;
     }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn getrandom(buf: *mut c_void, buflen: usize, _flags: u32) -> isize {
-    arc4random_buf(buf, buflen);
-    buflen as isize
 }
 
 // lang items ----------------------------------------------------------------

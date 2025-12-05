@@ -304,6 +304,27 @@ pub fn write(fd: u64, buf: u64, count: u64) -> u64 {
                     posix::set_errno(posix::errno::EROFS);
                     return u64::MAX;
                 }
+                FileBacking::DevRandom | FileBacking::DevUrandom => {
+                    // Writing to /dev/random adds entropy to the pool
+                    if !user_buffer_in_range(buf, count) {
+                        posix::set_errno(posix::errno::EFAULT);
+                        return u64::MAX;
+                    }
+                    let data = core::slice::from_raw_parts(buf as *const u8, count as usize);
+                    crate::drivers::dev_random_write(data);
+                    posix::set_errno(0);
+                    return count;
+                }
+                FileBacking::DevNull => {
+                    // /dev/null discards all writes
+                    posix::set_errno(0);
+                    return count;
+                }
+                FileBacking::DevZero => {
+                    // /dev/zero discards all writes
+                    posix::set_errno(0);
+                    return count;
+                }
             }
         }
     }
@@ -500,6 +521,34 @@ pub fn read(fd: u64, buf: *mut u8, count: usize) -> u64 {
                     posix::set_errno(0);
                     return read as u64;
                 }
+                FileBacking::DevRandom => {
+                    // Blocking read from /dev/random
+                    let dest = slice::from_raw_parts_mut(buf, count);
+                    crate::drivers::dev_random_read(dest);
+                    posix::set_errno(0);
+                    return count as u64;
+                }
+                FileBacking::DevUrandom => {
+                    // Non-blocking read from /dev/urandom
+                    let dest = slice::from_raw_parts_mut(buf, count);
+                    crate::drivers::dev_urandom_read(dest);
+                    posix::set_errno(0);
+                    return count as u64;
+                }
+                FileBacking::DevNull => {
+                    // /dev/null always returns EOF
+                    posix::set_errno(0);
+                    return 0;
+                }
+                FileBacking::DevZero => {
+                    // /dev/zero returns zero bytes
+                    let dest = slice::from_raw_parts_mut(buf, count);
+                    for byte in dest.iter_mut() {
+                        *byte = 0;
+                    }
+                    posix::set_errno(0);
+                    return count as u64;
+                }
             }
         }
     }
@@ -530,6 +579,48 @@ pub fn open(path_ptr: *const u8, len: usize) -> u64 {
     }
 
     let normalized = path;
+
+    // Check for special device files
+    let special_backing = match normalized {
+        "/dev/random" => Some(FileBacking::DevRandom),
+        "/dev/urandom" => Some(FileBacking::DevUrandom),
+        "/dev/null" => Some(FileBacking::DevNull),
+        "/dev/zero" => Some(FileBacking::DevZero),
+        _ => None,
+    };
+
+    if let Some(backing) = special_backing {
+        unsafe {
+            if let Some(index) = find_empty_file_handle_slot() {
+                let metadata = posix::Metadata {
+                    size: 0,
+                    file_type: FileType::Character,
+                    mode: 0o666 | FileType::Character.mode_bits(),
+                    uid: 0,
+                    gid: 0,
+                    mtime: 0,
+                    nlink: 1,
+                    blocks: 0,
+                };
+                set_file_handle(
+                    index,
+                    Some(FileHandle {
+                        backing,
+                        position: 0,
+                        metadata,
+                    }),
+                );
+                posix::set_errno(0);
+                let fd = FD_BASE + index as u64;
+                mark_fd_open(fd);
+                kinfo!("Opened device '{}' as fd {}", normalized, fd);
+                return fd;
+            }
+        }
+        posix::set_errno(posix::errno::EMFILE);
+        kwarn!("No free file handles available");
+        return u64::MAX;
+    }
 
     if let Some(opened) = crate::fs::open(normalized) {
         if matches!(opened.metadata.file_type, FileType::Directory) {

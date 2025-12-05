@@ -7,11 +7,13 @@
 //! - VGA text mode buffer
 //! - ACPI table parsing
 //! - Parallel display compositor
+//! - Random number generator (RDRAND/RDSEED + ChaCha20 CSPRNG)
 
 pub mod acpi;
 pub mod compositor;
 pub mod framebuffer;
 pub mod keyboard;
+pub mod random;
 pub mod serial;
 pub mod vga;
 
@@ -45,4 +47,12 @@ pub use compositor::{
     is_initialized as compositor_is_initialized, stats as compositor_stats,
     worker_count as compositor_worker_count, BlendMode, CompositionLayer, CompositionRegion,
     CompositorStats,
+};
+
+// Re-export from random
+pub use random::{
+    add_entropy, dev_random_read, dev_random_write, dev_urandom_read, entropy_available,
+    get_random_bytes, get_random_bytes_wait, get_random_u32, get_random_u64,
+    init as init_random, is_initialized as random_is_initialized, sys_getrandom,
+    GRND_INSECURE, GRND_NONBLOCK, GRND_RANDOM,
 };

@@ -164,8 +164,9 @@ pub fn generate_random_entropy_avail() -> (&'static [u8], usize) {
     let mut buf = SYS_BUFFER.lock();
     let mut writer = BufWriter::new(&mut buf[..]);
 
-    // Placeholder entropy value
-    let _ = write!(writer, "256\n");
+    // Get actual entropy value from random driver
+    let entropy = crate::drivers::entropy_available();
+    let _ = write!(writer, "{}\n", entropy);
 
     let len = writer.len();
     let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), len) };
@@ -189,16 +190,20 @@ pub fn generate_random_uuid() -> (&'static [u8], usize) {
     let mut buf = SYS_BUFFER.lock();
     let mut writer = BufWriter::new(&mut buf[..]);
 
-    // Generate a simple pseudo-random UUID based on tick counter
-    let tick = crate::scheduler::get_tick();
+    // Generate a version 4 (random) UUID using hardware RNG
+    let r1 = crate::drivers::get_random_u64();
+    let r2 = crate::drivers::get_random_u64();
+    
+    // Format as UUID: xxxxxxxx-xxxx-4xxx-Yxxx-xxxxxxxxxxxx
+    // where 4 indicates version 4, and Y is 8, 9, a, or b
     let _ = write!(
         writer,
         "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}\n",
-        (tick >> 32) as u32,
-        ((tick >> 16) & 0xFFFF) as u16,
-        (tick & 0xFFF) as u16,
-        0x8000 | ((tick >> 48) & 0x3FFF) as u16,
-        tick & 0xFFFFFFFFFFFF
+        (r1 >> 32) as u32,
+        ((r1 >> 16) & 0xFFFF) as u16,
+        (r1 & 0xFFF) as u16,
+        0x8000 | ((r2 >> 48) & 0x3FFF) as u16,  // Variant 1 (RFC 4122)
+        r2 & 0xFFFFFFFFFFFF
     );
 
     let len = writer.len();

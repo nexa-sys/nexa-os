@@ -344,6 +344,15 @@ pub extern "C" fn syscall_dispatch(
         SYS_UEFI_GET_USB_INFO => uefi_get_usb_info(arg1 as usize, arg2 as *mut UsbHostDescriptor),
         SYS_UEFI_GET_HID_INFO => uefi_get_hid_info(arg1 as usize, arg2 as *mut HidInputDescriptor),
         SYS_UEFI_MAP_USB_MMIO => uefi_map_usb_mmio(arg1 as usize),
+        SYS_GETRANDOM => {
+            let result = crate::drivers::sys_getrandom(arg1 as *mut u8, arg2 as usize, arg3 as u32);
+            if result < 0 {
+                posix::set_errno((-result) as i32);
+                (-1i64) as u64
+            } else {
+                result as u64
+            }
+        }
         _ => {
             crate::kwarn!("Unknown syscall: {}", nr);
             posix::set_errno(posix::errno::ENOSYS);

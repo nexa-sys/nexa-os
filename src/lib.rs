@@ -491,6 +491,9 @@ fn proceed_after_initramfs(cmdline_opt: Option<&'static str>) -> ! {
         drivers::compositor::worker_count()
     );
 
+    // Initialize random number generator (RDRAND/RDSEED + ChaCha20 CSPRNG)
+    drivers::random::init();
+
     scheduler::init(); // Process scheduler
     fs::init(); // Filesystem
     kmod::init(); // Kernel module system

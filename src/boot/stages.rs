@@ -307,6 +307,10 @@ fn mount_dev() -> Result<(), &'static str> {
     crate::fs::add_file_bytes("/dev/null", b"", false);
     crate::fs::add_file_bytes("/dev/zero", b"", false);
     crate::fs::add_file_bytes("/dev/console", b"", false);
+    
+    // Create random device nodes
+    crate::fs::add_file_bytes("/dev/random", b"", false);
+    crate::fs::add_file_bytes("/dev/urandom", b"", false);
 
     uefi_compat::install_device_nodes();
 

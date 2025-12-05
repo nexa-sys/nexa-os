@@ -107,3 +107,6 @@ pub const SYS_SYSLOG: u64 = 250;
 // Network configuration helpers
 pub const SYS_NET_SET_DNS: u64 = 260;
 pub const SYS_NET_GET_DNS: u64 = 261;
+
+// Random number generation (Linux-compatible)
+pub const SYS_GETRANDOM: u64 = 318;
