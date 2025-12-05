@@ -260,6 +260,7 @@ impl RecordLayer {
     /// Read a TLS record
     fn read_record(&mut self, expected_type: ContentType, rbio: *mut Bio) -> Option<Vec<u8>> {
         if rbio.is_null() {
+            eprintln!("[TLS-READ] rbio is null");
             return None;
         }
 
@@ -267,18 +268,23 @@ impl RecordLayer {
         let mut header_buf = [0u8; 5];
         unsafe {
             let n = (*rbio).read(header_buf.as_mut_ptr(), 5);
+            eprintln!("[TLS-READ] read header: n={}", n);
             if n <= 0 {
                 if n == 0 {
                     self.eof = true;
+                    eprintln!("[TLS-READ] EOF");
                 }
                 return None;
             }
             if n != 5 {
+                eprintln!("[TLS-READ] partial header read");
                 return None;
             }
         }
 
         let header = RecordHeader::from_bytes(&header_buf)?;
+        eprintln!("[TLS-READ] header: type={:#x}, ver={:#x}{:02x}, len={}", 
+            header.content_type, header.version_major, header.version_minor, header.length);
         
         // Check content type
         // TLS 1.3: encrypted records always have ApplicationData outer type
@@ -289,15 +295,34 @@ impl RecordLayer {
             expected_type as u8
         };
         
+        eprintln!("[TLS-READ] is_encrypted={}, expected_outer_type={:#x}", is_encrypted, expected_outer_type);
+        
         if header.content_type != expected_outer_type {
+            eprintln!("[TLS-READ] content type mismatch: got {:#x}, expected {:#x}", 
+                header.content_type, expected_outer_type);
             // Handle alerts
             if header.content_type == ContentType::Alert as u8 {
+                eprintln!("[TLS-READ] handling alert");
                 self.handle_alert(rbio, header.length);
                 return None;
+            }
+            // TLS 1.3: Handle ChangeCipherSpec for middlebox compatibility (RFC 8446 Section 5)
+            // Some servers send CCS even in TLS 1.3 for compatibility reasons
+            // We should read and ignore it, then retry reading the next record
+            if self.version >= TLS1_3_VERSION && header.content_type == ContentType::ChangeCipherSpec as u8 {
+                eprintln!("[TLS-READ] TLS 1.3 middlebox compatibility CCS, ignoring");
+                // Read and discard CCS data (should be 1 byte: 0x01)
+                let mut ccs_data = vec![0u8; header.length as usize];
+                unsafe {
+                    let _ = (*rbio).read(ccs_data.as_mut_ptr(), header.length as c_int);
+                }
+                // Recursively try to read the next record (the actual encrypted data)
+                return self.read_record(expected_type, rbio);
             }
             // TLS 1.3 encrypted: might be receiving ApplicationData when expecting Handshake
             // This is normal - inner type is in the decrypted content
             if is_encrypted && self.version >= TLS1_3_VERSION && header.content_type == ContentType::ApplicationData as u8 {
+                eprintln!("[TLS-READ] TLS 1.3 encrypted record, continuing");
                 // Continue processing
             } else {
                 return None;
@@ -306,6 +331,7 @@ impl RecordLayer {
 
         // Validate length
         if header.length as usize > MAX_RECORD_SIZE_WITH_OVERHEAD {
+            eprintln!("[TLS-READ] record too large: {}", header.length);
             return None;
         }
 
@@ -405,7 +431,11 @@ impl RecordLayer {
         let key = self.read_key.as_ref()?;
         let iv = self.read_iv.as_ref()?;
         
+        eprintln!("[TLS-DECRYPT] content_type={:#x}, ciphertext_len={}, read_seq={}", 
+            _content_type, ciphertext.len(), self.read_seq);
+        
         if ciphertext.len() < 16 {
+            eprintln!("[TLS-DECRYPT] ciphertext too short for tag");
             return None; // Too short for tag
         }
 
@@ -416,11 +446,15 @@ impl RecordLayer {
         for i in 0..8 {
             nonce[nonce_len - 8 + i] ^= seq_bytes[i];
         }
+        
+        eprintln!("[TLS-DECRYPT] nonce={:02x?}", &nonce);
 
         // Split ciphertext and tag
         let ct_len = ciphertext.len() - 16;
         let ct = &ciphertext[..ct_len];
         let tag = &ciphertext[ct_len..];
+        
+        eprintln!("[TLS-DECRYPT] ct_len={}, tag={:02x?}", ct_len, tag);
 
         // Build AAD
         // TLS 1.3: AAD is outer record header (type=0x17, version=0x0303, length)
@@ -430,21 +464,38 @@ impl RecordLayer {
         } else {
             build_aad(_content_type, self.version, ct_len as u16)
         };
+        
+        eprintln!("[TLS-DECRYPT] aad={:02x?}", &aad);
 
         // Decrypt using AES-GCM
         let plaintext = if key.len() == 32 {
             let key_arr: [u8; 32] = key.as_slice().try_into().ok()?;
             let tag_arr: [u8; 16] = tag.try_into().ok()?;
             let aes = ncryptolib::AesGcm::new_256(&key_arr);
-            aes.decrypt(&nonce, ct, &aad, &tag_arr)?
+            match aes.decrypt(&nonce, ct, &aad, &tag_arr) {
+                Some(p) => p,
+                None => {
+                    eprintln!("[TLS-DECRYPT] AES-256-GCM decryption failed (tag mismatch)");
+                    return None;
+                }
+            }
         } else if key.len() == 16 {
             let key_arr: [u8; 16] = key.as_slice().try_into().ok()?;
             let tag_arr: [u8; 16] = tag.try_into().ok()?;
             let aes = ncryptolib::AesGcm::new_128(&key_arr);
-            aes.decrypt(&nonce, ct, &aad, &tag_arr)?
+            match aes.decrypt(&nonce, ct, &aad, &tag_arr) {
+                Some(p) => p,
+                None => {
+                    eprintln!("[TLS-DECRYPT] AES-128-GCM decryption failed (tag mismatch)");
+                    return None;
+                }
+            }
         } else {
+            eprintln!("[TLS-DECRYPT] unsupported key length: {}", key.len());
             return None;
         };
+        
+        eprintln!("[TLS-DECRYPT] decryption OK, plaintext_len={}", plaintext.len());
         
         // TLS 1.3: remove inner content type from plaintext
         if self.version >= TLS1_3_VERSION && !plaintext.is_empty() {

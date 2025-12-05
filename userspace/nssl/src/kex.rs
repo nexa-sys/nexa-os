@@ -193,31 +193,45 @@ pub fn derive_tls13_keys(
 pub fn derive_tls13_handshake_keys(
     shared_secret: &[u8],
     transcript_hash: &[u8],
+    key_len: usize,
 ) -> Option<(Vec<u8>, DerivedKeys)> {
     // TLS 1.3 key schedule (RFC 8446 Section 7.1)
+    
+    eprintln!("[TLS1.3-KDF] shared_secret len={}, transcript_hash len={}, key_len={}", 
+        shared_secret.len(), transcript_hash.len(), key_len);
+    eprintln!("[TLS1.3-KDF] shared_secret={:02x?}", shared_secret);
+    eprintln!("[TLS1.3-KDF] transcript_hash={:02x?}", transcript_hash);
     
     // 1. Early secret: HKDF-Extract(salt=0, IKM=0) for no PSK
     let zero_key = [0u8; 32];
     let early_secret = hkdf_extract(&zero_key, &zero_key);
+    eprintln!("[TLS1.3-KDF] early_secret={:02x?}", &early_secret);
     
     // 2. Derive-Secret(early_secret, "derived", "")
     let empty_hash = ncryptolib::sha256(&[]);
     let derived_early = hkdf_expand_label(&early_secret, b"derived", &empty_hash, 32);
+    eprintln!("[TLS1.3-KDF] derived_early={:02x?}", &derived_early);
     
     // 3. Handshake secret: HKDF-Extract(derived_early, shared_secret)
     let handshake_secret = hkdf_extract(&derived_early, shared_secret);
+    eprintln!("[TLS1.3-KDF] handshake_secret={:02x?}", &handshake_secret);
     
     // 4. Client handshake traffic secret
     let client_hs_secret = hkdf_expand_label(&handshake_secret, b"c hs traffic", transcript_hash, 32);
+    eprintln!("[TLS1.3-KDF] client_hs_secret={:02x?}", &client_hs_secret);
     
     // 5. Server handshake traffic secret
     let server_hs_secret = hkdf_expand_label(&handshake_secret, b"s hs traffic", transcript_hash, 32);
+    eprintln!("[TLS1.3-KDF] server_hs_secret={:02x?}", &server_hs_secret);
     
-    // 6. Derive keys and IVs
-    let client_key = hkdf_expand_label(&client_hs_secret, b"key", &[], 32);
+    // 6. Derive keys and IVs (key_len depends on cipher suite)
+    let client_key = hkdf_expand_label(&client_hs_secret, b"key", &[], key_len);
     let client_iv = hkdf_expand_label(&client_hs_secret, b"iv", &[], 12);
-    let server_key = hkdf_expand_label(&server_hs_secret, b"key", &[], 32);
+    let server_key = hkdf_expand_label(&server_hs_secret, b"key", &[], key_len);
     let server_iv = hkdf_expand_label(&server_hs_secret, b"iv", &[], 12);
+    
+    eprintln!("[TLS1.3-KDF] server_key={:02x?}", &server_key);
+    eprintln!("[TLS1.3-KDF] server_iv={:02x?}", &server_iv);
     
     Some((handshake_secret, DerivedKeys {
         client_key,
@@ -231,6 +245,7 @@ pub fn derive_tls13_handshake_keys(
 pub fn derive_tls13_application_keys(
     handshake_secret: &[u8],
     transcript_hash: &[u8],
+    key_len: usize,
 ) -> Option<DerivedKeys> {
     // 1. Derive-Secret(handshake_secret, "derived", "")
     let empty_hash = ncryptolib::sha256(&[]);
@@ -246,10 +261,10 @@ pub fn derive_tls13_application_keys(
     // 4. Server application traffic secret
     let server_app_secret = hkdf_expand_label(&master_secret, b"s ap traffic", transcript_hash, 32);
     
-    // 5. Derive keys and IVs
-    let client_key = hkdf_expand_label(&client_app_secret, b"key", &[], 32);
+    // 5. Derive keys and IVs (key_len depends on cipher suite)
+    let client_key = hkdf_expand_label(&client_app_secret, b"key", &[], key_len);
     let client_iv = hkdf_expand_label(&client_app_secret, b"iv", &[], 12);
-    let server_key = hkdf_expand_label(&server_app_secret, b"key", &[], 32);
+    let server_key = hkdf_expand_label(&server_app_secret, b"key", &[], key_len);
     let server_iv = hkdf_expand_label(&server_app_secret, b"iv", &[], 12);
     
     Some(DerivedKeys {

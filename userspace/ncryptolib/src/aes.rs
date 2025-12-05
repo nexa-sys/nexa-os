@@ -502,7 +502,7 @@ impl<T> AesGcm<T> {
     where
         F: Fn(&[u8; 16]) -> [u8; 16],
     {
-        // Initialize counter
+        // Initialize counter J0
         let mut j0 = [0u8; 16];
         if nonce.len() == 12 {
             j0[..12].copy_from_slice(nonce);
@@ -511,12 +511,12 @@ impl<T> AesGcm<T> {
             j0 = self.ghash(&[], nonce);
         }
 
-        // Encrypt
+        // Encrypt using counters starting from J0+1
         let mut ciphertext = Vec::with_capacity(plaintext.len());
         let mut counter = j0;
 
         for chunk in plaintext.chunks(16) {
-            // Increment counter
+            // Increment counter first (J0+1, J0+2, ...)
             let ctr = u32::from_be_bytes([counter[12], counter[13], counter[14], counter[15]]);
             counter[12..16].copy_from_slice(&(ctr.wrapping_add(1)).to_be_bytes());
 
@@ -526,10 +526,9 @@ impl<T> AesGcm<T> {
             }
         }
 
-        // Compute tag
+        // Compute tag: GHASH(AAD, Ciphertext) XOR E_K(J0)
         let s = self.ghash(aad, &ciphertext);
-        j0[15] = j0[15].wrapping_add(1); // Use original counter + 1
-        let e_j0 = encrypt_block(&j0);
+        let e_j0 = encrypt_block(&j0);  // E_K(J0), NOT E_K(J0+1)
         
         let mut tag = [0u8; GCM_TAG_SIZE];
         for i in 0..16 {
@@ -543,7 +542,7 @@ impl<T> AesGcm<T> {
     where
         F: Fn(&[u8; 16]) -> [u8; 16],
     {
-        // Initialize counter
+        // Initialize counter J0
         let mut j0 = [0u8; 16];
         if nonce.len() == 12 {
             j0[..12].copy_from_slice(nonce);
@@ -553,9 +552,9 @@ impl<T> AesGcm<T> {
         }
 
         // Verify tag first
+        // GCM Tag = GHASH(AAD, Ciphertext) XOR E_K(J0)
         let s = self.ghash(aad, ciphertext);
-        j0[15] = j0[15].wrapping_add(1);
-        let e_j0 = encrypt_block(&j0);
+        let e_j0 = encrypt_block(&j0);  // E_K(J0), NOT E_K(J0+1)
         
         let mut computed_tag = [0u8; GCM_TAG_SIZE];
         for i in 0..16 {
@@ -571,17 +570,12 @@ impl<T> AesGcm<T> {
             return None;
         }
 
-        // Decrypt
-        let mut j0 = [0u8; 16];
-        if nonce.len() == 12 {
-            j0[..12].copy_from_slice(nonce);
-            j0[15] = 1;
-        }
-        
-        let mut plaintext = Vec::with_capacity(ciphertext.len());
+        // Decrypt using counters starting from J0+1
         let mut counter = j0;
+        let mut plaintext = Vec::with_capacity(ciphertext.len());
 
         for chunk in ciphertext.chunks(16) {
+            // Increment counter first (J0+1, J0+2, ...)
             let ctr = u32::from_be_bytes([counter[12], counter[13], counter[14], counter[15]]);
             counter[12..16].copy_from_slice(&(ctr.wrapping_add(1)).to_be_bytes());
 

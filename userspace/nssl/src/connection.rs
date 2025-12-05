@@ -397,10 +397,19 @@ impl SslConnection {
             }
         };
         
+        // 获取密钥长度（从 cipher suite）
+        let key_len = match &self.current_cipher {
+            Some(c) => (c.key_bits / 8) as usize,
+            None => 32, // 默认 AES-256
+        };
+        eprintln!("[TLS1.3] Using key_len={} bytes for cipher", key_len);
+        
         // 派生握手流量密钥 (handshake traffic keys)
+        eprintln!("[TLS1.3] Transcript data len={}", self.handshake.transcript.len());
+        eprintln!("[TLS1.3] Transcript first 32 bytes={:02x?}", &self.handshake.transcript[..32.min(self.handshake.transcript.len())]);
         let transcript_hash = self.handshake.get_transcript_hash();
         eprintln!("[TLS1.3] Transcript hash len={}", transcript_hash.len());
-        let (handshake_secret, hs_keys) = match derive_tls13_handshake_keys(&shared_secret, &transcript_hash) {
+        let (handshake_secret, hs_keys) = match derive_tls13_handshake_keys(&shared_secret, &transcript_hash, key_len) {
             Some(k) => {
                 eprintln!("[TLS1.3] Handshake keys derived");
                 k
@@ -463,7 +472,7 @@ impl SslConnection {
         
         // 6. 派生应用流量密钥 (application traffic keys)
         let final_transcript_hash = self.handshake.get_transcript_hash();
-        let app_keys = match derive_tls13_application_keys(&handshake_secret, &final_transcript_hash) {
+        let app_keys = match derive_tls13_application_keys(&handshake_secret, &final_transcript_hash, key_len) {
             Some(k) => {
                 eprintln!("[TLS1.3] Application keys derived");
                 k
@@ -700,9 +709,15 @@ impl SslConnection {
             }
         };
         
+        // 获取密钥长度（从 cipher suite）
+        let key_len = match &self.current_cipher {
+            Some(c) => (c.key_bits / 8) as usize,
+            None => 32, // 默认 AES-256
+        };
+        
         // 派生握手流量密钥
         let transcript_hash = self.handshake.get_transcript_hash();
-        let (handshake_secret, hs_keys) = match derive_tls13_handshake_keys(&shared_secret, &transcript_hash) {
+        let (handshake_secret, hs_keys) = match derive_tls13_handshake_keys(&shared_secret, &transcript_hash, key_len) {
             Some(k) => k,
             None => {
                 self.last_error = crate::ssl_error::SSL_ERROR_SSL;
@@ -741,7 +756,7 @@ impl SslConnection {
         
         // 4. 派生应用流量密钥
         let final_transcript_hash = self.handshake.get_transcript_hash();
-        let app_keys = match derive_tls13_application_keys(&handshake_secret, &final_transcript_hash) {
+        let app_keys = match derive_tls13_application_keys(&handshake_secret, &final_transcript_hash, key_len) {
             Some(k) => k,
             None => {
                 self.last_error = crate::ssl_error::SSL_ERROR_SSL;
