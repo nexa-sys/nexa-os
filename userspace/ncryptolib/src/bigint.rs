@@ -17,6 +17,8 @@ pub struct BigInt {
     limbs: [u64; MAX_LIMBS],
     /// Number of significant limbs
     len: usize,
+    /// Negative flag
+    negative: bool,
 }
 
 impl Default for BigInt {
@@ -27,7 +29,10 @@ impl Default for BigInt {
 
 impl PartialEq for BigInt {
     fn eq(&self, other: &Self) -> bool {
-        self.cmp(other) == Ordering::Equal
+        if self.negative != other.negative {
+            return false;
+        }
+        self.abs_cmp(other) == Ordering::Equal
     }
 }
 
@@ -41,6 +46,20 @@ impl PartialOrd for BigInt {
 
 impl Ord for BigInt {
     fn cmp(&self, other: &Self) -> Ordering {
+        // Handle signs
+        match (self.negative, other.negative) {
+            (false, true) => return Ordering::Greater,
+            (true, false) => return Ordering::Less,
+            (true, true) => return self.abs_cmp(other).reverse(),
+            (false, false) => {}
+        }
+        self.abs_cmp(other)
+    }
+}
+
+impl BigInt {
+    /// Compare absolute values
+    fn abs_cmp(&self, other: &Self) -> Ordering {
         if self.len != other.len {
             return self.len.cmp(&other.len);
         }
@@ -53,14 +72,24 @@ impl Ord for BigInt {
         
         Ordering::Equal
     }
-}
 
-impl BigInt {
     /// Create a zero BigInt
     pub const fn zero() -> Self {
         Self {
             limbs: [0u64; MAX_LIMBS],
             len: 0,
+            negative: false,
+        }
+    }
+
+    /// Create a one BigInt
+    pub const fn one() -> Self {
+        let mut limbs = [0u64; MAX_LIMBS];
+        limbs[0] = 1;
+        Self {
+            limbs,
+            len: 1,
+            negative: false,
         }
     }
 
@@ -74,10 +103,27 @@ impl BigInt {
         result
     }
 
+    /// Check if negative
+    pub fn is_negative(&self) -> bool {
+        self.negative && !self.is_zero()
+    }
+
+    /// Check if odd
+    pub fn is_odd(&self) -> bool {
+        !self.is_even()
+    }
+
+    /// Get byte length
+    pub fn byte_length(&self) -> usize {
+        (self.bit_length() + 7) / 8
+    }
+
     /// Create a BigInt from bytes (big-endian)
-    pub fn from_bytes_be(bytes: &[u8]) -> Option<Self> {
+    pub fn from_bytes_be(bytes: &[u8]) -> Self {
         if bytes.len() > MAX_LIMBS * 8 {
-            return None;
+            // Truncate if too large
+            let start = bytes.len() - MAX_LIMBS * 8;
+            return Self::from_bytes_be(&bytes[start..]);
         }
 
         let mut result = Self::zero();
@@ -87,7 +133,7 @@ impl BigInt {
         let significant = &bytes[first_nonzero..];
         
         if significant.is_empty() {
-            return Some(result);
+            return result;
         }
 
         // Convert to little-endian limbs
@@ -102,7 +148,26 @@ impl BigInt {
         }
 
         result.normalize();
-        Some(result)
+        result
+    }
+
+    /// Create modulo (alias for mod_reduce)
+    pub fn modulo(&self, m: &Self) -> Self {
+        self.mod_reduce(m)
+    }
+
+    /// Division returning quotient and remainder
+    pub fn div(&self, other: &Self) -> (Self, Self) {
+        if other.is_zero() {
+            return (Self::zero(), Self::zero());
+        }
+        if self < other {
+            return (Self::zero(), self.clone());
+        }
+
+        let q = Self::div_simple(self, other);
+        let r = self.sub(&q.mul(other));
+        (q, r)
     }
 
     /// Convert to bytes (big-endian)
@@ -394,7 +459,7 @@ impl BigInt {
 
         while !r.is_zero() {
             // Compute quotient
-            let q = Self::div(&old_r, &r);
+            let q = Self::div_simple(&old_r, &r);
             
             let temp_r = r.clone();
             r = old_r.sub(&q.mul(&r));
@@ -419,7 +484,7 @@ impl BigInt {
     }
 
     /// Integer division (simple implementation)
-    fn div(a: &Self, b: &Self) -> Self {
+    fn div_simple(a: &Self, b: &Self) -> Self {
         if b.is_zero() {
             return Self::zero();
         }
@@ -452,6 +517,11 @@ impl BigInt {
         
         low
     }
+
+    /// Check if greater than or equal to p (for modular reduction)
+    pub fn ge_p(&self, p: &Self) -> bool {
+        self >= p
+    }
 }
 
 #[cfg(test)]
@@ -461,7 +531,7 @@ mod tests {
     #[test]
     fn test_from_bytes() {
         let bytes = [0x01, 0x02, 0x03, 0x04];
-        let n = BigInt::from_bytes_be(&bytes).unwrap();
+        let n = BigInt::from_bytes_be(&bytes);
         assert_eq!(n.to_bytes_be(), bytes.to_vec());
     }
 
@@ -488,5 +558,14 @@ mod tests {
         let m = BigInt::from_u64(1000);
         let result = BigInt::mod_exp(&base, &exp, &m);
         assert_eq!(result.limbs[0], 24); // 2^10 = 1024 mod 1000 = 24
+    }
+
+    #[test]
+    fn test_div() {
+        let a = BigInt::from_u64(100);
+        let b = BigInt::from_u64(30);
+        let (q, r) = a.div(&b);
+        assert_eq!(q.limbs[0], 3);
+        assert_eq!(r.limbs[0], 10);
     }
 }

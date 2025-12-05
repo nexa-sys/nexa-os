@@ -13,16 +13,31 @@
 //!
 //! ## Symmetric Ciphers
 //! - **AES**: AES-128/256 in GCM, CTR, CBC modes (FIPS 197, SP 800-38D)
+//! - **ChaCha20**: ChaCha20 stream cipher (RFC 8439)
+//! - **ChaCha20-Poly1305**: AEAD cipher (RFC 8439)
 //!
 //! ## Asymmetric Cryptography
+//! - **RSA**: RSA-2048/3072/4096 with PKCS#1 v1.5 and OAEP (RFC 8017)
 //! - **Digital Signatures**: ECDSA (P-256, P-384), Ed25519 (RFC 8032)
 //! - **Key Exchange**: X25519 (RFC 7748)
 //!
 //! ## Key Derivation
 //! - **HKDF**: HMAC-based Key Derivation (RFC 5869)
 //! - **PBKDF2**: Password-Based Key Derivation (RFC 8018)
+//! - **Argon2**: Memory-hard password hashing (RFC 9106)
+//! - **scrypt**: Memory-hard key derivation (RFC 7914)
 //!
-//! ## Other
+//! ## Message Authentication
+//! - **HMAC**: HMAC-SHA256, HMAC-SHA384, HMAC-SHA512, HMAC-SHA3-256
+//! - **Poly1305**: One-time authenticator (RFC 8439)
+//!
+//! ## Encoding
+//! - **Base64**: Standard and URL-safe Base64 (RFC 4648)
+//! - **Hex**: Hexadecimal encoding/decoding
+//!
+//! ## Utilities
+//! - **Constant-time operations**: Timing-safe comparisons
+//! - **Secure zeroization**: Memory wiping
 //! - **Random**: CSPRNG based on getrandom syscall
 //!
 //! # Design Philosophy
@@ -61,14 +76,27 @@ pub mod crc32;
 
 // Symmetric encryption
 pub mod aes;
+pub mod chacha20;
 
 // Asymmetric cryptography
 pub mod ecdsa;
 pub mod x25519;
 pub mod ed25519;
+pub mod rsa;
 
 // Key derivation
 pub mod kdf;
+pub mod argon2;
+pub mod scrypt;
+
+// Message authentication
+pub mod hmac;
+
+// Encoding
+pub mod encoding;
+
+// Utilities
+pub mod constant_time;
 
 // Random number generation
 pub mod random;
@@ -217,9 +245,30 @@ pub use crc32::{crc32, crc32c, Crc32, Crc32c};
 
 // Symmetric encryption
 pub use aes::{Aes128, Aes256, AesGcm, AesCtr, AesCbc};
+pub use chacha20::{ChaCha20, ChaCha20Poly1305, Poly1305};
+pub use chacha20::{chacha20_encrypt, chacha20_decrypt};
+pub use chacha20::{chacha20_poly1305_encrypt, chacha20_poly1305_decrypt};
+
+// Asymmetric cryptography
+pub use rsa::{RsaPublicKey, RsaPrivateKey};
+pub use rsa::{rsa_encrypt, rsa_decrypt, rsa_sign, rsa_verify};
+pub use rsa::{rsa_oaep_encrypt, rsa_oaep_decrypt, generate_keypair};
 
 // Random
 pub use random::{getrandom, RngState};
 
 // Key derivation
 pub use kdf::{hkdf, pbkdf2_sha256};
+pub use argon2::{argon2, argon2id, argon2i, argon2d, Argon2Params, Argon2Variant};
+pub use scrypt::{scrypt, scrypt_simple, ScryptParams};
+
+// Message authentication
+pub use hmac::{hmac_sha384, hmac_sha512, hmac_sha3_256};
+pub use hmac::{HmacSha384, HmacSha512, HmacSha3_256, Hmac};
+
+// Encoding
+pub use encoding::{base64_encode, base64_decode, base64url_encode, base64url_decode};
+pub use encoding::{hex_encode, hex_decode};
+
+// Constant-time utilities
+pub use constant_time::{ct_eq, secure_zero};

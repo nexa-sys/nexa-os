@@ -145,8 +145,8 @@ impl EcdsaPublicKey {
             return None;
         }
 
-        let x = BigInt::from_bytes_be(&data[1..1 + coord_size])?;
-        let y = BigInt::from_bytes_be(&data[1 + coord_size..])?;
+        let x = BigInt::from_bytes_be(&data[1..1 + coord_size]);
+        let y = BigInt::from_bytes_be(&data[1 + coord_size..]);
 
         Some(Self {
             curve,
@@ -156,8 +156,8 @@ impl EcdsaPublicKey {
 
     /// Create from raw x, y coordinates
     pub fn from_xy(curve: EcdsaCurve, x: &[u8], y: &[u8]) -> Option<Self> {
-        let x = BigInt::from_bytes_be(x)?;
-        let y = BigInt::from_bytes_be(y)?;
+        let x = BigInt::from_bytes_be(x);
+        let y = BigInt::from_bytes_be(y);
 
         Some(Self {
             curve,
@@ -179,13 +179,13 @@ impl EcdsaPublicKey {
     pub fn verify_prehashed(&self, hash: &[u8], signature: &EcdsaSignature) -> bool {
         let (n, _p, _coord_size) = match self.curve {
             EcdsaCurve::P256 => (
-                BigInt::from_bytes_be(p256::N).unwrap(),
-                BigInt::from_bytes_be(p256::P).unwrap(),
+                BigInt::from_bytes_be(p256::N),
+                BigInt::from_bytes_be(p256::P),
                 p256::COORD_SIZE,
             ),
             EcdsaCurve::P384 => (
-                BigInt::from_bytes_be(p384::N).unwrap(),
-                BigInt::from_bytes_be(p384::P).unwrap(),
+                BigInt::from_bytes_be(p384::N),
+                BigInt::from_bytes_be(p384::P),
                 p384::COORD_SIZE,
             ),
         };
@@ -200,7 +200,7 @@ impl EcdsaPublicKey {
         }
 
         // z = hash truncated to bit length of n
-        let z = BigInt::from_bytes_be(hash).unwrap_or(BigInt::zero());
+        let z = BigInt::from_bytes_be(hash);
         let z = z.mod_reduce(&n);
 
         // w = s^(-1) mod n
@@ -239,8 +239,8 @@ impl EcdsaSignature {
     /// Create from raw r, s values
     pub fn from_rs(r: &[u8], s: &[u8]) -> Option<Self> {
         Some(Self {
-            r: BigInt::from_bytes_be(r)?,
-            s: BigInt::from_bytes_be(s)?,
+            r: BigInt::from_bytes_be(r),
+            s: BigInt::from_bytes_be(s),
         })
     }
 
@@ -279,7 +279,7 @@ impl EcdsaSignature {
         pos += 1;
         let r_len = data[pos] as usize;
         pos += 1;
-        let r = BigInt::from_bytes_be(&data[pos..pos + r_len])?;
+        let r = BigInt::from_bytes_be(&data[pos..pos + r_len]);
         pos += r_len;
 
         // Parse s
@@ -289,7 +289,7 @@ impl EcdsaSignature {
         pos += 1;
         let s_len = data[pos] as usize;
         pos += 1;
-        let s = BigInt::from_bytes_be(&data[pos..pos + s_len])?;
+        let s = BigInt::from_bytes_be(&data[pos..pos + s_len]);
 
         Some(Self { r, s })
     }

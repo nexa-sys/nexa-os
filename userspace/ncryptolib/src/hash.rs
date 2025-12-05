@@ -69,6 +69,8 @@ const SHA512_K: [u64; 80] = [
 
 /// SHA-384 digest size in bytes
 pub const SHA384_DIGEST_SIZE: usize = 48;
+/// SHA-384 block size in bytes (same as SHA-512)
+pub const SHA384_BLOCK_SIZE: usize = 128;
 /// SHA-512 digest size in bytes
 pub const SHA512_DIGEST_SIZE: usize = 64;
 /// SHA-512 block size in bytes
