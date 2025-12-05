@@ -50,6 +50,7 @@ const BLOCK_SIZE: usize = 1024;
 /// Number of 64-bit words per block
 const QWORDS_PER_BLOCK: usize = 128;
 /// Sync points per pass
+#[allow(dead_code)]
 const SYNC_POINTS: u32 = 4;
 
 // ============================================================================
@@ -206,6 +207,7 @@ fn rotr64(x: u64, n: u32) -> u64 {
     x.rotate_right(n)
 }
 
+#[allow(dead_code)]
 #[inline]
 fn g(a: &mut u64, b: &mut u64, c: &mut u64, d: &mut u64) {
     *a = a.wrapping_add(*b).wrapping_add(2u64.wrapping_mul((*a as u32 as u64).wrapping_mul(*b as u32 as u64)));

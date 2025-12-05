@@ -53,6 +53,7 @@
 //! security-critical application, use SHA-256, SHA-3, or BLAKE2.
 
 #![feature(linkage)]
+#![allow(non_camel_case_types)]
 
 // ============================================================================
 // Module Declarations
