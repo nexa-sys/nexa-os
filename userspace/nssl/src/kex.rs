@@ -189,6 +189,88 @@ pub fn derive_tls13_keys(
     })
 }
 
+/// Derive TLS 1.3 handshake keys and return handshake secret for later use
+pub fn derive_tls13_handshake_keys(
+    shared_secret: &[u8],
+    transcript_hash: &[u8],
+) -> Option<(Vec<u8>, DerivedKeys)> {
+    // TLS 1.3 key schedule (RFC 8446 Section 7.1)
+    
+    // 1. Early secret: HKDF-Extract(salt=0, IKM=0) for no PSK
+    let zero_key = [0u8; 32];
+    let early_secret = hkdf_extract(&zero_key, &zero_key);
+    
+    // 2. Derive-Secret(early_secret, "derived", "")
+    let empty_hash = ncryptolib::sha256(&[]);
+    let derived_early = hkdf_expand_label(&early_secret, b"derived", &empty_hash, 32);
+    
+    // 3. Handshake secret: HKDF-Extract(derived_early, shared_secret)
+    let handshake_secret = hkdf_extract(&derived_early, shared_secret);
+    
+    // 4. Client handshake traffic secret
+    let client_hs_secret = hkdf_expand_label(&handshake_secret, b"c hs traffic", transcript_hash, 32);
+    
+    // 5. Server handshake traffic secret
+    let server_hs_secret = hkdf_expand_label(&handshake_secret, b"s hs traffic", transcript_hash, 32);
+    
+    // 6. Derive keys and IVs
+    let client_key = hkdf_expand_label(&client_hs_secret, b"key", &[], 32);
+    let client_iv = hkdf_expand_label(&client_hs_secret, b"iv", &[], 12);
+    let server_key = hkdf_expand_label(&server_hs_secret, b"key", &[], 32);
+    let server_iv = hkdf_expand_label(&server_hs_secret, b"iv", &[], 12);
+    
+    Some((handshake_secret, DerivedKeys {
+        client_key,
+        client_iv,
+        server_key,
+        server_iv,
+    }))
+}
+
+/// Derive TLS 1.3 application keys from handshake secret
+pub fn derive_tls13_application_keys(
+    handshake_secret: &[u8],
+    transcript_hash: &[u8],
+) -> Option<DerivedKeys> {
+    // 1. Derive-Secret(handshake_secret, "derived", "")
+    let empty_hash = ncryptolib::sha256(&[]);
+    let derived_hs = hkdf_expand_label(handshake_secret, b"derived", &empty_hash, 32);
+    
+    // 2. Master secret: HKDF-Extract(derived_hs, 0)
+    let zero_key = [0u8; 32];
+    let master_secret = hkdf_extract(&derived_hs, &zero_key);
+    
+    // 3. Client application traffic secret
+    let client_app_secret = hkdf_expand_label(&master_secret, b"c ap traffic", transcript_hash, 32);
+    
+    // 4. Server application traffic secret
+    let server_app_secret = hkdf_expand_label(&master_secret, b"s ap traffic", transcript_hash, 32);
+    
+    // 5. Derive keys and IVs
+    let client_key = hkdf_expand_label(&client_app_secret, b"key", &[], 32);
+    let client_iv = hkdf_expand_label(&client_app_secret, b"iv", &[], 12);
+    let server_key = hkdf_expand_label(&server_app_secret, b"key", &[], 32);
+    let server_iv = hkdf_expand_label(&server_app_secret, b"iv", &[], 12);
+    
+    Some(DerivedKeys {
+        client_key,
+        client_iv,
+        server_key,
+        server_iv,
+    })
+}
+
+/// Derive TLS 1.3 traffic secret for Finished message verification
+pub fn derive_tls13_traffic_secret(
+    handshake_secret: &[u8],
+    label: &[u8],
+    transcript_hash: &[u8],
+) -> Vec<u8> {
+    // 首先需要从 handshake_secret 计算 traffic secret
+    // 这个函数直接计算指定的 traffic secret
+    hkdf_expand_label(handshake_secret, label, transcript_hash, 32)
+}
+
 /// Derive TLS 1.2 keys using PRF
 pub fn derive_tls12_keys(
     pre_master_secret: &[u8],
@@ -244,8 +326,8 @@ fn hkdf_extract(salt: &[u8], ikm: &[u8]) -> Vec<u8> {
     ncryptolib::hmac_sha256(salt, ikm).to_vec()
 }
 
-/// HKDF-Expand-Label (RFC 8446)
-fn hkdf_expand_label(secret: &[u8], label: &[u8], context: &[u8], length: usize) -> Vec<u8> {
+/// HKDF-Expand-Label (RFC 8446) - 公共函数供 Finished 消息使用
+pub fn hkdf_expand_label(secret: &[u8], label: &[u8], context: &[u8], length: usize) -> Vec<u8> {
     // HkdfLabel = struct {
     //   uint16 length = Length;
     //   opaque label<7..255> = "tls13 " + Label;

@@ -102,6 +102,11 @@ impl RecordLayer {
         self.read_seq = 0;
         self.write_seq = 0;
     }
+    
+    /// Set protocol version
+    pub fn set_version(&mut self, version: u16) {
+        self.version = version;
+    }
 
     /// Check if EOF
     pub fn is_eof(&self) -> bool {
