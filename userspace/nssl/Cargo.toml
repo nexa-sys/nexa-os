@@ -1,0 +1,34 @@
+[package]
+name = "nssl"
+version = "0.1.0"
+edition = "2021"
+description = "NexaOS SSL/TLS Library - libssl.so ABI compatible, modern TLS 1.2/1.3 only"
+
+[lib]
+# cdylib: Dynamic shared object (libssl.so) for dynamic linking
+# staticlib: Static library (libssl.a) for static linking
+# rlib: Rust library for Rust consumers
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[profile.release]
+panic = "abort"
+opt-level = 2
+lto = false
+
+[features]
+default = []
+# Enable TLS 1.2 support (default enabled)
+tls12 = []
+# Enable TLS 1.3 support (default enabled)
+tls13 = []
+# Enable ALPN (Application-Layer Protocol Negotiation)
+alpn = []
+# Enable SNI (Server Name Indication)
+sni = []
+# Enable session resumption
+session-resumption = []
+# Enable 0-RTT (TLS 1.3 early data)
+early-data = []
+
+[dependencies]
+ncryptolib = { path = "../ncryptolib" }

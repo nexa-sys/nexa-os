@@ -1,0 +1,295 @@
+//! Key Exchange
+//!
+//! Implements key exchange algorithms for TLS.
+
+use std::vec::Vec;
+use crate::tls::NamedGroup;
+
+/// Key exchange context
+pub struct KeyExchange {
+    /// Named group/curve
+    pub group: NamedGroup,
+    /// Private key
+    private_key: Vec<u8>,
+    /// Public key
+    public_key: Vec<u8>,
+    /// Shared secret (after exchange)
+    shared_secret: Option<Vec<u8>>,
+}
+
+impl KeyExchange {
+    /// Create new X25519 key exchange
+    pub fn new_x25519() -> Self {
+        let (private, public) = generate_x25519_keypair();
+        Self {
+            group: NamedGroup::X25519,
+            private_key: private,
+            public_key: public,
+            shared_secret: None,
+        }
+    }
+
+    /// Create new P-256 key exchange
+    pub fn new_p256() -> Self {
+        let (private, public) = generate_p256_keypair();
+        Self {
+            group: NamedGroup::Secp256r1,
+            private_key: private,
+            public_key: public,
+            shared_secret: None,
+        }
+    }
+
+    /// Get public key
+    pub fn public_key(&self) -> &[u8] {
+        &self.public_key
+    }
+
+    /// Compute shared secret with peer's public key
+    pub fn compute_shared_secret(&mut self, peer_public: &[u8]) -> Option<&[u8]> {
+        let secret = match self.group {
+            NamedGroup::X25519 => {
+                x25519_shared_secret(&self.private_key, peer_public)
+            }
+            NamedGroup::Secp256r1 => {
+                p256_shared_secret(&self.private_key, peer_public)
+            }
+            _ => return None,
+        };
+        
+        self.shared_secret = secret;
+        self.shared_secret.as_deref()
+    }
+
+    /// Get shared secret (if computed)
+    pub fn shared_secret(&self) -> Option<&[u8]> {
+        self.shared_secret.as_deref()
+    }
+
+    /// Get named group
+    pub fn get_group(&self) -> NamedGroup {
+        self.group
+    }
+}
+
+/// Generate X25519 key pair
+fn generate_x25519_keypair() -> (Vec<u8>, Vec<u8>) {
+    let mut private = [0u8; 32];
+    let _ = ncryptolib::getrandom(&mut private, 0);
+    
+    // Clamp private key per RFC 7748
+    private[0] &= 248;
+    private[31] &= 127;
+    private[31] |= 64;
+    
+    // Compute public key
+    let public = ncryptolib::x25519::x25519_base(&private);
+    
+    (private.to_vec(), public.to_vec())
+}
+
+/// Generate P-256 key pair
+fn generate_p256_keypair() -> (Vec<u8>, Vec<u8>) {
+    // Generate random private key
+    let mut private = [0u8; 32];
+    let _ = ncryptolib::getrandom(&mut private, 0);
+    let public = vec![0u8; 65]; // Uncompressed point placeholder
+    (private.to_vec(), public)
+}
+
+/// X25519 shared secret computation
+fn x25519_shared_secret(private: &[u8], peer_public: &[u8]) -> Option<Vec<u8>> {
+    if private.len() != 32 || peer_public.len() != 32 {
+        return None;
+    }
+    
+    let mut priv_arr = [0u8; 32];
+    priv_arr.copy_from_slice(private);
+    
+    let mut pub_arr = [0u8; 32];
+    pub_arr.copy_from_slice(peer_public);
+    
+    Some(ncryptolib::x25519::x25519(&priv_arr, &pub_arr).to_vec())
+}
+
+/// P-256 ECDH shared secret computation
+fn p256_shared_secret(_private: &[u8], _peer_public: &[u8]) -> Option<Vec<u8>> {
+    // TODO: Implement P-256 ECDH when ncryptolib supports it
+    // For now, return None (fall back to X25519)
+    None
+}
+
+/// Derive TLS 1.3 keys using HKDF
+pub fn derive_tls13_keys(
+    shared_secret: &[u8],
+    transcript_hash: &[u8],
+    is_handshake: bool,
+) -> Option<DerivedKeys> {
+    // TLS 1.3 key schedule (RFC 8446 Section 7.1)
+    
+    // Early secret
+    let early_secret = hkdf_extract(&[0u8; 32], &[0u8; 32]);
+    
+    // Derive handshake secret
+    let derived = hkdf_expand_label(&early_secret, b"derived", &[], 32);
+    let handshake_secret = hkdf_extract(&derived, shared_secret);
+    
+    let label_prefix = if is_handshake { b"hs" } else { b"ap" };
+    
+    // Client traffic secret
+    let mut client_label = Vec::new();
+    client_label.extend_from_slice(b"c ");
+    client_label.extend_from_slice(label_prefix);
+    client_label.extend_from_slice(b" traffic");
+    let client_secret = hkdf_expand_label(&handshake_secret, &client_label, transcript_hash, 32);
+    
+    // Server traffic secret
+    let mut server_label = Vec::new();
+    server_label.extend_from_slice(b"s ");
+    server_label.extend_from_slice(label_prefix);
+    server_label.extend_from_slice(b" traffic");
+    let server_secret = hkdf_expand_label(&handshake_secret, &server_label, transcript_hash, 32);
+    
+    // Derive actual keys and IVs
+    let client_key = hkdf_expand_label(&client_secret, b"key", &[], 32);
+    let client_iv = hkdf_expand_label(&client_secret, b"iv", &[], 12);
+    let server_key = hkdf_expand_label(&server_secret, b"key", &[], 32);
+    let server_iv = hkdf_expand_label(&server_secret, b"iv", &[], 12);
+    
+    Some(DerivedKeys {
+        client_key,
+        client_iv,
+        server_key,
+        server_iv,
+    })
+}
+
+/// Derive TLS 1.2 keys using PRF
+pub fn derive_tls12_keys(
+    pre_master_secret: &[u8],
+    client_random: &[u8],
+    server_random: &[u8],
+    key_len: usize,
+    iv_len: usize,
+) -> Option<DerivedKeys> {
+    // TLS 1.2 PRF (RFC 5246 Section 5)
+    
+    // master_secret = PRF(pre_master_secret, "master secret", ClientHello.random + ServerHello.random)
+    let mut seed = Vec::new();
+    seed.extend_from_slice(client_random);
+    seed.extend_from_slice(server_random);
+    let master_secret = prf_sha256(pre_master_secret, b"master secret", &seed, 48);
+    
+    // key_block = PRF(master_secret, "key expansion", server_random + client_random)
+    let mut key_seed = Vec::new();
+    key_seed.extend_from_slice(server_random);
+    key_seed.extend_from_slice(client_random);
+    let key_block_len = 2 * (key_len + iv_len);
+    let key_block = prf_sha256(&master_secret, b"key expansion", &key_seed, key_block_len);
+    
+    // Split key block
+    let mut offset = 0;
+    let client_key = key_block[offset..offset + key_len].to_vec();
+    offset += key_len;
+    let server_key = key_block[offset..offset + key_len].to_vec();
+    offset += key_len;
+    let client_iv = key_block[offset..offset + iv_len].to_vec();
+    offset += iv_len;
+    let server_iv = key_block[offset..offset + iv_len].to_vec();
+    
+    Some(DerivedKeys {
+        client_key,
+        client_iv,
+        server_key,
+        server_iv,
+    })
+}
+
+/// Derived keys
+#[derive(Clone)]
+pub struct DerivedKeys {
+    pub client_key: Vec<u8>,
+    pub client_iv: Vec<u8>,
+    pub server_key: Vec<u8>,
+    pub server_iv: Vec<u8>,
+}
+
+/// HKDF-Extract (RFC 5869)
+fn hkdf_extract(salt: &[u8], ikm: &[u8]) -> Vec<u8> {
+    ncryptolib::hmac_sha256(salt, ikm).to_vec()
+}
+
+/// HKDF-Expand-Label (RFC 8446)
+fn hkdf_expand_label(secret: &[u8], label: &[u8], context: &[u8], length: usize) -> Vec<u8> {
+    // HkdfLabel = struct {
+    //   uint16 length = Length;
+    //   opaque label<7..255> = "tls13 " + Label;
+    //   opaque context<0..255> = Context;
+    // };
+    
+    let mut hkdf_label = Vec::new();
+    
+    // Length (2 bytes)
+    hkdf_label.push((length >> 8) as u8);
+    hkdf_label.push((length & 0xFF) as u8);
+    
+    // Label with "tls13 " prefix
+    let full_label_len = 6 + label.len();
+    hkdf_label.push(full_label_len as u8);
+    hkdf_label.extend_from_slice(b"tls13 ");
+    hkdf_label.extend_from_slice(label);
+    
+    // Context
+    hkdf_label.push(context.len() as u8);
+    hkdf_label.extend_from_slice(context);
+    
+    // HKDF-Expand
+    hkdf_expand(secret, &hkdf_label, length)
+}
+
+/// HKDF-Expand (RFC 5869)
+fn hkdf_expand(prk: &[u8], info: &[u8], length: usize) -> Vec<u8> {
+    let hash_len = 32; // SHA-256
+    let n = (length + hash_len - 1) / hash_len;
+    
+    let mut okm = Vec::new();
+    let mut t = Vec::new();
+    
+    for i in 1..=n {
+        let mut data = t.clone();
+        data.extend_from_slice(info);
+        data.push(i as u8);
+        
+        t = ncryptolib::hmac_sha256(prk, &data).to_vec();
+        okm.extend_from_slice(&t);
+    }
+    
+    okm.truncate(length);
+    okm
+}
+
+/// TLS 1.2 PRF with SHA-256 (RFC 5246 Section 5)
+fn prf_sha256(secret: &[u8], label: &[u8], seed: &[u8], length: usize) -> Vec<u8> {
+    // P_SHA256(secret, seed) = HMAC_SHA256(secret, A(1) + seed) +
+    //                          HMAC_SHA256(secret, A(2) + seed) + ...
+    // A(0) = seed
+    // A(i) = HMAC_SHA256(secret, A(i-1))
+    
+    let mut full_seed = Vec::new();
+    full_seed.extend_from_slice(label);
+    full_seed.extend_from_slice(seed);
+    
+    let mut result = Vec::new();
+    let mut a = ncryptolib::hmac_sha256(secret, &full_seed).to_vec();
+    
+    while result.len() < length {
+        let mut data = a.clone();
+        data.extend_from_slice(&full_seed);
+        let p = ncryptolib::hmac_sha256(secret, &data);
+        result.extend_from_slice(&p);
+        a = ncryptolib::hmac_sha256(secret, &a).to_vec();
+    }
+    
+    result.truncate(length);
+    result
+}

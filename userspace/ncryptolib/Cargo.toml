@@ -17,7 +17,7 @@ lto = false
 
 [features]
 default = []
-# Enable hardware acceleration (AES-NI, SHA extensions)
+# Enable hardware acceleration (AES-NI, SHA extensions)ncryptolib
 hw-accel = []
 
 [dependencies]

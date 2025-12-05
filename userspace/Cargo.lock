@@ -94,6 +94,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "nssl"
+version = "0.1.0"
+dependencies = [
+ "ncryptolib",
+]
+
+[[package]]
 name = "nurl"
 version = "0.1.0"
 dependencies = [

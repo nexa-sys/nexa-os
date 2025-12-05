@@ -5,6 +5,7 @@ members = [
     "nrlib",
     "ld-nrlib",
     "ncryptolib",
+    "nssl",
     "programs/init",
     "programs/shell",
     "programs/getty",
