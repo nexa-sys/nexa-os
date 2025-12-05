@@ -26,8 +26,6 @@ pub const SHA3_384_DIGEST_SIZE: usize = 48;
 /// SHA3-512 digest size in bytes
 pub const SHA3_512_DIGEST_SIZE: usize = 64;
 
-/// Keccak state width in bits
-const KECCAK_WIDTH: usize = 1600;
 /// Keccak state width in lanes (64-bit words)
 const KECCAK_LANES: usize = 25;
 /// Number of Keccak rounds

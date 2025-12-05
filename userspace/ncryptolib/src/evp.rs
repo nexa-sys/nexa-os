@@ -5,6 +5,10 @@
 use std::vec::Vec;
 
 use crate::hash::{Sha256, Sha384, Sha512};
+use crate::sha3::{Sha3};
+use crate::blake2::{Blake2b, Blake2s};
+use crate::md5::Md5;
+use crate::sha1::Sha1;
 use crate::aes::{Aes128, Aes256, AesGcm, AesCtr, AesCbc, AES_128_KEY_SIZE, AES_256_KEY_SIZE};
 
 // ============================================================================
@@ -15,9 +19,20 @@ use crate::aes::{Aes128, Aes256, AesGcm, AesCtr, AesCbc, AES_128_KEY_SIZE, AES_2
 #[repr(i32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EvpMdType {
-    Sha256 = 1,
-    Sha384 = 2,
-    Sha512 = 3,
+    // Legacy (file verification only)
+    Md5 = 0,
+    Sha1 = 1,
+    // SHA-2 family
+    Sha256 = 2,
+    Sha384 = 3,
+    Sha512 = 4,
+    // SHA-3 family
+    Sha3_256 = 5,
+    Sha3_384 = 6,
+    Sha3_512 = 7,
+    // BLAKE2 family
+    Blake2b512 = 8,
+    Blake2s256 = 9,
 }
 
 /// EVP_MD - Message Digest algorithm descriptor
@@ -30,6 +45,20 @@ pub struct EvpMd {
     /// Block size in bytes
     pub block_size: usize,
 }
+
+/// MD5 algorithm (legacy - file verification only)
+pub static EVP_MD5: EvpMd = EvpMd {
+    md_type: EvpMdType::Md5,
+    md_size: 16,
+    block_size: 64,
+};
+
+/// SHA-1 algorithm (legacy - file verification only)
+pub static EVP_SHA1: EvpMd = EvpMd {
+    md_type: EvpMdType::Sha1,
+    md_size: 20,
+    block_size: 64,
+};
 
 /// SHA-256 algorithm
 pub static EVP_SHA256: EvpMd = EvpMd {
@@ -52,11 +81,53 @@ pub static EVP_SHA512: EvpMd = EvpMd {
     block_size: 128,
 };
 
+/// SHA3-256 algorithm
+pub static EVP_SHA3_256: EvpMd = EvpMd {
+    md_type: EvpMdType::Sha3_256,
+    md_size: 32,
+    block_size: 136,
+};
+
+/// SHA3-384 algorithm
+pub static EVP_SHA3_384: EvpMd = EvpMd {
+    md_type: EvpMdType::Sha3_384,
+    md_size: 48,
+    block_size: 104,
+};
+
+/// SHA3-512 algorithm
+pub static EVP_SHA3_512: EvpMd = EvpMd {
+    md_type: EvpMdType::Sha3_512,
+    md_size: 64,
+    block_size: 72,
+};
+
+/// BLAKE2b-512 algorithm
+pub static EVP_BLAKE2B512: EvpMd = EvpMd {
+    md_type: EvpMdType::Blake2b512,
+    md_size: 64,
+    block_size: 128,
+};
+
+/// BLAKE2s-256 algorithm
+pub static EVP_BLAKE2S256: EvpMd = EvpMd {
+    md_type: EvpMdType::Blake2s256,
+    md_size: 32,
+    block_size: 64,
+};
+
 /// Internal digest state
 enum DigestState {
+    Md5(Md5),
+    Sha1(Sha1),
     Sha256(Sha256),
     Sha384(Sha384),
     Sha512(Sha512),
+    Sha3_256(Sha3),
+    Sha3_384(Sha3),
+    Sha3_512(Sha3),
+    Blake2b512(Blake2b),
+    Blake2s256(Blake2s),
 }
 
 /// EVP_MD_CTX - Message Digest Context
@@ -79,9 +150,16 @@ impl EvpMdCtx {
     pub fn init(&mut self, md: &EvpMd) -> Result<(), i32> {
         self.md = md;
         self.state = Some(match md.md_type {
+            EvpMdType::Md5 => DigestState::Md5(Md5::new()),
+            EvpMdType::Sha1 => DigestState::Sha1(Sha1::new()),
             EvpMdType::Sha256 => DigestState::Sha256(Sha256::new()),
             EvpMdType::Sha384 => DigestState::Sha384(Sha384::new()),
             EvpMdType::Sha512 => DigestState::Sha512(Sha512::new()),
+            EvpMdType::Sha3_256 => DigestState::Sha3_256(Sha3::new_256()),
+            EvpMdType::Sha3_384 => DigestState::Sha3_384(Sha3::new_384()),
+            EvpMdType::Sha3_512 => DigestState::Sha3_512(Sha3::new_512()),
+            EvpMdType::Blake2b512 => DigestState::Blake2b512(Blake2b::new(64)),
+            EvpMdType::Blake2s256 => DigestState::Blake2s256(Blake2s::new(32)),
         });
         Ok(())
     }
@@ -89,9 +167,16 @@ impl EvpMdCtx {
     /// Update with data
     pub fn update(&mut self, data: &[u8]) -> Result<(), i32> {
         match &mut self.state {
+            Some(DigestState::Md5(h)) => h.update(data),
+            Some(DigestState::Sha1(h)) => h.update(data),
             Some(DigestState::Sha256(h)) => h.update(data),
             Some(DigestState::Sha384(h)) => h.update(data),
             Some(DigestState::Sha512(h)) => h.update(data),
+            Some(DigestState::Sha3_256(h)) => h.update(data),
+            Some(DigestState::Sha3_384(h)) => h.update(data),
+            Some(DigestState::Sha3_512(h)) => h.update(data),
+            Some(DigestState::Blake2b512(h)) => h.update(data),
+            Some(DigestState::Blake2s256(h)) => h.update(data),
             None => return Err(-1),
         }
         Ok(())
@@ -100,6 +185,18 @@ impl EvpMdCtx {
     /// Finalize and get digest
     pub fn finalize(&mut self, out: &mut [u8]) -> Result<usize, i32> {
         let size = match self.state.take() {
+            Some(DigestState::Md5(mut h)) => {
+                let hash = h.finalize();
+                let size = 16.min(out.len());
+                out[..size].copy_from_slice(&hash[..size]);
+                size
+            }
+            Some(DigestState::Sha1(mut h)) => {
+                let hash = h.finalize();
+                let size = 20.min(out.len());
+                out[..size].copy_from_slice(&hash[..size]);
+                size
+            }
             Some(DigestState::Sha256(mut h)) => {
                 let hash = h.finalize();
                 let size = 32.min(out.len());
@@ -115,6 +212,36 @@ impl EvpMdCtx {
             Some(DigestState::Sha512(mut h)) => {
                 let hash = h.finalize();
                 let size = 64.min(out.len());
+                out[..size].copy_from_slice(&hash[..size]);
+                size
+            }
+            Some(DigestState::Sha3_256(mut h)) => {
+                let hash = h.finalize();
+                let size = 32.min(out.len());
+                out[..size].copy_from_slice(&hash[..size]);
+                size
+            }
+            Some(DigestState::Sha3_384(mut h)) => {
+                let hash = h.finalize();
+                let size = 48.min(out.len());
+                out[..size].copy_from_slice(&hash[..size]);
+                size
+            }
+            Some(DigestState::Sha3_512(mut h)) => {
+                let hash = h.finalize();
+                let size = 64.min(out.len());
+                out[..size].copy_from_slice(&hash[..size]);
+                size
+            }
+            Some(DigestState::Blake2b512(mut h)) => {
+                let hash = h.finalize();
+                let size = 64.min(out.len());
+                out[..size].copy_from_slice(&hash[..size]);
+                size
+            }
+            Some(DigestState::Blake2s256(mut h)) => {
+                let hash = h.finalize();
+                let size = 32.min(out.len());
                 out[..size].copy_from_slice(&hash[..size]);
                 size
             }

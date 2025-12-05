@@ -10,8 +10,6 @@
 //! **Note**: CRC32 is NOT cryptographically secure. It should only be used
 //! for detecting accidental corruption, not malicious tampering.
 
-use core::ptr;
-
 // ============================================================================
 // CRC32 Constants
 // ============================================================================

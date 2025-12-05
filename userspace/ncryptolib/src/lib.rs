@@ -2,28 +2,40 @@
 //!
 //! A modern, libcrypto.so ABI-compatible cryptographic library for NexaOS.
 //! 
-//! This library provides commonly used modern cryptographic primitives:
-//! - **Hash Functions**: SHA-256, SHA-384, SHA-512
-//! - **Symmetric Ciphers**: AES-128/256 in GCM, CTR, CBC modes
-//! - **Digital Signatures**: ECDSA (P-256, P-384), Ed25519
-//! - **Key Exchange**: X25519 (Curve25519 ECDH)
-//! - **Key Derivation**: HKDF, PBKDF2
+//! This library provides commonly used cryptographic primitives:
+//!
+//! ## Hash Functions
+//! - **SHA-2 Family**: SHA-256, SHA-384, SHA-512 (FIPS 180-4)
+//! - **SHA-3 Family**: SHA3-256, SHA3-384, SHA3-512, SHAKE128, SHAKE256 (FIPS 202)
+//! - **BLAKE2**: BLAKE2b, BLAKE2s - Modern, fast hash functions (RFC 7693)
+//! - **Legacy Hashes**: MD5, SHA-1 (for file integrity only, NOT secure!)
+//! - **Checksums**: CRC32, CRC32C - Fast non-cryptographic checksums
+//!
+//! ## Symmetric Ciphers
+//! - **AES**: AES-128/256 in GCM, CTR, CBC modes (FIPS 197, SP 800-38D)
+//!
+//! ## Asymmetric Cryptography
+//! - **Digital Signatures**: ECDSA (P-256, P-384), Ed25519 (RFC 8032)
+//! - **Key Exchange**: X25519 (RFC 7748)
+//!
+//! ## Key Derivation
+//! - **HKDF**: HMAC-based Key Derivation (RFC 5869)
+//! - **PBKDF2**: Password-Based Key Derivation (RFC 8018)
+//!
+//! ## Other
 //! - **Random**: CSPRNG based on getrandom syscall
 //!
 //! # Design Philosophy
-//! - Only modern, secure algorithms (no MD5, SHA-1, DES, RC4, etc.)
+//! - Modern, secure algorithms for cryptographic use
+//! - Legacy algorithms (MD5, SHA-1) for file verification only
 //! - Uses std for NexaOS userspace
 //! - libcrypto.so ABI compatibility for drop-in replacement
 //! - Clean Rust API alongside C ABI exports
 //!
-//! # Supported Standards
-//! - FIPS 180-4 (SHA-2)
-//! - FIPS 197 (AES)
-//! - SP 800-38D (AES-GCM)
-//! - RFC 7748 (X25519)
-//! - RFC 8032 (Ed25519)
-//! - RFC 5869 (HKDF)
-//! - RFC 8018 (PBKDF2)
+//! # Security Notes
+//! **WARNING**: MD5 and SHA-1 are cryptographically broken. They are provided
+//! ONLY for file integrity verification and legacy compatibility. For any
+//! security-critical application, use SHA-256, SHA-3, or BLAKE2.
 
 #![feature(linkage)]
 
@@ -31,15 +43,41 @@
 // Module Declarations
 // ============================================================================
 
+// Core SHA-2 hash functions (FIPS 180-4)
 pub mod hash;
+
+// SHA-3 hash functions (FIPS 202)
+pub mod sha3;
+
+// BLAKE2 hash functions (RFC 7693)
+pub mod blake2;
+
+// Legacy hash functions (for file verification only)
+pub mod md5;
+pub mod sha1;
+
+// Checksums (non-cryptographic)
+pub mod crc32;
+
+// Symmetric encryption
 pub mod aes;
+
+// Asymmetric cryptography
 pub mod ecdsa;
 pub mod x25519;
 pub mod ed25519;
+
+// Key derivation
 pub mod kdf;
+
+// Random number generation
 pub mod random;
-pub mod evp;      // OpenSSL EVP compatibility layer
-pub mod bigint;   // Big integer arithmetic
+
+// OpenSSL EVP compatibility layer
+pub mod evp;
+
+// Big integer arithmetic
+pub mod bigint;
 
 // ============================================================================
 // C Type Definitions
@@ -158,7 +196,30 @@ pub extern "C" fn ERR_free_strings() {
 // Re-exports
 // ============================================================================
 
+// SHA-2 family
 pub use hash::{sha256, sha384, sha512, Sha256, Sha384, Sha512};
+pub use hash::{hmac_sha256, HmacSha256};
+
+// SHA-3 family
+pub use sha3::{sha3_256, sha3_384, sha3_512, Sha3, Sha3_256, Sha3_384, Sha3_512};
+pub use sha3::{Shake128, Shake256};
+
+// BLAKE2 family
+pub use blake2::{blake2b, blake2s, Blake2b, Blake2s};
+pub use blake2::{blake2b_with_len, blake2s_with_len, blake2b_keyed};
+
+// Legacy hashes (file verification only)
+pub use md5::{md5, Md5, MD5_DIGEST_SIZE};
+pub use sha1::{sha1, Sha1, SHA1_DIGEST_SIZE};
+
+// Checksums
+pub use crc32::{crc32, crc32c, Crc32, Crc32c};
+
+// Symmetric encryption
 pub use aes::{Aes128, Aes256, AesGcm, AesCtr, AesCbc};
+
+// Random
 pub use random::{getrandom, RngState};
+
+// Key derivation
 pub use kdf::{hkdf, pbkdf2_sha256};
