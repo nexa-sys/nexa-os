@@ -45,6 +45,11 @@ const SYNC_INTERVAL_SECS: u64 = 3600; // 1 hour
 // Timeout for NTP queries
 const NTP_TIMEOUT_SECS: u64 = 5;
 
+// Retry configuration
+const MAX_RETRIES: u32 = 3;           // Max retries per server
+const RETRY_DELAY_SECS: u32 = 2;      // Delay between retries
+const INITIAL_SYNC_TIMEOUT: u32 = 30; // Total timeout for initial sync attempt
+
 // Maximum allowed offset before adjusting time (seconds)
 const MAX_OFFSET_SECS: f64 = 1000.0;
 
@@ -398,6 +403,50 @@ fn sync_time(server: &str, verbose: bool, query_only: bool) -> Result<(), String
     Ok(())
 }
 
+/// Attempt to sync time with retries
+fn sync_time_with_retry(server: &str, verbose: bool, query_only: bool) -> Result<(), String> {
+    extern "C" {
+        fn sleep(seconds: u32);
+    }
+    
+    for attempt in 1..=MAX_RETRIES {
+        if verbose {
+            println!("NTP sync attempt {}/{}", attempt, MAX_RETRIES);
+        }
+        
+        match sync_time(server, verbose, query_only) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                if attempt < MAX_RETRIES {
+                    eprintln!("Attempt {} failed: {}, retrying in {}s...", attempt, e, RETRY_DELAY_SECS);
+                    unsafe { sleep(RETRY_DELAY_SECS) };
+                } else {
+                    return Err(format!("All {} attempts failed. Last error: {}", MAX_RETRIES, e));
+                }
+            }
+        }
+    }
+    
+    Err("Max retries exceeded".to_string())
+}
+
+/// Try multiple NTP servers until one succeeds
+fn sync_with_fallback_servers(servers: &[&str], verbose: bool, query_only: bool) -> Result<(), String> {
+    let mut last_error = String::new();
+    
+    for server in servers {
+        match sync_time_with_retry(server, verbose, query_only) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                eprintln!("Server '{}' failed: {}", server, e);
+                last_error = e;
+            }
+        }
+    }
+    
+    Err(format!("All servers failed. Last error: {}", last_error))
+}
+
 /// Run as daemon, syncing periodically
 fn run_daemon(server: &str, verbose: bool) {
     println!("NTP daemon starting...");
@@ -407,14 +456,45 @@ fn run_daemon(server: &str, verbose: bool) {
         fn sleep(seconds: u32);
     }
     
-    loop {
-        match sync_time(server, verbose, false) {
-            Ok(()) => println!("Sync successful"),
-            Err(e) => eprintln!("Sync failed: {}", e),
+    // Initial sync with fallback to other servers if primary fails
+    let mut synced = false;
+    
+    // First try the specified server with retries
+    match sync_time_with_retry(server, verbose, false) {
+        Ok(()) => {
+            println!("Initial sync successful");
+            synced = true;
         }
-        
+        Err(e) => {
+            eprintln!("Primary server failed: {}", e);
+            // Try fallback servers
+            println!("Trying fallback NTP servers...");
+            match sync_with_fallback_servers(DEFAULT_NTP_SERVERS, verbose, false) {
+                Ok(()) => {
+                    println!("Sync successful with fallback server");
+                    synced = true;
+                }
+                Err(e) => {
+                    eprintln!("All fallback servers failed: {}", e);
+                    eprintln!("Will continue trying in background...");
+                }
+            }
+        }
+    }
+    
+    if !synced {
+        println!("Initial sync failed, will retry periodically");
+    }
+    
+    // Main daemon loop - continue even if initial sync failed
+    loop {
         println!("Next sync in {} seconds...", SYNC_INTERVAL_SECS);
         unsafe { sleep(SYNC_INTERVAL_SECS as u32) };
+        
+        match sync_time_with_retry(server, verbose, false) {
+            Ok(()) => println!("Periodic sync successful"),
+            Err(e) => eprintln!("Periodic sync failed: {}", e),
+        }
     }
 }
 
@@ -483,7 +563,8 @@ fn main() {
     if daemon_mode {
         run_daemon(&server, verbose);
     } else {
-        match sync_time(&server, verbose, query_only) {
+        // One-shot mode: use retry mechanism
+        match sync_time_with_retry(&server, verbose, query_only) {
             Ok(()) => {
                 if !query_only {
                     println!("Time synchronization complete.");

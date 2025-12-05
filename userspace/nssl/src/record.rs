@@ -5,7 +5,7 @@
 use std::vec::Vec;
 use crate::bio::Bio;
 use crate::tls::ContentType;
-use crate::{c_int, TLS1_2_VERSION};
+use crate::{c_int, TLS1_2_VERSION, TLS1_3_VERSION};
 
 /// Maximum TLS record size
 pub const MAX_RECORD_SIZE: usize = 16384;
@@ -184,20 +184,32 @@ impl RecordLayer {
         }
 
         // Encrypt if keys are set
-        let (record_data, length) = if self.write_key.is_some() {
+        let (record_data, length, outer_content_type) = if self.write_key.is_some() {
             match self.encrypt_record(content_type, data) {
                 Some(encrypted) => {
                     let len = encrypted.len();
-                    (encrypted, len as u16)
+                    // TLS 1.3: outer content type is always ApplicationData
+                    let outer_type = if self.version >= TLS1_3_VERSION {
+                        ContentType::ApplicationData
+                    } else {
+                        content_type
+                    };
+                    (encrypted, len as u16, outer_type)
                 }
                 None => return false,
             }
         } else {
-            (data.to_vec(), data.len() as u16)
+            (data.to_vec(), data.len() as u16, content_type)
         };
 
         // Build record header
-        let header = RecordHeader::new(content_type, self.version, length);
+        // TLS 1.3: always use TLS 1.2 version (0x0303) in record layer
+        let header_version = if self.version >= TLS1_3_VERSION {
+            TLS1_2_VERSION
+        } else {
+            self.version
+        };
+        let header = RecordHeader::new(outer_content_type, header_version, length);
         let header_bytes = header.to_bytes();
 
         // Write header
@@ -269,13 +281,27 @@ impl RecordLayer {
         let header = RecordHeader::from_bytes(&header_buf)?;
         
         // Check content type
-        if header.content_type != expected_type as u8 {
+        // TLS 1.3: encrypted records always have ApplicationData outer type
+        let is_encrypted = self.read_key.is_some();
+        let expected_outer_type = if is_encrypted && self.version >= TLS1_3_VERSION {
+            ContentType::ApplicationData as u8
+        } else {
+            expected_type as u8
+        };
+        
+        if header.content_type != expected_outer_type {
             // Handle alerts
             if header.content_type == ContentType::Alert as u8 {
                 self.handle_alert(rbio, header.length);
                 return None;
             }
-            return None;
+            // TLS 1.3 encrypted: might be receiving ApplicationData when expecting Handshake
+            // This is normal - inner type is in the decrypted content
+            if is_encrypted && self.version >= TLS1_3_VERSION && header.content_type == ContentType::ApplicationData as u8 {
+                // Continue processing
+            } else {
+                return None;
+            }
         }
 
         // Validate length
@@ -316,30 +342,54 @@ impl RecordLayer {
             nonce[nonce_len - 8 + i] ^= seq_bytes[i];
         }
 
+        // TLS 1.3: append inner content type to plaintext
+        let inner_plaintext = if self.version >= TLS1_3_VERSION {
+            let mut inner = plaintext.to_vec();
+            inner.push(content_type as u8);
+            inner
+        } else {
+            plaintext.to_vec()
+        };
+
         // Build AAD (additional authenticated data)
-        let aad = build_aad(content_type as u8, self.version, plaintext.len() as u16);
+        // TLS 1.3: AAD = record header with ApplicationData type and encrypted length
+        // TLS 1.2: AAD = seq_num (8) + record header
+        let aad = if self.version >= TLS1_3_VERSION {
+            // TLS 1.3 AAD: outer content type (0x17) + version (0x0303) + length
+            // length includes inner_plaintext + 16-byte tag
+            let encrypted_len = inner_plaintext.len() + 16;
+            build_tls13_aad(encrypted_len as u16)
+        } else {
+            build_aad(content_type as u8, self.version, plaintext.len() as u16)
+        };
+        
+        let plaintext_to_encrypt = if self.version >= TLS1_3_VERSION {
+            &inner_plaintext
+        } else {
+            plaintext
+        };
 
         // Encrypt using AES-GCM or ChaCha20-Poly1305
         // For simplicity, using AES-256-GCM
         if key.len() == 32 {
-            let mut ciphertext = vec![0u8; plaintext.len() + 16]; // +16 for tag
+            let mut ciphertext = vec![0u8; plaintext_to_encrypt.len() + 16]; // +16 for tag
             
             // Use ncryptolib's AES-256-GCM
             let key_arr: [u8; 32] = key.as_slice().try_into().ok()?;
             let aes = ncryptolib::AesGcm::new_256(&key_arr);
-            let (ct, tag) = aes.encrypt(&nonce, plaintext, &aad);
+            let (ct, tag) = aes.encrypt(&nonce, plaintext_to_encrypt, &aad);
             
             ciphertext[..ct.len()].copy_from_slice(&ct);
             ciphertext[ct.len()..].copy_from_slice(&tag);
             
             Some(ciphertext)
         } else if key.len() == 16 {
-            let mut ciphertext = vec![0u8; plaintext.len() + 16];
+            let mut ciphertext = vec![0u8; plaintext_to_encrypt.len() + 16];
             
             // Use ncryptolib's AES-128-GCM
             let key_arr: [u8; 16] = key.as_slice().try_into().ok()?;
             let aes = ncryptolib::AesGcm::new_128(&key_arr);
-            let (ct, tag) = aes.encrypt(&nonce, plaintext, &aad);
+            let (ct, tag) = aes.encrypt(&nonce, plaintext_to_encrypt, &aad);
             
             ciphertext[..ct.len()].copy_from_slice(&ct);
             ciphertext[ct.len()..].copy_from_slice(&tag);
@@ -373,21 +423,44 @@ impl RecordLayer {
         let tag = &ciphertext[ct_len..];
 
         // Build AAD
-        let aad = build_aad(_content_type, self.version, ct_len as u16);
+        // TLS 1.3: AAD is outer record header (type=0x17, version=0x0303, length)
+        // TLS 1.2: AAD is content type + version + length
+        let aad = if self.version >= TLS1_3_VERSION {
+            build_tls13_aad(ciphertext.len() as u16)
+        } else {
+            build_aad(_content_type, self.version, ct_len as u16)
+        };
 
         // Decrypt using AES-GCM
-        if key.len() == 32 {
+        let plaintext = if key.len() == 32 {
             let key_arr: [u8; 32] = key.as_slice().try_into().ok()?;
             let tag_arr: [u8; 16] = tag.try_into().ok()?;
             let aes = ncryptolib::AesGcm::new_256(&key_arr);
-            aes.decrypt(&nonce, ct, &aad, &tag_arr)
+            aes.decrypt(&nonce, ct, &aad, &tag_arr)?
         } else if key.len() == 16 {
             let key_arr: [u8; 16] = key.as_slice().try_into().ok()?;
             let tag_arr: [u8; 16] = tag.try_into().ok()?;
             let aes = ncryptolib::AesGcm::new_128(&key_arr);
-            aes.decrypt(&nonce, ct, &aad, &tag_arr)
+            aes.decrypt(&nonce, ct, &aad, &tag_arr)?
         } else {
-            None
+            return None;
+        };
+        
+        // TLS 1.3: remove inner content type from plaintext
+        if self.version >= TLS1_3_VERSION && !plaintext.is_empty() {
+            // Remove trailing content type byte and any padding zeros
+            let mut end = plaintext.len();
+            while end > 0 && plaintext[end - 1] == 0 {
+                end -= 1;
+            }
+            if end > 0 {
+                // Last non-zero byte is the content type, remove it
+                Some(plaintext[..end - 1].to_vec())
+            } else {
+                None
+            }
+        } else {
+            Some(plaintext)
         }
     }
 
@@ -418,7 +491,7 @@ impl RecordLayer {
     }
 }
 
-/// Build Additional Authenticated Data for AEAD
+/// Build Additional Authenticated Data for AEAD (TLS 1.2)
 fn build_aad(content_type: u8, version: u16, length: u16) -> Vec<u8> {
     vec![
         content_type,
@@ -426,6 +499,17 @@ fn build_aad(content_type: u8, version: u16, length: u16) -> Vec<u8> {
         (version & 0xFF) as u8,
         (length >> 8) as u8,
         (length & 0xFF) as u8,
+    ]
+}
+
+/// Build Additional Authenticated Data for TLS 1.3 AEAD
+/// TLS 1.3 AAD format: 0x17 (ApplicationData) || 0x03 0x03 (TLS 1.2) || length (2 bytes)
+fn build_tls13_aad(encrypted_length: u16) -> Vec<u8> {
+    vec![
+        0x17, // ApplicationData
+        0x03, 0x03, // TLS 1.2 legacy version
+        (encrypted_length >> 8) as u8,
+        (encrypted_length & 0xFF) as u8,
     ]
 }
 

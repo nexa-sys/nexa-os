@@ -735,9 +735,8 @@ pub fn recvfrom(
             return u64::MAX;
         }
         
-        kinfo!("[SYS_RECVFROM] UDP recv loop starting");
-
         let timeout_ms = sock_handle.recv_timeout_ms;
+        kinfo!("[SYS_RECVFROM] UDP recv loop starting, timeout_ms={}", timeout_ms);
         let start_tick = crate::scheduler::get_tick();
 
         static mut RECVFROM_LOOP_COUNT: u64 = 0;
@@ -787,9 +786,8 @@ pub fn recvfrom(
                                 return u64::MAX;
                             }
                         }
-                        for _ in 0..1000 {
-                            core::hint::spin_loop();
-                        }
+                        // Yield to allow timer interrupts and other processes to run
+                        crate::scheduler::do_schedule();
                     }
                 }
             } else {

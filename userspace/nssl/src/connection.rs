@@ -235,16 +235,22 @@ impl SslConnection {
     /// Client handshake implementation
     fn do_client_handshake(&mut self) -> c_int {
         // Send ClientHello
+        eprintln!("[TLS] Sending ClientHello...");
         if !self.send_client_hello() {
+            eprintln!("[TLS] Failed to send ClientHello");
             self.last_error = crate::ssl_error::SSL_ERROR_SSL;
             return -1;
         }
+        eprintln!("[TLS] ClientHello sent");
         
         // Receive ServerHello
+        eprintln!("[TLS] Waiting for ServerHello...");
         if !self.receive_server_hello() {
+            eprintln!("[TLS] Failed to receive ServerHello");
             self.last_error = crate::ssl_error::SSL_ERROR_SSL;
             return -1;
         }
+        eprintln!("[TLS] ServerHello received, version=0x{:04x}", self.version);
         
         // Complete handshake based on version
         if self.version >= TLS1_3_VERSION {
@@ -353,6 +359,7 @@ impl SslConnection {
 
     /// TLS 1.3 client handshake
     fn do_tls13_client_handshake(&mut self) -> c_int {
+        eprintln!("[TLS1.3] Starting TLS 1.3 client handshake");
         // TLS 1.3 handshake after ServerHello (RFC 8446):
         // 1. 从 ClientHello 的 key_share 中获取我们的私钥
         // 2. 从 ServerHello 的 key_share 扩展中获取服务器公钥
@@ -366,8 +373,12 @@ impl SslConnection {
         
         // 获取服务器的 key share
         let server_pubkey = match &self.server_kex_pubkey {
-            Some(pk) => pk.clone(),
+            Some(pk) => {
+                eprintln!("[TLS1.3] Server pubkey len={}", pk.len());
+                pk.clone()
+            },
             None => {
+                eprintln!("[TLS1.3] No server pubkey!");
                 self.last_error = crate::ssl_error::SSL_ERROR_SSL;
                 return -1;
             }
@@ -375,8 +386,12 @@ impl SslConnection {
         
         // 使用 ClientHello 中生成的私钥计算共享密钥
         let shared_secret = match self.compute_tls13_shared_secret(&server_pubkey) {
-            Some(s) => s,
+            Some(s) => {
+                eprintln!("[TLS1.3] Shared secret computed, len={}", s.len());
+                s
+            },
             None => {
+                eprintln!("[TLS1.3] Failed to compute shared secret");
                 self.last_error = crate::ssl_error::SSL_ERROR_SSL;
                 return -1;
             }
@@ -384,9 +399,14 @@ impl SslConnection {
         
         // 派生握手流量密钥 (handshake traffic keys)
         let transcript_hash = self.handshake.get_transcript_hash();
+        eprintln!("[TLS1.3] Transcript hash len={}", transcript_hash.len());
         let (handshake_secret, hs_keys) = match derive_tls13_handshake_keys(&shared_secret, &transcript_hash) {
-            Some(k) => k,
+            Some(k) => {
+                eprintln!("[TLS1.3] Handshake keys derived");
+                k
+            },
             None => {
+                eprintln!("[TLS1.3] Failed to derive handshake keys");
                 self.last_error = crate::ssl_error::SSL_ERROR_SSL;
                 return -1;
             }
@@ -394,6 +414,8 @@ impl SslConnection {
         
         // 设置读取密钥（用于解密服务器的握手消息）
         // 注意：client 读取用 server_key，写入用 client_key
+        eprintln!("[TLS1.3] Setting record layer keys (server_key len={}, client_key len={})", 
+            hs_keys.server_key.len(), hs_keys.client_key.len());
         self.record.set_keys(
             hs_keys.server_key.clone(),
             hs_keys.client_key.clone(),
@@ -403,42 +425,58 @@ impl SslConnection {
         self.record.set_version(crate::TLS1_3_VERSION);
         
         // 1. 接收 EncryptedExtensions
+        eprintln!("[TLS1.3] Receiving EncryptedExtensions...");
         if !self.receive_encrypted_extensions() {
+            eprintln!("[TLS1.3] Failed to receive EncryptedExtensions");
             self.last_error = crate::ssl_error::SSL_ERROR_SSL;
             return -1;
         }
+        eprintln!("[TLS1.3] EncryptedExtensions received");
         
         // 2. 接收 Certificate (可选 - 服务器可能发送证书)
         // 3. 接收 CertificateVerify (可选 - 如果发送了证书)
         // 注意：简化实现中我们尝试读取这些消息但不严格验证
+        eprintln!("[TLS1.3] Receiving Certificate (optional)...");
         let _ = self.receive_tls13_certificate();
+        eprintln!("[TLS1.3] Receiving CertificateVerify (optional)...");
         let _ = self.receive_tls13_certificate_verify();
         
         // 4. 接收 server Finished
+        eprintln!("[TLS1.3] Receiving server Finished...");
         let server_finished_hash = self.handshake.get_transcript_hash();
         if !self.receive_tls13_finished(&handshake_secret, &server_finished_hash, false) {
+            eprintln!("[TLS1.3] Failed to receive server Finished");
             self.last_error = crate::ssl_error::SSL_ERROR_SSL;
             return -1;
         }
+        eprintln!("[TLS1.3] Server Finished received");
         
         // 5. 发送 client Finished
+        eprintln!("[TLS1.3] Sending client Finished...");
         let client_finished_hash = self.handshake.get_transcript_hash();
         if !self.send_tls13_finished(&handshake_secret, &client_finished_hash, true) {
+            eprintln!("[TLS1.3] Failed to send client Finished");
             self.last_error = crate::ssl_error::SSL_ERROR_SSL;
             return -1;
         }
+        eprintln!("[TLS1.3] Client Finished sent");
         
         // 6. 派生应用流量密钥 (application traffic keys)
         let final_transcript_hash = self.handshake.get_transcript_hash();
         let app_keys = match derive_tls13_application_keys(&handshake_secret, &final_transcript_hash) {
-            Some(k) => k,
+            Some(k) => {
+                eprintln!("[TLS1.3] Application keys derived");
+                k
+            },
             None => {
+                eprintln!("[TLS1.3] Failed to derive application keys");
                 self.last_error = crate::ssl_error::SSL_ERROR_SSL;
                 return -1;
             }
         };
         
         // 切换到应用密钥
+        eprintln!("[TLS1.3] Switching to application keys");
         self.record.set_keys(
             app_keys.server_key,
             app_keys.client_key,
