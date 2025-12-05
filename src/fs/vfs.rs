@@ -769,8 +769,11 @@ fn handle_sysfs_read(path: &str) -> Option<OpenFile> {
 }
 
 pub fn open(path: &str) -> Option<OpenFile> {
+    crate::serial_println!("[open] path='{}'", path);
+    
     // Check for procfs paths first
     if path.starts_with("/proc") || path.starts_with("proc") {
+        crate::serial_println!("[open] trying procfs");
         if let Some(result) = handle_procfs_read(path) {
             return Some(result);
         }
@@ -778,13 +781,24 @@ pub fn open(path: &str) -> Option<OpenFile> {
 
     // Check for sysfs paths
     if path.starts_with("/sys") || path.starts_with("sys") {
+        crate::serial_println!("[open] trying sysfs");
         if let Some(result) = handle_sysfs_read(path) {
             return Some(result);
         }
     }
 
-    let (fs, relative) = resolve_mount(path)?;
-    fs.read(relative)
+    crate::serial_println!("[open] calling resolve_mount");
+    let (fs, relative) = match resolve_mount(path) {
+        Some(r) => r,
+        None => {
+            crate::serial_println!("[open] resolve_mount returned None");
+            return None;
+        }
+    };
+    crate::serial_println!("[open] fs={}, rel='{}'", fs.name(), relative);
+    let result = fs.read(relative);
+    crate::serial_println!("[open] fs.read returned {:?}", result.is_some());
+    result
 }
 
 /// Handle procfs virtual directory stat
@@ -1174,16 +1188,26 @@ pub fn list_files() -> &'static [Option<File>] {
 }
 
 pub fn read_file_bytes(name: &str) -> Option<&'static [u8]> {
+    crate::serial_println!("[read_file_bytes] opening '{}'", name);
     crate::kinfo!("read_file_bytes: opening '{}'", name);
-    let opened = open(name)?;
+    let opened = match open(name) {
+        Some(o) => o,
+        None => {
+            crate::serial_println!("[read_file_bytes] open('{}') returned None", name);
+            return None;
+        }
+    };
+    crate::serial_println!("[read_file_bytes] open('{}') succeeded", name);
     crate::kinfo!("read_file_bytes: opened, checking content type");
 
     match opened.content {
         FileContent::Inline(bytes) => {
+            crate::serial_println!("[read_file_bytes] Inline content, {} bytes", bytes.len());
             crate::kinfo!("read_file_bytes: Inline content, {} bytes", bytes.len());
             Some(bytes)
         }
         FileContent::Ext2Modular(file_ref) => {
+            crate::serial_println!("[read_file_bytes] Ext2Modular inode={}, size={}", file_ref.inode, file_ref.size);
             crate::kinfo!(
                 "read_file_bytes: Ext2Modular content, inode={}, size={}",
                 file_ref.inode,
@@ -1210,6 +1234,7 @@ pub fn read_file_bytes(name: &str) -> Option<&'static [u8]> {
 
             let size = file_ref.size as usize;
             if size == 0 {
+                crate::serial_println!("[read_file_bytes] file size is 0");
                 // Restore CR3 before returning
                 unsafe {
                     if saved_cr3 != kernel_cr3 {
@@ -1219,6 +1244,7 @@ pub fn read_file_bytes(name: &str) -> Option<&'static [u8]> {
                 return Some(&EMPTY_EXT2_FILE);
             }
             if size > EXT2_READ_CACHE_SIZE {
+                crate::serial_println!("[read_file_bytes] file too large: {} > {}", size, EXT2_READ_CACHE_SIZE);
                 crate::kwarn!(
                     "ext2 file '{}' is {} bytes, exceeds {} byte limit",
                     name,
@@ -1234,11 +1260,13 @@ pub fn read_file_bytes(name: &str) -> Option<&'static [u8]> {
                 return None;
             }
 
+            crate::serial_println!("[read_file_bytes] getting cache buffer for {} bytes", size);
             // Lock the cache and get/allocate buffer (now in kernel CR3)
             let mut cache = EXT2_READ_CACHE.lock();
             let dest = match cache.get_buffer(size) {
                 Some(d) => d,
                 None => {
+                    crate::serial_println!("[read_file_bytes] cache.get_buffer failed");
                     drop(cache);
                     // Restore CR3 before returning
                     unsafe {
@@ -1249,6 +1277,7 @@ pub fn read_file_bytes(name: &str) -> Option<&'static [u8]> {
                     return None;
                 }
             };
+            crate::serial_println!("[read_file_bytes] got buffer at {:#x}, size {}", dest.as_ptr() as u64, size);
             crate::kinfo!(
                 "read_file_bytes: got buffer at {:#x}, size {}",
                 dest.as_ptr() as u64,
@@ -1257,8 +1286,11 @@ pub fn read_file_bytes(name: &str) -> Option<&'static [u8]> {
 
             let mut read_offset = 0usize;
             while read_offset < size {
+                crate::serial_println!("[read_file_bytes] ext2 read_at offset={}", read_offset);
                 let read = ext2_modular::read_at(&file_ref, read_offset, &mut dest[read_offset..]);
+                crate::serial_println!("[read_file_bytes] ext2 read_at returned {}", read);
                 if read == 0 {
+                    crate::serial_println!("[read_file_bytes] short read at offset {} of {}", read_offset, size);
                     crate::kwarn!(
                         "short read while loading '{}' from ext2 (offset {} of {})",
                         name,
@@ -1276,6 +1308,7 @@ pub fn read_file_bytes(name: &str) -> Option<&'static [u8]> {
                 }
                 read_offset += read;
             }
+            crate::serial_println!("[read_file_bytes] read complete, total {} bytes", size);
 
             // Debug: log first 16 bytes
             let n = core::cmp::min(16, size);

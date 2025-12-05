@@ -1264,33 +1264,88 @@ impl Ext2Filesystem {
     }
 
     fn block_number(&self, inode: &Inode, index: usize) -> Option<u32> {
+        let pointers_per_block = self.block_size / EXT2_BLOCK_POINTER_SIZE;
+
+        // Direct blocks (0-11)
         if index < EXT2_NDIR_BLOCKS {
             return Some(inode.block[index]);
         }
 
         let ind_index = index - EXT2_NDIR_BLOCKS;
-        let pointers_per_block = self.block_size / EXT2_BLOCK_POINTER_SIZE;
-        if ind_index >= pointers_per_block {
-            return None;
+
+        // Single indirect block (12): covers pointers_per_block entries
+        if ind_index < pointers_per_block {
+            let indirect_block = inode.block[EXT2_IND_BLOCK];
+            if indirect_block == 0 {
+                return None;
+            }
+
+            let raw = self.read_block(indirect_block)?;
+            let offset = ind_index * EXT2_BLOCK_POINTER_SIZE;
+            if offset + EXT2_BLOCK_POINTER_SIZE > raw.len() {
+                return None;
+            }
+
+            return Some(u32::from_le_bytes([
+                raw[offset],
+                raw[offset + 1],
+                raw[offset + 2],
+                raw[offset + 3],
+            ]));
         }
 
-        let indirect_block = inode.block[EXT2_IND_BLOCK];
-        if indirect_block == 0 {
-            return None;
+        // Double indirect block (13): covers pointers_per_block^2 entries
+        let dind_index = ind_index - pointers_per_block;
+        let dind_capacity = pointers_per_block * pointers_per_block;
+        
+        if dind_index < dind_capacity {
+            const EXT2_DIND_BLOCK: usize = 13;
+            let double_indirect_block = inode.block[EXT2_DIND_BLOCK];
+            if double_indirect_block == 0 {
+                return None;
+            }
+
+            // First level: which indirect block?
+            let first_level_index = dind_index / pointers_per_block;
+            // Second level: which pointer within that indirect block?
+            let second_level_index = dind_index % pointers_per_block;
+
+            // Read the double indirect block to get the indirect block pointer
+            let dind_raw = self.read_block(double_indirect_block)?;
+            let first_offset = first_level_index * EXT2_BLOCK_POINTER_SIZE;
+            if first_offset + EXT2_BLOCK_POINTER_SIZE > dind_raw.len() {
+                return None;
+            }
+
+            let indirect_block = u32::from_le_bytes([
+                dind_raw[first_offset],
+                dind_raw[first_offset + 1],
+                dind_raw[first_offset + 2],
+                dind_raw[first_offset + 3],
+            ]);
+
+            if indirect_block == 0 {
+                return None;
+            }
+
+            // Read the indirect block to get the data block pointer
+            let ind_raw = self.read_block(indirect_block)?;
+            let second_offset = second_level_index * EXT2_BLOCK_POINTER_SIZE;
+            if second_offset + EXT2_BLOCK_POINTER_SIZE > ind_raw.len() {
+                return None;
+            }
+
+            return Some(u32::from_le_bytes([
+                ind_raw[second_offset],
+                ind_raw[second_offset + 1],
+                ind_raw[second_offset + 2],
+                ind_raw[second_offset + 3],
+            ]));
         }
 
-        let raw = self.read_block(indirect_block)?;
-        let offset = ind_index * EXT2_BLOCK_POINTER_SIZE;
-        if offset + EXT2_BLOCK_POINTER_SIZE > raw.len() {
-            return None;
-        }
-
-        Some(u32::from_le_bytes([
-            raw[offset],
-            raw[offset + 1],
-            raw[offset + 2],
-            raw[offset + 3],
-        ]))
+        // Triple indirect block (14) not implemented yet
+        // Would cover pointers_per_block^3 entries
+        None
     }
 }
 
