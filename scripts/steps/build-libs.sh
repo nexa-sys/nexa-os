@@ -191,9 +191,9 @@ build_all_libraries() {
     
     for lib_name in "${BUILD_ORDER[@]}"; do
         if build_library "$lib_name" "all"; then
-            ((success_count++))
+            ((success_count++)) || true
         else
-            ((fail_count++))
+            ((fail_count++)) || true
             log_error "Failed to build $lib_name"
         fi
     done

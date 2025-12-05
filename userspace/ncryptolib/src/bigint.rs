@@ -59,7 +59,7 @@ impl Ord for BigInt {
 
 impl BigInt {
     /// Compare absolute values
-    fn abs_cmp(&self, other: &Self) -> Ordering {
+    pub fn abs_cmp(&self, other: &Self) -> Ordering {
         if self.len != other.len {
             return self.len.cmp(&other.len);
         }

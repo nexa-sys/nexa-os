@@ -223,10 +223,240 @@ pub fn hmac_sha3_256(key: &[u8], data: &[u8]) -> [u8; 32] {
 }
 
 // ============================================================================
+// OpenSSL HMAC_CTX Compatible Interface
+// ============================================================================
+
+use std::boxed::Box;
+use crate::hash::{Sha256, SHA256_BLOCK_SIZE, HmacSha256};
+use crate::evp::{EvpMd, EvpMdType};
+
+/// HMAC Context (OpenSSL compatible)
+pub struct HMAC_CTX {
+    /// Algorithm type
+    md_type: EvpMdType,
+    /// Key (padded)
+    key: Vec<u8>,
+    /// Inner hash state
+    state: HmacState,
+    /// Has been initialized
+    initialized: bool,
+}
+
+enum HmacState {
+    None,
+    Sha256(HmacSha256),
+    Sha384(HmacSha384),
+    Sha512(HmacSha512),
+    Sha3_256(HmacSha3_256),
+}
+
+impl HMAC_CTX {
+    pub fn new() -> Self {
+        Self {
+            md_type: EvpMdType::Sha256,
+            key: Vec::new(),
+            state: HmacState::None,
+            initialized: false,
+        }
+    }
+
+    pub fn init(&mut self, key: &[u8], md: &EvpMd) -> bool {
+        self.md_type = md.md_type;
+        self.key = key.to_vec();
+        self.state = match md.md_type {
+            EvpMdType::Sha256 => HmacState::Sha256(HmacSha256::new(key)),
+            EvpMdType::Sha384 => HmacState::Sha384(HmacSha384::new(key)),
+            EvpMdType::Sha512 => HmacState::Sha512(HmacSha512::new(key)),
+            EvpMdType::Sha3_256 => HmacState::Sha3_256(HmacSha3_256::new(key)),
+            _ => return false,
+        };
+        self.initialized = true;
+        true
+    }
+
+    pub fn update(&mut self, data: &[u8]) -> bool {
+        if !self.initialized {
+            return false;
+        }
+        match &mut self.state {
+            HmacState::Sha256(h) => h.update(data),
+            HmacState::Sha384(h) => h.update(data),
+            HmacState::Sha512(h) => h.update(data),
+            HmacState::Sha3_256(h) => h.update(data),
+            HmacState::None => return false,
+        }
+        true
+    }
+
+    pub fn finalize(&mut self, out: &mut [u8]) -> usize {
+        if !self.initialized {
+            return 0;
+        }
+        let result: Vec<u8> = match core::mem::replace(&mut self.state, HmacState::None) {
+            HmacState::Sha256(mut h) => h.finalize().to_vec(),
+            HmacState::Sha384(h) => h.finalize(),
+            HmacState::Sha512(h) => h.finalize(),
+            HmacState::Sha3_256(h) => h.finalize(),
+            HmacState::None => return 0,
+        };
+        let len = result.len().min(out.len());
+        out[..len].copy_from_slice(&result[..len]);
+        self.initialized = false;
+        len
+    }
+
+    pub fn reset(&mut self) -> bool {
+        if self.key.is_empty() {
+            return false;
+        }
+        self.state = match self.md_type {
+            EvpMdType::Sha256 => HmacState::Sha256(HmacSha256::new(&self.key)),
+            EvpMdType::Sha384 => HmacState::Sha384(HmacSha384::new(&self.key)),
+            EvpMdType::Sha512 => HmacState::Sha512(HmacSha512::new(&self.key)),
+            EvpMdType::Sha3_256 => HmacState::Sha3_256(HmacSha3_256::new(&self.key)),
+            _ => return false,
+        };
+        self.initialized = true;
+        true
+    }
+}
+
+impl Default for HMAC_CTX {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ============================================================================
 // C ABI Exports
 // ============================================================================
 
 use crate::{c_int, size_t};
+
+/// HMAC_CTX_new - Create new HMAC context
+#[no_mangle]
+pub extern "C" fn HMAC_CTX_new() -> *mut HMAC_CTX {
+    Box::into_raw(Box::new(HMAC_CTX::new()))
+}
+
+/// HMAC_CTX_free - Free HMAC context
+#[no_mangle]
+pub extern "C" fn HMAC_CTX_free(ctx: *mut HMAC_CTX) {
+    if !ctx.is_null() {
+        unsafe { drop(Box::from_raw(ctx)); }
+    }
+}
+
+/// HMAC_CTX_reset - Reset HMAC context
+#[no_mangle]
+pub extern "C" fn HMAC_CTX_reset(ctx: *mut HMAC_CTX) -> c_int {
+    if ctx.is_null() {
+        return 0;
+    }
+    if unsafe { (*ctx).reset() } { 1 } else { 0 }
+}
+
+/// HMAC_Init_ex - Initialize HMAC context
+#[no_mangle]
+pub extern "C" fn HMAC_Init_ex(
+    ctx: *mut HMAC_CTX,
+    key: *const u8,
+    len: c_int,
+    md: *const EvpMd,
+    _engine: *mut core::ffi::c_void,
+) -> c_int {
+    if ctx.is_null() || md.is_null() {
+        return 0;
+    }
+
+    unsafe {
+        let ctx_ref = &mut *ctx;
+        let md_ref = &*md;
+        
+        // Clone the key if using existing key
+        let key_vec: Vec<u8> = if key.is_null() || len <= 0 {
+            ctx_ref.key.clone()
+        } else {
+            core::slice::from_raw_parts(key, len as usize).to_vec()
+        };
+
+        if ctx_ref.init(&key_vec, md_ref) { 1 } else { 0 }
+    }
+}
+
+/// HMAC_Update - Update HMAC with data
+#[no_mangle]
+pub extern "C" fn HMAC_Update(ctx: *mut HMAC_CTX, data: *const u8, len: usize) -> c_int {
+    if ctx.is_null() || data.is_null() {
+        return 0;
+    }
+    let data_slice = unsafe { core::slice::from_raw_parts(data, len) };
+    if unsafe { (*ctx).update(data_slice) } { 1 } else { 0 }
+}
+
+/// HMAC_Final - Finalize HMAC
+#[no_mangle]
+pub extern "C" fn HMAC_Final(ctx: *mut HMAC_CTX, md: *mut u8, len: *mut u32) -> c_int {
+    if ctx.is_null() || md.is_null() {
+        return 0;
+    }
+    let mut buf = [0u8; 64]; // Max hash size
+    let result_len = unsafe { (*ctx).finalize(&mut buf) };
+    
+    unsafe {
+        core::ptr::copy_nonoverlapping(buf.as_ptr(), md, result_len);
+        if !len.is_null() {
+            *len = result_len as u32;
+        }
+    }
+    1
+}
+
+/// HMAC - One-shot HMAC computation
+#[no_mangle]
+pub extern "C" fn HMAC(
+    evp_md: *const EvpMd,
+    key: *const u8,
+    key_len: c_int,
+    data: *const u8,
+    data_len: usize,
+    md: *mut u8,
+    md_len: *mut u32,
+) -> *mut u8 {
+    if evp_md.is_null() || key.is_null() || data.is_null() || md.is_null() {
+        return core::ptr::null_mut();
+    }
+
+    let evp_md = unsafe { &*evp_md };
+    let key_slice = unsafe { core::slice::from_raw_parts(key, key_len as usize) };
+    let data_slice = unsafe { core::slice::from_raw_parts(data, data_len) };
+
+    let result: Vec<u8> = match evp_md.md_type {
+        EvpMdType::Sha256 => {
+            let mac = crate::hash::hmac_sha256(key_slice, data_slice);
+            mac.to_vec()
+        }
+        EvpMdType::Sha384 => {
+            hmac_sha384(key_slice, data_slice).to_vec()
+        }
+        EvpMdType::Sha512 => {
+            hmac_sha512(key_slice, data_slice).to_vec()
+        }
+        EvpMdType::Sha3_256 => {
+            hmac_sha3_256(key_slice, data_slice).to_vec()
+        }
+        _ => return core::ptr::null_mut(),
+    };
+
+    unsafe {
+        core::ptr::copy_nonoverlapping(result.as_ptr(), md, result.len());
+        if !md_len.is_null() {
+            *md_len = result.len() as u32;
+        }
+    }
+
+    md
+}
 
 /// HMAC-SHA384 (C ABI)
 #[no_mangle]

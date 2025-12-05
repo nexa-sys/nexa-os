@@ -217,11 +217,7 @@ pub extern "C" fn CRYPTO_cleanup_all_ex_data() {
     // No-op
 }
 
-/// Free all error strings (no-op)
-#[no_mangle]
-pub extern "C" fn ERR_free_strings() {
-    // No-op
-}
+// ERR_free_strings is defined in err.rs
 
 // ============================================================================
 // Re-exports
@@ -266,6 +262,31 @@ pub use p256::{P256_COORD_SIZE, P256_SIG_SIZE, P256_PRIVATE_KEY_SIZE, P256_PUBLI
 pub use ec::{EC_GROUP, EC_POINT, EC_KEY, ECDSA_SIG};
 pub use ec::nid;
 
+// Big number support
+pub mod bn;
+pub use bn::{BIGNUM, BN_CTX};
+
+// PEM encoding
+pub mod pem;
+pub use pem::{PemBlock, pem_encode, pem_decode, pem_decode_one};
+
+// ASN.1 parsing
+pub mod asn1;
+pub use asn1::{Oid, oids, parse_tlv, encode_tlv, parse_sequence, encode_sequence};
+
+// OpenSSL error handling
+pub mod err;
+pub use err::{lib_code, push_error, push_error_data, unpack_error};
+
+// OpenSSL version functions
+pub mod version;
+pub use version::{OPENSSL_VERSION_NUMBER as OPENSSL_VERSION_NUM_3, init_opts};
+
+// OpenSSL object identifiers
+pub mod objects;
+pub use objects::ASN1_OBJECT;
+pub use objects::nid as obj_nid;
+
 // Random
 pub use random::{getrandom, RngState};
 
@@ -280,6 +301,7 @@ pub use scrypt::{scrypt, scrypt_simple, ScryptParams};
 // Message authentication
 pub use hmac::{hmac_sha384, hmac_sha512, hmac_sha3_256};
 pub use hmac::{HmacSha384, HmacSha512, HmacSha3_256, Hmac};
+pub use hmac::HMAC_CTX;
 
 // Encoding
 pub use encoding::{base64_encode, base64_decode, base64url_encode, base64url_decode};

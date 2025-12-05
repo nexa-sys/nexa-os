@@ -95,6 +95,7 @@ pub mod kex;
 pub mod x509;
 pub mod x509_verify;
 pub mod cert_verify;
+pub mod cert_chain;
 
 // Session management
 pub mod session;
@@ -110,6 +111,18 @@ pub mod bio;
 
 // OpenSSL C ABI compatibility
 pub mod compat;
+
+// TLS 1.3 Early Data (0-RTT)
+pub mod early_data;
+
+// Post-handshake operations
+pub mod post_handshake;
+
+// Session tickets and PSK
+pub mod tickets;
+
+// Additional SSL functions
+pub mod ssl_extra;
 
 // ============================================================================
 // C Type Definitions (OpenSSL compatible)
@@ -770,14 +783,7 @@ pub extern "C" fn SSL_get_peer_certificate(ssl: *const connection::SslConnection
     unsafe { (*ssl).get_peer_certificate() }
 }
 
-/// Get peer certificate chain
-#[no_mangle]
-pub extern "C" fn SSL_get_peer_cert_chain(ssl: *const connection::SslConnection) -> *mut x509::X509Stack {
-    if ssl.is_null() {
-        return core::ptr::null_mut();
-    }
-    unsafe { (*ssl).get_peer_cert_chain() }
-}
+// NOTE: SSL_get_peer_cert_chain is defined in cert_chain.rs
 
 /// Get verify result
 #[no_mangle]
@@ -955,39 +961,4 @@ pub extern "C" fn X509_NAME_oneline(
 // ============================================================================
 // C ABI Exports - Error Handling
 // ============================================================================
-
-/// Get last error
-#[no_mangle]
-pub extern "C" fn ERR_get_error() -> c_ulong {
-    error::get_error()
-}
-
-/// Peek at last error
-#[no_mangle]
-pub extern "C" fn ERR_peek_error() -> c_ulong {
-    error::peek_error()
-}
-
-/// Clear error queue
-#[no_mangle]
-pub extern "C" fn ERR_clear_error() {
-    error::clear_error()
-}
-
-/// Get error string
-#[no_mangle]
-pub extern "C" fn ERR_error_string(e: c_ulong, buf: *mut c_char) -> *mut c_char {
-    error::error_string(e, buf)
-}
-
-/// Get error string (with buffer length)
-#[no_mangle]
-pub extern "C" fn ERR_error_string_n(e: c_ulong, buf: *mut c_char, len: size_t) {
-    error::error_string_n(e, buf, len)
-}
-
-/// Print errors to file (stub - prints to stderr)
-#[no_mangle]
-pub extern "C" fn ERR_print_errors_fp(_fp: *mut core::ffi::c_void) {
-    error::print_errors()
-}
+// Note: ERR_* functions are provided by ncryptolib, not duplicated here
