@@ -200,8 +200,41 @@ impl X509 {
 
     /// Verify certificate signature with issuer's public key
     pub fn verify_signature(&self, issuer_pubkey: &[u8]) -> bool {
-        // TODO: Implement signature verification
-        !issuer_pubkey.is_empty()
+        use crate::x509_verify::{PublicKey, SignatureAlgorithm, SignatureVerifier};
+        
+        if issuer_pubkey.is_empty() || self.der.is_empty() {
+            return false;
+        }
+        
+        // Parse issuer's public key
+        let pubkey = match PublicKey::from_spki(issuer_pubkey) {
+            Some(k) => k,
+            None => return false,
+        };
+        
+        // Parse certificate to get TBSCertificate, signature algorithm, and signature
+        // This is a simplified extraction - full implementation would use ASN.1 parser
+        if self.der.len() < 10 {
+            return false;
+        }
+        
+        // For now, use a simplified verification that delegates to SignatureVerifier
+        // In a full implementation, we would:
+        // 1. Extract TBSCertificate from self.der
+        // 2. Extract signature algorithm OID
+        // 3. Extract signature bytes
+        // 4. Call SignatureVerifier::verify()
+        
+        // Placeholder: assume RSA-SHA256 for now
+        // TODO: Parse actual algorithm from certificate
+        let sig_alg = SignatureAlgorithm::RsaPkcs1Sha256;
+        
+        // Extract approximate TBSCertificate (everything before signature)
+        // This is a simplification - real implementation needs proper ASN.1 parsing
+        let tbs_data = &self.der[..self.der.len().saturating_sub(256)];
+        let sig_data = &self.der[self.der.len().saturating_sub(256)..];
+        
+        SignatureVerifier::verify(tbs_data, sig_alg, sig_data, &pubkey)
     }
 
     /// Check if certificate matches hostname

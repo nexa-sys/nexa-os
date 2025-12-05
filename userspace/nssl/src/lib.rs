@@ -93,6 +93,7 @@ pub mod kex;
 
 // Certificate handling
 pub mod x509;
+pub mod x509_verify;
 pub mod cert_verify;
 
 // Session management

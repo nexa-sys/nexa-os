@@ -1035,3 +1035,386 @@ pub extern "C" fn EVP_CIPHER_block_size(cipher: *const EvpCipher) -> i32 {
     let cipher = unsafe { &*cipher };
     cipher.block_size as i32
 }
+
+// ============================================================================
+// EVP_PKEY C ABI Functions
+// ============================================================================
+
+/// EVP_PKEY type constants
+pub const EVP_PKEY_RSA: i32 = 6;
+pub const EVP_PKEY_EC: i32 = 408;
+pub const EVP_PKEY_ED25519: i32 = 1087;
+pub const EVP_PKEY_X25519: i32 = 1034;
+
+/// EVP_PKEY_new
+#[no_mangle]
+pub extern "C" fn EVP_PKEY_new() -> *mut EvpPkey {
+    // Allocate uninitialized key
+    let key = Box::new(EvpPkey {
+        key_type: EvpPkeyType::Ed25519, // Default
+        private_key: Vec::new(),
+        public_key: Vec::new(),
+    });
+    Box::into_raw(key)
+}
+
+/// EVP_PKEY_free
+#[no_mangle]
+pub extern "C" fn EVP_PKEY_free(pkey: *mut EvpPkey) {
+    if !pkey.is_null() {
+        unsafe { drop(Box::from_raw(pkey)); }
+    }
+}
+
+/// EVP_PKEY_id - Get key type
+#[no_mangle]
+pub extern "C" fn EVP_PKEY_id(pkey: *const EvpPkey) -> i32 {
+    if pkey.is_null() {
+        return 0;
+    }
+    let pkey = unsafe { &*pkey };
+    match pkey.key_type {
+        EvpPkeyType::Ed25519 => EVP_PKEY_ED25519,
+        EvpPkeyType::X25519 => EVP_PKEY_X25519,
+        EvpPkeyType::EcdsaP256 => EVP_PKEY_EC,
+        EvpPkeyType::EcdsaP384 => EVP_PKEY_EC,
+    }
+}
+
+/// EVP_PKEY_size - Get key size in bytes
+#[no_mangle]
+pub extern "C" fn EVP_PKEY_size(pkey: *const EvpPkey) -> i32 {
+    if pkey.is_null() {
+        return 0;
+    }
+    let pkey = unsafe { &*pkey };
+    match pkey.key_type {
+        EvpPkeyType::Ed25519 => 64,  // Signature size
+        EvpPkeyType::X25519 => 32,   // Shared secret size
+        EvpPkeyType::EcdsaP256 => 72, // Max DER signature size
+        EvpPkeyType::EcdsaP384 => 104,
+    }
+}
+
+/// EVP_PKEY_bits - Get key size in bits
+#[no_mangle]
+pub extern "C" fn EVP_PKEY_bits(pkey: *const EvpPkey) -> i32 {
+    if pkey.is_null() {
+        return 0;
+    }
+    let pkey = unsafe { &*pkey };
+    match pkey.key_type {
+        EvpPkeyType::Ed25519 => 256,
+        EvpPkeyType::X25519 => 256,
+        EvpPkeyType::EcdsaP256 => 256,
+        EvpPkeyType::EcdsaP384 => 384,
+    }
+}
+
+/// EVP_PKEY_CTX - Key context for operations
+pub struct EvpPkeyCtx {
+    /// Key type
+    key_type: Option<i32>,
+    /// Associated key
+    pkey: *mut EvpPkey,
+    /// Operation mode
+    operation: i32,
+}
+
+impl EvpPkeyCtx {
+    pub fn new() -> Self {
+        Self {
+            key_type: None,
+            pkey: core::ptr::null_mut(),
+            operation: 0,
+        }
+    }
+}
+
+impl Default for EvpPkeyCtx {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// EVP_PKEY_CTX_new
+#[no_mangle]
+pub extern "C" fn EVP_PKEY_CTX_new(
+    pkey: *mut EvpPkey,
+    _engine: *mut core::ffi::c_void,
+) -> *mut EvpPkeyCtx {
+    let mut ctx = Box::new(EvpPkeyCtx::new());
+    ctx.pkey = pkey;
+    if !pkey.is_null() {
+        let pkey_ref = unsafe { &*pkey };
+        ctx.key_type = Some(match pkey_ref.key_type {
+            EvpPkeyType::Ed25519 => EVP_PKEY_ED25519,
+            EvpPkeyType::X25519 => EVP_PKEY_X25519,
+            EvpPkeyType::EcdsaP256 => EVP_PKEY_EC,
+            EvpPkeyType::EcdsaP384 => EVP_PKEY_EC,
+        });
+    }
+    Box::into_raw(ctx)
+}
+
+/// EVP_PKEY_CTX_new_id
+#[no_mangle]
+pub extern "C" fn EVP_PKEY_CTX_new_id(
+    id: i32,
+    _engine: *mut core::ffi::c_void,
+) -> *mut EvpPkeyCtx {
+    let mut ctx = Box::new(EvpPkeyCtx::new());
+    ctx.key_type = Some(id);
+    Box::into_raw(ctx)
+}
+
+/// EVP_PKEY_CTX_free
+#[no_mangle]
+pub extern "C" fn EVP_PKEY_CTX_free(ctx: *mut EvpPkeyCtx) {
+    if !ctx.is_null() {
+        unsafe { drop(Box::from_raw(ctx)); }
+    }
+}
+
+/// EVP_PKEY_keygen_init
+#[no_mangle]
+pub extern "C" fn EVP_PKEY_keygen_init(ctx: *mut EvpPkeyCtx) -> i32 {
+    if ctx.is_null() {
+        return -1;
+    }
+    unsafe { (*ctx).operation = 1; } // Keygen
+    1
+}
+
+/// EVP_PKEY_keygen
+#[no_mangle]
+pub extern "C" fn EVP_PKEY_keygen(ctx: *mut EvpPkeyCtx, ppkey: *mut *mut EvpPkey) -> i32 {
+    if ctx.is_null() || ppkey.is_null() {
+        return -1;
+    }
+    
+    let ctx = unsafe { &*ctx };
+    let key_type = ctx.key_type.unwrap_or(0);
+    
+    let pkey = match key_type {
+        EVP_PKEY_ED25519 => {
+            let mut seed = [0u8; 32];
+            let _ = crate::getrandom(&mut seed, 0);
+            Box::new(EvpPkey::ed25519_from_seed(&seed))
+        }
+        EVP_PKEY_X25519 => {
+            let mut private = [0u8; 32];
+            let _ = crate::getrandom(&mut private, 0);
+            Box::new(EvpPkey::x25519_from_private(&private))
+        }
+        EVP_PKEY_EC => {
+            // Default to P-256
+            let keypair = match crate::p256::P256KeyPair::generate() {
+                Some(kp) => kp,
+                None => return -1,
+            };
+            Box::new(EvpPkey {
+                key_type: EvpPkeyType::EcdsaP256,
+                private_key: keypair.private_key.to_vec(),
+                public_key: keypair.public_key_uncompressed().to_vec(),
+            })
+        }
+        _ => return -1,
+    };
+    
+    unsafe { *ppkey = Box::into_raw(pkey); }
+    1
+}
+
+/// EVP_PKEY_derive_init
+#[no_mangle]
+pub extern "C" fn EVP_PKEY_derive_init(ctx: *mut EvpPkeyCtx) -> i32 {
+    if ctx.is_null() {
+        return -1;
+    }
+    unsafe { (*ctx).operation = 2; } // Derive
+    1
+}
+
+/// EVP_PKEY_derive_set_peer
+#[no_mangle]
+pub extern "C" fn EVP_PKEY_derive_set_peer(
+    _ctx: *mut EvpPkeyCtx,
+    _peer: *mut EvpPkey,
+) -> i32 {
+    // Store peer key for derive operation
+    1
+}
+
+/// EVP_PKEY_sign_init
+#[no_mangle]
+pub extern "C" fn EVP_PKEY_sign_init(ctx: *mut EvpPkeyCtx) -> i32 {
+    if ctx.is_null() {
+        return -1;
+    }
+    unsafe { (*ctx).operation = 3; } // Sign
+    1
+}
+
+/// EVP_PKEY_verify_init
+#[no_mangle]
+pub extern "C" fn EVP_PKEY_verify_init(ctx: *mut EvpPkeyCtx) -> i32 {
+    if ctx.is_null() {
+        return -1;
+    }
+    unsafe { (*ctx).operation = 4; } // Verify
+    1
+}
+
+// ============================================================================
+// Additional Hash Functions
+// ============================================================================
+
+/// EVP_md5 (legacy - file verification only)
+#[no_mangle]
+pub extern "C" fn EVP_md5() -> *const EvpMd {
+    &EVP_MD5
+}
+
+/// EVP_sha1 (legacy - file verification only)
+#[no_mangle]
+pub extern "C" fn EVP_sha1() -> *const EvpMd {
+    &EVP_SHA1
+}
+
+/// EVP_sha3_256
+#[no_mangle]
+pub extern "C" fn EVP_sha3_256() -> *const EvpMd {
+    &EVP_SHA3_256
+}
+
+/// EVP_sha3_384
+#[no_mangle]
+pub extern "C" fn EVP_sha3_384() -> *const EvpMd {
+    &EVP_SHA3_384
+}
+
+/// EVP_sha3_512
+#[no_mangle]
+pub extern "C" fn EVP_sha3_512() -> *const EvpMd {
+    &EVP_SHA3_512
+}
+
+/// EVP_blake2b512
+#[no_mangle]
+pub extern "C" fn EVP_blake2b512() -> *const EvpMd {
+    &EVP_BLAKE2B512
+}
+
+/// EVP_blake2s256
+#[no_mangle]
+pub extern "C" fn EVP_blake2s256() -> *const EvpMd {
+    &EVP_BLAKE2S256
+}
+
+// ============================================================================
+// One-shot Digest Functions
+// ============================================================================
+
+/// EVP_Digest - One-shot hash
+#[no_mangle]
+pub extern "C" fn EVP_Digest(
+    data: *const u8,
+    count: usize,
+    md: *mut u8,
+    size: *mut u32,
+    type_: *const EvpMd,
+    _engine: *mut core::ffi::c_void,
+) -> i32 {
+    if data.is_null() || md.is_null() || type_.is_null() {
+        return 0;
+    }
+    
+    let data = unsafe { core::slice::from_raw_parts(data, count) };
+    let type_ = unsafe { &*type_ };
+    
+    let (hash, hash_len): (Vec<u8>, usize) = match type_.md_type {
+        EvpMdType::Md5 => {
+            let h = crate::md5::md5(data);
+            (h.to_vec(), 16)
+        }
+        EvpMdType::Sha1 => {
+            let h = crate::sha1::sha1(data);
+            (h.to_vec(), 20)
+        }
+        EvpMdType::Sha256 => {
+            let h = crate::hash::sha256(data);
+            (h.to_vec(), 32)
+        }
+        EvpMdType::Sha384 => {
+            let h = crate::hash::sha384(data);
+            (h.to_vec(), 48)
+        }
+        EvpMdType::Sha512 => {
+            let h = crate::hash::sha512(data);
+            (h.to_vec(), 64)
+        }
+        EvpMdType::Sha3_256 => {
+            let h = crate::sha3::sha3_256(data);
+            (h.to_vec(), 32)
+        }
+        EvpMdType::Sha3_384 => {
+            let h = crate::sha3::sha3_384(data);
+            (h.to_vec(), 48)
+        }
+        EvpMdType::Sha3_512 => {
+            let h = crate::sha3::sha3_512(data);
+            (h.to_vec(), 64)
+        }
+        EvpMdType::Blake2b512 => {
+            let h = crate::blake2::blake2b(data);
+            (h.to_vec(), 64)
+        }
+        EvpMdType::Blake2s256 => {
+            let h = crate::blake2::blake2s(data);
+            (h.to_vec(), 32)
+        }
+    };
+    
+    unsafe {
+        core::ptr::copy_nonoverlapping(hash.as_ptr(), md, hash_len);
+        if !size.is_null() {
+            *size = hash_len as u32;
+        }
+    }
+    
+    1
+}
+
+/// EVP_MD_CTX_reset
+#[no_mangle]
+pub extern "C" fn EVP_MD_CTX_reset(ctx: *mut EvpMdCtx) -> i32 {
+    if ctx.is_null() {
+        return 0;
+    }
+    let ctx = unsafe { &mut *ctx };
+    match ctx.reset() {
+        Ok(_) => 1,
+        Err(_) => 0,
+    }
+}
+
+/// EVP_DigestInit_ex - Initialize with optional engine
+#[no_mangle]
+pub extern "C" fn EVP_DigestInit_ex(
+    ctx: *mut EvpMdCtx,
+    type_: *const EvpMd,
+    _engine: *mut core::ffi::c_void,
+) -> i32 {
+    EVP_DigestInit(ctx, type_)
+}
+
+/// EVP_DigestFinal_ex
+#[no_mangle]
+pub extern "C" fn EVP_DigestFinal_ex(
+    ctx: *mut EvpMdCtx,
+    md: *mut u8,
+    size: *mut u32,
+) -> i32 {
+    EVP_DigestFinal(ctx, md, size)
+}

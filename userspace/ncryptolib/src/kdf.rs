@@ -60,6 +60,278 @@ pub fn hkdf(salt: &[u8], ikm: &[u8], info: &[u8], length: usize) -> Vec<u8> {
 }
 
 // ============================================================================
+// TLS 1.3 Key Derivation (RFC 8446 Section 7.1)
+// ============================================================================
+
+/// HKDF-Expand-Label as defined in RFC 8446 Section 7.1
+///
+/// ```text
+/// HKDF-Expand-Label(Secret, Label, Context, Length) =
+///     HKDF-Expand(Secret, HkdfLabel, Length)
+///
+/// struct {
+///    uint16 length = Length;
+///    opaque label<7..255> = "tls13 " + Label;
+///    opaque context<0..255> = Context;
+/// } HkdfLabel;
+/// ```
+pub fn hkdf_expand_label(
+    secret: &[u8; SHA256_DIGEST_SIZE],
+    label: &[u8],
+    context: &[u8],
+    length: usize,
+) -> Vec<u8> {
+    // Build HkdfLabel structure
+    let mut hkdf_label = Vec::with_capacity(2 + 1 + 6 + label.len() + 1 + context.len());
+    
+    // Length (2 bytes, big-endian)
+    hkdf_label.push((length >> 8) as u8);
+    hkdf_label.push((length & 0xFF) as u8);
+    
+    // Label with "tls13 " prefix
+    let full_label_len = 6 + label.len();
+    hkdf_label.push(full_label_len as u8);
+    hkdf_label.extend_from_slice(b"tls13 ");
+    hkdf_label.extend_from_slice(label);
+    
+    // Context
+    hkdf_label.push(context.len() as u8);
+    hkdf_label.extend_from_slice(context);
+    
+    hkdf_expand_sha256(secret, &hkdf_label, length)
+}
+
+/// Derive-Secret as defined in RFC 8446 Section 7.1
+///
+/// ```text
+/// Derive-Secret(Secret, Label, Messages) =
+///     HKDF-Expand-Label(Secret, Label, Transcript-Hash(Messages), Hash.length)
+/// ```
+pub fn derive_secret(
+    secret: &[u8; SHA256_DIGEST_SIZE],
+    label: &[u8],
+    transcript_hash: &[u8],
+) -> [u8; SHA256_DIGEST_SIZE] {
+    let result = hkdf_expand_label(secret, label, transcript_hash, SHA256_DIGEST_SIZE);
+    let mut output = [0u8; SHA256_DIGEST_SIZE];
+    output.copy_from_slice(&result);
+    output
+}
+
+/// TLS 1.3 Key Schedule implementation
+pub struct Tls13KeySchedule {
+    /// Current secret in the key schedule
+    current_secret: [u8; SHA256_DIGEST_SIZE],
+    /// Early secret (from PSK or zeros)
+    early_secret: Option<[u8; SHA256_DIGEST_SIZE]>,
+    /// Handshake secret
+    handshake_secret: Option<[u8; SHA256_DIGEST_SIZE]>,
+    /// Master secret
+    master_secret: Option<[u8; SHA256_DIGEST_SIZE]>,
+}
+
+impl Tls13KeySchedule {
+    /// Create new key schedule without PSK (zeros for early secret)
+    pub fn new() -> Self {
+        let zeros = [0u8; SHA256_DIGEST_SIZE];
+        let early_secret = hkdf_extract_sha256(&zeros, &zeros);
+        Self {
+            current_secret: early_secret,
+            early_secret: Some(early_secret),
+            handshake_secret: None,
+            master_secret: None,
+        }
+    }
+    
+    /// Create key schedule with PSK for resumption
+    pub fn with_psk(psk: &[u8]) -> Self {
+        let zeros = [0u8; SHA256_DIGEST_SIZE];
+        let early_secret = hkdf_extract_sha256(&zeros, psk);
+        Self {
+            current_secret: early_secret,
+            early_secret: Some(early_secret),
+            handshake_secret: None,
+            master_secret: None,
+        }
+    }
+    
+    /// Derive handshake secret from (EC)DHE shared secret
+    pub fn derive_handshake_secret(&mut self, shared_secret: &[u8]) -> [u8; SHA256_DIGEST_SIZE] {
+        // derived = Derive-Secret(early_secret, "derived", "")
+        let empty_hash = crate::hash::sha256(&[]);
+        let derived = derive_secret(&self.current_secret, b"derived", &empty_hash);
+        
+        // handshake_secret = HKDF-Extract(derived, shared_secret)
+        let handshake_secret = hkdf_extract_sha256(&derived, shared_secret);
+        self.handshake_secret = Some(handshake_secret);
+        self.current_secret = handshake_secret;
+        
+        handshake_secret
+    }
+    
+    /// Derive master secret
+    pub fn derive_master_secret(&mut self) -> [u8; SHA256_DIGEST_SIZE] {
+        // derived = Derive-Secret(handshake_secret, "derived", "")
+        let empty_hash = crate::hash::sha256(&[]);
+        let derived = derive_secret(&self.current_secret, b"derived", &empty_hash);
+        
+        // master_secret = HKDF-Extract(derived, 0)
+        let zeros = [0u8; SHA256_DIGEST_SIZE];
+        let master_secret = hkdf_extract_sha256(&derived, &zeros);
+        self.master_secret = Some(master_secret);
+        self.current_secret = master_secret;
+        
+        master_secret
+    }
+    
+    /// Derive client handshake traffic secret
+    pub fn client_handshake_traffic_secret(
+        &self,
+        transcript_hash: &[u8],
+    ) -> [u8; SHA256_DIGEST_SIZE] {
+        let hs = self.handshake_secret.unwrap_or(self.current_secret);
+        derive_secret(&hs, b"c hs traffic", transcript_hash)
+    }
+    
+    /// Derive server handshake traffic secret
+    pub fn server_handshake_traffic_secret(
+        &self,
+        transcript_hash: &[u8],
+    ) -> [u8; SHA256_DIGEST_SIZE] {
+        let hs = self.handshake_secret.unwrap_or(self.current_secret);
+        derive_secret(&hs, b"s hs traffic", transcript_hash)
+    }
+    
+    /// Derive client application traffic secret
+    pub fn client_application_traffic_secret(
+        &self,
+        transcript_hash: &[u8],
+    ) -> [u8; SHA256_DIGEST_SIZE] {
+        let ms = self.master_secret.unwrap_or(self.current_secret);
+        derive_secret(&ms, b"c ap traffic", transcript_hash)
+    }
+    
+    /// Derive server application traffic secret  
+    pub fn server_application_traffic_secret(
+        &self,
+        transcript_hash: &[u8],
+    ) -> [u8; SHA256_DIGEST_SIZE] {
+        let ms = self.master_secret.unwrap_or(self.current_secret);
+        derive_secret(&ms, b"s ap traffic", transcript_hash)
+    }
+    
+    /// Derive exporter master secret
+    pub fn exporter_master_secret(&self, transcript_hash: &[u8]) -> [u8; SHA256_DIGEST_SIZE] {
+        let ms = self.master_secret.unwrap_or(self.current_secret);
+        derive_secret(&ms, b"exp master", transcript_hash)
+    }
+    
+    /// Derive resumption master secret
+    pub fn resumption_master_secret(&self, transcript_hash: &[u8]) -> [u8; SHA256_DIGEST_SIZE] {
+        let ms = self.master_secret.unwrap_or(self.current_secret);
+        derive_secret(&ms, b"res master", transcript_hash)
+    }
+}
+
+impl Default for Tls13KeySchedule {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Derive traffic keys from a traffic secret
+pub struct TrafficKeys {
+    pub key: Vec<u8>,
+    pub iv: Vec<u8>,
+}
+
+impl TrafficKeys {
+    /// Derive traffic keys from a traffic secret
+    ///
+    /// # Arguments
+    /// * `traffic_secret` - The traffic secret (e.g., client_handshake_traffic_secret)
+    /// * `key_len` - Length of the encryption key (16 for AES-128, 32 for AES-256/ChaCha20)
+    /// * `iv_len` - Length of the IV/nonce (12 for AES-GCM and ChaCha20-Poly1305)
+    pub fn derive(traffic_secret: &[u8; SHA256_DIGEST_SIZE], key_len: usize, iv_len: usize) -> Self {
+        let key = hkdf_expand_label(traffic_secret, b"key", &[], key_len);
+        let iv = hkdf_expand_label(traffic_secret, b"iv", &[], iv_len);
+        Self { key, iv }
+    }
+    
+    /// Derive finished key for Finished message
+    pub fn derive_finished_key(base_key: &[u8; SHA256_DIGEST_SIZE]) -> [u8; SHA256_DIGEST_SIZE] {
+        let result = hkdf_expand_label(base_key, b"finished", &[], SHA256_DIGEST_SIZE);
+        let mut key = [0u8; SHA256_DIGEST_SIZE];
+        key.copy_from_slice(&result);
+        key
+    }
+}
+
+// ============================================================================
+// TLS 1.2 PRF (RFC 5246)
+// ============================================================================
+
+/// TLS 1.2 PRF with SHA-256 (P_SHA256)
+///
+/// PRF(secret, label, seed) = P_SHA256(secret, label + seed)
+pub fn tls12_prf_sha256(secret: &[u8], label: &[u8], seed: &[u8], length: usize) -> Vec<u8> {
+    // Concatenate label and seed
+    let mut combined_seed = Vec::with_capacity(label.len() + seed.len());
+    combined_seed.extend_from_slice(label);
+    combined_seed.extend_from_slice(seed);
+    
+    // P_SHA256(secret, seed) = HMAC_SHA256(secret, A(1) + seed) +
+    //                          HMAC_SHA256(secret, A(2) + seed) + ...
+    // A(0) = seed
+    // A(i) = HMAC_SHA256(secret, A(i-1))
+    
+    let mut result = Vec::with_capacity(length);
+    let mut a = hmac_sha256(secret, &combined_seed);
+    
+    while result.len() < length {
+        // P_i = HMAC(secret, A(i) + seed)
+        let mut data = Vec::with_capacity(SHA256_DIGEST_SIZE + combined_seed.len());
+        data.extend_from_slice(&a);
+        data.extend_from_slice(&combined_seed);
+        let p = hmac_sha256(secret, &data);
+        result.extend_from_slice(&p);
+        
+        // A(i+1) = HMAC(secret, A(i))
+        a = hmac_sha256(secret, &a);
+    }
+    
+    result.truncate(length);
+    result
+}
+
+/// Derive TLS 1.2 master secret
+pub fn tls12_master_secret(
+    pre_master_secret: &[u8],
+    client_random: &[u8],
+    server_random: &[u8],
+) -> Vec<u8> {
+    let mut seed = Vec::with_capacity(64);
+    seed.extend_from_slice(client_random);
+    seed.extend_from_slice(server_random);
+    
+    tls12_prf_sha256(pre_master_secret, b"master secret", &seed, 48)
+}
+
+/// Derive TLS 1.2 key block
+pub fn tls12_key_block(
+    master_secret: &[u8],
+    server_random: &[u8],
+    client_random: &[u8],
+    key_block_len: usize,
+) -> Vec<u8> {
+    let mut seed = Vec::with_capacity(64);
+    seed.extend_from_slice(server_random);
+    seed.extend_from_slice(client_random);
+    
+    tls12_prf_sha256(master_secret, b"key expansion", &seed, key_block_len)
+}
+
+// ============================================================================
 // PBKDF2 (Password-Based Key Derivation Function 2)
 // ============================================================================
 

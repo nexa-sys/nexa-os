@@ -720,6 +720,263 @@ pub unsafe extern "C" fn ncrypto_rsa_verify(
     }
 }
 
+// ============================================================================
+// RSA-PSS Signatures (RFC 8017)
+// ============================================================================
+
+/// RSA-PSS signature (SHA-256, salt length = hash length)
+pub fn rsa_pss_sign(message: &[u8], key: &RsaPrivateKey) -> Result<Vec<u8>, &'static str> {
+    rsa_pss_sign_with_salt_len(message, key, SHA256_DIGEST_SIZE)
+}
+
+/// RSA-PSS signature with custom salt length
+pub fn rsa_pss_sign_with_salt_len(
+    message: &[u8],
+    key: &RsaPrivateKey,
+    salt_len: usize,
+) -> Result<Vec<u8>, &'static str> {
+    let k = key.byte_size();
+    let em_bits = key.public.bits - 1;
+    let em_len = (em_bits + 7) / 8;
+    let h_len = SHA256_DIGEST_SIZE;
+    
+    if em_len < h_len + salt_len + 2 {
+        return Err("Key too short for PSS padding");
+    }
+    
+    // Hash the message
+    let m_hash = sha256(message);
+    
+    // Generate random salt
+    let mut salt = vec![0u8; salt_len];
+    if salt_len > 0 {
+        random_bytes(&mut salt).map_err(|_| "RNG failure")?;
+    }
+    
+    // M' = (0x)00 00 00 00 00 00 00 00 || mHash || salt
+    let mut m_prime = Vec::with_capacity(8 + h_len + salt_len);
+    m_prime.extend_from_slice(&[0u8; 8]);
+    m_prime.extend_from_slice(&m_hash);
+    m_prime.extend_from_slice(&salt);
+    
+    // H = Hash(M')
+    let h = sha256(&m_prime);
+    
+    // DB = PS || 0x01 || salt
+    let ps_len = em_len - h_len - salt_len - 2;
+    let mut db = Vec::with_capacity(em_len - h_len - 1);
+    db.extend(vec![0u8; ps_len]);
+    db.push(0x01);
+    db.extend_from_slice(&salt);
+    
+    // dbMask = MGF1(H, emLen - hLen - 1)
+    let db_mask = mgf1_sha256(&h, em_len - h_len - 1);
+    
+    // maskedDB = DB XOR dbMask
+    let mut masked_db: Vec<u8> = db.iter().zip(db_mask.iter()).map(|(a, b)| a ^ b).collect();
+    
+    // Set leftmost bits to zero
+    let zero_bits = 8 * em_len - em_bits;
+    if zero_bits > 0 && !masked_db.is_empty() {
+        masked_db[0] &= 0xFF >> zero_bits;
+    }
+    
+    // EM = maskedDB || H || 0xbc
+    let mut em = Vec::with_capacity(em_len);
+    em.extend_from_slice(&masked_db);
+    em.extend_from_slice(&h);
+    em.push(0xbc);
+    
+    // Pad to k bytes if needed
+    let mut padded_em = Vec::with_capacity(k);
+    if em.len() < k {
+        padded_em.extend(vec![0u8; k - em.len()]);
+    }
+    padded_em.extend_from_slice(&em);
+    
+    // Sign with private key
+    let m = BigInt::from_bytes_be(&padded_em);
+    let s = rsa_decrypt_raw(&m, key);
+    
+    Ok(s.to_bytes_be_padded(k))
+}
+
+/// RSA-PSS signature verification
+pub fn rsa_pss_verify(
+    message: &[u8],
+    signature: &[u8],
+    key: &RsaPublicKey,
+) -> Result<bool, &'static str> {
+    rsa_pss_verify_with_salt_len(message, signature, key, SHA256_DIGEST_SIZE)
+}
+
+/// RSA-PSS signature verification with custom salt length
+pub fn rsa_pss_verify_with_salt_len(
+    message: &[u8],
+    signature: &[u8],
+    key: &RsaPublicKey,
+    salt_len: usize,
+) -> Result<bool, &'static str> {
+    let k = key.byte_size();
+    let em_bits = key.bits - 1;
+    let em_len = (em_bits + 7) / 8;
+    let h_len = SHA256_DIGEST_SIZE;
+    
+    if signature.len() != k {
+        return Err("Invalid signature length");
+    }
+    
+    if em_len < h_len + salt_len + 2 {
+        return Ok(false);
+    }
+    
+    // Verify with public key
+    let s = BigInt::from_bytes_be(signature);
+    let m = rsa_encrypt_raw(&s, key);
+    let em_full = m.to_bytes_be_padded(k);
+    
+    // Extract EM (may be padded with leading zeros)
+    let em = if em_full.len() > em_len {
+        &em_full[em_full.len() - em_len..]
+    } else {
+        &em_full
+    };
+    
+    // Check trailer byte
+    if em.is_empty() || em[em.len() - 1] != 0xbc {
+        return Ok(false);
+    }
+    
+    let masked_db = &em[..em_len - h_len - 1];
+    let h = &em[em_len - h_len - 1..em_len - 1];
+    
+    // Check leftmost bits
+    let zero_bits = 8 * em_len - em_bits;
+    if zero_bits > 0 && !masked_db.is_empty() {
+        let mask = 0xFF << (8 - zero_bits);
+        if (masked_db[0] & mask) != 0 {
+            return Ok(false);
+        }
+    }
+    
+    // Unmask DB
+    let db_mask = mgf1_sha256(h, em_len - h_len - 1);
+    let mut db: Vec<u8> = masked_db.iter().zip(db_mask.iter()).map(|(a, b)| a ^ b).collect();
+    
+    // Clear leftmost bits
+    if zero_bits > 0 && !db.is_empty() {
+        db[0] &= 0xFF >> zero_bits;
+    }
+    
+    // Verify PS and separator
+    let ps_len = em_len - h_len - salt_len - 2;
+    for i in 0..ps_len {
+        if db[i] != 0x00 {
+            return Ok(false);
+        }
+    }
+    if db[ps_len] != 0x01 {
+        return Ok(false);
+    }
+    
+    // Extract salt
+    let salt = &db[ps_len + 1..];
+    
+    // Hash the message
+    let m_hash = sha256(message);
+    
+    // M' = (0x)00 00 00 00 00 00 00 00 || mHash || salt
+    let mut m_prime = Vec::with_capacity(8 + h_len + salt_len);
+    m_prime.extend_from_slice(&[0u8; 8]);
+    m_prime.extend_from_slice(&m_hash);
+    m_prime.extend_from_slice(salt);
+    
+    // H' = Hash(M')
+    let h_prime = sha256(&m_prime);
+    
+    // Compare H and H'
+    Ok(h == &h_prime[..])
+}
+
+/// RSA-PSS sign (C ABI)
+#[no_mangle]
+pub unsafe extern "C" fn ncrypto_rsa_pss_sign(
+    message: *const u8,
+    message_len: size_t,
+    n: *const u8,
+    n_len: size_t,
+    d: *const u8,
+    d_len: size_t,
+    signature: *mut u8,
+    signature_len: *mut size_t,
+) -> c_int {
+    if message.is_null() || n.is_null() || d.is_null() || signature.is_null() {
+        return -1;
+    }
+
+    let message_slice = core::slice::from_raw_parts(message, message_len);
+    let n_int = BigInt::from_bytes_be(core::slice::from_raw_parts(n, n_len));
+    let d_int = BigInt::from_bytes_be(core::slice::from_raw_parts(d, d_len));
+    
+    // Create a minimal private key (simplified, without CRT)
+    let bits = n_int.bit_length();
+    let e = BigInt::from_u64(RSA_E as u64);
+    let public = RsaPublicKey { n: n_int.clone(), e, bits };
+    
+    // Create a simplified private key
+    let priv_key = RsaPrivateKey {
+        public,
+        d: d_int,
+        p: BigInt::zero(),
+        q: BigInt::zero(),
+        dp: BigInt::zero(),
+        dq: BigInt::zero(),
+        qinv: BigInt::zero(),
+    };
+
+    match rsa_pss_sign(message_slice, &priv_key) {
+        Ok(sig) => {
+            core::ptr::copy_nonoverlapping(sig.as_ptr(), signature, sig.len());
+            *signature_len = sig.len();
+            0
+        }
+        Err(_) => -1,
+    }
+}
+
+/// RSA-PSS verify (C ABI)
+#[no_mangle]
+pub unsafe extern "C" fn ncrypto_rsa_pss_verify(
+    message: *const u8,
+    message_len: size_t,
+    signature: *const u8,
+    signature_len: size_t,
+    n: *const u8,
+    n_len: size_t,
+    e: *const u8,
+    e_len: size_t,
+) -> c_int {
+    if message.is_null() || signature.is_null() || n.is_null() || e.is_null() {
+        return -1;
+    }
+
+    let message_slice = core::slice::from_raw_parts(message, message_len);
+    let signature_slice = core::slice::from_raw_parts(signature, signature_len);
+    let n_slice = core::slice::from_raw_parts(n, n_len);
+    let e_slice = core::slice::from_raw_parts(e, e_len);
+
+    let key = RsaPublicKey::new(
+        BigInt::from_bytes_be(n_slice),
+        BigInt::from_bytes_be(e_slice),
+    );
+
+    match rsa_pss_verify(message_slice, signature_slice, &key) {
+        Ok(true) => 0,
+        Ok(false) => 1,
+        Err(_) => -1,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

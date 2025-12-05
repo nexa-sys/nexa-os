@@ -90,11 +90,12 @@ fn generate_x25519_keypair() -> (Vec<u8>, Vec<u8>) {
 
 /// Generate P-256 key pair
 fn generate_p256_keypair() -> (Vec<u8>, Vec<u8>) {
-    // Generate random private key
-    let mut private = [0u8; 32];
-    let _ = ncryptolib::getrandom(&mut private, 0);
-    let public = vec![0u8; 65]; // Uncompressed point placeholder
-    (private.to_vec(), public)
+    // Generate P-256 key pair using ncryptolib
+    let keypair = ncryptolib::p256::P256KeyPair::generate()
+        .expect("Failed to generate P-256 key pair");
+    let private = keypair.private_key.to_vec();
+    let public = keypair.public_key_uncompressed();
+    (private, public)
 }
 
 /// X25519 shared secret computation
@@ -113,10 +114,34 @@ fn x25519_shared_secret(private: &[u8], peer_public: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// P-256 ECDH shared secret computation
-fn p256_shared_secret(_private: &[u8], _peer_public: &[u8]) -> Option<Vec<u8>> {
-    // TODO: Implement P-256 ECDH when ncryptolib supports it
-    // For now, return None (fall back to X25519)
-    None
+fn p256_shared_secret(private: &[u8], peer_public: &[u8]) -> Option<Vec<u8>> {
+    if private.len() != 32 {
+        return None;
+    }
+    
+    // Parse peer's public key (uncompressed format: 04 || x || y)
+    let peer_point = if peer_public.len() == 65 && peer_public[0] == 0x04 {
+        ncryptolib::p256::P256Point::from_uncompressed(peer_public)?
+    } else if peer_public.len() == 64 {
+        // Raw x || y format
+        let mut uncompressed = [0u8; 65];
+        uncompressed[0] = 0x04;
+        uncompressed[1..].copy_from_slice(peer_public);
+        ncryptolib::p256::P256Point::from_uncompressed(&uncompressed)?
+    } else {
+        return None;
+    };
+    
+    // Create key pair from private key
+    let mut priv_arr = [0u8; 32];
+    priv_arr.copy_from_slice(private);
+    let keypair = ncryptolib::p256::P256KeyPair::from_private_key(&priv_arr)?;
+    
+    // Compute ECDH shared secret - returns x-coordinate directly
+    let shared_secret = keypair.ecdh(&peer_point)?;
+    
+    // Return shared secret (x-coordinate)
+    Some(shared_secret.to_vec())
 }
 
 /// Derive TLS 1.3 keys using HKDF

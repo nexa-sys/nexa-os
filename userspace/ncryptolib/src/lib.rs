@@ -84,6 +84,8 @@ pub mod ecdsa;
 pub mod x25519;
 pub mod ed25519;
 pub mod rsa;
+pub mod p256;
+pub mod ec;
 
 // Key derivation
 pub mod kdf;
@@ -254,12 +256,24 @@ pub use chacha20::{chacha20_poly1305_encrypt, chacha20_poly1305_decrypt};
 pub use rsa::{RsaPublicKey, RsaPrivateKey};
 pub use rsa::{rsa_encrypt, rsa_decrypt, rsa_sign, rsa_verify};
 pub use rsa::{rsa_oaep_encrypt, rsa_oaep_decrypt, generate_keypair};
+pub use rsa::{rsa_pss_sign, rsa_pss_verify};
+
+// P-256 (secp256r1) ECDH/ECDSA
+pub use p256::{P256KeyPair, P256Point, P256Signature};
+pub use p256::{P256_COORD_SIZE, P256_SIG_SIZE, P256_PRIVATE_KEY_SIZE, P256_PUBLIC_KEY_SIZE};
+
+// EC OpenSSL compatibility
+pub use ec::{EC_GROUP, EC_POINT, EC_KEY, ECDSA_SIG};
+pub use ec::nid;
 
 // Random
 pub use random::{getrandom, RngState};
 
 // Key derivation
 pub use kdf::{hkdf, pbkdf2_sha256};
+pub use kdf::{hkdf_extract_sha256, hkdf_expand_sha256, hkdf_expand_label, derive_secret};
+pub use kdf::{Tls13KeySchedule, TrafficKeys};
+pub use kdf::{tls12_prf_sha256, tls12_master_secret, tls12_key_block};
 pub use argon2::{argon2, argon2id, argon2i, argon2d, Argon2Params, Argon2Variant};
 pub use scrypt::{scrypt, scrypt_simple, ScryptParams};
 
