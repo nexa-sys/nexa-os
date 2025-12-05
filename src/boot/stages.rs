@@ -528,12 +528,36 @@ pub fn start_real_root_init() -> Result<(), &'static str> {
         crate::kinfo!("Remounting root as read-write");
     }
 
+    // Recreate /dev with device nodes after pivot_root
+    // Since we switched to ext2 root, /dev needs to be repopulated
+    remount_dev_after_pivot()?;
+
     // Load and process /etc/fstab
     process_fstab();
 
     crate::kinfo!("Real root initialization complete");
     advance_stage(BootStage::UserSpace);
 
+    Ok(())
+}
+
+/// Remount /dev and recreate device nodes after pivot_root
+fn remount_dev_after_pivot() -> Result<(), &'static str> {
+    crate::kinfo!("Mounting devfs at /dev after pivot_root...");
+
+    // Initialize devfs with standard devices if not already done
+    crate::fs::devfs_init();
+
+    // Mount devfs at /dev - this will overlay the ext2's /dev directory
+    crate::fs::mount_at("/dev", &crate::fs::DEVFS).map_err(|e| {
+        crate::kerror!("Failed to mount devfs: {}", e);
+        "devfs mount failed"
+    })?;
+
+    // Re-register dynamic devices from UEFI device table
+    uefi_compat::register_devfs_devices();
+
+    crate::kinfo!("/dev mounted with devfs");
     Ok(())
 }
 

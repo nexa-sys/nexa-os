@@ -9,9 +9,11 @@
 //! - procfs pseudo-filesystem (Linux-compatible /proc)
 //! - sysfs pseudo-filesystem (Linux-compatible /sys)
 //! - tmpfs in-memory filesystem
+//! - devfs device filesystem
 //! - fstab mount configuration parser
 
 pub mod bridge;
+pub mod devfs;
 pub mod ext2_modular;
 pub mod fstab;
 pub mod initramfs;
@@ -58,6 +60,13 @@ pub use tmpfs::{
     is_tmpfs_mounted, list_tmpfs_mounts, mount_tmpfs, tmpfs_create_directory, tmpfs_create_file,
     tmpfs_read_file, tmpfs_remove, tmpfs_stat, tmpfs_stats, tmpfs_write_file, unmount_tmpfs,
     TmpfsInstance, TmpfsMountOptions, TmpfsVfsAdapter,
+};
+
+// Re-export devfs
+pub use devfs::{
+    get_device_type, init as devfs_init, is_device, register_block_device,
+    register_device, register_framebuffer_device, register_network_device, DevFs, DeviceType,
+    DEVFS,
 };
 
 // Re-export fstab

@@ -330,6 +330,34 @@ pub fn install_device_nodes() {
     }
 }
 
+/// Register dynamic devices to devfs after pivot_root
+/// This is called when devfs is mounted at /dev
+pub fn register_devfs_devices() {
+    if let Some(counts) = nonzero_counts() {
+        // Register network devices
+        for idx in 0..(counts.network as u8) {
+            crate::fs::register_network_device(idx);
+        }
+
+        // Register block devices
+        for idx in 0..(counts.block as u8) {
+            crate::fs::register_block_device(idx);
+        }
+
+        // Register framebuffer
+        if counts.framebuffer != 0 {
+            crate::fs::register_framebuffer_device(0);
+        }
+
+        crate::kinfo!(
+            "Registered {} network, {} block, {} framebuffer devices to devfs",
+            counts.network,
+            counts.block,
+            counts.framebuffer
+        );
+    }
+}
+
 pub fn counts() -> CompatCounts {
     let fb = FRAMEBUFFER.lock();
     let fb_count = fb.info.map(|_| 1).unwrap_or(0);

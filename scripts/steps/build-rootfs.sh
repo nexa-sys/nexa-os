@@ -104,10 +104,9 @@ create_ext2_image() {
     # Copy all files
     sudo cp -a "$ROOTFS_DIR"/* "$mount_point/"
     
-    # Create device nodes
-    sudo mknod "$mount_point/dev/null" c 1 3 || true
-    sudo mknod "$mount_point/dev/zero" c 1 5 || true
-    sudo mknod "$mount_point/dev/console" c 5 1 || true
+    # Note: Device nodes are created dynamically by the kernel at boot time.
+    # Static device nodes are not needed as NexaOS uses devtmpfs-like
+    # behavior where /dev is populated by the kernel during initialization.
     
     # Set permissions
     sudo chmod 755 "$mount_point"/{bin,sbin}
