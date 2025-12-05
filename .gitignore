@@ -26,4 +26,10 @@ build
 initramfs.cpio
 initramfs.cpio.gz
 
+# Module signing certs (generated)
 certs
+
+# CA certificates (downloaded at build time)
+etc/ssl/certs/*.crt
+etc/ssl/certs/*.pem
+build/.cache/

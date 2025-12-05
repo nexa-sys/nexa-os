@@ -57,6 +57,16 @@ EOF
     log_success "Configuration files installed"
 }
 
+install_ca_certs() {
+    log_step "Installing CA certificates..."
+    
+    # First, ensure CA bundle is downloaded and installed to source tree
+    bash "$SCRIPT_DIR/install-ca-certs.sh" all
+    
+    # Then install to rootfs
+    bash "$SCRIPT_DIR/install-ca-certs.sh" rootfs "$ROOTFS_DIR"
+}
+
 install_libs() {
     log_step "Installing libraries to rootfs..."
     
@@ -139,6 +149,7 @@ build_rootfs() {
     install_libs
     build_rootfs_programs
     install_configs
+    install_ca_certs
     create_ext2_image
     
     log_success "Rootfs build complete"
