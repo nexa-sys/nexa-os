@@ -276,7 +276,14 @@ fn inv_sub_bytes(state: &mut [u8; 16]) {
 
 #[inline]
 fn shift_rows(state: &mut [u8; 16]) {
+    // AES state is column-major:
+    // s[0] s[4] s[8]  s[12]
+    // s[1] s[5] s[9]  s[13]
+    // s[2] s[6] s[10] s[14]
+    // s[3] s[7] s[11] s[15]
+    
     // Row 1: shift left by 1
+    // new[1,5,9,13] = old[5,9,13,1]
     let tmp = state[1];
     state[1] = state[5];
     state[5] = state[9];
@@ -284,31 +291,38 @@ fn shift_rows(state: &mut [u8; 16]) {
     state[13] = tmp;
 
     // Row 2: shift left by 2
+    // new[2,6,10,14] = old[10,14,2,6]
     state.swap(2, 10);
     state.swap(6, 14);
 
-    // Row 3: shift left by 3 (= right by 1)
-    let tmp = state[15];
+    // Row 3: shift left by 3
+    // new[3,7,11,15] = old[15,3,7,11]
+    let tmp = state[3];
+    state[3] = state[15];
     state[15] = state[11];
     state[11] = state[7];
-    state[7] = state[3];
-    state[3] = tmp;
+    state[7] = tmp;
 }
 
 #[inline]
 fn inv_shift_rows(state: &mut [u8; 16]) {
+    // Inverse of shift_rows
+    
     // Row 1: shift right by 1
+    // new[1,5,9,13] = old[13,1,5,9]
     let tmp = state[13];
     state[13] = state[9];
     state[9] = state[5];
     state[5] = state[1];
     state[1] = tmp;
 
-    // Row 2: shift right by 2
+    // Row 2: shift right by 2 (same as left by 2)
+    // new[2,6,10,14] = old[10,14,2,6]
     state.swap(2, 10);
     state.swap(6, 14);
 
-    // Row 3: shift right by 3 (= left by 1)
+    // Row 3: shift right by 3
+    // new[3,7,11,15] = old[7,11,15,3]
     let tmp = state[3];
     state[3] = state[7];
     state[7] = state[11];
@@ -397,13 +411,23 @@ impl AesGcm<Aes256> {
     /// Create new AES-256-GCM
     pub fn new_256(key: &[u8; AES_256_KEY_SIZE]) -> Self {
         let cipher = Aes256::new(key);
+        
+        // Debug: print round keys
+        eprintln!("[AES-GCM-DEBUG] Key: {:02x?}", key);
+        for (i, rk) in cipher.round_keys.iter().enumerate() {
+            eprintln!("[AES-GCM-DEBUG] RK[{:02}]: {:02x?}", i, rk);
+        }
+        
         let h = cipher.encrypt_block(&[0u8; 16]);
+        eprintln!("[AES-GCM-DEBUG] H = AES(0): {:02x?}", &h);
         Self { cipher, h }
     }
 }
 
 impl<T> AesGcm<T> {
     /// GCM multiplication in GF(2^128)
+    /// Uses the NIST GCM specification: polynomial x^128 + x^7 + x^2 + x + 1
+    /// with bit reflection (LSB first within bytes, big-endian byte order)
     fn ghash_multiply(&self, x: &[u8; 16], y: &[u8; 16]) -> [u8; 16] {
         let mut z = [0u8; 16];
         let mut v = *y;
@@ -412,21 +436,27 @@ impl<T> AesGcm<T> {
             let byte_idx = i / 8;
             let bit_idx = 7 - (i % 8);
             
+            // Check bit i of X (MSB first within each byte)
             if (x[byte_idx] >> bit_idx) & 1 == 1 {
                 for j in 0..16 {
                     z[j] ^= v[j];
                 }
             }
 
-            // Right shift V and reduce if needed
+            // Check if LSB of V (rightmost bit of the 128-bit value) is 1
             let lsb = v[15] & 1;
+            
+            // Right shift V by 1 bit (treating as 128-bit big-endian integer)
             for j in (1..16).rev() {
                 v[j] = (v[j] >> 1) | ((v[j - 1] & 1) << 7);
             }
             v[0] >>= 1;
 
+            // If LSB was 1, XOR with R = 0xe1 || 0^120 (big-endian)
+            // This is the reduction polynomial x^128 + x^7 + x^2 + x + 1
+            // In big-endian, R = 0xe1000000000000000000000000000000
             if lsb == 1 {
-                v[0] ^= 0xe1; // Reduction polynomial
+                v[0] ^= 0xe1;
             }
         }
 
@@ -437,24 +467,51 @@ impl<T> AesGcm<T> {
     fn ghash(&self, aad: &[u8], ciphertext: &[u8]) -> [u8; 16] {
         let mut y = [0u8; 16];
 
+        eprintln!("[GHASH] aad_len={}, ct_len={}", aad.len(), ciphertext.len());
+
         // Process AAD
+        let mut aad_block_count = 0;
         for chunk in aad.chunks(16) {
             let mut block = [0u8; 16];
             block[..chunk.len()].copy_from_slice(chunk);
+            if aad_block_count == 0 {
+                eprintln!("[GHASH] AAD block 0: {:02x?}", &block);
+            }
             for i in 0..16 {
                 y[i] ^= block[i];
             }
             y = self.ghash_multiply(&y, &self.h);
+            if aad_block_count == 0 {
+                eprintln!("[GHASH] After AAD block 0 mult: {:02x?}", &y);
+            }
+            aad_block_count += 1;
         }
 
         // Process ciphertext
+        let mut ct_block_count = 0;
+        let total_ct_blocks = (ciphertext.len() + 15) / 16;
         for chunk in ciphertext.chunks(16) {
             let mut block = [0u8; 16];
             block[..chunk.len()].copy_from_slice(chunk);
+            if ct_block_count == 0 {
+                eprintln!("[GHASH] CT block 0: {:02x?}", &block);
+            }
+            // Log last block for debugging
+            if ct_block_count == total_ct_blocks - 1 {
+                eprintln!("[GHASH] CT last block {}: {:02x?} (chunk_len={})", ct_block_count, &block, chunk.len());
+                eprintln!("[GHASH] Y before last CT XOR: {:02x?}", &y);
+            }
             for i in 0..16 {
                 y[i] ^= block[i];
             }
             y = self.ghash_multiply(&y, &self.h);
+            if ct_block_count == 0 {
+                eprintln!("[GHASH] After CT block 0 mult: {:02x?}", &y);
+            }
+            if ct_block_count == total_ct_blocks - 1 {
+                eprintln!("[GHASH] After last CT block mult: {:02x?}", &y);
+            }
+            ct_block_count += 1;
         }
 
         // Process length block
@@ -464,10 +521,15 @@ impl<T> AesGcm<T> {
         len_block[..8].copy_from_slice(&aad_bits.to_be_bytes());
         len_block[8..].copy_from_slice(&ct_bits.to_be_bytes());
 
+        eprintln!("[GHASH] len_block: {:02x?}", &len_block);
+        eprintln!("[GHASH] Y before len_block: {:02x?}", &y);
+
         for i in 0..16 {
             y[i] ^= len_block[i];
         }
         y = self.ghash_multiply(&y, &self.h);
+
+        eprintln!("[GHASH] Final Y: {:02x?}", &y);
 
         y
     }
@@ -556,10 +618,18 @@ impl<T> AesGcm<T> {
         let s = self.ghash(aad, ciphertext);
         let e_j0 = encrypt_block(&j0);  // E_K(J0), NOT E_K(J0+1)
         
+        eprintln!("[GCM-DEBUG] J0={:02x?}", &j0);
+        eprintln!("[GCM-DEBUG] H={:02x?}", &self.h);
+        eprintln!("[GCM-DEBUG] GHASH(AAD,CT)={:02x?}", &s);
+        eprintln!("[GCM-DEBUG] E_K(J0)={:02x?}", &e_j0);
+        
         let mut computed_tag = [0u8; GCM_TAG_SIZE];
         for i in 0..16 {
             computed_tag[i] = s[i] ^ e_j0[i];
         }
+        
+        eprintln!("[GCM-DEBUG] computed_tag={:02x?}", &computed_tag);
+        eprintln!("[GCM-DEBUG] expected_tag={:02x?}", tag);
 
         // Constant-time comparison
         let mut diff = 0u8;

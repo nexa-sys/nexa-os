@@ -305,6 +305,7 @@ impl SslConnection {
         if let Some((version, cipher, extensions)) = self.handshake.parse_server_hello(&data) {
             self.version = version;
             // Find cipher from ID
+            eprintln!("[TLS] Server selected cipher suite: {:#06x}", cipher);
             self.current_cipher = SslCipher::from_id(cipher);
             
             // 对于 TLS 1.3，从扩展中提取 key_share
@@ -403,6 +404,10 @@ impl SslConnection {
             None => 32, // 默认 AES-256
         };
         eprintln!("[TLS1.3] Using key_len={} bytes for cipher", key_len);
+        
+        // 设置 transcript hash 使用的哈希算法
+        // AES-256-GCM-SHA384 使用 SHA-384, AES-128-GCM-SHA256 使用 SHA-256
+        self.handshake.use_sha384 = key_len == 32;
         
         // 派生握手流量密钥 (handshake traffic keys)
         eprintln!("[TLS1.3] Transcript data len={}", self.handshake.transcript.len());
@@ -714,6 +719,9 @@ impl SslConnection {
             Some(c) => (c.key_bits / 8) as usize,
             None => 32, // 默认 AES-256
         };
+        
+        // 设置 transcript hash 使用的哈希算法
+        self.handshake.use_sha384 = key_len == 32;
         
         // 派生握手流量密钥
         let transcript_hash = self.handshake.get_transcript_hash();

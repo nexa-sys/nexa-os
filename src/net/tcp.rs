@@ -781,11 +781,23 @@ impl TcpSocket {
                 }
 
                 // Process payload
-                ktrace!("[TCP process_segment] Payload check: len={}, seq={}, rcv_nxt={}, match={}, recv_buffer_len={}", payload.len(), seq, self.rcv_nxt, seq == self.rcv_nxt, self.recv_buffer.len());
+                if !payload.is_empty() {
+                    crate::kinfo!("[TCP] Payload: len={}, seq={}, rcv_nxt={}, match={}", payload.len(), seq, self.rcv_nxt, seq == self.rcv_nxt);
+                }
 
                 if !payload.is_empty() && seq == self.rcv_nxt {
                     let space = RECV_BUFFER_SIZE - self.recv_buffer.len();
                     let to_recv = cmp::min(payload.len(), space);
+
+                    // Compute simple checksum for debugging
+                    let mut sum: u32 = 0;
+                    for &b in &payload[..to_recv] {
+                        sum = sum.wrapping_add(b as u32);
+                    }
+                    crate::kinfo!("[TCP] Recv: len={}, first4={:02x?}, sum={:#x}", 
+                        to_recv, 
+                        &payload[..4.min(to_recv)],
+                        sum);
 
                     ktrace!(
                         "[TCP process_segment] Receiving {} bytes (space={}, payload_len={})",
@@ -816,8 +828,8 @@ impl TcpSocket {
                         }
                     }
                 } else if !payload.is_empty() {
-                    ktrace!(
-                        "[TCP process_segment] Payload IGNORED: seq={} != rcv_nxt={}",
+                    crate::kerror!(
+                        "[TCP] Payload DROPPED: seq={} != rcv_nxt={}",
                         seq,
                         self.rcv_nxt
                     );

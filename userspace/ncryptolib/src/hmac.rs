@@ -70,7 +70,7 @@ impl Hmac for HmacSha384 {
             outer_key[i] = padded_key[i] ^ 0x5c;
         }
 
-        let mut inner = Sha384::new();
+        let mut inner = Sha512::new_384();
         inner.update(&inner_key);
 
         Self { inner, outer_key }
@@ -82,7 +82,7 @@ impl Hmac for HmacSha384 {
 
     fn finalize(mut self) -> Vec<u8> {
         let inner_hash = self.inner.finalize();
-        let mut outer = Sha384::new();
+        let mut outer = Sha512::new_384();
         outer.update(&self.outer_key);
         outer.update(&inner_hash);
         outer.finalize().to_vec()

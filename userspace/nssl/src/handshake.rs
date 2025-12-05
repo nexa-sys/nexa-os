@@ -23,6 +23,8 @@ pub struct HandshakeState {
     /// Key share (for TLS 1.3)
     pub key_share_private: Option<Vec<u8>>,
     pub key_share_public: Option<Vec<u8>>,
+    /// Use SHA-384 for transcript hash (for AES-256-GCM cipher suites)
+    pub use_sha384: bool,
 }
 
 impl HandshakeState {
@@ -39,6 +41,7 @@ impl HandshakeState {
             master_secret: None,
             key_share_private: None,
             key_share_public: None,
+            use_sha384: false,
         }
     }
 
@@ -524,7 +527,11 @@ impl HandshakeState {
 
     /// Get transcript hash
     pub fn get_transcript_hash(&self) -> Vec<u8> {
-        ncryptolib::sha256(&self.transcript).to_vec()
+        if self.use_sha384 {
+            ncryptolib::sha384(&self.transcript).to_vec()
+        } else {
+            ncryptolib::sha256(&self.transcript).to_vec()
+        }
     }
 }
 

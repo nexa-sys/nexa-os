@@ -196,39 +196,78 @@ pub fn derive_tls13_handshake_keys(
     key_len: usize,
 ) -> Option<(Vec<u8>, DerivedKeys)> {
     // TLS 1.3 key schedule (RFC 8446 Section 7.1)
+    // key_len == 32 (AES-256-GCM) uses SHA-384
+    // key_len == 16 (AES-128-GCM) uses SHA-256
+    let use_sha384 = key_len == 32;
+    let hash_len = if use_sha384 { 48 } else { 32 };
     
-    eprintln!("[TLS1.3-KDF] shared_secret len={}, transcript_hash len={}, key_len={}", 
-        shared_secret.len(), transcript_hash.len(), key_len);
+    eprintln!("[TLS1.3-KDF] shared_secret len={}, transcript_hash len={}, key_len={}, use_sha384={}", 
+        shared_secret.len(), transcript_hash.len(), key_len, use_sha384);
     eprintln!("[TLS1.3-KDF] shared_secret={:02x?}", shared_secret);
     eprintln!("[TLS1.3-KDF] transcript_hash={:02x?}", transcript_hash);
     
     // 1. Early secret: HKDF-Extract(salt=0, IKM=0) for no PSK
-    let zero_key = [0u8; 32];
-    let early_secret = hkdf_extract(&zero_key, &zero_key);
+    let early_secret = if use_sha384 {
+        let zero_key = [0u8; 48];
+        hkdf_extract_sha384(&zero_key, &zero_key)
+    } else {
+        let zero_key = [0u8; 32];
+        hkdf_extract(&zero_key, &zero_key)
+    };
     eprintln!("[TLS1.3-KDF] early_secret={:02x?}", &early_secret);
     
     // 2. Derive-Secret(early_secret, "derived", "")
-    let empty_hash = ncryptolib::sha256(&[]);
-    let derived_early = hkdf_expand_label(&early_secret, b"derived", &empty_hash, 32);
+    let (empty_hash, derived_early) = if use_sha384 {
+        let h = ncryptolib::sha384(&[]);
+        let d = hkdf_expand_label_sha384(&early_secret, b"derived", &h, hash_len);
+        (h.to_vec(), d)
+    } else {
+        let h = ncryptolib::sha256(&[]);
+        let d = hkdf_expand_label(&early_secret, b"derived", &h, hash_len);
+        (h.to_vec(), d)
+    };
     eprintln!("[TLS1.3-KDF] derived_early={:02x?}", &derived_early);
     
     // 3. Handshake secret: HKDF-Extract(derived_early, shared_secret)
-    let handshake_secret = hkdf_extract(&derived_early, shared_secret);
+    let handshake_secret = if use_sha384 {
+        hkdf_extract_sha384(&derived_early, shared_secret)
+    } else {
+        hkdf_extract(&derived_early, shared_secret)
+    };
     eprintln!("[TLS1.3-KDF] handshake_secret={:02x?}", &handshake_secret);
     
     // 4. Client handshake traffic secret
-    let client_hs_secret = hkdf_expand_label(&handshake_secret, b"c hs traffic", transcript_hash, 32);
+    let client_hs_secret = if use_sha384 {
+        hkdf_expand_label_sha384(&handshake_secret, b"c hs traffic", transcript_hash, hash_len)
+    } else {
+        hkdf_expand_label(&handshake_secret, b"c hs traffic", transcript_hash, hash_len)
+    };
     eprintln!("[TLS1.3-KDF] client_hs_secret={:02x?}", &client_hs_secret);
     
     // 5. Server handshake traffic secret
-    let server_hs_secret = hkdf_expand_label(&handshake_secret, b"s hs traffic", transcript_hash, 32);
+    let server_hs_secret = if use_sha384 {
+        hkdf_expand_label_sha384(&handshake_secret, b"s hs traffic", transcript_hash, hash_len)
+    } else {
+        hkdf_expand_label(&handshake_secret, b"s hs traffic", transcript_hash, hash_len)
+    };
     eprintln!("[TLS1.3-KDF] server_hs_secret={:02x?}", &server_hs_secret);
     
     // 6. Derive keys and IVs (key_len depends on cipher suite)
-    let client_key = hkdf_expand_label(&client_hs_secret, b"key", &[], key_len);
-    let client_iv = hkdf_expand_label(&client_hs_secret, b"iv", &[], 12);
-    let server_key = hkdf_expand_label(&server_hs_secret, b"key", &[], key_len);
-    let server_iv = hkdf_expand_label(&server_hs_secret, b"iv", &[], 12);
+    let (client_key, client_iv, server_key, server_iv) = if use_sha384 {
+        (
+            hkdf_expand_label_sha384(&client_hs_secret, b"key", &[], key_len),
+            hkdf_expand_label_sha384(&client_hs_secret, b"iv", &[], 12),
+            hkdf_expand_label_sha384(&server_hs_secret, b"key", &[], key_len),
+            hkdf_expand_label_sha384(&server_hs_secret, b"iv", &[], 12),
+        )
+    } else {
+        (
+            hkdf_expand_label(&client_hs_secret, b"key", &[], key_len),
+            hkdf_expand_label(&client_hs_secret, b"iv", &[], 12),
+            hkdf_expand_label(&server_hs_secret, b"key", &[], key_len),
+            hkdf_expand_label(&server_hs_secret, b"iv", &[], 12),
+        )
+    };
     
     eprintln!("[TLS1.3-KDF] server_key={:02x?}", &server_key);
     eprintln!("[TLS1.3-KDF] server_iv={:02x?}", &server_iv);
@@ -247,25 +286,59 @@ pub fn derive_tls13_application_keys(
     transcript_hash: &[u8],
     key_len: usize,
 ) -> Option<DerivedKeys> {
+    // key_len == 32 (AES-256-GCM) uses SHA-384
+    // key_len == 16 (AES-128-GCM) uses SHA-256
+    let use_sha384 = key_len == 32;
+    let hash_len = if use_sha384 { 48 } else { 32 };
+    
     // 1. Derive-Secret(handshake_secret, "derived", "")
-    let empty_hash = ncryptolib::sha256(&[]);
-    let derived_hs = hkdf_expand_label(handshake_secret, b"derived", &empty_hash, 32);
+    let derived_hs = if use_sha384 {
+        let empty_hash = ncryptolib::sha384(&[]);
+        hkdf_expand_label_sha384(handshake_secret, b"derived", &empty_hash, hash_len)
+    } else {
+        let empty_hash = ncryptolib::sha256(&[]);
+        hkdf_expand_label(handshake_secret, b"derived", &empty_hash, hash_len)
+    };
     
     // 2. Master secret: HKDF-Extract(derived_hs, 0)
-    let zero_key = [0u8; 32];
-    let master_secret = hkdf_extract(&derived_hs, &zero_key);
+    let master_secret = if use_sha384 {
+        let zero_key = [0u8; 48];
+        hkdf_extract_sha384(&derived_hs, &zero_key)
+    } else {
+        let zero_key = [0u8; 32];
+        hkdf_extract(&derived_hs, &zero_key)
+    };
     
     // 3. Client application traffic secret
-    let client_app_secret = hkdf_expand_label(&master_secret, b"c ap traffic", transcript_hash, 32);
+    let client_app_secret = if use_sha384 {
+        hkdf_expand_label_sha384(&master_secret, b"c ap traffic", transcript_hash, hash_len)
+    } else {
+        hkdf_expand_label(&master_secret, b"c ap traffic", transcript_hash, hash_len)
+    };
     
     // 4. Server application traffic secret
-    let server_app_secret = hkdf_expand_label(&master_secret, b"s ap traffic", transcript_hash, 32);
+    let server_app_secret = if use_sha384 {
+        hkdf_expand_label_sha384(&master_secret, b"s ap traffic", transcript_hash, hash_len)
+    } else {
+        hkdf_expand_label(&master_secret, b"s ap traffic", transcript_hash, hash_len)
+    };
     
     // 5. Derive keys and IVs (key_len depends on cipher suite)
-    let client_key = hkdf_expand_label(&client_app_secret, b"key", &[], key_len);
-    let client_iv = hkdf_expand_label(&client_app_secret, b"iv", &[], 12);
-    let server_key = hkdf_expand_label(&server_app_secret, b"key", &[], key_len);
-    let server_iv = hkdf_expand_label(&server_app_secret, b"iv", &[], 12);
+    let (client_key, client_iv, server_key, server_iv) = if use_sha384 {
+        (
+            hkdf_expand_label_sha384(&client_app_secret, b"key", &[], key_len),
+            hkdf_expand_label_sha384(&client_app_secret, b"iv", &[], 12),
+            hkdf_expand_label_sha384(&server_app_secret, b"key", &[], key_len),
+            hkdf_expand_label_sha384(&server_app_secret, b"iv", &[], 12),
+        )
+    } else {
+        (
+            hkdf_expand_label(&client_app_secret, b"key", &[], key_len),
+            hkdf_expand_label(&client_app_secret, b"iv", &[], 12),
+            hkdf_expand_label(&server_app_secret, b"key", &[], key_len),
+            hkdf_expand_label(&server_app_secret, b"iv", &[], 12),
+        )
+    };
     
     Some(DerivedKeys {
         client_key,
@@ -341,6 +414,11 @@ fn hkdf_extract(salt: &[u8], ikm: &[u8]) -> Vec<u8> {
     ncryptolib::hmac_sha256(salt, ikm).to_vec()
 }
 
+/// HKDF-Extract with SHA-384
+fn hkdf_extract_sha384(salt: &[u8], ikm: &[u8]) -> Vec<u8> {
+    ncryptolib::hmac_sha384(salt, ikm).to_vec()
+}
+
 /// HKDF-Expand-Label (RFC 8446) - 公共函数供 Finished 消息使用
 pub fn hkdf_expand_label(secret: &[u8], label: &[u8], context: &[u8], length: usize) -> Vec<u8> {
     // HkdfLabel = struct {
@@ -388,6 +466,49 @@ fn hkdf_expand(prk: &[u8], info: &[u8], length: usize) -> Vec<u8> {
     
     okm.truncate(length);
     okm
+}
+
+/// HKDF-Expand with SHA-384
+fn hkdf_expand_sha384(prk: &[u8], info: &[u8], length: usize) -> Vec<u8> {
+    let hash_len = 48; // SHA-384
+    let n = (length + hash_len - 1) / hash_len;
+    
+    let mut okm = Vec::new();
+    let mut t = Vec::new();
+    
+    for i in 1..=n {
+        let mut data = t.clone();
+        data.extend_from_slice(info);
+        data.push(i as u8);
+        
+        t = ncryptolib::hmac_sha384(prk, &data).to_vec();
+        okm.extend_from_slice(&t);
+    }
+    
+    okm.truncate(length);
+    okm
+}
+
+/// HKDF-Expand-Label with SHA-384
+pub fn hkdf_expand_label_sha384(secret: &[u8], label: &[u8], context: &[u8], length: usize) -> Vec<u8> {
+    let mut hkdf_label = Vec::new();
+    
+    // Length (2 bytes)
+    hkdf_label.push((length >> 8) as u8);
+    hkdf_label.push((length & 0xFF) as u8);
+    
+    // Label with "tls13 " prefix
+    let full_label_len = 6 + label.len();
+    hkdf_label.push(full_label_len as u8);
+    hkdf_label.extend_from_slice(b"tls13 ");
+    hkdf_label.extend_from_slice(label);
+    
+    // Context
+    hkdf_label.push(context.len() as u8);
+    hkdf_label.extend_from_slice(context);
+    
+    // HKDF-Expand with SHA-384
+    hkdf_expand_sha384(secret, &hkdf_label, length)
 }
 
 /// TLS 1.2 PRF with SHA-256 (RFC 5246 Section 5)

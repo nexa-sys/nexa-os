@@ -264,21 +264,21 @@ impl RecordLayer {
             return None;
         }
 
-        // Read header
+        // Read header - must loop to handle partial TCP reads
         let mut header_buf = [0u8; 5];
-        unsafe {
-            let n = (*rbio).read(header_buf.as_mut_ptr(), 5);
-            eprintln!("[TLS-READ] read header: n={}", n);
-            if n <= 0 {
-                if n == 0 {
-                    self.eof = true;
-                    eprintln!("[TLS-READ] EOF");
+        let mut header_read = 0usize;
+        while header_read < 5 {
+            unsafe {
+                let n = (*rbio).read(header_buf.as_mut_ptr().add(header_read), (5 - header_read) as c_int);
+                eprintln!("[TLS-READ] read header: n={}, total={}", n, header_read + n.max(0) as usize);
+                if n <= 0 {
+                    if n == 0 && header_read == 0 {
+                        self.eof = true;
+                        eprintln!("[TLS-READ] EOF");
+                    }
+                    return None;
                 }
-                return None;
-            }
-            if n != 5 {
-                eprintln!("[TLS-READ] partial header read");
-                return None;
+                header_read += n as usize;
             }
         }
 
@@ -335,14 +335,34 @@ impl RecordLayer {
             return None;
         }
 
-        // Read record data
+        // Read record data - must loop to handle partial TCP reads
         let mut data = vec![0u8; header.length as usize];
-        unsafe {
-            let n = (*rbio).read(data.as_mut_ptr(), header.length as c_int);
-            if n != header.length as c_int {
-                return None;
+        let mut total_read = 0usize;
+        while total_read < header.length as usize {
+            let remaining = header.length as usize - total_read;
+            unsafe {
+                let n = (*rbio).read(data.as_mut_ptr().add(total_read), remaining as c_int);
+                if n <= 0 {
+                    eprintln!("[TLS-READ] read failed: n={}, total_read={}, remaining={}", n, total_read, remaining);
+                    return None;
+                }
+                eprintln!("[TLS-READ] read data: n={}, total_read={}/{}", n, total_read + n as usize, header.length);
+                total_read += n as usize;
             }
         }
+        
+        // Debug: print hash of entire data to verify we read correctly
+        let mut hash = 0u32;
+        for (i, &b) in data.iter().enumerate() {
+            hash = hash.wrapping_add(b as u32).wrapping_mul(31);
+            if i < 16 || i >= data.len() - 16 {
+                // Already printed first 32 bytes, also print last 16
+                if i == data.len() - 16 {
+                    eprintln!("[TLS-READ] data last 16 bytes: {:02x?}", &data[data.len()-16..]);
+                }
+            }
+        }
+        eprintln!("[TLS-READ] data checksum: {:#x}, len={}", hash, data.len());
 
         // Decrypt if keys are set
         let plaintext = if self.read_key.is_some() {
@@ -455,6 +475,7 @@ impl RecordLayer {
         let tag = &ciphertext[ct_len..];
         
         eprintln!("[TLS-DECRYPT] ct_len={}, tag={:02x?}", ct_len, tag);
+        eprintln!("[TLS-DECRYPT] ct first 32 bytes={:02x?}", &ct[..32.min(ct.len())]);
 
         // Build AAD
         // TLS 1.3: AAD is outer record header (type=0x17, version=0x0303, length)
