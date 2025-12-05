@@ -1244,8 +1244,53 @@ fn start_service(service: &ServiceConfig, _buf: &mut [u8]) -> i64 {
     exec_path_buf[..exec_path_len].copy_from_slice(&exec_start_bytes[..exec_path_len]);
     exec_path_buf[exec_path_len] = 0; // null-terminate
 
-    let exec_path = std::str::from_utf8(&exec_path_buf[..exec_path_len]).unwrap_or("/bin/sh");
-    eprintln!("[ni] start_service: service.exec_start='{}'", exec_path);
+    let exec_start_str = std::str::from_utf8(&exec_path_buf[..exec_path_len]).unwrap_or("/bin/sh");
+    eprintln!("[ni] start_service: service.exec_start='{}'", exec_start_str);
+    
+    // Parse exec_start into program path and arguments
+    // Split by whitespace to get argv components
+    let mut argv_ptrs: [*const u8; 16] = [core::ptr::null(); 16]; // Max 15 args + NULL
+    let mut argv_bufs: [[u8; 128]; 16] = [[0u8; 128]; 16]; // Storage for each arg
+    let mut argc = 0usize;
+    
+    // Split exec_start by spaces
+    let mut start = 0;
+    let bytes = exec_start_str.as_bytes();
+    let mut in_arg = false;
+    
+    for i in 0..=bytes.len() {
+        let is_space = i == bytes.len() || bytes[i] == b' ' || bytes[i] == b'\t';
+        
+        if is_space && in_arg {
+            // End of argument
+            let arg_len = i - start;
+            if arg_len > 0 && argc < 15 {
+                let copy_len = core::cmp::min(arg_len, 127);
+                argv_bufs[argc][..copy_len].copy_from_slice(&bytes[start..start + copy_len]);
+                argv_bufs[argc][copy_len] = 0; // null-terminate
+                argv_ptrs[argc] = argv_bufs[argc].as_ptr();
+                argc += 1;
+            }
+            in_arg = false;
+        } else if !is_space && !in_arg {
+            // Start of argument
+            start = i;
+            in_arg = true;
+        }
+    }
+    
+    // Ensure NULL terminator for argv
+    argv_ptrs[argc] = core::ptr::null();
+    
+    if argc == 0 {
+        eprintln!("[ni] start_service: empty exec_start");
+        return -1;
+    }
+    
+    // First argument is the program path
+    let program_path = std::str::from_utf8(&argv_bufs[0][..]).unwrap_or("/bin/sh");
+    let program_path = program_path.trim_end_matches('\0');
+    eprintln!("[ni] start_service: program='{}', argc={}", program_path, argc);
     
     let pid = fork();
 
@@ -1259,17 +1304,11 @@ fn start_service(service: &ServiceConfig, _buf: &mut [u8]) -> i64 {
         // Child process - exec the service
         eprintln!("[ni] start_service: child process (PID 0 from fork), about to exec");
         
-        // Build argv with program path as argv[0] and NULL terminator
-        // argv must be: [program_path, NULL]
-        let argv: [*const u8; 2] = [
-            exec_path_buf.as_ptr(),  // argv[0] = program path
-            core::ptr::null(),       // argv[1] = NULL terminator
-        ];
         let envp: [*const u8; 1] = [core::ptr::null()];
         
         let result = execve(
-            exec_path,
-            &argv,
+            program_path,
+            &argv_ptrs,
             &envp,
         );
         

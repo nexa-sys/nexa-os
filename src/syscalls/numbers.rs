@@ -70,6 +70,7 @@ pub const SYS_MOUNT: u64 = 165;
 pub const SYS_UMOUNT: u64 = 166;
 pub const SYS_REBOOT: u64 = 169;
 pub const SYS_CLOCK_GETTIME: u64 = 228;
+pub const SYS_CLOCK_SETTIME: u64 = 227;
 
 // Custom NexaOS syscalls (200+)
 pub const SYS_LIST_FILES: u64 = 200;

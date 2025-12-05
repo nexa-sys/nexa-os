@@ -101,6 +101,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ntpd"
+version = "0.1.0"
+dependencies = [
+ "nexa_boot_info",
+ "nrlib",
+]
+
+[[package]]
 name = "nurl"
 version = "0.1.0"
 dependencies = [

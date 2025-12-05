@@ -69,6 +69,62 @@ pub unsafe extern "C" fn clock_getres(clock_id: c_int, res: *mut timespec) -> c_
     }
 }
 
+/// clock_settime - Set the time of a specified clock
+/// 
+/// Only CLOCK_REALTIME can be set. Setting the time requires appropriate
+/// privileges (typically root).
+/// 
+/// # Arguments
+/// * `clock_id` - Clock to set (only CLOCK_REALTIME supported)
+/// * `tp` - Pointer to timespec with new time
+/// 
+/// # Returns
+/// * 0 on success
+/// * -1 on error (errno set)
+#[no_mangle]
+pub unsafe extern "C" fn clock_settime(clock_id: c_int, tp: *const timespec) -> c_int {
+    const SYS_CLOCK_SETTIME: u64 = 227;
+    
+    if tp.is_null() {
+        crate::set_errno(crate::EINVAL);
+        return -1;
+    }
+    
+    // Only CLOCK_REALTIME can be set
+    if clock_id != CLOCK_REALTIME {
+        crate::set_errno(crate::EINVAL);
+        return -1;
+    }
+    
+    // Validate timespec
+    let ts = &*tp;
+    if ts.tv_sec < 0 || ts.tv_nsec < 0 || ts.tv_nsec >= 1_000_000_000 {
+        crate::set_errno(crate::EINVAL);
+        return -1;
+    }
+    
+    // Call kernel syscall
+    let ret: i64;
+    core::arch::asm!(
+        "syscall",
+        in("rax") SYS_CLOCK_SETTIME,
+        in("rdi") clock_id,
+        in("rsi") tp,
+        lateout("rax") ret,
+        lateout("rcx") _,
+        lateout("r11") _,
+        options(nostack)
+    );
+    
+    if ret == 0 {
+        crate::set_errno(0);
+        0
+    } else {
+        crate::set_errno(crate::EPERM);
+        -1
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn gettimeofday(tv: *mut timeval, tz: *mut timezone) -> c_int {
     if tv.is_null() {

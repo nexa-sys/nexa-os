@@ -26,6 +26,7 @@ PROGRAMS=(
     "uefi_compatd:uefi-compatd:sbin:--features use-nrlib-std:dyn"
     "ip:ip:bin::dyn"
     "dhcp:dhcp:bin::dyn"
+    "ntpd:ntpd:sbin::dyn"
     "nurl:nurl:bin::dyn"
     "dmesg:dmesg:bin::dyn"
     "crashtest:crashtest:bin::dyn"

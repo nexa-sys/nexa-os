@@ -12,6 +12,7 @@ members = [
     "programs/login",
     "programs/nslookup",
     "programs/dhcp",
+    "programs/ntpd",
     "programs/ip",
     "programs/nurl",
     "programs/dmesg",

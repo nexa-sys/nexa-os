@@ -63,8 +63,12 @@ install_libs() {
     # Build and install nrlib (libc)
     bash "$SCRIPT_DIR/build-nrlib.sh" all "$ROOTFS_DIR/lib64"
     
-    # Build and install ncryptolib (libcrypto)
-    bash "$SCRIPT_DIR/build-ncryptolib.sh" shared "$ROOTFS_DIR/lib64"
+    # Build and install all libraries (ncryptolib, nssl, etc.)
+    # Using build-libs.sh with custom destination
+    local lib
+    for lib in ncryptolib nssl; do
+        bash "$SCRIPT_DIR/build-libs.sh" "$lib" shared "$ROOTFS_DIR/lib64"
+    done
 }
 
 # ============================================================================

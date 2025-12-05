@@ -297,6 +297,7 @@ pub(crate) const ENOSYS: i32 = 38;
 pub(crate) const ENOTTY: i32 = 25;
 pub(crate) const ENODEV: i32 = 19;
 pub(crate) const ENOSPC: i32 = 28;
+pub(crate) const EPERM: i32 = 1;
 
 const MAX_KERNEL_DNS_SERVERS: usize = 3;
 
