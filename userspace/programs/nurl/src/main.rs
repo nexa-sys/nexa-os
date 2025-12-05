@@ -572,16 +572,17 @@ fn parse_url(url: &str) -> Result<(bool, String, u16, String), String> {
 
 /// Parse HTTP response into (status_line, headers, body)
 fn parse_response(data: &[u8]) -> Result<(String, Vec<(String, String)>, Vec<u8>), String> {
-    let response_str = std::str::from_utf8(data)
-        .map_err(|_| "Invalid UTF-8 in response".to_string())?;
-
-    // Find end of headers
-    let header_end = response_str
-        .find("\r\n\r\n")
+    // Find end of headers by searching for \r\n\r\n in raw bytes
+    // This allows the body to contain arbitrary binary data
+    let header_end = find_header_end(data)
         .ok_or("Invalid HTTP response - no header end".to_string())?;
 
-    let headers_str = &response_str[..header_end];
-    let body_start = header_end + 4;
+    // Only the headers need to be valid UTF-8, body can be binary
+    let headers_bytes = &data[..header_end];
+    let headers_str = std::str::from_utf8(headers_bytes)
+        .map_err(|_| "Invalid UTF-8 in response headers".to_string())?;
+
+    let body_start = header_end + 4; // Skip \r\n\r\n
 
     // Parse status line
     let mut lines = headers_str.lines();
@@ -600,8 +601,25 @@ fn parse_response(data: &[u8]) -> Result<(String, Vec<(String, String)>, Vec<u8>
         }
     }
 
-    // Extract body
-    let body = data[body_start..].to_vec();
+    // Extract body (can be binary data)
+    let body = if body_start < data.len() {
+        data[body_start..].to_vec()
+    } else {
+        Vec::new()
+    };
 
     Ok((status_line, headers, body))
+}
+
+/// Find the position of \r\n\r\n in the byte slice (end of HTTP headers)
+fn find_header_end(data: &[u8]) -> Option<usize> {
+    if data.len() < 4 {
+        return None;
+    }
+    for i in 0..data.len() - 3 {
+        if data[i] == b'\r' && data[i + 1] == b'\n' && data[i + 2] == b'\r' && data[i + 3] == b'\n' {
+            return Some(i);
+        }
+    }
+    None
 }
