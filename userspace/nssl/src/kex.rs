@@ -201,11 +201,6 @@ pub fn derive_tls13_handshake_keys(
     let use_sha384 = key_len == 32;
     let hash_len = if use_sha384 { 48 } else { 32 };
     
-    eprintln!("[TLS1.3-KDF] shared_secret len={}, transcript_hash len={}, key_len={}, use_sha384={}", 
-        shared_secret.len(), transcript_hash.len(), key_len, use_sha384);
-    eprintln!("[TLS1.3-KDF] shared_secret={:02x?}", shared_secret);
-    eprintln!("[TLS1.3-KDF] transcript_hash={:02x?}", transcript_hash);
-    
     // 1. Early secret: HKDF-Extract(salt=0, IKM=0) for no PSK
     let early_secret = if use_sha384 {
         let zero_key = [0u8; 48];
@@ -214,7 +209,6 @@ pub fn derive_tls13_handshake_keys(
         let zero_key = [0u8; 32];
         hkdf_extract(&zero_key, &zero_key)
     };
-    eprintln!("[TLS1.3-KDF] early_secret={:02x?}", &early_secret);
     
     // 2. Derive-Secret(early_secret, "derived", "")
     let (empty_hash, derived_early) = if use_sha384 {
@@ -226,7 +220,6 @@ pub fn derive_tls13_handshake_keys(
         let d = hkdf_expand_label(&early_secret, b"derived", &h, hash_len);
         (h.to_vec(), d)
     };
-    eprintln!("[TLS1.3-KDF] derived_early={:02x?}", &derived_early);
     
     // 3. Handshake secret: HKDF-Extract(derived_early, shared_secret)
     let handshake_secret = if use_sha384 {
@@ -234,7 +227,6 @@ pub fn derive_tls13_handshake_keys(
     } else {
         hkdf_extract(&derived_early, shared_secret)
     };
-    eprintln!("[TLS1.3-KDF] handshake_secret={:02x?}", &handshake_secret);
     
     // 4. Client handshake traffic secret
     let client_hs_secret = if use_sha384 {
@@ -242,7 +234,6 @@ pub fn derive_tls13_handshake_keys(
     } else {
         hkdf_expand_label(&handshake_secret, b"c hs traffic", transcript_hash, hash_len)
     };
-    eprintln!("[TLS1.3-KDF] client_hs_secret={:02x?}", &client_hs_secret);
     
     // 5. Server handshake traffic secret
     let server_hs_secret = if use_sha384 {
@@ -250,7 +241,6 @@ pub fn derive_tls13_handshake_keys(
     } else {
         hkdf_expand_label(&handshake_secret, b"s hs traffic", transcript_hash, hash_len)
     };
-    eprintln!("[TLS1.3-KDF] server_hs_secret={:02x?}", &server_hs_secret);
     
     // 6. Derive keys and IVs (key_len depends on cipher suite)
     let (client_key, client_iv, server_key, server_iv) = if use_sha384 {
@@ -268,9 +258,6 @@ pub fn derive_tls13_handshake_keys(
             hkdf_expand_label(&server_hs_secret, b"iv", &[], 12),
         )
     };
-    
-    eprintln!("[TLS1.3-KDF] server_key={:02x?}", &server_key);
-    eprintln!("[TLS1.3-KDF] server_iv={:02x?}", &server_iv);
     
     let hs_secrets = HandshakeSecrets {
         handshake_secret: handshake_secret.clone(),

@@ -109,8 +109,6 @@ impl HandshakeState {
         msg[length_pos + 2] = (length & 0xFF) as u8;
         
         // Add to transcript
-        eprintln!("[HANDSHAKE] Adding ClientHello to transcript, len={}", msg.len());
-        eprintln!("[HANDSHAKE] ClientHello first 32 bytes: {:02x?}", &msg[..32.min(msg.len())]);
         self.transcript.extend_from_slice(&msg);
         
         msg
@@ -315,11 +313,7 @@ impl HandshakeState {
         }
         
         // Add to transcript
-        eprintln!("[HANDSHAKE] Adding ServerHello to transcript, len={}", data.len());
-        eprintln!("[HANDSHAKE] ServerHello first 32 bytes: {:02x?}", &data[..32.min(data.len())]);
-        eprintln!("[HANDSHAKE] ServerHello last 32 bytes: {:02x?}", &data[data.len().saturating_sub(32)..]);
         self.transcript.extend_from_slice(data);
-        eprintln!("[HANDSHAKE] Transcript total len after ServerHello: {}", self.transcript.len());
         
         Some((version, cipher_suite, extensions))
     }
