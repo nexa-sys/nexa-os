@@ -650,43 +650,63 @@ pub fn generate_pid_cmdline(pid: Pid) -> Option<(&'static [u8], usize)> {
 }
 
 /// Generate /proc/[pid]/maps content
+///
+/// Format matches Linux /proc/[pid]/maps:
+/// address           perms offset  dev   inode pathname
+/// 00400000-00452000 r-xp 00000000 08:02 173521 /usr/bin/dbus-daemon
 pub fn generate_pid_maps(pid: Pid) -> Option<(&'static [u8], usize)> {
     let process = scheduler::get_process(pid)?;
 
     let mut buf = PROC_BUFFER.lock();
     let mut writer = BufWriter::new(&mut buf[..]);
 
-    // Memory mapping format:
-    // address           perms offset  dev   inode pathname
-    // 00400000-00452000 r-xp 00000000 08:02 173521 /usr/bin/dbus-daemon
+    // Try to get VMA information from the new VMA system
+    // TODO: When VMA is fully integrated, use AddressSpace::iter()
+    
+    use crate::process::{STACK_BASE, STACK_SIZE, USER_VIRT_BASE, INTERP_BASE};
 
-    use crate::process::{STACK_BASE, STACK_SIZE, USER_VIRT_BASE};
-
-    // Code segment
+    // Code segment (from entry point)
     let code_end = process.heap_start;
-    let _ = writeln!(
-        writer,
-        "{:08x}-{:08x} r-xp 00000000 00:00 0 [text]",
-        USER_VIRT_BASE, code_end
-    );
+    if code_end > USER_VIRT_BASE {
+        let _ = writeln!(
+            writer,
+            "{:016x}-{:016x} r-xp 00000000 00:00 0                    [text]",
+            USER_VIRT_BASE, code_end
+        );
+    }
+
+    // Data/BSS (between code and heap)
+    // This is implicit in the text segment for now
 
     // Heap
     if process.heap_end > process.heap_start {
         let _ = writeln!(
             writer,
-            "{:08x}-{:08x} rw-p 00000000 00:00 0 [heap]",
+            "{:016x}-{:016x} rw-p 00000000 00:00 0                    [heap]",
             process.heap_start, process.heap_end
         );
     }
 
-    // Stack
+    // Interpreter/Dynamic linker region (if used)
+    if process.entry_point >= INTERP_BASE {
+        let _ = writeln!(
+            writer,
+            "{:016x}-{:016x} r-xp 00000000 00:00 0                    [ld-nrlib]",
+            INTERP_BASE, INTERP_BASE + 0x100000
+        );
+    }
+
+    // Stack (grows down, so show used portion)
     let stack_bottom = STACK_BASE;
     let stack_top = STACK_BASE + STACK_SIZE;
     let _ = writeln!(
         writer,
-        "{:08x}-{:08x} rw-p 00000000 00:00 0 [stack]",
+        "{:016x}-{:016x} rw-p 00000000 00:00 0                    [stack]",
         stack_bottom, stack_top
     );
+
+    // vDSO (Virtual Dynamic Shared Object) - not yet implemented
+    // let _ = writeln!(writer, "ffffffffff600000-ffffffffff601000 r-xp 00000000 00:00 0 [vsyscall]");
 
     let len = writer.len();
     let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), len) };

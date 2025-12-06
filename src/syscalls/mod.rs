@@ -24,6 +24,7 @@ mod fd;
 mod file;
 mod ipc;
 mod memory;
+pub mod memory_vma;
 mod network;
 mod numbers;
 mod process;

@@ -4,6 +4,7 @@
 //! - Physical and virtual memory allocation (buddy + slab allocators)
 //! - Page table management and mapping
 //! - Virtual memory regions (vmalloc)
+//! - Virtual Memory Area (VMA) management for process address spaces
 //! - NUMA topology support
 //! - Memory region detection
 
@@ -11,6 +12,7 @@ pub mod allocator;
 pub mod memory;
 pub mod numa;
 pub mod paging;
+pub mod vma;
 pub mod vmalloc;
 
 // Re-export commonly used items from allocator
@@ -45,4 +47,11 @@ pub use paging::{
 pub use vmalloc::{
     print_vmalloc_stats, vfree, vmalloc, vmalloc_flags, vmalloc_handle_fault, VmFlags,
     VmallocAllocator,
+};
+
+// Re-export from vma
+pub use vma::{
+    free_address_space, get_address_space, init_address_space, AddressSpace, VMA, VMABacking,
+    VMAFlags, VMAManager, VMAPermissions, VMAStats, MAX_ADDRESS_SPACES, MAX_VMAS,
+    PAGE_SIZE as VMA_PAGE_SIZE,
 };
