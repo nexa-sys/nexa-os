@@ -296,10 +296,14 @@ impl RecordLayer {
             return Some(copy_len);
         }
 
+        eprintln!("[TLS-APP-READ] version={:#x}, TLS1_3={:#x}", self.version, TLS1_3_VERSION);
+
         // Read new record - may need to loop to skip TLS 1.3 post-handshake messages
         loop {
             let data = self.read_record(ContentType::ApplicationData, rbio)?;
             
+            eprintln!("[TLS-APP-READ] got data len={}, last_inner_ct={:?}", data.len(), self.last_inner_content_type);
+
             // In TLS 1.3, check the inner content type
             // If it's not ApplicationData (0x17), skip this record (e.g., NewSessionTicket = 0x16)
             if self.version >= TLS1_3_VERSION {
@@ -533,7 +537,7 @@ impl RecordLayer {
     }
 
     /// Decrypt a record
-    fn decrypt_record(&self, _content_type: u8, ciphertext: &[u8]) -> Option<Vec<u8>> {
+    fn decrypt_record(&mut self, _content_type: u8, ciphertext: &[u8]) -> Option<Vec<u8>> {
         let key = self.read_key.as_ref()?;
         let iv = self.read_iv.as_ref()?;
         
