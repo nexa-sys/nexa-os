@@ -70,12 +70,16 @@ pub struct RecordLayer {
     read_iv: Option<Vec<u8>>,
     /// Write IV
     write_iv: Option<Vec<u8>>,
-    /// Pending data buffer
+    /// Pending application data buffer
     pending: Vec<u8>,
+    /// Pending handshake data buffer (for TLS 1.3 coalesced messages)
+    pending_handshake: Vec<u8>,
     /// EOF flag
     eof: bool,
     /// Protocol version
     version: u16,
+    /// Last decrypted inner content type (TLS 1.3)
+    last_inner_content_type: Option<u8>,
 }
 
 impl RecordLayer {
@@ -88,8 +92,10 @@ impl RecordLayer {
             read_iv: None,
             write_iv: None,
             pending: Vec::new(),
+            pending_handshake: Vec::new(),
             eof: false,
             version: TLS1_2_VERSION,
+            last_inner_content_type: None,
         }
     }
 
@@ -229,8 +235,55 @@ impl RecordLayer {
     }
 
     /// Read handshake message
+    /// In TLS 1.3, multiple handshake messages can be coalesced into a single record.
+    /// This function handles that by buffering excess data and parsing one message at a time.
     pub fn read_handshake(&mut self, rbio: *mut Bio) -> Option<Vec<u8>> {
-        self.read_record(ContentType::Handshake, rbio)
+        // First check if we have buffered handshake data from a previous coalesced record
+        if !self.pending_handshake.is_empty() {
+            // Try to parse a complete handshake message from the buffer
+            if let Some(msg) = self.extract_handshake_message() {
+                return Some(msg);
+            }
+        }
+        
+        // Read a new record
+        let data = self.read_record(ContentType::Handshake, rbio)?;
+        
+        // Add to pending handshake buffer
+        self.pending_handshake.extend_from_slice(&data);
+        
+        // Extract one handshake message
+        self.extract_handshake_message()
+    }
+    
+    /// Extract a single handshake message from pending_handshake buffer
+    fn extract_handshake_message(&mut self) -> Option<Vec<u8>> {
+        if self.pending_handshake.len() < 4 {
+            return None;
+        }
+        
+        // Handshake message format:
+        // - type: 1 byte
+        // - length: 3 bytes (big-endian)
+        // - data: length bytes
+        let msg_type = self.pending_handshake[0];
+        let msg_len = ((self.pending_handshake[1] as usize) << 16) 
+                    | ((self.pending_handshake[2] as usize) << 8) 
+                    | (self.pending_handshake[3] as usize);
+        let total_len = 4 + msg_len;
+        
+        if self.pending_handshake.len() < total_len {
+            // Not enough data yet
+            return None;
+        }
+        
+        // Extract the complete message
+        let msg: Vec<u8> = self.pending_handshake.drain(..total_len).collect();
+        
+        eprintln!("[TLS-HANDSHAKE] Extracted message type={}, len={}, remaining_buffer={}", 
+            msg_type, msg_len, self.pending_handshake.len());
+        
+        Some(msg)
     }
 
     /// Read application data
@@ -243,18 +296,44 @@ impl RecordLayer {
             return Some(copy_len);
         }
 
-        // Read new record
-        let data = self.read_record(ContentType::ApplicationData, rbio)?;
-        
-        let copy_len = buf.len().min(data.len());
-        buf[..copy_len].copy_from_slice(&data[..copy_len]);
-        
-        // Store excess in pending buffer
-        if data.len() > copy_len {
-            self.pending.extend_from_slice(&data[copy_len..]);
+        // Read new record - may need to loop to skip TLS 1.3 post-handshake messages
+        loop {
+            let data = self.read_record(ContentType::ApplicationData, rbio)?;
+            
+            // In TLS 1.3, check the inner content type
+            // If it's not ApplicationData (0x17), skip this record (e.g., NewSessionTicket = 0x16)
+            if self.version >= TLS1_3_VERSION {
+                if let Some(inner_ct) = self.last_inner_content_type {
+                    if inner_ct == ContentType::Alert as u8 {
+                        // Handle alert (close_notify)
+                        if data.len() >= 2 && data[0] == 1 && data[1] == 0 {
+                            // close_notify
+                            self.eof = true;
+                            return None;
+                        }
+                        eprintln!("[TLS-READ] TLS 1.3 alert: level={}, desc={}", 
+                            data.get(0).unwrap_or(&0), data.get(1).unwrap_or(&0));
+                        self.eof = true;
+                        return None;
+                    }
+                    if inner_ct != ContentType::ApplicationData as u8 {
+                        // Not application data (e.g., NewSessionTicket = 0x16), skip
+                        eprintln!("[TLS-READ] TLS 1.3 skipping non-app data, inner_ct={:#x}", inner_ct);
+                        continue;
+                    }
+                }
+            }
+            
+            let copy_len = buf.len().min(data.len());
+            buf[..copy_len].copy_from_slice(&data[..copy_len]);
+            
+            // Store excess in pending buffer
+            if data.len() > copy_len {
+                self.pending.extend_from_slice(&data[copy_len..]);
+            }
+            
+            return Some(copy_len);
         }
-        
-        Some(copy_len)
     }
 
     /// Read a TLS record
@@ -525,7 +604,7 @@ impl RecordLayer {
         
         eprintln!("[TLS-DECRYPT] decryption OK, plaintext_len={}", plaintext.len());
         
-        // TLS 1.3: remove inner content type from plaintext
+        // TLS 1.3: remove inner content type from plaintext and return it
         if self.version >= TLS1_3_VERSION && !plaintext.is_empty() {
             // Remove trailing content type byte and any padding zeros
             let mut end = plaintext.len();
@@ -534,11 +613,17 @@ impl RecordLayer {
             }
             if end > 0 {
                 // Last non-zero byte is the content type, remove it
+                let inner_content_type = plaintext[end - 1];
+                eprintln!("[TLS-DECRYPT] TLS1.3 inner content_type={:#x}, data_len={}", 
+                    inner_content_type, end - 1);
+                // Store inner content type for caller to check
+                self.last_inner_content_type = Some(inner_content_type);
                 Some(plaintext[..end - 1].to_vec())
             } else {
                 None
             }
         } else {
+            self.last_inner_content_type = None;
             Some(plaintext)
         }
     }

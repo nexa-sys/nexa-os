@@ -189,12 +189,12 @@ pub fn derive_tls13_keys(
     })
 }
 
-/// Derive TLS 1.3 handshake keys and return handshake secret for later use
+/// Derive TLS 1.3 handshake keys and return handshake secrets for later use
 pub fn derive_tls13_handshake_keys(
     shared_secret: &[u8],
     transcript_hash: &[u8],
     key_len: usize,
-) -> Option<(Vec<u8>, DerivedKeys)> {
+) -> Option<(HandshakeSecrets, DerivedKeys)> {
     // TLS 1.3 key schedule (RFC 8446 Section 7.1)
     // key_len == 32 (AES-256-GCM) uses SHA-384
     // key_len == 16 (AES-128-GCM) uses SHA-256
@@ -272,7 +272,13 @@ pub fn derive_tls13_handshake_keys(
     eprintln!("[TLS1.3-KDF] server_key={:02x?}", &server_key);
     eprintln!("[TLS1.3-KDF] server_iv={:02x?}", &server_iv);
     
-    Some((handshake_secret, DerivedKeys {
+    let hs_secrets = HandshakeSecrets {
+        handshake_secret: handshake_secret.clone(),
+        client_hs_traffic_secret: client_hs_secret,
+        server_hs_traffic_secret: server_hs_secret,
+    };
+    
+    Some((hs_secrets, DerivedKeys {
         client_key,
         client_iv,
         server_key,
@@ -353,10 +359,16 @@ pub fn derive_tls13_traffic_secret(
     handshake_secret: &[u8],
     label: &[u8],
     transcript_hash: &[u8],
+    use_sha384: bool,
 ) -> Vec<u8> {
     // 首先需要从 handshake_secret 计算 traffic secret
     // 这个函数直接计算指定的 traffic secret
-    hkdf_expand_label(handshake_secret, label, transcript_hash, 32)
+    let hash_len = if use_sha384 { 48 } else { 32 };
+    if use_sha384 {
+        hkdf_expand_label_sha384(handshake_secret, label, transcript_hash, hash_len)
+    } else {
+        hkdf_expand_label(handshake_secret, label, transcript_hash, hash_len)
+    }
 }
 
 /// Derive TLS 1.2 keys using PRF
@@ -407,6 +419,13 @@ pub struct DerivedKeys {
     pub client_iv: Vec<u8>,
     pub server_key: Vec<u8>,
     pub server_iv: Vec<u8>,
+}
+
+/// Handshake secrets for TLS 1.3 Finished verification
+pub struct HandshakeSecrets {
+    pub handshake_secret: Vec<u8>,
+    pub client_hs_traffic_secret: Vec<u8>,
+    pub server_hs_traffic_secret: Vec<u8>,
 }
 
 /// HKDF-Extract (RFC 5869)
