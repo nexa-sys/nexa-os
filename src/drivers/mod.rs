@@ -8,6 +8,7 @@
 //! - ACPI table parsing
 //! - Parallel display compositor
 //! - Random number generator (RDRAND/RDSEED + ChaCha20 CSPRNG)
+//! - TTF font parser for Unicode/CJK support
 
 pub mod acpi;
 pub mod compositor;

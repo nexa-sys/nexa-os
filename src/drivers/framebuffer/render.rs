@@ -1,0 +1,408 @@
+//! High-performance framebuffer rendering primitives
+//!
+//! This module contains optimized rendering functions for:
+//! - Character/glyph drawing with scaling
+//! - Rectangle filling (solid colors)
+//! - Screen scrolling
+//!
+//! Optimizations include:
+//! - 32bpp fast path with 64-bit writes
+//! - Row buffer pre-computation
+//! - Line copying instead of re-rendering
+
+use super::color::PackedColor;
+use super::spec::FramebufferSpec;
+use crate::drivers::compositor;
+
+/// Font rendering constants
+pub const BASE_FONT_WIDTH: usize = 8;
+pub const BASE_FONT_HEIGHT: usize = 8;
+pub const SCALE_X: usize = 2;
+pub const SCALE_Y: usize = 2;
+pub const CELL_WIDTH: usize = BASE_FONT_WIDTH * SCALE_X;
+pub const CELL_HEIGHT: usize = BASE_FONT_HEIGHT * SCALE_Y;
+
+/// Rendering context with pre-computed values
+pub struct RenderContext {
+    pub buffer: *mut u8,
+    pub width: usize,
+    pub height: usize,
+    pub pitch: usize,
+    pub bytes_per_pixel: usize,
+}
+
+impl RenderContext {
+    pub fn new(buffer: *mut u8, spec: &FramebufferSpec) -> Self {
+        Self {
+            buffer,
+            width: spec.width as usize,
+            height: spec.height as usize,
+            pitch: spec.pitch as usize,
+            bytes_per_pixel: ((spec.bpp + 7) / 8) as usize,
+        }
+    }
+
+    /// Draw a character glyph at the specified cell position
+    ///
+    /// Uses GPU-style batch writes for optimal performance.
+    pub fn draw_cell(
+        &self,
+        col: usize,
+        row: usize,
+        glyph: &[u8; BASE_FONT_HEIGHT],
+        fg: PackedColor,
+        bg: PackedColor,
+    ) {
+        let pixel_x = col * CELL_WIDTH;
+        let pixel_y = row * CELL_HEIGHT;
+
+        // Bounds check - only once at start
+        if pixel_x + CELL_WIDTH > self.width || pixel_y + CELL_HEIGHT > self.height {
+            return;
+        }
+
+        // Use optimized path for 32bpp
+        if self.bytes_per_pixel == 4 {
+            self.draw_cell_fast_32bpp(pixel_x, pixel_y, glyph, fg, bg);
+        } else {
+            self.draw_cell_generic(pixel_x, pixel_y, glyph, fg, bg);
+        }
+    }
+
+    /// 32bpp fast character rendering - uses pre-computed row buffer and batch writes
+    ///
+    /// GPU-inspired optimizations:
+    /// - Pre-compute complete row data (like GPU tile rasterization)
+    /// - Use non-volatile writes to temp buffer, final batch write out
+    /// - 128-bit writes (4 pixels at once) to utilize memory bus bandwidth
+    /// - Copy identical rows instead of recomputing
+    #[inline(always)]
+    fn draw_cell_fast_32bpp(
+        &self,
+        pixel_x: usize,
+        pixel_y: usize,
+        glyph: &[u8; BASE_FONT_HEIGHT],
+        fg: PackedColor,
+        bg: PackedColor,
+    ) {
+        let fg_u32 = u32::from_le_bytes(fg.bytes);
+        let bg_u32 = u32::from_le_bytes(bg.bytes);
+
+        // Pre-compute per-row pixel data (CELL_WIDTH = 16 pixels = 64 bytes)
+        let mut row_buffer: [u32; CELL_WIDTH] = [0; CELL_WIDTH];
+
+        // Create 64-bit patterns for fast fill
+        let fg_u64 = (fg_u32 as u64) | ((fg_u32 as u64) << 32);
+        let bg_u64 = (bg_u32 as u64) | ((bg_u32 as u64) << 32);
+
+        for (glyph_row, bits) in glyph.iter().enumerate() {
+            // Use 64-bit operations - 2 pixels at once
+            let row_ptr64 = row_buffer.as_mut_ptr() as *mut u64;
+
+            // Unrolled: 8 font pixels -> 16 display pixels -> 8 u64s
+            unsafe {
+                for bit_idx in 0..BASE_FONT_WIDTH {
+                    let mask = 1u8 << bit_idx;
+                    let color64 = if bits & mask != 0 { fg_u64 } else { bg_u64 };
+                    row_ptr64.add(bit_idx).write(color64);
+                }
+            }
+
+            // Write SCALE_Y rows (usually = 2)
+            let first_row_y = pixel_y + glyph_row * SCALE_Y;
+            let first_row_offset = first_row_y * self.pitch + pixel_x * 4;
+
+            unsafe {
+                let dst = self.buffer.add(first_row_offset);
+                let src = row_buffer.as_ptr() as *const u8;
+
+                // Use 64-bit writes, 2 pixels at a time
+                let dst64 = dst as *mut u64;
+                let src64 = src as *const u64;
+
+                // Unroll 8 u64 writes (64 bytes = 1 cache line)
+                dst64.write(*src64);
+                dst64.add(1).write(*src64.add(1));
+                dst64.add(2).write(*src64.add(2));
+                dst64.add(3).write(*src64.add(3));
+                dst64.add(4).write(*src64.add(4));
+                dst64.add(5).write(*src64.add(5));
+                dst64.add(6).write(*src64.add(6));
+                dst64.add(7).write(*src64.add(7));
+
+                // Remaining rows: copy from first row (faster than recomputing)
+                for sy in 1..SCALE_Y {
+                    let target_y = first_row_y + sy;
+                    let target_offset = target_y * self.pitch + pixel_x * 4;
+                    core::ptr::copy_nonoverlapping(dst, self.buffer.add(target_offset), 64);
+                }
+            }
+        }
+    }
+
+    /// Generic character rendering (non-32bpp) - optimized version
+    #[inline(always)]
+    fn draw_cell_generic(
+        &self,
+        pixel_x: usize,
+        pixel_y: usize,
+        glyph: &[u8; BASE_FONT_HEIGHT],
+        fg: PackedColor,
+        bg: PackedColor,
+    ) {
+        let row_bytes = CELL_WIDTH * self.bytes_per_pixel;
+        let mut row_buffer: [u8; 64] = [0; 64];
+
+        for (glyph_row_idx, bits) in glyph.iter().enumerate() {
+            // Fill row buffer
+            for col_offset in 0..BASE_FONT_WIDTH {
+                let mask = 1u8 << col_offset;
+                let color = if bits & mask != 0 { &fg } else { &bg };
+                let base_x = col_offset * SCALE_X;
+
+                for sx in 0..SCALE_X {
+                    let pixel_idx = (base_x + sx) * self.bytes_per_pixel;
+                    for i in 0..self.bytes_per_pixel {
+                        row_buffer[pixel_idx + i] = color.bytes[i];
+                    }
+                }
+            }
+
+            // Write SCALE_Y rows
+            let first_row_y = pixel_y + glyph_row_idx * SCALE_Y;
+            let first_row_offset = first_row_y * self.pitch + pixel_x * self.bytes_per_pixel;
+
+            unsafe {
+                let dst = self.buffer.add(first_row_offset);
+                core::ptr::copy_nonoverlapping(row_buffer.as_ptr(), dst, row_bytes);
+
+                for sy in 1..SCALE_Y {
+                    let target_y = first_row_y + sy;
+                    let target_offset = target_y * self.pitch + pixel_x * self.bytes_per_pixel;
+                    core::ptr::copy_nonoverlapping(dst, self.buffer.add(target_offset), row_bytes);
+                }
+            }
+        }
+    }
+
+    /// Clear a single character cell
+    pub fn clear_cell(&self, col: usize, row: usize, bg: PackedColor) {
+        let pixel_x = col * CELL_WIDTH;
+        let pixel_y = row * CELL_HEIGHT;
+
+        if pixel_x + CELL_WIDTH > self.width || pixel_y + CELL_HEIGHT > self.height {
+            return;
+        }
+
+        self.fill_rect(pixel_x, pixel_y, CELL_WIDTH, CELL_HEIGHT, bg);
+    }
+
+    /// High-performance rectangle fill
+    ///
+    /// Strategies:
+    /// 1. Use 64-bit batch writes
+    /// 2. Fill first row, then copy to other rows
+    pub fn fill_rect(
+        &self,
+        start_x: usize,
+        start_y: usize,
+        width: usize,
+        height: usize,
+        color: PackedColor,
+    ) {
+        if width == 0 || height == 0 {
+            return;
+        }
+
+        let end_x = start_x.saturating_add(width).min(self.width);
+        let end_y = start_y.saturating_add(height).min(self.height);
+        let actual_width = end_x.saturating_sub(start_x);
+        let actual_height = end_y.saturating_sub(start_y);
+
+        if actual_width == 0 || actual_height == 0 {
+            return;
+        }
+
+        if self.bytes_per_pixel == 4 {
+            self.fill_rect_fast_32bpp(start_x, start_y, actual_width, actual_height, color);
+        } else {
+            self.fill_rect_generic(start_x, start_y, actual_width, actual_height, color);
+        }
+    }
+
+    /// 32bpp fast rectangle fill - GPU-style optimization
+    #[inline(always)]
+    fn fill_rect_fast_32bpp(
+        &self,
+        start_x: usize,
+        start_y: usize,
+        width: usize,
+        height: usize,
+        color: PackedColor,
+    ) {
+        let color_u32 = u32::from_le_bytes(color.bytes);
+        let total_pixels = width * height;
+
+        // Lower parallel threshold for 2.5K resolution
+        let parallel_threshold = if start_x == 0 && width == self.width {
+            1024 // Full-width: more aggressive parallelization
+        } else {
+            2048 // Non-full-width: slightly higher threshold
+        };
+
+        // Use compositor multi-core fill for large areas
+        if total_pixels >= parallel_threshold && height >= 4 {
+            if start_x == 0 && width == self.width {
+                let aligned_buffer = unsafe { self.buffer.add(start_y * self.pitch) };
+                compositor::parallel_fill(
+                    aligned_buffer,
+                    self.pitch,
+                    width,
+                    height,
+                    self.bytes_per_pixel,
+                    color_u32,
+                );
+            } else {
+                self.fill_rect_optimized(start_x, start_y, width, height, color_u32);
+            }
+            return;
+        }
+
+        self.fill_rect_optimized(start_x, start_y, width, height, color_u32);
+    }
+
+    /// Optimized single-core rectangle fill - for small or non-aligned areas
+    #[inline(always)]
+    fn fill_rect_optimized(
+        &self,
+        start_x: usize,
+        start_y: usize,
+        width: usize,
+        height: usize,
+        color_u32: u32,
+    ) {
+        let color_u64 = (color_u32 as u64) | ((color_u32 as u64) << 32);
+        let row_bytes = width * 4;
+
+        let first_row_offset = start_y * self.pitch + start_x * 4;
+        unsafe {
+            let first_row_ptr = self.buffer.add(first_row_offset);
+
+            // Fill first row with unrolled 64-bit writes
+            let qwords = width / 2;
+            let remainder = width % 2;
+            let qword_ptr = first_row_ptr as *mut u64;
+
+            let batches = qwords / 4;
+            let batch_remainder = qwords % 4;
+
+            for batch in 0..batches {
+                let base = batch * 4;
+                qword_ptr.add(base).write(color_u64);
+                qword_ptr.add(base + 1).write(color_u64);
+                qword_ptr.add(base + 2).write(color_u64);
+                qword_ptr.add(base + 3).write(color_u64);
+            }
+
+            let batch_base = batches * 4;
+            for i in 0..batch_remainder {
+                qword_ptr.add(batch_base + i).write(color_u64);
+            }
+
+            if remainder > 0 {
+                let dword_ptr = first_row_ptr.add(qwords * 8) as *mut u32;
+                dword_ptr.write(color_u32);
+            }
+
+            // Copy first row to remaining rows
+            for row in 1..height {
+                let dst_offset = (start_y + row) * self.pitch + start_x * 4;
+                core::ptr::copy_nonoverlapping(
+                    first_row_ptr,
+                    self.buffer.add(dst_offset),
+                    row_bytes,
+                );
+            }
+        }
+    }
+
+    /// Generic rectangle fill (non-32bpp)
+    #[inline(always)]
+    fn fill_rect_generic(
+        &self,
+        start_x: usize,
+        start_y: usize,
+        width: usize,
+        height: usize,
+        color: PackedColor,
+    ) {
+        let row_bytes = width * self.bytes_per_pixel;
+        let first_row_offset = start_y * self.pitch + start_x * self.bytes_per_pixel;
+
+        unsafe {
+            let first_row_ptr = self.buffer.add(first_row_offset);
+
+            // Fill first row pixel by pixel
+            for x in 0..width {
+                let pixel_ptr = first_row_ptr.add(x * self.bytes_per_pixel);
+                for i in 0..self.bytes_per_pixel {
+                    pixel_ptr.add(i).write_volatile(color.bytes[i]);
+                }
+            }
+
+            // Copy first row to remaining rows
+            for row in 1..height {
+                let dst_offset = (start_y + row) * self.pitch + start_x * self.bytes_per_pixel;
+                core::ptr::copy_nonoverlapping(
+                    first_row_ptr,
+                    self.buffer.add(dst_offset),
+                    row_bytes,
+                );
+            }
+        }
+    }
+
+    /// Scroll the entire screen up by one text row
+    pub fn scroll_up(&self, bg_color: u32) {
+        compositor::scroll_up_fast(
+            self.buffer,
+            self.pitch,
+            self.width,
+            self.height,
+            self.bytes_per_pixel,
+            CELL_HEIGHT,
+            bg_color,
+        );
+    }
+
+    /// Fast full-screen clear using parallel fill
+    pub fn clear_screen(&self, bg_color: u32) {
+        compositor::parallel_fill(
+            self.buffer,
+            self.pitch,
+            self.width,
+            self.height,
+            self.bytes_per_pixel,
+            bg_color,
+        );
+    }
+
+    /// Clear a range of text rows
+    pub fn clear_rows(&self, start_row: usize, end_row: usize, bg: PackedColor) {
+        if start_row >= end_row {
+            return;
+        }
+
+        let pixel_y_start = start_row * CELL_HEIGHT;
+        let pixel_y_end = end_row * CELL_HEIGHT;
+        let height = pixel_y_end
+            .saturating_sub(pixel_y_start)
+            .min(self.height - pixel_y_start);
+
+        if height == 0 {
+            return;
+        }
+
+        self.fill_rect(0, pixel_y_start, self.width, height, bg);
+    }
+}
