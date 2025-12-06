@@ -27,15 +27,17 @@ pub const USER_VIRT_BASE: u64 = 0x1000000;
 /// Must be placed after the kernel image (kernel .bss ends around 0x83f000)
 /// Using 16MB (0x1000000) to provide safe margin from kernel memory.
 pub const USER_PHYS_BASE: u64 = 0x1000000;
+/// Virtual address where the heap begins in userspace.
+/// Starts at USER_VIRT_BASE + 2MB (after code/data segments)
+pub const HEAP_BASE: u64 = USER_VIRT_BASE + 0x200000;
+/// Maximum size of heap reserved for userspace (8MB for dynamic allocation).
+/// Heap region: 0x1200000 - 0x1A00000
+pub const HEAP_SIZE: u64 = 0x800000;
 /// Virtual address chosen for the base of the userspace stack region.
-/// Adjusted to be after USER_VIRT_BASE: USER_VIRT_BASE + 4MB = 0x1400000
-pub const STACK_BASE: u64 = 0x1400000;
+/// Placed after heap: HEAP_BASE + HEAP_SIZE = 0x1A00000
+pub const STACK_BASE: u64 = HEAP_BASE + HEAP_SIZE;
 /// Size of the userspace stack in bytes (must stay 2 MiB aligned for huge pages).
 pub const STACK_SIZE: u64 = 0x200000;
-/// Virtual address where the heap begins in userspace.
-pub const HEAP_BASE: u64 = USER_VIRT_BASE + 0x200000;
-/// Size of the initial heap allocation reserved for userspace.
-pub const HEAP_SIZE: u64 = 0x200000;
 /// Virtual base where the dynamic loader and shared objects are staged.
 pub const INTERP_BASE: u64 = STACK_BASE + STACK_SIZE;
 /// Reserved size for the dynamic loader and dependent shared objects.

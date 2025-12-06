@@ -59,7 +59,8 @@ use types::*;
 use fd::{dup, dup2, pipe};
 use file::{close, fcntl, fstat, get_errno, list_files, lseek, open, read, stat, write};
 use ipc::{ipc_create, ipc_recv, ipc_send};
-use memory::{brk, mmap, mprotect, munmap};
+use memory::{mmap, mprotect, munmap};
+use memory_vma::brk_vma as brk;  // Use VMA-based brk for per-process heap tracking
 use network::{
     bind, connect, get_dns_servers, recvfrom, sendto, set_dns_servers, setsockopt, socket,
     socketpair,

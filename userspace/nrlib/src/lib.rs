@@ -1269,13 +1269,18 @@ pub unsafe extern "C" fn pthread_setspecific(key: pthread_key_t, value: *const c
 
 // Allocator support for std::alloc::System ----------------------------------
 // std expects malloc/free/realloc/calloc
+//
+// This allocator uses sbrk() to dynamically expand the heap from the kernel.
+// It's a simple bump allocator that grows on demand.
 
-const HEAP_SIZE: usize = 2 * 1024 * 1024; // 2MB heap
 const DEFAULT_ALIGNMENT: usize = 16;
 const HEADER_SIZE: usize = core::mem::size_of::<usize>();
+const SBRK_INCREMENT: usize = 64 * 1024; // Request 64KB at a time
 
-static mut HEAP: [u8; HEAP_SIZE] = [0; HEAP_SIZE];
+/// Heap state - tracks current position and end of allocated region
+static mut HEAP_START: usize = 0;
 static mut HEAP_POS: usize = 0;
+static mut HEAP_END: usize = 0;
 
 #[inline(always)]
 fn is_power_of_two(value: usize) -> bool {
@@ -1291,11 +1296,29 @@ fn align_up(value: usize, align: usize) -> Option<usize> {
     value.checked_add(mask).map(|aligned| aligned & !mask)
 }
 
+/// Expand heap using sbrk() syscall
+unsafe fn expand_heap(min_size: usize) -> bool {
+    // Calculate how much to request (round up to SBRK_INCREMENT)
+    let increment = ((min_size + SBRK_INCREMENT - 1) / SBRK_INCREMENT) * SBRK_INCREMENT;
+    
+    let result = libc_compat::sbrk(increment as isize);
+    if result == (-1isize) as *mut c_void {
+        return false;
+    }
+    
+    // If this is first allocation, initialize HEAP_START
+    if HEAP_START == 0 {
+        HEAP_START = result as usize;
+        HEAP_POS = HEAP_START;
+    }
+    
+    HEAP_END = HEAP_END.max(result as usize) + increment;
+    true
+}
+
 unsafe fn alloc_internal(size: usize, align: usize) -> *mut c_void {
     // CRITICAL: DO NOT log here - causes infinite recursion!
     // Logging from allocator can trigger more allocations.
-    // let alloc_slot = ALLOC_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
-    // if alloc_slot < 64 { ... }
     
     if size == 0 {
         set_errno(0);
@@ -1311,6 +1334,22 @@ unsafe fn alloc_internal(size: usize, align: usize) -> *mut c_void {
     if !is_power_of_two(requested_align) {
         set_errno(EINVAL);
         return ptr::null_mut();
+    }
+
+    // Initialize heap on first allocation
+    if HEAP_START == 0 {
+        if !expand_heap(SBRK_INCREMENT) {
+            // Print error to stderr (safe - doesn't allocate)
+            let msg = b"memory allocation of ";
+            let _ = syscall3(SYS_WRITE, 2, msg.as_ptr() as u64, msg.len() as u64);
+            let mut buf = [0u8; 20];
+            let len = format_usize(size, &mut buf);
+            let _ = syscall3(SYS_WRITE, 2, buf.as_ptr() as u64, len as u64);
+            let msg2 = b" bytes failed\n";
+            let _ = syscall3(SYS_WRITE, 2, msg2.as_ptr() as u64, msg2.len() as u64);
+            set_errno(ENOMEM);
+            return ptr::null_mut();
+        }
     }
 
     let header_align = mem::align_of::<usize>();
@@ -1347,18 +1386,47 @@ unsafe fn alloc_internal(size: usize, align: usize) -> *mut c_void {
         }
     };
 
-    if end > HEAP_SIZE {
-        set_errno(ENOMEM);
-        return ptr::null_mut();
+    // Need to expand heap?
+    if end > HEAP_END {
+        let needed = end - HEAP_END;
+        if !expand_heap(needed) {
+            // Print error to stderr (safe - doesn't allocate)
+            let msg = b"memory allocation of ";
+            let _ = syscall3(SYS_WRITE, 2, msg.as_ptr() as u64, msg.len() as u64);
+            let mut buf = [0u8; 20];
+            let len = format_usize(size, &mut buf);
+            let _ = syscall3(SYS_WRITE, 2, buf.as_ptr() as u64, len as u64);
+            let msg2 = b" bytes failed\n";
+            let _ = syscall3(SYS_WRITE, 2, msg2.as_ptr() as u64, msg2.len() as u64);
+            set_errno(ENOMEM);
+            return ptr::null_mut();
+        }
     }
 
     let header_offset = aligned_data - HEADER_SIZE;
-    let header_ptr = HEAP.as_mut_ptr().add(header_offset) as *mut usize;
+    let header_ptr = header_offset as *mut usize;
     header_ptr.write(size);
 
     HEAP_POS = end;
     set_errno(0);
-    HEAP.as_mut_ptr().add(aligned_data) as *mut c_void
+    aligned_data as *mut c_void
+}
+
+/// Format usize to decimal string (no allocation)
+fn format_usize(mut n: usize, buf: &mut [u8; 20]) -> usize {
+    if n == 0 {
+        buf[0] = b'0';
+        return 1;
+    }
+    let mut i = 20;
+    while n > 0 && i > 0 {
+        i -= 1;
+        buf[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+    }
+    let len = 20 - i;
+    buf.copy_within(i..20, 0);
+    len
 }
 
 unsafe fn allocation_size(ptr: *mut c_void) -> Option<usize> {
@@ -1366,14 +1434,14 @@ unsafe fn allocation_size(ptr: *mut c_void) -> Option<usize> {
         return None;
     }
 
-    let base = HEAP.as_ptr() as *mut u8;
-    let data_ptr = ptr as *mut u8;
+    let data_ptr = ptr as usize;
 
-    if data_ptr < base.add(HEADER_SIZE) || data_ptr >= base.add(HEAP_SIZE) {
+    // Check if pointer is within our heap
+    if HEAP_START == 0 || data_ptr < HEAP_START + HEADER_SIZE || data_ptr >= HEAP_END {
         return None;
     }
 
-    let header_ptr = data_ptr.sub(HEADER_SIZE) as *mut usize;
+    let header_ptr = (data_ptr - HEADER_SIZE) as *mut usize;
     Some(header_ptr.read())
 }
 
