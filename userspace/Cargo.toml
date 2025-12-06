@@ -21,6 +21,17 @@ members = [
     "programs/pthread_test",
     "programs/uefi_compatd",
     "programs/hello_dynamic",
+    # Coreutils (split from shell builtins)
+    "programs/ls",
+    "programs/cat",
+    "programs/stat",
+    "programs/pwd",
+    "programs/echo",
+    "programs/uname",
+    "programs/mkdir",
+    "programs/whoami",
+    "programs/users",
+    "programs/clear",
 ]
 
 [workspace.package]

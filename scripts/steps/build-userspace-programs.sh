@@ -33,6 +33,17 @@ PROGRAMS=(
     "thread_test:thread_test:bin::dyn"
     "pthread_test:pthread_test:bin:--features use-nrlib-std:dyn"
     "hello_dynamic:hello:bin::dyn"
+    # Coreutils (split from shell builtins)
+    "ls:ls:bin::dyn"
+    "cat:cat:bin::dyn"
+    "stat:stat:bin::dyn"
+    "pwd:pwd:bin::dyn"
+    "echo:echo:bin::dyn"
+    "uname:uname:bin::dyn"
+    "mkdir:mkdir:bin::dyn"
+    "whoami:whoami:bin::dyn"
+    "users:users:bin::dyn"
+    "clear:clear:bin::dyn"
 )
 
 # ============================================================================

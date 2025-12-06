@@ -3,6 +3,22 @@
 version = 4
 
 [[package]]
+name = "cat"
+version = "0.1.0"
+dependencies = [
+ "nexa_boot_info",
+ "nrlib",
+]
+
+[[package]]
+name = "clear"
+version = "0.1.0"
+dependencies = [
+ "nexa_boot_info",
+ "nrlib",
+]
+
+[[package]]
 name = "crashtest"
 version = "0.1.0"
 dependencies = [
@@ -20,6 +36,14 @@ dependencies = [
 
 [[package]]
 name = "dmesg"
+version = "0.1.0"
+dependencies = [
+ "nexa_boot_info",
+ "nrlib",
+]
+
+[[package]]
+name = "echo"
 version = "0.1.0"
 dependencies = [
  "nexa_boot_info",
@@ -56,6 +80,22 @@ version = "0.1.0"
 
 [[package]]
 name = "login"
+version = "0.1.0"
+dependencies = [
+ "nexa_boot_info",
+ "nrlib",
+]
+
+[[package]]
+name = "ls"
+version = "0.1.0"
+dependencies = [
+ "nexa_boot_info",
+ "nrlib",
+]
+
+[[package]]
+name = "mkdir"
 version = "0.1.0"
 dependencies = [
  "nexa_boot_info",
@@ -126,7 +166,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "pwd"
+version = "0.1.0"
+dependencies = [
+ "nexa_boot_info",
+ "nrlib",
+]
+
+[[package]]
 name = "sh"
+version = "0.1.0"
+dependencies = [
+ "nexa_boot_info",
+ "nrlib",
+]
+
+[[package]]
+name = "stat"
 version = "0.1.0"
 dependencies = [
  "nexa_boot_info",
@@ -143,6 +199,30 @@ dependencies = [
 
 [[package]]
 name = "uefi_compatd"
+version = "0.1.0"
+dependencies = [
+ "nexa_boot_info",
+ "nrlib",
+]
+
+[[package]]
+name = "uname"
+version = "0.1.0"
+dependencies = [
+ "nexa_boot_info",
+ "nrlib",
+]
+
+[[package]]
+name = "users"
+version = "0.1.0"
+dependencies = [
+ "nexa_boot_info",
+ "nrlib",
+]
+
+[[package]]
+name = "whoami"
 version = "0.1.0"
 dependencies = [
  "nexa_boot_info",

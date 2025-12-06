@@ -2,10 +2,12 @@
 //!
 //! This shell uses Rust std functionality for clean, idiomatic code.
 //! NexaOS-specific syscalls are used only where std cannot provide the functionality.
+//!
+//! Most commands (ls, cat, pwd, etc.) are now external programs in /bin.
+//! Only shell-specific builtins (cd, exit, help) remain internal.
 
 use std::fs;
-use std::io::{self, BufReader, Read, Write};
-use std::os::unix::fs::MetadataExt;
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{self, Command, Stdio};
 
@@ -220,10 +222,19 @@ mod nexaos {
 const HOSTNAME: &str = "nexa";
 const SEARCH_PATHS: &[&str] = &["/bin", "/sbin", "/usr/bin", "/usr/sbin"];
 
-const BUILTIN_COMMANDS: &[&str] = &[
-    "help", "ls", "cat", "stat", "pwd", "cd", "echo", "uname", "mkdir",
-    "login", "whoami", "users", "logout", "adduser",
-    "ipc-create", "ipc-send", "ipc-recv", "clear", "exit",
+// Shell builtins: commands that must be handled internally
+// (cd changes shell state, exit terminates shell, help shows shell help)
+const SHELL_BUILTINS: &[&str] = &[
+    "cd", "exit", "help",
+    // User management (requires shell's syscall interface)
+    "login", "logout", "adduser",
+    // IPC commands (shell-specific)
+    "ipc-create", "ipc-send", "ipc-recv",
+];
+
+// External commands that were moved out of the shell
+const EXTERNAL_COMMANDS: &[&str] = &[
+    "ls", "cat", "stat", "pwd", "echo", "uname", "mkdir", "clear", "whoami", "users",
 ];
 
 // ============================================================================
@@ -445,7 +456,11 @@ impl LineEditor {
     }
 
     fn complete_command(&mut self, prefix: &str, state: &ShellState) {
-        let matches: Vec<&str> = BUILTIN_COMMANDS.iter()
+        // Collect all available commands (builtins + external)
+        let mut all_commands: Vec<&str> = SHELL_BUILTINS.to_vec();
+        all_commands.extend(EXTERNAL_COMMANDS.iter().copied());
+        
+        let matches: Vec<&str> = all_commands.iter()
             .filter(|cmd| cmd.starts_with(prefix))
             .copied()
             .collect();
@@ -613,69 +628,23 @@ fn clear_screen() {
     let _ = io::stdout().flush();
 }
 
-fn format_mode(mode: u32) -> String {
-    let file_type = match mode & 0o170000 {
-        0o040000 => 'd',
-        0o100000 => '-',
-        0o120000 => 'l',
-        0o020000 => 'c',
-        0o060000 => 'b',
-        0o010000 => 'p',
-        0o140000 => 's',
-        _ => '?',
-    };
-
-    let mut result = String::with_capacity(10);
-    result.push(file_type);
-    
-    for shift in [6, 3, 0] {
-        let p = (mode >> shift) & 0o7;
-        result.push(if (p & 0o4) != 0 { 'r' } else { '-' });
-        result.push(if (p & 0o2) != 0 { 'w' } else { '-' });
-        result.push(if (p & 0o1) != 0 { 'x' } else { '-' });
-    }
-    
-    result
-}
-
 // ============================================================================
-// Built-in Commands
+// Shell Built-in Commands
 // ============================================================================
 
 fn cmd_help() {
-    println!("Available commands:");
+    println!("NexaOS Shell, version 0.1.0");
+    println!("These shell commands are defined internally. Type `help' to see this list.");
+    println!();
     println!("  help              Show this message");
-    println!("  ls [-a] [-l] [p]  List directory contents");
-    println!("  cat <file>        Print file contents");
-    println!("  stat <file>       Show file metadata");
-    println!("  pwd               Print working directory");
-    println!("  cd <path>         Change directory");
-    println!("  echo [text...]    Print text to output");
-    println!("  uname [-a]        Show system information");
-    println!("  mkdir <path>      Create directory (stub)");
+    println!("  cd [dir]          Change directory");
+    println!("  exit [n]          Exit the shell");
     println!("  login <user>      Switch active user");
-    println!("  whoami            Show current user");
-    println!("  users             List registered users");
     println!("  logout            Log out current user");
     println!("  adduser [-a] <u>  Create a new user (-a for admin)");
     println!("  ipc-create        Allocate IPC channel");
     println!("  ipc-send <c> <m>  Send IPC message");
     println!("  ipc-recv <c>      Receive IPC message");
-    println!("  clear             Clear the screen");
-    println!("  exit              Exit the shell");
-    println!();
-    println!("Editing keys:");
-    println!("  Tab               Complete command/path");
-    println!("  Backspace         Delete character");
-    println!("  Ctrl-C            Cancel line");
-    println!("  Ctrl-D            Exit (on empty line)");
-    println!("  Ctrl-U            Clear line");
-    println!("  Ctrl-W            Delete word");
-    println!("  Ctrl-L            Refresh screen");
-}
-
-fn cmd_pwd(state: &ShellState) {
-    println!("{}", state.current_path_str());
 }
 
 fn cmd_cd(state: &mut ShellState, path: Option<&str>) {
@@ -693,128 +662,6 @@ fn cmd_cd(state: &mut ShellState, path: Option<&str>) {
             println!("cd: {}: {}", target, e);
         }
     }
-}
-
-fn cmd_ls(state: &ShellState, args: &[&str]) {
-    let mut show_all = false;
-    let mut long_format = false;
-    let mut target = None;
-
-    for arg in args {
-        if arg.starts_with('-') {
-            for c in arg[1..].chars() {
-                match c {
-                    'a' => show_all = true,
-                    'l' => long_format = true,
-                    _ => println!("ls: unknown option -{}", c),
-                }
-            }
-        } else {
-            target = Some(*arg);
-        }
-    }
-
-    let path = target.map(|t| state.resolve(t)).unwrap_or_else(|| state.cwd.clone());
-
-    match nexaos::list_files(Some(path.to_str().unwrap_or("/")), show_all) {
-        Ok(list) => {
-            for entry in list.lines() {
-                if entry.is_empty() { continue; }
-                if !show_all && entry.starts_with('.') { continue; }
-
-                if long_format {
-                    let full_path = path.join(entry);
-                    if let Ok(meta) = fs::metadata(&full_path) {
-                        let mode = format_mode(meta.mode());
-                        println!("{} {} {} {} {}", mode, meta.uid(), meta.gid(), meta.len(), entry);
-                        continue;
-                    }
-                }
-                println!("{}", entry);
-            }
-        }
-        Err(e) => {
-            println!("ls: failed to read directory (errno {})", e);
-        }
-    }
-}
-
-fn cmd_cat(state: &ShellState, path: &str) {
-    let resolved = state.resolve(path);
-    
-    // Use streaming read instead of reading entire file into memory
-    // This is essential for device files like /dev/random that are infinite
-    let file = match fs::File::open(&resolved) {
-        Ok(f) => f,
-        Err(e) => {
-            println!("cat: {}: {}", path, e);
-            return;
-        }
-    };
-    
-    let mut reader = io::BufReader::new(file);
-    let mut buffer = [0u8; 4096];
-    let mut stdout = io::stdout();
-    let mut last_byte_was_newline = true;
-    
-    loop {
-        match reader.read(&mut buffer) {
-            Ok(0) => break, // EOF
-            Ok(n) => {
-                if stdout.write_all(&buffer[..n]).is_err() {
-                    break;
-                }
-                let _ = stdout.flush();
-                last_byte_was_newline = buffer[n - 1] == b'\n';
-            }
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-            Err(e) => {
-                println!("cat: {}: {}", path, e);
-                break;
-            }
-        }
-    }
-    
-    if !last_byte_was_newline {
-        println!();
-    }
-}
-
-fn cmd_stat(state: &ShellState, path: &str) {
-    let resolved = state.resolve(path);
-    
-    match fs::metadata(&resolved) {
-        Ok(meta) => {
-            println!("File statistics:");
-            println!("  size: {} bytes", meta.len());
-            println!("  blocks: {}", meta.blocks());
-            println!("  mode: 0o{:o}", meta.mode());
-            println!("  links: {}", meta.nlink());
-        }
-        Err(e) => {
-            println!("stat: {}: {}", path, e);
-        }
-    }
-}
-
-fn cmd_echo(text: &str) {
-    println!("{}", text);
-}
-
-fn cmd_uname(all: bool) {
-    if all {
-        println!("NexaOS 0.1.0 x86_64 (experimental hybrid kernel)");
-    } else {
-        println!("NexaOS");
-    }
-}
-
-fn cmd_mkdir(_state: &ShellState, path: &str) {
-    if path.is_empty() {
-        println!("mkdir: missing operand");
-        return;
-    }
-    println!("mkdir: not yet implemented (filesystem is read-only)");
 }
 
 fn cmd_login(username: &str) {
@@ -858,35 +705,6 @@ fn cmd_adduser(username: &str, admin: bool) {
     match nexaos::add_user(username, password, admin) {
         Ok(()) => println!("adduser: user created"),
         Err(e) => println!("adduser: failed (errno {})", e),
-    }
-}
-
-fn cmd_whoami() {
-    match nexaos::get_user_info() {
-        Some(info) => {
-            let len = info.username_len as usize;
-            if len == 0 {
-                println!("(anonymous)");
-            } else if let Ok(name) = std::str::from_utf8(&info.username[..len]) {
-                println!("{}", name);
-            } else {
-                println!("(invalid username)");
-            }
-        }
-        None => println!("whoami: failed"),
-    }
-}
-
-fn cmd_users() {
-    match nexaos::list_users() {
-        Ok(list) => {
-            if list.is_empty() {
-                println!("(no users)");
-            } else {
-                print!("{}", list);
-            }
-        }
-        Err(e) => println!("users: failed (errno {})", e),
     }
 }
 
@@ -936,7 +754,7 @@ fn find_executable(cmd: &str) -> Option<PathBuf> {
     None
 }
 
-fn execute_external_command(cmd: &str, args: &[&str]) -> bool {
+fn execute_external_command(state: &ShellState, cmd: &str, args: &[&str]) -> bool {
     let path = match find_executable(cmd) {
         Some(p) => p,
         None => {
@@ -945,10 +763,10 @@ fn execute_external_command(cmd: &str, args: &[&str]) -> bool {
         }
     };
 
-    println!("Executing: {}", path.display());
-
+    // Set current directory for the child process
     match Command::new(&path)
         .args(args)
+        .current_dir(state.current_path())
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
@@ -957,7 +775,10 @@ fn execute_external_command(cmd: &str, args: &[&str]) -> bool {
         Ok(status) => {
             if !status.success() {
                 if let Some(code) = status.code() {
-                    println!("Command exited with status {}", code);
+                    if code != 0 {
+                        // Only print non-zero exit codes
+                        println!("Command exited with status {}", code);
+                    }
                 } else {
                     println!("Command terminated by signal");
                 }
@@ -965,7 +786,7 @@ fn execute_external_command(cmd: &str, args: &[&str]) -> bool {
             true
         }
         Err(e) => {
-            println!("Failed to execute command: {}", e);
+            println!("Failed to execute '{}': {}", cmd, e);
             false
         }
     }
@@ -983,37 +804,16 @@ fn handle_command(state: &mut ShellState, line: &str) {
     };
     let args = &parts[1..];
 
+    // Check for shell builtins first
     match cmd {
         "help" => cmd_help(),
-        "pwd" => cmd_pwd(state),
         "cd" => cmd_cd(state, args.first().copied()),
-        "echo" => {
-            let text = line.strip_prefix("echo").unwrap_or("").trim();
-            cmd_echo(text);
+        "exit" => {
+            println!("Bye!");
+            process::exit(0);
         }
-        "uname" => cmd_uname(args.first().map_or(false, |a| *a == "-a")),
-        "mkdir" => {
-            if let Some(path) = args.first() {
-                cmd_mkdir(state, path);
-            } else {
-                println!("mkdir: missing operand");
-            }
-        }
-        "ls" => cmd_ls(state, args),
-        "cat" => {
-            if let Some(path) = args.first() {
-                cmd_cat(state, path);
-            } else {
-                println!("cat: missing file name");
-            }
-        }
-        "stat" => {
-            if let Some(path) = args.first() {
-                cmd_stat(state, path);
-            } else {
-                println!("stat: missing file name");
-            }
-        }
+        
+        // User management builtins
         "login" => {
             if let Some(user) = args.first() {
                 cmd_login(user);
@@ -1021,8 +821,6 @@ fn handle_command(state: &mut ShellState, line: &str) {
                 println!("login: missing user name");
             }
         }
-        "whoami" => cmd_whoami(),
-        "users" => cmd_users(),
         "logout" => cmd_logout(),
         "adduser" => {
             let mut admin = false;
@@ -1040,6 +838,8 @@ fn handle_command(state: &mut ShellState, line: &str) {
                 println!("adduser: missing user name");
             }
         }
+        
+        // IPC builtins
         "ipc-create" => cmd_ipc_create(),
         "ipc-send" => {
             if args.len() >= 2 {
@@ -1063,15 +863,11 @@ fn handle_command(state: &mut ShellState, line: &str) {
                 println!("ipc-recv: missing channel");
             }
         }
-        "clear" => clear_screen(),
-        "exit" => {
-            println!("Bye!");
-            process::exit(0);
-        }
+        
+        // All other commands are external
         _ => {
-            // Try external command
             let args: Vec<&str> = args.to_vec();
-            execute_external_command(cmd, &args);
+            execute_external_command(state, cmd, &args);
         }
     }
 }
