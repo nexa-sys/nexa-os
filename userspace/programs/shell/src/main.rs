@@ -4,7 +4,7 @@
 //! NexaOS-specific syscalls are used only where std cannot provide the functionality.
 
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, BufReader, Read, Write};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::{self, Command, Stdio};
@@ -742,23 +742,41 @@ fn cmd_ls(state: &ShellState, args: &[&str]) {
 fn cmd_cat(state: &ShellState, path: &str) {
     let resolved = state.resolve(path);
     
-    match fs::read_to_string(&resolved) {
-        Ok(contents) => {
-            print!("{}", contents);
-            if !contents.ends_with('\n') {
-                println!();
-            }
-        }
+    // Use streaming read instead of reading entire file into memory
+    // This is essential for device files like /dev/random that are infinite
+    let file = match fs::File::open(&resolved) {
+        Ok(f) => f,
         Err(e) => {
-            // Try reading as binary
-            match fs::read(&resolved) {
-                Ok(bytes) => {
-                    let _ = io::stdout().write_all(&bytes);
-                    println!();
+            println!("cat: {}: {}", path, e);
+            return;
+        }
+    };
+    
+    let mut reader = io::BufReader::new(file);
+    let mut buffer = [0u8; 4096];
+    let mut stdout = io::stdout();
+    let mut last_byte_was_newline = true;
+    
+    loop {
+        match reader.read(&mut buffer) {
+            Ok(0) => break, // EOF
+            Ok(n) => {
+                if stdout.write_all(&buffer[..n]).is_err() {
+                    break;
                 }
-                Err(_) => println!("cat: {}: {}", path, e),
+                let _ = stdout.flush();
+                last_byte_was_newline = buffer[n - 1] == b'\n';
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => {
+                println!("cat: {}: {}", path, e);
+                break;
             }
         }
+    }
+    
+    if !last_byte_was_newline {
+        println!();
     }
 }
 
