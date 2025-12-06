@@ -1,6 +1,7 @@
 //! X25519 Key Exchange
 //!
 //! RFC 7748 compliant Curve25519 ECDH implementation.
+//! Uses radix-2^51 representation for field elements.
 
 #[allow(unused_imports)]
 use std::vec::Vec;
@@ -12,226 +13,301 @@ use std::vec::Vec;
 /// X25519 key size (32 bytes)
 pub const X25519_KEY_SIZE: usize = 32;
 
-/// Prime p = 2^255 - 19
-const P: [u64; 4] = [
-    0xffffffffffffffed,
-    0xffffffffffffffff,
-    0xffffffffffffffff,
-    0x7fffffffffffffff,
-];
-
 // ============================================================================
-// Field Element (mod p)
+// Field Element (mod 2^255 - 19)
+// 
+// Uses 5 limbs of 51 bits each (255 bits total)
+// This representation avoids carry overflow in multiplication
 // ============================================================================
 
 /// Field element in GF(2^255 - 19)
-#[derive(Clone, Copy)]
-struct Fe([u64; 4]);
+/// Represented as 5 limbs, each holding up to 51 bits
+#[derive(Clone, Copy, Debug)]
+struct Fe([u64; 5]);
+
+const MASK51: u64 = (1u64 << 51) - 1;
 
 impl Fe {
     const fn zero() -> Self {
-        Fe([0; 4])
+        Fe([0; 5])
     }
 
     const fn one() -> Self {
-        Fe([1, 0, 0, 0])
+        Fe([1, 0, 0, 0, 0])
     }
 
     /// Create from little-endian bytes
     fn from_bytes(bytes: &[u8; 32]) -> Self {
-        let mut limbs = [0u64; 4];
-        for i in 0..4 {
-            limbs[i] = u64::from_le_bytes([
-                bytes[i * 8],
-                bytes[i * 8 + 1],
-                bytes[i * 8 + 2],
-                bytes[i * 8 + 3],
-                bytes[i * 8 + 4],
-                bytes[i * 8 + 5],
-                bytes[i * 8 + 6],
-                bytes[i * 8 + 7],
-            ]);
-        }
-        // Clear the top bit (mod p reduction)
-        limbs[3] &= 0x7fffffffffffffff;
-        Fe(limbs)
+        let mut h = [0u64; 5];
+        
+        // Load bytes as u64s
+        let load64 = |b: &[u8]| -> u64 {
+            let mut tmp = [0u8; 8];
+            let len = b.len().min(8);
+            tmp[..len].copy_from_slice(&b[..len]);
+            u64::from_le_bytes(tmp)
+        };
+        
+        h[0] = load64(&bytes[0..]) & MASK51;
+        h[1] = (load64(&bytes[6..]) >> 3) & MASK51;
+        h[2] = (load64(&bytes[12..]) >> 6) & MASK51;
+        h[3] = (load64(&bytes[19..]) >> 1) & MASK51;
+        h[4] = (load64(&bytes[24..]) >> 12) & MASK51;
+        
+        Fe(h)
     }
 
     /// Convert to little-endian bytes
     fn to_bytes(&self) -> [u8; 32] {
-        let reduced = self.reduce();
+        let mut h = self.reduce();
+        
+        // Second reduction to ensure fully reduced
+        h = h.reduce();
+        
         let mut bytes = [0u8; 32];
-        for i in 0..4 {
-            let b = reduced.0[i].to_le_bytes();
-            bytes[i * 8..i * 8 + 8].copy_from_slice(&b);
-        }
+        
+        // Pack into bytes
+        let h0 = h.0[0];
+        let h1 = h.0[1];
+        let h2 = h.0[2];
+        let h3 = h.0[3];
+        let h4 = h.0[4];
+        
+        bytes[0] = h0 as u8;
+        bytes[1] = (h0 >> 8) as u8;
+        bytes[2] = (h0 >> 16) as u8;
+        bytes[3] = (h0 >> 24) as u8;
+        bytes[4] = (h0 >> 32) as u8;
+        bytes[5] = (h0 >> 40) as u8;
+        bytes[6] = ((h0 >> 48) | (h1 << 3)) as u8;
+        bytes[7] = (h1 >> 5) as u8;
+        bytes[8] = (h1 >> 13) as u8;
+        bytes[9] = (h1 >> 21) as u8;
+        bytes[10] = (h1 >> 29) as u8;
+        bytes[11] = (h1 >> 37) as u8;
+        bytes[12] = ((h1 >> 45) | (h2 << 6)) as u8;
+        bytes[13] = (h2 >> 2) as u8;
+        bytes[14] = (h2 >> 10) as u8;
+        bytes[15] = (h2 >> 18) as u8;
+        bytes[16] = (h2 >> 26) as u8;
+        bytes[17] = (h2 >> 34) as u8;
+        bytes[18] = (h2 >> 42) as u8;
+        bytes[19] = ((h2 >> 50) | (h3 << 1)) as u8;
+        bytes[20] = (h3 >> 7) as u8;
+        bytes[21] = (h3 >> 15) as u8;
+        bytes[22] = (h3 >> 23) as u8;
+        bytes[23] = (h3 >> 31) as u8;
+        bytes[24] = (h3 >> 39) as u8;
+        bytes[25] = ((h3 >> 47) | (h4 << 4)) as u8;
+        bytes[26] = (h4 >> 4) as u8;
+        bytes[27] = (h4 >> 12) as u8;
+        bytes[28] = (h4 >> 20) as u8;
+        bytes[29] = (h4 >> 28) as u8;
+        bytes[30] = (h4 >> 36) as u8;
+        bytes[31] = (h4 >> 44) as u8;
+        
         bytes
     }
 
-    /// Reduce modulo p
+    /// Carry propagation and reduction
     fn reduce(&self) -> Self {
-        let mut r = *self;
+        let mut h = *self;
         
-        // Simple reduction
-        let mut carry = (r.0[3] >> 63) * 19;
-        r.0[3] &= 0x7fffffffffffffff;
+        // First pass: carry propagation
+        let mut carry = h.0[0] >> 51; h.0[0] &= MASK51;
+        h.0[1] += carry;
+        carry = h.0[1] >> 51; h.0[1] &= MASK51;
+        h.0[2] += carry;
+        carry = h.0[2] >> 51; h.0[2] &= MASK51;
+        h.0[3] += carry;
+        carry = h.0[3] >> 51; h.0[3] &= MASK51;
+        h.0[4] += carry;
+        carry = h.0[4] >> 51; h.0[4] &= MASK51;
         
-        for i in 0..4 {
-            let sum = r.0[i] as u128 + carry as u128;
-            r.0[i] = sum as u64;
-            carry = (sum >> 64) as u64;
-        }
+        // Reduce mod p: multiply carry by 19
+        h.0[0] += carry * 19;
         
-        // Handle overflow
-        if carry > 0 || r.ge_p() {
-            let mut borrow = 0i128;
-            for i in 0..4 {
-                let diff = r.0[i] as i128 - P[i] as i128 - borrow;
-                if diff < 0 {
-                    r.0[i] = (diff + (1i128 << 64)) as u64;
-                    borrow = 1;
-                } else {
-                    r.0[i] = diff as u64;
-                    borrow = 0;
-                }
-            }
-        }
+        // Second pass
+        carry = h.0[0] >> 51; h.0[0] &= MASK51;
+        h.0[1] += carry;
+        carry = h.0[1] >> 51; h.0[1] &= MASK51;
+        h.0[2] += carry;
+        carry = h.0[2] >> 51; h.0[2] &= MASK51;
+        h.0[3] += carry;
+        carry = h.0[3] >> 51; h.0[3] &= MASK51;
+        h.0[4] += carry;
+        carry = h.0[4] >> 51; h.0[4] &= MASK51;
+        h.0[0] += carry * 19;
         
-        r
-    }
-
-    /// Check if >= p
-    fn ge_p(&self) -> bool {
-        for i in (0..4).rev() {
-            if self.0[i] > P[i] {
-                return true;
-            }
-            if self.0[i] < P[i] {
-                return false;
-            }
-        }
-        true
+        h
     }
 
     /// Addition
     fn add(&self, other: &Self) -> Self {
-        let mut result = Fe::zero();
-        let mut carry = 0u128;
-        
-        for i in 0..4 {
-            let sum = self.0[i] as u128 + other.0[i] as u128 + carry;
-            result.0[i] = sum as u64;
-            carry = sum >> 64;
-        }
-        
-        // Reduce
-        if carry > 0 || result.ge_p() {
-            result = result.reduce();
-        }
-        
-        result
+        Fe([
+            self.0[0] + other.0[0],
+            self.0[1] + other.0[1],
+            self.0[2] + other.0[2],
+            self.0[3] + other.0[3],
+            self.0[4] + other.0[4],
+        ])
     }
 
     /// Subtraction
     fn sub(&self, other: &Self) -> Self {
-        let mut result = Fe::zero();
-        let mut borrow = 0i128;
+        // Add 8*p to ensure positive result (this fits in 5 limbs of 54 bits each)
+        // 8*p = 8*(2^255 - 19) = 2^258 - 152
+        // Donna uses: limb[0] = 2^54 - 152, limbs[1-4] = 2^54 - 8
+        // These sum to 8*p ≡ 0 (mod p)
+        const ADJ: [u64; 5] = [
+            0x3fffffffffff68,  // 2^54 - 152
+            0x3ffffffffffff8,  // 2^54 - 8
+            0x3ffffffffffff8,
+            0x3ffffffffffff8,
+            0x3ffffffffffff8,
+        ];
         
-        for i in 0..4 {
-            let diff = self.0[i] as i128 - other.0[i] as i128 - borrow;
-            if diff < 0 {
-                result.0[i] = (diff + (1i128 << 64)) as u64;
-                borrow = 1;
-            } else {
-                result.0[i] = diff as u64;
-                borrow = 0;
-            }
-        }
-        
-        // Add p if result is negative
-        if borrow > 0 {
-            let mut carry = 0u128;
-            for i in 0..4 {
-                let sum = result.0[i] as u128 + P[i] as u128 + carry;
-                result.0[i] = sum as u64;
-                carry = sum >> 64;
-            }
-        }
-        
-        result
+        Fe([
+            (self.0[0] + ADJ[0]) - other.0[0],
+            (self.0[1] + ADJ[1]) - other.0[1],
+            (self.0[2] + ADJ[2]) - other.0[2],
+            (self.0[3] + ADJ[3]) - other.0[3],
+            (self.0[4] + ADJ[4]) - other.0[4],
+        ])
     }
 
-    /// Multiplication (schoolbook, could use Karatsuba)
+    /// Multiplication using 128-bit intermediates
     fn mul(&self, other: &Self) -> Self {
-        let mut product = [0u128; 8];
+        let a0 = self.0[0] as u128;
+        let a1 = self.0[1] as u128;
+        let a2 = self.0[2] as u128;
+        let a3 = self.0[3] as u128;
+        let a4 = self.0[4] as u128;
         
-        for i in 0..4 {
-            for j in 0..4 {
-                product[i + j] += self.0[i] as u128 * other.0[j] as u128;
-            }
-        }
+        let b0 = other.0[0] as u128;
+        let b1 = other.0[1] as u128;
+        let b2 = other.0[2] as u128;
+        let b3 = other.0[3] as u128;
+        let b4 = other.0[4] as u128;
+        
+        // Pre-multiply by 19 for reduction
+        let b1_19 = b1 * 19;
+        let b2_19 = b2 * 19;
+        let b3_19 = b3 * 19;
+        let b4_19 = b4 * 19;
+        
+        // Schoolbook multiplication with modular reduction
+        let h0 = a0*b0 + a1*b4_19 + a2*b3_19 + a3*b2_19 + a4*b1_19;
+        let h1 = a0*b1 + a1*b0 + a2*b4_19 + a3*b3_19 + a4*b2_19;
+        let h2 = a0*b2 + a1*b1 + a2*b0 + a3*b4_19 + a4*b3_19;
+        let h3 = a0*b3 + a1*b2 + a2*b1 + a3*b0 + a4*b4_19;
+        let h4 = a0*b4 + a1*b3 + a2*b2 + a3*b1 + a4*b0;
         
         // Carry propagation
-        for i in 0..7 {
-            product[i + 1] += product[i] >> 64;
-            product[i] &= 0xffffffffffffffff;
-        }
+        let mut r0 = h0 as u64 & MASK51;
+        let mut c = h0 >> 51;
         
-        // Reduction: multiply high part by 38 (since 2^256 = 38 mod p)
-        let mut result = Fe::zero();
+        let h1 = h1 + c;
+        let mut r1 = h1 as u64 & MASK51;
+        c = h1 >> 51;
         
-        for i in 0..4 {
-            let sum = product[i] + product[i + 4] * 38;
-            result.0[i] = sum as u64;
-            if i < 3 {
-                product[i + 1] += sum >> 64;
-            }
-        }
+        let h2 = h2 + c;
+        let mut r2 = h2 as u64 & MASK51;
+        c = h2 >> 51;
         
-        result.reduce()
+        let h3 = h3 + c;
+        let mut r3 = h3 as u64 & MASK51;
+        c = h3 >> 51;
+        
+        let h4 = h4 + c;
+        let mut r4 = h4 as u64 & MASK51;
+        c = h4 >> 51;
+        
+        // Final reduction
+        r0 += (c as u64) * 19;
+        c = (r0 >> 51) as u128;
+        r0 &= MASK51;
+        r1 += c as u64;
+        
+        Fe([r0, r1, r2, r3, r4])
     }
 
     /// Square
     fn square(&self) -> Self {
+        let a0 = self.0[0] as u128;
+        let a1 = self.0[1] as u128;
+        let a2 = self.0[2] as u128;
+        let a3 = self.0[3] as u128;
+        let a4 = self.0[4] as u128;
+        
+        // Double products
+        let a0_2 = a0 * 2;
+        let a1_2 = a1 * 2;
+        let a2_2 = a2 * 2;
+        let a3_2 = a3 * 2;
+        
+        // Pre-multiply by 19
+        let a1_38 = a1 * 38;
+        let a2_38 = a2 * 38;
+        let a3_38 = a3 * 38;
+        let a4_38 = a4 * 38;
+        let a4_19 = a4 * 19;
+        
+        let h0 = a0*a0 + a1_38*a4 + a2_38*a3;
+        let h1 = a0_2*a1 + a2_38*a4 + a3_38*(a3/2);  // a3^2 * 19
+        let h2 = a0_2*a2 + a1*a1 + a3_38*a4;
+        let h3 = a0_2*a3 + a1_2*a2 + a4_19*a4;
+        let h4 = a0_2*a4 + a1_2*a3 + a2*a2;
+        
+        // Hmm, the squaring formula is more complex. Let me use mul instead
         self.mul(self)
     }
 
-    /// Modular inverse using Fermat's little theorem: a^(-1) = a^(p-2) mod p
+    /// Modular inverse using Fermat's little theorem
+    /// a^(-1) = a^(p-2) mod p where p = 2^255 - 19
     fn invert(&self) -> Self {
-        // p - 2 = 2^255 - 21
-        let mut result = Fe::one();
-        let base = *self;
+        // Use addition chain for p-2 = 2^255 - 21
+        let z1 = *self;
+        let z2 = z1.square();
+        let z4 = z2.square();
+        let z8 = z4.square();
+        let z9 = z8.mul(&z1);
+        let z11 = z9.mul(&z2);
+        let z22 = z11.square();
+        let z_5_0 = z22.mul(&z9);  // z^(2^5 - 1) = z^31
         
-        // Square-and-multiply with p-2
-        // p-2 = ...11111111111111111111111111111111111111111111111111111111111101011
+        let mut z_10_5 = z_5_0;
+        for _ in 0..5 { z_10_5 = z_10_5.square(); }
+        let z_10_0 = z_10_5.mul(&z_5_0);  // z^(2^10 - 1)
         
-        // First compute base^(2^250 - 1)
-        let mut t = base;
-        for _ in 0..250 {
-            t = t.square();
-            t = t.mul(&base);
-        }
+        let mut z_20_10 = z_10_0;
+        for _ in 0..10 { z_20_10 = z_20_10.square(); }
+        let z_20_0 = z_20_10.mul(&z_10_0);  // z^(2^20 - 1)
         
-        // Simplified version - just do full exponentiation
-        // In production, use addition chain
-        result = base;
-        for i in 1..255 {
-            result = result.square();
-            // Check if bit is set in (p-2)
-            let byte_idx = i / 64;
-            let bit_idx = i % 64;
-            let p_minus_2: [u64; 4] = [
-                0xffffffffffffffeb_u64,
-                0xffffffffffffffff_u64,
-                0xffffffffffffffff_u64,
-                0x7fffffffffffffff_u64,
-            ];
-            if (p_minus_2[byte_idx] >> bit_idx) & 1 == 1 {
-                result = result.mul(&base);
-            }
-        }
+        let mut z_40_20 = z_20_0;
+        for _ in 0..20 { z_40_20 = z_40_20.square(); }
+        let z_40_0 = z_40_20.mul(&z_20_0);  // z^(2^40 - 1)
         
-        result
+        let mut z_50_10 = z_40_0;
+        for _ in 0..10 { z_50_10 = z_50_10.square(); }
+        let z_50_0 = z_50_10.mul(&z_10_0);  // z^(2^50 - 1)
+        
+        let mut z_100_50 = z_50_0;
+        for _ in 0..50 { z_100_50 = z_100_50.square(); }
+        let z_100_0 = z_100_50.mul(&z_50_0);  // z^(2^100 - 1)
+        
+        let mut z_200_100 = z_100_0;
+        for _ in 0..100 { z_200_100 = z_200_100.square(); }
+        let z_200_0 = z_200_100.mul(&z_100_0);  // z^(2^200 - 1)
+        
+        let mut z_250_50 = z_200_0;
+        for _ in 0..50 { z_250_50 = z_250_50.square(); }
+        let z_250_0 = z_250_50.mul(&z_50_0);  // z^(2^250 - 1)
+        
+        let mut z_255_5 = z_250_0;
+        for _ in 0..5 { z_255_5 = z_255_5.square(); }  // z^(2^255 - 2^5)
+        
+        z_255_5.mul(&z11)  // z^(2^255 - 2^5 + 11) = z^(2^255 - 21) = z^(p-2)
     }
 }
 
@@ -241,7 +317,7 @@ impl Fe {
 
 /// X25519 scalar multiplication using Montgomery ladder
 fn x25519_scalar_mult(scalar: &[u8; 32], point: &[u8; 32]) -> [u8; 32] {
-    // Clamp scalar
+    // Clamp scalar per RFC 7748
     let mut k = *scalar;
     k[0] &= 248;
     k[31] &= 127;
@@ -256,7 +332,7 @@ fn x25519_scalar_mult(scalar: &[u8; 32], point: &[u8; 32]) -> [u8; 32] {
     let mut x3 = u;
     let mut z3 = Fe::one();
     
-    let mut swap = 0u64;
+    let mut swap: u64 = 0;
     
     for i in (0..255).rev() {
         let byte_idx = i / 8;
@@ -269,22 +345,24 @@ fn x25519_scalar_mult(scalar: &[u8; 32], point: &[u8; 32]) -> [u8; 32] {
         swap = bit;
         
         let a = x2.add(&z2);
-        let aa = a.square();
+        let aa = a.mul(&a);  // (x2+z2)^2
         let b = x2.sub(&z2);
-        let bb = b.square();
-        let e = aa.sub(&bb);
+        let bb = b.mul(&b);  // (x2-z2)^2
+        let e = aa.sub(&bb); // (x2+z2)^2 - (x2-z2)^2 = 4*x2*z2
         let c = x3.add(&z3);
         let d = x3.sub(&z3);
-        let da = d.mul(&a);
-        let cb = c.mul(&b);
+        let da = d.mul(&a);  // (x3-z3)(x2+z2)
+        let cb = c.mul(&b);  // (x3+z3)(x2-z2)
         let sum = da.add(&cb);
         let diff = da.sub(&cb);
-        x3 = sum.square();
-        z3 = x1.mul(&diff.square());
-        x2 = aa.mul(&bb);
-        // a24 = 121666 = (486662 + 2) / 4
-        let a24 = Fe([121666, 0, 0, 0]);
-        z2 = e.mul(&aa.add(&a24.mul(&e)));
+        x3 = sum.mul(&sum);  // ((x3-z3)(x2+z2) + (x3+z3)(x2-z2))^2
+        z3 = x1.mul(&diff.mul(&diff));  // x1 * ((x3-z3)(x2+z2) - (x3+z3)(x2-z2))^2
+        x2 = aa.mul(&bb);    // (x2+z2)^2 * (x2-z2)^2
+        
+        // a24 = (A+2)/4 = (486662+2)/4 = 121666
+        let a24 = Fe([121666, 0, 0, 0, 0]);
+        let a24_e = a24.mul(&e);
+        z2 = e.mul(&bb.add(&a24_e));  // 4*x2*z2 * ((x2-z2)^2 + 121666*4*x2*z2)  -- FIXED: bb not aa
     }
     
     cswap(&mut x2, &mut x3, swap);
@@ -295,10 +373,10 @@ fn x25519_scalar_mult(scalar: &[u8; 32], point: &[u8; 32]) -> [u8; 32] {
     result.to_bytes()
 }
 
-/// Conditional swap
+/// Constant-time conditional swap
 fn cswap(a: &mut Fe, b: &mut Fe, swap: u64) {
     let mask = (swap.wrapping_neg()) as u64;
-    for i in 0..4 {
+    for i in 0..5 {
         let t = mask & (a.0[i] ^ b.0[i]);
         a.0[i] ^= t;
         b.0[i] ^= t;
@@ -442,7 +520,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_x25519_base() {
+    fn test_x25519_rfc7748() {
         // Test vector from RFC 7748
         let private_key = [
             0x77, 0x07, 0x6d, 0x0a, 0x73, 0x18, 0xa5, 0x7d,
@@ -450,24 +528,49 @@ mod tests {
             0xdf, 0x4c, 0x2f, 0x87, 0xeb, 0xc0, 0x99, 0x2a,
             0xb1, 0x77, 0xfb, 0xa5, 0x1d, 0xb9, 0x2c, 0x2a,
         ];
-
-        let public_key = x25519_base(&private_key);
+        let expected_public = [
+            0x85, 0x20, 0xf0, 0x09, 0x89, 0x30, 0xa7, 0x54,
+            0x74, 0x8b, 0x7d, 0xdc, 0xb4, 0x3e, 0xf7, 0x5a,
+            0x0d, 0xbf, 0x3a, 0x0d, 0x26, 0x38, 0x1a, 0xf4,
+            0xeb, 0xa4, 0xa9, 0x8e, 0xaa, 0x9b, 0x4e, 0x6a,
+        ];
         
-        // Public key should be non-zero
-        assert!(public_key.iter().any(|&b| b != 0));
+        let public_key = x25519_base(&private_key);
+        assert_eq!(public_key, expected_public);
     }
 
     #[test]
     fn test_x25519_key_exchange() {
-        let alice_private = [1u8; 32];
-        let bob_private = [2u8; 32];
-
+        // Test key exchange from RFC 7748
+        let alice_private = [
+            0x77, 0x07, 0x6d, 0x0a, 0x73, 0x18, 0xa5, 0x7d,
+            0x3c, 0x16, 0xc1, 0x72, 0x51, 0xb2, 0x66, 0x45,
+            0xdf, 0x4c, 0x2f, 0x87, 0xeb, 0xc0, 0x99, 0x2a,
+            0xb1, 0x77, 0xfb, 0xa5, 0x1d, 0xb9, 0x2c, 0x2a,
+        ];
+        let bob_private = [
+            0x5d, 0xab, 0x08, 0x7e, 0x62, 0x4a, 0x8a, 0x4b,
+            0x79, 0xe1, 0x7f, 0x8b, 0x83, 0x80, 0x0e, 0xe6,
+            0x6f, 0x3b, 0xb1, 0x29, 0x26, 0x18, 0xb6, 0xfd,
+            0x1c, 0x2f, 0x8b, 0x27, 0xff, 0x88, 0xe0, 0xeb,
+        ];
+        
         let alice_public = x25519_base(&alice_private);
         let bob_public = x25519_base(&bob_private);
-
+        
         let alice_shared = x25519(&alice_private, &bob_public);
         let bob_shared = x25519(&bob_private, &alice_public);
-
+        
+        // Both should compute the same shared secret
         assert_eq!(alice_shared, bob_shared);
+        
+        // Expected shared secret from RFC 7748
+        let expected_shared = [
+            0x4a, 0x5d, 0x9d, 0x5b, 0xa4, 0xce, 0x2d, 0xe1,
+            0x72, 0x8e, 0x3b, 0xf4, 0x80, 0x35, 0x0f, 0x25,
+            0xe0, 0x7e, 0x21, 0xc9, 0x47, 0xd1, 0x9e, 0x33,
+            0x76, 0xf0, 0x9b, 0x3c, 0x1e, 0x16, 0x17, 0x42,
+        ];
+        assert_eq!(alice_shared, expected_shared);
     }
 }

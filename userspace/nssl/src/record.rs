@@ -347,9 +347,16 @@ impl RecordLayer {
                     return None;
                 }
                 eprintln!("[TLS-READ] read data: n={}, total_read={}/{}", n, total_read + n as usize, header.length);
+                // Print first 32 bytes on first read
+                if total_read == 0 && n >= 32 {
+                    eprintln!("[TLS-READ] data first 32 bytes: {:02x?}", &data[..32]);
+                }
                 total_read += n as usize;
             }
         }
+        // Print first and last 32 bytes for verification
+        eprintln!("[TLS-READ] data complete, first 32: {:02x?}", &data[..32.min(data.len())]);
+        eprintln!("[TLS-READ] data complete, last 32: {:02x?}", &data[data.len().saturating_sub(32)..]);
         
         // Debug: print hash of entire data to verify we read correctly
         let mut hash = 0u32;

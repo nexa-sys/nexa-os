@@ -468,6 +468,12 @@ impl<T> AesGcm<T> {
         let mut y = [0u8; 16];
 
         eprintln!("[GHASH] aad_len={}, ct_len={}", aad.len(), ciphertext.len());
+        // Print last 32 bytes of ciphertext for debugging
+        if ciphertext.len() >= 32 {
+            eprintln!("[GHASH] CT last 32 bytes: {:02x?}", &ciphertext[ciphertext.len()-32..]);
+        } else if !ciphertext.is_empty() {
+            eprintln!("[GHASH] CT (all): {:02x?}", ciphertext);
+        }
 
         // Process AAD
         let mut aad_block_count = 0;
@@ -503,6 +509,9 @@ impl<T> AesGcm<T> {
             }
             for i in 0..16 {
                 y[i] ^= block[i];
+            }
+            if ct_block_count == total_ct_blocks - 1 {
+                eprintln!("[GHASH] Y after last CT XOR (before mult): {:02x?}", &y);
             }
             y = self.ghash_multiply(&y, &self.h);
             if ct_block_count == 0 {

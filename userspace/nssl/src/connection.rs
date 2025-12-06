@@ -412,6 +412,7 @@ impl SslConnection {
         // 派生握手流量密钥 (handshake traffic keys)
         eprintln!("[TLS1.3] Transcript data len={}", self.handshake.transcript.len());
         eprintln!("[TLS1.3] Transcript first 32 bytes={:02x?}", &self.handshake.transcript[..32.min(self.handshake.transcript.len())]);
+        eprintln!("[TLS1.3] Transcript last 32 bytes={:02x?}", &self.handshake.transcript[self.handshake.transcript.len().saturating_sub(32)..]);
         let transcript_hash = self.handshake.get_transcript_hash();
         eprintln!("[TLS1.3] Transcript hash len={}", transcript_hash.len());
         let (handshake_secret, hs_keys) = match derive_tls13_handshake_keys(&shared_secret, &transcript_hash, key_len) {
@@ -506,7 +507,16 @@ impl SslConnection {
         // 从 handshake state 获取私钥
         let private_key = self.handshake.key_share_private.as_ref()?;
         
+        eprintln!("[TLS1.3-X25519] client_private_key={:02x?}", private_key);
+        eprintln!("[TLS1.3-X25519] server_public_key={:02x?}", server_pubkey);
+        
+        // Also print our public key for verification
+        if let Some(our_pub) = &self.handshake.key_share_public {
+            eprintln!("[TLS1.3-X25519] our_public_key={:02x?}", our_pub);
+        }
+        
         if private_key.len() != 32 || server_pubkey.len() != 32 {
+            eprintln!("[TLS1.3-X25519] Invalid key length: priv={}, pub={}", private_key.len(), server_pubkey.len());
             return None;
         }
         
@@ -516,7 +526,10 @@ impl SslConnection {
         let mut pub_arr = [0u8; 32];
         pub_arr.copy_from_slice(server_pubkey);
         
-        Some(ncryptolib::x25519::x25519(&priv_arr, &pub_arr).to_vec())
+        let result = ncryptolib::x25519::x25519(&priv_arr, &pub_arr);
+        eprintln!("[TLS1.3-X25519] shared_secret={:02x?}", &result);
+        
+        Some(result.to_vec())
     }
     
     /// 接收 EncryptedExtensions (TLS 1.3)
