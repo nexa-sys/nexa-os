@@ -17,6 +17,19 @@ pub const SYS_MMAP: u64 = 9;
 pub const SYS_MPROTECT: u64 = 10;
 pub const SYS_MUNMAP: u64 = 11;
 pub const SYS_BRK: u64 = 12;
+pub const SYS_MREMAP: u64 = 25;
+pub const SYS_MSYNC: u64 = 26;
+pub const SYS_MINCORE: u64 = 27;
+pub const SYS_MADVISE: u64 = 28;
+pub const SYS_MLOCK: u64 = 149;
+pub const SYS_MUNLOCK: u64 = 150;
+pub const SYS_MLOCKALL: u64 = 151;
+pub const SYS_MUNLOCKALL: u64 = 152;
+
+// Resource limits (Linux-compatible)
+pub const SYS_GETRLIMIT: u64 = 97;
+pub const SYS_SETRLIMIT: u64 = 160;
+pub const SYS_PRLIMIT64: u64 = 302;
 
 // Signal handling
 pub const SYS_SIGACTION: u64 = 13;

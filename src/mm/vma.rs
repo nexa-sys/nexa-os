@@ -599,6 +599,31 @@ impl VMAManager {
         &mut self.stats
     }
 
+    /// Get VMA by node index (for internal use)
+    /// Returns None if index is invalid or node is not in use
+    #[inline]
+    pub fn get_vma_by_index(&self, idx: i32) -> Option<&VMA> {
+        if idx >= 0 && idx < MAX_VMAS as i32 {
+            let node = &self.nodes[idx as usize];
+            if node.in_use {
+                return Some(&node.vma);
+            }
+        }
+        None
+    }
+
+    /// Get mutable VMA by node index (for internal use)
+    #[inline]
+    pub fn get_vma_by_index_mut(&mut self, idx: i32) -> Option<&mut VMA> {
+        if idx >= 0 && idx < MAX_VMAS as i32 {
+            let node = &mut self.nodes[idx as usize];
+            if node.in_use {
+                return Some(&mut node.vma);
+            }
+        }
+        None
+    }
+
     /// Allocate a new node from the free list
     fn alloc_node(&mut self) -> Option<i32> {
         if self.free_head < 0 {

@@ -1271,16 +1271,82 @@ pub unsafe extern "C" fn pthread_setspecific(key: pthread_key_t, value: *const c
 // std expects malloc/free/realloc/calloc
 //
 // This allocator uses sbrk() to dynamically expand the heap from the kernel.
-// It's a simple bump allocator that grows on demand.
+// It implements a free list allocator with block coalescing for efficient
+// memory reuse, similar to dlmalloc/glibc malloc.
 
 const DEFAULT_ALIGNMENT: usize = 16;
-const HEADER_SIZE: usize = core::mem::size_of::<usize>();
+const MIN_BLOCK_SIZE: usize = 32; // Minimum block size (header + at least 16 bytes)
 const SBRK_INCREMENT: usize = 64 * 1024; // Request 64KB at a time
 
-/// Heap state - tracks current position and end of allocated region
+/// Block header for free list allocator
+/// When allocated: stores size and flags
+/// When free: stores size, flags, and free list pointers
+#[repr(C)]
+struct BlockHeader {
+    /// Size of the block (including header) | flags in low bits
+    /// Bit 0: is_allocated (1 = allocated, 0 = free)
+    /// Bit 1: prev_allocated (1 = previous block is allocated)
+    size_flags: usize,
+}
+
+/// Free block structure (only valid when block is free)
+#[repr(C)]
+struct FreeBlock {
+    header: BlockHeader,
+    /// Next free block in the free list
+    next_free: *mut FreeBlock,
+    /// Previous free block in the free list
+    prev_free: *mut FreeBlock,
+}
+
+/// Footer for free blocks (stores size for backward coalescing)
+#[repr(C)]
+struct BlockFooter {
+    size: usize,
+}
+
+const HEADER_SIZE: usize = core::mem::size_of::<BlockHeader>();
+const FOOTER_SIZE: usize = core::mem::size_of::<BlockFooter>();
+const FREE_BLOCK_MIN: usize = core::mem::size_of::<FreeBlock>() + FOOTER_SIZE;
+
+// Flag bits
+const FLAG_ALLOCATED: usize = 0x1;
+const FLAG_PREV_ALLOCATED: usize = 0x2;
+const SIZE_MASK: usize = !0x3;
+
+/// Heap state
 static mut HEAP_START: usize = 0;
-static mut HEAP_POS: usize = 0;
 static mut HEAP_END: usize = 0;
+/// Head of the free list (sorted by address for coalescing)
+static mut FREE_LIST_HEAD: *mut FreeBlock = ptr::null_mut();
+/// Total allocated bytes (for statistics)
+static mut TOTAL_ALLOCATED: usize = 0;
+/// Total free bytes
+static mut TOTAL_FREE: usize = 0;
+
+impl BlockHeader {
+    #[inline(always)]
+    fn size(&self) -> usize {
+        self.size_flags & SIZE_MASK
+    }
+
+    #[inline(always)]
+    fn is_allocated(&self) -> bool {
+        (self.size_flags & FLAG_ALLOCATED) != 0
+    }
+
+    #[inline(always)]
+    fn is_prev_allocated(&self) -> bool {
+        (self.size_flags & FLAG_PREV_ALLOCATED) != 0
+    }
+
+    #[inline(always)]
+    fn set_size_flags(&mut self, size: usize, allocated: bool, prev_allocated: bool) {
+        self.size_flags = (size & SIZE_MASK)
+            | (if allocated { FLAG_ALLOCATED } else { 0 })
+            | (if prev_allocated { FLAG_PREV_ALLOCATED } else { 0 });
+    }
+}
 
 #[inline(always)]
 fn is_power_of_two(value: usize) -> bool {
@@ -1306,19 +1372,184 @@ unsafe fn expand_heap(min_size: usize) -> bool {
         return false;
     }
     
+    let new_block_start = result as usize;
+    
     // If this is first allocation, initialize HEAP_START
     if HEAP_START == 0 {
-        HEAP_START = result as usize;
-        HEAP_POS = HEAP_START;
+        HEAP_START = new_block_start;
+        HEAP_END = new_block_start;
     }
     
-    HEAP_END = HEAP_END.max(result as usize) + increment;
+    // Create a new free block from the expanded region
+    let block = new_block_start as *mut FreeBlock;
+    let block_size = increment;
+    
+    // Set up the block header
+    (*block).header.set_size_flags(block_size, false, true); // Free, prev allocated (boundary)
+    
+    // Set up the footer
+    let footer = (new_block_start + block_size - FOOTER_SIZE) as *mut BlockFooter;
+    (*footer).size = block_size;
+    
+    // Initialize free list pointers
+    (*block).next_free = ptr::null_mut();
+    (*block).prev_free = ptr::null_mut();
+    
+    // Add to free list
+    add_to_free_list(block);
+    
+    HEAP_END = new_block_start + increment;
+    TOTAL_FREE += block_size;
+    
     true
+}
+
+/// Add a free block to the free list (address-ordered for coalescing)
+unsafe fn add_to_free_list(block: *mut FreeBlock) {
+    if FREE_LIST_HEAD.is_null() {
+        FREE_LIST_HEAD = block;
+        (*block).next_free = ptr::null_mut();
+        (*block).prev_free = ptr::null_mut();
+        return;
+    }
+    
+    // Find insertion point (address-ordered)
+    let mut prev: *mut FreeBlock = ptr::null_mut();
+    let mut curr = FREE_LIST_HEAD;
+    
+    while !curr.is_null() && (curr as usize) < (block as usize) {
+        prev = curr;
+        curr = (*curr).next_free;
+    }
+    
+    // Insert between prev and curr
+    (*block).next_free = curr;
+    (*block).prev_free = prev;
+    
+    if !curr.is_null() {
+        (*curr).prev_free = block;
+    }
+    
+    if prev.is_null() {
+        FREE_LIST_HEAD = block;
+    } else {
+        (*prev).next_free = block;
+    }
+}
+
+/// Remove a block from the free list
+unsafe fn remove_from_free_list(block: *mut FreeBlock) {
+    let prev = (*block).prev_free;
+    let next = (*block).next_free;
+    
+    if !prev.is_null() {
+        (*prev).next_free = next;
+    } else {
+        FREE_LIST_HEAD = next;
+    }
+    
+    if !next.is_null() {
+        (*next).prev_free = prev;
+    }
+}
+
+/// Try to coalesce a free block with adjacent free blocks
+unsafe fn coalesce(block: *mut FreeBlock) -> *mut FreeBlock {
+    let header = &mut (*block).header;
+    let mut current_size = header.size();
+    let mut result = block;
+    
+    // Try to coalesce with next block
+    let next_block = (block as usize + current_size) as *mut BlockHeader;
+    if (next_block as usize) < HEAP_END {
+        if !(*next_block).is_allocated() {
+            // Next block is free - merge
+            let next_free = next_block as *mut FreeBlock;
+            let next_size = (*next_block).size();
+            
+            // Remove next block from free list
+            remove_from_free_list(next_free);
+            
+            // Extend current block
+            current_size += next_size;
+            header.set_size_flags(current_size, false, header.is_prev_allocated());
+            
+            // Update footer
+            let footer = (result as usize + current_size - FOOTER_SIZE) as *mut BlockFooter;
+            (*footer).size = current_size;
+        }
+    }
+    
+    // Try to coalesce with previous block
+    if !header.is_prev_allocated() && (block as usize) > HEAP_START {
+        // Read previous block's footer to get its size
+        let prev_footer = (block as usize - FOOTER_SIZE) as *mut BlockFooter;
+        let prev_size = (*prev_footer).size;
+        let prev_block = (block as usize - prev_size) as *mut FreeBlock;
+        
+        // Remove current block from free list (we'll re-add the merged block)
+        remove_from_free_list(result);
+        
+        // Extend previous block
+        let new_size = prev_size + current_size;
+        (*prev_block).header.set_size_flags(new_size, false, (*prev_block).header.is_prev_allocated());
+        
+        // Update footer
+        let footer = (prev_block as usize + new_size - FOOTER_SIZE) as *mut BlockFooter;
+        (*footer).size = new_size;
+        
+        result = prev_block;
+        // Note: prev_block is already in the free list
+    }
+    
+    result
+}
+
+/// Find a free block that fits the requested size using first-fit
+unsafe fn find_free_block(size: usize) -> *mut FreeBlock {
+    let mut curr = FREE_LIST_HEAD;
+    
+    while !curr.is_null() {
+        if (*curr).header.size() >= size {
+            return curr;
+        }
+        curr = (*curr).next_free;
+    }
+    
+    ptr::null_mut()
+}
+
+/// Split a block if it's larger than needed
+unsafe fn split_block(block: *mut FreeBlock, needed_size: usize) {
+    let block_size = (*block).header.size();
+    let remaining = block_size - needed_size;
+    
+    // Only split if remaining is large enough for a free block
+    if remaining >= FREE_BLOCK_MIN {
+        // Create a new free block from the remainder
+        let new_block = (block as usize + needed_size) as *mut FreeBlock;
+        (*new_block).header.set_size_flags(remaining, false, true); // Free, prev allocated
+        
+        // Set up footer
+        let footer = (new_block as usize + remaining - FOOTER_SIZE) as *mut BlockFooter;
+        (*footer).size = remaining;
+        
+        // Update original block size
+        (*block).header.set_size_flags(
+            needed_size,
+            (*block).header.is_allocated(),
+            (*block).header.is_prev_allocated(),
+        );
+        
+        // Add new block to free list
+        add_to_free_list(new_block);
+        
+        TOTAL_FREE += remaining;
+    }
 }
 
 unsafe fn alloc_internal(size: usize, align: usize) -> *mut c_void {
     // CRITICAL: DO NOT log here - causes infinite recursion!
-    // Logging from allocator can trigger more allocations.
     
     if size == 0 {
         set_errno(0);
@@ -1330,15 +1561,33 @@ unsafe fn alloc_internal(size: usize, align: usize) -> *mut c_void {
         return ptr::null_mut();
     }
 
-    let requested_align = align.max(mem::size_of::<usize>());
+    let requested_align = align.max(DEFAULT_ALIGNMENT);
     if !is_power_of_two(requested_align) {
         set_errno(EINVAL);
         return ptr::null_mut();
     }
 
+    // Calculate total size needed
+    // Size = header + data (aligned) + possible padding
+    let data_size = match align_up(size, requested_align) {
+        Some(s) => s,
+        None => {
+            set_errno(ENOMEM);
+            return ptr::null_mut();
+        }
+    };
+    
+    let total_size = match data_size.checked_add(HEADER_SIZE) {
+        Some(s) => s.max(FREE_BLOCK_MIN), // Minimum size for free block
+        None => {
+            set_errno(ENOMEM);
+            return ptr::null_mut();
+        }
+    };
+
     // Initialize heap on first allocation
     if HEAP_START == 0 {
-        if !expand_heap(SBRK_INCREMENT) {
+        if !expand_heap(SBRK_INCREMENT.max(total_size)) {
             // Print error to stderr (safe - doesn't allocate)
             let msg = b"memory allocation of ";
             let _ = syscall3(SYS_WRITE, 2, msg.as_ptr() as u64, msg.len() as u64);
@@ -1352,64 +1601,48 @@ unsafe fn alloc_internal(size: usize, align: usize) -> *mut c_void {
         }
     }
 
-    let header_align = mem::align_of::<usize>();
-    let mut current = HEAP_POS;
-    current = match align_up(current, header_align) {
-        Some(val) => val,
-        None => {
-            set_errno(EINVAL);
-            return ptr::null_mut();
-        }
-    };
-
-    let after_header = match current.checked_add(HEADER_SIZE) {
-        Some(val) => val,
-        None => {
+    // Find a suitable free block
+    let mut block = find_free_block(total_size);
+    
+    // If no suitable block found, expand heap
+    if block.is_null() {
+        if !expand_heap(total_size) {
             set_errno(ENOMEM);
             return ptr::null_mut();
         }
-    };
-
-    let aligned_data = match align_up(after_header, requested_align) {
-        Some(val) => val,
-        None => {
-            set_errno(EINVAL);
-            return ptr::null_mut();
-        }
-    };
-
-    let end = match aligned_data.checked_add(size) {
-        Some(val) => val,
-        None => {
-            set_errno(ENOMEM);
-            return ptr::null_mut();
-        }
-    };
-
-    // Need to expand heap?
-    if end > HEAP_END {
-        let needed = end - HEAP_END;
-        if !expand_heap(needed) {
-            // Print error to stderr (safe - doesn't allocate)
-            let msg = b"memory allocation of ";
-            let _ = syscall3(SYS_WRITE, 2, msg.as_ptr() as u64, msg.len() as u64);
-            let mut buf = [0u8; 20];
-            let len = format_usize(size, &mut buf);
-            let _ = syscall3(SYS_WRITE, 2, buf.as_ptr() as u64, len as u64);
-            let msg2 = b" bytes failed\n";
-            let _ = syscall3(SYS_WRITE, 2, msg2.as_ptr() as u64, msg2.len() as u64);
+        block = find_free_block(total_size);
+        if block.is_null() {
             set_errno(ENOMEM);
             return ptr::null_mut();
         }
     }
-
-    let header_offset = aligned_data - HEADER_SIZE;
-    let header_ptr = header_offset as *mut usize;
-    header_ptr.write(size);
-
-    HEAP_POS = end;
+    
+    let block_size = (*block).header.size();
+    
+    // Remove from free list
+    remove_from_free_list(block);
+    TOTAL_FREE -= block_size;
+    
+    // Split if necessary
+    split_block(block, total_size);
+    
+    // Mark as allocated
+    let final_size = (*block).header.size();
+    (*block).header.set_size_flags(final_size, true, (*block).header.is_prev_allocated());
+    
+    // Mark next block's prev_allocated flag
+    let next_header = (block as usize + final_size) as *mut BlockHeader;
+    if (next_header as usize) < HEAP_END {
+        let next_flags = (*next_header).size_flags;
+        (*next_header).size_flags = next_flags | FLAG_PREV_ALLOCATED;
+    }
+    
+    TOTAL_ALLOCATED += final_size;
+    
+    // Return pointer to data (after header)
+    let data_ptr = (block as usize + HEADER_SIZE) as *mut c_void;
     set_errno(0);
-    aligned_data as *mut c_void
+    data_ptr
 }
 
 /// Format usize to decimal string (no allocation)
@@ -1441,8 +1674,12 @@ unsafe fn allocation_size(ptr: *mut c_void) -> Option<usize> {
         return None;
     }
 
-    let header_ptr = (data_ptr - HEADER_SIZE) as *mut usize;
-    Some(header_ptr.read())
+    let header = (data_ptr - HEADER_SIZE) as *mut BlockHeader;
+    if (*header).is_allocated() {
+        Some((*header).size() - HEADER_SIZE)
+    } else {
+        None
+    }
 }
 
 pub(crate) unsafe fn malloc_aligned(size: usize, alignment: usize) -> *mut c_void {
@@ -1456,8 +1693,52 @@ pub unsafe extern "C" fn malloc(size: usize) -> *mut c_void {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn free(_ptr: *mut c_void) {
-    // Bump allocator doesn't support free
+pub unsafe extern "C" fn free(ptr: *mut c_void) {
+    // DO NOT log here - may cause recursion
+    if ptr.is_null() {
+        return;
+    }
+    
+    let data_ptr = ptr as usize;
+    
+    // Validate pointer is within our heap
+    if HEAP_START == 0 || data_ptr < HEAP_START + HEADER_SIZE || data_ptr >= HEAP_END {
+        return; // Invalid pointer, silently ignore (like glibc)
+    }
+    
+    // Get block header
+    let header = (data_ptr - HEADER_SIZE) as *mut BlockHeader;
+    
+    // Check if block is actually allocated
+    if !(*header).is_allocated() {
+        return; // Double free, silently ignore
+    }
+    
+    let block_size = (*header).size();
+    
+    // Mark as free
+    (*header).set_size_flags(block_size, false, (*header).is_prev_allocated());
+    
+    // Set up footer for backward coalescing
+    let footer = (header as usize + block_size - FOOTER_SIZE) as *mut BlockFooter;
+    (*footer).size = block_size;
+    
+    // Update next block's prev_allocated flag
+    let next_header = (header as usize + block_size) as *mut BlockHeader;
+    if (next_header as usize) < HEAP_END {
+        let next_flags = (*next_header).size_flags;
+        (*next_header).size_flags = next_flags & !FLAG_PREV_ALLOCATED;
+    }
+    
+    TOTAL_ALLOCATED -= block_size;
+    TOTAL_FREE += block_size;
+    
+    // Add to free list
+    let block = header as *mut FreeBlock;
+    add_to_free_list(block);
+    
+    // Try to coalesce with adjacent free blocks
+    coalesce(block);
 }
 
 #[no_mangle]
@@ -1473,24 +1754,65 @@ pub unsafe extern "C" fn realloc(ptr: *mut c_void, new_size: usize) -> *mut c_vo
     }
 
     let old_size = allocation_size(ptr).unwrap_or(0);
+    
+    if old_size == 0 {
+        // Invalid pointer
+        set_errno(EINVAL);
+        return ptr::null_mut();
+    }
 
-    if old_size != 0 && new_size <= old_size {
-        let header_ptr = (ptr as *mut u8).sub(HEADER_SIZE) as *mut usize;
-        header_ptr.write(new_size);
+    // If shrinking significantly, we could split the block
+    // For now, just keep the same block if new_size <= old_size
+    if new_size <= old_size {
         set_errno(0);
         return ptr;
     }
+    
+    // Try to expand in place by checking if next block is free
+    let header = (ptr as usize - HEADER_SIZE) as *mut BlockHeader;
+    let block_size = (*header).size();
+    let next_header = (header as usize + block_size) as *mut BlockHeader;
+    
+    if (next_header as usize) < HEAP_END && !(*next_header).is_allocated() {
+        let next_size = (*next_header).size();
+        let combined_size = block_size + next_size;
+        let needed_size = new_size + HEADER_SIZE;
+        
+        if combined_size >= needed_size {
+            // Can expand in place!
+            let next_block = next_header as *mut FreeBlock;
+            remove_from_free_list(next_block);
+            TOTAL_FREE -= next_size;
+            
+            // Update header with new size
+            (*header).set_size_flags(combined_size, true, (*header).is_prev_allocated());
+            TOTAL_ALLOCATED += next_size;
+            
+            // Update next block's prev_allocated flag
+            let new_next = (header as usize + combined_size) as *mut BlockHeader;
+            if (new_next as usize) < HEAP_END {
+                let flags = (*new_next).size_flags;
+                (*new_next).size_flags = flags | FLAG_PREV_ALLOCATED;
+            }
+            
+            // Optionally split if there's excess
+            // (Skip for simplicity - could add later)
+            
+            set_errno(0);
+            return ptr;
+        }
+    }
 
+    // Fall back to allocate + copy + free
     let new_ptr = alloc_internal(new_size, DEFAULT_ALIGNMENT);
     if new_ptr.is_null() {
         return ptr::null_mut();
     }
 
-    if old_size != 0 {
-        let copy_len = cmp::min(old_size, new_size);
-        ptr::copy_nonoverlapping(ptr as *const u8, new_ptr as *mut u8, copy_len);
-    }
-
+    let copy_len = cmp::min(old_size, new_size);
+    ptr::copy_nonoverlapping(ptr as *const u8, new_ptr as *mut u8, copy_len);
+    
+    free(ptr);
     new_ptr
 }
 

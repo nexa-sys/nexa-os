@@ -53,8 +53,13 @@ pub const MAP_STACK: u64 = 0x20000;
 // =============================================================================
 
 /// Global table of process address spaces
-static ADDRESS_SPACES: Mutex<[AddressSpace; MAX_ADDRESS_SPACES]> =
+pub(crate) static ADDRESS_SPACES: Mutex<[AddressSpace; MAX_ADDRESS_SPACES]> =
     Mutex::new([const { AddressSpace::empty() }; MAX_ADDRESS_SPACES]);
+
+/// Get a locked reference to all address spaces (for internal use)
+pub(crate) fn get_address_spaces() -> spin::MutexGuard<'static, [AddressSpace; MAX_ADDRESS_SPACES]> {
+    ADDRESS_SPACES.lock()
+}
 
 /// Get the address space for the current process
 fn with_current_address_space<F, R>(f: F) -> Result<R, &'static str>

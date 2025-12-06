@@ -24,6 +24,7 @@ mod fd;
 mod file;
 mod ipc;
 mod memory;
+mod memory_advanced;
 pub mod memory_vma;
 mod network;
 mod numbers;
@@ -58,6 +59,10 @@ use types::*;
 // Import all syscall implementations
 use fd::{dup, dup2, pipe};
 use file::{close, fcntl, fstat, get_errno, list_files, lseek, open, read, stat, write};
+use memory_advanced::{
+    getrlimit, madvise, mincore, mlock, mlockall, mremap, msync, munlock, munlockall, prlimit64,
+    setrlimit, RLimit,
+};
 use ipc::{ipc_create, ipc_recv, ipc_send};
 use memory::{mmap, mprotect, munmap};
 use memory_vma::brk_vma as brk;  // Use VMA-based brk for per-process heap tracking
@@ -334,6 +339,45 @@ pub extern "C" fn syscall_dispatch(
         SYS_REBOOT => reboot(arg1 as i32),
         SYS_SHUTDOWN => shutdown(),
         SYS_RUNLEVEL => runlevel(arg1 as i32),
+        // Advanced memory management syscalls
+        SYS_MREMAP => {
+            // mremap needs 5 args: old_addr, old_size, new_size, flags, new_addr
+            let (arg4, arg5) = unsafe {
+                let mut r10_val: u64;
+                let mut r8_val: u64;
+                core::arch::asm!(
+                    "mov {0}, gs:[32]",
+                    "mov {1}, gs:[40]",
+                    out(reg) r10_val,
+                    out(reg) r8_val,
+                    options(nostack, preserves_flags)
+                );
+                (r10_val, r8_val)
+            };
+            mremap(arg1, arg2, arg3, arg4, arg5)
+        }
+        SYS_MSYNC => msync(arg1, arg2, arg3 as i32),
+        SYS_MINCORE => mincore(arg1, arg2, arg3 as *mut u8),
+        SYS_MADVISE => madvise(arg1, arg2, arg3 as i32),
+        SYS_MLOCK => mlock(arg1, arg2),
+        SYS_MUNLOCK => munlock(arg1, arg2),
+        SYS_MLOCKALL => mlockall(arg1 as i32),
+        SYS_MUNLOCKALL => munlockall(),
+        SYS_GETRLIMIT => getrlimit(arg1 as i32, arg2 as *mut RLimit),
+        SYS_SETRLIMIT => setrlimit(arg1 as i32, arg2 as *const RLimit),
+        SYS_PRLIMIT64 => {
+            // prlimit64 needs 4 args: pid, resource, new_rlim, old_rlim
+            let arg4 = unsafe {
+                let mut r10_val: u64;
+                core::arch::asm!(
+                    "mov {0}, gs:[32]",
+                    out(reg) r10_val,
+                    options(nostack, preserves_flags)
+                );
+                r10_val
+            };
+            prlimit64(arg1 as i64, arg2 as i32, arg3 as *const RLimit, arg4 as *mut RLimit)
+        }
         SYS_MOUNT => mount(arg1 as *const MountRequest),
         SYS_UMOUNT => umount(arg1 as *const u8, arg2 as usize),
         SYS_CHROOT => chroot(arg1 as *const u8, arg2 as usize),
