@@ -67,6 +67,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "hashmap_test"
+version = "0.1.0"
+dependencies = [
+ "nexa_boot_info",
+ "nrlib",
+]
+
+[[package]]
 name = "hello_dynamic"
 version = "0.1.0"
 dependencies = [

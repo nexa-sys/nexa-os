@@ -39,6 +39,8 @@ members = [
     "programs/ipc-create",
     "programs/ipc-send",
     "programs/ipc-recv",
+    # Test programs
+    "programs/hashmap_test",
 ]
 
 [workspace.package]

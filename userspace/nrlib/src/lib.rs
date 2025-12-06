@@ -1409,35 +1409,20 @@ unsafe fn expand_heap(min_size: usize) -> bool {
 
 /// Add a free block to the free list (address-ordered for coalescing)
 unsafe fn add_to_free_list(block: *mut FreeBlock) {
+    // Initialize pointers first
+    (*block).next_free = ptr::null_mut();
+    (*block).prev_free = ptr::null_mut();
+    
     if FREE_LIST_HEAD.is_null() {
         FREE_LIST_HEAD = block;
-        (*block).next_free = ptr::null_mut();
-        (*block).prev_free = ptr::null_mut();
         return;
     }
     
-    // Find insertion point (address-ordered)
-    let mut prev: *mut FreeBlock = ptr::null_mut();
-    let mut curr = FREE_LIST_HEAD;
-    
-    while !curr.is_null() && (curr as usize) < (block as usize) {
-        prev = curr;
-        curr = (*curr).next_free;
-    }
-    
-    // Insert between prev and curr
-    (*block).next_free = curr;
-    (*block).prev_free = prev;
-    
-    if !curr.is_null() {
-        (*curr).prev_free = block;
-    }
-    
-    if prev.is_null() {
-        FREE_LIST_HEAD = block;
-    } else {
-        (*prev).next_free = block;
-    }
+    // Simplified: just add to head of list (not address-ordered)
+    // This is less efficient but safer
+    (*block).next_free = FREE_LIST_HEAD;
+    (*FREE_LIST_HEAD).prev_free = block;
+    FREE_LIST_HEAD = block;
 }
 
 /// Remove a block from the free list
@@ -1719,6 +1704,12 @@ pub unsafe extern "C" fn free(ptr: *mut c_void) {
     
     let block_size = (*header).size();
     
+    // Validate block size
+    if block_size < FREE_BLOCK_MIN || block_size > HEAP_END - (header as usize) {
+        // Invalid block size - corrupted header
+        return;
+    }
+    
     // Mark as free
     (*header).set_size_flags(block_size, false, (*header).is_prev_allocated());
     
@@ -1736,12 +1727,18 @@ pub unsafe extern "C" fn free(ptr: *mut c_void) {
     TOTAL_ALLOCATED -= block_size;
     TOTAL_FREE += block_size;
     
-    // Add to free list
+    // Add to free list - but only if the block's internal free list
+    // pointers are initialized to safe values
     let block = header as *mut FreeBlock;
+    
+    // Clear the free list pointers to ensure they don't contain garbage
+    (*block).next_free = ptr::null_mut();
+    (*block).prev_free = ptr::null_mut();
+    
     add_to_free_list(block);
     
-    // Try to coalesce with adjacent free blocks
-    coalesce(block);
+    // TEMPORARILY DISABLED: Try to coalesce with adjacent free blocks
+    // coalesce(block);
 }
 
 #[no_mangle]

@@ -51,6 +51,8 @@ PROGRAMS=(
     "ipc-create:ipc-create:bin::dyn"
     "ipc-send:ipc-send:bin::dyn"
     "ipc-recv:ipc-recv:bin::dyn"
+    # Test programs
+    "hashmap_test:hashmap_test:bin::dyn"
 )
 
 # ============================================================================
