@@ -87,6 +87,125 @@ pub unsafe extern "C" fn getcwd(buf: *mut c_char, size: size_t) -> *mut c_char {
     buf
 }
 
+/// realpath - return the canonicalized absolute pathname
+/// 
+/// This is a simplified implementation that handles basic path normalization.
+/// It resolves `.` and `..` components but doesn't follow symlinks (NexaOS doesn't support them).
+#[no_mangle]
+pub unsafe extern "C" fn realpath(path: *const c_char, resolved_path: *mut c_char) -> *mut c_char {
+    if path.is_null() {
+        crate::set_errno(crate::EINVAL);
+        return ptr::null_mut();
+    }
+    
+    let path_len = crate::strlen(path as *const u8);
+    if path_len == 0 {
+        crate::set_errno(crate::ENOENT);
+        return ptr::null_mut();
+    }
+    
+    // Allocate buffer if not provided
+    const PATH_MAX: usize = 4096;
+    let result_buf = if resolved_path.is_null() {
+        crate::malloc(PATH_MAX) as *mut c_char
+    } else {
+        resolved_path
+    };
+    
+    if result_buf.is_null() {
+        crate::set_errno(crate::ENOMEM);
+        return ptr::null_mut();
+    }
+    
+    let path_bytes = core::slice::from_raw_parts(path as *const u8, path_len);
+    
+    // Start with absolute path
+    let mut result: [u8; PATH_MAX] = [0; PATH_MAX];
+    let mut result_len: usize = 0;
+    
+    if path_bytes[0] != b'/' {
+        // Relative path - prepend cwd
+        let cwd_len = CWD_LEN;
+        if cwd_len > 0 {
+            ptr::copy_nonoverlapping(CURRENT_WORKING_DIR.as_ptr(), result.as_mut_ptr(), cwd_len);
+            result_len = cwd_len;
+        }
+    }
+    
+    // Process path components
+    let mut i = 0;
+    while i < path_len {
+        // Skip leading slashes
+        while i < path_len && path_bytes[i] == b'/' {
+            i += 1;
+        }
+        if i >= path_len {
+            break;
+        }
+        
+        // Find end of component
+        let start = i;
+        while i < path_len && path_bytes[i] != b'/' {
+            i += 1;
+        }
+        let component = &path_bytes[start..i];
+        
+        if component == b"." {
+            // Current directory - skip
+            continue;
+        } else if component == b".." {
+            // Parent directory - remove last component
+            if result_len > 1 {
+                // Find last slash
+                while result_len > 1 && result[result_len - 1] != b'/' {
+                    result_len -= 1;
+                }
+                // Remove trailing slash (unless it's the root)
+                if result_len > 1 {
+                    result_len -= 1;
+                }
+            }
+        } else {
+            // Regular component - append
+            if result_len == 0 || result[result_len - 1] != b'/' {
+                if result_len + 1 >= PATH_MAX {
+                    if resolved_path.is_null() {
+                        crate::free(result_buf as *mut c_void);
+                    }
+                    crate::set_errno(36); // ENAMETOOLONG
+                    return ptr::null_mut();
+                }
+                result[result_len] = b'/';
+                result_len += 1;
+            }
+            
+            if result_len + component.len() >= PATH_MAX {
+                if resolved_path.is_null() {
+                    crate::free(result_buf as *mut c_void);
+                }
+                crate::set_errno(36); // ENAMETOOLONG
+                return ptr::null_mut();
+            }
+            
+            ptr::copy_nonoverlapping(component.as_ptr(), result.as_mut_ptr().add(result_len), component.len());
+            result_len += component.len();
+        }
+    }
+    
+    // Handle empty result (e.g., just ".." from root)
+    if result_len == 0 {
+        result[0] = b'/';
+        result_len = 1;
+    }
+    
+    // Copy result to output buffer
+    ptr::copy_nonoverlapping(result.as_ptr(), result_buf as *mut u8, result_len);
+    *(result_buf.add(result_len)) = 0;
+    
+    crate::set_errno(0);
+    result_buf
+}
+
 /// Change current working directory
 #[no_mangle]
 pub unsafe extern "C" fn chdir(path: *const c_char) -> c_int {

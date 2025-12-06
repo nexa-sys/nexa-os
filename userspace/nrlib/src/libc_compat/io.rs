@@ -130,6 +130,18 @@ pub unsafe extern "C" fn __lxstat64(_ver: c_int, path: *const u8, buf: *mut crat
     crate::stat(path, buf)
 }
 
+/// lstat - get file status (same as stat, we don't support symlinks)
+#[no_mangle]
+pub unsafe extern "C" fn lstat(path: *const c_char, buf: *mut crate::stat) -> c_int {
+    crate::stat(path as *const u8, buf)
+}
+
+/// lstat64 - get file status (64-bit version)
+#[no_mangle]
+pub unsafe extern "C" fn lstat64(path: *const c_char, buf: *mut crate::stat) -> c_int {
+    crate::stat(path as *const u8, buf)
+}
+
 // ============================================================================
 // fstatat Variants
 // ============================================================================
