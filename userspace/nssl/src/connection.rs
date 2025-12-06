@@ -235,22 +235,16 @@ impl SslConnection {
     /// Client handshake implementation
     fn do_client_handshake(&mut self) -> c_int {
         // Send ClientHello
-        eprintln!("[TLS] Sending ClientHello...");
         if !self.send_client_hello() {
-            eprintln!("[TLS] Failed to send ClientHello");
             self.last_error = crate::ssl_error::SSL_ERROR_SSL;
             return -1;
         }
-        eprintln!("[TLS] ClientHello sent");
         
         // Receive ServerHello
-        eprintln!("[TLS] Waiting for ServerHello...");
         if !self.receive_server_hello() {
-            eprintln!("[TLS] Failed to receive ServerHello");
             self.last_error = crate::ssl_error::SSL_ERROR_SSL;
             return -1;
         }
-        eprintln!("[TLS] ServerHello received, version=0x{:04x}", self.version);
         
         // Complete handshake based on version
         if self.version >= TLS1_3_VERSION {
@@ -305,7 +299,6 @@ impl SslConnection {
         if let Some((version, cipher, extensions)) = self.handshake.parse_server_hello(&data) {
             self.version = version;
             // Find cipher from ID
-            eprintln!("[TLS] Server selected cipher suite: {:#06x}", cipher);
             self.current_cipher = SslCipher::from_id(cipher);
             
             // 对于 TLS 1.3，从扩展中提取 key_share
@@ -360,7 +353,6 @@ impl SslConnection {
 
     /// TLS 1.3 client handshake
     fn do_tls13_client_handshake(&mut self) -> c_int {
-        eprintln!("[TLS1.3] Starting TLS 1.3 client handshake");
         // TLS 1.3 handshake after ServerHello (RFC 8446):
         // 1. 从 ClientHello 的 key_share 中获取我们的私钥
         // 2. 从 ServerHello 的 key_share 扩展中获取服务器公钥
@@ -375,11 +367,9 @@ impl SslConnection {
         // 获取服务器的 key share
         let server_pubkey = match &self.server_kex_pubkey {
             Some(pk) => {
-                eprintln!("[TLS1.3] Server pubkey len={}", pk.len());
                 pk.clone()
             },
             None => {
-                eprintln!("[TLS1.3] No server pubkey!");
                 self.last_error = crate::ssl_error::SSL_ERROR_SSL;
                 return -1;
             }
@@ -388,11 +378,9 @@ impl SslConnection {
         // 使用 ClientHello 中生成的私钥计算共享密钥
         let shared_secret = match self.compute_tls13_shared_secret(&server_pubkey) {
             Some(s) => {
-                eprintln!("[TLS1.3] Shared secret computed, len={}", s.len());
                 s
             },
             None => {
-                eprintln!("[TLS1.3] Failed to compute shared secret");
                 self.last_error = crate::ssl_error::SSL_ERROR_SSL;
                 return -1;
             }
@@ -403,25 +391,18 @@ impl SslConnection {
             Some(c) => (c.key_bits / 8) as usize,
             None => 32, // 默认 AES-256
         };
-        eprintln!("[TLS1.3] Using key_len={} bytes for cipher", key_len);
         
         // 设置 transcript hash 使用的哈希算法
         // AES-256-GCM-SHA384 使用 SHA-384, AES-128-GCM-SHA256 使用 SHA-256
         self.handshake.use_sha384 = key_len == 32;
         
         // 派生握手流量密钥 (handshake traffic keys)
-        eprintln!("[TLS1.3] Transcript data len={}", self.handshake.transcript.len());
-        eprintln!("[TLS1.3] Transcript first 32 bytes={:02x?}", &self.handshake.transcript[..32.min(self.handshake.transcript.len())]);
-        eprintln!("[TLS1.3] Transcript last 32 bytes={:02x?}", &self.handshake.transcript[self.handshake.transcript.len().saturating_sub(32)..]);
         let transcript_hash = self.handshake.get_transcript_hash();
-        eprintln!("[TLS1.3] Transcript hash len={}", transcript_hash.len());
         let (hs_secrets, hs_keys) = match derive_tls13_handshake_keys(&shared_secret, &transcript_hash, key_len) {
             Some(k) => {
-                eprintln!("[TLS1.3] Handshake keys derived");
                 k
             },
             None => {
-                eprintln!("[TLS1.3] Failed to derive handshake keys");
                 self.last_error = crate::ssl_error::SSL_ERROR_SSL;
                 return -1;
             }
@@ -429,8 +410,6 @@ impl SslConnection {
         
         // 设置读取密钥（用于解密服务器的握手消息）
         // 注意：client 读取用 server_key，写入用 client_key
-        eprintln!("[TLS1.3] Setting record layer keys (server_key len={}, client_key len={})", 
-            hs_keys.server_key.len(), hs_keys.client_key.len());
         self.record.set_keys(
             hs_keys.server_key.clone(),
             hs_keys.client_key.clone(),
@@ -440,61 +419,47 @@ impl SslConnection {
         self.record.set_version(crate::TLS1_3_VERSION);
         
         // 1. 接收 EncryptedExtensions
-        eprintln!("[TLS1.3] Receiving EncryptedExtensions...");
         if !self.receive_encrypted_extensions() {
-            eprintln!("[TLS1.3] Failed to receive EncryptedExtensions");
             self.last_error = crate::ssl_error::SSL_ERROR_SSL;
             return -1;
         }
-        eprintln!("[TLS1.3] EncryptedExtensions received");
         
         // 2. 接收 Certificate (可选 - 服务器可能发送证书)
         // 3. 接收 CertificateVerify (可选 - 如果发送了证书)
         // 注意：简化实现中我们尝试读取这些消息但不严格验证
-        eprintln!("[TLS1.3] Receiving Certificate (optional)...");
         let _ = self.receive_tls13_certificate();
-        eprintln!("[TLS1.3] Receiving CertificateVerify (optional)...");
         let _ = self.receive_tls13_certificate_verify();
         
         // 4. 接收 server Finished
-        eprintln!("[TLS1.3] Receiving server Finished...");
         let server_finished_hash = self.handshake.get_transcript_hash();
         // 使用保存的 server_hs_traffic_secret 来验证 Server Finished
         if !self.receive_tls13_finished_with_secret(&hs_secrets.server_hs_traffic_secret, &server_finished_hash) {
-            eprintln!("[TLS1.3] Failed to receive server Finished");
             self.last_error = crate::ssl_error::SSL_ERROR_SSL;
             return -1;
         }
-        eprintln!("[TLS1.3] Server Finished received");
         
         // 5. 发送 client Finished
-        eprintln!("[TLS1.3] Sending client Finished...");
         let client_finished_hash = self.handshake.get_transcript_hash();
         // 使用保存的 client_hs_traffic_secret 来计算 Client Finished
         if !self.send_tls13_finished_with_secret(&hs_secrets.client_hs_traffic_secret, &client_finished_hash) {
-            eprintln!("[TLS1.3] Failed to send client Finished");
             self.last_error = crate::ssl_error::SSL_ERROR_SSL;
             return -1;
         }
-        eprintln!("[TLS1.3] Client Finished sent");
         
         // 6. 派生应用流量密钥 (application traffic keys)
         // RFC 8446: 应用流量密钥使用的 transcript hash 只包含到 Server Finished 为止
         // （不包含 Client Finished），所以使用 client_finished_hash
         let app_keys = match derive_tls13_application_keys(&hs_secrets.handshake_secret, &client_finished_hash, key_len) {
             Some(k) => {
-                eprintln!("[TLS1.3] Application keys derived");
                 k
             },
             None => {
-                eprintln!("[TLS1.3] Failed to derive application keys");
                 self.last_error = crate::ssl_error::SSL_ERROR_SSL;
                 return -1;
             }
         };
         
         // 切换到应用密钥
-        eprintln!("[TLS1.3] Switching to application keys");
         self.record.set_keys(
             app_keys.server_key,
             app_keys.client_key,
@@ -510,16 +475,12 @@ impl SslConnection {
         // 从 handshake state 获取私钥
         let private_key = self.handshake.key_share_private.as_ref()?;
         
-        eprintln!("[TLS1.3-X25519] client_private_key={:02x?}", private_key);
-        eprintln!("[TLS1.3-X25519] server_public_key={:02x?}", server_pubkey);
         
         // Also print our public key for verification
         if let Some(our_pub) = &self.handshake.key_share_public {
-            eprintln!("[TLS1.3-X25519] our_public_key={:02x?}", our_pub);
         }
         
         if private_key.len() != 32 || server_pubkey.len() != 32 {
-            eprintln!("[TLS1.3-X25519] Invalid key length: priv={}, pub={}", private_key.len(), server_pubkey.len());
             return None;
         }
         
@@ -530,7 +491,6 @@ impl SslConnection {
         pub_arr.copy_from_slice(server_pubkey);
         
         let result = ncryptolib::x25519::x25519(&priv_arr, &pub_arr);
-        eprintln!("[TLS1.3-X25519] shared_secret={:02x?}", &result);
         
         Some(result.to_vec())
     }
@@ -632,21 +592,17 @@ impl SslConnection {
         let data = match self.record.read_handshake(self.rbio) {
             Some(d) => d,
             None => {
-                eprintln!("[TLS1.3-FINISHED] read_handshake returned None");
                 return false;
             }
         };
         
-        eprintln!("[TLS1.3-FINISHED] Got data len={}, first byte={:02x}", data.len(), data.get(0).copied().unwrap_or(0));
         
         if data.is_empty() || data[0] != HandshakeType::Finished as u8 {
-            eprintln!("[TLS1.3-FINISHED] Wrong message type: {:02x}", data.get(0).copied().unwrap_or(0));
             return false;
         }
         
         // 解析 Finished 消息
         if data.len() < 4 {
-            eprintln!("[TLS1.3-FINISHED] Data too short: {}", data.len());
             return false;
         }
         
@@ -654,7 +610,6 @@ impl SslConnection {
         // TLS 1.3 verify_data 长度：SHA-384 = 48 字节, SHA-256 = 32 字节
         let expected_hash_len = if self.handshake.use_sha384 { 48 } else { 32 };
         if data.len() < 4 + msg_len || msg_len != expected_hash_len {
-            eprintln!("[TLS1.3-FINISHED] Invalid msg_len={}, expected={}", msg_len, expected_hash_len);
             return false;
         }
         
@@ -680,9 +635,6 @@ impl SslConnection {
         
         // 验证 verify_data
         if received_verify_data != expected_verify_data.as_slice() {
-            eprintln!("[TLS1.3-FINISHED] verify_data mismatch!");
-            eprintln!("[TLS1.3-FINISHED] received={:02x?}", received_verify_data);
-            eprintln!("[TLS1.3-FINISHED] expected={:02x?}", expected_verify_data.as_slice());
             // 简化：即使验证失败也继续（生产环境应该返回错误）
             // return false;
         }
@@ -735,21 +687,17 @@ impl SslConnection {
         let data = match self.record.read_handshake(self.rbio) {
             Some(d) => d,
             None => {
-                eprintln!("[TLS1.3-FINISHED] read_handshake returned None");
                 return false;
             }
         };
         
-        eprintln!("[TLS1.3-FINISHED] Got data len={}, first byte={:02x}", data.len(), data.get(0).copied().unwrap_or(0));
         
         if data.is_empty() || data[0] != HandshakeType::Finished as u8 {
-            eprintln!("[TLS1.3-FINISHED] Wrong message type: {:02x}", data.get(0).copied().unwrap_or(0));
             return false;
         }
         
         // 解析 Finished 消息
         if data.len() < 4 {
-            eprintln!("[TLS1.3-FINISHED] Data too short: {}", data.len());
             return false;
         }
         
@@ -757,7 +705,6 @@ impl SslConnection {
         let use_sha384 = self.handshake.use_sha384;
         let expected_hash_len = if use_sha384 { 48 } else { 32 };
         if data.len() < 4 + msg_len || msg_len != expected_hash_len {
-            eprintln!("[TLS1.3-FINISHED] Invalid msg_len={}, expected={}", msg_len, expected_hash_len);
             return false;
         }
         
@@ -780,13 +727,9 @@ impl SslConnection {
         
         // 验证 verify_data
         if received_verify_data != expected_verify_data.as_slice() {
-            eprintln!("[TLS1.3-FINISHED] verify_data mismatch!");
-            eprintln!("[TLS1.3-FINISHED] received={:02x?}", received_verify_data);
-            eprintln!("[TLS1.3-FINISHED] expected={:02x?}", expected_verify_data.as_slice());
             // 简化：即使验证失败也继续（生产环境应该返回错误）
             // return false;
         } else {
-            eprintln!("[TLS1.3-FINISHED] verify_data MATCH!");
         }
         
         // 添加到 transcript

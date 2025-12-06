@@ -390,36 +390,24 @@ fn perform_https_request(
     let mut buf = [0u8; 4096];
     loop {
         let n = unsafe { nssl::SSL_read(ssl, buf.as_mut_ptr(), buf.len() as i32) };
-        eprintln!("[NURL] SSL_read returned n={}", n);
         if n > 0 {
-            eprintln!("[NURL] Read {} bytes, first 64: {:02x?}", n, &buf[..64.min(n as usize)]);
             response_data.extend_from_slice(&buf[..n as usize]);
         } else if n == 0 {
             // Connection closed
-            eprintln!("[NURL] Connection closed (n=0)");
             break;
         } else {
             let err = unsafe { nssl::SSL_get_error(ssl, n) };
-            eprintln!("[NURL] SSL_read error: err={}", err);
             if err == nssl::ssl_error::SSL_ERROR_ZERO_RETURN {
                 // Clean shutdown
-                eprintln!("[NURL] Clean shutdown");
                 break;
             } else if err == nssl::ssl_error::SSL_ERROR_WANT_READ {
                 // Would block, try again
-                eprintln!("[NURL] WANT_READ, retrying");
                 continue;
             } else {
                 // Error
-                eprintln!("[NURL] Breaking on error");
                 break;
             }
         }
-    }
-
-    eprintln!("[NURL] Total response_data len={}", response_data.len());
-    if !response_data.is_empty() {
-        eprintln!("[NURL] First 200 bytes: {:02x?}", &response_data[..200.min(response_data.len())]);
     }
 
     // Shutdown SSL connection

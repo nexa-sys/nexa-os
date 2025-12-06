@@ -411,15 +411,7 @@ impl AesGcm<Aes256> {
     /// Create new AES-256-GCM
     pub fn new_256(key: &[u8; AES_256_KEY_SIZE]) -> Self {
         let cipher = Aes256::new(key);
-        
-        // Debug: print round keys
-        eprintln!("[AES-GCM-DEBUG] Key: {:02x?}", key);
-        for (i, rk) in cipher.round_keys.iter().enumerate() {
-            eprintln!("[AES-GCM-DEBUG] RK[{:02}]: {:02x?}", i, rk);
-        }
-        
         let h = cipher.encrypt_block(&[0u8; 16]);
-        eprintln!("[AES-GCM-DEBUG] H = AES(0): {:02x?}", &h);
         Self { cipher, h }
     }
 }
@@ -467,60 +459,24 @@ impl<T> AesGcm<T> {
     fn ghash(&self, aad: &[u8], ciphertext: &[u8]) -> [u8; 16] {
         let mut y = [0u8; 16];
 
-        eprintln!("[GHASH] aad_len={}, ct_len={}", aad.len(), ciphertext.len());
-        // Print last 32 bytes of ciphertext for debugging
-        if ciphertext.len() >= 32 {
-            eprintln!("[GHASH] CT last 32 bytes: {:02x?}", &ciphertext[ciphertext.len()-32..]);
-        } else if !ciphertext.is_empty() {
-            eprintln!("[GHASH] CT (all): {:02x?}", ciphertext);
-        }
-
         // Process AAD
-        let mut aad_block_count = 0;
         for chunk in aad.chunks(16) {
             let mut block = [0u8; 16];
             block[..chunk.len()].copy_from_slice(chunk);
-            if aad_block_count == 0 {
-                eprintln!("[GHASH] AAD block 0: {:02x?}", &block);
-            }
             for i in 0..16 {
                 y[i] ^= block[i];
             }
             y = self.ghash_multiply(&y, &self.h);
-            if aad_block_count == 0 {
-                eprintln!("[GHASH] After AAD block 0 mult: {:02x?}", &y);
-            }
-            aad_block_count += 1;
         }
 
         // Process ciphertext
-        let mut ct_block_count = 0;
-        let total_ct_blocks = (ciphertext.len() + 15) / 16;
         for chunk in ciphertext.chunks(16) {
             let mut block = [0u8; 16];
             block[..chunk.len()].copy_from_slice(chunk);
-            if ct_block_count == 0 {
-                eprintln!("[GHASH] CT block 0: {:02x?}", &block);
-            }
-            // Log last block for debugging
-            if ct_block_count == total_ct_blocks - 1 {
-                eprintln!("[GHASH] CT last block {}: {:02x?} (chunk_len={})", ct_block_count, &block, chunk.len());
-                eprintln!("[GHASH] Y before last CT XOR: {:02x?}", &y);
-            }
             for i in 0..16 {
                 y[i] ^= block[i];
             }
-            if ct_block_count == total_ct_blocks - 1 {
-                eprintln!("[GHASH] Y after last CT XOR (before mult): {:02x?}", &y);
-            }
             y = self.ghash_multiply(&y, &self.h);
-            if ct_block_count == 0 {
-                eprintln!("[GHASH] After CT block 0 mult: {:02x?}", &y);
-            }
-            if ct_block_count == total_ct_blocks - 1 {
-                eprintln!("[GHASH] After last CT block mult: {:02x?}", &y);
-            }
-            ct_block_count += 1;
         }
 
         // Process length block
@@ -530,15 +486,10 @@ impl<T> AesGcm<T> {
         len_block[..8].copy_from_slice(&aad_bits.to_be_bytes());
         len_block[8..].copy_from_slice(&ct_bits.to_be_bytes());
 
-        eprintln!("[GHASH] len_block: {:02x?}", &len_block);
-        eprintln!("[GHASH] Y before len_block: {:02x?}", &y);
-
         for i in 0..16 {
             y[i] ^= len_block[i];
         }
         y = self.ghash_multiply(&y, &self.h);
-
-        eprintln!("[GHASH] Final Y: {:02x?}", &y);
 
         y
     }
@@ -627,18 +578,10 @@ impl<T> AesGcm<T> {
         let s = self.ghash(aad, ciphertext);
         let e_j0 = encrypt_block(&j0);  // E_K(J0), NOT E_K(J0+1)
         
-        eprintln!("[GCM-DEBUG] J0={:02x?}", &j0);
-        eprintln!("[GCM-DEBUG] H={:02x?}", &self.h);
-        eprintln!("[GCM-DEBUG] GHASH(AAD,CT)={:02x?}", &s);
-        eprintln!("[GCM-DEBUG] E_K(J0)={:02x?}", &e_j0);
-        
         let mut computed_tag = [0u8; GCM_TAG_SIZE];
         for i in 0..16 {
             computed_tag[i] = s[i] ^ e_j0[i];
         }
-        
-        eprintln!("[GCM-DEBUG] computed_tag={:02x?}", &computed_tag);
-        eprintln!("[GCM-DEBUG] expected_tag={:02x?}", tag);
 
         // Constant-time comparison
         let mut diff = 0u8;
