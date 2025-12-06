@@ -1312,6 +1312,11 @@ const HEADER_SIZE: usize = core::mem::size_of::<BlockHeader>();
 const FOOTER_SIZE: usize = core::mem::size_of::<BlockFooter>();
 const FREE_BLOCK_MIN: usize = core::mem::size_of::<FreeBlock>() + FOOTER_SIZE;
 
+// Data alignment: must be at least 16 for SSE/SSE2 instructions
+// To ensure data is 16-byte aligned, we need header to be at offset 0 mod 16
+// and data starts at offset HEADER_SIZE. So we pad HEADER_SIZE to 16.
+const DATA_OFFSET: usize = 16; // Padded header size to ensure 16-byte data alignment
+
 // Flag bits
 const FLAG_ALLOCATED: usize = 0x1;
 const FLAG_PREV_ALLOCATED: usize = 0x2;
@@ -1556,7 +1561,7 @@ unsafe fn alloc_internal(size: usize, align: usize) -> *mut c_void {
     }
 
     // Calculate total size needed
-    // Size = header + data (aligned) + possible padding
+    // Size = data offset (padded header) + data (aligned) + possible padding
     let data_size = match align_up(size, requested_align) {
         Some(s) => s,
         None => {
@@ -1565,7 +1570,7 @@ unsafe fn alloc_internal(size: usize, align: usize) -> *mut c_void {
         }
     };
     
-    let total_size = match data_size.checked_add(HEADER_SIZE) {
+    let total_size = match data_size.checked_add(DATA_OFFSET) {
         Some(s) => s.max(FREE_BLOCK_MIN), // Minimum size for free block
         None => {
             set_errno(ENOMEM);
@@ -1627,8 +1632,8 @@ unsafe fn alloc_internal(size: usize, align: usize) -> *mut c_void {
     
     TOTAL_ALLOCATED += final_size;
     
-    // Return pointer to data (after header)
-    let data_ptr = (block as usize + HEADER_SIZE) as *mut c_void;
+    // Return pointer to data (after padded header for 16-byte alignment)
+    let data_ptr = (block as usize + DATA_OFFSET) as *mut c_void;
     set_errno(0);
     data_ptr
 }
@@ -1658,13 +1663,13 @@ unsafe fn allocation_size(ptr: *mut c_void) -> Option<usize> {
     let data_ptr = ptr as usize;
 
     // Check if pointer is within our heap
-    if HEAP_START == 0 || data_ptr < HEAP_START + HEADER_SIZE || data_ptr >= HEAP_END {
+    if HEAP_START == 0 || data_ptr < HEAP_START + DATA_OFFSET || data_ptr >= HEAP_END {
         return None;
     }
 
-    let header = (data_ptr - HEADER_SIZE) as *mut BlockHeader;
+    let header = (data_ptr - DATA_OFFSET) as *mut BlockHeader;
     if (*header).is_allocated() {
-        Some((*header).size() - HEADER_SIZE)
+        Some((*header).size() - DATA_OFFSET)
     } else {
         None
     }
@@ -1690,12 +1695,12 @@ pub unsafe extern "C" fn free(ptr: *mut c_void) {
     let data_ptr = ptr as usize;
     
     // Validate pointer is within our heap
-    if HEAP_START == 0 || data_ptr < HEAP_START + HEADER_SIZE || data_ptr >= HEAP_END {
+    if HEAP_START == 0 || data_ptr < HEAP_START + DATA_OFFSET || data_ptr >= HEAP_END {
         return; // Invalid pointer, silently ignore (like glibc)
     }
     
     // Get block header
-    let header = (data_ptr - HEADER_SIZE) as *mut BlockHeader;
+    let header = (data_ptr - DATA_OFFSET) as *mut BlockHeader;
     
     // Check if block is actually allocated
     if !(*header).is_allocated() {
@@ -1769,14 +1774,14 @@ pub unsafe extern "C" fn realloc(ptr: *mut c_void, new_size: usize) -> *mut c_vo
     }
     
     // Try to expand in place by checking if next block is free
-    let header = (ptr as usize - HEADER_SIZE) as *mut BlockHeader;
+    let header = (ptr as usize - DATA_OFFSET) as *mut BlockHeader;
     let block_size = (*header).size();
     let next_header = (header as usize + block_size) as *mut BlockHeader;
     
     if (next_header as usize) < HEAP_END && !(*next_header).is_allocated() {
         let next_size = (*next_header).size();
         let combined_size = block_size + next_size;
-        let needed_size = new_size + HEADER_SIZE;
+        let needed_size = new_size + DATA_OFFSET;
         
         if combined_size >= needed_size {
             // Can expand in place!

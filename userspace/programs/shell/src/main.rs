@@ -1,15 +1,20 @@
-//! NexaOS Shell - A simple command-line shell
+//! NexaOS Shell - A POSIX-compatible command-line shell
 //!
 //! This shell uses Rust std functionality for clean, idiomatic code.
 //! NexaOS-specific syscalls are used only where std cannot provide the functionality.
 //!
-//! Most commands (ls, cat, pwd, etc.) are now external programs in /bin.
-//! Only shell-specific builtins (cd, exit, help) remain internal.
+//! Features a modular builtin command system with 35+ bash-compatible builtins.
 
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{self, Command, Stdio};
+
+mod builtins;
+mod state;
+
+use builtins::BuiltinRegistry;
+use state::{normalize_path, ShellState};
 
 // ============================================================================
 // NexaOS-specific syscalls (only what shell needs internally)
@@ -114,88 +119,12 @@ mod nexaos {
 const HOSTNAME: &str = "nexa";
 const SEARCH_PATHS: &[&str] = &["/bin", "/sbin", "/usr/bin", "/usr/sbin"];
 
-// Shell builtins: commands that MUST be handled internally
-// (they affect shell state or cannot be external programs)
-const SHELL_BUILTINS: &[&str] = &[
-    "cd",      // Changes shell's working directory
-    "exit",    // Terminates the shell process
-    "help",    // Shows shell builtin help
-    "export",  // Sets environment variables (TODO)
-    "source",  // Executes script in current shell (TODO)
-    ".",       // Alias for source (TODO)
-    "alias",   // Defines command aliases (TODO)
-    "unalias", // Removes aliases (TODO)
-    "set",     // Sets shell options (TODO)
-    "unset",   // Unsets variables (TODO)
-    "jobs",    // Lists background jobs (TODO)
-    "fg",      // Brings job to foreground (TODO)
-    "bg",      // Sends job to background (TODO)
-];
-
 // External commands (for tab completion hints)
 const EXTERNAL_COMMANDS: &[&str] = &[
-    "ls", "cat", "stat", "pwd", "echo", "uname", "mkdir", "clear", "whoami", "users",
+    "ls", "cat", "stat", "pwd", "uname", "mkdir", "clear", "whoami", "users",
     "login", "logout", "adduser",  // User management
     "ipc-create", "ipc-send", "ipc-recv",  // IPC utilities
 ];
-
-// ============================================================================
-// Shell State
-// ============================================================================
-
-struct ShellState {
-    cwd: PathBuf,
-}
-
-impl ShellState {
-    fn new() -> Self {
-        Self {
-            cwd: PathBuf::from("/"),
-        }
-    }
-
-    fn current_path(&self) -> &Path {
-        &self.cwd
-    }
-
-    fn current_path_str(&self) -> &str {
-        self.cwd.to_str().unwrap_or("/")
-    }
-
-    fn set_path(&mut self, path: impl AsRef<Path>) {
-        self.cwd = path.as_ref().to_path_buf();
-    }
-
-    /// Resolve a path relative to cwd
-    fn resolve(&self, input: &str) -> PathBuf {
-        if input.starts_with('/') {
-            normalize_path(Path::new(input))
-        } else {
-            normalize_path(&self.cwd.join(input))
-        }
-    }
-}
-
-/// Normalize a path by resolving . and ..
-fn normalize_path(path: &Path) -> PathBuf {
-    let mut components = Vec::new();
-    
-    for component in path.components() {
-        match component {
-            std::path::Component::ParentDir => {
-                components.pop();
-            }
-            std::path::Component::CurDir => {}
-            c => components.push(c),
-        }
-    }
-    
-    if components.is_empty() {
-        PathBuf::from("/")
-    } else {
-        components.iter().collect()
-    }
-}
 
 // ============================================================================
 // Terminal Input Handling
@@ -253,7 +182,7 @@ impl LineEditor {
         self.write(s.as_bytes());
     }
 
-    fn read_line(&mut self, state: &ShellState) -> String {
+    fn read_line(&mut self, state: &ShellState, registry: &BuiltinRegistry) -> String {
         self.buffer.clear();
         print_prompt(state);
 
@@ -292,7 +221,7 @@ impl LineEditor {
                     }
                 }
                 b'\t' => { // Tab completion
-                    self.handle_tab_completion(state);
+                    self.handle_tab_completion(state, registry);
                 }
                 0x15 => { // Ctrl-U
                     self.clear_line();
@@ -332,14 +261,14 @@ impl LineEditor {
         }
     }
 
-    fn handle_tab_completion(&mut self, state: &ShellState) {
+    fn handle_tab_completion(&mut self, state: &ShellState, registry: &BuiltinRegistry) {
         let parts: Vec<String> = self.buffer.split_whitespace().map(String::from).collect();
         let has_trailing_space = self.buffer.ends_with(' ');
 
         if parts.is_empty() || (parts.len() == 1 && !has_trailing_space) {
             // Complete command name
             let prefix = parts.first().map(|s| s.as_str()).unwrap_or("").to_string();
-            self.complete_command(&prefix, state);
+            self.complete_command(&prefix, state, registry);
         } else {
             // Complete path argument
             let cmd = parts[0].clone();
@@ -357,10 +286,26 @@ impl LineEditor {
         }
     }
 
-    fn complete_command(&mut self, prefix: &str, state: &ShellState) {
+    fn complete_command(&mut self, prefix: &str, state: &ShellState, registry: &BuiltinRegistry) {
         // Collect all available commands (builtins + external)
-        let mut all_commands: Vec<&str> = SHELL_BUILTINS.to_vec();
+        let builtin_names = registry.list_builtins();
+        let mut all_commands: Vec<&str> = builtin_names
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
         all_commands.extend(EXTERNAL_COMMANDS.iter().copied());
+        
+        // Also add executables from PATH directories
+        for dir in SEARCH_PATHS {
+            if let Ok(entries) = fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    if let Some(name) = entry.file_name().to_str() {
+                        // Leak to get 'static lifetime (acceptable for shell process lifetime)
+                        all_commands.push(Box::leak(name.to_string().into_boxed_str()));
+                    }
+                }
+            }
+        }
         
         let matches: Vec<&str> = all_commands.iter()
             .filter(|cmd| cmd.starts_with(prefix))
@@ -380,9 +325,9 @@ impl LineEditor {
         let directory = if prefix.starts_with('/') {
             if dir_part.is_empty() { PathBuf::from("/") } else { normalize_path(Path::new(dir_part)) }
         } else if dir_part.is_empty() {
-            state.cwd.clone()
+            state.cwd().to_path_buf()
         } else {
-            state.resolve(dir_part)
+            state.resolve_path(dir_part)
         };
 
         let show_hidden = name_prefix.starts_with('.');
@@ -477,7 +422,7 @@ impl LineEditor {
 }
 
 fn command_accepts_path(cmd: &str) -> bool {
-    matches!(cmd, "ls" | "cat" | "stat" | "cd" | "mkdir")
+    matches!(cmd, "ls" | "cat" | "stat" | "cd" | "mkdir" | "source" | ".")
 }
 
 fn longest_common_prefix(items: &[String]) -> String {
@@ -521,7 +466,7 @@ fn print_prompt(state: &ShellState) {
         })
         .unwrap_or_else(|| "anonymous".to_string());
 
-    print!("{}@{}:{}$ ", username, HOSTNAME, state.current_path_str());
+    print!("{}@{}:{}$ ", username, HOSTNAME, state.cwd_str());
     let _ = io::stdout().flush();
 }
 
@@ -534,34 +479,13 @@ fn clear_screen() {
 // Shell Built-in Commands
 // ============================================================================
 
-fn cmd_help() {
-    println!("NexaOS Shell, version 0.1.0");
-    println!("These shell commands are defined internally. Type `help' to see this list.");
-    println!();
-    println!("  help              Show this help message");
-    println!("  cd [dir]          Change working directory");
-    println!("  exit [n]          Exit the shell with status n");
-    println!();
-    println!("External commands are located in /bin, /sbin, /usr/bin.");
-    println!("Use 'ls /bin' to see available commands.");
-}
-
-fn cmd_cd(state: &mut ShellState, path: Option<&str>) {
-    let target = path.unwrap_or("/");
-    let resolved = state.resolve(target);
-    
-    match fs::metadata(&resolved) {
-        Ok(meta) if meta.is_dir() => {
-            state.set_path(resolved);
-        }
-        Ok(_) => {
-            println!("cd: not a directory: {}", target);
-        }
-        Err(e) => {
-            println!("cd: {}: {}", target, e);
-        }
-    }
-}
+// All builtin commands are now in the `builtins` module.
+// See builtins/mod.rs for the registry and the various submodules:
+// - builtins/navigation.rs: cd, pwd, pushd, popd, dirs
+// - builtins/info.rs: help, type, hash, enable
+// - builtins/variables.rs: export, unset, set, declare, readonly, alias, unalias, local
+// - builtins/flow.rs: exit, return, break, continue, test, [, true, false, :
+// - builtins/utility.rs: echo, printf, source, ., eval, exec, command, builtin, read
 
 // ============================================================================
 // External Command Execution
@@ -577,40 +501,30 @@ fn find_executable(cmd: &str) -> Option<PathBuf> {
     None
 }
 
-fn execute_external_command(state: &ShellState, cmd: &str, args: &[&str]) -> bool {
+fn execute_external_command(state: &ShellState, cmd: &str, args: &[&str]) -> i32 {
     let path = match find_executable(cmd) {
         Some(p) => p,
         None => {
-            println!("Command not found: {}", cmd);
-            return false;
+            eprintln!("{}: 未找到命令", cmd);
+            return 127;
         }
     };
 
     // Set current directory for the child process
     match Command::new(&path)
         .args(args)
-        .current_dir(state.current_path())
+        .current_dir(state.cwd())
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .status()
     {
         Ok(status) => {
-            if !status.success() {
-                if let Some(code) = status.code() {
-                    if code != 0 {
-                        // Only print non-zero exit codes
-                        println!("Command exited with status {}", code);
-                    }
-                } else {
-                    println!("Command terminated by signal");
-                }
-            }
-            true
+            status.code().unwrap_or(1)
         }
         Err(e) => {
-            println!("Failed to execute '{}': {}", cmd, e);
-            false
+            eprintln!("执行 '{}' 失败: {}", cmd, e);
+            126
         }
     }
 }
@@ -619,30 +533,71 @@ fn execute_external_command(state: &ShellState, cmd: &str, args: &[&str]) -> boo
 // Command Dispatcher
 // ============================================================================
 
-fn handle_command(state: &mut ShellState, line: &str) {
+fn handle_command(state: &mut ShellState, registry: &BuiltinRegistry, line: &str) {
     let parts: Vec<&str> = line.split_whitespace().collect();
     let cmd = match parts.first() {
         Some(c) => *c,
         None => return,
     };
-    let args = &parts[1..];
+    let args: Vec<&str> = parts[1..].to_vec();
 
-    // Check for shell builtins first
-    match cmd {
-        "help" => cmd_help(),
-        "cd" => cmd_cd(state, args.first().copied()),
-        "exit" => {
-            let code = args.first()
-                .and_then(|s| s.parse::<i32>().ok())
-                .unwrap_or(0);
-            process::exit(code);
+    // Check for alias expansion - clone the alias value to avoid borrowing issues
+    let expanded = state.get_alias(cmd).map(|s| s.to_string());
+    let (actual_cmd, actual_args): (&str, Vec<&str>) = if let Some(alias_value) = &expanded {
+        // Expand alias
+        let alias_parts: Vec<&str> = alias_value.split_whitespace().collect();
+        if alias_parts.is_empty() {
+            (cmd, args.clone())
+        } else {
+            let mut new_args = alias_parts[1..].to_vec();
+            new_args.extend(args.iter().copied());
+            (alias_parts[0], new_args)
         }
-        
-        // All other commands are external
-        _ => {
-            let args: Vec<&str> = args.to_vec();
-            execute_external_command(state, cmd, &args);
+    } else {
+        (cmd, args)
+    };
+
+    // Try builtin first
+    if let Some(result) = registry.execute(actual_cmd, state, &actual_args) {
+        match result {
+            Ok(code) => {
+                state.last_exit_status = code;
+            }
+            Err(e) => {
+                // Check for special error codes
+                if e.starts_with("HELP_PATTERN:") {
+                    // Handle help for specific commands
+                    let patterns: Vec<&str> = e[13..].split(',').collect();
+                    for pattern in patterns {
+                        if let Some(builtin) = registry.get(pattern) {
+                            println!("{}: {}", pattern, builtin.usage);
+                            println!("    {}", builtin.long_desc.replace('\n', "\n    "));
+                        } else {
+                            eprintln!("help: 没有与 `{}' 匹配的帮助主题", pattern);
+                        }
+                    }
+                    state.last_exit_status = 0;
+                } else if e.starts_with("BUILTIN_EXEC:") {
+                    // Handle builtin command execution
+                    let inner_cmd = &e[13..];
+                    let inner_parts: Vec<&str> = inner_cmd.split_whitespace().collect();
+                    if !inner_parts.is_empty() {
+                        if let Some(result) = registry.execute(inner_parts[0], state, &inner_parts[1..]) {
+                            state.last_exit_status = result.unwrap_or_else(|e| {
+                                eprintln!("{}", e);
+                                1
+                            });
+                        }
+                    }
+                } else {
+                    eprintln!("{}", e);
+                    state.last_exit_status = 1;
+                }
+            }
         }
+    } else {
+        // Not a builtin, try external command
+        state.last_exit_status = execute_external_command(state, actual_cmd, &actual_args);
     }
 }
 
@@ -651,16 +606,17 @@ fn handle_command(state: &mut ShellState, line: &str) {
 // ============================================================================
 
 fn main() -> ! {
-    println!("Welcome to NexaOS shell. Type 'help' for commands.");
+    println!("欢迎使用 NexaOS Shell。输入 'help' 获取命令列表。");
     
     let mut state = ShellState::new();
+    let registry = BuiltinRegistry::new();
     let mut editor = LineEditor::new();
 
     loop {
-        let line = editor.read_line(&state);
+        let line = editor.read_line(&state, &registry);
         let trimmed = line.trim();
         if !trimmed.is_empty() {
-            handle_command(&mut state, trimmed);
+            handle_command(&mut state, &registry, trimmed);
         }
     }
 }
