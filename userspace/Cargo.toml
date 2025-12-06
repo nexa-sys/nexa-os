@@ -32,6 +32,13 @@ members = [
     "programs/whoami",
     "programs/users",
     "programs/clear",
+    # User management
+    "programs/logout",
+    "programs/adduser",
+    # IPC utilities
+    "programs/ipc-create",
+    "programs/ipc-send",
+    "programs/ipc-recv",
 ]
 
 [workspace.package]

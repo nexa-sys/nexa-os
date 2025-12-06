@@ -3,6 +3,14 @@
 version = 4
 
 [[package]]
+name = "adduser"
+version = "0.1.0"
+dependencies = [
+ "nexa_boot_info",
+ "nrlib",
+]
+
+[[package]]
 name = "cat"
 version = "0.1.0"
 dependencies = [
@@ -75,11 +83,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "ipc-create"
+version = "0.1.0"
+dependencies = [
+ "nexa_boot_info",
+ "nrlib",
+]
+
+[[package]]
+name = "ipc-recv"
+version = "0.1.0"
+dependencies = [
+ "nexa_boot_info",
+ "nrlib",
+]
+
+[[package]]
+name = "ipc-send"
+version = "0.1.0"
+dependencies = [
+ "nexa_boot_info",
+ "nrlib",
+]
+
+[[package]]
 name = "ld-nrlib"
 version = "0.1.0"
 
 [[package]]
 name = "login"
+version = "0.1.0"
+dependencies = [
+ "nexa_boot_info",
+ "nrlib",
+]
+
+[[package]]
+name = "logout"
 version = "0.1.0"
 dependencies = [
  "nexa_boot_info",

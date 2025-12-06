@@ -44,6 +44,13 @@ PROGRAMS=(
     "whoami:whoami:bin::dyn"
     "users:users:bin::dyn"
     "clear:clear:bin::dyn"
+    # User management
+    "logout:logout:bin::dyn"
+    "adduser:adduser:sbin::dyn"
+    # IPC utilities
+    "ipc-create:ipc-create:bin::dyn"
+    "ipc-send:ipc-send:bin::dyn"
+    "ipc-recv:ipc-recv:bin::dyn"
 )
 
 # ============================================================================

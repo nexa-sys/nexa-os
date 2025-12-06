@@ -12,28 +12,20 @@ use std::path::{Path, PathBuf};
 use std::process::{self, Command, Stdio};
 
 // ============================================================================
-// NexaOS-specific syscalls (not available in std)
+// NexaOS-specific syscalls (only what shell needs internally)
 // ============================================================================
 
 mod nexaos {
     use std::arch::asm;
 
-    pub const SYS_LIST_FILES: u64 = 200;
-    pub const SYS_GETERRNO: u64 = 201;
-    pub const SYS_IPC_CREATE: u64 = 210;
-    pub const SYS_IPC_SEND: u64 = 211;
-    pub const SYS_IPC_RECV: u64 = 212;
-    pub const SYS_USER_ADD: u64 = 220;
-    pub const SYS_USER_LOGIN: u64 = 221;
-    pub const SYS_USER_INFO: u64 = 222;
-    pub const SYS_USER_LIST: u64 = 223;
-    pub const SYS_USER_LOGOUT: u64 = 224;
+    const SYS_LIST_FILES: u64 = 200;
+    const SYS_GETERRNO: u64 = 201;
+    const SYS_USER_INFO: u64 = 222;
 
-    pub const LIST_FLAG_INCLUDE_HIDDEN: u64 = 0x1;
-    pub const USER_FLAG_ADMIN: u64 = 0x1;
+    const LIST_FLAG_INCLUDE_HIDDEN: u64 = 0x1;
 
     #[inline(always)]
-    pub fn syscall3(n: u64, a1: u64, a2: u64, a3: u64) -> u64 {
+    fn syscall3(n: u64, a1: u64, a2: u64, a3: u64) -> u64 {
         let ret: u64;
         unsafe {
             asm!(
@@ -50,33 +42,19 @@ mod nexaos {
     }
 
     #[inline(always)]
-    pub fn syscall1(n: u64, a1: u64) -> u64 {
+    fn syscall1(n: u64, a1: u64) -> u64 {
         syscall3(n, a1, 0, 0)
     }
 
-    #[inline(always)]
-    pub fn syscall0(n: u64) -> u64 {
-        syscall3(n, 0, 0, 0)
-    }
-
-    pub fn errno() -> i32 {
+    fn errno() -> i32 {
         syscall1(SYS_GETERRNO, 0) as i32
     }
 
     #[repr(C)]
-    pub struct ListDirRequest {
-        pub path_ptr: u64,
-        pub path_len: u64,
-        pub flags: u64,
-    }
-
-    #[repr(C)]
-    pub struct UserRequest {
-        pub username_ptr: u64,
-        pub username_len: u64,
-        pub password_ptr: u64,
-        pub password_len: u64,
-        pub flags: u64,
+    struct ListDirRequest {
+        path_ptr: u64,
+        path_len: u64,
+        flags: u64,
     }
 
     #[repr(C)]
@@ -89,15 +67,7 @@ mod nexaos {
         pub is_admin: u32,
     }
 
-    #[repr(C)]
-    pub struct IpcTransferRequest {
-        pub channel_id: u32,
-        pub flags: u32,
-        pub buffer_ptr: u64,
-        pub buffer_len: u64,
-    }
-
-    /// List files in a directory using NexaOS syscall
+    /// List files in a directory (for tab completion)
     pub fn list_files(path: Option<&str>, include_hidden: bool) -> Result<String, i32> {
         let mut request = ListDirRequest {
             path_ptr: 0,
@@ -129,89 +99,11 @@ mod nexaos {
         String::from_utf8(buf).map_err(|_| -1)
     }
 
-    /// Get current user info
+    /// Get current user info (for prompt display)
     pub fn get_user_info() -> Option<UserInfo> {
         let mut info = UserInfo::default();
         let ret = syscall3(SYS_USER_INFO, &mut info as *mut UserInfo as u64, 0, 0);
         if ret != u64::MAX { Some(info) } else { None }
-    }
-
-    /// Login user
-    pub fn login(username: &str, password: &str) -> Result<(), i32> {
-        let request = UserRequest {
-            username_ptr: username.as_ptr() as u64,
-            username_len: username.len() as u64,
-            password_ptr: password.as_ptr() as u64,
-            password_len: password.len() as u64,
-            flags: 0,
-        };
-        let ret = syscall3(SYS_USER_LOGIN, &request as *const UserRequest as u64, 0, 0);
-        if ret == u64::MAX { Err(errno()) } else { Ok(()) }
-    }
-
-    /// Add user
-    pub fn add_user(username: &str, password: &str, admin: bool) -> Result<(), i32> {
-        let request = UserRequest {
-            username_ptr: username.as_ptr() as u64,
-            username_len: username.len() as u64,
-            password_ptr: password.as_ptr() as u64,
-            password_len: password.len() as u64,
-            flags: if admin { USER_FLAG_ADMIN } else { 0 },
-        };
-        let ret = syscall3(SYS_USER_ADD, &request as *const UserRequest as u64, 0, 0);
-        if ret == u64::MAX { Err(errno()) } else { Ok(()) }
-    }
-
-    /// Logout user
-    pub fn logout() -> Result<(), i32> {
-        let ret = syscall1(SYS_USER_LOGOUT, 0);
-        if ret == u64::MAX { Err(errno()) } else { Ok(()) }
-    }
-
-    /// List all users
-    pub fn list_users() -> Result<String, i32> {
-        let mut buffer = vec![0u8; 512];
-        let written = syscall3(SYS_USER_LIST, buffer.as_mut_ptr() as u64, buffer.len() as u64, 0);
-        if written == u64::MAX {
-            return Err(errno());
-        }
-        buffer.truncate(written as usize);
-        String::from_utf8(buffer).map_err(|_| -1)
-    }
-
-    /// Create IPC channel
-    pub fn ipc_create() -> Result<u64, i32> {
-        let id = syscall0(SYS_IPC_CREATE);
-        if id == u64::MAX { Err(errno()) } else { Ok(id) }
-    }
-
-    /// Send IPC message
-    pub fn ipc_send(channel: u32, message: &str) -> Result<(), i32> {
-        let request = IpcTransferRequest {
-            channel_id: channel,
-            flags: 0,
-            buffer_ptr: message.as_ptr() as u64,
-            buffer_len: message.len() as u64,
-        };
-        let ret = syscall3(SYS_IPC_SEND, &request as *const IpcTransferRequest as u64, 0, 0);
-        if ret == u64::MAX { Err(errno()) } else { Ok(()) }
-    }
-
-    /// Receive IPC message
-    pub fn ipc_recv(channel: u32) -> Result<String, i32> {
-        let mut buffer = vec![0u8; 256];
-        let request = IpcTransferRequest {
-            channel_id: channel,
-            flags: 0,
-            buffer_ptr: buffer.as_mut_ptr() as u64,
-            buffer_len: buffer.len() as u64,
-        };
-        let ret = syscall3(SYS_IPC_RECV, &request as *const IpcTransferRequest as u64, 0, 0);
-        if ret == u64::MAX {
-            return Err(errno());
-        }
-        buffer.truncate(ret as usize);
-        String::from_utf8(buffer).map_err(|_| -1)
     }
 }
 
@@ -222,19 +114,29 @@ mod nexaos {
 const HOSTNAME: &str = "nexa";
 const SEARCH_PATHS: &[&str] = &["/bin", "/sbin", "/usr/bin", "/usr/sbin"];
 
-// Shell builtins: commands that must be handled internally
-// (cd changes shell state, exit terminates shell, help shows shell help)
+// Shell builtins: commands that MUST be handled internally
+// (they affect shell state or cannot be external programs)
 const SHELL_BUILTINS: &[&str] = &[
-    "cd", "exit", "help",
-    // User management (requires shell's syscall interface)
-    "login", "logout", "adduser",
-    // IPC commands (shell-specific)
-    "ipc-create", "ipc-send", "ipc-recv",
+    "cd",      // Changes shell's working directory
+    "exit",    // Terminates the shell process
+    "help",    // Shows shell builtin help
+    "export",  // Sets environment variables (TODO)
+    "source",  // Executes script in current shell (TODO)
+    ".",       // Alias for source (TODO)
+    "alias",   // Defines command aliases (TODO)
+    "unalias", // Removes aliases (TODO)
+    "set",     // Sets shell options (TODO)
+    "unset",   // Unsets variables (TODO)
+    "jobs",    // Lists background jobs (TODO)
+    "fg",      // Brings job to foreground (TODO)
+    "bg",      // Sends job to background (TODO)
 ];
 
-// External commands that were moved out of the shell
+// External commands (for tab completion hints)
 const EXTERNAL_COMMANDS: &[&str] = &[
     "ls", "cat", "stat", "pwd", "echo", "uname", "mkdir", "clear", "whoami", "users",
+    "login", "logout", "adduser",  // User management
+    "ipc-create", "ipc-send", "ipc-recv",  // IPC utilities
 ];
 
 // ============================================================================
@@ -636,15 +538,12 @@ fn cmd_help() {
     println!("NexaOS Shell, version 0.1.0");
     println!("These shell commands are defined internally. Type `help' to see this list.");
     println!();
-    println!("  help              Show this message");
-    println!("  cd [dir]          Change directory");
-    println!("  exit [n]          Exit the shell");
-    println!("  login <user>      Switch active user");
-    println!("  logout            Log out current user");
-    println!("  adduser [-a] <u>  Create a new user (-a for admin)");
-    println!("  ipc-create        Allocate IPC channel");
-    println!("  ipc-send <c> <m>  Send IPC message");
-    println!("  ipc-recv <c>      Receive IPC message");
+    println!("  help              Show this help message");
+    println!("  cd [dir]          Change working directory");
+    println!("  exit [n]          Exit the shell with status n");
+    println!();
+    println!("External commands are located in /bin, /sbin, /usr/bin.");
+    println!("Use 'ls /bin' to see available commands.");
 }
 
 fn cmd_cd(state: &mut ShellState, path: Option<&str>) {
@@ -661,82 +560,6 @@ fn cmd_cd(state: &mut ShellState, path: Option<&str>) {
         Err(e) => {
             println!("cd: {}: {}", target, e);
         }
-    }
-}
-
-fn cmd_login(username: &str) {
-    if username.is_empty() {
-        println!("login: missing user name");
-        return;
-    }
-
-    print!("password: ");
-    let _ = io::stdout().flush();
-    
-    let mut password = String::new();
-    if io::stdin().read_line(&mut password).is_err() {
-        println!("login: failed to read password");
-        return;
-    }
-    let password = password.trim();
-
-    match nexaos::login(username, password) {
-        Ok(()) => println!("login successful"),
-        Err(e) => println!("login failed (errno {})", e),
-    }
-}
-
-fn cmd_adduser(username: &str, admin: bool) {
-    if username.is_empty() {
-        println!("adduser: missing user name");
-        return;
-    }
-
-    print!("new password: ");
-    let _ = io::stdout().flush();
-    
-    let mut password = String::new();
-    if io::stdin().read_line(&mut password).is_err() {
-        println!("adduser: failed to read password");
-        return;
-    }
-    let password = password.trim();
-
-    match nexaos::add_user(username, password, admin) {
-        Ok(()) => println!("adduser: user created"),
-        Err(e) => println!("adduser: failed (errno {})", e),
-    }
-}
-
-fn cmd_logout() {
-    match nexaos::logout() {
-        Ok(()) => println!("logged out"),
-        Err(e) => println!("logout: failed (errno {})", e),
-    }
-}
-
-fn cmd_ipc_create() {
-    match nexaos::ipc_create() {
-        Ok(id) => println!("channel {} created", id),
-        Err(e) => println!("ipc-create: failed (errno {})", e),
-    }
-}
-
-fn cmd_ipc_send(channel: u32, message: &str) {
-    if message.is_empty() {
-        println!("ipc-send: message cannot be empty");
-        return;
-    }
-    match nexaos::ipc_send(channel, message) {
-        Ok(()) => println!("ipc-send: message queued"),
-        Err(e) => println!("ipc-send: failed (errno {})", e),
-    }
-}
-
-fn cmd_ipc_recv(channel: u32) {
-    match nexaos::ipc_recv(channel) {
-        Ok(msg) => println!("ipc-recv: {}", msg),
-        Err(e) => println!("ipc-recv: failed (errno {})", e),
     }
 }
 
@@ -809,59 +632,10 @@ fn handle_command(state: &mut ShellState, line: &str) {
         "help" => cmd_help(),
         "cd" => cmd_cd(state, args.first().copied()),
         "exit" => {
-            println!("Bye!");
-            process::exit(0);
-        }
-        
-        // User management builtins
-        "login" => {
-            if let Some(user) = args.first() {
-                cmd_login(user);
-            } else {
-                println!("login: missing user name");
-            }
-        }
-        "logout" => cmd_logout(),
-        "adduser" => {
-            let mut admin = false;
-            let mut username = None;
-            for arg in args {
-                if *arg == "-a" {
-                    admin = true;
-                } else {
-                    username = Some(*arg);
-                }
-            }
-            if let Some(user) = username {
-                cmd_adduser(user, admin);
-            } else {
-                println!("adduser: missing user name");
-            }
-        }
-        
-        // IPC builtins
-        "ipc-create" => cmd_ipc_create(),
-        "ipc-send" => {
-            if args.len() >= 2 {
-                if let Ok(channel) = args[0].parse::<u32>() {
-                    cmd_ipc_send(channel, args[1]);
-                } else {
-                    println!("ipc-send: invalid channel");
-                }
-            } else {
-                println!("ipc-send: missing channel or message");
-            }
-        }
-        "ipc-recv" => {
-            if let Some(chan) = args.first() {
-                if let Ok(channel) = chan.parse::<u32>() {
-                    cmd_ipc_recv(channel);
-                } else {
-                    println!("ipc-recv: invalid channel");
-                }
-            } else {
-                println!("ipc-recv: missing channel");
-            }
+            let code = args.first()
+                .and_then(|s| s.parse::<i32>().ok())
+                .unwrap_or(0);
+            process::exit(code);
         }
         
         // All other commands are external
