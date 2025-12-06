@@ -413,11 +413,15 @@ pub fn lookup(path: &str) -> Option<FileRefHandle> {
 
     let ret = lookup_fn(handle, path_buf.as_ptr(), path_len, &mut file_ref);
 
-    crate::ktrace!(
-        "ext2_modular::lookup: lookup_fn returned {}, file_ref.inode={}, size={}",
+    crate::kinfo!(
+        "ext2_modular::lookup: ret={}, inode={}, size={}, mode=0o{:o}, uid={}, gid={}, nlink={}",
         ret,
         file_ref.inode,
-        file_ref.size
+        file_ref.size,
+        file_ref.mode,
+        file_ref.uid,
+        file_ref.gid,
+        file_ref.nlink
     );
     if ret == 0 && file_ref.is_valid() {
         Some(file_ref)

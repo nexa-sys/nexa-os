@@ -127,34 +127,36 @@ impl Metadata {
     }
 }
 
-/// Userspace visible struct stat (matches Linux x86_64 layout closely).
+/// Userspace visible struct stat (matches Linux x86_64 layout exactly).
+/// See: glibc/sysdeps/unix/sysv/linux/x86_64/bits/stat.h
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Stat {
-    pub st_dev: u64,
-    pub st_ino: u64,
-    pub st_mode: u32,
-    pub st_nlink: u32,
-    pub st_uid: u32,
-    pub st_gid: u32,
-    pub st_rdev: u64,
-    pub st_size: i64,
-    pub st_blksize: i64,
-    pub st_blocks: i64,
-    pub st_atime: i64,
-    pub st_atime_nsec: i64,
-    pub st_mtime: i64,
-    pub st_mtime_nsec: i64,
-    pub st_ctime: i64,
-    pub st_ctime_nsec: i64,
-    pub st_reserved: [i64; 3],
+    pub st_dev: u64,      // offset 0
+    pub st_ino: u64,      // offset 8
+    pub st_nlink: u64,    // offset 16 (u64 on x86_64!)
+    pub st_mode: u32,     // offset 24
+    pub st_uid: u32,      // offset 28
+    pub st_gid: u32,      // offset 32
+    pub __pad0: u32,      // offset 36 (padding)
+    pub st_rdev: u64,     // offset 40
+    pub st_size: i64,     // offset 48
+    pub st_blksize: i64,  // offset 56
+    pub st_blocks: i64,   // offset 64
+    pub st_atime: i64,    // offset 72
+    pub st_atime_nsec: i64, // offset 80
+    pub st_mtime: i64,    // offset 88
+    pub st_mtime_nsec: i64, // offset 96
+    pub st_ctime: i64,    // offset 104
+    pub st_ctime_nsec: i64, // offset 112
+    pub st_reserved: [i64; 3], // offset 120
 }
 
 impl Stat {
     pub fn from_metadata(meta: &Metadata) -> Self {
         let mut stat = Stat::default();
         stat.st_mode = meta.mode as u32;
-        stat.st_nlink = meta.nlink;
+        stat.st_nlink = meta.nlink as u64;
         stat.st_uid = meta.uid;
         stat.st_gid = meta.gid;
         stat.st_size = meta.size as i64;

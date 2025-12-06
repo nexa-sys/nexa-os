@@ -151,26 +151,27 @@ unsafe fn read_at(fd: i32, offset: u64, buf: &mut [u8]) -> Result<usize, LoadErr
     result
 }
 
-/// Stat structure (simplified)
+/// Stat structure (matches Linux x86_64 layout exactly)
 #[repr(C)]
 struct Stat {
-    st_dev: u64,
-    st_ino: u64,
-    st_mode: u32,
-    st_nlink: u32,
-    st_uid: u32,
-    st_gid: u32,
-    st_rdev: u64,
-    st_size: i64,
-    st_blksize: i64,
-    st_blocks: i64,
-    st_atime: i64,
-    st_atime_nsec: i64,
-    st_mtime: i64,
-    st_mtime_nsec: i64,
-    st_ctime: i64,
-    st_ctime_nsec: i64,
-    _unused: [i64; 3],
+    st_dev: u64,      // offset 0
+    st_ino: u64,      // offset 8
+    st_nlink: u64,    // offset 16 (u64 on x86_64!)
+    st_mode: u32,     // offset 24
+    st_uid: u32,      // offset 28
+    st_gid: u32,      // offset 32
+    __pad0: u32,      // offset 36 (padding)
+    st_rdev: u64,     // offset 40
+    st_size: i64,     // offset 48
+    st_blksize: i64,  // offset 56
+    st_blocks: i64,   // offset 64
+    st_atime: i64,    // offset 72
+    st_atime_nsec: i64, // offset 80
+    st_mtime: i64,    // offset 88
+    st_mtime_nsec: i64, // offset 96
+    st_ctime: i64,    // offset 104
+    st_ctime_nsec: i64, // offset 112
+    _unused: [i64; 3], // offset 120
 }
 
 /// Get file size
