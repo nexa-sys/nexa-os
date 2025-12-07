@@ -75,6 +75,12 @@ pub struct SslConnection {
     /// Server's key exchange data (ECDHE public key)
     server_kex_pubkey: Option<Vec<u8>>,
     
+    /// Server's named group/curve (for TLS 1.2 ECDHE)
+    server_named_group: Option<u16>,
+    
+    /// Server requested client certificate (TLS 1.2 CertificateRequest)
+    client_cert_requested: bool,
+    
     /// Peer certificate
     peer_cert: Option<X509>,
     
@@ -128,6 +134,8 @@ impl SslConnection {
             kex: None,
             pre_master_secret: None,
             server_kex_pubkey: None,
+            server_named_group: None,
+            client_cert_requested: false,
             peer_cert: None,
             peer_chain: Vec::new(),
             verify_result: 0,
@@ -917,59 +925,98 @@ impl SslConnection {
         // 7. 接收 ChangeCipherSpec
         // 8. 接收 Finished
         
+        eprintln!("[TLS1.2] Step 1: Receiving Certificate...");
         // 步骤 1: 接收 Certificate
         if !self.receive_certificate() {
+            eprintln!("[TLS1.2] Step 1 FAILED: receive_certificate");
             self.last_error = crate::ssl_error::SSL_ERROR_SSL;
             return -1;
         }
+        eprintln!("[TLS1.2] Step 1 OK");
         
+        eprintln!("[TLS1.2] Step 2: Receiving ServerKeyExchange...");
+        eprintln!("[TLS1.2] Step 2: Receiving ServerKeyExchange...");
         // 步骤 2: 接收 ServerKeyExchange
         if !self.receive_server_key_exchange() {
+            eprintln!("[TLS1.2] Step 2 FAILED: receive_server_key_exchange");
             self.last_error = crate::ssl_error::SSL_ERROR_SSL;
             return -1;
         }
+        eprintln!("[TLS1.2] Step 2 OK, named_group={:?}", self.server_named_group);
         
-        // 步骤 3: 接收 ServerHelloDone
+        eprintln!("[TLS1.2] Step 3: Receiving ServerHelloDone...");
+        // 步骤 3: 接收 ServerHelloDone (也处理可能的 CertificateRequest)
         if !self.receive_server_hello_done() {
+            eprintln!("[TLS1.2] Step 3 FAILED: receive_server_hello_done");
             self.last_error = crate::ssl_error::SSL_ERROR_SSL;
             return -1;
         }
+        eprintln!("[TLS1.2] Step 3 OK, client_cert_requested={}", self.client_cert_requested);
         
+        // 步骤 3.5: 如果服务器请求了客户端证书，发送空证书
+        if self.client_cert_requested {
+            eprintln!("[TLS1.2] Step 3.5: Sending empty client certificate...");
+            if !self.send_empty_client_certificate() {
+                eprintln!("[TLS1.2] Step 3.5 FAILED");
+                self.last_error = crate::ssl_error::SSL_ERROR_SSL;
+                return -1;
+            }
+            eprintln!("[TLS1.2] Step 3.5 OK");
+        }
+        
+        eprintln!("[TLS1.2] Step 4: Sending ClientKeyExchange...");
         // 步骤 4: 发送 ClientKeyExchange
         if !self.send_client_key_exchange() {
+            eprintln!("[TLS1.2] Step 4 FAILED: send_client_key_exchange");
             self.last_error = crate::ssl_error::SSL_ERROR_SSL;
             return -1;
         }
+        eprintln!("[TLS1.2] Step 4 OK");
         
+        eprintln!("[TLS1.2] Step 4.5: Deriving session keys...");
         // 计算预主密钥并派生会话密钥
         if !self.derive_session_keys_tls12() {
+            eprintln!("[TLS1.2] Step 4.5 FAILED: derive_session_keys_tls12");
             self.last_error = crate::ssl_error::SSL_ERROR_SSL;
             return -1;
         }
+        eprintln!("[TLS1.2] Step 4.5 OK");
         
+        eprintln!("[TLS1.2] Step 5: Sending ChangeCipherSpec...");
         // 步骤 5: 发送 ChangeCipherSpec
         if !self.send_change_cipher_spec() {
+            eprintln!("[TLS1.2] Step 5 FAILED");
             self.last_error = crate::ssl_error::SSL_ERROR_SSL;
             return -1;
         }
+        eprintln!("[TLS1.2] Step 5 OK");
         
+        eprintln!("[TLS1.2] Step 6: Sending Finished...");
         // 步骤 6: 发送 Finished
         if !self.send_finished() {
+            eprintln!("[TLS1.2] Step 6 FAILED");
             self.last_error = crate::ssl_error::SSL_ERROR_SSL;
             return -1;
         }
+        eprintln!("[TLS1.2] Step 6 OK");
         
+        eprintln!("[TLS1.2] Step 7: Receiving ChangeCipherSpec...");
         // 步骤 7: 接收 ChangeCipherSpec
         if !self.receive_change_cipher_spec() {
+            eprintln!("[TLS1.2] Step 7 FAILED");
             self.last_error = crate::ssl_error::SSL_ERROR_SSL;
             return -1;
         }
+        eprintln!("[TLS1.2] Step 7 OK");
         
+        eprintln!("[TLS1.2] Step 8: Receiving Finished...");
         // 步骤 8: 接收 Finished
         if !self.receive_finished() {
+            eprintln!("[TLS1.2] Step 8 FAILED");
             self.last_error = crate::ssl_error::SSL_ERROR_SSL;
             return -1;
         }
+        eprintln!("[TLS1.2] Step 8 OK - Handshake complete!");
         
         1
     }
@@ -1265,7 +1312,7 @@ impl SslConnection {
             return false;
         }
         
-        let _named_curve = ((msg[1] as u16) << 8) | (msg[2] as u16);
+        let named_curve = ((msg[1] as u16) << 8) | (msg[2] as u16);
         let point_len = msg[3] as usize;
         
         if msg.len() < 4 + point_len {
@@ -1276,31 +1323,92 @@ impl SslConnection {
         let server_pubkey = msg[4..4 + point_len].to_vec();
         self.server_kex_pubkey = Some(server_pubkey);
         
+        // 保存服务器使用的曲线类型 (23=P-256, 24=P-384, 29=X25519)
+        self.server_named_group = Some(named_curve);
+        
         true
     }
     
     /// 接收 ServerHelloDone
     fn receive_server_hello_done(&mut self) -> bool {
-        let data = match self.record.read_handshake(self.rbio) {
-            Some(d) => d,
-            None => return false,
-        };
-        
-        // ServerHelloDone 类型是 14，消息体为空
-        if data.len() < 4 || data[0] != 14 {
-            return false;
+        loop {
+            let data = match self.record.read_handshake(self.rbio) {
+                Some(d) => d,
+                None => return false,
+            };
+            
+            if data.len() < 4 {
+                return false;
+            }
+            
+            // 添加到 transcript
+            self.handshake.transcript.extend_from_slice(&data);
+            
+            match data[0] {
+                14 => {
+                    // ServerHelloDone - 完成
+                    return true;
+                }
+                13 => {
+                    // CertificateRequest - 记录下来，稍后需要发送空证书
+                    self.client_cert_requested = true;
+                    // 继续读取下一条消息
+                    continue;
+                }
+                _ => {
+                    // 意外的消息类型
+                    return false;
+                }
+            }
         }
+    }
+    
+    /// 发送空的客户端证书 (当服务器请求但我们没有证书时)
+    fn send_empty_client_certificate(&mut self) -> bool {
+        // 构建空的 Certificate 消息
+        // 格式: type(1) + length(3) + certificates_length(3)
+        let mut msg = Vec::new();
+        
+        // 握手类型: Certificate (11)
+        msg.push(11);
+        
+        // 消息长度: 3 (证书列表长度字段)
+        msg.push(0);
+        msg.push(0);
+        msg.push(3);
+        
+        // 证书列表长度: 0 (没有证书)
+        msg.push(0);
+        msg.push(0);
+        msg.push(0);
         
         // 添加到 transcript
-        self.handshake.transcript.extend_from_slice(&data);
+        self.handshake.transcript.extend_from_slice(&msg);
         
-        true
+        // 发送
+        self.record.write_handshake(&msg, self.wbio)
     }
     
     /// 发送 ClientKeyExchange
     fn send_client_key_exchange(&mut self) -> bool {
-        // 初始化 ECDHE 密钥交换
-        let kex = KeyExchange::new_x25519();
+        // 根据服务器使用的曲线初始化 ECDHE 密钥交换
+        // 23 = secp256r1 (P-256), 24 = secp384r1 (P-384), 29 = x25519
+        eprintln!("[TLS1.2] Generating key for group {:?}...", self.server_named_group);
+        let kex = match self.server_named_group {
+            Some(23) => {
+                eprintln!("[TLS1.2] Creating P-256 keypair (this may take a while)...");
+                KeyExchange::new_p256()   // P-256 (secp256r1)
+            }
+            Some(29) => {
+                eprintln!("[TLS1.2] Creating X25519 keypair...");
+                KeyExchange::new_x25519() // X25519
+            }
+            _ => {
+                eprintln!("[TLS1.2] Creating P-256 keypair (default)...");
+                KeyExchange::new_p256()          // 默认使用 P-256
+            }
+        };
+        eprintln!("[TLS1.2] Keypair generated, pubkey len={}", kex.public_key().len());
         let client_pubkey = kex.public_key().to_vec();
         
         // 构建 ClientKeyExchange 消息
@@ -1352,8 +1460,13 @@ impl SslConnection {
         };
         
         // 使用 PRF 派生密钥
-        // 获取密钥长度（AES-256-GCM: key=32, iv=4 for explicit + 8 implicit = 12 total, 但 TLS 1.2 GCM 使用 4 字节 implicit IV）
-        let key_len = 32; // AES-256
+        // 从协商的 cipher suite 获取密钥长度
+        // AES-128-GCM: key=16, AES-256-GCM: key=32
+        // TLS 1.2 GCM 使用 4 字节 implicit IV
+        let key_len = match &self.current_cipher {
+            Some(c) => (c.key_bits / 8) as usize,
+            None => 16, // 默认 AES-128
+        };
         let iv_len = 4;   // GCM implicit IV
         
         let keys = match derive_tls12_keys(
