@@ -25,8 +25,9 @@ const TAB_WIDTH: usize = 4;
 pub struct FramebufferWriter {
     render: RenderContext,
     spec: FramebufferSpec,
-    cursor_x: usize,
-    cursor_y: usize,
+    cursor_x: usize,      // Cell-based cursor X (for bitmap font compatibility)
+    cursor_y: usize,      // Cell-based cursor Y (row number)
+    pixel_x: usize,       // Pixel-based cursor X (for TTF fonts)
     columns: usize,
     rows: usize,
     fg: PackedColor,
@@ -74,6 +75,7 @@ impl FramebufferWriter {
             spec,
             cursor_x: 0,
             cursor_y: 0,
+            pixel_x: 0,
             columns,
             rows,
             fg: default_fg,
@@ -141,6 +143,7 @@ impl FramebufferWriter {
     /// Move to the next line, scrolling if necessary
     fn newline(&mut self) {
         self.cursor_x = 0;
+        self.pixel_x = 0;
         if self.cursor_y + 1 >= self.rows {
             // Before multi-core compositor init: clear instead of scroll for performance
             // After compositor init: use proper scrolling
@@ -166,6 +169,7 @@ impl FramebufferWriter {
             '\n' => self.newline(),
             '\r' => {
                 self.cursor_x = 0;
+                self.pixel_x = 0;
             }
             '\t' => {
                 let next_tab = ((self.cursor_x / TAB_WIDTH) + 1) * TAB_WIDTH;
@@ -199,22 +203,41 @@ impl FramebufferWriter {
             }
             '\r' => {
                 self.cursor_x = 0;
+                self.pixel_x = 0;
                 return;
             }
             '\t' => {
-                let next_tab = ((self.cursor_x / TAB_WIDTH) + 1) * TAB_WIDTH;
-                while self.cursor_x < next_tab && self.cursor_x < self.columns {
-                    // Clear cell for tab
-                    self.render.clear_cell(self.cursor_x, self.cursor_y, self.bg);
-                    self.cursor_x += 1;
+                // Tab: advance to next tab stop (every TAB_WIDTH cells)
+                let current_cell = self.pixel_x / CELL_WIDTH;
+                let next_tab = ((current_cell / TAB_WIDTH) + 1) * TAB_WIDTH;
+                let target_pixel = next_tab * CELL_WIDTH;
+                
+                // Clear the tab area
+                let row_y = self.cursor_y * CELL_HEIGHT;
+                if target_pixel > self.pixel_x {
+                    self.render.fill_rect(
+                        self.pixel_x, row_y,
+                        target_pixel - self.pixel_x, CELL_HEIGHT,
+                        self.bg
+                    );
+                }
+                
+                self.pixel_x = target_pixel;
+                self.cursor_x = next_tab;
+                
+                if self.pixel_x >= self.render.width {
+                    self.newline();
                 }
                 return;
             }
             '\x08' => {
-                // Backspace
-                if self.cursor_x > 0 {
-                    self.cursor_x -= 1;
+                // Backspace - go back one cell worth
+                if self.pixel_x >= CELL_WIDTH {
+                    self.pixel_x -= CELL_WIDTH;
+                } else {
+                    self.pixel_x = 0;
                 }
+                self.cursor_x = self.pixel_x / CELL_WIDTH;
                 return;
             }
             _ => {}
@@ -222,11 +245,13 @@ impl FramebufferWriter {
 
         // Check if TTF font system is ready
         if !font::is_ready() {
-            // Fall back to bitmap
+            // Fall back to bitmap font (cell-based)
             if (ch as u32) <= 0x7F {
                 self.write_char(ch);
+                self.pixel_x = self.cursor_x * CELL_WIDTH;
             } else {
                 self.write_char('?');
+                self.pixel_x = self.cursor_x * CELL_WIDTH;
             }
             return;
         }
@@ -234,59 +259,37 @@ impl FramebufferWriter {
         // Try to get TTF glyph
         let font_size = CELL_HEIGHT as u16;
         if let Some(glyph) = font::get_glyph(ch, font_size) {
-            // Determine if this is a wide character (CJK etc.)
-            let is_wide = font::is_wide_char(ch);
+            // Calculate the advance for this glyph
+            let advance = glyph.advance as usize;
             
-            // Calculate advance cells - wide characters always take 2 cells
-            let advance_cells = if is_wide {
-                2
-            } else if glyph.advance == 0 && glyph.width == 0 {
-                // Space or zero-width character
-                1
-            } else {
-                // For non-wide characters, calculate from advance width
-                // but cap at 1 for normal characters
-                let calculated = ((glyph.advance as usize) + CELL_WIDTH - 1) / CELL_WIDTH;
-                calculated.max(1).min(2)
-            };
+            // Check if we need to wrap to next line
+            if self.pixel_x + advance > self.render.width {
+                self.newline();
+            }
             
+            // Handle empty glyphs (like space)
             if glyph.width == 0 || glyph.height == 0 {
-                // Empty glyph (like space), just advance cursor
-                // Clear the cell area
-                for i in 0..advance_cells {
-                    if self.cursor_x + i < self.columns {
-                        self.render.clear_cell(self.cursor_x + i, self.cursor_y, self.bg);
-                    }
-                }
-                
-                self.cursor_x += advance_cells;
-                if self.cursor_x >= self.columns {
-                    self.newline();
-                }
+                // Clear the area and advance
+                let row_y = self.cursor_y * CELL_HEIGHT;
+                self.render.fill_rect(self.pixel_x, row_y, advance.max(1), CELL_HEIGHT, self.bg);
+                self.pixel_x += advance.max(1);
+                self.cursor_x = self.pixel_x / CELL_WIDTH;
                 return;
             }
 
-            // Check if we need to wrap
-            if self.cursor_x + advance_cells > self.columns {
-                self.newline();
-            }
-
-            // Calculate pixel position
-            let pixel_x = self.cursor_x * CELL_WIDTH;
-            // Use baseline position from font metrics for proper vertical alignment
+            // Calculate drawing position
+            // Use baseline from font metrics
             let baseline_offset = font::get_baseline_offset(font_size);
             let pixel_y = self.cursor_y * CELL_HEIGHT + baseline_offset as usize;
 
-            // Clear background for the cells this character will occupy
-            for i in 0..advance_cells {
-                if self.cursor_x + i < self.columns {
-                    self.render.clear_cell(self.cursor_x + i, self.cursor_y, self.bg);
-                }
-            }
+            // Clear background area for this glyph
+            let row_y = self.cursor_y * CELL_HEIGHT;
+            let clear_width = advance.max(glyph.width as usize + glyph.bearing_x.max(0) as usize);
+            self.render.fill_rect(self.pixel_x, row_y, clear_width, CELL_HEIGHT, self.bg);
 
-            // Draw the TTF glyph
+            // Draw the TTF glyph at pixel position
             self.render.draw_ttf_glyph(
-                pixel_x,
+                self.pixel_x,
                 pixel_y,
                 &glyph.data,
                 glyph.width as usize,
@@ -297,14 +300,18 @@ impl FramebufferWriter {
                 self.bg,
             );
 
-            self.cursor_x += advance_cells;
-            if self.cursor_x >= self.columns {
+            // Advance cursor by glyph's advance width
+            self.pixel_x += advance;
+            self.cursor_x = self.pixel_x / CELL_WIDTH;
+            
+            // Check for line wrap
+            if self.pixel_x >= self.render.width {
                 self.newline();
             }
         } else {
             // Glyph not found, use placeholder
-            crate::kdebug!("write_unicode_char: get_glyph returned None for U+{:04X}", ch as u32);
             self.write_char('?');
+            self.pixel_x = self.cursor_x * CELL_WIDTH;
         }
     }
 
@@ -491,6 +498,7 @@ impl FramebufferWriter {
 
         self.cursor_x = 0;
         self.cursor_y = 0;
+        self.pixel_x = 0;
         self.reset_colors();
         self.ansi.reset();
     }

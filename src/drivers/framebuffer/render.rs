@@ -458,30 +458,42 @@ impl RenderContext {
         unsafe {
             let first_row_ptr = self.buffer.add(first_row_offset);
 
-            // Fill first row with unrolled 64-bit writes
-            let qwords = width / 2;
-            let remainder = width % 2;
-            let qword_ptr = first_row_ptr as *mut u64;
+            // Check if pointer is 8-byte aligned for 64-bit writes
+            let ptr_addr = first_row_ptr as usize;
+            let is_aligned = (ptr_addr & 7) == 0;
 
-            let batches = qwords / 4;
-            let batch_remainder = qwords % 4;
+            if is_aligned && width >= 2 {
+                // Fast path: 64-bit writes when aligned
+                let qwords = width / 2;
+                let remainder = width % 2;
+                let qword_ptr = first_row_ptr as *mut u64;
 
-            for batch in 0..batches {
-                let base = batch * 4;
-                qword_ptr.add(base).write(color_u64);
-                qword_ptr.add(base + 1).write(color_u64);
-                qword_ptr.add(base + 2).write(color_u64);
-                qword_ptr.add(base + 3).write(color_u64);
-            }
+                let batches = qwords / 4;
+                let batch_remainder = qwords % 4;
 
-            let batch_base = batches * 4;
-            for i in 0..batch_remainder {
-                qword_ptr.add(batch_base + i).write(color_u64);
-            }
+                for batch in 0..batches {
+                    let base = batch * 4;
+                    qword_ptr.add(base).write(color_u64);
+                    qword_ptr.add(base + 1).write(color_u64);
+                    qword_ptr.add(base + 2).write(color_u64);
+                    qword_ptr.add(base + 3).write(color_u64);
+                }
 
-            if remainder > 0 {
-                let dword_ptr = first_row_ptr.add(qwords * 8) as *mut u32;
-                dword_ptr.write(color_u32);
+                let batch_base = batches * 4;
+                for i in 0..batch_remainder {
+                    qword_ptr.add(batch_base + i).write(color_u64);
+                }
+
+                if remainder > 0 {
+                    let dword_ptr = first_row_ptr.add(qwords * 8) as *mut u32;
+                    dword_ptr.write(color_u32);
+                }
+            } else {
+                // Slow path: 32-bit writes when unaligned or small width
+                let dword_ptr = first_row_ptr as *mut u32;
+                for x in 0..width {
+                    dword_ptr.add(x).write(color_u32);
+                }
             }
 
             // Copy first row to remaining rows
