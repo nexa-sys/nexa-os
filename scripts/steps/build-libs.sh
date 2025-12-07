@@ -92,7 +92,7 @@ check_dependencies() {
     fi
 }
 
-build_library_static() {
+ build_library_static() {
     local lib_name="$1"
     parse_lib_config "$lib_name"
     
@@ -133,12 +133,20 @@ build_library_shared() {
     # Build shared library with PIC
     # CRITICAL: Must use sysroot-pic/lib which contains PIC-compiled libc.a
     # Using non-PIC libc.a causes R_X86_64_32S relocation errors in shared libraries
+    #
+    # We use a SEPARATE target-dir to avoid cache conflicts with static lib builds.
+    # Static builds use non-PIC code, shared builds need PIC - they can't share the
+    # same build-std artifacts, so we isolate them in different target directories.
     local SYSROOT_PIC_LIB="$BUILD_DIR/userspace-build/sysroot-pic/lib"
-    RUSTFLAGS="-C opt-level=2 -C panic=abort -C relocation-model=pic -L $SYSROOT_PIC_LIB -L $SYSROOT_DIR/lib" \
-        cargo build -Z build-std=std,core,alloc,panic_abort \
-        --target "$TARGET_LIB" --release 2>&1 | grep -v "^warning:" || true
+    local SHARED_TARGET_DIR="$USERSPACE_DIR/target-shared"
     
-    local sharedlib="$USERSPACE_DIR/target/x86_64-nexaos-userspace-lib/release/lib${lib_name}.so"
+    RUSTFLAGS="-C opt-level=2 -C panic=abort -C relocation-model=pic -L $SYSROOT_PIC_LIB" \
+        cargo build -Z build-std=std,core,alloc,panic_abort \
+        --target "$TARGET_LIB" --release \
+        --target-dir "$SHARED_TARGET_DIR" \
+        2>&1 | grep -v "^warning:" || true
+    
+    local sharedlib="$SHARED_TARGET_DIR/x86_64-nexaos-userspace-lib/release/lib${lib_name}.so"
     
     if [ -f "$sharedlib" ]; then
         cp "$sharedlib" "$dest_dir/$LIB_SHARED_NAME"

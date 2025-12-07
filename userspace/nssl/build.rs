@@ -1,20 +1,13 @@
 fn main() {
     // Link against NexaOS nrlib's libc
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-    
-    // CRITICAL: PIC sysroot MUST come FIRST for shared library builds!
-    // The linker searches paths in order, and shared libraries need PIC-compiled libc.a
-    // Using non-PIC libc.a causes R_X86_64_32S relocation errors
-    let sysroot_pic = format!("{}/../../build/userspace-build/sysroot-pic/lib", manifest_dir);
-    println!("cargo:rustc-link-search=native={}", sysroot_pic);
-    
-    // Non-PIC sysroot as fallback for static builds
-    let sysroot = format!("{}/../../build/userspace-build/sysroot/lib", manifest_dir);
-    println!("cargo:rustc-link-search=native={}", sysroot);
-    
+    // 
+    // NOTE: Link search paths are now handled by build-libs.sh via RUSTFLAGS
+    // to ensure proper PIC/non-PIC separation. The build script uses:
+    // - sysroot-pic/lib for shared library builds (PIC code required)
+    // - sysroot/lib for static library builds (non-PIC is fine)
+    //
+    // We only need to declare the dependency on libc here.
     println!("cargo:rustc-link-lib=c");
     
-    // Link against ncryptolib
-    let ncrypto_path = format!("{}/../ncryptolib/target/release", manifest_dir);
-    println!("cargo:rustc-link-search=native={}", ncrypto_path);
+    // Link against ncryptolib (dependency handled by build-libs.sh build order)
 }
