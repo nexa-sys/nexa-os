@@ -417,11 +417,17 @@ fn builtin_command(_state: &mut ShellState, args: &[&str]) -> BuiltinResult {
     // List of known builtin names
     const BUILTINS: &[&str] = &[
         "cd", "pwd", "pushd", "popd", "dirs",
-        "export", "unset", "set", "declare", "typeset", "readonly", "local",
+        "export", "unset", "set", "declare", "typeset", "readonly", "local", "let",
         "alias", "unalias",
-        "exit", "return", "break", "continue", "test", "[", "true", "false", ":",
-        "help", "type", "hash", "enable",
+        "exit", "return", "break", "continue", "test", "[", "true", "false", ":", "logout",
+        "help", "type", "hash", "enable", "caller",
         "echo", "printf", "source", ".", "eval", "exec", "command", "builtin", "read",
+        "jobs", "bg", "fg", "disown", "suspend", "kill", "wait",
+        "history", "fc",
+        "shopt", "bind", "ulimit", "umask",
+        "trap", "times",
+        "compgen", "complete", "compopt",
+        "getopts", "mapfile", "readarray",
     ];
 
     let mut use_default_path = false;
@@ -503,11 +509,17 @@ fn builtin_builtin(_state: &mut ShellState, args: &[&str]) -> BuiltinResult {
     // List of known builtin names
     const BUILTINS: &[&str] = &[
         "cd", "pwd", "pushd", "popd", "dirs",
-        "export", "unset", "set", "declare", "typeset", "readonly", "local",
+        "export", "unset", "set", "declare", "typeset", "readonly", "local", "let",
         "alias", "unalias",
-        "exit", "return", "break", "continue", "test", "[", "true", "false", ":",
-        "help", "type", "hash", "enable",
+        "exit", "return", "break", "continue", "test", "[", "true", "false", ":", "logout",
+        "help", "type", "hash", "enable", "caller",
         "echo", "printf", "source", ".", "eval", "exec", "command", "builtin", "read",
+        "jobs", "bg", "fg", "disown", "suspend", "kill", "wait",
+        "history", "fc",
+        "shopt", "bind", "ulimit", "umask",
+        "trap", "times",
+        "compgen", "complete", "compopt",
+        "getopts", "mapfile", "readarray",
     ];
 
     if args.is_empty() {

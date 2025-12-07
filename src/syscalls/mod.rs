@@ -74,7 +74,7 @@ use process::{execve, exit, fork, getppid, kill, wait4};
 use signal::{sigaction, sigprocmask};
 use system::{chroot, mount, pivot_root, reboot, runlevel, shutdown, syslog, umount};
 use thread::{arch_prctl, clone, futex, get_robust_list, gettid, set_robust_list, set_tid_address};
-use time::{clock_gettime, clock_settime, nanosleep, sched_yield};
+use time::{clock_gettime, clock_settime, nanosleep, sched_yield, sys_times, Tms};
 use uefi::{
     uefi_get_block_info, uefi_get_counts, uefi_get_fb_info, uefi_get_hid_info, uefi_get_net_info,
     uefi_get_usb_info, uefi_map_net_mmio, uefi_map_usb_mmio,
@@ -229,6 +229,7 @@ pub extern "C" fn syscall_dispatch(
         SYS_CLOCK_GETTIME => clock_gettime(arg1 as i32, arg2 as *mut TimeSpec),
         SYS_CLOCK_SETTIME => clock_settime(arg1 as i32, arg2 as *const TimeSpec),
         SYS_NANOSLEEP => nanosleep(arg1 as *const TimeSpec, arg2 as *mut TimeSpec),
+        SYS_TIMES => sys_times(arg1 as *mut Tms),
         SYS_LIST_FILES => list_files(
             arg1 as *mut u8,
             arg2 as usize,

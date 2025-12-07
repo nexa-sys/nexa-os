@@ -126,17 +126,23 @@ pub fn builtin_help(_state: &mut ShellState, args: &[&str]) -> BuiltinResult {
     // Store parsed options for use by the caller
     // The actual help display is handled in main.rs
     if patterns.is_empty() {
-        println!("NexaOS Shell, 版本 0.2.0");
+        println!("NexaOS Shell, 版本 0.3.0");
         println!("这些 shell 命令是内部定义的。输入 `help' 以获取本列表。");
         println!("输入 `help 名称' 以得到有关命令 `名称' 的更多信息。");
         println!();
         println!("内建命令:");
         println!("  导航: cd, pwd, pushd, popd, dirs");
-        println!("  变量: export, unset, set, declare, typeset, readonly, local");
+        println!("  变量: export, unset, set, declare, typeset, readonly, local, let");
         println!("  别名: alias, unalias");
-        println!("  流程控制: exit, return, break, continue, test, [, true, false, :");
-        println!("  信息: help, type, hash, enable");
+        println!("  流程控制: exit, return, break, continue, test, [, true, false, :, logout");
+        println!("  信息: help, type, hash, enable, caller");
         println!("  实用: echo, printf, source, ., eval, exec, command, builtin, read");
+        println!("  作业控制: jobs, bg, fg, disown, suspend, kill, wait");
+        println!("  历史: history, fc");
+        println!("  配置: shopt, bind, ulimit, umask");
+        println!("  陷阱: trap, times");
+        println!("  补全: compgen, complete, compopt");
+        println!("  其他: getopts, mapfile, readarray");
         println!();
         println!("使用 `help 名称' 获取特定命令的详细帮助。");
         Ok(0)
@@ -151,12 +157,30 @@ pub fn builtin_help(_state: &mut ShellState, args: &[&str]) -> BuiltinResult {
 fn builtin_type(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
     // List of known builtin names
     const BUILTINS: &[&str] = &[
+        // Navigation
         "cd", "pwd", "pushd", "popd", "dirs",
-        "export", "unset", "set", "declare", "typeset", "readonly", "local",
+        // Variables
+        "export", "unset", "set", "declare", "typeset", "readonly", "local", "let",
+        // Aliases
         "alias", "unalias",
-        "exit", "return", "break", "continue", "test", "[", "true", "false", ":",
-        "help", "type", "hash", "enable",
+        // Flow control
+        "exit", "return", "break", "continue", "test", "[", "true", "false", ":", "logout",
+        // Information
+        "help", "type", "hash", "enable", "caller",
+        // Utility
         "echo", "printf", "source", ".", "eval", "exec", "command", "builtin", "read",
+        // Job control
+        "jobs", "bg", "fg", "disown", "suspend", "kill", "wait",
+        // History
+        "history", "fc",
+        // Configuration
+        "shopt", "bind", "ulimit", "umask",
+        // Traps
+        "trap", "times",
+        // Completion
+        "compgen", "complete", "compopt",
+        // Misc
+        "getopts", "mapfile", "readarray",
     ];
     
     let mut show_all = false;
@@ -340,11 +364,17 @@ fn builtin_enable(_state: &mut ShellState, args: &[&str]) -> BuiltinResult {
     // List of known builtin names
     const BUILTINS: &[&str] = &[
         "cd", "pwd", "pushd", "popd", "dirs",
-        "export", "unset", "set", "declare", "typeset", "readonly", "local",
+        "export", "unset", "set", "declare", "typeset", "readonly", "local", "let",
         "alias", "unalias",
-        "exit", "return", "break", "continue", "test", "[", "true", "false", ":",
-        "help", "type", "hash", "enable",
+        "exit", "return", "break", "continue", "test", "[", "true", "false", ":", "logout",
+        "help", "type", "hash", "enable", "caller",
         "echo", "printf", "source", ".", "eval", "exec", "command", "builtin", "read",
+        "jobs", "bg", "fg", "disown", "suspend", "kill", "wait",
+        "history", "fc",
+        "shopt", "bind", "ulimit", "umask",
+        "trap", "times",
+        "compgen", "complete", "compopt",
+        "getopts", "mapfile", "readarray",
     ];
 
     let mut show_all = false;

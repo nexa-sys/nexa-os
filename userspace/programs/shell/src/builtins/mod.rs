@@ -8,6 +8,10 @@ pub mod info;
 pub mod variables;
 pub mod flow;
 pub mod utility;
+pub mod jobs;
+pub mod history;
+pub mod config;
+pub mod misc;
 
 use crate::state::ShellState;
 use std::collections::HashMap;
@@ -71,6 +75,10 @@ impl BuiltinRegistry {
         variables::register(&mut registry);
         flow::register(&mut registry);
         utility::register(&mut registry);
+        jobs::register(&mut registry);
+        history::register(&mut registry);
+        config::register(&mut registry);
+        misc::register(&mut registry);
         
         registry
     }

@@ -34,6 +34,9 @@ edition = "2021"
 name = "sh"
 path = "../../userspace/programs/shell/src/main.rs"
 
+[dependencies]
+libc = "0.2"
+
 [profile.release]
 panic = "abort"
 opt-level = 2

@@ -184,7 +184,68 @@ pub unsafe extern "C" fn pause() -> c_int {
 // System Configuration
 // ============================================================================
 
+/// sysconf name constants
+pub const _SC_CLK_TCK: c_int = 2;
+pub const _SC_PAGESIZE: c_int = 30;
+pub const _SC_PAGE_SIZE: c_int = 30;
+pub const _SC_NPROCESSORS_CONF: c_int = 83;
+pub const _SC_NPROCESSORS_ONLN: c_int = 84;
+
 #[no_mangle]
-pub unsafe extern "C" fn sysconf(_name: c_int) -> c_long {
-    -1 // Not supported
+pub unsafe extern "C" fn sysconf(name: c_int) -> c_long {
+    match name {
+        _SC_CLK_TCK => 100,          // 100 Hz clock (standard Linux)
+        _SC_PAGESIZE | _SC_PAGE_SIZE => 4096,
+        _SC_NPROCESSORS_CONF | _SC_NPROCESSORS_ONLN => 1, // Single core for now
+        _ => -1, // Not supported
+    }
+}
+
+// ============================================================================
+// Process Times
+// ============================================================================
+
+/// tms structure for times()
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct tms {
+    pub tms_utime: c_long,   // User CPU time
+    pub tms_stime: c_long,   // System CPU time  
+    pub tms_cutime: c_long,  // User CPU time of children
+    pub tms_cstime: c_long,  // System CPU time of children
+}
+
+const SYS_TIMES: u64 = 100;
+
+/// times - get process times
+/// 
+/// Returns clock ticks since system boot, fills tms structure with
+/// process time accounting information.
+/// 
+/// # Arguments
+/// * `buf` - Pointer to tms structure to fill (can be NULL)
+/// 
+/// # Returns
+/// * Clock ticks since boot on success
+/// * -1 on error
+#[no_mangle]
+pub unsafe extern "C" fn times(buf: *mut tms) -> c_long {
+    let ret: i64;
+    core::arch::asm!(
+        "syscall",
+        in("rax") SYS_TIMES,
+        in("rdi") buf,
+        lateout("rax") ret,
+        lateout("rcx") _,
+        lateout("r11") _,
+        options(nostack)
+    );
+    
+    if ret == -1i64 as i64 || ret == u64::MAX as i64 {
+        crate::set_errno(crate::EFAULT);
+        return -1;
+    }
+    
+    crate::set_errno(0);
+    ret as c_long
 }

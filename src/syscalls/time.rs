@@ -135,6 +135,50 @@ pub fn clock_settime(clk_id: i32, tp: *const TimeSpec) -> u64 {
     0
 }
 
+/// tms structure for times() syscall
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct Tms {
+    pub tms_utime: i64,   // User CPU time
+    pub tms_stime: i64,   // System CPU time
+    pub tms_cutime: i64,  // User CPU time of children
+    pub tms_cstime: i64,  // System CPU time of children
+}
+
+/// SYS_TIMES - Get process times
+/// Returns clock ticks since system boot, fills tms structure
+pub fn sys_times(buf: *mut Tms) -> u64 {
+    // Get current boot time in microseconds
+    let boot_us = crate::logger::boot_time_us();
+    
+    // Convert to clock ticks (assume 100 Hz = 10ms per tick, standard Linux)
+    // clock ticks = microseconds / 10000
+    let ticks = (boot_us / 10000) as i64;
+    
+    if !buf.is_null() {
+        // Validate user pointer
+        let ptr_addr = buf as usize;
+        if ptr_addr >= USER_VIRT_BASE as usize
+            && ptr_addr + core::mem::size_of::<Tms>() <= (USER_VIRT_BASE + USER_REGION_SIZE) as usize
+        {
+            // For now, return simplified times based on boot time
+            // TODO: Track actual user/system time per process
+            unsafe {
+                (*buf).tms_utime = ticks / 2;  // Approximate user time
+                (*buf).tms_stime = ticks / 4;  // Approximate system time
+                (*buf).tms_cutime = 0;         // No child accounting yet
+                (*buf).tms_cstime = 0;
+            }
+        } else {
+            posix::set_errno(posix::errno::EFAULT);
+            return u64::MAX;
+        }
+    }
+    
+    posix::set_errno(0);
+    ticks as u64
+}
+
 /// SYS_NANOSLEEP - Sleep for specified time
 pub fn nanosleep(req: *const TimeSpec, rem: *mut TimeSpec) -> u64 {
     if req.is_null() {
