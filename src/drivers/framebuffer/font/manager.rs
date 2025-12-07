@@ -323,4 +323,30 @@ impl FontManager {
     pub fn clear_cache(&mut self) {
         self.cache.clear();
     }
+
+    /// Get the line height (ascender - descender) for the current font size
+    /// Returns the total height in pixels that a line of text should occupy
+    pub fn get_line_height(&self, size: u16) -> u16 {
+        if let Some(loaded) = self.fonts.first() {
+            let scale = size as f32 / loaded.font.units_per_em() as f32;
+            let ascender = loaded.font.hhea.ascender as f32 * scale;
+            let descender = loaded.font.hhea.descender as f32 * scale; // descender is negative
+            let line_gap = loaded.font.hhea.line_gap as f32 * scale;
+            // Total line height = ascender - descender + line_gap
+            ((ascender - descender + line_gap) as u16).max(size)
+        } else {
+            size
+        }
+    }
+
+    /// Get the baseline offset from the top of a cell
+    /// This is the ascender height scaled to the given size
+    pub fn get_baseline_offset(&self, size: u16) -> u16 {
+        if let Some(loaded) = self.fonts.first() {
+            let scale = size as f32 / loaded.font.units_per_em() as f32;
+            (loaded.font.hhea.ascender as f32 * scale) as u16
+        } else {
+            size
+        }
+    }
 }

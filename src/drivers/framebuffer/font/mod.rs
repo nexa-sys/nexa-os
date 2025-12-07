@@ -117,3 +117,70 @@ pub fn can_render(ch: char) -> bool {
     let manager = FONT_MANAGER.lock();
     manager.as_ref().map_or(false, |m| m.has_glyph(ch))
 }
+
+/// Get the line height for a given font size
+pub fn get_line_height(size: u16) -> u16 {
+    let manager = FONT_MANAGER.lock();
+    manager.as_ref().map_or(size, |m| m.get_line_height(size))
+}
+
+/// Get the baseline offset from the top of a cell
+pub fn get_baseline_offset(size: u16) -> u16 {
+    let manager = FONT_MANAGER.lock();
+    manager.as_ref().map_or(size, |m| m.get_baseline_offset(size))
+}
+
+/// Check if a character is a wide (fullwidth) character
+/// 
+/// East Asian Wide characters should occupy 2 cells in a terminal.
+/// This includes CJK Unified Ideographs, Hangul, Katakana, Hiragana, etc.
+#[inline]
+pub fn is_wide_char(ch: char) -> bool {
+    let cp = ch as u32;
+    
+    // Fast path for ASCII
+    if cp < 0x80 {
+        return false;
+    }
+    
+    // East Asian Wide characters
+    matches!(cp,
+        // CJK Radicals Supplement, Kangxi Radicals, Ideographic Description
+        0x2E80..=0x2FFF |
+        // CJK Symbols and Punctuation (most)
+        0x3000..=0x303F |
+        // Hiragana
+        0x3040..=0x309F |
+        // Katakana
+        0x30A0..=0x30FF |
+        // Bopomofo
+        0x3100..=0x312F |
+        // Hangul Compatibility Jamo
+        0x3130..=0x318F |
+        // Kanbun, Bopomofo Extended, CJK Strokes, Katakana Phonetic Extensions
+        0x3190..=0x31FF |
+        // Enclosed CJK Letters and Months
+        0x3200..=0x32FF |
+        // CJK Compatibility
+        0x3300..=0x33FF |
+        // CJK Unified Ideographs Extension A
+        0x3400..=0x4DBF |
+        // CJK Unified Ideographs
+        0x4E00..=0x9FFF |
+        // Yi Syllables and Radicals
+        0xA000..=0xA4CF |
+        // Hangul Jamo Extended-A
+        0xA960..=0xA97F |
+        // Hangul Syllables
+        0xAC00..=0xD7AF |
+        // Hangul Jamo Extended-B
+        0xD7B0..=0xD7FF |
+        // CJK Compatibility Ideographs
+        0xF900..=0xFAFF |
+        // Fullwidth Forms (Halfwidth and Fullwidth Forms, wide part)
+        0xFF00..=0xFF60 |
+        0xFFE0..=0xFFE6 |
+        // CJK Unified Ideographs Extension B, C, D, E, F (SIP) and Compatibility Supplement
+        0x20000..=0x2FA1F
+    )
+}

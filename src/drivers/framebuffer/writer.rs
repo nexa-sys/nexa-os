@@ -234,11 +234,24 @@ impl FramebufferWriter {
         // Try to get TTF glyph
         let font_size = CELL_HEIGHT as u16;
         if let Some(glyph) = font::get_glyph(ch, font_size) {
+            // Determine if this is a wide character (CJK etc.)
+            let is_wide = font::is_wide_char(ch);
+            
+            // Calculate advance cells - wide characters always take 2 cells
+            let advance_cells = if is_wide {
+                2
+            } else if glyph.advance == 0 && glyph.width == 0 {
+                // Space or zero-width character
+                1
+            } else {
+                // For non-wide characters, calculate from advance width
+                // but cap at 1 for normal characters
+                let calculated = ((glyph.advance as usize) + CELL_WIDTH - 1) / CELL_WIDTH;
+                calculated.max(1).min(2)
+            };
+            
             if glyph.width == 0 || glyph.height == 0 {
                 // Empty glyph (like space), just advance cursor
-                let advance_cells = ((glyph.advance as usize) + CELL_WIDTH - 1) / CELL_WIDTH;
-                let advance_cells = advance_cells.max(1);
-                
                 // Clear the cell area
                 for i in 0..advance_cells {
                     if self.cursor_x + i < self.columns {
@@ -253,10 +266,6 @@ impl FramebufferWriter {
                 return;
             }
 
-            // Calculate how many cells this character needs
-            let advance_cells = ((glyph.advance as usize) + CELL_WIDTH - 1) / CELL_WIDTH;
-            let advance_cells = advance_cells.max(1);
-
             // Check if we need to wrap
             if self.cursor_x + advance_cells > self.columns {
                 self.newline();
@@ -264,7 +273,9 @@ impl FramebufferWriter {
 
             // Calculate pixel position
             let pixel_x = self.cursor_x * CELL_WIDTH;
-            let pixel_y = self.cursor_y * CELL_HEIGHT + CELL_HEIGHT; // Baseline at bottom of cell
+            // Use baseline position from font metrics for proper vertical alignment
+            let baseline_offset = font::get_baseline_offset(font_size);
+            let pixel_y = self.cursor_y * CELL_HEIGHT + baseline_offset as usize;
 
             // Clear background for the cells this character will occupy
             for i in 0..advance_cells {

@@ -218,28 +218,38 @@ impl RenderContext {
         bearing_x: i16,
         bearing_y: i16,
         fg: PackedColor,
-        bg: PackedColor,
+        _bg: PackedColor, // Background is already cleared by caller
     ) {
         if glyph_width == 0 || glyph_height == 0 || glyph_data.is_empty() {
             return;
         }
 
         // Calculate actual drawing position
+        // bearing_x is horizontal offset from cursor to glyph left edge
+        // bearing_y is vertical offset from baseline to glyph top edge (positive = above baseline)
         let draw_x = (pixel_x as i32 + bearing_x as i32).max(0) as usize;
-        let draw_y = (pixel_y as i32 - bearing_y as i32).max(0) as usize;
+        let draw_y_signed = pixel_y as i32 - bearing_y as i32;
+        
+        // Handle cases where glyph would start above the screen
+        let (draw_y, skip_rows) = if draw_y_signed < 0 {
+            (0usize, (-draw_y_signed) as usize)
+        } else {
+            (draw_y_signed as usize, 0usize)
+        };
 
         // Bounds check
-        if draw_x >= self.width || draw_y >= self.height {
+        if draw_x >= self.width || draw_y >= self.height || skip_rows >= glyph_height {
             return;
         }
 
         let max_width = (self.width - draw_x).min(glyph_width);
-        let max_height = (self.height - draw_y).min(glyph_height);
+        let remaining_height = glyph_height - skip_rows;
+        let max_height = (self.height - draw_y).min(remaining_height);
 
         if self.bytes_per_pixel == 4 {
-            self.draw_ttf_glyph_32bpp(draw_x, draw_y, glyph_data, glyph_width, max_width, max_height, fg, bg);
+            self.draw_ttf_glyph_32bpp(draw_x, draw_y, glyph_data, glyph_width, max_width, max_height, skip_rows, fg);
         } else {
-            self.draw_ttf_glyph_generic(draw_x, draw_y, glyph_data, glyph_width, max_width, max_height, fg, bg);
+            self.draw_ttf_glyph_generic(draw_x, draw_y, glyph_data, glyph_width, max_width, max_height, skip_rows, fg);
         }
     }
 
@@ -253,15 +263,12 @@ impl RenderContext {
         glyph_pitch: usize,
         width: usize,
         height: usize,
+        skip_rows: usize,
         fg: PackedColor,
-        bg: PackedColor,
     ) {
         let fg_r = fg.bytes[2] as u32;
         let fg_g = fg.bytes[1] as u32;
         let fg_b = fg.bytes[0] as u32;
-        let bg_r = bg.bytes[2] as u32;
-        let bg_g = bg.bytes[1] as u32;
-        let bg_b = bg.bytes[0] as u32;
 
         for y in 0..height {
             let row_offset = draw_y + y;
@@ -270,7 +277,7 @@ impl RenderContext {
             }
 
             let dst_row = row_offset * self.pitch + draw_x * 4;
-            let src_row = y * glyph_pitch;
+            let src_row = (y + skip_rows) * glyph_pitch;
 
             unsafe {
                 let dst_ptr = self.buffer.add(dst_row) as *mut u32;
@@ -283,13 +290,18 @@ impl RenderContext {
                     let alpha = glyph_data[src_row + x] as u32;
 
                     if alpha == 0 {
-                        // Fully transparent - use background
-                        dst_ptr.add(x).write(u32::from_le_bytes(bg.bytes));
+                        // Fully transparent - keep existing pixel (background already cleared)
+                        continue;
                     } else if alpha == 255 {
                         // Fully opaque - use foreground
                         dst_ptr.add(x).write(u32::from_le_bytes(fg.bytes));
                     } else {
-                        // Alpha blend: result = fg * alpha + bg * (255 - alpha)
+                        // Alpha blend with existing pixel (already contains background)
+                        let existing = dst_ptr.add(x).read();
+                        let bg_r = ((existing >> 16) & 0xFF) as u32;
+                        let bg_g = ((existing >> 8) & 0xFF) as u32;
+                        let bg_b = (existing & 0xFF) as u32;
+                        
                         let inv_alpha = 255 - alpha;
                         let r = (fg_r * alpha + bg_r * inv_alpha) / 255;
                         let g = (fg_g * alpha + bg_g * inv_alpha) / 255;
@@ -313,8 +325,8 @@ impl RenderContext {
         glyph_pitch: usize,
         width: usize,
         height: usize,
+        skip_rows: usize,
         fg: PackedColor,
-        bg: PackedColor,
     ) {
         for y in 0..height {
             let row_offset = draw_y + y;
@@ -323,7 +335,7 @@ impl RenderContext {
             }
 
             let dst_row = row_offset * self.pitch + draw_x * self.bytes_per_pixel;
-            let src_row = y * glyph_pitch;
+            let src_row = (y + skip_rows) * glyph_pitch;
 
             for x in 0..width {
                 if draw_x + x >= self.width {
@@ -331,12 +343,14 @@ impl RenderContext {
                 }
 
                 let alpha = glyph_data[src_row + x];
-                let color = if alpha > 128 { &fg } else { &bg };
-
-                unsafe {
-                    let dst = self.buffer.add(dst_row + x * self.bytes_per_pixel);
-                    for i in 0..self.bytes_per_pixel {
-                        dst.add(i).write_volatile(color.bytes[i]);
+                
+                // Only draw if alpha is significant (threshold at 128)
+                if alpha > 128 {
+                    unsafe {
+                        let dst = self.buffer.add(dst_row + x * self.bytes_per_pixel);
+                        for i in 0..self.bytes_per_pixel {
+                            dst.add(i).write_volatile(fg.bytes[i]);
+                        }
                     }
                 }
             }
