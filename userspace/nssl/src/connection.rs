@@ -418,13 +418,14 @@ impl SslConnection {
         
         // 设置读取密钥（用于解密服务器的握手消息）
         // 注意：client 读取用 server_key，写入用 client_key
-        // 先设置版本，这样 set_keys 才能正确启用 TLS 1.3 加密
+        // TLS 1.3 立即启用加密
         self.record.set_version(crate::TLS1_3_VERSION);
         self.record.set_keys(
             hs_keys.server_key.clone(),
             hs_keys.client_key.clone(),
             hs_keys.server_iv.clone(),
             hs_keys.client_iv.clone(),
+            true, // TLS 1.3: enable encryption immediately
         );
         
         // 1. 接收 EncryptedExtensions
@@ -474,6 +475,7 @@ impl SslConnection {
             app_keys.client_key,
             app_keys.server_iv,
             app_keys.client_iv,
+            true, // TLS 1.3: enable encryption immediately
         );
         
         1
@@ -837,13 +839,15 @@ impl SslConnection {
         };
         
         // 设置密钥（服务器写入用 server_key，读取用 client_key）
+        // TLS 1.3 立即启用加密
+        self.record.set_version(crate::TLS1_3_VERSION);
         self.record.set_keys(
             hs_keys.client_key.clone(),
             hs_keys.server_key.clone(),
             hs_keys.client_iv.clone(),
             hs_keys.server_iv.clone(),
+            true, // TLS 1.3: enable encryption immediately
         );
-        self.record.set_version(crate::TLS1_3_VERSION);
         
         // 1. 发送 EncryptedExtensions
         if !self.send_encrypted_extensions() {
@@ -880,6 +884,7 @@ impl SslConnection {
             app_keys.server_key,
             app_keys.client_iv,
             app_keys.server_iv,
+            true, // TLS 1.3: enable encryption immediately
         );
         
         1
@@ -1487,12 +1492,14 @@ impl SslConnection {
         // 设置记录层密钥
         // 客户端: 读取用 server_key, 写入用 client_key
         // 服务器: 读取用 client_key, 写入用 server_key
+        // TLS 1.2: 不立即启用加密，等待 CCS
         if self.is_client {
             self.record.set_keys(
                 keys.server_key,
                 keys.client_key,
                 keys.server_iv,
                 keys.client_iv,
+                false, // TLS 1.2: enable after CCS
             );
         } else {
             self.record.set_keys(
@@ -1500,6 +1507,7 @@ impl SslConnection {
                 keys.server_key,
                 keys.client_iv,
                 keys.server_iv,
+                false, // TLS 1.2: enable after CCS
             );
         }
         

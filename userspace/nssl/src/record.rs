@@ -105,17 +105,19 @@ impl RecordLayer {
         }
     }
 
-    /// Set encryption keys (TLS 1.2: keys are set but not enabled until CCS)
-    pub fn set_keys(&mut self, read_key: Vec<u8>, write_key: Vec<u8>, read_iv: Vec<u8>, write_iv: Vec<u8>) {
+    /// Set encryption keys
+    /// 
+    /// # Arguments
+    /// * `enable_immediately` - If true, encryption is enabled immediately (TLS 1.3).
+    ///                          If false, encryption must be enabled later via CCS (TLS 1.2).
+    pub fn set_keys(&mut self, read_key: Vec<u8>, write_key: Vec<u8>, read_iv: Vec<u8>, write_iv: Vec<u8>, enable_immediately: bool) {
         self.read_key = Some(read_key);
         self.write_key = Some(write_key);
         self.read_iv = Some(read_iv);
         self.write_iv = Some(write_iv);
         self.read_seq = 0;
         self.write_seq = 0;
-        // For TLS 1.3, enable encryption immediately
-        // For TLS 1.2, encryption is enabled after CCS
-        if self.version >= TLS1_3_VERSION {
+        if enable_immediately {
             self.read_encrypt_enabled = true;
             self.write_encrypt_enabled = true;
         }
