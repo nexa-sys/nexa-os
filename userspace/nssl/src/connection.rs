@@ -1371,12 +1371,26 @@ impl SslConnection {
         self.pre_master_secret = Some(pre_master_secret);
         
         // 设置记录层密钥
-        self.record.set_keys(
-            keys.server_key,
-            keys.client_key,
-            keys.server_iv,
-            keys.client_iv,
-        );
+        // 客户端: 读取用 server_key, 写入用 client_key
+        // 服务器: 读取用 client_key, 写入用 server_key
+        if self.is_client {
+            self.record.set_keys(
+                keys.server_key,
+                keys.client_key,
+                keys.server_iv,
+                keys.client_iv,
+            );
+        } else {
+            self.record.set_keys(
+                keys.client_key,
+                keys.server_key,
+                keys.client_iv,
+                keys.server_iv,
+            );
+        }
+        
+        // 设置记录层版本为 TLS 1.2
+        self.record.set_version(self.version);
         
         true
     }

@@ -425,13 +425,27 @@ impl RecordLayer {
         let key = self.write_key.as_ref()?;
         let iv = self.write_iv.as_ref()?;
         
-        // Build nonce from IV and sequence number
-        let mut nonce = iv.clone();
-        let seq_bytes = self.write_seq.to_be_bytes();
-        let nonce_len = nonce.len();
-        for i in 0..8 {
-            nonce[nonce_len - 8 + i] ^= seq_bytes[i];
-        }
+        // TLS 1.2 vs TLS 1.3 have different nonce construction:
+        // - TLS 1.3: 12-byte IV XOR'd with 8-byte sequence number (padded to 12 bytes)
+        // - TLS 1.2 GCM: 4-byte implicit IV || 8-byte explicit nonce (random or seq_num)
+        let (nonce, explicit_nonce) = if self.version >= TLS1_3_VERSION {
+            // TLS 1.3: XOR IV with sequence number
+            let mut nonce = iv.clone();
+            let seq_bytes = self.write_seq.to_be_bytes();
+            let nonce_len = nonce.len();
+            for i in 0..8 {
+                nonce[nonce_len - 8 + i] ^= seq_bytes[i];
+            }
+            (nonce, None)
+        } else {
+            // TLS 1.2 GCM: nonce = implicit_iv (4 bytes) || explicit_nonce (8 bytes)
+            // explicit_nonce is typically the sequence number
+            let seq_bytes = self.write_seq.to_be_bytes();
+            let mut nonce = Vec::with_capacity(12);
+            nonce.extend_from_slice(iv); // 4-byte implicit IV
+            nonce.extend_from_slice(&seq_bytes); // 8-byte explicit nonce
+            (nonce, Some(seq_bytes.to_vec()))
+        };
 
         // TLS 1.3: append inner content type to plaintext
         let inner_plaintext = if self.version >= TLS1_3_VERSION {
@@ -444,14 +458,15 @@ impl RecordLayer {
 
         // Build AAD (additional authenticated data)
         // TLS 1.3: AAD = record header with ApplicationData type and encrypted length
-        // TLS 1.2: AAD = seq_num (8) + record header
+        // TLS 1.2: AAD = seq_num (8) + content_type (1) + version (2) + length (2)
         let aad = if self.version >= TLS1_3_VERSION {
             // TLS 1.3 AAD: outer content type (0x17) + version (0x0303) + length
             // length includes inner_plaintext + 16-byte tag
             let encrypted_len = inner_plaintext.len() + 16;
             build_tls13_aad(encrypted_len as u16)
         } else {
-            build_aad(content_type as u8, self.version, plaintext.len() as u16)
+            // TLS 1.2 GCM AAD includes sequence number
+            build_aad_tls12(self.write_seq, content_type as u8, self.version, plaintext.len() as u16)
         };
         
         let plaintext_to_encrypt = if self.version >= TLS1_3_VERSION {
@@ -462,33 +477,42 @@ impl RecordLayer {
 
         // Encrypt using AES-GCM or ChaCha20-Poly1305
         // For simplicity, using AES-256-GCM
-        if key.len() == 32 {
-            let mut ciphertext = vec![0u8; plaintext_to_encrypt.len() + 16]; // +16 for tag
-            
+        let encrypted = if key.len() == 32 {
             // Use ncryptolib's AES-256-GCM
             let key_arr: [u8; 32] = key.as_slice().try_into().ok()?;
             let aes = ncryptolib::AesGcm::new_256(&key_arr);
             let (ct, tag) = aes.encrypt(&nonce, plaintext_to_encrypt, &aad);
             
+            let mut ciphertext = vec![0u8; ct.len() + 16];
             ciphertext[..ct.len()].copy_from_slice(&ct);
             ciphertext[ct.len()..].copy_from_slice(&tag);
-            
             Some(ciphertext)
         } else if key.len() == 16 {
-            let mut ciphertext = vec![0u8; plaintext_to_encrypt.len() + 16];
-            
             // Use ncryptolib's AES-128-GCM
             let key_arr: [u8; 16] = key.as_slice().try_into().ok()?;
             let aes = ncryptolib::AesGcm::new_128(&key_arr);
             let (ct, tag) = aes.encrypt(&nonce, plaintext_to_encrypt, &aad);
             
+            let mut ciphertext = vec![0u8; ct.len() + 16];
             ciphertext[..ct.len()].copy_from_slice(&ct);
             ciphertext[ct.len()..].copy_from_slice(&tag);
-            
             Some(ciphertext)
         } else {
             None
+        };
+        
+        // For TLS 1.2, prepend the explicit nonce to the ciphertext
+        if let Some(explicit) = explicit_nonce {
+            if let Some(enc) = encrypted {
+                let mut result = Vec::with_capacity(explicit.len() + enc.len());
+                result.extend_from_slice(&explicit);
+                result.extend_from_slice(&enc);
+                return Some(result);
+            }
+            return None;
         }
+        
+        encrypted
     }
 
     /// Decrypt a record
@@ -496,30 +520,56 @@ impl RecordLayer {
         let key = self.read_key.as_ref()?;
         let iv = self.read_iv.as_ref()?;
         
-        if ciphertext.len() < 16 {
-            return None; // Too short for tag
+        // TLS 1.2 GCM: ciphertext = explicit_nonce (8) || encrypted_data || tag (16)
+        // TLS 1.3: ciphertext = encrypted_data || tag (16)
+        let min_len = if self.version >= TLS1_3_VERSION { 16 } else { 8 + 16 };
+        if ciphertext.len() < min_len {
+            return None; // Too short
         }
 
-        // Build nonce
-        let mut nonce = iv.clone();
-        let seq_bytes = self.read_seq.to_be_bytes();
-        let nonce_len = nonce.len();
-        for i in 0..8 {
-            nonce[nonce_len - 8 + i] ^= seq_bytes[i];
-        }
-
-        // Split ciphertext and tag
-        let ct_len = ciphertext.len() - 16;
-        let ct = &ciphertext[..ct_len];
-        let tag = &ciphertext[ct_len..];
+        // Build nonce and extract ciphertext based on version
+        let (nonce, ct, tag, plaintext_len) = if self.version >= TLS1_3_VERSION {
+            // TLS 1.3: XOR IV with sequence number
+            let mut nonce = iv.clone();
+            let seq_bytes = self.read_seq.to_be_bytes();
+            let nonce_len = nonce.len();
+            for i in 0..8 {
+                nonce[nonce_len - 8 + i] ^= seq_bytes[i];
+            }
+            
+            let ct_len = ciphertext.len() - 16;
+            let ct = &ciphertext[..ct_len];
+            let tag = &ciphertext[ct_len..];
+            (nonce, ct, tag, ct_len)
+        } else {
+            // TLS 1.2 GCM: extract explicit nonce from ciphertext
+            // nonce = implicit_iv (4 bytes) || explicit_nonce (8 bytes from ciphertext)
+            let explicit_nonce = &ciphertext[..8];
+            let remaining = &ciphertext[8..];
+            
+            if remaining.len() < 16 {
+                return None;
+            }
+            
+            let ct_len = remaining.len() - 16;
+            let ct = &remaining[..ct_len];
+            let tag = &remaining[ct_len..];
+            
+            let mut nonce = Vec::with_capacity(12);
+            nonce.extend_from_slice(iv); // 4-byte implicit IV
+            nonce.extend_from_slice(explicit_nonce); // 8-byte explicit nonce
+            
+            (nonce, ct, tag, ct_len)
+        };
 
         // Build AAD
         // TLS 1.3: AAD is outer record header (type=0x17, version=0x0303, length)
-        // TLS 1.2: AAD is content type + version + length
+        // TLS 1.2: AAD is seq_num (8) + content_type (1) + version (2) + plaintext_length (2)
         let aad = if self.version >= TLS1_3_VERSION {
             build_tls13_aad(ciphertext.len() as u16)
         } else {
-            build_aad(_content_type, self.version, ct_len as u16)
+            // For TLS 1.2, AAD uses the plaintext length (without explicit nonce and tag)
+            build_aad_tls12(self.read_seq, _content_type, self.version, plaintext_len as u16)
         };
 
         // Decrypt using AES-GCM
@@ -587,8 +637,12 @@ impl RecordLayer {
 }
 
 /// Build Additional Authenticated Data for AEAD (TLS 1.2)
-fn build_aad(content_type: u8, version: u16, length: u16) -> Vec<u8> {
+/// TLS 1.2 GCM AAD format: seq_num (8 bytes) || content_type (1 byte) || version (2 bytes) || length (2 bytes)
+fn build_aad_tls12(seq_num: u64, content_type: u8, version: u16, length: u16) -> Vec<u8> {
+    let seq_bytes = seq_num.to_be_bytes();
     vec![
+        seq_bytes[0], seq_bytes[1], seq_bytes[2], seq_bytes[3],
+        seq_bytes[4], seq_bytes[5], seq_bytes[6], seq_bytes[7],
         content_type,
         (version >> 8) as u8,
         (version & 0xFF) as u8,
