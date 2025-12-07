@@ -197,7 +197,13 @@ impl FramebufferWriter {
                 0x08 => self.backspace(),
                 b'\n' | b'\r' | b'\t' => self.write_char(byte as char),
                 0x20..=0x7E => self.write_char(byte as char),
-                _ => {}
+                // Handle control characters (0x00-0x1F except handled above, and 0x7F)
+                0x00..=0x07 | 0x09..=0x0C | 0x0E..=0x1A | 0x1C..=0x1F | 0x7F => {
+                    // Skip control characters silently
+                }
+                // Handle extended ASCII and UTF-8 continuation bytes (0x80-0xFF)
+                // These should be rendered as a placeholder character
+                0x80..=0xFF => self.write_char('?'),
             },
             AnsiState::Escape => {
                 if byte == b'[' {
@@ -377,7 +383,10 @@ impl Write for FramebufferWriter {
             } else if (ch as u32) <= 0x7F {
                 self.process_byte(ch as u8);
             } else {
-                self.process_byte(b'?');
+                // For non-ASCII characters (Chinese, special symbols, etc.),
+                // render a placeholder '?' character directly.
+                // This avoids skipping characters entirely and provides visual feedback.
+                self.write_char('?');
             }
         }
         Ok(())
