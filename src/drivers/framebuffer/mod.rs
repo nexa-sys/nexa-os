@@ -4,17 +4,20 @@
 //! - ANSI escape sequence support for colors and attributes
 //! - High-performance rendering with GPU-style optimizations
 //! - Multi-core parallel operations via compositor
+//! - TrueType font (TTF) support for Chinese and Unicode characters
 //!
 //! # Module Organization
 //!
 //! - `ansi`: ANSI escape sequence parser
 //! - `color`: Color types and palettes
+//! - `font`: TTF font parsing and rendering (post-pivot_root)
 //! - `render`: Low-level rendering primitives
 //! - `spec`: Framebuffer hardware specification
 //! - `writer`: High-level text console writer
 
 mod ansi;
 mod color;
+pub mod font;
 mod render;
 mod spec;
 mod writer;

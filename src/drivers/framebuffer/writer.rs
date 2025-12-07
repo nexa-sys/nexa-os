@@ -2,12 +2,14 @@
 //!
 //! The main FramebufferWriter struct that combines color management,
 //! ANSI parsing, and rendering to provide a text console interface.
+//! Supports both legacy 8x8 bitmap fonts and TTF fonts for Unicode.
 
 use core::fmt::{self, Write};
 use font8x8::legacy::BASIC_LEGACY;
 
 use super::ansi::{color_from_sgr, AnsiParser, AnsiState, SgrAction, SgrProcessor};
 use super::color::{pack_color, PackedColor, RgbColor, DEFAULT_BG, DEFAULT_FG};
+use super::font;
 use super::render::{RenderContext, CELL_HEIGHT, CELL_WIDTH};
 use super::spec::FramebufferSpec;
 use crate::drivers::compositor;
@@ -184,6 +186,80 @@ impl FramebufferWriter {
                     .draw_cell(self.cursor_x, self.cursor_y, glyph, self.fg, self.bg);
                 self.cursor_x += 1;
             }
+        }
+    }
+
+    /// Write a Unicode character using TTF fonts if available
+    fn write_unicode_char(&mut self, ch: char) {
+        // Check if TTF font system is ready
+        if !font::is_ready() {
+            // Fall back to placeholder
+            self.write_char('?');
+            return;
+        }
+
+        // Try to get TTF glyph
+        let font_size = CELL_HEIGHT as u16;
+        if let Some(glyph) = font::get_glyph(ch, font_size) {
+            if glyph.width == 0 || glyph.height == 0 {
+                // Empty glyph (like space), just advance cursor
+                let advance_cells = ((glyph.advance as usize) + CELL_WIDTH - 1) / CELL_WIDTH;
+                let advance_cells = advance_cells.max(1);
+                
+                // Clear the cell area
+                for i in 0..advance_cells {
+                    if self.cursor_x + i < self.columns {
+                        self.render.clear_cell(self.cursor_x + i, self.cursor_y, self.bg);
+                    }
+                }
+                
+                self.cursor_x += advance_cells;
+                if self.cursor_x >= self.columns {
+                    self.newline();
+                }
+                return;
+            }
+
+            // Calculate how many cells this character needs
+            let advance_cells = ((glyph.advance as usize) + CELL_WIDTH - 1) / CELL_WIDTH;
+            let advance_cells = advance_cells.max(1);
+
+            // Check if we need to wrap
+            if self.cursor_x + advance_cells > self.columns {
+                self.newline();
+            }
+
+            // Calculate pixel position
+            let pixel_x = self.cursor_x * CELL_WIDTH;
+            let pixel_y = self.cursor_y * CELL_HEIGHT + CELL_HEIGHT; // Baseline at bottom of cell
+
+            // Clear background for the cells this character will occupy
+            for i in 0..advance_cells {
+                if self.cursor_x + i < self.columns {
+                    self.render.clear_cell(self.cursor_x + i, self.cursor_y, self.bg);
+                }
+            }
+
+            // Draw the TTF glyph
+            self.render.draw_ttf_glyph(
+                pixel_x,
+                pixel_y,
+                &glyph.data,
+                glyph.width as usize,
+                glyph.height as usize,
+                glyph.bearing_x,
+                glyph.bearing_y,
+                self.fg,
+                self.bg,
+            );
+
+            self.cursor_x += advance_cells;
+            if self.cursor_x >= self.columns {
+                self.newline();
+            }
+        } else {
+            // Glyph not found, use placeholder
+            self.write_char('?');
         }
     }
 
@@ -384,9 +460,8 @@ impl Write for FramebufferWriter {
                 self.process_byte(ch as u8);
             } else {
                 // For non-ASCII characters (Chinese, special symbols, etc.),
-                // render a placeholder '?' character directly.
-                // This avoids skipping characters entirely and provides visual feedback.
-                self.write_char('?');
+                // try to render using TTF fonts if available.
+                self.write_unicode_char(ch);
             }
         }
         Ok(())

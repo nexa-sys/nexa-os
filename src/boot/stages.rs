@@ -535,10 +535,22 @@ pub fn start_real_root_init() -> Result<(), &'static str> {
     // Load and process /etc/fstab
     process_fstab();
 
+    // Initialize TTF font system now that /etc/fonts is accessible
+    init_font_system();
+
     crate::kinfo!("Real root initialization complete");
     advance_stage(BootStage::UserSpace);
 
     Ok(())
+}
+
+/// Initialize TTF font system after pivot_root
+///
+/// This function loads TrueType fonts from /etc/fonts configuration
+/// to enable rendering of Chinese characters and Unicode symbols.
+fn init_font_system() {
+    crate::kinfo!("Initializing TTF font system...");
+    crate::drivers::framebuffer::font::init_after_pivot_root();
 }
 
 /// Remount /dev and recreate device nodes after pivot_root

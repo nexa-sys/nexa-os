@@ -21,7 +21,9 @@ ROOTFS_SIZE_MB="${ROOTFS_SIZE_MB:-50}"
 setup_rootfs_dirs() {
     log_step "Creating rootfs directory structure..."
     
-    ensure_dir "$ROOTFS_DIR"/{bin,sbin,etc/ni,dev,proc,sys,tmp,var,home,root,lib64}
+    ensure_dir "$ROOTFS_DIR"/{bin,sbin,etc/ni,etc/fonts/conf.d,dev,proc,sys,tmp,var,home,root,lib64}
+    ensure_dir "$ROOTFS_DIR"/usr/share/fonts/truetype
+    ensure_dir "$ROOTFS_DIR"/var/cache/fontconfig
 }
 
 install_configs() {
@@ -35,6 +37,14 @@ install_configs() {
     # Copy inittab
     if [ -f "$PROJECT_ROOT/etc/inittab" ]; then
         cp "$PROJECT_ROOT/etc/inittab" "$ROOTFS_DIR/etc/inittab"
+    fi
+    
+    # Copy font configuration files
+    if [ -d "$PROJECT_ROOT/etc/fonts" ]; then
+        log_info "Installing font configuration..."
+        ensure_dir "$ROOTFS_DIR/etc/fonts/conf.d"
+        cp "$PROJECT_ROOT/etc/fonts/fonts.conf" "$ROOTFS_DIR/etc/fonts/" 2>/dev/null || true
+        cp "$PROJECT_ROOT/etc/fonts/conf.d/"*.conf "$ROOTFS_DIR/etc/fonts/conf.d/" 2>/dev/null || true
     fi
     
     # Create motd

@@ -197,6 +197,162 @@ impl RenderContext {
         self.fill_rect(pixel_x, pixel_y, CELL_WIDTH, CELL_HEIGHT, bg);
     }
 
+    /// Draw a TTF glyph bitmap at pixel coordinates with alpha blending
+    ///
+    /// This method renders anti-aliased TTF glyphs with proper alpha blending
+    /// for smooth text rendering.
+    ///
+    /// # Arguments
+    /// * `pixel_x` - X coordinate in pixels (not cell units)
+    /// * `pixel_y` - Y coordinate in pixels (baseline position)
+    /// * `glyph` - The glyph bitmap to render
+    /// * `fg` - Foreground color
+    /// * `bg` - Background color
+    pub fn draw_ttf_glyph(
+        &self,
+        pixel_x: usize,
+        pixel_y: usize,
+        glyph_data: &[u8],
+        glyph_width: usize,
+        glyph_height: usize,
+        bearing_x: i16,
+        bearing_y: i16,
+        fg: PackedColor,
+        bg: PackedColor,
+    ) {
+        if glyph_width == 0 || glyph_height == 0 || glyph_data.is_empty() {
+            return;
+        }
+
+        // Calculate actual drawing position
+        let draw_x = (pixel_x as i32 + bearing_x as i32).max(0) as usize;
+        let draw_y = (pixel_y as i32 - bearing_y as i32).max(0) as usize;
+
+        // Bounds check
+        if draw_x >= self.width || draw_y >= self.height {
+            return;
+        }
+
+        let max_width = (self.width - draw_x).min(glyph_width);
+        let max_height = (self.height - draw_y).min(glyph_height);
+
+        if self.bytes_per_pixel == 4 {
+            self.draw_ttf_glyph_32bpp(draw_x, draw_y, glyph_data, glyph_width, max_width, max_height, fg, bg);
+        } else {
+            self.draw_ttf_glyph_generic(draw_x, draw_y, glyph_data, glyph_width, max_width, max_height, fg, bg);
+        }
+    }
+
+    /// 32bpp TTF glyph rendering with alpha blending
+    #[inline(always)]
+    fn draw_ttf_glyph_32bpp(
+        &self,
+        draw_x: usize,
+        draw_y: usize,
+        glyph_data: &[u8],
+        glyph_pitch: usize,
+        width: usize,
+        height: usize,
+        fg: PackedColor,
+        bg: PackedColor,
+    ) {
+        let fg_r = fg.bytes[2] as u32;
+        let fg_g = fg.bytes[1] as u32;
+        let fg_b = fg.bytes[0] as u32;
+        let bg_r = bg.bytes[2] as u32;
+        let bg_g = bg.bytes[1] as u32;
+        let bg_b = bg.bytes[0] as u32;
+
+        for y in 0..height {
+            let row_offset = draw_y + y;
+            if row_offset >= self.height {
+                break;
+            }
+
+            let dst_row = row_offset * self.pitch + draw_x * 4;
+            let src_row = y * glyph_pitch;
+
+            unsafe {
+                let dst_ptr = self.buffer.add(dst_row) as *mut u32;
+
+                for x in 0..width {
+                    if draw_x + x >= self.width {
+                        break;
+                    }
+
+                    let alpha = glyph_data[src_row + x] as u32;
+
+                    if alpha == 0 {
+                        // Fully transparent - use background
+                        dst_ptr.add(x).write(u32::from_le_bytes(bg.bytes));
+                    } else if alpha == 255 {
+                        // Fully opaque - use foreground
+                        dst_ptr.add(x).write(u32::from_le_bytes(fg.bytes));
+                    } else {
+                        // Alpha blend: result = fg * alpha + bg * (255 - alpha)
+                        let inv_alpha = 255 - alpha;
+                        let r = (fg_r * alpha + bg_r * inv_alpha) / 255;
+                        let g = (fg_g * alpha + bg_g * inv_alpha) / 255;
+                        let b = (fg_b * alpha + bg_b * inv_alpha) / 255;
+
+                        let pixel = (r << 16) | (g << 8) | b;
+                        dst_ptr.add(x).write(pixel);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Generic TTF glyph rendering (non-32bpp)
+    #[inline(always)]
+    fn draw_ttf_glyph_generic(
+        &self,
+        draw_x: usize,
+        draw_y: usize,
+        glyph_data: &[u8],
+        glyph_pitch: usize,
+        width: usize,
+        height: usize,
+        fg: PackedColor,
+        bg: PackedColor,
+    ) {
+        for y in 0..height {
+            let row_offset = draw_y + y;
+            if row_offset >= self.height {
+                break;
+            }
+
+            let dst_row = row_offset * self.pitch + draw_x * self.bytes_per_pixel;
+            let src_row = y * glyph_pitch;
+
+            for x in 0..width {
+                if draw_x + x >= self.width {
+                    break;
+                }
+
+                let alpha = glyph_data[src_row + x];
+                let color = if alpha > 128 { &fg } else { &bg };
+
+                unsafe {
+                    let dst = self.buffer.add(dst_row + x * self.bytes_per_pixel);
+                    for i in 0..self.bytes_per_pixel {
+                        dst.add(i).write_volatile(color.bytes[i]);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Clear a rectangular area for TTF rendering
+    pub fn clear_rect(&self, x: usize, y: usize, width: usize, height: usize, bg: PackedColor) {
+        if x >= self.width || y >= self.height {
+            return;
+        }
+        let actual_width = width.min(self.width - x);
+        let actual_height = height.min(self.height - y);
+        self.fill_rect(x, y, actual_width, actual_height, bg);
+    }
+
     /// High-performance rectangle fill
     ///
     /// Strategies:
