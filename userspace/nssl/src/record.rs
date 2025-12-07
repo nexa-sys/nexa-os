@@ -160,7 +160,6 @@ impl RecordLayer {
     /// Read ChangeCipherSpec message
     pub fn read_ccs(&mut self, rbio: *mut Bio) -> bool {
         if rbio.is_null() {
-            eprintln!("[TLS] read_ccs: rbio is null");
             return false;
         }
 
@@ -168,36 +167,24 @@ impl RecordLayer {
         let mut header_buf = [0u8; 5];
         unsafe {
             let n = (*rbio).read(header_buf.as_mut_ptr(), 5);
-            eprintln!("[TLS] read_ccs: read {} header bytes: {:02x?}", n, &header_buf[..n.max(0) as usize]);
             if n != 5 {
-                eprintln!("[TLS] read_ccs: failed to read header (got {} bytes)", n);
                 return false;
             }
         }
 
         let header = match RecordHeader::from_bytes(&header_buf) {
             Some(h) => h,
-            None => {
-                eprintln!("[TLS] read_ccs: invalid header");
-                return false;
-            }
+            None => return false,
         };
-
-        eprintln!("[TLS] read_ccs: content_type={}, version={}.{}, length={}", 
-            header.content_type, header.version_major, header.version_minor, header.length);
 
         // Check content type
         if header.content_type != ContentType::ChangeCipherSpec as u8 {
-            eprintln!("[TLS] read_ccs: expected CCS (20), got {}", header.content_type);
-            // If it's an Alert (21), try to read and display it
+            // If it's an Alert (21), consume the data
             if header.content_type == ContentType::Alert as u8 && header.length >= 2 {
                 let mut alert_data = vec![0u8; header.length as usize];
                 unsafe {
                     (*rbio).read(alert_data.as_mut_ptr(), header.length as i32);
                 }
-                eprintln!("[TLS] read_ccs: Alert level={}, desc={}", 
-                    alert_data.get(0).unwrap_or(&0),
-                    alert_data.get(1).unwrap_or(&0));
             }
             return false;
         }
@@ -207,12 +194,9 @@ impl RecordLayer {
         unsafe {
             let n = (*rbio).read(data.as_mut_ptr(), header.length as i32);
             if n != header.length as i32 {
-                eprintln!("[TLS] read_ccs: failed to read data (got {} of {})", n, header.length);
                 return false;
             }
         }
-
-        eprintln!("[TLS] read_ccs: data={:02x?}", data);
 
         // Verify CCS content
         data.len() == 1 && data[0] == 1
@@ -240,15 +224,10 @@ impl RecordLayer {
             return false;
         }
 
-        eprintln!("[TLS] write_record: type={:?}, data_len={}, encrypt_enabled={}, has_key={}", 
-            content_type, data.len(), self.write_encrypt_enabled, self.write_key.is_some());
-
         // Encrypt if keys are set AND encryption is enabled
         let (record_data, length, outer_content_type) = if self.write_key.is_some() && self.write_encrypt_enabled {
-            eprintln!("[TLS] write_record: encrypting with seq={}", self.write_seq);
             match self.encrypt_record(content_type, data) {
                 Some(encrypted) => {
-                    eprintln!("[TLS] write_record: encrypted_len={}", encrypted.len());
                     let len = encrypted.len();
                     // TLS 1.3: outer content type is always ApplicationData
                     let outer_type = if self.version >= TLS1_3_VERSION {
@@ -258,10 +237,7 @@ impl RecordLayer {
                     };
                     (encrypted, len as u16, outer_type)
                 }
-                None => {
-                    eprintln!("[TLS] write_record: encryption FAILED");
-                    return false;
-                }
+                None => return false,
             }
         } else {
             (data.to_vec(), data.len() as u16, content_type)
@@ -277,18 +253,14 @@ impl RecordLayer {
         let header = RecordHeader::new(outer_content_type, header_version, length);
         let header_bytes = header.to_bytes();
 
-        eprintln!("[TLS] write_record: header={:02x?}", &header_bytes);
-
         // Write header
         unsafe {
             if (*wbio).write(header_bytes.as_ptr(), 5) != 5 {
-                eprintln!("[TLS] write_record: failed to write header");
                 return false;
             }
             
             // Write data
             if (*wbio).write(record_data.as_ptr(), record_data.len() as c_int) != record_data.len() as c_int {
-                eprintln!("[TLS] write_record: failed to write data");
                 return false;
             }
         }

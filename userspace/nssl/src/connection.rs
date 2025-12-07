@@ -931,98 +931,67 @@ impl SslConnection {
         // 7. 接收 ChangeCipherSpec
         // 8. 接收 Finished
         
-        eprintln!("[TLS1.2] Step 1: Receiving Certificate...");
         // 步骤 1: 接收 Certificate
         if !self.receive_certificate() {
-            eprintln!("[TLS1.2] Step 1 FAILED: receive_certificate");
             self.last_error = crate::ssl_error::SSL_ERROR_SSL;
             return -1;
         }
-        eprintln!("[TLS1.2] Step 1 OK");
         
-        eprintln!("[TLS1.2] Step 2: Receiving ServerKeyExchange...");
-        eprintln!("[TLS1.2] Step 2: Receiving ServerKeyExchange...");
         // 步骤 2: 接收 ServerKeyExchange
         if !self.receive_server_key_exchange() {
-            eprintln!("[TLS1.2] Step 2 FAILED: receive_server_key_exchange");
             self.last_error = crate::ssl_error::SSL_ERROR_SSL;
             return -1;
         }
-        eprintln!("[TLS1.2] Step 2 OK, named_group={:?}", self.server_named_group);
         
-        eprintln!("[TLS1.2] Step 3: Receiving ServerHelloDone...");
         // 步骤 3: 接收 ServerHelloDone (也处理可能的 CertificateRequest)
         if !self.receive_server_hello_done() {
-            eprintln!("[TLS1.2] Step 3 FAILED: receive_server_hello_done");
             self.last_error = crate::ssl_error::SSL_ERROR_SSL;
             return -1;
         }
-        eprintln!("[TLS1.2] Step 3 OK, client_cert_requested={}", self.client_cert_requested);
         
         // 步骤 3.5: 如果服务器请求了客户端证书，发送空证书
         if self.client_cert_requested {
-            eprintln!("[TLS1.2] Step 3.5: Sending empty client certificate...");
             if !self.send_empty_client_certificate() {
-                eprintln!("[TLS1.2] Step 3.5 FAILED");
                 self.last_error = crate::ssl_error::SSL_ERROR_SSL;
                 return -1;
             }
-            eprintln!("[TLS1.2] Step 3.5 OK");
         }
         
-        eprintln!("[TLS1.2] Step 4: Sending ClientKeyExchange...");
         // 步骤 4: 发送 ClientKeyExchange
         if !self.send_client_key_exchange() {
-            eprintln!("[TLS1.2] Step 4 FAILED: send_client_key_exchange");
             self.last_error = crate::ssl_error::SSL_ERROR_SSL;
             return -1;
         }
-        eprintln!("[TLS1.2] Step 4 OK");
         
-        eprintln!("[TLS1.2] Step 4.5: Deriving session keys...");
         // 计算预主密钥并派生会话密钥
         if !self.derive_session_keys_tls12() {
-            eprintln!("[TLS1.2] Step 4.5 FAILED: derive_session_keys_tls12");
             self.last_error = crate::ssl_error::SSL_ERROR_SSL;
             return -1;
         }
-        eprintln!("[TLS1.2] Step 4.5 OK");
         
-        eprintln!("[TLS1.2] Step 5: Sending ChangeCipherSpec...");
         // 步骤 5: 发送 ChangeCipherSpec
         if !self.send_change_cipher_spec() {
-            eprintln!("[TLS1.2] Step 5 FAILED");
             self.last_error = crate::ssl_error::SSL_ERROR_SSL;
             return -1;
         }
-        eprintln!("[TLS1.2] Step 5 OK");
         
-        eprintln!("[TLS1.2] Step 6: Sending Finished...");
         // 步骤 6: 发送 Finished
         if !self.send_finished() {
-            eprintln!("[TLS1.2] Step 6 FAILED");
             self.last_error = crate::ssl_error::SSL_ERROR_SSL;
             return -1;
         }
-        eprintln!("[TLS1.2] Step 6 OK");
         
-        eprintln!("[TLS1.2] Step 7: Receiving ChangeCipherSpec...");
         // 步骤 7: 接收 ChangeCipherSpec
         if !self.receive_change_cipher_spec() {
-            eprintln!("[TLS1.2] Step 7 FAILED");
             self.last_error = crate::ssl_error::SSL_ERROR_SSL;
             return -1;
         }
-        eprintln!("[TLS1.2] Step 7 OK");
         
-        eprintln!("[TLS1.2] Step 8: Receiving Finished...");
         // 步骤 8: 接收 Finished
         if !self.receive_finished() {
-            eprintln!("[TLS1.2] Step 8 FAILED");
             self.last_error = crate::ssl_error::SSL_ERROR_SSL;
             return -1;
         }
-        eprintln!("[TLS1.2] Step 8 OK - Handshake complete!");
         
         1
     }
@@ -1399,22 +1368,11 @@ impl SslConnection {
     fn send_client_key_exchange(&mut self) -> bool {
         // 根据服务器使用的曲线初始化 ECDHE 密钥交换
         // 23 = secp256r1 (P-256), 24 = secp384r1 (P-384), 29 = x25519
-        eprintln!("[TLS1.2] Generating key for group {:?}...", self.server_named_group);
         let kex = match self.server_named_group {
-            Some(23) => {
-                eprintln!("[TLS1.2] Creating P-256 keypair (this may take a while)...");
-                KeyExchange::new_p256()   // P-256 (secp256r1)
-            }
-            Some(29) => {
-                eprintln!("[TLS1.2] Creating X25519 keypair...");
-                KeyExchange::new_x25519() // X25519
-            }
-            _ => {
-                eprintln!("[TLS1.2] Creating P-256 keypair (default)...");
-                KeyExchange::new_p256()          // 默认使用 P-256
-            }
+            Some(23) => KeyExchange::new_p256(),   // P-256 (secp256r1)
+            Some(29) => KeyExchange::new_x25519(), // X25519
+            _ => KeyExchange::new_p256(),          // 默认使用 P-256
         };
-        eprintln!("[TLS1.2] Keypair generated, pubkey len={}", kex.public_key().len());
         let client_pubkey = kex.public_key().to_vec();
         
         // 构建 ClientKeyExchange 消息
@@ -1534,10 +1492,7 @@ impl SslConnection {
         // verify_data = PRF(master_secret, "client finished", Hash(handshake_messages))
         
         let transcript_hash = self.handshake.get_transcript_hash();
-        eprintln!("[TLS1.2] Finished: transcript_hash len={}", transcript_hash.len());
-        
         let pms = self.pre_master_secret.as_deref().unwrap_or(&[]);
-        eprintln!("[TLS1.2] Finished: pre_master_secret len={}", pms.len());
         
         // 使用简化的 verify_data（12 字节）
         let verify_data = compute_verify_data(
@@ -1547,7 +1502,6 @@ impl SslConnection {
             b"client finished",
             &transcript_hash,
         );
-        eprintln!("[TLS1.2] Finished: verify_data={:02x?}", &verify_data[..]);
         
         // 构建 Finished 消息
         let mut msg = Vec::new();
@@ -1559,20 +1513,14 @@ impl SslConnection {
         msg.push((len & 0xFF) as u8);
         msg.extend_from_slice(&verify_data);
         
-        eprintln!("[TLS1.2] Finished: msg={:02x?}", &msg[..]);
-        
         // Finished 消息是加密发送的
-        let result = self.record.write_handshake(&msg, self.wbio);
-        eprintln!("[TLS1.2] Finished: write_handshake returned {}", result);
-        result
+        self.record.write_handshake(&msg, self.wbio)
     }
     
     /// 接收 ChangeCipherSpec
     fn receive_change_cipher_spec(&mut self) -> bool {
-        eprintln!("[TLS] receive_change_cipher_spec: calling read_ccs");
         // 读取 ChangeCipherSpec 记录
         let result = self.record.read_ccs(self.rbio);
-        eprintln!("[TLS] receive_change_cipher_spec: read_ccs returned {}", result);
         if result {
             // Enable read encryption after receiving CCS
             self.record.enable_read_encryption();
