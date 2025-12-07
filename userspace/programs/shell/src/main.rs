@@ -3,7 +3,9 @@
 //! This shell uses Rust std functionality for clean, idiomatic code.
 //! NexaOS-specific syscalls are used only where std cannot provide the functionality.
 //!
-//! Features a modular builtin command system with 35+ bash-compatible builtins.
+//! Features a modular builtin command system with 50+ bash-compatible builtins.
+//! Supports full control flow: if/then/elif/else/fi, case/esac, for/while/until,
+//! function definitions, (( )) arithmetic, [[ ]] conditionals, pipelines, && and ||.
 
 use std::fs;
 use std::io::{self, Read, Write};
@@ -12,6 +14,8 @@ use std::process::{self, Command, Stdio};
 
 mod builtins;
 mod state;
+pub mod parser;
+pub mod executor;
 
 use builtins::BuiltinRegistry;
 use state::{normalize_path, ShellState};
@@ -534,6 +538,38 @@ fn execute_external_command(state: &ShellState, cmd: &str, args: &[&str]) -> i32
 // ============================================================================
 
 fn handle_command(state: &mut ShellState, registry: &BuiltinRegistry, line: &str) {
+    // Check if this looks like a compound command (control flow)
+    let is_compound = line.trim_start().starts_with("if ")
+        || line.trim_start().starts_with("case ")
+        || line.trim_start().starts_with("for ")
+        || line.trim_start().starts_with("while ")
+        || line.trim_start().starts_with("until ")
+        || line.trim_start().starts_with("select ")
+        || line.trim_start().starts_with("function ")
+        || line.trim_start().starts_with("((")
+        || line.trim_start().starts_with("[[")
+        || line.trim_start().starts_with("{")
+        || line.trim_start().starts_with("(")
+        || line.contains(" && ")
+        || line.contains(" || ")
+        || line.contains(" | ");
+
+    if is_compound {
+        // Use full parser for compound commands
+        match parser::parse_command(line) {
+            Ok(commands) => {
+                let mut exec = executor::Executor::new(state, registry);
+                state.last_exit_status = exec.execute(&commands);
+            }
+            Err(e) => {
+                eprintln!("shell: 语法错误: {}", e);
+                state.last_exit_status = 2;
+            }
+        }
+        return;
+    }
+
+    // Simple command handling (original logic for better performance)
     let parts: Vec<&str> = line.split_whitespace().collect();
     let cmd = match parts.first() {
         Some(c) => *c,

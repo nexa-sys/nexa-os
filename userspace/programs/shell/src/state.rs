@@ -114,6 +114,16 @@ pub struct ShellState {
     completion_specs: HashMap<String, String>,
     /// Call stack for caller builtin
     call_stack: Vec<CallFrame>,
+    /// Positional parameters ($1, $2, etc.)
+    positional_params: Vec<String>,
+    /// Script/shell name ($0)
+    shell_name: String,
+    /// Shell functions
+    functions: HashMap<String, String>,
+    /// Last background process PID ($!)
+    last_bg_pid: i32,
+    /// Last argument of previous command ($_)
+    last_arg: String,
 }
 
 /// Flow control signals for break/continue/return
@@ -169,6 +179,11 @@ impl ShellState {
             arrays: HashMap::new(),
             completion_specs: HashMap::new(),
             call_stack: Vec::new(),
+            positional_params: Vec::new(),
+            shell_name: "shell".to_string(),
+            functions: HashMap::new(),
+            last_bg_pid: 0,
+            last_arg: String::new(),
         };
 
         // Initialize some default variables
@@ -1062,6 +1077,113 @@ impl ShellState {
         } else {
             None
         }
+    }
+
+    // ========================================================================
+    // Positional Parameters
+    // ========================================================================
+
+    /// Set positional parameters
+    pub fn set_positional_params(&mut self, params: Vec<String>) {
+        self.positional_params = params;
+    }
+
+    /// Get positional parameter by index (1-based)
+    pub fn get_positional_param(&self, index: usize) -> Option<&str> {
+        if index == 0 {
+            Some(&self.shell_name)
+        } else {
+            self.positional_params.get(index - 1).map(|s| s.as_str())
+        }
+    }
+
+    /// Get number of positional parameters ($#)
+    pub fn positional_param_count(&self) -> usize {
+        self.positional_params.len()
+    }
+
+    /// Get all positional parameters as $@
+    pub fn positional_params_at(&self) -> Vec<&str> {
+        self.positional_params.iter().map(|s| s.as_str()).collect()
+    }
+
+    /// Get all positional parameters as $* (joined by first char of IFS)
+    pub fn positional_params_star(&self) -> String {
+        let ifs = self.get_var("IFS").unwrap_or(" ");
+        let sep = ifs.chars().next().unwrap_or(' ');
+        self.positional_params.join(&sep.to_string())
+    }
+
+    /// Shift positional parameters
+    pub fn shift_positional_params(&mut self, n: usize) -> Result<(), String> {
+        if n > self.positional_params.len() {
+            return Err(format!("shift: 移动次数 {} 超出位置参数数量 {}", n, self.positional_params.len()));
+        }
+        self.positional_params = self.positional_params[n..].to_vec();
+        Ok(())
+    }
+
+    /// Set shell name ($0)
+    pub fn set_shell_name(&mut self, name: &str) {
+        self.shell_name = name.to_string();
+    }
+
+    /// Get shell name ($0)
+    pub fn shell_name(&self) -> &str {
+        &self.shell_name
+    }
+
+    // ========================================================================
+    // Functions
+    // ========================================================================
+
+    /// Define a function
+    pub fn define_function(&mut self, name: &str, body: &str) {
+        self.functions.insert(name.to_string(), body.to_string());
+    }
+
+    /// Get function body
+    pub fn get_function(&self, name: &str) -> Option<&str> {
+        self.functions.get(name).map(|s| s.as_str())
+    }
+
+    /// Remove a function
+    pub fn unset_function(&mut self, name: &str) -> bool {
+        self.functions.remove(name).is_some()
+    }
+
+    /// Check if a function exists
+    pub fn is_function(&self, name: &str) -> bool {
+        self.functions.contains_key(name)
+    }
+
+    /// List all functions
+    pub fn list_functions(&self) -> Vec<(&str, &str)> {
+        self.functions.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect()
+    }
+
+    // ========================================================================
+    // Background Process
+    // ========================================================================
+
+    /// Set last background PID ($!)
+    pub fn set_last_bg_pid(&mut self, pid: i32) {
+        self.last_bg_pid = pid;
+    }
+
+    /// Get last background PID ($!)
+    pub fn last_bg_pid(&self) -> i32 {
+        self.last_bg_pid
+    }
+
+    /// Set last argument ($_)
+    pub fn set_last_arg(&mut self, arg: &str) {
+        self.last_arg = arg.to_string();
+    }
+
+    /// Get last argument ($_)
+    pub fn last_arg(&self) -> &str {
+        &self.last_arg
     }
 }
 
