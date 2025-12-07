@@ -299,20 +299,12 @@ impl SslConnection {
 
     /// Receive ServerHello
     fn receive_server_hello(&mut self) -> bool {
-        eprintln!("[TLS] receive_server_hello: calling read_handshake");
         let data = match self.record.read_handshake(self.rbio) {
-            Some(d) => {
-                eprintln!("[TLS] receive_server_hello: got {} bytes", d.len());
-                d
-            },
-            None => {
-                eprintln!("[TLS] receive_server_hello: read_handshake returned None");
-                return false;
-            }
+            Some(d) => d,
+            None => return false,
         };
         
         if let Some((version, cipher, extensions)) = self.handshake.parse_server_hello(&data) {
-            eprintln!("[TLS] receive_server_hello: version={:04x}, cipher={:04x}", version, cipher);
             self.version = version;
             // Find cipher from ID
             self.current_cipher = SslCipher::from_id(cipher);
