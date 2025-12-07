@@ -133,6 +133,20 @@ impl FontManager {
 
     /// Try to load a font file
     fn try_load_font(&mut self, path: &str) -> Result<(), FontManagerError> {
+        // Extract font name from path first to check for duplicates
+        let name = path
+            .rsplit('/')
+            .next()
+            .unwrap_or(path)
+            .trim_end_matches(".ttf")
+            .trim_end_matches(".TTF");
+
+        // Check if we already loaded a font with this name (avoid duplicates from overlapping directories)
+        if self.fonts.iter().any(|f| f.name == name) {
+            crate::kinfo!("Font manager: skipping '{}' (already loaded)", name);
+            return Ok(());
+        }
+
         crate::kinfo!("Font manager: loading {}", path);
 
         // Read font file
@@ -142,14 +156,6 @@ impl FontManager {
         // Parse font
         let font = TtfFont::parse(data)
             .map_err(FontManagerError::ParseFailed)?;
-
-        // Extract font name from path
-        let name = path
-            .rsplit('/')
-            .next()
-            .unwrap_or(path)
-            .trim_end_matches(".ttf")
-            .trim_end_matches(".TTF");
 
         // Determine priority based on name
         let priority = self.calculate_priority(name);

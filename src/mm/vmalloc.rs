@@ -312,15 +312,16 @@ impl VmallocAllocator {
         self.flush_tlb_range(virt_start, size);
     }
 
-    /// Map a single page
+    /// Map a single page to kernel page tables
+    /// IMPORTANT: Always maps to kernel PML4, not current CR3
     unsafe fn map_page(&self, virt: u64, phys: u64, flags: VmFlags) -> Result<(), &'static str> {
-        use x86_64::registers::control::Cr3;
         use x86_64::structures::paging::PageTable;
         use x86_64::PhysAddr;
 
-        let (pml4_frame, _) = Cr3::read();
-        let pml4_addr = pml4_frame.start_address();
-        let pml4 = &mut *(pml4_addr.as_u64() as *mut PageTable);
+        // Always use kernel PML4, not current CR3
+        // This ensures vmalloc memory is accessible regardless of process context
+        let pml4_addr = crate::paging::kernel_pml4_phys();
+        let pml4 = &mut *(pml4_addr as *mut PageTable);
 
         // Calculate indices
         let pml4_idx = ((virt >> 39) & 0x1FF) as usize;
@@ -378,14 +379,13 @@ impl VmallocAllocator {
         Ok(())
     }
 
-    /// Unmap a single page
+    /// Unmap a single page from kernel page tables
     unsafe fn unmap_page(&self, virt: u64) {
-        use x86_64::registers::control::Cr3;
         use x86_64::structures::paging::PageTable;
 
-        let (pml4_frame, _) = Cr3::read();
-        let pml4_addr = pml4_frame.start_address();
-        let pml4 = &mut *(pml4_addr.as_u64() as *mut PageTable);
+        // Always use kernel PML4
+        let pml4_addr = crate::paging::kernel_pml4_phys();
+        let pml4 = &mut *(pml4_addr as *mut PageTable);
 
         let pml4_idx = ((virt >> 39) & 0x1FF) as usize;
         let pdp_idx = ((virt >> 30) & 0x1FF) as usize;
@@ -437,16 +437,15 @@ impl VmallocAllocator {
         None
     }
 
-    /// Allocate a physical page (delegates to buddy allocator)
+    /// Allocate a physical page (delegates to buddy allocator directly)
     fn allocate_physical_page(&self) -> Result<u64, &'static str> {
-        crate::allocator::kalloc(PAGE_SIZE as usize)
-            .map(|ptr| ptr as u64)
+        crate::allocator::alloc_page()
             .ok_or("Out of physical memory")
     }
 
     /// Free a physical page
     fn free_physical_page(&self, phys: u64) {
-        crate::allocator::kfree(phys as *mut u8);
+        crate::allocator::free_page(phys);
     }
 
     /// Handle page fault for lazy allocation

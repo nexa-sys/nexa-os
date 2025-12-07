@@ -1,7 +1,7 @@
-use alloc::vec::Vec;
 use spin::Mutex;
 
 use crate::bootinfo;
+use crate::mm::vmalloc::vmalloc;
 use crate::posix::{self, FileType, Metadata};
 use crate::safety::static_slice_from_raw_parts;
 
@@ -31,53 +31,15 @@ ExecStart=/sbin/uefi-compatd\n\
 Restart=no\n\
 WantedBy=multi-user.target rescue.target\n";
 
-const EXT2_READ_CACHE_SIZE: usize = 8 * 1024 * 1024; // 8 MiB max file read size
+const EXT2_READ_CACHE_SIZE: usize = 64 * 1024 * 1024; // 64 MiB max file size
 
-/// Heap-allocated ext2 read cache (allocated on demand)
-struct Ext2ReadCache {
-    buffer: Option<Vec<u8>>,
-}
-
-impl Ext2ReadCache {
-    const fn new() -> Self {
-        Self { buffer: None }
-    }
-
-    /// Get or allocate a buffer of the required size
-    fn get_buffer(&mut self, size: usize) -> Option<&mut [u8]> {
-        if size > EXT2_READ_CACHE_SIZE {
-            return None;
-        }
-
-        // Allocate or resize buffer as needed
-        if self.buffer.is_none() || self.buffer.as_ref().unwrap().len() < size {
-            // Allocate with some headroom to avoid frequent reallocations
-            let alloc_size = size.max(64 * 1024); // At least 64KB
-            let mut new_buf = Vec::new();
-            if new_buf.try_reserve_exact(alloc_size).is_err() {
-                crate::kwarn!(
-                    "Failed to allocate {} bytes for ext2 read cache",
-                    alloc_size
-                );
-                return None;
-            }
-            new_buf.resize(alloc_size, 0);
-            self.buffer = Some(new_buf);
-        }
-
-        self.buffer.as_mut().map(|b| &mut b[..size])
-    }
-
-    /// Get a static slice reference to the cached data
-    /// SAFETY: Caller must ensure the lock is held and data won't be modified
-    unsafe fn as_static_slice(&self, size: usize) -> Option<&'static [u8]> {
-        self.buffer
-            .as_ref()
-            .map(|b| core::slice::from_raw_parts(b.as_ptr(), size))
-    }
-}
-
-static EXT2_READ_CACHE: Mutex<Ext2ReadCache> = Mutex::new(Ext2ReadCache::new());
+/// Track currently allocated vmalloc read buffers for large file reads
+/// vmalloc provides logically contiguous virtual memory backed by
+/// physically non-contiguous pages - perfect for large file reads
+/// 
+/// NOTE: We don't track/free old allocations because callers hold &'static [u8]
+/// references. In practice this is used for large files like fonts that stay
+/// loaded for the system lifetime. The vmalloc region (1GB) is more than enough.
 static EMPTY_EXT2_FILE: [u8; 0] = [];
 
 #[derive(Clone, Copy)]
@@ -1197,6 +1159,22 @@ pub fn read_file_bytes(name: &str) -> Option<&'static [u8]> {
             return None;
         }
     };
+    
+    // Check if it's a regular file (not a directory, symlink, etc.)
+    if opened.metadata.file_type != posix::FileType::Regular {
+        crate::serial_println!(
+            "[read_file_bytes] '{}' is not a regular file (type={:?}), skipping",
+            name,
+            opened.metadata.file_type
+        );
+        crate::kwarn!(
+            "read_file_bytes: '{}' is not a regular file (type={:?})",
+            name,
+            opened.metadata.file_type
+        );
+        return None;
+    }
+    
     crate::serial_println!("[read_file_bytes] open('{}') succeeded", name);
     crate::kinfo!("read_file_bytes: opened, checking content type");
 
@@ -1260,15 +1238,14 @@ pub fn read_file_bytes(name: &str) -> Option<&'static [u8]> {
                 return None;
             }
 
-            crate::serial_println!("[read_file_bytes] getting cache buffer for {} bytes", size);
-            // Lock the cache and get/allocate buffer (now in kernel CR3)
-            let mut cache = EXT2_READ_CACHE.lock();
-            let dest = match cache.get_buffer(size) {
-                Some(d) => d,
+            crate::serial_println!("[read_file_bytes] allocating {} bytes via vmalloc", size);
+            
+            // Use vmalloc for logically contiguous memory (physically non-contiguous is OK)
+            // Each call allocates a fresh buffer - we don't free because callers hold &'static refs
+            let vmalloc_ptr = match vmalloc(size as u64) {
+                Some(ptr) => ptr,
                 None => {
-                    crate::serial_println!("[read_file_bytes] cache.get_buffer failed");
-                    drop(cache);
-                    // Restore CR3 before returning
+                    crate::kwarn!("Failed to allocate {} bytes via vmalloc for '{}'", size, name);
                     unsafe {
                         if saved_cr3 != kernel_cr3 {
                             core::arch::asm!("mov cr3, {}", in(reg) saved_cr3, options(nostack));
@@ -1277,19 +1254,23 @@ pub fn read_file_bytes(name: &str) -> Option<&'static [u8]> {
                     return None;
                 }
             };
-            crate::serial_println!("[read_file_bytes] got buffer at {:#x}, size {}", dest.as_ptr() as u64, size);
-            crate::kinfo!(
-                "read_file_bytes: got buffer at {:#x}, size {}",
-                dest.as_ptr() as u64,
-                size
-            );
-
+            
+            // Get mutable slice for direct reading
+            let buf_slice = unsafe { core::slice::from_raw_parts_mut(vmalloc_ptr, size) };
+            
+            // Read directly into vmalloc buffer
             let mut read_offset = 0usize;
             while read_offset < size {
-                crate::serial_println!("[read_file_bytes] ext2 read_at offset={}", read_offset);
-                let read = ext2_modular::read_at(&file_ref, read_offset, &mut dest[read_offset..]);
-                crate::serial_println!("[read_file_bytes] ext2 read_at returned {}", read);
-                if read == 0 {
+                let remaining = size - read_offset;
+                let to_read = remaining.min(4096); // Read in 4KB chunks
+                
+                let bytes_read = ext2_modular::read_at(
+                    &file_ref, 
+                    read_offset, 
+                    &mut buf_slice[read_offset..read_offset + to_read]
+                );
+                
+                if bytes_read == 0 {
                     crate::serial_println!("[read_file_bytes] short read at offset {} of {}", read_offset, size);
                     crate::kwarn!(
                         "short read while loading '{}' from ext2 (offset {} of {})",
@@ -1297,8 +1278,8 @@ pub fn read_file_bytes(name: &str) -> Option<&'static [u8]> {
                         read_offset,
                         size
                     );
-                    drop(cache);
-                    // Restore CR3 before returning
+                    // Don't free vmalloc here - we can't recover partial reads
+                    // The memory will be leaked but this is an error path
                     unsafe {
                         if saved_cr3 != kernel_cr3 {
                             core::arch::asm!("mov cr3, {}", in(reg) saved_cr3, options(nostack));
@@ -1306,8 +1287,15 @@ pub fn read_file_bytes(name: &str) -> Option<&'static [u8]> {
                     }
                     return None;
                 }
-                read_offset += read;
+                
+                read_offset += bytes_read;
+                
+                // Progress logging for large files (every 1MB)
+                if size > 1024 * 1024 && read_offset % (1024 * 1024) == 0 {
+                    crate::kinfo!("read_file_bytes: progress {}/{}MB", read_offset / (1024*1024), size / (1024*1024));
+                }
             }
+            
             crate::serial_println!("[read_file_bytes] read complete, total {} bytes", size);
 
             // Debug: log first 16 bytes
@@ -1315,14 +1303,13 @@ pub fn read_file_bytes(name: &str) -> Option<&'static [u8]> {
             crate::kinfo!(
                 "read_file_bytes: complete, first {} bytes: {:02x?}",
                 n,
-                &dest[..n]
+                &buf_slice[..n]
             );
-
-            // SAFETY: We hold the lock, buffer content is valid for 'static
-            // as long as the lock protocol is followed by all callers.
-            // The buffer persists in the static Mutex.
-            let result = unsafe { cache.as_static_slice(size) };
-            drop(cache);
+            
+            // Create static slice from vmalloc memory (memory persists for kernel lifetime)
+            let result = unsafe { 
+                Some(core::slice::from_raw_parts(vmalloc_ptr as *const u8, size))
+            };
 
             // Restore CR3 after all operations complete
             unsafe {

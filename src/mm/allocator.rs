@@ -1046,6 +1046,19 @@ pub fn kalloc(size: usize) -> Option<*mut u8> {
     heap.allocate(size).map(|addr| addr as *mut u8)
 }
 
+/// Allocate a single page-aligned physical page from buddy allocator
+/// Returns page-aligned address suitable for page table operations
+pub fn alloc_page() -> Option<u64> {
+    let mut heap = KERNEL_HEAP.lock();
+    heap.buddy.allocate(0) // order 0 = 1 page = 4KB, already page-aligned
+}
+
+/// Free a page previously allocated with alloc_page
+pub fn free_page(addr: u64) {
+    let mut heap = KERNEL_HEAP.lock();
+    heap.buddy.free(addr, 0); // order 0 = 1 page
+}
+
 /// Free memory back to kernel heap
 pub fn kfree(ptr: *mut u8) {
     if ptr.is_null() {

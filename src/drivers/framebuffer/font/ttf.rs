@@ -102,8 +102,11 @@ impl GlyphOutline {
 }
 
 /// Parsed TTF font
+/// 
+/// Uses borrowed static data from vmalloc to avoid copying large font files.
+/// The data must live for 'static lifetime (typically from read_file_bytes).
 pub struct TtfFont {
-    data: Vec<u8>,
+    data: &'static [u8],
     tables: Vec<TableEntry>,
     pub head: HeadTable,
     pub hhea: HheaTable,
@@ -116,7 +119,10 @@ pub struct TtfFont {
 
 impl TtfFont {
     /// Parse a TTF font from raw bytes
-    pub fn parse(data: &[u8]) -> Result<Self, TtfError> {
+    /// 
+    /// The data must have 'static lifetime (e.g., from vmalloc-backed read_file_bytes).
+    /// This avoids copying large font files (~8MB) into a new Vec.
+    pub fn parse(data: &'static [u8]) -> Result<Self, TtfError> {
         if data.len() < 12 {
             return Err(TtfError::BufferTooSmall);
         }
@@ -179,7 +185,7 @@ impl TtfFont {
         let maxp = Self::parse_maxp(data, maxp_offset as usize)?;
 
         Ok(Self {
-            data: data.to_vec(),
+            data, // Use borrowed reference directly, no copy needed
             tables,
             head,
             hhea,
