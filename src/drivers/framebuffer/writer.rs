@@ -200,6 +200,7 @@ impl FramebufferWriter {
             '\r' => {
                 self.cursor_x = 0;
                 self.pixel_x = 0;
+                self.char_count = 0; // Reset character width history on carriage return
             }
             '\t' => {
                 let next_tab = ((self.cursor_x / TAB_WIDTH) + 1) * TAB_WIDTH;
@@ -234,6 +235,7 @@ impl FramebufferWriter {
             '\r' => {
                 self.cursor_x = 0;
                 self.pixel_x = 0;
+                self.char_count = 0; // Reset character width history on carriage return
                 return;
             }
             '\t' => {
@@ -276,6 +278,10 @@ impl FramebufferWriter {
                     self.render.fill_rect(self.pixel_x, row_y, char_width, CELL_HEIGHT, self.bg);
                 }
                 // If char_count == 0, do nothing (already at start of editable area)
+                return;
+            }
+            // Ignore other control characters (including BEL \x07)
+            '\x00'..='\x1F' | '\x7F' => {
                 return;
             }
             _ => {}
