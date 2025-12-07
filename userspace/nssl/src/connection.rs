@@ -299,12 +299,20 @@ impl SslConnection {
 
     /// Receive ServerHello
     fn receive_server_hello(&mut self) -> bool {
+        eprintln!("[TLS] receive_server_hello: calling read_handshake");
         let data = match self.record.read_handshake(self.rbio) {
-            Some(d) => d,
-            None => return false,
+            Some(d) => {
+                eprintln!("[TLS] receive_server_hello: got {} bytes", d.len());
+                d
+            },
+            None => {
+                eprintln!("[TLS] receive_server_hello: read_handshake returned None");
+                return false;
+            }
         };
         
         if let Some((version, cipher, extensions)) = self.handshake.parse_server_hello(&data) {
+            eprintln!("[TLS] receive_server_hello: version={:04x}, cipher={:04x}", version, cipher);
             self.version = version;
             // Find cipher from ID
             self.current_cipher = SslCipher::from_id(cipher);
@@ -418,13 +426,14 @@ impl SslConnection {
         
         // 设置读取密钥（用于解密服务器的握手消息）
         // 注意：client 读取用 server_key，写入用 client_key
+        // 先设置版本，这样 set_keys 才能正确启用 TLS 1.3 加密
+        self.record.set_version(crate::TLS1_3_VERSION);
         self.record.set_keys(
             hs_keys.server_key.clone(),
             hs_keys.client_key.clone(),
             hs_keys.server_iv.clone(),
             hs_keys.client_iv.clone(),
         );
-        self.record.set_version(crate::TLS1_3_VERSION);
         
         // 1. 接收 EncryptedExtensions
         if !self.receive_encrypted_extensions() {
