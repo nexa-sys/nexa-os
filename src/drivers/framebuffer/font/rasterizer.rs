@@ -17,9 +17,6 @@ use alloc::vec::Vec;
 use super::glyph::GlyphBitmap;
 use super::ttf::{GlyphOutline, GlyphPoint, HMetric, TtfFont};
 
-/// Number of subpixel samples per pixel (for anti-aliasing)
-const AA_SAMPLES: usize = 4;
-
 // Soft-float math functions for no_std
 #[inline]
 fn floor_f32(x: f32) -> f32 {
@@ -95,7 +92,7 @@ impl Rasterizer {
     }
 
     /// Rasterize a glyph outline to a bitmap
-    pub fn rasterize(&self, font: &TtfFont, outline: &GlyphOutline, metrics: &HMetric) -> GlyphBitmap {
+    pub fn rasterize(&self, _font: &TtfFont, outline: &GlyphOutline, metrics: &HMetric) -> GlyphBitmap {
         // Handle empty glyphs (like space)
         if outline.contours.is_empty() {
             let advance = ((metrics.advance_width as f32) * self.scale) as u16;
@@ -135,7 +132,7 @@ impl Rasterizer {
     /// Build edge list from glyph contours
     fn build_edges(&self, outline: &GlyphOutline, x_offset: f32, y_offset: f32) -> Vec<Edge> {
         let mut edges = Vec::new();
-
+        
         for contour in &outline.contours {
             if contour.is_empty() {
                 continue;
@@ -158,30 +155,38 @@ impl Rasterizer {
                 .collect();
 
             // Generate edges from the contour
-            let n = scaled.len();
-            for i in 0..n {
-                let p0 = scaled[i];
-                let p1 = scaled[(i + 1) % n];
-
-                // Check if this is a curve control point
-                if !expanded[i].on_curve {
-                    // This shouldn't happen after expansion, but handle it
-                    continue;
-                }
-
-                // Check next point
-                let next_idx = (i + 1) % n;
-                if !expanded[next_idx].on_curve {
-                    // Quadratic Bézier curve
-                    let ctrl = p1;
-                    let end_idx = (i + 2) % n;
-                    let end = scaled[end_idx];
-
-                    // Flatten the curve into line segments
-                    self.add_bezier_edges(&mut edges, p0, ctrl, end);
+            // After expand_contour, the pattern is: on, [off, on], on, [off, on], ...
+            // Walk through and connect each segment
+            let n = expanded.len();
+            let mut i = 0;
+            
+            // Find first on-curve point
+            while i < n && !expanded[i].on_curve {
+                i += 1;
+            }
+            if i >= n {
+                continue;
+            }
+            
+            let first_on = i;
+            let mut current = i;
+            
+            loop {
+                let next = (current + 1) % n;
+                
+                if !expanded[next].on_curve {
+                    // Quadratic Bézier: current (on) -> next (off) -> next+1 (on)
+                    let end = (next + 1) % n;
+                    self.add_bezier_edges(&mut edges, scaled[current], scaled[next], scaled[end]);
+                    current = end;
                 } else {
-                    // Straight line
-                    self.add_line_edge(&mut edges, p0, p1);
+                    // Straight line: current (on) -> next (on)
+                    self.add_line_edge(&mut edges, scaled[current], scaled[next]);
+                    current = next;
+                }
+                
+                if current == first_on {
+                    break; // Completed the contour loop
                 }
             }
         }
@@ -283,19 +288,26 @@ impl Rasterizer {
             return;
         }
 
+        // Winding rule in SCREEN coordinates (Y increases downward):
+        // - Edge going UP (y decreasing): direction = +1 (entering shape from left)
+        // - Edge going DOWN (y increasing): direction = -1 (exiting shape from left)
+        // This works because TTF outer contours are clockwise in font coords (Y-up),
+        // which become counter-clockwise in screen coords (Y-down).
         let (y_start, y_end, x_start, direction) = if p0.1 < p1.1 {
-            // Down-going edge
+            // Going DOWN in screen coords (Y increasing)
             (p0.1, p1.1, p0.0, -1)
         } else {
-            // Up-going edge
+            // Going UP in screen coords (Y decreasing)
             (p1.1, p0.1, p1.0, 1)
         };
 
         let dx_per_y = (p1.0 - p0.0) / (p1.1 - p0.1);
 
+        // Use floor for y_start, but keep y_end as the actual value 
+        // to prevent overlapping edges from adjacent curve segments
         edges.push(Edge {
             y_start: floor_f32(y_start) as i32,
-            y_end: ceil_f32(y_end) as i32,
+            y_end: floor_f32(y_end) as i32,  // Use floor, not ceil - prevents overlap
             x_start,
             dx_per_y,
             direction,

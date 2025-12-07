@@ -191,10 +191,43 @@ impl FramebufferWriter {
 
     /// Write a Unicode character using TTF fonts if available
     fn write_unicode_char(&mut self, ch: char) {
+        // Handle control characters first
+        match ch {
+            '\n' => {
+                self.newline();
+                return;
+            }
+            '\r' => {
+                self.cursor_x = 0;
+                return;
+            }
+            '\t' => {
+                let next_tab = ((self.cursor_x / TAB_WIDTH) + 1) * TAB_WIDTH;
+                while self.cursor_x < next_tab && self.cursor_x < self.columns {
+                    // Clear cell for tab
+                    self.render.clear_cell(self.cursor_x, self.cursor_y, self.bg);
+                    self.cursor_x += 1;
+                }
+                return;
+            }
+            '\x08' => {
+                // Backspace
+                if self.cursor_x > 0 {
+                    self.cursor_x -= 1;
+                }
+                return;
+            }
+            _ => {}
+        }
+
         // Check if TTF font system is ready
         if !font::is_ready() {
-            // Fall back to placeholder
-            self.write_char('?');
+            // Fall back to bitmap
+            if (ch as u32) <= 0x7F {
+                self.write_char(ch);
+            } else {
+                self.write_char('?');
+            }
             return;
         }
 
@@ -259,6 +292,7 @@ impl FramebufferWriter {
             }
         } else {
             // Glyph not found, use placeholder
+            crate::kdebug!("write_unicode_char: get_glyph returned None for U+{:04X}", ch as u32);
             self.write_char('?');
         }
     }
@@ -453,15 +487,66 @@ impl FramebufferWriter {
 
 impl Write for FramebufferWriter {
     fn write_str(&mut self, s: &str) -> fmt::Result {
+        // Debug: track when TTF becomes ready
+        static WAS_READY: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+        let is_ready = font::is_ready();
+        if is_ready && !WAS_READY.swap(true, core::sync::atomic::Ordering::Relaxed) {
+            crate::kinfo!("write_str: TTF is now READY, switching to TTF rendering");
+        }
+
         for ch in s.chars() {
-            if ch == '\u{1B}' {
-                self.process_byte(0x1B);
-            } else if (ch as u32) <= 0x7F {
-                self.process_byte(ch as u8);
-            } else {
-                // For non-ASCII characters (Chinese, special symbols, etc.),
-                // try to render using TTF fonts if available.
-                self.write_unicode_char(ch);
+            // Always go through ANSI state machine first
+            match self.ansi.state {
+                AnsiState::Ground => {
+                    if ch == '\u{1B}' {
+                        // Start of escape sequence
+                        self.ansi.state = AnsiState::Escape;
+                    } else if is_ready {
+                        // TTF font system is ready - use TTF for ALL characters
+                        self.write_unicode_char(ch);
+                    } else if (ch as u32) <= 0x7F {
+                        // Fallback to bitmap font for ASCII when TTF not ready
+                        self.process_byte(ch as u8);
+                    } else {
+                        // Non-ASCII without TTF - show placeholder
+                        self.write_char('?');
+                    }
+                }
+                AnsiState::Escape => {
+                    if ch == '[' {
+                        self.ansi.state = AnsiState::Csi;
+                        self.ansi.param_len = 0;
+                    } else {
+                        // Not a valid CSI sequence, reset and process character
+                        self.ansi.state = AnsiState::Ground;
+                        if is_ready {
+                            self.write_unicode_char(ch);
+                        } else if (ch as u32) <= 0x7F {
+                            self.process_byte(ch as u8);
+                        }
+                    }
+                }
+                AnsiState::Csi => {
+                    match ch {
+                        '0'..='9' | ';' => {
+                            self.ansi.push_param(ch as u8);
+                        }
+                        'm' | 'J' | 'K' | 'H' | 'A' | 'B' | 'C' | 'D' => {
+                            let (params, count) = self.ansi.parse_params();
+                            self.handle_csi(ch as u8, &params[..count]);
+                            self.ansi.reset();
+                        }
+                        '\u{1B}' => {
+                            // New escape sequence starts
+                            self.ansi.state = AnsiState::Escape;
+                            self.ansi.param_len = 0;
+                        }
+                        _ => {
+                            // Unknown CSI terminator, reset
+                            self.ansi.reset();
+                        }
+                    }
+                }
             }
         }
         Ok(())

@@ -971,9 +971,8 @@ impl Ext2Filesystem {
             let next_inode = match self.find_in_directory(&inode, segment) {
                 Some(n) => n,
                 None => {
-                    // Debug: log which segment failed
-                    let msg = b"lookup_internal: segment not found";
-                    unsafe { kmod_log_warn(msg.as_ptr(), msg.len()); }
+                    // Path segment not found - this is normal for non-existent paths
+                    // Don't log as warning to avoid noise during font directory scanning
                     return None;
                 }
             };

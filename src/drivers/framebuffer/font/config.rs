@@ -68,12 +68,15 @@ impl FontConfig {
 
         while let Some(event) = parser.next() {
             match event {
-                XmlEvent::StartElement { name, .. } => {
+                XmlEvent::StartElement { name, attrs } => {
                     match name {
                         "dir" => {
                             if let Some(text) = parser.read_text() {
                                 if config.directories.len() < MAX_FONT_DIRS {
-                                    config.directories.push(String::from(text.trim()));
+                                    let expanded = Self::expand_dir_path(text.trim(), attrs);
+                                    if !expanded.is_empty() {
+                                        config.directories.push(expanded);
+                                    }
                                 }
                             }
                         }
@@ -190,12 +193,46 @@ impl FontConfig {
     pub fn get_directories(&self) -> &[String] {
         &self.directories
     }
+
+    /// Expand font directory path based on prefix attribute
+    /// - prefix="xdg" -> XDG_DATA_HOME/path or /root/.local/share/path
+    /// - ~ at start -> /root (kernel runs as root)
+    /// - relative path -> skip (not valid in kernel context)
+    fn expand_dir_path(path: &str, attrs: &str) -> String {
+        // Check for prefix="xdg" attribute
+        let has_xdg_prefix = attrs.contains("prefix=\"xdg\"") || attrs.contains("prefix='xdg'");
+        
+        if has_xdg_prefix {
+            // XDG_DATA_HOME defaults to ~/.local/share
+            let mut result = String::from("/root/.local/share/");
+            result.push_str(path);
+            return result;
+        }
+        
+        // Expand ~ to /root
+        if path.starts_with("~/") {
+            let mut result = String::from("/root");
+            result.push_str(&path[1..]); // Skip the ~, keep the /
+            return result;
+        }
+        
+        if path == "~" {
+            return String::from("/root");
+        }
+        
+        // Skip relative paths (not valid for kernel font loading)
+        if !path.starts_with('/') {
+            return String::new(); // Return empty to indicate skip
+        }
+        
+        String::from(path)
+    }
 }
 
 /// XML parser events
 #[derive(Debug)]
 enum XmlEvent<'a> {
-    StartElement { name: &'a str },
+    StartElement { name: &'a str, attrs: &'a str },
     EndElement { name: &'a str },
     Text(&'a str),
 }
@@ -263,21 +300,19 @@ impl<'a> XmlParser<'a> {
                         tag_content
                     };
 
-                    // Extract tag name (first word)
-                    let name = tag_content
-                        .split_whitespace()
-                        .next()
-                        .unwrap_or("")
-                        .trim();
+                    // Extract tag name (first word) and remaining attrs
+                    let mut parts = tag_content.splitn(2, |c: char| c.is_whitespace());
+                    let name = parts.next().unwrap_or("").trim();
+                    let attrs = parts.next().unwrap_or("").trim();
 
                     self.pos += end + 1;
 
                     if is_self_closing {
                         // Return start then queue end
-                        return Some(XmlEvent::StartElement { name });
+                        return Some(XmlEvent::StartElement { name, attrs });
                     }
 
-                    return Some(XmlEvent::StartElement { name });
+                    return Some(XmlEvent::StartElement { name, attrs });
                 }
             }
         } else {

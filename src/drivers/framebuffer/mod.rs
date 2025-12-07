@@ -147,7 +147,16 @@ pub fn backspace() {
 
 /// Write a string to the framebuffer
 pub fn write_str(text: &str) {
-    write_bytes(text.as_bytes());
+    if !FRAMEBUFFER_READY.load(Ordering::SeqCst) {
+        return;
+    }
+
+    if let Some(mut guard) = FRAMEBUFFER_WRITER.try_lock() {
+        if let Some(writer) = guard.as_mut() {
+            use core::fmt::Write;
+            let _ = writer.write_str(text);
+        }
+    }
 }
 
 /// Write bytes to the framebuffer
@@ -156,10 +165,21 @@ pub fn write_bytes(bytes: &[u8]) {
         return;
     }
 
-    if let Some(mut guard) = FRAMEBUFFER_WRITER.try_lock() {
-        if let Some(writer) = guard.as_mut() {
-            for &byte in bytes {
-                writer.process_byte(byte);
+    // Try to interpret as UTF-8 string for TTF rendering
+    if let Ok(text) = core::str::from_utf8(bytes) {
+        if let Some(mut guard) = FRAMEBUFFER_WRITER.try_lock() {
+            if let Some(writer) = guard.as_mut() {
+                use core::fmt::Write;
+                let _ = writer.write_str(text);
+            }
+        }
+    } else {
+        // Fallback to byte-by-byte for invalid UTF-8
+        if let Some(mut guard) = FRAMEBUFFER_WRITER.try_lock() {
+            if let Some(writer) = guard.as_mut() {
+                for &byte in bytes {
+                    writer.process_byte(byte);
+                }
             }
         }
     }
