@@ -103,7 +103,10 @@ check_dependencies() {
     cd "$LIB_SRC_PATH"
     
     # Build static library
-    RUSTFLAGS="-C opt-level=2 -C panic=abort -L $SYSROOT_DIR/lib" \
+    # NOTE: We use sysroot-pic/lib because cargo builds ALL crate-types defined in Cargo.toml
+    # (cdylib + staticlib + rlib), and cdylib requires PIC-compiled libc.a
+    local SYSROOT_PIC_LIB="$BUILD_DIR/userspace-build/sysroot-pic/lib"
+    RUSTFLAGS="-C opt-level=2 -C panic=abort -L $SYSROOT_PIC_LIB" \
         cargo build -Z build-std=std,core,alloc,panic_abort \
         --target "$TARGET_LIB" --release 2>&1 | grep -v "^warning:" || true
     

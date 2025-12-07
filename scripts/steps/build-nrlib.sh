@@ -32,8 +32,9 @@ build_nrlib_static() {
     
     if [ -f "$staticlib" ]; then
         cp "$staticlib" "$SYSROOT_DIR/lib/libc.a"
-        # Create empty libunwind.a (std has its own unwind)
+        # Create empty libunwind.a and libgcc_s.a (std has its own unwind, panic=abort doesn't need gcc_s)
         ar crs "$SYSROOT_DIR/lib/libunwind.a"
+        ar crs "$SYSROOT_DIR/lib/libgcc_s.a"
         log_success "libc.a installed to sysroot ($(file_size "$staticlib"))"
     else
         log_error "Failed to build nrlib staticlib"
