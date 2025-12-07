@@ -80,6 +80,10 @@ pub struct RecordLayer {
     version: u16,
     /// Last decrypted inner content type (TLS 1.3)
     last_inner_content_type: Option<u8>,
+    /// Whether read encryption is enabled (after receiving CCS)
+    read_encrypt_enabled: bool,
+    /// Whether write encryption is enabled (after sending CCS)
+    write_encrypt_enabled: bool,
 }
 
 impl RecordLayer {
@@ -96,10 +100,12 @@ impl RecordLayer {
             eof: false,
             version: TLS1_2_VERSION,
             last_inner_content_type: None,
+            read_encrypt_enabled: false,
+            write_encrypt_enabled: false,
         }
     }
 
-    /// Set encryption keys
+    /// Set encryption keys (TLS 1.2: keys are set but not enabled until CCS)
     pub fn set_keys(&mut self, read_key: Vec<u8>, write_key: Vec<u8>, read_iv: Vec<u8>, write_iv: Vec<u8>) {
         self.read_key = Some(read_key);
         self.write_key = Some(write_key);
@@ -107,6 +113,26 @@ impl RecordLayer {
         self.write_iv = Some(write_iv);
         self.read_seq = 0;
         self.write_seq = 0;
+        // For TLS 1.3, enable encryption immediately
+        // For TLS 1.2, encryption is enabled after CCS
+        if self.version >= TLS1_3_VERSION {
+            self.read_encrypt_enabled = true;
+            self.write_encrypt_enabled = true;
+        }
+    }
+    
+    /// Enable write encryption (called after sending ChangeCipherSpec)
+    pub fn enable_write_encryption(&mut self) {
+        self.write_encrypt_enabled = true;
+        // Reset write sequence number for encrypted records
+        self.write_seq = 0;
+    }
+    
+    /// Enable read encryption (called after receiving ChangeCipherSpec)
+    pub fn enable_read_encryption(&mut self) {
+        self.read_encrypt_enabled = true;
+        // Reset read sequence number for encrypted records
+        self.read_seq = 0;
     }
     
     /// Set protocol version
@@ -132,6 +158,7 @@ impl RecordLayer {
     /// Read ChangeCipherSpec message
     pub fn read_ccs(&mut self, rbio: *mut Bio) -> bool {
         if rbio.is_null() {
+            eprintln!("[TLS] read_ccs: rbio is null");
             return false;
         }
 
@@ -139,18 +166,37 @@ impl RecordLayer {
         let mut header_buf = [0u8; 5];
         unsafe {
             let n = (*rbio).read(header_buf.as_mut_ptr(), 5);
+            eprintln!("[TLS] read_ccs: read {} header bytes: {:02x?}", n, &header_buf[..n.max(0) as usize]);
             if n != 5 {
+                eprintln!("[TLS] read_ccs: failed to read header (got {} bytes)", n);
                 return false;
             }
         }
 
         let header = match RecordHeader::from_bytes(&header_buf) {
             Some(h) => h,
-            None => return false,
+            None => {
+                eprintln!("[TLS] read_ccs: invalid header");
+                return false;
+            }
         };
+
+        eprintln!("[TLS] read_ccs: content_type={}, version={}.{}, length={}", 
+            header.content_type, header.version_major, header.version_minor, header.length);
 
         // Check content type
         if header.content_type != ContentType::ChangeCipherSpec as u8 {
+            eprintln!("[TLS] read_ccs: expected CCS (20), got {}", header.content_type);
+            // If it's an Alert (21), try to read and display it
+            if header.content_type == ContentType::Alert as u8 && header.length >= 2 {
+                let mut alert_data = vec![0u8; header.length as usize];
+                unsafe {
+                    (*rbio).read(alert_data.as_mut_ptr(), header.length as i32);
+                }
+                eprintln!("[TLS] read_ccs: Alert level={}, desc={}", 
+                    alert_data.get(0).unwrap_or(&0),
+                    alert_data.get(1).unwrap_or(&0));
+            }
             return false;
         }
 
@@ -159,9 +205,12 @@ impl RecordLayer {
         unsafe {
             let n = (*rbio).read(data.as_mut_ptr(), header.length as i32);
             if n != header.length as i32 {
+                eprintln!("[TLS] read_ccs: failed to read data (got {} of {})", n, header.length);
                 return false;
             }
         }
+
+        eprintln!("[TLS] read_ccs: data={:02x?}", data);
 
         // Verify CCS content
         data.len() == 1 && data[0] == 1
@@ -189,10 +238,15 @@ impl RecordLayer {
             return false;
         }
 
-        // Encrypt if keys are set
-        let (record_data, length, outer_content_type) = if self.write_key.is_some() {
+        eprintln!("[TLS] write_record: type={:?}, data_len={}, encrypt_enabled={}, has_key={}", 
+            content_type, data.len(), self.write_encrypt_enabled, self.write_key.is_some());
+
+        // Encrypt if keys are set AND encryption is enabled
+        let (record_data, length, outer_content_type) = if self.write_key.is_some() && self.write_encrypt_enabled {
+            eprintln!("[TLS] write_record: encrypting with seq={}", self.write_seq);
             match self.encrypt_record(content_type, data) {
                 Some(encrypted) => {
+                    eprintln!("[TLS] write_record: encrypted_len={}", encrypted.len());
                     let len = encrypted.len();
                     // TLS 1.3: outer content type is always ApplicationData
                     let outer_type = if self.version >= TLS1_3_VERSION {
@@ -202,7 +256,10 @@ impl RecordLayer {
                     };
                     (encrypted, len as u16, outer_type)
                 }
-                None => return false,
+                None => {
+                    eprintln!("[TLS] write_record: encryption FAILED");
+                    return false;
+                }
             }
         } else {
             (data.to_vec(), data.len() as u16, content_type)
@@ -218,14 +275,18 @@ impl RecordLayer {
         let header = RecordHeader::new(outer_content_type, header_version, length);
         let header_bytes = header.to_bytes();
 
+        eprintln!("[TLS] write_record: header={:02x?}", &header_bytes);
+
         // Write header
         unsafe {
             if (*wbio).write(header_bytes.as_ptr(), 5) != 5 {
+                eprintln!("[TLS] write_record: failed to write header");
                 return false;
             }
             
             // Write data
             if (*wbio).write(record_data.as_ptr(), record_data.len() as c_int) != record_data.len() as c_int {
+                eprintln!("[TLS] write_record: failed to write data");
                 return false;
             }
         }
@@ -356,7 +417,8 @@ impl RecordLayer {
         
         // Check content type
         // TLS 1.3: encrypted records always have ApplicationData outer type
-        let is_encrypted = self.read_key.is_some();
+        // Use read_encrypt_enabled instead of just checking if key exists
+        let is_encrypted = self.read_key.is_some() && self.read_encrypt_enabled;
         let expected_outer_type = if is_encrypted && self.version >= TLS1_3_VERSION {
             ContentType::ApplicationData as u8
         } else {
@@ -409,8 +471,8 @@ impl RecordLayer {
             }
         }
 
-        // Decrypt if keys are set
-        let plaintext = if self.read_key.is_some() {
+        // Decrypt if keys are set AND read encryption is enabled
+        let plaintext = if self.read_key.is_some() && self.read_encrypt_enabled {
             self.decrypt_record(header.content_type, &data)?
         } else {
             data

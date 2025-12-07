@@ -1511,7 +1511,12 @@ impl SslConnection {
     /// 发送 ChangeCipherSpec
     fn send_change_cipher_spec(&mut self) -> bool {
         let ccs = [1u8]; // ChangeCipherSpec 消息内容
-        self.record.write_ccs(&ccs, self.wbio)
+        if !self.record.write_ccs(&ccs, self.wbio) {
+            return false;
+        }
+        // Enable write encryption after sending CCS
+        self.record.enable_write_encryption();
+        true
     }
     
     /// 发送 Finished
@@ -1520,15 +1525,20 @@ impl SslConnection {
         // verify_data = PRF(master_secret, "client finished", Hash(handshake_messages))
         
         let transcript_hash = self.handshake.get_transcript_hash();
+        eprintln!("[TLS1.2] Finished: transcript_hash len={}", transcript_hash.len());
+        
+        let pms = self.pre_master_secret.as_deref().unwrap_or(&[]);
+        eprintln!("[TLS1.2] Finished: pre_master_secret len={}", pms.len());
         
         // 使用简化的 verify_data（12 字节）
         let verify_data = compute_verify_data(
-            self.pre_master_secret.as_deref().unwrap_or(&[]),
+            pms,
             &self.handshake.client_random,
             &self.handshake.server_random,
             b"client finished",
             &transcript_hash,
         );
+        eprintln!("[TLS1.2] Finished: verify_data={:02x?}", &verify_data[..]);
         
         // 构建 Finished 消息
         let mut msg = Vec::new();
@@ -1540,14 +1550,25 @@ impl SslConnection {
         msg.push((len & 0xFF) as u8);
         msg.extend_from_slice(&verify_data);
         
+        eprintln!("[TLS1.2] Finished: msg={:02x?}", &msg[..]);
+        
         // Finished 消息是加密发送的
-        self.record.write_handshake(&msg, self.wbio)
+        let result = self.record.write_handshake(&msg, self.wbio);
+        eprintln!("[TLS1.2] Finished: write_handshake returned {}", result);
+        result
     }
     
     /// 接收 ChangeCipherSpec
     fn receive_change_cipher_spec(&mut self) -> bool {
+        eprintln!("[TLS] receive_change_cipher_spec: calling read_ccs");
         // 读取 ChangeCipherSpec 记录
-        self.record.read_ccs(self.rbio)
+        let result = self.record.read_ccs(self.rbio);
+        eprintln!("[TLS] receive_change_cipher_spec: read_ccs returned {}", result);
+        if result {
+            // Enable read encryption after receiving CCS
+            self.record.enable_read_encryption();
+        }
+        result
     }
     
     /// 接收 Finished
