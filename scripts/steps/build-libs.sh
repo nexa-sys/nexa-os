@@ -131,7 +131,10 @@ build_library_shared() {
     cd "$LIB_SRC_PATH"
     
     # Build shared library with PIC
-    RUSTFLAGS="-C opt-level=2 -C panic=abort -C relocation-model=pic -L $SYSROOT_DIR/lib" \
+    # CRITICAL: Must use sysroot-pic/lib which contains PIC-compiled libc.a
+    # Using non-PIC libc.a causes R_X86_64_32S relocation errors in shared libraries
+    local SYSROOT_PIC_LIB="$BUILD_DIR/userspace-build/sysroot-pic/lib"
+    RUSTFLAGS="-C opt-level=2 -C panic=abort -C relocation-model=pic -L $SYSROOT_PIC_LIB -L $SYSROOT_DIR/lib" \
         cargo build -Z build-std=std,core,alloc,panic_abort \
         --target "$TARGET_LIB" --release 2>&1 | grep -v "^warning:" || true
     
