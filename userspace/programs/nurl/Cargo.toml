@@ -17,3 +17,6 @@ default = ["use-nrlib", "https"]
 use-nrlib = ["nrlib"]
 use-nrlib-std = ["nrlib", "nrlib/std"]
 https = ["nssl"]
+# Future HTTP/2 and HTTP/3 support
+http2 = []
+http3 = []
