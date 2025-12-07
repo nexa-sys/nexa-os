@@ -130,6 +130,12 @@ pub fn get_baseline_offset(size: u16) -> u16 {
     manager.as_ref().map_or(size, |m| m.get_baseline_offset(size))
 }
 
+/// Get the advance width for a character at a given size
+pub fn get_advance(ch: char, size: u16) -> u16 {
+    let manager = FONT_MANAGER.lock();
+    manager.as_ref().map_or(size / 2, |m| m.get_advance(ch, size))
+}
+
 /// Check if a character is a wide (fullwidth) character
 /// 
 /// East Asian Wide characters should occupy 2 cells in a terminal.

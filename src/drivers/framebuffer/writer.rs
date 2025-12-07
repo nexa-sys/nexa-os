@@ -18,6 +18,9 @@ use crate::ktrace;
 /// Tab width in characters
 const TAB_WIDTH: usize = 4;
 
+/// Maximum characters per line for width history
+const MAX_LINE_CHARS: usize = 256;
+
 /// Framebuffer text console writer
 ///
 /// Provides a text console interface on top of the framebuffer,
@@ -38,6 +41,10 @@ pub struct FramebufferWriter {
     default_bg_rgb: RgbColor,
     bold: bool,
     ansi: AnsiParser,
+    /// Character width history for current line (for accurate backspace)
+    char_widths: [u8; MAX_LINE_CHARS],
+    /// Number of characters in current line
+    char_count: usize,
 }
 
 unsafe impl Send for FramebufferWriter {}
@@ -86,6 +93,8 @@ impl FramebufferWriter {
             default_bg_rgb: DEFAULT_BG,
             bold: false,
             ansi: AnsiParser::new(),
+            char_widths: [0; MAX_LINE_CHARS],
+            char_count: 0,
         })
     }
 
@@ -144,6 +153,7 @@ impl FramebufferWriter {
     fn newline(&mut self) {
         self.cursor_x = 0;
         self.pixel_x = 0;
+        self.char_count = 0; // Reset character width history for new line
         if self.cursor_y + 1 >= self.rows {
             // Before multi-core compositor init: clear instead of scroll for performance
             // After compositor init: use proper scrolling
@@ -154,6 +164,26 @@ impl FramebufferWriter {
             }
         } else {
             self.cursor_y += 1;
+        }
+    }
+
+    /// Record a character's advance width for backspace support
+    #[inline]
+    fn push_char_width(&mut self, width: usize) {
+        if self.char_count < MAX_LINE_CHARS {
+            self.char_widths[self.char_count] = width.min(255) as u8;
+            self.char_count += 1;
+        }
+    }
+
+    /// Pop the last character's width for backspace
+    #[inline]
+    fn pop_char_width(&mut self) -> usize {
+        if self.char_count > 0 {
+            self.char_count -= 1;
+            self.char_widths[self.char_count] as usize
+        } else {
+            CELL_WIDTH // Default fallback
         }
     }
 
@@ -231,13 +261,24 @@ impl FramebufferWriter {
                 return;
             }
             '\x08' => {
-                // Backspace - go back one cell worth
-                if self.pixel_x >= CELL_WIDTH {
-                    self.pixel_x -= CELL_WIDTH;
-                } else {
-                    self.pixel_x = 0;
+                // Backspace - use recorded character width for accurate deletion
+                if self.char_count > 0 {
+                    let char_width = self.pop_char_width();
+                    if self.pixel_x >= char_width {
+                        self.pixel_x -= char_width;
+                    } else {
+                        self.pixel_x = 0;
+                    }
+                    self.cursor_x = self.pixel_x / CELL_WIDTH;
+                    // Clear the area
+                    let row_y = self.cursor_y * CELL_HEIGHT;
+                    self.render.fill_rect(self.pixel_x, row_y, char_width, CELL_HEIGHT, self.bg);
+                } else if self.cursor_y > 0 {
+                    // Move to end of previous line (no width history available)
+                    self.cursor_y -= 1;
+                    self.pixel_x = self.render.width;
+                    self.cursor_x = self.columns.saturating_sub(1);
                 }
-                self.cursor_x = self.pixel_x / CELL_WIDTH;
                 return;
             }
             _ => {}
@@ -249,9 +290,11 @@ impl FramebufferWriter {
             if (ch as u32) <= 0x7F {
                 self.write_char(ch);
                 self.pixel_x = self.cursor_x * CELL_WIDTH;
+                self.push_char_width(CELL_WIDTH);
             } else {
                 self.write_char('?');
                 self.pixel_x = self.cursor_x * CELL_WIDTH;
+                self.push_char_width(CELL_WIDTH);
             }
             return;
         }
@@ -274,6 +317,7 @@ impl FramebufferWriter {
                 self.render.fill_rect(self.pixel_x, row_y, advance.max(1), CELL_HEIGHT, self.bg);
                 self.pixel_x += advance.max(1);
                 self.cursor_x = self.pixel_x / CELL_WIDTH;
+                self.push_char_width(advance.max(1));
                 return;
             }
 
@@ -303,6 +347,7 @@ impl FramebufferWriter {
             // Advance cursor by glyph's advance width
             self.pixel_x += advance;
             self.cursor_x = self.pixel_x / CELL_WIDTH;
+            self.push_char_width(advance);
             
             // Check for line wrap
             if self.pixel_x >= self.render.width {
@@ -312,6 +357,7 @@ impl FramebufferWriter {
             // Glyph not found, use placeholder
             self.write_char('?');
             self.pixel_x = self.cursor_x * CELL_WIDTH;
+            self.push_char_width(CELL_WIDTH);
         }
     }
 
@@ -381,7 +427,7 @@ impl FramebufferWriter {
             0 => {
                 // Clear from cursor to end of screen
                 let start_pixel_y = self.cursor_y * CELL_HEIGHT;
-                let start_pixel_x = self.cursor_x * CELL_WIDTH;
+                let start_pixel_x = self.pixel_x;
                 let width = self.render.width.saturating_sub(start_pixel_x);
                 self.render
                     .fill_rect(start_pixel_x, start_pixel_y, width, CELL_HEIGHT, self.bg);
@@ -394,7 +440,7 @@ impl FramebufferWriter {
                 self.render.fill_rect(
                     0,
                     start_pixel_y,
-                    self.cursor_x * CELL_WIDTH,
+                    self.pixel_x,
                     CELL_HEIGHT,
                     self.bg,
                 );
@@ -411,7 +457,7 @@ impl FramebufferWriter {
         match mode {
             0 => {
                 // Clear from cursor to end of line
-                let start_pixel_x = self.cursor_x * CELL_WIDTH;
+                let start_pixel_x = self.pixel_x;
                 let width = self.render.width.saturating_sub(start_pixel_x);
                 self.render
                     .fill_rect(start_pixel_x, pixel_y, width, CELL_HEIGHT, self.bg);
@@ -421,7 +467,7 @@ impl FramebufferWriter {
                 self.render.fill_rect(
                     0,
                     pixel_y,
-                    self.cursor_x * CELL_WIDTH,
+                    self.pixel_x,
                     CELL_HEIGHT,
                     self.bg,
                 );
@@ -470,16 +516,24 @@ impl FramebufferWriter {
 
     /// Handle backspace
     pub fn backspace(&mut self) {
-        if self.cursor_x == 0 {
-            if self.cursor_y == 0 {
-                return;
+        // Use recorded character width for accurate deletion
+        if self.char_count > 0 {
+            let char_width = self.pop_char_width();
+            if self.pixel_x >= char_width {
+                self.pixel_x -= char_width;
+            } else {
+                self.pixel_x = 0;
             }
+            self.cursor_x = self.pixel_x / CELL_WIDTH;
+            // Clear the area
+            let row_y = self.cursor_y * CELL_HEIGHT;
+            self.render.fill_rect(self.pixel_x, row_y, char_width, CELL_HEIGHT, self.bg);
+        } else if self.cursor_y > 0 {
+            // Move to end of previous line (no width history available)
             self.cursor_y -= 1;
+            self.pixel_x = self.render.width;
             self.cursor_x = self.columns.saturating_sub(1);
-        } else {
-            self.cursor_x -= 1;
         }
-        self.render.clear_cell(self.cursor_x, self.cursor_y, self.bg);
     }
 
     /// Clear the entire screen and reset cursor
@@ -499,6 +553,7 @@ impl FramebufferWriter {
         self.cursor_x = 0;
         self.cursor_y = 0;
         self.pixel_x = 0;
+        self.char_count = 0;
         self.reset_colors();
         self.ansi.reset();
     }
