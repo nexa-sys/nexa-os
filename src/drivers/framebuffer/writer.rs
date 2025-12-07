@@ -262,6 +262,7 @@ impl FramebufferWriter {
             }
             '\x08' => {
                 // Backspace - use recorded character width for accurate deletion
+                // Only process if we have characters to delete on this line
                 if self.char_count > 0 {
                     let char_width = self.pop_char_width();
                     if self.pixel_x >= char_width {
@@ -273,12 +274,8 @@ impl FramebufferWriter {
                     // Clear the area
                     let row_y = self.cursor_y * CELL_HEIGHT;
                     self.render.fill_rect(self.pixel_x, row_y, char_width, CELL_HEIGHT, self.bg);
-                } else if self.cursor_y > 0 {
-                    // Move to end of previous line (no width history available)
-                    self.cursor_y -= 1;
-                    self.pixel_x = self.render.width;
-                    self.cursor_x = self.columns.saturating_sub(1);
                 }
+                // If char_count == 0, do nothing (already at start of editable area)
                 return;
             }
             _ => {}
@@ -517,6 +514,7 @@ impl FramebufferWriter {
     /// Handle backspace
     pub fn backspace(&mut self) {
         // Use recorded character width for accurate deletion
+        // Only process if we have characters to delete on this line
         if self.char_count > 0 {
             let char_width = self.pop_char_width();
             if self.pixel_x >= char_width {
@@ -528,12 +526,8 @@ impl FramebufferWriter {
             // Clear the area
             let row_y = self.cursor_y * CELL_HEIGHT;
             self.render.fill_rect(self.pixel_x, row_y, char_width, CELL_HEIGHT, self.bg);
-        } else if self.cursor_y > 0 {
-            // Move to end of previous line (no width history available)
-            self.cursor_y -= 1;
-            self.pixel_x = self.render.width;
-            self.cursor_x = self.columns.saturating_sub(1);
         }
+        // If char_count == 0, do nothing (already at start of editable area)
     }
 
     /// Clear the entire screen and reset cursor
