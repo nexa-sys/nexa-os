@@ -156,20 +156,6 @@ impl BigInt {
         self.mod_reduce(m)
     }
 
-    /// Division returning quotient and remainder
-    pub fn div(&self, other: &Self) -> (Self, Self) {
-        if other.is_zero() {
-            return (Self::zero(), Self::zero());
-        }
-        if self < other {
-            return (Self::zero(), self.clone());
-        }
-
-        let q = Self::div_simple(self, other);
-        let r = self.sub(&q.mul(other));
-        (q, r)
-    }
-
     /// Convert to bytes (big-endian)
     pub fn to_bytes_be(&self) -> Vec<u8> {
         if self.len == 0 {
@@ -331,20 +317,106 @@ impl BigInt {
     }
 
     /// Modular reduction: self mod m
+    /// Uses shift-and-subtract algorithm for reasonable performance
     pub fn mod_reduce(&self, m: &Self) -> Self {
+        if m.is_zero() {
+            return Self::zero();
+        }
         if self < m {
             return self.clone();
         }
         
-        let mut r = self.clone();
-        
-        // Simple repeated subtraction for now
-        // TODO: Implement Barrett/Montgomery reduction for performance
-        while &r >= m {
-            r = r.sub(m);
+        // Use division to get remainder
+        let (_q, r) = self.div(m);
+        r
+    }
+
+    /// Division: returns (quotient, remainder)
+    pub fn div(&self, divisor: &Self) -> (Self, Self) {
+        if divisor.is_zero() {
+            // Division by zero - return zero
+            return (Self::zero(), Self::zero());
         }
         
-        r
+        if self < divisor {
+            return (Self::zero(), self.clone());
+        }
+        
+        if self == divisor {
+            return (Self::from_u64(1), Self::zero());
+        }
+
+        // Binary long division
+        let mut quotient = Self::zero();
+        let mut remainder = Self::zero();
+        
+        let self_bits = self.bit_length();
+        
+        // Process bits from most significant to least
+        for i in (0..self_bits).rev() {
+            // Shift remainder left by 1
+            remainder = remainder.shl(1);
+            
+            // Bring down next bit from dividend
+            if self.get_bit(i) {
+                remainder.limbs[0] |= 1;
+                remainder.len = core::cmp::max(remainder.len, 1);
+            }
+            
+            // If remainder >= divisor, subtract and set quotient bit
+            if &remainder >= divisor {
+                remainder = remainder.sub(divisor);
+                // Set bit i in quotient
+                let limb_idx = i / 64;
+                let bit_idx = i % 64;
+                if limb_idx < MAX_LIMBS {
+                    quotient.limbs[limb_idx] |= 1u64 << bit_idx;
+                    quotient.len = core::cmp::max(quotient.len, limb_idx + 1);
+                }
+            }
+        }
+        
+        quotient.normalize();
+        remainder.normalize();
+        (quotient, remainder)
+    }
+
+    /// Left shift by n bits
+    pub fn shl(&self, n: usize) -> Self {
+        if n == 0 || self.is_zero() {
+            return self.clone();
+        }
+        
+        let limb_shift = n / 64;
+        let bit_shift = n % 64;
+        
+        let mut result = Self::zero();
+        
+        if bit_shift == 0 {
+            // Simple limb copy
+            for i in 0..self.len {
+                if i + limb_shift < MAX_LIMBS {
+                    result.limbs[i + limb_shift] = self.limbs[i];
+                }
+            }
+            result.len = core::cmp::min(self.len + limb_shift, MAX_LIMBS);
+        } else {
+            // Need to handle bit shifting
+            let mut carry = 0u64;
+            for i in 0..self.len {
+                if i + limb_shift < MAX_LIMBS {
+                    result.limbs[i + limb_shift] = (self.limbs[i] << bit_shift) | carry;
+                    carry = self.limbs[i] >> (64 - bit_shift);
+                }
+            }
+            if carry != 0 && self.len + limb_shift < MAX_LIMBS {
+                result.limbs[self.len + limb_shift] = carry;
+            }
+            result.len = core::cmp::min(self.len + limb_shift + 1, MAX_LIMBS);
+        }
+        
+        result.normalize();
+        result
     }
 
     /// Modular exponentiation: base^exp mod m
@@ -370,45 +442,6 @@ impl BigInt {
             base = base.mul(&base).mod_reduce(m);
         }
 
-        result
-    }
-
-    /// Left shift by n bits
-    pub fn shl(&self, n: usize) -> Self {
-        if self.is_zero() || n == 0 {
-            return self.clone();
-        }
-
-        let limb_shift = n / 64;
-        let bit_shift = n % 64;
-
-        let mut result = Self::zero();
-        
-        if bit_shift == 0 {
-            for i in 0..self.len {
-                if i + limb_shift < MAX_LIMBS {
-                    result.limbs[i + limb_shift] = self.limbs[i];
-                }
-            }
-        } else {
-            let mut carry = 0u64;
-            for i in 0..self.len {
-                let idx = i + limb_shift;
-                if idx >= MAX_LIMBS {
-                    break;
-                }
-                result.limbs[idx] = (self.limbs[i] << bit_shift) | carry;
-                carry = self.limbs[i] >> (64 - bit_shift);
-            }
-            
-            let idx = self.len + limb_shift;
-            if carry != 0 && idx < MAX_LIMBS {
-                result.limbs[idx] = carry;
-            }
-        }
-
-        result.len = core::cmp::min(self.len + limb_shift + 1, MAX_LIMBS);
-        result.normalize();
         result
     }
 
@@ -458,8 +491,8 @@ impl BigInt {
         let mut s = Self::from_u64(1);
 
         while !r.is_zero() {
-            // Compute quotient
-            let q = Self::div_simple(&old_r, &r);
+            // Compute quotient using our fast binary division
+            let (q, _) = old_r.div(&r);
             
             let temp_r = r.clone();
             r = old_r.sub(&q.mul(&r));
@@ -481,41 +514,6 @@ impl BigInt {
         }
 
         Some(old_s.mod_reduce(m))
-    }
-
-    /// Integer division (simple implementation)
-    fn div_simple(a: &Self, b: &Self) -> Self {
-        if b.is_zero() {
-            return Self::zero();
-        }
-        if a < b {
-            return Self::zero();
-        }
-
-        // Simple binary search division
-        let mut low = Self::zero();
-        let mut high = a.clone();
-        
-        while low < high {
-            let mid = low.add(&high).shr(1);
-            if mid.is_zero() {
-                break;
-            }
-            
-            let product = mid.mul(b);
-            if &product <= a {
-                low = mid.add(&Self::from_u64(1));
-            } else {
-                high = mid.sub(&Self::from_u64(1));
-            }
-        }
-        
-        // Verify and adjust
-        while low.mul(b) > *a && !low.is_zero() {
-            low = low.sub(&Self::from_u64(1));
-        }
-        
-        low
     }
 
     /// Check if greater than or equal to p (for modular reduction)

@@ -97,6 +97,13 @@ impl FieldElement {
         Some(Self { value })
     }
 
+    fn from_bigint(value: BigInt) -> Self {
+        let p = Self::p();
+        Self {
+            value: value.mod_reduce(&p),
+        }
+    }
+
     fn to_bytes(&self) -> [u8; 32] {
         let bytes = self.value.to_bytes_be_padded(32);
         let mut result = [0u8; 32];
@@ -168,10 +175,230 @@ impl FieldElement {
             value: mod_exp(&self.value, &p_minus_2, &p),
         })
     }
+
+    /// Multiply by a small integer
+    fn mul_small(&self, n: u64) -> Self {
+        let p = Self::p();
+        Self {
+            value: self.value.mul(&BigInt::from_u64(n)).mod_reduce(&p),
+        }
+    }
 }
 
 // ============================================================================
-// Point Operations
+// Jacobian Point (for fast computation)
+// ============================================================================
+
+/// Jacobian point representation: (X, Y, Z) represents affine (X/Z², Y/Z³)
+/// This allows point addition and doubling without modular inversion
+#[derive(Clone, Debug)]
+struct JacobianPoint {
+    x: FieldElement,
+    y: FieldElement,
+    z: FieldElement,
+}
+
+impl JacobianPoint {
+    /// Point at infinity
+    fn infinity() -> Self {
+        Self {
+            x: FieldElement::one(),
+            y: FieldElement::one(),
+            z: FieldElement::zero(),
+        }
+    }
+
+    /// Convert from affine point
+    fn from_affine(p: &P256Point) -> Self {
+        if p.infinity {
+            Self::infinity()
+        } else {
+            Self {
+                x: p.x.clone(),
+                y: p.y.clone(),
+                z: FieldElement::one(),
+            }
+        }
+    }
+
+    /// Convert to affine point (requires one modular inversion)
+    fn to_affine(&self) -> P256Point {
+        if self.z.is_zero() {
+            return P256Point::infinity();
+        }
+
+        let z_inv = match self.z.invert() {
+            Some(inv) => inv,
+            None => return P256Point::infinity(),
+        };
+
+        let z_inv2 = z_inv.square();
+        let z_inv3 = z_inv2.mul(&z_inv);
+
+        P256Point {
+            x: self.x.mul(&z_inv2),
+            y: self.y.mul(&z_inv3),
+            infinity: false,
+        }
+    }
+
+    fn is_infinity(&self) -> bool {
+        self.z.is_zero()
+    }
+
+    /// Point doubling in Jacobian coordinates
+    /// Formula from https://hyperelliptic.org/EFD/g1p/auto-shortw-jacobian-3.html
+    /// Cost: 4M + 4S (where M = multiplication, S = squaring)
+    fn double(&self) -> Self {
+        if self.is_infinity() {
+            return Self::infinity();
+        }
+
+        // For curve y² = x³ + ax + b with a = -3:
+        // δ = Z²
+        // γ = Y²
+        // β = X·γ
+        // α = 3·(X-δ)·(X+δ) = 3·X² - 3·Z⁴ = 3·(X² - Z⁴)
+        // X' = α² - 8·β
+        // Z' = (Y+Z)² - γ - δ
+        // Y' = α·(4·β - X') - 8·γ²
+
+        let delta = self.z.square();
+        let gamma = self.y.square();
+        let beta = self.x.mul(&gamma);
+
+        // Since a = -3 for P-256, we use: α = 3·(X - Z²)·(X + Z²)
+        let x_minus_delta = self.x.sub(&delta);
+        let x_plus_delta = self.x.add(&delta);
+        let alpha = x_minus_delta.mul(&x_plus_delta).mul_small(3);
+
+        // X' = α² - 8·β
+        let alpha_sq = alpha.square();
+        let beta8 = beta.mul_small(8);
+        let x3 = alpha_sq.sub(&beta8);
+
+        // Z' = (Y + Z)² - γ - δ
+        let y_plus_z = self.y.add(&self.z);
+        let z3 = y_plus_z.square().sub(&gamma).sub(&delta);
+
+        // Y' = α·(4·β - X') - 8·γ²
+        let beta4 = beta.mul_small(4);
+        let gamma_sq = gamma.square();
+        let gamma_sq8 = gamma_sq.mul_small(8);
+        let y3 = alpha.mul(&beta4.sub(&x3)).sub(&gamma_sq8);
+
+        Self { x: x3, y: y3, z: z3 }
+    }
+
+    /// Point addition in Jacobian coordinates (mixed: Jacobian + Affine)
+    /// This is faster when adding an affine point (Z = 1)
+    /// Cost: 8M + 3S
+    fn add_affine(&self, other: &P256Point) -> Self {
+        if self.is_infinity() {
+            return Self::from_affine(other);
+        }
+        if other.infinity {
+            return self.clone();
+        }
+
+        // Z1² and Z1³
+        let z1_sq = self.z.square();
+        let z1_cu = z1_sq.mul(&self.z);
+
+        // U1 = X1, U2 = X2·Z1²
+        let u2 = other.x.mul(&z1_sq);
+
+        // S1 = Y1, S2 = Y2·Z1³
+        let s2 = other.y.mul(&z1_cu);
+
+        // H = U2 - U1 = U2 - X1
+        let h = u2.sub(&self.x);
+
+        // R = S2 - S1 = S2 - Y1
+        let r = s2.sub(&self.y);
+
+        if h.is_zero() {
+            if r.is_zero() {
+                // P1 == P2, do doubling
+                return self.double();
+            } else {
+                // P1 == -P2
+                return Self::infinity();
+            }
+        }
+
+        let h_sq = h.square();
+        let h_cu = h_sq.mul(&h);
+
+        // X3 = R² - H³ - 2·U1·H²
+        let u1_h_sq = self.x.mul(&h_sq);
+        let x3 = r.square().sub(&h_cu).sub(&u1_h_sq.double());
+
+        // Y3 = R·(U1·H² - X3) - S1·H³
+        let y3 = r.mul(&u1_h_sq.sub(&x3)).sub(&self.y.mul(&h_cu));
+
+        // Z3 = Z1·H
+        let z3 = self.z.mul(&h);
+
+        Self { x: x3, y: y3, z: z3 }
+    }
+
+    /// Full Jacobian addition (both points in Jacobian coordinates)
+    /// Cost: 12M + 4S
+    fn add(&self, other: &Self) -> Self {
+        if self.is_infinity() {
+            return other.clone();
+        }
+        if other.is_infinity() {
+            return self.clone();
+        }
+
+        let z1_sq = self.z.square();
+        let z2_sq = other.z.square();
+        let z1_cu = z1_sq.mul(&self.z);
+        let z2_cu = z2_sq.mul(&other.z);
+
+        // U1 = X1·Z2², U2 = X2·Z1²
+        let u1 = self.x.mul(&z2_sq);
+        let u2 = other.x.mul(&z1_sq);
+
+        // S1 = Y1·Z2³, S2 = Y2·Z1³
+        let s1 = self.y.mul(&z2_cu);
+        let s2 = other.y.mul(&z1_cu);
+
+        // H = U2 - U1
+        let h = u2.sub(&u1);
+
+        // R = S2 - S1
+        let r = s2.sub(&s1);
+
+        if h.is_zero() {
+            if r.is_zero() {
+                return self.double();
+            } else {
+                return Self::infinity();
+            }
+        }
+
+        let h_sq = h.square();
+        let h_cu = h_sq.mul(&h);
+
+        // X3 = R² - H³ - 2·U1·H²
+        let u1_h_sq = u1.mul(&h_sq);
+        let x3 = r.square().sub(&h_cu).sub(&u1_h_sq.double());
+
+        // Y3 = R·(U1·H² - X3) - S1·H³
+        let y3 = r.mul(&u1_h_sq.sub(&x3)).sub(&s1.mul(&h_cu));
+
+        // Z3 = Z1·Z2·H
+        let z3 = self.z.mul(&other.z).mul(&h);
+
+        Self { x: x3, y: y3, z: z3 }
+    }
+}
+
+// ============================================================================
+// Point Operations (Affine)
 // ============================================================================
 
 /// Affine point on the P-256 curve
@@ -342,7 +569,9 @@ impl P256Point {
         }
     }
 
-    /// Scalar multiplication using double-and-add
+    /// Scalar multiplication using Jacobian coordinates
+    /// This is MUCH faster than affine as it only requires ONE modular inversion
+    /// at the end instead of one per point operation.
     pub fn scalar_mul(&self, scalar: &[u8]) -> Self {
         let k = BigInt::from_bytes_be(scalar);
         
@@ -350,18 +579,31 @@ impl P256Point {
             return Self::infinity();
         }
 
-        let mut result = Self::infinity();
-        let mut temp = self.clone();
-        
-        let bits = k.bit_length();
-        for i in 0..bits {
-            if k.get_bit(i) {
-                result = result.add(&temp);
-            }
-            temp = temp.double();
+        if self.infinity {
+            return Self::infinity();
         }
 
-        result
+        // Use Jacobian coordinates for all intermediate computations
+        let mut result = JacobianPoint::infinity();
+        
+        // Process bits from most significant to least significant (left-to-right)
+        // This allows us to use add_affine which is faster than full Jacobian add
+        let bits = k.bit_length();
+        for i in (0..bits).rev() {
+            result = result.double();
+            if k.get_bit(i) {
+                result = result.add_affine(self);
+            }
+        }
+
+        // Single conversion back to affine (single modular inversion)
+        result.to_affine()
+    }
+
+    /// Scalar multiplication optimized for the generator point
+    /// Uses a simple double-and-add with Jacobian coordinates
+    pub fn scalar_mul_generator(scalar: &[u8]) -> Self {
+        Self::generator().scalar_mul(scalar)
     }
 }
 
