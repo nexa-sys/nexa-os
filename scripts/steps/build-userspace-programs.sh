@@ -54,6 +54,8 @@ PROGRAMS=(
     "ipc-recv:ipc-recv:bin::dyn"
     # Test programs
     "hashmap_test:hashmap_test:bin::dyn"
+    # Editors
+    "edit:edit:bin::dyn"
 )
 
 # ============================================================================

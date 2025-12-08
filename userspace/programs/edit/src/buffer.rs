@@ -202,7 +202,7 @@ impl Buffer {
     
     /// Save buffer to file
     pub fn save(&mut self) -> io::Result<()> {
-        if let Some(ref path) = self.path {
+        if let Some(path) = self.path.clone() {
             self.save_as(path.to_string_lossy().as_ref())
         } else {
             Err(io::Error::new(io::ErrorKind::Other, "No file name"))

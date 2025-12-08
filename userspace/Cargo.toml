@@ -42,6 +42,8 @@ members = [
     "programs/ipc-recv",
     # Test programs
     "programs/hashmap_test",
+    # Editors
+    "programs/edit",
 ]
 
 [workspace.package]

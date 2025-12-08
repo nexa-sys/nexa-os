@@ -177,10 +177,9 @@ impl VimScript {
     }
     
     /// Execute a Vim Script file
-    pub fn source_file(&mut self, path: &str) -> io::Result<()> {
+    pub fn source_file(&mut self, path: &str) -> io::Result<Value> {
         let content = fs::read_to_string(path)?;
-        self.execute(&content)?;
-        Ok(())
+        self.execute(&content)
     }
     
     /// Execute a string of Vim Script
@@ -313,8 +312,8 @@ impl VimScript {
         }
         
         // Mapping commands
-        if self.is_map_command(line) {
-            return self.execute_map(line);
+        if self.is_map_command(&line) {
+            return self.execute_map(&line);
         }
         
         // Autocommand
@@ -1237,18 +1236,18 @@ impl VimScript {
         while let Some(ch) = chars.next() {
             if ch == '\\' {
                 if let Some(&next) = chars.peek() {
-                    result.push(match next {
-                        'n' => '\n',
-                        'r' => '\r',
-                        't' => '\t',
-                        '\\' => '\\',
-                        '"' => '"',
-                        '\'' => '\'',
+                    match next {
+                        'n' => result.push('\n'),
+                        'r' => result.push('\r'),
+                        't' => result.push('\t'),
+                        '\\' => result.push('\\'),
+                        '"' => result.push('"'),
+                        '\'' => result.push('\''),
                         _ => {
                             result.push('\\');
-                            next
+                            result.push(next);
                         }
-                    });
+                    }
                     chars.next();
                 } else {
                     result.push('\\');

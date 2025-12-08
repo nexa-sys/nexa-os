@@ -41,6 +41,7 @@ pub mod process;
 pub mod syscall_wrapper;
 pub mod fs;
 pub mod string;
+pub mod math;
 
 // Dynamic linking support modules
 pub mod elf;
@@ -70,3 +71,4 @@ pub use syscall_wrapper::*;
 pub use fs::*;
 pub use string::*;
 pub use dirent::*;
+pub use math::*;

@@ -59,6 +59,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "edit"
+version = "0.1.0"
+dependencies = [
+ "nexa_boot_info",
+ "nrlib",
+]
+
+[[package]]
 name = "getty"
 version = "0.1.0"
 dependencies = [

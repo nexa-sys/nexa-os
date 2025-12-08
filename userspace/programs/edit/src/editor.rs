@@ -132,7 +132,8 @@ impl Editor {
     
     /// Source a Vim Script file
     pub fn source_script(&mut self, path: &str) -> io::Result<()> {
-        self.vimscript.source_file(path)
+        self.vimscript.source_file(path)?;
+        Ok(())
     }
     
     /// Execute a command
@@ -751,12 +752,16 @@ impl Editor {
     // ---- Editing helpers ----
     
     fn enter_insert_mode(&mut self) {
-        self.buffer_mut().begin_group(self.cursor_line, self.cursor_col);
+        let cursor_line = self.cursor_line;
+        let cursor_col = self.cursor_col;
+        self.buffer_mut().begin_group(cursor_line, cursor_col);
         self.mode = Mode::Insert;
     }
     
     fn leave_insert_mode(&mut self) {
-        self.buffer_mut().commit_group(self.cursor_line, self.cursor_col);
+        let cursor_line = self.cursor_line;
+        let cursor_col = self.cursor_col;
+        self.buffer_mut().commit_group(cursor_line, cursor_col);
         self.mode = Mode::Normal;
         // Adjust cursor to be within line bounds
         if self.cursor_col > 0 {
@@ -765,7 +770,9 @@ impl Editor {
     }
     
     fn insert_char(&mut self, c: char) {
-        self.buffer_mut().insert_char(self.cursor_line, self.cursor_col, c);
+        let cursor_line = self.cursor_line;
+        let cursor_col = self.cursor_col;
+        self.buffer_mut().insert_char(cursor_line, cursor_col, c);
         self.cursor_col += 1;
     }
     
@@ -777,12 +784,15 @@ impl Editor {
             String::new()
         };
         
-        self.buffer_mut().split_line(self.cursor_line, self.cursor_col);
+        let cursor_line = self.cursor_line;
+        let cursor_col = self.cursor_col;
+        self.buffer_mut().split_line(cursor_line, cursor_col);
         self.cursor_line += 1;
         self.cursor_col = 0;
         
         if !indent.is_empty() {
-            self.buffer_mut().insert_text(self.cursor_line, 0, &indent);
+            let cursor_line = self.cursor_line;
+            self.buffer_mut().insert_text(cursor_line, 0, &indent);
             self.cursor_col = indent.len();
         }
     }
@@ -800,7 +810,9 @@ impl Editor {
     fn backspace(&mut self) {
         if self.cursor_col > 0 {
             self.cursor_col -= 1;
-            self.buffer_mut().delete_char(self.cursor_line, self.cursor_col);
+            let cursor_line = self.cursor_line;
+            let cursor_col = self.cursor_col;
+            self.buffer_mut().delete_char(cursor_line, cursor_col);
         } else if self.cursor_line > 0 {
             // Join with previous line
             let prev_line_len = self.buffer().get_line(self.cursor_line - 1)
@@ -809,13 +821,16 @@ impl Editor {
             
             self.cursor_line -= 1;
             self.cursor_col = prev_line_len;
-            self.buffer_mut().join_lines(self.cursor_line);
+            let cursor_line = self.cursor_line;
+            self.buffer_mut().join_lines(cursor_line);
         }
     }
     
     fn delete_char_under_cursor(&mut self) {
         if self.current_line_len() > 0 {
-            self.buffer_mut().delete_char(self.cursor_line, self.cursor_col);
+            let cursor_line = self.cursor_line;
+            let cursor_col = self.cursor_col;
+            self.buffer_mut().delete_char(cursor_line, cursor_col);
             // Adjust cursor if at end of line
             let line_len = self.current_line_len();
             if self.cursor_col >= line_len && line_len > 0 {
@@ -827,7 +842,9 @@ impl Editor {
     fn delete_char_before_cursor(&mut self) {
         if self.cursor_col > 0 {
             self.cursor_col -= 1;
-            self.buffer_mut().delete_char(self.cursor_line, self.cursor_col);
+            let cursor_line = self.cursor_line;
+            let cursor_col = self.cursor_col;
+            self.buffer_mut().delete_char(cursor_line, cursor_col);
         }
     }
     
@@ -837,20 +854,24 @@ impl Editor {
         let end_col = self.cursor_col;
         
         if end_col < start_col {
-            self.buffer_mut().delete_range(self.cursor_line, end_col, start_col);
+            let cursor_line = self.cursor_line;
+            self.buffer_mut().delete_range(cursor_line, end_col, start_col);
         }
     }
     
     fn delete_to_line_start(&mut self) {
         if self.cursor_col > 0 {
-            self.buffer_mut().delete_range(self.cursor_line, 0, self.cursor_col);
+            let cursor_line = self.cursor_line;
+            let cursor_col = self.cursor_col;
+            self.buffer_mut().delete_range(cursor_line, 0, cursor_col);
             self.cursor_col = 0;
         }
     }
     
     fn open_line_below(&mut self) {
         let indent = self.get_current_indent();
-        self.buffer_mut().insert_line(self.cursor_line + 1, indent.clone());
+        let cursor_line = self.cursor_line;
+        self.buffer_mut().insert_line(cursor_line + 1, indent.clone());
         self.cursor_line += 1;
         self.cursor_col = indent.len();
         self.enter_insert_mode();
@@ -858,7 +879,8 @@ impl Editor {
     
     fn open_line_above(&mut self) {
         let indent = self.get_current_indent();
-        self.buffer_mut().insert_line(self.cursor_line, indent.clone());
+        let cursor_line = self.cursor_line;
+        self.buffer_mut().insert_line(cursor_line, indent.clone());
         self.cursor_col = indent.len();
         self.enter_insert_mode();
     }
@@ -971,14 +993,19 @@ impl Editor {
         }
         
         if self.yank_linewise {
-            for line in self.yank_register.split('\n') {
-                self.buffer_mut().insert_line(self.cursor_line + 1, line.to_string());
+            let lines: Vec<String> = self.yank_register.split('\n').map(|s| s.to_string()).collect();
+            for line in lines {
+                let cursor_line = self.cursor_line;
+                self.buffer_mut().insert_line(cursor_line + 1, line);
                 self.cursor_line += 1;
             }
             self.cursor_col = self.first_non_blank();
         } else {
-            self.buffer_mut().insert_text(self.cursor_line, self.cursor_col + 1, &self.yank_register);
-            self.cursor_col += self.yank_register.chars().count();
+            let cursor_line = self.cursor_line;
+            let cursor_col = self.cursor_col;
+            let text = self.yank_register.clone();
+            self.buffer_mut().insert_text(cursor_line, cursor_col + 1, &text);
+            self.cursor_col += text.chars().count();
         }
     }
     
@@ -988,18 +1015,27 @@ impl Editor {
         }
         
         if self.yank_linewise {
-            for (i, line) in self.yank_register.split('\n').enumerate() {
-                self.buffer_mut().insert_line(self.cursor_line + i, line.to_string());
+            let lines: Vec<(usize, String)> = self.yank_register.split('\n')
+                .enumerate()
+                .map(|(i, s)| (i, s.to_string()))
+                .collect();
+            for (i, line) in lines {
+                let cursor_line = self.cursor_line;
+                self.buffer_mut().insert_line(cursor_line + i, line);
             }
             self.cursor_col = self.first_non_blank();
         } else {
-            self.buffer_mut().insert_text(self.cursor_line, self.cursor_col, &self.yank_register);
+            let cursor_line = self.cursor_line;
+            let cursor_col = self.cursor_col;
+            let text = self.yank_register.clone();
+            self.buffer_mut().insert_text(cursor_line, cursor_col, &text);
         }
     }
     
     fn join_lines(&mut self) {
-        if self.cursor_line < self.buffer().line_count() - 1 {
-            self.buffer_mut().join_lines(self.cursor_line);
+        let cursor_line = self.cursor_line;
+        if cursor_line < self.buffer().line_count() - 1 {
+            self.buffer_mut().join_lines(cursor_line);
         }
     }
     
