@@ -52,6 +52,11 @@ pub struct FramebufferWriter {
     saved_cursor_y: usize,
     /// Saved pixel X position for DECSC/DECRC
     saved_pixel_x: usize,
+    /// Cursor visibility (DECTCEM)
+    cursor_visible: bool,
+    /// Last rendered cursor position for erasing
+    last_cursor_x: usize,
+    last_cursor_y: usize,
 }
 
 unsafe impl Send for FramebufferWriter {}
@@ -105,6 +110,9 @@ impl FramebufferWriter {
             saved_cursor_x: 0,
             saved_cursor_y: 0,
             saved_pixel_x: 0,
+            cursor_visible: true,
+            last_cursor_x: 0,
+            last_cursor_y: 0,
         })
     }
 
@@ -433,6 +441,14 @@ impl FramebufferWriter {
         // Check for DEC private mode sequences (starting with ?)
         let is_private = self.ansi.is_private();
         
+        // Track if cursor position changes
+        let cursor_moved = matches!(command, b'H' | b'f' | b'A' | b'B' | b'C' | b'D' | b'G' | b'd' | b'u');
+        
+        // Erase cursor before moving
+        if cursor_moved && self.cursor_visible {
+            self.erase_cursor();
+        }
+        
         match command {
             b'm' => self.apply_sgr(params),
             b'J' => self.handle_erase_display(params),
@@ -459,6 +475,11 @@ impl FramebufferWriter {
             b'r' => self.handle_set_scrolling_region(params),
             _ => {}
         }
+        
+        // Redraw cursor at new position
+        if cursor_moved && self.cursor_visible {
+            self.draw_cursor();
+        }
     }
 
     /// Handle DEC Private Mode Set (DECSET) - ESC[?nh
@@ -466,8 +487,9 @@ impl FramebufferWriter {
         for &param in params {
             match param {
                 25 => {
-                    // Show cursor (DECTCEM) - acknowledged but not visually shown
-                    // (framebuffer doesn't have hardware cursor)
+                    // Show cursor (DECTCEM)
+                    self.cursor_visible = true;
+                    self.draw_cursor();
                 }
                 1049 => {
                     // Enable alternate screen buffer
@@ -492,7 +514,9 @@ impl FramebufferWriter {
         for &param in params {
             match param {
                 25 => {
-                    // Hide cursor (DECTCEM) - acknowledged but no visual effect
+                    // Hide cursor (DECTCEM)
+                    self.erase_cursor();
+                    self.cursor_visible = false;
                 }
                 1049 => {
                     // Disable alternate screen buffer
@@ -694,6 +718,56 @@ impl FramebufferWriter {
             self.render.fill_rect(self.pixel_x, row_y, char_width, CELL_HEIGHT, self.bg);
         }
         // If char_count == 0, do nothing (already at start of editable area)
+    }
+
+    /// Draw a cursor at the current position (block cursor style)
+    pub fn draw_cursor(&mut self) {
+        if !self.cursor_visible {
+            return;
+        }
+        
+        // Erase cursor at old position if it moved
+        if self.last_cursor_x != self.cursor_x || self.last_cursor_y != self.cursor_y {
+            self.erase_cursor_at(self.last_cursor_x, self.last_cursor_y);
+        }
+        
+        // Draw cursor as an underscore at the current position
+        let pixel_x = self.cursor_x * CELL_WIDTH;
+        let pixel_y = self.cursor_y * CELL_HEIGHT;
+        
+        // Draw underscore cursor (bottom 2 lines of the cell)
+        let cursor_y_start = pixel_y + CELL_HEIGHT - 3;
+        let cursor_height = 3;
+        
+        // Use foreground color for cursor
+        self.render.fill_rect(pixel_x, cursor_y_start, CELL_WIDTH, cursor_height, self.fg);
+        
+        self.last_cursor_x = self.cursor_x;
+        self.last_cursor_y = self.cursor_y;
+    }
+
+    /// Erase the cursor at the current position
+    pub fn erase_cursor(&mut self) {
+        self.erase_cursor_at(self.last_cursor_x, self.last_cursor_y);
+    }
+
+    /// Erase cursor at a specific position
+    fn erase_cursor_at(&self, col: usize, row: usize) {
+        let pixel_x = col * CELL_WIDTH;
+        let pixel_y = row * CELL_HEIGHT;
+        
+        // Erase underscore area
+        let cursor_y_start = pixel_y + CELL_HEIGHT - 3;
+        let cursor_height = 3;
+        
+        self.render.fill_rect(pixel_x, cursor_y_start, CELL_WIDTH, cursor_height, self.bg);
+    }
+
+    /// Update cursor display (call after any operation that moves the cursor)
+    pub fn update_cursor(&mut self) {
+        if self.cursor_visible {
+            self.draw_cursor();
+        }
     }
 
     /// Clear the entire screen and reset cursor

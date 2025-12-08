@@ -136,6 +136,9 @@ const EXTERNAL_COMMANDS: &[&str] = &[
 
 struct LineEditor {
     buffer: String,
+    cursor_pos: usize, // Cursor position in buffer (byte offset)
+    history: Vec<String>,
+    history_index: usize,
     stdout: io::Stdout,
 }
 
@@ -143,6 +146,9 @@ impl LineEditor {
     fn new() -> Self {
         Self {
             buffer: String::with_capacity(256),
+            cursor_pos: 0,
+            history: Vec::with_capacity(100),
+            history_index: 0,
             stdout: io::stdout(),
         }
     }
@@ -158,8 +164,36 @@ impl LineEditor {
     }
 
     fn erase_char(&mut self) -> bool {
-        if self.buffer.pop().is_some() {
-            self.write(b"\x08 \x08");
+        if self.cursor_pos > 0 && !self.buffer.is_empty() {
+            // Find the char boundary before cursor
+            let char_start = self.buffer[..self.cursor_pos]
+                .char_indices()
+                .last()
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+            
+            let removed_char = self.buffer.remove(char_start);
+            self.cursor_pos = char_start;
+            
+            // Redraw: move back, print rest of line, clear extra, reposition cursor
+            let char_width = if removed_char.is_ascii() { 1 } else { 2 };
+            // Clone the rest to avoid borrowing issues
+            let rest = self.buffer[self.cursor_pos..].to_string();
+            let rest_display_width: usize = rest.chars().map(|c| if c.is_ascii() { 1 } else { 2 }).sum();
+            
+            // Move cursor back
+            for _ in 0..char_width {
+                self.write(b"\x08");
+            }
+            // Print rest of buffer
+            self.write(rest.as_bytes());
+            // Clear the extra character
+            self.write(b" ");
+            // Move cursor back to position
+            let move_back = rest_display_width + 1;
+            for _ in 0..move_back {
+                self.write(b"\x08");
+            }
             true
         } else {
             false
@@ -178,16 +212,149 @@ impl LineEditor {
     }
 
     fn clear_line(&mut self) {
+        // Move cursor to end first
+        self.move_cursor_to_end();
+        // Then erase everything
         while self.erase_char() {}
     }
 
     fn append(&mut self, s: &str) {
-        self.buffer.push_str(s);
-        self.write(s.as_bytes());
+        // Insert at cursor position
+        self.buffer.insert_str(self.cursor_pos, s);
+        self.cursor_pos += s.len();
+        
+        // Clone data to avoid borrowing issues
+        let rest = self.buffer[self.cursor_pos - s.len()..].to_string();
+        let after_cursor = self.buffer[self.cursor_pos..].to_string();
+        let move_back: usize = after_cursor.chars().map(|c| if c.is_ascii() { 1 } else { 2 }).sum();
+        
+        // Print from cursor position to end
+        self.write(rest.as_bytes());
+        
+        // Move cursor back if not at end
+        for _ in 0..move_back {
+            self.write(b"\x08");
+        }
+    }
+
+    fn move_cursor_left(&mut self) {
+        if self.cursor_pos > 0 {
+            // Find previous char boundary
+            let prev_pos = self.buffer[..self.cursor_pos]
+                .char_indices()
+                .last()
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+            let ch = self.buffer[prev_pos..self.cursor_pos].chars().next().unwrap();
+            let char_width = if ch.is_ascii() { 1 } else { 2 };
+            self.cursor_pos = prev_pos;
+            
+            // Move terminal cursor left
+            self.write(b"\x1b[D");
+            if char_width > 1 {
+                self.write(b"\x1b[D");
+            }
+        } else {
+            self.beep();
+        }
+    }
+
+    fn move_cursor_right(&mut self) {
+        if self.cursor_pos < self.buffer.len() {
+            let ch = self.buffer[self.cursor_pos..].chars().next().unwrap();
+            let char_width = if ch.is_ascii() { 1 } else { 2 };
+            self.cursor_pos += ch.len_utf8();
+            
+            // Move terminal cursor right
+            self.write(b"\x1b[C");
+            if char_width > 1 {
+                self.write(b"\x1b[C");
+            }
+        } else {
+            self.beep();
+        }
+    }
+
+    fn move_cursor_to_start(&mut self) {
+        while self.cursor_pos > 0 {
+            self.move_cursor_left();
+        }
+    }
+
+    fn move_cursor_to_end(&mut self) {
+        while self.cursor_pos < self.buffer.len() {
+            self.move_cursor_right();
+        }
+    }
+
+    fn history_up(&mut self, state: &ShellState) {
+        if self.history.is_empty() || self.history_index == 0 {
+            self.beep();
+            return;
+        }
+        
+        // Clear current line
+        self.clear_display_line(state);
+        
+        self.history_index -= 1;
+        self.buffer = self.history[self.history_index].clone();
+        self.cursor_pos = self.buffer.len();
+        let buf_copy = self.buffer.clone();
+        self.write(buf_copy.as_bytes());
+    }
+
+    fn history_down(&mut self, state: &ShellState) {
+        if self.history_index >= self.history.len() {
+            self.beep();
+            return;
+        }
+        
+        // Clear current line
+        self.clear_display_line(state);
+        
+        self.history_index += 1;
+        if self.history_index < self.history.len() {
+            self.buffer = self.history[self.history_index].clone();
+        } else {
+            self.buffer.clear();
+        }
+        self.cursor_pos = self.buffer.len();
+        let buf_copy = self.buffer.clone();
+        self.write(buf_copy.as_bytes());
+    }
+
+    fn clear_display_line(&mut self, state: &ShellState) {
+        // Move to start, clear to end of line, reprint prompt
+        self.write(b"\r\x1b[K");
+        print_prompt(state);
+    }
+
+    fn delete_char_forward(&mut self) {
+        if self.cursor_pos < self.buffer.len() {
+            let ch = self.buffer[self.cursor_pos..].chars().next().unwrap();
+            self.buffer.remove(self.cursor_pos);
+            
+            // Clone rest of line to avoid borrow issues
+            let rest = self.buffer[self.cursor_pos..].to_string();
+            let rest_width: usize = rest.chars().map(|c| if c.is_ascii() { 1 } else { 2 }).sum();
+            let char_width = if ch.is_ascii() { 1 } else { 2 };
+            
+            self.write(rest.as_bytes());
+            // Clear extra characters
+            for _ in 0..char_width {
+                self.write(b" ");
+            }
+            // Move cursor back
+            for _ in 0..(rest_width + char_width) {
+                self.write(b"\x08");
+            }
+        }
     }
 
     fn read_line(&mut self, state: &ShellState, registry: &BuiltinRegistry) -> String {
         self.buffer.clear();
+        self.cursor_pos = 0;
+        self.history_index = self.history.len();
         print_prompt(state);
 
         // Use raw byte reading for terminal control
@@ -204,10 +371,20 @@ impl LineEditor {
             match ch {
                 b'\r' | b'\n' => {
                     println!();
-                    return std::mem::take(&mut self.buffer);
+                    let line = std::mem::take(&mut self.buffer);
+                    // Add to history if non-empty
+                    if !line.trim().is_empty() {
+                        self.history.push(line.clone());
+                        // Keep history bounded
+                        if self.history.len() > 100 {
+                            self.history.remove(0);
+                        }
+                    }
+                    return line;
                 }
                 0x03 => { // Ctrl-C
                     self.buffer.clear();
+                    self.cursor_pos = 0;
                     self.write(b"^C\n");
                     return String::new();
                 }
@@ -216,7 +393,8 @@ impl LineEditor {
                         println!("exit");
                         process::exit(0);
                     } else {
-                        self.beep();
+                        // Delete character under cursor
+                        self.delete_char_forward();
                     }
                 }
                 0x08 | 0x7f => { // Backspace
@@ -227,8 +405,25 @@ impl LineEditor {
                 b'\t' => { // Tab completion
                     self.handle_tab_completion(state, registry);
                 }
-                0x15 => { // Ctrl-U
-                    self.clear_line();
+                0x01 => { // Ctrl-A - move to start
+                    self.move_cursor_to_start();
+                }
+                0x05 => { // Ctrl-E - move to end
+                    self.move_cursor_to_end();
+                }
+                0x15 => { // Ctrl-U - clear line
+                    self.clear_display_line(state);
+                    self.buffer.clear();
+                    self.cursor_pos = 0;
+                }
+                0x0b => { // Ctrl-K - delete to end of line
+                    let rest_width: usize = self.buffer[self.cursor_pos..]
+                        .chars()
+                        .map(|c| if c.is_ascii() { 1 } else { 2 })
+                        .sum();
+                    self.buffer.truncate(self.cursor_pos);
+                    // Clear to end of line
+                    self.write(b"\x1b[K");
                 }
                 0x17 => { // Ctrl-W
                     self.erase_word();
@@ -238,29 +433,108 @@ impl LineEditor {
                     print_prompt(state);
                     let buf_copy = self.buffer.clone();
                     self.write(buf_copy.as_bytes());
+                    // Reposition cursor - calculate before calling write
+                    let move_back: usize = self.buffer[self.cursor_pos..]
+                        .chars()
+                        .map(|c| if c.is_ascii() { 1 } else { 2 })
+                        .sum();
+                    for _ in 0..move_back {
+                        self.write(b"\x08");
+                    }
                 }
                 0x1b => { // Escape sequence
-                    self.discard_escape_sequence(&mut stdin_lock);
+                    self.handle_escape_sequence(&mut stdin_lock, state);
                 }
                 ch if ch < 0x20 => {
                     self.beep();
                 }
                 _ => {
-                    self.buffer.push(ch as char);
-                    self.write(&[ch]);
+                    // Insert character at cursor position
+                    self.buffer.insert(self.cursor_pos, ch as char);
+                    self.cursor_pos += 1;
+                    
+                    // Clone data before calling write to avoid borrow issues
+                    let rest = self.buffer[self.cursor_pos - 1..].to_string();
+                    let move_back: usize = self.buffer[self.cursor_pos..]
+                        .chars()
+                        .map(|c| if c.is_ascii() { 1 } else { 2 })
+                        .sum();
+                    
+                    // Print from inserted position to end
+                    self.write(rest.as_bytes());
+                    
+                    // Move cursor back if not at end
+                    for _ in 0..move_back {
+                        self.write(b"\x08");
+                    }
                 }
             }
         }
     }
 
-    fn discard_escape_sequence(&mut self, stdin: &mut io::StdinLock) {
+    fn handle_escape_sequence(&mut self, stdin: &mut io::StdinLock, state: &ShellState) {
         let mut buf = [0u8; 1];
-        for _ in 0..4 {
-            if stdin.read(&mut buf).unwrap_or(0) != 1 {
-                break;
+        
+        // Read '['
+        if stdin.read(&mut buf).unwrap_or(0) != 1 {
+            return;
+        }
+        
+        if buf[0] != b'[' {
+            // Not a CSI sequence
+            return;
+        }
+        
+        // Read the command character
+        if stdin.read(&mut buf).unwrap_or(0) != 1 {
+            return;
+        }
+        
+        match buf[0] {
+            b'A' => { // Up arrow - history previous
+                self.history_up(state);
             }
-            if (0x40..=0x7e).contains(&buf[0]) {
-                break;
+            b'B' => { // Down arrow - history next
+                self.history_down(state);
+            }
+            b'C' => { // Right arrow - move cursor right
+                self.move_cursor_right();
+            }
+            b'D' => { // Left arrow - move cursor left
+                self.move_cursor_left();
+            }
+            b'H' => { // Home key
+                self.move_cursor_to_start();
+            }
+            b'F' => { // End key
+                self.move_cursor_to_end();
+            }
+            b'3' => { // Delete key (ESC[3~)
+                // Read the '~'
+                if stdin.read(&mut buf).unwrap_or(0) == 1 && buf[0] == b'~' {
+                    self.delete_char_forward();
+                }
+            }
+            b'1' => { // Home key variant (ESC[1~)
+                if stdin.read(&mut buf).unwrap_or(0) == 1 && buf[0] == b'~' {
+                    self.move_cursor_to_start();
+                }
+            }
+            b'4' => { // End key variant (ESC[4~)
+                if stdin.read(&mut buf).unwrap_or(0) == 1 && buf[0] == b'~' {
+                    self.move_cursor_to_end();
+                }
+            }
+            _ => {
+                // Unknown escape sequence, consume rest
+                for _ in 0..4 {
+                    if stdin.read(&mut buf).unwrap_or(0) != 1 {
+                        break;
+                    }
+                    if (0x40..=0x7e).contains(&buf[0]) {
+                        break;
+                    }
+                }
             }
         }
     }
