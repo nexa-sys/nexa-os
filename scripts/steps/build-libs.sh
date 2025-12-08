@@ -33,15 +33,16 @@ init_build_env
 declare -A LIBRARIES=(
     ["ncryptolib"]="ncryptolib:crypto:3:"
     ["nssl"]="nssl:ssl:3:ncryptolib"
+    ["nzip"]="nzip:z:1:"
     # Add more libraries here:
-    # ["nzlib"]="nzlib:z:1:"
-    # ["npng"]="npng:png:16:nzlib"
+    # ["npng"]="npng:png:16:nzip"
 )
 
 # Build order (topologically sorted based on dependencies)
 # Libraries without dependencies come first
 BUILD_ORDER=(
     "ncryptolib"
+    "nzip"
     "nssl"
     # Add new libraries in dependency order
 )

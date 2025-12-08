@@ -1,0 +1,27 @@
+[package]
+name = "nzip"
+version = "0.1.0"
+edition = "2021"
+description = "NexaOS Compression Library - zlib/libz.so ABI compatible, DEFLATE/GZIP/ZLIB formats"
+
+[lib]
+# cdylib: Dynamic shared object (libz.so) for dynamic linking
+# staticlib: Static library (libz.a) for static linking
+# rlib: Rust library for Rust consumers
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[profile.release]
+panic = "abort"
+opt-level = 2
+lto = false
+
+[features]
+default = []
+# Enable gzip format support
+gzip = []
+# Enable zlib format support (default enabled)
+zlib = []
+# Enable raw deflate (no header)
+raw = []
+
+[dependencies]
