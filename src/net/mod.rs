@@ -1,22 +1,85 @@
+//! NexaOS Network Stack
+//!
+//! This module provides the network stack implementation with conditional compilation
+//! support for various protocols. Use feature flags to enable/disable protocols:
+//!
+//! - `net_ethernet` - Ethernet frame support (base feature)
+//! - `net_arp` - ARP protocol support
+//! - `net_ipv4` - IPv4 protocol support
+//! - `net_udp` - UDP protocol support (requires ipv4)
+//! - `net_tcp` - TCP protocol support (requires ipv4)
+//! - `net_netlink` - Netlink socket support
+
 use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 
 use crate::{bootinfo, interrupts, logger, uefi_compat::NetworkDescriptor};
 
+// Conditionally compile network protocol modules
+#[cfg(feature = "net_arp")]
 pub mod arp;
+#[cfg(not(feature = "net_arp"))]
+pub mod arp {
+    //! ARP stub module (feature disabled)
+}
+
 mod drivers;
+
+#[cfg(feature = "net_ethernet")]
 pub mod ethernet;
+#[cfg(not(feature = "net_ethernet"))]
+pub mod ethernet {
+    //! Ethernet stub module (feature disabled)
+}
+
+#[cfg(feature = "net_ipv4")]
 pub mod ipv4;
+#[cfg(not(feature = "net_ipv4"))]
+pub mod ipv4 {
+    //! IPv4 stub module (feature disabled)
+}
+
 pub mod modular;
+
+#[cfg(feature = "net_netlink")]
 pub mod netlink;
+#[cfg(not(feature = "net_netlink"))]
+pub mod netlink {
+    //! Netlink stub module (feature disabled)
+}
+
 pub mod stack;
+
+#[cfg(feature = "net_tcp")]
 pub mod tcp;
+#[cfg(not(feature = "net_tcp"))]
+pub mod tcp {
+    //! TCP stub module (feature disabled)
+}
+
+#[cfg(feature = "net_udp")]
 pub mod udp;
+#[cfg(not(feature = "net_udp"))]
+pub mod udp {
+    //! UDP stub module (feature disabled)
+}
+
+#[cfg(feature = "net_udp")]
 pub mod udp_helper;
+#[cfg(not(feature = "net_udp"))]
+pub mod udp_helper {
+    //! UDP helper stub module (feature disabled)
+    /// Stub for UdpConnectionContext when UDP is disabled
+    pub struct UdpConnectionContext;
+    /// Stub for UdpStats when UDP is disabled
+    pub struct UdpStats;
+}
 
 pub use drivers::NetError;
+#[cfg(feature = "net_udp")]
 pub use udp_helper::{UdpConnectionContext, UdpStats};
-// UdpMessage is test-only, not exported for production use
+#[cfg(not(feature = "net_udp"))]
+pub use udp_helper::{UdpConnectionContext, UdpStats};
 
 const MAX_NET_DEVICES: usize = 4;
 

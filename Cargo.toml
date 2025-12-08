@@ -10,6 +10,48 @@ license = "MIT"
 path = "src/lib.rs"
 crate-type = ["rlib"]
 
+# =============================================================================
+# Feature Flags
+# =============================================================================
+# These can be enabled/disabled via config/features.yaml or environment variables.
+# Use FEATURE_xxx=true/false to override at build time.
+
+[features]
+default = ["net_full", "kernel_full", "fs_full"]
+
+# Network protocol stack features
+net_full = ["net_ipv4", "net_udp", "net_tcp", "net_arp", "net_ethernet", "net_dns", "net_dhcp", "net_netlink"]
+net_ipv4 = ["net_ethernet"]
+net_udp = ["net_ipv4"]
+net_tcp = ["net_ipv4"]
+net_arp = ["net_ethernet"]
+net_ethernet = []
+net_dns = ["net_udp"]
+net_dhcp = ["net_udp"]
+net_netlink = []
+
+# Kernel subsystem features
+kernel_full = ["smp", "kmod", "kmod_signing"]
+smp = []
+kmod = []
+kmod_signing = ["kmod"]
+
+# Filesystem features
+fs_full = ["fs_initramfs", "fs_devfs", "fs_procfs", "fs_sysfs"]
+fs_initramfs = []
+fs_devfs = []
+fs_procfs = []
+fs_sysfs = []
+
+# Security features
+security_stack_protector = []
+security_aslr = []
+
+# Debug features
+debug_verbose = []
+debug_memory = []
+debug_net = []
+
 [profile.dev]
 panic = "abort"
 opt-level = 2

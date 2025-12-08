@@ -6,11 +6,24 @@ import { join } from 'path';
 import { BuildEnvironment, BuildStepResult } from '../types.js';
 import { logger } from '../logger.js';
 import { cargoBuild, verifyMultiboot2, getFileSize, exec } from '../exec.js';
+import { loadBuildConfig, getEnabledFeatureFlags } from '../config.js';
 
 export async function buildKernel(env: BuildEnvironment): Promise<BuildStepResult> {
   logger.section(`Building NexaOS Kernel (${env.buildType})`);
   
   const startTime = Date.now();
+  
+  // Load configuration to get feature flags
+  const config = await loadBuildConfig(env.projectRoot);
+  const enabledFeatures = getEnabledFeatureFlags(config);
+  
+  // Build features string for cargo
+  let featuresStr: string | undefined;
+  if (enabledFeatures.length > 0) {
+    // Convert cfg flags to cargo feature names (they match in our setup)
+    featuresStr = enabledFeatures.join(',');
+    logger.info(`Enabled features: ${featuresStr}`);
+  }
   
   logger.step('Compiling kernel...');
   
@@ -19,6 +32,7 @@ export async function buildKernel(env: BuildEnvironment): Promise<BuildStepResul
     target: env.targets.kernel,
     release: env.buildType === 'release',
     buildStd: undefined, // Kernel uses custom build
+    features: featuresStr,
   });
   
   if (!result.success) {

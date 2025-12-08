@@ -1,0 +1,233 @@
+# NexaOS Feature Flags Configuration
+#
+# This file controls compile-time feature flags for the kernel.
+# Features can be enabled/disabled here and will be passed to Cargo as --features.
+# Use FEATURE_xxx environment variables to override at build time.
+#
+# Example: FEATURE_TCP=false ./scripts/build.sh kernel
+#
+# NOTE: Disabling core networking features may break userspace programs that depend on them.
+
+# =============================================================================
+# Network Protocol Stack Features
+# =============================================================================
+# Controls which network protocols are compiled into the kernel.
+# Disabling unused protocols reduces kernel binary size and attack surface.
+
+network:
+  # IPv4 networking support
+  # Required for: ARP, UDP, TCP, and all IP-based networking
+  # Dependencies: ethernet
+  ipv4:
+    enabled: true
+    description: "IPv4 protocol support"
+    cfg_flag: "net_ipv4"
+    dependencies: []
+
+  # UDP protocol support
+  # Required for: DNS resolution, DHCP, NTP, and connectionless networking
+  # Dependencies: ipv4
+  udp:
+    enabled: true
+    description: "UDP/IP protocol support"
+    cfg_flag: "net_udp"
+    dependencies: [ipv4]
+
+  # TCP protocol support
+  # Required for: HTTP, HTTPS, SSH, and connection-oriented networking
+  # Dependencies: ipv4
+  # Status: In development
+  tcp:
+    enabled: true
+    description: "TCP/IP protocol support (in development)"
+    cfg_flag: "net_tcp"
+    dependencies: [ipv4]
+
+  # ARP protocol support
+  # Required for: IPv4 address resolution on Ethernet networks
+  # Dependencies: ethernet
+  arp:
+    enabled: true
+    description: "ARP protocol support"
+    cfg_flag: "net_arp"
+    dependencies: []
+
+  # Ethernet frame support
+  # Required for: All network drivers (e1000, virtio_net)
+  # This is a base feature and should rarely be disabled
+  ethernet:
+    enabled: true
+    description: "Ethernet frame support"
+    cfg_flag: "net_ethernet"
+    dependencies: []
+
+  # DNS resolver
+  # Required for: hostname resolution in userspace
+  # Dependencies: udp
+  dns:
+    enabled: true
+    description: "DNS resolver support"
+    cfg_flag: "net_dns"
+    dependencies: [udp]
+
+  # DHCP client support
+  # Required for: automatic network configuration
+  # Dependencies: udp
+  dhcp:
+    enabled: true
+    description: "DHCP client support"
+    cfg_flag: "net_dhcp"
+    dependencies: [udp]
+
+  # Netlink socket support
+  # Required for: iproute2-style network configuration
+  netlink:
+    enabled: true
+    description: "Netlink socket support"
+    cfg_flag: "net_netlink"
+    dependencies: []
+
+# =============================================================================
+# Kernel Subsystem Features
+# =============================================================================
+# Controls major kernel subsystems.
+
+kernel:
+  # SMP (Symmetric Multi-Processing) support
+  smp:
+    enabled: true
+    description: "Multi-processor support"
+    cfg_flag: "smp"
+    dependencies: []
+
+  # Loadable kernel modules
+  kmod:
+    enabled: true
+    description: "Loadable kernel module support"
+    cfg_flag: "kmod"
+    dependencies: []
+
+  # Module signature verification
+  kmod_signing:
+    enabled: true
+    description: "PKCS#7 module signature verification"
+    cfg_flag: "kmod_signing"
+    dependencies: [kmod]
+
+# =============================================================================
+# Filesystem Features
+# =============================================================================
+# Controls built-in filesystem support (not loadable modules).
+
+filesystem:
+  # Initramfs (CPIO) support - required for boot
+  initramfs:
+    enabled: true
+    description: "CPIO initramfs support"
+    cfg_flag: "fs_initramfs"
+    dependencies: []
+    required: true  # Cannot be disabled
+
+  # devfs - pseudo-filesystem for /dev
+  devfs:
+    enabled: true
+    description: "Device filesystem (/dev)"
+    cfg_flag: "fs_devfs"
+    dependencies: []
+    required: true
+
+  # procfs - pseudo-filesystem for /proc
+  procfs:
+    enabled: true
+    description: "Process filesystem (/proc)"
+    cfg_flag: "fs_procfs"
+    dependencies: []
+
+  # sysfs - pseudo-filesystem for /sys
+  sysfs:
+    enabled: true
+    description: "System filesystem (/sys)"
+    cfg_flag: "fs_sysfs"
+    dependencies: []
+
+# =============================================================================
+# Security Features
+# =============================================================================
+
+security:
+  # Stack protection (canaries)
+  stack_protector:
+    enabled: true
+    description: "Stack buffer overflow protection"
+    cfg_flag: "security_stack_protector"
+    dependencies: []
+
+  # ASLR (Address Space Layout Randomization)
+  aslr:
+    enabled: false
+    description: "Address space layout randomization (planned)"
+    cfg_flag: "security_aslr"
+    dependencies: []
+
+# =============================================================================
+# Debug Features
+# =============================================================================
+# These features are primarily for development and testing.
+
+debug:
+  # Verbose kernel logging
+  verbose_logging:
+    enabled: false
+    description: "Enable verbose debug logging"
+    cfg_flag: "debug_verbose"
+    dependencies: []
+
+  # Memory allocation debugging
+  memory_debug:
+    enabled: false
+    description: "Memory allocation debugging"
+    cfg_flag: "debug_memory"
+    dependencies: []
+
+  # Network packet debugging
+  net_debug:
+    enabled: false
+    description: "Network packet tracing"
+    cfg_flag: "debug_net"
+    dependencies: []
+
+# =============================================================================
+# Feature Presets
+# =============================================================================
+# Quick presets for common configurations.
+
+presets:
+  # Full networking - all protocols enabled (default)
+  full_network:
+    description: "Full networking stack"
+    enable: [ipv4, udp, tcp, arp, ethernet, dns, dhcp, netlink]
+    disable: []
+
+  # Minimal networking - UDP only (for basic services)
+  minimal_network:
+    description: "Minimal networking (UDP only)"
+    enable: [ipv4, udp, arp, ethernet]
+    disable: [tcp, dns, dhcp, netlink]
+
+  # No networking - embedded/isolated systems
+  no_network:
+    description: "No network support"
+    enable: []
+    disable: [ipv4, udp, tcp, arp, ethernet, dns, dhcp, netlink]
+
+  # Development - all debug features
+  development:
+    description: "Development build with debugging"
+    enable: [verbose_logging, memory_debug, net_debug]
+    disable: []
+
+  # Production - security features, no debug
+  production:
+    description: "Production build"
+    enable: [stack_protector]
+    disable: [verbose_logging, memory_debug, net_debug]

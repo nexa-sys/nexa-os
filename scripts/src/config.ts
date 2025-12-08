@@ -5,9 +5,11 @@
  *   - config/modules.yaml   - Kernel modules configuration
  *   - config/programs.yaml  - Userspace programs configuration
  *   - config/libraries.yaml - Userspace libraries configuration
+ *   - config/features.yaml  - Compile-time feature flags
  */
 
 import { readFile } from 'fs/promises';
+import { existsSync } from 'fs';
 import { parse as parseYaml } from 'yaml';
 import { join } from 'path';
 import { 
@@ -19,7 +21,8 @@ import {
   ProgramsConfig,
   LibrariesConfig,
   MainBuildConfig,
-  BuildProfileConfig
+  BuildProfileConfig,
+  FeatureFlagsConfig
 } from './types.js';
 
 let cachedConfig: BuildConfig | null = null;
@@ -42,13 +45,21 @@ export async function loadBuildConfig(projectRoot: string): Promise<BuildConfig>
     readFile(join(configDir, 'libraries.yaml'), 'utf-8')
   ]);
   
+  // Load features.yaml if it exists
+  let featuresConfig: FeatureFlagsConfig | undefined;
+  const featuresPath = join(configDir, 'features.yaml');
+  if (existsSync(featuresPath)) {
+    const featuresContent = await readFile(featuresPath, 'utf-8');
+    featuresConfig = parseYaml(featuresContent) as FeatureFlagsConfig;
+  }
+  
   const buildConfig = parseYaml(buildContent) as MainBuildConfig;
   const modulesConfig = parseYaml(modulesContent) as ModulesConfig;
   const programsConfig = parseYaml(programsContent) as ProgramsConfig;
   const librariesConfig = parseYaml(librariesContent) as LibrariesConfig;
   
   // Merge into unified BuildConfig structure
-  cachedConfig = mergeConfigs(buildConfig, modulesConfig, programsConfig, librariesConfig);
+  cachedConfig = mergeConfigs(buildConfig, modulesConfig, programsConfig, librariesConfig, featuresConfig);
   return cachedConfig;
 }
 
@@ -59,7 +70,8 @@ function mergeConfigs(
   build: MainBuildConfig,
   modules: ModulesConfig,
   programs: ProgramsConfig,
-  libraries: LibrariesConfig
+  libraries: LibrariesConfig,
+  featureFlags?: FeatureFlagsConfig
 ): BuildConfig {
   // Get current profile from environment or use default
   const profileName = process.env.BUILD_PROFILE || 'default';
@@ -138,7 +150,8 @@ function mergeConfigs(
     },
     settings: build.settings,
     profile: profileName,
-    features: profile?.features || {}
+    features: profile?.features || {},
+    featureFlags: featureFlags
   };
 }
 
@@ -283,4 +296,130 @@ export function getProgramCategories(config: BuildConfig): string[] {
  */
 export function getModuleCategories(config: BuildConfig): string[] {
   return Object.keys(config.modules);
+}
+
+/**
+ * Get all enabled feature flags for kernel compilation
+ * Checks environment variables FEATURE_xxx to override config values
+ * @returns Array of cfg_flag strings to pass to rustc
+ */
+export function getEnabledFeatureFlags(config: BuildConfig): string[] {
+  if (!config.featureFlags) {
+    return [];
+  }
+  
+  const enabledFlags: string[] = [];
+  const categories = ['network', 'kernel', 'filesystem', 'security', 'debug'] as const;
+  
+  for (const category of categories) {
+    const categoryConfig = config.featureFlags[category];
+    if (!categoryConfig) continue;
+    
+    for (const [name, feature] of Object.entries(categoryConfig)) {
+      // Check for environment variable override (FEATURE_TCP=true/false)
+      const envVar = `FEATURE_${name.toUpperCase()}`;
+      const envValue = process.env[envVar];
+      
+      let isEnabled = feature.enabled;
+      if (envValue !== undefined) {
+        isEnabled = envValue.toLowerCase() === 'true' || envValue === '1';
+      }
+      
+      // Check dependencies
+      if (isEnabled && feature.dependencies) {
+        for (const dep of feature.dependencies) {
+          if (!isFeatureEnabled(config, dep)) {
+            console.warn(`Warning: Feature '${name}' depends on '${dep}' which is disabled`);
+            isEnabled = false;
+            break;
+          }
+        }
+      }
+      
+      if (isEnabled) {
+        enabledFlags.push(feature.cfg_flag);
+      }
+    }
+  }
+  
+  return enabledFlags;
+}
+
+/**
+ * Check if a specific feature is enabled
+ */
+export function isFeatureEnabled(config: BuildConfig, featureName: string): boolean {
+  if (!config.featureFlags) return false;
+  
+  const categories = ['network', 'kernel', 'filesystem', 'security', 'debug'] as const;
+  
+  for (const category of categories) {
+    const categoryConfig = config.featureFlags[category];
+    if (!categoryConfig) continue;
+    
+    const feature = categoryConfig[featureName];
+    if (feature) {
+      // Check environment variable override
+      const envVar = `FEATURE_${featureName.toUpperCase()}`;
+      const envValue = process.env[envVar];
+      if (envValue !== undefined) {
+        return envValue.toLowerCase() === 'true' || envValue === '1';
+      }
+      return feature.enabled;
+    }
+  }
+  
+  return false;
+}
+
+/**
+ * Get feature flags as RUSTFLAGS string for cfg attributes
+ * @returns RUSTFLAGS string like '--cfg net_tcp --cfg net_udp'
+ */
+export function getFeatureFlagsRustFlags(config: BuildConfig): string {
+  const flags = getEnabledFeatureFlags(config);
+  return flags.map(f => `--cfg ${f}`).join(' ');
+}
+
+/**
+ * Apply a feature preset
+ */
+export function applyFeaturePreset(config: BuildConfig, presetName: string): void {
+  if (!config.featureFlags?.presets) return;
+  
+  const preset = config.featureFlags.presets[presetName];
+  if (!preset) {
+    console.warn(`Warning: Feature preset '${presetName}' not found`);
+    return;
+  }
+  
+  const categories = ['network', 'kernel', 'filesystem', 'security', 'debug'] as const;
+  
+  // Apply enables
+  for (const featureName of preset.enable) {
+    for (const category of categories) {
+      const categoryConfig = config.featureFlags[category];
+      if (categoryConfig?.[featureName]) {
+        categoryConfig[featureName].enabled = true;
+      }
+    }
+  }
+  
+  // Apply disables
+  for (const featureName of preset.disable) {
+    for (const category of categories) {
+      const categoryConfig = config.featureFlags[category];
+      if (categoryConfig?.[featureName]) {
+        categoryConfig[featureName].enabled = false;
+      }
+    }
+  }
+}
+
+/**
+ * List all available feature presets
+ */
+export function listFeaturePresets(config: BuildConfig): string[] {
+  if (!config.featureFlags?.presets) return [];
+  return Object.keys(config.featureFlags.presets);
 }

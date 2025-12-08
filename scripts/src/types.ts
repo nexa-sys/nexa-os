@@ -53,6 +53,33 @@ export interface BuildConfig {
   settings?: BuildSettings;
   profile?: string;
   features?: Record<string, any>;
+  featureFlags?: FeatureFlagsConfig;
+}
+
+// Feature flag definition
+export interface FeatureDefinition {
+  enabled: boolean;
+  description: string;
+  cfg_flag: string;
+  dependencies?: string[];
+  required?: boolean;
+}
+
+// Feature flags configuration from config/features.yaml
+export interface FeatureFlagsConfig {
+  network: Record<string, FeatureDefinition>;
+  kernel: Record<string, FeatureDefinition>;
+  filesystem: Record<string, FeatureDefinition>;
+  security: Record<string, FeatureDefinition>;
+  debug: Record<string, FeatureDefinition>;
+  presets: Record<string, FeaturePreset>;
+}
+
+// Feature preset
+export interface FeaturePreset {
+  description: string;
+  enable: string[];
+  disable: string[];
 }
 
 // Main build.yaml configuration
