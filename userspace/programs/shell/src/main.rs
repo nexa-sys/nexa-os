@@ -533,28 +533,88 @@ fn execute_external_command(state: &ShellState, cmd: &str, args: &[&str]) -> i32
     }
 }
 
+/// Check if a command line needs the full parser (for compound commands, redirections, etc.)
+fn needs_full_parser(line: &str) -> bool {
+    let trimmed = line.trim();
+    
+    // Control flow keywords
+    if trimmed.starts_with("if ")
+        || trimmed.starts_with("case ")
+        || trimmed.starts_with("for ")
+        || trimmed.starts_with("while ")
+        || trimmed.starts_with("until ")
+        || trimmed.starts_with("select ")
+        || trimmed.starts_with("function ")
+        || trimmed.starts_with("((")
+        || trimmed.starts_with("[[")
+        || trimmed.starts_with("{")
+        || trimmed.starts_with("(") {
+        return true;
+    }
+    
+    // Operators and redirections (need to handle quoting)
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let chars: Vec<char> = line.chars().collect();
+    
+    for (i, &c) in chars.iter().enumerate() {
+        match c {
+            '\'' if !in_double_quote => in_single_quote = !in_single_quote,
+            '"' if !in_single_quote => in_double_quote = !in_double_quote,
+            _ if in_single_quote || in_double_quote => {}
+            '|' => {
+                // Check for | or ||
+                if chars.get(i + 1) == Some(&'|') {
+                    return true; // ||
+                }
+                return true; // |
+            }
+            '&' => {
+                // Check for && or &> or &>>
+                match chars.get(i + 1) {
+                    Some(&'&') | Some(&'>') => return true,
+                    _ => {}
+                }
+            }
+            '>' => {
+                // Redirect: >, >>, >&
+                return true;
+            }
+            '<' => {
+                // Redirect: <, <<, <<<, <&
+                return true;
+            }
+            '`' => {
+                // Backtick command substitution
+                return true;
+            }
+            '$' => {
+                // Check for $(
+                if chars.get(i + 1) == Some(&'(') {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    
+    // Check for fd redirects like 2> 
+    if line.contains("2>") || line.contains("1>") || line.contains("0<") {
+        return true;
+    }
+    
+    false
+}
+
 // ============================================================================
 // Command Dispatcher
 // ============================================================================
 
 fn handle_command(state: &mut ShellState, registry: &BuiltinRegistry, line: &str) {
-    // Check if this looks like a compound command (control flow)
-    let is_compound = line.trim_start().starts_with("if ")
-        || line.trim_start().starts_with("case ")
-        || line.trim_start().starts_with("for ")
-        || line.trim_start().starts_with("while ")
-        || line.trim_start().starts_with("until ")
-        || line.trim_start().starts_with("select ")
-        || line.trim_start().starts_with("function ")
-        || line.trim_start().starts_with("((")
-        || line.trim_start().starts_with("[[")
-        || line.trim_start().starts_with("{")
-        || line.trim_start().starts_with("(")
-        || line.contains(" && ")
-        || line.contains(" || ")
-        || line.contains(" | ");
+    // Check if this looks like a compound command (control flow) or has redirections/substitutions
+    let needs_parser = needs_full_parser(line);
 
-    if is_compound {
+    if needs_parser {
         // Use full parser for compound commands
         match parser::parse_command(line) {
             Ok(commands) => {

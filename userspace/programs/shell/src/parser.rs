@@ -1,16 +1,64 @@
 //! Shell Parser - Control Flow Syntax Support
 //!
 //! Supports: if/then/elif/else/fi, case/esac, for/while/until, select, function, (( )), [[ ]], { }
+//! Also supports redirections (>, >>, <, <<, 2>, 2>>, &>, etc.) and here-documents.
 
 use crate::state::ShellState;
 use crate::builtins::BuiltinRegistry;
 use std::collections::VecDeque;
 
+/// Redirection types
+#[derive(Debug, Clone, PartialEq)]
+pub enum RedirectType {
+    /// > file (output)
+    Output,
+    /// >> file (append output)
+    Append,
+    /// < file (input)
+    Input,
+    /// << word (here-document)
+    HereDoc,
+    /// <<< word (here-string)
+    HereString,
+    /// 2> file (stderr)
+    Stderr,
+    /// 2>> file (append stderr)
+    StderrAppend,
+    /// &> file (both stdout and stderr)
+    Both,
+    /// &>> file (append both)
+    BothAppend,
+    /// n> file (fd n to file)
+    FdOutput(i32),
+    /// n>> file (fd n append to file)
+    FdAppend(i32),
+    /// n< file (fd n from file)
+    FdInput(i32),
+    /// n>&m (duplicate fd)
+    FdDup(i32, i32),
+    /// n<&m (duplicate fd for input)
+    FdDupIn(i32, i32),
+    /// n>&- (close fd)
+    FdClose(i32),
+}
+
+/// A single redirection
+#[derive(Debug, Clone)]
+pub struct Redirect {
+    pub rtype: RedirectType,
+    pub target: String,  // filename or here-doc content
+}
+
 /// Parsed command types
 #[derive(Debug, Clone)]
 pub enum Command {
-    /// Simple command: cmd arg1 arg2 ...
+    /// Simple command with optional redirections: cmd arg1 arg2 ... [redirections]
     Simple(Vec<String>),
+    /// Simple command with redirections
+    SimpleWithRedirects {
+        args: Vec<String>,
+        redirects: Vec<Redirect>,
+    },
     /// Pipeline: cmd1 | cmd2 | cmd3
     Pipeline(Vec<Command>),
     /// And list: cmd1 && cmd2
@@ -89,6 +137,19 @@ pub enum Token {
     DoubleParenEnd, // ))
     DoubleBracket,  // [[
     DoubleBracketEnd, // ]]
+    // Redirections
+    RedirectOut,        // >
+    RedirectAppend,     // >>
+    RedirectIn,         // <
+    HereDoc,            // <<
+    HereString,         // <<<
+    RedirectBoth,       // &>
+    RedirectBothAppend, // &>>
+    RedirectFd(i32),    // n> (file descriptor redirect)
+    RedirectFdAppend(i32), // n>>
+    RedirectFdIn(i32),  // n<
+    DupFd,              // >&
+    DupFdIn,            // <&
     // Keywords
     If,
     Then,
@@ -176,7 +237,7 @@ impl Lexer {
                     in_double_quote = !in_double_quote;
                     self.advance();
                 }
-                ' ' | '\t' | '\n' | ';' | '|' | '&' | '(' | ')' | '{' | '}' 
+                ' ' | '\t' | '\n' | ';' | '|' | '&' | '(' | ')' | '{' | '}' | '<' | '>'
                     if !in_single_quote && !in_double_quote => {
                     break;
                 }
@@ -216,6 +277,14 @@ impl Lexer {
                 if self.peek() == Some('&') {
                     self.advance();
                     Token::And
+                } else if self.peek() == Some('>') {
+                    self.advance();
+                    if self.peek() == Some('>') {
+                        self.advance();
+                        Token::RedirectBothAppend
+                    } else {
+                        Token::RedirectBoth
+                    }
                 } else {
                     Token::Amp
                 }
@@ -269,6 +338,35 @@ impl Lexer {
                 self.advance();
                 Token::RBrace
             }
+            Some('>') => {
+                self.advance();
+                if self.peek() == Some('>') {
+                    self.advance();
+                    Token::RedirectAppend
+                } else if self.peek() == Some('&') {
+                    self.advance();
+                    Token::DupFd
+                } else {
+                    Token::RedirectOut
+                }
+            }
+            Some('<') => {
+                self.advance();
+                if self.peek() == Some('<') {
+                    self.advance();
+                    if self.peek() == Some('<') {
+                        self.advance();
+                        Token::HereString
+                    } else {
+                        Token::HereDoc
+                    }
+                } else if self.peek() == Some('&') {
+                    self.advance();
+                    Token::DupFdIn
+                } else {
+                    Token::RedirectIn
+                }
+            }
             Some('#') => {
                 // Comment - skip to end of line
                 while let Some(c) = self.peek() {
@@ -276,6 +374,62 @@ impl Lexer {
                     self.advance();
                 }
                 self.next_token()
+            }
+            Some(c) if c.is_ascii_digit() => {
+                // Check for fd redirect like 2> or 2>>
+                let start_pos = self.pos;
+                let mut fd_str = String::new();
+                while let Some(c) = self.peek() {
+                    if c.is_ascii_digit() {
+                        fd_str.push(c);
+                        self.advance();
+                    } else {
+                        break;
+                    }
+                }
+                
+                match self.peek() {
+                    Some('>') => {
+                        self.advance();
+                        let fd: i32 = fd_str.parse().unwrap_or(1);
+                        if self.peek() == Some('>') {
+                            self.advance();
+                            Token::RedirectFdAppend(fd)
+                        } else if self.peek() == Some('&') {
+                            self.advance();
+                            // Parse target fd: n>&m or n>&-
+                            self.skip_whitespace();
+                            if self.peek() == Some('-') {
+                                self.advance();
+                                // Close fd: n>&-
+                                return Token::Word(format!("{fd}>&-"));
+                            }
+                            // n>&m - we'll handle as a special word
+                            return Token::Word(format!("{fd}>&"));
+                        } else {
+                            Token::RedirectFd(fd)
+                        }
+                    }
+                    Some('<') => {
+                        self.advance();
+                        let fd: i32 = fd_str.parse().unwrap_or(0);
+                        if self.peek() == Some('&') {
+                            self.advance();
+                            return Token::Word(format!("{fd}<&"));
+                        }
+                        Token::RedirectFdIn(fd)
+                    }
+                    _ => {
+                        // Not a redirect, restore position and read as word
+                        self.pos = start_pos;
+                        let word = self.read_word();
+                        if word.is_empty() {
+                            Token::Eof
+                        } else {
+                            self.keyword_or_word(word)
+                        }
+                    }
+                }
             }
             Some(_) => {
                 let word = self.read_word();
@@ -830,15 +984,137 @@ impl Parser {
         Ok(Command::Conditional(args))
     }
 
-    /// Parse simple command
+    /// Parse simple command with optional redirections
     fn parse_simple_command(&mut self) -> Result<Command, String> {
         let mut words = Vec::new();
+        let mut redirects = Vec::new();
         
         loop {
             match self.peek() {
                 Token::Word(w) => {
                     words.push(w.clone());
                     self.advance();
+                }
+                // Output redirections
+                Token::RedirectOut => {
+                    self.advance();
+                    let target = self.expect_word("重定向目标")?;
+                    redirects.push(Redirect {
+                        rtype: RedirectType::Output,
+                        target,
+                    });
+                }
+                Token::RedirectAppend => {
+                    self.advance();
+                    let target = self.expect_word("重定向目标")?;
+                    redirects.push(Redirect {
+                        rtype: RedirectType::Append,
+                        target,
+                    });
+                }
+                Token::RedirectIn => {
+                    self.advance();
+                    let target = self.expect_word("重定向目标")?;
+                    redirects.push(Redirect {
+                        rtype: RedirectType::Input,
+                        target,
+                    });
+                }
+                Token::HereDoc => {
+                    self.advance();
+                    let delimiter = self.expect_word("here-doc 分隔符")?;
+                    // Read here-doc content (simplified: just store delimiter, content read later)
+                    redirects.push(Redirect {
+                        rtype: RedirectType::HereDoc,
+                        target: delimiter,
+                    });
+                }
+                Token::HereString => {
+                    self.advance();
+                    let content = self.expect_word("here-string 内容")?;
+                    redirects.push(Redirect {
+                        rtype: RedirectType::HereString,
+                        target: content,
+                    });
+                }
+                Token::RedirectBoth => {
+                    self.advance();
+                    let target = self.expect_word("重定向目标")?;
+                    redirects.push(Redirect {
+                        rtype: RedirectType::Both,
+                        target,
+                    });
+                }
+                Token::RedirectBothAppend => {
+                    self.advance();
+                    let target = self.expect_word("重定向目标")?;
+                    redirects.push(Redirect {
+                        rtype: RedirectType::BothAppend,
+                        target,
+                    });
+                }
+                Token::RedirectFd(fd) => {
+                    let fd = *fd;
+                    self.advance();
+                    let target = self.expect_word("重定向目标")?;
+                    redirects.push(Redirect {
+                        rtype: RedirectType::FdOutput(fd),
+                        target,
+                    });
+                }
+                Token::RedirectFdAppend(fd) => {
+                    let fd = *fd;
+                    self.advance();
+                    let target = self.expect_word("重定向目标")?;
+                    redirects.push(Redirect {
+                        rtype: RedirectType::FdAppend(fd),
+                        target,
+                    });
+                }
+                Token::RedirectFdIn(fd) => {
+                    let fd = *fd;
+                    self.advance();
+                    let target = self.expect_word("重定向目标")?;
+                    redirects.push(Redirect {
+                        rtype: RedirectType::FdInput(fd),
+                        target,
+                    });
+                }
+                Token::DupFd => {
+                    self.advance();
+                    let target = self.expect_word("文件描述符")?;
+                    if target == "-" {
+                        redirects.push(Redirect {
+                            rtype: RedirectType::FdClose(1),
+                            target: String::new(),
+                        });
+                    } else if let Ok(fd) = target.parse::<i32>() {
+                        redirects.push(Redirect {
+                            rtype: RedirectType::FdDup(1, fd),
+                            target: String::new(),
+                        });
+                    } else {
+                        // >&file means redirect both stdout and stderr
+                        redirects.push(Redirect {
+                            rtype: RedirectType::Both,
+                            target,
+                        });
+                    }
+                }
+                Token::DupFdIn => {
+                    self.advance();
+                    let target = self.expect_word("文件描述符")?;
+                    if target == "-" {
+                        redirects.push(Redirect {
+                            rtype: RedirectType::FdClose(0),
+                            target: String::new(),
+                        });
+                    } else if let Ok(fd) = target.parse::<i32>() {
+                        redirects.push(Redirect {
+                            rtype: RedirectType::FdDupIn(0, fd),
+                            target: String::new(),
+                        });
+                    }
                 }
                 Token::Pipe | Token::And | Token::Or | Token::Semi | Token::Amp |
                 Token::Newline | Token::Eof | Token::Then | Token::Do | Token::Done |
@@ -850,11 +1126,30 @@ impl Parser {
             }
         }
         
-        if words.is_empty() {
+        if words.is_empty() && redirects.is_empty() {
             Ok(Command::Empty)
-        } else {
+        } else if redirects.is_empty() {
             Ok(Command::Simple(words))
+        } else {
+            Ok(Command::SimpleWithRedirects {
+                args: words,
+                redirects,
+            })
         }
+    }
+
+    /// Expect a word token, return error with context if not found
+    fn expect_word(&mut self, context: &str) -> Result<String, String> {
+        self.skip_whitespace_tokens();
+        match self.advance() {
+            Token::Word(w) => Ok(w),
+            t => Err(format!("期望 {}, 得到 {:?}", context, t)),
+        }
+    }
+
+    /// Skip whitespace-like tokens (useful when parsing redirect targets)
+    fn skip_whitespace_tokens(&mut self) {
+        // In this lexer, whitespace is already skipped, but we might need to skip newlines in some contexts
     }
 
     /// Parse compound list until one of the stop tokens
