@@ -386,6 +386,17 @@ pub fn has_driver() -> bool {
 pub fn probe_device(desc: &BootBlockDevice) -> Result<usize, BlockError> {
     let mut subsystem = BLOCK_SUBSYSTEM.lock();
 
+    // Check if this device is already registered (by PCI location)
+    for device in subsystem.devices.iter() {
+        if device.info.pci_bus == desc.pci_bus
+            && device.info.pci_device == desc.pci_device
+            && device.info.pci_function == desc.pci_function
+        {
+            // Device already probed, return existing index
+            return Ok(device.index);
+        }
+    }
+
     // Find a driver that supports this device
     // For virtio-blk: vendor 0x1AF4, device 0x1001 (legacy) or 0x1042 (modern)
     let vendor_id = 0x1AF4; // Virtio vendor ID (would come from PCI enumeration)
@@ -538,7 +549,12 @@ pub fn write_sectors(index: usize, sector: u64, count: u32, buf: &[u8]) -> Resul
 
 /// Read bytes at arbitrary offset (handles sector alignment)
 pub fn read_bytes(index: usize, offset: u64, buf: &mut [u8]) -> Result<usize, BlockError> {
-    let info = get_device_info(index).ok_or(BlockError::NotFound)?;
+    let info = match get_device_info(index) {
+        Some(i) => i,
+        None => {
+            return Err(BlockError::NotFound);
+        }
+    };
     let sector_size = info.sector_size as u64;
     
     if buf.is_empty() {

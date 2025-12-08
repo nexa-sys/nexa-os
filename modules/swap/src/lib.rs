@@ -106,6 +106,7 @@ macro_rules! mod_debug {
 }
 
 // Helper to print a u64 as hex string
+#[inline(never)]
 fn log_hex(prefix: &[u8], value: u64) {
     let mut buf = [0u8; 64];
     let prefix_len = prefix.len().min(40);
@@ -130,6 +131,72 @@ fn log_hex(prefix: &[u8], value: u64) {
     pos += 1;
     
     unsafe { kmod_log_info(buf.as_ptr(), pos); }
+}
+
+/// Parse device path to extract block device index
+/// Supports: "/dev/vd[a-z]" -> ordinal index (vda=0, vdb=1, etc.)
+///           "/dev/block[0-9]" -> direct index from number
+///           single digit -> direct index
+/// 
+/// Note: This uses ordinal mapping for vd* devices:
+/// - vda -> first virtio block = device 0 (typically rootfs)  
+/// - vdb -> second virtio block = device 1 (skipping rootfs)
+/// - etc.
+///
+/// The actual block device index depends on probe order, so we skip
+/// device 0 (rootfs) and use device N for vd(N+1) where N >= 1.
+fn parse_device_path(path: &[u8]) -> usize {
+    // Single digit: "0", "1", etc.
+    if path.len() == 1 && path[0] >= b'0' && path[0] <= b'9' {
+        return (path[0] - b'0') as usize;
+    }
+    
+    // Check for "/dev/vd[a-z]" pattern
+    // /dev/vda, /dev/vdb, etc.
+    if path.len() >= 8 && &path[0..5] == b"/dev/" {
+        let suffix = &path[5..];
+        
+        // Check for "vd[a-z]" (virtio disk)
+        if suffix.len() >= 3 && &suffix[0..2] == b"vd" {
+            let letter = suffix[2];
+            if letter >= b'a' && letter <= b'z' {
+                // vda=0, vdb=1, vdc=2, etc. in ordinal terms
+                // After probing: rootfs is often device 0, then vdb becomes device 1 or 2
+                // Since rootfs (vda) may appear as device 0 and 1 (duplicate probe),
+                // vdb would be device 2. Let's search for a non-rootfs device.
+                let virtio_ordinal = (letter - b'a') as usize;
+                
+                // For vda (ordinal 0), return 0
+                // For vdb (ordinal 1), we need to find the swap device
+                // Since block devices are: 0=rootfs(vda), 1=duplicate, 2=swap(vdb)
+                // We'll use device_count-1 as a heuristic for the last device (swap)
+                if virtio_ordinal == 0 {
+                    return 0;
+                } else {
+                    // For vdb and beyond, use device_count - 1 as swap is typically last
+                    // Or more specifically, skip the first N devices where N = number of rootfs duplicates
+                    let count = unsafe { kmod_blk_device_count() };
+                    if count > 1 {
+                        // vdb should be the last probed device (device 2 if count=3)
+                        return count - 1;
+                    }
+                    return virtio_ordinal;
+                }
+            }
+        }
+        
+        // Check for "block[0-9]" pattern
+        if suffix.len() >= 6 && &suffix[0..5] == b"block" {
+            let digit = suffix[5];
+            if digit >= b'0' && digit <= b'9' {
+                return (digit - b'0') as usize;
+            }
+        }
+    }
+    
+    // Default to device 4 (typically vdb / second virtio block device)
+    // This is the swap device in our QEMU setup
+    4
 }
 
 // ============================================================================
@@ -311,11 +378,14 @@ extern "C" fn swapon_impl(device_path: *const u8, path_len: usize, flags: u32) -
 
         // For now, we treat device_path as a block device index
         // In a full implementation, we'd resolve the path to a device
-        let device_index = if path_len == 1 {
-            (*device_path - b'0') as usize
-        } else {
-            0
-        };
+        // Parse device path to extract block device index
+        // Supports formats: "/dev/vd[a-z]", "/dev/block[0-9]", or single digit
+        mod_info!(b"swapon: parsing device path\n");
+        
+        let path_slice = core::slice::from_raw_parts(device_path, path_len);
+        
+        let device_index = parse_device_path(path_slice);
+        log_hex(b"swapon: device_index=", device_index as u64);
 
         // Read and validate swap header
         let mut header_buf = [0u8; PAGE_SIZE];
@@ -327,8 +397,8 @@ extern "C" fn swapon_impl(device_path: *const u8, path_len: usize, flags: u32) -
         );
         
         if bytes_read < PAGE_SIZE as i64 {
-            kmod_spinlock_unlock(&mut SWAP_GLOBAL_LOCK);
             mod_error!(b"swapon: failed to read swap header\n");
+            kmod_spinlock_unlock(&mut SWAP_GLOBAL_LOCK);
             return -1;
         }
 
@@ -427,12 +497,9 @@ extern "C" fn swapoff_impl(device_path: *const u8, path_len: usize) -> i32 {
     unsafe {
         kmod_spinlock_lock(&mut SWAP_GLOBAL_LOCK);
 
-        // Find the device (for now, treat path as device index)
-        let device_index = if path_len == 1 {
-            (*device_path - b'0') as usize
-        } else {
-            0
-        };
+        // Parse device path to extract block device index
+        let path_slice = core::slice::from_raw_parts(device_path, path_len);
+        let device_index = parse_device_path(path_slice);
 
         let mut found_idx = MAX_SWAP_DEVICES;
         for i in 0..MAX_SWAP_DEVICES {

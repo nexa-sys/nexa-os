@@ -31,7 +31,7 @@ mod network;
 mod numbers;
 mod process;
 mod signal;
-mod swap;
+pub mod swap;
 mod system;
 mod thread;
 mod time;

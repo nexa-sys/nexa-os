@@ -48,6 +48,12 @@ async function installConfigs(env: BuildEnvironment, rootfsDir: string): Promise
     await copyFile(inittab, join(rootfsDir, 'etc/inittab'));
   }
   
+  // Copy fstab
+  const fstab = join(env.projectRoot, 'etc/fstab');
+  if (existsSync(fstab)) {
+    await copyFile(fstab, join(rootfsDir, 'etc/fstab'));
+  }
+  
   // Copy font config
   const fontsDir = join(env.projectRoot, 'etc/fonts');
   if (existsSync(fontsDir)) {

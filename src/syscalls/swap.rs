@@ -47,6 +47,13 @@ pub fn swapon(path: *const u8, flags: u32) -> u64 {
         }
         core::slice::from_raw_parts(path, len)
     };
+    
+    // Debug: log the parsed path
+    kinfo!(
+        "[sys_swapon] path={}, len={}",
+        core::str::from_utf8(path_slice).unwrap_or("<invalid>"),
+        path_slice.len()
+    );
 
     // Check if swap module is loaded
     if !swap::is_swap_available() {
@@ -135,4 +142,39 @@ pub fn swapoff(path: *const u8) -> u64 {
 
     posix::set_errno(0);
     0
+}
+
+/// Enable swap on a device from kernel context (e.g., fstab processing)
+/// 
+/// This is a convenience wrapper for internal kernel use that takes a path string
+/// instead of a raw pointer.
+/// 
+/// # Arguments
+/// * `path` - Path to the swap device as a &str
+/// * `flags` - Swap flags as i32 (converted from fstab options)
+/// 
+/// # Returns
+/// * Ok(()) on success
+/// * Err(errno) on failure
+pub fn sys_swapon(path: &str, flags: i32) -> Result<(), i32> {
+    use crate::mm::swap;
+    
+    kinfo!("[sys_swapon] path={}, flags={:#x}", path, flags);
+    
+    // Check if swap module is loaded
+    if !swap::is_swap_available() {
+        kerror!("[sys_swapon] Swap module not loaded");
+        return Err(errno::ENOSYS);
+    }
+    
+    // Call the swap subsystem directly
+    let result = swap::swapon(path.as_bytes(), flags as u32);
+    
+    if result < 0 {
+        kerror!("[sys_swapon] Failed with error: {}", result);
+        return Err(errno::EINVAL);
+    }
+    
+    kinfo!("[sys_swapon] Activated swap: {}", path);
+    Ok(())
 }

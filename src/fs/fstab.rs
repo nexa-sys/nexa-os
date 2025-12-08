@@ -396,6 +396,34 @@ pub fn mount_entry(entry: &FstabEntry) -> Result<(), &'static str> {
             Ok(())
         }
 
+        "swap" => {
+            // Swap device - call swapon syscall handler
+            crate::kinfo!("fstab: enabling swap on {}", entry.device);
+            
+            // Parse priority from options (pri=N)
+            let mut flags: i32 = 0;
+            for opt in entry.options.split(',') {
+                if let Some(prio_str) = opt.strip_prefix("pri=") {
+                    if let Ok(prio) = prio_str.parse::<i32>() {
+                        // SWAP_FLAG_PREFER | priority
+                        flags = 0x8000 | (prio & 0x7fff);
+                    }
+                }
+            }
+            
+            // Call swapon through the syscall handler
+            match crate::syscalls::swap::sys_swapon(&entry.device, flags) {
+                Ok(_) => {
+                    crate::kinfo!("fstab: swap enabled on {}", entry.device);
+                    Ok(())
+                }
+                Err(e) => {
+                    crate::kwarn!("fstab: failed to enable swap on {}: {:?}", entry.device, e);
+                    Err("failed to enable swap")
+                }
+            }
+        }
+
         _ => {
             crate::kwarn!("fstab: unknown filesystem type: {}", entry.fs_type);
             Err("unknown filesystem type")

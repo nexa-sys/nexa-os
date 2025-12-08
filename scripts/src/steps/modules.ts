@@ -3,7 +3,7 @@
  */
 
 import { join } from 'path';
-import { mkdir, writeFile, readdir } from 'fs/promises';
+import { mkdir, writeFile, readdir, stat as fsStat } from 'fs/promises';
 import { existsSync } from 'fs';
 import { BuildEnvironment, BuildStepResult, ModuleConfig } from '../types.js';
 import { logger } from '../logger.js';
@@ -161,8 +161,11 @@ async function buildModule(
   
   logger.info(`Found staticlib: ${staticlib}`);
   
-  // Extract and link object files
-  const tempDir = join(modulesBuilDir, '.temp');
+  // Extract and link object files - use unique temp dir per module to avoid conflicts
+  const tempDir = join(modulesBuilDir, `.temp-${module.name}`);
+  
+  // Clean temp dir before extracting
+  await exec('rm', ['-rf', tempDir]);
   await mkdir(tempDir, { recursive: true });
   
   // Extract object files
@@ -172,25 +175,59 @@ async function buildModule(
   const files = await readdir(tempDir);
   const objFiles = files.filter(f => f.endsWith('.o'));
   
+  logger.info(`Found ${objFiles.length} object files in ${tempDir}: ${objFiles.join(', ')}`);
+  
   if (objFiles.length > 0) {
     logger.info(`Linking ${objFiles.length} object files...`);
     
-    // Try to link
-    const linkArgs = ['-r', '--gc-sections', '-o', outputNkm, ...objFiles.map(f => join(tempDir, f))];
+    // Try to link - use --gc-sections with -u module_init to preserve init function,
+    // or fall back to simple relocatable link without gc-sections
     let linked = false;
     
     for (const linker of ['ld.lld', 'ld']) {
-      const linkResult = await exec(linker, linkArgs);
-      if (linkResult.exitCode === 0) {
-        linked = true;
-        break;
+      // First try with gc-sections and module_init entry, plus keep rodata for strings
+      const gcArgs = ['-r', '--gc-sections', '-u', 'module_init', '--gc-keep-exported', '-o', outputNkm, ...objFiles.map(f => join(tempDir, f))];
+      logger.info(`Trying: ${linker} ${gcArgs.slice(0, 6).join(' ')}...`);
+      let linkResult = await exec(linker, gcArgs);
+      if (linkResult.exitCode === 0 && existsSync(outputNkm)) {
+        const stats = await fsStat(outputNkm);
+        if (stats.size > 1000) {  // Must be > 1KB to be valid ELF
+          linked = true;
+          logger.info(`Link succeeded with ${linker} gc-sections (${stats.size} bytes)`);
+          break;
+        }
       }
+      logger.info(`Link with gc-sections+gc-keep failed (${linker}): code=${linkResult.exitCode} err=${linkResult.stderr.substring(0, 200)}`);
+      
+      // Try without --gc-keep-exported
+      const gc2Args = ['-r', '--gc-sections', '-u', 'module_init', '-o', outputNkm, ...objFiles.map(f => join(tempDir, f))];
+      linkResult = await exec(linker, gc2Args);
+      if (linkResult.exitCode === 0 && existsSync(outputNkm)) {
+        const stats = await fsStat(outputNkm);
+        if (stats.size > 1000) {
+          linked = true;
+          logger.info(`Link succeeded with ${linker} gc-sections (${stats.size} bytes)`);
+          break;
+        }
+      }
+      logger.info(`Link with gc-sections failed (${linker}): code=${linkResult.exitCode} err=${linkResult.stderr.substring(0, 200)}`);
+      
+      // Fall back to simple relocatable link without gc-sections
+      const simpleArgs = ['-r', '-o', outputNkm, ...objFiles.map(f => join(tempDir, f))];
+      linkResult = await exec(linker, simpleArgs);
+      if (linkResult.exitCode === 0 && existsSync(outputNkm)) {
+        const stats = await fsStat(outputNkm);
+        if (stats.size > 1000) {
+          linked = true;
+          logger.info(`Link succeeded with ${linker} simple (${stats.size} bytes)`);
+          break;
+        }
+      }
+      logger.info(`Simple link failed (${linker}): code=${linkResult.exitCode} err=${linkResult.stderr.substring(0, 200)}`);
     }
     
-    // Cleanup temp files
-    for (const f of objFiles) {
-      await exec('rm', ['-f', join(tempDir, f)]);
-    }
+    // Cleanup temp directory
+    await exec('rm', ['-rf', tempDir]);
     
     if (linked && existsSync(outputNkm)) {
       await exec('strip', ['--strip-debug', outputNkm]);

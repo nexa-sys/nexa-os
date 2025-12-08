@@ -627,6 +627,9 @@ pub fn start_real_root_init() -> Result<(), &'static str> {
     // Since we switched to ext2 root, /dev needs to be repopulated
     remount_dev_after_pivot()?;
 
+    // Probe all additional block devices (e.g., swap)
+    probe_all_block_devices();
+
     // Load and process /etc/fstab
     process_fstab();
 
@@ -666,6 +669,101 @@ fn remount_dev_after_pivot() -> Result<(), &'static str> {
 
     crate::kinfo!("/dev mounted with devfs");
     Ok(())
+}
+
+/// Probe all block devices that haven't been probed yet
+/// This enables swap and other additional block devices
+fn probe_all_block_devices() {
+    crate::kinfo!("Probing all block devices...");
+    
+    // Only proceed if virtio-blk driver is available
+    if !crate::drivers::block::has_driver() {
+        crate::kinfo!("No block driver available, skipping device probe");
+        return;
+    }
+    
+    // Get all block devices from boot info
+    let Some(block_devs) = bootinfo::block_devices() else {
+        crate::kinfo!("No block devices in boot info");
+        return;
+    };
+    
+    let mut probed_count = 0;
+    
+    for dev_info in block_devs {
+        // Skip non-512 byte sector devices (CD-ROMs, etc.)
+        if dev_info.block_size != 512 {
+            continue;
+        }
+        
+        // Get PCI info
+        let Some(pci) = bootinfo::pci_device_by_location(
+            dev_info.pci_segment,
+            dev_info.pci_bus,
+            dev_info.pci_device,
+            dev_info.pci_function,
+        ) else {
+            continue;
+        };
+        
+        // Check if this is a VirtIO block device
+        let is_virtio_blk = pci.vendor_id == 0x1af4 
+            && (pci.device_id == 0x1001 || pci.device_id == 0x1042);
+        
+        if !is_virtio_blk {
+            continue;
+        }
+        
+        // Get BAR info
+        let mut mmio_base = 0u64;
+        let mut mmio_length = 0u64;
+        let mut is_io_port = false;
+        
+        for bar in &pci.bars {
+            if bar.base != 0 && mmio_base == 0 {
+                mmio_base = bar.base;
+                mmio_length = bar.length;
+                is_io_port = (bar.bar_flags & 0x1) != 0;
+                break;
+            }
+        }
+        
+        if mmio_base == 0 {
+            continue;
+        }
+        
+        // Create boot device descriptor
+        let boot_dev = crate::drivers::block::BootBlockDevice {
+            pci_segment: dev_info.pci_segment,
+            pci_bus: dev_info.pci_bus,
+            pci_device: dev_info.pci_device,
+            pci_function: dev_info.pci_function,
+            mmio_base,
+            mmio_length,
+            sector_size: dev_info.block_size,
+            total_sectors: dev_info.last_block + 1,
+            features: if is_io_port { 0x1 } else { 0 },
+        };
+        
+        // Try to probe the device
+        match crate::drivers::block::probe_device(&boot_dev) {
+            Ok(index) => {
+                crate::kinfo!("Probed block device {} at PCI {:x}:{:02x}:{:02x}.{} ({} sectors)",
+                    index, dev_info.pci_segment, dev_info.pci_bus,
+                    dev_info.pci_device, dev_info.pci_function,
+                    dev_info.last_block + 1);
+                probed_count += 1;
+            }
+            Err(e) => {
+                // Device might already be probed, that's OK
+                crate::kdebug!("Could not probe device at PCI {:x}:{:02x}:{:02x}.{}: {:?}",
+                    dev_info.pci_segment, dev_info.pci_bus,
+                    dev_info.pci_device, dev_info.pci_function, e);
+            }
+        }
+    }
+    
+    crate::kinfo!("Probed {} additional block devices", probed_count);
 }
 
 /// Process /etc/fstab and mount configured filesystems
