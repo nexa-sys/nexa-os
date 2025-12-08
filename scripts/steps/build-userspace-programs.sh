@@ -48,6 +48,11 @@ PROGRAMS=(
     # User management
     "logout:logout:bin::dyn"
     "adduser:adduser:sbin::dyn"
+    # Power management
+    "reboot:reboot:sbin::dyn"
+    "shutdown:shutdown:sbin::dyn"
+    "halt:halt:sbin::dyn"
+    "poweroff:poweroff:sbin::dyn"
     # IPC utilities
     "ipc-create:ipc-create:bin::dyn"
     "ipc-send:ipc-send:bin::dyn"

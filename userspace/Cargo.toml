@@ -36,6 +36,11 @@ members = [
     # User management
     "programs/logout",
     "programs/adduser",
+    # Power management
+    "programs/reboot",
+    "programs/shutdown",
+    "programs/halt",
+    "programs/poweroff",
     # IPC utilities
     "programs/ipc-create",
     "programs/ipc-send",

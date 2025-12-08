@@ -75,6 +75,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "halt"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "nexa_boot_info",
+ "nrlib",
+]
+
+[[package]]
 name = "hashmap_test"
 version = "0.1.0"
 dependencies = [
@@ -228,6 +237,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "poweroff"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "nexa_boot_info",
+ "nrlib",
+]
+
+[[package]]
 name = "pthread_test"
 version = "0.1.0"
 dependencies = [
@@ -244,7 +262,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "reboot"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "nexa_boot_info",
+ "nrlib",
+]
+
+[[package]]
 name = "sh"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "nexa_boot_info",
+ "nrlib",
+]
+
+[[package]]
+name = "shutdown"
 version = "0.1.0"
 dependencies = [
  "libc",
