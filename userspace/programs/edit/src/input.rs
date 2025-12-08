@@ -98,11 +98,10 @@ impl InputReader {
         if first < 32 {
             return Some(match first {
                 0 => Key::Ctrl(' '),
-                1..=26 => Key::Ctrl((first + b'a' - 1) as char),
                 9 => Key::Tab,
                 10 | 13 => Key::Enter,
                 27 => Key::Escape,
-                127 => Key::Backspace,
+                1..=26 => Key::Ctrl((first + b'a' - 1) as char),
                 _ => Key::Unknown(vec![first]),
             });
         }
