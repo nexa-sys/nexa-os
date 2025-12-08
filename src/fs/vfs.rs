@@ -5,6 +5,8 @@ use crate::mm::vmalloc::vmalloc;
 use crate::posix::{self, FileType, Metadata};
 use crate::safety::static_slice_from_raw_parts;
 
+use super::traits::ModularFileHandle;
+// Keep ext2_modular import for backwards compatibility during transition
 use super::ext2_modular::{self, FileRefHandle};
 
 // Default ni configuration shipped when initramfs does not provide one.
@@ -31,7 +33,7 @@ ExecStart=/sbin/uefi-compatd\n\
 Restart=no\n\
 WantedBy=multi-user.target rescue.target\n";
 
-const EXT2_READ_CACHE_SIZE: usize = 64 * 1024 * 1024; // 64 MiB max file size
+const MODULAR_READ_CACHE_SIZE: usize = 64 * 1024 * 1024; // 64 MiB max file size
 
 /// Track currently allocated vmalloc read buffers for large file reads
 /// vmalloc provides logically contiguous virtual memory backed by
@@ -40,7 +42,7 @@ const EXT2_READ_CACHE_SIZE: usize = 64 * 1024 * 1024; // 64 MiB max file size
 /// NOTE: We don't track/free old allocations because callers hold &'static [u8]
 /// references. In practice this is used for large files like fonts that stay
 /// loaded for the system lifetime. The vmalloc region (1GB) is more than enough.
-static EMPTY_EXT2_FILE: [u8; 0] = [];
+static EMPTY_MODULAR_FILE: [u8; 0] = [];
 
 #[derive(Clone, Copy)]
 pub struct File {
@@ -57,9 +59,17 @@ static FILE_METADATA: Mutex<[Option<Metadata>; MAX_FILES]> = Mutex::new([None; M
 static FILE_COUNT: Mutex<usize> = Mutex::new(0);
 static MOUNTS: Mutex<[Option<MountEntry>; MAX_MOUNTS]> = Mutex::new([None; MAX_MOUNTS]);
 
+/// File content types - filesystem agnostic
 #[derive(Clone, Copy)]
 pub enum FileContent {
+    /// Inline content from initramfs or static memory
     Inline(&'static [u8]),
+    /// Content from a modular filesystem (ext2, ext3, ext4, etc.)
+    /// The ModularFileHandle contains the fs_index to identify which filesystem
+    Modular(ModularFileHandle),
+    /// Legacy ext2 handle - kept for backwards compatibility during transition
+    /// TODO: Remove this variant once ext2_modular is fully migrated to ModularFsOps
+    #[deprecated(note = "Use Modular variant instead")]
     Ext2Modular(FileRefHandle),
 }
 
@@ -1184,144 +1194,209 @@ pub fn read_file_bytes(name: &str) -> Option<&'static [u8]> {
             crate::kinfo!("read_file_bytes: Inline content, {} bytes", bytes.len());
             Some(bytes)
         }
+        // Handle new modular filesystem content (filesystem-agnostic)
+        FileContent::Modular(file_handle) => {
+            read_modular_file_bytes(name, &file_handle)
+        }
+        // Legacy ext2 handler - kept for backwards compatibility
+        #[allow(deprecated)]
         FileContent::Ext2Modular(file_ref) => {
-            crate::serial_println!("[read_file_bytes] Ext2Modular inode={}, size={}", file_ref.inode, file_ref.size);
-            crate::kinfo!(
-                "read_file_bytes: Ext2Modular content, inode={}, size={}",
-                file_ref.inode,
-                file_ref.size
-            );
-
-            // CRITICAL FIX: Switch to kernel CR3 before accessing EXT2_READ_CACHE
-            // The cache buffer is allocated in kernel address space (heap at ~0x7cc0000)
-            // which may not be mapped in user process page tables.
-            // We must be in kernel CR3 for both buffer allocation AND data reading.
-            let kernel_cr3 = crate::paging::kernel_pml4_phys();
-            let saved_cr3: u64;
-            unsafe {
-                core::arch::asm!("mov {}, cr3", out(reg) saved_cr3, options(nomem, nostack));
-                if saved_cr3 != kernel_cr3 {
-                    crate::kinfo!(
-                        "read_file_bytes: switching CR3 from {:#x} to kernel {:#x}",
-                        saved_cr3,
-                        kernel_cr3
-                    );
-                    core::arch::asm!("mov cr3, {}", in(reg) kernel_cr3, options(nostack));
-                }
-            }
-
-            let size = file_ref.size as usize;
-            if size == 0 {
-                crate::serial_println!("[read_file_bytes] file size is 0");
-                // Restore CR3 before returning
-                unsafe {
-                    if saved_cr3 != kernel_cr3 {
-                        core::arch::asm!("mov cr3, {}", in(reg) saved_cr3, options(nostack));
-                    }
-                }
-                return Some(&EMPTY_EXT2_FILE);
-            }
-            if size > EXT2_READ_CACHE_SIZE {
-                crate::serial_println!("[read_file_bytes] file too large: {} > {}", size, EXT2_READ_CACHE_SIZE);
-                crate::kwarn!(
-                    "ext2 file '{}' is {} bytes, exceeds {} byte limit",
-                    name,
-                    size,
-                    EXT2_READ_CACHE_SIZE
-                );
-                // Restore CR3 before returning
-                unsafe {
-                    if saved_cr3 != kernel_cr3 {
-                        core::arch::asm!("mov cr3, {}", in(reg) saved_cr3, options(nostack));
-                    }
-                }
-                return None;
-            }
-
-            crate::serial_println!("[read_file_bytes] allocating {} bytes via vmalloc", size);
-            
-            // Use vmalloc for logically contiguous memory (physically non-contiguous is OK)
-            // Each call allocates a fresh buffer - we don't free because callers hold &'static refs
-            let vmalloc_ptr = match vmalloc(size as u64) {
-                Some(ptr) => ptr,
-                None => {
-                    crate::kwarn!("Failed to allocate {} bytes via vmalloc for '{}'", size, name);
-                    unsafe {
-                        if saved_cr3 != kernel_cr3 {
-                            core::arch::asm!("mov cr3, {}", in(reg) saved_cr3, options(nostack));
-                        }
-                    }
-                    return None;
-                }
+            // Convert legacy FileRefHandle to ModularFileHandle for unified handling
+            let modular_handle = super::traits::ModularFileHandle {
+                fs_index: 0, // ext2 is always index 0 in legacy mode
+                fs_handle: file_ref.fs.0,
+                inode: file_ref.inode,
+                size: file_ref.size,
+                mode: file_ref.mode,
+                blocks: file_ref.blocks,
+                mtime: file_ref.mtime,
+                nlink: file_ref.nlink,
+                uid: file_ref.uid,
+                gid: file_ref.gid,
             };
-            
-            // Get mutable slice for direct reading
-            let buf_slice = unsafe { core::slice::from_raw_parts_mut(vmalloc_ptr, size) };
-            
-            // Read directly into vmalloc buffer
-            let mut read_offset = 0usize;
-            while read_offset < size {
-                let remaining = size - read_offset;
-                let to_read = remaining.min(4096); // Read in 4KB chunks
-                
-                let bytes_read = ext2_modular::read_at(
-                    &file_ref, 
-                    read_offset, 
-                    &mut buf_slice[read_offset..read_offset + to_read]
-                );
-                
-                if bytes_read == 0 {
-                    crate::serial_println!("[read_file_bytes] short read at offset {} of {}", read_offset, size);
-                    crate::kwarn!(
-                        "short read while loading '{}' from ext2 (offset {} of {})",
-                        name,
-                        read_offset,
-                        size
-                    );
-                    // Don't free vmalloc here - we can't recover partial reads
-                    // The memory will be leaked but this is an error path
-                    unsafe {
-                        if saved_cr3 != kernel_cr3 {
-                            core::arch::asm!("mov cr3, {}", in(reg) saved_cr3, options(nostack));
-                        }
-                    }
-                    return None;
-                }
-                
-                read_offset += bytes_read;
-                
-                // Progress logging for large files (every 1MB)
-                if size > 1024 * 1024 && read_offset % (1024 * 1024) == 0 {
-                    crate::kinfo!("read_file_bytes: progress {}/{}MB", read_offset / (1024*1024), size / (1024*1024));
-                }
-            }
-            
-            crate::serial_println!("[read_file_bytes] read complete, total {} bytes", size);
+            read_modular_file_bytes(name, &modular_handle)
+        }
+    }
+}
 
-            // Debug: log first 16 bytes
-            let n = core::cmp::min(16, size);
+/// Read file content from a modular filesystem (ext2, ext3, ext4, etc.)
+/// This is filesystem-agnostic and works with any registered modular filesystem
+fn read_modular_file_bytes(name: &str, file_handle: &super::traits::ModularFileHandle) -> Option<&'static [u8]> {
+    crate::serial_println!(
+        "[read_modular_file_bytes] fs_index={}, inode={}, size={}",
+        file_handle.fs_index,
+        file_handle.inode,
+        file_handle.size
+    );
+    crate::kinfo!(
+        "read_modular_file_bytes: fs_index={}, inode={}, size={}",
+        file_handle.fs_index,
+        file_handle.inode,
+        file_handle.size
+    );
+
+    // CRITICAL FIX: Switch to kernel CR3 before accessing kernel memory
+    // The cache buffer is allocated in kernel address space (heap at ~0x7cc0000)
+    // which may not be mapped in user process page tables.
+    // We must be in kernel CR3 for both buffer allocation AND data reading.
+    let kernel_cr3 = crate::paging::kernel_pml4_phys();
+    let saved_cr3: u64;
+    unsafe {
+        core::arch::asm!("mov {}, cr3", out(reg) saved_cr3, options(nomem, nostack));
+        if saved_cr3 != kernel_cr3 {
             crate::kinfo!(
-                "read_file_bytes: complete, first {} bytes: {:02x?}",
-                n,
-                &buf_slice[..n]
+                "read_modular_file_bytes: switching CR3 from {:#x} to kernel {:#x}",
+                saved_cr3,
+                kernel_cr3
             );
-            
-            // Create static slice from vmalloc memory (memory persists for kernel lifetime)
-            let result = unsafe { 
-                Some(core::slice::from_raw_parts(vmalloc_ptr as *const u8, size))
-            };
+            core::arch::asm!("mov cr3, {}", in(reg) kernel_cr3, options(nostack));
+        }
+    }
 
-            // Restore CR3 after all operations complete
+    let size = file_handle.size as usize;
+    if size == 0 {
+        crate::serial_println!("[read_modular_file_bytes] file size is 0");
+        // Restore CR3 before returning
+        unsafe {
+            if saved_cr3 != kernel_cr3 {
+                core::arch::asm!("mov cr3, {}", in(reg) saved_cr3, options(nostack));
+            }
+        }
+        return Some(&EMPTY_MODULAR_FILE);
+    }
+    if size > MODULAR_READ_CACHE_SIZE {
+        crate::serial_println!(
+            "[read_modular_file_bytes] file too large: {} > {}",
+            size,
+            MODULAR_READ_CACHE_SIZE
+        );
+        crate::kwarn!(
+            "modular fs file '{}' is {} bytes, exceeds {} byte limit",
+            name,
+            size,
+            MODULAR_READ_CACHE_SIZE
+        );
+        // Restore CR3 before returning
+        unsafe {
+            if saved_cr3 != kernel_cr3 {
+                core::arch::asm!("mov cr3, {}", in(reg) saved_cr3, options(nostack));
+            }
+        }
+        return None;
+    }
+
+    crate::serial_println!("[read_modular_file_bytes] allocating {} bytes via vmalloc", size);
+    
+    // Use vmalloc for logically contiguous memory (physically non-contiguous is OK)
+    // Each call allocates a fresh buffer - we don't free because callers hold &'static refs
+    let vmalloc_ptr = match vmalloc(size as u64) {
+        Some(ptr) => ptr,
+        None => {
+            crate::kwarn!("Failed to allocate {} bytes via vmalloc for '{}'", size, name);
             unsafe {
                 if saved_cr3 != kernel_cr3 {
-                    crate::kinfo!("read_file_bytes: restoring CR3 to {:#x}", saved_cr3);
                     core::arch::asm!("mov cr3, {}", in(reg) saved_cr3, options(nostack));
                 }
             }
-
-            result
+            return None;
+        }
+    };
+    
+    // Get mutable slice for direct reading
+    let buf_slice = unsafe { core::slice::from_raw_parts_mut(vmalloc_ptr, size) };
+    
+    // Read directly into vmalloc buffer using the modular filesystem API
+    let mut read_offset = 0usize;
+    while read_offset < size {
+        let remaining = size - read_offset;
+        let to_read = remaining.min(4096); // Read in 4KB chunks
+        
+        // Use the unified modular_fs_read_at API
+        let bytes_read = match super::traits::modular_fs_read_at(
+            file_handle,
+            read_offset,
+            &mut buf_slice[read_offset..read_offset + to_read],
+        ) {
+            Ok(n) => n,
+            Err(_) => {
+                // Fallback to legacy ext2_modular API for backwards compatibility
+                let legacy_ref = ext2_modular::FileRefHandle {
+                    fs: ext2_modular::Ext2Handle(file_handle.fs_handle),
+                    inode: file_handle.inode,
+                    size: file_handle.size,
+                    mode: file_handle.mode,
+                    blocks: file_handle.blocks,
+                    mtime: file_handle.mtime,
+                    nlink: file_handle.nlink,
+                    uid: file_handle.uid,
+                    gid: file_handle.gid,
+                };
+                ext2_modular::read_at(
+                    &legacy_ref,
+                    read_offset,
+                    &mut buf_slice[read_offset..read_offset + to_read],
+                )
+            }
+        };
+        
+        if bytes_read == 0 {
+            crate::serial_println!(
+                "[read_modular_file_bytes] short read at offset {} of {}",
+                read_offset,
+                size
+            );
+            crate::kwarn!(
+                "short read while loading '{}' from modular fs (offset {} of {})",
+                name,
+                read_offset,
+                size
+            );
+            // Don't free vmalloc here - we can't recover partial reads
+            // The memory will be leaked but this is an error path
+            unsafe {
+                if saved_cr3 != kernel_cr3 {
+                    core::arch::asm!("mov cr3, {}", in(reg) saved_cr3, options(nostack));
+                }
+            }
+            return None;
+        }
+        
+        read_offset += bytes_read;
+        
+        // Progress logging for large files (every 1MB)
+        if size > 1024 * 1024 && read_offset % (1024 * 1024) == 0 {
+            crate::kinfo!(
+                "read_modular_file_bytes: progress {}/{}MB",
+                read_offset / (1024 * 1024),
+                size / (1024 * 1024)
+            );
         }
     }
+    
+    crate::serial_println!("[read_modular_file_bytes] read complete, total {} bytes", size);
+
+    // Debug: log first 16 bytes
+    let n = core::cmp::min(16, size);
+    crate::kinfo!(
+        "read_modular_file_bytes: complete, first {} bytes: {:02x?}",
+        n,
+        &buf_slice[..n]
+    );
+    
+    // Create static slice from vmalloc memory (memory persists for kernel lifetime)
+    let result = unsafe {
+        Some(core::slice::from_raw_parts(vmalloc_ptr as *const u8, size))
+    };
+
+    // Restore CR3 after all operations complete
+    unsafe {
+        if saved_cr3 != kernel_cr3 {
+            crate::kinfo!("read_modular_file_bytes: restoring CR3 to {:#x}", saved_cr3);
+            core::arch::asm!("mov cr3, {}", in(reg) saved_cr3, options(nostack));
+        }
+    }
+
+    result
 }
 
 pub fn read_file(name: &str) -> Option<&'static str> {

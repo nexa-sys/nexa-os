@@ -258,6 +258,48 @@ pub fn write(fd: u64, buf: u64, count: u64) -> u64 {
                         }
                     }
                 }
+                FileBacking::Modular(file_handle) => {
+                    ktrace!(
+                        "[SYS_WRITE] Modular fs fd={} fs_index={} inode={} count={} position={}",
+                        fd,
+                        file_handle.fs_index,
+                        file_handle.inode,
+                        count,
+                        handle.position
+                    );
+
+                    // Check if filesystem is writable
+                    if !crate::fs::modular_fs_is_writable(file_handle.fs_index) {
+                        ktrace!("[SYS_WRITE] ERROR: modular filesystem is read-only");
+                        posix::set_errno(posix::errno::EROFS);
+                        return u64::MAX;
+                    }
+
+                    if !user_buffer_in_range(buf, count) {
+                        ktrace!("[SYS_WRITE] ERROR: Buffer out of range");
+                        posix::set_errno(posix::errno::EFAULT);
+                        return u64::MAX;
+                    }
+
+                    let data = core::slice::from_raw_parts(buf as *const u8, count as usize);
+
+                    // Write to modular file at current position
+                    match crate::fs::modular_fs_write_at(&file_handle, handle.position, data) {
+                        Ok(bytes_written) => {
+                            // Update position
+                            update_file_handle_position(idx, handle.position + bytes_written);
+                            ktrace!("[SYS_WRITE] Modular fs wrote {} bytes", bytes_written);
+                            posix::set_errno(0);
+                            return bytes_written as u64;
+                        }
+                        Err(e) => {
+                            ktrace!("[SYS_WRITE] ERROR: Modular fs write failed: {:?}", e);
+                            posix::set_errno(posix::errno::EIO);
+                            return u64::MAX;
+                        }
+                    }
+                }
+                #[allow(deprecated)]
                 FileBacking::Ext2(file_ref) => {
                     ktrace!(
                         "[SYS_WRITE] Ext2 file fd={} inode={} count={} position={}",
@@ -383,6 +425,35 @@ pub fn pwrite64(fd: u64, buf: u64, count: u64, offset: i64) -> u64 {
                     posix::set_errno(posix::errno::ESPIPE);
                     return u64::MAX;
                 }
+                FileBacking::Modular(ref file_handle) => {
+                    if !crate::fs::modular_fs_is_writable(file_handle.fs_index) {
+                        ktrace!("[SYS_PWRITE64] ERROR: modular filesystem is read-only");
+                        posix::set_errno(posix::errno::EROFS);
+                        return u64::MAX;
+                    }
+
+                    if !user_buffer_in_range(buf, count) {
+                        posix::set_errno(posix::errno::EFAULT);
+                        return u64::MAX;
+                    }
+
+                    let data = core::slice::from_raw_parts(buf as *const u8, count as usize);
+
+                    // Write at the specified offset (don't update file position)
+                    match crate::fs::modular_fs_write_at(file_handle, offset as usize, data) {
+                        Ok(bytes_written) => {
+                            ktrace!("[SYS_PWRITE64] Modular fs wrote {} bytes at offset {}", bytes_written, offset);
+                            posix::set_errno(0);
+                            return bytes_written as u64;
+                        }
+                        Err(e) => {
+                            ktrace!("[SYS_PWRITE64] ERROR: Modular fs write failed: {:?}", e);
+                            posix::set_errno(posix::errno::EIO);
+                            return u64::MAX;
+                        }
+                    }
+                }
+                #[allow(deprecated)]
                 FileBacking::Ext2(ref file_ref) => {
                     if !crate::fs::ext2_is_writable() {
                         ktrace!("[SYS_PWRITE64] ERROR: ext2 filesystem is read-only");
@@ -493,6 +564,23 @@ pub fn pread64(fd: u64, buf: *mut u8, count: usize, offset: i64) -> u64 {
                     posix::set_errno(posix::errno::ESPIPE);
                     return u64::MAX;
                 }
+                FileBacking::Modular(ref file_handle) => {
+                    let buffer = core::slice::from_raw_parts_mut(buf, count);
+                    
+                    // Read at the specified offset (don't update file position)
+                    match crate::fs::modular_fs_read_at(file_handle, offset as usize, buffer) {
+                        Ok(bytes_read) => {
+                            ktrace!("[SYS_PREAD64] Modular fs read {} bytes from offset {}", bytes_read, offset);
+                            posix::set_errno(0);
+                            return bytes_read as u64;
+                        }
+                        Err(_) => {
+                            posix::set_errno(posix::errno::EIO);
+                            return u64::MAX;
+                        }
+                    }
+                }
+                #[allow(deprecated)]
                 FileBacking::Ext2(ref file_ref) => {
                     let buffer = core::slice::from_raw_parts_mut(buf, count);
                     
@@ -865,6 +953,28 @@ pub fn read(fd: u64, buf: *mut u8, count: usize) -> u64 {
                     posix::set_errno(0);
                     return to_copy as u64;
                 }
+                FileBacking::Modular(file_handle) => {
+                    let total = handle.metadata.size as usize;
+                    if handle.position >= total {
+                        posix::set_errno(0);
+                        return 0;
+                    }
+                    let remaining = total - handle.position;
+                    let to_read = cmp::min(remaining, count);
+                    let dest = slice::from_raw_parts_mut(buf, to_read);
+                    let read = match crate::fs::modular_fs_read_at(&file_handle, handle.position, dest) {
+                        Ok(n) => n,
+                        Err(_) => {
+                            posix::set_errno(posix::errno::EIO);
+                            return u64::MAX;
+                        }
+                    };
+                    // Update position using accessor function
+                    update_file_handle_position(idx, handle.position.saturating_add(read));
+                    posix::set_errno(0);
+                    return read as u64;
+                }
+                #[allow(deprecated)]
                 FileBacking::Ext2(file_ref) => {
                     let total = handle.metadata.size as usize;
                     if handle.position >= total {
@@ -1028,7 +1138,23 @@ pub fn open(path_ptr: *const u8, flags: u64, mode: u64) -> u64 {
                     FileBacking::Inline(data)
                 }
             },
-            crate::fs::FileContent::Ext2Modular(file_ref) => FileBacking::Ext2(file_ref),
+            crate::fs::FileContent::Modular(handle) => FileBacking::Modular(handle),
+            #[allow(deprecated)]
+            crate::fs::FileContent::Ext2Modular(file_ref) => {
+                // Convert legacy ext2 handle to modular handle
+                FileBacking::Modular(crate::fs::ModularFileHandle {
+                    fs_index: 0,
+                    fs_handle: file_ref.fs.0,
+                    inode: file_ref.inode,
+                    size: file_ref.size,
+                    mode: file_ref.mode,
+                    blocks: file_ref.blocks,
+                    mtime: file_ref.mtime,
+                    nlink: file_ref.nlink,
+                    uid: file_ref.uid,
+                    gid: file_ref.gid,
+                })
+            }
         };
 
         unsafe {
@@ -1076,7 +1202,23 @@ pub fn open(path_ptr: *const u8, flags: u64, mode: u64) -> u64 {
             let crate::fs::OpenFile { content, metadata } = opened;
             let backing = match content {
                 crate::fs::FileContent::Inline(data) => FileBacking::Inline(data),
-                crate::fs::FileContent::Ext2Modular(file_ref) => FileBacking::Ext2(file_ref),
+                crate::fs::FileContent::Modular(handle) => FileBacking::Modular(handle),
+                #[allow(deprecated)]
+                crate::fs::FileContent::Ext2Modular(file_ref) => {
+                    // Convert legacy ext2 handle to modular handle
+                    FileBacking::Modular(crate::fs::ModularFileHandle {
+                        fs_index: 0,
+                        fs_handle: file_ref.fs.0,
+                        inode: file_ref.inode,
+                        size: file_ref.size,
+                        mode: file_ref.mode,
+                        blocks: file_ref.blocks,
+                        mtime: file_ref.mtime,
+                        nlink: file_ref.nlink,
+                        uid: file_ref.uid,
+                        gid: file_ref.gid,
+                    })
+                }
             };
 
             unsafe {

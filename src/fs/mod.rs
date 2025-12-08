@@ -52,6 +52,16 @@ pub use traits::{
     WritableFileSystem,
 };
 
+// Re-export modular filesystem registry types and functions
+pub use traits::{
+    ModularFileHandle, ModularFsOps, ModularDirCallback,
+    register_modular_fs, unregister_modular_fs, find_modular_fs, mount_modular_fs,
+    modular_fs_lookup, modular_fs_read_at, modular_fs_write_at, modular_fs_list_dir,
+    modular_fs_enable_write, modular_fs_is_writable, modular_fs_get_stats,
+    modular_fs_type_name, modular_fs_is_mounted, get_mounted_modular_fs,
+    modular_fs_create_file,
+};
+
 // Re-export bridge adapters
 pub use bridge::{BlockFsVfsAdapter, VfsBlockFsAdapter};
 

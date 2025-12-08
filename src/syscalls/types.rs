@@ -164,6 +164,10 @@ pub struct SocketpairHandle {
 #[derive(Clone, Copy)]
 pub enum FileBacking {
     Inline(&'static [u8]),
+    /// Modular filesystem file (ext2, ext3, ext4, etc.) - filesystem agnostic
+    Modular(crate::fs::ModularFileHandle),
+    /// Legacy ext2 file - kept for backwards compatibility
+    #[deprecated(note = "Use Modular variant instead")]
     Ext2(FileRefHandle),
     StdStream(StdStreamKind),
     Socket(SocketHandle),

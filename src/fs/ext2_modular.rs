@@ -305,6 +305,10 @@ pub extern "C" fn kmod_ext2_register(ops: *const Ext2ModuleOps) -> i32 {
         global_ops.create_file = ops.create_file;
     }
 
+    // Also register to the new modular filesystem registry for future ext3/ext4 compatibility
+    // This creates a bridge from the old ext2-specific API to the new unified API
+    register_to_modular_fs_registry();
+
     crate::kinfo!("ext2_modular: module registered successfully");
     0
 }
@@ -765,4 +769,286 @@ pub fn register_symbols() {
 pub fn init() {
     register_symbols();
     crate::kinfo!("ext2_modular: subsystem initialized (waiting for module)");
+}
+
+// ============================================================================
+// Modular Filesystem Registry Integration
+// ============================================================================
+
+/// Index of ext2 in the modular filesystem registry (set during registration)
+static EXT2_REGISTRY_INDEX: Mutex<Option<u8>> = Mutex::new(None);
+
+/// Bridge callback for ModularFsOps::new_from_image
+extern "C" fn ext2_modular_new_from_image(image: *const u8, size: usize) -> *mut u8 {
+    // This is called when mounting through the unified API
+    // We use the existing ext2 module ops
+    let ops = EXT2_OPS.lock();
+    if let Some(new_fn) = ops.new {
+        new_fn(image, size).0
+    } else {
+        core::ptr::null_mut()
+    }
+}
+
+/// Bridge callback for ModularFsOps::destroy
+extern "C" fn ext2_modular_destroy(handle: *mut u8) {
+    let ops = EXT2_OPS.lock();
+    if let Some(destroy_fn) = ops.destroy {
+        destroy_fn(Ext2Handle(handle));
+    }
+}
+
+/// Bridge callback for ModularFsOps::lookup
+extern "C" fn ext2_modular_lookup_bridge(
+    handle: *mut u8,
+    path: *const u8,
+    path_len: usize,
+    out: *mut super::traits::ModularFileHandle,
+) -> i32 {
+    if handle.is_null() || path.is_null() || out.is_null() {
+        return -1;
+    }
+    
+    let ops = EXT2_OPS.lock();
+    let lookup_fn = match ops.lookup {
+        Some(f) => f,
+        None => return -1,
+    };
+    drop(ops);
+    
+    // Create a temporary FileRefHandle for the ext2 lookup
+    let mut file_ref = FileRefHandle {
+        fs: Ext2Handle(handle),
+        inode: 0,
+        size: 0,
+        mode: 0,
+        blocks: 0,
+        mtime: 0,
+        nlink: 0,
+        uid: 0,
+        gid: 0,
+    };
+    
+    let ret = lookup_fn(Ext2Handle(handle), path, path_len, &mut file_ref);
+    
+    if ret == 0 {
+        // Convert FileRefHandle to ModularFileHandle
+        unsafe {
+            (*out).inode = file_ref.inode;
+            (*out).size = file_ref.size;
+            (*out).mode = file_ref.mode;
+            (*out).blocks = file_ref.blocks;
+            (*out).mtime = file_ref.mtime;
+            (*out).nlink = file_ref.nlink;
+            (*out).uid = file_ref.uid;
+            (*out).gid = file_ref.gid;
+            // fs_index and fs_handle will be set by the caller
+        }
+    }
+    
+    ret
+}
+
+/// Bridge callback for ModularFsOps::read_at
+extern "C" fn ext2_modular_read_at_bridge(
+    file: *const super::traits::ModularFileHandle,
+    offset: usize,
+    buf: *mut u8,
+    len: usize,
+) -> i32 {
+    if file.is_null() || buf.is_null() {
+        return -1;
+    }
+    
+    let ops = EXT2_OPS.lock();
+    let read_fn = match ops.read_at {
+        Some(f) => f,
+        None => return -1,
+    };
+    drop(ops);
+    
+    // Convert ModularFileHandle back to FileRefHandle
+    let file_handle = unsafe { &*file };
+    let file_ref = FileRefHandle {
+        fs: Ext2Handle(file_handle.fs_handle),
+        inode: file_handle.inode,
+        size: file_handle.size,
+        mode: file_handle.mode,
+        blocks: file_handle.blocks,
+        mtime: file_handle.mtime,
+        nlink: file_handle.nlink,
+        uid: file_handle.uid,
+        gid: file_handle.gid,
+    };
+    
+    read_fn(&file_ref, offset, buf, len)
+}
+
+/// Bridge callback for ModularFsOps::write_at
+extern "C" fn ext2_modular_write_at_bridge(
+    file: *const super::traits::ModularFileHandle,
+    offset: usize,
+    data: *const u8,
+    len: usize,
+) -> i32 {
+    if file.is_null() || data.is_null() {
+        return -1;
+    }
+    
+    let ops = EXT2_OPS.lock();
+    let write_fn = match ops.write_at {
+        Some(f) => f,
+        None => return -7, // ReadOnly error
+    };
+    drop(ops);
+    
+    // Convert ModularFileHandle back to FileRefHandle
+    let file_handle = unsafe { &*file };
+    let file_ref = FileRefHandle {
+        fs: Ext2Handle(file_handle.fs_handle),
+        inode: file_handle.inode,
+        size: file_handle.size,
+        mode: file_handle.mode,
+        blocks: file_handle.blocks,
+        mtime: file_handle.mtime,
+        nlink: file_handle.nlink,
+        uid: file_handle.uid,
+        gid: file_handle.gid,
+    };
+    
+    write_fn(&file_ref, offset, data, len)
+}
+
+/// Bridge callback for ModularFsOps::list_dir
+extern "C" fn ext2_modular_list_dir_bridge(
+    handle: *mut u8,
+    path: *const u8,
+    path_len: usize,
+    cb: super::traits::ModularDirCallback,
+    ctx: *mut u8,
+) -> i32 {
+    if handle.is_null() || path.is_null() {
+        return -1;
+    }
+    
+    let ops = EXT2_OPS.lock();
+    let list_fn = match ops.list_dir {
+        Some(f) => f,
+        None => return -1,
+    };
+    drop(ops);
+    
+    // The callback signatures are compatible, so we can cast directly
+    list_fn(Ext2Handle(handle), path, path_len, cb, ctx);
+    0
+}
+
+/// Bridge callback for ModularFsOps::get_stats
+extern "C" fn ext2_modular_get_stats_bridge(
+    handle: *mut u8,
+    stats: *mut super::traits::FsStats,
+) -> i32 {
+    if handle.is_null() || stats.is_null() {
+        return -1;
+    }
+    
+    let ops = EXT2_OPS.lock();
+    let get_stats_fn = match ops.get_stats {
+        Some(f) => f,
+        None => return -1,
+    };
+    drop(ops);
+    
+    // Create a temporary Ext2Stats
+    let mut ext2_stats = Ext2Stats::default();
+    let ret = get_stats_fn(Ext2Handle(handle), &mut ext2_stats);
+    
+    if ret == 0 {
+        // Convert Ext2Stats to FsStats
+        unsafe {
+            (*stats).total_blocks = ext2_stats.blocks_count as u64;
+            (*stats).free_blocks = ext2_stats.free_blocks_count as u64;
+            (*stats).avail_blocks = ext2_stats.free_blocks_count as u64;
+            (*stats).total_inodes = ext2_stats.inodes_count as u64;
+            (*stats).free_inodes = ext2_stats.free_inodes_count as u64;
+            (*stats).block_size = ext2_stats.block_size;
+            (*stats).name_max = 255;
+            (*stats).fs_type = 0xEF53; // EXT2_SUPER_MAGIC
+        }
+    }
+    
+    ret
+}
+
+/// Bridge callback for ModularFsOps::set_writable
+extern "C" fn ext2_modular_set_writable_bridge(writable: bool) {
+    let ops = EXT2_OPS.lock();
+    if let Some(set_writable_fn) = ops.set_writable {
+        set_writable_fn(writable);
+    }
+    drop(ops);
+    *EXT2_WRITABLE.lock() = writable;
+}
+
+/// Bridge callback for ModularFsOps::is_writable
+extern "C" fn ext2_modular_is_writable_bridge() -> bool {
+    *EXT2_WRITABLE.lock()
+}
+
+/// Bridge callback for ModularFsOps::create_file
+extern "C" fn ext2_modular_create_file_bridge(
+    handle: *mut u8,
+    path: *const u8,
+    path_len: usize,
+    mode: u16,
+) -> i32 {
+    if handle.is_null() || path.is_null() {
+        return -1;
+    }
+    
+    let ops = EXT2_OPS.lock();
+    let create_fn = match ops.create_file {
+        Some(f) => f,
+        None => return -7, // ReadOnly error
+    };
+    drop(ops);
+    
+    create_fn(Ext2Handle(handle), path, path_len, mode)
+}
+
+/// Register ext2 to the modular filesystem registry
+/// This bridges the legacy ext2 API to the new unified ModularFsOps interface
+fn register_to_modular_fs_registry() {
+    use super::traits::{register_modular_fs, ModularFsOps};
+    
+    let ops = ModularFsOps {
+        fs_type: "ext2",
+        new_from_image: Some(ext2_modular_new_from_image),
+        destroy: Some(ext2_modular_destroy),
+        lookup: Some(ext2_modular_lookup_bridge),
+        read_at: Some(ext2_modular_read_at_bridge),
+        write_at: Some(ext2_modular_write_at_bridge),
+        list_dir: Some(ext2_modular_list_dir_bridge),
+        get_stats: Some(ext2_modular_get_stats_bridge),
+        set_writable: Some(ext2_modular_set_writable_bridge),
+        is_writable: Some(ext2_modular_is_writable_bridge),
+        create_file: Some(ext2_modular_create_file_bridge),
+        mkdir: None,
+        unlink: None,
+        rmdir: None,
+        rename: None,
+        sync: None,
+    };
+    
+    if let Some(index) = register_modular_fs(ops) {
+        *EXT2_REGISTRY_INDEX.lock() = Some(index);
+        crate::kinfo!("ext2_modular: registered to modular fs registry at index {}", index);
+    } else {
+        crate::kwarn!("ext2_modular: failed to register to modular fs registry");
+    }
+}
+
+/// Get the ext2 registry index (for use when converting FileRefHandle to ModularFileHandle)
+pub fn get_registry_index() -> Option<u8> {
+    *EXT2_REGISTRY_INDEX.lock()
 }
