@@ -50,7 +50,13 @@ impl AnsiParser {
         }
     }
 
+    /// Check if this is a private (DEC) sequence starting with ?
+    pub fn is_private(&self) -> bool {
+        self.param_len > 0 && self.param_buf[0] == b'?'
+    }
+
     /// Parse accumulated parameters into numeric values
+    /// Returns (params, count, is_private)
     pub fn parse_params(&self) -> ([u16; 16], usize) {
         let mut params = [0u16; 16];
         if self.param_len == 0 {
@@ -62,7 +68,10 @@ impl AnsiParser {
         let mut value = 0u16;
         let mut has_value = false;
 
-        for &byte in &self.param_buf[..self.param_len] {
+        // Skip '?' prefix if present
+        let start = if self.param_buf[0] == b'?' { 1 } else { 0 };
+
+        for &byte in &self.param_buf[start..self.param_len] {
             if byte == b';' {
                 if count < params.len() {
                     params[count] = if has_value { value } else { 0 };

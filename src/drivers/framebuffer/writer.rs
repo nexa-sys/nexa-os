@@ -45,6 +45,12 @@ pub struct FramebufferWriter {
     char_widths: [u8; MAX_LINE_CHARS],
     /// Number of characters in current line
     char_count: usize,
+    /// Saved cursor X position for DECSC/DECRC
+    saved_cursor_x: usize,
+    /// Saved cursor Y position for DECSC/DECRC
+    saved_cursor_y: usize,
+    /// Saved pixel X position for DECSC/DECRC
+    saved_pixel_x: usize,
 }
 
 unsafe impl Send for FramebufferWriter {}
@@ -95,6 +101,9 @@ impl FramebufferWriter {
             ansi: AnsiParser::new(),
             char_widths: [0; MAX_LINE_CHARS],
             char_count: 0,
+            saved_cursor_x: 0,
+            saved_cursor_y: 0,
+            saved_pixel_x: 0,
         })
     }
 
@@ -392,10 +401,11 @@ impl FramebufferWriter {
                 }
             }
             AnsiState::Csi => match byte {
-                b'0'..=b'9' | b';' => {
+                b'0'..=b'9' | b';' | b'?' => {
                     self.ansi.push_param(byte);
                 }
-                b'm' | b'J' | b'K' => {
+                b'm' | b'J' | b'K' | b'H' | b'f' | b'A' | b'B' | b'C' | b'D' | b'G' | b'd' 
+                | b'h' | b'l' | b's' | b'u' | b'r' => {
                     let (params, count) = self.ansi.parse_params();
                     self.handle_csi(byte, &params[..count]);
                     self.ansi.reset();
@@ -414,12 +424,156 @@ impl FramebufferWriter {
 
     /// Handle a complete CSI sequence
     fn handle_csi(&mut self, command: u8, params: &[u16]) {
+        // Check for DEC private mode sequences (starting with ?)
+        let is_private = self.ansi.is_private();
+        
         match command {
             b'm' => self.apply_sgr(params),
             b'J' => self.handle_erase_display(params),
             b'K' => self.handle_erase_line(params),
+            b'H' | b'f' => self.handle_cursor_position(params),
+            b'A' => self.handle_cursor_up(params),
+            b'B' => self.handle_cursor_down(params),
+            b'C' => self.handle_cursor_forward(params),
+            b'D' => self.handle_cursor_back(params),
+            b'G' => self.handle_cursor_column(params),
+            b'd' => self.handle_cursor_row(params),
+            b'h' => {
+                if is_private {
+                    self.handle_dec_private_mode_set(params);
+                }
+            }
+            b'l' => {
+                if is_private {
+                    self.handle_dec_private_mode_reset(params);
+                }
+            }
+            b's' => self.save_cursor_position(),
+            b'u' => self.restore_cursor_position(),
+            b'r' => self.handle_set_scrolling_region(params),
             _ => {}
         }
+    }
+
+    /// Handle DEC Private Mode Set (DECSET) - ESC[?nh
+    fn handle_dec_private_mode_set(&mut self, params: &[u16]) {
+        for &param in params {
+            match param {
+                25 => {
+                    // Show cursor (DECTCEM) - acknowledged but not visually shown
+                    // (framebuffer doesn't have hardware cursor)
+                }
+                1049 => {
+                    // Enable alternate screen buffer
+                    // For now, just clear the screen to simulate alternate buffer
+                    self.save_cursor_position();
+                    self.clear();
+                }
+                1000 | 1002 | 1003 | 1006 => {
+                    // Mouse tracking modes - acknowledge but no-op
+                    // (framebuffer doesn't support mouse)
+                }
+                7 => {
+                    // Auto-wrap mode (DECAWM) - we always wrap, so no-op
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Handle DEC Private Mode Reset (DECRST) - ESC[?nl
+    fn handle_dec_private_mode_reset(&mut self, params: &[u16]) {
+        for &param in params {
+            match param {
+                25 => {
+                    // Hide cursor (DECTCEM) - acknowledged but no visual effect
+                }
+                1049 => {
+                    // Disable alternate screen buffer
+                    // For now, just clear and restore cursor
+                    self.clear();
+                    self.restore_cursor_position();
+                }
+                1000 | 1002 | 1003 | 1006 => {
+                    // Mouse tracking modes - acknowledge but no-op
+                }
+                7 => {
+                    // Disable auto-wrap mode - no-op (we always wrap)
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Save cursor position for later restore
+    fn save_cursor_position(&mut self) {
+        self.saved_cursor_x = self.cursor_x;
+        self.saved_cursor_y = self.cursor_y;
+        self.saved_pixel_x = self.pixel_x;
+    }
+
+    /// Restore previously saved cursor position
+    fn restore_cursor_position(&mut self) {
+        self.cursor_x = self.saved_cursor_x;
+        self.cursor_y = self.saved_cursor_y;
+        self.pixel_x = self.saved_pixel_x;
+    }
+
+    /// Handle DECSTBM (Set Top and Bottom Margins) - ESC[top;bottomr
+    fn handle_set_scrolling_region(&mut self, _params: &[u16]) {
+        // Scrolling region is not implemented for now
+        // Just acknowledge the sequence
+    }
+
+    /// Handle CUP/HVP (Cursor Position) - ESC[row;colH or ESC[row;colf
+    fn handle_cursor_position(&mut self, params: &[u16]) {
+        // CSI row ; col H  (1-indexed, defaults to 1)
+        let row = params.first().copied().unwrap_or(1).max(1) as usize - 1;
+        let col = params.get(1).copied().unwrap_or(1).max(1) as usize - 1;
+
+        self.cursor_y = row.min(self.rows.saturating_sub(1));
+        self.cursor_x = col.min(self.columns.saturating_sub(1));
+        self.pixel_x = self.cursor_x * CELL_WIDTH;
+        self.char_count = 0; // Reset character width history when moving cursor
+    }
+
+    /// Handle CUU (Cursor Up) - ESC[nA
+    fn handle_cursor_up(&mut self, params: &[u16]) {
+        let n = params.first().copied().unwrap_or(1).max(1) as usize;
+        self.cursor_y = self.cursor_y.saturating_sub(n);
+    }
+
+    /// Handle CUD (Cursor Down) - ESC[nB
+    fn handle_cursor_down(&mut self, params: &[u16]) {
+        let n = params.first().copied().unwrap_or(1).max(1) as usize;
+        self.cursor_y = (self.cursor_y + n).min(self.rows.saturating_sub(1));
+    }
+
+    /// Handle CUF (Cursor Forward) - ESC[nC
+    fn handle_cursor_forward(&mut self, params: &[u16]) {
+        let n = params.first().copied().unwrap_or(1).max(1) as usize;
+        self.cursor_x = (self.cursor_x + n).min(self.columns.saturating_sub(1));
+        self.pixel_x = self.cursor_x * CELL_WIDTH;
+    }
+
+    /// Handle CUB (Cursor Back) - ESC[nD
+    fn handle_cursor_back(&mut self, params: &[u16]) {
+        let n = params.first().copied().unwrap_or(1).max(1) as usize;
+        self.cursor_x = self.cursor_x.saturating_sub(n);
+        self.pixel_x = self.cursor_x * CELL_WIDTH;
+    }
+
+    /// Handle CHA (Cursor Horizontal Absolute) - ESC[nG
+    fn handle_cursor_column(&mut self, params: &[u16]) {
+        let col = params.first().copied().unwrap_or(1).max(1) as usize - 1;
+        self.cursor_x = col.min(self.columns.saturating_sub(1));
+        self.pixel_x = self.cursor_x * CELL_WIDTH;
+    }
+
+    /// Handle VPA (Vertical Position Absolute) - ESC[nd
+    fn handle_cursor_row(&mut self, params: &[u16]) {
+        let row = params.first().copied().unwrap_or(1).max(1) as usize - 1;
+        self.cursor_y = row.min(self.rows.saturating_sub(1));
     }
 
     /// Handle ED (Erase in Display) sequence
@@ -602,10 +756,11 @@ impl Write for FramebufferWriter {
                 }
                 AnsiState::Csi => {
                     match ch {
-                        '0'..='9' | ';' => {
+                        '0'..='9' | ';' | '?' => {
                             self.ansi.push_param(ch as u8);
                         }
-                        'm' | 'J' | 'K' | 'H' | 'A' | 'B' | 'C' | 'D' => {
+                        'm' | 'J' | 'K' | 'H' | 'f' | 'A' | 'B' | 'C' | 'D' | 'G' | 'd' 
+                        | 'h' | 'l' | 's' | 'u' | 'r' => {
                             let (params, count) = self.ansi.parse_params();
                             self.handle_csi(ch as u8, &params[..count]);
                             self.ansi.reset();
