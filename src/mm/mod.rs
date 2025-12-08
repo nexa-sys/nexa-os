@@ -26,7 +26,7 @@ pub use allocator::{
 };
 
 // Re-export from memory
-pub use memory::{find_heap_region, log_memory_overview};
+pub use memory::{find_heap_region, get_total_physical_memory, log_memory_overview};
 
 // Re-export from numa
 pub use numa::{

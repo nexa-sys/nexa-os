@@ -1,14 +1,31 @@
 use multiboot2::{BootInformation, MemoryAreaType};
+use core::sync::atomic::{AtomicU64, Ordering};
+
+/// Total physical memory in bytes (detected from bootloader)
+static TOTAL_PHYSICAL_MEMORY: AtomicU64 = AtomicU64::new(0);
+
+/// Get total physical memory in bytes
+pub fn get_total_physical_memory() -> u64 {
+    TOTAL_PHYSICAL_MEMORY.load(Ordering::Relaxed)
+}
+
+/// Set total physical memory in bytes (for UEFI boot path)
+pub fn set_total_physical_memory(size: u64) {
+    TOTAL_PHYSICAL_MEMORY.store(size, Ordering::Relaxed);
+}
 
 pub fn log_memory_overview(boot_info: &BootInformation<'_>) {
     if let Some(memmap) = boot_info.memory_map_tag() {
         let areas = memmap.memory_areas();
         crate::kinfo!("[mem] Detected {} memory regions", areas.len());
 
+        let mut total_available: u64 = 0;
+        
         for area in areas.iter() {
             let start = area.start_address() as u64;
             let end = area.end_address() as u64;
-            let size_kib = (area.size() / 1024).max(1);
+            let size = area.size() as u64;
+            let size_kib = (size / 1024).max(1);
 
             crate::kinfo!(
                 "  - {:#012x} .. {:#012x} ({} KiB, {})",
@@ -17,7 +34,16 @@ pub fn log_memory_overview(boot_info: &BootInformation<'_>) {
                 size_kib,
                 classify_area(area.typ())
             );
+            
+            // Count available memory
+            if area.typ() == MemoryAreaType::Available {
+                total_available += size;
+            }
         }
+        
+        // Store total physical memory
+        TOTAL_PHYSICAL_MEMORY.store(total_available, Ordering::Relaxed);
+        crate::kinfo!("[mem] Total available physical memory: {} MB", total_available / (1024 * 1024));
     } else {
         crate::kwarn!("[mem] No memory map provided by bootloader.");
     }

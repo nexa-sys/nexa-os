@@ -1293,6 +1293,9 @@ fn efi_main(image: Handle, mut st: SystemTable<Boot>) -> Status {
             return status;
         }
     };
+    
+    // 计算总物理内存大小（在 exit_boot_services 之前必须完成）
+    let total_physical_memory = calculate_total_physical_memory(bs);
 
     let boot_info_region = match stage_boot_info(
         bs,
@@ -1306,6 +1309,7 @@ fn efi_main(image: Handle, mut st: SystemTable<Boot>) -> Status {
         &cmdline_bytes,
         kernel_segments_region,
         acpi_rsdp_addr,
+        total_physical_memory,
     ) {
         Ok(region) => {
             log::info!("Boot info staged, addr: {:#x}, size: {}", region.phys_addr, region.length);
@@ -2157,6 +2161,7 @@ fn stage_boot_info(
     cmdline: &[u8],
     kernel_segments: MemoryRegion,
     acpi_rsdp_addr: Option<u64>,
+    total_physical_memory: u64,
 ) -> Result<MemoryRegion, Status> {
     let size_bytes = mem::size_of::<BootInfo>();
     debug_assert!(size_bytes <= u16::MAX as usize);
@@ -2227,6 +2232,13 @@ fn stage_boot_info(
         flags_value |= nexa_boot_info::flags::HAS_ACPI_RSDP;
         log::info!("Setting HAS_ACPI_RSDP flag, addr={:#x}", acpi_rsdp_addr.unwrap());
     }
+    
+    // 如果有物理内存信息，设置标志位
+    if total_physical_memory > 0 {
+        flags_value |= nexa_boot_info::flags::HAS_PHYSICAL_MEMORY;
+        log::info!("Setting HAS_PHYSICAL_MEMORY flag, size={} bytes ({} MB)", 
+            total_physical_memory, total_physical_memory / (1024 * 1024));
+    }
 
     let boot_info = BootInfo {
         signature: nexa_boot_info::BOOT_INFO_SIGNATURE,
@@ -2258,7 +2270,8 @@ fn stage_boot_info(
         kernel_segments,
         kernel_load_offset: kernel_offset,
         acpi_rsdp_addr: acpi_rsdp_addr.unwrap_or(0),
-        reserved: [0; 16],
+        total_physical_memory,
+        reserved: [0; 8],
     };
 
     unsafe {
@@ -2304,6 +2317,50 @@ fn stage_cmdline(bs: &BootServices, cmdline: &[u8]) -> Result<MemoryRegion, Stat
         phys_addr: addr as u64,
         length: size as u64,
     })
+}
+
+/// Calculate total physical memory from UEFI memory map.
+/// Returns total size of conventional (usable) memory in bytes.
+fn calculate_total_physical_memory(bs: &BootServices) -> u64 {
+    // Get the memory map to calculate total usable memory
+    let mut buffer = vec![0u8; 4096 * 8]; // Should be enough for most systems
+    
+    loop {
+        match bs.memory_map(&mut buffer) {
+            Ok(memory_map) => {
+                let mut total_memory: u64 = 0;
+                
+                for entry in memory_map.entries() {
+                    // Count conventional memory (usable RAM)
+                    // Also include boot services code/data that will be available after exit_boot_services
+                    match entry.ty {
+                        MemoryType::CONVENTIONAL |
+                        MemoryType::BOOT_SERVICES_CODE |
+                        MemoryType::BOOT_SERVICES_DATA |
+                        MemoryType::LOADER_CODE |
+                        MemoryType::LOADER_DATA => {
+                            let region_size = entry.page_count * 4096;
+                            total_memory = total_memory.saturating_add(region_size);
+                        }
+                        _ => {}
+                    }
+                }
+                
+                log::info!("Total usable physical memory: {} bytes ({} MB)", 
+                    total_memory, total_memory / (1024 * 1024));
+                return total_memory;
+            }
+            Err(e) => {
+                if e.status() == Status::BUFFER_TOO_SMALL {
+                    // Double buffer size and retry
+                    buffer.resize(buffer.len() * 2, 0);
+                } else {
+                    log::warn!("Failed to get memory map: {:?}", e.status());
+                    return 0;
+                }
+            }
+        }
+    }
 }
 
 fn determine_flags(

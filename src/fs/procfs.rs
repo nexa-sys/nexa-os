@@ -293,14 +293,20 @@ pub fn generate_meminfo() -> (&'static [u8], usize) {
 
     // Get real memory statistics from the kernel heap
     let (heap_stats, buddy_stats, slab_stats) = mm::get_memory_stats();
+    
+    // Get total physical memory from bootloader detection
+    let total_phys_bytes = mm::get_total_physical_memory();
+    let total_kb = total_phys_bytes / 1024;
 
-    // Calculate real values from buddy allocator
-    // Each page is 4KB
+    // Calculate buddy allocator stats (managed memory)
     let page_size_kb: u64 = 4;
-    let total_pages = buddy_stats.pages_allocated + buddy_stats.pages_free;
-    let total_kb = total_pages * page_size_kb;
-    let free_kb = buddy_stats.pages_free * page_size_kb;
-    let used_kb = buddy_stats.pages_allocated * page_size_kb;
+    let buddy_used_kb = buddy_stats.pages_allocated * page_size_kb;
+
+    // Free memory = total physical - used by buddy allocator - kernel overhead
+    // Estimate kernel overhead at ~16MB
+    let kernel_overhead_kb: u64 = 16 * 1024;
+    let free_kb = total_kb.saturating_sub(buddy_used_kb).saturating_sub(kernel_overhead_kb);
+    let used_kb = total_kb.saturating_sub(free_kb);
 
     // Heap usage from HeapStats
     let heap_used_kb = (heap_stats

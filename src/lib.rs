@@ -375,6 +375,19 @@ pub fn kernel_main_uefi(boot_info_ptr: *const BootInfo) -> ! {
     let heap_start = 0x0400_0000;
     let heap_size = 64 * 1024 * 1024; // 64MB
     allocator::init_kernel_heap(heap_start, heap_size);
+    
+    // Set total physical memory for UEFI boot path from BootInfo
+    if boot_info.has_physical_memory() {
+        memory::set_total_physical_memory(boot_info.total_physical_memory);
+        kinfo!(
+            "Total physical memory from UEFI: {} MB",
+            boot_info.total_physical_memory / (1024 * 1024)
+        );
+    } else {
+        // Fallback: use kernel heap size as minimum estimate
+        kwarn!("No physical memory info from bootloader, using fallback");
+        memory::set_total_physical_memory(heap_size as u64);
+    }
 
     if logger::tsc_frequency_is_guessed() {
         kwarn!(

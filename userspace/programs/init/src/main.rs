@@ -1046,7 +1046,79 @@ fn delay_ms(ms: u64) {
         std::thread::sleep(Duration::from_millis(ms));
     }
 }
+
+/// Enable swap devices from /etc/fstab
+fn enable_swap_from_fstab() {
+    const SYS_SWAPON: u64 = 167;
+    
+    log_start("Activating swap from /etc/fstab");
+    
+    let fstab_content = match fs::read_to_string("/etc/fstab") {
+        Ok(content) => content,
+        Err(_) => {
+            log_warn("Cannot read /etc/fstab");
+            return;
+        }
+    };
+    
+    let mut swap_enabled = false;
+    
+    for line in fstab_content.lines() {
+        let line = line.trim();
+        
+        // Skip comments and empty lines
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 3 && parts[2] == "swap" {
+            let device = parts[0];
+            
+            // Parse priority from options (pri=N)
+            let mut flags: i32 = 0;
+            if parts.len() >= 4 {
+                for opt in parts[3].split(',') {
+                    if let Some(prio_str) = opt.strip_prefix("pri=") {
+                        if let Ok(prio) = prio_str.parse::<i32>() {
+                            // SWAP_FLAG_PREFER | priority
+                            flags = 0x8000 | (prio & 0x7fff);
+                        }
+                    }
+                }
+            }
+            
+            // Check if device exists
+            if !Path::new(device).exists() {
+                log_warn(&format!("Swap device not found: {}", device));
+                continue;
+            }
+            
+            // Call swapon syscall
+            let device_cstr = format!("{}\0", device);
+            let ret = syscall3(SYS_SWAPON, device_cstr.as_ptr() as u64, flags as u64, 0);
+            
+            if ret == 0 || ret < 0x8000_0000_0000_0000 {
+                log_ok(&format!("Enabled swap on {}", device));
+                swap_enabled = true;
+            } else {
+                log_fail(&format!("Failed to enable swap on {}", device));
+            }
+        }
+    }
+    
+    if !swap_enabled {
+        log_info("No swap entries found or enabled");
+    }
+}
+
 fn init_main() -> ! {
+    // Early system initialization
+    log_info("NexaOS init starting");
+    
+    // Enable swap from fstab before starting services
+    enable_swap_from_fstab();
+    
     let catalog = load_service_catalog();
     
     // Simple initialization to avoid complex const expressions

@@ -20,4 +20,4 @@ tmpfs           /dev/shm       tmpfs      defaults,mode=1777,size=64M    0      
 # tmpfs         /var/tmp       tmpfs      defaults,mode=1777,size=128M   0       0
 
 # Swap space (second virtio block device)
-/dev/vdb        none           swap       defaults,pri=10 0       0
+/dev/vdb        none           swap       sw              0       0

@@ -6,7 +6,7 @@ use core::slice;
 pub const BOOT_INFO_SIGNATURE: [u8; 8] = *b"NEXAUEFI";
 
 /// Current version of the [`BootInfo`] structure.
-pub const BOOT_INFO_VERSION: u16 = 3;
+pub const BOOT_INFO_VERSION: u16 = 4;
 
 /// Maximum number of device descriptors exported in [`BootInfo`].
 pub const MAX_DEVICE_DESCRIPTORS: usize = 32;
@@ -29,6 +29,8 @@ pub mod flags {
     pub const HAS_KERNEL_SEGMENTS: u32 = 1 << 6;
     /// ACPI RSDP address is available.
     pub const HAS_ACPI_RSDP: u32 = 1 << 7;
+    /// Total physical memory size is available.
+    pub const HAS_PHYSICAL_MEMORY: u32 = 1 << 8;
 }
 
 /// Flags describing capabilities/features of a device descriptor.
@@ -464,8 +466,11 @@ pub struct BootInfo {
     /// Physical address of ACPI RSDP (Root System Description Pointer).
     /// Only valid if HAS_ACPI_RSDP flag is set.
     pub acpi_rsdp_addr: u64,
+    /// Total physical memory detected by firmware (in bytes).
+    /// Only valid if HAS_PHYSICAL_MEMORY flag is set.
+    pub total_physical_memory: u64,
     /// Reserved for future extensions.
-    pub reserved: [u8; 16],
+    pub reserved: [u8; 8],
 }
 
 impl BootInfo {
@@ -538,5 +543,10 @@ impl BootInfo {
     /// Returns whether ACPI RSDP address is available.
     pub fn has_acpi_rsdp(&self) -> bool {
         (self.flags & flags::HAS_ACPI_RSDP) != 0 && self.acpi_rsdp_addr != 0
+    }
+
+    /// Returns whether total physical memory size is available.
+    pub fn has_physical_memory(&self) -> bool {
+        (self.flags & flags::HAS_PHYSICAL_MEMORY) != 0 && self.total_physical_memory != 0
     }
 }
