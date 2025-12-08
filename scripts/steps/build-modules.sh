@@ -19,6 +19,7 @@ INITRAMFS_MODULES_DIR="$BUILD_DIR/initramfs/lib/modules"
 MODULES=(
     "ext2:1:ext2 filesystem driver"
     "e1000:4:Intel E1000 network driver"
+    "virtio_blk:2:VirtIO block device driver"
 )
 
 # ============================================================================

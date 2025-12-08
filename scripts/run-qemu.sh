@@ -226,7 +226,7 @@ if [[ "$DEFAULT_BIOS_MODE" == "legacy" ]]; then
         -cdrom "$ISO_PATH"
         -d guest_errors
         -monitor none
-        -drive file="$ROOTFS_IMG",id=rootfs,format=raw,if=none
+        -drive file="$ROOTFS_IMG",id=rootfs,format=raw,if=none,cache=writeback
         -device virtio-blk-pci,drive=rootfs
     )
     
@@ -256,7 +256,7 @@ else
         -cdrom "$ISO_PATH"
         -d guest_errors
         -monitor none
-        -drive file="$ROOTFS_IMG",id=rootfs,format=raw,if=none
+        -drive file="$ROOTFS_IMG",id=rootfs,format=raw,if=none,cache=writeback
         -device virtio-blk-pci,drive=rootfs
     )
     

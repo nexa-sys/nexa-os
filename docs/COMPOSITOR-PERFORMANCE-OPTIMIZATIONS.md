@@ -213,5 +213,4 @@ cargo build --release --target x86_64-nexaos.json
 ---
 
 **最后更新:** 2025-11-27  
-**作者:** GitHub Copilot  
 **状态:** ✅ 已完成并测试编译

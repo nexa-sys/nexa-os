@@ -301,4 +301,3 @@ NexaOS 现已具备从配置文件动态启动服务的能力，遵循 Unix 传�
 
 **最后更新**：2025-11-03  
 **版本**：1.0.0  
-**作者**：GitHub Copilot AI Assistant

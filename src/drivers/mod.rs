@@ -9,8 +9,10 @@
 //! - Parallel display compositor
 //! - Random number generator (RDRAND/RDSEED + ChaCha20 CSPRNG)
 //! - TTF font parser for Unicode/CJK support
+//! - Block device abstraction layer
 
 pub mod acpi;
+pub mod block;
 pub mod compositor;
 pub mod framebuffer;
 pub mod keyboard;

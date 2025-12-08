@@ -67,6 +67,12 @@ extern "C" {
     // New ext2 modular API
     fn kmod_ext2_register(ops: *const Ext2ModuleOps) -> i32;
     fn kmod_ext2_unregister() -> i32;
+    
+    // Block device API (for reading from real block devices)
+    fn kmod_blk_read_bytes(device_index: usize, offset: u64, buf: *mut u8, len: usize) -> i64;
+    fn kmod_blk_write_bytes(device_index: usize, offset: u64, buf: *const u8, len: usize) -> i64;
+    fn kmod_blk_device_count() -> usize;
+    fn kmod_blk_find_rootfs() -> i32;
 }
 
 // ============================================================================
@@ -292,19 +298,32 @@ struct Inode {
 // Ext2 Filesystem structure
 // ============================================================================
 
+/// Block device based ext2 filesystem
 #[repr(C)]
 pub struct Ext2Filesystem {
-    image_base: *const u8,
-    image_size: usize,
+    /// Block device index (from kmod_blk_find_rootfs)
+    block_device_index: usize,
+    /// Total size of the filesystem in bytes
+    total_size: u64,
+    /// Filesystem block size (1024, 2048, or 4096)
     block_size: usize,
+    /// Inode size (128 or 256)
     inode_size: usize,
+    /// Inodes per block group
     inodes_per_group: u32,
+    /// Blocks per block group
     blocks_per_group: u32,
+    /// Total number of block groups
     total_groups: u32,
+    /// First data block (0 for >1K blocks, 1 for 1K blocks)
     first_data_block: u32,
+    /// Total inode count from superblock
     sb_inodes_count: u32,
+    /// Total block count from superblock
     sb_blocks_count: u32,
+    /// Magic number (should be 0xEF53)
     sb_magic: u16,
+    /// Revision level
     sb_rev_level: u32,
 }
 
@@ -677,25 +696,49 @@ extern "C" fn ext2_mod_create_file(
 // ============================================================================
 
 /// Initialize ext2 filesystem from disk image
+/// Legacy: kept for API compatibility but now uses block device
 #[no_mangle]
-pub extern "C" fn ext2_fs_init(image: *const u8, size: usize) -> *mut Ext2Filesystem {
-    ext2_new(image, size)
+pub extern "C" fn ext2_fs_init(_image: *const u8, _size: usize) -> *mut Ext2Filesystem {
+    // Now always use block device - ignore image pointer
+    ext2_new_from_block_device()
 }
 
-/// Create a new ext2 filesystem from an image
+/// Legacy: kept for API compatibility but now uses block device
 #[no_mangle]
-pub extern "C" fn ext2_new(image: *const u8, size: usize) -> *mut Ext2Filesystem {
-    if image.is_null() || size < SUPERBLOCK_OFFSET + SUPERBLOCK_SIZE {
+pub extern "C" fn ext2_new(_image: *const u8, _size: usize) -> *mut Ext2Filesystem {
+    // Now always use block device - ignore image pointer
+    ext2_new_from_block_device()
+}
+
+/// Create a new ext2 filesystem from block device
+fn ext2_new_from_block_device() -> *mut Ext2Filesystem {
+    mod_info!(b"ext2: initializing from block device");
+    
+    // Find rootfs block device
+    let device_index = unsafe { kmod_blk_find_rootfs() };
+    if device_index < 0 {
+        mod_error!(b"ext2: no block device found");
+        return core::ptr::null_mut();
+    }
+    let device_index = device_index as usize;
+    
+    // Read superblock from block device
+    let mut sb_buf = [0u8; SUPERBLOCK_SIZE];
+    let result = unsafe {
+        kmod_blk_read_bytes(device_index, SUPERBLOCK_OFFSET as u64, sb_buf.as_mut_ptr(), SUPERBLOCK_SIZE)
+    };
+    if result < 0 {
+        mod_error!(b"ext2: failed to read superblock from block device");
         return core::ptr::null_mut();
     }
 
-    let image_slice = unsafe { core::slice::from_raw_parts(image, size) };
-
     // Parse superblock
-    let sb_data = &image_slice[SUPERBLOCK_OFFSET..SUPERBLOCK_OFFSET + SUPERBLOCK_SIZE];
-    let superblock = match Superblock::parse(sb_data) {
+    let superblock = match Superblock::parse(&sb_buf) {
         Ok(sb) => sb,
-        Err(_) => return core::ptr::null_mut(),
+        Err(_) => {
+            mod_error!(b"ext2: failed to parse superblock");
+            return core::ptr::null_mut();
+        }
     };
 
     if superblock.magic != EXT2_SUPER_MAGIC {
@@ -717,10 +760,13 @@ pub extern "C" fn ext2_new(image: *const u8, size: usize) -> *mut Ext2Filesystem
 
     let total_groups =
         (superblock.blocks_count + superblock.blocks_per_group - 1) / superblock.blocks_per_group;
+    
+    // Calculate total size
+    let total_size = superblock.blocks_count as u64 * block_size as u64;
 
     let fs = Ext2Filesystem {
-        image_base: image,
-        image_size: size,
+        block_device_index: device_index,
+        total_size,
         block_size,
         inode_size,
         inodes_per_group: superblock.inodes_per_group,
@@ -732,6 +778,8 @@ pub extern "C" fn ext2_new(image: *const u8, size: usize) -> *mut Ext2Filesystem
         sb_magic: superblock.magic,
         sb_rev_level: superblock.rev_level,
     };
+
+    mod_info!(b"ext2: filesystem initialized from block device");
 
     // Store in global instance
     unsafe {
@@ -957,19 +1005,34 @@ fn ext2_write_internal(
 // ============================================================================
 
 impl Ext2Filesystem {
-    fn image(&self) -> &[u8] {
-        // Debug: check image pointer validity
-        if self.image_base.is_null() {
-            let msg = b"Ext2Filesystem::image: image_base is NULL!";
-            unsafe { kmod_log_error(msg.as_ptr(), msg.len()); }
-            return &[];
+    /// Read bytes from block device at given offset
+    fn read_bytes(&self, offset: u64, buf: &mut [u8]) -> bool {
+        if buf.is_empty() {
+            return true;
         }
-        if self.image_size == 0 {
-            let msg = b"Ext2Filesystem::image: image_size is 0!";
-            unsafe { kmod_log_error(msg.as_ptr(), msg.len()); }
-            return &[];
+        let result = unsafe {
+            kmod_blk_read_bytes(self.block_device_index, offset, buf.as_mut_ptr(), buf.len())
+        };
+        if result < 0 {
+            mod_error!(b"ext2: block device read failed");
+            return false;
         }
-        unsafe { core::slice::from_raw_parts(self.image_base, self.image_size) }
+        true
+    }
+    
+    /// Write bytes to block device at given offset
+    fn write_bytes(&self, offset: u64, buf: &[u8]) -> bool {
+        if buf.is_empty() {
+            return true;
+        }
+        let result = unsafe {
+            kmod_blk_write_bytes(self.block_device_index, offset, buf.as_ptr(), buf.len())
+        };
+        if result < 0 {
+            mod_error!(b"ext2: block device write failed");
+            return false;
+        }
+        true
     }
 
     fn lookup_internal(&self, path: &str) -> Option<FileRef> {
@@ -980,26 +1043,16 @@ impl Ext2Filesystem {
             return self.file_ref_from_inode(inode_number);
         }
 
-        // Check if image is still valid
-        let image = self.image();
-        if image.is_empty() {
-            let msg = b"lookup_internal: image is empty!";
-            unsafe { kmod_log_error(msg.as_ptr(), msg.len()); }
+        // Debug: check magic number by reading from block device
+        let magic_offset = 1024 + 56;
+        let mut magic_buf = [0u8; 2];
+        if !self.read_bytes(magic_offset as u64, &mut magic_buf) {
+            mod_error!(b"lookup_internal: failed to read magic");
             return None;
         }
-
-        // Debug: check magic number
-        let magic_offset = 1024 + 56;
-        if magic_offset + 2 <= image.len() {
-            let magic = u16::from_le_bytes([image[magic_offset], image[magic_offset + 1]]);
-            if magic != 0xEF53 {
-                let msg = b"lookup_internal: bad ext2 magic!";
-                unsafe { kmod_log_error(msg.as_ptr(), msg.len()); }
-                return None;
-            }
-        } else {
-            let msg = b"lookup_internal: image too small for superblock";
-            unsafe { kmod_log_error(msg.as_ptr(), msg.len()); }
+        let magic = u16::from_le_bytes(magic_buf);
+        if magic != 0xEF53 {
+            mod_error!(b"lookup_internal: bad ext2 magic!");
             return None;
         }
 
@@ -1069,12 +1122,14 @@ impl Ext2Filesystem {
         let inode_table_offset = inode_table_block as usize * self.block_size;
         let inode_offset = inode_table_offset + index_in_group as usize * self.inode_size;
 
-        let image = self.image();
-        if inode_offset + self.inode_size > image.len() {
+        // Read inode data from block device
+        let mut inode_buf = [0u8; 256]; // Max inode size
+        let read_size = self.inode_size.min(256);
+        if !self.read_bytes(inode_offset as u64, &mut inode_buf[..read_size]) {
             return Err(Ext2Error::ImageTooSmall);
         }
         
-        Inode::parse(&image[inode_offset..inode_offset + self.inode_size])
+        Inode::parse(&inode_buf[..read_size])
     }
 
     fn group_descriptor(&self, group: u32) -> Result<GroupDescriptor, Ext2Error> {
@@ -1084,12 +1139,12 @@ impl Ext2Filesystem {
         let table_offset = table_block * self.block_size;
         let offset = table_offset + group as usize * desc_size;
 
-        let image = self.image();
-        if offset + desc_size > image.len() {
+        // Read group descriptor from block device
+        let mut data = [0u8; 32];
+        if !self.read_bytes(offset as u64, &mut data) {
             return Err(Ext2Error::InvalidGroupDescriptor);
         }
 
-        let data = &image[offset..offset + desc_size];
         Ok(GroupDescriptor {
             block_bitmap: u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
             inode_bitmap: u32::from_le_bytes([data[4], data[5], data[6], data[7]]),
@@ -1109,19 +1164,21 @@ impl Ext2Filesystem {
         table_offset + group as usize * desc_size
     }
 
-    fn read_block(&self, block_number: u32) -> Option<&[u8]> {
+    /// Read a block into provided buffer, returns slice of the buffer on success
+    fn read_block_to_buf<'a>(&self, block_number: u32, buf: &'a mut [u8]) -> Option<&'a [u8]> {
         if block_number == 0 {
             return None;
         }
-        let offset = block_number as usize * self.block_size;
-        let image = self.image();
-        let image_len = image.len();
-        
-        if offset + self.block_size > image_len {
-            mod_warn!(b"read_block: block out of bounds");
+        if buf.len() < self.block_size {
             return None;
         }
-        Some(&image[offset..offset + self.block_size])
+        let offset = block_number as u64 * self.block_size as u64;
+        
+        if !self.read_bytes(offset, &mut buf[..self.block_size]) {
+            mod_warn!(b"read_block_to_buf: block read failed");
+            return None;
+        }
+        Some(&buf[..self.block_size])
     }
 
     /// Write data to a block at a specific offset within the block
@@ -1134,19 +1191,16 @@ impl Ext2Filesystem {
             return Err(Ext2Error::InvalidBlockNumber);
         }
         
-        let block_offset = block_number as usize * self.block_size;
-        let write_offset = block_offset + offset_in_block;
+        let block_offset = block_number as u64 * self.block_size as u64;
+        let write_offset = block_offset + offset_in_block as u64;
         
-        if write_offset + data.len() > self.image_size {
+        if write_offset + data.len() as u64 > self.total_size {
             return Err(Ext2Error::ImageTooSmall);
         }
         
-        // SAFETY: We're writing to the in-memory ext2 image.
-        // The image is a mutable buffer in memory (not actually on disk in this implementation).
-        // This is a direct memory write to the image buffer.
-        unsafe {
-            let dest = (self.image_base as *mut u8).add(write_offset);
-            core::ptr::copy_nonoverlapping(data.as_ptr(), dest, data.len());
+        // Write to block device
+        if !self.write_bytes(write_offset, data) {
+            return Err(Ext2Error::ImageTooSmall);
         }
         
         Ok(())
@@ -1155,6 +1209,8 @@ impl Ext2Filesystem {
     /// Allocate a free inode from the filesystem
     /// Returns the inode number (1-based) on success
     fn allocate_inode(&self) -> Result<u32, Ext2Error> {
+        let mut block_buf = [0u8; 4096]; // Max block size
+        
         for group in 0..self.total_groups {
             let desc = self.group_descriptor(group)?;
             if desc.free_inodes_count == 0 {
@@ -1163,7 +1219,7 @@ impl Ext2Filesystem {
             
             // Read the inode bitmap
             let bitmap_block = desc.inode_bitmap;
-            let bitmap = match self.read_block(bitmap_block) {
+            let bitmap = match self.read_block_to_buf(bitmap_block, &mut block_buf) {
                 Some(b) => b,
                 None => continue,
             };
@@ -1183,21 +1239,19 @@ impl Ext2Filesystem {
                             break;
                         }
                         
-                        // Set the bit in bitmap
+                        // Set the bit in bitmap and write back
                         let new_byte = byte | (1 << bit);
-                        let bitmap_offset = bitmap_block as usize * self.block_size + byte_idx;
-                        unsafe {
-                            let dest = (self.image_base as *mut u8).add(bitmap_offset);
-                            *dest = new_byte;
+                        let bitmap_offset = bitmap_block as u64 * self.block_size as u64 + byte_idx as u64;
+                        if !self.write_bytes(bitmap_offset, &[new_byte]) {
+                            return Err(Ext2Error::ImageTooSmall);
                         }
                         
                         // Update free count in group descriptor
-                        let gd_offset = self.group_descriptor_offset(group);
+                        let gd_offset = self.group_descriptor_offset(group) as u64;
                         let new_free = desc.free_inodes_count - 1;
                         let new_free_bytes = new_free.to_le_bytes();
-                        unsafe {
-                            let dest = (self.image_base as *mut u8).add(gd_offset + 14);
-                            core::ptr::copy_nonoverlapping(new_free_bytes.as_ptr(), dest, 2);
+                        if !self.write_bytes(gd_offset + 14, &new_free_bytes) {
+                            return Err(Ext2Error::ImageTooSmall);
                         }
                         
                         // Calculate actual inode number (1-based)
@@ -1214,6 +1268,8 @@ impl Ext2Filesystem {
     /// Allocate a free block from the filesystem
     /// Returns the block number on success
     fn allocate_block(&self) -> Result<u32, Ext2Error> {
+        let mut block_buf = [0u8; 4096]; // Max block size
+        
         for group in 0..self.total_groups {
             let desc = self.group_descriptor(group)?;
             if desc.free_blocks_count == 0 {
@@ -1222,7 +1278,7 @@ impl Ext2Filesystem {
             
             // Read the block bitmap
             let bitmap_block = desc.block_bitmap;
-            let bitmap = match self.read_block(bitmap_block) {
+            let bitmap = match self.read_block_to_buf(bitmap_block, &mut block_buf) {
                 Some(b) => b,
                 None => continue,
             };
@@ -1242,31 +1298,29 @@ impl Ext2Filesystem {
                             break;
                         }
                         
-                        // Set the bit in bitmap
+                        // Set the bit in bitmap and write back
                         let new_byte = byte | (1 << bit);
-                        let bitmap_offset = bitmap_block as usize * self.block_size + byte_idx;
-                        unsafe {
-                            let dest = (self.image_base as *mut u8).add(bitmap_offset);
-                            *dest = new_byte;
+                        let bitmap_offset = bitmap_block as u64 * self.block_size as u64 + byte_idx as u64;
+                        if !self.write_bytes(bitmap_offset, &[new_byte]) {
+                            return Err(Ext2Error::ImageTooSmall);
                         }
                         
                         // Update free count in group descriptor
-                        let gd_offset = self.group_descriptor_offset(group);
+                        let gd_offset = self.group_descriptor_offset(group) as u64;
                         let new_free = desc.free_blocks_count - 1;
                         let new_free_bytes = new_free.to_le_bytes();
-                        unsafe {
-                            let dest = (self.image_base as *mut u8).add(gd_offset + 12);
-                            core::ptr::copy_nonoverlapping(new_free_bytes.as_ptr(), dest, 2);
+                        if !self.write_bytes(gd_offset + 12, &new_free_bytes) {
+                            return Err(Ext2Error::ImageTooSmall);
                         }
                         
                         // Calculate actual block number
                         let block_num = group * self.blocks_per_group + block_in_group + self.first_data_block;
                         
                         // Zero out the newly allocated block
-                        let block_offset = block_num as usize * self.block_size;
-                        unsafe {
-                            let dest = (self.image_base as *mut u8).add(block_offset);
-                            core::ptr::write_bytes(dest, 0, self.block_size);
+                        let zero_buf = [0u8; 4096];
+                        let block_offset = block_num as u64 * self.block_size as u64;
+                        if !self.write_bytes(block_offset, &zero_buf[..self.block_size]) {
+                            return Err(Ext2Error::ImageTooSmall);
                         }
                         
                         return Ok(block_num);
@@ -1295,10 +1349,6 @@ impl Ext2Filesystem {
         let inode_table_offset = inode_table_block as usize * self.block_size;
         let inode_offset = inode_table_offset + index_in_group as usize * self.inode_size;
 
-        if inode_offset + self.inode_size > self.image_size {
-            return Err(Ext2Error::ImageTooSmall);
-        }
-
         // Serialize inode to bytes (128 bytes minimum)
         let mut buf = [0u8; 128];
         buf[0..2].copy_from_slice(&inode.mode.to_le_bytes());
@@ -1321,9 +1371,9 @@ impl Ext2Filesystem {
         buf[104..108].copy_from_slice(&inode.file_acl.to_le_bytes());
         buf[108..112].copy_from_slice(&inode.size_high.to_le_bytes());
 
-        unsafe {
-            let dest = (self.image_base as *mut u8).add(inode_offset);
-            core::ptr::copy_nonoverlapping(buf.as_ptr(), dest, 128);
+        // Write inode to block device
+        if !self.write_bytes(inode_offset as u64, &buf) {
+            return Err(Ext2Error::ImageTooSmall);
         }
 
         Ok(())
@@ -1341,33 +1391,35 @@ impl Ext2Filesystem {
         let block_size = self.block_size;
         let num_blocks = (dir_inode.size() as usize + block_size - 1) / block_size;
         
+        let mut block_buf = [0u8; 4096]; // Max block size
+        
         for block_idx in 0..num_blocks {
             let block_num = match self.block_number(&dir_inode, block_idx) {
                 Some(bn) if bn != 0 => bn,
                 _ => continue,
             };
             
-            let block_offset = block_num as usize * block_size;
-            let image = self.image();
-            if block_offset + block_size > image.len() {
+            let block_offset = block_num as u64 * block_size as u64;
+            
+            // Read block from device
+            if !self.read_bytes(block_offset, &mut block_buf[..block_size]) {
                 continue;
             }
             
             // Scan through directory entries in this block
             let mut offset = 0usize;
             while offset + 8 <= block_size {
-                let entry_offset = block_offset + offset;
                 let entry_inode = u32::from_le_bytes([
-                    image[entry_offset],
-                    image[entry_offset + 1],
-                    image[entry_offset + 2],
-                    image[entry_offset + 3],
+                    block_buf[offset],
+                    block_buf[offset + 1],
+                    block_buf[offset + 2],
+                    block_buf[offset + 3],
                 ]);
                 let entry_rec_len = u16::from_le_bytes([
-                    image[entry_offset + 4],
-                    image[entry_offset + 5],
+                    block_buf[offset + 4],
+                    block_buf[offset + 5],
                 ]) as usize;
-                let entry_name_len = image[entry_offset + 6] as usize;
+                let entry_name_len = block_buf[offset + 6] as usize;
                 
                 if entry_rec_len == 0 || entry_rec_len < 8 {
                     break;
@@ -1384,29 +1436,23 @@ impl Ext2Filesystem {
                 let free_space = entry_rec_len - actual_len;
                 if free_space >= rec_len {
                     // Split this entry
-                    let new_entry_offset = entry_offset + actual_len;
+                    let new_entry_offset = offset + actual_len;
                     
-                    // Update current entry's rec_len
+                    // Update current entry's rec_len in buffer
                     let new_cur_rec_len = actual_len as u16;
-                    unsafe {
-                        let dest = (self.image_base as *mut u8).add(entry_offset + 4);
-                        core::ptr::copy_nonoverlapping(new_cur_rec_len.to_le_bytes().as_ptr(), dest, 2);
-                    }
+                    block_buf[offset + 4..offset + 6].copy_from_slice(&new_cur_rec_len.to_le_bytes());
                     
-                    // Write new entry
+                    // Write new entry to buffer
                     let new_rec_len = free_space as u16;
-                    unsafe {
-                        let dest = (self.image_base as *mut u8).add(new_entry_offset);
-                        // Inode number
-                        core::ptr::copy_nonoverlapping(new_inode.to_le_bytes().as_ptr(), dest, 4);
-                        // Record length
-                        core::ptr::copy_nonoverlapping(new_rec_len.to_le_bytes().as_ptr(), dest.add(4), 2);
-                        // Name length
-                        *dest.add(6) = name_len as u8;
-                        // File type
-                        *dest.add(7) = file_type;
-                        // Name
-                        core::ptr::copy_nonoverlapping(name.as_ptr(), dest.add(8), name_len);
+                    block_buf[new_entry_offset..new_entry_offset + 4].copy_from_slice(&new_inode.to_le_bytes());
+                    block_buf[new_entry_offset + 4..new_entry_offset + 6].copy_from_slice(&new_rec_len.to_le_bytes());
+                    block_buf[new_entry_offset + 6] = name_len as u8;
+                    block_buf[new_entry_offset + 7] = file_type;
+                    block_buf[new_entry_offset + 8..new_entry_offset + 8 + name_len].copy_from_slice(name.as_bytes());
+                    
+                    // Write block back to device
+                    if !self.write_bytes(block_offset, &block_buf[..block_size]) {
+                        return Err(Ext2Error::ImageTooSmall);
                     }
                     
                     return Ok(());
@@ -1429,11 +1475,11 @@ impl Ext2Filesystem {
             let desc = self.group_descriptor(group)?;
             let inode_table_offset = desc.inode_table_block as usize * self.block_size;
             let inode_offset = inode_table_offset + index_in_group as usize * self.inode_size;
-            let block_ptr_offset = inode_offset + 40 + next_block_idx * 4;
+            let block_ptr_offset = (inode_offset + 40 + next_block_idx * 4) as u64;
             
-            unsafe {
-                let dest = (self.image_base as *mut u8).add(block_ptr_offset);
-                core::ptr::copy_nonoverlapping(new_block.to_le_bytes().as_ptr(), dest, 4);
+            // Write block pointer to inode
+            if !self.write_bytes(block_ptr_offset, &new_block.to_le_bytes()) {
+                return Err(Ext2Error::ImageTooSmall);
             }
             
             // Update directory size
@@ -1441,20 +1487,19 @@ impl Ext2Filesystem {
             self.update_inode_size(dir_inode_num, new_size)?;
             
             // Write the new entry at the start of the new block
-            let block_offset = new_block as usize * block_size;
+            let block_offset = new_block as u64 * block_size as u64;
             let remaining = block_size as u16;
-            unsafe {
-                let dest = (self.image_base as *mut u8).add(block_offset);
-                // Inode number
-                core::ptr::copy_nonoverlapping(new_inode.to_le_bytes().as_ptr(), dest, 4);
-                // Record length (takes entire block)
-                core::ptr::copy_nonoverlapping(remaining.to_le_bytes().as_ptr(), dest.add(4), 2);
-                // Name length
-                *dest.add(6) = name_len as u8;
-                // File type
-                *dest.add(7) = file_type;
-                // Name
-                core::ptr::copy_nonoverlapping(name.as_ptr(), dest.add(8), name_len);
+            
+            // Prepare new directory entry
+            let mut entry_buf = [0u8; 4096];
+            entry_buf[0..4].copy_from_slice(&new_inode.to_le_bytes());
+            entry_buf[4..6].copy_from_slice(&remaining.to_le_bytes());
+            entry_buf[6] = name_len as u8;
+            entry_buf[7] = file_type;
+            entry_buf[8..8 + name_len].copy_from_slice(name.as_bytes());
+            
+            if !self.write_bytes(block_offset, &entry_buf[..block_size]) {
+                return Err(Ext2Error::ImageTooSmall);
             }
             
             return Ok(());
@@ -1559,10 +1604,6 @@ impl Ext2Filesystem {
         let inode_table_offset = inode_table_block as usize * self.block_size;
         let inode_offset = inode_table_offset + index_in_group as usize * self.inode_size;
 
-        if inode_offset + self.inode_size > self.image_size {
-            return Err(Ext2Error::ImageTooSmall);
-        }
-
         // Write the low 32 bits of size at offset 4 in the inode
         let size_lo = (new_size & 0xFFFFFFFF) as u32;
         let size_lo_bytes = size_lo.to_le_bytes();
@@ -1571,15 +1612,15 @@ impl Ext2Filesystem {
         let size_hi = ((new_size >> 32) & 0xFFFFFFFF) as u32;
         let size_hi_bytes = size_hi.to_le_bytes();
 
-        unsafe {
-            // Write size_lo at inode+4
-            let dest_lo = (self.image_base as *mut u8).add(inode_offset + 4);
-            core::ptr::copy_nonoverlapping(size_lo_bytes.as_ptr(), dest_lo, 4);
-            
-            // Write size_hi at inode+108 (for ext2 revision 1+)
-            if self.sb_rev_level >= 1 {
-                let dest_hi = (self.image_base as *mut u8).add(inode_offset + 108);
-                core::ptr::copy_nonoverlapping(size_hi_bytes.as_ptr(), dest_hi, 4);
+        // Write size_lo at inode+4
+        if !self.write_bytes((inode_offset + 4) as u64, &size_lo_bytes) {
+            return Err(Ext2Error::ImageTooSmall);
+        }
+        
+        // Write size_hi at inode+108 (for ext2 revision 1+)
+        if self.sb_rev_level >= 1 {
+            if !self.write_bytes((inode_offset + 108) as u64, &size_hi_bytes) {
+                return Err(Ext2Error::ImageTooSmall);
             }
         }
 
@@ -1602,6 +1643,7 @@ impl Ext2Filesystem {
     {
         let block_size = self.block_size;
         let mut block_count = 0u32;
+        let mut block_buf = [0u8; 4096]; // Max block size
         
         for &block in inode.block.iter().take(EXT2_NDIR_BLOCKS) {
             if block == 0 {
@@ -1609,7 +1651,7 @@ impl Ext2Filesystem {
             }
             block_count += 1;
             
-            if let Some(data) = self.read_block(block) {
+            if let Some(data) = self.read_block_to_buf(block, &mut block_buf) {
                 let mut offset = 0usize;
                 let mut entry_count = 0u32;
                 
@@ -1686,6 +1728,7 @@ impl Ext2Filesystem {
         let mut written = 0usize;
         let block_size = self.block_size;
         let mut current_offset = offset;
+        let mut block_buf = [0u8; 4096]; // Max block size
 
         while remaining > 0 {
             let block_index = current_offset / block_size;
@@ -1698,7 +1741,7 @@ impl Ext2Filesystem {
                 break;
             }
             
-            let Some(block) = self.read_block(block_number) else {
+            let Some(block) = self.read_block_to_buf(block_number, &mut block_buf) else {
                 break;
             };
             
@@ -1723,6 +1766,7 @@ impl Ext2Filesystem {
         }
 
         let ind_index = index - EXT2_NDIR_BLOCKS;
+        let mut block_buf = [0u8; 4096]; // Max block size
 
         // Single indirect block (12): covers pointers_per_block entries
         if ind_index < pointers_per_block {
@@ -1731,7 +1775,7 @@ impl Ext2Filesystem {
                 return None;
             }
 
-            let raw = self.read_block(indirect_block)?;
+            let raw = self.read_block_to_buf(indirect_block, &mut block_buf)?;
             let offset = ind_index * EXT2_BLOCK_POINTER_SIZE;
             if offset + EXT2_BLOCK_POINTER_SIZE > raw.len() {
                 return None;
@@ -1762,7 +1806,8 @@ impl Ext2Filesystem {
             let second_level_index = dind_index % pointers_per_block;
 
             // Read the double indirect block to get the indirect block pointer
-            let dind_raw = self.read_block(double_indirect_block)?;
+            let mut dind_buf = [0u8; 4096];
+            let dind_raw = self.read_block_to_buf(double_indirect_block, &mut dind_buf)?;
             let first_offset = first_level_index * EXT2_BLOCK_POINTER_SIZE;
             if first_offset + EXT2_BLOCK_POINTER_SIZE > dind_raw.len() {
                 return None;
@@ -1780,7 +1825,8 @@ impl Ext2Filesystem {
             }
 
             // Read the indirect block to get the data block pointer
-            let ind_raw = self.read_block(indirect_block)?;
+            let mut ind_buf = [0u8; 4096];
+            let ind_raw = self.read_block_to_buf(indirect_block, &mut ind_buf)?;
             let second_offset = second_level_index * EXT2_BLOCK_POINTER_SIZE;
             if second_offset + EXT2_BLOCK_POINTER_SIZE > ind_raw.len() {
                 return None;

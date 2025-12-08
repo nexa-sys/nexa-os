@@ -366,10 +366,24 @@ fn collect_block_devices(bs: &BootServices, image: Handle, table: &mut DeviceTab
         };
         let media = block_io.media();
 
-        let pci_snapshot = pci_snapshot_for_handle(bs, image, *handle);
+        // Try to get PCI snapshot from the same handle first
+        let mut pci_snapshot = pci_snapshot_for_handle(bs, image, *handle);
+        
+        // If that fails, try to find PCI I/O protocol for this address (or use direct config space access)
+        if pci_snapshot.is_none() {
+            log::warn!("Failed to get PCI snapshot from BlockIO handle, searching by address {:04x}:{:02x}:{:02x}.{}", 
+                      address.segment, address.bus, address.device, address.function);
+            pci_snapshot = find_pci_snapshot_by_address(bs, image, address);
+        }
+
         table.ensure_pci_entry(address, device_flags::BLOCK, |pci| {
             if let Some(snapshot) = pci_snapshot.as_ref() {
                 apply_pci_snapshot(pci, snapshot);
+                log::info!("Applied PCI snapshot for block device: vendor={:04x}, device={:04x}, bars[0].base={:#x}", 
+                          snapshot.vendor_id, snapshot.device_id, snapshot.bars[0].base);
+            } else {
+                log::warn!("No PCI snapshot available for block device at {:04x}:{:02x}:{:02x}.{}", 
+                          address.segment, address.bus, address.device, address.function);
             }
         });
 

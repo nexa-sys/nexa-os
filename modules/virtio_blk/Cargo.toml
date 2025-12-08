@@ -1,0 +1,21 @@
+[package]
+name = "virtio-blk-module"
+version = "1.0.0"
+edition = "2021"
+description = "VirtIO Block Device driver for NexaOS (loadable kernel module)"
+
+[lib]
+name = "virtio_blk_module"
+crate-type = ["staticlib"]  # Static library for kernel module (we extract .o from it)
+path = "src/lib.rs"
+
+[dependencies]
+
+[profile.release]
+panic = "abort"
+opt-level = 2
+lto = false  # Disable LTO for relocatable modules
+codegen-units = 1
+
+[profile.dev]
+panic = "abort"

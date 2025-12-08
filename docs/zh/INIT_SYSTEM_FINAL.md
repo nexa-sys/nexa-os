@@ -543,5 +543,4 @@ ELF 加载:     ~100K cycles
 **构建状态**: ✅ 通过  
 **测试状态**: ✅ 通过  
 
-**作者**: GitHub Copilot & hanxi-cat  
 **许可**: 与 NexaOS 主项目相同

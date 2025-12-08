@@ -304,5 +304,4 @@ fn log_detail(key: &str, value: &str)
 
 **状态**：✅ 完成并验证
 **日期**：2025-11-19
-**贡献者**：GitHub Copilot
 **审查状态**：待审查

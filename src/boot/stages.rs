@@ -418,6 +418,99 @@ pub fn mount_real_root() -> Result<(), &'static str> {
 fn scan_for_block_device(device_name: &str) -> Result<&'static [u8], &'static str> {
     crate::kinfo!("Scanning for block device: {}", device_name);
 
+    // Try to use real block device via virtio-blk driver
+    if crate::drivers::block::has_driver() {
+        crate::kinfo!("Block driver available, probing for devices...");
+        
+        // Get boot block device info and probe
+        // Find a VirtIO block device (vendor=0x1af4, device=0x1001 or 0x1042)
+        if let Some(block_devs) = bootinfo::block_devices() {
+            for dev_info in block_devs {
+                crate::kinfo!("Checking block device at PCI {:x}:{:02x}:{:02x}.{}",
+                    dev_info.pci_segment, dev_info.pci_bus,
+                    dev_info.pci_device, dev_info.pci_function);
+                
+                // Skip if block_size is not 512 (likely a CD-ROM or other device)
+                if dev_info.block_size != 512 {
+                    crate::kdebug!("  Skipping: block_size={} (expected 512)", dev_info.block_size);
+                    continue;
+                }
+                
+                // Try to get PCI device info to get BAR address
+                let pci_info = bootinfo::pci_device_by_location(
+                    dev_info.pci_segment,
+                    dev_info.pci_bus,
+                    dev_info.pci_device,
+                    dev_info.pci_function,
+                );
+                
+                let Some(pci) = pci_info else {
+                    crate::kwarn!("  PCI device info not found, skipping");
+                    continue;
+                };
+                
+                crate::kinfo!("  PCI device: vendor=0x{:04x}, device=0x{:04x}",
+                    pci.vendor_id, pci.device_id);
+                
+                // Check if this is a VirtIO device (vendor 0x1af4)
+                // VirtIO block device IDs: 0x1001 (legacy) or 0x1042 (modern)
+                let is_virtio_blk = pci.vendor_id == 0x1af4 
+                    && (pci.device_id == 0x1001 || pci.device_id == 0x1042);
+                
+                if !is_virtio_blk {
+                    crate::kdebug!("  Skipping: not a VirtIO block device");
+                    continue;
+                }
+                
+                // VirtIO-PCI uses BAR0 for I/O or MMIO
+                let mut mmio_base = 0u64;
+                let mut mmio_length = 0u64;
+                let mut is_io_port = false;
+                
+                for (i, bar) in pci.bars.iter().enumerate() {
+                    crate::kdebug!("  BAR{}: base=0x{:x}, length=0x{:x}, flags=0x{:x}",
+                        i, bar.base, bar.length, bar.bar_flags);
+                    if bar.base != 0 && mmio_base == 0 {
+                        mmio_base = bar.base;
+                        mmio_length = bar.length;
+                        // Check if this is I/O space (flag 0x1)
+                        is_io_port = (bar.bar_flags & 0x1) != 0;
+                    }
+                }
+                
+                crate::kinfo!("Block device PCI {}:{:02x}:{:02x}.{}, base=0x{:x} ({})",
+                    dev_info.pci_segment, dev_info.pci_bus, 
+                    dev_info.pci_device, dev_info.pci_function,
+                    mmio_base, if is_io_port { "I/O port" } else { "MMIO" });
+                
+                // Convert BlockDeviceInfo to BootBlockDevice
+                let boot_dev = crate::drivers::block::BootBlockDevice {
+                    pci_segment: dev_info.pci_segment,
+                    pci_bus: dev_info.pci_bus,
+                    pci_device: dev_info.pci_device,
+                    pci_function: dev_info.pci_function,
+                    mmio_base,
+                    mmio_length,
+                    sector_size: dev_info.block_size,
+                    total_sectors: dev_info.last_block + 1,
+                    features: if is_io_port { 0x1 } else { 0 }, // Flag for I/O port mode
+                };
+                
+                match crate::drivers::block::probe_device(&boot_dev) {
+                    Ok(index) => {
+                        crate::kinfo!("Block device probed successfully (index {})", index);
+                        // Return empty slice - ext2 will read directly from block device
+                        return Ok(&[]);
+                    }
+                    Err(e) => {
+                        crate::kwarn!("Failed to probe block device: {:?}", e);
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback: Use UEFI-staged rootfs image from memory
     if let Some(data) = bootinfo::rootfs_slice() {
         crate::kinfo!(
             "Using UEFI-staged rootfs image ({} bytes) for {}",
@@ -456,11 +549,6 @@ fn scan_for_block_device(device_name: &str) -> Result<&'static [u8], &'static st
     if let Some(data) = found_image {
         return Ok(data);
     }
-
-    // TODO: In a real implementation, scan actual hardware:
-    // - Scan PCI for virtio-blk (vendor 0x1AF4, device 0x1001/0x1042)
-    // - Scan for AHCI controllers (class 0x01, subclass 0x06)
-    // - Initialize controller and read device
 
     crate::kerror!("No block device or disk image found for '{}'", device_name);
     crate::kerror!("Searched: /rootfs.ext2, /disk.ext2, *.ext2, *.img in initramfs");

@@ -521,5 +521,4 @@ enum ServiceState {
 **状态**: ✅ 生产就绪  
 **测试**: ✅ 通过  
 
-**作者**: GitHub Copilot & hanxi-cat  
 **许可**: 与 NexaOS 主项目相同

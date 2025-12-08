@@ -914,6 +914,9 @@ pub fn init() {
     // Register network modular driver symbols
     crate::net::modular::register_symbols();
 
+    // Register block device subsystem symbols
+    crate::drivers::block::init();
+
     crate::kinfo!(
         "Kernel module system initialized (max {} modules)",
         MAX_MODULES

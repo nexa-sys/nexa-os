@@ -353,6 +353,48 @@ pub fn init() {
         SymbolType::Function,
     );
 
+    // Register I/O port access functions (for VirtIO-PCI and legacy devices)
+    register_symbol(
+        "kmod_inb",
+        kmod_inb as *const () as u64,
+        SymbolType::Function,
+    );
+    register_symbol(
+        "kmod_inw",
+        kmod_inw as *const () as u64,
+        SymbolType::Function,
+    );
+    register_symbol(
+        "kmod_inl",
+        crate::net::modular::kmod_inl as *const () as u64,
+        SymbolType::Function,
+    );
+    register_symbol(
+        "kmod_outb",
+        kmod_outb as *const () as u64,
+        SymbolType::Function,
+    );
+    register_symbol(
+        "kmod_outw",
+        kmod_outw as *const () as u64,
+        SymbolType::Function,
+    );
+    register_symbol(
+        "kmod_outl",
+        crate::net::modular::kmod_outl as *const () as u64,
+        SymbolType::Function,
+    );
+    register_symbol(
+        "kmod_fence",
+        crate::net::modular::kmod_fence as *const () as u64,
+        SymbolType::Function,
+    );
+    register_symbol(
+        "kmod_spin_hint",
+        crate::net::modular::kmod_spin_hint as *const () as u64,
+        SymbolType::Function,
+    );
+
     crate::kinfo!(
         "Kernel symbol table initialized with {} symbols",
         symbol_count()
@@ -910,3 +952,35 @@ pub extern "C" fn kmod_set_license(license: *const u8, len: usize) -> i32 {
         0
     }
 }
+
+// ============================================================================
+// I/O Port Access Functions (for legacy hardware and VirtIO-PCI)
+// ============================================================================
+
+/// Read a byte from an I/O port
+#[no_mangle]
+pub extern "C" fn kmod_inb(port: u16) -> u8 {
+    crate::safety::inb(port)
+}
+
+/// Read a word (16-bit) from an I/O port
+#[no_mangle]
+pub extern "C" fn kmod_inw(port: u16) -> u16 {
+    crate::safety::inw(port)
+}
+
+// kmod_inl is defined in src/net/modular.rs
+
+/// Write a byte to an I/O port
+#[no_mangle]
+pub extern "C" fn kmod_outb(port: u16, value: u8) {
+    crate::safety::outb(port, value);
+}
+
+/// Write a word (16-bit) to an I/O port
+#[no_mangle]
+pub extern "C" fn kmod_outw(port: u16, value: u16) {
+    crate::safety::outw(port, value);
+}
+
+// kmod_outl, kmod_fence and kmod_spin_hint are defined in src/net/modular.rs

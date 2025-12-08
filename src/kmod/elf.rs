@@ -398,7 +398,8 @@ impl<'a> ModuleLoader<'a> {
             match super::symbols::lookup_symbol(name) {
                 Some(addr) => Ok(addr),
                 None => {
-                    crate::kerror!("kmod: undefined symbol not found: '{}'", name);
+                    crate::kerror!("kmod: undefined symbol not found: '{}' (total symbols: {})", 
+                        name, super::symbols::symbol_count());
                     Err(LoaderError::SymbolNotFound)
                 }
             }
