@@ -50,6 +50,7 @@ export function createBuildEnvironment(projectRoot: string): BuildEnvironment {
     kernelBin: join(kernelTargetDir, 'nexa-os'),
     initramfsCpio: join(buildDir, 'initramfs.cpio'),
     rootfsImg: join(buildDir, 'rootfs.ext2'),
+    swapImg: join(buildDir, 'swap.img'),
     isoFile: join(distDir, 'nexaos.iso'),
     
     sysrootDir: join(buildDir, 'userspace-build', 'sysroot'),

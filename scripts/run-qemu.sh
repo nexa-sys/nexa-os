@@ -54,13 +54,23 @@ fi
 # Root filesystem now required (initramfs no longer embeds it)
 if [[ ! -f "$ROOTFS_IMG" ]]; then
     echo "Root filesystem image missing at $ROOTFS_IMG." >&2
-    echo "Run scripts/build-rootfs.sh (or build-all.sh) before launching QEMU." >&2
+    echo "Run scripts/build.sh all (or build-all.sh) before launching QEMU." >&2
+    exit 1
+fi
+
+# Swap partition image (created by build system)
+SWAP_IMG="$ROOT_DIR/build/swap.img"
+
+if [[ ! -f "$SWAP_IMG" ]]; then
+    echo "Swap image missing at $SWAP_IMG." >&2
+    echo "Run scripts/build.sh all (or scripts/build.sh swap) to create it." >&2
     exit 1
 fi
 
 echo "Starting NexaOS in QEMU..."
 echo "  Kernel: via ISO"
 echo "  Root device: ${ROOTFS_IMG}"
+echo "  Swap device: ${SWAP_IMG} (will be /dev/vdb)"
 
 # 默认使用UEFI启动
 DEFAULT_BIOS_MODE="${BIOS_MODE:-uefi}"
@@ -228,6 +238,8 @@ if [[ "$DEFAULT_BIOS_MODE" == "legacy" ]]; then
         -monitor none
         -drive file="$ROOTFS_IMG",id=rootfs,format=raw,if=none,cache=writeback
         -device virtio-blk-pci,drive=rootfs
+        -drive file="$SWAP_IMG",id=swap,format=raw,if=none,cache=writeback
+        -device virtio-blk-pci,drive=swap
     )
     
     # Add network configuration based on mode
@@ -258,6 +270,8 @@ else
         -monitor none
         -drive file="$ROOTFS_IMG",id=rootfs,format=raw,if=none,cache=writeback
         -device virtio-blk-pci,drive=rootfs
+        -drive file="$SWAP_IMG",id=swap,format=raw,if=none,cache=writeback
+        -device virtio-blk-pci,drive=swap
     )
     
     # Add network configuration based on mode

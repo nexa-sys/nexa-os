@@ -43,6 +43,11 @@ members = [
     "programs/shutdown",
     "programs/halt",
     "programs/poweroff",
+    # Memory management
+    "programs/swapon",
+    "programs/swapoff",
+    "programs/mkswap",
+    "programs/free",
     # IPC utilities
     "programs/ipc-create",
     "programs/ipc-send",

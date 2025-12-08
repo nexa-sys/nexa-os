@@ -126,6 +126,21 @@ programs:
       dest: sbin
       link: dyn
   
+  # Memory management utilities
+  memory:
+    - package: swapon
+      dest: sbin
+      link: dyn
+    - package: swapoff
+      dest: sbin
+      link: dyn
+    - package: mkswap
+      dest: sbin
+      link: dyn
+    - package: free
+      dest: bin
+      link: dyn
+  
   # IPC utilities
   ipc:
     - package: ipc-create
@@ -182,6 +197,11 @@ modules:
     - name: virtio_blk
       type: 2
       description: "VirtIO block device driver"
+  
+  memory:
+    - name: swap
+      type: 3
+      description: "Swap subsystem driver"
   
   network:
     - name: e1000

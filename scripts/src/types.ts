@@ -80,6 +80,7 @@ export interface BuildEnvironment {
   kernelBin: string;
   initramfsCpio: string;
   rootfsImg: string;
+  swapImg: string;
   isoFile: string;
   
   // Sysroot directories
@@ -105,6 +106,7 @@ export type BuildProfile =
   | 'modules'
   | 'initramfs'
   | 'rootfs'
+  | 'swap'
   | 'iso'
   | 'clean';
 

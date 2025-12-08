@@ -186,6 +186,16 @@ program
     process.exit(result.success ? 0 : 1);
   });
 
+// Swap
+program
+  .command('swap')
+  .description('Build swap image only')
+  .action(async () => {
+    const builder = new Builder(findProjectRoot());
+    const result = await builder.buildSwapOnly();
+    process.exit(result.success ? 0 : 1);
+  });
+
 // ISO
 program
   .command('iso')

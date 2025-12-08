@@ -11,4 +11,5 @@ export * from './rootfs.js';
 export * from './initramfs.js';
 export * from './iso.js';
 export * from './uefi.js';
+export * from './swap.js';
 export * from './clean.js';

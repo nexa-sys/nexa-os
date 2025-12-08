@@ -118,6 +118,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "free"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "nexa_boot_info",
+ "nrlib",
+]
+
+[[package]]
 name = "futures-core"
 version = "0.3.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -254,6 +263,15 @@ dependencies = [
 name = "mkdir"
 version = "0.1.0"
 dependencies = [
+ "nexa_boot_info",
+ "nrlib",
+]
+
+[[package]]
+name = "mkswap"
+version = "0.1.0"
+dependencies = [
+ "libc",
  "nexa_boot_info",
  "nrlib",
 ]
@@ -473,6 +491,24 @@ dependencies = [
 name = "stat"
 version = "0.1.0"
 dependencies = [
+ "nexa_boot_info",
+ "nrlib",
+]
+
+[[package]]
+name = "swapoff"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "nexa_boot_info",
+ "nrlib",
+]
+
+[[package]]
+name = "swapon"
+version = "0.1.0"
+dependencies = [
+ "libc",
  "nexa_boot_info",
  "nrlib",
 ]

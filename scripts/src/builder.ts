@@ -18,6 +18,7 @@ import {
   buildInitramfs,
   buildIso,
   buildUefiLoader,
+  buildSwapImage,
   cleanAll,
   cleanBuild,
 } from './steps/index.js';
@@ -67,6 +68,9 @@ export class Builder {
     // Build rootfs (includes nrlib, libs, programs)
     const rootfsResult = await timedStep('Building rootfs', () => buildRootfs(this.env));
     if (!rootfsResult.success) return rootfsResult;
+    
+    // Build swap image
+    await timedStep('Building swap image', () => buildSwapImage(this.env));
     
     // Build initramfs
     await timedStep('Building initramfs', () => buildInitramfs(this.env));
@@ -172,6 +176,14 @@ export class Builder {
   }
   
   /**
+   * Build swap image only
+   */
+  async buildSwapOnly(): Promise<BuildStepResult> {
+    await this.init();
+    return timedStep('Building swap image', () => buildSwapImage(this.env));
+  }
+  
+  /**
    * Build ISO only
    */
   async buildIsoOnly(): Promise<BuildStepResult> {
@@ -214,6 +226,8 @@ export class Builder {
         return this.buildInitramfsOnly();
       case 'rootfs':
         return this.buildRootfsOnly();
+      case 'swap':
+        return this.buildSwapOnly();
       case 'iso':
         return this.buildIsoOnly();
       case 'clean':
@@ -272,6 +286,14 @@ export class Builder {
         name: 'Root FS',
         path: this.env.rootfsImg,
         size: await getFileSize(this.env.rootfsImg),
+      });
+    }
+    
+    if (existsSync(this.env.swapImg)) {
+      artifacts.push({
+        name: 'Swap',
+        path: this.env.swapImg,
+        size: await getFileSize(this.env.swapImg),
       });
     }
     
