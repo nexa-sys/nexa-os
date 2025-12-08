@@ -24,6 +24,7 @@ mod exec;
 mod fd;
 mod file;
 mod ipc;
+mod kmod;
 mod memory;
 mod memory_advanced;
 pub mod memory_vma;
@@ -82,6 +83,7 @@ use uefi::{
     uefi_get_usb_info, uefi_map_net_mmio, uefi_map_usb_mmio,
 };
 use user::{user_add, user_info, user_list, user_login, user_logout};
+use kmod::{init_module, delete_module, query_module};
 
 // Re-export file descriptor tracking and cleanup functions
 pub use file::{close_all_fds_for_process, mark_fd_closed, mark_fd_open};
@@ -425,6 +427,22 @@ pub extern "C" fn syscall_dispatch(
         // Swap management syscalls
         SYS_SWAPON => swap::swapon(arg1 as *const u8, arg2 as u32),
         SYS_SWAPOFF => swap::swapoff(arg1 as *const u8),
+        // Kernel module management syscalls
+        SYS_INIT_MODULE => init_module(arg1 as *const u8, arg2 as usize, arg3 as *const u8),
+        SYS_DELETE_MODULE => delete_module(arg1 as *const u8, arg2 as u32),
+        SYS_QUERY_MODULE => {
+            // query_module needs 4 args: operation, name_ptr, buf_ptr, buf_size
+            let arg4 = unsafe {
+                let mut r10_val: u64;
+                core::arch::asm!(
+                    "mov {0}, gs:[32]",
+                    out(reg) r10_val,
+                    options(nostack, preserves_flags)
+                );
+                r10_val
+            };
+            query_module(arg1 as u32, arg2 as *const u8, arg3 as *mut u8, arg4 as usize)
+        }
         SYS_GETRANDOM => {
             let result = crate::drivers::sys_getrandom(arg1 as *mut u8, arg2 as usize, arg3 as u32);
             if result < 0 {

@@ -159,6 +159,21 @@ programs:
       dest: bin
       link: dyn
   
+  # Kernel module management
+  kmod:
+    - package: lsmod
+      dest: sbin
+      link: dyn
+    - package: insmod
+      dest: sbin
+      link: dyn
+    - package: rmmod
+      dest: sbin
+      link: dyn
+    - package: modinfo
+      dest: sbin
+      link: dyn
+  
   # Test programs
   test:
     - package: crashtest

@@ -2008,6 +2008,357 @@ unsafe fn fallback_random(buf: *mut u8, len: usize) {
     }
 }
 
+// ============================================================================
+// Kernel Module Management API
+// ============================================================================
+
+/// Syscall numbers for kernel module management
+const SYS_INIT_MODULE: u64 = 175;
+const SYS_DELETE_MODULE: u64 = 176;
+const SYS_QUERY_MODULE: u64 = 178;
+
+/// Query module operation types
+pub const QUERY_MODULE_LIST: u32 = 0;
+pub const QUERY_MODULE_INFO: u32 = 1;
+pub const QUERY_MODULE_PARAMS: u32 = 2;
+pub const QUERY_MODULE_DEPS: u32 = 3;
+pub const QUERY_MODULE_STATS: u32 = 4;
+pub const QUERY_MODULE_SYMBOLS: u32 = 5;
+
+/// Module list entry (matches kernel struct)
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct ModuleListEntry {
+    pub name: [u8; 32],
+    pub size: u64,
+    pub ref_count: u32,
+    pub state: u8,
+    pub module_type: u8,
+    pub signed: u8,
+    pub taints: u8,
+}
+
+impl ModuleListEntry {
+    /// Get module name as string
+    pub fn name_str(&self) -> &str {
+        let len = self.name.iter().position(|&c| c == 0).unwrap_or(32);
+        core::str::from_utf8(&self.name[..len]).unwrap_or("")
+    }
+    
+    /// Get module state as string
+    pub fn state_str(&self) -> &str {
+        match self.state {
+            0 => "loading",
+            1 => "running",
+            2 => "unloading",
+            _ => "unknown",
+        }
+    }
+    
+    /// Get module type as string
+    pub fn type_str(&self) -> &str {
+        match self.module_type {
+            1 => "filesystem",
+            2 => "block",
+            3 => "char",
+            4 => "network",
+            _ => "other",
+        }
+    }
+}
+
+/// Module detailed information (matches kernel struct)
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct ModuleDetailedInfo {
+    pub name: [u8; 32],
+    pub version: [u8; 32],
+    pub description: [u8; 128],
+    pub author: [u8; 64],
+    pub license: [u8; 32],
+    pub size: u64,
+    pub base_addr: u64,
+    pub ref_count: u32,
+    pub dep_count: u32,
+    pub symbol_count: u32,
+    pub param_count: u32,
+    pub state: u8,
+    pub module_type: u8,
+    pub signed: u8,
+    pub taints: u8,
+}
+
+impl ModuleDetailedInfo {
+    /// Get a string field
+    fn get_str_field(field: &[u8]) -> &str {
+        let len = field.iter().position(|&c| c == 0).unwrap_or(field.len());
+        core::str::from_utf8(&field[..len]).unwrap_or("")
+    }
+    
+    pub fn name_str(&self) -> &str { Self::get_str_field(&self.name) }
+    pub fn version_str(&self) -> &str { Self::get_str_field(&self.version) }
+    pub fn description_str(&self) -> &str { Self::get_str_field(&self.description) }
+    pub fn author_str(&self) -> &str { Self::get_str_field(&self.author) }
+    pub fn license_str(&self) -> &str { Self::get_str_field(&self.license) }
+}
+
+/// Module statistics (matches kernel struct)
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct ModuleStatistics {
+    pub loaded_count: u32,
+    pub total_memory: u64,
+    pub fs_count: u32,
+    pub blk_count: u32,
+    pub chr_count: u32,
+    pub net_count: u32,
+    pub other_count: u32,
+    pub symbol_count: u32,
+    pub is_tainted: u8,
+    pub _reserved: [u8; 3],
+    pub taint_string: [u8; 32],
+}
+
+impl ModuleStatistics {
+    pub fn taint_str(&self) -> &str {
+        let len = self.taint_string.iter().position(|&c| c == 0).unwrap_or(32);
+        core::str::from_utf8(&self.taint_string[..len]).unwrap_or("")
+    }
+}
+
+/// Module dependency entry
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct ModuleDependency {
+    pub name: [u8; 32],
+}
+
+impl ModuleDependency {
+    pub fn name_str(&self) -> &str {
+        let len = self.name.iter().position(|&c| c == 0).unwrap_or(32);
+        core::str::from_utf8(&self.name[..len]).unwrap_or("")
+    }
+}
+
+/// Module symbol entry
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct ModuleSymbol {
+    pub name: [u8; 64],
+    pub address: u64,
+    pub sym_type: u8,
+    pub gpl_only: u8,
+    pub _reserved: [u8; 6],
+}
+
+impl ModuleSymbol {
+    pub fn name_str(&self) -> &str {
+        let len = self.name.iter().position(|&c| c == 0).unwrap_or(64);
+        core::str::from_utf8(&self.name[..len]).unwrap_or("")
+    }
+}
+
+/// Load a kernel module from file data
+/// 
+/// # Arguments
+/// * `module_image` - Pointer to module binary data
+/// * `len` - Length of module data in bytes
+/// * `params` - Optional null-terminated parameter string (may be null)
+/// 
+/// # Returns
+/// 0 on success, -1 on error with errno set
+#[no_mangle]
+pub unsafe extern "C" fn init_module(
+    module_image: *const c_void,
+    len: usize,
+    params: *const u8,
+) -> c_int {
+    let ret: u64;
+    asm!(
+        "syscall",
+        inout("rax") SYS_INIT_MODULE => ret,
+        in("rdi") module_image,
+        in("rsi") len,
+        in("rdx") params,
+        out("rcx") _,
+        out("r11") _,
+        options(nostack, preserves_flags)
+    );
+    
+    if ret == u64::MAX {
+        refresh_errno_from_kernel();
+        -1
+    } else {
+        set_errno(0);
+        0
+    }
+}
+
+/// Unload a kernel module
+/// 
+/// # Arguments
+/// * `name` - Null-terminated module name
+/// * `flags` - Flags (0 = normal, 2 = force unload)
+/// 
+/// # Returns
+/// 0 on success, -1 on error with errno set
+#[no_mangle]
+pub unsafe extern "C" fn delete_module(name: *const u8, flags: u32) -> c_int {
+    let ret: u64;
+    asm!(
+        "syscall",
+        inout("rax") SYS_DELETE_MODULE => ret,
+        in("rdi") name,
+        in("rsi") flags as u64,
+        out("rcx") _,
+        out("r11") _,
+        options(nostack, preserves_flags)
+    );
+    
+    if ret == u64::MAX {
+        refresh_errno_from_kernel();
+        -1
+    } else {
+        set_errno(0);
+        0
+    }
+}
+
+/// Query kernel module information
+/// 
+/// # Arguments
+/// * `operation` - Query operation type (QUERY_MODULE_*)
+/// * `name` - Module name (may be null for some operations)
+/// * `buf` - Output buffer
+/// * `buf_size` - Size of output buffer
+/// 
+/// # Returns
+/// Number of entries/bytes on success, -1 on error
+#[no_mangle]
+pub unsafe extern "C" fn query_module(
+    operation: u32,
+    name: *const u8,
+    buf: *mut c_void,
+    buf_size: usize,
+) -> isize {
+    let ret: u64;
+    asm!(
+        "syscall",
+        inout("rax") SYS_QUERY_MODULE => ret,
+        in("rdi") operation as u64,
+        in("rsi") name,
+        in("rdx") buf,
+        in("r10") buf_size,
+        out("rcx") _,
+        out("r11") _,
+        options(nostack, preserves_flags)
+    );
+    
+    if ret == u64::MAX {
+        refresh_errno_from_kernel();
+        -1
+    } else {
+        set_errno(0);
+        ret as isize
+    }
+}
+
+/// Get list of all loaded modules
+/// 
+/// # Arguments
+/// * `entries` - Buffer to store module entries
+/// * `max_entries` - Maximum number of entries in buffer
+/// 
+/// # Returns
+/// Number of modules returned, or -1 on error
+pub fn list_modules(entries: &mut [ModuleListEntry]) -> isize {
+    unsafe {
+        query_module(
+            QUERY_MODULE_LIST,
+            core::ptr::null(),
+            entries.as_mut_ptr() as *mut c_void,
+            entries.len() * core::mem::size_of::<ModuleListEntry>(),
+        )
+    }
+}
+
+/// Get detailed information about a specific module
+/// 
+/// # Arguments
+/// * `name` - Module name (null-terminated)
+/// * `info` - Output info structure
+/// 
+/// # Returns
+/// true on success, false on error
+pub fn get_module_info(name: &[u8], info: &mut ModuleDetailedInfo) -> bool {
+    unsafe {
+        let ret = query_module(
+            QUERY_MODULE_INFO,
+            name.as_ptr(),
+            info as *mut _ as *mut c_void,
+            core::mem::size_of::<ModuleDetailedInfo>(),
+        );
+        ret > 0
+    }
+}
+
+/// Get module subsystem statistics
+/// 
+/// # Arguments
+/// * `stats` - Output statistics structure
+/// 
+/// # Returns
+/// true on success, false on error
+pub fn get_module_stats(stats: &mut ModuleStatistics) -> bool {
+    unsafe {
+        let ret = query_module(
+            QUERY_MODULE_STATS,
+            core::ptr::null(),
+            stats as *mut _ as *mut c_void,
+            core::mem::size_of::<ModuleStatistics>(),
+        );
+        ret > 0
+    }
+}
+
+/// Get dependencies of a module
+/// 
+/// # Arguments
+/// * `name` - Module name (null-terminated)
+/// * `deps` - Buffer to store dependency entries
+/// 
+/// # Returns
+/// Number of dependencies, or -1 on error
+pub fn get_module_deps(name: &[u8], deps: &mut [ModuleDependency]) -> isize {
+    unsafe {
+        query_module(
+            QUERY_MODULE_DEPS,
+            name.as_ptr(),
+            deps.as_mut_ptr() as *mut c_void,
+            deps.len() * core::mem::size_of::<ModuleDependency>(),
+        )
+    }
+}
+
+/// Get symbols exported by a module
+/// 
+/// # Arguments
+/// * `name` - Module name (null-terminated)
+/// * `syms` - Buffer to store symbol entries
+/// 
+/// # Returns
+/// Number of symbols, or -1 on error
+pub fn get_module_symbols(name: &[u8], syms: &mut [ModuleSymbol]) -> isize {
+    unsafe {
+        query_module(
+            QUERY_MODULE_SYMBOLS,
+            name.as_ptr(),
+            syms.as_mut_ptr() as *mut c_void,
+            syms.len() * core::mem::size_of::<ModuleSymbol>(),
+        )
+    }
+}
+
 // lang items ----------------------------------------------------------------
 
 #[cfg(feature = "panic-handler")]

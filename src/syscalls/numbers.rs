@@ -137,3 +137,8 @@ pub const SYS_TIMES: u64 = 100;
 
 // Random number generation (Linux-compatible)
 pub const SYS_GETRANDOM: u64 = 318;
+
+// Kernel module management syscalls (Linux-compatible)
+pub const SYS_INIT_MODULE: u64 = 175;     // Load a kernel module
+pub const SYS_DELETE_MODULE: u64 = 176;   // Unload a kernel module
+pub const SYS_QUERY_MODULE: u64 = 178;    // Query module information (NexaOS-specific extensions)

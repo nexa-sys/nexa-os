@@ -30,6 +30,7 @@ pub mod errno {
     pub const EROFS: i32 = 30; // Read-only file system
     pub const EPIPE: i32 = 32; // Broken pipe
     pub const ENOSYS: i32 = 38; // Function not implemented
+    pub const ENOEXEC: i32 = 8; // Exec format error
     pub const ENOTSOCK: i32 = 88; // Socket operation on non-socket
     pub const ENOTSUP: i32 = 95; // Operation not supported
     pub const EAFNOSUPPORT: i32 = 97; // Address family not supported
@@ -41,6 +42,7 @@ pub mod errno {
     pub const ETIMEDOUT: i32 = 110; // Connection timed out
     pub const ECONNREFUSED: i32 = 111; // Connection refused
     pub const EINPROGRESS: i32 = 115; // Operation in progress
+    pub const EKEYREJECTED: i32 = 129; // Key was rejected by service
 }
 
 /// POSIX file type enumeration used by the VFS layer.

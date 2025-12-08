@@ -56,6 +56,11 @@ members = [
     "programs/hashmap_test",
     # Editors
     "programs/edit",
+    # Kernel module management
+    "programs/lsmod",
+    "programs/insmod",
+    "programs/rmmod",
+    "programs/modinfo",
 ]
 
 [workspace.package]

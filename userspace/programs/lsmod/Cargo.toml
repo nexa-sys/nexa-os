@@ -1,0 +1,18 @@
+[package]
+name = "lsmod"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "lsmod"
+path = "src/main.rs"
+
+[dependencies]
+nrlib = { workspace = true, optional = true, features = ["panic-handler"] }
+nexa_boot_info.workspace = true
+libc = "0.2"
+
+[features]
+default = ["use-nrlib"]
+use-nrlib = ["nrlib"]
+use-nrlib-std = ["nrlib", "nrlib/std"]
