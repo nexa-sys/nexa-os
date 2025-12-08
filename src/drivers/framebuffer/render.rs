@@ -9,9 +9,11 @@
 //! - 32bpp fast path with 64-bit writes
 //! - Row buffer pre-computation
 //! - Line copying instead of re-rendering
+//! - Multi-core parallel operations via compositor (optional, `gfx_compositor` feature)
 
 use super::color::PackedColor;
 use super::spec::FramebufferSpec;
+#[cfg(feature = "gfx_compositor")]
 use crate::drivers::compositor;
 
 /// Font rendering constants
@@ -411,31 +413,35 @@ impl RenderContext {
         color: PackedColor,
     ) {
         let color_u32 = u32::from_le_bytes(color.bytes);
-        let total_pixels = width * height;
 
-        // Lower parallel threshold for 2.5K resolution
-        let parallel_threshold = if start_x == 0 && width == self.width {
-            1024 // Full-width: more aggressive parallelization
-        } else {
-            2048 // Non-full-width: slightly higher threshold
-        };
+        #[cfg(feature = "gfx_compositor")]
+        {
+            let total_pixels = width * height;
 
-        // Use compositor multi-core fill for large areas
-        if total_pixels >= parallel_threshold && height >= 4 {
-            if start_x == 0 && width == self.width {
-                let aligned_buffer = unsafe { self.buffer.add(start_y * self.pitch) };
-                compositor::parallel_fill(
-                    aligned_buffer,
-                    self.pitch,
-                    width,
-                    height,
-                    self.bytes_per_pixel,
-                    color_u32,
-                );
+            // Lower parallel threshold for 2.5K resolution
+            let parallel_threshold = if start_x == 0 && width == self.width {
+                1024 // Full-width: more aggressive parallelization
             } else {
-                self.fill_rect_optimized(start_x, start_y, width, height, color_u32);
+                2048 // Non-full-width: slightly higher threshold
+            };
+
+            // Use compositor multi-core fill for large areas
+            if total_pixels >= parallel_threshold && height >= 4 {
+                if start_x == 0 && width == self.width {
+                    let aligned_buffer = unsafe { self.buffer.add(start_y * self.pitch) };
+                    compositor::parallel_fill(
+                        aligned_buffer,
+                        self.pitch,
+                        width,
+                        height,
+                        self.bytes_per_pixel,
+                        color_u32,
+                    );
+                } else {
+                    self.fill_rect_optimized(start_x, start_y, width, height, color_u32);
+                }
+                return;
             }
-            return;
         }
 
         self.fill_rect_optimized(start_x, start_y, width, height, color_u32);
@@ -546,27 +552,60 @@ impl RenderContext {
 
     /// Scroll the entire screen up by one text row
     pub fn scroll_up(&self, bg_color: u32) {
-        compositor::scroll_up_fast(
-            self.buffer,
-            self.pitch,
-            self.width,
-            self.height,
-            self.bytes_per_pixel,
-            CELL_HEIGHT,
-            bg_color,
-        );
+        #[cfg(feature = "gfx_compositor")]
+        {
+            compositor::scroll_up_fast(
+                self.buffer,
+                self.pitch,
+                self.width,
+                self.height,
+                self.bytes_per_pixel,
+                CELL_HEIGHT,
+                bg_color,
+            );
+        }
+        #[cfg(not(feature = "gfx_compositor"))]
+        {
+            // Fallback: simple memmove-style scroll
+            let row_bytes = self.width * self.bytes_per_pixel;
+            let scroll_bytes = CELL_HEIGHT * self.pitch;
+            let copy_rows = self.height.saturating_sub(CELL_HEIGHT);
+            
+            unsafe {
+                let src = self.buffer.add(scroll_bytes);
+                core::ptr::copy(src, self.buffer, copy_rows * self.pitch);
+                
+                // Clear bottom rows
+                let clear_start = self.buffer.add(copy_rows * self.pitch);
+                let clear_bytes = CELL_HEIGHT * self.pitch;
+                core::ptr::write_bytes(clear_start, 0, clear_bytes);
+            }
+            let _ = bg_color; // Suppress unused warning in fallback
+        }
     }
 
     /// Fast full-screen clear using parallel fill
     pub fn clear_screen(&self, bg_color: u32) {
-        compositor::parallel_fill(
-            self.buffer,
-            self.pitch,
-            self.width,
-            self.height,
-            self.bytes_per_pixel,
-            bg_color,
-        );
+        #[cfg(feature = "gfx_compositor")]
+        {
+            compositor::parallel_fill(
+                self.buffer,
+                self.pitch,
+                self.width,
+                self.height,
+                self.bytes_per_pixel,
+                bg_color,
+            );
+        }
+        #[cfg(not(feature = "gfx_compositor"))]
+        {
+            // Fallback: simple memset clear
+            let total_bytes = self.height * self.pitch;
+            unsafe {
+                core::ptr::write_bytes(self.buffer, 0, total_bytes);
+            }
+            let _ = bg_color; // Suppress unused warning in fallback
+        }
     }
 
     /// Clear a range of text rows

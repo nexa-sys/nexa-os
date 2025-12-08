@@ -2,7 +2,7 @@
 //!
 //! The main FramebufferWriter struct that combines color management,
 //! ANSI parsing, and rendering to provide a text console interface.
-//! Supports both legacy 8x8 bitmap fonts and TTF fonts for Unicode.
+//! Supports both legacy 8x8 bitmap fonts and TTF fonts for Unicode (optional, `gfx_ttf` feature).
 
 use core::fmt::{self, Write};
 use font8x8::legacy::BASIC_LEGACY;
@@ -12,6 +12,7 @@ use super::color::{pack_color, PackedColor, RgbColor, DEFAULT_BG, DEFAULT_FG};
 use super::font;
 use super::render::{RenderContext, CELL_HEIGHT, CELL_WIDTH};
 use super::spec::FramebufferSpec;
+#[cfg(feature = "gfx_compositor")]
 use crate::drivers::compositor;
 use crate::ktrace;
 
@@ -166,7 +167,12 @@ impl FramebufferWriter {
         if self.cursor_y + 1 >= self.rows {
             // Before multi-core compositor init: clear instead of scroll for performance
             // After compositor init: use proper scrolling
-            if compositor::is_initialized() {
+            #[cfg(feature = "gfx_compositor")]
+            let use_scroll = compositor::is_initialized();
+            #[cfg(not(feature = "gfx_compositor"))]
+            let use_scroll = false;
+            
+            if use_scroll {
                 self.scroll_up();
             } else {
                 self.clear();

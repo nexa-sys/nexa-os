@@ -17,7 +17,7 @@ crate-type = ["rlib"]
 # Use FEATURE_xxx=true/false to override at build time.
 
 [features]
-default = ["net_full", "kernel_full", "fs_full"]
+default = ["net_full", "kernel_full", "fs_full", "gfx_full"]
 
 # Network protocol stack features
 net_full = ["net_ipv4", "net_udp", "net_tcp", "net_arp", "net_ethernet", "net_dns", "net_dhcp", "net_netlink"]
@@ -31,10 +31,17 @@ net_dhcp = ["net_udp"]
 net_netlink = []
 
 # Kernel subsystem features
-kernel_full = ["smp", "kmod", "kmod_signing"]
+kernel_full = ["smp", "numa", "kmod", "kmod_signing"]
 smp = []
+numa = ["smp"]  # NUMA requires SMP
 kmod = []
 kmod_signing = ["kmod"]
+
+# Graphics features
+gfx_full = ["gfx_framebuffer", "gfx_ttf", "gfx_compositor"]
+gfx_framebuffer = []
+gfx_ttf = []  # TrueType font support
+gfx_compositor = []  # Parallel display compositor
 
 # Filesystem features
 fs_full = ["fs_initramfs", "fs_devfs", "fs_procfs", "fs_sysfs"]

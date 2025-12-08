@@ -3,21 +3,49 @@
 //! This module provides framebuffer-based text console output with:
 //! - ANSI escape sequence support for colors and attributes
 //! - High-performance rendering with GPU-style optimizations
-//! - Multi-core parallel operations via compositor
-//! - TrueType font (TTF) support for Chinese and Unicode characters
+//! - Multi-core parallel operations via compositor (optional, `gfx_compositor` feature)
+//! - TrueType font (TTF) support for Chinese and Unicode characters (optional, `gfx_ttf` feature)
 //!
 //! # Module Organization
 //!
 //! - `ansi`: ANSI escape sequence parser
 //! - `color`: Color types and palettes
-//! - `font`: TTF font parsing and rendering (post-pivot_root)
+//! - `font`: TTF font parsing and rendering (post-pivot_root, requires `gfx_ttf` feature)
 //! - `render`: Low-level rendering primitives
 //! - `spec`: Framebuffer hardware specification
 //! - `writer`: High-level text console writer
 
 mod ansi;
 mod color;
+#[cfg(feature = "gfx_ttf")]
 pub mod font;
+#[cfg(not(feature = "gfx_ttf"))]
+pub mod font {
+    //! TTF font stub module (feature disabled)
+    //! Falls back to 8x8 bitmap font for ASCII only.
+    
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum FontSystemState { Uninitialized, Initializing, Ready, Failed }
+    
+    /// Glyph bitmap for rendering (stub - never instantiated)
+    #[derive(Clone)]
+    pub struct GlyphBitmap {
+        pub width: u16,
+        pub height: u16,
+        pub bearing_x: i16,
+        pub bearing_y: i16,
+        pub advance: u16,
+        pub data: alloc::vec::Vec<u8>,
+    }
+    
+    pub fn is_ready() -> bool { false }
+    pub fn state() -> FontSystemState { FontSystemState::Uninitialized }
+    pub fn init_after_pivot_root() {
+        crate::kinfo!("TTF font support disabled (gfx_ttf feature not enabled)");
+    }
+    pub fn get_glyph(_ch: char, _size: u16) -> Option<GlyphBitmap> { None }
+    pub fn get_baseline_offset(_size: u16) -> u16 { 0 }
+}
 mod render;
 mod spec;
 mod writer;

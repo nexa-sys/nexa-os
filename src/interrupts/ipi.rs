@@ -103,6 +103,7 @@ pub extern "x86-interrupt" fn ipi_call_function_handler(_stack_frame: InterruptS
 
     // Execute compositor work if available
     // This is the primary use case for IPI_CALL_FUNCTION
+    #[cfg(feature = "gfx_compositor")]
     crate::drivers::compositor::ap_work_entry();
 
     // Send EOI to LAPIC

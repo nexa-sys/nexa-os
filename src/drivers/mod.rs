@@ -6,14 +6,36 @@
 //! - Framebuffer (GOP/VBE)
 //! - VGA text mode buffer
 //! - ACPI table parsing
-//! - Parallel display compositor
+//! - Parallel display compositor (optional, `gfx_compositor` feature)
 //! - Random number generator (RDRAND/RDSEED + ChaCha20 CSPRNG)
-//! - TTF font parser for Unicode/CJK support
+//! - TTF font parser for Unicode/CJK support (optional, `gfx_ttf` feature)
 //! - Block device abstraction layer
 
 pub mod acpi;
 pub mod block;
+#[cfg(feature = "gfx_compositor")]
 pub mod compositor;
+#[cfg(not(feature = "gfx_compositor"))]
+pub mod compositor {
+    //! Compositor stub module (feature disabled)
+    //! Provides no-op implementations when compositor is disabled.
+    
+    pub struct CompositorStats { pub frames: u64, pub total_time_us: u64 }
+    pub struct CompositionRegion;
+    pub struct CompositionLayer;
+    #[derive(Clone, Copy)] pub enum BlendMode { Replace, Alpha, Additive }
+    
+    pub fn init() {}
+    pub fn is_initialized() -> bool { false }
+    pub fn worker_count() -> usize { 0 }
+    pub fn stats() -> CompositorStats { CompositorStats { frames: 0, total_time_us: 0 } }
+    pub fn debug_info() {}
+    pub fn compose(_layers: &[CompositionLayer], _region: &CompositionRegion) {}
+    pub fn fill_rect(_x: u32, _y: u32, _w: u32, _h: u32, _color: u32) {}
+    pub fn parallel_fill(_ptr: *mut u8, _len: usize, _value: u8) {}
+    pub fn scroll_up_fast(_dst: *mut u8, _src: *const u8, _copy_len: usize, _clear_ptr: *mut u8, _clear_len: usize, _clear_val: u8) {}
+    pub fn ap_work_entry() {}
+}
 pub mod framebuffer;
 pub mod keyboard;
 pub mod random;
@@ -44,6 +66,15 @@ pub use vga::{
 pub use acpi::{cpus as acpi_cpus, init as init_acpi, lapic_base, CpuDescriptor, MAX_CPUS};
 
 // Re-export from compositor
+#[cfg(feature = "gfx_compositor")]
+pub use compositor::{
+    compose as compositor_compose, debug_info as compositor_debug_info,
+    fill_rect as compositor_fill_rect, init as init_compositor,
+    is_initialized as compositor_is_initialized, stats as compositor_stats,
+    worker_count as compositor_worker_count, BlendMode, CompositionLayer, CompositionRegion,
+    CompositorStats,
+};
+#[cfg(not(feature = "gfx_compositor"))]
 pub use compositor::{
     compose as compositor_compose, debug_info as compositor_debug_info,
     fill_rect as compositor_fill_rect, init as init_compositor,

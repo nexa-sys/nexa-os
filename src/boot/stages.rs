@@ -634,6 +634,7 @@ pub fn start_real_root_init() -> Result<(), &'static str> {
     process_fstab();
 
     // Initialize TTF font system now that /etc/fonts is accessible
+    #[cfg(feature = "gfx_ttf")]
     init_font_system();
 
     crate::kinfo!("Real root initialization complete");
@@ -646,6 +647,7 @@ pub fn start_real_root_init() -> Result<(), &'static str> {
 ///
 /// This function loads TrueType fonts from /etc/fonts configuration
 /// to enable rendering of Chinese characters and Unicode symbols.
+#[cfg(feature = "gfx_ttf")]
 fn init_font_system() {
     crate::kinfo!("Initializing TTF font system...");
     crate::drivers::framebuffer::font::init_after_pivot_root();

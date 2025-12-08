@@ -490,20 +490,29 @@ fn proceed_after_initramfs(cmdline_opt: Option<&'static str>) -> ! {
 
     // Initialize NUMA topology detection after SMP/ACPI init
     // This must come before scheduler for NUMA-aware load balancing
+    #[cfg(feature = "numa")]
     if let Err(e) = numa::init() {
         kwarn!("NUMA initialization failed: {}", e);
     }
+    #[cfg(not(feature = "numa"))]
+    kinfo!("NUMA support disabled (numa feature not enabled)");
 
     // Initialize NUMA-aware memory allocator (uses NUMA topology)
+    #[cfg(feature = "numa")]
     allocator::init_numa_allocator();
 
     // Initialize parallel display compositor after SMP and NUMA
     // This enables multi-core accelerated display rendering
-    drivers::compositor::init();
-    kinfo!(
-        "Compositor: {} worker(s) ready for parallel rendering",
-        drivers::compositor::worker_count()
-    );
+    #[cfg(feature = "gfx_compositor")]
+    {
+        drivers::compositor::init();
+        kinfo!(
+            "Compositor: {} worker(s) ready for parallel rendering",
+            drivers::compositor::worker_count()
+        );
+    }
+    #[cfg(not(feature = "gfx_compositor"))]
+    kinfo!("Compositor disabled (gfx_compositor feature not enabled)");
 
     // Initialize random number generator (RDRAND/RDSEED + ChaCha20 CSPRNG)
     drivers::random::init();

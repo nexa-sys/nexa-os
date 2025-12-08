@@ -309,7 +309,7 @@ export function getEnabledFeatureFlags(config: BuildConfig): string[] {
   }
   
   const enabledFlags: string[] = [];
-  const categories = ['network', 'kernel', 'filesystem', 'security', 'debug'] as const;
+  const categories = ['network', 'kernel', 'filesystem', 'security', 'debug', 'graphics'] as const;
   
   for (const category of categories) {
     const categoryConfig = config.featureFlags[category];
@@ -351,7 +351,7 @@ export function getEnabledFeatureFlags(config: BuildConfig): string[] {
 export function isFeatureEnabled(config: BuildConfig, featureName: string): boolean {
   if (!config.featureFlags) return false;
   
-  const categories = ['network', 'kernel', 'filesystem', 'security', 'debug'] as const;
+  const categories = ['network', 'kernel', 'filesystem', 'security', 'debug', 'graphics'] as const;
   
   for (const category of categories) {
     const categoryConfig = config.featureFlags[category];
@@ -393,7 +393,7 @@ export function applyFeaturePreset(config: BuildConfig, presetName: string): voi
     return;
   }
   
-  const categories = ['network', 'kernel', 'filesystem', 'security', 'debug'] as const;
+  const categories = ['network', 'kernel', 'filesystem', 'security', 'debug', 'graphics'] as const;
   
   // Apply enables
   for (const featureName of preset.enable) {

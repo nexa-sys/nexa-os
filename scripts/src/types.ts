@@ -72,6 +72,7 @@ export interface FeatureFlagsConfig {
   filesystem: Record<string, FeatureDefinition>;
   security: Record<string, FeatureDefinition>;
   debug: Record<string, FeatureDefinition>;
+  graphics: Record<string, FeatureDefinition>;
   presets: Record<string, FeaturePreset>;
 }
 
