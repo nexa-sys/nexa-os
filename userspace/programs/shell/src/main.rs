@@ -183,7 +183,7 @@ impl LineEditor {
             
             // Move cursor back
             for _ in 0..char_width {
-                self.write(b"\x08");
+                self.write(b"\x1b[D");
             }
             // Print rest of buffer
             self.write(rest.as_bytes());
@@ -192,7 +192,7 @@ impl LineEditor {
             // Move cursor back to position
             let move_back = rest_display_width + 1;
             for _ in 0..move_back {
-                self.write(b"\x08");
+                self.write(b"\x1b[D");
             }
             true
         } else {
@@ -233,7 +233,7 @@ impl LineEditor {
         
         // Move cursor back if not at end
         for _ in 0..move_back {
-            self.write(b"\x08");
+            self.write(b"\x1b[D");
         }
     }
 
@@ -439,7 +439,7 @@ impl LineEditor {
                         .map(|c| if c.is_ascii() { 1 } else { 2 })
                         .sum();
                     for _ in 0..move_back {
-                        self.write(b"\x08");
+                        self.write(b"\x1b[D");
                     }
                 }
                 0x1b => { // Escape sequence
@@ -465,7 +465,7 @@ impl LineEditor {
                     
                     // Move cursor back if not at end
                     for _ in 0..move_back {
-                        self.write(b"\x08");
+                        self.write(b"\x1b[D");
                     }
                 }
             }

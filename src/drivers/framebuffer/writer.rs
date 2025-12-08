@@ -741,23 +741,12 @@ impl FramebufferWriter {
         // tracks bold state internally
     }
 
-    /// Handle backspace
+    /// Handle backspace (non-destructive move left)
     pub fn backspace(&mut self) {
-        // Use recorded character width for accurate deletion
-        // Only process if we have characters to delete on this line
-        if self.char_count > 0 {
-            let char_width = self.pop_char_width();
-            if self.pixel_x >= char_width {
-                self.pixel_x -= char_width;
-            } else {
-                self.pixel_x = 0;
-            }
-            self.cursor_x = self.pixel_x / CELL_WIDTH;
-            // Clear the area
-            let row_y = self.cursor_y * CELL_HEIGHT;
-            self.render.fill_rect(self.pixel_x, row_y, char_width, CELL_HEIGHT, self.bg);
-        }
-        // If char_count == 0, do nothing (already at start of editable area)
+        // Behave like Cursor Back (CUB) 1
+        // This allows \x08 to be used for cursor positioning without erasing
+        let params = [1];
+        self.handle_cursor_back(&params);
     }
 
     /// Draw a cursor at the current position (block cursor style)
