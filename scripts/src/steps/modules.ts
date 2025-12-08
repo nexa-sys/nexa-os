@@ -14,6 +14,31 @@ import { loadBuildConfig, getAllModules, findModule } from '../config.js';
 const MODULES_DIR = 'modules';
 
 /**
+ * Sign a kernel module using the sign-module.sh script
+ */
+async function signModule(env: BuildEnvironment, modulePath: string): Promise<boolean> {
+  const signScript = join(env.projectRoot, 'scripts', 'sign-module.sh');
+  
+  if (!existsSync(signScript)) {
+    logger.warn('sign-module.sh not found, skipping signature');
+    return false;
+  }
+  
+  logger.info(`Signing module: ${modulePath}`);
+  
+  // Use -i flag to sign in place
+  const result = await exec(signScript, ['-i', modulePath]);
+  
+  if (result.exitCode !== 0) {
+    logger.warn(`Module signing failed: ${result.stderr}`);
+    return false;
+  }
+  
+  logger.info('Module signed successfully');
+  return true;
+}
+
+/**
  * Create a simple NKM metadata-only module
  */
 async function createSimpleNkm(
@@ -169,15 +194,26 @@ async function buildModule(
     
     if (linked && existsSync(outputNkm)) {
       await exec('strip', ['--strip-debug', outputNkm]);
+      
+      // Sign the module
+      const signResult = await signModule(env, outputNkm);
+      if (!signResult) {
+        logger.warn(`Module ${module.name} built but signing failed`);
+      }
+      
       const size = await getFileSize(outputNkm);
-      logger.success(`${module.name}.nkm built (${size})`);
+      logger.success(`${module.name}.nkm built and signed (${size})`);
     } else {
       logger.warn('Link failed, creating metadata-only module');
       await createSimpleNkm(module.name, module.type, '1.0.0', `${module.description} (built-in)`, outputNkm);
+      // Sign the simple module too
+      await signModule(env, outputNkm);
     }
   } else {
     logger.warn('No object files found, creating metadata-only module');
     await createSimpleNkm(module.name, module.type, '1.0.0', `${module.description} (built-in)`, outputNkm);
+    // Sign the simple module too
+    await signModule(env, outputNkm);
   }
   
   return {

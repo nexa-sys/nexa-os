@@ -3,11 +3,12 @@
  */
 
 import { join } from 'path';
-import { mkdir, copyFile, writeFile, rm } from 'fs/promises';
+import { mkdir, copyFile, writeFile, rm, stat } from 'fs/promises';
 import { existsSync } from 'fs';
 import { BuildEnvironment, BuildStepResult } from '../types.js';
 import { logger } from '../logger.js';
 import { exec, requireCommands, getFileSize } from '../exec.js';
+import { glob } from 'glob';
 
 /**
  * Generate GRUB configuration
@@ -180,6 +181,14 @@ export async function buildIso(env: BuildEnvironment): Promise<BuildStepResult> 
     return { success: false, duration: Date.now() - startTime, error: result.stderr };
   }
   
+  // Post-process ESP for UEFI boot
+  if (hasUefi) {
+    const espResult = await postprocessEsp(env);
+    if (!espResult) {
+      logger.warn('ESP post-processing failed, UEFI boot may not work');
+    }
+  }
+  
   const isoSize = await getFileSize(env.isoFile);
   logger.success(`ISO created: ${env.isoFile} (${isoSize})`);
   
@@ -187,4 +196,99 @@ export async function buildIso(env: BuildEnvironment): Promise<BuildStepResult> 
     success: true,
     duration: Date.now() - startTime,
   };
+}
+
+/**
+ * Post-process the EFI System Partition in the ISO
+ * This is required because grub-mkrescue creates a small ESP that doesn't include our files
+ */
+async function postprocessEsp(env: BuildEnvironment): Promise<boolean> {
+  // Check for required tools
+  const missing = await requireCommands(['7z', 'mkfs.vfat', 'mmd', 'mcopy', 'mdir']);
+  if (missing.length > 0) {
+    logger.warn(`Missing tools for ESP modification: ${missing.join(', ')}`);
+    logger.info('Install mtools and p7zip-full for UEFI boot support');
+    return false;
+  }
+  
+  logger.step('Post-processing ESP for UEFI boot...');
+  
+  const isoTemp = join(env.buildDir, `iso_extract_${process.pid}`);
+  await rm(isoTemp, { recursive: true, force: true });
+  await mkdir(isoTemp, { recursive: true });
+  
+  try {
+    // Extract ISO
+    logger.info('Extracting ISO...');
+    await exec('7z', ['x', `-o${isoTemp}`, env.isoFile, '-bsp0', '-bso0']);
+    
+    // Find efi.img
+    const efiImgCandidates = await glob('**/efi.img', { cwd: isoTemp, absolute: true });
+    if (efiImgCandidates.length === 0) {
+      logger.warn('Could not find efi.img in ISO');
+      return false;
+    }
+    
+    const efiImg = efiImgCandidates[0];
+    logger.info(`Found ESP: ${efiImg}`);
+    
+    // Calculate required ESP size
+    const kernelStat = await stat(env.kernelBin);
+    const bootloaderStat = await stat(join(env.buildDir, 'BootX64.EFI'));
+    let initramfsStat = { size: 0 };
+    if (existsSync(env.initramfsCpio)) {
+      initramfsStat = await stat(env.initramfsCpio);
+    }
+    
+    const totalBytes = kernelStat.size + bootloaderStat.size + initramfsStat.size;
+    let espSizeMb = Math.ceil((totalBytes * 1.2) / (1024 * 1024));
+    if (espSizeMb < 16) espSizeMb = 16;
+    
+    logger.info(`Creating ${espSizeMb}MB ESP...`);
+    
+    const newEsp = join(env.buildDir, 'new_efi.img');
+    
+    // Create new ESP image
+    await exec('dd', ['if=/dev/zero', `of=${newEsp}`, 'bs=1M', `count=${espSizeMb}`, 'status=none']);
+    await exec('mkfs.vfat', ['-F', '12', '-n', 'UEFI', newEsp]);
+    
+    // Create directories
+    await exec('mmd', ['-i', newEsp, '::/EFI']).catch(() => {});
+    await exec('mmd', ['-i', newEsp, '::/EFI/BOOT']).catch(() => {});
+    
+    // Copy files to ESP
+    await exec('mcopy', ['-i', newEsp, join(env.buildDir, 'BootX64.EFI'), '::/EFI/BOOT/BOOTX64.EFI']);
+    await exec('mcopy', ['-i', newEsp, env.kernelBin, '::/EFI/BOOT/KERNEL.ELF']);
+    
+    if (existsSync(env.initramfsCpio)) {
+      await exec('mcopy', ['-i', newEsp, env.initramfsCpio, '::/EFI/BOOT/INITRAMFS.CPIO']);
+    }
+    
+    // Replace ESP in extracted ISO
+    await exec('chmod', ['u+w', efiImg]);
+    await copyFile(newEsp, efiImg);
+    await rm(newEsp, { force: true });
+    
+    // Verify ESP contents
+    logger.info('ESP contents:');
+    const mdirResult = await exec('mdir', ['-i', efiImg, '::/EFI/BOOT/']);
+    console.log(mdirResult.stdout);
+    
+    // Rebuild ISO
+    logger.info('Rebuilding ISO with modified ESP...');
+    await rm(env.isoFile, { force: true });
+    
+    const rebuildResult = await exec('grub-mkrescue', ['-o', env.isoFile, isoTemp]);
+    if (rebuildResult.exitCode !== 0) {
+      logger.error('Failed to rebuild ISO');
+      return false;
+    }
+    
+    logger.success('ESP modified successfully');
+    return true;
+    
+  } finally {
+    // Cleanup
+    await rm(isoTemp, { recursive: true, force: true });
+  }
 }

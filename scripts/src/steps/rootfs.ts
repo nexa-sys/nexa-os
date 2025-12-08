@@ -150,8 +150,8 @@ async function createExt2Image(env: BuildEnvironment, rootfsDir: string): Promis
   
   await exec('sudo', ['mount', '-o', 'loop', imgPath, mountPoint]);
   
-  // Copy all files
-  await exec('sudo', ['cp', '-a', rootfsDir + '/', mountPoint + '/']);
+  // Copy all files (using cp with proper source path to avoid nested directory)
+  await exec('sudo', ['sh', '-c', `cp -a "${rootfsDir}"/* "${mountPoint}/"`]);
   
   // Set permissions
   await exec('sudo', ['chmod', '755', join(mountPoint, 'bin')]);
