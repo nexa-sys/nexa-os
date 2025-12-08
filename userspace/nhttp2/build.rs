@@ -4,8 +4,9 @@
 
 fn main() {
     // Set output library name to match nghttp2
-    println!("cargo:rustc-cdylib-link-arg=-Wl,-soname,libnghttp2.so.14");
+    // For rust-lld linker, we use --soname directly (no -Wl, prefix)
+    println!("cargo:rustc-cdylib-link-arg=--soname=libnghttp2.so.14");
     
-    // Enable position independent code
-    println!("cargo:rustc-link-arg=-fPIC");
+    // Note: PIC is set via RUSTFLAGS in the build script, not here
+    // rust-lld doesn't support -fPIC as a linker argument
 }

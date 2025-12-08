@@ -34,6 +34,7 @@ declare -A LIBRARIES=(
     ["ncryptolib"]="ncryptolib:crypto:3:"
     ["nssl"]="nssl:ssl:3:ncryptolib"
     ["nzip"]="nzip:z:1:"
+    ["nhttp2"]="nhttp2:nghttp2:14:nssl"
     # Add more libraries here:
     # ["npng"]="npng:png:16:nzip"
 )
@@ -44,6 +45,7 @@ BUILD_ORDER=(
     "ncryptolib"
     "nzip"
     "nssl"
+    "nhttp2"
     # Add new libraries in dependency order
 )
 
