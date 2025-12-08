@@ -8,7 +8,7 @@
 - 📦 **模块化** - 每个构建步骤独立模块
 - 🎨 **美观输出** - 彩色日志、进度条、spinner
 - ⚡ **并行构建** - 支持并行执行独立任务
-- 📋 **YAML 配置** - 使用现有的 `build-config.yaml`
+- 📋 **YAML 配置** - 模块化配置文件在 `config/` 目录
 - 🔧 **灵活** - 支持单独构建任何组件
 
 ## 快速开始
@@ -147,7 +147,22 @@ scripts-ts/
 
 ### 添加新的程序/模块/库
 
-直接在 `scripts/build-config.yaml` 中添加配置即可，构建系统会自动识别。
+在 `config/` 目录的对应配置文件中添加配置即可，构建系统会自动识别：
+
+- `config/programs.yaml` - 用户空间程序
+- `config/modules.yaml` - 内核模块
+- `config/libraries.yaml` - 共享库
+- `config/build.yaml` - 构建配置文件和全局设置
+
+### 使用构建配置文件
+
+通过 `BUILD_PROFILE` 环境变量选择配置文件：
+
+```bash
+BUILD_PROFILE=minimal ./scripts/build.sh all  # 最小构建
+BUILD_PROFILE=full ./scripts/build.sh all     # 完整构建
+BUILD_PROFILE=dev ./scripts/build.sh all      # 开发构建
+```
 
 ## 依赖
 

@@ -4,7 +4,7 @@
  */
 
 import { existsSync } from 'fs';
-import { BuildEnvironment, BuildStepResult, BuildProfile } from './types.js';
+import { BuildEnvironment, BuildStepResult, BuildStep } from './types.js';
 import { createBuildEnvironment, ensureBuildDirs } from './env.js';
 import { logger } from './logger.js';
 import { getFileSize, timedStep } from './exec.js';
@@ -206,10 +206,10 @@ export class Builder {
   }
   
   /**
-   * Run a build profile
+   * Run a build step
    */
-  async run(profile: BuildProfile): Promise<BuildStepResult> {
-    switch (profile) {
+  async run(step: BuildStep): Promise<BuildStepResult> {
+    switch (step) {
       case 'full':
         return this.buildFull();
       case 'quick':
@@ -233,15 +233,15 @@ export class Builder {
       case 'clean':
         return this.clean();
       default:
-        logger.error(`Unknown profile: ${profile}`);
-        return { success: false, duration: 0, error: `Unknown profile: ${profile}` };
+        logger.error(`Unknown step: ${step}`);
+        return { success: false, duration: 0, error: `Unknown step: ${step}` };
     }
   }
   
   /**
    * Run multiple build steps in sequence
    */
-  async runSteps(steps: BuildProfile[]): Promise<BuildStepResult> {
+  async runSteps(steps: BuildStep[]): Promise<BuildStepResult> {
     const startTime = Date.now();
     
     for (const step of steps) {

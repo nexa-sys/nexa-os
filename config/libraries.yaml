@@ -1,0 +1,114 @@
+# NexaOS Userspace Libraries Configuration
+#
+# This file defines all shared libraries to be built and installed.
+# Libraries are built in dependency order automatically.
+#
+# Library Properties:
+#   - name: Cargo package name (required)
+#   - output: Library output name without 'lib' prefix (required)
+#   - version: Shared object version number (required)
+#   - description: Human-readable description (optional)
+#   - depends: List of library dependencies (optional)
+#   - enabled: Whether to build this library (default: true)
+#   - features: Cargo features to enable (optional)
+
+# =============================================================================
+# Core Libraries
+# =============================================================================
+# Fundamental libraries that other components depend on.
+
+libraries:
+  # Cryptography library - foundation for SSL/TLS
+  - name: ncryptolib
+    output: crypto
+    version: 3
+    description: "Cryptographic primitives (AES, SHA, RSA, etc.)"
+    depends: []
+    enabled: true
+    config:
+      # Enable hardware acceleration if available
+      hw_accel: true
+      # Supported algorithms
+      algorithms:
+        - aes
+        - sha256
+        - sha512
+        - rsa
+        - ed25519
+        - x25519
+  
+  # Compression library
+  - name: nzip
+    output: z
+    version: 1
+    description: "Data compression (zlib compatible)"
+    depends: []
+    enabled: true
+    config:
+      # Default compression level (1-9)
+      default_level: 6
+      # Enable gzip format support
+      gzip: true
+      # Enable deflate format support
+      deflate: true
+  
+  # SSL/TLS library - depends on crypto
+  - name: nssl
+    output: ssl
+    version: 3
+    description: "SSL/TLS implementation"
+    depends:
+      - ncryptolib
+    enabled: true
+    config:
+      # Minimum TLS version
+      min_version: "1.2"
+      # Maximum TLS version
+      max_version: "1.3"
+      # Enable certificate verification
+      verify_certs: true
+      # CA certificates path
+      ca_path: /etc/ssl/certs
+  
+  # HTTP/2 library - depends on SSL
+  - name: nhttp2
+    output: nghttp2
+    version: 14
+    description: "HTTP/2 protocol implementation"
+    depends:
+      - nssl
+    enabled: true
+    config:
+      # Enable HTTP/2 server push
+      server_push: true
+      # Maximum concurrent streams
+      max_streams: 100
+      # Initial window size
+      window_size: 65535
+
+# =============================================================================
+# Build Order
+# =============================================================================
+# Explicit build order (resolved automatically from dependencies, but can override)
+
+build_order:
+  - ncryptolib
+  - nzip  
+  - nssl
+  - nhttp2
+
+# =============================================================================
+# Library Installation Paths
+# =============================================================================
+# Where libraries are installed in the rootfs
+
+install_paths:
+  # Main library directory
+  lib64: /lib64
+  
+  # Symlink patterns for versioned libraries
+  # e.g., libssl.so -> libssl.so.3 -> libssl.so.3.0.0
+  versioning:
+    major: true
+    minor: false
+    patch: false

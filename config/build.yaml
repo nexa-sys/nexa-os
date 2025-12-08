@@ -1,0 +1,139 @@
+# NexaOS Main Build Configuration
+# 
+# This file contains global build settings and profiles.
+# Module-specific settings are in modules.yaml.
+# Program settings are in programs.yaml.
+# Library settings are in libraries.yaml.
+
+# =============================================================================
+# Build Settings
+# =============================================================================
+settings:
+  # Default build type (debug or release)
+  default_build_type: debug
+  
+  # Default log level for kernel (debug, info, warn, error)
+  default_log_level: info
+  
+  # Target architecture
+  target_arch: x86_64
+  
+  # Kernel target triple
+  kernel_target: x86_64-nexaos
+  
+  # Userspace target triple
+  userspace_target: x86_64-nexaos-userspace
+  
+  # Module target triple
+  module_target: x86_64-nexaos-module
+
+# =============================================================================
+# Build Profiles
+# =============================================================================
+# Profiles allow quick switching between different module/feature sets.
+# Use BUILD_PROFILE environment variable to select.
+
+profiles:
+  # Default profile - balanced selection of modules
+  default:
+    description: "Standard build with common modules"
+    modules:
+      filesystem: [ext2]
+      block: [virtio_blk]
+      memory: [swap]
+      network: [e1000]
+    features:
+      swap_enabled: true
+      default_fs: ext2
+  
+  # Minimal profile - only essential boot modules
+  minimal:
+    description: "Minimal boot with essential modules only"
+    modules:
+      filesystem: [ext2]
+      block: [virtio_blk]
+      memory: []
+      network: []
+    features:
+      swap_enabled: false
+      default_fs: ext2
+  
+  # Full profile - all available modules
+  full:
+    description: "All modules enabled"
+    modules:
+      filesystem: [ext2, ext3, ext4]
+      block: [virtio_blk]
+      memory: [swap]
+      network: [e1000, virtio_net]
+    features:
+      swap_enabled: true
+      default_fs: ext4
+  
+  # Development profile - includes test modules
+  dev:
+    description: "Development build with debugging features"
+    modules:
+      filesystem: [ext2, ext3, ext4]
+      block: [virtio_blk]
+      memory: [swap]
+      network: [e1000]
+    features:
+      swap_enabled: true
+      default_fs: ext2
+      extra_debug: true
+
+# =============================================================================
+# Build Order
+# =============================================================================
+# Defines the order in which components should be built.
+# Dependencies are automatically resolved.
+
+build_order:
+  # 1. Core libraries (order matters for dependencies)
+  libraries:
+    - ncryptolib
+    - nzip
+    - nssl
+    - nhttp2
+  
+  # 2. Core programs are built after libraries
+  # 3. Modules are built independently
+  # 4. Initramfs is built after modules
+  # 5. Rootfs is built after programs
+
+# =============================================================================
+# Output Paths
+# =============================================================================
+paths:
+  build_dir: build
+  kernel_output: target/x86_64-nexaos
+  userspace_output: userspace/target
+  modules_output: build/modules
+  initramfs_output: build/initramfs
+  rootfs_output: build/rootfs
+  iso_output: target/iso
+
+# =============================================================================
+# Feature Flags
+# =============================================================================
+# Global feature toggles that affect the entire build
+
+features:
+  # Enable module signing verification
+  module_signing: true
+  
+  # Enable UEFI boot support
+  uefi_support: true
+  
+  # Enable legacy BIOS boot support
+  bios_support: true
+  
+  # Enable SMP (multi-processor) support
+  smp_support: true
+  
+  # Enable network stack
+  network_stack: true
+  
+  # Enable graphics/compositor (future)
+  graphics: false

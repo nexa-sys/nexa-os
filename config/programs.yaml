@@ -1,0 +1,375 @@
+# NexaOS Userspace Programs Configuration
+#
+# This file defines all userspace programs to be built and installed.
+# Programs are organized by category for easier management.
+#
+# Program Properties:
+#   - package: Cargo package name (required)
+#   - binary: Output binary name (optional, defaults to package name)
+#   - dest: Destination directory - bin, sbin, usr/bin, etc. (required)
+#   - features: Cargo features to enable (optional)
+#   - link: Linking type - "std" (static) or "dyn" (dynamic, default)
+#   - enabled: Whether to build this program (default: true)
+
+# =============================================================================
+# Core System Services
+# =============================================================================
+# Essential services required for system boot and operation.
+# These are statically linked to ensure they work before shared libs are loaded.
+
+core:
+  - package: ni
+    description: "System V init implementation"
+    dest: sbin
+    link: std
+    enabled: true
+    required: true  # Cannot be disabled
+  
+  - package: getty
+    description: "TTY login prompt"
+    dest: sbin
+    link: std
+    enabled: true
+    required: true
+
+# =============================================================================
+# Shell and Authentication
+# =============================================================================
+# User interface and authentication programs.
+
+shell:
+  - package: sh
+    description: "POSIX shell"
+    dest: bin
+    link: dyn
+    enabled: true
+    required: true
+  
+  - package: login
+    description: "User login program"
+    dest: bin
+    link: dyn
+    enabled: true
+    required: true
+
+# =============================================================================
+# Network Utilities
+# =============================================================================
+# Programs for network configuration and testing.
+
+network:
+  - package: nslookup
+    description: "DNS lookup utility"
+    dest: bin
+    features: use-nrlib-std
+    link: dyn
+    enabled: true
+  
+  - package: ip
+    description: "Network interface configuration"
+    dest: bin
+    link: dyn
+    enabled: true
+  
+  - package: dhcp
+    description: "DHCP client"
+    dest: bin
+    link: dyn
+    enabled: true
+  
+  - package: nurl
+    description: "URL fetching utility (like curl)"
+    dest: bin
+    link: dyn
+    enabled: true
+
+# =============================================================================
+# System Daemons
+# =============================================================================
+# Background services.
+
+daemons:
+  - package: uefi_compatd
+    binary: uefi-compatd
+    description: "UEFI compatibility daemon"
+    dest: sbin
+    features: use-nrlib-std
+    link: dyn
+    enabled: true
+  
+  - package: ntpd
+    description: "NTP time synchronization daemon"
+    dest: sbin
+    link: dyn
+    enabled: true
+
+# =============================================================================
+# System Utilities
+# =============================================================================
+# General system administration tools.
+
+system:
+  - package: dmesg
+    description: "Display kernel ring buffer"
+    dest: bin
+    link: dyn
+    enabled: true
+
+# =============================================================================
+# Coreutils
+# =============================================================================
+# Standard POSIX/GNU coreutils equivalents.
+
+coreutils:
+  - package: ls
+    description: "List directory contents"
+    dest: bin
+    link: dyn
+    enabled: true
+  
+  - package: cat
+    description: "Concatenate and display files"
+    dest: bin
+    link: dyn
+    enabled: true
+  
+  - package: stat
+    description: "Display file status"
+    dest: bin
+    link: dyn
+    enabled: true
+  
+  - package: pwd
+    description: "Print working directory"
+    dest: bin
+    link: dyn
+    enabled: true
+  
+  - package: echo
+    description: "Display a line of text"
+    dest: bin
+    link: dyn
+    enabled: true
+  
+  - package: uname
+    description: "Print system information"
+    dest: bin
+    link: dyn
+    enabled: true
+  
+  - package: mkdir
+    description: "Create directories"
+    dest: bin
+    link: dyn
+    enabled: true
+  
+  - package: whoami
+    description: "Print current user name"
+    dest: bin
+    link: dyn
+    enabled: true
+  
+  - package: users
+    description: "Print logged-in users"
+    dest: bin
+    link: dyn
+    enabled: true
+  
+  - package: clear
+    description: "Clear terminal screen"
+    dest: bin
+    link: dyn
+    enabled: true
+  
+  - package: kill
+    description: "Send signals to processes"
+    dest: bin
+    link: dyn
+    enabled: true
+
+# =============================================================================
+# User Management
+# =============================================================================
+# User account management utilities.
+
+user_management:
+  - package: logout
+    description: "Log out current user"
+    dest: bin
+    link: dyn
+    enabled: true
+  
+  - package: adduser
+    description: "Add new user account"
+    dest: sbin
+    link: dyn
+    enabled: true
+
+# =============================================================================
+# Power Management
+# =============================================================================
+# System power state control.
+
+power:
+  - package: reboot
+    description: "Reboot the system"
+    dest: sbin
+    link: dyn
+    enabled: true
+  
+  - package: shutdown
+    description: "Shut down the system"
+    dest: sbin
+    link: dyn
+    enabled: true
+  
+  - package: halt
+    description: "Halt the system"
+    dest: sbin
+    link: dyn
+    enabled: true
+  
+  - package: poweroff
+    description: "Power off the system"
+    dest: sbin
+    link: dyn
+    enabled: true
+
+# =============================================================================
+# Memory Management Utilities
+# =============================================================================
+# Swap and memory management tools.
+
+memory:
+  - package: swapon
+    description: "Enable swap space"
+    dest: sbin
+    link: dyn
+    enabled: true
+  
+  - package: swapoff
+    description: "Disable swap space"
+    dest: sbin
+    link: dyn
+    enabled: true
+  
+  - package: mkswap
+    description: "Create swap area"
+    dest: sbin
+    link: dyn
+    enabled: true
+  
+  - package: free
+    description: "Display memory usage"
+    dest: bin
+    link: dyn
+    enabled: true
+
+# =============================================================================
+# IPC Utilities
+# =============================================================================
+# Inter-process communication tools.
+
+ipc:
+  - package: ipc-create
+    description: "Create IPC objects"
+    dest: bin
+    link: dyn
+    enabled: true
+  
+  - package: ipc-send
+    description: "Send IPC messages"
+    dest: bin
+    link: dyn
+    enabled: true
+  
+  - package: ipc-recv
+    description: "Receive IPC messages"
+    dest: bin
+    link: dyn
+    enabled: true
+
+# =============================================================================
+# Editors
+# =============================================================================
+# Text editors.
+
+editors:
+  - package: edit
+    description: "Simple text editor"
+    dest: bin
+    link: dyn
+    enabled: true
+
+# =============================================================================
+# Kernel Module Management
+# =============================================================================
+# Tools for loading and managing kernel modules.
+
+kmod:
+  - package: lsmod
+    description: "List loaded kernel modules"
+    dest: sbin
+    link: dyn
+    enabled: true
+  
+  - package: insmod
+    description: "Insert kernel module"
+    dest: sbin
+    link: dyn
+    enabled: true
+  
+  - package: rmmod
+    description: "Remove kernel module"
+    dest: sbin
+    link: dyn
+    enabled: true
+  
+  - package: modinfo
+    description: "Show module information"
+    dest: sbin
+    link: dyn
+    enabled: true
+
+# =============================================================================
+# Test Programs
+# =============================================================================
+# Programs for testing and development (can be disabled in production builds).
+
+test:
+  - package: crashtest
+    description: "Crash testing utility"
+    dest: bin
+    link: dyn
+    enabled: true
+    production: false  # Exclude from production builds
+  
+  - package: thread_test
+    description: "Thread API test"
+    dest: bin
+    link: dyn
+    enabled: true
+    production: false
+  
+  - package: pthread_test
+    description: "POSIX threads test"
+    dest: bin
+    features: use-nrlib-std
+    link: dyn
+    enabled: true
+    production: false
+  
+  - package: hello_dynamic
+    binary: hello
+    description: "Hello world (dynamic linking test)"
+    dest: bin
+    link: dyn
+    enabled: true
+    production: false
+  
+  - package: hashmap_test
+    description: "HashMap implementation test"
+    dest: bin
+    link: dyn
+    enabled: true
+    production: false

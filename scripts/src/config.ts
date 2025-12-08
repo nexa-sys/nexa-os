@@ -1,6 +1,10 @@
 /**
  * NexaOS Build System - Configuration Loader
- * Parses build-config.yaml
+ * Parses configuration files from config/ directory:
+ *   - config/build.yaml     - Main build settings and profiles
+ *   - config/modules.yaml   - Kernel modules configuration
+ *   - config/programs.yaml  - Userspace programs configuration
+ *   - config/libraries.yaml - Userspace libraries configuration
  */
 
 import { readFile } from 'fs/promises';
@@ -10,23 +14,132 @@ import {
   BuildConfig, 
   ProgramConfig, 
   ModuleConfig, 
-  LibraryConfig
+  LibraryConfig,
+  ModulesConfig,
+  ProgramsConfig,
+  LibrariesConfig,
+  MainBuildConfig,
+  BuildProfileConfig
 } from './types.js';
 
 let cachedConfig: BuildConfig | null = null;
 
 /**
- * Load and parse the build configuration from YAML
+ * Load and parse the build configuration from YAML files in config/
  */
 export async function loadBuildConfig(projectRoot: string): Promise<BuildConfig> {
   if (cachedConfig) {
     return cachedConfig;
   }
   
-  const configPath = join(projectRoot, 'scripts', 'build-config.yaml');
-  const content = await readFile(configPath, 'utf-8');
-  cachedConfig = parseYaml(content) as BuildConfig;
+  const configDir = join(projectRoot, 'config');
+  
+  // Load all configuration files
+  const [buildContent, modulesContent, programsContent, librariesContent] = await Promise.all([
+    readFile(join(configDir, 'build.yaml'), 'utf-8'),
+    readFile(join(configDir, 'modules.yaml'), 'utf-8'),
+    readFile(join(configDir, 'programs.yaml'), 'utf-8'),
+    readFile(join(configDir, 'libraries.yaml'), 'utf-8')
+  ]);
+  
+  const buildConfig = parseYaml(buildContent) as MainBuildConfig;
+  const modulesConfig = parseYaml(modulesContent) as ModulesConfig;
+  const programsConfig = parseYaml(programsContent) as ProgramsConfig;
+  const librariesConfig = parseYaml(librariesContent) as LibrariesConfig;
+  
+  // Merge into unified BuildConfig structure
+  cachedConfig = mergeConfigs(buildConfig, modulesConfig, programsConfig, librariesConfig);
   return cachedConfig;
+}
+
+/**
+ * Merge separate config files into unified BuildConfig
+ */
+function mergeConfigs(
+  build: MainBuildConfig,
+  modules: ModulesConfig,
+  programs: ProgramsConfig,
+  libraries: LibrariesConfig
+): BuildConfig {
+  // Get current profile from environment or use default
+  const profileName = process.env.BUILD_PROFILE || 'default';
+  const profile: BuildProfileConfig | undefined = build.profiles[profileName] || build.profiles['default'];
+  
+  // Convert modules config to BuildConfig format, filtering by profile
+  const enabledModules = profile?.modules || {};
+  
+  const moduleCategories: Record<string, ModuleConfig[]> = {};
+  for (const [category, moduleList] of Object.entries(modules)) {
+    if (category === 'shared' || category === 'autoload' || category === 'signing') continue;
+    
+    // Get the list of enabled modules for this category from the profile
+    // If category is not in profile.modules, include all enabled modules
+    // If category is in profile.modules with empty array [], include none
+    // If category is in profile.modules with values, include only those
+    const categoryInProfile = category in enabledModules;
+    const enabledInCategory = enabledModules[category] || [];
+    const categoryModules: ModuleConfig[] = [];
+    
+    for (const [name, config] of Object.entries(moduleList as Record<string, any>)) {
+      // Module is enabled if:
+      // 1. Explicitly enabled in modules.yaml (enabled !== false)
+      // 2. AND either: category not specified in profile (include all) OR module name is in profile list
+      const isEnabledInConfig = config.enabled !== false;
+      const isEnabledInProfile = !categoryInProfile || enabledInCategory.includes(name);
+      
+      if (isEnabledInConfig && isEnabledInProfile) {
+        categoryModules.push({
+          name,
+          type: config.type,
+          description: config.description,
+          depends: config.depends,
+          enabled: true
+        });
+      }
+    }
+    
+    if (categoryModules.length > 0) {
+      moduleCategories[category] = categoryModules;
+    }
+  }
+  
+  // Convert programs config to BuildConfig format
+  const programCategories: Record<string, ProgramConfig[]> = {};
+  for (const [category, programList] of Object.entries(programs)) {
+    if (!Array.isArray(programList)) continue;
+    
+    programCategories[category] = programList
+      .filter((p: any) => p.enabled !== false)
+      .map((p: any) => ({
+        package: p.package,
+        binary: p.binary,
+        dest: p.dest,
+        features: p.features,
+        link: p.link || 'dyn'
+      }));
+  }
+  
+  // Convert libraries config
+  const libraryList: LibraryConfig[] = (libraries.libraries || [])
+    .filter((l: any) => l.enabled !== false)
+    .map((l: any) => ({
+      name: l.name,
+      output: l.output,
+      version: l.version,
+      depends: l.depends || []
+    }));
+  
+  return {
+    programs: programCategories,
+    modules: moduleCategories,
+    libraries: libraryList,
+    build_order: {
+      libraries: libraries.build_order || build.build_order?.libraries || []
+    },
+    settings: build.settings,
+    profile: profileName,
+    features: profile?.features || {}
+  };
 }
 
 /**

@@ -10,7 +10,7 @@ import { fileURLToPath } from 'url';
 import { existsSync } from 'fs';
 import { Builder } from './builder.js';
 import { logger } from './logger.js';
-import { BuildProfile } from './types.js';
+import { BuildStep } from './types.js';
 import { loadBuildConfig } from './config.js';
 import { buildSingleProgram, listPrograms } from './steps/programs.js';
 import { buildSingleModule, listModules } from './steps/modules.js';
@@ -19,12 +19,12 @@ import { createBuildEnvironment } from './env.js';
 
 fileURLToPath(import.meta.url);
 
-// Find project root (go up until we find Cargo.toml)
+// Find project root (go up until we find Cargo.toml and config/)
 function findProjectRoot(): string {
   let dir = process.cwd();
   
   while (dir !== '/') {
-    if (existsSync(resolve(dir, 'Cargo.toml')) && existsSync(resolve(dir, 'scripts/build-config.yaml'))) {
+    if (existsSync(resolve(dir, 'Cargo.toml')) && existsSync(resolve(dir, 'config/build.yaml'))) {
       return dir;
     }
     dir = dirname(dir);
@@ -225,7 +225,7 @@ program
   .description('Run multiple build steps in sequence')
   .action(async (steps: string[]) => {
     const builder = new Builder(findProjectRoot());
-    const result = await builder.runSteps(steps as BuildProfile[]);
+    const result = await builder.runSteps(steps as BuildStep[]);
     process.exit(result.success ? 0 : 1);
   });
 

@@ -1,8 +1,14 @@
 /**
  * NexaOS Build System - Configuration Types
+ * 
+ * Configuration files are in config/ directory:
+ *   - config/build.yaml     - Main build settings and profiles
+ *   - config/modules.yaml   - Kernel modules configuration  
+ *   - config/programs.yaml  - Userspace programs configuration
+ *   - config/libraries.yaml - Userspace libraries configuration
  */
 
-// Program configuration from build-config.yaml
+// Program configuration from config/programs.yaml
 export interface ProgramConfig {
   package: string;
   binary?: string;  // defaults to package name
@@ -20,6 +26,8 @@ export interface ModuleConfig {
   name: string;
   type: number;  // 1=fs, 2=blk, 3=chr, 4=net
   description: string;
+  depends?: string[];
+  enabled?: boolean;
 }
 
 export interface ModuleCategory {
@@ -34,7 +42,7 @@ export interface LibraryConfig {
   depends: string[];
 }
 
-// Build configuration root
+// Build configuration root (merged from all config files)
 export interface BuildConfig {
   programs: ProgramCategory;
   modules: ModuleCategory;
@@ -42,6 +50,93 @@ export interface BuildConfig {
   build_order: {
     libraries: string[];
   };
+  settings?: BuildSettings;
+  profile?: string;
+  features?: Record<string, any>;
+}
+
+// Main build.yaml configuration
+export interface MainBuildConfig {
+  settings: BuildSettings;
+  profiles: Record<string, BuildProfileConfig>;
+  build_order: {
+    libraries: string[];
+  };
+  paths: Record<string, string>;
+  features: Record<string, boolean>;
+}
+
+export interface BuildSettings {
+  default_build_type: 'debug' | 'release';
+  default_log_level: 'debug' | 'info' | 'warn' | 'error';
+  target_arch: string;
+  kernel_target: string;
+  userspace_target: string;
+  module_target: string;
+}
+
+export interface BuildProfileConfig {
+  description: string;
+  modules: Record<string, string[]>;
+  features: Record<string, any>;
+}
+
+// Modules config file (config/modules.yaml)
+export interface ModulesConfig {
+  filesystem?: Record<string, ModuleDefinition>;
+  block?: Record<string, ModuleDefinition>;
+  memory?: Record<string, ModuleDefinition>;
+  network?: Record<string, ModuleDefinition>;
+  shared?: Record<string, any>;
+  autoload?: Record<string, string[]>;
+  signing?: Record<string, any>;
+}
+
+export interface ModuleDefinition {
+  enabled: boolean;
+  type: number;
+  description: string;
+  package: string;
+  output: string;
+  load_order: number;
+  depends?: string[];
+  provides?: string[];
+  config?: Record<string, any>;
+}
+
+// Programs config file (config/programs.yaml)
+export interface ProgramsConfig {
+  [category: string]: ProgramDefinition[];
+}
+
+export interface ProgramDefinition {
+  package: string;
+  binary?: string;
+  description?: string;
+  dest: string;
+  features?: string;
+  link?: 'std' | 'dyn';
+  enabled?: boolean;
+  required?: boolean;
+  production?: boolean;
+}
+
+// Libraries config file (config/libraries.yaml)
+export interface LibrariesConfig {
+  libraries: LibraryDefinition[];
+  build_order: string[];
+  install_paths?: Record<string, any>;
+}
+
+export interface LibraryDefinition {
+  name: string;
+  output: string;
+  version: number;
+  description?: string;
+  depends?: string[];
+  enabled?: boolean;
+  features?: string;
+  config?: Record<string, any>;
 }
 
 // Build type
@@ -96,8 +191,8 @@ export interface BuildStepResult {
   error?: string;
 }
 
-// Build profile
-export type BuildProfile = 
+// Build step types (CLI commands)
+export type BuildStep = 
   | 'full'
   | 'quick'
   | 'kernel'
