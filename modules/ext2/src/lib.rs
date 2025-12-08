@@ -186,6 +186,7 @@ pub struct Ext2ModuleOps {
     pub get_stats: Option<extern "C" fn(handle: Ext2Handle, stats: *mut Ext2Stats) -> i32>,
     pub set_writable: Option<extern "C" fn(writable: bool)>,
     pub is_writable: Option<extern "C" fn() -> bool>,
+    pub create_file: Option<extern "C" fn(handle: Ext2Handle, path: *const u8, path_len: usize, mode: u16) -> i32>,
 }
 
 // ============================================================================
@@ -261,7 +262,12 @@ struct Superblock {
 
 #[derive(Debug, Clone)]
 struct GroupDescriptor {
+    block_bitmap: u32,
+    inode_bitmap: u32,
     inode_table_block: u32,
+    free_blocks_count: u16,
+    free_inodes_count: u16,
+    used_dirs_count: u16,
 }
 
 #[derive(Debug, Clone)]
@@ -375,6 +381,7 @@ pub extern "C" fn module_init() -> i32 {
             get_stats: Some(ext2_mod_get_stats),
             set_writable: Some(ext2_mod_set_writable),
             is_writable: Some(ext2_mod_is_writable),
+            create_file: Some(ext2_mod_create_file),
         };
         
         // Register with the kernel's ext2 modular layer
@@ -622,6 +629,47 @@ extern "C" fn ext2_mod_set_writable(writable: bool) {
 /// Check if filesystem is writable
 extern "C" fn ext2_mod_is_writable() -> bool {
     unsafe { EXT2_WRITABLE }
+}
+
+/// Create a file in the filesystem
+extern "C" fn ext2_mod_create_file(
+    handle: Ext2Handle,
+    path: *const u8,
+    path_len: usize,
+    mode: u16,
+) -> i32 {
+    if handle.is_null() || path.is_null() {
+        mod_error!(b"ext2_mod_create_file: null handle or path");
+        return -1;
+    }
+    
+    unsafe {
+        if !EXT2_WRITABLE {
+            mod_error!(b"ext2_mod_create_file: filesystem is read-only");
+            return -1;
+        }
+    }
+    
+    let fs = unsafe { &*(handle as *const Ext2Filesystem) };
+    let path_bytes = unsafe { core::slice::from_raw_parts(path, path_len) };
+    let path_str = match core::str::from_utf8(path_bytes) {
+        Ok(s) => s,
+        Err(_) => {
+            mod_error!(b"ext2_mod_create_file: invalid UTF-8 path");
+            return -1;
+        }
+    };
+    
+    match fs.create_file(path_str, mode) {
+        Ok(inode) => {
+            mod_info!(b"ext2_mod_create_file: success");
+            inode as i32
+        }
+        Err(_e) => {
+            mod_error!(b"ext2_mod_create_file: failed");
+            -1
+        }
+    }
 }
 
 // ============================================================================
@@ -1043,8 +1091,22 @@ impl Ext2Filesystem {
 
         let data = &image[offset..offset + desc_size];
         Ok(GroupDescriptor {
+            block_bitmap: u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
+            inode_bitmap: u32::from_le_bytes([data[4], data[5], data[6], data[7]]),
             inode_table_block: u32::from_le_bytes([data[8], data[9], data[10], data[11]]),
+            free_blocks_count: u16::from_le_bytes([data[12], data[13]]),
+            free_inodes_count: u16::from_le_bytes([data[14], data[15]]),
+            used_dirs_count: u16::from_le_bytes([data[16], data[17]]),
         })
+    }
+    
+    /// Get offset in image for a group descriptor
+    fn group_descriptor_offset(&self, group: u32) -> usize {
+        let desc_size = 32usize;
+        let superblock_block = if self.block_size == 1024 { 1 } else { 0 };
+        let table_block = superblock_block + 1;
+        let table_offset = table_block * self.block_size;
+        table_offset + group as usize * desc_size
     }
 
     fn read_block(&self, block_number: u32) -> Option<&[u8]> {
@@ -1088,6 +1150,396 @@ impl Ext2Filesystem {
         }
         
         Ok(())
+    }
+
+    /// Allocate a free inode from the filesystem
+    /// Returns the inode number (1-based) on success
+    fn allocate_inode(&self) -> Result<u32, Ext2Error> {
+        for group in 0..self.total_groups {
+            let desc = self.group_descriptor(group)?;
+            if desc.free_inodes_count == 0 {
+                continue;
+            }
+            
+            // Read the inode bitmap
+            let bitmap_block = desc.inode_bitmap;
+            let bitmap = match self.read_block(bitmap_block) {
+                Some(b) => b,
+                None => continue,
+            };
+            
+            // Find a free bit in the bitmap
+            for byte_idx in 0..bitmap.len() {
+                let byte = bitmap[byte_idx];
+                if byte == 0xFF {
+                    continue; // All bits set
+                }
+                
+                for bit in 0..8 {
+                    if (byte & (1 << bit)) == 0 {
+                        // Found a free inode
+                        let inode_in_group = (byte_idx * 8 + bit) as u32;
+                        if inode_in_group >= self.inodes_per_group {
+                            break;
+                        }
+                        
+                        // Set the bit in bitmap
+                        let new_byte = byte | (1 << bit);
+                        let bitmap_offset = bitmap_block as usize * self.block_size + byte_idx;
+                        unsafe {
+                            let dest = (self.image_base as *mut u8).add(bitmap_offset);
+                            *dest = new_byte;
+                        }
+                        
+                        // Update free count in group descriptor
+                        let gd_offset = self.group_descriptor_offset(group);
+                        let new_free = desc.free_inodes_count - 1;
+                        let new_free_bytes = new_free.to_le_bytes();
+                        unsafe {
+                            let dest = (self.image_base as *mut u8).add(gd_offset + 14);
+                            core::ptr::copy_nonoverlapping(new_free_bytes.as_ptr(), dest, 2);
+                        }
+                        
+                        // Calculate actual inode number (1-based)
+                        let inode_num = group * self.inodes_per_group + inode_in_group + 1;
+                        return Ok(inode_num);
+                    }
+                }
+            }
+        }
+        
+        Err(Ext2Error::NoSpaceLeft)
+    }
+    
+    /// Allocate a free block from the filesystem
+    /// Returns the block number on success
+    fn allocate_block(&self) -> Result<u32, Ext2Error> {
+        for group in 0..self.total_groups {
+            let desc = self.group_descriptor(group)?;
+            if desc.free_blocks_count == 0 {
+                continue;
+            }
+            
+            // Read the block bitmap
+            let bitmap_block = desc.block_bitmap;
+            let bitmap = match self.read_block(bitmap_block) {
+                Some(b) => b,
+                None => continue,
+            };
+            
+            // Find a free bit in the bitmap
+            for byte_idx in 0..bitmap.len() {
+                let byte = bitmap[byte_idx];
+                if byte == 0xFF {
+                    continue; // All bits set
+                }
+                
+                for bit in 0..8 {
+                    if (byte & (1 << bit)) == 0 {
+                        // Found a free block
+                        let block_in_group = (byte_idx * 8 + bit) as u32;
+                        if block_in_group >= self.blocks_per_group {
+                            break;
+                        }
+                        
+                        // Set the bit in bitmap
+                        let new_byte = byte | (1 << bit);
+                        let bitmap_offset = bitmap_block as usize * self.block_size + byte_idx;
+                        unsafe {
+                            let dest = (self.image_base as *mut u8).add(bitmap_offset);
+                            *dest = new_byte;
+                        }
+                        
+                        // Update free count in group descriptor
+                        let gd_offset = self.group_descriptor_offset(group);
+                        let new_free = desc.free_blocks_count - 1;
+                        let new_free_bytes = new_free.to_le_bytes();
+                        unsafe {
+                            let dest = (self.image_base as *mut u8).add(gd_offset + 12);
+                            core::ptr::copy_nonoverlapping(new_free_bytes.as_ptr(), dest, 2);
+                        }
+                        
+                        // Calculate actual block number
+                        let block_num = group * self.blocks_per_group + block_in_group + self.first_data_block;
+                        
+                        // Zero out the newly allocated block
+                        let block_offset = block_num as usize * self.block_size;
+                        unsafe {
+                            let dest = (self.image_base as *mut u8).add(block_offset);
+                            core::ptr::write_bytes(dest, 0, self.block_size);
+                        }
+                        
+                        return Ok(block_num);
+                    }
+                }
+            }
+        }
+        
+        Err(Ext2Error::NoSpaceLeft)
+    }
+    
+    /// Write a new inode to disk
+    fn write_inode(&self, inode_num: u32, inode: &Inode) -> Result<(), Ext2Error> {
+        if inode_num == 0 {
+            return Err(Ext2Error::InodeOutOfBounds);
+        }
+
+        let inode_index = inode_num - 1;
+        let group = inode_index / self.inodes_per_group;
+        if group >= self.total_groups {
+            return Err(Ext2Error::InodeOutOfBounds);
+        }
+        let index_in_group = inode_index % self.inodes_per_group;
+        let desc = self.group_descriptor(group)?;
+        let inode_table_block = desc.inode_table_block;
+        let inode_table_offset = inode_table_block as usize * self.block_size;
+        let inode_offset = inode_table_offset + index_in_group as usize * self.inode_size;
+
+        if inode_offset + self.inode_size > self.image_size {
+            return Err(Ext2Error::ImageTooSmall);
+        }
+
+        // Serialize inode to bytes (128 bytes minimum)
+        let mut buf = [0u8; 128];
+        buf[0..2].copy_from_slice(&inode.mode.to_le_bytes());
+        buf[2..4].copy_from_slice(&inode.uid.to_le_bytes());
+        buf[4..8].copy_from_slice(&inode.size_lo.to_le_bytes());
+        buf[8..12].copy_from_slice(&inode.atime.to_le_bytes());
+        buf[12..16].copy_from_slice(&inode.ctime.to_le_bytes());
+        buf[16..20].copy_from_slice(&inode.mtime.to_le_bytes());
+        buf[20..24].copy_from_slice(&inode.dtime.to_le_bytes());
+        buf[24..26].copy_from_slice(&inode.gid.to_le_bytes());
+        buf[26..28].copy_from_slice(&inode.links_count.to_le_bytes());
+        buf[28..32].copy_from_slice(&inode.blocks_lo.to_le_bytes());
+        buf[32..36].copy_from_slice(&inode.flags.to_le_bytes());
+        // Skip osd1 (offset 36-40)
+        for i in 0..15 {
+            let start = 40 + i * 4;
+            buf[start..start + 4].copy_from_slice(&inode.block[i].to_le_bytes());
+        }
+        // Offset 100-104: generation
+        buf[104..108].copy_from_slice(&inode.file_acl.to_le_bytes());
+        buf[108..112].copy_from_slice(&inode.size_high.to_le_bytes());
+
+        unsafe {
+            let dest = (self.image_base as *mut u8).add(inode_offset);
+            core::ptr::copy_nonoverlapping(buf.as_ptr(), dest, 128);
+        }
+
+        Ok(())
+    }
+    
+    /// Add a directory entry to a directory inode
+    fn add_dir_entry(&self, dir_inode_num: u32, name: &str, new_inode: u32, file_type: u8) -> Result<(), Ext2Error> {
+        let dir_inode = self.load_inode(dir_inode_num)?;
+        
+        // Entry size: 8 bytes header + name (4-byte aligned)
+        let name_len = name.len();
+        let rec_len = ((8 + name_len + 3) / 4) * 4; // 4-byte aligned
+        
+        // Iterate through directory blocks to find space
+        let block_size = self.block_size;
+        let num_blocks = (dir_inode.size() as usize + block_size - 1) / block_size;
+        
+        for block_idx in 0..num_blocks {
+            let block_num = match self.block_number(&dir_inode, block_idx) {
+                Some(bn) if bn != 0 => bn,
+                _ => continue,
+            };
+            
+            let block_offset = block_num as usize * block_size;
+            let image = self.image();
+            if block_offset + block_size > image.len() {
+                continue;
+            }
+            
+            // Scan through directory entries in this block
+            let mut offset = 0usize;
+            while offset + 8 <= block_size {
+                let entry_offset = block_offset + offset;
+                let entry_inode = u32::from_le_bytes([
+                    image[entry_offset],
+                    image[entry_offset + 1],
+                    image[entry_offset + 2],
+                    image[entry_offset + 3],
+                ]);
+                let entry_rec_len = u16::from_le_bytes([
+                    image[entry_offset + 4],
+                    image[entry_offset + 5],
+                ]) as usize;
+                let entry_name_len = image[entry_offset + 6] as usize;
+                
+                if entry_rec_len == 0 || entry_rec_len < 8 {
+                    break;
+                }
+                
+                // Calculate the actual size needed for the existing entry
+                let actual_len = if entry_inode == 0 {
+                    8 // Empty entry
+                } else {
+                    ((8 + entry_name_len + 3) / 4) * 4
+                };
+                
+                // Check if there's room after this entry for our new one
+                let free_space = entry_rec_len - actual_len;
+                if free_space >= rec_len {
+                    // Split this entry
+                    let new_entry_offset = entry_offset + actual_len;
+                    
+                    // Update current entry's rec_len
+                    let new_cur_rec_len = actual_len as u16;
+                    unsafe {
+                        let dest = (self.image_base as *mut u8).add(entry_offset + 4);
+                        core::ptr::copy_nonoverlapping(new_cur_rec_len.to_le_bytes().as_ptr(), dest, 2);
+                    }
+                    
+                    // Write new entry
+                    let new_rec_len = free_space as u16;
+                    unsafe {
+                        let dest = (self.image_base as *mut u8).add(new_entry_offset);
+                        // Inode number
+                        core::ptr::copy_nonoverlapping(new_inode.to_le_bytes().as_ptr(), dest, 4);
+                        // Record length
+                        core::ptr::copy_nonoverlapping(new_rec_len.to_le_bytes().as_ptr(), dest.add(4), 2);
+                        // Name length
+                        *dest.add(6) = name_len as u8;
+                        // File type
+                        *dest.add(7) = file_type;
+                        // Name
+                        core::ptr::copy_nonoverlapping(name.as_ptr(), dest.add(8), name_len);
+                    }
+                    
+                    return Ok(());
+                }
+                
+                offset += entry_rec_len;
+            }
+        }
+        
+        // Need to allocate a new block for the directory
+        let new_block = self.allocate_block()?;
+        
+        // Add block to directory inode
+        let next_block_idx = num_blocks;
+        if next_block_idx < EXT2_NDIR_BLOCKS {
+            // Update inode's direct block pointer
+            let inode_index = dir_inode_num - 1;
+            let group = inode_index / self.inodes_per_group;
+            let index_in_group = inode_index % self.inodes_per_group;
+            let desc = self.group_descriptor(group)?;
+            let inode_table_offset = desc.inode_table_block as usize * self.block_size;
+            let inode_offset = inode_table_offset + index_in_group as usize * self.inode_size;
+            let block_ptr_offset = inode_offset + 40 + next_block_idx * 4;
+            
+            unsafe {
+                let dest = (self.image_base as *mut u8).add(block_ptr_offset);
+                core::ptr::copy_nonoverlapping(new_block.to_le_bytes().as_ptr(), dest, 4);
+            }
+            
+            // Update directory size
+            let new_size = ((next_block_idx + 1) * block_size) as u64;
+            self.update_inode_size(dir_inode_num, new_size)?;
+            
+            // Write the new entry at the start of the new block
+            let block_offset = new_block as usize * block_size;
+            let remaining = block_size as u16;
+            unsafe {
+                let dest = (self.image_base as *mut u8).add(block_offset);
+                // Inode number
+                core::ptr::copy_nonoverlapping(new_inode.to_le_bytes().as_ptr(), dest, 4);
+                // Record length (takes entire block)
+                core::ptr::copy_nonoverlapping(remaining.to_le_bytes().as_ptr(), dest.add(4), 2);
+                // Name length
+                *dest.add(6) = name_len as u8;
+                // File type
+                *dest.add(7) = file_type;
+                // Name
+                core::ptr::copy_nonoverlapping(name.as_ptr(), dest.add(8), name_len);
+            }
+            
+            return Ok(());
+        }
+        
+        // Indirect blocks not implemented for directory extension
+        Err(Ext2Error::NoSpaceLeft)
+    }
+    
+    /// Create a new file in the filesystem
+    pub fn create_file(&self, path: &str, mode: u16) -> Result<u32, Ext2Error> {
+        // Split path into directory and filename
+        let path = path.trim_matches('/');
+        if path.is_empty() {
+            return Err(Ext2Error::InvalidInode);
+        }
+        
+        let (parent_path, filename) = match path.rfind('/') {
+            Some(pos) => (&path[..pos], &path[pos + 1..]),
+            None => ("", path),
+        };
+        
+        if filename.is_empty() || filename.len() > 255 {
+            return Err(Ext2Error::InvalidInode);
+        }
+        
+        // Find parent directory
+        let parent_inode_num = if parent_path.is_empty() {
+            2 // Root directory
+        } else {
+            match self.lookup_internal(parent_path) {
+                Some(file_ref) => file_ref.inode,
+                None => return Err(Ext2Error::InvalidInode),
+            }
+        };
+        
+        // Check if file already exists
+        let parent_inode = self.load_inode(parent_inode_num)?;
+        if self.find_in_directory(&parent_inode, filename).is_some() {
+            // File already exists - that's okay, return success
+            mod_info!(b"create_file: file already exists");
+            return Ok(0);
+        }
+        
+        // Allocate a new inode
+        let new_inode_num = self.allocate_inode()?;
+        
+        // Allocate an initial block for the file (optional, but allows immediate writes)
+        let initial_block = self.allocate_block()?;
+        
+        // Get current timestamp (use 0 for now since we don't have time syscalls in module)
+        let timestamp = 0u32;
+        
+        // Create the inode
+        let file_mode = 0o100000 | (mode & 0o7777); // Regular file + permissions
+        let new_inode = Inode {
+            mode: file_mode,
+            uid: 0,
+            size_lo: 0,
+            atime: timestamp,
+            ctime: timestamp,
+            mtime: timestamp,
+            dtime: 0,
+            gid: 0,
+            links_count: 1,
+            blocks_lo: (self.block_size / 512) as u32, // blocks in 512-byte units
+            flags: 0,
+            block: {
+                let mut blocks = [0u32; 15];
+                blocks[0] = initial_block;
+                blocks
+            },
+            file_acl: 0,
+            size_high: 0,
+        };
+        
+        // Write the inode
+        self.write_inode(new_inode_num, &new_inode)?;
+        
+        // Add directory entry
+        // File type 1 = regular file
+        self.add_dir_entry(parent_inode_num, filename, new_inode_num, 1)?;
+        
+        mod_info!(b"create_file: file created successfully");
+        Ok(new_inode_num)
     }
 
     /// Update the size field in an inode

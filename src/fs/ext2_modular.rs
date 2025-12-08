@@ -195,6 +195,7 @@ pub type FnExt2ListDir = extern "C" fn(
 pub type FnExt2GetStats = extern "C" fn(handle: Ext2Handle, stats: *mut Ext2Stats) -> i32;
 pub type FnExt2SetWritable = extern "C" fn(writable: bool);
 pub type FnExt2IsWritable = extern "C" fn() -> bool;
+pub type FnExt2CreateFile = extern "C" fn(handle: Ext2Handle, path: *const u8, path_len: usize, mode: u16) -> i32;
 
 /// Module operations table
 #[repr(C)]
@@ -217,6 +218,8 @@ pub struct Ext2ModuleOps {
     pub set_writable: Option<FnExt2SetWritable>,
     /// Check if writable
     pub is_writable: Option<FnExt2IsWritable>,
+    /// Create a new file
+    pub create_file: Option<FnExt2CreateFile>,
 }
 
 impl Ext2ModuleOps {
@@ -231,6 +234,7 @@ impl Ext2ModuleOps {
             get_stats: None,
             set_writable: None,
             is_writable: None,
+            create_file: None,
         }
     }
 
@@ -468,6 +472,32 @@ pub fn write_at(file: &FileRefHandle, offset: usize, data: &[u8]) -> Result<usiz
     }
 }
 
+/// Create a new file in the filesystem
+pub fn create_file(path: &str, mode: u16) -> Result<(), Ext2Error> {
+    if !is_writable() {
+        return Err(Ext2Error::ReadOnly);
+    }
+
+    let ops = EXT2_OPS.lock();
+    let create_fn = ops.create_file.ok_or(Ext2Error::InvalidOperation)?;
+    let handle = EXT2_GLOBAL.lock().ok_or(Ext2Error::InvalidOperation)?;
+    drop(ops);
+
+    // Copy path to a buffer with fixed size
+    let path_len = path.len().min(255);
+    let mut path_buf = [0u8; 256];
+    path_buf[..path_len].copy_from_slice(path.as_bytes());
+
+    let ret = create_fn(handle, path_buf.as_ptr(), path_len, mode);
+    if ret >= 0 {
+        crate::kinfo!("ext2_modular::create_file: created '{}' (inode={})", path, ret);
+        Ok(())
+    } else {
+        crate::kwarn!("ext2_modular::create_file: failed for '{}' (ret={})", path, ret);
+        Err(Ext2Error::from_code(ret).unwrap_or(Ext2Error::InvalidOperation))
+    }
+}
+
 /// List directory entries
 pub fn list_directory<F>(path: &str, mut callback: F)
 where
@@ -679,11 +709,11 @@ impl FileSystem for Ext2ModularFs {
         write_at(&file_ref, 0, data).map_err(|_| "write failed")
     }
 
-    fn create(&self, _path: &str) -> Result<(), &'static str> {
+    fn create(&self, path: &str) -> Result<(), &'static str> {
         if !is_writable() {
             return Err("ext2 filesystem is read-only");
         }
-        Err("file creation not yet implemented")
+        create_file(path, 0o644).map_err(|_| "file creation failed")
     }
 }
 

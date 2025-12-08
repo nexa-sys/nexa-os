@@ -498,6 +498,13 @@ pub fn pivot_to_real_root() -> Result<(), &'static str> {
         })?;
 
         crate::kinfo!("Root filesystem switched successfully");
+        
+        // Enable write support for ext2 filesystem
+        if let Err(e) = crate::fs::enable_ext2_write() {
+            crate::kwarn!("Failed to enable ext2 write mode: {}", e);
+        } else {
+            crate::kinfo!("ext2 filesystem is now writable");
+        }
     } else {
         crate::kerror!("No ext2 filesystem registered (module not loaded or not initialized)");
         return Err("No filesystem to pivot to");
