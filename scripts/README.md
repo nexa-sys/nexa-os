@@ -1,324 +1,157 @@
-# NexaOS Build Scripts
+# NexaOS TypeScript Build System
 
-This directory contains the modular build system for NexaOS.
+用 TypeScript 重写的 NexaOS 构建系统，提供更好的类型安全、可维护性和扩展性。
 
-## Quick Start
+## 特性
 
-```bash
-# Build everything (kernel, userspace, rootfs, ISO)
-./scripts/build.sh
+- 🚀 **类型安全** - 完整的 TypeScript 类型定义
+- 📦 **模块化** - 每个构建步骤独立模块
+- 🎨 **美观输出** - 彩色日志、进度条、spinner
+- ⚡ **并行构建** - 支持并行执行独立任务
+- 📋 **YAML 配置** - 使用现有的 `build-config.yaml`
+- 🔧 **灵活** - 支持单独构建任何组件
 
-# Run in QEMU
-./scripts/run-qemu.sh
-```
+## 快速开始
 
-## Main Build Script
-
-### `build.sh` - Unified Build System
-
-The main entry point for all build operations:
+### 安装依赖
 
 ```bash
-# Full build (default)
-./scripts/build.sh
-
-# Quick build (skip modules)
-./scripts/build.sh quick
-
-# Build specific components
-./scripts/build.sh kernel          # Kernel only
-./scripts/build.sh userspace       # Userspace programs only
-./scripts/build.sh modules         # Kernel modules only
-./scripts/build.sh rootfs          # Root filesystem only
-./scripts/build.sh iso             # ISO image only
-
-# Build multiple components
-./scripts/build.sh kernel userspace rootfs iso
-
-# Clean build
-./scripts/build.sh clean           # Clean all artifacts
-./scripts/build.sh clean-build     # Clean build/ directory only
+cd scripts-ts
+npm install
 ```
 
-**Environment Variables:**
-```bash
-BUILD_TYPE=debug|release   # Build mode (default: debug)
-LOG_LEVEL=debug|info|warn  # Kernel log level (default: debug)
-```
+### 开发模式
 
-**Example:**
-```bash
-BUILD_TYPE=release LOG_LEVEL=info ./scripts/build.sh
-```
-
-## Directory Structure
-
-```
-scripts/
-├── build.sh                    # Main entry point
-├── build-config.yaml           # Centralized build configuration
-├── run-qemu.sh                 # QEMU launcher
-├── build-uefi-loader.sh        # UEFI loader builder
-├── sign-module.sh              # Module signing tool
-├── lib/
-│   ├── common.sh               # Shared functions and variables
-│   └── config-parser.sh        # YAML configuration parser
-└── steps/
-    ├── build-kernel.sh         # Kernel compilation
-    ├── build-nrlib.sh          # nrlib (libc shim) compilation
-    ├── build-userspace-programs.sh  # Userspace programs
-    ├── build-libs.sh           # Userspace libraries
-    ├── build-modules.sh        # Kernel modules (.nkm)
-    ├── build-initramfs.sh      # Minimal initramfs
-    ├── build-rootfs.sh         # ext2 root filesystem
-    └── build-iso.sh            # Bootable ISO creation
-```
-
-## Build Configuration
-
-The `build-config.yaml` file centralizes all build definitions:
-
-```yaml
-# Userspace programs
-programs:
-  core:
-    - package: ni
-      dest: sbin
-      link: std
-  network:
-    - package: nslookup
-      features: use-nrlib-std
-      link: dyn
-
-# Kernel modules
-modules:
-  filesystem:
-    - name: ext2
-      type: 1
-      description: "ext2 filesystem driver"
-
-# Userspace libraries
-libraries:
-  - name: ncryptolib
-    output: crypto
-    version: 3
-    depends: []
-```
-
-### Adding a New Program
-
-1. Add your program to `userspace/programs/<name>/`
-2. Add entry to `build-config.yaml` under appropriate category:
-   ```yaml
-   programs:
-     utilities:
-       - package: myprogram
-         binary: myprog       # optional, defaults to package name
-         dest: bin            # bin or sbin
-         features: my-feature # optional cargo features
-         link: dyn            # std (static) or dyn (dynamic)
-   ```
-3. Run `./scripts/build.sh userspace rootfs iso`
-
-### Adding a New Library
-
-1. Create library in `userspace/<name>/`
-2. Add entry to `build-config.yaml`:
-   ```yaml
-   libraries:
-     - name: mynewlib
-       output: mylib        # creates libmylib.so
-       version: 1           # libmylib.so.1
-       depends:
-         - ncryptolib       # dependencies (built first)
-   ```
-3. Add to `build_order.libraries` if needed
-4. Run `./scripts/build.sh userspace rootfs iso`
-
-### Adding a New Kernel Module
-
-1. Create module in `modules/<name>/`
-2. Add entry to `build-config.yaml`:
-   ```yaml
-   modules:
-     block:
-       - name: mydriver
-         type: 2            # 1=fs, 2=blk, 3=chr, 4=net
-         description: "My block device driver"
-   ```
-3. Run `./scripts/build.sh modules initramfs iso`
-
-## Build Components
-
-### Kernel (`build.sh kernel`)
-
-Builds the NexaOS kernel:
-- Target: `x86_64-nexaos.json`
-- Output: `target/x86_64-nexaos/debug/nexa-os`
-
-### Userspace (`build.sh userspace`)
-
-Builds all userspace components:
-1. **nrlib** - Rust libc shim library
-   - `lib64/libnrlib.so` - Shared library
-   - `lib64/ld-nrlib-x86_64.so.1` - Dynamic linker
-2. **Programs** - Shell, init, utilities
-   - `/sbin/ni` - Init system
-   - `/bin/sh` - Shell
-   - `/bin/dhcp`, `/bin/login`, etc.
-
-### Modules (`build.sh modules`)
-
-Builds loadable kernel modules:
-- `ext2.nkm` - ext2 filesystem driver
-- `e1000.nkm` - Intel E1000 network driver
-
-Modules are signed with PKCS#7/CMS signatures.
-
-### Rootfs (`build.sh rootfs`)
-
-Creates a 50MB ext2 root filesystem image:
-- Output: `build/rootfs.ext2`
-- Contains all binaries, libraries, and configs
-- Attached as virtio disk in QEMU (`/dev/vda`)
-
-### ISO (`build.sh iso`)
-
-Creates a bootable ISO with GRUB:
-- Output: `dist/nexaos.iso`
-- Supports both BIOS and UEFI boot
-- Contains kernel, initramfs, and UEFI loader
-
-## Common Workflows
-
-### First Time Build
+使用 `tsx` 直接运行 TypeScript：
 
 ```bash
-./scripts/build.sh
-./scripts/run-qemu.sh
+npm run dev -- full        # 完整构建
+npm run dev -- quick       # 快速构建
+npm run dev -- kernel      # 仅构建内核
 ```
 
-### After Kernel Changes
+或使用 wrapper 脚本：
 
 ```bash
-./scripts/build.sh kernel iso
-./scripts/run-qemu.sh
+./scripts/build-ts.sh full
+./scripts/build-ts.sh kernel
 ```
 
-### After Userspace Changes
+### 编译生产版本
 
 ```bash
-./scripts/build.sh userspace rootfs
-./scripts/run-qemu.sh
+npm run build              # 编译 TypeScript
+node dist/cli.js full      # 运行编译后的版本
 ```
 
-### After Module Changes
+## 命令
+
+| 命令 | 别名 | 描述 |
+|------|------|------|
+| `full` | `all` | 完整系统构建 |
+| `quick` | `q` | 快速构建（kernel + initramfs + ISO） |
+| `kernel` | `k` | 仅构建内核 |
+| `userspace` | `u` | 构建用户空间程序 |
+| `libs` | `l` | 构建库 |
+| `modules` | `m` | 构建内核模块 |
+| `programs` | `p` | 构建用户程序 |
+| `initramfs` | `i` | 构建 initramfs |
+| `rootfs` | `r` | 构建根文件系统 |
+| `iso` | - | 构建 ISO 镜像 |
+| `clean` | - | 清理构建产物 |
+| `list` | - | 列出可用目标 |
+| `info` | - | 显示构建环境信息 |
+
+### 选项
 
 ```bash
-./scripts/build.sh modules initramfs
-./scripts/run-qemu.sh
+# 构建特定程序
+npm run dev -- programs --name sh
+
+# 构建特定库
+npm run dev -- libs --name nssl
+
+# 构建特定模块
+npm run dev -- modules --name ext2
+
+# 列出所有可用程序
+npm run dev -- programs --list
+
+# 列出所有目标
+npm run dev -- list
+
+# 仅清理 build/ 目录
+npm run dev -- clean --build-only
+
+# 运行多个步骤
+npm run dev -- run kernel initramfs iso
 ```
 
-### Clean Rebuild
+## 环境变量
 
-```bash
-./scripts/build.sh clean
-./scripts/build.sh
-```
+| 变量 | 默认值 | 描述 |
+|------|--------|------|
+| `BUILD_TYPE` | `debug` | 构建类型 (debug/release) |
+| `LOG_LEVEL` | `debug` | 内核日志级别 |
+| `ROOTFS_SIZE_MB` | `50` | 根文件系统大小 (MB) |
 
-## Running in QEMU
-
-```bash
-# Default run
-./scripts/run-qemu.sh
-
-# With additional QEMU options
-./scripts/run-qemu.sh -S -s  # GDB server + pause
-```
-
-**QEMU Configuration:**
-- 512MB RAM
-- 4 CPU cores
-- Virtio disk: `build/rootfs.ext2` → `/dev/vda`
-- Serial console output
-- Network: User-mode or bridge (auto-detected)
-
-## Boot Parameters
-
-Default GRUB command line:
-```
-root=/dev/vda1 rootfstype=ext2 loglevel=debug
-```
-
-To change, set `LOG_LEVEL` before building:
-```bash
-LOG_LEVEL=info ./scripts/build.sh iso
-```
-
-## Build Requirements
-
-### Rust Toolchain
-- Rust nightly
-- Components: `rust-src`, `llvm-tools-preview`
-
-### System Tools
-- `grub-mkrescue`, `xorriso` - ISO creation
-- `mkfs.ext2` (e2fsprogs) - Filesystem creation
-- `qemu-system-x86_64` - Emulation
-- `openssl` - Module signing
-
-## Troubleshooting
-
-### "Kernel not found"
-```bash
-./scripts/build.sh kernel
-```
-
-### "Root filesystem not found"
-```bash
-./scripts/build.sh rootfs
-```
-
-### "ISO image not found"
-```bash
-./scripts/build.sh iso
-```
-
-### Fork/exec crashes in userspace
-Ensure kernel is built in debug mode (default). Release mode with O3 optimization causes issues:
-```bash
-BUILD_TYPE=debug ./scripts/build.sh kernel iso
-```
-
-### Clean everything and rebuild
-```bash
-./scripts/build.sh clean
-rm -rf target/
-./scripts/build.sh
-```
-
-## Boot Flow
+## 项目结构
 
 ```
-1. GRUB/UEFI loads kernel + initramfs
-   ↓
-2. Kernel parses: root=/dev/vda rootfstype=ext2
-   ↓
-3. Kernel mounts virtual filesystems (/proc, /sys, /dev)
-   ↓
-4. Kernel loads modules from initramfs (ext2.nkm, e1000.nkm)
-   ↓
-5. Kernel mounts rootfs.ext2 at /sysroot
-   ↓
-6. Kernel performs pivot_root to real root
-   ↓
-7. Kernel starts /sbin/ni (init system)
-   ↓
-8. Init reads /etc/inittab and starts services
+scripts-ts/
+├── src/
+│   ├── cli.ts           # 命令行接口
+│   ├── builder.ts       # 主构建器
+│   ├── types.ts         # 类型定义
+│   ├── config.ts        # YAML 配置解析
+│   ├── env.ts           # 构建环境
+│   ├── logger.ts        # 日志输出
+│   ├── exec.ts          # 命令执行
+│   └── steps/           # 构建步骤
+│       ├── kernel.ts    # 内核构建
+│       ├── nrlib.ts     # nrlib 构建
+│       ├── libs.ts      # 库构建
+│       ├── programs.ts  # 程序构建
+│       ├── modules.ts   # 模块构建
+│       ├── rootfs.ts    # rootfs 构建
+│       ├── initramfs.ts # initramfs 构建
+│       ├── iso.ts       # ISO 构建
+│       ├── uefi.ts      # UEFI loader 构建
+│       └── clean.ts     # 清理
+├── package.json
+├── tsconfig.json
+└── README.md
 ```
 
-## See Also
+## 与 Shell 脚本的对比
 
-- `../docs/BUILD-SYSTEM.md` - Detailed build system documentation
-- `../docs/zh/rootfs-boot-process.md` - Boot process guide (Chinese)
-- `../README.md` - Project overview
+| 特性 | Shell 脚本 | TypeScript |
+|------|------------|------------|
+| 类型检查 | ❌ | ✅ |
+| IDE 支持 | 基础 | 完整 |
+| 错误处理 | 基础 | 结构化 |
+| 配置解析 | 手动正则 | YAML 库 |
+| 并行构建 | 困难 | 简单 |
+| 测试 | 困难 | 简单 |
+| 可维护性 | 中等 | 高 |
+
+## 扩展
+
+### 添加新的构建步骤
+
+1. 在 `src/steps/` 创建新文件
+2. 导出构建函数
+3. 在 `src/steps/index.ts` 添加导出
+4. 在 `src/builder.ts` 添加方法
+5. 在 `src/cli.ts` 添加命令
+
+### 添加新的程序/模块/库
+
+直接在 `scripts/build-config.yaml` 中添加配置即可，构建系统会自动识别。
+
+## 依赖
+
+- Node.js 20+
+- npm 或 yarn
+- Rust 工具链
+- 标准 Linux 构建工具 (gcc, make, etc.)
