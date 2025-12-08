@@ -5,8 +5,13 @@
 # Use FEATURE_xxx environment variables to override at build time.
 #
 # Example: FEATURE_TCP=false ./scripts/build.sh kernel
+#          FEATURE_TTF=false ./scripts/build.sh kernel      # Disable TTF fonts
+#          FEATURE_COMPOSITOR=false ./scripts/build.sh kernel # Disable compositor
+#          FEATURE_NUMA=false ./scripts/build.sh kernel     # Disable NUMA support
 #
 # NOTE: Disabling core networking features may break userspace programs that depend on them.
+# NOTE: Disabling TTF falls back to 8x8 bitmap font (ASCII only).
+# NOTE: Disabling compositor disables parallel rendering optimizations.
 
 # =============================================================================
 # Network Protocol Stack Features
@@ -100,6 +105,16 @@ kernel:
     cfg_flag: "smp"
     dependencies: []
 
+  # NUMA (Non-Uniform Memory Access) support
+  # Required for: optimized memory allocation on multi-socket systems
+  # Dependencies: smp
+  # Note: Falls back to UMA mode when disabled or on non-NUMA hardware
+  numa:
+    enabled: true
+    description: "NUMA topology detection and memory affinity"
+    cfg_flag: "numa"
+    dependencies: [smp]
+
   # Loadable kernel modules
   kmod:
     enabled: true
@@ -170,6 +185,42 @@ security:
     dependencies: []
 
 # =============================================================================
+# Graphics Features
+# =============================================================================
+# Controls graphics and display subsystems.
+# Disabling these features reduces kernel size for headless/embedded systems.
+
+graphics:
+  # TrueType Font (TTF) support
+  # Required for: Chinese/CJK characters, Unicode symbols, custom fonts
+  # Dependencies: none (falls back to 8x8 bitmap font when disabled)
+  ttf:
+    enabled: true
+    description: "TrueType font parsing and rendering"
+    cfg_flag: "gfx_ttf"
+    dependencies: []
+
+  # Software compositor / renderer
+  # Required for: parallel framebuffer rendering, double buffering, blending
+  # Dependencies: smp (optional, single-core fallback available)
+  # Note: Provides 2-3x performance improvement on high-resolution displays
+  compositor:
+    enabled: true
+    description: "Parallel display compositor with double buffering"
+    cfg_flag: "gfx_compositor"
+    dependencies: []
+
+  # Framebuffer console
+  # Required for: graphical text console output
+  # Dependencies: none
+  framebuffer:
+    enabled: true
+    description: "Framebuffer-based text console"
+    cfg_flag: "gfx_framebuffer"
+    dependencies: []
+    required: true  # Needed for boot messages
+
+# =============================================================================
 # Debug Features
 # =============================================================================
 # These features are primarily for development and testing.
@@ -220,6 +271,36 @@ presets:
     enable: []
     disable: [ipv4, udp, tcp, arp, ethernet, dns, dhcp, netlink]
 
+  # Full graphics - all display features (default)
+  full_graphics:
+    description: "Full graphics with TTF and compositor"
+    enable: [ttf, compositor, framebuffer]
+    disable: []
+
+  # Minimal graphics - basic framebuffer only
+  minimal_graphics:
+    description: "Basic framebuffer console (no TTF/compositor)"
+    enable: [framebuffer]
+    disable: [ttf, compositor]
+
+  # Headless - no graphics output
+  headless:
+    description: "Headless server (serial console only)"
+    enable: []
+    disable: [ttf, compositor, framebuffer]
+
+  # Full hardware support - all features enabled
+  full_hardware:
+    description: "Full hardware support (SMP, NUMA)"
+    enable: [smp, numa]
+    disable: []
+
+  # Single CPU - no SMP/NUMA
+  single_cpu:
+    description: "Single CPU mode (no SMP/NUMA)"
+    enable: []
+    disable: [smp, numa]
+
   # Development - all debug features
   development:
     description: "Development build with debugging"
@@ -231,3 +312,9 @@ presets:
     description: "Production build"
     enable: [stack_protector]
     disable: [verbose_logging, memory_debug, net_debug]
+
+  # Embedded minimal - smallest possible kernel
+  embedded:
+    description: "Embedded minimal configuration"
+    enable: [framebuffer]
+    disable: [tcp, dns, dhcp, netlink, ttf, compositor, numa, verbose_logging, memory_debug, net_debug]
