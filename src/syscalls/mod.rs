@@ -196,7 +196,7 @@ pub extern "C" fn syscall_dispatch(
         }
         SYS_EXIT => exit(arg1 as i32),
         SYS_WAIT4 => wait4(arg1 as i64, arg2 as *mut i32, arg3 as i32, 0 as *mut u8),
-        SYS_KILL => kill(arg1, arg2),
+        SYS_KILL => kill(arg1 as i64, arg2),
         SYS_SIGACTION => sigaction(arg1, arg2 as *const u8, arg3 as *mut u8),
         SYS_SIGPROCMASK => sigprocmask(arg1 as i32, arg2 as *const u64, arg3 as *mut u64),
         SYS_GETPID => crate::scheduler::get_current_pid().unwrap_or(0),

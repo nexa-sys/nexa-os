@@ -44,6 +44,7 @@ PROGRAMS=(
     "whoami:whoami:bin::dyn"
     "users:users:bin::dyn"
     "clear:clear:bin::dyn"
+    "kill:kill:bin::dyn"
     # User management
     "logout:logout:bin::dyn"
     "adduser:adduser:sbin::dyn"

@@ -1000,13 +1000,174 @@ pub fn wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> u64 
 }
 
 /// POSIX kill() system call - send signal to process
-pub fn kill(pid: u64, signum: u64) -> u64 {
-    if signum >= crate::signal::NSIG as u64 {
+/// 
+/// If pid > 0, signal is sent to process with that PID.
+/// If pid == 0, signal is sent to every process in the calling process's process group.
+/// If pid == -1, signal is sent to every process except the init process.
+/// If pid < -1, signal is sent to every process in process group -pid.
+/// 
+/// If signum == 0, no signal is sent but error checking is still performed.
+pub fn kill(pid: i64, signum: u64) -> u64 {
+    use crate::signal::{SIGKILL, SIGTERM, SIGSTOP, SIGCONT, NSIG};
+    
+    // Validate signal number
+    if signum >= NSIG as u64 {
         posix::set_errno(posix::errno::EINVAL);
         return u64::MAX;
     }
 
-    kinfo!("kill(pid={}, sig={}) called", pid, signum);
+    let current_pid = crate::scheduler::get_current_pid().unwrap_or(0);
+    kinfo!("kill(pid={}, sig={}) called from PID {}", pid, signum, current_pid);
+
+    // signum == 0: just check permissions, don't send signal
+    if signum == 0 {
+        if pid > 0 {
+            // Check if target process exists
+            if crate::scheduler::get_process(pid as u64).is_some() {
+                posix::set_errno(0);
+                return 0;
+            } else {
+                posix::set_errno(posix::errno::ESRCH);
+                return u64::MAX;
+            }
+        }
+        posix::set_errno(0);
+        return 0;
+    }
+
+    if pid > 0 {
+        // Send to specific process
+        let target_pid = pid as u64;
+        
+        // Get the target process
+        let target_process = match crate::scheduler::get_process(target_pid) {
+            Some(p) => p,
+            None => {
+                kerror!("kill: process {} not found", target_pid);
+                posix::set_errno(posix::errno::ESRCH);
+                return u64::MAX;
+            }
+        };
+
+        // Don't allow killing init (PID 1) with most signals
+        if target_pid == 1 && signum as u32 != SIGCONT {
+            kwarn!("kill: cannot kill init process (PID 1) with signal {}", signum);
+            posix::set_errno(posix::errno::EPERM);
+            return u64::MAX;
+        }
+
+        // Handle the signal based on its type
+        match signum as u32 {
+            SIGKILL => {
+                // SIGKILL cannot be caught or ignored - terminate immediately
+                kinfo!("Sending SIGKILL to PID {}", target_pid);
+                
+                // Set termination signal
+                if let Err(e) = crate::scheduler::set_process_term_signal(target_pid, SIGKILL as i32) {
+                    kerror!("Failed to set term signal for PID {}: {}", target_pid, e);
+                }
+                
+                // Mark as zombie (terminated by signal)
+                if let Err(e) = crate::scheduler::set_process_state(target_pid, ProcessState::Zombie) {
+                    kerror!("Failed to set PID {} to Zombie: {}", target_pid, e);
+                    posix::set_errno(posix::errno::ESRCH);
+                    return u64::MAX;
+                }
+                
+                kinfo!("Process {} killed with SIGKILL", target_pid);
+            }
+            SIGTERM => {
+                // SIGTERM - request termination (can be caught)
+                kinfo!("Sending SIGTERM to PID {}", target_pid);
+                
+                // For now, treat SIGTERM like SIGKILL (terminate immediately)
+                // TODO: Implement proper signal delivery to user-space handlers
+                if let Err(e) = crate::scheduler::set_process_term_signal(target_pid, SIGTERM as i32) {
+                    kerror!("Failed to set term signal for PID {}: {}", target_pid, e);
+                }
+                
+                if let Err(e) = crate::scheduler::set_process_state(target_pid, ProcessState::Zombie) {
+                    kerror!("Failed to set PID {} to Zombie: {}", target_pid, e);
+                    posix::set_errno(posix::errno::ESRCH);
+                    return u64::MAX;
+                }
+                
+                kinfo!("Process {} terminated with SIGTERM", target_pid);
+            }
+            SIGSTOP => {
+                // SIGSTOP - stop process (cannot be caught)
+                kinfo!("Sending SIGSTOP to PID {}", target_pid);
+                
+                if let Err(e) = crate::scheduler::set_process_state(target_pid, ProcessState::Sleeping) {
+                    kerror!("Failed to stop PID {}: {}", target_pid, e);
+                    posix::set_errno(posix::errno::ESRCH);
+                    return u64::MAX;
+                }
+                
+                kinfo!("Process {} stopped with SIGSTOP", target_pid);
+            }
+            SIGCONT => {
+                // SIGCONT - continue if stopped
+                kinfo!("Sending SIGCONT to PID {}", target_pid);
+                
+                if target_process.state == ProcessState::Sleeping {
+                    if let Err(e) = crate::scheduler::set_process_state(target_pid, ProcessState::Ready) {
+                        kerror!("Failed to continue PID {}: {}", target_pid, e);
+                        posix::set_errno(posix::errno::ESRCH);
+                        return u64::MAX;
+                    }
+                    kinfo!("Process {} continued with SIGCONT", target_pid);
+                }
+            }
+            _ => {
+                // Other signals - deliver to process signal queue
+                kinfo!("Sending signal {} to PID {}", signum, target_pid);
+                
+                // For unhandled signals that terminate by default, terminate the process
+                let terminates = matches!(
+                    signum as u32,
+                    crate::signal::SIGHUP |
+                    crate::signal::SIGINT |
+                    crate::signal::SIGQUIT |
+                    crate::signal::SIGILL |
+                    crate::signal::SIGABRT |
+                    crate::signal::SIGFPE |
+                    crate::signal::SIGSEGV |
+                    crate::signal::SIGPIPE |
+                    crate::signal::SIGALRM |
+                    crate::signal::SIGUSR1 |
+                    crate::signal::SIGUSR2
+                );
+                
+                if terminates {
+                    if let Err(e) = crate::scheduler::set_process_term_signal(target_pid, signum as i32) {
+                        kerror!("Failed to set term signal for PID {}: {}", target_pid, e);
+                    }
+                    
+                    if let Err(e) = crate::scheduler::set_process_state(target_pid, ProcessState::Zombie) {
+                        kerror!("Failed to terminate PID {}: {}", target_pid, e);
+                        posix::set_errno(posix::errno::ESRCH);
+                        return u64::MAX;
+                    }
+                    
+                    kinfo!("Process {} terminated by signal {}", target_pid, signum);
+                }
+                // Non-terminating signals (like SIGCHLD) are just noted in the signal queue
+                // TODO: Implement proper signal delivery
+            }
+        }
+    } else if pid == 0 {
+        // Send to all processes in the same process group as caller
+        // TODO: Implement process groups
+        kwarn!("kill: process groups not implemented, ignoring pid=0");
+    } else if pid == -1 {
+        // Send to all processes (except init)
+        kwarn!("kill: broadcast to all processes not implemented");
+    } else {
+        // pid < -1: send to process group -pid
+        // TODO: Implement process groups
+        kwarn!("kill: process groups not implemented, ignoring pid={}", pid);
+    }
 
     posix::set_errno(0);
     0

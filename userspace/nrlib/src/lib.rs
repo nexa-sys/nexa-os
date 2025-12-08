@@ -66,6 +66,14 @@ pub use libc_compat::{
     WNOHANG, WUNTRACED, WCONTINUED,
 };
 
+// Re-export signal functions and constants
+pub use libc_compat::{
+    kill,
+    SIGHUP, SIGINT, SIGQUIT, SIGILL, SIGTRAP, SIGABRT, SIGBUS, SIGFPE,
+    SIGKILL, SIGUSR1, SIGSEGV, SIGUSR2, SIGPIPE, SIGALRM, SIGTERM,
+    SIGCHLD, SIGCONT, SIGSTOP, SIGTSTP, SIGTTIN, SIGTTOU,
+};
+
 // Re-export memory management functions
 pub use libc_compat::{
     mmap, mmap64, munmap, mprotect, brk, sbrk,

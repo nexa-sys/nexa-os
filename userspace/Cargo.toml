@@ -32,6 +32,7 @@ members = [
     "programs/whoami",
     "programs/users",
     "programs/clear",
+    "programs/kill",
     # User management
     "programs/logout",
     "programs/adduser",

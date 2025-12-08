@@ -115,6 +115,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "kill"
+version = "0.1.0"
+dependencies = [
+ "nexa_boot_info",
+ "nrlib",
+]
+
+[[package]]
 name = "ld-nrlib"
 version = "0.1.0"
 
