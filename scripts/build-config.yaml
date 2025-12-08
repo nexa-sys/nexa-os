@@ -1,0 +1,234 @@
+# NexaOS Build Configuration
+# This file centralizes all build configurations for userspace programs, 
+# kernel modules, and libraries.
+#
+# Usage: Scripts in scripts/steps/ parse this file to determine what to build.
+
+# =============================================================================
+# Userspace Programs
+# =============================================================================
+# Each program entry defines:
+#   - package: Cargo package name
+#   - binary: Output binary name (optional, defaults to package name)
+#   - dest: Destination directory (bin, sbin, etc.)
+#   - features: Cargo features to enable (optional)
+#   - link: Linking type - "std" (static) or "dyn" (dynamic, default)
+
+programs:
+  # Core system services (statically linked for early boot)
+  core:
+    - package: ni
+      dest: sbin
+      link: std
+    - package: getty
+      dest: sbin
+      link: std
+  
+  # Shell and authentication
+  shell:
+    - package: sh
+      dest: bin
+      link: dyn
+    - package: login
+      dest: bin
+      link: dyn
+  
+  # Network utilities
+  network:
+    - package: nslookup
+      dest: bin
+      features: use-nrlib-std
+      link: dyn
+    - package: ip
+      dest: bin
+      link: dyn
+    - package: dhcp
+      dest: bin
+      link: dyn
+    - package: nurl
+      dest: bin
+      link: dyn
+  
+  # System daemons
+  daemons:
+    - package: uefi_compatd
+      binary: uefi-compatd
+      dest: sbin
+      features: use-nrlib-std
+      link: dyn
+    - package: ntpd
+      dest: sbin
+      link: dyn
+  
+  # System utilities
+  system:
+    - package: dmesg
+      dest: bin
+      link: dyn
+  
+  # Coreutils (split from shell builtins)
+  coreutils:
+    - package: ls
+      dest: bin
+      link: dyn
+    - package: cat
+      dest: bin
+      link: dyn
+    - package: stat
+      dest: bin
+      link: dyn
+    - package: pwd
+      dest: bin
+      link: dyn
+    - package: echo
+      dest: bin
+      link: dyn
+    - package: uname
+      dest: bin
+      link: dyn
+    - package: mkdir
+      dest: bin
+      link: dyn
+    - package: whoami
+      dest: bin
+      link: dyn
+    - package: users
+      dest: bin
+      link: dyn
+    - package: clear
+      dest: bin
+      link: dyn
+    - package: kill
+      dest: bin
+      link: dyn
+  
+  # User management
+  user_management:
+    - package: logout
+      dest: bin
+      link: dyn
+    - package: adduser
+      dest: sbin
+      link: dyn
+  
+  # Power management
+  power:
+    - package: reboot
+      dest: sbin
+      link: dyn
+    - package: shutdown
+      dest: sbin
+      link: dyn
+    - package: halt
+      dest: sbin
+      link: dyn
+    - package: poweroff
+      dest: sbin
+      link: dyn
+  
+  # IPC utilities
+  ipc:
+    - package: ipc-create
+      dest: bin
+      link: dyn
+    - package: ipc-send
+      dest: bin
+      link: dyn
+    - package: ipc-recv
+      dest: bin
+      link: dyn
+  
+  # Editors
+  editors:
+    - package: edit
+      dest: bin
+      link: dyn
+  
+  # Test programs
+  test:
+    - package: crashtest
+      dest: bin
+      link: dyn
+    - package: thread_test
+      dest: bin
+      link: dyn
+    - package: pthread_test
+      dest: bin
+      features: use-nrlib-std
+      link: dyn
+    - package: hello_dynamic
+      binary: hello
+      dest: bin
+      link: dyn
+    - package: hashmap_test
+      dest: bin
+      link: dyn
+
+# =============================================================================
+# Kernel Modules
+# =============================================================================
+# Each module entry defines:
+#   - name: Module name (matches directory in modules/)
+#   - type: Module type (1=fs, 2=blk, 3=chr, 4=net)
+#   - description: Human-readable description
+
+modules:
+  filesystem:
+    - name: ext2
+      type: 1
+      description: "ext2 filesystem driver"
+  
+  block:
+    - name: virtio_blk
+      type: 2
+      description: "VirtIO block device driver"
+  
+  network:
+    - name: e1000
+      type: 4
+      description: "Intel E1000 network driver"
+
+# =============================================================================
+# Userspace Libraries
+# =============================================================================
+# Each library entry defines:
+#   - name: Library name (Cargo package name)
+#   - output: Output name (without lib prefix)
+#   - version: Shared object version number
+#   - depends: Dependencies (other libraries to build first)
+
+libraries:
+  - name: ncryptolib
+    output: crypto
+    version: 3
+    depends: []
+  
+  - name: nzip
+    output: z
+    version: 1
+    depends: []
+  
+  - name: nssl
+    output: ssl
+    version: 3
+    depends:
+      - ncryptolib
+  
+  - name: nhttp2
+    output: nghttp2
+    version: 14
+    depends:
+      - nssl
+
+# =============================================================================
+# Build Order
+# =============================================================================
+# Defines the order in which components should be built.
+# Dependencies are automatically resolved for libraries.
+
+build_order:
+  libraries:
+    - ncryptolib
+    - nzip
+    - nssl
+    - nhttp2

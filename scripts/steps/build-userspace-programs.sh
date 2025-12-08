@@ -1,9 +1,12 @@
 #!/bin/bash
 # NexaOS Build System - Userspace Programs Builder
 # Build userspace binaries for rootfs using workspace structure
+#
+# Program definitions are loaded from scripts/build-config.yaml
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../lib/common.sh"
+source "$SCRIPT_DIR/../lib/config-parser.sh"
 
 init_build_env
 
@@ -15,53 +18,9 @@ USERSPACE_DIR="$PROJECT_ROOT/userspace"
 SYSROOT_LIB="$BUILD_DIR/userspace-build/sysroot/lib"
 SYSROOT_PIC_LIB="$BUILD_DIR/userspace-build/sysroot-pic/lib"
 
-# Programs definition: package_name:binary_name:dest_subdir:extra_args:link_type
-# link_type: std (static linking) or dyn (dynamic linking)
-PROGRAMS=(
-    "ni:ni:sbin::std"
-    "getty:getty:sbin::std"
-    "sh:sh:bin::dyn"
-    "login:login:bin::dyn"
-    "nslookup:nslookup:bin:--features use-nrlib-std:dyn"
-    "uefi_compatd:uefi-compatd:sbin:--features use-nrlib-std:dyn"
-    "ip:ip:bin::dyn"
-    "dhcp:dhcp:bin::dyn"
-    "ntpd:ntpd:sbin::dyn"
-    "nurl:nurl:bin::dyn"
-    "dmesg:dmesg:bin::dyn"
-    "crashtest:crashtest:bin::dyn"
-    "thread_test:thread_test:bin::dyn"
-    "pthread_test:pthread_test:bin:--features use-nrlib-std:dyn"
-    "hello_dynamic:hello:bin::dyn"
-    # Coreutils (split from shell builtins)
-    "ls:ls:bin::dyn"
-    "cat:cat:bin::dyn"
-    "stat:stat:bin::dyn"
-    "pwd:pwd:bin::dyn"
-    "echo:echo:bin::dyn"
-    "uname:uname:bin::dyn"
-    "mkdir:mkdir:bin::dyn"
-    "whoami:whoami:bin::dyn"
-    "users:users:bin::dyn"
-    "clear:clear:bin::dyn"
-    "kill:kill:bin::dyn"
-    # User management
-    "logout:logout:bin::dyn"
-    "adduser:adduser:sbin::dyn"
-    # Power management
-    "reboot:reboot:sbin::dyn"
-    "shutdown:shutdown:sbin::dyn"
-    "halt:halt:sbin::dyn"
-    "poweroff:poweroff:sbin::dyn"
-    # IPC utilities
-    "ipc-create:ipc-create:bin::dyn"
-    "ipc-send:ipc-send:bin::dyn"
-    "ipc-recv:ipc-recv:bin::dyn"
-    # Test programs
-    "hashmap_test:hashmap_test:bin::dyn"
-    # Editors
-    "edit:edit:bin::dyn"
-)
+# Load programs from YAML config
+# Format: "package:binary:dest:features:link"
+load_programs_array
 
 # ============================================================================
 # Build Functions
@@ -70,11 +29,17 @@ PROGRAMS=(
 build_program() {
     local package="$1"
     local binary="$2"
-    local extra_args="$3"
+    local features="$3"
     local link_type="$4"
     
     local target
     local rustflags
+    local extra_args=""
+    
+    # Convert features to cargo argument
+    if [ -n "$features" ]; then
+        extra_args="--features $features"
+    fi
     
     if [ "$link_type" = "dyn" ]; then
         target="$TARGET_USERSPACE_DYN"
@@ -139,10 +104,10 @@ build_all_programs() {
     local failed=0
     
     for entry in "${PROGRAMS[@]}"; do
-        IFS=':' read -r package binary subdir extra link_type <<< "$entry"
+        IFS=':' read -r package binary dest features link_type <<< "$entry"
         
-        if build_program "$package" "$binary" "$extra" "$link_type"; then
-            install_program "$package" "$binary" "$subdir" "$dest_dir" "$link_type"
+        if build_program "$package" "$binary" "$features" "$link_type"; then
+            install_program "$package" "$binary" "$dest" "$dest_dir" "$link_type"
         else
             ((failed++))
         fi
@@ -180,10 +145,10 @@ build_single() {
     
     # Find program in list
     for entry in "${PROGRAMS[@]}"; do
-        IFS=':' read -r package binary subdir extra link_type <<< "$entry"
+        IFS=':' read -r package binary dest features link_type <<< "$entry"
         if [ "$package" = "$name" ] || [ "$binary" = "$name" ]; then
-            if build_program "$package" "$binary" "$extra" "$link_type"; then
-                install_program "$package" "$binary" "$subdir" "$dest_dir" "$link_type"
+            if build_program "$package" "$binary" "$features" "$link_type"; then
+                install_program "$package" "$binary" "$dest" "$dest_dir" "$link_type"
                 return $?
             fi
             return 1
@@ -213,8 +178,8 @@ if [ "${BASH_SOURCE[0]}" == "${0}" ]; then
         list)
             echo "Available programs:"
             for entry in "${PROGRAMS[@]}"; do
-                IFS=':' read -r package binary subdir _ link_type <<< "$entry"
-                echo "  $package -> $binary (/$subdir) [$link_type]"
+                IFS=':' read -r package binary dest _ link_type <<< "$entry"
+                echo "  $package -> $binary (/$dest) [$link_type]"
             done
             ;;
         *)

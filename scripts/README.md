@@ -56,20 +56,97 @@ BUILD_TYPE=release LOG_LEVEL=info ./scripts/build.sh
 ```
 scripts/
 ├── build.sh                    # Main entry point
+├── build-config.yaml           # Centralized build configuration
 ├── run-qemu.sh                 # QEMU launcher
 ├── build-uefi-loader.sh        # UEFI loader builder
 ├── sign-module.sh              # Module signing tool
 ├── lib/
-│   └── common.sh               # Shared functions and variables
+│   ├── common.sh               # Shared functions and variables
+│   └── config-parser.sh        # YAML configuration parser
 └── steps/
     ├── build-kernel.sh         # Kernel compilation
     ├── build-nrlib.sh          # nrlib (libc shim) compilation
     ├── build-userspace-programs.sh  # Userspace programs
+    ├── build-libs.sh           # Userspace libraries
     ├── build-modules.sh        # Kernel modules (.nkm)
     ├── build-initramfs.sh      # Minimal initramfs
     ├── build-rootfs.sh         # ext2 root filesystem
     └── build-iso.sh            # Bootable ISO creation
 ```
+
+## Build Configuration
+
+The `build-config.yaml` file centralizes all build definitions:
+
+```yaml
+# Userspace programs
+programs:
+  core:
+    - package: ni
+      dest: sbin
+      link: std
+  network:
+    - package: nslookup
+      features: use-nrlib-std
+      link: dyn
+
+# Kernel modules
+modules:
+  filesystem:
+    - name: ext2
+      type: 1
+      description: "ext2 filesystem driver"
+
+# Userspace libraries
+libraries:
+  - name: ncryptolib
+    output: crypto
+    version: 3
+    depends: []
+```
+
+### Adding a New Program
+
+1. Add your program to `userspace/programs/<name>/`
+2. Add entry to `build-config.yaml` under appropriate category:
+   ```yaml
+   programs:
+     utilities:
+       - package: myprogram
+         binary: myprog       # optional, defaults to package name
+         dest: bin            # bin or sbin
+         features: my-feature # optional cargo features
+         link: dyn            # std (static) or dyn (dynamic)
+   ```
+3. Run `./scripts/build.sh userspace rootfs iso`
+
+### Adding a New Library
+
+1. Create library in `userspace/<name>/`
+2. Add entry to `build-config.yaml`:
+   ```yaml
+   libraries:
+     - name: mynewlib
+       output: mylib        # creates libmylib.so
+       version: 1           # libmylib.so.1
+       depends:
+         - ncryptolib       # dependencies (built first)
+   ```
+3. Add to `build_order.libraries` if needed
+4. Run `./scripts/build.sh userspace rootfs iso`
+
+### Adding a New Kernel Module
+
+1. Create module in `modules/<name>/`
+2. Add entry to `build-config.yaml`:
+   ```yaml
+   modules:
+     block:
+       - name: mydriver
+         type: 2            # 1=fs, 2=blk, 3=chr, 4=net
+         description: "My block device driver"
+   ```
+3. Run `./scripts/build.sh modules initramfs iso`
 
 ## Build Components
 

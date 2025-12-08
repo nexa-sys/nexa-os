@@ -1,9 +1,12 @@
 #!/bin/bash
 # NexaOS Build System - Kernel Modules Builder
 # Build loadable kernel modules (.nkm)
+#
+# Module definitions are loaded from scripts/build-config.yaml
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../lib/common.sh"
+source "$SCRIPT_DIR/../lib/config-parser.sh"
 
 init_build_env
 
@@ -14,13 +17,9 @@ init_build_env
 MODULES_BUILD_DIR="$BUILD_DIR/modules"
 INITRAMFS_MODULES_DIR="$BUILD_DIR/initramfs/lib/modules"
 
-# Module definitions: name:type:description
-# Types: 1=fs, 2=blk, 3=chr, 4=net
-MODULES=(
-    "ext2:1:ext2 filesystem driver"
-    "e1000:4:Intel E1000 network driver"
-    "virtio_blk:2:VirtIO block device driver"
-)
+# Load modules from YAML config
+# Format: "name:type:description"
+load_modules_array
 
 # ============================================================================
 # Helper Functions

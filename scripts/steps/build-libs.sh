@@ -10,44 +10,13 @@
 #   ./build-libs.sh nssl shared        # Build only shared lib
 #   ./build-libs.sh list               # List available libraries
 #
-# Adding new libraries:
-#   1. Add entry to LIBRARIES array below
-#   2. Library must have Cargo.toml with cdylib+staticlib crate-types
-#   3. Library must use x86_64-nexaos-userspace-lib.json target
+# Library definitions are loaded from scripts/build-config.yaml
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../lib/common.sh"
+source "$SCRIPT_DIR/../lib/config-parser.sh"
 
 init_build_env
-
-# ============================================================================
-# Library Registry
-# Format: "name:source_dir:output_name:so_version:dependencies"
-# - name: Library identifier (cargo package name)
-# - source_dir: Path relative to userspace/
-# - output_name: Output library name (libXXX)
-# - so_version: Shared library version (e.g., "3" for libssl.so.3)
-# - dependencies: Comma-separated list of dependent libs (built first)
-# ============================================================================
-
-declare -A LIBRARIES=(
-    ["ncryptolib"]="ncryptolib:crypto:3:"
-    ["nssl"]="nssl:ssl:3:ncryptolib"
-    ["nzip"]="nzip:z:1:"
-    ["nhttp2"]="nhttp2:nghttp2:14:nssl"
-    # Add more libraries here:
-    # ["npng"]="npng:png:16:nzip"
-)
-
-# Build order (topologically sorted based on dependencies)
-# Libraries without dependencies come first
-BUILD_ORDER=(
-    "ncryptolib"
-    "nzip"
-    "nssl"
-    "nhttp2"
-    # Add new libraries in dependency order
-)
 
 # ============================================================================
 # Configuration
@@ -56,6 +25,27 @@ BUILD_ORDER=(
 USERSPACE_DIR="$PROJECT_ROOT/userspace"
 SYSROOT_DIR="$BUILD_DIR/userspace-build/sysroot"
 TARGET_LIB="$PROJECT_ROOT/targets/x86_64-nexaos-userspace-lib.json"
+
+# Load libraries from YAML config into associative array
+# Format from YAML: "name:output:version:depends"
+declare -A LIBRARIES
+declare -a BUILD_ORDER
+
+load_libraries_from_config() {
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        IFS=':' read -r name output version depends <<< "$line"
+        # Store as: name -> "name:output:version:depends"
+        LIBRARIES["$name"]="$name:$output:$version:$depends"
+    done < <(parse_libraries_config)
+    
+    # Load build order
+    while IFS= read -r line; do
+        [ -n "$line" ] && BUILD_ORDER+=("$line")
+    done < <(get_library_build_order)
+}
+
+load_libraries_from_config
 
 # ============================================================================
 # Library Build Functions
@@ -70,7 +60,9 @@ parse_lib_config() {
         return 1
     fi
     
-    IFS=':' read -r LIB_SRC_DIR LIB_OUTPUT_NAME LIB_SO_VERSION LIB_DEPS <<< "$config"
+    # Format: "name:output:version:depends"
+    IFS=':' read -r _ LIB_OUTPUT_NAME LIB_SO_VERSION LIB_DEPS <<< "$config"
+    LIB_SRC_DIR="$lib_name"
     LIB_SRC_PATH="$USERSPACE_DIR/$LIB_SRC_DIR"
     LIB_STATIC_NAME="lib${LIB_OUTPUT_NAME}.a"
     LIB_SHARED_NAME="lib${LIB_OUTPUT_NAME}.so"
@@ -84,6 +76,7 @@ check_dependencies() {
         IFS=',' read -ra deps <<< "$LIB_DEPS"
         for dep in "${deps[@]}"; do
             local dep_config="${LIBRARIES[$dep]}"
+            # Format: "name:output:version:depends"
             IFS=':' read -r _ dep_output _ _ <<< "$dep_config"
             local dep_lib="$SYSROOT_DIR/lib/lib${dep_output}.so"
             
@@ -236,7 +229,8 @@ list_libraries() {
     
     for lib_name in "${BUILD_ORDER[@]}"; do
         local config="${LIBRARIES[$lib_name]}"
-        IFS=':' read -r src_dir output_name so_ver deps <<< "$config"
+        # Format: "name:output:version:depends"
+        IFS=':' read -r _ output_name so_ver deps <<< "$config"
         printf "  %-15s lib%-9s %-8s %s\n" "$lib_name" "$output_name" "${so_ver:-N/A}" "${deps:-none}"
     done
     
