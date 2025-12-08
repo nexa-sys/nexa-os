@@ -57,6 +57,7 @@ pub struct FramebufferWriter {
     /// Last rendered cursor position for erasing
     last_cursor_x: usize,
     last_cursor_y: usize,
+    last_pixel_x: usize,
 }
 
 unsafe impl Send for FramebufferWriter {}
@@ -113,6 +114,7 @@ impl FramebufferWriter {
             cursor_visible: true,
             last_cursor_x: 0,
             last_cursor_y: 0,
+            last_pixel_x: 0,
         })
     }
 
@@ -342,8 +344,15 @@ impl FramebufferWriter {
                 let row_y = self.cursor_y * CELL_HEIGHT;
                 self.render.fill_rect(self.pixel_x, row_y, advance.max(1), CELL_HEIGHT, self.bg);
                 self.pixel_x += advance.max(1);
-                self.cursor_x = self.pixel_x / CELL_WIDTH;
-                self.push_char_width(advance.max(1));
+                
+                // Record width for this character position
+                if self.cursor_x < MAX_LINE_CHARS {
+                    self.char_widths[self.cursor_x] = advance.max(1).min(255) as u8;
+                }
+                self.cursor_x += 1;
+                if self.cursor_x > self.char_count {
+                    self.char_count = self.cursor_x;
+                }
                 return;
             }
 
@@ -372,8 +381,15 @@ impl FramebufferWriter {
 
             // Advance cursor by glyph's advance width
             self.pixel_x += advance;
-            self.cursor_x = self.pixel_x / CELL_WIDTH;
-            self.push_char_width(advance);
+            
+            // Record width for this character position
+            if self.cursor_x < MAX_LINE_CHARS {
+                self.char_widths[self.cursor_x] = advance.min(255) as u8;
+            }
+            self.cursor_x += 1;
+            if self.cursor_x > self.char_count {
+                self.char_count = self.cursor_x;
+            }
             
             // Check for line wrap
             if self.pixel_x >= self.render.width {
@@ -582,15 +598,39 @@ impl FramebufferWriter {
     /// Handle CUF (Cursor Forward) - ESC[nC
     fn handle_cursor_forward(&mut self, params: &[u16]) {
         let n = params.first().copied().unwrap_or(1).max(1) as usize;
-        self.cursor_x = (self.cursor_x + n).min(self.columns.saturating_sub(1));
-        self.pixel_x = self.cursor_x * CELL_WIDTH;
+        for _ in 0..n {
+            if self.cursor_x < self.columns.saturating_sub(1) {
+                // If we have a recorded width for this position, use it
+                let width = if self.cursor_x < self.char_count {
+                    self.char_widths[self.cursor_x] as usize
+                } else {
+                    CELL_WIDTH
+                };
+                self.pixel_x += width;
+                self.cursor_x += 1;
+            }
+        }
     }
 
     /// Handle CUB (Cursor Back) - ESC[nD
     fn handle_cursor_back(&mut self, params: &[u16]) {
         let n = params.first().copied().unwrap_or(1).max(1) as usize;
-        self.cursor_x = self.cursor_x.saturating_sub(n);
-        self.pixel_x = self.cursor_x * CELL_WIDTH;
+        for _ in 0..n {
+            if self.cursor_x > 0 {
+                self.cursor_x -= 1;
+                // If we have a recorded width for this position, use it
+                let width = if self.cursor_x < self.char_count {
+                    self.char_widths[self.cursor_x] as usize
+                } else {
+                    CELL_WIDTH
+                };
+                if self.pixel_x >= width {
+                    self.pixel_x -= width;
+                } else {
+                    self.pixel_x = 0;
+                }
+            }
+        }
     }
 
     /// Handle CHA (Cursor Horizontal Absolute) - ESC[nG
@@ -727,12 +767,13 @@ impl FramebufferWriter {
         }
         
         // Erase cursor at old position if it moved
-        if self.last_cursor_x != self.cursor_x || self.last_cursor_y != self.cursor_y {
-            self.erase_cursor_at(self.last_cursor_x, self.last_cursor_y);
+        if self.last_cursor_x != self.cursor_x || self.last_cursor_y != self.cursor_y || self.last_pixel_x != self.pixel_x {
+            self.erase_cursor_at(self.last_cursor_x, self.last_cursor_y, self.last_pixel_x);
         }
         
         // Draw cursor as an underscore at the current position
-        let pixel_x = self.cursor_x * CELL_WIDTH;
+        // Use pixel_x for accurate positioning with proportional fonts
+        let pixel_x = self.pixel_x;
         let pixel_y = self.cursor_y * CELL_HEIGHT;
         
         // Draw underscore cursor (bottom 2 lines of the cell)
@@ -744,16 +785,16 @@ impl FramebufferWriter {
         
         self.last_cursor_x = self.cursor_x;
         self.last_cursor_y = self.cursor_y;
+        self.last_pixel_x = self.pixel_x;
     }
 
     /// Erase the cursor at the current position
     pub fn erase_cursor(&mut self) {
-        self.erase_cursor_at(self.last_cursor_x, self.last_cursor_y);
+        self.erase_cursor_at(self.last_cursor_x, self.last_cursor_y, self.last_pixel_x);
     }
 
     /// Erase cursor at a specific position
-    fn erase_cursor_at(&self, col: usize, row: usize) {
-        let pixel_x = col * CELL_WIDTH;
+    fn erase_cursor_at(&self, _col: usize, row: usize, pixel_x: usize) {
         let pixel_y = row * CELL_HEIGHT;
         
         // Erase underscore area
@@ -858,6 +899,8 @@ impl Write for FramebufferWriter {
                 }
             }
         }
+        // Update cursor visibility after writing
+        self.update_cursor();
         Ok(())
     }
 }

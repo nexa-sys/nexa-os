@@ -50,6 +50,42 @@ static SCANCODE_QUEUE: Mutex<KeyboardBuffer> = Mutex::new(KeyboardBuffer::new())
 static SHIFT_PRESSED: AtomicBool = AtomicBool::new(false);
 static LAST_BYTE_WAS_CR: AtomicBool = AtomicBool::new(false);
 static ALT_PRESSED: AtomicBool = AtomicBool::new(false);
+static EXTENDED_MODE: AtomicBool = AtomicBool::new(false);
+
+struct PendingBuffer {
+    chars: [char; 8],
+    count: usize,
+    index: usize,
+}
+
+impl PendingBuffer {
+    const fn new() -> Self {
+        Self { chars: ['\0'; 8], count: 0, index: 0 }
+    }
+    
+    fn push(&mut self, c: char) {
+        if self.count < 8 {
+            self.chars[self.count] = c;
+            self.count += 1;
+        }
+    }
+    
+    fn pop(&mut self) -> Option<char> {
+        if self.index < self.count {
+            let c = self.chars[self.index];
+            self.index += 1;
+            if self.index == self.count {
+                self.count = 0;
+                self.index = 0;
+            }
+            Some(c)
+        } else {
+            None
+        }
+    }
+}
+
+static PENDING_KEYS: Mutex<PendingBuffer> = Mutex::new(PendingBuffer::new());
 
 /// Add scancode to queue (called from interrupt handler)
 pub fn add_scancode(scancode: u8) {
@@ -106,6 +142,14 @@ fn echo_backspace(tty: usize) {
 }
 
 fn decode_scancode(scancode: u8) -> Option<char> {
+    // Handle extended prefix
+    if scancode == 0xE0 {
+        EXTENDED_MODE.store(true, Ordering::Release);
+        return None;
+    }
+
+    let extended = EXTENDED_MODE.swap(false, Ordering::AcqRel);
+
     // Handle key release
     if scancode & 0x80 != 0 {
         let key = scancode & 0x7F;
@@ -116,6 +160,56 @@ fn decode_scancode(scancode: u8) -> Option<char> {
             ALT_PRESSED.store(false, Ordering::Release);
         }
         return None;
+    }
+
+    // Handle extended keys (arrows, etc.)
+    if extended {
+        match scancode {
+            0x48 => { // Up
+                let mut pending = PENDING_KEYS.lock();
+                pending.push('[');
+                pending.push('A');
+                return Some('\x1B');
+            }
+            0x4B => { // Left
+                let mut pending = PENDING_KEYS.lock();
+                pending.push('[');
+                pending.push('D');
+                return Some('\x1B');
+            }
+            0x4D => { // Right
+                let mut pending = PENDING_KEYS.lock();
+                pending.push('[');
+                pending.push('C');
+                return Some('\x1B');
+            }
+            0x50 => { // Down
+                let mut pending = PENDING_KEYS.lock();
+                pending.push('[');
+                pending.push('B');
+                return Some('\x1B');
+            }
+            0x53 => { // Delete
+                let mut pending = PENDING_KEYS.lock();
+                pending.push('[');
+                pending.push('3');
+                pending.push('~');
+                return Some('\x1B');
+            }
+            0x47 => { // Home
+                let mut pending = PENDING_KEYS.lock();
+                pending.push('[');
+                pending.push('H');
+                return Some('\x1B');
+            }
+            0x4F => { // End
+                let mut pending = PENDING_KEYS.lock();
+                pending.push('[');
+                pending.push('F');
+                return Some('\x1B');
+            }
+            _ => return None,
+        }
     }
 
     // Handle shift keys
@@ -206,6 +300,14 @@ fn decode_serial_byte(byte: u8) -> Option<char> {
 }
 
 fn poll_input_char() -> Option<char> {
+    // Check pending first
+    {
+        let mut pending = PENDING_KEYS.lock();
+        if let Some(c) = pending.pop() {
+            return Some(c);
+        }
+    }
+
     if let Some(scancode) = get_scancode() {
         if let Some(ch) = decode_scancode(scancode) {
             return Some(ch);
