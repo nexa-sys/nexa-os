@@ -78,7 +78,7 @@ impl DeflateState {
             if self.window_bits > 0 && self.window_bits <= 15 {
                 // zlib header
                 let cmf = 0x78u8; // CM=8, CINFO=7
-                let level_hint = match self.deflater.level {
+                let level_hint = match self.deflater.level() {
                     0..=1 => 0,
                     2..=5 => 1,
                     6 => 2,
@@ -189,14 +189,7 @@ impl DeflateState {
     /// Get compression level (for internal use)
     #[allow(dead_code)]
     fn level(&self) -> i32 {
-        self.deflater.level
-    }
-}
-
-impl Deflater {
-    /// Get compression level
-    pub fn level(&self) -> i32 {
-        self.level
+        self.deflater.level()
     }
 }
 
@@ -336,7 +329,7 @@ impl InflateState {
                     self.output_buffer.extend_from_slice(&decompressed);
                     self.input_buffer.drain(..consumed);
                     
-                    if self.inflater.finished {
+                    if self.inflater.finished() {
                         self.header_state = HeaderState::Trailer;
                     }
                 }
@@ -510,12 +503,5 @@ impl InflateState {
             // Raw deflate: no trailer
             true
         }
-    }
-}
-
-impl Inflater {
-    /// Check if inflation is finished
-    pub fn finished(&self) -> bool {
-        self.finished
     }
 }

@@ -10,6 +10,7 @@ pub struct Http1RequestBuilder {
     host: String,
     headers: Vec<(String, String)>,
     body: Option<Vec<u8>>,
+    compressed: bool,
 }
 
 impl Http1RequestBuilder {
@@ -21,12 +22,16 @@ impl Http1RequestBuilder {
             host: url.authority(),
             headers: Vec::new(),
             body: None,
+            compressed: false,
         }
     }
 
     /// Create a request builder from Args and ParsedUrl
     pub fn from_args(args: &Args, url: &ParsedUrl) -> Self {
         let mut builder = Self::new(args.method, url);
+        
+        // Enable compression if requested
+        builder.compressed = args.compressed;
         
         // Add custom headers
         for (key, value) in &args.headers {
@@ -72,6 +77,7 @@ impl Http1RequestBuilder {
         let mut has_user_agent = false;
         let mut has_accept = false;
         let mut has_content_type = false;
+        let mut has_accept_encoding = false;
 
         for (key, value) in &self.headers {
             request.push_str(key);
@@ -86,6 +92,8 @@ impl Http1RequestBuilder {
                 has_accept = true;
             } else if key_lower == "content-type" {
                 has_content_type = true;
+            } else if key_lower == "accept-encoding" {
+                has_accept_encoding = true;
             }
         }
 
@@ -95,6 +103,11 @@ impl Http1RequestBuilder {
         }
         if !has_accept {
             request.push_str("Accept: */*\r\n");
+        }
+        
+        // Add Accept-Encoding for compression if requested
+        if self.compressed && !has_accept_encoding {
+            request.push_str("Accept-Encoding: gzip, deflate\r\n");
         }
 
         // Content-Length if we have a body

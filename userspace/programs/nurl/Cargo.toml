@@ -11,12 +11,14 @@ path = "src/main.rs"
 nrlib = { workspace = true, optional = true, features = ["panic-handler"] }
 nexa_boot_info.workspace = true
 nssl = { path = "../../nssl", optional = true }
+nzip = { path = "../../nzip", optional = true }
 
 [features]
-default = ["use-nrlib", "https"]
+default = ["use-nrlib", "https", "compression"]
 use-nrlib = ["nrlib"]
 use-nrlib-std = ["nrlib", "nrlib/std"]
 https = ["nssl"]
+compression = ["nzip"]
 # Future HTTP/2 and HTTP/3 support
 http2 = []
 http3 = []

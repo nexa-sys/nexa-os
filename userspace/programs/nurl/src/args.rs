@@ -69,6 +69,8 @@ pub struct Args {
     pub insecure: bool,
     pub http_version: HttpVersion,
     pub output_file: Option<String>,
+    /// Request compressed response (gzip, deflate)
+    pub compressed: bool,
 }
 
 impl Args {
@@ -158,6 +160,9 @@ pub fn parse_args() -> Args {
             "--http3" => {
                 args.http_version = HttpVersion::Http3;
             }
+            "--compressed" => {
+                args.compressed = true;
+            }
             "--help" => {
                 print_usage();
                 process::exit(0);
@@ -195,6 +200,7 @@ pub fn print_usage() {
     eprintln!("  --http1.1              Force HTTP/1.1");
     eprintln!("  --http2                Use HTTP/2 (when available)");
     eprintln!("  --http3                Use HTTP/3 (when available)");
+    eprintln!("  --compressed           Request compressed response (gzip, deflate)");
     eprintln!("  --help                 Show this help message");
     eprintln!();
     eprintln!("Examples:");

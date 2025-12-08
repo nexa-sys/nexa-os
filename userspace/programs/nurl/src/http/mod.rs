@@ -34,6 +34,8 @@ pub enum HttpError {
     Timeout,
     /// Feature not supported
     NotSupported(String),
+    /// Decompression error
+    DecompressionError(String),
 }
 
 impl std::fmt::Display for HttpError {
@@ -47,6 +49,7 @@ impl std::fmt::Display for HttpError {
             HttpError::ProtocolError(msg) => write!(f, "Protocol error: {}", msg),
             HttpError::Timeout => write!(f, "Request timeout"),
             HttpError::NotSupported(msg) => write!(f, "Not supported: {}", msg),
+            HttpError::DecompressionError(msg) => write!(f, "Decompression error: {}", msg),
         }
     }
 }
@@ -85,6 +88,60 @@ impl HttpResponse {
     pub fn is_success(&self) -> bool {
         (200..300).contains(&self.status_code)
     }
+
+    /// Decompress the response body if Content-Encoding indicates compression
+    #[cfg(feature = "compression")]
+    pub fn decompress_body(&mut self) -> HttpResult<()> {
+        let encoding = match self.get_header("content-encoding") {
+            Some(enc) => enc.to_lowercase(),
+            None => return Ok(()), // No compression
+        };
+
+        let decompressed = match encoding.as_str() {
+            "gzip" => {
+                nzip::gzip::gzip_decompress(&self.body)
+                    .map_err(|e| HttpError::DecompressionError(format!("gzip: {:?}", e)))?
+            }
+            "deflate" => {
+                // Try zlib format first, fall back to raw deflate
+                let mut decompressor = nzip::zlib_format::ZlibDecompressor::new();
+                match decompressor.decompress(&self.body) {
+                    Ok((data, _)) => data,
+                    Err(_) => {
+                        // Try raw deflate
+                        let mut inflater = nzip::inflate::Inflater::new(15);
+                        inflater.decompress(&self.body)
+                            .map(|(data, _)| data)
+                            .map_err(|e| HttpError::DecompressionError(format!("deflate: {:?}", e)))?
+                    }
+                }
+            }
+            "identity" | "" => return Ok(()), // No compression
+            other => {
+                return Err(HttpError::DecompressionError(format!(
+                    "Unsupported encoding: {}", other
+                )));
+            }
+        };
+
+        self.body = decompressed;
+        
+        // Remove Content-Encoding header since we've decompressed
+        self.headers.retain(|(k, _)| !k.eq_ignore_ascii_case("content-encoding"));
+        
+        Ok(())
+    }
+
+    /// Decompress the response body (no-op if compression feature is disabled)
+    #[cfg(not(feature = "compression"))]
+    pub fn decompress_body(&mut self) -> HttpResult<()> {
+        if self.get_header("content-encoding").is_some() {
+            return Err(HttpError::NotSupported(
+                "Compression support not compiled in (enable 'compression' feature)".to_string()
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// Trait for HTTP client implementations
@@ -95,10 +152,10 @@ pub trait HttpClient {
 
 /// Perform an HTTP request using the appropriate protocol version
 pub fn perform_request(args: &Args, url: &ParsedUrl) -> HttpResult<HttpResponse> {
-    match args.http_version {
+    let mut response = match args.http_version {
         HttpVersion::Http1 => {
             let mut client = http1::Http1Client::new(args.verbose, args.insecure)?;
-            client.request(args, url)
+            client.request(args, url)?
         }
         HttpVersion::Http2 => {
             // TODO: Implement HTTP/2 support
@@ -107,7 +164,7 @@ pub fn perform_request(args: &Args, url: &ParsedUrl) -> HttpResult<HttpResponse>
                 eprintln!("* HTTP/2 not yet implemented, falling back to HTTP/1.1");
             }
             let mut client = http1::Http1Client::new(args.verbose, args.insecure)?;
-            client.request(args, url)
+            client.request(args, url)?
         }
         HttpVersion::Http3 => {
             // TODO: Implement HTTP/3 support
@@ -116,7 +173,19 @@ pub fn perform_request(args: &Args, url: &ParsedUrl) -> HttpResult<HttpResponse>
                 eprintln!("* HTTP/3 not yet implemented, falling back to HTTP/1.1");
             }
             let mut client = http1::Http1Client::new(args.verbose, args.insecure)?;
-            client.request(args, url)
+            client.request(args, url)?
         }
+    };
+
+    // Decompress response body if compressed
+    if args.compressed {
+        if let Some(encoding) = response.get_header("content-encoding") {
+            if args.verbose {
+                eprintln!("* Decompressing response (Content-Encoding: {})", encoding);
+            }
+        }
+        response.decompress_body()?;
     }
+
+    Ok(response)
 }

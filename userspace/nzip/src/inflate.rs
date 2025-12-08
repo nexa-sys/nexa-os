@@ -415,6 +415,11 @@ impl Inflater {
     pub fn checksum(&self) -> u32 {
         self.checksum.finalize()
     }
+
+    /// Check if decompression is finished
+    pub fn finished(&self) -> bool {
+        self.finished
+    }
 }
 
 /// Decompress zlib format data in one call

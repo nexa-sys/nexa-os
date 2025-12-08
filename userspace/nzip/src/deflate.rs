@@ -382,7 +382,10 @@ impl Deflater {
         let litlen_enc = HuffmanEncoder::from_lengths(&FIXED_LITLEN_LENGTHS);
         let dist_enc = HuffmanEncoder::from_lengths(&FIXED_DIST_LENGTHS);
         
-        for token in self.pending.iter() {
+        // Take ownership of pending to avoid borrow conflict
+        let tokens = core::mem::take(&mut self.pending);
+        
+        for token in tokens.iter() {
             match *token {
                 Token::Literal(byte) => {
                     let (code, bits) = litlen_enc.get(byte as usize);
@@ -417,11 +420,14 @@ impl Deflater {
 
     /// Write block with dynamic Huffman codes
     fn write_dynamic_block(&mut self) -> ZlibResult<()> {
+        // Take ownership of pending to avoid borrow conflict
+        let tokens = core::mem::take(&mut self.pending);
+        
         // Count symbol frequencies
         let mut litlen_freqs = [0u32; LITLEN_CODES];
         let mut dist_freqs = [0u32; DIST_CODES];
         
-        for token in self.pending.iter() {
+        for token in tokens.iter() {
             match *token {
                 Token::Literal(byte) => {
                     litlen_freqs[byte as usize] += 1;
@@ -492,7 +498,7 @@ impl Deflater {
         }
         
         // Write compressed data
-        for token in self.pending.iter() {
+        for token in tokens.iter() {
             match *token {
                 Token::Literal(byte) => {
                     let (code, bits) = litlen_enc.get(byte as usize);
@@ -537,6 +543,11 @@ impl Deflater {
     /// Get current checksum
     pub fn checksum(&self) -> u32 {
         self.checksum.finalize()
+    }
+
+    /// Get compression level
+    pub fn level(&self) -> i32 {
+        self.level
     }
 }
 

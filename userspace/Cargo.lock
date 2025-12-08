@@ -234,6 +234,7 @@ dependencies = [
  "nexa_boot_info",
  "nrlib",
  "nssl",
+ "nzip",
 ]
 
 [[package]]
