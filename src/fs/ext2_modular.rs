@@ -339,6 +339,98 @@ pub extern "C" fn kmod_ext2_unregister() -> i32 {
 }
 
 // ============================================================================
+// ext3/ext4 Module Registration Stubs
+// ============================================================================
+
+/// ext3 module operations (placeholder - ext3 extends ext2)
+static EXT3_MODULE_LOADED: Mutex<bool> = Mutex::new(false);
+
+/// ext4 module operations (placeholder - ext4 extends ext3)
+static EXT4_MODULE_LOADED: Mutex<bool> = Mutex::new(false);
+
+/// Register ext3 module operations
+/// Called by ext3.nkm during module_init
+#[no_mangle]
+pub extern "C" fn kmod_ext3_register(ops: *const u8) -> i32 {
+    if ops.is_null() {
+        crate::kerror!("ext3_modular: null ops pointer");
+        return -1;
+    }
+    
+    // ext3 is backward compatible with ext2, so we just mark it as loaded
+    // The actual operations are handled by the ext3 module itself
+    *EXT3_MODULE_LOADED.lock() = true;
+    crate::kinfo!("ext3_modular: module registered (journaling filesystem)");
+    0
+}
+
+/// Unregister ext3 module operations
+#[no_mangle]
+pub extern "C" fn kmod_ext3_unregister() -> i32 {
+    *EXT3_MODULE_LOADED.lock() = false;
+    crate::kinfo!("ext3_modular: module unregistered");
+    0
+}
+
+/// Register ext4 module operations
+/// Called by ext4.nkm during module_init
+#[no_mangle]
+pub extern "C" fn kmod_ext4_register(ops: *const u8) -> i32 {
+    if ops.is_null() {
+        crate::kerror!("ext4_modular: null ops pointer");
+        return -1;
+    }
+    
+    // ext4 is backward compatible with ext3/ext2
+    *EXT4_MODULE_LOADED.lock() = true;
+    crate::kinfo!("ext4_modular: module registered (extent-based filesystem)");
+    0
+}
+
+/// Unregister ext4 module operations
+#[no_mangle]
+pub extern "C" fn kmod_ext4_unregister() -> i32 {
+    *EXT4_MODULE_LOADED.lock() = false;
+    crate::kinfo!("ext4_modular: module unregistered");
+    0
+}
+
+/// Check if a module is loaded by name
+/// Used by ext3/ext4 modules to check dependencies
+#[no_mangle]
+pub extern "C" fn kmod_is_module_loaded(name: *const u8, name_len: usize) -> i32 {
+    if name.is_null() || name_len == 0 {
+        return 0;
+    }
+    
+    let name_bytes = unsafe { core::slice::from_raw_parts(name, name_len) };
+    let name_str = match core::str::from_utf8(name_bytes) {
+        Ok(s) => s,
+        Err(_) => return 0,
+    };
+    
+    match name_str {
+        "ext2" => if EXT2_OPS.lock().is_valid() { 1 } else { 0 },
+        "ext3" => if *EXT3_MODULE_LOADED.lock() { 1 } else { 0 },
+        "ext4" => if *EXT4_MODULE_LOADED.lock() { 1 } else { 0 },
+        _ => {
+            // Check with kernel module manager for other modules
+            if crate::kmod::is_loaded(name_str) { 1 } else { 0 }
+        }
+    }
+}
+
+/// Check if ext3 module is loaded
+pub fn is_ext3_loaded() -> bool {
+    *EXT3_MODULE_LOADED.lock()
+}
+
+/// Check if ext4 module is loaded
+pub fn is_ext4_loaded() -> bool {
+    *EXT4_MODULE_LOADED.lock()
+}
+
+// ============================================================================
 // Kernel API (used by VFS and boot stages)
 // ============================================================================
 
@@ -756,8 +848,39 @@ pub fn register_symbols() {
         kmod_ext2_unregister as *const () as u64,
         SymbolType::Function,
     );
+    
+    // ext3 module API symbols
+    register_symbol(
+        "kmod_ext3_register",
+        kmod_ext3_register as *const () as u64,
+        SymbolType::Function,
+    );
+    register_symbol(
+        "kmod_ext3_unregister",
+        kmod_ext3_unregister as *const () as u64,
+        SymbolType::Function,
+    );
+    
+    // ext4 module API symbols
+    register_symbol(
+        "kmod_ext4_register",
+        kmod_ext4_register as *const () as u64,
+        SymbolType::Function,
+    );
+    register_symbol(
+        "kmod_ext4_unregister",
+        kmod_ext4_unregister as *const () as u64,
+        SymbolType::Function,
+    );
+    
+    // Module dependency check API
+    register_symbol(
+        "kmod_is_module_loaded",
+        kmod_is_module_loaded as *const () as u64,
+        SymbolType::Function,
+    );
 
-    crate::kinfo!("ext2_modular: kernel symbols registered");
+    crate::kinfo!("ext2_modular: kernel symbols registered (ext2/ext3/ext4)");
 }
 
 // ============================================================================

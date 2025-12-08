@@ -192,6 +192,16 @@ modules:
     - name: ext2
       type: 1
       description: "ext2 filesystem driver"
+    - name: ext3
+      type: 1
+      description: "ext3 filesystem driver (journaling)"
+      depends:
+        - ext2
+    - name: ext4
+      type: 1
+      description: "ext4 filesystem driver (extents)"
+      depends:
+        - ext3
   
   block:
     - name: virtio_blk
