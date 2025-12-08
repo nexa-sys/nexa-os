@@ -7,11 +7,13 @@
 //! - Virtual Memory Area (VMA) management for process address spaces
 //! - NUMA topology support
 //! - Memory region detection
+//! - Swap subsystem support
 
 pub mod allocator;
 pub mod memory;
 pub mod numa;
 pub mod paging;
+pub mod swap;
 pub mod vma;
 pub mod vmalloc;
 
@@ -54,4 +56,11 @@ pub use vma::{
     free_address_space, get_address_space, init_address_space, AddressSpace, VMA, VMABacking,
     VMAFlags, VMAManager, VMAPermissions, VMAStats, MAX_ADDRESS_SPACES, MAX_VMAS,
     PAGE_SIZE as VMA_PAGE_SIZE,
+};
+
+// Re-export from swap
+pub use swap::{
+    get_swap_info, get_swap_stats, is_swap_available, kmod_swap_register, kmod_swap_unregister,
+    make_swap_pte, print_swap_stats, pte_is_swap, pte_to_swap_entry, swap_free, swap_in, swap_out,
+    SwapEntry, SwapInfo, SwapModuleOps, SWAP_FLAG_DISCARD, SWAP_FLAG_PREFER, SWAP_FLAG_PRIO_MASK,
 };

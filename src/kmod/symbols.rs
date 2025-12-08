@@ -395,6 +395,18 @@ pub fn init() {
         SymbolType::Function,
     );
 
+    // Register swap module API
+    register_symbol(
+        "kmod_swap_register",
+        crate::mm::swap::kmod_swap_register as *const () as u64,
+        SymbolType::Function,
+    );
+    register_symbol(
+        "kmod_swap_unregister",
+        crate::mm::swap::kmod_swap_unregister as *const () as u64,
+        SymbolType::Function,
+    );
+
     crate::kinfo!(
         "Kernel symbol table initialized with {} symbols",
         symbol_count()

@@ -316,6 +316,11 @@ pub fn generate_meminfo() -> (&'static [u8], usize) {
     let buffers_kb: u64 = 0;
     let cached_kb = heap_peak_kb.saturating_sub(heap_used_kb);
 
+    // Get swap statistics
+    let (swap_total, swap_free) = crate::mm::swap::get_swap_stats();
+    let swap_total_kb = swap_total / 1024;
+    let swap_free_kb = swap_free / 1024;
+
     let _ = writeln!(writer, "MemTotal:       {:8} kB", total_kb);
     let _ = writeln!(writer, "MemFree:        {:8} kB", free_kb);
     let _ = writeln!(writer, "MemAvailable:   {:8} kB", available_kb);
@@ -324,8 +329,8 @@ pub fn generate_meminfo() -> (&'static [u8], usize) {
     let _ = writeln!(writer, "SwapCached:     {:8} kB", 0u64);
     let _ = writeln!(writer, "Active:         {:8} kB", heap_used_kb);
     let _ = writeln!(writer, "Inactive:       {:8} kB", cached_kb);
-    let _ = writeln!(writer, "SwapTotal:      {:8} kB", 0u64);
-    let _ = writeln!(writer, "SwapFree:       {:8} kB", 0u64);
+    let _ = writeln!(writer, "SwapTotal:      {:8} kB", swap_total_kb);
+    let _ = writeln!(writer, "SwapFree:       {:8} kB", swap_free_kb);
     let _ = writeln!(writer, "Dirty:          {:8} kB", 0u64);
     let _ = writeln!(writer, "Writeback:      {:8} kB", 0u64);
     let _ = writeln!(writer, "AnonPages:      {:8} kB", heap_used_kb);
@@ -711,6 +716,37 @@ pub fn generate_pid_maps(pid: Pid) -> Option<(&'static [u8], usize)> {
     let len = writer.len();
     let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), len) };
     Some((slice, len))
+}
+
+/// Generate /proc/swaps content
+/// Format: Filename    Type        Size    Used    Priority
+pub fn generate_swaps() -> (&'static [u8], usize) {
+    let mut buf = PROC_BUFFER.lock();
+    let mut writer = BufWriter::new(&mut buf[..]);
+
+    // Header line (Linux-compatible)
+    let _ = writeln!(writer, "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority");
+
+    // Get swap info if available
+    if let Some(info) = crate::mm::swap::get_swap_info() {
+        // Get path as string
+        let path = core::str::from_utf8(&info.path[..info.path_len]).unwrap_or("/dev/swap0");
+        let swap_type = core::str::from_utf8(&info.swap_type[..info.swap_type.iter().position(|&c| c == 0).unwrap_or(info.swap_type.len())]).unwrap_or("partition");
+        
+        let _ = writeln!(
+            writer,
+            "{}\t\t\t\t{}\t\t{}\t\t{}\t\t{}",
+            path,
+            swap_type,
+            info.size_kb,
+            info.used_kb,
+            info.priority
+        );
+    }
+
+    let len = writer.len();
+    let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), len) };
+    (slice, len)
 }
 
 /// Check if a PID exists in the process table
