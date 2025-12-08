@@ -28,6 +28,8 @@ pub enum NetError {
     NoDevice,
     /// Driver module not loaded
     ModuleNotLoaded,
+    /// Network stack not ready (feature disabled)
+    NotReady,
 }
 
 /// Driver instance - modular drivers loaded from .nkm modules

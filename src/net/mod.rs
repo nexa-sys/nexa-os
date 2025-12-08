@@ -48,13 +48,100 @@ pub mod netlink {
     //! Netlink stub module (feature disabled)
 }
 
+#[cfg(feature = "net_full")]
 pub mod stack;
+#[cfg(not(feature = "net_full"))]
+pub mod stack {
+    //! Network stack stub module (feature disabled)
+    //! This module requires the full network stack (net_full feature)
+    
+    use super::drivers::NetError;
+    
+    pub const MAX_FRAME_SIZE: usize = 1536;
+    pub const UDP_MAX_PAYLOAD: usize = MAX_FRAME_SIZE - 14 - 20 - 8;
+
+    /// Stub TxBatch when network stack is disabled
+    pub struct TxBatch;
+    
+    impl TxBatch {
+        pub fn new() -> Self { Self }
+        pub fn is_empty(&self) -> bool { true }
+        pub fn len(&self) -> usize { 0 }
+    }
+
+    /// Stub device info
+    #[derive(Clone, Copy)]
+    pub struct DeviceInfo {
+        pub mac: [u8; 6],
+        pub ip: [u8; 4],
+    }
+
+    /// Stub UDP receive result
+    pub struct UdpReceiveResult {
+        pub bytes_copied: usize,
+        pub payload_len: usize,
+        pub src_ip: [u8; 4],
+        pub src_port: u16,
+        pub truncated: bool,
+    }
+
+    /// Stub NetStack when network stack is disabled
+    pub struct NetStack;
+
+    impl NetStack {
+        pub const fn new() -> Self { Self }
+        
+        // TCP stubs
+        pub fn tcp_socket(&mut self) -> Result<usize, NetError> { Err(NetError::NotReady) }
+        pub fn tcp_close(&mut self, _idx: usize) -> Result<(), NetError> { Err(NetError::NotReady) }
+        pub fn tcp_send(&mut self, _idx: usize, _data: &[u8]) -> Result<usize, NetError> { Err(NetError::NotReady) }
+        pub fn tcp_recv(&mut self, _idx: usize, _buf: &mut [u8]) -> Result<usize, NetError> { Err(NetError::NotReady) }
+        pub fn tcp_poll(&mut self, _idx: usize, _tx: &mut TxBatch) -> Result<(), NetError> { Err(NetError::NotReady) }
+        pub fn tcp_connect(&mut self, _idx: usize, _dev: usize, _ip: [u8; 4], _port: u16, _local_port: u16, _tx: &mut TxBatch) -> Result<(), NetError> { Err(NetError::NotReady) }
+        pub fn tcp_get_state(&mut self, _idx: usize) -> Result<super::tcp::TcpState, NetError> { Err(NetError::NotReady) }
+        pub fn tcp_add_waiter(&mut self, _idx: usize, _pid: crate::process::Pid) -> Result<(), NetError> { Err(NetError::NotReady) }
+        
+        // UDP stubs
+        pub fn udp_socket(&mut self, _port: u16) -> Result<usize, NetError> { Err(NetError::NotReady) }
+        pub fn udp_close(&mut self, _idx: usize) -> Result<(), NetError> { Err(NetError::NotReady) }
+        pub fn udp_send(&mut self, _dev: usize, _idx: usize, _ip: [u8; 4], _port: u16, _data: &[u8], _tx: &mut TxBatch) -> Result<usize, NetError> { Err(NetError::NotReady) }
+        pub fn udp_receive(&mut self, _idx: usize, _buf: &mut [u8]) -> Result<UdpReceiveResult, NetError> { Err(NetError::NotReady) }
+        pub fn is_udp_port_available(&self, _port: u16) -> bool { true }
+        
+        // Netlink stubs
+        pub fn netlink_socket(&mut self) -> Result<usize, NetError> { Err(NetError::NotReady) }
+        pub fn netlink_close(&mut self, _idx: usize) -> Result<(), NetError> { Err(NetError::NotReady) }
+        pub fn netlink_bind(&mut self, _idx: usize, _pid: u32, _groups: u32) -> Result<(), NetError> { Err(NetError::NotReady) }
+        pub fn netlink_send(&mut self, _idx: usize, _data: &[u8]) -> Result<usize, NetError> { Err(NetError::NotReady) }
+        pub fn netlink_receive(&mut self, _idx: usize, _buf: &mut [u8]) -> Result<usize, NetError> { Err(NetError::NotReady) }
+        
+        // Device info stub
+        pub fn get_device_info(&self, _idx: usize) -> Option<DeviceInfo> { None }
+        pub fn register_device(&mut self, _idx: usize, _mac: [u8; 6]) {}
+    }
+}
 
 #[cfg(feature = "net_tcp")]
 pub mod tcp;
 #[cfg(not(feature = "net_tcp"))]
 pub mod tcp {
     //! TCP stub module (feature disabled)
+    
+    /// Stub TcpState for when TCP is disabled
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum TcpState {
+        Closed,
+        Listen,
+        SynSent,
+        SynReceived,
+        Established,
+        FinWait1,
+        FinWait2,
+        CloseWait,
+        Closing,
+        LastAck,
+        TimeWait,
+    }
 }
 
 #[cfg(feature = "net_udp")]
@@ -99,6 +186,7 @@ impl DeviceSlot {
     }
 }
 
+#[cfg(feature = "net_full")]
 struct NetState {
     slots: [DeviceSlot; MAX_NET_DEVICES],
     stack: stack::NetStack,
@@ -106,6 +194,7 @@ struct NetState {
     last_poll_ms: u64,
 }
 
+#[cfg(feature = "net_full")]
 impl NetState {
     const fn new() -> Self {
         Self {
@@ -122,14 +211,39 @@ impl NetState {
     }
 }
 
+#[cfg(not(feature = "net_full"))]
+struct NetState {
+    slots: [DeviceSlot; MAX_NET_DEVICES],
+    activated: bool,
+    last_poll_ms: u64,
+}
+
+#[cfg(not(feature = "net_full"))]
+impl NetState {
+    const fn new() -> Self {
+        Self {
+            slots: [
+                DeviceSlot::new(),
+                DeviceSlot::new(),
+                DeviceSlot::new(),
+                DeviceSlot::new(),
+            ],
+            activated: false,
+            last_poll_ms: 0,
+        }
+    }
+}
+
 static NET_STATE: Mutex<NetState> = Mutex::new(NetState::new());
 
 static NET_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
+#[cfg(feature = "net_full")]
 struct IrqCookie {
     device_index: usize,
 }
 
+#[cfg(feature = "net_full")]
 static IRQ_COOKIES: Mutex<[IrqCookie; MAX_NET_DEVICES]> = Mutex::new([
     IrqCookie { device_index: 0 },
     IrqCookie { device_index: 1 },
@@ -137,9 +251,11 @@ static IRQ_COOKIES: Mutex<[IrqCookie; MAX_NET_DEVICES]> = Mutex::new([
     IrqCookie { device_index: 3 },
 ]);
 
+#[cfg(feature = "net_full")]
 const INVALID_IRQ_LINE: u8 = 0xFF;
 
 /// Access the network stack safely
+#[cfg(feature = "net_full")]
 pub fn with_net_stack<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut stack::NetStack) -> R,
@@ -151,7 +267,17 @@ where
     Some(f(&mut state.stack))
 }
 
+/// Access the network stack safely (stub when net_full disabled)
+#[cfg(not(feature = "net_full"))]
+pub fn with_net_stack<F, R>(_f: F) -> Option<R>
+where
+    F: FnOnce(&mut stack::NetStack) -> R,
+{
+    None
+}
+
 /// Send a batch of frames on a specific device
+#[cfg(feature = "net_full")]
 pub fn send_frames(device_index: usize, batch: &stack::TxBatch) -> Result<(), drivers::NetError> {
     crate::kdebug!(
         "[send_frames] device_index={}, MAX_NET_DEVICES={}",
@@ -182,6 +308,12 @@ pub fn send_frames(device_index: usize, batch: &stack::TxBatch) -> Result<(), dr
     }
 }
 
+/// Send a batch of frames on a specific device (stub when net_full disabled)
+#[cfg(not(feature = "net_full"))]
+pub fn send_frames(_device_index: usize, _batch: &stack::TxBatch) -> Result<(), drivers::NetError> {
+    Err(drivers::NetError::NotReady)
+}
+
 /// Called from the UEFI compatibility layer to mirror descriptors into the
 /// runtime registry.
 pub fn ingest_boot_descriptor(index: usize, descriptor: NetworkDescriptor) {
@@ -209,6 +341,7 @@ pub fn ingest_boot_descriptor(index: usize, descriptor: NetworkDescriptor) {
 
 /// Finalizes NIC drivers and the in-kernel network stack. Safe to call more
 /// than once; subsequent calls become no-ops.
+#[cfg(feature = "net_full")]
 pub fn init() {
     crate::kinfo!("[net::init] Starting network initialization");
 
@@ -280,6 +413,13 @@ pub fn init() {
     state.activated = true;
 }
 
+/// Stub init when net_full is disabled
+#[cfg(not(feature = "net_full"))]
+pub fn init() {
+    crate::kinfo!("[net::init] Network stack disabled (net_full feature not enabled)");
+}
+
+#[cfg(feature = "net_full")]
 fn register_device_irq(idx: usize, line: u8) {
     if line == 0 || line == INVALID_IRQ_LINE {
         crate::kwarn!("net: device {} missing legacy IRQ assignment", idx);
@@ -327,6 +467,7 @@ fn register_device_irq(idx: usize, line: u8) {
     */
 }
 
+#[cfg(feature = "net_full")]
 fn net_irq_trampoline(_line: u8, ctx: *mut ()) {
     if ctx.is_null() {
         return;
@@ -336,6 +477,7 @@ fn net_irq_trampoline(_line: u8, ctx: *mut ()) {
 }
 
 /// Invoked from the shared IRQ dispatcher when the NIC asserts INTx.
+#[cfg(feature = "net_full")]
 pub fn handle_irq(device_index: usize) {
     let mut guard = NET_STATE.lock();
     let state = &mut *guard;
@@ -348,8 +490,13 @@ pub fn handle_irq(device_index: usize) {
     }
 }
 
+/// Stub handle_irq when net_full is disabled
+#[cfg(not(feature = "net_full"))]
+pub fn handle_irq(_device_index: usize) {}
+
 /// Periodic polling hook (timer interrupt) used for link maintenance and
 /// protocol timers.
+#[cfg(feature = "net_full")]
 pub fn poll() {
     if !NET_INITIALIZED.load(Ordering::Relaxed) {
         return;
@@ -394,6 +541,11 @@ pub fn poll() {
     state.last_poll_ms = now_ms;
 }
 
+/// Stub poll when net_full is disabled
+#[cfg(not(feature = "net_full"))]
+pub fn poll() {}
+
+#[cfg(feature = "net_full")]
 fn drain_rx(
     driver: &mut drivers::DriverInstance,
     stack: &mut stack::NetStack,
@@ -470,6 +622,7 @@ fn drain_rx(
     }
 }
 
+#[cfg(feature = "net_full")]
 fn produce_pending_frames(
     driver: &mut drivers::DriverInstance,
     stack: &mut stack::NetStack,
@@ -482,6 +635,7 @@ fn produce_pending_frames(
     Ok(())
 }
 
+#[cfg(feature = "net_full")]
 fn transmit_batch(
     driver: &mut drivers::DriverInstance,
     batch: &stack::TxBatch,
