@@ -12,6 +12,12 @@ pub const SYS_STAT: u64 = 4;
 pub const SYS_FSTAT: u64 = 5;
 pub const SYS_LSEEK: u64 = 8;
 
+// Vectored and positioned I/O (Linux-compatible)
+pub const SYS_PREAD64: u64 = 17;
+pub const SYS_PWRITE64: u64 = 18;
+pub const SYS_READV: u64 = 19;
+pub const SYS_WRITEV: u64 = 20;
+
 // Memory management (Linux-compatible)
 pub const SYS_MMAP: u64 = 9;
 pub const SYS_MPROTECT: u64 = 10;

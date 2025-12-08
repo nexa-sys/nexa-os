@@ -52,6 +52,20 @@ pub const SO_SNDTIMEO: i32 = 21;
 pub const USER_LOW_START: u64 = 0x1000;
 pub const USER_LOW_END: u64 = 0x4000_0000;
 
+// Maximum iov count for readv/writev (Linux UIO_MAXIOV)
+pub const UIO_MAXIOV: usize = 1024;
+
+/// I/O vector for scatter/gather I/O (readv/writev)
+/// Compatible with POSIX struct iovec
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct IoVec {
+    /// Base address of the buffer
+    pub iov_base: *mut u8,
+    /// Length of the buffer in bytes
+    pub iov_len: usize,
+}
+
 /// Request structure for listing directory contents
 #[repr(C)]
 pub struct ListDirRequest {

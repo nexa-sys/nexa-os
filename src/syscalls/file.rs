@@ -333,6 +333,365 @@ pub fn write(fd: u64, buf: u64, count: u64) -> u64 {
     u64::MAX
 }
 
+/// pwrite64 system call - write at a specified offset without changing file position
+/// Unlike write(), this does not modify the file offset.
+pub fn pwrite64(fd: u64, buf: u64, count: u64, offset: i64) -> u64 {
+    ktrace!("[SYS_PWRITE64] fd={} count={} offset={}", fd, count, offset);
+    
+    if count == 0 {
+        posix::set_errno(0);
+        return 0;
+    }
+
+    if buf == 0 {
+        posix::set_errno(posix::errno::EFAULT);
+        return u64::MAX;
+    }
+
+    if offset < 0 {
+        posix::set_errno(posix::errno::EINVAL);
+        return u64::MAX;
+    }
+
+    // pwrite64 doesn't work on stdout/stderr (they don't support seeking)
+    if fd == STDOUT || fd == STDERR {
+        posix::set_errno(posix::errno::ESPIPE);
+        return u64::MAX;
+    }
+
+    if fd < FD_BASE {
+        posix::set_errno(posix::errno::EBADF);
+        return u64::MAX;
+    }
+
+    let idx = (fd - FD_BASE) as usize;
+    if idx >= MAX_OPEN_FILES {
+        posix::set_errno(posix::errno::EBADF);
+        return u64::MAX;
+    }
+
+    unsafe {
+        if let Some(handle) = get_file_handle(idx) {
+            match handle.backing {
+                FileBacking::StdStream(_) => {
+                    // Streams don't support positioned I/O
+                    posix::set_errno(posix::errno::ESPIPE);
+                    return u64::MAX;
+                }
+                FileBacking::Socket(_) | FileBacking::Socketpair(_) => {
+                    // Sockets don't support positioned I/O
+                    posix::set_errno(posix::errno::ESPIPE);
+                    return u64::MAX;
+                }
+                FileBacking::Ext2(ref file_ref) => {
+                    if !crate::fs::ext2_is_writable() {
+                        ktrace!("[SYS_PWRITE64] ERROR: ext2 filesystem is read-only");
+                        posix::set_errno(posix::errno::EROFS);
+                        return u64::MAX;
+                    }
+
+                    if !user_buffer_in_range(buf, count) {
+                        posix::set_errno(posix::errno::EFAULT);
+                        return u64::MAX;
+                    }
+
+                    let data = core::slice::from_raw_parts(buf as *const u8, count as usize);
+
+                    // Write at the specified offset (don't update file position)
+                    match crate::fs::ext2_write_at(file_ref, offset as usize, data) {
+                        Ok(bytes_written) => {
+                            ktrace!("[SYS_PWRITE64] Ext2 wrote {} bytes at offset {}", bytes_written, offset);
+                            posix::set_errno(0);
+                            return bytes_written as u64;
+                        }
+                        Err(e) => {
+                            ktrace!("[SYS_PWRITE64] ERROR: Ext2 write failed: {:?}", e);
+                            posix::set_errno(posix::errno::EIO);
+                            return u64::MAX;
+                        }
+                    }
+                }
+                FileBacking::Inline(_) => {
+                    // Inline files (from initramfs) are read-only
+                    posix::set_errno(posix::errno::EROFS);
+                    return u64::MAX;
+                }
+                FileBacking::DevRandom | FileBacking::DevUrandom => {
+                    // Writing to /dev/random adds entropy (offset is ignored)
+                    if !user_buffer_in_range(buf, count) {
+                        posix::set_errno(posix::errno::EFAULT);
+                        return u64::MAX;
+                    }
+                    let data = core::slice::from_raw_parts(buf as *const u8, count as usize);
+                    crate::drivers::dev_random_write(data);
+                    posix::set_errno(0);
+                    return count;
+                }
+                FileBacking::DevNull | FileBacking::DevZero => {
+                    // Discards all writes
+                    posix::set_errno(0);
+                    return count;
+                }
+            }
+        }
+    }
+
+    posix::set_errno(posix::errno::EBADF);
+    u64::MAX
+}
+
+/// pread64 system call - read at a specified offset without changing file position
+/// Unlike read(), this does not modify the file offset.
+pub fn pread64(fd: u64, buf: *mut u8, count: usize, offset: i64) -> u64 {
+    ktrace!("[SYS_PREAD64] fd={} count={} offset={}", fd, count, offset);
+    
+    if buf.is_null() {
+        posix::set_errno(posix::errno::EFAULT);
+        return u64::MAX;
+    }
+
+    if !user_buffer_in_range(buf as u64, count as u64) {
+        posix::set_errno(posix::errno::EFAULT);
+        return u64::MAX;
+    }
+
+    if count == 0 {
+        posix::set_errno(0);
+        return 0;
+    }
+
+    if offset < 0 {
+        posix::set_errno(posix::errno::EINVAL);
+        return u64::MAX;
+    }
+
+    // pread64 doesn't work on stdin
+    if fd == STDIN {
+        posix::set_errno(posix::errno::ESPIPE);
+        return u64::MAX;
+    }
+
+    if fd < FD_BASE {
+        posix::set_errno(posix::errno::EBADF);
+        return u64::MAX;
+    }
+
+    let idx = (fd - FD_BASE) as usize;
+    if idx >= MAX_OPEN_FILES {
+        posix::set_errno(posix::errno::EBADF);
+        return u64::MAX;
+    }
+
+    unsafe {
+        if let Some(handle) = get_file_handle(idx) {
+            match handle.backing {
+                FileBacking::StdStream(_) => {
+                    posix::set_errno(posix::errno::ESPIPE);
+                    return u64::MAX;
+                }
+                FileBacking::Socket(_) | FileBacking::Socketpair(_) => {
+                    posix::set_errno(posix::errno::ESPIPE);
+                    return u64::MAX;
+                }
+                FileBacking::Ext2(ref file_ref) => {
+                    let buffer = core::slice::from_raw_parts_mut(buf, count);
+                    
+                    // Read at the specified offset (don't update file position)
+                    let bytes_read = crate::fs::ext2_read_at(file_ref, offset as usize, buffer);
+                    ktrace!("[SYS_PREAD64] Ext2 read {} bytes from offset {}", bytes_read, offset);
+                    posix::set_errno(0);
+                    return bytes_read as u64;
+                }
+                FileBacking::Inline(data) => {
+                    let file_size = data.len();
+                    if offset as usize >= file_size {
+                        posix::set_errno(0);
+                        return 0;
+                    }
+                    let available = file_size - offset as usize;
+                    let to_read = cmp::min(count, available);
+                    let buffer = core::slice::from_raw_parts_mut(buf, to_read);
+                    buffer.copy_from_slice(&data[offset as usize..offset as usize + to_read]);
+                    posix::set_errno(0);
+                    return to_read as u64;
+                }
+                FileBacking::DevRandom | FileBacking::DevUrandom => {
+                    let buffer = core::slice::from_raw_parts_mut(buf, count);
+                    crate::drivers::dev_random_read(buffer);
+                    posix::set_errno(0);
+                    return count as u64;
+                }
+                FileBacking::DevNull => {
+                    posix::set_errno(0);
+                    return 0;
+                }
+                FileBacking::DevZero => {
+                    let buffer = core::slice::from_raw_parts_mut(buf, count);
+                    buffer.fill(0);
+                    posix::set_errno(0);
+                    return count as u64;
+                }
+            }
+        }
+    }
+
+    posix::set_errno(posix::errno::EBADF);
+    u64::MAX
+}
+
+/// writev system call - write data from multiple buffers (scatter-gather I/O)
+pub fn writev(fd: u64, iov: *const IoVec, iovcnt: i32) -> u64 {
+    ktrace!("[SYS_WRITEV] fd={} iovcnt={}", fd, iovcnt);
+    
+    if iovcnt <= 0 {
+        if iovcnt == 0 {
+            posix::set_errno(0);
+            return 0;
+        }
+        posix::set_errno(posix::errno::EINVAL);
+        return u64::MAX;
+    }
+
+    if iovcnt as usize > UIO_MAXIOV {
+        posix::set_errno(posix::errno::EINVAL);
+        return u64::MAX;
+    }
+
+    if iov.is_null() {
+        posix::set_errno(posix::errno::EFAULT);
+        return u64::MAX;
+    }
+
+    // Validate the iovec array is accessible
+    let iov_size = (iovcnt as usize) * core::mem::size_of::<IoVec>();
+    if !user_buffer_in_range(iov as u64, iov_size as u64) {
+        posix::set_errno(posix::errno::EFAULT);
+        return u64::MAX;
+    }
+
+    let iovecs = unsafe { core::slice::from_raw_parts(iov, iovcnt as usize) };
+
+    let mut total_written: u64 = 0;
+
+    for vec in iovecs {
+        if vec.iov_len == 0 {
+            continue;
+        }
+
+        // Each buffer must be valid
+        if !user_buffer_in_range(vec.iov_base as u64, vec.iov_len as u64) {
+            if total_written > 0 {
+                posix::set_errno(0);
+                return total_written;
+            }
+            posix::set_errno(posix::errno::EFAULT);
+            return u64::MAX;
+        }
+
+        let bytes_written = write(fd, vec.iov_base as u64, vec.iov_len as u64);
+        
+        if bytes_written == u64::MAX {
+            // Error occurred
+            if total_written > 0 {
+                // Return partial write
+                posix::set_errno(0);
+                return total_written;
+            }
+            // errno is already set by write()
+            return u64::MAX;
+        }
+
+        total_written += bytes_written;
+
+        // Short write - stop here
+        if bytes_written < vec.iov_len as u64 {
+            break;
+        }
+    }
+
+    posix::set_errno(0);
+    total_written
+}
+
+/// readv system call - read data into multiple buffers (scatter-gather I/O)
+pub fn readv(fd: u64, iov: *const IoVec, iovcnt: i32) -> u64 {
+    ktrace!("[SYS_READV] fd={} iovcnt={}", fd, iovcnt);
+    
+    if iovcnt <= 0 {
+        if iovcnt == 0 {
+            posix::set_errno(0);
+            return 0;
+        }
+        posix::set_errno(posix::errno::EINVAL);
+        return u64::MAX;
+    }
+
+    if iovcnt as usize > UIO_MAXIOV {
+        posix::set_errno(posix::errno::EINVAL);
+        return u64::MAX;
+    }
+
+    if iov.is_null() {
+        posix::set_errno(posix::errno::EFAULT);
+        return u64::MAX;
+    }
+
+    // Validate the iovec array is accessible
+    let iov_size = (iovcnt as usize) * core::mem::size_of::<IoVec>();
+    if !user_buffer_in_range(iov as u64, iov_size as u64) {
+        posix::set_errno(posix::errno::EFAULT);
+        return u64::MAX;
+    }
+
+    let iovecs = unsafe { core::slice::from_raw_parts(iov, iovcnt as usize) };
+
+    let mut total_read: u64 = 0;
+
+    for vec in iovecs {
+        if vec.iov_len == 0 {
+            continue;
+        }
+
+        // Each buffer must be valid
+        if !user_buffer_in_range(vec.iov_base as u64, vec.iov_len as u64) {
+            if total_read > 0 {
+                posix::set_errno(0);
+                return total_read;
+            }
+            posix::set_errno(posix::errno::EFAULT);
+            return u64::MAX;
+        }
+
+        let bytes_read = read(fd, vec.iov_base, vec.iov_len);
+        
+        if bytes_read == u64::MAX {
+            // Error occurred
+            if total_read > 0 {
+                // Return partial read
+                posix::set_errno(0);
+                return total_read;
+            }
+            // errno is already set by read()
+            return u64::MAX;
+        }
+
+        if bytes_read == 0 {
+            // EOF
+            break;
+        }
+
+        total_read += bytes_read;
+
+        // Short read - stop here
+        if bytes_read < vec.iov_len as u64 {
+            break;
+        }
+    }
+
+    posix::set_errno(0);
+    total_read
+}
+
 /// Read from keyboard input
 pub fn read_from_keyboard(buf: *mut u8, count: usize) -> u64 {
     use x86_64::instructions::interrupts;

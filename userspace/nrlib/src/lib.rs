@@ -140,6 +140,12 @@ const SYS_MPROTECT: u64 = 10;
 const SYS_MUNMAP: u64 = 11;
 const SYS_BRK: u64 = 12;
 
+// Vectored and positioned I/O (Linux-compatible)
+const SYS_PREAD64: u64 = 17;
+const SYS_PWRITE64: u64 = 18;
+const SYS_READV: u64 = 19;
+const SYS_WRITEV: u64 = 20;
+
 const SYS_PIPE: u64 = 22;
 const SYS_DUP: u64 = 32;
 const SYS_DUP2: u64 = 33;
@@ -796,6 +802,45 @@ pub extern "C" fn write(fd: i32, buf: *const c_void, count: usize) -> isize {
     // Temporarily disable all logging to debug the issue
     let ret_raw = syscall3(SYS_WRITE, fd as u64, buf as u64, count as u64);
     translate_ret_isize(ret_raw)
+}
+
+/// pread64 - read from a file descriptor at a given offset
+/// Unlike read(), the file offset is not changed.
+#[no_mangle]
+pub extern "C" fn pread64(fd: i32, buf: *mut c_void, count: usize, offset: off_t) -> isize {
+    translate_ret_isize(syscall4(SYS_PREAD64, fd as u64, buf as u64, count as u64, offset as u64))
+}
+
+/// pread - alias for pread64
+#[no_mangle]
+pub extern "C" fn pread(fd: i32, buf: *mut c_void, count: usize, offset: off_t) -> isize {
+    pread64(fd, buf, count, offset)
+}
+
+/// pwrite64 - write to a file descriptor at a given offset
+/// Unlike write(), the file offset is not changed.
+#[no_mangle]
+pub extern "C" fn pwrite64(fd: i32, buf: *const c_void, count: usize, offset: off_t) -> isize {
+    translate_ret_isize(syscall4(SYS_PWRITE64, fd as u64, buf as u64, count as u64, offset as u64))
+}
+
+/// pwrite - alias for pwrite64
+#[no_mangle]
+pub extern "C" fn pwrite(fd: i32, buf: *const c_void, count: usize, offset: off_t) -> isize {
+    pwrite64(fd, buf, count, offset)
+}
+
+// Note: readv and writev are implemented in libc_compat/io.rs
+// They now use the kernel's native SYS_READV/SYS_WRITEV syscalls internally
+
+/// Internal readv implementation using native kernel syscall
+pub(crate) fn readv_impl(fd: i32, iov: *const c_void, iovcnt: i32) -> isize {
+    translate_ret_isize(syscall3(SYS_READV, fd as u64, iov as u64, iovcnt as u64))
+}
+
+/// Internal writev implementation using native kernel syscall
+pub(crate) fn writev_impl(fd: i32, iov: *const c_void, iovcnt: i32) -> isize {
+    translate_ret_isize(syscall3(SYS_WRITEV, fd as u64, iov as u64, iovcnt as u64))
 }
 
 #[no_mangle]

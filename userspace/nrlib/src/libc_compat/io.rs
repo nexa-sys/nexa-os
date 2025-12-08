@@ -183,39 +183,17 @@ pub unsafe extern "C" fn fstatat64(
 // Vector I/O
 // ============================================================================
 
+/// readv - read data into multiple buffers using native kernel syscall
 #[no_mangle]
 pub unsafe extern "C" fn readv(fd: c_int, iov: *const iovec, iovcnt: c_int) -> ssize_t {
-    let mut total: ssize_t = 0;
-    for i in 0..iovcnt as usize {
-        let vec = &*iov.add(i);
-        let n = crate::read(fd, vec.iov_base, vec.iov_len);
-        if n < 0 {
-            return if total > 0 { total } else { n };
-        }
-        total += n;
-        if (n as size_t) < vec.iov_len {
-            break; // Short read
-        }
-    }
-    total
+    crate::readv_impl(fd, iov as *const crate::c_void, iovcnt)
 }
 
+/// writev - write data from multiple buffers using native kernel syscall
 #[no_mangle]
 pub unsafe extern "C" fn writev(fd: c_int, iov: *const iovec, iovcnt: c_int) -> ssize_t {
     trace_fn!("writev");
-    let mut total: ssize_t = 0;
-    for i in 0..iovcnt as usize {
-        let vec = &*iov.add(i);
-        let n = crate::write(fd, vec.iov_base, vec.iov_len);
-        if n < 0 {
-            return if total > 0 { total } else { n };
-        }
-        total += n;
-        if (n as size_t) < vec.iov_len {
-            break; // Short write
-        }
-    }
-    total
+    crate::writev_impl(fd, iov as *const crate::c_void, iovcnt)
 }
 
 // ============================================================================
