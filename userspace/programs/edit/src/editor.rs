@@ -103,6 +103,20 @@ impl Editor {
         self.current_buffer = self.buffers.len() - 1;
     }
     
+    /// Create a new empty buffer with a file path (for new files)
+    pub fn new_buffer_with_path(&mut self, path: &str) {
+        let mut buffer = Buffer::new();
+        buffer.set_path(path);
+        self.buffers.push(buffer);
+        self.current_buffer = self.buffers.len() - 1;
+        self.message = format!("[New File] {}", path);
+    }
+    
+    /// Check if editor has any buffers
+    pub fn has_buffers(&self) -> bool {
+        !self.buffers.is_empty()
+    }
+    
     /// Open a file into a new buffer
     pub fn open_file(&mut self, path: &str) -> io::Result<()> {
         let buffer = Buffer::from_file(path)?;
@@ -1168,9 +1182,15 @@ impl Editor {
             "w" | "write" => self.cmd_write(args)?,
             "q" | "quit" => self.cmd_quit(false)?,
             "q!" | "quit!" => self.cmd_quit(true)?,
+            "qa" | "qall" => self.cmd_quit_all(false)?,
+            "qa!" | "qall!" => self.cmd_quit_all(true)?,
             "wq" | "x" | "exit" => {
                 self.cmd_write(args)?;
                 self.cmd_quit(false)?;
+            }
+            "wqa" | "xa" | "xall" => {
+                self.cmd_write_all()?;
+                self.cmd_quit_all(false)?;
             }
             "e" | "edit" => self.cmd_edit(args)?,
             "set" => self.cmd_set(args)?,
@@ -1227,6 +1247,30 @@ impl Editor {
         } else {
             self.should_quit = true;
         }
+        Ok(())
+    }
+    
+    fn cmd_quit_all(&mut self, force: bool) -> io::Result<()> {
+        if !force {
+            // Check if any buffer is modified
+            for buffer in &self.buffers {
+                if buffer.modified {
+                    self.message = "E37: No write since last change (add ! to override)".to_string();
+                    return Ok(());
+                }
+            }
+        }
+        self.should_quit = true;
+        Ok(())
+    }
+    
+    fn cmd_write_all(&mut self) -> io::Result<()> {
+        for i in 0..self.buffers.len() {
+            if self.buffers[i].modified && self.buffers[i].path.is_some() {
+                self.buffers[i].save()?;
+            }
+        }
+        self.message = "All buffers written".to_string();
         Ok(())
     }
     

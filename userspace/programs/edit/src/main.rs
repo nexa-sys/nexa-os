@@ -144,9 +144,20 @@ fn main() {
     } else {
         for file in &files {
             if let Err(e) = editor.open_file(file) {
-                eprintln!("edit: error opening '{}': {}", file, e);
+                // File doesn't exist - create new buffer with this path
+                // This allows creating new files by specifying their path
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    editor.new_buffer_with_path(file);
+                } else {
+                    eprintln!("edit: error opening '{}': {}", file, e);
+                }
             }
         }
+    }
+    
+    // Ensure at least one buffer exists
+    if !editor.has_buffers() {
+        editor.new_buffer();
     }
     
     // Jump to line if specified

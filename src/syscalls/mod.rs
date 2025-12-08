@@ -129,7 +129,7 @@ pub extern "C" fn syscall_dispatch(
     let result = match nr {
         SYS_WRITE => write(arg1, arg2, arg3),
         SYS_READ => read(arg1, arg2 as *mut u8, arg3 as usize),
-        SYS_OPEN => open(arg1 as *const u8, arg2 as usize),
+        SYS_OPEN => open(arg1 as *const u8, arg2 as u64, arg3 as u64),
         SYS_CLOSE => close(arg1),
         SYS_STAT => stat(arg1 as *const u8, arg2 as usize, arg3 as *mut posix::Stat),
         SYS_FSTAT => fstat(arg1, arg2 as *mut posix::Stat),

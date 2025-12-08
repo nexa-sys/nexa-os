@@ -115,7 +115,7 @@ pub unsafe extern "C" fn opendir(name: *const c_char) -> *mut DIR {
         return ptr::null_mut();
     }
 
-    // Open the directory
+    // Open the directory - pass (path, flags, mode)
     let fd = crate::syscall3(SYS_OPEN, name as u64, (O_RDONLY | O_DIRECTORY | O_CLOEXEC) as u64, 0);
     if fd == u64::MAX {
         crate::refresh_errno_from_kernel();

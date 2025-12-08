@@ -158,6 +158,16 @@ impl Buffer {
         }
     }
     
+    /// Set the file path for this buffer
+    pub fn set_path(&mut self, path: &str) {
+        let path_buf = PathBuf::from(path);
+        self.name = path_buf.file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| String::from("[No Name]"));
+        self.filetype = detect_filetype(&path_buf);
+        self.path = Some(path_buf);
+    }
+    
     /// Create a buffer from a file
     pub fn from_file(path: &str) -> io::Result<Self> {
         let file = File::open(path)?;

@@ -844,13 +844,14 @@ pub(crate) fn writev_impl(fd: i32, iov: *const c_void, iovcnt: i32) -> isize {
 }
 
 #[no_mangle]
-pub extern "C" fn open(path: *const u8, flags: i32, _mode: i32) -> i32 {
+pub extern "C" fn open(path: *const u8, flags: i32, mode: i32) -> i32 {
     if path.is_null() {
         set_errno(EINVAL);
         return -1;
     }
-    let len = strlen(path);
-    translate_ret_i32(syscall3(SYS_OPEN, path as u64, len as u64, flags as u64))
+    // Pass path pointer, flags, and mode to kernel
+    // Kernel will read null-terminated string from path
+    translate_ret_i32(syscall3(SYS_OPEN, path as u64, flags as u64, mode as u64))
 }
 
 #[no_mangle]

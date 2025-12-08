@@ -916,15 +916,30 @@ pub fn read(fd: u64, buf: *mut u8, count: usize) -> u64 {
     u64::MAX
 }
 
+// Open flags (POSIX compatible)
+#[allow(dead_code)]
+const O_RDONLY: u64 = 0;
+#[allow(dead_code)]
+const O_WRONLY: u64 = 1;
+#[allow(dead_code)]
+const O_RDWR: u64 = 2;
+const O_CREAT: u64 = 0o100;
+const O_TRUNC: u64 = 0o1000;
+#[allow(dead_code)]
+const O_APPEND: u64 = 0o2000;
+
 /// Open system call
-pub fn open(path_ptr: *const u8, len: usize) -> u64 {
-    if path_ptr.is_null() || len == 0 {
+/// flags: O_RDONLY, O_WRONLY, O_RDWR, O_CREAT, O_TRUNC, O_APPEND
+/// mode: file permission bits (used when O_CREAT)
+pub fn open(path_ptr: *const u8, flags: u64, mode: u64) -> u64 {
+    if path_ptr.is_null() {
         posix::set_errno(posix::errno::EINVAL);
         return u64::MAX;
     }
 
-    let raw = unsafe { slice::from_raw_parts(path_ptr, len) };
-    let end = raw.iter().position(|&c| c == 0).unwrap_or(raw.len());
+    // Read path as null-terminated C string
+    let raw = unsafe { slice::from_raw_parts(path_ptr, 4096) }; // max path length
+    let end = raw.iter().position(|&c| c == 0).unwrap_or(4096);
     let trimmed = &raw[..end];
     let Ok(mut path) = str::from_utf8(trimmed) else {
         posix::set_errno(posix::errno::EINVAL);
@@ -938,6 +953,11 @@ pub fn open(path_ptr: *const u8, len: usize) -> u64 {
     }
 
     let normalized = path;
+    let create_if_missing = (flags & O_CREAT) != 0;
+    let truncate = (flags & O_TRUNC) != 0;
+
+    kinfo!("[open] path='{}', flags={:#o}, mode={:#o}, create={}, trunc={}", 
+           normalized, flags, mode, create_if_missing, truncate);
 
     // Check for special device files
     let special_backing = match normalized {
@@ -981,6 +1001,7 @@ pub fn open(path_ptr: *const u8, len: usize) -> u64 {
         return u64::MAX;
     }
 
+    // Try to open existing file first
     if let Some(opened) = crate::fs::open(normalized) {
         if matches!(opened.metadata.file_type, FileType::Directory) {
             posix::set_errno(posix::errno::EISDIR);
@@ -988,36 +1009,107 @@ pub fn open(path_ptr: *const u8, len: usize) -> u64 {
         }
 
         let crate::fs::OpenFile { content, metadata } = opened;
+        
+        // Handle O_TRUNC for existing file
+        if truncate {
+            // Truncate the file to zero length
+            if let Err(_) = crate::fs::write_file(normalized, &[]) {
+                kwarn!("[open] Failed to truncate file '{}'", normalized);
+                // Continue anyway, truncate is best-effort here
+            }
+        }
+        
         let backing = match content {
-            crate::fs::FileContent::Inline(data) => FileBacking::Inline(data),
+            crate::fs::FileContent::Inline(data) => {
+                if truncate {
+                    // Use empty static slice for truncated file
+                    FileBacking::Inline(&[])
+                } else {
+                    FileBacking::Inline(data)
+                }
+            },
             crate::fs::FileContent::Ext2Modular(file_ref) => FileBacking::Ext2(file_ref),
         };
 
         unsafe {
             if let Some(index) = find_empty_file_handle_slot() {
+                let final_metadata = if truncate {
+                    posix::Metadata { size: 0, ..metadata }
+                } else {
+                    metadata
+                };
                 set_file_handle(
                     index,
                     Some(FileHandle {
                         backing,
                         position: 0,
-                        metadata,
+                        metadata: final_metadata,
                     }),
                 );
                 posix::set_errno(0);
                 let fd = FD_BASE + index as u64;
-                mark_fd_open(fd); // Track this FD as open for the current process
+                mark_fd_open(fd);
                 kinfo!("Opened file '{}' as fd {}", normalized, fd);
                 return fd;
             }
         }
         posix::set_errno(posix::errno::EMFILE);
         kwarn!("No free file handles available");
-        u64::MAX
-    } else {
-        posix::set_errno(posix::errno::ENOENT);
-        kwarn!("sys_open: file '{}' not found", normalized);
-        u64::MAX
+        return u64::MAX;
     }
+    
+    // File doesn't exist - try to create if O_CREAT is set
+    if create_if_missing {
+        kinfo!("[open] File '{}' not found, creating with O_CREAT", normalized);
+        
+        // Try to create the file
+        if let Err(e) = crate::fs::create_file(normalized) {
+            kwarn!("[open] Failed to create file '{}': {}", normalized, e);
+            posix::set_errno(posix::errno::EACCES);
+            return u64::MAX;
+        }
+        
+        kinfo!("[open] Created file '{}'", normalized);
+        
+        // Now open the newly created file
+        if let Some(opened) = crate::fs::open(normalized) {
+            let crate::fs::OpenFile { content, metadata } = opened;
+            let backing = match content {
+                crate::fs::FileContent::Inline(data) => FileBacking::Inline(data),
+                crate::fs::FileContent::Ext2Modular(file_ref) => FileBacking::Ext2(file_ref),
+            };
+
+            unsafe {
+                if let Some(index) = find_empty_file_handle_slot() {
+                    set_file_handle(
+                        index,
+                        Some(FileHandle {
+                            backing,
+                            position: 0,
+                            metadata,
+                        }),
+                    );
+                    posix::set_errno(0);
+                    let fd = FD_BASE + index as u64;
+                    mark_fd_open(fd);
+                    kinfo!("Opened newly created file '{}' as fd {}", normalized, fd);
+                    return fd;
+                }
+            }
+            posix::set_errno(posix::errno::EMFILE);
+            kwarn!("No free file handles available");
+            return u64::MAX;
+        } else {
+            kwarn!("[open] Created file '{}' but failed to open it", normalized);
+            posix::set_errno(posix::errno::EIO);
+            return u64::MAX;
+        }
+    }
+
+    // File doesn't exist and O_CREAT not set
+    posix::set_errno(posix::errno::ENOENT);
+    kwarn!("sys_open: file '{}' not found", normalized);
+    u64::MAX
 }
 
 /// Close system call

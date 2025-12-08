@@ -826,17 +826,11 @@ fn page_align_up(addr: u64) -> u64 {
 }
 
 /// Open a file and return file descriptor
-/// NexaOS sys_open takes (path_ptr, length) not (path, flags, mode)
+/// NexaOS sys_open now takes (path_ptr, flags, mode) - standard POSIX interface
 unsafe fn open_file(path: *const u8) -> i64 {
-    // Calculate path length (null-terminated string)
-    let mut len = 0;
-    while *path.add(len) != 0 {
-        len += 1;
-        if len > 4096 {
-            break;
-        }
-    }
-    syscall3(SYS_OPEN, path as u64, len as u64, 0) as i64
+    // Pass path pointer, flags=O_RDONLY(0), mode=0
+    // Kernel reads null-terminated string from path pointer
+    syscall3(SYS_OPEN, path as u64, 0, 0) as i64
 }
 
 /// Close a file descriptor

@@ -96,7 +96,8 @@ unsafe fn syscall6(nr: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, a6: u64
 
 /// Open a file and return file descriptor
 unsafe fn open_file(path: &[u8]) -> Result<i32, LoadError> {
-    let fd = syscall3(SYS_OPEN, path.as_ptr() as u64, path.len() as u64, 0) as i64;
+    // path should be null-terminated, pass (path_ptr, flags=O_RDONLY, mode=0)
+    let fd = syscall3(SYS_OPEN, path.as_ptr() as u64, 0, 0) as i64;
     if fd < 0 {
         Err(LoadError::FileNotFound)
     } else {
