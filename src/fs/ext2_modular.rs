@@ -302,6 +302,7 @@ pub extern "C" fn kmod_ext2_register(ops: *const Ext2ModuleOps) -> i32 {
         global_ops.get_stats = ops.get_stats;
         global_ops.set_writable = ops.set_writable;
         global_ops.is_writable = ops.is_writable;
+        global_ops.create_file = ops.create_file;
     }
 
     crate::kinfo!("ext2_modular: module registered successfully");
@@ -474,13 +475,28 @@ pub fn write_at(file: &FileRefHandle, offset: usize, data: &[u8]) -> Result<usiz
 
 /// Create a new file in the filesystem
 pub fn create_file(path: &str, mode: u16) -> Result<(), Ext2Error> {
+    crate::kinfo!("ext2_modular::create_file: attempting to create '{}'", path);
+    
     if !is_writable() {
+        crate::kwarn!("ext2_modular::create_file: filesystem is not writable");
         return Err(Ext2Error::ReadOnly);
     }
 
     let ops = EXT2_OPS.lock();
-    let create_fn = ops.create_file.ok_or(Ext2Error::InvalidOperation)?;
-    let handle = EXT2_GLOBAL.lock().ok_or(Ext2Error::InvalidOperation)?;
+    let create_fn = match ops.create_file {
+        Some(f) => f,
+        None => {
+            crate::kwarn!("ext2_modular::create_file: create_file operation not registered");
+            return Err(Ext2Error::InvalidOperation);
+        }
+    };
+    let handle = match *EXT2_GLOBAL.lock() {
+        Some(h) => h,
+        None => {
+            crate::kwarn!("ext2_modular::create_file: no global ext2 handle");
+            return Err(Ext2Error::InvalidOperation);
+        }
+    };
     drop(ops);
 
     // Copy path to a buffer with fixed size
@@ -488,6 +504,7 @@ pub fn create_file(path: &str, mode: u16) -> Result<(), Ext2Error> {
     let mut path_buf = [0u8; 256];
     path_buf[..path_len].copy_from_slice(path.as_bytes());
 
+    crate::kinfo!("ext2_modular::create_file: calling module create_file for '{}'", path);
     let ret = create_fn(handle, path_buf.as_ptr(), path_len, mode);
     if ret >= 0 {
         crate::kinfo!("ext2_modular::create_file: created '{}' (inode={})", path, ret);
