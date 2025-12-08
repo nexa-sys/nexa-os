@@ -6,6 +6,7 @@ members = [
     "ld-nrlib",
     "ncryptolib",
     "nssl",
+    "nhttp2",
     "nzip",
     "programs/init",
     "programs/shell",

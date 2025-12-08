@@ -1,0 +1,47 @@
+[package]
+name = "nhttp2"
+version = "0.1.0"
+edition = "2021"
+description = "NexaOS HTTP/2 Library - nghttp2 ABI compatible with tokio async backend"
+
+[lib]
+# cdylib: Dynamic shared object (libnghttp2.so) for dynamic linking
+# staticlib: Static library (libnghttp2.a) for static linking
+# rlib: Rust library for Rust consumers
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[profile.release]
+panic = "abort"
+opt-level = 2
+lto = false
+
+[features]
+default = ["async-tokio"]
+# Enable tokio async runtime backend
+async-tokio = ["tokio"]
+# Enable HPACK header compression (always enabled)
+hpack = []
+# Enable priority/dependency handling
+priority = []
+# Enable server push support
+server-push = []
+# Enable flow control management
+flow-control = []
+# Enable nghttp2 C ABI compatibility layer
+compat = []
+
+[dependencies]
+# Tokio async runtime for async I/O
+tokio = { version = "1", features = ["full"], optional = true }
+# For synchronization primitives
+parking_lot = "0.12"
+# For byte manipulation
+bytes = "1"
+# For async traits
+async-trait = "0.1"
+# SSL/TLS support
+nssl = { path = "../nssl" }
+
+[dev-dependencies]
+# Testing utilities
+tokio-test = "0.4"

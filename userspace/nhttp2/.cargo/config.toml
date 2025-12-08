@@ -1,0 +1,6 @@
+[build]
+target = "../../targets/x86_64-nexaos-userspace-lib.json"
+
+[unstable]
+build-std = ["std", "core", "alloc", "panic_abort"]
+build-std-features = ["compiler-builtins-mem"]
