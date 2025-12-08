@@ -380,10 +380,10 @@ impl<'a> ModuleLoader<'a> {
         Err(LoaderError::SymbolNotFound)
     }
 
-    /// Get symbol value (resolving undefined symbols from kernel)
+    /// Get symbol value (resolving undefined symbols from kernel and other modules)
     fn get_symbol_value(&self, sym: &Elf64Sym, strtab: &[u8]) -> Result<u64, LoaderError> {
         if sym.st_shndx == 0 {
-            // Undefined symbol - look up in kernel symbol table
+            // Undefined symbol - look up in kernel symbol table first, then in other modules
             let name_start = sym.st_name as usize;
             let name_end = strtab[name_start..]
                 .iter()
@@ -394,15 +394,28 @@ impl<'a> ModuleLoader<'a> {
             let name = core::str::from_utf8(&strtab[name_start..name_end])
                 .map_err(|_| LoaderError::SymbolNotFound)?;
 
-            // Look up in kernel symbol table
-            match super::symbols::lookup_symbol(name) {
-                Some(addr) => Ok(addr),
-                None => {
-                    crate::kerror!("kmod: undefined symbol not found: '{}' (total symbols: {})", 
-                        name, super::symbols::symbol_count());
-                    Err(LoaderError::SymbolNotFound)
-                }
+            // 1. First, look up in kernel symbol table
+            if let Some(addr) = super::symbols::lookup_symbol(name) {
+                return Ok(addr);
             }
+            
+            // 2. Then, look up in other loaded modules' exported symbols
+            if let Some((_module_name, addr)) = super::lookup_module_symbol(name) {
+                crate::kdebug!(
+                    "kmod: resolved symbol '{}' from module '{}'",
+                    name,
+                    _module_name
+                );
+                return Ok(addr);
+            }
+            
+            // Symbol not found anywhere
+            crate::kerror!(
+                "kmod: undefined symbol not found: '{}' (kernel symbols: {}, checked modules too)", 
+                name, 
+                super::symbols::symbol_count()
+            );
+            Err(LoaderError::SymbolNotFound)
         } else if sym.st_shndx < self.section_bases.len() as u16 {
             // Symbol in a loaded section
             let section_base = self.section_bases[sym.st_shndx as usize];
@@ -588,6 +601,110 @@ impl<'a> ModuleLoader<'a> {
     pub fn sections(&self) -> &[LoadedSection] {
         &self.sections
     }
+    
+    /// Extract global symbols that can be exported by this module
+    /// Returns a list of (name, address, is_function) tuples
+    /// Symbols prefixed with "kmod_export_" will be exported for inter-module FFI
+    pub fn extract_exportable_symbols(&self) -> Result<Vec<(String, u64, bool)>, LoaderError> {
+        let (symtab_idx, strtab_idx) = self.find_symtab()?;
+        let symtab_data = self.get_section_data(symtab_idx)?;
+        let strtab_data = self.get_section_data(strtab_idx)?;
+
+        let sym_size = core::mem::size_of::<Elf64Sym>();
+        let sym_count = symtab_data.len() / sym_size;
+        
+        let mut exports = Vec::new();
+
+        for i in 0..sym_count {
+            let sym = unsafe {
+                ptr::read_unaligned(symtab_data.as_ptr().add(i * sym_size) as *const Elf64Sym)
+            };
+
+            // Only export global or weak symbols that are defined (not undefined)
+            let binding = sym.binding();
+            if (binding != STB_GLOBAL && binding != STB_WEAK) || sym.st_shndx == 0 {
+                continue;
+            }
+            
+            // Skip symbols with no type or section type
+            let sym_type = sym.sym_type();
+            if sym_type != STT_FUNC && sym_type != STT_OBJECT {
+                continue;
+            }
+
+            let name_start = sym.st_name as usize;
+            let name_end = strtab_data[name_start..]
+                .iter()
+                .position(|&c| c == 0)
+                .map(|p| name_start + p)
+                .unwrap_or(strtab_data.len());
+
+            let sym_name = match core::str::from_utf8(&strtab_data[name_start..name_end]) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            
+            // Check if this symbol is marked for export
+            // Convention: symbols starting with "kmod_export_" or "__kmod_export_" are exported
+            if sym_name.starts_with("kmod_export_") || sym_name.starts_with("__kmod_export_") {
+                if let Ok(addr) = self.get_symbol_value(&sym, strtab_data) {
+                    let is_function = sym_type == STT_FUNC;
+                    // Strip the prefix for the exported name
+                    let export_name = if sym_name.starts_with("__kmod_export_") {
+                        &sym_name[14..] // Skip "__kmod_export_"
+                    } else {
+                        &sym_name[12..] // Skip "kmod_export_"
+                    };
+                    exports.push((String::from(export_name), addr, is_function));
+                }
+            }
+        }
+        
+        Ok(exports)
+    }
+    
+    /// Extract module dependencies from special symbols
+    /// Modules declare dependencies via symbols like "__kmod_depends_ext2" or "__kmod_depends_virtio_common"
+    pub fn extract_dependencies(&self) -> Result<Vec<String>, LoaderError> {
+        let (symtab_idx, strtab_idx) = self.find_symtab()?;
+        let symtab_data = self.get_section_data(symtab_idx)?;
+        let strtab_data = self.get_section_data(strtab_idx)?;
+
+        let sym_size = core::mem::size_of::<Elf64Sym>();
+        let sym_count = symtab_data.len() / sym_size;
+        
+        let mut deps = Vec::new();
+
+        for i in 0..sym_count {
+            let sym = unsafe {
+                ptr::read_unaligned(symtab_data.as_ptr().add(i * sym_size) as *const Elf64Sym)
+            };
+
+            // Look for symbols that declare dependencies
+            // These can be undefined symbols or special marker symbols
+            let name_start = sym.st_name as usize;
+            let name_end = strtab_data[name_start..]
+                .iter()
+                .position(|&c| c == 0)
+                .map(|p| name_start + p)
+                .unwrap_or(strtab_data.len());
+
+            let sym_name = match core::str::from_utf8(&strtab_data[name_start..name_end]) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            
+            // Convention: symbols starting with "__kmod_depends_" declare a dependency
+            // E.g., "__kmod_depends_ext2" means this module depends on "ext2"
+            if let Some(dep_name) = sym_name.strip_prefix("__kmod_depends_") {
+                if !dep_name.is_empty() && !deps.iter().any(|d: &String| d == dep_name) {
+                    deps.push(String::from(dep_name));
+                }
+            }
+        }
+        
+        Ok(deps)
+    }
 }
 
 /// Load an ELF module and return its entry points
@@ -622,12 +739,41 @@ pub fn load_elf_module(data: &[u8]) -> Result<LoadedModule, LoaderError> {
         .or_else(|_| loader.find_symbol("ext2_module_exit"))
         .ok();
 
+    // Extract exportable symbols for inter-module FFI
+    let exported_symbols = loader.extract_exportable_symbols().unwrap_or_default();
+    if !exported_symbols.is_empty() {
+        crate::kinfo!(
+            "Module exports {} symbols for inter-module FFI",
+            exported_symbols.len()
+        );
+    }
+    
+    // Extract module dependencies
+    let dependencies = loader.extract_dependencies().unwrap_or_default();
+    if !dependencies.is_empty() {
+        crate::kinfo!(
+            "Module declares {} dependencies: {:?}",
+            dependencies.len(),
+            dependencies
+        );
+    }
+
     Ok(LoadedModule {
         base,
         size: loader.size(),
         init_fn,
         exit_fn,
+        exported_symbols,
+        dependencies,
     })
+}
+
+/// Exported symbol info from loaded module
+#[derive(Debug, Clone)]
+pub struct ExportedSymbolInfo {
+    pub name: String,
+    pub address: u64,
+    pub is_function: bool,
 }
 
 /// Loaded module information
@@ -637,6 +783,10 @@ pub struct LoadedModule {
     pub size: usize,
     pub init_fn: Option<u64>,
     pub exit_fn: Option<u64>,
+    /// Symbols exported by this module for inter-module FFI
+    pub exported_symbols: Vec<(String, u64, bool)>,
+    /// Dependencies declared by this module
+    pub dependencies: Vec<String>,
 }
 
 impl LoadedModule {

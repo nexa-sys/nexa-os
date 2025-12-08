@@ -562,6 +562,8 @@ pub struct ModuleInfo {
     pub dependencies: alloc::vec::Vec<alloc::string::String>,
     /// Reference count (how many modules depend on this)
     pub ref_count: usize,
+    /// Exported symbols (for inter-module FFI)
+    pub exported_symbols: alloc::vec::Vec<ModuleExportedSymbol>,
     /// Module license type
     pub license: LicenseType,
     /// Module author(s)
@@ -618,6 +620,28 @@ pub enum ParamType {
     IntArray,
 }
 
+/// Exported symbol from a module (for inter-module FFI)
+#[derive(Clone, Debug)]
+pub struct ModuleExportedSymbol {
+    /// Symbol name
+    pub name: alloc::string::String,
+    /// Symbol address in module's memory space
+    pub address: u64,
+    /// Symbol type (function or data)
+    pub sym_type: ExportedSymbolType,
+    /// Whether this symbol is GPL-only (requires GPL-compatible license to use)
+    pub gpl_only: bool,
+}
+
+/// Type of exported symbol
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExportedSymbolType {
+    /// Function symbol
+    Function,
+    /// Data/variable symbol
+    Data,
+}
+
 impl ModuleInfo {
     /// Create an empty module info
     fn new() -> Self {
@@ -633,6 +657,7 @@ impl ModuleInfo {
             exit_fn: None,
             dependencies: alloc::vec::Vec::new(),
             ref_count: 0,
+            exported_symbols: alloc::vec::Vec::new(),
             license: LicenseType::Unknown,
             author: alloc::string::String::new(),
             srcversion: alloc::string::String::new(),
@@ -874,6 +899,8 @@ pub enum ModuleError {
     SignatureInvalid,
     /// Signing key not found in trusted keyring
     SigningKeyNotFound,
+    /// Circular dependency detected between modules
+    CircularDependency,
 }
 
 impl From<elf::LoaderError> for ModuleError {
@@ -1009,6 +1036,47 @@ fn load_elf_module_named(data: &[u8], name: Option<&str>) -> Result<(), ModuleEr
         }
     }
     
+    // Check for circular dependencies if module declares any
+    if !loaded.dependencies.is_empty() {
+        let deps_refs: alloc::vec::Vec<&str> = loaded.dependencies.iter().map(|s| s.as_str()).collect();
+        if let Err(cycle) = check_circular_dependencies(module_name, &deps_refs) {
+            crate::kerror!(
+                "Circular dependency detected while loading '{}': {}",
+                module_name,
+                cycle.chain.join(" -> ")
+            );
+            return Err(ModuleError::CircularDependency);
+        }
+        
+        // Check if all dependencies are loaded
+        {
+            let registry = MODULE_REGISTRY.lock();
+            for dep in &loaded.dependencies {
+                match registry.find(dep) {
+                    Some(info) if info.state == ModuleState::Running => {}
+                    Some(_) => {
+                        crate::kerror!("Dependency '{}' is not in running state", dep);
+                        return Err(ModuleError::MissingDependency);
+                    }
+                    None => {
+                        crate::kerror!("Missing dependency: {} (required by {})", dep, module_name);
+                        return Err(ModuleError::MissingDependency);
+                    }
+                }
+            }
+        }
+        
+        // Increment reference counts for dependencies
+        {
+            let mut registry = MODULE_REGISTRY.lock();
+            for dep in &loaded.dependencies {
+                if let Some(info) = registry.find_mut(dep) {
+                    info.ref_count += 1;
+                }
+            }
+        }
+    }
+    
     let mut info = ModuleInfo::with_name(module_name);
     info.version = alloc::string::String::from("1.0.0");
     info.module_type = ModuleType::Other;
@@ -1017,6 +1085,7 @@ fn load_elf_module_named(data: &[u8], name: Option<&str>) -> Result<(), ModuleEr
     info.size = loaded.size;
     info.init_fn = loaded.init_fn;
     info.exit_fn = loaded.exit_fn;
+    info.dependencies = loaded.dependencies.clone();
     info.sig_status = sig_status;
     info.srcversion = alloc::string::String::from("in-tree");
     info.license = LicenseType::Mit; // Default for NexaOS modules
@@ -1067,6 +1136,43 @@ fn load_elf_module_named(data: &[u8], name: Option<&str>) -> Result<(), ModuleEr
         let mut registry = MODULE_REGISTRY.lock();
         if let Some(mod_info) = registry.find_mut(module_name) {
             mod_info.state = ModuleState::Running;
+        }
+    }
+
+    // Register exported symbols for inter-module FFI
+    if !loaded.exported_symbols.is_empty() {
+        crate::kinfo!(
+            "Registering {} exported symbols from module '{}'",
+            loaded.exported_symbols.len(),
+            module_name
+        );
+        for (sym_name, sym_addr, is_func) in &loaded.exported_symbols {
+            let sym_type = if *is_func {
+                ExportedSymbolType::Function
+            } else {
+                ExportedSymbolType::Data
+            };
+            // Symbols prefixed with _gpl are GPL-only
+            let gpl_only = sym_name.ends_with("_gpl");
+            let actual_name = if gpl_only {
+                &sym_name[..sym_name.len() - 4] // Strip "_gpl" suffix
+            } else {
+                sym_name.as_str()
+            };
+            
+            if let Err(e) = register_module_symbol(
+                module_name,
+                actual_name,
+                *sym_addr,
+                sym_type,
+                gpl_only,
+            ) {
+                crate::kwarn!(
+                    "Failed to register exported symbol '{}': {:?}",
+                    sym_name,
+                    e
+                );
+            }
         }
     }
 
@@ -1762,6 +1868,414 @@ pub fn is_kernel_tainted_by_modules() -> bool {
             | TaintFlag::OutOfTreeModule as u32
             | TaintFlag::ForcedLoad as u32))
         != 0
+}
+
+// ============================================================================
+// Inter-Module FFI Support
+// ============================================================================
+
+/// Maximum depth for dependency resolution (prevents stack overflow)
+const MAX_DEPENDENCY_DEPTH: usize = 16;
+
+/// Circular dependency error detail
+#[derive(Debug, Clone)]
+pub struct CircularDependencyError {
+    /// The dependency chain that forms the cycle
+    pub chain: alloc::vec::Vec<alloc::string::String>,
+}
+
+impl CircularDependencyError {
+    fn new(chain: alloc::vec::Vec<alloc::string::String>) -> Self {
+        Self { chain }
+    }
+}
+
+/// Check for circular dependencies using DFS with path tracking
+/// Returns Ok(()) if no cycle found, Err with the cycle chain if cycle detected
+pub fn check_circular_dependencies(
+    module_name: &str,
+    deps: &[&str],
+) -> Result<(), CircularDependencyError> {
+    let registry = MODULE_REGISTRY.lock();
+    
+    // Build adjacency list including the new module
+    let mut visited = alloc::collections::BTreeSet::new();
+    let mut path = alloc::vec::Vec::new();
+    
+    // Check from the new module's perspective
+    path.push(alloc::string::String::from(module_name));
+    
+    for dep in deps {
+        if let Err(cycle) = check_cycle_dfs(&registry, dep, &mut visited, &mut path) {
+            return Err(cycle);
+        }
+        // Also check if any dependency leads back to this module
+        if has_transitive_dependency(&registry, dep, module_name, &mut visited, 0) {
+            path.push(alloc::string::String::from(*dep));
+            path.push(alloc::string::String::from(module_name));
+            return Err(CircularDependencyError::new(path));
+        }
+    }
+    
+    Ok(())
+}
+
+/// DFS helper to detect cycles in dependency graph
+fn check_cycle_dfs(
+    registry: &ModuleRegistry,
+    current: &str,
+    visited: &mut alloc::collections::BTreeSet<alloc::string::String>,
+    path: &mut alloc::vec::Vec<alloc::string::String>,
+) -> Result<(), CircularDependencyError> {
+    let current_str = alloc::string::String::from(current);
+    
+    // Check if we're revisiting a node in current path (cycle!)
+    if path.contains(&current_str) {
+        path.push(current_str);
+        return Err(CircularDependencyError::new(path.clone()));
+    }
+    
+    // Skip if already fully visited
+    if visited.contains(&current_str) {
+        return Ok(());
+    }
+    
+    // Depth limit check
+    if path.len() >= MAX_DEPENDENCY_DEPTH {
+        crate::kwarn!("Dependency chain too deep at module: {}", current);
+        return Ok(()); // Don't fail, just stop recursing
+    }
+    
+    path.push(current_str.clone());
+    
+    // Get dependencies of current module
+    if let Some(info) = registry.find(current) {
+        for dep in &info.dependencies {
+            check_cycle_dfs(registry, dep, visited, path)?;
+        }
+    }
+    
+    path.pop();
+    visited.insert(current_str);
+    Ok(())
+}
+
+/// Check if module A has a transitive dependency on module B
+fn has_transitive_dependency(
+    registry: &ModuleRegistry,
+    from: &str,
+    target: &str,
+    visited: &mut alloc::collections::BTreeSet<alloc::string::String>,
+    depth: usize,
+) -> bool {
+    if depth >= MAX_DEPENDENCY_DEPTH {
+        return false;
+    }
+    
+    let from_str = alloc::string::String::from(from);
+    if visited.contains(&from_str) {
+        return false;
+    }
+    visited.insert(from_str);
+    
+    if let Some(info) = registry.find(from) {
+        for dep in &info.dependencies {
+            if dep == target {
+                return true;
+            }
+            if has_transitive_dependency(registry, dep, target, visited, depth + 1) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Lookup a symbol exported by a loaded module
+/// Returns (module_name, address) if found
+pub fn lookup_module_symbol(name: &str) -> Option<(alloc::string::String, u64)> {
+    let registry = MODULE_REGISTRY.lock();
+    for module in registry.list() {
+        for sym in &module.exported_symbols {
+            if sym.name == name {
+                return Some((module.name.clone(), sym.address));
+            }
+        }
+    }
+    None
+}
+
+/// Lookup a symbol exported by a loaded module, respecting license restrictions
+/// Returns (module_name, address) if found and license requirements are met
+/// 
+/// Note: NexaOS itself uses MIT license, but supports GPL-compatible modules.
+/// The `gpl_only` flag on symbols allows third-party GPL modules to restrict
+/// their symbols to GPL-compatible callers only (similar to EXPORT_SYMBOL_GPL in Linux).
+pub fn lookup_module_symbol_licensed(
+    name: &str, 
+    caller_license: LicenseType
+) -> Option<(alloc::string::String, u64)> {
+    let registry = MODULE_REGISTRY.lock();
+    for module in registry.list() {
+        for sym in &module.exported_symbols {
+            if sym.name == name {
+                // Check license restriction (for GPL-only symbols from third-party modules)
+                if sym.gpl_only && !caller_license.is_gpl_compatible() {
+                    crate::kwarn!(
+                        "Symbol '{}' has license restriction, caller license '{}' not compatible",
+                        name,
+                        caller_license.as_str()
+                    );
+                    continue;
+                }
+                return Some((module.name.clone(), sym.address));
+            }
+        }
+    }
+    None
+}
+
+/// Register an exported symbol for a module
+pub fn register_module_symbol(
+    module_name: &str,
+    symbol_name: &str,
+    address: u64,
+    sym_type: ExportedSymbolType,
+    gpl_only: bool,
+) -> Result<(), ModuleError> {
+    let mut registry = MODULE_REGISTRY.lock();
+    if let Some(info) = registry.find_mut(module_name) {
+        // Check for duplicate symbol
+        if info.exported_symbols.iter().any(|s| s.name == symbol_name) {
+            crate::kwarn!("Duplicate symbol export: {} from {}", symbol_name, module_name);
+            return Ok(()); // Don't fail, just ignore duplicate
+        }
+        
+        info.exported_symbols.push(ModuleExportedSymbol {
+            name: alloc::string::String::from(symbol_name),
+            address,
+            sym_type,
+            gpl_only,
+        });
+        
+        crate::kdebug!(
+            "Module {} exported symbol: {} at {:#x}{}",
+            module_name,
+            symbol_name,
+            address,
+            if gpl_only { " (GPL-only)" } else { "" }
+        );
+        Ok(())
+    } else {
+        Err(ModuleError::NotFound)
+    }
+}
+
+/// Unregister all symbols exported by a module
+pub fn unregister_module_symbols(module_name: &str) -> Result<(), ModuleError> {
+    let mut registry = MODULE_REGISTRY.lock();
+    if let Some(info) = registry.find_mut(module_name) {
+        let count = info.exported_symbols.len();
+        info.exported_symbols.clear();
+        crate::kdebug!("Unregistered {} symbols from module {}", count, module_name);
+        Ok(())
+    } else {
+        Err(ModuleError::NotFound)
+    }
+}
+
+/// Get list of all symbols exported by a specific module
+pub fn list_module_symbols(module_name: &str) -> alloc::vec::Vec<ModuleExportedSymbol> {
+    MODULE_REGISTRY
+        .lock()
+        .find(module_name)
+        .map(|info| info.exported_symbols.clone())
+        .unwrap_or_default()
+}
+
+/// Get list of all inter-module exported symbols across all modules
+pub fn list_all_module_symbols() -> alloc::vec::Vec<(alloc::string::String, ModuleExportedSymbol)> {
+    let registry = MODULE_REGISTRY.lock();
+    let mut result = alloc::vec::Vec::new();
+    for module in registry.list() {
+        for sym in &module.exported_symbols {
+            result.push((module.name.clone(), sym.clone()));
+        }
+    }
+    result
+}
+
+/// Load a module with dependency resolution and cycle detection
+pub fn load_module_with_dependency_check(
+    name: &str,
+    data: &[u8],
+    deps: &[&str],
+) -> Result<(), ModuleError> {
+    // Check for circular dependencies FIRST
+    if let Err(cycle) = check_circular_dependencies(name, deps) {
+        crate::kerror!(
+            "Circular dependency detected: {}",
+            cycle.chain.join(" -> ")
+        );
+        return Err(ModuleError::CircularDependency);
+    }
+    
+    // Check if all dependencies are loaded and running
+    {
+        let registry = MODULE_REGISTRY.lock();
+        for dep in deps {
+            match registry.find(dep) {
+                Some(info) if info.state == ModuleState::Running => {}
+                Some(_) => {
+                    crate::kerror!("Dependency '{}' is not in running state", dep);
+                    return Err(ModuleError::MissingDependency);
+                }
+                None => {
+                    crate::kerror!("Missing dependency: {}", dep);
+                    return Err(ModuleError::MissingDependency);
+                }
+            }
+        }
+    }
+    
+    // Increment reference counts for dependencies
+    {
+        let mut registry = MODULE_REGISTRY.lock();
+        for dep in deps {
+            if let Some(info) = registry.find_mut(dep) {
+                info.ref_count += 1;
+            }
+        }
+    }
+    
+    // Load the module
+    match load_module_named(data, Some(name)) {
+        Ok(()) => {
+            // Store dependencies in the module info
+            let mut registry = MODULE_REGISTRY.lock();
+            if let Some(info) = registry.find_mut(name) {
+                info.dependencies = deps
+                    .iter()
+                    .map(|s| alloc::string::String::from(*s))
+                    .collect();
+            }
+            
+            crate::kinfo!(
+                "Module '{}' loaded with {} dependencies: {:?}",
+                name,
+                deps.len(),
+                deps
+            );
+            Ok(())
+        }
+        Err(e) => {
+            // Rollback reference counts on failure
+            let mut registry = MODULE_REGISTRY.lock();
+            for dep in deps {
+                if let Some(info) = registry.find_mut(dep) {
+                    if info.ref_count > 0 {
+                        info.ref_count -= 1;
+                    }
+                }
+            }
+            Err(e)
+        }
+    }
+}
+
+/// Topologically sort modules for loading order
+/// Returns modules in order they should be loaded (dependencies first)
+pub fn topological_sort_modules(
+    modules: &[&str],
+    get_deps: impl Fn(&str) -> alloc::vec::Vec<alloc::string::String>,
+) -> Result<alloc::vec::Vec<alloc::string::String>, CircularDependencyError> {
+    let mut result = alloc::vec::Vec::new();
+    let mut visited = alloc::collections::BTreeSet::new();
+    let mut in_progress = alloc::collections::BTreeSet::new();
+    
+    fn visit(
+        node: &str,
+        get_deps: &impl Fn(&str) -> alloc::vec::Vec<alloc::string::String>,
+        visited: &mut alloc::collections::BTreeSet<alloc::string::String>,
+        in_progress: &mut alloc::collections::BTreeSet<alloc::string::String>,
+        result: &mut alloc::vec::Vec<alloc::string::String>,
+        path: &mut alloc::vec::Vec<alloc::string::String>,
+    ) -> Result<(), CircularDependencyError> {
+        let node_str = alloc::string::String::from(node);
+        
+        if visited.contains(&node_str) {
+            return Ok(());
+        }
+        
+        if in_progress.contains(&node_str) {
+            path.push(node_str);
+            return Err(CircularDependencyError::new(path.clone()));
+        }
+        
+        in_progress.insert(node_str.clone());
+        path.push(node_str.clone());
+        
+        for dep in get_deps(node) {
+            visit(&dep, get_deps, visited, in_progress, result, path)?;
+        }
+        
+        path.pop();
+        in_progress.remove(&node_str);
+        visited.insert(node_str.clone());
+        result.push(node_str);
+        
+        Ok(())
+    }
+    
+    for module in modules {
+        let mut path = alloc::vec::Vec::new();
+        visit(module, &get_deps, &mut visited, &mut in_progress, &mut result, &mut path)?;
+    }
+    
+    Ok(result)
+}
+
+/// Get the dependency graph as a printable string
+pub fn get_dependency_graph() -> alloc::string::String {
+    use core::fmt::Write;
+    let registry = MODULE_REGISTRY.lock();
+    let mut output = alloc::string::String::new();
+    
+    let _ = writeln!(output, "Module Dependency Graph:");
+    let _ = writeln!(output, "========================");
+    
+    for module in registry.list() {
+        if module.dependencies.is_empty() {
+            let _ = writeln!(output, "  {} (no dependencies)", module.name);
+        } else {
+            let _ = writeln!(
+                output,
+                "  {} -> [{}]",
+                module.name,
+                module.dependencies.join(", ")
+            );
+        }
+        
+        // Show exported symbols
+        if !module.exported_symbols.is_empty() {
+            let _ = writeln!(output, "    exports: {}", 
+                module.exported_symbols.iter()
+                    .map(|s| s.name.as_str())
+                    .collect::<alloc::vec::Vec<_>>()
+                    .join(", ")
+            );
+        }
+    }
+    
+    output
+}
+
+/// Print module dependency graph to kernel log
+pub fn print_dependency_graph() {
+    let graph = get_dependency_graph();
+    for line in graph.lines() {
+        crate::kinfo!("{}", line);
+    }
 }
 
 #[cfg(test)]
