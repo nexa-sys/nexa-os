@@ -97,7 +97,7 @@ impl X509 {
             .filter(|c| !c.is_whitespace())
             .collect();
         
-        let der = ncryptolib::base64_decode(&cleaned).ok()?;
+        let der = crate::ncryptolib::base64_decode(&cleaned).ok()?;
         Self::from_der(&der)
     }
 

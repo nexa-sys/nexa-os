@@ -75,7 +75,7 @@ impl KeyExchange {
 /// Generate X25519 key pair
 fn generate_x25519_keypair() -> (Vec<u8>, Vec<u8>) {
     let mut private = [0u8; 32];
-    let _ = ncryptolib::getrandom(&mut private, 0);
+    let _ = crate::ncryptolib::getrandom(&mut private, 0);
     
     // Clamp private key per RFC 7748
     private[0] &= 248;
@@ -83,7 +83,7 @@ fn generate_x25519_keypair() -> (Vec<u8>, Vec<u8>) {
     private[31] |= 64;
     
     // Compute public key
-    let public = ncryptolib::x25519::x25519_base(&private);
+    let public = crate::ncryptolib::x25519::x25519_base(&private);
     
     (private.to_vec(), public.to_vec())
 }
@@ -91,7 +91,7 @@ fn generate_x25519_keypair() -> (Vec<u8>, Vec<u8>) {
 /// Generate P-256 key pair
 fn generate_p256_keypair() -> (Vec<u8>, Vec<u8>) {
     // Generate P-256 key pair using ncryptolib
-    let keypair = ncryptolib::p256::P256KeyPair::generate()
+    let keypair = crate::ncryptolib::p256::P256KeyPair::generate()
         .expect("Failed to generate P-256 key pair");
     let private = keypair.private_key.to_vec();
     let public = keypair.public_key_uncompressed();
@@ -110,7 +110,7 @@ fn x25519_shared_secret(private: &[u8], peer_public: &[u8]) -> Option<Vec<u8>> {
     let mut pub_arr = [0u8; 32];
     pub_arr.copy_from_slice(peer_public);
     
-    Some(ncryptolib::x25519::x25519(&priv_arr, &pub_arr).to_vec())
+    Some(crate::ncryptolib::x25519::x25519(&priv_arr, &pub_arr).to_vec())
 }
 
 /// P-256 ECDH shared secret computation
@@ -121,13 +121,13 @@ fn p256_shared_secret(private: &[u8], peer_public: &[u8]) -> Option<Vec<u8>> {
     
     // Parse peer's public key (uncompressed format: 04 || x || y)
     let peer_point = if peer_public.len() == 65 && peer_public[0] == 0x04 {
-        ncryptolib::p256::P256Point::from_uncompressed(peer_public)?
+        crate::ncryptolib::p256::P256Point::from_uncompressed(peer_public)?
     } else if peer_public.len() == 64 {
         // Raw x || y format
         let mut uncompressed = [0u8; 65];
         uncompressed[0] = 0x04;
         uncompressed[1..].copy_from_slice(peer_public);
-        ncryptolib::p256::P256Point::from_uncompressed(&uncompressed)?
+        crate::ncryptolib::p256::P256Point::from_uncompressed(&uncompressed)?
     } else {
         return None;
     };
@@ -135,7 +135,7 @@ fn p256_shared_secret(private: &[u8], peer_public: &[u8]) -> Option<Vec<u8>> {
     // Create key pair from private key
     let mut priv_arr = [0u8; 32];
     priv_arr.copy_from_slice(private);
-    let keypair = ncryptolib::p256::P256KeyPair::from_private_key(&priv_arr)?;
+    let keypair = crate::ncryptolib::p256::P256KeyPair::from_private_key(&priv_arr)?;
     
     // Compute ECDH shared secret - returns x-coordinate directly
     let shared_secret = keypair.ecdh(&peer_point)?;
@@ -212,11 +212,11 @@ pub fn derive_tls13_handshake_keys(
     
     // 2. Derive-Secret(early_secret, "derived", "")
     let (empty_hash, derived_early) = if use_sha384 {
-        let h = ncryptolib::sha384(&[]);
+        let h = crate::ncryptolib::sha384(&[]);
         let d = hkdf_expand_label_sha384(&early_secret, b"derived", &h, hash_len);
         (h.to_vec(), d)
     } else {
-        let h = ncryptolib::sha256(&[]);
+        let h = crate::ncryptolib::sha256(&[]);
         let d = hkdf_expand_label(&early_secret, b"derived", &h, hash_len);
         (h.to_vec(), d)
     };
@@ -286,10 +286,10 @@ pub fn derive_tls13_application_keys(
     
     // 1. Derive-Secret(handshake_secret, "derived", "")
     let derived_hs = if use_sha384 {
-        let empty_hash = ncryptolib::sha384(&[]);
+        let empty_hash = crate::ncryptolib::sha384(&[]);
         hkdf_expand_label_sha384(handshake_secret, b"derived", &empty_hash, hash_len)
     } else {
-        let empty_hash = ncryptolib::sha256(&[]);
+        let empty_hash = crate::ncryptolib::sha256(&[]);
         hkdf_expand_label(handshake_secret, b"derived", &empty_hash, hash_len)
     };
     
@@ -417,12 +417,12 @@ pub struct HandshakeSecrets {
 
 /// HKDF-Extract (RFC 5869)
 fn hkdf_extract(salt: &[u8], ikm: &[u8]) -> Vec<u8> {
-    ncryptolib::hmac_sha256(salt, ikm).to_vec()
+    crate::ncryptolib::hmac_sha256(salt, ikm).to_vec()
 }
 
 /// HKDF-Extract with SHA-384
 fn hkdf_extract_sha384(salt: &[u8], ikm: &[u8]) -> Vec<u8> {
-    ncryptolib::hmac_sha384(salt, ikm).to_vec()
+    crate::ncryptolib::hmac_sha384(salt, ikm).to_vec()
 }
 
 /// HKDF-Expand-Label (RFC 8446) - 公共函数供 Finished 消息使用
@@ -466,7 +466,7 @@ fn hkdf_expand(prk: &[u8], info: &[u8], length: usize) -> Vec<u8> {
         data.extend_from_slice(info);
         data.push(i as u8);
         
-        t = ncryptolib::hmac_sha256(prk, &data).to_vec();
+        t = crate::ncryptolib::hmac_sha256(prk, &data).to_vec();
         okm.extend_from_slice(&t);
     }
     
@@ -487,7 +487,7 @@ fn hkdf_expand_sha384(prk: &[u8], info: &[u8], length: usize) -> Vec<u8> {
         data.extend_from_slice(info);
         data.push(i as u8);
         
-        t = ncryptolib::hmac_sha384(prk, &data).to_vec();
+        t = crate::ncryptolib::hmac_sha384(prk, &data).to_vec();
         okm.extend_from_slice(&t);
     }
     
@@ -529,14 +529,14 @@ fn prf_sha256(secret: &[u8], label: &[u8], seed: &[u8], length: usize) -> Vec<u8
     full_seed.extend_from_slice(seed);
     
     let mut result = Vec::new();
-    let mut a = ncryptolib::hmac_sha256(secret, &full_seed).to_vec();
+    let mut a = crate::ncryptolib::hmac_sha256(secret, &full_seed).to_vec();
     
     while result.len() < length {
         let mut data = a.clone();
         data.extend_from_slice(&full_seed);
-        let p = ncryptolib::hmac_sha256(secret, &data);
+        let p = crate::ncryptolib::hmac_sha256(secret, &data);
         result.extend_from_slice(&p);
-        a = ncryptolib::hmac_sha256(secret, &a).to_vec();
+        a = crate::ncryptolib::hmac_sha256(secret, &a).to_vec();
     }
     
     result.truncate(length);

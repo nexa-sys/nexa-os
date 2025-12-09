@@ -66,8 +66,12 @@
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 
-// External dependency
-pub use ncryptolib;
+// FFI bindings to ncryptolib (libcrypto.so) - provides stable C ABI
+pub mod crypto_ffi;
+
+// Re-export crypto_ffi as ncryptolib for compatibility
+// This allows existing code using crate::ncryptolib:: to work with minimal changes
+pub use crypto_ffi as ncryptolib;
 
 // ============================================================================
 // Module Declarations
@@ -127,6 +131,7 @@ pub mod ssl_extra;
 // ============================================================================
 // C Type Definitions (OpenSSL compatible)
 // ============================================================================
+
 
 pub type c_int = i32;
 pub type c_uint = u32;
@@ -279,7 +284,7 @@ pub extern "C" fn SSL_version_str() -> *const c_char {
 #[no_mangle]
 pub extern "C" fn SSL_library_init() -> c_int {
     // Initialize crypto library
-    unsafe { ncryptolib::OPENSSL_init_crypto(0, core::ptr::null()) };
+    unsafe { crate::ncryptolib::OPENSSL_init_crypto(0, core::ptr::null()) };
     1 // Success
 }
 

@@ -9,5 +9,7 @@ fn main() {
     // We only need to declare the dependency on libc here.
     println!("cargo:rustc-link-lib=c");
     
-    // Link against ncryptolib (dependency handled by build-libs.sh build order)
+    // Dynamically link against ncryptolib (libcrypto.so)
+    // This provides stable C ABI for cryptographic functions
+    println!("cargo:rustc-link-lib=dylib=crypto");
 }

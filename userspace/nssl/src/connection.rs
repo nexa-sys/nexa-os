@@ -501,7 +501,7 @@ impl SslConnection {
         let mut pub_arr = [0u8; 32];
         pub_arr.copy_from_slice(server_pubkey);
         
-        let result = ncryptolib::x25519::x25519(&priv_arr, &pub_arr);
+        let result = crate::ncryptolib::x25519::x25519(&priv_arr, &pub_arr);
         
         Some(result.to_vec())
     }
@@ -639,9 +639,9 @@ impl SslConnection {
         };
         
         let expected_verify_data: Vec<u8> = if use_sha384 {
-            ncryptolib::hmac_sha384(&finished_key, transcript_hash).to_vec()
+            crate::ncryptolib::hmac_sha384(&finished_key, transcript_hash).to_vec()
         } else {
-            ncryptolib::hmac_sha256(&finished_key, transcript_hash).to_vec()
+            crate::ncryptolib::hmac_sha256(&finished_key, transcript_hash).to_vec()
         };
         
         // 验证 verify_data
@@ -669,9 +669,9 @@ impl SslConnection {
             hkdf_expand_label(&traffic_secret, b"finished", &[], hash_len)
         };
         let verify_data: Vec<u8> = if use_sha384 {
-            ncryptolib::hmac_sha384(&finished_key, transcript_hash).to_vec()
+            crate::ncryptolib::hmac_sha384(&finished_key, transcript_hash).to_vec()
         } else {
-            ncryptolib::hmac_sha256(&finished_key, transcript_hash).to_vec()
+            crate::ncryptolib::hmac_sha256(&finished_key, transcript_hash).to_vec()
         };
         
         // 构建 Finished 消息
@@ -731,9 +731,9 @@ impl SslConnection {
         };
         
         let expected_verify_data: Vec<u8> = if use_sha384 {
-            ncryptolib::hmac_sha384(&finished_key, transcript_hash).to_vec()
+            crate::ncryptolib::hmac_sha384(&finished_key, transcript_hash).to_vec()
         } else {
-            ncryptolib::hmac_sha256(&finished_key, transcript_hash).to_vec()
+            crate::ncryptolib::hmac_sha256(&finished_key, transcript_hash).to_vec()
         };
         
         // 验证 verify_data
@@ -763,9 +763,9 @@ impl SslConnection {
         };
         
         let verify_data: Vec<u8> = if use_sha384 {
-            ncryptolib::hmac_sha384(&finished_key, transcript_hash).to_vec()
+            crate::ncryptolib::hmac_sha384(&finished_key, transcript_hash).to_vec()
         } else {
-            ncryptolib::hmac_sha256(&finished_key, transcript_hash).to_vec()
+            crate::ncryptolib::hmac_sha256(&finished_key, transcript_hash).to_vec()
         };
         
         // 构建 Finished 消息
@@ -1752,14 +1752,14 @@ fn prf_sha256(secret: &[u8], label: &[u8], seed: &[u8], length: usize) -> Vec<u8
     full_seed.extend_from_slice(seed);
     
     let mut result = Vec::new();
-    let mut a = ncryptolib::hmac_sha256(secret, &full_seed).to_vec();
+    let mut a = crate::ncryptolib::hmac_sha256(secret, &full_seed).to_vec();
     
     while result.len() < length {
         let mut data = a.clone();
         data.extend_from_slice(&full_seed);
-        let p = ncryptolib::hmac_sha256(secret, &data);
+        let p = crate::ncryptolib::hmac_sha256(secret, &data);
         result.extend_from_slice(&p);
-        a = ncryptolib::hmac_sha256(secret, &a).to_vec();
+        a = crate::ncryptolib::hmac_sha256(secret, &a).to_vec();
     }
     
     result.truncate(length);

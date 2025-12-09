@@ -516,7 +516,7 @@ impl RecordLayer {
         let encrypted = if key.len() == 32 {
             // Use ncryptolib's AES-256-GCM
             let key_arr: [u8; 32] = key.as_slice().try_into().ok()?;
-            let aes = ncryptolib::AesGcm::new_256(&key_arr);
+            let aes = crate::ncryptolib::AesGcm::new_256(&key_arr);
             let (ct, tag) = aes.encrypt(&nonce, plaintext_to_encrypt, &aad);
             
             let mut ciphertext = vec![0u8; ct.len() + 16];
@@ -526,7 +526,7 @@ impl RecordLayer {
         } else if key.len() == 16 {
             // Use ncryptolib's AES-128-GCM
             let key_arr: [u8; 16] = key.as_slice().try_into().ok()?;
-            let aes = ncryptolib::AesGcm::new_128(&key_arr);
+            let aes = crate::ncryptolib::AesGcm::new_128(&key_arr);
             let (ct, tag) = aes.encrypt(&nonce, plaintext_to_encrypt, &aad);
             
             let mut ciphertext = vec![0u8; ct.len() + 16];
@@ -612,12 +612,12 @@ impl RecordLayer {
         let plaintext = if key.len() == 32 {
             let key_arr: [u8; 32] = key.as_slice().try_into().ok()?;
             let tag_arr: [u8; 16] = tag.try_into().ok()?;
-            let aes = ncryptolib::AesGcm::new_256(&key_arr);
+            let aes = crate::ncryptolib::AesGcm::new_256(&key_arr);
             aes.decrypt(&nonce, ct, &aad, &tag_arr)?
         } else if key.len() == 16 {
             let key_arr: [u8; 16] = key.as_slice().try_into().ok()?;
             let tag_arr: [u8; 16] = tag.try_into().ok()?;
-            let aes = ncryptolib::AesGcm::new_128(&key_arr);
+            let aes = crate::ncryptolib::AesGcm::new_128(&key_arr);
             aes.decrypt(&nonce, ct, &aad, &tag_arr)?
         } else {
             return None;

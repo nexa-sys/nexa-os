@@ -30,7 +30,7 @@ pub struct HandshakeState {
 impl HandshakeState {
     pub fn new() -> Self {
         let mut client_random = [0u8; 32];
-        let _ = ncryptolib::getrandom(&mut client_random, 0);
+        let _ = crate::ncryptolib::getrandom(&mut client_random, 0);
         
         Self {
             client_random,
@@ -72,7 +72,7 @@ impl HandshakeState {
         
         // Session ID
         self.session_id = vec![0u8; 32];
-        let _ = ncryptolib::getrandom(&mut self.session_id, 0);
+        let _ = crate::ncryptolib::getrandom(&mut self.session_id, 0);
         msg.push(self.session_id.len() as u8);
         msg.extend_from_slice(&self.session_id);
         
@@ -441,7 +441,7 @@ impl HandshakeState {
         let mut msg = Vec::new();
         
         // Generate server random
-        let _ = ncryptolib::getrandom(&mut self.server_random, 0);
+        let _ = crate::ncryptolib::getrandom(&mut self.server_random, 0);
         
         // Handshake type
         msg.push(HandshakeType::ServerHello as u8);
@@ -528,9 +528,9 @@ impl HandshakeState {
     /// Get transcript hash
     pub fn get_transcript_hash(&self) -> Vec<u8> {
         if self.use_sha384 {
-            ncryptolib::sha384(&self.transcript).to_vec()
+            crate::ncryptolib::sha384(&self.transcript).to_vec()
         } else {
-            ncryptolib::sha256(&self.transcript).to_vec()
+            crate::ncryptolib::sha256(&self.transcript).to_vec()
         }
     }
 }
@@ -550,7 +550,7 @@ pub struct ClientHelloInfo {
 /// Generate X25519 key pair
 fn generate_x25519_keypair() -> (Vec<u8>, Vec<u8>) {
     let mut private = [0u8; 32];
-    let _ = ncryptolib::getrandom(&mut private, 0);
+    let _ = crate::ncryptolib::getrandom(&mut private, 0);
     
     // Clamp private key per RFC 7748
     private[0] &= 248;
@@ -558,7 +558,7 @@ fn generate_x25519_keypair() -> (Vec<u8>, Vec<u8>) {
     private[31] |= 64;
     
     // Generate public key
-    let public = ncryptolib::x25519::x25519_base(&private);
+    let public = crate::ncryptolib::x25519::x25519_base(&private);
     
     (private.to_vec(), public.to_vec())
 }

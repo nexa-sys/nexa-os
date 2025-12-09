@@ -417,7 +417,7 @@ fn parse_pem_private_key(data: &[u8]) -> Option<Vec<u8>> {
                 let cleaned: String = base64_data.chars()
                     .filter(|c| !c.is_whitespace())
                     .collect();
-                return ncryptolib::base64_decode(&cleaned).ok();
+                return crate::ncryptolib::base64_decode(&cleaned).ok();
             }
         }
     }

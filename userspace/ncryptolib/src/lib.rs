@@ -110,6 +110,9 @@ pub mod evp;
 // Big integer arithmetic
 pub mod bigint;
 
+// FFI exports for nssl dynamic linking
+pub mod ffi_exports;
+
 // ============================================================================
 // C Type Definitions
 // ============================================================================

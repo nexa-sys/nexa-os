@@ -177,7 +177,7 @@ impl SslSession {
             (*session).ref_count -= 1;
             if (*session).ref_count == 0 {
                 // Securely zero the master secret
-                ncryptolib::secure_zero(&mut (*session).master_secret);
+                crate::ncryptolib::secure_zero(&mut (*session).master_secret);
                 drop(Box::from_raw(session));
             }
         }
@@ -398,7 +398,7 @@ fn hkdf_expand_label(secret: &[u8], label: &[u8], context: &[u8], length: usize)
         data.extend_from_slice(&hkdf_label);
         data.push(counter);
         
-        t = ncryptolib::hmac_sha256(secret, &data).to_vec();
+        t = crate::ncryptolib::hmac_sha256(secret, &data).to_vec();
         result.extend_from_slice(&t);
         counter += 1;
     }

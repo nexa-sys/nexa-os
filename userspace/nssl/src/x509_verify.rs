@@ -258,8 +258,8 @@ impl SignatureVerifier {
         modulus: &[u8],
         exponent: &[u8],
     ) -> bool {
-        use ncryptolib::bigint::BigInt;
-        use ncryptolib::rsa::RsaPublicKey;
+        use crate::ncryptolib::bigint::BigInt;
+        use crate::ncryptolib::rsa::RsaPublicKey;
         
         // Build RSA public key from components
         let n = BigInt::from_bytes_be(modulus);
@@ -267,7 +267,7 @@ impl SignatureVerifier {
         let pubkey = RsaPublicKey::new(n, e);
         
         // Verify signature (rsa_verify hashes internally, pass raw message)
-        match ncryptolib::rsa::rsa_verify(message, signature, &pubkey) {
+        match crate::ncryptolib::rsa::rsa_verify(message, signature, &pubkey) {
             Ok(valid) => valid,
             Err(_) => false,
         }
@@ -280,8 +280,8 @@ impl SignatureVerifier {
         modulus: &[u8],
         exponent: &[u8],
     ) -> bool {
-        use ncryptolib::bigint::BigInt;
-        use ncryptolib::rsa::RsaPublicKey;
+        use crate::ncryptolib::bigint::BigInt;
+        use crate::ncryptolib::rsa::RsaPublicKey;
         
         // Build RSA public key from components
         let n = BigInt::from_bytes_be(modulus);
@@ -290,7 +290,7 @@ impl SignatureVerifier {
         
         // Note: Current rsa_verify only supports SHA-256
         // For SHA-384, we would need a separate implementation
-        match ncryptolib::rsa::rsa_verify(message, signature, &pubkey) {
+        match crate::ncryptolib::rsa::rsa_verify(message, signature, &pubkey) {
             Ok(valid) => valid,
             Err(_) => false,
         }
@@ -303,8 +303,8 @@ impl SignatureVerifier {
         modulus: &[u8],
         exponent: &[u8],
     ) -> bool {
-        use ncryptolib::bigint::BigInt;
-        use ncryptolib::rsa::RsaPublicKey;
+        use crate::ncryptolib::bigint::BigInt;
+        use crate::ncryptolib::rsa::RsaPublicKey;
         
         // Build RSA public key from components
         let n = BigInt::from_bytes_be(modulus);
@@ -313,7 +313,7 @@ impl SignatureVerifier {
         
         // Note: Current rsa_verify only supports SHA-256
         // For SHA-512, we would need a separate implementation
-        match ncryptolib::rsa::rsa_verify(message, signature, &pubkey) {
+        match crate::ncryptolib::rsa::rsa_verify(message, signature, &pubkey) {
             Ok(valid) => valid,
             Err(_) => false,
         }
@@ -326,8 +326,8 @@ impl SignatureVerifier {
         modulus: &[u8],
         exponent: &[u8],
     ) -> bool {
-        use ncryptolib::bigint::BigInt;
-        use ncryptolib::rsa::RsaPublicKey;
+        use crate::ncryptolib::bigint::BigInt;
+        use crate::ncryptolib::rsa::RsaPublicKey;
         
         // Build RSA public key from components
         let n = BigInt::from_bytes_be(modulus);
@@ -335,7 +335,7 @@ impl SignatureVerifier {
         let pubkey = RsaPublicKey::new(n, e);
         
         // Verify PSS signature (rsa_pss_verify hashes internally)
-        match ncryptolib::rsa::rsa_pss_verify(message, signature, &pubkey) {
+        match crate::ncryptolib::rsa::rsa_pss_verify(message, signature, &pubkey) {
             Ok(valid) => valid,
             Err(_) => false,
         }
@@ -348,8 +348,8 @@ impl SignatureVerifier {
         modulus: &[u8],
         exponent: &[u8],
     ) -> bool {
-        use ncryptolib::bigint::BigInt;
-        use ncryptolib::rsa::RsaPublicKey;
+        use crate::ncryptolib::bigint::BigInt;
+        use crate::ncryptolib::rsa::RsaPublicKey;
         
         // Build RSA public key from components
         let n = BigInt::from_bytes_be(modulus);
@@ -357,7 +357,7 @@ impl SignatureVerifier {
         let pubkey = RsaPublicKey::new(n, e);
         
         // Note: Current rsa_pss_verify only supports SHA-256
-        match ncryptolib::rsa::rsa_pss_verify(message, signature, &pubkey) {
+        match crate::ncryptolib::rsa::rsa_pss_verify(message, signature, &pubkey) {
             Ok(valid) => valid,
             Err(_) => false,
         }
@@ -370,8 +370,8 @@ impl SignatureVerifier {
         modulus: &[u8],
         exponent: &[u8],
     ) -> bool {
-        use ncryptolib::bigint::BigInt;
-        use ncryptolib::rsa::RsaPublicKey;
+        use crate::ncryptolib::bigint::BigInt;
+        use crate::ncryptolib::rsa::RsaPublicKey;
         
         // Build RSA public key from components
         let n = BigInt::from_bytes_be(modulus);
@@ -379,7 +379,7 @@ impl SignatureVerifier {
         let pubkey = RsaPublicKey::new(n, e);
         
         // Note: Current rsa_pss_verify only supports SHA-256
-        match ncryptolib::rsa::rsa_pss_verify(message, signature, &pubkey) {
+        match crate::ncryptolib::rsa::rsa_pss_verify(message, signature, &pubkey) {
             Ok(valid) => valid,
             Err(_) => false,
         }
@@ -392,16 +392,16 @@ impl SignatureVerifier {
         public_key: &[u8],
     ) -> bool {
         // Hash the message
-        let hash = ncryptolib::sha256(message);
+        let hash = crate::ncryptolib::sha256(message);
         
         // Parse the public key point
-        let point = match ncryptolib::p256::P256Point::from_uncompressed(public_key) {
+        let point = match crate::ncryptolib::p256::P256Point::from_uncompressed(public_key) {
             Some(p) => p,
             None => return false,
         };
         
         // Parse ECDSA signature from DER
-        let sig = match ncryptolib::p256::P256Signature::from_der(signature) {
+        let sig = match crate::ncryptolib::p256::P256Signature::from_der(signature) {
             Some(s) => s,
             None => return false,
         };

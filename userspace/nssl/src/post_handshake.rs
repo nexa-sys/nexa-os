@@ -148,7 +148,7 @@ pub extern "C" fn SSL_export_keying_material(
 
     // Simplified: generate pseudo-random output
     // Real implementation would use actual TLS secrets
-    let mut hasher = ncryptolib::hash::Sha256::new();
+    let mut hasher = crate::ncryptolib::hash::Sha256::new();
     hasher.update(label_slice);
     hasher.update(context_slice);
     let hash = hasher.finalize();
