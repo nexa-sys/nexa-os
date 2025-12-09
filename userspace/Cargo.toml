@@ -35,6 +35,8 @@ members = [
     "programs/users",
     "programs/clear",
     "programs/kill",
+    "programs/grep",
+    "programs/find",
     # User management
     "programs/logout",
     "programs/adduser",

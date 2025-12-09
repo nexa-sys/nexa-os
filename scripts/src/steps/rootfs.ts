@@ -120,7 +120,7 @@ async function installLibs(env: BuildEnvironment, rootfsDir: string): Promise<vo
   
   // Build and install other libraries
   const config = await loadBuildConfig(env.projectRoot);
-  const libNames = ['ncryptolib', 'nssl', 'nzip', 'nhttp2'];
+  const libNames = ['ncryptolib', 'nssl', 'nzip', 'nh2'];
   
   for (const libName of libNames) {
     await buildLibrary(env, config, libName, { type: 'shared', destDir: lib64Dir });

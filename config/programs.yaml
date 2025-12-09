@@ -186,6 +186,18 @@ coreutils:
     dest: bin
     link: dyn
     enabled: true
+  
+  - package: grep
+    description: "Search for patterns in files"
+    dest: bin
+    link: dyn
+    enabled: true
+  
+  - package: find
+    description: "Search for files in directory hierarchy"
+    dest: bin
+    link: dyn
+    enabled: true
 
 # =============================================================================
 # User Management

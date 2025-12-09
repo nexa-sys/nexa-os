@@ -118,6 +118,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "find"
+version = "0.1.0"
+dependencies = [
+ "nexa_boot_info",
+ "nrlib",
+]
+
+[[package]]
 name = "free"
 version = "0.1.0"
 dependencies = [
@@ -134,6 +142,14 @@ checksum = "05f29059c0c2090612e8d742178b0580d2dc940c837851ad723096f87af6663e"
 
 [[package]]
 name = "getty"
+version = "0.1.0"
+dependencies = [
+ "nexa_boot_info",
+ "nrlib",
+]
+
+[[package]]
+name = "grep"
 version = "0.1.0"
 dependencies = [
  "nexa_boot_info",
