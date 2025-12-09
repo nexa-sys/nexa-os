@@ -8,7 +8,7 @@ use super::{HttpClient, HttpError, HttpResponse, HttpResult};
 use crate::args::Args;
 use crate::url::ParsedUrl;
 
-#[cfg(feature = "https")]
+#[cfg(any(feature = "https", feature = "https-dynamic"))]
 use crate::tls::TlsConnection;
 
 use nh2::{Session, SessionCallbacks, HeaderField, StreamState};
@@ -243,7 +243,7 @@ impl Http2Client {
     }
 
     /// Perform HTTP/2 over TLS (h2)
-    #[cfg(feature = "https")]
+    #[cfg(any(feature = "https", feature = "https-dynamic"))]
     fn perform_h2(
         &self,
         tcp_stream: TcpStream,
@@ -294,15 +294,15 @@ impl HttpClient for Http2Client {
         let stream = self.connect(url)?;
 
         if url.is_https {
-            #[cfg(feature = "https")]
+            #[cfg(any(feature = "https", feature = "https-dynamic"))]
             {
                 self.perform_h2(stream, &url.host, args, url)
             }
-            #[cfg(not(feature = "https"))]
+            #[cfg(not(any(feature = "https", feature = "https-dynamic")))]
             {
                 drop(stream);
                 Err(HttpError::NotSupported(
-                    "HTTPS not supported (compile with 'https' feature)".to_string(),
+                    "HTTPS not supported (compile with 'https' or 'https-dynamic' feature)".to_string(),
                 ))
             }
         } else {

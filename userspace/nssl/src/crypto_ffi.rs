@@ -300,6 +300,37 @@ extern "C" {
     
     /// Secure memory zeroing
     pub fn ncrypto_secure_zero(ptr: *mut u8, len: size_t);
+    
+    // ========================================================================
+    // Error Handling Functions (ERR_*)
+    // ========================================================================
+    
+    /// Get and remove first error from error queue
+    pub fn ERR_get_error() -> c_ulong;
+    
+    /// Peek at first error without removing
+    pub fn ERR_peek_error() -> c_ulong;
+    
+    /// Peek at last error without removing
+    pub fn ERR_peek_last_error() -> c_ulong;
+    
+    /// Clear the error queue
+    pub fn ERR_clear_error();
+    
+    /// Get error string
+    pub fn ERR_error_string(e: c_ulong, buf: *mut c_char) -> *const c_char;
+    
+    /// Get error string (safer, with length limit)
+    pub fn ERR_error_string_n(e: c_ulong, buf: *mut c_char, len: size_t);
+    
+    /// Print error queue to file
+    pub fn ERR_print_errors_fp(fp: *mut c_void);
+    
+    /// Get error library string
+    pub fn ERR_lib_error_string(e: c_ulong) -> *const c_char;
+    
+    /// Get error reason string
+    pub fn ERR_reason_error_string(e: c_ulong) -> *const c_char;
 }
 
 // ============================================================================

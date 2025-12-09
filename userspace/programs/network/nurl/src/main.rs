@@ -19,8 +19,45 @@
 
 mod args;
 mod http;
-mod tls;
 mod url;
+
+// TLS module selection based on features:
+// - https: static linking with nssl crate
+// - https-dynamic: dynamic linking with libnssl.so via FFI
+
+#[cfg(feature = "https")]
+mod tls;
+
+#[cfg(feature = "https-dynamic")]
+mod nssl_ffi;
+
+#[cfg(feature = "https-dynamic")]
+#[path = "tls_dynamic.rs"]
+mod tls;
+
+// Fallback when no TLS support
+#[cfg(not(any(feature = "https", feature = "https-dynamic")))]
+mod tls {
+    use crate::http::HttpError;
+    
+    pub struct TlsConnection;
+    
+    impl TlsConnection {
+        pub fn new(_fd: i32, _hostname: &str, _insecure: bool) -> Result<Self, HttpError> {
+            Err(HttpError::NotSupported(
+                "HTTPS not supported (compile with 'https' or 'https-dynamic' feature)".to_string(),
+            ))
+        }
+        
+        pub fn new_with_alpn(
+            _fd: i32, _hostname: &str, _insecure: bool, _alpn: &[&str]
+        ) -> Result<Self, HttpError> {
+            Err(HttpError::NotSupported(
+                "HTTPS not supported (compile with 'https' or 'https-dynamic' feature)".to_string(),
+            ))
+        }
+    }
+}
 
 use std::fs::File;
 use std::io::Write;

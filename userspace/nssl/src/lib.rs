@@ -116,6 +116,10 @@ pub mod bio;
 // OpenSSL C ABI compatibility
 pub mod compat;
 
+// Complete OpenSSL FFI exports for dynamic linking
+// Applications can dynamically link against libnssl.so using these functions
+pub mod ffi;
+
 // TLS 1.3 Early Data (0-RTT)
 pub mod early_data;
 

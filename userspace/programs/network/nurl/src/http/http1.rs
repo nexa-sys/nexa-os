@@ -10,7 +10,7 @@ use super::{HttpClient, HttpError, HttpResponse, HttpResult};
 use crate::args::Args;
 use crate::url::ParsedUrl;
 
-#[cfg(feature = "https")]
+#[cfg(any(feature = "https", feature = "https-dynamic"))]
 use crate::tls::TlsConnection;
 
 /// HTTP/1.1 client
@@ -57,7 +57,7 @@ impl Http1Client {
     }
 
     /// Perform HTTPS request
-    #[cfg(feature = "https")]
+    #[cfg(any(feature = "https", feature = "https-dynamic"))]
     fn perform_https(
         &self,
         stream: TcpStream,
@@ -141,15 +141,15 @@ impl HttpClient for Http1Client {
 
         // Perform request
         let response_data = if url.is_https {
-            #[cfg(feature = "https")]
+            #[cfg(any(feature = "https", feature = "https-dynamic"))]
             {
                 self.perform_https(stream, &url.host, &request)?
             }
-            #[cfg(not(feature = "https"))]
+            #[cfg(not(any(feature = "https", feature = "https-dynamic")))]
             {
                 drop(stream);
                 return Err(HttpError::NotSupported(
-                    "HTTPS not supported (compile with 'https' feature)".to_string(),
+                    "HTTPS not supported (compile with 'https' or 'https-dynamic' feature)".to_string(),
                 ));
             }
         } else {

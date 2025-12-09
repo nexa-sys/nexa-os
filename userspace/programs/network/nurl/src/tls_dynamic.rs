@@ -1,21 +1,19 @@
-/// TLS/SSL support for nurl
+/// TLS/SSL support for nurl (Dynamic Linking Version)
 ///
-/// This module wraps the nssl library for HTTPS support.
-
-#[cfg(feature = "https")]
-use std::ffi::CString;
+/// This module provides TLS support by dynamically linking against libnssl.so
+/// instead of statically linking the nssl crate.
 
 use crate::http::HttpError;
+use crate::nssl_ffi::*;
+use std::ffi::CString;
 
-/// TLS connection wrapper
-#[cfg(feature = "https")]
+/// TLS connection wrapper (dynamic linking version)
 pub struct TlsConnection {
-    ssl: *mut nssl::SslConnection,
-    ctx: *mut nssl::SslContext,
+    ssl: *mut SSL,
+    ctx: *mut SSL_CTX,
     alpn_protocol: Option<String>,
 }
 
-#[cfg(feature = "https")]
 impl TlsConnection {
     /// Create a new TLS connection
     pub fn new(fd: i32, hostname: &str, insecure: bool) -> Result<Self, HttpError> {
@@ -31,18 +29,18 @@ impl TlsConnection {
     ) -> Result<Self, HttpError> {
         // Initialize SSL library
         unsafe {
-            nssl::SSL_library_init();
+            SSL_library_init();
         }
 
         // Create SSL context
-        let method = unsafe { nssl::TLS_client_method() };
+        let method = unsafe { TLS_client_method() };
         if method.is_null() {
             return Err(HttpError::TlsError(
                 "Failed to get TLS client method".to_string(),
             ));
         }
 
-        let ctx = unsafe { nssl::SSL_CTX_new(method) };
+        let ctx = unsafe { SSL_CTX_new(method) };
         if ctx.is_null() {
             return Err(HttpError::TlsError(
                 "Failed to create SSL context".to_string(),
@@ -57,24 +55,26 @@ impl TlsConnection {
                 alpn_data.push(proto.len() as u8);
                 alpn_data.extend_from_slice(proto.as_bytes());
             }
-            nssl::SSL_CTX_set_alpn_protos(ctx, alpn_data.as_ptr(), alpn_data.len() as u32);
+            unsafe {
+                SSL_CTX_set_alpn_protos(ctx, alpn_data.as_ptr(), alpn_data.len() as u32);
+            }
         }
 
         // Set verification mode
         unsafe {
             if insecure {
-                nssl::SSL_CTX_set_verify(ctx, nssl::ssl_verify::SSL_VERIFY_NONE, None);
+                SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, None);
             } else {
-                nssl::SSL_CTX_set_verify(ctx, nssl::ssl_verify::SSL_VERIFY_PEER, None);
-                nssl::SSL_CTX_set_default_verify_paths(ctx);
+                SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, None);
+                SSL_CTX_set_default_verify_paths(ctx);
             }
         }
 
         // Create SSL connection
-        let ssl = unsafe { nssl::SSL_new(ctx) };
+        let ssl = unsafe { SSL_new(ctx) };
         if ssl.is_null() {
             unsafe {
-                nssl::SSL_CTX_free(ctx);
+                SSL_CTX_free(ctx);
             }
             return Err(HttpError::TlsError(
                 "Failed to create SSL connection".to_string(),
@@ -85,15 +85,15 @@ impl TlsConnection {
         let hostname_cstr = CString::new(hostname)
             .map_err(|_| HttpError::TlsError("Invalid hostname".to_string()))?;
         unsafe {
-            nssl::SSL_set_tlsext_host_name(ssl, hostname_cstr.as_ptr() as *const i8);
+            SSL_set_tlsext_host_name(ssl, hostname_cstr.as_ptr());
         }
 
         // Set file descriptor
-        let result = unsafe { nssl::SSL_set_fd(ssl, fd) };
+        let result = unsafe { SSL_set_fd(ssl, fd) };
         if result != 1 {
             unsafe {
-                nssl::SSL_free(ssl);
-                nssl::SSL_CTX_free(ctx);
+                SSL_free(ssl);
+                SSL_CTX_free(ctx);
             }
             return Err(HttpError::TlsError(
                 "Failed to set SSL file descriptor".to_string(),
@@ -101,12 +101,12 @@ impl TlsConnection {
         }
 
         // Perform TLS handshake
-        let result = unsafe { nssl::SSL_connect(ssl) };
+        let result = unsafe { SSL_connect(ssl) };
         if result != 1 {
-            let err = unsafe { nssl::SSL_get_error(ssl, result) };
+            let err = unsafe { SSL_get_error(ssl, result) };
             unsafe {
-                nssl::SSL_free(ssl);
-                nssl::SSL_CTX_free(ctx);
+                SSL_free(ssl);
+                SSL_CTX_free(ctx);
             }
             return Err(HttpError::TlsError(format!(
                 "TLS handshake failed (error: {})",
@@ -118,7 +118,7 @@ impl TlsConnection {
         let alpn_protocol = unsafe {
             let mut proto_ptr: *const u8 = std::ptr::null();
             let mut proto_len: u32 = 0;
-            nssl::SSL_get0_alpn_selected(ssl, &mut proto_ptr, &mut proto_len);
+            SSL_get0_alpn_selected(ssl, &mut proto_ptr, &mut proto_len);
             if !proto_ptr.is_null() && proto_len > 0 {
                 let slice = std::slice::from_raw_parts(proto_ptr, proto_len as usize);
                 Some(String::from_utf8_lossy(slice).into_owned())
@@ -137,7 +137,7 @@ impl TlsConnection {
 
     /// Get the negotiated TLS version
     pub fn version(&self) -> Option<String> {
-        let version_ptr = unsafe { nssl::SSL_get_version(self.ssl) };
+        let version_ptr = unsafe { SSL_get_version(self.ssl) };
         if version_ptr.is_null() {
             return None;
         }
@@ -147,11 +147,11 @@ impl TlsConnection {
 
     /// Get the negotiated cipher suite
     pub fn cipher(&self) -> Option<String> {
-        let cipher = unsafe { nssl::SSL_get_current_cipher(self.ssl) };
+        let cipher = unsafe { SSL_get_current_cipher(self.ssl) };
         if cipher.is_null() {
             return None;
         }
-        let cipher_name = unsafe { nssl::SSL_CIPHER_get_name(cipher) };
+        let cipher_name = unsafe { SSL_CIPHER_get_name(cipher) };
         if cipher_name.is_null() {
             return None;
         }
@@ -164,7 +164,7 @@ impl TlsConnection {
         let mut written = 0;
         while written < data.len() {
             let n = unsafe {
-                nssl::SSL_write(
+                SSL_write(
                     self.ssl,
                     data[written..].as_ptr(),
                     (data.len() - written) as i32,
@@ -186,7 +186,7 @@ impl TlsConnection {
         let mut total = 0;
 
         loop {
-            let n = unsafe { nssl::SSL_read(self.ssl, temp.as_mut_ptr(), temp.len() as i32) };
+            let n = unsafe { SSL_read(self.ssl, temp.as_mut_ptr(), temp.len() as i32) };
             if n > 0 {
                 buf.extend_from_slice(&temp[..n as usize]);
                 total += n as usize;
@@ -194,11 +194,11 @@ impl TlsConnection {
                 // Connection closed
                 break;
             } else {
-                let err = unsafe { nssl::SSL_get_error(self.ssl, n) };
-                if err == nssl::ssl_error::SSL_ERROR_ZERO_RETURN {
+                let err = unsafe { SSL_get_error(self.ssl, n) };
+                if err == SSL_ERROR_ZERO_RETURN {
                     // Clean shutdown
                     break;
-                } else if err == nssl::ssl_error::SSL_ERROR_WANT_READ {
+                } else if err == SSL_ERROR_WANT_READ {
                     // Would block, try again
                     continue;
                 } else {
@@ -212,19 +212,18 @@ impl TlsConnection {
     }
 }
 
-#[cfg(feature = "https")]
 impl std::io::Read for TlsConnection {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let n = unsafe { nssl::SSL_read(self.ssl, buf.as_mut_ptr(), buf.len() as i32) };
+        let n = unsafe { SSL_read(self.ssl, buf.as_mut_ptr(), buf.len() as i32) };
         if n > 0 {
             Ok(n as usize)
         } else if n == 0 {
             Ok(0)
         } else {
-            let err = unsafe { nssl::SSL_get_error(self.ssl, n) };
-            if err == nssl::ssl_error::SSL_ERROR_ZERO_RETURN {
+            let err = unsafe { SSL_get_error(self.ssl, n) };
+            if err == SSL_ERROR_ZERO_RETURN {
                 Ok(0)
-            } else if err == nssl::ssl_error::SSL_ERROR_WANT_READ {
+            } else if err == SSL_ERROR_WANT_READ {
                 Err(std::io::Error::new(std::io::ErrorKind::WouldBlock, "would block"))
             } else {
                 Err(std::io::Error::new(std::io::ErrorKind::Other, format!("SSL read error: {}", err)))
@@ -233,14 +232,13 @@ impl std::io::Read for TlsConnection {
     }
 }
 
-#[cfg(feature = "https")]
 impl std::io::Write for TlsConnection {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let n = unsafe { nssl::SSL_write(self.ssl, buf.as_ptr(), buf.len() as i32) };
+        let n = unsafe { SSL_write(self.ssl, buf.as_ptr(), buf.len() as i32) };
         if n > 0 {
             Ok(n as usize)
         } else {
-            let err = unsafe { nssl::SSL_get_error(self.ssl, n) };
+            let err = unsafe { SSL_get_error(self.ssl, n) };
             Err(std::io::Error::new(std::io::ErrorKind::Other, format!("SSL write error: {}", err)))
         }
     }
@@ -250,13 +248,12 @@ impl std::io::Write for TlsConnection {
     }
 }
 
-#[cfg(feature = "https")]
 impl Drop for TlsConnection {
     fn drop(&mut self) {
         unsafe {
-            nssl::SSL_shutdown(self.ssl);
-            nssl::SSL_free(self.ssl);
-            nssl::SSL_CTX_free(self.ctx);
+            SSL_shutdown(self.ssl);
+            SSL_free(self.ssl);
+            SSL_CTX_free(self.ctx);
         }
     }
 }

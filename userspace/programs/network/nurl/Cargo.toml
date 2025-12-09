@@ -15,11 +15,19 @@ nzip = { path = "../../../nzip", optional = true }
 nh2 = { path = "../../../nh2", optional = true, default-features = false }
 
 [features]
-default = ["use-nrlib", "https", "compression", "http2"]
+# By default, use dynamic linking (https-dynamic) for nssl since nurl is built as
+# a dynamically linked binary that loads libnssl.so at runtime
+default = ["use-nrlib", "https-dynamic", "compression", "http2"]
 use-nrlib = ["nrlib"]
 use-nrlib-std = ["nrlib", "nrlib/std"]
+# Static linking with nssl (compile-time dependency)
+# Use this feature when building nurl as a statically linked binary
 https = ["nssl"]
+# Dynamic linking with libnssl.so (runtime dependency)
+# This is the default for dynamically linked builds
+https-dynamic = []
 compression = ["nzip"]
 # HTTP/2 support via nh2 (nghttp2 ABI compatible)
 http2 = ["nh2"]
 http3 = []
+
