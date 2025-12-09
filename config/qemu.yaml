@@ -1,0 +1,210 @@
+# NexaOS QEMU Configuration
+#
+# This file configures QEMU settings for running NexaOS.
+# The build system uses this to generate build/run-qemu.sh dynamically.
+
+# =============================================================================
+# Machine Settings
+# =============================================================================
+machine:
+  # System architecture
+  arch: x86_64
+  
+  # Memory size (supports: M, G suffixes)
+  memory: 1G
+  
+  # Number of CPU cores (can be overridden via SMP env var)
+  smp: 4
+  
+  # Machine type (q35 recommended for modern features)
+  type: q35
+
+# =============================================================================
+# Boot Configuration
+# =============================================================================
+boot:
+  # Boot mode: uefi or legacy
+  mode: uefi
+  
+  # UEFI firmware search paths (in order of preference)
+  uefi_paths:
+    - /usr/share/OVMF
+    - /usr/share/ovmf
+    - /usr/share/edk2/ovmf
+
+# =============================================================================
+# Display Settings
+# =============================================================================
+display:
+  # VGA type: std, virtio, qxl, cirrus
+  vga: std
+  
+  # Display backend: gtk, sdl, spice, none
+  backend: gtk
+  
+  # Window close behavior
+  window_close: true
+
+# =============================================================================
+# Serial Console
+# =============================================================================
+serial:
+  # Output: stdio, file, pty, none
+  output: stdio
+  
+  # Enable monitor (QEMU monitor interface)
+  monitor: false
+
+# =============================================================================
+# Storage Devices
+# =============================================================================
+storage:
+  # ISO image (relative to project root)
+  iso: dist/nexaos.iso
+  
+  # Root filesystem
+  rootfs:
+    path: build/rootfs.ext2
+    format: raw
+    cache: writeback
+    # Device type: virtio-blk-pci, ide-hd, scsi-hd
+    device: virtio-blk-pci
+  
+  # Swap partition
+  swap:
+    path: build/swap.img
+    format: raw
+    cache: writeback
+    device: virtio-blk-pci
+
+# =============================================================================
+# Network Configuration
+# =============================================================================
+network:
+  # Enable networking
+  enabled: true
+  
+  # NIC model: e1000, virtio-net-pci, rtl8139
+  model: e1000
+  
+  # MAC address (null = auto-generate)
+  mac: "52:54:00:12:34:56"
+  
+  # Network modes:
+  #   - auto: Detect (bridge for ethernet, user for WiFi)
+  #   - user: NAT/user-mode (works with WiFi)
+  #   - bridge: Bridge mode (requires ethernet)
+  #   - tap: TAP device only
+  mode: auto
+  
+  # Bridge name (for bridge/tap modes)
+  bridge: br0
+  
+  # TAP device name
+  tap: tap0
+  
+  # User-mode network settings
+  user:
+    # Forward ports from host to guest
+    # Format: hostport:guestport or hostport:guestport/protocol
+    hostfwd: []
+    # Example:
+    # hostfwd:
+    #   - "2222:22"        # SSH
+    #   - "8080:80"        # HTTP
+    #   - "8443:443"       # HTTPS
+
+# =============================================================================
+# Debug Settings
+# =============================================================================
+debug:
+  # Enable QEMU debug messages
+  guest_errors: true
+  
+  # GDB server settings
+  gdb:
+    enabled: false
+    port: 1234
+    # Pause CPU on startup (requires GDB server)
+    pause: false
+  
+  # Trace events (comma-separated list)
+  trace: null
+
+# =============================================================================
+# Audio (optional)
+# =============================================================================
+audio:
+  enabled: false
+  # Driver: pulseaudio, sdl, alsa, none
+  driver: pulseaudio
+  # Sound card: hda, ac97, sb16
+  model: hda
+
+# =============================================================================
+# USB Devices (optional)
+# =============================================================================
+usb:
+  enabled: false
+  # USB controller: xhci, ehci, uhci
+  controller: ehci
+  # USB devices to attach
+  devices: []
+  # Example:
+  # devices:
+  #   - tablet    # USB tablet for better mouse handling
+  #   - keyboard
+
+# =============================================================================
+# Profiles
+# =============================================================================
+# Quick profiles for common use cases
+
+profiles:
+  # Default development profile
+  default:
+    description: "Standard development setup"
+    
+  # Minimal profile (fast boot, reduced features)
+  minimal:
+    description: "Minimal setup for quick testing"
+    machine:
+      memory: 512M
+      smp: 2
+    display:
+      backend: none
+    network:
+      enabled: false
+    audio:
+      enabled: false
+    usb:
+      enabled: false
+      
+  # Debug profile (GDB server enabled)
+  debug:
+    description: "Debug setup with GDB server"
+    debug:
+      gdb:
+        enabled: true
+        pause: true
+        
+  # Headless profile (no display)
+  headless:
+    description: "Headless server mode"
+    display:
+      backend: none
+    serial:
+      output: stdio
+      
+  # Full profile (all features enabled)
+  full:
+    description: "Full featured setup"
+    machine:
+      memory: 2G
+      smp: 8
+    audio:
+      enabled: true
+    usb:
+      enabled: true
+      devices:
+        - tablet

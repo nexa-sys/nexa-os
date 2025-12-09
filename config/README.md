@@ -11,6 +11,40 @@ This directory contains all build configuration files for NexaOS.
 | `programs.yaml` | Userspace programs configuration |
 | `libraries.yaml` | Userspace shared libraries configuration |
 | `features.yaml` | Compile-time feature flags for conditional compilation |
+| `qemu.yaml` | QEMU emulator configuration |
+
+## QEMU Configuration (qemu.yaml)
+
+The `qemu.yaml` file configures the QEMU emulator settings. The build system
+uses this to dynamically generate `build/run-qemu.sh`.
+
+### Key Settings
+
+- **Machine**: Architecture, memory, CPU cores
+- **Boot**: UEFI or legacy BIOS mode
+- **Display**: VGA type and display backend
+- **Storage**: ISO, rootfs, and swap device configuration
+- **Network**: Network mode (auto/user/bridge/tap)
+- **Debug**: GDB server settings
+
+### QEMU Profiles
+
+| Profile | Description |
+|---------|-------------|
+| `default` | Standard development setup |
+| `minimal` | Fast boot, reduced features |
+| `debug` | GDB server enabled, pause on start |
+| `headless` | No display, serial console only |
+| `full` | All features, more resources |
+
+### Managing QEMU Configuration
+
+```bash
+./ndk qemu config           # Show current configuration
+./ndk qemu profiles         # List available profiles
+./ndk qemu generate         # Regenerate run-qemu.sh
+./ndk qemu generate -p debug  # Generate with debug profile
+```
 
 ## Feature Flags (features.yaml)
 
@@ -46,8 +80,18 @@ network:
 Or use environment variables at build time:
 
 ```bash
-FEATURE_TCP=false ./scripts/build.sh kernel    # Disable TCP
-FEATURE_UDP=true ./scripts/build.sh kernel     # Enable UDP
+FEATURE_TCP=false ./ndk kernel    # Disable TCP
+FEATURE_UDP=true ./ndk kernel     # Enable UDP
+```
+
+### Feature CLI Commands
+
+```bash
+./ndk features list           # List all features
+./ndk features enable tcp     # Enable TCP
+./ndk features disable debug  # Disable debug features
+./ndk features presets        # List available presets
+./ndk features apply minimal  # Apply a preset
 ```
 
 ### Feature Presets
@@ -92,6 +136,9 @@ The `build.yaml` file supports multiple profiles:
 Build scripts automatically read these configuration files:
 
 ```bash
-./scripts/build.sh all              # Uses default profile
-BUILD_PROFILE=minimal ./scripts/build.sh all  # Use minimal profile
+./ndk full                        # Full build with default profile
+BUILD_PROFILE=minimal ./ndk full  # Use minimal profile
+./ndk dev                         # Build and run in QEMU
+./ndk run                         # Run in QEMU (requires built system)
+./ndk run --debug                 # Run with GDB server
 ```

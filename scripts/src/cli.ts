@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * NexaOS Build System - CLI
- * TypeScript rewrite of the build system
+ * NexaOS Development Kit (NDK) - CLI
+ * TypeScript-based build system and development tools
  */
 
 import { Command } from 'commander';
@@ -27,6 +27,8 @@ import {
   printRustFlags,
   interactiveFeatures
 } from './features.js';
+import { generateQemuScript, loadQemuConfig } from './qemu.js';
+import { spawn } from 'child_process';
 
 fileURLToPath(import.meta.url);
 
@@ -48,8 +50,8 @@ function findProjectRoot(): string {
 const program = new Command();
 
 program
-  .name('nexaos-build')
-  .description('NexaOS TypeScript Build System')
+  .name('ndk')
+  .description('NexaOS Development Kit - Build system and development tools')
   .version('1.0.0');
 
 // Full build
@@ -230,10 +232,11 @@ program
     process.exit(result.success ? 0 : 1);
   });
 
-// Multi-step build
+// Multi-step build (renamed from 'run' to 'steps' to avoid conflict with QEMU run)
 program
-  .command('run <steps...>')
-  .description('Run multiple build steps in sequence')
+  .command('steps <steps...>')
+  .alias('s')
+  .description('Run multiple build steps in sequence (e.g., ndk steps kernel iso)')
   .action(async (steps: string[]) => {
     const builder = new Builder(findProjectRoot());
     const result = await builder.runSteps(steps as BuildStep[]);
@@ -402,6 +405,161 @@ featuresCmd
     const projectRoot = findProjectRoot();
     const env = createBuildEnvironment(projectRoot);
     await listFeatures(env, {});
+  });
+
+// =============================================================================
+// QEMU Commands
+// =============================================================================
+
+// Run command - start QEMU
+program
+  .command('run')
+  .description('Run NexaOS in QEMU (requires built system)')
+  .option('-d, --debug', 'Enable GDB server and pause at start')
+  .option('-n, --no-net', 'Disable networking')
+  .option('--headless', 'Run without display')
+  .option('-p, --profile <profile>', 'Use QEMU profile (default, minimal, debug, headless, full)', 'default')
+  .option('--regenerate', 'Regenerate run-qemu.sh before running')
+  .action(async (options) => {
+    const projectRoot = findProjectRoot();
+    const env = createBuildEnvironment(projectRoot);
+    const scriptPath = resolve(env.buildDir, 'run-qemu.sh');
+    
+    // Generate script if it doesn't exist or regenerate is requested
+    if (!existsSync(scriptPath) || options.regenerate) {
+      logger.info('Generating QEMU script...');
+      await generateQemuScript(env, options.profile);
+    }
+    
+    // Build args for run-qemu.sh
+    const args: string[] = [];
+    if (options.debug) args.push('--debug');
+    if (!options.net) args.push('--no-net');
+    if (options.headless) args.push('--headless');
+    
+    // Run the script (it will print its own startup message)
+    const child = spawn(scriptPath, args, {
+      stdio: 'inherit',
+      cwd: projectRoot,
+    });
+    
+    child.on('exit', (code) => {
+      process.exit(code ?? 0);
+    });
+  });
+
+// Dev command - build and run
+program
+  .command('dev')
+  .alias('d')
+  .description('Build and run NexaOS (full build + QEMU)')
+  .option('-q, --quick', 'Quick build (kernel + initramfs + ISO only)')
+  .option('-d, --debug', 'Enable GDB server and pause at start')
+  .option('-n, --no-net', 'Disable networking')
+  .option('--headless', 'Run without display')
+  .option('-p, --profile <profile>', 'Use QEMU profile', 'default')
+  .action(async (options) => {
+    const projectRoot = findProjectRoot();
+    const builder = new Builder(projectRoot);
+    const env = builder.getEnvironment();
+    
+    // Build
+    logger.section('Building NexaOS');
+    const buildResult = options.quick 
+      ? await builder.buildQuick()
+      : await builder.buildFull();
+    
+    if (!buildResult.success) {
+      logger.error('Build failed');
+      process.exit(1);
+    }
+    
+    // Generate QEMU script
+    logger.info('Generating QEMU script...');
+    await generateQemuScript(env, options.profile);
+    
+    const scriptPath = resolve(env.buildDir, 'run-qemu.sh');
+    
+    // Build args
+    const args: string[] = [];
+    if (options.debug) args.push('--debug');
+    if (!options.net) args.push('--no-net');
+    if (options.headless) args.push('--headless');
+    
+    // Run (script will print its own startup message)
+    const child = spawn(scriptPath, args, {
+      stdio: 'inherit',
+      cwd: projectRoot,
+    });
+    
+    child.on('exit', (code) => {
+      process.exit(code ?? 0);
+    });
+  });
+
+// QEMU command group - for QEMU-specific operations
+const qemuCmd = program
+  .command('qemu')
+  .description('QEMU configuration and management');
+
+// qemu generate - generate run-qemu.sh
+qemuCmd
+  .command('generate')
+  .alias('gen')
+  .description('Generate run-qemu.sh from config/qemu.yaml')
+  .option('-p, --profile <profile>', 'Use QEMU profile', 'default')
+  .action(async (options) => {
+    const projectRoot = findProjectRoot();
+    const env = createBuildEnvironment(projectRoot);
+    
+    logger.info(`Generating QEMU script with profile: ${options.profile}`);
+    await generateQemuScript(env, options.profile);
+  });
+
+// qemu config - show QEMU configuration
+qemuCmd
+  .command('config')
+  .description('Show QEMU configuration')
+  .option('-p, --profile <profile>', 'Show configuration for profile', 'default')
+  .action(async (options) => {
+    const projectRoot = findProjectRoot();
+    const config = await loadQemuConfig(projectRoot);
+    
+    console.log('\n📦 QEMU Configuration (config/qemu.yaml)\n');
+    console.log(`Machine: ${config.machine.arch} | ${config.machine.memory} RAM | ${config.machine.smp} CPUs`);
+    console.log(`Boot: ${config.boot.mode.toUpperCase()}`);
+    console.log(`Display: ${config.display.vga} via ${config.display.backend}`);
+    console.log(`Network: ${config.network.enabled ? config.network.mode : 'disabled'}`);
+    console.log(`Storage: ISO + ${config.storage.rootfs.device} + ${config.storage.swap.device}`);
+    
+    if (config.profiles && Object.keys(config.profiles).length > 0) {
+      console.log('\nProfiles:');
+      for (const [name, profile] of Object.entries(config.profiles)) {
+        const marker = name === options.profile ? '►' : ' ';
+        console.log(`  ${marker} ${name}: ${profile.description}`);
+      }
+    }
+    console.log('');
+  });
+
+// qemu profiles - list QEMU profiles
+qemuCmd
+  .command('profiles')
+  .description('List available QEMU profiles')
+  .action(async () => {
+    const projectRoot = findProjectRoot();
+    const config = await loadQemuConfig(projectRoot);
+    
+    console.log('\n📦 QEMU Profiles\n');
+    
+    if (!config.profiles || Object.keys(config.profiles).length === 0) {
+      console.log('  No profiles defined.');
+    } else {
+      for (const [name, profile] of Object.entries(config.profiles)) {
+        console.log(`  • ${name}: ${profile.description}`);
+      }
+    }
+    console.log('');
   });
 
 // Default action (no command = full build)

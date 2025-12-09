@@ -1,30 +1,16 @@
 #!/usr/bin/env bash
-# NexaOS Build System - TypeScript Entry Point
+# NexaOS Build System - Compatibility Wrapper
+#
+# This script is deprecated. Please use ./ndk instead.
+# This wrapper is kept for backward compatibility.
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# Check if we have node
-if ! command -v node &> /dev/null; then
-    echo "Error: Node.js is required but not installed." >&2
-    echo "Install Node.js 20+ and try again." >&2
-    exit 1
-fi
+echo "⚠️  Warning: scripts/build.sh is deprecated. Use ./ndk instead." >&2
+echo "" >&2
 
-# Check if dependencies are installed
-if [ ! -d "$SCRIPT_DIR/node_modules" ]; then
-    echo "Installing dependencies..."
-    cd "$SCRIPT_DIR"
-    npm install
-fi
-
-# Check if we should use development mode (tsx) or production mode
-if [ -f "$SCRIPT_DIR/dist/cli.js" ]; then
-    # Production mode - use compiled JavaScript
-    exec node "$SCRIPT_DIR/dist/cli.js" "$@"
-else
-    # Development mode - use tsx
-    cd "$SCRIPT_DIR"
-    exec npx tsx src/cli.ts "$@"
-fi
+# Forward to ndk
+exec "$ROOT_DIR/ndk" "$@"

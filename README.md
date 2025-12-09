@@ -174,10 +174,13 @@ git clone https://github.com/nexa-sys/nexa-os.git
 cd nexa-os
 
 # Build complete system (kernel + initramfs + rootfs + ISO)
-./scripts/build.sh all
+./ndk full
 
 # Run in QEMU
-./scripts/run-qemu.sh
+./ndk run
+
+# Or build and run in one command (development mode)
+./ndk dev
 ```
 
 **What happens during build**:
@@ -187,7 +190,7 @@ cd nexa-os
 4. Build kernel modules
 5. Create initramfs CPIO archive (`build/initramfs.cpio`)
 6. Create ext2 root filesystem (`build/rootfs.ext2`, 50 MB)
-7. Create bootable ISO with GRUB (`target/iso/nexaos.iso`)
+7. Create bootable ISO with GRUB (`dist/nexaos.iso`)
 
 **Boot sequence**:
 ```
@@ -200,20 +203,25 @@ GRUB → Kernel → Initramfs → Mount ext2 root → Start init (ni) → Getty 
 
 ```bash
 # Build individual components
-./scripts/build.sh kernel       # Kernel only
-./scripts/build.sh userspace    # nrlib + userspace programs
-./scripts/build.sh modules      # Kernel modules
-./scripts/build.sh initramfs    # Initial RAM filesystem
-./scripts/build.sh rootfs       # Root filesystem
-./scripts/build.sh iso          # Bootable ISO
+./ndk kernel       # Kernel only
+./ndk userspace    # nrlib + userspace programs
+./ndk modules      # Kernel modules
+./ndk initramfs    # Initial RAM filesystem
+./ndk rootfs       # Root filesystem
+./ndk iso          # Bootable ISO
 
-# Combine steps
-./scripts/build.sh kernel iso               # Kernel + ISO
-./scripts/build.sh userspace rootfs iso     # Userspace chain
+# Multiple steps
+./ndk steps kernel iso              # Kernel + ISO
+./ndk steps userspace rootfs iso    # Userspace chain
 
 # Environment variables
-BUILD_TYPE=release ./scripts/build.sh all   # Release build (smaller, may have issues)
-LOG_LEVEL=info ./scripts/build.sh kernel    # Set kernel log level
+BUILD_TYPE=release ./ndk full       # Release build (smaller, may have issues)
+LOG_LEVEL=info ./ndk kernel         # Set kernel log level
+
+# QEMU options
+./ndk run --debug                   # Run with GDB server
+./ndk dev --quick                   # Quick build + run
+SMP=8 MEMORY=2G ./ndk run           # Custom CPU/memory
 ```
 
 ### Troubleshooting
@@ -230,17 +238,17 @@ LOG_LEVEL=info ./scripts/build.sh kernel    # Set kernel log level
 - Verify custom target exists: `targets/x86_64-nexaos.json`
 
 **QEMU won't boot**:
-- Verify ISO exists: `target/iso/nexaos.iso`
+- Verify ISO exists: `dist/nexaos.iso`
 - Check QEMU version: `qemu-system-x86_64 --version` (need ≥ 4.0)
-- Try without KVM: Edit `scripts/run-qemu.sh`, remove `-enable-kvm`
+- Try without KVM: Edit `config/qemu.yaml`, or use `./ndk run --no-kvm`
 
 **Fork/exec crashes in release mode**:
-- Use debug builds (default): `./scripts/build.sh all`
-- If you used release mode, switch back: `BUILD_TYPE=debug ./scripts/build.sh all`
+- Use debug builds (default): `./ndk full`
+- If you used release mode, switch back: `BUILD_TYPE=debug ./ndk full`
 
 **Serial output missing**:
 - Check QEMU command includes `-serial stdio`
-- Try `-display curses` or `-nographic` instead
+- Try `./ndk run --headless` for serial-only output
 
 > 📚 **Documentation**: See [`docs/zh/getting-started.md`](docs/zh/getting-started.md) for detailed setup (Chinese) and [`docs/en/BUILD-SYSTEM.md`](docs/en/BUILD-SYSTEM.md) for build system architecture (English).
 

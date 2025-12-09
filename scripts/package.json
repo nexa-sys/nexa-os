@@ -1,11 +1,11 @@
 {
-  "name": "nexaos-build-system",
+  "name": "ndk",
   "version": "1.0.0",
-  "description": "NexaOS TypeScript Build System",
+  "description": "NexaOS Development Kit - Build system and development tools",
   "type": "module",
   "main": "dist/cli.js",
   "bin": {
-    "nexaos-build": "./dist/cli.js"
+    "ndk": "./dist/cli.js"
   },
   "scripts": {
     "build": "tsc",

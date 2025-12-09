@@ -26,18 +26,35 @@ INTERP_BASE:    0x1600000   // Dynamic linker region (16MB reserved)
 
 ## Build & Test Workflows
 ```bash
-./scripts/build.sh all                    # Full: kernel → userspace → rootfs → ISO (use first!)
-./scripts/run-qemu.sh                     # Boot in QEMU with serial console
-./scripts/build.sh kernel iso             # After kernel-only changes
-./scripts/build.sh userspace rootfs iso   # After userspace changes
-./scripts/build.sh modules initramfs      # After module changes
+./ndk full                    # Full: kernel → userspace → rootfs → ISO (use first!)
+./ndk run                     # Boot in QEMU with serial console
+./ndk dev                     # Build + run (development mode)
+./ndk dev --quick             # Quick build + run
+./ndk kernel iso              # After kernel-only changes
+./ndk run --debug             # Run with GDB server
+./ndk qemu generate           # Regenerate QEMU script from config/qemu.yaml
+```
+
+### Common Commands
+```bash
+./ndk full              # Full system build
+./ndk quick             # Quick build (kernel + initramfs + ISO)
+./ndk kernel            # Build kernel only
+./ndk userspace         # Build userspace programs
+./ndk modules           # Build kernel modules
+./ndk rootfs            # Build root filesystem
+./ndk clean             # Clean build artifacts
+./ndk features list     # List kernel features
+./ndk list              # List build targets
 ```
 
 ### Environment Variables
 ```bash
-BUILD_TYPE=debug ./scripts/build.sh all   # Debug build (default, STABLE)
-BUILD_TYPE=release ./scripts/build.sh all # Release build (O3 may cause fork/exec crashes!)
-LOG_LEVEL=info ./scripts/build.sh kernel  # Set kernel log level (debug|info|warn|error)
+BUILD_TYPE=debug ./ndk full     # Debug build (default, STABLE)
+BUILD_TYPE=release ./ndk full   # Release build (O3 may cause fork/exec crashes!)
+LOG_LEVEL=info ./ndk kernel     # Set kernel log level (debug|info|warn|error)
+SMP=8 ./ndk run                 # Run with 8 CPU cores
+MEMORY=2G ./ndk run             # Run with 2GB RAM
 ```
 
 **Build order matters**: Dependencies are kernel → nrlib → userspace → modules → initramfs → rootfs → iso.
@@ -76,12 +93,12 @@ Services use System V runlevels (0=halt, 1=single, 3=multi-user, 6=reboot). Init
 - **Never disable logging** — serial output is essential for boot debugging
 - **ProcessState consistency** — scheduler, signals (`src/ipc/signal.rs`), and wait4 must stay synchronized
 - **Dynamic linking** — PT_INTERP must match `/lib64/ld-nrlib-x86_64.so.1`
-- **Rebuild rootfs** after `userspace/` or `etc/` changes: `./scripts/build.sh userspace rootfs iso`
+- **Rebuild rootfs** after `userspace/` or `etc/` changes: `./ndk userspace rootfs iso`
 - **Memory constants** — USER_VIRT_BASE/STACK_BASE changes break ELF loading; coordinate with paging
 
 ## Debugging
 ```bash
-./scripts/run-qemu.sh -S -s              # GDB server + pause at start
+./ndk run --debug                        # GDB server + pause at start
 gdb -ex "target remote :1234"            # Attach GDB
 grub-file --is-x86-multiboot2 target/x86_64-nexaos/debug/nexa-os  # Verify boot
 ```

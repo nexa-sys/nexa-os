@@ -1,4 +1,4 @@
-# NexaOS TypeScript Build System
+# NexaOS Development Kit (NDK)
 
 用 TypeScript 重写的 NexaOS 构建系统，提供更好的类型安全、可维护性和扩展性。
 
@@ -11,38 +11,34 @@
 - 📋 **YAML 配置** - 模块化配置文件在 `config/` 目录
 - 🔧 **灵活** - 支持单独构建任何组件
 - 📝 **构建日志** - 自动记录所有构建输出到 `logs/` 目录，保留 ANSI 颜色代码
+- 🖥️ **QEMU 集成** - 动态生成 QEMU 启动脚本
 
 ## 快速开始
 
-### 安装依赖
+### 使用 ndk 命令
+
+从项目根目录运行：
 
 ```bash
-cd scripts-ts
+./ndk full       # 完整构建
+./ndk dev        # 构建并运行（开发模式）
+./ndk run        # 在 QEMU 中运行
+./ndk kernel     # 仅构建内核
+./ndk --help     # 显示帮助
+```
+
+### 安装依赖（首次运行自动安装）
+
+```bash
+cd scripts
 npm install
-```
-
-### 开发模式
-
-使用 `tsx` 直接运行 TypeScript：
-
-```bash
-npm run dev -- full        # 完整构建
-npm run dev -- quick       # 快速构建
-npm run dev -- kernel      # 仅构建内核
-```
-
-或使用 wrapper 脚本：
-
-```bash
-./scripts/build-ts.sh full
-./scripts/build-ts.sh kernel
 ```
 
 ### 编译生产版本
 
 ```bash
+cd scripts
 npm run build              # 编译 TypeScript
-node dist/cli.js full      # 运行编译后的版本
 ```
 
 ## 命令
@@ -58,36 +54,79 @@ node dist/cli.js full      # 运行编译后的版本
 | `programs` | `p` | 构建用户程序 |
 | `initramfs` | `i` | 构建 initramfs |
 | `rootfs` | `r` | 构建根文件系统 |
+| `swap` | - | 构建交换分区 |
 | `iso` | - | 构建 ISO 镜像 |
 | `clean` | - | 清理构建产物 |
 | `list` | - | 列出可用目标 |
 | `info` | - | 显示构建环境信息 |
 | `features` | `f` | 管理内核编译时特性 |
+| `run` | - | 在 QEMU 中运行 |
+| `dev` | `d` | 构建并在 QEMU 中运行 |
+| `qemu` | - | QEMU 配置管理 |
 
 ### 选项
 
 ```bash
 # 构建特定程序
-npm run dev -- programs --name sh
+./ndk programs --name sh
 
 # 构建特定库
-npm run dev -- libs --name nssl
+./ndk libs --name nssl
 
 # 构建特定模块
-npm run dev -- modules --name ext2
+./ndk modules --name ext2
 
 # 列出所有可用程序
-npm run dev -- programs --list
+./ndk programs --list
 
 # 列出所有目标
-npm run dev -- list
+./ndk list
 
 # 仅清理 build/ 目录
-npm run dev -- clean --build-only
+./ndk clean --build-only
 
 # 运行多个步骤
-npm run dev -- run kernel initramfs iso
+./ndk steps kernel initramfs iso
+
+# 运行 QEMU
+./ndk run                    # 普通运行
+./ndk run --debug            # 启用 GDB 服务器
+./ndk run --headless         # 无显示模式
+./ndk run -p minimal         # 使用 minimal 配置
+
+# 开发模式
+./ndk dev                    # 完整构建并运行
+./ndk dev --quick            # 快速构建并运行
+./ndk dev --debug            # 构建并以调试模式运行
 ```
+
+## QEMU 配置管理
+
+QEMU 设置通过 `config/qemu.yaml` 配置，构建系统会根据配置动态生成 `build/run-qemu.sh`：
+
+```bash
+# 显示当前配置
+./ndk qemu config
+
+# 列出可用配置
+./ndk qemu profiles
+
+# 重新生成 QEMU 脚本
+./ndk qemu generate
+
+# 使用特定配置生成
+./ndk qemu generate -p debug
+```
+
+### QEMU 配置
+
+| 配置 | 描述 |
+|------|------|
+| `default` | 标准开发设置 |
+| `minimal` | 最小配置，快速启动 |
+| `debug` | 启用 GDB 服务器 |
+| `headless` | 无显示，仅串口 |
+| `full` | 全功能，更多资源 |
 
 ## 内核特性管理 (Features)
 
@@ -95,38 +134,38 @@ npm run dev -- run kernel initramfs iso
 
 ```bash
 # 列出所有特性
-./scripts/build.sh features list
+./ndk features list
 
 # 只显示网络相关特性
-./scripts/build.sh features list -c network
+./ndk features list -c network
 
 # 只显示已启用的特性
-./scripts/build.sh features list -e
+./ndk features list -e
 
 # 显示详细信息
-./scripts/build.sh features list -v
+./ndk features list -v
 
 # 查看单个特性详情
-./scripts/build.sh features show tcp
+./ndk features show tcp
 
 # 启用特性
-./scripts/build.sh features enable verbose_logging
+./ndk features enable verbose_logging
 
 # 禁用特性
-./scripts/build.sh features disable tcp
+./ndk features disable tcp
 
 # 切换特性状态
-./scripts/build.sh features toggle ttf
+./ndk features toggle ttf
 
 # 列出所有预设
-./scripts/build.sh features presets -v
+./ndk features presets -v
 
 # 应用预设配置
-./scripts/build.sh features apply minimal_network
-./scripts/build.sh features apply embedded
+./ndk features apply minimal_network
+./ndk features apply embedded
 
 # 输出当前 RUSTFLAGS
-./scripts/build.sh features rustflags
+./ndk features rustflags
 ```
 
 ### 可用预设
@@ -159,8 +198,8 @@ npm run dev -- run kernel initramfs iso
 构建时可以使用环境变量临时覆盖特性设置：
 
 ```bash
-FEATURE_TCP=false ./scripts/build.sh kernel
-FEATURE_TTF=false FEATURE_COMPOSITOR=false ./scripts/build.sh kernel
+FEATURE_TCP=false ./ndk kernel
+FEATURE_TTF=false FEATURE_COMPOSITOR=false ./ndk kernel
 ```
 
 ## 环境变量
@@ -170,6 +209,9 @@ FEATURE_TTF=false FEATURE_COMPOSITOR=false ./scripts/build.sh kernel
 | `BUILD_TYPE` | `debug` | 构建类型 (debug/release) |
 | `LOG_LEVEL` | `debug` | 内核日志级别 |
 | `ROOTFS_SIZE_MB` | `50` | 根文件系统大小 (MB) |
+| `SMP` | `4` | QEMU CPU 核心数 |
+| `MEMORY` | `1G` | QEMU 内存大小 |
+| `BIOS_MODE` | `uefi` | QEMU 启动模式 (uefi/legacy) |
 
 ## 项目结构
 
@@ -181,6 +223,7 @@ scripts/
 │   ├── types.ts         # 类型定义
 │   ├── config.ts        # YAML 配置解析
 │   ├── features.ts      # 特性管理
+│   ├── qemu.ts          # QEMU 配置管理
 │   ├── env.ts           # 构建环境
 │   ├── logger.ts        # 日志输出
 │   ├── exec.ts          # 命令执行
@@ -236,9 +279,9 @@ scripts/
 通过 `BUILD_PROFILE` 环境变量选择配置文件：
 
 ```bash
-BUILD_PROFILE=minimal ./scripts/build.sh all  # 最小构建
-BUILD_PROFILE=full ./scripts/build.sh all     # 完整构建
-BUILD_PROFILE=dev ./scripts/build.sh all      # 开发构建
+BUILD_PROFILE=minimal ./ndk full  # 最小构建
+BUILD_PROFILE=full ./ndk full     # 完整构建
+BUILD_PROFILE=dev ./ndk full      # 开发构建
 ```
 
 ## 依赖

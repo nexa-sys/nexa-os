@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# NexaOS Development Kit (NDK)
+# Main entry point for the build system
+#
+# Usage:
+#   ./ndk [command] [options]
+#
+# Commands:
+#   full, all      - Full system build
+#   quick, q       - Quick build (kernel + initramfs + ISO)
+#   kernel, k      - Build kernel only
+#   userspace, u   - Build userspace programs
+#   libs, l        - Build libraries
+#   modules, m     - Build kernel modules
+#   initramfs, i   - Build initramfs
+#   rootfs, r      - Build root filesystem
+#   swap           - Build swap image
+#   iso            - Build ISO image
+#   clean          - Clean build artifacts
+#   run            - Run NexaOS in QEMU
+#   dev, d         - Build and run (development mode)
+#   qemu           - QEMU management commands
+#   features, f    - Manage kernel features
+#   list           - List build targets
+#   info           - Show build environment info
+#
+# Examples:
+#   ./ndk full           # Full build
+#   ./ndk dev            # Build and run
+#   ./ndk dev --quick    # Quick build and run
+#   ./ndk run --debug    # Run with GDB server
+#   ./ndk features list  # List kernel features
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPTS_DIR="$SCRIPT_DIR/scripts"
+
+# Check if we have node
+if ! command -v node &> /dev/null; then
+    echo "Error: Node.js is required but not installed." >&2
+    echo "Install Node.js 20+ and try again." >&2
+    exit 1
+fi
+
+# Check if dependencies are installed
+if [ ! -d "$SCRIPTS_DIR/node_modules" ]; then
+    echo "Installing dependencies..."
+    cd "$SCRIPTS_DIR"
+    npm install
+    cd "$SCRIPT_DIR"
+fi
+
+# Check if we should use development mode (tsx) or production mode
+if [ -f "$SCRIPTS_DIR/dist/cli.js" ]; then
+    # Production mode - use compiled JavaScript
+    exec node "$SCRIPTS_DIR/dist/cli.js" "$@"
+else
+    # Development mode - use tsx
+    cd "$SCRIPTS_DIR"
+    exec npx tsx src/cli.ts "$@"
+fi
