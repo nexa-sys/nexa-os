@@ -470,12 +470,11 @@ fn map_library_name(name: &[u8]) -> [u8; 64] {
 const MAX_LIBS: usize = 16;
 
 /// Library search paths
-const LIB_SEARCH_PATHS: &[&[u8]] = &[
-    b"/lib64\0",
-    b"/lib\0",
-    b"/usr/lib64\0",
-    b"/usr/lib\0",
-];
+// Library search paths as fixed-size byte arrays to avoid relocation issues
+const LIB_PATH_1: &[u8; 8] = b"/lib64\0\0";
+const LIB_PATH_2: &[u8; 6] = b"/lib\0\0";
+const LIB_PATH_3: &[u8; 12] = b"/usr/lib64\0\0";
+const LIB_PATH_4: &[u8; 10] = b"/usr/lib\0\0";
 
 /// Information parsed from auxiliary vector
 #[derive(Clone, Copy)]
@@ -1058,7 +1057,17 @@ unsafe fn parse_dynamic_section(dyn_addr: u64, load_bias: i64, dyn_info: &mut Dy
 unsafe fn search_library(name: &[u8]) -> Option<[u8; 256]> {
     let mut path_buf = [0u8; 256];
     
-    for search_path in LIB_SEARCH_PATHS {
+    // Use stack-local array to avoid global pointer relocation issues
+    let search_paths: [&[u8]; 4] = [
+        LIB_PATH_1.as_slice(),
+        LIB_PATH_2.as_slice(),
+        LIB_PATH_3.as_slice(),
+        LIB_PATH_4.as_slice(),
+    ];
+    
+    let mut path_idx = 0usize;
+    while path_idx < 4 {
+        let search_path = search_paths[path_idx];
         // Build path: search_path + "/" + name
         let mut pos = 0;
         
@@ -1098,6 +1107,8 @@ unsafe fn search_library(name: &[u8]) -> Option<[u8; 256]> {
             close_file(fd as i32);
             return Some(path_buf);
         }
+        
+        path_idx += 1;
     }
     
     None
@@ -1597,7 +1608,6 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
         // Step 2: Load other DT_NEEDED libraries
         // ================================================================
         if main_dyn_info.needed_count > 0 {
-            
             for i in 0..main_dyn_info.needed_count {
                 let name_offset = main_dyn_info.needed[i];
                 let name_ptr = (main_dyn_info.strtab + name_offset) as *const u8;
@@ -1613,6 +1623,7 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
                 
                 // Try mapped name first, then original name
                 let mapped_name = map_library_name(name_slice);
+                
                 if let Some(path) = search_library(&mapped_name) {
                     let (lib_base, lib_bias, lib_dyn_info) = load_shared_library(path.as_ptr());
                     if lib_base != 0 {
