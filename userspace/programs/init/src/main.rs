@@ -18,7 +18,7 @@
 use core::cell::UnsafeCell;
 use std::arch::asm;
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::panic;
 use std::path::Path;
 use std::sync::OnceLock;
@@ -997,6 +997,10 @@ struct RunningService<'a> {
 
 /// systemd-style logging with colors
 fn log_info(msg: &str) {
+    println!("\x1b[1;32m[  OK  ]\x1b[0m {}", msg); // Green
+}
+
+fn log_ok(msg: &str) {
     println!("\x1b[1;32m[  OK  ]\x1b[0m {}", msg); // Green
 }
 
