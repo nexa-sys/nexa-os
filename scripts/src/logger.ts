@@ -181,7 +181,7 @@ export class Logger {
     
     console.log('');
     console.log('To run in QEMU:');
-    console.log('  ./scripts/run-qemu.sh');
+    console.log(' ./ndk run');
     console.log('');
   }
   

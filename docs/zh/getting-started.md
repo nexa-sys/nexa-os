@@ -58,7 +58,7 @@ rustup component add rust-src llvm-tools-preview --toolchain nightly
 
 3. **使用 QEMU 启动**
    ```bash
-   ./scripts/run-qemu.sh
+  ./ndk run
    ```
    内核启动信息会同时输出到 VGA 文本模式和串口，脚本将串口重定向到当前终端，便于调试。
 

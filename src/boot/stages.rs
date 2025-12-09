@@ -660,10 +660,11 @@ fn remount_dev_after_pivot() -> Result<(), &'static str> {
     // Initialize devfs with standard devices if not already done
     crate::fs::devfs_init();
 
-    // Mount devfs at /dev - this will overlay the ext2's /dev directory
-    crate::fs::mount_at("/dev", &crate::fs::DEVFS).map_err(|e| {
-        crate::kerror!("Failed to mount devfs: {}", e);
-        "devfs mount failed"
+    // Remount devfs at /dev - this will replace any existing mount (from initramfs)
+    // or create a new mount if none exists
+    crate::fs::remount_at("/dev", &crate::fs::DEVFS).map_err(|e| {
+        crate::kerror!("Failed to remount devfs: {}", e);
+        "devfs remount failed"
     })?;
 
     // Re-register dynamic devices from UEFI device table

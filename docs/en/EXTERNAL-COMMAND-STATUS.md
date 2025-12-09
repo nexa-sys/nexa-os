@@ -53,7 +53,7 @@ RIP=0000000000000000
 
 1. **Run with New Debug Logs**
    ```bash
-   ./scripts/run-qemu.sh
+  ./ndk run
    # Try: nslookup
    # Check kernel logs for execve debug output
    ```

@@ -446,7 +446,7 @@ menuentry "NexaOS" {
 
 2. **检查串口输出**
    ```bash
-   ./scripts/run-qemu.sh | tee boot.log
+  ./ndk run | tee boot.log
    ```
 
 3. **使用 GDB 调试**

@@ -27,7 +27,7 @@ pub mod vfs;
 pub use vfs::{
     add_directory, add_file, add_file_bytes, add_file_with_metadata, create_file,
     enable_ext2_write, file_exists, init, list_directory, list_files, mount_at, open, read_file,
-    read_file_bytes, remount_root, stat, write_file, File, FileContent, OpenFile,
+    read_file_bytes, remount_at, remount_root, stat, write_file, File, FileContent, OpenFile,
 };
 
 // Re-export from initramfs

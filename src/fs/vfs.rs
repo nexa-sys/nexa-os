@@ -1553,6 +1553,46 @@ pub fn remount_root(fs: &'static dyn FileSystem) -> Result<(), &'static str> {
     Err("Root not mounted")
 }
 
+/// Remount a filesystem at a given path, replacing any existing mount
+/// This is useful after pivot_root when we need to re-establish virtual filesystems
+pub fn remount_at(
+    mount_point: &'static str,
+    fs: &'static dyn FileSystem,
+) -> Result<(), &'static str> {
+    let normalized = if mount_point == "/" {
+        "/"
+    } else {
+        mount_point.trim_end_matches('/')
+    };
+
+    let mut mounts = MOUNTS.lock();
+
+    // First, try to find and replace an existing mount
+    for entry in mounts.iter_mut() {
+        if let Some(mount) = entry {
+            if mount.mount_point == normalized {
+                crate::kinfo!("Remounting {}: {} -> {}", normalized, mount.fs.name(), fs.name());
+                mount.fs = fs;
+                return Ok(());
+            }
+        }
+    }
+
+    // If no existing mount, add a new one
+    for slot in mounts.iter_mut() {
+        if slot.is_none() {
+            *slot = Some(MountEntry {
+                mount_point: normalized,
+                fs,
+            });
+            crate::kinfo!("Mounted {} at {}", fs.name(), normalized);
+            return Ok(());
+        }
+    }
+
+    Err("Mount table full")
+}
+
 #[derive(Debug)]
 enum MountError {
     AlreadyMounted,

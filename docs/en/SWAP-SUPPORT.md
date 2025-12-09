@@ -157,8 +157,8 @@ Offset      Size    Field
 Set `SWAP_SIZE` environment variable:
 
 ```bash
-SWAP_SIZE=512M ./scripts/run-qemu.sh  # 512MB swap
-SWAP_SIZE=1G ./scripts/run-qemu.sh    # 1GB swap
+SWAP_SIZE=512M./ndk run  # 512MB swap
+SWAP_SIZE=1G./ndk run    # 1GB swap
 ```
 
 ### /etc/fstab Entry

@@ -110,7 +110,7 @@ Command not found: <command>
 
 2. Run in QEMU:
    ```bash
-   ./scripts/run-qemu.sh
+  ./ndk run
    ```
 
 3. After booting and logging in, try:

@@ -70,7 +70,7 @@ To verify the fix works:
 
 2. Run in QEMU:
    ```bash
-   ./scripts/run-qemu.sh
+  ./ndk run
    ```
 
 3. In the shell, try commands that trigger `print_bytes`:

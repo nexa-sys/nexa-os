@@ -206,7 +206,7 @@ The implementation follows:
 ✓ Kernel compiles successfully
 ✓ No UDP-related build errors
 ✓ ISO image created successfully
-✓ Ready for testing with ./scripts/run-qemu.sh
+✓ Ready for testing with./ndk run
 ```
 
 ## Future Documentation

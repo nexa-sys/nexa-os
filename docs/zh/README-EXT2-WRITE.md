@@ -300,7 +300,7 @@ userspace/
 
 3. **运行和测试**
    ```bash
-   ./scripts/run-qemu.sh
+  ./ndk run
    ```
 
 ### 用户程序写入文件
