@@ -1,0 +1,17 @@
+[package]
+name = "sleep"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "sleep"
+path = "src/main.rs"
+
+[dependencies]
+nrlib = { workspace = true, optional = true, features = ["panic-handler"] }
+nexa_boot_info.workspace = true
+
+[features]
+default = ["use-nrlib"]
+use-nrlib = ["nrlib"]
+use-nrlib-std = ["nrlib", "nrlib/std"]

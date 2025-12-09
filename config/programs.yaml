@@ -198,6 +198,102 @@ coreutils:
     dest: bin
     link: dyn
     enabled: true
+  
+  - package: touch
+    description: "Change file timestamps or create empty files"
+    dest: bin
+    link: dyn
+    enabled: true
+  
+  - package: rmdir
+    description: "Remove empty directories"
+    dest: bin
+    link: dyn
+    enabled: true
+  
+  - package: head
+    description: "Output the first part of files"
+    dest: bin
+    link: dyn
+    enabled: true
+  
+  - package: tail
+    description: "Output the last part of files"
+    dest: bin
+    link: dyn
+    enabled: true
+  
+  - package: rm
+    description: "Remove files or directories"
+    dest: bin
+    link: dyn
+    enabled: true
+  
+  - package: cp
+    description: "Copy files and directories"
+    dest: bin
+    link: dyn
+    enabled: true
+  
+  - package: mv
+    description: "Move (rename) files and directories"
+    dest: bin
+    link: dyn
+    enabled: true
+  
+  - package: wc
+    description: "Word, line, character, and byte count"
+    dest: bin
+    link: dyn
+    enabled: true
+  
+  - package: tee
+    description: "Read from stdin and write to stdout and files"
+    dest: bin
+    link: dyn
+    enabled: true
+  
+  - package: hostname
+    description: "Show or set the system hostname"
+    dest: bin
+    link: dyn
+    enabled: true
+  
+  - package: uptime
+    description: "Show how long the system has been running"
+    dest: bin
+    link: dyn
+    enabled: true
+  
+  - package: date
+    description: "Print or set the system date and time"
+    dest: bin
+    link: dyn
+    enabled: true
+  
+  - package: sleep
+    description: "Delay for a specified amount of time"
+    dest: bin
+    link: dyn
+    enabled: true
+  
+  - package: env
+    description: "Display environment or run command with modified environment"
+    dest: bin
+    link: dyn
+    enabled: true
+  
+  - package: id
+    description: "Print user and group IDs"
+    dest: bin
+    link: dyn
+    enabled: true
+  
+  - package: killall
+    description: "Kill processes by name"
+    dest: bin
+    link: dyn
+    enabled: true
 
 # =============================================================================
 # User Management
