@@ -92,7 +92,7 @@ edition = "2021"
 
 [[bin]]
 name = "sh"
-path = "../../userspace/programs/shell/src/main.rs"
+path = "../../userspace/programs/user/shell/src/main.rs"
 
 [dependencies]
 libc = "0.2"

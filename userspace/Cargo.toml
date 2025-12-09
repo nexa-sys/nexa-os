@@ -2,83 +2,126 @@
 resolver = "2"
 
 members = [
+    # ==========================================================================
+    # Libraries
+    # ==========================================================================
     "nrlib",
     "ld-nrlib",
     "ncryptolib",
     "nssl",
     "nh2",
     "nzip",
-    "programs/init",
-    "programs/shell",
-    "programs/getty",
-    "programs/login",
-    "programs/nslookup",
-    "programs/dhcp",
-    "programs/ntpd",
-    "programs/ip",
-    "programs/nurl",
-    "programs/dmesg",
-    "programs/crashtest",
-    "programs/thread_test",
-    "programs/pthread_test",
-    "programs/uefi_compatd",
-    "programs/hello_dynamic",
-    # Coreutils (split from shell builtins)
-    "programs/ls",
-    "programs/cat",
-    "programs/stat",
-    "programs/pwd",
-    "programs/echo",
-    "programs/uname",
-    "programs/mkdir",
-    "programs/whoami",
-    "programs/users",
-    "programs/clear",
-    "programs/kill",
-    "programs/grep",
-    "programs/find",
-    "programs/touch",
-    "programs/rmdir",
-    "programs/head",
-    "programs/tail",
-    "programs/killall",
-    "programs/rm",
-    "programs/cp",
-    "programs/mv",
-    "programs/wc",
-    "programs/hostname",
-    "programs/uptime",
-    "programs/tee",
-    "programs/date",
-    "programs/sleep",
-    "programs/env",
-    "programs/id",
-    # User management
-    "programs/logout",
-    "programs/adduser",
-    # Power management
-    "programs/reboot",
-    "programs/shutdown",
-    "programs/halt",
-    "programs/poweroff",
-    # Memory management
-    "programs/swapon",
-    "programs/swapoff",
-    "programs/mkswap",
-    "programs/free",
-    # IPC utilities
-    "programs/ipc-create",
-    "programs/ipc-send",
-    "programs/ipc-recv",
-    # Test programs
-    "programs/hashmap_test",
+
+    # ==========================================================================
+    # Core System Services (statically linked, boot-critical)
+    # ==========================================================================
+    "programs/core/init",
+    "programs/core/getty",
+
+    # ==========================================================================
+    # Shell and User Authentication
+    # ==========================================================================
+    "programs/user/shell",
+    "programs/user/login",
+    "programs/user/logout",
+    "programs/user/adduser",
+
+    # ==========================================================================
+    # Network Utilities
+    # ==========================================================================
+    "programs/network/nslookup",
+    "programs/network/dhcp",
+    "programs/network/ip",
+    "programs/network/nurl",
+
+    # ==========================================================================
+    # System Daemons
+    # ==========================================================================
+    "programs/daemons/ntpd",
+    "programs/daemons/uefi_compatd",
+
+    # ==========================================================================
+    # System Utilities
+    # ==========================================================================
+    "programs/system/dmesg",
+
+    # ==========================================================================
+    # Coreutils (POSIX standard utilities)
+    # ==========================================================================
+    "programs/coreutils/ls",
+    "programs/coreutils/cat",
+    "programs/coreutils/stat",
+    "programs/coreutils/pwd",
+    "programs/coreutils/echo",
+    "programs/coreutils/uname",
+    "programs/coreutils/mkdir",
+    "programs/coreutils/whoami",
+    "programs/coreutils/users",
+    "programs/coreutils/clear",
+    "programs/coreutils/kill",
+    "programs/coreutils/grep",
+    "programs/coreutils/find",
+    "programs/coreutils/touch",
+    "programs/coreutils/rmdir",
+    "programs/coreutils/head",
+    "programs/coreutils/tail",
+    "programs/coreutils/killall",
+    "programs/coreutils/rm",
+    "programs/coreutils/cp",
+    "programs/coreutils/mv",
+    "programs/coreutils/wc",
+    "programs/coreutils/hostname",
+    "programs/coreutils/uptime",
+    "programs/coreutils/tee",
+    "programs/coreutils/date",
+    "programs/coreutils/sleep",
+    "programs/coreutils/env",
+    "programs/coreutils/id",
+
+    # ==========================================================================
+    # Power Management
+    # ==========================================================================
+    "programs/power/reboot",
+    "programs/power/shutdown",
+    "programs/power/halt",
+    "programs/power/poweroff",
+
+    # ==========================================================================
+    # Memory Management
+    # ==========================================================================
+    "programs/memory/swapon",
+    "programs/memory/swapoff",
+    "programs/memory/mkswap",
+    "programs/memory/free",
+
+    # ==========================================================================
+    # IPC Utilities
+    # ==========================================================================
+    "programs/ipc/ipc-create",
+    "programs/ipc/ipc-send",
+    "programs/ipc/ipc-recv",
+
+    # ==========================================================================
     # Editors
-    "programs/edit",
-    # Kernel module management
-    "programs/lsmod",
-    "programs/insmod",
-    "programs/rmmod",
-    "programs/modinfo",
+    # ==========================================================================
+    "programs/editors/edit",
+
+    # ==========================================================================
+    # Kernel Module Management
+    # ==========================================================================
+    "programs/kmod/lsmod",
+    "programs/kmod/insmod",
+    "programs/kmod/rmmod",
+    "programs/kmod/modinfo",
+
+    # ==========================================================================
+    # Test Programs (exclude from production builds)
+    # ==========================================================================
+    "programs/test/crashtest",
+    "programs/test/thread_test",
+    "programs/test/pthread_test",
+    "programs/test/hello_dynamic",
+    "programs/test/hashmap_test",
 ]
 
 [workspace.package]

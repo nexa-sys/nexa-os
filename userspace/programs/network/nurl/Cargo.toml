@@ -10,9 +10,9 @@ path = "src/main.rs"
 [dependencies]
 nrlib = { workspace = true, optional = true, features = ["panic-handler"] }
 nexa_boot_info.workspace = true
-nssl = { path = "../../nssl", optional = true }
-nzip = { path = "../../nzip", optional = true }
-nh2 = { path = "../../nh2", optional = true, default-features = false }
+nssl = { path = "../../../nssl", optional = true }
+nzip = { path = "../../../nzip", optional = true }
+nh2 = { path = "../../../nh2", optional = true, default-features = false }
 
 [features]
 default = ["use-nrlib", "https", "compression", "http2"]

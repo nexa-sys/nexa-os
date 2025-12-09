@@ -7,7 +7,7 @@ import { mkdir, copyFile, chmod } from 'fs/promises';
 import { existsSync } from 'fs';
 import { BuildEnvironment, BuildStepResult, ProgramConfig } from '../types.js';
 import { logger } from '../logger.js';
-import { cargoBuild, stripBinary, getFileSize } from '../exec.js';
+import { cargoBuild, stripBinary, getFileSize, getStructuredLogPath } from '../exec.js';
 import { getStdRustFlags, getDynRustFlags } from '../env.js';
 import { loadBuildConfig, getAllPrograms, findProgram } from '../config.js';
 import { buildAllNrlib } from './nrlib.js';
@@ -39,6 +39,13 @@ async function buildProgram(
     rustflags = getStdRustFlags(join(env.sysrootDir, 'lib'));
   }
   
+  // Get structured log path using category
+  // Cast to the internal type used by getStructuredLogPath
+  const programCategory = program.category as Parameters<typeof getStructuredLogPath>[2];
+  const logPath = programCategory 
+    ? getStructuredLogPath('programs', program.package, programCategory)
+    : getStructuredLogPath('programs', program.package, 'test');  // fallback to test
+  
   const result = await cargoBuild(env, {
     cwd: userspaceDir,
     target,
@@ -47,7 +54,8 @@ async function buildProgram(
     features: program.features,
     buildStd: ['std', 'panic_abort'],
     rustflags,
-    logName: `program-${program.package}`,
+    logName: logPath ? undefined : `program-${program.package}`,  // Use old style if no structured path
+    logPath,  // Use structured log path
   });
   
   if (!result.success) {

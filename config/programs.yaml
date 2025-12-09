@@ -3,8 +3,24 @@
 # This file defines all userspace programs to be built and installed.
 # Programs are organized by category for easier management.
 #
+# Directory Structure:
+#   programs/
+#   ├── core/       - Boot-critical services (ni, getty)
+#   ├── user/       - Shell and authentication (sh, login, adduser)
+#   ├── network/    - Network utilities (nslookup, ip, dhcp, nurl)
+#   ├── daemons/    - Background services (ntpd, uefi_compatd)
+#   ├── system/     - System utilities (dmesg)
+#   ├── coreutils/  - POSIX standard utilities (ls, cat, cp, mv...)
+#   ├── power/      - Power management (reboot, shutdown, halt)
+#   ├── memory/     - Memory management (swapon, swapoff, free)
+#   ├── ipc/        - IPC utilities (ipc-create, ipc-send, ipc-recv)
+#   ├── editors/    - Text editors (edit)
+#   ├── kmod/       - Kernel module tools (lsmod, insmod, rmmod)
+#   └── test/       - Test programs (excluded from production)
+#
 # Program Properties:
 #   - package: Cargo package name (required)
+#   - path: Relative path under programs/ (required)
 #   - binary: Output binary name (optional, defaults to package name)
 #   - dest: Destination directory - bin, sbin, usr/bin, etc. (required)
 #   - features: Cargo features to enable (optional)
@@ -19,6 +35,7 @@
 
 core:
   - package: ni
+    path: core/init
     description: "System V init implementation"
     dest: sbin
     link: std
@@ -26,6 +43,7 @@ core:
     required: true  # Cannot be disabled
   
   - package: getty
+    path: core/getty
     description: "TTY login prompt"
     dest: sbin
     link: std
@@ -33,12 +51,13 @@ core:
     required: true
 
 # =============================================================================
-# Shell and Authentication
+# Shell and User Authentication
 # =============================================================================
-# User interface and authentication programs.
+# User interface, authentication, and account management programs.
 
-shell:
+user:
   - package: sh
+    path: user/shell
     description: "POSIX shell"
     dest: bin
     link: dyn
@@ -46,11 +65,26 @@ shell:
     required: true
   
   - package: login
+    path: user/login
     description: "User login program"
     dest: bin
     link: dyn
     enabled: true
     required: true
+
+  - package: logout
+    path: user/logout
+    description: "Log out current user"
+    dest: bin
+    link: dyn
+    enabled: true
+  
+  - package: adduser
+    path: user/adduser
+    description: "Add new user account"
+    dest: sbin
+    link: dyn
+    enabled: true
 
 # =============================================================================
 # Network Utilities
@@ -59,6 +93,7 @@ shell:
 
 network:
   - package: nslookup
+    path: network/nslookup
     description: "DNS lookup utility"
     dest: bin
     features: use-nrlib-std
@@ -66,18 +101,21 @@ network:
     enabled: true
   
   - package: ip
+    path: network/ip
     description: "Network interface configuration"
     dest: bin
     link: dyn
     enabled: true
   
   - package: dhcp
+    path: network/dhcp
     description: "DHCP client"
     dest: bin
     link: dyn
     enabled: true
   
   - package: nurl
+    path: network/nurl
     description: "URL fetching utility (like curl)"
     dest: bin
     link: dyn
@@ -90,6 +128,7 @@ network:
 
 daemons:
   - package: uefi_compatd
+    path: daemons/uefi_compatd
     binary: uefi-compatd
     description: "UEFI compatibility daemon"
     dest: sbin
@@ -98,6 +137,7 @@ daemons:
     enabled: true
   
   - package: ntpd
+    path: daemons/ntpd
     description: "NTP time synchronization daemon"
     dest: sbin
     link: dyn
@@ -110,6 +150,7 @@ daemons:
 
 system:
   - package: dmesg
+    path: system/dmesg
     description: "Display kernel ring buffer"
     dest: bin
     link: dyn
@@ -122,194 +163,205 @@ system:
 
 coreutils:
   - package: ls
+    path: coreutils/ls
     description: "List directory contents"
     dest: bin
     link: dyn
     enabled: true
   
   - package: cat
+    path: coreutils/cat
     description: "Concatenate and display files"
     dest: bin
     link: dyn
     enabled: true
   
   - package: stat
+    path: coreutils/stat
     description: "Display file status"
     dest: bin
     link: dyn
     enabled: true
   
   - package: pwd
+    path: coreutils/pwd
     description: "Print working directory"
     dest: bin
     link: dyn
     enabled: true
   
   - package: echo
+    path: coreutils/echo
     description: "Display a line of text"
     dest: bin
     link: dyn
     enabled: true
   
   - package: uname
+    path: coreutils/uname
     description: "Print system information"
     dest: bin
     link: dyn
     enabled: true
   
   - package: mkdir
+    path: coreutils/mkdir
     description: "Create directories"
     dest: bin
     link: dyn
     enabled: true
   
   - package: whoami
+    path: coreutils/whoami
     description: "Print current user name"
     dest: bin
     link: dyn
     enabled: true
   
   - package: users
+    path: coreutils/users
     description: "Print logged-in users"
     dest: bin
     link: dyn
     enabled: true
   
   - package: clear
+    path: coreutils/clear
     description: "Clear terminal screen"
     dest: bin
     link: dyn
     enabled: true
   
   - package: kill
+    path: coreutils/kill
     description: "Send signals to processes"
     dest: bin
     link: dyn
     enabled: true
   
   - package: grep
+    path: coreutils/grep
     description: "Search for patterns in files"
     dest: bin
     link: dyn
     enabled: true
   
   - package: find
+    path: coreutils/find
     description: "Search for files in directory hierarchy"
     dest: bin
     link: dyn
     enabled: true
   
   - package: touch
+    path: coreutils/touch
     description: "Change file timestamps or create empty files"
     dest: bin
     link: dyn
     enabled: true
   
   - package: rmdir
+    path: coreutils/rmdir
     description: "Remove empty directories"
     dest: bin
     link: dyn
     enabled: true
   
   - package: head
+    path: coreutils/head
     description: "Output the first part of files"
     dest: bin
     link: dyn
     enabled: true
   
   - package: tail
+    path: coreutils/tail
     description: "Output the last part of files"
     dest: bin
     link: dyn
     enabled: true
   
   - package: rm
+    path: coreutils/rm
     description: "Remove files or directories"
     dest: bin
     link: dyn
     enabled: true
   
   - package: cp
+    path: coreutils/cp
     description: "Copy files and directories"
     dest: bin
     link: dyn
     enabled: true
   
   - package: mv
+    path: coreutils/mv
     description: "Move (rename) files and directories"
     dest: bin
     link: dyn
     enabled: true
   
   - package: wc
+    path: coreutils/wc
     description: "Word, line, character, and byte count"
     dest: bin
     link: dyn
     enabled: true
   
   - package: tee
+    path: coreutils/tee
     description: "Read from stdin and write to stdout and files"
     dest: bin
     link: dyn
     enabled: true
   
   - package: hostname
+    path: coreutils/hostname
     description: "Show or set the system hostname"
     dest: bin
     link: dyn
     enabled: true
   
   - package: uptime
+    path: coreutils/uptime
     description: "Show how long the system has been running"
     dest: bin
     link: dyn
     enabled: true
   
   - package: date
+    path: coreutils/date
     description: "Print or set the system date and time"
     dest: bin
     link: dyn
     enabled: true
   
   - package: sleep
+    path: coreutils/sleep
     description: "Delay for a specified amount of time"
     dest: bin
     link: dyn
     enabled: true
   
   - package: env
+    path: coreutils/env
     description: "Display environment or run command with modified environment"
     dest: bin
     link: dyn
     enabled: true
   
   - package: id
+    path: coreutils/id
     description: "Print user and group IDs"
     dest: bin
     link: dyn
     enabled: true
   
   - package: killall
+    path: coreutils/killall
     description: "Kill processes by name"
     dest: bin
-    link: dyn
-    enabled: true
-
-# =============================================================================
-# User Management
-# =============================================================================
-# User account management utilities.
-
-user_management:
-  - package: logout
-    description: "Log out current user"
-    dest: bin
-    link: dyn
-    enabled: true
-  
-  - package: adduser
-    description: "Add new user account"
-    dest: sbin
     link: dyn
     enabled: true
 
@@ -320,24 +372,28 @@ user_management:
 
 power:
   - package: reboot
+    path: power/reboot
     description: "Reboot the system"
     dest: sbin
     link: dyn
     enabled: true
   
   - package: shutdown
+    path: power/shutdown
     description: "Shut down the system"
     dest: sbin
     link: dyn
     enabled: true
   
   - package: halt
+    path: power/halt
     description: "Halt the system"
     dest: sbin
     link: dyn
     enabled: true
   
   - package: poweroff
+    path: power/poweroff
     description: "Power off the system"
     dest: sbin
     link: dyn
@@ -350,24 +406,28 @@ power:
 
 memory:
   - package: swapon
+    path: memory/swapon
     description: "Enable swap space"
     dest: sbin
     link: dyn
     enabled: true
   
   - package: swapoff
+    path: memory/swapoff
     description: "Disable swap space"
     dest: sbin
     link: dyn
     enabled: true
   
   - package: mkswap
+    path: memory/mkswap
     description: "Create swap area"
     dest: sbin
     link: dyn
     enabled: true
   
   - package: free
+    path: memory/free
     description: "Display memory usage"
     dest: bin
     link: dyn
@@ -380,18 +440,21 @@ memory:
 
 ipc:
   - package: ipc-create
+    path: ipc/ipc-create
     description: "Create IPC objects"
     dest: bin
     link: dyn
     enabled: true
   
   - package: ipc-send
+    path: ipc/ipc-send
     description: "Send IPC messages"
     dest: bin
     link: dyn
     enabled: true
   
   - package: ipc-recv
+    path: ipc/ipc-recv
     description: "Receive IPC messages"
     dest: bin
     link: dyn
@@ -404,6 +467,7 @@ ipc:
 
 editors:
   - package: edit
+    path: editors/edit
     description: "Simple text editor"
     dest: bin
     link: dyn
@@ -416,24 +480,28 @@ editors:
 
 kmod:
   - package: lsmod
+    path: kmod/lsmod
     description: "List loaded kernel modules"
     dest: sbin
     link: dyn
     enabled: true
   
   - package: insmod
+    path: kmod/insmod
     description: "Insert kernel module"
     dest: sbin
     link: dyn
     enabled: true
   
   - package: rmmod
+    path: kmod/rmmod
     description: "Remove kernel module"
     dest: sbin
     link: dyn
     enabled: true
   
   - package: modinfo
+    path: kmod/modinfo
     description: "Show module information"
     dest: sbin
     link: dyn
@@ -446,6 +514,7 @@ kmod:
 
 test:
   - package: crashtest
+    path: test/crashtest
     description: "Crash testing utility"
     dest: bin
     link: dyn
@@ -453,6 +522,7 @@ test:
     production: false  # Exclude from production builds
   
   - package: thread_test
+    path: test/thread_test
     description: "Thread API test"
     dest: bin
     link: dyn
@@ -460,6 +530,7 @@ test:
     production: false
   
   - package: pthread_test
+    path: test/pthread_test
     description: "POSIX threads test"
     dest: bin
     features: use-nrlib-std
@@ -468,6 +539,7 @@ test:
     production: false
   
   - package: hello_dynamic
+    path: test/hello_dynamic
     binary: hello
     description: "Hello world (dynamic linking test)"
     dest: bin
@@ -476,6 +548,7 @@ test:
     production: false
   
   - package: hashmap_test
+    path: test/hashmap_test
     description: "HashMap implementation test"
     dest: bin
     link: dyn

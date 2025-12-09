@@ -127,7 +127,9 @@ function mergeConfigs(
         binary: p.binary,
         dest: p.dest,
         features: p.features,
-        link: p.link || 'dyn'
+        link: p.link || 'dyn',
+        path: p.path,
+        category: category as any,  // Store category name for log organization
       }));
   }
   

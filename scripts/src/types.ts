@@ -8,6 +8,21 @@
  *   - config/libraries.yaml - Userspace libraries configuration
  */
 
+// Program category names matching directory structure
+export type ProgramCategoryName = 
+  | 'core'      // ni, getty
+  | 'user'      // shell, login, logout, adduser
+  | 'network'   // nslookup, ip, dhcp, nurl
+  | 'daemons'   // ntpd, uefi_compatd
+  | 'system'    // dmesg
+  | 'coreutils' // ls, cat, cp, mv...
+  | 'power'     // reboot, shutdown, halt, poweroff
+  | 'memory'    // swapon, swapoff, mkswap, free
+  | 'ipc'       // ipc-create, ipc-send, ipc-recv
+  | 'editors'   // edit
+  | 'kmod'      // lsmod, insmod, rmmod, modinfo
+  | 'test';     // crashtest, thread_test, etc.
+
 // Program configuration from config/programs.yaml
 export interface ProgramConfig {
   package: string;
@@ -15,6 +30,8 @@ export interface ProgramConfig {
   dest: string;     // bin, sbin, etc.
   features?: string;
   link: 'std' | 'dyn';  // static or dynamic linking
+  path?: string;    // path under programs/ (e.g., 'core/init')
+  category?: ProgramCategoryName;  // category for log organization
 }
 
 export interface ProgramCategory {

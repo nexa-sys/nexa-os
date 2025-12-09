@@ -16,21 +16,77 @@ let BUILD_LOGS_DIR: string | null = null;
 let FAILED_BUILDS: Array<{ name: string; logPath: string; error: string }> = [];
 
 /**
- * Initialize logs directory
+ * Log categories for organized directory structure
+ */
+export type LogCategory = 'kernel' | 'modules' | 'libraries' | 'programs';
+
+/**
+ * Program subcategories matching userspace/programs structure
+ * (Internal type - use ProgramCategoryName from types.ts externally)
+ */
+type ProgramSubcategory = 
+  | 'core'      // ni, getty
+  | 'user'      // shell, login, logout, adduser
+  | 'network'   // nslookup, ip, dhcp, nurl
+  | 'daemons'   // ntpd, uefi_compatd
+  | 'system'    // dmesg
+  | 'coreutils' // ls, cat, cp, mv...
+  | 'power'     // reboot, shutdown, halt, poweroff
+  | 'memory'    // swapon, swapoff, mkswap, free
+  | 'ipc'       // ipc-create, ipc-send, ipc-recv
+  | 'editors'   // edit
+  | 'kmod'      // lsmod, insmod, rmmod, modinfo
+  | 'test';     // crashtest, thread_test, etc.
+
+/**
+ * Initialize logs directory with structured subdirectories
  */
 export async function initLogsDir(projectRoot: string): Promise<void> {
   BUILD_LOGS_DIR = join(projectRoot, 'logs');
-  await mkdir(BUILD_LOGS_DIR, { recursive: true });
+  
+  // Create main categories
+  const mainCategories = ['kernel', 'modules', 'libraries', 'programs'];
+  for (const cat of mainCategories) {
+    await mkdir(join(BUILD_LOGS_DIR, cat), { recursive: true });
+  }
+  
+  // Create program subcategories
+  const programCategories = [
+    'core', 'user', 'network', 'daemons', 'system', 'coreutils',
+    'power', 'memory', 'ipc', 'editors', 'kmod', 'test'
+  ];
+  for (const subcat of programCategories) {
+    await mkdir(join(BUILD_LOGS_DIR, 'programs', subcat), { recursive: true });
+  }
+  
   FAILED_BUILDS = [];
   logger.info(`Build logs directory: ${BUILD_LOGS_DIR}`);
 }
 
 /**
- * Get log file path for a build component
+ * Get log file path for a build component (legacy flat path)
+ * @deprecated Use getStructuredLogPath instead
  */
 export function getLogPath(componentName: string): string | null {
   if (!BUILD_LOGS_DIR) return null;
   return join(BUILD_LOGS_DIR, `${componentName}.log`);
+}
+
+/**
+ * Get structured log file path for a build component
+ */
+export function getStructuredLogPath(
+  category: LogCategory,
+  name: string,
+  programCategory?: ProgramSubcategory
+): string | null {
+  if (!BUILD_LOGS_DIR) return null;
+  
+  if (category === 'programs' && programCategory) {
+    return join(BUILD_LOGS_DIR, 'programs', programCategory, `${name}.log`);
+  }
+  
+  return join(BUILD_LOGS_DIR, category, `${name}.log`);
 }
 
 /**
@@ -191,7 +247,8 @@ export async function cargoBuild(
     rustflags?: string;
     targetDir?: string;
     extraArgs?: string[];
-    logName?: string;  // Name for log file
+    logName?: string;  // Name for log file (legacy, flat structure)
+    logPath?: string | null;  // Direct log path (structured)
   }
 ): Promise<BuildStepResult> {
   const startTime = Date.now();
@@ -233,19 +290,22 @@ export async function cargoBuild(
     execEnv.RUSTFLAGS = options.rustflags;
   }
   
-  // Setup logging if log name provided
-  let logPath: string | null = null;
-  if (options.logName) {
+  // Setup logging - prefer direct logPath over logName
+  let logPath: string | null = options.logPath ?? null;
+  const displayName = options.package ?? options.logName ?? 'unknown';
+  
+  if (!logPath && options.logName) {
     logPath = getLogPath(options.logName);
-    if (logPath) {
-      await initLogFile(logPath, options.logName);
-      const cmdLine = `$ cargo ${args.join(' ')}\n`;
-      await writeToLog(logPath, cmdLine);
-      if (options.rustflags) {
-        await writeToLog(logPath, `RUSTFLAGS=${options.rustflags}\n`);
-      }
-      await writeToLog(logPath, '\n');
+  }
+  
+  if (logPath) {
+    await initLogFile(logPath, displayName);
+    const cmdLine = `$ cargo ${args.join(' ')}\n`;
+    await writeToLog(logPath, cmdLine);
+    if (options.rustflags) {
+      await writeToLog(logPath, `RUSTFLAGS=${options.rustflags}\n`);
     }
+    await writeToLog(logPath, '\n');
   }
   
   const result = await exec('cargo', args, {
@@ -264,8 +324,8 @@ export async function cargoBuild(
   const duration = Date.now() - startTime;
   
   // Record failed build
-  if (result.exitCode !== 0 && options.logName && logPath) {
-    recordFailedBuild(options.logName, logPath, result.stderr);
+  if (result.exitCode !== 0 && logPath) {
+    recordFailedBuild(displayName, logPath, result.stderr);
   }
   
   return {
