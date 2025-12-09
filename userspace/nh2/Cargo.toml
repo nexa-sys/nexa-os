@@ -1,5 +1,5 @@
 [package]
-name = "nhttp2"
+name = "nh2"
 version = "0.1.0"
 edition = "2021"
 description = "NexaOS HTTP/2 Library - nghttp2 ABI compatible with tokio async backend"

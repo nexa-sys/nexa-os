@@ -2,12 +2,15 @@
 /// 
 /// This module provides a unified interface for different HTTP protocol versions:
 /// - HTTP/1.1 (implemented)
-/// - HTTP/2 (planned)
+/// - HTTP/2 (implemented via nh2)
 /// - HTTP/3 (planned)
 
 pub mod http1;
 pub mod request;
 pub mod response;
+
+#[cfg(feature = "http2")]
+pub mod http2;
 
 use crate::args::{Args, HttpVersion};
 use crate::url::ParsedUrl;
@@ -158,13 +161,31 @@ pub fn perform_request(args: &Args, url: &ParsedUrl) -> HttpResult<HttpResponse>
             client.request(args, url)?
         }
         HttpVersion::Http2 => {
-            // TODO: Implement HTTP/2 support
-            // For now, fall back to HTTP/1.1
-            if args.verbose {
-                eprintln!("* HTTP/2 not yet implemented, falling back to HTTP/1.1");
+            #[cfg(feature = "http2")]
+            {
+                if args.verbose {
+                    eprintln!("* Using HTTP/2 via nh2 library");
+                }
+                let mut client = http2::Http2Client::new(args.verbose, args.insecure)?;
+                match client.request(args, url) {
+                    Ok(resp) => resp,
+                    Err(e) => {
+                        if args.verbose {
+                            eprintln!("* HTTP/2 failed: {}, falling back to HTTP/1.1", e);
+                        }
+                        let mut client = http1::Http1Client::new(args.verbose, args.insecure)?;
+                        client.request(args, url)?
+                    }
+                }
             }
-            let mut client = http1::Http1Client::new(args.verbose, args.insecure)?;
-            client.request(args, url)?
+            #[cfg(not(feature = "http2"))]
+            {
+                if args.verbose {
+                    eprintln!("* HTTP/2 not compiled in, using HTTP/1.1");
+                }
+                let mut client = http1::Http1Client::new(args.verbose, args.insecure)?;
+                client.request(args, url)?
+            }
         }
         HttpVersion::Http3 => {
             // TODO: Implement HTTP/3 support

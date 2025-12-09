@@ -12,12 +12,23 @@ use crate::http::HttpError;
 pub struct TlsConnection {
     ssl: *mut nssl::SslConnection,
     ctx: *mut nssl::SslContext,
+    alpn_protocol: Option<String>,
 }
 
 #[cfg(feature = "https")]
 impl TlsConnection {
     /// Create a new TLS connection
     pub fn new(fd: i32, hostname: &str, insecure: bool) -> Result<Self, HttpError> {
+        Self::new_with_alpn(fd, hostname, insecure, &[])
+    }
+
+    /// Create a new TLS connection with ALPN protocol negotiation
+    pub fn new_with_alpn(
+        fd: i32,
+        hostname: &str,
+        insecure: bool,
+        alpn_protocols: &[&str],
+    ) -> Result<Self, HttpError> {
         // Initialize SSL library
         unsafe {
             nssl::SSL_library_init();
@@ -36,6 +47,17 @@ impl TlsConnection {
             return Err(HttpError::TlsError(
                 "Failed to create SSL context".to_string(),
             ));
+        }
+
+        // Set ALPN protocols if provided
+        if !alpn_protocols.is_empty() {
+            // Build ALPN wire format: length-prefixed strings
+            let mut alpn_data = Vec::new();
+            for proto in alpn_protocols {
+                alpn_data.push(proto.len() as u8);
+                alpn_data.extend_from_slice(proto.as_bytes());
+            }
+            nssl::SSL_CTX_set_alpn_protos(ctx, alpn_data.as_ptr(), alpn_data.len() as u32);
         }
 
         // Set verification mode
@@ -92,7 +114,25 @@ impl TlsConnection {
             )));
         }
 
-        Ok(Self { ssl, ctx })
+        // Get negotiated ALPN protocol
+        let alpn_protocol = unsafe {
+            let mut proto_ptr: *const u8 = std::ptr::null();
+            let mut proto_len: u32 = 0;
+            nssl::SSL_get0_alpn_selected(ssl, &mut proto_ptr, &mut proto_len);
+            if !proto_ptr.is_null() && proto_len > 0 {
+                let slice = std::slice::from_raw_parts(proto_ptr, proto_len as usize);
+                Some(String::from_utf8_lossy(slice).into_owned())
+            } else {
+                None
+            }
+        };
+
+        Ok(Self { ssl, ctx, alpn_protocol })
+    }
+
+    /// Get the negotiated ALPN protocol
+    pub fn alpn_protocol(&self) -> Option<&str> {
+        self.alpn_protocol.as_deref()
     }
 
     /// Get the negotiated TLS version
@@ -169,6 +209,44 @@ impl TlsConnection {
         }
 
         Ok(total)
+    }
+}
+
+#[cfg(feature = "https")]
+impl std::io::Read for TlsConnection {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = unsafe { nssl::SSL_read(self.ssl, buf.as_mut_ptr(), buf.len() as i32) };
+        if n > 0 {
+            Ok(n as usize)
+        } else if n == 0 {
+            Ok(0)
+        } else {
+            let err = unsafe { nssl::SSL_get_error(self.ssl, n) };
+            if err == nssl::ssl_error::SSL_ERROR_ZERO_RETURN {
+                Ok(0)
+            } else if err == nssl::ssl_error::SSL_ERROR_WANT_READ {
+                Err(std::io::Error::new(std::io::ErrorKind::WouldBlock, "would block"))
+            } else {
+                Err(std::io::Error::new(std::io::ErrorKind::Other, format!("SSL read error: {}", err)))
+            }
+        }
+    }
+}
+
+#[cfg(feature = "https")]
+impl std::io::Write for TlsConnection {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let n = unsafe { nssl::SSL_write(self.ssl, buf.as_ptr(), buf.len() as i32) };
+        if n > 0 {
+            Ok(n as usize)
+        } else {
+            let err = unsafe { nssl::SSL_get_error(self.ssl, n) };
+            Err(std::io::Error::new(std::io::ErrorKind::Other, format!("SSL write error: {}", err)))
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }
 

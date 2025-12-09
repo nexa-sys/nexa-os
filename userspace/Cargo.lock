@@ -312,7 +312,7 @@ name = "nexa_boot_info"
 version = "0.1.0"
 
 [[package]]
-name = "nhttp2"
+name = "nh2"
 version = "0.1.0"
 dependencies = [
  "async-trait",
@@ -366,6 +366,7 @@ name = "nurl"
 version = "0.1.0"
 dependencies = [
  "nexa_boot_info",
+ "nh2",
  "nrlib",
  "nssl",
  "nzip",

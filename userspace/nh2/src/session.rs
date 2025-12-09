@@ -704,16 +704,37 @@ impl Session {
         !inner.send_buffer.is_empty() || !inner.preface_sent
     }
 
-    /// Get a stream
+    /// Get a stream state
     pub fn get_stream(&self, stream_id: StreamId) -> Option<StreamState> {
         let inner = self.inner.lock();
         inner.streams.get(stream_id).map(|s| s.state)
+    }
+
+    /// Get stream data (headers and body) for reading response
+    pub fn get_stream_data(&self, stream_id: StreamId) -> Option<StreamData> {
+        let inner = self.inner.lock();
+        inner.streams.get(stream_id).map(|s| StreamData {
+            response_headers: s.response_headers.clone(),
+            recv_buffer: s.recv_buffer.clone(),
+            state: s.state,
+        })
     }
 
     /// Terminate the session
     pub fn terminate(&self, error_code: ErrorCode) -> Result<()> {
         self.submit_goaway(error_code, &[])
     }
+}
+
+/// Stream data snapshot for reading response
+#[derive(Debug, Clone)]
+pub struct StreamData {
+    /// Response headers
+    pub response_headers: Vec<HeaderField>,
+    /// Received data buffer
+    pub recv_buffer: Vec<u8>,
+    /// Stream state
+    pub state: StreamState,
 }
 
 // ============================================================================

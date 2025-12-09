@@ -117,7 +117,7 @@ pub mod compat;
 pub use types::*;
 pub use error::{Error, Result};
 pub use constants::*;
-pub use session::{Session, SessionBuilder, SessionCallbacks};
+pub use session::{Session, SessionBuilder, SessionCallbacks, StreamData};
 pub use stream::{Stream, StreamState, StreamMap};
 pub use frame::{Frame, FrameType, FrameFlags, FrameHeader};
 pub use hpack::{Hpack, HpackEncoder, HpackDecoder, HeaderField};

@@ -39,6 +39,16 @@ impl ParsedUrl {
     pub fn addr(&self) -> String {
         format!("{}:{}", self.host, self.port)
     }
+
+    /// Get path with query string (for HTTP/2 :path pseudo-header)
+    pub fn path_with_query(&self) -> &str {
+        &self.path
+    }
+
+    /// Get host with port for :authority pseudo-header
+    pub fn host_with_port(&self) -> String {
+        self.authority()
+    }
 }
 
 /// Parse URL into components
