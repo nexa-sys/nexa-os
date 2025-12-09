@@ -90,6 +90,15 @@ pub fn init() {
     register_device("random", DeviceType::Random, 1, 8);
     register_device("urandom", DeviceType::Urandom, 1, 9);
     register_device("console", DeviceType::Console, 5, 1);
+    
+    // TTY devices
+    register_device("tty", DeviceType::Console, 5, 0);
+    register_device("tty0", DeviceType::Console, 4, 0);
+    register_device("tty1", DeviceType::Console, 4, 1);
+    register_device("tty2", DeviceType::Console, 4, 2);
+    register_device("tty3", DeviceType::Console, 4, 3);
+    register_device("tty4", DeviceType::Console, 4, 4);
+    register_device("ptmx", DeviceType::Console, 5, 2);
 
     let count = *DEVICE_COUNT.lock();
     crate::kinfo!("devfs: initialized with {} devices", count);
@@ -209,6 +218,13 @@ impl FileSystem for DevFs {
         if !name.is_empty() && name != "." {
             return;
         }
+
+        // First output . and .. directory entries
+        let dir_meta = Metadata::empty()
+            .with_type(FileType::Directory)
+            .with_mode(0o755);
+        callback(".", dir_meta);
+        callback("..", dir_meta);
 
         let devices = DEVICES.lock();
         let count = *DEVICE_COUNT.lock();

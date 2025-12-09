@@ -1616,20 +1616,36 @@ fn resolve_mount(path: &str) -> Option<(&'static dyn FileSystem, &str)> {
 
     for entry in mounts.iter().flatten() {
         if entry.mount_point == "/" {
-            let relative = if is_absolute {
-                path.trim_start_matches('/')
-            } else {
-                path
-            };
+            let relative = path.trim_start_matches('/');
             if best.map_or(true, |(_, _, len)| len <= 1) {
                 best = Some((entry.fs, relative, 1));
             }
-        } else if is_absolute && path.starts_with(entry.mount_point) {
-            let rest = &path[entry.mount_point.len()..];
-            let relative = rest.trim_start_matches('/');
-            let mp_len = entry.mount_point.len();
-            if best.map_or(true, |(_, _, len)| mp_len > len) {
-                best = Some((entry.fs, relative, mp_len));
+        } else {
+            // For mount points like "/dev", "/proc", etc.
+            // Match both absolute paths ("/dev/foo") and relative paths ("dev/foo")
+            let mp_without_slash = entry.mount_point.trim_start_matches('/');
+            
+            let (matches, rest_start) = if is_absolute && path.starts_with(entry.mount_point) {
+                // Absolute path: "/dev/foo" matches mount point "/dev"
+                let mp_len = entry.mount_point.len();
+                let valid = path.len() == mp_len || path.as_bytes().get(mp_len) == Some(&b'/');
+                (valid, mp_len)
+            } else if !is_absolute && path.starts_with(mp_without_slash) {
+                // Relative path: "dev/foo" matches mount point "/dev" (without leading /)
+                let mp_len = mp_without_slash.len();
+                let valid = path.len() == mp_len || path.as_bytes().get(mp_len) == Some(&b'/');
+                (valid, mp_len)
+            } else {
+                (false, 0)
+            };
+            
+            if matches {
+                let rest = &path[rest_start..];
+                let relative = rest.trim_start_matches('/');
+                let mp_len = entry.mount_point.len();
+                if best.map_or(true, |(_, _, len)| mp_len > len) {
+                    best = Some((entry.fs, relative, mp_len));
+                }
             }
         }
     }

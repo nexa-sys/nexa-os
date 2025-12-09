@@ -674,10 +674,10 @@ where
                 Err(_) => return,
             };
 
-            // Skip . and ..
-            if name_str == "." || name_str == ".." {
-                return;
-            }
+            // NOTE: We no longer skip . and .. - they should be visible in ls output
+            // if name_str == "." || name_str == ".." {
+            //     return;
+            // }
 
             // Create basic metadata from file_type
             let ft = match file_type {
