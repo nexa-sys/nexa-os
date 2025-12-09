@@ -113,6 +113,7 @@ lto = false
     release: true,
     buildStd: ['core'],
     rustflags: getNrlibRustFlags(),
+    logName: 'initramfs-nrlib',
   });
   
   if (!nrlibResult.success) {
@@ -134,6 +135,7 @@ lto = false
     release: true,
     buildStd: ['std', 'panic_abort'],
     rustflags,
+    logName: 'initramfs-shell',
   });
   
   if (!shellResult.success) {
@@ -177,6 +179,7 @@ async function buildInitramfsLibs(env: BuildEnvironment): Promise<BuildStepResul
     release: true,
     buildStd: ['core'],
     rustflags: getPicRustFlags(),
+    logName: 'initramfs-libnrlib',
   });
   
   if (!result.success) {
@@ -219,6 +222,7 @@ async function buildInitramfsLibs(env: BuildEnvironment): Promise<BuildStepResul
     release: true,
     buildStd: ['core'],
     rustflags: ldFlags,
+    logName: 'initramfs-ld-nrlib',
   });
   
   if (!ldResult.success) {

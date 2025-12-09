@@ -33,6 +33,7 @@ export async function buildKernel(env: BuildEnvironment): Promise<BuildStepResul
     release: env.buildType === 'release',
     buildStd: undefined, // Kernel uses custom build
     features: featuresStr,
+    logName: 'kernel',
   });
   
   if (!result.success) {

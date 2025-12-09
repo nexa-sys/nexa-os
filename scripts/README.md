@@ -10,6 +10,7 @@
 - ⚡ **并行构建** - 支持并行执行独立任务
 - 📋 **YAML 配置** - 模块化配置文件在 `config/` 目录
 - 🔧 **灵活** - 支持单独构建任何组件
+- 📝 **构建日志** - 自动记录所有构建输出到 `logs/` 目录，保留 ANSI 颜色代码
 
 ## 快速开始
 
@@ -170,3 +171,26 @@ BUILD_PROFILE=dev ./scripts/build.sh all      # 开发构建
 - npm 或 yarn
 - Rust 工具链
 - 标准 Linux 构建工具 (gcc, make, etc.)
+
+## 构建日志
+
+所有构建输出都会自动保存到 `logs/` 目录，每个组件都有独立的日志文件：
+
+- 保留完整的 ANSI 转义字符（颜色、格式等）
+- 构建失败时自动显示相关日志
+- 方便调试和问题追踪
+
+详细信息请参阅 [构建日志文档](../docs/BUILD-LOGS.md)。
+
+### 查看日志
+
+```bash
+# 查看内核构建日志
+cat logs/kernel.log
+
+# 查看所有模块日志
+ls logs/module-*.log
+
+# 使用 less 查看（保留颜色）
+less -R logs/kernel.log
+```

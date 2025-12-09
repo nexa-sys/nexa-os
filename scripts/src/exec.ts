@@ -5,10 +5,81 @@
 
 import { execa, ExecaError } from 'execa';
 import { existsSync } from 'fs';
-import { stat } from 'fs/promises';
+import { stat, mkdir, appendFile, writeFile } from 'fs/promises';
+import { join } from 'path';
 import { logger } from './logger.js';
 import { BuildEnvironment, ExecOptions, BuildStepResult } from './types.js';
 import { getExportedEnv } from './env.js';
+
+// Build logs directory
+let BUILD_LOGS_DIR: string | null = null;
+let FAILED_BUILDS: Array<{ name: string; logPath: string; error: string }> = [];
+
+/**
+ * Initialize logs directory
+ */
+export async function initLogsDir(projectRoot: string): Promise<void> {
+  BUILD_LOGS_DIR = join(projectRoot, 'logs');
+  await mkdir(BUILD_LOGS_DIR, { recursive: true });
+  FAILED_BUILDS = [];
+  logger.info(`Build logs directory: ${BUILD_LOGS_DIR}`);
+}
+
+/**
+ * Get log file path for a build component
+ */
+export function getLogPath(componentName: string): string | null {
+  if (!BUILD_LOGS_DIR) return null;
+  return join(BUILD_LOGS_DIR, `${componentName}.log`);
+}
+
+/**
+ * Record a failed build
+ */
+export function recordFailedBuild(name: string, logPath: string, error: string): void {
+  FAILED_BUILDS.push({ name, logPath, error });
+}
+
+/**
+ * Get all failed builds
+ */
+export function getFailedBuilds(): Array<{ name: string; logPath: string; error: string }> {
+  return FAILED_BUILDS;
+}
+
+/**
+ * Clear failed builds list
+ */
+export function clearFailedBuilds(): void {
+  FAILED_BUILDS = [];
+}
+
+/**
+ * Write to log file (preserving ANSI escape codes)
+ */
+async function writeToLog(logPath: string, content: string): Promise<void> {
+  if (!logPath) return;
+  try {
+    await appendFile(logPath, content);
+  } catch (error) {
+    logger.warn(`Failed to write to log: ${error}`);
+  }
+}
+
+/**
+ * Initialize a log file with header
+ */
+async function initLogFile(logPath: string, componentName: string): Promise<void> {
+  if (!logPath) return;
+  const header = `=== Build Log: ${componentName} ===\n`;
+  const timestamp = `Timestamp: ${new Date().toISOString()}\n`;
+  const separator = '='.repeat(80) + '\n\n';
+  try {
+    await writeFile(logPath, header + timestamp + separator);
+  } catch (error) {
+    logger.warn(`Failed to initialize log file: ${error}`);
+  }
+}
 
 /**
  * Execute a command with full output
@@ -120,6 +191,7 @@ export async function cargoBuild(
     rustflags?: string;
     targetDir?: string;
     extraArgs?: string[];
+    logName?: string;  // Name for log file
   }
 ): Promise<BuildStepResult> {
   const startTime = Date.now();
@@ -161,12 +233,40 @@ export async function cargoBuild(
     execEnv.RUSTFLAGS = options.rustflags;
   }
   
+  // Setup logging if log name provided
+  let logPath: string | null = null;
+  if (options.logName) {
+    logPath = getLogPath(options.logName);
+    if (logPath) {
+      await initLogFile(logPath, options.logName);
+      const cmdLine = `$ cargo ${args.join(' ')}\n`;
+      await writeToLog(logPath, cmdLine);
+      if (options.rustflags) {
+        await writeToLog(logPath, `RUSTFLAGS=${options.rustflags}\n`);
+      }
+      await writeToLog(logPath, '\n');
+    }
+  }
+  
   const result = await exec('cargo', args, {
     cwd: options.cwd,
     env: execEnv,
   });
   
+  // Write output to log (preserving ANSI codes)
+  if (logPath) {
+    await writeToLog(logPath, result.stdout);
+    if (result.stderr) {
+      await writeToLog(logPath, result.stderr);
+    }
+  }
+  
   const duration = Date.now() - startTime;
+  
+  // Record failed build
+  if (result.exitCode !== 0 && options.logName && logPath) {
+    recordFailedBuild(options.logName, logPath, result.stderr);
+  }
   
   return {
     success: result.exitCode === 0,

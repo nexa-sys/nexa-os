@@ -141,6 +141,7 @@ async function buildModule(
     buildStd: ['core', 'alloc', 'compiler_builtins'],
     rustflags: getModuleRustFlags(),
     extraArgs: ['-Z', 'build-std-features=compiler-builtins-mem'],
+    logName: `module-${module.name}`,
   });
   
   if (!result.success) {

@@ -4,10 +4,11 @@
  */
 
 import { existsSync } from 'fs';
+import { readFile } from 'fs/promises';
 import { BuildEnvironment, BuildStepResult, BuildStep } from './types.js';
 import { createBuildEnvironment, ensureBuildDirs } from './env.js';
 import { logger } from './logger.js';
-import { getFileSize, timedStep } from './exec.js';
+import { getFileSize, timedStep, initLogsDir, getFailedBuilds, clearFailedBuilds } from './exec.js';
 import {
   buildKernel,
   buildAllNrlib,
@@ -42,6 +43,8 @@ export class Builder {
    */
   async init(): Promise<void> {
     await ensureBuildDirs(this.env);
+    await initLogsDir(this.env.projectRoot);
+    clearFailedBuilds();
   }
   
   /**
@@ -57,7 +60,10 @@ export class Builder {
     
     // Build kernel
     const kernelResult = await timedStep('Building kernel', () => buildKernel(this.env));
-    if (!kernelResult.success) return kernelResult;
+    if (!kernelResult.success) {
+      await this.printFailedBuilds();
+      return kernelResult;
+    }
     
     // Build UEFI loader
     await timedStep('Building UEFI loader', () => buildUefiLoader(this.env));
@@ -67,7 +73,10 @@ export class Builder {
     
     // Build rootfs (includes nrlib, libs, programs)
     const rootfsResult = await timedStep('Building rootfs', () => buildRootfs(this.env));
-    if (!rootfsResult.success) return rootfsResult;
+    if (!rootfsResult.success) {
+      await this.printFailedBuilds();
+      return rootfsResult;
+    }
     
     // Build swap image
     await timedStep('Building swap image', () => buildSwapImage(this.env));
@@ -77,7 +86,10 @@ export class Builder {
     
     // Build ISO
     const isoResult = await timedStep('Building ISO', () => buildIso(this.env));
-    if (!isoResult.success) return isoResult;
+    if (!isoResult.success) {
+      await this.printFailedBuilds();
+      return isoResult;
+    }
     
     await this.printSummary();
     
@@ -99,12 +111,18 @@ export class Builder {
     await this.init();
     
     const kernelResult = await timedStep('Building kernel', () => buildKernel(this.env));
-    if (!kernelResult.success) return kernelResult;
+    if (!kernelResult.success) {
+      await this.printFailedBuilds();
+      return kernelResult;
+    }
     
     await timedStep('Building initramfs', () => buildInitramfs(this.env));
     
     const isoResult = await timedStep('Building ISO', () => buildIso(this.env));
-    if (!isoResult.success) return isoResult;
+    if (!isoResult.success) {
+      await this.printFailedBuilds();
+      return isoResult;
+    }
     
     await this.printSummary();
     
@@ -249,6 +267,7 @@ export class Builder {
       const result = await this.run(step);
       if (!result.success) {
         logger.error(`Step '${step}' failed`);
+        await this.printFailedBuilds();
         return result;
       }
     }
@@ -306,5 +325,49 @@ export class Builder {
     }
     
     logger.summary(artifacts);
+    
+    // Print failed builds if any
+    await this.printFailedBuilds();
+  }
+  
+  /**
+   * Print failed build logs
+   */
+  private async printFailedBuilds(): Promise<void> {
+    const failedBuilds = getFailedBuilds();
+    
+    if (failedBuilds.length === 0) {
+      return;
+    }
+    
+    logger.section('Build Failures');
+    logger.error(`${failedBuilds.length} build(s) failed`);
+    
+    for (const failed of failedBuilds) {
+      logger.error(`\n${'='.repeat(80)}`);
+      logger.error(`Failed: ${failed.name}`);
+      logger.error(`Log file: ${failed.logPath}`);
+      logger.error('='.repeat(80));
+      
+      try {
+        const logContent = await readFile(failed.logPath, 'utf-8');
+        // Print last 100 lines or full log if smaller
+        const lines = logContent.split('\n');
+        const displayLines = lines.slice(-100);
+        
+        if (lines.length > 100) {
+          logger.error(`... (showing last 100 lines of ${lines.length}) ...\n`);
+        }
+        
+        // Print with ANSI colors preserved
+        console.error(displayLines.join('\n'));
+      } catch (error) {
+        logger.error(`Failed to read log file: ${error}`);
+      }
+    }
+    
+    logger.error(`\n${'='.repeat(80)}`);
+    logger.error('Build logs saved in: logs/');
+    logger.error('='.repeat(80));
   }
 }

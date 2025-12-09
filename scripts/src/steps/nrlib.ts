@@ -33,6 +33,7 @@ export async function buildNrlibStatic(env: BuildEnvironment): Promise<BuildStep
     release: true,
     buildStd: ['core'],
     rustflags: getNrlibRustFlags(),
+    logName: 'nrlib-static',
   });
   
   if (!result.success) {
@@ -62,6 +63,7 @@ export async function buildNrlibStatic(env: BuildEnvironment): Promise<BuildStep
     release: true,
     buildStd: ['core'],
     rustflags: '-C opt-level=2 -C panic=abort -C relocation-model=pic',
+    logName: 'nrlib-static-pic',
   });
   
   if (!picResult.success) {
@@ -105,6 +107,7 @@ export async function buildNrlibShared(
     release: true,
     buildStd: ['core'],
     rustflags: getPicRustFlags(),
+    logName: 'nrlib-shared',
   });
   
   if (!result.success) {
@@ -160,6 +163,7 @@ export async function buildDynamicLinker(
     release: true,
     buildStd: ['core'],
     rustflags: getLdRustFlags(),
+    logName: 'ld-nrlib',
   });
   
   if (!result.success) {

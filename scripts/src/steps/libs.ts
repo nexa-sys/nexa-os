@@ -43,6 +43,7 @@ async function buildLibraryStatic(
     release: true,
     buildStd: ['std', 'core', 'alloc', 'panic_abort'],
     rustflags: `-C opt-level=2 -C panic=abort -L ${sysrootPicLib}`,
+    logName: `library-${lib.name}-static`,
   });
   
   if (!result.success) {
@@ -92,6 +93,7 @@ async function buildLibraryShared(
     buildStd: ['std', 'core', 'alloc', 'panic_abort'],
     rustflags: `-C opt-level=2 -C panic=abort -C relocation-model=pic -L ${sysrootPicLib}`,
     targetDir: sharedTargetDir,
+    logName: `library-${lib.name}-shared`,
   });
   
   if (!result.success) {

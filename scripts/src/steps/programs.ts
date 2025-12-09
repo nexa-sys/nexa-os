@@ -47,6 +47,7 @@ async function buildProgram(
     features: program.features,
     buildStd: ['std', 'panic_abort'],
     rustflags,
+    logName: `program-${program.package}`,
   });
   
   if (!result.success) {
