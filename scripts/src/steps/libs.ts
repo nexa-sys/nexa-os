@@ -119,6 +119,24 @@ async function buildLibraryShared(
     }
   }
   
+  // Create Cargo package name symlinks for dynamic linking
+  // e.g., libncryptolib.so -> libcrypto.so, libnssl.so -> libssl.so
+  if (lib.name !== lib.output) {
+    const cargoName = `lib${lib.name}.so`;
+    const cargoLinkPath = join(dest, cargoName);
+    try { await unlink(cargoLinkPath); } catch {}
+    await symlink(sharedName, cargoLinkPath);
+    logger.info(`Created symlink: ${cargoName} -> ${sharedName}`);
+    
+    // Also create in sysroot-pic/lib for static library builds
+    const sysrootPicLib = join(env.sysrootPicDir, 'lib');
+    await mkdir(sysrootPicLib, { recursive: true });
+    const picLinkPath = join(sysrootPicLib, cargoName);
+    try { await unlink(picLinkPath); } catch {}
+    // Link to the main sysroot shared library
+    await symlink(join('..', '..', 'sysroot', 'lib', sharedName), picLinkPath);
+  }
+  
   const size = await getFileSize(destPath);
   logger.success(`${sharedName} installed (${size})`);
   

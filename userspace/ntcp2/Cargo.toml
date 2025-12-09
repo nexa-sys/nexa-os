@@ -1,0 +1,51 @@
+[package]
+name = "ntcp2"
+version = "0.1.0"
+edition = "2021"
+description = "NexaOS QUIC Library - ngtcp2 ABI compatible with tokio async backend"
+
+[lib]
+# cdylib: Dynamic shared object (libngtcp2.so) for dynamic linking
+# staticlib: Static library (libngtcp2.a) for static linking
+# rlib: Rust library for Rust consumers
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[profile.release]
+panic = "abort"
+opt-level = 2
+lto = false
+
+[features]
+default = ["async-tokio"]
+# Enable tokio async runtime backend
+async-tokio = ["tokio"]
+# Enable QPACK header compression
+qpack = []
+# Enable connection migration
+migration = []
+# Enable 0-RTT early data
+early-data = []
+# Enable multipath QUIC (RFC 9000)
+multipath = []
+# Enable datagram support (RFC 9221)
+datagram = []
+# Enable ngtcp2 C ABI compatibility layer
+compat = []
+
+[dependencies]
+# Tokio async runtime for async I/O
+tokio = { version = "1", features = ["full"], optional = true }
+# For synchronization primitives
+parking_lot = "0.12"
+# For byte manipulation
+bytes = "1"
+# For async traits
+async-trait = "0.1"
+# SSL/TLS support (QUIC uses TLS 1.3)
+nssl = { path = "../nssl" }
+# Cryptographic primitives
+ncryptolib = { path = "../ncryptolib" }
+
+[dev-dependencies]
+# Testing utilities
+tokio-test = "0.4"

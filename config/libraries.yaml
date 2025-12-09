@@ -86,6 +86,25 @@ libraries:
       # Initial window size
       window_size: 65535
 
+  # QUIC library - depends on SSL and crypto
+  - name: ntcp2
+    output: ngtcp2
+    version: 1
+    description: "QUIC protocol implementation (ngtcp2 ABI compatible)"
+    depends:
+      - nssl
+      - ncryptolib
+    enabled: true
+    config:
+      # Enable 0-RTT early data
+      early_data: true
+      # Enable connection migration
+      migration: true
+      # Enable datagram support (RFC 9221)
+      datagram: true
+      # Default congestion control algorithm
+      cc_algo: cubic
+
 # =============================================================================
 # Build Order
 # =============================================================================
@@ -96,6 +115,7 @@ build_order:
   - nzip  
   - nssl
   - nh2
+  - ntcp2
 
 # =============================================================================
 # Library Installation Paths
