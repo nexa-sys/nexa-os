@@ -62,6 +62,7 @@ node dist/cli.js full      # 运行编译后的版本
 | `clean` | - | 清理构建产物 |
 | `list` | - | 列出可用目标 |
 | `info` | - | 显示构建环境信息 |
+| `features` | `f` | 管理内核编译时特性 |
 
 ### 选项
 
@@ -88,6 +89,80 @@ npm run dev -- clean --build-only
 npm run dev -- run kernel initramfs iso
 ```
 
+## 内核特性管理 (Features)
+
+使用 `features` 命令管理内核编译时特性（定义在 `config/features.yaml`）：
+
+```bash
+# 列出所有特性
+./scripts/build.sh features list
+
+# 只显示网络相关特性
+./scripts/build.sh features list -c network
+
+# 只显示已启用的特性
+./scripts/build.sh features list -e
+
+# 显示详细信息
+./scripts/build.sh features list -v
+
+# 查看单个特性详情
+./scripts/build.sh features show tcp
+
+# 启用特性
+./scripts/build.sh features enable verbose_logging
+
+# 禁用特性
+./scripts/build.sh features disable tcp
+
+# 切换特性状态
+./scripts/build.sh features toggle ttf
+
+# 列出所有预设
+./scripts/build.sh features presets -v
+
+# 应用预设配置
+./scripts/build.sh features apply minimal_network
+./scripts/build.sh features apply embedded
+
+# 输出当前 RUSTFLAGS
+./scripts/build.sh features rustflags
+```
+
+### 可用预设
+
+| 预设 | 描述 |
+|------|------|
+| `full_network` | 完整网络栈 |
+| `minimal_network` | 最小网络（仅 UDP） |
+| `no_network` | 禁用所有网络 |
+| `full_graphics` | 完整图形支持 |
+| `minimal_graphics` | 基础帧缓冲 |
+| `headless` | 无头服务器 |
+| `full_hardware` | 完整硬件支持 (SMP, NUMA) |
+| `single_cpu` | 单 CPU 模式 |
+| `development` | 开发调试构建 |
+| `production` | 生产构建 |
+| `embedded` | 嵌入式最小配置 |
+
+### 特性类别
+
+- **network**: IPv4, UDP, TCP, ARP, DNS, DHCP, Netlink
+- **kernel**: SMP, NUMA, 内核模块, 模块签名
+- **filesystem**: initramfs, devfs, procfs, sysfs
+- **security**: 栈保护, ASLR
+- **graphics**: TTF 字体, 合成器, 帧缓冲
+- **debug**: 详细日志, 内存调试, 网络调试
+
+### 通过环境变量覆盖
+
+构建时可以使用环境变量临时覆盖特性设置：
+
+```bash
+FEATURE_TCP=false ./scripts/build.sh kernel
+FEATURE_TTF=false FEATURE_COMPOSITOR=false ./scripts/build.sh kernel
+```
+
 ## 环境变量
 
 | 变量 | 默认值 | 描述 |
@@ -99,12 +174,13 @@ npm run dev -- run kernel initramfs iso
 ## 项目结构
 
 ```
-scripts-ts/
+scripts/
 ├── src/
 │   ├── cli.ts           # 命令行接口
 │   ├── builder.ts       # 主构建器
 │   ├── types.ts         # 类型定义
 │   ├── config.ts        # YAML 配置解析
+│   ├── features.ts      # 特性管理
 │   ├── env.ts           # 构建环境
 │   ├── logger.ts        # 日志输出
 │   ├── exec.ts          # 命令执行

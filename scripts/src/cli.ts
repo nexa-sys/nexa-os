@@ -16,6 +16,17 @@ import { buildSingleProgram, listPrograms } from './steps/programs.js';
 import { buildSingleModule, listModules } from './steps/modules.js';
 import { buildLibrary, listLibraries } from './steps/libs.js';
 import { createBuildEnvironment } from './env.js';
+import { 
+  listFeatures, 
+  listPresets, 
+  enableFeature, 
+  disableFeature, 
+  toggleFeature,
+  applyPreset,
+  showFeature,
+  printRustFlags,
+  interactiveFeatures
+} from './features.js';
 
 fileURLToPath(import.meta.url);
 
@@ -269,6 +280,128 @@ program
       `Dist Dir: ${env.distDir}`,
       `Sysroot: ${env.sysrootDir}`,
     ]);
+  });
+
+// Features command group
+const featuresCmd = program
+  .command('features')
+  .alias('f')
+  .description('Manage kernel compile-time features (from config/features.yaml)');
+
+// features list
+featuresCmd
+  .command('list')
+  .alias('ls')
+  .description('List all kernel features')
+  .option('-c, --category <category>', 'Filter by category (network, kernel, filesystem, security, graphics, debug)')
+  .option('-e, --enabled', 'Show only enabled features')
+  .option('-d, --disabled', 'Show only disabled features')
+  .option('-v, --verbose', 'Show detailed feature information')
+  .action(async (options) => {
+    const projectRoot = findProjectRoot();
+    const env = createBuildEnvironment(projectRoot);
+    await listFeatures(env, options);
+  });
+
+// features enable
+featuresCmd
+  .command('enable <feature>')
+  .alias('on')
+  .description('Enable a kernel feature')
+  .action(async (feature: string) => {
+    const projectRoot = findProjectRoot();
+    const env = createBuildEnvironment(projectRoot);
+    const success = await enableFeature(env, feature);
+    process.exit(success ? 0 : 1);
+  });
+
+// features disable
+featuresCmd
+  .command('disable <feature>')
+  .alias('off')
+  .description('Disable a kernel feature')
+  .action(async (feature: string) => {
+    const projectRoot = findProjectRoot();
+    const env = createBuildEnvironment(projectRoot);
+    const success = await disableFeature(env, feature);
+    process.exit(success ? 0 : 1);
+  });
+
+// features toggle
+featuresCmd
+  .command('toggle <feature>')
+  .alias('t')
+  .description('Toggle a kernel feature')
+  .action(async (feature: string) => {
+    const projectRoot = findProjectRoot();
+    const env = createBuildEnvironment(projectRoot);
+    const success = await toggleFeature(env, feature);
+    process.exit(success ? 0 : 1);
+  });
+
+// features show
+featuresCmd
+  .command('show <feature>')
+  .alias('s')
+  .description('Show detailed information about a feature')
+  .action(async (feature: string) => {
+    const projectRoot = findProjectRoot();
+    const env = createBuildEnvironment(projectRoot);
+    await showFeature(env, feature);
+  });
+
+// features presets
+featuresCmd
+  .command('presets')
+  .alias('p')
+  .description('List available feature presets')
+  .option('-v, --verbose', 'Show preset details')
+  .action(async (options) => {
+    const projectRoot = findProjectRoot();
+    const env = createBuildEnvironment(projectRoot);
+    await listPresets(env, options.verbose);
+  });
+
+// features apply
+featuresCmd
+  .command('apply <preset>')
+  .alias('a')
+  .description('Apply a feature preset')
+  .action(async (preset: string) => {
+    const projectRoot = findProjectRoot();
+    const env = createBuildEnvironment(projectRoot);
+    const success = await applyPreset(env, preset);
+    process.exit(success ? 0 : 1);
+  });
+
+// features rustflags
+featuresCmd
+  .command('rustflags')
+  .alias('rf')
+  .description('Print RUSTFLAGS for enabled features')
+  .action(async () => {
+    const projectRoot = findProjectRoot();
+    const env = createBuildEnvironment(projectRoot);
+    await printRustFlags(env);
+  });
+
+// features interactive
+featuresCmd
+  .command('interactive')
+  .alias('i')
+  .description('Interactive feature selection (TUI)')
+  .action(async () => {
+    const projectRoot = findProjectRoot();
+    const env = createBuildEnvironment(projectRoot);
+    await interactiveFeatures(env);
+  });
+
+// Default action for features command (list all)
+featuresCmd
+  .action(async () => {
+    const projectRoot = findProjectRoot();
+    const env = createBuildEnvironment(projectRoot);
+    await listFeatures(env, {});
   });
 
 // Default action (no command = full build)
