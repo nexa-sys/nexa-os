@@ -180,14 +180,14 @@ async function buildModule(
   if (objFiles.length > 0) {
     logger.info(`Linking ${objFiles.length} object files...`);
     
-    // Try to link - use --gc-sections with -u module_init to preserve init function,
-    // or fall back to simple relocatable link without gc-sections
+    // Link object files into relocatable module
+    // Match the shell script behavior: try gc-sections first, then simple link
     let linked = false;
     
     for (const linker of ['ld.lld', 'ld']) {
-      // First try with gc-sections and module_init entry, plus keep rodata for strings
-      const gcArgs = ['-r', '--gc-sections', '-u', 'module_init', '--gc-keep-exported', '-o', outputNkm, ...objFiles.map(f => join(tempDir, f))];
-      logger.info(`Trying: ${linker} ${gcArgs.slice(0, 6).join(' ')}...`);
+      // First try with gc-sections (same as shell script)
+      const gcArgs = ['-r', '--gc-sections', '-o', outputNkm, ...objFiles.map(f => join(tempDir, f))];
+      logger.info(`Trying: ${linker} -r --gc-sections ...`);
       let linkResult = await exec(linker, gcArgs);
       if (linkResult.exitCode === 0 && existsSync(outputNkm)) {
         const stats = await fsStat(outputNkm);
@@ -197,23 +197,11 @@ async function buildModule(
           break;
         }
       }
-      logger.info(`Link with gc-sections+gc-keep failed (${linker}): code=${linkResult.exitCode} err=${linkResult.stderr.substring(0, 200)}`);
-      
-      // Try without --gc-keep-exported
-      const gc2Args = ['-r', '--gc-sections', '-u', 'module_init', '-o', outputNkm, ...objFiles.map(f => join(tempDir, f))];
-      linkResult = await exec(linker, gc2Args);
-      if (linkResult.exitCode === 0 && existsSync(outputNkm)) {
-        const stats = await fsStat(outputNkm);
-        if (stats.size > 1000) {
-          linked = true;
-          logger.info(`Link succeeded with ${linker} gc-sections (${stats.size} bytes)`);
-          break;
-        }
-      }
       logger.info(`Link with gc-sections failed (${linker}): code=${linkResult.exitCode} err=${linkResult.stderr.substring(0, 200)}`);
       
       // Fall back to simple relocatable link without gc-sections
       const simpleArgs = ['-r', '-o', outputNkm, ...objFiles.map(f => join(tempDir, f))];
+      logger.info(`Trying: ${linker} -r ...`);
       linkResult = await exec(linker, simpleArgs);
       if (linkResult.exitCode === 0 && existsSync(outputNkm)) {
         const stats = await fsStat(outputNkm);

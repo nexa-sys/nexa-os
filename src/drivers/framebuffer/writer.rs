@@ -300,7 +300,10 @@ impl FramebufferWriter {
                     self.cursor_x = self.pixel_x / CELL_WIDTH;
                     // Clear the area
                     let row_y = self.cursor_y * CELL_HEIGHT;
-                    self.render.fill_rect(self.pixel_x, row_y, char_width, CELL_HEIGHT, self.bg);
+                    // Fix: Clear slightly more than char_width to handle glyphs that spill over
+                    // (e.g. italic fonts or wide glyphs).
+                    let clear_width = char_width + 4;
+                    self.render.fill_rect(self.pixel_x, row_y, clear_width, CELL_HEIGHT, self.bg);
                 }
                 // If char_count == 0, do nothing (already at start of editable area)
                 return;

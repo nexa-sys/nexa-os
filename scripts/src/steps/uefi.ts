@@ -41,7 +41,7 @@ export async function buildUefiLoader(env: BuildEnvironment): Promise<BuildStepR
   }
   
   // Copy to build directory
-  const builtLoader = join(uefiLoaderDir, 'target/x86_64-unknown-uefi/release/uefi-loader.efi');
+  const builtLoader = join(uefiLoaderDir, 'target/x86_64-unknown-uefi/release/nexa-uefi-loader.efi');
   
   if (existsSync(builtLoader)) {
     await mkdir(env.buildDir, { recursive: true });
