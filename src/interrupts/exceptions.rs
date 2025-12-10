@@ -87,6 +87,19 @@ pub extern "x86-interrupt" fn page_fault_handler(
                 let cr3 = process.cr3;
                 let memory_base = process.memory_base;
 
+                // Debug: Print current CR3 for PID 11 to track mapping issues
+                if pid == 11 {
+                    let current_cr3: u64 = unsafe {
+                        let mut val: u64;
+                        core::arch::asm!("mov {}, cr3", out(reg) val, options(nostack));
+                        val
+                    };
+                    crate::serial_println!(
+                        "[DF DEBUG] PID 11: current_cr3={:#x}, process.cr3={:#x}, memory_base={:#x}",
+                        current_cr3, cr3, memory_base
+                    );
+                }
+
                 // Try to handle the demand fault
                 match crate::mm::handle_user_demand_fault(fault_addr, pid, cr3, memory_base) {
                     Ok(()) => {

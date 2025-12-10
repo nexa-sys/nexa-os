@@ -128,9 +128,12 @@ pub const TLS1_3_VERSION: u16 = 0x0304;
 pub type VerifyCallback = Option<unsafe extern "C" fn(c_int, *mut X509_STORE_CTX) -> c_int>;
 
 // ============================================================================
-// External Functions (linked dynamically from libnssl.so)
+// External Functions (linked dynamically from libnssl.so and libncryptolib.so)
 // ============================================================================
 
+// Link both nssl and ncryptolib since nssl depends on ncryptolib
+// and the dynamic linker doesn't recursively load library dependencies
+#[link(name = "ncryptolib")]
 #[link(name = "nssl")]
 extern "C" {
     // ========================================================================

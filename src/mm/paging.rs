@@ -1092,6 +1092,81 @@ pub fn print_user_region_statistics() {
 // =============================================================================
 
 /// Check if a virtual address is within the user space region that supports demand paging.
+/// Clear all user-space page table mappings in the specified CR3.
+/// This is used by execve to ensure that demand paging will create fresh mappings
+/// for the newly loaded program.
+///
+/// # Safety
+/// - cr3 must point to a valid PML4 table
+/// - This function modifies page tables and must be called with appropriate locks held
+pub unsafe fn clear_user_mappings(cr3: u64) {
+    use crate::process::{USER_VIRT_BASE, INTERP_BASE, INTERP_REGION_SIZE};
+    use x86_64::structures::paging::{PageTable, PageTableFlags};
+
+    const HUGE_PAGE_SIZE: u64 = 0x200000; // 2 MiB
+
+    // Get the PML4 table
+    let pml4 = &mut *(cr3 as *mut PageTable);
+
+    // Calculate the range of virtual addresses to clear
+    let user_start = USER_VIRT_BASE;
+    let user_end = INTERP_BASE + INTERP_REGION_SIZE;
+
+    // Iterate through all huge pages in the user region and clear their mappings
+    let mut cleared_count = 0u64;
+    let mut virt = user_start;
+    while virt < user_end {
+        // Get PML4 index (bits 39-47)
+        let pml4_idx = ((virt >> 39) & 0x1FF) as usize;
+
+        // Check if PML4 entry is present
+        if !pml4[pml4_idx].flags().contains(PageTableFlags::PRESENT) {
+            virt += HUGE_PAGE_SIZE;
+            continue;
+        }
+
+        // Get PDP table
+        let pdp_addr = pml4[pml4_idx].addr().as_u64();
+        let pdp = &mut *(pdp_addr as *mut PageTable);
+
+        // Get PDP index (bits 30-38)
+        let pdp_idx = ((virt >> 30) & 0x1FF) as usize;
+
+        // Check if PDP entry is present
+        if !pdp[pdp_idx].flags().contains(PageTableFlags::PRESENT) {
+            virt += HUGE_PAGE_SIZE;
+            continue;
+        }
+
+        // Get PD table
+        let pd_addr = pdp[pdp_idx].addr().as_u64();
+        let pd = &mut *(pd_addr as *mut PageTable);
+
+        // Get PD index (bits 21-29)
+        let pd_idx = ((virt >> 21) & 0x1FF) as usize;
+
+        // Check if PD entry is present
+        if pd[pd_idx].flags().contains(PageTableFlags::PRESENT) {
+            // Clear the PD entry
+            pd[pd_idx].set_unused();
+            cleared_count += 1;
+        }
+
+        virt += HUGE_PAGE_SIZE;
+    }
+
+    // Flush TLB to ensure the cleared mappings take effect
+    use x86_64::instructions::tlb;
+    tlb::flush_all();
+
+    if cleared_count > 0 {
+        crate::serial_println!(
+            "[clear_user_mappings] CR3={:#x}: cleared {} huge page mappings",
+            cr3, cleared_count
+        );
+    }
+}
+
 /// Returns true if the address is in the user region (USER_VIRT_BASE to USER_VIRT_BASE + USER_REGION_SIZE).
 pub fn is_user_demand_page_address(virt_addr: u64) -> bool {
     use crate::process::{USER_VIRT_BASE, USER_REGION_SIZE};
@@ -1145,13 +1220,13 @@ pub fn handle_user_demand_fault(
     // to map the virtual page to the corresponding physical page
     let page_phys = memory_base + offset;
 
-    // Use serial_println! to ensure visibility after init starts
-    crate::serial_println!(
-        "demand_fault: PID {} virt {:#x} -> phys {:#x}",
-        pid,
-        page_virt,
-        page_phys
-    );
+    // Debug: Print ALL demand faults for PID 11 to track mapping issues
+    if pid == 11 {
+        crate::serial_println!(
+            "[DF] PID {} fault virt={:#x} -> phys={:#x} (offset={:#x}, memory_base={:#x})",
+            pid, page_virt, page_phys, offset, memory_base
+        );
+    }
 
     // Map the page in the process's page table
     unsafe {

@@ -43,13 +43,21 @@ pub fn activate_cr3(cr3_phys: u64) {
     }
 }
 
-/// Flush the TLB by reloading CR3.
+/// Flush the TLB by reloading CR3 on current CPU and sending IPI to all other CPUs.
+/// This is critical for SMP systems where page table modifications must be visible
+/// to all CPUs before any process continues execution.
 #[inline]
 pub fn flush_tlb_all() {
+    // First, flush the current CPU's TLB
     let (frame, flags) = Cr3::read();
     unsafe {
         Cr3::write(frame, flags);
     }
+    
+    // Then send TLB flush IPI to all other CPUs
+    // This ensures that if the process runs on a different CPU after execve/fork,
+    // it won't see stale TLB entries pointing to old physical addresses
+    crate::smp::send_tlb_flush_ipi_all();
 }
 
 /// Invalidate a single TLB entry.

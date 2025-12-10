@@ -597,7 +597,26 @@ pub fn execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8)
     let elf_data = match crate::fs::read_file_bytes(path_str) {
         Some(data) => {
             crate::serial_println!("[execve] PID={} file found, {} bytes", current_pid, data.len());
+            // Force serial output immediately after file found - BEFORE any other code
+            {
+                unsafe {
+                    use x86_64::instructions::port::Port;
+                    let mut port = Port::<u8>::new(0x3F8);
+                    for &b in b"[X1]" {
+                        port.write(b);
+                    }
+                }
+            }
             kinfo!("[syscall_execve] Found file, {} bytes", data.len());
+            {
+                unsafe {
+                    use x86_64::instructions::port::Port;
+                    let mut port = Port::<u8>::new(0x3F8);
+                    for &b in b"[X2]\n" {
+                        port.write(b);
+                    }
+                }
+            }
             data
         }
         None => {
@@ -614,6 +633,7 @@ pub fn execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8)
         }
     };
 
+    crate::serial_println!("[execve] PID={} before get_current_pid for memory_base lookup", current_pid);
     let current_pid = match get_current_pid() {
         Some(pid) => pid,
         None => {
@@ -661,6 +681,15 @@ pub fn execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8)
         current_memory_base,
         current_cr3
     );
+
+    // CRITICAL DEBUG: Force serial output right before from_elf_with_args_at_base call
+    unsafe {
+        use x86_64::instructions::port::Port;
+        let mut port = Port::<u8>::new(0x3F8);
+        for &b in b"[BEFORE_FROM_ELF]\n" {
+            port.write(b);
+        }
+    }
 
     let new_process = match crate::process::Process::from_elf_with_args_at_base(
         elf_data,

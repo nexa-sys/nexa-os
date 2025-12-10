@@ -95,7 +95,7 @@ pub use numa::{
 
 // Re-export from paging
 pub use paging::{
-    activate_address_space, allocate_user_region, create_process_address_space, current_pml4_phys,
+    activate_address_space, allocate_user_region, clear_user_mappings, create_process_address_space, current_pml4_phys,
     debug_cr3_info, ensure_nxe_enabled, free_process_address_space, free_user_region,
     handle_user_demand_fault, init, is_user_demand_page_address, kernel_pml4_phys,
     print_cr3_statistics, print_demand_paging_statistics, print_user_region_statistics,

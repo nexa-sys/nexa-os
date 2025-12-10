@@ -1036,6 +1036,17 @@ impl Ext2Filesystem {
     }
 
     fn lookup_internal(&self, path: &str) -> Option<FileRef> {
+        // Maximum symlink depth to prevent infinite loops
+        const MAX_SYMLINK_DEPTH: u32 = 8;
+        self.lookup_internal_with_depth(path, 0, MAX_SYMLINK_DEPTH)
+    }
+
+    fn lookup_internal_with_depth(&self, path: &str, depth: u32, max_depth: u32) -> Option<FileRef> {
+        if depth > max_depth {
+            mod_warn!(b"lookup_internal: too many symlinks");
+            return None;
+        }
+
         let trimmed = path.trim_matches('/');
         let mut inode_number = 2u32; // root inode
 
@@ -1065,10 +1076,10 @@ impl Ext2Filesystem {
             }
         };
 
-        for segment in trimmed.split('/') {
-            if segment.is_empty() {
-                continue;
-            }
+        let segments: heapless::Vec<&str, 32> = trimmed.split('/').filter(|s| !s.is_empty()).collect();
+        let num_segments = segments.len();
+
+        for (idx, segment) in segments.iter().enumerate() {
             let next_inode = match self.find_in_directory(&inode, segment) {
                 Some(n) => n,
                 None => {
@@ -1086,9 +1097,96 @@ impl Ext2Filesystem {
                     return None;
                 }
             };
+
+            // Handle symlinks for intermediate path components
+            // Also handle symlink for the final component (so open() follows symlinks)
+            if inode.is_symlink() {
+                let mut target_buf = [0u8; 256];
+                if let Some(target) = self.read_symlink_target(&inode, &mut target_buf) {
+                    // Build the new path: target + remaining segments
+                    let mut new_path_buf = [0u8; 512];
+                    let mut new_path_len = 0usize;
+
+                    // If target is absolute, use it directly
+                    // If relative, we need to prepend the current directory
+                    if target.starts_with('/') {
+                        // Absolute symlink
+                        let target_bytes = target.as_bytes();
+                        new_path_buf[..target_bytes.len()].copy_from_slice(target_bytes);
+                        new_path_len = target_bytes.len();
+                    } else {
+                        // Relative symlink - prepend current directory
+                        // Current directory is segments[0..idx] joined with '/'
+                        new_path_buf[0] = b'/';
+                        new_path_len = 1;
+                        for i in 0..idx {
+                            let seg = segments[i].as_bytes();
+                            new_path_buf[new_path_len..new_path_len + seg.len()].copy_from_slice(seg);
+                            new_path_len += seg.len();
+                            new_path_buf[new_path_len] = b'/';
+                            new_path_len += 1;
+                        }
+                        // Add the symlink target
+                        let target_bytes = target.as_bytes();
+                        new_path_buf[new_path_len..new_path_len + target_bytes.len()].copy_from_slice(target_bytes);
+                        new_path_len += target_bytes.len();
+                    }
+
+                    // Append remaining path segments
+                    for i in (idx + 1)..num_segments {
+                        new_path_buf[new_path_len] = b'/';
+                        new_path_len += 1;
+                        let seg = segments[i].as_bytes();
+                        new_path_buf[new_path_len..new_path_len + seg.len()].copy_from_slice(seg);
+                        new_path_len += seg.len();
+                    }
+
+                    if let Ok(new_path) = core::str::from_utf8(&new_path_buf[..new_path_len]) {
+                        return self.lookup_internal_with_depth(new_path, depth + 1, max_depth);
+                    }
+                    return None;
+                }
+                return None;
+            }
         }
 
         self.file_ref_from_inode(inode_number)
+    }
+
+    /// Read the target of a symbolic link
+    /// Returns None if not a symlink or on error
+    /// The result is written to the provided buffer
+    fn read_symlink_target<'a>(&self, inode: &Inode, buf: &'a mut [u8; 256]) -> Option<&'a str> {
+        if !inode.is_symlink() {
+            return None;
+        }
+
+        let size = inode.size() as usize;
+        if size == 0 || size > 255 {
+            return None;
+        }
+
+        if inode.is_fast_symlink() {
+            // Fast symlink: target is stored inline in block pointers
+            let target = inode.fast_symlink_target();
+            buf[..target.len()].copy_from_slice(target);
+            return core::str::from_utf8(&buf[..target.len()]).ok();
+        }
+
+        // Slow symlink: target is stored in data blocks
+        // Read first block which should contain the entire target
+        let block_num = inode.block[0];
+        if block_num == 0 {
+            return None;
+        }
+
+        let mut block_buf = [0u8; 4096];
+        if self.read_block_to_buf(block_num, &mut block_buf).is_none() {
+            return None;
+        }
+
+        buf[..size].copy_from_slice(&block_buf[..size]);
+        core::str::from_utf8(&buf[..size]).ok()
     }
 
     fn file_ref_from_inode(&self, inode: u32) -> Option<FileRef> {
@@ -1909,6 +2007,37 @@ impl Inode {
 
     fn is_regular_file(&self) -> bool {
         (self.mode & 0o170000) == 0o100000
+    }
+
+    fn is_symlink(&self) -> bool {
+        (self.mode & 0o170000) == 0o120000
+    }
+
+    fn is_directory(&self) -> bool {
+        (self.mode & 0o170000) == 0o040000
+    }
+
+    /// Check if this is a fast symlink (target stored inline in block pointers)
+    /// Fast symlinks have size <= 60 bytes and no allocated blocks
+    fn is_fast_symlink(&self) -> bool {
+        self.is_symlink() && self.size() <= 60 && self.blocks_lo == 0
+    }
+
+    /// Read symlink target for fast symlinks (stored in block pointer area)
+    /// Returns the target path as bytes
+    fn fast_symlink_target(&self) -> &[u8] {
+        // For fast symlinks, the target is stored directly in the block[] array
+        // which occupies bytes 40-99 of the inode (60 bytes total)
+        let size = self.size() as usize;
+        let size = size.min(60);
+        // Safety: block array is 15 u32s = 60 bytes, reinterpret as bytes
+        let block_bytes: &[u8] = unsafe {
+            core::slice::from_raw_parts(
+                self.block.as_ptr() as *const u8,
+                60
+            )
+        };
+        &block_bytes[..size]
     }
 }
 

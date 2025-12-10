@@ -319,6 +319,23 @@ unsafe fn print_hex(val: u64) {
     print(&buf);
 }
 
+/// Print a decimal number
+unsafe fn print_num(val: u64) {
+    if val == 0 {
+        print(b"0");
+        return;
+    }
+    let mut buf = [0u8; 20];
+    let mut n = val;
+    let mut i = 19;
+    while n > 0 {
+        buf[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+        i -= 1;
+    }
+    print(&buf[i + 1..20]);
+}
+
 /// Copy memory
 unsafe fn memcpy(dest: *mut u8, src: *const u8, n: usize) {
     for i in 0..n {
@@ -428,8 +445,11 @@ unsafe fn is_libc_library(name: *const u8) -> bool {
         return true;
     }
     
-    // Check for libcrypt
-    if starts_with(name, b"libcrypt.so") {
+    // Check for libcrypt (NOT libcrypto - that's the crypto library we need)
+    // libcrypt.so is typically part of glibc for password hashing
+    if is_same_library_name(name, b"libcrypt.so\0".as_ptr()) ||
+       is_same_library_name(name, b"libcrypt.so.1\0".as_ptr()) ||
+       is_same_library_name(name, b"libcrypt.so.2\0".as_ptr()) {
         return true;
     }
     
@@ -457,6 +477,28 @@ fn map_library_name(name: &[u8]) -> [u8; 64] {
             break;
         }
         result[i] = c;
+    }
+    
+    // Debug output using single buffer
+    unsafe {
+        let hex = b"0123456789abcdef";
+        let mut dbuf = [0u8; 100];
+        let prefix = b"[map_lib] in='";
+        let mut pos = 0;
+        for c in prefix { dbuf[pos] = *c; pos += 1; }
+        for &c in name.iter() {
+            if c == 0 { break; }
+            if pos < 80 { dbuf[pos] = c; pos += 1; }
+        }
+        let mid = b"' out='";
+        for c in mid { dbuf[pos] = *c; pos += 1; }
+        for &c in result.iter() {
+            if c == 0 { break; }
+            if pos < 95 { dbuf[pos] = c; pos += 1; }
+        }
+        dbuf[pos] = b'\''; pos += 1;
+        dbuf[pos] = b'\n'; pos += 1;
+        write(2, dbuf.as_ptr(), pos);
     }
     
     result
@@ -850,15 +892,89 @@ unsafe fn lseek(fd: i32, offset: i64, whence: i32) -> i64 {
 /// Load a shared library from path
 /// Returns (base_addr, load_bias, dyn_info) or (0, 0, DynInfo::new()) on failure
 unsafe fn load_shared_library(path: *const u8) -> (u64, i64, DynInfo) {
+    // Use single buffer for path output
+    let mut pbuf = [0u8; 280];
+    let mut ppos = 0;
+    let pprefix = b"[load_so] path='";
+    for c in pprefix { pbuf[ppos] = *c; ppos += 1; }
+    let mut i = 0;
+    while *path.add(i) != 0 && i < 250 {
+        pbuf[ppos] = *path.add(i);
+        ppos += 1;
+        i += 1;
+    }
+    pbuf[ppos] = b'\''; ppos += 1;
+    pbuf[ppos] = b'\n'; ppos += 1;
+    write(2, pbuf.as_ptr(), ppos);
+    
     let fd = open_file(path);
     if fd < 0 {
+        print(b"[load_so] open FAILED\n");
         return (0, 0, DynInfo::new());
     }
     
     // Read ELF header
     let mut ehdr_buf = [0u8; 64];
+    
+    // Debug: print fd and buffer address before read
+    {
+        let hex = b"0123456789abcdef";
+        let mut dbuf = [0u8; 80];
+        let prefix = b"[load_so] read: fd=";
+        let mut pos = 0;
+        for c in prefix { dbuf[pos] = *c; pos += 1; }
+        // Print fd as decimal
+        let fd_val = fd as u64;
+        if fd_val < 10 {
+            dbuf[pos] = b'0' + fd_val as u8; pos += 1;
+        } else {
+            dbuf[pos] = b'0' + (fd_val / 10) as u8; pos += 1;
+            dbuf[pos] = b'0' + (fd_val % 10) as u8; pos += 1;
+        }
+        let mid = b" buf=0x";
+        for c in mid { dbuf[pos] = *c; pos += 1; }
+        let buf_addr = ehdr_buf.as_ptr() as u64;
+        for shift in (0..16).rev() {
+            let nibble = ((buf_addr >> (shift * 4)) & 0xf) as usize;
+            dbuf[pos] = hex[nibble];
+            pos += 1;
+        }
+        dbuf[pos] = b'\n'; pos += 1;
+        write(2, dbuf.as_ptr(), pos);
+    }
+    
     let bytes_read = read_bytes(fd as i32, ehdr_buf.as_mut_ptr(), 64);
     if bytes_read < 64 {
+        // Debug: also print what we got
+        {
+            let hex = b"0123456789abcdef";
+            let mut dbuf = [0u8; 100];
+            let prefix = b"[load_so] read FAIL: got=";
+            let mut pos = 0;
+            for c in prefix { dbuf[pos] = *c; pos += 1; }
+            let bval = bytes_read as u64;
+            if bval < 10 {
+                dbuf[pos] = b'0' + bval as u8; pos += 1;
+            } else if bval < 100 {
+                dbuf[pos] = b'0' + (bval / 10) as u8; pos += 1;
+                dbuf[pos] = b'0' + (bval % 10) as u8; pos += 1;
+            } else {
+                // Just print as hex if larger
+                for shift in (0..16).rev() {
+                    let nibble = ((bval >> (shift * 4)) & 0xf) as usize;
+                    dbuf[pos] = hex[nibble];
+                    pos += 1;
+                }
+            }
+            let mid = b" first4=";
+            for c in mid { dbuf[pos] = *c; pos += 1; }
+            for i in 0..4 {
+                dbuf[pos] = hex[(ehdr_buf[i] >> 4) as usize]; pos += 1;
+                dbuf[pos] = hex[(ehdr_buf[i] & 0xf) as usize]; pos += 1;
+            }
+            dbuf[pos] = b'\n'; pos += 1;
+            write(2, dbuf.as_ptr(), pos);
+        }
         close_file(fd as i32);
         return (0, 0, DynInfo::new());
     }
@@ -1057,6 +1173,19 @@ unsafe fn parse_dynamic_section(dyn_addr: u64, load_bias: i64, dyn_info: &mut Dy
 unsafe fn search_library(name: &[u8]) -> Option<[u8; 256]> {
     let mut path_buf = [0u8; 256];
     
+    // Use single buffer for debug output
+    let mut dbuf = [0u8; 100];
+    let mut dpos = 0;
+    let prefix = b"[search_lib] name='";
+    for c in prefix { dbuf[dpos] = *c; dpos += 1; }
+    for &c in name { 
+        if c == 0 { break; } 
+        if dpos < 90 { dbuf[dpos] = c; dpos += 1; }
+    }
+    dbuf[dpos] = b'\''; dpos += 1;
+    dbuf[dpos] = b'\n'; dpos += 1;
+    write(2, dbuf.as_ptr(), dpos);
+    
     // Use stack-local array to avoid global pointer relocation issues
     let search_paths: [&[u8]; 4] = [
         LIB_PATH_1.as_slice(),
@@ -1105,13 +1234,156 @@ unsafe fn search_library(name: &[u8]) -> Option<[u8; 256]> {
         let fd = open_file(path_buf.as_ptr());
         if fd >= 0 {
             close_file(fd as i32);
+            // Use single buffer to print found path
+            let mut fbuf = [0u8; 280];
+            let mut fpos = 0;
+            let fprefix = b"[search_lib] FOUND: '";
+            for c in fprefix { fbuf[fpos] = *c; fpos += 1; }
+            for &c in path_buf.iter() { 
+                if c == 0 { break; } 
+                if fpos < 270 { fbuf[fpos] = c; fpos += 1; }
+            }
+            fbuf[fpos] = b'\''; fpos += 1;
+            fbuf[fpos] = b'\n'; fpos += 1;
+            write(2, fbuf.as_ptr(), fpos);
             return Some(path_buf);
         }
         
         path_idx += 1;
     }
     
+    print(b"[search_lib] NOT FOUND\n");
     None
+}
+
+/// Load a library and recursively load its dependencies
+/// Returns true if library was loaded successfully (or already loaded)
+unsafe fn load_library_recursive(name: &[u8]) -> bool {
+    // Debug: immediately print slice info at function entry using single buffer
+    let slice_ptr = name.as_ptr();
+    let slice_len = name.len();
+    
+    let hex = b"0123456789abcdef";
+    let mut dbuf = [0u8; 100];
+    let prefix = b"[INSIDE] ptr=";
+    let mut pos = 0;
+    for c in prefix { dbuf[pos] = *c; pos += 1; }
+    // Print hex address
+    let ptr_val = slice_ptr as u64;
+    for shift in (0..16).rev() {
+        let nibble = ((ptr_val >> (shift * 4)) & 0xf) as usize;
+        dbuf[pos] = hex[nibble];
+        pos += 1;
+    }
+    let mid = b" data='";
+    for c in mid { dbuf[pos] = *c; pos += 1; }
+    for k in 0..slice_len.min(20) {
+        dbuf[pos] = *slice_ptr.add(k);
+        pos += 1;
+    }
+    dbuf[pos] = b'\''; pos += 1;
+    dbuf[pos] = b'\n'; pos += 1;
+    write(2, dbuf.as_ptr(), pos);
+    
+    // Skip libc-like libraries that map to libnrlib.so
+    if name.len() > 0 {
+        // Convert to null-terminated for is_libc_library check
+        let mut name_buf = [0u8; 128];
+        let copy_len = core::cmp::min(name.len(), 127);
+        for i in 0..copy_len {
+            name_buf[i] = name[i];
+        }
+        name_buf[copy_len] = 0;
+        
+        if is_libc_library(name_buf.as_ptr()) {
+            print(b"[load_lib_rec] skipped (libc-like)\n");
+            return true;
+        }
+    }
+    
+    // Try mapped name first, then original name
+    let mapped_name = map_library_name(name);
+    
+    let path = if let Some(p) = search_library(&mapped_name) {
+        print(b"[load_lib_rec] found via mapped\n");
+        p
+    } else if let Some(p) = search_library(name) {
+        print(b"[load_lib_rec] found via original\n");
+        p
+    } else {
+        print(b"[load_lib_rec] NOT FOUND!\n");
+        return false;
+    };
+    
+    // Load the library - use single buffer for path output
+    {
+        let mut pbuf = [0u8; 280];
+        let mut ppos = 0;
+        let pprefix = b"[load_lib_rec] loading path='";
+        for c in pprefix { pbuf[ppos] = *c; ppos += 1; }
+        for &c in path.iter() {
+            if c == 0 { break; }
+            if ppos < 270 { pbuf[ppos] = c; ppos += 1; }
+        }
+        pbuf[ppos] = b'\''; ppos += 1;
+        pbuf[ppos] = b'\n'; ppos += 1;
+        write(2, pbuf.as_ptr(), ppos);
+    }
+    
+    let (lib_base, lib_bias, lib_dyn_info) = load_shared_library(path.as_ptr());
+    if lib_base == 0 {
+        print(b"[load_lib_rec] load_shared_library FAILED!\n");
+        return false;
+    }
+    print(b"[load_lib_rec] loaded OK\n");
+    
+    // Register in global symbol table
+    let lib_idx = GLOBAL_SYMTAB.lib_count;
+    if lib_idx >= MAX_LIBS {
+        return false;
+    }
+    
+    let lib = &mut GLOBAL_SYMTAB.libs[lib_idx];
+    lib.base_addr = lib_base;
+    lib.load_bias = lib_bias;
+    lib.dyn_info = lib_dyn_info;
+    lib.valid = true;
+    GLOBAL_SYMTAB.lib_count = lib_idx + 1;
+    
+    // Process library's RELATIVE relocations first
+    if lib_dyn_info.rela != 0 && lib_dyn_info.relasz > 0 {
+        process_rela(lib_dyn_info.rela, lib_dyn_info.relasz, lib_dyn_info.relaent, lib_bias);
+    }
+    
+    // Recursively load this library's dependencies
+    if lib_dyn_info.needed_count > 0 {
+        print(b"[ld-nrlib]   -> has ");
+        print_num(lib_dyn_info.needed_count as u64);
+        print(b" dependencies\n");
+        
+        for i in 0..lib_dyn_info.needed_count {
+            let dep_name_offset = lib_dyn_info.needed[i];
+            let dep_name_ptr = (lib_dyn_info.strtab + dep_name_offset) as *const u8;
+            let dep_name_len = cstr_len(dep_name_ptr);
+            let dep_name_slice = core::slice::from_raw_parts(dep_name_ptr, dep_name_len);
+            
+            print(b"[ld-nrlib]   dep[");
+            print_num(i as u64);
+            print(b"]: ");
+            for &c in dep_name_slice {
+                if c == 0 { break; }
+                write(2, &c as *const u8, 1);
+            }
+            print(b"\n");
+            
+            // Recursively load dependency
+            load_library_recursive(dep_name_slice);
+        }
+    } else {
+        print(b"[ld-nrlib]   -> no dependencies\n");
+    }
+    
+    true
 }
 
 /// Get symbol count from hash table
@@ -1605,62 +1877,120 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
         }
         
         // ================================================================
-        // Step 2: Load other DT_NEEDED libraries
+        // Step 2: Load other DT_NEEDED libraries (recursively loads dependencies)
         // ================================================================
         if main_dyn_info.needed_count > 0 {
+            print(b"[ld-nrlib] strtab=");
+            print_hex(main_dyn_info.strtab);
+            print(b"\n");
+            
+            // DEBUG: Print first 16 bytes at strtab to verify content
+            // Build entire output in one buffer to avoid multiple writes
+            let strtab_ptr = main_dyn_info.strtab as *const u8;
+            // Format: "[strtab@0]: XX XX XX... [strtab@14f]: XX XX XX...\n"
+            // Max: 20 + 48 + 20 + 36 + 2 = 126 bytes
+            let mut debug_buf = [0u8; 150];
+            let hex = b"0123456789abcdef";
+            
+            // "[strtab@0]: "
+            let prefix1 = b"[strtab@0]: ";
+            let mut pos = 0;
+            for i in 0..12 {
+                debug_buf[pos] = prefix1[i];
+                pos += 1;
+            }
+            
+            // 16 hex bytes
+            for k in 0..16 {
+                let b = *strtab_ptr.add(k);
+                debug_buf[pos] = hex[(b >> 4) as usize];
+                pos += 1;
+                debug_buf[pos] = hex[(b & 0xf) as usize];
+                pos += 1;
+                debug_buf[pos] = b' ';
+                pos += 1;
+            }
+            
+            // " [strtab@14f]: "
+            let prefix2 = b"[strtab@14f]: ";
+            for i in 0..14 {
+                debug_buf[pos] = prefix2[i];
+                pos += 1;
+            }
+            
+            // 12 hex bytes at offset 0x14f  
+            for k in 0..12 {
+                let b = *strtab_ptr.add(0x14f + k);
+                debug_buf[pos] = hex[(b >> 4) as usize];
+                pos += 1;
+                debug_buf[pos] = hex[(b & 0xf) as usize];
+                pos += 1;
+                debug_buf[pos] = b' ';
+                pos += 1;
+            }
+            
+            debug_buf[pos] = b'\n';
+            pos += 1;
+            
+            write(2, debug_buf.as_ptr(), pos);
+            
             for i in 0..main_dyn_info.needed_count {
                 let name_offset = main_dyn_info.needed[i];
                 let name_ptr = (main_dyn_info.strtab + name_offset) as *const u8;
                 
+                // Compute length using cstr_len
+                let name_len = cstr_len(name_ptr);
+                
+                // Build debug output in single buffer
+                let hex = b"0123456789abcdef";
+                let mut dbuf = [0u8; 100];
+                let prefix = b"[ld-nrlib] needed[";
+                let mut pos = 0;
+                for c in prefix { dbuf[pos] = *c; pos += 1; }
+                // Add index
+                dbuf[pos] = b'0' + i as u8; pos += 1;
+                let suffix = b"]: '";
+                for c in suffix { dbuf[pos] = *c; pos += 1; }
+                // Copy library name directly
+                for k in 0..name_len.min(40) {
+                    dbuf[pos] = *name_ptr.add(k);
+                    pos += 1;
+                }
+                dbuf[pos] = b'\''; pos += 1;
+                dbuf[pos] = b'\n'; pos += 1;
+                write(2, dbuf.as_ptr(), pos);
+                
                 // Skip libraries that map to libnrlib.so (musl-compatible mappings)
                 if is_libc_library(name_ptr) {
+                    print(b"[ld-nrlib]   skipped (libc)\n");
                     continue;
                 }
                 
-                // Try to find and load the library
-                let name_len = cstr_len(name_ptr);
-                let name_slice = core::slice::from_raw_parts(name_ptr, name_len);
-                
-                // Try mapped name first, then original name
-                let mapped_name = map_library_name(name_slice);
-                
-                if let Some(path) = search_library(&mapped_name) {
-                    let (lib_base, lib_bias, lib_dyn_info) = load_shared_library(path.as_ptr());
-                    if lib_base != 0 {
-                        let lib_idx = GLOBAL_SYMTAB.lib_count;
-                        if lib_idx < MAX_LIBS {
-                            let lib = &mut GLOBAL_SYMTAB.libs[lib_idx];
-                            lib.base_addr = lib_base;
-                            lib.load_bias = lib_bias;
-                            lib.dyn_info = lib_dyn_info;
-                            lib.valid = true;
-                            GLOBAL_SYMTAB.lib_count = lib_idx + 1;
-                            
-                            // Process library's relocations
-                            if lib_dyn_info.rela != 0 && lib_dyn_info.relasz > 0 {
-                                process_rela(lib_dyn_info.rela, lib_dyn_info.relasz, lib_dyn_info.relaent, lib_bias);
-                            }
-                        }
-                    }
-                } else if let Some(path) = search_library(name_slice) {
-                    let (lib_base, lib_bias, lib_dyn_info) = load_shared_library(path.as_ptr());
-                    if lib_base != 0 {
-                        let lib_idx = GLOBAL_SYMTAB.lib_count;
-                        if lib_idx < MAX_LIBS {
-                            let lib = &mut GLOBAL_SYMTAB.libs[lib_idx];
-                            lib.base_addr = lib_base;
-                            lib.load_bias = lib_bias;
-                            lib.dyn_info = lib_dyn_info;
-                            lib.valid = true;
-                            GLOBAL_SYMTAB.lib_count = lib_idx + 1;
-                            
-                            // Process library's relocations
-                            if lib_dyn_info.rela != 0 && lib_dyn_info.relasz > 0 {
-                                process_rela(lib_dyn_info.rela, lib_dyn_info.relasz, lib_dyn_info.relaent, lib_bias);
-                            }
-                        }
-                    }
+                // Debug: verify data BEFORE creating slice
+                let mut dbuf2 = [0u8; 80];
+                let prefix2 = b"[PRE-CALL] ptr=";
+                let mut pos2 = 0;
+                for c in prefix2 { dbuf2[pos2] = *c; pos2 += 1; }
+                // Print hex address
+                let ptr_val = name_ptr as u64;
+                for shift in (0..16).rev() {
+                    let nibble = ((ptr_val >> (shift * 4)) & 0xf) as usize;
+                    dbuf2[pos2] = hex[nibble];
+                    pos2 += 1;
                 }
+                let mid = b" data='";
+                for c in mid { dbuf2[pos2] = *c; pos2 += 1; }
+                for k in 0..name_len.min(20) {
+                    dbuf2[pos2] = *name_ptr.add(k);
+                    pos2 += 1;
+                }
+                dbuf2[pos2] = b'\''; pos2 += 1;
+                dbuf2[pos2] = b'\n'; pos2 += 1;
+                write(2, dbuf2.as_ptr(), pos2);
+                
+                // Load library and its dependencies recursively
+                let name_slice = core::slice::from_raw_parts(name_ptr, name_len);
+                load_library_recursive(name_slice);
             }
         }
         

@@ -359,6 +359,8 @@ impl ElfLoader {
         let e_phnum = reader.u16(56).ok()? as usize;
         let e_phentsize = reader.u16(54).ok()? as usize;
 
+        crate::serial_println!("[get_interpreter] e_phoff={:#x}, e_phnum={}, e_phentsize={}", e_phoff, e_phnum, e_phentsize);
+
         for i in 0..e_phnum {
             let delta = i.checked_mul(e_phentsize)?;
             let ph_offset = e_phoff.checked_add(delta)?;
@@ -366,6 +368,7 @@ impl ElfLoader {
             let p_type = reader.u32(ph_offset).ok()?;
 
             if p_type == PhType::Interp as u32 {
+                crate::serial_println!("[get_interpreter] Found PT_INTERP at phdr[{}]", i);
                 let p_offset = reader.u64(ph_offset + 8).ok()? as usize;
                 let p_filesz = reader.u64(ph_offset + 32).ok()? as usize;
 
@@ -376,12 +379,15 @@ impl ElfLoader {
                     .unwrap_or(p_filesz);
 
                 if let Ok(s) = core::str::from_utf8(&interp_bytes[..null_pos]) {
+                    crate::serial_println!("[get_interpreter] interpreter={}", s);
                     return Some(s);
                 }
+                crate::serial_println!("[get_interpreter] failed to parse interpreter string");
                 return None;
             }
         }
 
+        crate::serial_println!("[get_interpreter] no PT_INTERP found");
         None
     }
 
@@ -551,6 +557,27 @@ impl ElfLoader {
                     ptr::copy_nonoverlapping(segment.as_ptr(), dst, p_filesz);
                 }
                 crate::kinfo!("Copy complete to {:#x}", target_addr);
+                
+                // Debug: verify specific offset 0x6c7 if it's within this segment
+                let offset_of_interest = 0x6c7_usize;
+                if offset_of_interest >= p_offset_val && offset_of_interest < p_offset_val + p_filesz {
+                    let rel_offset = offset_of_interest - p_offset_val;
+                    let debug_ptr = unsafe { dst.add(rel_offset) };
+                    crate::kinfo!(
+                        "DEBUG: offset 0x6c7 is in this segment at ptr={:#x}, bytes: {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
+                        debug_ptr as usize,
+                        unsafe { *debug_ptr.add(0) },
+                        unsafe { *debug_ptr.add(1) },
+                        unsafe { *debug_ptr.add(2) },
+                        unsafe { *debug_ptr.add(3) },
+                        unsafe { *debug_ptr.add(4) },
+                        unsafe { *debug_ptr.add(5) },
+                        unsafe { *debug_ptr.add(6) },
+                        unsafe { *debug_ptr.add(7) },
+                        unsafe { *debug_ptr.add(8) },
+                        unsafe { *debug_ptr.add(9) }
+                    );
+                }
             }
 
             if phdr_runtime.is_none() {

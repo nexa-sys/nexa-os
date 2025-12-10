@@ -10,6 +10,7 @@ crate-type = ["staticlib"]  # Static library for kernel module (we extract .o fr
 path = "src/lib.rs"
 
 [dependencies]
+heapless = "0.8"
 
 [profile.release]
 panic = "abort"
