@@ -223,6 +223,11 @@ pub fn init() {
         kmod_log_debug as *const () as u64,
         SymbolType::Function,
     );
+    register_symbol(
+        "kmod_serial_print",
+        kmod_serial_print as *const () as u64,
+        SymbolType::Function,
+    );
 
     // Register memory allocation functions
     register_symbol(
@@ -520,6 +525,20 @@ pub extern "C" fn kmod_log_debug(msg: *const u8, len: usize) {
         let bytes = core::slice::from_raw_parts(msg, len);
         if let Ok(s) = core::str::from_utf8(bytes) {
             crate::kdebug!("[kmod] {}", s);
+        }
+    }
+}
+
+/// Print directly to serial port from a module (bypasses ring buffer)
+#[no_mangle]
+pub extern "C" fn kmod_serial_print(msg: *const u8, len: usize) {
+    if msg.is_null() || len == 0 {
+        return;
+    }
+    unsafe {
+        let bytes = core::slice::from_raw_parts(msg, len);
+        if let Ok(s) = core::str::from_utf8(bytes) {
+            crate::serial_println!("[kmod] {}", s);
         }
     }
 }

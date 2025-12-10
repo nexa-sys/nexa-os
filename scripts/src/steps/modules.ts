@@ -182,28 +182,15 @@ async function buildModule(
     logger.info(`Linking ${objFiles.length} object files...`);
     
     // Link object files into relocatable module
-    // Match the shell script behavior: try gc-sections first, then simple link
+    // Temporarily using simple link without gc-sections for debugging
     let linked = false;
     
     for (const linker of ['ld.lld', 'ld']) {
-      // First try with gc-sections (same as shell script)
-      const gcArgs = ['-r', '--gc-sections', '-o', outputNkm, ...objFiles.map(f => join(tempDir, f))];
-      logger.info(`Trying: ${linker} -r --gc-sections ...`);
-      let linkResult = await exec(linker, gcArgs);
-      if (linkResult.exitCode === 0 && existsSync(outputNkm)) {
-        const stats = await fsStat(outputNkm);
-        if (stats.size > 1000) {  // Must be > 1KB to be valid ELF
-          linked = true;
-          logger.info(`Link succeeded with ${linker} gc-sections (${stats.size} bytes)`);
-          break;
-        }
-      }
-      logger.info(`Link with gc-sections failed (${linker}): code=${linkResult.exitCode} err=${linkResult.stderr.substring(0, 200)}`);
-      
-      // Fall back to simple relocatable link without gc-sections
+      // Simple relocatable link without gc-sections to preserve all symbols for debugging
       const simpleArgs = ['-r', '-o', outputNkm, ...objFiles.map(f => join(tempDir, f))];
       logger.info(`Trying: ${linker} -r ...`);
-      linkResult = await exec(linker, simpleArgs);
+      let linkResult = await exec(linker, simpleArgs);
+      logger.info(`${linker} result: code=${linkResult.exitCode}, stderr=${linkResult.stderr.substring(0, 100)}`);
       if (linkResult.exitCode === 0 && existsSync(outputNkm)) {
         const stats = await fsStat(outputNkm);
         if (stats.size > 1000) {
@@ -216,9 +203,11 @@ async function buildModule(
     }
     
     // Cleanup temp directory
-    await exec('rm', ['-rf', tempDir]);
+    // await exec('rm', ['-rf', tempDir]);  // Keep for debugging
     
     if (linked && existsSync(outputNkm)) {
+      // Copy before strip for debugging
+      await exec('cp', [outputNkm, outputNkm + '.unstripped']);
       await exec('strip', ['--strip-debug', outputNkm]);
       
       // Sign the module

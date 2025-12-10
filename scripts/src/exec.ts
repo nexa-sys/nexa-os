@@ -154,10 +154,20 @@ export async function exec(
       reject: false,
     });
     
+    // If exitCode is undefined, the command likely doesn't exist (ENOENT)
+    const exitCode = result.exitCode;
+    if (exitCode === undefined) {
+      return {
+        stdout: '',
+        stderr: `Command '${command}' not found`,
+        exitCode: 127,  // Standard exit code for command not found
+      };
+    }
+    
     return {
       stdout: String(result.stdout ?? ''),
       stderr: String(result.stderr ?? ''),
-      exitCode: result.exitCode ?? 0,
+      exitCode: exitCode,
     };
   } catch (error) {
     const execaError = error as ExecaError;

@@ -769,7 +769,11 @@ pub fn open(path: &str) -> Option<OpenFile> {
     };
     crate::serial_println!("[open] fs={}, rel='{}'", fs.name(), relative);
     let result = fs.read(relative);
-    crate::serial_println!("[open] fs.read returned {:?}", result.is_some());
+    if let Some(ref r) = result {
+        crate::serial_println!("[open] fs.read returned size={}", r.metadata.size);
+    } else {
+        crate::serial_println!("[open] fs.read returned None");
+    }
     result
 }
 

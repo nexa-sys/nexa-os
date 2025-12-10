@@ -944,6 +944,10 @@ unsafe fn load_shared_library(path: *const u8) -> (u64, i64, DynInfo) {
     }
     
     let bytes_read = read_bytes(fd as i32, ehdr_buf.as_mut_ptr(), 64);
+    
+    // Immediate debug after read
+    print(b"[load_so] read returned\n");
+    
     if bytes_read < 64 {
         // Debug: also print what we got
         {

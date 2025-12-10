@@ -514,8 +514,8 @@ pub fn lookup(path: &str) -> Option<FileRefHandle> {
 
     let ret = lookup_fn(handle, path_buf.as_ptr(), path_len, &mut file_ref);
 
-    crate::kinfo!(
-        "ext2_modular::lookup: ret={}, inode={}, size={}, mode=0o{:o}, uid={}, gid={}, nlink={}",
+    crate::serial_println!(
+        "[ext2_modular::lookup] ret={}, inode={}, size={}, mode=0o{:o}, uid={}, gid={}, nlink={}",
         ret,
         file_ref.inode,
         file_ref.size,
@@ -798,7 +798,10 @@ impl FileSystem for Ext2ModularFs {
     }
 
     fn read(&self, path: &str) -> Option<OpenFile> {
+        // Debug: log read path
+        crate::serial_println!("[ext2_modular::read] path='{}'", path);
         let file_ref = lookup(path)?;
+        crate::serial_println!("[ext2_modular::read] lookup returned size={}", file_ref.size);
         Some(OpenFile {
             content: FileContent::Ext2Modular(file_ref),
             metadata: file_ref.metadata(),
