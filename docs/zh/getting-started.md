@@ -19,7 +19,7 @@ NexaOS 不是教育性质的实验系统，而是面向生产环境的现代操�
 
 请确保使用 64 位 Linux 环境，并安装以下软件：
 
-- Rust 夜ly 工具链（自动通过 `rustup override` 配置）
+- Rust nightly 工具链（自动通过 `rustup override` 配置）
 - GCC/Clang 编译工具链（建议安装 `build-essential` 或对应发行版的开发套件）
 - GNU Binutils（尤其是 `ld.bfd`）：链接脚本依赖 GNU LD 的 `AT()` 语义，`scripts/linker.sh` 默认优先调用。
 - `lld`：可选的 LLVM 链接器（若安装仍可手动切换以获得更快的链接速度）。
