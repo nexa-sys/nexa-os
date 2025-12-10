@@ -37,20 +37,20 @@ fn do_halt(poweroff: bool) -> i32 {
         println!("System is halting...");
     }
     let _ = io::stdout().flush();
-    
+
     let cmd = if poweroff {
         LINUX_REBOOT_CMD_POWER_OFF
     } else {
         LINUX_REBOOT_CMD_HALT
     };
-    
+
     let ret = unsafe { libc::syscall(SYS_REBOOT, cmd) };
-    
+
     if ret == -1 {
         eprintln!("halt: Operation not permitted (are you root?)");
         return 1;
     }
-    
+
     // Should never reach here
     0
 }
@@ -58,7 +58,7 @@ fn do_halt(poweroff: bool) -> i32 {
 fn main() {
     let args: Vec<String> = env::args().collect();
     let mut poweroff = true; // Default to poweroff
-    
+
     for arg in args.iter().skip(1) {
         match arg.as_str() {
             "-h" | "--help" => {
@@ -81,6 +81,6 @@ fn main() {
             }
         }
     }
-    
+
     process::exit(do_halt(poweroff));
 }

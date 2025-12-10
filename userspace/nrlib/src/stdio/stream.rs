@@ -83,7 +83,11 @@ pub(crate) enum EchoMode {
 }
 
 /// Internal line reading with configurable echo
-pub(crate) fn read_line_internal(buf: &mut [u8], mode: EchoMode, skip_empty: bool) -> Result<usize, i32> {
+pub(crate) fn read_line_internal(
+    buf: &mut [u8],
+    mode: EchoMode,
+    skip_empty: bool,
+) -> Result<usize, i32> {
     if buf.is_empty() {
         return Ok(0);
     }

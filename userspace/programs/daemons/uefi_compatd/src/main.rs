@@ -5,10 +5,10 @@
 
 use core::ptr;
 use nrlib::{
-    get_errno, uefi_get_block, uefi_get_counts, uefi_get_framebuffer, uefi_get_network,
-    uefi_map_network_mmio, uefi_get_usb_host, uefi_get_hid_input, uefi_map_usb_mmio,
-    UefiBlockDescriptor, UefiCompatCounts, UefiNetworkDescriptor, UefiUsbHostDescriptor,
-    UefiHidInputDescriptor,
+    get_errno, uefi_get_block, uefi_get_counts, uefi_get_framebuffer, uefi_get_hid_input,
+    uefi_get_network, uefi_get_usb_host, uefi_map_network_mmio, uefi_map_usb_mmio,
+    UefiBlockDescriptor, UefiCompatCounts, UefiHidInputDescriptor, UefiNetworkDescriptor,
+    UefiUsbHostDescriptor,
 };
 use std::process::exit;
 
@@ -129,10 +129,7 @@ fn main() {
                     get_errno()
                 );
             } else {
-                println!(
-                    "[uefi-compatd] usb{} MMIO mapped at {:p}",
-                    idx, mmio_ptr
-                );
+                println!("[uefi-compatd] usb{} MMIO mapped at {:p}", idx, mmio_ptr);
                 // Read first register to verify access
                 let reg0 = unsafe { ptr::read_volatile(mmio_ptr as *const u32) };
                 println!(
@@ -163,7 +160,11 @@ fn main() {
                 idx,
                 device_type,
                 descriptor.info.protocol,
-                if descriptor.info.is_usb != 0 { "yes" } else { "no" },
+                if descriptor.info.is_usb != 0 {
+                    "yes"
+                } else {
+                    "no"
+                },
                 descriptor.info.vendor_id,
                 descriptor.info.product_id
             );
@@ -184,4 +185,3 @@ fn main() {
 
     println!("[uefi-compatd] initialisation complete");
 }
-

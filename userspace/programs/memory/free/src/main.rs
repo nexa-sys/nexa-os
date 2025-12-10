@@ -52,7 +52,7 @@ struct MemInfo {
 
 fn parse_meminfo() -> Option<MemInfo> {
     let content = fs::read_to_string("/proc/meminfo").ok()?;
-    
+
     let mut info = MemInfo {
         mem_total: 0,
         mem_free: 0,
@@ -63,19 +63,19 @@ fn parse_meminfo() -> Option<MemInfo> {
         swap_free: 0,
         swap_cached: 0,
     };
-    
+
     for line in content.lines() {
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() < 2 {
             continue;
         }
-        
+
         let key = parts[0].trim_end_matches(':');
         let value: u64 = parts[1].parse().unwrap_or(0);
-        
+
         // Values in /proc/meminfo are in kB
         let value_bytes = value * 1024;
-        
+
         match key {
             "MemTotal" => info.mem_total = value_bytes,
             "MemFree" => info.mem_free = value_bytes,
@@ -88,7 +88,7 @@ fn parse_meminfo() -> Option<MemInfo> {
             _ => {}
         }
     }
-    
+
     Some(info)
 }
 
@@ -120,7 +120,7 @@ fn print_header(unit: Unit) {
         Unit::Gibi => "Gi",
         Unit::Human => "",
     };
-    
+
     if unit == Unit::Human {
         println!(
             "{:>8} {:>10} {:>10} {:>10} {:>10} {:>10}",
@@ -147,15 +147,18 @@ fn display_memory(unit: Unit, show_total: bool) {
             return;
         }
     };
-    
+
     // Calculate used memory
     let buff_cache = info.buffers + info.cached;
-    let mem_used = info.mem_total.saturating_sub(info.mem_free).saturating_sub(buff_cache);
+    let mem_used = info
+        .mem_total
+        .saturating_sub(info.mem_free)
+        .saturating_sub(buff_cache);
     let swap_used = info.swap_total.saturating_sub(info.swap_free);
-    
+
     // Print header
     print_header(unit);
-    
+
     // Memory line
     println!(
         "Mem:{} {} {} {:>12} {} {}",
@@ -166,28 +169,32 @@ fn display_memory(unit: Unit, show_total: bool) {
         format_size(buff_cache, unit),
         format_size(info.mem_available, unit)
     );
-    
+
     // Swap line
     println!(
         "Swap:{} {} {} {:>12} {:>12} {:>12}",
         format_size(info.swap_total, unit),
         format_size(swap_used, unit),
         format_size(info.swap_free, unit),
-        "", "", ""
+        "",
+        "",
+        ""
     );
-    
+
     // Total line
     if show_total {
         let total = info.mem_total + info.swap_total;
         let used = mem_used + swap_used;
         let free = info.mem_free + info.swap_free;
-        
+
         println!(
             "Total:{} {} {} {:>12} {:>12} {:>12}",
             format_size(total, unit),
             format_size(used, unit),
             format_size(free, unit),
-            "", "", ""
+            "",
+            "",
+            ""
         );
     }
 }
@@ -197,7 +204,7 @@ fn main() {
     let mut unit = Unit::Kibi;
     let mut show_total = false;
     let mut repeat_seconds: Option<u64> = None;
-    
+
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -244,10 +251,10 @@ fn main() {
         }
         i += 1;
     }
-    
+
     loop {
         display_memory(unit, show_total);
-        
+
         match repeat_seconds {
             Some(seconds) if seconds > 0 => {
                 std::thread::sleep(std::time::Duration::from_secs(seconds));

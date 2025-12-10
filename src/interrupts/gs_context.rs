@@ -20,8 +20,8 @@ pub const GS_SLOT_SAVED_RCX: usize = 7;
 pub const GS_SLOT_SAVED_RFLAGS: usize = 8;
 pub const GS_SLOT_USER_RSP_DEBUG: usize = 9;
 pub const GS_SLOT_SAVED_RAX: usize = 10; // For fork child return value
-// Slots 11-19: User registers saved for fork() - allows child process to inherit parent's register state
-// (These are used by syscall instruction path in syscalls/mod.rs)
+                                         // Slots 11-19: User registers saved for fork() - allows child process to inherit parent's register state
+                                         // (These are used by syscall instruction path in syscalls/mod.rs)
 pub const GS_SLOT_SAVED_RDI: usize = 11;
 pub const GS_SLOT_SAVED_RSI: usize = 12;
 pub const GS_SLOT_SAVED_RDX: usize = 13;
@@ -37,12 +37,12 @@ pub const GS_SLOT_KERNEL_STACK_SNAPSHOT: usize = 21;
 // Slots 22-27: Callee-saved registers from int 0x81 path (syscall_interrupt_handler)
 // These preserve the ORIGINAL register values before syscall wrapper modified them
 // offset 176 = slot 22, 184 = slot 23, etc.
-pub const GS_SLOT_INT81_RBX: usize = 22;  // offset 176
-pub const GS_SLOT_INT81_RBP: usize = 23;  // offset 184
-pub const GS_SLOT_INT81_R12: usize = 24;  // offset 192
-pub const GS_SLOT_INT81_R13: usize = 25;  // offset 200
-pub const GS_SLOT_INT81_R14: usize = 26;  // offset 208
-pub const GS_SLOT_INT81_R15: usize = 27;  // offset 216
+pub const GS_SLOT_INT81_RBX: usize = 22; // offset 176
+pub const GS_SLOT_INT81_RBP: usize = 23; // offset 184
+pub const GS_SLOT_INT81_R12: usize = 24; // offset 192
+pub const GS_SLOT_INT81_R13: usize = 25; // offset 200
+pub const GS_SLOT_INT81_R14: usize = 26; // offset 208
+pub const GS_SLOT_INT81_R15: usize = 27; // offset 216
 
 pub const GUARD_SOURCE_INT_GATE: u64 = 0;
 pub const GUARD_SOURCE_SYSCALL: u64 = 1;
@@ -119,7 +119,12 @@ pub unsafe extern "C" fn restore_user_syscall_context(rip: u64, rsp: u64, rflags
 /// This function writes to the GS_DATA structure which is used by the CPU
 /// for syscall/sysret operations. Incorrect values can cause kernel crashes.
 pub unsafe extern "C" fn restore_user_syscall_context_full(
-    rip: u64, rsp: u64, rflags: u64, r10: u64, r8: u64, r9: u64
+    rip: u64,
+    rsp: u64,
+    rflags: u64,
+    r10: u64,
+    r8: u64,
+    r9: u64,
 ) {
     let gs_ptr = crate::smp::current_gs_data_ptr() as *mut u64;
     gs_ptr.add(GS_SLOT_SAVED_RCX).write(rip);
@@ -129,9 +134,9 @@ pub unsafe extern "C" fn restore_user_syscall_context_full(
     gs_ptr.add(GS_SLOT_KERNEL_STACK_GUARD).write(0);
     gs_ptr.add(GS_SLOT_KERNEL_STACK_SNAPSHOT).write(0);
     // Restore syscall argument registers (slots 4, 5, 6)
-    gs_ptr.add(4).write(r10);  // GS[4] = r10 (syscall arg4)
-    gs_ptr.add(5).write(r8);   // GS[5] = r8 (syscall arg5)
-    gs_ptr.add(6).write(r9);   // GS[6] = r9 (syscall arg6)
+    gs_ptr.add(4).write(r10); // GS[4] = r10 (syscall arg4)
+    gs_ptr.add(5).write(r8); // GS[5] = r8 (syscall arg5)
+    gs_ptr.add(6).write(r9); // GS[6] = r9 (syscall arg6)
 }
 
 /// Called when the kernel stack guard detects a re-entry condition

@@ -551,10 +551,12 @@ impl ElfLoader {
                     ptr::copy_nonoverlapping(segment.as_ptr(), dst, p_filesz);
                 }
                 crate::kinfo!("Copy complete to {:#x}", target_addr);
-                
+
                 // Debug: verify specific offset 0x6c7 if it's within this segment
                 let offset_of_interest = 0x6c7_usize;
-                if offset_of_interest >= p_offset_val && offset_of_interest < p_offset_val + p_filesz {
+                if offset_of_interest >= p_offset_val
+                    && offset_of_interest < p_offset_val + p_filesz
+                {
                     let rel_offset = offset_of_interest - p_offset_val;
                     let debug_ptr = unsafe { dst.add(rel_offset) };
                     crate::kinfo!(

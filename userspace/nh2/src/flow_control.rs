@@ -2,9 +2,11 @@
 //!
 //! Implements the flow control mechanism defined in RFC 7540 Section 5.2.
 
+use crate::constants::{
+    DEFAULT_INITIAL_WINDOW_SIZE, DEFAULT_WINDOW_UPDATE_THRESHOLD, MAX_WINDOW_SIZE,
+};
+use crate::error::{Error, ErrorCode, Result};
 use crate::types::StreamId;
-use crate::error::{Error, Result, ErrorCode};
-use crate::constants::{DEFAULT_INITIAL_WINDOW_SIZE, MAX_WINDOW_SIZE, DEFAULT_WINDOW_UPDATE_THRESHOLD};
 
 /// Flow control manager
 #[derive(Debug)]
@@ -211,10 +213,10 @@ mod tests {
     #[test]
     fn test_flow_control_consume() {
         let mut fc = FlowControl::new();
-        
+
         fc.consume_send(1000).unwrap();
         assert_eq!(fc.connection_send_window(), 65535 - 1000);
-        
+
         fc.consume_recv(2000).unwrap();
         assert_eq!(fc.connection_recv_window(), 65535 - 2000);
     }
@@ -222,7 +224,7 @@ mod tests {
     #[test]
     fn test_flow_control_update() {
         let mut fc = FlowControl::new();
-        
+
         fc.consume_send(10000).unwrap();
         fc.update_send(5000).unwrap();
         assert_eq!(fc.connection_send_window(), 65535 - 10000 + 5000);
@@ -231,11 +233,11 @@ mod tests {
     #[test]
     fn test_window_update_threshold() {
         let mut fc = FlowControl::new();
-        
+
         // Consume less than threshold
         fc.consume_recv(16384).unwrap();
         assert!(fc.should_send_window_update().is_none());
-        
+
         // Consume past threshold
         fc.consume_recv(16385).unwrap();
         assert!(fc.should_send_window_update().is_some());

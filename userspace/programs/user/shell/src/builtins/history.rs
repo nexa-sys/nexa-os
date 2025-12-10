@@ -8,10 +8,12 @@ use std::io::{self, Write};
 
 /// Register history builtins
 pub fn register(registry: &mut BuiltinRegistry) {
-    registry.register("history", BuiltinDesc::new(
-        builtin_history,
-        "显示或操作历史记录列表",
-        "显示带行号的历史记录列表，在每个修改过的条目前加上 `*'。\n\
+    registry.register(
+        "history",
+        BuiltinDesc::new(
+            builtin_history,
+            "显示或操作历史记录列表",
+            "显示带行号的历史记录列表，在每个修改过的条目前加上 `*'。\n\
          参数 N 限制只列出最后 N 个条目。\n\
          \n\
          选项:\n\
@@ -29,14 +31,17 @@ pub fn register(registry: &mut BuiltinRegistry) {
          如果 $HISTFILE 有值则使用它，否则使用 ~/.bash_history。\n\
          \n\
          如果没有遇到错误则返回成功。",
-        "history [-c] [-d 偏移量] [n] 或 history -anrw [文件名] 或 history -ps 参数 [参数 ...]",
-        true,
-    ));
+            "history [-c] [-d 偏移量] [n] 或 history -anrw [文件名] 或 history -ps 参数 [参数 ...]",
+            true,
+        ),
+    );
 
-    registry.register("fc", BuiltinDesc::new(
-        builtin_fc,
-        "显示或执行历史列表中的命令",
-        "fc 用于以交互方式编辑和重新执行来自历史列表的命令。\n\
+    registry.register(
+        "fc",
+        BuiltinDesc::new(
+            builtin_fc,
+            "显示或执行历史列表中的命令",
+            "fc 用于以交互方式编辑和重新执行来自历史列表的命令。\n\
          \n\
          FIRST 和 LAST 可以是数字来指定范围，或者 FIRST 可以是字符串\n\
          表示以该字符串开头的最近命令。\n\
@@ -54,9 +59,10 @@ pub fn register(registry: &mut BuiltinRegistry) {
          以 `cc' 开头的命令，输入 `r' 重新执行上一条命令。\n\
          \n\
          如果历史扩展和执行成功则返回 0，否则返回非零值。",
-        "fc [-e 编辑器名] [-lnr] [起始] [终止] 或 fc -s [模式=替换串] [命令]",
-        true,
-    ));
+            "fc [-e 编辑器名] [-lnr] [起始] [终止] 或 fc -s [模式=替换串] [命令]",
+            true,
+        ),
+    );
 }
 
 /// history builtin - display or manipulate history
@@ -78,8 +84,11 @@ fn builtin_history(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
             "-c" => clear = true,
             "-d" => {
                 if let Some(offset) = iter.next() {
-                    delete_offset = Some(offset.parse().map_err(|_| 
-                        format!("history: {}: 需要数字参数", offset))?);
+                    delete_offset = Some(
+                        offset
+                            .parse()
+                            .map_err(|_| format!("history: {}: 需要数字参数", offset))?,
+                    );
                 } else {
                     return Err("history: -d: 需要选项参数".to_string());
                 }
@@ -119,31 +128,37 @@ fn builtin_history(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
     }
 
     // Handle file operations
-    let histfile = extra_args.first().copied()
+    let histfile = extra_args
+        .first()
+        .copied()
         .or_else(|| state.get_var("HISTFILE"))
         .unwrap_or("~/.shell_history");
     let histfile = state.resolve_path(histfile);
 
     if append_file {
-        return state.append_history_to_file(&histfile)
+        return state
+            .append_history_to_file(&histfile)
             .map(|_| 0)
             .map_err(|e| format!("history: {}", e));
     }
 
     if read_file {
-        return state.read_history_from_file(&histfile)
+        return state
+            .read_history_from_file(&histfile)
             .map(|_| 0)
             .map_err(|e| format!("history: {}", e));
     }
 
     if read_new {
-        return state.read_new_history_from_file(&histfile)
+        return state
+            .read_new_history_from_file(&histfile)
             .map(|_| 0)
             .map_err(|e| format!("history: {}", e));
     }
 
     if write_file {
-        return state.write_history_to_file(&histfile)
+        return state
+            .write_history_to_file(&histfile)
             .map(|_| 0)
             .map_err(|e| format!("history: {}", e));
     }
@@ -212,11 +227,13 @@ fn builtin_fc(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
     // Substitute mode: fc -s [old=new] [command]
     if substitute_mode {
         let (substitutions, cmd_pattern) = parse_fc_substitutions(&range_args);
-        
+
         // Find matching command
         let history = state.get_history();
         let cmd = if let Some(pattern) = cmd_pattern {
-            history.iter().rev()
+            history
+                .iter()
+                .rev()
                 .find(|h| h.starts_with(pattern))
                 .map(|s| s.clone())
         } else {

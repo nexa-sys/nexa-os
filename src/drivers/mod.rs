@@ -19,21 +19,46 @@ pub mod compositor;
 pub mod compositor {
     //! Compositor stub module (feature disabled)
     //! Provides no-op implementations when compositor is disabled.
-    
-    pub struct CompositorStats { pub frames: u64, pub total_time_us: u64 }
+
+    pub struct CompositorStats {
+        pub frames: u64,
+        pub total_time_us: u64,
+    }
     pub struct CompositionRegion;
     pub struct CompositionLayer;
-    #[derive(Clone, Copy)] pub enum BlendMode { Replace, Alpha, Additive }
-    
+    #[derive(Clone, Copy)]
+    pub enum BlendMode {
+        Replace,
+        Alpha,
+        Additive,
+    }
+
     pub fn init() {}
-    pub fn is_initialized() -> bool { false }
-    pub fn worker_count() -> usize { 0 }
-    pub fn stats() -> CompositorStats { CompositorStats { frames: 0, total_time_us: 0 } }
+    pub fn is_initialized() -> bool {
+        false
+    }
+    pub fn worker_count() -> usize {
+        0
+    }
+    pub fn stats() -> CompositorStats {
+        CompositorStats {
+            frames: 0,
+            total_time_us: 0,
+        }
+    }
     pub fn debug_info() {}
     pub fn compose(_layers: &[CompositionLayer], _region: &CompositionRegion) {}
     pub fn fill_rect(_x: u32, _y: u32, _w: u32, _h: u32, _color: u32) {}
     pub fn parallel_fill(_ptr: *mut u8, _len: usize, _value: u8) {}
-    pub fn scroll_up_fast(_dst: *mut u8, _src: *const u8, _copy_len: usize, _clear_ptr: *mut u8, _clear_len: usize, _clear_val: u8) {}
+    pub fn scroll_up_fast(
+        _dst: *mut u8,
+        _src: *const u8,
+        _copy_len: usize,
+        _clear_ptr: *mut u8,
+        _clear_len: usize,
+        _clear_val: u8,
+    ) {
+    }
     pub fn ap_work_entry() {}
 }
 pub mod framebuffer;
@@ -86,7 +111,7 @@ pub use compositor::{
 // Re-export from random
 pub use random::{
     add_entropy, dev_random_read, dev_random_write, dev_urandom_read, entropy_available,
-    get_random_bytes, get_random_bytes_wait, get_random_u32, get_random_u64,
-    init as init_random, is_initialized as random_is_initialized, sys_getrandom,
-    GRND_INSECURE, GRND_NONBLOCK, GRND_RANDOM,
+    get_random_bytes, get_random_bytes_wait, get_random_u32, get_random_u64, init as init_random,
+    is_initialized as random_is_initialized, sys_getrandom, GRND_INSECURE, GRND_NONBLOCK,
+    GRND_RANDOM,
 };

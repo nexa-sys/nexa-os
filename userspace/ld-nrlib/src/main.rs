@@ -401,14 +401,15 @@ unsafe fn is_libc_library(name: *const u8) -> bool {
     if is_same_library_name(name, b"libnrlib.so\0".as_ptr()) {
         return true;
     }
-    
+
     // Check for glibc variants
-    if is_same_library_name(name, b"libc.so\0".as_ptr()) ||
-       is_same_library_name(name, b"libc.so.6\0".as_ptr()) ||
-       starts_with(name, b"libc.so.") {
+    if is_same_library_name(name, b"libc.so\0".as_ptr())
+        || is_same_library_name(name, b"libc.so.6\0".as_ptr())
+        || starts_with(name, b"libc.so.")
+    {
         return true;
     }
-    
+
     // Check for musl variants (ld-musl-*.so.1)
     if starts_with(name, b"ld-musl-") {
         return true;
@@ -416,53 +417,58 @@ unsafe fn is_libc_library(name: *const u8) -> bool {
     if is_same_library_name(name, b"ld-musl-x86_64.so.1\0".as_ptr()) {
         return true;
     }
-    
+
     // Check for libpthread (merged into libc in musl)
-    if is_same_library_name(name, b"libpthread.so.0\0".as_ptr()) ||
-       is_same_library_name(name, b"libpthread.so\0".as_ptr()) ||
-       starts_with(name, b"libpthread.so.") {
+    if is_same_library_name(name, b"libpthread.so.0\0".as_ptr())
+        || is_same_library_name(name, b"libpthread.so\0".as_ptr())
+        || starts_with(name, b"libpthread.so.")
+    {
         return true;
     }
-    
+
     // Check for libdl (merged into libc in musl)
-    if is_same_library_name(name, b"libdl.so.2\0".as_ptr()) ||
-       is_same_library_name(name, b"libdl.so\0".as_ptr()) ||
-       starts_with(name, b"libdl.so.") {
+    if is_same_library_name(name, b"libdl.so.2\0".as_ptr())
+        || is_same_library_name(name, b"libdl.so\0".as_ptr())
+        || starts_with(name, b"libdl.so.")
+    {
         return true;
     }
-    
+
     // Check for librt (merged into libc in musl)
-    if is_same_library_name(name, b"librt.so.1\0".as_ptr()) ||
-       is_same_library_name(name, b"librt.so\0".as_ptr()) ||
-       starts_with(name, b"librt.so.") {
+    if is_same_library_name(name, b"librt.so.1\0".as_ptr())
+        || is_same_library_name(name, b"librt.so\0".as_ptr())
+        || starts_with(name, b"librt.so.")
+    {
         return true;
     }
-    
+
     // Check for libm (provided by libnrlib)
-    if is_same_library_name(name, b"libm.so.6\0".as_ptr()) ||
-       is_same_library_name(name, b"libm.so\0".as_ptr()) ||
-       starts_with(name, b"libm.so.") {
+    if is_same_library_name(name, b"libm.so.6\0".as_ptr())
+        || is_same_library_name(name, b"libm.so\0".as_ptr())
+        || starts_with(name, b"libm.so.")
+    {
         return true;
     }
-    
+
     // Check for libcrypt (NOT libcrypto - that's the crypto library we need)
     // libcrypt.so is typically part of glibc for password hashing
-    if is_same_library_name(name, b"libcrypt.so\0".as_ptr()) ||
-       is_same_library_name(name, b"libcrypt.so.1\0".as_ptr()) ||
-       is_same_library_name(name, b"libcrypt.so.2\0".as_ptr()) {
+    if is_same_library_name(name, b"libcrypt.so\0".as_ptr())
+        || is_same_library_name(name, b"libcrypt.so.1\0".as_ptr())
+        || is_same_library_name(name, b"libcrypt.so.2\0".as_ptr())
+    {
         return true;
     }
-    
+
     // Check for libresolv
     if starts_with(name, b"libresolv.so") {
         return true;
     }
-    
+
     // Check for libutil
     if starts_with(name, b"libutil.so") {
         return true;
     }
-    
+
     false
 }
 
@@ -470,7 +476,7 @@ unsafe fn is_libc_library(name: *const u8) -> bool {
 /// Returns the original name if no mapping exists
 fn map_library_name(name: &[u8]) -> [u8; 64] {
     let mut result = [0u8; 64];
-    
+
     // Default: copy original name
     for (i, &c) in name.iter().enumerate() {
         if i >= 63 || c == 0 {
@@ -478,7 +484,7 @@ fn map_library_name(name: &[u8]) -> [u8; 64] {
         }
         result[i] = c;
     }
-    
+
     result
 }
 
@@ -499,22 +505,22 @@ const LIB_PATH_4: &[u8; 10] = b"/usr/lib\0\0";
 /// Information parsed from auxiliary vector
 #[derive(Clone, Copy)]
 struct AuxInfo {
-    at_phdr: u64,     // Program headers address
-    at_phent: u64,    // Program header entry size
-    at_phnum: u64,    // Number of program headers
-    at_pagesz: u64,   // Page size
-    at_base: u64,     // Interpreter base address
-    at_entry: u64,    // Main executable entry point
-    at_execfn: u64,   // Executable filename
-    at_random: u64,   // Address of random bytes
-    at_secure: u64,   // Secure mode flag
-    at_uid: u64,      // Real UID
-    at_euid: u64,     // Effective UID
-    at_gid: u64,      // Real GID
-    at_egid: u64,     // Effective GID
-    at_hwcap: u64,    // Hardware capabilities
-    at_hwcap2: u64,   // Hardware capabilities 2
-    at_clktck: u64,   // Clock ticks per second
+    at_phdr: u64,         // Program headers address
+    at_phent: u64,        // Program header entry size
+    at_phnum: u64,        // Number of program headers
+    at_pagesz: u64,       // Page size
+    at_base: u64,         // Interpreter base address
+    at_entry: u64,        // Main executable entry point
+    at_execfn: u64,       // Executable filename
+    at_random: u64,       // Address of random bytes
+    at_secure: u64,       // Secure mode flag
+    at_uid: u64,          // Real UID
+    at_euid: u64,         // Effective UID
+    at_gid: u64,          // Real GID
+    at_egid: u64,         // Effective GID
+    at_hwcap: u64,        // Hardware capabilities
+    at_hwcap2: u64,       // Hardware capabilities 2
+    at_clktck: u64,       // Clock ticks per second
     at_sysinfo_ehdr: u64, // vDSO address
 }
 
@@ -552,10 +558,10 @@ struct DynInfo {
     rela: u64,
     relasz: u64,
     relaent: u64,
-    relacount: u64,    // DT_RELACOUNT - count of relative relocations
+    relacount: u64, // DT_RELACOUNT - count of relative relocations
     jmprel: u64,
     pltrelsz: u64,
-    pltrel: u64,       // DT_PLTREL - type of PLT relocations
+    pltrel: u64, // DT_PLTREL - type of PLT relocations
     init: u64,
     fini: u64,
     init_array: u64,
@@ -566,15 +572,15 @@ struct DynInfo {
     preinit_arraysz: u64,
     hash: u64,
     gnu_hash: u64,
-    flags: u64,        // DT_FLAGS
-    flags_1: u64,      // DT_FLAGS_1
+    flags: u64,   // DT_FLAGS
+    flags_1: u64, // DT_FLAGS_1
     // Version information
-    versym: u64,       // DT_VERSYM
-    verneed: u64,      // DT_VERNEED
-    verneednum: u64,   // DT_VERNEEDNUM
+    versym: u64,     // DT_VERSYM
+    verneed: u64,    // DT_VERNEED
+    verneednum: u64, // DT_VERNEEDNUM
     // TLS information
     tls_modid: u64,    // TLS module ID (assigned at runtime)
-    needed: [u64; 16],  // DT_NEEDED offsets into strtab
+    needed: [u64; 16], // DT_NEEDED offsets into strtab
     needed_count: usize,
 }
 
@@ -584,7 +590,7 @@ impl DynInfo {
             strtab: 0,
             symtab: 0,
             strsz: 0,
-            syment: 24,  // sizeof(Elf64_Sym)
+            syment: 24, // sizeof(Elf64_Sym)
             rela: 0,
             relasz: 0,
             relaent: 0,
@@ -679,7 +685,7 @@ pub unsafe extern "C" fn getauxval(type_: u64) -> u64 {
     if !AUXV_INITIALIZED {
         return 0;
     }
-    
+
     match type_ {
         AT_PHDR => AUXV_STORAGE.at_phdr,
         AT_PHENT => AUXV_STORAGE.at_phent,
@@ -775,10 +781,10 @@ unsafe fn register_tls_module(image: u64, filesz: u64, memsz: u64, align: u64) -
     if TLS_STATE.count >= MAX_TLS_MODULES {
         return 0;
     }
-    
+
     let module_id = TLS_STATE.next_id;
     TLS_STATE.next_id += 1;
-    
+
     let idx = TLS_STATE.count;
     TLS_STATE.modules[idx] = TlsModule {
         id: module_id,
@@ -789,7 +795,7 @@ unsafe fn register_tls_module(image: u64, filesz: u64, memsz: u64, align: u64) -
         offset: 0, // Will be calculated during TLS setup
     };
     TLS_STATE.count += 1;
-    
+
     module_id
 }
 
@@ -797,8 +803,8 @@ unsafe fn register_tls_module(image: u64, filesz: u64, memsz: u64, align: u64) -
 /// Used for accessing thread-local variables in dynamically loaded libraries
 #[repr(C)]
 pub struct TlsIndex {
-    ti_module: u64,  // Module ID
-    ti_offset: u64,  // Offset within module
+    ti_module: u64, // Module ID
+    ti_offset: u64, // Offset within module
 }
 
 #[no_mangle]
@@ -806,14 +812,14 @@ pub unsafe extern "C" fn __tls_get_addr(ti: *const TlsIndex) -> *mut u8 {
     if ti.is_null() {
         return core::ptr::null_mut();
     }
-    
+
     let module_id = (*ti).ti_module;
     let offset = (*ti).ti_offset;
-    
+
     // Get thread pointer (FS base on x86_64)
     let tp: u64;
     asm!("mov {}, fs:0", out(reg) tp, options(nostack, preserves_flags, readonly));
-    
+
     // For static TLS (variant II, x86_64), TLS data is below TP
     // Find the module and calculate address
     for i in 0..TLS_STATE.count {
@@ -822,7 +828,7 @@ pub unsafe extern "C" fn __tls_get_addr(ti: *const TlsIndex) -> *mut u8 {
             return (tp as i64 + tls_offset + offset as i64) as *mut u8;
         }
     }
-    
+
     // Module not found
     core::ptr::null_mut()
 }
@@ -874,39 +880,42 @@ unsafe fn load_shared_library(path: *const u8) -> (u64, i64, DynInfo) {
     if fd < 0 {
         return (0, 0, DynInfo::new());
     }
-    
+
     // Read ELF header
     let mut ehdr_buf = [0u8; 64];
-    
+
     let bytes_read = read_bytes(fd as i32, ehdr_buf.as_mut_ptr(), 64);
-    
+
     if bytes_read < 64 {
         close_file(fd as i32);
         return (0, 0, DynInfo::new());
     }
-    
+
     let ehdr = &*(ehdr_buf.as_ptr() as *const Elf64Ehdr);
-    
+
     // Validate ELF magic
-    if ehdr.e_ident[0] != 0x7f || ehdr.e_ident[1] != b'E' || 
-       ehdr.e_ident[2] != b'L' || ehdr.e_ident[3] != b'F' {
+    if ehdr.e_ident[0] != 0x7f
+        || ehdr.e_ident[1] != b'E'
+        || ehdr.e_ident[2] != b'L'
+        || ehdr.e_ident[3] != b'F'
+    {
         close_file(fd as i32);
         return (0, 0, DynInfo::new());
     }
-    
+
     // Must be shared object (ET_DYN = 3)
     if ehdr.e_type != 3 {
         close_file(fd as i32);
         return (0, 0, DynInfo::new());
     }
-    
+
     // Read program headers
     let phdr_size = (ehdr.e_phentsize as usize) * (ehdr.e_phnum as usize);
     if phdr_size > 2048 {
         close_file(fd as i32);
         return (0, 0, DynInfo::new());
     }
-    
+
     lseek(fd as i32, ehdr.e_phoff as i64, 0); // SEEK_SET
     let mut phdr_buf = [0u8; 2048];
     let bytes_read = read_bytes(fd as i32, phdr_buf.as_mut_ptr(), phdr_size);
@@ -914,18 +923,16 @@ unsafe fn load_shared_library(path: *const u8) -> (u64, i64, DynInfo) {
         close_file(fd as i32);
         return (0, 0, DynInfo::new());
     }
-    
-    let phdrs = core::slice::from_raw_parts(
-        phdr_buf.as_ptr() as *const Elf64Phdr,
-        ehdr.e_phnum as usize,
-    );
-    
+
+    let phdrs =
+        core::slice::from_raw_parts(phdr_buf.as_ptr() as *const Elf64Phdr, ehdr.e_phnum as usize);
+
     // Find extent of loadable segments and TLS segment
     let mut load_addr_min: u64 = u64::MAX;
     let mut load_addr_max: u64 = 0;
     let mut dyn_vaddr: u64 = 0;
     let mut tls_phdr: Option<Elf64Phdr> = None;
-    
+
     for phdr in phdrs {
         if phdr.p_type == PT_LOAD {
             let seg_start = page_align_down(phdr.p_vaddr);
@@ -944,44 +951,44 @@ unsafe fn load_shared_library(path: *const u8) -> (u64, i64, DynInfo) {
             tls_phdr = Some(*phdr);
         }
     }
-    
+
     if load_addr_min == u64::MAX {
         close_file(fd as i32);
         return (0, 0, DynInfo::new());
     }
-    
+
     let total_size = load_addr_max - load_addr_min;
-    
+
     // Allocate memory for the library
     // For MAP_ANONYMOUS, fd should be -1 (passed as u64 representation of -1)
     let base_addr = syscall6(
         SYS_MMAP,
-        0,                          // addr
-        total_size,                 // length
+        0,                                  // addr
+        total_size,                         // length
         PROT_READ | PROT_WRITE | PROT_EXEC, // prot
-        MAP_PRIVATE | MAP_ANONYMOUS, // flags
-        (-1i64) as u64,             // fd = -1 for anonymous mapping
-        0,                          // offset
+        MAP_PRIVATE | MAP_ANONYMOUS,        // flags
+        (-1i64) as u64,                     // fd = -1 for anonymous mapping
+        0,                                  // offset
     );
-    
+
     // Check for mmap failure
     if base_addr >= 0xFFFF_FFFF_FFFF_F000 || base_addr == 0 {
         close_file(fd as i32);
         return (0, 0, DynInfo::new());
     }
-    
+
     let load_bias = base_addr as i64 - load_addr_min as i64;
-    
+
     // Load each PT_LOAD segment
     for phdr in phdrs {
         if phdr.p_type != PT_LOAD {
             continue;
         }
-        
+
         if phdr.p_filesz > 0 {
             // Seek to segment in file
             lseek(fd as i32, phdr.p_offset as i64, 0);
-            
+
             // Read segment data
             let dest_addr = (phdr.p_vaddr as i64 + load_bias) as *mut u8;
             let mut total_read: u64 = 0;
@@ -994,7 +1001,7 @@ unsafe fn load_shared_library(path: *const u8) -> (u64, i64, DynInfo) {
                 total_read += read as u64;
             }
         }
-        
+
         // Zero BSS (memsz > filesz)
         if phdr.p_memsz > phdr.p_filesz {
             let bss_start = ((phdr.p_vaddr + phdr.p_filesz) as i64 + load_bias) as *mut u8;
@@ -1002,35 +1009,30 @@ unsafe fn load_shared_library(path: *const u8) -> (u64, i64, DynInfo) {
             memset(bss_start, 0, bss_size);
         }
     }
-    
+
     close_file(fd as i32);
-    
+
     // Parse dynamic section
     let mut dyn_info = DynInfo::new();
     if dyn_vaddr != 0 {
         let dyn_addr = (dyn_vaddr as i64 + load_bias) as u64;
         parse_dynamic_section(dyn_addr, load_bias, &mut dyn_info);
     }
-    
+
     // Register TLS module if PT_TLS segment exists
     if let Some(tls) = tls_phdr {
         let tls_image = (tls.p_vaddr as i64 + load_bias) as u64;
-        let tls_mod_id = register_tls_module(
-            tls_image,
-            tls.p_filesz,
-            tls.p_memsz,
-            tls.p_align,
-        );
+        let tls_mod_id = register_tls_module(tls_image, tls.p_filesz, tls.p_memsz, tls.p_align);
         dyn_info.tls_modid = tls_mod_id;
     }
-    
+
     (base_addr, load_bias, dyn_info)
 }
 
 /// Parse dynamic section and fill DynInfo
 unsafe fn parse_dynamic_section(dyn_addr: u64, load_bias: i64, dyn_info: &mut DynInfo) {
     let mut dyn_ptr = dyn_addr as *const Elf64Dyn;
-    
+
     loop {
         let entry = *dyn_ptr;
         if entry.d_tag == DT_NULL {
@@ -1078,7 +1080,7 @@ unsafe fn parse_dynamic_section(dyn_addr: u64, load_bias: i64, dyn_info: &mut Dy
 /// Search for a library in standard paths
 unsafe fn search_library(name: &[u8]) -> Option<[u8; 256]> {
     let mut path_buf = [0u8; 256];
-    
+
     // Use stack-local array to avoid global pointer relocation issues
     let search_paths: [&[u8]; 4] = [
         LIB_PATH_1.as_slice(),
@@ -1086,13 +1088,13 @@ unsafe fn search_library(name: &[u8]) -> Option<[u8; 256]> {
         LIB_PATH_3.as_slice(),
         LIB_PATH_4.as_slice(),
     ];
-    
+
     let mut path_idx = 0usize;
     while path_idx < 4 {
         let search_path = search_paths[path_idx];
         // Build path: search_path + "/" + name
         let mut pos = 0;
-        
+
         // Copy search path (without null terminator)
         let mut i = 0;
         while i < search_path.len() && search_path[i] != 0 {
@@ -1102,13 +1104,13 @@ unsafe fn search_library(name: &[u8]) -> Option<[u8; 256]> {
             }
             i += 1;
         }
-        
+
         // Add separator
         if pos < 255 {
             path_buf[pos] = b'/';
             pos += 1;
         }
-        
+
         // Copy name
         for &c in name {
             if c == 0 {
@@ -1119,20 +1121,20 @@ unsafe fn search_library(name: &[u8]) -> Option<[u8; 256]> {
                 pos += 1;
             }
         }
-        
+
         // Null terminate
         path_buf[pos] = 0;
-        
+
         // Try to open to check if it exists
         let fd = open_file(path_buf.as_ptr());
         if fd >= 0 {
             close_file(fd as i32);
             return Some(path_buf);
         }
-        
+
         path_idx += 1;
     }
-    
+
     None
 }
 
@@ -1148,15 +1150,15 @@ unsafe fn load_library_recursive(name: &[u8]) -> bool {
             name_buf[i] = name[i];
         }
         name_buf[copy_len] = 0;
-        
+
         if is_libc_library(name_buf.as_ptr()) {
             return true;
         }
     }
-    
+
     // Try mapped name first, then original name
     let mapped_name = map_library_name(name);
-    
+
     let path = if let Some(p) = search_library(&mapped_name) {
         p
     } else if let Some(p) = search_library(name) {
@@ -1164,31 +1166,36 @@ unsafe fn load_library_recursive(name: &[u8]) -> bool {
     } else {
         return false;
     };
-    
+
     // Load the library
     let (lib_base, lib_bias, lib_dyn_info) = load_shared_library(path.as_ptr());
     if lib_base == 0 {
         return false;
     }
-    
+
     // Register in global symbol table
     let lib_idx = GLOBAL_SYMTAB.lib_count;
     if lib_idx >= MAX_LIBS {
         return false;
     }
-    
+
     let lib = &mut GLOBAL_SYMTAB.libs[lib_idx];
     lib.base_addr = lib_base;
     lib.load_bias = lib_bias;
     lib.dyn_info = lib_dyn_info;
     lib.valid = true;
     GLOBAL_SYMTAB.lib_count = lib_idx + 1;
-    
+
     // Process library's RELATIVE relocations first
     if lib_dyn_info.rela != 0 && lib_dyn_info.relasz > 0 {
-        process_rela(lib_dyn_info.rela, lib_dyn_info.relasz, lib_dyn_info.relaent, lib_bias);
+        process_rela(
+            lib_dyn_info.rela,
+            lib_dyn_info.relasz,
+            lib_dyn_info.relaent,
+            lib_bias,
+        );
     }
-    
+
     // Recursively load this library's dependencies
     if lib_dyn_info.needed_count > 0 {
         for i in 0..lib_dyn_info.needed_count {
@@ -1196,12 +1203,12 @@ unsafe fn load_library_recursive(name: &[u8]) -> bool {
             let dep_name_ptr = (lib_dyn_info.strtab + dep_name_offset) as *const u8;
             let dep_name_len = cstr_len(dep_name_ptr);
             let dep_name_slice = core::slice::from_raw_parts(dep_name_ptr, dep_name_len);
-            
+
             // Recursively load dependency
             load_library_recursive(dep_name_slice);
         }
     }
-    
+
     true
 }
 
@@ -1253,16 +1260,20 @@ fn elf_hash(name: &[u8]) -> u32 {
 /// Returns symbol value (with load_bias applied) or 0 if not found
 unsafe fn lookup_symbol_gnu_hash(lib: &LoadedLib, name: &[u8]) -> u64 {
     let dyn_info = &lib.dyn_info;
-    
+
     if dyn_info.gnu_hash == 0 || dyn_info.symtab == 0 || dyn_info.strtab == 0 {
         return 0;
     }
-    
+
     let gnu_hash_addr = dyn_info.gnu_hash;
     let symtab = dyn_info.symtab;
     let strtab = dyn_info.strtab;
-    let syment = if dyn_info.syment == 0 { 24 } else { dyn_info.syment };
-    
+    let syment = if dyn_info.syment == 0 {
+        24
+    } else {
+        dyn_info.syment
+    };
+
     // GNU hash table layout:
     // uint32_t nbuckets
     // uint32_t symoffset
@@ -1271,51 +1282,51 @@ unsafe fn lookup_symbol_gnu_hash(lib: &LoadedLib, name: &[u8]) -> u64 {
     // uint64_t bloom[bloom_size]  (for 64-bit)
     // uint32_t buckets[nbuckets]
     // uint32_t chains[]
-    
+
     let nbuckets = *(gnu_hash_addr as *const u32);
     let symoffset = *((gnu_hash_addr + 4) as *const u32);
     let bloom_size = *((gnu_hash_addr + 8) as *const u32);
     let bloom_shift = *((gnu_hash_addr + 12) as *const u32);
-    
+
     if nbuckets == 0 {
         return 0;
     }
-    
+
     let h1 = gnu_hash(name);
     let h2 = h1 >> bloom_shift;
-    
+
     // Check bloom filter first (64-bit)
     let bloom = (gnu_hash_addr + 16) as *const u64;
     let bloom_word = *bloom.add((h1 as usize / 64) % bloom_size as usize);
     let mask = (1u64 << (h1 % 64)) | (1u64 << (h2 % 64));
-    
+
     if (bloom_word & mask) != mask {
         // Symbol definitely not present
         return 0;
     }
-    
+
     // Calculate bucket and chain offsets
     let buckets = (gnu_hash_addr + 16 + (bloom_size as u64 * 8)) as *const u32;
     let chains = buckets.add(nbuckets as usize);
-    
+
     let bucket = h1 % nbuckets;
     let mut sym_idx = *buckets.add(bucket as usize);
-    
+
     if sym_idx == 0 {
         return 0;
     }
-    
+
     // Search the chain
     loop {
         let chain_idx = sym_idx - symoffset;
         let chain_val = *chains.add(chain_idx as usize);
-        
+
         // Check if hash matches (ignoring LSB which marks end of chain)
         if (chain_val | 1) == (h1 | 1) {
             // Hash matches, verify name
             let sym = &*((symtab + (sym_idx as u64) * syment) as *const Elf64Sym);
             let sym_name_ptr = (strtab + sym.st_name as u64) as *const u8;
-            
+
             // Compare names
             let mut j = 0;
             let mut match_found = true;
@@ -1327,7 +1338,7 @@ unsafe fn lookup_symbol_gnu_hash(lib: &LoadedLib, name: &[u8]) -> u64 {
                 }
                 j += 1;
             }
-            
+
             if match_found && *sym_name_ptr.add(j) == 0 {
                 // Found it!
                 if sym.st_value != 0 || sym.st_shndx != 0 {
@@ -1335,54 +1346,58 @@ unsafe fn lookup_symbol_gnu_hash(lib: &LoadedLib, name: &[u8]) -> u64 {
                 }
             }
         }
-        
+
         // Check end of chain (LSB set)
         if (chain_val & 1) != 0 {
             break;
         }
-        
+
         sym_idx += 1;
     }
-    
+
     0
 }
 
 /// Lookup symbol using ELF SYSV hash table
 unsafe fn lookup_symbol_elf_hash(lib: &LoadedLib, name: &[u8]) -> u64 {
     let dyn_info = &lib.dyn_info;
-    
+
     if dyn_info.hash == 0 || dyn_info.symtab == 0 || dyn_info.strtab == 0 {
         return 0;
     }
-    
+
     let hash_addr = dyn_info.hash;
     let symtab = dyn_info.symtab;
     let strtab = dyn_info.strtab;
-    let syment = if dyn_info.syment == 0 { 24 } else { dyn_info.syment };
-    
+    let syment = if dyn_info.syment == 0 {
+        24
+    } else {
+        dyn_info.syment
+    };
+
     // ELF hash table layout:
     // uint32_t nbucket
     // uint32_t nchain
     // uint32_t bucket[nbucket]
     // uint32_t chain[nchain]
-    
+
     let nbucket = *(hash_addr as *const u32);
     let _nchain = *((hash_addr + 4) as *const u32);
-    
+
     if nbucket == 0 {
         return 0;
     }
-    
+
     let h = elf_hash(name);
     let bucket = (hash_addr + 8) as *const u32;
     let chain = bucket.add(nbucket as usize);
-    
+
     let mut sym_idx = *bucket.add((h % nbucket) as usize);
-    
+
     while sym_idx != 0 {
         let sym = &*((symtab + (sym_idx as u64) * syment) as *const Elf64Sym);
         let sym_name_ptr = (strtab + sym.st_name as u64) as *const u8;
-        
+
         // Compare names
         let mut j = 0;
         let mut match_found = true;
@@ -1394,16 +1409,16 @@ unsafe fn lookup_symbol_elf_hash(lib: &LoadedLib, name: &[u8]) -> u64 {
             }
             j += 1;
         }
-        
+
         if match_found && *sym_name_ptr.add(j) == 0 {
             if sym.st_value != 0 || sym.st_shndx != 0 {
                 return (sym.st_value as i64 + lib.load_bias) as u64;
             }
         }
-        
+
         sym_idx = *chain.add(sym_idx as usize);
     }
-    
+
     0
 }
 
@@ -1414,12 +1429,12 @@ unsafe fn lookup_symbol_in_lib(lib: &LoadedLib, name: &[u8]) -> u64 {
     if !lib.valid {
         return 0;
     }
-    
+
     let dyn_info = &lib.dyn_info;
     if dyn_info.symtab == 0 || dyn_info.strtab == 0 {
         return 0;
     }
-    
+
     // Try GNU hash first (fastest)
     if dyn_info.gnu_hash != 0 {
         let result = lookup_symbol_gnu_hash(lib, name);
@@ -1427,7 +1442,7 @@ unsafe fn lookup_symbol_in_lib(lib: &LoadedLib, name: &[u8]) -> u64 {
             return result;
         }
     }
-    
+
     // Try ELF SYSV hash
     if dyn_info.hash != 0 {
         let result = lookup_symbol_elf_hash(lib, name);
@@ -1435,23 +1450,27 @@ unsafe fn lookup_symbol_in_lib(lib: &LoadedLib, name: &[u8]) -> u64 {
             return result;
         }
     }
-    
+
     // Fallback to linear search
     let sym_count = get_symbol_count(dyn_info);
-    let syment = if dyn_info.syment == 0 { 24 } else { dyn_info.syment };
-    
+    let syment = if dyn_info.syment == 0 {
+        24
+    } else {
+        dyn_info.syment
+    };
+
     // Linear search through symbol table
     for i in 0..sym_count {
         let sym = &*((dyn_info.symtab + (i as u64) * syment) as *const Elf64Sym);
-        
+
         // Skip undefined symbols and symbols with st_name == 0
         if sym.st_name == 0 || sym.st_shndx == 0 {
             continue;
         }
-        
+
         // Get symbol name from string table
         let sym_name_ptr = (dyn_info.strtab + sym.st_name as u64) as *const u8;
-        
+
         // Compare names - name is a slice without null terminator
         let mut j = 0;
         let mut match_found = true;
@@ -1464,7 +1483,7 @@ unsafe fn lookup_symbol_in_lib(lib: &LoadedLib, name: &[u8]) -> u64 {
             }
             j += 1;
         }
-        
+
         // Check that symbol name ends at the same position (sym_name[j] should be 0)
         if match_found {
             let c = *sym_name_ptr.add(j);
@@ -1473,13 +1492,13 @@ unsafe fn lookup_symbol_in_lib(lib: &LoadedLib, name: &[u8]) -> u64 {
                 match_found = false;
             }
         }
-        
+
         if match_found && sym.st_value != 0 {
             // Found it!
             return (sym.st_value as i64 + lib.load_bias) as u64;
         }
     }
-    
+
     0
 }
 
@@ -1500,14 +1519,18 @@ unsafe fn get_symbol_name(dyn_info: &DynInfo, sym_idx: u32) -> *const u8 {
     if dyn_info.symtab == 0 || dyn_info.strtab == 0 {
         return core::ptr::null();
     }
-    
-    let syment = if dyn_info.syment == 0 { 24 } else { dyn_info.syment };
+
+    let syment = if dyn_info.syment == 0 {
+        24
+    } else {
+        dyn_info.syment
+    };
     let sym = &*((dyn_info.symtab + (sym_idx as u64) * syment) as *const Elf64Sym);
-    
+
     if sym.st_name == 0 {
         return core::ptr::null();
     }
-    
+
     (dyn_info.strtab + sym.st_name as u64) as *const u8
 }
 
@@ -1538,9 +1561,7 @@ pub unsafe extern "C" fn _start() -> ! {
 #[unsafe(naked)]
 #[no_mangle]
 pub unsafe extern "C" fn _start_c() -> ! {
-    naked_asm!(
-        "jmp _start",
-    );
+    naked_asm!("jmp _start",);
 }
 
 /// Main dynamic linker entry point
@@ -1549,19 +1570,19 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
     // Parse the stack to get argc, argv, envp, auxv
     let argc = *stack_ptr as usize;
     let argv = stack_ptr.add(1) as *const *const u8;
-    
+
     // Skip past argv (argc+1 entries including NULL terminator)
     let mut ptr = argv.add(argc + 1) as *const *const u8;
-    
+
     // Skip past envp (until NULL)
     while !(*ptr).is_null() {
         ptr = ptr.add(1);
     }
     ptr = ptr.add(1); // Skip NULL terminator
-    
+
     // Now ptr points to auxv
     let auxv = ptr as *const AuxEntry;
-    
+
     // Parse auxiliary vector
     let mut aux_info = AuxInfo::new();
     let mut aux_ptr = auxv;
@@ -1592,7 +1613,7 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
         }
         aux_ptr = aux_ptr.add(1);
     }
-    
+
     // Store auxv globally for getauxval support
     store_auxv(&aux_info);
 
@@ -1606,12 +1627,12 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
     let mut dyn_addr: u64 = 0;
     let mut load_bias: i64 = 0;
     let mut first_load_vaddr: u64 = u64::MAX;
-    
+
     let phdrs = core::slice::from_raw_parts(
         aux_info.at_phdr as *const Elf64Phdr,
         aux_info.at_phnum as usize,
     );
-    
+
     // Calculate load bias from first PT_LOAD segment
     for phdr in phdrs {
         if phdr.p_type == PT_LOAD && phdr.p_vaddr < first_load_vaddr {
@@ -1639,10 +1660,10 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
     let mut main_dyn_info = DynInfo::new();
     if dyn_addr != 0 {
         dyn_addr = (dyn_addr as i64 + load_bias) as u64;
-        
+
         // Parse dynamic section (including DT_NEEDED)
         parse_dynamic_section(dyn_addr, load_bias, &mut main_dyn_info);
-        
+
         // Store main executable info in global symbol table (index 0)
         let main_lib = &mut GLOBAL_SYMTAB.libs[0];
         main_lib.base_addr = (first_load_vaddr as i64 + load_bias) as u64;
@@ -1650,15 +1671,15 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
         main_lib.dyn_info = main_dyn_info;
         main_lib.valid = true;
         GLOBAL_SYMTAB.lib_count = 1;
-        
+
         // ================================================================
         // Step 1: Load libnrlib.so first (always needed)
         // ================================================================
-        
+
         // Try to load libnrlib.so
         let libnrlib_path = b"/lib64/libnrlib.so\0";
         let (lib_base, lib_bias, lib_dyn_info) = load_shared_library(libnrlib_path.as_ptr());
-        
+
         if lib_base != 0 {
             // Register libnrlib.so in global symbol table
             let lib_idx = GLOBAL_SYMTAB.lib_count;
@@ -1669,18 +1690,23 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
                 lib.dyn_info = lib_dyn_info;
                 lib.valid = true;
                 GLOBAL_SYMTAB.lib_count = lib_idx + 1;
-                
+
                 // Process libnrlib.so's RELATIVE relocations first
                 if lib_dyn_info.rela != 0 && lib_dyn_info.relasz > 0 {
-                    process_rela(lib_dyn_info.rela, lib_dyn_info.relasz, lib_dyn_info.relaent, lib_bias);
+                    process_rela(
+                        lib_dyn_info.rela,
+                        lib_dyn_info.relasz,
+                        lib_dyn_info.relaent,
+                        lib_bias,
+                    );
                 }
-                
+
                 // Call libnrlib.so init functions
                 if lib_dyn_info.init != 0 {
                     let init_fn: extern "C" fn() = core::mem::transmute(lib_dyn_info.init);
                     init_fn();
                 }
-                
+
                 if lib_dyn_info.init_array != 0 && lib_dyn_info.init_arraysz > 0 {
                     let count = lib_dyn_info.init_arraysz / 8;
                     let array = lib_dyn_info.init_array as *const u64;
@@ -1694,7 +1720,7 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
                 }
             }
         }
-        
+
         // ================================================================
         // Step 2: Load other DT_NEEDED libraries (recursively loads dependencies)
         // ================================================================
@@ -1702,35 +1728,47 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
             for i in 0..main_dyn_info.needed_count {
                 let name_offset = main_dyn_info.needed[i];
                 let name_ptr = (main_dyn_info.strtab + name_offset) as *const u8;
-                
+
                 // Compute length using cstr_len
                 let name_len = cstr_len(name_ptr);
-                
+
                 // Skip libraries that map to libnrlib.so (musl-compatible mappings)
                 if is_libc_library(name_ptr) {
                     continue;
                 }
-                
+
                 // Load library and its dependencies recursively
                 let name_slice = core::slice::from_raw_parts(name_ptr, name_len);
                 load_library_recursive(name_slice);
             }
         }
-        
+
         // ================================================================
         // Step 3: Now process main executable's relocations with symbol lookup
         // ================================================================
-        
+
         // Process RELA relocations with full symbol lookup
         if main_dyn_info.rela != 0 && main_dyn_info.relasz > 0 {
-            process_rela_with_symtab(main_dyn_info.rela, main_dyn_info.relasz, main_dyn_info.relaent, load_bias, &main_dyn_info);
+            process_rela_with_symtab(
+                main_dyn_info.rela,
+                main_dyn_info.relasz,
+                main_dyn_info.relaent,
+                load_bias,
+                &main_dyn_info,
+            );
         }
-        
+
         // Process PLT/JMPREL relocations with full symbol lookup
         if main_dyn_info.jmprel != 0 && main_dyn_info.pltrelsz > 0 {
-            process_rela_with_symtab(main_dyn_info.jmprel, main_dyn_info.pltrelsz, 24, load_bias, &main_dyn_info);
+            process_rela_with_symtab(
+                main_dyn_info.jmprel,
+                main_dyn_info.pltrelsz,
+                24,
+                load_bias,
+                &main_dyn_info,
+            );
         }
-        
+
         // ================================================================
         // Step 4: Process library relocations that need main executable symbols
         // ================================================================
@@ -1739,15 +1777,27 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
             if !lib.valid {
                 continue;
             }
-            
+
             // Process RELA relocations (includes GLOB_DAT) with symbol lookup
             if lib.dyn_info.rela != 0 && lib.dyn_info.relasz > 0 {
-                process_rela_with_symtab(lib.dyn_info.rela, lib.dyn_info.relasz, lib.dyn_info.relaent, lib.load_bias, &lib.dyn_info);
+                process_rela_with_symtab(
+                    lib.dyn_info.rela,
+                    lib.dyn_info.relasz,
+                    lib.dyn_info.relaent,
+                    lib.load_bias,
+                    &lib.dyn_info,
+                );
             }
-            
+
             // Process PLT/JMPREL relocations
             if lib.dyn_info.jmprel != 0 && lib.dyn_info.pltrelsz > 0 {
-                process_rela_with_symtab(lib.dyn_info.jmprel, lib.dyn_info.pltrelsz, 24, lib.load_bias, &lib.dyn_info);
+                process_rela_with_symtab(
+                    lib.dyn_info.jmprel,
+                    lib.dyn_info.pltrelsz,
+                    24,
+                    lib.load_bias,
+                    &lib.dyn_info,
+                );
             }
         }
 
@@ -1790,16 +1840,16 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
 
     // Transfer control to the main executable
     let mut entry = aux_info.at_entry;
-    
+
     // For PIE executables, AT_ENTRY might be 0 (relative entry point)
     // In this case, we need to read e_entry from ELF header and apply load_bias
     if entry == 0 {
         // The ELF header is at the start of the first PT_LOAD segment
         let elf_header_addr = (first_load_vaddr as i64 + load_bias) as u64;
-        
+
         // Read e_entry from offset 24 in ELF header
         let e_entry = *((elf_header_addr + 24) as *const u64);
-        
+
         if e_entry != 0 {
             // Apply load_bias to get actual entry point
             entry = (e_entry as i64 + load_bias) as u64;
@@ -1812,7 +1862,7 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
                     entry = start_addr;
                 }
             }
-            
+
             // If not found, search in loaded libraries (global symbol table)
             if entry == 0 {
                 // Try _start from any loaded library (typically libnrlib.so)
@@ -1824,14 +1874,15 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
                     let get_start_fn = global_symbol_lookup(b"__nexa_get_start_addr");
                     if get_start_fn != 0 {
                         // Call the function to get _start address
-                        let get_start: extern "C" fn() -> usize = core::mem::transmute(get_start_fn);
+                        let get_start: extern "C" fn() -> usize =
+                            core::mem::transmute(get_start_fn);
                         let start_addr = get_start() as u64;
                         if start_addr != 0 {
                             entry = start_addr;
                         }
                     }
                 }
-                
+
                 // Try __nexa_crt_start (NexaOS nrlib entry point) as fallback
                 if entry == 0 {
                     let crt_addr = global_symbol_lookup(b"__nexa_crt_start");
@@ -1853,7 +1904,7 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
             }
         }
     }
-    
+
     if entry == 0 {
         print_str("[ld-nrlib] ERROR: No entry point\n");
         exit(127);
@@ -1871,7 +1922,7 @@ unsafe fn find_symbol_by_name(dyn_addr: u64, load_bias: i64, name: &[u8]) -> u64
     let mut symtab: u64 = 0;
     let mut hash: u64 = 0;
     let mut gnu_hash: u64 = 0;
-    
+
     // Parse dynamic section to find STRTAB, SYMTAB, and HASH/GNU_HASH
     let mut dyn_ptr = dyn_addr as *const Elf64Dyn;
     loop {
@@ -1888,11 +1939,11 @@ unsafe fn find_symbol_by_name(dyn_addr: u64, load_bias: i64, name: &[u8]) -> u64
         }
         dyn_ptr = dyn_ptr.add(1);
     }
-    
+
     if symtab == 0 || strtab == 0 {
         return 0;
     }
-    
+
     // Use DT_HASH to determine symbol count if available
     let sym_count = if hash != 0 {
         // ELF hash table: nchain is at offset 4 (u32)
@@ -1903,17 +1954,17 @@ unsafe fn find_symbol_by_name(dyn_addr: u64, load_bias: i64, name: &[u8]) -> u64
     } else {
         256 // Fallback
     };
-    
+
     // Linear search through symbol table
     for i in 0..sym_count {
         let sym = &*((symtab + i as u64 * 24) as *const Elf64Sym);
         if sym.st_name == 0 {
             continue;
         }
-        
+
         // Get symbol name from string table
         let sym_name_ptr = (strtab + sym.st_name as u64) as *const u8;
-        
+
         // Compare names (name is null-terminated)
         let mut j = 0;
         let mut match_found = true;
@@ -1928,7 +1979,7 @@ unsafe fn find_symbol_by_name(dyn_addr: u64, load_bias: i64, name: &[u8]) -> u64
             }
             j += 1;
         }
-        
+
         if match_found && j == name.len() - 1 {
             // Found it! Return address with load_bias
             if sym.st_value != 0 {
@@ -1936,7 +1987,7 @@ unsafe fn find_symbol_by_name(dyn_addr: u64, load_bias: i64, name: &[u8]) -> u64
             }
         }
     }
-    
+
     0
 }
 
@@ -1947,27 +1998,33 @@ unsafe fn call_main_directly(main_addr: u64, stack_ptr: *const u64) -> ! {
     // Parse argc and argv from stack
     let argc = *stack_ptr as i32;
     let argv = stack_ptr.add(1) as *const *const u8;
-    
+
     // Call main with C calling convention
     let main_fn: extern "C" fn(i32, *const *const u8) -> i32 = core::mem::transmute(main_addr);
     let ret = main_fn(argc, argv);
-    
+
     // Exit with main's return value
     exit(ret);
 }
 
 /// Process RELA relocations with symbol lookup
-unsafe fn process_rela_with_symtab(rela_addr: u64, relasz: u64, relaent: u64, load_bias: i64, dyn_info: &DynInfo) {
+unsafe fn process_rela_with_symtab(
+    rela_addr: u64,
+    relasz: u64,
+    relaent: u64,
+    load_bias: i64,
+    dyn_info: &DynInfo,
+) {
     let entry_size = if relaent == 0 { 24 } else { relaent };
     let count = relasz / entry_size;
-    
+
     for i in 0..count {
         let rela = &*((rela_addr + i * entry_size) as *const Elf64Rela);
         let rel_type = (rela.r_info & 0xffffffff) as u32;
         let sym_idx = (rela.r_info >> 32) as u32;
-        
+
         let target = (rela.r_offset as i64 + load_bias) as *mut u64;
-        
+
         match rel_type {
             R_X86_64_RELATIVE => {
                 // R_X86_64_RELATIVE: *target = load_bias + addend
@@ -2024,8 +2081,13 @@ unsafe fn process_rela_with_symtab(rela_addr: u64, relasz: u64, relaent: u64, lo
                         let sym_addr = global_symbol_lookup_cstr(sym_name);
                         if sym_addr != 0 {
                             // Get symbol size from symtab
-                            let syment = if dyn_info.syment == 0 { 24 } else { dyn_info.syment };
-                            let sym = &*((dyn_info.symtab + (sym_idx as u64) * syment) as *const Elf64Sym);
+                            let syment = if dyn_info.syment == 0 {
+                                24
+                            } else {
+                                dyn_info.syment
+                            };
+                            let sym = &*((dyn_info.symtab + (sym_idx as u64) * syment)
+                                as *const Elf64Sym);
                             let size = sym.st_size as usize;
                             if size > 0 {
                                 memcpy(target as *mut u8, sym_addr as *const u8, size);
@@ -2060,7 +2122,11 @@ unsafe fn process_rela_with_symtab(rela_addr: u64, relasz: u64, relaent: u64, lo
             R_X86_64_DTPOFF64 => {
                 // R_X86_64_DTPOFF64: TLS offset within module
                 if sym_idx != 0 {
-                    let syment = if dyn_info.syment == 0 { 24 } else { dyn_info.syment };
+                    let syment = if dyn_info.syment == 0 {
+                        24
+                    } else {
+                        dyn_info.syment
+                    };
                     let sym = &*((dyn_info.symtab + (sym_idx as u64) * syment) as *const Elf64Sym);
                     *target = (sym.st_value as i64 + rela.r_addend) as u64;
                 } else {
@@ -2071,7 +2137,11 @@ unsafe fn process_rela_with_symtab(rela_addr: u64, relasz: u64, relaent: u64, lo
                 // R_X86_64_TPOFF64: TLS offset from thread pointer
                 // For x86_64 variant II TLS model, offset is negative from TP
                 if sym_idx != 0 {
-                    let syment = if dyn_info.syment == 0 { 24 } else { dyn_info.syment };
+                    let syment = if dyn_info.syment == 0 {
+                        24
+                    } else {
+                        dyn_info.syment
+                    };
                     let sym = &*((dyn_info.symtab + (sym_idx as u64) * syment) as *const Elf64Sym);
                     // Static TLS offset - symbol value is offset within TLS block
                     *target = (sym.st_value as i64 + rela.r_addend) as u64;
@@ -2082,7 +2152,11 @@ unsafe fn process_rela_with_symtab(rela_addr: u64, relasz: u64, relaent: u64, lo
             R_X86_64_TPOFF32 => {
                 // R_X86_64_TPOFF32: 32-bit TLS offset from thread pointer
                 if sym_idx != 0 {
-                    let syment = if dyn_info.syment == 0 { 24 } else { dyn_info.syment };
+                    let syment = if dyn_info.syment == 0 {
+                        24
+                    } else {
+                        dyn_info.syment
+                    };
                     let sym = &*((dyn_info.symtab + (sym_idx as u64) * syment) as *const Elf64Sym);
                     let val = (sym.st_value as i64 + rela.r_addend) as i32;
                     *(target as *mut i32) = val;
@@ -2136,7 +2210,7 @@ unsafe fn global_symbol_lookup_cstr(name: *const u8) -> u64 {
         len += 1;
         p = p.add(1);
     }
-    
+
     // Create slice including null terminator
     let name_slice = core::slice::from_raw_parts(name, len);
     global_symbol_lookup(name_slice)
@@ -2146,14 +2220,14 @@ unsafe fn global_symbol_lookup_cstr(name: *const u8) -> u64 {
 unsafe fn process_rela(rela_addr: u64, relasz: u64, relaent: u64, load_bias: i64) {
     let entry_size = if relaent == 0 { 24 } else { relaent };
     let count = relasz / entry_size;
-    
+
     for i in 0..count {
         let rela = &*((rela_addr + i * entry_size) as *const Elf64Rela);
         let rel_type = (rela.r_info & 0xffffffff) as u32;
         let _sym_idx = (rela.r_info >> 32) as u32;
-        
+
         let target = (rela.r_offset as i64 + load_bias) as *mut u64;
-        
+
         match rel_type {
             R_X86_64_RELATIVE => {
                 // R_X86_64_RELATIVE: *target = load_bias + addend
@@ -2239,7 +2313,7 @@ pub static __dso_handle: usize = 0;
 
 /// __libc_start_main - glibc/musl entry point
 /// This is called by _start in glibc-compiled programs
-/// 
+///
 /// Arguments:
 /// - main: pointer to main function
 /// - argc: argument count  
@@ -2260,14 +2334,14 @@ pub unsafe extern "C" fn __libc_start_main(
 ) -> i32 {
     let _ = stack_end; // unused
     let _ = rtld_fini; // unused - we handle fini ourselves
-    
+
     // Set up program name
     if argc > 0 && !argv.is_null() {
         let arg0 = *argv;
         if !arg0.is_null() {
             __progname_full = arg0;
             program_invocation_name = arg0 as *mut u8;
-            
+
             // Find short name (after last '/')
             let mut short_name = arg0;
             let mut p = arg0;
@@ -2281,23 +2355,23 @@ pub unsafe extern "C" fn __libc_start_main(
             program_invocation_short_name = short_name as *mut u8;
         }
     }
-    
+
     // Call init function if provided
     if let Some(init_fn) = init {
         init_fn();
     }
-    
+
     // Calculate envp (after argv + NULL terminator)
     let envp = argv.add(argc as usize + 1);
-    
+
     // Call main
     let ret = main(argc, argv, envp);
-    
+
     // Call fini function if provided
     if let Some(fini_fn) = fini {
         fini_fn();
     }
-    
+
     // Exit with return value
     exit(ret)
 }
@@ -2390,14 +2464,14 @@ pub unsafe extern "C" fn ___errno() -> *mut i32 {
 /// dl_iterate_phdr callback info structure
 #[repr(C)]
 pub struct DlPhdrInfo {
-    pub dlpi_addr: u64,       // Base address of object
-    pub dlpi_name: *const u8, // Null-terminated name
+    pub dlpi_addr: u64,              // Base address of object
+    pub dlpi_name: *const u8,        // Null-terminated name
     pub dlpi_phdr: *const Elf64Phdr, // Pointer to program headers
-    pub dlpi_phnum: u16,      // Number of program headers
+    pub dlpi_phnum: u16,             // Number of program headers
     // Additional fields for newer versions
-    pub dlpi_adds: u64,       // Number of loads
-    pub dlpi_subs: u64,       // Number of unloads
-    pub dlpi_tls_modid: usize, // TLS module ID
+    pub dlpi_adds: u64,         // Number of loads
+    pub dlpi_subs: u64,         // Number of unloads
+    pub dlpi_tls_modid: usize,  // TLS module ID
     pub dlpi_tls_data: *mut u8, // TLS data address
 }
 
@@ -2414,12 +2488,16 @@ pub unsafe extern "C" fn dl_iterate_phdr(
         if !lib.valid {
             continue;
         }
-        
+
         // We don't store PHDR info, so we skip this for now
         // A full implementation would store and provide PHDR info
         let mut info = DlPhdrInfo {
             dlpi_addr: lib.base_addr,
-            dlpi_name: if i == 0 { b"\0".as_ptr() } else { b"lib\0".as_ptr() },
+            dlpi_name: if i == 0 {
+                b"\0".as_ptr()
+            } else {
+                b"lib\0".as_ptr()
+            },
             dlpi_phdr: core::ptr::null(),
             dlpi_phnum: 0,
             dlpi_adds: GLOBAL_SYMTAB.lib_count as u64,
@@ -2427,7 +2505,7 @@ pub unsafe extern "C" fn dl_iterate_phdr(
             dlpi_tls_modid: lib.dyn_info.tls_modid as usize,
             dlpi_tls_data: core::ptr::null_mut(),
         };
-        
+
         let ret = callback(&mut info, core::mem::size_of::<DlPhdrInfo>(), data);
         if ret != 0 {
             return ret;
@@ -2442,11 +2520,11 @@ pub unsafe extern "C" fn dlsym(_handle: *mut u8, name: *const u8) -> *mut u8 {
     if name.is_null() {
         return core::ptr::null_mut();
     }
-    
+
     // Convert name to slice
     let name_len = cstr_len(name);
     let name_slice = core::slice::from_raw_parts(name, name_len);
-    
+
     // Look up in global symbol table
     let addr = global_symbol_lookup(name_slice);
     addr as *mut u8

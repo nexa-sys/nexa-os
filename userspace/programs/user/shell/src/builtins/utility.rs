@@ -8,10 +8,12 @@ use std::io::{self, Write};
 
 /// Register utility builtins
 pub fn register(registry: &mut BuiltinRegistry) {
-    registry.register("echo", BuiltinDesc::new(
-        builtin_echo,
-        "输出参数",
-        "输出 ARG，参数之间以单个空格分隔，并以换行符结尾。\n\
+    registry.register(
+        "echo",
+        BuiltinDesc::new(
+            builtin_echo,
+            "输出参数",
+            "输出 ARG，参数之间以单个空格分隔，并以换行符结尾。\n\
          \n\
          选项:\n\
            -n    不输出尾随换行符\n\
@@ -33,14 +35,17 @@ pub fn register(registry: &mut BuiltinRegistry) {
            \\\\xHH   十六进制表示的 ASCII 字符（最多两位十六进制数字）\n\
          \n\
          除非给出无效选项，否则返回成功。",
-        "echo [-neE] [参数 ...]",
-        true,
-    ));
+            "echo [-neE] [参数 ...]",
+            true,
+        ),
+    );
 
-    registry.register("printf", BuiltinDesc::new(
-        builtin_printf,
-        "格式化并打印数据",
-        "根据 FORMAT 格式化并打印 ARGUMENTS。\n\
+    registry.register(
+        "printf",
+        BuiltinDesc::new(
+            builtin_printf,
+            "格式化并打印数据",
+            "根据 FORMAT 格式化并打印 ARGUMENTS。\n\
          \n\
          选项:\n\
            -v var    将输出放入 shell 变量 VAR 而非输出到标准输出\n\
@@ -59,14 +64,17 @@ pub fn register(registry: &mut BuiltinRegistry) {
          需要的 ARGUMENTS 少，则多余的格式说明符表现得就像提供了零值或空字符串。\n\
          \n\
          如果成功则返回 0，否则返回非零值。",
-        "printf [-v var] 格式 [参数]",
-        true,
-    ));
+            "printf [-v var] 格式 [参数]",
+            true,
+        ),
+    );
 
-    registry.register("source", BuiltinDesc::new(
-        builtin_source,
-        "在当前 shell 中执行脚本",
-        "从 FILENAME 读取并执行命令在当前 shell 中。\n\
+    registry.register(
+        "source",
+        BuiltinDesc::new(
+            builtin_source,
+            "在当前 shell 中执行脚本",
+            "从 FILENAME 读取并执行命令在当前 shell 中。\n\
          \n\
          $PATH 中的条目用于查找包含 FILENAME 的目录。\n\
          如果向 `source' 提供任何 ARGUMENTS，它们会在执行 FILENAME 时\n\
@@ -74,33 +82,42 @@ pub fn register(registry: &mut BuiltinRegistry) {
          \n\
          如果 FILENAME 被成功执行则返回 0，否则在找不到\n\
          FILENAME 或无法读取它时返回非零值。",
-        "source 文件名 [参数]",
-        true,
-    ));
+            "source 文件名 [参数]",
+            true,
+        ),
+    );
 
-    registry.register(".", BuiltinDesc::new(
-        builtin_source,
-        "在当前 shell 中执行脚本",
-        "从 FILENAME 读取并执行命令在当前 shell 中。\n\
+    registry.register(
+        ".",
+        BuiltinDesc::new(
+            builtin_source,
+            "在当前 shell 中执行脚本",
+            "从 FILENAME 读取并执行命令在当前 shell 中。\n\
          这是 `source' 命令的简写形式。",
-        ". 文件名 [参数]",
-        true,
-    ));
+            ". 文件名 [参数]",
+            true,
+        ),
+    );
 
-    registry.register("eval", BuiltinDesc::new(
-        builtin_eval,
-        "将参数作为 shell 命令执行",
-        "将 ARG 连接为单个字符串，以此作为 shell 的输入，并执行得到的命令。\n\
+    registry.register(
+        "eval",
+        BuiltinDesc::new(
+            builtin_eval,
+            "将参数作为 shell 命令执行",
+            "将 ARG 连接为单个字符串，以此作为 shell 的输入，并执行得到的命令。\n\
          \n\
          返回结果命令的退出状态，如果没有命令则返回成功。",
-        "eval [参数 ...]",
-        true,
-    ));
+            "eval [参数 ...]",
+            true,
+        ),
+    );
 
-    registry.register("exec", BuiltinDesc::new(
-        builtin_exec,
-        "用指定命令替换 shell",
-        "用 COMMAND 替换 shell。如果 COMMAND 没有指定，\n\
+    registry.register(
+        "exec",
+        BuiltinDesc::new(
+            builtin_exec,
+            "用指定命令替换 shell",
+            "用 COMMAND 替换 shell。如果 COMMAND 没有指定，\n\
          则任何重定向在当前 shell 中生效。\n\
          \n\
          选项:\n\
@@ -109,14 +126,17 @@ pub fn register(registry: &mut BuiltinRegistry) {
            -l        将连字符放在 argv[0] 传递给 COMMAND\n\
          \n\
          如果命令不能执行则返回失败。",
-        "exec [-cl] [-a 名称] [命令 [参数 ...]] [重定向 ...]",
-        true,
-    ));
+            "exec [-cl] [-a 名称] [命令 [参数 ...]] [重定向 ...]",
+            true,
+        ),
+    );
 
-    registry.register("command", BuiltinDesc::new(
-        builtin_command,
-        "执行命令但不进行函数查找",
-        "运行 COMMAND，参数为 ARGS，绕过函数查找。\n\
+    registry.register(
+        "command",
+        BuiltinDesc::new(
+            builtin_command,
+            "执行命令但不进行函数查找",
+            "运行 COMMAND，参数为 ARGS，绕过函数查找。\n\
          \n\
          选项:\n\
            -p    使用 PATH 的默认值来保证找到所有标准实用工具\n\
@@ -124,28 +144,34 @@ pub fn register(registry: &mut BuiltinRegistry) {
            -V    打印每个 COMMAND 将被调用的更详细描述\n\
          \n\
          如果 COMMAND 被找到并成功调用则返回 0，否则返回非零值。",
-        "command [-pVv] 命令 [参数 ...]",
-        true,
-    ));
+            "command [-pVv] 命令 [参数 ...]",
+            true,
+        ),
+    );
 
-    registry.register("builtin", BuiltinDesc::new(
-        builtin_builtin,
-        "执行 shell 内建命令",
-        "执行 SHELL-BUILTIN，参数为 ARGs，不进行函数查找。\n\
+    registry.register(
+        "builtin",
+        BuiltinDesc::new(
+            builtin_builtin,
+            "执行 shell 内建命令",
+            "执行 SHELL-BUILTIN，参数为 ARGs，不进行函数查找。\n\
          \n\
          当你希望重新实现一个与 shell 内建命令同名的函数，\n\
          但在函数内还要调用原内建命令时，这会很有用。\n\
          \n\
          如果 SHELL-BUILTIN 是内建命令则返回内建命令的结果，\n\
          否则返回失败。",
-        "builtin [shell-内建 [参数 ...]]",
-        false,  // Cannot be disabled
-    ));
+            "builtin [shell-内建 [参数 ...]]",
+            false, // Cannot be disabled
+        ),
+    );
 
-    registry.register("read", BuiltinDesc::new(
-        builtin_read,
-        "从标准输入读取一行",
-        "从标准输入读取一行，或从文件描述符 FD 读取（如果指定了 -u），\n\
+    registry.register(
+        "read",
+        BuiltinDesc::new(
+            builtin_read,
+            "从标准输入读取一行",
+            "从标准输入读取一行，或从文件描述符 FD 读取（如果指定了 -u），\n\
          并将第一个词赋值给第一个 NAME，第二个词赋值给第二个 NAME，\n\
          依此类推，剩余的词赋值给最后一个 NAME。\n\
          只有在 $IFS 中的字符才被识别为词分隔符。\n\
@@ -161,9 +187,10 @@ pub fn register(registry: &mut BuiltinRegistry) {
            -t 超时    如果在 TIMEOUT 秒内没有读取到完整行，则超时并返回失败\n\
          \n\
          除非遇到 EOF 或超时，否则返回成功。",
-        "read [-rs] [-d 分隔符] [-n 字符数] [-p 提示符] [-t 超时] [名称 ...]",
-        true,
-    ));
+            "read [-rs] [-d 分隔符] [-n 字符数] [-p 提示符] [-t 超时] [名称 ...]",
+            true,
+        ),
+    );
 }
 
 /// echo builtin - output arguments
@@ -206,9 +233,15 @@ fn builtin_echo(_state: &mut ShellState, args: &[&str]) -> BuiltinResult {
                     // Check if all chars are valid options
                     let valid = arg[1..].chars().all(|c| matches!(c, 'n' | 'e' | 'E'));
                     if valid {
-                        if arg.contains('n') { newline = false; }
-                        if arg.contains('e') { interpret_escapes = true; }
-                        if arg.contains('E') { interpret_escapes = false; }
+                        if arg.contains('n') {
+                            newline = false;
+                        }
+                        if arg.contains('e') {
+                            interpret_escapes = true;
+                        }
+                        if arg.contains('E') {
+                            interpret_escapes = false;
+                        }
                         continue;
                     }
                     // Not valid options, treat as regular argument
@@ -223,7 +256,7 @@ fn builtin_echo(_state: &mut ShellState, args: &[&str]) -> BuiltinResult {
     }
 
     let output = output_args.join(" ");
-    
+
     let final_output = if interpret_escapes {
         process_escape_sequences(&output)
     } else {
@@ -244,7 +277,7 @@ fn builtin_echo(_state: &mut ShellState, args: &[&str]) -> BuiltinResult {
     } else {
         print!("{}", final_output);
     }
-    
+
     let _ = io::stdout().flush();
     Ok(0)
 }
@@ -324,7 +357,7 @@ fn builtin_source(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
-        
+
         // Execute the line (simplified - should use shell's execute function)
         state.last_exit_status = 0;
     }
@@ -339,7 +372,7 @@ fn builtin_eval(_state: &mut ShellState, args: &[&str]) -> BuiltinResult {
     }
 
     let _command = args.join(" ");
-    
+
     // Note: eval requires access to the shell's command execution
     // This is a placeholder - full implementation would re-invoke the parser
     Err("eval: 功能尚未完全实现".to_string())
@@ -408,7 +441,7 @@ fn builtin_exec(_state: &mut ShellState, args: &[&str]) -> BuiltinResult {
     // exec replaces the current process
     use std::os::unix::process::CommandExt;
     let error = command.exec();
-    
+
     Err(format!("exec: {}: {}", cmd, error))
 }
 
@@ -416,18 +449,66 @@ fn builtin_exec(_state: &mut ShellState, args: &[&str]) -> BuiltinResult {
 fn builtin_command(_state: &mut ShellState, args: &[&str]) -> BuiltinResult {
     // List of known builtin names
     const BUILTINS: &[&str] = &[
-        "cd", "pwd", "pushd", "popd", "dirs",
-        "export", "unset", "set", "declare", "typeset", "readonly", "local", "let",
-        "alias", "unalias",
-        "exit", "return", "break", "continue", "test", "[", "true", "false", ":", "logout",
-        "help", "type", "hash", "enable", "caller",
-        "echo", "printf", "source", ".", "eval", "exec", "command", "builtin", "read",
-        "jobs", "bg", "fg", "disown", "suspend", "kill", "wait",
-        "history", "fc",
-        "shopt", "bind", "ulimit", "umask",
-        "trap", "times",
-        "compgen", "complete", "compopt",
-        "getopts", "mapfile", "readarray",
+        "cd",
+        "pwd",
+        "pushd",
+        "popd",
+        "dirs",
+        "export",
+        "unset",
+        "set",
+        "declare",
+        "typeset",
+        "readonly",
+        "local",
+        "let",
+        "alias",
+        "unalias",
+        "exit",
+        "return",
+        "break",
+        "continue",
+        "test",
+        "[",
+        "true",
+        "false",
+        ":",
+        "logout",
+        "help",
+        "type",
+        "hash",
+        "enable",
+        "caller",
+        "echo",
+        "printf",
+        "source",
+        ".",
+        "eval",
+        "exec",
+        "command",
+        "builtin",
+        "read",
+        "jobs",
+        "bg",
+        "fg",
+        "disown",
+        "suspend",
+        "kill",
+        "wait",
+        "history",
+        "fc",
+        "shopt",
+        "bind",
+        "ulimit",
+        "umask",
+        "trap",
+        "times",
+        "compgen",
+        "complete",
+        "compopt",
+        "getopts",
+        "mapfile",
+        "readarray",
     ];
 
     let mut use_default_path = false;
@@ -508,18 +589,66 @@ fn builtin_command(_state: &mut ShellState, args: &[&str]) -> BuiltinResult {
 fn builtin_builtin(_state: &mut ShellState, args: &[&str]) -> BuiltinResult {
     // List of known builtin names
     const BUILTINS: &[&str] = &[
-        "cd", "pwd", "pushd", "popd", "dirs",
-        "export", "unset", "set", "declare", "typeset", "readonly", "local", "let",
-        "alias", "unalias",
-        "exit", "return", "break", "continue", "test", "[", "true", "false", ":", "logout",
-        "help", "type", "hash", "enable", "caller",
-        "echo", "printf", "source", ".", "eval", "exec", "command", "builtin", "read",
-        "jobs", "bg", "fg", "disown", "suspend", "kill", "wait",
-        "history", "fc",
-        "shopt", "bind", "ulimit", "umask",
-        "trap", "times",
-        "compgen", "complete", "compopt",
-        "getopts", "mapfile", "readarray",
+        "cd",
+        "pwd",
+        "pushd",
+        "popd",
+        "dirs",
+        "export",
+        "unset",
+        "set",
+        "declare",
+        "typeset",
+        "readonly",
+        "local",
+        "let",
+        "alias",
+        "unalias",
+        "exit",
+        "return",
+        "break",
+        "continue",
+        "test",
+        "[",
+        "true",
+        "false",
+        ":",
+        "logout",
+        "help",
+        "type",
+        "hash",
+        "enable",
+        "caller",
+        "echo",
+        "printf",
+        "source",
+        ".",
+        "eval",
+        "exec",
+        "command",
+        "builtin",
+        "read",
+        "jobs",
+        "bg",
+        "fg",
+        "disown",
+        "suspend",
+        "kill",
+        "wait",
+        "history",
+        "fc",
+        "shopt",
+        "bind",
+        "ulimit",
+        "umask",
+        "trap",
+        "times",
+        "compgen",
+        "complete",
+        "compopt",
+        "getopts",
+        "mapfile",
+        "readarray",
     ];
 
     if args.is_empty() {
@@ -586,7 +715,7 @@ fn builtin_read(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
 
     // Read input
     let mut input = String::new();
-    
+
     // Note: timeout and silent mode would require terminal raw mode
     // This is a simplified implementation
     let _ = timeout;
@@ -615,8 +744,11 @@ fn builtin_read(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
     } else {
         // Split by IFS
         let ifs = state.get_var("IFS").unwrap_or(" \t\n");
-        let words: Vec<&str> = input.split(|c| ifs.contains(c)).filter(|s| !s.is_empty()).collect();
-        
+        let words: Vec<&str> = input
+            .split(|c| ifs.contains(c))
+            .filter(|s| !s.is_empty())
+            .collect();
+
         for (i, name) in names.iter().enumerate() {
             if i < words.len() - 1 || i >= words.len() {
                 state.set_var(*name, *words.get(i).unwrap_or(&""));

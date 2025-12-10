@@ -112,7 +112,12 @@ unsafe fn close_file(fd: i32) {
 
 /// Read from file at current position
 unsafe fn read_file(fd: i32, buf: &mut [u8]) -> Result<usize, LoadError> {
-    let ret = syscall3(SYS_READ, fd as u64, buf.as_mut_ptr() as u64, buf.len() as u64) as i64;
+    let ret = syscall3(
+        SYS_READ,
+        fd as u64,
+        buf.as_mut_ptr() as u64,
+        buf.len() as u64,
+    ) as i64;
     if ret < 0 {
         Err(LoadError::ReadError)
     } else {
@@ -139,40 +144,40 @@ unsafe fn lseek(fd: i32, offset: i64, whence: u64) -> Result<u64, LoadError> {
 unsafe fn read_at(fd: i32, offset: u64, buf: &mut [u8]) -> Result<usize, LoadError> {
     // Save current position
     let saved_pos = lseek(fd, 0, SEEK_CUR)?;
-    
+
     // Seek to desired offset
     lseek(fd, offset as i64, SEEK_SET)?;
-    
+
     // Read data
     let result = read_file(fd, buf);
-    
+
     // Restore position
     let _ = lseek(fd, saved_pos as i64, SEEK_SET);
-    
+
     result
 }
 
 /// Stat structure (matches Linux x86_64 layout exactly)
 #[repr(C)]
 struct Stat {
-    st_dev: u64,      // offset 0
-    st_ino: u64,      // offset 8
-    st_nlink: u64,    // offset 16 (u64 on x86_64!)
-    st_mode: u32,     // offset 24
-    st_uid: u32,      // offset 28
-    st_gid: u32,      // offset 32
-    __pad0: u32,      // offset 36 (padding)
-    st_rdev: u64,     // offset 40
-    st_size: i64,     // offset 48
-    st_blksize: i64,  // offset 56
-    st_blocks: i64,   // offset 64
-    st_atime: i64,    // offset 72
+    st_dev: u64,        // offset 0
+    st_ino: u64,        // offset 8
+    st_nlink: u64,      // offset 16 (u64 on x86_64!)
+    st_mode: u32,       // offset 24
+    st_uid: u32,        // offset 28
+    st_gid: u32,        // offset 32
+    __pad0: u32,        // offset 36 (padding)
+    st_rdev: u64,       // offset 40
+    st_size: i64,       // offset 48
+    st_blksize: i64,    // offset 56
+    st_blocks: i64,     // offset 64
+    st_atime: i64,      // offset 72
     st_atime_nsec: i64, // offset 80
-    st_mtime: i64,    // offset 88
+    st_mtime: i64,      // offset 88
     st_mtime_nsec: i64, // offset 96
-    st_ctime: i64,    // offset 104
+    st_ctime: i64,      // offset 104
     st_ctime_nsec: i64, // offset 112
-    _unused: [i64; 3], // offset 120
+    _unused: [i64; 3],  // offset 120
 }
 
 /// Get file size
@@ -382,10 +387,8 @@ pub unsafe fn load_elf_file(path: &[u8]) -> Result<ElfLoadResult, LoadError> {
     }
 
     // Parse program headers
-    let phdrs = core::slice::from_raw_parts(
-        phdr_buf.as_ptr() as *const Elf64Phdr,
-        ehdr.e_phnum as usize,
-    );
+    let phdrs =
+        core::slice::from_raw_parts(phdr_buf.as_ptr() as *const Elf64Phdr, ehdr.e_phnum as usize);
 
     // Find the extent of loadable segments
     let mut load_addr_min: u64 = u64::MAX;
@@ -419,14 +422,7 @@ pub unsafe fn load_elf_file(path: &[u8]) -> Result<ElfLoadResult, LoadError> {
     // For executables with fixed addresses, use those
     let base_addr = if ehdr.e_type == ET_DYN || load_addr_min == 0 {
         // Allocate anonymous region for the whole library
-        let addr = mmap(
-            0,
-            total_size,
-            PROT_NONE,
-            MAP_PRIVATE | MAP_ANONYMOUS,
-            -1,
-            0,
-        )?;
+        let addr = mmap(0, total_size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)?;
         addr
     } else {
         // Fixed address executable
@@ -481,10 +477,8 @@ pub unsafe fn load_elf_file(path: &[u8]) -> Result<ElfLoadResult, LoadError> {
 
             while read_total < phdr.p_filesz {
                 let to_read = core::cmp::min(phdr.p_filesz - read_total, 4096) as usize;
-                let dest = core::slice::from_raw_parts_mut(
-                    data_addr.add(read_total as usize),
-                    to_read,
-                );
+                let dest =
+                    core::slice::from_raw_parts_mut(data_addr.add(read_total as usize), to_read);
                 let read = read_file(fd, dest)?;
                 if read == 0 {
                     break;

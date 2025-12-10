@@ -1,5 +1,5 @@
 //! Vim Script lexer (placeholder module)
-//! 
+//!
 //! This module provides tokenization for Vim Script.
 //! Currently the parser uses simple string parsing.
 
@@ -10,11 +10,11 @@ pub enum TokenType {
     Number,
     Float,
     String,
-    
+
     // Identifiers and keywords
     Identifier,
     Keyword,
-    
+
     // Operators
     Plus,
     Minus,
@@ -32,7 +32,7 @@ pub enum TokenType {
     And,
     Or,
     Not,
-    
+
     // Delimiters
     LeftParen,
     RightParen,
@@ -43,7 +43,7 @@ pub enum TokenType {
     Comma,
     Colon,
     Question,
-    
+
     // Special
     Newline,
     Comment,
@@ -72,23 +72,58 @@ impl Token {
 
 /// Keywords in Vim Script
 pub const KEYWORDS: &[&str] = &[
-    "if", "else", "elseif", "endif",
-    "while", "endwhile",
-    "for", "endfor", "in",
-    "function", "endfunction",
-    "return", "break", "continue",
-    "try", "catch", "finally", "endtry", "throw",
-    "let", "unlet", "const",
-    "call", "execute",
-    "set", "setlocal",
-    "echo", "echom", "echoerr",
-    "source", "runtime",
-    "autocmd", "augroup",
-    "command", "delcommand",
-    "map", "nmap", "imap", "vmap", "cmap", "omap",
-    "noremap", "nnoremap", "inoremap", "vnoremap", "cnoremap", "onoremap",
-    "unmap", "mapclear",
-    "syntax", "highlight", "hi",
+    "if",
+    "else",
+    "elseif",
+    "endif",
+    "while",
+    "endwhile",
+    "for",
+    "endfor",
+    "in",
+    "function",
+    "endfunction",
+    "return",
+    "break",
+    "continue",
+    "try",
+    "catch",
+    "finally",
+    "endtry",
+    "throw",
+    "let",
+    "unlet",
+    "const",
+    "call",
+    "execute",
+    "set",
+    "setlocal",
+    "echo",
+    "echom",
+    "echoerr",
+    "source",
+    "runtime",
+    "autocmd",
+    "augroup",
+    "command",
+    "delcommand",
+    "map",
+    "nmap",
+    "imap",
+    "vmap",
+    "cmap",
+    "omap",
+    "noremap",
+    "nnoremap",
+    "inoremap",
+    "vnoremap",
+    "cnoremap",
+    "onoremap",
+    "unmap",
+    "mapclear",
+    "syntax",
+    "highlight",
+    "hi",
     "filetype",
     "finish",
 ];

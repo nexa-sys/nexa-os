@@ -2,33 +2,31 @@
 //!
 //! Session resumption support for TLS 1.2 (session tickets) and TLS 1.3 (PSK).
 
-use std::vec::Vec;
-use crate::{c_int, c_uint, c_uchar, c_ulong, size_t};
 use crate::connection::SslConnection;
 use crate::context::SslContext;
 use crate::session::SslSession;
+use crate::{c_int, c_uchar, c_uint, c_ulong, size_t};
+use std::vec::Vec;
 
 /// Session ticket callback type
 pub type SessionTicketKeyCallback = Option<
     extern "C" fn(
         ssl: *mut SslConnection,
-        key_name: *mut u8,  // 16 bytes
-        iv: *mut u8,        // 12-16 bytes
-        ctx: *mut core::ffi::c_void, // EVP_CIPHER_CTX
+        key_name: *mut u8,            // 16 bytes
+        iv: *mut u8,                  // 12-16 bytes
+        ctx: *mut core::ffi::c_void,  // EVP_CIPHER_CTX
         hctx: *mut core::ffi::c_void, // HMAC_CTX
         enc: c_int,
     ) -> c_int,
 >;
 
 /// New session callback type
-pub type NewSessionCallback = Option<
-    extern "C" fn(ssl: *mut SslConnection, session: *mut SslSession) -> c_int,
->;
+pub type NewSessionCallback =
+    Option<extern "C" fn(ssl: *mut SslConnection, session: *mut SslSession) -> c_int>;
 
 /// Remove session callback type
-pub type RemoveSessionCallback = Option<
-    extern "C" fn(ctx: *mut SslContext, session: *mut SslSession),
->;
+pub type RemoveSessionCallback =
+    Option<extern "C" fn(ctx: *mut SslContext, session: *mut SslSession)>;
 
 /// Get session callback type
 pub type GetSessionCallback = Option<
@@ -164,10 +162,7 @@ pub extern "C" fn SSL_CTX_set_psk_server_callback(
 
 /// Set PSK identity hint (server)
 #[no_mangle]
-pub extern "C" fn SSL_CTX_use_psk_identity_hint(
-    ctx: *mut SslContext,
-    hint: *const i8,
-) -> c_int {
+pub extern "C" fn SSL_CTX_use_psk_identity_hint(ctx: *mut SslContext, hint: *const i8) -> c_int {
     if ctx.is_null() {
         return 0;
     }
@@ -225,10 +220,7 @@ pub extern "C" fn SSL_set_psk_server_callback(
 
 /// Set new session callback
 #[no_mangle]
-pub extern "C" fn SSL_CTX_sess_set_new_cb(
-    ctx: *mut SslContext,
-    _callback: NewSessionCallback,
-) {
+pub extern "C" fn SSL_CTX_sess_set_new_cb(ctx: *mut SslContext, _callback: NewSessionCallback) {
     if ctx.is_null() {
         return;
     }
@@ -236,9 +228,7 @@ pub extern "C" fn SSL_CTX_sess_set_new_cb(
 
 /// Get new session callback
 #[no_mangle]
-pub extern "C" fn SSL_CTX_sess_get_new_cb(
-    _ctx: *const SslContext,
-) -> NewSessionCallback {
+pub extern "C" fn SSL_CTX_sess_get_new_cb(_ctx: *const SslContext) -> NewSessionCallback {
     None
 }
 
@@ -255,10 +245,7 @@ pub extern "C" fn SSL_CTX_sess_set_remove_cb(
 
 /// Set get session callback
 #[no_mangle]
-pub extern "C" fn SSL_CTX_sess_set_get_cb(
-    ctx: *mut SslContext,
-    _callback: GetSessionCallback,
-) {
+pub extern "C" fn SSL_CTX_sess_set_get_cb(ctx: *mut SslContext, _callback: GetSessionCallback) {
     if ctx.is_null() {
         return;
     }

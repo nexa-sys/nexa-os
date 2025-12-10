@@ -12,7 +12,10 @@ use crate::{kdebug, kerror, kinfo, kpanic, kwarn};
 /// Extract executable name from cmdline buffer (first null-terminated string)
 fn get_exe_name_from_cmdline(cmdline: &[u8]) -> &str {
     // Find the first null terminator or end of slice
-    let end = cmdline.iter().position(|&b| b == 0).unwrap_or(cmdline.len());
+    let end = cmdline
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(cmdline.len());
     core::str::from_utf8(&cmdline[..end]).unwrap_or("unknown")
 }
 
@@ -48,8 +51,8 @@ pub extern "x86-interrupt" fn page_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: PageFaultErrorCode,
 ) {
+    use crate::process::coredump::{dump_core, should_dump_core, CoreDumpInfo};
     use x86_64::registers::control::Cr2;
-    use crate::process::coredump::{CoreDumpInfo, dump_core, should_dump_core};
 
     let cr2 = Cr2::read().unwrap_or_else(|_| x86_64::VirtAddr::new(0));
     let fault_addr = cr2.as_u64();
@@ -145,13 +148,21 @@ pub extern "x86-interrupt" fn page_fault_handler(
             }
 
             // Set termination signal (SIGSEGV = 11) so wait4() returns correct status
-            let result1 =
-                crate::scheduler::set_process_term_signal(pid, signal as i32);
-            crate::serial_println!("SIGSEGV: set_process_term_signal({}, 11) = {:?}", pid, result1);
+            let result1 = crate::scheduler::set_process_term_signal(pid, signal as i32);
+            crate::serial_println!(
+                "SIGSEGV: set_process_term_signal({}, 11) = {:?}",
+                pid,
+                result1
+            );
 
             // Mark the process as zombie
-            let result2 = crate::scheduler::set_process_state(pid, crate::process::ProcessState::Zombie);
-            crate::serial_println!("SIGSEGV: set_process_state({}, Zombie) = {:?}", pid, result2);
+            let result2 =
+                crate::scheduler::set_process_state(pid, crate::process::ProcessState::Zombie);
+            crate::serial_println!(
+                "SIGSEGV: set_process_state({}, Zombie) = {:?}",
+                pid,
+                result2
+            );
 
             // CRITICAL: Ensure GS base points to kernel GS_DATA before calling scheduler.
             // When CPU enters kernel via interrupt gate from user mode, it does NOT execute
@@ -562,7 +573,7 @@ pub extern "x86-interrupt" fn double_fault_handler(
 
 /// Divide error exception handler (#DE, vector 0)
 pub extern "x86-interrupt" fn divide_error_handler(stack_frame: InterruptStackFrame) {
-    use crate::process::coredump::{CoreDumpInfo, dump_core, should_dump_core};
+    use crate::process::coredump::{dump_core, should_dump_core, CoreDumpInfo};
 
     let ring = stack_frame.code_segment.0 & 3;
     let rip = stack_frame.instruction_pointer.as_u64();
@@ -676,7 +687,7 @@ pub extern "x86-interrupt" fn segment_not_present_handler(
 
 /// Invalid opcode exception handler (#UD, vector 6)
 pub extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: InterruptStackFrame) {
-    use crate::process::coredump::{CoreDumpInfo, dump_core, should_dump_core};
+    use crate::process::coredump::{dump_core, should_dump_core, CoreDumpInfo};
 
     let ring = stack_frame.code_segment.0 & 3;
     let rip = stack_frame.instruction_pointer.as_u64();

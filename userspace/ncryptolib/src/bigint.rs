@@ -63,13 +63,13 @@ impl BigInt {
         if self.len != other.len {
             return self.len.cmp(&other.len);
         }
-        
+
         for i in (0..self.len).rev() {
             if self.limbs[i] != other.limbs[i] {
                 return self.limbs[i].cmp(&other.limbs[i]);
             }
         }
-        
+
         Ordering::Equal
     }
 
@@ -127,11 +127,11 @@ impl BigInt {
         }
 
         let mut result = Self::zero();
-        
+
         // Skip leading zeros
         let first_nonzero = bytes.iter().position(|&b| b != 0).unwrap_or(bytes.len());
         let significant = &bytes[first_nonzero..];
-        
+
         if significant.is_empty() {
             return result;
         }
@@ -188,7 +188,7 @@ impl BigInt {
         if bytes.len() >= len {
             return bytes[bytes.len() - len..].to_vec();
         }
-        
+
         let mut result = vec![0u8; len];
         result[len - bytes.len()..].copy_from_slice(&bytes);
         result
@@ -238,26 +238,26 @@ impl BigInt {
     pub fn add(&self, other: &Self) -> Self {
         let mut result = Self::zero();
         let max_len = core::cmp::max(self.len, other.len);
-        
+
         let mut carry = 0u64;
         for i in 0..max_len {
             let a = if i < self.len { self.limbs[i] } else { 0 };
             let b = if i < other.len { other.limbs[i] } else { 0 };
-            
+
             let (sum1, c1) = a.overflowing_add(b);
             let (sum2, c2) = sum1.overflowing_add(carry);
-            
+
             result.limbs[i] = sum2;
             carry = (c1 as u64) + (c2 as u64);
         }
-        
+
         if carry != 0 && max_len < MAX_LIMBS {
             result.limbs[max_len] = carry;
             result.len = max_len + 1;
         } else {
             result.len = max_len;
         }
-        
+
         result.normalize();
         result
     }
@@ -266,19 +266,19 @@ impl BigInt {
     pub fn sub(&self, other: &Self) -> Self {
         let mut result = Self::zero();
         result.len = self.len;
-        
+
         let mut borrow = 0u64;
         for i in 0..self.len {
             let a = self.limbs[i];
             let b = if i < other.len { other.limbs[i] } else { 0 };
-            
+
             let (diff1, b1) = a.overflowing_sub(b);
             let (diff2, b2) = diff1.overflowing_sub(borrow);
-            
+
             result.limbs[i] = diff2;
             borrow = (b1 as u64) + (b2 as u64);
         }
-        
+
         result.normalize();
         result
     }
@@ -290,27 +290,27 @@ impl BigInt {
         }
 
         let mut result = Self::zero();
-        
+
         for i in 0..self.len {
             let mut carry = 0u128;
             for j in 0..other.len {
                 if i + j >= MAX_LIMBS {
                     break;
                 }
-                
+
                 let product = (self.limbs[i] as u128) * (other.limbs[j] as u128)
                     + (result.limbs[i + j] as u128)
                     + carry;
-                
+
                 result.limbs[i + j] = product as u64;
                 carry = product >> 64;
             }
-            
+
             if i + other.len < MAX_LIMBS && carry != 0 {
                 result.limbs[i + other.len] = carry as u64;
             }
         }
-        
+
         result.len = core::cmp::min(self.len + other.len, MAX_LIMBS);
         result.normalize();
         result
@@ -325,7 +325,7 @@ impl BigInt {
         if self < m {
             return self.clone();
         }
-        
+
         // Use division to get remainder
         let (_q, r) = self.div(m);
         r
@@ -337,11 +337,11 @@ impl BigInt {
             // Division by zero - return zero
             return (Self::zero(), Self::zero());
         }
-        
+
         if self < divisor {
             return (Self::zero(), self.clone());
         }
-        
+
         if self == divisor {
             return (Self::from_u64(1), Self::zero());
         }
@@ -349,20 +349,20 @@ impl BigInt {
         // Binary long division
         let mut quotient = Self::zero();
         let mut remainder = Self::zero();
-        
+
         let self_bits = self.bit_length();
-        
+
         // Process bits from most significant to least
         for i in (0..self_bits).rev() {
             // Shift remainder left by 1
             remainder = remainder.shl(1);
-            
+
             // Bring down next bit from dividend
             if self.get_bit(i) {
                 remainder.limbs[0] |= 1;
                 remainder.len = core::cmp::max(remainder.len, 1);
             }
-            
+
             // If remainder >= divisor, subtract and set quotient bit
             if &remainder >= divisor {
                 remainder = remainder.sub(divisor);
@@ -375,7 +375,7 @@ impl BigInt {
                 }
             }
         }
-        
+
         quotient.normalize();
         remainder.normalize();
         (quotient, remainder)
@@ -386,12 +386,12 @@ impl BigInt {
         if n == 0 || self.is_zero() {
             return self.clone();
         }
-        
+
         let limb_shift = n / 64;
         let bit_shift = n % 64;
-        
+
         let mut result = Self::zero();
-        
+
         if bit_shift == 0 {
             // Simple limb copy
             for i in 0..self.len {
@@ -414,7 +414,7 @@ impl BigInt {
             }
             result.len = core::cmp::min(self.len + limb_shift + 1, MAX_LIMBS);
         }
-        
+
         result.normalize();
         result
     }
@@ -459,7 +459,7 @@ impl BigInt {
         }
 
         let mut result = Self::zero();
-        
+
         if bit_shift == 0 {
             for i in limb_shift..self.len {
                 result.limbs[i - limb_shift] = self.limbs[i];
@@ -493,7 +493,7 @@ impl BigInt {
         while !r.is_zero() {
             // Compute quotient using our fast binary division
             let (q, _) = old_r.div(&r);
-            
+
             let temp_r = r.clone();
             r = old_r.sub(&q.mul(&r));
             old_r = temp_r;

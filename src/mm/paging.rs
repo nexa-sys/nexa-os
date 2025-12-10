@@ -1041,7 +1041,7 @@ pub fn print_user_region_statistics() {
 /// - cr3 must point to a valid PML4 table
 /// - This function modifies page tables and must be called with appropriate locks held
 pub unsafe fn clear_user_mappings(cr3: u64) {
-    use crate::process::{USER_VIRT_BASE, INTERP_BASE, INTERP_REGION_SIZE};
+    use crate::process::{INTERP_BASE, INTERP_REGION_SIZE, USER_VIRT_BASE};
     use x86_64::structures::paging::{PageTable, PageTableFlags};
 
     const HUGE_PAGE_SIZE: u64 = 0x200000; // 2 MiB
@@ -1101,7 +1101,7 @@ pub unsafe fn clear_user_mappings(cr3: u64) {
 
 /// Returns true if the address is in the user region (USER_VIRT_BASE to USER_VIRT_BASE + USER_REGION_SIZE).
 pub fn is_user_demand_page_address(virt_addr: u64) -> bool {
-    use crate::process::{USER_VIRT_BASE, USER_REGION_SIZE};
+    use crate::process::{USER_REGION_SIZE, USER_VIRT_BASE};
     virt_addr >= USER_VIRT_BASE && virt_addr < USER_VIRT_BASE + USER_REGION_SIZE
 }
 
@@ -1128,7 +1128,7 @@ pub fn handle_user_demand_fault(
     cr3: u64,
     memory_base: u64,
 ) -> Result<(), &'static str> {
-    use crate::process::{USER_VIRT_BASE, USER_REGION_SIZE};
+    use crate::process::{USER_REGION_SIZE, USER_VIRT_BASE};
 
     // Validate the fault address is within user space
     if !is_user_demand_page_address(fault_addr) {
@@ -1175,7 +1175,11 @@ pub fn handle_user_demand_fault(
 /// # Safety
 /// - cr3 must point to a valid PML4 table
 /// - The page table structure for the user region must already exist (PML4 -> PDP -> PD)
-unsafe fn map_user_page_in_cr3(cr3: u64, virt_addr: u64, phys_addr: u64) -> Result<(), &'static str> {
+unsafe fn map_user_page_in_cr3(
+    cr3: u64,
+    virt_addr: u64,
+    phys_addr: u64,
+) -> Result<(), &'static str> {
     use x86_64::structures::paging::{PageTable, PageTableFlags};
 
     let pml4 = &mut *(cr3 as *mut PageTable);

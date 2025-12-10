@@ -122,23 +122,21 @@ impl FontConfig {
 
         while let Some(event) = parser.next() {
             match event {
-                XmlEvent::StartElement { name, .. } => {
-                    match name {
-                        "family" => {
-                            if let Some(text) = parser.read_text() {
-                                if family.is_none() && !in_prefer {
-                                    family = Some(String::from(text.trim()));
-                                } else if in_prefer && prefer.len() < MAX_PREFERENCES {
-                                    prefer.push(String::from(text.trim()));
-                                }
+                XmlEvent::StartElement { name, .. } => match name {
+                    "family" => {
+                        if let Some(text) = parser.read_text() {
+                            if family.is_none() && !in_prefer {
+                                family = Some(String::from(text.trim()));
+                            } else if in_prefer && prefer.len() < MAX_PREFERENCES {
+                                prefer.push(String::from(text.trim()));
                             }
                         }
-                        "prefer" => {
-                            in_prefer = true;
-                        }
-                        _ => {}
                     }
-                }
+                    "prefer" => {
+                        in_prefer = true;
+                    }
+                    _ => {}
+                },
                 XmlEvent::EndElement { name } => {
                     if name == "alias" {
                         break;
@@ -201,30 +199,30 @@ impl FontConfig {
     fn expand_dir_path(path: &str, attrs: &str) -> String {
         // Check for prefix="xdg" attribute
         let has_xdg_prefix = attrs.contains("prefix=\"xdg\"") || attrs.contains("prefix='xdg'");
-        
+
         if has_xdg_prefix {
             // XDG_DATA_HOME defaults to ~/.local/share
             let mut result = String::from("/root/.local/share/");
             result.push_str(path);
             return result;
         }
-        
+
         // Expand ~ to /root
         if path.starts_with("~/") {
             let mut result = String::from("/root");
             result.push_str(&path[1..]); // Skip the ~, keep the /
             return result;
         }
-        
+
         if path == "~" {
             return String::from("/root");
         }
-        
+
         // Skip relative paths (not valid for kernel font loading)
         if !path.starts_with('/') {
             return String::new(); // Return empty to indicate skip
         }
-        
+
         String::from(path)
     }
 }
@@ -291,7 +289,7 @@ impl<'a> XmlParser<'a> {
                 let tag_start = self.pos + 1;
                 if let Some(end) = remaining.find('>') {
                     let tag_content = &self.content[tag_start..self.pos + end];
-                    
+
                     // Check for self-closing tag
                     let is_self_closing = tag_content.ends_with('/');
                     let tag_content = if is_self_closing {

@@ -7,10 +7,12 @@ use crate::state::ShellState;
 
 /// Register configuration builtins
 pub fn register(registry: &mut BuiltinRegistry) {
-    registry.register("shopt", BuiltinDesc::new(
-        builtin_shopt,
-        "设置和取消 shell 选项",
-        "切换控制可选 shell 行为的选项值。\n\
+    registry.register(
+        "shopt",
+        BuiltinDesc::new(
+            builtin_shopt,
+            "设置和取消 shell 选项",
+            "切换控制可选 shell 行为的选项值。\n\
          没有选项或使用 `-p' 选项时，显示所有可设置选项的列表，\n\
          并指出每个选项是否被设置；如果提供了 OPTNAME，\n\
          则将输出限制为这些选项。\n\
@@ -26,9 +28,10 @@ pub fn register(registry: &mut BuiltinRegistry) {
          \n\
          如果 OPTNAME 启用则返回成功，如果给出无效选项或\n\
          OPTNAME 被禁用则返回失败。",
-        "shopt [-pqsu] [-o] [选项名 ...]",
-        true,
-    ));
+            "shopt [-pqsu] [-o] [选项名 ...]",
+            true,
+        ),
+    );
 
     registry.register("bind", BuiltinDesc::new(
         builtin_bind,
@@ -59,10 +62,12 @@ pub fn register(registry: &mut BuiltinRegistry) {
         true,
     ));
 
-    registry.register("ulimit", BuiltinDesc::new(
-        builtin_ulimit,
-        "修改 shell 资源限制",
-        "提供控制 shell 启动的进程可用资源的功能，\n\
+    registry.register(
+        "ulimit",
+        BuiltinDesc::new(
+            builtin_ulimit,
+            "修改 shell 资源限制",
+            "提供控制 shell 启动的进程可用资源的功能，\n\
          在允许此类控制的系统上。\n\
          \n\
          选项:\n\
@@ -103,14 +108,17 @@ pub fn register(registry: &mut BuiltinRegistry) {
          -u 是未缩放的进程数。\n\
          \n\
          返回成功，除非给出无效选项或发生错误。",
-        "ulimit [-SHabcdefiklmnpqrstuvxPRT] [限制]",
-        true,
-    ));
+            "ulimit [-SHabcdefiklmnpqrstuvxPRT] [限制]",
+            true,
+        ),
+    );
 
-    registry.register("umask", BuiltinDesc::new(
-        builtin_umask,
-        "显示或设置文件模式掩码",
-        "设置用户文件创建掩码为 MODE。如果 MODE 被省略，\n\
+    registry.register(
+        "umask",
+        BuiltinDesc::new(
+            builtin_umask,
+            "显示或设置文件模式掩码",
+            "设置用户文件创建掩码为 MODE。如果 MODE 被省略，\n\
          打印当前掩码值。\n\
          \n\
          如果 MODE 以数字开头，则被解释为八进制数；\n\
@@ -122,9 +130,10 @@ pub fn register(registry: &mut BuiltinRegistry) {
          \n\
          如果成功改变了 MODE 或没有给出 MODE 参数则返回成功，\n\
          否则返回失败。",
-        "umask [-p] [-S] [模式]",
-        true,
-    ));
+            "umask [-p] [-S] [模式]",
+            true,
+        ),
+    );
 }
 
 /// shopt builtin - set and unset shell options
@@ -182,7 +191,8 @@ fn builtin_shopt(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
             shopts.into_iter().collect()
         }
     } else {
-        optnames.iter()
+        optnames
+            .iter()
             .filter_map(|name| {
                 if use_set_options {
                     state.get_set_option(name).map(|v| (name.to_string(), v))
@@ -241,20 +251,55 @@ fn builtin_bind(_state: &mut ShellState, args: &[&str]) -> BuiltinResult {
     if list_functions {
         // List readline function names
         let functions = [
-            "accept-line", "backward-char", "backward-delete-char",
-            "backward-kill-line", "backward-kill-word", "backward-word",
-            "beginning-of-history", "beginning-of-line", "call-last-kbd-macro",
-            "capitalize-word", "clear-screen", "complete", "delete-char",
-            "delete-horizontal-space", "digit-argument", "downcase-word",
-            "dump-functions", "dump-macros", "dump-variables", "end-of-history",
-            "end-of-line", "exchange-point-and-mark", "forward-char",
-            "forward-search-history", "forward-word", "history-search-backward",
-            "history-search-forward", "insert-comment", "kill-line",
-            "kill-region", "kill-word", "next-history", "previous-history",
-            "quoted-insert", "re-read-init-file", "redraw-current-line",
-            "reverse-search-history", "self-insert", "set-mark", "transpose-chars",
-            "transpose-words", "undo", "universal-argument", "unix-line-discard",
-            "unix-word-rubout", "upcase-word", "yank", "yank-last-arg", "yank-pop",
+            "accept-line",
+            "backward-char",
+            "backward-delete-char",
+            "backward-kill-line",
+            "backward-kill-word",
+            "backward-word",
+            "beginning-of-history",
+            "beginning-of-line",
+            "call-last-kbd-macro",
+            "capitalize-word",
+            "clear-screen",
+            "complete",
+            "delete-char",
+            "delete-horizontal-space",
+            "digit-argument",
+            "downcase-word",
+            "dump-functions",
+            "dump-macros",
+            "dump-variables",
+            "end-of-history",
+            "end-of-line",
+            "exchange-point-and-mark",
+            "forward-char",
+            "forward-search-history",
+            "forward-word",
+            "history-search-backward",
+            "history-search-forward",
+            "insert-comment",
+            "kill-line",
+            "kill-region",
+            "kill-word",
+            "next-history",
+            "previous-history",
+            "quoted-insert",
+            "re-read-init-file",
+            "redraw-current-line",
+            "reverse-search-history",
+            "self-insert",
+            "set-mark",
+            "transpose-chars",
+            "transpose-words",
+            "undo",
+            "universal-argument",
+            "unix-line-discard",
+            "unix-word-rubout",
+            "upcase-word",
+            "yank",
+            "yank-last-arg",
+            "yank-pop",
         ];
         for func in functions {
             println!("{}", func);
@@ -350,8 +395,14 @@ fn builtin_ulimit(_state: &mut ShellState, args: &[&str]) -> BuiltinResult {
     let mut iter = args.iter().peekable();
     while let Some(arg) = iter.next() {
         match *arg {
-            "-S" => { soft = true; hard = false; }
-            "-H" => { hard = true; soft = false; }
+            "-S" => {
+                soft = true;
+                hard = false;
+            }
+            "-H" => {
+                hard = true;
+                soft = false;
+            }
             "-a" => show_all = true,
             "-c" => resource = 'c',
             "-d" => resource = 'd',
@@ -430,9 +481,7 @@ fn builtin_ulimit(_state: &mut ShellState, args: &[&str]) -> BuiltinResult {
             "unlimited" => None,
             "soft" => None, // Use soft limit
             "hard" => None, // Use hard limit
-            _ => {
-                value.parse::<u64>().ok()
-            }
+            _ => value.parse::<u64>().ok(),
         };
 
         // Actually setting limits requires platform-specific code
@@ -489,7 +538,7 @@ fn builtin_umask(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
     } else {
         // Display umask
         let mask = state.get_umask();
-        
+
         if symbolic {
             // Symbolic format: u=rwx,g=rwx,o=rwx
             let u = format_mask_part((mask >> 6) & 7);
@@ -529,28 +578,42 @@ fn format_mask_part(bits: u32) -> String {
 /// Parse symbolic umask mode (simplified)
 fn parse_symbolic_umask(mode: &str, current: u32) -> Result<u32, String> {
     let mut result = current;
-    
+
     for part in mode.split(',') {
         let mut chars = part.chars().peekable();
-        
+
         // Parse who: u, g, o, a
         let mut who = 0u32;
         while let Some(&c) = chars.peek() {
             match c {
-                'u' => { who |= 0o700; chars.next(); }
-                'g' => { who |= 0o070; chars.next(); }
-                'o' => { who |= 0o007; chars.next(); }
-                'a' => { who |= 0o777; chars.next(); }
+                'u' => {
+                    who |= 0o700;
+                    chars.next();
+                }
+                'g' => {
+                    who |= 0o070;
+                    chars.next();
+                }
+                'o' => {
+                    who |= 0o007;
+                    chars.next();
+                }
+                'a' => {
+                    who |= 0o777;
+                    chars.next();
+                }
                 _ => break,
             }
         }
         if who == 0 {
             who = 0o777; // Default to all
         }
-        
+
         // Parse operator: +, -, =
-        let op = chars.next().ok_or_else(|| format!("umask: {}: 无效的符号模式", mode))?;
-        
+        let op = chars
+            .next()
+            .ok_or_else(|| format!("umask: {}: 无效的符号模式", mode))?;
+
         // Parse permissions: r, w, x
         let mut perm = 0u32;
         for c in chars {
@@ -561,20 +624,20 @@ fn parse_symbolic_umask(mode: &str, current: u32) -> Result<u32, String> {
                 _ => return Err(format!("umask: {}: 无效的符号模式", mode)),
             }
         }
-        
+
         // Apply based on who
         perm &= who;
-        
+
         match op {
             '+' => result &= !perm, // Adding permission = removing from mask
             '-' => result |= perm,  // Removing permission = adding to mask
             '=' => {
-                result &= !who;     // Clear who bits
+                result &= !who; // Clear who bits
                 result |= who & !perm; // Set mask for unspecified permissions
             }
             _ => return Err(format!("umask: {}: 无效的符号模式", mode)),
         }
     }
-    
+
     Ok(result & 0o777)
 }

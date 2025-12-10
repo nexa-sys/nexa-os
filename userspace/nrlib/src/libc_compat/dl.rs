@@ -179,7 +179,10 @@ unsafe fn do_dlopen(filename: *const i8, flags: c_int) -> *mut c_void {
     };
 
     // Load the ELF file
-    let path_len = resolved_path.iter().position(|&c| c == 0).unwrap_or(resolved_path.len());
+    let path_len = resolved_path
+        .iter()
+        .position(|&c| c == 0)
+        .unwrap_or(resolved_path.len());
     let load_result = match super::loader::load_elf_file(&resolved_path[..path_len]) {
         Ok(result) => result,
         Err(load_err) => {
@@ -246,10 +249,8 @@ unsafe fn parse_dynamic_section(lib: &mut LoadedLibrary) {
         return;
     }
 
-    let dyn_entries = core::slice::from_raw_parts(
-        lib.dynamic_addr as *const Elf64Dyn,
-        lib.dynamic_count,
-    );
+    let dyn_entries =
+        core::slice::from_raw_parts(lib.dynamic_addr as *const Elf64Dyn, lib.dynamic_count);
 
     for entry in dyn_entries {
         if entry.d_tag == DT_NULL {
@@ -315,16 +316,19 @@ unsafe fn load_dependencies(lib: &mut LoadedLibrary, flags: c_int) -> bool {
     for i in 0..lib.needed_count {
         let name_offset = lib.needed[i];
         let dep_name = get_string(strtab, name_offset);
-        
+
         if dep_name.is_empty() {
             continue;
         }
 
         // Try to load the dependency (recursively)
         let mgr = get_library_manager_mut();
-        
+
         // Check if already loaded
-        if let Some(idx) = mgr.find_by_path(dep_name).or_else(|| mgr.find_by_soname(dep_name)) {
+        if let Some(idx) = mgr
+            .find_by_path(dep_name)
+            .or_else(|| mgr.find_by_soname(dep_name))
+        {
             mgr.libraries[idx].refcount += 1;
             lib.needed_libs[i] = idx;
             continue;
@@ -656,11 +660,7 @@ pub unsafe extern "C" fn dlinfo(
 /// Standard C ABI function.
 #[no_mangle]
 pub unsafe extern "C" fn dl_iterate_phdr(
-    callback: unsafe extern "C" fn(
-        info: *mut DlPhdrInfo,
-        size: usize,
-        data: *mut c_void,
-    ) -> c_int,
+    callback: unsafe extern "C" fn(info: *mut DlPhdrInfo, size: usize, data: *mut c_void) -> c_int,
     data: *mut c_void,
 ) -> c_int {
     let mgr = get_library_manager();
@@ -732,12 +732,7 @@ pub unsafe extern "C" fn dlvsym(
 
 /// POSIX extension: dlmopen - open in specific namespace
 #[no_mangle]
-pub unsafe extern "C" fn dlmopen(
-    _lmid: isize,
-    filename: *const i8,
-    flags: c_int,
-) -> *mut c_void {
+pub unsafe extern "C" fn dlmopen(_lmid: isize, filename: *const i8, flags: c_int) -> *mut c_void {
     // For now, ignore namespace and do regular open
     dlopen(filename, flags)
 }
- 

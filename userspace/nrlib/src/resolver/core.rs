@@ -1,18 +1,19 @@
 /// Core Resolver implementation
 ///
 /// Handles configuration parsing, hosts lookup, and DNS queries.
-
 use core::hint::black_box;
 use core::mem;
 use core::sync::atomic::{AtomicU16, Ordering};
 
-use crate::dns::{DnsQuery, QType, ResolverConfig};
-use crate::socket::{socket, bind, sendto, recvfrom, SockAddr, SockAddrIn, AF_INET, SOCK_DGRAM, parse_ipv4};
 use crate::close;
+use crate::dns::{DnsQuery, QType, ResolverConfig};
+use crate::socket::{
+    bind, parse_ipv4, recvfrom, sendto, socket, SockAddr, SockAddrIn, AF_INET, SOCK_DGRAM,
+};
 
-use super::constants::{MAX_HOSTNAME, DNS_PORT, MAX_CNAME_DEPTH, MAX_DNS_RETRIES};
-use super::types::{HostEntry, NssSource};
+use super::constants::{DNS_PORT, MAX_CNAME_DEPTH, MAX_DNS_RETRIES, MAX_HOSTNAME};
 use super::dns_parser::{parse_dns_response, DnsParseOutcome};
+use super::types::{HostEntry, NssSource};
 
 /// Atomic counter for generating unique DNS transaction IDs
 static DNS_TRANSACTION_COUNTER: AtomicU16 = AtomicU16::new(0x1337);
@@ -32,7 +33,12 @@ impl Resolver {
             config: ResolverConfig::new(),
             hosts: [HostEntry::empty(); 32],
             hosts_count: 0,
-            nsswitch_hosts: [NssSource::Files, NssSource::Dns, NssSource::Unknown, NssSource::Unknown],
+            nsswitch_hosts: [
+                NssSource::Files,
+                NssSource::Dns,
+                NssSource::Unknown,
+                NssSource::Unknown,
+            ],
             nsswitch_count: 2,
         }
     }
@@ -109,7 +115,8 @@ impl Resolver {
                     let mut entry = HostEntry::empty();
                     entry.ip = ip;
                     entry.name_len = hostname.len().min(255);
-                    entry.name[..entry.name_len].copy_from_slice(&hostname.as_bytes()[..entry.name_len]);
+                    entry.name[..entry.name_len]
+                        .copy_from_slice(&hostname.as_bytes()[..entry.name_len]);
 
                     self.hosts[self.hosts_count] = entry;
                     self.hosts_count += 1;
@@ -210,7 +217,9 @@ impl Resolver {
                 fqdn_buf[hostname_bytes.len() + 1..hostname_bytes.len() + 1 + domain_len]
                     .copy_from_slice(&domain[..domain_len]);
 
-                if let Ok(fqdn) = core::str::from_utf8(&fqdn_buf[..hostname_bytes.len() + 1 + domain_len]) {
+                if let Ok(fqdn) =
+                    core::str::from_utf8(&fqdn_buf[..hostname_bytes.len() + 1 + domain_len])
+                {
                     if let Some(ip) = self.query_dns_with_retry(fqdn, nameserver_ip, 0) {
                         return Some(ip);
                     }
@@ -222,7 +231,12 @@ impl Resolver {
     }
 
     /// Perform DNS query with retry logic
-    fn query_dns_with_retry(&self, hostname: &str, nameserver_ip: [u8; 4], depth: u8) -> Option<[u8; 4]> {
+    fn query_dns_with_retry(
+        &self,
+        hostname: &str,
+        nameserver_ip: [u8; 4],
+        depth: u8,
+    ) -> Option<[u8; 4]> {
         let max_attempts = self.config.attempts.max(1).min(MAX_DNS_RETRIES);
         for _attempt in 0..max_attempts {
             if let Some(ip) = self.query_dns_internal(hostname, nameserver_ip, depth) {
@@ -232,7 +246,12 @@ impl Resolver {
         None
     }
 
-    fn query_dns_internal(&self, hostname: &str, nameserver_ip: [u8; 4], depth: u8) -> Option<[u8; 4]> {
+    fn query_dns_internal(
+        &self,
+        hostname: &str,
+        nameserver_ip: [u8; 4],
+        depth: u8,
+    ) -> Option<[u8; 4]> {
         if depth >= MAX_CNAME_DEPTH {
             return None;
         }
@@ -283,8 +302,12 @@ impl Resolver {
         // Generate unique transaction ID using atomic counter and some entropy
         let base_id = DNS_TRANSACTION_COUNTER.fetch_add(1, Ordering::Relaxed);
         // Mix in some pseudo-randomness from hostname hash and depth
-        let hostname_hash = hostname.bytes().fold(0u16, |acc, b| acc.wrapping_add(b as u16).rotate_left(3));
-        let query_id = base_id.wrapping_add(hostname_hash).wrapping_add((depth as u16) << 8);
+        let hostname_hash = hostname
+            .bytes()
+            .fold(0u16, |acc, b| acc.wrapping_add(b as u16).rotate_left(3));
+        let query_id = base_id
+            .wrapping_add(hostname_hash)
+            .wrapping_add((depth as u16) << 8);
         let query_packet = match query.build(query_id, hostname, QType::A) {
             Ok(pkt) => pkt,
             Err(_) => {
@@ -330,7 +353,7 @@ impl Resolver {
         if received <= 0 {
             return None;
         }
-        
+
         // Minimum DNS response size check (header only is 12 bytes)
         if (received as usize) < 12 {
             return None;
@@ -340,10 +363,11 @@ impl Resolver {
         let response_data = &response_buf[..received as usize];
         let mut cname_buf = [0u8; MAX_HOSTNAME];
         let mut scratch_buf = [0u8; MAX_HOSTNAME];
-        let outcome = match parse_dns_response(response_data, query_id, &mut cname_buf, &mut scratch_buf) {
-            Ok(result) => result,
-            Err(_) => return None,
-        };
+        let outcome =
+            match parse_dns_response(response_data, query_id, &mut cname_buf, &mut scratch_buf) {
+                Ok(result) => result,
+                Err(_) => return None,
+            };
 
         match outcome {
             DnsParseOutcome::Address(ip) => Some(ip),

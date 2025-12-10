@@ -25,7 +25,6 @@ global_asm!(
     "mov gs:[32], r10", // GS[4]  = arg4 (r10)
     "mov gs:[40], r8",  // GS[5]  = arg5 (r8)
     "mov gs:[48], r9",  // GS[6]  = arg6 (r9)
-    
     // CRITICAL: Save callee-saved registers to GS_DATA BEFORE they are modified
     // These are needed for fork() to properly restore child's registers
     // GS_SLOT_SAVED_RBX = 14, offset = 14 * 8 = 112 (but 112/120/128 are used for CS/SS snapshot)
@@ -36,7 +35,6 @@ global_asm!(
     "mov gs:[200], r13", // Save callee-saved R13
     "mov gs:[208], r14", // Save callee-saved R14
     "mov gs:[216], r15", // Save callee-saved R15
-    
     // Record the incoming CS/SS pair for diagnostics
     "mov r10, [rsp + 8]",
     "mov gs:[120], r10", // gs slot 15 = entry CS snapshot
@@ -144,15 +142,14 @@ global_asm!(
     // CRITICAL: Restore syscall argument registers from GS_DATA
     // These were saved at syscall entry and must be restored before iretq
     // because they may have been overwritten by kernel code or other processes
-    "push rax",           // Save syscall return value
+    "push rax", // Save syscall return value
     "mov rax, gs:[32]",
-    "mov r10, rax",       // Restore r10 (arg4) from GS[4]
+    "mov r10, rax", // Restore r10 (arg4) from GS[4]
     "mov rax, gs:[40]",
-    "mov r8, rax",        // Restore r8 (arg5) from GS[5]
+    "mov r8, rax", // Restore r8 (arg5) from GS[5]
     "mov rax, gs:[48]",
-    "mov r9, rax",        // Restore r9 (arg6) from GS[6]
-    "pop rax",            // Restore syscall return value
-
+    "mov r9, rax", // Restore r9 (arg6) from GS[6]
+    "pop rax",     // Restore syscall return value
     // Snapshot the user-mode frame before we hand control back, so faults can
     // report the exact values that iretq attempted to restore.
     "xor r11, r11",
@@ -169,7 +166,7 @@ global_asm!(
     "mov gs:[104], rax", // gs slot 13 = user RSP
     "mov rax, [rsp + 32]",
     "mov gs:[112], rax", // gs slot 14 = user SS
-    "mov rax, r11",       // Restore syscall return value
+    "mov rax, r11",      // Restore syscall return value
     "iretq"
 );
 

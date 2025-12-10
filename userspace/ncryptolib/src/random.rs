@@ -2,8 +2,8 @@
 //!
 //! CSPRNG implementation using the getrandom syscall.
 
-use std::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
+use std::vec::Vec;
 
 // ============================================================================
 // Syscall Interface
@@ -33,7 +33,7 @@ pub fn getrandom(buf: &mut [u8], flags: u32) -> Result<usize, i32> {
             options(nostack, preserves_flags)
         );
     }
-    
+
     if ret < 0 {
         Err(ret as i32)
     } else {
@@ -63,15 +63,15 @@ fn quarter_round(state: &mut [u32; 16], a: usize, b: usize, c: usize, d: usize) 
     state[a] = state[a].wrapping_add(state[b]);
     state[d] ^= state[a];
     state[d] = state[d].rotate_left(16);
-    
+
     state[c] = state[c].wrapping_add(state[d]);
     state[b] ^= state[c];
     state[b] = state[b].rotate_left(12);
-    
+
     state[a] = state[a].wrapping_add(state[b]);
     state[d] ^= state[a];
     state[d] = state[d].rotate_left(8);
-    
+
     state[c] = state[c].wrapping_add(state[d]);
     state[b] ^= state[c];
     state[b] = state[b].rotate_left(7);
@@ -80,26 +80,26 @@ fn quarter_round(state: &mut [u32; 16], a: usize, b: usize, c: usize, d: usize) 
 /// ChaCha20 block function
 fn chacha20_block(key: &[u32; 8], counter: u64, nonce: &[u32; 2]) -> [u8; 64] {
     let mut state = [0u32; 16];
-    
+
     // Constants "expand 32-byte k"
     state[0] = 0x61707865;
     state[1] = 0x3320646e;
     state[2] = 0x79622d32;
     state[3] = 0x6b206574;
-    
+
     // Key
     state[4..12].copy_from_slice(key);
-    
+
     // Counter
     state[12] = counter as u32;
     state[13] = (counter >> 32) as u32;
-    
+
     // Nonce
     state[14] = nonce[0];
     state[15] = nonce[1];
-    
+
     let mut working = state;
-    
+
     // 20 rounds (10 double rounds)
     for _ in 0..10 {
         // Column rounds
@@ -113,18 +113,18 @@ fn chacha20_block(key: &[u32; 8], counter: u64, nonce: &[u32; 2]) -> [u8; 64] {
         quarter_round(&mut working, 2, 7, 8, 13);
         quarter_round(&mut working, 3, 4, 9, 14);
     }
-    
+
     // Add original state
     for i in 0..16 {
         working[i] = working[i].wrapping_add(state[i]);
     }
-    
+
     // Convert to bytes
     let mut output = [0u8; 64];
     for (i, word) in working.iter().enumerate() {
         output[i * 4..(i + 1) * 4].copy_from_slice(&word.to_le_bytes());
     }
-    
+
     output
 }
 
@@ -146,7 +146,7 @@ impl RngState {
     pub fn new() -> Result<Self, i32> {
         let mut seed = [0u8; 40]; // 32 bytes key + 8 bytes nonce
         random_bytes(&mut seed)?;
-        
+
         let mut key = [0u32; 8];
         for i in 0..8 {
             key[i] = u32::from_le_bytes([
@@ -156,12 +156,12 @@ impl RngState {
                 seed[i * 4 + 3],
             ]);
         }
-        
+
         let nonce = [
             u32::from_le_bytes([seed[32], seed[33], seed[34], seed[35]]),
             u32::from_le_bytes([seed[36], seed[37], seed[38], seed[39]]),
         ];
-        
+
         Ok(Self {
             key,
             nonce,
@@ -182,12 +182,12 @@ impl RngState {
                 seed[i * 4 + 3],
             ]);
         }
-        
+
         let nonce = [
             u32::from_le_bytes([seed[32], seed[33], seed[34], seed[35]]),
             u32::from_le_bytes([seed[36], seed[37], seed[38], seed[39]]),
         ];
-        
+
         Self {
             key,
             nonce,
@@ -200,7 +200,7 @@ impl RngState {
     /// Fill buffer with random bytes
     pub fn fill(&mut self, dest: &mut [u8]) {
         let mut offset = 0;
-        
+
         while offset < dest.len() {
             // Refill buffer if needed
             if self.buffer_pos >= 64 {
@@ -208,14 +208,13 @@ impl RngState {
                 self.buffer = chacha20_block(&self.key, counter, &self.nonce);
                 self.buffer_pos = 0;
             }
-            
+
             // Copy from buffer
             let available = 64 - self.buffer_pos;
             let to_copy = core::cmp::min(available, dest.len() - offset);
-            dest[offset..offset + to_copy].copy_from_slice(
-                &self.buffer[self.buffer_pos..self.buffer_pos + to_copy]
-            );
-            
+            dest[offset..offset + to_copy]
+                .copy_from_slice(&self.buffer[self.buffer_pos..self.buffer_pos + to_copy]);
+
             self.buffer_pos += to_copy;
             offset += to_copy;
         }
@@ -246,7 +245,7 @@ impl RngState {
     pub fn reseed(&mut self) -> Result<(), i32> {
         let mut seed = [0u8; 40];
         random_bytes(&mut seed)?;
-        
+
         for i in 0..8 {
             self.key[i] = u32::from_le_bytes([
                 seed[i * 4],
@@ -255,15 +254,15 @@ impl RngState {
                 seed[i * 4 + 3],
             ]);
         }
-        
+
         self.nonce = [
             u32::from_le_bytes([seed[32], seed[33], seed[34], seed[35]]),
             u32::from_le_bytes([seed[36], seed[37], seed[38], seed[39]]),
         ];
-        
+
         self.counter.store(0, Ordering::SeqCst);
         self.buffer_pos = 64;
-        
+
         Ok(())
     }
 }
@@ -284,7 +283,7 @@ pub extern "C" fn RAND_bytes(buf: *mut u8, num: i32) -> i32 {
     if buf.is_null() || num < 0 {
         return 0;
     }
-    
+
     let slice = unsafe { core::slice::from_raw_parts_mut(buf, num as usize) };
     match random_bytes(slice) {
         Ok(()) => 1,
@@ -331,13 +330,13 @@ mod tests {
         let seed = [0u8; 40];
         let mut rng1 = RngState::with_seed(&seed);
         let mut rng2 = RngState::with_seed(&seed);
-        
+
         let mut buf1 = [0u8; 100];
         let mut buf2 = [0u8; 100];
-        
+
         rng1.fill(&mut buf1);
         rng2.fill(&mut buf2);
-        
+
         assert_eq!(buf1, buf2);
     }
 
@@ -346,7 +345,7 @@ mod tests {
         let key = [0u32; 8];
         let nonce = [0u32; 2];
         let block = chacha20_block(&key, 0, &nonce);
-        
+
         // Just verify it produces output
         assert!(block.iter().any(|&b| b != 0));
     }

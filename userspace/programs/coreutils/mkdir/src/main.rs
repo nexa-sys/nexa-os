@@ -19,7 +19,7 @@ fn print_usage() {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    
+
     if args.len() < 2 {
         print_usage();
         process::exit(1);
@@ -27,7 +27,7 @@ fn main() {
 
     let mut parents = false;
     let mut dirs: Vec<&str> = Vec::new();
-    
+
     for arg in args.iter().skip(1) {
         if arg == "-h" || arg == "--help" {
             print_usage();
@@ -48,14 +48,14 @@ fn main() {
     }
 
     let mut exit_code = 0;
-    
+
     for dir in dirs {
         let result = if parents {
             fs::create_dir_all(dir)
         } else {
             fs::create_dir(dir)
         };
-        
+
         if let Err(e) = result {
             eprintln!("mkdir: cannot create directory '{}': {}", dir, e);
             exit_code = 1;

@@ -25,12 +25,12 @@ global_asm!(
     ".type _start,@function",
     "_start:",
     "\t.cfi_startproc",
-    "\tmov rbx, rsp",             // Preserve userspace stack pointer (points at argc)
-    "\tand rsp, -16",             // Realign the stack prior to calling into Rust
-    "\tmov rdi, rbx",             // Pass original stack pointer as first arg
-    "\txor rbp, rbp",             // Clear frame pointer to aid unwinding/debug
+    "\tmov rbx, rsp", // Preserve userspace stack pointer (points at argc)
+    "\tand rsp, -16", // Realign the stack prior to calling into Rust
+    "\tmov rdi, rbx", // Pass original stack pointer as first arg
+    "\txor rbp, rbp", // Clear frame pointer to aid unwinding/debug
     "\tcall __nexa_crt_start",
-    "\tud2",                      // Should never return; trap if it does
+    "\tud2", // Should never return; trap if it does
     "\t.cfi_endproc",
     "\t.size _start, .-_start",
     ".globl _start_c",
@@ -65,7 +65,7 @@ unsafe extern "C" fn __nexa_crt_start(stack_ptr: *const usize) -> ! {
     // Initialize TLS for main thread FIRST, before anything else
     // This is critical for proper std support
     crate::libc_compat::pthread::__nrlib_init_main_thread_tls();
-    
+
     if stack_ptr.is_null() {
         let exit_code = main(0, core::ptr::null());
         sys_exit(exit_code)

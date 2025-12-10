@@ -62,7 +62,7 @@ fn list_signals() {
 fn signal_name_to_num(name: &str) -> Option<i32> {
     let name_upper = name.to_uppercase();
     let search_name = name_upper.strip_prefix("SIG").unwrap_or(&name_upper);
-    
+
     for (sig_name, num) in SIGNAL_MAP {
         if *sig_name == search_name {
             return Some(*num);
@@ -89,7 +89,8 @@ fn get_process_cmdline(pid: u32) -> Option<String> {
     if let Ok(content) = fs::read(&cmdline_path) {
         if !content.is_empty() {
             // cmdline is null-separated
-            let cmd = content.split(|&b| b == 0)
+            let cmd = content
+                .split(|&b| b == 0)
                 .next()
                 .map(|s| String::from_utf8_lossy(s).to_string())?;
             // Extract basename
@@ -105,25 +106,24 @@ fn get_process_cmdline(pid: u32) -> Option<String> {
 /// Find all PIDs matching the process name
 fn find_processes_by_name(name: &str, exact_match: bool) -> Vec<u32> {
     let mut pids = Vec::new();
-    
+
     if let Ok(entries) = fs::read_dir("/proc") {
         for entry in entries.flatten() {
             let filename = entry.file_name();
             let filename_str = filename.to_string_lossy();
-            
+
             // Check if it's a numeric directory (PID)
             if let Ok(pid) = filename_str.parse::<u32>() {
                 // Get process name
-                let proc_name = get_process_name(pid)
-                    .or_else(|| get_process_cmdline(pid));
-                
+                let proc_name = get_process_name(pid).or_else(|| get_process_cmdline(pid));
+
                 if let Some(proc_name) = proc_name {
                     let matches = if exact_match {
                         proc_name == name
                     } else {
                         proc_name == name || proc_name.contains(name)
                     };
-                    
+
                     if matches {
                         pids.push(pid);
                     }
@@ -131,7 +131,7 @@ fn find_processes_by_name(name: &str, exact_match: bool) -> Vec<u32> {
             }
         }
     }
-    
+
     pids
 }
 
@@ -141,7 +141,7 @@ fn kill_process(pid: u32, signal: i32) -> Result<(), &'static str> {
     extern "C" {
         fn kill(pid: i32, sig: i32) -> i32;
     }
-    
+
     let result = unsafe { kill(pid as i32, signal) };
     if result == 0 {
         Ok(())
@@ -152,7 +152,7 @@ fn kill_process(pid: u32, signal: i32) -> Result<(), &'static str> {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    
+
     if args.len() < 2 {
         print_usage();
         process::exit(1);
@@ -164,10 +164,10 @@ fn main() {
     let mut verbose = false;
     let mut names: Vec<&str> = Vec::new();
     let mut i = 1;
-    
+
     while i < args.len() {
         let arg = &args[i];
-        
+
         if arg == "-h" || arg == "--help" {
             print_usage();
             process::exit(0);
@@ -211,7 +211,7 @@ fn main() {
         } else {
             names.push(arg);
         }
-        
+
         i += 1;
     }
 
@@ -222,10 +222,10 @@ fn main() {
 
     let mut exit_code = 0;
     let mut killed_any = false;
-    
+
     for name in &names {
         let pids = find_processes_by_name(name, exact_match);
-        
+
         if pids.is_empty() {
             if !quiet {
                 eprintln!("killall: {}: no process found", name);

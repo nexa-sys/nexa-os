@@ -653,8 +653,10 @@ impl FileSystem for TmpfsVfsAdapter {
     }
 
     fn create(&self, path: &str) -> Result<(), &'static str> {
-        with_tmpfs_mut(self.mount_point, |fs| fs.create_file(path, 0o644).map(|_| ()))
-            .map_err(|_| "tmpfs create error")
+        with_tmpfs_mut(self.mount_point, |fs| {
+            fs.create_file(path, 0o644).map(|_| ())
+        })
+        .map_err(|_| "tmpfs create error")
     }
 }
 

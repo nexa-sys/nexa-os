@@ -52,7 +52,7 @@ impl ParsedUrl {
 }
 
 /// Parse URL into components
-/// 
+///
 /// Supports:
 /// - `http://host/path`
 /// - `https://host/path`

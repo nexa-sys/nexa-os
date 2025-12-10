@@ -20,9 +20,7 @@ use super::constants::{
     DEFAULT_FLOAT_PRECISION, FLAG_ALT, FLAG_LEFT, FLAG_PLUS, FLAG_SPACE, FLAG_ZERO,
     FLOAT_BUFFER_SIZE, INT_BUFFER_SIZE, MAX_FLOAT_PRECISION,
 };
-use super::file::{
-    file_write_byte, file_write_bytes, lock_stream, write_repeat, FILE,
-};
+use super::file::{file_write_byte, file_write_bytes, lock_stream, write_repeat, FILE};
 use super::helpers::{format_unsigned, pow10, round_f64};
 
 /// Length modifier for format specifiers
@@ -208,8 +206,7 @@ pub(crate) fn write_formatted_block(
         && matches!(
             spec.specifier,
             b'd' | b'i' | b'u' | b'x' | b'X' | b'o' | b'p'
-        )
-    {
+        ) {
         b'0'
     } else {
         b' '
@@ -305,7 +302,8 @@ pub(crate) fn handle_float(
         if precision > 0 {
             let (frac_buf, _) = format_unsigned(frac_part, 10, precision.max(1));
             let start = INT_BUFFER_SIZE - precision;
-            float_buf[cursor..cursor + precision].copy_from_slice(&frac_buf[start..start + precision]);
+            float_buf[cursor..cursor + precision]
+                .copy_from_slice(&frac_buf[start..start + precision]);
             cursor += precision;
         }
     }
@@ -429,7 +427,9 @@ pub(crate) unsafe fn write_formatted(
                     break;
                 }
                 has_digit = true;
-                width = width.saturating_mul(10).saturating_add((ch - b'0') as usize);
+                width = width
+                    .saturating_mul(10)
+                    .saturating_add((ch - b'0') as usize);
                 i += 1;
             }
             if has_digit {
@@ -457,7 +457,9 @@ pub(crate) unsafe fn write_formatted(
                         break;
                     }
                     has_digit = true;
-                    precision = precision.saturating_mul(10).saturating_add((ch - b'0') as usize);
+                    precision = precision
+                        .saturating_mul(10)
+                        .saturating_add((ch - b'0') as usize);
                     i += 1;
                 }
                 spec.precision = if has_digit { Some(precision) } else { Some(0) };
@@ -510,14 +512,16 @@ pub(crate) unsafe fn write_formatted(
                 let value = read_signed_arg(args, spec.length);
                 let (negative, buf, idx) = format_signed(value, 10, 1);
                 let digits = &buf[idx..];
-                let written = emit_formatted_integer(file, &spec, negative, digits, false, value == 0)?;
+                let written =
+                    emit_formatted_integer(file, &spec, negative, digits, false, value == 0)?;
                 total_written += written as i32;
             }
             b'u' => {
                 let value = read_unsigned_arg(args, spec.length);
                 let (buf, idx) = format_unsigned(value, 10, 1);
                 let digits = &buf[idx..];
-                let written = emit_formatted_integer(file, &spec, false, digits, false, value == 0)?;
+                let written =
+                    emit_formatted_integer(file, &spec, false, digits, false, value == 0)?;
                 total_written += written as i32;
             }
             b'x' | b'X' => {
@@ -525,14 +529,16 @@ pub(crate) unsafe fn write_formatted(
                 let uppercase = spec.specifier == b'X';
                 let (buf, idx) = format_unsigned(value, 16, 1);
                 let digits = &buf[idx..];
-                let written = emit_formatted_integer(file, &spec, false, digits, uppercase, value == 0)?;
+                let written =
+                    emit_formatted_integer(file, &spec, false, digits, uppercase, value == 0)?;
                 total_written += written as i32;
             }
             b'o' => {
                 let value = read_unsigned_arg(args, spec.length);
                 let (buf, idx) = format_unsigned(value, 8, 1);
                 let digits = &buf[idx..];
-                let written = emit_formatted_integer(file, &spec, false, digits, false, value == 0)?;
+                let written =
+                    emit_formatted_integer(file, &spec, false, digits, false, value == 0)?;
                 total_written += written as i32;
             }
             b'p' => {
@@ -543,7 +549,8 @@ pub(crate) unsafe fn write_formatted(
                 let mut pointer_spec = spec;
                 pointer_spec.specifier = b'p';
                 pointer_spec.flags &= !(FLAG_ALT | FLAG_ZERO);
-                let written = emit_formatted_integer(file, &pointer_spec, false, digits, false, addr == 0)?;
+                let written =
+                    emit_formatted_integer(file, &pointer_spec, false, digits, false, addr == 0)?;
                 total_written += written as i32;
             }
             b'f' | b'F' => {

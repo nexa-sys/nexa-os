@@ -71,7 +71,7 @@ impl FontManager {
 
         if self.fonts.is_empty() {
             crate::kwarn!("Font manager: no fonts found, trying fallback paths");
-            
+
             // Try common fallback paths
             let fallbacks = [
                 "/usr/share/fonts/truetype/HarmonyOS_Sans_SC_Bold.ttf",
@@ -92,10 +92,7 @@ impl FontManager {
         // Sort fonts by priority
         self.fonts.sort_by_key(|f| f.priority);
 
-        crate::kinfo!(
-            "Font manager: loaded {} font(s)",
-            self.fonts.len()
-        );
+        crate::kinfo!("Font manager: loaded {} font(s)", self.fonts.len());
 
         Ok(())
     }
@@ -150,12 +147,10 @@ impl FontManager {
         crate::kinfo!("Font manager: loading {}", path);
 
         // Read font file
-        let data = crate::fs::read_file_bytes(path)
-            .ok_or(FontManagerError::LoadFailed)?;
+        let data = crate::fs::read_file_bytes(path).ok_or(FontManagerError::LoadFailed)?;
 
         // Parse font
-        let font = TtfFont::parse(data)
-            .map_err(FontManagerError::ParseFailed)?;
+        let font = TtfFont::parse(data).map_err(FontManagerError::ParseFailed)?;
 
         // Determine priority based on name
         let priority = self.calculate_priority(name);
@@ -197,8 +192,11 @@ impl FontManager {
         }
 
         // CJK fonts get higher priority for Chinese support
-        if name.contains("CJK") || name.contains("SC") || name.contains("CN") 
-            || name.contains("HarmonyOS") || name.contains("Noto")
+        if name.contains("CJK")
+            || name.contains("SC")
+            || name.contains("CN")
+            || name.contains("HarmonyOS")
+            || name.contains("Noto")
         {
             return 20;
         }
@@ -223,7 +221,9 @@ impl FontManager {
     /// Check if a character can be rendered
     pub fn has_glyph(&self, ch: char) -> bool {
         let codepoint = ch as u32;
-        self.fonts.iter().any(|f| f.font.get_glyph_id(codepoint).is_some())
+        self.fonts
+            .iter()
+            .any(|f| f.font.get_glyph_id(codepoint).is_some())
     }
 
     /// Get a rendered glyph bitmap for a character
@@ -250,8 +250,7 @@ impl FontManager {
                 let metrics = loaded.font.get_h_metrics(glyph_id);
 
                 // Rasterize
-                let rasterizer = Rasterizer::new(size)
-                    .with_scale(loaded.font.units_per_em());
+                let rasterizer = Rasterizer::new(size).with_scale(loaded.font.units_per_em());
 
                 return Some(rasterizer.rasterize(&loaded.font, &outline, &metrics));
             }

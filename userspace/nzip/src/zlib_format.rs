@@ -2,10 +2,10 @@
 //!
 //! Provides zlib format encoding/decoding.
 
-use crate::adler32::{Adler32, adler32};
-use crate::deflate::{Deflater, compress_bound};
-use crate::inflate::Inflater;
+use crate::adler32::{adler32, Adler32};
+use crate::deflate::{compress_bound, Deflater};
 use crate::error::{ZlibError, ZlibResult};
+use crate::inflate::Inflater;
 
 /// ZLIB format header
 #[derive(Clone, Copy, Debug)]
@@ -27,11 +27,11 @@ pub struct ZlibHeader {
 impl Default for ZlibHeader {
     fn default() -> Self {
         Self {
-            cm: 8,      // DEFLATE
-            cinfo: 7,   // 32K window
-            fcheck: 0,  // Calculated on encode
+            cm: 8,     // DEFLATE
+            cinfo: 7,  // 32K window
+            fcheck: 0, // Calculated on encode
             fdict: false,
-            flevel: 2,  // Default compression
+            flevel: 2, // Default compression
             dict_id: None,
         }
     }
@@ -41,12 +41,12 @@ impl ZlibHeader {
     /// Create header with specific compression level
     pub fn with_level(level: i32) -> Self {
         let flevel = match level {
-            0..=1 => 0,  // Fastest
-            2..=5 => 1,  // Fast
-            6 => 2,      // Default
-            _ => 3,      // Maximum
+            0..=1 => 0, // Fastest
+            2..=5 => 1, // Fast
+            6 => 2,     // Default
+            _ => 3,     // Maximum
         };
-        
+
         Self {
             flevel,
             ..Default::default()
@@ -57,21 +57,21 @@ impl ZlibHeader {
     pub fn encode(&self) -> Vec<u8> {
         let cmf = (self.cinfo << 4) | self.cm;
         let mut flg = (self.flevel << 6) | if self.fdict { 0x20 } else { 0 };
-        
+
         // Calculate fcheck so (cmf * 256 + flg) % 31 == 0
         let check = ((cmf as u16) << 8) | (flg as u16);
         let fcheck = (31 - (check % 31)) as u8;
         flg |= fcheck;
-        
+
         let mut result = vec![cmf, flg];
-        
+
         if let Some(dict_id) = self.dict_id {
             result.push((dict_id >> 24) as u8);
             result.push((dict_id >> 16) as u8);
             result.push((dict_id >> 8) as u8);
             result.push(dict_id as u8);
         }
-        
+
         result
     }
 
@@ -80,30 +80,30 @@ impl ZlibHeader {
         if data.len() < 2 {
             return Err(ZlibError::UnexpectedEof);
         }
-        
+
         let cmf = data[0];
         let flg = data[1];
-        
+
         let cm = cmf & 0x0F;
         let cinfo = (cmf >> 4) & 0x0F;
-        
+
         if cm != 8 {
             return Err(ZlibError::HeaderError);
         }
-        
+
         if cinfo > 7 {
             return Err(ZlibError::HeaderError);
         }
-        
+
         // Verify checksum
         if ((cmf as u16) * 256 + (flg as u16)) % 31 != 0 {
             return Err(ZlibError::HeaderError);
         }
-        
+
         let fdict = (flg & 0x20) != 0;
         let flevel = (flg >> 6) & 0x03;
         let fcheck = flg & 0x1F;
-        
+
         let (dict_id, consumed) = if fdict {
             if data.len() < 6 {
                 return Err(ZlibError::UnexpectedEof);
@@ -116,15 +116,18 @@ impl ZlibHeader {
         } else {
             (None, 2)
         };
-        
-        Ok((Self {
-            cm,
-            cinfo,
-            fcheck,
-            fdict,
-            flevel,
-            dict_id,
-        }, consumed))
+
+        Ok((
+            Self {
+                cm,
+                cinfo,
+                fcheck,
+                fdict,
+                flevel,
+                dict_id,
+            },
+            consumed,
+        ))
     }
 }
 
@@ -154,20 +157,20 @@ impl ZlibCompressor {
     /// Compress data
     pub fn compress(&mut self, input: &[u8], finish: bool) -> ZlibResult<Vec<u8>> {
         let mut output = Vec::new();
-        
+
         // Write header if not yet written
         if !self.header_written {
             output.extend(self.header.encode());
             self.header_written = true;
         }
-        
+
         // Update checksum
         self.checksum.update(input);
-        
+
         // Compress
         let compressed = self.deflater.compress(input, finish)?;
         output.extend(compressed);
-        
+
         // Write trailer if finishing
         if finish {
             let adler = self.checksum.finalize();
@@ -176,7 +179,7 @@ impl ZlibCompressor {
             output.push((adler >> 8) as u8);
             output.push(adler as u8);
         }
-        
+
         Ok(output)
     }
 }
@@ -207,11 +210,11 @@ impl ZlibDecompressor {
     /// Decompress data
     pub fn decompress(&mut self, input: &[u8]) -> ZlibResult<(Vec<u8>, usize)> {
         let mut pos = 0;
-        
+
         // Parse header if not yet done
         if self.header.is_none() {
             self.header_buffer.extend_from_slice(input);
-            
+
             match ZlibHeader::decode(&self.header_buffer) {
                 Ok((header, consumed)) => {
                     self.header = Some(header);
@@ -225,10 +228,12 @@ impl ZlibDecompressor {
                 Err(e) => return Err(e),
             }
         }
-        
+
         // Decompress
         let (decompressed, consumed) = if !self.header_buffer.is_empty() {
-            let combined: Vec<u8> = self.header_buffer.iter()
+            let combined: Vec<u8> = self
+                .header_buffer
+                .iter()
                 .chain(input[pos..].iter())
                 .copied()
                 .collect();
@@ -238,10 +243,10 @@ impl ZlibDecompressor {
         } else {
             self.inflater.decompress(&input[pos..])?
         };
-        
+
         // Update checksum
         self.checksum.update(&decompressed);
-        
+
         Ok((decompressed, pos + consumed))
     }
 

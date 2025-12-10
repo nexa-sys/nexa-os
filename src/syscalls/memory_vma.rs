@@ -9,9 +9,7 @@
 //! to provide proper memory region tracking, permission management, and
 //! page table integration.
 
-use crate::mm::vma::{
-    AddressSpace, VMABacking, VMAFlags, VMAPermissions, VMA, MAX_ADDRESS_SPACES,
-};
+use crate::mm::vma::{AddressSpace, VMABacking, VMAFlags, VMAPermissions, MAX_ADDRESS_SPACES, VMA};
 use crate::posix::{self, errno};
 use crate::process::{HEAP_BASE, USER_REGION_SIZE, USER_VIRT_BASE};
 use crate::scheduler::current_pid;
@@ -57,7 +55,8 @@ pub(crate) static ADDRESS_SPACES: Mutex<[AddressSpace; MAX_ADDRESS_SPACES]> =
     Mutex::new([const { AddressSpace::empty() }; MAX_ADDRESS_SPACES]);
 
 /// Get a locked reference to all address spaces (for internal use)
-pub(crate) fn get_address_spaces() -> spin::MutexGuard<'static, [AddressSpace; MAX_ADDRESS_SPACES]> {
+pub(crate) fn get_address_spaces() -> spin::MutexGuard<'static, [AddressSpace; MAX_ADDRESS_SPACES]>
+{
     ADDRESS_SPACES.lock()
 }
 
@@ -70,7 +69,7 @@ where
         Some(p) => p,
         None => return Err("No current process"),
     };
-    
+
     if pid >= MAX_ADDRESS_SPACES as u64 {
         return Err("PID out of range");
     }
@@ -145,7 +144,7 @@ pub fn copy_address_space_for_fork(parent_pid: u64, child_pid: u64) -> Result<()
     // Collect VMAs from parent (copy to avoid borrow conflict)
     let mut vmas_to_copy: [Option<VMA>; 64] = [None; 64];
     let mut vma_count = 0;
-    
+
     for vma in spaces[parent_pid as usize].vmas.iter() {
         if vma_count < 64 {
             let mut child_vma = *vma;
@@ -252,9 +251,11 @@ pub fn mmap_vma(addr: u64, length: u64, prot: u64, flags: u64, fd: i64, offset: 
             if space.vmas.find(aligned_hint).is_none() {
                 // Check the entire range is free
                 let mut overlapping = [0i32; 16];
-                let count = space
-                    .vmas
-                    .find_overlapping(aligned_hint, aligned_hint + aligned_length, &mut overlapping);
+                let count = space.vmas.find_overlapping(
+                    aligned_hint,
+                    aligned_hint + aligned_length,
+                    &mut overlapping,
+                );
                 if count == 0 {
                     aligned_hint
                 } else {
@@ -310,7 +311,13 @@ pub fn mmap_vma(addr: u64, length: u64, prot: u64, flags: u64, fd: i64, offset: 
         };
 
         // Create and insert VMA
-        let vma = VMA::new(map_addr, map_addr + aligned_length, vma_perm, vma_flags, backing);
+        let vma = VMA::new(
+            map_addr,
+            map_addr + aligned_length,
+            vma_perm,
+            vma_flags,
+            backing,
+        );
 
         if space.add_vma(vma).is_none() {
             kerror!("[mmap_vma] Failed to add VMA");
@@ -328,7 +335,8 @@ pub fn mmap_vma(addr: u64, length: u64, prot: u64, flags: u64, fd: i64, offset: 
                 }
             } else if fd >= 0 {
                 // Read file contents into mapping
-                if let Err(e) = read_file_into_mapping(fd as u64, offset, map_addr, aligned_length) {
+                if let Err(e) = read_file_into_mapping(fd as u64, offset, map_addr, aligned_length)
+                {
                     kwarn!("[mmap_vma] Failed to read file into mapping: {}", e);
                     // Don't fail - the mapping exists, just empty
                 }
@@ -371,7 +379,10 @@ fn find_free_mmap_region(space: &mut AddressSpace, size: u64) -> Result<u64, i32
     let user_end = USER_VIRT_BASE + USER_REGION_SIZE;
 
     // Try from current mmap pointer
-    if let Some(addr) = space.vmas.find_free_region(space.mmap_current, user_end, size) {
+    if let Some(addr) = space
+        .vmas
+        .find_free_region(space.mmap_current, user_end, size)
+    {
         space.mmap_current = addr + size;
         return Ok(addr);
     }
@@ -382,10 +393,7 @@ fn find_free_mmap_region(space: &mut AddressSpace, size: u64) -> Result<u64, i32
         return Ok(addr);
     }
 
-    kerror!(
-        "[mmap_vma] No free region for {} bytes",
-        size
-    );
+    kerror!("[mmap_vma] No free region for {} bytes", size);
     Err(errno::ENOMEM)
 }
 
@@ -507,9 +515,7 @@ pub fn munmap_vma(addr: u64, length: u64) -> u64 {
 
     let aligned_length = (length + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
 
-    let result = with_current_address_space(|space| {
-        space.munmap(addr, aligned_length)
-    });
+    let result = with_current_address_space(|space| space.munmap(addr, aligned_length));
 
     match result {
         Ok(Ok(())) => {
@@ -568,9 +574,7 @@ pub fn mprotect_vma(addr: u64, length: u64, prot: u64) -> u64 {
 
     let aligned_length = (length + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
 
-    let result = with_current_address_space(|space| {
-        space.mprotect(addr, aligned_length, prot)
-    });
+    let result = with_current_address_space(|space| space.mprotect(addr, aligned_length, prot));
 
     match result {
         Ok(Ok(())) => {
@@ -623,11 +627,7 @@ pub fn brk_vma(addr: u64) -> u64 {
                 if new_brk > space.heap_end {
                     unsafe {
                         let old_end = space.heap_end;
-                        core::ptr::write_bytes(
-                            old_end as *mut u8,
-                            0,
-                            (new_brk - old_end) as usize,
-                        );
+                        core::ptr::write_bytes(old_end as *mut u8, 0, (new_brk - old_end) as usize);
                     }
                 }
 
@@ -680,15 +680,9 @@ pub fn handle_user_page_fault(
     is_write: bool,
     _is_user: bool,
 ) -> Result<(), &'static str> {
-    ktrace!(
-        "[vma] Page fault at {:#x}, write={}",
-        fault_addr,
-        is_write
-    );
+    ktrace!("[vma] Page fault at {:#x}, write={}", fault_addr, is_write);
 
-    with_current_address_space(|space| {
-        space.handle_fault(fault_addr, is_write)
-    })?
+    with_current_address_space(|space| space.handle_fault(fault_addr, is_write))?
 }
 
 // =============================================================================

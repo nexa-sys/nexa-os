@@ -590,14 +590,14 @@ pub fn get_kernel_stack_top(cpu_id: usize) -> u64 {
 /// - Must be called with interrupts disabled
 pub unsafe fn update_tss_rsp0(cpu_id: usize, new_rsp0: u64) {
     use x86_64::VirtAddr;
-    
+
     if cpu_id >= MAX_CPUS {
         return; // Silently ignore invalid CPU IDs in release mode
     }
-    
+
     // Determine if this CPU uses dynamic or static TSS
     let uses_dynamic = cpu_id >= STATIC_CPU_COUNT;
-    
+
     let tss: &mut x86_64::structures::tss::TaskStateSegment = if uses_dynamic {
         match crate::smp::alloc::get_dynamic_tss_mut(cpu_id) {
             Ok(t) => t,
@@ -609,6 +609,6 @@ pub unsafe fn update_tss_rsp0(cpu_id: usize, new_rsp0: u64) {
         }
         PER_CPU_TSS[cpu_id].get_mut()
     };
-    
+
     tss.privilege_stack_table[0] = VirtAddr::new(new_rsp0);
 }

@@ -49,23 +49,23 @@ fn generate_uuid() -> [u8; 16] {
     // Simple pseudo-random UUID generation
     // In a real implementation, would use proper random source
     let mut uuid = [0u8; 16];
-    
+
     // Use simple counter + device path hash as seed
     let seed = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0x12345678);
-    
+
     let mut state = seed;
     for byte in &mut uuid {
         state = state.wrapping_mul(1103515245).wrapping_add(12345);
         *byte = (state >> 16) as u8;
     }
-    
+
     // Set version (4) and variant (RFC 4122)
     uuid[6] = (uuid[6] & 0x0f) | 0x40;
     uuid[8] = (uuid[8] & 0x3f) | 0x80;
-    
+
     uuid
 }
 
@@ -82,17 +82,17 @@ fn format_uuid(uuid: &[u8; 16]) -> String {
 
 fn parse_size(size_str: &str) -> Option<u64> {
     let size_str = size_str.trim();
-    
+
     let (num_str, multiplier) = if size_str.ends_with('K') || size_str.ends_with('k') {
-        (&size_str[..size_str.len()-1], 1024u64)
+        (&size_str[..size_str.len() - 1], 1024u64)
     } else if size_str.ends_with('M') || size_str.ends_with('m') {
-        (&size_str[..size_str.len()-1], 1024 * 1024)
+        (&size_str[..size_str.len() - 1], 1024 * 1024)
     } else if size_str.ends_with('G') || size_str.ends_with('g') {
-        (&size_str[..size_str.len()-1], 1024 * 1024 * 1024)
+        (&size_str[..size_str.len() - 1], 1024 * 1024 * 1024)
     } else {
         (size_str, 1)
     };
-    
+
     num_str.parse::<u64>().ok().map(|n| n * multiplier)
 }
 
@@ -116,7 +116,7 @@ fn do_mkswap(
             return 1;
         }
     };
-    
+
     // Determine size
     let total_size = match size {
         Some(s) => {
@@ -138,46 +138,50 @@ fn do_mkswap(
             }
         }
     };
-    
+
     if total_size < 2 * PAGE_SIZE as u64 {
-        eprintln!("mkswap: {}: file/device too small (minimum {} bytes)", path, 2 * PAGE_SIZE);
+        eprintln!(
+            "mkswap: {}: file/device too small (minimum {} bytes)",
+            path,
+            2 * PAGE_SIZE
+        );
         return 1;
     }
-    
+
     // Calculate number of pages
     let total_pages = total_size / PAGE_SIZE as u64;
     let last_page = total_pages - 1; // last usable page (0-indexed)
-    
+
     if verbose {
         println!("Device: {}", path);
         println!("Size: {} bytes ({} pages)", total_size, total_pages);
     }
-    
+
     // Generate UUID if not provided
     let uuid = uuid.unwrap_or_else(generate_uuid);
-    
+
     // Create header page
     let mut header = vec![0u8; PAGE_SIZE];
-    
+
     // Version (1)
     header[VERSION_OFFSET] = 1;
     header[VERSION_OFFSET + 1] = 0;
     header[VERSION_OFFSET + 2] = 0;
     header[VERSION_OFFSET + 3] = 0;
-    
+
     // Last page (little-endian 32-bit)
     let last_page_u32 = last_page as u32;
     header[LAST_PAGE_OFFSET] = (last_page_u32 & 0xFF) as u8;
     header[LAST_PAGE_OFFSET + 1] = ((last_page_u32 >> 8) & 0xFF) as u8;
     header[LAST_PAGE_OFFSET + 2] = ((last_page_u32 >> 16) & 0xFF) as u8;
     header[LAST_PAGE_OFFSET + 3] = ((last_page_u32 >> 24) & 0xFF) as u8;
-    
+
     // Number of bad pages (0)
     header[NR_BADPAGES_OFFSET..NR_BADPAGES_OFFSET + 4].copy_from_slice(&[0, 0, 0, 0]);
-    
+
     // UUID
     header[UUID_OFFSET..UUID_OFFSET + 16].copy_from_slice(&uuid);
-    
+
     // Volume name/label
     if let Some(label) = label {
         let label_bytes = label.as_bytes();
@@ -185,37 +189,40 @@ fn do_mkswap(
         header[VOLUME_NAME_OFFSET..VOLUME_NAME_OFFSET + copy_len]
             .copy_from_slice(&label_bytes[..copy_len]);
     }
-    
+
     // Magic signature at end of page
     header[SWAP_MAGIC_OFFSET..SWAP_MAGIC_OFFSET + SWAP_MAGIC.len()].copy_from_slice(SWAP_MAGIC);
-    
+
     // Write header
     if let Err(e) = file.seek(SeekFrom::Start(0)) {
         eprintln!("mkswap: seek failed: {}", e);
         return 1;
     }
-    
+
     if let Err(e) = file.write_all(&header) {
         eprintln!("mkswap: write failed: {}", e);
         return 1;
     }
-    
+
     // Sync to disk
     if let Err(e) = file.sync_all() {
         eprintln!("mkswap: sync failed: {}", e);
         return 1;
     }
-    
+
     // Print results
-    println!("Setting up swapspace version 1, size = {} bytes ({} pages)", 
-             total_size - PAGE_SIZE as u64, last_page);
-    
+    println!(
+        "Setting up swapspace version 1, size = {} bytes ({} pages)",
+        total_size - PAGE_SIZE as u64,
+        last_page
+    );
+
     if let Some(label) = label {
         println!("LABEL={}", label);
     }
-    
+
     println!("UUID={}", format_uuid(&uuid));
-    
+
     0
 }
 
@@ -227,7 +234,7 @@ fn main() {
     let mut uuid: Option<[u8; 16]> = None;
     let mut verbose = false;
     let mut force = false;
-    
+
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -305,7 +312,7 @@ fn main() {
         }
         i += 1;
     }
-    
+
     // Need a device
     let device = match device {
         Some(d) => d,
@@ -315,6 +322,6 @@ fn main() {
             process::exit(1);
         }
     };
-    
+
     process::exit(do_mkswap(&device, label.as_deref(), uuid, size, verbose));
 }

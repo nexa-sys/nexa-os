@@ -565,8 +565,8 @@ unsafe fn save_syscall_context_to_entry(entry: &mut super::types::ProcessEntry, 
     // and are restored on syscall return. Without saving these, context switches
     // during syscalls (e.g., wait4 -> do_schedule) would corrupt these registers.
     let saved_r10 = gs_data_ptr.add(4).read(); // GS[4] = r10 (syscall arg4)
-    let saved_r8 = gs_data_ptr.add(5).read();  // GS[5] = r8 (syscall arg5)
-    let saved_r9 = gs_data_ptr.add(6).read();  // GS[6] = r9 (syscall arg6)
+    let saved_r8 = gs_data_ptr.add(5).read(); // GS[5] = r8 (syscall arg5)
+    let saved_r9 = gs_data_ptr.add(6).read(); // GS[6] = r9 (syscall arg6)
 
     ktrace!(
         "[do_schedule] Saving syscall context for PID {}: rip={:#x}, rsp={:#x}, rflags={:#x}",
@@ -777,17 +777,16 @@ extern "C" fn first_run_trampoline() -> ! {
     if cr3 != 0 {
         crate::paging::activate_address_space(cr3);
     }
-    
+
     // Get the process from global storage
     let mut process = unsafe {
-        FIRST_RUN_PROCESS.take().expect("first_run_trampoline called without process")
+        FIRST_RUN_PROCESS
+            .take()
+            .expect("first_run_trampoline called without process")
     };
 
     if process.cr3 == 0 {
-        crate::kpanic!(
-            "FirstRun PID {} has CR3=0",
-            process.pid
-        );
+        crate::kpanic!("FirstRun PID {} has CR3=0", process.pid);
     }
 
     mark_process_entered_user(process.pid);
@@ -806,7 +805,7 @@ unsafe fn execute_first_run_via_context_switch(
     fs_base: u64,
 ) {
     // crate::serial_println!("[FRVCS] PID={} kstack={:#x}", process.pid, kernel_stack);
-    
+
     // Store process and CR3 in globals for the trampoline to pick up
     FIRST_RUN_PROCESS = Some(process);
     FIRST_RUN_CR3 = next_cr3;
@@ -818,7 +817,7 @@ unsafe fn execute_first_run_via_context_switch(
         gs_data_ptr
             .add(crate::interrupts::GS_SLOT_KERNEL_RSP)
             .write(new_kstack_top);
-        
+
         // CRITICAL: Also update TSS RSP0 for int 0x81 syscalls
         let cpu_id = crate::smp::current_cpu_id() as usize;
         crate::arch::gdt::update_tss_rsp0(cpu_id, new_kstack_top);
@@ -844,13 +843,13 @@ unsafe fn execute_first_run_via_context_switch(
     //         old_context_ptr as u64, (*old_context_ptr).rip);
     // }
     context_switch(old_context_ptr, &new_context as *const _);
-    
+
     // Reached when this process is restored
     // Print debug: what RIP was restored?
     let _restored_rip: u64;
     core::arch::asm!("lea {}, [rip]", out(reg) _restored_rip, options(nomem, nostack));
     // crate::serial_println!("[FRV] RESTORED: rip~{:#x}", restored_rip);
-    
+
     // Restore our CR3
     if let Some(pid) = *CURRENT_PID.lock() {
         let table = PROCESS_TABLE.lock();
@@ -878,10 +877,10 @@ unsafe extern "C" fn switch_return_trampoline() {
         // rbx = user_r10
         // rbp = user_r8
         // [rsp] = user_r9 (on stack)
-        
+
         // Pop user_r9 from stack into a temporary location (use rax, will be clobbered anyway)
         "pop rax",  // rax = user_r9
-        
+
         // Ensure GS base is correct (using callee-saved registers to preserve context)
         // Save r8/r9 values before the call since they may be clobbered
         "push rax",  // save user_r9
@@ -891,7 +890,7 @@ unsafe extern "C" fn switch_return_trampoline() {
         "pop rbp",   // restore user_r8
         "pop rbx",   // restore user_r10
         "pop rax",   // restore user_r9
-        
+
         // Activate address space (r15 = cr3, preserved across call)
         "push rax",
         "push rbx",
@@ -901,7 +900,7 @@ unsafe extern "C" fn switch_return_trampoline() {
         "pop rbp",
         "pop rbx",
         "pop rax",
-        
+
         // Restore user syscall context with full register set
         // rdi = rip, rsi = rsp, rdx = rflags, rcx = r10, r8 = r8, r9 = r9
         "mov rdi, r12",  // rip
@@ -911,7 +910,7 @@ unsafe extern "C" fn switch_return_trampoline() {
         "mov r8, rbp",   // r8 (from rbp)
         "mov r9, rax",   // r9 (from rax)
         "call {restore_user_syscall_context_full}",
-        
+
         // sysretq to return to userspace
         "cli",
         // Clear kernel stack guard flags before returning
@@ -923,7 +922,7 @@ unsafe extern "C" fn switch_return_trampoline() {
         "mov r11, gs:[0x40]",  // GS_SLOT_SAVED_RFLAGS = 8, * 8 = 0x40 -> user RFLAGS
         "mov rsp, gs:[0x00]",  // GS_SLOT_USER_RSP = 0, * 8 = 0x00 -> user RSP
         "sysretq",
-        
+
         ensure_kernel_gs_base = sym crate::smp::ensure_kernel_gs_base,
         activate_address_space = sym crate::mm::paging::activate_address_space,
         restore_user_syscall_context_full = sym crate::interrupts::restore_user_syscall_context_full,
@@ -931,7 +930,7 @@ unsafe extern "C" fn switch_return_trampoline() {
 }
 
 /// Execute context switch to next process
-/// 
+///
 /// There are two cases:
 /// 1. Process was switched out while in kernel (context_valid=true, has valid saved context)
 ///    -> Restore the saved kernel context directly, let it continue where it left off
@@ -954,17 +953,17 @@ unsafe fn execute_context_switch(
     // CRITICAL: Disable interrupts during context switch setup.
     // Timer interrupts could otherwise re-enter the scheduler and corrupt state.
     x86_64::instructions::interrupts::disable();
-    
+
     // CRITICAL: Ensure GS base is correct FIRST before any GS_DATA operations.
     crate::smp::ensure_kernel_gs_base();
-    
+
     // Update kernel stack in GS (per-CPU GS_DATA)
     if kernel_stack != 0 {
         let gs_data_ptr = crate::smp::current_gs_data_ptr();
         let write_addr = gs_data_ptr.add(crate::interrupts::GS_SLOT_KERNEL_RSP);
         let new_kstack_top = kernel_stack + crate::process::KERNEL_STACK_SIZE as u64;
         write_addr.write(new_kstack_top);
-        
+
         // CRITICAL: Also update TSS RSP0 so that int 0x81 syscalls and
         // hardware interrupts from Ring 3 use this process's kernel stack.
         // Without this, all processes would share the CPU's static kernel stack,
@@ -972,7 +971,7 @@ unsafe fn execute_context_switch(
         let cpu_id = crate::smp::current_cpu_id() as usize;
         crate::arch::gdt::update_tss_rsp0(cpu_id, new_kstack_top);
     }
-    
+
     // Restore FS base for TLS if set
     if fs_base != 0 {
         use x86_64::registers::model_specific::Msr;
@@ -984,23 +983,28 @@ unsafe fn execute_context_switch(
     // This happens when a process called do_schedule() voluntarily from kernel code.
     let next_rip = next_context.rip;
     let is_kernel_context = next_rip != 0 && next_rip < 0x400000; // Kernel is below 4MB
-    
+
     if is_kernel_context {
         // Process was in kernel (e.g., in wait4 loop calling do_schedule)
         // Restore its kernel context directly - it will continue from context_switch return
         // First activate the process's address space
         crate::mm::paging::activate_address_space(next_cr3);
-        
+
         // Restore user syscall context to GS_DATA so when the process eventually
         // returns to userspace via sysretq, it has the correct values
         // Use the full version to also restore r10, r8, r9 syscall argument registers
         crate::interrupts::restore_user_syscall_context_full(
-            user_rip, user_rsp, user_rflags, user_r10, user_r8, user_r9
+            user_rip,
+            user_rsp,
+            user_rflags,
+            user_r10,
+            user_r8,
+            user_r9,
         );
-        
+
         // Direct context switch to saved kernel context
         context_switch(old_context_ptr, next_context as *const _);
-        
+
         // Reached when this process is restored - restore our CR3
         if let Some(pid) = *CURRENT_PID.lock() {
             let table = PROCESS_TABLE.lock();
@@ -1021,7 +1025,7 @@ unsafe fn execute_context_switch(
         // Stack: -16 for 16-byte alignment
         trampoline_context.rsp = kernel_stack + crate::process::KERNEL_STACK_SIZE as u64 - 16;
         trampoline_context.rflags = 0x202; // IF=1
-        
+
         // Pass user context via callee-saved registers to the trampoline
         // This avoids using global variables which are not SMP-safe and race-prone
         trampoline_context.r12 = user_rip;
@@ -1040,9 +1044,9 @@ unsafe fn execute_context_switch(
         let user_r9_slot = (stack_top - 8) as *mut u64;
         core::ptr::write_volatile(user_r9_slot, user_r9);
         trampoline_context.rsp = stack_top - 8; // Adjust stack to include user_r9
-        
+
         context_switch(old_context_ptr, &trampoline_context as *const _);
-        
+
         // Reached when this process is restored - restore our CR3
         if let Some(pid) = *CURRENT_PID.lock() {
             let table = PROCESS_TABLE.lock();
@@ -1070,10 +1074,22 @@ fn do_schedule_internal(from_interrupt: bool) {
     let decision = compute_schedule_decision(from_interrupt);
 
     match decision {
-        Some(ScheduleDecision::FirstRun { process, old_context_ptr, next_cr3, kernel_stack, fs_base }) => unsafe {
+        Some(ScheduleDecision::FirstRun {
+            process,
+            old_context_ptr,
+            next_cr3,
+            kernel_stack,
+            fs_base,
+        }) => unsafe {
             // crate::serial_println!("[SCHED] Decision: FirstRun PID={}", process.pid);
-            execute_first_run_via_context_switch(process, old_context_ptr, next_cr3, kernel_stack, fs_base);
-        }
+            execute_first_run_via_context_switch(
+                process,
+                old_context_ptr,
+                next_cr3,
+                kernel_stack,
+                fs_base,
+            );
+        },
         Some(ScheduleDecision::Switch {
             old_context_ptr,
             next_context,
@@ -1138,7 +1154,7 @@ fn compute_schedule_decision(from_interrupt: bool) -> Option<ScheduleDecision> {
 
     let entry = table[next_idx].as_mut().expect("Process entry vanished");
     let _cpu_id = crate::smp::current_cpu_id();
-    // DEBUG: crate::serial_println!("[SCHED_SEL] CPU{} Selected PID {} state={:?} ctx_valid={}", 
+    // DEBUG: crate::serial_println!("[SCHED_SEL] CPU{} Selected PID {} state={:?} ctx_valid={}",
     //     cpu_id, entry.process.pid, entry.process.state, entry.process.context_valid);
     let (
         first_run,
@@ -1197,4 +1213,3 @@ fn compute_schedule_decision(from_interrupt: bool) -> Option<ScheduleDecision> {
         fs_base,
     })
 }
-

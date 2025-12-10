@@ -21,13 +21,21 @@ use super::ttf::{GlyphOutline, GlyphPoint, HMetric, TtfFont};
 #[inline]
 fn floor_f32(x: f32) -> f32 {
     let i = x as i32;
-    if x < i as f32 { (i - 1) as f32 } else { i as f32 }
+    if x < i as f32 {
+        (i - 1) as f32
+    } else {
+        i as f32
+    }
 }
 
 #[inline]
 fn ceil_f32(x: f32) -> f32 {
     let i = x as i32;
-    if x > i as f32 { (i + 1) as f32 } else { i as f32 }
+    if x > i as f32 {
+        (i + 1) as f32
+    } else {
+        i as f32
+    }
 }
 
 #[inline]
@@ -50,7 +58,11 @@ fn sqrt_f32(x: f32) -> f32 {
 
 #[inline]
 fn abs_f32(x: f32) -> f32 {
-    if x < 0.0 { -x } else { x }
+    if x < 0.0 {
+        -x
+    } else {
+        x
+    }
 }
 
 /// Edge in the rasterization process
@@ -92,7 +104,12 @@ impl Rasterizer {
     }
 
     /// Rasterize a glyph outline to a bitmap
-    pub fn rasterize(&self, _font: &TtfFont, outline: &GlyphOutline, metrics: &HMetric) -> GlyphBitmap {
+    pub fn rasterize(
+        &self,
+        _font: &TtfFont,
+        outline: &GlyphOutline,
+        metrics: &HMetric,
+    ) -> GlyphBitmap {
         // Handle empty glyphs (like space)
         if outline.contours.is_empty() {
             let advance = ((metrics.advance_width as f32) * self.scale) as u16;
@@ -132,7 +149,7 @@ impl Rasterizer {
     /// Build edge list from glyph contours
     fn build_edges(&self, outline: &GlyphOutline, x_offset: f32, y_offset: f32) -> Vec<Edge> {
         let mut edges = Vec::new();
-        
+
         for contour in &outline.contours {
             if contour.is_empty() {
                 continue;
@@ -159,7 +176,7 @@ impl Rasterizer {
             // Walk through and connect each segment
             let n = expanded.len();
             let mut i = 0;
-            
+
             // Find first on-curve point
             while i < n && !expanded[i].on_curve {
                 i += 1;
@@ -167,13 +184,13 @@ impl Rasterizer {
             if i >= n {
                 continue;
             }
-            
+
             let first_on = i;
             let mut current = i;
-            
+
             loop {
                 let next = (current + 1) % n;
-                
+
                 if !expanded[next].on_curve {
                     // Quadratic Bézier: current (on) -> next (off) -> next+1 (on)
                     let end = (next + 1) % n;
@@ -184,7 +201,7 @@ impl Rasterizer {
                     self.add_line_edge(&mut edges, scaled[current], scaled[next]);
                     current = next;
                 }
-                
+
                 if current == first_on {
                     break; // Completed the contour loop
                 }
@@ -222,11 +239,17 @@ impl Rasterizer {
     }
 
     /// Add edges for a quadratic Bézier curve
-    fn add_bezier_edges(&self, edges: &mut Vec<Edge>, p0: (f32, f32), ctrl: (f32, f32), p2: (f32, f32)) {
+    fn add_bezier_edges(
+        &self,
+        edges: &mut Vec<Edge>,
+        p0: (f32, f32),
+        ctrl: (f32, f32),
+        p2: (f32, f32),
+    ) {
         // Flatten curve into line segments
         // Use adaptive subdivision based on curve flatness
         const MAX_DEPTH: usize = 5;
-        
+
         self.subdivide_bezier(edges, p0, ctrl, p2, 0, MAX_DEPTH);
     }
 
@@ -242,7 +265,7 @@ impl Rasterizer {
     ) {
         // Check if curve is flat enough
         let flatness = self.curve_flatness(p0, ctrl, p2);
-        
+
         if flatness < 0.25 || depth >= max_depth {
             // Flat enough, add as line
             self.add_line_edge(edges, p0, p2);
@@ -263,7 +286,7 @@ impl Rasterizer {
         let dx = p2.0 - p0.0;
         let dy = p2.1 - p0.1;
         let len_sq = dx * dx + dy * dy;
-        
+
         if len_sq < 0.0001 {
             // Degenerate case
             let cdx = ctrl.0 - p0.0;
@@ -274,10 +297,10 @@ impl Rasterizer {
         let t = ((ctrl.0 - p0.0) * dx + (ctrl.1 - p0.1) * dy) / len_sq;
         let proj_x = p0.0 + t * dx;
         let proj_y = p0.1 + t * dy;
-        
+
         let dist_x = ctrl.0 - proj_x;
         let dist_y = ctrl.1 - proj_y;
-        
+
         sqrt_f32(dist_x * dist_x + dist_y * dist_y)
     }
 
@@ -303,11 +326,11 @@ impl Rasterizer {
 
         let dx_per_y = (p1.0 - p0.0) / (p1.1 - p0.1);
 
-        // Use floor for y_start, but keep y_end as the actual value 
+        // Use floor for y_start, but keep y_end as the actual value
         // to prevent overlapping edges from adjacent curve segments
         edges.push(Edge {
             y_start: floor_f32(y_start) as i32,
-            y_end: floor_f32(y_end) as i32,  // Use floor, not ceil - prevents overlap
+            y_end: floor_f32(y_end) as i32, // Use floor, not ceil - prevents overlap
             x_start,
             dx_per_y,
             direction,
@@ -359,7 +382,7 @@ impl Rasterizer {
                 if winding == 0 {
                     x_start = Some(ae.x);
                 }
-                
+
                 winding += ae.direction;
 
                 if winding == 0 {
@@ -372,10 +395,10 @@ impl Rasterizer {
                             // Calculate coverage
                             let left = x as f32;
                             let right = (x + 1) as f32;
-                            
+
                             let cover_start = max_f32(xs, left);
                             let cover_end = min_f32(ae.x, right);
-                            
+
                             if cover_end > cover_start {
                                 let coverage = ((cover_end - cover_start) * 255.0) as u8;
                                 let idx = y as usize * width + x;
@@ -408,11 +431,19 @@ struct ActiveEdge {
 // Helper for f32 max
 #[inline]
 fn max_f32(a: f32, b: f32) -> f32 {
-    if a > b { a } else { b }
+    if a > b {
+        a
+    } else {
+        b
+    }
 }
 
 // Helper for f32 min
 #[inline]
 fn min_f32(a: f32, b: f32) -> f32 {
-    if a < b { a } else { b }
+    if a < b {
+        a
+    } else {
+        b
+    }
 }

@@ -22,18 +22,18 @@ fn print_usage() {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    
+
     let mut print_all = false;
     let mut print_sysname = false;
     let mut print_release = false;
     let mut print_version = false;
     let mut print_machine = false;
-    
+
     if args.len() == 1 {
         // Default: print kernel name
         print_sysname = true;
     }
-    
+
     for arg in args.iter().skip(1) {
         if arg.starts_with('-') {
             for c in arg[1..].chars() {
@@ -68,7 +68,7 @@ fn main() {
     }
 
     let mut parts: Vec<&str> = Vec::new();
-    
+
     if print_sysname {
         parts.push("NexaOS");
     }

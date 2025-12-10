@@ -2,7 +2,6 @@
 ///
 /// This module provides TLS support by dynamically linking against libnssl.so
 /// instead of statically linking the nssl crate.
-
 use crate::http::HttpError;
 use crate::nssl_ffi::*;
 use std::ffi::CString;
@@ -127,7 +126,11 @@ impl TlsConnection {
             }
         };
 
-        Ok(Self { ssl, ctx, alpn_protocol })
+        Ok(Self {
+            ssl,
+            ctx,
+            alpn_protocol,
+        })
     }
 
     /// Get the negotiated ALPN protocol
@@ -224,9 +227,15 @@ impl std::io::Read for TlsConnection {
             if err == SSL_ERROR_ZERO_RETURN {
                 Ok(0)
             } else if err == SSL_ERROR_WANT_READ {
-                Err(std::io::Error::new(std::io::ErrorKind::WouldBlock, "would block"))
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::WouldBlock,
+                    "would block",
+                ))
             } else {
-                Err(std::io::Error::new(std::io::ErrorKind::Other, format!("SSL read error: {}", err)))
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("SSL read error: {}", err),
+                ))
             }
         }
     }
@@ -239,7 +248,10 @@ impl std::io::Write for TlsConnection {
             Ok(n as usize)
         } else {
             let err = unsafe { SSL_get_error(self.ssl, n) };
-            Err(std::io::Error::new(std::io::ErrorKind::Other, format!("SSL write error: {}", err)))
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("SSL write error: {}", err),
+            ))
         }
     }
 

@@ -10,54 +10,68 @@ use std::path::Path;
 
 /// Register flow control builtins
 pub fn register(registry: &mut BuiltinRegistry) {
-    registry.register("exit", BuiltinDesc::new(
-        builtin_exit,
-        "退出 shell",
-        "退出 shell。\n\
+    registry.register(
+        "exit",
+        BuiltinDesc::new(
+            builtin_exit,
+            "退出 shell",
+            "退出 shell。\n\
          \n\
          使用状态 N 退出 shell。如果 N 被省略，则退出状态是\n\
          最后执行的命令的状态。",
-        "exit [n]",
-        false,  // Cannot be disabled
-    ));
+            "exit [n]",
+            false, // Cannot be disabled
+        ),
+    );
 
-    registry.register("return", BuiltinDesc::new(
-        builtin_return,
-        "从函数返回",
-        "使函数或脚本以指定的返回值退出。\n\
+    registry.register(
+        "return",
+        BuiltinDesc::new(
+            builtin_return,
+            "从函数返回",
+            "使函数或脚本以指定的返回值退出。\n\
          \n\
          使 shell 函数退出并返回 N 值。如果 N 被省略，返回值是\n\
          函数中最后执行的命令的状态。",
-        "return [n]",
-        false,
-    ));
+            "return [n]",
+            false,
+        ),
+    );
 
-    registry.register("break", BuiltinDesc::new(
-        builtin_break,
-        "退出 for, while 或 until 循环",
-        "退出 FOR、WHILE 或 UNTIL 循环。\n\
+    registry.register(
+        "break",
+        BuiltinDesc::new(
+            builtin_break,
+            "退出 for, while 或 until 循环",
+            "退出 FOR、WHILE 或 UNTIL 循环。\n\
          \n\
          退出封闭的 FOR、WHILE 或 UNTIL 循环。如果指定了 N，\n\
          则退出 N 层封闭循环。",
-        "break [n]",
-        false,
-    ));
+            "break [n]",
+            false,
+        ),
+    );
 
-    registry.register("continue", BuiltinDesc::new(
-        builtin_continue,
-        "继续 for, while 或 until 循环的下一次迭代",
-        "继续 FOR、WHILE 或 UNTIL 循环的下一次迭代。\n\
+    registry.register(
+        "continue",
+        BuiltinDesc::new(
+            builtin_continue,
+            "继续 for, while 或 until 循环的下一次迭代",
+            "继续 FOR、WHILE 或 UNTIL 循环的下一次迭代。\n\
          \n\
          继续封闭的 FOR、WHILE 或 UNTIL 循环的下一次迭代。\n\
          如果指定了 N，则继续第 N 层封闭循环。",
-        "continue [n]",
-        false,
-    ));
+            "continue [n]",
+            false,
+        ),
+    );
 
-    registry.register("test", BuiltinDesc::new(
-        builtin_test,
-        "求条件表达式的值",
-        "根据 EXPR 求值并返回成功或失败的退出状态。\n\
+    registry.register(
+        "test",
+        BuiltinDesc::new(
+            builtin_test,
+            "求条件表达式的值",
+            "根据 EXPR 求值并返回成功或失败的退出状态。\n\
          \n\
          表达式可以是一元或二元表达式。一元表达式通常用于检测文件的状态。\n\
          也有字符串运算符和数值比较运算符。\n\
@@ -97,53 +111,67 @@ pub fn register(registry: &mut BuiltinRegistry) {
            ! EXPR     如果 EXPR 为假则为真\n\
            EXPR1 -a EXPR2    如果 EXPR1 和 EXPR2 都为真则为真\n\
            EXPR1 -o EXPR2    如果 EXPR1 或 EXPR2 为真则为真",
-        "test [表达式]",
-        true,
-    ));
+            "test [表达式]",
+            true,
+        ),
+    );
 
-    registry.register("[", BuiltinDesc::new(
-        builtin_bracket,
-        "求条件表达式的值",
-        "这是 `test' 内建命令的同义词，但最后一个参数必须是\n\
+    registry.register(
+        "[",
+        BuiltinDesc::new(
+            builtin_bracket,
+            "求条件表达式的值",
+            "这是 `test' 内建命令的同义词，但最后一个参数必须是\n\
          `]' 字面量，以匹配开始的 `['。",
-        "[ 表达式 ]",
-        true,
-    ));
+            "[ 表达式 ]",
+            true,
+        ),
+    );
 
-    registry.register("true", BuiltinDesc::new(
-        builtin_true,
-        "返回成功的结果",
-        "返回成功的退出状态（0）。",
+    registry.register(
         "true",
-        true,
-    ));
+        BuiltinDesc::new(
+            builtin_true,
+            "返回成功的结果",
+            "返回成功的退出状态（0）。",
+            "true",
+            true,
+        ),
+    );
 
-    registry.register("false", BuiltinDesc::new(
-        builtin_false,
-        "返回失败的结果",
-        "返回不成功的退出状态（1）。",
+    registry.register(
         "false",
-        true,
-    ));
+        BuiltinDesc::new(
+            builtin_false,
+            "返回失败的结果",
+            "返回不成功的退出状态（1）。",
+            "false",
+            true,
+        ),
+    );
 
-    registry.register(":", BuiltinDesc::new(
-        builtin_colon,
-        "空命令",
-        "无效果；命令什么也不做。\n\
+    registry.register(
+        ":",
+        BuiltinDesc::new(
+            builtin_colon,
+            "空命令",
+            "无效果；命令什么也不做。\n\
          \n\
          退出状态:\n\
          总是成功。",
-        ":",
-        false,
-    ));
+            ":",
+            false,
+        ),
+    );
 }
 
 /// exit builtin - exit the shell
 fn builtin_exit(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
-    let code = args.first()
+    let code = args
+        .first()
         .and_then(|s| s.parse::<i32>().ok())
         .unwrap_or(state.last_exit_status);
-    
+
     std::process::exit(code);
 }
 
@@ -153,7 +181,8 @@ fn builtin_return(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
         return Err("return: 只能从函数或脚本中调用 `return'".to_string());
     }
 
-    let code = args.first()
+    let code = args
+        .first()
         .and_then(|s| s.parse::<i32>().ok())
         .unwrap_or(state.last_exit_status);
 
@@ -167,7 +196,8 @@ fn builtin_break(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
         return Err("break: 只有在 FOR、WHILE 或 UNTIL 循环中才有效".to_string());
     }
 
-    let levels = args.first()
+    let levels = args
+        .first()
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(1);
 
@@ -185,7 +215,8 @@ fn builtin_continue(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
         return Err("continue: 只有在 FOR、WHILE 或 UNTIL 循环中才有效".to_string());
     }
 
-    let levels = args.first()
+    let levels = args
+        .first()
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(1);
 
@@ -222,7 +253,7 @@ fn builtin_bracket(_state: &mut ShellState, args: &[&str]) -> BuiltinResult {
 
     // Remove the closing ]
     let test_args = &args[..args.len() - 1];
-    
+
     if test_args.is_empty() {
         return Ok(1);
     }
@@ -257,31 +288,37 @@ fn evaluate_test_expression(args: &[&str]) -> Result<bool, String> {
     evaluate_or_expression(&mut iter)
 }
 
-fn evaluate_or_expression(iter: &mut std::iter::Peekable<std::slice::Iter<&str>>) -> Result<bool, String> {
+fn evaluate_or_expression(
+    iter: &mut std::iter::Peekable<std::slice::Iter<&str>>,
+) -> Result<bool, String> {
     let mut result = evaluate_and_expression(iter)?;
-    
+
     while iter.peek() == Some(&&"-o") {
         iter.next(); // consume -o
         let right = evaluate_and_expression(iter)?;
         result = result || right;
     }
-    
+
     Ok(result)
 }
 
-fn evaluate_and_expression(iter: &mut std::iter::Peekable<std::slice::Iter<&str>>) -> Result<bool, String> {
+fn evaluate_and_expression(
+    iter: &mut std::iter::Peekable<std::slice::Iter<&str>>,
+) -> Result<bool, String> {
     let mut result = evaluate_not_expression(iter)?;
-    
+
     while iter.peek() == Some(&&"-a") {
         iter.next(); // consume -a
         let right = evaluate_not_expression(iter)?;
         result = result && right;
     }
-    
+
     Ok(result)
 }
 
-fn evaluate_not_expression(iter: &mut std::iter::Peekable<std::slice::Iter<&str>>) -> Result<bool, String> {
+fn evaluate_not_expression(
+    iter: &mut std::iter::Peekable<std::slice::Iter<&str>>,
+) -> Result<bool, String> {
     if iter.peek() == Some(&&"!") {
         iter.next(); // consume !
         Ok(!evaluate_primary_expression(iter)?)
@@ -290,7 +327,9 @@ fn evaluate_not_expression(iter: &mut std::iter::Peekable<std::slice::Iter<&str>
     }
 }
 
-fn evaluate_primary_expression(iter: &mut std::iter::Peekable<std::slice::Iter<&str>>) -> Result<bool, String> {
+fn evaluate_primary_expression(
+    iter: &mut std::iter::Peekable<std::slice::Iter<&str>>,
+) -> Result<bool, String> {
     let first = match iter.next() {
         Some(s) => *s,
         None => return Ok(false),
@@ -308,8 +347,10 @@ fn evaluate_primary_expression(iter: &mut std::iter::Peekable<std::slice::Iter<&
     // Unary file tests
     if first.starts_with('-') && first.len() == 2 {
         let op = first.chars().nth(1).unwrap();
-        let operand = iter.next().ok_or_else(|| format!("{}: 期望一元表达式", first))?;
-        
+        let operand = iter
+            .next()
+            .ok_or_else(|| format!("{}: 期望一元表达式", first))?;
+
         return match op {
             'e' => Ok(Path::new(operand).exists()),
             'f' => Ok(fs::metadata(operand).map(|m| m.is_file()).unwrap_or(false)),
@@ -318,7 +359,9 @@ fn evaluate_primary_expression(iter: &mut std::iter::Peekable<std::slice::Iter<&
             'w' => Ok(is_writable(operand)),
             'x' => Ok(is_executable(operand)),
             's' => Ok(fs::metadata(operand).map(|m| m.len() > 0).unwrap_or(false)),
-            'L' | 'h' => Ok(fs::symlink_metadata(operand).map(|m| m.file_type().is_symlink()).unwrap_or(false)),
+            'L' | 'h' => Ok(fs::symlink_metadata(operand)
+                .map(|m| m.file_type().is_symlink())
+                .unwrap_or(false)),
             'b' => Ok(is_block_device(operand)),
             'c' => Ok(is_char_device(operand)),
             'p' => Ok(is_fifo(operand)),
@@ -355,43 +398,67 @@ fn evaluate_primary_expression(iter: &mut std::iter::Peekable<std::slice::Iter<&
             "-eq" => {
                 iter.next();
                 let right = iter.next().ok_or("缺少右操作数")?;
-                let n1: i64 = first.parse().map_err(|_| format!("{}: 需要整数表达式", first))?;
-                let n2: i64 = right.parse().map_err(|_| format!("{}: 需要整数表达式", right))?;
+                let n1: i64 = first
+                    .parse()
+                    .map_err(|_| format!("{}: 需要整数表达式", first))?;
+                let n2: i64 = right
+                    .parse()
+                    .map_err(|_| format!("{}: 需要整数表达式", right))?;
                 return Ok(n1 == n2);
             }
             "-ne" => {
                 iter.next();
                 let right = iter.next().ok_or("缺少右操作数")?;
-                let n1: i64 = first.parse().map_err(|_| format!("{}: 需要整数表达式", first))?;
-                let n2: i64 = right.parse().map_err(|_| format!("{}: 需要整数表达式", right))?;
+                let n1: i64 = first
+                    .parse()
+                    .map_err(|_| format!("{}: 需要整数表达式", first))?;
+                let n2: i64 = right
+                    .parse()
+                    .map_err(|_| format!("{}: 需要整数表达式", right))?;
                 return Ok(n1 != n2);
             }
             "-lt" => {
                 iter.next();
                 let right = iter.next().ok_or("缺少右操作数")?;
-                let n1: i64 = first.parse().map_err(|_| format!("{}: 需要整数表达式", first))?;
-                let n2: i64 = right.parse().map_err(|_| format!("{}: 需要整数表达式", right))?;
+                let n1: i64 = first
+                    .parse()
+                    .map_err(|_| format!("{}: 需要整数表达式", first))?;
+                let n2: i64 = right
+                    .parse()
+                    .map_err(|_| format!("{}: 需要整数表达式", right))?;
                 return Ok(n1 < n2);
             }
             "-le" => {
                 iter.next();
                 let right = iter.next().ok_or("缺少右操作数")?;
-                let n1: i64 = first.parse().map_err(|_| format!("{}: 需要整数表达式", first))?;
-                let n2: i64 = right.parse().map_err(|_| format!("{}: 需要整数表达式", right))?;
+                let n1: i64 = first
+                    .parse()
+                    .map_err(|_| format!("{}: 需要整数表达式", first))?;
+                let n2: i64 = right
+                    .parse()
+                    .map_err(|_| format!("{}: 需要整数表达式", right))?;
                 return Ok(n1 <= n2);
             }
             "-gt" => {
                 iter.next();
                 let right = iter.next().ok_or("缺少右操作数")?;
-                let n1: i64 = first.parse().map_err(|_| format!("{}: 需要整数表达式", first))?;
-                let n2: i64 = right.parse().map_err(|_| format!("{}: 需要整数表达式", right))?;
+                let n1: i64 = first
+                    .parse()
+                    .map_err(|_| format!("{}: 需要整数表达式", first))?;
+                let n2: i64 = right
+                    .parse()
+                    .map_err(|_| format!("{}: 需要整数表达式", right))?;
                 return Ok(n1 > n2);
             }
             "-ge" => {
                 iter.next();
                 let right = iter.next().ok_or("缺少右操作数")?;
-                let n1: i64 = first.parse().map_err(|_| format!("{}: 需要整数表达式", first))?;
-                let n2: i64 = right.parse().map_err(|_| format!("{}: 需要整数表达式", right))?;
+                let n1: i64 = first
+                    .parse()
+                    .map_err(|_| format!("{}: 需要整数表达式", first))?;
+                let n2: i64 = right
+                    .parse()
+                    .map_err(|_| format!("{}: 需要整数表达式", right))?;
                 return Ok(n1 >= n2);
             }
             "-nt" => {

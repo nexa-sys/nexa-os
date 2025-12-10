@@ -5,17 +5,15 @@
 use crate::{c_int, c_ulong, c_void, size_t};
 use core::{
     hint::spin_loop,
-    mem,
-    ptr,
+    mem, ptr,
     sync::atomic::{AtomicUsize, Ordering},
 };
 
 use super::types::{
-    pthread_attr_t, pthread_mutex_t, pthread_mutexattr_t, pthread_once_t, pthread_t,
-    MutexInner, EBUSY, EDEADLK, EPERM, GLIBC_KIND_WORD, MAX_PTHREAD_MUTEXES,
-    MUTEX_LOCKED, MUTEX_MAGIC, MUTEX_UNLOCKED, PTHREAD_MUTEX_DEFAULT,
-    PTHREAD_MUTEX_NORMAL, PTHREAD_MUTEX_RECURSIVE, PTHREAD_MUTEX_WORDS, PTHREAD_ONCE_DONE,
-    PTHREAD_ONCE_IN_PROGRESS, PTHREAD_ONCE_INIT_VALUE,
+    pthread_attr_t, pthread_mutex_t, pthread_mutexattr_t, pthread_once_t, pthread_t, MutexInner,
+    EBUSY, EDEADLK, EPERM, GLIBC_KIND_WORD, MAX_PTHREAD_MUTEXES, MUTEX_LOCKED, MUTEX_MAGIC,
+    MUTEX_UNLOCKED, PTHREAD_MUTEX_DEFAULT, PTHREAD_MUTEX_NORMAL, PTHREAD_MUTEX_RECURSIVE,
+    PTHREAD_MUTEX_WORDS, PTHREAD_ONCE_DONE, PTHREAD_ONCE_INIT_VALUE, PTHREAD_ONCE_IN_PROGRESS,
 };
 
 /// Trace function entry (logs to stderr)
@@ -158,7 +156,11 @@ fn u64_to_hex(mut n: u64, buf: &mut [u8]) -> &[u8] {
     let mut i = 0;
     while n > 0 && i < buf.len() {
         let digit = (n & 0xF) as u8;
-        buf[i] = if digit < 10 { b'0' + digit } else { b'a' + (digit - 10) };
+        buf[i] = if digit < 10 {
+            b'0' + digit
+        } else {
+            b'a' + (digit - 10)
+        };
         n >>= 4;
         i += 1;
     }
@@ -176,7 +178,8 @@ fn print_hex_u64(val: u64) {
 #[inline(always)]
 fn log_mutex(msg: &[u8]) {
     let slot = PTHREAD_MUTEX_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
-    if slot < 0 {  // Disabled: was 256
+    if slot < 0 {
+        // Disabled: was 256
         let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
     }
 }
@@ -184,7 +187,8 @@ fn log_mutex(msg: &[u8]) {
 #[inline(always)]
 fn debug_mutex_event(msg: &[u8]) {
     let slot = PTHREAD_MUTEX_EXTRA_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
-    if slot < 0 {  // Disabled: was 128
+    if slot < 0 {
+        // Disabled: was 128
         let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
     }
 }
@@ -461,7 +465,12 @@ pub unsafe extern "C" fn pthread_mutex_lock(mutex: *mut pthread_mutex_t) -> c_in
     const MAX_SPINS: usize = 1_000_000;
     while (*inner)
         .state
-        .compare_exchange(MUTEX_UNLOCKED, MUTEX_LOCKED, Ordering::Acquire, Ordering::Relaxed)
+        .compare_exchange(
+            MUTEX_UNLOCKED,
+            MUTEX_LOCKED,
+            Ordering::Acquire,
+            Ordering::Relaxed,
+        )
         .is_err()
     {
         spins += 1;
@@ -663,13 +672,21 @@ impl ThreadControlBlock {
         (self.flags & 1) != 0
     }
     fn set_joinable(&mut self, v: bool) {
-        if v { self.flags |= 1; } else { self.flags &= !1; }
+        if v {
+            self.flags |= 1;
+        } else {
+            self.flags &= !1;
+        }
     }
     fn is_detached(&self) -> bool {
         (self.flags & 2) != 0
     }
     fn set_detached(&mut self, v: bool) {
-        if v { self.flags |= 2; } else { self.flags &= !2; }
+        if v {
+            self.flags |= 2;
+        } else {
+            self.flags &= !2;
+        }
     }
 }
 
@@ -726,23 +743,26 @@ extern "C" fn main_thread_dummy_start(_arg: *mut c_void) -> *mut c_void {
 #[no_mangle]
 pub unsafe extern "C" fn __nrlib_init_main_thread_tls() {
     // Only initialize once
-    if MAIN_TLS_INITIALIZED.compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+    if MAIN_TLS_INITIALIZED
+        .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
         return;
     }
-    
+
     // Get pointer to the static TCB storage
     let tcb_ptr = &mut MAIN_THREAD_TCB.tcb as *mut ThreadControlBlock;
-    
+
     // Initialize self-pointer (critical for %fs:0 access)
     (*tcb_ptr).self_ptr = tcb_ptr;
-    
+
     // Get main thread's TID
     let tid = crate::syscall0(crate::SYS_GETTID) as usize;
     (*tcb_ptr).tid.store(tid, Ordering::SeqCst);
-    
+
     // Register in thread table (slot 0 for main thread)
     THREAD_TABLE[0] = Some(tcb_ptr);
-    
+
     // Set FS base to point to the TCB using arch_prctl
     // ARCH_SET_FS = 0x1002
     let ret = crate::syscall2(crate::SYS_ARCH_PRCTL, 0x1002, tcb_ptr as u64);
@@ -763,7 +783,7 @@ pub unsafe fn get_current_tcb() -> Option<*mut ThreadControlBlock> {
         out(reg) tcb_ptr,
         options(nostack, preserves_flags, readonly)
     );
-    
+
     if tcb_ptr.is_null() {
         None
     } else {
@@ -800,10 +820,13 @@ pub unsafe fn set_thread_tls_data(key: usize, value: *mut c_void) -> bool {
 /// Allocate a thread slot
 unsafe fn alloc_thread_slot(tcb: *mut ThreadControlBlock) -> Option<usize> {
     // Acquire lock
-    while THREAD_TABLE_LOCK.compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed).is_err() {
+    while THREAD_TABLE_LOCK
+        .compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
         spin_loop();
     }
-    
+
     for i in 0..MAX_THREADS {
         if THREAD_TABLE[i].is_none() {
             THREAD_TABLE[i] = Some(tcb);
@@ -811,21 +834,24 @@ unsafe fn alloc_thread_slot(tcb: *mut ThreadControlBlock) -> Option<usize> {
             return Some(i);
         }
     }
-    
+
     THREAD_TABLE_LOCK.store(0, Ordering::Release);
     None
 }
 
 /// Free a thread slot
 unsafe fn free_thread_slot(slot: usize) {
-    while THREAD_TABLE_LOCK.compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed).is_err() {
+    while THREAD_TABLE_LOCK
+        .compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
         spin_loop();
     }
-    
+
     if slot < MAX_THREADS {
         THREAD_TABLE[slot] = None;
     }
-    
+
     THREAD_TABLE_LOCK.store(0, Ordering::Release);
 }
 
@@ -840,45 +866,47 @@ pub unsafe extern "C" fn __thread_entry() -> ! {
         out(reg) tcb_ptr,
         options(nostack, preserves_flags)
     );
-    
+
     let msg = b"[nrlib] __thread_entry: starting thread\n";
     let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
-    
+
     // Debug: print tcb_ptr
     let msg = b"[nrlib] __thread_entry: tcb_ptr=0x";
     let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
     print_hex_u64(tcb_ptr as u64);
     let _ = crate::syscall3(SYS_WRITE_NR, 2, b"\n".as_ptr() as u64, 1);
-    
+
     if tcb_ptr.is_null() {
         let msg = b"[nrlib] __thread_entry: ERROR tcb_ptr is NULL!\n";
         let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
         crate::syscall1(crate::SYS_EXIT, 1);
-        loop { spin_loop(); }
+        loop {
+            spin_loop();
+        }
     }
-    
+
     // Debug: dump raw TCB memory to verify offsets
     {
         let msg = b"[nrlib] __thread_entry: dumping TCB offsets\n";
         let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
-        
+
         // Read raw bytes at each offset
         let base = tcb_ptr as *const u8;
-        
+
         // Offset 64 (start_routine)
         let msg = b"[nrlib] offset64=0x";
         let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
         let val64 = *(base.add(64) as *const u64);
         print_hex_u64(val64);
         let _ = crate::syscall3(SYS_WRITE_NR, 2, b"\n".as_ptr() as u64, 1);
-        
+
         // Offset 72 (arg)
         let msg = b"[nrlib] offset72=0x";
         let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
         let val72 = *(base.add(72) as *const u64);
         print_hex_u64(val72);
         let _ = crate::syscall3(SYS_WRITE_NR, 2, b"\n".as_ptr() as u64, 1);
-        
+
         // Print actual field addresses using offset_of would be ideal, but let's use ptr math
         let msg = b"[nrlib] &tcb.start_routine offset=";
         let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
@@ -886,34 +914,44 @@ pub unsafe extern "C" fn __thread_entry() -> ! {
         let start_offset = (&tcb.start_routine as *const _ as usize) - (tcb_ptr as usize);
         print_hex_u64(start_offset as u64);
         let _ = crate::syscall3(SYS_WRITE_NR, 2, b"\n".as_ptr() as u64, 1);
-        
+
         let msg = b"[nrlib] &tcb.arg offset=";
         let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
         let arg_offset = (&tcb.arg as *const _ as usize) - (tcb_ptr as usize);
         print_hex_u64(arg_offset as u64);
         let _ = crate::syscall3(SYS_WRITE_NR, 2, b"\n".as_ptr() as u64, 1);
     }
-    
+
     let tcb = &mut *tcb_ptr;
-    
+
     // Debug: print start_routine
     {
         let msg: &[u8] = b"[nrlib] __thread_entry: start_routine=0x";
         let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
         print_hex_u64(tcb.start_routine as u64);
         let newline: &[u8] = b"\n";
-        let _ = crate::syscall3(SYS_WRITE_NR, 2, newline.as_ptr() as u64, newline.len() as u64);
+        let _ = crate::syscall3(
+            SYS_WRITE_NR,
+            2,
+            newline.as_ptr() as u64,
+            newline.len() as u64,
+        );
     }
-    
+
     // Debug: print arg
     {
         let msg: &[u8] = b"[nrlib] __thread_entry: arg=0x";
         let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
         print_hex_u64(tcb.arg as u64);
         let newline: &[u8] = b"\n";
-        let _ = crate::syscall3(SYS_WRITE_NR, 2, newline.as_ptr() as u64, newline.len() as u64);
+        let _ = crate::syscall3(
+            SYS_WRITE_NR,
+            2,
+            newline.as_ptr() as u64,
+            newline.len() as u64,
+        );
     }
-    
+
     // Call the user's start routine
     {
         let msg: &[u8] = b"[nrlib] __thread_entry: calling start_routine at 0x";
@@ -924,12 +962,12 @@ pub unsafe extern "C" fn __thread_entry() -> ! {
         print_hex_u64(tcb.arg as u64);
         let _ = crate::syscall3(SYS_WRITE_NR, 2, b"\n".as_ptr() as u64, 1);
     }
-    
+
     // Actually call the start routine
     let start_fn = tcb.start_routine;
     let start_arg = tcb.arg;
     let retval = (start_fn)(start_arg);
-    
+
     // We reached here - thread function returned
     {
         let msg: &[u8] = b"[nrlib] __thread_entry: start_routine returned 0x";
@@ -937,12 +975,12 @@ pub unsafe extern "C" fn __thread_entry() -> ! {
         print_hex_u64(retval as u64);
         let _ = crate::syscall3(SYS_WRITE_NR, 2, b"\n".as_ptr() as u64, 1);
     }
-    
+
     tcb.retval = retval;
-    
+
     // Mark as exited
     tcb.exited.store(1, Ordering::Release);
-    
+
     // Wake any threads waiting to join
     if !tcb.tid_address.is_null() {
         // Clear the tid address
@@ -958,12 +996,14 @@ pub unsafe extern "C" fn __thread_entry() -> ! {
             0,
         );
     }
-    
+
     // Exit thread (not process)
     crate::syscall1(crate::SYS_EXIT, 0);
-    
+
     // Should never reach here
-    loop { spin_loop(); }
+    loop {
+        spin_loop();
+    }
 }
 
 /// Create a new thread
@@ -976,20 +1016,20 @@ pub unsafe extern "C" fn pthread_create(
 ) -> c_int {
     let msg = b"[nrlib] pthread_create called\n";
     let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
-    
+
     if thread.is_null() {
         return crate::EINVAL;
     }
-    
+
     // Get stack size from attributes or use default
     let stack_size = if !attr.is_null() {
         DEFAULT_STACK_SIZE // TODO: parse from attr
     } else {
         DEFAULT_STACK_SIZE
     };
-    
+
     let total_stack = stack_size + STACK_GUARD_SIZE;
-    
+
     // Allocate stack using mmap
     let stack = crate::syscall6(
         crate::SYS_MMAP,
@@ -1000,19 +1040,19 @@ pub unsafe extern "C" fn pthread_create(
         u64::MAX, // -1 for anonymous
         0,
     );
-    
+
     // Debug: print mmap result
     let msg = b"[nrlib] pthread_create: mmap returned stack=0x";
     let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
     print_hex_u64(stack);
     let _ = crate::syscall3(SYS_WRITE_NR, 2, b"\n".as_ptr() as u64, 1);
-    
+
     if stack == u64::MAX || stack == 0 {
         let msg = b"[nrlib] pthread_create: mmap failed\n";
         let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
         return crate::ENOMEM;
     }
-    
+
     // Calculate TCB location at top of stack
     // Stack layout (high to low):
     //   +---------------------+ <- stack + total_stack
@@ -1028,18 +1068,18 @@ pub unsafe extern "C" fn pthread_create(
     //   +---------------------+ <- stack + STACK_GUARD_SIZE
     //   |  Guard page         |
     //   +---------------------+ <- stack
-    
+
     let stack_top = stack + total_stack as u64;
     let tcb_size = mem::size_of::<ThreadControlBlock>() as u64;
     let tcb_addr = (stack_top - tcb_size) & !0xF; // 16-byte aligned
     let tcb_ptr = tcb_addr as *mut ThreadControlBlock;
-    
+
     // Debug: print tcb_addr
     let msg = b"[nrlib] pthread_create: tcb_addr=0x";
     let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
     print_hex_u64(tcb_addr);
     let _ = crate::syscall3(SYS_WRITE_NR, 2, b"\n".as_ptr() as u64, 1);
-    
+
     // Initialize TCB
     let tcb = &mut *tcb_ptr;
     tcb.self_ptr = tcb_ptr; // Self pointer for TLS access (%fs:0)
@@ -1059,14 +1099,14 @@ pub unsafe extern "C" fn pthread_create(
     tcb.tid_address = ptr::null_mut();
     tcb.canary = 0; // TODO: randomize for security
     tcb._pad = 0;
-    
+
     // Debug: verify we stored arg correctly
     {
         let msg = b"[nrlib] pthread_create: arg stored=0x";
         let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
         print_hex_u64(tcb.arg as u64);
         let _ = crate::syscall3(SYS_WRITE_NR, 2, b"\n".as_ptr() as u64, 1);
-        
+
         // Print actual offset of arg field
         let msg = b"[nrlib] pthread_create: &tcb.arg offset=";
         let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
@@ -1074,16 +1114,16 @@ pub unsafe extern "C" fn pthread_create(
         print_hex_u64(arg_offset as u64);
         let _ = crate::syscall3(SYS_WRITE_NR, 2, b"\n".as_ptr() as u64, 1);
     }
-    
+
     // Initialize TLS data to null
     for i in 0..MAX_TLS_KEYS {
         tcb.tls_data[i] = ptr::null_mut();
     }
-    
+
     // Set TID address for CLONE_CHILD_CLEARTID
     let tid_storage = &mut tcb.tid as *mut AtomicUsize as *mut c_int;
     tcb.tid_address = tid_storage;
-    
+
     // Allocate a thread slot
     let slot = match alloc_thread_slot(tcb_ptr) {
         Some(s) => s,
@@ -1093,22 +1133,22 @@ pub unsafe extern "C" fn pthread_create(
             return crate::EAGAIN;
         }
     };
-    
+
     // Calculate child stack pointer (16-byte aligned, below TCB)
     // Leave space for a return address (though it won't be used)
     let child_stack = (tcb_addr - 8) & !0xF;
-    
+
     // Set up the stack so when the child thread starts, __thread_entry gets called
     // Put the return address (entry point) on the stack
     let stack_frame = child_stack as *mut u64;
     *stack_frame = __thread_entry as u64; // Return address
-    
+
     let msg = b"[nrlib] pthread_create: calling clone\n";
     let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
-    
+
     // Clone flags for thread creation
     let clone_flags = CLONE_THREAD_FLAGS as u64;
-    
+
     // Call clone syscall
     // Arguments:
     //   - flags: CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD | ...
@@ -1120,11 +1160,11 @@ pub unsafe extern "C" fn pthread_create(
         crate::SYS_CLONE,
         clone_flags,
         child_stack,
-        0, // parent_tid - not needed
+        0,                  // parent_tid - not needed
         tid_storage as u64, // child_tid for CLONE_CHILD_CLEARTID
-        tcb_addr, // TLS pointer = TCB address
+        tcb_addr,           // TLS pointer = TCB address
     );
-    
+
     if ret == u64::MAX || ret as i64 == -1 {
         let msg = b"[nrlib] pthread_create: clone failed\n";
         let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
@@ -1134,7 +1174,7 @@ pub unsafe extern "C" fn pthread_create(
         crate::refresh_errno_from_kernel();
         return crate::EAGAIN;
     }
-    
+
     if ret == 0 {
         // We are the child thread!
         // This code path should not execute in the parent's flow.
@@ -1143,14 +1183,14 @@ pub unsafe extern "C" fn pthread_create(
         __thread_entry();
         // Never returns
     }
-    
+
     // Parent: ret is child TID
     tcb.tid.store(ret as usize, Ordering::Release);
     *thread = ret as pthread_t;
-    
+
     let msg = b"[nrlib] pthread_create: thread created with TID ";
     let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
-    
+
     // Print TID
     let mut tid_buf = [0u8; 20];
     let mut tid_val = ret;
@@ -1165,10 +1205,19 @@ pub unsafe extern "C" fn pthread_create(
             i += 1;
         }
     }
-    let tid_str = if ret == 0 { &tid_buf[0..1] } else { &tid_buf[20-i..20] };
-    let _ = crate::syscall3(SYS_WRITE_NR, 2, tid_str.as_ptr() as u64, tid_str.len() as u64);
+    let tid_str = if ret == 0 {
+        &tid_buf[0..1]
+    } else {
+        &tid_buf[20 - i..20]
+    };
+    let _ = crate::syscall3(
+        SYS_WRITE_NR,
+        2,
+        tid_str.as_ptr() as u64,
+        tid_str.len() as u64,
+    );
     let _ = crate::syscall3(SYS_WRITE_NR, 2, b"\n".as_ptr() as u64, 1);
-    
+
     0
 }
 
@@ -1177,15 +1226,18 @@ pub unsafe extern "C" fn pthread_create(
 pub unsafe extern "C" fn pthread_join(thread: pthread_t, retval: *mut *mut c_void) -> c_int {
     let msg = b"[nrlib] pthread_join called\n";
     let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
-    
+
     // Find the thread in our table
-    while THREAD_TABLE_LOCK.compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed).is_err() {
+    while THREAD_TABLE_LOCK
+        .compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
         spin_loop();
     }
-    
+
     let mut found_tcb: *mut ThreadControlBlock = ptr::null_mut();
     let mut found_slot: usize = MAX_THREADS;
-    
+
     for i in 0..MAX_THREADS {
         if let Some(tcb) = THREAD_TABLE[i] {
             if (*tcb).tid.load(Ordering::Acquire) == thread as usize {
@@ -1195,19 +1247,19 @@ pub unsafe extern "C" fn pthread_join(thread: pthread_t, retval: *mut *mut c_voi
             }
         }
     }
-    
+
     THREAD_TABLE_LOCK.store(0, Ordering::Release);
-    
+
     if found_tcb.is_null() {
         return crate::ESRCH;
     }
-    
+
     let tcb = &*found_tcb;
-    
+
     if tcb.is_detached() {
         return crate::EINVAL;
     }
-    
+
     // Wait for thread to exit using futex
     while tcb.exited.load(Ordering::Acquire) == 0 {
         // Wait on the tid address
@@ -1221,31 +1273,34 @@ pub unsafe extern "C" fn pthread_join(thread: pthread_t, retval: *mut *mut c_voi
             0,
         );
     }
-    
+
     // Get return value
     if !retval.is_null() {
         *retval = (*found_tcb).retval;
     }
-    
+
     // Free resources
     let stack_base = (*found_tcb).stack_base as u64;
     let stack_size = (*found_tcb).stack_size as u64;
-    
+
     free_thread_slot(found_slot);
-    
+
     // Unmap the stack
     crate::syscall2(crate::SYS_MUNMAP, stack_base, stack_size);
-    
+
     0
 }
 
 /// Detach a thread
 #[no_mangle]
 pub unsafe extern "C" fn pthread_detach(thread: pthread_t) -> c_int {
-    while THREAD_TABLE_LOCK.compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed).is_err() {
+    while THREAD_TABLE_LOCK
+        .compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
         spin_loop();
     }
-    
+
     for i in 0..MAX_THREADS {
         if let Some(tcb) = THREAD_TABLE[i] {
             if (*tcb).tid.load(Ordering::Acquire) == thread as usize {
@@ -1255,7 +1310,7 @@ pub unsafe extern "C" fn pthread_detach(thread: pthread_t) -> c_int {
             }
         }
     }
-    
+
     THREAD_TABLE_LOCK.store(0, Ordering::Release);
     crate::ESRCH
 }
@@ -1266,7 +1321,9 @@ pub unsafe extern "C" fn pthread_exit(retval: *mut c_void) -> ! {
     // TODO: Find current thread's TCB and set return value
     // For now, just exit
     crate::syscall1(crate::SYS_EXIT, 0);
-    loop { spin_loop(); }
+    loop {
+        spin_loop();
+    }
 }
 
 #[no_mangle]
@@ -1279,7 +1336,7 @@ pub unsafe extern "C" fn pthread_self() -> pthread_t {
         out(reg) tcb_ptr,
         options(nostack, preserves_flags)
     );
-    
+
     // If we have a valid TCB, return it
     // Otherwise fall back to TID
     if tcb_ptr != 0 {
@@ -1332,40 +1389,49 @@ pub unsafe extern "C" fn pthread_once(
     init_routine: Option<unsafe extern "C" fn()>,
 ) -> c_int {
     trace_fn!("pthread_once");
-    
+
     let routine_addr = if let Some(f) = init_routine {
         f as *const () as u64
     } else {
         0
     };
-    
+
     let diag_msg = b"[nrlib] pthread_once called with routine @ 0x";
-    let _ = crate::syscall3(SYS_WRITE_NR, 2, diag_msg.as_ptr() as u64, diag_msg.len() as u64);
-    
+    let _ = crate::syscall3(
+        SYS_WRITE_NR,
+        2,
+        diag_msg.as_ptr() as u64,
+        diag_msg.len() as u64,
+    );
+
     for i in 0..16 {
         let shift = (15 - i) * 4;
         let nibble = ((routine_addr >> shift) & 0xF) as u8;
-        let ch = if nibble < 10 { b'0' + nibble } else { b'a' + nibble - 10 };
+        let ch = if nibble < 10 {
+            b'0' + nibble
+        } else {
+            b'a' + nibble - 10
+        };
         let _ = crate::syscall3(SYS_WRITE_NR, 2, &ch as *const u8 as u64, 1);
     }
     let _ = crate::syscall3(SYS_WRITE_NR, 2, b"\n".as_ptr() as u64, 1);
-    
+
     if once_control.is_null() {
         return crate::EINVAL;
     }
-    
+
     let init = match init_routine {
         Some(f) => f,
         None => return crate::EINVAL,
     };
-    
+
     let control = &*once_control;
-    
+
     // Fast path: already initialized
     if control.state.load(Ordering::Acquire) == PTHREAD_ONCE_DONE {
         return 0;
     }
-    
+
     // Try to be the thread that initializes
     match control.state.compare_exchange(
         PTHREAD_ONCE_INIT_VALUE,
@@ -1375,23 +1441,36 @@ pub unsafe extern "C" fn pthread_once(
     ) {
         Ok(_) => {
             let diag_msg = b"[nrlib] pthread_once: Calling init routine\n";
-            let _ = crate::syscall3(SYS_WRITE_NR, 2, diag_msg.as_ptr() as u64, diag_msg.len() as u64);
-            
+            let _ = crate::syscall3(
+                SYS_WRITE_NR,
+                2,
+                diag_msg.as_ptr() as u64,
+                diag_msg.len() as u64,
+            );
+
             init();
-            
+
             let diag_msg = b"[nrlib] pthread_once: Init routine completed\n";
-            let _ = crate::syscall3(SYS_WRITE_NR, 2, diag_msg.as_ptr() as u64, diag_msg.len() as u64);
-            
+            let _ = crate::syscall3(
+                SYS_WRITE_NR,
+                2,
+                diag_msg.as_ptr() as u64,
+                diag_msg.len() as u64,
+            );
+
             control.state.store(PTHREAD_ONCE_DONE, Ordering::Release);
             0
         }
-        Err(PTHREAD_ONCE_DONE) => {
-            0
-        }
+        Err(PTHREAD_ONCE_DONE) => 0,
         Err(_) => {
             let diag_msg = b"[nrlib] pthread_once: Waiting for init from another thread\n";
-            let _ = crate::syscall3(SYS_WRITE_NR, 2, diag_msg.as_ptr() as u64, diag_msg.len() as u64);
-            
+            let _ = crate::syscall3(
+                SYS_WRITE_NR,
+                2,
+                diag_msg.as_ptr() as u64,
+                diag_msg.len() as u64,
+            );
+
             let mut spin_count = 0u32;
             loop {
                 if control.state.load(Ordering::Acquire) != PTHREAD_ONCE_IN_PROGRESS {
@@ -1400,15 +1479,25 @@ pub unsafe extern "C" fn pthread_once(
                 spin_count += 1;
                 if spin_count > 100000 {
                     let hang_msg = b"[nrlib] WARNING: pthread_once init timeout - possible hang\n";
-                    let _ = crate::syscall3(SYS_WRITE_NR, 2, hang_msg.as_ptr() as u64, hang_msg.len() as u64);
+                    let _ = crate::syscall3(
+                        SYS_WRITE_NR,
+                        2,
+                        hang_msg.as_ptr() as u64,
+                        hang_msg.len() as u64,
+                    );
                     break;
                 }
                 spin_loop();
             }
-            
+
             let diag_msg = b"[nrlib] pthread_once: Init completed by other thread\n";
-            let _ = crate::syscall3(SYS_WRITE_NR, 2, diag_msg.as_ptr() as u64, diag_msg.len() as u64);
-            
+            let _ = crate::syscall3(
+                SYS_WRITE_NR,
+                2,
+                diag_msg.as_ptr() as u64,
+                diag_msg.len() as u64,
+            );
+
             0
         }
     }

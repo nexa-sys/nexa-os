@@ -2,9 +2,9 @@
 //!
 //! Provides PEM format handling for certificates and keys.
 
-use std::vec::Vec;
+use crate::encoding::{base64_decode, base64_encode};
 use std::string::String;
-use crate::encoding::{base64_encode, base64_decode};
+use std::vec::Vec;
 
 /// PEM header/footer markers
 pub mod pem_types {
@@ -48,12 +48,12 @@ impl PemBlock {
     /// Encode to PEM format
     pub fn encode(&self) -> String {
         let mut result = String::new();
-        
+
         // Begin marker
         result.push_str("-----BEGIN ");
         result.push_str(&self.block_type);
         result.push_str("-----\n");
-        
+
         // Headers
         for (name, value) in &self.headers {
             result.push_str(name);
@@ -61,23 +61,23 @@ impl PemBlock {
             result.push_str(value);
             result.push('\n');
         }
-        
+
         if !self.headers.is_empty() {
             result.push('\n'); // Blank line after headers
         }
-        
+
         // Base64 encoded data (64 chars per line)
         let b64 = base64_encode(&self.data);
         for chunk in b64.as_bytes().chunks(64) {
             result.push_str(core::str::from_utf8(chunk).unwrap_or(""));
             result.push('\n');
         }
-        
+
         // End marker
         result.push_str("-----END ");
         result.push_str(&self.block_type);
         result.push_str("-----\n");
-        
+
         result
     }
 }
@@ -89,7 +89,7 @@ pub fn pem_decode(pem: &[u8]) -> Vec<PemBlock> {
         Ok(s) => s,
         Err(_) => return blocks,
     };
-    
+
     let mut pos = 0;
     while pos < text.len() {
         // Find begin marker
@@ -97,31 +97,29 @@ pub fn pem_decode(pem: &[u8]) -> Vec<PemBlock> {
         if let Some(begin_idx) = text[pos..].find(begin_prefix) {
             let abs_begin = pos + begin_idx;
             let after_begin = abs_begin + begin_prefix.len();
-            
+
             // Find end of begin line
             if let Some(dash_idx) = text[after_begin..].find("-----") {
                 let block_type = &text[after_begin..after_begin + dash_idx];
                 let after_begin_line = after_begin + dash_idx + 5;
-                
+
                 // Find end marker
                 let end_marker = format!("-----END {}-----", block_type);
                 if let Some(end_idx) = text[after_begin_line..].find(&end_marker) {
                     let content = &text[after_begin_line..after_begin_line + end_idx];
-                    
+
                     // Parse headers and base64 data
                     let (headers, b64_data) = parse_pem_content(content);
-                    
+
                     // Decode base64
-                    let cleaned: String = b64_data.chars()
-                        .filter(|c| !c.is_whitespace())
-                        .collect();
-                    
+                    let cleaned: String = b64_data.chars().filter(|c| !c.is_whitespace()).collect();
+
                     if let Ok(data) = base64_decode(&cleaned) {
                         let mut block = PemBlock::new(block_type, data);
                         block.headers = headers;
                         blocks.push(block);
                     }
-                    
+
                     pos = after_begin_line + end_idx + end_marker.len();
                     continue;
                 }
@@ -129,7 +127,7 @@ pub fn pem_decode(pem: &[u8]) -> Vec<PemBlock> {
         }
         break;
     }
-    
+
     blocks
 }
 
@@ -139,7 +137,7 @@ fn parse_pem_content(content: &str) -> (Vec<(String, String)>, &str) {
     let mut lines = content.lines().peekable();
     let mut data_start = 0;
     let mut in_headers = true;
-    
+
     for line in content.lines() {
         if in_headers {
             if line.is_empty() {
@@ -147,7 +145,7 @@ fn parse_pem_content(content: &str) -> (Vec<(String, String)>, &str) {
                 data_start += line.len() + 1;
                 continue;
             }
-            
+
             if let Some(colon_idx) = line.find(':') {
                 let name = line[..colon_idx].trim();
                 let value = line[colon_idx + 1..].trim();
@@ -159,13 +157,13 @@ fn parse_pem_content(content: &str) -> (Vec<(String, String)>, &str) {
             }
         }
     }
-    
+
     let data = if data_start > 0 && data_start < content.len() {
         &content[data_start..]
     } else {
         content
     };
-    
+
     (headers, data)
 }
 
@@ -218,15 +216,15 @@ pub extern "C" fn PEM_write_bio(
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_pem_encode_decode() {
         let data = vec![0x30, 0x82, 0x01, 0x22]; // Sample DER data
         let pem = pem_encode("CERTIFICATE", &data);
-        
+
         assert!(pem.contains("-----BEGIN CERTIFICATE-----"));
         assert!(pem.contains("-----END CERTIFICATE-----"));
-        
+
         let decoded = pem_decode_one(pem.as_bytes(), "CERTIFICATE");
         assert_eq!(decoded, Some(data));
     }

@@ -80,14 +80,14 @@
 // ============================================================================
 
 // Core types and constants
-pub mod types;
-pub mod error;
 pub mod constants;
+pub mod error;
+pub mod types;
 
 // Packet layer
-pub mod packet;
-pub mod frame;
 pub mod crypto;
+pub mod frame;
+pub mod packet;
 
 // Connection layer (TODO: implement)
 // pub mod connection;
@@ -114,12 +114,12 @@ pub mod crypto;
 // Re-exports for convenience
 // ============================================================================
 
-pub use types::*;
-pub use error::{Error, Result, NgError, CryptoError, TransportError};
 pub use constants::*;
-pub use packet::{PacketType, PacketHeader, PacketBuilder};
-pub use frame::{Frame, FrameType};
 pub use crypto::CryptoContext;
+pub use error::{CryptoError, Error, NgError, Result, TransportError};
+pub use frame::{Frame, FrameType};
+pub use packet::{PacketBuilder, PacketHeader, PacketType};
+pub use types::*;
 
 // ============================================================================
 // C Type Definitions (ngtcp2 compatible)
@@ -182,7 +182,7 @@ pub extern "C" fn ngtcp2_err_is_fatal(error_code: c_int) -> c_int {
 }
 
 /// Version info structure (ngtcp2 compatible)
-/// 
+///
 /// Note: This struct is NOT thread-safe due to raw pointer.
 /// Use only from a single thread or with external synchronization.
 #[repr(C)]
@@ -207,7 +207,7 @@ pub extern "C" fn ngtcp2_version(least_version: c_int) -> *const Ngtcp2Info {
         version_num: NTCP2_VERSION_NUM as c_int,
         version_str: NTCP2_VERSION_CSTR.as_ptr() as *const c_char,
     };
-    
+
     if least_version as u32 > NTCP2_VERSION_NUM {
         core::ptr::null()
     } else {
@@ -239,7 +239,7 @@ impl ConnectionId {
         cid.data[..cid.datalen].copy_from_slice(&data[..cid.datalen]);
         cid
     }
-    
+
     /// Create an empty connection ID
     pub fn empty() -> Self {
         Self {
@@ -247,12 +247,12 @@ impl ConnectionId {
             datalen: 0,
         }
     }
-    
+
     /// Get the connection ID as a slice
     pub fn as_slice(&self) -> &[u8] {
         &self.data[..self.datalen]
     }
-    
+
     /// Check if the connection ID is empty
     pub fn is_empty(&self) -> bool {
         self.datalen == 0
@@ -387,10 +387,10 @@ impl Default for ngtcp2_settings {
     fn default() -> Self {
         Self {
             qlog_write: None,
-            cc_algo: 0, // Cubic
+            cc_algo: 0,               // Cubic
             initial_rtt: 333_000_000, // 333ms
             log_printf: None,
-            max_window: 6 * 1024 * 1024, // 6MB
+            max_window: 6 * 1024 * 1024,        // 6MB
             max_stream_window: 6 * 1024 * 1024, // 6MB
             ack_thresh: 2,
             no_pmtud: 0,
@@ -464,7 +464,7 @@ impl Default for ngtcp2_transport_params {
             preferred_addr_present: 0,
             max_idle_timeout: 30_000, // 30 seconds
             max_udp_payload_size: NGTCP2_DEFAULT_MAX_UDP_PAYLOAD_SIZE as u64,
-            initial_max_data: 10 * 1024 * 1024, // 10MB
+            initial_max_data: 10 * 1024 * 1024,             // 10MB
             initial_max_stream_data_bidi_local: 256 * 1024, // 256KB
             initial_max_stream_data_bidi_remote: 256 * 1024,
             initial_max_stream_data_uni: 256 * 1024,

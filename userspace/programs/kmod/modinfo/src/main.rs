@@ -134,7 +134,7 @@ mod kmod_syscalls {
                 options(nostack, preserves_flags)
             );
         }
-        
+
         if ret == u64::MAX {
             -1
         } else {
@@ -206,7 +206,7 @@ fn format_size(size: u64) -> String {
 fn show_module_info(name: &str) {
     let mut name_bytes = name.as_bytes().to_vec();
     name_bytes.push(0);
-    
+
     let mut info = ModuleDetailedInfo {
         name: [0; 32],
         version: [0; 32],
@@ -224,12 +224,16 @@ fn show_module_info(name: &str) {
         signed: 0,
         taints: 0,
     };
-    
+
     if !get_module_info(&name_bytes, &mut info) {
-        eprintln!("modinfo: module '{}' not found (errno={})", name, get_errno());
+        eprintln!(
+            "modinfo: module '{}' not found (errno={})",
+            name,
+            get_errno()
+        );
         process::exit(1);
     }
-    
+
     let type_str = match info.module_type {
         1 => "filesystem",
         2 => "block device",
@@ -237,7 +241,7 @@ fn show_module_info(name: &str) {
         4 => "network",
         _ => "other",
     };
-    
+
     let state_str = match info.state {
         0 => "loaded",
         1 => "running",
@@ -245,14 +249,14 @@ fn show_module_info(name: &str) {
         3 => "error",
         _ => "unknown",
     };
-    
+
     let signed_str = match info.signed {
         0 => "unsigned",
         1 => "signed (valid)",
         2 => "signed (invalid)",
         _ => "unknown",
     };
-    
+
     println!("filename:        {}.nkm", info.name_str());
     println!("name:            {}", info.name_str());
     println!("version:         {}", info.version_str());
@@ -265,7 +269,10 @@ fn show_module_info(name: &str) {
     println!("refcount:        {}", info.ref_count);
     println!("state:           {}", state_str);
     println!("signed:          {}", signed_str);
-    println!("taints_kernel:   {}", if info.taints != 0 { "yes" } else { "no" });
+    println!(
+        "taints_kernel:   {}",
+        if info.taints != 0 { "yes" } else { "no" }
+    );
     println!("dependencies:    {}", info.dep_count);
     println!("symbols:         {}", info.symbol_count);
     println!("parameters:      {}", info.param_count);
@@ -274,15 +281,19 @@ fn show_module_info(name: &str) {
 fn show_dependencies(name: &str) {
     let mut name_bytes = name.as_bytes().to_vec();
     name_bytes.push(0);
-    
+
     let mut deps = [ModuleDependency { name: [0; 32] }; 16];
-    
+
     let count = get_module_deps(&name_bytes, &mut deps);
     if count < 0 {
-        eprintln!("modinfo: module '{}' not found (errno={})", name, get_errno());
+        eprintln!(
+            "modinfo: module '{}' not found (errno={})",
+            name,
+            get_errno()
+        );
         process::exit(1);
     }
-    
+
     println!("Dependencies for '{}':", name);
     if count == 0 {
         println!("  (none)");
@@ -299,7 +310,7 @@ fn show_dependencies(name: &str) {
 fn show_symbols(name: &str) {
     let mut name_bytes = name.as_bytes().to_vec();
     name_bytes.push(0);
-    
+
     let mut syms = [ModuleSymbol {
         name: [0; 64],
         address: 0,
@@ -307,26 +318,36 @@ fn show_symbols(name: &str) {
         gpl_only: 0,
         _reserved: [0; 6],
     }; 64];
-    
+
     let count = get_module_symbols(&name_bytes, &mut syms);
     if count < 0 {
-        eprintln!("modinfo: module '{}' not found (errno={})", name, get_errno());
+        eprintln!(
+            "modinfo: module '{}' not found (errno={})",
+            name,
+            get_errno()
+        );
         process::exit(1);
     }
-    
+
     println!("Exported symbols for '{}':", name);
     if count == 0 {
         println!("  (none)");
     } else {
-        println!("{:<40} {:>16}  {:>8}  {:>8}", "Symbol", "Address", "Type", "GPL");
+        println!(
+            "{:<40} {:>16}  {:>8}  {:>8}",
+            "Symbol", "Address", "Type", "GPL"
+        );
         println!("{}", "-".repeat(76));
-        
+
         for sym in syms.iter().take(count as usize) {
             let sym_name = sym.name_str();
             if !sym_name.is_empty() {
                 let type_str = if sym.sym_type == 0 { "func" } else { "data" };
                 let gpl_str = if sym.gpl_only != 0 { "yes" } else { "no" };
-                println!("{:<40} {:#16x}  {:>8}  {:>8}", sym_name, sym.address, type_str, gpl_str);
+                println!(
+                    "{:<40} {:#16x}  {:>8}  {:>8}",
+                    sym_name, sym.address, type_str, gpl_str
+                );
             }
         }
     }
@@ -334,17 +355,17 @@ fn show_symbols(name: &str) {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    
+
     if args.len() < 2 {
         eprintln!("modinfo: missing module name");
         eprintln!("Usage: modinfo [OPTIONS] <module>");
         process::exit(1);
     }
-    
+
     let mut show_deps = false;
     let mut show_syms = false;
     let mut module_name: Option<&str> = None;
-    
+
     // Parse arguments
     for arg in args.iter().skip(1) {
         match arg.as_str() {
@@ -375,7 +396,7 @@ fn main() {
             }
         }
     }
-    
+
     let module_name = match module_name {
         Some(name) => name,
         None => {
@@ -384,7 +405,7 @@ fn main() {
             process::exit(1);
         }
     };
-    
+
     if show_deps {
         show_dependencies(module_name);
     } else if show_syms {

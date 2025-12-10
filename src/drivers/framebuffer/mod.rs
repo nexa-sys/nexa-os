@@ -23,10 +23,15 @@ pub mod font;
 pub mod font {
     //! TTF font stub module (feature disabled)
     //! Falls back to 8x8 bitmap font for ASCII only.
-    
+
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum FontSystemState { Uninitialized, Initializing, Ready, Failed }
-    
+    pub enum FontSystemState {
+        Uninitialized,
+        Initializing,
+        Ready,
+        Failed,
+    }
+
     /// Glyph bitmap for rendering (stub - never instantiated)
     #[derive(Clone)]
     pub struct GlyphBitmap {
@@ -37,14 +42,22 @@ pub mod font {
         pub advance: u16,
         pub data: alloc::vec::Vec<u8>,
     }
-    
-    pub fn is_ready() -> bool { false }
-    pub fn state() -> FontSystemState { FontSystemState::Uninitialized }
+
+    pub fn is_ready() -> bool {
+        false
+    }
+    pub fn state() -> FontSystemState {
+        FontSystemState::Uninitialized
+    }
     pub fn init_after_pivot_root() {
         crate::kinfo!("TTF font support disabled (gfx_ttf feature not enabled)");
     }
-    pub fn get_glyph(_ch: char, _size: u16) -> Option<GlyphBitmap> { None }
-    pub fn get_baseline_offset(_size: u16) -> u16 { 0 }
+    pub fn get_glyph(_ch: char, _size: u16) -> Option<GlyphBitmap> {
+        None
+    }
+    pub fn get_baseline_offset(_size: u16) -> u16 {
+        0
+    }
 }
 mod render;
 mod spec;

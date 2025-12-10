@@ -15,7 +15,7 @@ fn main() {
         let null_ptr: *const u32 = core::ptr::null();
         let _ = core::ptr::read_volatile(null_ptr);
     }
-    
+
     // If we somehow get here (we shouldn't), exit with error
     println!("ERROR: Reached code after null pointer dereference!");
     std::process::exit(1);

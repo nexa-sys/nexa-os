@@ -2,8 +2,8 @@
 //!
 //! Provides clone, gettid, set_tid_address, futex, and related functions.
 
-use crate::{c_int, c_void, size_t};
 use super::types::timespec;
+use crate::{c_int, c_void, size_t};
 
 // ============================================================================
 // Clone Syscall
@@ -26,7 +26,7 @@ pub unsafe extern "C" fn clone_syscall(
         child_tid as u64,
         tls as u64,
     );
-    
+
     if ret == u64::MAX {
         crate::refresh_errno_from_kernel();
         -1
@@ -81,7 +81,7 @@ pub unsafe extern "C" fn set_tid_address(tidptr: *mut c_int) -> c_int {
 #[no_mangle]
 pub unsafe extern "C" fn set_robust_list(head: *mut c_void, len: size_t) -> c_int {
     let ret = crate::syscall2(crate::SYS_SET_ROBUST_LIST, head as u64, len as u64);
-    
+
     if ret == u64::MAX {
         crate::refresh_errno_from_kernel();
         -1
@@ -104,7 +104,7 @@ pub unsafe extern "C" fn get_robust_list(
         head_ptr as u64,
         len_ptr as u64,
     );
-    
+
     if ret == u64::MAX {
         crate::refresh_errno_from_kernel();
         -1
@@ -137,7 +137,7 @@ pub unsafe extern "C" fn futex(
         uaddr2 as u64,
         val3 as u64,
     );
-    
+
     if ret == u64::MAX {
         crate::refresh_errno_from_kernel();
         -1

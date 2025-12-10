@@ -2,8 +2,8 @@
 //!
 //! Provides signal-related functions for NexaOS.
 
-use crate::{c_int, c_void, pid_t, syscall2, set_errno, refresh_errno_from_kernel, EINVAL};
 use super::types::{sigaction, sighandler_t};
+use crate::{c_int, c_void, pid_t, refresh_errno_from_kernel, set_errno, syscall2, EINVAL};
 
 /// System call number for kill
 const SYS_KILL: u64 = 62;
@@ -93,7 +93,7 @@ pub unsafe extern "C" fn sigaddset(_set: *mut c_void, _signum: c_int) -> c_int {
 // ============================================================================
 
 /// Send a signal to a process
-/// 
+///
 /// # Arguments
 /// * `pid` - Process ID to send signal to:
 ///   - pid > 0: Send to process with that PID
@@ -101,7 +101,7 @@ pub unsafe extern "C" fn sigaddset(_set: *mut c_void, _signum: c_int) -> c_int {
 ///   - pid == -1: Send to all processes (except init)
 ///   - pid < -1: Send to all processes in process group -pid
 /// * `sig` - Signal number to send (0 to check if process exists)
-/// 
+///
 /// # Returns
 /// * 0 on success
 /// * -1 on error (errno is set)
@@ -112,9 +112,9 @@ pub extern "C" fn kill(pid: pid_t, sig: c_int) -> c_int {
         set_errno(EINVAL);
         return -1;
     }
-    
+
     let ret = syscall2(SYS_KILL, pid as u64, sig as u64);
-    
+
     if ret == u64::MAX {
         refresh_errno_from_kernel();
         -1

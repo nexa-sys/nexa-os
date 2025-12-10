@@ -78,24 +78,25 @@ fn do_swapon(path: &str, flags: i32) -> i32 {
             return 1;
         }
     };
-    
-    let ret = unsafe {
-        libc::syscall(SYS_SWAPON, c_path.as_ptr(), flags)
-    };
-    
+
+    let ret = unsafe { libc::syscall(SYS_SWAPON, c_path.as_ptr(), flags) };
+
     if ret == -1 {
         let errno = unsafe { *libc::__errno_location() };
         match errno {
             libc::EPERM => eprintln!("swapon: {}: Operation not permitted (are you root?)", path),
             libc::ENOENT => eprintln!("swapon: {}: No such file or directory", path),
-            libc::EINVAL => eprintln!("swapon: {}: Invalid swap signature or already enabled", path),
+            libc::EINVAL => eprintln!(
+                "swapon: {}: Invalid swap signature or already enabled",
+                path
+            ),
             libc::EBUSY => eprintln!("swapon: {}: Device or resource busy (already in use)", path),
             libc::ENOSYS => eprintln!("swapon: {}: Function not implemented", path),
             _ => eprintln!("swapon: {}: Error (errno={})", path, errno),
         }
         return 1;
     }
-    
+
     println!("swapon: {}: swap enabled", path);
     0
 }
@@ -109,21 +110,21 @@ fn enable_from_fstab() -> i32 {
             return 1;
         }
     };
-    
+
     let mut exit_code = 0;
     let mut found_swap = false;
-    
+
     for line in content.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        
+
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() >= 3 && parts[2] == "swap" {
             found_swap = true;
             let device = parts[0];
-            
+
             // Parse options for priority
             let mut flags = 0i32;
             if parts.len() >= 4 {
@@ -138,18 +139,18 @@ fn enable_from_fstab() -> i32 {
                     }
                 }
             }
-            
+
             if do_swapon(device, flags) != 0 {
                 exit_code = 1;
             }
         }
     }
-    
+
     if !found_swap {
         eprintln!("swapon: no swap entries found in /etc/fstab");
         return 1;
     }
-    
+
     exit_code
 }
 
@@ -160,7 +161,7 @@ fn main() {
     let mut enable_all = false;
     let mut priority: Option<i32> = None;
     let mut discard = false;
-    
+
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -202,7 +203,7 @@ fn main() {
         }
         i += 1;
     }
-    
+
     // Handle -s (summary) option
     if show_summary {
         show_swap_summary();
@@ -210,12 +211,12 @@ fn main() {
         show_meminfo_swap();
         process::exit(0);
     }
-    
+
     // Handle -a (all) option
     if enable_all {
         process::exit(enable_from_fstab());
     }
-    
+
     // Need a device
     let device = match device {
         Some(d) => d,
@@ -225,7 +226,7 @@ fn main() {
             process::exit(0);
         }
     };
-    
+
     // Build flags
     let mut flags = 0i32;
     if let Some(prio) = priority {
@@ -234,6 +235,6 @@ fn main() {
     if discard {
         flags |= SWAP_FLAG_DISCARD;
     }
-    
+
     process::exit(do_swapon(&device, flags));
 }

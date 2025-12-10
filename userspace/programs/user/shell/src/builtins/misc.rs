@@ -9,21 +9,26 @@ use std::time::Instant;
 
 /// Register miscellaneous builtins
 pub fn register(registry: &mut BuiltinRegistry) {
-    registry.register("times", BuiltinDesc::new(
-        builtin_times,
-        "显示 shell 及其子进程的累积用户和系统时间",
-        "打印 shell 及其所有子进程累积的用户和系统时间。\n\
+    registry.register(
+        "times",
+        BuiltinDesc::new(
+            builtin_times,
+            "显示 shell 及其子进程的累积用户和系统时间",
+            "打印 shell 及其所有子进程累积的用户和系统时间。\n\
          \n\
          返回状态:\n\
          总是成功。",
-        "times",
-        true,
-    ));
+            "times",
+            true,
+        ),
+    );
 
-    registry.register("trap", BuiltinDesc::new(
-        builtin_trap,
-        "在 shell 收到信号时执行命令",
-        "当 shell 收到信号或其他条件时运行 ARG 中的命令。\n\
+    registry.register(
+        "trap",
+        BuiltinDesc::new(
+            builtin_trap,
+            "在 shell 收到信号时执行命令",
+            "当 shell 收到信号或其他条件时运行 ARG 中的命令。\n\
          \n\
          定义并激活当 shell 收到信号时执行的处理程序。\n\
          ARG 是在 shell 收到信号 SIGNAL_SPEC 时要执行的命令。\n\
@@ -46,14 +51,17 @@ pub fn register(registry: &mut BuiltinRegistry) {
          与每个信号关联的命令列表。\n\
          \n\
          如果 SIGNAL_SPEC 无效则返回失败；否则 trap 返回成功。",
-        "trap [-lp] [[参数] 信号说明符 ...]",
-        false,  // Cannot be disabled
-    ));
+            "trap [-lp] [[参数] 信号说明符 ...]",
+            false, // Cannot be disabled
+        ),
+    );
 
-    registry.register("getopts", BuiltinDesc::new(
-        builtin_getopts,
-        "解析命令的位置参数",
-        "getopts 用于 shell 脚本来解析位置参数。\n\
+    registry.register(
+        "getopts",
+        BuiltinDesc::new(
+            builtin_getopts,
+            "解析命令的位置参数",
+            "getopts 用于 shell 脚本来解析位置参数。\n\
          \n\
          OPTSTRING 包含要识别的选项字母；如果一个字母后面跟着冒号，\n\
          该选项需要一个参数，应该用空白符与选项字母分开。\n\
@@ -67,14 +75,17 @@ pub fn register(registry: &mut BuiltinRegistry) {
          则使用静默错误报告。\n\
          \n\
          getopts 如果找到了选项则返回成功；如果遇到选项结尾或发生错误则返回失败。",
-        "getopts 选项字符串 名称 [参数 ...]",
-        true,
-    ));
+            "getopts 选项字符串 名称 [参数 ...]",
+            true,
+        ),
+    );
 
-    registry.register("caller", BuiltinDesc::new(
-        builtin_caller,
-        "返回活动子程序调用的上下文",
-        "返回任何活动子程序调用（shell 函数或以 `.' 或 `source'\n\
+    registry.register(
+        "caller",
+        BuiltinDesc::new(
+            builtin_caller,
+            "返回活动子程序调用的上下文",
+            "返回任何活动子程序调用（shell 函数或以 `.' 或 `source'\n\
          内建命令执行的脚本）的上下文。\n\
          \n\
          不带 EXPR，caller 显示当前子程序调用的行号和源文件名。\n\
@@ -85,9 +96,10 @@ pub fn register(registry: &mut BuiltinRegistry) {
          \n\
          如果 shell 没有在子程序调用中执行或 EXPR 不对应\n\
          调用堆栈中的有效位置则返回失败。",
-        "caller [表达式]",
-        true,
-    ));
+            "caller [表达式]",
+            true,
+        ),
+    );
 
     registry.register("mapfile", BuiltinDesc::new(
         builtin_mapfile,
@@ -128,10 +140,12 @@ pub fn register(registry: &mut BuiltinRegistry) {
         true,
     ));
 
-    registry.register("let", BuiltinDesc::new(
-        builtin_let,
-        "计算算术表达式",
-        "计算算术表达式。\n\
+    registry.register(
+        "let",
+        BuiltinDesc::new(
+            builtin_let,
+            "计算算术表达式",
+            "计算算术表达式。\n\
          \n\
          EXPRESSION 中的每个 ARG 是要被计算的算术表达式。\n\
          表达式遵循 shell 算术规则。如果最后一个 ARG 计算结果为 0，\n\
@@ -141,21 +155,25 @@ pub fn register(registry: &mut BuiltinRegistry) {
            (( 表达式 ))\n\
          \n\
          如果最后一个 ARG 计算为非零则返回成功，否则返回失败。",
-        "let 参数 [参数 ...]",
-        true,
-    ));
+            "let 参数 [参数 ...]",
+            true,
+        ),
+    );
 
-    registry.register("logout", BuiltinDesc::new(
-        builtin_logout,
-        "退出登录 shell",
-        "退出登录 shell。\n\
+    registry.register(
+        "logout",
+        BuiltinDesc::new(
+            builtin_logout,
+            "退出登录 shell",
+            "退出登录 shell。\n\
          \n\
          以状态 N 退出登录 shell。非登录 shell 返回错误。\n\
          \n\
          如果不是登录 shell 则返回失败。",
-        "logout [n]",
-        true,
-    ));
+            "logout [n]",
+            true,
+        ),
+    );
 
     registry.register("compgen", BuiltinDesc::new(
         builtin_compgen,
@@ -207,10 +225,12 @@ pub fn register(registry: &mut BuiltinRegistry) {
         true,
     ));
 
-    registry.register("compopt", BuiltinDesc::new(
-        builtin_compopt,
-        "修改补全选项",
-        "修改当前可编程补全的补全选项或对于 NAME 的选项（如果提供了）。\n\
+    registry.register(
+        "compopt",
+        BuiltinDesc::new(
+            builtin_compopt,
+            "修改补全选项",
+            "修改当前可编程补全的补全选项或对于 NAME 的选项（如果提供了）。\n\
          \n\
          使用 `+o' 而非 `-o' 来关闭指定选项。\n\
          \n\
@@ -224,38 +244,47 @@ pub fn register(registry: &mut BuiltinRegistry) {
          noquote, nosort, nospace, plusdirs\n\
          \n\
          如果成功则返回 0，如果给出无效选项或 NAME 没有补全规范则返回非零。",
-        "compopt [-o|+o 选项] [-DEI] [名称 ...]",
-        true,
-    ));
+            "compopt [-o|+o 选项] [-DEI] [名称 ...]",
+            true,
+        ),
+    );
 
-    registry.register("shift", BuiltinDesc::new(
-        builtin_shift,
-        "移动位置参数",
-        "将位置参数向左移动。\n\
+    registry.register(
+        "shift",
+        BuiltinDesc::new(
+            builtin_shift,
+            "移动位置参数",
+            "将位置参数向左移动。\n\
          \n\
          将位置参数 $N+1, $N+2 ... 重命名为 $1, $2 ...。\n\
          如果没有给出 N，则假定为 1。\n\
          \n\
          退出状态:\n\
          如果 N 是非负数且小于等于 $# 则返回成功。",
-        "shift [n]",
-        true,
-    ));
+            "shift [n]",
+            true,
+        ),
+    );
 
-    registry.register("variables", BuiltinDesc::new(
-        builtin_variables,
-        "显示 shell 变量信息",
-        "显示一些 shell 变量的名称和含义。\n\
+    registry.register(
+        "variables",
+        BuiltinDesc::new(
+            builtin_variables,
+            "显示 shell 变量信息",
+            "显示一些 shell 变量的名称和含义。\n\
          \n\
          这是一个帮助命令，显示 shell 使用的特殊变量列表。",
-        "variables",
-        true,
-    ));
+            "variables",
+            true,
+        ),
+    );
 
-    registry.register("coproc", BuiltinDesc::new(
-        builtin_coproc,
-        "创建协进程",
-        "创建一个协进程，命名为 NAME。\n\
+    registry.register(
+        "coproc",
+        BuiltinDesc::new(
+            builtin_coproc,
+            "创建协进程",
+            "创建一个协进程，命名为 NAME。\n\
          \n\
          在后台执行 COMMAND，将其 stdin 和 stdout 连接到数组变量 NAME。\n\
          协进程的 stdin 是 NAME[1]，stdout 是 NAME[0]。\n\
@@ -265,14 +294,17 @@ pub fn register(registry: &mut BuiltinRegistry) {
          协进程的 PID 存储在 NAME_PID 中。\n\
          \n\
          如果成功启动协进程则返回 0。",
-        "coproc [名称] 命令 [重定向]",
-        true,
-    ));
+            "coproc [名称] 命令 [重定向]",
+            true,
+        ),
+    );
 
-    registry.register("time", BuiltinDesc::new(
-        builtin_time,
-        "计时命令执行",
-        "报告流水线执行消耗的时间。\n\
+    registry.register(
+        "time",
+        BuiltinDesc::new(
+            builtin_time,
+            "计时命令执行",
+            "报告流水线执行消耗的时间。\n\
          \n\
          执行 PIPELINE 并打印实际时间、用户 CPU 时间和系统 CPU 时间\n\
          用于执行 PIPELINE 的概要。\n\
@@ -283,9 +315,10 @@ pub fn register(registry: &mut BuiltinRegistry) {
          TIMEFORMAT 变量的值被用作输出格式。\n\
          \n\
          返回 PIPELINE 的退出状态。",
-        "time [-p] 流水线",
-        true,
-    ));
+            "time [-p] 流水线",
+            true,
+        ),
+    );
 }
 
 /// times builtin - display process times
@@ -299,37 +332,37 @@ fn builtin_times(_state: &mut ShellState, _args: &[&str]) -> BuiltinResult {
             tms_cutime: 0,
             tms_cstime: 0,
         };
-        
+
         unsafe {
             libc::times(&mut tms);
         }
-        
+
         // Get clock ticks per second
         let ticks_per_sec = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as f64;
-        
+
         // Calculate times in seconds
         let user_time = tms.tms_utime as f64 / ticks_per_sec;
         let sys_time = tms.tms_stime as f64 / ticks_per_sec;
         let child_user = tms.tms_cutime as f64 / ticks_per_sec;
         let child_sys = tms.tms_cstime as f64 / ticks_per_sec;
-        
+
         // Format as minutes:seconds
         let format_time = |t: f64| {
             let mins = (t / 60.0) as u64;
             let secs = t % 60.0;
             format!("{}m{:.3}s", mins, secs)
         };
-        
+
         println!("{} {}", format_time(user_time), format_time(sys_time));
         println!("{} {}", format_time(child_user), format_time(child_sys));
     }
-    
+
     #[cfg(not(target_family = "unix"))]
     {
         println!("0m0.000s 0m0.000s");
         println!("0m0.000s 0m0.000s");
     }
-    
+
     Ok(0)
 }
 
@@ -400,7 +433,8 @@ fn builtin_getopts(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
     };
 
     // Get current OPTIND
-    let optind: usize = state.get_var("OPTIND")
+    let optind: usize = state
+        .get_var("OPTIND")
         .and_then(|s| s.parse().ok())
         .unwrap_or(1);
 
@@ -411,7 +445,7 @@ fn builtin_getopts(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
     }
 
     let current = params.get(optind - 1).copied().unwrap_or("");
-    
+
     if !current.starts_with('-') || current == "-" || current == "--" {
         // Not an option
         state.set_var(name, "?");
@@ -419,15 +453,15 @@ fn builtin_getopts(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
     }
 
     let opt_char = current.chars().nth(1).unwrap_or('?');
-    
+
     // Check if option is valid
     let silent = optstring.starts_with(':');
     let optstring_clean = if silent { &optstring[1..] } else { optstring };
-    
+
     if let Some(pos) = optstring_clean.find(opt_char) {
         // Valid option
         state.set_var(name, &opt_char.to_string());
-        
+
         // Check if it requires an argument
         if optstring_clean.chars().nth(pos + 1) == Some(':') {
             // Needs argument
@@ -451,7 +485,7 @@ fn builtin_getopts(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
             };
             state.set_var("OPTARG", arg);
         }
-        
+
         state.set_var("OPTIND", (optind + 1).to_string());
         Ok(0)
     } else {
@@ -469,9 +503,7 @@ fn builtin_getopts(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
 
 /// caller builtin - return context of subroutine call
 fn builtin_caller(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
-    let level: usize = args.first()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
+    let level: usize = args.first().and_then(|s| s.parse().ok()).unwrap_or(0);
 
     if let Some((line, name, file)) = state.get_caller_info(level) {
         if args.is_empty() {
@@ -533,7 +565,10 @@ fn builtin_mapfile(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
             "-t" => strip_delimiter = true,
             "-u" => {
                 if let Some(f) = iter.next() {
-                    fd = Some(f.parse().map_err(|_| format!("mapfile: {}: 无效文件描述符", f))?);
+                    fd = Some(
+                        f.parse()
+                            .map_err(|_| format!("mapfile: {}: 无效文件描述符", f))?,
+                    );
                 } else {
                     return Err("mapfile: -u: 需要选项参数".to_string());
                 }
@@ -570,7 +605,7 @@ fn builtin_mapfile(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
 
     for line in stdin.lock().lines() {
         let mut line = line.map_err(|e| format!("mapfile: {}", e))?;
-        
+
         // Skip first N lines
         if skipped < skip {
             skipped += 1;
@@ -631,7 +666,8 @@ fn builtin_logout(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
         return Err("logout: 非登录 shell: 使用 `exit'".to_string());
     }
 
-    let code = args.first()
+    let code = args
+        .first()
         .and_then(|s| s.parse::<i32>().ok())
         .unwrap_or(0);
 
@@ -706,14 +742,63 @@ fn builtin_compgen(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
     }
 
     if gen_builtins {
-        let builtins = ["cd", "pwd", "echo", "exit", "export", "alias", "set", "unset",
-                       "source", "type", "help", "history", "jobs", "bg", "fg", "kill",
-                       "wait", "trap", "umask", "ulimit", "shopt", "declare", "local",
-                       "readonly", "let", "test", "true", "false", "break", "continue",
-                       "return", "eval", "exec", "command", "builtin", "read", "printf",
-                       "pushd", "popd", "dirs", "hash", "enable", "getopts", "caller",
-                       "mapfile", "readarray", "compgen", "complete", "compopt", "bind",
-                       "times", "logout", "suspend", "disown", "fc"];
+        let builtins = [
+            "cd",
+            "pwd",
+            "echo",
+            "exit",
+            "export",
+            "alias",
+            "set",
+            "unset",
+            "source",
+            "type",
+            "help",
+            "history",
+            "jobs",
+            "bg",
+            "fg",
+            "kill",
+            "wait",
+            "trap",
+            "umask",
+            "ulimit",
+            "shopt",
+            "declare",
+            "local",
+            "readonly",
+            "let",
+            "test",
+            "true",
+            "false",
+            "break",
+            "continue",
+            "return",
+            "eval",
+            "exec",
+            "command",
+            "builtin",
+            "read",
+            "printf",
+            "pushd",
+            "popd",
+            "dirs",
+            "hash",
+            "enable",
+            "getopts",
+            "caller",
+            "mapfile",
+            "readarray",
+            "compgen",
+            "complete",
+            "compopt",
+            "bind",
+            "times",
+            "logout",
+            "suspend",
+            "disown",
+            "fc",
+        ];
         for name in builtins {
             if name.starts_with(word) {
                 completions.push(name.to_string());
@@ -722,9 +807,10 @@ fn builtin_compgen(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
     }
 
     if gen_keywords {
-        let keywords = ["if", "then", "else", "elif", "fi", "case", "esac", "for",
-                       "while", "until", "do", "done", "in", "function", "select",
-                       "time", "coproc", "{", "}", "[[", "]]", "!", "[["];
+        let keywords = [
+            "if", "then", "else", "elif", "fi", "case", "esac", "for", "while", "until", "do",
+            "done", "in", "function", "select", "time", "coproc", "{", "}", "[[", "]]", "!", "[[",
+        ];
         for kw in keywords {
             if kw.starts_with(word) {
                 completions.push(kw.to_string());
@@ -807,7 +893,8 @@ fn builtin_complete(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
 
     // Set completion spec for names
     // Parse options and create spec string
-    let spec = args.iter()
+    let spec = args
+        .iter()
         .take_while(|a| a.starts_with('-'))
         .copied()
         .collect::<Vec<_>>()
@@ -868,7 +955,7 @@ fn builtin_compopt(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
 fn evaluate_arithmetic(state: &mut ShellState, expr: &str) -> Result<i64, String> {
     // Remove outer quotes if present
     let expr = expr.trim_matches('"').trim_matches('\'');
-    
+
     // Handle assignment
     if let Some((var, value_expr)) = expr.split_once('=') {
         let var = var.trim();
@@ -881,13 +968,13 @@ fn evaluate_arithmetic(state: &mut ShellState, expr: &str) -> Result<i64, String
 
     // Handle increment/decrement
     if expr.ends_with("++") {
-        let var = &expr[..expr.len()-2];
+        let var = &expr[..expr.len() - 2];
         let val: i64 = state.get_var(var).and_then(|s| s.parse().ok()).unwrap_or(0);
         state.set_var(var, (val + 1).to_string());
         return Ok(val);
     }
     if expr.ends_with("--") {
-        let var = &expr[..expr.len()-2];
+        let var = &expr[..expr.len() - 2];
         let val: i64 = state.get_var(var).and_then(|s| s.parse().ok()).unwrap_or(0);
         state.set_var(var, (val - 1).to_string());
         return Ok(val);
@@ -920,11 +1007,14 @@ fn evaluate_arithmetic(state: &mut ShellState, expr: &str) -> Result<i64, String
     }
 
     // Simple binary operations
-    for op in ["**", "<=", ">=", "==", "!=", "&&", "||", "<<", ">>", "+", "-", "*", "/", "%", "<", ">", "&", "|", "^"] {
+    for op in [
+        "**", "<=", ">=", "==", "!=", "&&", "||", "<<", ">>", "+", "-", "*", "/", "%", "<", ">",
+        "&", "|", "^",
+    ] {
         if let Some((left, right)) = expr.split_once(op) {
             let left_val = evaluate_arithmetic(state, left.trim())?;
             let right_val = evaluate_arithmetic(state, right.trim())?;
-            
+
             return Ok(match op {
                 "+" => left_val + right_val,
                 "-" => left_val - right_val,
@@ -942,14 +1032,62 @@ fn evaluate_arithmetic(state: &mut ShellState, expr: &str) -> Result<i64, String
                     left_val % right_val
                 }
                 "**" => left_val.pow(right_val as u32),
-                "<" => if left_val < right_val { 1 } else { 0 },
-                ">" => if left_val > right_val { 1 } else { 0 },
-                "<=" => if left_val <= right_val { 1 } else { 0 },
-                ">=" => if left_val >= right_val { 1 } else { 0 },
-                "==" => if left_val == right_val { 1 } else { 0 },
-                "!=" => if left_val != right_val { 1 } else { 0 },
-                "&&" => if left_val != 0 && right_val != 0 { 1 } else { 0 },
-                "||" => if left_val != 0 || right_val != 0 { 1 } else { 0 },
+                "<" => {
+                    if left_val < right_val {
+                        1
+                    } else {
+                        0
+                    }
+                }
+                ">" => {
+                    if left_val > right_val {
+                        1
+                    } else {
+                        0
+                    }
+                }
+                "<=" => {
+                    if left_val <= right_val {
+                        1
+                    } else {
+                        0
+                    }
+                }
+                ">=" => {
+                    if left_val >= right_val {
+                        1
+                    } else {
+                        0
+                    }
+                }
+                "==" => {
+                    if left_val == right_val {
+                        1
+                    } else {
+                        0
+                    }
+                }
+                "!=" => {
+                    if left_val != right_val {
+                        1
+                    } else {
+                        0
+                    }
+                }
+                "&&" => {
+                    if left_val != 0 && right_val != 0 {
+                        1
+                    } else {
+                        0
+                    }
+                }
+                "||" => {
+                    if left_val != 0 || right_val != 0 {
+                        1
+                    } else {
+                        0
+                    }
+                }
                 "&" => left_val & right_val,
                 "|" => left_val | right_val,
                 "^" => left_val ^ right_val,
@@ -979,7 +1117,7 @@ fn evaluate_arithmetic(state: &mut ShellState, expr: &str) -> Result<i64, String
 
     // Parentheses
     if expr.starts_with('(') && expr.ends_with(')') {
-        return evaluate_arithmetic(state, &expr[1..expr.len()-1]);
+        return evaluate_arithmetic(state, &expr[1..expr.len() - 1]);
     }
 
     Err(format!("let: {}: 语法错误", expr))
@@ -996,7 +1134,8 @@ fn builtin_shift(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
         }
     };
 
-    state.shift_positional_params(n)
+    state
+        .shift_positional_params(n)
         .map(|_| 0)
         .map_err(|e| e.to_string())
 }
@@ -1044,7 +1183,8 @@ fn builtin_coproc(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
     }
 
     // Parse name and command
-    let (name, cmd_start) = if args.len() > 1 && !args[0].contains('/') && !args[0].starts_with('.') {
+    let (name, cmd_start) = if args.len() > 1 && !args[0].contains('/') && !args[0].starts_with('.')
+    {
         // First arg might be a name if it's not a command path
         (args[0], 1)
     } else {
@@ -1060,13 +1200,13 @@ fn builtin_coproc(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
     // Note: Full coprocess implementation would require pipe creation and
     // process forking, which is complex in this context
     // For now, provide a simplified implementation that just runs the command in background
-    
+
     println!("coproc: 协进程功能尚未完全实现");
     println!("coproc: 将在后台运行: {}", command);
-    
+
     // Store coproc name
     state.set_var(format!("{}_PID", name), "0");
-    
+
     Ok(0)
 }
 
@@ -1090,11 +1230,11 @@ fn builtin_time(_state: &mut ShellState, args: &[&str]) -> BuiltinResult {
     }
 
     let command = args[cmd_start..].join(" ");
-    
+
     // Note: Full time implementation would need to fork and exec
     // For now, return a message
     println!("time: 计时功能需要在命令行解析器中实现");
     println!("time: 命令: {}", command);
-    
+
     Ok(0)
 }

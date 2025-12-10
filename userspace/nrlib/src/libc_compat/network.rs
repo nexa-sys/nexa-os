@@ -92,10 +92,10 @@ pub unsafe extern "C" fn inet_aton(cp: *const c_char, inp: *mut u32) -> c_int {
 #[no_mangle]
 pub unsafe extern "C" fn inet_ntoa(inp: u32) -> *const c_char {
     static mut BUFFER: [u8; 16] = [0; 16];
-    
+
     let octets = inp.to_be_bytes();
     let mut pos = 0;
-    
+
     for (i, octet) in octets.iter().enumerate() {
         let mut n = *octet as usize;
         if n == 0 {
@@ -104,25 +104,25 @@ pub unsafe extern "C" fn inet_ntoa(inp: u32) -> *const c_char {
         } else {
             let mut digits = [0u8; 3];
             let mut digit_count = 0;
-            
+
             while n > 0 && digit_count < 3 {
                 digits[digit_count] = (n % 10) as u8 + b'0';
                 n /= 10;
                 digit_count += 1;
             }
-            
+
             for j in (0..digit_count).rev() {
                 BUFFER[pos] = digits[j];
                 pos += 1;
             }
         }
-        
+
         if i < 3 {
             BUFFER[pos] = b'.';
             pos += 1;
         }
     }
-    
+
     BUFFER[pos] = 0; // Null terminator
     BUFFER.as_ptr() as *const c_char
 }
@@ -137,7 +137,8 @@ pub unsafe extern "C" fn inet_pton(af: c_int, src: *const c_char, dst: *mut c_vo
     }
 
     match af {
-        2 => {  // AF_INET
+        2 => {
+            // AF_INET
             let result = inet_aton(src, dst as *mut u32);
             if result == 1 {
                 1
@@ -146,7 +147,7 @@ pub unsafe extern "C" fn inet_pton(af: c_int, src: *const c_char, dst: *mut c_vo
             }
         }
         _ => {
-            crate::set_errno(crate::ENOSYS);  // AF_INET6 not supported yet
+            crate::set_errno(crate::ENOSYS); // AF_INET6 not supported yet
             -1
         }
     }
@@ -167,11 +168,12 @@ pub unsafe extern "C" fn inet_ntop(
     }
 
     match af {
-        2 => {  // AF_INET
+        2 => {
+            // AF_INET
             let addr = *(src as *const u32);
             let octets = addr.to_be_bytes();
             let mut pos = 0;
-            
+
             for (i, octet) in octets.iter().enumerate() {
                 let mut n = *octet as usize;
                 if n == 0 {
@@ -184,13 +186,13 @@ pub unsafe extern "C" fn inet_ntop(
                 } else {
                     let mut digits = [0u8; 3];
                     let mut digit_count = 0;
-                    
+
                     while n > 0 && digit_count < 3 {
                         digits[digit_count] = (n % 10) as u8 + b'0';
                         n /= 10;
                         digit_count += 1;
                     }
-                    
+
                     for j in (0..digit_count).rev() {
                         if pos >= size as usize {
                             crate::set_errno(crate::ENOSPC);
@@ -200,7 +202,7 @@ pub unsafe extern "C" fn inet_ntop(
                         pos += 1;
                     }
                 }
-                
+
                 if i < 3 {
                     if pos >= size as usize {
                         crate::set_errno(crate::ENOSPC);
@@ -210,7 +212,7 @@ pub unsafe extern "C" fn inet_ntop(
                     pos += 1;
                 }
             }
-            
+
             if pos >= size as usize {
                 crate::set_errno(crate::ENOSPC);
                 return ptr::null();
@@ -219,7 +221,7 @@ pub unsafe extern "C" fn inet_ntop(
             dst
         }
         _ => {
-            crate::set_errno(crate::ENOSYS);  // AF_INET6 not supported yet
+            crate::set_errno(crate::ENOSYS); // AF_INET6 not supported yet
             ptr::null()
         }
     }

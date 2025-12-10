@@ -60,12 +60,8 @@ fn chacha20_block(key: &[u8; 32], counter: u32, nonce: &[u8; 12]) -> [u8; 64] {
 
     // Set key
     for i in 0..8 {
-        state[4 + i] = u32::from_le_bytes([
-            key[i * 4],
-            key[i * 4 + 1],
-            key[i * 4 + 2],
-            key[i * 4 + 3],
-        ]);
+        state[4 + i] =
+            u32::from_le_bytes([key[i * 4], key[i * 4 + 1], key[i * 4 + 2], key[i * 4 + 3]]);
     }
 
     // Set counter
@@ -215,18 +211,14 @@ impl Poly1305 {
             key[24], key[25], key[26], key[27], key[28], key[29], key[30], key[31],
         ]);
 
-        Self {
-            r,
-            s,
-            h: [0; 3],
-        }
+        Self { r, s, h: [0; 3] }
     }
 
     /// Process a 16-byte block
     fn block(&mut self, block: &[u8], is_final: bool) {
         // Add block to h
         let mut n = [0u128; 3];
-        
+
         if block.len() >= 8 {
             let b0 = u64::from_le_bytes([
                 block[0],
@@ -271,7 +263,7 @@ impl Poly1305 {
         // Multiply by r (simplified)
         let r0 = self.r[0] as u128;
         let r1 = self.r[1] as u128;
-        
+
         let mut t0 = n[0].wrapping_mul(r0);
         let mut t1 = n[0].wrapping_mul(r1).wrapping_add(n[1].wrapping_mul(r0));
         let t2 = n[1].wrapping_mul(r1).wrapping_add(n[2].wrapping_mul(r0));
@@ -280,7 +272,7 @@ impl Poly1305 {
         let c = t2 >> 2;
         t0 = t0.wrapping_add(c.wrapping_mul(5));
         t1 = t1.wrapping_add(t0 >> 64);
-        
+
         self.h[0] = t0 as u64;
         self.h[1] = t1 as u64;
         self.h[2] = ((t1 >> 64) as u64) & 3;
@@ -305,10 +297,10 @@ impl Poly1305 {
         let c = f >> 64;
         let mut tag = [0u8; 16];
         tag[0..8].copy_from_slice(&(f as u64).to_le_bytes());
-        
+
         f = self.h[1] as u128 + self.s[1] as u128 + c;
         tag[8..16].copy_from_slice(&(f as u64).to_le_bytes());
-        
+
         tag
     }
 }
@@ -513,7 +505,12 @@ pub unsafe extern "C" fn ncrypto_chacha20_poly1305_encrypt(
     ciphertext: *mut u8,
     tag: *mut u8,
 ) -> c_int {
-    if key.is_null() || nonce.is_null() || plaintext.is_null() || ciphertext.is_null() || tag.is_null() {
+    if key.is_null()
+        || nonce.is_null()
+        || plaintext.is_null()
+        || ciphertext.is_null()
+        || tag.is_null()
+    {
         return -1;
     }
 
@@ -551,7 +548,12 @@ pub unsafe extern "C" fn ncrypto_chacha20_poly1305_decrypt(
     tag: *const u8,
     plaintext: *mut u8,
 ) -> c_int {
-    if key.is_null() || nonce.is_null() || ciphertext.is_null() || tag.is_null() || plaintext.is_null() {
+    if key.is_null()
+        || nonce.is_null()
+        || ciphertext.is_null()
+        || tag.is_null()
+        || plaintext.is_null()
+    {
         return -1;
     }
 
@@ -620,7 +622,7 @@ mod tests {
         let plaintext = b"Secret message";
 
         let mut ciphertext = chacha20_poly1305_encrypt(&key, &nonce, aad, plaintext);
-        
+
         // Tamper with ciphertext
         ciphertext[0] ^= 1;
 

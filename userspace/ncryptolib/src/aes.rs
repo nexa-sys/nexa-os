@@ -61,7 +61,9 @@ const INV_SBOX: [u8; 256] = [
 ];
 
 // Round constants
-const RCON: [u8; 11] = [0x00, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36];
+const RCON: [u8; 11] = [
+    0x00, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36,
+];
 
 // ============================================================================
 // AES Core Implementation
@@ -281,7 +283,7 @@ fn shift_rows(state: &mut [u8; 16]) {
     // s[1] s[5] s[9]  s[13]
     // s[2] s[6] s[10] s[14]
     // s[3] s[7] s[11] s[15]
-    
+
     // Row 1: shift left by 1
     // new[1,5,9,13] = old[5,9,13,1]
     let tmp = state[1];
@@ -307,7 +309,7 @@ fn shift_rows(state: &mut [u8; 16]) {
 #[inline]
 fn inv_shift_rows(state: &mut [u8; 16]) {
     // Inverse of shift_rows
-    
+
     // Row 1: shift right by 1
     // new[1,5,9,13] = old[13,1,5,9]
     let tmp = state[13];
@@ -357,7 +359,7 @@ fn multiply(x: u8, y: u8) -> u8 {
     let mut result = 0u8;
     let mut a = x;
     let mut b = y;
-    
+
     for _ in 0..8 {
         if (b & 1) != 0 {
             result ^= a;
@@ -382,9 +384,12 @@ fn inv_mix_columns(state: &mut [u8; 16]) {
         let d = state[col + 3];
 
         state[col] = multiply(a, 0x0e) ^ multiply(b, 0x0b) ^ multiply(c, 0x0d) ^ multiply(d, 0x09);
-        state[col + 1] = multiply(a, 0x09) ^ multiply(b, 0x0e) ^ multiply(c, 0x0b) ^ multiply(d, 0x0d);
-        state[col + 2] = multiply(a, 0x0d) ^ multiply(b, 0x09) ^ multiply(c, 0x0e) ^ multiply(d, 0x0b);
-        state[col + 3] = multiply(a, 0x0b) ^ multiply(b, 0x0d) ^ multiply(c, 0x09) ^ multiply(d, 0x0e);
+        state[col + 1] =
+            multiply(a, 0x09) ^ multiply(b, 0x0e) ^ multiply(c, 0x0b) ^ multiply(d, 0x0d);
+        state[col + 2] =
+            multiply(a, 0x0d) ^ multiply(b, 0x09) ^ multiply(c, 0x0e) ^ multiply(d, 0x0b);
+        state[col + 3] =
+            multiply(a, 0x0b) ^ multiply(b, 0x0d) ^ multiply(c, 0x09) ^ multiply(d, 0x0e);
     }
 }
 
@@ -427,7 +432,7 @@ impl<T> AesGcm<T> {
         for i in 0..128 {
             let byte_idx = i / 8;
             let bit_idx = 7 - (i % 8);
-            
+
             // Check bit i of X (MSB first within each byte)
             if (x[byte_idx] >> bit_idx) & 1 == 1 {
                 for j in 0..16 {
@@ -437,7 +442,7 @@ impl<T> AesGcm<T> {
 
             // Check if LSB of V (rightmost bit of the 128-bit value) is 1
             let lsb = v[15] & 1;
-            
+
             // Right shift V by 1 bit (treating as 128-bit big-endian integer)
             for j in (1..16).rev() {
                 v[j] = (v[j] >> 1) | ((v[j - 1] & 1) << 7);
@@ -497,30 +502,66 @@ impl<T> AesGcm<T> {
 
 impl AesGcm<Aes128> {
     /// Encrypt with AES-128-GCM
-    pub fn encrypt(&self, nonce: &[u8], plaintext: &[u8], aad: &[u8]) -> (Vec<u8>, [u8; GCM_TAG_SIZE]) {
-        self.encrypt_internal(nonce, plaintext, aad, |block| self.cipher.encrypt_block(block))
+    pub fn encrypt(
+        &self,
+        nonce: &[u8],
+        plaintext: &[u8],
+        aad: &[u8],
+    ) -> (Vec<u8>, [u8; GCM_TAG_SIZE]) {
+        self.encrypt_internal(nonce, plaintext, aad, |block| {
+            self.cipher.encrypt_block(block)
+        })
     }
 
     /// Decrypt with AES-128-GCM
-    pub fn decrypt(&self, nonce: &[u8], ciphertext: &[u8], aad: &[u8], tag: &[u8; GCM_TAG_SIZE]) -> Option<Vec<u8>> {
-        self.decrypt_internal(nonce, ciphertext, aad, tag, |block| self.cipher.encrypt_block(block))
+    pub fn decrypt(
+        &self,
+        nonce: &[u8],
+        ciphertext: &[u8],
+        aad: &[u8],
+        tag: &[u8; GCM_TAG_SIZE],
+    ) -> Option<Vec<u8>> {
+        self.decrypt_internal(nonce, ciphertext, aad, tag, |block| {
+            self.cipher.encrypt_block(block)
+        })
     }
 }
 
 impl AesGcm<Aes256> {
     /// Encrypt with AES-256-GCM
-    pub fn encrypt(&self, nonce: &[u8], plaintext: &[u8], aad: &[u8]) -> (Vec<u8>, [u8; GCM_TAG_SIZE]) {
-        self.encrypt_internal(nonce, plaintext, aad, |block| self.cipher.encrypt_block(block))
+    pub fn encrypt(
+        &self,
+        nonce: &[u8],
+        plaintext: &[u8],
+        aad: &[u8],
+    ) -> (Vec<u8>, [u8; GCM_TAG_SIZE]) {
+        self.encrypt_internal(nonce, plaintext, aad, |block| {
+            self.cipher.encrypt_block(block)
+        })
     }
 
     /// Decrypt with AES-256-GCM
-    pub fn decrypt(&self, nonce: &[u8], ciphertext: &[u8], aad: &[u8], tag: &[u8; GCM_TAG_SIZE]) -> Option<Vec<u8>> {
-        self.decrypt_internal(nonce, ciphertext, aad, tag, |block| self.cipher.encrypt_block(block))
+    pub fn decrypt(
+        &self,
+        nonce: &[u8],
+        ciphertext: &[u8],
+        aad: &[u8],
+        tag: &[u8; GCM_TAG_SIZE],
+    ) -> Option<Vec<u8>> {
+        self.decrypt_internal(nonce, ciphertext, aad, tag, |block| {
+            self.cipher.encrypt_block(block)
+        })
     }
 }
 
 impl<T> AesGcm<T> {
-    fn encrypt_internal<F>(&self, nonce: &[u8], plaintext: &[u8], aad: &[u8], encrypt_block: F) -> (Vec<u8>, [u8; GCM_TAG_SIZE])
+    fn encrypt_internal<F>(
+        &self,
+        nonce: &[u8],
+        plaintext: &[u8],
+        aad: &[u8],
+        encrypt_block: F,
+    ) -> (Vec<u8>, [u8; GCM_TAG_SIZE])
     where
         F: Fn(&[u8; 16]) -> [u8; 16],
     {
@@ -550,8 +591,8 @@ impl<T> AesGcm<T> {
 
         // Compute tag: GHASH(AAD, Ciphertext) XOR E_K(J0)
         let s = self.ghash(aad, &ciphertext);
-        let e_j0 = encrypt_block(&j0);  // E_K(J0), NOT E_K(J0+1)
-        
+        let e_j0 = encrypt_block(&j0); // E_K(J0), NOT E_K(J0+1)
+
         let mut tag = [0u8; GCM_TAG_SIZE];
         for i in 0..16 {
             tag[i] = s[i] ^ e_j0[i];
@@ -560,7 +601,14 @@ impl<T> AesGcm<T> {
         (ciphertext, tag)
     }
 
-    fn decrypt_internal<F>(&self, nonce: &[u8], ciphertext: &[u8], aad: &[u8], tag: &[u8; GCM_TAG_SIZE], encrypt_block: F) -> Option<Vec<u8>>
+    fn decrypt_internal<F>(
+        &self,
+        nonce: &[u8],
+        ciphertext: &[u8],
+        aad: &[u8],
+        tag: &[u8; GCM_TAG_SIZE],
+        encrypt_block: F,
+    ) -> Option<Vec<u8>>
     where
         F: Fn(&[u8; 16]) -> [u8; 16],
     {
@@ -576,8 +624,8 @@ impl<T> AesGcm<T> {
         // Verify tag first
         // GCM Tag = GHASH(AAD, Ciphertext) XOR E_K(J0)
         let s = self.ghash(aad, ciphertext);
-        let e_j0 = encrypt_block(&j0);  // E_K(J0), NOT E_K(J0+1)
-        
+        let e_j0 = encrypt_block(&j0); // E_K(J0), NOT E_K(J0+1)
+
         let mut computed_tag = [0u8; GCM_TAG_SIZE];
         for i in 0..16 {
             computed_tag[i] = s[i] ^ e_j0[i];
@@ -623,7 +671,9 @@ pub struct AesCtr<T> {
 impl AesCtr<Aes128> {
     /// Create new AES-128-CTR
     pub fn new_128(key: &[u8; AES_128_KEY_SIZE]) -> Self {
-        Self { cipher: Aes128::new(key) }
+        Self {
+            cipher: Aes128::new(key),
+        }
     }
 
     /// Encrypt/decrypt (CTR mode is symmetric)
@@ -635,7 +685,9 @@ impl AesCtr<Aes128> {
 impl AesCtr<Aes256> {
     /// Create new AES-256-CTR
     pub fn new_256(key: &[u8; AES_256_KEY_SIZE]) -> Self {
-        Self { cipher: Aes256::new(key) }
+        Self {
+            cipher: Aes256::new(key),
+        }
     }
 
     /// Encrypt/decrypt (CTR mode is symmetric)
@@ -683,7 +735,9 @@ pub struct AesCbc<T> {
 impl AesCbc<Aes128> {
     /// Create new AES-128-CBC
     pub fn new_128(key: &[u8; AES_128_KEY_SIZE]) -> Self {
-        Self { cipher: Aes128::new(key) }
+        Self {
+            cipher: Aes128::new(key),
+        }
     }
 
     /// Encrypt with PKCS7 padding
@@ -700,7 +754,9 @@ impl AesCbc<Aes128> {
 impl AesCbc<Aes256> {
     /// Create new AES-256-CBC
     pub fn new_256(key: &[u8; AES_256_KEY_SIZE]) -> Self {
-        Self { cipher: Aes256::new(key) }
+        Self {
+            cipher: Aes256::new(key),
+        }
     }
 
     /// Encrypt with PKCS7 padding
@@ -731,11 +787,11 @@ impl<T> AesCbc<T> {
         for chunk in padded.chunks(16) {
             let mut block = [0u8; 16];
             block.copy_from_slice(chunk);
-            
+
             for i in 0..16 {
                 block[i] ^= prev_block[i];
             }
-            
+
             let encrypted = encrypt_block(&block);
             result.extend_from_slice(&encrypted);
             prev_block = encrypted;
@@ -744,7 +800,12 @@ impl<T> AesCbc<T> {
         result
     }
 
-    fn decrypt_internal<F>(&self, iv: &[u8; 16], ciphertext: &[u8], decrypt_block: F) -> Option<Vec<u8>>
+    fn decrypt_internal<F>(
+        &self,
+        iv: &[u8; 16],
+        ciphertext: &[u8],
+        decrypt_block: F,
+    ) -> Option<Vec<u8>>
     where
         F: Fn(&[u8; 16]) -> [u8; 16],
     {
@@ -758,13 +819,13 @@ impl<T> AesCbc<T> {
         for chunk in ciphertext.chunks(16) {
             let mut block = [0u8; 16];
             block.copy_from_slice(chunk);
-            
+
             let decrypted = decrypt_block(&block);
-            
+
             for i in 0..16 {
                 result.push(decrypted[i] ^ prev_block[i]);
             }
-            
+
             prev_block = block;
         }
 
@@ -773,7 +834,7 @@ impl<T> AesCbc<T> {
         if padding_len == 0 || padding_len > 16 {
             return None;
         }
-        
+
         // Verify padding
         for &b in &result[result.len() - padding_len..] {
             if b as usize != padding_len {
@@ -806,7 +867,7 @@ pub extern "C" fn AES_set_encrypt_key(user_key: *const u8, bits: i32, key: *mut 
     if bits != 128 && bits != 256 {
         return -2;
     }
-    
+
     // Implementation would copy key schedule
     unsafe {
         (*key).rounds = if bits == 128 { 10 } else { 14 };
@@ -847,10 +908,10 @@ mod tests {
         let key = [0u8; 16];
         let cipher = Aes128::new(&key);
         let plaintext = [0u8; 16];
-        
+
         let ciphertext = cipher.encrypt_block(&plaintext);
         let decrypted = cipher.decrypt_block(&ciphertext);
-        
+
         assert_eq!(plaintext, decrypted);
     }
 
@@ -859,10 +920,10 @@ mod tests {
         let key = [0u8; 32];
         let cipher = Aes256::new(&key);
         let plaintext = [0u8; 16];
-        
+
         let ciphertext = cipher.encrypt_block(&plaintext);
         let decrypted = cipher.decrypt_block(&ciphertext);
-        
+
         assert_eq!(plaintext, decrypted);
     }
 }

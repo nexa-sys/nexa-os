@@ -61,8 +61,22 @@ struct RtAttr {
 extern "C" {
     fn socket(domain: i32, type_: i32, protocol: i32) -> i32;
     fn bind(sockfd: i32, addr: *const std::ffi::c_void, addrlen: u32) -> i32;
-    fn sendto(sockfd: i32, buf: *const std::ffi::c_void, len: usize, flags: i32, dest_addr: *const std::ffi::c_void, addrlen: u32) -> isize;
-    fn recvfrom(sockfd: i32, buf: *mut std::ffi::c_void, len: usize, flags: i32, src_addr: *mut std::ffi::c_void, addrlen: *mut u32) -> isize;
+    fn sendto(
+        sockfd: i32,
+        buf: *const std::ffi::c_void,
+        len: usize,
+        flags: i32,
+        dest_addr: *const std::ffi::c_void,
+        addrlen: u32,
+    ) -> isize;
+    fn recvfrom(
+        sockfd: i32,
+        buf: *mut std::ffi::c_void,
+        len: usize,
+        flags: i32,
+        src_addr: *mut std::ffi::c_void,
+        addrlen: *mut u32,
+    ) -> isize;
     fn close(fd: i32) -> i32;
 }
 
@@ -96,7 +110,7 @@ fn do_link() {
         nl_pid: process::id(),
         nl_groups: 0,
     };
-    
+
     if unsafe { bind(fd, &addr as *const _ as *const std::ffi::c_void, 12) } < 0 {
         println!("Failed to bind socket");
         unsafe { close(fd) };
@@ -112,7 +126,17 @@ fn do_link() {
         nlmsg_pid: process::id(),
     };
 
-    if unsafe { sendto(fd, &req as *const _ as *const std::ffi::c_void, 16, 0, std::ptr::null(), 0) } < 0 {
+    if unsafe {
+        sendto(
+            fd,
+            &req as *const _ as *const std::ffi::c_void,
+            16,
+            0,
+            std::ptr::null(),
+            0,
+        )
+    } < 0
+    {
         println!("Failed to send request");
         unsafe { close(fd) };
         return;
@@ -120,8 +144,17 @@ fn do_link() {
 
     // Receive response
     let mut buf = [0u8; 4096];
-    let len = unsafe { recvfrom(fd, buf.as_mut_ptr() as *mut std::ffi::c_void, 4096, 0, std::ptr::null_mut(), std::ptr::null_mut()) };
-    
+    let len = unsafe {
+        recvfrom(
+            fd,
+            buf.as_mut_ptr() as *mut std::ffi::c_void,
+            4096,
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+
     if len < 0 {
         println!("Failed to receive response");
     } else {
@@ -134,7 +167,7 @@ fn do_link() {
 
 fn do_addr() {
     println!("Network interfaces and addresses:\n");
-    
+
     // Create socket
     let fd = unsafe { socket(AF_NETLINK, SOCK_DGRAM, 0) };
     if fd < 0 {
@@ -149,7 +182,7 @@ fn do_addr() {
         nl_pid: process::id(),
         nl_groups: 0,
     };
-    
+
     if unsafe { bind(fd, &addr as *const _ as *const std::ffi::c_void, 12) } < 0 {
         println!("Failed to bind netlink socket");
         unsafe { close(fd) };
@@ -165,7 +198,17 @@ fn do_addr() {
         nlmsg_pid: process::id(),
     };
 
-    if unsafe { sendto(fd, &req as *const _ as *const std::ffi::c_void, 16, 0, std::ptr::null(), 0) } < 0 {
+    if unsafe {
+        sendto(
+            fd,
+            &req as *const _ as *const std::ffi::c_void,
+            16,
+            0,
+            std::ptr::null(),
+            0,
+        )
+    } < 0
+    {
         println!("Failed to send RTM_GETLINK request");
         unsafe { close(fd) };
         return;
@@ -174,8 +217,17 @@ fn do_addr() {
     // Receive all link info messages until DONE
     let mut buf = [0u8; 4096];
     loop {
-        let len = unsafe { recvfrom(fd, buf.as_mut_ptr() as *mut std::ffi::c_void, 4096, 0, std::ptr::null_mut(), std::ptr::null_mut()) };
-        
+        let len = unsafe {
+            recvfrom(
+                fd,
+                buf.as_mut_ptr() as *mut std::ffi::c_void,
+                4096,
+                0,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+
         if len < 0 {
             println!("Failed to receive link info");
             unsafe { close(fd) };
@@ -184,7 +236,8 @@ fn do_addr() {
 
         if len >= 16 {
             let hdr = unsafe { &*(buf.as_ptr() as *const NlMsgHdr) };
-            if hdr.nlmsg_type == 3 { // NLMSG_DONE
+            if hdr.nlmsg_type == 3 {
+                // NLMSG_DONE
                 break;
             }
             // Parse this link info message
@@ -201,7 +254,17 @@ fn do_addr() {
         nlmsg_pid: process::id(),
     };
 
-    if unsafe { sendto(fd, &req as *const _ as *const std::ffi::c_void, 16, 0, std::ptr::null(), 0) } < 0 {
+    if unsafe {
+        sendto(
+            fd,
+            &req as *const _ as *const std::ffi::c_void,
+            16,
+            0,
+            std::ptr::null(),
+            0,
+        )
+    } < 0
+    {
         println!("Failed to send RTM_GETADDR request");
         unsafe { close(fd) };
         return;
@@ -210,8 +273,17 @@ fn do_addr() {
     // Receive all address info messages until DONE
     buf.fill(0);
     loop {
-        let len = unsafe { recvfrom(fd, buf.as_mut_ptr() as *mut std::ffi::c_void, 4096, 0, std::ptr::null_mut(), std::ptr::null_mut()) };
-        
+        let len = unsafe {
+            recvfrom(
+                fd,
+                buf.as_mut_ptr() as *mut std::ffi::c_void,
+                4096,
+                0,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+
         if len < 0 {
             println!("Failed to receive address info (no response)");
             break;
@@ -220,7 +292,8 @@ fn do_addr() {
             break;
         } else if len >= 16 {
             let hdr = unsafe { &*(buf.as_ptr() as *const NlMsgHdr) };
-            if hdr.nlmsg_type == 3 { // NLMSG_DONE
+            if hdr.nlmsg_type == 3 {
+                // NLMSG_DONE
                 break;
             }
             // Parse this address info message
@@ -233,37 +306,41 @@ fn do_addr() {
 
 fn parse_link_info(data: &[u8]) {
     let mut offset = 0;
-    
+
     while offset + 16 <= data.len() {
         let hdr = unsafe { &*(data.as_ptr().add(offset) as *const NlMsgHdr) };
-        
-        if hdr.nlmsg_type == 3 { // NLMSG_DONE
+
+        if hdr.nlmsg_type == 3 {
+            // NLMSG_DONE
             break;
         }
-        if hdr.nlmsg_type == 2 { // NLMSG_ERROR
+        if hdr.nlmsg_type == 2 {
+            // NLMSG_ERROR
             println!("Netlink error in link info");
             break;
         }
-        
+
         if hdr.nlmsg_type == RTM_NEWLINK {
             let ifinfo_offset = offset + 16;
             if ifinfo_offset + 16 <= data.len() {
                 let ifinfo = unsafe { &*(data.as_ptr().add(ifinfo_offset) as *const IfInfoMsg) };
-                
+
                 print!("{}: ", ifinfo.ifi_index);
-                
+
                 // Parse attributes
                 let mut attr_offset = ifinfo_offset + 16;
                 let mut if_name = String::from("unknown");
                 let mut mac_addr = String::new();
-                
+
                 while attr_offset + 4 <= offset + hdr.nlmsg_len as usize {
                     let attr = unsafe { &*(data.as_ptr().add(attr_offset) as *const RtAttr) };
-                    if attr.rta_len < 4 { break; }
-                    
+                    if attr.rta_len < 4 {
+                        break;
+                    }
+
                     let data_offset = attr_offset + 4;
                     let data_len = (attr.rta_len as usize).saturating_sub(4);
-                    
+
                     if data_offset + data_len <= data.len() {
                         if attr.rta_type == IFLA_IFNAME {
                             let name_bytes = &data[data_offset..data_offset + data_len];
@@ -274,16 +351,20 @@ fn parse_link_info(data: &[u8]) {
                             }
                         } else if attr.rta_type == IFLA_ADDRESS && data_len >= 6 {
                             let mac = &data[data_offset..data_offset + 6];
-                            mac_addr = format!("{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                                mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+                            mac_addr = format!(
+                                "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                                mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+                            );
                         }
                     }
-                    
+
                     let aligned_len = ((attr.rta_len + 3) & !3) as usize;
-                    if aligned_len == 0 { break; }
+                    if aligned_len == 0 {
+                        break;
+                    }
                     attr_offset += aligned_len;
                 }
-                
+
                 print!("{}: ", if_name);
                 if !mac_addr.is_empty() {
                     print!("<BROADCAST,MULTICAST> link/ether {}", mac_addr);
@@ -291,9 +372,11 @@ fn parse_link_info(data: &[u8]) {
                 println!();
             }
         }
-        
+
         let aligned_msg_len = ((hdr.nlmsg_len + 3) & !3) as usize;
-        if aligned_msg_len == 0 || offset + aligned_msg_len > data.len() { break; }
+        if aligned_msg_len == 0 || offset + aligned_msg_len > data.len() {
+            break;
+        }
         offset += aligned_msg_len;
     }
 }
@@ -303,61 +386,71 @@ fn parse_addr_info(data: &[u8]) {
         println!("    (No address data received)");
         return;
     }
-    
+
     let mut offset = 0;
     let mut addr_count = 0;
-    
+
     while offset + 16 <= data.len() {
         let hdr = unsafe { &*(data.as_ptr().add(offset) as *const NlMsgHdr) };
-        
-        if hdr.nlmsg_type == 3 { // NLMSG_DONE
+
+        if hdr.nlmsg_type == 3 {
+            // NLMSG_DONE
             break;
         }
-        if hdr.nlmsg_type == 2 { // NLMSG_ERROR
+        if hdr.nlmsg_type == 2 {
+            // NLMSG_ERROR
             println!("    Netlink error in address info");
             break;
         }
-        
+
         if hdr.nlmsg_type == RTM_NEWADDR {
             let ifaddr_offset = offset + 16;
             if ifaddr_offset + 8 <= data.len() {
                 let ifaddr = unsafe { &*(data.as_ptr().add(ifaddr_offset) as *const IfAddrMsg) };
-                
+
                 // Parse attributes
                 let mut attr_offset = ifaddr_offset + 8;
                 let mut ip_addr = String::new();
-                
+
                 while attr_offset + 4 <= offset + hdr.nlmsg_len as usize {
                     let attr = unsafe { &*(data.as_ptr().add(attr_offset) as *const RtAttr) };
-                    if attr.rta_len < 4 { break; }
-                    
+                    if attr.rta_len < 4 {
+                        break;
+                    }
+
                     let data_offset = attr_offset + 4;
                     let data_len = (attr.rta_len as usize).saturating_sub(4);
-                    
-                    if data_offset + data_len <= data.len() && (attr.rta_type == IFA_ADDRESS || attr.rta_type == IFA_LOCAL) {
+
+                    if data_offset + data_len <= data.len()
+                        && (attr.rta_type == IFA_ADDRESS || attr.rta_type == IFA_LOCAL)
+                    {
                         if data_len >= 4 {
                             let ip = &data[data_offset..data_offset + 4];
                             ip_addr = format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]);
                         }
                     }
-                    
+
                     let aligned_len = ((attr.rta_len + 3) & !3) as usize;
-                    if aligned_len == 0 { break; }
+                    if aligned_len == 0 {
+                        break;
+                    }
                     attr_offset += aligned_len;
                 }
-                
+
                 if !ip_addr.is_empty() {
                     println!("    inet {}/{} scope global", ip_addr, ifaddr.ifa_prefixlen);
                     addr_count += 1;
                 }
             }
         }
-        
+
         let aligned_msg_len = ((hdr.nlmsg_len + 3) & !3) as usize;
-        if aligned_msg_len == 0 || offset + aligned_msg_len > data.len() { break; }
+        if aligned_msg_len == 0 || offset + aligned_msg_len > data.len() {
+            break;
+        }
         offset += aligned_msg_len;
     }
-    
+
     if addr_count == 0 {
         println!("    (No addresses configured)");
     }

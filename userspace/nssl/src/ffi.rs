@@ -9,7 +9,7 @@
 //! - Error functions (from libcrypto)
 //! - Version functions
 
-use crate::{c_int, c_char, c_ulong, size_t};
+use crate::{c_char, c_int, c_ulong, size_t};
 
 // ============================================================================
 // Legacy Library Initialization Functions (OpenSSL 1.0 compatibility)

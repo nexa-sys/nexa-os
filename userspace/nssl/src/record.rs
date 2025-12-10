@@ -2,10 +2,10 @@
 //!
 //! Handles encryption/decryption and framing of TLS records.
 
-use std::vec::Vec;
 use crate::bio::Bio;
 use crate::tls::ContentType;
 use crate::{c_int, TLS1_2_VERSION, TLS1_3_VERSION};
+use std::vec::Vec;
 
 /// Maximum TLS record size
 pub const MAX_RECORD_SIZE: usize = 16384;
@@ -106,11 +106,18 @@ impl RecordLayer {
     }
 
     /// Set encryption keys
-    /// 
+    ///
     /// # Arguments
     /// * `enable_immediately` - If true, encryption is enabled immediately (TLS 1.3).
     ///                          If false, encryption must be enabled later via CCS (TLS 1.2).
-    pub fn set_keys(&mut self, read_key: Vec<u8>, write_key: Vec<u8>, read_iv: Vec<u8>, write_iv: Vec<u8>, enable_immediately: bool) {
+    pub fn set_keys(
+        &mut self,
+        read_key: Vec<u8>,
+        write_key: Vec<u8>,
+        read_iv: Vec<u8>,
+        write_iv: Vec<u8>,
+        enable_immediately: bool,
+    ) {
         self.read_key = Some(read_key);
         self.write_key = Some(write_key);
         self.read_iv = Some(read_iv);
@@ -122,21 +129,21 @@ impl RecordLayer {
             self.write_encrypt_enabled = true;
         }
     }
-    
+
     /// Enable write encryption (called after sending ChangeCipherSpec)
     pub fn enable_write_encryption(&mut self) {
         self.write_encrypt_enabled = true;
         // Reset write sequence number for encrypted records
         self.write_seq = 0;
     }
-    
+
     /// Enable read encryption (called after receiving ChangeCipherSpec)
     pub fn enable_read_encryption(&mut self) {
         self.read_encrypt_enabled = true;
         // Reset read sequence number for encrypted records
         self.read_seq = 0;
     }
-    
+
     /// Set protocol version
     pub fn set_version(&mut self, version: u16) {
         self.version = version;
@@ -209,7 +216,7 @@ impl RecordLayer {
         while offset < data.len() {
             let chunk_len = (data.len() - offset).min(MAX_RECORD_SIZE);
             let chunk = &data[offset..offset + chunk_len];
-            
+
             if !self.write_record(ContentType::ApplicationData, chunk, wbio) {
                 return false;
             }
@@ -225,23 +232,24 @@ impl RecordLayer {
         }
 
         // Encrypt if keys are set AND encryption is enabled
-        let (record_data, length, outer_content_type) = if self.write_key.is_some() && self.write_encrypt_enabled {
-            match self.encrypt_record(content_type, data) {
-                Some(encrypted) => {
-                    let len = encrypted.len();
-                    // TLS 1.3: outer content type is always ApplicationData
-                    let outer_type = if self.version >= TLS1_3_VERSION {
-                        ContentType::ApplicationData
-                    } else {
-                        content_type
-                    };
-                    (encrypted, len as u16, outer_type)
+        let (record_data, length, outer_content_type) =
+            if self.write_key.is_some() && self.write_encrypt_enabled {
+                match self.encrypt_record(content_type, data) {
+                    Some(encrypted) => {
+                        let len = encrypted.len();
+                        // TLS 1.3: outer content type is always ApplicationData
+                        let outer_type = if self.version >= TLS1_3_VERSION {
+                            ContentType::ApplicationData
+                        } else {
+                            content_type
+                        };
+                        (encrypted, len as u16, outer_type)
+                    }
+                    None => return false,
                 }
-                None => return false,
-            }
-        } else {
-            (data.to_vec(), data.len() as u16, content_type)
-        };
+            } else {
+                (data.to_vec(), data.len() as u16, content_type)
+            };
 
         // Build record header
         // TLS 1.3: always use TLS 1.2 version (0x0303) in record layer
@@ -258,9 +266,11 @@ impl RecordLayer {
             if (*wbio).write(header_bytes.as_ptr(), 5) != 5 {
                 return false;
             }
-            
+
             // Write data
-            if (*wbio).write(record_data.as_ptr(), record_data.len() as c_int) != record_data.len() as c_int {
+            if (*wbio).write(record_data.as_ptr(), record_data.len() as c_int)
+                != record_data.len() as c_int
+            {
                 return false;
             }
         }
@@ -280,41 +290,41 @@ impl RecordLayer {
                 return Some(msg);
             }
         }
-        
+
         // Read a new record
         let data = self.read_record(ContentType::Handshake, rbio)?;
-        
+
         // Add to pending handshake buffer
         self.pending_handshake.extend_from_slice(&data);
-        
+
         // Extract one handshake message
         self.extract_handshake_message()
     }
-    
+
     /// Extract a single handshake message from pending_handshake buffer
     fn extract_handshake_message(&mut self) -> Option<Vec<u8>> {
         if self.pending_handshake.len() < 4 {
             return None;
         }
-        
+
         // Handshake message format:
         // - type: 1 byte
         // - length: 3 bytes (big-endian)
         // - data: length bytes
         let msg_type = self.pending_handshake[0];
-        let msg_len = ((self.pending_handshake[1] as usize) << 16) 
-                    | ((self.pending_handshake[2] as usize) << 8) 
-                    | (self.pending_handshake[3] as usize);
+        let msg_len = ((self.pending_handshake[1] as usize) << 16)
+            | ((self.pending_handshake[2] as usize) << 8)
+            | (self.pending_handshake[3] as usize);
         let total_len = 4 + msg_len;
-        
+
         if self.pending_handshake.len() < total_len {
             // Not enough data yet
             return None;
         }
-        
+
         // Extract the complete message
         let msg: Vec<u8> = self.pending_handshake.drain(..total_len).collect();
-        
+
         Some(msg)
     }
 
@@ -352,15 +362,15 @@ impl RecordLayer {
                     }
                 }
             }
-            
+
             let copy_len = buf.len().min(data.len());
             buf[..copy_len].copy_from_slice(&data[..copy_len]);
-            
+
             // Store excess in pending buffer
             if data.len() > copy_len {
                 self.pending.extend_from_slice(&data[copy_len..]);
             }
-            
+
             return Some(copy_len);
         }
     }
@@ -376,7 +386,10 @@ impl RecordLayer {
         let mut header_read = 0usize;
         while header_read < 5 {
             unsafe {
-                let n = (*rbio).read(header_buf.as_mut_ptr().add(header_read), (5 - header_read) as c_int);
+                let n = (*rbio).read(
+                    header_buf.as_mut_ptr().add(header_read),
+                    (5 - header_read) as c_int,
+                );
                 if n <= 0 {
                     if n == 0 && header_read == 0 {
                         self.eof = true;
@@ -388,7 +401,7 @@ impl RecordLayer {
         }
 
         let header = RecordHeader::from_bytes(&header_buf)?;
-        
+
         // Check content type
         // TLS 1.3: encrypted records always have ApplicationData outer type
         // Use read_encrypt_enabled instead of just checking if key exists
@@ -398,7 +411,7 @@ impl RecordLayer {
         } else {
             expected_type as u8
         };
-        
+
         if header.content_type != expected_outer_type {
             // Handle alerts
             if header.content_type == ContentType::Alert as u8 {
@@ -408,7 +421,9 @@ impl RecordLayer {
             // TLS 1.3: Handle ChangeCipherSpec for middlebox compatibility (RFC 8446 Section 5)
             // Some servers send CCS even in TLS 1.3 for compatibility reasons
             // We should read and ignore it, then retry reading the next record
-            if self.version >= TLS1_3_VERSION && header.content_type == ContentType::ChangeCipherSpec as u8 {
+            if self.version >= TLS1_3_VERSION
+                && header.content_type == ContentType::ChangeCipherSpec as u8
+            {
                 // Read and discard CCS data (should be 1 byte: 0x01)
                 let mut ccs_data = vec![0u8; header.length as usize];
                 unsafe {
@@ -419,7 +434,10 @@ impl RecordLayer {
             }
             // TLS 1.3 encrypted: might be receiving ApplicationData when expecting Handshake
             // This is normal - inner type is in the decrypted content
-            if is_encrypted && self.version >= TLS1_3_VERSION && header.content_type == ContentType::ApplicationData as u8 {
+            if is_encrypted
+                && self.version >= TLS1_3_VERSION
+                && header.content_type == ContentType::ApplicationData as u8
+            {
                 // Continue processing
             } else {
                 return None;
@@ -460,7 +478,7 @@ impl RecordLayer {
     fn encrypt_record(&self, content_type: ContentType, plaintext: &[u8]) -> Option<Vec<u8>> {
         let key = self.write_key.as_ref()?;
         let iv = self.write_iv.as_ref()?;
-        
+
         // TLS 1.2 vs TLS 1.3 have different nonce construction:
         // - TLS 1.3: 12-byte IV XOR'd with 8-byte sequence number (padded to 12 bytes)
         // - TLS 1.2 GCM: 4-byte implicit IV || 8-byte explicit nonce (random or seq_num)
@@ -502,9 +520,14 @@ impl RecordLayer {
             build_tls13_aad(encrypted_len as u16)
         } else {
             // TLS 1.2 GCM AAD includes sequence number
-            build_aad_tls12(self.write_seq, content_type as u8, self.version, plaintext.len() as u16)
+            build_aad_tls12(
+                self.write_seq,
+                content_type as u8,
+                self.version,
+                plaintext.len() as u16,
+            )
         };
-        
+
         let plaintext_to_encrypt = if self.version >= TLS1_3_VERSION {
             &inner_plaintext
         } else {
@@ -518,7 +541,7 @@ impl RecordLayer {
             let key_arr: [u8; 32] = key.as_slice().try_into().ok()?;
             let aes = crate::ncryptolib::AesGcm::new_256(&key_arr);
             let (ct, tag) = aes.encrypt(&nonce, plaintext_to_encrypt, &aad);
-            
+
             let mut ciphertext = vec![0u8; ct.len() + 16];
             ciphertext[..ct.len()].copy_from_slice(&ct);
             ciphertext[ct.len()..].copy_from_slice(&tag);
@@ -528,7 +551,7 @@ impl RecordLayer {
             let key_arr: [u8; 16] = key.as_slice().try_into().ok()?;
             let aes = crate::ncryptolib::AesGcm::new_128(&key_arr);
             let (ct, tag) = aes.encrypt(&nonce, plaintext_to_encrypt, &aad);
-            
+
             let mut ciphertext = vec![0u8; ct.len() + 16];
             ciphertext[..ct.len()].copy_from_slice(&ct);
             ciphertext[ct.len()..].copy_from_slice(&tag);
@@ -536,7 +559,7 @@ impl RecordLayer {
         } else {
             None
         };
-        
+
         // For TLS 1.2, prepend the explicit nonce to the ciphertext
         if let Some(explicit) = explicit_nonce {
             if let Some(enc) = encrypted {
@@ -547,7 +570,7 @@ impl RecordLayer {
             }
             return None;
         }
-        
+
         encrypted
     }
 
@@ -555,10 +578,14 @@ impl RecordLayer {
     fn decrypt_record(&mut self, _content_type: u8, ciphertext: &[u8]) -> Option<Vec<u8>> {
         let key = self.read_key.as_ref()?;
         let iv = self.read_iv.as_ref()?;
-        
+
         // TLS 1.2 GCM: ciphertext = explicit_nonce (8) || encrypted_data || tag (16)
         // TLS 1.3: ciphertext = encrypted_data || tag (16)
-        let min_len = if self.version >= TLS1_3_VERSION { 16 } else { 8 + 16 };
+        let min_len = if self.version >= TLS1_3_VERSION {
+            16
+        } else {
+            8 + 16
+        };
         if ciphertext.len() < min_len {
             return None; // Too short
         }
@@ -572,7 +599,7 @@ impl RecordLayer {
             for i in 0..8 {
                 nonce[nonce_len - 8 + i] ^= seq_bytes[i];
             }
-            
+
             let ct_len = ciphertext.len() - 16;
             let ct = &ciphertext[..ct_len];
             let tag = &ciphertext[ct_len..];
@@ -582,19 +609,19 @@ impl RecordLayer {
             // nonce = implicit_iv (4 bytes) || explicit_nonce (8 bytes from ciphertext)
             let explicit_nonce = &ciphertext[..8];
             let remaining = &ciphertext[8..];
-            
+
             if remaining.len() < 16 {
                 return None;
             }
-            
+
             let ct_len = remaining.len() - 16;
             let ct = &remaining[..ct_len];
             let tag = &remaining[ct_len..];
-            
+
             let mut nonce = Vec::with_capacity(12);
             nonce.extend_from_slice(iv); // 4-byte implicit IV
             nonce.extend_from_slice(explicit_nonce); // 8-byte explicit nonce
-            
+
             (nonce, ct, tag, ct_len)
         };
 
@@ -605,7 +632,12 @@ impl RecordLayer {
             build_tls13_aad(ciphertext.len() as u16)
         } else {
             // For TLS 1.2, AAD uses the plaintext length (without explicit nonce and tag)
-            build_aad_tls12(self.read_seq, _content_type, self.version, plaintext_len as u16)
+            build_aad_tls12(
+                self.read_seq,
+                _content_type,
+                self.version,
+                plaintext_len as u16,
+            )
         };
 
         // Decrypt using AES-GCM
@@ -622,7 +654,7 @@ impl RecordLayer {
         } else {
             return None;
         };
-        
+
         // TLS 1.3: remove inner content type from plaintext and return it
         if self.version >= TLS1_3_VERSION && !plaintext.is_empty() {
             // Remove trailing content type byte and any padding zeros
@@ -677,8 +709,14 @@ impl RecordLayer {
 fn build_aad_tls12(seq_num: u64, content_type: u8, version: u16, length: u16) -> Vec<u8> {
     let seq_bytes = seq_num.to_be_bytes();
     vec![
-        seq_bytes[0], seq_bytes[1], seq_bytes[2], seq_bytes[3],
-        seq_bytes[4], seq_bytes[5], seq_bytes[6], seq_bytes[7],
+        seq_bytes[0],
+        seq_bytes[1],
+        seq_bytes[2],
+        seq_bytes[3],
+        seq_bytes[4],
+        seq_bytes[5],
+        seq_bytes[6],
+        seq_bytes[7],
         content_type,
         (version >> 8) as u8,
         (version & 0xFF) as u8,
@@ -692,7 +730,8 @@ fn build_aad_tls12(seq_num: u64, content_type: u8, version: u16, length: u16) ->
 fn build_tls13_aad(encrypted_length: u16) -> Vec<u8> {
     vec![
         0x17, // ApplicationData
-        0x03, 0x03, // TLS 1.2 legacy version
+        0x03,
+        0x03, // TLS 1.2 legacy version
         (encrypted_length >> 8) as u8,
         (encrypted_length & 0xFF) as u8,
     ]

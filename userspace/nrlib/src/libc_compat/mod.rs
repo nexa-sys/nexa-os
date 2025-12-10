@@ -27,48 +27,48 @@
 //! are already defined in lib.rs. This module only adds additional functions
 //! needed by std that are not in lib.rs.
 
-pub mod types;
-pub mod pthread;
-pub mod memory;
-pub mod io;
-pub mod time_compat;
-pub mod env;
-pub mod unwind;
-pub mod signal;
 pub mod clone;
+pub mod env;
+pub mod fs;
+pub mod io;
+pub mod math;
+pub mod memory;
 pub mod network;
 pub mod process;
-pub mod syscall_wrapper;
-pub mod fs;
+pub mod pthread;
+pub mod signal;
 pub mod string;
-pub mod math;
+pub mod syscall_wrapper;
+pub mod time_compat;
+pub mod types;
+pub mod unwind;
 
 // Dynamic linking support modules
+pub mod dl;
 pub mod elf;
+pub mod loader;
+pub mod reloc;
 pub mod rtld;
 pub mod symbol;
-pub mod reloc;
-pub mod loader;
-pub mod dl;
 
 // Directory operations
 pub mod dirent;
 
 // Re-export all public items from submodules
-pub use types::*;
-pub use pthread::*;
-pub use memory::*;
-pub use io::*;
-pub use time_compat::*;
-pub use env::*;
-pub use unwind::*;
-pub use signal::*;
-pub use dl::*;
 pub use clone::*;
+pub use dirent::*;
+pub use dl::*;
+pub use env::*;
+pub use fs::*;
+pub use io::*;
+pub use math::*;
+pub use memory::*;
 pub use network::*;
 pub use process::*;
-pub use syscall_wrapper::*;
-pub use fs::*;
+pub use pthread::*;
+pub use signal::*;
 pub use string::*;
-pub use dirent::*;
-pub use math::*;
+pub use syscall_wrapper::*;
+pub use time_compat::*;
+pub use types::*;
+pub use unwind::*;

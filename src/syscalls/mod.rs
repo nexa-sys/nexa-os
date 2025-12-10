@@ -61,14 +61,18 @@ use types::*;
 
 // Import all syscall implementations
 use fd::{dup, dup2, pipe};
-use file::{close, fcntl, fstat, get_errno, list_files, lseek, open, pread64, pwrite64, read, readv, stat, write, writev};
+use file::{
+    close, fcntl, fstat, get_errno, list_files, lseek, open, pread64, pwrite64, read, readv, stat,
+    write, writev,
+};
+use ipc::{ipc_create, ipc_recv, ipc_send};
+use kmod::{delete_module, init_module, query_module};
+use memory::{mmap, mprotect, munmap};
 use memory_advanced::{
     getrlimit, madvise, mincore, mlock, mlockall, mremap, msync, munlock, munlockall, prlimit64,
     setrlimit, RLimit,
 };
-use ipc::{ipc_create, ipc_recv, ipc_send};
-use memory::{mmap, mprotect, munmap};
-use memory_vma::brk_vma as brk;  // Use VMA-based brk for per-process heap tracking
+use memory_vma::brk_vma as brk; // Use VMA-based brk for per-process heap tracking
 use network::{
     bind, connect, get_dns_servers, recvfrom, sendto, set_dns_servers, setsockopt, socket,
     socketpair,
@@ -83,7 +87,6 @@ use uefi::{
     uefi_get_usb_info, uefi_map_net_mmio, uefi_map_usb_mmio,
 };
 use user::{user_add, user_info, user_list, user_login, user_logout};
-use kmod::{init_module, delete_module, query_module};
 
 // Re-export file descriptor tracking and cleanup functions
 pub use file::{close_all_fds_for_process, mark_fd_closed, mark_fd_open};
@@ -409,7 +412,12 @@ pub extern "C" fn syscall_dispatch(
                 );
                 r10_val
             };
-            prlimit64(arg1 as i64, arg2 as i32, arg3 as *const RLimit, arg4 as *mut RLimit)
+            prlimit64(
+                arg1 as i64,
+                arg2 as i32,
+                arg3 as *const RLimit,
+                arg4 as *mut RLimit,
+            )
         }
         SYS_MOUNT => mount(arg1 as *const MountRequest),
         SYS_UMOUNT => umount(arg1 as *const u8, arg2 as usize),
@@ -441,7 +449,12 @@ pub extern "C" fn syscall_dispatch(
                 );
                 r10_val
             };
-            query_module(arg1 as u32, arg2 as *const u8, arg3 as *mut u8, arg4 as usize)
+            query_module(
+                arg1 as u32,
+                arg2 as *const u8,
+                arg3 as *mut u8,
+                arg4 as usize,
+            )
         }
         SYS_GETRANDOM => {
             let result = crate::drivers::sys_getrandom(arg1 as *mut u8, arg2 as usize, arg3 as u32);
@@ -512,7 +525,7 @@ global_asm!(
     "mov gs:[136], r9",  // Save user R9 (syscall arg6)
     "mov gs:[144], r10", // Save user R10
     "mov gs:[152], r12", // Save user R12 (callee-saved)
-    "mov rsp, gs:[8]", // Load kernel RSP
+    "mov rsp, gs:[8]",   // Load kernel RSP
     // Also push to stack for sysretq restore
     "push r11", // save user rflags
     "push rcx", // save user return address

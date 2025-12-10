@@ -198,13 +198,13 @@ pub extern "C" fn CRC32(crc: u32, data: *const u8, len: usize) -> u32 {
     if data.is_null() && len > 0 {
         return crc;
     }
-    
+
     let input = if len > 0 {
         unsafe { core::slice::from_raw_parts(data, len) }
     } else {
         &[]
     };
-    
+
     let mut hasher = Crc32::new();
     if crc != 0 {
         hasher.state = crc ^ 0xFFFFFFFF;
@@ -225,13 +225,13 @@ pub extern "C" fn CRC32C(crc: u32, data: *const u8, len: usize) -> u32 {
     if data.is_null() && len > 0 {
         return crc;
     }
-    
+
     let input = if len > 0 {
         unsafe { core::slice::from_raw_parts(data, len) }
     } else {
         &[]
     };
-    
+
     let mut hasher = Crc32c::new();
     if crc != 0 {
         hasher.state = crc ^ 0xFFFFFFFF;
@@ -275,7 +275,7 @@ mod tests {
         hasher.update(b"Hello");
         hasher.update(b", ");
         hasher.update(b"World!");
-        
+
         assert_eq!(hasher.finalize(), crc32(b"Hello, World!"));
     }
 }

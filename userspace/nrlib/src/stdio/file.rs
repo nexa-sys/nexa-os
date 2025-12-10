@@ -137,7 +137,12 @@ pub(crate) unsafe fn lock_stream<'a>(stream: *mut FILE) -> Result<FileGuard<'a>,
                 // This helps debug the actual lock issue without causing more contention
                 if spin_count == 100 {
                     let diag_msg = b"[nrlib] WARNING: lock contention detected on stdio\n";
-                    let _ = syscall3(SYS_WRITE, 2, diag_msg.as_ptr() as u64, diag_msg.len() as u64);
+                    let _ = syscall3(
+                        SYS_WRITE,
+                        2,
+                        diag_msg.as_ptr() as u64,
+                        diag_msg.len() as u64,
+                    );
                 }
 
                 // Safety check: if we've been spinning too long, something is definitely wrong
@@ -145,7 +150,8 @@ pub(crate) unsafe fn lock_stream<'a>(stream: *mut FILE) -> Result<FileGuard<'a>,
                 // mode but could indicate a serious bug like reentrancy or corruption)
                 if spin_count >= MAX_SPIN_COUNT {
                     // CRITICAL: Failed to acquire lock after excessive spinning
-                    let err_msg = b"[nrlib] CRITICAL: Lock acquisition timeout - possible deadlock\n";
+                    let err_msg =
+                        b"[nrlib] CRITICAL: Lock acquisition timeout - possible deadlock\n";
                     let _ = syscall3(SYS_WRITE, 2, err_msg.as_ptr() as u64, err_msg.len() as u64);
 
                     set_errno(EAGAIN);

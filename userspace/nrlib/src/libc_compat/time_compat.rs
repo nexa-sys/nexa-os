@@ -2,8 +2,8 @@
 //!
 //! Provides clock_gettime, gettimeofday, nanosleep, and related functions.
 
+use super::types::{timespec, timeval, timezone, CLOCK_MONOTONIC, CLOCK_REALTIME, NSEC_PER_SEC};
 use crate::{c_int, c_long, time};
-use super::types::{timespec, timeval, timezone, CLOCK_REALTIME, CLOCK_MONOTONIC, NSEC_PER_SEC};
 
 // ============================================================================
 // Helper Functions
@@ -70,39 +70,39 @@ pub unsafe extern "C" fn clock_getres(clock_id: c_int, res: *mut timespec) -> c_
 }
 
 /// clock_settime - Set the time of a specified clock
-/// 
+///
 /// Only CLOCK_REALTIME can be set. Setting the time requires appropriate
 /// privileges (typically root).
-/// 
+///
 /// # Arguments
 /// * `clock_id` - Clock to set (only CLOCK_REALTIME supported)
 /// * `tp` - Pointer to timespec with new time
-/// 
+///
 /// # Returns
 /// * 0 on success
 /// * -1 on error (errno set)
 #[no_mangle]
 pub unsafe extern "C" fn clock_settime(clock_id: c_int, tp: *const timespec) -> c_int {
     const SYS_CLOCK_SETTIME: u64 = 227;
-    
+
     if tp.is_null() {
         crate::set_errno(crate::EINVAL);
         return -1;
     }
-    
+
     // Only CLOCK_REALTIME can be set
     if clock_id != CLOCK_REALTIME {
         crate::set_errno(crate::EINVAL);
         return -1;
     }
-    
+
     // Validate timespec
     let ts = &*tp;
     if ts.tv_sec < 0 || ts.tv_nsec < 0 || ts.tv_nsec >= 1_000_000_000 {
         crate::set_errno(crate::EINVAL);
         return -1;
     }
-    
+
     // Call kernel syscall
     let ret: i64;
     core::arch::asm!(
@@ -115,7 +115,7 @@ pub unsafe extern "C" fn clock_settime(clock_id: c_int, tp: *const timespec) -> 
         lateout("r11") _,
         options(nostack)
     );
-    
+
     if ret == 0 {
         crate::set_errno(0);
         0
@@ -194,10 +194,10 @@ pub const _SC_NPROCESSORS_ONLN: c_int = 84;
 #[no_mangle]
 pub unsafe extern "C" fn sysconf(name: c_int) -> c_long {
     match name {
-        _SC_CLK_TCK => 100,          // 100 Hz clock (standard Linux)
+        _SC_CLK_TCK => 100, // 100 Hz clock (standard Linux)
         _SC_PAGESIZE | _SC_PAGE_SIZE => 4096,
         _SC_NPROCESSORS_CONF | _SC_NPROCESSORS_ONLN => 1, // Single core for now
-        _ => -1, // Not supported
+        _ => -1,                                          // Not supported
     }
 }
 
@@ -209,22 +209,22 @@ pub unsafe extern "C" fn sysconf(name: c_int) -> c_long {
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct tms {
-    pub tms_utime: c_long,   // User CPU time
-    pub tms_stime: c_long,   // System CPU time  
-    pub tms_cutime: c_long,  // User CPU time of children
-    pub tms_cstime: c_long,  // System CPU time of children
+    pub tms_utime: c_long,  // User CPU time
+    pub tms_stime: c_long,  // System CPU time
+    pub tms_cutime: c_long, // User CPU time of children
+    pub tms_cstime: c_long, // System CPU time of children
 }
 
 const SYS_TIMES: u64 = 100;
 
 /// times - get process times
-/// 
+///
 /// Returns clock ticks since system boot, fills tms structure with
 /// process time accounting information.
-/// 
+///
 /// # Arguments
 /// * `buf` - Pointer to tms structure to fill (can be NULL)
-/// 
+///
 /// # Returns
 /// * Clock ticks since boot on success
 /// * -1 on error
@@ -240,12 +240,12 @@ pub unsafe extern "C" fn times(buf: *mut tms) -> c_long {
         lateout("r11") _,
         options(nostack)
     );
-    
+
     if ret == -1i64 as i64 || ret == u64::MAX as i64 {
         crate::set_errno(crate::EFAULT);
         return -1;
     }
-    
+
     crate::set_errno(0);
     ret as c_long
 }

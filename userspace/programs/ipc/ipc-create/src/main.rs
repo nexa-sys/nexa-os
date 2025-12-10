@@ -83,7 +83,11 @@ fn exit(code: i32) -> ! {
 
 fn ipc_create() -> Result<u64, i32> {
     let id = syscall0(SYS_IPC_CREATE);
-    if id == u64::MAX { Err(-1) } else { Ok(id) }
+    if id == u64::MAX {
+        Err(-1)
+    } else {
+        Ok(id)
+    }
 }
 
 #[no_mangle]

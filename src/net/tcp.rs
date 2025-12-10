@@ -782,7 +782,13 @@ impl TcpSocket {
 
                 // Process payload
                 if !payload.is_empty() {
-                    crate::kinfo!("[TCP] Payload: len={}, seq={}, rcv_nxt={}, match={}", payload.len(), seq, self.rcv_nxt, seq == self.rcv_nxt);
+                    crate::kinfo!(
+                        "[TCP] Payload: len={}, seq={}, rcv_nxt={}, match={}",
+                        payload.len(),
+                        seq,
+                        self.rcv_nxt,
+                        seq == self.rcv_nxt
+                    );
                 }
 
                 if !payload.is_empty() && seq == self.rcv_nxt {
@@ -794,10 +800,12 @@ impl TcpSocket {
                     for &b in &payload[..to_recv] {
                         sum = sum.wrapping_add(b as u32);
                     }
-                    crate::kinfo!("[TCP] Recv: len={}, first4={:02x?}, sum={:#x}", 
-                        to_recv, 
+                    crate::kinfo!(
+                        "[TCP] Recv: len={}, first4={:02x?}, sum={:#x}",
+                        to_recv,
                         &payload[..4.min(to_recv)],
-                        sum);
+                        sum
+                    );
 
                     ktrace!(
                         "[TCP process_segment] Receiving {} bytes (space={}, payload_len={})",

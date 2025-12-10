@@ -252,13 +252,23 @@ pub fn hkdf_extract(salt: &[u8], ikm: &[u8]) -> Result<[u8; SHA256_DIGEST_SIZE]>
 /// HKDF-Expand-Label for QUIC using ncryptolib
 ///
 /// Wrapper that handles variable-length secrets by padding/truncating to 32 bytes
-pub fn hkdf_expand_label(secret: &[u8], label: &[u8], context: &[u8], length: usize) -> Result<Vec<u8>> {
+pub fn hkdf_expand_label(
+    secret: &[u8],
+    label: &[u8],
+    context: &[u8],
+    length: usize,
+) -> Result<Vec<u8>> {
     // ncryptolib's hkdf_expand_label requires exactly 32-byte secret
     let mut fixed_secret = [0u8; SHA256_DIGEST_SIZE];
     let copy_len = secret.len().min(SHA256_DIGEST_SIZE);
     fixed_secret[..copy_len].copy_from_slice(&secret[..copy_len]);
 
-    Ok(ncrypto_hkdf_expand_label(&fixed_secret, label, context, length))
+    Ok(ncrypto_hkdf_expand_label(
+        &fixed_secret,
+        label,
+        context,
+        length,
+    ))
 }
 
 // ============================================================================
@@ -597,7 +607,10 @@ pub fn derive_next_secret(current_secret: &[u8]) -> Result<Vec<u8>> {
 }
 
 /// Derive keys for key update phase
-pub fn derive_key_update_keys(current_secret: &[u8], aead: AeadAlgorithm) -> Result<(Vec<u8>, CryptoKeys)> {
+pub fn derive_key_update_keys(
+    current_secret: &[u8],
+    aead: AeadAlgorithm,
+) -> Result<(Vec<u8>, CryptoKeys)> {
     let next_secret = derive_next_secret(current_secret)?;
     let key_len = aead.key_len();
 
@@ -642,7 +655,9 @@ mod tests {
     fn test_crypto_keys_nonce() {
         let keys = CryptoKeys::new(
             vec![0u8; 16],
-            vec![0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b],
+            vec![
+                0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
+            ],
             vec![0u8; 16],
             AeadAlgorithm::Aes128Gcm,
         );
@@ -669,7 +684,8 @@ mod tests {
         let ct_len = encrypt_packet(&keys, 1, header, payload, &mut ciphertext).unwrap();
         assert_eq!(ct_len, payload.len() + 16);
 
-        let pt_len = decrypt_packet(&keys, 1, header, &ciphertext[..ct_len], &mut decrypted).unwrap();
+        let pt_len =
+            decrypt_packet(&keys, 1, header, &ciphertext[..ct_len], &mut decrypted).unwrap();
         assert_eq!(pt_len, payload.len());
         assert_eq!(&decrypted[..pt_len], payload);
     }
@@ -691,7 +707,8 @@ mod tests {
         let ct_len = encrypt_packet(&keys, 1, header, payload, &mut ciphertext).unwrap();
         assert_eq!(ct_len, payload.len() + 16);
 
-        let pt_len = decrypt_packet(&keys, 1, header, &ciphertext[..ct_len], &mut decrypted).unwrap();
+        let pt_len =
+            decrypt_packet(&keys, 1, header, &ciphertext[..ct_len], &mut decrypted).unwrap();
         assert_eq!(pt_len, payload.len());
         assert_eq!(&decrypted[..pt_len], payload);
     }

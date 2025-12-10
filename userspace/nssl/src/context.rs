@@ -2,14 +2,14 @@
 //!
 //! SSL_CTX holds configuration shared across multiple SSL connections.
 
-use std::vec::Vec;
 use std::string::String;
+use std::vec::Vec;
 
-use crate::ssl::SslMethod;
-use crate::connection::SslConnection;
 use crate::cipher::CipherList;
-use crate::x509::{X509, X509Store, X509StoreCtx};
+use crate::connection::SslConnection;
 use crate::error::{SslError, SslResult};
+use crate::ssl::SslMethod;
+use crate::x509::{X509Store, X509StoreCtx, X509};
 use crate::{c_int, c_ulong, TLS1_2_VERSION, TLS1_3_VERSION};
 
 /// Verification callback type
@@ -19,49 +19,49 @@ pub type VerifyCallback = Option<extern "C" fn(c_int, *mut X509StoreCtx) -> c_in
 pub struct SslContext {
     /// SSL method (defines protocol version and mode)
     method: SslMethod,
-    
+
     /// Options flags
     options: u64,
-    
+
     /// Mode flags
     mode: u64,
-    
+
     /// Minimum protocol version
     min_version: u16,
-    
+
     /// Maximum protocol version
     max_version: u16,
-    
+
     /// TLS 1.2 cipher list
     cipher_list: CipherList,
-    
+
     /// TLS 1.3 ciphersuites
     ciphersuites: Vec<u16>,
-    
+
     /// Verification mode
     verify_mode: i32,
-    
+
     /// Verification depth
     verify_depth: usize,
-    
+
     /// Verification callback
     verify_callback: VerifyCallback,
-    
+
     /// Certificate chain
     cert_chain: Vec<X509>,
-    
+
     /// Private key (DER encoded)
     private_key: Option<Vec<u8>>,
-    
+
     /// CA certificate store
     cert_store: X509Store,
-    
+
     /// ALPN protocols
     alpn_protos: Vec<u8>,
-    
+
     /// Session timeout (seconds)
     session_timeout: u64,
-    
+
     /// Session cache mode
     session_cache_mode: i32,
 }
@@ -93,10 +93,10 @@ impl SslContext {
             session_timeout: 300,
             session_cache_mode: 0,
         };
-        
+
         // Set default cipher list
         ctx.cipher_list = CipherList::default_secure();
-        
+
         Ok(ctx)
     }
 
@@ -119,10 +119,10 @@ impl SslContext {
     /// Clear options
     pub fn clear_options(&mut self, options: u64) -> u64 {
         // Don't allow clearing security-critical options
-        let safe_mask = !(crate::ssl_options::SSL_OP_NO_SSLv2 |
-                         crate::ssl_options::SSL_OP_NO_SSLv3 |
-                         crate::ssl_options::SSL_OP_NO_TLSv1 |
-                         crate::ssl_options::SSL_OP_NO_TLSv1_1);
+        let safe_mask = !(crate::ssl_options::SSL_OP_NO_SSLv2
+            | crate::ssl_options::SSL_OP_NO_SSLv3
+            | crate::ssl_options::SSL_OP_NO_TLSv1
+            | crate::ssl_options::SSL_OP_NO_TLSv1_1);
         self.options &= !(options & safe_mask);
         self.options
     }
@@ -224,19 +224,19 @@ impl SslContext {
     /// Load CA certificates
     pub fn load_verify_locations(&mut self, ca_file: Option<&str>, ca_path: Option<&str>) -> bool {
         let mut loaded = false;
-        
+
         if let Some(file) = ca_file {
             if self.cert_store.load_file(file) {
                 loaded = true;
             }
         }
-        
+
         if let Some(path) = ca_path {
             if self.cert_store.load_path(path) {
                 loaded = true;
             }
         }
-        
+
         loaded
     }
 
@@ -250,9 +250,9 @@ impl SslContext {
             "/etc/ssl/cert.pem",
             "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
         ];
-        
+
         let mut loaded = false;
-        
+
         // Try loading CA bundle files
         for path in &bundle_files {
             if self.cert_store.load_file(path) {
@@ -260,20 +260,20 @@ impl SslContext {
                 break;
             }
         }
-        
+
         // Also try loading from CA certificate directories
         let ca_dirs = [
             "/etc/ssl/certs",
             "/etc/pki/tls/certs",
             "/etc/pki/ca-trust/extracted/pem",
         ];
-        
+
         for dir in &ca_dirs {
             if self.cert_store.load_path(dir) {
                 loaded = true;
             }
         }
-        
+
         loaded
     }
 
@@ -361,7 +361,7 @@ fn default_tls13_ciphersuites() -> Vec<u16> {
 /// Parse TLS 1.3 ciphersuite string
 fn parse_tls13_ciphersuites(s: &str) -> Vec<u16> {
     let mut suites = Vec::new();
-    
+
     for name in s.split(':') {
         match name.trim() {
             "TLS_AES_256_GCM_SHA384" => suites.push(0x1302),
@@ -370,7 +370,7 @@ fn parse_tls13_ciphersuites(s: &str) -> Vec<u16> {
             _ => {}
         }
     }
-    
+
     suites
 }
 
@@ -378,11 +378,11 @@ fn parse_tls13_ciphersuites(s: &str) -> Vec<u16> {
 fn load_private_key_file(path: &str, file_type: i32) -> Option<Vec<u8>> {
     use std::fs;
     use std::io::Read;
-    
+
     let mut file = fs::File::open(path).ok()?;
     let mut data = Vec::new();
     file.read_to_end(&mut data).ok()?;
-    
+
     if file_type == crate::SSL_FILETYPE_PEM {
         // Parse PEM format
         parse_pem_private_key(&data)
@@ -395,32 +395,30 @@ fn load_private_key_file(path: &str, file_type: i32) -> Option<Vec<u8>> {
 /// Parse PEM encoded private key
 fn parse_pem_private_key(data: &[u8]) -> Option<Vec<u8>> {
     let text = std::str::from_utf8(data).ok()?;
-    
+
     // Find private key block
     let start_markers = [
         "-----BEGIN PRIVATE KEY-----",
         "-----BEGIN RSA PRIVATE KEY-----",
         "-----BEGIN EC PRIVATE KEY-----",
     ];
-    
+
     let end_markers = [
         "-----END PRIVATE KEY-----",
         "-----END RSA PRIVATE KEY-----",
         "-----END EC PRIVATE KEY-----",
     ];
-    
+
     for (start, end) in start_markers.iter().zip(end_markers.iter()) {
         if let Some(start_idx) = text.find(start) {
             if let Some(end_idx) = text.find(end) {
                 let base64_start = start_idx + start.len();
                 let base64_data = &text[base64_start..end_idx];
-                let cleaned: String = base64_data.chars()
-                    .filter(|c| !c.is_whitespace())
-                    .collect();
+                let cleaned: String = base64_data.chars().filter(|c| !c.is_whitespace()).collect();
                 return crate::ncryptolib::base64_decode(&cleaned).ok();
             }
         }
     }
-    
+
     None
 }

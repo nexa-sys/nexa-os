@@ -2,9 +2,9 @@
 //!
 //! Provides functions for TLS 1.3 early data handling.
 
-use crate::{c_int, c_uchar};
 use crate::connection::SslConnection;
 use crate::context::SslContext;
+use crate::{c_int, c_uchar};
 
 /// Early data status
 #[repr(i32)]

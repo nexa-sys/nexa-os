@@ -9,7 +9,7 @@
 use super::types::*;
 use crate::posix;
 use crate::process::{USER_REGION_SIZE, USER_VIRT_BASE};
-use crate::{kinfo, kwarn, kerror};
+use crate::{kerror, kinfo, kwarn};
 use core::slice;
 use core::str;
 
@@ -154,20 +154,20 @@ impl ModuleDetailedInfo {
             },
             taints: if info.taints_kernel { 1 } else { 0 },
         };
-        
+
         // Copy strings
         let copy_str = |dest: &mut [u8], src: &str| {
             let bytes = src.as_bytes();
             let len = bytes.len().min(dest.len() - 1);
             dest[..len].copy_from_slice(&bytes[..len]);
         };
-        
+
         copy_str(&mut entry.name, &info.name);
         copy_str(&mut entry.version, &info.version);
         copy_str(&mut entry.description, &info.description);
         copy_str(&mut entry.author, &info.author);
         copy_str(&mut entry.license, info.license.as_str());
-        
+
         entry
     }
 }
@@ -243,32 +243,37 @@ fn validate_user_ptr(ptr: u64, size: usize) -> bool {
 /// Returns:
 ///   0 on success, -1 on failure with errno set
 pub fn init_module(module_image: *const u8, len: usize, param_values: *const u8) -> u64 {
-    kinfo!("syscall: init_module(image={:#x}, len={})", module_image as u64, len);
-    
+    kinfo!(
+        "syscall: init_module(image={:#x}, len={})",
+        module_image as u64,
+        len
+    );
+
     // Check privilege - only root can load modules
     if !crate::auth::is_superuser() {
         kwarn!("init_module: permission denied (not root)");
         posix::set_errno(posix::errno::EPERM);
         return u64::MAX;
     }
-    
+
     // Validate module image pointer
     if !validate_user_ptr(module_image as u64, len) {
         kerror!("init_module: invalid module image pointer");
         posix::set_errno(posix::errno::EFAULT);
         return u64::MAX;
     }
-    
+
     // Validate size
-    if len < 64 || len > 16 * 1024 * 1024 {  // 64 bytes min, 16MB max
+    if len < 64 || len > 16 * 1024 * 1024 {
+        // 64 bytes min, 16MB max
         kerror!("init_module: invalid module size: {}", len);
         posix::set_errno(posix::errno::EINVAL);
         return u64::MAX;
     }
-    
+
     // Read module data from userspace
     let module_data = unsafe { slice::from_raw_parts(module_image, len) };
-    
+
     // Parse options if provided
     let _options = if !param_values.is_null() {
         let opt_ptr = param_values as u64;
@@ -278,7 +283,9 @@ pub fn init_module(module_image: *const u8, len: usize, param_values: *const u8)
                 let mut len = 0;
                 let mut p = param_values;
                 while len < 1024 {
-                    if *p == 0 { break; }
+                    if *p == 0 {
+                        break;
+                    }
                     p = p.add(1);
                     len += 1;
                 }
@@ -291,7 +298,7 @@ pub fn init_module(module_image: *const u8, len: usize, param_values: *const u8)
     } else {
         None
     };
-    
+
     // Load the module
     match crate::kmod::load_module(module_data) {
         Ok(()) => {
@@ -304,17 +311,17 @@ pub fn init_module(module_image: *const u8, len: usize, param_values: *const u8)
             let errno = match e {
                 crate::kmod::ModuleError::AlreadyLoaded => posix::errno::EEXIST,
                 crate::kmod::ModuleError::TooManyModules => posix::errno::ENOMEM,
-                crate::kmod::ModuleError::InvalidFormat | 
-                crate::kmod::ModuleError::InvalidMagic |
-                crate::kmod::ModuleError::UnsupportedVersion => posix::errno::ENOEXEC,
-                crate::kmod::ModuleError::SignatureRequired |
-                crate::kmod::ModuleError::SignatureInvalid |
-                crate::kmod::ModuleError::SigningKeyNotFound => posix::errno::EKEYREJECTED,
-                crate::kmod::ModuleError::MissingDependency |
-                crate::kmod::ModuleError::CircularDependency => posix::errno::ENOENT,
+                crate::kmod::ModuleError::InvalidFormat
+                | crate::kmod::ModuleError::InvalidMagic
+                | crate::kmod::ModuleError::UnsupportedVersion => posix::errno::ENOEXEC,
+                crate::kmod::ModuleError::SignatureRequired
+                | crate::kmod::ModuleError::SignatureInvalid
+                | crate::kmod::ModuleError::SigningKeyNotFound => posix::errno::EKEYREJECTED,
+                crate::kmod::ModuleError::MissingDependency
+                | crate::kmod::ModuleError::CircularDependency => posix::errno::ENOENT,
                 crate::kmod::ModuleError::AllocationFailed => posix::errno::ENOMEM,
-                crate::kmod::ModuleError::SymbolNotFound |
-                crate::kmod::ModuleError::RelocationFailed => posix::errno::ENOEXEC,
+                crate::kmod::ModuleError::SymbolNotFound
+                | crate::kmod::ModuleError::RelocationFailed => posix::errno::ENOEXEC,
                 crate::kmod::ModuleError::InitFailed => posix::errno::ENOEXEC,
                 _ => posix::errno::EINVAL,
             };
@@ -339,21 +346,26 @@ pub fn delete_module(name_ptr: *const u8, flags: u32) -> u64 {
         posix::set_errno(posix::errno::EPERM);
         return u64::MAX;
     }
-    
+
     // Validate name pointer
     let name_addr = name_ptr as u64;
-    if name_ptr.is_null() || name_addr < USER_VIRT_BASE || name_addr >= USER_VIRT_BASE + USER_REGION_SIZE {
+    if name_ptr.is_null()
+        || name_addr < USER_VIRT_BASE
+        || name_addr >= USER_VIRT_BASE + USER_REGION_SIZE
+    {
         kerror!("delete_module: invalid name pointer");
         posix::set_errno(posix::errno::EFAULT);
         return u64::MAX;
     }
-    
+
     // Read module name from userspace
     let name = unsafe {
         let mut len = 0;
         let mut p = name_ptr;
         while len < 64 {
-            if *p == 0 { break; }
+            if *p == 0 {
+                break;
+            }
             p = p.add(1);
             len += 1;
         }
@@ -366,19 +378,23 @@ pub fn delete_module(name_ptr: *const u8, flags: u32) -> u64 {
             }
         }
     };
-    
-    kinfo!("syscall: delete_module(name='{}', flags={:#x})", name, flags);
-    
+
+    kinfo!(
+        "syscall: delete_module(name='{}', flags={:#x})",
+        name,
+        flags
+    );
+
     // Check for force flag (O_TRUNC = 0x200 in some systems, we use 2)
     let force = (flags & 2) != 0;
-    
+
     // Unload the module
     let result = if force {
         crate::kmod::force_unload_module(name)
     } else {
         crate::kmod::unload_module(name)
     };
-    
+
     match result {
         Ok(()) => {
             kinfo!("delete_module: module '{}' unloaded successfully", name);
@@ -415,7 +431,7 @@ pub fn query_module(operation: u32, name_ptr: *const u8, buf_ptr: *mut u8, buf_s
         posix::set_errno(posix::errno::EFAULT);
         return u64::MAX;
     }
-    
+
     // Read module name if provided
     let name = if !name_ptr.is_null() {
         let name_addr = name_ptr as u64;
@@ -427,7 +443,9 @@ pub fn query_module(operation: u32, name_ptr: *const u8, buf_ptr: *mut u8, buf_s
             let mut len = 0;
             let mut p = name_ptr;
             while len < 64 {
-                if *p == 0 { break; }
+                if *p == 0 {
+                    break;
+                }
                 p = p.add(1);
                 len += 1;
             }
@@ -437,7 +455,7 @@ pub fn query_module(operation: u32, name_ptr: *const u8, buf_ptr: *mut u8, buf_s
     } else {
         None
     };
-    
+
     match operation {
         QUERY_MODULE_LIST => query_module_list(buf_ptr, buf_size),
         QUERY_MODULE_INFO => {
@@ -484,15 +502,14 @@ fn query_module_list(buf_ptr: *mut u8, buf_size: usize) -> u64 {
     let entry_size = core::mem::size_of::<ModuleListEntry>();
     let max_entries = buf_size / entry_size;
     let entries_to_copy = modules.len().min(max_entries);
-    
-    let out_buf = unsafe { 
-        slice::from_raw_parts_mut(buf_ptr as *mut ModuleListEntry, entries_to_copy) 
-    };
-    
+
+    let out_buf =
+        unsafe { slice::from_raw_parts_mut(buf_ptr as *mut ModuleListEntry, entries_to_copy) };
+
     for (i, info) in modules.iter().take(entries_to_copy).enumerate() {
         out_buf[i] = ModuleListEntry::from_module_info(info);
     }
-    
+
     posix::set_errno(0);
     entries_to_copy as u64
 }
@@ -504,7 +521,7 @@ fn query_module_info(name: &str, buf_ptr: *mut u8, buf_size: usize) -> u64 {
         posix::set_errno(posix::errno::EINVAL);
         return u64::MAX;
     }
-    
+
     match crate::kmod::get_module_info(name) {
         Some(info) => {
             let out = unsafe { &mut *(buf_ptr as *mut ModuleDetailedInfo) };
@@ -526,11 +543,11 @@ fn query_module_stats(buf_ptr: *mut u8, buf_size: usize) -> u64 {
         posix::set_errno(posix::errno::EINVAL);
         return u64::MAX;
     }
-    
+
     let kstats = crate::kmod::get_module_stats();
     let taint_str = crate::kmod::get_taint_string();
     let symbol_stats = crate::kmod::symbols::get_symbol_stats();
-    
+
     let out = unsafe { &mut *(buf_ptr as *mut ModuleStatistics) };
     *out = ModuleStatistics {
         loaded_count: kstats.loaded_count as u32,
@@ -545,12 +562,12 @@ fn query_module_stats(buf_ptr: *mut u8, buf_size: usize) -> u64 {
         _reserved: [0; 3],
         taint_string: [0; 32],
     };
-    
+
     // Copy taint string
     let taint_bytes = taint_str.as_bytes();
     let copy_len = taint_bytes.len().min(31);
     out.taint_string[..copy_len].copy_from_slice(&taint_bytes[..copy_len]);
-    
+
     posix::set_errno(0);
     stats_size as u64
 }
@@ -562,18 +579,18 @@ fn query_module_deps(name: &str, buf_ptr: *mut u8, buf_size: usize) -> u64 {
             let entry_size = core::mem::size_of::<ModuleDependency>();
             let max_entries = buf_size / entry_size;
             let entries_to_copy = info.dependencies.len().min(max_entries);
-            
+
             let out_buf = unsafe {
                 slice::from_raw_parts_mut(buf_ptr as *mut ModuleDependency, entries_to_copy)
             };
-            
+
             for (i, dep) in info.dependencies.iter().take(entries_to_copy).enumerate() {
                 out_buf[i] = ModuleDependency { name: [0; 32] };
                 let dep_bytes = dep.as_bytes();
                 let copy_len = dep_bytes.len().min(31);
                 out_buf[i].name[..copy_len].copy_from_slice(&dep_bytes[..copy_len]);
             }
-            
+
             posix::set_errno(0);
             entries_to_copy as u64
         }
@@ -594,15 +611,14 @@ fn query_module_symbols(name: &str, buf_ptr: *mut u8, buf_size: usize) -> u64 {
             return u64::MAX;
         }
     }
-    
+
     let entry_size = core::mem::size_of::<ModuleSymbol>();
     let max_entries = buf_size / entry_size;
     let entries_to_copy = symbols.len().min(max_entries);
-    
-    let out_buf = unsafe {
-        slice::from_raw_parts_mut(buf_ptr as *mut ModuleSymbol, entries_to_copy)
-    };
-    
+
+    let out_buf =
+        unsafe { slice::from_raw_parts_mut(buf_ptr as *mut ModuleSymbol, entries_to_copy) };
+
     for (i, sym) in symbols.iter().take(entries_to_copy).enumerate() {
         out_buf[i] = ModuleSymbol {
             name: [0; 64],
@@ -618,7 +634,7 @@ fn query_module_symbols(name: &str, buf_ptr: *mut u8, buf_size: usize) -> u64 {
         let copy_len = sym_bytes.len().min(63);
         out_buf[i].name[..copy_len].copy_from_slice(&sym_bytes[..copy_len]);
     }
-    
+
     posix::set_errno(0);
     entries_to_copy as u64
 }

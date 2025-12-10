@@ -2,8 +2,8 @@
 //!
 //! This module implements stream priority handling for HTTP/2.
 
-use crate::types::{StreamId, PrioritySpec};
 use crate::constants::priority::*;
+use crate::types::{PrioritySpec, StreamId};
 use std::collections::HashMap;
 
 /// Priority node in the dependency tree
@@ -312,11 +312,14 @@ mod tests {
         tree.add(3);
 
         // Make stream 5 exclusive child of root
-        tree.add_with_spec(5, &PrioritySpec {
-            stream_id: 0,
-            weight: 32,
-            exclusive: 1,
-        });
+        tree.add_with_spec(
+            5,
+            &PrioritySpec {
+                stream_id: 0,
+                weight: 32,
+                exclusive: 1,
+            },
+        );
 
         // Stream 1 and 3 should now be children of 5
         let node5 = tree.get(5).unwrap();
@@ -327,11 +330,14 @@ mod tests {
     fn test_remove() {
         let mut tree = PriorityTree::new();
         tree.add(1);
-        tree.add_with_spec(3, &PrioritySpec {
-            stream_id: 1,
-            weight: 16,
-            exclusive: 0,
-        });
+        tree.add_with_spec(
+            3,
+            &PrioritySpec {
+                stream_id: 1,
+                weight: 16,
+                exclusive: 0,
+            },
+        );
 
         tree.remove(1);
 

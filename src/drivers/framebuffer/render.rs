@@ -231,7 +231,7 @@ impl RenderContext {
         // bearing_y is vertical offset from baseline to glyph top edge (positive = above baseline)
         let draw_x = (pixel_x as i32 + bearing_x as i32).max(0) as usize;
         let draw_y_signed = pixel_y as i32 - bearing_y as i32;
-        
+
         // Handle cases where glyph would start above the screen
         let (draw_y, skip_rows) = if draw_y_signed < 0 {
             (0usize, (-draw_y_signed) as usize)
@@ -249,9 +249,27 @@ impl RenderContext {
         let max_height = (self.height - draw_y).min(remaining_height);
 
         if self.bytes_per_pixel == 4 {
-            self.draw_ttf_glyph_32bpp(draw_x, draw_y, glyph_data, glyph_width, max_width, max_height, skip_rows, fg);
+            self.draw_ttf_glyph_32bpp(
+                draw_x,
+                draw_y,
+                glyph_data,
+                glyph_width,
+                max_width,
+                max_height,
+                skip_rows,
+                fg,
+            );
         } else {
-            self.draw_ttf_glyph_generic(draw_x, draw_y, glyph_data, glyph_width, max_width, max_height, skip_rows, fg);
+            self.draw_ttf_glyph_generic(
+                draw_x,
+                draw_y,
+                glyph_data,
+                glyph_width,
+                max_width,
+                max_height,
+                skip_rows,
+                fg,
+            );
         }
     }
 
@@ -303,7 +321,7 @@ impl RenderContext {
                         let bg_r = ((existing >> 16) & 0xFF) as u32;
                         let bg_g = ((existing >> 8) & 0xFF) as u32;
                         let bg_b = (existing & 0xFF) as u32;
-                        
+
                         let inv_alpha = 255 - alpha;
                         let r = (fg_r * alpha + bg_r * inv_alpha) / 255;
                         let g = (fg_g * alpha + bg_g * inv_alpha) / 255;
@@ -345,7 +363,7 @@ impl RenderContext {
                 }
 
                 let alpha = glyph_data[src_row + x];
-                
+
                 // Only draw if alpha is significant (threshold at 128)
                 if alpha > 128 {
                     unsafe {
@@ -570,11 +588,11 @@ impl RenderContext {
             let row_bytes = self.width * self.bytes_per_pixel;
             let scroll_bytes = CELL_HEIGHT * self.pitch;
             let copy_rows = self.height.saturating_sub(CELL_HEIGHT);
-            
+
             unsafe {
                 let src = self.buffer.add(scroll_bytes);
                 core::ptr::copy(src, self.buffer, copy_rows * self.pitch);
-                
+
                 // Clear bottom rows
                 let clear_start = self.buffer.add(copy_rows * self.pitch);
                 let clear_bytes = CELL_HEIGHT * self.pitch;

@@ -134,23 +134,23 @@ impl Metadata {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Stat {
-    pub st_dev: u64,      // offset 0
-    pub st_ino: u64,      // offset 8
-    pub st_nlink: u64,    // offset 16 (u64 on x86_64!)
-    pub st_mode: u32,     // offset 24
-    pub st_uid: u32,      // offset 28
-    pub st_gid: u32,      // offset 32
-    pub __pad0: u32,      // offset 36 (padding)
-    pub st_rdev: u64,     // offset 40
-    pub st_size: i64,     // offset 48
-    pub st_blksize: i64,  // offset 56
-    pub st_blocks: i64,   // offset 64
-    pub st_atime: i64,    // offset 72
-    pub st_atime_nsec: i64, // offset 80
-    pub st_mtime: i64,    // offset 88
-    pub st_mtime_nsec: i64, // offset 96
-    pub st_ctime: i64,    // offset 104
-    pub st_ctime_nsec: i64, // offset 112
+    pub st_dev: u64,           // offset 0
+    pub st_ino: u64,           // offset 8
+    pub st_nlink: u64,         // offset 16 (u64 on x86_64!)
+    pub st_mode: u32,          // offset 24
+    pub st_uid: u32,           // offset 28
+    pub st_gid: u32,           // offset 32
+    pub __pad0: u32,           // offset 36 (padding)
+    pub st_rdev: u64,          // offset 40
+    pub st_size: i64,          // offset 48
+    pub st_blksize: i64,       // offset 56
+    pub st_blocks: i64,        // offset 64
+    pub st_atime: i64,         // offset 72
+    pub st_atime_nsec: i64,    // offset 80
+    pub st_mtime: i64,         // offset 88
+    pub st_mtime_nsec: i64,    // offset 96
+    pub st_ctime: i64,         // offset 104
+    pub st_ctime_nsec: i64,    // offset 112
     pub st_reserved: [i64; 3], // offset 120
 }
 

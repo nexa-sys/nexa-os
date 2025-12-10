@@ -10,7 +10,7 @@ use crate::{c_int, c_void, size_t};
 // ============================================================================
 
 /// Stream identifier type
-/// 
+///
 /// Stream IDs are 31-bit unsigned integers.
 /// - Stream 0 is reserved for connection-level frames
 /// - Client-initiated streams use odd IDs (1, 3, 5, ...)
@@ -98,7 +98,7 @@ impl Nv {
     }
 
     /// Get name as slice
-    /// 
+    ///
     /// # Safety
     /// The name pointer must be valid and point to at least `namelen` bytes.
     pub unsafe fn name_slice(&self) -> &[u8] {
@@ -106,7 +106,7 @@ impl Nv {
     }
 
     /// Get value as slice
-    /// 
+    ///
     /// # Safety
     /// The value pointer must be valid and point to at least `valuelen` bytes.
     pub unsafe fn value_slice(&self) -> &[u8] {
@@ -267,11 +267,8 @@ pub type MemAllocFunc = extern "C" fn(size: size_t, mem_user_data: *mut c_void) 
 pub type MemFreeFunc = extern "C" fn(ptr: *mut c_void, mem_user_data: *mut c_void);
 
 /// Memory realloc function type
-pub type MemReallocFunc = extern "C" fn(
-    ptr: *mut c_void,
-    size: size_t,
-    mem_user_data: *mut c_void,
-) -> *mut c_void;
+pub type MemReallocFunc =
+    extern "C" fn(ptr: *mut c_void, size: size_t, mem_user_data: *mut c_void) -> *mut c_void;
 
 /// Custom memory allocator
 #[repr(C)]

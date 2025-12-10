@@ -118,7 +118,7 @@ impl GlyphCache {
     /// Get a cached glyph
     pub fn get(&mut self, codepoint: u32, size: u16) -> Option<&GlyphBitmap> {
         let key = GlyphKey { codepoint, size };
-        
+
         if self.cache.contains_key(&key) {
             // Move to end of access order (most recently used)
             self.access_order.retain(|k| k != &key);

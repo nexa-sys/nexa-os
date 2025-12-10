@@ -49,7 +49,7 @@ mod kmod_syscalls {
                 options(nostack, preserves_flags)
             );
         }
-        
+
         if ret == u64::MAX || ret > i32::MAX as u64 {
             -1
         } else {
@@ -72,7 +72,7 @@ mod kmod_syscalls {
 use kmod_syscalls::*;
 
 const O_NONBLOCK: u32 = 0x1;
-const O_TRUNC: u32 = 0x2;  // Used as force flag
+const O_TRUNC: u32 = 0x2; // Used as force flag
 
 fn print_usage() {
     eprintln!("rmmod - Remove a kernel module");
@@ -102,7 +102,7 @@ fn main() {
     let mut force = false;
     let mut wait = false;
     let mut verbose = false;
-    
+
     // Parse arguments
     for arg in args.iter().skip(1) {
         match arg.as_str() {
@@ -136,7 +136,7 @@ fn main() {
             }
         }
     }
-    
+
     let module_name = match module_name {
         Some(name) => name,
         None => {
@@ -145,35 +145,39 @@ fn main() {
             process::exit(1);
         }
     };
-    
+
     if verbose {
         println!("rmmod: removing module '{}'", module_name);
     }
-    
+
     // Build flags
     let mut flags: u32 = 0;
     if force {
-        flags |= O_TRUNC;  // Force flag
+        flags |= O_TRUNC; // Force flag
         if verbose {
             println!("rmmod: forcing removal");
         }
     }
     if !wait {
-        flags |= O_NONBLOCK;  // Non-blocking (don't wait)
+        flags |= O_NONBLOCK; // Non-blocking (don't wait)
     }
-    
+
     // Prepare null-terminated name
     let mut name_bytes = module_name.clone().into_bytes();
     name_bytes.push(0);
-    
+
     // Unload the module
     let ret = delete_module(name_bytes.as_ptr(), flags);
-    
+
     if ret < 0 {
         let errno = get_errno();
-        eprintln!("rmmod: failed to remove module '{}': {} (errno={})", 
-                  module_name, errno_str(errno), errno);
-        
+        eprintln!(
+            "rmmod: failed to remove module '{}': {} (errno={})",
+            module_name,
+            errno_str(errno),
+            errno
+        );
+
         // Provide additional hints
         match errno {
             2 => {
@@ -192,7 +196,7 @@ fn main() {
         }
         process::exit(1);
     }
-    
+
     if verbose {
         println!("rmmod: module '{}' removed successfully", module_name);
     }

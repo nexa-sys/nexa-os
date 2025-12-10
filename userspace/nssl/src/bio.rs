@@ -2,10 +2,10 @@
 //!
 //! Provides I/O abstraction layer similar to OpenSSL's BIO.
 
-use std::vec::Vec;
+use crate::{c_char, c_int, c_uchar};
 use std::fs::File;
 use std::io::{Read, Write};
-use crate::{c_int, c_char, c_uchar};
+use std::vec::Vec;
 
 /// BIO method type
 #[repr(i32)]
@@ -97,7 +97,7 @@ impl Bio {
         if method.is_null() {
             return core::ptr::null_mut();
         }
-        
+
         let bio = Box::new(Self {
             method,
             fd: -1,
@@ -111,7 +111,7 @@ impl Bio {
             ref_count: 1,
             retry_reason: 0,
         });
-        
+
         Box::into_raw(bio)
     }
 
@@ -121,12 +121,12 @@ impl Bio {
         if bio.is_null() {
             return bio;
         }
-        
+
         unsafe {
             (*bio).fd = sock;
             (*bio).close_flag = close_flag;
         }
-        
+
         bio
     }
 
@@ -135,41 +135,41 @@ impl Bio {
         if filename.is_null() || mode.is_null() {
             return core::ptr::null_mut();
         }
-        
+
         let path = unsafe {
             match core::ffi::CStr::from_ptr(filename as *const i8).to_str() {
                 Ok(s) => s,
                 Err(_) => return core::ptr::null_mut(),
             }
         };
-        
+
         let mode_str = unsafe {
             match core::ffi::CStr::from_ptr(mode as *const i8).to_str() {
                 Ok(s) => s,
                 Err(_) => return core::ptr::null_mut(),
             }
         };
-        
+
         let file = if mode_str.contains('w') {
             File::create(path).ok()
         } else {
             File::open(path).ok()
         };
-        
+
         if file.is_none() {
             return core::ptr::null_mut();
         }
-        
+
         let bio = Self::new(&BIO_S_FILE as *const _);
         if bio.is_null() {
             return bio;
         }
-        
+
         unsafe {
             (*bio).file = file;
             (*bio).close_flag = bio_flags::BIO_CLOSE;
         }
-        
+
         bio
     }
 
@@ -179,7 +179,7 @@ impl Bio {
         if bio.is_null() {
             return bio;
         }
-        
+
         if !buf.is_null() && len != 0 {
             let actual_len = if len < 0 {
                 // Null-terminated string
@@ -193,13 +193,13 @@ impl Bio {
             } else {
                 len as usize
             };
-            
+
             unsafe {
                 let slice = core::slice::from_raw_parts(buf, actual_len);
                 (*bio).mem_buf = slice.to_vec();
             }
         }
-        
+
         bio
     }
 
@@ -208,9 +208,9 @@ impl Bio {
         if buf.is_null() || len <= 0 {
             return -1;
         }
-        
+
         let method_type = unsafe { (*self.method).method_type };
-        
+
         match method_type {
             BioMethodType::Socket => self.read_socket(buf, len),
             BioMethodType::File => self.read_file(buf, len),
@@ -224,9 +224,9 @@ impl Bio {
         if buf.is_null() || len <= 0 {
             return -1;
         }
-        
+
         let method_type = unsafe { (*self.method).method_type };
-        
+
         match method_type {
             BioMethodType::Socket => self.write_socket(buf, len),
             BioMethodType::File => self.write_file(buf, len),
@@ -240,7 +240,7 @@ impl Bio {
         if self.fd < 0 {
             return -1;
         }
-        
+
         // Use read syscall
         unsafe {
             let result = libc_read(self.fd, buf as *mut u8, len as usize);
@@ -257,7 +257,7 @@ impl Bio {
         if self.fd < 0 {
             return -1;
         }
-        
+
         unsafe {
             let result = libc_write(self.fd, buf as *const u8, len as usize);
             if result < 0 {
@@ -300,17 +300,13 @@ impl Bio {
         if available == 0 {
             return 0; // EOF
         }
-        
+
         let to_read = (len as usize).min(available);
         unsafe {
-            core::ptr::copy_nonoverlapping(
-                self.mem_buf[self.mem_pos..].as_ptr(),
-                buf,
-                to_read,
-            );
+            core::ptr::copy_nonoverlapping(self.mem_buf[self.mem_pos..].as_ptr(), buf, to_read);
         }
         self.mem_pos += to_read;
-        
+
         to_read as c_int
     }
 
@@ -331,7 +327,7 @@ impl Bio {
         if bio.is_null() {
             return 0;
         }
-        
+
         unsafe {
             (*bio).ref_count -= 1;
             if (*bio).ref_count == 0 {
@@ -342,7 +338,7 @@ impl Bio {
                 drop(Box::from_raw(bio));
             }
         }
-        
+
         1
     }
 

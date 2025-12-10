@@ -54,19 +54,25 @@ pub mod stack;
 pub mod stack {
     //! Network stack stub module (feature disabled)
     //! This module requires the full network stack (net_full feature)
-    
+
     use super::drivers::NetError;
-    
+
     pub const MAX_FRAME_SIZE: usize = 1536;
     pub const UDP_MAX_PAYLOAD: usize = MAX_FRAME_SIZE - 14 - 20 - 8;
 
     /// Stub TxBatch when network stack is disabled
     pub struct TxBatch;
-    
+
     impl TxBatch {
-        pub fn new() -> Self { Self }
-        pub fn is_empty(&self) -> bool { true }
-        pub fn len(&self) -> usize { 0 }
+        pub fn new() -> Self {
+            Self
+        }
+        pub fn is_empty(&self) -> bool {
+            true
+        }
+        pub fn len(&self) -> usize {
+            0
+        }
     }
 
     /// Stub device info
@@ -89,34 +95,103 @@ pub mod stack {
     pub struct NetStack;
 
     impl NetStack {
-        pub const fn new() -> Self { Self }
-        
+        pub const fn new() -> Self {
+            Self
+        }
+
         // TCP stubs
-        pub fn tcp_socket(&mut self) -> Result<usize, NetError> { Err(NetError::NotReady) }
-        pub fn tcp_close(&mut self, _idx: usize) -> Result<(), NetError> { Err(NetError::NotReady) }
-        pub fn tcp_send(&mut self, _idx: usize, _data: &[u8]) -> Result<usize, NetError> { Err(NetError::NotReady) }
-        pub fn tcp_recv(&mut self, _idx: usize, _buf: &mut [u8]) -> Result<usize, NetError> { Err(NetError::NotReady) }
-        pub fn tcp_poll(&mut self, _idx: usize, _tx: &mut TxBatch) -> Result<(), NetError> { Err(NetError::NotReady) }
-        pub fn tcp_connect(&mut self, _idx: usize, _dev: usize, _ip: [u8; 4], _port: u16, _local_port: u16, _tx: &mut TxBatch) -> Result<(), NetError> { Err(NetError::NotReady) }
-        pub fn tcp_get_state(&mut self, _idx: usize) -> Result<super::tcp::TcpState, NetError> { Err(NetError::NotReady) }
-        pub fn tcp_add_waiter(&mut self, _idx: usize, _pid: crate::process::Pid) -> Result<(), NetError> { Err(NetError::NotReady) }
-        
+        pub fn tcp_socket(&mut self) -> Result<usize, NetError> {
+            Err(NetError::NotReady)
+        }
+        pub fn tcp_close(&mut self, _idx: usize) -> Result<(), NetError> {
+            Err(NetError::NotReady)
+        }
+        pub fn tcp_send(&mut self, _idx: usize, _data: &[u8]) -> Result<usize, NetError> {
+            Err(NetError::NotReady)
+        }
+        pub fn tcp_recv(&mut self, _idx: usize, _buf: &mut [u8]) -> Result<usize, NetError> {
+            Err(NetError::NotReady)
+        }
+        pub fn tcp_poll(&mut self, _idx: usize, _tx: &mut TxBatch) -> Result<(), NetError> {
+            Err(NetError::NotReady)
+        }
+        pub fn tcp_connect(
+            &mut self,
+            _idx: usize,
+            _dev: usize,
+            _ip: [u8; 4],
+            _port: u16,
+            _local_port: u16,
+            _tx: &mut TxBatch,
+        ) -> Result<(), NetError> {
+            Err(NetError::NotReady)
+        }
+        pub fn tcp_get_state(&mut self, _idx: usize) -> Result<super::tcp::TcpState, NetError> {
+            Err(NetError::NotReady)
+        }
+        pub fn tcp_add_waiter(
+            &mut self,
+            _idx: usize,
+            _pid: crate::process::Pid,
+        ) -> Result<(), NetError> {
+            Err(NetError::NotReady)
+        }
+
         // UDP stubs
-        pub fn udp_socket(&mut self, _port: u16) -> Result<usize, NetError> { Err(NetError::NotReady) }
-        pub fn udp_close(&mut self, _idx: usize) -> Result<(), NetError> { Err(NetError::NotReady) }
-        pub fn udp_send(&mut self, _dev: usize, _idx: usize, _ip: [u8; 4], _port: u16, _data: &[u8], _tx: &mut TxBatch) -> Result<usize, NetError> { Err(NetError::NotReady) }
-        pub fn udp_receive(&mut self, _idx: usize, _buf: &mut [u8]) -> Result<UdpReceiveResult, NetError> { Err(NetError::NotReady) }
-        pub fn is_udp_port_available(&self, _port: u16) -> bool { true }
-        
+        pub fn udp_socket(&mut self, _port: u16) -> Result<usize, NetError> {
+            Err(NetError::NotReady)
+        }
+        pub fn udp_close(&mut self, _idx: usize) -> Result<(), NetError> {
+            Err(NetError::NotReady)
+        }
+        pub fn udp_send(
+            &mut self,
+            _dev: usize,
+            _idx: usize,
+            _ip: [u8; 4],
+            _port: u16,
+            _data: &[u8],
+            _tx: &mut TxBatch,
+        ) -> Result<usize, NetError> {
+            Err(NetError::NotReady)
+        }
+        pub fn udp_receive(
+            &mut self,
+            _idx: usize,
+            _buf: &mut [u8],
+        ) -> Result<UdpReceiveResult, NetError> {
+            Err(NetError::NotReady)
+        }
+        pub fn is_udp_port_available(&self, _port: u16) -> bool {
+            true
+        }
+
         // Netlink stubs
-        pub fn netlink_socket(&mut self) -> Result<usize, NetError> { Err(NetError::NotReady) }
-        pub fn netlink_close(&mut self, _idx: usize) -> Result<(), NetError> { Err(NetError::NotReady) }
-        pub fn netlink_bind(&mut self, _idx: usize, _pid: u32, _groups: u32) -> Result<(), NetError> { Err(NetError::NotReady) }
-        pub fn netlink_send(&mut self, _idx: usize, _data: &[u8]) -> Result<usize, NetError> { Err(NetError::NotReady) }
-        pub fn netlink_receive(&mut self, _idx: usize, _buf: &mut [u8]) -> Result<usize, NetError> { Err(NetError::NotReady) }
-        
+        pub fn netlink_socket(&mut self) -> Result<usize, NetError> {
+            Err(NetError::NotReady)
+        }
+        pub fn netlink_close(&mut self, _idx: usize) -> Result<(), NetError> {
+            Err(NetError::NotReady)
+        }
+        pub fn netlink_bind(
+            &mut self,
+            _idx: usize,
+            _pid: u32,
+            _groups: u32,
+        ) -> Result<(), NetError> {
+            Err(NetError::NotReady)
+        }
+        pub fn netlink_send(&mut self, _idx: usize, _data: &[u8]) -> Result<usize, NetError> {
+            Err(NetError::NotReady)
+        }
+        pub fn netlink_receive(&mut self, _idx: usize, _buf: &mut [u8]) -> Result<usize, NetError> {
+            Err(NetError::NotReady)
+        }
+
         // Device info stub
-        pub fn get_device_info(&self, _idx: usize) -> Option<DeviceInfo> { None }
+        pub fn get_device_info(&self, _idx: usize) -> Option<DeviceInfo> {
+            None
+        }
         pub fn register_device(&mut self, _idx: usize, _mac: [u8; 6]) {}
     }
 }
@@ -126,7 +201,7 @@ pub mod tcp;
 #[cfg(not(feature = "net_tcp"))]
 pub mod tcp {
     //! TCP stub module (feature disabled)
-    
+
     /// Stub TcpState for when TCP is disabled
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum TcpState {
@@ -554,7 +629,7 @@ fn drain_rx(
     use core::sync::atomic::{AtomicU64, Ordering};
     static DRAIN_RX_CALLS: AtomicU64 = AtomicU64::new(0);
     static LAST_DRAIN_DEBUG_MS: AtomicU64 = AtomicU64::new(0);
-    
+
     let call_count = DRAIN_RX_CALLS.fetch_add(1, Ordering::Relaxed) + 1;
     let now_ms = logger::boot_time_us() / 1_000;
     let last_debug = LAST_DRAIN_DEBUG_MS.load(Ordering::Relaxed);
@@ -562,7 +637,7 @@ fn drain_rx(
         crate::kinfo!("[drain_rx] device {} call #{}", device_index, call_count);
         LAST_DRAIN_DEBUG_MS.store(now_ms, Ordering::Relaxed);
     }
-    
+
     let mut scratch = [0u8; stack::MAX_FRAME_SIZE];
     let mut frame_count = 0;
     while let Some(len) = driver.drain_rx(&mut scratch) {

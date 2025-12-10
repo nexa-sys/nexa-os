@@ -110,7 +110,7 @@ fn main() {
     }
 
     let total_len = bytes_read as usize;
-    
+
     // Determine the slice to output
     let data = if let Some(size) = tail_size {
         // -s SIZE: show the last SIZE bytes (tail)
@@ -126,7 +126,7 @@ fn main() {
                 .position(|&b| b == b'\n')
                 .map(|pos| start_offset + pos + 1)
                 .unwrap_or(start_offset);
-            
+
             if adjusted_start < total_len {
                 &buffer[adjusted_start..total_len]
             } else {

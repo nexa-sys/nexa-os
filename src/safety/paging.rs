@@ -53,7 +53,7 @@ pub fn flush_tlb_all() {
     unsafe {
         Cr3::write(frame, flags);
     }
-    
+
     // Then send TLB flush IPI to all other CPUs
     // This ensures that if the process runs on a different CPU after execve/fork,
     // it won't see stale TLB entries pointing to old physical addresses

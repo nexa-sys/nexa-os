@@ -2,9 +2,9 @@
 //!
 //! Parsing and building of TLS extensions.
 
-use std::vec::Vec;
-use std::string::String;
 use crate::tls::ExtensionType;
+use std::string::String;
+use std::vec::Vec;
 
 /// Parsed extension data
 pub enum ExtensionData {
@@ -87,19 +87,19 @@ pub fn parse_extension(ext_type: u16, data: &[u8]) -> ExtensionData {
 /// Parse server_name extension
 fn parse_server_name(data: &[u8]) -> ExtensionData {
     let mut names = Vec::new();
-    
+
     if data.len() < 2 {
         return ExtensionData::ServerName(names);
     }
-    
+
     let list_len = ((data[0] as usize) << 8) | (data[1] as usize);
     let mut pos = 2;
-    
+
     while pos + 3 <= data.len() && pos < 2 + list_len {
         let name_type = data[pos];
         let name_len = ((data[pos + 1] as usize) << 8) | (data[pos + 2] as usize);
         pos += 3;
-        
+
         if pos + name_len <= data.len() {
             if let Ok(name) = std::str::from_utf8(&data[pos..pos + name_len]) {
                 names.push(ServerName {
@@ -110,18 +110,18 @@ fn parse_server_name(data: &[u8]) -> ExtensionData {
             pos += name_len;
         }
     }
-    
+
     ExtensionData::ServerName(names)
 }
 
 /// Parse supported_versions extension
 fn parse_supported_versions(data: &[u8]) -> ExtensionData {
     let mut versions = Vec::new();
-    
+
     if data.is_empty() {
         return ExtensionData::SupportedVersions(versions);
     }
-    
+
     // Check if this is ClientHello format (with length byte) or ServerHello format (just version)
     if data.len() == 2 {
         // ServerHello format
@@ -131,61 +131,61 @@ fn parse_supported_versions(data: &[u8]) -> ExtensionData {
         // ClientHello format
         let len = data[0] as usize;
         let mut pos = 1;
-        
+
         while pos + 2 <= data.len() && pos < 1 + len {
             let version = ((data[pos] as u16) << 8) | (data[pos + 1] as u16);
             versions.push(version);
             pos += 2;
         }
     }
-    
+
     ExtensionData::SupportedVersions(versions)
 }
 
 /// Parse supported_groups extension
 fn parse_supported_groups(data: &[u8]) -> ExtensionData {
     let mut groups = Vec::new();
-    
+
     if data.len() < 2 {
         return ExtensionData::SupportedGroups(groups);
     }
-    
+
     let len = ((data[0] as usize) << 8) | (data[1] as usize);
     let mut pos = 2;
-    
+
     while pos + 2 <= data.len() && pos < 2 + len {
         let group = ((data[pos] as u16) << 8) | (data[pos + 1] as u16);
         groups.push(group);
         pos += 2;
     }
-    
+
     ExtensionData::SupportedGroups(groups)
 }
 
 /// Parse signature_algorithms extension
 fn parse_signature_algorithms(data: &[u8]) -> ExtensionData {
     let mut algs = Vec::new();
-    
+
     if data.len() < 2 {
         return ExtensionData::SignatureAlgorithms(algs);
     }
-    
+
     let len = ((data[0] as usize) << 8) | (data[1] as usize);
     let mut pos = 2;
-    
+
     while pos + 2 <= data.len() && pos < 2 + len {
         let alg = ((data[pos] as u16) << 8) | (data[pos + 1] as u16);
         algs.push(alg);
         pos += 2;
     }
-    
+
     ExtensionData::SignatureAlgorithms(algs)
 }
 
 /// Parse key_share extension
 fn parse_key_share(data: &[u8]) -> ExtensionData {
     let mut entries = Vec::new();
-    
+
     if data.len() < 2 {
         // ServerHello format (single entry, no length prefix)
         if data.len() >= 4 {
@@ -200,16 +200,16 @@ fn parse_key_share(data: &[u8]) -> ExtensionData {
         }
         return ExtensionData::KeyShareClient(entries);
     }
-    
+
     // ClientHello format
     let len = ((data[0] as usize) << 8) | (data[1] as usize);
     let mut pos = 2;
-    
+
     while pos + 4 <= data.len() && pos < 2 + len {
         let group = ((data[pos] as u16) << 8) | (data[pos + 1] as u16);
         let key_len = ((data[pos + 2] as usize) << 8) | (data[pos + 3] as usize);
         pos += 4;
-        
+
         if pos + key_len <= data.len() {
             entries.push(KeyShareEntry {
                 group,
@@ -218,7 +218,7 @@ fn parse_key_share(data: &[u8]) -> ExtensionData {
             pos += key_len;
         }
     }
-    
+
     ExtensionData::KeyShareClient(entries)
 }
 
@@ -230,42 +230,43 @@ fn parse_pre_shared_key(data: &[u8]) -> ExtensionData {
         let selected = ((data[0] as u16) << 8) | (data[1] as u16);
         return ExtensionData::PreSharedKeyServer(selected);
     }
-    
+
     // ClientHello format
     let mut identities = Vec::new();
     let mut binders = Vec::new();
-    
+
     if data.len() >= 2 {
         let ident_len = ((data[0] as usize) << 8) | (data[1] as usize);
         let mut pos = 2;
-        
+
         while pos + 6 <= data.len() && pos < 2 + ident_len {
             let id_len = ((data[pos] as usize) << 8) | (data[pos + 1] as usize);
             pos += 2;
-            
+
             if pos + id_len + 4 <= data.len() {
                 let identity = data[pos..pos + id_len].to_vec();
                 pos += id_len;
-                
-                let age = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]);
+
+                let age =
+                    u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]);
                 pos += 4;
-                
+
                 identities.push(PskIdentity {
                     identity,
                     obfuscated_ticket_age: age,
                 });
             }
         }
-        
+
         // Parse binders
         if pos + 2 <= data.len() {
             let binders_len = ((data[pos] as usize) << 8) | (data[pos + 1] as usize);
             pos += 2;
-            
+
             while pos + 1 <= data.len() && pos < pos + binders_len {
                 let binder_len = data[pos] as usize;
                 pos += 1;
-                
+
                 if pos + binder_len <= data.len() {
                     binders.push(data[pos..pos + binder_len].to_vec());
                     pos += binder_len;
@@ -273,21 +274,24 @@ fn parse_pre_shared_key(data: &[u8]) -> ExtensionData {
             }
         }
     }
-    
-    ExtensionData::PreSharedKeyClient(PreSharedKeyClientHello { identities, binders })
+
+    ExtensionData::PreSharedKeyClient(PreSharedKeyClientHello {
+        identities,
+        binders,
+    })
 }
 
 /// Parse psk_key_exchange_modes extension
 fn parse_psk_key_exchange_modes(data: &[u8]) -> ExtensionData {
     let mut modes = Vec::new();
-    
+
     if !data.is_empty() {
         let len = data[0] as usize;
         for &mode in data.get(1..1 + len).unwrap_or(&[]) {
             modes.push(mode);
         }
     }
-    
+
     ExtensionData::PskKeyExchangeModes(modes)
 }
 
@@ -315,18 +319,18 @@ fn parse_cookie(data: &[u8]) -> ExtensionData {
 /// Parse application_layer_protocol_negotiation extension
 fn parse_alpn(data: &[u8]) -> ExtensionData {
     let mut protocols = Vec::new();
-    
+
     if data.len() < 2 {
         return ExtensionData::Alpn(protocols);
     }
-    
+
     let list_len = ((data[0] as usize) << 8) | (data[1] as usize);
     let mut pos = 2;
-    
+
     while pos + 1 <= data.len() && pos < 2 + list_len {
         let proto_len = data[pos] as usize;
         pos += 1;
-        
+
         if pos + proto_len <= data.len() {
             if let Ok(proto) = std::str::from_utf8(&data[pos..pos + proto_len]) {
                 protocols.push(proto.to_string());
@@ -334,50 +338,50 @@ fn parse_alpn(data: &[u8]) -> ExtensionData {
             pos += proto_len;
         }
     }
-    
+
     ExtensionData::Alpn(protocols)
 }
 
 /// Build ALPN extension for wire format
 pub fn build_alpn_extension(protocols: &[&str]) -> Vec<u8> {
     let mut data = Vec::new();
-    
+
     // Calculate total length
     let mut list_len = 0;
     for proto in protocols {
         list_len += 1 + proto.len();
     }
-    
+
     // Extension type
     data.push((ExtensionType::ApplicationLayerProtocolNegotiation as u16 >> 8) as u8);
     data.push((ExtensionType::ApplicationLayerProtocolNegotiation as u16 & 0xFF) as u8);
-    
+
     // Extension length
     let ext_len = 2 + list_len;
     data.push((ext_len >> 8) as u8);
     data.push((ext_len & 0xFF) as u8);
-    
+
     // Protocol list length
     data.push((list_len >> 8) as u8);
     data.push((list_len & 0xFF) as u8);
-    
+
     // Protocols
     for proto in protocols {
         data.push(proto.len() as u8);
         data.extend_from_slice(proto.as_bytes());
     }
-    
+
     data
 }
 
 /// Encode ALPN protocols to wire format (for SSL_CTX_set_alpn_protos)
 pub fn encode_alpn_protos(protocols: &[&str]) -> Vec<u8> {
     let mut data = Vec::new();
-    
+
     for proto in protocols {
         data.push(proto.len() as u8);
         data.extend_from_slice(proto.as_bytes());
     }
-    
+
     data
 }

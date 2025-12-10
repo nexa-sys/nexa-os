@@ -38,7 +38,7 @@ const MODULAR_READ_CACHE_SIZE: usize = 64 * 1024 * 1024; // 64 MiB max file size
 /// Track currently allocated vmalloc read buffers for large file reads
 /// vmalloc provides logically contiguous virtual memory backed by
 /// physically non-contiguous pages - perfect for large file reads
-/// 
+///
 /// NOTE: We don't track/free old allocations because callers hold &'static [u8]
 /// references. In practice this is used for large files like fonts that stay
 /// loaded for the system lifetime. The vmalloc region (1GB) is more than enough.
@@ -274,7 +274,7 @@ pub fn init() {
                     dir_meta.mode |= 0o755;
                     add_file_with_metadata("mnt", &[], true, dir_meta);
                     add_file_with_metadata("mnt/ext", &[], true, dir_meta);
-                    
+
                     // Enable ext2 write mode automatically for log support
                     ext2_modular::enable_write_mode();
                     crate::kinfo!("ext2 write mode enabled for filesystem operations");
@@ -785,7 +785,8 @@ fn handle_procfs_stat(path: &str) -> Option<Metadata> {
             return Some(procfs::proc_file_metadata(0)); // Size determined at read time
         }
         // /proc/sys/kernel/ entries (writable)
-        "proc/sys/kernel/core_pattern" | "proc/sys/kernel/core_pipe_limit"
+        "proc/sys/kernel/core_pattern"
+        | "proc/sys/kernel/core_pipe_limit"
         | "proc/sys/kernel/core_uses_pid" => {
             return Some(procfs::proc_file_metadata(0).with_mode(0o644));
         }
@@ -982,9 +983,18 @@ where
             return true;
         }
         "proc/sys/kernel" => {
-            cb("core_pattern", procfs::proc_file_metadata(0).with_mode(0o644));
-            cb("core_pipe_limit", procfs::proc_file_metadata(0).with_mode(0o644));
-            cb("core_uses_pid", procfs::proc_file_metadata(0).with_mode(0o644));
+            cb(
+                "core_pattern",
+                procfs::proc_file_metadata(0).with_mode(0o644),
+            );
+            cb(
+                "core_pipe_limit",
+                procfs::proc_file_metadata(0).with_mode(0o644),
+            );
+            cb(
+                "core_uses_pid",
+                procfs::proc_file_metadata(0).with_mode(0o644),
+            );
             return true;
         }
         _ => {}
@@ -1157,7 +1167,7 @@ pub fn read_file_bytes(name: &str) -> Option<&'static [u8]> {
             return None;
         }
     };
-    
+
     // Check if it's a regular file (not a directory, symlink, etc.)
     if opened.metadata.file_type != posix::FileType::Regular {
         crate::kwarn!(
@@ -1169,13 +1179,9 @@ pub fn read_file_bytes(name: &str) -> Option<&'static [u8]> {
     }
 
     match opened.content {
-        FileContent::Inline(bytes) => {
-            Some(bytes)
-        }
+        FileContent::Inline(bytes) => Some(bytes),
         // Handle new modular filesystem content (filesystem-agnostic)
-        FileContent::Modular(file_handle) => {
-            read_modular_file_bytes(name, &file_handle)
-        }
+        FileContent::Modular(file_handle) => read_modular_file_bytes(name, &file_handle),
         // Legacy ext2 handler - kept for backwards compatibility
         #[allow(deprecated)]
         FileContent::Ext2Modular(file_ref) => {
@@ -1199,7 +1205,10 @@ pub fn read_file_bytes(name: &str) -> Option<&'static [u8]> {
 
 /// Read file content from a modular filesystem (ext2, ext3, ext4, etc.)
 /// This is filesystem-agnostic and works with any registered modular filesystem
-fn read_modular_file_bytes(name: &str, file_handle: &super::traits::ModularFileHandle) -> Option<&'static [u8]> {
+fn read_modular_file_bytes(
+    name: &str,
+    file_handle: &super::traits::ModularFileHandle,
+) -> Option<&'static [u8]> {
     // CRITICAL FIX: Switch to kernel CR3 before accessing kernel memory
     // The cache buffer is allocated in kernel address space (heap at ~0x7cc0000)
     // which may not be mapped in user process page tables.
@@ -1238,13 +1247,17 @@ fn read_modular_file_bytes(name: &str, file_handle: &super::traits::ModularFileH
         }
         return None;
     }
-    
+
     // Use vmalloc for logically contiguous memory (physically non-contiguous is OK)
     // Each call allocates a fresh buffer - we don't free because callers hold &'static refs
     let vmalloc_ptr = match vmalloc(size as u64) {
         Some(ptr) => ptr,
         None => {
-            crate::kwarn!("Failed to allocate {} bytes via vmalloc for '{}'", size, name);
+            crate::kwarn!(
+                "Failed to allocate {} bytes via vmalloc for '{}'",
+                size,
+                name
+            );
             unsafe {
                 if saved_cr3 != kernel_cr3 {
                     core::arch::asm!("mov cr3, {}", in(reg) saved_cr3, options(nostack));
@@ -1253,16 +1266,16 @@ fn read_modular_file_bytes(name: &str, file_handle: &super::traits::ModularFileH
             return None;
         }
     };
-    
+
     // Get mutable slice for direct reading
     let buf_slice = unsafe { core::slice::from_raw_parts_mut(vmalloc_ptr, size) };
-    
+
     // Read directly into vmalloc buffer using the modular filesystem API
     let mut read_offset = 0usize;
     while read_offset < size {
         let remaining = size - read_offset;
         let to_read = remaining.min(4096); // Read in 4KB chunks
-        
+
         // Use the unified modular_fs_read_at API
         let bytes_read = match super::traits::modular_fs_read_at(
             file_handle,
@@ -1290,7 +1303,7 @@ fn read_modular_file_bytes(name: &str, file_handle: &super::traits::ModularFileH
                 )
             }
         };
-        
+
         if bytes_read == 0 {
             crate::kwarn!(
                 "short read while loading '{}' from modular fs (offset {} of {})",
@@ -1307,14 +1320,12 @@ fn read_modular_file_bytes(name: &str, file_handle: &super::traits::ModularFileH
             }
             return None;
         }
-        
+
         read_offset += bytes_read;
     }
-    
+
     // Create static slice from vmalloc memory (memory persists for kernel lifetime)
-    let result = unsafe {
-        Some(core::slice::from_raw_parts(vmalloc_ptr as *const u8, size))
-    };
+    let result = unsafe { Some(core::slice::from_raw_parts(vmalloc_ptr as *const u8, size)) };
 
     // Restore CR3 after all operations complete
     unsafe {
@@ -1498,7 +1509,12 @@ pub fn remount_at(
     for entry in mounts.iter_mut() {
         if let Some(mount) = entry {
             if mount.mount_point == normalized {
-                crate::kinfo!("Remounting {}: {} -> {}", normalized, mount.fs.name(), fs.name());
+                crate::kinfo!(
+                    "Remounting {}: {} -> {}",
+                    normalized,
+                    mount.fs.name(),
+                    fs.name()
+                );
                 mount.fs = fs;
                 return Ok(());
             }
@@ -1551,7 +1567,7 @@ fn resolve_mount(path: &str) -> Option<(&'static dyn FileSystem, &str)> {
             // For mount points like "/dev", "/proc", etc.
             // Match both absolute paths ("/dev/foo") and relative paths ("dev/foo")
             let mp_without_slash = entry.mount_point.trim_start_matches('/');
-            
+
             let (matches, rest_start) = if is_absolute && path.starts_with(entry.mount_point) {
                 // Absolute path: "/dev/foo" matches mount point "/dev"
                 let mp_len = entry.mount_point.len();
@@ -1565,7 +1581,7 @@ fn resolve_mount(path: &str) -> Option<(&'static dyn FileSystem, &str)> {
             } else {
                 (false, 0)
             };
-            
+
             if matches {
                 let rest = &path[rest_start..];
                 let relative = rest.trim_start_matches('/');

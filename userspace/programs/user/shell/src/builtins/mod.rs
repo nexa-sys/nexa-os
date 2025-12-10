@@ -3,15 +3,15 @@
 //! This module provides a modular architecture for shell builtin commands.
 //! Each category of commands is in its own submodule.
 
-pub mod navigation;
-pub mod info;
-pub mod variables;
-pub mod flow;
-pub mod utility;
-pub mod jobs;
-pub mod history;
 pub mod config;
+pub mod flow;
+pub mod history;
+pub mod info;
+pub mod jobs;
 pub mod misc;
+pub mod navigation;
+pub mod utility;
+pub mod variables;
 
 use crate::state::ShellState;
 use std::collections::HashMap;
@@ -68,7 +68,7 @@ impl BuiltinRegistry {
         let mut registry = Self {
             builtins: HashMap::new(),
         };
-        
+
         // Register all builtin commands
         navigation::register(&mut registry);
         info::register(&mut registry);
@@ -79,7 +79,7 @@ impl BuiltinRegistry {
         history::register(&mut registry);
         config::register(&mut registry);
         misc::register(&mut registry);
-        
+
         registry
     }
 
@@ -113,7 +113,12 @@ impl BuiltinRegistry {
     }
 
     /// Execute a builtin command
-    pub fn execute(&self, name: &str, state: &mut ShellState, args: &[&str]) -> Option<BuiltinResult> {
+    pub fn execute(
+        &self,
+        name: &str,
+        state: &mut ShellState,
+        args: &[&str],
+    ) -> Option<BuiltinResult> {
         self.builtins.get(name).and_then(|builtin| {
             if builtin.enabled {
                 Some((builtin.func)(state, args))
@@ -142,7 +147,8 @@ impl BuiltinRegistry {
 
     /// List all builtins with descriptions
     pub fn list_with_desc(&self) -> Vec<(&'static str, &'static str, bool)> {
-        let mut list: Vec<_> = self.builtins
+        let mut list: Vec<_> = self
+            .builtins
             .iter()
             .map(|(&name, desc)| (name, desc.short_desc, desc.enabled))
             .collect();
@@ -152,7 +158,8 @@ impl BuiltinRegistry {
 
     /// Get disabled builtins
     pub fn list_disabled(&self) -> Vec<&'static str> {
-        let mut list: Vec<_> = self.builtins
+        let mut list: Vec<_> = self
+            .builtins
             .iter()
             .filter(|(_, desc)| !desc.enabled && desc.can_disable)
             .map(|(&name, _)| name)

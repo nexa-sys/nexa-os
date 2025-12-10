@@ -2,16 +2,14 @@
 //!
 //! Implements DEFLATE compression algorithm with LZ77 and Huffman coding.
 
-use std::vec::Vec;
-use crate::huffman::{
-    HuffmanEncoder, FIXED_LITLEN_LENGTHS, FIXED_DIST_LENGTHS,
-    LENGTH_BASE, LENGTH_EXTRA, DIST_BASE, DIST_EXTRA,
-    LITLEN_CODES, DIST_CODES, MAX_BITS,
-    build_code_lengths,
-};
 use crate::adler32::Adler32;
-use crate::error::{ZlibError, ZlibResult};
 use crate::c_int;
+use crate::error::{ZlibError, ZlibResult};
+use crate::huffman::{
+    build_code_lengths, HuffmanEncoder, DIST_BASE, DIST_CODES, DIST_EXTRA, FIXED_DIST_LENGTHS,
+    FIXED_LITLEN_LENGTHS, LENGTH_BASE, LENGTH_EXTRA, LITLEN_CODES, MAX_BITS,
+};
+use std::vec::Vec;
 
 /// Maximum window size (32KB)
 pub const MAX_WINDOW_SIZE: usize = 32768;
@@ -44,34 +42,34 @@ pub struct Deflater {
     mem_level: i32,
     /// Compression strategy
     strategy: i32,
-    
+
     /// Sliding window buffer
     window: Vec<u8>,
     /// Current position in window
     window_pos: usize,
     /// Bytes in window
     window_len: usize,
-    
+
     /// Hash table for LZ77
     hash_table: Vec<u16>,
     /// Hash chain links
     hash_chain: Vec<u16>,
-    
+
     /// Output buffer
     output: Vec<u8>,
     /// Bit buffer for output
     bit_buffer: u32,
     /// Bits in bit buffer
     bit_count: u8,
-    
+
     /// Pending literal/length/distance tokens
     pending: Vec<Token>,
-    
+
     /// Whether we've written the header
     header_written: bool,
     /// Whether compression is finished
     finished: bool,
-    
+
     /// Checksum calculator
     checksum: Adler32,
 }
@@ -91,7 +89,7 @@ impl Deflater {
         let actual_level = if level == -1 { 6 } else { level.clamp(0, 9) };
         let actual_wbits = window_bits.clamp(8, 15);
         let window_size = 1 << actual_wbits;
-        
+
         Self {
             level: actual_level,
             window_bits: actual_wbits,
@@ -135,16 +133,16 @@ impl Deflater {
     pub fn compress(&mut self, input: &[u8], finish: bool) -> ZlibResult<Vec<u8>> {
         // Update checksum
         self.checksum.update(input);
-        
+
         // Process input through LZ77
         self.lz77_compress(input);
-        
+
         // If finishing, flush pending tokens and write end marker
         if finish {
             self.flush_block(true)?;
             self.finished = true;
         }
-        
+
         Ok(core::mem::take(&mut self.output))
     }
 
@@ -159,13 +157,14 @@ impl Deflater {
         }
 
         let mut pos = 0;
-        
+
         while pos < input.len() {
             // Try to find a match
             if pos + MIN_MATCH <= input.len() {
                 if let Some((length, distance)) = self.find_match(input, pos) {
-                    self.pending.push(Token::Match(length as u16, distance as u16));
-                    
+                    self.pending
+                        .push(Token::Match(length as u16, distance as u16));
+
                     // Update hash for matched bytes
                     for i in 0..length {
                         if pos + i + MIN_MATCH <= input.len() {
@@ -176,12 +175,12 @@ impl Deflater {
                     continue;
                 }
             }
-            
+
             // No match - emit literal
             self.pending.push(Token::Literal(input[pos]));
             self.update_hash(input, pos);
             pos += 1;
-            
+
             // Flush block if pending is too large
             if self.pending.len() >= 16384 {
                 let _ = self.flush_block(false);
@@ -194,9 +193,8 @@ impl Deflater {
         if pos + 2 >= data.len() {
             return 0;
         }
-        let h = (data[pos] as usize) << 10
-            ^ (data[pos + 1] as usize) << 5
-            ^ (data[pos + 2] as usize);
+        let h =
+            (data[pos] as usize) << 10 ^ (data[pos + 1] as usize) << 5 ^ (data[pos + 2] as usize);
         h & HASH_MASK
     }
 
@@ -205,15 +203,15 @@ impl Deflater {
         if pos + MIN_MATCH > data.len() {
             return;
         }
-        
+
         let h = self.hash(data, pos);
         let window_size = 1 << self.window_bits;
         let win_pos = self.window_pos & (window_size - 1);
-        
+
         // Store current position's previous match
         self.hash_chain[win_pos] = self.hash_table[h];
         self.hash_table[h] = win_pos as u16;
-        
+
         // Copy byte to window
         if pos < data.len() {
             self.window[self.window_pos] = data[pos];
@@ -229,14 +227,14 @@ impl Deflater {
         if pos + MIN_MATCH > data.len() {
             return None;
         }
-        
+
         let h = self.hash(data, pos);
         let window_size = 1 << self.window_bits;
-        
+
         let mut match_pos = self.hash_table[h] as usize;
         let mut best_len = MIN_MATCH - 1;
         let mut best_dist = 0;
-        
+
         let max_chain = match self.level {
             1 => 4,
             2 => 8,
@@ -249,24 +247,24 @@ impl Deflater {
             9 => 4096,
             _ => 32,
         };
-        
+
         let mut chain_len = 0;
-        
+
         while match_pos != 0 && chain_len < max_chain {
             let dist = if self.window_pos > match_pos {
                 self.window_pos - match_pos
             } else {
                 window_size * 2 - match_pos + self.window_pos
             };
-            
+
             if dist > window_size || dist == 0 {
                 break;
             }
-            
+
             // Check for match
             let mut len = 0;
             let max_len = core::cmp::min(MAX_MATCH, data.len() - pos);
-            
+
             while len < max_len {
                 let win_idx = (match_pos + len) & (window_size * 2 - 1);
                 if self.window[win_idx] != data[pos + len] {
@@ -274,21 +272,21 @@ impl Deflater {
                 }
                 len += 1;
             }
-            
+
             if len > best_len {
                 best_len = len;
                 best_dist = dist;
-                
+
                 if len >= MAX_MATCH {
                     break;
                 }
             }
-            
+
             // Follow chain
             match_pos = self.hash_chain[match_pos & (window_size - 1)] as usize;
             chain_len += 1;
         }
-        
+
         if best_len >= MIN_MATCH {
             Some((best_len, best_dist))
         } else {
@@ -305,12 +303,12 @@ impl Deflater {
         // Write block header
         // BFINAL (1 bit) + BTYPE (2 bits)
         let bfinal = if final_block { 1u32 } else { 0u32 };
-        
+
         if self.level == 0 {
             // Stored block (BTYPE = 00)
             self.write_bits(bfinal | (0 << 1), 3);
             self.flush_bits_to_byte();
-            
+
             // Write stored block
             self.write_stored_block()?;
         } else if self.should_use_fixed() {
@@ -324,7 +322,7 @@ impl Deflater {
         }
 
         self.pending.clear();
-        
+
         Ok(())
     }
 
@@ -338,7 +336,7 @@ impl Deflater {
     fn write_bits(&mut self, value: u32, count: u8) {
         self.bit_buffer |= value << self.bit_count;
         self.bit_count += count;
-        
+
         while self.bit_count >= 8 {
             self.output.push(self.bit_buffer as u8);
             self.bit_buffer >>= 8;
@@ -358,7 +356,9 @@ impl Deflater {
     /// Write a stored (uncompressed) block
     fn write_stored_block(&mut self) -> ZlibResult<()> {
         // Collect literals
-        let literals: Vec<u8> = self.pending.iter()
+        let literals: Vec<u8> = self
+            .pending
+            .iter()
             .filter_map(|t| match t {
                 Token::Literal(b) => Some(*b),
                 Token::Match(_, _) => None,
@@ -367,13 +367,13 @@ impl Deflater {
 
         let len = literals.len() as u16;
         let nlen = !len;
-        
+
         self.output.push(len as u8);
         self.output.push((len >> 8) as u8);
         self.output.push(nlen as u8);
         self.output.push((nlen >> 8) as u8);
         self.output.extend_from_slice(&literals);
-        
+
         Ok(())
     }
 
@@ -381,10 +381,10 @@ impl Deflater {
     fn write_fixed_block(&mut self) -> ZlibResult<()> {
         let litlen_enc = HuffmanEncoder::from_lengths(&FIXED_LITLEN_LENGTHS);
         let dist_enc = HuffmanEncoder::from_lengths(&FIXED_DIST_LENGTHS);
-        
+
         // Take ownership of pending to avoid borrow conflict
         let tokens = core::mem::take(&mut self.pending);
-        
+
         for token in tokens.iter() {
             match *token {
                 Token::Literal(byte) => {
@@ -399,7 +399,7 @@ impl Deflater {
                     if len_extra_bits > 0 {
                         self.write_bits(len_extra as u32, len_extra_bits);
                     }
-                    
+
                     // Encode distance
                     let (dist_sym, dist_extra, dist_extra_bits) = encode_distance(distance);
                     let (code, bits) = dist_enc.get(dist_sym as usize);
@@ -410,11 +410,11 @@ impl Deflater {
                 }
             }
         }
-        
+
         // End of block marker (symbol 256)
         let (code, bits) = litlen_enc.get(256);
         self.write_bits_reversed(code, bits);
-        
+
         Ok(())
     }
 
@@ -422,11 +422,11 @@ impl Deflater {
     fn write_dynamic_block(&mut self) -> ZlibResult<()> {
         // Take ownership of pending to avoid borrow conflict
         let tokens = core::mem::take(&mut self.pending);
-        
+
         // Count symbol frequencies
         let mut litlen_freqs = [0u32; LITLEN_CODES];
         let mut dist_freqs = [0u32; DIST_CODES];
-        
+
         for token in tokens.iter() {
             match *token {
                 Token::Literal(byte) => {
@@ -435,59 +435,75 @@ impl Deflater {
                 Token::Match(length, distance) => {
                     let (len_sym, _, _) = encode_length(length);
                     litlen_freqs[len_sym as usize] += 1;
-                    
+
                     let (dist_sym, _, _) = encode_distance(distance);
                     dist_freqs[dist_sym as usize] += 1;
                 }
             }
         }
-        
+
         // End of block marker
         litlen_freqs[256] = 1;
-        
+
         // Build Huffman codes
         let litlen_lengths = build_code_lengths(&litlen_freqs, MAX_BITS as u8);
         let dist_lengths = build_code_lengths(&dist_freqs, MAX_BITS as u8);
-        
+
         let litlen_enc = HuffmanEncoder::from_lengths(&litlen_lengths);
         let dist_enc = HuffmanEncoder::from_lengths(&dist_lengths);
-        
+
         // Find HLIT and HDIST
-        let hlit = litlen_lengths.iter().rposition(|&l| l > 0).unwrap_or(256).max(256) - 256;
-        let hdist = dist_lengths.iter().rposition(|&l| l > 0).unwrap_or(0).max(0);
-        
+        let hlit = litlen_lengths
+            .iter()
+            .rposition(|&l| l > 0)
+            .unwrap_or(256)
+            .max(256)
+            - 256;
+        let hdist = dist_lengths
+            .iter()
+            .rposition(|&l| l > 0)
+            .unwrap_or(0)
+            .max(0);
+
         // Encode the code lengths using run-length encoding
-        let combined: Vec<u8> = litlen_lengths[..257 + hlit].iter()
+        let combined: Vec<u8> = litlen_lengths[..257 + hlit]
+            .iter()
             .chain(dist_lengths[..hdist + 1].iter())
             .copied()
             .collect();
-        
+
         let (codelen_symbols, codelen_freqs) = rle_encode_lengths(&combined);
         let codelen_lengths = build_code_lengths(&codelen_freqs, 7);
         let codelen_enc = HuffmanEncoder::from_lengths(&codelen_lengths);
-        
+
         // Find HCLEN
-        let hclen = crate::huffman::CODELEN_ORDER.iter()
+        let hclen = crate::huffman::CODELEN_ORDER
+            .iter()
             .rposition(|&i| i < codelen_lengths.len() && codelen_lengths[i] > 0)
             .unwrap_or(3)
-            .max(3) - 3;
-        
+            .max(3)
+            - 3;
+
         // Write HLIT, HDIST, HCLEN
         self.write_bits(hlit as u32, 5);
         self.write_bits(hdist as u32, 5);
         self.write_bits(hclen as u32, 4);
-        
+
         // Write code length code lengths
         for &i in crate::huffman::CODELEN_ORDER.iter().take(hclen + 4) {
-            let len = if i < codelen_lengths.len() { codelen_lengths[i] } else { 0 };
+            let len = if i < codelen_lengths.len() {
+                codelen_lengths[i]
+            } else {
+                0
+            };
             self.write_bits(len as u32, 3);
         }
-        
+
         // Write encoded code lengths
         for &sym in codelen_symbols.iter() {
             let (code, bits) = codelen_enc.get((sym & 0xFF) as usize);
             self.write_bits_reversed(code, bits);
-            
+
             // Extra bits
             match sym & 0xFF {
                 16 => self.write_bits(((sym >> 8) - 3) as u32, 2),
@@ -496,7 +512,7 @@ impl Deflater {
                 _ => {}
             }
         }
-        
+
         // Write compressed data
         for token in tokens.iter() {
             match *token {
@@ -511,7 +527,7 @@ impl Deflater {
                     if len_extra_bits > 0 {
                         self.write_bits(len_extra as u32, len_extra_bits);
                     }
-                    
+
                     let (dist_sym, dist_extra, dist_extra_bits) = encode_distance(distance);
                     let (code, bits) = dist_enc.get(dist_sym as usize);
                     self.write_bits_reversed(code, bits);
@@ -521,11 +537,11 @@ impl Deflater {
                 }
             }
         }
-        
+
         // End of block marker
         let (code, bits) = litlen_enc.get(256);
         self.write_bits_reversed(code, bits);
-        
+
         Ok(())
     }
 
@@ -560,7 +576,7 @@ fn encode_length(length: u16) -> (u16, u16, u8) {
         } else {
             259
         };
-        
+
         if len >= base as usize && len < next_base {
             let extra_bits = LENGTH_EXTRA[i];
             let extra = (len - base as usize) as u16;
@@ -580,7 +596,7 @@ fn encode_distance(distance: u16) -> (u16, u16, u8) {
         } else {
             32769
         };
-        
+
         if dist >= base as usize && dist < next_base {
             let extra_bits = DIST_EXTRA[i];
             let extra = (dist - base as usize) as u16;
@@ -595,18 +611,18 @@ fn encode_distance(distance: u16) -> (u16, u16, u8) {
 fn rle_encode_lengths(lengths: &[u8]) -> (Vec<u16>, [u32; 19]) {
     let mut symbols = Vec::new();
     let mut freqs = [0u32; 19];
-    
+
     let mut i = 0;
     while i < lengths.len() {
         let len = lengths[i];
-        
+
         if len == 0 {
             // Count consecutive zeros
             let mut count = 1;
             while i + count < lengths.len() && lengths[i + count] == 0 && count < 138 {
                 count += 1;
             }
-            
+
             if count >= 11 {
                 // Symbol 18: 11-138 zeros
                 symbols.push(18 | ((count as u16) << 8));
@@ -628,13 +644,13 @@ fn rle_encode_lengths(lengths: &[u8]) -> (Vec<u16>, [u32; 19]) {
             symbols.push(len as u16);
             freqs[len as usize] += 1;
             i += 1;
-            
+
             // Check for repetition
             let mut count = 0;
             while i + count < lengths.len() && lengths[i + count] == len && count < 6 {
                 count += 1;
             }
-            
+
             if count >= 3 {
                 // Symbol 16: repeat previous 3-6 times
                 symbols.push(16 | ((count as u16 + 3) << 8));
@@ -643,47 +659,47 @@ fn rle_encode_lengths(lengths: &[u8]) -> (Vec<u16>, [u32; 19]) {
             }
         }
     }
-    
+
     (symbols, freqs)
 }
 
 /// Compress data to zlib format in one call
 pub fn compress_to_zlib(input: &[u8], output: &mut [u8], level: c_int) -> ZlibResult<usize> {
     let actual_level = if level == -1 { 6 } else { level.clamp(0, 9) };
-    
+
     if output.len() < compress_bound(input.len()) {
         return Err(ZlibError::BufferError);
     }
-    
+
     let mut pos = 0;
-    
+
     // Write zlib header
     let cmf = 0x78; // CM=8 (deflate), CINFO=7 (32K window)
     let flg = match actual_level {
-        0..=1 => 0x01,  // FLEVEL=0 (fastest)
-        2..=5 => 0x5E,  // FLEVEL=1 (fast)
-        6 => 0x9C,      // FLEVEL=2 (default)
-        _ => 0xDA,      // FLEVEL=3 (max compression)
+        0..=1 => 0x01, // FLEVEL=0 (fastest)
+        2..=5 => 0x5E, // FLEVEL=1 (fast)
+        6 => 0x9C,     // FLEVEL=2 (default)
+        _ => 0xDA,     // FLEVEL=3 (max compression)
     };
     // Adjust FLG so (CMF*256 + FLG) % 31 == 0
     let check = ((cmf as u16) << 8) | (flg as u16);
     let flg = flg + (31 - (check % 31)) as u8;
-    
+
     output[pos] = cmf;
     output[pos + 1] = flg;
     pos += 2;
-    
+
     // Compress data
     let mut deflater = Deflater::new(actual_level, 15, 8, 0);
     let compressed = deflater.compress(input, true)?;
-    
+
     if pos + compressed.len() + 4 > output.len() {
         return Err(ZlibError::BufferError);
     }
-    
+
     output[pos..pos + compressed.len()].copy_from_slice(&compressed);
     pos += compressed.len();
-    
+
     // Write Adler-32 checksum (big-endian)
     let checksum = deflater.checksum();
     output[pos] = (checksum >> 24) as u8;
@@ -691,6 +707,6 @@ pub fn compress_to_zlib(input: &[u8], output: &mut [u8], level: c_int) -> ZlibRe
     output[pos + 2] = (checksum >> 8) as u8;
     output[pos + 3] = checksum as u8;
     pos += 4;
-    
+
     Ok(pos)
 }

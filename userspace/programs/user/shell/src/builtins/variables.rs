@@ -7,10 +7,12 @@ use crate::state::ShellState;
 
 /// Register variable builtins
 pub fn register(registry: &mut BuiltinRegistry) {
-    registry.register("export", BuiltinDesc::new(
-        builtin_export,
-        "为子进程设置导出属性",
-        "标记每个 NAME 以便在后续命令的环境中自动导出。\n\
+    registry.register(
+        "export",
+        BuiltinDesc::new(
+            builtin_export,
+            "为子进程设置导出属性",
+            "标记每个 NAME 以便在后续命令的环境中自动导出。\n\
          如果提供了 VALUE，则在导出前赋值。\n\
          \n\
          选项:\n\
@@ -21,14 +23,17 @@ pub fn register(registry: &mut BuiltinRegistry) {
          参数 `--' 禁用进一步的选项处理。\n\
          \n\
          如果 NAME 不是有效的 shell 变量名则返回失败，否则返回成功。",
-        "export [-fn] [名称[=值] ...] 或 export -p",
-        true,
-    ));
+            "export [-fn] [名称[=值] ...] 或 export -p",
+            true,
+        ),
+    );
 
-    registry.register("unset", BuiltinDesc::new(
-        builtin_unset,
-        "取消变量或函数的定义",
-        "对于每个 NAME，移除对应的变量或函数。\n\
+    registry.register(
+        "unset",
+        BuiltinDesc::new(
+            builtin_unset,
+            "取消变量或函数的定义",
+            "对于每个 NAME，移除对应的变量或函数。\n\
          \n\
          选项:\n\
            -f    将每个 NAME 视为 shell 函数\n\
@@ -40,14 +45,17 @@ pub fn register(registry: &mut BuiltinRegistry) {
          某些变量不能被取消；参见 `readonly'。\n\
          \n\
          如果 NAME 是只读的则返回失败，否则返回成功。",
-        "unset [-f] [-v] [-n] [名称 ...]",
-        true,
-    ));
+            "unset [-f] [-v] [-n] [名称 ...]",
+            true,
+        ),
+    );
 
-    registry.register("set", BuiltinDesc::new(
-        builtin_set,
-        "设置或取消 shell 选项和位置参数的值",
-        "改变 shell 选项和位置参数的值，或显示 shell 变量的名称和值。\n\
+    registry.register(
+        "set",
+        BuiltinDesc::new(
+            builtin_set,
+            "设置或取消 shell 选项和位置参数的值",
+            "改变 shell 选项和位置参数的值，或显示 shell 变量的名称和值。\n\
          \n\
          选项:\n\
            -a    标记已修改或创建的变量以便导出\n\
@@ -74,14 +82,17 @@ pub fn register(registry: &mut BuiltinRegistry) {
          没有选项名来显示当前选项设置。\n\
          \n\
          返回成功，除非给出无效选项。",
-        "set [-abefhkmnptuvxBCEHPT] [-o 选项名] [--] [-] [参数 ...]",
-        true,
-    ));
+            "set [-abefhkmnptuvxBCEHPT] [-o 选项名] [--] [-] [参数 ...]",
+            true,
+        ),
+    );
 
-    registry.register("declare", BuiltinDesc::new(
-        builtin_declare,
-        "设置变量的值和属性",
-        "声明变量和给它们设置属性。如果没有给出 NAME，\n\
+    registry.register(
+        "declare",
+        BuiltinDesc::new(
+            builtin_declare,
+            "设置变量的值和属性",
+            "声明变量和给它们设置属性。如果没有给出 NAME，\n\
          显示所有变量的属性和值。\n\
          \n\
          选项:\n\
@@ -99,23 +110,29 @@ pub fn register(registry: &mut BuiltinRegistry) {
          使用 `+' 而非 `-' 可关闭给定属性。\n\
          \n\
          返回成功，除非给出无效选项或出现变量赋值错误。",
-        "declare [-aAfFgiIlnrtux] [名称[=值] ...]",
-        true,
-    ));
+            "declare [-aAfFgiIlnrtux] [名称[=值] ...]",
+            true,
+        ),
+    );
 
     // typeset is an alias for declare
-    registry.register("typeset", BuiltinDesc::new(
-        builtin_declare,
-        "设置变量的值和属性",
-        "与 `declare' 等同。参见 `help declare'。",
-        "typeset [-aAfFgiIlnrtux] 名称[=值] ...",
-        true,
-    ));
+    registry.register(
+        "typeset",
+        BuiltinDesc::new(
+            builtin_declare,
+            "设置变量的值和属性",
+            "与 `declare' 等同。参见 `help declare'。",
+            "typeset [-aAfFgiIlnrtux] 名称[=值] ...",
+            true,
+        ),
+    );
 
-    registry.register("readonly", BuiltinDesc::new(
-        builtin_readonly,
-        "标记变量或函数为只读",
-        "标记每个 NAME 为只读；NAME 的值不能被后续赋值改变。\n\
+    registry.register(
+        "readonly",
+        BuiltinDesc::new(
+            builtin_readonly,
+            "标记变量或函数为只读",
+            "标记每个 NAME 为只读；NAME 的值不能被后续赋值改变。\n\
          如果提供了 VALUE，则在标记只读前赋值。\n\
          \n\
          选项:\n\
@@ -127,14 +144,17 @@ pub fn register(registry: &mut BuiltinRegistry) {
          参数 `--' 禁用进一步的选项处理。\n\
          \n\
          返回成功，除非给出无效选项或 NAME 无效。",
-        "readonly [-aAf] [名称[=值] ...] 或 readonly -p",
-        true,
-    ));
+            "readonly [-aAf] [名称[=值] ...] 或 readonly -p",
+            true,
+        ),
+    );
 
-    registry.register("alias", BuiltinDesc::new(
-        builtin_alias,
-        "定义或显示别名",
-        "alias 不带参数或带 -p 选项在标准输出上以\n\
+    registry.register(
+        "alias",
+        BuiltinDesc::new(
+            builtin_alias,
+            "定义或显示别名",
+            "alias 不带参数或带 -p 选项在标准输出上以\n\
          alias NAME=VALUE 的格式打印别名列表，使其可以重用作输入。\n\
          \n\
          否则，定义一个别名，使 VALUE 成为 NAME 的值。\n\
@@ -145,27 +165,33 @@ pub fn register(registry: &mut BuiltinRegistry) {
          \n\
          如果提供了 NAME 且未提供 VALUE，则打印该别名的值。\n\
          除非给出的 NAME 没有定义别名，否则返回成功。",
-        "alias [-p] [名称[=值] ... ]",
-        true,
-    ));
+            "alias [-p] [名称[=值] ... ]",
+            true,
+        ),
+    );
 
-    registry.register("unalias", BuiltinDesc::new(
-        builtin_unalias,
-        "移除别名定义",
-        "从定义的别名列表中移除每个 NAME。\n\
+    registry.register(
+        "unalias",
+        BuiltinDesc::new(
+            builtin_unalias,
+            "移除别名定义",
+            "从定义的别名列表中移除每个 NAME。\n\
          \n\
          选项:\n\
            -a    移除所有别名定义\n\
          \n\
          返回成功，除非 NAME 未定义为别名。",
-        "unalias [-a] 名称 [名称 ...]",
-        true,
-    ));
+            "unalias [-a] 名称 [名称 ...]",
+            true,
+        ),
+    );
 
-    registry.register("local", BuiltinDesc::new(
-        builtin_local,
-        "定义局部变量",
-        "创建局部变量。\n\
+    registry.register(
+        "local",
+        BuiltinDesc::new(
+            builtin_local,
+            "定义局部变量",
+            "创建局部变量。\n\
          \n\
          创建名为 NAME 的局部变量，并赋值为 VALUE。\n\
          OPTION 可以是 `declare' 接受的任何选项。\n\
@@ -173,9 +199,10 @@ pub fn register(registry: &mut BuiltinRegistry) {
          局部变量只能在函数内使用；使 NAME 仅在该函数及其子函数内可见。\n\
          \n\
          返回成功，除非在函数外使用 local 或给出无效选项。",
-        "local [选项] 名称[=值] ...",
-        true,
-    ));
+            "local [选项] 名称[=值] ...",
+            true,
+        ),
+    );
 }
 
 /// export builtin
@@ -248,7 +275,11 @@ fn builtin_unset(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
         }
     }
 
-    if success { Ok(0) } else { Ok(1) }
+    if success {
+        Ok(0)
+    } else {
+        Ok(1)
+    }
 }
 
 /// set builtin
@@ -305,15 +336,42 @@ fn builtin_set(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
                         }
                     } else {
                         // Show options
-                        println!("allexport\t{}", if state.options.allexport { "on" } else { "off" });
-                        println!("errexit\t\t{}", if state.options.errexit { "on" } else { "off" });
-                        println!("hashall\t\t{}", if state.options.hashall { "on" } else { "off" });
-                        println!("ignoreeof\t{}", if state.options.ignoreeof { "on" } else { "off" });
-                        println!("noglob\t\t{}", if state.options.noglob { "on" } else { "off" });
-                        println!("notify\t\t{}", if state.options.notify { "on" } else { "off" });
-                        println!("nounset\t\t{}", if state.options.nounset { "on" } else { "off" });
-                        println!("verbose\t\t{}", if state.options.verbose { "on" } else { "off" });
-                        println!("xtrace\t\t{}", if state.options.xtrace { "on" } else { "off" });
+                        println!(
+                            "allexport\t{}",
+                            if state.options.allexport { "on" } else { "off" }
+                        );
+                        println!(
+                            "errexit\t\t{}",
+                            if state.options.errexit { "on" } else { "off" }
+                        );
+                        println!(
+                            "hashall\t\t{}",
+                            if state.options.hashall { "on" } else { "off" }
+                        );
+                        println!(
+                            "ignoreeof\t{}",
+                            if state.options.ignoreeof { "on" } else { "off" }
+                        );
+                        println!(
+                            "noglob\t\t{}",
+                            if state.options.noglob { "on" } else { "off" }
+                        );
+                        println!(
+                            "notify\t\t{}",
+                            if state.options.notify { "on" } else { "off" }
+                        );
+                        println!(
+                            "nounset\t\t{}",
+                            if state.options.nounset { "on" } else { "off" }
+                        );
+                        println!(
+                            "verbose\t\t{}",
+                            if state.options.verbose { "on" } else { "off" }
+                        );
+                        println!(
+                            "xtrace\t\t{}",
+                            if state.options.xtrace { "on" } else { "off" }
+                        );
                     }
                 }
                 _ => {
@@ -341,7 +399,11 @@ fn builtin_declare(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
             let enable = arg.starts_with('-');
             for flag in arg[1..].chars() {
                 match flag {
-                    'r' => if enable { make_readonly = true },
+                    'r' => {
+                        if enable {
+                            make_readonly = true
+                        }
+                    }
                     'x' => make_export = enable,
                     'i' => make_integer = enable,
                     'l' => make_lowercase = enable,
@@ -365,12 +427,22 @@ fn builtin_declare(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
         let vars = state.all_vars();
         for (name, var) in vars {
             let mut attrs = String::new();
-            if var.attrs.exported { attrs.push('x'); }
-            if var.attrs.readonly { attrs.push('r'); }
-            if var.attrs.integer { attrs.push('i'); }
-            if var.attrs.lowercase { attrs.push('l'); }
-            if var.attrs.uppercase { attrs.push('u'); }
-            
+            if var.attrs.exported {
+                attrs.push('x');
+            }
+            if var.attrs.readonly {
+                attrs.push('r');
+            }
+            if var.attrs.integer {
+                attrs.push('i');
+            }
+            if var.attrs.lowercase {
+                attrs.push('l');
+            }
+            if var.attrs.uppercase {
+                attrs.push('u');
+            }
+
             if attrs.is_empty() {
                 println!("{}={}", name, var.value);
             } else {
@@ -395,9 +467,13 @@ fn builtin_declare(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
 
         // Apply attributes
         if let Some(var) = state.variables_mut().get_mut(name) {
-            if make_export { var.attrs.exported = true; }
-            if make_integer { var.attrs.integer = true; }
-            if make_lowercase { 
+            if make_export {
+                var.attrs.exported = true;
+            }
+            if make_integer {
+                var.attrs.integer = true;
+            }
+            if make_lowercase {
                 var.attrs.lowercase = true;
                 var.attrs.uppercase = false;
             }
@@ -498,7 +574,11 @@ fn builtin_alias(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
         }
     }
 
-    if success { Ok(0) } else { Ok(1) }
+    if success {
+        Ok(0)
+    } else {
+        Ok(1)
+    }
 }
 
 /// unalias builtin
@@ -533,7 +613,11 @@ fn builtin_unalias(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
         }
     }
 
-    if success { Ok(0) } else { Ok(1) }
+    if success {
+        Ok(0)
+    } else {
+        Ok(1)
+    }
 }
 
 /// local builtin

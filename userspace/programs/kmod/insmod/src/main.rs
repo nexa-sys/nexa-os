@@ -40,7 +40,12 @@ mod kmod_syscalls {
     /// len: length of module binary
     /// param_values: null-terminated parameter string
     /// flags: loading flags (0x1 = FORCE_LOAD)
-    pub fn init_module(module_image: *const u8, len: usize, param_values: *const u8, flags: u32) -> i32 {
+    pub fn init_module(
+        module_image: *const u8,
+        len: usize,
+        param_values: *const u8,
+        flags: u32,
+    ) -> i32 {
         let ret: u64;
         unsafe {
             asm!(
@@ -55,7 +60,7 @@ mod kmod_syscalls {
                 options(nostack, preserves_flags)
             );
         }
-        
+
         if ret == u64::MAX || ret > i32::MAX as u64 {
             -1
         } else {
@@ -111,7 +116,7 @@ fn main() {
     let mut params: Vec<String> = Vec::new();
     let mut force = false;
     let mut verbose = false;
-    
+
     // Parse arguments
     let mut i = 1;
     while i < args.len() {
@@ -143,7 +148,7 @@ fn main() {
         }
         i += 1;
     }
-    
+
     let module_path = match module_path {
         Some(p) => p,
         None => {
@@ -152,12 +157,12 @@ fn main() {
             process::exit(1);
         }
     };
-    
+
     // Read module file
     if verbose {
         println!("insmod: loading module from {}", module_path);
     }
-    
+
     let module_data = match fs::read(&module_path) {
         Ok(data) => data,
         Err(e) => {
@@ -165,26 +170,26 @@ fn main() {
             process::exit(1);
         }
     };
-    
+
     if verbose {
         println!("insmod: module size: {} bytes", module_data.len());
     }
-    
+
     // Build parameter string
     let param_str = if params.is_empty() {
         String::new()
     } else {
         params.join(" ")
     };
-    
+
     if verbose && !param_str.is_empty() {
         println!("insmod: parameters: {}", param_str);
     }
-    
+
     // Prepare null-terminated parameter string
     let mut param_bytes = param_str.into_bytes();
     param_bytes.push(0);
-    
+
     // Set flags
     let flags = if force {
         if verbose {
@@ -194,7 +199,7 @@ fn main() {
     } else {
         0
     };
-    
+
     // Load the module
     let ret = init_module(
         module_data.as_ptr(),
@@ -202,12 +207,16 @@ fn main() {
         param_bytes.as_ptr(),
         flags,
     );
-    
+
     if ret < 0 {
         let errno = get_errno();
-        eprintln!("insmod: failed to insert module '{}': {} (errno={})", 
-                  module_path, errno_str(errno), errno);
-        
+        eprintln!(
+            "insmod: failed to insert module '{}': {} (errno={})",
+            module_path,
+            errno_str(errno),
+            errno
+        );
+
         // Provide additional hints
         match errno {
             129 => {
@@ -228,14 +237,14 @@ fn main() {
         }
         process::exit(1);
     }
-    
+
     // Extract module name from path for display
     let module_name = module_path
         .rsplit('/')
         .next()
         .unwrap_or(&module_path)
         .trim_end_matches(".nkm");
-    
+
     if verbose {
         println!("insmod: module '{}' loaded successfully", module_name);
     }

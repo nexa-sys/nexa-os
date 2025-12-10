@@ -31,21 +31,21 @@ fn print_usage() {
 fn do_poweroff() -> i32 {
     println!("System is powering off...");
     let _ = io::stdout().flush();
-    
+
     let ret = unsafe { libc::syscall(SYS_REBOOT, LINUX_REBOOT_CMD_POWER_OFF) };
-    
+
     if ret == -1 {
         eprintln!("poweroff: Operation not permitted (are you root?)");
         return 1;
     }
-    
+
     // Should never reach here
     0
 }
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    
+
     for arg in args.iter().skip(1) {
         match arg.as_str() {
             "-h" | "--help" => {
@@ -65,6 +65,6 @@ fn main() {
             }
         }
     }
-    
+
     process::exit(do_poweroff());
 }

@@ -1,5 +1,4 @@
 /// HTTP request building utilities
-
 use crate::args::{Args, HttpMethod};
 use crate::url::ParsedUrl;
 
@@ -29,10 +28,10 @@ impl Http1RequestBuilder {
     /// Create a request builder from Args and ParsedUrl
     pub fn from_args(args: &Args, url: &ParsedUrl) -> Self {
         let mut builder = Self::new(args.method, url);
-        
+
         // Enable compression if requested
         builder.compressed = args.compressed;
-        
+
         // Add custom headers
         for (key, value) in &args.headers {
             builder = builder.header(key, value);
@@ -61,7 +60,7 @@ impl Http1RequestBuilder {
     /// Build the HTTP/1.1 request string
     pub fn build(self) -> Vec<u8> {
         let mut request = String::new();
-        
+
         // Request line
         request.push_str(self.method.as_str());
         request.push(' ');
@@ -104,7 +103,7 @@ impl Http1RequestBuilder {
         if !has_accept {
             request.push_str("Accept: */*\r\n");
         }
-        
+
         // Add Accept-Encoding for compression if requested
         if self.compressed && !has_accept_encoding {
             request.push_str("Accept-Encoding: gzip, deflate\r\n");

@@ -307,7 +307,7 @@ fn mount_dev() -> Result<(), &'static str> {
     crate::fs::add_file_bytes("/dev/null", b"", false);
     crate::fs::add_file_bytes("/dev/zero", b"", false);
     crate::fs::add_file_bytes("/dev/console", b"", false);
-    
+
     // Create random device nodes
     crate::fs::add_file_bytes("/dev/random", b"", false);
     crate::fs::add_file_bytes("/dev/urandom", b"", false);
@@ -421,21 +421,28 @@ fn scan_for_block_device(device_name: &str) -> Result<&'static [u8], &'static st
     // Try to use real block device via virtio-blk driver
     if crate::drivers::block::has_driver() {
         crate::kinfo!("Block driver available, probing for devices...");
-        
+
         // Get boot block device info and probe
         // Find a VirtIO block device (vendor=0x1af4, device=0x1001 or 0x1042)
         if let Some(block_devs) = bootinfo::block_devices() {
             for dev_info in block_devs {
-                crate::kinfo!("Checking block device at PCI {:x}:{:02x}:{:02x}.{}",
-                    dev_info.pci_segment, dev_info.pci_bus,
-                    dev_info.pci_device, dev_info.pci_function);
-                
+                crate::kinfo!(
+                    "Checking block device at PCI {:x}:{:02x}:{:02x}.{}",
+                    dev_info.pci_segment,
+                    dev_info.pci_bus,
+                    dev_info.pci_device,
+                    dev_info.pci_function
+                );
+
                 // Skip if block_size is not 512 (likely a CD-ROM or other device)
                 if dev_info.block_size != 512 {
-                    crate::kdebug!("  Skipping: block_size={} (expected 512)", dev_info.block_size);
+                    crate::kdebug!(
+                        "  Skipping: block_size={} (expected 512)",
+                        dev_info.block_size
+                    );
                     continue;
                 }
-                
+
                 // Try to get PCI device info to get BAR address
                 let pci_info = bootinfo::pci_device_by_location(
                     dev_info.pci_segment,
@@ -443,33 +450,41 @@ fn scan_for_block_device(device_name: &str) -> Result<&'static [u8], &'static st
                     dev_info.pci_device,
                     dev_info.pci_function,
                 );
-                
+
                 let Some(pci) = pci_info else {
                     crate::kwarn!("  PCI device info not found, skipping");
                     continue;
                 };
-                
-                crate::kinfo!("  PCI device: vendor=0x{:04x}, device=0x{:04x}",
-                    pci.vendor_id, pci.device_id);
-                
+
+                crate::kinfo!(
+                    "  PCI device: vendor=0x{:04x}, device=0x{:04x}",
+                    pci.vendor_id,
+                    pci.device_id
+                );
+
                 // Check if this is a VirtIO device (vendor 0x1af4)
                 // VirtIO block device IDs: 0x1001 (legacy) or 0x1042 (modern)
-                let is_virtio_blk = pci.vendor_id == 0x1af4 
-                    && (pci.device_id == 0x1001 || pci.device_id == 0x1042);
-                
+                let is_virtio_blk =
+                    pci.vendor_id == 0x1af4 && (pci.device_id == 0x1001 || pci.device_id == 0x1042);
+
                 if !is_virtio_blk {
                     crate::kdebug!("  Skipping: not a VirtIO block device");
                     continue;
                 }
-                
+
                 // VirtIO-PCI uses BAR0 for I/O or MMIO
                 let mut mmio_base = 0u64;
                 let mut mmio_length = 0u64;
                 let mut is_io_port = false;
-                
+
                 for (i, bar) in pci.bars.iter().enumerate() {
-                    crate::kdebug!("  BAR{}: base=0x{:x}, length=0x{:x}, flags=0x{:x}",
-                        i, bar.base, bar.length, bar.bar_flags);
+                    crate::kdebug!(
+                        "  BAR{}: base=0x{:x}, length=0x{:x}, flags=0x{:x}",
+                        i,
+                        bar.base,
+                        bar.length,
+                        bar.bar_flags
+                    );
                     if bar.base != 0 && mmio_base == 0 {
                         mmio_base = bar.base;
                         mmio_length = bar.length;
@@ -477,12 +492,17 @@ fn scan_for_block_device(device_name: &str) -> Result<&'static [u8], &'static st
                         is_io_port = (bar.bar_flags & 0x1) != 0;
                     }
                 }
-                
-                crate::kinfo!("Block device PCI {}:{:02x}:{:02x}.{}, base=0x{:x} ({})",
-                    dev_info.pci_segment, dev_info.pci_bus, 
-                    dev_info.pci_device, dev_info.pci_function,
-                    mmio_base, if is_io_port { "I/O port" } else { "MMIO" });
-                
+
+                crate::kinfo!(
+                    "Block device PCI {}:{:02x}:{:02x}.{}, base=0x{:x} ({})",
+                    dev_info.pci_segment,
+                    dev_info.pci_bus,
+                    dev_info.pci_device,
+                    dev_info.pci_function,
+                    mmio_base,
+                    if is_io_port { "I/O port" } else { "MMIO" }
+                );
+
                 // Convert BlockDeviceInfo to BootBlockDevice
                 let boot_dev = crate::drivers::block::BootBlockDevice {
                     pci_segment: dev_info.pci_segment,
@@ -495,7 +515,7 @@ fn scan_for_block_device(device_name: &str) -> Result<&'static [u8], &'static st
                     total_sectors: dev_info.last_block + 1,
                     features: if is_io_port { 0x1 } else { 0 }, // Flag for I/O port mode
                 };
-                
+
                 match crate::drivers::block::probe_device(&boot_dev) {
                     Ok(index) => {
                         crate::kinfo!("Block device probed successfully (index {})", index);
@@ -586,7 +606,7 @@ pub fn pivot_to_real_root() -> Result<(), &'static str> {
         })?;
 
         crate::kinfo!("Root filesystem switched successfully");
-        
+
         // Enable write support for ext2 filesystem
         if let Err(e) = crate::fs::enable_ext2_write() {
             crate::kwarn!("Failed to enable ext2 write mode: {}", e);
@@ -678,27 +698,27 @@ fn remount_dev_after_pivot() -> Result<(), &'static str> {
 /// This enables swap and other additional block devices
 fn probe_all_block_devices() {
     crate::kinfo!("Probing all block devices...");
-    
+
     // Only proceed if virtio-blk driver is available
     if !crate::drivers::block::has_driver() {
         crate::kinfo!("No block driver available, skipping device probe");
         return;
     }
-    
+
     // Get all block devices from boot info
     let Some(block_devs) = bootinfo::block_devices() else {
         crate::kinfo!("No block devices in boot info");
         return;
     };
-    
+
     let mut probed_count = 0;
-    
+
     for dev_info in block_devs {
         // Skip non-512 byte sector devices (CD-ROMs, etc.)
         if dev_info.block_size != 512 {
             continue;
         }
-        
+
         // Get PCI info
         let Some(pci) = bootinfo::pci_device_by_location(
             dev_info.pci_segment,
@@ -708,20 +728,20 @@ fn probe_all_block_devices() {
         ) else {
             continue;
         };
-        
+
         // Check if this is a VirtIO block device
-        let is_virtio_blk = pci.vendor_id == 0x1af4 
-            && (pci.device_id == 0x1001 || pci.device_id == 0x1042);
-        
+        let is_virtio_blk =
+            pci.vendor_id == 0x1af4 && (pci.device_id == 0x1001 || pci.device_id == 0x1042);
+
         if !is_virtio_blk {
             continue;
         }
-        
+
         // Get BAR info
         let mut mmio_base = 0u64;
         let mut mmio_length = 0u64;
         let mut is_io_port = false;
-        
+
         for bar in &pci.bars {
             if bar.base != 0 && mmio_base == 0 {
                 mmio_base = bar.base;
@@ -730,11 +750,11 @@ fn probe_all_block_devices() {
                 break;
             }
         }
-        
+
         if mmio_base == 0 {
             continue;
         }
-        
+
         // Create boot device descriptor
         let boot_dev = crate::drivers::block::BootBlockDevice {
             pci_segment: dev_info.pci_segment,
@@ -747,25 +767,35 @@ fn probe_all_block_devices() {
             total_sectors: dev_info.last_block + 1,
             features: if is_io_port { 0x1 } else { 0 },
         };
-        
+
         // Try to probe the device
         match crate::drivers::block::probe_device(&boot_dev) {
             Ok(index) => {
-                crate::kinfo!("Probed block device {} at PCI {:x}:{:02x}:{:02x}.{} ({} sectors)",
-                    index, dev_info.pci_segment, dev_info.pci_bus,
-                    dev_info.pci_device, dev_info.pci_function,
-                    dev_info.last_block + 1);
+                crate::kinfo!(
+                    "Probed block device {} at PCI {:x}:{:02x}:{:02x}.{} ({} sectors)",
+                    index,
+                    dev_info.pci_segment,
+                    dev_info.pci_bus,
+                    dev_info.pci_device,
+                    dev_info.pci_function,
+                    dev_info.last_block + 1
+                );
                 probed_count += 1;
             }
             Err(e) => {
                 // Device might already be probed, that's OK
-                crate::kdebug!("Could not probe device at PCI {:x}:{:02x}:{:02x}.{}: {:?}",
-                    dev_info.pci_segment, dev_info.pci_bus,
-                    dev_info.pci_device, dev_info.pci_function, e);
+                crate::kdebug!(
+                    "Could not probe device at PCI {:x}:{:02x}:{:02x}.{}: {:?}",
+                    dev_info.pci_segment,
+                    dev_info.pci_bus,
+                    dev_info.pci_device,
+                    dev_info.pci_function,
+                    e
+                );
             }
         }
     }
-    
+
     crate::kinfo!("Probed {} additional block devices", probed_count);
 }
 
@@ -850,4 +880,3 @@ fn mount_default_tmpfs() {
 
     crate::kinfo!("Default tmpfs filesystems mounted");
 }
-

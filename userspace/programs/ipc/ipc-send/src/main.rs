@@ -81,8 +81,17 @@ fn ipc_send(channel: u32, message: &[u8]) -> Result<(), i32> {
         buffer_ptr: message.as_ptr() as u64,
         buffer_len: message.len() as u64,
     };
-    let ret = syscall3(SYS_IPC_SEND, &request as *const IpcTransferRequest as u64, 0, 0);
-    if ret == u64::MAX { Err(-1) } else { Ok(()) }
+    let ret = syscall3(
+        SYS_IPC_SEND,
+        &request as *const IpcTransferRequest as u64,
+        0,
+        0,
+    );
+    if ret == u64::MAX {
+        Err(-1)
+    } else {
+        Ok(())
+    }
 }
 
 /// Parse C-style argv
@@ -121,10 +130,10 @@ pub extern "C" fn main(argc: isize, argv: *const *const u8) -> isize {
         print_usage();
         exit(1);
     }
-    
+
     let channel_arg = unsafe { get_arg(argv, 1) };
     let message_arg = unsafe { get_arg(argv, 2) };
-    
+
     let channel = match channel_arg.and_then(parse_u32) {
         Some(c) => c,
         None => {
@@ -132,7 +141,7 @@ pub extern "C" fn main(argc: isize, argv: *const *const u8) -> isize {
             exit(1);
         }
     };
-    
+
     let message = match message_arg {
         Some(m) => m,
         None => {
@@ -140,12 +149,12 @@ pub extern "C" fn main(argc: isize, argv: *const *const u8) -> isize {
             exit(1);
         }
     };
-    
+
     if message.is_empty() {
         eprint("ipc-send: message cannot be empty\n");
         exit(1);
     }
-    
+
     match ipc_send(channel, message) {
         Ok(()) => {
             print("Message sent.\n");

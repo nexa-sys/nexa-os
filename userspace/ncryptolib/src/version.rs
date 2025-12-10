@@ -52,34 +52,25 @@ pub extern "C" fn CRYPTO_num_locks() -> i32 {
 
 /// CRYPTO_set_locking_callback - Set locking callback (deprecated)
 #[no_mangle]
-pub extern "C" fn CRYPTO_set_locking_callback(
-    _func: *const core::ffi::c_void,
-) {
+pub extern "C" fn CRYPTO_set_locking_callback(_func: *const core::ffi::c_void) {
     // No-op: Rust's mutex handles this
 }
 
 /// CRYPTO_set_id_callback - Set thread ID callback (deprecated)
 #[no_mangle]
-pub extern "C" fn CRYPTO_set_id_callback(
-    _func: *const core::ffi::c_void,
-) {
+pub extern "C" fn CRYPTO_set_id_callback(_func: *const core::ffi::c_void) {
     // No-op
 }
 
 /// CRYPTO_THREADID_set_callback - Set thread ID callback
 #[no_mangle]
-pub extern "C" fn CRYPTO_THREADID_set_callback(
-    _func: *const core::ffi::c_void,
-) -> i32 {
+pub extern "C" fn CRYPTO_THREADID_set_callback(_func: *const core::ffi::c_void) -> i32 {
     1 // Success
 }
 
 /// CRYPTO_THREADID_set_numeric - Set numeric thread ID
 #[no_mangle]
-pub extern "C" fn CRYPTO_THREADID_set_numeric(
-    _id: *mut core::ffi::c_void,
-    _val: u64,
-) {
+pub extern "C" fn CRYPTO_THREADID_set_numeric(_id: *mut core::ffi::c_void, _val: u64) {
     // No-op
 }
 

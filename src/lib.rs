@@ -375,7 +375,7 @@ pub fn kernel_main_uefi(boot_info_ptr: *const BootInfo) -> ! {
     let heap_start = 0x0400_0000;
     let heap_size = 64 * 1024 * 1024; // 64MB
     allocator::init_kernel_heap(heap_start, heap_size);
-    
+
     // Set total physical memory for UEFI boot path from BootInfo
     if boot_info.has_physical_memory() {
         memory::set_total_physical_memory(boot_info.total_physical_memory);
@@ -835,7 +835,7 @@ macro_rules! kpanic {
 
         // Get current process info
         let current_pid = $crate::scheduler::get_current_pid().map(|p| p as u64).unwrap_or(0);
-        
+
         // Get uptime in ticks (milliseconds)
         let uptime_ticks = $crate::scheduler::get_tick();
         let uptime_secs = uptime_ticks / 1000;
@@ -931,7 +931,7 @@ macro_rules! kpanic {
             let r15: u64;
             asm!(
                 "mov {rax}, rax",
-                "mov {rbx}, rbx", 
+                "mov {rbx}, rbx",
                 "mov {rcx}, rcx",
                 "mov {rdx}, rdx",
                 "mov {rsi}, rsi",
@@ -1034,7 +1034,7 @@ macro_rules! kpanic {
                 "CR3: {:#018x} CR4: {:#018x}",
                 cr3, cr4
             );
-            
+
             // Decode CR0 flags
             let pe = (cr0 & 1) != 0;           // Protection Enable
             let pg = (cr0 & (1 << 31)) != 0;   // Paging
@@ -1044,7 +1044,7 @@ macro_rules! kpanic {
                 "CR0 flags: PE={} PG={} WP={}",
                 pe, pg, wp
             );
-            
+
             // CR2 is the page fault linear address
             if cr2 != 0 {
                 $crate::klog!(

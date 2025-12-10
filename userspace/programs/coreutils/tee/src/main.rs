@@ -23,10 +23,10 @@ fn print_usage() {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    
+
     let mut append = false;
     let mut files: Vec<&str> = Vec::new();
-    
+
     for arg in args.iter().skip(1) {
         match arg.as_str() {
             "-h" | "--help" => {
@@ -59,17 +59,14 @@ fn main() {
     // Open output files
     let mut output_files: Vec<File> = Vec::new();
     let mut exit_code = 0;
-    
+
     for file_path in &files {
         let result = if append {
-            OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(file_path)
+            OpenOptions::new().create(true).append(true).open(file_path)
         } else {
             File::create(file_path)
         };
-        
+
         match result {
             Ok(file) => output_files.push(file),
             Err(e) => {
@@ -83,7 +80,7 @@ fn main() {
     let mut stdin = io::stdin();
     let mut stdout = io::stdout();
     let mut buffer = [0u8; 4096];
-    
+
     loop {
         match stdin.read(&mut buffer) {
             Ok(0) => break, // EOF
@@ -93,7 +90,7 @@ fn main() {
                     eprintln!("tee: stdout: {}", e);
                     exit_code = 1;
                 }
-                
+
                 // Write to all files
                 for (file, path) in output_files.iter_mut().zip(files.iter()) {
                     if let Err(e) = file.write_all(&buffer[..n]) {
@@ -110,7 +107,7 @@ fn main() {
             }
         }
     }
-    
+
     // Flush stdout
     let _ = stdout.flush();
 

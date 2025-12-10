@@ -472,13 +472,8 @@ unsafe impl Send for ModularFileHandle {}
 unsafe impl Sync for ModularFileHandle {}
 
 /// Directory entry callback type for modular filesystems
-pub type ModularDirCallback = extern "C" fn(
-    name: *const u8,
-    name_len: usize,
-    inode: u32,
-    file_type: u8,
-    ctx: *mut u8,
-);
+pub type ModularDirCallback =
+    extern "C" fn(name: *const u8, name_len: usize, inode: u32, file_type: u8, ctx: *mut u8);
 
 /// Operations table for modular filesystem modules
 /// Each filesystem module (ext2, ext3, ext4, etc.) implements this interface
@@ -486,98 +481,92 @@ pub type ModularDirCallback = extern "C" fn(
 pub struct ModularFsOps {
     /// Filesystem type name (e.g., "ext2", "ext4")
     pub fs_type: &'static str,
-    
+
     /// Create a new filesystem instance from raw image data
     /// Returns a filesystem handle or null on failure
     pub new_from_image: Option<extern "C" fn(image: *const u8, size: usize) -> *mut u8>,
-    
+
     /// Destroy a filesystem instance
     pub destroy: Option<extern "C" fn(handle: *mut u8)>,
-    
+
     /// Lookup a file by path
     /// Returns 0 on success, negative error code on failure
-    pub lookup: Option<extern "C" fn(
-        handle: *mut u8,
-        path: *const u8,
-        path_len: usize,
-        out: *mut ModularFileHandle,
-    ) -> i32>,
-    
+    pub lookup: Option<
+        extern "C" fn(
+            handle: *mut u8,
+            path: *const u8,
+            path_len: usize,
+            out: *mut ModularFileHandle,
+        ) -> i32,
+    >,
+
     /// Read data from a file at offset
     /// Returns bytes read or negative error code
-    pub read_at: Option<extern "C" fn(
-        file: *const ModularFileHandle,
-        offset: usize,
-        buf: *mut u8,
-        len: usize,
-    ) -> i32>,
-    
+    pub read_at: Option<
+        extern "C" fn(
+            file: *const ModularFileHandle,
+            offset: usize,
+            buf: *mut u8,
+            len: usize,
+        ) -> i32,
+    >,
+
     /// Write data to a file at offset
     /// Returns bytes written or negative error code
-    pub write_at: Option<extern "C" fn(
-        file: *const ModularFileHandle,
-        offset: usize,
-        data: *const u8,
-        len: usize,
-    ) -> i32>,
-    
+    pub write_at: Option<
+        extern "C" fn(
+            file: *const ModularFileHandle,
+            offset: usize,
+            data: *const u8,
+            len: usize,
+        ) -> i32,
+    >,
+
     /// List directory contents
-    pub list_dir: Option<extern "C" fn(
-        handle: *mut u8,
-        path: *const u8,
-        path_len: usize,
-        cb: ModularDirCallback,
-        ctx: *mut u8,
-    ) -> i32>,
-    
+    pub list_dir: Option<
+        extern "C" fn(
+            handle: *mut u8,
+            path: *const u8,
+            path_len: usize,
+            cb: ModularDirCallback,
+            ctx: *mut u8,
+        ) -> i32,
+    >,
+
     /// Get filesystem statistics
     pub get_stats: Option<extern "C" fn(handle: *mut u8, stats: *mut FsStats) -> i32>,
-    
+
     /// Set writable mode
     pub set_writable: Option<extern "C" fn(writable: bool)>,
-    
+
     /// Check if writable
     pub is_writable: Option<extern "C" fn() -> bool>,
-    
+
     /// Create a new file
-    pub create_file: Option<extern "C" fn(
-        handle: *mut u8,
-        path: *const u8,
-        path_len: usize,
-        mode: u16,
-    ) -> i32>,
-    
+    pub create_file:
+        Option<extern "C" fn(handle: *mut u8, path: *const u8, path_len: usize, mode: u16) -> i32>,
+
     /// Create a new directory
-    pub mkdir: Option<extern "C" fn(
-        handle: *mut u8,
-        path: *const u8,
-        path_len: usize,
-        mode: u16,
-    ) -> i32>,
-    
+    pub mkdir:
+        Option<extern "C" fn(handle: *mut u8, path: *const u8, path_len: usize, mode: u16) -> i32>,
+
     /// Remove a file
-    pub unlink: Option<extern "C" fn(
-        handle: *mut u8,
-        path: *const u8,
-        path_len: usize,
-    ) -> i32>,
-    
+    pub unlink: Option<extern "C" fn(handle: *mut u8, path: *const u8, path_len: usize) -> i32>,
+
     /// Remove a directory
-    pub rmdir: Option<extern "C" fn(
-        handle: *mut u8,
-        path: *const u8,
-        path_len: usize,
-    ) -> i32>,
-    
+    pub rmdir: Option<extern "C" fn(handle: *mut u8, path: *const u8, path_len: usize) -> i32>,
+
     /// Rename a file or directory
-    pub rename: Option<extern "C" fn(
-        handle: *mut u8,
-        old_path: *const u8,
-        old_len: usize,
-        new_path: *const u8,
-        new_len: usize,
-    ) -> i32>,
-    
+    pub rename: Option<
+        extern "C" fn(
+            handle: *mut u8,
+            old_path: *const u8,
+            old_len: usize,
+            new_path: *const u8,
+            new_len: usize,
+        ) -> i32,
+    >,
+
     /// Sync filesystem to disk
     pub sync: Option<extern "C" fn(handle: *mut u8) -> i32>,
 }
@@ -631,8 +620,32 @@ unsafe impl Send for ModularFsEntry {}
 unsafe impl Sync for ModularFsEntry {}
 
 /// Global registry of modular filesystems
-static MODULAR_FS_REGISTRY: Mutex<[ModularFsEntry; MAX_MODULAR_FS]> = 
-    Mutex::new([const { ModularFsEntry { ops: ModularFsOps { fs_type: "unknown", new_from_image: None, destroy: None, lookup: None, read_at: None, write_at: None, list_dir: None, get_stats: None, set_writable: None, is_writable: None, create_file: None, mkdir: None, unlink: None, rmdir: None, rename: None, sync: None }, handle: None, active: false } }; MAX_MODULAR_FS]);
+static MODULAR_FS_REGISTRY: Mutex<[ModularFsEntry; MAX_MODULAR_FS]> = Mutex::new(
+    [const {
+        ModularFsEntry {
+            ops: ModularFsOps {
+                fs_type: "unknown",
+                new_from_image: None,
+                destroy: None,
+                lookup: None,
+                read_at: None,
+                write_at: None,
+                list_dir: None,
+                get_stats: None,
+                set_writable: None,
+                is_writable: None,
+                create_file: None,
+                mkdir: None,
+                unlink: None,
+                rmdir: None,
+                rename: None,
+                sync: None,
+            },
+            handle: None,
+            active: false,
+        }
+    }; MAX_MODULAR_FS],
+);
 
 /// Register a modular filesystem
 /// Returns the index in the registry, or None if registry is full
@@ -642,7 +655,11 @@ pub fn register_modular_fs(ops: ModularFsOps) -> Option<u8> {
         if !entry.active {
             entry.ops = ops;
             entry.active = true;
-            crate::kinfo!("Registered modular filesystem: {} at index {}", entry.ops.fs_type, i);
+            crate::kinfo!(
+                "Registered modular filesystem: {} at index {}",
+                entry.ops.fs_type,
+                i
+            );
             return Some(i as u8);
         }
     }
@@ -680,19 +697,21 @@ pub fn find_modular_fs(fs_type: &str) -> Option<u8> {
 /// Mount a modular filesystem from an image
 pub fn mount_modular_fs(index: u8, image: &[u8]) -> FsResult<()> {
     let mut registry = MODULAR_FS_REGISTRY.lock();
-    let entry = registry.get_mut(index as usize).ok_or(FsError::InvalidArgument)?;
-    
+    let entry = registry
+        .get_mut(index as usize)
+        .ok_or(FsError::InvalidArgument)?;
+
     if !entry.active {
         return Err(FsError::InvalidArgument);
     }
-    
+
     let new_fn = entry.ops.new_from_image.ok_or(FsError::NotSupported)?;
     let handle = new_fn(image.as_ptr(), image.len());
-    
+
     if handle.is_null() {
         return Err(FsError::IoError);
     }
-    
+
     entry.handle = Some(handle);
     crate::kinfo!("Mounted {} filesystem", entry.ops.fs_type);
     Ok(())
@@ -701,15 +720,17 @@ pub fn mount_modular_fs(index: u8, image: &[u8]) -> FsResult<()> {
 /// Lookup a file in a modular filesystem
 pub fn modular_fs_lookup(index: u8, path: &str) -> FsResult<ModularFileHandle> {
     let registry = MODULAR_FS_REGISTRY.lock();
-    let entry = registry.get(index as usize).ok_or(FsError::InvalidArgument)?;
-    
+    let entry = registry
+        .get(index as usize)
+        .ok_or(FsError::InvalidArgument)?;
+
     if !entry.active {
         return Err(FsError::InvalidArgument);
     }
-    
+
     let lookup_fn = entry.ops.lookup.ok_or(FsError::NotSupported)?;
     let handle = entry.handle.ok_or(FsError::InvalidArgument)?;
-    
+
     let mut file_handle = ModularFileHandle {
         fs_index: index,
         fs_handle: handle,
@@ -722,10 +743,15 @@ pub fn modular_fs_lookup(index: u8, path: &str) -> FsResult<ModularFileHandle> {
         uid: 0,
         gid: 0,
     };
-    
+
     let path_bytes = path.as_bytes();
-    let ret = lookup_fn(handle, path_bytes.as_ptr(), path_bytes.len(), &mut file_handle);
-    
+    let ret = lookup_fn(
+        handle,
+        path_bytes.as_ptr(),
+        path_bytes.len(),
+        &mut file_handle,
+    );
+
     if ret == 0 {
         file_handle.fs_index = index;
         file_handle.fs_handle = handle;
@@ -736,17 +762,23 @@ pub fn modular_fs_lookup(index: u8, path: &str) -> FsResult<ModularFileHandle> {
 }
 
 /// Read from a file in a modular filesystem
-pub fn modular_fs_read_at(file: &ModularFileHandle, offset: usize, buf: &mut [u8]) -> FsResult<usize> {
+pub fn modular_fs_read_at(
+    file: &ModularFileHandle,
+    offset: usize,
+    buf: &mut [u8],
+) -> FsResult<usize> {
     let registry = MODULAR_FS_REGISTRY.lock();
-    let entry = registry.get(file.fs_index as usize).ok_or(FsError::InvalidArgument)?;
-    
+    let entry = registry
+        .get(file.fs_index as usize)
+        .ok_or(FsError::InvalidArgument)?;
+
     if !entry.active {
         return Err(FsError::InvalidArgument);
     }
-    
+
     let read_fn = entry.ops.read_at.ok_or(FsError::NotSupported)?;
     let ret = read_fn(file, offset, buf.as_mut_ptr(), buf.len());
-    
+
     if ret >= 0 {
         Ok(ret as usize)
     } else {
@@ -755,24 +787,30 @@ pub fn modular_fs_read_at(file: &ModularFileHandle, offset: usize, buf: &mut [u8
 }
 
 /// Write to a file in a modular filesystem
-pub fn modular_fs_write_at(file: &ModularFileHandle, offset: usize, data: &[u8]) -> FsResult<usize> {
+pub fn modular_fs_write_at(
+    file: &ModularFileHandle,
+    offset: usize,
+    data: &[u8],
+) -> FsResult<usize> {
     let registry = MODULAR_FS_REGISTRY.lock();
-    let entry = registry.get(file.fs_index as usize).ok_or(FsError::InvalidArgument)?;
-    
+    let entry = registry
+        .get(file.fs_index as usize)
+        .ok_or(FsError::InvalidArgument)?;
+
     if !entry.active {
         return Err(FsError::InvalidArgument);
     }
-    
+
     // Check if filesystem is writable
     if let Some(is_writable) = entry.ops.is_writable {
         if !is_writable() {
             return Err(FsError::ReadOnly);
         }
     }
-    
+
     let write_fn = entry.ops.write_at.ok_or(FsError::NotSupported)?;
     let ret = write_fn(file, offset, data.as_ptr(), data.len());
-    
+
     if ret >= 0 {
         Ok(ret as usize)
     } else if ret == -7 {
@@ -790,18 +828,20 @@ pub fn modular_fs_list_dir(
     ctx: *mut u8,
 ) -> FsResult<()> {
     let registry = MODULAR_FS_REGISTRY.lock();
-    let entry = registry.get(index as usize).ok_or(FsError::InvalidArgument)?;
-    
+    let entry = registry
+        .get(index as usize)
+        .ok_or(FsError::InvalidArgument)?;
+
     if !entry.active {
         return Err(FsError::InvalidArgument);
     }
-    
+
     let list_fn = entry.ops.list_dir.ok_or(FsError::NotSupported)?;
     let handle = entry.handle.ok_or(FsError::InvalidArgument)?;
-    
+
     let path_bytes = path.as_bytes();
     let ret = list_fn(handle, path_bytes.as_ptr(), path_bytes.len(), callback, ctx);
-    
+
     if ret == 0 {
         Ok(())
     } else {
@@ -812,12 +852,14 @@ pub fn modular_fs_list_dir(
 /// Enable write mode for a modular filesystem
 pub fn modular_fs_enable_write(index: u8) -> FsResult<()> {
     let registry = MODULAR_FS_REGISTRY.lock();
-    let entry = registry.get(index as usize).ok_or(FsError::InvalidArgument)?;
-    
+    let entry = registry
+        .get(index as usize)
+        .ok_or(FsError::InvalidArgument)?;
+
     if !entry.active {
         return Err(FsError::InvalidArgument);
     }
-    
+
     if let Some(set_writable) = entry.ops.set_writable {
         set_writable(true);
         Ok(())
@@ -842,18 +884,20 @@ pub fn modular_fs_is_writable(index: u8) -> bool {
 /// Get statistics for a modular filesystem
 pub fn modular_fs_get_stats(index: u8) -> FsResult<FsStats> {
     let registry = MODULAR_FS_REGISTRY.lock();
-    let entry = registry.get(index as usize).ok_or(FsError::InvalidArgument)?;
-    
+    let entry = registry
+        .get(index as usize)
+        .ok_or(FsError::InvalidArgument)?;
+
     if !entry.active {
         return Err(FsError::InvalidArgument);
     }
-    
+
     let get_stats_fn = entry.ops.get_stats.ok_or(FsError::NotSupported)?;
     let handle = entry.handle.ok_or(FsError::InvalidArgument)?;
-    
+
     let mut stats = FsStats::default();
     let ret = get_stats_fn(handle, &mut stats);
-    
+
     if ret == 0 {
         Ok(stats)
     } else {
@@ -864,7 +908,8 @@ pub fn modular_fs_get_stats(index: u8) -> FsResult<FsStats> {
 /// Get the filesystem type name for an index
 pub fn modular_fs_type_name(index: u8) -> Option<&'static str> {
     let registry = MODULAR_FS_REGISTRY.lock();
-    registry.get(index as usize)
+    registry
+        .get(index as usize)
         .filter(|e| e.active)
         .map(|e| e.ops.fs_type)
 }
@@ -872,7 +917,8 @@ pub fn modular_fs_type_name(index: u8) -> Option<&'static str> {
 /// Check if a modular filesystem is mounted at the given index
 pub fn modular_fs_is_mounted(index: u8) -> bool {
     let registry = MODULAR_FS_REGISTRY.lock();
-    registry.get(index as usize)
+    registry
+        .get(index as usize)
         .map(|e| e.active && e.handle.is_some())
         .unwrap_or(false)
 }
@@ -891,18 +937,20 @@ pub fn get_mounted_modular_fs() -> Option<u8> {
 /// Create a file in a modular filesystem
 pub fn modular_fs_create_file(index: u8, path: &str, mode: u16) -> FsResult<()> {
     let registry = MODULAR_FS_REGISTRY.lock();
-    let entry = registry.get(index as usize).ok_or(FsError::InvalidArgument)?;
-    
+    let entry = registry
+        .get(index as usize)
+        .ok_or(FsError::InvalidArgument)?;
+
     if !entry.active {
         return Err(FsError::InvalidArgument);
     }
-    
+
     let create_fn = entry.ops.create_file.ok_or(FsError::NotSupported)?;
     let handle = entry.handle.ok_or(FsError::InvalidArgument)?;
-    
+
     let path_bytes = path.as_bytes();
     let ret = create_fn(handle, path_bytes.as_ptr(), path_bytes.len(), mode);
-    
+
     if ret == 0 {
         Ok(())
     } else if ret == -7 {

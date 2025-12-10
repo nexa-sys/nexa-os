@@ -29,9 +29,9 @@ const MAX_LINE_CHARS: usize = 256;
 pub struct FramebufferWriter {
     render: RenderContext,
     spec: FramebufferSpec,
-    cursor_x: usize,      // Cell-based cursor X (for bitmap font compatibility)
-    cursor_y: usize,      // Cell-based cursor Y (row number)
-    pixel_x: usize,       // Pixel-based cursor X (for TTF fonts)
+    cursor_x: usize, // Cell-based cursor X (for bitmap font compatibility)
+    cursor_y: usize, // Cell-based cursor Y (row number)
+    pixel_x: usize,  // Pixel-based cursor X (for TTF fonts)
     columns: usize,
     rows: usize,
     fg: PackedColor,
@@ -82,11 +82,25 @@ impl FramebufferWriter {
         let render = RenderContext::new(buffer, &spec);
 
         let default_fg = PackedColor::new(
-            pack_color(&spec.red, &spec.green, &spec.blue, DEFAULT_FG.r, DEFAULT_FG.g, DEFAULT_FG.b),
+            pack_color(
+                &spec.red,
+                &spec.green,
+                &spec.blue,
+                DEFAULT_FG.r,
+                DEFAULT_FG.g,
+                DEFAULT_FG.b,
+            ),
             bytes_per_pixel,
         );
         let default_bg = PackedColor::new(
-            pack_color(&spec.red, &spec.green, &spec.blue, DEFAULT_BG.r, DEFAULT_BG.g, DEFAULT_BG.b),
+            pack_color(
+                &spec.red,
+                &spec.green,
+                &spec.blue,
+                DEFAULT_BG.r,
+                DEFAULT_BG.g,
+                DEFAULT_BG.b,
+            ),
             bytes_per_pixel,
         );
 
@@ -181,7 +195,7 @@ impl FramebufferWriter {
             let use_scroll = compositor::is_initialized();
             #[cfg(not(feature = "gfx_compositor"))]
             let use_scroll = false;
-            
+
             if use_scroll {
                 self.scroll_up();
             } else {
@@ -268,20 +282,22 @@ impl FramebufferWriter {
                 let current_cell = self.pixel_x / CELL_WIDTH;
                 let next_tab = ((current_cell / TAB_WIDTH) + 1) * TAB_WIDTH;
                 let target_pixel = next_tab * CELL_WIDTH;
-                
+
                 // Clear the tab area
                 let row_y = self.cursor_y * CELL_HEIGHT;
                 if target_pixel > self.pixel_x {
                     self.render.fill_rect(
-                        self.pixel_x, row_y,
-                        target_pixel - self.pixel_x, CELL_HEIGHT,
-                        self.bg
+                        self.pixel_x,
+                        row_y,
+                        target_pixel - self.pixel_x,
+                        CELL_HEIGHT,
+                        self.bg,
                     );
                 }
-                
+
                 self.pixel_x = target_pixel;
                 self.cursor_x = next_tab;
-                
+
                 if self.pixel_x >= self.render.width {
                     self.newline();
                 }
@@ -303,7 +319,8 @@ impl FramebufferWriter {
                     // Fix: Clear slightly more than char_width to handle glyphs that spill over
                     // (e.g. italic fonts or wide glyphs).
                     let clear_width = char_width + 4;
-                    self.render.fill_rect(self.pixel_x, row_y, clear_width, CELL_HEIGHT, self.bg);
+                    self.render
+                        .fill_rect(self.pixel_x, row_y, clear_width, CELL_HEIGHT, self.bg);
                 }
                 // If char_count == 0, do nothing (already at start of editable area)
                 return;
@@ -335,19 +352,20 @@ impl FramebufferWriter {
         if let Some(glyph) = font::get_glyph(ch, font_size) {
             // Calculate the advance for this glyph
             let advance = glyph.advance as usize;
-            
+
             // Check if we need to wrap to next line
             if self.pixel_x + advance > self.render.width {
                 self.newline();
             }
-            
+
             // Handle empty glyphs (like space)
             if glyph.width == 0 || glyph.height == 0 {
                 // Clear the area and advance
                 let row_y = self.cursor_y * CELL_HEIGHT;
-                self.render.fill_rect(self.pixel_x, row_y, advance.max(1), CELL_HEIGHT, self.bg);
+                self.render
+                    .fill_rect(self.pixel_x, row_y, advance.max(1), CELL_HEIGHT, self.bg);
                 self.pixel_x += advance.max(1);
-                
+
                 // Record width for this character position
                 if self.cursor_x < MAX_LINE_CHARS {
                     self.char_widths[self.cursor_x] = advance.max(1).min(255) as u8;
@@ -367,7 +385,8 @@ impl FramebufferWriter {
             // Clear background area for this glyph
             let row_y = self.cursor_y * CELL_HEIGHT;
             let clear_width = advance.max(glyph.width as usize + glyph.bearing_x.max(0) as usize);
-            self.render.fill_rect(self.pixel_x, row_y, clear_width, CELL_HEIGHT, self.bg);
+            self.render
+                .fill_rect(self.pixel_x, row_y, clear_width, CELL_HEIGHT, self.bg);
 
             // Draw the TTF glyph at pixel position
             self.render.draw_ttf_glyph(
@@ -384,7 +403,7 @@ impl FramebufferWriter {
 
             // Advance cursor by glyph's advance width
             self.pixel_x += advance;
-            
+
             // Record width for this character position
             if self.cursor_x < MAX_LINE_CHARS {
                 self.char_widths[self.cursor_x] = advance.min(255) as u8;
@@ -393,7 +412,7 @@ impl FramebufferWriter {
             if self.cursor_x > self.char_count {
                 self.char_count = self.cursor_x;
             }
-            
+
             // Check for line wrap
             if self.pixel_x >= self.render.width {
                 self.newline();
@@ -437,7 +456,7 @@ impl FramebufferWriter {
                 b'0'..=b'9' | b';' | b'?' => {
                     self.ansi.push_param(byte);
                 }
-                b'm' | b'J' | b'K' | b'H' | b'f' | b'A' | b'B' | b'C' | b'D' | b'G' | b'd' 
+                b'm' | b'J' | b'K' | b'H' | b'f' | b'A' | b'B' | b'C' | b'D' | b'G' | b'd'
                 | b'h' | b'l' | b's' | b'u' | b'r' => {
                     let (params, count) = self.ansi.parse_params();
                     self.handle_csi(byte, &params[..count]);
@@ -459,15 +478,18 @@ impl FramebufferWriter {
     fn handle_csi(&mut self, command: u8, params: &[u16]) {
         // Check for DEC private mode sequences (starting with ?)
         let is_private = self.ansi.is_private();
-        
+
         // Track if cursor position changes
-        let cursor_moved = matches!(command, b'H' | b'f' | b'A' | b'B' | b'C' | b'D' | b'G' | b'd' | b'u');
-        
+        let cursor_moved = matches!(
+            command,
+            b'H' | b'f' | b'A' | b'B' | b'C' | b'D' | b'G' | b'd' | b'u'
+        );
+
         // Erase cursor before moving
         if cursor_moved && self.cursor_visible {
             self.erase_cursor();
         }
-        
+
         match command {
             b'm' => self.apply_sgr(params),
             b'J' => self.handle_erase_display(params),
@@ -494,7 +516,7 @@ impl FramebufferWriter {
             b'r' => self.handle_set_scrolling_region(params),
             _ => {}
         }
-        
+
         // Redraw cursor at new position
         if cursor_moved && self.cursor_visible {
             self.draw_cursor();
@@ -661,19 +683,15 @@ impl FramebufferWriter {
                 let width = self.render.width.saturating_sub(start_pixel_x);
                 self.render
                     .fill_rect(start_pixel_x, start_pixel_y, width, CELL_HEIGHT, self.bg);
-                self.render.clear_rows(self.cursor_y + 1, self.rows, self.bg);
+                self.render
+                    .clear_rows(self.cursor_y + 1, self.rows, self.bg);
             }
             1 => {
                 // Clear from start to cursor
                 self.render.clear_rows(0, self.cursor_y, self.bg);
                 let start_pixel_y = self.cursor_y * CELL_HEIGHT;
-                self.render.fill_rect(
-                    0,
-                    start_pixel_y,
-                    self.pixel_x,
-                    CELL_HEIGHT,
-                    self.bg,
-                );
+                self.render
+                    .fill_rect(0, start_pixel_y, self.pixel_x, CELL_HEIGHT, self.bg);
             }
             _ => {}
         }
@@ -694,13 +712,8 @@ impl FramebufferWriter {
             }
             1 => {
                 // Clear from start to cursor
-                self.render.fill_rect(
-                    0,
-                    pixel_y,
-                    self.pixel_x,
-                    CELL_HEIGHT,
-                    self.bg,
-                );
+                self.render
+                    .fill_rect(0, pixel_y, self.pixel_x, CELL_HEIGHT, self.bg);
             }
             2 => {
                 // Clear entire line
@@ -757,24 +770,28 @@ impl FramebufferWriter {
         if !self.cursor_visible {
             return;
         }
-        
+
         // Erase cursor at old position if it moved
-        if self.last_cursor_x != self.cursor_x || self.last_cursor_y != self.cursor_y || self.last_pixel_x != self.pixel_x {
+        if self.last_cursor_x != self.cursor_x
+            || self.last_cursor_y != self.cursor_y
+            || self.last_pixel_x != self.pixel_x
+        {
             self.erase_cursor_at(self.last_cursor_x, self.last_cursor_y, self.last_pixel_x);
         }
-        
+
         // Draw cursor as an underscore at the current position
         // Use pixel_x for accurate positioning with proportional fonts
         let pixel_x = self.pixel_x;
         let pixel_y = self.cursor_y * CELL_HEIGHT;
-        
+
         // Draw underscore cursor (bottom 2 lines of the cell)
         let cursor_y_start = pixel_y + CELL_HEIGHT - 3;
         let cursor_height = 3;
-        
+
         // Use foreground color for cursor
-        self.render.fill_rect(pixel_x, cursor_y_start, CELL_WIDTH, cursor_height, self.fg);
-        
+        self.render
+            .fill_rect(pixel_x, cursor_y_start, CELL_WIDTH, cursor_height, self.fg);
+
         self.last_cursor_x = self.cursor_x;
         self.last_cursor_y = self.cursor_y;
         self.last_pixel_x = self.pixel_x;
@@ -788,12 +805,13 @@ impl FramebufferWriter {
     /// Erase cursor at a specific position
     fn erase_cursor_at(&self, _col: usize, row: usize, pixel_x: usize) {
         let pixel_y = row * CELL_HEIGHT;
-        
+
         // Erase underscore area
         let cursor_y_start = pixel_y + CELL_HEIGHT - 3;
         let cursor_height = 3;
-        
-        self.render.fill_rect(pixel_x, cursor_y_start, CELL_WIDTH, cursor_height, self.bg);
+
+        self.render
+            .fill_rect(pixel_x, cursor_y_start, CELL_WIDTH, cursor_height, self.bg);
     }
 
     /// Update cursor display (call after any operation that moves the cursor)
@@ -829,7 +847,8 @@ impl FramebufferWriter {
 impl Write for FramebufferWriter {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         // Debug: track when TTF becomes ready
-        static WAS_READY: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+        static WAS_READY: core::sync::atomic::AtomicBool =
+            core::sync::atomic::AtomicBool::new(false);
         let is_ready = font::is_ready();
         if is_ready && !WAS_READY.swap(true, core::sync::atomic::Ordering::Relaxed) {
             crate::kinfo!("write_str: TTF is now READY, switching to TTF rendering");
@@ -872,8 +891,8 @@ impl Write for FramebufferWriter {
                         '0'..='9' | ';' | '?' => {
                             self.ansi.push_param(ch as u8);
                         }
-                        'm' | 'J' | 'K' | 'H' | 'f' | 'A' | 'B' | 'C' | 'D' | 'G' | 'd' 
-                        | 'h' | 'l' | 's' | 'u' | 'r' => {
+                        'm' | 'J' | 'K' | 'H' | 'f' | 'A' | 'B' | 'C' | 'D' | 'G' | 'd' | 'h'
+                        | 'l' | 's' | 'u' | 'r' => {
                             let (params, count) = self.ansi.parse_params();
                             self.handle_csi(ch as u8, &params[..count]);
                             self.ansi.reset();

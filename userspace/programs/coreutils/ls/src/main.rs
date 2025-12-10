@@ -53,7 +53,11 @@ fn list_files(path: Option<&str>, include_hidden: bool) -> Result<String, i32> {
     let mut request = ListDirRequest {
         path_ptr: 0,
         path_len: 0,
-        flags: if include_hidden { LIST_FLAG_INCLUDE_HIDDEN } else { 0 },
+        flags: if include_hidden {
+            LIST_FLAG_INCLUDE_HIDDEN
+        } else {
+            0
+        },
     };
 
     if let Some(p) = path {
@@ -70,8 +74,13 @@ fn list_files(path: Option<&str>, include_hidden: bool) -> Result<String, i32> {
     };
 
     let mut buf = vec![0u8; 4096];
-    let written = syscall3(SYS_LIST_FILES, buf.as_mut_ptr() as u64, buf.len() as u64, req_ptr);
-    
+    let written = syscall3(
+        SYS_LIST_FILES,
+        buf.as_mut_ptr() as u64,
+        buf.len() as u64,
+        req_ptr,
+    );
+
     if written == u64::MAX {
         return Err(errno());
     }
@@ -94,14 +103,14 @@ fn format_mode(mode: u32) -> String {
 
     let mut result = String::with_capacity(10);
     result.push(file_type);
-    
+
     for shift in [6, 3, 0] {
         let p = (mode >> shift) & 0o7;
         result.push(if (p & 0o4) != 0 { 'r' } else { '-' });
         result.push(if (p & 0o2) != 0 { 'w' } else { '-' });
         result.push(if (p & 0o1) != 0 { 'x' } else { '-' });
     }
-    
+
     result
 }
 
@@ -156,15 +165,25 @@ fn main() {
     match list_files(Some(&path_str), show_all) {
         Ok(list) => {
             for entry in list.lines() {
-                if entry.is_empty() { continue; }
-                if !show_all && entry.starts_with('.') { continue; }
+                if entry.is_empty() {
+                    continue;
+                }
+                if !show_all && entry.starts_with('.') {
+                    continue;
+                }
 
                 if long_format {
                     let full_path = Path::new(&path_str).join(entry);
                     if let Ok(meta) = fs::metadata(&full_path) {
                         let mode = format_mode(meta.mode());
-                        println!("{} {:>4} {:>4} {:>8} {}", 
-                            mode, meta.uid(), meta.gid(), meta.len(), entry);
+                        println!(
+                            "{} {:>4} {:>4} {:>8} {}",
+                            mode,
+                            meta.uid(),
+                            meta.gid(),
+                            meta.len(),
+                            entry
+                        );
                         continue;
                     }
                 }

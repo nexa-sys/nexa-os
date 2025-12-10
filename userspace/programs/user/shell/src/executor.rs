@@ -2,9 +2,9 @@
 //!
 //! Executes parsed commands including control flow structures and redirections
 
+use crate::builtins::BuiltinRegistry;
 use crate::parser::{Command, Redirect, RedirectType};
 use crate::state::ShellState;
-use crate::builtins::BuiltinRegistry;
 use std::io::{self, Write};
 use std::string::String;
 use std::vec::Vec;
@@ -132,9 +132,12 @@ impl<'a> Executor<'a> {
             Command::Background(cmd) => self.execute_background(cmd),
             Command::Subshell(cmd) => self.execute_subshell(cmd),
             Command::BraceGroup(cmds) => self.execute(cmds),
-            Command::If { condition, then_part, elif_parts, else_part } => {
-                self.execute_if(condition, then_part, elif_parts, else_part)
-            }
+            Command::If {
+                condition,
+                then_part,
+                elif_parts,
+                else_part,
+            } => self.execute_if(condition, then_part, elif_parts, else_part),
             Command::Case { word, cases } => self.execute_case(word, cases),
             Command::For { var, words, body } => self.execute_for(var, words, body),
             Command::While { condition, body } => self.execute_while(condition, body),
@@ -158,10 +161,8 @@ impl<'a> Executor<'a> {
         }
 
         // Expand variables in args
-        let expanded: Vec<String> = args.iter()
-            .map(|a| self.expand_string(a))
-            .collect();
-        
+        let expanded: Vec<String> = args.iter().map(|a| self.expand_string(a)).collect();
+
         // Expand glob patterns
         let expanded = self.expand_globs(&expanded);
 
@@ -171,12 +172,16 @@ impl<'a> Executor<'a> {
         // Check for function first
         if let Some(func_body) = self.state.get_function(cmd).map(|s| s.to_string()) {
             // Save old positional params
-            let old_params: Vec<String> = self.state.positional_params_at()
-                .iter().map(|s| s.to_string()).collect();
-            
+            let old_params: Vec<String> = self
+                .state
+                .positional_params_at()
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+
             // Set new positional params from arguments
             self.state.set_positional_params(expanded[1..].to_vec());
-            
+
             // Parse and execute function body (TODO: apply redirects for functions)
             let result = match crate::parser::parse_command(&func_body) {
                 Ok(cmds) => self.execute(&cmds),
@@ -185,7 +190,7 @@ impl<'a> Executor<'a> {
                     1
                 }
             };
-            
+
             // Restore positional params
             self.state.set_positional_params(old_params);
             return result;
@@ -259,7 +264,8 @@ impl<'a> Executor<'a> {
 
             let cmd = &args[0];
             let cmd_args: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-            let code = if let Some(result) = self.registry.execute(cmd, self.state, &cmd_args[1..]) {
+            let code = if let Some(result) = self.registry.execute(cmd, self.state, &cmd_args[1..])
+            {
                 result.unwrap_or(1)
             } else {
                 1
@@ -396,7 +402,12 @@ impl<'a> Executor<'a> {
                     // Write here-doc content (target contains the delimiter, content should be parsed)
                     // For now, just use target as content (simplified)
                     let content = target.as_bytes();
-                    syscall3(SYS_WRITE, pipe_fds[1] as u64, content.as_ptr() as u64, content.len() as u64);
+                    syscall3(
+                        SYS_WRITE,
+                        pipe_fds[1] as u64,
+                        content.as_ptr() as u64,
+                        content.len() as u64,
+                    );
                     syscall1(SYS_CLOSE, pipe_fds[1] as u64);
                     syscall2(SYS_DUP2, pipe_fds[0] as u64, 0);
                     syscall1(SYS_CLOSE, pipe_fds[0] as u64);
@@ -410,7 +421,12 @@ impl<'a> Executor<'a> {
                     }
                     let content = format!("{}\n", target);
                     let content_bytes = content.as_bytes();
-                    syscall3(SYS_WRITE, pipe_fds[1] as u64, content_bytes.as_ptr() as u64, content_bytes.len() as u64);
+                    syscall3(
+                        SYS_WRITE,
+                        pipe_fds[1] as u64,
+                        content_bytes.as_ptr() as u64,
+                        content_bytes.len() as u64,
+                    );
                     syscall1(SYS_CLOSE, pipe_fds[1] as u64);
                     syscall2(SYS_DUP2, pipe_fds[0] as u64, 0);
                     syscall1(SYS_CLOSE, pipe_fds[0] as u64);
@@ -444,21 +460,24 @@ impl<'a> Executor<'a> {
             }
 
             let path_cstr = format!("{}\0", path);
-            
+
             // Prepare argv
-            let argv_strs: Vec<String> = args.iter()
-                .map(|s| format!("{}\0", s))
-                .collect();
-            let argv_ptrs: Vec<*const u8> = argv_strs.iter()
+            let argv_strs: Vec<String> = args.iter().map(|s| format!("{}\0", s)).collect();
+            let argv_ptrs: Vec<*const u8> = argv_strs
+                .iter()
                 .map(|s| s.as_ptr())
                 .chain(std::iter::once(std::ptr::null()))
                 .collect();
 
             // Prepare envp from exported variables
-            let env_strs: Vec<String> = self.state.exported_vars().iter()
+            let env_strs: Vec<String> = self
+                .state
+                .exported_vars()
+                .iter()
                 .map(|(k, v)| format!("{}={}\0", k, v))
                 .collect();
-            let envp_ptrs: Vec<*const u8> = env_strs.iter()
+            let envp_ptrs: Vec<*const u8> = env_strs
+                .iter()
                 .map(|s| s.as_ptr())
                 .chain(std::iter::once(std::ptr::null()))
                 .collect();
@@ -467,7 +486,7 @@ impl<'a> Executor<'a> {
                 SYS_EXECVE,
                 path_cstr.as_ptr() as u64,
                 argv_ptrs.as_ptr() as u64,
-                envp_ptrs.as_ptr() as u64
+                envp_ptrs.as_ptr() as u64,
             );
 
             if ret < 0 {
@@ -479,14 +498,14 @@ impl<'a> Executor<'a> {
             // Parent - wait for child
             let mut status: i32 = 0;
             syscall3(SYS_WAITPID, pid as u64, &mut status as *mut i32 as u64, 0);
-            
+
             // Extract exit code (lower 8 bits if normal exit)
             let exit_code = if status & 0x7f == 0 {
                 (status >> 8) & 0xff
             } else {
                 128 + (status & 0x7f)
             };
-            
+
             self.state.set_var("?", &exit_code.to_string());
             exit_code
         }
@@ -529,11 +548,16 @@ impl<'a> Executor<'a> {
 
         let mut matches = Vec::new();
         let mut buf = [0u8; 4096];
-        
+
         // Read directory (using getdents64 syscall)
         const SYS_GETDENTS64: u64 = 78;
         loop {
-            let n = syscall3(SYS_GETDENTS64, fd as u64, buf.as_mut_ptr() as u64, buf.len() as u64);
+            let n = syscall3(
+                SYS_GETDENTS64,
+                fd as u64,
+                buf.as_mut_ptr() as u64,
+                buf.len() as u64,
+            );
             if n <= 0 {
                 break;
             }
@@ -557,7 +581,7 @@ impl<'a> Executor<'a> {
                     .position(|&b| b == 0)
                     .map(|p| name_start + p)
                     .unwrap_or(offset + reclen);
-                
+
                 if let Ok(name) = std::str::from_utf8(&buf[name_start..name_end]) {
                     if name != "." && name != ".." && self.glob_match(file_pattern, name) {
                         let full_path = if dir == "." {
@@ -605,7 +629,7 @@ impl<'a> Executor<'a> {
                 5, // SYS_OPEN
                 full_cstr.as_ptr() as u64,
                 0, // O_RDONLY
-                0
+                0,
             );
             if fd >= 0 {
                 syscall1(SYS_CLOSE, fd as u64);
@@ -628,7 +652,7 @@ impl<'a> Executor<'a> {
 
         for (i, cmd) in cmds.iter().enumerate() {
             let is_last = i == cmds.len() - 1;
-            
+
             // Create pipe (except for last command)
             let mut pipe_fds = [0i32; 2];
             if !is_last {
@@ -656,14 +680,14 @@ impl<'a> Executor<'a> {
                     syscall2(SYS_DUP2, pipe_fds[1] as u64, 1); // stdout
                     syscall1(SYS_CLOSE, pipe_fds[1] as u64);
                 }
-                
+
                 let status = self.execute_command(cmd);
                 syscall1(SYS_EXIT, status as u64);
                 unreachable!()
             } else {
                 // Parent
                 pids.push(pid);
-                
+
                 if prev_read_fd != -1 {
                     syscall1(SYS_CLOSE, prev_read_fd as u64);
                 }
@@ -759,12 +783,16 @@ impl<'a> Executor<'a> {
     }
 
     /// Execute if statement
-    fn execute_if(&mut self, condition: &[Command], then_part: &[Command], 
-                  elif_parts: &[(Vec<Command>, Vec<Command>)], 
-                  else_part: &Option<Vec<Command>>) -> i32 {
+    fn execute_if(
+        &mut self,
+        condition: &[Command],
+        then_part: &[Command],
+        elif_parts: &[(Vec<Command>, Vec<Command>)],
+        else_part: &Option<Vec<Command>>,
+    ) -> i32 {
         // Evaluate main condition
         let cond_result = self.execute(condition);
-        
+
         if cond_result == 0 {
             return self.execute(then_part);
         }
@@ -839,13 +867,21 @@ impl<'a> Executor<'a> {
 
     /// Execute for loop
     fn execute_for(&mut self, var: &str, words: &[String], body: &[Command]) -> i32 {
-        let expanded_words: Vec<String> = words.iter()
+        let expanded_words: Vec<String> = words
+            .iter()
             .flat_map(|w| {
                 let expanded = self.expand_string(w);
                 if w == "\"$@\"" || w == "$@" {
-                    self.state.positional_params_at().iter().map(|s| s.to_string()).collect::<Vec<String>>()
+                    self.state
+                        .positional_params_at()
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect::<Vec<String>>()
                 } else {
-                    expanded.split_whitespace().map(String::from).collect::<Vec<String>>()
+                    expanded
+                        .split_whitespace()
+                        .map(String::from)
+                        .collect::<Vec<String>>()
                 }
             })
             .collect();
@@ -862,7 +898,7 @@ impl<'a> Executor<'a> {
     /// Execute while loop
     fn execute_while(&mut self, condition: &[Command], body: &[Command]) -> i32 {
         let mut last_status = 0;
-        
+
         loop {
             let cond_result = self.execute(condition);
             if cond_result != 0 {
@@ -877,7 +913,7 @@ impl<'a> Executor<'a> {
     /// Execute until loop
     fn execute_until(&mut self, condition: &[Command], body: &[Command]) -> i32 {
         let mut last_status = 0;
-        
+
         loop {
             let cond_result = self.execute(condition);
             if cond_result == 0 {
@@ -891,15 +927,13 @@ impl<'a> Executor<'a> {
 
     /// Execute select menu
     fn execute_select(&mut self, var: &str, words: &[String], body: &[Command]) -> i32 {
-        let expanded_words: Vec<String> = words.iter()
-            .map(|w| self.expand_string(w))
-            .collect();
+        let expanded_words: Vec<String> = words.iter().map(|w| self.expand_string(w)).collect();
 
         loop {
             for (i, word) in expanded_words.iter().enumerate() {
                 println!("{}) {}", i + 1, word);
             }
-            
+
             let ps3 = self.state.get_var("PS3").unwrap_or("#? ").to_string();
             print!("{}", ps3);
             io::stdout().flush().ok();
@@ -956,16 +990,41 @@ impl<'a> Executor<'a> {
                 }
                 s
             }
-            Command::Pipeline(cmds) => cmds.iter().map(|c| self.serialize_command(c)).collect::<Vec<_>>().join(" | "),
-            Command::AndList(cmds) => cmds.iter().map(|c| self.serialize_command(c)).collect::<Vec<_>>().join(" && "),
-            Command::OrList(cmds) => cmds.iter().map(|c| self.serialize_command(c)).collect::<Vec<_>>().join(" || "),
+            Command::Pipeline(cmds) => cmds
+                .iter()
+                .map(|c| self.serialize_command(c))
+                .collect::<Vec<_>>()
+                .join(" | "),
+            Command::AndList(cmds) => cmds
+                .iter()
+                .map(|c| self.serialize_command(c))
+                .collect::<Vec<_>>()
+                .join(" && "),
+            Command::OrList(cmds) => cmds
+                .iter()
+                .map(|c| self.serialize_command(c))
+                .collect::<Vec<_>>()
+                .join(" || "),
             Command::Background(cmd) => format!("{} &", self.serialize_command(cmd)),
             Command::Subshell(cmd) => format!("( {} )", self.serialize_command(cmd)),
             Command::BraceGroup(cmds) => format!("{{ {}; }}", self.serialize_commands(cmds)),
-            Command::If { condition, then_part, elif_parts, else_part } => {
-                let mut s = format!("if {}; then {}", self.serialize_commands(condition), self.serialize_commands(then_part));
+            Command::If {
+                condition,
+                then_part,
+                elif_parts,
+                else_part,
+            } => {
+                let mut s = format!(
+                    "if {}; then {}",
+                    self.serialize_commands(condition),
+                    self.serialize_commands(then_part)
+                );
                 for (cond, then_) in elif_parts {
-                    s.push_str(&format!("; elif {}; then {}", self.serialize_commands(cond), self.serialize_commands(then_)));
+                    s.push_str(&format!(
+                        "; elif {}; then {}",
+                        self.serialize_commands(cond),
+                        self.serialize_commands(then_)
+                    ));
                 }
                 if let Some(else_cmds) = else_part {
                     s.push_str(&format!("; else {}", self.serialize_commands(else_cmds)));
@@ -973,19 +1032,43 @@ impl<'a> Executor<'a> {
                 s.push_str("; fi");
                 s
             }
-            Command::For { var, words, body } => format!("for {} in {}; do {}; done", var, words.join(" "), self.serialize_commands(body)),
-            Command::While { condition, body } => format!("while {}; do {}; done", self.serialize_commands(condition), self.serialize_commands(body)),
-            Command::Until { condition, body } => format!("until {}; do {}; done", self.serialize_commands(condition), self.serialize_commands(body)),
+            Command::For { var, words, body } => format!(
+                "for {} in {}; do {}; done",
+                var,
+                words.join(" "),
+                self.serialize_commands(body)
+            ),
+            Command::While { condition, body } => format!(
+                "while {}; do {}; done",
+                self.serialize_commands(condition),
+                self.serialize_commands(body)
+            ),
+            Command::Until { condition, body } => format!(
+                "until {}; do {}; done",
+                self.serialize_commands(condition),
+                self.serialize_commands(body)
+            ),
             Command::Case { word, cases } => {
                 let mut s = format!("case {} in", word);
                 for (patterns, cmds) in cases {
-                    s.push_str(&format!(" {}) {};; ", patterns.join("|"), self.serialize_commands(cmds)));
+                    s.push_str(&format!(
+                        " {}) {};; ",
+                        patterns.join("|"),
+                        self.serialize_commands(cmds)
+                    ));
                 }
                 s.push_str("esac");
                 s
             }
-            Command::Select { var, words, body } => format!("select {} in {}; do {}; done", var, words.join(" "), self.serialize_commands(body)),
-            Command::Function { name, body } => format!("function {} {{ {}; }}", name, self.serialize_commands(body)),
+            Command::Select { var, words, body } => format!(
+                "select {} in {}; do {}; done",
+                var,
+                words.join(" "),
+                self.serialize_commands(body)
+            ),
+            Command::Function { name, body } => {
+                format!("function {} {{ {}; }}", name, self.serialize_commands(body))
+            }
             Command::Arithmetic(expr) => format!("(( {} ))", expr),
             Command::Conditional(args) => format!("[[ {} ]]", args.join(" ")),
             Command::Empty => String::new(),
@@ -1017,7 +1100,13 @@ impl<'a> Executor<'a> {
     fn execute_arithmetic(&mut self, expr: &str) -> i32 {
         let expanded = self.expand_string(expr);
         match self.evaluate_arithmetic(&expanded) {
-            Ok(result) => if result == 0 { 1 } else { 0 },
+            Ok(result) => {
+                if result == 0 {
+                    1
+                } else {
+                    0
+                }
+            }
             Err(e) => {
                 eprintln!("(( )): {}", e);
                 1
@@ -1030,7 +1119,7 @@ impl<'a> Executor<'a> {
         if expr.is_empty() {
             return Ok(0);
         }
-        
+
         // Handle comparison operators
         if let Some(pos) = expr.rfind("==") {
             let left = self.evaluate_arithmetic(&expr[..pos])?;
@@ -1052,10 +1141,17 @@ impl<'a> Executor<'a> {
                 '(' => depth -= 1,
                 '+' | '-' if depth == 0 && i > 0 => {
                     let prev = chars.get(i - 1);
-                    if prev.map(|p| !matches!(p, '*' | '/' | '%' | '+' | '-' | '(' | ' ')).unwrap_or(false) {
+                    if prev
+                        .map(|p| !matches!(p, '*' | '/' | '%' | '+' | '-' | '(' | ' '))
+                        .unwrap_or(false)
+                    {
                         let left = self.evaluate_arithmetic(&expr[..i])?;
                         let right = self.evaluate_arithmetic(&expr[i + 1..])?;
-                        return Ok(if chars[i] == '+' { left + right } else { left - right });
+                        return Ok(if chars[i] == '+' {
+                            left + right
+                        } else {
+                            left - right
+                        });
                     }
                 }
                 _ => {}
@@ -1076,13 +1172,17 @@ impl<'a> Executor<'a> {
                 '/' if depth == 0 && i > 0 => {
                     let left = self.evaluate_arithmetic(&expr[..i])?;
                     let right = self.evaluate_arithmetic(&expr[i + 1..])?;
-                    if right == 0 { return Err("除以零".to_string()); }
+                    if right == 0 {
+                        return Err("除以零".to_string());
+                    }
                     return Ok(left / right);
                 }
                 '%' if depth == 0 && i > 0 => {
                     let left = self.evaluate_arithmetic(&expr[..i])?;
                     let right = self.evaluate_arithmetic(&expr[i + 1..])?;
-                    if right == 0 { return Err("除以零".to_string()); }
+                    if right == 0 {
+                        return Err("除以零".to_string());
+                    }
                     return Ok(left % right);
                 }
                 _ => {}
@@ -1104,36 +1204,60 @@ impl<'a> Executor<'a> {
         }
 
         // Handle variable
-        if trimmed.chars().all(|c| c.is_alphanumeric() || c == '_') && !trimmed.chars().next().map(|c| c.is_numeric()).unwrap_or(true) {
+        if trimmed.chars().all(|c| c.is_alphanumeric() || c == '_')
+            && !trimmed
+                .chars()
+                .next()
+                .map(|c| c.is_numeric())
+                .unwrap_or(true)
+        {
             if let Some(val) = self.state.get_var(trimmed) {
                 return val.parse().map_err(|_| format!("无效数字: {}", val));
             }
             return Ok(0);
         }
 
-        trimmed.parse().map_err(|_| format!("无效表达式: {}", trimmed))
+        trimmed
+            .parse()
+            .map_err(|_| format!("无效表达式: {}", trimmed))
     }
 
     fn execute_conditional(&mut self, args: &[String]) -> i32 {
         let expanded: Vec<String> = args.iter().map(|a| self.expand_string(a)).collect();
-        if expanded.is_empty() { return 1; }
+        if expanded.is_empty() {
+            return 1;
+        }
         self.evaluate_conditional(&expanded)
     }
 
     fn evaluate_conditional(&self, args: &[String]) -> i32 {
-        if args.is_empty() { return 1; }
+        if args.is_empty() {
+            return 1;
+        }
 
         if args.len() >= 2 {
             let op = &args[0];
             let arg = &args[1];
-            
+
             match op.as_str() {
                 "-z" => return if arg.is_empty() { 0 } else { 1 },
                 "-n" => return if !arg.is_empty() { 0 } else { 1 },
                 "-e" | "-a" => return if self.file_exists(arg) { 0 } else { 1 },
-                "-f" => return if self.file_exists(arg) && !arg.ends_with('/') { 0 } else { 1 },
+                "-f" => {
+                    return if self.file_exists(arg) && !arg.ends_with('/') {
+                        0
+                    } else {
+                        1
+                    }
+                }
                 "-d" => return if self.is_directory(arg) { 0 } else { 1 },
-                "!" => return if self.evaluate_conditional(&args[1..]) != 0 { 0 } else { 1 },
+                "!" => {
+                    return if self.evaluate_conditional(&args[1..]) != 0 {
+                        0
+                    } else {
+                        1
+                    }
+                }
                 _ => {}
             }
         }
@@ -1224,7 +1348,10 @@ impl<'a> Executor<'a> {
                             if let Some(next) = chars.next() {
                                 match next {
                                     '`' | '\\' | '$' => cmd.push(next),
-                                    _ => { cmd.push('\\'); cmd.push(next); }
+                                    _ => {
+                                        cmd.push('\\');
+                                        cmd.push(next);
+                                    }
                                 }
                             }
                         } else {
@@ -1238,7 +1365,10 @@ impl<'a> Executor<'a> {
                         if in_double_quote {
                             match next {
                                 '$' | '`' | '"' | '\\' | '\n' => result.push(next),
-                                _ => { result.push('\\'); result.push(next); }
+                                _ => {
+                                    result.push('\\');
+                                    result.push(next);
+                                }
                             }
                         } else {
                             result.push(next);
@@ -1309,13 +1439,34 @@ impl<'a> Executor<'a> {
                 }
                 self.state.get_var(&name).unwrap_or("").to_string()
             }
-            Some('?') => { chars.next(); self.state.get_var("?").unwrap_or("0").to_string() }
-            Some('$') => { chars.next(); "1".to_string() }
-            Some('!') => { chars.next(); self.state.get_var("!").unwrap_or("0").to_string() }
-            Some('#') => { chars.next(); self.state.positional_param_count().to_string() }
-            Some('*') => { chars.next(); self.state.positional_params_star() }
-            Some('@') => { chars.next(); self.state.positional_params_star() }
-            Some('0') => { chars.next(); self.state.shell_name().to_string() }
+            Some('?') => {
+                chars.next();
+                self.state.get_var("?").unwrap_or("0").to_string()
+            }
+            Some('$') => {
+                chars.next();
+                "1".to_string()
+            }
+            Some('!') => {
+                chars.next();
+                self.state.get_var("!").unwrap_or("0").to_string()
+            }
+            Some('#') => {
+                chars.next();
+                self.state.positional_param_count().to_string()
+            }
+            Some('*') => {
+                chars.next();
+                self.state.positional_params_star()
+            }
+            Some('@') => {
+                chars.next();
+                self.state.positional_params_star()
+            }
+            Some('0') => {
+                chars.next();
+                self.state.shell_name().to_string()
+            }
             Some(c) if c.is_numeric() => {
                 let n = c.to_digit(10).unwrap() as usize;
                 chars.next();
@@ -1326,7 +1477,10 @@ impl<'a> Executor<'a> {
     }
 
     /// Read command substitution content from $(...)
-    fn read_command_substitution(&self, chars: &mut std::iter::Peekable<std::str::Chars>) -> String {
+    fn read_command_substitution(
+        &self,
+        chars: &mut std::iter::Peekable<std::str::Chars>,
+    ) -> String {
         let mut cmd = String::new();
         let mut depth = 1;
         let mut in_single_quote = false;
@@ -1396,7 +1550,7 @@ impl<'a> Executor<'a> {
             let sh_path = "/bin/sh\0";
             let c_flag = "-c\0";
             let cmd_str = format!("{}\0", cmd);
-            
+
             let argv_ptrs: [*const u8; 4] = [
                 sh_path.as_ptr(),
                 c_flag.as_ptr(),
@@ -1408,18 +1562,23 @@ impl<'a> Executor<'a> {
                 SYS_EXECVE,
                 sh_path.as_ptr() as u64,
                 argv_ptrs.as_ptr() as u64,
-                std::ptr::null::<u8>() as u64
+                std::ptr::null::<u8>() as u64,
             );
             syscall1(SYS_EXIT, 1);
             unreachable!()
         } else {
             // Parent: read output from pipe
             syscall1(SYS_CLOSE, pipe_fds[1] as u64);
-            
+
             let mut output = Vec::new();
             let mut buf = [0u8; 4096];
             loop {
-                let n = syscall3(SYS_READ, pipe_fds[0] as u64, buf.as_mut_ptr() as u64, buf.len() as u64);
+                let n = syscall3(
+                    SYS_READ,
+                    pipe_fds[0] as u64,
+                    buf.as_mut_ptr() as u64,
+                    buf.len() as u64,
+                );
                 if n <= 0 {
                     break;
                 }
@@ -1446,10 +1605,15 @@ impl<'a> Executor<'a> {
 
         while let Some(c) = chars.next() {
             match c {
-                '{' => { depth += 1; content.push(c); }
+                '{' => {
+                    depth += 1;
+                    content.push(c);
+                }
                 '}' => {
                     depth -= 1;
-                    if depth == 0 { break; }
+                    if depth == 0 {
+                        break;
+                    }
                     content.push(c);
                 }
                 _ => content.push(c),
@@ -1458,7 +1622,11 @@ impl<'a> Executor<'a> {
 
         if content.starts_with('#') {
             let var_name = &content[1..];
-            return self.state.get_var(var_name).map(|v| v.len().to_string()).unwrap_or_else(|| "0".to_string());
+            return self
+                .state
+                .get_var(var_name)
+                .map(|v| v.len().to_string())
+                .unwrap_or_else(|| "0".to_string());
         }
 
         self.state.get_var(&content).unwrap_or("").to_string()

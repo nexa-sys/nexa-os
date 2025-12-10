@@ -2,8 +2,8 @@
 //!
 //! Implements session caching and resumption for TLS 1.2 and TLS 1.3.
 
-use std::vec::Vec;
 use std::collections::HashMap;
+use std::vec::Vec;
 
 /// TLS Session
 #[derive(Clone)]
@@ -172,7 +172,7 @@ impl SslSession {
         if session.is_null() {
             return;
         }
-        
+
         unsafe {
             (*session).ref_count -= 1;
             if (*session).ref_count == 0 {
@@ -219,21 +219,21 @@ impl SessionCache {
         if self.by_id.len() >= self.max_size {
             self.cleanup();
         }
-        
+
         // Still full? Remove oldest
         if self.by_id.len() >= self.max_size {
             if let Some(oldest_id) = self.find_oldest() {
                 self.remove(&oldest_id);
             }
         }
-        
+
         let id = session.session_id.clone();
-        
+
         // Add to hostname index
         if let Some(ref hostname) = session.hostname {
             self.by_hostname.insert(hostname.clone(), id.clone());
         }
-        
+
         self.by_id.insert(id, session);
     }
 
@@ -262,11 +262,13 @@ impl SessionCache {
 
     /// Remove expired sessions
     pub fn cleanup(&mut self) {
-        let expired: Vec<Vec<u8>> = self.by_id.iter()
+        let expired: Vec<Vec<u8>> = self
+            .by_id
+            .iter()
             .filter(|(_, s)| s.is_expired())
             .map(|(id, _)| id.clone())
             .collect();
-        
+
         for id in expired {
             self.remove(&id);
         }
@@ -274,7 +276,8 @@ impl SessionCache {
 
     /// Find oldest session ID
     fn find_oldest(&self) -> Option<Vec<u8>> {
-        self.by_id.iter()
+        self.by_id
+            .iter()
             .min_by_key(|(_, s)| s.creation_time)
             .map(|(id, _)| id.clone())
     }
@@ -323,26 +326,26 @@ impl NewSessionTicket {
         if data.len() < 9 {
             return None;
         }
-        
+
         let lifetime = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
         let age_add = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
-        
+
         let nonce_len = data[8] as usize;
         if data.len() < 9 + nonce_len + 2 {
             return None;
         }
-        
+
         let nonce = data[9..9 + nonce_len].to_vec();
         let pos = 9 + nonce_len;
-        
+
         let ticket_len = ((data[pos] as usize) << 8) | (data[pos + 1] as usize);
         let pos = pos + 2;
         if data.len() < pos + ticket_len {
             return None;
         }
-        
+
         let ticket = data[pos..pos + ticket_len].to_vec();
-        
+
         Some(Self {
             lifetime,
             age_add,
@@ -356,7 +359,7 @@ impl NewSessionTicket {
     pub fn to_session(&self, resumption_master_secret: &[u8], cipher_suite: u16) -> SslSession {
         // Derive PSK from resumption master secret and nonce
         let psk = derive_psk(resumption_master_secret, &self.nonce);
-        
+
         SslSession::from_params(
             Vec::new(), // No session ID for TLS 1.3
             psk,
@@ -376,33 +379,33 @@ fn derive_psk(resumption_master_secret: &[u8], nonce: &[u8]) -> Vec<u8> {
 /// HKDF-Expand-Label (simplified)
 fn hkdf_expand_label(secret: &[u8], label: &[u8], context: &[u8], length: usize) -> Vec<u8> {
     let mut hkdf_label = Vec::new();
-    
+
     hkdf_label.push((length >> 8) as u8);
     hkdf_label.push((length & 0xFF) as u8);
-    
+
     let full_label_len = 6 + label.len();
     hkdf_label.push(full_label_len as u8);
     hkdf_label.extend_from_slice(b"tls13 ");
     hkdf_label.extend_from_slice(label);
-    
+
     hkdf_label.push(context.len() as u8);
     hkdf_label.extend_from_slice(context);
-    
+
     // HKDF-Expand
     let mut result = Vec::new();
     let mut t = Vec::new();
     let mut counter = 1u8;
-    
+
     while result.len() < length {
         let mut data = t.clone();
         data.extend_from_slice(&hkdf_label);
         data.push(counter);
-        
+
         t = crate::ncryptolib::hmac_sha256(secret, &data).to_vec();
         result.extend_from_slice(&t);
         counter += 1;
     }
-    
+
     result.truncate(length);
     result
 }

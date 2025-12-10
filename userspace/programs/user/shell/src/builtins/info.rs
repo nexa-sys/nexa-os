@@ -12,10 +12,12 @@ const SEARCH_PATHS: &[&str] = &["/bin", "/sbin", "/usr/bin", "/usr/sbin"];
 
 /// Register info builtins
 pub fn register(registry: &mut BuiltinRegistry) {
-    registry.register("help", BuiltinDesc::new(
-        builtin_help,
-        "显示内建命令的帮助信息",
-        "显示有关内建命令的帮助信息。\n\
+    registry.register(
+        "help",
+        BuiltinDesc::new(
+            builtin_help,
+            "显示内建命令的帮助信息",
+            "显示有关内建命令的帮助信息。\n\
          \n\
          如果指定了 PATTERN，则给出所有匹配 PATTERN 的命令的详细帮助，\n\
          否则打印所有内建命令的列表。\n\
@@ -30,14 +32,17 @@ pub fn register(registry: &mut BuiltinRegistry) {
          \n\
          退出状态:\n\
          返回成功，除非 PATTERN 未找到或给出无效选项。",
-        "help [-dms] [模式 ...]",
-        false,  // Cannot be disabled
-    ));
+            "help [-dms] [模式 ...]",
+            false, // Cannot be disabled
+        ),
+    );
 
-    registry.register("type", BuiltinDesc::new(
-        builtin_type,
-        "显示命令类型的信息",
-        "对于每个 NAME，指示如果作为命令名，它将如何被解释。\n\
+    registry.register(
+        "type",
+        BuiltinDesc::new(
+            builtin_type,
+            "显示命令类型的信息",
+            "对于每个 NAME，指示如果作为命令名，它将如何被解释。\n\
          \n\
          选项:\n\
            -a    显示所有包含名为 NAME 的可执行文件的位置；\n\
@@ -55,14 +60,17 @@ pub fn register(registry: &mut BuiltinRegistry) {
            NAME  要解释的命令名\n\
          \n\
          如果所有 NAME 都被找到则返回成功，否则返回失败。",
-        "type [-afptP] 名称 [名称 ...]",
-        true,
-    ));
+            "type [-afptP] 名称 [名称 ...]",
+            true,
+        ),
+    );
 
-    registry.register("hash", BuiltinDesc::new(
-        builtin_hash,
-        "记住或显示程序位置",
-        "确定并记住每个 NAME 的完整路径名。如果不带参数，\n\
+    registry.register(
+        "hash",
+        BuiltinDesc::new(
+            builtin_hash,
+            "记住或显示程序位置",
+            "确定并记住每个 NAME 的完整路径名。如果不带参数，\n\
          则打印有关已记住命令的信息。\n\
          \n\
          选项:\n\
@@ -76,14 +84,17 @@ pub fn register(registry: &mut BuiltinRegistry) {
            NAME  每个 NAME 被搜索于 $PATH 并添加到已记住命令的列表\n\
          \n\
          如果每个 NAME 都被找到则返回成功，否则返回失败。",
-        "hash [-lr] [-p 路径名] [-dt] [名称 ...]",
-        true,
-    ));
+            "hash [-lr] [-p 路径名] [-dt] [名称 ...]",
+            true,
+        ),
+    );
 
-    registry.register("enable", BuiltinDesc::new(
-        builtin_enable,
-        "启用和禁用内建命令",
-        "启用和禁用内建 shell 命令。禁用某个内建命令后，\n\
+    registry.register(
+        "enable",
+        BuiltinDesc::new(
+            builtin_enable,
+            "启用和禁用内建命令",
+            "启用和禁用内建 shell 命令。禁用某个内建命令后，\n\
          磁盘上同名的命令可以在不使用完整路径名的情况下执行，\n\
          即使 shell 通常在搜索磁盘上的命令之前先搜索内建命令。\n\
          \n\
@@ -96,9 +107,10 @@ pub fn register(registry: &mut BuiltinRegistry) {
          不使用选项，每个 NAME 被启用。\n\
          \n\
          如果 NAME 是内建命令或给出了无效选项则返回成功。",
-        "enable [-a] [-dnps] [-f 文件名] [名称 ...]",
-        false,  // Cannot be disabled
-    ));
+            "enable [-a] [-dnps] [-f 文件名] [名称 ...]",
+            false, // Cannot be disabled
+        ),
+    );
 }
 
 /// help builtin - display help information
@@ -106,7 +118,7 @@ pub fn register(registry: &mut BuiltinRegistry) {
 pub fn builtin_help(_state: &mut ShellState, args: &[&str]) -> BuiltinResult {
     // This function needs registry access, which is provided through a different mechanism
     // The actual implementation is in main.rs where the registry is available
-    
+
     let mut short_desc = false;
     let mut short_usage = false;
     let mut patterns: Vec<&str> = Vec::new();
@@ -164,31 +176,83 @@ fn builtin_type(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
     // List of known builtin names
     const BUILTINS: &[&str] = &[
         // Navigation
-        "cd", "pwd", "pushd", "popd", "dirs",
+        "cd",
+        "pwd",
+        "pushd",
+        "popd",
+        "dirs",
         // Variables
-        "export", "unset", "set", "declare", "typeset", "readonly", "local", "let", "shift",
+        "export",
+        "unset",
+        "set",
+        "declare",
+        "typeset",
+        "readonly",
+        "local",
+        "let",
+        "shift",
         // Aliases
-        "alias", "unalias",
+        "alias",
+        "unalias",
         // Flow control
-        "exit", "return", "break", "continue", "test", "[", "true", "false", ":", "logout",
+        "exit",
+        "return",
+        "break",
+        "continue",
+        "test",
+        "[",
+        "true",
+        "false",
+        ":",
+        "logout",
         // Information
-        "help", "type", "hash", "enable", "caller", "variables",
+        "help",
+        "type",
+        "hash",
+        "enable",
+        "caller",
+        "variables",
         // Utility
-        "echo", "printf", "source", ".", "eval", "exec", "command", "builtin", "read",
+        "echo",
+        "printf",
+        "source",
+        ".",
+        "eval",
+        "exec",
+        "command",
+        "builtin",
+        "read",
         // Job control
-        "jobs", "bg", "fg", "disown", "suspend", "kill", "wait", "coproc",
+        "jobs",
+        "bg",
+        "fg",
+        "disown",
+        "suspend",
+        "kill",
+        "wait",
+        "coproc",
         // History
-        "history", "fc",
+        "history",
+        "fc",
         // Configuration
-        "shopt", "bind", "ulimit", "umask",
+        "shopt",
+        "bind",
+        "ulimit",
+        "umask",
         // Traps
-        "trap", "times", "time",
+        "trap",
+        "times",
+        "time",
         // Completion
-        "compgen", "complete", "compopt",
+        "compgen",
+        "complete",
+        "compopt",
         // Misc
-        "getopts", "mapfile", "readarray",
+        "getopts",
+        "mapfile",
+        "readarray",
     ];
-    
+
     let mut show_all = false;
     let mut type_only = false;
     let mut show_path = false;
@@ -224,7 +288,9 @@ fn builtin_type(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
             } else {
                 println!("{} 是 `{}' 的别名", name, value);
             }
-            if !show_all { continue; }
+            if !show_all {
+                continue;
+            }
         }
 
         // Check builtin
@@ -235,7 +301,9 @@ fn builtin_type(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
             } else {
                 println!("{} 是一个 shell 内建命令", name);
             }
-            if !show_all { continue; }
+            if !show_all {
+                continue;
+            }
         }
 
         // Check hashed
@@ -248,7 +316,9 @@ fn builtin_type(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
             } else {
                 println!("{} 已哈希 ({})", name, path.display());
             }
-            if !show_all { continue; }
+            if !show_all {
+                continue;
+            }
         }
 
         // Search PATH
@@ -271,7 +341,11 @@ fn builtin_type(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
         }
     }
 
-    if all_found { Ok(0) } else { Ok(1) }
+    if all_found {
+        Ok(0)
+    } else {
+        Ok(1)
+    }
 }
 
 /// hash builtin - manage command hash table
@@ -361,7 +435,11 @@ fn builtin_hash(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
         }
     }
 
-    if all_found { Ok(0) } else { Ok(1) }
+    if all_found {
+        Ok(0)
+    } else {
+        Ok(1)
+    }
 }
 
 /// enable builtin - enable/disable builtins
@@ -369,18 +447,70 @@ fn builtin_hash(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
 fn builtin_enable(_state: &mut ShellState, args: &[&str]) -> BuiltinResult {
     // List of known builtin names
     const BUILTINS: &[&str] = &[
-        "cd", "pwd", "pushd", "popd", "dirs",
-        "export", "unset", "set", "declare", "typeset", "readonly", "local", "let", "shift",
-        "alias", "unalias",
-        "exit", "return", "break", "continue", "test", "[", "true", "false", ":", "logout",
-        "help", "type", "hash", "enable", "caller", "variables",
-        "echo", "printf", "source", ".", "eval", "exec", "command", "builtin", "read",
-        "jobs", "bg", "fg", "disown", "suspend", "kill", "wait", "coproc",
-        "history", "fc",
-        "shopt", "bind", "ulimit", "umask",
-        "trap", "times", "time",
-        "compgen", "complete", "compopt",
-        "getopts", "mapfile", "readarray",
+        "cd",
+        "pwd",
+        "pushd",
+        "popd",
+        "dirs",
+        "export",
+        "unset",
+        "set",
+        "declare",
+        "typeset",
+        "readonly",
+        "local",
+        "let",
+        "shift",
+        "alias",
+        "unalias",
+        "exit",
+        "return",
+        "break",
+        "continue",
+        "test",
+        "[",
+        "true",
+        "false",
+        ":",
+        "logout",
+        "help",
+        "type",
+        "hash",
+        "enable",
+        "caller",
+        "variables",
+        "echo",
+        "printf",
+        "source",
+        ".",
+        "eval",
+        "exec",
+        "command",
+        "builtin",
+        "read",
+        "jobs",
+        "bg",
+        "fg",
+        "disown",
+        "suspend",
+        "kill",
+        "wait",
+        "coproc",
+        "history",
+        "fc",
+        "shopt",
+        "bind",
+        "ulimit",
+        "umask",
+        "trap",
+        "times",
+        "time",
+        "compgen",
+        "complete",
+        "compopt",
+        "getopts",
+        "mapfile",
+        "readarray",
     ];
 
     let mut show_all = false;

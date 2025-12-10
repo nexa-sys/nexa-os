@@ -7,8 +7,7 @@ use core::{ffi::c_void, ptr, slice};
 use crate::{set_errno, EINVAL};
 
 use super::file::{
-    file_read_byte, file_read_bytes, file_write_bytes, lock_stream,
-    stderr, stdin, stdout, FILE,
+    file_read_byte, file_read_bytes, file_write_bytes, lock_stream, stderr, stdin, stdout, FILE,
 };
 use super::format::write_formatted;
 use super::helpers::debug_log;
@@ -56,8 +55,7 @@ pub extern "C" fn puts(s: *const u8) -> i32 {
             len += 1;
         }
         let slice = slice::from_raw_parts(s, len);
-        if write_stream_bytes(stdout, slice).is_err()
-            || write_stream_bytes(stdout, b"\n").is_err()
+        if write_stream_bytes(stdout, slice).is_err() || write_stream_bytes(stdout, b"\n").is_err()
         {
             return -1;
         }
@@ -331,7 +329,8 @@ pub unsafe extern "C" fn fread(
 
     let mut read_total = 0usize;
     while read_total < total {
-        let buffer = slice::from_raw_parts_mut((ptr as *mut u8).add(read_total), total - read_total);
+        let buffer =
+            slice::from_raw_parts_mut((ptr as *mut u8).add(read_total), total - read_total);
         match file_read_bytes(file, buffer) {
             Ok(0) => break,
             Ok(n) => read_total += n,

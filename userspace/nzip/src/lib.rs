@@ -237,7 +237,7 @@ pub extern "C" fn zlibCompileFlags() -> uLong {
     // Bits 4-5: size of voidpf
     // Bits 6-7: size of z_off_t
     let mut flags: uLong = 0;
-    
+
     // uInt is 32-bit
     flags |= 1;
     // uLong is 64-bit
@@ -246,7 +246,7 @@ pub extern "C" fn zlibCompileFlags() -> uLong {
     flags |= 2 << 4;
     // z_off_t is 64-bit
     flags |= 2 << 6;
-    
+
     flags
 }
 
@@ -264,7 +264,7 @@ pub use adler32::{adler32, adler32_combine, Adler32};
 pub use error::{ZlibError, ZlibResult};
 
 // Deflate compression
-pub use deflate::{Deflater, compress_bound};
+pub use deflate::{compress_bound, Deflater};
 
 // Inflate decompression
 pub use inflate::Inflater;
@@ -302,12 +302,12 @@ pub extern "C" fn compress2(
     if dest.is_null() || dest_len.is_null() || source.is_null() {
         return Z_STREAM_ERROR;
     }
-    
+
     unsafe {
         let src = core::slice::from_raw_parts(source, source_len as usize);
         let dst_cap = *dest_len as usize;
         let dst = core::slice::from_raw_parts_mut(dest, dst_cap);
-        
+
         match deflate::compress_to_zlib(src, dst, level) {
             Ok(written) => {
                 *dest_len = written as uLong;
@@ -340,12 +340,12 @@ pub extern "C" fn uncompress2(
     if dest.is_null() || dest_len.is_null() || source.is_null() || source_len.is_null() {
         return Z_STREAM_ERROR;
     }
-    
+
     unsafe {
         let src = core::slice::from_raw_parts(source, *source_len as usize);
         let dst_cap = *dest_len as usize;
         let dst = core::slice::from_raw_parts_mut(dest, dst_cap);
-        
+
         match inflate::decompress_zlib(src, dst) {
             Ok((written, consumed)) => {
                 *dest_len = written as uLong;
@@ -396,15 +396,15 @@ pub extern "C" fn deflateInit2_(
     if strm.is_null() {
         return Z_STREAM_ERROR;
     }
-    
+
     if stream_size != core::mem::size_of::<z_stream>() as c_int {
         return Z_VERSION_ERROR;
     }
-    
+
     if method != Z_DEFLATED {
         return Z_STREAM_ERROR;
     }
-    
+
     unsafe {
         // Initialize stream fields
         (*strm).total_in = 0;
@@ -412,11 +412,16 @@ pub extern "C" fn deflateInit2_(
         (*strm).msg = core::ptr::null();
         (*strm).data_type = Z_UNKNOWN;
         (*strm).adler = 1; // Initial adler32 value
-        
+
         // Allocate internal state
-        let state = Box::new(compat::DeflateState::new(level, window_bits, mem_level, strategy));
+        let state = Box::new(compat::DeflateState::new(
+            level,
+            window_bits,
+            mem_level,
+            strategy,
+        ));
         (*strm).state = Box::into_raw(state) as voidpf;
-        
+
         Z_OK
     }
 }
@@ -427,12 +432,12 @@ pub extern "C" fn deflate(strm: z_streamp, flush: c_int) -> c_int {
     if strm.is_null() {
         return Z_STREAM_ERROR;
     }
-    
+
     unsafe {
         if (*strm).state.is_null() {
             return Z_STREAM_ERROR;
         }
-        
+
         let state = &mut *((*strm).state as *mut compat::DeflateState);
         state.deflate(&mut *strm, flush)
     }
@@ -444,16 +449,16 @@ pub extern "C" fn deflateEnd(strm: z_streamp) -> c_int {
     if strm.is_null() {
         return Z_STREAM_ERROR;
     }
-    
+
     unsafe {
         if (*strm).state.is_null() {
             return Z_STREAM_ERROR;
         }
-        
+
         // Free the internal state
         let _ = Box::from_raw((*strm).state as *mut compat::DeflateState);
         (*strm).state = core::ptr::null_mut();
-        
+
         Z_OK
     }
 }
@@ -464,20 +469,20 @@ pub extern "C" fn deflateReset(strm: z_streamp) -> c_int {
     if strm.is_null() {
         return Z_STREAM_ERROR;
     }
-    
+
     unsafe {
         if (*strm).state.is_null() {
             return Z_STREAM_ERROR;
         }
-        
+
         let state = &mut *((*strm).state as *mut compat::DeflateState);
         state.reset();
-        
+
         (*strm).total_in = 0;
         (*strm).total_out = 0;
         (*strm).adler = 1;
         (*strm).msg = core::ptr::null();
-        
+
         Z_OK
     }
 }
@@ -492,19 +497,19 @@ pub extern "C" fn deflateSetDictionary(
     if strm.is_null() || dictionary.is_null() {
         return Z_STREAM_ERROR;
     }
-    
+
     unsafe {
         if (*strm).state.is_null() {
             return Z_STREAM_ERROR;
         }
-        
+
         let state = &mut *((*strm).state as *mut compat::DeflateState);
         let dict = core::slice::from_raw_parts(dictionary, dict_length as usize);
         state.set_dictionary(dict);
-        
+
         // Update adler32 with dictionary
         (*strm).adler = adler32::adler32_slice(1, dict) as uLong;
-        
+
         Z_OK
     }
 }
@@ -540,11 +545,11 @@ pub extern "C" fn inflateInit2_(
     if strm.is_null() {
         return Z_STREAM_ERROR;
     }
-    
+
     if stream_size != core::mem::size_of::<z_stream>() as c_int {
         return Z_VERSION_ERROR;
     }
-    
+
     unsafe {
         // Initialize stream fields
         (*strm).total_in = 0;
@@ -552,11 +557,11 @@ pub extern "C" fn inflateInit2_(
         (*strm).msg = core::ptr::null();
         (*strm).data_type = Z_UNKNOWN;
         (*strm).adler = 1; // Initial adler32/crc32 value
-        
+
         // Allocate internal state
         let state = Box::new(compat::InflateState::new(window_bits));
         (*strm).state = Box::into_raw(state) as voidpf;
-        
+
         Z_OK
     }
 }
@@ -567,12 +572,12 @@ pub extern "C" fn inflate(strm: z_streamp, flush: c_int) -> c_int {
     if strm.is_null() {
         return Z_STREAM_ERROR;
     }
-    
+
     unsafe {
         if (*strm).state.is_null() {
             return Z_STREAM_ERROR;
         }
-        
+
         let state = &mut *((*strm).state as *mut compat::InflateState);
         state.inflate(&mut *strm, flush)
     }
@@ -584,16 +589,16 @@ pub extern "C" fn inflateEnd(strm: z_streamp) -> c_int {
     if strm.is_null() {
         return Z_STREAM_ERROR;
     }
-    
+
     unsafe {
         if (*strm).state.is_null() {
             return Z_STREAM_ERROR;
         }
-        
+
         // Free the internal state
         let _ = Box::from_raw((*strm).state as *mut compat::InflateState);
         (*strm).state = core::ptr::null_mut();
-        
+
         Z_OK
     }
 }
@@ -604,20 +609,20 @@ pub extern "C" fn inflateReset(strm: z_streamp) -> c_int {
     if strm.is_null() {
         return Z_STREAM_ERROR;
     }
-    
+
     unsafe {
         if (*strm).state.is_null() {
             return Z_STREAM_ERROR;
         }
-        
+
         let state = &mut *((*strm).state as *mut compat::InflateState);
         state.reset();
-        
+
         (*strm).total_in = 0;
         (*strm).total_out = 0;
         (*strm).adler = 1;
         (*strm).msg = core::ptr::null();
-        
+
         Z_OK
     }
 }
@@ -628,20 +633,20 @@ pub extern "C" fn inflateReset2(strm: z_streamp, window_bits: c_int) -> c_int {
     if strm.is_null() {
         return Z_STREAM_ERROR;
     }
-    
+
     unsafe {
         if (*strm).state.is_null() {
             return Z_STREAM_ERROR;
         }
-        
+
         let state = &mut *((*strm).state as *mut compat::InflateState);
         state.reset_with_window_bits(window_bits);
-        
+
         (*strm).total_in = 0;
         (*strm).total_out = 0;
         (*strm).adler = 1;
         (*strm).msg = core::ptr::null();
-        
+
         Z_OK
     }
 }
@@ -656,15 +661,15 @@ pub extern "C" fn inflateSetDictionary(
     if strm.is_null() || dictionary.is_null() {
         return Z_STREAM_ERROR;
     }
-    
+
     unsafe {
         if (*strm).state.is_null() {
             return Z_STREAM_ERROR;
         }
-        
+
         let state = &mut *((*strm).state as *mut compat::InflateState);
         let dict = core::slice::from_raw_parts(dictionary, dict_length as usize);
-        
+
         if state.set_dictionary(dict) {
             Z_OK
         } else {
@@ -683,7 +688,7 @@ pub extern "C" fn adler32_z(adler: uLong, buf: *const Bytef, len: usize) -> uLon
     if buf.is_null() {
         return 1;
     }
-    
+
     unsafe {
         let data = core::slice::from_raw_parts(buf, len);
         adler32::adler32_slice(adler as u32, data) as uLong
@@ -696,7 +701,7 @@ pub extern "C" fn crc32_z(crc: uLong, buf: *const Bytef, len: usize) -> uLong {
     if buf.is_null() {
         return 0;
     }
-    
+
     unsafe {
         let data = core::slice::from_raw_parts(buf, len);
         crc32::crc32_slice(crc as u32, data) as uLong

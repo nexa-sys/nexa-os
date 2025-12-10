@@ -3,9 +3,9 @@
 //! This module implements HTTP/2 frame serialization and deserialization
 //! according to RFC 7540 Section 4.
 
-use crate::constants::{frame_type, frame_flags, FRAME_HEADER_LENGTH, MAX_MAX_FRAME_SIZE};
-use crate::error::{Error, Result, ErrorCode};
-use crate::types::{StreamId, PrioritySpec, SettingsEntry, Nv, GoawayData};
+use crate::constants::{frame_flags, frame_type, FRAME_HEADER_LENGTH, MAX_MAX_FRAME_SIZE};
+use crate::error::{Error, ErrorCode, Result};
+use crate::types::{GoawayData, Nv, PrioritySpec, SettingsEntry, StreamId};
 
 // ============================================================================
 // Frame Type Enum
@@ -345,12 +345,7 @@ impl FrameBuilder {
     }
 
     /// Create a DATA frame
-    pub fn data(
-        &self,
-        stream_id: StreamId,
-        data: &[u8],
-        end_stream: bool,
-    ) -> Result<DataFrame> {
+    pub fn data(&self, stream_id: StreamId, data: &[u8], end_stream: bool) -> Result<DataFrame> {
         if data.len() > self.max_frame_size as usize {
             return Err(Error::Protocol(ErrorCode::FrameSizeError));
         }
@@ -804,7 +799,10 @@ impl FrameParser {
         let mut opaque_data = [0u8; 8];
         opaque_data.copy_from_slice(payload);
 
-        Ok(Frame::Ping(PingFrame { header, opaque_data }))
+        Ok(Frame::Ping(PingFrame {
+            header,
+            opaque_data,
+        }))
     }
 
     fn parse_goaway(&self, header: FrameHeader, payload: &[u8]) -> Result<Frame> {

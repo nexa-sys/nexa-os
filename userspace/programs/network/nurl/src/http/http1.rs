@@ -1,5 +1,4 @@
 /// HTTP/1.1 client implementation
-
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
@@ -37,12 +36,8 @@ impl Http1Client {
             .map_err(|e| HttpError::ConnectionFailed(format!("{}: {}", addr, e)))?;
 
         // Set timeouts
-        stream
-            .set_read_timeout(Some(Duration::from_secs(30)))
-            .ok();
-        stream
-            .set_write_timeout(Some(Duration::from_secs(30)))
-            .ok();
+        stream.set_read_timeout(Some(Duration::from_secs(30))).ok();
+        stream.set_write_timeout(Some(Duration::from_secs(30))).ok();
 
         if self.verbose {
             eprintln!("* Connected!");
@@ -149,7 +144,8 @@ impl HttpClient for Http1Client {
             {
                 drop(stream);
                 return Err(HttpError::NotSupported(
-                    "HTTPS not supported (compile with 'https' or 'https-dynamic' feature)".to_string(),
+                    "HTTPS not supported (compile with 'https' or 'https-dynamic' feature)"
+                        .to_string(),
                 ));
             }
         } else {

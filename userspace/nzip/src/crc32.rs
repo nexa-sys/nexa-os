@@ -163,7 +163,7 @@ pub fn crc32_combine_impl(crc1: u32, crc2: u32, mut len2: usize) -> u32 {
 // C ABI Exports
 // ============================================================================
 
-use crate::{c_int, c_ulong, Bytef, uInt};
+use crate::{c_int, c_ulong, uInt, Bytef};
 
 /// Calculate CRC32 (zlib-compatible C ABI)
 #[no_mangle]
@@ -171,7 +171,7 @@ pub extern "C" fn nzip_crc32(crc: c_ulong, buf: *const Bytef, len: uInt) -> c_ul
     if buf.is_null() || len == 0 {
         return crc;
     }
-    
+
     unsafe {
         let data = core::slice::from_raw_parts(buf, len as usize);
         crc32_slice(crc as u32, data) as c_ulong
@@ -205,12 +205,12 @@ mod tests {
     #[test]
     fn test_crc32_incremental() {
         let full = crc32(b"hello world");
-        
+
         let mut hasher = Crc32::new();
         hasher.update(b"hello");
         hasher.update(b" ");
         hasher.update(b"world");
-        
+
         assert_eq!(hasher.finalize(), full);
     }
 }

@@ -2,9 +2,9 @@
 //!
 //! Error queue management compatible with OpenSSL error handling.
 
-use std::vec::Vec;
-use std::sync::Mutex;
 use std::collections::VecDeque;
+use std::sync::Mutex;
+use std::vec::Vec;
 
 /// Thread-local error queue (simplified with global)
 static ERROR_QUEUE: Mutex<VecDeque<ErrorEntry>> = Mutex::new(VecDeque::new());
@@ -72,7 +72,7 @@ pub fn push_error(lib: i32, reason: i32, file: &'static str, line: u32) {
         line,
         data: None,
     };
-    
+
     if let Ok(mut queue) = ERROR_QUEUE.lock() {
         queue.push_back(entry);
     }
@@ -86,7 +86,7 @@ pub fn push_error_data(lib: i32, reason: i32, file: &'static str, line: u32, dat
         line,
         data: Some(data.to_string()),
     };
-    
+
     if let Ok(mut queue) = ERROR_QUEUE.lock() {
         queue.push_back(entry);
     }
@@ -136,17 +136,18 @@ pub extern "C" fn ERR_clear_error() {
 
 /// ERR_get_error_line - Get error with file/line
 #[no_mangle]
-pub extern "C" fn ERR_get_error_line(
-    file: *mut *const i8,
-    line: *mut i32,
-) -> u64 {
+pub extern "C" fn ERR_get_error_line(file: *mut *const i8, line: *mut i32) -> u64 {
     if let Ok(mut queue) = ERROR_QUEUE.lock() {
         if let Some(entry) = queue.pop_front() {
             if !file.is_null() {
-                unsafe { *file = entry.file.as_ptr() as *const i8; }
+                unsafe {
+                    *file = entry.file.as_ptr() as *const i8;
+                }
             }
             if !line.is_null() {
-                unsafe { *line = entry.line as i32; }
+                unsafe {
+                    *line = entry.line as i32;
+                }
             }
             return entry.code;
         }
@@ -164,27 +165,32 @@ pub extern "C" fn ERR_get_error_line_data(
 ) -> u64 {
     let code = ERR_get_error_line(file, line);
     if !data.is_null() {
-        unsafe { *data = core::ptr::null(); }
+        unsafe {
+            *data = core::ptr::null();
+        }
     }
     if !flags.is_null() {
-        unsafe { *flags = 0; }
+        unsafe {
+            *flags = 0;
+        }
     }
     code
 }
 
 /// ERR_peek_error_line - Peek error with file/line
 #[no_mangle]
-pub extern "C" fn ERR_peek_error_line(
-    file: *mut *const i8,
-    line: *mut i32,
-) -> u64 {
+pub extern "C" fn ERR_peek_error_line(file: *mut *const i8, line: *mut i32) -> u64 {
     if let Ok(queue) = ERROR_QUEUE.lock() {
         if let Some(entry) = queue.front() {
             if !file.is_null() {
-                unsafe { *file = entry.file.as_ptr() as *const i8; }
+                unsafe {
+                    *file = entry.file.as_ptr() as *const i8;
+                }
             }
             if !line.is_null() {
-                unsafe { *line = entry.line as i32; }
+                unsafe {
+                    *line = entry.line as i32;
+                }
             }
             return entry.code;
         }
@@ -196,7 +202,7 @@ pub extern "C" fn ERR_peek_error_line(
 #[no_mangle]
 pub extern "C" fn ERR_error_string(e: u64, buf: *mut i8) -> *mut i8 {
     let (lib, reason) = unpack_error(e);
-    
+
     let lib_name = match lib {
         lib_code::ERR_LIB_SSL => "SSL",
         lib_code::ERR_LIB_RSA => "RSA",
@@ -209,10 +215,10 @@ pub extern "C" fn ERR_error_string(e: u64, buf: *mut i8) -> *mut i8 {
         lib_code::ERR_LIB_RAND => "RAND",
         _ => "lib",
     };
-    
+
     // Format: "error:XXXXXXXX:lib:func:reason"
     let msg = format!("error:{:08X}:{}:func:reason({})\0", e, lib_name, reason);
-    
+
     if buf.is_null() {
         // Use static buffer (simplified)
         static BUFFER: Mutex<[u8; 256]> = Mutex::new([0u8; 256]);
@@ -223,13 +229,13 @@ pub extern "C" fn ERR_error_string(e: u64, buf: *mut i8) -> *mut i8 {
         }
         return core::ptr::null_mut();
     }
-    
+
     unsafe {
         let len = msg.len().min(255);
         core::ptr::copy_nonoverlapping(msg.as_ptr(), buf as *mut u8, len);
         *(buf as *mut u8).add(len) = 0;
     }
-    
+
     buf
 }
 
@@ -239,10 +245,10 @@ pub extern "C" fn ERR_error_string_n(e: u64, buf: *mut i8, len: usize) {
     if buf.is_null() || len == 0 {
         return;
     }
-    
+
     let (lib, reason) = unpack_error(e);
     let msg = format!("error:{:08X}:lib({}):func:reason({})", e, lib, reason);
-    
+
     let copy_len = msg.len().min(len - 1);
     unsafe {
         core::ptr::copy_nonoverlapping(msg.as_ptr(), buf as *mut u8, copy_len);
@@ -254,7 +260,7 @@ pub extern "C" fn ERR_error_string_n(e: u64, buf: *mut i8, len: usize) {
 #[no_mangle]
 pub extern "C" fn ERR_lib_error_string(e: u64) -> *const i8 {
     let (lib, _) = unpack_error(e);
-    
+
     match lib {
         lib_code::ERR_LIB_SSL => b"SSL routines\0".as_ptr() as *const i8,
         lib_code::ERR_LIB_RSA => b"RSA routines\0".as_ptr() as *const i8,
@@ -273,7 +279,7 @@ pub extern "C" fn ERR_lib_error_string(e: u64) -> *const i8 {
 #[no_mangle]
 pub extern "C" fn ERR_reason_error_string(e: u64) -> *const i8 {
     let (_, reason) = unpack_error(e);
-    
+
     // Common reason codes
     match reason {
         0 => b"no error\0".as_ptr() as *const i8,
@@ -299,13 +305,7 @@ pub extern "C" fn ERR_print_errors(_bio: *mut core::ffi::c_void) {
 
 /// ERR_put_error - Put error (deprecated)
 #[no_mangle]
-pub extern "C" fn ERR_put_error(
-    lib: i32,
-    _func: i32,
-    reason: i32,
-    file: *const i8,
-    line: i32,
-) {
+pub extern "C" fn ERR_put_error(lib: i32, _func: i32, reason: i32, file: *const i8, line: i32) {
     let file_str = if file.is_null() {
         ""
     } else {
@@ -356,8 +356,8 @@ pub extern "C" fn OPENSSL_cleanse(ptr: *mut core::ffi::c_void, len: usize) {
     if ptr.is_null() {
         return;
     }
-    crate::constant_time::secure_zero(unsafe { 
-        core::slice::from_raw_parts_mut(ptr as *mut u8, len) 
+    crate::constant_time::secure_zero(unsafe {
+        core::slice::from_raw_parts_mut(ptr as *mut u8, len)
     });
 }
 
@@ -380,7 +380,10 @@ pub extern "C" fn OPENSSL_free(ptr: *mut core::ffi::c_void) {
 
 /// OPENSSL_realloc - Reallocate memory
 #[no_mangle]
-pub extern "C" fn OPENSSL_realloc(ptr: *mut core::ffi::c_void, size: usize) -> *mut core::ffi::c_void {
+pub extern "C" fn OPENSSL_realloc(
+    ptr: *mut core::ffi::c_void,
+    size: usize,
+) -> *mut core::ffi::c_void {
     if ptr.is_null() {
         return OPENSSL_malloc(size);
     }
@@ -409,17 +412,19 @@ pub extern "C" fn OPENSSL_hexstr2buf(str: *const i8, len: *mut i64) -> *mut u8 {
     if str.is_null() {
         return core::ptr::null_mut();
     }
-    
+
     let hex_str = unsafe { core::ffi::CStr::from_ptr(str) };
     let hex_str = match hex_str.to_str() {
         Ok(s) => s,
         Err(_) => return core::ptr::null_mut(),
     };
-    
+
     match crate::encoding::hex_decode(hex_str) {
         Ok(bytes) => {
             if !len.is_null() {
-                unsafe { *len = bytes.len() as i64; }
+                unsafe {
+                    *len = bytes.len() as i64;
+                }
             }
             let boxed = bytes.into_boxed_slice();
             let ptr = Box::into_raw(boxed) as *mut u8;
@@ -435,10 +440,10 @@ pub extern "C" fn OPENSSL_buf2hexstr(buf: *const u8, len: i64) -> *mut i8 {
     if buf.is_null() || len < 0 {
         return core::ptr::null_mut();
     }
-    
+
     let data = unsafe { core::slice::from_raw_parts(buf, len as usize) };
     let hex = crate::encoding::hex_encode(data).to_uppercase();
-    
+
     // Add colons between bytes
     let mut result = String::with_capacity(hex.len() * 3 / 2);
     for (i, c) in hex.chars().enumerate() {
@@ -448,7 +453,7 @@ pub extern "C" fn OPENSSL_buf2hexstr(buf: *const u8, len: i64) -> *mut i8 {
         result.push(c);
     }
     result.push('\0');
-    
+
     let boxed = result.into_bytes().into_boxed_slice();
     Box::into_raw(boxed) as *mut i8
 }

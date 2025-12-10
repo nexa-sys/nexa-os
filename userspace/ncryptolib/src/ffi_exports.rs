@@ -3,11 +3,11 @@
 //! This module provides additional C ABI functions that nssl requires
 //! for dynamic linking against libcrypto.so with stable ABI.
 
-use crate::{c_int, c_uint, size_t};
-use crate::hash::hmac_sha256;
-use crate::random::getrandom as sys_getrandom;
-use crate::p256::{P256KeyPair, P256Point};
 use crate::aes::{AesGcm, GCM_TAG_SIZE};
+use crate::hash::hmac_sha256;
+use crate::p256::{P256KeyPair, P256Point};
+use crate::random::getrandom as sys_getrandom;
+use crate::{c_int, c_uint, size_t};
 
 // ============================================================================
 // HMAC-SHA256 C ABI (missing from hmac.rs)
@@ -41,11 +41,7 @@ pub unsafe extern "C" fn ncrypto_hmac_sha256(
 
 /// Get random bytes from kernel (C ABI)
 #[no_mangle]
-pub unsafe extern "C" fn ncrypto_getrandom(
-    buf: *mut u8,
-    len: size_t,
-    flags: c_uint,
-) -> c_int {
+pub unsafe extern "C" fn ncrypto_getrandom(buf: *mut u8, len: size_t, flags: c_uint) -> c_int {
     if buf.is_null() {
         return -1;
     }
@@ -62,18 +58,15 @@ pub unsafe extern "C" fn ncrypto_getrandom(
 // ============================================================================
 
 /// Generate P-256 key pair (C ABI)
-/// 
+///
 /// # Arguments
 /// * `private_key` - Output buffer for 32-byte private key
 /// * `public_key` - Output buffer for 65-byte uncompressed public key (04 || x || y)
-/// 
+///
 /// # Returns
 /// 1 on success, 0 on failure
 #[no_mangle]
-pub unsafe extern "C" fn ncrypto_p256_keygen(
-    private_key: *mut u8,
-    public_key: *mut u8,
-) -> c_int {
+pub unsafe extern "C" fn ncrypto_p256_keygen(private_key: *mut u8, public_key: *mut u8) -> c_int {
     if private_key.is_null() || public_key.is_null() {
         return 0;
     }
@@ -90,13 +83,13 @@ pub unsafe extern "C" fn ncrypto_p256_keygen(
 }
 
 /// P-256 ECDH shared secret computation (C ABI)
-/// 
+///
 /// # Arguments
 /// * `shared_secret` - Output buffer for 32-byte shared secret
 /// * `private_key` - 32-byte private key
 /// * `peer_public_key` - Peer's public key (uncompressed format)
 /// * `peer_public_key_len` - Length of peer's public key (65 for uncompressed)
-/// 
+///
 /// # Returns
 /// 1 on success, 0 on failure
 #[no_mangle]
@@ -136,27 +129,25 @@ pub unsafe extern "C" fn ncrypto_p256_ecdh(
 
     // Create keypair and compute ECDH
     match P256KeyPair::from_private_key(&priv_arr) {
-        Some(keypair) => {
-            match keypair.ecdh(&peer_point) {
-                Some(secret) => {
-                    core::ptr::copy_nonoverlapping(secret.as_ptr(), shared_secret, 32);
-                    1
-                }
-                None => 0,
+        Some(keypair) => match keypair.ecdh(&peer_point) {
+            Some(secret) => {
+                core::ptr::copy_nonoverlapping(secret.as_ptr(), shared_secret, 32);
+                1
             }
-        }
+            None => 0,
+        },
         None => 0,
     }
 }
 
 /// Parse P-256 uncompressed public key point (C ABI)
-/// 
+///
 /// # Arguments
 /// * `x` - Output buffer for 32-byte x coordinate
 /// * `y` - Output buffer for 32-byte y coordinate
 /// * `data` - Input uncompressed point (04 || x || y)
 /// * `len` - Length of input (must be 65)
-/// 
+///
 /// # Returns
 /// 1 on success, 0 on failure
 #[no_mangle]
@@ -188,7 +179,7 @@ pub unsafe extern "C" fn ncrypto_p256_point_from_uncompressed(
 }
 
 /// P-256 ECDSA signature verification (C ABI)
-/// 
+///
 /// # Arguments
 /// * `message_hash` - Message hash to verify
 /// * `hash_len` - Length of message hash
@@ -196,7 +187,7 @@ pub unsafe extern "C" fn ncrypto_p256_point_from_uncompressed(
 /// * `sig_len` - Length of signature (use 64 for raw r||s, otherwise DER)
 /// * `public_key` - Public key (uncompressed format)
 /// * `pubkey_len` - Length of public key
-/// 
+///
 /// # Returns
 /// 1 if signature is valid, 0 if invalid
 #[no_mangle]

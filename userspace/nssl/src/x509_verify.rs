@@ -8,30 +8,49 @@ use std::vec::Vec;
 /// Signature algorithm OIDs
 pub mod oid {
     // RSA PKCS#1 v1.5 signatures
-    pub const SHA256_WITH_RSA: &[u8] = &[0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0B];
-    pub const SHA384_WITH_RSA: &[u8] = &[0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0C];
-    pub const SHA512_WITH_RSA: &[u8] = &[0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0D];
-    
+    pub const SHA256_WITH_RSA: &[u8] = &[
+        0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0B,
+    ];
+    pub const SHA384_WITH_RSA: &[u8] = &[
+        0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0C,
+    ];
+    pub const SHA512_WITH_RSA: &[u8] = &[
+        0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0D,
+    ];
+
     // RSA-PSS (generic OID, params in AlgorithmIdentifier)
-    pub const RSA_PSS: &[u8] = &[0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0A];
-    
+    pub const RSA_PSS: &[u8] = &[
+        0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0A,
+    ];
+
     // ECDSA signatures
-    pub const ECDSA_WITH_SHA256: &[u8] = &[0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x04, 0x03, 0x02];
-    pub const ECDSA_WITH_SHA384: &[u8] = &[0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x04, 0x03, 0x03];
-    pub const ECDSA_WITH_SHA512: &[u8] = &[0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x04, 0x03, 0x04];
-    
+    pub const ECDSA_WITH_SHA256: &[u8] =
+        &[0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x04, 0x03, 0x02];
+    pub const ECDSA_WITH_SHA384: &[u8] =
+        &[0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x04, 0x03, 0x03];
+    pub const ECDSA_WITH_SHA512: &[u8] =
+        &[0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x04, 0x03, 0x04];
+
     // Public key algorithm OIDs
-    pub const RSA_ENCRYPTION: &[u8] = &[0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x01];
+    pub const RSA_ENCRYPTION: &[u8] = &[
+        0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x01,
+    ];
     pub const EC_PUBLIC_KEY: &[u8] = &[0x06, 0x07, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x02, 0x01];
-    
+
     // EC curve OIDs
     pub const SECP256R1: &[u8] = &[0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07];
     pub const SECP384R1: &[u8] = &[0x06, 0x05, 0x2B, 0x81, 0x04, 0x00, 0x22];
-    
+
     // Hash algorithm OIDs
-    pub const SHA256: &[u8] = &[0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01];
-    pub const SHA384: &[u8] = &[0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x02];
-    pub const SHA512: &[u8] = &[0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x03];
+    pub const SHA256: &[u8] = &[
+        0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01,
+    ];
+    pub const SHA384: &[u8] = &[
+        0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x02,
+    ];
+    pub const SHA512: &[u8] = &[
+        0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x03,
+    ];
 }
 
 /// Signature algorithm types
@@ -68,7 +87,7 @@ impl SignatureAlgorithm {
         } else {
             oid
         };
-        
+
         // RSA PKCS#1 v1.5 with SHA-256: 1.2.840.113549.1.1.11
         if oid_value == &[0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0B] {
             return SignatureAlgorithm::RsaPkcs1Sha256;
@@ -97,7 +116,7 @@ impl SignatureAlgorithm {
         if oid_value == &[0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x04, 0x03, 0x04] {
             return SignatureAlgorithm::EcdsaP521Sha512;
         }
-        
+
         SignatureAlgorithm::Unknown
     }
 }
@@ -106,92 +125,91 @@ impl SignatureAlgorithm {
 #[derive(Debug, Clone)]
 pub enum PublicKey {
     /// RSA public key (n, e)
-    Rsa {
-        modulus: Vec<u8>,
-        exponent: Vec<u8>,
-    },
+    Rsa { modulus: Vec<u8>, exponent: Vec<u8> },
     /// EC public key (P-256)
     EcP256 {
         /// Uncompressed point (65 bytes: 04 || x || y)
         point: Vec<u8>,
     },
     /// EC public key (P-384)
-    EcP384 {
-        point: Vec<u8>,
-    },
+    EcP384 { point: Vec<u8> },
 }
 
 impl PublicKey {
     /// Parse public key from SubjectPublicKeyInfo DER
     pub fn from_spki(spki: &[u8]) -> Option<Self> {
         let mut parser = Asn1Parser::new(spki);
-        
+
         // SEQUENCE
         let _seq = parser.read_sequence()?;
-        
+
         // AlgorithmIdentifier SEQUENCE
         let alg_id = parser.read_sequence()?;
         let alg_oid = Asn1Parser::new(&alg_id).read_oid()?;
-        
+
         // BIT STRING containing the public key
         let key_bits = parser.read_bit_string()?;
-        
+
         // Check algorithm OID
         let alg_oid_value = if alg_oid.len() > 2 && alg_oid[0] == 0x06 {
             &alg_oid[2..]
         } else {
             &alg_oid
         };
-        
+
         // RSA
         if alg_oid_value == &[0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x01] {
             return Self::parse_rsa_public_key(&key_bits);
         }
-        
+
         // EC
         if alg_oid_value == &[0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x02, 0x01] {
             // Get curve OID from AlgorithmIdentifier params
             let mut alg_parser = Asn1Parser::new(&alg_id);
             alg_parser.read_oid(); // Skip algorithm OID
             let curve_oid = alg_parser.read_oid()?;
-            
+
             let curve_oid_value = if curve_oid.len() > 2 && curve_oid[0] == 0x06 {
                 &curve_oid[2..]
             } else {
                 &curve_oid
             };
-            
+
             // P-256 (secp256r1)
             if curve_oid_value == &[0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07] {
                 if key_bits.len() == 65 && key_bits[0] == 0x04 {
-                    return Some(PublicKey::EcP256 { point: key_bits.to_vec() });
+                    return Some(PublicKey::EcP256 {
+                        point: key_bits.to_vec(),
+                    });
                 }
             }
-            
+
             // P-384 (secp384r1)
             if curve_oid_value == &[0x2B, 0x81, 0x04, 0x00, 0x22] {
                 if key_bits.len() == 97 && key_bits[0] == 0x04 {
-                    return Some(PublicKey::EcP384 { point: key_bits.to_vec() });
+                    return Some(PublicKey::EcP384 {
+                        point: key_bits.to_vec(),
+                    });
                 }
             }
         }
-        
+
         None
     }
-    
+
     /// Parse RSA public key from BIT STRING content
     fn parse_rsa_public_key(key_bits: &[u8]) -> Option<Self> {
         let mut parser = Asn1Parser::new(key_bits);
-        
+
         // RSAPublicKey ::= SEQUENCE { modulus INTEGER, publicExponent INTEGER }
         let _seq = parser.read_sequence()?;
-        
+
         let mut inner = Asn1Parser::new(&key_bits[parser.pos - _seq.len()..]);
         inner.skip(2)?; // Skip SEQUENCE tag and length
-        
+
         let modulus = inner.read_integer()?;
         let exponent = inner.read_integer()?;
-        
+
         Some(PublicKey::Rsa { modulus, exponent })
     }
 }
@@ -224,7 +242,7 @@ impl SignatureVerifier {
             (SignatureAlgorithm::RsaPkcs1Sha512, PublicKey::Rsa { modulus, exponent }) => {
                 Self::verify_rsa_pkcs1_sha512(tbs_certificate, signature, modulus, exponent)
             }
-            
+
             // RSA-PSS
             (SignatureAlgorithm::RsaPssSha256, PublicKey::Rsa { modulus, exponent }) => {
                 Self::verify_rsa_pss_sha256(tbs_certificate, signature, modulus, exponent)
@@ -235,22 +253,22 @@ impl SignatureVerifier {
             (SignatureAlgorithm::RsaPssSha512, PublicKey::Rsa { modulus, exponent }) => {
                 Self::verify_rsa_pss_sha512(tbs_certificate, signature, modulus, exponent)
             }
-            
+
             // ECDSA P-256
             (SignatureAlgorithm::EcdsaP256Sha256, PublicKey::EcP256 { point }) => {
                 Self::verify_ecdsa_p256_sha256(tbs_certificate, signature, point)
             }
-            
+
             // ECDSA P-384 (not fully implemented yet)
             (SignatureAlgorithm::EcdsaP384Sha384, PublicKey::EcP384 { .. }) => {
                 // TODO: Implement P-384
                 false
             }
-            
+
             _ => false,
         }
     }
-    
+
     /// Verify RSA PKCS#1 v1.5 with SHA-256
     fn verify_rsa_pkcs1_sha256(
         message: &[u8],
@@ -260,19 +278,19 @@ impl SignatureVerifier {
     ) -> bool {
         use crate::ncryptolib::bigint::BigInt;
         use crate::ncryptolib::rsa::RsaPublicKey;
-        
+
         // Build RSA public key from components
         let n = BigInt::from_bytes_be(modulus);
         let e = BigInt::from_bytes_be(exponent);
         let pubkey = RsaPublicKey::new(n, e);
-        
+
         // Verify signature (rsa_verify hashes internally, pass raw message)
         match crate::ncryptolib::rsa::rsa_verify(message, signature, &pubkey) {
             Ok(valid) => valid,
             Err(_) => false,
         }
     }
-    
+
     /// Verify RSA PKCS#1 v1.5 with SHA-384
     fn verify_rsa_pkcs1_sha384(
         message: &[u8],
@@ -282,12 +300,12 @@ impl SignatureVerifier {
     ) -> bool {
         use crate::ncryptolib::bigint::BigInt;
         use crate::ncryptolib::rsa::RsaPublicKey;
-        
+
         // Build RSA public key from components
         let n = BigInt::from_bytes_be(modulus);
         let e = BigInt::from_bytes_be(exponent);
         let pubkey = RsaPublicKey::new(n, e);
-        
+
         // Note: Current rsa_verify only supports SHA-256
         // For SHA-384, we would need a separate implementation
         match crate::ncryptolib::rsa::rsa_verify(message, signature, &pubkey) {
@@ -295,7 +313,7 @@ impl SignatureVerifier {
             Err(_) => false,
         }
     }
-    
+
     /// Verify RSA PKCS#1 v1.5 with SHA-512
     fn verify_rsa_pkcs1_sha512(
         message: &[u8],
@@ -305,12 +323,12 @@ impl SignatureVerifier {
     ) -> bool {
         use crate::ncryptolib::bigint::BigInt;
         use crate::ncryptolib::rsa::RsaPublicKey;
-        
+
         // Build RSA public key from components
         let n = BigInt::from_bytes_be(modulus);
         let e = BigInt::from_bytes_be(exponent);
         let pubkey = RsaPublicKey::new(n, e);
-        
+
         // Note: Current rsa_verify only supports SHA-256
         // For SHA-512, we would need a separate implementation
         match crate::ncryptolib::rsa::rsa_verify(message, signature, &pubkey) {
@@ -318,7 +336,7 @@ impl SignatureVerifier {
             Err(_) => false,
         }
     }
-    
+
     /// Verify RSA-PSS with SHA-256
     fn verify_rsa_pss_sha256(
         message: &[u8],
@@ -328,19 +346,19 @@ impl SignatureVerifier {
     ) -> bool {
         use crate::ncryptolib::bigint::BigInt;
         use crate::ncryptolib::rsa::RsaPublicKey;
-        
+
         // Build RSA public key from components
         let n = BigInt::from_bytes_be(modulus);
         let e = BigInt::from_bytes_be(exponent);
         let pubkey = RsaPublicKey::new(n, e);
-        
+
         // Verify PSS signature (rsa_pss_verify hashes internally)
         match crate::ncryptolib::rsa::rsa_pss_verify(message, signature, &pubkey) {
             Ok(valid) => valid,
             Err(_) => false,
         }
     }
-    
+
     /// Verify RSA-PSS with SHA-384
     fn verify_rsa_pss_sha384(
         message: &[u8],
@@ -350,19 +368,19 @@ impl SignatureVerifier {
     ) -> bool {
         use crate::ncryptolib::bigint::BigInt;
         use crate::ncryptolib::rsa::RsaPublicKey;
-        
+
         // Build RSA public key from components
         let n = BigInt::from_bytes_be(modulus);
         let e = BigInt::from_bytes_be(exponent);
         let pubkey = RsaPublicKey::new(n, e);
-        
+
         // Note: Current rsa_pss_verify only supports SHA-256
         match crate::ncryptolib::rsa::rsa_pss_verify(message, signature, &pubkey) {
             Ok(valid) => valid,
             Err(_) => false,
         }
     }
-    
+
     /// Verify RSA-PSS with SHA-512
     fn verify_rsa_pss_sha512(
         message: &[u8],
@@ -372,40 +390,36 @@ impl SignatureVerifier {
     ) -> bool {
         use crate::ncryptolib::bigint::BigInt;
         use crate::ncryptolib::rsa::RsaPublicKey;
-        
+
         // Build RSA public key from components
         let n = BigInt::from_bytes_be(modulus);
         let e = BigInt::from_bytes_be(exponent);
         let pubkey = RsaPublicKey::new(n, e);
-        
+
         // Note: Current rsa_pss_verify only supports SHA-256
         match crate::ncryptolib::rsa::rsa_pss_verify(message, signature, &pubkey) {
             Ok(valid) => valid,
             Err(_) => false,
         }
     }
-    
+
     /// Verify ECDSA P-256 with SHA-256
-    fn verify_ecdsa_p256_sha256(
-        message: &[u8],
-        signature: &[u8],
-        public_key: &[u8],
-    ) -> bool {
+    fn verify_ecdsa_p256_sha256(message: &[u8], signature: &[u8], public_key: &[u8]) -> bool {
         // Hash the message
         let hash = crate::ncryptolib::sha256(message);
-        
+
         // Parse the public key point
         let point = match crate::ncryptolib::p256::P256Point::from_uncompressed(public_key) {
             Some(p) => p,
             None => return false,
         };
-        
+
         // Parse ECDSA signature from DER
         let sig = match crate::ncryptolib::p256::P256Signature::from_der(signature) {
             Some(s) => s,
             None => return false,
         };
-        
+
         // Verify signature
         sig.verify(&point, &hash)
     }
@@ -419,23 +433,23 @@ impl SignatureVerifier {
 /// }
 fn parse_ecdsa_signature_der(der: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
     let mut parser = Asn1Parser::new(der);
-    
+
     // Read outer SEQUENCE
     let _seq = parser.read_sequence()?;
-    
+
     // Re-parse from the sequence content
     let mut inner = Asn1Parser::new(&der[2..]);
-    
+
     // Read r INTEGER
     let r = inner.read_integer()?;
-    
+
     // Read s INTEGER
     let s = inner.read_integer()?;
-    
+
     // Normalize to 32 bytes (remove leading zeros or pad)
     let r_normalized = normalize_integer(&r, 32);
     let s_normalized = normalize_integer(&s, 32);
-    
+
     Some((r_normalized, s_normalized))
 }
 
@@ -446,9 +460,9 @@ fn normalize_integer(data: &[u8], size: usize) -> Vec<u8> {
     while start < data.len() && data[start] == 0 {
         start += 1;
     }
-    
+
     let significant = &data[start..];
-    
+
     if significant.len() >= size {
         // Take the last 'size' bytes
         significant[significant.len() - size..].to_vec()
@@ -470,7 +484,7 @@ impl<'a> Asn1Parser<'a> {
     pub fn new(data: &'a [u8]) -> Self {
         Self { data, pos: 0 }
     }
-    
+
     /// Skip n bytes
     pub fn skip(&mut self, n: usize) -> Option<()> {
         if self.pos + n > self.data.len() {
@@ -479,16 +493,16 @@ impl<'a> Asn1Parser<'a> {
         self.pos += n;
         Some(())
     }
-    
+
     /// Read length field
     fn read_length(&mut self) -> Option<usize> {
         if self.pos >= self.data.len() {
             return None;
         }
-        
+
         let first = self.data[self.pos];
         self.pos += 1;
-        
+
         if first < 0x80 {
             Some(first as usize)
         } else if first == 0x81 {
@@ -518,99 +532,99 @@ impl<'a> Asn1Parser<'a> {
             None
         }
     }
-    
+
     /// Read SEQUENCE and return contents
     pub fn read_sequence(&mut self) -> Option<Vec<u8>> {
         if self.pos >= self.data.len() || self.data[self.pos] != 0x30 {
             return None;
         }
         self.pos += 1;
-        
+
         let len = self.read_length()?;
         if self.pos + len > self.data.len() {
             return None;
         }
-        
+
         let content = self.data[self.pos..self.pos + len].to_vec();
         self.pos += len;
         Some(content)
     }
-    
+
     /// Read OID
     pub fn read_oid(&mut self) -> Option<Vec<u8>> {
         if self.pos >= self.data.len() || self.data[self.pos] != 0x06 {
             return None;
         }
-        
+
         let start = self.pos;
         self.pos += 1;
-        
+
         let len = self.read_length()?;
         if self.pos + len > self.data.len() {
             return None;
         }
-        
+
         let end = self.pos + len;
         self.pos = end;
-        
+
         Some(self.data[start..end].to_vec())
     }
-    
+
     /// Read INTEGER
     pub fn read_integer(&mut self) -> Option<Vec<u8>> {
         if self.pos >= self.data.len() || self.data[self.pos] != 0x02 {
             return None;
         }
         self.pos += 1;
-        
+
         let len = self.read_length()?;
         if self.pos + len > self.data.len() {
             return None;
         }
-        
+
         let content = self.data[self.pos..self.pos + len].to_vec();
         self.pos += len;
         Some(content)
     }
-    
+
     /// Read BIT STRING
     pub fn read_bit_string(&mut self) -> Option<Vec<u8>> {
         if self.pos >= self.data.len() || self.data[self.pos] != 0x03 {
             return None;
         }
         self.pos += 1;
-        
+
         let len = self.read_length()?;
         if self.pos + len > self.data.len() || len < 1 {
             return None;
         }
-        
+
         // First byte is number of unused bits (usually 0)
         let _unused_bits = self.data[self.pos];
         self.pos += 1;
-        
+
         let content = self.data[self.pos..self.pos + len - 1].to_vec();
         self.pos += len - 1;
         Some(content)
     }
-    
+
     /// Read OCTET STRING
     pub fn read_octet_string(&mut self) -> Option<Vec<u8>> {
         if self.pos >= self.data.len() || self.data[self.pos] != 0x04 {
             return None;
         }
         self.pos += 1;
-        
+
         let len = self.read_length()?;
         if self.pos + len > self.data.len() {
             return None;
         }
-        
+
         let content = self.data[self.pos..self.pos + len].to_vec();
         self.pos += len;
         Some(content)
     }
-    
+
     /// Read context-specific tag [n]
     pub fn read_context(&mut self, tag: u8) -> Option<Vec<u8>> {
         let expected_tag = 0xA0 | tag;
@@ -618,17 +632,17 @@ impl<'a> Asn1Parser<'a> {
             return None;
         }
         self.pos += 1;
-        
+
         let len = self.read_length()?;
         if self.pos + len > self.data.len() {
             return None;
         }
-        
+
         let content = self.data[self.pos..self.pos + len].to_vec();
         self.pos += len;
         Some(content)
     }
-    
+
     /// Peek at next tag
     pub fn peek_tag(&self) -> Option<u8> {
         if self.pos < self.data.len() {
@@ -637,12 +651,12 @@ impl<'a> Asn1Parser<'a> {
             None
         }
     }
-    
+
     /// Get remaining data
     pub fn remaining(&self) -> &[u8] {
         &self.data[self.pos..]
     }
-    
+
     /// Check if at end
     pub fn is_empty(&self) -> bool {
         self.pos >= self.data.len()
@@ -691,11 +705,11 @@ impl TbsCertificate {
     /// Parse TBSCertificate from DER
     pub fn from_der(der: &[u8]) -> Option<Self> {
         let mut parser = Asn1Parser::new(der);
-        
+
         // TBSCertificate SEQUENCE
         let tbs_content = parser.read_sequence()?;
         let mut inner = Asn1Parser::new(&tbs_content);
-        
+
         // Version [0] EXPLICIT INTEGER DEFAULT v1
         let version = if inner.peek_tag() == Some(0xA0) {
             let version_data = inner.read_context(0)?;
@@ -705,37 +719,37 @@ impl TbsCertificate {
         } else {
             0 // Default v1
         };
-        
+
         // Serial number
         let serial_number = inner.read_integer()?;
-        
+
         // Signature algorithm
         let sig_alg_seq = inner.read_sequence()?;
         let mut sig_parser = Asn1Parser::new(&sig_alg_seq);
         let signature_algorithm = sig_parser.read_oid()?;
-        
+
         // Issuer
         let issuer = inner.read_sequence()?;
-        
+
         // Validity
         let validity_seq = inner.read_sequence()?;
         let validity = Self::parse_validity(&validity_seq)?;
-        
+
         // Subject
         let subject = inner.read_sequence()?;
-        
+
         // SubjectPublicKeyInfo
         let spki_start = inner.pos;
         let _spki = inner.read_sequence()?;
         let subject_public_key_info = tbs_content[spki_start..inner.pos].to_vec();
-        
+
         // Extensions (optional, v3 only)
         let mut extensions = Vec::new();
         if version >= 2 && inner.peek_tag() == Some(0xA3) {
             let ext_data = inner.read_context(3)?;
             extensions = Self::parse_extensions(&ext_data)?;
         }
-        
+
         Some(TbsCertificate {
             version,
             serial_number,
@@ -747,53 +761,53 @@ impl TbsCertificate {
             extensions,
         })
     }
-    
+
     /// Parse validity period
     fn parse_validity(data: &[u8]) -> Option<CertValidity> {
         let mut parser = Asn1Parser::new(data);
-        
+
         // notBefore
         let not_before = Self::parse_time(&mut parser)?;
-        
+
         // notAfter
         let not_after = Self::parse_time(&mut parser)?;
-        
+
         Some(CertValidity {
             not_before,
             not_after,
         })
     }
-    
+
     /// Parse UTCTime or GeneralizedTime
     fn parse_time(parser: &mut Asn1Parser) -> Option<u64> {
         if parser.pos >= parser.data.len() {
             return None;
         }
-        
+
         let tag = parser.data[parser.pos];
         parser.pos += 1;
-        
+
         let len = parser.read_length()?;
         if parser.pos + len > parser.data.len() {
             return None;
         }
-        
+
         let time_str = std::str::from_utf8(&parser.data[parser.pos..parser.pos + len]).ok()?;
         parser.pos += len;
-        
+
         match tag {
             0x17 => Self::parse_utc_time(time_str),
             0x18 => Self::parse_generalized_time(time_str),
             _ => None,
         }
     }
-    
+
     /// Parse UTCTime (YYMMDDHHMMSSZ)
     fn parse_utc_time(s: &str) -> Option<u64> {
         if s.len() < 12 {
             return None;
         }
-        
+
         let year: u32 = s[0..2].parse().ok()?;
         let year = if year >= 50 { 1900 + year } else { 2000 + year };
         let month: u32 = s[2..4].parse().ok()?;
@@ -801,14 +815,14 @@ impl TbsCertificate {
         let hour: u32 = s[6..8].parse().ok()?;
         let minute: u32 = s[8..10].parse().ok()?;
         let second: u32 = s[10..12].parse().ok()?;
-        
+
         // Simplified: calculate Unix timestamp
         // Days from epoch to year start
         let mut days: u64 = 0;
         for y in 1970..year {
             days += if is_leap_year(y) { 366 } else { 365 };
         }
-        
+
         // Days in months
         let month_days = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
         for m in 0..(month as usize - 1) {
@@ -817,32 +831,32 @@ impl TbsCertificate {
                 days += 1;
             }
         }
-        
+
         days += (day - 1) as u64;
-        
+
         let timestamp = days * 86400 + (hour as u64) * 3600 + (minute as u64) * 60 + second as u64;
-        
+
         Some(timestamp)
     }
-    
+
     /// Parse GeneralizedTime (YYYYMMDDHHMMSSZ)
     fn parse_generalized_time(s: &str) -> Option<u64> {
         if s.len() < 14 {
             return None;
         }
-        
+
         let year: u32 = s[0..4].parse().ok()?;
         let month: u32 = s[4..6].parse().ok()?;
         let day: u32 = s[6..8].parse().ok()?;
         let hour: u32 = s[8..10].parse().ok()?;
         let minute: u32 = s[10..12].parse().ok()?;
         let second: u32 = s[12..14].parse().ok()?;
-        
+
         let mut days: u64 = 0;
         for y in 1970..year {
             days += if is_leap_year(y) { 366 } else { 365 };
         }
-        
+
         let month_days = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
         for m in 0..(month as usize - 1) {
             days += month_days[m] as u64;
@@ -850,24 +864,24 @@ impl TbsCertificate {
                 days += 1;
             }
         }
-        
+
         days += (day - 1) as u64;
-        
+
         let timestamp = days * 86400 + (hour as u64) * 3600 + (minute as u64) * 60 + second as u64;
-        
+
         Some(timestamp)
     }
-    
+
     /// Parse extensions
     fn parse_extensions(data: &[u8]) -> Option<Vec<Extension>> {
         let mut parser = Asn1Parser::new(data);
-        
+
         // Extensions SEQUENCE
         let ext_seq = parser.read_sequence()?;
         let mut ext_parser = Asn1Parser::new(&ext_seq);
-        
+
         let mut extensions = Vec::new();
-        
+
         while !ext_parser.is_empty() {
             if let Some(ext) = Self::parse_extension(&mut ext_parser) {
                 extensions.push(ext);
@@ -875,17 +889,17 @@ impl TbsCertificate {
                 break;
             }
         }
-        
+
         Some(extensions)
     }
-    
+
     /// Parse single extension
     fn parse_extension(parser: &mut Asn1Parser) -> Option<Extension> {
         let ext_seq = parser.read_sequence()?;
         let mut inner = Asn1Parser::new(&ext_seq);
-        
+
         let oid = inner.read_oid()?;
-        
+
         // Critical flag (optional BOOLEAN, defaults to FALSE)
         let critical = if inner.peek_tag() == Some(0x01) {
             inner.pos += 1;
@@ -900,11 +914,15 @@ impl TbsCertificate {
         } else {
             false
         };
-        
+
         // Extension value (OCTET STRING)
         let value = inner.read_octet_string()?;
-        
-        Some(Extension { oid, critical, value })
+
+        Some(Extension {
+            oid,
+            critical,
+            value,
+        })
     }
 }
 
@@ -920,28 +938,36 @@ mod tests {
     #[test]
     fn test_signature_algorithm_from_oid() {
         // SHA-256 with RSA
-        let oid = &[0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0B];
-        assert_eq!(SignatureAlgorithm::from_oid(oid), SignatureAlgorithm::RsaPkcs1Sha256);
-        
+        let oid = &[
+            0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0B,
+        ];
+        assert_eq!(
+            SignatureAlgorithm::from_oid(oid),
+            SignatureAlgorithm::RsaPkcs1Sha256
+        );
+
         // ECDSA with SHA-256
         let oid = &[0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x04, 0x03, 0x02];
-        assert_eq!(SignatureAlgorithm::from_oid(oid), SignatureAlgorithm::EcdsaP256Sha256);
+        assert_eq!(
+            SignatureAlgorithm::from_oid(oid),
+            SignatureAlgorithm::EcdsaP256Sha256
+        );
     }
-    
+
     #[test]
     fn test_parse_utc_time() {
         // 2024-01-01 00:00:00 UTC
         let timestamp = TbsCertificate::parse_utc_time("240101000000Z");
         assert!(timestamp.is_some());
     }
-    
+
     #[test]
     fn test_normalize_integer() {
         // Remove leading zeros
         let data = vec![0x00, 0x00, 0x12, 0x34];
         let normalized = normalize_integer(&data, 2);
         assert_eq!(normalized, vec![0x12, 0x34]);
-        
+
         // Pad with zeros
         let data = vec![0x12];
         let normalized = normalize_integer(&data, 4);

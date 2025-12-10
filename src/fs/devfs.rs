@@ -90,7 +90,7 @@ pub fn init() {
     register_device("random", DeviceType::Random, 1, 8);
     register_device("urandom", DeviceType::Urandom, 1, 9);
     register_device("console", DeviceType::Console, 5, 1);
-    
+
     // TTY devices
     register_device("tty", DeviceType::Console, 5, 0);
     register_device("tty0", DeviceType::Console, 4, 0);
@@ -165,10 +165,8 @@ impl FileSystem for DevFs {
                         DeviceType::Block(_) => FileType::Block,
                         _ => FileType::Character,
                     };
-                    let meta = Metadata::empty()
-                        .with_type(file_type)
-                        .with_mode(0o666);
-                    
+                    let meta = Metadata::empty().with_type(file_type).with_mode(0o666);
+
                     return Some(OpenFile {
                         content: FileContent::Inline(&[]),
                         metadata: meta,
@@ -201,9 +199,7 @@ impl FileSystem for DevFs {
                         DeviceType::Block(_) => FileType::Block,
                         _ => FileType::Character,
                     };
-                    let meta = Metadata::empty()
-                        .with_type(file_type)
-                        .with_mode(0o666);
+                    let meta = Metadata::empty().with_type(file_type).with_mode(0o666);
                     return Some(meta);
                 }
             }
@@ -235,10 +231,8 @@ impl FileSystem for DevFs {
                     DeviceType::Block(_) => FileType::Block,
                     _ => FileType::Character,
                 };
-                let meta = Metadata::empty()
-                    .with_type(file_type)
-                    .with_mode(0o666);
-                
+                let meta = Metadata::empty().with_type(file_type).with_mode(0o666);
+
                 callback(dev.name, meta);
             }
         }

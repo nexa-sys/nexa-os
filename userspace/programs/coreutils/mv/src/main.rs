@@ -31,7 +31,7 @@ fn print_usage() {
 fn confirm(dest: &str) -> bool {
     print!("mv: overwrite '{}'? ", dest);
     io::stdout().flush().unwrap();
-    
+
     let mut input = String::new();
     if io::stdin().read_line(&mut input).is_ok() {
         let response = input.trim().to_lowercase();
@@ -43,17 +43,17 @@ fn confirm(dest: &str) -> bool {
 
 fn move_item(src: &Path, dest: &Path, verbose: bool) -> io::Result<()> {
     fs::rename(src, dest)?;
-    
+
     if verbose {
         println!("renamed '{}' -> '{}'", src.display(), dest.display());
     }
-    
+
     Ok(())
 }
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    
+
     if args.len() < 3 {
         print_usage();
         process::exit(1);
@@ -64,7 +64,7 @@ fn main() {
     let mut verbose = false;
     let mut no_clobber = false;
     let mut paths: Vec<&str> = Vec::new();
-    
+
     for arg in args.iter().skip(1) {
         if arg == "-h" || arg == "--help" {
             print_usage();
@@ -114,7 +114,7 @@ fn main() {
     let dest = paths.pop().unwrap();
     let dest_path = Path::new(dest);
     let dest_is_dir = dest_path.is_dir();
-    
+
     // Multiple sources require destination to be a directory
     if paths.len() > 1 && !dest_is_dir {
         eprintln!("mv: target '{}' is not a directory", dest);
@@ -122,22 +122,22 @@ fn main() {
     }
 
     let mut exit_code = 0;
-    
+
     for src in paths {
         let src_path = Path::new(src);
-        
+
         if !src_path.exists() {
             eprintln!("mv: cannot stat '{}': No such file or directory", src);
             exit_code = 1;
             continue;
         }
-        
+
         let final_dest = if dest_is_dir {
             dest_path.join(src_path.file_name().unwrap_or_default())
         } else {
             dest_path.to_path_buf()
         };
-        
+
         // Check if destination exists
         if final_dest.exists() {
             if no_clobber {
@@ -155,7 +155,7 @@ fn main() {
                 }
             }
         }
-        
+
         if let Err(e) = move_item(src_path, &final_dest, verbose) {
             eprintln!("mv: cannot move '{}': {}", src, e);
             exit_code = 1;

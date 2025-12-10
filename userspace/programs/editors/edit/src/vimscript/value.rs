@@ -47,7 +47,7 @@ impl Value {
             Value::Special(s) => matches!(s, SpecialValue::True),
         }
     }
-    
+
     /// Convert to integer
     pub fn to_int(&self) -> i64 {
         match self {
@@ -64,7 +64,7 @@ impl Value {
             },
         }
     }
-    
+
     /// Convert to float
     pub fn to_float(&self) -> f64 {
         match self {
@@ -81,7 +81,7 @@ impl Value {
             },
         }
     }
-    
+
     /// Get type name
     pub fn type_name(&self) -> &'static str {
         match self {
@@ -95,7 +95,7 @@ impl Value {
             Value::Special(_) => "v:t_special",
         }
     }
-    
+
     /// Get type number (for type() function)
     pub fn type_number(&self) -> i64 {
         match self {
@@ -109,27 +109,43 @@ impl Value {
             Value::Null => 7,
         }
     }
-    
+
     /// Compare two values (for sorting)
     pub fn compare(&self, other: &Value) -> i32 {
         match (self, other) {
             (Value::Integer(a), Value::Integer(b)) => {
-                if a < b { -1 } else if a > b { 1 } else { 0 }
+                if a < b {
+                    -1
+                } else if a > b {
+                    1
+                } else {
+                    0
+                }
             }
             (Value::Float(a), Value::Float(b)) => {
-                if a < b { -1.0 as i32 } else if a > b { 1 } else { 0 }
+                if a < b {
+                    -1.0 as i32
+                } else if a > b {
+                    1
+                } else {
+                    0
+                }
             }
-            (Value::String(a), Value::String(b)) => {
-                a.cmp(b) as i32
-            }
+            (Value::String(a), Value::String(b)) => a.cmp(b) as i32,
             _ => {
                 let a = self.to_float();
                 let b = other.to_float();
-                if a < b { -1 } else if a > b { 1 } else { 0 }
+                if a < b {
+                    -1
+                } else if a > b {
+                    1
+                } else {
+                    0
+                }
             }
         }
     }
-    
+
     /// Get list item by index
     pub fn get_index(&self, index: i64) -> Option<Value> {
         match self {
@@ -153,7 +169,7 @@ impl Value {
             _ => None,
         }
     }
-    
+
     /// Get dictionary item by key
     pub fn get_key(&self, key: &str) -> Option<Value> {
         match self {
@@ -161,7 +177,7 @@ impl Value {
             _ => None,
         }
     }
-    
+
     /// Get length
     pub fn len(&self) -> usize {
         match self {
@@ -171,7 +187,7 @@ impl Value {
             _ => 0,
         }
     }
-    
+
     /// Check if empty
     pub fn is_empty(&self) -> bool {
         self.len() == 0

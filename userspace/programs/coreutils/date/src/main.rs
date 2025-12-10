@@ -32,8 +32,9 @@ fn print_usage() {
 }
 
 const WEEKDAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", 
-                            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
 
 struct DateTime {
     year: u32,
@@ -51,7 +52,7 @@ impl DateTime {
         if let Some(dt) = Self::read_from_rtc() {
             return dt;
         }
-        
+
         // Default fallback
         DateTime {
             year: 2024,
@@ -63,24 +64,24 @@ impl DateTime {
             weekday: 0,
         }
     }
-    
+
     fn read_from_rtc() -> Option<Self> {
         // Try reading from /proc/driver/rtc
         let content = fs::read_to_string("/proc/driver/rtc").ok()?;
-        
+
         let mut year = 0u32;
         let mut month = 0u32;
         let mut day = 0u32;
         let mut hour = 0u32;
         let mut minute = 0u32;
         let mut second = 0u32;
-        
+
         for line in content.lines() {
             let parts: Vec<&str> = line.split(':').collect();
             if parts.len() >= 2 {
                 let key = parts[0].trim();
                 let value = parts[1..].join(":").trim().to_string();
-                
+
                 match key {
                     "rtc_time" => {
                         let time_parts: Vec<&str> = value.split(':').collect();
@@ -102,7 +103,7 @@ impl DateTime {
                 }
             }
         }
-        
+
         if year > 0 {
             Some(DateTime {
                 year,
@@ -117,21 +118,21 @@ impl DateTime {
             None
         }
     }
-    
+
     fn calculate_weekday(year: u32, month: u32, day: u32) -> u32 {
         // Zeller's congruence (simplified)
         let y = if month < 3 { year - 1 } else { year } as i32;
         let m = if month < 3 { month + 12 } else { month } as i32;
         let d = day as i32;
-        
+
         let h = (d + (13 * (m + 1)) / 5 + y + y / 4 - y / 100 + y / 400) % 7;
         ((h + 6) % 7) as u32 // Convert to Sunday = 0
     }
-    
+
     fn format(&self, fmt: &str) -> String {
         let mut result = String::new();
         let mut chars = fmt.chars().peekable();
-        
+
         while let Some(c) = chars.next() {
             if c == '%' {
                 if let Some(&spec) = chars.peek() {
@@ -155,7 +156,9 @@ impl DateTime {
                             6 => "Saturday",
                             _ => "?",
                         }),
-                        'b' | 'h' => result.push_str(MONTHS[(self.month as usize).saturating_sub(1) % 12]),
+                        'b' | 'h' => {
+                            result.push_str(MONTHS[(self.month as usize).saturating_sub(1) % 12])
+                        }
                         'B' => result.push_str(match self.month {
                             1 => "January",
                             2 => "February",
@@ -171,7 +174,7 @@ impl DateTime {
                             12 => "December",
                             _ => "?",
                         }),
-                        'Z' => result.push_str("UTC"), // Timezone
+                        'Z' => result.push_str("UTC"),   // Timezone
                         'z' => result.push_str("+0000"), // Timezone offset
                         'n' => result.push('\n'),
                         't' => result.push('\t'),
@@ -188,13 +191,14 @@ impl DateTime {
                 result.push(c);
             }
         }
-        
+
         result
     }
-    
+
     fn default_format(&self) -> String {
         // Format: "Thu Jan  1 00:00:00 UTC 2024"
-        format!("{} {} {:>2} {:02}:{:02}:{:02} UTC {}",
+        format!(
+            "{} {} {:>2} {:02}:{:02}:{:02} UTC {}",
             WEEKDAYS[self.weekday as usize % 7],
             MONTHS[(self.month as usize).saturating_sub(1) % 12],
             self.day,
@@ -204,10 +208,11 @@ impl DateTime {
             self.year
         )
     }
-    
+
     fn rfc_format(&self) -> String {
         // RFC 5322 format: "Thu, 01 Jan 2024 00:00:00 +0000"
-        format!("{}, {:02} {} {} {:02}:{:02}:{:02} +0000",
+        format!(
+            "{}, {:02} {} {} {:02}:{:02}:{:02} +0000",
             WEEKDAYS[self.weekday as usize % 7],
             self.day,
             MONTHS[(self.month as usize).saturating_sub(1) % 12],
@@ -217,23 +222,23 @@ impl DateTime {
             self.second
         )
     }
-    
+
     fn iso_format(&self) -> String {
         // ISO 8601 format: "2024-01-01T00:00:00+00:00"
-        format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}+00:00",
-            self.year, self.month, self.day,
-            self.hour, self.minute, self.second
+        format!(
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}+00:00",
+            self.year, self.month, self.day, self.hour, self.minute, self.second
         )
     }
 }
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    
+
     let mut rfc_format = false;
     let mut iso_format = false;
     let mut custom_format: Option<&str> = None;
-    
+
     for arg in args.iter().skip(1) {
         match arg.as_str() {
             "-h" | "--help" => {
@@ -261,7 +266,7 @@ fn main() {
     }
 
     let dt = DateTime::new();
-    
+
     let output = if let Some(fmt) = custom_format {
         dt.format(fmt)
     } else if rfc_format {
@@ -271,6 +276,6 @@ fn main() {
     } else {
         dt.default_format()
     };
-    
+
     println!("{}", output);
 }

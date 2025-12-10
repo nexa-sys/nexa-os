@@ -1,10 +1,9 @@
 /// HTTP protocol abstraction layer
-/// 
+///
 /// This module provides a unified interface for different HTTP protocol versions:
 /// - HTTP/1.1 (implemented)
 /// - HTTP/2 (implemented via nh2)
 /// - HTTP/3 (planned)
-
 pub mod http1;
 pub mod request;
 pub mod response;
@@ -101,10 +100,8 @@ impl HttpResponse {
         };
 
         let decompressed = match encoding.as_str() {
-            "gzip" => {
-                nzip::gzip::gzip_decompress(&self.body)
-                    .map_err(|e| HttpError::DecompressionError(format!("gzip: {:?}", e)))?
-            }
+            "gzip" => nzip::gzip::gzip_decompress(&self.body)
+                .map_err(|e| HttpError::DecompressionError(format!("gzip: {:?}", e)))?,
             "deflate" => {
                 // Try zlib format first, fall back to raw deflate
                 let mut decompressor = nzip::zlib_format::ZlibDecompressor::new();
@@ -113,25 +110,30 @@ impl HttpResponse {
                     Err(_) => {
                         // Try raw deflate
                         let mut inflater = nzip::inflate::Inflater::new(15);
-                        inflater.decompress(&self.body)
+                        inflater
+                            .decompress(&self.body)
                             .map(|(data, _)| data)
-                            .map_err(|e| HttpError::DecompressionError(format!("deflate: {:?}", e)))?
+                            .map_err(|e| {
+                                HttpError::DecompressionError(format!("deflate: {:?}", e))
+                            })?
                     }
                 }
             }
             "identity" | "" => return Ok(()), // No compression
             other => {
                 return Err(HttpError::DecompressionError(format!(
-                    "Unsupported encoding: {}", other
+                    "Unsupported encoding: {}",
+                    other
                 )));
             }
         };
 
         self.body = decompressed;
-        
+
         // Remove Content-Encoding header since we've decompressed
-        self.headers.retain(|(k, _)| !k.eq_ignore_ascii_case("content-encoding"));
-        
+        self.headers
+            .retain(|(k, _)| !k.eq_ignore_ascii_case("content-encoding"));
+
         Ok(())
     }
 
@@ -140,7 +142,7 @@ impl HttpResponse {
     pub fn decompress_body(&mut self) -> HttpResult<()> {
         if self.get_header("content-encoding").is_some() {
             return Err(HttpError::NotSupported(
-                "Compression support not compiled in (enable 'compression' feature)".to_string()
+                "Compression support not compiled in (enable 'compression' feature)".to_string(),
             ));
         }
         Ok(())

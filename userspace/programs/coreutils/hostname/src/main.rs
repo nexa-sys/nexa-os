@@ -31,12 +31,12 @@ fn get_hostname() -> String {
     if let Ok(hostname) = fs::read_to_string(PROC_HOSTNAME) {
         return hostname.trim().to_string();
     }
-    
+
     // Fall back to /etc/hostname
     if let Ok(hostname) = fs::read_to_string(HOSTNAME_FILE) {
         return hostname.trim().to_string();
     }
-    
+
     // Default hostname
     "localhost".to_string()
 }
@@ -46,24 +46,24 @@ fn set_hostname(name: &str) -> Result<(), String> {
     if fs::write(PROC_HOSTNAME, format!("{}\n", name)).is_ok() {
         return Ok(());
     }
-    
+
     // Try /etc/hostname
     if fs::write(HOSTNAME_FILE, format!("{}\n", name)).is_ok() {
         return Ok(());
     }
-    
+
     Err("hostname: you must be root to change the hostname".to_string())
 }
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    
+
     let mut short = false;
     let mut fqdn = false;
     let mut domain = false;
     let mut ip_address = false;
     let mut new_hostname: Option<&str> = None;
-    
+
     for arg in args.iter().skip(1) {
         match arg.as_str() {
             "-h" | "--help" => {
@@ -95,7 +95,7 @@ fn main() {
 
     // Get and display hostname
     let hostname = get_hostname();
-    
+
     if short {
         // Print up to first '.'
         let short_name = hostname.split('.').next().unwrap_or(&hostname);

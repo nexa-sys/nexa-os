@@ -13,9 +13,9 @@ use std::path::{Path, PathBuf};
 use std::process::{self, Command, Stdio};
 
 mod builtins;
-mod state;
-pub mod parser;
 pub mod executor;
+pub mod parser;
+mod state;
 
 use builtins::BuiltinRegistry;
 use state::{normalize_path, ShellState};
@@ -81,7 +81,11 @@ mod nexaos {
         let mut request = ListDirRequest {
             path_ptr: 0,
             path_len: 0,
-            flags: if include_hidden { LIST_FLAG_INCLUDE_HIDDEN } else { 0 },
+            flags: if include_hidden {
+                LIST_FLAG_INCLUDE_HIDDEN
+            } else {
+                0
+            },
         };
 
         if let Some(p) = path {
@@ -98,8 +102,13 @@ mod nexaos {
         };
 
         let mut buf = vec![0u8; 4096];
-        let written = syscall3(SYS_LIST_FILES, buf.as_mut_ptr() as u64, buf.len() as u64, req_ptr);
-        
+        let written = syscall3(
+            SYS_LIST_FILES,
+            buf.as_mut_ptr() as u64,
+            buf.len() as u64,
+            req_ptr,
+        );
+
         if written == u64::MAX {
             return Err(errno());
         }
@@ -112,7 +121,11 @@ mod nexaos {
     pub fn get_user_info() -> Option<UserInfo> {
         let mut info = UserInfo::default();
         let ret = syscall3(SYS_USER_INFO, &mut info as *mut UserInfo as u64, 0, 0);
-        if ret != u64::MAX { Some(info) } else { None }
+        if ret != u64::MAX {
+            Some(info)
+        } else {
+            None
+        }
     }
 }
 
@@ -125,9 +138,21 @@ const SEARCH_PATHS: &[&str] = &["/bin", "/sbin", "/usr/bin", "/usr/sbin"];
 
 // External commands (for tab completion hints)
 const EXTERNAL_COMMANDS: &[&str] = &[
-    "ls", "cat", "stat", "pwd", "uname", "mkdir", "clear", "whoami", "users",
-    "login", "logout", "adduser",  // User management
-    "ipc-create", "ipc-send", "ipc-recv",  // IPC utilities
+    "ls",
+    "cat",
+    "stat",
+    "pwd",
+    "uname",
+    "mkdir",
+    "clear",
+    "whoami",
+    "users",
+    "login",
+    "logout",
+    "adduser", // User management
+    "ipc-create",
+    "ipc-send",
+    "ipc-recv", // IPC utilities
 ];
 
 // ============================================================================
@@ -171,16 +196,17 @@ impl LineEditor {
                 .last()
                 .map(|(i, _)| i)
                 .unwrap_or(0);
-            
+
             let removed_char = self.buffer.remove(char_start);
             self.cursor_pos = char_start;
-            
+
             // Redraw: move back, print rest of line, clear extra, reposition cursor
             let char_width = if removed_char.is_ascii() { 1 } else { 2 };
             // Clone the rest to avoid borrowing issues
             let rest = self.buffer[self.cursor_pos..].to_string();
-            let rest_display_width: usize = rest.chars().map(|c| if c.is_ascii() { 1 } else { 2 }).sum();
-            
+            let rest_display_width: usize =
+                rest.chars().map(|c| if c.is_ascii() { 1 } else { 2 }).sum();
+
             // Move cursor back
             for _ in 0..char_width {
                 self.write(b"\x1b[D");
@@ -203,11 +229,15 @@ impl LineEditor {
     fn erase_word(&mut self) {
         // Remove trailing whitespace
         while self.buffer.ends_with(char::is_whitespace) {
-            if !self.erase_char() { return; }
+            if !self.erase_char() {
+                return;
+            }
         }
         // Remove word
         while !self.buffer.is_empty() && !self.buffer.ends_with(char::is_whitespace) {
-            if !self.erase_char() { break; }
+            if !self.erase_char() {
+                break;
+            }
         }
     }
 
@@ -222,15 +252,18 @@ impl LineEditor {
         // Insert at cursor position
         self.buffer.insert_str(self.cursor_pos, s);
         self.cursor_pos += s.len();
-        
+
         // Clone data to avoid borrowing issues
         let rest = self.buffer[self.cursor_pos - s.len()..].to_string();
         let after_cursor = self.buffer[self.cursor_pos..].to_string();
-        let move_back: usize = after_cursor.chars().map(|c| if c.is_ascii() { 1 } else { 2 }).sum();
-        
+        let move_back: usize = after_cursor
+            .chars()
+            .map(|c| if c.is_ascii() { 1 } else { 2 })
+            .sum();
+
         // Print from cursor position to end
         self.write(rest.as_bytes());
-        
+
         // Move cursor back if not at end
         for _ in 0..move_back {
             self.write(b"\x1b[D");
@@ -245,10 +278,13 @@ impl LineEditor {
                 .last()
                 .map(|(i, _)| i)
                 .unwrap_or(0);
-            let ch = self.buffer[prev_pos..self.cursor_pos].chars().next().unwrap();
+            let ch = self.buffer[prev_pos..self.cursor_pos]
+                .chars()
+                .next()
+                .unwrap();
             let char_width = if ch.is_ascii() { 1 } else { 2 };
             self.cursor_pos = prev_pos;
-            
+
             // Move terminal cursor left
             self.write(b"\x1b[D");
             if char_width > 1 {
@@ -264,7 +300,7 @@ impl LineEditor {
             let ch = self.buffer[self.cursor_pos..].chars().next().unwrap();
             let char_width = if ch.is_ascii() { 1 } else { 2 };
             self.cursor_pos += ch.len_utf8();
-            
+
             // Move terminal cursor right
             self.write(b"\x1b[C");
             if char_width > 1 {
@@ -292,10 +328,10 @@ impl LineEditor {
             self.beep();
             return;
         }
-        
+
         // Clear current line
         self.clear_display_line(state);
-        
+
         self.history_index -= 1;
         self.buffer = self.history[self.history_index].clone();
         self.cursor_pos = self.buffer.len();
@@ -308,10 +344,10 @@ impl LineEditor {
             self.beep();
             return;
         }
-        
+
         // Clear current line
         self.clear_display_line(state);
-        
+
         self.history_index += 1;
         if self.history_index < self.history.len() {
             self.buffer = self.history[self.history_index].clone();
@@ -333,12 +369,12 @@ impl LineEditor {
         if self.cursor_pos < self.buffer.len() {
             let ch = self.buffer[self.cursor_pos..].chars().next().unwrap();
             self.buffer.remove(self.cursor_pos);
-            
+
             // Clone rest of line to avoid borrow issues
             let rest = self.buffer[self.cursor_pos..].to_string();
             let rest_width: usize = rest.chars().map(|c| if c.is_ascii() { 1 } else { 2 }).sum();
             let char_width = if ch.is_ascii() { 1 } else { 2 };
-            
+
             self.write(rest.as_bytes());
             // Clear extra characters
             for _ in 0..char_width {
@@ -382,13 +418,15 @@ impl LineEditor {
                     }
                     return line;
                 }
-                0x03 => { // Ctrl-C
+                0x03 => {
+                    // Ctrl-C
                     self.buffer.clear();
                     self.cursor_pos = 0;
                     self.write(b"^C\n");
                     return String::new();
                 }
-                0x04 => { // Ctrl-D
+                0x04 => {
+                    // Ctrl-D
                     if self.buffer.is_empty() {
                         println!("exit");
                         process::exit(0);
@@ -397,26 +435,32 @@ impl LineEditor {
                         self.delete_char_forward();
                     }
                 }
-                0x08 | 0x7f => { // Backspace
+                0x08 | 0x7f => {
+                    // Backspace
                     if !self.erase_char() {
                         self.beep();
                     }
                 }
-                b'\t' => { // Tab completion
+                b'\t' => {
+                    // Tab completion
                     self.handle_tab_completion(state, registry);
                 }
-                0x01 => { // Ctrl-A - move to start
+                0x01 => {
+                    // Ctrl-A - move to start
                     self.move_cursor_to_start();
                 }
-                0x05 => { // Ctrl-E - move to end
+                0x05 => {
+                    // Ctrl-E - move to end
                     self.move_cursor_to_end();
                 }
-                0x15 => { // Ctrl-U - clear line
+                0x15 => {
+                    // Ctrl-U - clear line
                     self.clear_display_line(state);
                     self.buffer.clear();
                     self.cursor_pos = 0;
                 }
-                0x0b => { // Ctrl-K - delete to end of line
+                0x0b => {
+                    // Ctrl-K - delete to end of line
                     let rest_width: usize = self.buffer[self.cursor_pos..]
                         .chars()
                         .map(|c| if c.is_ascii() { 1 } else { 2 })
@@ -425,10 +469,12 @@ impl LineEditor {
                     // Clear to end of line
                     self.write(b"\x1b[K");
                 }
-                0x17 => { // Ctrl-W
+                0x17 => {
+                    // Ctrl-W
                     self.erase_word();
                 }
-                0x0c => { // Ctrl-L
+                0x0c => {
+                    // Ctrl-L
                     clear_screen();
                     print_prompt(state);
                     let buf_copy = self.buffer.clone();
@@ -442,7 +488,8 @@ impl LineEditor {
                         self.write(b"\x1b[D");
                     }
                 }
-                0x1b => { // Escape sequence
+                0x1b => {
+                    // Escape sequence
                     self.handle_escape_sequence(&mut stdin_lock, state);
                 }
                 ch if ch < 0x20 => {
@@ -452,17 +499,17 @@ impl LineEditor {
                     // Insert character at cursor position
                     self.buffer.insert(self.cursor_pos, ch as char);
                     self.cursor_pos += 1;
-                    
+
                     // Clone data before calling write to avoid borrow issues
                     let rest = self.buffer[self.cursor_pos - 1..].to_string();
                     let move_back: usize = self.buffer[self.cursor_pos..]
                         .chars()
                         .map(|c| if c.is_ascii() { 1 } else { 2 })
                         .sum();
-                    
+
                     // Print from inserted position to end
                     self.write(rest.as_bytes());
-                    
+
                     // Move cursor back if not at end
                     for _ in 0..move_back {
                         self.write(b"\x1b[D");
@@ -474,53 +521,62 @@ impl LineEditor {
 
     fn handle_escape_sequence(&mut self, stdin: &mut io::StdinLock, state: &ShellState) {
         let mut buf = [0u8; 1];
-        
+
         // Read '['
         if stdin.read(&mut buf).unwrap_or(0) != 1 {
             return;
         }
-        
+
         if buf[0] != b'[' {
             // Not a CSI sequence
             return;
         }
-        
+
         // Read the command character
         if stdin.read(&mut buf).unwrap_or(0) != 1 {
             return;
         }
-        
+
         match buf[0] {
-            b'A' => { // Up arrow - history previous
+            b'A' => {
+                // Up arrow - history previous
                 self.history_up(state);
             }
-            b'B' => { // Down arrow - history next
+            b'B' => {
+                // Down arrow - history next
                 self.history_down(state);
             }
-            b'C' => { // Right arrow - move cursor right
+            b'C' => {
+                // Right arrow - move cursor right
                 self.move_cursor_right();
             }
-            b'D' => { // Left arrow - move cursor left
+            b'D' => {
+                // Left arrow - move cursor left
                 self.move_cursor_left();
             }
-            b'H' => { // Home key
+            b'H' => {
+                // Home key
                 self.move_cursor_to_start();
             }
-            b'F' => { // End key
+            b'F' => {
+                // End key
                 self.move_cursor_to_end();
             }
-            b'3' => { // Delete key (ESC[3~)
+            b'3' => {
+                // Delete key (ESC[3~)
                 // Read the '~'
                 if stdin.read(&mut buf).unwrap_or(0) == 1 && buf[0] == b'~' {
                     self.delete_char_forward();
                 }
             }
-            b'1' => { // Home key variant (ESC[1~)
+            b'1' => {
+                // Home key variant (ESC[1~)
                 if stdin.read(&mut buf).unwrap_or(0) == 1 && buf[0] == b'~' {
                     self.move_cursor_to_start();
                 }
             }
-            b'4' => { // End key variant (ESC[4~)
+            b'4' => {
+                // End key variant (ESC[4~)
                 if stdin.read(&mut buf).unwrap_or(0) == 1 && buf[0] == b'~' {
                     self.move_cursor_to_end();
                 }
@@ -550,12 +606,12 @@ impl LineEditor {
         } else {
             // Complete path argument
             let cmd = parts[0].clone();
-            let prefix = if has_trailing_space { 
-                String::new() 
-            } else { 
+            let prefix = if has_trailing_space {
+                String::new()
+            } else {
                 parts.last().cloned().unwrap_or_default()
             };
-            
+
             if command_accepts_path(&cmd) {
                 self.complete_path(&prefix, state);
             } else {
@@ -567,12 +623,9 @@ impl LineEditor {
     fn complete_command(&mut self, prefix: &str, state: &ShellState, registry: &BuiltinRegistry) {
         // Collect all available commands (builtins + external)
         let builtin_names = registry.list_builtins();
-        let mut all_commands: Vec<&str> = builtin_names
-            .iter()
-            .map(|s| s.as_str())
-            .collect();
+        let mut all_commands: Vec<&str> = builtin_names.iter().map(|s| s.as_str()).collect();
         all_commands.extend(EXTERNAL_COMMANDS.iter().copied());
-        
+
         // Also add executables from PATH directories
         for dir in SEARCH_PATHS {
             if let Ok(entries) = fs::read_dir(dir) {
@@ -584,8 +637,9 @@ impl LineEditor {
                 }
             }
         }
-        
-        let matches: Vec<&str> = all_commands.iter()
+
+        let matches: Vec<&str> = all_commands
+            .iter()
             .filter(|cmd| cmd.starts_with(prefix))
             .copied()
             .collect();
@@ -601,7 +655,11 @@ impl LineEditor {
         };
 
         let directory = if prefix.starts_with('/') {
-            if dir_part.is_empty() { PathBuf::from("/") } else { normalize_path(Path::new(dir_part)) }
+            if dir_part.is_empty() {
+                PathBuf::from("/")
+            } else {
+                normalize_path(Path::new(dir_part))
+            }
         } else if dir_part.is_empty() {
             state.cwd().to_path_buf()
         } else {
@@ -609,7 +667,7 @@ impl LineEditor {
         };
 
         let show_hidden = name_prefix.starts_with('.');
-        
+
         // Use NexaOS syscall for directory listing
         let list = match nexaos::list_files(Some(directory.to_str().unwrap_or("/")), show_hidden) {
             Ok(l) => l,
@@ -623,13 +681,21 @@ impl LineEditor {
         let mut is_dir: Vec<bool> = Vec::new();
 
         for entry in list.lines() {
-            if entry.is_empty() { continue; }
-            if !show_hidden && entry.starts_with('.') { continue; }
-            if name_prefix.is_empty() && (entry == "." || entry == "..") { continue; }
-            
+            if entry.is_empty() {
+                continue;
+            }
+            if !show_hidden && entry.starts_with('.') {
+                continue;
+            }
+            if name_prefix.is_empty() && (entry == "." || entry == "..") {
+                continue;
+            }
+
             if entry.starts_with(name_prefix) {
                 let full_path = directory.join(entry);
-                let dir = fs::metadata(&full_path).map(|m| m.is_dir()).unwrap_or(false);
+                let dir = fs::metadata(&full_path)
+                    .map(|m| m.is_dir())
+                    .unwrap_or(false);
                 matches.push(entry.to_string());
                 is_dir.push(dir);
             }
@@ -704,29 +770,41 @@ fn command_accepts_path(cmd: &str) -> bool {
 }
 
 fn longest_common_prefix(items: &[String]) -> String {
-    if items.is_empty() { return String::new(); }
+    if items.is_empty() {
+        return String::new();
+    }
     let first = &items[0];
     let mut len = first.len();
     for item in &items[1..] {
-        len = first.chars().zip(item.chars())
+        len = first
+            .chars()
+            .zip(item.chars())
             .take_while(|(a, b)| a == b)
             .count()
             .min(len);
-        if len == 0 { break; }
+        if len == 0 {
+            break;
+        }
     }
     first[..len].to_string()
 }
 
 fn longest_common_prefix_str(items: &[&str]) -> String {
-    if items.is_empty() { return String::new(); }
+    if items.is_empty() {
+        return String::new();
+    }
     let first = items[0];
     let mut len = first.len();
     for item in &items[1..] {
-        len = first.chars().zip(item.chars())
+        len = first
+            .chars()
+            .zip(item.chars())
             .take_while(|(a, b)| a == b)
             .count()
             .min(len);
-        if len == 0 { break; }
+        if len == 0 {
+            break;
+        }
     }
     first[..len].to_string()
 }
@@ -739,8 +817,13 @@ fn print_prompt(state: &ShellState) {
     let username = nexaos::get_user_info()
         .and_then(|info| {
             let len = info.username_len as usize;
-            if len == 0 { None }
-            else { std::str::from_utf8(&info.username[..len]).ok().map(String::from) }
+            if len == 0 {
+                None
+            } else {
+                std::str::from_utf8(&info.username[..len])
+                    .ok()
+                    .map(String::from)
+            }
         })
         .unwrap_or_else(|| "anonymous".to_string());
 
@@ -797,9 +880,7 @@ fn execute_external_command(state: &ShellState, cmd: &str, args: &[&str]) -> i32
         .stderr(Stdio::inherit())
         .status()
     {
-        Ok(status) => {
-            status.code().unwrap_or(1)
-        }
+        Ok(status) => status.code().unwrap_or(1),
         Err(e) => {
             eprintln!("执行 '{}' 失败: {}", cmd, e);
             126
@@ -810,7 +891,7 @@ fn execute_external_command(state: &ShellState, cmd: &str, args: &[&str]) -> i32
 /// Check if a command line needs the full parser (for compound commands, redirections, etc.)
 fn needs_full_parser(line: &str) -> bool {
     let trimmed = line.trim();
-    
+
     // Control flow keywords
     if trimmed.starts_with("if ")
         || trimmed.starts_with("case ")
@@ -822,15 +903,16 @@ fn needs_full_parser(line: &str) -> bool {
         || trimmed.starts_with("((")
         || trimmed.starts_with("[[")
         || trimmed.starts_with("{")
-        || trimmed.starts_with("(") {
+        || trimmed.starts_with("(")
+    {
         return true;
     }
-    
+
     // Operators and redirections (need to handle quoting)
     let mut in_single_quote = false;
     let mut in_double_quote = false;
     let chars: Vec<char> = line.chars().collect();
-    
+
     for (i, &c) in chars.iter().enumerate() {
         match c {
             '\'' if !in_double_quote => in_single_quote = !in_single_quote,
@@ -871,12 +953,12 @@ fn needs_full_parser(line: &str) -> bool {
             _ => {}
         }
     }
-    
-    // Check for fd redirects like 2> 
+
+    // Check for fd redirects like 2>
     if line.contains("2>") || line.contains("1>") || line.contains("0<") {
         return true;
     }
-    
+
     false
 }
 
@@ -952,7 +1034,9 @@ fn handle_command(state: &mut ShellState, registry: &BuiltinRegistry, line: &str
                     let inner_cmd = &e[13..];
                     let inner_parts: Vec<&str> = inner_cmd.split_whitespace().collect();
                     if !inner_parts.is_empty() {
-                        if let Some(result) = registry.execute(inner_parts[0], state, &inner_parts[1..]) {
+                        if let Some(result) =
+                            registry.execute(inner_parts[0], state, &inner_parts[1..])
+                        {
                             state.last_exit_status = result.unwrap_or_else(|e| {
                                 eprintln!("{}", e);
                                 1
@@ -977,7 +1061,7 @@ fn handle_command(state: &mut ShellState, registry: &BuiltinRegistry, line: &str
 
 fn main() -> ! {
     println!("欢迎使用 NexaOS Shell。输入 'help' 获取命令列表。");
-    
+
     let mut state = ShellState::new();
     let registry = BuiltinRegistry::new();
     let mut editor = LineEditor::new();

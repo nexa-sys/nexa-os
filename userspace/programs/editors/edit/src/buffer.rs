@@ -16,19 +16,19 @@ impl Line {
             content: String::new(),
         }
     }
-    
+
     pub fn from_string(s: String) -> Self {
         Line { content: s }
     }
-    
+
     pub fn len(&self) -> usize {
         self.content.len()
     }
-    
+
     pub fn is_empty(&self) -> bool {
         self.content.is_empty()
     }
-    
+
     /// Get the display width of the line (tabs expanded)
     pub fn display_width(&self, tabstop: usize) -> usize {
         let mut width = 0;
@@ -65,15 +65,9 @@ pub enum EditOp {
         text: String,
     },
     /// Insert a new line
-    InsertLine {
-        line: usize,
-        content: String,
-    },
+    InsertLine { line: usize, content: String },
     /// Delete a line
-    DeleteLine {
-        line: usize,
-        content: String,
-    },
+    DeleteLine { line: usize, content: String },
     /// Replace text
     Replace {
         line: usize,
@@ -82,15 +76,9 @@ pub enum EditOp {
         new_text: String,
     },
     /// Join lines
-    JoinLines {
-        line: usize,
-        col: usize,
-    },
+    JoinLines { line: usize, col: usize },
     /// Split line
-    SplitLine {
-        line: usize,
-        col: usize,
-    },
+    SplitLine { line: usize, col: usize },
     /// Multiple operations grouped together
     Group(Vec<EditOp>),
 }
@@ -130,9 +118,9 @@ pub struct Buffer {
 /// Line ending style
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineEnding {
-    Unix,    // \n
-    Dos,     // \r\n
-    Mac,     // \r (classic Mac OS)
+    Unix, // \n
+    Dos,  // \r\n
+    Mac,  // \r (classic Mac OS)
 }
 
 impl Default for LineEnding {
@@ -157,24 +145,25 @@ impl Buffer {
             line_ending: LineEnding::default(),
         }
     }
-    
+
     /// Set the file path for this buffer
     pub fn set_path(&mut self, path: &str) {
         let path_buf = PathBuf::from(path);
-        self.name = path_buf.file_name()
+        self.name = path_buf
+            .file_name()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| String::from("[No Name]"));
         self.filetype = detect_filetype(&path_buf);
         self.path = Some(path_buf);
     }
-    
+
     /// Create a buffer from a file
     pub fn from_file(path: &str) -> io::Result<Self> {
         let file = File::open(path)?;
         let reader = BufReader::new(file);
         let mut lines = Vec::new();
         let mut line_ending = LineEnding::Unix;
-        
+
         for line_result in reader.lines() {
             let line = line_result?;
             // Detect line ending from first line with content
@@ -183,19 +172,20 @@ impl Buffer {
             }
             lines.push(Line::from_string(line));
         }
-        
+
         // Ensure at least one line
         if lines.is_empty() {
             lines.push(Line::new());
         }
-        
+
         let path_buf = PathBuf::from(path);
-        let name = path_buf.file_name()
+        let name = path_buf
+            .file_name()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| String::from("[No Name]"));
-        
+
         let filetype = detect_filetype(&path_buf);
-        
+
         Ok(Buffer {
             lines,
             path: Some(path_buf),
@@ -209,7 +199,7 @@ impl Buffer {
             line_ending,
         })
     }
-    
+
     /// Save buffer to file
     pub fn save(&mut self) -> io::Result<()> {
         if let Some(path) = self.path.clone() {
@@ -218,17 +208,17 @@ impl Buffer {
             Err(io::Error::new(io::ErrorKind::Other, "No file name"))
         }
     }
-    
+
     /// Save buffer to a specific file
     pub fn save_as(&mut self, path: &str) -> io::Result<()> {
         let mut file = File::create(path)?;
-        
+
         let line_sep = match self.line_ending {
             LineEnding::Unix => "\n",
             LineEnding::Dos => "\r\n",
             LineEnding::Mac => "\r",
         };
-        
+
         for (i, line) in self.lines.iter().enumerate() {
             file.write_all(line.content.as_bytes())?;
             if i < self.lines.len() - 1 {
@@ -237,7 +227,7 @@ impl Buffer {
         }
         // Write final newline
         file.write_all(line_sep.as_bytes())?;
-        
+
         self.path = Some(PathBuf::from(path));
         self.name = PathBuf::from(path)
             .file_name()
@@ -245,25 +235,25 @@ impl Buffer {
             .unwrap_or_else(|| String::from("[No Name]"));
         self.modified = false;
         self.filetype = detect_filetype(&PathBuf::from(path));
-        
+
         Ok(())
     }
-    
+
     /// Get the number of lines
     pub fn line_count(&self) -> usize {
         self.lines.len()
     }
-    
+
     /// Get a line by index
     pub fn get_line(&self, line: usize) -> Option<&Line> {
         self.lines.get(line)
     }
-    
+
     /// Get a mutable line by index
     pub fn get_line_mut(&mut self, line: usize) -> Option<&mut Line> {
         self.lines.get_mut(line)
     }
-    
+
     /// Insert a character at position
     pub fn insert_char(&mut self, line: usize, col: usize, ch: char) {
         if let Some(l) = self.lines.get_mut(line) {
@@ -271,7 +261,7 @@ impl Buffer {
             let byte_pos = char_to_byte_pos(&l.content, col);
             l.content.insert(byte_pos, ch);
             self.modified = true;
-            
+
             self.current_group.push(EditOp::Insert {
                 line,
                 col,
@@ -279,14 +269,14 @@ impl Buffer {
             });
         }
     }
-    
+
     /// Insert text at position
     pub fn insert_text(&mut self, line: usize, col: usize, text: &str) {
         if let Some(l) = self.lines.get_mut(line) {
             let byte_pos = char_to_byte_pos(&l.content, col);
             l.content.insert_str(byte_pos, text);
             self.modified = true;
-            
+
             self.current_group.push(EditOp::Insert {
                 line,
                 col,
@@ -294,7 +284,7 @@ impl Buffer {
             });
         }
     }
-    
+
     /// Delete character at position
     pub fn delete_char(&mut self, line: usize, col: usize) -> Option<char> {
         if let Some(l) = self.lines.get_mut(line) {
@@ -302,19 +292,19 @@ impl Buffer {
             if byte_pos < l.content.len() {
                 let ch = l.content.remove(byte_pos);
                 self.modified = true;
-                
+
                 self.current_group.push(EditOp::Delete {
                     line,
                     col,
                     text: ch.to_string(),
                 });
-                
+
                 return Some(ch);
             }
         }
         None
     }
-    
+
     /// Delete range of text
     pub fn delete_range(&mut self, line: usize, start_col: usize, end_col: usize) -> String {
         if let Some(l) = self.lines.get_mut(line) {
@@ -323,102 +313,94 @@ impl Buffer {
             let deleted: String = l.content[start_byte..end_byte].to_string();
             l.content.drain(start_byte..end_byte);
             self.modified = true;
-            
+
             self.current_group.push(EditOp::Delete {
                 line,
                 col: start_col,
                 text: deleted.clone(),
             });
-            
+
             return deleted;
         }
         String::new()
     }
-    
+
     /// Insert a new line
     pub fn insert_line(&mut self, line: usize, content: String) {
         let new_line = Line::from_string(content.clone());
         if line <= self.lines.len() {
             self.lines.insert(line, new_line);
             self.modified = true;
-            
-            self.current_group.push(EditOp::InsertLine {
-                line,
-                content,
-            });
+
+            self.current_group
+                .push(EditOp::InsertLine { line, content });
         }
     }
-    
+
     /// Delete a line
     pub fn delete_line(&mut self, line: usize) -> Option<String> {
         if line < self.lines.len() && self.lines.len() > 1 {
             let removed = self.lines.remove(line);
             self.modified = true;
-            
+
             self.current_group.push(EditOp::DeleteLine {
                 line,
                 content: removed.content.clone(),
             });
-            
+
             return Some(removed.content);
         } else if line < self.lines.len() {
             // Last line - just clear it
             let content = self.lines[line].content.clone();
             self.lines[line].content.clear();
             self.modified = true;
-            
+
             self.current_group.push(EditOp::DeleteLine {
                 line,
                 content: content.clone(),
             });
-            
+
             return Some(content);
         }
         None
     }
-    
+
     /// Split a line at position (for Enter key)
     pub fn split_line(&mut self, line: usize, col: usize) {
         if let Some(l) = self.lines.get_mut(line) {
             let byte_pos = char_to_byte_pos(&l.content, col);
             let new_content = l.content[byte_pos..].to_string();
             l.content.truncate(byte_pos);
-            
+
             self.lines.insert(line + 1, Line::from_string(new_content));
             self.modified = true;
-            
-            self.current_group.push(EditOp::SplitLine {
-                line,
-                col,
-            });
+
+            self.current_group.push(EditOp::SplitLine { line, col });
         }
     }
-    
+
     /// Join line with the next line
     pub fn join_lines(&mut self, line: usize) {
         if line + 1 < self.lines.len() {
             let next_content = self.lines.remove(line + 1).content;
             let col = self.lines[line].content.chars().count();
-            
+
             // Add a space if needed
             if !self.lines[line].content.is_empty() && !next_content.is_empty() {
                 self.lines[line].content.push(' ');
             }
             self.lines[line].content.push_str(next_content.trim_start());
             self.modified = true;
-            
-            self.current_group.push(EditOp::JoinLines {
-                line,
-                col,
-            });
+
+            self.current_group.push(EditOp::JoinLines { line, col });
         }
     }
-    
+
     /// Begin a group of operations (for undo)
     pub fn begin_group(&mut self, cursor_line: usize, cursor_col: usize) {
         self.commit_group(cursor_line, cursor_col);
     }
-    
+
     /// Commit current operation group
     pub fn commit_group(&mut self, cursor_line: usize, cursor_col: usize) {
         if !self.current_group.is_empty() {
@@ -431,7 +413,7 @@ impl Buffer {
             self.redo_stack.clear();
         }
     }
-    
+
     /// Undo last operation
     pub fn undo(&mut self) -> Option<(usize, usize)> {
         if let Some(state) = self.undo_stack.pop() {
@@ -441,18 +423,18 @@ impl Buffer {
                 redo_ops.push(self.apply_inverse(op));
             }
             redo_ops.reverse();
-            
+
             self.redo_stack.push(UndoState {
                 ops: redo_ops,
                 cursor_line: state.cursor_line,
                 cursor_col: state.cursor_col,
             });
-            
+
             return Some((state.cursor_line, state.cursor_col));
         }
         None
     }
-    
+
     /// Redo last undone operation
     pub fn redo(&mut self) -> Option<(usize, usize)> {
         if let Some(state) = self.redo_stack.pop() {
@@ -460,18 +442,18 @@ impl Buffer {
             for op in state.ops.iter() {
                 undo_ops.push(self.apply_inverse(op));
             }
-            
+
             self.undo_stack.push(UndoState {
                 ops: undo_ops,
                 cursor_line: state.cursor_line,
                 cursor_col: state.cursor_col,
             });
-            
+
             return Some((state.cursor_line, state.cursor_col));
         }
         None
     }
-    
+
     /// Apply inverse of an operation
     fn apply_inverse(&mut self, op: &EditOp) -> EditOp {
         match op {
@@ -544,7 +526,12 @@ impl Buffer {
                     col: *col,
                 }
             }
-            EditOp::Replace { line, col, old_text, new_text } => {
+            EditOp::Replace {
+                line,
+                col,
+                old_text,
+                new_text,
+            } => {
                 if let Some(l) = self.lines.get_mut(*line) {
                     let byte_pos = char_to_byte_pos(&l.content, *col);
                     let end_byte = byte_pos + new_text.len();
@@ -567,13 +554,19 @@ impl Buffer {
             }
         }
     }
-    
+
     /// Search for text in buffer
-    pub fn search(&self, pattern: &str, start_line: usize, start_col: usize, forward: bool) -> Option<(usize, usize)> {
+    pub fn search(
+        &self,
+        pattern: &str,
+        start_line: usize,
+        start_col: usize,
+        forward: bool,
+    ) -> Option<(usize, usize)> {
         if pattern.is_empty() {
             return None;
         }
-        
+
         if forward {
             // Search forward from current position
             for line_idx in start_line..self.lines.len() {
@@ -583,13 +576,13 @@ impl Buffer {
                 } else {
                     0
                 };
-                
+
                 if let Some(pos) = line[search_start..].find(pattern) {
                     let byte_pos = search_start + pos;
                     return Some((line_idx, byte_to_char_pos(line, byte_pos)));
                 }
             }
-            
+
             // Wrap around to beginning
             for line_idx in 0..=start_line {
                 let line = &self.lines[line_idx].content;
@@ -598,7 +591,7 @@ impl Buffer {
                 } else {
                     line.len()
                 };
-                
+
                 if let Some(pos) = line[..search_end].find(pattern) {
                     return Some((line_idx, byte_to_char_pos(line, pos)));
                 }
@@ -612,12 +605,12 @@ impl Buffer {
                 } else {
                     line.len()
                 };
-                
+
                 if let Some(pos) = line[..search_end].rfind(pattern) {
                     return Some((line_idx, byte_to_char_pos(line, pos)));
                 }
             }
-            
+
             // Wrap around to end
             for line_idx in (start_line..self.lines.len()).rev() {
                 let line = &self.lines[line_idx].content;
@@ -626,14 +619,14 @@ impl Buffer {
                 } else {
                     0
                 };
-                
+
                 if let Some(pos) = line[search_start..].rfind(pattern) {
                     let byte_pos = search_start + pos;
                     return Some((line_idx, byte_to_char_pos(line, byte_pos)));
                 }
             }
         }
-        
+
         None
     }
 }

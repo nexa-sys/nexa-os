@@ -2,9 +2,9 @@
 //!
 //! Provides X.509 certificate parsing, verification, and management.
 
-use std::vec::Vec;
-use std::string::String;
 use crate::{c_char, c_int, SSL_FILETYPE_PEM};
+use std::string::String;
+use std::vec::Vec;
 
 /// X.509 verification error codes
 pub mod verify_error {
@@ -75,28 +75,26 @@ impl X509 {
     pub fn from_der(der: &[u8]) -> Option<Self> {
         let mut cert = Self::new();
         cert.der = der.to_vec();
-        
+
         // Parse ASN.1 structure (simplified)
         if !cert.parse_der() {
             return None;
         }
-        
+
         Some(cert)
     }
 
     /// Parse certificate from PEM data
     pub fn from_pem(pem: &[u8]) -> Option<Self> {
         let text = std::str::from_utf8(pem).ok()?;
-        
+
         let start = text.find("-----BEGIN CERTIFICATE-----")?;
         let end = text.find("-----END CERTIFICATE-----")?;
-        
+
         let base64_start = start + "-----BEGIN CERTIFICATE-----".len();
         let base64_data = &text[base64_start..end];
-        let cleaned: String = base64_data.chars()
-            .filter(|c| !c.is_whitespace())
-            .collect();
-        
+        let cleaned: String = base64_data.chars().filter(|c| !c.is_whitespace()).collect();
+
         let der = crate::ncryptolib::base64_decode(&cleaned).ok()?;
         Self::from_der(&der)
     }
@@ -105,11 +103,11 @@ impl X509 {
     pub fn load_from_file(path: &str, file_type: c_int) -> Option<Self> {
         use std::fs;
         use std::io::Read;
-        
+
         let mut file = fs::File::open(path).ok()?;
         let mut data = Vec::new();
         file.read_to_end(&mut data).ok()?;
-        
+
         if file_type == SSL_FILETYPE_PEM {
             Self::from_pem(&data)
         } else {
@@ -121,21 +119,21 @@ impl X509 {
     pub fn load_chain_from_file(path: &str) -> Option<Vec<Self>> {
         use std::fs;
         use std::io::Read;
-        
+
         let mut file = fs::File::open(path).ok()?;
         let mut data = Vec::new();
         file.read_to_end(&mut data).ok()?;
-        
+
         let text = std::str::from_utf8(&data).ok()?;
         let mut certs = Vec::new();
         let mut search_from = 0;
-        
+
         while let Some(start) = text[search_from..].find("-----BEGIN CERTIFICATE-----") {
             let abs_start = search_from + start;
             if let Some(end_offset) = text[abs_start..].find("-----END CERTIFICATE-----") {
                 let abs_end = abs_start + end_offset + "-----END CERTIFICATE-----".len();
                 let cert_pem = text[abs_start..abs_end].as_bytes();
-                
+
                 if let Some(cert) = Self::from_pem(cert_pem) {
                     certs.push(cert);
                 }
@@ -144,7 +142,7 @@ impl X509 {
                 break;
             }
         }
-        
+
         if certs.is_empty() {
             None
         } else {
@@ -156,16 +154,16 @@ impl X509 {
     fn parse_der(&mut self) -> bool {
         // Simplified ASN.1 DER parsing
         // Real implementation would need full ASN.1 parser
-        
+
         if self.der.len() < 10 {
             return false;
         }
-        
+
         // Check for SEQUENCE tag
         if self.der[0] != 0x30 {
             return false;
         }
-        
+
         // For now, mark as successfully parsed
         // TODO: Implement full ASN.1 parsing
         true
@@ -201,39 +199,39 @@ impl X509 {
     /// Verify certificate signature with issuer's public key
     pub fn verify_signature(&self, issuer_pubkey: &[u8]) -> bool {
         use crate::x509_verify::{PublicKey, SignatureAlgorithm, SignatureVerifier};
-        
+
         if issuer_pubkey.is_empty() || self.der.is_empty() {
             return false;
         }
-        
+
         // Parse issuer's public key
         let pubkey = match PublicKey::from_spki(issuer_pubkey) {
             Some(k) => k,
             None => return false,
         };
-        
+
         // Parse certificate to get TBSCertificate, signature algorithm, and signature
         // This is a simplified extraction - full implementation would use ASN.1 parser
         if self.der.len() < 10 {
             return false;
         }
-        
+
         // For now, use a simplified verification that delegates to SignatureVerifier
         // In a full implementation, we would:
         // 1. Extract TBSCertificate from self.der
         // 2. Extract signature algorithm OID
         // 3. Extract signature bytes
         // 4. Call SignatureVerifier::verify()
-        
+
         // Placeholder: assume RSA-SHA256 for now
         // TODO: Parse actual algorithm from certificate
         let sig_alg = SignatureAlgorithm::RsaPkcs1Sha256;
-        
+
         // Extract approximate TBSCertificate (everything before signature)
         // This is a simplification - real implementation needs proper ASN.1 parsing
         let tbs_data = &self.der[..self.der.len().saturating_sub(256)];
         let sig_data = &self.der[self.der.len().saturating_sub(256)..];
-        
+
         SignatureVerifier::verify(tbs_data, sig_alg, sig_data, &pubkey)
     }
 
@@ -245,19 +243,21 @@ impl X509 {
                 return true;
             }
         }
-        
+
         // Fall back to Common Name
         if let Some(cn) = self.subject.get_common_name() {
             return matches_hostname(cn, hostname);
         }
-        
+
         false
     }
 
     /// Free certificate
     pub fn free(cert: *mut X509) {
         if !cert.is_null() {
-            unsafe { drop(Box::from_raw(cert)); }
+            unsafe {
+                drop(Box::from_raw(cert));
+            }
         }
     }
 }
@@ -302,10 +302,10 @@ impl X509Name {
         if name.is_null() {
             return core::ptr::null_mut();
         }
-        
+
         let name_ref = unsafe { &*name };
         let mut result = String::new();
-        
+
         if let Some(ref cn) = name_ref.common_name {
             result.push_str("/CN=");
             result.push_str(cn);
@@ -322,23 +322,23 @@ impl X509Name {
             result.push_str("/C=");
             result.push_str(c);
         }
-        
+
         if buf.is_null() {
             // Allocate and return
             let boxed = result.into_bytes().into_boxed_slice();
             let ptr = Box::into_raw(boxed);
             return ptr as *mut c_char;
         }
-        
+
         // Copy to provided buffer
         let bytes = result.as_bytes();
         let copy_len = (size as usize - 1).min(bytes.len());
-        
+
         unsafe {
             core::ptr::copy_nonoverlapping(bytes.as_ptr(), buf as *mut u8, copy_len);
             *((buf as *mut u8).add(copy_len)) = 0;
         }
-        
+
         buf
     }
 }
@@ -389,12 +389,12 @@ impl X509Store {
     /// Load certificates from directory
     pub fn load_path(&mut self, path: &str) -> bool {
         use std::fs;
-        
+
         let entries = match fs::read_dir(path) {
             Ok(e) => e,
             Err(_) => return false,
         };
-        
+
         let mut loaded = false;
         for entry in entries.flatten() {
             let file_path = entry.path();
@@ -408,7 +408,7 @@ impl X509Store {
                 }
             }
         }
-        
+
         loaded
     }
 
@@ -429,7 +429,7 @@ impl X509Store {
         if chain.is_empty() {
             return verify_error::X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY;
         }
-        
+
         // Check leaf certificate validity
         let leaf = &chain[0];
         if !leaf.is_valid() {
@@ -439,17 +439,17 @@ impl X509Store {
                 return verify_error::X509_V_ERR_CERT_HAS_EXPIRED;
             }
         }
-        
+
         // Verify chain
         for i in 0..chain.len() - 1 {
             let cert = &chain[i];
             let issuer = &chain[i + 1];
-            
+
             if !cert.verify_signature(&issuer.public_key) {
                 return verify_error::X509_V_ERR_CERT_SIGNATURE_FAILURE;
             }
         }
-        
+
         // Check if root is trusted
         let root = chain.last().unwrap();
         if self.find_issuer(root).is_none() {
@@ -458,7 +458,7 @@ impl X509Store {
             }
             return verify_error::X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY;
         }
-        
+
         verify_error::X509_V_OK
     }
 }
@@ -552,7 +552,7 @@ impl Default for X509VerifyParam {
 fn matches_hostname(pattern: &str, hostname: &str) -> bool {
     let pattern = pattern.to_lowercase();
     let hostname = hostname.to_lowercase();
-    
+
     if pattern.starts_with("*.") {
         // Wildcard match
         let suffix = &pattern[2..];

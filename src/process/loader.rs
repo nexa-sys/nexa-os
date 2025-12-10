@@ -290,13 +290,13 @@ impl Process {
             user_rip: entry_point,
             user_rsp: stack_ptr,
             user_rflags: 0x202,
-            user_r10: 0,  // Syscall arg4 - initialized to 0
-            user_r8: 0,   // Syscall arg5 - initialized to 0
-            user_r9: 0,   // Syscall arg6 - initialized to 0
+            user_r10: 0, // Syscall arg4 - initialized to 0
+            user_r8: 0,  // Syscall arg5 - initialized to 0
+            user_r9: 0,  // Syscall arg6 - initialized to 0
             exit_code: 0,
             term_signal: None,
-            kernel_stack: 0, // Initialize kernel stack pointer
-            fs_base: 0,      // Initialize TLS base (will be set by CLONE_SETTLS or arch_prctl)
+            kernel_stack: 0,    // Initialize kernel stack pointer
+            fs_base: 0,         // Initialize TLS base (will be set by CLONE_SETTLS or arch_prctl)
             clear_child_tid: 0, // No clear_child_tid set
             cmdline,
             cmdline_len,
@@ -475,9 +475,9 @@ impl Process {
                     user_rip: interp_image.entry_point,
                     user_rsp: stack_ptr,
                     user_rflags: 0x202,
-                    user_r10: 0,  // Syscall arg4 - initialized to 0
-                    user_r8: 0,   // Syscall arg5 - initialized to 0
-                    user_r9: 0,   // Syscall arg6 - initialized to 0
+                    user_r10: 0, // Syscall arg4 - initialized to 0
+                    user_r8: 0,  // Syscall arg5 - initialized to 0
+                    user_r9: 0,  // Syscall arg6 - initialized to 0
                     exit_code: 0,
                     term_signal: None,
                     kernel_stack: {
@@ -489,7 +489,7 @@ impl Process {
                         }
                         ptr
                     },
-                    fs_base: 0, // Initialize TLS base
+                    fs_base: 0,         // Initialize TLS base
                     clear_child_tid: 0, // No clear_child_tid set
                     cmdline,
                     cmdline_len,
@@ -525,21 +525,24 @@ impl Process {
         context.rsp = stack_ptr;
 
         // New process (init): use demand paging (pages mapped on first access)
-        let cr3 =
-            match crate::paging::create_process_address_space(USER_PHYS_BASE, USER_REGION_SIZE, true) {
-                Ok(cr3) => {
-                    // Validate CR3 before using it
-                    if let Err(e) = crate::paging::validate_cr3(cr3, false) {
-                        kerror!("Process::from_elf: Invalid CR3 {:#x}: {}", cr3, e);
-                        return Err("Failed to create valid address space");
-                    }
-                    cr3
+        let cr3 = match crate::paging::create_process_address_space(
+            USER_PHYS_BASE,
+            USER_REGION_SIZE,
+            true,
+        ) {
+            Ok(cr3) => {
+                // Validate CR3 before using it
+                if let Err(e) = crate::paging::validate_cr3(cr3, false) {
+                    kerror!("Process::from_elf: Invalid CR3 {:#x}: {}", cr3, e);
+                    return Err("Failed to create valid address space");
                 }
-                Err(err) => {
-                    kerror!("Failed to create address space for process: {}", err);
-                    return Err("Failed to create process address space");
-                }
-            };
+                cr3
+            }
+            Err(err) => {
+                kerror!("Failed to create address space for process: {}", err);
+                return Err("Failed to create process address space");
+            }
+        };
 
         // Build cmdline from arguments
         let (cmdline, cmdline_len) = build_cmdline(final_args);
@@ -568,9 +571,9 @@ impl Process {
             user_rip: program_image.entry_point,
             user_rsp: stack_ptr,
             user_rflags: 0x202,
-            user_r10: 0,  // Syscall arg4 - initialized to 0
-            user_r8: 0,   // Syscall arg5 - initialized to 0
-            user_r9: 0,   // Syscall arg6 - initialized to 0
+            user_r10: 0, // Syscall arg4 - initialized to 0
+            user_r8: 0,  // Syscall arg5 - initialized to 0
+            user_r9: 0,  // Syscall arg6 - initialized to 0
             kernel_stack: {
                 let layout =
                     Layout::from_size_align(KERNEL_STACK_SIZE, KERNEL_STACK_ALIGN).unwrap();
@@ -580,7 +583,7 @@ impl Process {
                 }
                 ptr
             },
-            fs_base: 0, // Initialize TLS base
+            fs_base: 0,         // Initialize TLS base
             clear_child_tid: 0, // No clear_child_tid set
             cmdline,
             cmdline_len,

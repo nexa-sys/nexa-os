@@ -218,7 +218,10 @@ pub fn is_pipe_mode() -> bool {
 }
 
 /// Generate core filename from pattern and process info
-pub fn generate_core_filename(info: &CoreDumpInfo, exe_name: &str) -> Option<([u8; MAX_CORE_FILENAME], usize)> {
+pub fn generate_core_filename(
+    info: &CoreDumpInfo,
+    exe_name: &str,
+) -> Option<([u8; MAX_CORE_FILENAME], usize)> {
     let config = CORE_PATTERN.lock();
     if !config.enabled {
         return None;
@@ -365,7 +368,11 @@ pub fn dump_core(info: &CoreDumpInfo, exe_name: &str) -> Result<(), &'static str
         crate::kerror!("    Error code: {:#018x}", info.error_code);
     }
 
-    crate::kerror!("  Memory: base={:#x}, size={:#x}", info.memory_base, info.memory_size);
+    crate::kerror!(
+        "  Memory: base={:#x}, size={:#x}",
+        info.memory_base,
+        info.memory_size
+    );
 
     // Try to dump stack trace
     dump_stack_trace(info);
@@ -406,8 +413,7 @@ fn dump_stack_trace(info: &CoreDumpInfo) {
             {
                 // Try to read - might still fault for unmapped pages
                 core::ptr::read_volatile(ptr)
-            } else if addr >= info.memory_base
-                && addr < info.memory_base + info.memory_size as u64
+            } else if addr >= info.memory_base && addr < info.memory_base + info.memory_size as u64
             {
                 // Physical address in kernel mapping
                 core::ptr::read_volatile(ptr)

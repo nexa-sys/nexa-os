@@ -19,12 +19,12 @@ pub mod tls12 {
     pub const TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256: u16 = 0xC02F;
     pub const TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384: u16 = 0xC030;
     pub const TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256: u16 = 0xCCA8;
-    
+
     // ECDHE + ECDSA
     pub const TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256: u16 = 0xC02B;
     pub const TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384: u16 = 0xC02C;
     pub const TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256: u16 = 0xCCA9;
-    
+
     // DHE + RSA (less preferred)
     pub const TLS_DHE_RSA_WITH_AES_128_GCM_SHA256: u16 = 0x009E;
     pub const TLS_DHE_RSA_WITH_AES_256_GCM_SHA384: u16 = 0x009F;
@@ -77,7 +77,8 @@ impl CipherSuite {
 
     /// Get cipher suite by name
     pub fn from_name(name: &str) -> Option<Self> {
-        ALL_CIPHER_SUITES.iter()
+        ALL_CIPHER_SUITES
+            .iter()
             .find(|c| c.name == name || c.openssl_name == name)
             .copied()
     }

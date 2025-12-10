@@ -8,12 +8,11 @@
 /// Protocols: UDP (default), TCP (with -tcp flag)
 ///
 /// This tool performs real DNS queries using std's UdpSocket/TcpStream
-
 use std::env;
 use std::fs;
 use std::io::{self, BufRead, Read, Write};
+use std::net::{SocketAddr, TcpStream, UdpSocket};
 use std::process;
-use std::net::{UdpSocket, TcpStream, SocketAddr};
 use std::time::Duration;
 
 // DNS constants
@@ -103,7 +102,6 @@ enum Protocol {
     Udp,
     Tcp,
 }
-
 
 fn parse_ipv4(s: &str) -> Option<[u8; 4]> {
     let mut octets = [0u8; 4];
@@ -256,7 +254,8 @@ fn parse_dns_name(data: &[u8], offset: &mut usize) -> Option<String> {
             return None;
         }
 
-        if let Ok(label) = std::str::from_utf8(&data[current_offset..current_offset + len as usize]) {
+        if let Ok(label) = std::str::from_utf8(&data[current_offset..current_offset + len as usize])
+        {
             name.push_str(label);
         } else {
             return None;
@@ -280,7 +279,12 @@ fn parse_a_record(data: &[u8], offset: usize) -> Option<[u8; 4]> {
     if offset + 4 > data.len() {
         return None;
     }
-    Some([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]])
+    Some([
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+    ])
 }
 
 /// Parse AAAA record (IPv6 address) from DNS response
@@ -394,7 +398,12 @@ fn parse_dns_response(response: &[u8], qtype: QueryType) -> Result<Vec<String>, 
                     ));
                 }
             }
-            QTYPE_CNAME | QTYPE_NS | QTYPE_PTR if matches!(qtype, QueryType::CNAME | QueryType::NS | QueryType::PTR | QueryType::ANY) => {
+            QTYPE_CNAME | QTYPE_NS | QTYPE_PTR
+                if matches!(
+                    qtype,
+                    QueryType::CNAME | QueryType::NS | QueryType::PTR | QueryType::ANY
+                ) =>
+            {
                 let mut data_offset = offset;
                 if let Some(domain) = parse_dns_name(response, &mut data_offset) {
                     let type_name = match rtype {
@@ -415,7 +424,10 @@ fn parse_dns_response(response: &[u8], qtype: QueryType) -> Result<Vec<String>, 
                     let preference = u16::from_be_bytes([response[offset], response[offset + 1]]);
                     let mut mx_offset = offset + 2;
                     if let Some(exchange) = parse_dns_name(response, &mut mx_offset) {
-                        results.push(format!("MX preference={}, exchange={}", preference, exchange));
+                        results.push(format!(
+                            "MX preference={}, exchange={}",
+                            preference, exchange
+                        ));
                     }
                 }
             }
@@ -426,7 +438,9 @@ fn parse_dns_response(response: &[u8], qtype: QueryType) -> Result<Vec<String>, 
                     let txt_len = response[txt_offset] as usize;
                     txt_offset += 1;
                     if txt_offset + txt_len <= offset + rdlength {
-                        if let Ok(txt) = std::str::from_utf8(&response[txt_offset..txt_offset + txt_len]) {
+                        if let Ok(txt) =
+                            std::str::from_utf8(&response[txt_offset..txt_offset + txt_len])
+                        {
                             txt_parts.push(txt.to_string());
                         }
                         txt_offset += txt_len;
@@ -454,37 +468,49 @@ fn parse_dns_response(response: &[u8], qtype: QueryType) -> Result<Vec<String>, 
 }
 
 /// Query DNS server via UDP
-fn query_dns_udp(hostname: &str, nameserver: [u8; 4], qtype: QueryType) -> Result<Vec<String>, String> {
+fn query_dns_udp(
+    hostname: &str,
+    nameserver: [u8; 4],
+    qtype: QueryType,
+) -> Result<Vec<String>, String> {
     let query = build_dns_query(hostname, qtype);
-    
+
     eprintln!("[DEBUG] About to call UdpSocket::bind...");
-    let socket = UdpSocket::bind("0.0.0.0:0")
-        .map_err(|e| format!("Failed to create UDP socket: {}", e))?;
+    let socket =
+        UdpSocket::bind("0.0.0.0:0").map_err(|e| format!("Failed to create UDP socket: {}", e))?;
     eprintln!("[DEBUG] UdpSocket::bind succeeded!");
-    
-    socket.set_read_timeout(Some(Duration::from_secs(DNS_TIMEOUT_SECS)))
+
+    socket
+        .set_read_timeout(Some(Duration::from_secs(DNS_TIMEOUT_SECS)))
         .map_err(|e| format!("Failed to set timeout: {}", e))?;
 
     let ns_addr = format!(
         "{}.{}.{}.{}:{}",
         nameserver[0], nameserver[1], nameserver[2], nameserver[3], DNS_PORT
     );
-    let ns_socket_addr: SocketAddr = ns_addr.parse()
+    let ns_socket_addr: SocketAddr = ns_addr
+        .parse()
         .map_err(|e| format!("Invalid nameserver address: {}", e))?;
 
     // Send query - kernel handles ARP resolution automatically
-    socket.send_to(&query, ns_socket_addr)
+    socket
+        .send_to(&query, ns_socket_addr)
         .map_err(|e| format!("Failed to send query: {}", e))?;
 
     let mut response_buf = [0u8; MAX_DNS_PACKET_SIZE];
-    let (n, _) = socket.recv_from(&mut response_buf)
+    let (n, _) = socket
+        .recv_from(&mut response_buf)
         .map_err(|e| format!("Failed to receive response: {}", e))?;
 
     parse_dns_response(&response_buf[..n], qtype)
 }
 
 /// Query DNS server via TCP (for large responses or when UDP fails)
-fn query_dns_tcp(hostname: &str, nameserver: [u8; 4], qtype: QueryType) -> Result<Vec<String>, String> {
+fn query_dns_tcp(
+    hostname: &str,
+    nameserver: [u8; 4],
+    qtype: QueryType,
+) -> Result<Vec<String>, String> {
     let query = build_dns_query(hostname, qtype);
 
     let ns_addr = format!(
@@ -493,23 +519,30 @@ fn query_dns_tcp(hostname: &str, nameserver: [u8; 4], qtype: QueryType) -> Resul
     );
 
     let mut stream = TcpStream::connect_timeout(
-        &ns_addr.parse().map_err(|e| format!("Invalid nameserver address: {}", e))?,
-        Duration::from_secs(DNS_TIMEOUT_SECS)
-    ).map_err(|e| format!("Failed to connect via TCP: {}", e))?;
+        &ns_addr
+            .parse()
+            .map_err(|e| format!("Invalid nameserver address: {}", e))?,
+        Duration::from_secs(DNS_TIMEOUT_SECS),
+    )
+    .map_err(|e| format!("Failed to connect via TCP: {}", e))?;
 
-    stream.set_read_timeout(Some(Duration::from_secs(DNS_TIMEOUT_SECS)))
+    stream
+        .set_read_timeout(Some(Duration::from_secs(DNS_TIMEOUT_SECS)))
         .map_err(|e| format!("Failed to set timeout: {}", e))?;
 
     // DNS over TCP uses 2-byte length prefix
     let query_len = query.len() as u16;
-    stream.write_all(&query_len.to_be_bytes())
+    stream
+        .write_all(&query_len.to_be_bytes())
         .map_err(|e| format!("Failed to send length: {}", e))?;
-    stream.write_all(&query)
+    stream
+        .write_all(&query)
         .map_err(|e| format!("Failed to send query: {}", e))?;
 
     // Read 2-byte length prefix
     let mut len_buf = [0u8; 2];
-    stream.read_exact(&mut len_buf)
+    stream
+        .read_exact(&mut len_buf)
         .map_err(|e| format!("Failed to read response length: {}", e))?;
     let response_len = u16::from_be_bytes(len_buf) as usize;
 
@@ -519,7 +552,8 @@ fn query_dns_tcp(hostname: &str, nameserver: [u8; 4], qtype: QueryType) -> Resul
 
     // Read DNS response
     let mut response_buf = vec![0u8; response_len];
-    stream.read_exact(&mut response_buf)
+    stream
+        .read_exact(&mut response_buf)
         .map_err(|e| format!("Failed to read response: {}", e))?;
 
     parse_dns_response(&response_buf, qtype)
@@ -590,19 +624,20 @@ fn main() {
     };
 
     // Determine nameserver to use
-    let ns = nameserver.unwrap_or_else(|| {
-        match read_resolv_conf() {
-            Ok(nameservers) if !nameservers.is_empty() => nameservers[0],
-            _ => {
-                eprintln!("Warning: No nameservers in /etc/resolv.conf, using Google DNS (8.8.8.8)");
-                [8, 8, 8, 8]
-            }
+    let ns = nameserver.unwrap_or_else(|| match read_resolv_conf() {
+        Ok(nameservers) if !nameservers.is_empty() => nameservers[0],
+        _ => {
+            eprintln!("Warning: No nameservers in /etc/resolv.conf, using Google DNS (8.8.8.8)");
+            [8, 8, 8, 8]
         }
     });
 
     // Print server info (mimics standard nslookup output)
     println!("Server:\t\t{}.{}.{}.{}", ns[0], ns[1], ns[2], ns[3]);
-    println!("Address:\t{}.{}.{}.{}#{}", ns[0], ns[1], ns[2], ns[3], DNS_PORT);
+    println!(
+        "Address:\t{}.{}.{}.{}#{}",
+        ns[0], ns[1], ns[2], ns[3], DNS_PORT
+    );
     println!();
 
     // Check /etc/hosts first (for A records only)
@@ -649,4 +684,3 @@ fn main() {
         }
     }
 }
-

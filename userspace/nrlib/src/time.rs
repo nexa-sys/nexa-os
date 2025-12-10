@@ -128,7 +128,10 @@ fn syscall_nanosleep(req: *const TimeSpec, rem: *mut TimeSpec) -> i64 {
 /// Get current uptime in seconds (uses kernel syscall)
 #[no_mangle]
 pub extern "C" fn get_uptime() -> u64 {
-    let mut ts = TimeSpec { tv_sec: 0, tv_nsec: 0 };
+    let mut ts = TimeSpec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
     if syscall_clock_gettime(CLOCK_BOOTTIME, &mut ts as *mut TimeSpec) == 0 {
         ts.tv_sec as u64
     } else {

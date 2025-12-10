@@ -50,23 +50,23 @@ fn do_shutdown(mode: ShutdownMode) -> i32 {
         ShutdownMode::Halt => "halting",
         ShutdownMode::Reboot => "rebooting",
     };
-    
+
     println!("System is {}...", action);
     let _ = io::stdout().flush();
-    
+
     let cmd = match mode {
         ShutdownMode::PowerOff => LINUX_REBOOT_CMD_POWER_OFF,
         ShutdownMode::Halt => LINUX_REBOOT_CMD_HALT,
         ShutdownMode::Reboot => LINUX_REBOOT_CMD_RESTART,
     };
-    
+
     let ret = unsafe { libc::syscall(SYS_REBOOT, cmd) };
-    
+
     if ret == -1 {
         eprintln!("shutdown: Operation not permitted (are you root?)");
         return 1;
     }
-    
+
     // Should never reach here
     0
 }
@@ -75,7 +75,7 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     let mut mode = ShutdownMode::PowerOff;
     let mut immediate = false;
-    
+
     let mut i = 1;
     while i < args.len() {
         let arg = &args[i];
@@ -117,12 +117,12 @@ fn main() {
         }
         i += 1;
     }
-    
+
     // Default to immediate if no time specified
     if !immediate && args.len() == 1 {
         // No arguments, default to immediate poweroff
         immediate = true;
     }
-    
+
     process::exit(do_shutdown(mode));
 }

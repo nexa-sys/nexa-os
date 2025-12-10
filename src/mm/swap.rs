@@ -188,9 +188,7 @@ pub fn swapon(device_path: &[u8], flags: u32) -> i32 {
         return -crate::posix::errno::ENOSYS as i32;
     }
 
-    unsafe {
-        ((*ops).swapon)(device_path.as_ptr(), device_path.len(), flags)
-    }
+    unsafe { ((*ops).swapon)(device_path.as_ptr(), device_path.len(), flags) }
 }
 
 /// Deactivate a swap area
@@ -212,9 +210,7 @@ pub fn swapoff(device_path: &[u8]) -> i32 {
         return -crate::posix::errno::ENOSYS as i32;
     }
 
-    unsafe {
-        ((*ops).swapoff)(device_path.as_ptr(), device_path.len())
-    }
+    unsafe { ((*ops).swapoff)(device_path.as_ptr(), device_path.len()) }
 }
 
 /// Swap out a page to swap space
@@ -464,7 +460,7 @@ pub fn pte_to_swap_entry(pte: u64) -> SwapEntry {
 /// Print swap statistics
 pub fn print_swap_stats() {
     let (total, free) = get_swap_stats();
-    
+
     if total == 0 {
         kinfo!("Swap: not configured");
         return;

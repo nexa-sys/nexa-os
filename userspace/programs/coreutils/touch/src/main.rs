@@ -46,7 +46,7 @@ fn touch_file(path: &str, no_create: bool) -> io::Result<()> {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    
+
     if args.len() < 2 {
         print_usage();
         process::exit(1);
@@ -54,7 +54,7 @@ fn main() {
 
     let mut no_create = false;
     let mut files: Vec<&str> = Vec::new();
-    
+
     for arg in args.iter().skip(1) {
         if arg == "-h" || arg == "--help" {
             print_usage();
@@ -78,7 +78,7 @@ fn main() {
     }
 
     let mut exit_code = 0;
-    
+
     for file in files {
         if let Err(e) = touch_file(file, no_create) {
             eprintln!("touch: cannot touch '{}': {}", file, e);

@@ -16,7 +16,6 @@
 ///   --http2                Use HTTP/2 (when available)
 ///   --http3                Use HTTP/3 (when available)
 ///   --help                 Show this help message
-
 mod args;
 mod http;
 mod url;
@@ -39,18 +38,21 @@ mod tls;
 #[cfg(not(any(feature = "https", feature = "https-dynamic")))]
 mod tls {
     use crate::http::HttpError;
-    
+
     pub struct TlsConnection;
-    
+
     impl TlsConnection {
         pub fn new(_fd: i32, _hostname: &str, _insecure: bool) -> Result<Self, HttpError> {
             Err(HttpError::NotSupported(
                 "HTTPS not supported (compile with 'https' or 'https-dynamic' feature)".to_string(),
             ))
         }
-        
+
         pub fn new_with_alpn(
-            _fd: i32, _hostname: &str, _insecure: bool, _alpn: &[&str]
+            _fd: i32,
+            _hostname: &str,
+            _insecure: bool,
+            _alpn: &[&str],
         ) -> Result<Self, HttpError> {
             Err(HttpError::NotSupported(
                 "HTTPS not supported (compile with 'https' or 'https-dynamic' feature)".to_string(),

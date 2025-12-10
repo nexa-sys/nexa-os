@@ -41,7 +41,7 @@ mod kmod_syscalls {
             let len = self.name.iter().position(|&c| c == 0).unwrap_or(32);
             std::str::from_utf8(&self.name[..len]).unwrap_or("")
         }
-        
+
         pub fn state_str(&self) -> &str {
             match self.state {
                 0 => "loaded",
@@ -51,7 +51,7 @@ mod kmod_syscalls {
                 _ => "unknown",
             }
         }
-        
+
         pub fn type_str(&self) -> &str {
             match self.module_type {
                 1 => "fs",
@@ -117,7 +117,7 @@ mod kmod_syscalls {
                 options(nostack, preserves_flags)
             );
         }
-        
+
         if ret == u64::MAX {
             -1
         } else {
@@ -177,16 +177,23 @@ fn print_statistics() {
         _reserved: [0; 3],
         taint_string: [0; 32],
     };
-    
+
     if !get_module_stats(&mut stats) {
-        eprintln!("lsmod: failed to get module statistics (errno={})", get_errno());
+        eprintln!(
+            "lsmod: failed to get module statistics (errno={})",
+            get_errno()
+        );
         process::exit(1);
     }
-    
+
     println!("=== Kernel Module Statistics ===");
     println!("Kernel: {}", stats.taint_str());
     println!("Loaded modules: {}", stats.loaded_count);
-    println!("Total memory: {} bytes ({} KB)", stats.total_memory, stats.total_memory / 1024);
+    println!(
+        "Total memory: {} bytes ({} KB)",
+        stats.total_memory,
+        stats.total_memory / 1024
+    );
     println!("Kernel symbols: {}", stats.symbol_count);
     println!();
     println!("By type:");
@@ -207,21 +214,21 @@ fn list_modules_simple() {
         signed: 0,
         taints: 0,
     }; 64];
-    
+
     let count = list_modules(&mut entries);
     if count < 0 {
         eprintln!("lsmod: failed to list modules (errno={})", get_errno());
         process::exit(1);
     }
-    
+
     if count == 0 {
         println!("No modules loaded.");
         return;
     }
-    
+
     // Print header
     println!("{:<20} {:>8} {:>4}", "Module", "Size", "Used");
-    
+
     // Print modules
     for entry in entries.iter().take(count as usize) {
         let name = entry.name_str();
@@ -242,42 +249,50 @@ fn list_modules_verbose() {
         signed: 0,
         taints: 0,
     }; 64];
-    
+
     let count = list_modules(&mut entries);
     if count < 0 {
         eprintln!("lsmod: failed to list modules (errno={})", get_errno());
         process::exit(1);
     }
-    
+
     if count == 0 {
         println!("No modules loaded.");
         return;
     }
-    
+
     // Print header
-    println!("{:<16} {:>8} {:>4} {:>6} {:>10} {:>8} {:>6}", 
-             "Module", "Size", "Used", "Type", "State", "Signed", "Taint");
-    
+    println!(
+        "{:<16} {:>8} {:>4} {:>6} {:>10} {:>8} {:>6}",
+        "Module", "Size", "Used", "Type", "State", "Signed", "Taint"
+    );
+
     // Print modules
     for entry in entries.iter().take(count as usize) {
         let name = entry.name_str();
         if name.is_empty() {
             continue;
         }
-        
+
         let signed_str = match entry.signed {
             0 => "no",
             1 => "yes",
             2 => "invalid",
             _ => "?",
         };
-        
+
         let taint_str = if entry.taints != 0 { "yes" } else { "no" };
-        
-        println!("{:<16} {:>8} {:>4} {:>6} {:>10} {:>8} {:>6}",
-                 name, entry.size, entry.ref_count,
-                 entry.type_str(), entry.state_str(),
-                 signed_str, taint_str);
+
+        println!(
+            "{:<16} {:>8} {:>4} {:>6} {:>10} {:>8} {:>6}",
+            name,
+            entry.size,
+            entry.ref_count,
+            entry.type_str(),
+            entry.state_str(),
+            signed_str,
+            taint_str
+        );
     }
 }
 
@@ -285,7 +300,7 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     let mut verbose = false;
     let mut show_stats = false;
-    
+
     // Parse arguments
     for arg in args.iter().skip(1) {
         match arg.as_str() {
@@ -311,7 +326,7 @@ fn main() {
             }
         }
     }
-    
+
     if show_stats {
         print_statistics();
     } else if verbose {

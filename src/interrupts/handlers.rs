@@ -65,7 +65,7 @@ pub extern "x86-interrupt" fn timer_interrupt_handler(stack_frame: InterruptStac
         // kernel via interrupt gate WITHOUT swapgs. The scheduler's switch_return_trampoline
         // uses gs:[xxx] to read sysretq parameters, which would read garbage if GS base is wrong.
         crate::smp::ensure_kernel_gs_base();
-        
+
         // Save user-mode context from InterruptStackFrame to GS_DATA for scheduler
         // This is needed because do_schedule_from_interrupt uses GS_DATA to restore user context.
         // Only save if the interrupt was from user mode (ring 3).
@@ -75,17 +75,20 @@ pub extern "x86-interrupt" fn timer_interrupt_handler(stack_frame: InterruptStac
             unsafe {
                 let gs_data_ptr = crate::smp::current_gs_data_ptr();
                 // GS_SLOT_USER_RSP = 0
-                gs_data_ptr.add(super::gs_context::GS_SLOT_USER_RSP)
+                gs_data_ptr
+                    .add(super::gs_context::GS_SLOT_USER_RSP)
                     .write(stack_frame.stack_pointer.as_u64());
                 // GS_SLOT_SAVED_RCX = 7 (user RIP for sysretq)
-                gs_data_ptr.add(super::gs_context::GS_SLOT_SAVED_RCX)
+                gs_data_ptr
+                    .add(super::gs_context::GS_SLOT_SAVED_RCX)
                     .write(stack_frame.instruction_pointer.as_u64());
                 // GS_SLOT_SAVED_RFLAGS = 8
-                gs_data_ptr.add(super::gs_context::GS_SLOT_SAVED_RFLAGS)
+                gs_data_ptr
+                    .add(super::gs_context::GS_SLOT_SAVED_RFLAGS)
                     .write(stack_frame.cpu_flags.bits());
             }
         }
-        
+
         crate::scheduler::do_schedule_from_interrupt();
     }
 }

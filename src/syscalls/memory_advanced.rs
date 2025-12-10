@@ -8,9 +8,11 @@
 //! - mlock/munlock: Lock/unlock memory
 //! - getrlimit/setrlimit: Get/set resource limits
 
-use crate::mm::vma::{AddressSpace, VMA, VMABacking, VMAFlags, VMAPermissions, MAX_ADDRESS_SPACES};
+use crate::mm::vma::{AddressSpace, VMABacking, VMAFlags, VMAPermissions, MAX_ADDRESS_SPACES, VMA};
 use crate::posix::{self, errno};
-use crate::process::{HEAP_BASE, HEAP_SIZE, STACK_BASE, STACK_SIZE, USER_REGION_SIZE, USER_VIRT_BASE};
+use crate::process::{
+    HEAP_BASE, HEAP_SIZE, STACK_BASE, STACK_SIZE, USER_REGION_SIZE, USER_VIRT_BASE,
+};
 use crate::scheduler::current_pid;
 use crate::{kdebug, kerror, kinfo, ktrace, kwarn};
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -111,7 +113,7 @@ pub struct ProcessLimits {
 impl Default for ProcessLimits {
     fn default() -> Self {
         let mut limits = [RLimit::default(); RLIMIT_NLIMITS as usize];
-        
+
         // Set some reasonable defaults
         limits[RLIMIT_STACK as usize] = RLimit {
             rlim_cur: STACK_SIZE,
@@ -130,14 +132,14 @@ impl Default for ProcessLimits {
             rlim_max: 4096,
         };
         limits[RLIMIT_MEMLOCK as usize] = RLimit {
-            rlim_cur: 64 * 1024, // 64KB
+            rlim_cur: 64 * 1024,  // 64KB
             rlim_max: 256 * 1024, // 256KB
         };
         limits[RLIMIT_NPROC as usize] = RLimit {
             rlim_cur: 32,
             rlim_max: 64,
         };
-        
+
         Self { limits }
     }
 }
@@ -150,34 +152,38 @@ impl ProcessLimits {
             None
         }
     }
-    
+
     pub fn set(&mut self, resource: i32, limit: RLimit) -> Result<(), &'static str> {
         if resource < 0 || resource >= RLIMIT_NLIMITS {
             return Err("Invalid resource");
         }
-        
+
         // Soft limit must not exceed hard limit
         if limit.rlim_cur > limit.rlim_max {
             return Err("Soft limit exceeds hard limit");
         }
-        
+
         // Non-privileged users cannot raise hard limit (simplified check)
         // In a real system, we'd check capabilities
         let current = &self.limits[resource as usize];
         if limit.rlim_max > current.rlim_max {
             // Allow for now - in production, check CAP_SYS_RESOURCE
         }
-        
+
         self.limits[resource as usize] = limit;
         Ok(())
     }
 }
 
 /// Global process limits table
-static PROCESS_LIMITS: Mutex<[ProcessLimits; MAX_ADDRESS_SPACES]> =
-    Mutex::new([ProcessLimits { 
-        limits: [RLimit { rlim_cur: RLIM_INFINITY, rlim_max: RLIM_INFINITY }; RLIMIT_NLIMITS as usize] 
-    }; MAX_ADDRESS_SPACES]);
+static PROCESS_LIMITS: Mutex<[ProcessLimits; MAX_ADDRESS_SPACES]> = Mutex::new(
+    [ProcessLimits {
+        limits: [RLimit {
+            rlim_cur: RLIM_INFINITY,
+            rlim_max: RLIM_INFINITY,
+        }; RLIMIT_NLIMITS as usize],
+    }; MAX_ADDRESS_SPACES],
+);
 
 /// Initialize default limits for a process
 pub fn init_process_limits(pid: u64) {
@@ -221,8 +227,8 @@ pub struct ProcessMemoryStats {
     pub major_faults: u64,
 }
 
-static PROCESS_MEMORY_STATS: Mutex<[ProcessMemoryStats; MAX_ADDRESS_SPACES]> =
-    Mutex::new([ProcessMemoryStats {
+static PROCESS_MEMORY_STATS: Mutex<[ProcessMemoryStats; MAX_ADDRESS_SPACES]> = Mutex::new(
+    [ProcessMemoryStats {
         vm_size: 0,
         vm_rss: 0,
         vm_shared: 0,
@@ -235,7 +241,8 @@ static PROCESS_MEMORY_STATS: Mutex<[ProcessMemoryStats; MAX_ADDRESS_SPACES]> =
         anon_pages: 0,
         page_faults: 0,
         major_faults: 0,
-    }; MAX_ADDRESS_SPACES]);
+    }; MAX_ADDRESS_SPACES],
+);
 
 /// Update memory statistics for current process
 pub fn update_memory_stats<F>(f: F)
@@ -246,7 +253,7 @@ where
         if pid < MAX_ADDRESS_SPACES as u64 {
             let mut stats = PROCESS_MEMORY_STATS.lock();
             f(&mut stats[pid as usize]);
-            
+
             // Update peak values
             let stat = &mut stats[pid as usize];
             if stat.vm_size > stat.vm_peak {
@@ -280,7 +287,7 @@ where
         Some(p) => p,
         None => return Err("No current process"),
     };
-    
+
     if pid >= MAX_ADDRESS_SPACES as u64 {
         return Err("PID out of range");
     }
@@ -313,13 +320,7 @@ where
 /// # Returns
 /// * New address on success
 /// * MAP_FAILED (-1) on error
-pub fn mremap(
-    old_address: u64,
-    old_size: u64,
-    new_size: u64,
-    flags: u64,
-    new_address: u64,
-) -> u64 {
+pub fn mremap(old_address: u64, old_size: u64, new_size: u64, flags: u64, new_address: u64) -> u64 {
     ktrace!(
         "[mremap] old={:#x}, old_size={:#x}, new_size={:#x}, flags={:#x}, new_addr={:#x}",
         old_address,
@@ -376,12 +377,14 @@ pub fn mremap(
             // Shrinking - unmap the excess
             let unmap_start = old_address + aligned_new_size;
             let unmap_size = aligned_old_size - aligned_new_size;
-            space.munmap(unmap_start, unmap_size).map_err(|_| errno::ENOMEM)?;
-            
+            space
+                .munmap(unmap_start, unmap_size)
+                .map_err(|_| errno::ENOMEM)?;
+
             update_memory_stats(|stats| {
                 stats.vm_size = stats.vm_size.saturating_sub(unmap_size);
             });
-            
+
             return Ok(old_address);
         }
 
@@ -391,26 +394,25 @@ pub fn mremap(
 
         // Try to extend in place first
         let mut overlap_buf = [0i32; 8];
-        let overlap_count = space.vmas.find_overlapping(
-            extend_start,
-            extend_start + extra_size,
-            &mut overlap_buf,
-        );
+        let overlap_count =
+            space
+                .vmas
+                .find_overlapping(extend_start, extend_start + extra_size, &mut overlap_buf);
 
         if overlap_count == 0 {
             // Can extend in place - update the VMA's end
             if let Some(vma_mut) = space.vmas.find_mut(old_address) {
                 vma_mut.end = old_address + aligned_new_size;
-                
+
                 // Zero the new memory
                 unsafe {
                     core::ptr::write_bytes(extend_start as *mut u8, 0, extra_size as usize);
                 }
-                
+
                 update_memory_stats(|stats| {
                     stats.vm_size += extra_size;
                 });
-                
+
                 return Ok(old_address);
             }
         }
@@ -432,7 +434,9 @@ pub fn mremap(
             new_address
         } else {
             // Find a free region
-            space.vmas.find_free_region(space.mmap_current, user_end, aligned_new_size)
+            space
+                .vmas
+                .find_free_region(space.mmap_current, user_end, aligned_new_size)
                 .ok_or(errno::ENOMEM)?
         };
 
@@ -443,7 +447,7 @@ pub fn mremap(
                 new_addr as *mut u8,
                 aligned_old_size.min(aligned_new_size) as usize,
             );
-            
+
             // Zero any extra space
             if aligned_new_size > aligned_old_size {
                 core::ptr::write_bytes(
@@ -540,7 +544,9 @@ pub fn madvise(addr: u64, length: u64, advice: i32) -> u64 {
     let result = with_current_address_space(|space| {
         // Find overlapping VMAs
         let mut overlapping = [0i32; 32];
-        let count = space.vmas.find_overlapping(addr, addr + aligned_length, &mut overlapping);
+        let count = space
+            .vmas
+            .find_overlapping(addr, addr + aligned_length, &mut overlapping);
 
         if count == 0 {
             return Err("No mapping at address");
@@ -552,7 +558,7 @@ pub fn madvise(addr: u64, length: u64, advice: i32) -> u64 {
                 // We acknowledge them but don't do anything special (yet)
                 kdebug!("[madvise] Advice {} acknowledged", advice);
             }
-            
+
             MADV_DONTNEED => {
                 // Mark pages as not needed - can be discarded
                 // For anonymous mappings, zero the pages
@@ -562,7 +568,7 @@ pub fn madvise(addr: u64, length: u64, advice: i32) -> u64 {
                         if vma.flags.is_anonymous() {
                             let start = addr.max(vma.start);
                             let end = (addr + aligned_length).min(vma.end);
-                            
+
                             // Zero the memory
                             unsafe {
                                 core::ptr::write_bytes(start as *mut u8, 0, (end - start) as usize);
@@ -571,7 +577,7 @@ pub fn madvise(addr: u64, length: u64, advice: i32) -> u64 {
                     }
                 }
             }
-            
+
             MADV_FREE => {
                 // Similar to DONTNEED but lazier - pages can be reused when needed
                 // For now, treat like DONTNEED
@@ -581,7 +587,7 @@ pub fn madvise(addr: u64, length: u64, advice: i32) -> u64 {
                         if vma.flags.is_anonymous() {
                             let start = addr.max(vma.start);
                             let end = (addr + aligned_length).min(vma.end);
-                            
+
                             unsafe {
                                 core::ptr::write_bytes(start as *mut u8, 0, (end - start) as usize);
                             }
@@ -589,7 +595,7 @@ pub fn madvise(addr: u64, length: u64, advice: i32) -> u64 {
                     }
                 }
             }
-            
+
             MADV_DONTFORK => {
                 // Mark VMA to not be copied on fork
                 for i in 0..count {
@@ -599,7 +605,7 @@ pub fn madvise(addr: u64, length: u64, advice: i32) -> u64 {
                     }
                 }
             }
-            
+
             MADV_DOFORK => {
                 // Remove DONTCOPY flag
                 for i in 0..count {
@@ -609,20 +615,20 @@ pub fn madvise(addr: u64, length: u64, advice: i32) -> u64 {
                     }
                 }
             }
-            
-            MADV_MERGEABLE | MADV_UNMERGEABLE | MADV_HUGEPAGE | MADV_NOHUGEPAGE |
-            MADV_DONTDUMP | MADV_DODUMP | MADV_COLD | MADV_PAGEOUT => {
+
+            MADV_MERGEABLE | MADV_UNMERGEABLE | MADV_HUGEPAGE | MADV_NOHUGEPAGE | MADV_DONTDUMP
+            | MADV_DODUMP | MADV_COLD | MADV_PAGEOUT => {
                 // These require more advanced memory management features
                 // Accept them silently for compatibility
                 kdebug!("[madvise] Advice {} accepted (no-op)", advice);
             }
-            
+
             MADV_REMOVE => {
                 // Requires file-backed mapping with hole punch support
                 // Not fully implemented
                 kwarn!("[madvise] MADV_REMOVE not fully supported");
             }
-            
+
             _ => {
                 kerror!("[madvise] Unknown advice: {}", advice);
                 return Err("Invalid advice");
@@ -690,7 +696,7 @@ pub fn mincore(addr: u64, length: u64, vec: *mut u8) -> u64 {
         // Check each page
         for i in 0..num_pages {
             let page_addr = addr + (i as u64 * PAGE_SIZE);
-            
+
             // Check if page is in a valid VMA
             let in_core = if space.vmas.find(page_addr).is_some() {
                 // For now, assume all mapped pages are resident
@@ -699,7 +705,7 @@ pub fn mincore(addr: u64, length: u64, vec: *mut u8) -> u64 {
             } else {
                 0u8
             };
-            
+
             unsafe {
                 *vec.add(i) = in_core;
             }
@@ -749,7 +755,8 @@ pub fn mlock(addr: u64, len: u64) -> u64 {
         // Check resource limit
         let pid = current_pid().unwrap_or(0);
         let limits = PROCESS_LIMITS.lock();
-        let memlock_limit = limits[pid as usize].get(RLIMIT_MEMLOCK)
+        let memlock_limit = limits[pid as usize]
+            .get(RLIMIT_MEMLOCK)
             .map(|l| l.rlim_cur)
             .unwrap_or(RLIM_INFINITY);
         drop(limits);
@@ -764,7 +771,11 @@ pub fn mlock(addr: u64, len: u64) -> u64 {
 
         // Find and lock VMAs
         let mut overlapping = [0i32; 32];
-        let count = space.vmas.find_overlapping(aligned_start, aligned_start + aligned_len, &mut overlapping);
+        let count = space.vmas.find_overlapping(
+            aligned_start,
+            aligned_start + aligned_len,
+            &mut overlapping,
+        );
 
         if count == 0 {
             return Err("No mapping at address");
@@ -817,7 +828,11 @@ pub fn munlock(addr: u64, len: u64) -> u64 {
 
     let result = with_current_address_space(|space| {
         let mut overlapping = [0i32; 32];
-        let count = space.vmas.find_overlapping(aligned_start, aligned_start + aligned_len, &mut overlapping);
+        let count = space.vmas.find_overlapping(
+            aligned_start,
+            aligned_start + aligned_len,
+            &mut overlapping,
+        );
 
         for i in 0..count {
             let idx = overlapping[i];
@@ -966,7 +981,9 @@ pub fn msync(addr: u64, length: u64, flags: i32) -> u64 {
     let result = with_current_address_space(|space| {
         // Check that the range is mapped
         let mut overlapping = [0i32; 32];
-        let count = space.vmas.find_overlapping(addr, addr + length, &mut overlapping);
+        let count = space
+            .vmas
+            .find_overlapping(addr, addr + length, &mut overlapping);
 
         if count == 0 {
             return Err("No mapping at address");
@@ -1023,7 +1040,7 @@ pub fn getrlimit(resource: i32, rlim: *mut RLimit) -> u64 {
 
     let pid = current_pid().unwrap_or(0);
     let limits = PROCESS_LIMITS.lock();
-    
+
     if let Some(limit) = limits[pid as usize].get(resource) {
         unsafe {
             *rlim = *limit;
@@ -1053,7 +1070,7 @@ pub fn setrlimit(resource: i32, rlim: *const RLimit) -> u64 {
     let limit = unsafe { *rlim };
     let pid = current_pid().unwrap_or(0);
     let mut limits = PROCESS_LIMITS.lock();
-    
+
     match limits[pid as usize].set(resource, limit) {
         Ok(()) => {
             posix::set_errno(0);
@@ -1068,12 +1085,7 @@ pub fn setrlimit(resource: i32, rlim: *const RLimit) -> u64 {
 }
 
 /// SYS_PRLIMIT64 - Get/set resource limits (combined)
-pub fn prlimit64(
-    pid: i64,
-    resource: i32,
-    new_rlim: *const RLimit,
-    old_rlim: *mut RLimit,
-) -> u64 {
+pub fn prlimit64(pid: i64, resource: i32, new_rlim: *const RLimit, old_rlim: *mut RLimit) -> u64 {
     ktrace!(
         "[prlimit64] pid={}, resource={}, new={:p}, old={:p}",
         pid,

@@ -50,7 +50,7 @@ fn count_file(path: &str) -> io::Result<Counts> {
     let mut reader = BufReader::new(file);
     let mut counts = Counts::default();
     let mut line = String::new();
-    
+
     loop {
         line.clear();
         match reader.read_line(&mut line) {
@@ -58,7 +58,7 @@ fn count_file(path: &str) -> io::Result<Counts> {
             Ok(bytes_read) => {
                 counts.bytes += bytes_read;
                 counts.chars += line.chars().count();
-                
+
                 // Count line (if ends with newline or is the last line)
                 if line.ends_with('\n') {
                     counts.lines += 1;
@@ -76,7 +76,7 @@ fn count_file(path: &str) -> io::Result<Counts> {
                         }
                     }
                 }
-                
+
                 // Count words (sequences of non-whitespace)
                 counts.words += line.split_whitespace().count();
             }
@@ -84,7 +84,7 @@ fn count_file(path: &str) -> io::Result<Counts> {
             Err(e) => return Err(e),
         }
     }
-    
+
     Ok(counts)
 }
 
@@ -98,7 +98,7 @@ fn print_counts(
     show_max_length: bool,
 ) {
     let mut parts: Vec<String> = Vec::new();
-    
+
     if show_lines {
         parts.push(format!("{:>7}", counts.lines));
     }
@@ -114,7 +114,7 @@ fn print_counts(
     if show_max_length {
         parts.push(format!("{:>7}", counts.max_line_length));
     }
-    
+
     if name.is_empty() {
         println!("{}", parts.join(""));
     } else {
@@ -124,14 +124,14 @@ fn print_counts(
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    
+
     let mut show_lines = false;
     let mut show_words = false;
     let mut show_bytes = false;
     let mut show_chars = false;
     let mut show_max_length = false;
     let mut files: Vec<&str> = Vec::new();
-    
+
     for arg in args.iter().skip(1) {
         if arg == "-h" || arg == "--help" {
             print_usage();
@@ -185,7 +185,7 @@ fn main() {
     let mut exit_code = 0;
     let mut total = Counts::default();
     let show_total = files.len() > 1;
-    
+
     for file in &files {
         match count_file(file) {
             Ok(counts) => {
@@ -206,7 +206,7 @@ fn main() {
             }
         }
     }
-    
+
     if show_total {
         print_counts(
             &total,

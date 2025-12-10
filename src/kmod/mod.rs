@@ -1027,7 +1027,7 @@ fn load_elf_module_named(data: &[u8], name: Option<&str>) -> Result<(), ModuleEr
     // Create module info using heap allocation
     // Use provided name or default to "elf_module"
     let module_name = name.unwrap_or("elf_module");
-    
+
     // Check if module is already loaded
     {
         let registry = MODULE_REGISTRY.lock();
@@ -1035,10 +1035,11 @@ fn load_elf_module_named(data: &[u8], name: Option<&str>) -> Result<(), ModuleEr
             return Err(ModuleError::AlreadyLoaded);
         }
     }
-    
+
     // Check for circular dependencies if module declares any
     if !loaded.dependencies.is_empty() {
-        let deps_refs: alloc::vec::Vec<&str> = loaded.dependencies.iter().map(|s| s.as_str()).collect();
+        let deps_refs: alloc::vec::Vec<&str> =
+            loaded.dependencies.iter().map(|s| s.as_str()).collect();
         if let Err(cycle) = check_circular_dependencies(module_name, &deps_refs) {
             crate::kerror!(
                 "Circular dependency detected while loading '{}': {}",
@@ -1047,7 +1048,7 @@ fn load_elf_module_named(data: &[u8], name: Option<&str>) -> Result<(), ModuleEr
             );
             return Err(ModuleError::CircularDependency);
         }
-        
+
         // Check if all dependencies are loaded
         {
             let registry = MODULE_REGISTRY.lock();
@@ -1065,7 +1066,7 @@ fn load_elf_module_named(data: &[u8], name: Option<&str>) -> Result<(), ModuleEr
                 }
             }
         }
-        
+
         // Increment reference counts for dependencies
         {
             let mut registry = MODULE_REGISTRY.lock();
@@ -1076,7 +1077,7 @@ fn load_elf_module_named(data: &[u8], name: Option<&str>) -> Result<(), ModuleEr
             }
         }
     }
-    
+
     let mut info = ModuleInfo::with_name(module_name);
     info.version = alloc::string::String::from("1.0.0");
     info.module_type = ModuleType::Other;
@@ -1159,19 +1160,11 @@ fn load_elf_module_named(data: &[u8], name: Option<&str>) -> Result<(), ModuleEr
             } else {
                 sym_name.as_str()
             };
-            
-            if let Err(e) = register_module_symbol(
-                module_name,
-                actual_name,
-                *sym_addr,
-                sym_type,
-                gpl_only,
-            ) {
-                crate::kwarn!(
-                    "Failed to register exported symbol '{}': {:?}",
-                    sym_name,
-                    e
-                );
+
+            if let Err(e) =
+                register_module_symbol(module_name, actual_name, *sym_addr, sym_type, gpl_only)
+            {
+                crate::kwarn!("Failed to register exported symbol '{}': {:?}", sym_name, e);
             }
         }
     }
@@ -1897,14 +1890,14 @@ pub fn check_circular_dependencies(
     deps: &[&str],
 ) -> Result<(), CircularDependencyError> {
     let registry = MODULE_REGISTRY.lock();
-    
+
     // Build adjacency list including the new module
     let mut visited = alloc::collections::BTreeSet::new();
     let mut path = alloc::vec::Vec::new();
-    
+
     // Check from the new module's perspective
     path.push(alloc::string::String::from(module_name));
-    
+
     for dep in deps {
         if let Err(cycle) = check_cycle_dfs(&registry, dep, &mut visited, &mut path) {
             return Err(cycle);
@@ -1916,7 +1909,7 @@ pub fn check_circular_dependencies(
             return Err(CircularDependencyError::new(path));
         }
     }
-    
+
     Ok(())
 }
 
@@ -1928,33 +1921,33 @@ fn check_cycle_dfs(
     path: &mut alloc::vec::Vec<alloc::string::String>,
 ) -> Result<(), CircularDependencyError> {
     let current_str = alloc::string::String::from(current);
-    
+
     // Check if we're revisiting a node in current path (cycle!)
     if path.contains(&current_str) {
         path.push(current_str);
         return Err(CircularDependencyError::new(path.clone()));
     }
-    
+
     // Skip if already fully visited
     if visited.contains(&current_str) {
         return Ok(());
     }
-    
+
     // Depth limit check
     if path.len() >= MAX_DEPENDENCY_DEPTH {
         crate::kwarn!("Dependency chain too deep at module: {}", current);
         return Ok(()); // Don't fail, just stop recursing
     }
-    
+
     path.push(current_str.clone());
-    
+
     // Get dependencies of current module
     if let Some(info) = registry.find(current) {
         for dep in &info.dependencies {
             check_cycle_dfs(registry, dep, visited, path)?;
         }
     }
-    
+
     path.pop();
     visited.insert(current_str);
     Ok(())
@@ -1971,13 +1964,13 @@ fn has_transitive_dependency(
     if depth >= MAX_DEPENDENCY_DEPTH {
         return false;
     }
-    
+
     let from_str = alloc::string::String::from(from);
     if visited.contains(&from_str) {
         return false;
     }
     visited.insert(from_str);
-    
+
     if let Some(info) = registry.find(from) {
         for dep in &info.dependencies {
             if dep == target {
@@ -2007,13 +2000,13 @@ pub fn lookup_module_symbol(name: &str) -> Option<(alloc::string::String, u64)> 
 
 /// Lookup a symbol exported by a loaded module, respecting license restrictions
 /// Returns (module_name, address) if found and license requirements are met
-/// 
+///
 /// Note: NexaOS itself uses MIT license, but supports GPL-compatible modules.
 /// The `gpl_only` flag on symbols allows third-party GPL modules to restrict
 /// their symbols to GPL-compatible callers only (similar to EXPORT_SYMBOL_GPL in Linux).
 pub fn lookup_module_symbol_licensed(
-    name: &str, 
-    caller_license: LicenseType
+    name: &str,
+    caller_license: LicenseType,
 ) -> Option<(alloc::string::String, u64)> {
     let registry = MODULE_REGISTRY.lock();
     for module in registry.list() {
@@ -2047,17 +2040,21 @@ pub fn register_module_symbol(
     if let Some(info) = registry.find_mut(module_name) {
         // Check for duplicate symbol
         if info.exported_symbols.iter().any(|s| s.name == symbol_name) {
-            crate::kwarn!("Duplicate symbol export: {} from {}", symbol_name, module_name);
+            crate::kwarn!(
+                "Duplicate symbol export: {} from {}",
+                symbol_name,
+                module_name
+            );
             return Ok(()); // Don't fail, just ignore duplicate
         }
-        
+
         info.exported_symbols.push(ModuleExportedSymbol {
             name: alloc::string::String::from(symbol_name),
             address,
             sym_type,
             gpl_only,
         });
-        
+
         crate::kdebug!(
             "Module {} exported symbol: {} at {:#x}{}",
             module_name,
@@ -2113,13 +2110,10 @@ pub fn load_module_with_dependency_check(
 ) -> Result<(), ModuleError> {
     // Check for circular dependencies FIRST
     if let Err(cycle) = check_circular_dependencies(name, deps) {
-        crate::kerror!(
-            "Circular dependency detected: {}",
-            cycle.chain.join(" -> ")
-        );
+        crate::kerror!("Circular dependency detected: {}", cycle.chain.join(" -> "));
         return Err(ModuleError::CircularDependency);
     }
-    
+
     // Check if all dependencies are loaded and running
     {
         let registry = MODULE_REGISTRY.lock();
@@ -2137,7 +2131,7 @@ pub fn load_module_with_dependency_check(
             }
         }
     }
-    
+
     // Increment reference counts for dependencies
     {
         let mut registry = MODULE_REGISTRY.lock();
@@ -2147,7 +2141,7 @@ pub fn load_module_with_dependency_check(
             }
         }
     }
-    
+
     // Load the module
     match load_module_named(data, Some(name)) {
         Ok(()) => {
@@ -2159,7 +2153,7 @@ pub fn load_module_with_dependency_check(
                     .map(|s| alloc::string::String::from(*s))
                     .collect();
             }
-            
+
             crate::kinfo!(
                 "Module '{}' loaded with {} dependencies: {:?}",
                 name,
@@ -2192,7 +2186,7 @@ pub fn topological_sort_modules(
     let mut result = alloc::vec::Vec::new();
     let mut visited = alloc::collections::BTreeSet::new();
     let mut in_progress = alloc::collections::BTreeSet::new();
-    
+
     fn visit(
         node: &str,
         get_deps: &impl Fn(&str) -> alloc::vec::Vec<alloc::string::String>,
@@ -2202,36 +2196,43 @@ pub fn topological_sort_modules(
         path: &mut alloc::vec::Vec<alloc::string::String>,
     ) -> Result<(), CircularDependencyError> {
         let node_str = alloc::string::String::from(node);
-        
+
         if visited.contains(&node_str) {
             return Ok(());
         }
-        
+
         if in_progress.contains(&node_str) {
             path.push(node_str);
             return Err(CircularDependencyError::new(path.clone()));
         }
-        
+
         in_progress.insert(node_str.clone());
         path.push(node_str.clone());
-        
+
         for dep in get_deps(node) {
             visit(&dep, get_deps, visited, in_progress, result, path)?;
         }
-        
+
         path.pop();
         in_progress.remove(&node_str);
         visited.insert(node_str.clone());
         result.push(node_str);
-        
+
         Ok(())
     }
-    
+
     for module in modules {
         let mut path = alloc::vec::Vec::new();
-        visit(module, &get_deps, &mut visited, &mut in_progress, &mut result, &mut path)?;
+        visit(
+            module,
+            &get_deps,
+            &mut visited,
+            &mut in_progress,
+            &mut result,
+            &mut path,
+        )?;
     }
-    
+
     Ok(result)
 }
 
@@ -2240,10 +2241,10 @@ pub fn get_dependency_graph() -> alloc::string::String {
     use core::fmt::Write;
     let registry = MODULE_REGISTRY.lock();
     let mut output = alloc::string::String::new();
-    
+
     let _ = writeln!(output, "Module Dependency Graph:");
     let _ = writeln!(output, "========================");
-    
+
     for module in registry.list() {
         if module.dependencies.is_empty() {
             let _ = writeln!(output, "  {} (no dependencies)", module.name);
@@ -2255,18 +2256,22 @@ pub fn get_dependency_graph() -> alloc::string::String {
                 module.dependencies.join(", ")
             );
         }
-        
+
         // Show exported symbols
         if !module.exported_symbols.is_empty() {
-            let _ = writeln!(output, "    exports: {}", 
-                module.exported_symbols.iter()
+            let _ = writeln!(
+                output,
+                "    exports: {}",
+                module
+                    .exported_symbols
+                    .iter()
                     .map(|s| s.name.as_str())
                     .collect::<alloc::vec::Vec<_>>()
                     .join(", ")
             );
         }
     }
-    
+
     output
 }
 

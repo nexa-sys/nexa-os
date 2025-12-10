@@ -37,32 +37,33 @@ fn do_swapoff(path: &str, verbose: bool) -> i32 {
             return 1;
         }
     };
-    
+
     if verbose {
         println!("swapoff: disabling {}", path);
     }
-    
-    let ret = unsafe {
-        libc::syscall(SYS_SWAPOFF, c_path.as_ptr())
-    };
-    
+
+    let ret = unsafe { libc::syscall(SYS_SWAPOFF, c_path.as_ptr()) };
+
     if ret == -1 {
         let errno = unsafe { *libc::__errno_location() };
         match errno {
             libc::EPERM => eprintln!("swapoff: {}: Operation not permitted (are you root?)", path),
             libc::ENOENT => eprintln!("swapoff: {}: No such file or directory", path),
             libc::EINVAL => eprintln!("swapoff: {}: Not a swap device", path),
-            libc::ENOMEM => eprintln!("swapoff: {}: Not enough memory to disable swap (too many pages in use)", path),
+            libc::ENOMEM => eprintln!(
+                "swapoff: {}: Not enough memory to disable swap (too many pages in use)",
+                path
+            ),
             libc::ENOSYS => eprintln!("swapoff: {}: Function not implemented", path),
             _ => eprintln!("swapoff: {}: Error (errno={})", path, errno),
         }
         return 1;
     }
-    
+
     if verbose {
         println!("swapoff: {}: swap disabled", path);
     }
-    
+
     0
 }
 
@@ -75,38 +76,38 @@ fn disable_all_swap(verbose: bool) -> i32 {
             return 1;
         }
     };
-    
+
     let mut exit_code = 0;
     let mut found_swap = false;
-    
+
     for (i, line) in content.lines().enumerate() {
         // Skip header line
         if i == 0 {
             continue;
         }
-        
+
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
-        
+
         let parts: Vec<&str> = line.split_whitespace().collect();
         if !parts.is_empty() {
             found_swap = true;
             let device = parts[0];
-            
+
             if do_swapoff(device, verbose) != 0 {
                 exit_code = 1;
             }
         }
     }
-    
+
     if !found_swap {
         if verbose {
             println!("swapoff: no swap devices active");
         }
     }
-    
+
     exit_code
 }
 
@@ -115,7 +116,7 @@ fn main() {
     let mut devices: Vec<String> = Vec::new();
     let mut disable_all = false;
     let mut verbose = false;
-    
+
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -140,19 +141,19 @@ fn main() {
         }
         i += 1;
     }
-    
+
     // Handle -a (all) option
     if disable_all {
         process::exit(disable_all_swap(verbose));
     }
-    
+
     // Need at least one device
     if devices.is_empty() {
         eprintln!("swapoff: need a device or -a option");
         print_usage();
         process::exit(1);
     }
-    
+
     // Disable specified devices
     let mut exit_code = 0;
     for device in &devices {
@@ -160,6 +161,6 @@ fn main() {
             exit_code = 1;
         }
     }
-    
+
     process::exit(exit_code);
 }

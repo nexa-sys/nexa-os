@@ -66,13 +66,13 @@ pub unsafe extern "C" fn getcwd(buf: *mut c_char, size: size_t) -> *mut c_char {
 
     // First try the syscall
     let ret = crate::syscall2(SYS_GETCWD, buf as u64, size as u64);
-    
+
     if ret != u64::MAX && ret > 0 {
         // Kernel returned a valid path
         crate::set_errno(0);
         return buf;
     }
-    
+
     // Fall back to our tracked CWD
     let cwd_len = CWD_LEN;
     if cwd_len >= size {
@@ -88,7 +88,7 @@ pub unsafe extern "C" fn getcwd(buf: *mut c_char, size: size_t) -> *mut c_char {
 }
 
 /// realpath - return the canonicalized absolute pathname
-/// 
+///
 /// This is a simplified implementation that handles basic path normalization.
 /// It resolves `.` and `..` components but doesn't follow symlinks (NexaOS doesn't support them).
 #[no_mangle]
@@ -97,13 +97,13 @@ pub unsafe extern "C" fn realpath(path: *const c_char, resolved_path: *mut c_cha
         crate::set_errno(crate::EINVAL);
         return ptr::null_mut();
     }
-    
+
     let path_len = crate::strlen(path as *const u8);
     if path_len == 0 {
         crate::set_errno(crate::ENOENT);
         return ptr::null_mut();
     }
-    
+
     // Allocate buffer if not provided
     const PATH_MAX: usize = 4096;
     let result_buf = if resolved_path.is_null() {
@@ -111,18 +111,18 @@ pub unsafe extern "C" fn realpath(path: *const c_char, resolved_path: *mut c_cha
     } else {
         resolved_path
     };
-    
+
     if result_buf.is_null() {
         crate::set_errno(crate::ENOMEM);
         return ptr::null_mut();
     }
-    
+
     let path_bytes = core::slice::from_raw_parts(path as *const u8, path_len);
-    
+
     // Start with absolute path
     let mut result: [u8; PATH_MAX] = [0; PATH_MAX];
     let mut result_len: usize = 0;
-    
+
     if path_bytes[0] != b'/' {
         // Relative path - prepend cwd
         let cwd_len = CWD_LEN;
@@ -131,7 +131,7 @@ pub unsafe extern "C" fn realpath(path: *const c_char, resolved_path: *mut c_cha
             result_len = cwd_len;
         }
     }
-    
+
     // Process path components
     let mut i = 0;
     while i < path_len {
@@ -142,14 +142,14 @@ pub unsafe extern "C" fn realpath(path: *const c_char, resolved_path: *mut c_cha
         if i >= path_len {
             break;
         }
-        
+
         // Find end of component
         let start = i;
         while i < path_len && path_bytes[i] != b'/' {
             i += 1;
         }
         let component = &path_bytes[start..i];
-        
+
         if component == b"." {
             // Current directory - skip
             continue;
@@ -178,7 +178,7 @@ pub unsafe extern "C" fn realpath(path: *const c_char, resolved_path: *mut c_cha
                 result[result_len] = b'/';
                 result_len += 1;
             }
-            
+
             if result_len + component.len() >= PATH_MAX {
                 if resolved_path.is_null() {
                     crate::free(result_buf as *mut c_void);
@@ -186,22 +186,26 @@ pub unsafe extern "C" fn realpath(path: *const c_char, resolved_path: *mut c_cha
                 crate::set_errno(36); // ENAMETOOLONG
                 return ptr::null_mut();
             }
-            
-            ptr::copy_nonoverlapping(component.as_ptr(), result.as_mut_ptr().add(result_len), component.len());
+
+            ptr::copy_nonoverlapping(
+                component.as_ptr(),
+                result.as_mut_ptr().add(result_len),
+                component.len(),
+            );
             result_len += component.len();
         }
     }
-    
+
     // Handle empty result (e.g., just ".." from root)
     if result_len == 0 {
         result[0] = b'/';
         result_len = 1;
     }
-    
+
     // Copy result to output buffer
     ptr::copy_nonoverlapping(result.as_ptr(), result_buf as *mut u8, result_len);
     *(result_buf.add(result_len)) = 0;
-    
+
     crate::set_errno(0);
     result_buf
 }
@@ -215,41 +219,49 @@ pub unsafe extern "C" fn chdir(path: *const c_char) -> c_int {
     }
 
     let path_len = crate::strlen(path as *const u8);
-    
+
     // Try the kernel syscall first
     let ret = crate::syscall1(SYS_CHDIR, path as u64);
-    
+
     // Even if kernel doesn't support it, we track it ourselves
     // Update our internal CWD tracking
     if path_len > 0 && path_len < CWD_MAX {
         let path_slice = core::slice::from_raw_parts(path as *const u8, path_len);
-        
+
         if path_slice[0] == b'/' {
             // Absolute path
-            ptr::copy_nonoverlapping(path_slice.as_ptr(), CURRENT_WORKING_DIR.as_mut_ptr(), path_len);
+            ptr::copy_nonoverlapping(
+                path_slice.as_ptr(),
+                CURRENT_WORKING_DIR.as_mut_ptr(),
+                path_len,
+            );
             CWD_LEN = path_len;
         } else {
             // Relative path - append to current
             let old_len = CWD_LEN;
             let need_slash = old_len > 0 && CURRENT_WORKING_DIR[old_len - 1] != b'/';
             let new_len = old_len + (if need_slash { 1 } else { 0 }) + path_len;
-            
+
             if new_len < CWD_MAX {
                 if need_slash {
                     CURRENT_WORKING_DIR[old_len] = b'/';
                 }
                 let offset = old_len + (if need_slash { 1 } else { 0 });
-                ptr::copy_nonoverlapping(path_slice.as_ptr(), CURRENT_WORKING_DIR.as_mut_ptr().add(offset), path_len);
+                ptr::copy_nonoverlapping(
+                    path_slice.as_ptr(),
+                    CURRENT_WORKING_DIR.as_mut_ptr().add(offset),
+                    path_len,
+                );
                 CWD_LEN = new_len;
             }
         }
-        
+
         // Normalize: remove trailing slashes (except for root)
         while CWD_LEN > 1 && CURRENT_WORKING_DIR[CWD_LEN - 1] == b'/' {
             CWD_LEN -= 1;
         }
     }
-    
+
     if ret == u64::MAX {
         // Kernel doesn't support chdir but we tracked it anyway
         // Return success since we handle CWD in userspace
@@ -498,7 +510,13 @@ pub unsafe extern "C" fn fchmodat(
         return -1;
     }
 
-    let ret = crate::syscall4(SYS_FCHMODAT, dirfd as u64, path as u64, mode as u64, flags as u64);
+    let ret = crate::syscall4(
+        SYS_FCHMODAT,
+        dirfd as u64,
+        path as u64,
+        mode as u64,
+        flags as u64,
+    );
     if ret == u64::MAX {
         crate::refresh_errno_from_kernel();
         -1
@@ -510,7 +528,11 @@ pub unsafe extern "C" fn fchmodat(
 
 /// Change file owner
 #[no_mangle]
-pub unsafe extern "C" fn chown(path: *const c_char, owner: crate::uid_t, group: crate::gid_t) -> c_int {
+pub unsafe extern "C" fn chown(
+    path: *const c_char,
+    owner: crate::uid_t,
+    group: crate::gid_t,
+) -> c_int {
     if path.is_null() {
         crate::set_errno(crate::EINVAL);
         return -1;
@@ -541,7 +563,11 @@ pub unsafe extern "C" fn fchown(fd: c_int, owner: crate::uid_t, group: crate::gi
 
 /// Change file owner (don't follow symlinks)
 #[no_mangle]
-pub unsafe extern "C" fn lchown(path: *const c_char, owner: crate::uid_t, group: crate::gid_t) -> c_int {
+pub unsafe extern "C" fn lchown(
+    path: *const c_char,
+    owner: crate::uid_t,
+    group: crate::gid_t,
+) -> c_int {
     // Same as chown since we don't have symlinks yet
     chown(path, owner, group)
 }
@@ -610,7 +636,13 @@ pub unsafe extern "C" fn faccessat(
         return -1;
     }
 
-    let ret = crate::syscall4(SYS_FACCESSAT, dirfd as u64, path as u64, mode as u64, flags as u64);
+    let ret = crate::syscall4(
+        SYS_FACCESSAT,
+        dirfd as u64,
+        path as u64,
+        mode as u64,
+        flags as u64,
+    );
     if ret == u64::MAX {
         crate::refresh_errno_from_kernel();
         -1

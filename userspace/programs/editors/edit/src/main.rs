@@ -72,16 +72,16 @@ fn print_version() {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    
+
     let mut files: Vec<String> = Vec::new();
     let mut commands: Vec<String> = Vec::new();
     let mut scripts: Vec<String> = Vec::new();
     let mut start_line: Option<usize> = None;
-    
+
     let mut i = 1;
     while i < args.len() {
         let arg = &args[i];
-        
+
         if arg == "-h" || arg == "--help" {
             print_usage();
             process::exit(0);
@@ -111,10 +111,10 @@ fn main() {
         } else if !arg.starts_with('-') {
             files.push(arg.clone());
         }
-        
+
         i += 1;
     }
-    
+
     // Create editor instance
     let mut editor = match Editor::new() {
         Ok(e) => e,
@@ -123,20 +123,20 @@ fn main() {
             process::exit(1);
         }
     };
-    
+
     // Load Vim Script files
     for script in &scripts {
         if let Err(e) = editor.source_script(script) {
             eprintln!("edit: error sourcing '{}': {}", script, e);
         }
     }
-    
+
     // Try to load user config
     if let Ok(home) = env::var("HOME") {
         let vimrc = format!("{}/.editrc", home);
         let _ = editor.source_script(&vimrc);
     }
-    
+
     // Load files
     if files.is_empty() {
         // Start with empty buffer
@@ -154,24 +154,24 @@ fn main() {
             }
         }
     }
-    
+
     // Ensure at least one buffer exists
     if !editor.has_buffers() {
         editor.new_buffer();
     }
-    
+
     // Jump to line if specified
     if let Some(line) = start_line {
         editor.goto_line(line);
     }
-    
+
     // Execute startup commands
     for cmd in &commands {
         if let Err(e) = editor.execute_command(cmd) {
             eprintln!("edit: error executing '{}': {}", cmd, e);
         }
     }
-    
+
     // Run the main editor loop
     match editor.run() {
         Ok(_) => {}

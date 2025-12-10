@@ -12,8 +12,8 @@
 
 use std::env;
 use std::mem;
-use std::process;
 use std::net::UdpSocket;
+use std::process;
 use std::time::Duration;
 
 // NTP Constants
@@ -46,8 +46,8 @@ const SYNC_INTERVAL_SECS: u64 = 3600; // 1 hour
 const NTP_TIMEOUT_SECS: u64 = 5;
 
 // Retry configuration
-const MAX_RETRIES: u32 = 3;           // Max retries per server
-const RETRY_DELAY_SECS: u32 = 2;      // Delay between retries
+const MAX_RETRIES: u32 = 3; // Max retries per server
+const RETRY_DELAY_SECS: u32 = 2; // Delay between retries
 const INITIAL_SYNC_TIMEOUT: u32 = 30; // Total timeout for initial sync attempt
 
 // Maximum allowed offset before adjusting time (seconds)
@@ -67,7 +67,7 @@ struct TimeSpec {
 }
 
 /// NTP Packet structure (48 bytes)
-/// 
+///
 /// Format (RFC 4330):
 /// ```text
 ///  0                   1                   2                   3
@@ -140,38 +140,47 @@ impl NtpPacket {
             trans_ts_sec: 0,
             trans_ts_frac: 0,
         };
-        
+
         // Set transmit timestamp to current time
         let now = get_current_time_ntp();
         packet.trans_ts_sec = now.0.to_be();
         packet.trans_ts_frac = now.1.to_be();
-        
+
         packet
     }
-    
+
     /// Parse response and extract mode
     fn get_mode(&self) -> u8 {
         self.li_vn_mode & 0x07
     }
-    
+
     /// Get stratum level
     fn get_stratum(&self) -> u8 {
         self.stratum
     }
-    
+
     /// Get transmit timestamp as seconds since NTP epoch
     fn get_transmit_timestamp(&self) -> (u32, u32) {
-        (u32::from_be(self.trans_ts_sec), u32::from_be(self.trans_ts_frac))
+        (
+            u32::from_be(self.trans_ts_sec),
+            u32::from_be(self.trans_ts_frac),
+        )
     }
-    
+
     /// Get receive timestamp
     fn get_receive_timestamp(&self) -> (u32, u32) {
-        (u32::from_be(self.recv_ts_sec), u32::from_be(self.recv_ts_frac))
+        (
+            u32::from_be(self.recv_ts_sec),
+            u32::from_be(self.recv_ts_frac),
+        )
     }
-    
+
     /// Get originate timestamp
     fn get_originate_timestamp(&self) -> (u32, u32) {
-        (u32::from_be(self.orig_ts_sec), u32::from_be(self.orig_ts_frac))
+        (
+            u32::from_be(self.orig_ts_sec),
+            u32::from_be(self.orig_ts_frac),
+        )
     }
 }
 
@@ -181,14 +190,14 @@ fn get_current_time_ntp() -> (u32, u32) {
     extern "C" {
         fn get_uptime() -> u64;
     }
-    
+
     // For now, use uptime as a base (will be corrected after sync)
     // In a real implementation, we'd use clock_gettime(CLOCK_REALTIME)
     let uptime = unsafe { get_uptime() };
-    
+
     // Convert to NTP timestamp (add delta from 1900 to 1970)
     let ntp_secs = uptime + NTP_TIMESTAMP_DELTA;
-    
+
     (ntp_secs as u32, 0)
 }
 
@@ -203,7 +212,7 @@ fn set_system_time(unix_secs: i64, nsecs: i64) -> Result<(), String> {
         tv_sec: unix_secs,
         tv_nsec: nsecs,
     };
-    
+
     let ret: i64;
     unsafe {
         core::arch::asm!(
@@ -217,7 +226,7 @@ fn set_system_time(unix_secs: i64, nsecs: i64) -> Result<(), String> {
             options(nostack)
         );
     }
-    
+
     if ret == 0 {
         Ok(())
     } else {
@@ -245,10 +254,10 @@ fn resolve_hostname(hostname: &str) -> Result<[u8; 4], String> {
             return Ok(ip);
         }
     }
-    
+
     // Use DNS resolution via nslookup-style lookup
     // For simplicity, we'll use a hardcoded resolver or fall back to known IPs
-    
+
     // Known NTP server IPs (fallback)
     match hostname {
         "pool.ntp.org" | "0.pool.ntp.org" => Ok([162, 159, 200, 1]), // time.cloudflare.com
@@ -259,7 +268,10 @@ fn resolve_hostname(hostname: &str) -> Result<[u8; 4], String> {
         _ => {
             // Try to resolve via system DNS
             // This would use gethostbyname or similar, but for now use fallback
-            eprintln!("Warning: Cannot resolve '{}', using fallback server", hostname);
+            eprintln!(
+                "Warning: Cannot resolve '{}', using fallback server",
+                hostname
+            );
             Ok([162, 159, 200, 1]) // Cloudflare NTP
         }
     }
@@ -271,61 +283,61 @@ fn query_ntp_server(server_ip: [u8; 4], verbose: bool) -> Result<(i64, i64), Str
         "{}.{}.{}.{}:{}",
         server_ip[0], server_ip[1], server_ip[2], server_ip[3], NTP_PORT
     );
-    
+
     if verbose {
         println!("Querying NTP server at {}...", server_addr);
     }
-    
+
     // Create UDP socket
-    let socket = UdpSocket::bind("0.0.0.0:0")
-        .map_err(|e| format!("Failed to create socket: {}", e))?;
-    
-    socket.set_read_timeout(Some(Duration::from_secs(NTP_TIMEOUT_SECS)))
+    let socket =
+        UdpSocket::bind("0.0.0.0:0").map_err(|e| format!("Failed to create socket: {}", e))?;
+
+    socket
+        .set_read_timeout(Some(Duration::from_secs(NTP_TIMEOUT_SECS)))
         .map_err(|e| format!("Failed to set timeout: {}", e))?;
-    
+
     // Create and send NTP request
     let request = NtpPacket::new_request();
     let request_bytes = unsafe {
-        core::slice::from_raw_parts(
-            &request as *const NtpPacket as *const u8,
-            NTP_PACKET_SIZE
-        )
+        core::slice::from_raw_parts(&request as *const NtpPacket as *const u8, NTP_PACKET_SIZE)
     };
-    
+
     // Record time of request (T1)
     let t1 = get_current_time_ntp();
-    
-    socket.send_to(request_bytes, &server_addr)
+
+    socket
+        .send_to(request_bytes, &server_addr)
         .map_err(|e| format!("Failed to send request: {}", e))?;
-    
+
     // Receive response
     let mut response_buf = [0u8; NTP_PACKET_SIZE];
-    let (n, _) = socket.recv_from(&mut response_buf)
+    let (n, _) = socket
+        .recv_from(&mut response_buf)
         .map_err(|e| format!("Failed to receive response: {}", e))?;
-    
+
     // Record time of response (T4)
     let t4 = get_current_time_ntp();
-    
+
     if n != NTP_PACKET_SIZE {
         return Err(format!("Invalid response size: {} bytes", n));
     }
-    
+
     // Parse response
     let response: &NtpPacket = unsafe { &*(response_buf.as_ptr() as *const NtpPacket) };
-    
+
     // Validate response
     if response.get_mode() != MODE_SERVER {
         return Err(format!("Invalid response mode: {}", response.get_mode()));
     }
-    
+
     if response.get_stratum() == 0 {
         return Err("Server returned stratum 0 (kiss-of-death)".to_string());
     }
-    
+
     // Get timestamps from response
-    let t2 = response.get_receive_timestamp();  // Server receive time
+    let t2 = response.get_receive_timestamp(); // Server receive time
     let t3 = response.get_transmit_timestamp(); // Server transmit time
-    
+
     if verbose {
         println!("  Stratum: {}", response.get_stratum());
         println!("  T1 (client send):    {} s", t1.0);
@@ -333,64 +345,66 @@ fn query_ntp_server(server_ip: [u8; 4], verbose: bool) -> Result<(i64, i64), Str
         println!("  T3 (server send):    {} s", t3.0);
         println!("  T4 (client receive): {} s", t4.0);
     }
-    
+
     // Calculate offset and delay using NTP algorithm
     // offset = ((T2 - T1) + (T3 - T4)) / 2
     // delay = (T4 - T1) - (T3 - T2)
-    
+
     let t1_secs = t1.0 as i64;
     let t2_secs = t2.0 as i64;
     let t3_secs = t3.0 as i64;
     let t4_secs = t4.0 as i64;
-    
+
     let offset_secs = ((t2_secs - t1_secs) + (t3_secs - t4_secs)) / 2;
     let delay_secs = (t4_secs - t1_secs) - (t3_secs - t2_secs);
-    
+
     if verbose {
         println!("  Offset: {} seconds", offset_secs);
         println!("  Round-trip delay: {} seconds", delay_secs);
     }
-    
+
     // Calculate correct Unix timestamp
     let server_time_unix = ntp_to_unix(t3.0, t3.1);
-    
+
     Ok((server_time_unix, offset_secs))
 }
 
 /// Synchronize system time with NTP server
 fn sync_time(server: &str, verbose: bool, query_only: bool) -> Result<(), String> {
     println!("NTP sync: using server '{}'", server);
-    
+
     // Resolve server hostname
     let server_ip = resolve_hostname(server)?;
-    
+
     if verbose {
-        println!("Resolved to IP: {}.{}.{}.{}", 
-                 server_ip[0], server_ip[1], server_ip[2], server_ip[3]);
+        println!(
+            "Resolved to IP: {}.{}.{}.{}",
+            server_ip[0], server_ip[1], server_ip[2], server_ip[3]
+        );
     }
-    
+
     // Query NTP server
     let (server_time, offset) = query_ntp_server(server_ip, verbose)?;
-    
+
     println!("Server time: {} (Unix timestamp)", server_time);
     println!("Time offset: {} seconds", offset);
-    
+
     if query_only {
         println!("Query only mode - not setting system time");
         return Ok(());
     }
-    
+
     // Check if offset is reasonable
     if (offset as f64).abs() > MAX_OFFSET_SECS {
         println!("Warning: Large time offset detected ({} seconds)", offset);
     }
-    
+
     // Set system time
     println!("Setting system time...");
     set_system_time(server_time, 0)?;
-    
+
     println!("System time synchronized successfully!");
-    
+
     // Verify the time was set
     if verbose {
         extern "C" {
@@ -399,7 +413,7 @@ fn sync_time(server: &str, verbose: bool, query_only: bool) -> Result<(), String
         let new_time = unsafe { get_uptime() };
         println!("New system uptime: {} seconds", new_time);
     }
-    
+
     Ok(())
 }
 
@@ -408,32 +422,42 @@ fn sync_time_with_retry(server: &str, verbose: bool, query_only: bool) -> Result
     extern "C" {
         fn sleep(seconds: u32);
     }
-    
+
     for attempt in 1..=MAX_RETRIES {
         if verbose {
             println!("NTP sync attempt {}/{}", attempt, MAX_RETRIES);
         }
-        
+
         match sync_time(server, verbose, query_only) {
             Ok(()) => return Ok(()),
             Err(e) => {
                 if attempt < MAX_RETRIES {
-                    eprintln!("Attempt {} failed: {}, retrying in {}s...", attempt, e, RETRY_DELAY_SECS);
+                    eprintln!(
+                        "Attempt {} failed: {}, retrying in {}s...",
+                        attempt, e, RETRY_DELAY_SECS
+                    );
                     unsafe { sleep(RETRY_DELAY_SECS) };
                 } else {
-                    return Err(format!("All {} attempts failed. Last error: {}", MAX_RETRIES, e));
+                    return Err(format!(
+                        "All {} attempts failed. Last error: {}",
+                        MAX_RETRIES, e
+                    ));
                 }
             }
         }
     }
-    
+
     Err("Max retries exceeded".to_string())
 }
 
 /// Try multiple NTP servers until one succeeds
-fn sync_with_fallback_servers(servers: &[&str], verbose: bool, query_only: bool) -> Result<(), String> {
+fn sync_with_fallback_servers(
+    servers: &[&str],
+    verbose: bool,
+    query_only: bool,
+) -> Result<(), String> {
     let mut last_error = String::new();
-    
+
     for server in servers {
         match sync_time_with_retry(server, verbose, query_only) {
             Ok(()) => return Ok(()),
@@ -443,7 +467,7 @@ fn sync_with_fallback_servers(servers: &[&str], verbose: bool, query_only: bool)
             }
         }
     }
-    
+
     Err(format!("All servers failed. Last error: {}", last_error))
 }
 
@@ -451,14 +475,14 @@ fn sync_with_fallback_servers(servers: &[&str], verbose: bool, query_only: bool)
 fn run_daemon(server: &str, verbose: bool) {
     println!("NTP daemon starting...");
     println!("Sync interval: {} seconds", SYNC_INTERVAL_SECS);
-    
+
     extern "C" {
         fn sleep(seconds: u32);
     }
-    
+
     // Initial sync with fallback to other servers if primary fails
     let mut synced = false;
-    
+
     // First try the specified server with retries
     match sync_time_with_retry(server, verbose, false) {
         Ok(()) => {
@@ -481,16 +505,16 @@ fn run_daemon(server: &str, verbose: bool) {
             }
         }
     }
-    
+
     if !synced {
         println!("Initial sync failed, will retry periodically");
     }
-    
+
     // Main daemon loop - continue even if initial sync failed
     loop {
         println!("Next sync in {} seconds...", SYNC_INTERVAL_SECS);
         unsafe { sleep(SYNC_INTERVAL_SECS as u32) };
-        
+
         match sync_time_with_retry(server, verbose, false) {
             Ok(()) => println!("Periodic sync successful"),
             Err(e) => eprintln!("Periodic sync failed: {}", e),
@@ -519,12 +543,12 @@ fn print_usage() {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    
+
     let mut server = DEFAULT_NTP_SERVERS[0].to_string();
     let mut daemon_mode = false;
     let mut query_only = false;
     let mut verbose = false;
-    
+
     // Parse arguments
     let mut i = 1;
     while i < args.len() {
@@ -553,13 +577,13 @@ fn main() {
         }
         i += 1;
     }
-    
+
     if verbose {
         println!("NTP Client for NexaOS");
         println!("Server: {}", server);
         println!("Mode: {}", if daemon_mode { "daemon" } else { "one-shot" });
     }
-    
+
     if daemon_mode {
         run_daemon(&server, verbose);
     } else {

@@ -2,8 +2,8 @@
 //!
 //! Cipher suite definitions and management.
 
-use std::vec::Vec;
 use crate::c_char;
+use std::vec::Vec;
 
 /// SSL Cipher descriptor
 #[repr(C)]
@@ -64,7 +64,7 @@ pub enum Encryption {
 #[repr(i32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mac {
-    None = 0,      // AEAD modes
+    None = 0, // AEAD modes
     Sha256 = 1,
     Sha384 = 2,
 }
@@ -260,13 +260,13 @@ impl CipherList {
     /// Parse cipher list from OpenSSL-style string
     pub fn from_string(s: &str) -> Option<Self> {
         let mut suites = Vec::new();
-        
+
         for part in s.split(':') {
             let name = part.trim();
             if name.is_empty() || name.starts_with('!') || name.starts_with('-') {
                 continue;
             }
-            
+
             // Handle special keywords
             match name {
                 "HIGH" | "DEFAULT" => {
@@ -291,11 +291,11 @@ impl CipherList {
                 _ => {}
             }
         }
-        
+
         // Remove duplicates while preserving order
         let mut seen = std::collections::HashSet::new();
         suites.retain(|x| seen.insert(*x));
-        
+
         if suites.is_empty() {
             None
         } else {

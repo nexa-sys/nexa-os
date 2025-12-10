@@ -137,7 +137,7 @@ fn parse_signal(s: &str) -> Result<i32, String> {
     // Try to parse as signal name (with or without SIG prefix)
     let upper = s.to_uppercase();
     let name = upper.trim_start_matches("SIG");
-    
+
     for (signame, signum) in SIGNAL_MAP {
         if *signame == name {
             return Ok(*signum);
@@ -152,9 +152,9 @@ fn kill_process(pid: i32, signal: i32) -> io::Result<()> {
     extern "C" {
         fn kill(pid: i32, sig: i32) -> i32;
     }
-    
+
     let result = unsafe { kill(pid, signal) };
-    
+
     if result == 0 {
         Ok(())
     } else {
@@ -164,7 +164,7 @@ fn kill_process(pid: i32, signal: i32) -> io::Result<()> {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    
+
     if args.len() < 2 {
         print_usage();
         process::exit(1);
@@ -176,7 +176,7 @@ fn main() {
 
     while i < args.len() {
         let arg = &args[i];
-        
+
         if arg == "-h" || arg == "--help" {
             print_usage();
             process::exit(0);
@@ -219,7 +219,7 @@ fn main() {
                 }
             }
         }
-        
+
         i += 1;
     }
 

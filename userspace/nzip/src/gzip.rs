@@ -2,10 +2,10 @@
 //!
 //! Provides gzip format encoding/decoding.
 
-use crate::crc32::{Crc32, crc32};
+use crate::crc32::{crc32, Crc32};
 use crate::deflate::Deflater;
-use crate::inflate::Inflater;
 use crate::error::{ZlibError, ZlibResult};
+use crate::inflate::Inflater;
 
 /// GZIP magic bytes
 pub const GZIP_MAGIC: [u8; 2] = [0x1F, 0x8B];
@@ -93,13 +93,13 @@ impl GzipHeader {
     /// Encode header to bytes
     pub fn encode(&self) -> Vec<u8> {
         let mut output = Vec::new();
-        
+
         // Magic number
         output.extend_from_slice(&GZIP_MAGIC);
-        
+
         // CM
         output.push(self.cm);
-        
+
         // Calculate flags
         let mut flg = 0u8;
         if self.extra.is_some() {
@@ -112,19 +112,19 @@ impl GzipHeader {
             flg |= flags::FCOMMENT;
         }
         output.push(flg);
-        
+
         // MTIME (little-endian)
         output.push(self.mtime as u8);
         output.push((self.mtime >> 8) as u8);
         output.push((self.mtime >> 16) as u8);
         output.push((self.mtime >> 24) as u8);
-        
+
         // XFL
         output.push(self.xfl);
-        
+
         // OS
         output.push(self.os);
-        
+
         // Extra field
         if let Some(ref extra) = self.extra {
             let len = extra.len() as u16;
@@ -132,19 +132,19 @@ impl GzipHeader {
             output.push((len >> 8) as u8);
             output.extend_from_slice(extra);
         }
-        
+
         // Filename
         if let Some(ref name) = self.name {
             output.extend_from_slice(name.as_bytes());
             output.push(0);
         }
-        
+
         // Comment
         if let Some(ref comment) = self.comment {
             output.extend_from_slice(comment.as_bytes());
             output.push(0);
         }
-        
+
         output
     }
 
@@ -153,17 +153,17 @@ impl GzipHeader {
         if data.len() < 10 {
             return Err(ZlibError::UnexpectedEof);
         }
-        
+
         // Check magic
         if data[0] != GZIP_MAGIC[0] || data[1] != GZIP_MAGIC[1] {
             return Err(ZlibError::HeaderError);
         }
-        
+
         let cm = data[2];
         if cm != GZIP_CM_DEFLATE {
             return Err(ZlibError::HeaderError);
         }
-        
+
         let flg = data[3];
         let mtime = (data[4] as u32)
             | ((data[5] as u32) << 8)
@@ -171,9 +171,9 @@ impl GzipHeader {
             | ((data[7] as u32) << 24);
         let xfl = data[8];
         let os = data[9];
-        
+
         let mut pos = 10;
-        
+
         // Extra field
         let extra = if (flg & flags::FEXTRA) != 0 {
             if pos + 2 > data.len() {
@@ -181,7 +181,7 @@ impl GzipHeader {
             }
             let xlen = (data[pos] as usize) | ((data[pos + 1] as usize) << 8);
             pos += 2;
-            
+
             if pos + xlen > data.len() {
                 return Err(ZlibError::UnexpectedEof);
             }
@@ -191,7 +191,7 @@ impl GzipHeader {
         } else {
             None
         };
-        
+
         // Filename
         let name = if (flg & flags::FNAME) != 0 {
             let start = pos;
@@ -207,7 +207,7 @@ impl GzipHeader {
         } else {
             None
         };
-        
+
         // Comment
         let comment = if (flg & flags::FCOMMENT) != 0 {
             let start = pos;
@@ -223,7 +223,7 @@ impl GzipHeader {
         } else {
             None
         };
-        
+
         // Header CRC
         let hcrc = if (flg & flags::FHCRC) != 0 {
             if pos + 2 > data.len() {
@@ -235,18 +235,21 @@ impl GzipHeader {
         } else {
             None
         };
-        
-        Ok((Self {
-            cm,
-            flg,
-            mtime,
-            xfl,
-            os,
-            extra,
-            name,
-            comment,
-            hcrc,
-        }, pos))
+
+        Ok((
+            Self {
+                cm,
+                flg,
+                mtime,
+                xfl,
+                os,
+                extra,
+                name,
+                comment,
+                hcrc,
+            },
+            pos,
+        ))
     }
 }
 
@@ -279,17 +282,17 @@ impl GzipTrailer {
         if data.len() < 8 {
             return Err(ZlibError::UnexpectedEof);
         }
-        
+
         let crc32 = (data[0] as u32)
             | ((data[1] as u32) << 8)
             | ((data[2] as u32) << 16)
             | ((data[3] as u32) << 24);
-        
+
         let isize = (data[4] as u32)
             | ((data[5] as u32) << 8)
             | ((data[6] as u32) << 16)
             | ((data[7] as u32) << 24);
-        
+
         Ok(Self { crc32, isize })
     }
 }
@@ -334,21 +337,21 @@ impl GzipCompressor {
     /// Compress data
     pub fn compress(&mut self, input: &[u8], finish: bool) -> ZlibResult<Vec<u8>> {
         let mut output = Vec::new();
-        
+
         // Write header if not yet written
         if !self.header_written {
             output.extend(self.header.encode());
             self.header_written = true;
         }
-        
+
         // Update checksum and size
         self.crc.update(input);
         self.size = self.size.wrapping_add(input.len() as u32);
-        
+
         // Compress
         let compressed = self.deflater.compress(input, finish)?;
         output.extend(compressed);
-        
+
         // Write trailer if finishing
         if finish {
             let trailer = GzipTrailer {
@@ -357,7 +360,7 @@ impl GzipCompressor {
             };
             output.extend_from_slice(&trailer.encode());
         }
-        
+
         Ok(output)
     }
 }
@@ -396,11 +399,11 @@ impl GzipDecompressor {
     /// Decompress data
     pub fn decompress(&mut self, input: &[u8]) -> ZlibResult<(Vec<u8>, usize)> {
         let mut pos = 0;
-        
+
         // Parse header if not yet done
         if self.header.is_none() {
             self.header_buffer.extend_from_slice(input);
-            
+
             match GzipHeader::decode(&self.header_buffer) {
                 Ok((header, consumed)) => {
                     self.header = Some(header);
@@ -414,10 +417,12 @@ impl GzipDecompressor {
                 Err(e) => return Err(e),
             }
         }
-        
+
         // Decompress
         let (decompressed, consumed) = if !self.header_buffer.is_empty() {
-            let combined: Vec<u8> = self.header_buffer.iter()
+            let combined: Vec<u8> = self
+                .header_buffer
+                .iter()
                 .chain(input[pos..].iter())
                 .copied()
                 .collect();
@@ -427,11 +432,11 @@ impl GzipDecompressor {
         } else {
             self.inflater.decompress(&input[pos..])?
         };
-        
+
         // Update checksum and size
         self.crc.update(&decompressed);
         self.size = self.size.wrapping_add(decompressed.len() as u32);
-        
+
         Ok((decompressed, pos + consumed))
     }
 
@@ -457,16 +462,16 @@ pub fn gzip_compress(input: &[u8], level: i32) -> ZlibResult<Vec<u8>> {
 pub fn gzip_decompress(input: &[u8]) -> ZlibResult<Vec<u8>> {
     let mut decompressor = GzipDecompressor::new();
     let (output, consumed) = decompressor.decompress(input)?;
-    
+
     // Verify trailer
     if consumed + 8 > input.len() {
         return Err(ZlibError::UnexpectedEof);
     }
-    
+
     let trailer = GzipTrailer::decode(&input[consumed..])?;
     if !decompressor.verify(&trailer) {
         return Err(ZlibError::ChecksumError);
     }
-    
+
     Ok(output)
 }

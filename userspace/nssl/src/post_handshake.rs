@@ -2,7 +2,7 @@
 //!
 //! TLS 1.3 post-handshake operations.
 
-use crate::{c_int};
+use crate::c_int;
 use crate::connection::SslConnection;
 use crate::context::SslContext;
 
@@ -28,7 +28,7 @@ pub extern "C" fn SSL_verify_client_post_handshake(ssl: *mut SslConnection) -> c
     }
     // Send CertificateRequest message to client
     // Only valid for TLS 1.3 after handshake is complete
-    
+
     // Simplified: return success (actual implementation would send message)
     1
 }

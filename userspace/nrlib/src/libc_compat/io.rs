@@ -48,14 +48,14 @@ const NCCS: usize = 32;
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct termios {
-    pub c_iflag: u32,   // Input mode flags
-    pub c_oflag: u32,   // Output mode flags
-    pub c_cflag: u32,   // Control mode flags
-    pub c_lflag: u32,   // Local mode flags
-    pub c_line: u8,     // Line discipline
+    pub c_iflag: u32,     // Input mode flags
+    pub c_oflag: u32,     // Output mode flags
+    pub c_cflag: u32,     // Control mode flags
+    pub c_lflag: u32,     // Local mode flags
+    pub c_line: u8,       // Line discipline
     pub c_cc: [u8; NCCS], // Control characters
-    pub c_ispeed: u32,  // Input speed
-    pub c_ospeed: u32,  // Output speed
+    pub c_ispeed: u32,    // Input speed
+    pub c_ospeed: u32,    // Output speed
 }
 
 /// Winsize structure for terminal size
@@ -258,14 +258,12 @@ pub unsafe extern "C" fn openat64(
 #[no_mangle]
 pub unsafe extern "C" fn fcntl(fd: c_int, cmd: c_int, arg: c_int) -> c_int {
     match cmd {
-        F_DUPFD => {
-            crate::translate_ret_i32(crate::syscall3(
-                crate::SYS_FCNTL,
-                fd as u64,
-                cmd as u64,
-                (arg as i64) as u64,
-            ))
-        }
+        F_DUPFD => crate::translate_ret_i32(crate::syscall3(
+            crate::SYS_FCNTL,
+            fd as u64,
+            cmd as u64,
+            (arg as i64) as u64,
+        )),
         F_GETFL | F_SETFL => 0,
         _ => 0,
     }
@@ -335,7 +333,7 @@ pub unsafe extern "C" fn ioctl(fd: c_int, request: c_ulong, arg: *mut c_void) ->
         }
         _ => {}
     }
-    
+
     // Unknown ioctl
     crate::set_errno(crate::ENOTTY);
     -1
@@ -360,7 +358,11 @@ pub unsafe extern "C" fn tcgetattr(fd: c_int, termios_p: *mut termios) -> c_int 
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn tcsetattr(fd: c_int, _optional_actions: c_int, termios_p: *const termios) -> c_int {
+pub unsafe extern "C" fn tcsetattr(
+    fd: c_int,
+    _optional_actions: c_int,
+    termios_p: *const termios,
+) -> c_int {
     if termios_p.is_null() {
         crate::set_errno(crate::EINVAL);
         return -1;
@@ -461,5 +463,9 @@ pub unsafe extern "C" fn poll(_fds: *mut c_void, _nfds: c_ulong, _timeout: c_int
 #[no_mangle]
 pub unsafe extern "C" fn isatty(fd: c_int) -> c_int {
     // Return 1 (true) for stdin/stdout/stderr, 0 (false) otherwise
-    if (0..=2).contains(&fd) { 1 } else { 0 }
+    if (0..=2).contains(&fd) {
+        1
+    } else {
+        0
+    }
 }

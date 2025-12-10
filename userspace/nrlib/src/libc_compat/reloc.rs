@@ -146,11 +146,7 @@ pub unsafe fn process_rela(
             if sym_addr != 0 {
                 let size = _sym_size as usize;
                 if size > 0 {
-                    ptr::copy_nonoverlapping(
-                        sym_addr as *const u8,
-                        target_addr as *mut u8,
-                        size,
-                    );
+                    ptr::copy_nonoverlapping(sym_addr as *const u8, target_addr as *mut u8, size);
                 }
             }
         }
@@ -178,8 +174,7 @@ pub unsafe fn process_rela(
             // B + A gives address of resolver function
             let resolver_addr = (lib.base_addr as i64).wrapping_add(rela.r_addend) as u64;
             // Call the resolver to get actual function address
-            let resolver: unsafe extern "C" fn() -> u64 =
-                core::mem::transmute(resolver_addr);
+            let resolver: unsafe extern "C" fn() -> u64 = core::mem::transmute(resolver_addr);
             let resolved_addr = resolver();
             ptr::write_volatile(target_addr as *mut u64, resolved_addr);
         }

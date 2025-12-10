@@ -67,7 +67,11 @@ pub(crate) fn format_isize(val: isize, buf: &mut [u8]) -> &str {
         return "0";
     }
     let neg = val < 0;
-    let mut n = if neg { (val as i64).abs() as usize } else { val as usize };
+    let mut n = if neg {
+        (val as i64).abs() as usize
+    } else {
+        val as usize
+    };
     let mut idx = buf.len();
     while n > 0 && idx > 0 {
         idx -= 1;
@@ -82,7 +86,11 @@ pub(crate) fn format_isize(val: isize, buf: &mut [u8]) -> &str {
 }
 
 /// Format unsigned integer with specified base and minimum digits
-pub(crate) fn format_unsigned(mut value: u128, base: u32, min_digits: usize) -> ([u8; INT_BUFFER_SIZE], usize) {
+pub(crate) fn format_unsigned(
+    mut value: u128,
+    base: u32,
+    min_digits: usize,
+) -> ([u8; INT_BUFFER_SIZE], usize) {
     let mut buf = [0u8; INT_BUFFER_SIZE];
     let mut index = INT_BUFFER_SIZE;
     if value == 0 {
@@ -113,7 +121,11 @@ pub(crate) fn format_unsigned(mut value: u128, base: u32, min_digits: usize) -> 
 }
 
 /// Format signed integer with specified base and minimum digits
-pub(crate) fn format_signed(value: i128, base: u32, min_digits: usize) -> (bool, [u8; INT_BUFFER_SIZE], usize) {
+pub(crate) fn format_signed(
+    value: i128,
+    base: u32,
+    min_digits: usize,
+) -> (bool, [u8; INT_BUFFER_SIZE], usize) {
     if value < 0 {
         let unsigned = value.wrapping_neg() as u128;
         let (buf, index) = format_unsigned(unsigned, base, min_digits);

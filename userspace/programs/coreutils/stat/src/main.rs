@@ -53,14 +53,14 @@ fn stat_file(path: &str) {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    
+
     if args.len() < 2 {
         print_usage();
         process::exit(1);
     }
 
     let mut files: Vec<&str> = Vec::new();
-    
+
     for arg in args.iter().skip(1) {
         if arg == "-h" || arg == "--help" {
             print_usage();

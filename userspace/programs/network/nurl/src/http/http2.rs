@@ -1,5 +1,4 @@
 /// HTTP/2 client implementation using nh2 library
-
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
@@ -11,7 +10,7 @@ use crate::url::ParsedUrl;
 #[cfg(any(feature = "https", feature = "https-dynamic"))]
 use crate::tls::TlsConnection;
 
-use nh2::{Session, SessionCallbacks, HeaderField, StreamState};
+use nh2::{HeaderField, Session, SessionCallbacks, StreamState};
 
 /// HTTP/2 client
 pub struct Http2Client {
@@ -64,14 +63,19 @@ impl Http2Client {
         }
 
         // Default user-agent
-        let has_user_agent = args.headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("user-agent"));
+        let has_user_agent = args
+            .headers
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("user-agent"));
         if !has_user_agent {
             headers.push(HeaderField::new("user-agent", "nurl/1.0 (NexaOS; HTTP/2)"));
         }
 
         // Request compression
         if args.compressed {
-            let has_accept_encoding = args.headers.iter()
+            let has_accept_encoding = args
+                .headers
+                .iter()
                 .any(|(k, _)| k.eq_ignore_ascii_case("accept-encoding"));
             if !has_accept_encoding {
                 headers.push(HeaderField::new("accept-encoding", "gzip, deflate"));
@@ -98,29 +102,37 @@ impl Http2Client {
         if self.verbose {
             eprintln!("* [HTTP/2] Submitting request...");
             for h in &headers {
-                eprintln!("> {}: {}", 
-                    String::from_utf8_lossy(&h.name), 
-                    String::from_utf8_lossy(&h.value));
+                eprintln!(
+                    "> {}: {}",
+                    String::from_utf8_lossy(&h.name),
+                    String::from_utf8_lossy(&h.value)
+                );
             }
         }
 
         // Submit request (without data provider for GET, with for POST etc)
-        let stream_id = session.submit_request(None, &headers, None)
+        let stream_id = session
+            .submit_request(None, &headers, None)
             .map_err(|e| HttpError::ProtocolError(format!("Failed to submit request: {:?}", e)))?;
 
         // Send request body if present
         if let Some(ref data) = args.data {
-            session.submit_data(stream_id, data, true)
+            session
+                .submit_data(stream_id, data, true)
                 .map_err(|e| HttpError::ProtocolError(format!("Failed to send data: {:?}", e)))?;
         }
 
         // Send connection preface and initial frames
         let send_data = session.mem_send();
-        stream.write_all(&send_data)
+        stream
+            .write_all(&send_data)
             .map_err(|e| HttpError::SendFailed(e.to_string()))?;
 
         if self.verbose {
-            eprintln!("* [HTTP/2] Sent {} bytes (preface + request)", send_data.len());
+            eprintln!(
+                "* [HTTP/2] Sent {} bytes (preface + request)",
+                send_data.len()
+            );
         }
 
         // Read and process response
@@ -131,7 +143,8 @@ impl Http2Client {
 
         loop {
             // Read from transport
-            let n = stream.read(&mut recv_buffer)
+            let n = stream
+                .read(&mut recv_buffer)
                 .map_err(|e| HttpError::ReceiveFailed(e.to_string()))?;
 
             if n == 0 {
@@ -146,8 +159,9 @@ impl Http2Client {
             }
 
             // Feed data to session
-            let _ = session.mem_recv(&recv_buffer[..n])
-                .map_err(|e| HttpError::ProtocolError(format!("Failed to process data: {:?}", e)))?;
+            let _ = session.mem_recv(&recv_buffer[..n]).map_err(|e| {
+                HttpError::ProtocolError(format!("Failed to process data: {:?}", e))
+            })?;
 
             // Get stream to check for headers and data
             if let Some(stream_data) = session.get_stream_data(stream_id) {
@@ -156,7 +170,7 @@ impl Http2Client {
                     for h in &stream_data.response_headers {
                         let name = String::from_utf8_lossy(&h.name);
                         let value = String::from_utf8_lossy(&h.value);
-                        
+
                         if name == ":status" {
                             status_code = value.parse().ok();
                             if self.verbose {
@@ -174,7 +188,10 @@ impl Http2Client {
                 // Get received body data
                 if !stream_data.recv_buffer.is_empty() {
                     if self.verbose {
-                        eprintln!("* [HTTP/2] Got {} bytes of body data", stream_data.recv_buffer.len());
+                        eprintln!(
+                            "* [HTTP/2] Got {} bytes of body data",
+                            stream_data.recv_buffer.len()
+                        );
                     }
                     response_body.extend_from_slice(&stream_data.recv_buffer);
                 }
@@ -182,7 +199,10 @@ impl Http2Client {
 
             // Check if stream is complete
             let stream_state = session.get_stream(stream_id);
-            if matches!(stream_state, Some(StreamState::Closed) | Some(StreamState::HalfClosedRemote)) {
+            if matches!(
+                stream_state,
+                Some(StreamState::Closed) | Some(StreamState::HalfClosedRemote)
+            ) {
                 if self.verbose {
                     eprintln!("* [HTTP/2] Stream {} complete", stream_id);
                 }
@@ -192,7 +212,8 @@ impl Http2Client {
             // Send any pending frames (WINDOW_UPDATE, etc.)
             let pending = session.mem_send();
             if !pending.is_empty() {
-                stream.write_all(&pending)
+                stream
+                    .write_all(&pending)
                     .map_err(|e| HttpError::SendFailed(e.to_string()))?;
             }
         }
@@ -203,7 +224,7 @@ impl Http2Client {
                 for h in &stream_data.response_headers {
                     let name = String::from_utf8_lossy(&h.name);
                     let value = String::from_utf8_lossy(&h.value);
-                    
+
                     if name == ":status" {
                         status_code = value.parse().ok();
                     } else if !name.starts_with(':') {
@@ -216,9 +237,8 @@ impl Http2Client {
             }
         }
 
-        let status = status_code.ok_or_else(|| 
-            HttpError::InvalidResponse("No :status header received".to_string())
-        )?;
+        let status = status_code
+            .ok_or_else(|| HttpError::InvalidResponse("No :status header received".to_string()))?;
 
         Ok(HttpResponse {
             status_code: status,
@@ -272,7 +292,7 @@ impl Http2Client {
 
         if negotiated != "h2" {
             return Err(HttpError::ProtocolError(
-                "Server does not support HTTP/2".to_string()
+                "Server does not support HTTP/2".to_string(),
             ));
         }
 
@@ -302,7 +322,8 @@ impl HttpClient for Http2Client {
             {
                 drop(stream);
                 Err(HttpError::NotSupported(
-                    "HTTPS not supported (compile with 'https' or 'https-dynamic' feature)".to_string(),
+                    "HTTPS not supported (compile with 'https' or 'https-dynamic' feature)"
+                        .to_string(),
                 ))
             }
         } else {

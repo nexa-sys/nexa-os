@@ -1,5 +1,5 @@
-use multiboot2::{BootInformation, MemoryAreaType};
 use core::sync::atomic::{AtomicU64, Ordering};
+use multiboot2::{BootInformation, MemoryAreaType};
 
 /// Total physical memory in bytes (detected from bootloader)
 static TOTAL_PHYSICAL_MEMORY: AtomicU64 = AtomicU64::new(0);
@@ -20,7 +20,7 @@ pub fn log_memory_overview(boot_info: &BootInformation<'_>) {
         crate::kinfo!("[mem] Detected {} memory regions", areas.len());
 
         let mut total_available: u64 = 0;
-        
+
         for area in areas.iter() {
             let start = area.start_address() as u64;
             let end = area.end_address() as u64;
@@ -34,16 +34,19 @@ pub fn log_memory_overview(boot_info: &BootInformation<'_>) {
                 size_kib,
                 classify_area(area.typ())
             );
-            
+
             // Count available memory
             if area.typ() == MemoryAreaType::Available {
                 total_available += size;
             }
         }
-        
+
         // Store total physical memory
         TOTAL_PHYSICAL_MEMORY.store(total_available, Ordering::Relaxed);
-        crate::kinfo!("[mem] Total available physical memory: {} MB", total_available / (1024 * 1024));
+        crate::kinfo!(
+            "[mem] Total available physical memory: {} MB",
+            total_available / (1024 * 1024)
+        );
     } else {
         crate::kwarn!("[mem] No memory map provided by bootloader.");
     }

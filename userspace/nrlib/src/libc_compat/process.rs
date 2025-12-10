@@ -6,8 +6,7 @@ use crate::{c_char, c_int, c_void, size_t, ssize_t};
 use core::ptr;
 
 use super::types::{
-    posix_spawn_file_actions_t, posix_spawnattr_t, siginfo_t,
-    P_PID, P_PGID, P_ALL, WNOHANG,
+    posix_spawn_file_actions_t, posix_spawnattr_t, siginfo_t, P_ALL, P_PGID, P_PID, WNOHANG,
 };
 
 // ============================================================================
@@ -58,12 +57,20 @@ pub extern "C" fn __WEXITSTATUS(status: c_int) -> c_int {
 
 #[no_mangle]
 pub extern "C" fn __WIFEXITED(status: c_int) -> c_int {
-    if wifexited(status) { 1 } else { 0 }
+    if wifexited(status) {
+        1
+    } else {
+        0
+    }
 }
 
 #[no_mangle]
 pub extern "C" fn __WIFSIGNALED(status: c_int) -> c_int {
-    if wifsignaled(status) { 1 } else { 0 }
+    if wifsignaled(status) {
+        1
+    } else {
+        0
+    }
 }
 
 #[no_mangle]
@@ -73,7 +80,11 @@ pub extern "C" fn __WTERMSIG(status: c_int) -> c_int {
 
 #[no_mangle]
 pub extern "C" fn __WIFSTOPPED(status: c_int) -> c_int {
-    if wifstopped(status) { 1 } else { 0 }
+    if wifstopped(status) {
+        1
+    } else {
+        0
+    }
 }
 
 #[no_mangle]
@@ -87,13 +98,21 @@ pub extern "C" fn __WSTOPSIG(status: c_int) -> c_int {
 
 /// waitpid - wait for process to change state
 #[no_mangle]
-pub unsafe extern "C" fn waitpid(pid: crate::pid_t, status: *mut c_int, options: c_int) -> crate::pid_t {
+pub unsafe extern "C" fn waitpid(
+    pid: crate::pid_t,
+    status: *mut c_int,
+    options: c_int,
+) -> crate::pid_t {
     crate::wait4(pid, status, options, ptr::null_mut())
 }
 
 /// wait3 - wait for process to change state (BSD-style)
 #[no_mangle]
-pub unsafe extern "C" fn wait3(status: *mut c_int, options: c_int, _rusage: *mut c_void) -> crate::pid_t {
+pub unsafe extern "C" fn wait3(
+    status: *mut c_int,
+    options: c_int,
+    _rusage: *mut c_void,
+) -> crate::pid_t {
     crate::wait4(-1, status, options, ptr::null_mut())
 }
 
@@ -114,20 +133,20 @@ pub unsafe extern "C" fn waitid(
             return -1;
         }
     };
-    
+
     let wait_options = if (options & WNOHANG) != 0 { WNOHANG } else { 0 };
-    
+
     let mut status: c_int = 0;
     let result = crate::wait4(pid, &mut status, wait_options, ptr::null_mut());
-    
+
     if result < 0 {
         return -1;
     }
-    
+
     if !infop.is_null() {
         (*infop).si_signo = 17; // SIGCHLD
         (*infop).si_errno = 0;
-        
+
         if wifexited(status) {
             (*infop).si_code = 1; // CLD_EXITED
         } else if wifsignaled(status) {
@@ -138,7 +157,7 @@ pub unsafe extern "C" fn waitid(
             (*infop).si_code = 0;
         }
     }
-    
+
     0
 }
 
@@ -169,7 +188,11 @@ pub unsafe extern "C" fn posix_spawn_file_actions_init(
     if file_actions.is_null() {
         return crate::EINVAL;
     }
-    ptr::write_bytes(file_actions as *mut u8, 0, core::mem::size_of::<posix_spawn_file_actions_t>());
+    ptr::write_bytes(
+        file_actions as *mut u8,
+        0,
+        core::mem::size_of::<posix_spawn_file_actions_t>(),
+    );
     0
 }
 
@@ -221,7 +244,11 @@ pub unsafe extern "C" fn posix_spawnattr_init(attr: *mut posix_spawnattr_t) -> c
     if attr.is_null() {
         return crate::EINVAL;
     }
-    ptr::write_bytes(attr as *mut u8, 0, core::mem::size_of::<posix_spawnattr_t>());
+    ptr::write_bytes(
+        attr as *mut u8,
+        0,
+        core::mem::size_of::<posix_spawnattr_t>(),
+    );
     0
 }
 
@@ -274,7 +301,7 @@ pub unsafe extern "C" fn posix_spawn(
 ) -> c_int {
     if path.is_null() || pid.is_null() {
         return crate::EINVAL;
-    } 
+    }
 
     // CRITICAL FIX: Force parameters to be saved on stack before fork
     // Without this, the compiler may keep them in caller-saved registers
@@ -283,7 +310,7 @@ pub unsafe extern "C" fn posix_spawn(
     let path_copy: *const c_char;
     let argv_copy: *const *mut c_char;
     let envp_copy: *const *mut c_char;
-    
+
     // Force stack storage using inline assembly memory barrier
     core::arch::asm!(
         "",
@@ -292,7 +319,7 @@ pub unsafe extern "C" fn posix_spawn(
         in("rdx") envp,
         options(nomem, nostack, preserves_flags)
     );
-    
+
     // Copy to stack variables
     path_copy = core::ptr::read_volatile(&path);
     argv_copy = core::ptr::read_volatile(&argv);
@@ -309,7 +336,7 @@ pub unsafe extern "C" fn posix_spawn(
         let path_for_exec = core::ptr::read_volatile(&path_copy);
         let argv_for_exec = core::ptr::read_volatile(&argv_copy);
         let envp_for_exec = core::ptr::read_volatile(&envp_copy);
-        
+
         let ret = crate::execve(
             path_for_exec as *const u8,
             argv_for_exec as *const *const u8,

@@ -50,7 +50,7 @@ fn format_uptime(seconds: f64) -> String {
     let days = total_seconds / 86400;
     let hours = (total_seconds % 86400) / 3600;
     let minutes = (total_seconds % 3600) / 60;
-    
+
     if days > 0 {
         if hours > 0 {
             format!("{} day(s), {:02}:{:02}", days, hours, minutes)
@@ -69,19 +69,27 @@ fn format_pretty_uptime(seconds: f64) -> String {
     let days = total_seconds / 86400;
     let hours = (total_seconds % 86400) / 3600;
     let minutes = (total_seconds % 3600) / 60;
-    
+
     let mut parts: Vec<String> = Vec::new();
-    
+
     if days > 0 {
         parts.push(format!("{} day{}", days, if days == 1 { "" } else { "s" }));
     }
     if hours > 0 {
-        parts.push(format!("{} hour{}", hours, if hours == 1 { "" } else { "s" }));
+        parts.push(format!(
+            "{} hour{}",
+            hours,
+            if hours == 1 { "" } else { "s" }
+        ));
     }
     if minutes > 0 || parts.is_empty() {
-        parts.push(format!("{} minute{}", minutes, if minutes == 1 { "" } else { "s" }));
+        parts.push(format!(
+            "{} minute{}",
+            minutes,
+            if minutes == 1 { "" } else { "s" }
+        ));
     }
-    
+
     format!("up {}", parts.join(", "))
 }
 
@@ -99,10 +107,10 @@ fn get_user_count() -> usize {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    
+
     let mut pretty = false;
     let mut since = false;
-    
+
     for arg in args.iter().skip(1) {
         match arg.as_str() {
             "-h" | "--help" => {
@@ -146,14 +154,15 @@ fn main() {
     let time = get_current_time();
     let uptime_str = format_uptime(uptime_secs);
     let users = get_user_count();
-    
+
     let load_str = if let Some((l1, l5, l15)) = get_load_average() {
         format!("load average: {:.2}, {:.2}, {:.2}", l1, l5, l15)
     } else {
         "load average: 0.00, 0.00, 0.00".to_string()
     };
-    
-    println!(" {}  up {},  {} user{},  {}",
+
+    println!(
+        " {}  up {},  {} user{},  {}",
         time,
         uptime_str,
         users,

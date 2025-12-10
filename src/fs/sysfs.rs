@@ -193,7 +193,7 @@ pub fn generate_random_uuid() -> (&'static [u8], usize) {
     // Generate a version 4 (random) UUID using hardware RNG
     let r1 = crate::drivers::get_random_u64();
     let r2 = crate::drivers::get_random_u64();
-    
+
     // Format as UUID: xxxxxxxx-xxxx-4xxx-Yxxx-xxxxxxxxxxxx
     // where 4 indicates version 4, and Y is 8, 9, a, or b
     let _ = write!(
@@ -202,7 +202,7 @@ pub fn generate_random_uuid() -> (&'static [u8], usize) {
         (r1 >> 32) as u32,
         ((r1 >> 16) & 0xFFFF) as u16,
         (r1 & 0xFFF) as u16,
-        0x8000 | ((r2 >> 48) & 0x3FFF) as u16,  // Variant 1 (RFC 4122)
+        0x8000 | ((r2 >> 48) & 0x3FFF) as u16, // Variant 1 (RFC 4122)
         r2 & 0xFFFFFFFFFFFF
     );
 

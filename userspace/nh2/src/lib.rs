@@ -89,19 +89,19 @@
 // ============================================================================
 
 // Core types and constants
-pub mod types;
-pub mod error;
 pub mod constants;
+pub mod error;
+pub mod types;
 
 // Frame layer
 pub mod frame;
 pub mod hpack;
 
 // Session layer
-pub mod session;
-pub mod stream;
 pub mod flow_control;
 pub mod priority;
+pub mod session;
+pub mod stream;
 
 // Async I/O backend (tokio)
 #[cfg(feature = "async-tokio")]
@@ -114,13 +114,13 @@ pub mod compat;
 // Re-exports for convenience
 // ============================================================================
 
-pub use types::*;
-pub use error::{Error, Result};
 pub use constants::*;
+pub use error::{Error, Result};
+pub use frame::{Frame, FrameFlags, FrameHeader, FrameType};
+pub use hpack::{HeaderField, Hpack, HpackDecoder, HpackEncoder};
 pub use session::{Session, SessionBuilder, SessionCallbacks, StreamData};
-pub use stream::{Stream, StreamState, StreamMap};
-pub use frame::{Frame, FrameType, FrameFlags, FrameHeader};
-pub use hpack::{Hpack, HpackEncoder, HpackDecoder, HeaderField};
+pub use stream::{Stream, StreamMap, StreamState};
+pub use types::*;
 
 #[cfg(feature = "async-tokio")]
 pub use async_io::{AsyncSession, Connection};
@@ -166,7 +166,7 @@ pub const NGHTTP2_CLIENT_MAGIC_LEN: usize = 24;
 // ============================================================================
 
 /// Initialize the library (nghttp2 compatible, but no-op for us)
-/// 
+///
 /// # Safety
 /// This function is safe to call from C code.
 #[no_mangle]
@@ -187,7 +187,7 @@ pub extern "C" fn nghttp2_version(least_version: c_int) -> *const NgHttp2Info {
         version_str: NHTTP2_VERSION.as_ptr() as *const c_char,
         proto_str: NGHTTP2_PROTO_VERSION_ID.as_ptr() as *const c_char,
     };
-    
+
     if least_version as u32 > NHTTP2_VERSION_NUM {
         core::ptr::null()
     } else {

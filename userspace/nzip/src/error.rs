@@ -1,6 +1,6 @@
 //! Error types for nzip library
 
-use crate::{Z_DATA_ERROR, Z_MEM_ERROR, Z_BUF_ERROR, Z_STREAM_ERROR, c_int};
+use crate::{c_int, Z_BUF_ERROR, Z_DATA_ERROR, Z_MEM_ERROR, Z_STREAM_ERROR};
 
 /// Error type for zlib operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,7 +25,9 @@ impl ZlibError {
     /// Convert to zlib error code
     pub fn to_zlib_error(self) -> c_int {
         match self {
-            ZlibError::DataError | ZlibError::HeaderError | ZlibError::ChecksumError => Z_DATA_ERROR,
+            ZlibError::DataError | ZlibError::HeaderError | ZlibError::ChecksumError => {
+                Z_DATA_ERROR
+            }
             ZlibError::MemoryError => Z_MEM_ERROR,
             ZlibError::BufferError => Z_BUF_ERROR,
             ZlibError::StreamError | ZlibError::UnexpectedEof => Z_STREAM_ERROR,

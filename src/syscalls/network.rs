@@ -729,14 +729,21 @@ pub fn recvfrom(
             || sock_handle.socket_type != SOCK_DGRAM
             || sock_handle.protocol != IPPROTO_UDP
         {
-            kinfo!("[SYS_RECVFROM] not UDP: domain={} type={} proto={}", 
-                sock_handle.domain, sock_handle.socket_type, sock_handle.protocol);
+            kinfo!(
+                "[SYS_RECVFROM] not UDP: domain={} type={} proto={}",
+                sock_handle.domain,
+                sock_handle.socket_type,
+                sock_handle.protocol
+            );
             posix::set_errno(posix::errno::ENOTSUP);
             return u64::MAX;
         }
-        
+
         let timeout_ms = sock_handle.recv_timeout_ms;
-        kinfo!("[SYS_RECVFROM] UDP recv loop starting, timeout_ms={}", timeout_ms);
+        kinfo!(
+            "[SYS_RECVFROM] UDP recv loop starting, timeout_ms={}",
+            timeout_ms
+        );
         let start_tick = crate::scheduler::get_tick();
 
         static mut RECVFROM_LOOP_COUNT: u64 = 0;

@@ -8,10 +8,12 @@ use std::process;
 
 /// Register job control builtins
 pub fn register(registry: &mut BuiltinRegistry) {
-    registry.register("jobs", BuiltinDesc::new(
-        builtin_jobs,
-        "显示当前作业",
-        "显示当前作业的状态。\n\
+    registry.register(
+        "jobs",
+        BuiltinDesc::new(
+            builtin_jobs,
+            "显示当前作业",
+            "显示当前作业的状态。\n\
          \n\
          选项:\n\
            -l    除正常信息外还列出进程 ID\n\
@@ -24,38 +26,47 @@ pub fn register(registry: &mut BuiltinRegistry) {
          如果没有选项，则显示所有活动作业的状态。\n\
          \n\
          如果给出了 JOBSPEC 且它存在则返回成功，否则返回失败。",
-        "jobs [-lnprs] [任务说明符 ...] 或 jobs -x 命令 [参数]",
-        true,
-    ));
+            "jobs [-lnprs] [任务说明符 ...] 或 jobs -x 命令 [参数]",
+            true,
+        ),
+    );
 
-    registry.register("bg", BuiltinDesc::new(
-        builtin_bg,
-        "将作业移至后台",
-        "将每个 JOBSPEC 移至后台，就像以 `&' 启动它一样。\n\
+    registry.register(
+        "bg",
+        BuiltinDesc::new(
+            builtin_bg,
+            "将作业移至后台",
+            "将每个 JOBSPEC 移至后台，就像以 `&' 启动它一样。\n\
          如果 JOB_SPEC 没有提供，则使用 shell 认为的当前作业。\n\
          \n\
          如果成功启用了作业控制且 JOB_SPEC 存在则返回成功，\n\
          否则返回非零值。",
-        "bg [任务说明符 ...]",
-        true,
-    ));
+            "bg [任务说明符 ...]",
+            true,
+        ),
+    );
 
-    registry.register("fg", BuiltinDesc::new(
-        builtin_fg,
-        "将作业移至前台",
-        "将 JOB_SPEC 移至前台，使它成为当前作业。\n\
+    registry.register(
+        "fg",
+        BuiltinDesc::new(
+            builtin_fg,
+            "将作业移至前台",
+            "将 JOB_SPEC 移至前台，使它成为当前作业。\n\
          如果 JOB_SPEC 没有提供，则使用 shell 认为的当前作业。\n\
          \n\
          如果成功启用了作业控制且 JOB_SPEC 存在则返回前台命令的状态，\n\
          否则返回非零值。",
-        "fg [任务说明符]",
-        true,
-    ));
+            "fg [任务说明符]",
+            true,
+        ),
+    );
 
-    registry.register("disown", BuiltinDesc::new(
-        builtin_disown,
-        "从作业表中移除作业",
-        "从活动作业表中移除每个 JOBSPEC 参数。\n\
+    registry.register(
+        "disown",
+        BuiltinDesc::new(
+            builtin_disown,
+            "从作业表中移除作业",
+            "从活动作业表中移除每个 JOBSPEC 参数。\n\
          \n\
          选项:\n\
            -a    如果未给出 JOBSPEC，则移除所有作业\n\
@@ -66,28 +77,34 @@ pub fn register(registry: &mut BuiltinRegistry) {
          如果既没有给出选项也没有给出 JOBSPEC，则使用当前作业。\n\
          \n\
          如果所有 JOBSPEC 都被移除则返回成功，否则返回失败。",
-        "disown [-h] [-ar] [任务说明符 ... | pid ...]",
-        true,
-    ));
+            "disown [-h] [-ar] [任务说明符 ... | pid ...]",
+            true,
+        ),
+    );
 
-    registry.register("suspend", BuiltinDesc::new(
-        builtin_suspend,
-        "挂起 shell 的执行",
-        "挂起执行此 shell，直到它收到 SIGCONT 信号。\n\
+    registry.register(
+        "suspend",
+        BuiltinDesc::new(
+            builtin_suspend,
+            "挂起 shell 的执行",
+            "挂起执行此 shell，直到它收到 SIGCONT 信号。\n\
          登录 shell 或以 -f 选项使用的 shell 无法被挂起。\n\
          \n\
          选项:\n\
            -f    即使是登录 shell 也强制挂起\n\
          \n\
          如果不是登录 shell 则返回成功，否则返回失败。",
-        "suspend [-f]",
-        true,
-    ));
+            "suspend [-f]",
+            true,
+        ),
+    );
 
-    registry.register("kill", BuiltinDesc::new(
-        builtin_kill,
-        "向作业发送信号",
-        "向由 PID 或 JOBSPEC 标识的进程发送 SIGSPEC 或 SIGNUM 指定的信号。\n\
+    registry.register(
+        "kill",
+        BuiltinDesc::new(
+            builtin_kill,
+            "向作业发送信号",
+            "向由 PID 或 JOBSPEC 标识的进程发送 SIGSPEC 或 SIGNUM 指定的信号。\n\
          \n\
          选项:\n\
            -s sig    SIG 是信号名称\n\
@@ -98,14 +115,17 @@ pub fn register(registry: &mut BuiltinRegistry) {
          如果没有给出 SIGSPEC，则默认为 SIGTERM。\n\
          \n\
          如果成功发送了信号则返回成功，否则返回失败。",
-        "kill [-s 信号说明符 | -n 信号编号 | -信号说明符] pid | 任务说明符 ...",
-        false,  // Cannot be disabled (important for signal handling)
-    ));
+            "kill [-s 信号说明符 | -n 信号编号 | -信号说明符] pid | 任务说明符 ...",
+            false, // Cannot be disabled (important for signal handling)
+        ),
+    );
 
-    registry.register("wait", BuiltinDesc::new(
-        builtin_wait,
-        "等待作业完成",
-        "等待由 ID 标识的每个进程（可以是进程 ID 或作业说明符），\n\
+    registry.register(
+        "wait",
+        BuiltinDesc::new(
+            builtin_wait,
+            "等待作业完成",
+            "等待由 ID 标识的每个进程（可以是进程 ID 或作业说明符），\n\
          并报告其终止状态。\n\
          \n\
          选项:\n\
@@ -118,9 +138,10 @@ pub fn register(registry: &mut BuiltinRegistry) {
          \n\
          如果每个 ID 都是有效进程或作业则返回 ID 的退出状态，\n\
          否则返回失败。",
-        "wait [-fn] [-p 变量] [id ...]",
-        true,
-    ));
+            "wait [-fn] [-p 变量] [id ...]",
+            true,
+        ),
+    );
 }
 
 /// jobs builtin - display job status
@@ -146,7 +167,7 @@ fn builtin_jobs(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
 
     // Get jobs from state
     let jobs = state.list_jobs();
-    
+
     if jobs.is_empty() {
         // No jobs - silently succeed
         return Ok(0);
@@ -164,17 +185,31 @@ fn builtin_jobs(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
         if show_pids {
             println!("{}", job.pid);
         } else if long_format {
-            println!("[{}]{}\t{}\t{}\t{}", 
+            println!(
+                "[{}]{}\t{}\t{}\t{}",
                 job.job_id,
-                if job.is_current { "+" } else if job.is_previous { "-" } else { " " },
+                if job.is_current {
+                    "+"
+                } else if job.is_previous {
+                    "-"
+                } else {
+                    " "
+                },
                 job.pid,
                 job.status,
                 job.command
             );
         } else {
-            println!("[{}]{}\t{}\t{}", 
+            println!(
+                "[{}]{}\t{}\t{}",
                 job.job_id,
-                if job.is_current { "+" } else if job.is_previous { "-" } else { " " },
+                if job.is_current {
+                    "+"
+                } else if job.is_previous {
+                    "-"
+                } else {
+                    " "
+                },
                 job.status,
                 job.command
             );
@@ -187,7 +222,7 @@ fn builtin_jobs(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
 /// bg builtin - move job to background
 fn builtin_bg(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
     let job_spec = args.first().copied();
-    
+
     match state.resume_job(job_spec, false) {
         Ok(job_id) => {
             println!("[{}] 继续", job_id);
@@ -200,7 +235,7 @@ fn builtin_bg(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
 /// fg builtin - move job to foreground
 fn builtin_fg(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
     let job_spec = args.first().copied();
-    
+
     match state.resume_job(job_spec, true) {
         Ok(job_id) => {
             if let Some(job) = state.get_job(job_id) {
@@ -255,7 +290,11 @@ fn builtin_disown(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
                 success = false;
             }
         }
-        if success { Ok(0) } else { Ok(1) }
+        if success {
+            Ok(0)
+        } else {
+            Ok(1)
+        }
     }
 }
 
@@ -290,7 +329,10 @@ fn builtin_suspend(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
 /// kill builtin - send signal to process
 fn builtin_kill(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
     if args.is_empty() {
-        return Err("kill: 用法: kill [-s 信号说明符 | -n 信号编号 | -信号说明符] pid | 任务说明符 ...".to_string());
+        return Err(
+            "kill: 用法: kill [-s 信号说明符 | -n 信号编号 | -信号说明符] pid | 任务说明符 ..."
+                .to_string(),
+        );
     }
 
     let mut list_signals = false;
@@ -312,7 +354,9 @@ fn builtin_kill(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
             }
             "-n" => {
                 if let Some(sig_num) = iter.next() {
-                    signal = sig_num.parse().map_err(|_| format!("kill: {}: 无效信号说明符", sig_num))?;
+                    signal = sig_num
+                        .parse()
+                        .map_err(|_| format!("kill: {}: 无效信号说明符", sig_num))?;
                 } else {
                     return Err("kill: -n: 需要选项参数".to_string());
                 }
@@ -336,7 +380,10 @@ fn builtin_kill(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
     }
 
     if targets.is_empty() {
-        return Err("kill: 用法: kill [-s 信号说明符 | -n 信号编号 | -信号说明符] pid | 任务说明符 ...".to_string());
+        return Err(
+            "kill: 用法: kill [-s 信号说明符 | -n 信号编号 | -信号说明符] pid | 任务说明符 ..."
+                .to_string(),
+        );
     }
 
     let mut success = true;
@@ -378,7 +425,11 @@ fn builtin_kill(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
         }
     }
 
-    if success { Ok(0) } else { Ok(1) }
+    if success {
+        Ok(0)
+    } else {
+        Ok(1)
+    }
 }
 
 /// wait builtin - wait for job completion
@@ -468,7 +519,7 @@ fn builtin_wait(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
 fn parse_signal_name(name: &str) -> Result<i32, String> {
     let name_upper = name.to_uppercase();
     let name = name_upper.strip_prefix("SIG").unwrap_or(&name_upper);
-    
+
     match name {
         "HUP" => Ok(1),
         "INT" => Ok(2),
@@ -508,14 +559,37 @@ fn parse_signal_name(name: &str) -> Result<i32, String> {
 /// Print list of signals
 fn print_signal_list() {
     const SIGNALS: &[(&str, i32)] = &[
-        ("HUP", 1), ("INT", 2), ("QUIT", 3), ("ILL", 4),
-        ("TRAP", 5), ("ABRT", 6), ("BUS", 7), ("FPE", 8),
-        ("KILL", 9), ("USR1", 10), ("SEGV", 11), ("USR2", 12),
-        ("PIPE", 13), ("ALRM", 14), ("TERM", 15), ("STKFLT", 16),
-        ("CHLD", 17), ("CONT", 18), ("STOP", 19), ("TSTP", 20),
-        ("TTIN", 21), ("TTOU", 22), ("URG", 23), ("XCPU", 24),
-        ("XFSZ", 25), ("VTALRM", 26), ("PROF", 27), ("WINCH", 28),
-        ("IO", 29), ("PWR", 30), ("SYS", 31),
+        ("HUP", 1),
+        ("INT", 2),
+        ("QUIT", 3),
+        ("ILL", 4),
+        ("TRAP", 5),
+        ("ABRT", 6),
+        ("BUS", 7),
+        ("FPE", 8),
+        ("KILL", 9),
+        ("USR1", 10),
+        ("SEGV", 11),
+        ("USR2", 12),
+        ("PIPE", 13),
+        ("ALRM", 14),
+        ("TERM", 15),
+        ("STKFLT", 16),
+        ("CHLD", 17),
+        ("CONT", 18),
+        ("STOP", 19),
+        ("TSTP", 20),
+        ("TTIN", 21),
+        ("TTOU", 22),
+        ("URG", 23),
+        ("XCPU", 24),
+        ("XFSZ", 25),
+        ("VTALRM", 26),
+        ("PROF", 27),
+        ("WINCH", 28),
+        ("IO", 29),
+        ("PWR", 30),
+        ("SYS", 31),
     ];
 
     for (i, (name, num)) in SIGNALS.iter().enumerate() {

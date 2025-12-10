@@ -2,9 +2,9 @@
 //!
 //! This module provides additional C API compatibility functions for nghttp2.
 
-use crate::types::*;
-use crate::session::*;
 use crate::error::NgError;
+use crate::session::*;
+use crate::types::*;
 use crate::{c_int, c_void, size_t};
 
 // ============================================================================
@@ -40,10 +40,7 @@ pub extern "C" fn nghttp2_option_del(option: *mut NgHttp2Option) {
 
 /// Set no_auto_window_update option
 #[no_mangle]
-pub extern "C" fn nghttp2_option_set_no_auto_window_update(
-    option: *mut NgHttp2Option,
-    val: c_int,
-) {
+pub extern "C" fn nghttp2_option_set_no_auto_window_update(option: *mut NgHttp2Option, val: c_int) {
     if let Some(opt) = unsafe { option.as_mut() } {
         opt.inner.no_auto_window_update = if val != 0 { 1 } else { 0 };
     }
@@ -51,10 +48,7 @@ pub extern "C" fn nghttp2_option_set_no_auto_window_update(
 
 /// Set no_recv_client_magic option
 #[no_mangle]
-pub extern "C" fn nghttp2_option_set_no_recv_client_magic(
-    option: *mut NgHttp2Option,
-    val: c_int,
-) {
+pub extern "C" fn nghttp2_option_set_no_recv_client_magic(option: *mut NgHttp2Option, val: c_int) {
     if let Some(opt) = unsafe { option.as_mut() } {
         opt.inner.no_recv_client_magic = if val != 0 { 1 } else { 0 };
     }
@@ -62,10 +56,7 @@ pub extern "C" fn nghttp2_option_set_no_recv_client_magic(
 
 /// Set no_http_messaging option
 #[no_mangle]
-pub extern "C" fn nghttp2_option_set_no_http_messaging(
-    option: *mut NgHttp2Option,
-    val: c_int,
-) {
+pub extern "C" fn nghttp2_option_set_no_http_messaging(option: *mut NgHttp2Option, val: c_int) {
     if let Some(opt) = unsafe { option.as_mut() } {
         opt.inner.no_http_messaging = if val != 0 { 1 } else { 0 };
     }
@@ -84,10 +75,7 @@ pub extern "C" fn nghttp2_option_set_max_deflate_dynamic_table_size(
 
 /// Set no_auto_ping_ack option
 #[no_mangle]
-pub extern "C" fn nghttp2_option_set_no_auto_ping_ack(
-    option: *mut NgHttp2Option,
-    val: c_int,
-) {
+pub extern "C" fn nghttp2_option_set_no_auto_ping_ack(option: *mut NgHttp2Option, val: c_int) {
     if let Some(opt) = unsafe { option.as_mut() } {
         opt.inner.no_auto_ping_ack = if val != 0 { 1 } else { 0 };
     }
@@ -106,10 +94,7 @@ pub extern "C" fn nghttp2_option_set_max_send_header_block_length(
 
 /// Set max settings
 #[no_mangle]
-pub extern "C" fn nghttp2_option_set_max_settings(
-    option: *mut NgHttp2Option,
-    val: size_t,
-) {
+pub extern "C" fn nghttp2_option_set_max_settings(option: *mut NgHttp2Option, val: size_t) {
     if let Some(opt) = unsafe { option.as_mut() } {
         opt.inner.max_settings = val;
     }
@@ -208,10 +193,16 @@ pub extern "C" fn nghttp2_session_get_remote_settings(
     };
 
     let inner = sess.session.inner.lock();
-    
+
     match id as u16 {
         settings_id::HEADER_TABLE_SIZE => inner.remote_settings.header_table_size,
-        settings_id::ENABLE_PUSH => if inner.remote_settings.enable_push { 1 } else { 0 },
+        settings_id::ENABLE_PUSH => {
+            if inner.remote_settings.enable_push {
+                1
+            } else {
+                0
+            }
+        }
         settings_id::MAX_CONCURRENT_STREAMS => inner.remote_settings.max_concurrent_streams,
         settings_id::INITIAL_WINDOW_SIZE => inner.remote_settings.initial_window_size,
         settings_id::MAX_FRAME_SIZE => inner.remote_settings.max_frame_size,
@@ -234,10 +225,16 @@ pub extern "C" fn nghttp2_session_get_local_settings(
     };
 
     let inner = sess.session.inner.lock();
-    
+
     match id as u16 {
         settings_id::HEADER_TABLE_SIZE => inner.local_settings.header_table_size,
-        settings_id::ENABLE_PUSH => if inner.local_settings.enable_push { 1 } else { 0 },
+        settings_id::ENABLE_PUSH => {
+            if inner.local_settings.enable_push {
+                1
+            } else {
+                0
+            }
+        }
         settings_id::MAX_CONCURRENT_STREAMS => inner.local_settings.max_concurrent_streams,
         settings_id::INITIAL_WINDOW_SIZE => inner.local_settings.initial_window_size,
         settings_id::MAX_FRAME_SIZE => inner.local_settings.max_frame_size,
@@ -262,7 +259,9 @@ pub extern "C" fn nghttp2_session_get_stream_effective_local_window_size(
     };
 
     let inner = sess.session.inner.lock();
-    inner.streams.get(stream_id)
+    inner
+        .streams
+        .get(stream_id)
         .map(|s| s.local_window_size)
         .unwrap_or(-1)
 }
@@ -279,7 +278,9 @@ pub extern "C" fn nghttp2_session_get_stream_effective_recv_data_length(
     };
 
     let inner = sess.session.inner.lock();
-    inner.streams.get(stream_id)
+    inner
+        .streams
+        .get(stream_id)
         .map(|s| s.recv_buffer.len() as i32)
         .unwrap_or(-1)
 }
@@ -300,9 +301,7 @@ pub extern "C" fn nghttp2_session_get_effective_local_window_size(
 
 /// Get remote window size
 #[no_mangle]
-pub extern "C" fn nghttp2_session_get_remote_window_size(
-    session: *mut NgHttp2Session,
-) -> i32 {
+pub extern "C" fn nghttp2_session_get_remote_window_size(session: *mut NgHttp2Session) -> i32 {
     let sess = match unsafe { (session as *mut CApiSession).as_ref() } {
         Some(s) => s,
         None => return -1,
@@ -324,7 +323,9 @@ pub extern "C" fn nghttp2_session_get_stream_remote_window_size(
     };
 
     let inner = sess.session.inner.lock();
-    inner.streams.get(stream_id)
+    inner
+        .streams
+        .get(stream_id)
         .map(|s| s.remote_window_size)
         .unwrap_or(-1)
 }
@@ -335,9 +336,7 @@ pub extern "C" fn nghttp2_session_get_stream_remote_window_size(
 
 /// Create HD inflater
 #[no_mangle]
-pub extern "C" fn nghttp2_hd_inflate_new(
-    inflater_ptr: *mut *mut c_void,
-) -> c_int {
+pub extern "C" fn nghttp2_hd_inflate_new(inflater_ptr: *mut *mut c_void) -> c_int {
     use crate::hpack::HpackDecoder;
 
     if inflater_ptr.is_null() {
@@ -400,16 +399,13 @@ pub extern "C" fn nghttp2_hd_deflate_del(deflater: *mut c_void) {
 
 /// Check header name validity
 #[no_mangle]
-pub extern "C" fn nghttp2_check_header_name(
-    name: *const u8,
-    len: size_t,
-) -> c_int {
+pub extern "C" fn nghttp2_check_header_name(name: *const u8, len: size_t) -> c_int {
     if name.is_null() || len == 0 {
         return 0;
     }
 
     let slice = unsafe { core::slice::from_raw_parts(name, len) };
-    
+
     // Header names must be lowercase and valid tokens
     for &byte in slice {
         match byte {
@@ -423,16 +419,13 @@ pub extern "C" fn nghttp2_check_header_name(
 
 /// Check header value validity
 #[no_mangle]
-pub extern "C" fn nghttp2_check_header_value(
-    value: *const u8,
-    len: size_t,
-) -> c_int {
+pub extern "C" fn nghttp2_check_header_value(value: *const u8, len: size_t) -> c_int {
     if value.is_null() {
         return if len == 0 { 1 } else { 0 };
     }
 
     let slice = unsafe { core::slice::from_raw_parts(value, len) };
-    
+
     // Header values must not contain certain control characters
     for &byte in slice {
         match byte {

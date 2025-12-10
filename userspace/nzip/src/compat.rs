@@ -2,15 +2,14 @@
 //!
 //! Provides internal state management for streaming compression/decompression.
 
-use crate::{
-    z_stream, c_int, c_char, voidpf, uInt, uLong, Bytef,
-    Z_OK, Z_STREAM_END, Z_STREAM_ERROR, Z_DATA_ERROR, Z_BUF_ERROR,
-    Z_NO_FLUSH, Z_SYNC_FLUSH, Z_FULL_FLUSH, Z_FINISH,
-    MAX_WBITS, DEF_MEM_LEVEL,
-};
+use crate::adler32;
 use crate::deflate::Deflater;
 use crate::inflate::Inflater;
-use crate::adler32;
+use crate::{
+    c_char, c_int, uInt, uLong, voidpf, z_stream, Bytef, DEF_MEM_LEVEL, MAX_WBITS, Z_BUF_ERROR,
+    Z_DATA_ERROR, Z_FINISH, Z_FULL_FLUSH, Z_NO_FLUSH, Z_OK, Z_STREAM_END, Z_STREAM_ERROR,
+    Z_SYNC_FLUSH,
+};
 
 /// Internal state for deflate (compression)
 pub struct DeflateState {
@@ -41,7 +40,7 @@ impl DeflateState {
             // Normal = zlib format
             window_bits
         };
-        
+
         Self {
             deflater: Deflater::new(level, actual_wbits, mem_level, strategy),
             window_bits,
@@ -87,22 +86,22 @@ impl DeflateState {
                 let flg = (level_hint << 6) as u8;
                 let check = ((cmf as u16) << 8) | (flg as u16);
                 let flg = flg + (31 - (check % 31) as u8) as u8;
-                
+
                 output.push(cmf);
                 output.push(flg);
             } else if self.window_bits > 15 {
                 // gzip header
                 output.extend_from_slice(&[
                     0x1F, 0x8B, // Magic
-                    0x08,       // CM (deflate)
-                    0x00,       // FLG
-                    0, 0, 0, 0, // MTIME
-                    0x00,       // XFL
-                    0xFF,       // OS (unknown)
+                    0x08, // CM (deflate)
+                    0x00, // FLG
+                    0, 0, 0, 0,    // MTIME
+                    0x00, // XFL
+                    0xFF, // OS (unknown)
                 ]);
             }
             // else: raw deflate, no header
-            
+
             self.header_written = true;
         }
 
@@ -147,7 +146,7 @@ impl DeflateState {
                 output.push((crc >> 8) as u8);
                 output.push((crc >> 16) as u8);
                 output.push((crc >> 24) as u8);
-                
+
                 let size = strm.total_in as u32;
                 output.push(size as u8);
                 output.push((size >> 8) as u8);
@@ -161,15 +160,11 @@ impl DeflateState {
         unsafe {
             if !strm.next_out.is_null() && strm.avail_out > 0 {
                 let to_write = core::cmp::min(output.len(), strm.avail_out as usize);
-                core::ptr::copy_nonoverlapping(
-                    output.as_ptr(),
-                    strm.next_out,
-                    to_write,
-                );
+                core::ptr::copy_nonoverlapping(output.as_ptr(), strm.next_out, to_write);
                 strm.next_out = strm.next_out.add(to_write);
                 strm.avail_out -= to_write as uInt;
                 strm.total_out += to_write as uLong;
-                
+
                 if to_write < output.len() {
                     return Z_BUF_ERROR;
                 }
@@ -237,7 +232,7 @@ impl InflateState {
         } else {
             window_bits
         };
-        
+
         Self {
             inflater: Inflater::new(actual_wbits),
             window_bits,
@@ -268,7 +263,7 @@ impl InflateState {
         } else {
             window_bits
         };
-        
+
         self.window_bits = window_bits;
         self.inflater = Inflater::new(actual_wbits);
         self.header_state = HeaderState::Start;
@@ -282,13 +277,13 @@ impl InflateState {
         if self.header_state != HeaderState::NeedDict {
             return false;
         }
-        
+
         // Verify dictionary ID
         let dict_adler = adler32::adler32(dict);
         if dict_adler != self.dict_id {
             return false;
         }
-        
+
         self.dictionary = Some(dict.to_vec());
         self.header_state = HeaderState::Deflate;
         true
@@ -328,7 +323,7 @@ impl InflateState {
                 Ok((decompressed, consumed)) => {
                     self.output_buffer.extend_from_slice(&decompressed);
                     self.input_buffer.drain(..consumed);
-                    
+
                     if self.inflater.finished() {
                         self.header_state = HeaderState::Trailer;
                     }
@@ -380,22 +375,22 @@ impl InflateState {
             if self.input_buffer.len() < 2 {
                 return false;
             }
-            
+
             let cmf = self.input_buffer[0];
             let flg = self.input_buffer[1];
-            
+
             // Validate header
             let cm = cmf & 0x0F;
             let cinfo = (cmf >> 4) & 0x0F;
-            
+
             if cm != 8 || cinfo > 7 {
                 return false;
             }
-            
+
             if ((cmf as u16) * 256 + (flg as u16)) % 31 != 0 {
                 return false;
             }
-            
+
             if (flg & 0x20) != 0 {
                 // Dictionary required
                 if self.input_buffer.len() < 6 {
@@ -416,18 +411,18 @@ impl InflateState {
             if self.input_buffer.len() < 10 {
                 return false;
             }
-            
+
             if self.input_buffer[0] != 0x1F || self.input_buffer[1] != 0x8B {
                 return false;
             }
-            
+
             if self.input_buffer[2] != 8 {
                 return false; // Not deflate
             }
-            
+
             let flg = self.input_buffer[3];
             let mut pos = 10;
-            
+
             // Skip optional fields
             if (flg & 0x04) != 0 {
                 // FEXTRA
@@ -438,7 +433,7 @@ impl InflateState {
                     | ((self.input_buffer[pos + 1] as usize) << 8);
                 pos += 2 + xlen;
             }
-            
+
             if (flg & 0x08) != 0 {
                 // FNAME
                 while pos < self.input_buffer.len() && self.input_buffer[pos] != 0 {
@@ -446,7 +441,7 @@ impl InflateState {
                 }
                 pos += 1;
             }
-            
+
             if (flg & 0x10) != 0 {
                 // FCOMMENT
                 while pos < self.input_buffer.len() && self.input_buffer[pos] != 0 {
@@ -454,23 +449,23 @@ impl InflateState {
                 }
                 pos += 1;
             }
-            
+
             if (flg & 0x02) != 0 {
                 // FHCRC
                 pos += 2;
             }
-            
+
             if self.input_buffer.len() < pos {
                 return false;
             }
-            
+
             self.input_buffer.drain(..pos);
             self.header_state = HeaderState::Deflate;
         } else {
             // Raw deflate
             self.header_state = HeaderState::Deflate;
         }
-        
+
         true
     }
 
@@ -481,14 +476,14 @@ impl InflateState {
             if self.input_buffer.len() < 4 {
                 return false;
             }
-            
+
             let stored = ((self.input_buffer[0] as u32) << 24)
                 | ((self.input_buffer[1] as u32) << 16)
                 | ((self.input_buffer[2] as u32) << 8)
                 | (self.input_buffer[3] as u32);
-            
+
             self.input_buffer.drain(..4);
-            
+
             // Verify checksum
             stored == self.inflater.checksum()
         } else if self.window_bits > 15 {
@@ -496,7 +491,7 @@ impl InflateState {
             if self.input_buffer.len() < 8 {
                 return false;
             }
-            
+
             self.input_buffer.drain(..8);
             true
         } else {

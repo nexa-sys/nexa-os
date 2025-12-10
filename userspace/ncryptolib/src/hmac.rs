@@ -226,9 +226,9 @@ pub fn hmac_sha3_256(key: &[u8], data: &[u8]) -> [u8; 32] {
 // OpenSSL HMAC_CTX Compatible Interface
 // ============================================================================
 
-use std::boxed::Box;
-use crate::hash::{Sha256, SHA256_BLOCK_SIZE, HmacSha256};
 use crate::evp::{EvpMd, EvpMdType};
+use crate::hash::{HmacSha256, Sha256, SHA256_BLOCK_SIZE};
+use std::boxed::Box;
 
 /// HMAC Context (OpenSSL compatible)
 pub struct HMAC_CTX {
@@ -343,7 +343,9 @@ pub extern "C" fn HMAC_CTX_new() -> *mut HMAC_CTX {
 #[no_mangle]
 pub extern "C" fn HMAC_CTX_free(ctx: *mut HMAC_CTX) {
     if !ctx.is_null() {
-        unsafe { drop(Box::from_raw(ctx)); }
+        unsafe {
+            drop(Box::from_raw(ctx));
+        }
     }
 }
 
@@ -353,7 +355,11 @@ pub extern "C" fn HMAC_CTX_reset(ctx: *mut HMAC_CTX) -> c_int {
     if ctx.is_null() {
         return 0;
     }
-    if unsafe { (*ctx).reset() } { 1 } else { 0 }
+    if unsafe { (*ctx).reset() } {
+        1
+    } else {
+        0
+    }
 }
 
 /// HMAC_Init_ex - Initialize HMAC context
@@ -372,7 +378,7 @@ pub extern "C" fn HMAC_Init_ex(
     unsafe {
         let ctx_ref = &mut *ctx;
         let md_ref = &*md;
-        
+
         // Clone the key if using existing key
         let key_vec: Vec<u8> = if key.is_null() || len <= 0 {
             ctx_ref.key.clone()
@@ -380,7 +386,11 @@ pub extern "C" fn HMAC_Init_ex(
             core::slice::from_raw_parts(key, len as usize).to_vec()
         };
 
-        if ctx_ref.init(&key_vec, md_ref) { 1 } else { 0 }
+        if ctx_ref.init(&key_vec, md_ref) {
+            1
+        } else {
+            0
+        }
     }
 }
 
@@ -391,7 +401,11 @@ pub extern "C" fn HMAC_Update(ctx: *mut HMAC_CTX, data: *const u8, len: usize) -
         return 0;
     }
     let data_slice = unsafe { core::slice::from_raw_parts(data, len) };
-    if unsafe { (*ctx).update(data_slice) } { 1 } else { 0 }
+    if unsafe { (*ctx).update(data_slice) } {
+        1
+    } else {
+        0
+    }
 }
 
 /// HMAC_Final - Finalize HMAC
@@ -402,7 +416,7 @@ pub extern "C" fn HMAC_Final(ctx: *mut HMAC_CTX, md: *mut u8, len: *mut u32) -> 
     }
     let mut buf = [0u8; 64]; // Max hash size
     let result_len = unsafe { (*ctx).finalize(&mut buf) };
-    
+
     unsafe {
         core::ptr::copy_nonoverlapping(buf.as_ptr(), md, result_len);
         if !len.is_null() {
@@ -436,15 +450,9 @@ pub extern "C" fn HMAC(
             let mac = crate::hash::hmac_sha256(key_slice, data_slice);
             mac.to_vec()
         }
-        EvpMdType::Sha384 => {
-            hmac_sha384(key_slice, data_slice).to_vec()
-        }
-        EvpMdType::Sha512 => {
-            hmac_sha512(key_slice, data_slice).to_vec()
-        }
-        EvpMdType::Sha3_256 => {
-            hmac_sha3_256(key_slice, data_slice).to_vec()
-        }
+        EvpMdType::Sha384 => hmac_sha384(key_slice, data_slice).to_vec(),
+        EvpMdType::Sha512 => hmac_sha512(key_slice, data_slice).to_vec(),
+        EvpMdType::Sha3_256 => hmac_sha3_256(key_slice, data_slice).to_vec(),
         _ => return core::ptr::null_mut(),
     };
 

@@ -1,7 +1,6 @@
 /// Resolver utility functions
 ///
 /// Contains helper functions for IP formatting, file reading, etc.
-
 use crate::os;
 use core::ffi::CStr;
 
@@ -119,7 +118,7 @@ pub fn read_file_content(path: &str, buf: &mut [u8]) -> Option<usize> {
 
     // Close file
     let _ = os::close(fd);
-    
+
     Some(read_result)
 }
 
@@ -133,11 +132,11 @@ mod tests {
         let len = format_ipv4_to_buffer([192, 168, 1, 1], buf.as_mut_ptr(), 16);
         assert!(len > 0);
         assert_eq!(&buf[..len], b"192.168.1.1");
-        
+
         let len = format_ipv4_to_buffer([0, 0, 0, 0], buf.as_mut_ptr(), 16);
         assert!(len > 0);
         assert_eq!(&buf[..len], b"0.0.0.0");
-        
+
         let len = format_ipv4_to_buffer([255, 255, 255, 255], buf.as_mut_ptr(), 16);
         assert!(len > 0);
         assert_eq!(&buf[..len], b"255.255.255.255");

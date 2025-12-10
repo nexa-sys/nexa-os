@@ -12,7 +12,7 @@ pub type Result<T> = core::result::Result<T, Error>;
 // ============================================================================
 
 /// QUIC transport error codes
-/// 
+///
 /// Note: Values 0x00-0x10 are standard QUIC transport errors.
 /// Values 0x100-0x1FF are TLS crypto errors (0x100 | TLS alert code).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,7 +61,7 @@ impl TransportError {
         if code >= 0x100 && code < 0x200 {
             return TransportError::CryptoError((code & 0xff) as u8);
         }
-        
+
         match code {
             0x00 => TransportError::NoError,
             0x01 => TransportError::InternalError,
@@ -83,7 +83,7 @@ impl TransportError {
             _ => TransportError::InternalError,
         }
     }
-    
+
     /// Convert to u64
     pub fn as_u64(self) -> u64 {
         match self {
@@ -184,7 +184,7 @@ impl NgError {
     pub fn as_i32(self) -> i32 {
         self as i32
     }
-    
+
     /// Check if error is fatal
     pub fn is_fatal(self) -> bool {
         (self as i32) < -500
@@ -282,27 +282,27 @@ impl Error {
     pub fn transport(err: TransportError) -> Self {
         Error::Transport(err)
     }
-    
+
     /// Create an ngtcp2 API error
     pub fn ng(err: NgError) -> Self {
         Error::Ng(err)
     }
-    
+
     /// Create a crypto error
     pub fn crypto(err: CryptoError) -> Self {
         Error::Crypto(err)
     }
-    
+
     /// Create an I/O error
     pub fn io(msg: impl Into<String>) -> Self {
         Error::Io(msg.into())
     }
-    
+
     /// Create a custom error
     pub fn custom(msg: impl Into<String>) -> Self {
         Error::Custom(msg.into())
     }
-    
+
     /// Check if error is fatal
     pub fn is_fatal(&self) -> bool {
         match self {
@@ -311,7 +311,7 @@ impl Error {
             _ => false,
         }
     }
-    
+
     /// Convert to ngtcp2 error code
     pub fn as_error_code(&self) -> i32 {
         match self {
@@ -435,7 +435,7 @@ impl TlsAlert {
     pub fn to_transport_error(self) -> TransportError {
         TransportError::CryptoError(self as u8)
     }
-    
+
     /// Convert alert code to u64 error code
     pub fn as_error_code(self) -> u64 {
         0x100 | (self as u64)

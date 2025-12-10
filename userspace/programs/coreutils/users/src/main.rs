@@ -38,7 +38,12 @@ fn errno() -> i32 {
 
 fn list_users() -> Result<String, i32> {
     let mut buffer = vec![0u8; 512];
-    let written = syscall3(SYS_USER_LIST, buffer.as_mut_ptr() as u64, buffer.len() as u64, 0);
+    let written = syscall3(
+        SYS_USER_LIST,
+        buffer.as_mut_ptr() as u64,
+        buffer.len() as u64,
+        0,
+    );
     if written == u64::MAX {
         return Err(errno());
     }
@@ -57,7 +62,7 @@ fn print_usage() {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    
+
     for arg in args.iter().skip(1) {
         if arg == "-h" || arg == "--help" {
             print_usage();

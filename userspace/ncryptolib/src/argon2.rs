@@ -183,17 +183,20 @@ fn blake2b_long(output_len: usize, input: &[u8]) -> Vec<u8> {
     } else {
         // For longer outputs, chain Blake2b calls
         let mut result = Vec::with_capacity(output_len);
-        let mut v = blake2b_with_len(&[&(output_len as u32).to_le_bytes()[..], input].concat(), 64);
-        
+        let mut v = blake2b_with_len(
+            &[&(output_len as u32).to_le_bytes()[..], input].concat(),
+            64,
+        );
+
         while result.len() + 64 < output_len {
             result.extend_from_slice(&v[..32]);
             v = blake2b_with_len(&v, 64);
         }
-        
+
         let remaining = output_len - result.len();
         let final_hash = blake2b_with_len(&v, remaining);
         result.extend_from_slice(&final_hash);
-        
+
         result
     }
 }
@@ -210,26 +213,42 @@ fn rotr64(x: u64, n: u32) -> u64 {
 #[allow(dead_code)]
 #[inline]
 fn g(a: &mut u64, b: &mut u64, c: &mut u64, d: &mut u64) {
-    *a = a.wrapping_add(*b).wrapping_add(2u64.wrapping_mul((*a as u32 as u64).wrapping_mul(*b as u32 as u64)));
+    *a = a
+        .wrapping_add(*b)
+        .wrapping_add(2u64.wrapping_mul((*a as u32 as u64).wrapping_mul(*b as u32 as u64)));
     *d = rotr64(*d ^ *a, 32);
-    *c = c.wrapping_add(*d).wrapping_add(2u64.wrapping_mul((*c as u32 as u64).wrapping_mul(*d as u32 as u64)));
+    *c = c
+        .wrapping_add(*d)
+        .wrapping_add(2u64.wrapping_mul((*c as u32 as u64).wrapping_mul(*d as u32 as u64)));
     *b = rotr64(*b ^ *c, 24);
-    *a = a.wrapping_add(*b).wrapping_add(2u64.wrapping_mul((*a as u32 as u64).wrapping_mul(*b as u32 as u64)));
+    *a = a
+        .wrapping_add(*b)
+        .wrapping_add(2u64.wrapping_mul((*a as u32 as u64).wrapping_mul(*b as u32 as u64)));
     *d = rotr64(*d ^ *a, 16);
-    *c = c.wrapping_add(*d).wrapping_add(2u64.wrapping_mul((*c as u32 as u64).wrapping_mul(*d as u32 as u64)));
+    *c = c
+        .wrapping_add(*d)
+        .wrapping_add(2u64.wrapping_mul((*c as u32 as u64).wrapping_mul(*d as u32 as u64)));
     *b = rotr64(*b ^ *c, 63);
 }
 
 /// G mixing function that works on array indices to avoid borrowing issues
 #[inline]
 fn g_idx(v: &mut [u64; 16], a: usize, b: usize, c: usize, d: usize) {
-    v[a] = v[a].wrapping_add(v[b]).wrapping_add(2u64.wrapping_mul((v[a] as u32 as u64).wrapping_mul(v[b] as u32 as u64)));
+    v[a] = v[a]
+        .wrapping_add(v[b])
+        .wrapping_add(2u64.wrapping_mul((v[a] as u32 as u64).wrapping_mul(v[b] as u32 as u64)));
     v[d] = rotr64(v[d] ^ v[a], 32);
-    v[c] = v[c].wrapping_add(v[d]).wrapping_add(2u64.wrapping_mul((v[c] as u32 as u64).wrapping_mul(v[d] as u32 as u64)));
+    v[c] = v[c]
+        .wrapping_add(v[d])
+        .wrapping_add(2u64.wrapping_mul((v[c] as u32 as u64).wrapping_mul(v[d] as u32 as u64)));
     v[b] = rotr64(v[b] ^ v[c], 24);
-    v[a] = v[a].wrapping_add(v[b]).wrapping_add(2u64.wrapping_mul((v[a] as u32 as u64).wrapping_mul(v[b] as u32 as u64)));
+    v[a] = v[a]
+        .wrapping_add(v[b])
+        .wrapping_add(2u64.wrapping_mul((v[a] as u32 as u64).wrapping_mul(v[b] as u32 as u64)));
     v[d] = rotr64(v[d] ^ v[a], 16);
-    v[c] = v[c].wrapping_add(v[d]).wrapping_add(2u64.wrapping_mul((v[c] as u32 as u64).wrapping_mul(v[d] as u32 as u64)));
+    v[c] = v[c]
+        .wrapping_add(v[d])
+        .wrapping_add(2u64.wrapping_mul((v[c] as u32 as u64).wrapping_mul(v[d] as u32 as u64)));
     v[b] = rotr64(v[b] ^ v[c], 63);
 }
 
@@ -250,14 +269,14 @@ fn permutation_p(v: &mut [u64; 16]) {
 /// Compression function G
 fn compress_g(x: &Block, y: &Block) -> Block {
     let mut r = Block::new();
-    
+
     // r = x XOR y
     for i in 0..QWORDS_PER_BLOCK {
         r.0[i] = x.0[i] ^ y.0[i];
     }
-    
+
     let mut q = r.clone();
-    
+
     // Apply P rowwise
     for row in 0..8 {
         let mut v = [0u64; 16];
@@ -269,7 +288,7 @@ fn compress_g(x: &Block, y: &Block) -> Block {
             q.0[row * 16 + i] = v[i];
         }
     }
-    
+
     // Apply P columnwise
     for col in 0..8 {
         let mut v = [0u64; 16];
@@ -281,7 +300,7 @@ fn compress_g(x: &Block, y: &Block) -> Block {
             q.0[(i / 2) * 16 + col * 2 + (i % 2)] = v[i];
         }
     }
-    
+
     // r = r XOR q
     r.xor_with(&q);
     r
@@ -310,11 +329,11 @@ fn index_alpha(
     } else {
         (j2 as u32) % lanes
     };
-    
+
     // Reference index calculation
     let total_blocks = lanes * segment_length * 4;
     let same_lane = ref_lane == lane;
-    
+
     let reference_area_size = if pass == 0 {
         // First pass
         if slice == 0 {
@@ -332,11 +351,13 @@ fn index_alpha(
             total_blocks - segment_length - if index == 0 { 1 } else { 0 }
         }
     };
-    
+
     // Map j1 to reference index
     let relative_pos = (j1 as u128 * j1 as u128 / u64::MAX as u128) as u64;
-    let ref_index = (reference_area_size as u64 - 1 - (reference_area_size as u64 * relative_pos / u64::MAX)) as u32;
-    
+    let ref_index = (reference_area_size as u64
+        - 1
+        - (reference_area_size as u64 * relative_pos / u64::MAX)) as u32;
+
     // Calculate actual position
     let start_position = if pass == 0 && slice == 0 {
         0
@@ -345,9 +366,9 @@ fn index_alpha(
     } else {
         ((slice + 1) % 4) * segment_length
     };
-    
+
     let ref_block = (start_position + ref_index) % (4 * segment_length);
-    
+
     (ref_lane, ref_block)
 }
 
@@ -388,7 +409,7 @@ pub fn argon2(
     // Initialize H0
     let secret_bytes = secret.unwrap_or(&[]);
     let ad_bytes = associated_data.unwrap_or(&[]);
-    
+
     let mut h0_input = Vec::new();
     h0_input.extend_from_slice(&params.parallelism.to_le_bytes());
     h0_input.extend_from_slice(&(params.output_len as u32).to_le_bytes());
@@ -404,7 +425,7 @@ pub fn argon2(
     h0_input.extend_from_slice(secret_bytes);
     h0_input.extend_from_slice(&(ad_bytes.len() as u32).to_le_bytes());
     h0_input.extend_from_slice(ad_bytes);
-    
+
     let h0 = blake2b_with_len(&h0_input, 64);
 
     // Allocate memory
@@ -413,14 +434,14 @@ pub fn argon2(
     // Initialize first two columns of each lane
     for lane in 0..lanes {
         let lane_start = (lane as usize) * segment_length as usize * 4;
-        
+
         // Block[lane][0]
         let mut input0 = h0.clone();
         input0.extend_from_slice(&0u32.to_le_bytes());
         input0.extend_from_slice(&lane.to_le_bytes());
         let block0_bytes = blake2b_long(BLOCK_SIZE, &input0);
         memory[lane_start] = Block::from_bytes(&block0_bytes);
-        
+
         // Block[lane][1]
         let mut input1 = h0.clone();
         input1.extend_from_slice(&1u32.to_le_bytes());
@@ -434,25 +455,27 @@ pub fn argon2(
         for slice in 0..4u32 {
             for lane in 0..lanes {
                 let start_index = if pass == 0 && slice == 0 { 2 } else { 0 };
-                
+
                 for index in start_index..segment_length {
                     // Current block position
                     let cur_lane = lane;
                     let cur_offset = slice * segment_length + index;
-                    let cur_index = (cur_lane as usize) * (4 * segment_length as usize) + cur_offset as usize;
-                    
+                    let cur_index =
+                        (cur_lane as usize) * (4 * segment_length as usize) + cur_offset as usize;
+
                     // Previous block
                     let prev_offset = if cur_offset == 0 {
                         4 * segment_length - 1
                     } else {
                         cur_offset - 1
                     };
-                    let prev_index = (cur_lane as usize) * (4 * segment_length as usize) + prev_offset as usize;
-                    
+                    let prev_index =
+                        (cur_lane as usize) * (4 * segment_length as usize) + prev_offset as usize;
+
                     // Generate pseudo-random values for indexing
                     let j1: u64;
                     let j2: u64;
-                    
+
                     match params.variant {
                         Argon2Variant::Argon2d => {
                             // Data-dependent: use first 64 bits of previous block
@@ -461,14 +484,16 @@ pub fn argon2(
                         }
                         Argon2Variant::Argon2i => {
                             // Data-independent: generate from counter
-                            let counter = (pass as u64) << 32 | (slice as u64) << 16 | (lane as u64);
+                            let counter =
+                                (pass as u64) << 32 | (slice as u64) << 16 | (lane as u64);
                             j1 = counter;
                             j2 = counter.wrapping_add(1);
                         }
                         Argon2Variant::Argon2id => {
                             // Hybrid: Argon2i for first two slices of first pass, Argon2d otherwise
                             if pass == 0 && slice < 2 {
-                                let counter = (pass as u64) << 32 | (slice as u64) << 16 | (lane as u64);
+                                let counter =
+                                    (pass as u64) << 32 | (slice as u64) << 16 | (lane as u64);
                                 j1 = counter;
                                 j2 = counter.wrapping_add(1);
                             } else {
@@ -477,7 +502,7 @@ pub fn argon2(
                             }
                         }
                     }
-                    
+
                     // Get reference block
                     let (ref_lane, ref_offset) = index_alpha(
                         0,
@@ -491,11 +516,12 @@ pub fn argon2(
                         j1,
                         j2,
                     );
-                    let ref_index = (ref_lane as usize) * (4 * segment_length as usize) + ref_offset as usize;
-                    
+                    let ref_index =
+                        (ref_lane as usize) * (4 * segment_length as usize) + ref_offset as usize;
+
                     // Compute new block
                     let new_block = compress_g(&memory[prev_index], &memory[ref_index]);
-                    
+
                     // XOR with existing block for passes > 0
                     if pass == 0 {
                         memory[cur_index] = new_block;
@@ -516,7 +542,7 @@ pub fn argon2(
 
     // Generate output tag
     let output = blake2b_long(params.output_len, &final_block.to_bytes());
-    
+
     Ok(output)
 }
 
@@ -533,8 +559,8 @@ pub fn argon2id(
     parallelism: u32,
     output_len: usize,
 ) -> Result<Vec<u8>, &'static str> {
-    let params = Argon2Params::argon2id(memory_kb, iterations, parallelism)
-        .with_output_len(output_len);
+    let params =
+        Argon2Params::argon2id(memory_kb, iterations, parallelism).with_output_len(output_len);
     argon2(&params, password, salt, None, None)
 }
 
@@ -547,8 +573,8 @@ pub fn argon2i(
     parallelism: u32,
     output_len: usize,
 ) -> Result<Vec<u8>, &'static str> {
-    let params = Argon2Params::argon2i(memory_kb, iterations, parallelism)
-        .with_output_len(output_len);
+    let params =
+        Argon2Params::argon2i(memory_kb, iterations, parallelism).with_output_len(output_len);
     argon2(&params, password, salt, None, None)
 }
 
@@ -561,8 +587,8 @@ pub fn argon2d(
     parallelism: u32,
     output_len: usize,
 ) -> Result<Vec<u8>, &'static str> {
-    let params = Argon2Params::argon2d(memory_kb, iterations, parallelism)
-        .with_output_len(output_len);
+    let params =
+        Argon2Params::argon2d(memory_kb, iterations, parallelism).with_output_len(output_len);
     argon2(&params, password, salt, None, None)
 }
 
@@ -595,7 +621,14 @@ pub unsafe extern "C" fn ncrypto_argon2id(
     let password_slice = core::slice::from_raw_parts(password, password_len);
     let salt_slice = core::slice::from_raw_parts(salt, salt_len);
 
-    match argon2id(password_slice, salt_slice, memory_kb, iterations, parallelism, output_len) {
+    match argon2id(
+        password_slice,
+        salt_slice,
+        memory_kb,
+        iterations,
+        parallelism,
+        output_len,
+    ) {
         Ok(hash) => {
             core::ptr::copy_nonoverlapping(hash.as_ptr(), output, hash.len());
             0
@@ -627,7 +660,14 @@ pub unsafe extern "C" fn ncrypto_argon2i(
     let password_slice = core::slice::from_raw_parts(password, password_len);
     let salt_slice = core::slice::from_raw_parts(salt, salt_len);
 
-    match argon2i(password_slice, salt_slice, memory_kb, iterations, parallelism, output_len) {
+    match argon2i(
+        password_slice,
+        salt_slice,
+        memory_kb,
+        iterations,
+        parallelism,
+        output_len,
+    ) {
         Ok(hash) => {
             core::ptr::copy_nonoverlapping(hash.as_ptr(), output, hash.len());
             0
@@ -644,7 +684,7 @@ mod tests {
     fn test_argon2id_basic() {
         let password = b"password";
         let salt = b"somesalt12345678";
-        
+
         let result = argon2id(password, salt, 1024, 1, 1, 32);
         assert!(result.is_ok());
         let hash = result.unwrap();
@@ -655,20 +695,20 @@ mod tests {
     fn test_argon2id_deterministic() {
         let password = b"test_password";
         let salt = b"random_salt_here";
-        
+
         let hash1 = argon2id(password, salt, 1024, 1, 1, 32).unwrap();
         let hash2 = argon2id(password, salt, 1024, 1, 1, 32).unwrap();
-        
+
         assert_eq!(hash1, hash2);
     }
 
     #[test]
     fn test_argon2_different_passwords() {
         let salt = b"same_salt_value!";
-        
+
         let hash1 = argon2id(b"password1", salt, 1024, 1, 1, 32).unwrap();
         let hash2 = argon2id(b"password2", salt, 1024, 1, 1, 32).unwrap();
-        
+
         assert_ne!(hash1, hash2);
     }
 

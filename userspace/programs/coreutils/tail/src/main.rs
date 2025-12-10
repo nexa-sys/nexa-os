@@ -28,10 +28,10 @@ fn tail_lines(path: &str, num_lines: usize) -> io::Result<()> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
     let mut stdout = io::stdout();
-    
+
     // Use a ring buffer to keep track of the last N lines
     let mut line_buffer: VecDeque<String> = VecDeque::with_capacity(num_lines);
-    
+
     for line in reader.lines() {
         let line = line?;
         if line_buffer.len() >= num_lines {
@@ -39,11 +39,11 @@ fn tail_lines(path: &str, num_lines: usize) -> io::Result<()> {
         }
         line_buffer.push_back(line);
     }
-    
+
     for line in line_buffer {
         writeln!(stdout, "{}", line)?;
     }
-    
+
     stdout.flush()?;
     Ok(())
 }
@@ -51,20 +51,20 @@ fn tail_lines(path: &str, num_lines: usize) -> io::Result<()> {
 fn tail_bytes(path: &str, num_bytes: usize) -> io::Result<()> {
     let mut file = File::open(path)?;
     let mut stdout = io::stdout();
-    
+
     // Get file size
     let file_size = file.seek(SeekFrom::End(0))?;
-    
+
     // Calculate starting position
     let start_pos = if file_size > num_bytes as u64 {
         file_size - num_bytes as u64
     } else {
         0
     };
-    
+
     // Seek to start position and read
     file.seek(SeekFrom::Start(start_pos))?;
-    
+
     let mut buffer = [0u8; 4096];
     loop {
         match file.read(&mut buffer) {
@@ -76,14 +76,14 @@ fn tail_bytes(path: &str, num_bytes: usize) -> io::Result<()> {
             Err(e) => return Err(e),
         }
     }
-    
+
     stdout.flush()?;
     Ok(())
 }
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    
+
     if args.len() < 2 {
         print_usage();
         process::exit(1);
@@ -95,10 +95,10 @@ fn main() {
     let mut verbose = false;
     let mut files: Vec<&str> = Vec::new();
     let mut i = 1;
-    
+
     while i < args.len() {
         let arg = &args[i];
-        
+
         if arg == "-h" || arg == "--help" {
             print_usage();
             process::exit(0);
@@ -161,7 +161,7 @@ fn main() {
         } else {
             files.push(arg);
         }
-        
+
         i += 1;
     }
 
@@ -180,7 +180,7 @@ fn main() {
 
     let mut exit_code = 0;
     let mut first = true;
-    
+
     for file in &files {
         if show_headers {
             if !first {
@@ -189,13 +189,13 @@ fn main() {
             println!("==> {} <==", file);
         }
         first = false;
-        
+
         let result = if let Some(bytes) = num_bytes {
             tail_bytes(file, bytes)
         } else {
             tail_lines(file, num_lines.unwrap_or(DEFAULT_LINES))
         };
-        
+
         if let Err(e) = result {
             eprintln!("tail: cannot open '{}' for reading: {}", file, e);
             exit_code = 1;

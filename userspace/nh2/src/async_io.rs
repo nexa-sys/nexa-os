@@ -2,17 +2,17 @@
 //!
 //! This module provides async support for HTTP/2 sessions using the Tokio runtime.
 
-use crate::session::{Session, SessionBuilder, SessionCallbacks, SessionType};
+use crate::error::{Error, ErrorCode, Result};
 use crate::hpack::HeaderField;
-use crate::types::{StreamId, PrioritySpec, DataProvider};
-use crate::error::{Error, Result, ErrorCode};
+use crate::session::{Session, SessionBuilder, SessionCallbacks, SessionType};
 use crate::stream::StreamState;
+use crate::types::{DataProvider, PrioritySpec, StreamId};
 
-use tokio::io::{AsyncRead, AsyncWrite, AsyncReadExt, AsyncWriteExt};
-use tokio::sync::{mpsc, oneshot, Mutex as TokioMutex};
-use std::sync::Arc;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::sync::{mpsc, oneshot, Mutex as TokioMutex};
 
 // ============================================================================
 // Async Session Wrapper
@@ -27,14 +27,20 @@ impl AsyncSession {
     /// Create a new async client session
     pub fn client() -> Self {
         Self {
-            inner: Arc::new(Session::client(SessionCallbacks::new(), core::ptr::null_mut())),
+            inner: Arc::new(Session::client(
+                SessionCallbacks::new(),
+                core::ptr::null_mut(),
+            )),
         }
     }
 
     /// Create a new async server session
     pub fn server() -> Self {
         Self {
-            inner: Arc::new(Session::server(SessionCallbacks::new(), core::ptr::null_mut())),
+            inner: Arc::new(Session::server(
+                SessionCallbacks::new(),
+                core::ptr::null_mut(),
+            )),
         }
     }
 
@@ -44,10 +50,7 @@ impl AsyncSession {
     }
 
     /// Submit a request asynchronously
-    pub fn submit_request(
-        &self,
-        headers: &[HeaderField],
-    ) -> Result<StreamId> {
+    pub fn submit_request(&self, headers: &[HeaderField]) -> Result<StreamId> {
         self.inner.submit_request(None, headers, None)
     }
 
@@ -61,21 +64,12 @@ impl AsyncSession {
     }
 
     /// Submit a response
-    pub fn submit_response(
-        &self,
-        stream_id: StreamId,
-        headers: &[HeaderField],
-    ) -> Result<()> {
+    pub fn submit_response(&self, stream_id: StreamId, headers: &[HeaderField]) -> Result<()> {
         self.inner.submit_response(stream_id, headers, None)
     }
 
     /// Submit data
-    pub fn submit_data(
-        &self,
-        stream_id: StreamId,
-        data: &[u8],
-        end_stream: bool,
-    ) -> Result<()> {
+    pub fn submit_data(&self, stream_id: StreamId, data: &[u8], end_stream: bool) -> Result<()> {
         self.inner.submit_data(stream_id, data, end_stream)
     }
 
@@ -158,7 +152,9 @@ where
     pub async fn flush(&mut self) -> Result<()> {
         let data = self.session.get_send_data();
         if !data.is_empty() {
-            self.transport.write_all(&data).await
+            self.transport
+                .write_all(&data)
+                .await
                 .map_err(|_| Error::Internal("write error"))?;
         }
         Ok(())
@@ -166,7 +162,10 @@ where
 
     /// Receive and process data
     pub async fn recv(&mut self) -> Result<usize> {
-        let n = self.transport.read(&mut self.read_buf).await
+        let n = self
+            .transport
+            .read(&mut self.read_buf)
+            .await
             .map_err(|_| Error::Internal("read error"))?;
 
         if n == 0 {
@@ -333,9 +332,10 @@ impl Response {
 
     /// Convert to header fields
     pub fn to_header_fields(&self) -> Vec<HeaderField> {
-        let mut fields = vec![
-            HeaderField::new(b":status".to_vec(), self.status.to_string().as_bytes().to_vec()),
-        ];
+        let mut fields = vec![HeaderField::new(
+            b":status".to_vec(),
+            self.status.to_string().as_bytes().to_vec(),
+        )];
 
         for (name, value) in &self.headers {
             fields.push(HeaderField::new(
@@ -380,11 +380,11 @@ where
 
         // Flush and receive response
         self.connection.flush().await?;
-        
+
         // Wait for response
         loop {
             self.connection.recv().await?;
-            
+
             if let Some(state) = self.connection.session().get_stream_state(stream_id) {
                 if state == StreamState::Closed || state == StreamState::HalfClosedRemote {
                     break;
@@ -398,7 +398,10 @@ where
 
     /// Close the client
     pub async fn close(mut self) -> Result<()> {
-        self.connection.session.inner.terminate(ErrorCode::NoError)?;
+        self.connection
+            .session
+            .inner
+            .terminate(ErrorCode::NoError)?;
         self.connection.flush().await?;
         Ok(())
     }
@@ -443,7 +446,10 @@ where
     pub async fn new(transport: T, handler: Arc<H>) -> Result<Self> {
         let mut connection = Connection::server(transport);
         connection.handshake().await?;
-        Ok(Self { connection, handler })
+        Ok(Self {
+            connection,
+            handler,
+        })
     }
 
     /// Run the server connection

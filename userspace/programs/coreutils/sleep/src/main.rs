@@ -30,12 +30,12 @@ fn parse_duration(arg: &str) -> Option<Duration> {
     } else {
         (arg, 's')
     };
-    
+
     let num: f64 = num_str.parse().ok()?;
     if num < 0.0 {
         return None;
     }
-    
+
     let multiplier = match suffix {
         's' => 1.0,
         'm' => 60.0,
@@ -43,27 +43,27 @@ fn parse_duration(arg: &str) -> Option<Duration> {
         'd' => 86400.0,
         _ => return None,
     };
-    
+
     let secs = num * multiplier;
     Some(Duration::from_secs_f64(secs))
 }
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    
+
     if args.len() < 2 {
         print_usage();
         process::exit(1);
     }
 
     let mut total_duration = Duration::ZERO;
-    
+
     for arg in args.iter().skip(1) {
         if arg == "-h" || arg == "--help" {
             print_usage();
             process::exit(0);
         }
-        
+
         match parse_duration(arg) {
             Some(duration) => {
                 total_duration += duration;
@@ -74,10 +74,10 @@ fn main() {
             }
         }
     }
-    
+
     if total_duration.is_zero() {
         process::exit(0);
     }
-    
+
     thread::sleep(total_duration);
 }

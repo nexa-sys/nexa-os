@@ -2,8 +2,8 @@
 //!
 //! Provides OpenSSL-compatible BN_* functions for arbitrary precision arithmetic.
 
-use std::vec::Vec;
 use crate::bigint::BigInt;
+use std::vec::Vec;
 
 /// BIGNUM - Big Number structure
 pub struct BIGNUM {
@@ -140,7 +140,11 @@ impl BIGNUM {
             Ordering::Equal => 0,
             Ordering::Greater => 1,
         };
-        if self.negative { -r } else { r }
+        if self.negative {
+            -r
+        } else {
+            r
+        }
     }
 }
 
@@ -192,7 +196,9 @@ pub extern "C" fn BN_new() -> *mut BIGNUM {
 #[no_mangle]
 pub extern "C" fn BN_free(bn: *mut BIGNUM) {
     if !bn.is_null() {
-        unsafe { drop(Box::from_raw(bn)); }
+        unsafe {
+            drop(Box::from_raw(bn));
+        }
     }
 }
 
@@ -233,7 +239,9 @@ pub extern "C" fn BN_copy(dst: *mut BIGNUM, src: *const BIGNUM) -> *mut BIGNUM {
 #[no_mangle]
 pub extern "C" fn BN_zero(bn: *mut BIGNUM) {
     if !bn.is_null() {
-        unsafe { (*bn).zero(); }
+        unsafe {
+            (*bn).zero();
+        }
     }
 }
 
@@ -243,7 +251,9 @@ pub extern "C" fn BN_one(bn: *mut BIGNUM) -> i32 {
     if bn.is_null() {
         return 0;
     }
-    unsafe { (*bn).one(); }
+    unsafe {
+        (*bn).one();
+    }
     1
 }
 
@@ -253,7 +263,9 @@ pub extern "C" fn BN_set_word(bn: *mut BIGNUM, w: u64) -> i32 {
     if bn.is_null() {
         return 0;
     }
-    unsafe { (*bn).set_word(w); }
+    unsafe {
+        (*bn).set_word(w);
+    }
     1
 }
 
@@ -290,7 +302,11 @@ pub extern "C" fn BN_is_zero(bn: *const BIGNUM) -> i32 {
     if bn.is_null() {
         return 0;
     }
-    if unsafe { (*bn).is_zero() } { 1 } else { 0 }
+    if unsafe { (*bn).is_zero() } {
+        1
+    } else {
+        0
+    }
 }
 
 /// BN_is_one - Check if one
@@ -299,7 +315,11 @@ pub extern "C" fn BN_is_one(bn: *const BIGNUM) -> i32 {
     if bn.is_null() {
         return 0;
     }
-    if unsafe { (*bn).is_one() } { 1 } else { 0 }
+    if unsafe { (*bn).is_one() } {
+        1
+    } else {
+        0
+    }
 }
 
 /// BN_is_negative - Check if negative
@@ -308,7 +328,11 @@ pub extern "C" fn BN_is_negative(bn: *const BIGNUM) -> i32 {
     if bn.is_null() {
         return 0;
     }
-    if unsafe { (*bn).is_negative() } { 1 } else { 0 }
+    if unsafe { (*bn).is_negative() } {
+        1
+    } else {
+        0
+    }
 }
 
 /// BN_cmp - Compare two BIGNUMs
@@ -347,7 +371,9 @@ pub extern "C" fn BN_bin2bn(s: *const u8, len: i32, ret: *mut BIGNUM) -> *mut BI
     if ret.is_null() {
         Box::into_raw(Box::new(bn))
     } else {
-        unsafe { *ret = bn; }
+        unsafe {
+            *ret = bn;
+        }
         ret
     }
 }
@@ -420,7 +446,12 @@ pub extern "C" fn BN_sub(r: *mut BIGNUM, a: *const BIGNUM, b: *const BIGNUM) -> 
 
 /// BN_mul - Multiply two BIGNUMs
 #[no_mangle]
-pub extern "C" fn BN_mul(r: *mut BIGNUM, a: *const BIGNUM, b: *const BIGNUM, _ctx: *mut BN_CTX) -> i32 {
+pub extern "C" fn BN_mul(
+    r: *mut BIGNUM,
+    a: *const BIGNUM,
+    b: *const BIGNUM,
+    _ctx: *mut BN_CTX,
+) -> i32 {
     if r.is_null() || a.is_null() || b.is_null() {
         return 0;
     }
@@ -432,7 +463,13 @@ pub extern "C" fn BN_mul(r: *mut BIGNUM, a: *const BIGNUM, b: *const BIGNUM, _ct
 
 /// BN_mod_exp - Modular exponentiation
 #[no_mangle]
-pub extern "C" fn BN_mod_exp(r: *mut BIGNUM, a: *const BIGNUM, p: *const BIGNUM, m: *const BIGNUM, _ctx: *mut BN_CTX) -> i32 {
+pub extern "C" fn BN_mod_exp(
+    r: *mut BIGNUM,
+    a: *const BIGNUM,
+    p: *const BIGNUM,
+    m: *const BIGNUM,
+    _ctx: *mut BN_CTX,
+) -> i32 {
     if r.is_null() || a.is_null() || p.is_null() || m.is_null() {
         return 0;
     }
@@ -452,7 +489,9 @@ pub extern "C" fn BN_CTX_new() -> *mut BN_CTX {
 #[no_mangle]
 pub extern "C" fn BN_CTX_free(ctx: *mut BN_CTX) {
     if !ctx.is_null() {
-        unsafe { drop(Box::from_raw(ctx)); }
+        unsafe {
+            drop(Box::from_raw(ctx));
+        }
     }
 }
 

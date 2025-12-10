@@ -1,6 +1,5 @@
 /// Socket API for NexaOS (POSIX-compatible)
 /// Provides standard socket functions for networking
-
 use core::arch::asm;
 
 // Socket system call numbers (must match kernel)
@@ -15,40 +14,40 @@ const SYS_GETSOCKNAME: usize = 51;
 const SYS_GETPEERNAME: usize = 52;
 
 // Socket domain constants (POSIX)
-pub const AF_UNIX: i32 = 1;       // Unix domain sockets
-pub const AF_LOCAL: i32 = 1;      // Alias for AF_UNIX
-pub const AF_INET: i32 = 2;       // IPv4
-pub const AF_INET6: i32 = 10;     // IPv6
-pub const AF_NETLINK: i32 = 16;   // Netlink
-pub const AF_UNSPEC: i32 = 0;     // Unspecified
+pub const AF_UNIX: i32 = 1; // Unix domain sockets
+pub const AF_LOCAL: i32 = 1; // Alias for AF_UNIX
+pub const AF_INET: i32 = 2; // IPv4
+pub const AF_INET6: i32 = 10; // IPv6
+pub const AF_NETLINK: i32 = 16; // Netlink
+pub const AF_UNSPEC: i32 = 0; // Unspecified
 
 /// Socket type constants (POSIX)
-pub const SOCK_STREAM: i32 = 1;   // TCP
-pub const SOCK_DGRAM: i32 = 2;    // UDP
-pub const SOCK_RAW: i32 = 3;      // Raw sockets
+pub const SOCK_STREAM: i32 = 1; // TCP
+pub const SOCK_DGRAM: i32 = 2; // UDP
+pub const SOCK_RAW: i32 = 3; // Raw sockets
 
 // Socket type flags (Linux-specific)
-pub const SOCK_NONBLOCK: i32 = 0x800;      // Non-blocking mode
-pub const SOCK_CLOEXEC: i32 = 0x80000;     // Close-on-exec flag
-const SOCK_TYPE_MASK: i32 = 0xf;           // Mask to extract base type
+pub const SOCK_NONBLOCK: i32 = 0x800; // Non-blocking mode
+pub const SOCK_CLOEXEC: i32 = 0x80000; // Close-on-exec flag
+const SOCK_TYPE_MASK: i32 = 0xf; // Mask to extract base type
 
 // Message flag constants used by libc send/recv wrappers
 const MSG_NOSIGNAL: i32 = 0x4000;
 
 // Socket protocol constants (POSIX)
-pub const IPPROTO_IP: i32 = 0;    // Dummy protocol for TCP
-pub const IPPROTO_ICMP: i32 = 1;  // ICMP
-pub const IPPROTO_TCP: i32 = 6;   // TCP
-pub const IPPROTO_UDP: i32 = 17;  // UDP
+pub const IPPROTO_IP: i32 = 0; // Dummy protocol for TCP
+pub const IPPROTO_ICMP: i32 = 1; // ICMP
+pub const IPPROTO_TCP: i32 = 6; // TCP
+pub const IPPROTO_UDP: i32 = 17; // UDP
 
 /// Netlink socket address
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct SockAddrNl {
-    pub nl_family: u16,     // AF_NETLINK
-    pub nl_pad: u16,        // Zero
-    pub nl_pid: u32,        // Port ID
-    pub nl_groups: u32,     // Multicast groups mask
+    pub nl_family: u16, // AF_NETLINK
+    pub nl_pad: u16,    // Zero
+    pub nl_pid: u32,    // Port ID
+    pub nl_groups: u32, // Multicast groups mask
 }
 
 impl SockAddrNl {
@@ -81,10 +80,10 @@ impl From<SockAddrNl> for SockAddr {
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct SockAddrIn {
-    pub sin_family: u16,    // AF_INET
-    pub sin_port: u16,      // Port number (network byte order)
-    pub sin_addr: u32,      // IPv4 address (network byte order)
-    pub sin_zero: [u8; 8],  // Padding to match sockaddr size
+    pub sin_family: u16,   // AF_INET
+    pub sin_port: u16,     // Port number (network byte order)
+    pub sin_addr: u32,     // IPv4 address (network byte order)
+    pub sin_zero: [u8; 8], // Padding to match sockaddr size
 }
 
 impl SockAddrIn {
@@ -96,7 +95,7 @@ impl SockAddrIn {
         // This ensures the bytes are in the right order for the wire format
         let port_bytes = port.to_be_bytes();
         let port_ne = u16::from_ne_bytes(port_bytes);
-        
+
         Self {
             sin_family: AF_INET as u16,
             sin_port: port_ne,
@@ -121,8 +120,8 @@ impl SockAddrIn {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct SockAddr {
-    pub sa_family: u16,     // Address family
-    pub sa_data: [u8; 14],  // Address data
+    pub sa_family: u16,    // Address family
+    pub sa_data: [u8; 14], // Address data
 }
 
 impl From<SockAddrIn> for SockAddr {
@@ -141,12 +140,12 @@ impl From<SockAddrIn> for SockAddr {
 }
 
 /// Create a socket
-/// 
+///
 /// # Arguments
 /// * `domain` - Protocol family (AF_INET, AF_INET6)
 /// * `type_` - Socket type (SOCK_STREAM, SOCK_DGRAM)
 /// * `protocol` - Protocol number (0 for default)
-/// 
+///
 /// # Returns
 /// Socket file descriptor on success, -1 on error (errno set)
 #[no_mangle]
@@ -154,25 +153,25 @@ pub extern "C" fn socket(domain: i32, type_: i32, protocol: i32) -> i32 {
     // Strip flags and pass only base type to kernel
     // Linux socket() accepts flags in type parameter, but NexaOS kernel expects clean type
     let base_type = type_ & SOCK_TYPE_MASK;
-    
+
     let ret = crate::syscall3(
         SYS_SOCKET as u64,
         domain as u64,
-        base_type as u64,  // Pass stripped type to kernel
+        base_type as u64, // Pass stripped type to kernel
         protocol as u64,
     );
-    
+
     crate::translate_ret_i32(ret)
 }
 
 /// Create a pair of connected sockets (Unix domain)
-/// 
+///
 /// # Arguments
 /// * `domain` - Protocol family (must be AF_UNIX/AF_LOCAL)
 /// * `type_` - Socket type (SOCK_STREAM or SOCK_DGRAM)
 /// * `protocol` - Protocol number (must be 0)
 /// * `sv` - Array of two integers to receive socket file descriptors
-/// 
+///
 /// # Returns
 /// 0 on success, -1 on error (errno set)
 #[no_mangle]
@@ -208,27 +207,22 @@ pub extern "C" fn socketpair(domain: i32, type_: i32, protocol: i32, sv: *mut i3
 }
 
 /// Bind socket to local address
-/// 
+///
 /// # Arguments
 /// * `sockfd` - Socket file descriptor
 /// * `addr` - Local address to bind to
 /// * `addrlen` - Size of address structure
-/// 
+///
 /// # Returns
 /// 0 on success, -1 on error (errno set)
 #[no_mangle]
 pub extern "C" fn bind(sockfd: i32, addr: *const SockAddr, addrlen: u32) -> i32 {
-    let ret = crate::syscall3(
-        SYS_BIND as u64,
-        sockfd as u64,
-        addr as u64,
-        addrlen as u64,
-    );
+    let ret = crate::syscall3(SYS_BIND as u64, sockfd as u64, addr as u64, addrlen as u64);
     crate::translate_ret_i32(ret)
 }
 
 /// Send datagram to specified address
-/// 
+///
 /// # Arguments
 /// * `sockfd` - Socket file descriptor
 /// * `buf` - Buffer containing data to send
@@ -236,7 +230,7 @@ pub extern "C" fn bind(sockfd: i32, addr: *const SockAddr, addrlen: u32) -> i32 
 /// * `flags` - Send flags (usually 0)
 /// * `dest_addr` - Destination address
 /// * `addrlen` - Size of destination address
-/// 
+///
 /// # Returns
 /// Number of bytes sent on success, -1 on error
 #[no_mangle]
@@ -274,7 +268,7 @@ pub extern "C" fn sendto(
 }
 
 /// Receive datagram and source address
-/// 
+///
 /// # Arguments
 /// * `sockfd` - Socket file descriptor
 /// * `buf` - Buffer to receive data
@@ -282,7 +276,7 @@ pub extern "C" fn sendto(
 /// * `flags` - Receive flags (usually 0)
 /// * `src_addr` - Buffer to receive source address (may be null)
 /// * `addrlen` - Pointer to size of address buffer (may be null)
-/// 
+///
 /// # Returns
 /// Number of bytes received on success, -1 on error
 #[no_mangle]
@@ -320,12 +314,12 @@ pub extern "C" fn recvfrom(
 }
 
 /// Connect socket to remote address
-/// 
+///
 /// # Arguments
 /// * `sockfd` - Socket file descriptor
 /// * `addr` - Remote address to connect to
 /// * `addrlen` - Size of address structure
-/// 
+///
 /// # Returns
 /// 0 on success, -1 on error (errno set)
 #[no_mangle]
@@ -346,12 +340,12 @@ pub fn parse_ipv4(s: &str) -> Option<[u8; 4]> {
     if s.is_empty() {
         return None;
     }
-    
+
     let mut octets = [0u8; 4];
     let mut idx = 0;
     let mut current = 0u16;
     let mut digit_count = 0u8; // Track digits in current octet
-    
+
     for ch in s.chars() {
         if ch == '.' {
             // Check for empty octet or overflow
@@ -376,7 +370,7 @@ pub fn parse_ipv4(s: &str) -> Option<[u8; 4]> {
             return None;
         }
     }
-    
+
     // Check final octet: must have exactly 3 dots, last octet has digits, value <= 255
     if idx != 3 || digit_count == 0 || current > 255 {
         return None;
@@ -390,13 +384,13 @@ pub fn parse_ipv4(s: &str) -> Option<[u8; 4]> {
 pub fn format_ipv4(ip: [u8; 4]) -> [u8; 16] {
     let mut buf = [0u8; 16];
     let mut pos = 0;
-    
+
     for (i, octet) in ip.iter().enumerate() {
         // Convert u8 to decimal string
         let mut n = *octet as usize;
         let mut digits = [0u8; 3];
         let mut digit_count = 0;
-        
+
         if n == 0 {
             buf[pos] = b'0';
             pos += 1;
@@ -412,24 +406,24 @@ pub fn format_ipv4(ip: [u8; 4]) -> [u8; 16] {
                 pos += 1;
             }
         }
-        
+
         if i < 3 {
             buf[pos] = b'.';
             pos += 1;
         }
     }
-    
+
     buf
 }
 
 /// Send data on a connected socket
-/// 
+///
 /// # Arguments
 /// * `sockfd` - Socket file descriptor
 /// * `buf` - Buffer containing data to send
 /// * `len` - Length of data
 /// * `flags` - Send flags (usually 0)
-/// 
+///
 /// # Returns
 /// Number of bytes sent on success, -1 on error
 #[no_mangle]
@@ -454,13 +448,13 @@ pub extern "C" fn send(sockfd: i32, buf: *const u8, len: usize, flags: i32) -> i
 }
 
 /// Receive data from a connected socket
-/// 
+///
 /// # Arguments
 /// * `sockfd` - Socket file descriptor
 /// * `buf` - Buffer to receive data
 /// * `len` - Maximum length to receive
 /// * `flags` - Receive flags (usually 0)
-/// 
+///
 /// # Returns
 /// Number of bytes received on success, -1 on error
 #[no_mangle]
@@ -491,14 +485,14 @@ pub extern "C" fn recv(sockfd: i32, buf: *mut u8, len: usize, flags: i32) -> isi
 }
 
 /// Get socket options
-/// 
+///
 /// # Arguments
 /// * `sockfd` - Socket file descriptor
 /// * `level` - Protocol level (SOL_SOCKET, IPPROTO_TCP, etc.)
 /// * `optname` - Option name (SO_ERROR, SO_REUSEADDR, etc.)
 /// * `optval` - Pointer to buffer to receive option value
 /// * `optlen` - Pointer to size of buffer (in/out parameter)
-/// 
+///
 /// # Returns
 /// 0 on success, -1 on error
 #[no_mangle]
@@ -511,16 +505,16 @@ pub extern "C" fn getsockopt(
 ) -> i32 {
     // For now, we'll implement a minimal version that handles common cases
     // In a full implementation, this would make a syscall to the kernel
-    
+
     const SOL_SOCKET: i32 = 1;
     const SO_ERROR: i32 = 4;
     const SO_TYPE: i32 = 3;
-    
+
     unsafe {
         if optval.is_null() || optlen.is_null() {
             return -1;
         }
-        
+
         match (level, optname) {
             (SOL_SOCKET, SO_ERROR) => {
                 // Return 0 (no error) for now

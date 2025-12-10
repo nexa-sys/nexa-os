@@ -23,7 +23,7 @@ fn cat_file(path: &str) -> io::Result<()> {
     let mut buffer = [0u8; 4096];
     let mut stdout = io::stdout();
     let mut last_byte_was_newline = true;
-    
+
     loop {
         match reader.read(&mut buffer) {
             Ok(0) => break, // EOF
@@ -36,24 +36,24 @@ fn cat_file(path: &str) -> io::Result<()> {
             Err(e) => return Err(e),
         }
     }
-    
+
     if !last_byte_was_newline {
         println!();
     }
-    
+
     Ok(())
 }
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    
+
     if args.len() < 2 {
         print_usage();
         process::exit(1);
     }
 
     let mut files: Vec<&str> = Vec::new();
-    
+
     for arg in args.iter().skip(1) {
         if arg == "-h" || arg == "--help" {
             print_usage();
@@ -68,7 +68,7 @@ fn main() {
     }
 
     let mut exit_code = 0;
-    
+
     for file in files {
         if let Err(e) = cat_file(file) {
             eprintln!("cat: {}: {}", file, e);

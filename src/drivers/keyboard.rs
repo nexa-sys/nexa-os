@@ -60,16 +60,20 @@ struct PendingBuffer {
 
 impl PendingBuffer {
     const fn new() -> Self {
-        Self { chars: ['\0'; 8], count: 0, index: 0 }
+        Self {
+            chars: ['\0'; 8],
+            count: 0,
+            index: 0,
+        }
     }
-    
+
     fn push(&mut self, c: char) {
         if self.count < 8 {
             self.chars[self.count] = c;
             self.count += 1;
         }
     }
-    
+
     fn pop(&mut self) -> Option<char> {
         if self.index < self.count {
             let c = self.chars[self.index];
@@ -165,44 +169,51 @@ fn decode_scancode(scancode: u8) -> Option<char> {
     // Handle extended keys (arrows, etc.)
     if extended {
         match scancode {
-            0x48 => { // Up
+            0x48 => {
+                // Up
                 let mut pending = PENDING_KEYS.lock();
                 pending.push('[');
                 pending.push('A');
                 return Some('\x1B');
             }
-            0x4B => { // Left
+            0x4B => {
+                // Left
                 let mut pending = PENDING_KEYS.lock();
                 pending.push('[');
                 pending.push('D');
                 return Some('\x1B');
             }
-            0x4D => { // Right
+            0x4D => {
+                // Right
                 let mut pending = PENDING_KEYS.lock();
                 pending.push('[');
                 pending.push('C');
                 return Some('\x1B');
             }
-            0x50 => { // Down
+            0x50 => {
+                // Down
                 let mut pending = PENDING_KEYS.lock();
                 pending.push('[');
                 pending.push('B');
                 return Some('\x1B');
             }
-            0x53 => { // Delete
+            0x53 => {
+                // Delete
                 let mut pending = PENDING_KEYS.lock();
                 pending.push('[');
                 pending.push('3');
                 pending.push('~');
                 return Some('\x1B');
             }
-            0x47 => { // Home
+            0x47 => {
+                // Home
                 let mut pending = PENDING_KEYS.lock();
                 pending.push('[');
                 pending.push('H');
                 return Some('\x1B');
             }
-            0x4F => { // End
+            0x4F => {
+                // End
                 let mut pending = PENDING_KEYS.lock();
                 pending.push('[');
                 pending.push('F');

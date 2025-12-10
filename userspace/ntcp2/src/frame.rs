@@ -4,8 +4,8 @@
 //! according to RFC 9000 Section 19.
 
 use crate::constants::frame_type;
-use crate::error::{Error, Result, NgError, TransportError};
-use crate::packet::{encode_varint, decode_varint, varint_len};
+use crate::error::{Error, NgError, Result, TransportError};
+use crate::packet::{decode_varint, encode_varint, varint_len};
 use crate::types::StreamId;
 
 // ============================================================================
@@ -99,7 +99,7 @@ impl FrameType {
             v => FrameType::Unknown(v),
         }
     }
-    
+
     /// Convert to frame type value
     pub fn to_varint(&self) -> u64 {
         match self {
@@ -113,9 +113,15 @@ impl FrameType {
             FrameType::NewToken => frame_type::NEW_TOKEN,
             FrameType::Stream { fin, len, off } => {
                 let mut v = frame_type::STREAM;
-                if *fin { v |= 0x01; }
-                if *len { v |= 0x02; }
-                if *off { v |= 0x04; }
+                if *fin {
+                    v |= 0x01;
+                }
+                if *len {
+                    v |= 0x02;
+                }
+                if *off {
+                    v |= 0x04;
+                }
                 v
             }
             FrameType::MaxData => frame_type::MAX_DATA,
@@ -350,15 +356,17 @@ impl Frame {
         match self {
             Frame::Padding => FrameType::Padding,
             Frame::Ping => FrameType::Ping,
-            Frame::Ack(f) => FrameType::Ack { ecn: f.ecn_counts.is_some() },
+            Frame::Ack(f) => FrameType::Ack {
+                ecn: f.ecn_counts.is_some(),
+            },
             Frame::ResetStream(_) => FrameType::ResetStream,
             Frame::StopSending(_) => FrameType::StopSending,
             Frame::Crypto(_) => FrameType::Crypto,
             Frame::NewToken(_) => FrameType::NewToken,
-            Frame::Stream(f) => FrameType::Stream { 
-                fin: f.fin, 
-                len: true, 
-                off: f.offset > 0 
+            Frame::Stream(f) => FrameType::Stream {
+                fin: f.fin,
+                len: true,
+                off: f.offset > 0,
             },
             Frame::MaxData(_) => FrameType::MaxData,
             Frame::MaxStreamData(_) => FrameType::MaxStreamData,
@@ -375,7 +383,7 @@ impl Frame {
             Frame::Datagram(_) => FrameType::Datagram { len: true },
         }
     }
-    
+
     /// Check if this frame is ACK-eliciting
     pub fn is_ack_eliciting(&self) -> bool {
         !matches!(self, Frame::Padding | Frame::Ack(_))
@@ -391,10 +399,10 @@ pub fn parse_frame(data: &[u8]) -> Result<(Frame, usize)> {
     if data.is_empty() {
         return Err(Error::BufferTooSmall);
     }
-    
+
     let (frame_type_val, mut offset) = decode_varint(data)?;
     let frame_type = FrameType::from_varint(frame_type_val);
-    
+
     let frame = match frame_type {
         FrameType::Padding => {
             // Count consecutive padding bytes
@@ -405,22 +413,22 @@ pub fn parse_frame(data: &[u8]) -> Result<(Frame, usize)> {
             offset += count - 1;
             Frame::Padding
         }
-        
+
         FrameType::Ping => Frame::Ping,
-        
+
         FrameType::Ack { ecn } => {
             let (largest_acked, n) = decode_varint(&data[offset..])?;
             offset += n;
-            
+
             let (ack_delay, n) = decode_varint(&data[offset..])?;
             offset += n;
-            
+
             let (ack_range_count, n) = decode_varint(&data[offset..])?;
             offset += n;
-            
+
             let (first_ack_range, n) = decode_varint(&data[offset..])?;
             offset += n;
-            
+
             let mut ack_ranges = Vec::new();
             for _ in 0..ack_range_count {
                 let (gap, n) = decode_varint(&data[offset..])?;
@@ -429,7 +437,7 @@ pub fn parse_frame(data: &[u8]) -> Result<(Frame, usize)> {
                 offset += n;
                 ack_ranges.push((gap, range));
             }
-            
+
             let ecn_counts = if ecn {
                 let (ect0, n) = decode_varint(&data[offset..])?;
                 offset += n;
@@ -441,7 +449,7 @@ pub fn parse_frame(data: &[u8]) -> Result<(Frame, usize)> {
             } else {
                 None
             };
-            
+
             Frame::Ack(AckFrame {
                 largest_acked,
                 ack_delay,
@@ -451,7 +459,7 @@ pub fn parse_frame(data: &[u8]) -> Result<(Frame, usize)> {
                 ecn_counts,
             })
         }
-        
+
         FrameType::ResetStream => {
             let (stream_id, n) = decode_varint(&data[offset..])?;
             offset += n;
@@ -459,63 +467,63 @@ pub fn parse_frame(data: &[u8]) -> Result<(Frame, usize)> {
             offset += n;
             let (final_size, n) = decode_varint(&data[offset..])?;
             offset += n;
-            
+
             Frame::ResetStream(ResetStreamFrame {
                 stream_id: stream_id as StreamId,
                 error_code,
                 final_size,
             })
         }
-        
+
         FrameType::StopSending => {
             let (stream_id, n) = decode_varint(&data[offset..])?;
             offset += n;
             let (error_code, n) = decode_varint(&data[offset..])?;
             offset += n;
-            
+
             Frame::StopSending(StopSendingFrame {
                 stream_id: stream_id as StreamId,
                 error_code,
             })
         }
-        
+
         FrameType::Crypto => {
             let (crypto_offset, n) = decode_varint(&data[offset..])?;
             offset += n;
             let (length, n) = decode_varint(&data[offset..])?;
             offset += n;
-            
+
             if offset + length as usize > data.len() {
                 return Err(Error::BufferTooSmall);
             }
-            
+
             let crypto_data = data[offset..offset + length as usize].to_vec();
             offset += length as usize;
-            
+
             Frame::Crypto(CryptoFrame {
                 offset: crypto_offset,
                 data: crypto_data,
             })
         }
-        
+
         FrameType::NewToken => {
             let (length, n) = decode_varint(&data[offset..])?;
             offset += n;
-            
+
             if offset + length as usize > data.len() {
                 return Err(Error::BufferTooSmall);
             }
-            
+
             let token = data[offset..offset + length as usize].to_vec();
             offset += length as usize;
-            
+
             Frame::NewToken(NewTokenFrame { token })
         }
-        
+
         FrameType::Stream { fin, len, off } => {
             let (stream_id, n) = decode_varint(&data[offset..])?;
             offset += n;
-            
+
             let stream_offset = if off {
                 let (o, n) = decode_varint(&data[offset..])?;
                 offset += n;
@@ -523,7 +531,7 @@ pub fn parse_frame(data: &[u8]) -> Result<(Frame, usize)> {
             } else {
                 0
             };
-            
+
             let length = if len {
                 let (l, n) = decode_varint(&data[offset..])?;
                 offset += n;
@@ -531,14 +539,14 @@ pub fn parse_frame(data: &[u8]) -> Result<(Frame, usize)> {
             } else {
                 data.len() - offset
             };
-            
+
             if offset + length > data.len() {
                 return Err(Error::BufferTooSmall);
             }
-            
+
             let stream_data = data[offset..offset + length].to_vec();
             offset += length;
-            
+
             Frame::Stream(StreamFrame {
                 stream_id: stream_id as StreamId,
                 offset: stream_offset,
@@ -546,13 +554,13 @@ pub fn parse_frame(data: &[u8]) -> Result<(Frame, usize)> {
                 fin,
             })
         }
-        
+
         FrameType::MaxData => {
             let (max_data, n) = decode_varint(&data[offset..])?;
             offset += n;
             Frame::MaxData(MaxDataFrame { max_data })
         }
-        
+
         FrameType::MaxStreamData => {
             let (stream_id, n) = decode_varint(&data[offset..])?;
             offset += n;
@@ -563,19 +571,19 @@ pub fn parse_frame(data: &[u8]) -> Result<(Frame, usize)> {
                 max_stream_data,
             })
         }
-        
+
         FrameType::MaxStreams { bidi } => {
             let (max_streams, n) = decode_varint(&data[offset..])?;
             offset += n;
             Frame::MaxStreams(MaxStreamsFrame { max_streams, bidi })
         }
-        
+
         FrameType::DataBlocked => {
             let (max_data, n) = decode_varint(&data[offset..])?;
             offset += n;
             Frame::DataBlocked(DataBlockedFrame { max_data })
         }
-        
+
         FrameType::StreamDataBlocked => {
             let (stream_id, n) = decode_varint(&data[offset..])?;
             offset += n;
@@ -586,36 +594,36 @@ pub fn parse_frame(data: &[u8]) -> Result<(Frame, usize)> {
                 max_stream_data,
             })
         }
-        
+
         FrameType::StreamsBlocked { bidi } => {
             let (max_streams, n) = decode_varint(&data[offset..])?;
             offset += n;
             Frame::StreamsBlocked(StreamsBlockedFrame { max_streams, bidi })
         }
-        
+
         FrameType::NewConnectionId => {
             let (sequence, n) = decode_varint(&data[offset..])?;
             offset += n;
             let (retire_prior_to, n) = decode_varint(&data[offset..])?;
             offset += n;
-            
+
             if offset >= data.len() {
                 return Err(Error::BufferTooSmall);
             }
             let cid_len = data[offset] as usize;
             offset += 1;
-            
+
             if cid_len > 20 || offset + cid_len + 16 > data.len() {
                 return Err(Error::Ng(NgError::Proto));
             }
-            
+
             let connection_id = data[offset..offset + cid_len].to_vec();
             offset += cid_len;
-            
+
             let mut stateless_reset_token = [0u8; 16];
             stateless_reset_token.copy_from_slice(&data[offset..offset + 16]);
             offset += 16;
-            
+
             Frame::NewConnectionId(NewConnectionIdFrame {
                 sequence,
                 retire_prior_to,
@@ -623,13 +631,13 @@ pub fn parse_frame(data: &[u8]) -> Result<(Frame, usize)> {
                 stateless_reset_token,
             })
         }
-        
+
         FrameType::RetireConnectionId => {
             let (sequence, n) = decode_varint(&data[offset..])?;
             offset += n;
             Frame::RetireConnectionId(RetireConnectionIdFrame { sequence })
         }
-        
+
         FrameType::PathChallenge => {
             if offset + 8 > data.len() {
                 return Err(Error::BufferTooSmall);
@@ -637,9 +645,11 @@ pub fn parse_frame(data: &[u8]) -> Result<(Frame, usize)> {
             let mut challenge_data = [0u8; 8];
             challenge_data.copy_from_slice(&data[offset..offset + 8]);
             offset += 8;
-            Frame::PathChallenge(PathChallengeFrame { data: challenge_data })
+            Frame::PathChallenge(PathChallengeFrame {
+                data: challenge_data,
+            })
         }
-        
+
         FrameType::PathResponse => {
             if offset + 8 > data.len() {
                 return Err(Error::BufferTooSmall);
@@ -647,13 +657,15 @@ pub fn parse_frame(data: &[u8]) -> Result<(Frame, usize)> {
             let mut response_data = [0u8; 8];
             response_data.copy_from_slice(&data[offset..offset + 8]);
             offset += 8;
-            Frame::PathResponse(PathResponseFrame { data: response_data })
+            Frame::PathResponse(PathResponseFrame {
+                data: response_data,
+            })
         }
-        
+
         FrameType::ConnectionClose { app } => {
             let (error_code, n) = decode_varint(&data[offset..])?;
             offset += n;
-            
+
             let frame_type = if !app {
                 let (ft, n) = decode_varint(&data[offset..])?;
                 offset += n;
@@ -661,17 +673,17 @@ pub fn parse_frame(data: &[u8]) -> Result<(Frame, usize)> {
             } else {
                 None
             };
-            
+
             let (reason_len, n) = decode_varint(&data[offset..])?;
             offset += n;
-            
+
             if offset + reason_len as usize > data.len() {
                 return Err(Error::BufferTooSmall);
             }
-            
+
             let reason = data[offset..offset + reason_len as usize].to_vec();
             offset += reason_len as usize;
-            
+
             Frame::ConnectionClose(ConnectionCloseFrame {
                 error_code,
                 frame_type,
@@ -679,9 +691,9 @@ pub fn parse_frame(data: &[u8]) -> Result<(Frame, usize)> {
                 app,
             })
         }
-        
+
         FrameType::HandshakeDone => Frame::HandshakeDone,
-        
+
         FrameType::Datagram { len } => {
             let length = if len {
                 let (l, n) = decode_varint(&data[offset..])?;
@@ -690,22 +702,24 @@ pub fn parse_frame(data: &[u8]) -> Result<(Frame, usize)> {
             } else {
                 data.len() - offset
             };
-            
+
             if offset + length > data.len() {
                 return Err(Error::BufferTooSmall);
             }
-            
+
             let datagram_data = data[offset..offset + length].to_vec();
             offset += length;
-            
-            Frame::Datagram(DatagramFrame { data: datagram_data })
+
+            Frame::Datagram(DatagramFrame {
+                data: datagram_data,
+            })
         }
-        
+
         FrameType::Unknown(ft) => {
             return Err(Error::Transport(TransportError::FrameEncodingError));
         }
     };
-    
+
     Ok((frame, offset))
 }
 
@@ -730,18 +744,18 @@ pub fn build_ack(buf: &mut Vec<u8>, frame: &AckFrame) {
     } else {
         frame_type::ACK
     };
-    
+
     encode_varint(buf, frame_type);
     encode_varint(buf, frame.largest_acked);
     encode_varint(buf, frame.ack_delay);
     encode_varint(buf, frame.ack_range_count);
     encode_varint(buf, frame.first_ack_range);
-    
+
     for (gap, range) in &frame.ack_ranges {
         encode_varint(buf, *gap);
         encode_varint(buf, *range);
     }
-    
+
     if let Some((ect0, ect1, ce)) = frame.ecn_counts {
         encode_varint(buf, ect0);
         encode_varint(buf, ect1);
@@ -766,7 +780,7 @@ pub fn build_stream(buf: &mut Vec<u8>, stream_id: StreamId, offset: u64, data: &
     if offset > 0 {
         frame_type |= 0x04;
     }
-    
+
     encode_varint(buf, frame_type);
     encode_varint(buf, stream_id as u64);
     if offset > 0 {
@@ -802,14 +816,14 @@ pub fn build_connection_close(
     } else {
         frame_type::CONNECTION_CLOSE
     };
-    
+
     encode_varint(buf, ft);
     encode_varint(buf, error_code);
-    
+
     if !app {
         encode_varint(buf, frame_type_val.unwrap_or(0));
     }
-    
+
     encode_varint(buf, reason.len() as u64);
     buf.extend_from_slice(reason);
 }

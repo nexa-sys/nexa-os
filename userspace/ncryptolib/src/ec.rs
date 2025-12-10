@@ -3,8 +3,8 @@
 //! Provides OpenSSL-compatible EC_KEY, EC_POINT, and EC_GROUP functions
 //! for P-256 (secp256r1/prime256v1) curve operations.
 
-use std::vec::Vec;
 use crate::p256::{P256KeyPair, P256Point, P256Signature};
+use std::vec::Vec;
 
 // ============================================================================
 // EC_GROUP - Elliptic Curve Group
@@ -39,7 +39,7 @@ impl EC_GROUP {
     pub fn get_curve_name(&self) -> i32 {
         self.nid
     }
-    
+
     /// Get field size in bits
     pub fn get_degree(&self) -> usize {
         self.field_bits
@@ -79,7 +79,7 @@ impl EC_POINT {
             group_nid: group.nid,
         }
     }
-    
+
     /// Create from P256Point
     pub fn from_p256_point(point: &P256Point) -> Self {
         let uncompressed = point.to_uncompressed();
@@ -99,40 +99,40 @@ impl EC_POINT {
             }
         }
     }
-    
+
     /// Convert to P256Point
     pub fn to_p256_point(&self) -> Option<P256Point> {
         if self.is_infinity {
             return Some(P256Point::infinity());
         }
-        
+
         // Create uncompressed format
         let mut uncompressed = [0u8; 65];
         uncompressed[0] = 0x04;
         uncompressed[1..33].copy_from_slice(&self.x);
         uncompressed[33..65].copy_from_slice(&self.y);
-        
+
         P256Point::from_uncompressed(&uncompressed)
     }
-    
+
     /// Set from uncompressed format (04 || x || y)
     pub fn set_from_uncompressed(&mut self, data: &[u8]) -> bool {
         if data.len() != 65 || data[0] != 0x04 {
             return false;
         }
-        
+
         self.x = data[1..33].to_vec();
         self.y = data[33..65].to_vec();
         self.is_infinity = false;
         true
     }
-    
+
     /// Get as uncompressed format
     pub fn to_uncompressed(&self) -> Vec<u8> {
         if self.is_infinity {
             return vec![0x00]; // Point at infinity
         }
-        
+
         let mut result = Vec::with_capacity(65);
         result.push(0x04);
         result.extend_from_slice(&self.x);
@@ -164,31 +164,31 @@ impl EC_KEY {
             group: core::ptr::null(),
         }
     }
-    
+
     /// Generate new key pair
     pub fn generate(group: &EC_GROUP) -> Option<Self> {
         if group.nid != nid::NID_X9_62_prime256v1 {
             return None; // Only P-256 supported currently
         }
-        
+
         let keypair = P256KeyPair::generate()?;
-        
+
         Some(Self {
             private_key: Some(keypair.private_key.to_vec()),
             public_key: Some(EC_POINT::from_p256_point(&keypair.public_key)),
             group,
         })
     }
-    
+
     /// Set private key
     pub fn set_private_key(&mut self, key: &[u8]) -> bool {
         if key.len() != 32 {
             return false;
         }
-        
+
         let mut priv_arr = [0u8; 32];
         priv_arr.copy_from_slice(key);
-        
+
         // Derive public key
         if let Some(keypair) = P256KeyPair::from_private_key(&priv_arr) {
             self.private_key = Some(key.to_vec());
@@ -198,29 +198,29 @@ impl EC_KEY {
             false
         }
     }
-    
+
     /// Get private key
     pub fn get_private_key(&self) -> Option<&[u8]> {
         self.private_key.as_deref()
     }
-    
+
     /// Get public key point
     pub fn get_public_key(&self) -> Option<&EC_POINT> {
         self.public_key.as_ref()
     }
-    
+
     /// Sign data
     pub fn sign(&self, hash: &[u8]) -> Option<Vec<u8>> {
         let priv_key = self.private_key.as_ref()?;
         if priv_key.len() != 32 {
             return None;
         }
-        
+
         let sig = P256Signature::sign(priv_key, hash)?;
-        
+
         Some(sig.to_der())
     }
-    
+
     /// Verify signature
     pub fn verify(&self, hash: &[u8], signature: &[u8]) -> bool {
         let public_point = match self.public_key.as_ref() {
@@ -230,13 +230,13 @@ impl EC_KEY {
             },
             None => return false,
         };
-        
+
         // Parse DER signature
         let sig = match P256Signature::from_der(signature) {
             Some(s) => s,
             None => return false,
         };
-        
+
         sig.verify(&public_point, hash)
     }
 }
@@ -267,7 +267,7 @@ impl ECDSA_SIG {
             s: s.to_vec(),
         }
     }
-    
+
     /// Create from P256Signature
     pub fn from_p256_sig(sig: &P256Signature) -> Self {
         Self {
@@ -275,30 +275,30 @@ impl ECDSA_SIG {
             s: sig.s.to_vec(),
         }
     }
-    
+
     /// Get r component
     pub fn get_r(&self) -> &[u8] {
         &self.r
     }
-    
+
     /// Get s component
     pub fn get_s(&self) -> &[u8] {
         &self.s
     }
-    
+
     /// Convert to DER format
     pub fn to_der(&self) -> Vec<u8> {
         // ECDSA-Sig-Value ::= SEQUENCE {
         //     r INTEGER,
         //     s INTEGER
         // }
-        
+
         let r_der = integer_to_der(&self.r);
         let s_der = integer_to_der(&self.s);
-        
+
         let inner_len = r_der.len() + s_der.len();
         let mut result = Vec::with_capacity(2 + inner_len);
-        
+
         // SEQUENCE tag
         result.push(0x30);
         if inner_len < 128 {
@@ -307,19 +307,19 @@ impl ECDSA_SIG {
             result.push(0x81);
             result.push(inner_len as u8);
         }
-        
+
         result.extend_from_slice(&r_der);
         result.extend_from_slice(&s_der);
-        
+
         result
     }
-    
+
     /// Parse from DER format
     pub fn from_der(der: &[u8]) -> Option<Self> {
         if der.len() < 6 || der[0] != 0x30 {
             return None;
         }
-        
+
         let (len, offset) = if der[1] < 0x80 {
             (der[1] as usize, 2)
         } else if der[1] == 0x81 {
@@ -327,13 +327,13 @@ impl ECDSA_SIG {
         } else {
             return None;
         };
-        
+
         if der.len() < offset + len {
             return None;
         }
-        
+
         let mut pos = offset;
-        
+
         // Parse r
         if der[pos] != 0x02 {
             return None;
@@ -343,7 +343,7 @@ impl ECDSA_SIG {
         pos += 1;
         let r = der[pos..pos + r_len].to_vec();
         pos += r_len;
-        
+
         // Parse s
         if der[pos] != 0x02 {
             return None;
@@ -352,7 +352,7 @@ impl ECDSA_SIG {
         let s_len = der[pos] as usize;
         pos += 1;
         let s = der[pos..pos + s_len].to_vec();
-        
+
         Some(Self { r, s })
     }
 }
@@ -364,27 +364,27 @@ fn integer_to_der(data: &[u8]) -> Vec<u8> {
     while start < data.len() && data[start] == 0 {
         start += 1;
     }
-    
+
     let significant = if start == data.len() {
         &[0u8][..]
     } else {
         &data[start..]
     };
-    
+
     // Add leading zero if high bit is set (to keep positive)
     let needs_zero = significant[0] & 0x80 != 0;
-    
+
     let len = significant.len() + if needs_zero { 1 } else { 0 };
     let mut result = Vec::with_capacity(2 + len);
-    
+
     result.push(0x02); // INTEGER tag
     result.push(len as u8);
-    
+
     if needs_zero {
         result.push(0x00);
     }
     result.extend_from_slice(significant);
-    
+
     result
 }
 
@@ -412,7 +412,9 @@ pub extern "C" fn EC_GROUP_new_by_curve_name(nid: i32) -> *mut EC_GROUP {
 #[no_mangle]
 pub extern "C" fn EC_GROUP_free(group: *mut EC_GROUP) {
     if !group.is_null() {
-        unsafe { drop(Box::from_raw(group)); }
+        unsafe {
+            drop(Box::from_raw(group));
+        }
     }
 }
 
@@ -445,7 +447,9 @@ pub extern "C" fn EC_KEY_new() -> *mut EC_KEY {
 #[no_mangle]
 pub extern "C" fn EC_KEY_free(key: *mut EC_KEY) {
     if !key.is_null() {
-        unsafe { drop(Box::from_raw(key)); }
+        unsafe {
+            drop(Box::from_raw(key));
+        }
     }
 }
 
@@ -455,7 +459,7 @@ pub extern "C" fn EC_KEY_new_by_curve_name(nid: i32) -> *mut EC_KEY {
     if nid != nid::NID_X9_62_prime256v1 {
         return core::ptr::null_mut();
     }
-    
+
     let mut key = Box::new(EC_KEY::new());
     key.group = &P256_GROUP;
     Box::into_raw(key)
@@ -467,17 +471,17 @@ pub extern "C" fn EC_KEY_generate_key(key: *mut EC_KEY) -> i32 {
     if key.is_null() {
         return 0;
     }
-    
+
     let keypair = match P256KeyPair::generate() {
         Some(kp) => kp,
         None => return 0,
     };
-    
+
     unsafe {
         (*key).private_key = Some(keypair.private_key.to_vec());
         (*key).public_key = Some(EC_POINT::from_p256_point(&keypair.public_key));
     }
-    
+
     1
 }
 
@@ -496,7 +500,9 @@ pub extern "C" fn EC_KEY_set_group(key: *mut EC_KEY, group: *const EC_GROUP) -> 
     if key.is_null() || group.is_null() {
         return 0;
     }
-    unsafe { (*key).group = group; }
+    unsafe {
+        (*key).group = group;
+    }
     1
 }
 
@@ -529,7 +535,9 @@ pub extern "C" fn EC_POINT_new(group: *const EC_GROUP) -> *mut EC_POINT {
 #[no_mangle]
 pub extern "C" fn EC_POINT_free(point: *mut EC_POINT) {
     if !point.is_null() {
-        unsafe { drop(Box::from_raw(point)); }
+        unsafe {
+            drop(Box::from_raw(point));
+        }
     }
 }
 
@@ -546,28 +554,28 @@ pub extern "C" fn EC_POINT_point2oct(
     if point.is_null() {
         return 0;
     }
-    
+
     let point = unsafe { &*point };
-    
+
     // form: 4 = uncompressed
     if form != 4 {
         return 0; // Only uncompressed supported
     }
-    
+
     let data = point.to_uncompressed();
-    
+
     if buf.is_null() {
         return data.len();
     }
-    
+
     if len < data.len() {
         return 0;
     }
-    
+
     unsafe {
         core::ptr::copy_nonoverlapping(data.as_ptr(), buf, data.len());
     }
-    
+
     data.len()
 }
 
@@ -583,10 +591,10 @@ pub extern "C" fn EC_POINT_oct2point(
     if point.is_null() || buf.is_null() || len < 1 {
         return 0;
     }
-    
+
     let data = unsafe { core::slice::from_raw_parts(buf, len) };
     let point = unsafe { &mut *point };
-    
+
     if point.set_from_uncompressed(data) {
         1
     } else {
@@ -617,7 +625,9 @@ pub extern "C" fn ECDSA_SIG_new() -> *mut ECDSA_SIG {
 #[no_mangle]
 pub extern "C" fn ECDSA_SIG_free(sig: *mut ECDSA_SIG) {
     if !sig.is_null() {
-        unsafe { drop(Box::from_raw(sig)); }
+        unsafe {
+            drop(Box::from_raw(sig));
+        }
     }
 }
 
@@ -631,18 +641,20 @@ pub extern "C" fn d2i_ECDSA_SIG(
     if pp.is_null() {
         return core::ptr::null_mut();
     }
-    
+
     let data = unsafe { core::slice::from_raw_parts(*pp, len as usize) };
-    
+
     match ECDSA_SIG::from_der(data) {
         Some(parsed) => {
             let boxed = Box::new(parsed);
             let ptr = Box::into_raw(boxed);
-            
+
             if !sig.is_null() {
-                unsafe { *sig = ptr; }
+                unsafe {
+                    *sig = ptr;
+                }
             }
-            
+
             ptr
         }
         None => core::ptr::null_mut(),
@@ -651,25 +663,22 @@ pub extern "C" fn d2i_ECDSA_SIG(
 
 /// i2d_ECDSA_SIG - Encode signature to DER
 #[no_mangle]
-pub extern "C" fn i2d_ECDSA_SIG(
-    sig: *const ECDSA_SIG,
-    pp: *mut *mut u8,
-) -> i32 {
+pub extern "C" fn i2d_ECDSA_SIG(sig: *const ECDSA_SIG, pp: *mut *mut u8) -> i32 {
     if sig.is_null() {
         return -1;
     }
-    
+
     let sig = unsafe { &*sig };
     let der = sig.to_der();
     let len = der.len();
-    
+
     if !pp.is_null() && !unsafe { (*pp).is_null() } {
         unsafe {
             core::ptr::copy_nonoverlapping(der.as_ptr(), *pp, len);
             *pp = (*pp).add(len);
         }
     }
-    
+
     len as i32
 }
 
@@ -688,10 +697,10 @@ mod tests {
     fn test_ecdsa_sign_verify() {
         let key = EC_KEY::generate(&P256_GROUP).unwrap();
         let hash = [0x12u8; 32];
-        
+
         let signature = key.sign(&hash).unwrap();
         assert!(key.verify(&hash, &signature));
-        
+
         // Verify with wrong hash fails
         let wrong_hash = [0x34u8; 32];
         assert!(!key.verify(&wrong_hash, &signature));
@@ -701,7 +710,7 @@ mod tests {
     fn test_ecdsa_sig_der() {
         let sig = ECDSA_SIG::new(&[0x12; 32], &[0x34; 32]);
         let der = sig.to_der();
-        
+
         let parsed = ECDSA_SIG::from_der(&der).unwrap();
         assert_eq!(parsed.r.len(), 32);
         assert_eq!(parsed.s.len(), 32);

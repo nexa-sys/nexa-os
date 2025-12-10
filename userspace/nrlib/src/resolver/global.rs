@@ -1,7 +1,6 @@
 /// Global resolver instance and initialization
 ///
 /// Manages the global resolver state and provides initialization.
-
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::get_system_dns_servers;

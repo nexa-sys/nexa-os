@@ -92,12 +92,12 @@ fn print_usage() {
 fn pattern_matches(pattern: &str, name: &str) -> bool {
     let pattern_chars: Vec<char> = pattern.chars().collect();
     let name_chars: Vec<char> = name.chars().collect();
-    
+
     fn match_helper(pattern: &[char], name: &[char]) -> bool {
         if pattern.is_empty() {
             return name.is_empty();
         }
-        
+
         match pattern[0] {
             '*' => {
                 // Try matching * with 0 characters, then 1, then 2, etc.
@@ -124,7 +124,7 @@ fn pattern_matches(pattern: &str, name: &str) -> bool {
             }
         }
     }
-    
+
     match_helper(&pattern_chars, &name_chars)
 }
 
@@ -133,7 +133,7 @@ fn parse_size(s: &str) -> Result<SizeComparison, String> {
     if s.is_empty() {
         return Err("Empty size specification".to_string());
     }
-    
+
     let (comparison_fn, rest): (fn(u64) -> SizeComparison, &str) = if s.starts_with('+') {
         (SizeComparison::GreaterThan, &s[1..])
     } else if s.starts_with('-') {
@@ -141,7 +141,7 @@ fn parse_size(s: &str) -> Result<SizeComparison, String> {
     } else {
         (SizeComparison::Exact, s)
     };
-    
+
     // Extract numeric part and suffix
     let mut num_end = 0;
     for (i, c) in rest.char_indices() {
@@ -151,14 +151,14 @@ fn parse_size(s: &str) -> Result<SizeComparison, String> {
             break;
         }
     }
-    
+
     if num_end == 0 {
         return Err("Invalid size: no number found".to_string());
     }
-    
+
     let num: u64 = rest[..num_end].parse().map_err(|_| "Invalid number")?;
     let suffix = &rest[num_end..];
-    
+
     let multiplier: u64 = match suffix {
         "" | "k" => 1024,
         "c" => 1,
@@ -166,18 +166,18 @@ fn parse_size(s: &str) -> Result<SizeComparison, String> {
         "G" => 1024 * 1024 * 1024,
         _ => return Err(format!("Unknown size suffix: {}", suffix)),
     };
-    
+
     Ok(comparison_fn(num * multiplier))
 }
 
 fn parse_args() -> Result<FindOptions, String> {
     let args: Vec<String> = env::args().collect();
     let mut opts = FindOptions::default();
-    
+
     let mut i = 1;
     while i < args.len() {
         let arg = &args[i];
-        
+
         if arg == "--help" {
             print_usage();
             process::exit(0);
@@ -226,15 +226,15 @@ fn parse_args() -> Result<FindOptions, String> {
             // It's a path
             opts.paths.push(PathBuf::from(arg));
         }
-        
+
         i += 1;
     }
-    
+
     // Default to current directory if no paths specified
     if opts.paths.is_empty() {
         opts.paths.push(PathBuf::from("."));
     }
-    
+
     Ok(opts)
 }
 
@@ -280,24 +280,24 @@ fn matches_criteria(path: &Path, metadata: &Metadata, opts: &FindOptions) -> boo
             return false;
         }
     }
-    
+
     // Check file type
     if !check_type(metadata, &opts.file_type) {
         return false;
     }
-    
+
     // Check size
     if let Some(ref size) = opts.size {
         if !check_size(metadata, size) {
             return false;
         }
     }
-    
+
     // Check empty
     if opts.empty && !check_empty(path, metadata) {
         return false;
     }
-    
+
     true
 }
 
@@ -308,23 +308,23 @@ fn find_recursive(path: &Path, depth: usize, opts: &FindOptions) {
             return;
         }
     }
-    
+
     // Get metadata
     let metadata = match fs::symlink_metadata(path) {
         Ok(m) => m,
         Err(_) => return,
     };
-    
+
     // Check if we should print this entry
     let should_print = match opts.min_depth {
         Some(min) => depth >= min,
         None => true,
     };
-    
+
     if should_print && matches_criteria(path, &metadata, opts) {
         println!("{}", path.display());
     }
-    
+
     // Recurse into directories
     if metadata.is_dir() {
         if let Some(max) = opts.max_depth {
@@ -332,12 +332,12 @@ fn find_recursive(path: &Path, depth: usize, opts: &FindOptions) {
                 return;
             }
         }
-        
+
         let entries = match fs::read_dir(path) {
             Ok(e) => e,
             Err(_) => return,
         };
-        
+
         for entry in entries.flatten() {
             find_recursive(&entry.path(), depth + 1, opts);
         }
@@ -353,13 +353,13 @@ fn main() {
             process::exit(1);
         }
     };
-    
+
     for path in &opts.paths {
         if !path.exists() {
             eprintln!("find: '{}': No such file or directory", path.display());
             continue;
         }
-        
+
         find_recursive(path, 0, &opts);
     }
 }

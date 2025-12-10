@@ -439,8 +439,7 @@ impl VmallocAllocator {
 
     /// Allocate a physical page (delegates to buddy allocator directly)
     fn allocate_physical_page(&self) -> Result<u64, &'static str> {
-        crate::allocator::alloc_page()
-            .ok_or("Out of physical memory")
+        crate::allocator::alloc_page().ok_or("Out of physical memory")
     }
 
     /// Free a physical page

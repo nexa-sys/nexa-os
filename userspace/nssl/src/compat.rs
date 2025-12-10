@@ -4,10 +4,10 @@
 //! These functions allow applications to dynamically link against libnssl.so
 //! using the standard OpenSSL API.
 
-use crate::{c_int, c_char, c_uchar, c_ulong, c_long, size_t};
-use crate::context::SslContext;
 use crate::connection::SslConnection;
+use crate::context::SslContext;
 use crate::ssl::SslMethod;
+use crate::{c_char, c_int, c_long, c_uchar, c_ulong, size_t};
 
 // ============================================================================
 // Additional SSL_CTX functions
@@ -178,7 +178,11 @@ pub extern "C" fn SSL_pending(ssl: *const SslConnection) -> c_int {
 /// Check for pending data
 #[no_mangle]
 pub extern "C" fn SSL_has_pending(ssl: *const SslConnection) -> c_int {
-    if SSL_pending(ssl) > 0 { 1 } else { 0 }
+    if SSL_pending(ssl) > 0 {
+        1
+    } else {
+        0
+    }
 }
 
 /// Get shutdown state
@@ -226,7 +230,10 @@ pub extern "C" fn SSL_get_SSL_CTX(ssl: *const SslConnection) -> *mut SslContext 
 
 /// Set SSL context
 #[no_mangle]
-pub extern "C" fn SSL_set_SSL_CTX(ssl: *mut SslConnection, _ctx: *mut SslContext) -> *mut SslContext {
+pub extern "C" fn SSL_set_SSL_CTX(
+    ssl: *mut SslConnection,
+    _ctx: *mut SslContext,
+) -> *mut SslContext {
     if ssl.is_null() {
         return core::ptr::null_mut();
     }
@@ -328,25 +335,39 @@ pub extern "C" fn SSL_get_verify_depth(ssl: *const SslConnection) -> c_int {
 
 /// Set ex data on SSL
 #[no_mangle]
-pub extern "C" fn SSL_set_ex_data(_ssl: *mut SslConnection, _idx: c_int, _data: *mut core::ffi::c_void) -> c_int {
+pub extern "C" fn SSL_set_ex_data(
+    _ssl: *mut SslConnection,
+    _idx: c_int,
+    _data: *mut core::ffi::c_void,
+) -> c_int {
     1 // Success
 }
 
 /// Get ex data from SSL
 #[no_mangle]
-pub extern "C" fn SSL_get_ex_data(_ssl: *const SslConnection, _idx: c_int) -> *mut core::ffi::c_void {
+pub extern "C" fn SSL_get_ex_data(
+    _ssl: *const SslConnection,
+    _idx: c_int,
+) -> *mut core::ffi::c_void {
     core::ptr::null_mut()
 }
 
 /// Set ex data on SSL_CTX
 #[no_mangle]
-pub extern "C" fn SSL_CTX_set_ex_data(_ctx: *mut SslContext, _idx: c_int, _data: *mut core::ffi::c_void) -> c_int {
+pub extern "C" fn SSL_CTX_set_ex_data(
+    _ctx: *mut SslContext,
+    _idx: c_int,
+    _data: *mut core::ffi::c_void,
+) -> c_int {
     1
 }
 
 /// Get ex data from SSL_CTX
 #[no_mangle]
-pub extern "C" fn SSL_CTX_get_ex_data(_ctx: *const SslContext, _idx: c_int) -> *mut core::ffi::c_void {
+pub extern "C" fn SSL_CTX_get_ex_data(
+    _ctx: *const SslContext,
+    _idx: c_int,
+) -> *mut core::ffi::c_void {
     core::ptr::null_mut()
 }
 
@@ -371,11 +392,16 @@ pub extern "C" fn SSL_SESSION_get_timeout(session: *const crate::session::SslSes
 
 /// Set session timeout
 #[no_mangle]
-pub extern "C" fn SSL_SESSION_set_timeout(session: *mut crate::session::SslSession, timeout: c_ulong) -> c_ulong {
+pub extern "C" fn SSL_SESSION_set_timeout(
+    session: *mut crate::session::SslSession,
+    timeout: c_ulong,
+) -> c_ulong {
     if session.is_null() {
         return 0;
     }
-    unsafe { (*session).set_timeout(timeout); }
+    unsafe {
+        (*session).set_timeout(timeout);
+    }
     timeout
 }
 
@@ -445,13 +471,17 @@ pub extern "C" fn SSL_read_ex(
     if ssl.is_null() || buf.is_null() || readbytes.is_null() {
         return 0;
     }
-    
+
     let result = crate::SSL_read(ssl, buf, num as c_int);
     if result > 0 {
-        unsafe { *readbytes = result as size_t; }
+        unsafe {
+            *readbytes = result as size_t;
+        }
         1 // Success
     } else {
-        unsafe { *readbytes = 0; }
+        unsafe {
+            *readbytes = 0;
+        }
         0 // Error
     }
 }
@@ -467,13 +497,17 @@ pub extern "C" fn SSL_write_ex(
     if ssl.is_null() || buf.is_null() || written.is_null() {
         return 0;
     }
-    
+
     let result = crate::SSL_write(ssl, buf, num as c_int);
     if result > 0 {
-        unsafe { *written = result as size_t; }
+        unsafe {
+            *written = result as size_t;
+        }
         1 // Success
     } else {
-        unsafe { *written = 0; }
+        unsafe {
+            *written = 0;
+        }
         0 // Error
     }
 }
@@ -537,7 +571,7 @@ pub extern "C" fn SSL_get1_peer_certificate(ssl: *const SslConnection) -> *mut c
 // SSL Session Ticket Functions
 // ============================================================================
 
-// Note: Session ticket functions (SSL_CTX_set_tlsext_ticket_key_cb, 
+// Note: Session ticket functions (SSL_CTX_set_tlsext_ticket_key_cb,
 // SSL_CTX_set_num_tickets, SSL_CTX_get_num_tickets) are exported from tickets.rs
 
 // ============================================================================
@@ -581,7 +615,9 @@ pub extern "C" fn SSL_set_msg_callback_arg(ssl: *mut SslConnection, _arg: *mut c
 
 /// Get X509 verify parameters
 #[no_mangle]
-pub extern "C" fn SSL_CTX_get0_param(ctx: *const SslContext) -> *mut crate::cert_chain::X509_VERIFY_PARAM {
+pub extern "C" fn SSL_CTX_get0_param(
+    ctx: *const SslContext,
+) -> *mut crate::cert_chain::X509_VERIFY_PARAM {
     if ctx.is_null() {
         return core::ptr::null_mut();
     }
@@ -590,7 +626,9 @@ pub extern "C" fn SSL_CTX_get0_param(ctx: *const SslContext) -> *mut crate::cert
 
 /// Get X509 verify parameters from connection
 #[no_mangle]
-pub extern "C" fn SSL_get0_param(ssl: *const SslConnection) -> *mut crate::cert_chain::X509_VERIFY_PARAM {
+pub extern "C" fn SSL_get0_param(
+    ssl: *const SslConnection,
+) -> *mut crate::cert_chain::X509_VERIFY_PARAM {
     if ssl.is_null() {
         return core::ptr::null_mut();
     }
@@ -601,7 +639,7 @@ pub extern "C" fn SSL_get0_param(ssl: *const SslConnection) -> *mut crate::cert_
 // SSL Renegotiation Functions
 // ============================================================================
 
-// Note: Renegotiation functions (SSL_renegotiate, SSL_renegotiate_pending, 
+// Note: Renegotiation functions (SSL_renegotiate, SSL_renegotiate_pending,
 // SSL_renegotiate_abbreviated) are exported from post_handshake.rs
 
 // ============================================================================
@@ -640,5 +678,5 @@ pub extern "C" fn SSL_CTX_get_keylog_callback(ctx: *const SslContext) -> KeylogC
 // Post-Handshake Authentication (TLS 1.3)
 // ============================================================================
 
-// Note: Post-handshake auth functions (SSL_set_post_handshake_auth, 
+// Note: Post-handshake auth functions (SSL_set_post_handshake_auth,
 // SSL_verify_client_post_handshake) are exported from post_handshake.rs

@@ -1,7 +1,7 @@
 //! NexaOS Cryptographic Library (ncryptolib)
 //!
 //! A modern, libcrypto.so ABI-compatible cryptographic library for NexaOS.
-//! 
+//!
 //! This library provides commonly used cryptographic primitives:
 //!
 //! ## Hash Functions
@@ -80,16 +80,16 @@ pub mod aes;
 pub mod chacha20;
 
 // Asymmetric cryptography
-pub mod ecdsa;
-pub mod x25519;
-pub mod ed25519;
-pub mod rsa;
-pub mod p256;
 pub mod ec;
+pub mod ecdsa;
+pub mod ed25519;
+pub mod p256;
+pub mod rsa;
+pub mod x25519;
 
 // Key derivation
-pub mod kdf;
 pub mod argon2;
+pub mod kdf;
 pub mod scrypt;
 
 // Message authentication
@@ -227,8 +227,8 @@ pub extern "C" fn CRYPTO_cleanup_all_ex_data() {
 // ============================================================================
 
 // SHA-2 family
-pub use hash::{sha256, sha384, sha512, Sha256, Sha384, Sha512};
 pub use hash::{hmac_sha256, HmacSha256};
+pub use hash::{sha256, sha384, sha512, Sha256, Sha384, Sha512};
 
 // SHA-3 family
 pub use sha3::{sha3_256, sha3_384, sha3_512, Sha3, Sha3_256, Sha3_384, Sha3_512};
@@ -236,7 +236,7 @@ pub use sha3::{Shake128, Shake256};
 
 // BLAKE2 family
 pub use blake2::{blake2b, blake2s, Blake2b, Blake2s};
-pub use blake2::{blake2b_with_len, blake2s_with_len, blake2b_keyed};
+pub use blake2::{blake2b_keyed, blake2b_with_len, blake2s_with_len};
 
 // Legacy hashes (file verification only)
 pub use md5::{md5, Md5, MD5_DIGEST_SIZE};
@@ -246,24 +246,24 @@ pub use sha1::{sha1, Sha1, SHA1_DIGEST_SIZE};
 pub use crc32::{crc32, crc32c, Crc32, Crc32c};
 
 // Symmetric encryption
-pub use aes::{Aes128, Aes256, AesGcm, AesCtr, AesCbc};
+pub use aes::{Aes128, Aes256, AesCbc, AesCtr, AesGcm};
+pub use chacha20::{chacha20_decrypt, chacha20_encrypt};
+pub use chacha20::{chacha20_poly1305_decrypt, chacha20_poly1305_encrypt};
 pub use chacha20::{ChaCha20, ChaCha20Poly1305, Poly1305};
-pub use chacha20::{chacha20_encrypt, chacha20_decrypt};
-pub use chacha20::{chacha20_poly1305_encrypt, chacha20_poly1305_decrypt};
 
 // Asymmetric cryptography
-pub use rsa::{RsaPublicKey, RsaPrivateKey};
-pub use rsa::{rsa_encrypt, rsa_decrypt, rsa_sign, rsa_verify};
-pub use rsa::{rsa_oaep_encrypt, rsa_oaep_decrypt, generate_keypair};
+pub use rsa::{generate_keypair, rsa_oaep_decrypt, rsa_oaep_encrypt};
+pub use rsa::{rsa_decrypt, rsa_encrypt, rsa_sign, rsa_verify};
 pub use rsa::{rsa_pss_sign, rsa_pss_verify};
+pub use rsa::{RsaPrivateKey, RsaPublicKey};
 
 // P-256 (secp256r1) ECDH/ECDSA
 pub use p256::{P256KeyPair, P256Point, P256Signature};
-pub use p256::{P256_COORD_SIZE, P256_SIG_SIZE, P256_PRIVATE_KEY_SIZE, P256_PUBLIC_KEY_SIZE};
+pub use p256::{P256_COORD_SIZE, P256_PRIVATE_KEY_SIZE, P256_PUBLIC_KEY_SIZE, P256_SIG_SIZE};
 
 // EC OpenSSL compatibility
-pub use ec::{EC_GROUP, EC_POINT, EC_KEY, ECDSA_SIG};
 pub use ec::nid;
+pub use ec::{ECDSA_SIG, EC_GROUP, EC_KEY, EC_POINT};
 
 // Big number support
 pub mod bn;
@@ -271,11 +271,11 @@ pub use bn::{BIGNUM, BN_CTX};
 
 // PEM encoding
 pub mod pem;
-pub use pem::{PemBlock, pem_encode, pem_decode, pem_decode_one};
+pub use pem::{pem_decode, pem_decode_one, pem_encode, PemBlock};
 
 // ASN.1 parsing
 pub mod asn1;
-pub use asn1::{Oid, oids, parse_tlv, encode_tlv, parse_sequence, encode_sequence};
+pub use asn1::{encode_sequence, encode_tlv, oids, parse_sequence, parse_tlv, Oid};
 
 // OpenSSL error handling
 pub mod err;
@@ -283,32 +283,32 @@ pub use err::{lib_code, push_error, push_error_data, unpack_error};
 
 // OpenSSL version functions
 pub mod version;
-pub use version::{OPENSSL_VERSION_NUMBER as OPENSSL_VERSION_NUM_3, init_opts};
+pub use version::{init_opts, OPENSSL_VERSION_NUMBER as OPENSSL_VERSION_NUM_3};
 
 // OpenSSL object identifiers
 pub mod objects;
-pub use objects::ASN1_OBJECT;
 pub use objects::nid as obj_nid;
+pub use objects::ASN1_OBJECT;
 
 // Random
 pub use random::{getrandom, RngState};
 
 // Key derivation
+pub use argon2::{argon2, argon2d, argon2i, argon2id, Argon2Params, Argon2Variant};
+pub use kdf::{derive_secret, hkdf_expand_label, hkdf_expand_sha256, hkdf_extract_sha256};
 pub use kdf::{hkdf, pbkdf2_sha256};
-pub use kdf::{hkdf_extract_sha256, hkdf_expand_sha256, hkdf_expand_label, derive_secret};
+pub use kdf::{tls12_key_block, tls12_master_secret, tls12_prf_sha256};
 pub use kdf::{Tls13KeySchedule, TrafficKeys};
-pub use kdf::{tls12_prf_sha256, tls12_master_secret, tls12_key_block};
-pub use argon2::{argon2, argon2id, argon2i, argon2d, Argon2Params, Argon2Variant};
 pub use scrypt::{scrypt, scrypt_simple, ScryptParams};
 
 // Message authentication
-pub use hmac::{hmac_sha384, hmac_sha512, hmac_sha3_256};
-pub use hmac::{HmacSha384, HmacSha512, HmacSha3_256, Hmac};
 pub use hmac::HMAC_CTX;
+pub use hmac::{hmac_sha384, hmac_sha3_256, hmac_sha512};
+pub use hmac::{Hmac, HmacSha384, HmacSha3_256, HmacSha512};
 
 // Encoding
-pub use encoding::{base64_encode, base64_decode, base64url_encode, base64url_decode};
-pub use encoding::{hex_encode, hex_decode};
+pub use encoding::{base64_decode, base64_encode, base64url_decode, base64url_encode};
+pub use encoding::{hex_decode, hex_encode};
 
 // Constant-time utilities
 pub use constant_time::{ct_eq, secure_zero};

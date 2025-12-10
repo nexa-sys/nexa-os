@@ -135,7 +135,7 @@ fn itoa(n: u64, buf: &mut [u8]) -> &str {
     if buf.is_empty() {
         return "";
     }
-    
+
     if n == 0 {
         buf[0] = b'0';
         return std::str::from_utf8(&buf[0..1]).unwrap();
@@ -180,11 +180,11 @@ const FIELD_IDX_RESERVED: usize = 12;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ServiceType {
-    Simple,     // Default: service main process started directly
-    Oneshot,    // Service process terminates, init continues
-    Forking,    // Service forks, parent exits
-    Dbus,       // Service acquires D-Bus name
-    Notify,     // Service sends readiness notification
+    Simple,  // Default: service main process started directly
+    Oneshot, // Service process terminates, init continues
+    Forking, // Service forks, parent exits
+    Dbus,    // Service acquires D-Bus name
+    Notify,  // Service sends readiness notification
 }
 
 impl ServiceType {
@@ -222,11 +222,11 @@ impl RestartPolicy {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ServiceState {
-    Inactive,   // Not running
-    Activating, // Being started
-    Active,     // Running
+    Inactive,     // Not running
+    Activating,   // Being started
+    Active,       // Running
     Deactivating, // Being stopped
-    Failed,     // Failed or exited with error
+    Failed,       // Failed or exited with error
 }
 
 impl ServiceState {
@@ -369,27 +369,27 @@ fn load_service_catalog() -> ServiceCatalog {
     unsafe {
         DEFAULT_BOOT_TARGET = DEFAULT_TARGET_NAME;
         FALLBACK_BOOT_TARGET = FALLBACK_TARGET_NAME;
-        
+
         // Use std::fs for file operations - nrlib provides std I/O support
         match fs::read("/etc/ni/ni.conf") {
             Ok(content) => {
                 log_info("Unit catalog file opened");
-                
+
                 let usable = core::cmp::min(content.len(), config_buffer_capacity());
-                
+
                 // Copy content to CONFIG_BUFFER
                 let buffer_ptr = config_buffer_ptr();
                 for i in 0..usable {
                     buffer_ptr.add(i).write(content[i]);
                 }
-                
+
                 let mut diag_buf = [0u8; 32];
                 let bytes_read = itoa(usable as u64, &mut diag_buf);
                 println!("         Bytes read: {}", bytes_read);
-                
+
                 let service_count = parse_unit_file(usable);
                 log_info("Unit catalog parsed successfully");
-                
+
                 ServiceCatalog {
                     services: &SERVICE_CONFIGS[0..service_count],
                     default_target: DEFAULT_BOOT_TARGET,
@@ -654,11 +654,16 @@ fn finalize_service(service: &ServiceConfig, service_count: &mut usize) {
         stored.after = store_service_field(idx, FIELD_IDX_AFTER, stored.after, "After");
         stored.before = store_service_field(idx, FIELD_IDX_BEFORE, stored.before, "Before");
         stored.wants = store_service_field(idx, FIELD_IDX_WANTS, stored.wants, "WantedBy");
-        stored.requires = store_service_field(idx, FIELD_IDX_REQUIRES, stored.requires, "RequiredBy");
+        stored.requires =
+            store_service_field(idx, FIELD_IDX_REQUIRES, stored.requires, "RequiredBy");
         stored.user = store_service_field(idx, FIELD_IDX_USER, stored.user, "User");
         stored.group = store_service_field(idx, FIELD_IDX_GROUP, stored.group, "Group");
-        stored.working_dir =
-            store_service_field(idx, FIELD_IDX_WORKING_DIR, stored.working_dir, "WorkingDirectory");
+        stored.working_dir = store_service_field(
+            idx,
+            FIELD_IDX_WORKING_DIR,
+            stored.working_dir,
+            "WorkingDirectory",
+        );
         stored.standard_output = store_service_field(
             idx,
             FIELD_IDX_STANDARD_OUTPUT,
@@ -1043,7 +1048,7 @@ fn delay_ms(ms: u64) {
             unsafe { asm!("pause") }
         }
     }
-    
+
     #[cfg(not(target_os = "none"))]
     {
         // In normal environments, use proper sleep
@@ -1054,9 +1059,9 @@ fn delay_ms(ms: u64) {
 /// Enable swap devices from /etc/fstab
 fn enable_swap_from_fstab() {
     const SYS_SWAPON: u64 = 167;
-    
+
     log_start("Activating swap from /etc/fstab");
-    
+
     let fstab_content = match fs::read_to_string("/etc/fstab") {
         Ok(content) => content,
         Err(_) => {
@@ -1064,21 +1069,21 @@ fn enable_swap_from_fstab() {
             return;
         }
     };
-    
+
     let mut swap_enabled = false;
-    
+
     for line in fstab_content.lines() {
         let line = line.trim();
-        
+
         // Skip comments and empty lines
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        
+
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() >= 3 && parts[2] == "swap" {
             let device = parts[0];
-            
+
             // Parse priority from options (pri=N)
             let mut flags: i32 = 0;
             if parts.len() >= 4 {
@@ -1091,17 +1096,17 @@ fn enable_swap_from_fstab() {
                     }
                 }
             }
-            
+
             // Check if device exists
             if !Path::new(device).exists() {
                 log_warn(&format!("Swap device not found: {}", device));
                 continue;
             }
-            
+
             // Call swapon syscall
             let device_cstr = format!("{}\0", device);
             let ret = syscall3(SYS_SWAPON, device_cstr.as_ptr() as u64, flags as u64, 0);
-            
+
             if ret == 0 || ret < 0x8000_0000_0000_0000 {
                 log_ok(&format!("Enabled swap on {}", device));
                 swap_enabled = true;
@@ -1110,7 +1115,7 @@ fn enable_swap_from_fstab() {
             }
         }
     }
-    
+
     if !swap_enabled {
         log_info("No swap entries found or enabled");
     }
@@ -1119,20 +1124,29 @@ fn enable_swap_from_fstab() {
 fn init_main() -> ! {
     // Early system initialization
     log_info("NexaOS init starting");
-    
+
     // Enable swap from fstab before starting services
     enable_swap_from_fstab();
-    
+
     let catalog = load_service_catalog();
-    
+
     // Simple initialization to avoid complex const expressions
     let empty_service: Option<RunningService> = None;
     let mut running_services: [Option<RunningService>; MAX_SERVICES] = [
-        empty_service, empty_service, empty_service, empty_service,
-        empty_service, empty_service, empty_service, empty_service,
-        empty_service, empty_service, empty_service, empty_service,
+        empty_service,
+        empty_service,
+        empty_service,
+        empty_service,
+        empty_service,
+        empty_service,
+        empty_service,
+        empty_service,
+        empty_service,
+        empty_service,
+        empty_service,
+        empty_service,
     ];
-    
+
     let service_count = catalog.services.len();
 
     for i in 0..service_count {
@@ -1146,13 +1160,13 @@ fn init_main() -> ! {
 
     if service_count == 0 {
         log_warn("No units configured, starting fallback shell");
-        
+
         // Use FALLBACK_SERVICE configuration
         running_services[0] = Some(RunningService {
             config: &FALLBACK_SERVICE,
             state: UnitState::new(),
         });
-        
+
         parallel_service_supervisor(&mut running_services, 1, &mut buf);
     }
 
@@ -1166,23 +1180,30 @@ fn parallel_service_supervisor(
     buf: &mut [u8],
 ) -> ! {
     // Start all services initially
-    println!("\x1b[1;34m[INIT]\x1b[0m Starting {} services", service_count);
+    println!(
+        "\x1b[1;34m[INIT]\x1b[0m Starting {} services",
+        service_count
+    );
     println!();
-    
+
     for i in 0..service_count {
         if let Some(ref mut rs) = running_services[i] {
             let service = rs.config;
             let state = &mut rs.state;
 
             log_start(&format!("Starting unit: {}", service_label(service)));
-            
+
             let pid = start_service(service, buf);
-            
+
             if pid > 0 {
                 state.set_active(pid);
                 state.total_starts = state.total_starts.saturating_add(1);
-                log_info(&format!("Unit started: {} (PID: {})", service_label(service), pid));
-                
+                log_info(&format!(
+                    "Unit started: {} (PID: {})",
+                    service_label(service),
+                    pid
+                ));
+
                 // For oneshot services, don't wait for them
                 if service.service_type == ServiceType::Oneshot {
                     log_detail("Type", "oneshot");
@@ -1196,7 +1217,7 @@ fn parallel_service_supervisor(
             }
         }
     }
-    
+
     // Main supervision loop - wait for any child process to exit and restart if needed
     loop {
         let mut status: i32 = 0;
@@ -1222,7 +1243,7 @@ fn parallel_service_supervisor(
                     log_warn(&format!("Unit terminated: {}", service_label(service)));
                     let pid_str = itoa(pid as u64, buf);
                     log_detail("PID", pid_str);
-                    
+
                     // Decode POSIX wait status
                     if wifexited(status) {
                         let exit_code = wexitstatus(status);
@@ -1235,11 +1256,7 @@ fn parallel_service_supervisor(
                     }
 
                     state.set_inactive();
-                    log_state_change(
-                        service_label(service),
-                        old_state,
-                        state.state.as_str(),
-                    );
+                    log_state_change(service_label(service), old_state, state.state.as_str());
 
                     // Check if we should restart
                     let exited_with_failure = if wifexited(status) {
@@ -1247,7 +1264,7 @@ fn parallel_service_supervisor(
                     } else {
                         true // Terminated by signal counts as failure
                     };
-                    
+
                     let should_restart = match service.restart {
                         RestartPolicy::No => false,
                         RestartPolicy::Always => true,
@@ -1255,7 +1272,11 @@ fn parallel_service_supervisor(
                     };
 
                     if should_restart
-                        && state.allow_attempt(now_marker, service.restart, service.restart_settings)
+                        && state.allow_attempt(
+                            now_marker,
+                            service.restart,
+                            service.restart_settings,
+                        )
                     {
                         delay_ms(service.restart_delay_ms);
 
@@ -1278,7 +1299,10 @@ fn parallel_service_supervisor(
                             println!();
                         } else {
                             state.set_failed();
-                            log_fail(&format!("Failed to restart unit: {}", service_label(service)));
+                            log_fail(&format!(
+                                "Failed to restart unit: {}",
+                                service_label(service)
+                            ));
                             println!();
                         }
                     } else if should_restart {
@@ -1287,11 +1311,7 @@ fn parallel_service_supervisor(
                             "Restart limit exceeded for unit: {}",
                             service_label(service)
                         ));
-                        log_state_change(
-                            service_label(service),
-                            old_state,
-                            state.state.as_str(),
-                        );
+                        log_state_change(service_label(service), old_state, state.state.as_str());
                         println!();
                     } else {
                         log_info(&format!(
@@ -1321,21 +1341,21 @@ fn start_service(service: &ServiceConfig, _buf: &mut [u8]) -> i64 {
     exec_path_buf[exec_path_len] = 0; // null-terminate
 
     let exec_start_str = std::str::from_utf8(&exec_path_buf[..exec_path_len]).unwrap_or("/bin/sh");
-    
+
     // Parse exec_start into program path and arguments
     // Split by whitespace to get argv components
     let mut argv_ptrs: [*const u8; 16] = [core::ptr::null(); 16]; // Max 15 args + NULL
     let mut argv_bufs: [[u8; 128]; 16] = [[0u8; 128]; 16]; // Storage for each arg
     let mut argc = 0usize;
-    
+
     // Split exec_start by spaces
     let mut start = 0;
     let bytes = exec_start_str.as_bytes();
     let mut in_arg = false;
-    
+
     for i in 0..=bytes.len() {
         let is_space = i == bytes.len() || bytes[i] == b' ' || bytes[i] == b'\t';
-        
+
         if is_space && in_arg {
             // End of argument
             let arg_len = i - start;
@@ -1353,19 +1373,19 @@ fn start_service(service: &ServiceConfig, _buf: &mut [u8]) -> i64 {
             in_arg = true;
         }
     }
-    
+
     // Ensure NULL terminator for argv
     argv_ptrs[argc] = core::ptr::null();
-    
+
     if argc == 0 {
         eprintln!("[ni] start_service: empty exec_start");
         return -1;
     }
-    
+
     // First argument is the program path
     let program_path = std::str::from_utf8(&argv_bufs[0][..]).unwrap_or("/bin/sh");
     let program_path = program_path.trim_end_matches('\0');
-    
+
     let pid = fork();
 
     if pid < 0 {
@@ -1377,16 +1397,12 @@ fn start_service(service: &ServiceConfig, _buf: &mut [u8]) -> i64 {
     if pid == 0 {
         // Child process - exec the service
         let envp: [*const u8; 1] = [core::ptr::null()];
-        
-        let result = execve(
-            program_path,
-            &argv_ptrs,
-            &envp,
-        );
-        
+
+        let result = execve(program_path, &argv_ptrs, &envp);
+
         // If execve returns, it failed
         eprintln!("[ni] start_service: execve failed with code {}", result);
-        exit(127);  // Standard exit code for "command not found"
+        exit(127); // Standard exit code for "command not found"
     }
 
     // Parent process - return child PID

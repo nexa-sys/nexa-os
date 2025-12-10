@@ -19,31 +19,29 @@
 //! - `format` - Printf format parsing and output
 //! - `api` - Public C API functions (printf, fwrite, etc.)
 
-mod constants;
-mod helpers;
-mod buffer;
-mod file;
-mod stream;
-mod format;
 mod api;
+mod buffer;
+mod constants;
+mod file;
+mod format;
+mod helpers;
+mod stream;
 
 // Re-export FILE type for external use
 pub use file::FILE;
 
 // Re-export global stdio streams
-pub use file::{stdin, stdout, stderr};
+pub use file::{stderr, stdin, stdout};
 
 // Re-export C API functions
 pub use api::{
-    fflush, fgets, fileno, fputc, fprintf, fputs, fread, fwrite,
-    getchar, gets, printf, putchar, puts,
+    fflush, fgets, fileno, fprintf, fputc, fputs, fread, fwrite, getchar, gets, printf, putchar,
+    puts,
 };
 
 // Re-export Rust-friendly stream helpers
 pub use stream::{
     stderr_write_all, stderr_write_i32, stderr_write_isize, stderr_write_str, stderr_write_usize,
-    stdin_read_line, stdin_read_line_masked, stdin_read_line_noecho,
-    stdout_flush, stdout_write_all, stdout_write_fmt, stdout_write_str,
+    stdin_read_line, stdin_read_line_masked, stdin_read_line_noecho, stdout_flush,
+    stdout_write_all, stdout_write_fmt, stdout_write_str,
 };
-
-

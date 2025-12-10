@@ -47,11 +47,11 @@ pub extern "C" fn sin(x: f64) -> f64 {
     } else if x < -PI {
         x += 2.0 * PI;
     }
-    
+
     let x2 = x * x;
     let mut term = x;
     let mut result = x;
-    
+
     for i in 1..25 {
         term *= -x2 / ((2 * i) * (2 * i + 1)) as f64;
         result += term;
@@ -59,7 +59,7 @@ pub extern "C" fn sin(x: f64) -> f64 {
             break;
         }
     }
-    
+
     result
 }
 
@@ -74,11 +74,11 @@ pub extern "C" fn cos(x: f64) -> f64 {
     } else if x < -PI {
         x += 2.0 * PI;
     }
-    
+
     let x2 = x * x;
     let mut term = 1.0;
     let mut result = 1.0;
-    
+
     for i in 1..25 {
         term *= -x2 / ((2 * i - 1) * (2 * i)) as f64;
         result += term;
@@ -86,7 +86,7 @@ pub extern "C" fn cos(x: f64) -> f64 {
             break;
         }
     }
-    
+
     result
 }
 
@@ -118,11 +118,15 @@ pub extern "C" fn asin(x: f64) -> f64 {
     if x == -1.0 {
         return -PI / 2.0;
     }
-    
+
     // Use atan for numerical stability: asin(x) = atan(x / sqrt(1 - x²))
     let denom = sqrt(1.0 - x * x);
     if denom < 1e-15 {
-        if x >= 0.0 { PI / 2.0 } else { -PI / 2.0 }
+        if x >= 0.0 {
+            PI / 2.0
+        } else {
+            -PI / 2.0
+        }
     } else {
         atan(x / denom)
     }
@@ -145,12 +149,12 @@ pub extern "C" fn atan(x: f64) -> f64 {
         let sign = if x >= 0.0 { 1.0 } else { -1.0 };
         return sign * (PI / 2.0) - atan(1.0 / x);
     }
-    
+
     // Taylor series: atan(x) = x - x³/3 + x⁵/5 - x⁷/7 + ...
     let x2 = x * x;
     let mut term = x;
     let mut result = x;
-    
+
     for i in 1..50 {
         term *= -x2;
         let contrib = term / (2 * i + 1) as f64;
@@ -159,7 +163,7 @@ pub extern "C" fn atan(x: f64) -> f64 {
             break;
         }
     }
-    
+
     result
 }
 
@@ -199,16 +203,16 @@ pub extern "C" fn exp(x: f64) -> f64 {
     if x < -709.0 {
         return 0.0;
     }
-    
+
     // For large |x|, use exp(x) = exp(x/2)² to improve convergence
     if x.abs() > 1.0 {
         let half = exp(x / 2.0);
         return half * half;
     }
-    
+
     let mut result = 1.0;
     let mut term = 1.0;
-    
+
     for i in 1..100 {
         term *= x / i as f64;
         result += term;
@@ -216,7 +220,7 @@ pub extern "C" fn exp(x: f64) -> f64 {
             break;
         }
     }
-    
+
     result
 }
 
@@ -245,11 +249,11 @@ pub extern "C" fn log(x: f64) -> f64 {
     if x == f64::INFINITY {
         return f64::INFINITY;
     }
-    
+
     // Reduce x to [0.5, 2] range: x = m * 2^e, then ln(x) = ln(m) + e*ln(2)
     let mut e = 0i32;
     let mut m = x;
-    
+
     while m >= 2.0 {
         m /= 2.0;
         e += 1;
@@ -258,13 +262,13 @@ pub extern "C" fn log(x: f64) -> f64 {
         m *= 2.0;
         e -= 1;
     }
-    
+
     // Now compute ln(m) where m is in [0.5, 2]
     let z = (m - 1.0) / (m + 1.0);
     let z2 = z * z;
     let mut term = z;
     let mut result = z;
-    
+
     for i in 1..50 {
         term *= z2;
         let contrib = term / (2 * i + 1) as f64;
@@ -273,7 +277,7 @@ pub extern "C" fn log(x: f64) -> f64 {
             break;
         }
     }
-    
+
     2.0 * result + e as f64 * LN_2
 }
 
@@ -359,13 +363,13 @@ pub extern "C" fn pow(x: f64, y: f64) -> f64 {
     if y == 0.5 {
         return sqrt(x);
     }
-    
+
     // For integer exponents, use repeated multiplication
     if y == trunc_internal(y) && y.abs() <= 100.0 {
         let mut result = 1.0;
         let mut exp = y.abs() as i32;
         let mut base = x;
-        
+
         // Fast exponentiation
         while exp > 0 {
             if exp & 1 == 1 {
@@ -374,7 +378,7 @@ pub extern "C" fn pow(x: f64, y: f64) -> f64 {
             base *= base;
             exp >>= 1;
         }
-        
+
         if y < 0.0 {
             1.0 / result
         } else {
@@ -401,13 +405,13 @@ pub extern "C" fn sqrt(x: f64) -> f64 {
     if x == f64::INFINITY {
         return f64::INFINITY;
     }
-    
+
     // Initial guess
     let mut guess = x;
     if x > 1.0 {
         guess = x / 2.0;
     }
-    
+
     // Newton's method: x_{n+1} = (x_n + S/x_n) / 2
     for _ in 0..50 {
         let new_guess = (guess + x / guess) / 2.0;
@@ -416,7 +420,7 @@ pub extern "C" fn sqrt(x: f64) -> f64 {
         }
         guess = new_guess;
     }
-    
+
     guess
 }
 
@@ -426,10 +430,10 @@ pub extern "C" fn cbrt(x: f64) -> f64 {
     if x == 0.0 {
         return 0.0;
     }
-    
+
     let sign = if x < 0.0 { -1.0 } else { 1.0 };
     let abs_x = x.abs();
-    
+
     // Newton's method for cube root: x_{n+1} = (2*x_n + S/x_n²) / 3
     let mut guess = abs_x / 3.0;
     if abs_x > 1.0 {
@@ -437,7 +441,7 @@ pub extern "C" fn cbrt(x: f64) -> f64 {
     } else {
         guess = abs_x;
     }
-    
+
     for _ in 0..50 {
         let new_guess = (2.0 * guess + abs_x / (guess * guess)) / 3.0;
         if (new_guess - guess).abs() < guess * 1e-15 {
@@ -445,7 +449,7 @@ pub extern "C" fn cbrt(x: f64) -> f64 {
         }
         guess = new_guess;
     }
-    
+
     sign * guess
 }
 
@@ -455,7 +459,7 @@ pub extern "C" fn hypot(x: f64, y: f64) -> f64 {
     // Use formula that avoids overflow
     let ax = x.abs();
     let ay = y.abs();
-    
+
     if ax > ay {
         let r = ay / ax;
         ax * sqrt(1.0 + r * r)
@@ -500,7 +504,7 @@ pub extern "C" fn tanh(x: f64) -> f64 {
     if x < -20.0 {
         return -1.0;
     }
-    
+
     let e2x = exp(2.0 * x);
     (e2x - 1.0) / (e2x + 1.0)
 }
@@ -545,7 +549,7 @@ pub extern "C" fn atanh(x: f64) -> f64 {
 pub extern "C" fn round(x: f64) -> f64 {
     let t = trunc_internal(x);
     let f = x - t;
-    
+
     if f.abs() >= 0.5 {
         if x >= 0.0 {
             t + 1.0
@@ -610,14 +614,22 @@ pub extern "C" fn remainder(x: f64, y: f64) -> f64 {
 /// Absolute value
 #[unsafe(no_mangle)]
 pub extern "C" fn fabs(x: f64) -> f64 {
-    if x < 0.0 { -x } else { x }
+    if x < 0.0 {
+        -x
+    } else {
+        x
+    }
 }
 
 /// Copy sign of y to x
 #[unsafe(no_mangle)]
 pub extern "C" fn copysign(x: f64, y: f64) -> f64 {
     let abs_x = if x < 0.0 { -x } else { x };
-    if y < 0.0 { -abs_x } else { abs_x }
+    if y < 0.0 {
+        -abs_x
+    } else {
+        abs_x
+    }
 }
 
 /// Return larger of x and y
@@ -629,7 +641,11 @@ pub extern "C" fn fmax(x: f64, y: f64) -> f64 {
     if y.is_nan() {
         return x;
     }
-    if x > y { x } else { y }
+    if x > y {
+        x
+    } else {
+        y
+    }
 }
 
 /// Return smaller of x and y
@@ -641,13 +657,21 @@ pub extern "C" fn fmin(x: f64, y: f64) -> f64 {
     if y.is_nan() {
         return x;
     }
-    if x < y { x } else { y }
+    if x < y {
+        x
+    } else {
+        y
+    }
 }
 
 /// Positive difference: max(x - y, 0)
 #[unsafe(no_mangle)]
 pub extern "C" fn fdim(x: f64, y: f64) -> f64 {
-    if x > y { x - y } else { 0.0 }
+    if x > y {
+        x - y
+    } else {
+        0.0
+    }
 }
 
 /// Fused multiply-add: x * y + z

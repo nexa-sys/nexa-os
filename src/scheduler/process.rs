@@ -148,7 +148,13 @@ pub fn remove_process(pid: Pid) -> Result<(), &'static str> {
         (cr3, kernel_stack, open_fds, memory_base, memory_size)
     };
 
-    let (removed_cr3, removed_kernel_stack, removed_open_fds, removed_memory_base, removed_memory_size) = removal_result;
+    let (
+        removed_cr3,
+        removed_kernel_stack,
+        removed_open_fds,
+        removed_memory_base,
+        removed_memory_size,
+    ) = removal_result;
 
     if current_pid() == Some(pid) {
         set_current_pid(None);
@@ -289,7 +295,7 @@ pub fn set_process_exit_code(pid: Pid, code: i32) -> Result<(), &'static str> {
 pub fn set_process_term_signal(pid: Pid, signal: i32) -> Result<(), &'static str> {
     // DEBUG: Print who is setting what signal
     crate::serial_println!("SET_TERM_SIGNAL: pid={}, signal={}", pid, signal);
-    
+
     let mut table = PROCESS_TABLE.lock();
 
     // Try radix tree lookup first (O(log N))
@@ -558,7 +564,7 @@ pub fn wake_process(pid: Pid) -> bool {
 /// Get the thread group ID (tgid) for a process/thread
 pub fn get_tgid(pid: Pid) -> Option<Pid> {
     let table = PROCESS_TABLE.lock();
-    
+
     // Try radix tree lookup first
     if let Some(idx) = crate::process::lookup_pid(pid) {
         let idx = idx as usize;
@@ -570,7 +576,7 @@ pub fn get_tgid(pid: Pid) -> Option<Pid> {
             }
         }
     }
-    
+
     // Fallback to linear scan
     for slot in table.iter() {
         if let Some(entry) = slot {
@@ -579,14 +585,14 @@ pub fn get_tgid(pid: Pid) -> Option<Pid> {
             }
         }
     }
-    
+
     None
 }
 
 /// Check if a process is a thread (part of a thread group with a different leader)
 pub fn is_thread(pid: Pid) -> bool {
     let table = PROCESS_TABLE.lock();
-    
+
     // Try radix tree lookup first
     if let Some(idx) = crate::process::lookup_pid(pid) {
         let idx = idx as usize;
@@ -598,7 +604,7 @@ pub fn is_thread(pid: Pid) -> bool {
             }
         }
     }
-    
+
     // Fallback
     for slot in table.iter() {
         if let Some(entry) = slot {
@@ -607,7 +613,7 @@ pub fn is_thread(pid: Pid) -> bool {
             }
         }
     }
-    
+
     false
 }
 
@@ -615,7 +621,7 @@ pub fn is_thread(pid: Pid) -> bool {
 pub fn thread_group_count(tgid: Pid) -> usize {
     let table = PROCESS_TABLE.lock();
     let mut count = 0;
-    
+
     for slot in table.iter() {
         if let Some(entry) = slot {
             if entry.process.tgid == tgid {
@@ -623,7 +629,7 @@ pub fn thread_group_count(tgid: Pid) -> usize {
             }
         }
     }
-    
+
     count
 }
 
@@ -632,7 +638,7 @@ pub fn thread_group_count(tgid: Pid) -> usize {
 pub fn get_thread_group_members(tgid: Pid, buffer: &mut [Pid]) -> usize {
     let table = PROCESS_TABLE.lock();
     let mut count = 0;
-    
+
     for slot in table.iter() {
         if let Some(entry) = slot {
             if entry.process.tgid == tgid && count < buffer.len() {
@@ -641,7 +647,7 @@ pub fn get_thread_group_members(tgid: Pid, buffer: &mut [Pid]) -> usize {
             }
         }
     }
-    
+
     count
 }
 
@@ -649,7 +655,7 @@ pub fn get_thread_group_members(tgid: Pid, buffer: &mut [Pid]) -> usize {
 /// Returns the futex address to wake, if any
 pub fn handle_thread_exit(pid: Pid) -> Option<u64> {
     let mut table = PROCESS_TABLE.lock();
-    
+
     // Find the process/thread
     let slot_idx = crate::process::lookup_pid(pid)
         .map(|idx| idx as usize)
@@ -657,18 +663,18 @@ pub fn handle_thread_exit(pid: Pid) -> Option<u64> {
             idx < table.len() && table[idx].as_ref().map_or(false, |e| e.process.pid == pid)
         })
         .or_else(|| {
-            table.iter().position(|slot| {
-                slot.as_ref().map_or(false, |e| e.process.pid == pid)
-            })
+            table
+                .iter()
+                .position(|slot| slot.as_ref().map_or(false, |e| e.process.pid == pid))
         });
-    
+
     let Some(idx) = slot_idx else {
         return None;
     };
-    
+
     let entry = table[idx].as_ref().unwrap();
     let clear_child_tid = entry.process.clear_child_tid;
-    
+
     if clear_child_tid != 0 {
         // Clear the TID at the specified address
         unsafe {
@@ -681,18 +687,18 @@ pub fn handle_thread_exit(pid: Pid) -> Option<u64> {
         );
         return Some(clear_child_tid);
     }
-    
+
     None
 }
 
 /// Terminate all threads in a thread group (for exit_group)
 pub fn terminate_thread_group(tgid: Pid, exit_code: i32) {
     let table = PROCESS_TABLE.lock();
-    
+
     // Collect all PIDs in the thread group first
     let mut pids_to_terminate = [0u64; MAX_PROCESSES];
     let mut count = 0;
-    
+
     for slot in table.iter() {
         if let Some(entry) = slot {
             if entry.process.tgid == tgid && count < MAX_PROCESSES {
@@ -701,9 +707,9 @@ pub fn terminate_thread_group(tgid: Pid, exit_code: i32) {
             }
         }
     }
-    
+
     drop(table);
-    
+
     // Now terminate each thread
     for i in 0..count {
         let pid = pids_to_terminate[i];
@@ -712,22 +718,29 @@ pub fn terminate_thread_group(tgid: Pid, exit_code: i32) {
             pid,
             tgid
         );
-        
+
         // Handle thread exit (clear_child_tid and futex wake)
         if let Some(futex_addr) = handle_thread_exit(pid) {
             // Wake any threads waiting on this futex
             // We call into the syscall via the public interface
             crate::syscalls::futex_wake_internal(futex_addr, i32::MAX);
         }
-        
+
         // Set exit code and mark as zombie
         if let Err(e) = set_process_exit_code(pid, exit_code) {
-            ktrace!("[terminate_thread_group] Failed to set exit code for PID {}: {}", pid, e);
+            ktrace!(
+                "[terminate_thread_group] Failed to set exit code for PID {}: {}",
+                pid,
+                e
+            );
         }
-        
+
         if let Err(e) = set_process_state(pid, ProcessState::Zombie) {
-            ktrace!("[terminate_thread_group] Failed to set zombie state for PID {}: {}", pid, e);
+            ktrace!(
+                "[terminate_thread_group] Failed to set zombie state for PID {}: {}",
+                pid,
+                e
+            );
         }
     }
 }
-

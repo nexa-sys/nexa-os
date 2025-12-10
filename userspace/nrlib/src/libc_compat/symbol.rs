@@ -492,7 +492,10 @@ impl<'a> Iterator for SymbolIterator<'a> {
 ///
 /// # Safety
 /// The caller must ensure the library is valid.
-pub unsafe fn find_symbol_by_addr(lib: &LoadedLibrary, addr: u64) -> Option<(u32, &'static Elf64Sym)> {
+pub unsafe fn find_symbol_by_addr(
+    lib: &LoadedLibrary,
+    addr: u64,
+) -> Option<(u32, &'static Elf64Sym)> {
     let symtab = lib.symtab();
     let strtab = lib.strtab();
 
@@ -549,10 +552,7 @@ pub unsafe fn find_symbol_by_addr(lib: &LoadedLibrary, addr: u64) -> Option<(u32
 ///
 /// # Safety
 /// The caller must ensure proper synchronization.
-pub unsafe fn lookup_versioned_symbol(
-    name: &[u8],
-    version: Option<&[u8]>,
-) -> Option<SymbolResult> {
+pub unsafe fn lookup_versioned_symbol(name: &[u8], version: Option<&[u8]>) -> Option<SymbolResult> {
     // For now, ignore version and do normal lookup
     // Full versioning support would require parsing DT_VERSYM, DT_VERNEED, etc.
     lookup_symbol(name, &LookupOptions::default())

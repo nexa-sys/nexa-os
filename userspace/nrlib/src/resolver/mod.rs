@@ -12,29 +12,45 @@
 /// - `core`: Main Resolver struct implementation
 /// - `global`: Global resolver instance and initialization
 /// - `posix`: POSIX-compatible getaddrinfo/getnameinfo functions
-
 mod constants;
-mod types;
-mod dns_parser;
-mod utils;
 mod core;
+mod dns_parser;
 mod global;
 mod posix;
+mod types;
+mod utils;
 
 // Re-export public API
 
 // Constants
 pub use constants::{
-    // AI flags
-    AI_PASSIVE, AI_CANONNAME, AI_NUMERICHOST, AI_NUMERICSERV,
-    AI_V4MAPPED, AI_ALL, AI_ADDRCONFIG,
-    // NI flags
-    NI_NUMERICHOST, NI_NUMERICSERV, NI_NOFQDN, NI_NAMEREQD, NI_DGRAM,
-    // Error codes
-    EAI_BADFLAGS, EAI_NONAME, EAI_AGAIN, EAI_FAIL, EAI_FAMILY,
-    EAI_SOCKTYPE, EAI_SERVICE, EAI_MEMORY, EAI_SYSTEM, EAI_OVERFLOW,
     // Functions
     gai_strerror_str,
+    AI_ADDRCONFIG,
+    AI_ALL,
+    AI_CANONNAME,
+    AI_NUMERICHOST,
+    AI_NUMERICSERV,
+    // AI flags
+    AI_PASSIVE,
+    AI_V4MAPPED,
+    EAI_AGAIN,
+    // Error codes
+    EAI_BADFLAGS,
+    EAI_FAIL,
+    EAI_FAMILY,
+    EAI_MEMORY,
+    EAI_NONAME,
+    EAI_OVERFLOW,
+    EAI_SERVICE,
+    EAI_SOCKTYPE,
+    EAI_SYSTEM,
+    NI_DGRAM,
+    NI_NAMEREQD,
+    NI_NOFQDN,
+    // NI flags
+    NI_NUMERICHOST,
+    NI_NUMERICSERV,
 };
 
 // Types
@@ -44,13 +60,13 @@ pub use types::{AddrInfo, HostEntry, NssSource};
 pub use self::core::Resolver;
 
 // Global resolver
-pub use global::{resolver_init, get_resolver};
+pub use global::{get_resolver, resolver_init};
 
 // POSIX functions
-pub use posix::{getaddrinfo, freeaddrinfo, getnameinfo};
+pub use posix::{freeaddrinfo, getaddrinfo, getnameinfo};
 
 // DNS parser (for advanced use cases)
-pub use dns_parser::{parse_dns_response, DnsParseOutcome, dns_name_equals};
+pub use dns_parser::{dns_name_equals, parse_dns_response, DnsParseOutcome};
 
 // Utilities
 pub use utils::{format_ipv4_to_buffer, read_file_content};
@@ -79,7 +95,10 @@ mod tests {
     fn test_gai_strerror() {
         assert_eq!(gai_strerror_str(0), "Success");
         assert_eq!(gai_strerror_str(EAI_NONAME), "Name or service not known");
-        assert_eq!(gai_strerror_str(EAI_AGAIN), "Temporary failure in name resolution");
+        assert_eq!(
+            gai_strerror_str(EAI_AGAIN),
+            "Temporary failure in name resolution"
+        );
         assert_eq!(gai_strerror_str(-999), "Unknown error");
     }
 

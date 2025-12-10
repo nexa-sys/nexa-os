@@ -107,11 +107,7 @@ use crate::{c_int, size_t};
 
 /// Constant-time comparison (C ABI)
 #[no_mangle]
-pub unsafe extern "C" fn ncrypto_ct_eq(
-    a: *const u8,
-    b: *const u8,
-    len: size_t,
-) -> c_int {
+pub unsafe extern "C" fn ncrypto_ct_eq(a: *const u8, b: *const u8, len: size_t) -> c_int {
     if a.is_null() || b.is_null() {
         return -1;
     }
@@ -128,10 +124,7 @@ pub unsafe extern "C" fn ncrypto_ct_eq(
 
 /// Secure zero (C ABI)
 #[no_mangle]
-pub unsafe extern "C" fn ncrypto_secure_zero(
-    data: *mut u8,
-    len: size_t,
-) -> c_int {
+pub unsafe extern "C" fn ncrypto_secure_zero(data: *mut u8, len: size_t) -> c_int {
     if data.is_null() {
         return -1;
     }

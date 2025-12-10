@@ -2,10 +2,10 @@
 //!
 //! SSL/TLS error codes and error queue management.
 
-use std::vec::Vec;
-use std::sync::Mutex;
-use std::collections::VecDeque;
 use crate::{c_char, c_ulong, size_t};
+use std::collections::VecDeque;
+use std::sync::Mutex;
+use std::vec::Vec;
 
 /// SSL Error type
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -166,7 +166,7 @@ pub fn clear_error() {
 /// Get error string
 pub fn error_string(e: c_ulong, buf: *mut c_char) -> *mut c_char {
     let (lib, _func, reason) = unpack_error(e as u64);
-    
+
     let msg = if lib == 0x14 {
         // SSL library error
         match reason {
@@ -190,12 +190,12 @@ pub fn error_string(e: c_ulong, buf: *mut c_char) -> *mut c_char {
     } else {
         "unknown library error"
     };
-    
+
     if buf.is_null() {
         // Return static string
         return msg.as_ptr() as *mut c_char;
     }
-    
+
     // Copy to buffer
     let bytes = msg.as_bytes();
     unsafe {
@@ -203,7 +203,7 @@ pub fn error_string(e: c_ulong, buf: *mut c_char) -> *mut c_char {
         core::ptr::copy_nonoverlapping(bytes.as_ptr(), buf as *mut u8, len);
         *((buf as *mut u8).add(len)) = 0;
     }
-    
+
     buf
 }
 
@@ -212,9 +212,9 @@ pub fn error_string_n(e: c_ulong, buf: *mut c_char, len: size_t) {
     if buf.is_null() || len == 0 {
         return;
     }
-    
+
     let (lib, _func, reason) = unpack_error(e as u64);
-    
+
     let msg = if lib == 0x14 {
         match reason {
             0 => "no error",
@@ -237,10 +237,10 @@ pub fn error_string_n(e: c_ulong, buf: *mut c_char, len: size_t) {
     } else {
         "unknown library error"
     };
-    
+
     let bytes = msg.as_bytes();
     let copy_len = (len - 1).min(bytes.len());
-    
+
     unsafe {
         core::ptr::copy_nonoverlapping(bytes.as_ptr(), buf as *mut u8, copy_len);
         *((buf as *mut u8).add(copy_len)) = 0;

@@ -1,7 +1,6 @@
 /// Resolver type definitions
 ///
 /// Contains AddrInfo, HostEntry, and NssSource types.
-
 use crate::socket::SockAddrIn;
 
 /// addrinfo structure (compatible with POSIX)

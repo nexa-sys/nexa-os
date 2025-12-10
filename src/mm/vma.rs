@@ -130,37 +130,37 @@ impl VMAFlags {
     pub const NONE: Self = Self(0);
 
     // Mapping type flags (from mmap flags)
-    pub const SHARED: Self = Self(1 << 0);      // MAP_SHARED
-    pub const PRIVATE: Self = Self(1 << 1);     // MAP_PRIVATE
-    pub const ANONYMOUS: Self = Self(1 << 2);   // MAP_ANONYMOUS
-    pub const FIXED: Self = Self(1 << 3);       // MAP_FIXED
+    pub const SHARED: Self = Self(1 << 0); // MAP_SHARED
+    pub const PRIVATE: Self = Self(1 << 1); // MAP_PRIVATE
+    pub const ANONYMOUS: Self = Self(1 << 2); // MAP_ANONYMOUS
+    pub const FIXED: Self = Self(1 << 3); // MAP_FIXED
 
     // VMA state flags
-    pub const GROWSDOWN: Self = Self(1 << 4);   // Stack grows down
-    pub const GROWSUP: Self = Self(1 << 5);     // Heap grows up
-    pub const LOCKED: Self = Self(1 << 6);      // mlock'd - pages cannot be swapped
-    pub const DONTEXPAND: Self = Self(1 << 7);  // Cannot expand with mremap
-    pub const DONTCOPY: Self = Self(1 << 8);    // Do not copy on fork (MADV_DONTFORK)
-    pub const MAYREAD: Self = Self(1 << 9);     // VM_READ may be set
-    pub const MAYWRITE: Self = Self(1 << 10);   // VM_WRITE may be set
-    pub const MAYEXEC: Self = Self(1 << 11);    // VM_EXEC may be set
-    pub const MAYSHARE: Self = Self(1 << 12);   // VM_SHARED may be set
+    pub const GROWSDOWN: Self = Self(1 << 4); // Stack grows down
+    pub const GROWSUP: Self = Self(1 << 5); // Heap grows up
+    pub const LOCKED: Self = Self(1 << 6); // mlock'd - pages cannot be swapped
+    pub const DONTEXPAND: Self = Self(1 << 7); // Cannot expand with mremap
+    pub const DONTCOPY: Self = Self(1 << 8); // Do not copy on fork (MADV_DONTFORK)
+    pub const MAYREAD: Self = Self(1 << 9); // VM_READ may be set
+    pub const MAYWRITE: Self = Self(1 << 10); // VM_WRITE may be set
+    pub const MAYEXEC: Self = Self(1 << 11); // VM_EXEC may be set
+    pub const MAYSHARE: Self = Self(1 << 12); // VM_SHARED may be set
 
     // Special VMA types
-    pub const STACK: Self = Self(1 << 16);      // Main thread stack
-    pub const HEAP: Self = Self(1 << 17);       // Heap region
-    pub const CODE: Self = Self(1 << 18);       // Code/text segment
-    pub const DATA: Self = Self(1 << 19);       // Data segment
-    pub const BSS: Self = Self(1 << 20);        // BSS segment
-    pub const VDSO: Self = Self(1 << 21);       // Virtual DSO
-    pub const INTERP: Self = Self(1 << 22);     // Dynamic linker region
+    pub const STACK: Self = Self(1 << 16); // Main thread stack
+    pub const HEAP: Self = Self(1 << 17); // Heap region
+    pub const CODE: Self = Self(1 << 18); // Code/text segment
+    pub const DATA: Self = Self(1 << 19); // Data segment
+    pub const BSS: Self = Self(1 << 20); // BSS segment
+    pub const VDSO: Self = Self(1 << 21); // Virtual DSO
+    pub const INTERP: Self = Self(1 << 22); // Dynamic linker region
 
     // Demand paging flags
-    pub const DEMAND: Self = Self(1 << 24);     // Demand-paged (lazy allocation)
-    pub const POPULATE: Self = Self(1 << 25);   // Populate immediately (MAP_POPULATE)
+    pub const DEMAND: Self = Self(1 << 24); // Demand-paged (lazy allocation)
+    pub const POPULATE: Self = Self(1 << 25); // Populate immediately (MAP_POPULATE)
 
     // Copy-on-write flag
-    pub const COW: Self = Self(1 << 26);        // Copy-on-write pending
+    pub const COW: Self = Self(1 << 26); // Copy-on-write pending
 
     /// Create from POSIX MAP_* flags
     pub const fn from_mmap_flags(flags: u64) -> Self {
@@ -388,8 +388,14 @@ impl VMA {
         match (&self.backing, &other.backing) {
             (VMABacking::Anonymous, VMABacking::Anonymous) => true,
             (
-                VMABacking::File { inode: i1, offset: o1 },
-                VMABacking::File { inode: i2, offset: o2 },
+                VMABacking::File {
+                    inode: i1,
+                    offset: o1,
+                },
+                VMABacking::File {
+                    inode: i2,
+                    offset: o2,
+                },
             ) => {
                 // Same file and contiguous offsets
                 *i1 == *i2 && *o1 + self.size() == *o2
@@ -1661,7 +1667,9 @@ static ADDRESS_SPACES: Mutex<[AddressSpace; MAX_ADDRESS_SPACES]> =
     Mutex::new([const { AddressSpace::empty() }; MAX_ADDRESS_SPACES]);
 
 /// Get address space for a PID
-pub fn get_address_space(pid: u64) -> Option<spin::MutexGuard<'static, [AddressSpace; MAX_ADDRESS_SPACES]>> {
+pub fn get_address_space(
+    pid: u64,
+) -> Option<spin::MutexGuard<'static, [AddressSpace; MAX_ADDRESS_SPACES]>> {
     let spaces = ADDRESS_SPACES.lock();
     if pid < MAX_ADDRESS_SPACES as u64 && spaces[pid as usize].valid {
         Some(spaces)

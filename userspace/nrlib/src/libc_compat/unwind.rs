@@ -2,8 +2,8 @@
 //!
 //! Provides _Unwind_* functions required by the Rust panic infrastructure.
 
-use crate::{c_int, c_void};
 use super::types::{UnwindContext, UnwindReasonCode, UnwindTraceFn};
+use crate::{c_int, c_void};
 
 // ============================================================================
 // Unwind Functions

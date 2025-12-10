@@ -35,29 +35,29 @@ pub struct Oid {
 impl Oid {
     /// Create OID from bytes
     pub fn from_bytes(bytes: &[u8]) -> Self {
-        Self { bytes: bytes.to_vec() }
+        Self {
+            bytes: bytes.to_vec(),
+        }
     }
 
     /// Create OID from string (dotted notation like "1.2.840.113549.1.1.1")
     pub fn from_str(s: &str) -> Option<Self> {
-        let parts: Vec<u32> = s.split('.')
-            .filter_map(|p| p.parse().ok())
-            .collect();
-        
+        let parts: Vec<u32> = s.split('.').filter_map(|p| p.parse().ok()).collect();
+
         if parts.len() < 2 {
             return None;
         }
 
         let mut bytes = Vec::new();
-        
+
         // First two components are encoded as (first * 40) + second
         bytes.push((parts[0] * 40 + parts[1]) as u8);
-        
+
         // Remaining components use base-128 encoding
         for &comp in &parts[2..] {
             encode_base128(&mut bytes, comp);
         }
-        
+
         Some(Self { bytes })
     }
 
@@ -66,14 +66,14 @@ impl Oid {
         if self.bytes.is_empty() {
             return String::new();
         }
-        
+
         let mut result = Vec::new();
-        
+
         // Decode first byte
         let first = self.bytes[0];
         result.push((first / 40) as u32);
         result.push((first % 40) as u32);
-        
+
         // Decode remaining bytes
         let mut i = 1;
         while i < self.bytes.len() {
@@ -81,8 +81,9 @@ impl Oid {
             result.push(val);
             i += consumed;
         }
-        
-        result.iter()
+
+        result
+            .iter()
             .map(|n| n.to_string())
             .collect::<Vec<_>>()
             .join(".")
@@ -95,13 +96,13 @@ fn encode_base128(out: &mut Vec<u8>, mut val: u32) {
         out.push(0);
         return;
     }
-    
+
     let mut bytes = Vec::new();
     while val > 0 {
         bytes.push((val & 0x7F) as u8);
         val >>= 7;
     }
-    
+
     for (i, &b) in bytes.iter().rev().enumerate() {
         if i < bytes.len() - 1 {
             out.push(b | 0x80);
@@ -115,7 +116,7 @@ fn encode_base128(out: &mut Vec<u8>, mut val: u32) {
 fn decode_base128(data: &[u8]) -> (u32, usize) {
     let mut val: u32 = 0;
     let mut i = 0;
-    
+
     while i < data.len() {
         val = (val << 7) | (data[i] & 0x7F) as u32;
         i += 1;
@@ -123,74 +124,74 @@ fn decode_base128(data: &[u8]) -> (u32, usize) {
             break;
         }
     }
-    
+
     (val, i)
 }
 
 /// Common OIDs
 pub mod oids {
     use super::Oid;
-    
+
     /// RSA encryption
     pub fn rsa_encryption() -> Oid {
         Oid::from_bytes(&[0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x01])
     }
-    
+
     /// SHA256 with RSA
     pub fn sha256_with_rsa() -> Oid {
         Oid::from_bytes(&[0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0B])
     }
-    
+
     /// SHA384 with RSA
     pub fn sha384_with_rsa() -> Oid {
         Oid::from_bytes(&[0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0C])
     }
-    
+
     /// SHA512 with RSA
     pub fn sha512_with_rsa() -> Oid {
         Oid::from_bytes(&[0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0D])
     }
-    
+
     /// ECDSA with SHA256
     pub fn ecdsa_with_sha256() -> Oid {
         Oid::from_bytes(&[0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x04, 0x03, 0x02])
     }
-    
+
     /// ECDSA with SHA384
     pub fn ecdsa_with_sha384() -> Oid {
         Oid::from_bytes(&[0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x04, 0x03, 0x03])
     }
-    
+
     /// Ed25519
     pub fn ed25519() -> Oid {
         Oid::from_bytes(&[0x2B, 0x65, 0x70])
     }
-    
+
     /// X25519
     pub fn x25519() -> Oid {
         Oid::from_bytes(&[0x2B, 0x65, 0x6E])
     }
-    
+
     /// P-256 curve
     pub fn secp256r1() -> Oid {
         Oid::from_bytes(&[0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07])
     }
-    
+
     /// P-384 curve
     pub fn secp384r1() -> Oid {
         Oid::from_bytes(&[0x2B, 0x81, 0x04, 0x00, 0x22])
     }
-    
+
     /// Common Name (CN)
     pub fn common_name() -> Oid {
         Oid::from_bytes(&[0x55, 0x04, 0x03])
     }
-    
+
     /// Organization (O)
     pub fn organization() -> Oid {
         Oid::from_bytes(&[0x55, 0x04, 0x0A])
     }
-    
+
     /// Country (C)
     pub fn country() -> Oid {
         Oid::from_bytes(&[0x55, 0x04, 0x06])
@@ -202,30 +203,30 @@ pub fn parse_length(data: &[u8]) -> Option<(usize, usize)> {
     if data.is_empty() {
         return None;
     }
-    
+
     let first = data[0];
-    
+
     if first < 0x80 {
         // Short form
         return Some((first as usize, 1));
     }
-    
+
     if first == 0x80 {
         // Indefinite length (not supported in DER)
         return None;
     }
-    
+
     // Long form
     let num_bytes = (first & 0x7F) as usize;
     if num_bytes > 4 || data.len() < 1 + num_bytes {
         return None;
     }
-    
+
     let mut len: usize = 0;
     for i in 0..num_bytes {
         len = (len << 8) | data[1 + i] as usize;
     }
-    
+
     Some((len, 1 + num_bytes))
 }
 
@@ -234,7 +235,7 @@ pub fn encode_length(len: usize) -> Vec<u8> {
     if len < 0x80 {
         return vec![len as u8];
     }
-    
+
     let mut bytes = Vec::new();
     let mut val = len;
     while val > 0 {
@@ -242,7 +243,7 @@ pub fn encode_length(len: usize) -> Vec<u8> {
         val >>= 8;
     }
     bytes.reverse();
-    
+
     let mut result = vec![0x80 | bytes.len() as u8];
     result.extend(bytes);
     result
@@ -253,15 +254,15 @@ pub fn parse_tlv(data: &[u8]) -> Option<(u8, &[u8], usize)> {
     if data.is_empty() {
         return None;
     }
-    
+
     let tag = data[0];
     let (len, len_bytes) = parse_length(&data[1..])?;
-    
+
     let total = 1 + len_bytes + len;
     if data.len() < total {
         return None;
     }
-    
+
     let value = &data[1 + len_bytes..1 + len_bytes + len];
     Some((tag, value, total))
 }
@@ -280,7 +281,7 @@ pub fn parse_integer(data: &[u8]) -> Option<Vec<u8>> {
     if tag != asn1_tag::INTEGER {
         return None;
     }
-    
+
     // Remove leading zero if present (sign byte)
     if !value.is_empty() && value[0] == 0 {
         Some(value[1..].to_vec())
@@ -296,22 +297,22 @@ pub fn encode_integer(value: &[u8]) -> Vec<u8> {
     while start < value.len() && value[start] == 0 {
         start += 1;
     }
-    
+
     let significant = if start == value.len() {
         &[0u8][..]
     } else {
         &value[start..]
     };
-    
+
     // Add leading zero if high bit is set
     let needs_zero = !significant.is_empty() && significant[0] & 0x80 != 0;
-    
+
     let mut data = Vec::new();
     if needs_zero {
         data.push(0);
     }
     data.extend(significant);
-    
+
     encode_tlv(asn1_tag::INTEGER, &data)
 }
 
@@ -321,7 +322,7 @@ pub fn parse_bit_string(data: &[u8]) -> Option<(u8, Vec<u8>)> {
     if tag != asn1_tag::BIT_STRING || value.is_empty() {
         return None;
     }
-    
+
     let unused_bits = value[0];
     Some((unused_bits, value[1..].to_vec()))
 }
@@ -448,7 +449,9 @@ pub extern "C" fn ASN1_TIME_new() -> *mut ASN1_TIME {
 #[no_mangle]
 pub extern "C" fn ASN1_TIME_free(t: *mut ASN1_TIME) {
     if !t.is_null() {
-        unsafe { drop(Box::from_raw(t)); }
+        unsafe {
+            drop(Box::from_raw(t));
+        }
     }
 }
 
@@ -462,7 +465,9 @@ pub extern "C" fn ASN1_INTEGER_new() -> *mut ASN1_INTEGER {
 #[no_mangle]
 pub extern "C" fn ASN1_INTEGER_free(i: *mut ASN1_INTEGER) {
     if !i.is_null() {
-        unsafe { drop(Box::from_raw(i)); }
+        unsafe {
+            drop(Box::from_raw(i));
+        }
     }
 }
 
@@ -476,7 +481,9 @@ pub extern "C" fn ASN1_STRING_new() -> *mut ASN1_STRING {
 #[no_mangle]
 pub extern "C" fn ASN1_STRING_free(s: *mut ASN1_STRING) {
     if !s.is_null() {
-        unsafe { drop(Box::from_raw(s)); }
+        unsafe {
+            drop(Box::from_raw(s));
+        }
     }
 }
 

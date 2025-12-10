@@ -249,15 +249,13 @@ pub fn mount_all() -> Result<usize, &'static str> {
 
     // Sort entries: pass=1 first, then pass=2+, then pass=0 (pseudo-fs)
     let mut sorted_entries = entries.clone();
-    sorted_entries.sort_by(|a, b| {
-        match (a.pass, b.pass) {
-            (1, _) => core::cmp::Ordering::Less,
-            (_, 1) => core::cmp::Ordering::Greater,
-            (0, 0) => core::cmp::Ordering::Equal,
-            (0, _) => core::cmp::Ordering::Greater,
-            (_, 0) => core::cmp::Ordering::Less,
-            (a, b) => a.cmp(&b),
-        }
+    sorted_entries.sort_by(|a, b| match (a.pass, b.pass) {
+        (1, _) => core::cmp::Ordering::Less,
+        (_, 1) => core::cmp::Ordering::Greater,
+        (0, 0) => core::cmp::Ordering::Equal,
+        (0, _) => core::cmp::Ordering::Greater,
+        (_, 0) => core::cmp::Ordering::Less,
+        (a, b) => a.cmp(&b),
     });
 
     for entry in sorted_entries {
@@ -399,7 +397,7 @@ pub fn mount_entry(entry: &FstabEntry) -> Result<(), &'static str> {
         "swap" => {
             // Swap device - call swapon syscall handler
             crate::kinfo!("fstab: enabling swap on {}", entry.device);
-            
+
             // Parse priority from options (pri=N)
             let mut flags: i32 = 0;
             for opt in entry.options.split(',') {
@@ -410,7 +408,7 @@ pub fn mount_entry(entry: &FstabEntry) -> Result<(), &'static str> {
                     }
                 }
             }
-            
+
             // Call swapon through the syscall handler
             match crate::syscalls::swap::sys_swapon(&entry.device, flags) {
                 Ok(_) => {
@@ -444,12 +442,12 @@ pub struct MountInfo {
 
 fn track_mount(mount_point: &str, fs_type: &str, device: &str) {
     let mut table = MOUNT_TABLE.lock();
-    
+
     // Check if already tracked
     if table.iter().any(|m| m.mount_point == mount_point) {
         return;
     }
-    
+
     table.push(MountInfo {
         device: String::from(device),
         mount_point: String::from(mount_point),

@@ -103,10 +103,10 @@ struct linux_dirent64 {
 }
 
 /// Open a directory stream
-/// 
+///
 /// Opens the directory specified by name and returns a pointer to a DIR structure
 /// that can be used with readdir() to iterate over directory entries.
-/// 
+///
 /// Returns NULL and sets errno on error.
 #[no_mangle]
 pub unsafe extern "C" fn opendir(name: *const c_char) -> *mut DIR {
@@ -116,7 +116,12 @@ pub unsafe extern "C" fn opendir(name: *const c_char) -> *mut DIR {
     }
 
     // Open the directory - pass (path, flags, mode)
-    let fd = crate::syscall3(SYS_OPEN, name as u64, (O_RDONLY | O_DIRECTORY | O_CLOEXEC) as u64, 0);
+    let fd = crate::syscall3(
+        SYS_OPEN,
+        name as u64,
+        (O_RDONLY | O_DIRECTORY | O_CLOEXEC) as u64,
+        0,
+    );
     if fd == u64::MAX {
         crate::refresh_errno_from_kernel();
         return ptr::null_mut();
@@ -135,7 +140,7 @@ pub unsafe extern "C" fn opendir(name: *const c_char) -> *mut DIR {
     // Initialize DIR structure
     let dir = &mut *dir_ptr;
     *dir = DIR::new(fd as c_int);
-    
+
     crate::set_errno(0);
     dir_ptr
 }
@@ -156,13 +161,13 @@ pub unsafe extern "C" fn fdopendir(fd: c_int) -> *mut DIR {
 
     let dir = &mut *dir_ptr;
     *dir = DIR::new(fd);
-    
+
     crate::set_errno(0);
     dir_ptr
 }
 
 /// Read a directory entry
-/// 
+///
 /// Returns a pointer to a dirent structure representing the next directory entry.
 /// Returns NULL when reaching end of directory or on error (check errno).
 #[no_mangle]
@@ -173,7 +178,7 @@ pub unsafe extern "C" fn readdir(dirp: *mut DIR) -> *mut dirent {
     }
 
     let dir = &mut *dirp;
-    
+
     // If we've reached EOF, return NULL
     if dir.eof {
         crate::set_errno(0); // Not an error, just end of directory
@@ -188,19 +193,19 @@ pub unsafe extern "C" fn readdir(dirp: *mut DIR) -> *mut dirent {
             dir.buf.as_mut_ptr() as u64,
             DIR_BUF_SIZE as u64,
         );
-        
+
         if n == u64::MAX {
             crate::refresh_errno_from_kernel();
             return ptr::null_mut();
         }
-        
+
         if n == 0 {
             // End of directory
             dir.eof = true;
             crate::set_errno(0);
             return ptr::null_mut();
         }
-        
+
         dir.pos = 0;
         dir.size = n as usize;
     }
@@ -208,16 +213,16 @@ pub unsafe extern "C" fn readdir(dirp: *mut DIR) -> *mut dirent {
     // Parse the next entry from buffer
     let entry_ptr = dir.buf.as_ptr().add(dir.pos) as *const linux_dirent64;
     let linux_entry = &*entry_ptr;
-    
+
     // Copy to our dirent structure
     dir.entry.d_ino = linux_entry.d_ino;
     dir.entry.d_off = linux_entry.d_off;
     dir.entry.d_reclen = linux_entry.d_reclen;
     dir.entry.d_type = linux_entry.d_type;
-    
+
     // Copy name (d_name starts at offset 19 in linux_dirent64)
     let name_ptr = (entry_ptr as *const u8).add(19) as *const c_char;
-    
+
     let mut i = 0;
     while i < NAME_MAX {
         let c = *name_ptr.add(i);
@@ -228,10 +233,10 @@ pub unsafe extern "C" fn readdir(dirp: *mut DIR) -> *mut dirent {
         i += 1;
     }
     dir.entry.d_name[NAME_MAX] = 0; // Ensure null termination
-    
+
     // Move to next entry
     dir.pos += linux_entry.d_reclen as usize;
-    
+
     crate::set_errno(0);
     &mut dir.entry as *mut dirent
 }
@@ -267,7 +272,7 @@ pub unsafe extern "C" fn readdir_r(
     // Copy entry
     ptr::copy_nonoverlapping(ent, entry, 1);
     *result = entry;
-    
+
     0
 }
 
@@ -281,10 +286,10 @@ pub unsafe extern "C" fn closedir(dirp: *mut DIR) -> c_int {
 
     let dir = &*dirp;
     let ret = crate::syscall1(SYS_CLOSE, dir.fd as u64);
-    
+
     // Free the DIR structure
     free_dir(dirp);
-    
+
     if ret == u64::MAX {
         crate::refresh_errno_from_kernel();
         -1
@@ -302,12 +307,12 @@ pub unsafe extern "C" fn rewinddir(dirp: *mut DIR) {
     }
 
     let dir = &mut *dirp;
-    
+
     // Seek to beginning of directory
     const SYS_LSEEK: u64 = 8;
     const SEEK_SET: c_int = 0;
     let _ = crate::syscall3(SYS_LSEEK, dir.fd as u64, 0, SEEK_SET as u64);
-    
+
     // Reset buffer state
     dir.pos = 0;
     dir.size = 0;
@@ -322,11 +327,11 @@ pub unsafe extern "C" fn seekdir(dirp: *mut DIR, loc: c_int) {
     }
 
     let dir = &mut *dirp;
-    
+
     const SYS_LSEEK: u64 = 8;
     const SEEK_SET: c_int = 0;
     let _ = crate::syscall3(SYS_LSEEK, dir.fd as u64, loc as u64, SEEK_SET as u64);
-    
+
     // Reset buffer state (need to re-read after seek)
     dir.pos = 0;
     dir.size = 0;
@@ -342,11 +347,11 @@ pub unsafe extern "C" fn telldir(dirp: *mut DIR) -> c_int {
     }
 
     let dir = &*dirp;
-    
+
     const SYS_LSEEK: u64 = 8;
     const SEEK_CUR: c_int = 1;
     let ret = crate::syscall3(SYS_LSEEK, dir.fd as u64, 0, SEEK_CUR as u64);
-    
+
     if ret == u64::MAX {
         crate::refresh_errno_from_kernel();
         -1
@@ -420,7 +425,7 @@ unsafe fn free_dir(dirp: *mut DIR) {
 }
 
 // ============================================================================
-// Convenience functions 
+// Convenience functions
 // ============================================================================
 
 /// alphasort - comparison function for scandir
@@ -429,16 +434,16 @@ pub unsafe extern "C" fn alphasort(a: *const *const dirent, b: *const *const dir
     if a.is_null() || b.is_null() || (*a).is_null() || (*b).is_null() {
         return 0;
     }
-    
+
     let name_a = (**a).d_name.as_ptr();
     let name_b = (**b).d_name.as_ptr();
-    
+
     // Simple strcmp
     let mut i = 0;
     loop {
         let ca = *name_a.add(i) as u8;
         let cb = *name_b.add(i) as u8;
-        
+
         if ca == 0 && cb == 0 {
             return 0;
         }

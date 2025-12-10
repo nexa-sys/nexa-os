@@ -65,7 +65,7 @@ pub enum NamedGroup {
     Secp521r1 = 25,
     X25519 = 29,
     X448 = 30,
-    
+
     // Finite field groups (not recommended)
     Ffdhe2048 = 256,
     Ffdhe3072 = 257,
@@ -80,21 +80,21 @@ pub enum SignatureScheme {
     RsaPkcs1Sha256 = 0x0401,
     RsaPkcs1Sha384 = 0x0501,
     RsaPkcs1Sha512 = 0x0601,
-    
+
     // ECDSA
     EcdsaSecp256r1Sha256 = 0x0403,
     EcdsaSecp384r1Sha384 = 0x0503,
     EcdsaSecp521r1Sha512 = 0x0603,
-    
+
     // RSA-PSS with SHA-256/384/512
     RsaPssRsaeSha256 = 0x0804,
     RsaPssRsaeSha384 = 0x0805,
     RsaPssRsaeSha512 = 0x0806,
-    
+
     // EdDSA
     Ed25519 = 0x0807,
     Ed448 = 0x0808,
-    
+
     // RSA-PSS with public key OID rsassa-pss
     RsaPssPssSha256 = 0x0809,
     RsaPssPssSha384 = 0x080a,

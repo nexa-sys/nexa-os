@@ -129,8 +129,8 @@ pub const SYS_NET_SET_DNS: u64 = 260;
 pub const SYS_NET_GET_DNS: u64 = 261;
 
 // Swap management syscalls (Linux-compatible)
-pub const SYS_SWAPON: u64 = 167;   // Linux x86_64 swapon
-pub const SYS_SWAPOFF: u64 = 168;  // Linux x86_64 swapoff
+pub const SYS_SWAPON: u64 = 167; // Linux x86_64 swapon
+pub const SYS_SWAPOFF: u64 = 168; // Linux x86_64 swapoff
 
 // Process times (Linux-compatible)
 pub const SYS_TIMES: u64 = 100;
@@ -139,6 +139,6 @@ pub const SYS_TIMES: u64 = 100;
 pub const SYS_GETRANDOM: u64 = 318;
 
 // Kernel module management syscalls (Linux-compatible)
-pub const SYS_INIT_MODULE: u64 = 175;     // Load a kernel module
-pub const SYS_DELETE_MODULE: u64 = 176;   // Unload a kernel module
-pub const SYS_QUERY_MODULE: u64 = 178;    // Query module information (NexaOS-specific extensions)
+pub const SYS_INIT_MODULE: u64 = 175; // Load a kernel module
+pub const SYS_DELETE_MODULE: u64 = 176; // Unload a kernel module
+pub const SYS_QUERY_MODULE: u64 = 178; // Query module information (NexaOS-specific extensions)

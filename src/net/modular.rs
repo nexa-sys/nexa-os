@@ -66,7 +66,7 @@ impl NetDriverError {
 }
 
 // ============================================================================
-// FFI Types for Module Callbacks  
+// FFI Types for Module Callbacks
 // ============================================================================
 
 /// Network device descriptor passed from kernel to driver module
@@ -147,10 +147,12 @@ pub type FnNetDriverInit = extern "C" fn(handle: NetDriverHandle) -> i32;
 pub type FnNetDriverUpdateDma = extern "C" fn(handle: NetDriverHandle);
 
 /// Transmit a frame
-pub type FnNetDriverTransmit = extern "C" fn(handle: NetDriverHandle, frame: *const u8, len: usize) -> i32;
+pub type FnNetDriverTransmit =
+    extern "C" fn(handle: NetDriverHandle, frame: *const u8, len: usize) -> i32;
 
 /// Drain RX queue, returns frame length or 0 if no frames
-pub type FnNetDriverDrainRx = extern "C" fn(handle: NetDriverHandle, buf: *mut u8, buf_len: usize) -> i32;
+pub type FnNetDriverDrainRx =
+    extern "C" fn(handle: NetDriverHandle, buf: *mut u8, buf_len: usize) -> i32;
 
 /// Perform periodic maintenance (link status check, etc.)
 pub type FnNetDriverMaintenance = extern "C" fn(handle: NetDriverHandle) -> i32;
@@ -310,10 +312,10 @@ pub extern "C" fn kmod_net_register(ops: *const NetDriverOps) -> i32 {
     }
 
     let mut drivers = NET_DRIVERS.lock();
-    
+
     // Find empty slot
     let slot = drivers.iter_mut().find(|d| !d.active);
-    
+
     match slot {
         Some(slot) => {
             slot.ops.name.copy_from_slice(&ops.name);
@@ -327,7 +329,7 @@ pub extern "C" fn kmod_net_register(ops: *const NetDriverOps) -> i32 {
             slot.ops.maintenance = ops.maintenance;
             slot.ops.get_mac = ops.get_mac;
             slot.active = true;
-            
+
             crate::kinfo!("net_modular: registered driver '{}'", ops.name_str());
             0
         }
@@ -349,11 +351,11 @@ pub extern "C" fn kmod_net_unregister(name: *const u8, name_len: usize) -> i32 {
     let name_str = core::str::from_utf8(name_bytes).unwrap_or("");
 
     let mut drivers = NET_DRIVERS.lock();
-    
+
     // First, find the driver index
     let mut found_idx: Option<usize> = None;
     let mut destroy_fn: Option<FnNetDriverDestroy> = None;
-    
+
     for (idx, slot) in drivers.iter().enumerate() {
         if slot.active && slot.ops.name_str() == name_str {
             found_idx = Some(idx);
@@ -361,7 +363,7 @@ pub extern "C" fn kmod_net_unregister(name: *const u8, name_len: usize) -> i32 {
             break;
         }
     }
-    
+
     if let Some(driver_idx) = found_idx {
         // Destroy any active devices using this driver
         {
@@ -375,7 +377,7 @@ pub extern "C" fn kmod_net_unregister(name: *const u8, name_len: usize) -> i32 {
                 }
             }
         }
-        
+
         // Clear the driver slot
         drivers[driver_idx] = RegisteredDriver::empty();
         crate::kinfo!("net_modular: unregistered driver '{}'", name_str);
@@ -398,19 +400,19 @@ pub fn has_drivers() -> bool {
 /// Find a driver that supports the given PCI device
 pub fn find_driver_for_device(vendor_id: u16, device_id: u16) -> Option<usize> {
     let drivers = NET_DRIVERS.lock();
-    
+
     for (idx, slot) in drivers.iter().enumerate() {
         if !slot.active {
             continue;
         }
-        
+
         if let Some(probe) = slot.ops.probe {
             if probe(vendor_id, device_id) == 0 {
                 return Some(idx);
             }
         }
     }
-    
+
     None
 }
 
@@ -421,21 +423,27 @@ pub fn create_driver_instance(
     desc: &NetDeviceDescriptor,
 ) -> Result<(), NetDriverError> {
     let drivers = NET_DRIVERS.lock();
-    
+
     if driver_index >= MAX_NET_DRIVERS || !drivers[driver_index].active {
         return Err(NetDriverError::ModuleNotLoaded);
     }
-    
-    let new_fn = drivers[driver_index].ops.new.ok_or(NetDriverError::InvalidOperation)?;
-    let init_fn = drivers[driver_index].ops.init.ok_or(NetDriverError::InvalidOperation)?;
-    
-    drop(drivers);  // Release lock before calling into module
-    
+
+    let new_fn = drivers[driver_index]
+        .ops
+        .new
+        .ok_or(NetDriverError::InvalidOperation)?;
+    let init_fn = drivers[driver_index]
+        .ops
+        .init
+        .ok_or(NetDriverError::InvalidOperation)?;
+
+    drop(drivers); // Release lock before calling into module
+
     let handle = new_fn(desc);
     if handle.is_null() {
         return Err(NetDriverError::InvalidDescriptor);
     }
-    
+
     let result = init_fn(handle);
     if result != 0 {
         // Cleanup on init failure
@@ -445,7 +453,7 @@ pub fn create_driver_instance(
         }
         return Err(NetDriverError::from_code(result).unwrap_or(NetDriverError::HardwareFault));
     }
-    
+
     // Store active device
     {
         let mut devices = ACTIVE_DEVICES.lock();
@@ -458,8 +466,11 @@ pub fn create_driver_instance(
             active: true,
         };
     }
-    
-    crate::kinfo!("net_modular: created driver instance for device {}", device_index);
+
+    crate::kinfo!(
+        "net_modular: created driver instance for device {}",
+        device_index
+    );
     Ok(())
 }
 
@@ -469,11 +480,11 @@ pub fn update_dma_addresses(device_index: usize) {
     if device_index >= MAX_NET_DEVICES || !devices[device_index].active {
         return;
     }
-    
+
     let driver_index = devices[device_index].driver_index;
     let handle = devices[device_index].handle;
     drop(devices);
-    
+
     let drivers = NET_DRIVERS.lock();
     if let Some(update_dma) = drivers[driver_index].ops.update_dma {
         drop(drivers);
@@ -487,20 +498,23 @@ pub fn transmit(device_index: usize, frame: &[u8]) -> Result<(), NetDriverError>
     if device_index >= MAX_NET_DEVICES || !devices[device_index].active {
         return Err(NetDriverError::DeviceMissing);
     }
-    
+
     let driver_index = devices[device_index].driver_index;
     let handle = devices[device_index].handle;
     drop(devices);
-    
+
     let drivers = NET_DRIVERS.lock();
-    let transmit_fn = drivers[driver_index].ops.transmit.ok_or(NetDriverError::InvalidOperation)?;
+    let transmit_fn = drivers[driver_index]
+        .ops
+        .transmit
+        .ok_or(NetDriverError::InvalidOperation)?;
     drop(drivers);
-    
+
     let result = transmit_fn(handle, frame.as_ptr(), frame.len());
     if result != 0 {
         return Err(NetDriverError::from_code(result).unwrap_or(NetDriverError::TxBusy));
     }
-    
+
     Ok(())
 }
 
@@ -510,15 +524,15 @@ pub fn drain_rx(device_index: usize, buf: &mut [u8]) -> Option<usize> {
     if device_index >= MAX_NET_DEVICES || !devices[device_index].active {
         return None;
     }
-    
+
     let driver_index = devices[device_index].driver_index;
     let handle = devices[device_index].handle;
     drop(devices);
-    
+
     let drivers = NET_DRIVERS.lock();
     let drain_fn = drivers[driver_index].ops.drain_rx?;
     drop(drivers);
-    
+
     let result = drain_fn(handle, buf.as_mut_ptr(), buf.len());
     if result > 0 {
         Some(result as usize)
@@ -533,11 +547,11 @@ pub fn maintenance(device_index: usize) -> Result<(), NetDriverError> {
     if device_index >= MAX_NET_DEVICES || !devices[device_index].active {
         return Err(NetDriverError::DeviceMissing);
     }
-    
+
     let driver_index = devices[device_index].driver_index;
     let handle = devices[device_index].handle;
     drop(devices);
-    
+
     let drivers = NET_DRIVERS.lock();
     if let Some(maint_fn) = drivers[driver_index].ops.maintenance {
         drop(drivers);
@@ -546,7 +560,7 @@ pub fn maintenance(device_index: usize) -> Result<(), NetDriverError> {
             return Err(NetDriverError::from_code(result).unwrap_or(NetDriverError::HardwareFault));
         }
     }
-    
+
     Ok(())
 }
 
@@ -556,15 +570,15 @@ pub fn get_mac_address(device_index: usize) -> Option<[u8; 6]> {
     if device_index >= MAX_NET_DEVICES || !devices[device_index].active {
         return None;
     }
-    
+
     let driver_index = devices[device_index].driver_index;
     let handle = devices[device_index].handle;
     drop(devices);
-    
+
     let drivers = NET_DRIVERS.lock();
     let get_mac_fn = drivers[driver_index].ops.get_mac?;
     drop(drivers);
-    
+
     let mut mac = [0u8; 6];
     get_mac_fn(handle, mac.as_mut_ptr());
     Some(mac)
@@ -583,7 +597,7 @@ pub fn is_device_active(device_index: usize) -> bool {
 /// Register network modular symbols with kernel symbol table
 pub fn register_symbols() {
     use crate::kmod::symbols::{register_symbol, SymbolType};
-    
+
     register_symbol(
         "kmod_net_register",
         kmod_net_register as *const () as u64,
@@ -594,7 +608,7 @@ pub fn register_symbols() {
         kmod_net_unregister as *const () as u64,
         SymbolType::Function,
     );
-    
+
     // Register I/O helper functions for drivers
     register_symbol(
         "kmod_mmio_read32",
@@ -636,7 +650,7 @@ pub fn register_symbols() {
         kmod_spin_hint as *const () as u64,
         SymbolType::Function,
     );
-    
+
     crate::kinfo!("net_modular: registered kernel symbols");
 }
 
@@ -672,7 +686,13 @@ pub extern "C" fn kmod_pci_read_config_word(bus: u8, device: u8, function: u8, o
 
 /// Write PCI config word
 #[no_mangle]
-pub extern "C" fn kmod_pci_write_config_word(bus: u8, device: u8, function: u8, offset: u32, value: u16) {
+pub extern "C" fn kmod_pci_write_config_word(
+    bus: u8,
+    device: u8,
+    function: u8,
+    offset: u32,
+    value: u16,
+) {
     let address = 0x80000000u32
         | ((bus as u32) << 16)
         | ((device as u32) << 11)

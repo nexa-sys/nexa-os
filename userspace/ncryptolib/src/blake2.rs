@@ -13,8 +13,8 @@
 //! - Digital signatures
 //! - Password hashing (with salt/personalization)
 
-use std::vec::Vec;
 use core::ptr;
+use std::vec::Vec;
 
 // ============================================================================
 // BLAKE2b Constants
@@ -29,10 +29,14 @@ pub const BLAKE2B_KEY_SIZE: usize = 64;
 
 /// BLAKE2b IV (same as SHA-512 IV)
 const BLAKE2B_IV: [u64; 8] = [
-    0x6a09e667f3bcc908, 0xbb67ae8584caa73b,
-    0x3c6ef372fe94f82b, 0xa54ff53a5f1d36f1,
-    0x510e527fade682d1, 0x9b05688c2b3e6c1f,
-    0x1f83d9abfb41bd6b, 0x5be0cd19137e2179,
+    0x6a09e667f3bcc908,
+    0xbb67ae8584caa73b,
+    0x3c6ef372fe94f82b,
+    0xa54ff53a5f1d36f1,
+    0x510e527fade682d1,
+    0x9b05688c2b3e6c1f,
+    0x1f83d9abfb41bd6b,
+    0x5be0cd19137e2179,
 ];
 
 /// BLAKE2b sigma schedule
@@ -64,8 +68,7 @@ pub const BLAKE2S_KEY_SIZE: usize = 32;
 
 /// BLAKE2s IV (same as SHA-256 IV)
 const BLAKE2S_IV: [u32; 8] = [
-    0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
-    0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+    0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
 ];
 
 /// BLAKE2s sigma schedule (same as BLAKE2b)
@@ -89,9 +92,9 @@ const BLAKE2S_SIGMA: [[usize; 16]; 10] = [
 /// BLAKE2b hasher state
 #[derive(Clone)]
 pub struct Blake2b {
-    h: [u64; 8],          // State
-    t: [u64; 2],          // Counter
-    f: [u64; 2],          // Finalization flags
+    h: [u64; 8], // State
+    t: [u64; 2], // Counter
+    f: [u64; 2], // Finalization flags
     buffer: [u8; BLAKE2B_BLOCK_SIZE],
     buffer_len: usize,
     digest_len: usize,
@@ -101,11 +104,11 @@ impl Blake2b {
     /// Create a new BLAKE2b hasher with specified digest length (1-64 bytes)
     pub fn new(digest_len: usize) -> Self {
         assert!(digest_len >= 1 && digest_len <= BLAKE2B_DIGEST_SIZE);
-        
+
         let mut h = BLAKE2B_IV;
         // Parameter block: digest_len, key_len=0, fanout=1, depth=1
         h[0] ^= 0x01010000 ^ (digest_len as u64);
-        
+
         Self {
             h,
             t: [0, 0],
@@ -120,10 +123,10 @@ impl Blake2b {
     pub fn new_keyed(key: &[u8], digest_len: usize) -> Self {
         assert!(key.len() <= BLAKE2B_KEY_SIZE);
         assert!(digest_len >= 1 && digest_len <= BLAKE2B_DIGEST_SIZE);
-        
+
         let mut h = BLAKE2B_IV;
         h[0] ^= 0x01010000 ^ ((key.len() as u64) << 8) ^ (digest_len as u64);
-        
+
         let mut hasher = Self {
             h,
             t: [0, 0],
@@ -132,13 +135,13 @@ impl Blake2b {
             buffer_len: 0,
             digest_len,
         };
-        
+
         // If keyed, the first block is the key padded to block size
         if !key.is_empty() {
             hasher.buffer[..key.len()].copy_from_slice(key);
             hasher.buffer_len = BLAKE2B_BLOCK_SIZE;
         }
-        
+
         hasher
     }
 
@@ -155,7 +158,7 @@ impl Blake2b {
     /// Update with data
     pub fn update(&mut self, data: &[u8]) {
         let mut offset = 0;
-        
+
         // If buffer has data, try to fill it
         if self.buffer_len > 0 {
             let to_copy = core::cmp::min(BLAKE2B_BLOCK_SIZE - self.buffer_len, data.len());
@@ -163,7 +166,7 @@ impl Blake2b {
                 .copy_from_slice(&data[..to_copy]);
             self.buffer_len += to_copy;
             offset = to_copy;
-            
+
             if self.buffer_len == BLAKE2B_BLOCK_SIZE {
                 self.increment_counter(BLAKE2B_BLOCK_SIZE as u64);
                 let block = self.buffer;
@@ -171,16 +174,17 @@ impl Blake2b {
                 self.buffer_len = 0;
             }
         }
-        
+
         // Process full blocks, keeping last partial block in buffer
         while offset + BLAKE2B_BLOCK_SIZE < data.len() {
             self.increment_counter(BLAKE2B_BLOCK_SIZE as u64);
-            let block: [u8; BLAKE2B_BLOCK_SIZE] = 
-                data[offset..offset + BLAKE2B_BLOCK_SIZE].try_into().unwrap();
+            let block: [u8; BLAKE2B_BLOCK_SIZE] = data[offset..offset + BLAKE2B_BLOCK_SIZE]
+                .try_into()
+                .unwrap();
             self.compress(&block, false);
             offset += BLAKE2B_BLOCK_SIZE;
         }
-        
+
         // Buffer remaining
         if offset < data.len() {
             let remaining = data.len() - offset;
@@ -195,15 +199,15 @@ impl Blake2b {
         // Process final block
         self.increment_counter(self.buffer_len as u64);
         self.f[0] = u64::MAX; // Set finalization flag
-        
+
         // Pad buffer with zeros
         for i in self.buffer_len..BLAKE2B_BLOCK_SIZE {
             self.buffer[i] = 0;
         }
-        
+
         let block = self.buffer;
         self.compress(&block, true);
-        
+
         // Output digest
         let mut result = Vec::with_capacity(self.digest_len);
         for i in 0..self.digest_len {
@@ -224,8 +228,14 @@ impl Blake2b {
         let mut m = [0u64; 16];
         for i in 0..16 {
             m[i] = u64::from_le_bytes([
-                block[i * 8], block[i * 8 + 1], block[i * 8 + 2], block[i * 8 + 3],
-                block[i * 8 + 4], block[i * 8 + 5], block[i * 8 + 6], block[i * 8 + 7],
+                block[i * 8],
+                block[i * 8 + 1],
+                block[i * 8 + 2],
+                block[i * 8 + 3],
+                block[i * 8 + 4],
+                block[i * 8 + 5],
+                block[i * 8 + 6],
+                block[i * 8 + 7],
             ]);
         }
 
@@ -241,13 +251,13 @@ impl Blake2b {
         // Mixing rounds
         for round in 0..12 {
             let s = &BLAKE2B_SIGMA[round];
-            
+
             // Column step
             Self::g(&mut v, 0, 4, 8, 12, m[s[0]], m[s[1]]);
             Self::g(&mut v, 1, 5, 9, 13, m[s[2]], m[s[3]]);
             Self::g(&mut v, 2, 6, 10, 14, m[s[4]], m[s[5]]);
             Self::g(&mut v, 3, 7, 11, 15, m[s[6]], m[s[7]]);
-            
+
             // Diagonal step
             Self::g(&mut v, 0, 5, 10, 15, m[s[8]], m[s[9]]);
             Self::g(&mut v, 1, 6, 11, 12, m[s[10]], m[s[11]]);
@@ -323,10 +333,10 @@ impl Blake2s {
     /// Create a new BLAKE2s hasher with specified digest length (1-32 bytes)
     pub fn new(digest_len: usize) -> Self {
         assert!(digest_len >= 1 && digest_len <= BLAKE2S_DIGEST_SIZE);
-        
+
         let mut h = BLAKE2S_IV;
         h[0] ^= 0x01010000 ^ (digest_len as u32);
-        
+
         Self {
             h,
             t: [0, 0],
@@ -341,10 +351,10 @@ impl Blake2s {
     pub fn new_keyed(key: &[u8], digest_len: usize) -> Self {
         assert!(key.len() <= BLAKE2S_KEY_SIZE);
         assert!(digest_len >= 1 && digest_len <= BLAKE2S_DIGEST_SIZE);
-        
+
         let mut h = BLAKE2S_IV;
         h[0] ^= 0x01010000 ^ ((key.len() as u32) << 8) ^ (digest_len as u32);
-        
+
         let mut hasher = Self {
             h,
             t: [0, 0],
@@ -353,26 +363,26 @@ impl Blake2s {
             buffer_len: 0,
             digest_len,
         };
-        
+
         if !key.is_empty() {
             hasher.buffer[..key.len()].copy_from_slice(key);
             hasher.buffer_len = BLAKE2S_BLOCK_SIZE;
         }
-        
+
         hasher
     }
 
     /// Update with data
     pub fn update(&mut self, data: &[u8]) {
         let mut offset = 0;
-        
+
         if self.buffer_len > 0 {
             let to_copy = core::cmp::min(BLAKE2S_BLOCK_SIZE - self.buffer_len, data.len());
             self.buffer[self.buffer_len..self.buffer_len + to_copy]
                 .copy_from_slice(&data[..to_copy]);
             self.buffer_len += to_copy;
             offset = to_copy;
-            
+
             if self.buffer_len == BLAKE2S_BLOCK_SIZE {
                 self.increment_counter(BLAKE2S_BLOCK_SIZE as u32);
                 let block = self.buffer;
@@ -380,15 +390,16 @@ impl Blake2s {
                 self.buffer_len = 0;
             }
         }
-        
+
         while offset + BLAKE2S_BLOCK_SIZE < data.len() {
             self.increment_counter(BLAKE2S_BLOCK_SIZE as u32);
-            let block: [u8; BLAKE2S_BLOCK_SIZE] = 
-                data[offset..offset + BLAKE2S_BLOCK_SIZE].try_into().unwrap();
+            let block: [u8; BLAKE2S_BLOCK_SIZE] = data[offset..offset + BLAKE2S_BLOCK_SIZE]
+                .try_into()
+                .unwrap();
             self.compress(&block);
             offset += BLAKE2S_BLOCK_SIZE;
         }
-        
+
         if offset < data.len() {
             let remaining = data.len() - offset;
             self.buffer[self.buffer_len..self.buffer_len + remaining]
@@ -401,14 +412,14 @@ impl Blake2s {
     pub fn finalize(&mut self) -> Vec<u8> {
         self.increment_counter(self.buffer_len as u32);
         self.f[0] = u32::MAX;
-        
+
         for i in self.buffer_len..BLAKE2S_BLOCK_SIZE {
             self.buffer[i] = 0;
         }
-        
+
         let block = self.buffer;
         self.compress(&block);
-        
+
         let mut result = Vec::with_capacity(self.digest_len);
         for i in 0..self.digest_len {
             result.push((self.h[i / 4] >> (8 * (i % 4))) as u8);
@@ -427,7 +438,10 @@ impl Blake2s {
         let mut m = [0u32; 16];
         for i in 0..16 {
             m[i] = u32::from_le_bytes([
-                block[i * 4], block[i * 4 + 1], block[i * 4 + 2], block[i * 4 + 3],
+                block[i * 4],
+                block[i * 4 + 1],
+                block[i * 4 + 2],
+                block[i * 4 + 3],
             ]);
         }
 
@@ -441,12 +455,12 @@ impl Blake2s {
 
         for round in 0..10 {
             let s = &BLAKE2S_SIGMA[round];
-            
+
             Self::g(&mut v, 0, 4, 8, 12, m[s[0]], m[s[1]]);
             Self::g(&mut v, 1, 5, 9, 13, m[s[2]], m[s[3]]);
             Self::g(&mut v, 2, 6, 10, 14, m[s[4]], m[s[5]]);
             Self::g(&mut v, 3, 7, 11, 15, m[s[6]], m[s[7]]);
-            
+
             Self::g(&mut v, 0, 5, 10, 15, m[s[8]], m[s[9]]);
             Self::g(&mut v, 1, 6, 11, 12, m[s[10]], m[s[11]]);
             Self::g(&mut v, 2, 7, 8, 13, m[s[12]], m[s[13]]);
@@ -504,14 +518,14 @@ pub extern "C" fn BLAKE2b(data: *const u8, len: usize, md: *mut u8) -> *mut u8 {
     if data.is_null() || md.is_null() {
         return ptr::null_mut();
     }
-    
+
     let input = unsafe { core::slice::from_raw_parts(data, len) };
     let hash = blake2b(input);
-    
+
     unsafe {
         ptr::copy_nonoverlapping(hash.as_ptr(), md, BLAKE2B_DIGEST_SIZE);
     }
-    
+
     md
 }
 
@@ -521,14 +535,14 @@ pub extern "C" fn BLAKE2s(data: *const u8, len: usize, md: *mut u8) -> *mut u8 {
     if data.is_null() || md.is_null() {
         return ptr::null_mut();
     }
-    
+
     let input = unsafe { core::slice::from_raw_parts(data, len) };
     let hash = blake2s(input);
-    
+
     unsafe {
         ptr::copy_nonoverlapping(hash.as_ptr(), md, BLAKE2S_DIGEST_SIZE);
     }
-    
+
     md
 }
 

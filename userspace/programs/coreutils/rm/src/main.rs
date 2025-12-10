@@ -30,7 +30,7 @@ fn print_usage() {
 fn confirm(path: &str) -> bool {
     print!("rm: remove '{}'? ", path);
     io::stdout().flush().unwrap();
-    
+
     let mut input = String::new();
     if io::stdin().read_line(&mut input).is_ok() {
         let response = input.trim().to_lowercase();

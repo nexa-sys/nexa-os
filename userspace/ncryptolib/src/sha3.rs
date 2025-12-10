@@ -12,8 +12,8 @@
 //! - SHAKE128: 128-bit security, variable output
 //! - SHAKE256: 256-bit security, variable output
 
-use std::vec::Vec;
 use core::ptr;
+use std::vec::Vec;
 
 // ============================================================================
 // SHA-3 Constants
@@ -33,12 +33,30 @@ const KECCAK_ROUNDS: usize = 24;
 
 /// Keccak round constants
 const KECCAK_RC: [u64; 24] = [
-    0x0000000000000001, 0x0000000000008082, 0x800000000000808a, 0x8000000080008000,
-    0x000000000000808b, 0x0000000080000001, 0x8000000080008081, 0x8000000000008009,
-    0x000000000000008a, 0x0000000000000088, 0x0000000080008009, 0x000000008000000a,
-    0x000000008000808b, 0x800000000000008b, 0x8000000000008089, 0x8000000000008003,
-    0x8000000000008002, 0x8000000000000080, 0x000000000000800a, 0x800000008000000a,
-    0x8000000080008081, 0x8000000000008080, 0x0000000080000001, 0x8000000080008008,
+    0x0000000000000001,
+    0x0000000000008082,
+    0x800000000000808a,
+    0x8000000080008000,
+    0x000000000000808b,
+    0x0000000080000001,
+    0x8000000080008081,
+    0x8000000000008009,
+    0x000000000000008a,
+    0x0000000000000088,
+    0x0000000080008009,
+    0x000000008000000a,
+    0x000000008000808b,
+    0x800000000000008b,
+    0x8000000000008089,
+    0x8000000000008003,
+    0x8000000000008002,
+    0x8000000000000080,
+    0x000000000000800a,
+    0x800000008000000a,
+    0x8000000080008081,
+    0x8000000000008080,
+    0x0000000080000001,
+    0x8000000080008008,
 ];
 
 /// Keccak rotation offsets
@@ -63,7 +81,9 @@ struct KeccakState {
 impl KeccakState {
     /// Create new zeroed state
     fn new() -> Self {
-        Self { state: [0u64; KECCAK_LANES] }
+        Self {
+            state: [0u64; KECCAK_LANES],
+        }
     }
 
     /// Reset state to zero
@@ -76,8 +96,14 @@ impl KeccakState {
         let rate_lanes = rate_bytes / 8;
         for i in 0..rate_lanes.min(data.len() / 8) {
             let lane = u64::from_le_bytes([
-                data[i * 8], data[i * 8 + 1], data[i * 8 + 2], data[i * 8 + 3],
-                data[i * 8 + 4], data[i * 8 + 5], data[i * 8 + 6], data[i * 8 + 7],
+                data[i * 8],
+                data[i * 8 + 1],
+                data[i * 8 + 2],
+                data[i * 8 + 3],
+                data[i * 8 + 4],
+                data[i * 8 + 5],
+                data[i * 8 + 6],
+                data[i * 8 + 7],
             ]);
             self.state[i] ^= lane;
         }
@@ -97,8 +123,11 @@ impl KeccakState {
             // θ (theta) step
             let mut c = [0u64; 5];
             for x in 0..5 {
-                c[x] = self.state[x] ^ self.state[x + 5] ^ self.state[x + 10] 
-                     ^ self.state[x + 15] ^ self.state[x + 20];
+                c[x] = self.state[x]
+                    ^ self.state[x + 5]
+                    ^ self.state[x + 10]
+                    ^ self.state[x + 15]
+                    ^ self.state[x + 20];
             }
             let mut d = [0u64; 5];
             for x in 0..5 {
@@ -123,8 +152,8 @@ impl KeccakState {
             // χ (chi) step
             for y in 0..5 {
                 for x in 0..5 {
-                    self.state[x + 5 * y] = b[x + 5 * y] 
-                        ^ ((!b[(x + 1) % 5 + 5 * y]) & b[(x + 2) % 5 + 5 * y]);
+                    self.state[x + 5 * y] =
+                        b[x + 5 * y] ^ ((!b[(x + 1) % 5 + 5 * y]) & b[(x + 2) % 5 + 5 * y]);
                 }
             }
 
@@ -158,7 +187,7 @@ impl KeccakState {
 pub struct Sha3 {
     state: KeccakState,
     buffer: Vec<u8>,
-    rate: usize,      // Rate in bytes
+    rate: usize,       // Rate in bytes
     output_len: usize, // Output length in bytes
 }
 
@@ -202,7 +231,7 @@ impl Sha3 {
     /// Update hash with input data
     pub fn update(&mut self, data: &[u8]) {
         self.buffer.extend_from_slice(data);
-        
+
         // Process complete blocks
         while self.buffer.len() >= self.rate {
             let block: Vec<u8> = self.buffer.drain(..self.rate).collect();
@@ -226,26 +255,27 @@ impl Sha3 {
             let last = padded.last_mut().unwrap();
             *last |= 0x80;
         }
-        
+
         // Absorb final block
         self.state.absorb(&padded, self.rate);
         self.state.permute();
-        
+
         // Squeeze output
         let mut output = vec![0u8; self.output_len];
         let mut remaining = self.output_len;
         let mut offset = 0;
-        
+
         while remaining > 0 {
             let to_squeeze = remaining.min(self.rate);
-            self.state.squeeze(&mut output[offset..offset + to_squeeze], self.rate);
+            self.state
+                .squeeze(&mut output[offset..offset + to_squeeze], self.rate);
             remaining -= to_squeeze;
             offset += to_squeeze;
             if remaining > 0 {
                 self.state.permute();
             }
         }
-        
+
         output
     }
 }
@@ -332,24 +362,25 @@ impl Shake128 {
             let last = padded.last_mut().unwrap();
             *last |= 0x80;
         }
-        
+
         self.state.absorb(&padded, self.rate);
         self.state.permute();
-        
+
         let mut output = vec![0u8; output_len];
         let mut remaining = output_len;
         let mut offset = 0;
-        
+
         while remaining > 0 {
             let to_squeeze = remaining.min(self.rate);
-            self.state.squeeze(&mut output[offset..offset + to_squeeze], self.rate);
+            self.state
+                .squeeze(&mut output[offset..offset + to_squeeze], self.rate);
             remaining -= to_squeeze;
             offset += to_squeeze;
             if remaining > 0 {
                 self.state.permute();
             }
         }
-        
+
         output
     }
 }
@@ -400,24 +431,25 @@ impl Shake256 {
             let last = padded.last_mut().unwrap();
             *last |= 0x80;
         }
-        
+
         self.state.absorb(&padded, self.rate);
         self.state.permute();
-        
+
         let mut output = vec![0u8; output_len];
         let mut remaining = output_len;
         let mut offset = 0;
-        
+
         while remaining > 0 {
             let to_squeeze = remaining.min(self.rate);
-            self.state.squeeze(&mut output[offset..offset + to_squeeze], self.rate);
+            self.state
+                .squeeze(&mut output[offset..offset + to_squeeze], self.rate);
             remaining -= to_squeeze;
             offset += to_squeeze;
             if remaining > 0 {
                 self.state.permute();
             }
         }
-        
+
         output
     }
 }
@@ -438,14 +470,14 @@ pub extern "C" fn SHA3_256(data: *const u8, len: usize, md: *mut u8) -> *mut u8 
     if data.is_null() || md.is_null() {
         return ptr::null_mut();
     }
-    
+
     let input = unsafe { core::slice::from_raw_parts(data, len) };
     let hash = sha3_256(input);
-    
+
     unsafe {
         ptr::copy_nonoverlapping(hash.as_ptr(), md, SHA3_256_DIGEST_SIZE);
     }
-    
+
     md
 }
 
@@ -455,14 +487,14 @@ pub extern "C" fn SHA3_384(data: *const u8, len: usize, md: *mut u8) -> *mut u8 
     if data.is_null() || md.is_null() {
         return ptr::null_mut();
     }
-    
+
     let input = unsafe { core::slice::from_raw_parts(data, len) };
     let hash = sha3_384(input);
-    
+
     unsafe {
         ptr::copy_nonoverlapping(hash.as_ptr(), md, SHA3_384_DIGEST_SIZE);
     }
-    
+
     md
 }
 
@@ -472,14 +504,14 @@ pub extern "C" fn SHA3_512(data: *const u8, len: usize, md: *mut u8) -> *mut u8 
     if data.is_null() || md.is_null() {
         return ptr::null_mut();
     }
-    
+
     let input = unsafe { core::slice::from_raw_parts(data, len) };
     let hash = sha3_512(input);
-    
+
     unsafe {
         ptr::copy_nonoverlapping(hash.as_ptr(), md, SHA3_512_DIGEST_SIZE);
     }
-    
+
     md
 }
 
@@ -492,10 +524,9 @@ mod tests {
         let hash = sha3_256(b"");
         // SHA3-256("") = a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a
         let expected = [
-            0xa7, 0xff, 0xc6, 0xf8, 0xbf, 0x1e, 0xd7, 0x66,
-            0x51, 0xc1, 0x47, 0x56, 0xa0, 0x61, 0xd6, 0x62,
-            0xf5, 0x80, 0xff, 0x4d, 0xe4, 0x3b, 0x49, 0xfa,
-            0x82, 0xd8, 0x0a, 0x4b, 0x80, 0xf8, 0x43, 0x4a,
+            0xa7, 0xff, 0xc6, 0xf8, 0xbf, 0x1e, 0xd7, 0x66, 0x51, 0xc1, 0x47, 0x56, 0xa0, 0x61,
+            0xd6, 0x62, 0xf5, 0x80, 0xff, 0x4d, 0xe4, 0x3b, 0x49, 0xfa, 0x82, 0xd8, 0x0a, 0x4b,
+            0x80, 0xf8, 0x43, 0x4a,
         ];
         assert_eq!(hash, expected);
     }
@@ -505,10 +536,9 @@ mod tests {
         let hash = sha3_256(b"abc");
         // SHA3-256("abc") = 3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532
         let expected = [
-            0x3a, 0x98, 0x5d, 0xa7, 0x4f, 0xe2, 0x25, 0xb2,
-            0x04, 0x5c, 0x17, 0x2d, 0x6b, 0xd3, 0x90, 0xbd,
-            0x85, 0x5f, 0x08, 0x6e, 0x3e, 0x9d, 0x52, 0x5b,
-            0x46, 0xbf, 0xe2, 0x45, 0x11, 0x43, 0x15, 0x32,
+            0x3a, 0x98, 0x5d, 0xa7, 0x4f, 0xe2, 0x25, 0xb2, 0x04, 0x5c, 0x17, 0x2d, 0x6b, 0xd3,
+            0x90, 0xbd, 0x85, 0x5f, 0x08, 0x6e, 0x3e, 0x9d, 0x52, 0x5b, 0x46, 0xbf, 0xe2, 0x45,
+            0x11, 0x43, 0x15, 0x32,
         ];
         assert_eq!(hash, expected);
     }

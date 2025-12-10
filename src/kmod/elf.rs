@@ -398,7 +398,7 @@ impl<'a> ModuleLoader<'a> {
             if let Some(addr) = super::symbols::lookup_symbol(name) {
                 return Ok(addr);
             }
-            
+
             // 2. Then, look up in other loaded modules' exported symbols
             if let Some((_module_name, addr)) = super::lookup_module_symbol(name) {
                 crate::kdebug!(
@@ -408,11 +408,11 @@ impl<'a> ModuleLoader<'a> {
                 );
                 return Ok(addr);
             }
-            
+
             // Symbol not found anywhere
             crate::kerror!(
-                "kmod: undefined symbol not found: '{}' (kernel symbols: {}, checked modules too)", 
-                name, 
+                "kmod: undefined symbol not found: '{}' (kernel symbols: {}, checked modules too)",
+                name,
                 super::symbols::symbol_count()
             );
             Err(LoaderError::SymbolNotFound)
@@ -601,7 +601,7 @@ impl<'a> ModuleLoader<'a> {
     pub fn sections(&self) -> &[LoadedSection] {
         &self.sections
     }
-    
+
     /// Extract global symbols that can be exported by this module
     /// Returns a list of (name, address, is_function) tuples
     /// Symbols prefixed with "kmod_export_" will be exported for inter-module FFI
@@ -612,7 +612,7 @@ impl<'a> ModuleLoader<'a> {
 
         let sym_size = core::mem::size_of::<Elf64Sym>();
         let sym_count = symtab_data.len() / sym_size;
-        
+
         let mut exports = Vec::new();
 
         for i in 0..sym_count {
@@ -625,7 +625,7 @@ impl<'a> ModuleLoader<'a> {
             if (binding != STB_GLOBAL && binding != STB_WEAK) || sym.st_shndx == 0 {
                 continue;
             }
-            
+
             // Skip symbols with no type or section type
             let sym_type = sym.sym_type();
             if sym_type != STT_FUNC && sym_type != STT_OBJECT {
@@ -643,7 +643,7 @@ impl<'a> ModuleLoader<'a> {
                 Ok(s) => s,
                 Err(_) => continue,
             };
-            
+
             // Check if this symbol is marked for export
             // Convention: symbols starting with "kmod_export_" or "__kmod_export_" are exported
             if sym_name.starts_with("kmod_export_") || sym_name.starts_with("__kmod_export_") {
@@ -659,10 +659,10 @@ impl<'a> ModuleLoader<'a> {
                 }
             }
         }
-        
+
         Ok(exports)
     }
-    
+
     /// Extract module dependencies from special symbols
     /// Modules declare dependencies via symbols like "__kmod_depends_ext2" or "__kmod_depends_virtio_common"
     pub fn extract_dependencies(&self) -> Result<Vec<String>, LoaderError> {
@@ -672,7 +672,7 @@ impl<'a> ModuleLoader<'a> {
 
         let sym_size = core::mem::size_of::<Elf64Sym>();
         let sym_count = symtab_data.len() / sym_size;
-        
+
         let mut deps = Vec::new();
 
         for i in 0..sym_count {
@@ -693,7 +693,7 @@ impl<'a> ModuleLoader<'a> {
                 Ok(s) => s,
                 Err(_) => continue,
             };
-            
+
             // Convention: symbols starting with "__kmod_depends_" declare a dependency
             // E.g., "__kmod_depends_ext2" means this module depends on "ext2"
             if let Some(dep_name) = sym_name.strip_prefix("__kmod_depends_") {
@@ -702,7 +702,7 @@ impl<'a> ModuleLoader<'a> {
                 }
             }
         }
-        
+
         Ok(deps)
     }
 }
@@ -747,7 +747,7 @@ pub fn load_elf_module(data: &[u8]) -> Result<LoadedModule, LoaderError> {
             exported_symbols.len()
         );
     }
-    
+
     // Extract module dependencies
     let dependencies = loader.extract_dependencies().unwrap_or_default();
     if !dependencies.is_empty() {

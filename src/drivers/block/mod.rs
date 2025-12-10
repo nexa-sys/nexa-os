@@ -177,8 +177,10 @@ pub type FnBlkNew = extern "C" fn(desc: *const BootBlockDevice) -> BlockDeviceHa
 pub type FnBlkDestroy = extern "C" fn(handle: BlockDeviceHandle);
 pub type FnBlkInit = extern "C" fn(handle: BlockDeviceHandle) -> i32;
 pub type FnBlkGetInfo = extern "C" fn(handle: BlockDeviceHandle, info: *mut BlockDeviceInfo) -> i32;
-pub type FnBlkRead = extern "C" fn(handle: BlockDeviceHandle, sector: u64, count: u32, buf: *mut u8) -> i32;
-pub type FnBlkWrite = extern "C" fn(handle: BlockDeviceHandle, sector: u64, count: u32, buf: *const u8) -> i32;
+pub type FnBlkRead =
+    extern "C" fn(handle: BlockDeviceHandle, sector: u64, count: u32, buf: *mut u8) -> i32;
+pub type FnBlkWrite =
+    extern "C" fn(handle: BlockDeviceHandle, sector: u64, count: u32, buf: *const u8) -> i32;
 pub type FnBlkFlush = extern "C" fn(handle: BlockDeviceHandle) -> i32;
 
 /// Block driver operations table
@@ -296,9 +298,11 @@ pub extern "C" fn kmod_blk_unregister(name: *const u8, name_len: usize) -> i32 {
     let mut subsystem = BLOCK_SUBSYSTEM.lock();
 
     // Find and remove the driver
-    if let Some(pos) = subsystem.drivers.iter().position(|d| {
-        driver_name_str(&d.ops.name) == name_str
-    }) {
+    if let Some(pos) = subsystem
+        .drivers
+        .iter()
+        .position(|d| driver_name_str(&d.ops.name) == name_str)
+    {
         subsystem.drivers.swap_remove(pos);
         crate::kinfo!("Unregistered block driver: {}", name_str);
         0
@@ -330,50 +334,67 @@ pub fn init() {
     use crate::kmod::symbols::{register_symbol, SymbolType};
 
     let mut ok_count = 0usize;
-    
+
     if register_symbol(
         "kmod_blk_register",
         kmod_blk_register as *const () as u64,
         SymbolType::Function,
-    ) { ok_count += 1; }
-    
+    ) {
+        ok_count += 1;
+    }
+
     if register_symbol(
         "kmod_blk_unregister",
         kmod_blk_unregister as *const () as u64,
         SymbolType::Function,
-    ) { ok_count += 1; }
-    
+    ) {
+        ok_count += 1;
+    }
+
     if register_symbol(
         "kmod_blk_read_bytes",
         kmod_blk_read_bytes as *const () as u64,
         SymbolType::Function,
-    ) { ok_count += 1; }
-    
+    ) {
+        ok_count += 1;
+    }
+
     if register_symbol(
         "kmod_blk_write_bytes",
         kmod_blk_write_bytes as *const () as u64,
         SymbolType::Function,
-    ) { ok_count += 1; }
-    
+    ) {
+        ok_count += 1;
+    }
+
     if register_symbol(
         "kmod_blk_get_info",
         kmod_blk_get_info as *const () as u64,
         SymbolType::Function,
-    ) { ok_count += 1; }
-    
+    ) {
+        ok_count += 1;
+    }
+
     if register_symbol(
         "kmod_blk_device_count",
         kmod_blk_device_count as *const () as u64,
         SymbolType::Function,
-    ) { ok_count += 1; }
-    
+    ) {
+        ok_count += 1;
+    }
+
     if register_symbol(
         "kmod_blk_find_rootfs",
         kmod_blk_find_rootfs as *const () as u64,
         SymbolType::Function,
-    ) { ok_count += 1; }
+    ) {
+        ok_count += 1;
+    }
 
-    crate::kinfo!("Block device subsystem initialized ({}/7 symbols registered)", ok_count);
+    crate::kinfo!(
+        "Block device subsystem initialized ({}/7 symbols registered)",
+        ok_count
+    );
 }
 
 /// Check if any block driver is loaded
@@ -449,7 +470,9 @@ pub fn probe_device(desc: &BootBlockDevice) -> Result<usize, BlockError> {
     if info.name[0] == 0 {
         let name = format_device_name(index);
         for (i, &b) in name.as_bytes().iter().enumerate() {
-            if i >= 15 { break; }
+            if i >= 15 {
+                break;
+            }
             info.name[i] = b;
         }
     }
@@ -494,11 +517,18 @@ pub fn get_device_info(index: usize) -> Option<BlockDeviceInfo> {
 }
 
 /// Read sectors from a block device
-pub fn read_sectors(index: usize, sector: u64, count: u32, buf: &mut [u8]) -> Result<(), BlockError> {
+pub fn read_sectors(
+    index: usize,
+    sector: u64,
+    count: u32,
+    buf: &mut [u8],
+) -> Result<(), BlockError> {
     let subsystem = BLOCK_SUBSYSTEM.lock();
-    
+
     let device = subsystem.devices.get(index).ok_or(BlockError::NotFound)?;
-    let driver = subsystem.drivers.iter()
+    let driver = subsystem
+        .drivers
+        .iter()
         .find(|d| d.ops.name == device.driver_name)
         .ok_or(BlockError::DriverNotLoaded)?;
 
@@ -521,13 +551,15 @@ pub fn read_sectors(index: usize, sector: u64, count: u32, buf: &mut [u8]) -> Re
 /// Write sectors to a block device
 pub fn write_sectors(index: usize, sector: u64, count: u32, buf: &[u8]) -> Result<(), BlockError> {
     let subsystem = BLOCK_SUBSYSTEM.lock();
-    
+
     let device = subsystem.devices.get(index).ok_or(BlockError::NotFound)?;
     if device.info.read_only {
         return Err(BlockError::ReadOnly);
     }
 
-    let driver = subsystem.drivers.iter()
+    let driver = subsystem
+        .drivers
+        .iter()
         .find(|d| d.ops.name == device.driver_name)
         .ok_or(BlockError::DriverNotLoaded)?;
 
@@ -556,7 +588,7 @@ pub fn read_bytes(index: usize, offset: u64, buf: &mut [u8]) -> Result<usize, Bl
         }
     };
     let sector_size = info.sector_size as u64;
-    
+
     if buf.is_empty() {
         return Ok(0);
     }
@@ -584,9 +616,13 @@ pub fn read_bytes(index: usize, offset: u64, buf: &mut [u8]) -> Result<usize, Bl
 /// Find block device by PCI address
 pub fn find_by_pci(bus: u8, device: u8, function: u8) -> Option<usize> {
     let subsystem = BLOCK_SUBSYSTEM.lock();
-    subsystem.devices.iter().find(|d| {
-        d.info.pci_bus == bus && d.info.pci_device == device && d.info.pci_function == function
-    }).map(|d| d.index)
+    subsystem
+        .devices
+        .iter()
+        .find(|d| {
+            d.info.pci_bus == bus && d.info.pci_device == device && d.info.pci_function == function
+        })
+        .map(|d| d.index)
 }
 
 // ============================================================================
@@ -645,9 +681,9 @@ pub extern "C" fn kmod_blk_write_bytes(
         let end_sector = (end_offset + sector_size - 1) / sector_size;
         let sector_count = (end_sector - start_sector) as u32;
         let temp_size = sector_count as usize * sector_size as usize;
-        
+
         let mut temp = alloc::vec![0u8; temp_size];
-        
+
         // Read existing data
         if read_sectors(device_index, start_sector, sector_count, &mut temp).is_err() {
             return BlockError::IoError as i32 as i64;

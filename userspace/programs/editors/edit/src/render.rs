@@ -59,12 +59,12 @@ impl Renderer {
             tabstop: 4,
         }
     }
-    
+
     /// Get the number of text rows available
     pub fn text_rows(&self, term_rows: usize) -> usize {
         term_rows.saturating_sub(self.status_lines)
     }
-    
+
     /// Get the text column offset (for line numbers)
     pub fn text_col_offset(&self) -> usize {
         if self.show_line_numbers {
@@ -73,7 +73,7 @@ impl Renderer {
             0
         }
     }
-    
+
     /// Render the entire screen
     pub fn render(
         &mut self,
@@ -90,25 +90,26 @@ impl Renderer {
     ) {
         let size = term.get_size();
         let text_rows = self.text_rows(size.rows);
-        
+
         // Update line number width based on total lines
         self.line_number_width = format!("{}", buffer.line_count()).len().max(4);
-        
+
         term.hide_cursor();
         term.move_cursor(1, 1);
-        
+
         // Render text area
         for row in 0..text_rows {
             let line_idx = scroll_row + row;
-            
+
             term.move_cursor(row + 1, 1);
             term.clear_to_eol();
-            
+
             // Line numbers
             if self.show_line_numbers {
                 if line_idx < buffer.line_count() {
                     term.set_fg_color(Color::Yellow);
-                    let line_num = format!("{:>width$}", line_idx + 1, width = self.line_number_width);
+                    let line_num =
+                        format!("{:>width$}", line_idx + 1, width = self.line_number_width);
                     term.write_str(&line_num);
                     term.reset_style();
                     term.write_char(' ');
@@ -120,7 +121,7 @@ impl Renderer {
                     term.write_char(' ');
                 }
             }
-            
+
             // Line content
             if line_idx < buffer.line_count() {
                 let line = &buffer.lines[line_idx];
@@ -137,23 +138,27 @@ impl Renderer {
                 );
             }
         }
-        
+
         // Render status line
         self.render_status_line(term, buffer, mode, cursor_line, cursor_col, size);
-        
+
         // Render command/message line
         self.render_command_line(term, mode, message, command_line, size);
-        
+
         // Position cursor
         let screen_row = cursor_line.saturating_sub(scroll_row) + 1;
-        let screen_col = self.text_col_offset() + self.display_col(&buffer.lines[cursor_line].content, cursor_col).saturating_sub(scroll_col) + 1;
-        
+        let screen_col = self.text_col_offset()
+            + self
+                .display_col(&buffer.lines[cursor_line].content, cursor_col)
+                .saturating_sub(scroll_col)
+            + 1;
+
         term.move_cursor(screen_row, screen_col);
         term.show_cursor();
-        
+
         let _ = term.flush();
     }
-    
+
     /// Render a single line with syntax highlighting
     fn render_line(
         &self,
@@ -168,10 +173,10 @@ impl Renderer {
         filetype: &str,
     ) {
         let tokens = self.tokenize(content, filetype);
-        
+
         let mut display_col = 0;
         let mut written = 0;
-        
+
         for (token_type, text) in tokens {
             for ch in text.chars() {
                 let char_width = if ch == '\t' {
@@ -179,7 +184,7 @@ impl Renderer {
                 } else {
                     1
                 };
-                
+
                 // Check if in visible area
                 if display_col + char_width > scroll_col && written < max_width {
                     // Check for visual selection highlighting
@@ -190,13 +195,13 @@ impl Renderer {
                         cursor_col,
                         visual_start,
                     );
-                    
+
                     if in_selection {
                         term.set_reverse();
                     }
-                    
+
                     term.set_fg_color(token_type.color());
-                    
+
                     if ch == '\t' {
                         // Render tab as spaces
                         let spaces_to_write = (char_width).min(max_width - written);
@@ -208,15 +213,15 @@ impl Renderer {
                         term.write_char(ch);
                         written += 1;
                     }
-                    
+
                     term.reset_style();
                 }
-                
+
                 display_col += char_width;
             }
         }
     }
-    
+
     /// Check if a position is in the visual selection
     fn is_in_selection(
         &self,
@@ -234,7 +239,7 @@ impl Renderer {
             } else {
                 (cursor_line, cursor_col, start_line, start_col)
             };
-            
+
             if line > begin_line && line < end_line {
                 return true;
             }
@@ -250,7 +255,7 @@ impl Renderer {
         }
         false
     }
-    
+
     /// Render the status line
     fn render_status_line(
         &self,
@@ -262,36 +267,37 @@ impl Renderer {
         size: crate::terminal::TermSize,
     ) {
         let status_row = size.rows - 1;
-        
+
         term.move_cursor(status_row, 1);
         term.set_reverse();
-        
+
         // Left side: mode and filename
         let mode_str = format!(" {} ", mode.indicator());
         let modified = if buffer.modified { "[+]" } else { "" };
         let readonly = if buffer.readonly { "[RO]" } else { "" };
         let left = format!("{} {}{}{}", mode_str, buffer.name, modified, readonly);
-        
+
         // Right side: position info
-        let right = format!(" {}:{} ({}/{}) ", 
-            cursor_line + 1, 
+        let right = format!(
+            " {}:{} ({}/{}) ",
+            cursor_line + 1,
             cursor_col + 1,
             cursor_line + 1,
             buffer.line_count()
         );
-        
+
         // Calculate padding
         let padding = size.cols.saturating_sub(left.len() + right.len());
-        
+
         term.write_str(&left);
         for _ in 0..padding {
             term.write_char(' ');
         }
         term.write_str(&right);
-        
+
         term.reset_style();
     }
-    
+
     /// Render the command/message line
     fn render_command_line(
         &self,
@@ -303,7 +309,7 @@ impl Renderer {
     ) {
         term.move_cursor(size.rows, 1);
         term.clear_to_eol();
-        
+
         match mode {
             Mode::Command => {
                 term.write_char(':');
@@ -320,7 +326,7 @@ impl Renderer {
             }
         }
     }
-    
+
     /// Calculate display column from character column (accounting for tabs)
     fn display_col(&self, content: &str, char_col: usize) -> usize {
         let mut display = 0;
@@ -336,17 +342,17 @@ impl Renderer {
         }
         display
     }
-    
+
     /// Simple tokenizer for syntax highlighting
     fn tokenize<'a>(&self, content: &'a str, filetype: &str) -> Vec<(TokenType, &'a str)> {
         if filetype.is_empty() {
             return vec![(TokenType::Normal, content)];
         }
-        
+
         let mut tokens = Vec::new();
         let mut pos = 0;
         let bytes = content.as_bytes();
-        
+
         while pos < bytes.len() {
             // Comments
             if filetype == "rust" || filetype == "c" || filetype == "cpp" {
@@ -361,7 +367,7 @@ impl Renderer {
                     break;
                 }
             }
-            
+
             // Strings
             if bytes[pos] == b'"' || bytes[pos] == b'\'' {
                 let quote = bytes[pos];
@@ -380,21 +386,27 @@ impl Renderer {
                 tokens.push((TokenType::String, &content[start..pos]));
                 continue;
             }
-            
+
             // Numbers
             if bytes[pos].is_ascii_digit() {
                 let start = pos;
-                while pos < bytes.len() && (bytes[pos].is_ascii_alphanumeric() || bytes[pos] == b'.' || bytes[pos] == b'_') {
+                while pos < bytes.len()
+                    && (bytes[pos].is_ascii_alphanumeric()
+                        || bytes[pos] == b'.'
+                        || bytes[pos] == b'_')
+                {
                     pos += 1;
                 }
                 tokens.push((TokenType::Number, &content[start..pos]));
                 continue;
             }
-            
+
             // Identifiers and keywords
             if bytes[pos].is_ascii_alphabetic() || bytes[pos] == b'_' {
                 let start = pos;
-                while pos < bytes.len() && (bytes[pos].is_ascii_alphanumeric() || bytes[pos] == b'_') {
+                while pos < bytes.len()
+                    && (bytes[pos].is_ascii_alphanumeric() || bytes[pos] == b'_')
+                {
                     pos += 1;
                 }
                 let word = &content[start..pos];
@@ -402,82 +414,81 @@ impl Renderer {
                 tokens.push((token_type, word));
                 continue;
             }
-            
+
             // Operators and other characters
             let start = pos;
             pos += 1;
             tokens.push((TokenType::Normal, &content[start..pos]));
         }
-        
+
         tokens
     }
-    
+
     /// Classify a word as keyword, type, etc.
     fn classify_word(&self, word: &str, filetype: &str) -> TokenType {
         match filetype {
-            "rust" => {
-                match word {
-                    "fn" | "let" | "mut" | "const" | "static" | "if" | "else" | "match" |
-                    "loop" | "while" | "for" | "in" | "return" | "break" | "continue" |
-                    "pub" | "mod" | "use" | "struct" | "enum" | "impl" | "trait" |
-                    "where" | "type" | "as" | "ref" | "move" | "async" | "await" |
-                    "unsafe" | "extern" | "crate" | "self" | "super" | "dyn" => TokenType::Keyword,
-                    "bool" | "char" | "str" | "u8" | "u16" | "u32" | "u64" | "u128" | "usize" |
-                    "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "f32" | "f64" |
-                    "String" | "Vec" | "Option" | "Result" | "Box" | "Rc" | "Arc" |
-                    "Self" => TokenType::Type,
-                    "true" | "false" | "None" | "Some" | "Ok" | "Err" => TokenType::Constant,
-                    _ if word.starts_with(char::is_uppercase) => TokenType::Type,
-                    _ => TokenType::Normal,
+            "rust" => match word {
+                "fn" | "let" | "mut" | "const" | "static" | "if" | "else" | "match" | "loop"
+                | "while" | "for" | "in" | "return" | "break" | "continue" | "pub" | "mod"
+                | "use" | "struct" | "enum" | "impl" | "trait" | "where" | "type" | "as"
+                | "ref" | "move" | "async" | "await" | "unsafe" | "extern" | "crate" | "self"
+                | "super" | "dyn" => TokenType::Keyword,
+                "bool" | "char" | "str" | "u8" | "u16" | "u32" | "u64" | "u128" | "usize"
+                | "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "f32" | "f64" | "String"
+                | "Vec" | "Option" | "Result" | "Box" | "Rc" | "Arc" | "Self" => TokenType::Type,
+                "true" | "false" | "None" | "Some" | "Ok" | "Err" => TokenType::Constant,
+                _ if word.starts_with(char::is_uppercase) => TokenType::Type,
+                _ => TokenType::Normal,
+            },
+            "vim" => match word {
+                "if" | "else" | "elseif" | "endif" | "while" | "endwhile" | "for" | "endfor"
+                | "function" | "endfunction" | "return" | "let" | "unlet" | "set" | "call"
+                | "execute" | "source" | "autocmd" | "augroup" | "map" | "nmap" | "imap"
+                | "vmap" | "noremap" | "nnoremap" | "inoremap" | "vnoremap" | "command"
+                | "filetype" | "syntax" | "highlight" | "echo" | "echom" | "echoerr" | "try"
+                | "catch" | "finally" | "endtry" | "throw" | "break" | "continue" => {
+                    TokenType::Keyword
                 }
-            }
-            "vim" => {
-                match word {
-                    "if" | "else" | "elseif" | "endif" | "while" | "endwhile" |
-                    "for" | "endfor" | "function" | "endfunction" | "return" |
-                    "let" | "unlet" | "set" | "call" | "execute" | "source" |
-                    "autocmd" | "augroup" | "map" | "nmap" | "imap" | "vmap" |
-                    "noremap" | "nnoremap" | "inoremap" | "vnoremap" |
-                    "command" | "filetype" | "syntax" | "highlight" | "echo" |
-                    "echom" | "echoerr" | "try" | "catch" | "finally" | "endtry" |
-                    "throw" | "break" | "continue" => TokenType::Keyword,
-                    _ if word.starts_with("g:") || word.starts_with("s:") ||
-                         word.starts_with("l:") || word.starts_with("b:") ||
-                         word.starts_with("v:") => TokenType::Special,
-                    _ => TokenType::Normal,
+                _ if word.starts_with("g:")
+                    || word.starts_with("s:")
+                    || word.starts_with("l:")
+                    || word.starts_with("b:")
+                    || word.starts_with("v:") =>
+                {
+                    TokenType::Special
                 }
-            }
-            "c" | "cpp" => {
-                match word {
-                    "if" | "else" | "switch" | "case" | "default" | "while" | "do" |
-                    "for" | "break" | "continue" | "return" | "goto" |
-                    "struct" | "union" | "enum" | "typedef" | "sizeof" |
-                    "static" | "extern" | "const" | "volatile" | "register" |
-                    "auto" | "inline" | "restrict" => TokenType::Keyword,
-                    "class" | "public" | "private" | "protected" | "virtual" |
-                    "override" | "final" | "template" | "typename" | "namespace" |
-                    "using" | "new" | "delete" | "try" | "catch" | "throw" |
-                    "noexcept" | "constexpr" | "nullptr" if filetype == "cpp" => TokenType::Keyword,
-                    "void" | "int" | "char" | "short" | "long" | "float" | "double" |
-                    "signed" | "unsigned" | "bool" | "size_t" | "uint8_t" | "uint16_t" |
-                    "uint32_t" | "uint64_t" | "int8_t" | "int16_t" | "int32_t" | "int64_t" => TokenType::Type,
-                    "true" | "false" | "NULL" | "TRUE" | "FALSE" => TokenType::Constant,
-                    _ if word.chars().all(|c| c.is_uppercase() || c == '_') => TokenType::Constant,
-                    _ => TokenType::Normal,
+                _ => TokenType::Normal,
+            },
+            "c" | "cpp" => match word {
+                "if" | "else" | "switch" | "case" | "default" | "while" | "do" | "for"
+                | "break" | "continue" | "return" | "goto" | "struct" | "union" | "enum"
+                | "typedef" | "sizeof" | "static" | "extern" | "const" | "volatile"
+                | "register" | "auto" | "inline" | "restrict" => TokenType::Keyword,
+                "class" | "public" | "private" | "protected" | "virtual" | "override" | "final"
+                | "template" | "typename" | "namespace" | "using" | "new" | "delete" | "try"
+                | "catch" | "throw" | "noexcept" | "constexpr" | "nullptr"
+                    if filetype == "cpp" =>
+                {
+                    TokenType::Keyword
                 }
-            }
-            "python" => {
-                match word {
-                    "if" | "elif" | "else" | "for" | "while" | "break" | "continue" |
-                    "return" | "def" | "class" | "import" | "from" | "as" |
-                    "try" | "except" | "finally" | "raise" | "with" | "assert" |
-                    "pass" | "lambda" | "yield" | "global" | "nonlocal" |
-                    "and" | "or" | "not" | "in" | "is" | "del" | "async" | "await" => TokenType::Keyword,
-                    "int" | "float" | "str" | "bool" | "list" | "dict" | "tuple" |
-                    "set" | "None" | "True" | "False" => TokenType::Type,
-                    _ => TokenType::Normal,
+                "void" | "int" | "char" | "short" | "long" | "float" | "double" | "signed"
+                | "unsigned" | "bool" | "size_t" | "uint8_t" | "uint16_t" | "uint32_t"
+                | "uint64_t" | "int8_t" | "int16_t" | "int32_t" | "int64_t" => TokenType::Type,
+                "true" | "false" | "NULL" | "TRUE" | "FALSE" => TokenType::Constant,
+                _ if word.chars().all(|c| c.is_uppercase() || c == '_') => TokenType::Constant,
+                _ => TokenType::Normal,
+            },
+            "python" => match word {
+                "if" | "elif" | "else" | "for" | "while" | "break" | "continue" | "return"
+                | "def" | "class" | "import" | "from" | "as" | "try" | "except" | "finally"
+                | "raise" | "with" | "assert" | "pass" | "lambda" | "yield" | "global"
+                | "nonlocal" | "and" | "or" | "not" | "in" | "is" | "del" | "async" | "await" => {
+                    TokenType::Keyword
                 }
-            }
+                "int" | "float" | "str" | "bool" | "list" | "dict" | "tuple" | "set" | "None"
+                | "True" | "False" => TokenType::Type,
+                _ => TokenType::Normal,
+            },
             _ => TokenType::Normal,
         }
     }

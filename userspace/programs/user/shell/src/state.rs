@@ -50,17 +50,17 @@ impl ShellVar {
 /// Shell options (set -o)
 #[derive(Clone, Debug, Default)]
 pub struct ShellOptions {
-    pub errexit: bool,      // -e: Exit on error
-    pub nounset: bool,      // -u: Error on unset variables
-    pub xtrace: bool,       // -x: Print commands before execution
-    pub verbose: bool,      // -v: Print input lines
-    pub noclobber: bool,    // -C: Don't overwrite files with >
-    pub allexport: bool,    // -a: Export all variables
-    pub notify: bool,       // -b: Notify immediately of job termination
-    pub noglob: bool,       // -f: Disable pathname expansion
-    pub ignoreeof: bool,    // Ignore EOF (Ctrl-D)
-    pub hashall: bool,      // -h: Hash commands
-    pub interactive: bool,  // Shell is interactive
+    pub errexit: bool,     // -e: Exit on error
+    pub nounset: bool,     // -u: Error on unset variables
+    pub xtrace: bool,      // -x: Print commands before execution
+    pub verbose: bool,     // -v: Print input lines
+    pub noclobber: bool,   // -C: Don't overwrite files with >
+    pub allexport: bool,   // -a: Export all variables
+    pub notify: bool,      // -b: Notify immediately of job termination
+    pub noglob: bool,      // -f: Disable pathname expansion
+    pub ignoreeof: bool,   // Ignore EOF (Ctrl-D)
+    pub hashall: bool,     // -h: Hash commands
+    pub interactive: bool, // Shell is interactive
 }
 
 /// Command alias definition
@@ -193,7 +193,7 @@ impl ShellState {
         state.set_var("PWD", "/");
         state.set_var("OLDPWD", "/");
         state.set_var("IFS", " \t\n");
-        
+
         // Export PATH by default
         if let Some(var) = state.variables.get_mut("PATH") {
             var.attrs.exported = true;
@@ -275,7 +275,7 @@ impl ShellState {
         } else {
             len - ((-n as usize - 1) % (len + 1))
         };
-        
+
         if idx == 0 {
             Some(self.cwd.clone())
         } else if idx <= len {
@@ -293,7 +293,11 @@ impl ShellState {
     pub fn get_var(&self, name: &str) -> Option<&str> {
         // Check special variables first
         match name {
-            "?" => return Some(Box::leak(self.last_exit_status.to_string().into_boxed_str())),
+            "?" => {
+                return Some(Box::leak(
+                    self.last_exit_status.to_string().into_boxed_str(),
+                ))
+            }
             "PWD" => return Some(self.cwd_str()),
             _ => {}
         }
@@ -304,7 +308,7 @@ impl ShellState {
     pub fn set_var(&mut self, name: impl Into<String>, value: impl Into<String>) {
         let name = name.into();
         let mut value = value.into();
-        
+
         if let Some(existing) = self.variables.get(&name) {
             if existing.attrs.readonly {
                 return; // Cannot modify readonly variables
@@ -401,7 +405,11 @@ impl ShellState {
 
     /// List all aliases
     pub fn list_aliases(&self) -> Vec<(&str, &str)> {
-        let mut list: Vec<_> = self.aliases.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let mut list: Vec<_> = self
+            .aliases
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
         list.sort_by_key(|(k, _)| *k);
         list
     }
@@ -437,7 +445,8 @@ impl ShellState {
 
     /// List all hashed commands
     pub fn list_hashed(&self) -> Vec<(&str, &Path)> {
-        let mut list: Vec<_> = self.hash_table
+        let mut list: Vec<_> = self
+            .hash_table
             .iter()
             .map(|(k, v)| (k.as_str(), v.as_path()))
             .collect();
@@ -475,7 +484,10 @@ impl ShellState {
                 self.jobs.iter().find(|j| j.job_id == id).map(|j| j.pid)
             } else {
                 // Match by command prefix
-                self.jobs.iter().find(|j| j.command.starts_with(id_str)).map(|j| j.pid)
+                self.jobs
+                    .iter()
+                    .find(|j| j.command.starts_with(id_str))
+                    .map(|j| j.pid)
             }
         } else {
             None
@@ -526,20 +538,24 @@ impl ShellState {
     /// Resume a job (fg/bg)
     pub fn resume_job(&mut self, spec: Option<&str>, foreground: bool) -> Result<usize, String> {
         let job_id = if let Some(s) = spec {
-            self.parse_job_spec(s).ok_or_else(|| format!("{}: 没有这个作业", s))?
+            self.parse_job_spec(s)
+                .ok_or_else(|| format!("{}: 没有这个作业", s))?
         } else {
-            self.jobs.iter().find(|j| j.is_current).map(|j| j.job_id)
+            self.jobs
+                .iter()
+                .find(|j| j.is_current)
+                .map(|j| j.job_id)
                 .ok_or_else(|| "当前: 没有这个作业".to_string())?
         };
 
         if let Some(job) = self.jobs.iter_mut().find(|j| j.job_id == job_id) {
             job.status = if foreground { "Running" } else { "Running" }.to_string();
-            
+
             #[cfg(target_family = "unix")]
             unsafe {
                 libc::kill(job.pid, libc::SIGCONT);
             }
-            
+
             Ok(job_id)
         } else {
             Err(format!("{}: 没有这个作业", job_id))
@@ -550,24 +566,24 @@ impl ShellState {
     pub fn wait_for_job(&mut self, job_id: usize) -> Option<i32> {
         if let Some(job) = self.jobs.iter().find(|j| j.job_id == job_id) {
             let pid = job.pid;
-            
+
             #[cfg(target_family = "unix")]
             {
                 let mut status: i32 = 0;
                 unsafe {
                     libc::waitpid(pid, &mut status, 0);
                 }
-                
+
                 // Remove completed job
                 self.jobs.retain(|j| j.job_id != job_id);
-                
+
                 if libc::WIFEXITED(status) {
                     Some(libc::WEXITSTATUS(status))
                 } else {
                     Some(128 + libc::WTERMSIG(status))
                 }
             }
-            
+
             #[cfg(not(target_family = "unix"))]
             {
                 self.jobs.retain(|j| j.job_id != job_id);
@@ -586,17 +602,17 @@ impl ShellState {
             unsafe {
                 libc::waitpid(pid, &mut status, 0);
             }
-            
+
             // Remove job with this PID if any
             self.jobs.retain(|j| j.pid != pid);
-            
+
             if libc::WIFEXITED(status) {
                 libc::WEXITSTATUS(status)
             } else {
                 128 + libc::WTERMSIG(status)
             }
         }
-        
+
         #[cfg(not(target_family = "unix"))]
         {
             self.jobs.retain(|j| j.pid != pid);
@@ -626,7 +642,7 @@ impl ShellState {
         {
             let mut status: i32 = 0;
             let pid = unsafe { libc::waitpid(-1, &mut status, 0) };
-            
+
             if pid > 0 {
                 self.jobs.retain(|j| j.pid != pid);
                 let exit_code = if libc::WIFEXITED(status) {
@@ -639,7 +655,7 @@ impl ShellState {
                 (0, 0)
             }
         }
-        
+
         #[cfg(not(target_family = "unix"))]
         {
             (0, 0)
@@ -663,9 +679,10 @@ impl ShellState {
 
     /// Disown a specific job
     pub fn disown_job(&mut self, spec: &str, no_hup: bool) -> Result<(), String> {
-        let job_id = self.parse_job_spec(spec)
+        let job_id = self
+            .parse_job_spec(spec)
             .ok_or_else(|| format!("{}: 没有这个作业", spec))?;
-        
+
         if let Some(job) = self.jobs.iter_mut().find(|j| j.job_id == job_id) {
             if no_hup {
                 job.no_hup = true;
@@ -751,10 +768,7 @@ impl ShellState {
         use std::fs::OpenOptions;
         use std::io::Write;
 
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)?;
+        let mut file = OpenOptions::new().create(true).append(true).open(path)?;
 
         for entry in &self.history[self.history_file_pos..] {
             writeln!(file, "{}", entry)?;
@@ -852,7 +866,10 @@ impl ShellState {
 
     /// Get all traps
     pub fn get_traps(&self) -> Vec<(&str, &str)> {
-        self.traps.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect()
+        self.traps
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect()
     }
 
     // ========================================================================
@@ -990,7 +1007,7 @@ impl ShellState {
     /// Set umask
     pub fn set_umask(&mut self, mask: u32) {
         self.umask = mask & 0o777;
-        
+
         #[cfg(target_family = "unix")]
         unsafe {
             libc::umask(self.umask as libc::mode_t);
@@ -1026,12 +1043,16 @@ impl ShellState {
 
     /// Set completion spec
     pub fn set_completion_spec(&mut self, name: &str, spec: &str) {
-        self.completion_specs.insert(name.to_string(), spec.to_string());
+        self.completion_specs
+            .insert(name.to_string(), spec.to_string());
     }
 
     /// Get completion specs
     pub fn get_completion_specs(&self) -> Vec<(&str, &str)> {
-        self.completion_specs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect()
+        self.completion_specs
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect()
     }
 
     /// Remove completion spec
@@ -1117,7 +1138,11 @@ impl ShellState {
     /// Shift positional parameters
     pub fn shift_positional_params(&mut self, n: usize) -> Result<(), String> {
         if n > self.positional_params.len() {
-            return Err(format!("shift: 移动次数 {} 超出位置参数数量 {}", n, self.positional_params.len()));
+            return Err(format!(
+                "shift: 移动次数 {} 超出位置参数数量 {}",
+                n,
+                self.positional_params.len()
+            ));
         }
         self.positional_params = self.positional_params[n..].to_vec();
         Ok(())
@@ -1159,7 +1184,10 @@ impl ShellState {
 
     /// List all functions
     pub fn list_functions(&self) -> Vec<(&str, &str)> {
-        self.functions.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect()
+        self.functions
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect()
     }
 
     // ========================================================================
@@ -1196,7 +1224,7 @@ impl Default for ShellState {
 /// Normalize a path by resolving . and ..
 pub fn normalize_path(path: &Path) -> PathBuf {
     let mut components = Vec::new();
-    
+
     for component in path.components() {
         match component {
             std::path::Component::ParentDir => {
@@ -1206,7 +1234,7 @@ pub fn normalize_path(path: &Path) -> PathBuf {
             c => components.push(c),
         }
     }
-    
+
     if components.is_empty() {
         PathBuf::from("/")
     } else {

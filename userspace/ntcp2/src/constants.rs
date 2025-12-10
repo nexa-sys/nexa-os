@@ -235,17 +235,17 @@ pub const NUM_PKTNS: usize = 3;
 pub mod loss_detection {
     /// Packet threshold for loss detection (kPacketThreshold)
     pub const PACKET_THRESHOLD: u64 = 3;
-    
+
     /// Time threshold multiplier (kTimeThreshold = 9/8)
     pub const TIME_THRESHOLD_NUM: u64 = 9;
     pub const TIME_THRESHOLD_DEN: u64 = 8;
-    
+
     /// Initial RTT estimate (333ms in nanoseconds)
     pub const INITIAL_RTT: u64 = 333_000_000;
-    
+
     /// kGranularity (timer granularity, 1ms in nanoseconds)
     pub const GRANULARITY: u64 = 1_000_000;
-    
+
     /// Maximum number of PTO exponents
     pub const MAX_PTO_COUNT: usize = 6;
 }
@@ -257,17 +257,17 @@ pub mod loss_detection {
 pub mod congestion {
     /// Initial window (10 * MSS or 14720 bytes, whichever is smaller)
     pub const INITIAL_WINDOW_PACKETS: u64 = 10;
-    
+
     /// Minimum window (2 * MSS)
     pub const MINIMUM_WINDOW_PACKETS: u64 = 2;
-    
+
     /// Loss reduction factor (0.5 for New Reno)
     pub const LOSS_REDUCTION_FACTOR_NUM: u64 = 1;
     pub const LOSS_REDUCTION_FACTOR_DEN: u64 = 2;
-    
+
     /// Persistent congestion threshold (kPersistentCongestionThreshold = 3)
     pub const PERSISTENT_CONGESTION_THRESHOLD: u64 = 3;
-    
+
     /// Default MSS (Maximum Segment Size) for QUIC
     pub const DEFAULT_MSS: usize = 1200;
 }
@@ -279,78 +279,74 @@ pub mod congestion {
 pub mod crypto {
     /// Initial salt for QUIC v1 (RFC 9001)
     pub const INITIAL_SALT_V1: [u8; 20] = [
-        0x38, 0x76, 0x2c, 0xf7, 0xf5, 0x59, 0x34, 0xb3,
-        0x4d, 0x17, 0x9a, 0xe6, 0xa4, 0xc8, 0x0c, 0xad,
-        0xcc, 0xbb, 0x7f, 0x0a,
+        0x38, 0x76, 0x2c, 0xf7, 0xf5, 0x59, 0x34, 0xb3, 0x4d, 0x17, 0x9a, 0xe6, 0xa4, 0xc8, 0x0c,
+        0xad, 0xcc, 0xbb, 0x7f, 0x0a,
     ];
-    
+
     /// Initial salt for QUIC v2 (RFC 9369)
     pub const INITIAL_SALT_V2: [u8; 20] = [
-        0x0d, 0xed, 0xe3, 0xde, 0xf7, 0x00, 0xa6, 0xdb,
-        0x81, 0x93, 0x81, 0xbe, 0x6e, 0x26, 0x9d, 0xcb,
-        0xf9, 0xbd, 0x2e, 0xd9,
+        0x0d, 0xed, 0xe3, 0xde, 0xf7, 0x00, 0xa6, 0xdb, 0x81, 0x93, 0x81, 0xbe, 0x6e, 0x26, 0x9d,
+        0xcb, 0xf9, 0xbd, 0x2e, 0xd9,
     ];
-    
+
     /// Client initial label
     pub const CLIENT_INITIAL_LABEL: &[u8] = b"client in";
-    
+
     /// Server initial label
     pub const SERVER_INITIAL_LABEL: &[u8] = b"server in";
-    
+
     /// Key label
     pub const KEY_LABEL: &[u8] = b"quic key";
-    
+
     /// IV label
     pub const IV_LABEL: &[u8] = b"quic iv";
-    
+
     /// HP (header protection) label
     pub const HP_LABEL: &[u8] = b"quic hp";
-    
+
     /// Key update label
     pub const KEY_UPDATE_LABEL: &[u8] = b"quic ku";
-    
+
     /// Retry key for QUIC v1 (RFC 9001)
     pub const RETRY_KEY_V1: [u8; 16] = [
-        0xbe, 0x0c, 0x69, 0x0b, 0x9f, 0x66, 0x57, 0x5a,
-        0x1d, 0x76, 0x6b, 0x54, 0xe3, 0x68, 0xc8, 0x4e,
+        0xbe, 0x0c, 0x69, 0x0b, 0x9f, 0x66, 0x57, 0x5a, 0x1d, 0x76, 0x6b, 0x54, 0xe3, 0x68, 0xc8,
+        0x4e,
     ];
-    
+
     /// Retry nonce for QUIC v1 (RFC 9001)
     pub const RETRY_NONCE_V1: [u8; 12] = [
-        0x46, 0x15, 0x99, 0xd3, 0x5d, 0x63, 0x2b, 0xf2,
-        0x23, 0x98, 0x25, 0xbb,
+        0x46, 0x15, 0x99, 0xd3, 0x5d, 0x63, 0x2b, 0xf2, 0x23, 0x98, 0x25, 0xbb,
     ];
-    
+
     /// Retry key for QUIC v2 (RFC 9369)
     pub const RETRY_KEY_V2: [u8; 16] = [
-        0x8f, 0xb4, 0xb0, 0x1b, 0x56, 0xac, 0x48, 0xe2,
-        0x60, 0xfb, 0xcb, 0xce, 0xad, 0x7c, 0xcc, 0x92,
+        0x8f, 0xb4, 0xb0, 0x1b, 0x56, 0xac, 0x48, 0xe2, 0x60, 0xfb, 0xcb, 0xce, 0xad, 0x7c, 0xcc,
+        0x92,
     ];
-    
+
     /// Retry nonce for QUIC v2 (RFC 9369)
     pub const RETRY_NONCE_V2: [u8; 12] = [
-        0xd8, 0x69, 0x69, 0xbc, 0x2d, 0x7c, 0x6d, 0x99,
-        0x90, 0xef, 0xb0, 0x4a,
+        0xd8, 0x69, 0x69, 0xbc, 0x2d, 0x7c, 0x6d, 0x99, 0x90, 0xef, 0xb0, 0x4a,
     ];
-    
+
     /// AES-128-GCM key length
     pub const AES_128_KEY_LEN: usize = 16;
-    
+
     /// AES-256-GCM key length
     pub const AES_256_KEY_LEN: usize = 32;
-    
+
     /// ChaCha20-Poly1305 key length
     pub const CHACHA20_KEY_LEN: usize = 32;
-    
+
     /// AEAD tag length
     pub const AEAD_TAG_LEN: usize = 16;
-    
+
     /// AEAD nonce/IV length
     pub const AEAD_NONCE_LEN: usize = 12;
-    
+
     /// Header protection sample length
     pub const HP_SAMPLE_LEN: usize = 16;
-    
+
     /// Maximum packet number length in bytes
     pub const MAX_PKT_NUM_LEN: usize = 4;
 }
@@ -363,10 +359,10 @@ pub mod crypto {
 pub mod qpack {
     /// Default QPACK max table capacity
     pub const DEFAULT_MAX_TABLE_CAPACITY: usize = 4096;
-    
+
     /// Default QPACK max blocked streams
     pub const DEFAULT_MAX_BLOCKED_STREAMS: usize = 100;
-    
+
     /// Entry overhead in dynamic table
     pub const ENTRY_OVERHEAD: usize = 32;
 }

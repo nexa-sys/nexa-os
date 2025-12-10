@@ -2,9 +2,9 @@
 //!
 //! This module implements HTTP/2 stream state machine and management.
 
-use crate::types::{StreamId, PrioritySpec};
-use crate::error::{Error, Result, ErrorCode};
+use crate::error::{Error, ErrorCode, Result};
 use crate::hpack::HeaderField;
+use crate::types::{PrioritySpec, StreamId};
 use std::collections::HashMap;
 
 // ============================================================================
@@ -161,7 +161,9 @@ impl Stream {
                 self.end_stream_received = true;
                 Ok(())
             }
-            _ => Err(Error::InvalidState("cannot close remote from current state")),
+            _ => Err(Error::InvalidState(
+                "cannot close remote from current state",
+            )),
         }
     }
 
@@ -307,7 +309,11 @@ impl StreamMap {
         }
 
         // Check concurrent stream limit
-        let active_count = self.streams.values().filter(|s| s.state.is_active()).count() as u32;
+        let active_count = self
+            .streams
+            .values()
+            .filter(|s| s.state.is_active())
+            .count() as u32;
         if active_count >= self.max_concurrent_local {
             return Err(Error::Protocol(ErrorCode::RefusedStream));
         }
@@ -332,7 +338,10 @@ impl StreamMap {
 
     /// Get the number of active streams
     pub fn active_count(&self) -> usize {
-        self.streams.values().filter(|s| s.state.is_active()).count()
+        self.streams
+            .values()
+            .filter(|s| s.state.is_active())
+            .count()
     }
 
     /// Check if a stream ID is valid for local initiation
@@ -386,7 +395,8 @@ impl StreamMap {
 
     /// Clean up closed streams
     pub fn cleanup_closed(&mut self) {
-        self.streams.retain(|_, stream| stream.state != StreamState::Closed);
+        self.streams
+            .retain(|_, stream| stream.state != StreamState::Closed);
     }
 }
 

@@ -6,35 +6,35 @@ pub enum Key {
     Char(char),
     Ctrl(char),
     Alt(char),
-    
+
     // Special keys
     Escape,
     Enter,
     Tab,
     Backspace,
     Delete,
-    
+
     // Arrow keys
     Up,
     Down,
     Left,
     Right,
-    
+
     // Navigation keys
     Home,
     End,
     PageUp,
     PageDown,
-    
+
     // Function keys
     F(u8),
-    
+
     // Mouse events
     MousePress(MouseButton, usize, usize),
     MouseRelease(usize, usize),
     MouseDrag(usize, usize),
     MouseScroll(ScrollDirection, usize, usize),
-    
+
     // Unknown/unhandled
     Unknown(Vec<u8>),
 }
@@ -65,35 +65,35 @@ impl InputReader {
             buffer: Vec::with_capacity(32),
         }
     }
-    
+
     /// Parse input bytes and return a key event
     pub fn parse_key(&mut self, bytes: &[u8]) -> Option<Key> {
         if bytes.is_empty() {
             return None;
         }
-        
+
         self.buffer.clear();
         self.buffer.extend_from_slice(bytes);
-        
+
         self.parse_from_buffer()
     }
-    
+
     fn parse_from_buffer(&mut self) -> Option<Key> {
         if self.buffer.is_empty() {
             return None;
         }
-        
+
         let first = self.buffer[0];
-        
+
         // Escape sequence
         if first == 0x1b {
             if self.buffer.len() == 1 {
                 return Some(Key::Escape);
             }
-            
+
             return self.parse_escape_sequence();
         }
-        
+
         // Control characters
         if first < 32 {
             return Some(match first {
@@ -105,27 +105,27 @@ impl InputReader {
                 _ => Key::Unknown(vec![first]),
             });
         }
-        
+
         // Backspace (some terminals send 127)
         if first == 127 {
             return Some(Key::Backspace);
         }
-        
+
         // Regular character (potentially UTF-8)
         if let Some(ch) = self.parse_utf8_char() {
             return Some(Key::Char(ch));
         }
-        
+
         Some(Key::Unknown(self.buffer.clone()))
     }
-    
+
     fn parse_escape_sequence(&mut self) -> Option<Key> {
         if self.buffer.len() < 2 {
             return Some(Key::Escape);
         }
-        
+
         let second = self.buffer[1];
-        
+
         // Alt + key
         if second != b'[' && second != b'O' {
             if second >= 32 && second < 127 {
@@ -133,12 +133,12 @@ impl InputReader {
             }
             return Some(Key::Unknown(self.buffer.clone()));
         }
-        
+
         // CSI sequence: ESC [
         if second == b'[' {
             return self.parse_csi_sequence();
         }
-        
+
         // SS3 sequence: ESC O (function keys)
         if second == b'O' {
             if self.buffer.len() >= 3 {
@@ -152,18 +152,18 @@ impl InputReader {
                 });
             }
         }
-        
+
         Some(Key::Unknown(self.buffer.clone()))
     }
-    
+
     fn parse_csi_sequence(&mut self) -> Option<Key> {
         if self.buffer.len() < 3 {
             return Some(Key::Unknown(self.buffer.clone()));
         }
-        
+
         // Check for simple arrow keys: ESC [ A/B/C/D
         let last = self.buffer[self.buffer.len() - 1];
-        
+
         match last {
             b'A' => return Some(Key::Up),
             b'B' => return Some(Key::Down),
@@ -173,15 +173,13 @@ impl InputReader {
             b'F' => return Some(Key::End),
             _ => {}
         }
-        
+
         // Parse numeric parameters
-        let params: Vec<u32> = self.buffer[2..self.buffer.len()-1]
+        let params: Vec<u32> = self.buffer[2..self.buffer.len() - 1]
             .split(|&b| b == b';')
-            .filter_map(|s| {
-                std::str::from_utf8(s).ok().and_then(|s| s.parse().ok())
-            })
+            .filter_map(|s| std::str::from_utf8(s).ok().and_then(|s| s.parse().ok()))
             .collect();
-        
+
         match last {
             b'~' => {
                 // Extended key codes
@@ -215,27 +213,27 @@ impl InputReader {
             }
             _ => {}
         }
-        
+
         Some(Key::Unknown(self.buffer.clone()))
     }
-    
+
     fn parse_mouse_event(&mut self, params: &[u32], is_release: bool) -> Option<Key> {
         if params.len() >= 3 {
             let button_code = params[0];
             let col = params[1] as usize;
             let row = params[2] as usize;
-            
+
             if is_release {
                 return Some(Key::MouseRelease(row, col));
             }
-            
+
             let button = match button_code & 0x03 {
                 0 => MouseButton::Left,
                 1 => MouseButton::Middle,
                 2 => MouseButton::Right,
                 _ => return Some(Key::Unknown(self.buffer.clone())),
             };
-            
+
             // Check for scroll
             if button_code & 64 != 0 {
                 let dir = if button_code & 0x01 == 0 {
@@ -245,30 +243,30 @@ impl InputReader {
                 };
                 return Some(Key::MouseScroll(dir, row, col));
             }
-            
+
             // Check for drag
             if button_code & 32 != 0 {
                 return Some(Key::MouseDrag(row, col));
             }
-            
+
             return Some(Key::MousePress(button, row, col));
         }
-        
+
         Some(Key::Unknown(self.buffer.clone()))
     }
-    
+
     fn parse_utf8_char(&mut self) -> Option<char> {
         if self.buffer.is_empty() {
             return None;
         }
-        
+
         let first = self.buffer[0];
-        
+
         // ASCII
         if first < 128 {
             return Some(first as char);
         }
-        
+
         // Determine UTF-8 length
         let len = if first & 0xE0 == 0xC0 {
             2
@@ -279,13 +277,13 @@ impl InputReader {
         } else {
             return None;
         };
-        
+
         if self.buffer.len() >= len {
             if let Ok(s) = std::str::from_utf8(&self.buffer[..len]) {
                 return s.chars().next();
             }
         }
-        
+
         None
     }
 }

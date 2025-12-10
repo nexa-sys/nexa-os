@@ -3,8 +3,8 @@
 //! Supports: if/then/elif/else/fi, case/esac, for/while/until, select, function, (( )), [[ ]], { }
 //! Also supports redirections (>, >>, <, <<, 2>, 2>>, &>, etc.) and here-documents.
 
-use crate::state::ShellState;
 use crate::builtins::BuiltinRegistry;
+use crate::state::ShellState;
 use std::collections::VecDeque;
 
 /// Redirection types
@@ -46,7 +46,7 @@ pub enum RedirectType {
 #[derive(Debug, Clone)]
 pub struct Redirect {
     pub rtype: RedirectType,
-    pub target: String,  // filename or here-doc content
+    pub target: String, // filename or here-doc content
 }
 
 /// Parsed command types
@@ -106,10 +106,7 @@ pub enum Command {
         body: Vec<Command>,
     },
     /// Function definition
-    Function {
-        name: String,
-        body: Vec<Command>,
-    },
+    Function { name: String, body: Vec<Command> },
     /// Arithmetic expression: (( expr ))
     Arithmetic(String),
     /// Conditional expression: [[ expr ]]
@@ -123,33 +120,33 @@ pub enum Command {
 pub enum Token {
     Word(String),
     // Operators
-    Pipe,           // |
-    And,            // &&
-    Or,             // ||
-    Semi,           // ;
+    Pipe, // |
+    And,  // &&
+    Or,   // ||
+    Semi, // ;
     Newline,
-    Amp,            // &
-    LParen,         // (
-    RParen,         // )
-    LBrace,         // {
-    RBrace,         // }
-    DoubleParen,    // ((
-    DoubleParenEnd, // ))
-    DoubleBracket,  // [[
+    Amp,              // &
+    LParen,           // (
+    RParen,           // )
+    LBrace,           // {
+    RBrace,           // }
+    DoubleParen,      // ((
+    DoubleParenEnd,   // ))
+    DoubleBracket,    // [[
     DoubleBracketEnd, // ]]
     // Redirections
-    RedirectOut,        // >
-    RedirectAppend,     // >>
-    RedirectIn,         // <
-    HereDoc,            // <<
-    HereString,         // <<<
-    RedirectBoth,       // &>
-    RedirectBothAppend, // &>>
-    RedirectFd(i32),    // n> (file descriptor redirect)
+    RedirectOut,           // >
+    RedirectAppend,        // >>
+    RedirectIn,            // <
+    HereDoc,               // <<
+    HereString,            // <<<
+    RedirectBoth,          // &>
+    RedirectBothAppend,    // &>>
+    RedirectFd(i32),       // n> (file descriptor redirect)
     RedirectFdAppend(i32), // n>>
-    RedirectFdIn(i32),  // n<
-    DupFd,              // >&
-    DupFdIn,            // <&
+    RedirectFdIn(i32),     // n<
+    DupFd,                 // >&
+    DupFdIn,               // <&
     // Keywords
     If,
     Then,
@@ -238,7 +235,8 @@ impl Lexer {
                     self.advance();
                 }
                 ' ' | '\t' | '\n' | ';' | '|' | '&' | '(' | ')' | '{' | '}' | '<' | '>'
-                    if !in_single_quote && !in_double_quote => {
+                    if !in_single_quote && !in_double_quote =>
+                {
                     break;
                 }
                 _ => {
@@ -370,7 +368,9 @@ impl Lexer {
             Some('#') => {
                 // Comment - skip to end of line
                 while let Some(c) = self.peek() {
-                    if c == '\n' { break; }
+                    if c == '\n' {
+                        break;
+                    }
                     self.advance();
                 }
                 self.next_token()
@@ -387,7 +387,7 @@ impl Lexer {
                         break;
                     }
                 }
-                
+
                 match self.peek() {
                     Some('>') => {
                         self.advance();
@@ -519,7 +519,7 @@ impl Parser {
     pub fn parse(&mut self) -> Result<Vec<Command>, String> {
         let mut commands = Vec::new();
         self.skip_newlines();
-        
+
         while !matches!(self.peek(), Token::Eof) {
             let cmd = self.parse_list()?;
             if !matches!(cmd, Command::Empty) {
@@ -527,14 +527,14 @@ impl Parser {
             }
             self.skip_newlines();
         }
-        
+
         Ok(commands)
     }
 
     /// Parse command list (separated by ; or newline)
     fn parse_list(&mut self) -> Result<Command, String> {
         let first = self.parse_and_or()?;
-        
+
         // Handle background
         if matches!(self.peek(), Token::Amp) {
             self.advance();
@@ -584,7 +584,7 @@ impl Parser {
     /// Parse pipeline: cmd1 | cmd2 | cmd3
     fn parse_pipeline(&mut self) -> Result<Command, String> {
         let first = self.parse_command()?;
-        
+
         if !matches!(self.peek(), Token::Pipe) {
             return Ok(first);
         }
@@ -602,7 +602,7 @@ impl Parser {
     /// Parse a single command (could be compound or simple)
     fn parse_command(&mut self) -> Result<Command, String> {
         self.skip_newlines();
-        
+
         match self.peek() {
             Token::If => self.parse_if(),
             Token::Case => self.parse_case(),
@@ -633,15 +633,15 @@ impl Parser {
     fn parse_if(&mut self) -> Result<Command, String> {
         self.expect(Token::If)?;
         self.skip_newlines();
-        
+
         // Parse condition
         let condition = self.parse_compound_list_until(&[Token::Then])?;
         self.expect(Token::Then)?;
         self.skip_newlines();
-        
+
         // Parse then part
         let then_part = self.parse_compound_list_until(&[Token::Elif, Token::Else, Token::Fi])?;
-        
+
         // Parse elif parts
         let mut elif_parts = Vec::new();
         while matches!(self.peek(), Token::Elif) {
@@ -650,10 +650,11 @@ impl Parser {
             let elif_cond = self.parse_compound_list_until(&[Token::Then])?;
             self.expect(Token::Then)?;
             self.skip_newlines();
-            let elif_then = self.parse_compound_list_until(&[Token::Elif, Token::Else, Token::Fi])?;
+            let elif_then =
+                self.parse_compound_list_until(&[Token::Elif, Token::Else, Token::Fi])?;
             elif_parts.push((elif_cond, elif_then));
         }
-        
+
         // Parse else part
         let else_part = if matches!(self.peek(), Token::Else) {
             self.advance();
@@ -662,9 +663,9 @@ impl Parser {
         } else {
             None
         };
-        
+
         self.expect(Token::Fi)?;
-        
+
         Ok(Command::If {
             condition,
             then_part,
@@ -677,16 +678,16 @@ impl Parser {
     fn parse_case(&mut self) -> Result<Command, String> {
         self.expect(Token::Case)?;
         self.skip_newlines();
-        
+
         let word = match self.advance() {
             Token::Word(w) => w,
             t => return Err(format!("case: 期望词语, 得到 {:?}", t)),
         };
-        
+
         self.skip_newlines();
         self.expect(Token::In)?;
         self.skip_newlines();
-        
+
         let mut cases = Vec::new();
         while !matches!(self.peek(), Token::Esac | Token::Eof) {
             // Parse patterns
@@ -697,7 +698,7 @@ impl Parser {
                     Token::LParen => continue, // Optional leading (
                     t => return Err(format!("case: 期望模式, 得到 {:?}", t)),
                 }
-                
+
                 match self.peek() {
                     Token::Pipe => {
                         self.advance();
@@ -714,9 +715,9 @@ impl Parser {
                     _ => break,
                 }
             }
-            
+
             self.skip_newlines();
-            
+
             // Parse commands until ;; or esac
             let mut cmds = Vec::new();
             while !matches!(self.peek(), Token::Esac | Token::Eof) {
@@ -732,15 +733,15 @@ impl Parser {
                 }
                 self.skip_newlines();
             }
-            
+
             if !patterns.is_empty() {
                 cases.push((patterns, cmds));
             }
             self.skip_newlines();
         }
-        
+
         self.expect(Token::Esac)?;
-        
+
         Ok(Command::Case { word, cases })
     }
 
@@ -748,14 +749,14 @@ impl Parser {
     fn parse_for(&mut self) -> Result<Command, String> {
         self.expect(Token::For)?;
         self.skip_newlines();
-        
+
         let var = match self.advance() {
             Token::Word(w) => w,
             t => return Err(format!("for: 期望变量名, 得到 {:?}", t)),
         };
-        
+
         self.skip_newlines();
-        
+
         // Optional 'in words...'
         let words = if matches!(self.peek(), Token::In) {
             self.advance();
@@ -769,9 +770,9 @@ impl Parser {
             // Default to "$@"
             vec!["\"$@\"".to_string()]
         };
-        
+
         self.skip_newlines();
-        
+
         // Expect do or ; do
         if matches!(self.peek(), Token::Semi) {
             self.advance();
@@ -779,10 +780,10 @@ impl Parser {
         self.skip_newlines();
         self.expect(Token::Do)?;
         self.skip_newlines();
-        
+
         let body = self.parse_compound_list_until(&[Token::Done])?;
         self.expect(Token::Done)?;
-        
+
         Ok(Command::For { var, words, body })
     }
 
@@ -790,14 +791,14 @@ impl Parser {
     fn parse_while(&mut self) -> Result<Command, String> {
         self.expect(Token::While)?;
         self.skip_newlines();
-        
+
         let condition = self.parse_compound_list_until(&[Token::Do])?;
         self.expect(Token::Do)?;
         self.skip_newlines();
-        
+
         let body = self.parse_compound_list_until(&[Token::Done])?;
         self.expect(Token::Done)?;
-        
+
         Ok(Command::While { condition, body })
     }
 
@@ -805,14 +806,14 @@ impl Parser {
     fn parse_until(&mut self) -> Result<Command, String> {
         self.expect(Token::Until)?;
         self.skip_newlines();
-        
+
         let condition = self.parse_compound_list_until(&[Token::Do])?;
         self.expect(Token::Do)?;
         self.skip_newlines();
-        
+
         let body = self.parse_compound_list_until(&[Token::Done])?;
         self.expect(Token::Done)?;
-        
+
         Ok(Command::Until { condition, body })
     }
 
@@ -820,14 +821,14 @@ impl Parser {
     fn parse_select(&mut self) -> Result<Command, String> {
         self.expect(Token::Select)?;
         self.skip_newlines();
-        
+
         let var = match self.advance() {
             Token::Word(w) => w,
             t => return Err(format!("select: 期望变量名, 得到 {:?}", t)),
         };
-        
+
         self.skip_newlines();
-        
+
         // 'in words...'
         self.expect(Token::In)?;
         let mut words = Vec::new();
@@ -835,7 +836,7 @@ impl Parser {
             self.advance();
             words.push(w);
         }
-        
+
         self.skip_newlines();
         if matches!(self.peek(), Token::Semi) {
             self.advance();
@@ -843,10 +844,10 @@ impl Parser {
         self.skip_newlines();
         self.expect(Token::Do)?;
         self.skip_newlines();
-        
+
         let body = self.parse_compound_list_until(&[Token::Done])?;
         self.expect(Token::Done)?;
-        
+
         Ok(Command::Select { var, words, body })
     }
 
@@ -854,28 +855,28 @@ impl Parser {
     fn parse_function(&mut self) -> Result<Command, String> {
         self.expect(Token::Function)?;
         self.skip_newlines();
-        
+
         let name = match self.advance() {
             Token::Word(w) => w,
             t => return Err(format!("function: 期望函数名, 得到 {:?}", t)),
         };
-        
+
         self.skip_newlines();
-        
+
         // Optional ()
         if let Token::Word(w) = self.peek() {
             if w == "()" {
                 self.advance();
             }
         }
-        
+
         self.skip_newlines();
         self.expect(Token::LBrace)?;
         self.skip_newlines();
-        
+
         let body = self.parse_compound_list_until(&[Token::RBrace])?;
         self.expect(Token::RBrace)?;
-        
+
         Ok(Command::Function { name, body })
     }
 
@@ -885,21 +886,21 @@ impl Parser {
             Token::Word(w) => w,
             t => return Err(format!("function: 期望函数名, 得到 {:?}", t)),
         };
-        
+
         // Skip ()
         if let Token::Word(w) = self.peek() {
             if w == "()" {
                 self.advance();
             }
         }
-        
+
         self.skip_newlines();
         self.expect(Token::LBrace)?;
         self.skip_newlines();
-        
+
         let body = self.parse_compound_list_until(&[Token::RBrace])?;
         self.expect(Token::RBrace)?;
-        
+
         Ok(Command::Function { name, body })
     }
 
@@ -907,7 +908,7 @@ impl Parser {
     fn parse_subshell(&mut self) -> Result<Command, String> {
         self.expect(Token::LParen)?;
         self.skip_newlines();
-        
+
         let mut commands = Vec::new();
         while !matches!(self.peek(), Token::RParen | Token::Eof) {
             let cmd = self.parse_list()?;
@@ -916,9 +917,9 @@ impl Parser {
             }
             self.skip_newlines();
         }
-        
+
         self.expect(Token::RParen)?;
-        
+
         if commands.len() == 1 {
             Ok(Command::Subshell(Box::new(commands.remove(0))))
         } else {
@@ -930,17 +931,17 @@ impl Parser {
     fn parse_brace_group(&mut self) -> Result<Command, String> {
         self.expect(Token::LBrace)?;
         self.skip_newlines();
-        
+
         let commands = self.parse_compound_list_until(&[Token::RBrace])?;
         self.expect(Token::RBrace)?;
-        
+
         Ok(Command::BraceGroup(commands))
     }
 
     /// Parse arithmetic expression: (( expr ))
     fn parse_arithmetic(&mut self) -> Result<Command, String> {
         self.expect(Token::DoubleParen)?;
-        
+
         let mut expr = String::new();
         loop {
             match self.advance() {
@@ -955,14 +956,14 @@ impl Parser {
                 _ => {}
             }
         }
-        
+
         Ok(Command::Arithmetic(expr))
     }
 
     /// Parse conditional expression: [[ expr ]]
     fn parse_conditional(&mut self) -> Result<Command, String> {
         self.expect(Token::DoubleBracket)?;
-        
+
         let mut args = Vec::new();
         loop {
             match self.peek() {
@@ -980,7 +981,7 @@ impl Parser {
                 }
             }
         }
-        
+
         Ok(Command::Conditional(args))
     }
 
@@ -988,7 +989,7 @@ impl Parser {
     fn parse_simple_command(&mut self) -> Result<Command, String> {
         let mut words = Vec::new();
         let mut redirects = Vec::new();
-        
+
         loop {
             match self.peek() {
                 Token::Word(w) => {
@@ -1116,16 +1117,29 @@ impl Parser {
                         });
                     }
                 }
-                Token::Pipe | Token::And | Token::Or | Token::Semi | Token::Amp |
-                Token::Newline | Token::Eof | Token::Then | Token::Do | Token::Done |
-                Token::Fi | Token::Elif | Token::Else | Token::Esac | Token::RParen |
-                Token::RBrace | Token::In => break,
+                Token::Pipe
+                | Token::And
+                | Token::Or
+                | Token::Semi
+                | Token::Amp
+                | Token::Newline
+                | Token::Eof
+                | Token::Then
+                | Token::Do
+                | Token::Done
+                | Token::Fi
+                | Token::Elif
+                | Token::Else
+                | Token::Esac
+                | Token::RParen
+                | Token::RBrace
+                | Token::In => break,
                 _ => {
                     self.advance();
                 }
             }
         }
-        
+
         if words.is_empty() && redirects.is_empty() {
             Ok(Command::Empty)
         } else if redirects.is_empty() {
@@ -1155,29 +1169,29 @@ impl Parser {
     /// Parse compound list until one of the stop tokens
     fn parse_compound_list_until(&mut self, stops: &[Token]) -> Result<Vec<Command>, String> {
         let mut commands = Vec::new();
-        
+
         loop {
             self.skip_newlines();
-            
-            let stop = stops.iter().any(|s| {
-                std::mem::discriminant(self.peek()) == std::mem::discriminant(s)
-            });
-            
+
+            let stop = stops
+                .iter()
+                .any(|s| std::mem::discriminant(self.peek()) == std::mem::discriminant(s));
+
             if stop || matches!(self.peek(), Token::Eof) {
                 break;
             }
-            
+
             let cmd = self.parse_list()?;
             if !matches!(cmd, Command::Empty) {
                 commands.push(cmd);
             }
-            
+
             // Consume separator
             if matches!(self.peek(), Token::Semi | Token::Newline) {
                 self.advance();
             }
         }
-        
+
         Ok(commands)
     }
 }

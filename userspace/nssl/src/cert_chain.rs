@@ -2,11 +2,11 @@
 //!
 //! OpenSSL-compatible certificate chain handling functions.
 
-use crate::context::SslContext;
 use crate::connection::SslConnection;
+use crate::context::SslContext;
 use crate::x509::X509;
-use std::vec::Vec;
 use std::ptr;
+use std::vec::Vec;
 
 /// X509_STORE structure
 #[repr(C)]
@@ -112,20 +112,19 @@ pub extern "C" fn X509_STORE_new() -> *mut X509_STORE {
 #[no_mangle]
 pub extern "C" fn X509_STORE_free(store: *mut X509_STORE) {
     if !store.is_null() {
-        unsafe { let _ = Box::from_raw(store); }
+        unsafe {
+            let _ = Box::from_raw(store);
+        }
     }
 }
 
 /// X509_STORE_add_cert - Add certificate to store
 #[no_mangle]
-pub extern "C" fn X509_STORE_add_cert(
-    store: *mut X509_STORE,
-    cert: *mut X509,
-) -> i32 {
+pub extern "C" fn X509_STORE_add_cert(store: *mut X509_STORE, cert: *mut X509) -> i32 {
     if store.is_null() || cert.is_null() {
         return 0;
     }
-    
+
     let store = unsafe { &mut *store };
     store.trusted_certs.push(cert);
     1
@@ -140,21 +139,18 @@ pub extern "C" fn X509_STORE_set_verify_cb(
     if store.is_null() {
         return;
     }
-    
+
     let store = unsafe { &mut *store };
     store.verify_cb = cb;
 }
 
 /// X509_STORE_set_flags - Set store flags
 #[no_mangle]
-pub extern "C" fn X509_STORE_set_flags(
-    store: *mut X509_STORE,
-    flags: u64,
-) -> i32 {
+pub extern "C" fn X509_STORE_set_flags(store: *mut X509_STORE, flags: u64) -> i32 {
     if store.is_null() {
         return 0;
     }
-    
+
     let store = unsafe { &mut *store };
     store.verify_flags |= flags;
     1
@@ -162,14 +158,11 @@ pub extern "C" fn X509_STORE_set_flags(
 
 /// X509_STORE_set_depth - Set maximum chain depth
 #[no_mangle]
-pub extern "C" fn X509_STORE_set_depth(
-    store: *mut X509_STORE,
-    depth: i32,
-) -> i32 {
+pub extern "C" fn X509_STORE_set_depth(store: *mut X509_STORE, depth: i32) -> i32 {
     if store.is_null() {
         return 0;
     }
-    
+
     let store = unsafe { &mut *store };
     store.verify_depth = depth;
     1
@@ -199,7 +192,9 @@ pub extern "C" fn X509_STORE_CTX_new() -> *mut X509_STORE_CTX {
 #[no_mangle]
 pub extern "C" fn X509_STORE_CTX_free(ctx: *mut X509_STORE_CTX) {
     if !ctx.is_null() {
-        unsafe { let _ = Box::from_raw(ctx); }
+        unsafe {
+            let _ = Box::from_raw(ctx);
+        }
     }
 }
 
@@ -214,7 +209,7 @@ pub extern "C" fn X509_STORE_CTX_init(
     if ctx.is_null() {
         return 0;
     }
-    
+
     let ctx = unsafe { &mut *ctx };
     ctx.store = store;
     ctx.cert = cert;
@@ -238,7 +233,9 @@ pub extern "C" fn X509_STORE_CTX_get_error(ctx: *mut X509_STORE_CTX) -> i32 {
 #[no_mangle]
 pub extern "C" fn X509_STORE_CTX_set_error(ctx: *mut X509_STORE_CTX, error: i32) {
     if !ctx.is_null() {
-        unsafe { (*ctx).error = error; }
+        unsafe {
+            (*ctx).error = error;
+        }
     }
 }
 
@@ -274,28 +271,33 @@ pub extern "C" fn X509_STORE_CTX_get0_chain(ctx: *mut X509_STORE_CTX) -> *mut ST
 pub extern "C" fn X509_verify_cert_error_string(error: i64) -> *const i8 {
     match error as i32 {
         verify_error::X509_V_OK => b"ok\0".as_ptr() as *const i8,
-        verify_error::X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT => 
-            b"unable to get issuer certificate\0".as_ptr() as *const i8,
-        verify_error::X509_V_ERR_CERT_SIGNATURE_FAILURE => 
-            b"certificate signature failure\0".as_ptr() as *const i8,
-        verify_error::X509_V_ERR_CERT_NOT_YET_VALID => 
-            b"certificate is not yet valid\0".as_ptr() as *const i8,
-        verify_error::X509_V_ERR_CERT_HAS_EXPIRED => 
-            b"certificate has expired\0".as_ptr() as *const i8,
-        verify_error::X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT => 
-            b"self signed certificate\0".as_ptr() as *const i8,
-        verify_error::X509_V_ERR_SELF_SIGNED_CERT_IN_CHAIN => 
-            b"self signed certificate in chain\0".as_ptr() as *const i8,
-        verify_error::X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY => 
-            b"unable to get local issuer certificate\0".as_ptr() as *const i8,
-        verify_error::X509_V_ERR_CERT_CHAIN_TOO_LONG => 
-            b"certificate chain too long\0".as_ptr() as *const i8,
-        verify_error::X509_V_ERR_CERT_REVOKED => 
-            b"certificate revoked\0".as_ptr() as *const i8,
-        verify_error::X509_V_ERR_INVALID_CA => 
-            b"invalid CA certificate\0".as_ptr() as *const i8,
-        verify_error::X509_V_ERR_HOSTNAME_MISMATCH => 
-            b"hostname mismatch\0".as_ptr() as *const i8,
+        verify_error::X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT => {
+            b"unable to get issuer certificate\0".as_ptr() as *const i8
+        }
+        verify_error::X509_V_ERR_CERT_SIGNATURE_FAILURE => {
+            b"certificate signature failure\0".as_ptr() as *const i8
+        }
+        verify_error::X509_V_ERR_CERT_NOT_YET_VALID => {
+            b"certificate is not yet valid\0".as_ptr() as *const i8
+        }
+        verify_error::X509_V_ERR_CERT_HAS_EXPIRED => {
+            b"certificate has expired\0".as_ptr() as *const i8
+        }
+        verify_error::X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT => {
+            b"self signed certificate\0".as_ptr() as *const i8
+        }
+        verify_error::X509_V_ERR_SELF_SIGNED_CERT_IN_CHAIN => {
+            b"self signed certificate in chain\0".as_ptr() as *const i8
+        }
+        verify_error::X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY => {
+            b"unable to get local issuer certificate\0".as_ptr() as *const i8
+        }
+        verify_error::X509_V_ERR_CERT_CHAIN_TOO_LONG => {
+            b"certificate chain too long\0".as_ptr() as *const i8
+        }
+        verify_error::X509_V_ERR_CERT_REVOKED => b"certificate revoked\0".as_ptr() as *const i8,
+        verify_error::X509_V_ERR_INVALID_CA => b"invalid CA certificate\0".as_ptr() as *const i8,
+        verify_error::X509_V_ERR_HOSTNAME_MISMATCH => b"hostname mismatch\0".as_ptr() as *const i8,
         _ => b"unknown certificate verification error\0".as_ptr() as *const i8,
     }
 }
@@ -315,7 +317,9 @@ pub extern "C" fn sk_X509_new_null() -> *mut STACK_OF_X509 {
 #[no_mangle]
 pub extern "C" fn sk_X509_free(stack: *mut STACK_OF_X509) {
     if !stack.is_null() {
-        unsafe { let _ = Box::from_raw(stack); }
+        unsafe {
+            let _ = Box::from_raw(stack);
+        }
     }
 }
 
@@ -334,9 +338,13 @@ pub extern "C" fn sk_X509_value(stack: *const STACK_OF_X509, idx: i32) -> *mut X
     if stack.is_null() || idx < 0 {
         return ptr::null_mut();
     }
-    
+
     let stack = unsafe { &*stack };
-    stack.certs.get(idx as usize).copied().unwrap_or(ptr::null_mut())
+    stack
+        .certs
+        .get(idx as usize)
+        .copied()
+        .unwrap_or(ptr::null_mut())
 }
 
 /// sk_X509_push - Push certificate onto stack
@@ -345,7 +353,7 @@ pub extern "C" fn sk_X509_push(stack: *mut STACK_OF_X509, cert: *mut X509) -> i3
     if stack.is_null() || cert.is_null() {
         return 0;
     }
-    
+
     let stack = unsafe { &mut *stack };
     stack.certs.push(cert);
     stack.certs.len() as i32
@@ -357,7 +365,7 @@ pub extern "C" fn sk_X509_pop(stack: *mut STACK_OF_X509) -> *mut X509 {
     if stack.is_null() {
         return ptr::null_mut();
     }
-    
+
     let stack = unsafe { &mut *stack };
     stack.certs.pop().unwrap_or(ptr::null_mut())
 }
@@ -368,7 +376,7 @@ pub extern "C" fn sk_X509_dup(stack: *const STACK_OF_X509) -> *mut STACK_OF_X509
     if stack.is_null() {
         return ptr::null_mut();
     }
-    
+
     let stack = unsafe { &*stack };
     let new_stack = Box::new(STACK_OF_X509 {
         certs: stack.certs.clone(),
@@ -397,7 +405,9 @@ pub extern "C" fn X509_VERIFY_PARAM_new() -> *mut X509_VERIFY_PARAM {
 #[no_mangle]
 pub extern "C" fn X509_VERIFY_PARAM_free(param: *mut X509_VERIFY_PARAM) {
     if !param.is_null() {
-        unsafe { let _ = Box::from_raw(param); }
+        unsafe {
+            let _ = Box::from_raw(param);
+        }
     }
 }
 
@@ -407,7 +417,9 @@ pub extern "C" fn X509_VERIFY_PARAM_set_flags(param: *mut X509_VERIFY_PARAM, fla
     if param.is_null() {
         return 0;
     }
-    unsafe { (*param).flags |= flags; }
+    unsafe {
+        (*param).flags |= flags;
+    }
     1
 }
 
@@ -417,7 +429,9 @@ pub extern "C" fn X509_VERIFY_PARAM_clear_flags(param: *mut X509_VERIFY_PARAM, f
     if param.is_null() {
         return 0;
     }
-    unsafe { (*param).flags &= !flags; }
+    unsafe {
+        (*param).flags &= !flags;
+    }
     1
 }
 
@@ -434,7 +448,9 @@ pub extern "C" fn X509_VERIFY_PARAM_get_flags(param: *const X509_VERIFY_PARAM) -
 #[no_mangle]
 pub extern "C" fn X509_VERIFY_PARAM_set_depth(param: *mut X509_VERIFY_PARAM, depth: i32) {
     if !param.is_null() {
-        unsafe { (*param).depth = depth; }
+        unsafe {
+            (*param).depth = depth;
+        }
     }
 }
 
@@ -457,32 +473,27 @@ pub extern "C" fn X509_VERIFY_PARAM_set1_host(
     if param.is_null() {
         return 0;
     }
-    
+
     let param = unsafe { &mut *param };
-    
+
     if name.is_null() {
         param.host = None;
         return 1;
     }
-    
+
     let name_slice = if namelen == 0 {
         unsafe { std::ffi::CStr::from_ptr(name).to_str().ok() }
     } else {
-        unsafe {
-            std::str::from_utf8(std::slice::from_raw_parts(name as *const u8, namelen)).ok()
-        }
+        unsafe { std::str::from_utf8(std::slice::from_raw_parts(name as *const u8, namelen)).ok() }
     };
-    
+
     param.host = name_slice.map(|s| s.to_string());
     1
 }
 
 /// X509_VERIFY_PARAM_set_hostflags - Set hostname verification flags
 #[no_mangle]
-pub extern "C" fn X509_VERIFY_PARAM_set_hostflags(
-    param: *mut X509_VERIFY_PARAM,
-    _flags: u32,
-) {
+pub extern "C" fn X509_VERIFY_PARAM_set_hostflags(param: *mut X509_VERIFY_PARAM, _flags: u32) {
     // TODO: Store flags
 }
 

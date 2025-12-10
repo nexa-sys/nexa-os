@@ -40,7 +40,7 @@ pub enum DriverInstance {
 
 impl DriverInstance {
     /// Create a new driver instance for the given device
-    /// 
+    ///
     /// This checks if a modular driver is available for the device.
     /// Network drivers must be loaded as kernel modules (e.g., e1000.nkm).
     pub fn new(index: usize, descriptor: NetworkDescriptor) -> Result<Self, NetError> {
@@ -51,7 +51,8 @@ impl DriverInstance {
             descriptor.info.pci_device,
             descriptor.info.pci_function,
         ) {
-            if let Some(driver_idx) = modular::find_driver_for_device(pci.vendor_id, pci.device_id) {
+            if let Some(driver_idx) = modular::find_driver_for_device(pci.vendor_id, pci.device_id)
+            {
                 // Create modular driver instance
                 let mod_desc = modular::NetDeviceDescriptor {
                     index,
@@ -66,20 +67,19 @@ impl DriverInstance {
                     mac_address: descriptor.info.mac_address,
                     _reserved: [0; 5],
                 };
-                
+
                 if let Err(e) = modular::create_driver_instance(driver_idx, index, &mod_desc) {
-                    crate::kerror!(
-                        "net: modular driver failed for device {}: {:?}",
-                        index, e
-                    );
+                    crate::kerror!("net: modular driver failed for device {}: {:?}", index, e);
                     return Err(NetError::ModuleNotLoaded);
                 }
-                
+
                 crate::kinfo!("net: using modular driver for device {}", index);
-                return Ok(Self::Modular { device_index: index });
+                return Ok(Self::Modular {
+                    device_index: index,
+                });
             }
         }
-        
+
         // No driver found - network drivers must be loaded as modules
         crate::kwarn!("net: no driver module loaded for device {}", index);
         Err(NetError::ModuleNotLoaded)
@@ -105,25 +105,21 @@ impl DriverInstance {
     pub fn transmit(&mut self, frame: &[u8]) -> Result<(), NetError> {
         match self {
             DriverInstance::Modular { device_index } => {
-                modular::transmit(*device_index, frame)
-                    .map_err(|_| NetError::TxBusy)
+                modular::transmit(*device_index, frame).map_err(|_| NetError::TxBusy)
             }
         }
     }
 
     pub fn drain_rx(&mut self, scratch: &mut [u8]) -> Option<usize> {
         match self {
-            DriverInstance::Modular { device_index } => {
-                modular::drain_rx(*device_index, scratch)
-            }
+            DriverInstance::Modular { device_index } => modular::drain_rx(*device_index, scratch),
         }
     }
 
     pub fn maintenance(&mut self) -> Result<(), NetError> {
         match self {
             DriverInstance::Modular { device_index } => {
-                modular::maintenance(*device_index)
-                    .map_err(|_| NetError::HardwareFault)
+                modular::maintenance(*device_index).map_err(|_| NetError::HardwareFault)
             }
         }
     }
@@ -136,4 +132,3 @@ impl DriverInstance {
         }
     }
 }
-

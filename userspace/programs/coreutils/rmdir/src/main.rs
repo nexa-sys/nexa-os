@@ -36,7 +36,7 @@ fn remove_dir_verbose(path: &str, verbose: bool) -> Result<(), String> {
 fn remove_with_parents(path: &str, verbose: bool) -> Result<(), String> {
     // First remove the target directory
     remove_dir_verbose(path, verbose)?;
-    
+
     // Then try to remove parent directories
     let mut current = Path::new(path).parent();
     while let Some(parent) = current {
@@ -44,7 +44,7 @@ fn remove_with_parents(path: &str, verbose: bool) -> Result<(), String> {
         if parent_str.is_empty() || parent_str == "/" || parent_str == "." {
             break;
         }
-        
+
         // Try to remove parent, but don't fail if it's not empty
         match fs::remove_dir(parent) {
             Ok(()) => {
@@ -59,13 +59,13 @@ fn remove_with_parents(path: &str, verbose: bool) -> Result<(), String> {
         }
         current = parent.parent();
     }
-    
+
     Ok(())
 }
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    
+
     if args.len() < 2 {
         print_usage();
         process::exit(1);
@@ -74,7 +74,7 @@ fn main() {
     let mut parents = false;
     let mut verbose = false;
     let mut dirs: Vec<&str> = Vec::new();
-    
+
     for arg in args.iter().skip(1) {
         if arg == "-h" || arg == "--help" {
             print_usage();
@@ -106,14 +106,14 @@ fn main() {
     }
 
     let mut exit_code = 0;
-    
+
     for dir in dirs {
         let result = if parents {
             remove_with_parents(dir, verbose)
         } else {
             remove_dir_verbose(dir, verbose)
         };
-        
+
         if let Err(e) = result {
             eprintln!("rmdir: failed to remove '{}': {}", dir, e);
             exit_code = 1;

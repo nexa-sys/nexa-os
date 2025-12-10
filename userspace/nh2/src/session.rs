@@ -3,18 +3,18 @@
 //! This module implements the core HTTP/2 session handling, providing both
 //! a native Rust API and nghttp2-compatible C API.
 
-use crate::types::*;
-use crate::error::{Error, Result, ErrorCode, NgError};
-use crate::frame::*;
-use crate::hpack::{Hpack, HpackEncoder, HpackDecoder, HeaderField};
-use crate::stream::{Stream, StreamMap, StreamState};
-use crate::flow_control::FlowControl;
-use crate::priority::PriorityTree;
 use crate::constants::*;
+use crate::error::{Error, ErrorCode, NgError, Result};
+use crate::flow_control::FlowControl;
+use crate::frame::*;
+use crate::hpack::{HeaderField, Hpack, HpackDecoder, HpackEncoder};
+use crate::priority::PriorityTree;
+use crate::stream::{Stream, StreamMap, StreamState};
+use crate::types::*;
 use crate::{c_int, c_void, size_t, ssize_t, NGHTTP2_CLIENT_MAGIC};
 
-use std::collections::VecDeque;
 use parking_lot::Mutex;
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 // ============================================================================
@@ -312,7 +312,9 @@ impl Session {
             return Err(Error::InvalidState("submit_response is for servers only"));
         }
 
-        let stream = inner.streams.get_mut(stream_id)
+        let stream = inner
+            .streams
+            .get_mut(stream_id)
             .ok_or(Error::StreamNotFound(stream_id))?;
 
         stream.response_headers = headers.to_vec();
@@ -323,13 +325,10 @@ impl Session {
 
         // Create HEADERS frame
         let end_stream = data_provider.is_none();
-        let frame = inner.frame_builder.headers(
-            stream_id,
-            &header_block,
-            end_stream,
-            true,
-            None,
-        )?;
+        let frame =
+            inner
+                .frame_builder
+                .headers(stream_id, &header_block, end_stream, true, None)?;
 
         // Serialize and queue
         let mut buf = Vec::new();
@@ -349,7 +348,9 @@ impl Session {
     pub fn submit_data(&self, stream_id: StreamId, data: &[u8], end_stream: bool) -> Result<()> {
         let mut inner = self.inner.lock();
 
-        let stream = inner.streams.get_mut(stream_id)
+        let stream = inner
+            .streams
+            .get_mut(stream_id)
             .ok_or(Error::StreamNotFound(stream_id))?;
 
         if !stream.state.can_send() {
@@ -562,14 +563,14 @@ impl Session {
         match frame {
             Frame::Data(f) => {
                 let stream_id = f.header.stream_id;
-                
+
                 // Update flow control
                 inner.flow_control.consume_recv(f.data.len() as i32)?;
-                
+
                 if let Some(stream) = inner.streams.get_mut(stream_id) {
                     stream.consume_recv_window(f.data.len() as i32)?;
                     stream.recv_buffer.extend_from_slice(&f.data);
-                    
+
                     if f.header.flags.end_stream() {
                         stream.close_remote()?;
                     }
@@ -586,32 +587,32 @@ impl Session {
             }
             Frame::Headers(f) => {
                 let stream_id = f.header.stream_id;
-                
+
                 // Decode headers
                 let headers = inner.hpack.decode(&f.header_block)?;
-                
+
                 // Get or create stream
                 let stream = inner.streams.get_or_create(stream_id)?;
-                
+
                 if stream.state == StreamState::Idle {
                     stream.open()?;
                 }
-                
+
                 if inner.session_type == SessionType::Server {
                     stream.request_headers = headers;
                 } else {
                     stream.response_headers = headers;
                 }
-                
+
                 // Handle priority
                 if let Some(pri) = f.priority {
                     inner.priority.add_with_spec(stream_id, &pri);
                 }
-                
+
                 if f.header.flags.end_stream() {
                     stream.close_remote()?;
                 }
-                
+
                 inner.last_recv_stream_id = stream_id;
             }
             Frame::Priority(f) => {
@@ -632,7 +633,10 @@ impl Session {
                         match entry.settings_id as u16 {
                             settings_id::HEADER_TABLE_SIZE => {
                                 inner.remote_settings.header_table_size = entry.value;
-                                inner.hpack.encoder().set_max_table_size(entry.value as usize);
+                                inner
+                                    .hpack
+                                    .encoder()
+                                    .set_max_table_size(entry.value as usize);
                             }
                             settings_id::ENABLE_PUSH => {
                                 inner.remote_settings.enable_push = entry.value != 0;
@@ -642,7 +646,8 @@ impl Session {
                                 inner.streams.set_max_concurrent_remote(entry.value);
                             }
                             settings_id::INITIAL_WINDOW_SIZE => {
-                                let delta = entry.value as i32 - inner.remote_settings.initial_window_size as i32;
+                                let delta = entry.value as i32
+                                    - inner.remote_settings.initial_window_size as i32;
                                 inner.remote_settings.initial_window_size = entry.value;
                                 inner.streams.set_initial_window_size(entry.value as i32)?;
                             }
@@ -678,7 +683,9 @@ impl Session {
             }
             Frame::WindowUpdate(f) => {
                 if f.header.stream_id == 0 {
-                    inner.flow_control.update_send(f.window_size_increment as i32)?;
+                    inner
+                        .flow_control
+                        .update_send(f.window_size_increment as i32)?;
                 } else if let Some(stream) = inner.streams.get_mut(f.header.stream_id) {
                     stream.update_send_window(f.window_size_increment as i32)?;
                 }
@@ -792,7 +799,8 @@ impl SessionBuilder {
 
     /// Build the session
     pub fn build(self) -> Result<Session> {
-        let session_type = self.session_type
+        let session_type = self
+            .session_type
             .ok_or(Error::InvalidState("session type not set"))?;
 
         Ok(Session::new(session_type, self.callbacks, self.user_data))
@@ -849,11 +857,11 @@ pub extern "C" fn nghttp2_session_callbacks_new(
 
     let callbacks = Box::new(SessionCallbacks::new());
     let wrapper = Box::new(NgHttp2SessionCallbacks { inner: callbacks });
-    
+
     unsafe {
         *callbacks_ptr = Box::into_raw(wrapper);
     }
-    
+
     0
 }
 
@@ -1032,13 +1040,7 @@ pub extern "C" fn nghttp2_session_send(session: *mut NgHttp2Session) -> c_int {
     // Call send callback if set
     if let Some(callback) = sess.callbacks.send_callback {
         let inner = sess.session.inner.lock();
-        let result = callback(
-            session,
-            data.as_ptr(),
-            data.len(),
-            0,
-            inner.user_data,
-        );
+        let result = callback(session, data.as_ptr(), data.len(), 0, inner.user_data);
         if result < 0 {
             return result as i32;
         }
@@ -1058,13 +1060,7 @@ pub extern "C" fn nghttp2_session_recv(session: *mut NgHttp2Session) -> c_int {
     if let Some(callback) = sess.callbacks.recv_callback {
         let mut buf = [0u8; 16384];
         let inner = sess.session.inner.lock();
-        let result = callback(
-            session,
-            buf.as_mut_ptr(),
-            buf.len(),
-            0,
-            inner.user_data,
-        );
+        let result = callback(session, buf.as_mut_ptr(), buf.len(), 0, inner.user_data);
         drop(inner);
 
         if result > 0 {
@@ -1134,7 +1130,11 @@ pub extern "C" fn nghttp2_session_want_read(session: *mut NgHttp2Session) -> c_i
         None => return 0,
     };
 
-    if sess.session.want_read() { 1 } else { 0 }
+    if sess.session.want_read() {
+        1
+    } else {
+        0
+    }
 }
 
 #[no_mangle]
@@ -1144,7 +1144,11 @@ pub extern "C" fn nghttp2_session_want_write(session: *mut NgHttp2Session) -> c_
         None => return 0,
     };
 
-    if sess.session.want_write() { 1 } else { 0 }
+    if sess.session.want_write() {
+        1
+    } else {
+        0
+    }
 }
 
 // Submit functions
@@ -1170,10 +1174,12 @@ pub extern "C" fn nghttp2_submit_request(
         unsafe {
             core::slice::from_raw_parts(nva, nvlen)
                 .iter()
-                .map(|nv| HeaderField::new(
-                    core::slice::from_raw_parts(nv.name, nv.namelen).to_vec(),
-                    core::slice::from_raw_parts(nv.value, nv.valuelen).to_vec(),
-                ))
+                .map(|nv| {
+                    HeaderField::new(
+                        core::slice::from_raw_parts(nv.name, nv.namelen).to_vec(),
+                        core::slice::from_raw_parts(nv.value, nv.valuelen).to_vec(),
+                    )
+                })
                 .collect()
         }
     };
@@ -1216,10 +1222,12 @@ pub extern "C" fn nghttp2_submit_response(
         unsafe {
             core::slice::from_raw_parts(nva, nvlen)
                 .iter()
-                .map(|nv| HeaderField::new(
-                    core::slice::from_raw_parts(nv.name, nv.namelen).to_vec(),
-                    core::slice::from_raw_parts(nv.value, nv.valuelen).to_vec(),
-                ))
+                .map(|nv| {
+                    HeaderField::new(
+                        core::slice::from_raw_parts(nv.name, nv.namelen).to_vec(),
+                        core::slice::from_raw_parts(nv.value, nv.valuelen).to_vec(),
+                    )
+                })
                 .collect()
         }
     };
@@ -1307,7 +1315,10 @@ pub extern "C" fn nghttp2_submit_goaway(
         unsafe { core::slice::from_raw_parts(opaque_data, opaque_data_len) }
     };
 
-    match sess.session.submit_goaway(ErrorCode::from_u32(error_code), debug_data) {
+    match sess
+        .session
+        .submit_goaway(ErrorCode::from_u32(error_code), debug_data)
+    {
         Ok(()) => 0,
         Err(e) => e.to_error_code(),
     }
@@ -1325,7 +1336,10 @@ pub extern "C" fn nghttp2_submit_rst_stream(
         None => return NgError::InvalidArgument as i32,
     };
 
-    match sess.session.submit_rst_stream(stream_id, ErrorCode::from_u32(error_code)) {
+    match sess
+        .session
+        .submit_rst_stream(stream_id, ErrorCode::from_u32(error_code))
+    {
         Ok(()) => 0,
         Err(e) => e.to_error_code(),
     }
@@ -1347,7 +1361,10 @@ pub extern "C" fn nghttp2_submit_window_update(
         return NgError::InvalidArgument as i32;
     }
 
-    match sess.session.submit_window_update(stream_id, window_size_increment as u32) {
+    match sess
+        .session
+        .submit_window_update(stream_id, window_size_increment as u32)
+    {
         Ok(()) => 0,
         Err(e) => e.to_error_code(),
     }
@@ -1366,7 +1383,9 @@ pub extern "C" fn nghttp2_session_get_stream_user_data(
     };
 
     let inner = sess.session.inner.lock();
-    inner.streams.get(stream_id)
+    inner
+        .streams
+        .get(stream_id)
         .and_then(|s| s.user_data)
         .unwrap_or(core::ptr::null_mut())
 }

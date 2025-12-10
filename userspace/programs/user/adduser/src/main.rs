@@ -68,7 +68,11 @@ fn write(fd: u64, buf: &[u8]) {
 
 fn read(fd: u64, buf: &mut [u8]) -> isize {
     let ret = syscall3(SYS_READ, fd, buf.as_mut_ptr() as u64, buf.len() as u64);
-    if ret == u64::MAX { -1 } else { ret as isize }
+    if ret == u64::MAX {
+        -1
+    } else {
+        ret as isize
+    }
 }
 
 fn print(s: &str) {
@@ -89,7 +93,7 @@ fn exit(code: i32) -> ! {
 fn read_line(buf: &mut [u8]) -> usize {
     let mut pos = 0;
     let mut byte = [0u8; 1];
-    
+
     while pos < buf.len() - 1 {
         let n = read(STDIN, &mut byte);
         if n <= 0 {
@@ -112,9 +116,13 @@ fn add_user(username: &[u8], password: &[u8], admin: bool) -> Result<(), i32> {
         password_len: password.len() as u64,
         flags: if admin { USER_FLAG_ADMIN } else { 0 },
     };
-    
+
     let ret = syscall3(SYS_USER_ADD, &request as *const UserRequest as u64, 0, 0);
-    if ret == u64::MAX { Err(-1) } else { Ok(()) }
+    if ret == u64::MAX {
+        Err(-1)
+    } else {
+        Ok(())
+    }
 }
 
 fn print_usage() {
@@ -128,13 +136,13 @@ unsafe fn get_arg(argv: *const *const u8, index: isize) -> Option<&'static [u8]>
     if arg_ptr.is_null() {
         return None;
     }
-    
+
     // Find string length
     let mut len = 0;
     while *arg_ptr.add(len) != 0 {
         len += 1;
     }
-    
+
     Some(core::slice::from_raw_parts(arg_ptr, len))
 }
 
@@ -142,7 +150,7 @@ unsafe fn get_arg(argv: *const *const u8, index: isize) -> Option<&'static [u8]>
 pub extern "C" fn main(argc: isize, argv: *const *const u8) -> isize {
     let mut admin = false;
     let mut username: Option<&[u8]> = None;
-    
+
     // Parse arguments
     let mut i = 1;
     while i < argc {
@@ -165,7 +173,7 @@ pub extern "C" fn main(argc: isize, argv: *const *const u8) -> isize {
         }
         i += 1;
     }
-    
+
     let username = match username {
         Some(u) => u,
         None => {
@@ -174,20 +182,20 @@ pub extern "C" fn main(argc: isize, argv: *const *const u8) -> isize {
             exit(1);
         }
     };
-    
+
     // Prompt for password
     print("New password: ");
     let mut password_buf = [0u8; MAX_INPUT];
     let password_len = read_line(&mut password_buf);
     print("\n");
-    
+
     if password_len == 0 {
         eprint("adduser: password cannot be empty\n");
         exit(1);
     }
-    
+
     let password = &password_buf[..password_len];
-    
+
     match add_user(username, password, admin) {
         Ok(()) => {
             print("User created successfully.\n");

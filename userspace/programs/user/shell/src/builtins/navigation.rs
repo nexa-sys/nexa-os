@@ -8,10 +8,12 @@ use std::fs;
 
 /// Register navigation builtins
 pub fn register(registry: &mut BuiltinRegistry) {
-    registry.register("cd", BuiltinDesc::new(
-        builtin_cd,
-        "改变 shell 工作目录",
-        "改变当前目录至 DIR。默认的 DIR 目录是 HOME 环境变量的值。\n\
+    registry.register(
+        "cd",
+        BuiltinDesc::new(
+            builtin_cd,
+            "改变 shell 工作目录",
+            "改变当前目录至 DIR。默认的 DIR 目录是 HOME 环境变量的值。\n\
          \n\
          变量 CDPATH 定义了搜索包含 DIR 的目录的搜索路径。\n\
          CDPATH 中用冒号分隔的备选目录名称。空目录名表示当前目录。\n\
@@ -24,14 +26,17 @@ pub fn register(registry: &mut BuiltinRegistry) {
          \n\
          默认情况下跟随符号链接，就像指定了 -L 一样。\n\
          如果成功更改了目录则返回 0，否则返回非零值。",
-        "cd [-L|[-P [-e]] [-@]] [目录]",
-        true,
-    ));
+            "cd [-L|[-P [-e]] [-@]] [目录]",
+            true,
+        ),
+    );
 
-    registry.register("pwd", BuiltinDesc::new(
-        builtin_pwd,
-        "打印当前/工作目录的名称",
-        "打印当前工作目录的绝对路径名。\n\
+    registry.register(
+        "pwd",
+        BuiltinDesc::new(
+            builtin_pwd,
+            "打印当前/工作目录的名称",
+            "打印当前工作目录的绝对路径名。\n\
          \n\
          选项:\n\
            -L    打印 $PWD 的值，即使它包含符号链接\n\
@@ -39,14 +44,17 @@ pub fn register(registry: &mut BuiltinRegistry) {
          \n\
          默认情况下，`pwd' 的行为就像指定了 `-L'。\n\
          如果成功打印了当前目录则返回 0，否则返回非零值。",
-        "pwd [-LP]",
-        true,
-    ));
+            "pwd [-LP]",
+            true,
+        ),
+    );
 
-    registry.register("pushd", BuiltinDesc::new(
-        builtin_pushd,
-        "向目录栈添加目录",
-        "将当前目录保存到目录栈顶部，然后切换到 DIR。\n\
+    registry.register(
+        "pushd",
+        BuiltinDesc::new(
+            builtin_pushd,
+            "向目录栈添加目录",
+            "将当前目录保存到目录栈顶部，然后切换到 DIR。\n\
          如果没有参数，pushd 将交换栈顶的两个目录。\n\
          \n\
          选项:\n\
@@ -58,14 +66,17 @@ pub fn register(registry: &mut BuiltinRegistry) {
            dir   将 DIR 添加到目录栈顶部\n\
          \n\
          如果成功更改了目录则返回 0，否则返回非零值。",
-        "pushd [-n] [+N | -N | 目录]",
-        true,
-    ));
+            "pushd [-n] [+N | -N | 目录]",
+            true,
+        ),
+    );
 
-    registry.register("popd", BuiltinDesc::new(
-        builtin_popd,
-        "从目录栈移除目录",
-        "从目录栈移除最顶部的目录，并切换到新的栈顶目录。\n\
+    registry.register(
+        "popd",
+        BuiltinDesc::new(
+            builtin_popd,
+            "从目录栈移除目录",
+            "从目录栈移除最顶部的目录，并切换到新的栈顶目录。\n\
          \n\
          选项:\n\
            -n    不改变目录的情况下从栈中移除目录\n\
@@ -75,14 +86,17 @@ pub fn register(registry: &mut BuiltinRegistry) {
            -N    移除第 N 个目录（从 dirs 打印的列表右边数起，从零开始）\n\
          \n\
          如果成功更改了目录则返回 0，否则返回非零值。",
-        "popd [-n] [+N | -N]",
-        true,
-    ));
+            "popd [-n] [+N | -N]",
+            true,
+        ),
+    );
 
-    registry.register("dirs", BuiltinDesc::new(
-        builtin_dirs,
-        "显示目录栈",
-        "显示当前记忆的目录列表。目录是通过 pushd 命令添加到列表中的。\n\
+    registry.register(
+        "dirs",
+        BuiltinDesc::new(
+            builtin_dirs,
+            "显示目录栈",
+            "显示当前记忆的目录列表。目录是通过 pushd 命令添加到列表中的。\n\
          \n\
          选项:\n\
            -c    清除目录栈，删除所有条目\n\
@@ -95,9 +109,10 @@ pub fn register(registry: &mut BuiltinRegistry) {
            -N    显示第 N 个目录（从 dirs 无选项时打印的列表右边数起，从零开始）\n\
          \n\
          如果成功则返回 0，除非提供了无效选项或发生错误。",
-        "dirs [-clpv] [+N] [-N]",
-        true,
-    ));
+            "dirs [-clpv] [+N] [-N]",
+            true,
+        ),
+    );
 }
 
 /// cd builtin - change directory
@@ -151,18 +166,18 @@ fn builtin_cd(state: &mut ShellState, args: &[&str]) -> BuiltinResult {
             } else {
                 resolved
             };
-            
+
             // Check if cd - (to old directory)
             let oldpwd = state.get_var("OLDPWD").unwrap_or("").to_string();
             let was_cd_minus = target == oldpwd;
-            
+
             state.set_cwd(&final_path);
-            
+
             // If cd -, print the new directory
             if was_cd_minus {
                 println!("{}", final_path.display());
             }
-            
+
             Ok(0)
         }
         Ok(_) => Err(format!("cd: {}: 不是目录", target)),
@@ -342,7 +357,7 @@ fn print_dir_stack(state: &ShellState, long_format: bool, per_line: bool) {
 
 fn print_dir_stack_opts(state: &ShellState, long_format: bool, per_line: bool, with_index: bool) {
     let stack = state.dir_stack();
-    
+
     if with_index {
         for (i, dir) in stack.iter().enumerate() {
             println!("{:2}  {}", i, format_dir(dir, state, long_format));
@@ -363,7 +378,7 @@ fn print_dir_stack_opts(state: &ShellState, long_format: bool, per_line: bool, w
 /// Helper: format directory for display
 fn format_dir(dir: &std::path::Path, state: &ShellState, long_format: bool) -> String {
     let path_str = dir.to_str().unwrap_or("?");
-    
+
     if long_format {
         path_str.to_string()
     } else {

@@ -1,7 +1,7 @@
 //! NexaOS SSL/TLS Library (nssl)
 //!
 //! A modern, libssl.so ABI-compatible TLS library for NexaOS.
-//! 
+//!
 //! ## Supported Protocols
 //! - **TLS 1.3** (RFC 8446) - Recommended, default
 //! - **TLS 1.2** (RFC 5246) - For legacy compatibility
@@ -50,12 +50,12 @@
 //!
 //! // Create a TLS 1.3 client context
 //! let ctx = SslContext::new(SslMethod::tls_client())?;
-//! 
+//!
 //! // Create connection and perform handshake
 //! let ssl = ctx.new_ssl()?;
 //! ssl.set_fd(socket_fd);
 //! ssl.connect()?;
-//! 
+//!
 //! // Send/receive data
 //! ssl.write(b"GET / HTTP/1.1\r\n\r\n")?;
 //! let mut buf = [0u8; 4096];
@@ -78,15 +78,15 @@ pub use crypto_ffi as ncryptolib;
 // ============================================================================
 
 // Core SSL/TLS context and connection management
-pub mod ssl;
-pub mod context;
 pub mod connection;
+pub mod context;
+pub mod ssl;
 
 // TLS Protocol Implementation
-pub mod tls;
-pub mod record;
-pub mod handshake;
 pub mod alert;
+pub mod handshake;
+pub mod record;
+pub mod tls;
 
 // Cipher suites
 pub mod cipher;
@@ -96,10 +96,10 @@ pub mod cipher_suites;
 pub mod kex;
 
 // Certificate handling
+pub mod cert_chain;
+pub mod cert_verify;
 pub mod x509;
 pub mod x509_verify;
-pub mod cert_verify;
-pub mod cert_chain;
 
 // Session management
 pub mod session;
@@ -135,7 +135,6 @@ pub mod ssl_extra;
 // ============================================================================
 // C Type Definitions (OpenSSL compatible)
 // ============================================================================
-
 
 pub type c_int = i32;
 pub type c_uint = u32;
@@ -195,31 +194,33 @@ pub mod ssl_error {
 pub mod ssl_options {
     // Session options
     pub const SSL_OP_NO_SESSION_RESUMPTION_ON_RENEGOTIATION: u64 = 0x00010000;
-    
+
     // Protocol version options (we only support TLS 1.2+)
-    pub const SSL_OP_NO_SSLv2: u64 = 0x01000000;   // Always set internally
-    pub const SSL_OP_NO_SSLv3: u64 = 0x02000000;   // Always set internally
-    pub const SSL_OP_NO_TLSv1: u64 = 0x04000000;   // Always set internally
+    pub const SSL_OP_NO_SSLv2: u64 = 0x01000000; // Always set internally
+    pub const SSL_OP_NO_SSLv3: u64 = 0x02000000; // Always set internally
+    pub const SSL_OP_NO_TLSv1: u64 = 0x04000000; // Always set internally
     pub const SSL_OP_NO_TLSv1_1: u64 = 0x10000000; // Always set internally
     pub const SSL_OP_NO_TLSv1_2: u64 = 0x08000000;
     pub const SSL_OP_NO_TLSv1_3: u64 = 0x20000000;
-    
+
     // Cipher preferences
     pub const SSL_OP_CIPHER_SERVER_PREFERENCE: u64 = 0x00400000;
-    
+
     // Ticket options
     pub const SSL_OP_NO_TICKET: u64 = 0x00004000;
-    
+
     // Compression (always disabled)
     pub const SSL_OP_NO_COMPRESSION: u64 = 0x00020000;
-    
+
     // Renegotiation
     pub const SSL_OP_NO_RENEGOTIATION: u64 = 0x40000000;
-    
+
     // Default secure options
-    pub const SSL_OP_ALL: u64 = SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | 
-                                SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1 |
-                                SSL_OP_NO_COMPRESSION;
+    pub const SSL_OP_ALL: u64 = SSL_OP_NO_SSLv2
+        | SSL_OP_NO_SSLv3
+        | SSL_OP_NO_TLSv1
+        | SSL_OP_NO_TLSv1_1
+        | SSL_OP_NO_COMPRESSION;
 }
 
 // ============================================================================
@@ -258,15 +259,15 @@ pub const SSL_FILETYPE_ASN1: i32 = 2;
 // Re-exports for public API
 // ============================================================================
 
-pub use ssl::{SslMethod, SslMethodType};
-pub use context::SslContext;
+pub use bio::{Bio, BioMethod};
+pub use cipher::{CipherList, SslCipher};
+pub use cipher_suites::{CipherSuite, TLS12_CIPHER_SUITES, TLS13_CIPHER_SUITES};
 pub use connection::SslConnection;
+pub use context::SslContext;
 pub use error::{SslError, SslResult};
 pub use session::SslSession;
-pub use bio::{Bio, BioMethod};
-pub use x509::{X509, X509Store, X509VerifyParam};
-pub use cipher::{SslCipher, CipherList};
-pub use cipher_suites::{CipherSuite, TLS13_CIPHER_SUITES, TLS12_CIPHER_SUITES};
+pub use ssl::{SslMethod, SslMethodType};
+pub use x509::{X509Store, X509VerifyParam, X509};
 
 // ============================================================================
 // C ABI Exports - Version Functions
@@ -374,7 +375,7 @@ pub extern "C" fn SSL_CTX_new(method: *const ssl::SslMethod) -> *mut context::Ss
     if method.is_null() {
         return core::ptr::null_mut();
     }
-    
+
     match context::SslContext::new(unsafe { &*method }) {
         Ok(ctx) => Box::into_raw(Box::new(ctx)),
         Err(_) => core::ptr::null_mut(),
@@ -385,7 +386,9 @@ pub extern "C" fn SSL_CTX_new(method: *const ssl::SslMethod) -> *mut context::Ss
 #[no_mangle]
 pub extern "C" fn SSL_CTX_free(ctx: *mut context::SslContext) {
     if !ctx.is_null() {
-        unsafe { drop(Box::from_raw(ctx)); }
+        unsafe {
+            drop(Box::from_raw(ctx));
+        }
     }
 }
 
@@ -409,7 +412,10 @@ pub extern "C" fn SSL_CTX_get_options(ctx: *const context::SslContext) -> c_ulon
 
 /// Clear SSL context options
 #[no_mangle]
-pub extern "C" fn SSL_CTX_clear_options(ctx: *mut context::SslContext, options: c_ulong) -> c_ulong {
+pub extern "C" fn SSL_CTX_clear_options(
+    ctx: *mut context::SslContext,
+    options: c_ulong,
+) -> c_ulong {
     if ctx.is_null() {
         return 0;
     }
@@ -418,7 +424,10 @@ pub extern "C" fn SSL_CTX_clear_options(ctx: *mut context::SslContext, options: 
 
 /// Set minimum protocol version
 #[no_mangle]
-pub extern "C" fn SSL_CTX_set_min_proto_version(ctx: *mut context::SslContext, version: c_int) -> c_int {
+pub extern "C" fn SSL_CTX_set_min_proto_version(
+    ctx: *mut context::SslContext,
+    version: c_int,
+) -> c_int {
     if ctx.is_null() {
         return 0;
     }
@@ -433,7 +442,10 @@ pub extern "C" fn SSL_CTX_set_min_proto_version(ctx: *mut context::SslContext, v
 
 /// Set maximum protocol version
 #[no_mangle]
-pub extern "C" fn SSL_CTX_set_max_proto_version(ctx: *mut context::SslContext, version: c_int) -> c_int {
+pub extern "C" fn SSL_CTX_set_max_proto_version(
+    ctx: *mut context::SslContext,
+    version: c_int,
+) -> c_int {
     if ctx.is_null() {
         return 0;
     }
@@ -442,7 +454,10 @@ pub extern "C" fn SSL_CTX_set_max_proto_version(ctx: *mut context::SslContext, v
 
 /// Set cipher list (TLS 1.2)
 #[no_mangle]
-pub extern "C" fn SSL_CTX_set_cipher_list(ctx: *mut context::SslContext, str: *const c_char) -> c_int {
+pub extern "C" fn SSL_CTX_set_cipher_list(
+    ctx: *mut context::SslContext,
+    str: *const c_char,
+) -> c_int {
     if ctx.is_null() || str.is_null() {
         return 0;
     }
@@ -457,7 +472,10 @@ pub extern "C" fn SSL_CTX_set_cipher_list(ctx: *mut context::SslContext, str: *c
 
 /// Set ciphersuites (TLS 1.3)
 #[no_mangle]
-pub extern "C" fn SSL_CTX_set_ciphersuites(ctx: *mut context::SslContext, str: *const c_char) -> c_int {
+pub extern "C" fn SSL_CTX_set_ciphersuites(
+    ctx: *mut context::SslContext,
+    str: *const c_char,
+) -> c_int {
     if ctx.is_null() || str.is_null() {
         return 0;
     }
@@ -475,12 +493,14 @@ pub extern "C" fn SSL_CTX_set_ciphersuites(ctx: *mut context::SslContext, str: *
 pub extern "C" fn SSL_CTX_set_verify(
     ctx: *mut context::SslContext,
     mode: c_int,
-    callback: Option<extern "C" fn(c_int, *mut x509::X509StoreCtx) -> c_int>
+    callback: Option<extern "C" fn(c_int, *mut x509::X509StoreCtx) -> c_int>,
 ) {
     if ctx.is_null() {
         return;
     }
-    unsafe { (*ctx).set_verify(mode, callback); }
+    unsafe {
+        (*ctx).set_verify(mode, callback);
+    }
 }
 
 /// Set verification depth
@@ -489,7 +509,9 @@ pub extern "C" fn SSL_CTX_set_verify_depth(ctx: *mut context::SslContext, depth:
     if ctx.is_null() {
         return;
     }
-    unsafe { (*ctx).set_verify_depth(depth as usize); }
+    unsafe {
+        (*ctx).set_verify_depth(depth as usize);
+    }
 }
 
 /// Load certificate file
@@ -497,7 +519,7 @@ pub extern "C" fn SSL_CTX_set_verify_depth(ctx: *mut context::SslContext, depth:
 pub extern "C" fn SSL_CTX_use_certificate_file(
     ctx: *mut context::SslContext,
     file: *const c_char,
-    type_: c_int
+    type_: c_int,
 ) -> c_int {
     if ctx.is_null() || file.is_null() {
         return 0;
@@ -515,7 +537,7 @@ pub extern "C" fn SSL_CTX_use_certificate_file(
 #[no_mangle]
 pub extern "C" fn SSL_CTX_use_certificate_chain_file(
     ctx: *mut context::SslContext,
-    file: *const c_char
+    file: *const c_char,
 ) -> c_int {
     if ctx.is_null() || file.is_null() {
         return 0;
@@ -534,7 +556,7 @@ pub extern "C" fn SSL_CTX_use_certificate_chain_file(
 pub extern "C" fn SSL_CTX_use_PrivateKey_file(
     ctx: *mut context::SslContext,
     file: *const c_char,
-    type_: c_int
+    type_: c_int,
 ) -> c_int {
     if ctx.is_null() || file.is_null() {
         return 0;
@@ -562,12 +584,12 @@ pub extern "C" fn SSL_CTX_check_private_key(ctx: *const context::SslContext) -> 
 pub extern "C" fn SSL_CTX_load_verify_locations(
     ctx: *mut context::SslContext,
     ca_file: *const c_char,
-    ca_path: *const c_char
+    ca_path: *const c_char,
 ) -> c_int {
     if ctx.is_null() {
         return 0;
     }
-    
+
     let file = if ca_file.is_null() {
         None
     } else {
@@ -577,7 +599,7 @@ pub extern "C" fn SSL_CTX_load_verify_locations(
                 .ok()
         }
     };
-    
+
     let path = if ca_path.is_null() {
         None
     } else {
@@ -587,7 +609,7 @@ pub extern "C" fn SSL_CTX_load_verify_locations(
                 .ok()
         }
     };
-    
+
     unsafe { (*ctx).load_verify_locations(file, path) as c_int }
 }
 
@@ -605,7 +627,7 @@ pub extern "C" fn SSL_CTX_set_default_verify_paths(ctx: *mut context::SslContext
 pub extern "C" fn SSL_CTX_set_alpn_protos(
     ctx: *mut context::SslContext,
     protos: *const c_uchar,
-    protos_len: c_uint
+    protos_len: c_uint,
 ) -> c_int {
     if ctx.is_null() || protos.is_null() {
         return 1; // Error
@@ -630,7 +652,7 @@ pub extern "C" fn SSL_new(ctx: *mut context::SslContext) -> *mut connection::Ssl
     if ctx.is_null() {
         return core::ptr::null_mut();
     }
-    
+
     match unsafe { (*ctx).new_ssl() } {
         Ok(ssl) => Box::into_raw(Box::new(ssl)),
         Err(_) => core::ptr::null_mut(),
@@ -641,7 +663,9 @@ pub extern "C" fn SSL_new(ctx: *mut context::SslContext) -> *mut connection::Ssl
 #[no_mangle]
 pub extern "C" fn SSL_free(ssl: *mut connection::SslConnection) {
     if !ssl.is_null() {
-        unsafe { drop(Box::from_raw(ssl)); }
+        unsafe {
+            drop(Box::from_raw(ssl));
+        }
     }
 }
 
@@ -692,7 +716,11 @@ pub extern "C" fn SSL_do_handshake(ssl: *mut connection::SslConnection) -> c_int
 
 /// Read data from SSL connection
 #[no_mangle]
-pub extern "C" fn SSL_read(ssl: *mut connection::SslConnection, buf: *mut c_uchar, num: c_int) -> c_int {
+pub extern "C" fn SSL_read(
+    ssl: *mut connection::SslConnection,
+    buf: *mut c_uchar,
+    num: c_int,
+) -> c_int {
     if ssl.is_null() || buf.is_null() || num <= 0 {
         return -1;
     }
@@ -704,7 +732,11 @@ pub extern "C" fn SSL_read(ssl: *mut connection::SslConnection, buf: *mut c_ucha
 
 /// Write data to SSL connection
 #[no_mangle]
-pub extern "C" fn SSL_write(ssl: *mut connection::SslConnection, buf: *const c_uchar, num: c_int) -> c_int {
+pub extern "C" fn SSL_write(
+    ssl: *mut connection::SslConnection,
+    buf: *const c_uchar,
+    num: c_int,
+) -> c_int {
     if ssl.is_null() || buf.is_null() || num <= 0 {
         return -1;
     }
@@ -752,7 +784,9 @@ pub extern "C" fn SSL_get_version(ssl: *const connection::SslConnection) -> *con
 
 /// Get current cipher
 #[no_mangle]
-pub extern "C" fn SSL_get_current_cipher(ssl: *const connection::SslConnection) -> *const cipher::SslCipher {
+pub extern "C" fn SSL_get_current_cipher(
+    ssl: *const connection::SslConnection,
+) -> *const cipher::SslCipher {
     if ssl.is_null() {
         return core::ptr::null();
     }
@@ -770,7 +804,10 @@ pub extern "C" fn SSL_CIPHER_get_name(cipher: *const cipher::SslCipher) -> *cons
 
 /// Set SNI hostname
 #[no_mangle]
-pub extern "C" fn SSL_set_tlsext_host_name(ssl: *mut connection::SslConnection, name: *const c_char) -> c_int {
+pub extern "C" fn SSL_set_tlsext_host_name(
+    ssl: *mut connection::SslConnection,
+    name: *const c_char,
+) -> c_int {
     if ssl.is_null() || name.is_null() {
         return 0;
     }
@@ -785,7 +822,9 @@ pub extern "C" fn SSL_set_tlsext_host_name(ssl: *mut connection::SslConnection, 
 
 /// Get peer certificate
 #[no_mangle]
-pub extern "C" fn SSL_get_peer_certificate(ssl: *const connection::SslConnection) -> *mut x509::X509 {
+pub extern "C" fn SSL_get_peer_certificate(
+    ssl: *const connection::SslConnection,
+) -> *mut x509::X509 {
     if ssl.is_null() {
         return core::ptr::null_mut();
     }
@@ -807,7 +846,9 @@ pub extern "C" fn SSL_get_verify_result(ssl: *const connection::SslConnection) -
 #[no_mangle]
 pub extern "C" fn SSL_set_connect_state(ssl: *mut connection::SslConnection) {
     if !ssl.is_null() {
-        unsafe { (*ssl).set_connect_state(); }
+        unsafe {
+            (*ssl).set_connect_state();
+        }
     }
 }
 
@@ -815,7 +856,9 @@ pub extern "C" fn SSL_set_connect_state(ssl: *mut connection::SslConnection) {
 #[no_mangle]
 pub extern "C" fn SSL_set_accept_state(ssl: *mut connection::SslConnection) {
     if !ssl.is_null() {
-        unsafe { (*ssl).set_accept_state(); }
+        unsafe {
+            (*ssl).set_accept_state();
+        }
     }
 }
 
@@ -824,7 +867,7 @@ pub extern "C" fn SSL_set_accept_state(ssl: *mut connection::SslConnection) {
 pub extern "C" fn SSL_get0_alpn_selected(
     ssl: *const connection::SslConnection,
     data: *mut *const c_uchar,
-    len: *mut c_uint
+    len: *mut c_uint,
 ) {
     if ssl.is_null() || data.is_null() || len.is_null() {
         return;
@@ -847,7 +890,9 @@ pub extern "C" fn SSL_session_reused(ssl: *const connection::SslConnection) -> c
 
 /// Get session
 #[no_mangle]
-pub extern "C" fn SSL_get_session(ssl: *const connection::SslConnection) -> *mut session::SslSession {
+pub extern "C" fn SSL_get_session(
+    ssl: *const connection::SslConnection,
+) -> *mut session::SslSession {
     if ssl.is_null() {
         return core::ptr::null_mut();
     }
@@ -856,7 +901,10 @@ pub extern "C" fn SSL_get_session(ssl: *const connection::SslConnection) -> *mut
 
 /// Set session
 #[no_mangle]
-pub extern "C" fn SSL_set_session(ssl: *mut connection::SslConnection, session: *mut session::SslSession) -> c_int {
+pub extern "C" fn SSL_set_session(
+    ssl: *mut connection::SslConnection,
+    session: *mut session::SslSession,
+) -> c_int {
     if ssl.is_null() {
         return 0;
     }
@@ -923,9 +971,15 @@ pub extern "C" fn BIO_write(bio: *mut bio::Bio, buf: *const c_uchar, len: c_int)
 
 /// Set SSL for BIO
 #[no_mangle]
-pub extern "C" fn SSL_set_bio(ssl: *mut connection::SslConnection, rbio: *mut bio::Bio, wbio: *mut bio::Bio) {
+pub extern "C" fn SSL_set_bio(
+    ssl: *mut connection::SslConnection,
+    rbio: *mut bio::Bio,
+    wbio: *mut bio::Bio,
+) {
     if !ssl.is_null() {
-        unsafe { (*ssl).set_bio(rbio, wbio); }
+        unsafe {
+            (*ssl).set_bio(rbio, wbio);
+        }
     }
 }
 
@@ -962,7 +1016,7 @@ pub extern "C" fn X509_get_issuer_name(x509: *const x509::X509) -> *mut x509::X5
 pub extern "C" fn X509_NAME_oneline(
     name: *const x509::X509Name,
     buf: *mut c_char,
-    size: c_int
+    size: c_int,
 ) -> *mut c_char {
     x509::X509Name::oneline(name, buf, size)
 }

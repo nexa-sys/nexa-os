@@ -102,7 +102,7 @@ impl GlyphOutline {
 }
 
 /// Parsed TTF font
-/// 
+///
 /// Uses borrowed static data from vmalloc to avoid copying large font files.
 /// The data must live for 'static lifetime (typically from read_file_bytes).
 pub struct TtfFont {
@@ -119,7 +119,7 @@ pub struct TtfFont {
 
 impl TtfFont {
     /// Parse a TTF font from raw bytes
-    /// 
+    ///
     /// The data must have 'static lifetime (e.g., from vmalloc-backed read_file_bytes).
     /// This avoids copying large font files (~8MB) into a new Vec.
     pub fn parse(data: &'static [u8]) -> Result<Self, TtfError> {
@@ -143,7 +143,12 @@ impl TtfFont {
                 return Err(TtfError::BufferTooSmall);
             }
 
-            let tag = [data[offset], data[offset + 1], data[offset + 2], data[offset + 3]];
+            let tag = [
+                data[offset],
+                data[offset + 1],
+                data[offset + 2],
+                data[offset + 3],
+            ];
             let checksum = read_u32_be(data, offset + 4);
             let table_offset = read_u32_be(data, offset + 8);
             let length = read_u32_be(data, offset + 12);

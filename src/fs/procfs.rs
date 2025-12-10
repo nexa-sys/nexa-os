@@ -293,7 +293,7 @@ pub fn generate_meminfo() -> (&'static [u8], usize) {
 
     // Get real memory statistics from the kernel heap
     let (heap_stats, buddy_stats, slab_stats) = mm::get_memory_stats();
-    
+
     // Get total physical memory from bootloader detection
     let total_phys_bytes = mm::get_total_physical_memory();
     let total_kb = total_phys_bytes / 1024;
@@ -305,7 +305,9 @@ pub fn generate_meminfo() -> (&'static [u8], usize) {
     // Free memory = total physical - used by buddy allocator - kernel overhead
     // Estimate kernel overhead at ~16MB
     let kernel_overhead_kb: u64 = 16 * 1024;
-    let free_kb = total_kb.saturating_sub(buddy_used_kb).saturating_sub(kernel_overhead_kb);
+    let free_kb = total_kb
+        .saturating_sub(buddy_used_kb)
+        .saturating_sub(kernel_overhead_kb);
     let used_kb = total_kb.saturating_sub(free_kb);
 
     // Heap usage from HeapStats
@@ -506,10 +508,10 @@ pub fn generate_mounts() -> (&'static [u8], usize) {
     // Add mounts tracked by fstab module
     for mount in crate::fs::fstab_get_mounts() {
         // Skip already-handled pseudo-filesystems
-        if mount.mount_point == "/" 
-            || mount.mount_point == "/proc" 
-            || mount.mount_point == "/sys" 
-            || mount.mount_point == "/dev" 
+        if mount.mount_point == "/"
+            || mount.mount_point == "/proc"
+            || mount.mount_point == "/sys"
+            || mount.mount_point == "/dev"
         {
             continue;
         }
@@ -673,8 +675,8 @@ pub fn generate_pid_maps(pid: Pid) -> Option<(&'static [u8], usize)> {
 
     // Try to get VMA information from the new VMA system
     // TODO: When VMA is fully integrated, use AddressSpace::iter()
-    
-    use crate::process::{STACK_BASE, STACK_SIZE, USER_VIRT_BASE, INTERP_BASE};
+
+    use crate::process::{INTERP_BASE, STACK_BASE, STACK_SIZE, USER_VIRT_BASE};
 
     // Code segment (from entry point)
     let code_end = process.heap_start;
@@ -703,7 +705,8 @@ pub fn generate_pid_maps(pid: Pid) -> Option<(&'static [u8], usize)> {
         let _ = writeln!(
             writer,
             "{:016x}-{:016x} r-xp 00000000 00:00 0                    [ld-nrlib]",
-            INTERP_BASE, INTERP_BASE + 0x100000
+            INTERP_BASE,
+            INTERP_BASE + 0x100000
         );
     }
 
@@ -737,16 +740,19 @@ pub fn generate_swaps() -> (&'static [u8], usize) {
     if let Some(info) = crate::mm::swap::get_swap_info() {
         // Get path as string
         let path = core::str::from_utf8(&info.path[..info.path_len]).unwrap_or("/dev/swap0");
-        let swap_type = core::str::from_utf8(&info.swap_type[..info.swap_type.iter().position(|&c| c == 0).unwrap_or(info.swap_type.len())]).unwrap_or("partition");
-        
+        let swap_type = core::str::from_utf8(
+            &info.swap_type[..info
+                .swap_type
+                .iter()
+                .position(|&c| c == 0)
+                .unwrap_or(info.swap_type.len())],
+        )
+        .unwrap_or("partition");
+
         let _ = writeln!(
             writer,
             "{}\t\t\t\t{}\t\t{}\t\t{}\t\t{}",
-            path,
-            swap_type,
-            info.size_kb,
-            info.used_kb,
-            info.priority
+            path, swap_type, info.size_kb, info.used_kb, info.priority
         );
     }
 

@@ -2,8 +2,8 @@
 //!
 //! Implements key exchange algorithms for TLS.
 
-use std::vec::Vec;
 use crate::tls::NamedGroup;
+use std::vec::Vec;
 
 /// Key exchange context
 pub struct KeyExchange {
@@ -48,15 +48,11 @@ impl KeyExchange {
     /// Compute shared secret with peer's public key
     pub fn compute_shared_secret(&mut self, peer_public: &[u8]) -> Option<&[u8]> {
         let secret = match self.group {
-            NamedGroup::X25519 => {
-                x25519_shared_secret(&self.private_key, peer_public)
-            }
-            NamedGroup::Secp256r1 => {
-                p256_shared_secret(&self.private_key, peer_public)
-            }
+            NamedGroup::X25519 => x25519_shared_secret(&self.private_key, peer_public),
+            NamedGroup::Secp256r1 => p256_shared_secret(&self.private_key, peer_public),
             _ => return None,
         };
-        
+
         self.shared_secret = secret;
         self.shared_secret.as_deref()
     }
@@ -76,15 +72,15 @@ impl KeyExchange {
 fn generate_x25519_keypair() -> (Vec<u8>, Vec<u8>) {
     let mut private = [0u8; 32];
     let _ = crate::ncryptolib::getrandom(&mut private, 0);
-    
+
     // Clamp private key per RFC 7748
     private[0] &= 248;
     private[31] &= 127;
     private[31] |= 64;
-    
+
     // Compute public key
     let public = crate::ncryptolib::x25519::x25519_base(&private);
-    
+
     (private.to_vec(), public.to_vec())
 }
 
@@ -103,13 +99,13 @@ fn x25519_shared_secret(private: &[u8], peer_public: &[u8]) -> Option<Vec<u8>> {
     if private.len() != 32 || peer_public.len() != 32 {
         return None;
     }
-    
+
     let mut priv_arr = [0u8; 32];
     priv_arr.copy_from_slice(private);
-    
+
     let mut pub_arr = [0u8; 32];
     pub_arr.copy_from_slice(peer_public);
-    
+
     Some(crate::ncryptolib::x25519::x25519(&priv_arr, &pub_arr).to_vec())
 }
 
@@ -118,7 +114,7 @@ fn p256_shared_secret(private: &[u8], peer_public: &[u8]) -> Option<Vec<u8>> {
     if private.len() != 32 {
         return None;
     }
-    
+
     // Parse peer's public key (uncompressed format: 04 || x || y)
     let peer_point = if peer_public.len() == 65 && peer_public[0] == 0x04 {
         crate::ncryptolib::p256::P256Point::from_uncompressed(peer_public)?
@@ -131,15 +127,15 @@ fn p256_shared_secret(private: &[u8], peer_public: &[u8]) -> Option<Vec<u8>> {
     } else {
         return None;
     };
-    
+
     // Create key pair from private key
     let mut priv_arr = [0u8; 32];
     priv_arr.copy_from_slice(private);
     let keypair = crate::ncryptolib::p256::P256KeyPair::from_private_key(&priv_arr)?;
-    
+
     // Compute ECDH shared secret - returns x-coordinate directly
     let shared_secret = keypair.ecdh(&peer_point)?;
-    
+
     // Return shared secret (x-coordinate)
     Some(shared_secret.to_vec())
 }
@@ -151,36 +147,36 @@ pub fn derive_tls13_keys(
     is_handshake: bool,
 ) -> Option<DerivedKeys> {
     // TLS 1.3 key schedule (RFC 8446 Section 7.1)
-    
+
     // Early secret
     let early_secret = hkdf_extract(&[0u8; 32], &[0u8; 32]);
-    
+
     // Derive handshake secret
     let derived = hkdf_expand_label(&early_secret, b"derived", &[], 32);
     let handshake_secret = hkdf_extract(&derived, shared_secret);
-    
+
     let label_prefix = if is_handshake { b"hs" } else { b"ap" };
-    
+
     // Client traffic secret
     let mut client_label = Vec::new();
     client_label.extend_from_slice(b"c ");
     client_label.extend_from_slice(label_prefix);
     client_label.extend_from_slice(b" traffic");
     let client_secret = hkdf_expand_label(&handshake_secret, &client_label, transcript_hash, 32);
-    
+
     // Server traffic secret
     let mut server_label = Vec::new();
     server_label.extend_from_slice(b"s ");
     server_label.extend_from_slice(label_prefix);
     server_label.extend_from_slice(b" traffic");
     let server_secret = hkdf_expand_label(&handshake_secret, &server_label, transcript_hash, 32);
-    
+
     // Derive actual keys and IVs
     let client_key = hkdf_expand_label(&client_secret, b"key", &[], 32);
     let client_iv = hkdf_expand_label(&client_secret, b"iv", &[], 12);
     let server_key = hkdf_expand_label(&server_secret, b"key", &[], 32);
     let server_iv = hkdf_expand_label(&server_secret, b"iv", &[], 12);
-    
+
     Some(DerivedKeys {
         client_key,
         client_iv,
@@ -200,7 +196,7 @@ pub fn derive_tls13_handshake_keys(
     // key_len == 16 (AES-128-GCM) uses SHA-256
     let use_sha384 = key_len == 32;
     let hash_len = if use_sha384 { 48 } else { 32 };
-    
+
     // 1. Early secret: HKDF-Extract(salt=0, IKM=0) for no PSK
     let early_secret = if use_sha384 {
         let zero_key = [0u8; 48];
@@ -209,7 +205,7 @@ pub fn derive_tls13_handshake_keys(
         let zero_key = [0u8; 32];
         hkdf_extract(&zero_key, &zero_key)
     };
-    
+
     // 2. Derive-Secret(early_secret, "derived", "")
     let (empty_hash, derived_early) = if use_sha384 {
         let h = crate::ncryptolib::sha384(&[]);
@@ -220,28 +216,48 @@ pub fn derive_tls13_handshake_keys(
         let d = hkdf_expand_label(&early_secret, b"derived", &h, hash_len);
         (h.to_vec(), d)
     };
-    
+
     // 3. Handshake secret: HKDF-Extract(derived_early, shared_secret)
     let handshake_secret = if use_sha384 {
         hkdf_extract_sha384(&derived_early, shared_secret)
     } else {
         hkdf_extract(&derived_early, shared_secret)
     };
-    
+
     // 4. Client handshake traffic secret
     let client_hs_secret = if use_sha384 {
-        hkdf_expand_label_sha384(&handshake_secret, b"c hs traffic", transcript_hash, hash_len)
+        hkdf_expand_label_sha384(
+            &handshake_secret,
+            b"c hs traffic",
+            transcript_hash,
+            hash_len,
+        )
     } else {
-        hkdf_expand_label(&handshake_secret, b"c hs traffic", transcript_hash, hash_len)
+        hkdf_expand_label(
+            &handshake_secret,
+            b"c hs traffic",
+            transcript_hash,
+            hash_len,
+        )
     };
-    
+
     // 5. Server handshake traffic secret
     let server_hs_secret = if use_sha384 {
-        hkdf_expand_label_sha384(&handshake_secret, b"s hs traffic", transcript_hash, hash_len)
+        hkdf_expand_label_sha384(
+            &handshake_secret,
+            b"s hs traffic",
+            transcript_hash,
+            hash_len,
+        )
     } else {
-        hkdf_expand_label(&handshake_secret, b"s hs traffic", transcript_hash, hash_len)
+        hkdf_expand_label(
+            &handshake_secret,
+            b"s hs traffic",
+            transcript_hash,
+            hash_len,
+        )
     };
-    
+
     // 6. Derive keys and IVs (key_len depends on cipher suite)
     let (client_key, client_iv, server_key, server_iv) = if use_sha384 {
         (
@@ -258,19 +274,22 @@ pub fn derive_tls13_handshake_keys(
             hkdf_expand_label(&server_hs_secret, b"iv", &[], 12),
         )
     };
-    
+
     let hs_secrets = HandshakeSecrets {
         handshake_secret: handshake_secret.clone(),
         client_hs_traffic_secret: client_hs_secret,
         server_hs_traffic_secret: server_hs_secret,
     };
-    
-    Some((hs_secrets, DerivedKeys {
-        client_key,
-        client_iv,
-        server_key,
-        server_iv,
-    }))
+
+    Some((
+        hs_secrets,
+        DerivedKeys {
+            client_key,
+            client_iv,
+            server_key,
+            server_iv,
+        },
+    ))
 }
 
 /// Derive TLS 1.3 application keys from handshake secret
@@ -283,7 +302,7 @@ pub fn derive_tls13_application_keys(
     // key_len == 16 (AES-128-GCM) uses SHA-256
     let use_sha384 = key_len == 32;
     let hash_len = if use_sha384 { 48 } else { 32 };
-    
+
     // 1. Derive-Secret(handshake_secret, "derived", "")
     let derived_hs = if use_sha384 {
         let empty_hash = crate::ncryptolib::sha384(&[]);
@@ -292,7 +311,7 @@ pub fn derive_tls13_application_keys(
         let empty_hash = crate::ncryptolib::sha256(&[]);
         hkdf_expand_label(handshake_secret, b"derived", &empty_hash, hash_len)
     };
-    
+
     // 2. Master secret: HKDF-Extract(derived_hs, 0)
     let master_secret = if use_sha384 {
         let zero_key = [0u8; 48];
@@ -301,21 +320,21 @@ pub fn derive_tls13_application_keys(
         let zero_key = [0u8; 32];
         hkdf_extract(&derived_hs, &zero_key)
     };
-    
+
     // 3. Client application traffic secret
     let client_app_secret = if use_sha384 {
         hkdf_expand_label_sha384(&master_secret, b"c ap traffic", transcript_hash, hash_len)
     } else {
         hkdf_expand_label(&master_secret, b"c ap traffic", transcript_hash, hash_len)
     };
-    
+
     // 4. Server application traffic secret
     let server_app_secret = if use_sha384 {
         hkdf_expand_label_sha384(&master_secret, b"s ap traffic", transcript_hash, hash_len)
     } else {
         hkdf_expand_label(&master_secret, b"s ap traffic", transcript_hash, hash_len)
     };
-    
+
     // 5. Derive keys and IVs (key_len depends on cipher suite)
     let (client_key, client_iv, server_key, server_iv) = if use_sha384 {
         (
@@ -332,7 +351,7 @@ pub fn derive_tls13_application_keys(
             hkdf_expand_label(&server_app_secret, b"iv", &[], 12),
         )
     };
-    
+
     Some(DerivedKeys {
         client_key,
         client_iv,
@@ -367,20 +386,20 @@ pub fn derive_tls12_keys(
     iv_len: usize,
 ) -> Option<DerivedKeys> {
     // TLS 1.2 PRF (RFC 5246 Section 5)
-    
+
     // master_secret = PRF(pre_master_secret, "master secret", ClientHello.random + ServerHello.random)
     let mut seed = Vec::new();
     seed.extend_from_slice(client_random);
     seed.extend_from_slice(server_random);
     let master_secret = prf_sha256(pre_master_secret, b"master secret", &seed, 48);
-    
+
     // key_block = PRF(master_secret, "key expansion", server_random + client_random)
     let mut key_seed = Vec::new();
     key_seed.extend_from_slice(server_random);
     key_seed.extend_from_slice(client_random);
     let key_block_len = 2 * (key_len + iv_len);
     let key_block = prf_sha256(&master_secret, b"key expansion", &key_seed, key_block_len);
-    
+
     // Split key block
     let mut offset = 0;
     let client_key = key_block[offset..offset + key_len].to_vec();
@@ -390,7 +409,7 @@ pub fn derive_tls12_keys(
     let client_iv = key_block[offset..offset + iv_len].to_vec();
     offset += iv_len;
     let server_iv = key_block[offset..offset + iv_len].to_vec();
-    
+
     Some(DerivedKeys {
         client_key,
         client_iv,
@@ -432,23 +451,23 @@ pub fn hkdf_expand_label(secret: &[u8], label: &[u8], context: &[u8], length: us
     //   opaque label<7..255> = "tls13 " + Label;
     //   opaque context<0..255> = Context;
     // };
-    
+
     let mut hkdf_label = Vec::new();
-    
+
     // Length (2 bytes)
     hkdf_label.push((length >> 8) as u8);
     hkdf_label.push((length & 0xFF) as u8);
-    
+
     // Label with "tls13 " prefix
     let full_label_len = 6 + label.len();
     hkdf_label.push(full_label_len as u8);
     hkdf_label.extend_from_slice(b"tls13 ");
     hkdf_label.extend_from_slice(label);
-    
+
     // Context
     hkdf_label.push(context.len() as u8);
     hkdf_label.extend_from_slice(context);
-    
+
     // HKDF-Expand
     hkdf_expand(secret, &hkdf_label, length)
 }
@@ -457,19 +476,19 @@ pub fn hkdf_expand_label(secret: &[u8], label: &[u8], context: &[u8], length: us
 fn hkdf_expand(prk: &[u8], info: &[u8], length: usize) -> Vec<u8> {
     let hash_len = 32; // SHA-256
     let n = (length + hash_len - 1) / hash_len;
-    
+
     let mut okm = Vec::new();
     let mut t = Vec::new();
-    
+
     for i in 1..=n {
         let mut data = t.clone();
         data.extend_from_slice(info);
         data.push(i as u8);
-        
+
         t = crate::ncryptolib::hmac_sha256(prk, &data).to_vec();
         okm.extend_from_slice(&t);
     }
-    
+
     okm.truncate(length);
     okm
 }
@@ -478,41 +497,46 @@ fn hkdf_expand(prk: &[u8], info: &[u8], length: usize) -> Vec<u8> {
 fn hkdf_expand_sha384(prk: &[u8], info: &[u8], length: usize) -> Vec<u8> {
     let hash_len = 48; // SHA-384
     let n = (length + hash_len - 1) / hash_len;
-    
+
     let mut okm = Vec::new();
     let mut t = Vec::new();
-    
+
     for i in 1..=n {
         let mut data = t.clone();
         data.extend_from_slice(info);
         data.push(i as u8);
-        
+
         t = crate::ncryptolib::hmac_sha384(prk, &data).to_vec();
         okm.extend_from_slice(&t);
     }
-    
+
     okm.truncate(length);
     okm
 }
 
 /// HKDF-Expand-Label with SHA-384
-pub fn hkdf_expand_label_sha384(secret: &[u8], label: &[u8], context: &[u8], length: usize) -> Vec<u8> {
+pub fn hkdf_expand_label_sha384(
+    secret: &[u8],
+    label: &[u8],
+    context: &[u8],
+    length: usize,
+) -> Vec<u8> {
     let mut hkdf_label = Vec::new();
-    
+
     // Length (2 bytes)
     hkdf_label.push((length >> 8) as u8);
     hkdf_label.push((length & 0xFF) as u8);
-    
+
     // Label with "tls13 " prefix
     let full_label_len = 6 + label.len();
     hkdf_label.push(full_label_len as u8);
     hkdf_label.extend_from_slice(b"tls13 ");
     hkdf_label.extend_from_slice(label);
-    
+
     // Context
     hkdf_label.push(context.len() as u8);
     hkdf_label.extend_from_slice(context);
-    
+
     // HKDF-Expand with SHA-384
     hkdf_expand_sha384(secret, &hkdf_label, length)
 }
@@ -523,14 +547,14 @@ fn prf_sha256(secret: &[u8], label: &[u8], seed: &[u8], length: usize) -> Vec<u8
     //                          HMAC_SHA256(secret, A(2) + seed) + ...
     // A(0) = seed
     // A(i) = HMAC_SHA256(secret, A(i-1))
-    
+
     let mut full_seed = Vec::new();
     full_seed.extend_from_slice(label);
     full_seed.extend_from_slice(seed);
-    
+
     let mut result = Vec::new();
     let mut a = crate::ncryptolib::hmac_sha256(secret, &full_seed).to_vec();
-    
+
     while result.len() < length {
         let mut data = a.clone();
         data.extend_from_slice(&full_seed);
@@ -538,7 +562,7 @@ fn prf_sha256(secret: &[u8], label: &[u8], seed: &[u8], length: usize) -> Vec<u8
         result.extend_from_slice(&p);
         a = crate::ncryptolib::hmac_sha256(secret, &a).to_vec();
     }
-    
+
     result.truncate(length);
     result
 }

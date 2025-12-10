@@ -23,18 +23,18 @@ fn print_usage() {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    
+
     let mut ignore_env = false;
     let mut null_terminated = false;
     let mut unset_vars: Vec<String> = Vec::new();
     let mut set_vars: Vec<(String, String)> = Vec::new();
     let mut command_args: Vec<&str> = Vec::new();
     let mut parsing_options = true;
-    
+
     let mut i = 1;
     while i < args.len() {
         let arg = &args[i];
-        
+
         if parsing_options {
             if arg == "-h" || arg == "--help" {
                 print_usage();
@@ -77,7 +77,7 @@ fn main() {
     // If no command, just print environment
     if command_args.is_empty() {
         let terminator = if null_terminated { '\0' } else { '\n' };
-        
+
         if ignore_env {
             // Only print set_vars
             for (name, value) in &set_vars {
@@ -90,13 +90,14 @@ fn main() {
                     continue;
                 }
                 // Check if overridden
-                let final_value = set_vars.iter()
+                let final_value = set_vars
+                    .iter()
                     .find(|(k, _)| k == &key)
                     .map(|(_, v)| v.as_str())
                     .unwrap_or(&value);
                 print!("{}={}{}", key, final_value, terminator);
             }
-            
+
             // Print new variables
             for (name, value) in &set_vars {
                 if env::var(name).is_err() {
@@ -110,7 +111,7 @@ fn main() {
     // Execute command with modified environment
     let program = command_args[0];
     let mut cmd = Command::new(program);
-    
+
     if ignore_env {
         cmd.env_clear();
     } else {
@@ -119,15 +120,15 @@ fn main() {
             cmd.env_remove(var);
         }
     }
-    
+
     // Set new variables
     for (name, value) in &set_vars {
         cmd.env(name, value);
     }
-    
+
     // Add command arguments
     cmd.args(&command_args[1..]);
-    
+
     // Execute
     match cmd.status() {
         Ok(status) => {
@@ -135,7 +136,11 @@ fn main() {
         }
         Err(e) => {
             eprintln!("env: {}: {}", program, e);
-            process::exit(if e.kind() == std::io::ErrorKind::NotFound { 127 } else { 126 });
+            process::exit(if e.kind() == std::io::ErrorKind::NotFound {
+                127
+            } else {
+                126
+            });
         }
     }
 }

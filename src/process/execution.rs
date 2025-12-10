@@ -66,7 +66,7 @@ impl Process {
             // CRITICAL: Switch CR3 and return to userspace atomically
             // We must switch CR3 in the same assembly block that does sysretq
             // to avoid accessing kernel stack after address space switch
-            // 
+            //
             // IMPORTANT: Restore CALLEE-SAVED registers (RBX, RBP, R12-R15) from context
             // These are the registers that the compiler expects to be preserved across
             // the fork() syscall. The caller-saved registers (RDI, RSI, etc.) don't need

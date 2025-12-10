@@ -28,7 +28,7 @@ fn head_lines(path: &str, num_lines: usize) -> io::Result<()> {
     let reader = BufReader::new(file);
     let mut stdout = io::stdout();
     let mut count = 0;
-    
+
     for line in reader.lines() {
         if count >= num_lines {
             break;
@@ -37,7 +37,7 @@ fn head_lines(path: &str, num_lines: usize) -> io::Result<()> {
         writeln!(stdout, "{}", line)?;
         count += 1;
     }
-    
+
     stdout.flush()?;
     Ok(())
 }
@@ -48,7 +48,7 @@ fn head_bytes(path: &str, num_bytes: usize) -> io::Result<()> {
     let mut stdout = io::stdout();
     let mut buffer = vec![0u8; num_bytes.min(4096)];
     let mut remaining = num_bytes;
-    
+
     while remaining > 0 {
         let to_read = remaining.min(buffer.len());
         let mut slice = &mut buffer[..to_read];
@@ -62,14 +62,14 @@ fn head_bytes(path: &str, num_bytes: usize) -> io::Result<()> {
             Err(e) => return Err(e),
         }
     }
-    
+
     stdout.flush()?;
     Ok(())
 }
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    
+
     if args.len() < 2 {
         print_usage();
         process::exit(1);
@@ -81,10 +81,10 @@ fn main() {
     let mut verbose = false;
     let mut files: Vec<&str> = Vec::new();
     let mut i = 1;
-    
+
     while i < args.len() {
         let arg = &args[i];
-        
+
         if arg == "-h" || arg == "--help" {
             print_usage();
             process::exit(0);
@@ -147,7 +147,7 @@ fn main() {
         } else {
             files.push(arg);
         }
-        
+
         i += 1;
     }
 
@@ -166,7 +166,7 @@ fn main() {
 
     let mut exit_code = 0;
     let mut first = true;
-    
+
     for file in &files {
         if show_headers {
             if !first {
@@ -175,13 +175,13 @@ fn main() {
             println!("==> {} <==", file);
         }
         first = false;
-        
+
         let result = if let Some(bytes) = num_bytes {
             head_bytes(file, bytes)
         } else {
             head_lines(file, num_lines.unwrap_or(DEFAULT_LINES))
         };
-        
+
         if let Err(e) = result {
             eprintln!("head: cannot open '{}' for reading: {}", file, e);
             exit_code = 1;

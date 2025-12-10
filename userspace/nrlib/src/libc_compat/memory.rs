@@ -9,8 +9,7 @@ use super::types::MAP_FAILED;
 
 // Re-export constants
 pub use super::types::{
-    MAP_SHARED, MAP_PRIVATE, MAP_FIXED, MAP_ANONYMOUS, MAP_ANON,
-    MAP_NORESERVE, MAP_POPULATE,
+    MAP_ANON, MAP_ANONYMOUS, MAP_FIXED, MAP_NORESERVE, MAP_POPULATE, MAP_PRIVATE, MAP_SHARED,
 };
 
 /// Trace function entry (logs to stderr)
@@ -81,7 +80,7 @@ pub unsafe extern "C" fn mmap(
         fd as i64 as u64,
         offset as u64,
     );
-    
+
     if ret == u64::MAX {
         crate::refresh_errno_from_kernel();
         MAP_FAILED
@@ -108,7 +107,7 @@ pub unsafe extern "C" fn mmap64(
 #[no_mangle]
 pub unsafe extern "C" fn munmap(addr: *mut c_void, length: size_t) -> c_int {
     let ret = crate::syscall2(crate::SYS_MUNMAP, addr as u64, length as u64);
-    
+
     if ret == u64::MAX {
         crate::refresh_errno_from_kernel();
         -1
@@ -122,7 +121,7 @@ pub unsafe extern "C" fn munmap(addr: *mut c_void, length: size_t) -> c_int {
 #[no_mangle]
 pub unsafe extern "C" fn mprotect(addr: *mut c_void, len: size_t, prot: c_int) -> c_int {
     let ret = crate::syscall3(crate::SYS_MPROTECT, addr as u64, len as u64, prot as u64);
-    
+
     if ret == u64::MAX {
         crate::refresh_errno_from_kernel();
         -1
@@ -137,7 +136,7 @@ pub unsafe extern "C" fn mprotect(addr: *mut c_void, len: size_t, prot: c_int) -
 #[no_mangle]
 pub unsafe extern "C" fn brk(addr: *mut c_void) -> c_int {
     let ret = crate::syscall1(crate::SYS_BRK, addr as u64);
-    
+
     if ret == addr as u64 {
         crate::set_errno(0);
         0
@@ -162,20 +161,20 @@ pub unsafe extern "C" fn sbrk(increment: isize) -> *mut c_void {
         }
         CURRENT_BRK = ret as *mut c_void;
     }
-    
+
     let old_brk = CURRENT_BRK;
-    
+
     if increment == 0 {
         return old_brk;
     }
-    
+
     // Calculate new break
     let new_brk = if increment > 0 {
         (old_brk as usize).checked_add(increment as usize)
     } else {
         (old_brk as usize).checked_sub((-increment) as usize)
     };
-    
+
     let new_brk = match new_brk {
         Some(addr) => addr as *mut c_void,
         None => {
@@ -183,10 +182,10 @@ pub unsafe extern "C" fn sbrk(increment: isize) -> *mut c_void {
             return (-1isize) as *mut c_void;
         }
     };
-    
+
     // Request new break
     let ret = crate::syscall1(crate::SYS_BRK, new_brk as u64);
-    
+
     if ret == new_brk as u64 {
         CURRENT_BRK = new_brk;
         crate::set_errno(0);

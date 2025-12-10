@@ -24,42 +24,32 @@ pub const P256_PUBLIC_KEY_SIZE: usize = 65;
 
 /// Field prime p = 2^256 - 2^224 + 2^192 + 2^96 - 1
 const P_BYTES: [u8; 32] = [
-    0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x01,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff,
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
 ];
 
 /// Curve order n
 const N_BYTES: [u8; 32] = [
-    0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00,
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-    0xbc, 0xe6, 0xfa, 0xad, 0xa7, 0x17, 0x9e, 0x84,
-    0xf3, 0xb9, 0xca, 0xc2, 0xfc, 0x63, 0x25, 0x51,
+    0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xbc, 0xe6, 0xfa, 0xad, 0xa7, 0x17, 0x9e, 0x84, 0xf3, 0xb9, 0xca, 0xc2, 0xfc, 0x63, 0x25, 0x51,
 ];
 
 /// Generator point Gx
 const GX_BYTES: [u8; 32] = [
-    0x6b, 0x17, 0xd1, 0xf2, 0xe1, 0x2c, 0x42, 0x47,
-    0xf8, 0xbc, 0xe6, 0xe5, 0x63, 0xa4, 0x40, 0xf2,
-    0x77, 0x03, 0x7d, 0x81, 0x2d, 0xeb, 0x33, 0xa0,
-    0xf4, 0xa1, 0x39, 0x45, 0xd8, 0x98, 0xc2, 0x96,
+    0x6b, 0x17, 0xd1, 0xf2, 0xe1, 0x2c, 0x42, 0x47, 0xf8, 0xbc, 0xe6, 0xe5, 0x63, 0xa4, 0x40, 0xf2,
+    0x77, 0x03, 0x7d, 0x81, 0x2d, 0xeb, 0x33, 0xa0, 0xf4, 0xa1, 0x39, 0x45, 0xd8, 0x98, 0xc2, 0x96,
 ];
 
 /// Generator point Gy
 const GY_BYTES: [u8; 32] = [
-    0x4f, 0xe3, 0x42, 0xe2, 0xfe, 0x1a, 0x7f, 0x9b,
-    0x8e, 0xe7, 0xeb, 0x4a, 0x7c, 0x0f, 0x9e, 0x16,
-    0x2b, 0xce, 0x33, 0x57, 0x6b, 0x31, 0x5e, 0xce,
-    0xcb, 0xb6, 0x40, 0x68, 0x37, 0xbf, 0x51, 0xf5,
+    0x4f, 0xe3, 0x42, 0xe2, 0xfe, 0x1a, 0x7f, 0x9b, 0x8e, 0xe7, 0xeb, 0x4a, 0x7c, 0x0f, 0x9e, 0x16,
+    0x2b, 0xce, 0x33, 0x57, 0x6b, 0x31, 0x5e, 0xce, 0xcb, 0xb6, 0x40, 0x68, 0x37, 0xbf, 0x51, 0xf5,
 ];
 
 /// Curve parameter a = -3 mod p (in Montgomery form this is p - 3)
 const A_BYTES: [u8; 32] = [
-    0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x01,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff,
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfc,
+    0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfc,
 ];
 
 // ============================================================================
@@ -74,11 +64,15 @@ struct FieldElement {
 
 impl FieldElement {
     fn zero() -> Self {
-        Self { value: BigInt::zero() }
+        Self {
+            value: BigInt::zero(),
+        }
     }
 
     fn one() -> Self {
-        Self { value: BigInt::one() }
+        Self {
+            value: BigInt::one(),
+        }
     }
 
     fn p() -> BigInt {
@@ -167,10 +161,10 @@ impl FieldElement {
         if self.is_zero() {
             return None;
         }
-        
+
         let p = Self::p();
         let p_minus_2 = p.sub(&BigInt::from_u64(2));
-        
+
         Some(Self {
             value: mod_exp(&self.value, &p_minus_2, &p),
         })
@@ -287,7 +281,11 @@ impl JacobianPoint {
         let gamma_sq8 = gamma_sq.mul_small(8);
         let y3 = alpha.mul(&beta4.sub(&x3)).sub(&gamma_sq8);
 
-        Self { x: x3, y: y3, z: z3 }
+        Self {
+            x: x3,
+            y: y3,
+            z: z3,
+        }
     }
 
     /// Point addition in Jacobian coordinates (mixed: Jacobian + Affine)
@@ -340,7 +338,11 @@ impl JacobianPoint {
         // Z3 = Z1·H
         let z3 = self.z.mul(&h);
 
-        Self { x: x3, y: y3, z: z3 }
+        Self {
+            x: x3,
+            y: y3,
+            z: z3,
+        }
     }
 
     /// Full Jacobian addition (both points in Jacobian coordinates)
@@ -393,7 +395,11 @@ impl JacobianPoint {
         // Z3 = Z1·Z2·H
         let z3 = self.z.mul(&other.z).mul(&h);
 
-        Self { x: x3, y: y3, z: z3 }
+        Self {
+            x: x3,
+            y: y3,
+            z: z3,
+        }
     }
 }
 
@@ -432,18 +438,18 @@ impl P256Point {
     pub fn from_affine(x: &[u8], y: &[u8]) -> Option<Self> {
         let x_fe = FieldElement::from_bytes(x)?;
         let y_fe = FieldElement::from_bytes(y)?;
-        
+
         let point = Self {
             x: x_fe,
             y: y_fe,
             infinity: false,
         };
-        
+
         // Verify point is on curve
         if !point.is_on_curve() {
             return None;
         }
-        
+
         Some(point)
     }
 
@@ -460,7 +466,7 @@ impl P256Point {
         if self.infinity {
             return vec![0];
         }
-        
+
         let mut result = Vec::with_capacity(65);
         result.push(0x04);
         result.extend_from_slice(&self.x.to_bytes());
@@ -476,11 +482,11 @@ impl P256Point {
 
         let a = FieldElement::from_bytes(&A_BYTES).unwrap();
         let b = FieldElement::from_bytes(&[
-            0x5a, 0xc6, 0x35, 0xd8, 0xaa, 0x3a, 0x93, 0xe7,
-            0xb3, 0xeb, 0xbd, 0x55, 0x76, 0x98, 0x86, 0xbc,
-            0x65, 0x1d, 0x06, 0xb0, 0xcc, 0x53, 0xb0, 0xf6,
-            0x3b, 0xce, 0x3c, 0x3e, 0x27, 0xd2, 0x60, 0x4b,
-        ]).unwrap();
+            0x5a, 0xc6, 0x35, 0xd8, 0xaa, 0x3a, 0x93, 0xe7, 0xb3, 0xeb, 0xbd, 0x55, 0x76, 0x98,
+            0x86, 0xbc, 0x65, 0x1d, 0x06, 0xb0, 0xcc, 0x53, 0xb0, 0xf6, 0x3b, 0xce, 0x3c, 0x3e,
+            0x27, 0xd2, 0x60, 0x4b,
+        ])
+        .unwrap();
 
         // y^2 = x^3 + ax + b
         let y_squared = self.y.square();
@@ -498,15 +504,19 @@ impl P256Point {
         }
 
         let a = FieldElement::from_bytes(&A_BYTES).unwrap();
-        
+
         // lambda = (3*x^2 + a) / (2*y)
-        let three = FieldElement { value: BigInt::from_u64(3) };
-        let two = FieldElement { value: BigInt::from_u64(2) };
-        
+        let three = FieldElement {
+            value: BigInt::from_u64(3),
+        };
+        let two = FieldElement {
+            value: BigInt::from_u64(2),
+        };
+
         let x_squared = self.x.square();
         let numerator = three.mul(&x_squared).add(&a);
         let denominator = two.mul(&self.y);
-        
+
         let lambda = match denominator.invert() {
             Some(inv) => numerator.mul(&inv),
             None => return Self::infinity(),
@@ -549,7 +559,7 @@ impl P256Point {
         // lambda = (y2 - y1) / (x2 - x1)
         let numerator = other.y.sub(&self.y);
         let denominator = other.x.sub(&self.x);
-        
+
         let lambda = match denominator.invert() {
             Some(inv) => numerator.mul(&inv),
             None => return Self::infinity(),
@@ -574,7 +584,7 @@ impl P256Point {
     /// at the end instead of one per point operation.
     pub fn scalar_mul(&self, scalar: &[u8]) -> Self {
         let k = BigInt::from_bytes_be(scalar);
-        
+
         if k.is_zero() {
             return Self::infinity();
         }
@@ -585,7 +595,7 @@ impl P256Point {
 
         // Use Jacobian coordinates for all intermediate computations
         let mut result = JacobianPoint::infinity();
-        
+
         // Process bits from most significant to least significant (left-to-right)
         // This allows us to use add_affine which is faster than full Jacobian add
         let bits = k.bit_length();
@@ -623,12 +633,12 @@ impl P256KeyPair {
     /// Generate a new random key pair
     pub fn generate() -> Option<Self> {
         let n = BigInt::from_bytes_be(&N_BYTES);
-        
+
         // Generate random scalar in [1, n-1]
         let mut private_key = [0u8; 32];
         loop {
             random_bytes(&mut private_key).ok()?;
-            
+
             let k = BigInt::from_bytes_be(&private_key);
             if !k.is_zero() && k < n {
                 break;
@@ -638,7 +648,7 @@ impl P256KeyPair {
         // Compute public key Q = k * G
         let g = P256Point::generator();
         let public_key = g.scalar_mul(&private_key);
-        
+
         if public_key.infinity {
             return None;
         }
@@ -657,7 +667,7 @@ impl P256KeyPair {
 
         let n = BigInt::from_bytes_be(&N_BYTES);
         let k = BigInt::from_bytes_be(private_key);
-        
+
         if k.is_zero() || k >= n {
             return None;
         }
@@ -720,7 +730,7 @@ impl P256Signature {
         let mut k_bytes = [0u8; 32];
         loop {
             random_bytes(&mut k_bytes).ok()?;
-            
+
             let k = BigInt::from_bytes_be(&k_bytes);
             if k.is_zero() || k >= n {
                 continue;
@@ -748,7 +758,7 @@ impl P256Signature {
             let rd = r.mul(&d).mod_reduce(&n);
             let z_rd = z.add(&rd).mod_reduce(&n);
             let s = k_inv.mul(&z_rd).mod_reduce(&n);
-            
+
             if s.is_zero() {
                 continue;
             }
@@ -763,7 +773,7 @@ impl P256Signature {
             };
             sig.r.copy_from_slice(&r.to_bytes_be_padded(32));
             sig.s.copy_from_slice(&s_normalized.to_bytes_be_padded(32));
-            
+
             return Some(sig);
         }
     }
@@ -798,7 +808,7 @@ impl P256Signature {
 
         // u1 = z * w mod n
         let u1 = z.mul(&w).mod_reduce(&n);
-        
+
         // u2 = r * w mod n
         let u2 = r.mul(&w).mod_reduce(&n);
 
@@ -827,7 +837,7 @@ impl P256Signature {
     pub fn to_der(&self) -> Vec<u8> {
         let r = BigInt::from_bytes_be(&self.r);
         let s = BigInt::from_bytes_be(&self.s);
-        
+
         let r_bytes = r.to_bytes_be();
         let s_bytes = s.to_bytes_be();
 
@@ -876,7 +886,7 @@ impl P256Signature {
         pos += 1;
         let r_len = data[pos] as usize;
         pos += 1;
-        
+
         let r_start = if data[pos] == 0x00 { pos + 1 } else { pos };
         let r_bytes = &data[r_start..pos + r_len];
         pos += r_len;
@@ -888,7 +898,7 @@ impl P256Signature {
         pos += 1;
         let s_len = data[pos] as usize;
         pos += 1;
-        
+
         let s_start = if data[pos] == 0x00 { pos + 1 } else { pos };
         let s_bytes = &data[s_start..pos + s_len];
 
@@ -900,7 +910,7 @@ impl P256Signature {
         // Pad to 32 bytes
         let r_offset = 32 - r_bytes.len().min(32);
         let s_offset = 32 - s_bytes.len().min(32);
-        
+
         sig.r[r_offset..].copy_from_slice(&r_bytes[r_bytes.len().saturating_sub(32)..]);
         sig.s[s_offset..].copy_from_slice(&s_bytes[s_bytes.len().saturating_sub(32)..]);
 
@@ -939,11 +949,11 @@ fn mod_exp(base: &BigInt, exp: &BigInt, modulus: &BigInt) -> BigInt {
     if modulus == &BigInt::one() {
         return BigInt::zero();
     }
-    
+
     let mut result = BigInt::one();
     let mut base = base.mod_reduce(modulus);
     let mut exp = exp.clone();
-    
+
     while exp > BigInt::zero() {
         if exp.is_odd() {
             result = result.mul(&base).mod_reduce(modulus);
@@ -951,7 +961,7 @@ fn mod_exp(base: &BigInt, exp: &BigInt, modulus: &BigInt) -> BigInt {
         exp = exp.div(&BigInt::from_u64(2)).0;
         base = base.mul(&base).mod_reduce(modulus);
     }
-    
+
     result
 }
 
@@ -961,10 +971,7 @@ fn mod_exp(base: &BigInt, exp: &BigInt, modulus: &BigInt) -> BigInt {
 
 /// Generate P-256 key pair
 #[no_mangle]
-pub extern "C" fn p256_keygen(
-    private_key: *mut u8,
-    public_key: *mut u8,
-) -> i32 {
+pub extern "C" fn p256_keygen(private_key: *mut u8, public_key: *mut u8) -> i32 {
     if private_key.is_null() || public_key.is_null() {
         return -1;
     }
@@ -972,11 +979,7 @@ pub extern "C" fn p256_keygen(
     match P256KeyPair::generate() {
         Some(kp) => {
             unsafe {
-                core::ptr::copy_nonoverlapping(
-                    kp.private_key.as_ptr(),
-                    private_key,
-                    32,
-                );
+                core::ptr::copy_nonoverlapping(kp.private_key.as_ptr(), private_key, 32);
                 let pk = kp.public_key_uncompressed();
                 core::ptr::copy_nonoverlapping(pk.as_ptr(), public_key, 65);
             }
@@ -1112,11 +1115,11 @@ mod tests {
     fn test_signature_der_roundtrip() {
         let kp = P256KeyPair::generate().unwrap();
         let message = b"test";
-        
+
         let sig = P256Signature::sign_message(&kp.private_key, message).unwrap();
         let der = sig.to_der();
         let sig2 = P256Signature::from_der(&der).unwrap();
-        
+
         assert_eq!(sig.r, sig2.r);
         assert_eq!(sig.s, sig2.s);
     }

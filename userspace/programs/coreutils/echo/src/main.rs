@@ -21,7 +21,7 @@ fn print_usage() {
 fn process_escapes(s: &str) -> String {
     let mut result = String::new();
     let mut chars = s.chars().peekable();
-    
+
     while let Some(c) = chars.next() {
         if c == '\\' {
             match chars.next() {
@@ -40,17 +40,17 @@ fn process_escapes(s: &str) -> String {
             result.push(c);
         }
     }
-    
+
     result
 }
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    
+
     let mut newline = true;
     let mut interpret_escapes = false;
     let mut text_args: Vec<&str> = Vec::new();
-    
+
     for arg in args.iter().skip(1) {
         if arg == "--help" {
             print_usage();
@@ -78,10 +78,10 @@ fn main() {
     } else {
         text
     };
-    
+
     let stdout = io::stdout();
     let mut handle = stdout.lock();
-    
+
     let _ = handle.write_all(output.as_bytes());
     if newline {
         let _ = handle.write_all(b"\n");

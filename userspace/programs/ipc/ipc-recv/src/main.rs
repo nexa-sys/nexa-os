@@ -83,8 +83,17 @@ fn ipc_recv(channel: u32, buffer: &mut [u8]) -> Result<usize, i32> {
         buffer_ptr: buffer.as_mut_ptr() as u64,
         buffer_len: buffer.len() as u64,
     };
-    let ret = syscall3(SYS_IPC_RECV, &request as *const IpcTransferRequest as u64, 0, 0);
-    if ret == u64::MAX { Err(-1) } else { Ok(ret as usize) }
+    let ret = syscall3(
+        SYS_IPC_RECV,
+        &request as *const IpcTransferRequest as u64,
+        0,
+        0,
+    );
+    if ret == u64::MAX {
+        Err(-1)
+    } else {
+        Ok(ret as usize)
+    }
 }
 
 /// Parse C-style argv
@@ -123,9 +132,9 @@ pub extern "C" fn main(argc: isize, argv: *const *const u8) -> isize {
         print_usage();
         exit(1);
     }
-    
+
     let channel_arg = unsafe { get_arg(argv, 1) };
-    
+
     let channel = match channel_arg.and_then(parse_u32) {
         Some(c) => c,
         None => {
@@ -133,9 +142,9 @@ pub extern "C" fn main(argc: isize, argv: *const *const u8) -> isize {
             exit(1);
         }
     };
-    
+
     let mut buffer = [0u8; MAX_MESSAGE_LEN];
-    
+
     match ipc_recv(channel, &mut buffer) {
         Ok(len) => {
             write_fd(STDOUT, &buffer[..len]);

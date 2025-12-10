@@ -1,7 +1,11 @@
 //! Login - user authentication program
 //! Prompts for username/password and authenticates against kernel user database
 
-use std::{arch::asm, io::{self, Write}, panic};
+use std::{
+    arch::asm,
+    io::{self, Write},
+    panic,
+};
 
 // System call numbers
 const SYS_READ: u64 = 0;
@@ -49,7 +53,7 @@ fn syscall3(n: u64, a1: u64, a2: u64, a3: u64) -> u64 {
             lateout("rax") ret,
             // nostack removed - iretq modifies stack and RSP alignment
             out("rcx") _,  // rcx clobbered by interrupt
-            out("r8") _,   // r8 clobbered by interrupt  
+            out("r8") _,   // r8 clobbered by interrupt
             out("r9") _,   // r9 might be clobbered
             out("r10") _,  // r10 clobbered by interrupt
             out("r11") _   // r11 clobbered by interrupt
@@ -117,7 +121,7 @@ fn execve(path: &str, argv: &[*const u8], envp: &[*const u8]) -> i64 {
 fn read_line(buf: &mut [u8]) -> usize {
     let mut pos = 0;
     let mut tmp = [0u8; 1];
-    
+
     while pos < buf.len() {
         let n = read(STDIN, &mut tmp);
         if n < 0 {
@@ -126,9 +130,9 @@ fn read_line(buf: &mut [u8]) -> usize {
         if n == 0 {
             continue;
         }
-        
+
         let ch = tmp[0];
-        
+
         // Handle backspace
         if ch == 8 || ch == 127 {
             if pos > 0 {
@@ -138,13 +142,13 @@ fn read_line(buf: &mut [u8]) -> usize {
             }
             continue;
         }
-        
+
         // Handle newline
         if ch == b'\n' || ch == b'\r' {
             println!();
             break;
         }
-        
+
         // Printable characters
         if ch >= 32 && ch < 127 {
             buf[pos] = ch;
@@ -152,7 +156,7 @@ fn read_line(buf: &mut [u8]) -> usize {
             write(STDOUT, &[ch]);
         }
     }
-    
+
     pos
 }
 
@@ -160,7 +164,7 @@ fn read_line(buf: &mut [u8]) -> usize {
 fn read_password(buf: &mut [u8]) -> usize {
     let mut pos = 0;
     let mut tmp = [0u8; 1];
-    
+
     while pos < buf.len() {
         let n = read(STDIN, &mut tmp);
         if n < 0 {
@@ -169,9 +173,9 @@ fn read_password(buf: &mut [u8]) -> usize {
         if n == 0 {
             continue;
         }
-        
+
         let ch = tmp[0];
-        
+
         // Handle backspace
         if ch == 8 || ch == 127 {
             if pos > 0 {
@@ -181,13 +185,13 @@ fn read_password(buf: &mut [u8]) -> usize {
             }
             continue;
         }
-        
+
         // Handle newline
         if ch == b'\n' || ch == b'\r' {
             println!();
             break;
         }
-        
+
         // Printable characters (but don't echo)
         if ch >= 32 && ch < 127 {
             buf[pos] = ch;
@@ -196,7 +200,7 @@ fn read_password(buf: &mut [u8]) -> usize {
             flush_stdout();
         }
     }
-    
+
     pos
 }
 
@@ -204,7 +208,7 @@ fn read_password(buf: &mut [u8]) -> usize {
 fn ensure_default_user() {
     let username = b"root";
     let password = b"root";
-    
+
     let req = UserRequest {
         username_ptr: username.as_ptr() as u64,
         username_len: username.len() as u64,
@@ -212,7 +216,7 @@ fn ensure_default_user() {
         password_len: password.len() as u64,
         flags: 1, // Admin flag
     };
-    
+
     // Try to add user (will fail if already exists, which is fine)
     syscall1(SYS_USER_ADD, &req as *const UserRequest as u64);
 }
@@ -223,26 +227,26 @@ fn login_main() -> ! {
 
     let mut username_buf = [0u8; MAX_INPUT];
     let mut password_buf = [0u8; MAX_INPUT];
-    
+
     println!();
     println!("\x1b[1;32mNexaOS Login\x1b[0m");
     println!("\x1b[0;36mDefault credentials: root/root\x1b[0m");
     println!();
-    
+
     // Read username
     print!("login: ");
     flush_stdout();
     let username_len = read_line(&mut username_buf);
-    
+
     if username_len == 0 {
         exit(1);
     }
-    
+
     // Read password
     print!("password: ");
     flush_stdout();
     let password_len = read_password(&mut password_buf);
-    
+
     // Attempt login
     let req = UserRequest {
         username_ptr: username_buf.as_ptr() as u64,
@@ -254,7 +258,7 @@ fn login_main() -> ! {
 
     // Removed debug output to avoid terminal corruption
     let result = syscall1(SYS_USER_LOGIN, &req as *const UserRequest as u64);
-    
+
     if result == 0 {
         // Login successful
         println!();
@@ -265,13 +269,8 @@ fn login_main() -> ! {
         // Replace current process with the user shell so getty only
         // restarts once the session actually terminates.
         let shell_path = "/bin/sh\0";
-        let argv: [*const u8; 2] = [
-            shell_path.as_ptr(),
-            core::ptr::null(),
-        ];
-        let envp: [*const u8; 1] = [
-            core::ptr::null(),
-        ];
+        let argv: [*const u8; 2] = [shell_path.as_ptr(), core::ptr::null()];
+        let envp: [*const u8; 1] = [core::ptr::null()];
 
         execve(shell_path, &argv, &envp);
 
@@ -289,5 +288,3 @@ fn main() -> ! {
     install_panic_hook();
     login_main()
 }
-
-

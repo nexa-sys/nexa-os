@@ -1,14 +1,14 @@
 //! Built-in Vim Script functions
 
-use std::io;
 use super::Value;
+use std::io;
 
 /// Call a built-in function
 pub fn call_builtin(name: &str, args: &[Value]) -> Option<io::Result<Value>> {
     match name {
         // String functions
         "strlen" => Some(strlen(args)),
-        "strwidth" => Some(strlen(args)), // Simplified
+        "strwidth" => Some(strlen(args)),        // Simplified
         "strdisplaywidth" => Some(strlen(args)), // Simplified
         "len" => Some(len(args)),
         "empty" => Some(empty(args)),
@@ -33,7 +33,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<io::Result<Value>> {
         "printf" => Some(printf(args)),
         "tr" => Some(tr(args)),
         "repeat" => Some(repeat(args)),
-        
+
         // List functions
         "add" => Some(add(args)),
         "extend" => Some(extend(args)),
@@ -51,13 +51,13 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<io::Result<Value>> {
         "count" => Some(count(args)),
         "range" => Some(range(args)),
         "flatten" => Some(flatten(args)),
-        
+
         // Dictionary functions
         "has_key" => Some(has_key(args)),
         "keys" => Some(keys(args)),
         "values" => Some(values(args)),
         "items" => Some(items(args)),
-        
+
         // Type functions
         "type" => Some(type_fn(args)),
         "typename" => Some(typename(args)),
@@ -78,11 +78,11 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<io::Result<Value>> {
         "sin" => Some(sin(args)),
         "cos" => Some(cos(args)),
         "tan" => Some(tan(args)),
-        
+
         // Comparison functions
         "min" => Some(min(args)),
         "max" => Some(max(args)),
-        
+
         // Test functions
         "exists" => Some(exists(args)),
         "has" => Some(has(args)),
@@ -90,7 +90,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<io::Result<Value>> {
         "filereadable" => Some(filereadable(args)),
         "filewritable" => Some(filewritable(args)),
         "isdirectory" => Some(isdirectory(args)),
-        
+
         // File functions
         "glob" => Some(glob(args)),
         "globpath" => Some(globpath(args)),
@@ -103,25 +103,25 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<io::Result<Value>> {
         "expand" => Some(expand(args)),
         "resolve" => Some(resolve(args)),
         "simplify" => Some(simplify(args)),
-        
+
         // Utility functions
         "system" => Some(system(args)),
         "systemlist" => Some(systemlist(args)),
         "localtime" => Some(localtime(args)),
         "strftime" => Some(strftime(args)),
-        
+
         // Input functions
         "input" => Some(input(args)),
         "inputlist" => Some(inputlist(args)),
         "confirm" => Some(confirm(args)),
-        
+
         // Miscellaneous
         "eval" => Some(eval(args)),
         "execute" => Some(execute(args)),
         "function" => Some(function(args)),
         "funcref" => Some(function(args)),
         "call" => Some(call(args)),
-        
+
         // Unknown function
         _ => None,
     }
@@ -157,14 +157,14 @@ fn toupper(args: &[Value]) -> io::Result<Value> {
 fn trim(args: &[Value]) -> io::Result<Value> {
     let s = args.get(0).map(|v| v.to_string()).unwrap_or_default();
     let chars = args.get(1).map(|v| v.to_string());
-    
+
     let result = if let Some(chars) = chars {
         let chars: Vec<char> = chars.chars().collect();
         s.trim_matches(|c| chars.contains(&c)).to_string()
     } else {
         s.trim().to_string()
     };
-    
+
     Ok(Value::String(result))
 }
 
@@ -173,32 +173,39 @@ fn substitute(args: &[Value]) -> io::Result<Value> {
     let pat = args.get(1).map(|v| v.to_string()).unwrap_or_default();
     let sub = args.get(2).map(|v| v.to_string()).unwrap_or_default();
     let flags = args.get(3).map(|v| v.to_string()).unwrap_or_default();
-    
+
     let result = if flags.contains('g') {
         s.replace(&pat, &sub)
     } else {
         s.replacen(&pat, &sub, 1)
     };
-    
+
     Ok(Value::String(result))
 }
 
 fn split(args: &[Value]) -> io::Result<Value> {
     let s = args.get(0).map(|v| v.to_string()).unwrap_or_default();
-    let pat = args.get(1).map(|v| v.to_string()).unwrap_or_else(|| " ".to_string());
-    
-    let parts: Vec<Value> = s.split(&pat)
+    let pat = args
+        .get(1)
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| " ".to_string());
+
+    let parts: Vec<Value> = s
+        .split(&pat)
         .filter(|s| !s.is_empty())
         .map(|s| Value::String(s.to_string()))
         .collect();
-    
+
     Ok(Value::List(parts))
 }
 
 fn join(args: &[Value]) -> io::Result<Value> {
     let list = args.get(0).cloned().unwrap_or(Value::List(Vec::new()));
-    let sep = args.get(1).map(|v| v.to_string()).unwrap_or_else(|| " ".to_string());
-    
+    let sep = args
+        .get(1)
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| " ".to_string());
+
     if let Value::List(items) = list {
         let strings: Vec<String> = items.iter().map(|v| v.to_string()).collect();
         Ok(Value::String(strings.join(&sep)))
@@ -210,7 +217,7 @@ fn join(args: &[Value]) -> io::Result<Value> {
 fn escape(args: &[Value]) -> io::Result<Value> {
     let s = args.get(0).map(|v| v.to_string()).unwrap_or_default();
     let chars = args.get(1).map(|v| v.to_string()).unwrap_or_default();
-    
+
     let mut result = String::new();
     for ch in s.chars() {
         if chars.contains(ch) {
@@ -218,7 +225,7 @@ fn escape(args: &[Value]) -> io::Result<Value> {
         }
         result.push(ch);
     }
-    
+
     Ok(Value::String(result))
 }
 
@@ -242,9 +249,9 @@ fn fnameescape(args: &[Value]) -> io::Result<Value> {
 fn fnamemodify(args: &[Value]) -> io::Result<Value> {
     let fname = args.get(0).map(|v| v.to_string()).unwrap_or_default();
     let mods = args.get(1).map(|v| v.to_string()).unwrap_or_default();
-    
+
     let mut result = fname.clone();
-    
+
     for m in mods.split(':').skip(1) {
         match m {
             "p" => {
@@ -284,7 +291,7 @@ fn fnamemodify(args: &[Value]) -> io::Result<Value> {
             _ => {}
         }
     }
-    
+
     Ok(Value::String(result))
 }
 
@@ -292,11 +299,13 @@ fn strpart(args: &[Value]) -> io::Result<Value> {
     let s = args.get(0).map(|v| v.to_string()).unwrap_or_default();
     let start = args.get(1).map(|v| v.to_int()).unwrap_or(0) as usize;
     let len = args.get(2).map(|v| v.to_int() as usize);
-    
+
     let chars: Vec<char> = s.chars().collect();
-    let end = len.map(|l| (start + l).min(chars.len())).unwrap_or(chars.len());
+    let end = len
+        .map(|l| (start + l).min(chars.len()))
+        .unwrap_or(chars.len());
     let start = start.min(chars.len());
-    
+
     Ok(Value::String(chars[start..end].iter().collect()))
 }
 
@@ -304,11 +313,12 @@ fn stridx(args: &[Value]) -> io::Result<Value> {
     let haystack = args.get(0).map(|v| v.to_string()).unwrap_or_default();
     let needle = args.get(1).map(|v| v.to_string()).unwrap_or_default();
     let start = args.get(2).map(|v| v.to_int()).unwrap_or(0) as usize;
-    
-    let result = haystack[start..].find(&needle)
+
+    let result = haystack[start..]
+        .find(&needle)
         .map(|pos| (start + pos) as i64)
         .unwrap_or(-1);
-    
+
     Ok(Value::Integer(result))
 }
 
@@ -316,20 +326,23 @@ fn strridx(args: &[Value]) -> io::Result<Value> {
     let haystack = args.get(0).map(|v| v.to_string()).unwrap_or_default();
     let needle = args.get(1).map(|v| v.to_string()).unwrap_or_default();
     let start = args.get(2).map(|v| v.to_int() as usize);
-    
-    let search_str = start.map(|s| &haystack[..s.min(haystack.len())]).unwrap_or(&haystack);
-    
-    let result = search_str.rfind(&needle)
+
+    let search_str = start
+        .map(|s| &haystack[..s.min(haystack.len())])
+        .unwrap_or(&haystack);
+
+    let result = search_str
+        .rfind(&needle)
         .map(|pos| pos as i64)
         .unwrap_or(-1);
-    
+
     Ok(Value::Integer(result))
 }
 
 fn matchstr(args: &[Value]) -> io::Result<Value> {
     let s = args.get(0).map(|v| v.to_string()).unwrap_or_default();
     let pat = args.get(1).map(|v| v.to_string()).unwrap_or_default();
-    
+
     // Simplified: just find the pattern
     if let Some(pos) = s.find(&pat) {
         Ok(Value::String(s[pos..pos + pat.len()].to_string()))
@@ -341,21 +354,23 @@ fn matchstr(args: &[Value]) -> io::Result<Value> {
 fn match_fn(args: &[Value]) -> io::Result<Value> {
     let s = args.get(0).map(|v| v.to_string()).unwrap_or_default();
     let pat = args.get(1).map(|v| v.to_string()).unwrap_or_default();
-    
+
     Ok(Value::Integer(s.find(&pat).map(|p| p as i64).unwrap_or(-1)))
 }
 
 fn matchend(args: &[Value]) -> io::Result<Value> {
     let s = args.get(0).map(|v| v.to_string()).unwrap_or_default();
     let pat = args.get(1).map(|v| v.to_string()).unwrap_or_default();
-    
-    Ok(Value::Integer(s.find(&pat).map(|p| (p + pat.len()) as i64).unwrap_or(-1)))
+
+    Ok(Value::Integer(
+        s.find(&pat).map(|p| (p + pat.len()) as i64).unwrap_or(-1),
+    ))
 }
 
 fn matchlist(args: &[Value]) -> io::Result<Value> {
     let s = args.get(0).map(|v| v.to_string()).unwrap_or_default();
     let pat = args.get(1).map(|v| v.to_string()).unwrap_or_default();
-    
+
     if s.contains(&pat) {
         Ok(Value::List(vec![Value::String(pat)]))
     } else {
@@ -366,11 +381,11 @@ fn matchlist(args: &[Value]) -> io::Result<Value> {
 fn printf(args: &[Value]) -> io::Result<Value> {
     let fmt = args.get(0).map(|v| v.to_string()).unwrap_or_default();
     let mut result = fmt;
-    
+
     for (i, arg) in args.iter().skip(1).enumerate() {
         let placeholder = format!("%{}", i + 1);
         result = result.replace(&placeholder, &arg.to_string());
-        
+
         // Also handle simple %s, %d patterns
         if result.contains("%s") {
             result = result.replacen("%s", &arg.to_string(), 1);
@@ -378,7 +393,7 @@ fn printf(args: &[Value]) -> io::Result<Value> {
             result = result.replacen("%d", &arg.to_int().to_string(), 1);
         }
     }
-    
+
     Ok(Value::String(result))
 }
 
@@ -386,16 +401,21 @@ fn tr(args: &[Value]) -> io::Result<Value> {
     let s = args.get(0).map(|v| v.to_string()).unwrap_or_default();
     let from = args.get(1).map(|v| v.to_string()).unwrap_or_default();
     let to = args.get(2).map(|v| v.to_string()).unwrap_or_default();
-    
+
     let from_chars: Vec<char> = from.chars().collect();
     let to_chars: Vec<char> = to.chars().collect();
-    
-    let result: String = s.chars().map(|c| {
-        from_chars.iter().position(|&fc| fc == c)
-            .and_then(|i| to_chars.get(i).copied())
-            .unwrap_or(c)
-    }).collect();
-    
+
+    let result: String = s
+        .chars()
+        .map(|c| {
+            from_chars
+                .iter()
+                .position(|&fc| fc == c)
+                .and_then(|i| to_chars.get(i).copied())
+                .unwrap_or(c)
+        })
+        .collect();
+
     Ok(Value::String(result))
 }
 
@@ -412,11 +432,11 @@ fn add(args: &[Value]) -> io::Result<Value> {
         Some(Value::List(l)) => l.clone(),
         _ => return Ok(Value::List(Vec::new())),
     };
-    
+
     if let Some(item) = args.get(1) {
         list.push(item.clone());
     }
-    
+
     Ok(Value::List(list))
 }
 
@@ -425,11 +445,11 @@ fn extend(args: &[Value]) -> io::Result<Value> {
         Some(Value::List(l)) => l.clone(),
         _ => return Ok(Value::List(Vec::new())),
     };
-    
+
     if let Some(Value::List(l2)) = args.get(1) {
         list1.extend(l2.clone());
     }
-    
+
     Ok(Value::List(list1))
 }
 
@@ -438,10 +458,10 @@ fn insert(args: &[Value]) -> io::Result<Value> {
         Some(Value::List(l)) => l.clone(),
         _ => return Ok(Value::List(Vec::new())),
     };
-    
+
     let item = args.get(1).cloned().unwrap_or(Value::Null);
     let idx = args.get(2).map(|v| v.to_int()).unwrap_or(0) as usize;
-    
+
     list.insert(idx.min(list.len()), item);
     Ok(Value::List(list))
 }
@@ -451,9 +471,9 @@ fn remove(args: &[Value]) -> io::Result<Value> {
         Some(Value::List(l)) => l.clone(),
         _ => return Ok(Value::Null),
     };
-    
+
     let idx = args.get(1).map(|v| v.to_int()).unwrap_or(0) as usize;
-    
+
     if idx < list.len() {
         Ok(list.remove(idx))
     } else {
@@ -466,7 +486,7 @@ fn reverse(args: &[Value]) -> io::Result<Value> {
         Some(Value::List(l)) => l.clone(),
         _ => return Ok(Value::List(Vec::new())),
     };
-    
+
     list.reverse();
     Ok(Value::List(list))
 }
@@ -476,7 +496,7 @@ fn sort(args: &[Value]) -> io::Result<Value> {
         Some(Value::List(l)) => l.clone(),
         _ => return Ok(Value::List(Vec::new())),
     };
-    
+
     list.sort_by(|a, b| {
         use std::cmp::Ordering;
         match a.compare(b) {
@@ -485,7 +505,7 @@ fn sort(args: &[Value]) -> io::Result<Value> {
             _ => Ordering::Equal,
         }
     });
-    
+
     Ok(Value::List(list))
 }
 
@@ -494,14 +514,14 @@ fn uniq(args: &[Value]) -> io::Result<Value> {
         Some(Value::List(l)) => l.clone(),
         _ => return Ok(Value::List(Vec::new())),
     };
-    
+
     let mut result = Vec::new();
     for item in list {
         if !result.contains(&item) {
             result.push(item);
         }
     }
-    
+
     Ok(Value::List(result))
 }
 
@@ -527,15 +547,13 @@ fn get(args: &[Value]) -> io::Result<Value> {
     let container = args.get(0).unwrap_or(&Value::Null);
     let key = args.get(1).unwrap_or(&Value::Null);
     let default = args.get(2).cloned().unwrap_or(Value::Null);
-    
+
     match container {
         Value::List(l) => {
             let idx = key.to_int() as usize;
             Ok(l.get(idx).cloned().unwrap_or(default))
         }
-        Value::Dict(d) => {
-            Ok(d.get(&key.to_string()).cloned().unwrap_or(default))
-        }
+        Value::Dict(d) => Ok(d.get(&key.to_string()).cloned().unwrap_or(default)),
         _ => Ok(default),
     }
 }
@@ -545,15 +563,15 @@ fn index(args: &[Value]) -> io::Result<Value> {
         Some(Value::List(l)) => l,
         _ => return Ok(Value::Integer(-1)),
     };
-    
+
     let item = args.get(1).unwrap_or(&Value::Null);
-    
+
     for (i, v) in list.iter().enumerate() {
         if v == item {
             return Ok(Value::Integer(i as i64));
         }
     }
-    
+
     Ok(Value::Integer(-1))
 }
 
@@ -562,10 +580,10 @@ fn count(args: &[Value]) -> io::Result<Value> {
         Some(Value::List(l)) => l,
         _ => return Ok(Value::Integer(0)),
     };
-    
+
     let item = args.get(1).unwrap_or(&Value::Null);
     let count = list.iter().filter(|v| *v == item).count();
-    
+
     Ok(Value::Integer(count as i64))
 }
 
@@ -573,10 +591,10 @@ fn range(args: &[Value]) -> io::Result<Value> {
     let end = args.get(0).map(|v| v.to_int()).unwrap_or(0);
     let start = args.get(1).map(|v| v.to_int()).unwrap_or(0);
     let step = args.get(2).map(|v| v.to_int()).unwrap_or(1);
-    
+
     let mut list = Vec::new();
     let mut i = start;
-    
+
     if step > 0 {
         while i <= end {
             list.push(Value::Integer(i));
@@ -588,7 +606,7 @@ fn range(args: &[Value]) -> io::Result<Value> {
             i += step;
         }
     }
-    
+
     Ok(Value::List(list))
 }
 
@@ -597,9 +615,9 @@ fn flatten(args: &[Value]) -> io::Result<Value> {
         Some(Value::List(l)) => l.clone(),
         _ => return Ok(Value::List(Vec::new())),
     };
-    
+
     let maxdepth = args.get(1).map(|v| v.to_int()).unwrap_or(-1);
-    
+
     fn flatten_recursive(list: &[Value], depth: i64, maxdepth: i64) -> Vec<Value> {
         let mut result = Vec::new();
         for item in list {
@@ -615,7 +633,7 @@ fn flatten(args: &[Value]) -> io::Result<Value> {
         }
         result
     }
-    
+
     Ok(Value::List(flatten_recursive(&list, 0, maxdepth)))
 }
 
@@ -626,7 +644,7 @@ fn has_key(args: &[Value]) -> io::Result<Value> {
         Some(Value::Dict(d)) => d,
         _ => return Ok(Value::Integer(0)),
     };
-    
+
     let key = args.get(1).map(|v| v.to_string()).unwrap_or_default();
     Ok(Value::Integer(if dict.contains_key(&key) { 1 } else { 0 }))
 }
@@ -636,7 +654,7 @@ fn keys(args: &[Value]) -> io::Result<Value> {
         Some(Value::Dict(d)) => d,
         _ => return Ok(Value::List(Vec::new())),
     };
-    
+
     let keys: Vec<Value> = dict.keys().map(|k| Value::String(k.clone())).collect();
     Ok(Value::List(keys))
 }
@@ -646,7 +664,7 @@ fn values(args: &[Value]) -> io::Result<Value> {
         Some(Value::Dict(d)) => d,
         _ => return Ok(Value::List(Vec::new())),
     };
-    
+
     let values: Vec<Value> = dict.values().cloned().collect();
     Ok(Value::List(values))
 }
@@ -656,8 +674,9 @@ fn items(args: &[Value]) -> io::Result<Value> {
         Some(Value::Dict(d)) => d,
         _ => return Ok(Value::List(Vec::new())),
     };
-    
-    let items: Vec<Value> = dict.iter()
+
+    let items: Vec<Value> = dict
+        .iter()
         .map(|(k, v)| Value::List(vec![Value::String(k.clone()), v.clone()]))
         .collect();
     Ok(Value::List(items))
@@ -683,7 +702,7 @@ fn string(args: &[Value]) -> io::Result<Value> {
 fn str2nr(args: &[Value]) -> io::Result<Value> {
     let s = args.get(0).map(|v| v.to_string()).unwrap_or_default();
     let base = args.get(1).map(|v| v.to_int()).unwrap_or(10) as u32;
-    
+
     let n = i64::from_str_radix(s.trim(), base).unwrap_or(0);
     Ok(Value::Integer(n))
 }
@@ -812,11 +831,12 @@ fn exists(args: &[Value]) -> io::Result<Value> {
 
 fn has(args: &[Value]) -> io::Result<Value> {
     let feature = args.get(0).map(|v| v.to_string()).unwrap_or_default();
-    
-    let supported = matches!(feature.as_str(),
+
+    let supported = matches!(
+        feature.as_str(),
         "unix" | "nvim" | "vim_starting" | "syntax" | "autocmd" | "eval"
     );
-    
+
     Ok(Value::Integer(if supported { 1 } else { 0 }))
 }
 
@@ -855,10 +875,11 @@ fn globpath(args: &[Value]) -> io::Result<Value> {
 
 fn readfile(args: &[Value]) -> io::Result<Value> {
     let path = args.get(0).map(|v| v.to_string()).unwrap_or_default();
-    
+
     match std::fs::read_to_string(&path) {
         Ok(content) => {
-            let lines: Vec<Value> = content.lines()
+            let lines: Vec<Value> = content
+                .lines()
                 .map(|l| Value::String(l.to_string()))
                 .collect();
             Ok(Value::List(lines))
@@ -872,14 +893,15 @@ fn writefile(args: &[Value]) -> io::Result<Value> {
         Some(Value::List(l)) => l,
         _ => return Ok(Value::Integer(-1)),
     };
-    
+
     let path = args.get(1).map(|v| v.to_string()).unwrap_or_default();
-    
-    let content: String = lines.iter()
+
+    let content: String = lines
+        .iter()
         .map(|l| l.to_string())
         .collect::<Vec<_>>()
         .join("\n");
-    
+
     match std::fs::write(&path, content) {
         Ok(_) => Ok(Value::Integer(0)),
         Err(_) => Ok(Value::Integer(-1)),
@@ -888,7 +910,7 @@ fn writefile(args: &[Value]) -> io::Result<Value> {
 
 fn delete(args: &[Value]) -> io::Result<Value> {
     let path = args.get(0).map(|v| v.to_string()).unwrap_or_default();
-    
+
     match std::fs::remove_file(&path) {
         Ok(_) => Ok(Value::Integer(0)),
         Err(_) => Ok(Value::Integer(-1)),
@@ -898,7 +920,7 @@ fn delete(args: &[Value]) -> io::Result<Value> {
 fn rename(args: &[Value]) -> io::Result<Value> {
     let from = args.get(0).map(|v| v.to_string()).unwrap_or_default();
     let to = args.get(1).map(|v| v.to_string()).unwrap_or_default();
-    
+
     match std::fs::rename(&from, &to) {
         Ok(_) => Ok(Value::Integer(0)),
         Err(_) => Ok(Value::Integer(-1)),
@@ -908,13 +930,13 @@ fn rename(args: &[Value]) -> io::Result<Value> {
 fn mkdir(args: &[Value]) -> io::Result<Value> {
     let path = args.get(0).map(|v| v.to_string()).unwrap_or_default();
     let recursive = args.get(1).map(|v| v.to_string()).unwrap_or_default() == "p";
-    
+
     let result = if recursive {
         std::fs::create_dir_all(&path)
     } else {
         std::fs::create_dir(&path)
     };
-    
+
     match result {
         Ok(_) => Ok(Value::Integer(0)),
         Err(_) => Ok(Value::Integer(-1)),
@@ -930,7 +952,7 @@ fn getcwd(_args: &[Value]) -> io::Result<Value> {
 
 fn expand(args: &[Value]) -> io::Result<Value> {
     let s = args.get(0).map(|v| v.to_string()).unwrap_or_default();
-    
+
     let expanded = match s.as_str() {
         "%" => "[No Name]".to_string(), // Current file
         "%:p" => std::env::current_dir()
@@ -942,13 +964,13 @@ fn expand(args: &[Value]) -> io::Result<Value> {
         _ if s.starts_with('$') => std::env::var(&s[1..]).unwrap_or_default(),
         _ => s,
     };
-    
+
     Ok(Value::String(expanded))
 }
 
 fn resolve(args: &[Value]) -> io::Result<Value> {
     let path = args.get(0).map(|v| v.to_string()).unwrap_or_default();
-    
+
     match std::fs::canonicalize(&path) {
         Ok(p) => Ok(Value::String(p.to_string_lossy().to_string())),
         Err(_) => Ok(Value::String(path)),
@@ -991,10 +1013,10 @@ fn input(args: &[Value]) -> io::Result<Value> {
     let prompt = args.get(0).map(|v| v.to_string()).unwrap_or_default();
     print!("{}", prompt);
     let _ = std::io::Write::flush(&mut std::io::stdout());
-    
+
     let mut line = String::new();
     std::io::stdin().read_line(&mut line)?;
-    
+
     Ok(Value::String(line.trim_end().to_string()))
 }
 
@@ -1003,38 +1025,41 @@ fn inputlist(args: &[Value]) -> io::Result<Value> {
         Some(Value::List(l)) => l,
         _ => return Ok(Value::Integer(-1)),
     };
-    
+
     for (i, item) in list.iter().enumerate() {
         println!("{}: {}", i, item);
     }
-    
+
     print!("Type number: ");
     let _ = std::io::Write::flush(&mut std::io::stdout());
-    
+
     let mut line = String::new();
     std::io::stdin().read_line(&mut line)?;
-    
+
     let choice = line.trim().parse::<i64>().unwrap_or(-1);
     Ok(Value::Integer(choice))
 }
 
 fn confirm(args: &[Value]) -> io::Result<Value> {
     let msg = args.get(0).map(|v| v.to_string()).unwrap_or_default();
-    let choices = args.get(1).map(|v| v.to_string()).unwrap_or_else(|| "&Yes\n&No".to_string());
+    let choices = args
+        .get(1)
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "&Yes\n&No".to_string());
     let default = args.get(2).map(|v| v.to_int()).unwrap_or(0);
-    
+
     println!("{}", msg);
-    
+
     for (i, choice) in choices.split('\n').enumerate() {
         println!("{}: {}", i + 1, choice.trim_start_matches('&'));
     }
-    
+
     print!("Choice (default {}): ", default);
     let _ = std::io::Write::flush(&mut std::io::stdout());
-    
+
     let mut line = String::new();
     std::io::stdin().read_line(&mut line)?;
-    
+
     let choice = line.trim().parse::<i64>().unwrap_or(default);
     Ok(Value::Integer(choice))
 }
@@ -1044,7 +1069,7 @@ fn confirm(args: &[Value]) -> io::Result<Value> {
 fn eval(args: &[Value]) -> io::Result<Value> {
     // Would need access to VimScript interpreter
     let s = args.get(0).map(|v| v.to_string()).unwrap_or_default();
-    
+
     // Try to parse as a simple value
     if let Ok(n) = s.parse::<i64>() {
         return Ok(Value::Integer(n));
@@ -1052,7 +1077,7 @@ fn eval(args: &[Value]) -> io::Result<Value> {
     if let Ok(n) = s.parse::<f64>() {
         return Ok(Value::Float(n));
     }
-    
+
     Ok(Value::String(s))
 }
 

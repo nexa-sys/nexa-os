@@ -2,11 +2,11 @@
 //!
 //! Extra SSL functions for broader compatibility.
 
-use crate::{c_int, c_long, c_char, c_uchar, c_uint, c_ulong, size_t};
-use crate::context::SslContext;
-use crate::connection::SslConnection;
-use crate::x509::{X509, X509Store};
 use crate::bio::Bio;
+use crate::connection::SslConnection;
+use crate::context::SslContext;
+use crate::x509::{X509Store, X509};
+use crate::{c_char, c_int, c_long, c_uchar, c_uint, c_ulong, size_t};
 
 // ============================================================================
 // SSL_CTX Certificate and Key Functions
@@ -58,10 +58,7 @@ pub extern "C" fn SSL_CTX_use_RSAPrivateKey_ASN1(
 
 /// Add extra chain certificate
 #[no_mangle]
-pub extern "C" fn SSL_CTX_add_extra_chain_cert(
-    ctx: *mut SslContext,
-    _x509: *mut X509,
-) -> c_long {
+pub extern "C" fn SSL_CTX_add_extra_chain_cert(ctx: *mut SslContext, _x509: *mut X509) -> c_long {
     if ctx.is_null() {
         return 0;
     }
@@ -71,7 +68,7 @@ pub extern "C" fn SSL_CTX_add_extra_chain_cert(
 // NOTE: SSL_CTX_get_cert_store and SSL_CTX_set_cert_store are defined in cert_chain.rs
 
 // ============================================================================
-// SSL Connection Certificate Functions  
+// SSL Connection Certificate Functions
 // ============================================================================
 
 /// Use certificate on connection
@@ -329,7 +326,7 @@ pub extern "C" fn SSL_ctrl(
     if ssl.is_null() {
         return 0;
     }
-    
+
     match cmd {
         ssl_ctrl_cmd::SSL_CTRL_SET_MIN_PROTO_VERSION => {
             // Set minimum protocol version
@@ -339,12 +336,8 @@ pub extern "C" fn SSL_ctrl(
             // Set maximum protocol version
             1
         }
-        ssl_ctrl_cmd::SSL_CTRL_GET_MIN_PROTO_VERSION => {
-            crate::TLS1_2_VERSION as c_long
-        }
-        ssl_ctrl_cmd::SSL_CTRL_GET_MAX_PROTO_VERSION => {
-            crate::TLS1_3_VERSION as c_long
-        }
+        ssl_ctrl_cmd::SSL_CTRL_GET_MIN_PROTO_VERSION => crate::TLS1_2_VERSION as c_long,
+        ssl_ctrl_cmd::SSL_CTRL_GET_MAX_PROTO_VERSION => crate::TLS1_3_VERSION as c_long,
         _ => 0,
     }
 }
@@ -360,26 +353,16 @@ pub extern "C" fn SSL_CTX_ctrl(
     if ctx.is_null() {
         return 0;
     }
-    
+
     match cmd {
-        ssl_ctrl_cmd::SSL_CTRL_SET_SESS_CACHE_SIZE => {
-            larg
-        }
+        ssl_ctrl_cmd::SSL_CTRL_SET_SESS_CACHE_SIZE => larg,
         ssl_ctrl_cmd::SSL_CTRL_GET_SESS_CACHE_SIZE => {
             1024 * 20 // Default session cache size
         }
-        ssl_ctrl_cmd::SSL_CTRL_SET_SESS_CACHE_MODE => {
-            larg
-        }
-        ssl_ctrl_cmd::SSL_CTRL_GET_SESS_CACHE_MODE => {
-            0
-        }
-        ssl_ctrl_cmd::SSL_CTRL_SET_MIN_PROTO_VERSION => {
-            1
-        }
-        ssl_ctrl_cmd::SSL_CTRL_SET_MAX_PROTO_VERSION => {
-            1
-        }
+        ssl_ctrl_cmd::SSL_CTRL_SET_SESS_CACHE_MODE => larg,
+        ssl_ctrl_cmd::SSL_CTRL_GET_SESS_CACHE_MODE => 0,
+        ssl_ctrl_cmd::SSL_CTRL_SET_MIN_PROTO_VERSION => 1,
+        ssl_ctrl_cmd::SSL_CTRL_SET_MAX_PROTO_VERSION => 1,
         _ => 0,
     }
 }
@@ -417,7 +400,9 @@ pub extern "C" fn BIO_get_ssl(bio: *mut Bio, sslp: *mut *mut SslConnection) -> c
     if bio.is_null() || sslp.is_null() {
         return 0;
     }
-    unsafe { *sslp = core::ptr::null_mut(); }
+    unsafe {
+        *sslp = core::ptr::null_mut();
+    }
     0
 }
 
@@ -427,25 +412,29 @@ pub extern "C" fn BIO_new_ssl(ctx: *mut SslContext, client: c_int) -> *mut Bio {
     if ctx.is_null() {
         return core::ptr::null_mut();
     }
-    
+
     let bio = Bio::new(BIO_f_ssl());
     if bio.is_null() {
         return core::ptr::null_mut();
     }
-    
+
     // Create SSL and set on BIO
     let ssl = crate::SSL_new(ctx);
     if ssl.is_null() {
         Bio::free(bio);
         return core::ptr::null_mut();
     }
-    
+
     if client != 0 {
-        unsafe { (*ssl).set_connect_state(); }
+        unsafe {
+            (*ssl).set_connect_state();
+        }
     } else {
-        unsafe { (*ssl).set_accept_state(); }
+        unsafe {
+            (*ssl).set_accept_state();
+        }
     }
-    
+
     BIO_set_ssl(bio, ssl, 1);
     bio
 }
@@ -488,9 +477,7 @@ pub extern "C" fn SSL_get_finished(
 
 /// Get client CA list
 #[no_mangle]
-pub extern "C" fn SSL_get_client_CA_list(
-    ssl: *const SslConnection,
-) -> *mut core::ffi::c_void {
+pub extern "C" fn SSL_get_client_CA_list(ssl: *const SslConnection) -> *mut core::ffi::c_void {
     if ssl.is_null() {
         return core::ptr::null_mut();
     }
@@ -499,10 +486,7 @@ pub extern "C" fn SSL_get_client_CA_list(
 
 /// Set client CA list
 #[no_mangle]
-pub extern "C" fn SSL_set_client_CA_list(
-    ssl: *mut SslConnection,
-    _list: *mut core::ffi::c_void,
-) {
+pub extern "C" fn SSL_set_client_CA_list(ssl: *mut SslConnection, _list: *mut core::ffi::c_void) {
     if ssl.is_null() {
         return;
     }
@@ -510,9 +494,7 @@ pub extern "C" fn SSL_set_client_CA_list(
 
 /// Get client CA list from context
 #[no_mangle]
-pub extern "C" fn SSL_CTX_get_client_CA_list(
-    ctx: *const SslContext,
-) -> *mut core::ffi::c_void {
+pub extern "C" fn SSL_CTX_get_client_CA_list(ctx: *const SslContext) -> *mut core::ffi::c_void {
     if ctx.is_null() {
         return core::ptr::null_mut();
     }
@@ -521,10 +503,7 @@ pub extern "C" fn SSL_CTX_get_client_CA_list(
 
 /// Set client CA list on context
 #[no_mangle]
-pub extern "C" fn SSL_CTX_set_client_CA_list(
-    ctx: *mut SslContext,
-    _list: *mut core::ffi::c_void,
-) {
+pub extern "C" fn SSL_CTX_set_client_CA_list(ctx: *mut SslContext, _list: *mut core::ffi::c_void) {
     if ctx.is_null() {
         return;
     }
@@ -532,10 +511,7 @@ pub extern "C" fn SSL_CTX_set_client_CA_list(
 
 /// Add client CA from file
 #[no_mangle]
-pub extern "C" fn SSL_CTX_add_client_CA(
-    ctx: *mut SslContext,
-    _x509: *mut X509,
-) -> c_int {
+pub extern "C" fn SSL_CTX_add_client_CA(ctx: *mut SslContext, _x509: *mut X509) -> c_int {
     if ctx.is_null() {
         return 0;
     }

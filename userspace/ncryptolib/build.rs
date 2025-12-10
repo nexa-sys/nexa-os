@@ -1,6 +1,6 @@
 fn main() {
     // Link against NexaOS nrlib's libc
-    // 
+    //
     // NOTE: Link search paths are now handled by build-libs.sh via RUSTFLAGS
     // to ensure proper PIC/non-PIC separation. The build script uses:
     // - sysroot-pic/lib for shared library builds (PIC code required)

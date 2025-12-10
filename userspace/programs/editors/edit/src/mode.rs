@@ -35,12 +35,12 @@ impl Mode {
             Mode::Replace => "REPLACE",
         }
     }
-    
+
     /// Check if the mode allows text editing
     pub fn is_editing(&self) -> bool {
         matches!(self, Mode::Insert | Mode::Replace)
     }
-    
+
     /// Check if the mode is a visual selection mode
     pub fn is_visual(&self) -> bool {
         matches!(self, Mode::Visual | Mode::VisualLine | Mode::VisualBlock)
@@ -57,14 +57,14 @@ impl Default for Mode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Operator {
     None,
-    Delete,     // d
-    Yank,       // y
-    Change,     // c
-    Indent,     // >
-    Unindent,   // <
-    Format,     // gq
-    Uppercase,  // gU
-    Lowercase,  // gu
+    Delete,    // d
+    Yank,      // y
+    Change,    // c
+    Indent,    // >
+    Unindent,  // <
+    Format,    // gq
+    Uppercase, // gU
+    Lowercase, // gu
 }
 
 impl Default for Operator {

@@ -51,12 +51,12 @@ impl Adler32 {
 
         while offset < data.len() {
             let chunk_len = core::cmp::min(NMAX, data.len() - offset);
-            
+
             for i in 0..chunk_len {
                 a += data[offset + i] as u32;
                 b += a;
             }
-            
+
             a %= ADLER_MOD;
             b %= ADLER_MOD;
             offset += chunk_len;
@@ -125,7 +125,7 @@ pub fn adler32_combine_impl(adler1: u32, adler2: u32, len2: usize) -> u32 {
 // C ABI Exports
 // ============================================================================
 
-use crate::{c_int, c_ulong, Bytef, uInt};
+use crate::{c_int, c_ulong, uInt, Bytef};
 
 /// Calculate Adler-32 (zlib-compatible C ABI)
 #[no_mangle]
@@ -133,11 +133,11 @@ pub extern "C" fn nzip_adler32(adler: c_ulong, buf: *const Bytef, len: uInt) -> 
     if buf.is_null() {
         return 1; // Initial adler32 value
     }
-    
+
     if len == 0 {
         return adler;
     }
-    
+
     unsafe {
         let data = core::slice::from_raw_parts(buf, len as usize);
         adler32_slice(adler as u32, data) as c_ulong
@@ -172,12 +172,12 @@ mod tests {
     #[test]
     fn test_adler32_incremental() {
         let full = adler32(b"hello world");
-        
+
         let mut hasher = Adler32::new();
         hasher.update(b"hello");
         hasher.update(b" ");
         hasher.update(b"world");
-        
+
         assert_eq!(hasher.finalize(), full);
     }
 }

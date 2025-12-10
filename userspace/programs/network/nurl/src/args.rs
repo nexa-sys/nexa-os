@@ -1,5 +1,4 @@
 /// Command-line argument parsing for nurl
-
 use std::env;
 use std::process;
 

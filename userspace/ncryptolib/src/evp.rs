@@ -4,12 +4,12 @@
 
 use std::vec::Vec;
 
-use crate::hash::{Sha256, Sha384, Sha512};
-use crate::sha3::{Sha3};
+use crate::aes::{Aes128, Aes256, AesCbc, AesCtr, AesGcm, AES_128_KEY_SIZE, AES_256_KEY_SIZE};
 use crate::blake2::{Blake2b, Blake2s};
+use crate::hash::{Sha256, Sha384, Sha512};
 use crate::md5::Md5;
 use crate::sha1::Sha1;
-use crate::aes::{Aes128, Aes256, AesGcm, AesCtr, AesCbc, AES_128_KEY_SIZE, AES_256_KEY_SIZE};
+use crate::sha3::Sha3;
 
 // ============================================================================
 // EVP Digest (Message Digest)
@@ -345,12 +345,30 @@ pub static EVP_AES_256_CBC: EvpCipher = EvpCipher {
 
 /// Internal cipher state - stores the cipher and accumulated data
 enum CipherState {
-    Aes128Gcm { gcm: AesGcm<Aes128>, nonce: [u8; 12] },
-    Aes256Gcm { gcm: AesGcm<Aes256>, nonce: [u8; 12] },
-    Aes128Ctr { ctr: AesCtr<Aes128>, nonce: [u8; 16] },
-    Aes256Ctr { ctr: AesCtr<Aes256>, nonce: [u8; 16] },
-    Aes128Cbc { cbc: AesCbc<Aes128>, iv: [u8; 16] },
-    Aes256Cbc { cbc: AesCbc<Aes256>, iv: [u8; 16] },
+    Aes128Gcm {
+        gcm: AesGcm<Aes128>,
+        nonce: [u8; 12],
+    },
+    Aes256Gcm {
+        gcm: AesGcm<Aes256>,
+        nonce: [u8; 12],
+    },
+    Aes128Ctr {
+        ctr: AesCtr<Aes128>,
+        nonce: [u8; 16],
+    },
+    Aes256Ctr {
+        ctr: AesCtr<Aes256>,
+        nonce: [u8; 16],
+    },
+    Aes128Cbc {
+        cbc: AesCbc<Aes128>,
+        iv: [u8; 16],
+    },
+    Aes256Cbc {
+        cbc: AesCbc<Aes256>,
+        iv: [u8; 16],
+    },
 }
 
 /// EVP_CIPHER_CTX - Cipher Context
@@ -359,7 +377,7 @@ pub struct EvpCipherCtx {
     state: Option<CipherState>,
     encrypting: bool,
     aad: Vec<u8>,
-    buffer: Vec<u8>,  // Accumulated input data
+    buffer: Vec<u8>, // Accumulated input data
     tag: [u8; 16],
 }
 
@@ -377,12 +395,7 @@ impl EvpCipherCtx {
     }
 
     /// Initialize for encryption
-    pub fn encrypt_init(
-        &mut self,
-        cipher: &EvpCipher,
-        key: &[u8],
-        iv: &[u8],
-    ) -> Result<(), i32> {
+    pub fn encrypt_init(&mut self, cipher: &EvpCipher, key: &[u8], iv: &[u8]) -> Result<(), i32> {
         self.cipher = cipher;
         self.encrypting = true;
         self.aad.clear();
@@ -391,12 +404,7 @@ impl EvpCipherCtx {
     }
 
     /// Initialize for decryption
-    pub fn decrypt_init(
-        &mut self,
-        cipher: &EvpCipher,
-        key: &[u8],
-        iv: &[u8],
-    ) -> Result<(), i32> {
+    pub fn decrypt_init(&mut self, cipher: &EvpCipher, key: &[u8], iv: &[u8]) -> Result<(), i32> {
         self.cipher = cipher;
         self.encrypting = false;
         self.aad.clear();
@@ -711,11 +719,7 @@ pub extern "C" fn EVP_DigestUpdate(ctx: *mut EvpMdCtx, data: *const u8, len: usi
 
 /// EVP_DigestFinal
 #[no_mangle]
-pub extern "C" fn EVP_DigestFinal(
-    ctx: *mut EvpMdCtx,
-    md: *mut u8,
-    md_len: *mut u32,
-) -> i32 {
+pub extern "C" fn EVP_DigestFinal(ctx: *mut EvpMdCtx, md: *mut u8, md_len: *mut u32) -> i32 {
     if ctx.is_null() || md.is_null() {
         return 0;
     }
@@ -784,13 +788,13 @@ pub extern "C" fn EVP_EncryptInit_ex(
     }
     let ctx = unsafe { &mut *ctx };
     let cipher = unsafe { &*cipher };
-    
+
     let key_slice = if key.is_null() {
         return 0;
     } else {
         unsafe { core::slice::from_raw_parts(key, cipher.key_len) }
     };
-    
+
     let iv_slice = if iv.is_null() {
         return 0;
     } else {
@@ -817,13 +821,13 @@ pub extern "C" fn EVP_DecryptInit_ex(
     }
     let ctx = unsafe { &mut *ctx };
     let cipher = unsafe { &*cipher };
-    
+
     let key_slice = if key.is_null() {
         return 0;
     } else {
         unsafe { core::slice::from_raw_parts(key, cipher.key_len) }
     };
-    
+
     let iv_slice = if iv.is_null() {
         return 0;
     } else {
@@ -855,7 +859,9 @@ pub extern "C" fn EVP_EncryptUpdate(
     match ctx.update(input_slice, output_slice) {
         Ok(len) => {
             if !out_len.is_null() {
-                unsafe { *out_len = len as i32; }
+                unsafe {
+                    *out_len = len as i32;
+                }
             }
             1
         }
@@ -891,7 +897,9 @@ pub extern "C" fn EVP_EncryptFinal_ex(
     match ctx.finalize(output_slice) {
         Ok(len) => {
             if !out_len.is_null() {
-                unsafe { *out_len = len as i32; }
+                unsafe {
+                    *out_len = len as i32;
+                }
             }
             1
         }
@@ -1062,7 +1070,9 @@ pub extern "C" fn EVP_PKEY_new() -> *mut EvpPkey {
 #[no_mangle]
 pub extern "C" fn EVP_PKEY_free(pkey: *mut EvpPkey) {
     if !pkey.is_null() {
-        unsafe { drop(Box::from_raw(pkey)); }
+        unsafe {
+            drop(Box::from_raw(pkey));
+        }
     }
 }
 
@@ -1089,8 +1099,8 @@ pub extern "C" fn EVP_PKEY_size(pkey: *const EvpPkey) -> i32 {
     }
     let pkey = unsafe { &*pkey };
     match pkey.key_type {
-        EvpPkeyType::Ed25519 => 64,  // Signature size
-        EvpPkeyType::X25519 => 32,   // Shared secret size
+        EvpPkeyType::Ed25519 => 64,   // Signature size
+        EvpPkeyType::X25519 => 32,    // Shared secret size
         EvpPkeyType::EcdsaP256 => 72, // Max DER signature size
         EvpPkeyType::EcdsaP384 => 104,
     }
@@ -1159,10 +1169,7 @@ pub extern "C" fn EVP_PKEY_CTX_new(
 
 /// EVP_PKEY_CTX_new_id
 #[no_mangle]
-pub extern "C" fn EVP_PKEY_CTX_new_id(
-    id: i32,
-    _engine: *mut core::ffi::c_void,
-) -> *mut EvpPkeyCtx {
+pub extern "C" fn EVP_PKEY_CTX_new_id(id: i32, _engine: *mut core::ffi::c_void) -> *mut EvpPkeyCtx {
     let mut ctx = Box::new(EvpPkeyCtx::new());
     ctx.key_type = Some(id);
     Box::into_raw(ctx)
@@ -1172,7 +1179,9 @@ pub extern "C" fn EVP_PKEY_CTX_new_id(
 #[no_mangle]
 pub extern "C" fn EVP_PKEY_CTX_free(ctx: *mut EvpPkeyCtx) {
     if !ctx.is_null() {
-        unsafe { drop(Box::from_raw(ctx)); }
+        unsafe {
+            drop(Box::from_raw(ctx));
+        }
     }
 }
 
@@ -1182,7 +1191,9 @@ pub extern "C" fn EVP_PKEY_keygen_init(ctx: *mut EvpPkeyCtx) -> i32 {
     if ctx.is_null() {
         return -1;
     }
-    unsafe { (*ctx).operation = 1; } // Keygen
+    unsafe {
+        (*ctx).operation = 1;
+    } // Keygen
     1
 }
 
@@ -1192,10 +1203,10 @@ pub extern "C" fn EVP_PKEY_keygen(ctx: *mut EvpPkeyCtx, ppkey: *mut *mut EvpPkey
     if ctx.is_null() || ppkey.is_null() {
         return -1;
     }
-    
+
     let ctx = unsafe { &*ctx };
     let key_type = ctx.key_type.unwrap_or(0);
-    
+
     let pkey = match key_type {
         EVP_PKEY_ED25519 => {
             let mut seed = [0u8; 32];
@@ -1221,8 +1232,10 @@ pub extern "C" fn EVP_PKEY_keygen(ctx: *mut EvpPkeyCtx, ppkey: *mut *mut EvpPkey
         }
         _ => return -1,
     };
-    
-    unsafe { *ppkey = Box::into_raw(pkey); }
+
+    unsafe {
+        *ppkey = Box::into_raw(pkey);
+    }
     1
 }
 
@@ -1232,16 +1245,15 @@ pub extern "C" fn EVP_PKEY_derive_init(ctx: *mut EvpPkeyCtx) -> i32 {
     if ctx.is_null() {
         return -1;
     }
-    unsafe { (*ctx).operation = 2; } // Derive
+    unsafe {
+        (*ctx).operation = 2;
+    } // Derive
     1
 }
 
 /// EVP_PKEY_derive_set_peer
 #[no_mangle]
-pub extern "C" fn EVP_PKEY_derive_set_peer(
-    _ctx: *mut EvpPkeyCtx,
-    _peer: *mut EvpPkey,
-) -> i32 {
+pub extern "C" fn EVP_PKEY_derive_set_peer(_ctx: *mut EvpPkeyCtx, _peer: *mut EvpPkey) -> i32 {
     // Store peer key for derive operation
     1
 }
@@ -1252,7 +1264,9 @@ pub extern "C" fn EVP_PKEY_sign_init(ctx: *mut EvpPkeyCtx) -> i32 {
     if ctx.is_null() {
         return -1;
     }
-    unsafe { (*ctx).operation = 3; } // Sign
+    unsafe {
+        (*ctx).operation = 3;
+    } // Sign
     1
 }
 
@@ -1262,7 +1276,9 @@ pub extern "C" fn EVP_PKEY_verify_init(ctx: *mut EvpPkeyCtx) -> i32 {
     if ctx.is_null() {
         return -1;
     }
-    unsafe { (*ctx).operation = 4; } // Verify
+    unsafe {
+        (*ctx).operation = 4;
+    } // Verify
     1
 }
 
@@ -1329,10 +1345,10 @@ pub extern "C" fn EVP_Digest(
     if data.is_null() || md.is_null() || type_.is_null() {
         return 0;
     }
-    
+
     let data = unsafe { core::slice::from_raw_parts(data, count) };
     let type_ = unsafe { &*type_ };
-    
+
     let (hash, hash_len): (Vec<u8>, usize) = match type_.md_type {
         EvpMdType::Md5 => {
             let h = crate::md5::md5(data);
@@ -1375,14 +1391,14 @@ pub extern "C" fn EVP_Digest(
             (h.to_vec(), 32)
         }
     };
-    
+
     unsafe {
         core::ptr::copy_nonoverlapping(hash.as_ptr(), md, hash_len);
         if !size.is_null() {
             *size = hash_len as u32;
         }
     }
-    
+
     1
 }
 
@@ -1411,10 +1427,6 @@ pub extern "C" fn EVP_DigestInit_ex(
 
 /// EVP_DigestFinal_ex
 #[no_mangle]
-pub extern "C" fn EVP_DigestFinal_ex(
-    ctx: *mut EvpMdCtx,
-    md: *mut u8,
-    size: *mut u32,
-) -> i32 {
+pub extern "C" fn EVP_DigestFinal_ex(ctx: *mut EvpMdCtx, md: *mut u8, size: *mut u32) -> i32 {
     EVP_DigestFinal(ctx, md, size)
 }

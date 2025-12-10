@@ -1,5 +1,8 @@
 #![cfg_attr(not(feature = "std"), no_std)]
-#![cfg_attr(all(not(feature = "std"), feature = "panic-handler"), feature(lang_items))]
+#![cfg_attr(
+    all(not(feature = "std"), feature = "panic-handler"),
+    feature(lang_items)
+)]
 #![feature(linkage)]
 #![feature(thread_local)]
 #![feature(c_variadic)]
@@ -11,9 +14,7 @@ use core::{
     arch::asm,
     cmp,
     ffi::c_void,
-    mem,
-    ptr,
-    slice,
+    mem, ptr, slice,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use nexa_boot_info::{BlockDeviceInfo, FramebufferInfo, NetworkDeviceInfo};
@@ -21,7 +22,7 @@ use nexa_boot_info::{BlockDeviceInfo, FramebufferInfo, NetworkDeviceInfo};
 // Indicate to std that we're in single-threaded mode
 // This may cause std to skip locking entirely for I/O
 #[no_mangle]
-pub static __libc_single_threaded: u8 = 1;  // 1 = single-threaded (skip locks)
+pub static __libc_single_threaded: u8 = 1; // 1 = single-threaded (skip locks)
 
 // C Runtime support for std programs
 pub mod crt;
@@ -43,9 +44,9 @@ pub mod socket;
 // Re-export commonly used stdio helpers for convenience
 pub use stdio::{
     fflush, fprintf, fread, fwrite, getchar, printf, putchar, puts, stderr_write_all,
-    stderr_write_str, stderr_write_usize, stderr_write_isize, stderr_write_i32,
-    stdin_read_line, stdin_read_line_masked, stdin_read_line_noecho,
-    stdout_flush, stdout_write_all, stdout_write_fmt, stdout_write_str,
+    stderr_write_i32, stderr_write_isize, stderr_write_str, stderr_write_usize, stdin_read_line,
+    stdin_read_line_masked, stdin_read_line_noecho, stdout_flush, stdout_write_all,
+    stdout_write_fmt, stdout_write_str,
 };
 
 // Re-export time functions
@@ -53,56 +54,50 @@ pub use time::{get_uptime, sleep};
 
 // Re-export socket types and functions
 pub use socket::{
-    bind, connect, recvfrom, sendto, socket, socketpair,
-    format_ipv4, parse_ipv4, SockAddr, SockAddrIn,
-    AF_INET, AF_INET6, AF_UNSPEC, AF_UNIX, AF_LOCAL,
-    SOCK_STREAM, SOCK_DGRAM, SOCK_RAW,
-    IPPROTO_IP, IPPROTO_ICMP, IPPROTO_TCP, IPPROTO_UDP,
+    bind, connect, format_ipv4, parse_ipv4, recvfrom, sendto, socket, socketpair, SockAddr,
+    SockAddrIn, AF_INET, AF_INET6, AF_LOCAL, AF_UNIX, AF_UNSPEC, IPPROTO_ICMP, IPPROTO_IP,
+    IPPROTO_TCP, IPPROTO_UDP, SOCK_DGRAM, SOCK_RAW, SOCK_STREAM,
 };
 
 // Re-export process control functions and wait status macros
 pub use libc_compat::{
-    wexitstatus, wifexited, wifsignaled, wtermsig, wifstopped, wstopsig,
-    WNOHANG, WUNTRACED, WCONTINUED,
+    wexitstatus, wifexited, wifsignaled, wifstopped, wstopsig, wtermsig, WCONTINUED, WNOHANG,
+    WUNTRACED,
 };
 
 // Re-export signal functions and constants
 pub use libc_compat::{
-    kill,
-    SIGHUP, SIGINT, SIGQUIT, SIGILL, SIGTRAP, SIGABRT, SIGBUS, SIGFPE,
-    SIGKILL, SIGUSR1, SIGSEGV, SIGUSR2, SIGPIPE, SIGALRM, SIGTERM,
-    SIGCHLD, SIGCONT, SIGSTOP, SIGTSTP, SIGTTIN, SIGTTOU,
+    kill, SIGABRT, SIGALRM, SIGBUS, SIGCHLD, SIGCONT, SIGFPE, SIGHUP, SIGILL, SIGINT, SIGKILL,
+    SIGPIPE, SIGQUIT, SIGSEGV, SIGSTOP, SIGTERM, SIGTRAP, SIGTSTP, SIGTTIN, SIGTTOU, SIGUSR1,
+    SIGUSR2,
 };
 
 // Re-export memory management functions
 pub use libc_compat::{
-    mmap, mmap64, munmap, mprotect, brk, sbrk,
-    PROT_NONE, PROT_READ, PROT_WRITE, PROT_EXEC,
-    MAP_SHARED, MAP_PRIVATE, MAP_FIXED, MAP_ANONYMOUS, MAP_ANON,
-    MAP_NORESERVE, MAP_POPULATE, MAP_FAILED,
+    brk, mmap, mmap64, mprotect, munmap, sbrk, MAP_ANON, MAP_ANONYMOUS, MAP_FAILED, MAP_FIXED,
+    MAP_NORESERVE, MAP_POPULATE, MAP_PRIVATE, MAP_SHARED, PROT_EXEC, PROT_NONE, PROT_READ,
+    PROT_WRITE,
 };
 
 // Re-export thread management functions
 pub use libc_compat::{
-    clone_syscall, gettid, set_tid_address, set_robust_list, get_robust_list, futex,
-    CLONE_VM, CLONE_FS, CLONE_FILES, CLONE_SIGHAND, CLONE_THREAD,
-    CLONE_SETTLS, CLONE_PARENT_SETTID, CLONE_CHILD_CLEARTID, CLONE_CHILD_SETTID, CLONE_VFORK,
-    FUTEX_WAIT_OP, FUTEX_WAKE_OP, FUTEX_PRIVATE, FUTEX_CLOCK_REALTIME_FLAG,
+    clone_syscall, futex, get_robust_list, gettid, set_robust_list, set_tid_address,
+    CLONE_CHILD_CLEARTID, CLONE_CHILD_SETTID, CLONE_FILES, CLONE_FS, CLONE_PARENT_SETTID,
+    CLONE_SETTLS, CLONE_SIGHAND, CLONE_THREAD, CLONE_VFORK, CLONE_VM, FUTEX_CLOCK_REALTIME_FLAG,
+    FUTEX_PRIVATE, FUTEX_WAIT_OP, FUTEX_WAKE_OP,
 };
 
 // Re-export dynamic linker types and functions
 pub use libc_compat::rtld::{
-    RTLD_LAZY, RTLD_NOW, RTLD_GLOBAL, RTLD_LOCAL, RTLD_NODELETE,
-    RTLD_NOLOAD, RTLD_DEEPBIND, RTLD_DEFAULT, RTLD_NEXT,
-    DlInfo, DlError, rtld_init, rtld_is_initialized,
+    rtld_init, rtld_is_initialized, DlError, DlInfo, RTLD_DEEPBIND, RTLD_DEFAULT, RTLD_GLOBAL,
+    RTLD_LAZY, RTLD_LOCAL, RTLD_NEXT, RTLD_NODELETE, RTLD_NOLOAD, RTLD_NOW,
 };
 
 // Re-export directory operations
 pub use libc_compat::dirent::{
-    opendir, readdir, readdir64, readdir_r, closedir, rewinddir,
-    seekdir, telldir, dirfd, fdopendir, alphasort, versionsort,
-    dirent, dirent64, DIR,
-    DT_UNKNOWN, DT_FIFO, DT_CHR, DT_DIR, DT_BLK, DT_REG, DT_LNK, DT_SOCK, DT_WHT,
+    alphasort, closedir, dirent, dirent64, dirfd, fdopendir, opendir, readdir, readdir64,
+    readdir_r, rewinddir, seekdir, telldir, versionsort, DIR, DT_BLK, DT_CHR, DT_DIR, DT_FIFO,
+    DT_LNK, DT_REG, DT_SOCK, DT_UNKNOWN, DT_WHT,
 };
 
 // Re-export resolver types
@@ -808,7 +803,13 @@ pub extern "C" fn write(fd: i32, buf: *const c_void, count: usize) -> isize {
 /// Unlike read(), the file offset is not changed.
 #[no_mangle]
 pub extern "C" fn pread64(fd: i32, buf: *mut c_void, count: usize, offset: off_t) -> isize {
-    translate_ret_isize(syscall4(SYS_PREAD64, fd as u64, buf as u64, count as u64, offset as u64))
+    translate_ret_isize(syscall4(
+        SYS_PREAD64,
+        fd as u64,
+        buf as u64,
+        count as u64,
+        offset as u64,
+    ))
 }
 
 /// pread - alias for pread64
@@ -821,7 +822,13 @@ pub extern "C" fn pread(fd: i32, buf: *mut c_void, count: usize, offset: off_t) 
 /// Unlike write(), the file offset is not changed.
 #[no_mangle]
 pub extern "C" fn pwrite64(fd: i32, buf: *const c_void, count: usize, offset: off_t) -> isize {
-    translate_ret_isize(syscall4(SYS_PWRITE64, fd as u64, buf as u64, count as u64, offset as u64))
+    translate_ret_isize(syscall4(
+        SYS_PWRITE64,
+        fd as u64,
+        buf as u64,
+        count as u64,
+        offset as u64,
+    ))
 }
 
 /// pwrite - alias for pwrite64
@@ -902,7 +909,7 @@ pub extern "C" fn fork() -> i32 {
 #[no_mangle]
 pub extern "C" fn execve(path: *const u8, argv: *const *const u8, envp: *const *const u8) -> i32 {
     if path.is_null() {
-        set_errno(ENOENT);  
+        set_errno(ENOENT);
         return -1;
     }
     translate_ret_i32(syscall3(SYS_EXECVE, path as u64, argv as u64, envp as u64))
@@ -924,23 +931,23 @@ pub extern "C" fn wait4(pid: i32, status: *mut i32, options: i32, _rusage: *mut 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct stat {
-    pub st_dev: u64,      // offset 0
-    pub st_ino: u64,      // offset 8
-    pub st_nlink: u64,    // offset 16 (u64 on x86_64!)
-    pub st_mode: u32,     // offset 24
-    pub st_uid: u32,      // offset 28
-    pub st_gid: u32,      // offset 32
-    pub __pad0: u32,      // offset 36 (padding)
-    pub st_rdev: u64,     // offset 40
-    pub st_size: i64,     // offset 48
-    pub st_blksize: i64,  // offset 56
-    pub st_blocks: i64,   // offset 64
-    pub st_atime: i64,    // offset 72
-    pub st_atime_nsec: i64, // offset 80
-    pub st_mtime: i64,    // offset 88
-    pub st_mtime_nsec: i64, // offset 96
-    pub st_ctime: i64,    // offset 104
-    pub st_ctime_nsec: i64, // offset 112
+    pub st_dev: u64,           // offset 0
+    pub st_ino: u64,           // offset 8
+    pub st_nlink: u64,         // offset 16 (u64 on x86_64!)
+    pub st_mode: u32,          // offset 24
+    pub st_uid: u32,           // offset 28
+    pub st_gid: u32,           // offset 32
+    pub __pad0: u32,           // offset 36 (padding)
+    pub st_rdev: u64,          // offset 40
+    pub st_size: i64,          // offset 48
+    pub st_blksize: i64,       // offset 56
+    pub st_blocks: i64,        // offset 64
+    pub st_atime: i64,         // offset 72
+    pub st_atime_nsec: i64,    // offset 80
+    pub st_mtime: i64,         // offset 88
+    pub st_mtime_nsec: i64,    // offset 96
+    pub st_ctime: i64,         // offset 104
+    pub st_ctime_nsec: i64,    // offset 112
     pub st_reserved: [i64; 3], // offset 120
 }
 
@@ -1240,7 +1247,8 @@ const MAX_TLS_KEYS: usize = 128;
 // Global key allocation tracking (which keys are in use)
 static mut TLS_KEY_USED: [bool; MAX_TLS_KEYS] = [false; MAX_TLS_KEYS];
 static mut TLS_NEXT_KEY: usize = 0;
-static mut TLS_DESTRUCTORS: [Option<unsafe extern "C" fn(*mut c_void)>; MAX_TLS_KEYS] = [None; MAX_TLS_KEYS];
+static mut TLS_DESTRUCTORS: [Option<unsafe extern "C" fn(*mut c_void)>; MAX_TLS_KEYS] =
+    [None; MAX_TLS_KEYS];
 
 // Fallback global storage for when TCB is not available (early init)
 static mut TLS_FALLBACK: [*mut c_void; MAX_TLS_KEYS] = [ptr::null_mut(); MAX_TLS_KEYS];
@@ -1295,13 +1303,13 @@ pub unsafe extern "C" fn pthread_getspecific(key: pthread_key_t) -> *mut c_void 
     if idx >= MAX_TLS_KEYS {
         return ptr::null_mut();
     }
-    
+
     // Try to get from per-thread TCB first
     let value = libc_compat::pthread::get_thread_tls_data(idx);
     if !value.is_null() {
         return value;
     }
-    
+
     // Fallback to global storage (for early init or if TCB not set)
     TLS_FALLBACK[idx]
 }
@@ -1313,12 +1321,12 @@ pub unsafe extern "C" fn pthread_setspecific(key: pthread_key_t, value: *const c
         set_errno(EINVAL);
         return EINVAL;
     }
-    
+
     // Try to set in per-thread TCB first
     if libc_compat::pthread::set_thread_tls_data(idx, value as *mut c_void) {
         return 0;
     }
-    
+
     // Fallback to global storage (for early init or if TCB not set)
     TLS_FALLBACK[idx] = value as *mut c_void;
     0
@@ -1406,7 +1414,11 @@ impl BlockHeader {
     fn set_size_flags(&mut self, size: usize, allocated: bool, prev_allocated: bool) {
         self.size_flags = (size & SIZE_MASK)
             | (if allocated { FLAG_ALLOCATED } else { 0 })
-            | (if prev_allocated { FLAG_PREV_ALLOCATED } else { 0 });
+            | (if prev_allocated {
+                FLAG_PREV_ALLOCATED
+            } else {
+                0
+            });
     }
 }
 
@@ -1428,41 +1440,41 @@ fn align_up(value: usize, align: usize) -> Option<usize> {
 unsafe fn expand_heap(min_size: usize) -> bool {
     // Calculate how much to request (round up to SBRK_INCREMENT)
     let increment = ((min_size + SBRK_INCREMENT - 1) / SBRK_INCREMENT) * SBRK_INCREMENT;
-    
+
     let result = libc_compat::sbrk(increment as isize);
     if result == (-1isize) as *mut c_void {
         return false;
     }
-    
+
     let new_block_start = result as usize;
-    
+
     // If this is first allocation, initialize HEAP_START
     if HEAP_START == 0 {
         HEAP_START = new_block_start;
         HEAP_END = new_block_start;
     }
-    
+
     // Create a new free block from the expanded region
     let block = new_block_start as *mut FreeBlock;
     let block_size = increment;
-    
+
     // Set up the block header
     (*block).header.set_size_flags(block_size, false, true); // Free, prev allocated (boundary)
-    
+
     // Set up the footer
     let footer = (new_block_start + block_size - FOOTER_SIZE) as *mut BlockFooter;
     (*footer).size = block_size;
-    
+
     // Initialize free list pointers
     (*block).next_free = ptr::null_mut();
     (*block).prev_free = ptr::null_mut();
-    
+
     // Add to free list
     add_to_free_list(block);
-    
+
     HEAP_END = new_block_start + increment;
     TOTAL_FREE += block_size;
-    
+
     true
 }
 
@@ -1471,12 +1483,12 @@ unsafe fn add_to_free_list(block: *mut FreeBlock) {
     // Initialize pointers first
     (*block).next_free = ptr::null_mut();
     (*block).prev_free = ptr::null_mut();
-    
+
     if FREE_LIST_HEAD.is_null() {
         FREE_LIST_HEAD = block;
         return;
     }
-    
+
     // Simplified: just add to head of list (not address-ordered)
     // This is less efficient but safer
     (*block).next_free = FREE_LIST_HEAD;
@@ -1488,13 +1500,13 @@ unsafe fn add_to_free_list(block: *mut FreeBlock) {
 unsafe fn remove_from_free_list(block: *mut FreeBlock) {
     let prev = (*block).prev_free;
     let next = (*block).next_free;
-    
+
     if !prev.is_null() {
         (*prev).next_free = next;
     } else {
         FREE_LIST_HEAD = next;
     }
-    
+
     if !next.is_null() {
         (*next).prev_free = prev;
     }
@@ -1505,7 +1517,7 @@ unsafe fn coalesce(block: *mut FreeBlock) -> *mut FreeBlock {
     let header = &mut (*block).header;
     let mut current_size = header.size();
     let mut result = block;
-    
+
     // Try to coalesce with next block
     let next_block = (block as usize + current_size) as *mut BlockHeader;
     if (next_block as usize) < HEAP_END {
@@ -1513,56 +1525,60 @@ unsafe fn coalesce(block: *mut FreeBlock) -> *mut FreeBlock {
             // Next block is free - merge
             let next_free = next_block as *mut FreeBlock;
             let next_size = (*next_block).size();
-            
+
             // Remove next block from free list
             remove_from_free_list(next_free);
-            
+
             // Extend current block
             current_size += next_size;
             header.set_size_flags(current_size, false, header.is_prev_allocated());
-            
+
             // Update footer
             let footer = (result as usize + current_size - FOOTER_SIZE) as *mut BlockFooter;
             (*footer).size = current_size;
         }
     }
-    
+
     // Try to coalesce with previous block
     if !header.is_prev_allocated() && (block as usize) > HEAP_START {
         // Read previous block's footer to get its size
         let prev_footer = (block as usize - FOOTER_SIZE) as *mut BlockFooter;
         let prev_size = (*prev_footer).size;
         let prev_block = (block as usize - prev_size) as *mut FreeBlock;
-        
+
         // Remove current block from free list (we'll re-add the merged block)
         remove_from_free_list(result);
-        
+
         // Extend previous block
         let new_size = prev_size + current_size;
-        (*prev_block).header.set_size_flags(new_size, false, (*prev_block).header.is_prev_allocated());
-        
+        (*prev_block).header.set_size_flags(
+            new_size,
+            false,
+            (*prev_block).header.is_prev_allocated(),
+        );
+
         // Update footer
         let footer = (prev_block as usize + new_size - FOOTER_SIZE) as *mut BlockFooter;
         (*footer).size = new_size;
-        
+
         result = prev_block;
         // Note: prev_block is already in the free list
     }
-    
+
     result
 }
 
 /// Find a free block that fits the requested size using first-fit
 unsafe fn find_free_block(size: usize) -> *mut FreeBlock {
     let mut curr = FREE_LIST_HEAD;
-    
+
     while !curr.is_null() {
         if (*curr).header.size() >= size {
             return curr;
         }
         curr = (*curr).next_free;
     }
-    
+
     ptr::null_mut()
 }
 
@@ -1570,34 +1586,34 @@ unsafe fn find_free_block(size: usize) -> *mut FreeBlock {
 unsafe fn split_block(block: *mut FreeBlock, needed_size: usize) {
     let block_size = (*block).header.size();
     let remaining = block_size - needed_size;
-    
+
     // Only split if remaining is large enough for a free block
     if remaining >= FREE_BLOCK_MIN {
         // Create a new free block from the remainder
         let new_block = (block as usize + needed_size) as *mut FreeBlock;
         (*new_block).header.set_size_flags(remaining, false, true); // Free, prev allocated
-        
+
         // Set up footer
         let footer = (new_block as usize + remaining - FOOTER_SIZE) as *mut BlockFooter;
         (*footer).size = remaining;
-        
+
         // Update original block size
         (*block).header.set_size_flags(
             needed_size,
             (*block).header.is_allocated(),
             (*block).header.is_prev_allocated(),
         );
-        
+
         // Add new block to free list
         add_to_free_list(new_block);
-        
+
         TOTAL_FREE += remaining;
     }
 }
 
 unsafe fn alloc_internal(size: usize, align: usize) -> *mut c_void {
     // CRITICAL: DO NOT log here - causes infinite recursion!
-    
+
     if size == 0 {
         set_errno(0);
         return ptr::null_mut();
@@ -1623,7 +1639,7 @@ unsafe fn alloc_internal(size: usize, align: usize) -> *mut c_void {
             return ptr::null_mut();
         }
     };
-    
+
     let total_size = match data_size.checked_add(DATA_OFFSET) {
         Some(s) => s.max(FREE_BLOCK_MIN), // Minimum size for free block
         None => {
@@ -1650,7 +1666,7 @@ unsafe fn alloc_internal(size: usize, align: usize) -> *mut c_void {
 
     // Find a suitable free block
     let mut block = find_free_block(total_size);
-    
+
     // If no suitable block found, expand heap
     if block.is_null() {
         if !expand_heap(total_size) {
@@ -1663,29 +1679,31 @@ unsafe fn alloc_internal(size: usize, align: usize) -> *mut c_void {
             return ptr::null_mut();
         }
     }
-    
+
     let block_size = (*block).header.size();
-    
+
     // Remove from free list
     remove_from_free_list(block);
     TOTAL_FREE -= block_size;
-    
+
     // Split if necessary
     split_block(block, total_size);
-    
+
     // Mark as allocated
     let final_size = (*block).header.size();
-    (*block).header.set_size_flags(final_size, true, (*block).header.is_prev_allocated());
-    
+    (*block)
+        .header
+        .set_size_flags(final_size, true, (*block).header.is_prev_allocated());
+
     // Mark next block's prev_allocated flag
     let next_header = (block as usize + final_size) as *mut BlockHeader;
     if (next_header as usize) < HEAP_END {
         let next_flags = (*next_header).size_flags;
         (*next_header).size_flags = next_flags | FLAG_PREV_ALLOCATED;
     }
-    
+
     TOTAL_ALLOCATED += final_size;
-    
+
     // Return pointer to data (after padded header for 16-byte alignment)
     let data_ptr = (block as usize + DATA_OFFSET) as *mut c_void;
     set_errno(0);
@@ -1745,57 +1763,57 @@ pub unsafe extern "C" fn free(ptr: *mut c_void) {
     if ptr.is_null() {
         return;
     }
-    
+
     let data_ptr = ptr as usize;
-    
+
     // Validate pointer is within our heap
     if HEAP_START == 0 || data_ptr < HEAP_START + DATA_OFFSET || data_ptr >= HEAP_END {
         return; // Invalid pointer, silently ignore (like glibc)
     }
-    
+
     // Get block header
     let header = (data_ptr - DATA_OFFSET) as *mut BlockHeader;
-    
+
     // Check if block is actually allocated
     if !(*header).is_allocated() {
         return; // Double free, silently ignore
     }
-    
+
     let block_size = (*header).size();
-    
+
     // Validate block size
     if block_size < FREE_BLOCK_MIN || block_size > HEAP_END - (header as usize) {
         // Invalid block size - corrupted header
         return;
     }
-    
+
     // Mark as free
     (*header).set_size_flags(block_size, false, (*header).is_prev_allocated());
-    
+
     // Set up footer for backward coalescing
     let footer = (header as usize + block_size - FOOTER_SIZE) as *mut BlockFooter;
     (*footer).size = block_size;
-    
+
     // Update next block's prev_allocated flag
     let next_header = (header as usize + block_size) as *mut BlockHeader;
     if (next_header as usize) < HEAP_END {
         let next_flags = (*next_header).size_flags;
         (*next_header).size_flags = next_flags & !FLAG_PREV_ALLOCATED;
     }
-    
+
     TOTAL_ALLOCATED -= block_size;
     TOTAL_FREE += block_size;
-    
+
     // Add to free list - but only if the block's internal free list
     // pointers are initialized to safe values
     let block = header as *mut FreeBlock;
-    
+
     // Clear the free list pointers to ensure they don't contain garbage
     (*block).next_free = ptr::null_mut();
     (*block).prev_free = ptr::null_mut();
-    
+
     add_to_free_list(block);
-    
+
     // TEMPORARILY DISABLED: Try to coalesce with adjacent free blocks
     // coalesce(block);
 }
@@ -1813,7 +1831,7 @@ pub unsafe extern "C" fn realloc(ptr: *mut c_void, new_size: usize) -> *mut c_vo
     }
 
     let old_size = allocation_size(ptr).unwrap_or(0);
-    
+
     if old_size == 0 {
         // Invalid pointer
         set_errno(EINVAL);
@@ -1826,37 +1844,37 @@ pub unsafe extern "C" fn realloc(ptr: *mut c_void, new_size: usize) -> *mut c_vo
         set_errno(0);
         return ptr;
     }
-    
+
     // Try to expand in place by checking if next block is free
     let header = (ptr as usize - DATA_OFFSET) as *mut BlockHeader;
     let block_size = (*header).size();
     let next_header = (header as usize + block_size) as *mut BlockHeader;
-    
+
     if (next_header as usize) < HEAP_END && !(*next_header).is_allocated() {
         let next_size = (*next_header).size();
         let combined_size = block_size + next_size;
         let needed_size = new_size + DATA_OFFSET;
-        
+
         if combined_size >= needed_size {
             // Can expand in place!
             let next_block = next_header as *mut FreeBlock;
             remove_from_free_list(next_block);
             TOTAL_FREE -= next_size;
-            
+
             // Update header with new size
             (*header).set_size_flags(combined_size, true, (*header).is_prev_allocated());
             TOTAL_ALLOCATED += next_size;
-            
+
             // Update next block's prev_allocated flag
             let new_next = (header as usize + combined_size) as *mut BlockHeader;
             if (new_next as usize) < HEAP_END {
                 let flags = (*new_next).size_flags;
                 (*new_next).size_flags = flags | FLAG_PREV_ALLOCATED;
             }
-            
+
             // Optionally split if there's excess
             // (Skip for simplicity - could add later)
-            
+
             set_errno(0);
             return ptr;
         }
@@ -1870,7 +1888,7 @@ pub unsafe extern "C" fn realloc(ptr: *mut c_void, new_size: usize) -> *mut c_vo
 
     let copy_len = cmp::min(old_size, new_size);
     ptr::copy_nonoverlapping(ptr as *const u8, new_ptr as *mut u8, copy_len);
-    
+
     free(ptr);
     new_ptr
 }
@@ -1943,11 +1961,11 @@ pub unsafe extern "C" fn arc4random_buf(buf: *mut c_void, nbytes: usize) {
     // Use getrandom syscall with blocking mode
     let mut filled = 0usize;
     let bytes = buf as *mut u8;
-    
+
     while filled < nbytes {
         let to_fill = nbytes - filled;
         let result = getrandom(bytes.add(filled) as *mut c_void, to_fill, 0);
-        
+
         if result > 0 {
             filled += result as usize;
         } else {
@@ -1973,10 +1991,10 @@ pub unsafe extern "C" fn arc4random_uniform(upper_bound: u32) -> u32 {
     if upper_bound < 2 {
         return 0;
     }
-    
+
     // Rejection sampling to avoid modulo bias
     let min = (-(upper_bound as i32) as u32) % upper_bound;
-    
+
     loop {
         let r = arc4random();
         if r >= min {
@@ -1988,7 +2006,7 @@ pub unsafe extern "C" fn arc4random_uniform(upper_bound: u32) -> u32 {
 /// Fallback software PRNG (used only if kernel syscall fails)
 unsafe fn fallback_random(buf: *mut u8, len: usize) {
     static mut SEED: u64 = 0x123456789abcdef0;
-    
+
     // Mix in some entropy from TSC
     let tsc: u64;
     core::arch::asm!(
@@ -2000,7 +2018,7 @@ unsafe fn fallback_random(buf: *mut u8, len: usize) {
         options(nomem, nostack)
     );
     SEED ^= tsc;
-    
+
     let bytes = core::slice::from_raw_parts_mut(buf, len);
     for byte in bytes {
         SEED = SEED.wrapping_mul(6364136223846793005).wrapping_add(1);
@@ -2044,7 +2062,7 @@ impl ModuleListEntry {
         let len = self.name.iter().position(|&c| c == 0).unwrap_or(32);
         core::str::from_utf8(&self.name[..len]).unwrap_or("")
     }
-    
+
     /// Get module state as string
     pub fn state_str(&self) -> &str {
         match self.state {
@@ -2054,7 +2072,7 @@ impl ModuleListEntry {
             _ => "unknown",
         }
     }
-    
+
     /// Get module type as string
     pub fn type_str(&self) -> &str {
         match self.module_type {
@@ -2094,12 +2112,22 @@ impl ModuleDetailedInfo {
         let len = field.iter().position(|&c| c == 0).unwrap_or(field.len());
         core::str::from_utf8(&field[..len]).unwrap_or("")
     }
-    
-    pub fn name_str(&self) -> &str { Self::get_str_field(&self.name) }
-    pub fn version_str(&self) -> &str { Self::get_str_field(&self.version) }
-    pub fn description_str(&self) -> &str { Self::get_str_field(&self.description) }
-    pub fn author_str(&self) -> &str { Self::get_str_field(&self.author) }
-    pub fn license_str(&self) -> &str { Self::get_str_field(&self.license) }
+
+    pub fn name_str(&self) -> &str {
+        Self::get_str_field(&self.name)
+    }
+    pub fn version_str(&self) -> &str {
+        Self::get_str_field(&self.version)
+    }
+    pub fn description_str(&self) -> &str {
+        Self::get_str_field(&self.description)
+    }
+    pub fn author_str(&self) -> &str {
+        Self::get_str_field(&self.author)
+    }
+    pub fn license_str(&self) -> &str {
+        Self::get_str_field(&self.license)
+    }
 }
 
 /// Module statistics (matches kernel struct)
@@ -2159,12 +2187,12 @@ impl ModuleSymbol {
 }
 
 /// Load a kernel module from file data
-/// 
+///
 /// # Arguments
 /// * `module_image` - Pointer to module binary data
 /// * `len` - Length of module data in bytes
 /// * `params` - Optional null-terminated parameter string (may be null)
-/// 
+///
 /// # Returns
 /// 0 on success, -1 on error with errno set
 #[no_mangle]
@@ -2184,7 +2212,7 @@ pub unsafe extern "C" fn init_module(
         out("r11") _,
         options(nostack, preserves_flags)
     );
-    
+
     if ret == u64::MAX {
         refresh_errno_from_kernel();
         -1
@@ -2195,11 +2223,11 @@ pub unsafe extern "C" fn init_module(
 }
 
 /// Unload a kernel module
-/// 
+///
 /// # Arguments
 /// * `name` - Null-terminated module name
 /// * `flags` - Flags (0 = normal, 2 = force unload)
-/// 
+///
 /// # Returns
 /// 0 on success, -1 on error with errno set
 #[no_mangle]
@@ -2214,7 +2242,7 @@ pub unsafe extern "C" fn delete_module(name: *const u8, flags: u32) -> c_int {
         out("r11") _,
         options(nostack, preserves_flags)
     );
-    
+
     if ret == u64::MAX {
         refresh_errno_from_kernel();
         -1
@@ -2225,13 +2253,13 @@ pub unsafe extern "C" fn delete_module(name: *const u8, flags: u32) -> c_int {
 }
 
 /// Query kernel module information
-/// 
+///
 /// # Arguments
 /// * `operation` - Query operation type (QUERY_MODULE_*)
 /// * `name` - Module name (may be null for some operations)
 /// * `buf` - Output buffer
 /// * `buf_size` - Size of output buffer
-/// 
+///
 /// # Returns
 /// Number of entries/bytes on success, -1 on error
 #[no_mangle]
@@ -2253,7 +2281,7 @@ pub unsafe extern "C" fn query_module(
         out("r11") _,
         options(nostack, preserves_flags)
     );
-    
+
     if ret == u64::MAX {
         refresh_errno_from_kernel();
         -1
@@ -2264,11 +2292,11 @@ pub unsafe extern "C" fn query_module(
 }
 
 /// Get list of all loaded modules
-/// 
+///
 /// # Arguments
 /// * `entries` - Buffer to store module entries
 /// * `max_entries` - Maximum number of entries in buffer
-/// 
+///
 /// # Returns
 /// Number of modules returned, or -1 on error
 pub fn list_modules(entries: &mut [ModuleListEntry]) -> isize {
@@ -2283,11 +2311,11 @@ pub fn list_modules(entries: &mut [ModuleListEntry]) -> isize {
 }
 
 /// Get detailed information about a specific module
-/// 
+///
 /// # Arguments
 /// * `name` - Module name (null-terminated)
 /// * `info` - Output info structure
-/// 
+///
 /// # Returns
 /// true on success, false on error
 pub fn get_module_info(name: &[u8], info: &mut ModuleDetailedInfo) -> bool {
@@ -2303,10 +2331,10 @@ pub fn get_module_info(name: &[u8], info: &mut ModuleDetailedInfo) -> bool {
 }
 
 /// Get module subsystem statistics
-/// 
+///
 /// # Arguments
 /// * `stats` - Output statistics structure
-/// 
+///
 /// # Returns
 /// true on success, false on error
 pub fn get_module_stats(stats: &mut ModuleStatistics) -> bool {
@@ -2322,11 +2350,11 @@ pub fn get_module_stats(stats: &mut ModuleStatistics) -> bool {
 }
 
 /// Get dependencies of a module
-/// 
+///
 /// # Arguments
 /// * `name` - Module name (null-terminated)
 /// * `deps` - Buffer to store dependency entries
-/// 
+///
 /// # Returns
 /// Number of dependencies, or -1 on error
 pub fn get_module_deps(name: &[u8], deps: &mut [ModuleDependency]) -> isize {
@@ -2341,11 +2369,11 @@ pub fn get_module_deps(name: &[u8], deps: &mut [ModuleDependency]) -> isize {
 }
 
 /// Get symbols exported by a module
-/// 
+///
 /// # Arguments
 /// * `name` - Module name (null-terminated)
 /// * `syms` - Buffer to store symbol entries
-/// 
+///
 /// # Returns
 /// Number of symbols, or -1 on error
 pub fn get_module_symbols(name: &[u8], syms: &mut [ModuleSymbol]) -> isize {

@@ -32,7 +32,7 @@ fn print_usage() {
 fn confirm(dest: &str) -> bool {
     print!("cp: overwrite '{}'? ", dest);
     io::stdout().flush().unwrap();
-    
+
     let mut input = String::new();
     if io::stdin().read_line(&mut input).is_ok() {
         let response = input.trim().to_lowercase();
@@ -45,7 +45,7 @@ fn confirm(dest: &str) -> bool {
 fn copy_file(src: &Path, dest: &Path, verbose: bool) -> io::Result<()> {
     let mut src_file = File::open(src)?;
     let mut dest_file = File::create(dest)?;
-    
+
     let mut buffer = [0u8; 8192];
     loop {
         match src_file.read(&mut buffer) {
@@ -57,11 +57,11 @@ fn copy_file(src: &Path, dest: &Path, verbose: bool) -> io::Result<()> {
             Err(e) => return Err(e),
         }
     }
-    
+
     if verbose {
         println!("'{}' -> '{}'", src.display(), dest.display());
     }
-    
+
     Ok(())
 }
 
@@ -74,7 +74,7 @@ fn copy_recursive(src: &Path, dest: &Path, verbose: bool) -> io::Result<()> {
                 println!("created directory '{}'", dest.display());
             }
         }
-        
+
         // Copy contents
         for entry in fs::read_dir(src)? {
             let entry = entry?;
@@ -85,13 +85,13 @@ fn copy_recursive(src: &Path, dest: &Path, verbose: bool) -> io::Result<()> {
     } else {
         copy_file(src, dest, verbose)?;
     }
-    
+
     Ok(())
 }
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    
+
     if args.len() < 3 {
         print_usage();
         process::exit(1);
@@ -103,7 +103,7 @@ fn main() {
     let mut verbose = false;
     let mut no_clobber = false;
     let mut paths: Vec<&str> = Vec::new();
-    
+
     for arg in args.iter().skip(1) {
         if arg == "-h" || arg == "--help" {
             print_usage();
@@ -156,7 +156,7 @@ fn main() {
     let dest = paths.pop().unwrap();
     let dest_path = Path::new(dest);
     let dest_is_dir = dest_path.is_dir();
-    
+
     // Multiple sources require destination to be a directory
     if paths.len() > 1 && !dest_is_dir {
         eprintln!("cp: target '{}' is not a directory", dest);
@@ -164,28 +164,28 @@ fn main() {
     }
 
     let mut exit_code = 0;
-    
+
     for src in paths {
         let src_path = Path::new(src);
-        
+
         if !src_path.exists() {
             eprintln!("cp: cannot stat '{}': No such file or directory", src);
             exit_code = 1;
             continue;
         }
-        
+
         if src_path.is_dir() && !recursive {
             eprintln!("cp: -r not specified; omitting directory '{}'", src);
             exit_code = 1;
             continue;
         }
-        
+
         let final_dest = if dest_is_dir {
             dest_path.join(src_path.file_name().unwrap_or_default())
         } else {
             dest_path.to_path_buf()
         };
-        
+
         // Check if destination exists
         if final_dest.exists() {
             if no_clobber {
@@ -195,13 +195,13 @@ fn main() {
                 continue;
             }
         }
-        
+
         let result = if recursive && src_path.is_dir() {
             copy_recursive(src_path, &final_dest, verbose)
         } else {
             copy_file(src_path, &final_dest, verbose)
         };
-        
+
         if let Err(e) = result {
             eprintln!("cp: cannot copy '{}': {}", src, e);
             exit_code = 1;

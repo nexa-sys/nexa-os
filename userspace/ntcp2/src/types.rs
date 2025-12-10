@@ -3,14 +3,14 @@
 //! This module defines the fundamental types used throughout the library,
 //! maintaining compatibility with ngtcp2's C API types.
 
-use crate::{c_int, c_uint, c_void, size_t, ConnectionId, Timestamp, Duration};
+use crate::{c_int, c_uint, c_void, size_t, ConnectionId, Duration, Timestamp};
 
 // ============================================================================
 // Stream ID Type
 // ============================================================================
 
 /// Stream identifier type (62-bit)
-/// 
+///
 /// Stream IDs encode both the initiator and directionality:
 /// - Bit 0: Initiator (0 = client, 1 = server)
 /// - Bit 1: Directionality (0 = bidirectional, 1 = unidirectional)
@@ -198,7 +198,7 @@ impl Default for Settings {
             initial_rtt: 333 * 1_000_000, // 333ms in nanoseconds
             cc_algo: CongestionControlAlgorithm::Cubic,
             log_printf: None,
-            max_window: 24 * 1024 * 1024, // 24MB
+            max_window: 24 * 1024 * 1024,        // 24MB
             max_stream_window: 16 * 1024 * 1024, // 16MB
             ack_thresh: 2,
             no_pmtud: false,
@@ -245,11 +245,7 @@ pub type ngtcp2_cc_algo = CongestionControlAlgorithm;
 // ============================================================================
 
 /// Log callback type
-pub type LogCallback = extern "C" fn(
-    user_data: *mut c_void,
-    fmt: *const i8,
-    ...
-);
+pub type LogCallback = extern "C" fn(user_data: *mut c_void, fmt: *const i8, ...);
 
 // ============================================================================
 // Path

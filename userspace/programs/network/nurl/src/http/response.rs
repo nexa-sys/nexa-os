@@ -1,5 +1,4 @@
 /// HTTP response parsing utilities
-
 use super::{HttpError, HttpResponse, HttpResult};
 
 /// Parse an HTTP/1.1 response from raw bytes
@@ -150,9 +149,8 @@ fn decode_chunked(data: &[u8]) -> HttpResult<Vec<u8>> {
         // Remove any chunk extension (after semicolon)
         let size_str = size_str.split(';').next().unwrap_or("0").trim();
 
-        let chunk_size = usize::from_str_radix(size_str, 16).map_err(|_| {
-            HttpError::InvalidResponse(format!("Invalid chunk size: {}", size_str))
-        })?;
+        let chunk_size = usize::from_str_radix(size_str, 16)
+            .map_err(|_| HttpError::InvalidResponse(format!("Invalid chunk size: {}", size_str)))?;
 
         if chunk_size == 0 {
             // Last chunk
@@ -162,7 +160,9 @@ fn decode_chunked(data: &[u8]) -> HttpResult<Vec<u8>> {
         pos += line_end + 2; // Skip size line and CRLF
 
         if pos + chunk_size > data.len() {
-            return Err(HttpError::InvalidResponse("Truncated chunk data".to_string()));
+            return Err(HttpError::InvalidResponse(
+                "Truncated chunk data".to_string(),
+            ));
         }
 
         result.extend_from_slice(&data[pos..pos + chunk_size]);
@@ -196,7 +196,9 @@ pub mod http2 {
         // - HPACK header decompression
         // - Frame parsing (HEADERS, DATA, etc.)
         // - Stream reassembly
-        Err(HttpError::NotSupported("HTTP/2 parsing not implemented".to_string()))
+        Err(HttpError::NotSupported(
+            "HTTP/2 parsing not implemented".to_string(),
+        ))
     }
 }
 
@@ -211,7 +213,9 @@ pub mod http3 {
         // - QPACK header decompression
         // - HTTP/3 frame parsing
         // - QUIC stream handling
-        Err(HttpError::NotSupported("HTTP/3 parsing not implemented".to_string()))
+        Err(HttpError::NotSupported(
+            "HTTP/3 parsing not implemented".to_string(),
+        ))
     }
 }
 
@@ -230,7 +234,8 @@ mod tests {
 
     #[test]
     fn test_parse_chunked_response() {
-        let response = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n";
+        let response =
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n";
         let parsed = parse_http1_response(response).unwrap();
         assert_eq!(parsed.body, b"hello");
     }

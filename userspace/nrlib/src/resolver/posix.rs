@@ -1,19 +1,18 @@
 /// POSIX-compatible resolver functions
 ///
 /// Implements getaddrinfo, freeaddrinfo, and getnameinfo.
-
 use core::mem;
 
-use crate::socket::{SockAddr, SockAddrIn, AF_INET, SOCK_STREAM, parse_ipv4};
-use crate::{malloc, free, c_void};
+use crate::socket::{parse_ipv4, SockAddr, SockAddrIn, AF_INET, SOCK_STREAM};
+use crate::{c_void, free, malloc};
 
 use super::constants::*;
-use super::types::AddrInfo;
 use super::global::get_resolver;
+use super::types::AddrInfo;
 use super::utils::format_ipv4_to_buffer;
 
 /// Musl-compatible getaddrinfo implementation
-/// 
+///
 /// Parameters match POSIX getaddrinfo signature
 #[no_mangle]
 pub extern "C" fn getaddrinfo(
@@ -64,7 +63,7 @@ pub extern "C" fn getaddrinfo(
                 service_buf[slen] = byte;
                 slen += 1;
             }
-            
+
             if slen > 0 {
                 if let Ok(service_str) = core::str::from_utf8(&service_buf[..slen]) {
                     // Try to parse as numeric port
@@ -195,14 +194,14 @@ pub extern "C" fn getnameinfo(
     flags: i32,
 ) -> i32 {
     let _ = addrlen; // Unused but part of POSIX signature
-    
+
     if addr.is_null() || host.is_null() || hostlen == 0 {
         return EAI_FAIL;
     }
 
     unsafe {
         let sockaddr = &*addr;
-        
+
         // Only support AF_INET for now
         if sockaddr.sa_family != AF_INET as u16 {
             return EAI_FAMILY;
@@ -256,11 +255,11 @@ pub extern "C" fn getnameinfo(
             let port = u16::from_be_bytes([sockaddr.sa_data[0], sockaddr.sa_data[1]]);
             let mut port_buf = [0u8; 6];
             let mut port_pos = 0;
-            
+
             let mut p = port as usize;
             let mut digits = [0u8; 5];
             let mut digit_count = 0;
-            
+
             if p == 0 {
                 digits[0] = b'0';
                 digit_count = 1;
@@ -276,7 +275,7 @@ pub extern "C" fn getnameinfo(
                 port_buf[port_pos] = digits[digit_count - 1 - j];
                 port_pos += 1;
             }
-            
+
             if port_pos + 1 > servlen as usize {
                 return EAI_OVERFLOW;
             }

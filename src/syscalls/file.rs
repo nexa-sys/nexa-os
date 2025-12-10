@@ -29,7 +29,12 @@ pub fn mark_fd_open(fd: u64) {
                 if let Some(entry) = &mut table[idx] {
                     if entry.process.pid == pid {
                         entry.process.open_fds |= 1 << bit;
-                        ktrace!("[mark_fd_open] PID {} fd {} marked open, open_fds={:#06x}", pid, fd, entry.process.open_fds);
+                        ktrace!(
+                            "[mark_fd_open] PID {} fd {} marked open, open_fds={:#06x}",
+                            pid,
+                            fd,
+                            entry.process.open_fds
+                        );
                     }
                 }
             }
@@ -55,7 +60,12 @@ pub fn mark_fd_closed(fd: u64) {
                 if let Some(entry) = &mut table[idx] {
                     if entry.process.pid == pid {
                         entry.process.open_fds &= !(1 << bit);
-                        ktrace!("[mark_fd_closed] PID {} fd {} marked closed, open_fds={:#06x}", pid, fd, entry.process.open_fds);
+                        ktrace!(
+                            "[mark_fd_closed] PID {} fd {} marked closed, open_fds={:#06x}",
+                            pid,
+                            fd,
+                            entry.process.open_fds
+                        );
                     }
                 }
             }
@@ -379,7 +389,7 @@ pub fn write(fd: u64, buf: u64, count: u64) -> u64 {
 /// Unlike write(), this does not modify the file offset.
 pub fn pwrite64(fd: u64, buf: u64, count: u64, offset: i64) -> u64 {
     ktrace!("[SYS_PWRITE64] fd={} count={} offset={}", fd, count, offset);
-    
+
     if count == 0 {
         posix::set_errno(0);
         return 0;
@@ -442,7 +452,11 @@ pub fn pwrite64(fd: u64, buf: u64, count: u64, offset: i64) -> u64 {
                     // Write at the specified offset (don't update file position)
                     match crate::fs::modular_fs_write_at(file_handle, offset as usize, data) {
                         Ok(bytes_written) => {
-                            ktrace!("[SYS_PWRITE64] Modular fs wrote {} bytes at offset {}", bytes_written, offset);
+                            ktrace!(
+                                "[SYS_PWRITE64] Modular fs wrote {} bytes at offset {}",
+                                bytes_written,
+                                offset
+                            );
                             posix::set_errno(0);
                             return bytes_written as u64;
                         }
@@ -471,7 +485,11 @@ pub fn pwrite64(fd: u64, buf: u64, count: u64, offset: i64) -> u64 {
                     // Write at the specified offset (don't update file position)
                     match crate::fs::ext2_write_at(file_ref, offset as usize, data) {
                         Ok(bytes_written) => {
-                            ktrace!("[SYS_PWRITE64] Ext2 wrote {} bytes at offset {}", bytes_written, offset);
+                            ktrace!(
+                                "[SYS_PWRITE64] Ext2 wrote {} bytes at offset {}",
+                                bytes_written,
+                                offset
+                            );
                             posix::set_errno(0);
                             return bytes_written as u64;
                         }
@@ -515,7 +533,7 @@ pub fn pwrite64(fd: u64, buf: u64, count: u64, offset: i64) -> u64 {
 /// Unlike read(), this does not modify the file offset.
 pub fn pread64(fd: u64, buf: *mut u8, count: usize, offset: i64) -> u64 {
     ktrace!("[SYS_PREAD64] fd={} count={} offset={}", fd, count, offset);
-    
+
     if buf.is_null() {
         posix::set_errno(posix::errno::EFAULT);
         return u64::MAX;
@@ -566,11 +584,15 @@ pub fn pread64(fd: u64, buf: *mut u8, count: usize, offset: i64) -> u64 {
                 }
                 FileBacking::Modular(ref file_handle) => {
                     let buffer = core::slice::from_raw_parts_mut(buf, count);
-                    
+
                     // Read at the specified offset (don't update file position)
                     match crate::fs::modular_fs_read_at(file_handle, offset as usize, buffer) {
                         Ok(bytes_read) => {
-                            ktrace!("[SYS_PREAD64] Modular fs read {} bytes from offset {}", bytes_read, offset);
+                            ktrace!(
+                                "[SYS_PREAD64] Modular fs read {} bytes from offset {}",
+                                bytes_read,
+                                offset
+                            );
                             posix::set_errno(0);
                             return bytes_read as u64;
                         }
@@ -583,10 +605,14 @@ pub fn pread64(fd: u64, buf: *mut u8, count: usize, offset: i64) -> u64 {
                 #[allow(deprecated)]
                 FileBacking::Ext2(ref file_ref) => {
                     let buffer = core::slice::from_raw_parts_mut(buf, count);
-                    
+
                     // Read at the specified offset (don't update file position)
                     let bytes_read = crate::fs::ext2_read_at(file_ref, offset as usize, buffer);
-                    ktrace!("[SYS_PREAD64] Ext2 read {} bytes from offset {}", bytes_read, offset);
+                    ktrace!(
+                        "[SYS_PREAD64] Ext2 read {} bytes from offset {}",
+                        bytes_read,
+                        offset
+                    );
                     posix::set_errno(0);
                     return bytes_read as u64;
                 }
@@ -630,7 +656,7 @@ pub fn pread64(fd: u64, buf: *mut u8, count: usize, offset: i64) -> u64 {
 /// writev system call - write data from multiple buffers (scatter-gather I/O)
 pub fn writev(fd: u64, iov: *const IoVec, iovcnt: i32) -> u64 {
     ktrace!("[SYS_WRITEV] fd={} iovcnt={}", fd, iovcnt);
-    
+
     if iovcnt <= 0 {
         if iovcnt == 0 {
             posix::set_errno(0);
@@ -677,7 +703,7 @@ pub fn writev(fd: u64, iov: *const IoVec, iovcnt: i32) -> u64 {
         }
 
         let bytes_written = write(fd, vec.iov_base as u64, vec.iov_len as u64);
-        
+
         if bytes_written == u64::MAX {
             // Error occurred
             if total_written > 0 {
@@ -704,7 +730,7 @@ pub fn writev(fd: u64, iov: *const IoVec, iovcnt: i32) -> u64 {
 /// readv system call - read data into multiple buffers (scatter-gather I/O)
 pub fn readv(fd: u64, iov: *const IoVec, iovcnt: i32) -> u64 {
     ktrace!("[SYS_READV] fd={} iovcnt={}", fd, iovcnt);
-    
+
     if iovcnt <= 0 {
         if iovcnt == 0 {
             posix::set_errno(0);
@@ -751,7 +777,7 @@ pub fn readv(fd: u64, iov: *const IoVec, iovcnt: i32) -> u64 {
         }
 
         let bytes_read = read(fd, vec.iov_base, vec.iov_len);
-        
+
         if bytes_read == u64::MAX {
             // Error occurred
             if total_read > 0 {
@@ -962,13 +988,14 @@ pub fn read(fd: u64, buf: *mut u8, count: usize) -> u64 {
                     let remaining = total - handle.position;
                     let to_read = cmp::min(remaining, count);
                     let dest = slice::from_raw_parts_mut(buf, to_read);
-                    let read = match crate::fs::modular_fs_read_at(&file_handle, handle.position, dest) {
-                        Ok(n) => n,
-                        Err(_) => {
-                            posix::set_errno(posix::errno::EIO);
-                            return u64::MAX;
-                        }
-                    };
+                    let read =
+                        match crate::fs::modular_fs_read_at(&file_handle, handle.position, dest) {
+                            Ok(n) => n,
+                            Err(_) => {
+                                posix::set_errno(posix::errno::EIO);
+                                return u64::MAX;
+                            }
+                        };
                     // Update position using accessor function
                     update_file_handle_position(idx, handle.position.saturating_add(read));
                     posix::set_errno(0);
@@ -1066,8 +1093,14 @@ pub fn open(path_ptr: *const u8, flags: u64, mode: u64) -> u64 {
     let create_if_missing = (flags & O_CREAT) != 0;
     let truncate = (flags & O_TRUNC) != 0;
 
-    ktrace!("[open] path='{}', flags={:#o}, mode={:#o}, create={}, trunc={}", 
-           normalized, flags, mode, create_if_missing, truncate);
+    ktrace!(
+        "[open] path='{}', flags={:#o}, mode={:#o}, create={}, trunc={}",
+        normalized,
+        flags,
+        mode,
+        create_if_missing,
+        truncate
+    );
 
     // Check for special device files
     let special_backing = match normalized {
@@ -1119,7 +1152,7 @@ pub fn open(path_ptr: *const u8, flags: u64, mode: u64) -> u64 {
         }
 
         let crate::fs::OpenFile { content, metadata } = opened;
-        
+
         // Handle O_TRUNC for existing file
         if truncate {
             // Truncate the file to zero length
@@ -1128,7 +1161,7 @@ pub fn open(path_ptr: *const u8, flags: u64, mode: u64) -> u64 {
                 // Continue anyway, truncate is best-effort here
             }
         }
-        
+
         let backing = match content {
             crate::fs::FileContent::Inline(data) => {
                 if truncate {
@@ -1137,7 +1170,7 @@ pub fn open(path_ptr: *const u8, flags: u64, mode: u64) -> u64 {
                 } else {
                     FileBacking::Inline(data)
                 }
-            },
+            }
             crate::fs::FileContent::Modular(handle) => FileBacking::Modular(handle),
             #[allow(deprecated)]
             crate::fs::FileContent::Ext2Modular(file_ref) => {
@@ -1160,7 +1193,10 @@ pub fn open(path_ptr: *const u8, flags: u64, mode: u64) -> u64 {
         unsafe {
             if let Some(index) = find_empty_file_handle_slot() {
                 let final_metadata = if truncate {
-                    posix::Metadata { size: 0, ..metadata }
+                    posix::Metadata {
+                        size: 0,
+                        ..metadata
+                    }
                 } else {
                     metadata
                 };
@@ -1183,20 +1219,23 @@ pub fn open(path_ptr: *const u8, flags: u64, mode: u64) -> u64 {
         kwarn!("No free file handles available");
         return u64::MAX;
     }
-    
+
     // File doesn't exist - try to create if O_CREAT is set
     if create_if_missing {
-        ktrace!("[open] File '{}' not found, creating with O_CREAT", normalized);
-        
+        ktrace!(
+            "[open] File '{}' not found, creating with O_CREAT",
+            normalized
+        );
+
         // Try to create the file
         if let Err(e) = crate::fs::create_file(normalized) {
             kwarn!("[open] Failed to create file '{}': {}", normalized, e);
             posix::set_errno(posix::errno::EACCES);
             return u64::MAX;
         }
-        
+
         ktrace!("[open] Created file '{}'", normalized);
-        
+
         // Now open the newly created file
         if let Some(opened) = crate::fs::open(normalized) {
             let crate::fs::OpenFile { content, metadata } = opened;
@@ -1612,7 +1651,10 @@ pub fn close_all_fds_for_process(open_fds: u16) {
         return; // No open file descriptors
     }
 
-    kinfo!("Closing all FDs for process, open_fds bitmap: {:#06x}", open_fds);
+    kinfo!(
+        "Closing all FDs for process, open_fds bitmap: {:#06x}",
+        open_fds
+    );
 
     for bit in 0..MAX_OPEN_FILES {
         if (open_fds & (1 << bit)) != 0 {
@@ -1626,7 +1668,9 @@ pub fn close_all_fds_for_process(open_fds: u16) {
                     // Clean up socket resources if this is a socket
                     if let FileBacking::Socket(ref sock_handle) = handle.backing {
                         // Close netlink socket in network stack
-                        if sock_handle.domain == AF_NETLINK && sock_handle.socket_index != usize::MAX {
+                        if sock_handle.domain == AF_NETLINK
+                            && sock_handle.socket_index != usize::MAX
+                        {
                             if let Some(_) = crate::net::with_net_stack(|stack| {
                                 stack.netlink_close(sock_handle.socket_index)
                             }) {

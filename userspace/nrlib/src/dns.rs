@@ -3,17 +3,16 @@
 /// This module provides DNS query construction, parsing, and resolution
 /// services compatible with POSIX getaddrinfo/getnameinfo APIs.
 
-
 /// DNS header structure (12 bytes)
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
 pub struct DnsHeader {
-    pub id: u16,           // Transaction ID
-    pub flags: u16,        // Flags (QR, Opcode, AA, TC, RD, RA, Z, RCODE)
-    pub qdcount: u16,      // Number of questions
-    pub ancount: u16,      // Number of answers
-    pub nscount: u16,      // Number of authority RRs
-    pub arcount: u16,      // Number of additional RRs
+    pub id: u16,      // Transaction ID
+    pub flags: u16,   // Flags (QR, Opcode, AA, TC, RD, RA, Z, RCODE)
+    pub qdcount: u16, // Number of questions
+    pub ancount: u16, // Number of answers
+    pub nscount: u16, // Number of authority RRs
+    pub arcount: u16, // Number of additional RRs
 }
 
 impl DnsHeader {
@@ -65,16 +64,16 @@ impl DnsHeader {
 #[repr(u16)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QType {
-    A = 1,      // IPv4 address
-    NS = 2,     // Name server
-    CNAME = 5,  // Canonical name
-    SOA = 6,    // Start of authority
-    PTR = 12,   // Pointer record
-    MX = 15,    // Mail exchange
-    TXT = 16,   // Text record
-    AAAA = 28,  // IPv6 address
-    SRV = 33,   // Service record
-    ANY = 255,  // Any record
+    A = 1,     // IPv4 address
+    NS = 2,    // Name server
+    CNAME = 5, // Canonical name
+    SOA = 6,   // Start of authority
+    PTR = 12,  // Pointer record
+    MX = 15,   // Mail exchange
+    TXT = 16,  // Text record
+    AAAA = 28, // IPv6 address
+    SRV = 33,  // Service record
+    ANY = 255, // Any record
 }
 
 impl From<u16> for QType {
@@ -99,10 +98,10 @@ impl From<u16> for QType {
 #[repr(u16)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QClass {
-    IN = 1,   // Internet
-    CS = 2,   // CSNET (obsolete)
-    CH = 3,   // CHAOS
-    HS = 4,   // Hesiod
+    IN = 1, // Internet
+    CS = 2, // CSNET (obsolete)
+    CH = 3, // CHAOS
+    HS = 4, // Hesiod
 }
 
 /// DNS query builder
@@ -176,7 +175,7 @@ impl DnsQuery {
     fn encode_domain(&mut self, domain: &str) -> Result<(), &'static str> {
         // Handle trailing dot (FQDN notation)
         let domain = domain.trim_end_matches('.');
-        
+
         if domain.is_empty() {
             // Root domain - just the null terminator
             if self.length >= 512 {
@@ -204,8 +203,7 @@ impl DnsQuery {
 
             self.buffer[self.length] = label.len() as u8;
             self.length += 1;
-            self.buffer[self.length..self.length + label.len()]
-                .copy_from_slice(label.as_bytes());
+            self.buffer[self.length..self.length + label.len()].copy_from_slice(label.as_bytes());
             self.length += label.len();
         }
 
@@ -239,9 +237,7 @@ impl<'a> DnsResponse<'a> {
             return Err("Response too short");
         }
 
-        let header = unsafe {
-            core::ptr::read_unaligned(self.data.as_ptr() as *const DnsHeader)
-        };
+        let header = unsafe { core::ptr::read_unaligned(self.data.as_ptr() as *const DnsHeader) };
 
         self.offset = DnsHeader::SIZE;
         Ok(header)
@@ -271,14 +267,9 @@ impl<'a> DnsResponse<'a> {
             return Err("Unexpected end of data");
         }
 
-        let rtype = u16::from_be_bytes([
-            self.data[self.offset],
-            self.data[self.offset + 1],
-        ]);
-        let rdlength = u16::from_be_bytes([
-            self.data[self.offset + 8],
-            self.data[self.offset + 9],
-        ]) as usize;
+        let rtype = u16::from_be_bytes([self.data[self.offset], self.data[self.offset + 1]]);
+        let rdlength =
+            u16::from_be_bytes([self.data[self.offset + 8], self.data[self.offset + 9]]) as usize;
 
         self.offset += 10;
 
@@ -312,7 +303,7 @@ impl<'a> DnsResponse<'a> {
         let initial_offset = self.offset;
         let mut pos = self.offset;
         let mut jumped = false;
-        
+
         loop {
             if pos >= self.data.len() {
                 return Err("Unexpected end of data");
@@ -341,7 +332,7 @@ impl<'a> DnsResponse<'a> {
                 }
                 continue;
             }
-            
+
             // Check for reserved label type
             if len & 0xC0 != 0 {
                 return Err("Invalid label type");
@@ -403,7 +394,7 @@ impl<'a> DnsResponse<'a> {
                 }
                 continue;
             }
-            
+
             // Check for reserved label type
             if len & 0xC0 != 0 {
                 return Err("Invalid label type");
@@ -613,7 +604,7 @@ mod tests {
     #[test]
     fn test_resolver_config_limits() {
         let mut config = ResolverConfig::new();
-        
+
         // Add max nameservers
         config.add_nameserver([1, 1, 1, 1]).unwrap();
         config.add_nameserver([8, 8, 8, 8]).unwrap();

@@ -55,7 +55,7 @@ fn getegid() -> u32 {
 /// Get username from UID by reading /etc/passwd
 fn get_username(uid: u32) -> Option<String> {
     let passwd = fs::read_to_string("/etc/passwd").ok()?;
-    
+
     for line in passwd.lines() {
         let fields: Vec<&str> = line.split(':').collect();
         if fields.len() >= 3 {
@@ -72,7 +72,7 @@ fn get_username(uid: u32) -> Option<String> {
 /// Get group name from GID by reading /etc/group
 fn get_groupname(gid: u32) -> Option<String> {
     let group = fs::read_to_string("/etc/group").ok()?;
-    
+
     for line in group.lines() {
         let fields: Vec<&str> = line.split(':').collect();
         if fields.len() >= 3 {
@@ -89,14 +89,14 @@ fn get_groupname(gid: u32) -> Option<String> {
 /// Get all groups for a user
 fn get_user_groups(username: &str, primary_gid: u32) -> Vec<(u32, String)> {
     let mut groups = Vec::new();
-    
+
     // Add primary group
     if let Some(name) = get_groupname(primary_gid) {
         groups.push((primary_gid, name));
     } else {
         groups.push((primary_gid, primary_gid.to_string()));
     }
-    
+
     // Check supplementary groups in /etc/group
     if let Ok(group_file) = fs::read_to_string("/etc/group") {
         for line in group_file.lines() {
@@ -105,27 +105,27 @@ fn get_user_groups(username: &str, primary_gid: u32) -> Vec<(u32, String)> {
                 let group_name = fields[0];
                 let gid: u32 = fields[2].parse().unwrap_or(0);
                 let members: Vec<&str> = fields[3].split(',').collect();
-                
+
                 if gid != primary_gid && members.contains(&username) {
                     groups.push((gid, group_name.to_string()));
                 }
             }
         }
     }
-    
+
     groups
 }
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    
+
     let mut show_user = false;
     let mut show_group = false;
     let mut show_groups = false;
     let mut show_name = false;
     let mut show_real = false;
     let mut target_user: Option<&str> = None;
-    
+
     for arg in args.iter().skip(1) {
         match arg.as_str() {
             "-h" | "--help" => {
@@ -166,7 +166,7 @@ fn main() {
 
     let uid = if show_real { getuid() } else { geteuid() };
     let gid = if show_real { getgid() } else { getegid() };
-    
+
     let username = get_username(uid).unwrap_or_else(|| uid.to_string());
     let groupname = get_groupname(gid).unwrap_or_else(|| gid.to_string());
 
@@ -193,13 +193,17 @@ fn main() {
     } else {
         // Default: print all
         let groups = get_user_groups(&username, gid);
-        let group_str: Vec<String> = groups.iter()
+        let group_str: Vec<String> = groups
+            .iter()
             .map(|(id, name)| format!("{}({})", id, name))
             .collect();
-        
-        println!("uid={}({}) gid={}({}) groups={}",
-            uid, username,
-            gid, groupname,
+
+        println!(
+            "uid={}({}) gid={}({}) groups={}",
+            uid,
+            username,
+            gid,
+            groupname,
             group_str.join(",")
         );
     }

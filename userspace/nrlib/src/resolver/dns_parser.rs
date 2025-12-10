@@ -35,7 +35,7 @@ pub fn parse_dns_response(
     if data.len() < 12 {
         return Err("dns response too short");
     }
-    
+
     // Maximum reasonable DNS response size (RFC 6891 recommends 4096 for EDNS)
     // But we only support 512 byte UDP responses without EDNS
     if data.len() > 512 {
@@ -49,16 +49,16 @@ pub fn parse_dns_response(
     }
 
     let flags = u16::from_be_bytes([data[2], data[3]]);
-    
+
     // QR bit (bit 15) must be 1 for response
     if flags & 0x8000 == 0 {
         return Err("dns packet is not a response");
     }
-    
+
     // TC bit (bit 9) indicates truncation - response may be incomplete
     // For UDP we cannot recover from this, but we can try to parse what we have
     let truncated = flags & 0x0200 != 0;
-    
+
     // RCODE (bits 0-3) should be 0 for success
     let rcode = flags & 0x000F;
     match rcode {
@@ -77,17 +77,18 @@ pub fn parse_dns_response(
     let additional_count = u16::from_be_bytes([data[10], data[11]]) as usize;
 
     // Sanity check: prevent excessive iteration
-    if question_count > 64 || answer_count > 256 || authority_count > 256 || additional_count > 256 {
+    if question_count > 64 || answer_count > 256 || authority_count > 256 || additional_count > 256
+    {
         return Err("dns response has too many records");
     }
-    
+
     // If truncated and no answers, we can't proceed
     if truncated && answer_count == 0 {
         return Err("dns response truncated with no answers");
     }
 
     let mut offset = 12;
-    
+
     // Skip question section
     for _ in 0..question_count {
         skip_name(data, &mut offset)?;
@@ -188,7 +189,7 @@ pub fn parse_dns_response(
         }
         return Ok(DnsParseOutcome::Cname(len));
     }
-    
+
     // Skip additional section if we didn't find any answers
     // (already skipped if we had a CNAME)
 
@@ -226,7 +227,7 @@ pub(crate) fn skip_name(data: &[u8], offset: &mut usize) -> Result<(), &'static 
             return Err("dns name exceeds packet");
         }
         let len = data[pos];
-        
+
         // Check for compression pointer (top 2 bits = 11)
         if len & 0xC0 == 0xC0 {
             if pos + 1 >= data.len() {
@@ -250,7 +251,7 @@ pub(crate) fn skip_name(data: &[u8], offset: &mut usize) -> Result<(), &'static 
             }
             continue;
         }
-        
+
         // Check for reserved label type (top 2 bits = 01 or 10)
         if len & 0xC0 != 0 {
             return Err("dns invalid label type");
@@ -275,7 +276,11 @@ pub(crate) fn skip_name(data: &[u8], offset: &mut usize) -> Result<(), &'static 
 }
 
 /// Read a DNS name into buffer (handles compression pointers)
-pub(crate) fn read_name_into(data: &[u8], offset: &mut usize, out: &mut [u8]) -> Result<usize, &'static str> {
+pub(crate) fn read_name_into(
+    data: &[u8],
+    offset: &mut usize,
+    out: &mut [u8],
+) -> Result<usize, &'static str> {
     let mut pos = *offset;
     let mut jumped = false;
     let mut steps = 0;
@@ -288,7 +293,7 @@ pub(crate) fn read_name_into(data: &[u8], offset: &mut usize, out: &mut [u8]) ->
             return Err("dns name exceeds packet");
         }
         let len = data[pos];
-        
+
         // Check for compression pointer
         if len & 0xC0 == 0xC0 {
             if pos + 1 >= data.len() {
@@ -310,7 +315,7 @@ pub(crate) fn read_name_into(data: &[u8], offset: &mut usize, out: &mut [u8]) ->
             }
             continue;
         }
-        
+
         // Check for reserved label type
         if len & 0xC0 != 0 {
             return Err("dns invalid label type");
@@ -325,7 +330,7 @@ pub(crate) fn read_name_into(data: &[u8], offset: &mut usize, out: &mut [u8]) ->
             }
             return Ok(buf_pos);
         }
-        
+
         // Validate total name length won't exceed DNS limit (253 chars)
         total_len += len as usize + 1; // +1 for dot separator
         if total_len > 254 {
@@ -393,8 +398,8 @@ mod tests {
             0x30, 0x30, 0x85, 0x80, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, // header
             0x05, b'b', b'a', b'i', b'd', b'u', 0x03, b'c', b'o', b'm', 0x00, // question name
             0x00, 0x01, 0x00, 0x01, // qtype, qclass
-            0xC0, 0x0C, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x04,
-            0xC6, 0x12, 0x00, 0x65, // answer A record 198.18.0.101
+            0xC0, 0x0C, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x04, 0xC6, 0x12,
+            0x00, 0x65, // answer A record 198.18.0.101
         ];
 
         let mut cname = [0u8; MAX_HOSTNAME];
@@ -408,11 +413,10 @@ mod tests {
     #[test]
     fn test_parse_dns_response_wrong_id() {
         let response: [u8; 45] = [
-            0x30, 0x30, 0x85, 0x80, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
-            0x05, b'b', b'a', b'i', b'd', b'u', 0x03, b'c', b'o', b'm', 0x00,
-            0x00, 0x01, 0x00, 0x01,
-            0xC0, 0x0C, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x04,
-            0xC6, 0x12, 0x00, 0x65,
+            0x30, 0x30, 0x85, 0x80, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x05, b'b',
+            b'a', b'i', b'd', b'u', 0x03, b'c', b'o', b'm', 0x00, 0x00, 0x01, 0x00, 0x01, 0xC0,
+            0x0C, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x04, 0xC6, 0x12, 0x00,
+            0x65,
         ];
 
         let mut cname = [0u8; MAX_HOSTNAME];
@@ -425,9 +429,8 @@ mod tests {
     fn test_parse_dns_response_nxdomain() {
         // NXDOMAIN response (RCODE = 3)
         let response: [u8; 25] = [
-            0x12, 0x34, 0x81, 0x83, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x04, b't', b'e', b's', b't', 0x03, b'c', b'o', b'm', 0x00,
-            0x00, 0x01, 0x00, 0x01,
+            0x12, 0x34, 0x81, 0x83, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, b't',
+            b'e', b's', b't', 0x03, b'c', b'o', b'm', 0x00, 0x00, 0x01, 0x00, 0x01,
         ];
 
         let mut cname = [0u8; MAX_HOSTNAME];
@@ -449,13 +452,16 @@ mod tests {
     fn test_parse_dns_response_cname_with_glue() {
         let response: [u8; 87] = [
             0x11, 0x11, 0x85, 0x80, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, // header
-            0x05, b'a', b'l', b'i', b'a', b's', 0x04, b't', b'e', b's', b't', 0x03, b'c', b'o', b'm', 0x00, // question
-            0x00, 0x01, 0x00, 0x01,
-            0xC0, 0x0C, 0x00, 0x05, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x11, // answer header
-            0x06, b't', b'a', b'r', b'g', b'e', b't', 0x04, b't', b'e', b's', b't', 0x03, b'c', b'o', b'm', 0x00, // canonical name
-            0x06, b't', b'a', b'r', b'g', b'e', b't', 0x04, b't', b'e', b's', b't', 0x03, b'c', b'o', b'm', 0x00, // additional name
-            0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04,
-            0x01, 0x02, 0x03, 0x04, // glue A record
+            0x05, b'a', b'l', b'i', b'a', b's', 0x04, b't', b'e', b's', b't', 0x03, b'c', b'o',
+            b'm', 0x00, // question
+            0x00, 0x01, 0x00, 0x01, 0xC0, 0x0C, 0x00, 0x05, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x11, // answer header
+            0x06, b't', b'a', b'r', b'g', b'e', b't', 0x04, b't', b'e', b's', b't', 0x03, b'c',
+            b'o', b'm', 0x00, // canonical name
+            0x06, b't', b'a', b'r', b'g', b'e', b't', 0x04, b't', b'e', b's', b't', 0x03, b'c',
+            b'o', b'm', 0x00, // additional name
+            0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x01, 0x02, 0x03,
+            0x04, // glue A record
         ];
 
         let mut cname = [0u8; MAX_HOSTNAME];
