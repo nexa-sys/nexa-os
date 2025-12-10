@@ -7,7 +7,7 @@ use alloc::alloc::{alloc, Layout};
 use core::ptr;
 
 use crate::elf::ElfLoader;
-use crate::{kdebug, kerror, kinfo, ktrace, kwarn};
+use crate::{kdebug, kerror, ktrace, kwarn};
 
 use super::pid_tree::allocate_pid;
 use super::stack::build_initial_stack;
@@ -33,16 +33,7 @@ impl Process {
         phys_base: u64,
         existing_cr3: u64,
     ) -> Result<Self, &'static str> {
-        // Direct serial output to ensure it appears
-        unsafe {
-            use x86_64::instructions::port::Port;
-            let mut port = Port::<u8>::new(0x3F8);
-            for &b in b"[LOADER_ENTRY]\n" {
-                port.write(b);
-            }
-        }
-        crate::serial_println!("[from_elf_with_args_at_base] ENTRY: phys_base={:#x}, cr3={:#x}, elf_len={}", phys_base, existing_cr3, elf_data.len());
-        kdebug!(
+        ktrace!(
             "Process::from_elf_with_args_at_base called: phys_base={:#x}, cr3={:#x}",
             phys_base,
             existing_cr3
@@ -119,75 +110,17 @@ impl Process {
         // This is necessary because the old process may have had pages mapped
         // at these virtual addresses, and the TLB may cache stale translations
         crate::safety::flush_tlb_all();
-        ktrace!("[from_elf_with_args_at_base] Memory cleared and TLB flushed");
 
         let loader = ElfLoader::new(elf_data)?;
-
-        crate::serial_println!("[LOADER] About to call loader.load(phys_base={:#x})", phys_base);
 
         // CRITICAL: ElfLoader writes to physical memory but returns virtual addresses
         // We need to adjust: write to phys_base but calculate addresses from USER_VIRT_BASE
         // Since kernel has identity mapping, we temporarily load at phys_base then adjust addresses
         let mut program_image = loader.load(phys_base)?;
 
-        crate::serial_println!("[LOADER] loader.load() completed, entry={:#x}", program_image.entry_point);
-
         // CRITICAL: Flush TLB again after loading ELF to ensure new content is visible
         // Even though we flush after clearing, loading changes the physical memory content
         crate::safety::flush_tlb_all();
-
-        // DEBUG: Verify content at physical address phys_base + 0x6c7 (which should be "libnssl.so")
-        {
-            let debug_addr = phys_base + 0x6c7;
-            let debug_ptr = debug_addr as *const u8;
-            let b0 = unsafe { *debug_ptr.add(0) };
-            let b1 = unsafe { *debug_ptr.add(1) };
-            let b2 = unsafe { *debug_ptr.add(2) };
-            let b3 = unsafe { *debug_ptr.add(3) };
-            let b4 = unsafe { *debug_ptr.add(4) };
-            let b5 = unsafe { *debug_ptr.add(5) };
-            let b6 = unsafe { *debug_ptr.add(6) };
-            let b7 = unsafe { *debug_ptr.add(7) };
-            let b8 = unsafe { *debug_ptr.add(8) };
-            let b9 = unsafe { *debug_ptr.add(9) };
-            crate::serial_println!(
-                "[LOADER DEBUG] phys_base={:#x}, offset 0x6c7 at {:#x}: {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
-                phys_base, debug_addr,
-                b0, b1, b2, b3, b4, b5, b6, b7, b8, b9
-            );
-        }
-
-        // DEBUG: Switch to user CR3 and verify virtual address reads correctly
-        unsafe {
-            let kernel_cr3: u64;
-            core::arch::asm!("mov {}, cr3", out(reg) kernel_cr3, options(nomem, nostack));
-            
-            // Switch to user CR3
-            core::arch::asm!("mov cr3, {}", in(reg) existing_cr3, options(nostack));
-            
-            // Try to read from virtual address 0x10006c7
-            let virt_addr = USER_VIRT_BASE + 0x6c7;
-            let virt_ptr = virt_addr as *const u8;
-            let vb0 = *virt_ptr.add(0);
-            let vb1 = *virt_ptr.add(1);
-            let vb2 = *virt_ptr.add(2);
-            let vb3 = *virt_ptr.add(3);
-            let vb4 = *virt_ptr.add(4);
-            let vb5 = *virt_ptr.add(5);
-            let vb6 = *virt_ptr.add(6);
-            let vb7 = *virt_ptr.add(7);
-            let vb8 = *virt_ptr.add(8);
-            let vb9 = *virt_ptr.add(9);
-            
-            // Switch back to kernel CR3
-            core::arch::asm!("mov cr3, {}", in(reg) kernel_cr3, options(nostack));
-            
-            crate::serial_println!(
-                "[LOADER DEBUG] user_cr3={:#x}, virt_addr={:#x}: {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
-                existing_cr3, virt_addr,
-                vb0, vb1, vb2, vb3, vb4, vb5, vb6, vb7, vb8, vb9
-            );
-        }
 
         // Adjust addresses: ElfLoader calculated them relative to phys_base,
         // but userspace expects them relative to USER_VIRT_BASE
@@ -251,9 +184,7 @@ impl Process {
         };
 
         // Handle dynamic/static executable
-        crate::serial_println!("[LOADER] Calling loader.get_interpreter()...");
         let (entry_point, stack_ptr) = if let Some(interp_path) = loader.get_interpreter() {
-            crate::serial_println!("[LOADER] Dynamic executable detected, interpreter={}", interp_path);
             kdebug!("Dynamic executable, interpreter: {}", interp_path);
 
             if let Some(interp_data) = crate::fs::read_file_bytes(interp_path) {
@@ -265,20 +196,6 @@ impl Process {
                 let interp_phys = phys_base + interp_offset;
 
                 let mut interp_image = interp_loader.load(interp_phys)?;
-
-                // DEBUG: Verify nurl's strtab is still intact after loading interpreter
-                {
-                    let debug_addr = phys_base + 0x6c7;
-                    let debug_ptr = debug_addr as *const u8;
-                    let b0 = unsafe { *debug_ptr.add(0) };
-                    let b1 = unsafe { *debug_ptr.add(1) };
-                    let b2 = unsafe { *debug_ptr.add(2) };
-                    let b3 = unsafe { *debug_ptr.add(3) };
-                    crate::serial_println!(
-                        "[LOADER DEBUG] AFTER interp load: phys={:#x} first 4 bytes: {:02x} {:02x} {:02x} {:02x}",
-                        debug_addr, b0, b1, b2, b3
-                    );
-                }
 
                 // Adjust interpreter addresses to virtual space
                 let interp_adjustment = INTERP_BASE as i64 - interp_phys as i64;
@@ -312,20 +229,6 @@ impl Process {
                     &program_image,
                     Some(&interp_image),
                 )?;
-
-                // DEBUG: Verify nurl's strtab is still intact after building stack
-                {
-                    let debug_addr = phys_base + 0x6c7;
-                    let debug_ptr = debug_addr as *const u8;
-                    let b0 = unsafe { *debug_ptr.add(0) };
-                    let b1 = unsafe { *debug_ptr.add(1) };
-                    let b2 = unsafe { *debug_ptr.add(2) };
-                    let b3 = unsafe { *debug_ptr.add(3) };
-                    crate::serial_println!(
-                        "[LOADER DEBUG] AFTER stack build: phys={:#x} first 4 bytes: {:02x} {:02x} {:02x} {:02x}",
-                        debug_addr, b0, b1, b2, b3
-                    );
-                }
 
                 (interp_image.entry_point, stack)
             } else {
@@ -428,10 +331,10 @@ impl Process {
             return Err("Invalid ELF magic");
         }
 
-        kinfo!("ELF magic is valid");
+        ktrace!("ELF magic is valid");
 
         let loader = ElfLoader::new(elf_data)?;
-        kdebug!("ElfLoader created successfully");
+        ktrace!("ElfLoader created successfully");
 
         let mut program_image = loader.load(USER_PHYS_BASE)?;
 
@@ -445,7 +348,7 @@ impl Process {
         program_image.base_addr = USER_VIRT_BASE;
         program_image.load_bias = USER_VIRT_BASE as i64 - program_image.first_load_vaddr as i64;
 
-        kdebug!(
+        ktrace!(
             "Program image loaded and adjusted: entry={:#x}, base={:#x}, bias={:+}, phdr={:#x}",
             program_image.entry_point,
             program_image.base_addr,

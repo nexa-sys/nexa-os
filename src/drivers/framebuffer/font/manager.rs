@@ -230,13 +230,6 @@ impl FontManager {
     pub fn get_glyph(&self, ch: char, size: u16) -> Option<GlyphBitmap> {
         let codepoint = ch as u32;
 
-        // Debug: log first few glyph requests
-        static GLYPH_LOG_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-        let count = GLYPH_LOG_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        if count < 20 {
-            crate::kinfo!("get_glyph: ch='{}' (U+{:04X}), fonts={}", ch, codepoint, self.fonts.len());
-        }
-
         if self.fonts.is_empty() {
             crate::kwarn!("get_glyph: NO FONTS LOADED!");
             return Some(GlyphBitmap::placeholder(size));
@@ -248,10 +241,7 @@ impl FontManager {
                 // Get glyph outline
                 let outline = match loaded.font.get_glyph_outline(glyph_id) {
                     Ok(o) => o,
-                    Err(e) => {
-                        if count < 20 {
-                            crate::kwarn!("get_glyph: outline error for '{}': {:?}", ch, e);
-                        }
+                    Err(_e) => {
                         continue;
                     }
                 };
@@ -263,18 +253,11 @@ impl FontManager {
                 let rasterizer = Rasterizer::new(size)
                     .with_scale(loaded.font.units_per_em());
 
-                if count < 20 {
-                    crate::kinfo!("get_glyph: rasterizing '{}' glyph_id={}", ch, glyph_id);
-                }
-
                 return Some(rasterizer.rasterize(&loaded.font, &outline, &metrics));
             }
         }
 
         // Character not found in any font
-        if count < 20 {
-            crate::kwarn!("get_glyph: '{}' (U+{:04X}) not found in any font!", ch, codepoint);
-        }
         Some(GlyphBitmap::placeholder(size))
     }
 

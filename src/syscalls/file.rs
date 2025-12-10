@@ -1066,7 +1066,7 @@ pub fn open(path_ptr: *const u8, flags: u64, mode: u64) -> u64 {
     let create_if_missing = (flags & O_CREAT) != 0;
     let truncate = (flags & O_TRUNC) != 0;
 
-    kinfo!("[open] path='{}', flags={:#o}, mode={:#o}, create={}, trunc={}", 
+    ktrace!("[open] path='{}', flags={:#o}, mode={:#o}, create={}, trunc={}", 
            normalized, flags, mode, create_if_missing, truncate);
 
     // Check for special device files
@@ -1102,7 +1102,7 @@ pub fn open(path_ptr: *const u8, flags: u64, mode: u64) -> u64 {
                 posix::set_errno(0);
                 let fd = FD_BASE + index as u64;
                 mark_fd_open(fd);
-                kinfo!("Opened device '{}' as fd {}", normalized, fd);
+                ktrace!("Opened device '{}' as fd {}", normalized, fd);
                 return fd;
             }
         }
@@ -1175,7 +1175,7 @@ pub fn open(path_ptr: *const u8, flags: u64, mode: u64) -> u64 {
                 posix::set_errno(0);
                 let fd = FD_BASE + index as u64;
                 mark_fd_open(fd);
-                kinfo!("Opened file '{}' as fd {}", normalized, fd);
+                ktrace!("Opened file '{}' as fd {}", normalized, fd);
                 return fd;
             }
         }
@@ -1186,7 +1186,7 @@ pub fn open(path_ptr: *const u8, flags: u64, mode: u64) -> u64 {
     
     // File doesn't exist - try to create if O_CREAT is set
     if create_if_missing {
-        kinfo!("[open] File '{}' not found, creating with O_CREAT", normalized);
+        ktrace!("[open] File '{}' not found, creating with O_CREAT", normalized);
         
         // Try to create the file
         if let Err(e) = crate::fs::create_file(normalized) {
@@ -1195,7 +1195,7 @@ pub fn open(path_ptr: *const u8, flags: u64, mode: u64) -> u64 {
             return u64::MAX;
         }
         
-        kinfo!("[open] Created file '{}'", normalized);
+        ktrace!("[open] Created file '{}'", normalized);
         
         // Now open the newly created file
         if let Some(opened) = crate::fs::open(normalized) {
@@ -1234,7 +1234,7 @@ pub fn open(path_ptr: *const u8, flags: u64, mode: u64) -> u64 {
                     posix::set_errno(0);
                     let fd = FD_BASE + index as u64;
                     mark_fd_open(fd);
-                    kinfo!("Opened newly created file '{}' as fd {}", normalized, fd);
+                    ktrace!("Opened newly created file '{}' as fd {}", normalized, fd);
                     return fd;
                 }
             }

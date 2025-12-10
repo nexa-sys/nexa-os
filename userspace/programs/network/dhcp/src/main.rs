@@ -242,7 +242,7 @@ fn main() {
 fn acquire_lease(if_index: u32, mac: &[u8; 6]) -> Option<DhcpLease> {
     // Create UDP socket
     let fd = unsafe { socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP) };
-    println!("[acquire_lease] socket() returned: {}", fd);
+    // DEBUG: println!("[acquire_lease] socket() returned: {}", fd);
     if fd < 0 {
         println!("Failed to create UDP socket");
         return None;
@@ -251,7 +251,7 @@ fn acquire_lease(if_index: u32, mac: &[u8; 6]) -> Option<DhcpLease> {
     // Enable broadcast
     let broadcast: i32 = 1;
     let ret = unsafe { setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &broadcast as *const _ as *const std::ffi::c_void, 4) };
-    println!("[acquire_lease] setsockopt(SO_BROADCAST) returned: {}", ret);
+    // DEBUG: println!("[acquire_lease] setsockopt(SO_BROADCAST) returned: {}", ret);
     if ret < 0 {
         println!("Failed to enable broadcast");
         unsafe { close(fd) };
@@ -267,7 +267,7 @@ fn acquire_lease(if_index: u32, mac: &[u8; 6]) -> Option<DhcpLease> {
     };
 
     let ret = unsafe { bind(fd, &addr as *const _ as *const std::ffi::c_void, 16) };
-    println!("[acquire_lease] bind(port={}) returned: {}", DHCP_CLIENT_PORT, ret);
+    // DEBUG: println!("[acquire_lease] bind(port={}) returned: {}", DHCP_CLIENT_PORT, ret);
     if ret < 0 {
         println!("Failed to bind to port 68");
         unsafe { close(fd) };
@@ -288,10 +288,10 @@ fn acquire_lease(if_index: u32, mac: &[u8; 6]) -> Option<DhcpLease> {
     println!("Sending DHCP DISCOVER...");
     let packet = create_dhcp_packet(DHCP_DISCOVER, mac, xid);
     let packet_size = mem::size_of::<DhcpPacket>();
-    println!("[acquire_lease] Calling sendto: fd={}, size={}, dest=255.255.255.255:{}", 
+    // DEBUG: println!("[acquire_lease] Calling sendto: fd={}, size={}, dest=255.255.255.255:{}", 
              fd, packet_size, DHCP_SERVER_PORT);
     let ret = unsafe { sendto(fd, &packet as *const _ as *const std::ffi::c_void, packet_size, 0, &dest_addr as *const _ as *const std::ffi::c_void, 16) };
-    println!("[acquire_lease] sendto() returned: {}", ret);
+    // DEBUG: println!("[acquire_lease] sendto() returned: {}", ret);
     if ret < 0 {
         println!("Failed to send DHCP DISCOVER");
         unsafe { close(fd) };
@@ -410,22 +410,22 @@ fn acquire_lease(if_index: u32, mac: &[u8; 6]) -> Option<DhcpLease> {
         .unwrap_or(0);
     
     // Parse router (default gateway)
-    println!("[acquire_lease] Searching for DHCP_OPT_ROUTER (option 3)...");
+    // DEBUG: println!("[acquire_lease] Searching for DHCP_OPT_ROUTER (option 3)...");
     let router = find_option(&buf[..len as usize], DHCP_OPT_ROUTER)
         .and_then(|b| {
-            println!("[acquire_lease] Found router option, len={}", b.len());
+            // DEBUG: println!("[acquire_lease] Found router option, len={}", b.len());
             if b.len() >= 4 {
                 let ip = u32::from_be_bytes([b[0], b[1], b[2], b[3]]);
-                println!("[acquire_lease] Parsed router IP: {}.{}.{}.{}", 
+                // DEBUG: println!("[acquire_lease] Parsed router IP: {}.{}.{}.{}", 
                     (ip >> 24) & 0xFF, (ip >> 16) & 0xFF, (ip >> 8) & 0xFF, ip & 0xFF);
                 Some(ip)
             } else {
-                println!("[acquire_lease] Router option too short!");
+                // DEBUG: println!("[acquire_lease] Router option too short!");
                 None
             }
         });
     if router.is_none() {
-        println!("[acquire_lease] WARNING: No router option found in DHCP ACK!");
+        // DEBUG: println!("[acquire_lease] WARNING: No router option found in DHCP ACK!");
     }
     
     // Parse DNS servers
@@ -583,13 +583,13 @@ fn generate_xid() -> u32 {
 }
 
 fn get_mac_address() -> Option<(u32, [u8; 6])> {
-    println!("[get_mac_address] Creating netlink socket...");
+    // DEBUG: println!("[get_mac_address] Creating netlink socket...");
     let fd = unsafe { socket(AF_NETLINK, SOCK_DGRAM, 0) };
     if fd < 0 {
-        println!("[get_mac_address] socket() failed, fd={}", fd);
+        // DEBUG: println!("[get_mac_address] socket() failed, fd={}", fd);
         return None;
     }
-    println!("[get_mac_address] Socket created, fd={}", fd);
+    // DEBUG: println!("[get_mac_address] Socket created, fd={}", fd);
 
     let addr = SockAddrNl {
         nl_family: AF_NETLINK as u16,
@@ -598,13 +598,13 @@ fn get_mac_address() -> Option<(u32, [u8; 6])> {
         nl_groups: 0,
     };
     
-    println!("[get_mac_address] Binding socket, pid={}", process::id());
+    // DEBUG: println!("[get_mac_address] Binding socket, pid={}", process::id());
     if unsafe { bind(fd, &addr as *const _ as *const std::ffi::c_void, 12) } < 0 {
-        println!("[get_mac_address] bind() failed");
+        // DEBUG: println!("[get_mac_address] bind() failed");
         unsafe { close(fd) };
         return None;
     }
-    println!("[get_mac_address] Socket bound successfully");
+    // DEBUG: println!("[get_mac_address] Socket bound successfully");
 
     let req = NlMsgHdr {
         nlmsg_len: 16,
@@ -614,32 +614,32 @@ fn get_mac_address() -> Option<(u32, [u8; 6])> {
         nlmsg_pid: process::id(),
     };
 
-    println!("[get_mac_address] Sending RTM_GETLINK request...");
+    // DEBUG: println!("[get_mac_address] Sending RTM_GETLINK request...");
     if unsafe { sendto(fd, &req as *const _ as *const std::ffi::c_void, 16, 0, std::ptr::null(), 0) } < 0 {
-        println!("[get_mac_address] sendto() failed");
+        // DEBUG: println!("[get_mac_address] sendto() failed");
         unsafe { close(fd) };
         return None;
     }
-    println!("[get_mac_address] Request sent successfully");
+    // DEBUG: println!("[get_mac_address] Request sent successfully");
 
     let mut buf = [0u8; 4096];
-    println!("[get_mac_address] Waiting for response...");
+    // DEBUG: println!("[get_mac_address] Waiting for response...");
     let len = unsafe { recvfrom(fd, buf.as_mut_ptr() as *mut std::ffi::c_void, 4096, 0, std::ptr::null_mut(), std::ptr::null_mut()) };
-    println!("[get_mac_address] recvfrom returned: {}", len);
+    // DEBUG: println!("[get_mac_address] recvfrom returned: {}", len);
     unsafe { close(fd) };
 
     if len < 0 {
-        println!("[get_mac_address] recvfrom failed, len={}", len);
+        // DEBUG: println!("[get_mac_address] recvfrom failed, len={}", len);
         return None;
     }
 
     // Parse response to find IFLA_ADDRESS
     // We expect a single RTM_NEWLINK message followed by attributes
     let mut offset = 0;
-    println!("[get_mac_address] Parsing response, len={}", len);
+    // DEBUG: println!("[get_mac_address] Parsing response, len={}", len);
     while offset < len as usize {
         let hdr = unsafe { &*(buf.as_ptr().add(offset) as *const NlMsgHdr) };
-        println!("[get_mac_address] Msg at offset {}: type={}, len={}", offset, hdr.nlmsg_type, hdr.nlmsg_len);
+        // DEBUG: println!("[get_mac_address] Msg at offset {}: type={}, len={}", offset, hdr.nlmsg_type, hdr.nlmsg_len);
         
         if hdr.nlmsg_type == 3 { // NLMSG_DONE
             break;
@@ -653,10 +653,10 @@ fn get_mac_address() -> Option<(u32, [u8; 6])> {
         let if_index = ifinfo.ifi_index;
         let mut attr_offset = offset + 16 + 16; // NlMsgHdr + IfInfoMsg
         
-        println!("[get_mac_address] Attributes start at {}", attr_offset);
+        // DEBUG: println!("[get_mac_address] Attributes start at {}", attr_offset);
         while attr_offset < offset + hdr.nlmsg_len as usize {
             let attr = unsafe { &*(buf.as_ptr().add(attr_offset) as *const RtAttr) };
-            println!("[get_mac_address] Attr at {}: type={}, len={}", attr_offset, attr.rta_type, attr.rta_len);
+            // DEBUG: println!("[get_mac_address] Attr at {}: type={}, len={}", attr_offset, attr.rta_type, attr.rta_len);
             
             if attr.rta_type == IFLA_ADDRESS {
                 let mac_ptr = unsafe { buf.as_ptr().add(attr_offset + 4) };
@@ -666,7 +666,7 @@ fn get_mac_address() -> Option<(u32, [u8; 6])> {
             }
             let aligned_len = ((attr.rta_len + 3) & !3) as usize;
             if aligned_len == 0 { 
-                println!("[get_mac_address] Zero length attribute, breaking");
+                // DEBUG: println!("[get_mac_address] Zero length attribute, breaking");
                 break; 
             } // Prevent infinite loop
             attr_offset += aligned_len;
@@ -674,12 +674,12 @@ fn get_mac_address() -> Option<(u32, [u8; 6])> {
 
         let aligned_msg_len = ((hdr.nlmsg_len + 3) & !3) as usize;
         if aligned_msg_len == 0 { 
-            println!("[get_mac_address] Zero length message, breaking");
+            // DEBUG: println!("[get_mac_address] Zero length message, breaking");
             break; 
         } // Prevent infinite loop
         offset += aligned_msg_len;
     }
-    println!("[get_mac_address] Parsing finished, not found");
+    // DEBUG: println!("[get_mac_address] Parsing finished, not found");
 
     None
 }
@@ -1018,23 +1018,23 @@ fn debug_print_dhcp_options(buf: &[u8]) {
     // But the magic cookie is the u32 field just before options
     let magic_offset = mem::size_of::<DhcpPacket>() - 308 - 4;  // magic is before options
     if buf.len() < magic_offset + 4 { 
-        println!("[debug_dhcp_options] Buffer too short");
+        // DEBUG: println!("[debug_dhcp_options] Buffer too short");
         return;
     }
     
-    println!("[debug_dhcp_options] Buffer len={}, magic_offset={}", buf.len(), magic_offset);
-    println!("[debug_dhcp_options] Magic cookie bytes: [{:02x} {:02x} {:02x} {:02x}]", 
+    // DEBUG: println!("[debug_dhcp_options] Buffer len={}, magic_offset={}", buf.len(), magic_offset);
+    // DEBUG: println!("[debug_dhcp_options] Magic cookie bytes: [{:02x} {:02x} {:02x} {:02x}]", 
         buf[magic_offset], buf[magic_offset+1], buf[magic_offset+2], buf[magic_offset+3]);
     
     // Check magic cookie
     if buf[magic_offset] != 0x63 || buf[magic_offset+1] != 0x82 || buf[magic_offset+2] != 0x53 || buf[magic_offset+3] != 0x63 {
-        println!("[debug_dhcp_options] Invalid magic cookie (expected 63 82 53 63)");
+        // DEBUG: println!("[debug_dhcp_options] Invalid magic cookie (expected 63 82 53 63)");
         return;
     }
     
     let mut idx = magic_offset + 4;  // Start after magic cookie
     
-    println!("[debug_dhcp_options] DHCP options in packet:");
+    // DEBUG: println!("[debug_dhcp_options] DHCP options in packet:");
     while idx < buf.len() {
         let opt = buf[idx];
         if opt == DHCP_OPT_END { 

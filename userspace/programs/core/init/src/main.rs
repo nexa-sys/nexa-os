@@ -1321,7 +1321,6 @@ fn start_service(service: &ServiceConfig, _buf: &mut [u8]) -> i64 {
     exec_path_buf[exec_path_len] = 0; // null-terminate
 
     let exec_start_str = std::str::from_utf8(&exec_path_buf[..exec_path_len]).unwrap_or("/bin/sh");
-    eprintln!("[ni] start_service: service.exec_start='{}'", exec_start_str);
     
     // Parse exec_start into program path and arguments
     // Split by whitespace to get argv components
@@ -1366,7 +1365,6 @@ fn start_service(service: &ServiceConfig, _buf: &mut [u8]) -> i64 {
     // First argument is the program path
     let program_path = std::str::from_utf8(&argv_bufs[0][..]).unwrap_or("/bin/sh");
     let program_path = program_path.trim_end_matches('\0');
-    eprintln!("[ni] start_service: program='{}', argc={}", program_path, argc);
     
     let pid = fork();
 
@@ -1378,8 +1376,6 @@ fn start_service(service: &ServiceConfig, _buf: &mut [u8]) -> i64 {
 
     if pid == 0 {
         // Child process - exec the service
-        eprintln!("[ni] start_service: child process (PID 0 from fork), about to exec");
-        
         let envp: [*const u8; 1] = [core::ptr::null()];
         
         let result = execve(
@@ -1394,7 +1390,6 @@ fn start_service(service: &ServiceConfig, _buf: &mut [u8]) -> i64 {
     }
 
     // Parent process - return child PID
-    eprintln!("[ni] start_service: parent continuing, child PID={}", pid);
     pid
 }
 

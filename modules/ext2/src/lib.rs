@@ -808,9 +808,6 @@ pub extern "C" fn ext2_lookup(
     path_len: usize,
     out_ref: *mut FileRef,
 ) -> i32 {
-    // Debug: log entry to serial
-    unsafe { kmod_serial_print(b"ext2_lookup called\n".as_ptr(), b"ext2_lookup called\n".len()); }
-    
     if fs.is_null() {
         let msg = b"ext2_lookup: fs is null";
         unsafe { kmod_log_error(msg.as_ptr(), msg.len()); }
@@ -838,35 +835,12 @@ pub extern "C" fn ext2_lookup(
         }
     };
 
-    // Debug: check if looking up libnssl
-    if path_str.contains("libnssl") || path_str.contains("nssl") || path_str.contains("ssl") {
-        unsafe { kmod_serial_print(b"ext2_lookup: path contains ssl\n".as_ptr(), b"ext2_lookup: path contains ssl\n".len()); }
-        // Print the path
-        log_hex(b"ext2_lookup: path_len=", path_len as u64);
-    }
-
     match fs.lookup_internal(path_str) {
         Some(file_ref) => {
-            // Debug: print result for libnssl
-            if path_str.contains("libnssl") {
-                // Print mode as hex
-                let mode = file_ref.mode;
-                let is_sym = (mode & 0o170000) == 0o120000;
-                if is_sym {
-                    unsafe { kmod_serial_print(b"ext2: libnssl IS symlink\n".as_ptr(), b"ext2: libnssl IS symlink\n".len()); }
-                } else {
-                    unsafe { kmod_serial_print(b"ext2: libnssl NOT symlink\n".as_ptr(), b"ext2: libnssl NOT symlink\n".len()); }
-                }
-                log_hex(b"ext2: libnssl mode=0o", mode as u64);
-                log_hex(b"ext2: libnssl size=", file_ref.size);
-            }
             unsafe { *out_ref = file_ref };
             0
         }
         None => {
-            // Debug: log failure
-            let msg = b"ext2_lookup: lookup_internal returned None";
-            unsafe { kmod_log_warn(msg.as_ptr(), msg.len()); }
             -1
         }
     }
@@ -1074,16 +1048,10 @@ impl Ext2Filesystem {
 
     #[inline(never)]
     fn lookup_internal_with_depth(&self, path: &str, depth: u32, max_depth: u32) -> Option<FileRef> {
-        // UNCONDITIONAL serial print test
-        unsafe { kmod_serial_print(b"*** LOOKUP_INTERNAL ***\n".as_ptr(), 24); }
-        
         if depth > max_depth {
             mod_warn!(b"lookup_internal: too many symlinks");
             return None;
         }
-
-        // Debug: log path being looked up - unconditionally
-        serial_debug!(b"ext2: lookup_internal_with_depth called");
 
         let trimmed = path.trim_matches('/');
         let mut inode_number = 2u32; // root inode
@@ -1118,11 +1086,6 @@ impl Ext2Filesystem {
         let num_segments = segments.len();
 
         for (idx, segment) in segments.iter().enumerate() {
-            // Debug: print each segment being looked up
-            if trimmed.contains("nssl") || trimmed.contains("ssl") {
-                log_hex(b"lookup seg idx=", idx as u64);
-            }
-            
             let next_inode = match self.find_in_directory(&inode, segment) {
                 Some(n) => n,
                 None => {
@@ -1141,25 +1104,10 @@ impl Ext2Filesystem {
                 }
             };
 
-            // Debug: print inode info for libnssl.so
-            if *segment == "libnssl.so" {
-                // Print inode mode to serial
-                let mode = inode.mode;
-                let is_sym = (mode & 0o170000) == 0o120000;
-                log_hex(b"ext2: libnssl inode=", inode_number as u64);
-                log_hex(b"ext2: libnssl mode=0o", mode as u64);
-                if is_sym {
-                    serial_debug!(b"ext2: libnssl IS symlink");
-                } else {
-                    serial_debug!(b"ext2: libnssl NOT symlink");
-                }
-            }
-
             // Handle symlinks for intermediate path components
             // Also handle symlink for the final component (so open() follows symlinks)
             let is_sym = inode.is_symlink();
             if is_sym {
-                serial_debug!(b"ext2: found symlink, resolving...");
                 let mut target_buf = [0u8; 256];
                 if let Some(target) = self.read_symlink_target(&inode, &mut target_buf) {
                     // Build the new path: target + remaining segments
@@ -1201,13 +1149,10 @@ impl Ext2Filesystem {
                     }
 
                     if let Ok(new_path) = core::str::from_utf8(&new_path_buf[..new_path_len]) {
-                        serial_debug!(b"ext2: symlink resolved, calling recursive lookup");
                         return self.lookup_internal_with_depth(new_path, depth + 1, max_depth);
                     }
-                    serial_debug!(b"ext2: failed to parse new path as utf8");
                     return None;
                 }
-                serial_debug!(b"ext2: read_symlink_target returned None");
                 return None;
             }
         }

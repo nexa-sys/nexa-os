@@ -23,7 +23,6 @@ use core::sync::atomic::Ordering;
 pub fn exit(code: i32) -> ! {
     let pid = crate::scheduler::current_pid().unwrap_or(0);
     ktrace!("[SYS_EXIT] PID {} exiting with code: {}", pid, code);
-    kinfo!("Process {} exiting with code: {}", pid, code);
 
     if pid == 0 {
         kpanic!("Cannot exit from kernel context (PID 0)!");
@@ -32,7 +31,7 @@ pub fn exit(code: i32) -> ! {
     // Handle thread exit: clear_child_tid and futex wake
     if let Some(futex_addr) = crate::scheduler::handle_thread_exit(pid) {
         // Wake any threads waiting on this futex (e.g., pthread_join)
-        kinfo!("[SYS_EXIT] Waking waiters on futex {:#x} for PID {}", futex_addr, pid);
+        ktrace!("[SYS_EXIT] Waking waiters on futex {:#x} for PID {}", futex_addr, pid);
         super::thread::futex_wake_internal(futex_addr, i32::MAX);
     }
 
@@ -46,7 +45,7 @@ pub fn exit(code: i32) -> ! {
     ktrace!("[SYS_EXIT] Setting PID {} to Zombie state (is_thread={})", pid, is_thread);
     let _ = crate::scheduler::set_process_state(pid, crate::process::ProcessState::Zombie);
 
-    kinfo!("Process {} marked as zombie, yielding to scheduler", pid);
+    ktrace!("Process {} marked as zombie, yielding to scheduler", pid);
 
     crate::scheduler::do_schedule();
 
@@ -100,7 +99,7 @@ pub fn fork(syscall_return_addr: u64) -> u64 {
         }
     };
 
-    kinfo!("fork() called from PID {}", current_pid);
+    ktrace!("fork() called from PID {}", current_pid);
     ktrace!("[fork] PID {} calling fork", current_pid);
 
     let parent_pid = current_pid;
@@ -230,37 +229,19 @@ pub fn fork(syscall_return_addr: u64) -> u64 {
     // Also update user_rflags
     child_process.user_rflags = saved_rflags;
 
-    crate::serial_println!(
-        "[fork] Child callee-saved regs: rbx={:#x}, rbp={:#x}, r12={:#x}, r13={:#x}, r14={:#x}, r15={:#x}",
-        saved_rbx, saved_rbp, saved_r12, saved_r13, saved_r14, saved_r15
-    );
-    crate::serial_println!(
-        "[fork] Child caller-saved regs: rdi={:#x}, rsi={:#x}, rdx={:#x}, r8={:#x}, r9={:#x}, r10={:#x}",
-        saved_rdi, saved_rsi, saved_rdx, saved_r8, saved_r9, saved_r10
-    );
-
     kdebug!(
         "Child fork: entry={:#x}, stack={:#x}, will return RAX=0",
         child_process.entry_point,
         child_process.stack_top
     );
 
-    ktrace!(
-        "[fork] User RSP (from GS_DATA)={:#x}, Kernel RSP={:#x}, Child stack_top={:#x}",
-        user_rsp,
-        parent_process.context.rsp,
-        child_process.stack_top
-    );
-
     let memory_size = (INTERP_BASE + INTERP_REGION_SIZE) - USER_VIRT_BASE;
-    kinfo!(
+    kdebug!(
         "fork() - copying {:#x} bytes ({} KB) from {:#x}",
         memory_size,
         memory_size / 1024,
         USER_VIRT_BASE
     );
-
-    ktrace!("[fork] Copying {} KB of memory", memory_size / 1024);
 
     let child_phys_base = match crate::paging::allocate_user_region(memory_size) {
         Some(addr) => addr,
@@ -270,59 +251,12 @@ pub fn fork(syscall_return_addr: u64) -> u64 {
         }
     };
 
-    // DEBUG: Always print for debugging fork issues
-    crate::serial_println!(
-        "[fork] PID {} -> child: phys_base={:#x}, parent_phys_base will be read next",
-        current_pid,
-        child_phys_base
-    );
-
     kdebug!(
         "fork() - allocated child memory at physical {:#x}",
         child_phys_base
     );
 
     let parent_phys_base = parent_process.memory_base;
-
-    // DEBUG: Always print parent memory_base for tracing
-    crate::serial_println!(
-        "[fork] Parent PID {} memory_base={:#x}, child will get phys_base={:#x}",
-        parent_pid,
-        parent_phys_base,
-        child_phys_base
-    );
-
-    ktrace!(
-        "[fork] Parent PID {} phys_base={:#x}, child PID {} phys_base={:#x}",
-        parent_pid,
-        parent_phys_base,
-        child_pid,
-        child_phys_base
-    );
-    ktrace!(
-        "[fork] Copying {} KB from parent to child",
-        memory_size / 1024
-    );
-
-    unsafe {
-        let test_addr = 0x9fe390u64 as *const u8;
-        let test_bytes = core::slice::from_raw_parts(test_addr, 16);
-        ktrace!(
-            "[fork-debug] Parent mem at path_buf (0x9fe390): {:02x?}",
-            test_bytes
-        );
-    }
-
-    // DEBUG: Print a sample byte from parent memory to verify it's accessible
-    unsafe {
-        // Read first few bytes at a known offset to verify parent memory is accessible
-        let sample_byte = core::ptr::read_volatile(parent_phys_base as *const u8);
-        crate::serial_println!(
-            "[fork] Parent phys_base={:#x}, first byte={:#x}",
-            parent_phys_base,
-            sample_byte
-        );
-    }
 
     unsafe {
         // CRITICAL: Copy from parent's PHYSICAL base, not USER_VIRT_BASE!
@@ -341,34 +275,11 @@ pub fn fork(syscall_return_addr: u64) -> u64 {
             return u64::MAX;
         }
 
-        // DEBUG: Always print for tracing
-        crate::serial_println!(
-            "[fork] Copying from parent PHYS {:#x} to child PHYS {:#x}, size {:#x}",
-            src_ptr as u64,
-            dst_ptr as u64,
-            memory_size
-        );
-
-        kdebug!(
-            "[fork] Copying from parent PHYS {:#x} to child PHYS {:#x}, size {:#x}",
-            src_ptr as u64,
-            dst_ptr as u64,
-            memory_size
-        );
-
         // Perform the memory copy
         core::ptr::copy_nonoverlapping(src_ptr, dst_ptr, memory_size as usize);
 
         // Memory barrier to ensure copy is visible
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
-
-        // DEBUG: Read a sample byte from child memory to verify copy
-        let sample_byte_child = core::ptr::read_volatile(child_phys_base as *const u8);
-        crate::serial_println!(
-            "[fork] Child phys_base={:#x}, first byte after copy={:#x}",
-            child_phys_base,
-            sample_byte_child
-        );
 
         // Verify copy succeeded (use volatile to bypass caches)
         let verify_src = core::ptr::read_volatile(src_ptr);
@@ -392,12 +303,10 @@ pub fn fork(syscall_return_addr: u64) -> u64 {
         flush_all();
     }
 
-    kinfo!(
+    kdebug!(
         "fork() - memory copied successfully, {} KB",
         memory_size / 1024
     );
-
-    ktrace!("[fork] Memory copied successfully");
 
     child_process.memory_base = child_phys_base;
     child_process.memory_size = memory_size;
@@ -416,12 +325,6 @@ pub fn fork(syscall_return_addr: u64) -> u64 {
             }
 
             child_process.cr3 = cr3;
-
-            ktrace!(
-                "[fork] VALIDATED CR3: {:#x} for child PID {}",
-                cr3,
-                child_pid
-            );
         }
         Err(err) => {
             kerror!(
@@ -433,20 +336,12 @@ pub fn fork(syscall_return_addr: u64) -> u64 {
         }
     }
 
-    ktrace!(
-        "[fork] Child memory_base={:#x}, memory_size={:#x}",
-        child_phys_base,
-        memory_size
-    );
-
-    kdebug!("fork() - FD table shared (TODO: implement copy)");
-
     if let Err(e) = crate::scheduler::add_process(child_process, 128) {
         kerror!("fork() - failed to add child process: {}", e);
         return u64::MAX;
     }
 
-    kinfo!(
+    ktrace!(
         "fork() created child PID {} from parent PID {} (child will return 0)",
         child_pid,
         current_pid
@@ -478,14 +373,10 @@ pub fn execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8)
     use crate::scheduler::get_current_pid;
     use alloc::vec::Vec;
 
-    // DEBUG: Always print to serial to track execve calls
     let current_pid = get_current_pid().unwrap_or(0);
-    crate::serial_println!("[execve] PID={} path_ptr={:#x}", current_pid, path as u64);
-
-    kinfo!("[syscall_execve] Called");
+    ktrace!("[syscall_execve] PID={} path_ptr={:#x}", current_pid, path as u64);
 
     if path.is_null() {
-        crate::serial_println!("[execve] PID={} ERROR: path is null", current_pid);
         kerror!("[syscall_execve] Error: path is null");
         posix::set_errno(posix::errno::EFAULT);
         return u64::MAX;
@@ -499,13 +390,9 @@ pub fn execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8)
 
     let mut path_buf = [0u8; MAX_EXEC_PATH_LEN];
     let path_len = match copy_user_c_string(path, &mut path_buf) {
-        Ok(len) => {
-            crate::serial_println!("[execve] PID={} path copied, len={}", current_pid, len);
-            len
-        }
+        Ok(len) => len,
         Err(_) => {
-            crate::serial_println!("[execve] PID={} ERROR: path copy failed", current_pid);
-            ktrace!("[syscall_execve] Error: path too long or invalid");
+            kerror!("[syscall_execve] Error: path too long or invalid");
             posix::set_errno(posix::errno::EINVAL);
             return u64::MAX;
         }
@@ -552,24 +439,15 @@ pub fn execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8)
     unsafe {
         core::arch::asm!("mov {}, cr3", out(reg) saved_cr3, options(nomem, nostack));
         if saved_cr3 != kernel_cr3 {
-            kinfo!(
-                "[syscall_execve] Switching CR3 from {:#x} to kernel {:#x}",
-                saved_cr3,
-                kernel_cr3
-            );
             core::arch::asm!("mov cr3, {}", in(reg) kernel_cr3, options(nostack));
         }
     }
 
     let path_slice = &path_buf[..path_len];
     let path_str = match core::str::from_utf8(path_slice) {
-        Ok(s) => {
-            crate::serial_println!("[execve] PID={} path={}", current_pid, s);
-            s
-        }
+        Ok(s) => s,
         Err(_) => {
-            crate::serial_println!("[execve] PID={} ERROR: invalid UTF-8", current_pid);
-            ktrace!("[syscall_execve] Error: invalid UTF-8 in path");
+            kerror!("[syscall_execve] Error: invalid UTF-8 in path");
             // Restore CR3 before returning
             unsafe {
                 if saved_cr3 != kernel_cr3 {
@@ -585,42 +463,13 @@ pub fn execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8)
     let argv_refs: Vec<&[u8]> = argv_storage.iter().map(|v| v.as_slice()).collect();
     let argv_list = argv_refs.as_slice();
 
-    kinfo!("[syscall_execve] Path: {}", path_str);
-    kinfo!("[syscall_execve] argc={}", argv_list.len());
-    for (i, arg) in argv_list.iter().enumerate() {
-        let disp = core::str::from_utf8(arg).unwrap_or("<non-utf8>");
-        ktrace!("  argv[{}] = {}", i, disp);
-    }
+    kinfo!("[syscall_execve] Path: {}, argc={}", path_str, argv_list.len());
 
     let exec_path_bytes = path_slice;
 
     let elf_data = match crate::fs::read_file_bytes(path_str) {
-        Some(data) => {
-            crate::serial_println!("[execve] PID={} file found, {} bytes", current_pid, data.len());
-            // Force serial output immediately after file found - BEFORE any other code
-            {
-                unsafe {
-                    use x86_64::instructions::port::Port;
-                    let mut port = Port::<u8>::new(0x3F8);
-                    for &b in b"[X1]" {
-                        port.write(b);
-                    }
-                }
-            }
-            kinfo!("[syscall_execve] Found file, {} bytes", data.len());
-            {
-                unsafe {
-                    use x86_64::instructions::port::Port;
-                    let mut port = Port::<u8>::new(0x3F8);
-                    for &b in b"[X2]\n" {
-                        port.write(b);
-                    }
-                }
-            }
-            data
-        }
+        Some(data) => data,
         None => {
-            crate::serial_println!("[execve] PID={} ERROR: file not found: {}", current_pid, path_str);
             kerror!("[syscall_execve] Error: file not found: {}", path_str);
             // Restore CR3 before returning
             unsafe {
@@ -633,7 +482,6 @@ pub fn execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8)
         }
     };
 
-    crate::serial_println!("[execve] PID={} before get_current_pid for memory_base lookup", current_pid);
     let current_pid = match get_current_pid() {
         Some(pid) => pid,
         None => {
@@ -676,21 +524,6 @@ pub fn execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8)
         }
     };
 
-    ktrace!(
-        "[syscall_execve] Current process memory_base={:#x}, cr3={:#x}",
-        current_memory_base,
-        current_cr3
-    );
-
-    // CRITICAL DEBUG: Force serial output right before from_elf_with_args_at_base call
-    unsafe {
-        use x86_64::instructions::port::Port;
-        let mut port = Port::<u8>::new(0x3F8);
-        for &b in b"[BEFORE_FROM_ELF]\n" {
-            port.write(b);
-        }
-    }
-
     let new_process = match crate::process::Process::from_elf_with_args_at_base(
         elf_data,
         argv_list,
@@ -698,14 +531,7 @@ pub fn execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8)
         current_memory_base,
         current_cr3,
     ) {
-        Ok(proc) => {
-            ktrace!(
-                "[syscall_execve] Successfully loaded ELF at existing base, entry={:#x}, stack={:#x}",
-                proc.entry_point,
-                proc.stack_top
-            );
-            proc
-        }
+        Ok(proc) => proc,
         Err(e) => {
             kerror!("[syscall_execve] Error loading ELF: {}", e);
             // Restore CR3 before returning
@@ -794,10 +620,6 @@ pub fn execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8)
     // Note: The process will be scheduled with its new CR3 when it runs
     unsafe {
         if saved_cr3 != kernel_cr3 {
-            kinfo!(
-                "[syscall_execve] Restoring CR3 to {:#x} before returning",
-                saved_cr3
-            );
             core::arch::asm!("mov cr3, {}", in(reg) saved_cr3, options(nostack));
         }
     }
@@ -808,37 +630,21 @@ pub fn execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8)
 
 /// POSIX wait4() system call - wait for process state change
 pub fn wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> u64 {
-    // Use serial_println for debugging (kinfo is filtered after init starts)
-    crate::serial_println!("WAIT4_ENTRY: pid={}, options={:#x}", pid, options);
-    kinfo!("wait4(pid={}, options={:#x}) called", pid, options);
-
     let current_pid = match crate::scheduler::get_current_pid() {
         Some(pid) => pid,
         None => {
-            crate::serial_println!("WAIT4_ERROR: no current process");
             kerror!("wait4() called but no current process");
             posix::set_errno(posix::errno::ESRCH);
             return u64::MAX;
         }
     };
 
-    crate::serial_println!("WAIT4: from PID {} waiting for pid {}", current_pid, pid);
-    kinfo!("wait4() from PID {} waiting for pid {}", current_pid, pid);
-
     const WNOHANG: i32 = 1;
     const WUNTRACED: i32 = 2;
     const WCONTINUED: i32 = 8;
 
     // Force is_nonblocking to false if options is 0, just to be safe
-    // DEBUG: Force blocking to investigate why wait4 returns 0 (WNOHANG behavior) when options=0
-    let is_nonblocking = false; 
-    /*
-    let is_nonblocking = if options == 0 {
-        false
-    } else {
-        (options & WNOHANG) != 0
-    };
-    */
+    let is_nonblocking = false;
 
     if (options & !(WNOHANG | WUNTRACED | WCONTINUED)) != 0 {
         kerror!("wait4: unsupported options {:#x}", options);
@@ -855,16 +661,7 @@ pub fn wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> u64 
         return u64::MAX;
     }
 
-    let mut loop_count = 0;
     loop {
-        loop_count += 1;
-        ktrace!(
-            "[wait4] ===== Loop {} BEGIN: PID {} waiting for pid {} =====",
-            loop_count,
-            current_pid,
-            pid
-        );
-
         let mut found_any_child = false;
         let mut child_exited = false;
         let mut child_exit_code: Option<i32> = None;
@@ -884,78 +681,33 @@ pub fn wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> u64 
                         if let Some(proc) = crate::scheduler::get_process(check_pid) {
                             child_exit_code = Some(proc.exit_code);
                             child_term_signal = proc.term_signal;
-                            kinfo!("wait4: found zombie PID {}, term_signal={:?}", check_pid, child_term_signal);
                         } else {
                             child_exit_code = Some(0);
                         }
 
-                        kinfo!("wait4() found exited child PID {}", check_pid);
                         break;
                     }
                 }
             }
         } else if pid > 0 {
-            if loop_count <= 3 || (loop_count % 100 == 0) {
-                ktrace!(
-                    "[wait4] Loop {}: Checking if PID {} is child of PID {}",
-                    loop_count,
-                    pid,
-                    current_pid
-                );
-            }
-
             if let Some(child_state) = crate::scheduler::get_child_state(current_pid, pid as u64) {
                 found_any_child = true;
                 wait_pid = pid as u64;
 
-                // Debug output every iteration
-                if loop_count <= 10 {
-                    crate::serial_println!(
-                        "WAIT4_LOOP: iter={}, pid={}, state={:?}",
-                        loop_count,
-                        pid,
-                        child_state
-                    );
-                }
-
-                if loop_count <= 3 || (loop_count % 100 == 0) {
-                    ktrace!(
-                        "[wait4] Loop {}: PID {} found, state={:?}",
-                        loop_count,
-                        pid,
-                        child_state
-                    );
-                }
-
                 if child_state == crate::process::ProcessState::Zombie {
                     child_exited = true;
-                    crate::serial_println!("WAIT4_ZOMBIE: pid={} is zombie!", pid);
 
                     if let Some(proc) = crate::scheduler::get_process(wait_pid) {
                         child_exit_code = Some(proc.exit_code);
                         child_term_signal = proc.term_signal;
-                        crate::serial_println!(
-                            "WAIT4_ZOMBIE_INFO: exit_code={}, term_signal={:?}",
-                            proc.exit_code,
-                            proc.term_signal
-                        );
-                        kinfo!("wait4: found zombie PID {}, term_signal={:?}", wait_pid, child_term_signal);
                     } else {
                         child_exit_code = Some(0);
                     }
-
-                    kinfo!("wait4() found exited specific child PID {}", pid);
                 }
             }
         }
 
         if child_exited {
-            ktrace!(
-                "[wait4] Child {} exited, found_any_child={}, proceeding to cleanup",
-                wait_pid,
-                found_any_child
-            );
-
             let encoded_status = if let Some(signal) = child_term_signal {
                 signal & 0x7f
             } else {
@@ -969,62 +721,32 @@ pub fn wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> u64 
                 }
             }
 
-            crate::serial_println!("WAIT4: About to remove_process({})", wait_pid);
             if let Err(e) = crate::scheduler::remove_process(wait_pid) {
                 kerror!("wait4: Failed to remove process {}: {}", wait_pid, e);
             }
-            crate::serial_println!("WAIT4: remove_process({}) done", wait_pid);
 
             crate::init::handle_process_exit(wait_pid, child_exit_code.unwrap_or(0));
 
             kinfo!(
-                "wait4() returning child PID {} with encoded status {:#x}",
+                "wait4() returning child PID {} with status {:#x}",
                 wait_pid,
                 encoded_status
             );
             posix::set_errno(0);
-
-            ktrace!(
-                "[wait4] Returning to PID {} with child PID {}",
-                current_pid,
-                wait_pid
-            );
-            crate::serial_println!("WAIT4_RETURN: pid={}, status={:#x}", wait_pid, encoded_status);
             return wait_pid;
         }
 
         if !found_any_child {
-            crate::serial_println!("WAIT4_ECHILD: no child found for parent={}, arg={}", current_pid, pid);
-            ktrace!(
-                "[wait4] No matching child found for PID {} (pid arg={}) - returning ECHILD",
-                current_pid,
-                pid
-            );
-            kinfo!("wait4() no matching child found");
             posix::set_errno(posix::errno::ECHILD);
             return u64::MAX;
         }
 
         if is_nonblocking {
-            crate::serial_println!("WAIT4_WNOHANG: returning 0");
-            kinfo!("wait4() WNOHANG: child not yet exited");
             posix::set_errno(0);
             return 0;
         }
 
-        if loop_count <= 3 || (loop_count % 100 == 0) {
-            ktrace!(
-                "[wait4] Loop {}: Child not ready, calling do_schedule()",
-                loop_count
-            );
-        }
         crate::scheduler::do_schedule();
-        if loop_count <= 3 || (loop_count % 100 == 0) {
-            ktrace!(
-                "[wait4] Loop {}: Returned from do_schedule(), re-checking child state",
-                loop_count
-            );
-        }
     }
 }
 
@@ -1046,7 +768,7 @@ pub fn kill(pid: i64, signum: u64) -> u64 {
     }
 
     let current_pid = crate::scheduler::get_current_pid().unwrap_or(0);
-    kinfo!("kill(pid={}, sig={}) called from PID {}", pid, signum, current_pid);
+    ktrace!("kill(pid={}, sig={}) called from PID {}", pid, signum, current_pid);
 
     // signum == 0: just check permissions, don't send signal
     if signum == 0 {
@@ -1089,7 +811,7 @@ pub fn kill(pid: i64, signum: u64) -> u64 {
         match signum as u32 {
             SIGKILL => {
                 // SIGKILL cannot be caught or ignored - terminate immediately
-                kinfo!("Sending SIGKILL to PID {}", target_pid);
+                ktrace!("Sending SIGKILL to PID {}", target_pid);
                 
                 // Set termination signal
                 if let Err(e) = crate::scheduler::set_process_term_signal(target_pid, SIGKILL as i32) {
@@ -1103,11 +825,11 @@ pub fn kill(pid: i64, signum: u64) -> u64 {
                     return u64::MAX;
                 }
                 
-                kinfo!("Process {} killed with SIGKILL", target_pid);
+                ktrace!("Process {} killed with SIGKILL", target_pid);
             }
             SIGTERM => {
                 // SIGTERM - request termination (can be caught)
-                kinfo!("Sending SIGTERM to PID {}", target_pid);
+                ktrace!("Sending SIGTERM to PID {}", target_pid);
                 
                 // For now, treat SIGTERM like SIGKILL (terminate immediately)
                 // TODO: Implement proper signal delivery to user-space handlers
@@ -1121,11 +843,11 @@ pub fn kill(pid: i64, signum: u64) -> u64 {
                     return u64::MAX;
                 }
                 
-                kinfo!("Process {} terminated with SIGTERM", target_pid);
+                ktrace!("Process {} terminated with SIGTERM", target_pid);
             }
             SIGSTOP => {
                 // SIGSTOP - stop process (cannot be caught)
-                kinfo!("Sending SIGSTOP to PID {}", target_pid);
+                ktrace!("Sending SIGSTOP to PID {}", target_pid);
                 
                 if let Err(e) = crate::scheduler::set_process_state(target_pid, ProcessState::Sleeping) {
                     kerror!("Failed to stop PID {}: {}", target_pid, e);
@@ -1133,11 +855,11 @@ pub fn kill(pid: i64, signum: u64) -> u64 {
                     return u64::MAX;
                 }
                 
-                kinfo!("Process {} stopped with SIGSTOP", target_pid);
+                ktrace!("Process {} stopped with SIGSTOP", target_pid);
             }
             SIGCONT => {
                 // SIGCONT - continue if stopped
-                kinfo!("Sending SIGCONT to PID {}", target_pid);
+                ktrace!("Sending SIGCONT to PID {}", target_pid);
                 
                 if target_process.state == ProcessState::Sleeping {
                     if let Err(e) = crate::scheduler::set_process_state(target_pid, ProcessState::Ready) {
@@ -1145,12 +867,12 @@ pub fn kill(pid: i64, signum: u64) -> u64 {
                         posix::set_errno(posix::errno::ESRCH);
                         return u64::MAX;
                     }
-                    kinfo!("Process {} continued with SIGCONT", target_pid);
+                    ktrace!("Process {} continued with SIGCONT", target_pid);
                 }
             }
             _ => {
                 // Other signals - deliver to process signal queue
-                kinfo!("Sending signal {} to PID {}", signum, target_pid);
+                ktrace!("Sending signal {} to PID {}", signum, target_pid);
                 
                 // For unhandled signals that terminate by default, terminate the process
                 let terminates = matches!(

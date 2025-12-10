@@ -3,7 +3,7 @@
 //! This module contains functions for executing processes and transitioning
 //! to user mode (Ring 3), including context switching and sysretq handling.
 
-use crate::{kdebug, kinfo, ktrace};
+use crate::{kdebug, ktrace};
 
 use super::types::{Process, ProcessState};
 
@@ -30,7 +30,7 @@ impl Process {
 
     /// Execute the process in user mode (Ring 3)
     pub fn execute(&mut self) {
-        crate::serial_println!(
+        ktrace!(
             "EXEC_ENTER: PID={} entry={:#x} stack={:#x}",
             self.pid,
             self.entry_point,
@@ -41,13 +41,6 @@ impl Process {
         ktrace!(
             "[process::execute] PID={}, entry={:#x}, stack={:#x}, has_entered_user={}, is_fork_child={}",
             self.pid, self.entry_point, self.stack_top, self.has_entered_user, self.is_fork_child
-        );
-
-        kinfo!(
-            "Executing process PID={}, entry={:#x}, stack={:#x}",
-            self.pid,
-            self.entry_point,
-            self.stack_top
         );
 
         // Mark as entered user mode BEFORE switching CR3
@@ -129,7 +122,7 @@ impl Process {
 /// This function never returns - execution continues in user space
 #[inline(never)]
 pub fn jump_to_usermode_with_cr3(entry: u64, stack: u64, cr3: u64) -> ! {
-    crate::serial_println!("J2U: entry={:#x} stack={:#x} cr3={:#x}", entry, stack, cr3);
+    ktrace!("J2U: entry={:#x} stack={:#x} cr3={:#x}", entry, stack, cr3);
     // Use kdebug! macro for direct serial output
     kdebug!(
         "[jump_to_usermode_with_cr3] ENTRY: entry={:#x}, stack={:#x}, cr3={:#x}",
@@ -180,7 +173,7 @@ pub fn jump_to_usermode_with_cr3(entry: u64, stack: u64, cr3: u64) -> ! {
         Msr::new(0xc0000101).write(gs_base);
     }
 
-    crate::serial_println!(
+    ktrace!(
         "J2U_PRE_SYSRET: cr3={:#x} entry={:#x} stack={:#x}",
         cr3,
         entry,
@@ -191,7 +184,7 @@ pub fn jump_to_usermode_with_cr3(entry: u64, stack: u64, cr3: u64) -> ! {
     unsafe {
         use x86_64::registers::model_specific::Msr;
         let star_val = Msr::new(0xC0000081).read();
-        crate::serial_println!("STAR MSR: {:#018x}", star_val);
+        ktrace!("STAR MSR: {:#018x}", star_val);
     }
 
     // Verify IDT[0x81] is still correctly configured before entering userspace
@@ -205,7 +198,7 @@ pub fn jump_to_usermode_with_cr3(entry: u64, stack: u64, cr3: u64) -> ! {
         let handler = (low & 0xFFFF) | ((low >> 48) << 16) | ((high as u64 & 0xFFFFFFFF) << 32);
         let dpl = ((low >> 32) >> 13) & 0x3;
         let present = ((low >> 32) >> 15) & 0x1;
-        crate::serial_println!(
+        ktrace!(
             "PRE_SYSRET IDT[0x81]: base={:#x} handler={:#x} dpl={} present={}",
             idt_base,
             handler,
@@ -215,7 +208,7 @@ pub fn jump_to_usermode_with_cr3(entry: u64, stack: u64, cr3: u64) -> ! {
     }
 
     unsafe {
-        crate::serial_println!("J2U_SYSRET_NOW");
+        ktrace!("J2U_SYSRET_NOW");
 
         // Store values for asm block
         let entry_val = entry;

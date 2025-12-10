@@ -57,14 +57,6 @@ pub extern "x86-interrupt" fn page_fault_handler(
     let rsp = stack_frame.stack_pointer.as_u64();
     let rflags = stack_frame.cpu_flags.bits();
 
-    // Debug: always print page fault info to serial
-    crate::serial_println!(
-        "PF: addr={:#x} rip={:#x} err={:?}",
-        fault_addr,
-        rip,
-        error_code
-    );
-
     // Check if this is a user-mode page fault using the error code's USER_MODE bit
     // This is more reliable than checking CS because:
     // 1. The error code USER_MODE bit directly indicates if the access was from user mode
@@ -87,34 +79,15 @@ pub extern "x86-interrupt" fn page_fault_handler(
                 let cr3 = process.cr3;
                 let memory_base = process.memory_base;
 
-                // Debug: Print current CR3 for PID 11 to track mapping issues
-                if pid == 11 {
-                    let current_cr3: u64 = unsafe {
-                        let mut val: u64;
-                        core::arch::asm!("mov {}, cr3", out(reg) val, options(nostack));
-                        val
-                    };
-                    crate::serial_println!(
-                        "[DF DEBUG] PID 11: current_cr3={:#x}, process.cr3={:#x}, memory_base={:#x}",
-                        current_cr3, cr3, memory_base
-                    );
-                }
-
                 // Try to handle the demand fault
                 match crate::mm::handle_user_demand_fault(fault_addr, pid, cr3, memory_base) {
                     Ok(()) => {
                         // Successfully mapped the page, return to continue execution
-                        crate::serial_println!(
-                            "demand_fault: PID {} fault at {:#x} handled OK (kernel_mode={})",
-                            pid,
-                            fault_addr,
-                            !is_user_mode
-                        );
                         return; // Continue execution
                     }
                     Err(e) => {
                         // Demand paging failed, fall through to error handling
-                        crate::serial_println!(
+                        crate::kwarn!(
                             "demand_fault: PID {} fault at {:#x} failed: {}",
                             pid,
                             fault_addr,

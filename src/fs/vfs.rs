@@ -741,11 +741,8 @@ fn handle_sysfs_read(path: &str) -> Option<OpenFile> {
 }
 
 pub fn open(path: &str) -> Option<OpenFile> {
-    crate::serial_println!("[open] path='{}'", path);
-    
     // Check for procfs paths first
     if path.starts_with("/proc") || path.starts_with("proc") {
-        crate::serial_println!("[open] trying procfs");
         if let Some(result) = handle_procfs_read(path) {
             return Some(result);
         }
@@ -753,28 +750,18 @@ pub fn open(path: &str) -> Option<OpenFile> {
 
     // Check for sysfs paths
     if path.starts_with("/sys") || path.starts_with("sys") {
-        crate::serial_println!("[open] trying sysfs");
         if let Some(result) = handle_sysfs_read(path) {
             return Some(result);
         }
     }
 
-    crate::serial_println!("[open] calling resolve_mount");
     let (fs, relative) = match resolve_mount(path) {
         Some(r) => r,
         None => {
-            crate::serial_println!("[open] resolve_mount returned None");
             return None;
         }
     };
-    crate::serial_println!("[open] fs={}, rel='{}'", fs.name(), relative);
-    let result = fs.read(relative);
-    if let Some(ref r) = result {
-        crate::serial_println!("[open] fs.read returned size={}", r.metadata.size);
-    } else {
-        crate::serial_println!("[open] fs.read returned None");
-    }
-    result
+    fs.read(relative)
 }
 
 /// Handle procfs virtual directory stat
@@ -1164,23 +1151,15 @@ pub fn list_files() -> &'static [Option<File>] {
 }
 
 pub fn read_file_bytes(name: &str) -> Option<&'static [u8]> {
-    crate::serial_println!("[read_file_bytes] opening '{}'", name);
-    crate::kinfo!("read_file_bytes: opening '{}'", name);
     let opened = match open(name) {
         Some(o) => o,
         None => {
-            crate::serial_println!("[read_file_bytes] open('{}') returned None", name);
             return None;
         }
     };
     
     // Check if it's a regular file (not a directory, symlink, etc.)
     if opened.metadata.file_type != posix::FileType::Regular {
-        crate::serial_println!(
-            "[read_file_bytes] '{}' is not a regular file (type={:?}), skipping",
-            name,
-            opened.metadata.file_type
-        );
         crate::kwarn!(
             "read_file_bytes: '{}' is not a regular file (type={:?})",
             name,
@@ -1188,14 +1167,9 @@ pub fn read_file_bytes(name: &str) -> Option<&'static [u8]> {
         );
         return None;
     }
-    
-    crate::serial_println!("[read_file_bytes] open('{}') succeeded", name);
-    crate::kinfo!("read_file_bytes: opened, checking content type");
 
     match opened.content {
         FileContent::Inline(bytes) => {
-            crate::serial_println!("[read_file_bytes] Inline content, {} bytes", bytes.len());
-            crate::kinfo!("read_file_bytes: Inline content, {} bytes", bytes.len());
             Some(bytes)
         }
         // Handle new modular filesystem content (filesystem-agnostic)
@@ -1226,19 +1200,6 @@ pub fn read_file_bytes(name: &str) -> Option<&'static [u8]> {
 /// Read file content from a modular filesystem (ext2, ext3, ext4, etc.)
 /// This is filesystem-agnostic and works with any registered modular filesystem
 fn read_modular_file_bytes(name: &str, file_handle: &super::traits::ModularFileHandle) -> Option<&'static [u8]> {
-    crate::serial_println!(
-        "[read_modular_file_bytes] fs_index={}, inode={}, size={}",
-        file_handle.fs_index,
-        file_handle.inode,
-        file_handle.size
-    );
-    crate::kinfo!(
-        "read_modular_file_bytes: fs_index={}, inode={}, size={}",
-        file_handle.fs_index,
-        file_handle.inode,
-        file_handle.size
-    );
-
     // CRITICAL FIX: Switch to kernel CR3 before accessing kernel memory
     // The cache buffer is allocated in kernel address space (heap at ~0x7cc0000)
     // which may not be mapped in user process page tables.
@@ -1248,18 +1209,12 @@ fn read_modular_file_bytes(name: &str, file_handle: &super::traits::ModularFileH
     unsafe {
         core::arch::asm!("mov {}, cr3", out(reg) saved_cr3, options(nomem, nostack));
         if saved_cr3 != kernel_cr3 {
-            crate::kinfo!(
-                "read_modular_file_bytes: switching CR3 from {:#x} to kernel {:#x}",
-                saved_cr3,
-                kernel_cr3
-            );
             core::arch::asm!("mov cr3, {}", in(reg) kernel_cr3, options(nostack));
         }
     }
 
     let size = file_handle.size as usize;
     if size == 0 {
-        crate::serial_println!("[read_modular_file_bytes] file size is 0");
         // Restore CR3 before returning
         unsafe {
             if saved_cr3 != kernel_cr3 {
@@ -1269,11 +1224,6 @@ fn read_modular_file_bytes(name: &str, file_handle: &super::traits::ModularFileH
         return Some(&EMPTY_MODULAR_FILE);
     }
     if size > MODULAR_READ_CACHE_SIZE {
-        crate::serial_println!(
-            "[read_modular_file_bytes] file too large: {} > {}",
-            size,
-            MODULAR_READ_CACHE_SIZE
-        );
         crate::kwarn!(
             "modular fs file '{}' is {} bytes, exceeds {} byte limit",
             name,
@@ -1288,8 +1238,6 @@ fn read_modular_file_bytes(name: &str, file_handle: &super::traits::ModularFileH
         }
         return None;
     }
-
-    crate::serial_println!("[read_modular_file_bytes] allocating {} bytes via vmalloc", size);
     
     // Use vmalloc for logically contiguous memory (physically non-contiguous is OK)
     // Each call allocates a fresh buffer - we don't free because callers hold &'static refs
@@ -1344,11 +1292,6 @@ fn read_modular_file_bytes(name: &str, file_handle: &super::traits::ModularFileH
         };
         
         if bytes_read == 0 {
-            crate::serial_println!(
-                "[read_modular_file_bytes] short read at offset {} of {}",
-                read_offset,
-                size
-            );
             crate::kwarn!(
                 "short read while loading '{}' from modular fs (offset {} of {})",
                 name,
@@ -1366,26 +1309,7 @@ fn read_modular_file_bytes(name: &str, file_handle: &super::traits::ModularFileH
         }
         
         read_offset += bytes_read;
-        
-        // Progress logging for large files (every 1MB)
-        if size > 1024 * 1024 && read_offset % (1024 * 1024) == 0 {
-            crate::kinfo!(
-                "read_modular_file_bytes: progress {}/{}MB",
-                read_offset / (1024 * 1024),
-                size / (1024 * 1024)
-            );
-        }
     }
-    
-    crate::serial_println!("[read_modular_file_bytes] read complete, total {} bytes", size);
-
-    // Debug: log first 16 bytes
-    let n = core::cmp::min(16, size);
-    crate::kinfo!(
-        "read_modular_file_bytes: complete, first {} bytes: {:02x?}",
-        n,
-        &buf_slice[..n]
-    );
     
     // Create static slice from vmalloc memory (memory persists for kernel lifetime)
     let result = unsafe {
@@ -1395,7 +1319,6 @@ fn read_modular_file_bytes(name: &str, file_handle: &super::traits::ModularFileH
     // Restore CR3 after all operations complete
     unsafe {
         if saved_cr3 != kernel_cr3 {
-            crate::kinfo!("read_modular_file_bytes: restoring CR3 to {:#x}", saved_cr3);
             core::arch::asm!("mov cr3, {}", in(reg) saved_cr3, options(nostack));
         }
     }

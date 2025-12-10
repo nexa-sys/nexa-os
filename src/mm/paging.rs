@@ -551,72 +551,13 @@ pub fn create_process_address_space(
     if !pdp[user_pdp_index].is_unused() {
         let kernel_pd_addr = pdp[user_pdp_index].addr();
         let kernel_pd = phys_to_page_table(kernel_pd_addr);
-        crate::kinfo!(
+        crate::ktrace!(
             "create_process_address_space: cloning from kernel_pd at {:#x} to new pd at {:#x}",
             kernel_pd_addr.as_u64(),
             pd_phys.as_u64()
         );
 
-        // Debug: show raw entry values for PD[163] before clone
-        crate::kinfo!(
-            "  BEFORE clone: kernel_pd[163].addr = {:#x}, flags = {:#x}",
-            kernel_pd[163].addr().as_u64(),
-            kernel_pd[163].flags().bits()
-        );
-
         clone_table(pd, kernel_pd);
-
-        // Debug: show raw entry values for PD[163] after clone
-        crate::kinfo!(
-            "  AFTER clone: pd[163].addr = {:#x}, flags = {:#x}",
-            pd[163].addr().as_u64(),
-            pd[163].flags().bits()
-        );
-
-        // Debug: verify kernel mappings are preserved
-        // Kernel heap PD index = 32, rootfs PD index = 155, module PD index = 62
-        let kernel_heap_pd_idx = 32usize;
-        let module_pd_idx = 62usize; // 0x7d00000 >> 21 = 62
-        let rootfs_pd_idx = 155usize;
-        let rootfs_inode_pd_idx = 163usize; // 0x1473a000 >> 21 = 163 (where inodes live)
-        crate::kinfo!(
-            "create_process_address_space: kernel PD[{}] (heap) = {:#x}, PD[{}] (module) = {:#x}, PD[{}] (rootfs) = {:#x}",
-            kernel_heap_pd_idx,
-            kernel_pd[kernel_heap_pd_idx].addr().as_u64(),
-            module_pd_idx,
-            kernel_pd[module_pd_idx].addr().as_u64(),
-            rootfs_pd_idx,
-            kernel_pd[rootfs_pd_idx].addr().as_u64()
-        );
-        crate::kinfo!(
-            "create_process_address_space: kernel PD[{}] (rootfs inode area) = {:#x}",
-            rootfs_inode_pd_idx,
-            kernel_pd[rootfs_inode_pd_idx].addr().as_u64()
-        );
-        crate::kinfo!(
-            "create_process_address_space: cloned PD[{}] (heap) = {:#x}, PD[{}] (module) = {:#x}, PD[{}] (rootfs) = {:#x}",
-            kernel_heap_pd_idx,
-            pd[kernel_heap_pd_idx].addr().as_u64(),
-            module_pd_idx,
-            pd[module_pd_idx].addr().as_u64(),
-            rootfs_pd_idx,
-            pd[rootfs_pd_idx].addr().as_u64()
-        );
-        crate::kinfo!(
-            "create_process_address_space: cloned PD[{}] (rootfs inode area) = {:#x}",
-            rootfs_inode_pd_idx,
-            pd[rootfs_inode_pd_idx].addr().as_u64()
-        );
-
-        // Debug: check PD[171] which is where 0x1573a000 lives
-        let pd_171_idx = 171usize;
-        crate::kinfo!(
-            "create_process_address_space: kernel PD[{}] = {:#x}, cloned PD[{}] = {:#x}",
-            pd_171_idx,
-            kernel_pd[pd_171_idx].addr().as_u64(),
-            pd_171_idx,
-            pd[pd_171_idx].addr().as_u64()
-        );
     }
 
     let mut pdp_flags = pdp[user_pdp_index].flags();
@@ -644,7 +585,7 @@ pub fn create_process_address_space(
             }
         }
 
-        crate::serial_println!(
+        crate::ktrace!(
             "create_process_address_space: DEMAND PAGING mode, {} pages will be mapped on-demand (phys_base={:#x})",
             page_count,
             phys_base
@@ -667,7 +608,7 @@ pub fn create_process_address_space(
             pd[pd_index].set_addr(PhysAddr::new(phys_addr), flags);
         }
 
-        crate::serial_println!(
+        crate::ktrace!(
             "create_process_address_space: IMMEDIATE mode, {} pages mapped (phys_base={:#x})",
             page_count,
             phys_base
@@ -1113,7 +1054,6 @@ pub unsafe fn clear_user_mappings(cr3: u64) {
     let user_end = INTERP_BASE + INTERP_REGION_SIZE;
 
     // Iterate through all huge pages in the user region and clear their mappings
-    let mut cleared_count = 0u64;
     let mut virt = user_start;
     while virt < user_end {
         // Get PML4 index (bits 39-47)
@@ -1149,7 +1089,6 @@ pub unsafe fn clear_user_mappings(cr3: u64) {
         if pd[pd_idx].flags().contains(PageTableFlags::PRESENT) {
             // Clear the PD entry
             pd[pd_idx].set_unused();
-            cleared_count += 1;
         }
 
         virt += HUGE_PAGE_SIZE;
@@ -1158,13 +1097,6 @@ pub unsafe fn clear_user_mappings(cr3: u64) {
     // Flush TLB to ensure the cleared mappings take effect
     use x86_64::instructions::tlb;
     tlb::flush_all();
-
-    if cleared_count > 0 {
-        crate::serial_println!(
-            "[clear_user_mappings] CR3={:#x}: cleared {} huge page mappings",
-            cr3, cleared_count
-        );
-    }
 }
 
 /// Returns true if the address is in the user region (USER_VIRT_BASE to USER_VIRT_BASE + USER_REGION_SIZE).
@@ -1192,7 +1124,7 @@ pub fn is_user_demand_page_address(virt_addr: u64) -> bool {
 /// in an appropriate context (interrupts may be disabled).
 pub fn handle_user_demand_fault(
     fault_addr: u64,
-    pid: u64,
+    _pid: u64,
     cr3: u64,
     memory_base: u64,
 ) -> Result<(), &'static str> {
@@ -1219,14 +1151,6 @@ pub fn handle_user_demand_fault(
     // The physical memory is pre-allocated at memory_base, so we just need
     // to map the virtual page to the corresponding physical page
     let page_phys = memory_base + offset;
-
-    // Debug: Print ALL demand faults for PID 11 to track mapping issues
-    if pid == 11 {
-        crate::serial_println!(
-            "[DF] PID {} fault virt={:#x} -> phys={:#x} (offset={:#x}, memory_base={:#x})",
-            pid, page_virt, page_phys, offset, memory_base
-        );
-    }
 
     // Map the page in the process's page table
     unsafe {
