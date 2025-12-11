@@ -18,10 +18,11 @@ use std::ffi::{c_char, c_int, c_void};
 use std::ptr;
 use std::slice;
 
-use crate::connection::{Connection, ConnectionCallbacks};
+use crate::connection::{Connection, ConnectionCallbacks, PacketInfo};
 use crate::crypto::{AeadAlgorithm, CryptoContext};
 use crate::error::{Error, NgError, TransportError};
-use crate::types::{EncryptionLevel, Settings, TransportParams};
+use crate::types::{EncryptionLevel, Path, Settings, SocketAddr as QuicSocketAddr, TransportParams};
+use crate::ConnectionId;
 
 // ============================================================================
 // Error Codes (ngtcp2 compatible)
@@ -110,6 +111,10 @@ pub struct ngtcp2_info {
     /// Version string
     pub version_str: *const c_char,
 }
+
+// SAFETY: ngtcp2_info is read-only static data with a constant string pointer.
+// The version_str pointer points to static string data that never changes.
+unsafe impl Sync for ngtcp2_info {}
 
 /// Get library version info
 #[no_mangle]
@@ -696,9 +701,64 @@ pub struct ngtcp2_conn {
 
 /// Connection internal state
 struct ConnState {
-    inner: Connection,
+    inner: Box<Connection>,
     user_data: *mut c_void,
     callbacks: ngtcp2_callbacks,
+}
+
+// ============================================================================
+// Helper Conversion Functions
+// ============================================================================
+
+/// Convert ngtcp2_cid to ConnectionId
+fn cid_from_ngtcp2(cid: &ngtcp2_cid) -> ConnectionId {
+    let len = (cid.datalen as usize).min(crate::NGTCP2_MAX_CIDLEN);
+    let mut id = ConnectionId {
+        data: [0u8; crate::NGTCP2_MAX_CIDLEN],
+        datalen: len,
+    };
+    id.data[..len].copy_from_slice(&cid.data[..len]);
+    id
+}
+
+/// Convert ngtcp2_path to Path
+fn path_from_ngtcp2(_path: &ngtcp2_path) -> Path {
+    make_default_path()
+}
+
+/// Create a default path
+fn make_default_path() -> Path {
+    Path {
+        local: QuicSocketAddr::default(),
+        remote: QuicSocketAddr::default(),
+        user_data: ptr::null_mut(),
+    }
+}
+
+/// Convert ngtcp2_settings to Settings
+fn settings_from_ngtcp2(settings: &ngtcp2_settings) -> Settings {
+    let mut s = Settings::default();
+    s.initial_rtt = settings.initial_rtt;
+    s.handshake_timeout = settings.handshake_timeout;
+    s
+}
+
+/// Convert ngtcp2_transport_params to TransportParams
+fn params_from_ngtcp2(params: &ngtcp2_transport_params) -> TransportParams {
+    TransportParams {
+        initial_max_data: params.initial_max_data,
+        initial_max_stream_data_bidi_local: params.initial_max_stream_data_bidi_local,
+        initial_max_stream_data_bidi_remote: params.initial_max_stream_data_bidi_remote,
+        initial_max_stream_data_uni: params.initial_max_stream_data_uni,
+        initial_max_streams_bidi: params.initial_max_streams_bidi,
+        initial_max_streams_uni: params.initial_max_streams_uni,
+        max_idle_timeout: params.max_idle_timeout,
+        ack_delay_exponent: params.ack_delay_exponent,
+        max_ack_delay: params.max_ack_delay,
+        active_connection_id_limit: params.active_connection_id_limit,
+        max_udp_payload_size: params.max_udp_payload_size,
+        ..Default::default()
+    }
 }
 
 /// Create client connection
@@ -715,25 +775,41 @@ pub unsafe extern "C" fn ngtcp2_conn_client_new(
     _mem: *const c_void,
     user_data: *mut c_void,
 ) -> c_int {
-    if pconn.is_null() || callbacks.is_null() || settings.is_null() || params.is_null() {
+    if pconn.is_null() || dcid.is_null() || scid.is_null() || callbacks.is_null() || settings.is_null() || params.is_null() {
         return NGTCP2_ERR_INVALID_ARGUMENT;
     }
 
-    // Create internal connection
+    // Convert C types to Rust types
+    let dcid_rust = cid_from_ngtcp2(&*dcid);
+    let scid_rust = cid_from_ngtcp2(&*scid);
+    let path_rust = if path.is_null() { 
+        make_default_path()
+    } else {
+        path_from_ngtcp2(&*path)
+    };
+    let settings_rust = settings_from_ngtcp2(&*settings);
+    let params_rust = params_from_ngtcp2(&*params);
     let conn_callbacks = ConnectionCallbacks::default();
-    let conn = Connection::client_new(conn_callbacks, version);
 
-    // Allocate state
-    let state = Box::new(ConnState {
-        inner: conn,
-        user_data,
-        callbacks: (*callbacks).clone(),
-    });
+    // Create internal connection
+    match Connection::client(
+        &dcid_rust, &scid_rust, &path_rust, version,
+        &conn_callbacks, &settings_rust, &params_rust, user_data
+    ) {
+        Ok(conn) => {
+            // Allocate state
+            let state = Box::new(ConnState {
+                inner: conn,
+                user_data,
+                callbacks: (*callbacks).clone(),
+            });
 
-    // Store pointer
-    *pconn = Box::into_raw(state) as *mut ngtcp2_conn;
-
-    NGTCP2_NO_ERROR
+            // Store pointer
+            *pconn = Box::into_raw(state) as *mut ngtcp2_conn;
+            NGTCP2_NO_ERROR
+        }
+        Err(_) => NGTCP2_ERR_INTERNAL
+    }
 }
 
 /// Create server connection
@@ -750,22 +826,39 @@ pub unsafe extern "C" fn ngtcp2_conn_server_new(
     _mem: *const c_void,
     user_data: *mut c_void,
 ) -> c_int {
-    if pconn.is_null() || callbacks.is_null() || settings.is_null() || params.is_null() {
+    if pconn.is_null() || dcid.is_null() || scid.is_null() || callbacks.is_null() || settings.is_null() || params.is_null() {
         return NGTCP2_ERR_INVALID_ARGUMENT;
     }
 
+    // Convert C types to Rust types
+    let dcid_rust = cid_from_ngtcp2(&*dcid);
+    let scid_rust = cid_from_ngtcp2(&*scid);
+    let path_rust = if path.is_null() { 
+        make_default_path()
+    } else {
+        path_from_ngtcp2(&*path)
+    };
+    let settings_rust = settings_from_ngtcp2(&*settings);
+    let params_rust = params_from_ngtcp2(&*params);
     let conn_callbacks = ConnectionCallbacks::default();
-    let conn = Connection::server_new(conn_callbacks, version);
 
-    let state = Box::new(ConnState {
-        inner: conn,
-        user_data,
-        callbacks: (*callbacks).clone(),
-    });
+    // Create internal connection
+    match Connection::server(
+        &dcid_rust, &scid_rust, &path_rust, version,
+        &conn_callbacks, &settings_rust, &params_rust, user_data
+    ) {
+        Ok(conn) => {
+            let state = Box::new(ConnState {
+                inner: conn,
+                user_data,
+                callbacks: (*callbacks).clone(),
+            });
 
-    *pconn = Box::into_raw(state) as *mut ngtcp2_conn;
-
-    NGTCP2_NO_ERROR
+            *pconn = Box::into_raw(state) as *mut ngtcp2_conn;
+            NGTCP2_NO_ERROR
+        }
+        Err(_) => NGTCP2_ERR_INTERNAL
+    }
 }
 
 /// Delete connection
@@ -803,7 +896,7 @@ pub unsafe extern "C" fn ngtcp2_conn_set_user_data(
 pub unsafe extern "C" fn ngtcp2_conn_read_pkt(
     conn: *mut ngtcp2_conn,
     path: *const ngtcp2_path,
-    _pi: *const c_void,
+    pi: *const c_void,
     pkt: *const u8,
     pktlen: usize,
     ts: ngtcp2_tstamp,
@@ -814,8 +907,14 @@ pub unsafe extern "C" fn ngtcp2_conn_read_pkt(
 
     let state = &mut *(conn as *mut ConnState);
     let data = slice::from_raw_parts(pkt, pktlen);
+    
+    let path_rust = if path.is_null() { 
+        make_default_path()
+    } else {
+        path_from_ngtcp2(&*path)
+    };
 
-    match state.inner.read_pkt(data, ts) {
+    match state.inner.read_pkt(&path_rust, pi as *const PacketInfo, data, ts) {
         Ok(_) => NGTCP2_NO_ERROR,
         Err(Error::Ng(NgError::Proto)) => NGTCP2_ERR_PROTO,
         Err(Error::Ng(NgError::Crypto)) => NGTCP2_ERR_CRYPTO,
@@ -828,7 +927,7 @@ pub unsafe extern "C" fn ngtcp2_conn_read_pkt(
 pub unsafe extern "C" fn ngtcp2_conn_write_pkt(
     conn: *mut ngtcp2_conn,
     path: *mut ngtcp2_path,
-    _pi: *mut c_void,
+    pi: *mut c_void,
     dest: *mut u8,
     destlen: usize,
     ts: ngtcp2_tstamp,
@@ -839,8 +938,15 @@ pub unsafe extern "C" fn ngtcp2_conn_write_pkt(
 
     let state = &mut *(conn as *mut ConnState);
     let buf = slice::from_raw_parts_mut(dest, destlen);
+    
+    let path_ptr: *mut Path = if path.is_null() {
+        ptr::null_mut()
+    } else {
+        // We need a stable path object - use a stack-allocated one
+        ptr::null_mut()
+    };
 
-    match state.inner.write_pkt(buf, ts) {
+    match state.inner.write_pkt(path_ptr, pi as *mut PacketInfo, buf, ts) {
         Ok(n) => n as isize,
         Err(Error::Ng(NgError::Proto)) => NGTCP2_ERR_PROTO as isize,
         Err(_) => NGTCP2_ERR_INTERNAL as isize,
@@ -882,9 +988,9 @@ pub unsafe extern "C" fn ngtcp2_conn_writev_stream(
     }
 
     match state.inner.write_stream(stream_id, &data, buf, ts) {
-        Ok((written, data_written)) => {
+        Ok(written) => {
             if !pdatalen.is_null() {
-                *pdatalen = data_written as isize;
+                *pdatalen = data.len() as isize;
             }
             written as isize
         }
@@ -1004,7 +1110,7 @@ pub unsafe extern "C" fn ngtcp2_conn_get_handshake_completed(conn: *mut ngtcp2_c
     }
 
     let state = &*(conn as *const ConnState);
-    if state.inner.is_handshake_complete() {
+    if state.inner.is_handshake_completed() {
         1
     } else {
         0

@@ -386,6 +386,18 @@ pub struct Connection {
     app_error_code: AtomicU64,
     /// Close reason
     close_reason: RwLock<Vec<u8>>,
+    /// Connection-level max data
+    max_data: AtomicU64,
+    /// Bytes sent for flow control
+    bytes_sent: AtomicU64,
+    /// Max local bidi streams
+    max_local_streams_bidi: AtomicU64,
+    /// Max local uni streams
+    max_local_streams_uni: AtomicU64,
+    /// Crypto data buffers per level
+    crypto_data_initial: RwLock<Vec<u8>>,
+    crypto_data_handshake: RwLock<Vec<u8>>,
+    crypto_data_app: RwLock<Vec<u8>>,
 }
 
 // SAFETY: Connection uses internal synchronization (RwLock, Mutex, Atomic*)
@@ -508,6 +520,13 @@ impl Connection {
             retry_token: RwLock::new(Vec::new()),
             app_error_code: AtomicU64::new(0),
             close_reason: RwLock::new(Vec::new()),
+            max_data: AtomicU64::new(transport_params.initial_max_data),
+            bytes_sent: AtomicU64::new(0),
+            max_local_streams_bidi: AtomicU64::new(transport_params.initial_max_streams_bidi),
+            max_local_streams_uni: AtomicU64::new(transport_params.initial_max_streams_uni),
+            crypto_data_initial: RwLock::new(Vec::new()),
+            crypto_data_handshake: RwLock::new(Vec::new()),
+            crypto_data_app: RwLock::new(Vec::new()),
         })
     }
 
@@ -877,7 +896,9 @@ impl Connection {
 
         // Add CRYPTO frames, etc.
 
-        let len = builder.finish(dest)?;
+        let packet = builder.finish();
+        let len = packet.len().min(dest.len());
+        dest[..len].copy_from_slice(&packet[..len]);
         Ok(len as ssize_t)
     }
 
@@ -892,7 +913,9 @@ impl Connection {
 
         // Add CRYPTO frames, etc.
 
-        let len = builder.finish(dest)?;
+        let packet = builder.finish();
+        let len = packet.len().min(dest.len());
+        dest[..len].copy_from_slice(&packet[..len]);
         Ok(len as ssize_t)
     }
 
@@ -901,11 +924,13 @@ impl Connection {
         let mut builder = PacketBuilder::new(dest.len());
 
         let dcid = *self.dcid.read();
-        builder.start_short(&dcid)?;
+        builder.start_short(&dcid, false)?;
 
         // Add stream data frames, ACKs, etc.
 
-        let len = builder.finish(dest)?;
+        let packet = builder.finish();
+        let len = packet.len().min(dest.len());
+        dest[..len].copy_from_slice(&packet[..len]);
         Ok(len as ssize_t)
     }
 
@@ -1005,6 +1030,96 @@ impl Connection {
 
         Ok(())
     }
+
+    // ========================================================================
+    // Additional methods for compat.rs
+    // ========================================================================
+
+    /// Write data to stream and generate packet in one call
+    pub fn write_stream(
+        &mut self,
+        stream_id: StreamId,
+        data: &[u8],
+        dest: &mut [u8],
+        ts: Timestamp,
+    ) -> Result<ssize_t> {
+        // Write stream data
+        if !data.is_empty() {
+            self.stream_write(stream_id, data, false)?;
+        }
+        // Generate packet
+        self.write_pkt(core::ptr::null_mut(), core::ptr::null_mut(), dest, ts)
+    }
+
+    /// Shutdown stream with app error
+    pub fn shutdown_stream(&self, stream_id: StreamId, app_error_code: u64) -> Result<()> {
+        self.stream_close(stream_id, app_error_code)
+    }
+
+    /// Check if connection is draining
+    pub fn is_draining(&self) -> bool {
+        matches!(*self.state.read(), ConnectionState::Draining)
+    }
+
+    /// Check if connection is closing
+    pub fn is_closing(&self) -> bool {
+        matches!(*self.state.read(), ConnectionState::Closing)
+    }
+
+    /// Submit crypto data at specific encryption level
+    pub fn submit_crypto_data(&mut self, level: EncryptionLevel, data: &[u8]) -> Result<()> {
+        // Store crypto data for the given encryption level
+        match level {
+            EncryptionLevel::Initial => {
+                self.crypto_data_initial.write().extend_from_slice(data);
+            }
+            EncryptionLevel::Handshake => {
+                self.crypto_data_handshake.write().extend_from_slice(data);
+            }
+            EncryptionLevel::ZeroRtt
+            | EncryptionLevel::OneRtt
+            | EncryptionLevel::EarlyData
+            | EncryptionLevel::Application => {
+                self.crypto_data_app.write().extend_from_slice(data);
+            }
+        }
+        Ok(())
+    }
+
+    /// Get max data left for connection flow control
+    pub fn get_max_data_left(&self) -> u64 {
+        let max_data = self.max_data.load(Ordering::Acquire);
+        let bytes_sent = self.bytes_sent.load(Ordering::Acquire);
+        max_data.saturating_sub(bytes_sent)
+    }
+
+    /// Get max data left for stream flow control
+    pub fn get_max_stream_data_left(&self, stream_id: StreamId) -> u64 {
+        let streams = self.streams.read();
+        streams.get_max_data_left(stream_id).unwrap_or(0)
+    }
+
+    /// Extend max local bidi streams
+    pub fn extend_max_local_streams_bidi(&mut self, n: u64) {
+        self.max_local_streams_bidi
+            .fetch_add(n, Ordering::AcqRel);
+    }
+
+    /// Extend max local uni streams
+    pub fn extend_max_local_streams_uni(&mut self, n: u64) {
+        self.max_local_streams_uni.fetch_add(n, Ordering::AcqRel);
+    }
+
+    /// Extend max stream data for a stream
+    pub fn extend_max_stream_data(&mut self, stream_id: StreamId, n: u64) {
+        let mut streams = self.streams.write();
+        let _ = streams.extend_max_data(stream_id, n);
+    }
+
+    /// Extend max data for connection
+    pub fn extend_max_data(&mut self, n: u64) {
+        self.max_data.fetch_add(n, Ordering::AcqRel);
+    }
 }
 
 // ============================================================================
@@ -1022,392 +1137,11 @@ pub struct PacketInfo {
 /// ngtcp2-compatible alias
 pub type ngtcp2_pkt_info = PacketInfo;
 
-// ============================================================================
-// ngtcp2 C API Compatibility Layer
-// ============================================================================
+// NOTE: Full C API compatibility layer is in compat.rs module
+// Only type aliases are kept here for use by other modules
 
 /// ngtcp2_conn type alias (opaque pointer to Connection)
 pub type ngtcp2_conn = Connection;
-
-/// Create a new client connection (ngtcp2 compatible)
-#[no_mangle]
-pub extern "C" fn ngtcp2_conn_client_new(
-    pconn: *mut *mut ngtcp2_conn,
-    dcid: *const ngtcp2_cid,
-    scid: *const ngtcp2_cid,
-    path: *const Path,
-    version: u32,
-    callbacks: *const ngtcp2_callbacks,
-    settings: *const ngtcp2_settings,
-    transport_params: *const ngtcp2_transport_params,
-    _mem: *const c_void,
-    user_data: *mut c_void,
-) -> c_int {
-    if pconn.is_null() || dcid.is_null() || scid.is_null() || path.is_null() {
-        return -201; // ERR_INVALID_ARGUMENT
-    }
-
-    unsafe {
-        let dcid = &*dcid;
-        let scid = &*scid;
-        let path = &*path;
-        let callbacks = callbacks.as_ref().cloned().unwrap_or_default();
-        let settings = settings
-            .as_ref()
-            .cloned()
-            .unwrap_or_default();
-        let transport_params = transport_params
-            .as_ref()
-            .map(|tp| TransportParams {
-                original_dcid: tp.original_dcid,
-                initial_scid: tp.initial_scid,
-                initial_max_data: tp.initial_max_data as u64,
-                initial_max_stream_data_bidi_local: tp.initial_max_stream_data_bidi_local as u64,
-                initial_max_stream_data_bidi_remote: tp.initial_max_stream_data_bidi_remote as u64,
-                initial_max_stream_data_uni: tp.initial_max_stream_data_uni as u64,
-                initial_max_streams_bidi: tp.initial_max_streams_bidi as u64,
-                initial_max_streams_uni: tp.initial_max_streams_uni as u64,
-                max_idle_timeout: tp.max_idle_timeout * 1_000_000, // ms to ns
-                max_udp_payload_size: tp.max_udp_payload_size as u64,
-                ..Default::default()
-            })
-            .unwrap_or_default();
-
-        match Connection::client(
-            dcid,
-            scid,
-            path,
-            version,
-            &callbacks,
-            &settings,
-            &transport_params,
-            user_data,
-        ) {
-            Ok(conn) => {
-                *pconn = Box::into_raw(conn);
-                0
-            }
-            Err(_) => -502, // ERR_NOMEM
-        }
-    }
-}
-
-/// Create a new server connection (ngtcp2 compatible)
-#[no_mangle]
-pub extern "C" fn ngtcp2_conn_server_new(
-    pconn: *mut *mut ngtcp2_conn,
-    dcid: *const ngtcp2_cid,
-    scid: *const ngtcp2_cid,
-    path: *const Path,
-    version: u32,
-    callbacks: *const ngtcp2_callbacks,
-    settings: *const ngtcp2_settings,
-    transport_params: *const ngtcp2_transport_params,
-    _mem: *const c_void,
-    user_data: *mut c_void,
-) -> c_int {
-    if pconn.is_null() || dcid.is_null() || scid.is_null() || path.is_null() {
-        return -201;
-    }
-
-    unsafe {
-        let dcid = &*dcid;
-        let scid = &*scid;
-        let path = &*path;
-        let callbacks = callbacks.as_ref().cloned().unwrap_or_default();
-        let settings = settings
-            .as_ref()
-            .cloned()
-            .unwrap_or_default();
-        let transport_params = transport_params
-            .as_ref()
-            .map(|tp| TransportParams {
-                original_dcid: tp.original_dcid,
-                initial_scid: tp.initial_scid,
-                initial_max_data: tp.initial_max_data as u64,
-                ..Default::default()
-            })
-            .unwrap_or_default();
-
-        match Connection::server(
-            dcid,
-            scid,
-            path,
-            version,
-            &callbacks,
-            &settings,
-            &transport_params,
-            user_data,
-        ) {
-            Ok(conn) => {
-                *pconn = Box::into_raw(conn);
-                0
-            }
-            Err(_) => -502,
-        }
-    }
-}
-
-/// Delete a connection (ngtcp2 compatible)
-#[no_mangle]
-pub extern "C" fn ngtcp2_conn_del(conn: *mut ngtcp2_conn) {
-    if !conn.is_null() {
-        unsafe {
-            drop(Box::from_raw(conn));
-        }
-    }
-}
-
-/// Read packet (ngtcp2 compatible)
-#[no_mangle]
-pub extern "C" fn ngtcp2_conn_read_pkt(
-    conn: *mut ngtcp2_conn,
-    path: *const Path,
-    pi: *const PacketInfo,
-    pkt: *const u8,
-    pktlen: size_t,
-    ts: Timestamp,
-) -> ssize_t {
-    if conn.is_null() || pkt.is_null() {
-        return -201;
-    }
-
-    unsafe {
-        let conn = &mut *conn;
-        let path = &*path;
-        let data = std::slice::from_raw_parts(pkt, pktlen);
-
-        match conn.read_pkt(path, pi, data, ts) {
-            Ok(n) => n,
-            Err(e) => match e {
-                Error::Ng(NgError::Proto) => -203,
-                Error::Ng(NgError::InvalidState) => -204,
-                _ => -501,
-            },
-        }
-    }
-}
-
-/// Write packet (ngtcp2 compatible)
-#[no_mangle]
-pub extern "C" fn ngtcp2_conn_write_pkt(
-    conn: *mut ngtcp2_conn,
-    path: *mut Path,
-    pi: *mut PacketInfo,
-    dest: *mut u8,
-    destlen: size_t,
-    ts: Timestamp,
-) -> ssize_t {
-    if conn.is_null() || dest.is_null() {
-        return -201;
-    }
-
-    unsafe {
-        let conn = &mut *conn;
-        let dest = std::slice::from_raw_parts_mut(dest, destlen);
-
-        match conn.write_pkt(path, pi, dest, ts) {
-            Ok(n) => n,
-            Err(_) => -501,
-        }
-    }
-}
-
-/// Write stream data (ngtcp2 compatible)
-#[no_mangle]
-pub extern "C" fn ngtcp2_conn_write_stream(
-    conn: *mut ngtcp2_conn,
-    path: *mut Path,
-    pi: *mut PacketInfo,
-    dest: *mut u8,
-    destlen: size_t,
-    pdatalen: *mut ssize_t,
-    flags: u32,
-    stream_id: i64,
-    data: *const u8,
-    datalen: size_t,
-    ts: Timestamp,
-) -> ssize_t {
-    if conn.is_null() || dest.is_null() {
-        return -201;
-    }
-
-    unsafe {
-        let conn = &mut *conn;
-
-        // First write stream data
-        if !data.is_null() && datalen > 0 {
-            let data = std::slice::from_raw_parts(data, datalen);
-            let fin = (flags & 0x01) != 0;
-
-            match conn.stream_write(stream_id, data, fin) {
-                Ok(n) => {
-                    if !pdatalen.is_null() {
-                        *pdatalen = n as ssize_t;
-                    }
-                }
-                Err(_) => return -220, // ERR_STREAM_NOT_FOUND
-            }
-        }
-
-        // Then write packet
-        let dest = std::slice::from_raw_parts_mut(dest, destlen);
-        match conn.write_pkt(path, pi, dest, ts) {
-            Ok(n) => n,
-            Err(_) => -501,
-        }
-    }
-}
-
-/// Open a bidirectional stream (ngtcp2 compatible)
-#[no_mangle]
-pub extern "C" fn ngtcp2_conn_open_bidi_stream(
-    conn: *mut ngtcp2_conn,
-    pstream_id: *mut i64,
-    stream_user_data: *mut c_void,
-) -> c_int {
-    if conn.is_null() || pstream_id.is_null() {
-        return -201;
-    }
-
-    unsafe {
-        let conn = &*conn;
-        match conn.open_bidi_stream() {
-            Ok(stream_id) => {
-                *pstream_id = stream_id;
-                0
-            }
-            Err(_) => -211, // ERR_STREAM_LIMIT
-        }
-    }
-}
-
-/// Open a unidirectional stream (ngtcp2 compatible)
-#[no_mangle]
-pub extern "C" fn ngtcp2_conn_open_uni_stream(
-    conn: *mut ngtcp2_conn,
-    pstream_id: *mut i64,
-    stream_user_data: *mut c_void,
-) -> c_int {
-    if conn.is_null() || pstream_id.is_null() {
-        return -201;
-    }
-
-    unsafe {
-        let conn = &*conn;
-        match conn.open_uni_stream() {
-            Ok(stream_id) => {
-                *pstream_id = stream_id;
-                0
-            }
-            Err(_) => -211,
-        }
-    }
-}
-
-/// Get connection statistics (ngtcp2 compatible)
-#[no_mangle]
-pub extern "C" fn ngtcp2_conn_get_conn_stat(conn: *mut ngtcp2_conn, stat: *mut ngtcp2_conn_stat) {
-    if conn.is_null() || stat.is_null() {
-        return;
-    }
-
-    unsafe {
-        let conn = &*conn;
-        *stat = conn.get_stats();
-    }
-}
-
-/// Check if handshake is completed (ngtcp2 compatible)
-#[no_mangle]
-pub extern "C" fn ngtcp2_conn_get_handshake_completed(conn: *const ngtcp2_conn) -> c_int {
-    if conn.is_null() {
-        return 0;
-    }
-
-    unsafe {
-        let conn = &*conn;
-        if conn.is_handshake_completed() { 1 } else { 0 }
-    }
-}
-
-/// Get expiry timestamp (ngtcp2 compatible)
-#[no_mangle]
-pub extern "C" fn ngtcp2_conn_get_expiry(conn: *const ngtcp2_conn) -> Timestamp {
-    if conn.is_null() {
-        return NGTCP2_TSTAMP_MAX;
-    }
-
-    unsafe {
-        let conn = &*conn;
-        conn.get_expiry()
-    }
-}
-
-/// Handle timeout (ngtcp2 compatible)
-#[no_mangle]
-pub extern "C" fn ngtcp2_conn_handle_expiry(conn: *mut ngtcp2_conn, ts: Timestamp) -> c_int {
-    if conn.is_null() {
-        return -201;
-    }
-
-    unsafe {
-        let conn = &mut *conn;
-        match conn.handle_expiry(ts) {
-            Ok(_) => 0,
-            Err(_) => -501,
-        }
-    }
-}
-
-/// Shutdown stream (ngtcp2 compatible)
-#[no_mangle]
-pub extern "C" fn ngtcp2_conn_shutdown_stream(
-    conn: *mut ngtcp2_conn,
-    flags: u32,
-    stream_id: i64,
-    app_error_code: u64,
-) -> c_int {
-    if conn.is_null() {
-        return -201;
-    }
-
-    unsafe {
-        let conn = &*conn;
-        match conn.stream_shutdown(stream_id, flags) {
-            Ok(_) => 0,
-            Err(_) => -220,
-        }
-    }
-}
-
-/// Set local transport parameters (ngtcp2 compatible)
-#[no_mangle]
-pub extern "C" fn ngtcp2_conn_set_local_transport_params(
-    conn: *mut ngtcp2_conn,
-    params: *const ngtcp2_transport_params,
-) -> c_int {
-    if conn.is_null() || params.is_null() {
-        return -201;
-    }
-
-    // TODO: Convert and set transport params
-    0
-}
-
-/// Get remote transport parameters (ngtcp2 compatible)
-#[no_mangle]
-pub extern "C" fn ngtcp2_conn_get_remote_transport_params(
-    conn: *const ngtcp2_conn,
-    params: *mut ngtcp2_transport_params,
-) -> c_int {
-    if conn.is_null() || params.is_null() {
-        return -201;
-    }
-
-    // TODO: Get remote transport params
-    0
-}
 
 #[cfg(test)]
 mod tests {

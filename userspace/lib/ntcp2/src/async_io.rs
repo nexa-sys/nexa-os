@@ -43,8 +43,8 @@ mod tokio_impl {
 
     use crate::connection::Connection;
     use crate::error::{Error, NgError, Result};
-    use crate::stream::{Stream, StreamId, StreamManager};
-    use crate::types::{Settings, TransportParams};
+    use crate::stream::{Stream, StreamManager};
+    use crate::types::{Settings, StreamId, TransportParams};
 
     // ========================================================================
     // Configuration
@@ -368,7 +368,7 @@ mod tokio_impl {
                 is_server,
                 config,
                 state: RwLock::new(ConnectionState::Initial),
-                streams: RwLock::new(StreamManager::new()),
+                streams: RwLock::new(StreamManager::new(!is_server)),
                 send_queue: Mutex::new(Vec::new()),
                 handshake_complete: Mutex::new(Some(tx)),
                 handshake_wait: Mutex::new(Some(rx)),
@@ -513,10 +513,10 @@ mod tokio_impl {
                 return Err(Error::Ng(NgError::Proto));
             }
 
-            let stream_id = self.next_stream_id.fetch_add(4, Ordering::Relaxed);
+            let stream_id = self.next_stream_id.fetch_add(4, Ordering::Relaxed) as StreamId;
 
             Ok(AsyncStream::new(
-                StreamId(stream_id),
+                stream_id,
                 self.socket.clone(),
                 self.remote,
             ))
@@ -669,7 +669,7 @@ mod tokio_impl {
             frame.push(0x0e);
 
             // Stream ID
-            frame.extend_from_slice(&(self.id.0 as u32).to_be_bytes());
+            frame.extend_from_slice(&(self.id as u32).to_be_bytes());
 
             // Offset
             frame.extend_from_slice(&0u64.to_be_bytes());

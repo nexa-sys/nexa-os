@@ -125,8 +125,8 @@ pub use types::*;
 
 // Connection layer re-exports
 pub use connection::{Connection, ConnectionCallbacks, ConnectionState};
-pub use stream::{Stream, StreamId, StreamManager, StreamState, StreamType};
-pub use flow_control::{FlowController, StreamFlowController};
+pub use stream::{Stream, StreamManager, StreamSendState, StreamRecvState};
+pub use flow_control::{ConnectionFlowController, StreamFlowController};
 pub use congestion::{CongestionController, CongestionAlgorithm};
 pub use recovery::{LossDetector, RttEstimator, SentPacket};
 
@@ -182,53 +182,7 @@ pub const NGTCP2_MIN_CIDLEN: usize = 1;
 /// Stateless reset token length
 pub const NGTCP2_STATELESS_RESET_TOKENLEN: usize = 16;
 
-// ============================================================================
-// Library Initialization
-// ============================================================================
-
-/// Check if an error code is fatal
-#[no_mangle]
-pub extern "C" fn ngtcp2_err_is_fatal(error_code: c_int) -> c_int {
-    if error_code < -500 {
-        1
-    } else {
-        0
-    }
-}
-
-/// Version info structure (ngtcp2 compatible)
-///
-/// Note: This struct is NOT thread-safe due to raw pointer.
-/// Use only from a single thread or with external synchronization.
-#[repr(C)]
-pub struct Ngtcp2Info {
-    /// Age of this struct
-    pub age: c_int,
-    /// Version number
-    pub version_num: c_int,
-    /// Version string (points to static memory)
-    pub version_str: *const c_char,
-}
-
-// SAFETY: version_str points to static memory that never changes
-unsafe impl Send for Ngtcp2Info {}
-unsafe impl Sync for Ngtcp2Info {}
-
-/// Get library version info
-#[no_mangle]
-pub extern "C" fn ngtcp2_version(least_version: c_int) -> *const Ngtcp2Info {
-    static INFO: Ngtcp2Info = Ngtcp2Info {
-        age: 1,
-        version_num: NTCP2_VERSION_NUM as c_int,
-        version_str: NTCP2_VERSION_CSTR.as_ptr() as *const c_char,
-    };
-
-    if least_version as u32 > NTCP2_VERSION_NUM {
-        core::ptr::null()
-    } else {
-        &INFO
-    }
-}
+// NOTE: ngtcp2_err_is_fatal and ngtcp2_version are now provided by compat.rs module
 
 // ============================================================================
 // Connection ID
@@ -332,43 +286,7 @@ pub const fn nanos_to_millis(nanos: Duration) -> u64 {
     nanos / 1_000_000
 }
 
-// ============================================================================
-// Error Code Helper
-// ============================================================================
-
-/// Convert ngtcp2 error code to string
-#[no_mangle]
-pub extern "C" fn ngtcp2_strerror(error_code: c_int) -> *const c_char {
-    let msg: &[u8] = match error_code {
-        0 => b"NO_ERROR\0",
-        -201 => b"ERR_INVALID_ARGUMENT\0",
-        -202 => b"ERR_NOBUF\0",
-        -203 => b"ERR_PROTO\0",
-        -204 => b"ERR_INVALID_STATE\0",
-        -205 => b"ERR_ACK_FRAME\0",
-        -206 => b"ERR_STREAM_ID_BLOCKED\0",
-        -207 => b"ERR_STREAM_IN_USE\0",
-        -208 => b"ERR_STREAM_DATA_BLOCKED\0",
-        -209 => b"ERR_FLOW_CONTROL\0",
-        -210 => b"ERR_CONNECTION_ID_LIMIT\0",
-        -211 => b"ERR_STREAM_LIMIT\0",
-        -212 => b"ERR_FINAL_SIZE\0",
-        -213 => b"ERR_CRYPTO\0",
-        -214 => b"ERR_PKT_NUM_EXHAUSTED\0",
-        -215 => b"ERR_REQUIRED_TRANSPORT_PARAM\0",
-        -216 => b"ERR_MALFORMED_TRANSPORT_PARAM\0",
-        -217 => b"ERR_FRAME_ENCODING\0",
-        -218 => b"ERR_DECRYPT\0",
-        -219 => b"ERR_STREAM_SHUT_WR\0",
-        -220 => b"ERR_STREAM_NOT_FOUND\0",
-        -221 => b"ERR_STREAM_STATE\0",
-        -501 => b"ERR_FATAL\0",
-        -502 => b"ERR_NOMEM\0",
-        -503 => b"ERR_CALLBACK_FAILURE\0",
-        _ => b"UNKNOWN_ERROR\0",
-    };
-    msg.as_ptr() as *const c_char
-}
+// NOTE: ngtcp2_strerror is now provided by compat.rs module
 
 // ============================================================================
 // Settings and Transport Parameters (ngtcp2 compatible)
@@ -414,15 +332,7 @@ impl Default for ngtcp2_settings {
     }
 }
 
-/// Set default settings
-#[no_mangle]
-pub extern "C" fn ngtcp2_settings_default(settings: *mut ngtcp2_settings) {
-    if !settings.is_null() {
-        unsafe {
-            *settings = ngtcp2_settings::default();
-        }
-    }
-}
+// NOTE: ngtcp2_settings_default is now provided by compat.rs module
 
 /// ngtcp2 transport parameters structure
 #[repr(C)]
@@ -497,15 +407,11 @@ impl Default for ngtcp2_transport_params {
     }
 }
 
-/// Set default transport parameters
-#[no_mangle]
-pub extern "C" fn ngtcp2_transport_params_default(params: *mut ngtcp2_transport_params) {
-    if !params.is_null() {
-        unsafe {
-            *params = ngtcp2_transport_params::default();
-        }
-    }
-}
+// NOTE: ngtcp2_transport_params_default is now provided by compat.rs module
+
+// NOTE: Full connection C API is now provided by compat.rs module.
+// Type re-export for backward compatibility
+pub use compat::ngtcp2_conn;
 
 // ============================================================================
 // Simple test/example

@@ -484,6 +484,58 @@ pub extern "C" fn recv(sockfd: i32, buf: *mut u8, len: usize, flags: i32) -> isi
     )
 }
 
+/// Get socket name (local address)
+///
+/// # Arguments
+/// * `sockfd` - Socket file descriptor
+/// * `addr` - Buffer to receive local address
+/// * `addrlen` - Pointer to size of address buffer (in/out parameter)
+///
+/// # Returns
+/// 0 on success, -1 on error
+#[no_mangle]
+pub extern "C" fn getsockname(sockfd: i32, addr: *mut SockAddr, addrlen: *mut u32) -> i32 {
+    if addr.is_null() || addrlen.is_null() {
+        crate::set_errno(crate::EINVAL);
+        return -1;
+    }
+
+    let ret = crate::syscall3(
+        SYS_GETSOCKNAME as u64,
+        sockfd as u64,
+        addr as u64,
+        addrlen as u64,
+    );
+
+    crate::translate_ret_i32(ret)
+}
+
+/// Get peer name (remote address)
+///
+/// # Arguments
+/// * `sockfd` - Socket file descriptor
+/// * `addr` - Buffer to receive remote address
+/// * `addrlen` - Pointer to size of address buffer (in/out parameter)
+///
+/// # Returns
+/// 0 on success, -1 on error
+#[no_mangle]
+pub extern "C" fn getpeername(sockfd: i32, addr: *mut SockAddr, addrlen: *mut u32) -> i32 {
+    if addr.is_null() || addrlen.is_null() {
+        crate::set_errno(crate::EINVAL);
+        return -1;
+    }
+
+    let ret = crate::syscall3(
+        SYS_GETPEERNAME as u64,
+        sockfd as u64,
+        addr as u64,
+        addrlen as u64,
+    );
+
+    crate::translate_ret_i32(ret)
+}
+
 /// Get socket options
 ///
 /// # Arguments

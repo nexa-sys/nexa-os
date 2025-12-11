@@ -49,6 +49,10 @@ mod nh2_ffi;
 #[cfg(feature = "http3-dynamic")]
 pub mod nh3_ffi;
 
+// QUIC FFI module for dynamic linking with libngtcp2.so (ntcp2)
+#[cfg(feature = "http3-dynamic")]
+pub mod quic_ffi;
+
 // Fallback when no TLS support
 #[cfg(not(any(feature = "https", feature = "https-dynamic")))]
 mod tls {

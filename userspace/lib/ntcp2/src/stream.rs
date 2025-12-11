@@ -628,6 +628,33 @@ impl Stream {
         }
     }
 
+    /// Get max send data
+    pub fn max_send_data(&self) -> u64 {
+        self.max_send_data.load(Ordering::Acquire)
+    }
+
+    /// Get bytes sent
+    pub fn bytes_sent(&self) -> u64 {
+        self.bytes_sent.load(Ordering::Acquire)
+    }
+
+    /// Get remaining send budget (flow control)
+    pub fn send_budget(&self) -> u64 {
+        let max = self.max_send_data.load(Ordering::Acquire);
+        let sent = self.bytes_sent.load(Ordering::Acquire);
+        max.saturating_sub(sent)
+    }
+
+    /// Get max recv data
+    pub fn max_recv_data(&self) -> u64 {
+        self.max_recv_data.load(Ordering::Acquire)
+    }
+
+    /// Update max recv data (extend receive window)
+    pub fn update_max_recv_data(&self, delta: u64) {
+        self.max_recv_data.fetch_add(delta, Ordering::AcqRel);
+    }
+
     /// Get user data
     pub fn user_data(&self) -> *mut c_void {
         self.user_data
@@ -924,6 +951,41 @@ impl StreamManager {
             self.max_local_uni_streams
                 .fetch_max(max_streams, Ordering::AcqRel);
         }
+    }
+
+    /// Extend max local bidirectional streams
+    pub fn extend_max_local_streams_bidi(&mut self, n: u64) {
+        self.max_local_bidi_streams.fetch_add(n, Ordering::AcqRel);
+    }
+
+    /// Extend max local unidirectional streams
+    pub fn extend_max_local_streams_uni(&mut self, n: u64) {
+        self.max_local_uni_streams.fetch_add(n, Ordering::AcqRel);
+    }
+
+    /// Extend max remote bidirectional streams
+    pub fn extend_max_remote_streams_bidi(&mut self, n: u64) {
+        self.max_remote_bidi_streams.fetch_add(n, Ordering::AcqRel);
+    }
+
+    /// Extend max remote unidirectional streams  
+    pub fn extend_max_remote_streams_uni(&mut self, n: u64) {
+        self.max_remote_uni_streams.fetch_add(n, Ordering::AcqRel);
+    }
+
+    /// Get max data left for a stream (flow control)
+    pub fn get_max_data_left(&self, stream_id: StreamId) -> Option<u64> {
+        self.streams.get(&stream_id).map(|s| s.send_budget())
+    }
+
+    /// Extend max data for a specific stream
+    pub fn extend_max_data(&mut self, stream_id: StreamId, n: u64) -> Result<()> {
+        let stream = self
+            .streams
+            .get(&stream_id)
+            .ok_or(Error::Ng(NgError::StreamNotFound))?;
+        stream.update_max_recv_data(stream.max_recv_data().saturating_add(n));
+        Ok(())
     }
 }
 

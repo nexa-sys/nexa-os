@@ -117,6 +117,8 @@ impl TransportError {
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NgError {
+    /// Invalid argument (alias for InvalidArgument)
+    InvalidArg = -200,
     /// Invalid argument
     InvalidArgument = -201,
     /// Buffer overflow / no buffer space
@@ -171,6 +173,8 @@ pub enum NgError {
     ApplicationClose = -226,
     /// Version negotiation required
     VersionNegotiation = -227,
+    /// Too many connection IDs
+    TooManyIds = -228,
     /// Fatal error
     Fatal = -501,
     /// Memory allocation failure

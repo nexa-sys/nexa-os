@@ -15,6 +15,7 @@
 //! PTO triggers retransmission when no ACK is received:
 //! `PTO = smoothed_rtt + max(4 * rttvar, kGranularity) + max_ack_delay`
 
+use crate::congestion::PERSISTENT_CONGESTION_THRESHOLD;
 use crate::error::{Error, NgError, Result};
 use crate::types::EncryptionLevel;
 use crate::{Duration, Timestamp, NGTCP2_TSTAMP_MAX};
@@ -265,8 +266,10 @@ impl From<EncryptionLevel> for PacketNumberSpace {
         match level {
             EncryptionLevel::Initial => PacketNumberSpace::Initial,
             EncryptionLevel::ZeroRtt => PacketNumberSpace::ApplicationData,
+            EncryptionLevel::EarlyData => PacketNumberSpace::ApplicationData,
             EncryptionLevel::Handshake => PacketNumberSpace::Handshake,
             EncryptionLevel::OneRtt => PacketNumberSpace::ApplicationData,
+            EncryptionLevel::Application => PacketNumberSpace::ApplicationData,
         }
     }
 }
@@ -472,18 +475,20 @@ impl LossDetector {
         pn_space.set_loss_time(None);
         let loss_delay = self.rtt.loss_delay();
 
-        for packet in pn_space.sent_packets() {
-            if packet.pkt_num > largest_acked {
-                continue;
-            }
+        // Collect packets we need to check for potential future loss
+        let packets_to_check: Vec<_> = pn_space.sent_packets()
+            .filter(|p| p.pkt_num <= largest_acked)
+            .map(|p| (p.time_sent, p.pkt_num))
+            .collect();
 
-            let time_since_sent = now.saturating_sub(packet.time_sent);
+        for (time_sent, _pkt_num) in packets_to_check {
+            let time_since_sent = now.saturating_sub(time_sent);
 
             if time_since_sent > loss_delay {
                 // Would be declared lost - already handled above
             } else {
                 // Might be lost later - set loss time
-                let loss_time = packet.time_sent + loss_delay;
+                let loss_time = time_sent + loss_delay;
                 match pn_space.loss_time() {
                     Some(current) if current <= loss_time => {}
                     _ => pn_space.set_loss_time(Some(loss_time)),

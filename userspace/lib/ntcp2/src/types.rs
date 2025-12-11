@@ -414,10 +414,14 @@ pub enum EncryptionLevel {
     Initial = 0,
     /// Handshake encryption
     Handshake = 1,
-    /// 0-RTT encryption
+    /// 0-RTT encryption (early data)
     ZeroRtt = 2,
     /// 1-RTT encryption (application data)
     OneRtt = 3,
+    /// Early data (alias for ZeroRtt)
+    EarlyData = 4,
+    /// Application data (alias for OneRtt)
+    Application = 5,
 }
 
 impl Default for EncryptionLevel {

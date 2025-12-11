@@ -80,7 +80,7 @@ impl Default for SHA256_CTX {
 // FFI Function Declarations - libssl.so (nssl)
 // ============================================================================
 
-#[link(name = "ssl")]
+#[link(name = "nssl")]
 extern "C" {
     // ========================================================================
     // Library Initialization
@@ -259,7 +259,7 @@ extern "C" {
 // FFI Function Declarations - libcrypto.so (ncryptolib)
 // ============================================================================
 
-#[link(name = "crypto")]
+#[link(name = "ncryptolib")]
 extern "C" {
     // ========================================================================
     // Hash Functions - SHA-256

@@ -2,7 +2,7 @@
 //!
 //! This configures:
 //! - Library name for C ABI compatibility (libngtcp2.so)
-//! - Dynamic linking against nssl (libssl.so) for TLS support
+//! - Library search path for NexaOS libraries
 
 fn main() {
     // Rerun if source changes
@@ -12,9 +12,17 @@ fn main() {
     // For rust-lld linker, we use --soname directly (no -Wl, prefix)
     println!("cargo:rustc-cdylib-link-arg=--soname=libngtcp2.so.1");
 
-    // Dynamically link against nssl (libssl.so)
-    // nssl provides OpenSSL-compatible C ABI for TLS 1.2/1.3 support
-    // nssl internally links against ncryptolib (libcrypto.so)
-    println!("cargo:rustc-link-lib=dylib=ssl");
-    println!("cargo:rustc-link-lib=dylib=crypto");
+    // Add library search path for our custom libraries (nssl, ncryptolib)
+    // These are built in the userspace target directory
+    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+        // Compute the path to the library output directory
+        let lib_path = std::path::Path::new(&manifest_dir)
+            .parent() // lib/
+            .and_then(|p| p.parent()) // userspace/
+            .map(|p| p.join("target/x86_64-nexaos-userspace-lib/release"));
+
+        if let Some(path) = lib_path {
+            println!("cargo:rustc-link-search=native={}", path.display());
+        }
+    }
 }
