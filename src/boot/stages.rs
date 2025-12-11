@@ -462,17 +462,8 @@ fn scan_for_block_device(device_name: &str) -> Result<&'static [u8], &'static st
                     pci.device_id
                 );
 
-                // Check if this is a VirtIO device (vendor 0x1af4)
-                // VirtIO block device IDs: 0x1001 (legacy) or 0x1042 (modern)
-                let is_virtio_blk =
-                    pci.vendor_id == 0x1af4 && (pci.device_id == 0x1001 || pci.device_id == 0x1042);
-
-                if !is_virtio_blk {
-                    crate::kdebug!("  Skipping: not a VirtIO block device");
-                    continue;
-                }
-
-                // VirtIO-PCI uses BAR0 for I/O or MMIO
+                // Extract BAR0 for I/O or MMIO access
+                // The driver module will determine if it supports this device
                 let mut mmio_base = 0u64;
                 let mut mmio_length = 0u64;
                 let mut is_io_port = false;
@@ -503,12 +494,15 @@ fn scan_for_block_device(device_name: &str) -> Result<&'static [u8], &'static st
                     if is_io_port { "I/O port" } else { "MMIO" }
                 );
 
-                // Convert BlockDeviceInfo to BootBlockDevice
+                // Build device descriptor with vendor/device IDs
+                // Let driver modules decide if they support this device
                 let boot_dev = crate::drivers::block::BootBlockDevice {
                     pci_segment: dev_info.pci_segment,
                     pci_bus: dev_info.pci_bus,
                     pci_device: dev_info.pci_device,
                     pci_function: dev_info.pci_function,
+                    vendor_id: pci.vendor_id,
+                    device_id: pci.device_id,
                     mmio_base,
                     mmio_length,
                     sector_size: dev_info.block_size,
@@ -704,7 +698,7 @@ fn remount_dev_after_pivot() -> Result<(), &'static str> {
 fn probe_all_block_devices() {
     crate::kinfo!("Probing all block devices...");
 
-    // Only proceed if virtio-blk driver is available
+    // Only proceed if block driver is available
     if !crate::drivers::block::has_driver() {
         crate::kinfo!("No block driver available, skipping device probe");
         return;
@@ -734,14 +728,6 @@ fn probe_all_block_devices() {
             continue;
         };
 
-        // Check if this is a VirtIO block device
-        let is_virtio_blk =
-            pci.vendor_id == 0x1af4 && (pci.device_id == 0x1001 || pci.device_id == 0x1042);
-
-        if !is_virtio_blk {
-            continue;
-        }
-
         // Get BAR info
         let mut mmio_base = 0u64;
         let mut mmio_length = 0u64;
@@ -760,12 +746,15 @@ fn probe_all_block_devices() {
             continue;
         }
 
-        // Create boot device descriptor
+        // Create boot device descriptor with vendor/device IDs
+        // Let driver modules decide if they support this device
         let boot_dev = crate::drivers::block::BootBlockDevice {
             pci_segment: dev_info.pci_segment,
             pci_bus: dev_info.pci_bus,
             pci_device: dev_info.pci_device,
             pci_function: dev_info.pci_function,
+            vendor_id: pci.vendor_id,
+            device_id: pci.device_id,
             mmio_base,
             mmio_length,
             sector_size: dev_info.block_size,

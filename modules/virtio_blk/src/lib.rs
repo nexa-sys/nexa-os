@@ -298,6 +298,8 @@ pub struct BootBlockDevice {
     pub pci_bus: u8,
     pub pci_device: u8,
     pub pci_function: u8,
+    pub vendor_id: u16,
+    pub device_id: u16,
     pub mmio_base: u64,
     pub mmio_length: u64,
     pub sector_size: u32,

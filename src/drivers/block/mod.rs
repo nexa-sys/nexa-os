@@ -5,13 +5,21 @@
 //!
 //! # Architecture
 //!
+//! The kernel is device-agnostic - it does not know or care about specific
+//! device types (VirtIO, AHCI, NVMe, etc.). Instead, it:
+//!
+//! 1. Enumerates PCI devices and collects their vendor/device IDs
+//! 2. Passes device descriptors to all registered drivers
+//! 3. Lets each driver's `probe` function decide if it supports the device
+//!
 //! ```text
 //! ┌─────────────┐     ┌─────────────────┐     ┌────────────────┐
-//! │   VFS/FS    │────▶│  block layer    │────▶│  virtio_blk.nkm│
+//! │   VFS/FS    │────▶│  block layer    │────▶│  driver.nkm    │
 //! │   Layer     │     │  (this module)  │     │  (loadable)    │
 //! └─────────────┘     └─────────────────┘     └────────────────┘
-//!                            │
-//!                            ▼
+//!                            │                   virtio_blk.nkm
+//!                            │                   ahci.nkm
+//!                            ▼                   nvme.nkm
 //!                     ┌─────────────────┐
 //!                     │  Block Ops      │
 //!                     │  (FFI callbacks)│
@@ -22,7 +30,6 @@
 //! The kernel then routes all block I/O operations through these callbacks.
 
 use alloc::vec::Vec;
-use core::ptr;
 use spin::Mutex;
 
 // ============================================================================
@@ -144,6 +151,8 @@ pub struct BootBlockDevice {
     pub pci_bus: u8,
     pub pci_device: u8,
     pub pci_function: u8,
+    pub vendor_id: u16,
+    pub device_id: u16,
     pub mmio_base: u64,
     pub mmio_length: u64,
     pub sector_size: u32,
@@ -158,6 +167,8 @@ impl BootBlockDevice {
             pci_bus: 0,
             pci_device: 0,
             pci_function: 0,
+            vendor_id: 0,
+            device_id: 0,
             mmio_base: 0,
             mmio_length: 0,
             sector_size: 512,
@@ -419,9 +430,9 @@ pub fn probe_device(desc: &BootBlockDevice) -> Result<usize, BlockError> {
     }
 
     // Find a driver that supports this device
-    // For virtio-blk: vendor 0x1AF4, device 0x1001 (legacy) or 0x1042 (modern)
-    let vendor_id = 0x1AF4; // Virtio vendor ID (would come from PCI enumeration)
-    let device_id = 0x1001; // Virtio block device
+    // Each driver's probe function checks if it supports the vendor/device ID
+    let vendor_id = desc.vendor_id;
+    let device_id = desc.device_id;
 
     let driver_idx = subsystem.drivers.iter().position(|d| {
         if let Some(probe) = d.ops.probe {
