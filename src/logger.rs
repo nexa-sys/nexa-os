@@ -21,6 +21,9 @@ static LOG_LEVEL: AtomicU8 = AtomicU8::new(LogLevel::INFO.priority());
 static SERIAL_RUNTIME_ENABLED: AtomicBool = AtomicBool::new(true);
 static VGA_RUNTIME_ENABLED: AtomicBool = AtomicBool::new(true);
 static INIT_STARTED: AtomicBool = AtomicBool::new(false);
+/// Graphics mode flag - when set, only PANIC/FATAL logs are shown on screen
+/// This prepares for graphics driver initialization
+static GRAPHICS_MODE: AtomicBool = AtomicBool::new(true);
 
 // 环形缓冲区用于存储内核日志（64KB）
 pub const RINGBUF_SIZE: usize = 65536;
@@ -217,17 +220,20 @@ pub fn log(level: LogLevel, args: fmt::Arguments<'_>) {
     }
 
     let init_started = INIT_STARTED.load(Ordering::Relaxed);
+    let graphics_mode = GRAPHICS_MODE.load(Ordering::Relaxed);
 
     // 在 init 启动前，输出到显示器和串口；启动后，只输出到环形缓冲区
     // Panic 总是输出到显示器和串口
+    // 图形模式下，只有 PANIC/FATAL 才输出到屏幕（VGA/framebuffer）
     let emit_serial = if init_started {
         level.priority() <= LogLevel::PANIC.priority()
     } else {
         should_emit_serial(level)
     };
 
-    let emit_vga = if init_started {
-        level.priority() <= LogLevel::PANIC.priority()
+    let emit_vga = if init_started || graphics_mode {
+        // In graphics mode or after init, only PANIC/FATAL go to screen
+        level.priority() <= LogLevel::FATAL.priority()
     } else {
         should_emit_vga(level)
     };
@@ -458,6 +464,23 @@ pub fn enable_runtime_console_output() {
 /// 在此之后，内核日志仅输出到环形缓冲区（除了 panic）
 pub fn mark_init_started() {
     INIT_STARTED.store(true, Ordering::Relaxed);
+}
+
+/// 启用图形模式 - 之后只有 PANIC/FATAL 日志会输出到屏幕
+/// 这为图形驱动初始化做准备，让屏幕变得干净
+/// 日志仍然会输出到串口和环形缓冲区
+pub fn enable_graphics_mode() {
+    GRAPHICS_MODE.store(true, Ordering::Relaxed);
+}
+
+/// 禁用图形模式 - 恢复正常日志输出到屏幕
+pub fn disable_graphics_mode() {
+    GRAPHICS_MODE.store(false, Ordering::Relaxed);
+}
+
+/// 检查是否处于图形模式
+pub fn is_graphics_mode() -> bool {
+    GRAPHICS_MODE.load(Ordering::Relaxed)
 }
 
 /// 读取内核日志环形缓冲区

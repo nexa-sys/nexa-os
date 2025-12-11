@@ -658,6 +658,11 @@ pub fn start_real_root_init() -> Result<(), &'static str> {
     init_font_system();
 
     crate::kinfo!("Real root initialization complete");
+
+    // 启用图形模式 - 之后只有 PANIC/FATAL 日志会输出到屏幕
+    // 这为图形驱动初始化和用户空间做准备
+    crate::logger::enable_graphics_mode();
+
     advance_stage(BootStage::UserSpace);
 
     Ok(())

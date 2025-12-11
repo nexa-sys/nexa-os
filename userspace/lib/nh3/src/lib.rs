@@ -5,7 +5,7 @@
 //! ## Features
 //! - **Full HTTP/3 protocol support** (RFC 9114)
 //! - **nghttp3 C ABI compatibility** for drop-in replacement
-//! - **QUIC transport via ntcp2** (dynamic linking)
+//! - **QUIC transport via ntcp2** (dynamic linking to libngtcp2.so)
 //! - **QPACK header compression** (RFC 9204)
 //! - **Server push support**
 //! - **Priority handling** (RFC 9218)
@@ -64,6 +64,39 @@
 //! nghttp3_settings_default(&settings);
 //! nghttp3_conn_client_new(&conn, &callbacks, &settings, NULL, user_data);
 //! ```
+//!
+//! ## C ABI Exported Functions
+//!
+//! This library exports the following nghttp3-compatible C functions:
+//!
+//! ### Version and Error Functions
+//! - `nghttp3_version()` - Get library version info
+//! - `nghttp3_err_is_fatal()` - Check if error code is fatal
+//! - `nghttp3_strerror()` - Convert error code to string
+//!
+//! ### Connection Functions
+//! - `nghttp3_conn_client_new()` - Create client connection
+//! - `nghttp3_conn_server_new()` - Create server connection
+//! - `nghttp3_conn_del()` - Delete connection
+//! - `nghttp3_conn_bind_control_stream()` - Bind control stream
+//! - `nghttp3_conn_bind_qpack_streams()` - Bind QPACK streams
+//! - `nghttp3_conn_read_stream()` - Receive data on stream
+//! - `nghttp3_conn_writev_stream()` - Write data to stream
+//! - `nghttp3_conn_add_write_offset()` - Acknowledge sent data
+//! - `nghttp3_conn_submit_request()` - Submit HTTP request
+//! - `nghttp3_conn_submit_response()` - Submit HTTP response
+//! - `nghttp3_conn_submit_trailers()` - Submit trailers
+//! - `nghttp3_conn_shutdown()` - Shutdown connection
+//! - `nghttp3_conn_close_stream()` - Close a stream
+//! - `nghttp3_conn_is_client()` - Check if connection is client
+//!
+//! ### Settings Functions
+//! - `nghttp3_settings_default()` - Initialize default settings
+//!
+//! ### Callback Functions
+//! - `nghttp3_callbacks_new()` - Create callbacks structure
+//! - `nghttp3_callbacks_del()` - Delete callbacks structure
+//! - Various `nghttp3_callbacks_set_*()` functions
 
 #![feature(linkage)]
 #![allow(non_camel_case_types)]
@@ -83,6 +116,10 @@ pub mod types;
 // Provides ngtcp2-compatible C ABI for QUIC operations
 pub mod quic_ffi;
 
+// QUIC transport layer integration
+// Bridges HTTP/3 with QUIC via ntcp2
+pub mod quic_transport;
+
 // QPACK header compression (RFC 9204)
 pub mod qpack;
 
@@ -92,6 +129,9 @@ pub mod frame;
 // Connection layer
 pub mod connection;
 pub mod stream;
+
+// High-level HTTP/3 client API
+pub mod client;
 
 // Async I/O backend (tokio)
 #[cfg(feature = "async-tokio")]
@@ -110,7 +150,56 @@ pub use frame::{Frame, FrameType};
 pub use qpack::{QpackDecoder, QpackEncoder};
 pub use connection::{Connection, ConnectionCallbacks, ConnectionState};
 pub use stream::{Stream, StreamMap, StreamState, StreamType};
-pub use types::*;
+
+// Re-export important types (explicit to avoid conflicts)
+pub use types::{
+    StreamId, HeaderField, Settings, Priority, Vec3, Nv,
+    nghttp3_vec, nghttp3_nv, nghttp3_pri, nghttp3_rcbuf, nghttp3_settings,
+    DataProvider, ReadCallback, nghttp3_data_reader,
+};
+
+// Re-export QUIC transport
+pub use quic_transport::{QuicTransport, TransportState, Http3Client};
+
+// Re-export high-level client
+pub use client::{Client, ClientConfig, Request, Response, Method};
+
+// Re-export C ABI connection functions (from connection.rs)
+pub use connection::{
+    nghttp3_conn, nghttp3_callbacks,
+    nghttp3_conn_client_new, nghttp3_conn_server_new, nghttp3_conn_del,
+    nghttp3_conn_bind_control_stream, nghttp3_conn_bind_qpack_streams,
+    nghttp3_conn_read_stream, nghttp3_conn_writev_stream,
+    nghttp3_conn_add_write_offset, nghttp3_conn_submit_request,
+    nghttp3_conn_shutdown, nghttp3_conn_close_stream, nghttp3_conn_is_client,
+};
+
+// Re-export C ABI compatibility functions (from compat.rs)
+pub use compat::{
+    // Callback management
+    nghttp3_callbacks_new, nghttp3_callbacks_del,
+    nghttp3_callbacks_set_recv_header, nghttp3_callbacks_set_end_headers,
+    nghttp3_callbacks_set_begin_headers, nghttp3_callbacks_set_recv_data,
+    nghttp3_callbacks_set_acked_stream_data, nghttp3_callbacks_set_deferred_consume,
+    nghttp3_callbacks_set_stream_close, nghttp3_callbacks_set_reset_stream,
+    nghttp3_callbacks_set_stop_sending, nghttp3_callbacks_set_end_stream,
+    nghttp3_callbacks_set_shutdown,
+    // Priority and settings helpers
+    nghttp3_pri_default, nghttp3_nv_new,
+    // Data reader
+    nghttp3_data_reader_new,
+    // Vector helpers
+    nghttp3_vec_new, nghttp3_vec_len,
+    // RcBuf helpers
+    nghttp3_rcbuf_get_buf, nghttp3_rcbuf_get_len,
+    // Stream helpers
+    nghttp3_client_stream_bidi,
+    // Memory structure  
+    nghttp3_mem,
+    // Response and trailers
+    nghttp3_conn_submit_response, nghttp3_conn_submit_trailers,
+    nghttp3_conn_resume_stream, nghttp3_conn_block_stream, nghttp3_conn_unblock_stream,
+};
 
 // ============================================================================
 // C Type Definitions (nghttp3 compatible)

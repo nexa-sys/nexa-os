@@ -151,7 +151,7 @@ pub type nghttp3_callbacks = ConnectionCallbacks;
 #[repr(C)]
 pub struct Nghttp3Conn {
     /// Inner connection wrapped in Arc<Mutex> for thread safety
-    inner: *mut Connection,
+    pub(crate) inner: *mut Connection,
 }
 
 /// C type alias
@@ -166,43 +166,43 @@ pub struct Connection {
     /// Connection type
     conn_type: ConnectionType,
     /// Connection state
-    state: ConnectionState,
+    pub(crate) state: ConnectionState,
     /// Stream map
-    streams: StreamMap,
+    pub(crate) streams: StreamMap,
     /// QPACK encoder
-    qpack_encoder: QpackEncoder,
+    pub(crate) qpack_encoder: QpackEncoder,
     /// QPACK decoder
-    qpack_decoder: QpackDecoder,
+    pub(crate) qpack_decoder: QpackDecoder,
     /// Settings
-    local_settings: Settings,
+    pub(crate) local_settings: Settings,
     /// Remote settings (received from peer)
-    remote_settings: Option<Settings>,
+    pub(crate) remote_settings: Option<Settings>,
     /// Control stream ID (local)
-    local_ctrl_stream_id: Option<StreamId>,
+    pub(crate) local_ctrl_stream_id: Option<StreamId>,
     /// Control stream ID (remote)
-    remote_ctrl_stream_id: Option<StreamId>,
+    pub(crate) remote_ctrl_stream_id: Option<StreamId>,
     /// QPACK encoder stream ID (local)
-    local_qpack_enc_stream_id: Option<StreamId>,
+    pub(crate) local_qpack_enc_stream_id: Option<StreamId>,
     /// QPACK decoder stream ID (local)
-    local_qpack_dec_stream_id: Option<StreamId>,
+    pub(crate) local_qpack_dec_stream_id: Option<StreamId>,
     /// QPACK encoder stream ID (remote)
-    remote_qpack_enc_stream_id: Option<StreamId>,
+    pub(crate) remote_qpack_enc_stream_id: Option<StreamId>,
     /// QPACK decoder stream ID (remote)
-    remote_qpack_dec_stream_id: Option<StreamId>,
+    pub(crate) remote_qpack_dec_stream_id: Option<StreamId>,
     /// Callbacks
-    callbacks: ConnectionCallbacks,
+    pub(crate) callbacks: ConnectionCallbacks,
     /// User data
-    user_data: *mut c_void,
+    pub(crate) user_data: *mut c_void,
     /// Outgoing frames queue
-    outgoing_frames: VecDeque<(StreamId, Frame)>,
+    pub(crate) outgoing_frames: VecDeque<(StreamId, Frame)>,
     /// Settings received flag
-    settings_received: bool,
+    pub(crate) settings_received: bool,
     /// Goaway ID (stream ID or push ID we sent in GOAWAY)
-    goaway_id: Option<u64>,
+    pub(crate) goaway_id: Option<u64>,
     /// Next push ID
-    next_push_id: u64,
+    pub(crate) next_push_id: u64,
     /// Max push ID received from client
-    max_push_id: Option<u64>,
+    pub(crate) max_push_id: Option<u64>,
 }
 
 impl Connection {
