@@ -145,12 +145,51 @@ impl HttpResponse {
         Ok(())
     }
 
+    /// Decompress the response body using dynamic linking (libnzip.so)
+    #[cfg(feature = "compression-dynamic")]
+    pub fn decompress_body(&mut self) -> HttpResult<()> {
+        use crate::nzip_ffi;
+
+        let encoding = match self.get_header("content-encoding") {
+            Some(enc) => enc.to_lowercase(),
+            None => return Ok(()), // No compression
+        };
+
+        let decompressed = match encoding.as_str() {
+            "gzip" => nzip_ffi::decompress_gzip(&self.body)
+                .map_err(|e| HttpError::DecompressionError(format!("gzip: {}", e)))?,
+            "deflate" => {
+                // Try zlib format first, fall back to raw deflate
+                match nzip_ffi::decompress_zlib(&self.body) {
+                    Ok(data) => data,
+                    Err(_) => nzip_ffi::decompress_raw(&self.body)
+                        .map_err(|e| HttpError::DecompressionError(format!("deflate: {}", e)))?,
+                }
+            }
+            "identity" | "" => return Ok(()), // No compression
+            other => {
+                return Err(HttpError::DecompressionError(format!(
+                    "Unsupported encoding: {}",
+                    other
+                )));
+            }
+        };
+
+        self.body = decompressed;
+
+        // Remove Content-Encoding header since we've decompressed
+        self.headers
+            .retain(|(k, _)| !k.eq_ignore_ascii_case("content-encoding"));
+
+        Ok(())
+    }
+
     /// Decompress the response body (no-op if compression feature is disabled)
-    #[cfg(not(feature = "compression"))]
+    #[cfg(not(any(feature = "compression", feature = "compression-dynamic")))]
     pub fn decompress_body(&mut self) -> HttpResult<()> {
         if self.get_header("content-encoding").is_some() {
             return Err(HttpError::NotSupported(
-                "Compression support not compiled in (enable 'compression' feature)".to_string(),
+                "Compression support not compiled in (enable 'compression' or 'compression-dynamic' feature)".to_string(),
             ));
         }
         Ok(())

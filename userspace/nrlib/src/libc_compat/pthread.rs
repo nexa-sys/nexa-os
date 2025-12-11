@@ -814,6 +814,86 @@ pub unsafe fn get_current_tcb() -> Option<*mut ThreadControlBlock> {
     }
 }
 
+// ============================================================================
+// __tls_get_addr - General Dynamic TLS Access
+// ============================================================================
+
+/// TLS index structure used by __tls_get_addr
+/// This is the standard ABI structure for General Dynamic TLS model.
+#[repr(C)]
+pub struct TlsIndex {
+    /// TLS module ID (1 = main executable, 2+ = shared libraries)
+    pub ti_module: usize,
+    /// Offset within the module's TLS block
+    pub ti_offset: usize,
+}
+
+/// Get the address of a thread-local variable.
+/// 
+/// This is the General Dynamic TLS model accessor function.
+/// Called by code using @tlsgd relocations for dynamic TLS access.
+/// 
+/// # Safety
+/// The TLS index must be valid and point to an initialized TLS block.
+/// 
+/// # Parameters
+/// - `ti`: Pointer to TLS index containing module ID and offset
+/// 
+/// # Returns
+/// Pointer to the thread-local variable
+#[no_mangle]
+pub unsafe extern "C" fn __tls_get_addr(ti: *const TlsIndex) -> *mut c_void {
+    if ti.is_null() {
+        return ptr::null_mut();
+    }
+    
+    let ti = &*ti;
+    
+    // Get the current thread's TCB
+    if let Some(tcb) = get_current_tcb() {
+        // Get the DTV (Dynamic Thread Vector)
+        let dtv = (*tcb).dtv;
+        
+        if !dtv.is_null() {
+            // DTV layout (musl-style):
+            //   dtv[0] = generation counter
+            //   dtv[module_id] = pointer to TLS block for that module
+            //
+            // For simplicity in our implementation:
+            // - Module 1 (main executable) uses static TLS via TP
+            // - Module 2+ (shared libraries) would need dynamic allocation
+            
+            if ti.ti_module == 0 {
+                // Module 0 is invalid
+                return ptr::null_mut();
+            }
+            
+            // For static TLS (most common case), compute address directly
+            // Static TLS is stored at negative offsets from TP (fs:0)
+            if ti.ti_module == 1 {
+                // Main executable's TLS - use TP-relative addressing
+                // TLS is at negative offset from thread pointer
+                let tp = tcb as *mut u8;
+                return tp.wrapping_sub(ti.ti_offset) as *mut c_void;
+            }
+            
+            // For dynamic TLS (shared libraries), lookup in DTV
+            let tls_block = *dtv.add(ti.ti_module);
+            if tls_block != 0 {
+                return (tls_block as *mut u8).add(ti.ti_offset) as *mut c_void;
+            }
+        }
+        
+        // Fallback for static TLS when DTV is not set up
+        // Use direct negative offset from TP
+        let tp = tcb as *mut u8;
+        return tp.wrapping_sub(ti.ti_offset) as *mut c_void;
+    }
+    
+    // No TCB available - this shouldn't happen in properly initialized programs
+    ptr::null_mut()
+}
+
 /// Get TLS data for the current thread at the given key index.
 /// Returns null if no TCB or key out of range.
 #[inline]

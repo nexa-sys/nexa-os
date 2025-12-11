@@ -730,3 +730,199 @@ pub extern "C" fn adler32_combine_func(adler1: uLong, adler2: uLong, len2: i64) 
 pub extern "C" fn crc32_combine_func(crc1: uLong, crc2: uLong, len2: i64) -> uLong {
     crc32::crc32_combine_impl(crc1 as u32, crc2 as u32, len2 as usize) as uLong
 }
+
+// ============================================================================
+// C ABI Exports - GZIP Functions (NexaOS Extensions)
+// ============================================================================
+
+/// Decompress gzip data in one call
+/// Returns the number of decompressed bytes, or negative error code
+/// dest must be large enough to hold the decompressed data
+#[no_mangle]
+pub extern "C" fn gzip_uncompress(
+    dest: *mut Bytef,
+    dest_len: *mut uLong,
+    source: *const Bytef,
+    source_len: uLong,
+) -> c_int {
+    if dest.is_null() || dest_len.is_null() || source.is_null() {
+        return Z_STREAM_ERROR;
+    }
+
+    unsafe {
+        let src = core::slice::from_raw_parts(source, source_len as usize);
+        let dst_cap = *dest_len as usize;
+        let dst = core::slice::from_raw_parts_mut(dest, dst_cap);
+
+        match gzip::gzip_decompress(src) {
+            Ok(decompressed) => {
+                if decompressed.len() > dst_cap {
+                    return Z_BUF_ERROR;
+                }
+                core::ptr::copy_nonoverlapping(
+                    decompressed.as_ptr(),
+                    dst.as_mut_ptr(),
+                    decompressed.len(),
+                );
+                *dest_len = decompressed.len() as uLong;
+                Z_OK
+            }
+            Err(e) => e.to_zlib_error(),
+        }
+    }
+}
+
+/// Compress data to gzip format in one call
+#[no_mangle]
+pub extern "C" fn gzip_compress(
+    dest: *mut Bytef,
+    dest_len: *mut uLong,
+    source: *const Bytef,
+    source_len: uLong,
+    level: c_int,
+) -> c_int {
+    if dest.is_null() || dest_len.is_null() || source.is_null() {
+        return Z_STREAM_ERROR;
+    }
+
+    unsafe {
+        let src = core::slice::from_raw_parts(source, source_len as usize);
+        let dst_cap = *dest_len as usize;
+        let dst = core::slice::from_raw_parts_mut(dest, dst_cap);
+
+        match gzip::gzip_compress(src, level) {
+            Ok(compressed) => {
+                if compressed.len() > dst_cap {
+                    return Z_BUF_ERROR;
+                }
+                core::ptr::copy_nonoverlapping(
+                    compressed.as_ptr(),
+                    dst.as_mut_ptr(),
+                    compressed.len(),
+                );
+                *dest_len = compressed.len() as uLong;
+                Z_OK
+            }
+            Err(e) => e.to_zlib_error(),
+        }
+    }
+}
+
+/// Calculate upper bound for gzip compressed size
+#[no_mangle]
+pub extern "C" fn gzip_compress_bound(source_len: uLong) -> uLong {
+    // gzip header (10) + deflate data + trailer (8) + some margin
+    compress_bound(source_len as usize) as uLong + 18
+}
+
+// ============================================================================
+// C ABI Exports - Raw DEFLATE Functions (NexaOS Extensions)
+// ============================================================================
+
+/// Decompress raw deflate data (no zlib/gzip header)
+#[no_mangle]
+pub extern "C" fn inflate_raw(
+    dest: *mut Bytef,
+    dest_len: *mut uLong,
+    source: *const Bytef,
+    source_len: uLong,
+) -> c_int {
+    if dest.is_null() || dest_len.is_null() || source.is_null() {
+        return Z_STREAM_ERROR;
+    }
+
+    unsafe {
+        let src = core::slice::from_raw_parts(source, source_len as usize);
+        let dst_cap = *dest_len as usize;
+        let dst = core::slice::from_raw_parts_mut(dest, dst_cap);
+
+        let mut inflater = inflate::Inflater::new(15);
+        match inflater.decompress(src) {
+            Ok((decompressed, _consumed)) => {
+                if decompressed.len() > dst_cap {
+                    return Z_BUF_ERROR;
+                }
+                core::ptr::copy_nonoverlapping(
+                    decompressed.as_ptr(),
+                    dst.as_mut_ptr(),
+                    decompressed.len(),
+                );
+                *dest_len = decompressed.len() as uLong;
+                Z_OK
+            }
+            Err(e) => e.to_zlib_error(),
+        }
+    }
+}
+
+/// Compress to raw deflate (no zlib/gzip header)
+#[no_mangle]
+pub extern "C" fn deflate_raw(
+    dest: *mut Bytef,
+    dest_len: *mut uLong,
+    source: *const Bytef,
+    source_len: uLong,
+    level: c_int,
+) -> c_int {
+    if dest.is_null() || dest_len.is_null() || source.is_null() {
+        return Z_STREAM_ERROR;
+    }
+
+    unsafe {
+        let src = core::slice::from_raw_parts(source, source_len as usize);
+        let dst_cap = *dest_len as usize;
+        let dst = core::slice::from_raw_parts_mut(dest, dst_cap);
+
+        match deflate::compress_raw(src, dst, level) {
+            Ok(written) => {
+                *dest_len = written as uLong;
+                Z_OK
+            }
+            Err(_) => Z_BUF_ERROR,
+        }
+    }
+}
+
+// ============================================================================
+// C ABI Exports - ZLIB Format Functions (NexaOS Extensions)
+// ============================================================================
+
+/// Decompress zlib-format data (same as uncompress but explicit naming)
+#[no_mangle]
+pub extern "C" fn zlib_uncompress(
+    dest: *mut Bytef,
+    dest_len: *mut uLong,
+    source: *const Bytef,
+    source_len: uLong,
+) -> c_int {
+    uncompress(dest, dest_len, source, source_len)
+}
+
+/// Compress to zlib format (same as compress but explicit naming)
+#[no_mangle]
+pub extern "C" fn zlib_compress(
+    dest: *mut Bytef,
+    dest_len: *mut uLong,
+    source: *const Bytef,
+    source_len: uLong,
+    level: c_int,
+) -> c_int {
+    compress2(dest, dest_len, source, source_len, level)
+}
+
+// ============================================================================
+// C ABI Exports - Library Information (NexaOS Extensions)
+// ============================================================================
+
+/// Get nzip library version string
+#[no_mangle]
+pub extern "C" fn nzip_version() -> *const c_char {
+    b"nzip 0.1.0 (zlib-compat)\0".as_ptr() as *const c_char
+}
+
+/// Check if nzip is available (always returns 1)
+/// This is useful for runtime detection of the library
+#[no_mangle]
+pub extern "C" fn nzip_available() -> c_int {
+    1
+}

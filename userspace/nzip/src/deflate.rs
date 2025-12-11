@@ -710,3 +710,24 @@ pub fn compress_to_zlib(input: &[u8], output: &mut [u8], level: c_int) -> ZlibRe
 
     Ok(pos)
 }
+
+/// Compress data to raw deflate format (no header/trailer)
+pub fn compress_raw(input: &[u8], output: &mut [u8], level: c_int) -> ZlibResult<usize> {
+    let actual_level = if level == -1 { 6 } else { level.clamp(0, 9) };
+
+    // Raw deflate doesn't need header/trailer space
+    if output.len() < input.len() + (input.len() >> 12) + 11 {
+        return Err(ZlibError::BufferError);
+    }
+
+    // Compress data
+    let mut deflater = Deflater::new(actual_level, 15, 8, 0);
+    let compressed = deflater.compress(input, true)?;
+
+    if compressed.len() > output.len() {
+        return Err(ZlibError::BufferError);
+    }
+
+    output[..compressed.len()].copy_from_slice(&compressed);
+    Ok(compressed.len())
+}

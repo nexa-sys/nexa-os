@@ -34,6 +34,13 @@ mod nssl_ffi;
 #[path = "tls_dynamic.rs"]
 mod tls;
 
+// Compression module selection based on features:
+// - compression: static linking with nzip crate
+// - compression-dynamic: dynamic linking with libnzip.so via FFI
+
+#[cfg(feature = "compression-dynamic")]
+pub mod nzip_ffi;
+
 // HTTP/2 FFI module for dynamic linking with libnh2.so
 #[cfg(feature = "http2-dynamic")]
 mod nh2_ffi;
