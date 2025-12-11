@@ -93,26 +93,24 @@ pub mod crypto;
 pub mod frame;
 pub mod packet;
 
-// Connection layer (TODO: implement)
-// pub mod connection;
-// pub mod stream;
-// pub mod flow_control;
-// pub mod congestion;
-// pub mod recovery;
+// Connection layer
+pub mod connection;
+pub mod stream;
+pub mod flow_control;
+pub mod congestion;
+pub mod recovery;
 
-// Header compression (TODO: implement)
-// #[cfg(feature = "qpack")]
-// pub mod qpack;
+// Header compression (QPACK - RFC 9204)
+pub mod qpack;
 
-// Async I/O backend (TODO: implement)
-// #[cfg(feature = "async-tokio")]
-// pub mod async_io;
+// Async I/O backend (tokio-based)
+pub mod async_io;
 
-// ngtcp2 C ABI compatibility layer (TODO: implement)
-// pub mod compat;
+// ngtcp2 C ABI compatibility layer
+pub mod compat;
 
-// Path and address validation (TODO: implement)
-// pub mod path;
+// Path and address validation
+pub mod path;
 
 // ============================================================================
 // Re-exports for convenience
@@ -124,6 +122,19 @@ pub use error::{CryptoError, Error, NgError, Result, TransportError};
 pub use frame::{Frame, FrameType};
 pub use packet::{PacketBuilder, PacketHeader, PacketType};
 pub use types::*;
+
+// Connection layer re-exports
+pub use connection::{Connection, ConnectionCallbacks, ConnectionState};
+pub use stream::{Stream, StreamId, StreamManager, StreamState, StreamType};
+pub use flow_control::{FlowController, StreamFlowController};
+pub use congestion::{CongestionController, CongestionAlgorithm};
+pub use recovery::{LossDetector, RttEstimator, SentPacket};
+
+// QPACK re-exports
+pub use qpack::{Encoder as QpackEncoder, Decoder as QpackDecoder, DynamicTable};
+
+// Path validation re-exports
+pub use path::{Path, PathId, PathManager, PathState, MtuDiscovery, AddressValidator};
 
 // ============================================================================
 // C Type Definitions (ngtcp2 compatible)
