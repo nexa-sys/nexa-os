@@ -26,7 +26,6 @@ use nexa_boot_info::{
     PciBarInfo,
     PciDeviceInfo,
     UsbHostInfo,
-    HidInputInfo,
     MAX_DEVICE_DESCRIPTORS,
 };
 use r_efi::base as raw_base;
@@ -47,28 +46,234 @@ use uefi::{cstr16, Handle, Status};
 // Primary paths for EFI System Partition
 const KERNEL_PATH: &uefi::CStr16 = cstr16!("\\EFI\\BOOT\\KERNEL.ELF");
 const INITRAMFS_PATH: &uefi::CStr16 = cstr16!("\\EFI\\BOOT\\INITRAMFS.CPIO");
-const ROOTFS_PATH: &uefi::CStr16 = cstr16!("\\EFI\\BOOT\\ROOTFS.EXT2");
-const CMDLINE_PATH: &uefi::CStr16 = cstr16!("\\EFI\\BOOT\\cmdline.txt");
+const NEXA_CFG_PATH: &uefi::CStr16 = cstr16!("\\EFI\\BOOT\\NEXA.CFG");
 
 // Fallback paths for ISO 9660 filesystem
 const KERNEL_PATH_ISO: &uefi::CStr16 = cstr16!("\\boot\\KERNEL.ELF");
 const INITRAMFS_PATH_ISO: &uefi::CStr16 = cstr16!("\\boot\\INITRAMFS.CPIO");
-const ROOTFS_PATH_ISO: &uefi::CStr16 = cstr16!("\\rootfs.ext2");
-const CMDLINE_PATH_ISO: &uefi::CStr16 = cstr16!("\\cmdline.txt");
+const NEXA_CFG_PATH_ISO: &uefi::CStr16 = cstr16!("\\NEXA.CFG");
 
-// Additional fallback paths (lowercase variants)
-const KERNEL_PATH_ISO_LOWER: &uefi::CStr16 = cstr16!("\\boot\\kernel.elf");
-const INITRAMFS_PATH_ISO_LOWER: &uefi::CStr16 = cstr16!("\\boot\\initramfs.cpio");
-const ROOTFS_PATH_ISO_LOWER: &uefi::CStr16 = cstr16!("\\rootfs.ext2");
-const CMDLINE_PATH_ISO_LOWER: &uefi::CStr16 = cstr16!("\\cmdline.txt");
-
-// Rootfs 优先从 ESP 缓存，若缺失则回退到块设备读取
+// Block device root filesystem is now used directly, no mirroring to memory
 const MAX_PHYS_ADDR: u64 = 0x0000FFFF_FFFF;
 const BOOT_INFO_PREF_MAX_ADDR: u64 = 0x03FF_FFFF; // Prefer BootInfo below 64 MiB
-const DEFAULT_CMDLINE: &[u8] = b"root=/dev/vda rootfstype=ext2 init=/sbin/ni";
 
 const PNP0A03_EISA_ID: u32 = encode_eisa_id(*b"PNP0A03");
 const PNP0A08_EISA_ID: u32 = encode_eisa_id(*b"PNP0A08");
+
+/// NexaOS boot configuration (parsed from NEXA.CFG)
+/// Similar to grub.cfg, supports key=value pairs for boot parameters
+#[derive(Clone)]
+struct NexaConfig {
+    /// Root device (e.g., "/dev/vda", "/dev/sda1")
+    root: [u8; 64],
+    root_len: usize,
+    /// Root filesystem type (e.g., "ext2", "ext4")
+    rootfstype: [u8; 32],
+    rootfstype_len: usize,
+    /// Init program path (e.g., "/sbin/ni", "/sbin/init")
+    init: [u8; 128],
+    init_len: usize,
+    /// Console device (e.g., "ttyS0,115200")
+    console: [u8; 64],
+    console_len: usize,
+    /// Additional kernel parameters
+    extra_params: [u8; 256],
+    extra_params_len: usize,
+    /// Quiet boot (suppress most kernel messages)
+    quiet: bool,
+    /// Debug mode (enable verbose logging)
+    debug: bool,
+}
+
+impl NexaConfig {
+    const fn new() -> Self {
+        Self {
+            root: [0; 64],
+            root_len: 0,
+            rootfstype: [0; 32],
+            rootfstype_len: 0,
+            init: [0; 128],
+            init_len: 0,
+            console: [0; 64],
+            console_len: 0,
+            extra_params: [0; 256],
+            extra_params_len: 0,
+            quiet: false,
+            debug: false,
+        }
+    }
+
+    /// Create default configuration
+    fn default() -> Self {
+        let mut cfg = Self::new();
+        // Default root device
+        let root = b"/dev/vda";
+        cfg.root[..root.len()].copy_from_slice(root);
+        cfg.root_len = root.len();
+        // Default filesystem type
+        let fstype = b"ext2";
+        cfg.rootfstype[..fstype.len()].copy_from_slice(fstype);
+        cfg.rootfstype_len = fstype.len();
+        // Default init
+        let init = b"/sbin/ni";
+        cfg.init[..init.len()].copy_from_slice(init);
+        cfg.init_len = init.len();
+        cfg
+    }
+
+    /// Parse configuration from NEXA.CFG file content
+    /// Format:
+    /// ```
+    /// # Comment line
+    /// root=/dev/vda
+    /// rootfstype=ext2
+    /// init=/sbin/ni
+    /// console=ttyS0,115200
+    /// quiet
+    /// debug
+    /// ```
+    fn parse(data: &[u8]) -> Self {
+        let mut cfg = Self::default();
+        
+        for line in data.split(|&b| b == b'\n') {
+            let line = trim_bytes(line);
+            if line.is_empty() || line.starts_with(b"#") {
+                continue;
+            }
+            
+            if let Some(pos) = line.iter().position(|&b| b == b'=') {
+                let key = trim_bytes(&line[..pos]);
+                let value = trim_bytes(&line[pos + 1..]);
+                
+                match key {
+                    b"root" => {
+                        let len = value.len().min(cfg.root.len());
+                        cfg.root[..len].copy_from_slice(&value[..len]);
+                        cfg.root_len = len;
+                    }
+                    b"rootfstype" => {
+                        let len = value.len().min(cfg.rootfstype.len());
+                        cfg.rootfstype[..len].copy_from_slice(&value[..len]);
+                        cfg.rootfstype_len = len;
+                    }
+                    b"init" => {
+                        let len = value.len().min(cfg.init.len());
+                        cfg.init[..len].copy_from_slice(&value[..len]);
+                        cfg.init_len = len;
+                    }
+                    b"console" => {
+                        let len = value.len().min(cfg.console.len());
+                        cfg.console[..len].copy_from_slice(&value[..len]);
+                        cfg.console_len = len;
+                    }
+                    _ => {
+                        // Unknown key, add to extra params
+                        if cfg.extra_params_len + line.len() + 1 <= cfg.extra_params.len() {
+                            if cfg.extra_params_len > 0 {
+                                cfg.extra_params[cfg.extra_params_len] = b' ';
+                                cfg.extra_params_len += 1;
+                            }
+                            let end = cfg.extra_params_len + line.len();
+                            cfg.extra_params[cfg.extra_params_len..end].copy_from_slice(line);
+                            cfg.extra_params_len = end;
+                        }
+                    }
+                }
+            } else {
+                // Flag-style options (no value)
+                match line {
+                    b"quiet" => cfg.quiet = true,
+                    b"debug" => cfg.debug = true,
+                    _ => {
+                        // Unknown flag, add to extra params
+                        if cfg.extra_params_len + line.len() + 1 <= cfg.extra_params.len() {
+                            if cfg.extra_params_len > 0 {
+                                cfg.extra_params[cfg.extra_params_len] = b' ';
+                                cfg.extra_params_len += 1;
+                            }
+                            let end = cfg.extra_params_len + line.len();
+                            cfg.extra_params[cfg.extra_params_len..end].copy_from_slice(line);
+                            cfg.extra_params_len = end;
+                        }
+                    }
+                }
+            }
+        }
+        
+        cfg
+    }
+
+    /// Build kernel command line from configuration
+    fn build_cmdline(&self) -> Vec<u8> {
+        let mut cmdline = Vec::new();
+        
+        // root=
+        if self.root_len > 0 {
+            cmdline.extend_from_slice(b"root=");
+            cmdline.extend_from_slice(&self.root[..self.root_len]);
+        }
+        
+        // rootfstype=
+        if self.rootfstype_len > 0 {
+            if !cmdline.is_empty() {
+                cmdline.push(b' ');
+            }
+            cmdline.extend_from_slice(b"rootfstype=");
+            cmdline.extend_from_slice(&self.rootfstype[..self.rootfstype_len]);
+        }
+        
+        // init=
+        if self.init_len > 0 {
+            if !cmdline.is_empty() {
+                cmdline.push(b' ');
+            }
+            cmdline.extend_from_slice(b"init=");
+            cmdline.extend_from_slice(&self.init[..self.init_len]);
+        }
+        
+        // console=
+        if self.console_len > 0 {
+            if !cmdline.is_empty() {
+                cmdline.push(b' ');
+            }
+            cmdline.extend_from_slice(b"console=");
+            cmdline.extend_from_slice(&self.console[..self.console_len]);
+        }
+        
+        // quiet
+        if self.quiet {
+            if !cmdline.is_empty() {
+                cmdline.push(b' ');
+            }
+            cmdline.extend_from_slice(b"quiet");
+        }
+        
+        // debug
+        if self.debug {
+            if !cmdline.is_empty() {
+                cmdline.push(b' ');
+            }
+            cmdline.extend_from_slice(b"debug");
+        }
+        
+        // extra params
+        if self.extra_params_len > 0 {
+            if !cmdline.is_empty() {
+                cmdline.push(b' ');
+            }
+            cmdline.extend_from_slice(&self.extra_params[..self.extra_params_len]);
+        }
+        
+        cmdline
+    }
+}
+
+/// Trim leading and trailing whitespace from byte slice
+fn trim_bytes(bytes: &[u8]) -> &[u8] {
+    let start = bytes.iter().position(|&b| !b.is_ascii_whitespace()).unwrap_or(bytes.len());
+    let end = bytes.iter().rposition(|&b| !b.is_ascii_whitespace()).map(|i| i + 1).unwrap_or(start);
+    &bytes[start..end]
+}
 
 #[derive(Clone, Copy)]
 struct DeviceTable {
@@ -1172,33 +1377,19 @@ fn efi_main(image: Handle, mut st: SystemTable<Boot>) -> Status {
         }
     };
 
-    let mut rootfs_bytes = match read_file_multi(&mut root, ROOTFS_PATH, ROOTFS_PATH_ISO) {
-        Ok(data) => {
-            log::info!("Rootfs image loaded, size: {} bytes", data.len());
-            Some(data)
-        }
-        Err(status) if status == Status::NOT_FOUND => {
-            log::info!("Rootfs image not present; will probe block devices");
-            None
-        }
-        Err(status) => {
-            log::warn!("Failed to load rootfs: {:?}", status);
-            None
-        }
-    };
-
-    let cmdline_bytes = load_kernel_cmdline(&mut root);
+    // Load NEXA.CFG configuration file (similar to grub.cfg)
+    let nexa_config = load_nexa_config(&mut root);
+    let cmdline_bytes = nexa_config.build_cmdline();
     match core::str::from_utf8(&cmdline_bytes) {
-        Ok(text) => log::info!("Kernel command line: {}", text),
+        Ok(text) => log::info!("Kernel command line (from NEXA.CFG): {}", text),
         Err(_) => log::warn!("Kernel command line contains non-UTF8 data"),
     }
 
     drop(root);
     log::info!("File system root dropped");
 
-    if rootfs_bytes.is_none() {
-        rootfs_bytes = load_rootfs_from_block_device(bs, image);
-    }
+    // NOTE: Root filesystem is now accessed directly from block devices at runtime.
+    // No longer mirroring rootfs to memory - the kernel uses real block device drivers.
 
     let loaded = match load_kernel_image(bs, &kernel_bytes) {
         Ok(info) => {
@@ -1248,29 +1439,7 @@ fn efi_main(image: Handle, mut st: SystemTable<Boot>) -> Status {
         }
     };
 
-    let rootfs_region = if let Some(ref bytes) = rootfs_bytes {
-        match stage_payload(bs, bytes, MemoryType::LOADER_DATA) {
-            Ok(region) => {
-                log::info!(
-                    "Rootfs staged, addr: {:#x}, size: {}",
-                    region.phys_addr,
-                    region.length
-                );
-                region
-            }
-            Err(status) => {
-                log::error!("Failed to allocate rootfs region: {:?}", status);
-                return status;
-            }
-        }
-    } else {
-        log::warn!("Rootfs image unavailable; kernel will rely on /dev mounts");
-        MemoryRegion::empty()
-    };
-
-    if !rootfs_region.is_empty() {
-        rootfs_bytes = None;
-    }
+    // NOTE: rootfs is no longer staged to memory - kernel uses block device drivers directly
     
     // 创建启动信息
     let kernel_segments_region = match stage_kernel_segments(bs, &loaded.segments) {
@@ -1300,7 +1469,6 @@ fn efi_main(image: Handle, mut st: SystemTable<Boot>) -> Status {
     let boot_info_region = match stage_boot_info(
         bs,
         initramfs_region,
-        rootfs_region,
         framebuffer_info,
         &device_table,
         loaded.kernel_offset,
@@ -1683,153 +1851,49 @@ fn read_entire_file(mut file: RegularFile) -> Result<Vec<u8>, Status> {
     Ok(buffer)
 }
 
-fn load_kernel_cmdline(root: &mut Directory) -> Vec<u8> {
-    match read_file_multi(root, CMDLINE_PATH, CMDLINE_PATH_ISO) {
-        Ok(mut data) => {
-            while matches!(data.last(), Some(b' ') | Some(b'\n') | Some(b'\r') | Some(&0)) {
-                data.pop();
-            }
+/// Load NEXA.CFG configuration file (similar to grub.cfg)
+/// This file contains boot parameters like root device, filesystem type, init, etc.
+fn load_nexa_config(root: &mut Directory) -> NexaConfig {
+    match read_file_multi(root, NEXA_CFG_PATH, NEXA_CFG_PATH_ISO) {
+        Ok(data) => {
             if data.is_empty() {
-                log::warn!(
-                    "cmdline.txt is empty; falling back to default kernel command line"
-                );
-                DEFAULT_CMDLINE.to_vec()
+                log::warn!("NEXA.CFG is empty; using default configuration");
+                NexaConfig::default()
             } else {
-                log::info!("Loaded kernel command line from cmdline.txt");
-                data
+                log::info!("Loaded NEXA.CFG ({} bytes)", data.len());
+                let config = NexaConfig::parse(&data);
+                if config.root_len > 0 {
+                    if let Ok(root_str) = core::str::from_utf8(&config.root[..config.root_len]) {
+                        log::info!("  root={}", root_str);
+                    }
+                }
+                if config.rootfstype_len > 0 {
+                    if let Ok(fstype_str) = core::str::from_utf8(&config.rootfstype[..config.rootfstype_len]) {
+                        log::info!("  rootfstype={}", fstype_str);
+                    }
+                }
+                if config.init_len > 0 {
+                    if let Ok(init_str) = core::str::from_utf8(&config.init[..config.init_len]) {
+                        log::info!("  init={}", init_str);
+                    }
+                }
+                config
             }
         }
         Err(status) if status == Status::NOT_FOUND => {
             log::info!(
-                "cmdline.txt not found; using default kernel command line: {}",
-                core::str::from_utf8(DEFAULT_CMDLINE).unwrap_or("<non-utf8>")
+                "NEXA.CFG not found; using default configuration (root=/dev/vda, rootfstype=ext2, init=/sbin/ni)"
             );
-            DEFAULT_CMDLINE.to_vec()
+            NexaConfig::default()
         }
         Err(status) => {
             log::warn!(
-                "Failed to read cmdline.txt (status {:?}); using default kernel command line",
+                "Failed to read NEXA.CFG (status {:?}); using default configuration",
                 status
             );
-            DEFAULT_CMDLINE.to_vec()
+            NexaConfig::default()
         }
     }
-}
-
-fn load_rootfs_from_block_device(bs: &BootServices, image: Handle) -> Option<Vec<u8>> {
-    let handles = bs
-        .locate_handle_buffer(SearchType::ByProtocol(&BlockIO::GUID))
-        .ok()?;
-
-    for handle in handles.iter() {
-        let block_proto = unsafe {
-            bs.open_protocol::<BlockIO>(
-                OpenProtocolParams {
-                    handle: *handle,
-                    agent: image,
-                    controller: None,
-                },
-                OpenProtocolAttributes::GetProtocol,
-            )
-        };
-        let Ok(block_proto) = block_proto else {
-            continue;
-        };
-        let Some(block_io) = block_proto.get() else {
-            continue;
-        };
-        let media = block_io.media();
-        if !media.is_media_present() {
-            continue;
-        }
-
-        let block_size = media.block_size() as usize;
-        if block_size == 0 {
-            continue;
-        }
-
-        // Prefer 512-byte logical block devices (virtio-blk).
-        if block_size != 512 {
-            log::debug!(
-                "Skipping block device with block size {} bytes (not 512)",
-                block_size
-            );
-            continue;
-        }
-
-        let total_blocks = media.last_block().saturating_add(1);
-        let total_bytes = match total_blocks.checked_mul(block_size as u64) {
-            Some(value) => value,
-            None => {
-                log::warn!("Block device size overflow, skipping");
-                continue;
-            }
-        };
-
-        // Avoid pulling unreasonably large disks into memory.
-        if total_bytes > 256 * 1024 * 1024 {
-            log::warn!(
-                "Block device reports {} bytes (>256 MiB), skipping",
-                total_bytes
-            );
-            continue;
-        }
-
-        let mut buffer = vec![0u8; total_bytes as usize];
-        let media_id = media.media_id();
-        let mut lba = 0u64;
-        let mut offset = 0usize;
-        const CHUNK_BLOCKS: usize = 128;
-
-        log::info!(
-            "Reading root filesystem from block device: {} blocks × {} bytes",
-            total_blocks,
-            block_size
-        );
-
-        while lba < total_blocks {
-            let remaining_blocks = (total_blocks - lba) as usize;
-            let chunk_blocks = remaining_blocks.min(CHUNK_BLOCKS);
-            let chunk_bytes = chunk_blocks * block_size;
-            let slice = &mut buffer[offset..offset + chunk_bytes];
-
-            if let Err(status) = block_io.read_blocks(media_id, lba, slice) {
-                log::warn!(
-                    "Failed to read LBA {} ({} blocks): {:?}",
-                    lba,
-                    chunk_blocks,
-                    status
-                );
-                buffer.clear();
-                break;
-            }
-
-            lba += chunk_blocks as u64;
-            offset += chunk_bytes;
-        }
-
-        if offset == buffer.len() {
-            if let Some(address) = pci_address_for_handle(bs, image, *handle) {
-                log::info!(
-                    "Loaded rootfs image ({} bytes) from {:04x}:{:02x}:{:02x}.{}",
-                    buffer.len(),
-                    address.segment,
-                    address.bus,
-                    address.device,
-                    address.function
-                );
-            } else {
-                log::info!(
-                    "Loaded rootfs image ({} bytes) from block device (no PCI address)",
-                    buffer.len()
-                );
-            }
-
-            return Some(buffer);
-        }
-    }
-
-    None
 }
 
 fn load_kernel_image(bs: &BootServices, image: &[u8]) -> Result<LoadedKernel, Status> {
@@ -2152,7 +2216,6 @@ fn mirror_boot_info_to_expected(region: &MemoryRegion, offset: i64) -> Option<u6
 fn stage_boot_info(
     bs: &BootServices,
     initramfs: MemoryRegion,
-    rootfs: MemoryRegion,
     framebuffer: Option<FramebufferInfo>,
     devices: &DeviceTable,
     kernel_offset: i64,
@@ -2205,7 +2268,6 @@ fn stage_boot_info(
 
     let mut flags_value = determine_flags(
         &initramfs,
-        &rootfs,
         framebuffer.is_some(),
         devices.count != 0,
         !cmdline_region.is_empty(),
@@ -2240,13 +2302,14 @@ fn stage_boot_info(
             total_physical_memory, total_physical_memory / (1024 * 1024));
     }
 
+    // NOTE: rootfs field is set to empty - kernel uses block device drivers directly
     let boot_info = BootInfo {
         signature: nexa_boot_info::BOOT_INFO_SIGNATURE,
         version: nexa_boot_info::BOOT_INFO_VERSION,
         size: size_bytes as u16,
         flags: flags_value,
         initramfs,
-        rootfs,
+        rootfs: MemoryRegion::empty(),
         cmdline: cmdline_region,
         framebuffer: framebuffer.unwrap_or(FramebufferInfo {
             address: 0,
@@ -2365,7 +2428,6 @@ fn calculate_total_physical_memory(bs: &BootServices) -> u64 {
 
 fn determine_flags(
     initramfs: &MemoryRegion,
-    rootfs: &MemoryRegion,
     has_fb: bool,
     has_devices: bool,
     has_cmdline: bool,
@@ -2374,9 +2436,7 @@ fn determine_flags(
     if !initramfs.is_empty() {
         flags_val |= flags::HAS_INITRAMFS;
     }
-    if !rootfs.is_empty() {
-        flags_val |= flags::HAS_ROOTFS;
-    }
+    // NOTE: HAS_ROOTFS is no longer set - kernel uses block device drivers directly
     if has_fb {
         flags_val |= flags::HAS_FRAMEBUFFER;
     }

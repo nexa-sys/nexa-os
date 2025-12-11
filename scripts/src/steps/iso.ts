@@ -126,6 +126,16 @@ export async function buildIso(env: BuildEnvironment): Promise<BuildStepResult> 
     await copyFile(env.kernelBin, join(isoWorkDir, 'boot/KERNEL.ELF'));
     hasUefi = true;
     logger.success('UEFI loader included');
+    
+    // Copy NEXA.CFG boot configuration
+    const nexaCfgPath = join(env.projectRoot, 'boot/NEXA.CFG');
+    if (existsSync(nexaCfgPath)) {
+      await copyFile(nexaCfgPath, join(isoWorkDir, 'EFI/BOOT/NEXA.CFG'));
+      await copyFile(nexaCfgPath, join(isoWorkDir, 'NEXA.CFG'));
+      logger.success('NEXA.CFG boot configuration included');
+    } else {
+      logger.warn('boot/NEXA.CFG not found, UEFI loader will use defaults');
+    }
   }
   
   // Copy GRUB font
@@ -239,8 +249,13 @@ async function postprocessEsp(env: BuildEnvironment): Promise<boolean> {
     if (existsSync(env.initramfsCpio)) {
       initramfsStat = await stat(env.initramfsCpio);
     }
+    let nexaCfgStat = { size: 0 };
+    const nexaCfgPath = join(env.projectRoot, 'boot/NEXA.CFG');
+    if (existsSync(nexaCfgPath)) {
+      nexaCfgStat = await stat(nexaCfgPath);
+    }
     
-    const totalBytes = kernelStat.size + bootloaderStat.size + initramfsStat.size;
+    const totalBytes = kernelStat.size + bootloaderStat.size + initramfsStat.size + nexaCfgStat.size;
     let espSizeMb = Math.ceil((totalBytes * 1.2) / (1024 * 1024));
     if (espSizeMb < 16) espSizeMb = 16;
     
@@ -262,6 +277,12 @@ async function postprocessEsp(env: BuildEnvironment): Promise<boolean> {
     
     if (existsSync(env.initramfsCpio)) {
       await exec('mcopy', ['-i', newEsp, env.initramfsCpio, '::/EFI/BOOT/INITRAMFS.CPIO']);
+    }
+    
+    // Copy NEXA.CFG boot configuration to ESP
+    if (existsSync(nexaCfgPath)) {
+      await exec('mcopy', ['-i', newEsp, nexaCfgPath, '::/EFI/BOOT/NEXA.CFG']);
+      logger.info('NEXA.CFG copied to ESP');
     }
     
     // Replace ESP in extracted ISO
