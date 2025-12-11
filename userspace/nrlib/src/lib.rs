@@ -1263,21 +1263,6 @@ pub unsafe extern "C" fn pthread_key_create(
     key: *mut pthread_key_t,
     destructor: Option<PthreadDestructorFn>,  // Option<fn> has same ABI as nullable function pointer
 ) -> i32 {
-    // Debug: print raw destructor value
-    let dtor_raw = destructor.map(|f| f as *const c_void as u64).unwrap_or(0);
-    let msg = b"[nrlib] pthread_key_create: dtor_raw=0x";
-    let _ = syscall3(SYS_WRITE, 2, msg.as_ptr() as u64, msg.len() as u64);
-    // Print hex value
-    let mut buf = [0u8; 16];
-    let mut val = dtor_raw;
-    for i in (0..16).rev() {
-        let nibble = (val & 0xF) as u8;
-        buf[i] = if nibble < 10 { b'0' + nibble } else { b'a' + nibble - 10 };
-        val >>= 4;
-    }
-    let _ = syscall3(SYS_WRITE, 2, buf.as_ptr() as u64, 16);
-    let _ = syscall3(SYS_WRITE, 2, b"\n".as_ptr() as u64, 1);
-
     // Convert Option<fn> to raw pointer for storage
     let dtor_ptr: *const c_void = match destructor {
         Some(f) => f as *const c_void,
@@ -1292,13 +1277,6 @@ pub unsafe extern "C" fn pthread_key_create(
                 TLS_KEY_USED[i] = true;
                 TLS_DESTRUCTORS[i] = dtor_ptr;
                 *key = i as pthread_key_t;
-                // Debug: print key allocation
-                let msg = b"[nrlib] pthread_key_create: allocated key ";
-                let _ = syscall3(SYS_WRITE, 2, msg.as_ptr() as u64, msg.len() as u64);
-                let digit = b'0' + (i as u8 % 10);
-                let _ = syscall3(SYS_WRITE, 2, &digit as *const u8 as u64, 1);
-                let has_dtor: &[u8] = if !dtor_ptr.is_null() { b" (has dtor)\n" } else { b" (no dtor)\n" };
-                let _ = syscall3(SYS_WRITE, 2, has_dtor.as_ptr() as u64, has_dtor.len() as u64);
                 return 0;
             }
         }
@@ -1310,13 +1288,6 @@ pub unsafe extern "C" fn pthread_key_create(
     TLS_KEY_USED[k] = true;
     TLS_DESTRUCTORS[k] = dtor_ptr;
     *key = k as pthread_key_t;
-    // Debug: print key allocation
-    let msg = b"[nrlib] pthread_key_create: allocated key ";
-    let _ = syscall3(SYS_WRITE, 2, msg.as_ptr() as u64, msg.len() as u64);
-    let digit = b'0' + (k as u8 % 10);
-    let _ = syscall3(SYS_WRITE, 2, &digit as *const u8 as u64, 1);
-    let has_dtor: &[u8] = if !dtor_ptr.is_null() { b" (has dtor)\n" } else { b" (no dtor)\n" };
-    let _ = syscall3(SYS_WRITE, 2, has_dtor.as_ptr() as u64, has_dtor.len() as u64);
     0
 }
 
@@ -1342,16 +1313,7 @@ pub unsafe extern "C" fn pthread_getspecific(key: pthread_key_t) -> *mut c_void 
 
     // musl semantics: return self->tsd[k] directly
     if let Some(tcb) = libc_compat::pthread::get_current_tcb() {
-        let val = (*tcb).tsd[idx];
-        // Debug: print when sentinel value 1 is read
-        if val as usize == 1 {
-            let msg = b"[nrlib] pthread_getspecific: returning sentinel value 1 for key ";
-            let _ = syscall3(SYS_WRITE, 2, msg.as_ptr() as u64, msg.len() as u64);
-            let digit = b'0' + (idx as u8 % 10);
-            let _ = syscall3(SYS_WRITE, 2, &digit as *const u8 as u64, 1);
-            let _ = syscall3(SYS_WRITE, 2, b"\n".as_ptr() as u64, 1);
-        }
-        return val;
+        return (*tcb).tsd[idx];
     }
     
     // Fallback for early init before TCB is set up
@@ -1364,15 +1326,6 @@ pub unsafe extern "C" fn pthread_setspecific(key: pthread_key_t, value: *const c
     if idx >= MAX_TLS_KEYS {
         set_errno(EINVAL);
         return EINVAL;
-    }
-
-    // Debug: print when sentinel value 1 is set (TLS destruction starting)
-    if value as usize == 1 {
-        let msg = b"[nrlib] pthread_setspecific: setting SENTINEL VALUE 1 for key ";
-        let _ = syscall3(SYS_WRITE, 2, msg.as_ptr() as u64, msg.len() as u64);
-        let digit = b'0' + (idx as u8 % 10);
-        let _ = syscall3(SYS_WRITE, 2, &digit as *const u8 as u64, 1);
-        let _ = syscall3(SYS_WRITE, 2, b"\n".as_ptr() as u64, 1);
     }
 
     // musl semantics: self->tsd[k] = x, set tsd_used = 1
