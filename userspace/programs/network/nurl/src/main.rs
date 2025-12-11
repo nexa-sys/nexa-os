@@ -45,6 +45,10 @@ pub mod nzip_ffi;
 #[cfg(feature = "http2-dynamic")]
 mod nh2_ffi;
 
+// HTTP/3 FFI module for dynamic linking with libnghttp3.so (nh3)
+#[cfg(feature = "http3-dynamic")]
+pub mod nh3_ffi;
+
 // Fallback when no TLS support
 #[cfg(not(any(feature = "https", feature = "https-dynamic")))]
 mod tls {

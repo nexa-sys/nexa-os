@@ -1161,6 +1161,178 @@ pub extern "C" fn nghttp3_conn_is_client(conn: *const nghttp3_conn) -> c_int {
 }
 
 // ============================================================================
+// Stream Response Data Extension (nh3 extension for nurl integration)
+// ============================================================================
+
+/// Header field for stream response data
+#[repr(C)]
+pub struct Nghttp3HeaderField {
+    /// Header name pointer
+    pub name: *mut u8,
+    /// Header name length
+    pub name_len: size_t,
+    /// Header value pointer
+    pub value: *mut u8,
+    /// Header value length
+    pub value_len: size_t,
+}
+
+/// Stream response data structure (nh3 extension)
+/// This provides a convenient way to extract response data from a stream
+#[repr(C)]
+pub struct Nghttp3StreamResponseData {
+    /// Pointer to response headers array
+    pub headers: *mut Nghttp3HeaderField,
+    /// Number of response headers
+    pub headers_len: size_t,
+    /// Pointer to response body data
+    pub body: *mut u8,
+    /// Length of response body
+    pub body_len: size_t,
+    /// HTTP status code (0 if not found)
+    pub status_code: u16,
+}
+
+/// Get stream response data (headers and body)
+/// Returns a pointer to Nghttp3StreamResponseData or null if stream not found
+/// Caller must free the returned data using nghttp3_stream_response_data_free
+#[no_mangle]
+pub extern "C" fn nghttp3_conn_get_stream_response_data(
+    conn: *mut nghttp3_conn,
+    stream_id: StreamId,
+) -> *mut Nghttp3StreamResponseData {
+    if conn.is_null() {
+        return core::ptr::null_mut();
+    }
+    
+    let inner = unsafe { &*(*conn).inner };
+    
+    let stream = match inner.streams.get(stream_id) {
+        Some(s) => s,
+        None => return core::ptr::null_mut(),
+    };
+    
+    // Extract status code from headers
+    let mut status_code: u16 = 0;
+    for header in &stream.headers {
+        if header.name == b":status" {
+            if let Ok(s) = std::str::from_utf8(&header.value) {
+                status_code = s.parse().unwrap_or(0);
+            }
+            break;
+        }
+    }
+    
+    // Allocate and copy headers
+    let headers_len = stream.headers.len();
+    let headers_ptr = if headers_len > 0 {
+        let layout = std::alloc::Layout::array::<Nghttp3HeaderField>(headers_len).unwrap();
+        let ptr = unsafe { std::alloc::alloc(layout) as *mut Nghttp3HeaderField };
+        if ptr.is_null() {
+            return core::ptr::null_mut();
+        }
+        
+        for (i, header) in stream.headers.iter().enumerate() {
+            // Allocate and copy name
+            let name_ptr = unsafe { std::alloc::alloc(std::alloc::Layout::array::<u8>(header.name.len()).unwrap()) };
+            if !name_ptr.is_null() {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(header.name.as_ptr(), name_ptr, header.name.len());
+                }
+            }
+            
+            // Allocate and copy value
+            let value_ptr = unsafe { std::alloc::alloc(std::alloc::Layout::array::<u8>(header.value.len()).unwrap()) };
+            if !value_ptr.is_null() {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(header.value.as_ptr(), value_ptr, header.value.len());
+                }
+            }
+            
+            unsafe {
+                (*ptr.add(i)).name = name_ptr;
+                (*ptr.add(i)).name_len = header.name.len();
+                (*ptr.add(i)).value = value_ptr;
+                (*ptr.add(i)).value_len = header.value.len();
+            }
+        }
+        ptr
+    } else {
+        core::ptr::null_mut()
+    };
+    
+    // Allocate and copy body
+    let body_len = stream.recv_buf.len();
+    let body_ptr = if body_len > 0 {
+        let ptr = unsafe { std::alloc::alloc(std::alloc::Layout::array::<u8>(body_len).unwrap()) };
+        if !ptr.is_null() {
+            unsafe {
+                std::ptr::copy_nonoverlapping(stream.recv_buf.as_ptr(), ptr, body_len);
+            }
+        }
+        ptr
+    } else {
+        core::ptr::null_mut()
+    };
+    
+    // Allocate response data structure
+    let response = Box::new(Nghttp3StreamResponseData {
+        headers: headers_ptr,
+        headers_len,
+        body: body_ptr,
+        body_len,
+        status_code,
+    });
+    
+    Box::into_raw(response)
+}
+
+/// Free stream response data allocated by nghttp3_conn_get_stream_response_data
+#[no_mangle]
+pub extern "C" fn nghttp3_stream_response_data_free(data: *mut Nghttp3StreamResponseData) {
+    if data.is_null() {
+        return;
+    }
+    
+    unsafe {
+        let response = Box::from_raw(data);
+        
+        // Free headers
+        if !response.headers.is_null() && response.headers_len > 0 {
+            for i in 0..response.headers_len {
+                let header = &*response.headers.add(i);
+                if !header.name.is_null() && header.name_len > 0 {
+                    std::alloc::dealloc(
+                        header.name,
+                        std::alloc::Layout::array::<u8>(header.name_len).unwrap(),
+                    );
+                }
+                if !header.value.is_null() && header.value_len > 0 {
+                    std::alloc::dealloc(
+                        header.value,
+                        std::alloc::Layout::array::<u8>(header.value_len).unwrap(),
+                    );
+                }
+            }
+            std::alloc::dealloc(
+                response.headers as *mut u8,
+                std::alloc::Layout::array::<Nghttp3HeaderField>(response.headers_len).unwrap(),
+            );
+        }
+        
+        // Free body
+        if !response.body.is_null() && response.body_len > 0 {
+            std::alloc::dealloc(
+                response.body,
+                std::alloc::Layout::array::<u8>(response.body_len).unwrap(),
+            );
+        }
+        
+        // Box::from_raw already dropped the response
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 

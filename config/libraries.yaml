@@ -73,19 +73,21 @@ libraries:
       priority: false
       server-push: true
       flow-control: true
-      compat: false
+      compat: true
     config:
       max_streams: 100
       window_size: 65535
   
-  # HTTP/3 library (NEW - was missing!)
+  # HTTP/3 library - nghttp3 ABI compatible
+  # Provides HTTP/3 protocol support with QUIC backend via ntcp2
   nh3:
     enabled: true
     features:
       async-tokio: true
       qpack: true
       server-push: false
-      compat: false
+      # Enable nghttp3 C ABI compatibility layer for nurl dynamic linking
+      compat: true
     config:
       max_streams: 100
   

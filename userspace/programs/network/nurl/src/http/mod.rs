@@ -3,7 +3,7 @@
 /// This module provides a unified interface for different HTTP protocol versions:
 /// - HTTP/1.1 (implemented)
 /// - HTTP/2 (implemented via nh2 - static or dynamic linking)
-/// - HTTP/3 (planned)
+/// - HTTP/3 (implemented via nh3 - dynamic linking with libnghttp3.so)
 pub mod http1;
 pub mod request;
 pub mod response;
@@ -18,6 +18,14 @@ pub mod http2;
 #[cfg(feature = "http2-dynamic")]
 #[path = "http2_dynamic.rs"]
 pub mod http2_dynamic;
+
+// HTTP/3 module selection based on features:
+// - http3: static linking with nh3 crate (Rust API) - not yet implemented
+// - http3-dynamic: dynamic linking with libnghttp3.so via FFI (C ABI)
+
+#[cfg(feature = "http3-dynamic")]
+#[path = "http3_dynamic.rs"]
+pub mod http3_dynamic;
 
 use crate::args::{Args, HttpVersion};
 use crate::url::ParsedUrl;
@@ -255,13 +263,74 @@ pub fn perform_request(args: &Args, url: &ParsedUrl) -> HttpResult<HttpResponse>
             }
         }
         HttpVersion::Http3 => {
-            // TODO: Implement HTTP/3 support
-            // For now, fall back to HTTP/1.1
-            if args.verbose {
-                eprintln!("* HTTP/3 not yet implemented, falling back to HTTP/1.1");
+            // Prefer dynamic linking (http3-dynamic) for HTTP/3
+            #[cfg(feature = "http3-dynamic")]
+            {
+                if args.verbose {
+                    eprintln!("* Using HTTP/3 via libnghttp3.so (dynamic linking)");
+                }
+                let mut client = http3_dynamic::Http3Client::new(args.verbose, args.insecure)?;
+                match client.request(args, url) {
+                    Ok(resp) => resp,
+                    Err(e) => {
+                        if args.verbose {
+                            eprintln!("* HTTP/3 (dynamic) failed: {}, falling back to HTTP/2", e);
+                        }
+                        // Fall back to HTTP/2 if available
+                        #[cfg(feature = "http2-dynamic")]
+                        {
+                            let mut client = http2_dynamic::Http2Client::new(args.verbose, args.insecure)?;
+                            match client.request(args, url) {
+                                Ok(resp) => resp,
+                                Err(e) => {
+                                    if args.verbose {
+                                        eprintln!("* HTTP/2 (dynamic) failed: {}, falling back to HTTP/1.1", e);
+                                    }
+                                    let mut client = http1::Http1Client::new(args.verbose, args.insecure)?;
+                                    client.request(args, url)?
+                                }
+                            }
+                        }
+                        #[cfg(not(feature = "http2-dynamic"))]
+                        {
+                            if args.verbose {
+                                eprintln!("* HTTP/2 not available, falling back to HTTP/1.1");
+                            }
+                            let mut client = http1::Http1Client::new(args.verbose, args.insecure)?;
+                            client.request(args, url)?
+                        }
+                    }
+                }
             }
-            let mut client = http1::Http1Client::new(args.verbose, args.insecure)?;
-            client.request(args, url)?
+            #[cfg(not(feature = "http3-dynamic"))]
+            {
+                // HTTP/3 not compiled in, fall back
+                if args.verbose {
+                    eprintln!("* HTTP/3 not compiled in, falling back to HTTP/2");
+                }
+                #[cfg(feature = "http2-dynamic")]
+                {
+                    let mut client = http2_dynamic::Http2Client::new(args.verbose, args.insecure)?;
+                    match client.request(args, url) {
+                        Ok(resp) => resp,
+                        Err(e) => {
+                            if args.verbose {
+                                eprintln!("* HTTP/2 failed: {}, falling back to HTTP/1.1", e);
+                            }
+                            let mut client = http1::Http1Client::new(args.verbose, args.insecure)?;
+                            client.request(args, url)?
+                        }
+                    }
+                }
+                #[cfg(not(feature = "http2-dynamic"))]
+                {
+                    if args.verbose {
+                        eprintln!("* HTTP/2 not available, falling back to HTTP/1.1");
+                    }
+                    let mut client = http1::Http1Client::new(args.verbose, args.insecure)?;
+                    client.request(args, url)?
+                }
+            }
         }
     };
 
