@@ -24,6 +24,22 @@ pub unsafe fn syscall1(nr: u64, a1: u64) -> u64 {
 }
 
 #[inline]
+pub unsafe fn syscall2(nr: u64, a1: u64, a2: u64) -> u64 {
+    let ret: u64;
+    asm!(
+        "syscall",
+        in("rax") nr,
+        in("rdi") a1,
+        in("rsi") a2,
+        lateout("rax") ret,
+        lateout("rcx") _,
+        lateout("r11") _,
+        options(nostack)
+    );
+    ret
+}
+
+#[inline]
 pub unsafe fn syscall3(nr: u64, a1: u64, a2: u64, a3: u64) -> u64 {
     let ret: u64;
     asm!(

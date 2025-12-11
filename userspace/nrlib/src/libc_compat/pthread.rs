@@ -625,10 +625,10 @@ const CLONE_THREAD_FLAGS: c_int = super::types::CLONE_VM
 ///   offset 96: exited (8 bytes)
 ///   offset 104: tid_address (8 bytes)
 ///   offset 112: canary (8 bytes)
-///   offset 120: padding (8 bytes)
-///   offset 128: tls_data (128 * 8 = 1024 bytes)
+///   offset 120: tsd_used (1 byte) + padding (7 bytes)
+///   offset 128: tsd (128 * 8 = 1024 bytes) - musl naming
 #[repr(C)]
-struct ThreadControlBlock {
+pub(crate) struct ThreadControlBlock {
     /// Self pointer (for TLS access via %fs:0) - offset 0
     self_ptr: *mut ThreadControlBlock,
     /// DTV (Dynamic Thread Vector) for TLS - offset 8
@@ -661,10 +661,12 @@ struct ThreadControlBlock {
     tid_address: *mut c_int,
     /// Stack canary - offset 112
     canary: usize,
-    /// Padding to align tls_data to 128 - offset 120
-    _pad: usize,
-    /// Thread-specific data (pthread_key values) - offset 128
-    tls_data: [*mut c_void; MAX_TLS_KEYS],
+    /// Whether TSD has been used (for destructor optimization) - offset 120
+    pub(crate) tsd_used: bool,
+    /// Padding to align tsd to 128 - offset 121
+    _pad: [u8; 7],
+    /// Thread-specific data (pthread_key values) - offset 128, musl naming
+    pub(crate) tsd: [*mut c_void; MAX_TLS_KEYS],
 }
 
 impl ThreadControlBlock {
@@ -724,8 +726,9 @@ static mut MAIN_THREAD_TCB: MainThreadTcbStorage = MainThreadTcbStorage {
         exited: AtomicUsize::new(0),
         tid_address: ptr::null_mut(),
         canary: 0,
-        _pad: 0,
-        tls_data: [ptr::null_mut(); MAX_TLS_KEYS],
+        tsd_used: false,
+        _pad: [0; 7],
+        tsd: [ptr::null_mut(); MAX_TLS_KEYS],
     },
 };
 
@@ -742,6 +745,10 @@ extern "C" fn main_thread_dummy_start(_arg: *mut c_void) -> *mut c_void {
 /// It sets up the TCB and FS base register for the main thread.
 #[no_mangle]
 pub unsafe extern "C" fn __nrlib_init_main_thread_tls() {
+    // Debug: print entry
+    let msg = b"[nrlib] __nrlib_init_main_thread_tls called\n";
+    let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
+    
     // Only initialize once
     if MAIN_TLS_INITIALIZED
         .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
@@ -760,6 +767,11 @@ pub unsafe extern "C" fn __nrlib_init_main_thread_tls() {
     let tid = crate::syscall0(crate::SYS_GETTID) as usize;
     (*tcb_ptr).tid.store(tid, Ordering::SeqCst);
 
+    // Initialize TLS data array to null (critical!)
+    for i in 0..MAX_TLS_KEYS {
+        (*tcb_ptr).tsd[i] = ptr::null_mut();
+    }
+
     // Register in thread table (slot 0 for main thread)
     THREAD_TABLE[0] = Some(tcb_ptr);
 
@@ -769,6 +781,17 @@ pub unsafe extern "C" fn __nrlib_init_main_thread_tls() {
     if ret != 0 {
         // Log error but continue - some operations may still work
         let msg = b"[nrlib] WARNING: Failed to set FS base for main thread\n";
+        let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
+    }
+    
+    // Verify FS base was set correctly
+    let fs_check: u64;
+    core::arch::asm!("mov {}, fs:0", out(reg) fs_check, options(nostack, preserves_flags, readonly));
+    if fs_check != tcb_ptr as u64 {
+        let msg = b"[nrlib] ERROR: FS base mismatch after init\n";
+        let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
+    } else {
+        let msg = b"[nrlib] TLS init success\n";
         let _ = crate::syscall3(SYS_WRITE_NR, 2, msg.as_ptr() as u64, msg.len() as u64);
     }
 }
@@ -792,15 +815,15 @@ pub unsafe fn get_current_tcb() -> Option<*mut ThreadControlBlock> {
 }
 
 /// Get TLS data for the current thread at the given key index.
-/// Falls back to global storage if TLS is not initialized.
+/// Returns null if no TCB or key out of range.
 #[inline]
 pub unsafe fn get_thread_tls_data(key: usize) -> *mut c_void {
     if let Some(tcb) = get_current_tcb() {
         if key < MAX_TLS_KEYS {
-            return (*tcb).tls_data[key];
+            return (*tcb).tsd[key];
         }
     }
-    // Fallback: return null if no TCB or key out of range
+    // No TCB or key out of range
     ptr::null_mut()
 }
 
@@ -810,7 +833,7 @@ pub unsafe fn get_thread_tls_data(key: usize) -> *mut c_void {
 pub unsafe fn set_thread_tls_data(key: usize, value: *mut c_void) -> bool {
     if let Some(tcb) = get_current_tcb() {
         if key < MAX_TLS_KEYS {
-            (*tcb).tls_data[key] = value;
+            (*tcb).tsd[key] = value;
             return true;
         }
     }
@@ -1098,7 +1121,13 @@ pub unsafe extern "C" fn pthread_create(
     tcb.exited = AtomicUsize::new(0);
     tcb.tid_address = ptr::null_mut();
     tcb.canary = 0; // TODO: randomize for security
-    tcb._pad = 0;
+    tcb.tsd_used = false;
+    tcb._pad = [0; 7];
+    // CRITICAL: Initialize TLS data array to null pointers
+    // Without this, TLS access in new threads would return garbage values
+    for i in 0..MAX_TLS_KEYS {
+        tcb.tsd[i] = ptr::null_mut();
+    }
 
     // Debug: verify we stored arg correctly
     {
@@ -1117,7 +1146,7 @@ pub unsafe extern "C" fn pthread_create(
 
     // Initialize TLS data to null
     for i in 0..MAX_TLS_KEYS {
-        tcb.tls_data[i] = ptr::null_mut();
+        tcb.tsd[i] = ptr::null_mut();
     }
 
     // Set TID address for CLONE_CHILD_CLEARTID

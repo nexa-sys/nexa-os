@@ -143,14 +143,14 @@ pub type ssize_t = isize;
 // Version Constants
 // ============================================================================
 
-/// Library version string
-pub const NHTTP2_VERSION: &str = "1.58.0";
+/// Library version string (NUL-terminated for C ABI compatibility)
+pub const NHTTP2_VERSION: &[u8] = b"1.58.0\0";
 
 /// Library version number (0xMMmmpp format)
 pub const NHTTP2_VERSION_NUM: u32 = 0x013A00; // 1.58.0
 
-/// Protocol version ID
-pub const NGHTTP2_PROTO_VERSION_ID: &[u8] = b"h2";
+/// Protocol version ID (NUL-terminated for C ABI compatibility)
+pub const NGHTTP2_PROTO_VERSION_ID: &[u8] = b"h2\0";
 pub const NGHTTP2_PROTO_VERSION_ID_LEN: usize = 2;
 
 /// ALPN protocol ID for HTTP/2 over TLS

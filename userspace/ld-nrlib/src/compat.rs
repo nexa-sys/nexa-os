@@ -134,6 +134,53 @@ pub unsafe extern "C" fn atexit(_func: Option<extern "C" fn()>) -> i32 {
 }
 
 // ============================================================================
+// Thread-local atexit Functions
+// ============================================================================
+
+/// Maximum number of TLS destructors that can be registered
+const MAX_THREAD_ATEXIT: usize = 256;
+
+/// TLS destructor entry
+struct ThreadAtexitEntry {
+    dtor: unsafe extern "C" fn(*mut core::ffi::c_void),
+    obj: *mut core::ffi::c_void,
+}
+
+/// Global list of TLS destructors
+static mut THREAD_ATEXIT_ENTRIES: [Option<ThreadAtexitEntry>; MAX_THREAD_ATEXIT] =
+    [const { None }; MAX_THREAD_ATEXIT];
+static mut THREAD_ATEXIT_COUNT: usize = 0;
+
+/// __cxa_thread_atexit_impl - Register a destructor for a thread-local object
+///
+/// This is called by Rust's thread_local! macro to register TLS destructors.
+#[no_mangle]
+pub unsafe extern "C" fn __cxa_thread_atexit_impl(
+    dtor: unsafe extern "C" fn(*mut core::ffi::c_void),
+    obj: *mut core::ffi::c_void,
+    _dso_handle: *mut core::ffi::c_void,
+) -> i32 {
+    if THREAD_ATEXIT_COUNT >= MAX_THREAD_ATEXIT {
+        return -1; // No space left
+    }
+
+    THREAD_ATEXIT_ENTRIES[THREAD_ATEXIT_COUNT] = Some(ThreadAtexitEntry { dtor, obj });
+    THREAD_ATEXIT_COUNT += 1;
+    0 // Success
+}
+
+/// Run all registered TLS destructors (called on thread/program exit)
+#[no_mangle]
+pub unsafe extern "C" fn __cxa_thread_atexit_run() {
+    while THREAD_ATEXIT_COUNT > 0 {
+        THREAD_ATEXIT_COUNT -= 1;
+        if let Some(entry) = THREAD_ATEXIT_ENTRIES[THREAD_ATEXIT_COUNT].take() {
+            (entry.dtor)(entry.obj);
+        }
+    }
+}
+
+// ============================================================================
 // Stack Protection
 // ============================================================================
 

@@ -97,9 +97,6 @@ export async function buildNrlibShared(
   
   const startTime = Date.now();
   const nrlibSrc = join(env.projectRoot, NRLIB_DIR);
-  const dest = destDir ?? join(env.sysrootDir, 'lib');
-  
-  await mkdir(dest, { recursive: true });
   
   const result = await cargoBuild(env, {
     cwd: nrlibSrc,
@@ -116,24 +113,33 @@ export async function buildNrlibShared(
   }
   
   const sharedlib = join(env.projectRoot, 'userspace/target/x86_64-nexaos-userspace-pic/release/libnrlib.so');
-  const destPath = join(dest, 'libnrlib.so');
   
-  await copyFile(sharedlib, destPath);
-  await stripBinary(destPath, false);
+  // Install to all required locations
+  const destinations = destDir 
+    ? [destDir]
+    : [join(env.sysrootDir, 'lib'), join(env.sysrootPicDir, 'lib')];
   
-  // Create compatibility symlinks
-  const symlinks = ['libc.so', 'libc.so.6', 'libc.musl-x86_64.so.1'];
-  for (const link of symlinks) {
-    const linkPath = join(dest, link);
-    try {
-      await unlink(linkPath);
-    } catch {
-      // Ignore if doesn't exist
+  for (const dest of destinations) {
+    await mkdir(dest, { recursive: true });
+    
+    const destPath = join(dest, 'libnrlib.so');
+    await copyFile(sharedlib, destPath);
+    await stripBinary(destPath, false);
+    
+    // Create compatibility symlinks (libc.so -> libnrlib.so)
+    const symlinks = ['libc.so', 'libc.so.6', 'libc.musl-x86_64.so.1'];
+    for (const link of symlinks) {
+      const linkPath = join(dest, link);
+      try {
+        await unlink(linkPath);
+      } catch {
+        // Ignore if doesn't exist
+      }
+      await symlink('libnrlib.so', linkPath);
     }
-    await symlink('libnrlib.so', linkPath);
   }
   
-  const size = await getFileSize(destPath);
+  const size = await getFileSize(sharedlib);
   logger.success(`libnrlib.so installed (${size})`);
   
   return {

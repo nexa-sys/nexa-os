@@ -313,16 +313,27 @@ impl SslConnection {
             // Find cipher from ID
             self.current_cipher = SslCipher::from_id(cipher);
 
-            // 对于 TLS 1.3，从扩展中提取 key_share
-            if version >= TLS1_3_VERSION {
-                for (ext_type, ext_data) in extensions {
-                    // key_share 扩展类型是 51
-                    if ext_type == ExtensionType::KeyShare as u16 && ext_data.len() >= 4 {
-                        // 解析: named_group (2) + key_exchange_length (2) + key_exchange
-                        let _group = ((ext_data[0] as u16) << 8) | (ext_data[1] as u16);
-                        let key_len = ((ext_data[2] as usize) << 8) | (ext_data[3] as usize);
-                        if ext_data.len() >= 4 + key_len {
-                            self.server_kex_pubkey = Some(ext_data[4..4 + key_len].to_vec());
+            // 处理扩展
+            for (ext_type, ext_data) in extensions {
+                // key_share 扩展类型是 51 (TLS 1.3)
+                if ext_type == ExtensionType::KeyShare as u16 && ext_data.len() >= 4 {
+                    // 解析: named_group (2) + key_exchange_length (2) + key_exchange
+                    let _group = ((ext_data[0] as u16) << 8) | (ext_data[1] as u16);
+                    let key_len = ((ext_data[2] as usize) << 8) | (ext_data[3] as usize);
+                    if ext_data.len() >= 4 + key_len {
+                        self.server_kex_pubkey = Some(ext_data[4..4 + key_len].to_vec());
+                    }
+                }
+                // ALPN 扩展类型是 16 (TLS 1.2 在 ServerHello 中返回)
+                else if ext_type == ExtensionType::ApplicationLayerProtocolNegotiation as u16 {
+                    // ALPN 响应格式: 
+                    // protocol_name_list_length (2 bytes) + 
+                    // protocol_name_length (1 byte) + protocol_name
+                    if ext_data.len() >= 3 {
+                        let _list_len = ((ext_data[0] as usize) << 8) | (ext_data[1] as usize);
+                        let proto_len = ext_data[2] as usize;
+                        if ext_data.len() >= 3 + proto_len {
+                            self.alpn_selected = ext_data[3..3 + proto_len].to_vec();
                         }
                     }
                 }
@@ -530,7 +541,7 @@ impl SslConnection {
         // 添加到 transcript
         self.handshake.transcript.extend_from_slice(&data);
 
-        // 解析扩展（简化：仅验证消息格式）
+        // 解析扩展
         if data.len() < 4 {
             return false;
         }
@@ -541,7 +552,42 @@ impl SslConnection {
         }
 
         // EncryptedExtensions 内容：extensions_length (2 bytes) + extensions
-        // 简化处理：不解析具体扩展内容
+        let ext_start = 4; // 跳过 handshake type (1) + length (3)
+        if data.len() < ext_start + 2 {
+            return true; // 没有扩展数据也是有效的
+        }
+
+        let ext_len = ((data[ext_start] as usize) << 8) | (data[ext_start + 1] as usize);
+        let mut pos = ext_start + 2;
+        let ext_end = pos + ext_len;
+
+        // 解析每个扩展
+        while pos + 4 <= ext_end && pos + 4 <= data.len() {
+            let ext_type = ((data[pos] as u16) << 8) | (data[pos + 1] as u16);
+            let ext_data_len = ((data[pos + 2] as usize) << 8) | (data[pos + 3] as usize);
+            pos += 4;
+
+            if pos + ext_data_len > data.len() {
+                break;
+            }
+
+            // ALPN 扩展 (类型 16)
+            if ext_type == ExtensionType::ApplicationLayerProtocolNegotiation as u16 {
+                // ALPN 响应格式: 
+                // protocol_name_list_length (2 bytes) + 
+                // protocol_name_length (1 byte) + protocol_name
+                if ext_data_len >= 3 {
+                    let _list_len = ((data[pos] as usize) << 8) | (data[pos + 1] as usize);
+                    let proto_len = data[pos + 2] as usize;
+                    if ext_data_len >= 3 + proto_len {
+                        self.alpn_selected = data[pos + 3..pos + 3 + proto_len].to_vec();
+                    }
+                }
+            }
+
+            pos += ext_data_len;
+        }
+
         true
     }
 

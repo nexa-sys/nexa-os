@@ -147,6 +147,7 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
     );
 
     // Calculate load bias from first PT_LOAD segment
+    // Also find PT_TLS segment for main executable
     for phdr in phdrs {
         if phdr.p_type == PT_LOAD && phdr.p_vaddr < first_load_vaddr {
             first_load_vaddr = phdr.p_vaddr;
@@ -163,6 +164,15 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
                 load_bias = (aux_info.at_phdr as i64) - (phdr.p_vaddr as i64);
                 break;
             }
+        }
+    }
+
+    // Register TLS for main executable
+    for phdr in phdrs {
+        if phdr.p_type == PT_TLS {
+            let tls_image = (phdr.p_vaddr as i64 + load_bias) as u64;
+            tls::register_tls_module(tls_image, phdr.p_filesz, phdr.p_memsz, phdr.p_align);
+            break;
         }
     }
 
@@ -377,6 +387,10 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
         print_str("[ld-nrlib] ERROR: No entry point\n");
         exit(127);
     }
+
+    // NOTE: TLS setup is done by nrlib's __nrlib_init_main_thread_tls()
+    // We don't set up TLS here because nrlib's ThreadControlBlock has the
+    // correct layout with tls_data array at offset 0x80 that Rust std expects.
 
     jump_to_entry(entry, stack_ptr);
 }

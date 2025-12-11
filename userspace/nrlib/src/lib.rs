@@ -1304,13 +1304,12 @@ pub unsafe extern "C" fn pthread_getspecific(key: pthread_key_t) -> *mut c_void 
         return ptr::null_mut();
     }
 
-    // Try to get from per-thread TCB first
-    let value = libc_compat::pthread::get_thread_tls_data(idx);
-    if !value.is_null() {
-        return value;
+    // musl semantics: return self->tsd[k] directly
+    if let Some(tcb) = libc_compat::pthread::get_current_tcb() {
+        return (*tcb).tsd[idx];
     }
-
-    // Fallback to global storage (for early init or if TCB not set)
+    
+    // Fallback for early init before TCB is set up
     TLS_FALLBACK[idx]
 }
 
@@ -1322,14 +1321,71 @@ pub unsafe extern "C" fn pthread_setspecific(key: pthread_key_t, value: *const c
         return EINVAL;
     }
 
-    // Try to set in per-thread TCB first
-    if libc_compat::pthread::set_thread_tls_data(idx, value as *mut c_void) {
+    // musl semantics: self->tsd[k] = x, set tsd_used = 1
+    if let Some(tcb) = libc_compat::pthread::get_current_tcb() {
+        // Avoid unnecessary writes (COW optimization like musl)
+        if (*tcb).tsd[idx] != value as *mut c_void {
+            (*tcb).tsd[idx] = value as *mut c_void;
+            (*tcb).tsd_used = true;
+        }
         return 0;
     }
-
-    // Fallback to global storage (for early init or if TCB not set)
+    
+    // Fallback for early init before TCB is set up
     TLS_FALLBACK[idx] = value as *mut c_void;
     0
+}
+
+// Thread-local storage destructors for Rust's thread_local! macro ----------
+// These are needed for parking_lot, tokio, and other crates that use TLS
+
+/// Maximum number of TLS destructors that can be registered
+const MAX_THREAD_ATEXIT: usize = 256;
+
+/// TLS destructor entry
+struct ThreadAtexitEntry {
+    dtor: unsafe extern "C" fn(*mut c_void),
+    obj: *mut c_void,
+    // dso_handle is ignored - we don't support unloading shared libraries with TLS destructors
+}
+
+/// Global list of TLS destructors (simplified - single-threaded for now)
+static mut THREAD_ATEXIT_ENTRIES: [Option<ThreadAtexitEntry>; MAX_THREAD_ATEXIT] =
+    [const { None }; MAX_THREAD_ATEXIT];
+static mut THREAD_ATEXIT_COUNT: usize = 0;
+
+/// __cxa_thread_atexit_impl - Register a destructor for a thread-local object
+///
+/// This is called by Rust's thread_local! macro implementation to register
+/// destructors that will be called when the thread exits.
+///
+/// For single-threaded programs (like most NexaOS userspace programs currently),
+/// we simply store the destructors and call them on program exit.
+#[no_mangle]
+pub unsafe extern "C" fn __cxa_thread_atexit_impl(
+    dtor: unsafe extern "C" fn(*mut c_void),
+    obj: *mut c_void,
+    _dso_handle: *mut c_void,
+) -> i32 {
+    if THREAD_ATEXIT_COUNT >= MAX_THREAD_ATEXIT {
+        return -1; // No space left
+    }
+
+    THREAD_ATEXIT_ENTRIES[THREAD_ATEXIT_COUNT] = Some(ThreadAtexitEntry { dtor, obj });
+    THREAD_ATEXIT_COUNT += 1;
+    0 // Success
+}
+
+/// Run all registered TLS destructors (called on thread/program exit)
+#[no_mangle]
+pub unsafe extern "C" fn __cxa_thread_atexit_run() {
+    // Run destructors in reverse order (LIFO)
+    while THREAD_ATEXIT_COUNT > 0 {
+        THREAD_ATEXIT_COUNT -= 1;
+        if let Some(entry) = THREAD_ATEXIT_ENTRIES[THREAD_ATEXIT_COUNT].take() {
+            (entry.dtor)(entry.obj);
+        }
+    }
 }
 
 // Allocator support for std::alloc::System ----------------------------------

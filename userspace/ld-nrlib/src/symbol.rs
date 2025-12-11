@@ -310,12 +310,40 @@ pub unsafe fn lookup_symbol_in_lib(lib: &LoadedLib, name: &[u8]) -> u64 {
 }
 
 // ============================================================================
+// Builtin Symbols (provided by the dynamic linker itself)
+// ============================================================================
+
+/// Lookup builtin symbols provided by the dynamic linker
+/// These are symbols that must be available to all loaded libraries
+unsafe fn lookup_builtin_symbol(name: &[u8]) -> u64 {
+    // Compare symbol names (strip null terminator if present)
+    let name = if name.last() == Some(&0) {
+        &name[..name.len() - 1]
+    } else {
+        name
+    };
+
+    match name {
+        b"__tls_get_addr" => crate::tls::__tls_get_addr as u64,
+        b"__cxa_thread_atexit_impl" => crate::compat::__cxa_thread_atexit_impl as u64,
+        b"__dso_handle" => &crate::compat::__dso_handle as *const _ as u64,
+        _ => 0,
+    }
+}
+
+// ============================================================================
 // Global Symbol Lookup
 // ============================================================================
 
 /// Global symbol lookup - search all loaded libraries
-/// Search order: main executable first, then libraries in load order
+/// Search order: builtin symbols first, main executable, then libraries in load order
 pub unsafe fn global_symbol_lookup(name: &[u8]) -> u64 {
+    // First check builtin symbols provided by the dynamic linker
+    let builtin = lookup_builtin_symbol(name);
+    if builtin != 0 {
+        return builtin;
+    }
+
     for i in 0..GLOBAL_SYMTAB.lib_count {
         let addr = lookup_symbol_in_lib(&GLOBAL_SYMTAB.libs[i], name);
         if addr != 0 {
