@@ -9,6 +9,7 @@ import { BuildEnvironment, BuildStepResult } from '../types.js';
 import { logger } from '../logger.js';
 import { exec, requireCommands, getFileSize } from '../exec.js';
 import { glob } from 'glob';
+import { generateNexaConfig } from '../qemu.js';
 
 /**
  * Generate GRUB configuration
@@ -127,14 +128,14 @@ export async function buildIso(env: BuildEnvironment): Promise<BuildStepResult> 
     hasUefi = true;
     logger.success('UEFI loader included');
     
-    // Copy NEXA.CFG boot configuration
-    const nexaCfgPath = join(env.projectRoot, 'boot/NEXA.CFG');
-    if (existsSync(nexaCfgPath)) {
+    // Generate and copy NEXA.CFG boot configuration from config/qemu.yaml
+    try {
+      const nexaCfgPath = await generateNexaConfig(env);
       await copyFile(nexaCfgPath, join(isoWorkDir, 'EFI/BOOT/NEXA.CFG'));
       await copyFile(nexaCfgPath, join(isoWorkDir, 'NEXA.CFG'));
-      logger.success('NEXA.CFG boot configuration included');
-    } else {
-      logger.warn('boot/NEXA.CFG not found, UEFI loader will use defaults');
+      logger.success('NEXA.CFG boot configuration generated and included');
+    } catch (err) {
+      logger.warn(`Failed to generate NEXA.CFG: ${err}, UEFI loader will use defaults`);
     }
   }
   

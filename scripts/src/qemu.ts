@@ -26,6 +26,15 @@ export interface QemuBootConfig {
   uefi_paths: string[];
 }
 
+export interface QemuBootConfigParams {
+  root: string;
+  rootfstype: string;
+  init: string;
+  console: string | null;
+  quiet: boolean;
+  debug: boolean;
+}
+
 export interface QemuDisplayConfig {
   vga: string;
   backend: string;
@@ -103,6 +112,7 @@ export interface QemuProfileOverride {
 export interface QemuConfig {
   machine: QemuMachineConfig;
   boot: QemuBootConfig;
+  boot_config: QemuBootConfigParams;
   display: QemuDisplayConfig;
   serial: QemuSerialConfig;
   storage: QemuStorageConfig;
@@ -547,4 +557,68 @@ function generateQemuBashScript(config: QemuConfig, _env: BuildEnvironment): str
  */
 export function clearQemuConfigCache(): void {
   cachedQemuConfig = null;
+}
+
+/**
+ * Generate NEXA.CFG boot configuration file from config/qemu.yaml
+ * This file is used by the UEFI loader to configure kernel boot parameters
+ */
+export async function generateNexaConfig(env: BuildEnvironment): Promise<string> {
+  const config = await loadQemuConfig(env.projectRoot);
+  const bootConfig = config.boot_config;
+  
+  const lines: string[] = [];
+  
+  // Header
+  lines.push('# NexaOS Boot Configuration');
+  lines.push('# Auto-generated from config/qemu.yaml by the build system');
+  lines.push('# Do not edit directly - modify config/qemu.yaml instead');
+  lines.push('');
+  
+  // Root device
+  lines.push(`# Root device - the block device containing the root filesystem`);
+  lines.push(`root=${bootConfig.root}`);
+  lines.push('');
+  
+  // Root filesystem type
+  lines.push(`# Root filesystem type`);
+  lines.push(`rootfstype=${bootConfig.rootfstype}`);
+  lines.push('');
+  
+  // Init program
+  lines.push(`# Init program path - first userspace process`);
+  lines.push(`init=${bootConfig.init}`);
+  lines.push('');
+  
+  // Serial console (optional)
+  if (bootConfig.console) {
+    lines.push(`# Serial console configuration`);
+    lines.push(`console=${bootConfig.console}`);
+    lines.push('');
+  }
+  
+  // Quiet mode (optional)
+  if (bootConfig.quiet) {
+    lines.push(`# Quiet boot mode enabled`);
+    lines.push(`quiet`);
+    lines.push('');
+  }
+  
+  // Debug mode (optional)
+  if (bootConfig.debug) {
+    lines.push(`# Debug mode enabled`);
+    lines.push(`debug`);
+    lines.push('');
+  }
+  
+  const content = lines.join('\n');
+  
+  // Write to build directory
+  const outputPath = join(env.buildDir, 'NEXA.CFG');
+  await mkdir(env.buildDir, { recursive: true });
+  await writeFile(outputPath, content, 'utf-8');
+  
+  logger.success(`Generated ${outputPath}`);
+  
+  return outputPath;
 }

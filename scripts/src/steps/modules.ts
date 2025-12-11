@@ -82,7 +82,7 @@ async function createSimpleNkm(
   // Init offset
   header.writeUInt32LE(80, 16);
   
-  // Init size
+//  // Init size
   header.writeUInt32LE(stringTable.length, 20);
   
   // Reserved (8 bytes at offset 24)
@@ -128,8 +128,8 @@ async function buildModule(
     return { success: true, duration: Date.now() - startTime };
   }
   
-  // Clean previous build
-  await exec('cargo', ['clean'], { cwd: moduleSrc });
+  // NOTE: Removed cargo clean to preserve rlib cache
+  // The large kernel rlib files are reused between module builds
   
   // Build as staticlib using kernel target
   logger.info(`Compiling ${module.name} module as staticlib...`);
@@ -238,7 +238,7 @@ async function buildModule(
 }
 
 /**
- * Build all kernel modules
+ * Build all kernel modules (parallel)
  */
 export async function buildAllModules(env: BuildEnvironment): Promise<BuildStepResult> {
   logger.section('Building Kernel Modules');
@@ -247,22 +247,34 @@ export async function buildAllModules(env: BuildEnvironment): Promise<BuildStepR
   const config = await loadBuildConfig(env.projectRoot);
   const modules = getAllModules(config);
   
+  // Parallel compile concurrency limit (avoid overwhelming system)
+  const PARALLEL_LIMIT = Math.min(modules.length, 4);
+  
+  logger.info(`Building ${modules.length} modules in parallel (max ${PARALLEL_LIMIT} concurrent)...`);
+  
   let successCount = 0;
   let failCount = 0;
   
-  for (const module of modules) {
-    const result = await buildModule(env, module);
-    if (result.success) {
-      successCount++;
-    } else {
-      failCount++;
+  // Process modules in batches
+  for (let i = 0; i < modules.length; i += PARALLEL_LIMIT) {
+    const batch = modules.slice(i, i + PARALLEL_LIMIT);
+    const results = await Promise.all(
+      batch.map(module => buildModule(env, module))
+    );
+    
+    for (const result of results) {
+      if (result.success) {
+        successCount++;
+      } else {
+        failCount++;
+      }
     }
   }
   
   if (failCount > 0) {
     logger.warn(`Built ${successCount} modules, ${failCount} failed`);
   } else {
-    logger.success(`All ${successCount} modules built successfully`);
+    logger.success(`All ${successCount} modules built successfully in parallel`);
   }
   
   return {

@@ -33,6 +33,29 @@ boot:
     - /usr/share/edk2/ovmf
 
 # =============================================================================
+# Kernel Boot Parameters (generates build/NEXA.CFG)
+# =============================================================================
+boot_config:
+  # Root device - the block device containing the root filesystem
+  root: /dev/vda
+  
+  # Root filesystem type (ext2, ext4)
+  rootfstype: ext2
+  
+  # Init program path - first userspace process
+  init: /sbin/ni
+  
+  # Serial console (null to disable)
+  # Format: device,baudrate
+  console: null
+  
+  # Enable quiet boot (suppress most kernel messages)
+  quiet: false
+  
+  # Enable debug mode (verbose kernel logging)
+  debug: false
+
+# =============================================================================
 # Display Settings
 # =============================================================================
 display:

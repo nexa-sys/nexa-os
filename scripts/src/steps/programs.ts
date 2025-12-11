@@ -119,7 +119,7 @@ async function ensureNrlib(env: BuildEnvironment): Promise<void> {
 }
 
 /**
- * Build and install all programs
+ * Build and install all programs (parallel build, sequential install)
  */
 export async function buildAllPrograms(
   env: BuildEnvironment,
@@ -136,12 +136,35 @@ export async function buildAllPrograms(
   const config = await loadBuildConfig(env.projectRoot);
   const programs = getAllPrograms(config);
   
+  // Parallel compile concurrency limit
+  const PARALLEL_LIMIT = Math.min(programs.length, 6);
+  
+  logger.info(`Building ${programs.length} programs in parallel (max ${PARALLEL_LIMIT} concurrent)...`);
+  
+  // Phase 1: Build all programs in parallel batches
+  const buildResults: Map<string, boolean> = new Map();
+  
+  for (let i = 0; i < programs.length; i += PARALLEL_LIMIT) {
+    const batch = programs.slice(i, i + PARALLEL_LIMIT);
+    const results = await Promise.all(
+      batch.map(async (program) => {
+        const result = await buildProgram(env, program);
+        return { program, result };
+      })
+    );
+    
+    for (const { program, result } of results) {
+      buildResults.set(program.package, result.success);
+    }
+  }
+  
+  // Phase 2: Install successfully built programs (sequential to avoid file conflicts)
   let successCount = 0;
   let failCount = 0;
   
   for (const program of programs) {
-    const buildResult = await buildProgram(env, program);
-    if (buildResult.success) {
+    const buildSuccess = buildResults.get(program.package);
+    if (buildSuccess) {
       const installResult = await installProgram(env, program, dest);
       if (installResult.success) {
         successCount++;
