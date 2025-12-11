@@ -1372,6 +1372,171 @@ pub extern "C" fn nghttp2_submit_window_update(
 
 // Utility functions
 
+/// C structure to hold stream response data
+#[repr(C)]
+pub struct NgHttp2StreamResponseData {
+    /// Pointer to response headers array
+    pub headers: *mut NgHttp2HeaderField,
+    /// Number of response headers
+    pub headers_len: size_t,
+    /// Pointer to response body data
+    pub body: *mut u8,
+    /// Length of response body
+    pub body_len: size_t,
+    /// HTTP status code (0 if not found)
+    pub status_code: u16,
+}
+
+/// C structure for a header field
+#[repr(C)]
+pub struct NgHttp2HeaderField {
+    /// Header name
+    pub name: *mut u8,
+    /// Header name length
+    pub name_len: size_t,
+    /// Header value
+    pub value: *mut u8,
+    /// Header value length
+    pub value_len: size_t,
+}
+
+/// Get stream response data (headers and body)
+/// Caller is responsible for freeing the returned data using nghttp2_stream_response_data_free
+#[no_mangle]
+pub extern "C" fn nghttp2_session_get_stream_response_data(
+    session: *mut NgHttp2Session,
+    stream_id: i32,
+) -> *mut NgHttp2StreamResponseData {
+    let sess = match unsafe { (session as *mut CApiSession).as_ref() } {
+        Some(s) => s,
+        None => return core::ptr::null_mut(),
+    };
+
+    let inner = sess.session.inner.lock();
+    let stream = match inner.streams.get(stream_id) {
+        Some(s) => s,
+        None => return core::ptr::null_mut(),
+    };
+
+    // Extract status code from :status pseudo-header
+    let mut status_code: u16 = 0;
+    for h in &stream.response_headers {
+        if h.name == b":status" {
+            if let Ok(s) = core::str::from_utf8(&h.value) {
+                status_code = s.parse().unwrap_or(0);
+            }
+            break;
+        }
+    }
+
+    // Filter out pseudo-headers for the response headers
+    let filtered_headers: Vec<_> = stream.response_headers
+        .iter()
+        .filter(|h| !h.name.starts_with(b":"))
+        .collect();
+
+    // Allocate headers array
+    let headers_len = filtered_headers.len();
+    let headers_ptr = if headers_len > 0 {
+        let layout = std::alloc::Layout::array::<NgHttp2HeaderField>(headers_len).unwrap();
+        let ptr = unsafe { std::alloc::alloc(layout) as *mut NgHttp2HeaderField };
+        if ptr.is_null() {
+            return core::ptr::null_mut();
+        }
+
+        for (i, h) in filtered_headers.iter().enumerate() {
+            // Allocate and copy name
+            let name_ptr = unsafe { std::alloc::alloc(std::alloc::Layout::array::<u8>(h.name.len()).unwrap()) };
+            if !name_ptr.is_null() {
+                unsafe { core::ptr::copy_nonoverlapping(h.name.as_ptr(), name_ptr, h.name.len()) };
+            }
+
+            // Allocate and copy value
+            let value_ptr = unsafe { std::alloc::alloc(std::alloc::Layout::array::<u8>(h.value.len()).unwrap()) };
+            if !value_ptr.is_null() {
+                unsafe { core::ptr::copy_nonoverlapping(h.value.as_ptr(), value_ptr, h.value.len()) };
+            }
+
+            unsafe {
+                *ptr.add(i) = NgHttp2HeaderField {
+                    name: name_ptr,
+                    name_len: h.name.len(),
+                    value: value_ptr,
+                    value_len: h.value.len(),
+                };
+            }
+        }
+        ptr
+    } else {
+        core::ptr::null_mut()
+    };
+
+    // Allocate and copy body
+    let body_len = stream.recv_buffer.len();
+    let body_ptr = if body_len > 0 {
+        let ptr = unsafe { std::alloc::alloc(std::alloc::Layout::array::<u8>(body_len).unwrap()) };
+        if !ptr.is_null() {
+            unsafe { core::ptr::copy_nonoverlapping(stream.recv_buffer.as_ptr(), ptr, body_len) };
+        }
+        ptr
+    } else {
+        core::ptr::null_mut()
+    };
+
+    // Allocate response data structure
+    let response = Box::new(NgHttp2StreamResponseData {
+        headers: headers_ptr,
+        headers_len,
+        body: body_ptr,
+        body_len,
+        status_code,
+    });
+
+    Box::into_raw(response)
+}
+
+/// Free stream response data allocated by nghttp2_session_get_stream_response_data
+#[no_mangle]
+pub extern "C" fn nghttp2_stream_response_data_free(data: *mut NgHttp2StreamResponseData) {
+    if data.is_null() {
+        return;
+    }
+
+    let data = unsafe { Box::from_raw(data) };
+
+    // Free headers
+    if !data.headers.is_null() && data.headers_len > 0 {
+        for i in 0..data.headers_len {
+            let h = unsafe { &*data.headers.add(i) };
+            if !h.name.is_null() && h.name_len > 0 {
+                unsafe {
+                    std::alloc::dealloc(h.name, std::alloc::Layout::array::<u8>(h.name_len).unwrap());
+                }
+            }
+            if !h.value.is_null() && h.value_len > 0 {
+                unsafe {
+                    std::alloc::dealloc(h.value, std::alloc::Layout::array::<u8>(h.value_len).unwrap());
+                }
+            }
+        }
+        unsafe {
+            std::alloc::dealloc(
+                data.headers as *mut u8,
+                std::alloc::Layout::array::<NgHttp2HeaderField>(data.headers_len).unwrap(),
+            );
+        }
+    }
+
+    // Free body
+    if !data.body.is_null() && data.body_len > 0 {
+        unsafe {
+            std::alloc::dealloc(data.body, std::alloc::Layout::array::<u8>(data.body_len).unwrap());
+        }
+    }
+
+    // Box is automatically dropped
+}
+
 #[no_mangle]
 pub extern "C" fn nghttp2_session_get_stream_user_data(
     session: *mut NgHttp2Session,

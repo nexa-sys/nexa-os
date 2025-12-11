@@ -856,6 +856,53 @@ extern "C" {
         iv: *const nghttp2_settings_entry,
         niv: size_t,
     ) -> ssize_t;
+
+    // ========================================================================
+    // Stream Response Data Functions (nh2 extension)
+    // ========================================================================
+
+    /// Get stream response data (headers and body)
+    /// Returns a pointer to nghttp2_stream_response_data or null if stream not found
+    /// Caller must free the returned data using nghttp2_stream_response_data_free
+    pub fn nghttp2_session_get_stream_response_data(
+        session: *mut nghttp2_session,
+        stream_id: nghttp2_stream_id,
+    ) -> *mut nghttp2_stream_response_data;
+
+    /// Free stream response data allocated by nghttp2_session_get_stream_response_data
+    pub fn nghttp2_stream_response_data_free(data: *mut nghttp2_stream_response_data);
+}
+
+// ============================================================================
+// Stream Response Data Structures (nh2 extension)
+// ============================================================================
+
+/// Header field for response data
+#[repr(C)]
+pub struct nghttp2_header_field {
+    /// Header name pointer
+    pub name: *mut u8,
+    /// Header name length
+    pub name_len: size_t,
+    /// Header value pointer
+    pub value: *mut u8,
+    /// Header value length
+    pub value_len: size_t,
+}
+
+/// Stream response data structure
+#[repr(C)]
+pub struct nghttp2_stream_response_data {
+    /// Pointer to response headers array
+    pub headers: *mut nghttp2_header_field,
+    /// Number of response headers
+    pub headers_len: size_t,
+    /// Pointer to response body data
+    pub body: *mut u8,
+    /// Length of response body
+    pub body_len: size_t,
+    /// HTTP status code (0 if not found)
+    pub status_code: u16,
 }
 
 // ============================================================================

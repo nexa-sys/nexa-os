@@ -209,9 +209,6 @@ impl Http2Client {
 
         // Read and process response
         let mut recv_buffer = vec![0u8; 16384];
-        let mut response_body = Vec::new();
-        let mut response_headers: Vec<(String, String)> = Vec::new();
-        let mut status_code: Option<u16> = None;
 
         loop {
             // Check if session wants to read
@@ -273,7 +270,7 @@ impl Http2Client {
                 break;
             }
 
-            // Send any pending frames
+            // Send any pending frames (e.g., WINDOW_UPDATE)
             let mut pending_ptr: *const u8 = std::ptr::null();
             let pending_len = unsafe { nghttp2_session_mem_send(session, &mut pending_ptr) };
             if pending_len > 0 && !pending_ptr.is_null() {
@@ -284,28 +281,66 @@ impl Http2Client {
             }
         }
 
+        // Get response data using the new nh2 C API
+        let response_data_ptr = unsafe {
+            nghttp2_session_get_stream_response_data(session, stream_id)
+        };
+
         // Clean up session
         unsafe { nghttp2_session_del(session) };
 
-        // Since we don't have callbacks set up to collect headers/data,
-        // we need to parse the raw frames. For now, this is a simplified
-        // implementation that works with the basic case.
-        // In a complete implementation, we would set up callbacks to collect
-        // headers and data as they arrive.
+        if response_data_ptr.is_null() {
+            return Err(HttpError::InvalidResponse(
+                "Failed to get stream response data".to_string(),
+            ));
+        }
 
-        // For this implementation, we'll fall back to the simpler static linking
-        // approach if available, or return an error indicating partial support.
-        // 
-        // TODO: Implement full callback-based header/data collection
-        
-        // Return a basic response indicating HTTP/2 was attempted
-        let status = status_code.unwrap_or(200);
+        // Extract response data
+        let response_data = unsafe { &*response_data_ptr };
+        let status_code = response_data.status_code;
+
+        // Extract headers
+        let mut headers = Vec::new();
+        if !response_data.headers.is_null() && response_data.headers_len > 0 {
+            for i in 0..response_data.headers_len {
+                let h = unsafe { &*response_data.headers.add(i) };
+                if !h.name.is_null() && !h.value.is_null() {
+                    let name = unsafe {
+                        String::from_utf8_lossy(std::slice::from_raw_parts(h.name, h.name_len))
+                            .to_string()
+                    };
+                    let value = unsafe {
+                        String::from_utf8_lossy(std::slice::from_raw_parts(h.value, h.value_len))
+                            .to_string()
+                    };
+                    headers.push((name, value));
+                }
+            }
+        }
+
+        // Extract body
+        let body = if !response_data.body.is_null() && response_data.body_len > 0 {
+            unsafe {
+                std::slice::from_raw_parts(response_data.body, response_data.body_len).to_vec()
+            }
+        } else {
+            Vec::new()
+        };
+
+        // Free the response data
+        unsafe { nghttp2_stream_response_data_free(response_data_ptr) };
+
+        if status_code == 0 {
+            return Err(HttpError::InvalidResponse(
+                "No :status header received".to_string(),
+            ));
+        }
 
         Ok(HttpResponse {
-            status_code: status,
-            reason: http_status_reason(status).to_string(),
-            headers: response_headers,
-            body: response_body,
+            status_code,
+            reason: http_status_reason(status_code).to_string(),
+            headers,
+            body,
             version: "HTTP/2".to_string(),
         })
     }
