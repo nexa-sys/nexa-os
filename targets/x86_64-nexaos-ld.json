@@ -21,5 +21,6 @@
   "crt-objects-fallback": "false",
   "dynamic-linking": false,
   "has-rpath": false,
-  "position-independent-executables": true
+  "position-independent-executables": true,
+  "has-thread-local": true
 }

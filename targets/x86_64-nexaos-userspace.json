@@ -17,5 +17,6 @@
   "function-sections": true,
   "crt-static-default": true,
   "crt-static-respected": true,
-  "crt-objects-fallback": "false"
+  "crt-objects-fallback": "false",
+  "has-thread-local": true
 }

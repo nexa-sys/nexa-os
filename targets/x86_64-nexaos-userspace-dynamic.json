@@ -28,5 +28,6 @@
   "post-link-args": {
     "ld.lld": ["--as-needed"]
   },
-  "no-default-libraries": true
+  "no-default-libraries": true,
+  "has-thread-local": true
 }

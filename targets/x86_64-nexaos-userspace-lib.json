@@ -26,5 +26,6 @@
   "pre-link-args": {
     "ld.lld": ["--gc-sections", "-z", "noexecstack"]
   },
-  "default-visibility": "hidden"
+  "default-visibility": "hidden",
+  "has-thread-local": true
 }
