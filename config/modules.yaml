@@ -94,6 +94,25 @@ block:
       # Block size (bytes)
       block_size: 512
 
+  ide:
+    enabled: true
+    type: 2
+    description: "IDE/ATA Block Device Driver"
+    package: ide
+    output: ide.nkm
+    load_order: 6
+    depends: []
+    provides:
+      - ide_ata
+      - ata_disk
+    config:
+      # Enable LBA48 support for large disks
+      lba48: true
+      # PIO mode (DMA not yet supported)
+      pio_mode: true
+      # Maximum sectors per transfer
+      max_sectors: 256
+
 # =============================================================================
 # Memory Management Modules
 # =============================================================================

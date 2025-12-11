@@ -39,7 +39,7 @@ profiles:
     description: "Standard build with common modules"
     modules:
       filesystem: [ext2]
-      block: [virtio_blk]
+      block: [virtio_blk, ide]
       memory: [swap]
       network: [e1000]
     features:
@@ -51,7 +51,7 @@ profiles:
     description: "Minimal boot with essential modules only"
     modules:
       filesystem: [ext2]
-      block: [virtio_blk]
+      block: [virtio_blk, ide]
       memory: []
       network: []
     features:
@@ -63,7 +63,7 @@ profiles:
     description: "All modules enabled"
     modules:
       filesystem: [ext2, ext3, ext4]
-      block: [virtio_blk]
+      block: [virtio_blk, ide]
       memory: [swap]
       network: [e1000, virtio_net]
     features:
@@ -75,7 +75,7 @@ profiles:
     description: "Development build with debugging features"
     modules:
       filesystem: [ext2, ext3, ext4]
-      block: [virtio_blk]
+      block: [virtio_blk, ide]
       memory: [swap]
       network: [e1000]
     features:
