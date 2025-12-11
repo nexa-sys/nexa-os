@@ -3,21 +3,25 @@
 //! This module implements QUIC cryptographic operations including
 //! key derivation, AEAD encryption/decryption, and header protection.
 //!
-//! Uses `ncryptolib` for cryptographic primitives:
-//! - HKDF for key derivation
-//! - AES-GCM and ChaCha20-Poly1305 for AEAD
-//! - AES-ECB and ChaCha20 for header protection
+//! Uses `ssl_ffi` for cryptographic primitives via C ABI dynamic linking:
+//! - nssl (libssl.so) for TLS 1.3 support
+//! - ncryptolib (libcrypto.so) for:
+//!   - HKDF for key derivation
+//!   - AES-GCM and ChaCha20-Poly1305 for AEAD
+//!   - AES-ECB and ChaCha20 for header protection
 
 use crate::constants::crypto::*;
 use crate::error::{CryptoError, Error, Result};
 use crate::types::EncryptionLevel;
 use crate::{ConnectionId, NGTCP2_PROTO_VER_V2};
 
-// Import from ncryptolib
-use ncryptolib::aes::{Aes128, Aes256, AesGcm, AES_BLOCK_SIZE};
-use ncryptolib::chacha20::{ChaCha20, ChaCha20Poly1305};
-use ncryptolib::hash::SHA256_DIGEST_SIZE;
-use ncryptolib::kdf::{hkdf_expand_label as ncrypto_hkdf_expand_label, hkdf_extract_sha256};
+// Import from ssl_ffi module (C ABI bindings to nssl/ncryptolib)
+use crate::ssl_ffi::{
+    self, aes128_ecb_encrypt, aes128_gcm_decrypt, aes128_gcm_encrypt, aes256_ecb_encrypt,
+    aes256_gcm_decrypt, aes256_gcm_encrypt, chacha20_hp_mask, chacha20_poly1305_decrypt,
+    chacha20_poly1305_encrypt, hkdf_expand_label as ffi_hkdf_expand_label, hkdf_extract_sha256,
+    AES_BLOCK_SIZE, SHA256_DIGEST_SIZE,
+};
 
 // ============================================================================
 // AEAD Algorithm
@@ -241,34 +245,24 @@ impl CryptoContext {
 }
 
 // ============================================================================
-// HKDF Functions - Using ncryptolib
+// HKDF Functions - Using ssl_ffi (C ABI to ncryptolib)
 // ============================================================================
 
-/// HKDF-Extract using SHA-256 via ncryptolib
+/// HKDF-Extract using SHA-256 via ncryptolib C ABI
 pub fn hkdf_extract(salt: &[u8], ikm: &[u8]) -> Result<[u8; SHA256_DIGEST_SIZE]> {
     Ok(hkdf_extract_sha256(salt, ikm))
 }
 
-/// HKDF-Expand-Label for QUIC using ncryptolib
+/// HKDF-Expand-Label for QUIC using ncryptolib C ABI
 ///
-/// Wrapper that handles variable-length secrets by padding/truncating to 32 bytes
+/// Uses TLS 1.3 style HKDF-Expand-Label
 pub fn hkdf_expand_label(
     secret: &[u8],
     label: &[u8],
     context: &[u8],
     length: usize,
 ) -> Result<Vec<u8>> {
-    // ncryptolib's hkdf_expand_label requires exactly 32-byte secret
-    let mut fixed_secret = [0u8; SHA256_DIGEST_SIZE];
-    let copy_len = secret.len().min(SHA256_DIGEST_SIZE);
-    fixed_secret[..copy_len].copy_from_slice(&secret[..copy_len]);
-
-    Ok(ncrypto_hkdf_expand_label(
-        &fixed_secret,
-        label,
-        context,
-        length,
-    ))
+    Ok(ffi_hkdf_expand_label(secret, label, context, length))
 }
 
 // ============================================================================
@@ -343,7 +337,7 @@ pub fn unprotect_header(
     Ok(pkt_num_len)
 }
 
-/// Generate header protection mask using ncryptolib
+/// Generate header protection mask using ssl_ffi (C ABI to ncryptolib)
 fn generate_hp_mask(hp_key: &[u8], sample: &[u8], aead: AeadAlgorithm) -> Result<[u8; 5]> {
     let mut mask = [0u8; 5];
 
@@ -357,8 +351,7 @@ fn generate_hp_mask(hp_key: &[u8], sample: &[u8], aead: AeadAlgorithm) -> Result
             let key: [u8; 16] = hp_key[..16]
                 .try_into()
                 .map_err(|_| Error::Crypto(CryptoError::HeaderProtection))?;
-            let aes = Aes128::new(&key);
-            let encrypted = aes.encrypt_block(&sample_block);
+            let encrypted = aes128_ecb_encrypt(&key, &sample_block);
             mask.copy_from_slice(&encrypted[..5]);
         }
         AeadAlgorithm::Aes256Gcm => {
@@ -370,8 +363,7 @@ fn generate_hp_mask(hp_key: &[u8], sample: &[u8], aead: AeadAlgorithm) -> Result
             let key: [u8; 32] = hp_key[..32]
                 .try_into()
                 .map_err(|_| Error::Crypto(CryptoError::HeaderProtection))?;
-            let aes = Aes256::new(&key);
-            let encrypted = aes.encrypt_block(&sample_block);
+            let encrypted = aes256_ecb_encrypt(&key, &sample_block);
             mask.copy_from_slice(&encrypted[..5]);
         }
         AeadAlgorithm::ChaCha20Poly1305 => {
@@ -388,11 +380,7 @@ fn generate_hp_mask(hp_key: &[u8], sample: &[u8], aead: AeadAlgorithm) -> Result
                 .try_into()
                 .map_err(|_| Error::Crypto(CryptoError::HeaderProtection))?;
 
-            let mut chacha = ChaCha20::new(&key, &nonce);
-            chacha.set_counter(counter);
-            let mut output = [0u8; 5];
-            chacha.apply_keystream(&mut output);
-            mask.copy_from_slice(&output);
+            mask = chacha20_hp_mask(&key, counter, &nonce);
         }
     }
 
@@ -400,10 +388,10 @@ fn generate_hp_mask(hp_key: &[u8], sample: &[u8], aead: AeadAlgorithm) -> Result
 }
 
 // ============================================================================
-// AEAD Operations - Using ncryptolib
+// AEAD Operations - Using ssl_ffi (C ABI to ncryptolib)
 // ============================================================================
 
-/// Encrypt packet payload using ncryptolib AEAD
+/// Encrypt packet payload using ssl_ffi AEAD (C ABI to ncryptolib)
 pub fn encrypt_packet(
     keys: &CryptoKeys,
     pkt_num: u64,
@@ -426,31 +414,31 @@ pub fn encrypt_packet(
             let key: [u8; 16] = keys.key[..16]
                 .try_into()
                 .map_err(|_| Error::Crypto(CryptoError::Encryption))?;
-            let gcm: AesGcm<Aes128> = AesGcm::new_128(&key);
 
-            let (ciphertext, tag) = gcm.encrypt(&nonce, payload, header);
+            let (ciphertext, tag) = aes128_gcm_encrypt(&key, &nonce, payload, header);
             output[..ciphertext.len()].copy_from_slice(&ciphertext);
-            output[ciphertext.len()..ciphertext.len() + AEAD_TAG_LEN].copy_from_slice(&tag);
-            Ok(ciphertext.len() + AEAD_TAG_LEN)
+            output[ciphertext.len()..ciphertext.len() + ssl_ffi::AEAD_TAG_LEN]
+                .copy_from_slice(&tag);
+            Ok(ciphertext.len() + ssl_ffi::AEAD_TAG_LEN)
         }
         AeadAlgorithm::Aes256Gcm => {
             let key: [u8; 32] = keys.key[..32]
                 .try_into()
                 .map_err(|_| Error::Crypto(CryptoError::Encryption))?;
-            let gcm: AesGcm<Aes256> = AesGcm::new_256(&key);
 
-            let (ciphertext, tag) = gcm.encrypt(&nonce, payload, header);
+            let (ciphertext, tag) = aes256_gcm_encrypt(&key, &nonce, payload, header);
             output[..ciphertext.len()].copy_from_slice(&ciphertext);
-            output[ciphertext.len()..ciphertext.len() + AEAD_TAG_LEN].copy_from_slice(&tag);
-            Ok(ciphertext.len() + AEAD_TAG_LEN)
+            output[ciphertext.len()..ciphertext.len() + ssl_ffi::AEAD_TAG_LEN]
+                .copy_from_slice(&tag);
+            Ok(ciphertext.len() + ssl_ffi::AEAD_TAG_LEN)
         }
         AeadAlgorithm::ChaCha20Poly1305 => {
             let key: [u8; 32] = keys.key[..32]
                 .try_into()
                 .map_err(|_| Error::Crypto(CryptoError::Encryption))?;
-            let chacha_poly = ChaCha20Poly1305::new(&key);
+            let nonce12: [u8; 12] = nonce;
 
-            let ciphertext_with_tag = chacha_poly.encrypt(&nonce, header, payload);
+            let ciphertext_with_tag = chacha20_poly1305_encrypt(&key, &nonce12, payload, header);
             if output.len() < ciphertext_with_tag.len() {
                 return Err(Error::BufferTooSmall);
             }
@@ -460,7 +448,7 @@ pub fn encrypt_packet(
     }
 }
 
-/// Decrypt packet payload using ncryptolib AEAD
+/// Decrypt packet payload using ssl_ffi AEAD (C ABI to ncryptolib)
 pub fn decrypt_packet(
     keys: &CryptoKeys,
     pkt_num: u64,
@@ -487,14 +475,13 @@ pub fn decrypt_packet(
             let key: [u8; 16] = keys.key[..16]
                 .try_into()
                 .map_err(|_| Error::Crypto(CryptoError::Decryption))?;
-            let gcm: AesGcm<Aes128> = AesGcm::new_128(&key);
 
             let ciphertext_data = &ciphertext[..payload_len];
-            let tag: [u8; AEAD_TAG_LEN] = ciphertext[payload_len..]
+            let tag: [u8; ssl_ffi::AEAD_TAG_LEN] = ciphertext[payload_len..]
                 .try_into()
                 .map_err(|_| Error::Crypto(CryptoError::Decryption))?;
 
-            match gcm.decrypt(&nonce, ciphertext_data, header, &tag) {
+            match aes128_gcm_decrypt(&key, &nonce, ciphertext_data, header, &tag) {
                 Some(plaintext) => {
                     output[..plaintext.len()].copy_from_slice(&plaintext);
                     Ok(plaintext.len())
@@ -511,14 +498,13 @@ pub fn decrypt_packet(
             let key: [u8; 32] = keys.key[..32]
                 .try_into()
                 .map_err(|_| Error::Crypto(CryptoError::Decryption))?;
-            let gcm: AesGcm<Aes256> = AesGcm::new_256(&key);
 
             let ciphertext_data = &ciphertext[..payload_len];
-            let tag: [u8; AEAD_TAG_LEN] = ciphertext[payload_len..]
+            let tag: [u8; ssl_ffi::AEAD_TAG_LEN] = ciphertext[payload_len..]
                 .try_into()
                 .map_err(|_| Error::Crypto(CryptoError::Decryption))?;
 
-            match gcm.decrypt(&nonce, ciphertext_data, header, &tag) {
+            match aes256_gcm_decrypt(&key, &nonce, ciphertext_data, header, &tag) {
                 Some(plaintext) => {
                     output[..plaintext.len()].copy_from_slice(&plaintext);
                     Ok(plaintext.len())
@@ -534,14 +520,14 @@ pub fn decrypt_packet(
             let key: [u8; 32] = keys.key[..32]
                 .try_into()
                 .map_err(|_| Error::Crypto(CryptoError::Decryption))?;
-            let chacha_poly = ChaCha20Poly1305::new(&key);
+            let nonce12: [u8; 12] = nonce;
 
-            match chacha_poly.decrypt(&nonce, header, ciphertext) {
-                Ok(plaintext) => {
+            match chacha20_poly1305_decrypt(&key, &nonce12, ciphertext, header) {
+                Some(plaintext) => {
                     output[..plaintext.len()].copy_from_slice(&plaintext);
                     Ok(plaintext.len())
                 }
-                Err(_) => Err(Error::Crypto(CryptoError::Decryption)),
+                None => Err(Error::Crypto(CryptoError::Decryption)),
             }
         }
     }
@@ -551,12 +537,12 @@ pub fn decrypt_packet(
 // Retry Token Validation
 // ============================================================================
 
-/// Generate retry integrity tag using AES-128-GCM
+/// Generate retry integrity tag using AES-128-GCM (via ssl_ffi C ABI)
 pub fn generate_retry_integrity_tag(
     version: u32,
     retry_packet: &[u8],
     original_dcid: &ConnectionId,
-) -> Result<[u8; AEAD_TAG_LEN]> {
+) -> Result<[u8; ssl_ffi::AEAD_TAG_LEN]> {
     let (key, nonce) = match version {
         NGTCP2_PROTO_VER_V2 => {
             // QUIC v2 uses different retry keys (RFC 9369)
@@ -572,28 +558,24 @@ pub fn generate_retry_integrity_tag(
     pseudo_retry.extend_from_slice(retry_packet);
 
     // Tag = AES-128-GCM-Encrypt(key, nonce, aad=pseudo_retry, plaintext="")
-    let gcm: AesGcm<Aes128> = AesGcm::new_128(key);
-
-    let (_ciphertext, tag) = gcm.encrypt(nonce, &[], &pseudo_retry);
+    let key16: [u8; 16] = (*key)
+        .try_into()
+        .map_err(|_| Error::Crypto(CryptoError::Encryption))?;
+    let (_ciphertext, tag) = aes128_gcm_encrypt(&key16, nonce, &[], &pseudo_retry);
     Ok(tag)
 }
 
-/// Verify retry integrity tag
+/// Verify retry integrity tag (using ssl_ffi constant-time comparison)
 pub fn verify_retry_integrity_tag(
     version: u32,
     retry_packet: &[u8],
     original_dcid: &ConnectionId,
-    tag: &[u8; AEAD_TAG_LEN],
+    tag: &[u8; ssl_ffi::AEAD_TAG_LEN],
 ) -> Result<bool> {
     let expected_tag = generate_retry_integrity_tag(version, retry_packet, original_dcid)?;
 
-    // Constant-time comparison
-    let mut result = 0u8;
-    for (a, b) in expected_tag.iter().zip(tag.iter()) {
-        result |= a ^ b;
-    }
-
-    Ok(result == 0)
+    // Constant-time comparison via ssl_ffi
+    Ok(ssl_ffi::ct_eq(&expected_tag, tag))
 }
 
 // ============================================================================

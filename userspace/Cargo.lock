@@ -436,8 +436,6 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "bytes",
- "ncryptolib",
- "nssl",
  "parking_lot",
  "tokio",
  "tokio-test",

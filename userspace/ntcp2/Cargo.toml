@@ -9,7 +9,7 @@ description = "NexaOS QUIC Library - ngtcp2 ABI compatible with tokio async back
 # staticlib: Static library (libngtcp2.a) for static linking
 # rlib: Rust library for Rust consumers
 crate-type = ["cdylib", "staticlib", "rlib"]
-
+ 
 [profile.release]
 panic = "abort"
 opt-level = 2
@@ -41,10 +41,10 @@ parking_lot = "0.12"
 bytes = "1"
 # For async traits
 async-trait = "0.1"
-# SSL/TLS support (QUIC uses TLS 1.3)
-nssl = { path = "../nssl" }
-# Cryptographic primitives
-ncryptolib = { path = "../ncryptolib" }
+# NOTE: SSL/TLS and crypto support is provided via C ABI dynamic linking
+# nssl (libssl.so) exports OpenSSL-compatible C ABI for TLS 1.2/1.3
+# nssl internally links against ncryptolib (libcrypto.so)
+# See build.rs for link configuration
 
 [dev-dependencies]
 # Testing utilities

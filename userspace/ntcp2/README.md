@@ -175,9 +175,31 @@ cargo build --release --features "async-tokio,qpack,migration,early-data,datagra
 
 ## Dependencies
 
-- **nssl** - TLS 1.3 for QUIC handshake
-- **ncryptolib** - Cryptographic primitives (AEAD, HKDF)
+ntcp2 uses TLS/crypto support via **OpenSSL-compatible C ABI** dynamic linking:
+
+- **nssl** (libssl.so) - TLS 1.2/1.3 support for QUIC handshake
+- **ncryptolib** (libcrypto.so) - Cryptographic primitives (AEAD, HKDF, hash)
 - **tokio** - Async runtime (optional)
+
+### Dynamic Linking Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                ntcp2 (libngtcp2.so)                         │
+│           QUIC Protocol Implementation                       │
+├─────────────────────────────────────────────────────────────┤
+│                    ssl_ffi.rs                               │
+│           FFI bindings (OpenSSL C ABI)                      │
+├─────────────────────────────────────────────────────────────┤
+│    nssl (libssl.so)    │    ncryptolib (libcrypto.so)      │
+│    TLS 1.2/1.3         │    AES-GCM, ChaCha20, HKDF, etc   │
+└─────────────────────────────────────────────────────────────┘
+```
+
+ntcp2 dynamically links against nssl and ncryptolib via C ABI for:
+- **ABI stability** across library versions
+- **Shared crypto code** with other NexaOS components
+- **Smaller binary size** through dynamic linking
 
 ## Specification Compliance
 

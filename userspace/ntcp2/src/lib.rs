@@ -84,6 +84,10 @@ pub mod constants;
 pub mod error;
 pub mod types;
 
+// FFI bindings to nssl (libssl.so) and ncryptolib (libcrypto.so)
+// Provides OpenSSL-compatible C ABI for TLS/crypto operations
+pub mod ssl_ffi;
+
 // Packet layer
 pub mod crypto;
 pub mod frame;

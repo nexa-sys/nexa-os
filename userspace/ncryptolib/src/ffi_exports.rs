@@ -1,10 +1,12 @@
-//! C ABI Exports for nssl Dynamic Linking
+//! C ABI Exports for nssl and ntcp2 Dynamic Linking
 //!
-//! This module provides additional C ABI functions that nssl requires
+//! This module provides additional C ABI functions that nssl and ntcp2 require
 //! for dynamic linking against libcrypto.so with stable ABI.
 
-use crate::aes::{AesGcm, GCM_TAG_SIZE};
-use crate::hash::hmac_sha256;
+use crate::aes::{Aes128, Aes256, AesGcm, GCM_TAG_SIZE};
+use crate::chacha20::{ChaCha20, ChaCha20Poly1305};
+use crate::hash::{hmac_sha256, SHA256_DIGEST_SIZE};
+use crate::kdf::{hkdf_expand_label as rust_hkdf_expand_label, hkdf_extract_sha256 as rust_hkdf_extract_sha256};
 use crate::p256::{P256KeyPair, P256Point};
 use crate::random::getrandom as sys_getrandom;
 use crate::{c_int, c_uint, size_t};
@@ -430,3 +432,235 @@ pub unsafe extern "C" fn ncrypto_aes256_gcm_decrypt(
 // Note: RSA C ABI functions are already defined in rsa.rs:
 // - ncrypto_rsa_verify
 // - ncrypto_rsa_pss_verify
+
+// ============================================================================
+// HKDF Functions (for ntcp2 QUIC crypto)
+// ============================================================================
+
+/// HKDF-Extract using SHA-256 (C ABI)
+///
+/// # Arguments
+/// * `salt` - Salt value (can be NULL for no salt)
+/// * `salt_len` - Length of salt
+/// * `ikm` - Input keying material
+/// * `ikm_len` - Length of IKM
+/// * `prk` - Output buffer for 32-byte PRK
+///
+/// # Returns
+/// 1 on success, 0 on failure
+#[no_mangle]
+pub unsafe extern "C" fn ncrypto_hkdf_extract_sha256(
+    salt: *const u8,
+    salt_len: size_t,
+    ikm: *const u8,
+    ikm_len: size_t,
+    prk: *mut u8,
+) -> c_int {
+    if ikm.is_null() || prk.is_null() {
+        return 0;
+    }
+
+    let salt_slice = if salt.is_null() || salt_len == 0 {
+        &[][..]
+    } else {
+        core::slice::from_raw_parts(salt, salt_len)
+    };
+    let ikm_slice = core::slice::from_raw_parts(ikm, ikm_len);
+
+    let result = rust_hkdf_extract_sha256(salt_slice, ikm_slice);
+    core::ptr::copy_nonoverlapping(result.as_ptr(), prk, SHA256_DIGEST_SIZE);
+    1
+}
+
+/// HKDF-Expand-Label using SHA-256 (TLS 1.3 style) (C ABI)
+///
+/// # Arguments
+/// * `secret` - Secret value
+/// * `secret_len` - Length of secret (padded/truncated to 32 bytes internally)
+/// * `label` - Label bytes
+/// * `label_len` - Length of label
+/// * `context` - Context bytes
+/// * `context_len` - Length of context
+/// * `out` - Output buffer
+/// * `out_len` - Desired output length
+///
+/// # Returns
+/// 1 on success, 0 on failure
+#[no_mangle]
+pub unsafe extern "C" fn ncrypto_hkdf_expand_label_sha256(
+    secret: *const u8,
+    secret_len: size_t,
+    label: *const u8,
+    label_len: size_t,
+    context: *const u8,
+    context_len: size_t,
+    out: *mut u8,
+    out_len: size_t,
+) -> c_int {
+    if secret.is_null() || out.is_null() {
+        return 0;
+    }
+
+    // Convert secret to fixed 32-byte array (pad or truncate)
+    let mut fixed_secret = [0u8; SHA256_DIGEST_SIZE];
+    let secret_slice = core::slice::from_raw_parts(secret, secret_len);
+    let copy_len = secret_len.min(SHA256_DIGEST_SIZE);
+    fixed_secret[..copy_len].copy_from_slice(&secret_slice[..copy_len]);
+
+    let label_slice = if label.is_null() || label_len == 0 {
+        &[][..]
+    } else {
+        core::slice::from_raw_parts(label, label_len)
+    };
+
+    let context_slice = if context.is_null() || context_len == 0 {
+        &[][..]
+    } else {
+        core::slice::from_raw_parts(context, context_len)
+    };
+
+    let result = rust_hkdf_expand_label(&fixed_secret, label_slice, context_slice, out_len);
+    core::ptr::copy_nonoverlapping(result.as_ptr(), out, result.len());
+    1
+}
+
+// ============================================================================
+// AES-ECB Operations (for QUIC header protection)
+// ============================================================================
+
+/// AES-128-ECB single block encryption (C ABI)
+///
+/// Encrypts a single 16-byte block using AES-128-ECB.
+/// Used for QUIC header protection with AES-128-GCM cipher suites.
+///
+/// # Arguments
+/// * `key` - 16-byte AES key
+/// * `input` - 16-byte plaintext block
+/// * `output` - 16-byte output buffer for ciphertext
+///
+/// # Returns
+/// 1 on success, 0 on failure
+#[no_mangle]
+pub unsafe extern "C" fn ncrypto_aes128_ecb_encrypt(
+    key: *const u8,
+    input: *const u8,
+    output: *mut u8,
+) -> c_int {
+    if key.is_null() || input.is_null() || output.is_null() {
+        return 0;
+    }
+
+    let key_arr: [u8; 16] = {
+        let mut arr = [0u8; 16];
+        core::ptr::copy_nonoverlapping(key, arr.as_mut_ptr(), 16);
+        arr
+    };
+
+    let input_arr: [u8; 16] = {
+        let mut arr = [0u8; 16];
+        core::ptr::copy_nonoverlapping(input, arr.as_mut_ptr(), 16);
+        arr
+    };
+
+    let aes = Aes128::new(&key_arr);
+    let encrypted = aes.encrypt_block(&input_arr);
+    core::ptr::copy_nonoverlapping(encrypted.as_ptr(), output, 16);
+    1
+}
+
+/// AES-256-ECB single block encryption (C ABI)
+///
+/// Encrypts a single 16-byte block using AES-256-ECB.
+/// Used for QUIC header protection with AES-256-GCM cipher suites.
+///
+/// # Arguments
+/// * `key` - 32-byte AES key
+/// * `input` - 16-byte plaintext block
+/// * `output` - 16-byte output buffer for ciphertext
+///
+/// # Returns
+/// 1 on success, 0 on failure
+#[no_mangle]
+pub unsafe extern "C" fn ncrypto_aes256_ecb_encrypt(
+    key: *const u8,
+    input: *const u8,
+    output: *mut u8,
+) -> c_int {
+    if key.is_null() || input.is_null() || output.is_null() {
+        return 0;
+    }
+
+    let key_arr: [u8; 32] = {
+        let mut arr = [0u8; 32];
+        core::ptr::copy_nonoverlapping(key, arr.as_mut_ptr(), 32);
+        arr
+    };
+
+    let input_arr: [u8; 16] = {
+        let mut arr = [0u8; 16];
+        core::ptr::copy_nonoverlapping(input, arr.as_mut_ptr(), 16);
+        arr
+    };
+
+    let aes = Aes256::new(&key_arr);
+    let encrypted = aes.encrypt_block(&input_arr);
+    core::ptr::copy_nonoverlapping(encrypted.as_ptr(), output, 16);
+    1
+}
+
+// ============================================================================
+// ChaCha20 Operations (for ntcp2 QUIC header protection)
+// Note: ChaCha20-Poly1305 encrypt/decrypt are already exported in chacha20.rs
+// ============================================================================
+
+/// ChaCha20 block for header protection (C ABI)
+///
+/// Generates ChaCha20 keystream for QUIC header protection.
+///
+/// # Arguments
+/// * `key` - 32-byte key
+/// * `counter` - 32-bit counter (from sample[0..4])
+/// * `nonce` - 12-byte nonce (from sample[4..16])
+/// * `output` - Output buffer for keystream
+/// * `output_len` - Desired output length
+///
+/// # Returns
+/// 1 on success, 0 on failure
+#[no_mangle]
+pub unsafe extern "C" fn ncrypto_chacha20_block(
+    key: *const u8,
+    counter: u32,
+    nonce: *const u8,
+    output: *mut u8,
+    output_len: size_t,
+) -> c_int {
+    if key.is_null() || nonce.is_null() || output.is_null() {
+        return 0;
+    }
+
+    let key_arr: [u8; 32] = {
+        let mut arr = [0u8; 32];
+        core::ptr::copy_nonoverlapping(key, arr.as_mut_ptr(), 32);
+        arr
+    };
+
+    let nonce_arr: [u8; 12] = {
+        let mut arr = [0u8; 12];
+        core::ptr::copy_nonoverlapping(nonce, arr.as_mut_ptr(), 12);
+        arr
+    };
+
+    // Use ChaCha20 to generate keystream
+    let mut chacha = ChaCha20::new(&key_arr, &nonce_arr);
+    chacha.set_counter(counter);
+
+    // Generate keystream by XORing with zeros
+    let output_slice = core::slice::from_raw_parts_mut(output, output_len);
+    output_slice.fill(0);
+    chacha.apply_keystream(output_slice);
+
+    1
+}
+
+// Note: Constant-time operations (ncrypto_ct_eq, ncrypto_secure_zero) are already
+// exported in constant_time.rs
