@@ -1,0 +1,43 @@
+[package]
+name = "nh3"
+version = "0.1.0"
+edition = "2021"
+description = "NexaOS HTTP/3 Library - nghttp3 ABI compatible with QUIC backend via ntcp2"
+
+[lib]
+# cdylib: Dynamic shared object (libnghttp3.so) for dynamic linking
+# staticlib: Static library (libnghttp3.a) for static linking
+# rlib: Rust library for Rust consumers
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[profile.release]
+panic = "abort"
+opt-level = 2
+lto = false
+
+[features]
+default = ["async-tokio"]
+# Enable tokio async runtime backend
+async-tokio = ["tokio"]
+# Enable QPACK header compression (always enabled for HTTP/3)
+qpack = []
+# Enable server push support
+server-push = []
+# Enable nghttp3 C ABI compatibility layer
+compat = []
+
+[dependencies]
+# Tokio async runtime for async I/O
+tokio = { version = "1", features = ["full"], optional = true }
+# For synchronization primitives
+parking_lot = "0.12"
+# For byte manipulation
+bytes = "1"
+# For async traits
+async-trait = "0.1"
+# NOTE: QUIC support is provided via C ABI dynamic linking to ntcp2 (libngtcp2.so)
+# See build.rs for link configuration
+
+[dev-dependencies]
+# Testing utilities
+tokio-test = "0.4"

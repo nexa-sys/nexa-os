@@ -10,6 +10,7 @@ members = [
     "ncryptolib",
     "nssl",
     "nh2",
+    "nh3",
     "ntcp2",
     "nzip",
 
