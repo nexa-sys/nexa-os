@@ -1,12 +1,17 @@
 [package]
-name = "nh3"
+name = "nh2"
 version = "0.1.0"
 edition = "2021"
-description = "NexaOS HTTP/3 Library - nghttp3 ABI compatible with QUIC backend via ntcp2"
+description = "NexaOS HTTP/2 Library - nghttp2 ABI compatible with tokio async backend"
+
+# NexaOS Build System Metadata
+[package.metadata.nexaos]
+output = "nghttp2"   # Output name: libnghttp2.so
+version = 14         # SO version: libnghttp2.so.14
 
 [lib]
-# cdylib: Dynamic shared object (libnghttp3.so) for dynamic linking
-# staticlib: Static library (libnghttp3.a) for static linking
+# cdylib: Dynamic shared object (libnghttp2.so) for dynamic linking
+# staticlib: Static library (libnghttp2.a) for static linking
 # rlib: Rust library for Rust consumers
 crate-type = ["cdylib", "staticlib", "rlib"]
 
@@ -19,11 +24,15 @@ lto = false
 default = ["async-tokio"]
 # Enable tokio async runtime backend
 async-tokio = ["tokio"]
-# Enable QPACK header compression (always enabled for HTTP/3)
-qpack = []
+# Enable HPACK header compression (always enabled)
+hpack = []
+# Enable priority/dependency handling
+priority = []
 # Enable server push support
 server-push = []
-# Enable nghttp3 C ABI compatibility layer
+# Enable flow control management
+flow-control = []
+# Enable nghttp2 C ABI compatibility layer
 compat = []
 
 [dependencies]
@@ -35,8 +44,8 @@ parking_lot = "0.12"
 bytes = "1"
 # For async traits
 async-trait = "0.1"
-# NOTE: QUIC support is provided via C ABI dynamic linking to ntcp2 (libngtcp2.so)
-# See build.rs for link configuration
+# SSL/TLS support
+nssl = { path = "../nssl" }
 
 [dev-dependencies]
 # Testing utilities

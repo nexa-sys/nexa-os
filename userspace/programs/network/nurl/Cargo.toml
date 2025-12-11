@@ -10,9 +10,9 @@ path = "src/main.rs"
 [dependencies]
 nrlib = { workspace = true, optional = true, features = ["panic-handler"] }
 nexa_boot_info.workspace = true
-nssl = { path = "../../../nssl", optional = true }
-nzip = { path = "../../../nzip", optional = true }
-nh2 = { path = "../../../nh2", optional = true, default-features = false }
+nssl = { path = "../../../lib/nssl", optional = true }
+nzip = { path = "../../../lib/nzip", optional = true }
+nh2 = { path = "../../../lib/nh2", optional = true, default-features = false }
 
 [features]
 # By default, use dynamic linking for nssl, nzip and nh2 since nurl is built as

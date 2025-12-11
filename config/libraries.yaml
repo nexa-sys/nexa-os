@@ -1,34 +1,35 @@
 # NexaOS Userspace Libraries Configuration
 #
-# This file defines all shared libraries to be built and installed.
-# Libraries are built in dependency order automatically.
+# This configuration file controls library build settings.
+# Library metadata (name, output, version, dependencies) is auto-discovered
+# from Cargo.toml files in userspace/lib/.
 #
-# Library Properties:
-#   - name: Cargo package name (required)
-#   - output: Library output name without 'lib' prefix (required)
-#   - version: Shared object version number (required)
-#   - description: Human-readable description (optional)
-#   - depends: List of library dependencies (optional)
-#   - enabled: Whether to build this library (default: true)
-#   - features: Cargo features to enable (optional)
+# To add a new library:
+#   1. Create directory: userspace/lib/<name>/
+#   2. Add Cargo.toml with [package.metadata.nexaos] section:
+#      [package.metadata.nexaos]
+#      output = "libname"  # Output name without 'lib' prefix
+#      version = 1         # SO version number
+#   3. Optionally add configuration here to control features/enabled state
+#
+# Dependencies are automatically resolved from Cargo.toml [dependencies].
 
 # =============================================================================
-# Core Libraries
+# Library Settings
 # =============================================================================
-# Fundamental libraries that other components depend on.
+# Per-library configuration for enabling/disabling and feature control.
+# Only libraries that need non-default settings need to be listed here.
+# All libraries in userspace/lib/ are built by default.
 
 libraries:
   # Cryptography library - foundation for SSL/TLS
-  - name: ncryptolib
-    output: crypto
-    version: 3
-    description: "Cryptographic primitives (AES, SHA, RSA, etc.)"
-    depends: []
+  ncryptolib:
     enabled: true
+    features:
+      # Enable hardware acceleration if available (AES-NI, SHA extensions)
+      hw-accel: false
     config:
-      # Enable hardware acceleration if available
-      hw_accel: true
-      # Supported algorithms
+      # Supported algorithms (informational)
       algorithms:
         - aes
         - sha256
@@ -38,97 +39,92 @@ libraries:
         - x25519
   
   # Compression library
-  - name: nzip
-    output: z
-    version: 1
-    description: "Data compression (zlib compatible)"
-    depends: []
+  nzip:
     enabled: true
-    config:
-      # Default compression level (1-9)
-      default_level: 6
-      # Enable gzip format support
+    features:
       gzip: true
-      # Enable deflate format support
-      deflate: true
-  
-  # SSL/TLS library - depends on crypto
-  - name: nssl
-    output: ssl
-    version: 3
-    description: "SSL/TLS implementation"
-    depends:
-      - ncryptolib
-    enabled: true
+      zlib: true
+      raw: false
     config:
-      # Minimum TLS version
+      default_level: 6
+  
+  # SSL/TLS library
+  nssl:
+    enabled: true
+    features:
+      tls12: true
+      tls13: true
+      alpn: true
+      sni: true
+      session-resumption: false
+      early-data: false
+    config:
       min_version: "1.2"
-      # Maximum TLS version
       max_version: "1.3"
-      # Enable certificate verification
       verify_certs: true
-      # CA certificates path
       ca_path: /etc/ssl/certs
   
-  # HTTP/2 library - depends on SSL
-  - name: nh2
-    output: nghttp2
-    version: 14
-    description: "HTTP/2 protocol implementation (nghttp2 ABI compatible)"
-    depends:
-      - nssl
+  # HTTP/2 library
+  nh2:
     enabled: true
+    features:
+      async-tokio: true
+      hpack: true
+      priority: false
+      server-push: true
+      flow-control: true
+      compat: false
     config:
-      # Enable HTTP/2 server push
-      server_push: true
-      # Maximum concurrent streams
       max_streams: 100
-      # Initial window size
       window_size: 65535
-
-  # QUIC library - depends on SSL and crypto
-  - name: ntcp2
-    output: ngtcp2
-    version: 1
-    description: "QUIC protocol implementation (ngtcp2 ABI compatible)"
-    depends:
-      - nssl
-      - ncryptolib
+  
+  # HTTP/3 library (NEW - was missing!)
+  nh3:
     enabled: true
+    features:
+      async-tokio: true
+      qpack: true
+      server-push: false
+      compat: false
     config:
-      # Enable 0-RTT early data
-      early_data: true
-      # Enable connection migration
+      max_streams: 100
+  
+  # QUIC library
+  ntcp2:
+    enabled: true
+    features:
+      async-tokio: true
+      qpack: true
       migration: true
-      # Enable datagram support (RFC 9221)
+      early-data: true
+      multipath: false
       datagram: true
-      # Default congestion control algorithm
+      compat: false
+    config:
       cc_algo: cubic
 
 # =============================================================================
-# Build Order
+# Global Build Settings
 # =============================================================================
-# Explicit build order (resolved automatically from dependencies, but can override)
 
-build_order:
-  - ncryptolib
-  - nzip  
-  - nssl
-  - nh2
-  - ntcp2
+build:
+  # Build both static and shared libraries
+  static: true
+  shared: true
+  
+  # Strip debug symbols from shared libraries
+  strip: true
+  
+  # Create version symlinks (libfoo.so -> libfoo.so.X)
+  versioned_symlinks: true
 
 # =============================================================================
-# Library Installation Paths
+# Installation Paths
 # =============================================================================
-# Where libraries are installed in the rootfs
 
-install_paths:
-  # Main library directory
+install:
+  # Main library directory in rootfs
   lib64: /lib64
   
-  # Symlink patterns for versioned libraries
-  # e.g., libssl.so -> libssl.so.3 -> libssl.so.3.0.0
-  versioning:
-    major: true
-    minor: false
-    patch: false
+  # Also install to sysroot for cross-compilation
+  sysroot: true

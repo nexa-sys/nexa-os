@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2021"
 description = "NexaOS Compression Library - zlib/libz.so ABI compatible, DEFLATE/GZIP/ZLIB formats"
 
+# NexaOS Build System Metadata
+[package.metadata.nexaos]
+output = "z"         # Output name: libz.so
+version = 1          # SO version: libz.so.1
+
 [lib]
 # cdylib: Dynamic shared object (libz.so) for dynamic linking
 # staticlib: Static library (libz.a) for static linking

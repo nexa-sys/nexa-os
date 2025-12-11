@@ -1,6 +1,9 @@
 /**
  * NexaOS Build System - Libraries Builder
  * Build userspace libraries (libcrypto, libssl, etc.)
+ * 
+ * Libraries are auto-discovered from userspace/lib/ directory.
+ * Each library must have a Cargo.toml with [package.metadata.nexaos] section.
  */
 
 import { join } from 'path';
@@ -19,6 +22,14 @@ interface LibraryBuildOptions {
 }
 
 /**
+ * Get the source path for a library
+ */
+function getLibrarySourcePath(env: BuildEnvironment, lib: LibraryConfig): string {
+  // Libraries are in userspace/lib/<name>/
+  return join(env.projectRoot, USERSPACE_DIR, lib.path);
+}
+
+/**
  * Build a static library
  */
 async function buildLibraryStatic(
@@ -29,7 +40,7 @@ async function buildLibraryStatic(
   logger.step(`Building ${lib.name} staticlib (${staticName})...`);
   
   const startTime = Date.now();
-  const libSrc = join(env.projectRoot, USERSPACE_DIR, lib.name);
+  const libSrc = getLibrarySourcePath(env, lib);
   const sysrootLib = join(env.sysrootDir, 'lib');
   
   await mkdir(sysrootLib, { recursive: true });
@@ -37,13 +48,20 @@ async function buildLibraryStatic(
   // Use sysroot-pic/lib for building (cargo builds ALL crate-types)
   const sysrootPicLib = join(env.sysrootPicDir, 'lib');
   
+  // Build Cargo features string from config
+  const features = lib.features 
+    ? Object.entries(lib.features).filter(([_, v]) => v).map(([k]) => k).join(',')
+    : undefined;
+  
+  // Include both sysroot-pic/lib and sysroot/lib for library search paths
   const result = await cargoBuild(env, {
     cwd: libSrc,
     target: env.targets.lib,
     release: true,
     buildStd: ['std', 'core', 'alloc', 'panic_abort'],
-    rustflags: `-C opt-level=2 -C panic=abort -L ${sysrootPicLib}`,
+    rustflags: `-C opt-level=2 -C panic=abort -L ${sysrootPicLib} -L ${sysrootLib}`,
     logName: `library-${lib.name}-static`,
+    features,
   });
   
   if (!result.success) {
@@ -71,13 +89,14 @@ async function buildLibraryStatic(
 async function buildLibraryShared(
   env: BuildEnvironment,
   lib: LibraryConfig,
+  _config: BuildConfig,
   destDir?: string
 ): Promise<BuildStepResult> {
   const sharedName = `lib${lib.output}.so`;
   logger.step(`Building ${lib.name} shared library (${sharedName})...`);
   
   const startTime = Date.now();
-  const libSrc = join(env.projectRoot, USERSPACE_DIR, lib.name);
+  const libSrc = getLibrarySourcePath(env, lib);
   const dest = destDir ?? join(env.sysrootDir, 'lib');
   
   await mkdir(dest, { recursive: true });
@@ -85,15 +104,24 @@ async function buildLibraryShared(
   // Use separate target dir to avoid cache conflicts
   const sharedTargetDir = join(env.projectRoot, USERSPACE_DIR, 'target-shared');
   const sysrootPicLib = join(env.sysrootPicDir, 'lib');
+  const sysrootLib = join(env.sysrootDir, 'lib');
   
+  // Build Cargo features string from config
+  const features = lib.features 
+    ? Object.entries(lib.features).filter(([_, v]) => v).map(([k]) => k).join(',')
+    : undefined;
+  
+  // Include both sysroot-pic/lib and sysroot/lib for library search paths
+  // sysroot/lib contains the built .so files that dependent libraries need
   const result = await cargoBuild(env, {
     cwd: libSrc,
     target: env.targets.lib,
     release: true,
     buildStd: ['std', 'core', 'alloc', 'panic_abort'],
-    rustflags: `-C opt-level=2 -C panic=abort -C relocation-model=pic -L ${sysrootPicLib}`,
+    rustflags: `-C opt-level=2 -C panic=abort -C relocation-model=pic -L ${sysrootPicLib} -L ${sysrootLib}`,
     targetDir: sharedTargetDir,
     logName: `library-${lib.name}-shared`,
+    features,
   });
   
   if (!result.success) {
@@ -199,7 +227,7 @@ export async function buildLibrary(
   }
   
   if (options.type === 'shared' || options.type === 'all') {
-    const result = await buildLibraryShared(env, lib, options.destDir);
+    const result = await buildLibraryShared(env, lib, config, options.destDir);
     if (!result.success) return result;
   }
   
@@ -250,13 +278,20 @@ export async function listLibraries(env: BuildEnvironment): Promise<void> {
   const config = await loadBuildConfig(env.projectRoot);
   const libraries = getAllLibraries(config);
   
-  logger.info('Available libraries:');
+  logger.info('Available libraries (auto-discovered from userspace/lib/):');
+  logger.info('');
   
   const rows = libraries.map(lib => [
     lib.name,
     `lib${lib.output}.so.${lib.version}`,
+    lib.path,
     lib.depends.length > 0 ? lib.depends.join(', ') : '-',
+    lib.enabled ? '✓' : '✗',
   ]);
   
-  logger.table(['Name', 'Output', 'Dependencies'], rows);
+  logger.table(['Package', 'Output', 'Path', 'Dependencies', 'Enabled'], rows);
+  
+  logger.info('');
+  logger.info('Build order (topologically sorted):');
+  logger.info(`  ${config.build_order.libraries.join(' → ')}`);
 }

@@ -4,6 +4,14 @@ version = "0.1.0"
 edition = "2021"
 description = "NexaOS QUIC Library - ngtcp2 ABI compatible with tokio async backend"
 
+# NexaOS Build System Metadata
+[package.metadata.nexaos]
+output = "ngtcp2"    # Output name: libngtcp2.so
+version = 1          # SO version: libngtcp2.so.1
+# Build-time library dependencies (not Cargo dependencies)
+# These are needed for linking but not compile-time
+link_depends = ["nssl", "ncryptolib"]
+
 [lib]
 # cdylib: Dynamic shared object (libngtcp2.so) for dynamic linking
 # staticlib: Static library (libngtcp2.a) for static linking

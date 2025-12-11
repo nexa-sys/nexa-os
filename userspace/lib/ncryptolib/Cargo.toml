@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2021"
 description = "NexaOS Cryptographic Library - libcrypto.so ABI compatible, modern standards only"
 
+# NexaOS Build System Metadata
+# This section is used by the build system to auto-discover libraries
+[package.metadata.nexaos]
+output = "crypto"    # Output name: libcrypto.so
+version = 3          # SO version: libcrypto.so.3
+
 [lib]
 # cdylib: Dynamic shared object (libcrypto.so) for dynamic linking
 # staticlib: Static library (libcrypto.a) for static linking

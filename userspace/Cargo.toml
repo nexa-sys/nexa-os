@@ -3,16 +3,25 @@ resolver = "2"
 
 members = [
     # ==========================================================================
-    # Libraries
+    # Core Runtime Libraries (special - not in lib/)
     # ==========================================================================
     "nrlib",
     "ld-nrlib",
-    "ncryptolib",
-    "nssl",
-    "nh2",
-    "nh3",
-    "ntcp2",
-    "nzip",
+
+    # ==========================================================================
+    # Shared Libraries (auto-discovered from lib/)
+    # Libraries are organized in lib/ and auto-discovered by the build system.
+    # Add new libraries by creating lib/<name>/ with a Cargo.toml that includes:
+    #   [package.metadata.nexaos]
+    #   output = "libname"  # output name without 'lib' prefix
+    #   version = 3         # SO version number
+    # ==========================================================================
+    "lib/ncryptolib",
+    "lib/nssl",
+    "lib/nzip",
+    "lib/nh2",
+    "lib/nh3",
+    "lib/ntcp2",
 
     # ==========================================================================
     # Core System Services (statically linked, boot-critical)

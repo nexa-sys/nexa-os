@@ -51,14 +51,6 @@ export interface ModuleCategory {
   [category: string]: ModuleConfig[];
 }
 
-// Library configuration
-export interface LibraryConfig {
-  name: string;
-  output: string;
-  version: number;
-  depends: string[];
-}
-
 // Build configuration root (merged from all config files)
 export interface BuildConfig {
   programs: ProgramCategory;
@@ -71,6 +63,8 @@ export interface BuildConfig {
   profile?: string;
   features?: Record<string, any>;
   featureFlags?: FeatureFlagsConfig;
+  libraryBuildSettings?: LibraryBuildSettings;
+  libraryInstallPaths?: LibraryInstallPaths;
 }
 
 // Feature flag definition
@@ -167,21 +161,47 @@ export interface ProgramDefinition {
 }
 
 // Libraries config file (config/libraries.yaml)
+// New format: libraries are auto-discovered from Cargo.toml
 export interface LibrariesConfig {
-  libraries: LibraryDefinition[];
-  build_order: string[];
-  install_paths?: Record<string, any>;
+  // Per-library settings (keyed by package name)
+  libraries: Record<string, LibrarySettings>;
+  // Global build settings
+  build?: LibraryBuildSettings;
+  // Installation paths
+  install?: LibraryInstallPaths;
 }
 
-export interface LibraryDefinition {
-  name: string;
-  output: string;
-  version: number;
-  description?: string;
-  depends?: string[];
+// Settings for individual library (from config/libraries.yaml)
+export interface LibrarySettings {
   enabled?: boolean;
-  features?: string;
+  features?: Record<string, boolean>;
   config?: Record<string, any>;
+}
+
+// Global library build settings
+export interface LibraryBuildSettings {
+  static?: boolean;
+  shared?: boolean;
+  strip?: boolean;
+  versioned_symlinks?: boolean;
+}
+
+// Library installation paths
+export interface LibraryInstallPaths {
+  lib64?: string;
+  sysroot?: boolean;
+}
+
+// Resolved library configuration (merged from Cargo.toml + YAML config)
+export interface LibraryConfig {
+  name: string;         // Cargo package name
+  output: string;       // Output name without 'lib' prefix
+  version: number;      // SO version number
+  description?: string; // From Cargo.toml description
+  depends: string[];    // Dependencies from Cargo.toml
+  enabled: boolean;     // From YAML config (default: true)
+  features?: Record<string, boolean>;  // Cargo features to enable
+  path: string;         // Path to library source (e.g., "lib/ncryptolib")
 }
 
 // Build type

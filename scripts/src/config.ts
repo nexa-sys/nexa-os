@@ -4,13 +4,16 @@
  *   - config/build.yaml     - Main build settings and profiles
  *   - config/modules.yaml   - Kernel modules configuration
  *   - config/programs.yaml  - Userspace programs configuration
- *   - config/libraries.yaml - Userspace libraries configuration
+ *   - config/libraries.yaml - Userspace libraries configuration (settings only)
  *   - config/features.yaml  - Compile-time feature flags
+ * 
+ * Libraries are auto-discovered from userspace/lib/ by parsing Cargo.toml files.
  */
 
-import { readFile } from 'fs/promises';
+import { readFile, readdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { parse as parseYaml } from 'yaml';
+import { parse as parseToml } from '@iarna/toml';
 import { join } from 'path';
 import { 
   BuildConfig, 
@@ -20,12 +23,115 @@ import {
   ModulesConfig,
   ProgramsConfig,
   LibrariesConfig,
+  LibrarySettings,
   MainBuildConfig,
   BuildProfileConfig,
   FeatureFlagsConfig
 } from './types.js';
 
 let cachedConfig: BuildConfig | null = null;
+
+/**
+ * Parse a Cargo.toml file and extract NexaOS library metadata
+ */
+async function parseCargoToml(cargoPath: string): Promise<{
+  name: string;
+  description?: string;
+  output?: string;
+  version?: number;
+  depends: string[];
+} | null> {
+  try {
+    const content = await readFile(cargoPath, 'utf-8');
+    const cargo = parseToml(content) as any;
+    
+    const pkg = cargo.package;
+    if (!pkg?.name) return null;
+    
+    // Check if it's a library (has [lib] section with cdylib/staticlib)
+    const lib = cargo.lib;
+    if (!lib?.['crate-type']) return null;
+    const crateTypes = lib['crate-type'] as string[];
+    if (!crateTypes.includes('cdylib') && !crateTypes.includes('staticlib')) {
+      return null;
+    }
+    
+    // Extract NexaOS metadata
+    const nexaos = pkg.metadata?.nexaos;
+    
+    // Extract dependencies (only path dependencies in lib/ are library deps)
+    const depends: string[] = [];
+    const deps = cargo.dependencies || {};
+    for (const [depName, depConfig] of Object.entries(deps)) {
+      if (typeof depConfig === 'object' && (depConfig as any).path) {
+        const depPath = (depConfig as any).path as string;
+        // Only count sibling library dependencies
+        if (depPath.startsWith('../') || depPath.startsWith('./')) {
+          depends.push(depName);
+        }
+      }
+    }
+    
+    // Add link-time dependencies from nexaos metadata
+    // These are libraries that need to be built first but aren't Cargo dependencies
+    const linkDepends = nexaos?.link_depends as string[] | undefined;
+    if (linkDepends) {
+      depends.push(...linkDepends);
+    }
+    
+    return {
+      name: pkg.name,
+      description: pkg.description,
+      output: nexaos?.output,
+      version: nexaos?.version,
+      depends,
+    };
+  } catch (err) {
+    return null;
+  }
+}
+
+/**
+ * Auto-discover libraries from userspace/lib/ directory
+ */
+async function discoverLibraries(projectRoot: string): Promise<Map<string, {
+  name: string;
+  output: string;
+  version: number;
+  description?: string;
+  depends: string[];
+  path: string;
+}>> {
+  const libDir = join(projectRoot, 'userspace', 'lib');
+  const libraries = new Map();
+  
+  if (!existsSync(libDir)) {
+    return libraries;
+  }
+  
+  const entries = await readdir(libDir, { withFileTypes: true });
+  
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    
+    const cargoPath = join(libDir, entry.name, 'Cargo.toml');
+    if (!existsSync(cargoPath)) continue;
+    
+    const parsed = await parseCargoToml(cargoPath);
+    if (!parsed) continue;
+    
+    libraries.set(parsed.name, {
+      name: parsed.name,
+      output: parsed.output || parsed.name,
+      version: parsed.version || 1,
+      description: parsed.description,
+      depends: parsed.depends,
+      path: `lib/${entry.name}`,
+    });
+  }
+  
+  return libraries;
+}
 
 /**
  * Load and parse the build configuration from YAML files in config/
@@ -37,12 +143,13 @@ export async function loadBuildConfig(projectRoot: string): Promise<BuildConfig>
   
   const configDir = join(projectRoot, 'config');
   
-  // Load all configuration files
-  const [buildContent, modulesContent, programsContent, librariesContent] = await Promise.all([
+  // Load all configuration files and discover libraries in parallel
+  const [buildContent, modulesContent, programsContent, librariesContent, discoveredLibs] = await Promise.all([
     readFile(join(configDir, 'build.yaml'), 'utf-8'),
     readFile(join(configDir, 'modules.yaml'), 'utf-8'),
     readFile(join(configDir, 'programs.yaml'), 'utf-8'),
-    readFile(join(configDir, 'libraries.yaml'), 'utf-8')
+    readFile(join(configDir, 'libraries.yaml'), 'utf-8'),
+    discoverLibraries(projectRoot)
   ]);
   
   // Load features.yaml if it exists
@@ -59,7 +166,7 @@ export async function loadBuildConfig(projectRoot: string): Promise<BuildConfig>
   const librariesConfig = parseYaml(librariesContent) as LibrariesConfig;
   
   // Merge into unified BuildConfig structure
-  cachedConfig = mergeConfigs(buildConfig, modulesConfig, programsConfig, librariesConfig, featuresConfig);
+  cachedConfig = mergeConfigs(buildConfig, modulesConfig, programsConfig, librariesConfig, discoveredLibs, featuresConfig);
   return cachedConfig;
 }
 
@@ -70,7 +177,15 @@ function mergeConfigs(
   build: MainBuildConfig,
   modules: ModulesConfig,
   programs: ProgramsConfig,
-  libraries: LibrariesConfig,
+  librariesYaml: LibrariesConfig,
+  discoveredLibs: Map<string, {
+    name: string;
+    output: string;
+    version: number;
+    description?: string;
+    depends: string[];
+    path: string;
+  }>,
   featureFlags?: FeatureFlagsConfig
 ): BuildConfig {
   // Get current profile from environment or use default
@@ -133,28 +248,76 @@ function mergeConfigs(
       }));
   }
   
-  // Convert libraries config
-  const libraryList: LibraryConfig[] = (libraries.libraries || [])
-    .filter((l: any) => l.enabled !== false)
-    .map((l: any) => ({
-      name: l.name,
-      output: l.output,
-      version: l.version,
-      depends: l.depends || []
-    }));
+  // Merge discovered libraries with YAML settings
+  // Libraries are auto-discovered from Cargo.toml, YAML only provides settings
+  const yamlSettings = librariesYaml.libraries || {};
+  const libraryList: LibraryConfig[] = [];
+  
+  for (const [name, discovered] of discoveredLibs) {
+    const settings: LibrarySettings = yamlSettings[name] || {};
+    
+    // Skip if explicitly disabled in YAML
+    if (settings.enabled === false) continue;
+    
+    libraryList.push({
+      name: discovered.name,
+      output: discovered.output,
+      version: discovered.version,
+      description: discovered.description,
+      depends: discovered.depends,
+      enabled: true,  // Already filtered disabled ones above
+      features: settings.features,
+      path: discovered.path,
+    });
+  }
+  
+  // Sort libraries by dependency order (topological sort)
+  const sortedLibraries = topologicalSortLibraries(libraryList);
   
   return {
     programs: programCategories,
     modules: moduleCategories,
-    libraries: libraryList,
+    libraries: sortedLibraries,
     build_order: {
-      libraries: libraries.build_order || build.build_order?.libraries || []
+      libraries: sortedLibraries.map(l => l.name)
     },
     settings: build.settings,
     profile: profileName,
     features: profile?.features || {},
-    featureFlags: featureFlags
+    featureFlags: featureFlags,
+    libraryBuildSettings: librariesYaml.build,
+    libraryInstallPaths: librariesYaml.install,
   };
+}
+
+/**
+ * Topological sort libraries by dependencies
+ */
+function topologicalSortLibraries(libraries: LibraryConfig[]): LibraryConfig[] {
+  const libMap = new Map(libraries.map(l => [l.name, l]));
+  const visited = new Set<string>();
+  const result: LibraryConfig[] = [];
+  
+  function visit(name: string) {
+    if (visited.has(name)) return;
+    visited.add(name);
+    
+    const lib = libMap.get(name);
+    if (!lib) return;
+    
+    // Visit dependencies first
+    for (const dep of lib.depends) {
+      visit(dep);
+    }
+    
+    result.push(lib);
+  }
+  
+  for (const lib of libraries) {
+    visit(lib.name);
+  }
+  
+  return result;
 }
 
 /**

@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2021"
 description = "NexaOS SSL/TLS Library - libssl.so ABI compatible, modern TLS 1.2/1.3 only"
 
+# NexaOS Build System Metadata
+[package.metadata.nexaos]
+output = "ssl"       # Output name: libssl.so
+version = 3          # SO version: libssl.so.3
+
 [lib]
 # cdylib: Dynamic shared object (libssl.so) for dynamic linking
 # staticlib: Static library (libssl.a) for static linking
