@@ -119,7 +119,9 @@ async function ensureNrlib(env: BuildEnvironment): Promise<void> {
 }
 
 /**
- * Build and install all programs (parallel build, sequential install)
+ * Build and install all programs
+ * Strategy: Group by (link_type, features) for batch building where possible,
+ * fall back to individual builds for programs with custom features
  */
 export async function buildAllPrograms(
   env: BuildEnvironment,
@@ -129,6 +131,7 @@ export async function buildAllPrograms(
   
   const startTime = Date.now();
   const dest = destDir ?? join(env.buildDir, 'rootfs');
+  const userspaceDir = join(env.projectRoot, USERSPACE_DIR);
   
   // Ensure nrlib is built first
   await ensureNrlib(env);
@@ -136,29 +139,69 @@ export async function buildAllPrograms(
   const config = await loadBuildConfig(env.projectRoot);
   const programs = getAllPrograms(config);
   
-  // Parallel compile concurrency limit
-  const PARALLEL_LIMIT = Math.min(programs.length, 6);
+  // Separate programs into batchable (no features) and individual (has features)
+  const staticNoFeatures = programs.filter(p => (p.link ?? 'dyn') === 'std' && !p.features);
+  const dynamicNoFeatures = programs.filter(p => (p.link ?? 'dyn') === 'dyn' && !p.features);
+  const withFeatures = programs.filter(p => p.features);
   
-  logger.info(`Building ${programs.length} programs in parallel (max ${PARALLEL_LIMIT} concurrent)...`);
+  logger.info(`Building ${programs.length} programs: ${staticNoFeatures.length} static batch, ${dynamicNoFeatures.length} dynamic batch, ${withFeatures.length} with custom features`);
   
-  // Phase 1: Build all programs in parallel batches
   const buildResults: Map<string, boolean> = new Map();
   
-  for (let i = 0; i < programs.length; i += PARALLEL_LIMIT) {
-    const batch = programs.slice(i, i + PARALLEL_LIMIT);
-    const results = await Promise.all(
-      batch.map(async (program) => {
-        const result = await buildProgram(env, program);
-        return { program, result };
-      })
-    );
+  // Phase 1: Batch build static programs without features
+  if (staticNoFeatures.length > 0) {
+    logger.step(`Building ${staticNoFeatures.length} static programs (batch)...`);
+    const extraArgs = staticNoFeatures.flatMap(p => ['-p', p.package]);
+    const result = await cargoBuild(env, {
+      cwd: userspaceDir,
+      target: env.targets.userspace,
+      release: true,
+      buildStd: ['std', 'panic_abort'],
+      rustflags: getStdRustFlags(join(env.sysrootDir, 'lib')),
+      extraArgs,
+      logName: 'programs-static-batch',
+    });
+    for (const p of staticNoFeatures) buildResults.set(p.package, result.success);
+    if (result.success) logger.success(`Built ${staticNoFeatures.length} static programs`);
+  }
+  
+  // Phase 2: Batch build dynamic programs without features
+  if (dynamicNoFeatures.length > 0) {
+    logger.step(`Building ${dynamicNoFeatures.length} dynamic programs (batch)...`);
+    const extraArgs = dynamicNoFeatures.flatMap(p => ['-p', p.package]);
+    const result = await cargoBuild(env, {
+      cwd: userspaceDir,
+      target: env.targets.userspaceDyn,
+      release: true,
+      buildStd: ['std', 'panic_abort'],
+      rustflags: getDynRustFlags(join(env.sysrootPicDir, 'lib')),
+      extraArgs,
+      logName: 'programs-dynamic-batch',
+    });
+    for (const p of dynamicNoFeatures) buildResults.set(p.package, result.success);
+    if (result.success) logger.success(`Built ${dynamicNoFeatures.length} dynamic programs`);
+  }
+  
+  // Phase 3: Build programs with custom features individually (in parallel)
+  if (withFeatures.length > 0) {
+    logger.step(`Building ${withFeatures.length} programs with custom features...`);
+    const PARALLEL_LIMIT = Math.min(withFeatures.length, 4);
     
-    for (const { program, result } of results) {
-      buildResults.set(program.package, result.success);
+    for (let i = 0; i < withFeatures.length; i += PARALLEL_LIMIT) {
+      const batch = withFeatures.slice(i, i + PARALLEL_LIMIT);
+      const results = await Promise.all(
+        batch.map(async (program) => {
+          const result = await buildProgram(env, program);
+          return { program, result };
+        })
+      );
+      for (const { program, result } of results) {
+        buildResults.set(program.package, result.success);
+      }
     }
   }
   
-  // Phase 2: Install successfully built programs (sequential to avoid file conflicts)
+  // Phase 4: Install successfully built programs
   let successCount = 0;
   let failCount = 0;
   

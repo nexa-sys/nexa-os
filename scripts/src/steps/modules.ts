@@ -110,7 +110,8 @@ async function createSimpleNkm(
  */
 async function buildModule(
   env: BuildEnvironment,
-  module: ModuleConfig
+  module: ModuleConfig,
+  sharedTargetDir: string
 ): Promise<BuildStepResult> {
   logger.step(`Building ${module.name} module...`);
   
@@ -128,10 +129,8 @@ async function buildModule(
     return { success: true, duration: Date.now() - startTime };
   }
   
-  // NOTE: Removed cargo clean to preserve rlib cache
-  // The large kernel rlib files are reused between module builds
-  
-  // Build as staticlib using kernel target
+  // Build as staticlib using kernel target with SHARED target directory
+  // This allows all modules to share compiled std libraries (core, alloc, compiler_builtins)
   logger.info(`Compiling ${module.name} module as staticlib...`);
   
   const result = await cargoBuild(env, {
@@ -141,6 +140,7 @@ async function buildModule(
     buildStd: ['core', 'alloc', 'compiler_builtins'],
     rustflags: getModuleRustFlags(),
     extraArgs: ['-Z', 'build-std-features=compiler-builtins-mem'],
+    targetDir: sharedTargetDir,  // Use shared target directory!
     logName: `module-${module.name}`,
   });
   
@@ -150,8 +150,8 @@ async function buildModule(
     return { success: true, duration: Date.now() - startTime };
   }
   
-  // Find the built staticlib
-  const findResult = await exec('find', [moduleSrc + '/target', '-name', `lib${module.name}_module.a`]);
+  // Find the built staticlib in shared target directory
+  const findResult = await exec('find', [sharedTargetDir, '-name', `lib${module.name}_module.a`]);
   const staticlib = findResult.stdout.trim().split('\n')[0];
   
   if (!staticlib || !existsSync(staticlib)) {
@@ -238,7 +238,7 @@ async function buildModule(
 }
 
 /**
- * Build all kernel modules (parallel)
+ * Build all kernel modules (parallel with shared target directory)
  */
 export async function buildAllModules(env: BuildEnvironment): Promise<BuildStepResult> {
   logger.section('Building Kernel Modules');
@@ -247,26 +247,49 @@ export async function buildAllModules(env: BuildEnvironment): Promise<BuildStepR
   const config = await loadBuildConfig(env.projectRoot);
   const modules = getAllModules(config);
   
-  // Parallel compile concurrency limit (avoid overwhelming system)
-  const PARALLEL_LIMIT = Math.min(modules.length, 4);
+  // Shared target directory for all modules - this caches the compiled std libraries
+  const sharedTargetDir = join(env.projectRoot, 'modules', 'target');
+  await mkdir(sharedTargetDir, { recursive: true });
   
-  logger.info(`Building ${modules.length} modules in parallel (max ${PARALLEL_LIMIT} concurrent)...`);
+  logger.info(`Using shared target directory: ${sharedTargetDir}`);
+  logger.info(`Building ${modules.length} modules...`);
   
   let successCount = 0;
   let failCount = 0;
   
-  // Process modules in batches
-  for (let i = 0; i < modules.length; i += PARALLEL_LIMIT) {
-    const batch = modules.slice(i, i + PARALLEL_LIMIT);
-    const results = await Promise.all(
-      batch.map(module => buildModule(env, module))
-    );
+  if (modules.length === 0) {
+    logger.warn('No modules to build');
+    return { success: true, duration: Date.now() - startTime };
+  }
+  
+  // Build first module to warm up the shared std cache (core, alloc, compiler_builtins)
+  // This avoids parallel builds fighting over compiling std
+  logger.info('Building first module to warm std cache...');
+  const firstResult = await buildModule(env, modules[0], sharedTargetDir);
+  if (firstResult.success) {
+    successCount++;
+  } else {
+    failCount++;
+  }
+  
+  // Now build remaining modules in parallel - std is already cached
+  const remainingModules = modules.slice(1);
+  if (remainingModules.length > 0) {
+    const PARALLEL_LIMIT = Math.min(remainingModules.length, 4);
+    logger.info(`Building ${remainingModules.length} remaining modules in parallel (max ${PARALLEL_LIMIT} concurrent)...`);
     
-    for (const result of results) {
-      if (result.success) {
-        successCount++;
-      } else {
-        failCount++;
+    for (let i = 0; i < remainingModules.length; i += PARALLEL_LIMIT) {
+      const batch = remainingModules.slice(i, i + PARALLEL_LIMIT);
+      const results = await Promise.all(
+        batch.map(module => buildModule(env, module, sharedTargetDir))
+      );
+      
+      for (const result of results) {
+        if (result.success) {
+          successCount++;
+        } else {
+          failCount++;
+        }
       }
     }
   }
@@ -274,7 +297,7 @@ export async function buildAllModules(env: BuildEnvironment): Promise<BuildStepR
   if (failCount > 0) {
     logger.warn(`Built ${successCount} modules, ${failCount} failed`);
   } else {
-    logger.success(`All ${successCount} modules built successfully in parallel`);
+    logger.success(`All ${successCount} modules built successfully`);
   }
   
   return {
@@ -298,7 +321,9 @@ export async function buildSingleModule(
     return { success: false, duration: 0, error: `Unknown module: ${name}` };
   }
   
-  return buildModule(env, module);
+  // Use shared target directory for single module builds too
+  const sharedTargetDir = join(env.projectRoot, 'modules', 'target');
+  return buildModule(env, module, sharedTargetDir);
 }
 
 /**
