@@ -242,6 +242,11 @@ impl HpackEncoder {
         self.dynamic_table.set_max_size(size);
     }
 
+    /// Get the current dynamic table size
+    pub fn dynamic_table_size(&self) -> usize {
+        self.dynamic_table.size()
+    }
+
     /// Encode a list of headers
     pub fn encode(&mut self, headers: &[HeaderField], buf: &mut Vec<u8>) -> Result<()> {
         for field in headers {
@@ -449,6 +454,11 @@ impl HpackDecoder {
     pub fn set_max_table_size(&mut self, size: usize) {
         self.max_table_size = size;
         self.dynamic_table.set_max_size(size);
+    }
+
+    /// Get the current dynamic table size
+    pub fn dynamic_table_size(&self) -> usize {
+        self.dynamic_table.size()
     }
 
     /// Decode a header block

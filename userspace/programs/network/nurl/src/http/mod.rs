@@ -2,14 +2,22 @@
 ///
 /// This module provides a unified interface for different HTTP protocol versions:
 /// - HTTP/1.1 (implemented)
-/// - HTTP/2 (implemented via nh2)
+/// - HTTP/2 (implemented via nh2 - static or dynamic linking)
 /// - HTTP/3 (planned)
 pub mod http1;
 pub mod request;
 pub mod response;
 
+// HTTP/2 module selection based on features:
+// - http2: static linking with nh2 crate (Rust API)
+// - http2-dynamic: dynamic linking with libnh2.so via FFI (C ABI)
+
 #[cfg(feature = "http2")]
 pub mod http2;
+
+#[cfg(feature = "http2-dynamic")]
+#[path = "http2_dynamic.rs"]
+pub mod http2_dynamic;
 
 use crate::args::{Args, HttpVersion};
 use crate::url::ParsedUrl;
@@ -163,10 +171,28 @@ pub fn perform_request(args: &Args, url: &ParsedUrl) -> HttpResult<HttpResponse>
             client.request(args, url)?
         }
         HttpVersion::Http2 => {
-            #[cfg(feature = "http2")]
+            // Prefer dynamic linking (http2-dynamic) over static linking (http2)
+            #[cfg(feature = "http2-dynamic")]
             {
                 if args.verbose {
-                    eprintln!("* Using HTTP/2 via nh2 library");
+                    eprintln!("* Using HTTP/2 via libnh2.so (dynamic linking)");
+                }
+                let mut client = http2_dynamic::Http2Client::new(args.verbose, args.insecure)?;
+                match client.request(args, url) {
+                    Ok(resp) => resp,
+                    Err(e) => {
+                        if args.verbose {
+                            eprintln!("* HTTP/2 (dynamic) failed: {}, falling back to HTTP/1.1", e);
+                        }
+                        let mut client = http1::Http1Client::new(args.verbose, args.insecure)?;
+                        client.request(args, url)?
+                    }
+                }
+            }
+            #[cfg(all(feature = "http2", not(feature = "http2-dynamic")))]
+            {
+                if args.verbose {
+                    eprintln!("* Using HTTP/2 via nh2 library (static linking)");
                 }
                 let mut client = http2::Http2Client::new(args.verbose, args.insecure)?;
                 match client.request(args, url) {
@@ -180,7 +206,7 @@ pub fn perform_request(args: &Args, url: &ParsedUrl) -> HttpResult<HttpResponse>
                     }
                 }
             }
-            #[cfg(not(feature = "http2"))]
+            #[cfg(not(any(feature = "http2", feature = "http2-dynamic")))]
             {
                 if args.verbose {
                     eprintln!("* HTTP/2 not compiled in, using HTTP/1.1");

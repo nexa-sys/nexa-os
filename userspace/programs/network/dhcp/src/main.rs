@@ -288,8 +288,8 @@ fn acquire_lease(if_index: u32, mac: &[u8; 6]) -> Option<DhcpLease> {
     println!("Sending DHCP DISCOVER...");
     let packet = create_dhcp_packet(DHCP_DISCOVER, mac, xid);
     let packet_size = mem::size_of::<DhcpPacket>();
-    // DEBUG: println!("[acquire_lease] Calling sendto: fd={}, size={}, dest=255.255.255.255:{}", 
-             fd, packet_size, DHCP_SERVER_PORT);
+    // DEBUG: println!("[acquire_lease] Calling sendto: fd={}, size={}, dest=255.255.255.255:{}",
+    //          fd, packet_size, DHCP_SERVER_PORT);
     let ret = unsafe { sendto(fd, &packet as *const _ as *const std::ffi::c_void, packet_size, 0, &dest_addr as *const _ as *const std::ffi::c_void, 16) };
     // DEBUG: println!("[acquire_lease] sendto() returned: {}", ret);
     if ret < 0 {
@@ -416,8 +416,8 @@ fn acquire_lease(if_index: u32, mac: &[u8; 6]) -> Option<DhcpLease> {
             // DEBUG: println!("[acquire_lease] Found router option, len={}", b.len());
             if b.len() >= 4 {
                 let ip = u32::from_be_bytes([b[0], b[1], b[2], b[3]]);
-                // DEBUG: println!("[acquire_lease] Parsed router IP: {}.{}.{}.{}", 
-                    (ip >> 24) & 0xFF, (ip >> 16) & 0xFF, (ip >> 8) & 0xFF, ip & 0xFF);
+                // DEBUG: println!("[acquire_lease] Parsed router IP: {}.{}.{}.{}",
+                //     (ip >> 24) & 0xFF, (ip >> 16) & 0xFF, (ip >> 8) & 0xFF, ip & 0xFF);
                 Some(ip)
             } else {
                 // DEBUG: println!("[acquire_lease] Router option too short!");
@@ -1023,8 +1023,8 @@ fn debug_print_dhcp_options(buf: &[u8]) {
     }
     
     // DEBUG: println!("[debug_dhcp_options] Buffer len={}, magic_offset={}", buf.len(), magic_offset);
-    // DEBUG: println!("[debug_dhcp_options] Magic cookie bytes: [{:02x} {:02x} {:02x} {:02x}]", 
-        buf[magic_offset], buf[magic_offset+1], buf[magic_offset+2], buf[magic_offset+3]);
+    // DEBUG: println!("[debug_dhcp_options] Magic cookie bytes: [{:02x} {:02x} {:02x} {:02x}]",
+    //     buf[magic_offset], buf[magic_offset+1], buf[magic_offset+2], buf[magic_offset+3]);
     
     // Check magic cookie
     if buf[magic_offset] != 0x63 || buf[magic_offset+1] != 0x82 || buf[magic_offset+2] != 0x53 || buf[magic_offset+3] != 0x63 {

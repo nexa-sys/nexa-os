@@ -34,6 +34,10 @@ mod nssl_ffi;
 #[path = "tls_dynamic.rs"]
 mod tls;
 
+// HTTP/2 FFI module for dynamic linking with libnh2.so
+#[cfg(feature = "http2-dynamic")]
+mod nh2_ffi;
+
 // Fallback when no TLS support
 #[cfg(not(any(feature = "https", feature = "https-dynamic")))]
 mod tls {
