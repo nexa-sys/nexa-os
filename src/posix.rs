@@ -25,6 +25,7 @@ pub mod errno {
     pub const EISDIR: i32 = 21; // Is a directory
     pub const EINVAL: i32 = 22; // Invalid argument
     pub const EMFILE: i32 = 24; // Too many open files
+    pub const ENOTTY: i32 = 25; // Inappropriate ioctl for device
     pub const ENOSPC: i32 = 28; // No space left on device
     pub const ESPIPE: i32 = 29; // Illegal seek
     pub const EROFS: i32 = 30; // Read-only file system

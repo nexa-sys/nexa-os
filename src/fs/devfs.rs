@@ -23,6 +23,8 @@ pub enum DeviceType {
     Urandom,
     /// /dev/console - system console
     Console,
+    /// /dev/ptmx - PTY master multiplexer
+    PtyMasterMux,
     /// Network device (e.g., net0)
     Network(u8),
     /// Block device (e.g., block0, vda)
@@ -98,7 +100,7 @@ pub fn init() {
     register_device("tty2", DeviceType::Console, 4, 2);
     register_device("tty3", DeviceType::Console, 4, 3);
     register_device("tty4", DeviceType::Console, 4, 4);
-    register_device("ptmx", DeviceType::Console, 5, 2);
+    register_device("ptmx", DeviceType::PtyMasterMux, 5, 2);
 
     let count = *DEVICE_COUNT.lock();
     crate::kinfo!("devfs: initialized with {} devices", count);
@@ -155,6 +157,33 @@ impl FileSystem for DevFs {
     fn read(&self, path: &str) -> Option<OpenFile> {
         let name = path.trim_start_matches('/');
 
+        // devpts-like directory: /dev/pts
+        if name == "pts" {
+            let meta = Metadata::empty()
+                .with_type(FileType::Directory)
+                .with_mode(0o755);
+            return Some(OpenFile {
+                content: FileContent::Inline(&[]),
+                metadata: meta,
+            });
+        }
+
+        // devpts-like slave nodes: /dev/pts/<n>
+        if let Some(rest) = name.strip_prefix("pts/") {
+            if let Ok(id) = rest.parse::<usize>() {
+                if crate::tty::pty::is_allocated(id) {
+                    let meta = Metadata::empty()
+                        .with_type(FileType::Character)
+                        .with_mode(0o666);
+                    return Some(OpenFile {
+                        content: FileContent::Inline(&[]),
+                        metadata: meta,
+                    });
+                }
+            }
+            return None;
+        }
+
         let devices = DEVICES.lock();
         let count = *DEVICE_COUNT.lock();
 
@@ -189,6 +218,29 @@ impl FileSystem for DevFs {
             );
         }
 
+        // /dev/pts directory
+        if name == "pts" {
+            return Some(
+                Metadata::empty()
+                    .with_type(FileType::Directory)
+                    .with_mode(0o755),
+            );
+        }
+
+        // /dev/pts/<n>
+        if let Some(rest) = name.strip_prefix("pts/") {
+            if let Ok(id) = rest.parse::<usize>() {
+                if crate::tty::pty::is_allocated(id) {
+                    return Some(
+                        Metadata::empty()
+                            .with_type(FileType::Character)
+                            .with_mode(0o666),
+                    );
+                }
+            }
+            return None;
+        }
+
         let devices = DEVICES.lock();
         let count = *DEVICE_COUNT.lock();
 
@@ -210,32 +262,57 @@ impl FileSystem for DevFs {
     fn list(&self, path: &str, callback: &mut dyn FnMut(&str, Metadata)) {
         let name = path.trim_start_matches('/');
 
-        // Only root directory is listable
-        if !name.is_empty() && name != "." {
-            return;
-        }
-
-        // First output . and .. directory entries
         let dir_meta = Metadata::empty()
             .with_type(FileType::Directory)
             .with_mode(0o755);
-        callback(".", dir_meta);
-        callback("..", dir_meta);
 
-        let devices = DEVICES.lock();
-        let count = *DEVICE_COUNT.lock();
+        // Root: list devices + pts directory
+        if name.is_empty() || name == "." {
+            callback(".", dir_meta);
+            callback("..", dir_meta);
 
-        for i in 0..count {
-            if let Some(ref dev) = devices[i] {
-                let file_type = match dev.dev_type {
-                    DeviceType::Block(_) => FileType::Block,
-                    _ => FileType::Character,
-                };
-                let meta = Metadata::empty().with_type(file_type).with_mode(0o666);
+            callback("pts", dir_meta);
 
-                callback(dev.name, meta);
+            let devices = DEVICES.lock();
+            let count = *DEVICE_COUNT.lock();
+            for i in 0..count {
+                if let Some(ref dev) = devices[i] {
+                    let file_type = match dev.dev_type {
+                        DeviceType::Block(_) => FileType::Block,
+                        _ => FileType::Character,
+                    };
+                    let meta = Metadata::empty().with_type(file_type).with_mode(0o666);
+                    callback(dev.name, meta);
+                }
             }
+            return;
         }
+
+        // /dev/pts: list allocated slave nodes
+        if name == "pts" {
+            callback(".", dir_meta);
+            callback("..", dir_meta);
+
+            let meta = Metadata::empty()
+                .with_type(FileType::Character)
+                .with_mode(0o666);
+
+            const PTY_NAMES: [&str; 32] = [
+                "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13",
+                "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25",
+                "26", "27", "28", "29", "30", "31",
+            ];
+
+            crate::tty::pty::list_allocated_ids(|id| {
+                if id < PTY_NAMES.len() {
+                    callback(PTY_NAMES[id], meta);
+                }
+            });
+            return;
+        }
+
+        // Other directories: not listable
+        return;
     }
 }
 

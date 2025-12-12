@@ -129,6 +129,7 @@ members = [
     # Test Programs (exclude from production builds)
     # ==========================================================================
     "programs/test/crashtest",
+    "programs/test/pty-smoke",
     "programs/test/thread_test",
     "programs/test/pthread_test",
     "programs/test/hello_dynamic",

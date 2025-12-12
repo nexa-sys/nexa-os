@@ -141,6 +141,8 @@ const SYS_PWRITE64: u64 = 18;
 const SYS_READV: u64 = 19;
 const SYS_WRITEV: u64 = 20;
 
+const SYS_IOCTL: u64 = 16;
+
 const SYS_PIPE: u64 = 22;
 const SYS_DUP: u64 = 32;
 const SYS_DUP2: u64 = 33;
@@ -315,6 +317,7 @@ pub(crate) const ENOTTY: i32 = 25;
 pub(crate) const ENODEV: i32 = 19;
 pub(crate) const ENOSPC: i32 = 28;
 pub(crate) const EPERM: i32 = 1;
+pub(crate) const ERANGE: i32 = 34;
 
 const MAX_KERNEL_DNS_SERVERS: usize = 3;
 

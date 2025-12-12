@@ -21,6 +21,10 @@ const TIOCSPGRP: c_ulong = 0x5410;
 const FIONREAD: c_ulong = 0x541B;
 const FIONBIO: c_ulong = 0x5421;
 
+// PTY ioctls
+const TIOCGPTN: c_ulong = 0x8004_5430;
+const TIOCSPTLCK: c_ulong = 0x4004_5431;
+
 // Local mode flags
 const ECHO: u32 = 0o000010;
 const ECHONL: u32 = 0o000100;
@@ -271,6 +275,13 @@ pub unsafe extern "C" fn fcntl(fd: c_int, cmd: c_int, arg: c_int) -> c_int {
 
 #[no_mangle]
 pub unsafe extern "C" fn ioctl(fd: c_int, request: c_ulong, arg: *mut c_void) -> c_int {
+    // For real fds, delegate to the kernel's ioctl syscall.
+    // Keep stdio (0..=2) handled here for now, because the kernel stdio is not a real /dev/tty.
+    if fd > 2 {
+        let ret = crate::syscall3(crate::SYS_IOCTL, fd as u64, request as u64, arg as u64);
+        return crate::translate_ret_i32(ret);
+    }
+
     // Handle terminal control requests
     match request {
         TCGETS => {
@@ -337,6 +348,103 @@ pub unsafe extern "C" fn ioctl(fd: c_int, request: c_ulong, arg: *mut c_void) ->
     // Unknown ioctl
     crate::set_errno(crate::ENOTTY);
     -1
+}
+
+// ============================================================================
+// PTY helper APIs (glibc-ish)
+// ============================================================================
+
+const O_RDWR: c_int = 2;
+
+#[no_mangle]
+pub unsafe extern "C" fn posix_openpt(flags: c_int) -> c_int {
+    // flags is typically O_RDWR|O_NOCTTY; we ignore unsupported bits for now.
+    let _ = flags;
+    crate::open(b"/dev/ptmx\0".as_ptr(), O_RDWR, 0)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn grantpt(_fd: c_int) -> c_int {
+    // Permissions are managed by devfs; nothing to do.
+    0
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn unlockpt(fd: c_int) -> c_int {
+    let mut unlock: c_int = 0;
+    let ret = ioctl(fd, TIOCSPTLCK, &mut unlock as *mut _ as *mut c_void);
+    ret
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn ptsname_r(fd: c_int, buf: *mut c_char, buflen: size_t) -> c_int {
+    if buf.is_null() || buflen == 0 {
+        crate::set_errno(crate::EINVAL);
+        return -1;
+    }
+
+    let mut pty_num: c_int = 0;
+    if ioctl(fd, TIOCGPTN, &mut pty_num as *mut _ as *mut c_void) != 0 {
+        return -1;
+    }
+
+    // Build "/dev/pts/<n>\0" into buf
+    const PREFIX: &[u8] = b"/dev/pts/";
+    let mut tmp = [0u8; 32];
+    let mut len = 0usize;
+    tmp[..PREFIX.len()].copy_from_slice(PREFIX);
+    len += PREFIX.len();
+
+    // decimal
+    let mut n = pty_num as i32;
+    if n < 0 {
+        crate::set_errno(crate::EINVAL);
+        return -1;
+    }
+    let mut digits = [0u8; 16];
+    let mut dlen = 0usize;
+    if n == 0 {
+        digits[0] = b'0';
+        dlen = 1;
+    } else {
+        while n > 0 && dlen < digits.len() {
+            digits[dlen] = b'0' + (n % 10) as u8;
+            n /= 10;
+            dlen += 1;
+        }
+        for i in 0..dlen / 2 {
+            let j = dlen - 1 - i;
+            let t = digits[i];
+            digits[i] = digits[j];
+            digits[j] = t;
+        }
+    }
+
+    if len + dlen + 1 > tmp.len() {
+        crate::set_errno(crate::EINVAL);
+        return -1;
+    }
+    tmp[len..len + dlen].copy_from_slice(&digits[..dlen]);
+    len += dlen;
+    tmp[len] = 0;
+    len += 1;
+
+    if len > buflen {
+        crate::set_errno(crate::ERANGE);
+        return -1;
+    }
+
+    core::ptr::copy_nonoverlapping(tmp.as_ptr() as *const c_char, buf, len);
+    0
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn ptsname(fd: c_int) -> *const c_char {
+    static mut BUF: [c_char; 64] = [0; 64];
+    if ptsname_r(fd, BUF.as_mut_ptr(), BUF.len()) != 0 {
+        return core::ptr::null();
+    }
+    BUF.as_ptr()
 }
 
 // ============================================================================

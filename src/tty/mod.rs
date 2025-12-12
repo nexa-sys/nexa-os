@@ -5,6 +5,7 @@
 //! - Console I/O
 
 pub mod vt;
+pub mod pty;
 
 // Re-export commonly used items
 pub use vt::{

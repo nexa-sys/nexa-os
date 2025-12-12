@@ -5,7 +5,7 @@
 use crate::fs::ext2_modular::FileRefHandle;
 use crate::posix;
 use core::ptr::{addr_of, addr_of_mut};
-use core::{cmp, ptr, slice, str};
+use core::ptr;
 
 // File descriptor constants
 pub const STDIN: u64 = 0;
@@ -32,6 +32,7 @@ pub const CLOCK_BOOTTIME: i32 = 7;
 
 // Socket domain and protocol constants (subset of POSIX)
 pub const AF_UNIX: i32 = 1;
+#[allow(dead_code)]
 pub const AF_LOCAL: i32 = 1; // Alias for AF_UNIX
 pub const AF_INET: i32 = 2;
 pub const AF_NETLINK: i32 = 16;
@@ -157,6 +158,7 @@ pub struct SocketHandle {
 pub struct SocketpairHandle {
     pub pair_id: usize,
     pub end: usize, // 0 or 1
+    #[allow(dead_code)]
     pub socket_type: i32,
 }
 
@@ -168,6 +170,7 @@ pub enum FileBacking {
     Modular(crate::fs::ModularFileHandle),
     /// Legacy ext2 file - kept for backwards compatibility
     #[deprecated(note = "Use Modular variant instead")]
+    #[allow(dead_code)]
     Ext2(FileRefHandle),
     StdStream(StdStreamKind),
     Socket(SocketHandle),
@@ -180,6 +183,11 @@ pub enum FileBacking {
     DevNull,
     /// /dev/zero - return zero bytes on read
     DevZero,
+
+    /// PTY master (allocated via /dev/ptmx)
+    PtyMaster(u32),
+    /// PTY slave (opened via /dev/pts/<n>)
+    PtySlave(u32),
 }
 
 /// Standard stream kind

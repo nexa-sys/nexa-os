@@ -269,6 +269,76 @@ pub fn write(fd: u64, buf: u64, count: u64) -> u64 {
                         }
                     }
                 }
+                FileBacking::PtyMaster(id) => {
+                    if !user_buffer_in_range(buf, count) {
+                        posix::set_errno(posix::errno::EFAULT);
+                        return u64::MAX;
+                    }
+
+                    let data = core::slice::from_raw_parts(buf as *const u8, count as usize);
+                    let mut written_total = 0usize;
+
+                    while written_total < data.len() {
+                        match crate::tty::pty::try_write(
+                            id as usize,
+                            crate::tty::pty::PtyDirection::SlaveReads,
+                            &data[written_total..],
+                        ) {
+                            crate::tty::pty::PtyIoResult::Bytes(n) => {
+                                written_total += n;
+                                if n == 0 {
+                                    break;
+                                }
+                            }
+                            crate::tty::pty::PtyIoResult::WouldBlock => {
+                                scheduler::set_current_process_state(ProcessState::Sleeping);
+                                continue;
+                            }
+                            crate::tty::pty::PtyIoResult::Eof => {
+                                posix::set_errno(posix::errno::EPIPE);
+                                return u64::MAX;
+                            }
+                        }
+                    }
+
+                    posix::set_errno(0);
+                    return written_total as u64;
+                }
+                FileBacking::PtySlave(id) => {
+                    if !user_buffer_in_range(buf, count) {
+                        posix::set_errno(posix::errno::EFAULT);
+                        return u64::MAX;
+                    }
+
+                    let data = core::slice::from_raw_parts(buf as *const u8, count as usize);
+                    let mut written_total = 0usize;
+
+                    while written_total < data.len() {
+                        match crate::tty::pty::try_write(
+                            id as usize,
+                            crate::tty::pty::PtyDirection::MasterReads,
+                            &data[written_total..],
+                        ) {
+                            crate::tty::pty::PtyIoResult::Bytes(n) => {
+                                written_total += n;
+                                if n == 0 {
+                                    break;
+                                }
+                            }
+                            crate::tty::pty::PtyIoResult::WouldBlock => {
+                                scheduler::set_current_process_state(ProcessState::Sleeping);
+                                continue;
+                            }
+                            crate::tty::pty::PtyIoResult::Eof => {
+                                posix::set_errno(posix::errno::EPIPE);
+                                return u64::MAX;
+                            }
+                        }
+                    }
+
+                    posix::set_errno(0);
+                    return written_total as u64;
+                }
                 FileBacking::Modular(file_handle) => {
                     ktrace!(
                         "[SYS_WRITE] Modular fs fd={} fs_index={} inode={} count={} position={}",
@@ -436,6 +506,11 @@ pub fn pwrite64(fd: u64, buf: u64, count: u64, offset: i64) -> u64 {
                     posix::set_errno(posix::errno::ESPIPE);
                     return u64::MAX;
                 }
+                FileBacking::PtyMaster(_) | FileBacking::PtySlave(_) => {
+                    // PTYs don't support positioned I/O
+                    posix::set_errno(posix::errno::ESPIPE);
+                    return u64::MAX;
+                }
                 FileBacking::Modular(ref file_handle) => {
                     if !crate::fs::modular_fs_is_writable(file_handle.fs_index) {
                         ktrace!("[SYS_PWRITE64] ERROR: modular filesystem is read-only");
@@ -580,6 +655,10 @@ pub fn pread64(fd: u64, buf: *mut u8, count: usize, offset: i64) -> u64 {
                     return u64::MAX;
                 }
                 FileBacking::Socket(_) | FileBacking::Socketpair(_) => {
+                    posix::set_errno(posix::errno::ESPIPE);
+                    return u64::MAX;
+                }
+                FileBacking::PtyMaster(_) | FileBacking::PtySlave(_) => {
                     posix::set_errno(posix::errno::ESPIPE);
                     return u64::MAX;
                 }
@@ -967,6 +1046,58 @@ pub fn read(fd: u64, buf: *mut u8, count: usize) -> u64 {
                         }
                     }
                 }
+                FileBacking::PtyMaster(id) => {
+                    let buffer = core::slice::from_raw_parts_mut(buf, count);
+
+                    loop {
+                        let pid = scheduler::current_pid();
+                        match crate::tty::pty::try_read(
+                            id as usize,
+                            crate::tty::pty::PtyDirection::MasterReads,
+                            buffer,
+                            pid,
+                        ) {
+                            crate::tty::pty::PtyIoResult::Bytes(n) => {
+                                posix::set_errno(0);
+                                return n as u64;
+                            }
+                            crate::tty::pty::PtyIoResult::Eof => {
+                                posix::set_errno(0);
+                                return 0;
+                            }
+                            crate::tty::pty::PtyIoResult::WouldBlock => {
+                                scheduler::set_current_process_state(ProcessState::Sleeping);
+                                continue;
+                            }
+                        }
+                    }
+                }
+                FileBacking::PtySlave(id) => {
+                    let buffer = core::slice::from_raw_parts_mut(buf, count);
+
+                    loop {
+                        let pid = scheduler::current_pid();
+                        match crate::tty::pty::try_read(
+                            id as usize,
+                            crate::tty::pty::PtyDirection::SlaveReads,
+                            buffer,
+                            pid,
+                        ) {
+                            crate::tty::pty::PtyIoResult::Bytes(n) => {
+                                posix::set_errno(0);
+                                return n as u64;
+                            }
+                            crate::tty::pty::PtyIoResult::Eof => {
+                                posix::set_errno(0);
+                                return 0;
+                            }
+                            crate::tty::pty::PtyIoResult::WouldBlock => {
+                                scheduler::set_current_process_state(ProcessState::Sleeping);
+                                continue;
+                            }
+                        }
+                    }
+                }
                 FileBacking::Inline(data) => {
                     let remaining = data.len().saturating_sub(handle.position);
                     if remaining == 0 {
@@ -1179,6 +1310,92 @@ pub fn open(path_ptr: *const u8, flags: u64, mode: u64) -> u64 {
         }
         posix::set_errno(posix::errno::EMFILE);
         kwarn!("No free file handles available");
+        return u64::MAX;
+    }
+
+    // PTY: /dev/ptmx allocates a new PTY master
+    if normalized == "/dev/ptmx" {
+        let Some(id) = crate::tty::pty::allocate_ptmx() else {
+            posix::set_errno(posix::errno::ENOSPC);
+            return u64::MAX;
+        };
+
+        unsafe {
+            if let Some(index) = find_empty_file_handle_slot() {
+                let metadata = posix::Metadata {
+                    size: 0,
+                    file_type: FileType::Character,
+                    mode: 0o666 | FileType::Character.mode_bits(),
+                    uid: 0,
+                    gid: 0,
+                    mtime: 0,
+                    nlink: 1,
+                    blocks: 0,
+                };
+                set_file_handle(
+                    index,
+                    Some(FileHandle {
+                        backing: FileBacking::PtyMaster(id as u32),
+                        position: 0,
+                        metadata,
+                    }),
+                );
+                posix::set_errno(0);
+                let fd = FD_BASE + index as u64;
+                mark_fd_open(fd);
+                return fd;
+            }
+        }
+
+        crate::tty::pty::close_master(id);
+        posix::set_errno(posix::errno::EMFILE);
+        return u64::MAX;
+    }
+
+    // PTY: /dev/pts/<n> opens the slave side (after unlock)
+    if let Some(rest) = normalized
+        .strip_prefix("/dev/pts/")
+        .or_else(|| normalized.strip_prefix("dev/pts/"))
+    {
+        if let Ok(id) = rest.parse::<usize>() {
+            if crate::tty::pty::open_slave(id).is_ok() {
+                unsafe {
+                    if let Some(index) = find_empty_file_handle_slot() {
+                        let metadata = posix::Metadata {
+                            size: 0,
+                            file_type: FileType::Character,
+                            mode: 0o666 | FileType::Character.mode_bits(),
+                            uid: 0,
+                            gid: 0,
+                            mtime: 0,
+                            nlink: 1,
+                            blocks: 0,
+                        };
+                        set_file_handle(
+                            index,
+                            Some(FileHandle {
+                                backing: FileBacking::PtySlave(id as u32),
+                                position: 0,
+                                metadata,
+                            }),
+                        );
+                        posix::set_errno(0);
+                        let fd = FD_BASE + index as u64;
+                        mark_fd_open(fd);
+                        return fd;
+                    }
+                }
+
+                crate::tty::pty::close_slave(id);
+                posix::set_errno(posix::errno::EMFILE);
+                return u64::MAX;
+            }
+
+            posix::set_errno(posix::errno::EACCES);
+            return u64::MAX;
+        }
+
+        posix::set_errno(posix::errno::ENOENT);
         return u64::MAX;
     }
 
@@ -1407,6 +1624,13 @@ pub fn close(fd: u64) -> u64 {
                 }
             }
 
+            // Clean up PTY resources
+            else if let FileBacking::PtyMaster(id) = handle.backing {
+                crate::tty::pty::close_master(id as usize);
+            } else if let FileBacking::PtySlave(id) = handle.backing {
+                crate::tty::pty::close_slave(id as usize);
+            }
+
             clear_file_handle(idx);
             mark_fd_closed(fd); // Track this FD as closed for the current process
             kinfo!("Closed fd {}", fd);
@@ -1591,6 +1815,8 @@ fn build_fd_link_target(fd: u64) -> Option<String> {
         FileBacking::DevZero => String::from("/dev/zero"),
         FileBacking::DevRandom => String::from("/dev/random"),
         FileBacking::DevUrandom => String::from("/dev/urandom"),
+        FileBacking::PtyMaster(_) => String::from("/dev/ptmx"),
+        FileBacking::PtySlave(id) => alloc::format!("/dev/pts/{}", id),
         FileBacking::Socket(sock) => alloc::format!("socket:[{}]", sock.socket_index),
         FileBacking::Socketpair(pair) => {
             alloc::format!("socketpair:[{}]:{}", pair.pair_id, pair.end)

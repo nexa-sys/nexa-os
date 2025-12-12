@@ -10,6 +10,7 @@ pub const SYS_OPEN: u64 = 2;
 pub const SYS_CLOSE: u64 = 3;
 pub const SYS_STAT: u64 = 4;
 pub const SYS_FSTAT: u64 = 5;
+pub const SYS_IOCTL: u64 = 16;
 pub const SYS_READLINK: u64 = 89;
 pub const SYS_LSEEK: u64 = 8;
 

@@ -23,6 +23,7 @@ use crate::kinfo;
 mod exec;
 mod fd;
 mod file;
+mod ioctl;
 mod ipc;
 mod kmod;
 mod memory;
@@ -65,6 +66,7 @@ use file::{
     close, fcntl, fstat, get_errno, list_files, lseek, open, pread64, pwrite64, read, readlink,
     readlinkat, readv, stat, write, writev,
 };
+use ioctl::ioctl;
 use ipc::{ipc_create, ipc_recv, ipc_send};
 use kmod::{delete_module, init_module, query_module};
 use memory::{mmap, mprotect, munmap};
@@ -138,6 +140,7 @@ pub extern "C" fn syscall_dispatch(
         SYS_READ => read(arg1, arg2 as *mut u8, arg3 as usize),
         SYS_OPEN => open(arg1 as *const u8, arg2 as u64, arg3 as u64),
         SYS_CLOSE => close(arg1),
+        SYS_IOCTL => ioctl(arg1, arg2, arg3),
         SYS_STAT => stat(arg1 as *const u8, arg2 as usize, arg3 as *mut posix::Stat),
         SYS_FSTAT => fstat(arg1, arg2 as *mut posix::Stat),
         SYS_READLINK => readlink(arg1 as *const u8, arg2 as *mut u8, arg3 as usize),
