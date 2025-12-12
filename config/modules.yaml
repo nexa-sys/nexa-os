@@ -32,6 +32,8 @@ modules:
     enabled: true
   ahci:
     enabled: true
+  nvme:
+    enabled: true
 
   # Memory management
   swap:
@@ -103,6 +105,7 @@ profiles:
       - ext4
       - virtio_blk
       - ahci
+      - nvme
       - e1000
       - swap
     disabled:
@@ -118,6 +121,7 @@ profiles:
       - virtio_blk
       - ide
       - ahci
+      - nvme
       - e1000
       - swap
     disabled:
@@ -132,6 +136,7 @@ profiles:
       - virtio_blk
       - ide
       - ahci
+      - nvme
       - e1000
       - swap
     disabled:

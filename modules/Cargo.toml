@@ -35,6 +35,7 @@ members = [
     "virtio_blk",
     "ide",
     "ahci",
+    "nvme",
 
     # ==========================================================================
     # Memory Management Modules

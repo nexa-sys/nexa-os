@@ -1,0 +1,27 @@
+[package]
+name = "nvme-module"
+version = "1.0.0"
+edition = "2021"
+description = "NVMe Block Device Driver"
+
+[lib]
+name = "nvme_module"
+crate-type = ["staticlib"]
+path = "src/lib.rs"
+
+# NexaOS module metadata - used by build system for auto-discovery
+[package.metadata.nexaos]
+type = "block"
+load_order = 4                  # Load before AHCI since NVMe is faster
+output = "nvme.nkm"
+depends = []
+provides = ["nvme", "nvme_disk"]
+
+[package.metadata.nexaos.config]
+max_queues = 64                 # Maximum I/O queues
+queue_depth = 256               # Entries per queue
+admin_queue_depth = 64          # Admin queue depth
+use_msix = true                 # Use MSI-X interrupts
+poll_mode = false               # Use interrupt mode by default
+
+[dependencies]
