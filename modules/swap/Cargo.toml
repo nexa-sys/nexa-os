@@ -2,20 +2,27 @@
 name = "swap-module"
 version = "1.0.0"
 edition = "2021"
-description = "Swap subsystem driver for NexaOS (loadable kernel module)"
+description = "Swap Subsystem Driver"
 
 [lib]
 name = "swap_module"
 crate-type = ["staticlib"]  # Static library for kernel module (we extract .o from it)
 path = "src/lib.rs"
 
+# NexaOS module metadata - used by build system for auto-discovery
+[package.metadata.nexaos]
+type = "memory"         # Module type: filesystem, block, network, memory
+load_order = 3          # Load priority (lower = earlier)
+output = "swap.nkm"
+depends = []
+provides = ["swap"]
+
+# Module-specific configuration defaults
+[package.metadata.nexaos.config]
+auto_enable = false
+swappiness = 60
+max_swap_devices = 8
+compression = false
+compression_algo = "lz4"
+
 [dependencies]
-
-[profile.release]
-panic = "abort"
-opt-level = 2
-lto = false  # Disable LTO for relocatable modules
-codegen-units = 1
-
-[profile.dev]
-panic = "abort"

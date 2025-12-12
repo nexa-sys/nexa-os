@@ -2,20 +2,24 @@
 name = "ide-module"
 version = "1.0.0"
 edition = "2021"
-description = "IDE/ATA Block Device driver for NexaOS (loadable kernel module)"
+description = "IDE/ATA Block Device Driver"
 
 [lib]
 name = "ide_module"
 crate-type = ["staticlib"]  # Static library for kernel module (we extract .o from it)
 path = "src/lib.rs"
 
+# NexaOS module metadata - used by build system for auto-discovery
+[package.metadata.nexaos]
+type = "block"
+load_order = 6
+output = "ide.nkm"
+depends = []
+provides = ["ide_ata", "ata_disk"]
+
+[package.metadata.nexaos.config]
+lba48 = true
+pio_mode = true
+max_sectors = 256
+
 [dependencies]
-
-[profile.release]
-panic = "abort"
-opt-level = 2
-lto = false  # Disable LTO for relocatable modules
-codegen-units = 1
-
-[profile.dev]
-panic = "abort"

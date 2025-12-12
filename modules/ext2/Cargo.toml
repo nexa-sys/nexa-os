@@ -2,21 +2,25 @@
 name = "ext2-module"
 version = "1.0.0"
 edition = "2021"
-description = "ext2 filesystem driver for NexaOS (loadable kernel module)"
+description = "Second Extended Filesystem (ext2)"
 
 [lib]
 name = "ext2_module"
 crate-type = ["staticlib"]  # Static library for kernel module (we extract .o from it)
 path = "src/lib.rs"
 
+# NexaOS module metadata - used by build system for auto-discovery
+[package.metadata.nexaos]
+type = "filesystem"     # Module type: filesystem, block, network, memory
+load_order = 10         # Load priority (lower = earlier)
+output = "ext2.nkm"     # Output filename
+depends = []            # Runtime dependencies (other modules)
+provides = ["ext2_fs"]  # Capabilities provided
+
+# Module-specific configuration defaults
+[package.metadata.nexaos.config]
+max_file_size = 0       # 0 = unlimited
+large_file = true       # Enable large file support (>2GB)
+
 [dependencies]
 heapless = "0.8"
-
-[profile.release]
-panic = "abort"
-opt-level = 2
-lto = false  # Disable LTO for relocatable modules
-codegen-units = 1
-
-[profile.dev]
-panic = "abort"

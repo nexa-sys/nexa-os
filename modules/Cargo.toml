@@ -1,0 +1,58 @@
+[workspace]
+resolver = "2"
+
+# =============================================================================
+# NexaOS Kernel Modules Workspace
+# =============================================================================
+# Modules are auto-discovered by the build system from this workspace.
+# Each module's Cargo.toml must include [package.metadata.nexaos] section
+# with module-specific configuration.
+#
+# Build system will:
+#   1. Parse this workspace to discover all modules
+#   2. Read each module's [package.metadata.nexaos] for type, description, etc.
+#   3. Apply trimming config from config/modules.yaml (enabled/disabled)
+#   4. Build only enabled modules
+#
+# Example module Cargo.toml metadata:
+#   [package.metadata.nexaos]
+#   type = "filesystem"     # Module type: filesystem, block, network, memory
+#   load_order = 10         # Load priority (lower = earlier)
+#   depends = ["ext2"]      # Runtime dependencies
+#   provides = ["ext2_fs"]  # Capabilities provided
+
+members = [
+    # ==========================================================================
+    # Filesystem Drivers
+    # ==========================================================================
+    "ext2",
+    "ext3",
+    "ext4",
+
+    # ==========================================================================
+    # Block Device Drivers
+    # ==========================================================================
+    "virtio_blk",
+    "ide",
+
+    # ==========================================================================
+    # Memory Management Modules
+    # ==========================================================================
+    "swap",
+
+    # ==========================================================================
+    # Network Drivers
+    # ==========================================================================
+    "e1000",
+    # "virtio_net",  # TODO: Not yet implemented
+]
+
+# Shared profile settings for all modules
+[profile.release]
+panic = "abort"
+opt-level = 2
+lto = false        # Disable LTO for relocatable modules
+codegen-units = 1
+
+[profile.dev]
+panic = "abort"

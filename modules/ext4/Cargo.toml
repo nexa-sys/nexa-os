@@ -2,20 +2,24 @@
 name = "ext4-module"
 version = "1.0.0"
 edition = "2021"
-description = "ext4 filesystem driver for NexaOS (loadable kernel module)"
+description = "Fourth Extended Filesystem with extents (ext4)"
 
 [lib]
 name = "ext4_module"
 crate-type = ["staticlib"]  # Static library for kernel module (we extract .o from it)
 path = "src/lib.rs"
 
+# NexaOS module metadata - used by build system for auto-discovery
+[package.metadata.nexaos]
+type = "filesystem"
+load_order = 12
+output = "ext4.nkm"
+depends = ["ext3"]
+provides = ["ext4_fs"]
+
+[package.metadata.nexaos.config]
+extents = true
+dir_index = true
+"64bit" = true
+
 [dependencies]
-
-[profile.release]
-panic = "abort"
-opt-level = 2
-lto = false  # Disable LTO for relocatable modules
-codegen-units = 1
-
-[profile.dev]
-panic = "abort"

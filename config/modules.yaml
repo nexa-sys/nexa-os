@@ -1,215 +1,45 @@
-# NexaOS Kernel Modules Configuration
+# NexaOS Kernel Modules Trimming Configuration
 #
-# This file defines all kernel modules, their properties, and build settings.
-# Modules can be enabled/disabled per-profile in build.yaml or overridden here.
+# This file controls which modules are enabled/disabled for each build profile.
+# Module metadata (type, description, dependencies, config) is defined in each
+# module's Cargo.toml under [package.metadata.nexaos].
 #
-# Module Types:
-#   1 = Filesystem driver
-#   2 = Block device driver
-#   3 = Character device driver
-#   4 = Network driver
-#   5 = Virtual device driver
+# The build system auto-discovers modules from modules/Cargo.toml workspace,
+# then applies this trimming configuration to determine which modules to build.
+#
+# See modules/Cargo.toml for the workspace definition and individual module
+# Cargo.toml files for module-specific metadata.
 
 # =============================================================================
-# Filesystem Drivers
+# Module Enable/Disable Configuration
 # =============================================================================
-# Filesystem modules provide support for various on-disk formats.
-# The ext family shares common code via ext_common.
+# Set to true to enable, false to disable
+# Modules not listed here default to enabled if present in workspace
 
-filesystem:
+modules:
+  # Filesystem drivers
   ext2:
     enabled: true
-    type: 1
-    description: "Second Extended Filesystem (ext2)"
-    package: ext2
-    output: ext2.nkm
-    load_order: 10
-    depends: []
-    # ext2 is the base for ext3/ext4, should be loaded first if others need it
-    provides:
-      - ext2_fs
-    config:
-      # Maximum file size supported (bytes, 0 = unlimited)
-      max_file_size: 0
-      # Enable large file support (>2GB)
-      large_file: true
-  
   ext3:
     enabled: true
-    type: 1
-    description: "Third Extended Filesystem with journaling (ext3)"
-    package: ext3
-    output: ext3.nkm
-    load_order: 11
-    depends:
-      - ext2
-    provides:
-      - ext3_fs
-    config:
-      # Journal size in MB (0 = auto)
-      journal_size: 0
-      # Journal mode: ordered, writeback, journal
-      journal_mode: ordered
-  
   ext4:
     enabled: true
-    type: 1
-    description: "Fourth Extended Filesystem with extents (ext4)"
-    package: ext4
-    output: ext4.nkm
-    load_order: 12
-    depends:
-      - ext3
-    provides:
-      - ext4_fs
-    config:
-      # Enable extent trees (recommended)
-      extents: true
-      # Enable directory indexing
-      dir_index: true
-      # Enable 64-bit block numbers
-      64bit: true
 
-# =============================================================================
-# Block Device Drivers
-# =============================================================================
-# Block device drivers provide access to storage devices.
-
-block:
+  # Block device drivers
   virtio_blk:
     enabled: true
-    type: 2
-    description: "VirtIO Block Device Driver"
-    package: virtio_blk
-    output: virtio_blk.nkm
-    load_order: 5
-    depends: []
-    provides:
-      - virtio_blk
-    config:
-      # Maximum queue depth
-      queue_depth: 128
-      # Enable multi-queue support
-      multi_queue: true
-      # Block size (bytes)
-      block_size: 512
-
   ide:
     enabled: true
-    type: 2
-    description: "IDE/ATA Block Device Driver"
-    package: ide
-    output: ide.nkm
-    load_order: 6
-    depends: []
-    provides:
-      - ide_ata
-      - ata_disk
-    config:
-      # Enable LBA48 support for large disks
-      lba48: true
-      # PIO mode (DMA not yet supported)
-      pio_mode: true
-      # Maximum sectors per transfer
-      max_sectors: 256
 
-# =============================================================================
-# Memory Management Modules
-# =============================================================================
-# Modules that extend kernel memory management capabilities.
-
-memory:
+  # Memory management
   swap:
     enabled: true
-    type: 3
-    description: "Swap Subsystem Driver"
-    package: swap
-    output: swap.nkm
-    load_order: 3
-    depends: []
-    provides:
-      - swap
-    config:
-      # Enable swap by default at boot
-      auto_enable: false
-      # Default swappiness (0-100, higher = more aggressive swapping)
-      swappiness: 60
-      # Maximum swap devices
-      max_swap_devices: 8
-      # Enable swap compression (future)
-      compression: false
-      # Compression algorithm (lz4, zstd)
-      compression_algo: lz4
 
-# =============================================================================
-# Network Drivers
-# =============================================================================
-# Network interface card (NIC) drivers.
-
-network:
+  # Network drivers
   e1000:
     enabled: true
-    type: 4
-    description: "Intel E1000/E1000E Gigabit Ethernet Driver"
-    package: e1000
-    output: e1000.nkm
-    load_order: 20
-    depends: []
-    provides:
-      - e1000_nic
-      - ethernet
-    config:
-      # RX ring buffer size
-      rx_ring_size: 256
-      # TX ring buffer size  
-      tx_ring_size: 256
-      # Enable hardware checksum offload
-      hw_checksum: true
-      # Enable interrupt coalescing
-      interrupt_coalesce: true
-      # Coalesce delay (microseconds)
-      coalesce_usecs: 100
-  
   virtio_net:
-    enabled: false  # Not yet fully implemented
-    type: 4
-    description: "VirtIO Network Driver"
-    package: virtio_net
-    output: virtio_net.nkm
-    load_order: 21
-    depends: []
-    provides:
-      - virtio_net
-      - ethernet
-    config:
-      # Number of virtqueues
-      num_queues: 2
-      # Enable checksum offload
-      csum_offload: true
-      # Enable TSO (TCP Segmentation Offload)
-      tso: true
-
-# =============================================================================
-# Shared Module Dependencies
-# =============================================================================
-# Internal libraries shared between modules (not loadable modules themselves)
-
-shared:
-  ext_common:
-    description: "Common code for ext2/3/4 filesystems"
-    package: ext_common
-    # This is compiled into ext modules, not a standalone .nkm
-    type: library
-  
-  virtio_common:
-    description: "Common VirtIO infrastructure"
-    package: virtio_common
-    type: library
-  
-  kmod_api:
-    description: "Kernel Module API definitions"
-    package: kmod_api
-    type: library
+    enabled: false    # Not yet implemented
 
 # =============================================================================
 # Module Loading Configuration
@@ -219,16 +49,16 @@ shared:
 autoload:
   # Modules to load during initramfs phase (before root pivot)
   initramfs:
-    - virtio_blk  # Need block device access
-    - ext2        # Need filesystem to mount root
+    - virtio_blk      # Need block device access
+    - ext2            # Need filesystem to mount root
   
   # Modules to load after root pivot
   rootfs:
-    - e1000       # Network driver
-    - swap        # Swap support (if enabled in profile)
+    - e1000           # Network driver
+    - swap            # Swap support (if enabled)
 
 # =============================================================================
-# Module Signing
+# Module Signing Configuration
 # =============================================================================
 signing:
   # Require all modules to be signed
@@ -242,3 +72,61 @@ signing:
   
   # Signing algorithm
   algorithm: sha256
+
+# =============================================================================
+# Build Profile Overrides
+# =============================================================================
+# Override module settings per build profile (referenced from config/build.yaml)
+
+profiles:
+  # Minimal profile - only essential modules
+  minimal:
+    enabled:
+      - ext2
+      - virtio_blk
+    disabled:
+      - ext3
+      - ext4
+      - ide
+      - swap
+      - e1000
+      - virtio_net
+
+  # Server profile - no swap compression, optimized for throughput
+  server:
+    enabled:
+      - ext2
+      - ext3
+      - ext4
+      - virtio_blk
+      - e1000
+      - swap
+    disabled:
+      - ide           # VirtIO preferred for servers
+      - virtio_net
+
+  # Desktop profile - full driver support
+  desktop:
+    enabled:
+      - ext2
+      - ext3
+      - ext4
+      - virtio_blk
+      - ide
+      - e1000
+      - swap
+    disabled:
+      - virtio_net
+
+  # Default profile - same as desktop
+  default:
+    enabled:
+      - ext2
+      - ext3
+      - ext4
+      - virtio_blk
+      - ide
+      - e1000
+      - swap
+    disabled:
+      - virtio_net

@@ -2,12 +2,13 @@
  * NexaOS Build System - Configuration Loader
  * Parses configuration files from config/ directory:
  *   - config/build.yaml     - Main build settings and profiles
- *   - config/modules.yaml   - Kernel modules configuration
+ *   - config/modules.yaml   - Kernel modules trimming configuration
  *   - config/programs.yaml  - Userspace programs configuration
  *   - config/libraries.yaml - Userspace libraries configuration (settings only)
  *   - config/features.yaml  - Compile-time feature flags
  * 
  * Libraries are auto-discovered from userspace/lib/ by parsing Cargo.toml files.
+ * Modules are auto-discovered from modules/ workspace by parsing Cargo.toml files.
  */
 
 import { readFile, readdir } from 'fs/promises';
@@ -30,6 +31,16 @@ import {
 } from './types.js';
 
 let cachedConfig: BuildConfig | null = null;
+
+// Module type mapping from string to number
+const MODULE_TYPE_MAP: Record<string, number> = {
+  'filesystem': 1,
+  'block': 2,
+  'character': 3,
+  'memory': 3,  // memory modules use character device type
+  'network': 4,
+  'virtual': 5,
+};
 
 /**
  * Parse a Cargo.toml file and extract NexaOS library metadata
@@ -92,6 +103,147 @@ async function parseCargoToml(cargoPath: string): Promise<{
 }
 
 /**
+ * Parse a module Cargo.toml file and extract NexaOS module metadata
+ */
+async function parseModuleCargoToml(cargoPath: string): Promise<{
+  name: string;
+  description: string;
+  type: string;
+  loadOrder: number;
+  output: string;
+  depends: string[];
+  provides: string[];
+} | null> {
+  try {
+    const content = await readFile(cargoPath, 'utf-8');
+    const cargo = parseToml(content) as any;
+    
+    const pkg = cargo.package;
+    if (!pkg?.name) return null;
+    
+    // Check if it's a staticlib (kernel module)
+    const lib = cargo.lib;
+    if (!lib?.['crate-type']) return null;
+    const crateTypes = lib['crate-type'] as string[];
+    if (!crateTypes.includes('staticlib')) {
+      return null;
+    }
+    
+    // Extract NexaOS module metadata
+    const nexaos = pkg.metadata?.nexaos;
+    if (!nexaos) {
+      // No nexaos metadata, use defaults
+      // Derive module name from package name (remove -module suffix) and normalize to underscores
+      const moduleName = pkg.name.replace(/-module$/, '').replace(/_module$/, '').replace(/-/g, '_');
+      return {
+        name: moduleName,
+        description: pkg.description || moduleName,
+        type: 'virtual',
+        loadOrder: 100,
+        output: `${moduleName}.nkm`,
+        depends: [],
+        provides: [],
+      };
+    }
+    
+    // Derive module name from package name (remove -module suffix) and normalize to underscores
+    const moduleName = pkg.name.replace(/-module$/, '').replace(/_module$/, '').replace(/-/g, '_');
+    
+    return {
+      name: moduleName,
+      description: pkg.description || moduleName,
+      type: nexaos.type || 'virtual',
+      loadOrder: nexaos.load_order || 100,
+      output: nexaos.output || `${moduleName}.nkm`,
+      depends: nexaos.depends || [],
+      provides: nexaos.provides || [],
+    };
+  } catch (err) {
+    return null;
+  }
+}
+
+/**
+ * Auto-discover kernel modules from modules/ workspace
+ */
+async function discoverModules(projectRoot: string): Promise<Map<string, {
+  name: string;
+  type: number;
+  description: string;
+  loadOrder: number;
+  output: string;
+  depends: string[];
+  provides: string[];
+}>> {
+  const modulesDir = join(projectRoot, 'modules');
+  const modules = new Map();
+  
+  // First, try to read the workspace Cargo.toml to get member list
+  const workspaceCargoPath = join(modulesDir, 'Cargo.toml');
+  if (existsSync(workspaceCargoPath)) {
+    try {
+      const content = await readFile(workspaceCargoPath, 'utf-8');
+      const cargo = parseToml(content) as any;
+      
+      // Parse workspace members
+      const members = cargo.workspace?.members || [];
+      for (const member of members) {
+        // Skip commented out members (they're strings starting with #)
+        if (typeof member !== 'string') continue;
+        
+        const memberPath = join(modulesDir, member);
+        const cargoPath = join(memberPath, 'Cargo.toml');
+        
+        if (!existsSync(cargoPath)) continue;
+        
+        const parsed = await parseModuleCargoToml(cargoPath);
+        if (!parsed) continue;
+        
+        modules.set(parsed.name, {
+          name: parsed.name,
+          type: MODULE_TYPE_MAP[parsed.type] || 5,
+          description: parsed.description,
+          loadOrder: parsed.loadOrder,
+          output: parsed.output,
+          depends: parsed.depends,
+          provides: parsed.provides,
+        });
+      }
+    } catch (err) {
+      // Fall back to directory scanning
+    }
+  }
+  
+  // If workspace parsing didn't find any modules, fall back to directory scanning
+  if (modules.size === 0 && existsSync(modulesDir)) {
+    const entries = await readdir(modulesDir, { withFileTypes: true });
+    
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (entry.name === 'target') continue;  // Skip target directory
+      
+      const cargoPath = join(modulesDir, entry.name, 'Cargo.toml');
+      if (!existsSync(cargoPath)) continue;
+      
+      const parsed = await parseModuleCargoToml(cargoPath);
+      if (!parsed) continue;
+      
+      modules.set(parsed.name, {
+        name: parsed.name,
+        type: MODULE_TYPE_MAP[parsed.type] || 5,
+        description: parsed.description,
+        loadOrder: parsed.loadOrder,
+        output: parsed.output,
+        depends: parsed.depends,
+        provides: parsed.provides,
+      });
+    }
+  }
+  
+  return modules;
+}
+
+/**
  * Auto-discover libraries from userspace/lib/ directory
  */
 async function discoverLibraries(projectRoot: string): Promise<Map<string, {
@@ -143,13 +295,14 @@ export async function loadBuildConfig(projectRoot: string): Promise<BuildConfig>
   
   const configDir = join(projectRoot, 'config');
   
-  // Load all configuration files and discover libraries in parallel
-  const [buildContent, modulesContent, programsContent, librariesContent, discoveredLibs] = await Promise.all([
+  // Load all configuration files and discover libraries and modules in parallel
+  const [buildContent, modulesContent, programsContent, librariesContent, discoveredLibs, discoveredMods] = await Promise.all([
     readFile(join(configDir, 'build.yaml'), 'utf-8'),
     readFile(join(configDir, 'modules.yaml'), 'utf-8'),
     readFile(join(configDir, 'programs.yaml'), 'utf-8'),
     readFile(join(configDir, 'libraries.yaml'), 'utf-8'),
-    discoverLibraries(projectRoot)
+    discoverLibraries(projectRoot),
+    discoverModules(projectRoot)
   ]);
   
   // Load features.yaml if it exists
@@ -166,7 +319,7 @@ export async function loadBuildConfig(projectRoot: string): Promise<BuildConfig>
   const librariesConfig = parseYaml(librariesContent) as LibrariesConfig;
   
   // Merge into unified BuildConfig structure
-  cachedConfig = mergeConfigs(buildConfig, modulesConfig, programsConfig, librariesConfig, discoveredLibs, featuresConfig);
+  cachedConfig = mergeConfigs(buildConfig, modulesConfig, programsConfig, librariesConfig, discoveredLibs, discoveredMods, featuresConfig);
   return cachedConfig;
 }
 
@@ -175,7 +328,7 @@ export async function loadBuildConfig(projectRoot: string): Promise<BuildConfig>
  */
 function mergeConfigs(
   build: MainBuildConfig,
-  modules: ModulesConfig,
+  modulesTrimmingConfig: ModulesConfig,
   programs: ProgramsConfig,
   librariesYaml: LibrariesConfig,
   discoveredLibs: Map<string, {
@@ -186,48 +339,75 @@ function mergeConfigs(
     depends: string[];
     path: string;
   }>,
+  discoveredMods: Map<string, {
+    name: string;
+    type: number;
+    description: string;
+    loadOrder: number;
+    output: string;
+    depends: string[];
+    provides: string[];
+  }>,
   featureFlags?: FeatureFlagsConfig
 ): BuildConfig {
   // Get current profile from environment or use default
   const profileName = process.env.BUILD_PROFILE || 'default';
   const profile: BuildProfileConfig | undefined = build.profiles[profileName] || build.profiles['default'];
   
-  // Convert modules config to BuildConfig format, filtering by profile
-  const enabledModules = profile?.modules || {};
+  // Get module trimming settings from modules.yaml
+  const modulesSettings = (modulesTrimmingConfig as any).modules || {};
+  const profilesSettings = (modulesTrimmingConfig as any).profiles || {};
+  const currentProfileSettings = profilesSettings[profileName] || profilesSettings['default'] || {};
   
+  // Build module categories from discovered modules, applying trimming config
   const moduleCategories: Record<string, ModuleConfig[]> = {};
-  for (const [category, moduleList] of Object.entries(modules)) {
-    if (category === 'shared' || category === 'autoload' || category === 'signing') continue;
+  
+  // Sort discovered modules by load order
+  const sortedModules = Array.from(discoveredMods.values()).sort((a, b) => a.loadOrder - b.loadOrder);
+  
+  for (const mod of sortedModules) {
+    // Check if module is enabled in trimming config
+    const moduleSettings = modulesSettings[mod.name];
+    const isEnabledInSettings = moduleSettings?.enabled !== false;
     
-    // Get the list of enabled modules for this category from the profile
-    // If category is not in profile.modules, include all enabled modules
-    // If category is in profile.modules with empty array [], include none
-    // If category is in profile.modules with values, include only those
-    const categoryInProfile = category in enabledModules;
-    const enabledInCategory = enabledModules[category] || [];
-    const categoryModules: ModuleConfig[] = [];
+    // Check profile-specific overrides
+    const enabledInProfile = currentProfileSettings.enabled as string[] | undefined;
+    const disabledInProfile = currentProfileSettings.disabled as string[] | undefined;
     
-    for (const [name, config] of Object.entries(moduleList as Record<string, any>)) {
-      // Module is enabled if:
-      // 1. Explicitly enabled in modules.yaml (enabled !== false)
-      // 2. AND either: category not specified in profile (include all) OR module name is in profile list
-      const isEnabledInConfig = config.enabled !== false;
-      const isEnabledInProfile = !categoryInProfile || enabledInCategory.includes(name);
-      
-      if (isEnabledInConfig && isEnabledInProfile) {
-        categoryModules.push({
-          name,
-          type: config.type,
-          description: config.description,
-          depends: config.depends,
-          enabled: true
-        });
-      }
+    let isEnabled = isEnabledInSettings;
+    if (enabledInProfile && !enabledInProfile.includes(mod.name)) {
+      isEnabled = false;
+    }
+    if (disabledInProfile && disabledInProfile.includes(mod.name)) {
+      isEnabled = false;
+    }
+    if (enabledInProfile && enabledInProfile.includes(mod.name)) {
+      isEnabled = true;
     }
     
-    if (categoryModules.length > 0) {
-      moduleCategories[category] = categoryModules;
+    if (!isEnabled) continue;
+    
+    // Determine category from module type
+    const typeToCategory: Record<number, string> = {
+      1: 'filesystem',
+      2: 'block',
+      3: 'memory',
+      4: 'network',
+      5: 'virtual',
+    };
+    const category = typeToCategory[mod.type] || 'other';
+    
+    if (!moduleCategories[category]) {
+      moduleCategories[category] = [];
     }
+    
+    moduleCategories[category].push({
+      name: mod.name,
+      type: mod.type,
+      description: mod.description,
+      depends: mod.depends,
+      enabled: true
+    });
   }
   
   // Convert programs config to BuildConfig format

@@ -2,20 +2,27 @@
 name = "e1000-module"
 version = "1.0.0"
 edition = "2021"
-description = "Intel E1000 network driver for NexaOS (loadable kernel module)"
+description = "Intel E1000/E1000E Gigabit Ethernet Driver"
 
 [lib]
 name = "e1000_module"
 crate-type = ["staticlib"]  # Static library for kernel module (we extract .o from it)
 path = "src/lib.rs"
 
+# NexaOS module metadata - used by build system for auto-discovery
+[package.metadata.nexaos]
+type = "network"        # Module type: filesystem, block, network, memory
+load_order = 20         # Load priority (lower = earlier)
+output = "e1000.nkm"    # Output filename
+depends = []            # Runtime dependencies (other modules)
+provides = ["e1000_nic", "ethernet"]  # Capabilities provided
+
+# Module-specific configuration defaults
+[package.metadata.nexaos.config]
+rx_ring_size = 256
+tx_ring_size = 256
+hw_checksum = true
+interrupt_coalesce = true
+coalesce_usecs = 100
+
 [dependencies]
-
-[profile.release]
-panic = "abort"
-opt-level = 2
-lto = false  # Disable LTO for relocatable modules
-codegen-units = 1
-
-[profile.dev]
-panic = "abort"
