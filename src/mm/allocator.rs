@@ -150,7 +150,18 @@ impl BuddyAllocator {
     }
 
     /// Add a free block to the free list
+    /// Helper to validate an address is valid for pointer operations
+    #[inline]
+    fn is_valid_addr(addr: u64) -> bool {
+        // Address must be non-zero and 8-byte aligned for u64 read/write
+        addr != 0 && addr & 7 == 0
+    }
+
     fn add_free_block(&mut self, addr: u64, order: usize) {
+        if !Self::is_valid_addr(addr) {
+            crate::kerror!("add_free_block: invalid addr {:#x} (order={})", addr, order);
+            return;
+        }
         unsafe {
             // Store the next pointer in the free block itself
             let next = self.free_lists[order];
@@ -177,6 +188,12 @@ impl BuddyAllocator {
         // Find a free block of the requested order or larger
         for current_order in order..MAX_ORDER {
             if let Some(addr) = self.free_lists[current_order] {
+                // Validate address before reading
+                if !Self::is_valid_addr(addr) {
+                    crate::kerror!("allocate: corrupt free list at order {}, addr={:#x}", current_order, addr);
+                    self.free_lists[current_order] = None;
+                    continue;
+                }
                 // Remove from free list
                 unsafe {
                     let ptr = addr as *const u64;
@@ -252,6 +269,20 @@ impl BuddyAllocator {
         let mut current_addr = self.free_lists[order];
 
         while let Some(addr) = current_addr {
+            // Validate address before any pointer operations
+            if !Self::is_valid_addr(addr) {
+                crate::kerror!("remove_from_free_list: corrupt free list at order {}, addr={:#x}", order, addr);
+                // Truncate the list at the previous valid entry
+                if let Some(prev) = prev_addr {
+                    unsafe {
+                        core::ptr::write(prev as *mut u64, u64::MAX);
+                    }
+                } else {
+                    self.free_lists[order] = None;
+                }
+                return false;
+            }
+
             if addr == target_addr {
                 // Found it, remove from list
                 unsafe {

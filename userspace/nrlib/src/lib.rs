@@ -1460,6 +1460,32 @@ static mut TOTAL_ALLOCATED: usize = 0;
 /// Total free bytes
 static mut TOTAL_FREE: usize = 0;
 
+/// Validate that a free block pointer is within heap bounds and properly aligned
+#[inline(always)]
+unsafe fn is_valid_free_block(block: *mut FreeBlock) -> bool {
+    if block.is_null() {
+        return false;
+    }
+    let addr = block as usize;
+    // Check alignment (FreeBlock needs at least 8-byte alignment)
+    if addr & 7 != 0 {
+        return false;
+    }
+    // Check within heap bounds
+    if HEAP_START == 0 {
+        return false;
+    }
+    if addr < HEAP_START || addr >= HEAP_END {
+        return false;
+    }
+    // Check block size is reasonable
+    let size = (*block).header.size();
+    if size < FREE_BLOCK_MIN || size > HEAP_END - addr {
+        return false;
+    }
+    true
+}
+
 impl BlockHeader {
     #[inline(always)]
     fn size(&self) -> usize {
@@ -1546,11 +1572,23 @@ unsafe fn expand_heap(min_size: usize) -> bool {
 
 /// Add a free block to the free list (address-ordered for coalescing)
 unsafe fn add_to_free_list(block: *mut FreeBlock) {
+    // Validate block before adding
+    if block.is_null() {
+        return;
+    }
+    
     // Initialize pointers first
     (*block).next_free = ptr::null_mut();
     (*block).prev_free = ptr::null_mut();
 
     if FREE_LIST_HEAD.is_null() {
+        FREE_LIST_HEAD = block;
+        return;
+    }
+
+    // Validate current head before linking
+    if !is_valid_free_block(FREE_LIST_HEAD) {
+        // Free list is corrupted, start fresh with this block
         FREE_LIST_HEAD = block;
         return;
     }
@@ -1564,18 +1602,32 @@ unsafe fn add_to_free_list(block: *mut FreeBlock) {
 
 /// Remove a block from the free list
 unsafe fn remove_from_free_list(block: *mut FreeBlock) {
+    if block.is_null() {
+        return;
+    }
+    
     let prev = (*block).prev_free;
     let next = (*block).next_free;
 
+    // Validate prev pointer before dereferencing
     if !prev.is_null() {
-        (*prev).next_free = next;
+        if is_valid_free_block(prev) {
+            (*prev).next_free = next;
+        }
     } else {
         FREE_LIST_HEAD = next;
     }
 
+    // Validate next pointer before dereferencing
     if !next.is_null() {
-        (*next).prev_free = prev;
+        if is_valid_free_block(next) {
+            (*next).prev_free = prev;
+        }
     }
+    
+    // Clear the removed block's pointers
+    (*block).next_free = ptr::null_mut();
+    (*block).prev_free = ptr::null_mut();
 }
 
 /// Try to coalesce a free block with adjacent free blocks
@@ -1637,12 +1689,31 @@ unsafe fn coalesce(block: *mut FreeBlock) -> *mut FreeBlock {
 /// Find a free block that fits the requested size using first-fit
 unsafe fn find_free_block(size: usize) -> *mut FreeBlock {
     let mut curr = FREE_LIST_HEAD;
+    let mut iterations = 0;
+    const MAX_ITERATIONS: usize = 100000; // Prevent infinite loops
 
-    while !curr.is_null() {
+    while !curr.is_null() && iterations < MAX_ITERATIONS {
+        // Validate current block before accessing
+        if !is_valid_free_block(curr) {
+            // Free list is corrupted at this point, truncate it
+            FREE_LIST_HEAD = ptr::null_mut();
+            return ptr::null_mut();
+        }
+        
         if (*curr).header.size() >= size {
             return curr;
         }
-        curr = (*curr).next_free;
+        
+        let next = (*curr).next_free;
+        // Validate next pointer
+        if !next.is_null() && !is_valid_free_block(next) {
+            // Next pointer is invalid, truncate list here
+            (*curr).next_free = ptr::null_mut();
+            return ptr::null_mut();
+        }
+        
+        curr = next;
+        iterations += 1;
     }
 
     ptr::null_mut()
@@ -1657,6 +1728,12 @@ unsafe fn split_block(block: *mut FreeBlock, needed_size: usize) {
     if remaining >= FREE_BLOCK_MIN {
         // Create a new free block from the remainder
         let new_block = (block as usize + needed_size) as *mut FreeBlock;
+        
+        // IMPORTANT: Initialize free list pointers BEFORE setting up the block
+        // This prevents garbage values from causing issues
+        (*new_block).next_free = ptr::null_mut();
+        (*new_block).prev_free = ptr::null_mut();
+        
         (*new_block).header.set_size_flags(remaining, false, true); // Free, prev allocated
 
         // Set up footer
