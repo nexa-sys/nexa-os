@@ -27,7 +27,7 @@ import {
   printRustFlags,
   interactiveFeatures
 } from './features.js';
-import { generateQemuScript, loadQemuConfig } from './qemu.js';
+import { generateQemuScript, loadQemuConfig, generateNexaConfig } from './qemu.js';
 import { spawn } from 'child_process';
 
 fileURLToPath(import.meta.url);
@@ -506,7 +506,7 @@ const qemuCmd = program
 qemuCmd
   .command('generate')
   .alias('gen')
-  .description('Generate run-qemu.sh from config/qemu.yaml')
+  .description('Generate run-qemu.sh and NEXA.CFG from config/qemu.yaml')
   .option('-p, --profile <profile>', 'Use QEMU profile', 'default')
   .action(async (options) => {
     const projectRoot = findProjectRoot();
@@ -514,6 +514,9 @@ qemuCmd
     
     logger.info(`Generating QEMU script with profile: ${options.profile}`);
     await generateQemuScript(env, options.profile);
+    
+    // Also generate NEXA.CFG boot configuration
+    await generateNexaConfig(env);
   });
 
 // qemu config - show QEMU configuration

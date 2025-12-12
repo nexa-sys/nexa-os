@@ -87,7 +87,7 @@ storage:
   
   # Root filesystem
   rootfs:
-    path: build/rootfs.ext2
+    path: build/rootfs.ext4
     format: raw
     cache: writeback
     # Device type: virtio-blk-pci, ide-hd, scsi-hd

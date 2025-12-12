@@ -128,10 +128,11 @@ async function installLibs(env: BuildEnvironment, rootfsDir: string): Promise<vo
 }
 
 /**
- * Create ext2 filesystem image
+ * Create filesystem image based on qemu.yaml configuration
+ * Supports ext2 and ext4 filesystem types
  */
-async function createExt2Image(env: BuildEnvironment, rootfsDir: string): Promise<BuildStepResult> {
-  logger.step(`Creating ext2 filesystem image (${ROOTFS_SIZE_MB}MB)...`);
+async function createFilesystemImage(env: BuildEnvironment, rootfsDir: string, fsType: string): Promise<BuildStepResult> {
+  logger.step(`Creating ${fsType} filesystem image (${ROOTFS_SIZE_MB}MB)...`);
   
   const startTime = Date.now();
   const imgPath = env.rootfsImg;
@@ -144,12 +145,13 @@ async function createExt2Image(env: BuildEnvironment, rootfsDir: string): Promis
   logger.info('Creating disk image...');
   await exec('dd', ['if=/dev/zero', `of=${imgPath}`, 'bs=1M', `count=${ROOTFS_SIZE_MB}`, 'status=progress']);
   
-  // Format as ext2
-  logger.info('Formatting as ext2...');
-  await exec('mkfs.ext2', ['-F', '-L', 'nexaos-root', imgPath]);
+  // Format based on filesystem type from qemu.yaml
+  logger.info(`Formatting as ${fsType}...`);
+  const mkfsCmd = `mkfs.${fsType}`;
+  await exec(mkfsCmd, ['-F', '-L', 'nexaos-root', imgPath]);
   
   // Mount and copy files
-  logger.info('Copying files to ext2 filesystem...');
+  logger.info(`Copying files to ${fsType} filesystem...`);
   
   const mountResult = await exec('mktemp', ['-d']);
   const mountPoint = mountResult.stdout.trim();
@@ -173,10 +175,10 @@ async function createExt2Image(env: BuildEnvironment, rootfsDir: string): Promis
   
   // Verify
   const fileResult = await exec('file', [imgPath]);
-  if (fileResult.stdout.includes('ext2')) {
-    logger.success('Valid ext2 filesystem');
+  if (fileResult.stdout.includes(fsType)) {
+    logger.success(`Valid ${fsType} filesystem`);
   } else {
-    logger.warn('May not be a valid ext2 filesystem');
+    logger.warn(`May not be a valid ${fsType} filesystem`);
   }
   
   return {
@@ -189,7 +191,11 @@ async function createExt2Image(env: BuildEnvironment, rootfsDir: string): Promis
  * Build the complete root filesystem
  */
 export async function buildRootfs(env: BuildEnvironment): Promise<BuildStepResult> {
-  logger.section('Building ext2 Root Filesystem');
+  // Get filesystem type from qemu.yaml configuration
+  const { getRootfsType } = await import('../qemu.js');
+  const fsType = getRootfsType(env.projectRoot);
+  
+  logger.section(`Building ${fsType} Root Filesystem`);
   
   const startTime = Date.now();
   const rootfsDir = join(env.buildDir, 'rootfs');
@@ -200,7 +206,7 @@ export async function buildRootfs(env: BuildEnvironment): Promise<BuildStepResul
   await installConfigs(env, rootfsDir);
   await installCaCerts(env, rootfsDir);
   
-  const result = await createExt2Image(env, rootfsDir);
+  const result = await createFilesystemImage(env, rootfsDir, fsType);
   
   logger.success('Rootfs build complete');
   

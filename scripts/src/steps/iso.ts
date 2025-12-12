@@ -9,13 +9,24 @@ import { BuildEnvironment, BuildStepResult } from '../types.js';
 import { logger } from '../logger.js';
 import { exec, requireCommands, getFileSize } from '../exec.js';
 import { glob } from 'glob';
-import { generateNexaConfig } from '../qemu.js';
+import { generateNexaConfig, loadQemuConfig } from '../qemu.js';
 
 /**
- * Generate GRUB configuration
+ * Generate GRUB configuration from qemu.yaml settings
  */
-function generateGrubConfig(env: BuildEnvironment, hasInitramfs: boolean, hasUefi: boolean): string {
-  const grubCmdline = `root=/dev/vda1 rootfstype=ext2 loglevel=${env.logLevel}`;
+async function generateGrubConfig(env: BuildEnvironment, hasInitramfs: boolean, hasUefi: boolean): Promise<string> {
+  // Load boot configuration from qemu.yaml
+  const qemuConfig = await loadQemuConfig(env.projectRoot);
+  const bootConfig = qemuConfig.boot_config;
+  
+  // Build command line from qemu.yaml boot_config
+  let grubCmdline = `root=${bootConfig.root} rootfstype=${bootConfig.rootfstype} loglevel=${env.logLevel}`;
+  if (bootConfig.quiet) {
+    grubCmdline += ' quiet';
+  }
+  if (bootConfig.debug) {
+    grubCmdline += ' debug';
+  }
   
   let config = `set timeout=3
 set default=0
@@ -171,9 +182,9 @@ export async function buildIso(env: BuildEnvironment): Promise<BuildStepResult> 
     hasInitramfs = true;
   }
   
-  // Generate GRUB config
+  // Generate GRUB config from qemu.yaml settings
   logger.step('Generating GRUB configuration...');
-  const grubConfig = generateGrubConfig(env, hasInitramfs, hasUefi);
+  const grubConfig = await generateGrubConfig(env, hasInitramfs, hasUefi);
   await writeFile(join(isoWorkDir, 'boot/grub/grub.cfg'), grubConfig);
   
   // Build ISO

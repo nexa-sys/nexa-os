@@ -4,7 +4,7 @@
  */
 
 import { readFile, writeFile, chmod, mkdir } from 'fs/promises';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { parse as parseYaml } from 'yaml';
 import { join } from 'path';
 import { BuildEnvironment } from './types.js';
@@ -128,6 +128,43 @@ export interface QemuConfig {
 // =============================================================================
 
 let cachedQemuConfig: QemuConfig | null = null;
+
+/**
+ * Load QEMU configuration from config/qemu.yaml (synchronous version)
+ * Use this when async is not available (e.g., in createBuildEnvironment)
+ */
+export function loadQemuConfigSync(projectRoot: string): QemuConfig {
+  if (cachedQemuConfig) {
+    return cachedQemuConfig;
+  }
+
+  const configPath = join(projectRoot, 'config', 'qemu.yaml');
+  
+  if (!existsSync(configPath)) {
+    throw new Error(`QEMU configuration not found at ${configPath}`);
+  }
+
+  const content = readFileSync(configPath, 'utf-8');
+  cachedQemuConfig = parseYaml(content) as QemuConfig;
+  
+  return cachedQemuConfig;
+}
+
+/**
+ * Get root filesystem image path from qemu.yaml configuration
+ */
+export function getRootfsImgPath(projectRoot: string): string {
+  const config = loadQemuConfigSync(projectRoot);
+  return join(projectRoot, config.storage.rootfs.path);
+}
+
+/**
+ * Get root filesystem type from qemu.yaml configuration
+ */
+export function getRootfsType(projectRoot: string): string {
+  const config = loadQemuConfigSync(projectRoot);
+  return config.boot_config.rootfstype;
+}
 
 /**
  * Load QEMU configuration from config/qemu.yaml

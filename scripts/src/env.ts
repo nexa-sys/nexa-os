@@ -6,6 +6,7 @@
 import { join } from 'path';
 import { mkdir } from 'fs/promises';
 import { BuildEnvironment, BuildType, LogLevel } from './types.js';
+import { getRootfsImgPath } from './qemu.js';
 
 /**
  * Initialize build environment with all paths and settings
@@ -22,6 +23,9 @@ export function createBuildEnvironment(projectRoot: string): BuildEnvironment {
   const userspaceTargetDir = join(buildDir, 'userspace-build', 'target', 'x86_64-nexaos-userspace', 'release');
   
   const targetsDir = join(projectRoot, 'targets');
+  
+  // Get rootfs image path from qemu.yaml configuration
+  const rootfsImg = getRootfsImgPath(projectRoot);
   
   return {
     projectRoot,
@@ -49,7 +53,7 @@ export function createBuildEnvironment(projectRoot: string): BuildEnvironment {
     
     kernelBin: join(kernelTargetDir, 'nexa-os'),
     initramfsCpio: join(buildDir, 'initramfs.cpio'),
-    rootfsImg: join(buildDir, 'rootfs.ext2'),
+    rootfsImg,
     swapImg: join(buildDir, 'swap.img'),
     isoFile: join(distDir, 'nexaos.iso'),
     
