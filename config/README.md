@@ -7,11 +7,33 @@ This directory contains all build configuration files for NexaOS.
 | File | Description |
 |------|-------------|
 | `build.yaml` | Main build configuration and settings |
-| `modules.yaml` | Kernel modules configuration (drivers, filesystems, etc.) |
+| `modules.yaml` | Kernel modules **trimming** configuration (enable/disable only) |
 | `programs.yaml` | Userspace programs configuration |
 | `libraries.yaml` | Userspace shared libraries configuration |
 | `features.yaml` | Compile-time feature flags for conditional compilation |
 | `qemu.yaml` | QEMU emulator configuration |
+
+## Architecture: Auto-Discovery vs Trimming
+
+NexaOS uses a two-layer configuration approach:
+
+### 1. Auto-Discovery (Cargo.toml)
+- **Modules**: Auto-discovered from `modules/Cargo.toml` workspace
+- **Libraries**: Auto-discovered from `userspace/lib/*/Cargo.toml`
+
+Each module/library defines its metadata in `[package.metadata.nexaos]`:
+```toml
+[package.metadata.nexaos]
+type = "network"        # filesystem, block, memory, network
+load_order = 20         # Load priority (lower = earlier)
+output = "e1000.nkm"    # Output filename
+depends = []            # Runtime dependencies
+provides = ["ethernet"] # Capabilities provided
+```
+
+### 2. Trimming Configuration (config/*.yaml)
+- `modules.yaml`: Enable/disable modules for different build profiles
+- `libraries.yaml`: Enable/disable libraries, additional settings
 
 ## QEMU Configuration (qemu.yaml)
 
@@ -106,22 +128,42 @@ The configuration supports presets for quick configuration:
 
 ## Module Categories
 
-Kernel modules are organized by type:
+Kernel modules are organized by type in the `modules/` workspace:
 - **filesystem**: File system drivers (ext2, ext3, ext4)
-- **block**: Block device drivers (virtio_blk)
+- **block**: Block device drivers (virtio_blk, ide)
 - **memory**: Memory management (swap)
 - **network**: Network drivers (e1000, virtio_net)
+
+Each module is a separate crate in the `modules/` workspace. The build system:
+1. Parses `modules/Cargo.toml` to discover workspace members
+2. Reads each module's `[package.metadata.nexaos]` for type, dependencies, etc.
+3. Applies trimming config from `config/modules.yaml` (enable/disable)
+4. Builds only enabled modules
 
 ## Enabling/Disabling Modules
 
 Edit `modules.yaml` to enable or disable specific modules:
 
 ```yaml
-filesystem:
+modules:
   ext2:
     enabled: true    # Enable ext2 support
   ext3:
     enabled: false   # Disable ext3 support
+```
+
+Or use profile-specific overrides:
+
+```yaml
+profiles:
+  minimal:
+    enabled:
+      - ext2
+      - virtio_blk
+    disabled:
+      - ext3
+      - ext4
+      - e1000
 ```
 
 ## Build Profiles
