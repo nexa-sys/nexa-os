@@ -44,6 +44,10 @@ pub use ext2_modular::{
     metadata_for_path as ext2_metadata_for_path, new as ext2_new, read_at as ext2_read_at,
     register_global as ext2_register_global, write_at as ext2_write_at, Ext2Error, Ext2Handle,
     Ext2ModularFs, Ext2Stats, FileRefHandle,
+    // ext4 exports
+    Ext4ModularFs, Ext4FileRefHandle, Ext4Stats,
+    is_ext4_loaded, ext4_global, ext4_new, ext4_lookup, ext4_read_at,
+    ext4_list_directory, ext4_enable_write_mode, ext4_is_writable,
 };
 
 // Re-export filesystem abstraction traits

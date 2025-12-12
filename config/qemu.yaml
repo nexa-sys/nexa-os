@@ -40,7 +40,7 @@ boot_config:
   root: /dev/vda
   
   # Root filesystem type (ext2, ext4)
-  rootfstype: ext2
+  rootfstype: ext4
   
   # Init program path - first userspace process
   init: /sbin/ni

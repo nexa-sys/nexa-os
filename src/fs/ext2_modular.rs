@@ -340,14 +340,139 @@ pub extern "C" fn kmod_ext2_unregister() -> i32 {
 }
 
 // ============================================================================
-// ext3/ext4 Module Registration Stubs
+// ext3/ext4 Module Registration
 // ============================================================================
 
 /// ext3 module operations (placeholder - ext3 extends ext2)
 static EXT3_MODULE_LOADED: Mutex<bool> = Mutex::new(false);
 
-/// ext4 module operations (placeholder - ext4 extends ext3)
-static EXT4_MODULE_LOADED: Mutex<bool> = Mutex::new(false);
+/// ext4 module operations structure (mirrors ext4.nkm's Ext4ModuleOps)
+#[repr(C)]
+pub struct Ext4ModuleOps {
+    pub new: Option<extern "C" fn(*const u8, usize) -> *mut u8>,
+    pub destroy: Option<extern "C" fn(*mut u8)>,
+    pub lookup: Option<extern "C" fn(*mut u8, *const u8, usize, *mut Ext4FileRefHandle) -> i32>,
+    pub read_at: Option<extern "C" fn(*const Ext4FileRefHandle, usize, *mut u8, usize) -> i32>,
+    pub write_at: Option<extern "C" fn(*const Ext4FileRefHandle, usize, *const u8, usize) -> i32>,
+    pub list_dir: Option<extern "C" fn(*mut u8, *const u8, usize, DirEntryCallback, *mut u8) -> i32>,
+    pub get_stats: Option<extern "C" fn(*mut u8, *mut Ext4Stats) -> i32>,
+    pub set_writable: Option<extern "C" fn(bool)>,
+    pub is_writable: Option<extern "C" fn() -> bool>,
+    pub create_file: Option<extern "C" fn(*mut u8, *const u8, usize, u16) -> i32>,
+    pub journal_sync: Option<extern "C" fn(*mut u8) -> i32>,
+}
+
+impl Ext4ModuleOps {
+    const fn empty() -> Self {
+        Self {
+            new: None,
+            destroy: None,
+            lookup: None,
+            read_at: None,
+            write_at: None,
+            list_dir: None,
+            get_stats: None,
+            set_writable: None,
+            is_writable: None,
+            create_file: None,
+            journal_sync: None,
+        }
+    }
+
+    fn is_valid(&self) -> bool {
+        self.new.is_some() && self.lookup.is_some() && self.read_at.is_some() && self.list_dir.is_some()
+    }
+}
+
+/// ext4 file reference handle (matches ext4.nkm's FileRefHandle)
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct Ext4FileRefHandle {
+    pub fs: *mut u8,
+    pub inode: u32,
+    pub size: u64,
+    pub mode: u16,
+    pub blocks: u64,
+    pub mtime: u64,
+    pub nlink: u32,
+    pub uid: u16,
+    pub gid: u16,
+}
+
+impl Ext4FileRefHandle {
+    pub fn is_valid(&self) -> bool {
+        !self.fs.is_null() && self.inode != 0
+    }
+
+    pub fn metadata(&self) -> Metadata {
+        let file_type = match self.mode & 0o170000 {
+            0o040000 => FileType::Directory,
+            0o100000 => FileType::Regular,
+            0o120000 => FileType::Symlink,
+            0o020000 => FileType::Character,
+            0o060000 => FileType::Block,
+            0o010000 => FileType::Fifo,
+            0o140000 => FileType::Socket,
+            other => FileType::Unknown(other as u16),
+        };
+
+        Metadata {
+            mode: self.mode,
+            uid: self.uid as u32,
+            gid: self.gid as u32,
+            size: self.size,
+            mtime: self.mtime,
+            file_type,
+            nlink: self.nlink,
+            blocks: self.blocks,
+        }
+        .normalize()
+    }
+}
+
+unsafe impl Send for Ext4FileRefHandle {}
+unsafe impl Sync for Ext4FileRefHandle {}
+
+/// ext4 filesystem statistics
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Ext4Stats {
+    pub inodes_count: u32,
+    pub blocks_count_lo: u32,
+    pub blocks_count_hi: u32,
+    pub free_blocks: u32,
+    pub free_inodes: u32,
+    pub block_size: u32,
+    pub has_extents: bool,
+    pub has_64bit: bool,
+}
+
+/// Wrapper for ext4 filesystem handle that implements Send + Sync
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct Ext4Handle(pub *mut u8);
+
+impl Ext4Handle {
+    pub fn is_null(&self) -> bool {
+        self.0.is_null()
+    }
+}
+
+// SAFETY: Ext4Handle is managed by the ext4 module which ensures thread safety
+unsafe impl Send for Ext4Handle {}
+unsafe impl Sync for Ext4Handle {}
+
+/// Registered ext4 module operations
+static EXT4_OPS: Mutex<Ext4ModuleOps> = Mutex::new(Ext4ModuleOps::empty());
+
+/// Global ext4 filesystem instance (after mounting)
+static EXT4_GLOBAL: Mutex<Option<Ext4Handle>> = Mutex::new(None);
+
+/// ext4 write mode flag
+static EXT4_WRITABLE: Mutex<bool> = Mutex::new(false);
+
+/// ext4 registry index
+static EXT4_REGISTRY_INDEX: Mutex<Option<u8>> = Mutex::new(None);
 
 /// Register ext3 module operations
 /// Called by ext3.nkm during module_init
@@ -376,14 +501,47 @@ pub extern "C" fn kmod_ext3_unregister() -> i32 {
 /// Register ext4 module operations
 /// Called by ext4.nkm during module_init
 #[no_mangle]
-pub extern "C" fn kmod_ext4_register(ops: *const u8) -> i32 {
+pub extern "C" fn kmod_ext4_register(ops: *const Ext4ModuleOps) -> i32 {
     if ops.is_null() {
         crate::kerror!("ext4_modular: null ops pointer");
         return -1;
     }
 
-    // ext4 is backward compatible with ext3/ext2
-    *EXT4_MODULE_LOADED.lock() = true;
+    let ops = unsafe { &*ops };
+
+    // Validate required operations
+    if ops.new.is_none() {
+        crate::kerror!("ext4_modular: missing 'new' operation");
+        return -1;
+    }
+    if ops.lookup.is_none() {
+        crate::kerror!("ext4_modular: missing 'lookup' operation");
+        return -1;
+    }
+    if ops.read_at.is_none() {
+        crate::kerror!("ext4_modular: missing 'read_at' operation");
+        return -1;
+    }
+
+    // Store the operations
+    {
+        let mut global_ops = EXT4_OPS.lock();
+        global_ops.new = ops.new;
+        global_ops.destroy = ops.destroy;
+        global_ops.lookup = ops.lookup;
+        global_ops.read_at = ops.read_at;
+        global_ops.write_at = ops.write_at;
+        global_ops.list_dir = ops.list_dir;
+        global_ops.get_stats = ops.get_stats;
+        global_ops.set_writable = ops.set_writable;
+        global_ops.is_writable = ops.is_writable;
+        global_ops.create_file = ops.create_file;
+        global_ops.journal_sync = ops.journal_sync;
+    }
+
+    // Register to the modular filesystem registry
+    ext4_register_to_modular_fs_registry();
+
     crate::kinfo!("ext4_modular: module registered (extent-based filesystem)");
     0
 }
@@ -391,7 +549,25 @@ pub extern "C" fn kmod_ext4_register(ops: *const u8) -> i32 {
 /// Unregister ext4 module operations
 #[no_mangle]
 pub extern "C" fn kmod_ext4_unregister() -> i32 {
-    *EXT4_MODULE_LOADED.lock() = false;
+    // Destroy any existing filesystem instance
+    {
+        let mut global = EXT4_GLOBAL.lock();
+        if let Some(handle) = global.take() {
+            let ops = EXT4_OPS.lock();
+            if let Some(destroy) = ops.destroy {
+                destroy(handle.0);
+            }
+        }
+    }
+
+    // Clear operations
+    *EXT4_OPS.lock() = Ext4ModuleOps::empty();
+
+    // Unregister from modular fs registry
+    if let Some(index) = EXT4_REGISTRY_INDEX.lock().take() {
+        super::traits::unregister_modular_fs(index);
+    }
+
     crate::kinfo!("ext4_modular: module unregistered");
     0
 }
@@ -426,7 +602,7 @@ pub extern "C" fn kmod_is_module_loaded(name: *const u8, name_len: usize) -> i32
             }
         }
         "ext4" => {
-            if *EXT4_MODULE_LOADED.lock() {
+            if EXT4_OPS.lock().is_valid() {
                 1
             } else {
                 0
@@ -450,7 +626,168 @@ pub fn is_ext3_loaded() -> bool {
 
 /// Check if ext4 module is loaded
 pub fn is_ext4_loaded() -> bool {
-    *EXT4_MODULE_LOADED.lock()
+    EXT4_OPS.lock().is_valid()
+}
+
+/// Get the global ext4 filesystem handle
+pub fn ext4_global() -> Option<*mut u8> {
+    EXT4_GLOBAL.lock().map(|h| h.0)
+}
+
+/// Create a new ext4 filesystem from block device
+pub fn ext4_new(image: &'static [u8]) -> Result<(), Ext2Error> {
+    let ops = EXT4_OPS.lock();
+    let new_fn = ops.new.ok_or(Ext2Error::ModuleNotLoaded)?;
+    drop(ops);
+
+    let handle = new_fn(image.as_ptr(), image.len());
+    if handle.is_null() {
+        return Err(Ext2Error::BadMagic);
+    }
+
+    *EXT4_GLOBAL.lock() = Some(Ext4Handle(handle));
+
+    crate::kinfo!("ext4_modular: filesystem initialized");
+    Ok(())
+}
+
+/// Lookup a file by path in ext4
+pub fn ext4_lookup(path: &str) -> Option<Ext4FileRefHandle> {
+    let ops = EXT4_OPS.lock();
+    let lookup_fn = match ops.lookup {
+        Some(f) => f,
+        None => return None,
+    };
+    let handle = match *EXT4_GLOBAL.lock() {
+        Some(h) => h.0,
+        None => return None,
+    };
+    drop(ops);
+
+    let mut file_ref = Ext4FileRefHandle {
+        fs: core::ptr::null_mut(),
+        inode: 0,
+        size: 0,
+        mode: 0,
+        blocks: 0,
+        mtime: 0,
+        nlink: 0,
+        uid: 0,
+        gid: 0,
+    };
+
+    let path_len = path.len().min(256);
+    let mut path_buf = [0u8; 256];
+    path_buf[..path_len].copy_from_slice(&path.as_bytes()[..path_len]);
+
+    let ret = lookup_fn(handle, path_buf.as_ptr(), path_len, &mut file_ref);
+    if ret == 0 && file_ref.is_valid() {
+        Some(file_ref)
+    } else {
+        None
+    }
+}
+
+/// Read data from an ext4 file
+pub fn ext4_read_at(file: &Ext4FileRefHandle, offset: usize, buf: &mut [u8]) -> usize {
+    let ops = EXT4_OPS.lock();
+    let read_fn = match ops.read_at {
+        Some(f) => f,
+        None => return 0,
+    };
+    drop(ops);
+
+    let ret = read_fn(file, offset, buf.as_mut_ptr(), buf.len());
+    if ret >= 0 { ret as usize } else { 0 }
+}
+
+/// List ext4 directory entries
+pub fn ext4_list_directory<F>(path: &str, mut callback: F)
+where
+    F: FnMut(&str, Metadata),
+{
+    let ops = EXT4_OPS.lock();
+    let list_fn = match ops.list_dir {
+        Some(f) => f,
+        None => return,
+    };
+    let handle = match *EXT4_GLOBAL.lock() {
+        Some(h) => h.0,
+        None => return,
+    };
+    drop(ops);
+
+    let path_len = path.len().min(256);
+    let mut path_buf: Vec<u8> = Vec::with_capacity(path_len);
+    path_buf.extend_from_slice(&path.as_bytes()[..path_len]);
+
+    struct CallbackContext<'a, F: FnMut(&str, Metadata)> {
+        callback: &'a mut F,
+        name_buf: Box<[u8; 256]>,
+    }
+
+    extern "C" fn dir_entry_trampoline<F: FnMut(&str, Metadata)>(
+        name: *const u8,
+        name_len: usize,
+        _inode: u32,
+        file_type: u8,
+        ctx: *mut u8,
+    ) {
+        if name.is_null() || ctx.is_null() { return; }
+
+        unsafe {
+            let ctx = &mut *(ctx as *mut CallbackContext<F>);
+            let name_len = name_len.min(255);
+            let name_slice = core::slice::from_raw_parts(name, name_len);
+            ctx.name_buf[..name_len].copy_from_slice(name_slice);
+
+            let name_str = match core::str::from_utf8(&ctx.name_buf[..name_len]) {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+
+            let ft = match file_type {
+                2 => FileType::Directory,
+                1 => FileType::Regular,
+                7 => FileType::Symlink,
+                3 => FileType::Character,
+                4 => FileType::Block,
+                5 => FileType::Fifo,
+                6 => FileType::Socket,
+                _ => FileType::Unknown(0),
+            };
+
+            let meta = Metadata::empty().with_type(ft);
+            (ctx.callback)(name_str, meta);
+        }
+    }
+
+    let mut ctx = CallbackContext {
+        callback: &mut callback,
+        name_buf: Box::new([0u8; 256]),
+    };
+
+    list_fn(
+        handle,
+        path_buf.as_ptr(),
+        path_len,
+        dir_entry_trampoline::<F>,
+        &mut ctx as *mut _ as *mut u8,
+    );
+}
+
+/// Enable ext4 write mode
+pub fn ext4_enable_write_mode() {
+    *EXT4_WRITABLE.lock() = true;
+    let ops = EXT4_OPS.lock();
+    if let Some(set_writable) = ops.set_writable {
+        set_writable(true);
+    }
+}
+
+/// Check if ext4 is writable
+pub fn ext4_is_writable() -> bool {
+    *EXT4_WRITABLE.lock()
 }
 
 // ============================================================================
@@ -861,6 +1198,94 @@ impl FileSystem for Ext2ModularFs {
     }
 }
 
+/// Wrapper that implements FileSystem trait for the modular ext4
+pub struct Ext4ModularFs;
+
+impl Ext4ModularFs {
+    pub fn new() -> Option<Self> {
+        if is_ext4_loaded() && ext4_global().is_some() {
+            Some(Self)
+        } else {
+            None
+        }
+    }
+}
+
+impl FileSystem for Ext4ModularFs {
+    fn name(&self) -> &'static str {
+        "ext4"
+    }
+
+    fn read(&self, path: &str) -> Option<OpenFile> {
+        let file_ref = ext4_lookup(path)?;
+        // Convert Ext4FileRefHandle to ModularFileHandle for the unified API
+        let modular_handle = super::traits::ModularFileHandle {
+            fs_index: EXT4_REGISTRY_INDEX.lock().unwrap_or(0),
+            fs_handle: file_ref.fs,
+            inode: file_ref.inode,
+            size: file_ref.size,
+            mode: file_ref.mode,
+            blocks: file_ref.blocks,
+            mtime: file_ref.mtime,
+            nlink: file_ref.nlink,
+            uid: file_ref.uid,
+            gid: file_ref.gid,
+        };
+        Some(OpenFile {
+            content: FileContent::Modular(modular_handle),
+            metadata: file_ref.metadata(),
+        })
+    }
+
+    fn metadata(&self, path: &str) -> Option<Metadata> {
+        ext4_lookup(path).map(|f| f.metadata())
+    }
+
+    fn list(&self, path: &str, cb: &mut dyn FnMut(&str, Metadata)) {
+        ext4_list_directory(path, cb);
+    }
+
+    fn write(&self, path: &str, data: &[u8]) -> Result<usize, &'static str> {
+        if !ext4_is_writable() {
+            return Err("ext4 filesystem is read-only");
+        }
+
+        let file_ref = ext4_lookup(path).ok_or("file not found")?;
+        let ops = EXT4_OPS.lock();
+        let write_fn = ops.write_at.ok_or("write not supported")?;
+        drop(ops);
+
+        let ret = write_fn(&file_ref, 0, data.as_ptr(), data.len());
+        if ret >= 0 {
+            Ok(ret as usize)
+        } else {
+            Err("write failed")
+        }
+    }
+
+    fn create(&self, path: &str) -> Result<(), &'static str> {
+        if !ext4_is_writable() {
+            return Err("ext4 filesystem is read-only");
+        }
+        
+        let ops = EXT4_OPS.lock();
+        let create_fn = ops.create_file.ok_or("create not supported")?;
+        let handle = ext4_global().ok_or("ext4 not mounted")?;
+        drop(ops);
+
+        let path_len = path.len().min(255);
+        let mut path_buf = [0u8; 256];
+        path_buf[..path_len].copy_from_slice(path.as_bytes());
+
+        let ret = create_fn(handle, path_buf.as_ptr(), path_len, 0o644);
+        if ret >= 0 {
+            Ok(())
+        } else {
+            Err("file creation failed")
+        }
+    }
+}
+
 // ============================================================================
 // Symbol Table Registration
 // ============================================================================
@@ -1208,4 +1633,275 @@ fn register_to_modular_fs_registry() {
 /// Get the ext2 registry index (for use when converting FileRefHandle to ModularFileHandle)
 pub fn get_registry_index() -> Option<u8> {
     *EXT2_REGISTRY_INDEX.lock()
+}
+
+// ============================================================================
+// ext4 Modular Filesystem Registry Integration
+// ============================================================================
+
+/// Bridge callback for ext4 ModularFsOps::new_from_image
+extern "C" fn ext4_modular_new_from_image(image: *const u8, size: usize) -> *mut u8 {
+    let ops = EXT4_OPS.lock();
+    if let Some(new_fn) = ops.new {
+        new_fn(image, size)
+    } else {
+        core::ptr::null_mut()
+    }
+}
+
+/// Bridge callback for ext4 ModularFsOps::destroy
+extern "C" fn ext4_modular_destroy(handle: *mut u8) {
+    let ops = EXT4_OPS.lock();
+    if let Some(destroy_fn) = ops.destroy {
+        destroy_fn(handle);
+    }
+}
+
+/// Bridge callback for ext4 ModularFsOps::lookup
+extern "C" fn ext4_modular_lookup_bridge(
+    handle: *mut u8,
+    path: *const u8,
+    path_len: usize,
+    out: *mut super::traits::ModularFileHandle,
+) -> i32 {
+    if handle.is_null() || path.is_null() || out.is_null() {
+        return -1;
+    }
+
+    let ops = EXT4_OPS.lock();
+    let lookup_fn = match ops.lookup {
+        Some(f) => f,
+        None => return -1,
+    };
+    drop(ops);
+
+    let mut file_ref = Ext4FileRefHandle {
+        fs: handle,
+        inode: 0,
+        size: 0,
+        mode: 0,
+        blocks: 0,
+        mtime: 0,
+        nlink: 0,
+        uid: 0,
+        gid: 0,
+    };
+
+    let ret = lookup_fn(handle, path, path_len, &mut file_ref);
+
+    if ret == 0 {
+        unsafe {
+            (*out).inode = file_ref.inode;
+            (*out).size = file_ref.size;
+            (*out).mode = file_ref.mode;
+            (*out).blocks = file_ref.blocks;
+            (*out).mtime = file_ref.mtime;
+            (*out).nlink = file_ref.nlink;
+            (*out).uid = file_ref.uid;
+            (*out).gid = file_ref.gid;
+        }
+    }
+
+    ret
+}
+
+/// Bridge callback for ext4 ModularFsOps::read_at
+extern "C" fn ext4_modular_read_at_bridge(
+    file: *const super::traits::ModularFileHandle,
+    offset: usize,
+    buf: *mut u8,
+    len: usize,
+) -> i32 {
+    if file.is_null() || buf.is_null() {
+        return -1;
+    }
+
+    let ops = EXT4_OPS.lock();
+    let read_fn = match ops.read_at {
+        Some(f) => f,
+        None => return -1,
+    };
+    drop(ops);
+
+    let file_handle = unsafe { &*file };
+    let file_ref = Ext4FileRefHandle {
+        fs: file_handle.fs_handle,
+        inode: file_handle.inode,
+        size: file_handle.size,
+        mode: file_handle.mode,
+        blocks: file_handle.blocks,
+        mtime: file_handle.mtime,
+        nlink: file_handle.nlink,
+        uid: file_handle.uid,
+        gid: file_handle.gid,
+    };
+
+    read_fn(&file_ref, offset, buf, len)
+}
+
+/// Bridge callback for ext4 ModularFsOps::write_at
+extern "C" fn ext4_modular_write_at_bridge(
+    file: *const super::traits::ModularFileHandle,
+    offset: usize,
+    data: *const u8,
+    len: usize,
+) -> i32 {
+    if file.is_null() || data.is_null() {
+        return -1;
+    }
+
+    let ops = EXT4_OPS.lock();
+    let write_fn = match ops.write_at {
+        Some(f) => f,
+        None => return -7,
+    };
+    drop(ops);
+
+    let file_handle = unsafe { &*file };
+    let file_ref = Ext4FileRefHandle {
+        fs: file_handle.fs_handle,
+        inode: file_handle.inode,
+        size: file_handle.size,
+        mode: file_handle.mode,
+        blocks: file_handle.blocks,
+        mtime: file_handle.mtime,
+        nlink: file_handle.nlink,
+        uid: file_handle.uid,
+        gid: file_handle.gid,
+    };
+
+    write_fn(&file_ref, offset, data, len)
+}
+
+/// Bridge callback for ext4 ModularFsOps::list_dir
+extern "C" fn ext4_modular_list_dir_bridge(
+    handle: *mut u8,
+    path: *const u8,
+    path_len: usize,
+    cb: super::traits::ModularDirCallback,
+    ctx: *mut u8,
+) -> i32 {
+    if handle.is_null() || path.is_null() {
+        return -1;
+    }
+
+    let ops = EXT4_OPS.lock();
+    let list_fn = match ops.list_dir {
+        Some(f) => f,
+        None => return -1,
+    };
+    drop(ops);
+
+    list_fn(handle, path, path_len, cb, ctx);
+    0
+}
+
+/// Bridge callback for ext4 ModularFsOps::get_stats
+extern "C" fn ext4_modular_get_stats_bridge(
+    handle: *mut u8,
+    stats: *mut super::traits::FsStats,
+) -> i32 {
+    if handle.is_null() || stats.is_null() {
+        return -1;
+    }
+
+    let ops = EXT4_OPS.lock();
+    let get_stats_fn = match ops.get_stats {
+        Some(f) => f,
+        None => return -1,
+    };
+    drop(ops);
+
+    let mut ext4_stats = Ext4Stats::default();
+    let ret = get_stats_fn(handle, &mut ext4_stats);
+
+    if ret == 0 {
+        unsafe {
+            (*stats).total_blocks = ext4_stats.blocks_count_lo as u64 | ((ext4_stats.blocks_count_hi as u64) << 32);
+            (*stats).free_blocks = ext4_stats.free_blocks as u64;
+            (*stats).avail_blocks = ext4_stats.free_blocks as u64;
+            (*stats).total_inodes = ext4_stats.inodes_count as u64;
+            (*stats).free_inodes = ext4_stats.free_inodes as u64;
+            (*stats).block_size = ext4_stats.block_size;
+            (*stats).name_max = 255;
+            (*stats).fs_type = 0xEF53; // EXT4 uses same magic
+        }
+    }
+
+    ret
+}
+
+/// Bridge callback for ext4 ModularFsOps::set_writable
+extern "C" fn ext4_modular_set_writable_bridge(writable: bool) {
+    let ops = EXT4_OPS.lock();
+    if let Some(set_writable_fn) = ops.set_writable {
+        set_writable_fn(writable);
+    }
+    drop(ops);
+    *EXT4_WRITABLE.lock() = writable;
+}
+
+/// Bridge callback for ext4 ModularFsOps::is_writable
+extern "C" fn ext4_modular_is_writable_bridge() -> bool {
+    *EXT4_WRITABLE.lock()
+}
+
+/// Bridge callback for ext4 ModularFsOps::create_file
+extern "C" fn ext4_modular_create_file_bridge(
+    handle: *mut u8,
+    path: *const u8,
+    path_len: usize,
+    mode: u16,
+) -> i32 {
+    if handle.is_null() || path.is_null() {
+        return -1;
+    }
+
+    let ops = EXT4_OPS.lock();
+    let create_fn = match ops.create_file {
+        Some(f) => f,
+        None => return -7,
+    };
+    drop(ops);
+
+    create_fn(handle, path, path_len, mode)
+}
+
+/// Register ext4 to the modular filesystem registry
+fn ext4_register_to_modular_fs_registry() {
+    use super::traits::{register_modular_fs, ModularFsOps};
+
+    let ops = ModularFsOps {
+        fs_type: "ext4",
+        new_from_image: Some(ext4_modular_new_from_image),
+        destroy: Some(ext4_modular_destroy),
+        lookup: Some(ext4_modular_lookup_bridge),
+        read_at: Some(ext4_modular_read_at_bridge),
+        write_at: Some(ext4_modular_write_at_bridge),
+        list_dir: Some(ext4_modular_list_dir_bridge),
+        get_stats: Some(ext4_modular_get_stats_bridge),
+        set_writable: Some(ext4_modular_set_writable_bridge),
+        is_writable: Some(ext4_modular_is_writable_bridge),
+        create_file: Some(ext4_modular_create_file_bridge),
+        mkdir: None,
+        unlink: None,
+        rmdir: None,
+        rename: None,
+        sync: None,
+    };
+
+    if let Some(index) = register_modular_fs(ops) {
+        *EXT4_REGISTRY_INDEX.lock() = Some(index);
+        crate::kinfo!(
+            "ext4_modular: registered to modular fs registry at index {}",
+            index
+        );
+    } else {
+        crate::kwarn!("ext4_modular: failed to register to modular fs registry");
+    }
+}
+
+/// Get the ext4 registry index
+pub fn get_ext4_registry_index() -> Option<u8> {
+    *EXT4_REGISTRY_INDEX.lock()
 }

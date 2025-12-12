@@ -262,7 +262,7 @@ async function postprocessEsp(env: BuildEnvironment): Promise<boolean> {
       initramfsStat = await stat(env.initramfsCpio);
     }
     let nexaCfgStat = { size: 0 };
-    const nexaCfgPath = join(env.projectRoot, 'boot/NEXA.CFG');
+    const nexaCfgPath = join(env.buildDir, 'NEXA.CFG');
     if (existsSync(nexaCfgPath)) {
       nexaCfgStat = await stat(nexaCfgPath);
     }

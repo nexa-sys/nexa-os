@@ -51,6 +51,7 @@ autoload:
   initramfs:
     - virtio_blk      # Need block device access
     - ext2            # Need filesystem to mount root
+    - ext4            # ext4 filesystem support
   
   # Modules to load after root pivot
   rootfs:
