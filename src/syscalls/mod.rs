@@ -44,6 +44,13 @@ mod user;
 // Re-export syscall numbers for external use
 pub use numbers::*;
 
+/// Kernel-internal helper: set CLOCK_REALTIME base (microseconds since Unix epoch).
+///
+/// This forwards to the time syscall implementation while keeping `time` private.
+pub fn set_realtime_us(realtime_us: i64) {
+    time::set_system_time_offset(realtime_us);
+}
+
 // Re-export exec context function for assembly
 pub use exec::get_exec_context;
 

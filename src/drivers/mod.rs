@@ -64,6 +64,7 @@ pub mod compositor {
 pub mod framebuffer;
 pub mod keyboard;
 pub mod random;
+pub mod rtc;
 pub mod serial;
 pub mod vga;
 

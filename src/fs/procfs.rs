@@ -249,6 +249,37 @@ pub fn generate_uptime() -> (&'static [u8], usize) {
     (slice, len)
 }
 
+/// Generate /proc/driver/rtc content (minimal subset used by userspace `date`).
+///
+/// Provides:
+/// - rtc_time : HH:MM:SS
+/// - rtc_date : YYYY-MM-DD
+pub fn generate_rtc() -> (&'static [u8], usize) {
+    let mut buf = PROC_BUFFER.lock();
+    let mut writer = BufWriter::new(&mut buf[..]);
+
+    if let Some(dt) = crate::drivers::rtc::read_datetime() {
+        let _ = writeln!(
+            writer,
+            "rtc_time\t: {:02}:{:02}:{:02}",
+            dt.hour,
+            dt.minute,
+            dt.second
+        );
+        let _ = writeln!(
+            writer,
+            "rtc_date\t: {:04}-{:02}-{:02}",
+            dt.year,
+            dt.month,
+            dt.day
+        );
+    }
+
+    let len = writer.len();
+    let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), len) };
+    (slice, len)
+}
+
 /// Generate /proc/loadavg content
 pub fn generate_loadavg() -> (&'static [u8], usize) {
     let mut buf = PROC_BUFFER.lock();

@@ -418,6 +418,13 @@ fn handle_procfs_read(path: &str) -> Option<OpenFile> {
                 metadata: procfs::proc_file_metadata(len as u64),
             });
         }
+        "proc/driver/rtc" => {
+            let (content, len) = procfs::generate_rtc();
+            return Some(OpenFile {
+                content: FileContent::Inline(content),
+                metadata: procfs::proc_file_metadata(len as u64),
+            });
+        }
         "proc/self" => {
             let (content, _len) = procfs::generate_self();
             return Some(OpenFile {
@@ -776,7 +783,7 @@ fn handle_procfs_stat(path: &str) -> Option<Metadata> {
     match path {
         "proc" => return Some(procfs::proc_dir_metadata()),
         "proc/self" => return Some(procfs::proc_link_metadata()),
-        "proc/sys" | "proc/sys/kernel" => return Some(procfs::proc_dir_metadata()),
+        "proc/sys" | "proc/sys/kernel" | "proc/driver" => return Some(procfs::proc_dir_metadata()),
         _ => {}
     }
 
@@ -808,7 +815,7 @@ fn handle_procfs_stat(path: &str) -> Option<Metadata> {
     // Global procfs files
     match path {
         "proc/version" | "proc/uptime" | "proc/loadavg" | "proc/meminfo" | "proc/cpuinfo"
-        | "proc/stat" | "proc/filesystems" | "proc/mounts" | "proc/cmdline" => {
+        | "proc/stat" | "proc/filesystems" | "proc/mounts" | "proc/cmdline" | "proc/driver/rtc" => {
             return Some(procfs::proc_file_metadata(0)); // Size determined at read time
         }
         // /proc/sys/kernel/ entries (writable)
@@ -1012,6 +1019,7 @@ where
             cb("cmdline", procfs::proc_file_metadata(0));
             cb("self", procfs::proc_link_metadata());
             cb("sys", procfs::proc_dir_metadata()); // /proc/sys directory
+            cb("driver", procfs::proc_dir_metadata()); // /proc/driver directory
 
             // List all process directories
             // PIDs are managed by radix tree and can be any value up to MAX_PID
@@ -1022,6 +1030,10 @@ where
                     cb(&pid_str, procfs::proc_dir_metadata());
                 }
             }
+            return true;
+        }
+        "proc/driver" => {
+            cb("rtc", procfs::proc_file_metadata(0));
             return true;
         }
         "proc/self" => {

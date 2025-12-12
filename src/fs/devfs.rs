@@ -23,6 +23,8 @@ pub enum DeviceType {
     Urandom,
     /// /dev/console - system console
     Console,
+    /// /dev/full - always fail writes with ENOSPC
+    Full,
     /// /dev/ptmx - PTY master multiplexer
     PtyMasterMux,
     /// Network device (e.g., net0)
@@ -91,6 +93,7 @@ pub fn init() {
     register_device("zero", DeviceType::Zero, 1, 5);
     register_device("random", DeviceType::Random, 1, 8);
     register_device("urandom", DeviceType::Urandom, 1, 9);
+    register_device("full", DeviceType::Full, 1, 7);
     register_device("console", DeviceType::Console, 5, 1);
 
     // TTY devices

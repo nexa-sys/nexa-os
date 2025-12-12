@@ -517,6 +517,9 @@ fn proceed_after_initramfs(cmdline_opt: Option<&'static str>) -> ! {
     // Initialize random number generator (RDRAND/RDSEED + ChaCha20 CSPRNG)
     drivers::random::init();
 
+    // Best-effort: initialize CLOCK_REALTIME from CMOS RTC.
+    drivers::rtc::init_system_time_from_rtc_once();
+
     scheduler::init(); // Process scheduler
     fs::init(); // Filesystem
     kmod::init(); // Kernel module system

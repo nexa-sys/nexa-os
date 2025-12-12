@@ -448,6 +448,11 @@ pub fn write(fd: u64, buf: u64, count: u64) -> u64 {
                     posix::set_errno(0);
                     return count;
                 }
+                FileBacking::DevFull => {
+                    // /dev/full always fails writes with ENOSPC
+                    posix::set_errno(posix::errno::ENOSPC);
+                    return u64::MAX;
+                }
             }
         }
     }
@@ -597,6 +602,11 @@ pub fn pwrite64(fd: u64, buf: u64, count: u64, offset: i64) -> u64 {
                     posix::set_errno(0);
                     return count;
                 }
+                FileBacking::DevFull => {
+                    // /dev/full always fails writes with ENOSPC
+                    posix::set_errno(posix::errno::ENOSPC);
+                    return u64::MAX;
+                }
             }
         }
     }
@@ -720,6 +730,12 @@ pub fn pread64(fd: u64, buf: *mut u8, count: usize, offset: i64) -> u64 {
                     return 0;
                 }
                 FileBacking::DevZero => {
+                    let buffer = core::slice::from_raw_parts_mut(buf, count);
+                    buffer.fill(0);
+                    posix::set_errno(0);
+                    return count as u64;
+                }
+                FileBacking::DevFull => {
                     let buffer = core::slice::from_raw_parts_mut(buf, count);
                     buffer.fill(0);
                     posix::set_errno(0);
@@ -1177,6 +1193,15 @@ pub fn read(fd: u64, buf: *mut u8, count: usize) -> u64 {
                     posix::set_errno(0);
                     return count as u64;
                 }
+                FileBacking::DevFull => {
+                    // /dev/full reads like /dev/zero
+                    let dest = slice::from_raw_parts_mut(buf, count);
+                    for byte in dest.iter_mut() {
+                        *byte = 0;
+                    }
+                    posix::set_errno(0);
+                    return count as u64;
+                }
             }
         }
     }
@@ -1277,6 +1302,7 @@ pub fn open(path_ptr: *const u8, flags: u64, mode: u64) -> u64 {
         "/dev/urandom" => Some(FileBacking::DevUrandom),
         "/dev/null" => Some(FileBacking::DevNull),
         "/dev/zero" => Some(FileBacking::DevZero),
+        "/dev/full" => Some(FileBacking::DevFull),
         _ => None,
     };
 
@@ -1813,6 +1839,7 @@ fn build_fd_link_target(fd: u64) -> Option<String> {
         FileBacking::StdStream(_) => String::from("/dev/tty"),
         FileBacking::DevNull => String::from("/dev/null"),
         FileBacking::DevZero => String::from("/dev/zero"),
+        FileBacking::DevFull => String::from("/dev/full"),
         FileBacking::DevRandom => String::from("/dev/random"),
         FileBacking::DevUrandom => String::from("/dev/urandom"),
         FileBacking::PtyMaster(_) => String::from("/dev/ptmx"),

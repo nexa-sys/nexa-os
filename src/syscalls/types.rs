@@ -184,6 +184,9 @@ pub enum FileBacking {
     /// /dev/zero - return zero bytes on read
     DevZero,
 
+    /// /dev/full - always fail writes with ENOSPC, reads return zeros
+    DevFull,
+
     /// PTY master (allocated via /dev/ptmx)
     PtyMaster(u32),
     /// PTY slave (opened via /dev/pts/<n>)
