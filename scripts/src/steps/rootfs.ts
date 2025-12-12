@@ -3,7 +3,7 @@
  */
 
 import { join } from 'path';
-import { mkdir, copyFile, writeFile, chmod, readdir } from 'fs/promises';
+import { mkdir, copyFile, writeFile, chmod, readdir, symlink, unlink } from 'fs/promises';
 import { existsSync } from 'fs';
 import { BuildEnvironment, BuildStepResult } from '../types.js';
 import { logger } from '../logger.js';
@@ -14,6 +14,21 @@ import { buildLibrary } from './libs.js';
 import { loadBuildConfig } from '../config.js';
 
 const ROOTFS_SIZE_MB = parseInt(process.env.ROOTFS_SIZE_MB ?? '50', 10);
+
+async function ensureStdStreamSymlinks(rootfsDir: string): Promise<void> {
+  const devDir = join(rootfsDir, 'dev');
+  const links: Array<[string, string]> = [
+    ['stdin', '/proc/self/fd/0'],
+    ['stdout', '/proc/self/fd/1'],
+    ['stderr', '/proc/self/fd/2'],
+  ];
+
+  for (const [name, target] of links) {
+    const linkPath = join(devDir, name);
+    try { await unlink(linkPath); } catch {}
+    await symlink(target, linkPath);
+  }
+}
 
 /**
  * Setup rootfs directory structure
@@ -28,6 +43,8 @@ async function setupRootfsDirs(rootfsDir: string): Promise<void> {
   ];
   
   await Promise.all(dirs.map(d => mkdir(join(rootfsDir, d), { recursive: true })));
+
+  await ensureStdStreamSymlinks(rootfsDir);
 }
 
 /**

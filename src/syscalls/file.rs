@@ -4,11 +4,12 @@
 
 use super::types::*;
 use crate::posix::{self, FileType};
-use crate::process::{Process, ProcessState, USER_REGION_SIZE, USER_VIRT_BASE};
+use crate::process::{Process, ProcessState};
 use crate::scheduler;
 use crate::vt;
-use crate::{kdebug, kerror, kinfo, ktrace, kwarn};
+use crate::{kinfo, ktrace, kwarn};
 use alloc::boxed::Box;
+use alloc::string::String;
 use core::{cmp, ptr, slice, str};
 
 /// Mark a file descriptor as open in the current process's open_fds bitmap
@@ -1102,6 +1103,43 @@ pub fn open(path_ptr: *const u8, flags: u64, mode: u64) -> u64 {
         truncate
     );
 
+    // Linux-compatible stdio path aliases
+    // - /dev/stdin|stdout|stderr are typically symlinks into /proc/self/fd/{0,1,2}
+    // - Opening either form should return a dup() of the referenced FD
+    match normalized {
+        "/dev/stdin" => return super::fd::dup(STDIN),
+        "/dev/stdout" => return super::fd::dup(STDOUT),
+        "/dev/stderr" => return super::fd::dup(STDERR),
+        _ => {}
+    }
+
+    if let Some(fd_str) = normalized
+        .strip_prefix("/proc/self/fd/")
+        .or_else(|| normalized.strip_prefix("proc/self/fd/"))
+    {
+        if let Ok(fd_num) = fd_str.parse::<u64>() {
+            return super::fd::dup(fd_num);
+        }
+        posix::set_errno(posix::errno::ENOENT);
+        return u64::MAX;
+    }
+
+    // /proc/<pid>/fd/<n> (Linux-like behavior: opening duplicates the referenced FD)
+    if let Some(rest) = normalized
+        .strip_prefix("/proc/")
+        .or_else(|| normalized.strip_prefix("proc/"))
+    {
+        if let Some((pid_str, fd_str)) = rest.split_once("/fd/") {
+            if let (Ok(pid), Ok(fd_num)) = (pid_str.parse::<u64>(), fd_str.parse::<u64>()) {
+                if crate::fs::procfs::pid_exists(pid) && pid_has_fd(pid, fd_num) {
+                    return super::fd::dup(fd_num);
+                }
+                posix::set_errno(posix::errno::ENOENT);
+                return u64::MAX;
+            }
+        }
+    }
+
     // Check for special device files
     let special_backing = match normalized {
         "/dev/random" => Some(FileBacking::DevRandom),
@@ -1538,6 +1576,161 @@ pub fn fstat(fd: u64, stat_buf: *mut posix::Stat) -> u64 {
     }
     posix::set_errno(0);
     0
+}
+
+fn build_fd_link_target(fd: u64) -> Option<String> {
+    if fd <= 2 {
+        return Some(String::from("/dev/tty"));
+    }
+
+    let handle = handle_for_fd(fd).ok()?;
+
+    let target = match handle.backing {
+        FileBacking::StdStream(_) => String::from("/dev/tty"),
+        FileBacking::DevNull => String::from("/dev/null"),
+        FileBacking::DevZero => String::from("/dev/zero"),
+        FileBacking::DevRandom => String::from("/dev/random"),
+        FileBacking::DevUrandom => String::from("/dev/urandom"),
+        FileBacking::Socket(sock) => alloc::format!("socket:[{}]", sock.socket_index),
+        FileBacking::Socketpair(pair) => {
+            alloc::format!("socketpair:[{}]:{}", pair.pair_id, pair.end)
+        }
+        FileBacking::Inline(_) => String::from("initramfs"),
+        FileBacking::Modular(m) => alloc::format!(
+            "modfs:{}:inode:{}",
+            m.fs_index,
+            m.inode
+        ),
+        #[allow(deprecated)]
+        FileBacking::Ext2(_) => String::from("ext2"),
+    };
+
+    Some(target)
+}
+
+fn parse_proc_pid_fd(path: &str) -> Option<(u64, u64)> {
+    let path = path.trim();
+    // Accept both absolute and relative proc-style paths
+    let path = path
+        .strip_prefix("/proc/")
+        .or_else(|| path.strip_prefix("proc/"))?;
+
+    if let Some(fd_str) = path.strip_prefix("self/fd/") {
+        let pid = scheduler::get_current_pid().unwrap_or(1);
+        let fd = fd_str.parse::<u64>().ok()?;
+        return Some((pid, fd));
+    }
+
+    let (pid_str, fd_str) = path.split_once("/fd/")?;
+    let pid = pid_str.parse::<u64>().ok()?;
+    let fd = fd_str.parse::<u64>().ok()?;
+    Some((pid, fd))
+}
+
+fn pid_has_fd(pid: u64, fd: u64) -> bool {
+    if fd <= 2 {
+        return true;
+    }
+    if fd < FD_BASE {
+        return false;
+    }
+    let bit = (fd - FD_BASE) as usize;
+    if bit >= MAX_OPEN_FILES {
+        return false;
+    }
+    scheduler::get_process(pid)
+        .map(|p| (p.open_fds & (1 << bit)) != 0)
+        .unwrap_or(false)
+}
+
+fn readlink_impl(path: &str) -> Option<String> {
+    match path.trim() {
+        "/dev/stdin" => return Some(String::from("/proc/self/fd/0")),
+        "/dev/stdout" => return Some(String::from("/proc/self/fd/1")),
+        "/dev/stderr" => return Some(String::from("/proc/self/fd/2")),
+        _ => {}
+    }
+
+    if path.trim() == "/proc/self" || path.trim() == "proc/self" {
+        let pid = scheduler::get_current_pid().unwrap_or(1);
+        return Some(alloc::format!("{}", pid));
+    }
+
+    let (pid, fd) = parse_proc_pid_fd(path)?;
+    if !crate::fs::procfs::pid_exists(pid) {
+        return None;
+    }
+    if !pid_has_fd(pid, fd) {
+        return None;
+    }
+    build_fd_link_target(fd)
+}
+
+/// readlink(2) - read the target of a symbolic link
+pub fn readlink(path_ptr: *const u8, buf_ptr: *mut u8, bufsiz: usize) -> u64 {
+    if path_ptr.is_null() || buf_ptr.is_null() || bufsiz == 0 {
+        posix::set_errno(posix::errno::EINVAL);
+        return u64::MAX;
+    }
+
+    if !user_buffer_in_range(buf_ptr as u64, bufsiz as u64) {
+        posix::set_errno(posix::errno::EFAULT);
+        return u64::MAX;
+    }
+
+    // Read path as null-terminated C string
+    let raw = unsafe { slice::from_raw_parts(path_ptr, 4096) };
+    let end = raw.iter().position(|&c| c == 0).unwrap_or(4096);
+    let trimmed = &raw[..end];
+    let Ok(path) = str::from_utf8(trimmed) else {
+        posix::set_errno(posix::errno::EINVAL);
+        return u64::MAX;
+    };
+
+    let Some(target) = readlink_impl(path) else {
+        posix::set_errno(posix::errno::ENOENT);
+        return u64::MAX;
+    };
+
+    let bytes = target.as_bytes();
+    let n = bytes.len().min(bufsiz);
+    unsafe {
+        ptr::copy_nonoverlapping(bytes.as_ptr(), buf_ptr, n);
+    }
+    posix::set_errno(0);
+    n as u64
+}
+
+/// readlinkat(2) - minimal support (absolute paths only, or AT_FDCWD)
+pub fn readlinkat(dirfd: i32, pathname_ptr: *const u8, buf_ptr: *mut u8, bufsiz: usize) -> u64 {
+    const AT_FDCWD: i32 = -100;
+
+    if pathname_ptr.is_null() {
+        posix::set_errno(posix::errno::EINVAL);
+        return u64::MAX;
+    }
+
+    // Read pathname as C string
+    let raw = unsafe { slice::from_raw_parts(pathname_ptr, 4096) };
+    let end = raw.iter().position(|&c| c == 0).unwrap_or(4096);
+    let trimmed = &raw[..end];
+    let Ok(path) = str::from_utf8(trimmed) else {
+        posix::set_errno(posix::errno::EINVAL);
+        return u64::MAX;
+    };
+
+    // We only support absolute paths for now (or AT_FDCWD with an absolute path)
+    if path.trim().starts_with('/') {
+        return readlink(pathname_ptr, buf_ptr, bufsiz);
+    }
+
+    if dirfd == AT_FDCWD {
+        posix::set_errno(posix::errno::ENOSYS);
+        return u64::MAX;
+    }
+
+    posix::set_errno(posix::errno::ENOSYS);
+    u64::MAX
 }
 
 /// Lseek system call

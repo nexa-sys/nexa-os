@@ -767,6 +767,8 @@ pub fn open(path: &str) -> Option<OpenFile> {
 /// Handle procfs virtual directory stat
 fn handle_procfs_stat(path: &str) -> Option<Metadata> {
     use super::procfs;
+    const FD_BASE: u64 = 3;
+    const MAX_OPEN_FILES: usize = 16;
 
     let path = path.trim_start_matches('/');
 
@@ -776,6 +778,31 @@ fn handle_procfs_stat(path: &str) -> Option<Metadata> {
         "proc/self" => return Some(procfs::proc_link_metadata()),
         "proc/sys" | "proc/sys/kernel" => return Some(procfs::proc_dir_metadata()),
         _ => {}
+    }
+
+    // /proc/self/...
+    if path == "proc/self/fd" {
+        return Some(procfs::proc_dir_metadata());
+    }
+    if let Some(fd_str) = path.strip_prefix("proc/self/fd/") {
+        if let Ok(fd) = fd_str.parse::<u64>() {
+            // stdin/stdout/stderr are always present
+            if fd <= 2 {
+                return Some(procfs::proc_link_metadata());
+            }
+            // Other FDs are tracked by open_fds bitmask
+            if let Some(pid) = crate::scheduler::get_current_pid() {
+                if let Some(p) = crate::scheduler::get_process(pid) {
+                    if fd >= FD_BASE {
+                        let bit = (fd - FD_BASE) as usize;
+                        if bit < MAX_OPEN_FILES && (p.open_fds & (1 << bit)) != 0 {
+                            return Some(procfs::proc_link_metadata());
+                        }
+                    }
+                }
+            }
+        }
+        return None;
     }
 
     // Global procfs files
@@ -809,6 +836,23 @@ fn handle_procfs_stat(path: &str) -> Option<Metadata> {
                             return Some(procfs::proc_file_metadata(0));
                         }
                         "fd" => return Some(procfs::proc_dir_metadata()),
+                        _ if file_path.starts_with("fd/") => {
+                            let fd_str = &file_path[3..];
+                            if let Ok(fd) = fd_str.parse::<u64>() {
+                                if fd <= 2 {
+                                    return Some(procfs::proc_link_metadata());
+                                }
+                                if let Some(p) = crate::scheduler::get_process(pid) {
+                                    if fd >= FD_BASE {
+                                        let bit = (fd - FD_BASE) as usize;
+                                        if bit < MAX_OPEN_FILES && (p.open_fds & (1 << bit)) != 0 {
+                                            return Some(procfs::proc_link_metadata());
+                                        }
+                                    }
+                                }
+                            }
+                            return None;
+                        }
                         _ => {}
                     }
                 }
@@ -949,6 +993,8 @@ where
     F: FnMut(&str, Metadata),
 {
     use super::procfs;
+    const FD_BASE: u64 = 3;
+    const MAX_OPEN_FILES: usize = 16;
 
     let path = path.trim_start_matches('/').trim_end_matches('/');
 
@@ -978,6 +1024,35 @@ where
             }
             return true;
         }
+        "proc/self" => {
+            if let Some(pid) = crate::scheduler::get_current_pid() {
+                if procfs::pid_exists(pid) {
+                    cb("status", procfs::proc_file_metadata(0));
+                    cb("stat", procfs::proc_file_metadata(0));
+                    cb("cmdline", procfs::proc_file_metadata(0));
+                    cb("maps", procfs::proc_file_metadata(0));
+                    cb("fd", procfs::proc_dir_metadata());
+                    return true;
+                }
+            }
+        }
+        "proc/self/fd" => {
+            if let Some(pid) = crate::scheduler::get_current_pid() {
+                if let Some(p) = crate::scheduler::get_process(pid) {
+                    cb("0", procfs::proc_link_metadata());
+                    cb("1", procfs::proc_link_metadata());
+                    cb("2", procfs::proc_link_metadata());
+                    for bit in 0..MAX_OPEN_FILES {
+                        if (p.open_fds & (1 << bit)) != 0 {
+                            let fd = FD_BASE + bit as u64;
+                            let fd_str = alloc::format!("{}", fd);
+                            cb(&fd_str, procfs::proc_link_metadata());
+                        }
+                    }
+                    return true;
+                }
+            }
+        }
         "proc/sys" => {
             cb("kernel", procfs::proc_dir_metadata());
             return true;
@@ -1003,6 +1078,7 @@ where
     // Per-process directory listing
     if path.starts_with("proc/") {
         let rest = &path[5..];
+        // /proc/<pid>
         if let Ok(pid) = rest.parse::<u64>() {
             if procfs::pid_exists(pid) {
                 cb("status", procfs::proc_file_metadata(0));
@@ -1011,6 +1087,27 @@ where
                 cb("maps", procfs::proc_file_metadata(0));
                 cb("fd", procfs::proc_dir_metadata());
                 return true;
+            }
+        }
+
+        // /proc/<pid>/fd
+        if let Some((pid_str, subpath)) = rest.split_once('/') {
+            if let Ok(pid) = pid_str.parse::<u64>() {
+                if procfs::pid_exists(pid) && subpath == "fd" {
+                    if let Some(p) = crate::scheduler::get_process(pid) {
+                        cb("0", procfs::proc_link_metadata());
+                        cb("1", procfs::proc_link_metadata());
+                        cb("2", procfs::proc_link_metadata());
+                        for bit in 0..MAX_OPEN_FILES {
+                            if (p.open_fds & (1 << bit)) != 0 {
+                                let fd = FD_BASE + bit as u64;
+                                let fd_str = alloc::format!("{}", fd);
+                                cb(&fd_str, procfs::proc_link_metadata());
+                            }
+                        }
+                        return true;
+                    }
+                }
             }
         }
     }

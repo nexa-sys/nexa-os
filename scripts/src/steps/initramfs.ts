@@ -298,6 +298,18 @@ async function createCpioArchive(env: BuildEnvironment): Promise<BuildStepResult
       logger.info(`Added module: ${nkm}`);
     }
   }
+
+  // Standard stream symlinks
+  const stdioLinks: Array<[string, string]> = [
+    ['stdin', '/proc/self/fd/0'],
+    ['stdout', '/proc/self/fd/1'],
+    ['stderr', '/proc/self/fd/2'],
+  ];
+  for (const [name, target] of stdioLinks) {
+    const linkPath = join(stagingDir, 'dev', name);
+    try { await unlink(linkPath); } catch {}
+    await symlink(target, linkPath);
+  }
   
   // Create CPIO archive
   const cpioPath = env.initramfsCpio;

@@ -415,17 +415,24 @@ pub unsafe extern "C" fn cfmakeraw(termios_p: *mut termios) {
 }
 
 // ============================================================================
-// Symlink Functions (not supported)
+// Symlink Functions
 // ============================================================================
+
+const SYS_READLINK: u64 = 89;
+const SYS_READLINKAT: u64 = 267;
 
 #[no_mangle]
 pub unsafe extern "C" fn readlink(
-    _path: *const c_char,
-    _buf: *mut c_char,
-    _bufsiz: size_t,
+    path: *const c_char,
+    buf: *mut c_char,
+    bufsiz: size_t,
 ) -> ssize_t {
-    crate::set_errno(22); // EINVAL
-    -1
+    crate::translate_ret_isize(crate::syscall3(
+        SYS_READLINK,
+        path as u64,
+        buf as u64,
+        bufsiz as u64,
+    )) as ssize_t
 }
 
 #[no_mangle]
@@ -435,12 +442,15 @@ pub unsafe extern "C" fn readlinkat(
     buf: *mut c_char,
     bufsiz: size_t,
 ) -> ssize_t {
-    let _ = dirfd;
-    let _ = pathname;
-    let _ = buf;
-    let _ = bufsiz;
-    crate::set_errno(22); // EINVAL
-    -1
+    crate::translate_ret_isize(crate::syscall6(
+        SYS_READLINKAT,
+        dirfd as u64,
+        pathname as u64,
+        buf as u64,
+        bufsiz as u64,
+        0,
+        0,
+    )) as ssize_t
 }
 
 // ============================================================================

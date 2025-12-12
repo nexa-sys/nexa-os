@@ -18,7 +18,7 @@
 //! - `uefi`: UEFI compatibility syscalls
 //! - `swap`: Swap management syscalls (swapon, swapoff)
 
-use crate::{kerror, kinfo};
+use crate::kinfo;
 
 mod exec;
 mod fd;
@@ -62,8 +62,8 @@ use types::*;
 // Import all syscall implementations
 use fd::{dup, dup2, pipe};
 use file::{
-    close, fcntl, fstat, get_errno, list_files, lseek, open, pread64, pwrite64, read, readv, stat,
-    write, writev,
+    close, fcntl, fstat, get_errno, list_files, lseek, open, pread64, pwrite64, read, readlink,
+    readlinkat, readv, stat, write, writev,
 };
 use ipc::{ipc_create, ipc_recv, ipc_send};
 use kmod::{delete_module, init_module, query_module};
@@ -140,6 +140,20 @@ pub extern "C" fn syscall_dispatch(
         SYS_CLOSE => close(arg1),
         SYS_STAT => stat(arg1 as *const u8, arg2 as usize, arg3 as *mut posix::Stat),
         SYS_FSTAT => fstat(arg1, arg2 as *mut posix::Stat),
+        SYS_READLINK => readlink(arg1 as *const u8, arg2 as *mut u8, arg3 as usize),
+        SYS_READLINKAT => {
+            // readlinkat needs 4 args: dirfd, pathname, buf, bufsiz
+            let arg4 = unsafe {
+                let mut r10_val: u64;
+                core::arch::asm!(
+                    "mov {0}, gs:[32]",
+                    out(reg) r10_val,
+                    options(nostack, preserves_flags)
+                );
+                r10_val
+            };
+            readlinkat(arg1 as i32, arg2 as *const u8, arg3 as *mut u8, arg4 as usize)
+        }
         SYS_LSEEK => lseek(arg1, arg2 as i64, arg3),
         SYS_PREAD64 => {
             // pread64 needs 4 args: fd, buf, count, offset

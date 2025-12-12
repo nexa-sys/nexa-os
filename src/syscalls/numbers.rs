@@ -10,6 +10,7 @@ pub const SYS_OPEN: u64 = 2;
 pub const SYS_CLOSE: u64 = 3;
 pub const SYS_STAT: u64 = 4;
 pub const SYS_FSTAT: u64 = 5;
+pub const SYS_READLINK: u64 = 89;
 pub const SYS_LSEEK: u64 = 8;
 
 // Vectored and positioned I/O (Linux-compatible)
@@ -65,6 +66,7 @@ pub const SYS_FUTEX: u64 = 98; // Linux x86_64 uses 202, but we avoid conflict w
 pub const SYS_SET_TID_ADDRESS: u64 = 218;
 pub const SYS_SET_ROBUST_LIST: u64 = 273;
 pub const SYS_GET_ROBUST_LIST: u64 = 274;
+pub const SYS_READLINKAT: u64 = 267;
 
 // Architecture-specific (TLS support)
 pub const SYS_ARCH_PRCTL: u64 = 158;
