@@ -42,10 +42,85 @@ pub fn ioctl(fd: u64, request: u64, arg: u64) -> u64 {
         match handle.backing {
             FileBacking::PtyMaster(id) => ioctl_pty(id as usize, true, request, arg),
             FileBacking::PtySlave(id) => ioctl_pty(id as usize, false, request, arg),
+            FileBacking::DevLoop(index) => {
+                match crate::drivers::r#loop::loop_device_ioctl(index as usize, request, arg) {
+                    Ok(result) => {
+                        posix::set_errno(0);
+                        result as u64
+                    }
+                    Err(e) => {
+                        posix::set_errno(e);
+                        u64::MAX
+                    }
+                }
+            }
+            FileBacking::DevLoopControl => {
+                match crate::drivers::r#loop::loop_control_ioctl(request, arg) {
+                    Ok(result) => {
+                        posix::set_errno(0);
+                        result as u64
+                    }
+                    Err(e) => {
+                        posix::set_errno(e);
+                        u64::MAX
+                    }
+                }
+            }
+            FileBacking::DevInputEvent(index) => {
+                ioctl_input_event(index as usize, request, arg)
+            }
+            FileBacking::DevInputMice => {
+                // /dev/input/mice doesn't support most ioctls
+                posix::set_errno(posix::errno::ENOTTY);
+                u64::MAX
+            }
             _ => {
                 posix::set_errno(posix::errno::ENOTTY);
                 u64::MAX
             }
+        }
+    }
+}
+
+// ============================================================================
+// Input event ioctl handler
+// ============================================================================
+
+// Linux input ioctl commands
+const EVIOCGVERSION: u64 = 0x80044501; // Get driver version
+const EVIOCGID: u64 = 0x80084502; // Get device ID
+
+fn ioctl_input_event(index: usize, request: u64, arg: u64) -> u64 {
+    match request {
+        EVIOCGVERSION => {
+            // Return driver version (Linux uses 0x010001 = 1.0.1)
+            if arg == 0 || !user_buffer_in_range(arg, mem::size_of::<i32>() as u64) {
+                posix::set_errno(posix::errno::EFAULT);
+                return u64::MAX;
+            }
+            unsafe { ptr::write(arg as *mut i32, 0x010001) };
+            posix::set_errno(0);
+            0
+        }
+        EVIOCGID => {
+            // Return device ID
+            if arg == 0 || !user_buffer_in_range(arg, mem::size_of::<crate::drivers::input::event::InputId>() as u64) {
+                posix::set_errno(posix::errno::EFAULT);
+                return u64::MAX;
+            }
+            if let Some(id) = crate::drivers::input::get_device_id(index) {
+                unsafe { ptr::write(arg as *mut crate::drivers::input::event::InputId, id) };
+                posix::set_errno(0);
+                0
+            } else {
+                posix::set_errno(posix::errno::ENODEV);
+                u64::MAX
+            }
+        }
+        _ => {
+            // Many input ioctls are optional
+            posix::set_errno(posix::errno::ENOTTY);
+            u64::MAX
         }
     }
 }

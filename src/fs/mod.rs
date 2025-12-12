@@ -78,7 +78,9 @@ pub use tmpfs::{
 // Re-export devfs
 pub use devfs::{
     get_device_type, init as devfs_init, is_device, register_block_device, register_device,
-    register_framebuffer_device, register_network_device, DevFs, DeviceType, DEVFS,
+    register_framebuffer_device, register_network_device, register_loop_device,
+    register_loop_control, register_input_event_device, register_input_mice,
+    DevFs, DeviceType, DEVFS,
 };
 
 // Re-export fstab

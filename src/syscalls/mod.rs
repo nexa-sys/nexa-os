@@ -100,6 +100,12 @@ use user::{user_add, user_info, user_list, user_login, user_logout};
 // Re-export file descriptor tracking and cleanup functions
 pub use file::{close_all_fds_for_process, mark_fd_closed, mark_fd_open};
 
+// Re-export internal file APIs for kernel subsystems (loop devices, etc.)
+pub use file::{get_file_path, get_file_size, pread_internal, pwrite_internal};
+
+// Re-export user buffer validation for kernel subsystems
+pub use types::user_buffer_in_range;
+
 // Re-export thread-related functions for internal kernel use
 pub use thread::{futex_wake_internal, FUTEX_WAKE};
 

@@ -191,6 +191,15 @@ pub enum FileBacking {
     PtyMaster(u32),
     /// PTY slave (opened via /dev/pts/<n>)
     PtySlave(u32),
+
+    /// Loop device (/dev/loop0-7)
+    DevLoop(u8),
+    /// Loop control device (/dev/loop-control)
+    DevLoopControl,
+    /// Input event device (/dev/input/event0-7)
+    DevInputEvent(u8),
+    /// Combined mice device (/dev/input/mice)
+    DevInputMice,
 }
 
 /// Standard stream kind

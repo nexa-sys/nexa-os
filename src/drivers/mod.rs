@@ -10,6 +10,8 @@
 //! - Random number generator (RDRAND/RDSEED + ChaCha20 CSPRNG)
 //! - TTF font parser for Unicode/CJK support (optional, `gfx_ttf` feature)
 //! - Block device abstraction layer
+//! - Loop devices (file-backed block devices)
+//! - Unified input event subsystem (keyboard, mouse)
 
 pub mod acpi;
 pub mod block;
@@ -62,7 +64,9 @@ pub mod compositor {
     pub fn ap_work_entry() {}
 }
 pub mod framebuffer;
+pub mod input;
 pub mod keyboard;
+pub mod r#loop;
 pub mod random;
 pub mod rtc;
 pub mod serial;
@@ -115,4 +119,31 @@ pub use random::{
     get_random_bytes, get_random_bytes_wait, get_random_u32, get_random_u64, init as init_random,
     is_initialized as random_is_initialized, sys_getrandom, GRND_INSECURE, GRND_NONBLOCK,
     GRND_RANDOM,
+};
+
+// Re-export from loop (loop device driver)
+pub use r#loop::{
+    init as init_loop, attach as loop_attach, detach as loop_detach,
+    get_free as loop_get_free, is_attached as loop_is_attached,
+    read_sectors as loop_read_sectors, write_sectors as loop_write_sectors,
+    loop_control_ioctl, loop_device_ioctl, get_device_info as loop_get_device_info,
+    LoopInfo64, LoopFlags, MAX_LOOP_DEVICES,
+    LOOP_SET_FD, LOOP_CLR_FD, LOOP_GET_STATUS64, LOOP_SET_STATUS64,
+    LOOP_CTL_GET_FREE, LOOP_CTL_ADD, LOOP_CTL_REMOVE,
+};
+
+// Re-export from input (unified input event subsystem)
+pub use input::{
+    init as init_input, device_count as input_device_count,
+    device_exists as input_device_exists, has_events as input_has_events,
+    read_events as input_read_events, get_device_id as input_get_device_id,
+    get_device_info as input_get_device_info, list_devices as input_list_devices,
+    InputDeviceType,
+};
+pub use input::event::{
+    InputEvent, InputId, InputDeviceInfo,
+    EV_SYN, EV_KEY, EV_REL, EV_ABS, EV_MSC, EV_LED,
+    SYN_REPORT, SYN_DROPPED,
+    REL_X, REL_Y, REL_WHEEL,
+    BTN_LEFT, BTN_RIGHT, BTN_MIDDLE,
 };

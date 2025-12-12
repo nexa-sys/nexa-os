@@ -808,6 +808,9 @@ fn remount_dev_after_pivot() -> Result<(), &'static str> {
     // Re-register dynamic devices from UEFI device table
     uefi_compat::register_devfs_devices();
 
+    // Initialize input subsystem (registers /dev/input/* devices)
+    crate::drivers::input::init();
+
     crate::kinfo!("/dev mounted with devfs");
     Ok(())
 }

@@ -33,6 +33,14 @@ pub enum DeviceType {
     Block(u8),
     /// Framebuffer (e.g., fb0)
     Framebuffer(u8),
+    /// Loop device (e.g., loop0) - maps files to block devices
+    Loop(u8),
+    /// Loop control device (/dev/loop-control)
+    LoopControl,
+    /// Input event device (e.g., event0)
+    InputEvent(u8),
+    /// Combined mice device (/dev/input/mice)
+    InputMice,
 }
 
 /// A device entry in devfs
@@ -105,6 +113,14 @@ pub fn init() {
     register_device("tty4", DeviceType::Console, 4, 4);
     register_device("ptmx", DeviceType::PtyMasterMux, 5, 2);
 
+    // Loop devices
+    register_loop_control();
+    for i in 0..8 {
+        register_loop_device(i);
+    }
+
+    // Input devices will be registered dynamically when input subsystem initializes
+
     let count = *DEVICE_COUNT.lock();
     crate::kinfo!("devfs: initialized with {} devices", count);
 }
@@ -146,6 +162,52 @@ pub fn register_framebuffer_device(index: u8) {
     register_device(name, DeviceType::Framebuffer(index), 29, index as u32);
 }
 
+/// Register loop device
+pub fn register_loop_device(index: u8) {
+    let name: &'static str = match index {
+        0 => "loop0",
+        1 => "loop1",
+        2 => "loop2",
+        3 => "loop3",
+        4 => "loop4",
+        5 => "loop5",
+        6 => "loop6",
+        7 => "loop7",
+        _ => return,
+    };
+    // Major 7 is for loop devices in Linux
+    register_device(name, DeviceType::Loop(index), 7, index as u32);
+}
+
+/// Register loop control device
+pub fn register_loop_control() {
+    // Major 10, minor 237 is loop-control in Linux
+    register_device("loop-control", DeviceType::LoopControl, 10, 237);
+}
+
+/// Register input event device
+pub fn register_input_event_device(index: u8) {
+    let name: &'static str = match index {
+        0 => "event0",
+        1 => "event1",
+        2 => "event2",
+        3 => "event3",
+        4 => "event4",
+        5 => "event5",
+        6 => "event6",
+        7 => "event7",
+        _ => return,
+    };
+    // Major 13 is for input devices in Linux
+    register_device(name, DeviceType::InputEvent(index), 13, 64 + index as u32);
+}
+
+/// Register combined mice device
+pub fn register_input_mice() {
+    // Major 13, minor 63 is /dev/input/mice in Linux
+    register_device("mice", DeviceType::InputMice, 13, 63);
+}
+
 /// The devfs filesystem implementation
 pub struct DevFs;
 
@@ -171,6 +233,17 @@ impl FileSystem for DevFs {
             });
         }
 
+        // /dev/input directory
+        if name == "input" {
+            let meta = Metadata::empty()
+                .with_type(FileType::Directory)
+                .with_mode(0o755);
+            return Some(OpenFile {
+                content: FileContent::Inline(&[]),
+                metadata: meta,
+            });
+        }
+
         // devpts-like slave nodes: /dev/pts/<n>
         if let Some(rest) = name.strip_prefix("pts/") {
             if let Ok(id) = rest.parse::<usize>() {
@@ -182,6 +255,33 @@ impl FileSystem for DevFs {
                         content: FileContent::Inline(&[]),
                         metadata: meta,
                     });
+                }
+            }
+            return None;
+        }
+
+        // /dev/input/event<n> or /dev/input/mice
+        if let Some(rest) = name.strip_prefix("input/") {
+            if rest == "mice" {
+                let meta = Metadata::empty()
+                    .with_type(FileType::Character)
+                    .with_mode(0o666);
+                return Some(OpenFile {
+                    content: FileContent::Inline(&[]),
+                    metadata: meta,
+                });
+            }
+            if let Some(event_str) = rest.strip_prefix("event") {
+                if let Ok(id) = event_str.parse::<usize>() {
+                    if crate::drivers::input::device_exists(id) {
+                        let meta = Metadata::empty()
+                            .with_type(FileType::Character)
+                            .with_mode(0o666);
+                        return Some(OpenFile {
+                            content: FileContent::Inline(&[]),
+                            metadata: meta,
+                        });
+                    }
                 }
             }
             return None;
@@ -230,6 +330,15 @@ impl FileSystem for DevFs {
             );
         }
 
+        // /dev/input directory
+        if name == "input" {
+            return Some(
+                Metadata::empty()
+                    .with_type(FileType::Directory)
+                    .with_mode(0o755),
+            );
+        }
+
         // /dev/pts/<n>
         if let Some(rest) = name.strip_prefix("pts/") {
             if let Ok(id) = rest.parse::<usize>() {
@@ -244,6 +353,29 @@ impl FileSystem for DevFs {
             return None;
         }
 
+        // /dev/input/event<n> or /dev/input/mice
+        if let Some(rest) = name.strip_prefix("input/") {
+            if rest == "mice" {
+                return Some(
+                    Metadata::empty()
+                        .with_type(FileType::Character)
+                        .with_mode(0o666),
+                );
+            }
+            if let Some(event_str) = rest.strip_prefix("event") {
+                if let Ok(id) = event_str.parse::<usize>() {
+                    if crate::drivers::input::device_exists(id) {
+                        return Some(
+                            Metadata::empty()
+                                .with_type(FileType::Character)
+                                .with_mode(0o666),
+                        );
+                    }
+                }
+            }
+            return None;
+        }
+
         let devices = DEVICES.lock();
         let count = *DEVICE_COUNT.lock();
 
@@ -251,7 +383,7 @@ impl FileSystem for DevFs {
             if let Some(ref dev) = devices[i] {
                 if dev.name == name {
                     let file_type = match dev.dev_type {
-                        DeviceType::Block(_) => FileType::Block,
+                        DeviceType::Block(_) | DeviceType::Loop(_) => FileType::Block,
                         _ => FileType::Character,
                     };
                     let meta = Metadata::empty().with_type(file_type).with_mode(0o666);
@@ -269,19 +401,20 @@ impl FileSystem for DevFs {
             .with_type(FileType::Directory)
             .with_mode(0o755);
 
-        // Root: list devices + pts directory
+        // Root: list devices + pts + input directories
         if name.is_empty() || name == "." {
             callback(".", dir_meta);
             callback("..", dir_meta);
 
             callback("pts", dir_meta);
+            callback("input", dir_meta);
 
             let devices = DEVICES.lock();
             let count = *DEVICE_COUNT.lock();
             for i in 0..count {
                 if let Some(ref dev) = devices[i] {
                     let file_type = match dev.dev_type {
-                        DeviceType::Block(_) => FileType::Block,
+                        DeviceType::Block(_) | DeviceType::Loop(_) => FileType::Block,
                         _ => FileType::Character,
                     };
                     let meta = Metadata::empty().with_type(file_type).with_mode(0o666);
@@ -311,6 +444,32 @@ impl FileSystem for DevFs {
                     callback(PTY_NAMES[id], meta);
                 }
             });
+            return;
+        }
+
+        // /dev/input: list input devices
+        if name == "input" {
+            callback(".", dir_meta);
+            callback("..", dir_meta);
+
+            let meta = Metadata::empty()
+                .with_type(FileType::Character)
+                .with_mode(0o666);
+
+            // List event devices
+            const EVENT_NAMES: [&str; 8] = [
+                "event0", "event1", "event2", "event3",
+                "event4", "event5", "event6", "event7",
+            ];
+
+            for (id, name) in EVENT_NAMES.iter().enumerate() {
+                if crate::drivers::input::device_exists(id) {
+                    callback(name, meta);
+                }
+            }
+
+            // Always list mice
+            callback("mice", meta);
             return;
         }
 

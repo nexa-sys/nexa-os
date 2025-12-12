@@ -453,6 +453,43 @@ pub fn write(fd: u64, buf: u64, count: u64) -> u64 {
                     posix::set_errno(posix::errno::ENOSPC);
                     return u64::MAX;
                 }
+                FileBacking::DevLoop(index) => {
+                    // Write to loop device (block device)
+                    if !user_buffer_in_range(buf, count) {
+                        posix::set_errno(posix::errno::EFAULT);
+                        return u64::MAX;
+                    }
+                    if !crate::drivers::loop_is_attached(index as usize) {
+                        posix::set_errno(posix::errno::ENXIO);
+                        return u64::MAX;
+                    }
+                    let data = core::slice::from_raw_parts(buf as *const u8, count as usize);
+                    let position = handle.position as u64;
+                    let sector = position / 512;
+                    let sector_count = ((count + 511) / 512) as u32;
+                    match crate::drivers::loop_write_sectors(index as usize, sector, sector_count, data) {
+                        Ok(written) => {
+                            let new_pos = handle.position + written;
+                            let mut updated = handle;
+                            updated.position = new_pos;
+                            set_file_handle(idx, Some(updated));
+                            posix::set_errno(0);
+                            return written as u64;
+                        }
+                        Err(e) => {
+                            posix::set_errno(e);
+                            return u64::MAX;
+                        }
+                    }
+                }
+                FileBacking::DevLoopControl => {
+                    posix::set_errno(posix::errno::EINVAL);
+                    return u64::MAX;
+                }
+                FileBacking::DevInputEvent(_) | FileBacking::DevInputMice => {
+                    posix::set_errno(posix::errno::EINVAL);
+                    return u64::MAX;
+                }
             }
         }
     }
@@ -607,6 +644,16 @@ pub fn pwrite64(fd: u64, buf: u64, count: u64, offset: i64) -> u64 {
                     posix::set_errno(posix::errno::ENOSPC);
                     return u64::MAX;
                 }
+                FileBacking::DevLoop(_) | FileBacking::DevLoopControl => {
+                    // Loop devices don't support positioned I/O directly
+                    posix::set_errno(posix::errno::EINVAL);
+                    return u64::MAX;
+                }
+                FileBacking::DevInputEvent(_) | FileBacking::DevInputMice => {
+                    // Input devices don't support positioned writes
+                    posix::set_errno(posix::errno::EINVAL);
+                    return u64::MAX;
+                }
             }
         }
     }
@@ -740,6 +787,16 @@ pub fn pread64(fd: u64, buf: *mut u8, count: usize, offset: i64) -> u64 {
                     buffer.fill(0);
                     posix::set_errno(0);
                     return count as u64;
+                }
+                FileBacking::DevLoop(_) | FileBacking::DevLoopControl => {
+                    // Loop devices don't support positioned I/O directly
+                    posix::set_errno(posix::errno::EINVAL);
+                    return u64::MAX;
+                }
+                FileBacking::DevInputEvent(_) | FileBacking::DevInputMice => {
+                    // Input devices don't support positioned reads
+                    posix::set_errno(posix::errno::EINVAL);
+                    return u64::MAX;
                 }
             }
         }
@@ -1202,6 +1259,58 @@ pub fn read(fd: u64, buf: *mut u8, count: usize) -> u64 {
                     posix::set_errno(0);
                     return count as u64;
                 }
+                FileBacking::DevLoop(index) => {
+                    // Read from loop device
+                    let dest = slice::from_raw_parts_mut(buf, count);
+                    match crate::drivers::r#loop::read_sectors(index as usize, 0, (count / 512) as u32, dest) {
+                        Ok(bytes) => {
+                            posix::set_errno(0);
+                            return bytes as u64;
+                        }
+                        Err(e) => {
+                            posix::set_errno(e);
+                            return u64::MAX;
+                        }
+                    }
+                }
+                FileBacking::DevLoopControl => {
+                    // loop-control doesn't support read, only ioctl
+                    posix::set_errno(posix::errno::EINVAL);
+                    return u64::MAX;
+                }
+                FileBacking::DevInputEvent(index) => {
+                    // Read input events
+                    // Each InputEvent is 24 bytes (struct input_event)
+                    use crate::drivers::input::event::InputEvent;
+                    let event_size = core::mem::size_of::<InputEvent>();
+                    let max_events = count / event_size;
+                    if max_events == 0 {
+                        posix::set_errno(posix::errno::EINVAL);
+                        return u64::MAX;
+                    }
+                    let events_ptr = buf as *mut InputEvent;
+                    let events_buf = slice::from_raw_parts_mut(events_ptr, max_events);
+                    let events_read = crate::drivers::input::read_events(index as usize, events_buf);
+                    if events_read == 0 {
+                        // No events available - would block
+                        posix::set_errno(posix::errno::EAGAIN);
+                        return u64::MAX;
+                    }
+                    posix::set_errno(0);
+                    return (events_read * event_size) as u64;
+                }
+                FileBacking::DevInputMice => {
+                    // Read combined mouse data (ImPS/2 format)
+                    let dest = slice::from_raw_parts_mut(buf, count);
+                    let bytes = crate::drivers::input::mouse::read_imps2(dest);
+                    if bytes == 0 {
+                        // No data available - would block
+                        posix::set_errno(posix::errno::EAGAIN);
+                        return u64::MAX;
+                    }
+                    posix::set_errno(0);
+                    return bytes as u64;
+                }
             }
         }
     }
@@ -1336,6 +1445,151 @@ pub fn open(path_ptr: *const u8, flags: u64, mode: u64) -> u64 {
         }
         posix::set_errno(posix::errno::EMFILE);
         kwarn!("No free file handles available");
+        return u64::MAX;
+    }
+
+    // Loop devices: /dev/loop0-7
+    if let Some(rest) = normalized.strip_prefix("/dev/loop") {
+        if let Ok(index) = rest.parse::<u8>() {
+            if index < crate::drivers::MAX_LOOP_DEVICES as u8 {
+                unsafe {
+                    if let Some(slot) = find_empty_file_handle_slot() {
+                        let metadata = posix::Metadata {
+                            size: 0,
+                            file_type: FileType::Block,
+                            mode: 0o660 | FileType::Block.mode_bits(),
+                            uid: 0,
+                            gid: 0,
+                            mtime: 0,
+                            nlink: 1,
+                            blocks: 0,
+                        };
+                        set_file_handle(
+                            slot,
+                            Some(FileHandle {
+                                backing: FileBacking::DevLoop(index),
+                                position: 0,
+                                metadata,
+                            }),
+                        );
+                        posix::set_errno(0);
+                        let fd = FD_BASE + slot as u64;
+                        mark_fd_open(fd);
+                        ktrace!("Opened /dev/loop{} as fd {}", index, fd);
+                        return fd;
+                    }
+                }
+                posix::set_errno(posix::errno::EMFILE);
+                return u64::MAX;
+            }
+        }
+    }
+
+    // Loop control device: /dev/loop-control
+    if normalized == "/dev/loop-control" {
+        unsafe {
+            if let Some(slot) = find_empty_file_handle_slot() {
+                let metadata = posix::Metadata {
+                    size: 0,
+                    file_type: FileType::Character,
+                    mode: 0o660 | FileType::Character.mode_bits(),
+                    uid: 0,
+                    gid: 0,
+                    mtime: 0,
+                    nlink: 1,
+                    blocks: 0,
+                };
+                set_file_handle(
+                    slot,
+                    Some(FileHandle {
+                        backing: FileBacking::DevLoopControl,
+                        position: 0,
+                        metadata,
+                    }),
+                );
+                posix::set_errno(0);
+                let fd = FD_BASE + slot as u64;
+                mark_fd_open(fd);
+                ktrace!("Opened /dev/loop-control as fd {}", fd);
+                return fd;
+            }
+        }
+        posix::set_errno(posix::errno::EMFILE);
+        return u64::MAX;
+    }
+
+    // Input event devices: /dev/input/event0-7
+    if let Some(rest) = normalized
+        .strip_prefix("/dev/input/event")
+        .or_else(|| normalized.strip_prefix("dev/input/event"))
+    {
+        if let Ok(index) = rest.parse::<u8>() {
+            if crate::drivers::input_device_exists(index as usize) {
+                unsafe {
+                    if let Some(slot) = find_empty_file_handle_slot() {
+                        let metadata = posix::Metadata {
+                            size: 0,
+                            file_type: FileType::Character,
+                            mode: 0o666 | FileType::Character.mode_bits(),
+                            uid: 0,
+                            gid: 0,
+                            mtime: 0,
+                            nlink: 1,
+                            blocks: 0,
+                        };
+                        set_file_handle(
+                            slot,
+                            Some(FileHandle {
+                                backing: FileBacking::DevInputEvent(index),
+                                position: 0,
+                                metadata,
+                            }),
+                        );
+                        posix::set_errno(0);
+                        let fd = FD_BASE + slot as u64;
+                        mark_fd_open(fd);
+                        ktrace!("Opened /dev/input/event{} as fd {}", index, fd);
+                        return fd;
+                    }
+                }
+                posix::set_errno(posix::errno::EMFILE);
+                return u64::MAX;
+            }
+        }
+        posix::set_errno(posix::errno::ENOENT);
+        return u64::MAX;
+    }
+
+    // Combined mice device: /dev/input/mice
+    if normalized == "/dev/input/mice" {
+        unsafe {
+            if let Some(slot) = find_empty_file_handle_slot() {
+                let metadata = posix::Metadata {
+                    size: 0,
+                    file_type: FileType::Character,
+                    mode: 0o666 | FileType::Character.mode_bits(),
+                    uid: 0,
+                    gid: 0,
+                    mtime: 0,
+                    nlink: 1,
+                    blocks: 0,
+                };
+                set_file_handle(
+                    slot,
+                    Some(FileHandle {
+                        backing: FileBacking::DevInputMice,
+                        position: 0,
+                        metadata,
+                    }),
+                );
+                posix::set_errno(0);
+                let fd = FD_BASE + slot as u64;
+                mark_fd_open(fd);
+                ktrace!("Opened /dev/input/mice as fd {}", fd);
+                return fd;
+            }
+        }
+        posix::set_errno(posix::errno::EMFILE);
         return u64::MAX;
     }
 
@@ -1856,6 +2110,10 @@ fn build_fd_link_target(fd: u64) -> Option<String> {
         ),
         #[allow(deprecated)]
         FileBacking::Ext2(_) => String::from("ext2"),
+        FileBacking::DevLoop(n) => alloc::format!("/dev/loop{}", n),
+        FileBacking::DevLoopControl => String::from("/dev/loop-control"),
+        FileBacking::DevInputEvent(n) => alloc::format!("/dev/input/event{}", n),
+        FileBacking::DevInputMice => String::from("/dev/input/mice"),
     };
 
     Some(target)
@@ -2174,3 +2432,217 @@ pub fn close_all_fds_for_process(open_fds: u16) {
         }
     }
 }
+
+// ============================================================================
+// Internal API for kernel subsystems (loop devices, etc.)
+// ============================================================================
+
+/// Get file size for a given file descriptor (internal API)
+///
+/// Returns the size in bytes, or None if the fd is invalid or doesn't have a size.
+pub fn get_file_size(fd: u64) -> Option<u64> {
+    if fd < FD_BASE {
+        return None;
+    }
+
+    let idx = (fd - FD_BASE) as usize;
+    if idx >= MAX_OPEN_FILES {
+        return None;
+    }
+
+    unsafe {
+        get_file_handle(idx).map(|handle| handle.metadata.size)
+    }
+}
+
+/// Get file path for a given file descriptor (internal API)
+///
+/// Returns the path if available, or a generated name otherwise.
+pub fn get_file_path(fd: u64) -> Option<alloc::string::String> {
+    use alloc::string::String;
+    use alloc::format;
+
+    if fd < FD_BASE {
+        return match fd {
+            0 => Some(String::from("/dev/stdin")),
+            1 => Some(String::from("/dev/stdout")),
+            2 => Some(String::from("/dev/stderr")),
+            _ => None,
+        };
+    }
+
+    let idx = (fd - FD_BASE) as usize;
+    if idx >= MAX_OPEN_FILES {
+        return None;
+    }
+
+    unsafe {
+        get_file_handle(idx).map(|handle| {
+            match handle.backing {
+                FileBacking::StdStream(_) => String::from("/dev/tty"),
+                FileBacking::DevNull => String::from("/dev/null"),
+                FileBacking::DevZero => String::from("/dev/zero"),
+                FileBacking::DevFull => String::from("/dev/full"),
+                FileBacking::DevRandom => String::from("/dev/random"),
+                FileBacking::DevUrandom => String::from("/dev/urandom"),
+                FileBacking::PtyMaster(_) => String::from("/dev/ptmx"),
+                FileBacking::PtySlave(id) => format!("/dev/pts/{}", id),
+                FileBacking::Socket(sock) => format!("socket:[{}]", sock.socket_index),
+                FileBacking::Socketpair(pair) => format!("socketpair:[{}]:{}", pair.pair_id, pair.end),
+                FileBacking::Inline(_) => String::from("initramfs"),
+                FileBacking::Modular(m) => format!("modfs:{}:inode:{}", m.fs_index, m.inode),
+                #[allow(deprecated)]
+                FileBacking::Ext2(_) => String::from("ext2"),
+                FileBacking::DevLoop(n) => format!("/dev/loop{}", n),
+                FileBacking::DevLoopControl => String::from("/dev/loop-control"),
+                FileBacking::DevInputEvent(n) => format!("/dev/input/event{}", n),
+                FileBacking::DevInputMice => String::from("/dev/input/mice"),
+            }
+        })
+    }
+}
+
+/// Read from a file descriptor at a specific offset (internal API)
+///
+/// This is similar to pread64 but for kernel-internal use.
+pub fn pread_internal(fd: u64, buf: &mut [u8], offset: i64) -> Result<usize, i32> {
+    use crate::posix;
+
+    if buf.is_empty() {
+        return Ok(0);
+    }
+
+    if offset < 0 {
+        return Err(posix::errno::EINVAL);
+    }
+
+    if fd < FD_BASE {
+        return Err(posix::errno::ESPIPE);
+    }
+
+    let idx = (fd - FD_BASE) as usize;
+    if idx >= MAX_OPEN_FILES {
+        return Err(posix::errno::EBADF);
+    }
+
+    unsafe {
+        if let Some(handle) = get_file_handle(idx) {
+            match handle.backing {
+                FileBacking::Modular(ref file_handle) => {
+                    match crate::fs::modular_fs_read_at(file_handle, offset as usize, buf) {
+                        Ok(bytes_read) => Ok(bytes_read),
+                        Err(_) => Err(posix::errno::EIO),
+                    }
+                }
+                #[allow(deprecated)]
+                FileBacking::Ext2(ref file_ref) => {
+                    let bytes_read = crate::fs::ext2_read_at(file_ref, offset as usize, buf);
+                    Ok(bytes_read)
+                }
+                FileBacking::Inline(data) => {
+                    let file_size = data.len();
+                    if offset as usize >= file_size {
+                        return Ok(0);
+                    }
+                    let available = file_size - offset as usize;
+                    let to_read = core::cmp::min(buf.len(), available);
+                    buf[..to_read].copy_from_slice(&data[offset as usize..offset as usize + to_read]);
+                    Ok(to_read)
+                }
+                FileBacking::DevRandom | FileBacking::DevUrandom => {
+                    crate::drivers::dev_random_read(buf);
+                    Ok(buf.len())
+                }
+                FileBacking::DevNull => Ok(0),
+                FileBacking::DevZero | FileBacking::DevFull => {
+                    buf.fill(0);
+                    Ok(buf.len())
+                }
+                FileBacking::StdStream(_) | FileBacking::Socket(_) | FileBacking::Socketpair(_) |
+                FileBacking::PtyMaster(_) | FileBacking::PtySlave(_) => {
+                    Err(posix::errno::ESPIPE)
+                }
+                FileBacking::DevLoop(_) | FileBacking::DevLoopControl |
+                FileBacking::DevInputEvent(_) | FileBacking::DevInputMice => {
+                    Err(posix::errno::EINVAL)
+                }
+            }
+        } else {
+            Err(posix::errno::EBADF)
+        }
+    }
+}
+
+/// Write to a file descriptor at a specific offset (internal API)
+///
+/// This is similar to pwrite64 but for kernel-internal use.
+pub fn pwrite_internal(fd: u64, buf: &[u8], offset: i64) -> Result<usize, i32> {
+    use crate::posix;
+
+    if buf.is_empty() {
+        return Ok(0);
+    }
+
+    if offset < 0 {
+        return Err(posix::errno::EINVAL);
+    }
+
+    if fd < FD_BASE {
+        return Err(posix::errno::ESPIPE);
+    }
+
+    let idx = (fd - FD_BASE) as usize;
+    if idx >= MAX_OPEN_FILES {
+        return Err(posix::errno::EBADF);
+    }
+
+    unsafe {
+        if let Some(handle) = get_file_handle(idx) {
+            match handle.backing {
+                FileBacking::Modular(ref file_handle) => {
+                    if !crate::fs::modular_fs_is_writable(file_handle.fs_index) {
+                        return Err(posix::errno::EROFS);
+                    }
+                    match crate::fs::modular_fs_write_at(file_handle, offset as usize, buf) {
+                        Ok(bytes_written) => Ok(bytes_written),
+                        Err(_) => Err(posix::errno::EIO),
+                    }
+                }
+                #[allow(deprecated)]
+                FileBacking::Ext2(ref file_ref) => {
+                    if !crate::fs::ext2_is_writable() {
+                        return Err(posix::errno::EROFS);
+                    }
+                    match crate::fs::ext2_write_at(file_ref, offset as usize, buf) {
+                        Ok(bytes_written) => Ok(bytes_written),
+                        Err(_) => Err(posix::errno::EIO),
+                    }
+                }
+                FileBacking::Inline(_) => {
+                    Err(posix::errno::EROFS)
+                }
+                FileBacking::DevRandom | FileBacking::DevUrandom => {
+                    crate::drivers::dev_random_write(buf);
+                    Ok(buf.len())
+                }
+                FileBacking::DevNull | FileBacking::DevZero => {
+                    Ok(buf.len())
+                }
+                FileBacking::DevFull => {
+                    Err(posix::errno::ENOSPC)
+                }
+                FileBacking::StdStream(_) | FileBacking::Socket(_) | FileBacking::Socketpair(_) |
+                FileBacking::PtyMaster(_) | FileBacking::PtySlave(_) => {
+                    Err(posix::errno::ESPIPE)
+                }
+                FileBacking::DevLoop(_) | FileBacking::DevLoopControl |
+                FileBacking::DevInputEvent(_) | FileBacking::DevInputMice => {
+                    Err(posix::errno::EINVAL)
+                }
+            }
+        } else {
+            Err(posix::errno::EBADF)
+        }
+    }
+}
+
