@@ -200,6 +200,8 @@ pub enum FileBacking {
     DevInputEvent(u8),
     /// Combined mice device (/dev/input/mice)
     DevInputMice,
+    /// Watchdog device (/dev/watchdog)
+    DevWatchdog,
 }
 
 /// Standard stream kind

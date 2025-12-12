@@ -490,6 +490,19 @@ pub fn write(fd: u64, buf: u64, count: u64) -> u64 {
                     posix::set_errno(posix::errno::EINVAL);
                     return u64::MAX;
                 }
+                FileBacking::DevWatchdog => {
+                    // Writing to watchdog feeds it (keepalive)
+                    match crate::drivers::watchdog::feed() {
+                        Ok(()) => {
+                            posix::set_errno(0);
+                            return count;
+                        }
+                        Err(e) => {
+                            posix::set_errno(e);
+                            return u64::MAX;
+                        }
+                    }
+                }
             }
         }
     }
@@ -654,6 +667,11 @@ pub fn pwrite64(fd: u64, buf: u64, count: u64, offset: i64) -> u64 {
                     posix::set_errno(posix::errno::EINVAL);
                     return u64::MAX;
                 }
+                FileBacking::DevWatchdog => {
+                    // Watchdog doesn't support positioned writes
+                    posix::set_errno(posix::errno::EINVAL);
+                    return u64::MAX;
+                }
             }
         }
     }
@@ -795,6 +813,11 @@ pub fn pread64(fd: u64, buf: *mut u8, count: usize, offset: i64) -> u64 {
                 }
                 FileBacking::DevInputEvent(_) | FileBacking::DevInputMice => {
                     // Input devices don't support positioned reads
+                    posix::set_errno(posix::errno::EINVAL);
+                    return u64::MAX;
+                }
+                FileBacking::DevWatchdog => {
+                    // Watchdog doesn't support positioned reads
                     posix::set_errno(posix::errno::EINVAL);
                     return u64::MAX;
                 }
@@ -1311,6 +1334,11 @@ pub fn read(fd: u64, buf: *mut u8, count: usize) -> u64 {
                     posix::set_errno(0);
                     return bytes as u64;
                 }
+                FileBacking::DevWatchdog => {
+                    // Reading from watchdog returns nothing (use ioctl for info)
+                    posix::set_errno(posix::errno::EINVAL);
+                    return u64::MAX;
+                }
             }
         }
     }
@@ -1586,6 +1614,45 @@ pub fn open(path_ptr: *const u8, flags: u64, mode: u64) -> u64 {
                 let fd = FD_BASE + slot as u64;
                 mark_fd_open(fd);
                 ktrace!("Opened /dev/input/mice as fd {}", fd);
+                return fd;
+            }
+        }
+        posix::set_errno(posix::errno::EMFILE);
+        return u64::MAX;
+    }
+
+    // Watchdog device: /dev/watchdog
+    if normalized == "/dev/watchdog" {
+        // Initialize watchdog if not already done
+        if !crate::drivers::watchdog::is_initialized() {
+            crate::drivers::watchdog::init();
+        }
+        unsafe {
+            if let Some(slot) = find_empty_file_handle_slot() {
+                let metadata = posix::Metadata {
+                    size: 0,
+                    file_type: FileType::Character,
+                    mode: 0o600 | FileType::Character.mode_bits(),
+                    uid: 0,
+                    gid: 0,
+                    mtime: 0,
+                    nlink: 1,
+                    blocks: 0,
+                };
+                set_file_handle(
+                    slot,
+                    Some(FileHandle {
+                        backing: FileBacking::DevWatchdog,
+                        position: 0,
+                        metadata,
+                    }),
+                );
+                // Enable watchdog when opened (standard Linux behavior)
+                let _ = crate::drivers::watchdog::enable();
+                posix::set_errno(0);
+                let fd = FD_BASE + slot as u64;
+                mark_fd_open(fd);
+                ktrace!("Opened /dev/watchdog as fd {}", fd);
                 return fd;
             }
         }
@@ -2114,6 +2181,7 @@ fn build_fd_link_target(fd: u64) -> Option<String> {
         FileBacking::DevLoopControl => String::from("/dev/loop-control"),
         FileBacking::DevInputEvent(n) => alloc::format!("/dev/input/event{}", n),
         FileBacking::DevInputMice => String::from("/dev/input/mice"),
+        FileBacking::DevWatchdog => String::from("/dev/watchdog"),
     };
 
     Some(target)
@@ -2497,6 +2565,7 @@ pub fn get_file_path(fd: u64) -> Option<alloc::string::String> {
                 FileBacking::DevLoopControl => String::from("/dev/loop-control"),
                 FileBacking::DevInputEvent(n) => format!("/dev/input/event{}", n),
                 FileBacking::DevInputMice => String::from("/dev/input/mice"),
+                FileBacking::DevWatchdog => String::from("/dev/watchdog"),
             }
         })
     }
@@ -2563,7 +2632,8 @@ pub fn pread_internal(fd: u64, buf: &mut [u8], offset: i64) -> Result<usize, i32
                     Err(posix::errno::ESPIPE)
                 }
                 FileBacking::DevLoop(_) | FileBacking::DevLoopControl |
-                FileBacking::DevInputEvent(_) | FileBacking::DevInputMice => {
+                FileBacking::DevInputEvent(_) | FileBacking::DevInputMice |
+                FileBacking::DevWatchdog => {
                     Err(posix::errno::EINVAL)
                 }
             }
@@ -2636,7 +2706,8 @@ pub fn pwrite_internal(fd: u64, buf: &[u8], offset: i64) -> Result<usize, i32> {
                     Err(posix::errno::ESPIPE)
                 }
                 FileBacking::DevLoop(_) | FileBacking::DevLoopControl |
-                FileBacking::DevInputEvent(_) | FileBacking::DevInputMice => {
+                FileBacking::DevInputEvent(_) | FileBacking::DevInputMice |
+                FileBacking::DevWatchdog => {
                     Err(posix::errno::EINVAL)
                 }
             }

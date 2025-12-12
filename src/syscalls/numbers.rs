@@ -145,3 +145,14 @@ pub const SYS_GETRANDOM: u64 = 318;
 pub const SYS_INIT_MODULE: u64 = 175; // Load a kernel module
 pub const SYS_DELETE_MODULE: u64 = 176; // Unload a kernel module
 pub const SYS_QUERY_MODULE: u64 = 178; // Query module information (NexaOS-specific extensions)
+
+// I/O port access syscalls (Linux-compatible)
+pub const SYS_IOPL: u64 = 172; // Set I/O privilege level
+pub const SYS_IOPERM: u64 = 173; // Set I/O port permission bitmap
+
+// Direct I/O port access (NexaOS extension)
+pub const SYS_PORT_IN: u64 = 270; // Read from I/O port
+pub const SYS_PORT_OUT: u64 = 271; // Write to I/O port
+
+// Watchdog timer syscall (NexaOS extension)
+pub const SYS_WATCHDOG_CTL: u64 = 280; // Watchdog control

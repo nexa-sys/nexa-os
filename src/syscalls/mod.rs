@@ -31,6 +31,7 @@ mod memory_advanced;
 pub mod memory_vma;
 mod network;
 mod numbers;
+mod port;
 mod process;
 mod signal;
 pub mod swap;
@@ -40,6 +41,7 @@ mod time;
 mod types;
 mod uefi;
 mod user;
+mod watchdog;
 
 // Re-export syscall numbers for external use
 pub use numbers::*;
@@ -86,6 +88,7 @@ use network::{
     bind, connect, get_dns_servers, recvfrom, sendto, set_dns_servers, setsockopt, socket,
     socketpair,
 };
+use port::{ioperm, iopl, port_in, port_out};
 use process::{execve, exit, fork, getppid, kill, wait4};
 use signal::{sigaction, sigprocmask};
 use system::{chroot, mount, pivot_root, reboot, runlevel, shutdown, syslog, umount};
@@ -96,6 +99,7 @@ use uefi::{
     uefi_get_usb_info, uefi_map_net_mmio, uefi_map_usb_mmio,
 };
 use user::{user_add, user_info, user_list, user_login, user_logout};
+use watchdog::watchdog_ctl;
 
 // Re-export file descriptor tracking and cleanup functions
 pub use file::{close_all_fds_for_process, mark_fd_closed, mark_fd_open};
@@ -495,6 +499,13 @@ pub extern "C" fn syscall_dispatch(
                 result as u64
             }
         }
+        // I/O port access syscalls
+        SYS_IOPL => iopl(arg1),
+        SYS_IOPERM => ioperm(arg1, arg2, arg3),
+        SYS_PORT_IN => port_in(arg1, arg2),
+        SYS_PORT_OUT => port_out(arg1, arg2, arg3),
+        // Watchdog timer syscall
+        SYS_WATCHDOG_CTL => watchdog_ctl(arg1, arg2),
         _ => {
             crate::kwarn!("Unknown syscall: {}", nr);
             posix::set_errno(posix::errno::ENOSYS);

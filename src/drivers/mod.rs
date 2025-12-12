@@ -71,6 +71,7 @@ pub mod random;
 pub mod rtc;
 pub mod serial;
 pub mod vga;
+pub mod watchdog;
 
 // Re-export commonly used items from serial
 pub use serial::{init as init_serial, try_read_byte, write_byte, write_bytes, write_str};
@@ -146,4 +147,14 @@ pub use input::event::{
     SYN_REPORT, SYN_DROPPED,
     REL_X, REL_Y, REL_WHEEL,
     BTN_LEFT, BTN_RIGHT, BTN_MIDDLE,
+};
+
+// Re-export from watchdog (hardware watchdog timer)
+pub use watchdog::{
+    init as init_watchdog, is_initialized as watchdog_is_initialized,
+    enable as watchdog_enable, disable as watchdog_disable,
+    feed as watchdog_feed, set_timeout as watchdog_set_timeout,
+    get_timeout as watchdog_get_timeout, get_info as watchdog_get_info,
+    is_enabled as watchdog_is_enabled, get_type as watchdog_get_type,
+    watchdog_ioctl, WatchdogInfo, WatchdogType,
 };

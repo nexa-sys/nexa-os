@@ -74,6 +74,18 @@ pub fn ioctl(fd: u64, request: u64, arg: u64) -> u64 {
                 posix::set_errno(posix::errno::ENOTTY);
                 u64::MAX
             }
+            FileBacking::DevWatchdog => {
+                match crate::drivers::watchdog::watchdog_ioctl(request, arg) {
+                    Ok(result) => {
+                        posix::set_errno(0);
+                        result
+                    }
+                    Err(e) => {
+                        posix::set_errno(e);
+                        u64::MAX
+                    }
+                }
+            }
             _ => {
                 posix::set_errno(posix::errno::ENOTTY);
                 u64::MAX
