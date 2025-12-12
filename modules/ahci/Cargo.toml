@@ -1,0 +1,25 @@
+[package]
+name = "ahci-module"
+version = "1.0.0"
+edition = "2021"
+description = "AHCI/SATA Block Device Driver"
+
+[lib]
+name = "ahci_module"
+crate-type = ["staticlib"]
+path = "src/lib.rs"
+
+# NexaOS module metadata - used by build system for auto-discovery
+[package.metadata.nexaos]
+type = "block"
+load_order = 5
+output = "ahci.nkm"
+depends = []
+provides = ["ahci", "sata_disk"]
+
+[package.metadata.nexaos.config]
+ncq_enabled = true
+max_ports = 32
+command_slots = 32
+
+[dependencies]
