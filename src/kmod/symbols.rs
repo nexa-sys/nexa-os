@@ -412,6 +412,18 @@ pub fn init() {
         SymbolType::Function,
     );
 
+    // Register address translation functions (identity-mapped kernel)
+    register_symbol(
+        "kmod_virt_to_phys",
+        kmod_virt_to_phys as *const () as u64,
+        SymbolType::Function,
+    );
+    register_symbol(
+        "kmod_phys_to_virt",
+        kmod_phys_to_virt as *const () as u64,
+        SymbolType::Function,
+    );
+
     crate::kinfo!(
         "Kernel symbol table initialized with {} symbols",
         symbol_count()
@@ -1019,3 +1031,27 @@ pub extern "C" fn kmod_outw(port: u16, value: u16) {
 }
 
 // kmod_outl, kmod_fence and kmod_spin_hint are defined in src/net/modular.rs
+
+// ============================================================================
+// Address Translation Functions (Identity Mapped Kernel)
+// ============================================================================
+
+/// Convert a virtual address to physical address
+///
+/// In NexaOS, the kernel uses identity mapping, so virtual addresses
+/// equal physical addresses for kernel memory.
+#[no_mangle]
+pub extern "C" fn kmod_virt_to_phys(virt: u64) -> u64 {
+    // Identity mapping: virtual == physical
+    virt
+}
+
+/// Convert a physical address to virtual address
+///
+/// In NexaOS, the kernel uses identity mapping, so physical addresses
+/// equal virtual addresses for kernel memory.
+#[no_mangle]
+pub extern "C" fn kmod_phys_to_virt(phys: u64) -> u64 {
+    // Identity mapping: physical == virtual
+    phys
+}
