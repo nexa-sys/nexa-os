@@ -523,10 +523,30 @@ function generateQemuBashScript(config: QemuConfig, _env: BuildEnvironment): str
   lines.push('# Storage devices');
   lines.push('QEMU_CMD+=(');
   lines.push('  -cdrom "$ISO_PATH"');
-  lines.push(`  -drive file="$ROOTFS_IMG",id=rootfs,format=${config.storage.rootfs.format},if=none,cache=${config.storage.rootfs.cache}`);
-  lines.push(`  -device ${config.storage.rootfs.device},drive=rootfs`);
-  lines.push(`  -drive file="$SWAP_IMG",id=swap,format=${config.storage.swap.format},if=none,cache=${config.storage.swap.cache}`);
-  lines.push(`  -device ${config.storage.swap.device},drive=swap`);
+  
+  // For IDE devices, we need to specify bus.unit to avoid conflicts
+  // CDROM uses secondary master (ide.1), so we use primary channel for disks
+  // Primary: ide.0 (master=unit 0, slave=unit 1)
+  const rootfsDevice = config.storage.rootfs.device;
+  const swapDevice = config.storage.swap.device;
+  
+  if (rootfsDevice === 'ide-hd') {
+    // Use primary master (bus=ide.0, unit=0)
+    lines.push(`  -drive file="$ROOTFS_IMG",id=rootfs,format=${config.storage.rootfs.format},if=none,cache=${config.storage.rootfs.cache}`);
+    lines.push(`  -device ide-hd,drive=rootfs,bus=ide.0,unit=0`);
+  } else {
+    lines.push(`  -drive file="$ROOTFS_IMG",id=rootfs,format=${config.storage.rootfs.format},if=none,cache=${config.storage.rootfs.cache}`);
+    lines.push(`  -device ${rootfsDevice},drive=rootfs`);
+  }
+  
+  if (swapDevice === 'ide-hd') {
+    // Use primary slave (bus=ide.0, unit=1)
+    lines.push(`  -drive file="$SWAP_IMG",id=swap,format=${config.storage.swap.format},if=none,cache=${config.storage.swap.cache}`);
+    lines.push(`  -device ide-hd,drive=swap,bus=ide.0,unit=1`);
+  } else {
+    lines.push(`  -drive file="$SWAP_IMG",id=swap,format=${config.storage.swap.format},if=none,cache=${config.storage.swap.cache}`);
+    lines.push(`  -device ${swapDevice},drive=swap`);
+  }
   lines.push(')');
   lines.push('');
   

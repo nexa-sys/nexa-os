@@ -556,6 +556,14 @@ fn scan_for_block_device(device_name: &str) -> Result<&'static [u8], &'static st
 
                 // Build device descriptor with vendor/device IDs
                 // Let driver modules decide if they support this device
+                // features layout:
+                //   bit 0: I/O port mode (1 = I/O port, 0 = MMIO)
+                //   bit 8-9: IDE drive index (0-3 for primary master/slave, secondary master/slave)
+                let mut features: u64 = if is_io_port { 0x1 } else { 0 };
+                // For IDE controllers, set drive index in bits 8-9 (default 0 = primary master)
+                // This can be extended to detect multiple drives if needed
+                features |= 0 << 8; // Primary Master
+                
                 let boot_dev = crate::drivers::block::BootBlockDevice {
                     pci_segment: dev_info.pci_segment,
                     pci_bus: dev_info.pci_bus,
@@ -567,7 +575,7 @@ fn scan_for_block_device(device_name: &str) -> Result<&'static [u8], &'static st
                     mmio_length,
                     sector_size: dev_info.block_size,
                     total_sectors: dev_info.last_block + 1,
-                    features: if is_io_port { 0x1 } else { 0 }, // Flag for I/O port mode
+                    features,
                 };
 
                 match crate::drivers::block::probe_device(&boot_dev) {

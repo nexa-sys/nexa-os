@@ -7,7 +7,7 @@
 import { Command } from 'commander';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { existsSync } from 'fs';
+import { existsSync, statSync } from 'fs';
 import { Builder } from './builder.js';
 import { logger } from './logger.js';
 import { BuildStep } from './types.js';
@@ -424,9 +424,21 @@ program
     const projectRoot = findProjectRoot();
     const env = createBuildEnvironment(projectRoot);
     const scriptPath = resolve(env.buildDir, 'run-qemu.sh');
+    const configPath = resolve(projectRoot, 'config', 'qemu.yaml');
     
-    // Generate script if it doesn't exist or regenerate is requested
-    if (!existsSync(scriptPath) || options.regenerate) {
+    // Check if config is newer than script
+    let needsRegenerate = !existsSync(scriptPath) || options.regenerate;
+    if (!needsRegenerate && existsSync(scriptPath) && existsSync(configPath)) {
+      const scriptStat = statSync(scriptPath);
+      const configStat = statSync(configPath);
+      if (configStat.mtimeMs > scriptStat.mtimeMs) {
+        logger.info('qemu.yaml has changed, regenerating script...');
+        needsRegenerate = true;
+      }
+    }
+    
+    // Generate script if needed
+    if (needsRegenerate) {
       logger.info('Generating QEMU script...');
       await generateQemuScript(env, options.profile);
     }

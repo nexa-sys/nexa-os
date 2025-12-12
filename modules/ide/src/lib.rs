@@ -555,7 +555,10 @@ unsafe fn ide_detect_device(channel: &mut IdeChannelState, drive: IdeDrive) -> I
 
 /// Read IDENTIFY data from device
 unsafe fn ide_identify(device: &mut IdeDevice) -> i32 {
+    mod_debug!(b"ide: Starting IDENTIFY...\n");
+    
     ide_select_drive(&mut device.channel, device.drive);
+    mod_debug!(b"ide: Drive selected\n");
     
     // Determine command based on device type
     let cmd = match device.device_type {
@@ -565,27 +568,40 @@ unsafe fn ide_identify(device: &mut IdeDevice) -> i32 {
     };
     
     // Send command
+    mod_debug!(b"ide: Sending IDENTIFY command\n");
     outb(device.channel.base + IDE_REG_COMMAND, cmd);
     ide_400ns_delay(device.channel.ctrl);
     
     // Wait for DRQ
+    mod_debug!(b"ide: Waiting for DRQ\n");
     if let Err(e) = ide_wait_drq(device.channel.base, IDE_IDENTIFY_TIMEOUT) {
+        mod_error!(b"ide: DRQ wait failed\n");
         return e;
     }
+    mod_debug!(b"ide: DRQ ready, reading IDENTIFY data\n");
     
     // Read 256 words (512 bytes) of identify data
-    let mut identify_buf = [0u16; 256];
-    for i in 0..256 {
-        identify_buf[i] = inw(device.channel.base + IDE_REG_DATA);
+    // Use heap allocation to avoid stack overflow
+    let identify_ptr = kmod_zalloc(512, 2) as *mut u16;
+    if identify_ptr.is_null() {
+        mod_error!(b"ide: Failed to allocate IDENTIFY buffer\n");
+        return -4;
     }
     
-    // Parse identify data
+    for i in 0..256 {
+        let word = inw(device.channel.base + IDE_REG_DATA);
+        core::ptr::write_volatile(identify_ptr.add(i), word);
+    }
+    
+    // Use kmod_fence for memory barrier
+    kmod_fence();
+    
     // Word 0: General configuration
-    let config = identify_buf[0];
+    let config = core::ptr::read_volatile(identify_ptr.add(0));
     
     // Words 27-46: Model number (40 chars, swapped bytes)
     for i in 0..20 {
-        let word = identify_buf[27 + i];
+        let word = core::ptr::read_volatile(identify_ptr.add(27 + i));
         device.model[i * 2] = (word >> 8) as u8;
         device.model[i * 2 + 1] = (word & 0xFF) as u8;
     }
@@ -594,7 +610,7 @@ unsafe fn ide_identify(device: &mut IdeDevice) -> i32 {
     
     // Words 10-19: Serial number (20 chars, swapped bytes)
     for i in 0..10 {
-        let word = identify_buf[10 + i];
+        let word = core::ptr::read_volatile(identify_ptr.add(10 + i));
         device.serial[i * 2] = (word >> 8) as u8;
         device.serial[i * 2 + 1] = (word & 0xFF) as u8;
     }
@@ -603,7 +619,7 @@ unsafe fn ide_identify(device: &mut IdeDevice) -> i32 {
     
     // Words 23-26: Firmware revision (8 chars, swapped bytes)
     for i in 0..4 {
-        let word = identify_buf[23 + i];
+        let word = core::ptr::read_volatile(identify_ptr.add(23 + i));
         device.firmware[i * 2] = (word >> 8) as u8;
         device.firmware[i * 2 + 1] = (word & 0xFF) as u8;
     }
@@ -611,43 +627,43 @@ unsafe fn ide_identify(device: &mut IdeDevice) -> i32 {
     trim_string(&mut device.firmware);
     
     // Word 49: Capabilities
-    let caps = identify_buf[49];
+    let caps = core::ptr::read_volatile(identify_ptr.add(49));
     let lba_supported = (caps & (1 << 9)) != 0;
     
     // Word 83: Command set supported (LBA48)
-    let cmd_set_2 = identify_buf[83];
+    let cmd_set_2 = core::ptr::read_volatile(identify_ptr.add(83));
     device.lba48 = (cmd_set_2 & (1 << 10)) != 0;
     
     // Get capacity
     if device.lba48 {
         // Words 100-103: LBA48 sector count
         device.total_sectors = 
-            (identify_buf[100] as u64) |
-            ((identify_buf[101] as u64) << 16) |
-            ((identify_buf[102] as u64) << 32) |
-            ((identify_buf[103] as u64) << 48);
+            (core::ptr::read_volatile(identify_ptr.add(100)) as u64) |
+            ((core::ptr::read_volatile(identify_ptr.add(101)) as u64) << 16) |
+            ((core::ptr::read_volatile(identify_ptr.add(102)) as u64) << 32) |
+            ((core::ptr::read_volatile(identify_ptr.add(103)) as u64) << 48);
     } else if lba_supported {
         // Words 60-61: LBA28 sector count
         device.total_sectors = 
-            (identify_buf[60] as u64) |
-            ((identify_buf[61] as u64) << 16);
+            (core::ptr::read_volatile(identify_ptr.add(60)) as u64) |
+            ((core::ptr::read_volatile(identify_ptr.add(61)) as u64) << 16);
     } else {
         // CHS mode (legacy, use words 1, 3, 6)
-        let cylinders = identify_buf[1] as u64;
-        let heads = identify_buf[3] as u64;
-        let sectors = identify_buf[6] as u64;
+        let cylinders = core::ptr::read_volatile(identify_ptr.add(1)) as u64;
+        let heads = core::ptr::read_volatile(identify_ptr.add(3)) as u64;
+        let sectors = core::ptr::read_volatile(identify_ptr.add(6)) as u64;
         device.total_sectors = cylinders * heads * sectors;
     }
     
     // Word 106: Physical/Logical sector size
-    let sector_info = identify_buf[106];
+    let sector_info = core::ptr::read_volatile(identify_ptr.add(106));
     if (sector_info & (1 << 14)) != 0 && (sector_info & (1 << 15)) == 0 {
         // Large logical sectors are supported
         if (sector_info & (1 << 12)) != 0 {
             // Words 117-118: Logical sector size
             let logical_size = 
-                (identify_buf[117] as u32) |
-                ((identify_buf[118] as u32) << 16);
+                (core::ptr::read_volatile(identify_ptr.add(117)) as u32) |
+                ((core::ptr::read_volatile(identify_ptr.add(118)) as u32) << 16);
             device.sector_size = logical_size * 2;
         } else {
             device.sector_size = SECTOR_SIZE;
@@ -658,6 +674,9 @@ unsafe fn ide_identify(device: &mut IdeDevice) -> i32 {
     
     // ATAPI devices are typically read-only
     device.read_only = device.device_type == IdeDeviceType::Atapi;
+    
+    // Free the IDENTIFY buffer
+    kmod_dealloc(identify_ptr as *mut u8, 512, 2);
     
     0
 }
@@ -905,10 +924,11 @@ extern "C" fn ide_new(desc: *const BootBlockDevice) -> BlockDeviceHandle {
         &mut *ptr
     };
     
-    // Determine channel and drive from features or mmio_base
-    // features bits:
-    //   bit 0-1: drive index (0-3 for primary master, primary slave, secondary master, secondary slave)
-    let drive_index = (desc.features & 0x03) as u8;
+    // Determine channel and drive from features
+    // features layout:
+    //   bit 0: I/O port mode (1 = I/O port, 0 = MMIO) - not used by IDE driver
+    //   bit 8-9: drive index (0-3 for primary master, primary slave, secondary master, secondary slave)
+    let drive_index = ((desc.features >> 8) & 0x03) as u8;
     
     device.index = drive_index;
     
@@ -990,13 +1010,18 @@ extern "C" fn ide_init(handle: BlockDeviceHandle) -> i32 {
     
     unsafe {
         // Disable interrupts on the channel
+        mod_debug!(b"ide: Disabling interrupts\n");
         outb(device.channel.ctrl, IDE_CTRL_NIEN);
         
         // Reset the channel
+        mod_debug!(b"ide: Resetting channel\n");
         ide_reset_channel(&device.channel);
+        mod_debug!(b"ide: Channel reset complete\n");
         
         // Detect device type
+        mod_debug!(b"ide: Detecting device type\n");
         device.device_type = ide_detect_device(&mut device.channel, device.drive);
+        mod_debug!(b"ide: Device type detected\n");
         
         match device.device_type {
             IdeDeviceType::None => {
@@ -1010,9 +1035,15 @@ extern "C" fn ide_init(handle: BlockDeviceHandle) -> i32 {
                 mod_info!(b"ide: ATAPI device detected\n");
             }
         }
+        mod_debug!(b"ide: Match block complete\n");
+        kmod_fence();
         
         // Read IDENTIFY data
-        if ide_identify(device) != 0 {
+        mod_debug!(b"ide: About to call ide_identify\n");
+        kmod_fence();
+        let identify_result = ide_identify(device);
+        mod_debug!(b"ide: ide_identify returned\n");
+        if identify_result != 0 {
             mod_error!(b"ide: Failed to identify device\n");
             return -3;
         }
