@@ -135,7 +135,7 @@ async function buildLibraryShared(
   await copyFile(sharedlib, destPath);
   await stripBinary(destPath, false);
   
-  // Create version symlinks
+  // Create version symlinks in destination
   if (lib.version) {
     const versionedName = `${sharedName}.${lib.version}`;
     const fullVersionName = `${sharedName}.${lib.version}.0.0`;
@@ -155,14 +155,24 @@ async function buildLibraryShared(
     try { await unlink(cargoLinkPath); } catch {}
     await symlink(sharedName, cargoLinkPath);
     logger.info(`Created symlink: ${cargoName} -> ${sharedName}`);
-    
-    // Also create in sysroot-pic/lib for static library builds
-    const sysrootPicLib = join(env.sysrootPicDir, 'lib');
-    await mkdir(sysrootPicLib, { recursive: true });
-    const picLinkPath = join(sysrootPicLib, cargoName);
-    try { await unlink(picLinkPath); } catch {}
-    // Link to the main sysroot shared library
-    await symlink(join('..', '..', 'sysroot', 'lib', sharedName), picLinkPath);
+  }
+  
+  // Always create symlinks in sysroot-pic/lib for dependent library builds
+  // This allows libraries like nssl to find libcrypto.so when linking
+  // Symlinks point to rootfs/lib64 where actual .so files are installed
+  await mkdir(sysrootPicLib, { recursive: true });
+  
+  // Create symlink for the output name (e.g., libcrypto.so)
+  const picOutputLink = join(sysrootPicLib, sharedName);
+  try { await unlink(picOutputLink); } catch {}
+  await symlink(join('..', '..', 'rootfs', 'lib64', sharedName), picOutputLink);
+  
+  // Also create cargo package name symlink if different
+  if (lib.name !== lib.output) {
+    const cargoName = `lib${lib.name}.so`;
+    const picCargoLink = join(sysrootPicLib, cargoName);
+    try { await unlink(picCargoLink); } catch {}
+    await symlink(sharedName, picCargoLink);
   }
   
   const size = await getFileSize(destPath);

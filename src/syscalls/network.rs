@@ -740,26 +740,73 @@ pub fn recvfrom(
         }
 
         let timeout_ms = sock_handle.recv_timeout_ms;
-        kinfo!(
-            "[SYS_RECVFROM] UDP recv loop starting, timeout_ms={}",
-            timeout_ms
+        let socket_index = sock_handle.socket_index;
+        ktrace!(
+            "[SYS_RECVFROM] UDP recv starting, timeout_ms={}, socket_idx={}",
+            timeout_ms,
+            socket_index
         );
         let start_tick = crate::scheduler::get_tick();
 
-        static mut RECVFROM_LOOP_COUNT: u64 = 0;
+        // First try to receive immediately without waiting
+        crate::net::poll();
+        let buffer = slice::from_raw_parts_mut(buf, len);
+        
+        if let Some(res) = crate::net::with_net_stack(|stack| {
+            stack.udp_receive(socket_index, buffer)
+        }) {
+            if let Ok(result) = res {
+                // Data available immediately
+                if !_src_addr.is_null() && !_addrlen.is_null() {
+                    let src_addr = &mut *_src_addr;
+                    src_addr.sa_family = AF_INET as u16;
+                    src_addr.sa_data[0..2].copy_from_slice(&result.src_port.to_be_bytes());
+                    src_addr.sa_data[2..6].copy_from_slice(&result.src_ip);
+                    *_addrlen = 16;
+                }
+                posix::set_errno(0);
+                return result.bytes_copied as u64;
+            }
+        }
+
+        // No data immediately available - enter sleep/wake loop
+        let current_pid = scheduler::current_pid().unwrap_or(0);
+        if current_pid == 0 {
+            posix::set_errno(posix::errno::EAGAIN);
+            return u64::MAX;
+        }
+
         loop {
-            unsafe {
-                RECVFROM_LOOP_COUNT += 1;
-                let cnt = RECVFROM_LOOP_COUNT;
-                if cnt % 100 == 1 {
-                    kinfo!("[SYS_RECVFROM] loop #{}", cnt);
+            // Check timeout
+            if timeout_ms > 0 {
+                let elapsed_ms = crate::scheduler::get_tick() - start_tick;
+                if elapsed_ms >= timeout_ms {
+                    ktrace!("[SYS_RECVFROM] TIMEOUT after {}ms", elapsed_ms);
+                    // Clear waiting before returning
+                    let _ = crate::net::with_net_stack(|stack| {
+                        stack.udp_clear_waiting(socket_index)
+                    });
+                    posix::set_errno(posix::errno::EAGAIN);
+                    return u64::MAX;
                 }
             }
-            crate::net::poll();
 
+            // Register this process as waiting on the socket
+            let _ = crate::net::with_net_stack(|stack| {
+                stack.udp_set_waiting(socket_index, current_pid)
+            });
+
+            // Put process to sleep - will be woken when data arrives
+            ktrace!("[SYS_RECVFROM] PID {} sleeping on UDP socket {}", current_pid, socket_index);
+            scheduler::sleep_current_process();
+            scheduler::do_schedule();
+
+            // Woken up - try to receive again
+            crate::net::poll();
             let buffer = slice::from_raw_parts_mut(buf, len);
+
             if let Some(res) = crate::net::with_net_stack(|stack| {
-                stack.udp_receive(sock_handle.socket_index, buffer)
+                stack.udp_receive(socket_index, buffer)
             }) {
                 match res {
                     Ok(result) => {
@@ -784,17 +831,9 @@ pub fn recvfrom(
                         posix::set_errno(0);
                         return result.bytes_copied as u64;
                     }
-                    Err(_err) => {
-                        if timeout_ms > 0 {
-                            let elapsed_ms = crate::scheduler::get_tick() - start_tick;
-                            if elapsed_ms >= timeout_ms {
-                                ktrace!("[SYS_RECVFROM] TIMEOUT after {}ms", elapsed_ms);
-                                posix::set_errno(posix::errno::EAGAIN);
-                                return u64::MAX;
-                            }
-                        }
-                        // Yield to allow timer interrupts and other processes to run
-                        crate::scheduler::do_schedule();
+                    Err(_) => {
+                        // Spurious wakeup or no data yet, loop again
+                        continue;
                     }
                 }
             } else {

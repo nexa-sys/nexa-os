@@ -20,7 +20,7 @@ use super::priority::{
     calc_vdeadline, is_eligible, ms_to_ns, replenish_slice, update_curr, update_min_vruntime,
 };
 use super::table::{
-    current_pid, set_current_pid, CURRENT_PID, GLOBAL_TICK, PROCESS_TABLE, SCHED_STATS,
+    current_pid, set_current_pid, GLOBAL_TICK, PROCESS_TABLE, SCHED_STATS,
 };
 use super::types::{SchedPolicy, BASE_SLICE_NS, DEFAULT_TIME_SLICE};
 
@@ -218,7 +218,7 @@ fn find_best_candidate(
 /// Provides fair CPU time distribution with latency guarantees
 pub fn schedule() -> Option<Pid> {
     let mut table = PROCESS_TABLE.lock();
-    let current = *CURRENT_PID.lock();
+    let current = current_pid();
     let current_tick = GLOBAL_TICK.load(Ordering::Relaxed);
 
     update_ready_process_eevdf(&mut table, current_tick);
@@ -256,7 +256,7 @@ pub fn schedule() -> Option<Pid> {
     }
 
     drop(table);
-    *CURRENT_PID.lock() = Some(next_pid);
+    set_current_pid(Some(next_pid));
 
     // Update global min_vruntime
     update_min_vruntime();
@@ -409,7 +409,7 @@ pub fn tick(elapsed_ms: u64) -> bool {
     GLOBAL_TICK.fetch_add(1, Ordering::Relaxed);
 
     let mut table = PROCESS_TABLE.lock();
-    let current = *CURRENT_PID.lock();
+    let current = current_pid();
 
     let Some(curr_pid) = current else {
         return false;
@@ -891,7 +891,7 @@ unsafe fn execute_first_run_via_context_switch(
     // crate::serial_println!("[FRV] RESTORED: rip~{:#x}", restored_rip);
 
     // Restore our CR3
-    if let Some(pid) = *CURRENT_PID.lock() {
+    if let Some(pid) = current_pid() {
         let table = PROCESS_TABLE.lock();
         for slot in table.iter() {
             if let Some(entry) = slot {
@@ -1051,7 +1051,7 @@ unsafe fn execute_context_switch(
         context_switch(old_context_ptr, next_context as *const _);
 
         // Reached when this process is restored - restore our CR3
-        if let Some(pid) = *CURRENT_PID.lock() {
+        if let Some(pid) = current_pid() {
             let table = PROCESS_TABLE.lock();
             for slot in table.iter() {
                 if let Some(entry) = slot {
@@ -1093,7 +1093,7 @@ unsafe fn execute_context_switch(
         context_switch(old_context_ptr, &trampoline_context as *const _);
 
         // Reached when this process is restored - restore our CR3
-        if let Some(pid) = *CURRENT_PID.lock() {
+        if let Some(pid) = current_pid() {
             let table = PROCESS_TABLE.lock();
             for slot in table.iter() {
                 if let Some(entry) = slot {
@@ -1199,7 +1199,7 @@ fn compute_schedule_decision(from_interrupt: bool) -> Option<ScheduleDecision> {
 
     let entry = table[next_idx].as_mut().expect("Process entry vanished");
     let _cpu_id = crate::smp::current_cpu_id();
-    crate::ktrace!("[SCHED_SEL] CPU{} Selected PID {} state={:?} ctx_valid={} has_entered_user={}",
+    crate::kdebug!("[SCHED_SEL] CPU{} Selected PID {} state={:?} ctx_valid={} has_entered_user={}",
         _cpu_id, entry.process.pid, entry.process.state, entry.process.context_valid, entry.process.has_entered_user);
     let (
         first_run,

@@ -531,6 +531,11 @@ pub fn set_current_process_state(state: ProcessState) {
     }
 }
 
+/// Put the current process to sleep (convenience wrapper)
+pub fn sleep_current_process() {
+    set_current_process_state(ProcessState::Sleeping);
+}
+
 /// Wake up a process by PID (EEVDF: adjust vruntime for waking process)
 pub fn wake_process(pid: Pid) -> bool {
     let min_vrt = get_min_vruntime();

@@ -72,6 +72,7 @@ pub use process::{
     set_process_exit_code,
     set_process_state,
     set_process_term_signal,
+    sleep_current_process,
     terminate_thread_group,
     thread_group_count,
     update_process_cr3,

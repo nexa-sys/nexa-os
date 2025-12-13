@@ -135,12 +135,18 @@ async function installLibs(env: BuildEnvironment, rootfsDir: string): Promise<vo
   // Build and install nrlib
   await buildAllNrlib(env, lib64Dir);
   
-  // Build and install other libraries
+  // Build and install all enabled libraries from config
   const config = await loadBuildConfig(env.projectRoot);
-  const libNames = ['ncryptolib', 'nssl', 'nzip', 'nh2'];
   
-  for (const libName of libNames) {
-    await buildLibrary(env, config, libName, { type: 'shared', destDir: lib64Dir });
+  // Get library build order from config (already topologically sorted)
+  const libBuildOrder = config.build_order?.libraries ?? [];
+  
+  for (const libName of libBuildOrder) {
+    // Find library config to check if enabled
+    const libConfig = config.libraries.find(l => l.name === libName);
+    if (libConfig && libConfig.enabled) {
+      await buildLibrary(env, config, libName, { type: 'shared', destDir: lib64Dir });
+    }
   }
 }
 

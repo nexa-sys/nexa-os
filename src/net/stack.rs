@@ -87,6 +87,8 @@ pub struct UdpSocket {
     pub remote_ip: Option<[u8; 4]>,
     pub remote_port: Option<u16>,
     pub in_use: bool,
+    /// PID of process waiting for data on this socket (0 = none)
+    pub waiting_pid: Pid,
     rx_head: usize,
     rx_tail: usize,
     rx_len: usize,
@@ -131,6 +133,7 @@ impl UdpSocket {
             remote_ip: None,
             remote_port: None,
             in_use: false,
+            waiting_pid: 0,
             rx_head: 0,
             rx_tail: 0,
             rx_len: 0,
@@ -508,6 +511,27 @@ impl NetStack {
             return Err(NetError::InvalidSocket);
         }
         self.udp_sockets[socket_idx].dequeue_packet(buffer)
+    }
+
+    /// Set the waiting PID for a UDP socket
+    pub fn udp_set_waiting(&mut self, socket_idx: usize, pid: Pid) -> Result<(), NetError> {
+        if socket_idx >= MAX_UDP_SOCKETS {
+            return Err(NetError::InvalidSocket);
+        }
+        if !self.udp_sockets[socket_idx].in_use {
+            return Err(NetError::InvalidSocket);
+        }
+        self.udp_sockets[socket_idx].waiting_pid = pid;
+        Ok(())
+    }
+
+    /// Clear the waiting PID for a UDP socket
+    pub fn udp_clear_waiting(&mut self, socket_idx: usize) -> Result<(), NetError> {
+        if socket_idx >= MAX_UDP_SOCKETS {
+            return Err(NetError::InvalidSocket);
+        }
+        self.udp_sockets[socket_idx].waiting_pid = 0;
+        Ok(())
     }
 
     /// Get socket information
@@ -1275,6 +1299,13 @@ impl NetStack {
                         src_port,
                         payload.len()
                     );
+                    // Wake up waiting process if any
+                    let waiting = self.udp_sockets[idx].waiting_pid;
+                    if waiting != 0 {
+                        crate::kinfo!("net: Waking PID {} waiting on UDP socket {}", waiting, idx);
+                        self.udp_sockets[idx].waiting_pid = 0;
+                        crate::scheduler::wake_process(waiting);
+                    }
                 }
                 Err(e) => {
                     crate::kwarn!(

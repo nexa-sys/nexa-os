@@ -91,11 +91,14 @@ profiles:
 
 build_order:
   # 1. Core libraries (order matters for dependencies)
+  # Dependencies: nssl->ncryptolib, nh2->nssl, ntcp2->nssl+ncryptolib, nh3->ntcp2
   libraries:
     - ncryptolib
     - nzip
     - nssl
     - nh2
+    - ntcp2
+    - nh3
   
   # 2. Core programs are built after libraries
   # 3. Modules are built independently
