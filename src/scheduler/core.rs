@@ -313,23 +313,21 @@ fn should_preempt_for_eevdf(
         return false;
     }
 
-    // EEVDF: eligible process with significantly earlier deadline preempts
+    // EEVDF: Only preempt if the ready process has HIGHER priority (lower nice)
+    // Same-priority processes should NOT preempt each other - they wait for
+    // time slice exhaustion. This prevents the rapid context switching issue.
+    if ready_entry.weight <= curr_entry.weight {
+        // Same or lower priority - don't preempt, let time slice run out
+        return false;
+    }
+
+    // Higher priority process wants to preempt - check eligibility
     if !is_eligible(ready_entry) {
         return false;
     }
 
-    // Calculate deadline difference
-    let deadline_diff = curr_entry.vdeadline.saturating_sub(ready_entry.vdeadline);
-
-    // Preemption threshold: only preempt if significant improvement
-    // This prevents excessive context switches
-    // Use larger threshold for batch processes (they prefer longer runs)
-    let threshold = match curr_entry.policy {
-        SchedPolicy::Batch => super::types::SCHED_GRANULARITY_NS * 2,
-        _ => super::types::SCHED_GRANULARITY_NS,
-    };
-
-    deadline_diff > threshold
+    // Higher priority + eligible = preempt
+    true
 }
 
 /// Check if any ready process should preempt the current one (EEVDF)
@@ -668,8 +666,13 @@ fn get_old_context_info(
             continue;
         }
 
-        let voluntary =
-            candidate.process.state == ProcessState::Sleeping || candidate.time_slice > 0;
+        // Voluntary = process gave up CPU willingly (sleep, I/O wait, yield)
+        // NOT voluntary = timer preemption while still having time slice
+        // 
+        // This is important for EEVDF progressive slice growth:
+        // - Voluntary yield → reset to base slice (keep interactive processes responsive)
+        // - Timer preemption after full slice → grow slice (reward CPU-bound processes)
+        let voluntary = candidate.process.state == ProcessState::Sleeping;
         if voluntary {
             candidate.voluntary_switches += 1;
         }

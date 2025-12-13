@@ -165,6 +165,9 @@ pub const SCHED_GRANULARITY_NS: u64 = 1_000_000; // 1ms
 /// Default time slice in nanoseconds (for EEVDF request size)
 pub const BASE_SLICE_NS: u64 = 4_000_000; // 4ms
 
+/// Maximum time slice in nanoseconds (100ms upper bound like Linux)
+pub const MAX_SLICE_NS: u64 = 100_000_000; // 100ms
+
 /// Default time slice in milliseconds (legacy compatibility)
 pub const DEFAULT_TIME_SLICE: u64 = 4;
 

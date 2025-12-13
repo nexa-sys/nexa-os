@@ -277,42 +277,46 @@ pub fn check_preempt_curr(
 }
 
 /// Replenish time slice when exhausted
-/// Dynamically adjusts slice based on process behavior for better responsiveness
+/// EEVDF-style: time slice grows progressively based on consecutive full runs
+/// This reduces context switch overhead for CPU-bound processes while maintaining
+/// responsiveness for interactive ones. Max slice is 100ms.
 pub fn replenish_slice(entry: &mut super::types::ProcessEntry) {
+    use super::types::MAX_SLICE_NS;
+    
     // Base slice from policy
     let base_slice = match entry.policy {
-        SchedPolicy::Realtime => BASE_SLICE_NS * 2, // Longer slices for realtime
-        SchedPolicy::Normal => BASE_SLICE_NS,
-        SchedPolicy::Batch => BASE_SLICE_NS * 4, // Much longer for batch
-        SchedPolicy::Idle => BASE_SLICE_NS,
+        SchedPolicy::Realtime => BASE_SLICE_NS * 2, // 8ms for realtime
+        SchedPolicy::Normal => BASE_SLICE_NS,       // 4ms base
+        SchedPolicy::Batch => BASE_SLICE_NS * 4,    // 16ms for batch
+        SchedPolicy::Idle => BASE_SLICE_NS,         // 4ms for idle
     };
 
-    // Dynamic slice adjustment based on process behavior
-    // Interactive processes (low avg_cpu_burst) get shorter slices for better latency
-    // CPU-bound processes (high avg_cpu_burst) get longer slices to reduce overhead
-    let slice = if entry.policy == SchedPolicy::Normal {
-        let burst_ms = entry.avg_cpu_burst;
-        if burst_ms == 0 {
-            // New process, use default
-            base_slice
-        } else if burst_ms < 2 {
-            // Very interactive (< 2ms bursts): shorter slice for low latency
-            (base_slice * 3) / 4
-        } else if burst_ms > 20 {
-            // CPU-bound (> 20ms bursts): longer slice to reduce context switches
-            (base_slice * 3) / 2
-        } else {
-            base_slice
-        }
-    } else {
+    // EEVDF progressive slice growth:
+    // Each time a process uses its full slice without voluntary yield,
+    // it gets a larger slice next time (up to MAX_SLICE_NS = 100ms)
+    // 
+    // Growth pattern: 4ms -> 8ms -> 16ms -> 32ms -> 64ms -> 100ms
+    let prev_slice = entry.slice_ns;
+    let slice = if prev_slice == 0 {
+        // First run or after reset
         base_slice
+    } else if entry.voluntary_switches > 0 {
+        // Process yielded voluntarily (I/O, sleep, etc.) - reset to base
+        // This keeps interactive processes responsive
+        base_slice
+    } else {
+        // Process used full slice - double it (capped at MAX_SLICE_NS)
+        (prev_slice * 2).min(MAX_SLICE_NS)
     };
+
+    // Reset voluntary switch counter for next period
+    entry.voluntary_switches = 0;
 
     // Apply nice value adjustment: high priority processes get slightly longer slices
     let slice = if entry.nice < 0 {
         // Negative nice (higher priority): up to 25% longer slice
         let boost = ((-entry.nice as u64) * slice) / 80;
-        slice + boost
+        (slice + boost).min(MAX_SLICE_NS)
     } else if entry.nice > 0 {
         // Positive nice (lower priority): up to 25% shorter slice
         let reduction = ((entry.nice as u64) * slice) / 80;

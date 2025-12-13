@@ -43,7 +43,7 @@ mod table;
 mod types;
 
 // Re-export types for external use
-pub use types::{nice_to_weight, BASE_SLICE_NS, NICE_0_WEIGHT, SCHED_GRANULARITY_NS};
+pub use types::{nice_to_weight, BASE_SLICE_NS, MAX_SLICE_NS, NICE_0_WEIGHT, SCHED_GRANULARITY_NS};
 pub use types::{CpuMask, ProcessEntry, SchedPolicy, SchedulerStats};
 pub use types::{BASE_TIME_SLICE_MS, DEFAULT_TIME_SLICE, NUM_PRIORITY_LEVELS};
 
