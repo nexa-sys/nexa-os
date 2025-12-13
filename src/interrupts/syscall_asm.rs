@@ -20,6 +20,8 @@ global_asm!(
     //   [rsp+24] = user RSP
     //   [rsp+32] = SS
 
+    "swapgs",           // Swap to kernel GS
+
     // CRITICAL: Save additional syscall argument registers for syscalls with >3 args
     // This must be done FIRST before any register is modified!
     "mov gs:[32], r10", // GS[4]  = arg4 (r10)
@@ -118,6 +120,7 @@ global_asm!(
     "mov gs:[160], r9",
     "mov gs:[168], r9",
     "xor rax, rax", // Clear return value for exec
+    "swapgs",       // Swap back to user GS
     "iretq",        // Jump to new program
     ".Lexec_failed:",
     "add rsp, 16", // Clean up get_exec_context params
@@ -167,6 +170,7 @@ global_asm!(
     "mov rax, [rsp + 32]",
     "mov gs:[112], rax", // gs slot 14 = user SS
     "mov rax, r11",      // Restore syscall return value
+    "swapgs",            // Swap back to user GS
     "iretq"
 );
 
@@ -174,6 +178,7 @@ global_asm!(
 global_asm!(
     ".global ring3_switch_handler",
     "ring3_switch_handler:",
+    "swapgs", // Swap to kernel GS
     // Stack layout from int 0x80: [ss, rsp, rflags, cs, rip] + pushed values [entry, stack, rflags, cs, ss]
     // We need to set up sysret parameters
     "mov rax, gs:[160]",
@@ -194,6 +199,7 @@ global_asm!(
     "xor rdx, rdx",
     "mov gs:[160], rdx",
     "mov gs:[168], rdx",
+    "swapgs", // Swap back to user GS (saved in KernelGSBase)
     // Set user data segments
     "mov ax, 0x23",
     "mov ds, ax",
@@ -211,6 +217,7 @@ pub extern "C" fn syscall_instruction_handler() {
         // On SYSCALL entry the CPU stores the user return RIP in RCX and the
         // user RFLAGS in R11. Capture that state alongside the user stack so
         // the kernel can restore it exactly before executing SYSRET.
+        "swapgs",           // Swap to kernel GS
         "mov gs:[0], rsp",  // GS[0]  = user RSP snapshot
         "mov gs:[72], rsp", // GS[9]  = debug copy of user RSP
         "mov rsp, gs:[8]",  // RSP    = kernel stack top
@@ -265,6 +272,7 @@ pub extern "C" fn syscall_instruction_handler() {
         "mov gs:[168], rdx",
         "mov r11, 0x202", // User rflags (IF=1, reserved=1)
         "xor rax, rax",   // Clear return value for exec
+        "swapgs",         // Swap back to user GS
         "sysretq",        // Jump to new program
         "1:",             // exec failed, restore stack
         "add rsp, 16",
@@ -290,6 +298,7 @@ pub extern "C" fn syscall_instruction_handler() {
         "mov rcx, gs:[56]", // rcx = user RIP (will be loaded into RIP by sysretq)
         "mov r11, gs:[64]", // r11 = user RFLAGS (will be loaded into RFLAGS by sysretq)
         "mov rsp, gs:[0]",  // rsp = user RSP
+        "swapgs",           // Swap back to user GS
         "sysretq",
     );
 }

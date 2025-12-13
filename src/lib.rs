@@ -637,7 +637,6 @@ fn proceed_after_initramfs(cmdline_opt: Option<&'static str>) -> ! {
         kinfo!("==========================================================");
         kinfo!("Init process loaded (PID {}), starting scheduler", pid);
         kinfo!("==========================================================");
-
         // Set init as current process
         scheduler::set_current_pid(Some(pid));
 
@@ -645,7 +644,7 @@ fn proceed_after_initramfs(cmdline_opt: Option<&'static str>) -> ! {
         let _ = scheduler::set_process_state(pid, process::ProcessState::Ready);
 
         // 标记 init 已启动 - 此后内核日志将只输出到环形缓冲区
-        logger::mark_init_started();
+        // logger::mark_init_started();
 
         // Start the scheduler - this will switch to init and never return
         kinfo!("Starting process scheduler");

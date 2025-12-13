@@ -772,11 +772,28 @@ static mut FIRST_RUN_CR3: u64 = 0;
 /// This function never returns - it jumps to userspace via process.execute()
 #[no_mangle]
 extern "C" fn first_run_trampoline() -> ! {
-    // Switch to the new process's address space first
-    let cr3 = unsafe { FIRST_RUN_CR3 };
-    if cr3 != 0 {
-        crate::paging::activate_address_space(cr3);
+    // Early alignment probe (avoid fmt/logging): print 'F' + (RSP & 0xF) + '\n'
+    {
+        use crate::safety::x86::{serial_debug_byte, serial_debug_hex};
+        let rsp: u64;
+        unsafe { core::arch::asm!("mov {0}, rsp", out(reg) rsp, options(nomem, nostack, preserves_flags)); }
+        serial_debug_byte(b'F');
+        serial_debug_hex(rsp & 0xF, 1);
+        serial_debug_byte(b'\n');
     }
+
+    // Keep interrupts disabled during the entire first user-mode transition.
+    // The sysretq path programs user RFLAGS with IF=1, so interrupts will be
+    // re-enabled automatically after we enter Ring 3.
+    x86_64::instructions::interrupts::disable();
+
+    // IMPORTANT:
+    // Do NOT switch to the new process's CR3 here.
+    // We still execute kernel Rust code (including logging/formatting) in this trampoline.
+    // Running that code with a user process page table can fault if the page table does
+    // not map all kernel runtime data (e.g., log buffers, VGA, etc.).
+    // The actual CR3 switch must be performed atomically at the final user-mode transition
+    // (sysretq path) in `jump_to_usermode_with_cr3`.
 
     // Get the process from global storage
     let mut process = unsafe {
@@ -806,6 +823,14 @@ unsafe fn execute_first_run_via_context_switch(
 ) {
     // crate::serial_println!("[FRVCS] PID={} kstack={:#x}", process.pid, kernel_stack);
 
+    // Alignment probe for kernel_stack/new_context.rsp (avoid fmt/logging)
+    {
+        use crate::safety::x86::{serial_debug_byte, serial_debug_hex};
+        serial_debug_byte(b'K');
+        serial_debug_hex(kernel_stack & 0xF, 1);
+        serial_debug_byte(b'\n');
+    }
+
     // Store process and CR3 in globals for the trampoline to pick up
     FIRST_RUN_PROCESS = Some(process);
     FIRST_RUN_CR3 = next_cr3;
@@ -832,9 +857,23 @@ unsafe fn execute_first_run_via_context_switch(
     // Create a context for the new process that will call first_run_trampoline
     let mut new_context = crate::process::Context::zero();
     new_context.rip = first_run_trampoline as usize as u64;
-    // Stack: -16 for 16-byte alignment (RSP % 16 == 8 after push rip; ret)
-    new_context.rsp = kernel_stack + crate::process::KERNEL_STACK_SIZE as u64 - 16;
-    new_context.rflags = 0x202; // IF=1
+    // IMPORTANT: `context_switch` restores `rsp = new_context.rsp`, then does `push rip; ret`.
+    // The push/ret pair cancels out, so the target function's *entry* RSP is exactly
+    // `new_context.rsp`.
+    // SysV x86_64 ABI expects RSP % 16 == 8 on function entry.
+    // We don't assume any particular alignment of `kernel_stack`, so compute the largest
+    // value <= stack_top that satisfies the constraint.
+    let stack_top = kernel_stack + crate::process::KERNEL_STACK_SIZE as u64;
+    new_context.rsp = stack_top - ((stack_top.wrapping_sub(8)) & 0xF);
+    {
+        use crate::safety::x86::{serial_debug_byte, serial_debug_hex};
+        serial_debug_byte(b'S');
+        serial_debug_hex(new_context.rsp & 0xF, 1);
+        serial_debug_byte(b'\n');
+    }
+    // Run the trampoline with interrupts disabled to avoid IRQ/timer re-entry while
+    // the kernel is preparing GS/MSRs and transitioning to user mode.
+    new_context.rflags = 0x2; // reserved bit only, IF=0
 
     // Context switch: saves old process context and jumps to trampoline
     // Print old_context_ptr address before switch

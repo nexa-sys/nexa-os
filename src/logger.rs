@@ -11,7 +11,7 @@ use crate::vga_buffer::{self, Color};
 // Static buffer pool for log lines to avoid stack allocation >1KB
 // This is safe to use before heap initialization
 static mut LOG_BUFFER_POOL: [[u8; 1024]; 2] = [[0; 1024]; 2];
-static LOG_BUFFER_IN_USE: AtomicBool = AtomicBool::new(false);
+static LOG_BUFFER_STATE: AtomicU8 = AtomicU8::new(0);
 
 static LOGGER_INITIALIZED: AtomicBool = AtomicBool::new(false);
 static BOOT_TSC: AtomicU64 = AtomicU64::new(0);
@@ -166,6 +166,47 @@ pub fn tsc_frequency_is_guessed() -> bool {
 }
 
 pub fn log(level: LogLevel, args: fmt::Arguments<'_>) {
+    // Some kernel entry paths (e.g. naked asm / interrupt glue) can violate the SysV
+    // stack alignment rules. LLVM may emit `movaps` spills in `log_impl`, which will
+    // #GP on misaligned stacks.
+    // Route all logging through a tiny assembly shim that realigns RSP to 16 bytes.
+    unsafe {
+        log_aligned(level.priority(), (&args as *const fmt::Arguments<'_>).cast());
+    }
+}
+
+/// Align RSP to 16 bytes and then call into the real logger.
+///
+/// Safety: `args` must be valid for the duration of this call.
+#[unsafe(naked)]
+unsafe extern "C" fn log_aligned(_level: u8, _args: *const fmt::Arguments<'static>) {
+    core::arch::naked_asm!(
+        // Save the original RSP in a stack slot (not a register) so IRQ/exception
+        // paths that don't preserve all regs can't corrupt our restore value.
+        "mov rax, rsp",
+        // Align down to 16 so LLVM-generated `movaps` spills are safe.
+        "and rsp, -16",
+        // Keep RSP 16B-aligned before `call` (SysV requires this).
+        "sub rsp, 16",
+        "mov [rsp + 8], rax",
+        // Call the Rust body (arguments already in rdi/rsi per SysV).
+        "call {inner}",
+        // Restore the original RSP (with our caller return address at [rsp]).
+        "mov rsp, [rsp + 8]",
+        "ret",
+        inner = sym log_aligned_inner,
+    );
+}
+
+#[inline(never)]
+extern "C" fn log_aligned_inner(level: u8, args: *const fmt::Arguments<'static>) {
+    // SAFETY: pointer is provided by `log()` and is valid for this call.
+    let args = unsafe { core::ptr::read(args) };
+    log_impl(LogLevel::from_priority(level), args);
+}
+
+#[inline(never)]
+fn log_impl(level: LogLevel, args: fmt::Arguments<'_>) {
     // TEMPORARY: Disable stack alignment check - it's too strict and breaks SMP testing
     // TODO: Re-enable with proper understanding of when stack should be aligned
     /*
@@ -622,29 +663,59 @@ impl fmt::Display for LevelDisplay {
 struct LogLineBuffer {
     buf: &'static mut [u8; 1024],
     len: usize,
+    buf_index: u8,
 }
 
 impl LogLineBuffer {
     fn new() -> Option<Self> {
         // Try to acquire a static buffer from the pool
-        if LOG_BUFFER_IN_USE
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_ok()
-        {
-            // SAFETY: We acquired the lock, so we have exclusive access to buffer 0
-            let buf_ptr = unsafe { addr_of_mut!(LOG_BUFFER_POOL[0]) };
-            Some(Self {
-                buf: unsafe { &mut *buf_ptr },
-                len: 0,
-            })
-        } else {
-            // If pool is in use, use the second buffer (for nested logging)
-            // SAFETY: Buffer 1 is used for nested logging
-            let buf_ptr = unsafe { addr_of_mut!(LOG_BUFFER_POOL[1]) };
-            Some(Self {
-                buf: unsafe { &mut *buf_ptr },
-                len: 0,
-            })
+        // Bit 0: Buffer 0 in use
+        // Bit 1: Buffer 1 in use
+        let mut current_state = LOG_BUFFER_STATE.load(Ordering::Relaxed);
+
+        loop {
+            if current_state & 1 == 0 {
+                // Try to acquire buffer 0
+                match LOG_BUFFER_STATE.compare_exchange(
+                    current_state,
+                    current_state | 1,
+                    Ordering::Acquire,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => {
+                        // SAFETY: We acquired the lock for buffer 0
+                        let buf_ptr = unsafe { addr_of_mut!(LOG_BUFFER_POOL[0]) };
+                        return Some(Self {
+                            buf: unsafe { &mut *buf_ptr },
+                            len: 0,
+                            buf_index: 0,
+                        });
+                    }
+                    Err(s) => current_state = s,
+                }
+            } else if current_state & 2 == 0 {
+                // Try to acquire buffer 1
+                match LOG_BUFFER_STATE.compare_exchange(
+                    current_state,
+                    current_state | 2,
+                    Ordering::Acquire,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => {
+                        // SAFETY: We acquired the lock for buffer 1
+                        let buf_ptr = unsafe { addr_of_mut!(LOG_BUFFER_POOL[1]) };
+                        return Some(Self {
+                            buf: unsafe { &mut *buf_ptr },
+                            len: 0,
+                            buf_index: 1,
+                        });
+                    }
+                    Err(s) => current_state = s,
+                }
+            } else {
+                // Both buffers in use. We cannot log this line.
+                return None;
+            }
         }
     }
 
@@ -656,7 +727,8 @@ impl LogLineBuffer {
 impl Drop for LogLineBuffer {
     fn drop(&mut self) {
         // Release the buffer back to the pool
-        LOG_BUFFER_IN_USE.store(false, Ordering::Release);
+        let mask = !(1 << self.buf_index);
+        LOG_BUFFER_STATE.fetch_and(mask, Ordering::Release);
     }
 }
 

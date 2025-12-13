@@ -664,7 +664,7 @@ export async function generateNexaConfig(env: BuildEnvironment): Promise<string>
   // Debug mode (optional)
   if (bootConfig.debug) {
     lines.push(`# Debug mode enabled`);
-    lines.push(`debug`);
+    lines.push(`loglevel=debug`);
     lines.push('');
   }
   

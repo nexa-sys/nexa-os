@@ -122,6 +122,20 @@ impl Process {
 /// This function never returns - execution continues in user space
 #[inline(never)]
 pub fn jump_to_usermode_with_cr3(entry: u64, stack: u64, cr3: u64) -> ! {
+    // Prevent timer/IRQ re-entry while we program GS/MSRs and perform sysretq.
+    // Interrupts will be re-enabled in userspace via R11=0x202.
+    x86_64::instructions::interrupts::disable();
+
+    // Alignment probe (avoid fmt/logging): print 'J' + (RSP & 0xF) + '\n'
+    {
+        use crate::safety::x86::{serial_debug_byte, serial_debug_hex};
+        let rsp: u64;
+        unsafe { core::arch::asm!("mov {0}, rsp", out(reg) rsp, options(nomem, nostack, preserves_flags)); }
+        serial_debug_byte(b'J');
+        serial_debug_hex(rsp & 0xF, 1);
+        serial_debug_byte(b'\n');
+    }
+
     ktrace!("J2U: entry={:#x} stack={:#x} cr3={:#x}", entry, stack, cr3);
     // Use kdebug! macro for direct serial output
     kdebug!(
@@ -150,6 +164,16 @@ pub fn jump_to_usermode_with_cr3(entry: u64, stack: u64, cr3: u64) -> ! {
         user_data_sel
     );
 
+    // Alignment probe just before the next log site
+    {
+        use crate::safety::x86::{serial_debug_byte, serial_debug_hex};
+        let rsp: u64;
+        unsafe { core::arch::asm!("mov {0}, rsp", out(reg) rsp, options(nomem, nostack, preserves_flags)); }
+        serial_debug_byte(b'G');
+        serial_debug_hex(rsp & 0xF, 1);
+        serial_debug_byte(b'\n');
+    }
+
     kdebug!(
         "[jump_to_usermode_with_cr3] Setting GS_DATA: entry={:#x}, stack={:#x}, user_cs={:#x}, user_ds={:#x}",
         entry,
@@ -171,6 +195,9 @@ pub fn jump_to_usermode_with_cr3(entry: u64, stack: u64, cr3: u64) -> ! {
         use x86_64::registers::model_specific::Msr;
         let gs_base = crate::smp::current_gs_data_ptr() as u64;
         Msr::new(0xc0000101).write(gs_base);
+        // Set KernelGSBase to 0 so that after swapgs in asm!, GS_BASE becomes 0 (User GS)
+        // and KernelGSBase becomes gs_base (Kernel GS)
+        Msr::new(0xc0000102).write(0);
     }
 
     ktrace!(
@@ -210,45 +237,32 @@ pub fn jump_to_usermode_with_cr3(entry: u64, stack: u64, cr3: u64) -> ! {
     unsafe {
         ktrace!("J2U_SYSRET_NOW");
 
-        // Store values for asm block
-        let entry_val = entry;
-        let stack_val = stack;
-        let cr3_val = cr3;
-
-        // CRITICAL FIX: Use explicit registers to avoid compiler interference
-        // The compiler might reuse registers in unexpected ways with inline asm
+        // CRITICAL FIX: Use explicit register constraints to avoid compiler interference
+        // and register corruption. We force inputs into specific registers where possible.
         core::arch::asm!(
             "cli",
-            // First, save our values to scratch registers that won't be clobbered
-            "mov r12, {entry}",    // Save entry point
-            "mov r13, {stack}",    // Save stack pointer
-            "mov r14, {cr3}",      // Save CR3
-            // Now switch CR3
-            "mov cr3, r14",
-            // Print 'O' to confirm CR3 switch
-            "mov dx, 0x3f8",
-            "mov al, 79",
-            "out dx, al",
-            "mov al, 75",          // 'K'
-            "out dx, al",
-            "mov al, 10",
-            "out dx, al",
-            // Set up sysret registers
-            "mov rcx, r12",        // RCX = entry point (from saved r12)
-            "mov rsp, r13",        // RSP = stack (from saved r13)
-            "mov r11d, 0x202",     // R11 = RFLAGS (IF set)
-            "xor rax, rax",        // RAX = 0
-            // Print 'G' right before sysretq
-            "mov dx, 0x3f8",
-            "mov al, 71",          // 'G'
-            "out dx, al",
-            "mov al, 10",
-            "out dx, al",
+            // Switch CR3 first. Keep CR3 in a fixed register to avoid allocator conflicts
+            // with the required sysretq registers (RCX=RIP, R11=RFLAGS, RSP=user stack).
+            "mov cr3, rax",
+            
+            // Swap GS to user GS (0) and save kernel GS to KernelGSBase
+            "swapgs",
+            
+            // Clear RAX (return value)
+            "xor eax, eax",
+
+            // Set user stack (from rdi)
+            "mov rsp, rdi",
+
             // Execute sysretq
             "sysretq",
-            entry = in(reg) entry_val,
-            stack = in(reg) stack_val,
-            cr3 = in(reg) cr3_val,
+            
+            // Inputs
+            in("rax") cr3,         // CR3 source
+            in("rcx") entry,       // entry -> rcx (RIP for sysretq)
+            in("rdi") stack,       // stack -> rdi (moved to rsp inside)
+            in("r11") 0x202u64,    // rflags -> r11 (RFLAGS for sysretq)
+            
             options(noreturn)
         );
     }
@@ -303,6 +317,9 @@ pub fn jump_to_usermode(entry: u64, stack: u64) -> ! {
         use x86_64::registers::model_specific::Msr;
         let gs_base = crate::smp::current_gs_data_ptr() as u64;
         Msr::new(0xc0000101).write(gs_base);
+        // Set KernelGSBase to 0 so that after swapgs in asm!, GS_BASE becomes 0 (User GS)
+        // and KernelGSBase becomes gs_base (Kernel GS)
+        Msr::new(0xc0000102).write(0);
     }
 
     kdebug!("[jump_to_usermode] About to execute sysretq");
@@ -327,13 +344,13 @@ pub fn jump_to_usermode(entry: u64, stack: u64) -> ! {
         // an unpredictable #GP.
         core::arch::asm!(
             "cli",                 // Mask interrupts during the stack swap
-            "mov rcx, {entry}",    // RCX = user RIP for sysretq
-            "mov rsp, {stack}",    // Set user stack (now safe from interrupts)
-            "mov r11d, 0x202",     // User RFLAGS with IF=1, reserved bit=1
+            "mov rsp, rdi",        // Set user stack (from rdi)
             "xor rax, rax",        // Clear return value
+            "swapgs",              // Swap GS to user GS (0) and save kernel GS to KernelGSBase
             "sysretq",             // Return to Ring 3
-            entry = in(reg) entry,
-            stack = in(reg) stack,
+            in("rcx") entry,       // RCX = user RIP for sysretq
+            in("rdi") stack,       // RDI = user stack
+            in("r11") 0x202,       // R11 = User RFLAGS with IF=1, reserved bit=1
             options(noreturn)
         );
     }
