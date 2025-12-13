@@ -1175,8 +1175,8 @@ fn do_schedule_internal(from_interrupt: bool) {
 /// Compute the scheduling decision: which process to run next
 fn compute_schedule_decision(from_interrupt: bool) -> Option<ScheduleDecision> {
     let mut table = PROCESS_TABLE.lock();
-    let mut current_lock = CURRENT_PID.lock();
-    let current = *current_lock;
+    // Use per-CPU current_pid instead of global CURRENT_PID
+    let current = current_pid();
 
     let start_idx = current
         .and_then(|pid| {
@@ -1199,7 +1199,7 @@ fn compute_schedule_decision(from_interrupt: bool) -> Option<ScheduleDecision> {
 
     let entry = table[next_idx].as_mut().expect("Process entry vanished");
     let _cpu_id = crate::smp::current_cpu_id();
-    crate::kinfo!("[SCHED_SEL] CPU{} Selected PID {} state={:?} ctx_valid={} has_entered_user={}",
+    crate::ktrace!("[SCHED_SEL] CPU{} Selected PID {} state={:?} ctx_valid={} has_entered_user={}",
         _cpu_id, entry.process.pid, entry.process.state, entry.process.context_valid, entry.process.has_entered_user);
     let (
         first_run,
@@ -1217,7 +1217,8 @@ fn compute_schedule_decision(from_interrupt: bool) -> Option<ScheduleDecision> {
         process_copy,
     ) = extract_next_process_info(entry);
 
-    *current_lock = Some(next_pid);
+    // Set current PID using per-CPU aware function
+    set_current_pid(Some(next_pid));
 
     // Always get old context info to save current process state
     let (old_context_opt, is_voluntary) = get_old_context_info(&mut table, current);

@@ -53,6 +53,15 @@ pub fn exit(code: i32) -> ! {
     );
     let _ = crate::scheduler::set_process_state(pid, crate::process::ProcessState::Zombie);
 
+    // Wake up parent process if it's sleeping (waiting for this child to exit)
+    if let Some(process) = crate::scheduler::get_process(pid) {
+        let ppid = process.ppid;
+        if ppid != 0 {
+            ktrace!("[SYS_EXIT] Waking parent process {}", ppid);
+            crate::scheduler::wake_process(ppid);
+        }
+    }
+
     ktrace!("Process {} marked as zombie, yielding to scheduler", pid);
 
     crate::scheduler::do_schedule();
@@ -674,8 +683,7 @@ pub fn wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> u64 
     const WUNTRACED: i32 = 2;
     const WCONTINUED: i32 = 8;
 
-    // Force is_nonblocking to false if options is 0, just to be safe
-    let is_nonblocking = false;
+    let is_nonblocking = (options & WNOHANG) != 0;
 
     if (options & !(WNOHANG | WUNTRACED | WCONTINUED)) != 0 {
         kerror!("wait4: unsupported options {:#x}", options);
@@ -700,25 +708,17 @@ pub fn wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> u64 
         let mut wait_pid = 0u64;
 
         if pid == -1 {
-            for check_pid in 2..32 {
-                if let Some(child_state) = crate::scheduler::get_child_state(current_pid, check_pid)
-                {
-                    found_any_child = true;
-
-                    if child_state == crate::process::ProcessState::Zombie {
-                        wait_pid = check_pid;
-                        child_exited = true;
-
-                        if let Some(proc) = crate::scheduler::get_process(check_pid) {
-                            child_exit_code = Some(proc.exit_code);
-                            child_term_signal = proc.term_signal;
-                        } else {
-                            child_exit_code = Some(0);
-                        }
-
-                        break;
-                    }
-                }
+            // Use efficient single-pass lookup instead of iterating all possible PIDs
+            let (has_child, zombie_pid, exit_code, term_signal) =
+                crate::scheduler::find_any_child_for_wait(current_pid);
+            
+            found_any_child = has_child;
+            
+            if let Some(zpid) = zombie_pid {
+                wait_pid = zpid;
+                child_exited = true;
+                child_exit_code = exit_code;
+                child_term_signal = term_signal;
             }
         } else if pid > 0 {
             if let Some(child_state) = crate::scheduler::get_child_state(current_pid, pid as u64) {
@@ -777,6 +777,9 @@ pub fn wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> u64 
             return 0;
         }
 
+        // Put the process to sleep waiting for a child to exit
+        // This avoids busy-waiting which causes the system to be unresponsive
+        crate::scheduler::set_current_process_state(crate::process::ProcessState::Sleeping);
         crate::scheduler::do_schedule();
     }
 }

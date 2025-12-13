@@ -638,7 +638,7 @@ pub extern "C" fn activate_address_space(cr3_phys: u64) {
     use x86_64::registers::control::{Cr3, Cr3Flags};
     use x86_64::structures::paging::Size4KiB;
 
-    crate::kdebug!("[activate_address_space] ENTRY: cr3_phys={:#x}", cr3_phys);
+    crate::ktrace!("[activate_address_space] ENTRY: cr3_phys={:#x}", cr3_phys);
 
     // CRITICAL FIX: Validate CR3 before use to catch fork-related page table errors
     // This prevents GP faults from invalid page table structures
@@ -663,7 +663,7 @@ pub extern "C" fn activate_address_space(cr3_phys: u64) {
         unsafe {
             let entry0 = core::ptr::read_volatile(pml4_ptr);
             let entry1 = core::ptr::read_volatile(pml4_ptr.add(1));
-            crate::kdebug!(
+            crate::ktrace!(
                 "[activate_address_space] PML4 content check: entry[0]={:#x}, entry[1]={:#x}",
                 entry0,
                 entry1
@@ -685,22 +685,22 @@ pub extern "C" fn activate_address_space(cr3_phys: u64) {
         cr3_phys
     };
 
-    crate::kdebug!("[activate_address_space] Target CR3={:#x}", target);
+    crate::ktrace!("[activate_address_space] Target CR3={:#x}", target);
 
     let (current, _) = Cr3::read();
-    crate::kdebug!(
+    crate::ktrace!(
         "[activate_address_space] Current CR3={:#x}, Target CR3={:#x}",
         current.start_address().as_u64(),
         target
     );
 
     if current.start_address().as_u64() == target {
-        crate::kdebug!("[activate_address_space] CR3 already active, returning");
+        crate::ktrace!("[activate_address_space] CR3 already active, returning");
         return; // Short-circuit: CR3 already active, no need to reload
     }
 
     // Validate the frame creation - convert physical address to PhysFrame
-    crate::kdebug!(
+    crate::ktrace!(
         "[activate_address_space] Creating PhysFrame from target={:#x}",
         target
     );

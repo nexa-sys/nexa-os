@@ -57,6 +57,7 @@ pub use table::{
 pub use process::{
     add_process,
     add_process_with_policy,
+    find_any_child_for_wait,
     find_child_with_state,
     get_child_state,
     get_process,

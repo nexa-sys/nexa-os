@@ -26,14 +26,25 @@ pub fn process_table_lock() -> spin::MutexGuard<'static, [Option<ProcessEntry>; 
     PROCESS_TABLE.lock()
 }
 
-/// Get current running process PID
+/// Get current running process PID (per-CPU)
 pub fn current_pid() -> Option<Pid> {
+    // Use per-CPU data if available
+    let cpu_id = crate::smp::current_cpu_id() as usize;
+    if let Some(sched) = super::percpu::get_percpu_sched(cpu_id) {
+        return sched.run_queue.lock().current();
+    }
+    // Fallback to global (for early boot before per-CPU init)
     *CURRENT_PID.lock()
 }
 
-/// Set current running process
+/// Set current running process (per-CPU)
 pub fn set_current_pid(pid: Option<Pid>) {
-    {
+    // Use per-CPU data if available
+    let cpu_id = crate::smp::current_cpu_id() as usize;
+    if let Some(sched) = super::percpu::get_percpu_sched(cpu_id) {
+        sched.run_queue.lock().set_current(pid);
+    } else {
+        // Fallback to global (for early boot)
         let mut current = CURRENT_PID.lock();
         *current = pid;
     }

@@ -353,7 +353,8 @@ pub fn get_child_state(parent_pid: Pid, child_pid: Pid) -> Option<ProcessState> 
             return Some(entry.process.state);
         }
 
-        kerror!(
+        // Wrong parent - use ktrace instead of kerror since this is normal during wait(-1)
+        ktrace!(
             "[get_child_state] PID {} has wrong parent (ppid={}, expected={})",
             child_pid,
             entry.process.ppid,
@@ -362,7 +363,8 @@ pub fn get_child_state(parent_pid: Pid, child_pid: Pid) -> Option<ProcessState> 
         return None;
     }
 
-    kdebug!(
+    // Not found - use ktrace since this is expected for non-existent PIDs
+    kerror!(
         "[get_child_state] PID {} not found in process table",
         child_pid
     );
@@ -382,6 +384,38 @@ pub fn find_child_with_state(parent_pid: Pid, target_state: ProcessState) -> Opt
     }
 
     None
+}
+
+/// Check if parent has any children and optionally find zombie child
+/// Returns (has_any_child, zombie_child_pid, exit_code, term_signal)
+/// This is more efficient than iterating through all possible PIDs
+pub fn find_any_child_for_wait(
+    parent_pid: Pid,
+) -> (bool, Option<Pid>, Option<i32>, Option<i32>) {
+    let table = PROCESS_TABLE.lock();
+
+    let mut has_any_child = false;
+    let mut zombie_child: Option<(Pid, i32, Option<i32>)> = None;
+
+    for slot in table.iter() {
+        let Some(entry) = slot else { continue };
+        if entry.process.ppid == parent_pid {
+            has_any_child = true;
+            if entry.process.state == ProcessState::Zombie {
+                zombie_child = Some((
+                    entry.process.pid,
+                    entry.process.exit_code,
+                    entry.process.term_signal,
+                ));
+                break; // Found a zombie, return immediately
+            }
+        }
+    }
+
+    match zombie_child {
+        Some((pid, exit_code, term_signal)) => (has_any_child, Some(pid), Some(exit_code), term_signal),
+        None => (has_any_child, None, None, None),
+    }
 }
 
 /// Mark a process as a forked child (will return 0 from fork when it runs)
