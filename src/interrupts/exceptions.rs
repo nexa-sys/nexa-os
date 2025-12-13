@@ -193,10 +193,7 @@ pub extern "x86-interrupt" fn page_fault_handler(
         rip
     );
     kerror!("Error code: {:?}", error_code);
-    kerror!("System halted due to unrecoverable kernel page fault");
-    loop {
-        x86_64::instructions::hlt();
-    }
+    kpanic!("System halted due to unrecoverable kernel page fault");
 }
 
 /// General protection fault exception handler (#GP, vector 13)

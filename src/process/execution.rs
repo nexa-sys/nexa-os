@@ -71,6 +71,11 @@ impl Process {
             // These are the registers that the compiler expects to be preserved across
             // the fork() syscall. The caller-saved registers (RDI, RSI, etc.) don't need
             // to be restored because the syscall wrapper already clobbered them.
+            //
+            // CRITICAL FIX: Must execute swapgs before sysretq to set up proper GS state!
+            // Without swapgs, GS_BASE remains pointing to kernel GS_DATA, and after the
+            // first swapgs in the next syscall entry, GS_BASE becomes 0 (KernelGSBase),
+            // causing gs:[8] to read from address 8 instead of GS_DATA offset 8.
             unsafe {
                 core::arch::asm!(
                     "cli",                 // Disable interrupts during transition
@@ -87,6 +92,7 @@ impl Process {
                     "mov r14, {r14}",      // Restore R14 (callee-saved)
                     "mov r15, {r15}",      // Restore R15 (callee-saved)
                     "xor rax, rax",        // RAX = 0 (fork child return value)
+                    "swapgs",              // Swap to user GS (GS_BASE=0, KernelGSBase=kernel GS_DATA)
                     "sysretq",             // Return to Ring 3
                     cr3 = in(reg) self.cr3,
                     rip = in(reg) self.entry_point,

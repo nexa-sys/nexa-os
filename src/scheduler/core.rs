@@ -960,6 +960,11 @@ unsafe extern "C" fn switch_return_trampoline() {
         "mov rcx, gs:[0x38]",  // GS_SLOT_SAVED_RCX = 7, * 8 = 0x38 -> user RIP
         "mov r11, gs:[0x40]",  // GS_SLOT_SAVED_RFLAGS = 8, * 8 = 0x40 -> user RFLAGS
         "mov rsp, gs:[0x00]",  // GS_SLOT_USER_RSP = 0, * 8 = 0x00 -> user RSP
+        // CRITICAL FIX: Must swapgs before sysretq to restore user GS base!
+        // Without this, GS_BASE remains pointing to kernel GS_DATA after return,
+        // and the next syscall's swapgs will set GS_BASE=0 (KernelGSBase), causing
+        // gs:[8] to read from address 8 instead of GS_DATA offset 8.
+        "swapgs",
         "sysretq",
 
         ensure_kernel_gs_base = sym crate::smp::ensure_kernel_gs_base,

@@ -53,7 +53,7 @@ boot_config:
   quiet: false
   
   # Enable debug mode (verbose kernel logging)
-  debug: false
+  debug: true
 
 # =============================================================================
 # Display Settings

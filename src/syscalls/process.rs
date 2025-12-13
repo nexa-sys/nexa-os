@@ -593,13 +593,22 @@ pub fn execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8)
                     // Update cmdline from new process
                     entry.process.cmdline = new_process.cmdline;
                     entry.process.cmdline_len = new_process.cmdline_len;
+                    // CRITICAL: Do NOT overwrite kernel_stack - keep the existing one!
+                    // The kernel_stack was allocated during fork() and must be preserved
+                    // for syscall handling. new_process.kernel_stack is 0 which would
+                    // cause a kernel page fault on the next syscall.
+                    // Also reset TLS (fs_base) since new program needs fresh TLS setup.
+                    entry.process.fs_base = 0;
+                    // Reset context_valid so scheduler treats this as first-run
+                    entry.process.context_valid = false;
+                    entry.process.has_entered_user = false;
 
                     ktrace!(
-                        "[syscall_execve] Updated: entry={:#x}, stack={:#x}, cr3={:#x}, has_entered_user={}",
+                        "[syscall_execve] Updated: entry={:#x}, stack={:#x}, cr3={:#x}, kernel_stack={:#x}",
                         entry.process.entry_point,
                         entry.process.stack_top,
                         entry.process.cr3,
-                        entry.process.has_entered_user
+                        entry.process.kernel_stack
                     );
 
                     entry.process.signal_state.reset_to_default();
