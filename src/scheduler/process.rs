@@ -10,7 +10,7 @@ use crate::process::{Pid, Process, ProcessState, MAX_PROCESSES};
 use crate::{kdebug, kerror, ktrace};
 
 use super::priority::{calc_vdeadline, get_min_vruntime, update_min_vruntime};
-use super::table::{current_pid, set_current_pid, CURRENT_PID, GLOBAL_TICK, PROCESS_TABLE};
+use super::table::{current_pid, set_current_pid, GLOBAL_TICK, PROCESS_TABLE};
 use super::types::{nice_to_weight, ProcessEntry, SchedPolicy, BASE_SLICE_NS, DEFAULT_TIME_SLICE};
 
 /// Add a process to the scheduler with full initialization
@@ -502,7 +502,8 @@ pub fn update_process_cr3(pid: Pid, new_cr3: u64) -> Result<(), &'static str> {
 
 /// Set the state of the current process using radix tree for O(log N) lookup
 pub fn set_current_process_state(state: ProcessState) {
-    let Some(curr_pid) = *CURRENT_PID.lock() else {
+    // Use per-CPU aware current_pid() instead of global CURRENT_PID
+    let Some(curr_pid) = current_pid() else {
         return;
     };
 
