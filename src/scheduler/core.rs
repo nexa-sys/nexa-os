@@ -806,6 +806,7 @@ extern "C" fn first_run_trampoline() -> ! {
         crate::kpanic!("FirstRun PID {} has CR3=0", process.pid);
     }
 
+    crate::serial_println!("[FRT] PID {} calling mark_process_entered_user", process.pid);
     mark_process_entered_user(process.pid);
     process.execute();
     // process.execute() never returns, but compiler doesn't know
@@ -1198,8 +1199,8 @@ fn compute_schedule_decision(from_interrupt: bool) -> Option<ScheduleDecision> {
 
     let entry = table[next_idx].as_mut().expect("Process entry vanished");
     let _cpu_id = crate::smp::current_cpu_id();
-    // DEBUG: crate::serial_println!("[SCHED_SEL] CPU{} Selected PID {} state={:?} ctx_valid={}",
-    //     cpu_id, entry.process.pid, entry.process.state, entry.process.context_valid);
+    crate::kinfo!("[SCHED_SEL] CPU{} Selected PID {} state={:?} ctx_valid={} has_entered_user={}",
+        _cpu_id, entry.process.pid, entry.process.state, entry.process.context_valid, entry.process.has_entered_user);
     let (
         first_run,
         next_pid,

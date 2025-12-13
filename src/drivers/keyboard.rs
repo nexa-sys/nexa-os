@@ -409,7 +409,8 @@ pub fn read_raw_for_tty(tty: usize, buf: &mut [u8], count: usize) -> usize {
     // This enables raw/character-by-character input mode
     while pos < max_read {
         if tty != vt::active_terminal() {
-            x86_64::instructions::hlt();
+            // Not active terminal - yield to other processes
+            crate::scheduler::do_schedule();
             continue;
         }
 
@@ -420,7 +421,10 @@ pub fn read_raw_for_tty(tty: usize, buf: &mut [u8], count: usize) -> usize {
             // This allows single-character reads for shell line editing
             break;
         } else {
-            x86_64::instructions::hlt();
+            // No input available - yield CPU to other processes instead of busy-waiting with hlt
+            // do_schedule() will context switch to another Ready process if available,
+            // allowing other tasks (like dhcp, ntpd) to run while waiting for keyboard input
+            crate::scheduler::do_schedule();
         }
     }
 

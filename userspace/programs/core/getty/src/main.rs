@@ -101,7 +101,6 @@ fn wtermsig(status: i32) -> i32 {
 fn getty_main() -> ! {
     // Test output at the very beginning
     println!("GETTY_STARTING");
-    println!("GETTY_STARTING_LINE_2");
 
     loop {
         // Display banner

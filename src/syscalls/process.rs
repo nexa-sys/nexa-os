@@ -599,9 +599,15 @@ pub fn execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8)
                     // cause a kernel page fault on the next syscall.
                     // Also reset TLS (fs_base) since new program needs fresh TLS setup.
                     entry.process.fs_base = 0;
-                    // Reset context_valid so scheduler treats this as first-run
-                    entry.process.context_valid = false;
-                    entry.process.has_entered_user = false;
+                    // IMPORTANT: Do NOT set context_valid=false here!
+                    // The process is already running and will return via the syscall return path.
+                    // Setting context_valid=false would cause the scheduler to treat this as
+                    // a first-run process if preempted, leading to double-execution.
+                    // The EXEC_CONTEXT mechanism handles jumping to the new entry point
+                    // in the syscall return path.
+                    // 
+                    // Also clear is_fork_child since execve replaces the process image.
+                    entry.process.is_fork_child = false;
 
                     ktrace!(
                         "[syscall_execve] Updated: entry={:#x}, stack={:#x}, cr3={:#x}, kernel_stack={:#x}",
