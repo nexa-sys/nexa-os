@@ -68,7 +68,6 @@ pub extern "x86-interrupt" fn timer_interrupt_handler(stack_frame: InterruptStac
     if should_resched || resched_pending {
         // Time slice expired or higher priority process ready
         // Trigger rescheduling via do_schedule()
-        crate::kdebug!("Timer: Triggering preemptive reschedule (should={} pending={})", should_resched, resched_pending);
         // CRITICAL: Ensure GS base points to kernel GS_DATA before calling scheduler.
         // When timer interrupt occurs while CPU is executing user-mode code, the CPU enters
         // kernel via interrupt gate WITHOUT swapgs. The scheduler's switch_return_trampoline
