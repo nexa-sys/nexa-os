@@ -145,13 +145,16 @@ impl CpuData {
     }
 
     /// Leave interrupt context, returns true if reschedule is needed
+    /// This atomically clears the reschedule_pending flag to prevent repeated
+    /// scheduling on every subsequent interrupt.
     #[inline]
     pub fn leave_interrupt(&self) -> bool {
         self.preempt_enable();
         self.in_interrupt.store(false, Ordering::Release);
 
-        // Check if reschedule was requested during interrupt
-        self.reschedule_pending.load(Ordering::Acquire)
+        // Atomically check and clear the reschedule flag
+        // Using swap ensures we only schedule once per request
+        self.reschedule_pending.swap(false, Ordering::AcqRel)
     }
 
     /// Record a context switch

@@ -22,7 +22,7 @@ use super::priority::{
 use super::table::{
     current_pid, set_current_pid, GLOBAL_TICK, PROCESS_TABLE, SCHED_STATS,
 };
-use super::types::{SchedPolicy, BASE_SLICE_NS, DEFAULT_TIME_SLICE};
+use super::types::{SchedPolicy, BASE_SLICE_NS};
 
 /// Initialize scheduler subsystem
 pub fn init() {
@@ -287,6 +287,7 @@ fn update_previous_process_state(
 /// - Early exits for common cases (realtime, idle)
 /// - Threshold-based preemption to avoid thrashing
 /// - Consider both eligibility and deadline difference
+/// - Minimum runtime protection to prevent context switch thrashing
 #[inline]
 fn should_preempt_for_eevdf(
     ready_entry: &super::types::ProcessEntry,
@@ -310,6 +311,14 @@ fn should_preempt_for_eevdf(
 
     // Fast path 3: Idle processes don't preempt normal ones
     if ready_entry.policy == SchedPolicy::Idle {
+        return false;
+    }
+
+    // CRITICAL: For same-priority (Normal) processes, NEVER preempt based on EEVDF.
+    // Let the time slice mechanism handle fairness. This prevents rapid context switching
+    // that makes the system unresponsive.
+    if ready_entry.policy == SchedPolicy::Normal && curr_entry.policy == SchedPolicy::Normal {
+        // Same scheduling class - no preemption, wait for time slice to expire
         return false;
     }
 
@@ -440,10 +449,18 @@ pub fn tick(elapsed_ms: u64) -> bool {
         return true;
     }
 
-    // Save current entry info for preemption check
+    // For Normal policy processes, DON'T check for preemption on every tick.
+    // Just let the time slice run out. This dramatically reduces context switches
+    // and prevents the "rapid switching" bug where processes only get 1-2ms of CPU.
+    // Only Realtime processes can trigger mid-slice preemption checks.
+    if entry.policy != SchedPolicy::Realtime {
+        return false;
+    }
+
+    // Save current entry info for preemption check (only for RT processes)
     let curr_entry_copy = *entry;
 
-    // Check for preemption by eligible process with earlier deadline
+    // Check for preemption by higher priority realtime process
     if should_preempt_current(&table, &curr_entry_copy) {
         handle_preemption(&mut table, curr_pid);
         return true;
@@ -586,7 +603,7 @@ unsafe fn save_syscall_context_to_entry(entry: &mut super::types::ProcessEntry, 
 fn transition_current_to_ready(
     table: &mut [Option<super::types::ProcessEntry>; MAX_PROCESSES],
     curr_pid: Pid,
-    from_interrupt: bool,
+    _from_interrupt: bool,
 ) {
     for slot in table.iter_mut() {
         let Some(entry) = slot else { continue };
@@ -625,7 +642,26 @@ fn extract_next_process_info(
     u64,
     crate::process::Process,
 ) {
-    entry.time_slice = DEFAULT_TIME_SLICE;
+    // EEVDF: Replenish slice if exhausted
+    if entry.slice_remaining_ns == 0 {
+        replenish_slice(entry);
+    }
+
+    // EEVDF: Reset lag when scheduled (consumed their fair share of waiting)
+    entry.lag = 0;
+
+    // EEVDF: Recalculate deadline based on current vruntime
+    entry.vdeadline = calc_vdeadline(entry.vruntime, entry.slice_ns, entry.weight);
+
+    // Update scheduling stats
+    let current_tick = GLOBAL_TICK.load(Ordering::Relaxed);
+    entry.last_scheduled = current_tick;
+    entry.wait_time = 0;
+    entry.cpu_burst_count += 1;
+
+    // Legacy: Update time_slice for compatibility
+    entry.time_slice = super::priority::ns_to_ms(entry.slice_remaining_ns);
+    
     entry.process.state = ProcessState::Running;
 
     // Update last_cpu to record which CPU is running this process

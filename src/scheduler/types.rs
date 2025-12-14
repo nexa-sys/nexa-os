@@ -159,8 +159,13 @@ impl<'a> Iterator for CpuMaskIter<'a> {
     }
 }
 
-/// Minimum granularity - minimum time slice a process can get (in ns)
-pub const SCHED_GRANULARITY_NS: u64 = 1_000_000; // 1ms
+/// Minimum granularity - minimum time a process runs before preemption check (in ns)
+/// This prevents excessive context switching by ensuring processes get at least this much CPU time
+pub const SCHED_GRANULARITY_NS: u64 = 2_000_000; // 2ms - prevents thrashing
+
+/// Minimum preemption threshold - process must run at least this long before being preempted
+/// by a non-realtime process. This is critical for system responsiveness.
+pub const MIN_PREEMPT_GRANULARITY_NS: u64 = 2_000_000; // 2ms
 
 /// Default time slice in nanoseconds (for EEVDF request size)
 pub const BASE_SLICE_NS: u64 = 4_000_000; // 4ms
@@ -225,7 +230,7 @@ pub struct ProcessEntry {
     /// Virtual deadline - vruntime + request/weight (in nanoseconds)
     pub vdeadline: u64,
     /// Lag - difference between ideal and actual CPU time (can be negative)
-    /// Positive lag means the process deserves more CPU time
+    /// Positive lag means the process deserves more CPU time 
     pub lag: i64,
     /// Weight based on nice value (higher weight = more CPU share)
     pub weight: u64,
