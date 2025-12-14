@@ -108,13 +108,20 @@ pub extern "x86-interrupt" fn page_fault_handler(
         if let Some(pid) = crate::scheduler::current_pid() {
             let signal = crate::ipc::signal::SIGSEGV;
 
+            // Get current CR3 for debugging
+            let cr3 = x86_64::registers::control::Cr3::read().0.start_address().as_u64();
+            // Get FS base for TLS debugging
+            let fs_base = unsafe { x86_64::registers::model_specific::Msr::new(0xC0000100).read() };
+
             // Use serial_println! to ensure output is visible (kerror! is filtered after init starts)
             crate::serial_println!(
-                "SIGSEGV: PID {} segfault at {:#x}, RIP={:#x}, error={:?}",
+                "SIGSEGV: PID {} segfault at {:#x}, RIP={:#x}, error={:?}, CR3={:#x}, FS_BASE={:#x}",
                 pid,
                 fault_addr,
                 rip,
-                error_code
+                error_code,
+                cr3,
+                fs_base
             );
             // Log for kernel developers
             kerror!(
@@ -163,6 +170,15 @@ pub extern "x86-interrupt" fn page_fault_handler(
                 pid,
                 result2
             );
+
+            // Wake up parent process if it's sleeping (waiting for this child to exit)
+            if let Some(process) = crate::scheduler::get_process(pid) {
+                let ppid = process.ppid;
+                if ppid != 0 {
+                    crate::serial_println!("SIGSEGV: Waking parent process {}", ppid);
+                    crate::scheduler::wake_process(ppid);
+                }
+            }
 
             // CRITICAL: Ensure GS base points to kernel GS_DATA before calling scheduler.
             // When CPU enters kernel via interrupt gate from user mode, it does NOT execute
@@ -255,6 +271,15 @@ pub extern "x86-interrupt" fn general_protection_fault_handler(
 
         // Mark the process as zombie
         let _ = crate::scheduler::set_process_state(pid, crate::process::ProcessState::Zombie);
+
+        // Wake up parent process if it's sleeping (waiting for this child to exit)
+        if let Some(process) = crate::scheduler::get_process(pid) {
+            let ppid = process.ppid;
+            if ppid != 0 {
+                crate::serial_println!("GPF: Waking parent process {}", ppid);
+                crate::scheduler::wake_process(ppid);
+            }
+        }
 
         // CRITICAL: Ensure GS base points to kernel GS_DATA before calling scheduler.
         // When CPU enters kernel via interrupt gate from user mode, it does NOT execute
@@ -615,6 +640,15 @@ pub extern "x86-interrupt" fn divide_error_handler(stack_frame: InterruptStackFr
             let _ = crate::scheduler::set_process_term_signal(pid, signal as i32);
             let _ = crate::scheduler::set_process_state(pid, crate::process::ProcessState::Zombie);
 
+            // Wake up parent process if it's sleeping (waiting for this child to exit)
+            if let Some(process) = crate::scheduler::get_process(pid) {
+                let ppid = process.ppid;
+                if ppid != 0 {
+                    crate::serial_println!("SIGFPE: Waking parent process {}", ppid);
+                    crate::scheduler::wake_process(ppid);
+                }
+            }
+
             kinfo!(
                 "Process {} terminated with signal SIGFPE (exit code {})",
                 pid,
@@ -656,7 +690,17 @@ pub extern "x86-interrupt" fn segment_not_present_handler(
 
             let exit_code = 128 + crate::ipc::signal::SIGSEGV as i32;
             let _ = crate::scheduler::set_process_exit_code(pid, exit_code);
+            let _ = crate::scheduler::set_process_term_signal(pid, crate::ipc::signal::SIGSEGV as i32);
             let _ = crate::scheduler::set_process_state(pid, crate::process::ProcessState::Zombie);
+
+            // Wake up parent process if it's sleeping (waiting for this child to exit)
+            if let Some(process) = crate::scheduler::get_process(pid) {
+                let ppid = process.ppid;
+                if ppid != 0 {
+                    crate::serial_println!("SEGNP: Waking parent process {}", ppid);
+                    crate::scheduler::wake_process(ppid);
+                }
+            }
 
             kinfo!(
                 "Process {} terminated with signal SIGSEGV (exit code {})",
@@ -728,6 +772,15 @@ pub extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: InterruptStack
             let _ = crate::scheduler::set_process_exit_code(pid, exit_code);
             let _ = crate::scheduler::set_process_term_signal(pid, signal as i32);
             let _ = crate::scheduler::set_process_state(pid, crate::process::ProcessState::Zombie);
+
+            // Wake up parent process if it's sleeping (waiting for this child to exit)
+            if let Some(process) = crate::scheduler::get_process(pid) {
+                let ppid = process.ppid;
+                if ppid != 0 {
+                    crate::serial_println!("SIGILL: Waking parent process {}", ppid);
+                    crate::scheduler::wake_process(ppid);
+                }
+            }
 
             kinfo!(
                 "Process {} terminated with signal SIGILL (exit code {})",

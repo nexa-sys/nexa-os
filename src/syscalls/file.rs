@@ -989,10 +989,12 @@ pub fn read_from_keyboard(buf: *mut u8, count: usize) -> u64 {
     use x86_64::instructions::interrupts;
 
     if count == 0 {
+        kinfo!("[read_from_keyboard] count=0, returning 0");
         return 0;
     }
 
     if !user_buffer_in_range(buf as u64, count as u64) {
+        kinfo!("[read_from_keyboard] buf out of range, returning MAX");
         posix::set_errno(posix::errno::EFAULT);
         return u64::MAX;
     }
@@ -1013,6 +1015,7 @@ pub fn read_from_keyboard(buf: *mut u8, count: usize) -> u64 {
         interrupts::disable();
     }
 
+    kinfo!("[read_from_keyboard] tty={}, read_len={}", tty, read_len);
     posix::set_errno(0);
     read_len as u64
 }

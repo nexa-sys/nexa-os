@@ -22,7 +22,7 @@ use core::sync::atomic::Ordering;
 /// - Terminates the entire process
 pub fn exit(code: i32) -> ! {
     let pid = crate::scheduler::current_pid().unwrap_or(0);
-    ktrace!("[SYS_EXIT] PID {} exiting with code: {}", pid, code);
+    kinfo!("[SYS_EXIT] PID {} exiting with code: {}", pid, code);
 
     if pid == 0 {
         kpanic!("Cannot exit from kernel context (PID 0)!");

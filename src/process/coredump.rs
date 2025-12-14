@@ -110,6 +110,20 @@ pub struct CoreDumpInfo {
     pub memory_base: u64,
     /// Size of process memory region
     pub memory_size: usize,
+    /// RAX register
+    pub rax: u64,
+    /// RBX register
+    pub rbx: u64,
+    /// RCX register
+    pub rcx: u64,
+    /// RDX register
+    pub rdx: u64,
+    /// RSI register
+    pub rsi: u64,
+    /// RDI register
+    pub rdi: u64,
+    /// RBP register
+    pub rbp: u64,
 }
 
 impl CoreDumpInfo {
@@ -127,6 +141,13 @@ impl CoreDumpInfo {
             error_code: 0,
             memory_base: 0,
             memory_size: 0,
+            rax: 0,
+            rbx: 0,
+            rcx: 0,
+            rdx: 0,
+            rsi: 0,
+            rdi: 0,
+            rbp: 0,
         }
     }
 }
@@ -361,7 +382,14 @@ pub fn dump_core(info: &CoreDumpInfo, exe_name: &str) -> Result<(), &'static str
     crate::kerror!("  Register State:");
     crate::kerror!("    RIP: {:#018x}", info.rip);
     crate::kerror!("    RSP: {:#018x}", info.rsp);
+    crate::kerror!("    RBP: {:#018x}", info.rbp);
     crate::kerror!("    RFLAGS: {:#018x}", info.rflags);
+    crate::kerror!("    RAX: {:#018x}", info.rax);
+    crate::kerror!("    RBX: {:#018x}", info.rbx);
+    crate::kerror!("    RCX: {:#018x}", info.rcx);
+    crate::kerror!("    RDX: {:#018x}", info.rdx);
+    crate::kerror!("    RSI: {:#018x}", info.rsi);
+    crate::kerror!("    RDI: {:#018x}", info.rdi);
 
     if info.signal == crate::ipc::signal::SIGSEGV || info.signal == crate::ipc::signal::SIGBUS {
         crate::kerror!("    CR2 (fault addr): {:#018x}", info.cr2);
