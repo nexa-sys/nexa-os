@@ -37,7 +37,7 @@ mod signal;
 pub mod swap;
 mod system;
 mod thread;
-mod time;
+pub mod time;
 mod types;
 mod uefi;
 mod user;

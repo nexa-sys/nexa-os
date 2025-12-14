@@ -292,6 +292,7 @@ pub fn write(fd: u64, buf: u64, count: u64) -> u64 {
                             }
                             crate::tty::pty::PtyIoResult::WouldBlock => {
                                 scheduler::set_current_process_state(ProcessState::Sleeping);
+                                scheduler::do_schedule();
                                 continue;
                             }
                             crate::tty::pty::PtyIoResult::Eof => {
@@ -327,6 +328,7 @@ pub fn write(fd: u64, buf: u64, count: u64) -> u64 {
                             }
                             crate::tty::pty::PtyIoResult::WouldBlock => {
                                 scheduler::set_current_process_state(ProcessState::Sleeping);
+                                scheduler::do_schedule();
                                 continue;
                             }
                             crate::tty::pty::PtyIoResult::Eof => {
@@ -1103,6 +1105,7 @@ pub fn read(fd: u64, buf: *mut u8, count: usize) -> u64 {
                                     }
 
                                     scheduler::set_current_process_state(ProcessState::Sleeping);
+                                    scheduler::do_schedule();
                                     continue;
                                 }
                                 Some(Err(_)) => {
@@ -1163,6 +1166,7 @@ pub fn read(fd: u64, buf: *mut u8, count: usize) -> u64 {
                             }
                             crate::tty::pty::PtyIoResult::WouldBlock => {
                                 scheduler::set_current_process_state(ProcessState::Sleeping);
+                                scheduler::do_schedule();
                                 continue;
                             }
                         }
@@ -1189,6 +1193,7 @@ pub fn read(fd: u64, buf: *mut u8, count: usize) -> u64 {
                             }
                             crate::tty::pty::PtyIoResult::WouldBlock => {
                                 scheduler::set_current_process_state(ProcessState::Sleeping);
+                                scheduler::do_schedule();
                                 continue;
                             }
                         }

@@ -1205,8 +1205,35 @@ fn do_schedule_internal(from_interrupt: bool) {
             );
         },
         None => {
-            set_current_pid(None);
-            crate::kwarn!("do_schedule(): No ready process found, returning to caller");
+            // No ready process found - this can happen when all processes are sleeping.
+            // Instead of setting current_pid to None (which would cause "no current process" errors),
+            // we enter an idle loop waiting for an interrupt to wake up a process.
+            // 
+            // IMPORTANT: Do NOT set current_pid to None here, as that would cause
+            // "User-mode page fault but no current process" errors if a fault occurs.
+            crate::ktrace!("do_schedule(): No ready process, entering idle loop");
+            
+            // Enable interrupts and halt until an interrupt occurs.
+            // The timer interrupt will call check_sleepers() and potentially wake up a process,
+            // and the next tick will trigger another scheduling attempt.
+            loop {
+                // Check if any process became ready
+                {
+                    let table = PROCESS_TABLE.lock();
+                    for slot in table.iter() {
+                        if let Some(entry) = slot {
+                            if entry.process.state == crate::process::ProcessState::Ready {
+                                // A process is ready, retry scheduling
+                                drop(table);
+                                return do_schedule_internal(from_interrupt);
+                            }
+                        }
+                    }
+                }
+                
+                // No ready process, wait for interrupt
+                x86_64::instructions::interrupts::enable_and_hlt();
+            }
         }
     }
 }

@@ -52,6 +52,46 @@ static LAST_BYTE_WAS_CR: AtomicBool = AtomicBool::new(false);
 static ALT_PRESSED: AtomicBool = AtomicBool::new(false);
 static EXTENDED_MODE: AtomicBool = AtomicBool::new(false);
 
+/// Maximum number of processes that can wait for keyboard input
+const MAX_KEYBOARD_WAITERS: usize = 8;
+
+/// PIDs waiting for keyboard input
+static KEYBOARD_WAITERS: Mutex<[Option<crate::process::Pid>; MAX_KEYBOARD_WAITERS]> =
+    Mutex::new([None; MAX_KEYBOARD_WAITERS]);
+
+/// Add a process to the keyboard wait queue
+pub fn add_waiter(pid: crate::process::Pid) {
+    let mut waiters = KEYBOARD_WAITERS.lock();
+    for slot in waiters.iter_mut() {
+        if slot.is_none() {
+            *slot = Some(pid);
+            return;
+        }
+    }
+    // Queue full, ignore (process will spin)
+}
+
+/// Remove a process from the keyboard wait queue
+pub fn remove_waiter(pid: crate::process::Pid) {
+    let mut waiters = KEYBOARD_WAITERS.lock();
+    for slot in waiters.iter_mut() {
+        if *slot == Some(pid) {
+            *slot = None;
+            return;
+        }
+    }
+}
+
+/// Wake up all processes waiting for keyboard input
+fn wake_all_waiters() {
+    let mut waiters = KEYBOARD_WAITERS.lock();
+    for slot in waiters.iter_mut() {
+        if let Some(pid) = slot.take() {
+            crate::scheduler::wake_process(pid);
+        }
+    }
+}
+
 struct PendingBuffer {
     chars: [char; 8],
     count: usize,
@@ -97,6 +137,8 @@ pub fn add_scancode(scancode: u8) {
         let mut queue = SCANCODE_QUEUE.lock();
         queue.push(scancode);
     });
+    // Wake up processes waiting for keyboard input
+    wake_all_waiters();
 }
 
 /// Get next scancode from queue
@@ -398,6 +440,9 @@ pub fn read_raw(buf: &mut [u8], count: usize) -> usize {
 }
 
 pub fn read_raw_for_tty(tty: usize, buf: &mut [u8], count: usize) -> usize {
+    use crate::process::ProcessState;
+    use crate::scheduler;
+    
     let mut pos = 0;
     let max_read = core::cmp::min(buf.len(), count);
 
@@ -405,12 +450,20 @@ pub fn read_raw_for_tty(tty: usize, buf: &mut [u8], count: usize) -> usize {
         return 0;
     }
 
+    // Get current process PID for wait queue
+    let current_pid = scheduler::current_pid();
+
     // Wait for at least one character, then return immediately
     // This enables raw/character-by-character input mode
     while pos < max_read {
         if tty != vt::active_terminal() {
-            // Not active terminal - yield to other processes
-            crate::scheduler::do_schedule();
+            // Not active terminal - sleep and wait to be woken
+            if let Some(pid) = current_pid {
+                add_waiter(pid);
+                scheduler::set_current_process_state(ProcessState::Sleeping);
+                scheduler::do_schedule();
+                // After waking, we stay in the loop and re-register if needed
+            }
             continue;
         }
 
@@ -421,11 +474,24 @@ pub fn read_raw_for_tty(tty: usize, buf: &mut [u8], count: usize) -> usize {
             // This allows single-character reads for shell line editing
             break;
         } else {
-            // No input available - yield CPU to other processes instead of busy-waiting with hlt
-            // do_schedule() will context switch to another Ready process if available,
-            // allowing other tasks (like dhcp, ntpd) to run while waiting for keyboard input
-            crate::scheduler::do_schedule();
+            // No input available - register as waiter and enter sleep state
+            // Must register BEFORE setting sleep state to avoid race condition
+            if let Some(pid) = current_pid {
+                add_waiter(pid);
+                scheduler::set_current_process_state(ProcessState::Sleeping);
+                scheduler::do_schedule();
+                // After waking, loop back to try_read_char()
+                // The waiter was removed by wake_all_waiters(), so we re-register next iteration if needed
+            } else {
+                // No current process (kernel context) - just yield
+                scheduler::do_schedule();
+            }
         }
+    }
+
+    // Clean up: ensure we're removed from wait queue on exit
+    if let Some(pid) = current_pid {
+        remove_waiter(pid);
     }
 
     pos

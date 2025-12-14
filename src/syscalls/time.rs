@@ -4,12 +4,87 @@
 
 use super::types::*;
 use crate::posix;
-use crate::process::{USER_REGION_SIZE, USER_VIRT_BASE};
-use core::sync::atomic::{AtomicI64, Ordering};
+use crate::process::{Pid, USER_REGION_SIZE, USER_VIRT_BASE};
+use core::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
 /// System time offset from boot time in microseconds
 /// When set, realtime = boot_time + TIME_OFFSET_US
 static TIME_OFFSET_US: AtomicI64 = AtomicI64::new(0);
+
+/// Maximum number of sleeping processes that can be tracked
+const MAX_SLEEPERS: usize = 64;
+
+/// Sleep entry: (wake_time_us, pid)
+/// wake_time_us == 0 means the slot is empty
+struct SleepEntry {
+    wake_time_us: AtomicU64,
+    pid: AtomicU64,
+}
+
+impl SleepEntry {
+    const fn new() -> Self {
+        Self {
+            wake_time_us: AtomicU64::new(0),
+            pid: AtomicU64::new(0),
+        }
+    }
+}
+
+/// Global sleep queue for nanosleep
+static SLEEP_QUEUE: [SleepEntry; MAX_SLEEPERS] = {
+    const EMPTY: SleepEntry = SleepEntry::new();
+    [EMPTY; MAX_SLEEPERS]
+};
+
+/// Add a process to the sleep queue
+fn add_sleeper(pid: Pid, wake_time_us: u64) -> bool {
+    for entry in SLEEP_QUEUE.iter() {
+        // Try to claim an empty slot (wake_time_us == 0)
+        if entry.wake_time_us.compare_exchange(
+            0,
+            wake_time_us,
+            Ordering::SeqCst,
+            Ordering::SeqCst
+        ).is_ok() {
+            entry.pid.store(pid as u64, Ordering::SeqCst);
+            return true;
+        }
+    }
+    false // Queue full
+}
+
+/// Remove a process from the sleep queue
+fn remove_sleeper(pid: Pid) {
+    for entry in SLEEP_QUEUE.iter() {
+        if entry.pid.load(Ordering::SeqCst) == pid as u64 {
+            entry.wake_time_us.store(0, Ordering::SeqCst);
+            entry.pid.store(0, Ordering::SeqCst);
+            break;
+        }
+    }
+}
+
+/// Check and wake up sleeping processes (called from timer tick)
+pub fn check_sleepers() {
+    let now_us = crate::logger::boot_time_us();
+    
+    for entry in SLEEP_QUEUE.iter() {
+        let wake_time = entry.wake_time_us.load(Ordering::SeqCst);
+        if wake_time == 0 {
+            continue; // Empty slot
+        }
+        
+        if now_us >= wake_time {
+            let pid = entry.pid.load(Ordering::SeqCst) as Pid;
+            // Clear the entry first
+            entry.wake_time_us.store(0, Ordering::SeqCst);
+            entry.pid.store(0, Ordering::SeqCst);
+            // Wake up the process
+            crate::scheduler::wake_process(pid);
+            crate::kdebug!("check_sleepers: woke PID {} (target={}, now={})", pid, wake_time, now_us);
+        }
+    }
+}
 
 /// Set the system time offset (called by clock_settime)
 /// `realtime_us` is the Unix timestamp in microseconds
@@ -212,26 +287,41 @@ pub fn nanosleep(req: *const TimeSpec, rem: *mut TimeSpec) -> u64 {
     // Convert to microseconds
     let sleep_us = (request.tv_sec as u64 * 1_000_000) + (request.tv_nsec as u64 / 1000);
 
-    // Get current time
+    // Get current PID
+    let Some(pid) = crate::scheduler::get_current_pid() else {
+        posix::set_errno(posix::errno::ESRCH);
+        return u64::MAX;
+    };
+
+    // Get current time and calculate wake time
     let start_us = crate::logger::boot_time_us();
     let target_us = start_us + sleep_us;
 
     crate::kdebug!(
-        "nanosleep: sleeping for {} us (until {})",
-        sleep_us,
-        target_us
+        "nanosleep: PID {} sleeping for {} us (until {})",
+        pid, sleep_us, target_us
     );
 
-    // Busy-wait sleep for now
-    // TODO: Implement proper scheduler-based sleep with wait queues
-    loop {
-        let now_us = crate::logger::boot_time_us();
-        if now_us >= target_us {
-            break;
+    // Add to sleep queue
+    if !add_sleeper(pid, target_us) {
+        // Queue full, fall back to minimal busy-wait with longer intervals
+        crate::kwarn!("nanosleep: sleep queue full, using busy-wait for PID {}", pid);
+        loop {
+            let now_us = crate::logger::boot_time_us();
+            if now_us >= target_us {
+                break;
+            }
+            // Yield to scheduler
+            crate::scheduler::do_schedule();
         }
-
-        // Yield to scheduler to avoid monopolizing CPU
+    } else {
+        // Put process to sleep and let timer wake it
+        crate::scheduler::sleep_current_process();
         crate::scheduler::do_schedule();
+        
+        // When we return here, we've been woken up
+        // Remove ourselves from sleep queue if still there (e.g., spurious wake)
+        remove_sleeper(pid);
     }
 
     // If rem is provided and sleep was interrupted (not implemented yet), fill it

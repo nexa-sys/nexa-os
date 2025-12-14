@@ -50,6 +50,9 @@ pub extern "x86-interrupt" fn timer_interrupt_handler(stack_frame: InterruptStac
     // Timer tick for scheduler (1ms granularity)
     const TIMER_TICK_MS: u64 = 1;
 
+    // Check sleeping processes and wake them if their time has come
+    crate::syscalls::time::check_sleepers();
+
     // Check if current process should be preempted
     let should_resched = crate::scheduler::tick(TIMER_TICK_MS);
 
@@ -169,6 +172,9 @@ pub extern "x86-interrupt" fn lapic_timer_handler(_stack_frame: InterruptStackFr
 
     // Timer tick for scheduler (1ms granularity)
     const TIMER_TICK_MS: u64 = 1;
+
+    // Check sleeping processes and wake them if their time has come
+    crate::syscalls::time::check_sleepers();
 
     // Check if current process should be preempted
     let should_resched = crate::scheduler::tick(TIMER_TICK_MS);
