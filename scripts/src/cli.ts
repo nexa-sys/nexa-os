@@ -52,10 +52,47 @@ const program = new Command();
 program
   .name('ndk')
   .description('NexaOS Development Kit - Build system and development tools')
-  .version('1.0.0');
+  .version('1.0.0')
+  .showHelpAfterError('(use "./ndk --help" for available commands)')
+  .configureOutput({
+    outputError: (str, write) => write(`\x1b[31mError:\x1b[0m ${str}`)
+  });
 
-// Full build
-program
+// =============================================================================
+// Build Command Group
+// =============================================================================
+
+const buildCmd = program
+  .command('build')
+  .alias('b')
+  .description('Build NexaOS components')
+  .showHelpAfterError('(use "./ndk build --help" for available subcommands)');
+
+// Valid build subcommands for validation
+const validBuildSubcommands = ['full', 'all', 'quick', 'q', 'kernel', 'k', 'userspace', 'u', 'libs', 'l', 'modules', 'm', 'programs', 'p', 'initramfs', 'i', 'rootfs', 'r', 'swap', 'iso', 'steps', 's'];
+
+// Check for excess arguments before parsing - build subcommands only accept one target (except 'steps')
+const buildIdx = process.argv.findIndex(arg => arg === 'build' || arg === 'b');
+if (buildIdx >= 0 && buildIdx + 1 < process.argv.length) {
+  const subCmd = process.argv[buildIdx + 1];
+  // Skip if it's 'steps' (which accepts multiple args) or an option
+  if (subCmd && !subCmd.startsWith('-') && subCmd !== 'steps' && subCmd !== 's') {
+    // Check if there are extra non-option arguments after the subcommand
+    const extraArgs = process.argv.slice(buildIdx + 2).filter(arg => !arg.startsWith('-'));
+    if (extraArgs.length > 0 && validBuildSubcommands.includes(subCmd)) {
+      console.error(`\x1b[31mError:\x1b[0m Too many arguments. Only one build subcommand allowed.`);
+      console.error(`       Got: ${subCmd} ${extraArgs.join(' ')}`);
+      console.error('');
+      console.error('Hint: Use "./ndk build steps <step1> <step2> ..." to run multiple build steps.');
+      console.error('      Example: ./ndk build steps kernel iso');
+      console.error('');
+      process.exit(1);
+    }
+  }
+}
+
+// build full
+buildCmd
   .command('full')
   .alias('all')
   .description('Full system build (kernel, userspace, rootfs, initramfs, ISO)')
@@ -65,8 +102,8 @@ program
     process.exit(result.success ? 0 : 1);
   });
 
-// Quick build
-program
+// build quick
+buildCmd
   .command('quick')
   .alias('q')
   .description('Quick build (kernel + initramfs + ISO, no rootfs rebuild)')
@@ -76,8 +113,8 @@ program
     process.exit(result.success ? 0 : 1);
   });
 
-// Kernel
-program
+// build kernel
+buildCmd
   .command('kernel')
   .alias('k')
   .description('Build kernel only')
@@ -87,8 +124,8 @@ program
     process.exit(result.success ? 0 : 1);
   });
 
-// Userspace
-program
+// build userspace
+buildCmd
   .command('userspace')
   .alias('u')
   .description('Build userspace programs only')
@@ -98,8 +135,8 @@ program
     process.exit(result.success ? 0 : 1);
   });
 
-// Libraries
-program
+// build libs
+buildCmd
   .command('libs')
   .alias('l')
   .description('Build libraries only')
@@ -125,8 +162,8 @@ program
     process.exit(result.success ? 0 : 1);
   });
 
-// Modules
-program
+// build modules
+buildCmd
   .command('modules')
   .alias('m')
   .description('Build kernel modules only')
@@ -151,8 +188,8 @@ program
     process.exit(result.success ? 0 : 1);
   });
 
-// Programs
-program
+// build programs
+buildCmd
   .command('programs')
   .alias('p')
   .description('Build userspace programs')
@@ -177,8 +214,8 @@ program
     process.exit(result.success ? 0 : 1);
   });
 
-// Initramfs
-program
+// build initramfs
+buildCmd
   .command('initramfs')
   .alias('i')
   .description('Build initramfs only')
@@ -188,8 +225,8 @@ program
     process.exit(result.success ? 0 : 1);
   });
 
-// Rootfs
-program
+// build rootfs
+buildCmd
   .command('rootfs')
   .alias('r')
   .description('Build root filesystem only')
@@ -199,8 +236,8 @@ program
     process.exit(result.success ? 0 : 1);
   });
 
-// Swap
-program
+// build swap
+buildCmd
   .command('swap')
   .description('Build swap image only')
   .action(async () => {
@@ -209,8 +246,8 @@ program
     process.exit(result.success ? 0 : 1);
   });
 
-// ISO
-program
+// build iso
+buildCmd
   .command('iso')
   .description('Build ISO only (requires existing kernel)')
   .action(async () => {
@@ -219,7 +256,35 @@ program
     process.exit(result.success ? 0 : 1);
   });
 
-// Clean
+// build steps - run multiple build steps
+buildCmd
+  .command('steps <steps...>')
+  .alias('s')
+  .description('Run multiple build steps in sequence (e.g., ndk build steps kernel iso)')
+  .action(async (steps: string[]) => {
+    const builder = new Builder(findProjectRoot());
+    const result = await builder.runSteps(steps as BuildStep[]);
+    process.exit(result.success ? 0 : 1);
+  });
+
+// Handle unknown subcommands for build (fallback action)
+buildCmd
+  .argument('[subcommand]', 'Build subcommand')
+  .action((subcommand?: string) => {
+    if (subcommand && !validBuildSubcommands.includes(subcommand)) {
+      console.error(`\x1b[31mError:\x1b[0m Unknown build subcommand '${subcommand}'`);
+      console.error('');
+      console.error('(use "./ndk build --help" for available subcommands)');
+      console.error('');
+    }
+    buildCmd.outputHelp();
+    process.exit(1);
+  });
+
+// =============================================================================
+// Clean Command
+// =============================================================================
+
 program
   .command('clean')
   .description('Clean all build artifacts')
@@ -229,17 +294,6 @@ program
     const result = options.buildOnly 
       ? await builder.cleanBuildOnly()
       : await builder.clean();
-    process.exit(result.success ? 0 : 1);
-  });
-
-// Multi-step build (renamed from 'run' to 'steps' to avoid conflict with QEMU run)
-program
-  .command('steps <steps...>')
-  .alias('s')
-  .description('Run multiple build steps in sequence (e.g., ndk steps kernel iso)')
-  .action(async (steps: string[]) => {
-    const builder = new Builder(findProjectRoot());
-    const result = await builder.runSteps(steps as BuildStep[]);
     process.exit(result.success ? 0 : 1);
   });
 
@@ -577,13 +631,24 @@ qemuCmd
     console.log('');
   });
 
-// Default action (no command = full build)
-program
-  .action(async () => {
-    const builder = new Builder(findProjectRoot());
-    const result = await builder.buildFull();
-    process.exit(result.success ? 0 : 1);
-  });
+// Default action (no command = show help)
+// Note: This handles the case when no command is provided
+if (process.argv.length <= 2) {
+  program.outputHelp();
+  process.exit(0);
+}
+
+// Handle unknown commands before parsing
+const validCommands = ['build', 'b', 'clean', 'list', 'info', 'features', 'f', 'run', 'dev', 'd', 'qemu', '-V', '--version', '-h', '--help'];
+const firstArg = process.argv[2];
+if (firstArg && !firstArg.startsWith('-') && !validCommands.includes(firstArg)) {
+  console.error(`\x1b[31mError:\x1b[0m Unknown command '${firstArg}'`);
+  console.error('');
+  console.error('(use "./ndk --help" for available commands)');
+  console.error('');
+  program.outputHelp();
+  process.exit(1);
+}
 
 // Parse and execute
 program.parse();

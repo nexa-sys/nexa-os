@@ -6,16 +6,19 @@
 #   ./ndk [command] [options]
 #
 # Commands:
-#   full, all      - Full system build
-#   quick, q       - Quick build (kernel + initramfs + ISO)
-#   kernel, k      - Build kernel only
-#   userspace, u   - Build userspace programs
-#   libs, l        - Build libraries
-#   modules, m     - Build kernel modules
-#   initramfs, i   - Build initramfs
-#   rootfs, r      - Build root filesystem
-#   swap           - Build swap image
-#   iso            - Build ISO image
+#   build, b       - Build NexaOS components
+#     full, all    - Full system build
+#     quick, q     - Quick build (kernel + initramfs + ISO)
+#     kernel, k    - Build kernel only
+#     userspace, u - Build userspace programs
+#     libs, l      - Build libraries
+#     modules, m   - Build kernel modules
+#     programs, p  - Build userspace programs
+#     initramfs, i - Build initramfs
+#     rootfs, r    - Build root filesystem
+#     swap         - Build swap image
+#     iso          - Build ISO image
+#     steps        - Run multiple build steps
 #   clean          - Clean build artifacts
 #   run            - Run NexaOS in QEMU
 #   dev, d         - Build and run (development mode)
@@ -25,11 +28,12 @@
 #   info           - Show build environment info
 #
 # Examples:
-#   ./ndk full           # Full build
-#   ./ndk dev            # Build and run
-#   ./ndk dev --quick    # Quick build and run
-#   ./ndk run --debug    # Run with GDB server
-#   ./ndk features list  # List kernel features
+#   ./ndk build full      # Full build
+#   ./ndk build quick     # Quick build
+#   ./ndk dev             # Build and run
+#   ./ndk dev --quick     # Quick build and run
+#   ./ndk run --debug     # Run with GDB server
+#   ./ndk features list   # List kernel features
 
 set -e
 
