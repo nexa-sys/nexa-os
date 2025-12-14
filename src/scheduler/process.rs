@@ -7,7 +7,7 @@ use alloc::alloc::{dealloc, Layout};
 use core::sync::atomic::Ordering;
 
 use crate::process::{Pid, Process, ProcessState, MAX_PROCESSES};
-use crate::{kdebug, kerror, ktrace};
+use crate::{kdebug, kerror, kinfo, ktrace};
 
 use super::priority::{calc_vdeadline, get_min_vruntime, update_min_vruntime};
 use super::table::{current_pid, set_current_pid, GLOBAL_TICK, PROCESS_TABLE};
@@ -224,12 +224,21 @@ pub fn set_process_state(pid: Pid, state: ProcessState) -> Result<(), &'static s
         if idx < table.len() {
             if let Some(entry) = &mut table[idx] {
                 if entry.process.pid == pid {
-                    ktrace!(
-                        "[set_process_state] PID {} state: {:?} -> {:?}",
-                        pid,
-                        entry.process.state,
-                        state
-                    );
+                    // DEBUG: Log state transitions to Zombie with INFO level
+                    if state == ProcessState::Zombie {
+                        kinfo!(
+                            "[set_process_state] PID {} state: {:?} -> Zombie",
+                            pid,
+                            entry.process.state
+                        );
+                    } else {
+                        ktrace!(
+                            "[set_process_state] PID {} state: {:?} -> {:?}",
+                            pid,
+                            entry.process.state,
+                            state
+                        );
+                    }
                     entry.process.state = state;
                     return Ok(());
                 }
@@ -244,12 +253,21 @@ pub fn set_process_state(pid: Pid, state: ProcessState) -> Result<(), &'static s
             continue;
         }
 
-        ktrace!(
-            "[set_process_state] PID {} state: {:?} -> {:?}",
-            pid,
-            entry.process.state,
-            state
-        );
+        // DEBUG: Log state transitions to Zombie with INFO level
+        if state == ProcessState::Zombie {
+            kinfo!(
+                "[set_process_state] PID {} state: {:?} -> Zombie (fallback)",
+                pid,
+                entry.process.state
+            );
+        } else {
+            ktrace!(
+                "[set_process_state] PID {} state: {:?} -> {:?}",
+                pid,
+                entry.process.state,
+                state
+            );
+        }
         entry.process.state = state;
         return Ok(());
     }

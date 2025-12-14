@@ -160,12 +160,13 @@ async function buildLibraryShared(
   // Always create symlinks in sysroot-pic/lib for dependent library builds
   // This allows libraries like nssl to find libcrypto.so when linking
   // Symlinks point to rootfs/lib64 where actual .so files are installed
+  // Path: sysroot-pic/lib/ -> userspace-build/ -> build/ -> rootfs/lib64/
   await mkdir(sysrootPicLib, { recursive: true });
   
   // Create symlink for the output name (e.g., libcrypto.so)
   const picOutputLink = join(sysrootPicLib, sharedName);
   try { await unlink(picOutputLink); } catch {}
-  await symlink(join('..', '..', 'rootfs', 'lib64', sharedName), picOutputLink);
+  await symlink(join('..', '..', '..', 'rootfs', 'lib64', sharedName), picOutputLink);
   
   // Also create cargo package name symlink if different
   if (lib.name !== lib.output) {
