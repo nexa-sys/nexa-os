@@ -53,6 +53,12 @@ pub extern "x86-interrupt" fn timer_interrupt_handler(stack_frame: InterruptStac
     // Check sleeping processes and wake them if their time has come
     crate::syscalls::time::check_sleepers();
 
+    // Poll network stack to receive packets and wake up waiting processes.
+    // This is critical for processes blocked on recvfrom() - they need
+    // network packets to be processed and wake_process() to be called.
+    // Without this, sleeping processes waiting for network I/O would never wake up.
+    crate::net::poll();
+
     // Check if current process should be preempted
     let should_resched = crate::scheduler::tick(TIMER_TICK_MS);
 
@@ -175,6 +181,11 @@ pub extern "x86-interrupt" fn lapic_timer_handler(_stack_frame: InterruptStackFr
 
     // Check sleeping processes and wake them if their time has come
     crate::syscalls::time::check_sleepers();
+
+    // Poll network stack to receive packets and wake up waiting processes.
+    // This is critical for processes blocked on recvfrom() - they need
+    // network packets to be processed and wake_process() to be called.
+    crate::net::poll();
 
     // Check if current process should be preempted
     let should_resched = crate::scheduler::tick(TIMER_TICK_MS);
