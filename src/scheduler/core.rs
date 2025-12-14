@@ -1254,9 +1254,32 @@ fn compute_schedule_decision(from_interrupt: bool) -> Option<ScheduleDecision> {
         .unwrap_or(0);
 
     // Try to prioritize parent of zombie child first
-    let next_idx = current
+    let next_idx_opt = current
         .and_then(|pid| find_zombie_parent_index(&table, pid))
-        .or_else(|| find_next_ready_index(&table, start_idx))?;
+        .or_else(|| find_next_ready_index(&table, start_idx));
+
+    // CRITICAL FIX: If no ready process is found, we must still mark the current process's
+    // context as valid before returning. Otherwise, when the process is later woken up,
+    // the scheduler will incorrectly treat it as a first-run process (context_valid=false)
+    // and restart it from the entry point instead of resuming from where it blocked.
+    let next_idx = match next_idx_opt {
+        Some(idx) => idx,
+        None => {
+            // Mark current process context as valid before entering idle
+            if let Some(curr_pid) = current {
+                for slot in table.iter_mut() {
+                    let Some(entry) = slot else { continue };
+                    if entry.process.pid == curr_pid && entry.process.has_entered_user {
+                        entry.process.context_valid = true;
+                        // Also save user context from GS_DATA
+                        unsafe { save_syscall_context_to_entry(entry, curr_pid) };
+                        break;
+                    }
+                }
+            }
+            return None;
+        }
+    };
 
     // Transition current process to Ready
     if let Some(curr_pid) = current {

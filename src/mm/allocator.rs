@@ -21,8 +21,7 @@
 /// - O(log n) allocation time for buddy system
 /// - Lock-free fast paths where possible
 /// - Comprehensive debugging and leak detection
-/// - Production-ready reliability
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+/// - Production-ready reliability                         
 use spin::Mutex;
 
 // =============================================================================
