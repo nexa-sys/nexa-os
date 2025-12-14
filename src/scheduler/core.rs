@@ -419,11 +419,29 @@ pub fn tick(elapsed_ms: u64) -> bool {
     let current = current_pid();
 
     let Some(curr_pid) = current else {
+        // No current process - check if any process is ready to run
+        for slot in table.iter() {
+            if let Some(entry) = slot {
+                if entry.process.state == ProcessState::Ready {
+                    return true; // Trigger scheduling
+                }
+            }
+        }
         return false;
     };
 
     // Find and update the current running process
     let Some(entry) = find_current_running_entry_mut(&mut table, curr_pid) else {
+        // Current process is not Running (e.g., Sleeping on I/O).
+        // Check if any other process is Ready and should be scheduled.
+        for slot in table.iter() {
+            if let Some(entry) = slot {
+                if entry.process.state == ProcessState::Ready {
+                    crate::kdebug!("tick: curr {} not running, found ready PID {}", curr_pid, entry.process.pid);
+                    return true; // Trigger scheduling to run the ready process
+                }
+            }
+        }
         return false;
     };
 

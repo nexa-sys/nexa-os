@@ -270,14 +270,14 @@ pub fn init_interrupts() {
         );
     }
 
-    // Now set final PIC masks - unmask only keyboard IRQ
+    // Now set final PIC masks - unmask timer (IRQ0) and keyboard (IRQ1)
     unsafe {
         let mut master_port = Port::<u8>::new(0x21);
-        master_port.write(0xFD); // Unmask only keyboard IRQ (IRQ1)
+        master_port.write(0xFC); // Unmask timer IRQ (IRQ0) and keyboard IRQ (IRQ1)
         let mut slave_port = Port::<u8>::new(0xA1);
         slave_port.write(0xFF); // Keep all slave IRQs masked
     }
-    crate::kinfo!("init_interrupts: PIC masks applied (keyboard unmasked)");
+    crate::kinfo!("init_interrupts: PIC masks applied (timer and keyboard unmasked)");
 
     if ENABLE_SYSCALL_MSRS {
         crate::kinfo!("init_interrupts: enabling SYSCALL MSR fast path");

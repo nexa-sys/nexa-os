@@ -8,6 +8,17 @@ use x86_64::VirtAddr;
 
 use crate::safety::{read_rsp, serial_debug_byte, serial_debug_hex, stack_alignment_offset};
 
+// SS register requires unsafe assembly to set on x86_64
+fn set_ss(selector: SegmentSelector) {
+    unsafe {
+        core::arch::asm!(
+            "mov ss, ax",
+            in("ax") selector.0,
+            options(nostack, nomem)
+        );
+    }
+}
+
 const STACK_SIZE: usize = 4096 * 5;
 
 #[repr(align(16))]
@@ -483,6 +494,11 @@ fn init_cpu(cpu_id: usize) {
             if cpu_id > 0 {
                 serial_debug_byte(b'j'); // After DS::set_reg
             }
+            // CRITICAL: Set SS to kernel data selector
+            // UEFI may leave SS set to a selector (e.g., 0x30) that doesn't exist
+            // in our GDT. When an interrupt occurs, iretq will try to restore
+            // this invalid SS value, causing a GP fault.
+            set_ss(selectors.data_selector);
             // Each CPU needs its own TSS loaded
             load_tss(selectors.tss_selector);
             if cpu_id > 0 {
