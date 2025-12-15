@@ -75,6 +75,7 @@ pub use process::{
     sleep_current_process,
     terminate_thread_group,
     thread_group_count,
+    try_wake_process,
     update_process_cr3,
     wake_process,
 };

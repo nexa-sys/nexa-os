@@ -412,10 +412,17 @@ fn find_current_running_entry_mut<'a>(
 
 /// Timer tick handler: EEVDF scheduler tick
 /// Updates vruntime and checks for preemption based on virtual deadlines
+/// IMPORTANT: Called from interrupt context, uses try_lock() to avoid deadlock.
 pub fn tick(elapsed_ms: u64) -> bool {
     GLOBAL_TICK.fetch_add(1, Ordering::Relaxed);
 
-    let mut table = PROCESS_TABLE.lock();
+    // Use try_lock() because this is called from timer interrupt.
+    // If PROCESS_TABLE lock is held by interrupted code, we must skip
+    // this tick to avoid deadlock (spin::Mutex is not reentrant).
+    let mut table = match PROCESS_TABLE.try_lock() {
+        Some(t) => t,
+        None => return false, // Lock held, skip this tick
+    };
     let current = current_pid();
 
     let Some(curr_pid) = current else {

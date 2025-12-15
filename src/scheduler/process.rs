@@ -557,8 +557,27 @@ pub fn sleep_current_process() {
 
 /// Wake up a process by PID (EEVDF: adjust vruntime for waking process)
 pub fn wake_process(pid: Pid) -> bool {
+    wake_process_internal(pid, false)
+}
+
+/// Try to wake up a process by PID, but don't block if lock is held.
+/// This is safe to call from interrupt context (timer tick).
+/// Returns true if woke, false if couldn't wake or lock was held.
+pub fn try_wake_process(pid: Pid) -> bool {
+    wake_process_internal(pid, true)
+}
+
+/// Internal wake implementation
+fn wake_process_internal(pid: Pid, try_lock: bool) -> bool {
     let min_vrt = get_min_vruntime();
-    let mut table = PROCESS_TABLE.lock();
+    let mut table = if try_lock {
+        match PROCESS_TABLE.try_lock() {
+            Some(t) => t,
+            None => return false, // Lock held, skip this wake attempt
+        }
+    } else {
+        PROCESS_TABLE.lock()
+    };
 
     // Try radix tree lookup first (O(log N))
     if let Some(idx) = crate::process::lookup_pid(pid) {

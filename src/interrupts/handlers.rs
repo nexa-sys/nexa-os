@@ -32,11 +32,6 @@ pub extern "x86-interrupt" fn timer_interrupt_handler(stack_frame: InterruptStac
     // Mark entering interrupt context (disables preemption)
     crate::smp::enter_interrupt();
 
-    // Send EOI to PIC
-    unsafe {
-        PICS.lock().notify_end_of_interrupt(PIC_1_OFFSET);
-    }
-
     // Record interrupt on per-CPU statistics
     crate::smp::record_interrupt();
 
@@ -64,6 +59,13 @@ pub extern "x86-interrupt" fn timer_interrupt_handler(stack_frame: InterruptStac
 
     // Mark leaving interrupt context and check for pending reschedule
     let resched_pending = crate::smp::leave_interrupt();
+
+    // CRITICAL: Send EOI AFTER all processing is complete but BEFORE reschedule.
+    // Sending EOI too early allows nested timer interrupts which can cause
+    // deadlock if the interrupt handler tries to acquire a lock already held.
+    unsafe {
+        PICS.lock().notify_end_of_interrupt(PIC_1_OFFSET);
+    }
 
     if should_resched || resched_pending {
         // Time slice expired or higher priority process ready

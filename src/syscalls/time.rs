@@ -65,6 +65,8 @@ fn remove_sleeper(pid: Pid) {
 }
 
 /// Check and wake up sleeping processes (called from timer tick)
+/// IMPORTANT: This is called from interrupt context, so we use try_wake_process()
+/// which won't deadlock if PROCESS_TABLE lock is already held.
 pub fn check_sleepers() {
     let now_us = crate::logger::boot_time_us();
     
@@ -79,8 +81,8 @@ pub fn check_sleepers() {
             // Clear the entry first
             entry.wake_time_us.store(0, Ordering::SeqCst);
             entry.pid.store(0, Ordering::SeqCst);
-            // Wake up the process
-            crate::scheduler::wake_process(pid);
+            // Wake up the process - use try_wake to avoid deadlock in interrupt context
+            crate::scheduler::try_wake_process(pid);
             crate::kdebug!("check_sleepers: woke PID {} (target={}, now={})", pid, wake_time, now_us);
         }
     }
