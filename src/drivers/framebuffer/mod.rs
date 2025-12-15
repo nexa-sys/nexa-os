@@ -174,15 +174,19 @@ pub fn is_ready() -> bool {
 
 /// Clear the framebuffer screen
 pub fn clear() {
-    if let Some(writer) = FRAMEBUFFER_WRITER.lock().as_mut() {
-        writer.clear();
+    if let Some(mut guard) = FRAMEBUFFER_WRITER.try_lock() {
+        if let Some(writer) = guard.as_mut() {
+            writer.clear();
+        }
     }
 }
 
 /// Handle backspace
 pub fn backspace() {
-    if let Some(writer) = FRAMEBUFFER_WRITER.lock().as_mut() {
-        writer.backspace();
+    if let Some(mut guard) = FRAMEBUFFER_WRITER.try_lock() {
+        if let Some(writer) = guard.as_mut() {
+            writer.backspace();
+        }
     }
 }
 
@@ -231,13 +235,15 @@ pub fn try_with_writer<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut FramebufferWriter) -> R,
 {
-    FRAMEBUFFER_WRITER.lock().as_mut().map(f)
+    FRAMEBUFFER_WRITER.try_lock().and_then(|mut guard| guard.as_mut().map(f))
 }
 
 /// Print formatted output to the framebuffer
 pub(crate) fn _print(args: fmt::Arguments<'_>) {
     use core::fmt::Write;
-    if let Some(writer) = FRAMEBUFFER_WRITER.lock().as_mut() {
-        writer.write_fmt(args).ok();
+    if let Some(mut guard) = FRAMEBUFFER_WRITER.try_lock() {
+        if let Some(writer) = guard.as_mut() {
+            writer.write_fmt(args).ok();
+        }
     }
 }

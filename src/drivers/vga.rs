@@ -238,20 +238,20 @@ impl Writer {
 }
 
 pub fn clear_screen() {
-    let mut writer = VGA_WRITER.lock();
-    for row in 0..BUFFER_HEIGHT {
-        writer.clear_row(row);
+    if let Some(mut writer) = VGA_WRITER.try_lock() {
+        for row in 0..BUFFER_HEIGHT {
+            writer.clear_row(row);
+        }
+        writer.column_position = 0;
     }
-    writer.column_position = 0;
     framebuffer::clear();
 }
 
-pub fn with_writer<F, R>(f: F) -> R
+pub fn with_writer<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut Writer) -> R,
 {
-    let mut writer = VGA_WRITER.lock();
-    f(&mut writer)
+    VGA_WRITER.try_lock().map(|mut writer| f(&mut writer))
 }
 
 pub fn try_with_writer<F, R>(f: F) -> Option<R>
@@ -264,7 +264,9 @@ where
 pub static WRITER: Mutex<Option<&'static mut Writer>> = Mutex::new(None);
 
 pub fn print_char(c: char) {
-    if let Some(writer) = WRITER.lock().as_mut() {
-        writer.write_byte(c as u8);
+    if let Some(mut guard) = WRITER.try_lock() {
+        if let Some(writer) = guard.as_mut() {
+            writer.write_byte(c as u8);
+        }
     }
 }

@@ -48,12 +48,19 @@ pub fn init() {
 }
 
 pub(crate) fn _print(args: fmt::Arguments<'_>) {
-    SERIAL1.lock().write_fmt(args);
+    // Use try_lock() to avoid deadlock when called from interrupt context.
+    // If the lock is held (e.g., main code is printing when timer fires),
+    // we simply drop this log message rather than deadlock.
+    if let Some(mut guard) = SERIAL1.try_lock() {
+        guard.write_fmt(args);
+    }
+    // If lock is held, silently drop the message - better than deadlock
 }
 
 pub fn write_byte(byte: u8) {
-    let mut guard = SERIAL1.lock();
-    guard.with_port(|port| port.send(byte));
+    if let Some(mut guard) = SERIAL1.try_lock() {
+        guard.with_port(|port| port.send(byte));
+    }
 }
 
 pub fn write_str(s: &str) {
@@ -65,12 +72,13 @@ pub fn write_bytes(bytes: &[u8]) {
         return;
     }
 
-    let mut guard = SERIAL1.lock();
-    guard.with_port(|port| {
-        for &byte in bytes {
-            port.send(byte);
-        }
-    });
+    if let Some(mut guard) = SERIAL1.try_lock() {
+        guard.with_port(|port| {
+            for &byte in bytes {
+                port.send(byte);
+            }
+        });
+    }
 }
 
 pub fn try_read_byte() -> Option<u8> {

@@ -327,8 +327,10 @@ fn log_impl(level: LogLevel, args: fmt::Arguments<'_>) {
     }
 
     if let Some(buffer) = plain_line.as_ref() {
-        let mut ringbuf = RINGBUF.lock();
-        ringbuf.write_bytes(buffer.as_bytes());
+        // Use try_lock to avoid deadlock in interrupt context
+        if let Some(mut ringbuf) = RINGBUF.try_lock() {
+            ringbuf.write_bytes(buffer.as_bytes());
+        }
     }
 }
 

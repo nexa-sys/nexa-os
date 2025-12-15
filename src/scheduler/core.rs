@@ -632,7 +632,15 @@ fn transition_current_to_ready(
 ) {
     for slot in table.iter_mut() {
         let Some(entry) = slot else { continue };
-        if entry.process.pid != curr_pid || entry.process.state != ProcessState::Running {
+        if entry.process.pid != curr_pid {
+            continue;
+        }
+        // Allow transition from Running OR Sleeping (voluntary sleep in syscall like wait4)
+        // When a process calls set_current_process_state(Sleeping) then do_schedule(),
+        // its state is already Sleeping, not Running. We still need to save its context.
+        let can_save = entry.process.state == ProcessState::Running 
+            || entry.process.state == ProcessState::Sleeping;
+        if !can_save {
             continue;
         }
 
@@ -644,7 +652,10 @@ fn transition_current_to_ready(
             unsafe { save_syscall_context_to_entry(entry, curr_pid) };
         }
 
-        entry.process.state = ProcessState::Ready;
+        // Only change state to Ready if it was Running (not already Sleeping)
+        if entry.process.state == ProcessState::Running {
+            entry.process.state = ProcessState::Ready;
+        }
         break;
     }
 }
@@ -1091,7 +1102,10 @@ unsafe fn execute_context_switch(
     // If the saved context's RIP is in kernel space, restore it directly.
     // This happens when a process called do_schedule() voluntarily from kernel code.
     let next_rip = next_context.rip;
-    let is_kernel_context = next_rip != 0 && next_rip < 0x400000; // Kernel is below 4MB
+    // Kernel code is loaded at 0x100000 and spans to about 0x400000.
+    // A valid kernel RIP must be >= 0x100000. Addresses below that (like 0x381)
+    // indicate a corrupted context and should NOT be treated as kernel context.
+    let is_kernel_context = next_rip >= 0x100000 && next_rip < 0x400000;
 
     if is_kernel_context {
         // Process was in kernel (e.g., in wait4 loop calling do_schedule)
@@ -1283,20 +1297,39 @@ fn compute_schedule_decision(from_interrupt: bool) -> Option<ScheduleDecision> {
         .and_then(|pid| find_zombie_parent_index(&table, pid))
         .or_else(|| find_next_ready_index(&table, start_idx));
 
+    // If no Ready process found, check if current process is still Running.
+    // This happens when time slice expires but no other process is ready.
+    // In this case, let the current process continue running (with replenished slice).
+    let next_idx_opt = next_idx_opt.or_else(|| {
+        current.and_then(|curr_pid| {
+            table.iter().position(|slot| {
+                slot.as_ref().map_or(false, |e| {
+                    e.process.pid == curr_pid && e.process.state == ProcessState::Running
+                })
+            })
+        })
+    });
+
     // CRITICAL FIX: If no ready process is found, we must still mark the current process's
     // context as valid before returning. Otherwise, when the process is later woken up,
     // the scheduler will incorrectly treat it as a first-run process (context_valid=false)
     // and restart it from the entry point instead of resuming from where it blocked.
+    //
+    // NOTE: We do NOT set context_valid=true here because context_switch is never called
+    // in this path. The kernel context (process.context.rip, .rsp, etc.) is NOT saved.
+    // Only the user syscall context (user_rip, user_rsp) is saved. When this process
+    // is later scheduled, if context_valid=false, it will use the FirstRun path which
+    // correctly uses user_rip/user_rsp instead of the invalid process.context.
     let next_idx = match next_idx_opt {
         Some(idx) => idx,
         None => {
-            // Mark current process context as valid before entering idle
+            // Save user context from GS_DATA (but DON'T set context_valid=true)
             if let Some(curr_pid) = current {
                 for slot in table.iter_mut() {
                     let Some(entry) = slot else { continue };
                     if entry.process.pid == curr_pid && entry.process.has_entered_user {
-                        entry.process.context_valid = true;
-                        // Also save user context from GS_DATA
+                        // Only save user context, do NOT set context_valid=true
+                        // because context_switch is not called here
                         unsafe { save_syscall_context_to_entry(entry, curr_pid) };
                         break;
                     }
@@ -1305,6 +1338,20 @@ fn compute_schedule_decision(from_interrupt: bool) -> Option<ScheduleDecision> {
             return None;
         }
     };
+
+    // Check if we're rescheduling the same process (time slice expired, no other ready)
+    // In this case, just replenish the time slice and return - no context switch needed
+    if let Some(curr_pid) = current {
+        if let Some(entry) = table[next_idx].as_mut() {
+            if entry.process.pid == curr_pid && entry.process.state == ProcessState::Running {
+                // Same process, just replenish time slice
+                if entry.slice_remaining_ns == 0 {
+                    replenish_slice(entry);
+                }
+                return None; // No switch needed
+            }
+        }
+    }
 
     // Transition current process to Ready
     if let Some(curr_pid) = current {
