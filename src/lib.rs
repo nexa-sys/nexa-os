@@ -47,6 +47,9 @@ pub mod safety;
 // Kernel module support
 pub mod kmod;
 
+// User-space driver framework (HongMeng-inspired)
+pub mod udrv;
+
 // Logging and POSIX compatibility
 pub mod logger;
 pub mod posix;
@@ -524,6 +527,7 @@ fn proceed_after_initramfs(cmdline_opt: Option<&'static str>) -> ! {
     fs::init(); // Filesystem
     kmod::init(); // Kernel module system
     kmod::load_initramfs_modules(); // Load .nkm modules from /lib/modules
+    udrv::init(); // User-space driver framework (HongMeng-inspired)
     init::init(); // Init system (PID 1 management)
 
     let elapsed_us = logger::boot_time_us();
