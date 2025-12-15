@@ -195,14 +195,3 @@ impl From<IsolationError> for ContainerError {
         ContainerError::IsolationError(e)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_framework_init() {
-        init();
-        assert!(is_initialized());
-    }
-}

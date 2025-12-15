@@ -6,7 +6,8 @@
 [build]
 target = "x86_64-unknown-linux-gnu"
 
-# Override build-std with empty array to disable it
+# Override unstable build-std from parent config - set to empty
+# Tests use the standard prebuilt std, not custom-built core
 [unstable]
 build-std = []
 build-std-features = []

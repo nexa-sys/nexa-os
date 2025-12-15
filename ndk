@@ -21,6 +21,12 @@
 #     steps        - Run multiple build steps
 #   clean          - Clean build artifacts
 #   test, t        - Run kernel unit tests (tests/ crate)
+#   coverage, cov  - Test coverage analysis (requires cargo-llvm-cov)
+#     run          - Run tests with coverage
+#     html         - Generate HTML report
+#     lcov         - Generate LCOV report (CI integration)
+#     summary      - Show coverage summary
+#     clean        - Clean coverage data
 #   run            - Run NexaOS in QEMU
 #   dev, d         - Build and run (development mode)
 #   qemu           - QEMU management commands
@@ -33,6 +39,8 @@
 #   ./ndk build quick     # Quick build
 #   ./ndk test            # Run unit tests
 #   ./ndk test --filter bitmap  # Run tests matching 'bitmap'
+#   ./ndk coverage        # Show coverage summary
+#   ./ndk coverage html   # Generate HTML coverage report
 #   ./ndk dev             # Build and run
 #   ./ndk dev --quick     # Quick build and run
 #   ./ndk run --debug     # Run with GDB server

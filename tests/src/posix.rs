@@ -30,6 +30,7 @@ pub mod errno {
     pub const EPIPE: i32 = 32;
     pub const ENOSYS: i32 = 38;
     pub const ENOEXEC: i32 = 8;
+    pub const ENOTEMPTY: i32 = 39;
     pub const ENOTSOCK: i32 = 88;
     pub const ENOTSUP: i32 = 95;
     pub const EAFNOSUPPORT: i32 = 97;

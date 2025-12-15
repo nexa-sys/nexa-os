@@ -8,6 +8,7 @@ publish = false
 # This is an independent test crate that runs in std environment
 # It tests kernel logic that doesn't depend on bare-metal hardware
 # Run with: cargo test (from this directory)
+# Run with coverage: cargo llvm-cov (requires cargo-llvm-cov)
 
 [lib]
 path = "src/lib.rs"
@@ -17,3 +18,10 @@ path = "src/lib.rs"
 
 [dev-dependencies]
 # Minimal test utilities - no dependencies that require build-std
+
+# Coverage configuration (for cargo-llvm-cov)
+[package.metadata.llvm-cov]
+# Show branches in coverage report
+show-branch = true
+# Include all files
+include = ["src/**/*.rs"]

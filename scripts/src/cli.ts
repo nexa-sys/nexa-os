@@ -335,11 +335,16 @@ program
     
     logger.step('Running unit tests...');
     
+    // Helper to get test environment with isolated target directory
+    // This prevents config.toml inheritance issues with build-std
+    const targetDir = resolve(projectRoot, 'build', 'tests-target');
+    const testEnv = { ...process.env, CARGO_TARGET_DIR: targetDir };
+    
     // Run cargo test in the tests directory
     const child = spawn('cargo', args, {
       cwd: testDir,
       stdio: 'inherit',
-      env: { ...process.env }
+      env: testEnv
     });
     
     child.on('close', (code) => {
@@ -356,6 +361,309 @@ program
       process.exit(1);
     });
   });
+
+// =============================================================================
+// Coverage Command
+// =============================================================================
+
+// Helper to get test environment with isolated target directory
+// This prevents config.toml inheritance issues with build-std
+function getTestEnv(projectRoot: string): NodeJS.ProcessEnv {
+  const targetDir = resolve(projectRoot, 'build', 'tests-target');
+  return {
+    ...process.env,
+    CARGO_TARGET_DIR: targetDir,
+  };
+}
+
+const coverageCmd = program
+  .command('coverage')
+  .alias('cov')
+  .description('Run tests with code coverage analysis (requires cargo-llvm-cov)');
+
+// coverage run - run tests with coverage
+coverageCmd
+  .command('run')
+  .description('Run tests and generate coverage report')
+  .option('-f, --format <format>', 'Output format: text, html, lcov, json', 'text')
+  .option('-o, --output <path>', 'Output path for coverage report')
+  .option('--open', 'Open HTML report in browser (html format only)')
+  .option('--filter <pattern>', 'Run only tests matching pattern')
+  .option('--fail-under <threshold>', 'Fail if coverage is below threshold (0-100)', '0')
+  .action(async (options) => {
+    const projectRoot = findProjectRoot();
+    const testDir = resolve(projectRoot, 'tests');
+    
+    if (!existsSync(testDir)) {
+      logger.error('Tests directory not found. Expected: tests/');
+      process.exit(1);
+    }
+    
+    // Check if cargo-llvm-cov is installed
+    const checkChild = spawn('cargo', ['llvm-cov', '--version'], {
+      cwd: testDir,
+      stdio: 'pipe',
+    });
+    
+    let isInstalled = true;
+    checkChild.on('error', () => { isInstalled = false; });
+    checkChild.on('close', async (code) => {
+      if (code !== 0 || !isInstalled) {
+        logger.warn('cargo-llvm-cov not found. Installing...');
+        const installChild = spawn('cargo', ['install', 'cargo-llvm-cov'], {
+          stdio: 'inherit',
+        });
+        
+        await new Promise<void>((resolve, reject) => {
+          installChild.on('close', (code) => {
+            if (code === 0) resolve();
+            else reject(new Error(`Installation failed with code ${code}`));
+          });
+          installChild.on('error', reject);
+        });
+      }
+      
+      // Build llvm-cov command
+      const args = ['llvm-cov'];
+      
+      // Output format
+      switch (options.format) {
+        case 'html':
+          args.push('--html');
+          break;
+        case 'lcov':
+          args.push('--lcov');
+          break;
+        case 'json':
+          args.push('--json');
+          break;
+        // 'text' is default
+      }
+      
+      // Output path
+      if (options.output) {
+        args.push('--output-path', options.output);
+      }
+      
+      // Open in browser
+      if (options.open && options.format === 'html') {
+        args.push('--open');
+      }
+      
+      // Fail threshold
+      if (options.failUnder && parseFloat(options.failUnder) > 0) {
+        args.push('--fail-under-lines', options.failUnder);
+      }
+      
+      // Filter
+      if (options.filter) {
+        args.push('--', options.filter);
+      }
+      
+      logger.step('Running tests with coverage analysis...');
+      logger.info(`Format: ${options.format}`);
+      
+      const covChild = spawn('cargo', args, {
+        cwd: testDir,
+        stdio: 'inherit',
+        env: getTestEnv(projectRoot)
+      });
+      
+      covChild.on('close', (code) => {
+        if (code === 0) {
+          logger.success('Coverage analysis complete!');
+          if (options.output) {
+            logger.info(`Report saved to: ${options.output}`);
+          }
+        } else {
+          logger.error(`Coverage analysis failed with exit code ${code}`);
+        }
+        process.exit(code || 0);
+      });
+      
+      covChild.on('error', (err) => {
+        logger.error(`Failed to run coverage: ${err.message}`);
+        process.exit(1);
+      });
+    });
+  });
+
+// coverage html - shortcut for HTML report
+coverageCmd
+  .command('html')
+  .description('Generate HTML coverage report and open in browser')
+  .option('-o, --output <path>', 'Output directory', 'coverage')
+  .action(async (options) => {
+    const projectRoot = findProjectRoot();
+    const testDir = resolve(projectRoot, 'tests');
+    const outputDir = resolve(projectRoot, options.output);
+    
+    if (!existsSync(testDir)) {
+      logger.error('Tests directory not found. Expected: tests/');
+      process.exit(1);
+    }
+    
+    logger.step('Generating HTML coverage report...');
+    
+    const args = ['llvm-cov', '--html', '--output-dir', outputDir, '--open'];
+    
+    const child = spawn('cargo', args, {
+      cwd: testDir,
+      stdio: 'inherit',
+      env: getTestEnv(projectRoot)
+    });
+    
+    child.on('close', (code) => {
+      if (code === 0) {
+        logger.success(`HTML report generated at: ${outputDir}`);
+      } else {
+        logger.error(`Failed to generate report (exit code ${code})`);
+        logger.info('Make sure cargo-llvm-cov is installed: cargo install cargo-llvm-cov');
+      }
+      process.exit(code || 0);
+    });
+    
+    child.on('error', (err) => {
+      logger.error(`Failed to run coverage: ${err.message}`);
+      process.exit(1);
+    });
+  });
+
+// coverage lcov - generate lcov report for CI integration
+coverageCmd
+  .command('lcov')
+  .description('Generate LCOV report (for CI integration)')
+  .option('-o, --output <path>', 'Output file', 'lcov.info')
+  .action(async (options) => {
+    const projectRoot = findProjectRoot();
+    const testDir = resolve(projectRoot, 'tests');
+    const outputFile = resolve(projectRoot, options.output);
+    
+    if (!existsSync(testDir)) {
+      logger.error('Tests directory not found. Expected: tests/');
+      process.exit(1);
+    }
+    
+    logger.step('Generating LCOV coverage report...');
+    
+    const args = ['llvm-cov', '--lcov', '--output-path', outputFile];
+    
+    const child = spawn('cargo', args, {
+      cwd: testDir,
+      stdio: 'inherit',
+      env: getTestEnv(projectRoot)
+    });
+    
+    child.on('close', (code) => {
+      if (code === 0) {
+        logger.success(`LCOV report generated: ${outputFile}`);
+      } else {
+        logger.error(`Failed to generate report (exit code ${code})`);
+      }
+      process.exit(code || 0);
+    });
+    
+    child.on('error', (err) => {
+      logger.error(`Failed to run coverage: ${err.message}`);
+      process.exit(1);
+    });
+  });
+
+// coverage summary - show coverage summary
+coverageCmd
+  .command('summary')
+  .alias('sum')
+  .description('Show coverage summary (text output)')
+  .action(async () => {
+    const projectRoot = findProjectRoot();
+    const testDir = resolve(projectRoot, 'tests');
+    
+    if (!existsSync(testDir)) {
+      logger.error('Tests directory not found. Expected: tests/');
+      process.exit(1);
+    }
+    
+    logger.step('Analyzing test coverage...');
+    
+    const child = spawn('cargo', ['llvm-cov'], {
+      cwd: testDir,
+      stdio: 'inherit',
+      env: getTestEnv(projectRoot)
+    });
+    
+    child.on('close', (code) => {
+      process.exit(code || 0);
+    });
+    
+    child.on('error', (err) => {
+      logger.error(`Failed to run coverage: ${err.message}`);
+      process.exit(1);
+    });
+  });
+
+// coverage clean - clean coverage data
+coverageCmd
+  .command('clean')
+  .description('Clean coverage data and reports')
+  .action(async () => {
+    const projectRoot = findProjectRoot();
+    const testDir = resolve(projectRoot, 'tests');
+    const coverageDir = resolve(projectRoot, 'coverage');
+    
+    logger.step('Cleaning coverage data...');
+    
+    // Clean cargo-llvm-cov data
+    const child = spawn('cargo', ['llvm-cov', 'clean'], {
+      cwd: testDir,
+      stdio: 'inherit',
+      env: getTestEnv(projectRoot)
+    });
+    
+    child.on('close', (code) => {
+      // Also remove coverage directory if it exists
+      if (existsSync(coverageDir)) {
+        const rmChild = spawn('rm', ['-rf', coverageDir], {
+          stdio: 'inherit',
+        });
+        rmChild.on('close', () => {
+          logger.success('Coverage data cleaned');
+          process.exit(0);
+        });
+      } else {
+        logger.success('Coverage data cleaned');
+        process.exit(code || 0);
+      }
+    });
+  });
+
+// Default coverage action (show summary)
+coverageCmd.action(async () => {
+  const projectRoot = findProjectRoot();
+  const testDir = resolve(projectRoot, 'tests');
+  
+  if (!existsSync(testDir)) {
+    logger.error('Tests directory not found. Expected: tests/');
+    process.exit(1);
+  }
+  
+  logger.step('Analyzing test coverage...');
+  
+  const child = spawn('cargo', ['llvm-cov'], {
+    cwd: testDir,
+    stdio: 'inherit',
+    env: getTestEnv(projectRoot)
+  });
+  
+  child.on('close', (code) => {
+    process.exit(code || 0);
+  });
+  
+  child.on('error', (err) => {
+    logger.error(`Failed to run coverage: ${err.message}`);
+    logger.info('Make sure cargo-llvm-cov is installed: cargo install cargo-llvm-cov');
+    process.exit(1);
+  });
+});
 
 // List command
 program
@@ -699,7 +1007,7 @@ if (process.argv.length <= 2) {
 }
 
 // Handle unknown commands before parsing
-const validCommands = ['build', 'b', 'clean', 'test', 't', 'list', 'info', 'features', 'f', 'run', 'dev', 'd', 'qemu', '-V', '--version', '-h', '--help'];
+const validCommands = ['build', 'b', 'clean', 'test', 't', 'coverage', 'cov', 'list', 'info', 'features', 'f', 'run', 'dev', 'd', 'qemu', '-V', '--version', '-h', '--help'];
 const firstArg = process.argv[2];
 if (firstArg && !firstArg.startsWith('-') && !validCommands.includes(firstArg)) {
   console.error(`\x1b[31mError:\x1b[0m Unknown command '${firstArg}'`);
