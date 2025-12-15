@@ -20,6 +20,7 @@
 #     iso          - Build ISO image
 #     steps        - Run multiple build steps
 #   clean          - Clean build artifacts
+#   test, t        - Run kernel unit tests (tests/ crate)
 #   run            - Run NexaOS in QEMU
 #   dev, d         - Build and run (development mode)
 #   qemu           - QEMU management commands
@@ -30,6 +31,8 @@
 # Examples:
 #   ./ndk build full      # Full build
 #   ./ndk build quick     # Quick build
+#   ./ndk test            # Run unit tests
+#   ./ndk test --filter bitmap  # Run tests matching 'bitmap'
 #   ./ndk dev             # Build and run
 #   ./ndk dev --quick     # Quick build and run
 #   ./ndk run --debug     # Run with GDB server

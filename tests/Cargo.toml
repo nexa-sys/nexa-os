@@ -1,0 +1,19 @@
+[package]
+name = "nexa-os-tests"
+version = "0.0.1"
+edition = "2021"
+description = "Unit tests for NexaOS kernel components"
+publish = false
+
+# This is an independent test crate that runs in std environment
+# It tests kernel logic that doesn't depend on bare-metal hardware
+# Run with: cargo test (from this directory)
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# No kernel dependencies - this is a pure std crate
+
+[dev-dependencies]
+# Minimal test utilities - no dependencies that require build-std

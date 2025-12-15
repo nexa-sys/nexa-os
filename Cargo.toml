@@ -1,3 +1,10 @@
+# =============================================================================
+# NexaOS Kernel Cargo Configuration
+# =============================================================================
+# This is the kernel crate (no_std). Tests are in a separate workspace at tests/
+# Run tests with: cd tests && cargo test
+# Or use the ndk: ./ndk test
+
 [package]
 name = "nexa-os"
 version = "0.0.1"
@@ -6,9 +13,18 @@ description = "Production-grade hybrid-kernel operating system with full POSIX c
 authors = ["nexa-sys <opensource@nexa.sys>"]
 license = "MIT"
 
+# Prevent running cargo test directly on the kernel (it's no_std)
+[[bin]]
+name = "nexa-os"
+path = "src/main.rs"
+test = false
+bench = false
+
 [lib]
 path = "src/lib.rs"
 crate-type = ["rlib"]
+test = false
+bench = false
 
 # =============================================================================
 # Feature Flags

@@ -1,0 +1,12 @@
+# Override parent .cargo/config.toml to use host target for tests
+# This allows tests to run with std support
+
+# Use explicit host target (x86_64-unknown-linux-gnu)
+# This overrides the kernel's custom target
+[build]
+target = "x86_64-unknown-linux-gnu"
+
+# Override build-std with empty array to disable it
+[unstable]
+build-std = []
+build-std-features = []

@@ -297,6 +297,66 @@ program
     process.exit(result.success ? 0 : 1);
   });
 
+// =============================================================================
+// Test Command
+// =============================================================================
+
+program
+  .command('test')
+  .alias('t')
+  .description('Run kernel unit tests (tests/ crate)')
+  .option('-v, --verbose', 'Show verbose output')
+  .option('--filter <pattern>', 'Run only tests matching pattern')
+  .option('--release', 'Run tests in release mode')
+  .action(async (options) => {
+    const projectRoot = findProjectRoot();
+    const testDir = resolve(projectRoot, 'tests');
+    
+    // Check if tests directory exists
+    if (!existsSync(testDir)) {
+      logger.error('Tests directory not found. Expected: tests/');
+      process.exit(1);
+    }
+    
+    // Build cargo test command
+    const args = ['test'];
+    
+    if (options.release) {
+      args.push('--release');
+    }
+    
+    if (options.filter) {
+      args.push(options.filter);
+    }
+    
+    if (options.verbose) {
+      args.push('--', '--nocapture');
+    }
+    
+    logger.step('Running unit tests...');
+    
+    // Run cargo test in the tests directory
+    const child = spawn('cargo', args, {
+      cwd: testDir,
+      stdio: 'inherit',
+      env: { ...process.env }
+    });
+    
+    child.on('close', (code) => {
+      if (code === 0) {
+        logger.success('All tests passed!');
+      } else {
+        logger.error(`Tests failed with exit code ${code}`);
+      }
+      process.exit(code || 0);
+    });
+    
+    child.on('error', (err) => {
+      logger.error(`Failed to run tests: ${err.message}`);
+      process.exit(1);
+    });
+  });
+
 // List command
 program
   .command('list')
@@ -639,7 +699,7 @@ if (process.argv.length <= 2) {
 }
 
 // Handle unknown commands before parsing
-const validCommands = ['build', 'b', 'clean', 'list', 'info', 'features', 'f', 'run', 'dev', 'd', 'qemu', '-V', '--version', '-h', '--help'];
+const validCommands = ['build', 'b', 'clean', 'test', 't', 'list', 'info', 'features', 'f', 'run', 'dev', 'd', 'qemu', '-V', '--version', '-h', '--help'];
 const firstArg = process.argv[2];
 if (firstArg && !firstArg.startsWith('-') && !validCommands.includes(firstArg)) {
   console.error(`\x1b[31mError:\x1b[0m Unknown command '${firstArg}'`);
