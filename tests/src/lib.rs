@@ -1,21 +1,23 @@
 //! NexaOS Test Suite
 //!
-//! This crate provides unit tests for NexaOS kernel components.
-//! Tests run in a standard Rust environment (with std), not bare-metal.
+//! This crate tests kernel code by directly including kernel source files.
+//! This bypasses no_std restrictions while testing the actual kernel logic.
 //!
-//! The design philosophy:
-//! - Keep tests separate from kernel code (no `#[cfg(test)]` pollution)
-//! - Test pure logic that doesn't require hardware (algorithms, data structures)
-//! - Mock hardware-dependent code when necessary
+//! # How it works
+//! We use `#[path = "..."]` to include kernel source files directly.
+//! The `core::` references in kernel code work because std re-exports core.
 //!
-//! # Structure
-//!
-//! - `posix/` - POSIX types and error codes
-//! - `algorithms/` - Core algorithms (bitmap, ring buffer, etc.)
-//! - `data_structures/` - Data structure implementations
-//! - `mock/` - Mock implementations for testing
+//! # Note
+//! Only include files that don't depend on kernel-specific macros (ktrace, kinfo, etc.)
 
-pub mod posix;
-pub mod algorithms;
-pub mod data_structures;
-pub mod mock;
+// Import kernel source files directly using #[path]
+// These are pure logic modules that don't depend on kernel infrastructure
+
+#[path = "../../src/net/ipv4.rs"]
+pub mod ipv4;
+
+// Test modules
+#[cfg(test)]
+mod tests;
+
+

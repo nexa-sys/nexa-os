@@ -319,6 +319,7 @@ program
     }
     
     // Build cargo test command
+    // Tests directory has its own rust-toolchain.toml (stable) to avoid build-std
     const args = ['test'];
     
     if (options.release) {
@@ -335,16 +336,10 @@ program
     
     logger.step('Running unit tests...');
     
-    // Helper to get test environment with isolated target directory
-    // This prevents config.toml inheritance issues with build-std
-    const targetDir = resolve(projectRoot, 'build', 'tests-target');
-    const testEnv = { ...process.env, CARGO_TARGET_DIR: targetDir };
-    
     // Run cargo test in the tests directory
     const child = spawn('cargo', args, {
       cwd: testDir,
       stdio: 'inherit',
-      env: testEnv
     });
     
     child.on('close', (code) => {
@@ -376,6 +371,44 @@ function getTestEnv(projectRoot: string): NodeJS.ProcessEnv {
   };
 }
 
+// Ensure cargo-llvm-cov is installed
+async function ensureLlvmCovInstalled(testDir: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const checkChild = spawn('cargo', ['llvm-cov', '--version'], {
+      cwd: testDir,
+      stdio: 'pipe',
+    });
+    
+    checkChild.on('error', () => {
+      // Command not found, install it
+      installLlvmCov().then(resolve).catch(reject);
+    });
+    
+    checkChild.on('close', (code) => {
+      if (code !== 0) {
+        logger.warn('cargo-llvm-cov not found. Installing...');
+        installLlvmCov().then(resolve).catch(reject);
+      } else {
+        resolve();
+      }
+    });
+  });
+}
+
+async function installLlvmCov(): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const installChild = spawn('cargo', ['install', 'cargo-llvm-cov'], {
+      stdio: 'inherit',
+    });
+    
+    installChild.on('close', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`Installation failed with code ${code}`));
+    });
+    installChild.on('error', reject);
+  });
+}
+
 const coverageCmd = program
   .command('coverage')
   .alias('cov')
@@ -399,92 +432,75 @@ coverageCmd
       process.exit(1);
     }
     
-    // Check if cargo-llvm-cov is installed
-    const checkChild = spawn('cargo', ['llvm-cov', '--version'], {
+    // Ensure cargo-llvm-cov is installed
+    try {
+      await ensureLlvmCovInstalled(testDir);
+    } catch (err: any) {
+      logger.error(`Failed to install cargo-llvm-cov: ${err.message}`);
+      process.exit(1);
+    }
+    
+    // Build llvm-cov command
+    const args = ['llvm-cov'];
+    
+    // Output format
+    switch (options.format) {
+      case 'html':
+        args.push('--html');
+        break;
+      case 'lcov':
+        args.push('--lcov');
+        break;
+      case 'json':
+        args.push('--json');
+        break;
+      // 'text' is default
+    }
+    
+    // Output path
+    if (options.output) {
+      args.push('--output-path', options.output);
+    }
+    
+    // Open in browser
+    if (options.open && options.format === 'html') {
+      args.push('--open');
+    }
+    
+    // Fail threshold
+    if (options.failUnder && parseFloat(options.failUnder) > 0) {
+      args.push('--fail-under-lines', options.failUnder);
+    }
+    
+    // Filter
+    if (options.filter) {
+      args.push('--', options.filter);
+    }
+    
+    logger.step('Running tests with coverage analysis...');
+    logger.info(`Format: ${options.format}`);
+    
+    const covChild = spawn('cargo', args, {
       cwd: testDir,
-      stdio: 'pipe',
+      stdio: 'inherit',
+      env: getTestEnv(projectRoot)
     });
     
-    let isInstalled = true;
-    checkChild.on('error', () => { isInstalled = false; });
-    checkChild.on('close', async (code) => {
-      if (code !== 0 || !isInstalled) {
-        logger.warn('cargo-llvm-cov not found. Installing...');
-        const installChild = spawn('cargo', ['install', 'cargo-llvm-cov'], {
-          stdio: 'inherit',
-        });
-        
-        await new Promise<void>((resolve, reject) => {
-          installChild.on('close', (code) => {
-            if (code === 0) resolve();
-            else reject(new Error(`Installation failed with code ${code}`));
-          });
-          installChild.on('error', reject);
-        });
-      }
-      
-      // Build llvm-cov command
-      const args = ['llvm-cov'];
-      
-      // Output format
-      switch (options.format) {
-        case 'html':
-          args.push('--html');
-          break;
-        case 'lcov':
-          args.push('--lcov');
-          break;
-        case 'json':
-          args.push('--json');
-          break;
-        // 'text' is default
-      }
-      
-      // Output path
-      if (options.output) {
-        args.push('--output-path', options.output);
-      }
-      
-      // Open in browser
-      if (options.open && options.format === 'html') {
-        args.push('--open');
-      }
-      
-      // Fail threshold
-      if (options.failUnder && parseFloat(options.failUnder) > 0) {
-        args.push('--fail-under-lines', options.failUnder);
-      }
-      
-      // Filter
-      if (options.filter) {
-        args.push('--', options.filter);
-      }
-      
-      logger.step('Running tests with coverage analysis...');
-      logger.info(`Format: ${options.format}`);
-      
-      const covChild = spawn('cargo', args, {
-        cwd: testDir,
-        stdio: 'inherit',
-        env: getTestEnv(projectRoot)
-      });
-      
-      covChild.on('close', (code) => {
-        if (code === 0) {
-          logger.success('Coverage analysis complete!');
-          if (options.output) {
-            logger.info(`Report saved to: ${options.output}`);
-          }
-        } else {
-          logger.error(`Coverage analysis failed with exit code ${code}`);
+    covChild.on('close', (code) => {
+      if (code === 0) {
+        logger.success('Coverage analysis complete!');
+        if (options.output) {
+          logger.info(`Report saved to: ${options.output}`);
         }
-        process.exit(code || 0);
-      });
-      
-      covChild.on('error', (err) => {
-        logger.error(`Failed to run coverage: ${err.message}`);
-        process.exit(1);
-      });
+      } else {
+        logger.error(`Coverage analysis failed with exit code ${code}`);
+      }
+      process.exit(code || 0);
+    });
+    
+    covChild.on('error', (err) => {
+      logger.error(`Failed to run coverage: ${err.message}`);
+      process.exit(1);
     });
   });
 
@@ -500,6 +516,14 @@ coverageCmd
     
     if (!existsSync(testDir)) {
       logger.error('Tests directory not found. Expected: tests/');
+      process.exit(1);
+    }
+    
+    // Ensure cargo-llvm-cov is installed
+    try {
+      await ensureLlvmCovInstalled(testDir);
+    } catch (err: any) {
+      logger.error(`Failed to install cargo-llvm-cov: ${err.message}`);
       process.exit(1);
     }
     
@@ -544,6 +568,14 @@ coverageCmd
       process.exit(1);
     }
     
+    // Ensure cargo-llvm-cov is installed
+    try {
+      await ensureLlvmCovInstalled(testDir);
+    } catch (err: any) {
+      logger.error(`Failed to install cargo-llvm-cov: ${err.message}`);
+      process.exit(1);
+    }
+    
     logger.step('Generating LCOV coverage report...');
     
     const args = ['llvm-cov', '--lcov', '--output-path', outputFile];
@@ -580,6 +612,14 @@ coverageCmd
     
     if (!existsSync(testDir)) {
       logger.error('Tests directory not found. Expected: tests/');
+      process.exit(1);
+    }
+    
+    // Ensure cargo-llvm-cov is installed
+    try {
+      await ensureLlvmCovInstalled(testDir);
+    } catch (err: any) {
+      logger.error(`Failed to install cargo-llvm-cov: ${err.message}`);
       process.exit(1);
     }
     
@@ -643,6 +683,14 @@ coverageCmd.action(async () => {
   
   if (!existsSync(testDir)) {
     logger.error('Tests directory not found. Expected: tests/');
+    process.exit(1);
+  }
+  
+  // Ensure cargo-llvm-cov is installed
+  try {
+    await ensureLlvmCovInstalled(testDir);
+  } catch (err: any) {
+    logger.error(`Failed to install cargo-llvm-cov: ${err.message}`);
     process.exit(1);
   }
   

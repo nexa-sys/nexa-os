@@ -1,0 +1,4 @@
+# Override parent's nightly toolchain
+# Tests need stable to avoid build-std
+[toolchain]
+channel = "stable"
