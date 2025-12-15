@@ -579,6 +579,8 @@ fn wake_process_internal(pid: Pid, try_lock: bool) -> bool {
         PROCESS_TABLE.lock()
     };
 
+    let mut woke = false;
+
     // Try radix tree lookup first (O(log N))
     if let Some(idx) = crate::process::lookup_pid(pid) {
         let idx = idx as usize;
@@ -600,38 +602,52 @@ fn wake_process_internal(pid: Pid, try_lock: bool) -> bool {
                             calc_vdeadline(entry.vruntime, entry.slice_ns, entry.weight);
                         entry.lag = 0; // Reset lag on wake
 
-                        return true;
+                        woke = true;
                     }
-                    return false;
                 }
             }
         }
     }
 
-    // Fallback to linear scan
-    for slot in table.iter_mut() {
-        let Some(entry) = slot else { continue };
-        if entry.process.pid != pid {
-            continue;
-        }
-
-        if entry.process.state == ProcessState::Sleeping {
-            entry.process.state = ProcessState::Ready;
-            entry.wait_time = 0;
-
-            // EEVDF: Adjust vruntime for waking process
-            if entry.vruntime < min_vrt {
-                let credit = super::types::BASE_SLICE_NS / 2;
-                entry.vruntime = min_vrt.saturating_sub(credit);
+    // Fallback to linear scan if radix tree lookup didn't find it
+    if !woke {
+        for slot in table.iter_mut() {
+            let Some(entry) = slot else { continue };
+            if entry.process.pid != pid {
+                continue;
             }
-            entry.vdeadline = calc_vdeadline(entry.vruntime, entry.slice_ns, entry.weight);
-            entry.lag = 0;
 
-            return true;
+            if entry.process.state == ProcessState::Sleeping {
+                entry.process.state = ProcessState::Ready;
+                entry.wait_time = 0;
+
+                // EEVDF: Adjust vruntime for waking process
+                if entry.vruntime < min_vrt {
+                    let credit = super::types::BASE_SLICE_NS / 2;
+                    entry.vruntime = min_vrt.saturating_sub(credit);
+                }
+                entry.vdeadline = calc_vdeadline(entry.vruntime, entry.slice_ns, entry.weight);
+                entry.lag = 0;
+
+                woke = true;
+            }
+            break;
         }
-        return false;
     }
-    false
+
+    // Drop table lock before setting need_resched to avoid potential deadlock
+    drop(table);
+
+    // CRITICAL: Signal that a reschedule is needed when a process wakes up.
+    // This allows interactive processes (e.g., waiting for keyboard input) to
+    // preempt background processes immediately, preventing starvation.
+    if woke {
+        let cpu_id = crate::smp::current_cpu_id();
+        super::percpu::set_need_resched(cpu_id);
+        crate::ktrace!("wake_process: PID {} woke, set need_resched on CPU {}", pid, cpu_id);
+    }
+
+    woke
 }
 
 // ============================================================================

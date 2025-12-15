@@ -474,6 +474,15 @@ pub fn tick(elapsed_ms: u64) -> bool {
         return true;
     }
 
+    // Check if a process was woken up and needs immediate scheduling.
+    // This is critical for interactive responsiveness - when a user types
+    // on keyboard, the waiting process should run ASAP, not wait for the
+    // current process's time slice to expire.
+    if super::percpu::check_need_resched() {
+        crate::kdebug!("tick: need_resched set, preempting PID {}", curr_pid);
+        return true;
+    }
+
     // For Normal policy processes, DON'T check for preemption on every tick.
     // Just let the time slice run out. This dramatically reduces context switches
     // and prevents the "rapid switching" bug where processes only get 1-2ms of CPU.
@@ -1102,10 +1111,26 @@ unsafe fn execute_context_switch(
     // If the saved context's RIP is in kernel space, restore it directly.
     // This happens when a process called do_schedule() voluntarily from kernel code.
     let next_rip = next_context.rip;
-    // Kernel code is loaded at 0x100000 and spans to about 0x400000.
-    // A valid kernel RIP must be >= 0x100000. Addresses below that (like 0x381)
-    // indicate a corrupted context and should NOT be treated as kernel context.
-    let is_kernel_context = next_rip >= 0x100000 && next_rip < 0x400000;
+    let next_rsp = next_context.rsp;
+    // Kernel code is loaded at 0x100000. The text section spans to about 0x300000
+    // and the kernel image (including BSS) can reach up to 0xe00000.
+    // A valid kernel RIP must be in the text section range.
+    // Addresses below 0x100000 (like 0x381) or in userspace indicate corrupted context.
+    // NOTE: Userspace addresses start at USER_VIRT_BASE (0x1000000 = 16MB).
+    // Also check RSP is in a reasonable kernel stack range:
+    // - Kernel heap allocations start around 0x200000 and can reach several MB
+    // - RSP should not be in userspace (< 0x1000000) but that overlaps with kernel heap
+    // - Use a simple check: RSP should be at least 0x100000 (1MB) to be in kernel space
+    let is_kernel_context = next_rip >= 0x100000 && next_rip < 0x300000 
+        && next_rsp >= 0x100000;
+    
+    // SAFETY CHECK: If context looks invalid, log and use trampoline path instead
+    if next_rip != 0 && next_rip < 0x100000 {
+        crate::kwarn!(
+            "[SCHED] Corrupted context detected: rip={:#x}, rsp={:#x}, using trampoline",
+            next_rip, next_rsp
+        );
+    }
 
     if is_kernel_context {
         // Process was in kernel (e.g., in wait4 loop calling do_schedule)
