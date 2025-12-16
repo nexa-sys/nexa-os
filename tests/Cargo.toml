@@ -14,6 +14,8 @@ build = "build.rs"
 path = "src/lib.rs"
 
 [dependencies]
+# Used by kernel code we're testing (spin::Mutex, etc.)
+spin = "0.9"
 
 [build-dependencies]
 cc = "1.0"
