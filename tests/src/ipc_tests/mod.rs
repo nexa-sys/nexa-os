@@ -1,0 +1,3 @@
+//! IPC tests
+
+mod signal;

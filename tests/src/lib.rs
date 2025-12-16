@@ -180,10 +180,31 @@ pub use security::elf;
 pub use tty::vt;
 
 // ===========================================================================
-// Test modules
+// Test modules - organized by subsystem
 // ===========================================================================
 
 #[cfg(test)]
-mod tests;
+mod net_tests;      // Network stack tests (ethernet, ipv4, arp, udp)
+
+#[cfg(test)]
+mod kmod_tests;     // Kernel module tests (crypto, pkcs7, nkm)
+
+#[cfg(test)]
+mod fs_tests;       // Filesystem tests (fstab)
+
+#[cfg(test)]
+mod ipc_tests;      // IPC tests (signal)
+
+#[cfg(test)]
+mod scheduler_tests;  // Scheduler tests
+
+#[cfg(test)]
+mod process_tests;    // Process tests
+
+#[cfg(test)]
+mod safety_tests;     // Safety module tests
+
+#[cfg(test)]
+mod mm_tests;         // Memory allocator tests
 
 
