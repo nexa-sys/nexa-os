@@ -1,6 +1,19 @@
-//! Mock memory allocator for testing
+//! Mock Physical Memory for Testing
 //!
-//! Simulates kernel memory allocation behavior.
+//! This module simulates **physical memory hardware** - the underlying
+//! resource that the kernel's memory manager operates on.
+//!
+//! ## What this mocks:
+//! - Physical page frames (4KB aligned memory regions)
+//! - Memory allocation tracking (simulates limited physical memory)
+//!
+//! ## What this does NOT mock:
+//! - Page tables (kernel implementation)
+//! - Virtual memory (kernel implementation)
+//! - The kernel's allocator logic (use real kernel code)
+//!
+//! This allows testing kernel memory management code without needing
+//! actual hardware memory management.
 
 use std::alloc::{alloc, dealloc, Layout};
 use std::collections::HashMap;
