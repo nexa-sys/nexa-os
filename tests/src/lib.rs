@@ -152,11 +152,9 @@ pub mod udrv_isolation;
 pub mod security_auth;
 
 // ===========================================================================
-// Local test implementations (for algorithms/data structures not in kernel)
+// Hardware-level mocks (simulates underlying hardware, NOT kernel functionality)
 // ===========================================================================
 
-pub mod algorithms;
-pub mod data_structures;
 pub mod mock;
 
 // ===========================================================================
