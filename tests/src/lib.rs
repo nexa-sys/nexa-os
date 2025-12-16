@@ -183,28 +183,28 @@ pub use tty::vt;
 // Test modules - organized by subsystem
 // ===========================================================================
 
-#[cfg(test)]
-mod net_tests;      // Network stack tests (ethernet, ipv4, arp, udp)
+#[path = "net/mod.rs"]
+mod tests_net;
 
-#[cfg(test)]
-mod kmod_tests;     // Kernel module tests (crypto, pkcs7, nkm)
+#[path = "kmod/mod.rs"]
+mod tests_kmod;
 
-#[cfg(test)]
-mod fs_tests;       // Filesystem tests (fstab)
+#[path = "fs/mod.rs"]
+mod tests_fs;
 
-#[cfg(test)]
-mod ipc_tests;      // IPC tests (signal)
+#[path = "ipc/mod.rs"]
+mod tests_ipc;
 
-#[cfg(test)]
-mod scheduler_tests;  // Scheduler tests
+#[path = "scheduler.rs"]
+mod tests_scheduler;
 
-#[cfg(test)]
-mod process_tests;    // Process tests
+#[path = "process.rs"]
+mod tests_process;
 
-#[cfg(test)]
-mod safety_tests;     // Safety module tests
+#[path = "safety.rs"]
+mod tests_safety;
 
-#[cfg(test)]
-mod mm_tests;         // Memory allocator tests
+#[path = "mm.rs"]
+mod tests_mm;
 
 
