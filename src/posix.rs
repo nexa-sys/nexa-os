@@ -32,6 +32,7 @@ pub mod errno {
     pub const EROFS: i32 = 30; // Read-only file system
     pub const EPIPE: i32 = 32; // Broken pipe
     pub const ENOSYS: i32 = 38; // Function not implemented
+    pub const ENOTEMPTY: i32 = 39; // Directory not empty
     pub const ENOEXEC: i32 = 8; // Exec format error
     pub const ENOTSOCK: i32 = 88; // Socket operation on non-socket
     pub const ENOTSUP: i32 = 95; // Operation not supported

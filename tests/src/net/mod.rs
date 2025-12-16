@@ -1,12 +1,13 @@
 //! Tests for kernel network code
 //!
-//! These tests directly use the kernel's net module.
+//! These tests directly use the kernel's net modules included via #[path].
 
 #[cfg(test)]
 mod tests {
-    use nexa_os::net::ethernet::{MacAddress, EtherType};
-    use nexa_os::net::ipv4::{Ipv4Address, IpProtocol};
-    use nexa_os::net::arp::{ArpPacket, ArpOperation};
+    // Use the kernel modules included in lib.rs via #[path]
+    use crate::ethernet::{MacAddress, EtherType};
+    use crate::ipv4::{Ipv4Address, IpProtocol};
+    use crate::arp::{ArpPacket, ArpOperation};
 
     #[test]
     fn test_mac_address_broadcast() {
@@ -100,5 +101,12 @@ mod tests {
         assert_eq!(arp.sender_proto_addr, sender_ip);
         assert_eq!(arp.target_hw_addr, target_mac);
         assert_eq!(arp.target_proto_addr, target_ip);
+    }
+
+    #[test]
+    fn test_arp_operation() {
+        assert_eq!(ArpOperation::from(1), ArpOperation::Request);
+        assert_eq!(ArpOperation::from(2), ArpOperation::Reply);
+        assert_eq!(ArpOperation::from(99), ArpOperation::Unknown);
     }
 }

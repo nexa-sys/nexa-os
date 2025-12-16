@@ -142,3 +142,147 @@ mod checksum_tests {
         assert_eq!(calculate_checksum(&header), 0);
     }
 }
+
+// ===========================================================================
+// Signal Tests (using kernel's ipc/signal.rs)
+// ===========================================================================
+
+mod signal_tests {
+    use crate::signal::*;
+
+    #[test]
+    fn test_signal_constants() {
+        assert_eq!(SIGINT, 2);
+        assert_eq!(SIGKILL, 9);
+        assert_eq!(SIGSEGV, 11);
+        assert_eq!(SIGTERM, 15);
+        assert_eq!(SIGCHLD, 17);
+        assert_eq!(SIGSTOP, 19);
+    }
+
+    #[test]
+    fn test_signal_state_new() {
+        let state = SignalState::new();
+        assert_eq!(state.has_pending_signal(), None);
+    }
+
+    #[test]
+    fn test_signal_send_and_pending() {
+        let mut state = SignalState::new();
+        
+        // Send SIGTERM
+        assert!(state.send_signal(SIGTERM).is_ok());
+        assert_eq!(state.has_pending_signal(), Some(SIGTERM));
+        
+        // Clear it
+        state.clear_signal(SIGTERM);
+        assert_eq!(state.has_pending_signal(), None);
+    }
+
+    #[test]
+    fn test_signal_blocking() {
+        let mut state = SignalState::new();
+        
+        // Send and block SIGTERM
+        state.send_signal(SIGTERM).unwrap();
+        state.block_signal(SIGTERM);
+        
+        // Should not be deliverable
+        assert_eq!(state.has_pending_signal(), None);
+        
+        // Unblock
+        state.unblock_signal(SIGTERM);
+        assert_eq!(state.has_pending_signal(), Some(SIGTERM));
+    }
+
+    #[test]
+    fn test_signal_multiple_pending() {
+        let mut state = SignalState::new();
+        
+        // Send multiple signals
+        state.send_signal(SIGTERM).unwrap();
+        state.send_signal(SIGINT).unwrap();
+        state.send_signal(SIGUSR1).unwrap();
+        
+        // Should return lowest signal number first
+        assert_eq!(state.has_pending_signal(), Some(SIGINT));
+        state.clear_signal(SIGINT);
+        
+        assert_eq!(state.has_pending_signal(), Some(SIGUSR1));
+        state.clear_signal(SIGUSR1);
+        
+        assert_eq!(state.has_pending_signal(), Some(SIGTERM));
+    }
+
+    #[test]
+    fn test_signal_action() {
+        let mut state = SignalState::new();
+        
+        // Set custom handler for SIGINT
+        let handler_addr = 0x12345678u64;
+        let old = state.set_action(SIGINT, SignalAction::Handler(handler_addr));
+        assert!(old.is_ok());
+        assert_eq!(old.unwrap(), SignalAction::Default);
+        
+        // Verify
+        let action = state.get_action(SIGINT).unwrap();
+        assert_eq!(action, SignalAction::Handler(handler_addr));
+    }
+
+    #[test]
+    fn test_signal_cannot_catch_sigkill() {
+        let mut state = SignalState::new();
+        
+        // Cannot change SIGKILL action
+        let result = state.set_action(SIGKILL, SignalAction::Ignore);
+        assert!(result.is_err());
+        
+        // Cannot change SIGSTOP action
+        let result = state.set_action(SIGSTOP, SignalAction::Ignore);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_signal_invalid_number() {
+        let mut state = SignalState::new();
+        
+        // Signal 0 is invalid
+        assert!(state.send_signal(0).is_err());
+        
+        // Signal >= NSIG is invalid
+        assert!(state.send_signal(NSIG as u32).is_err());
+        assert!(state.send_signal(100).is_err());
+    }
+
+    #[test]
+    fn test_signal_reset_to_default() {
+        let mut state = SignalState::new();
+        
+        // Set up some state
+        state.send_signal(SIGINT).unwrap();
+        state.set_action(SIGTERM, SignalAction::Ignore).unwrap();
+        state.block_signal(SIGUSR1);
+        
+        // Reset
+        state.reset_to_default();
+        
+        // Pending should be cleared
+        assert_eq!(state.has_pending_signal(), None);
+        
+        // Actions should be default
+        assert_eq!(state.get_action(SIGTERM).unwrap(), SignalAction::Default);
+    }
+
+    #[test]
+    fn test_default_signal_action() {
+        // SIGCHLD should be ignored by default
+        assert_eq!(default_signal_action(SIGCHLD), SignalAction::Ignore);
+        
+        // SIGCONT should be ignored by default
+        assert_eq!(default_signal_action(SIGCONT), SignalAction::Ignore);
+        
+        // Others should have default action
+        assert_eq!(default_signal_action(SIGTERM), SignalAction::Default);
+        assert_eq!(default_signal_action(SIGINT), SignalAction::Default);
+    }
+}
