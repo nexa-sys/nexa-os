@@ -3,4 +3,4 @@
 target = "x86_64-unknown-linux-gnu"
 
 # Explicitly disable build-std (tests use prebuilt std)
-[unstable]
+# Leave unstable section empty to override parent's build-std config

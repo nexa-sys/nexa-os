@@ -1,4 +1,5 @@
-# Override parent's nightly toolchain
-# Tests need stable to avoid build-std
+# Tests use nightly to match kernel dependencies
 [toolchain]
-channel = "stable"
+channel = "nightly"
+components = ["rust-src", "llvm-tools-preview"]
+profile = "minimal"

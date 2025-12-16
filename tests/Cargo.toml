@@ -2,27 +2,64 @@
 name = "nexa-os-tests"
 version = "0.0.1"
 edition = "2021"
-description = "Unit tests for NexaOS kernel components"
+description = "Full kernel unit tests with hardware mocks"
 publish = false
 build = "build.rs"
-
-# Unit tests for the kernel
-# Uses build.rs to compile kernel source files directly (without no_std restrictions)
-# Run with: cargo test (from this directory)
 
 [lib]
 path = "src/lib.rs"
 
+[features]
+default = ["net_full", "kernel_full", "fs_full", "gfx_full"]
+
+# Network features (mirror kernel)
+net_full = ["net_ipv4", "net_udp", "net_tcp", "net_arp", "net_ethernet", "net_dns", "net_dhcp", "net_netlink"]
+net_ipv4 = ["net_ethernet"]
+net_udp = ["net_ipv4"]
+net_tcp = ["net_ipv4"]
+net_arp = ["net_ethernet"]
+net_ethernet = []
+net_dns = ["net_udp"]
+net_dhcp = ["net_udp"]
+net_netlink = []
+
+# Kernel features
+kernel_full = ["smp", "numa", "kmod", "kmod_signing"]
+smp = []
+numa = ["smp"]
+kmod = []
+kmod_signing = ["kmod"]
+
+# Graphics features
+gfx_full = ["gfx_framebuffer", "gfx_ttf", "gfx_compositor"]
+gfx_framebuffer = []
+gfx_ttf = []
+gfx_compositor = []
+
+# Filesystem features
+fs_full = ["fs_initramfs", "fs_devfs", "fs_procfs", "fs_sysfs"]
+fs_initramfs = []
+fs_devfs = []
+fs_procfs = []
+fs_sysfs = []
+
 [dependencies]
-# Used by kernel code we're testing (spin::Mutex, etc.)
+# Same as kernel dependencies
 spin = "0.9"
+x86_64 = "0.15"
+multiboot2 = { version = "0.24", default-features = false }
+linked_list_allocator = { version = "0.10", default-features = false, features = ["use_spin"] }
+lazy_static = { version = "1.4", features = ["spin_no_std"] }
+font8x8 = { version = "0.3", default-features = false }
+nexa_boot_info = { path = "../boot/boot-info" }
+uart_16550 = "0.3"
+pic8259 = "0.10"
 
 [build-dependencies]
 cc = "1.0"
 
 [dev-dependencies]
 
-# Coverage configuration (for cargo-llvm-cov)
 [package.metadata.llvm-cov]
 show-branch = true
 include = ["../src/**/*.rs", "src/**/*.rs"]

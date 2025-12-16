@@ -1,161 +1,183 @@
-//! NexaOS Test Suite
+//! NexaOS Full Kernel Test Suite
 //!
-//! This crate tests kernel code by directly including kernel source files.
-//! This bypasses no_std restrictions while testing the actual kernel logic.
+//! Tests the complete kernel with hardware mocks.
+//! Build.rs preprocesses kernel source to remove #[global_allocator] and
+//! #[alloc_error_handler] which conflict with std.
 //!
 //! # How it works
-//! 1. We define stub macros (kinfo!, ktrace!, etc.) that map to println! or no-op
-//! 2. We use `#[path = "..."]` to include kernel source files directly
-//! 3. The `core::` references in kernel code work because std re-exports core
-//!
-//! This allows testing real kernel code without running in QEMU.
+//! 1. build.rs copies kernel source to build/kernel_src/, removing conflicting attributes
+//! 2. We include the preprocessed kernel source via #[path]
+//! 3. Hardware operations are mocked in the mock module
+//! 4. The kernel's allocator logic runs but uses std's allocator underneath
 
-// Re-export alloc crate for kernel code that uses alloc::vec, alloc::string, etc.
-extern crate alloc;
+#![feature(abi_x86_interrupt)]
+#![allow(dead_code)]
+#![allow(unused_variables)]
+#![allow(unused_imports)]
+
+// Note: We use std's alloc, so no extern crate alloc needed
 
 // ===========================================================================
-// Kernel macro stubs - these replace the kernel's logging macros for testing
+// Kernel logging macros - output to stderr for test visibility
 // ===========================================================================
 
-/// Stub for kernel's kinfo! macro - prints to stdout in tests
 #[macro_export]
 macro_rules! kinfo {
-    ($($arg:tt)*) => {{
-        #[cfg(test)]
-        eprintln!("[INFO] {}", format_args!($($arg)*));
-    }};
+    ($($arg:tt)*) => { eprintln!("[INFO] {}", format_args!($($arg)*)) }
 }
 
-/// Stub for kernel's ktrace! macro - no-op in tests (too verbose)
 #[macro_export]
 macro_rules! ktrace {
-    ($($arg:tt)*) => {{}};
+    ($($arg:tt)*) => { () }
 }
 
-/// Stub for kernel's kwarn! macro - prints to stderr in tests
 #[macro_export]
 macro_rules! kwarn {
-    ($($arg:tt)*) => {{
-        #[cfg(test)]
-        eprintln!("[WARN] {}", format_args!($($arg)*));
-    }};
+    ($($arg:tt)*) => { eprintln!("[WARN] {}", format_args!($($arg)*)) }
 }
 
-/// Stub for kernel's kerror! macro - prints to stderr in tests
 #[macro_export]
 macro_rules! kerror {
-    ($($arg:tt)*) => {{
-        #[cfg(test)]
-        eprintln!("[ERROR] {}", format_args!($($arg)*));
-    }};
+    ($($arg:tt)*) => { eprintln!("[ERROR] {}", format_args!($($arg)*)) }
 }
 
-/// Stub for kernel's kfatal! macro - prints to stderr in tests
 #[macro_export]
 macro_rules! kfatal {
-    ($($arg:tt)*) => {{
-        #[cfg(test)]
-        eprintln!("[FATAL] {}", format_args!($($arg)*));
-    }};
+    ($($arg:tt)*) => { eprintln!("[FATAL] {}", format_args!($($arg)*)) }
 }
 
-/// Stub for kernel's kdebug! macro - no-op in tests
 #[macro_export]
 macro_rules! kdebug {
-    ($($arg:tt)*) => {{}};
+    ($($arg:tt)*) => { () }
+}
+
+#[macro_export]
+macro_rules! serial_println {
+    ($($arg:tt)*) => { eprintln!("{}", format_args!($($arg)*)) }
+}
+
+#[macro_export]
+macro_rules! serial_print {
+    ($($arg:tt)*) => { eprint!("{}", format_args!($($arg)*)) }
+}
+
+#[macro_export]
+macro_rules! kpanic {
+    ($($arg:tt)*) => { panic!("{}", format_args!($($arg)*)) }
 }
 
 // ===========================================================================
-// Kernel environment stubs - provides constants/types that kernel code needs
-// These mirror the real kernel definitions for testing purposes
-// ===========================================================================
-
-/// ACPI stub - provides MAX_CPUS constant
-pub mod acpi {
-    /// Maximum number of CPUs supported (same as kernel)
-    pub const MAX_CPUS: usize = 1024;
-}
-
-/// NUMA stub - provides NumaPolicy and NUMA_NO_NODE
-pub mod numa {
-    /// NUMA_NO_NODE indicates no preferred NUMA node
-    pub const NUMA_NO_NODE: u32 = 0xFFFFFFFF;
-
-    /// NUMA memory allocation policy
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub enum NumaPolicy {
-        /// Allocate from the local node (default)
-        Local,
-        /// Allocate from the specified node
-        Bind(u32),
-        /// Interleave allocations across all nodes
-        Interleave,
-        /// Prefer local node but fall back to others
-        Preferred(u32),
-    }
-
-    impl Default for NumaPolicy {
-        fn default() -> Self {
-            NumaPolicy::Local
-        }
-    }
-}
-
-// ===========================================================================
-// Import kernel source files directly using #[path]
-// ===========================================================================
-
-// Network modules (pure protocol logic)
-#[path = "../../src/net/ipv4.rs"]
-pub mod ipv4;
-
-#[path = "../../src/net/ethernet.rs"]
-pub mod ethernet;
-
-#[path = "../../src/net/arp.rs"]
-pub mod arp;
-
-// POSIX types and errno definitions
-#[path = "../../src/posix.rs"]
-pub mod posix;
-
-// IPC: Signal handling (pure logic)
-#[path = "../../src/ipc/signal.rs"]
-pub mod signal;
-
-// Process types (Process, ProcessState, Context, etc.)
-#[path = "../../src/process/types.rs"]
-pub mod process;
-
-// Scheduler types (CpuMask, ProcessEntry, SchedPolicy, etc.)
-#[path = "../../src/scheduler/types.rs"]
-pub mod scheduler_types;
-
-// IPC: Pipe (uses spin::Mutex - we provide via Cargo.toml dependency)
-#[path = "../../src/ipc/pipe.rs"]
-pub mod pipe;
-
-// IPC: Core message channels
-#[path = "../../src/ipc/core.rs"]
-pub mod ipc_core;
-
-// Filesystem traits and types
-#[path = "../../src/fs/traits.rs"]
-pub mod fs_traits;
-
-// UDRV: Isolation classes (IC0, IC1, IC2)
-#[path = "../../src/udrv/isolation.rs"]
-pub mod udrv_isolation;
-
-// Security: Authentication system
-#[path = "../../src/security/auth.rs"]
-pub mod security_auth;
-
-// ===========================================================================
-// Hardware-level mocks (simulates underlying hardware, NOT kernel functionality)
+// Hardware mocks - simulates CPU/hardware for testing
 // ===========================================================================
 
 pub mod mock;
+
+// ===========================================================================
+// Import FULL kernel source (preprocessed by build.rs)
+// ===========================================================================
+
+// Architecture support
+#[path = "../build/kernel_src/arch/mod.rs"]
+pub mod arch;
+
+// Safety utilities  
+#[path = "../build/kernel_src/safety/mod.rs"]
+pub mod safety;
+
+// Memory management (allocator has #[global_allocator] removed)
+#[path = "../build/kernel_src/mm/mod.rs"]
+pub mod mm;
+
+// Boot support
+#[path = "../build/kernel_src/boot/mod.rs"]
+pub mod boot;
+
+// Scheduler
+#[path = "../build/kernel_src/scheduler/mod.rs"]
+pub mod scheduler;
+
+// SMP support
+#[path = "../build/kernel_src/smp/mod.rs"]
+pub mod smp;
+
+// IPC
+#[path = "../build/kernel_src/ipc/mod.rs"]
+pub mod ipc;
+
+// Filesystem
+#[path = "../build/kernel_src/fs/mod.rs"]
+pub mod fs;
+
+// Drivers
+#[path = "../build/kernel_src/drivers/mod.rs"]
+pub mod drivers;
+
+// Networking
+#[path = "../build/kernel_src/net/mod.rs"]
+pub mod net;
+
+// Kernel modules (kmod)
+#[path = "../build/kernel_src/kmod/mod.rs"]
+pub mod kmod;
+
+// Process management
+#[path = "../build/kernel_src/process/mod.rs"]
+pub mod process;
+
+// Interrupts
+#[path = "../build/kernel_src/interrupts/mod.rs"]
+pub mod interrupts;
+
+// TTY
+#[path = "../build/kernel_src/tty/mod.rs"]
+pub mod tty;
+
+// User-space driver framework
+#[path = "../build/kernel_src/udrv/mod.rs"]
+pub mod udrv;
+
+// Security
+#[path = "../build/kernel_src/security/mod.rs"]
+pub mod security;
+
+// System calls
+#[path = "../build/kernel_src/syscalls/mod.rs"]
+pub mod syscalls;
+
+// Logger
+#[path = "../build/kernel_src/logger.rs"]
+pub mod logger;
+
+// POSIX types
+#[path = "../build/kernel_src/posix.rs"]
+pub mod posix;
+
+// ===========================================================================
+// Module aliases (matching kernel's lib.rs re-exports)
+// ===========================================================================
+
+pub use arch::gdt;
+pub use arch::lapic;
+pub use boot::info as bootinfo;
+pub use boot::init;
+pub use boot::stages as boot_stages;
+pub use boot::uefi as uefi_compat;
+pub use drivers::acpi;
+pub use drivers::framebuffer;
+pub use drivers::keyboard;
+pub use drivers::serial;
+pub use drivers::vga as vga_buffer;
+pub use fs::initramfs;
+pub use ipc::pipe;
+pub use ipc::signal;
+pub use mm::allocator;
+pub use mm::memory;
+pub use mm::numa;
+pub use mm::paging;
+pub use mm::vmalloc;
+pub use security::auth;
+pub use security::elf;
+pub use tty::vt;
 
 // ===========================================================================
 // Test modules
@@ -163,8 +185,5 @@ pub mod mock;
 
 #[cfg(test)]
 mod tests;
-
-// Re-export net module for convenience
-pub mod net;
 
 
