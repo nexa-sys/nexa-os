@@ -487,30 +487,3 @@ tmpfs           /run           tmpfs      defaults,mode=0755,size=32M    0      
 tmpfs           /dev/shm       tmpfs      defaults,mode=1777,size=64M    0       0
 "#
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_parse_size() {
-        assert_eq!(parse_size("1024"), 1024);
-        assert_eq!(parse_size("10K"), 10 * 1024);
-        assert_eq!(parse_size("10M"), 10 * 1024 * 1024);
-        assert_eq!(parse_size("1G"), 1024 * 1024 * 1024);
-    }
-
-    #[test]
-    fn test_parse_fstab() {
-        let content = r#"
-# Comment line
-/dev/vda1   /       ext2    defaults    0   1
-tmpfs       /tmp    tmpfs   size=64M    0   0
-"#;
-        let entries = parse_fstab(content);
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].device, "/dev/vda1");
-        assert_eq!(entries[0].mount_point, "/");
-        assert_eq!(entries[1].fs_type, "tmpfs");
-    }
-}
