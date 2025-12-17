@@ -556,15 +556,16 @@ fn test_delta_vruntime_precision() {
 #[test]
 fn test_delta_vruntime_with_all_nice_values() {
     let runtime_ns = 1_000_000u64; // 1ms
-    let mut prev_delta = u64::MAX;
+    let mut prev_delta = 0u64;
     
-    // Nice -20 to +19, deltas should increase
+    // Nice -20 to +19: as nice increases, weight decreases, so delta increases
+    // Higher nice value = lower priority = faster vruntime growth
     for nice in -20i8..=19 {
         let weight = nice_to_weight(nice);
         let delta = calc_delta_vruntime(runtime_ns, weight);
         
         assert!(delta > 0, "Delta for nice {} should be > 0", nice);
-        assert!(delta < prev_delta, "Delta should increase with nice value (nice={})", nice);
+        assert!(delta > prev_delta, "Delta should increase with nice value (nice={}, delta={}, prev={})", nice, delta, prev_delta);
         
         prev_delta = delta;
     }
