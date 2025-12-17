@@ -108,28 +108,3 @@ impl MockDevice {
     pub fn write(&mut self, val: u8) { ... }
 }
 ```
-
-## 与内核代码同步
-
-当内核中的数据结构或算法变化时，需要手动同步测试代码。这是有意为之，以保持测试的独立性和简洁性。
-
-如果需要测试更复杂的内核逻辑，考虑：
-
-1. 将内核中的纯逻辑提取到 `#![no_std]` 兼容的独立 crate
-2. 在测试套件中依赖该 crate
-3. 内核也依赖该 crate
-
-## 测试分类
-
-| 模块 | 描述 | 测试数量 |
-|------|------|----------|
-| `posix` | POSIX 错误码、文件类型 | 4 |
-| `algorithms::bitmap` | 位图分配 | 5 |
-| `algorithms::ring_buffer` | 环形缓冲区 | 6 |
-| `algorithms::checksum` | 网络校验和 | 6 |
-| `data_structures::fixed_vec` | 固定大小向量 | 7 |
-| `data_structures::path` | 路径操作 | 8 |
-| `mock::memory` | 内存分配器 mock | 3 |
-| `mock::scheduler` | 调度器 mock | 5 |
-
-总计: **44 个测试**

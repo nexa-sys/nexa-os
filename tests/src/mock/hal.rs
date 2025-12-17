@@ -1,0 +1,501 @@
+//! Hardware Abstraction Layer (HAL)
+//!
+//! This module provides the interface between kernel code and emulated hardware.
+//! In the real kernel, these operations go to real hardware via inline assembly.
+//! In tests, they go to the emulated hardware.
+//!
+//! The HAL is designed to be a drop-in replacement for `src/safety/x86.rs` functions.
+
+use std::sync::{Arc, RwLock};
+use super::cpu::VirtualCpu;
+use super::devices::{DeviceManager, IoAccess};
+use super::memory::PhysicalMemory;
+use super::pci::PciBus;
+
+// Global HAL instance (thread-local for test isolation)
+thread_local! {
+    static HAL: RwLock<Option<Arc<HardwareAbstractionLayer>>> = RwLock::new(None);
+}
+
+/// Set the HAL for current thread
+pub fn set_hal(hal: Arc<HardwareAbstractionLayer>) {
+    HAL.with(|h| {
+        *h.write().unwrap() = Some(hal);
+    });
+}
+
+/// Get the current HAL (panics if not set)
+pub fn get_hal() -> Arc<HardwareAbstractionLayer> {
+    HAL.with(|h| {
+        h.read().unwrap().clone().expect("HAL not initialized")
+    })
+}
+
+/// Clear the HAL for current thread
+pub fn clear_hal() {
+    HAL.with(|h| {
+        *h.write().unwrap() = None;
+    });
+}
+
+/// Check if HAL is initialized
+pub fn hal_initialized() -> bool {
+    HAL.with(|h| {
+        h.read().unwrap().is_some()
+    })
+}
+
+/// Hardware Abstraction Layer
+pub struct HardwareAbstractionLayer {
+    /// Virtual CPU(s)
+    pub cpus: RwLock<Vec<Arc<VirtualCpu>>>,
+    /// Current CPU index
+    current_cpu: RwLock<usize>,
+    /// Physical memory
+    pub memory: Arc<PhysicalMemory>,
+    /// Device manager
+    pub devices: Arc<DeviceManager>,
+    /// PCI bus
+    pub pci: RwLock<PciBus>,
+}
+
+impl HardwareAbstractionLayer {
+    pub fn new(memory_mb: usize) -> Self {
+        let memory = Arc::new(PhysicalMemory::new(memory_mb));
+        let devices = Arc::new(DeviceManager::new());
+        
+        let hal = Self {
+            cpus: RwLock::new(vec![Arc::new(VirtualCpu::new_bsp())]),
+            current_cpu: RwLock::new(0),
+            memory,
+            devices,
+            pci: RwLock::new(PciBus::with_host_bridge()),
+        };
+        
+        hal
+    }
+    
+    /// Get current CPU
+    pub fn cpu(&self) -> Arc<VirtualCpu> {
+        let idx = *self.current_cpu.read().unwrap();
+        self.cpus.read().unwrap()[idx].clone()
+    }
+    
+    /// Add an AP (application processor)
+    pub fn add_cpu(&self) -> u32 {
+        let mut cpus = self.cpus.write().unwrap();
+        let id = cpus.len() as u32;
+        cpus.push(Arc::new(VirtualCpu::new_ap(id)));
+        id
+    }
+    
+    /// Switch to a different CPU
+    pub fn switch_cpu(&self, id: u32) {
+        let cpus = self.cpus.read().unwrap();
+        if (id as usize) < cpus.len() {
+            *self.current_cpu.write().unwrap() = id as usize;
+        }
+    }
+    
+    // ========================================================================
+    // Port I/O Operations (replacement for src/safety/x86.rs)
+    // ========================================================================
+    
+    pub fn inb(&self, port: u16) -> u8 {
+        // Check for PCI config ports first
+        match port {
+            0xCF8..=0xCFB => {
+                let pci = self.pci.read().unwrap();
+                let addr = pci.read_address();
+                let shift = ((port - 0xCF8) * 8) as u32;
+                ((addr >> shift) & 0xFF) as u8
+            }
+            0xCFC..=0xCFF => {
+                let pci = self.pci.read().unwrap();
+                let data = pci.read_data();
+                let shift = ((port - 0xCFC) * 8) as u32;
+                ((data >> shift) & 0xFF) as u8
+            }
+            _ => self.devices.port_read(port, IoAccess::Byte) as u8,
+        }
+    }
+    
+    pub fn inw(&self, port: u16) -> u16 {
+        match port {
+            0xCF8 | 0xCFA => {
+                let pci = self.pci.read().unwrap();
+                let addr = pci.read_address();
+                let shift = ((port - 0xCF8) * 8) as u32;
+                ((addr >> shift) & 0xFFFF) as u16
+            }
+            0xCFC | 0xCFE => {
+                let pci = self.pci.read().unwrap();
+                let data = pci.read_data();
+                let shift = ((port - 0xCFC) * 8) as u32;
+                ((data >> shift) & 0xFFFF) as u16
+            }
+            _ => self.devices.port_read(port, IoAccess::Word) as u16,
+        }
+    }
+    
+    pub fn inl(&self, port: u16) -> u32 {
+        match port {
+            0xCF8 => self.pci.read().unwrap().read_address(),
+            0xCFC => self.pci.read().unwrap().read_data(),
+            _ => self.devices.port_read(port, IoAccess::Dword),
+        }
+    }
+    
+    pub fn outb(&self, port: u16, value: u8) {
+        match port {
+            0xCF8..=0xCFB => {
+                let mut pci = self.pci.write().unwrap();
+                let addr = pci.read_address();
+                let shift = ((port - 0xCF8) * 8) as u32;
+                let mask = !(0xFF << shift);
+                pci.write_address((addr & mask) | ((value as u32) << shift));
+            }
+            0xCFC..=0xCFF => {
+                let pci = self.pci.write().unwrap();
+                let data = pci.read_data();
+                let shift = ((port - 0xCFC) * 8) as u32;
+                let mask = !(0xFF << shift);
+                pci.write_data((data & mask) | ((value as u32) << shift));
+            }
+            _ => self.devices.port_write(port, value as u32, IoAccess::Byte),
+        }
+    }
+    
+    pub fn outw(&self, port: u16, value: u16) {
+        match port {
+            0xCF8 | 0xCFA => {
+                let mut pci = self.pci.write().unwrap();
+                let addr = pci.read_address();
+                let shift = ((port - 0xCF8) * 8) as u32;
+                let mask = !(0xFFFF << shift);
+                pci.write_address((addr & mask) | ((value as u32) << shift));
+            }
+            0xCFC | 0xCFE => {
+                let pci = self.pci.write().unwrap();
+                let data = pci.read_data();
+                let shift = ((port - 0xCFC) * 8) as u32;
+                let mask = !(0xFFFF << shift);
+                pci.write_data((data & mask) | ((value as u32) << shift));
+            }
+            _ => self.devices.port_write(port, value as u32, IoAccess::Word),
+        }
+    }
+    
+    pub fn outl(&self, port: u16, value: u32) {
+        match port {
+            0xCF8 => self.pci.write().unwrap().write_address(value),
+            0xCFC => self.pci.write().unwrap().write_data(value),
+            _ => self.devices.port_write(port, value, IoAccess::Dword),
+        }
+    }
+    
+    // ========================================================================
+    // PCI Config Space
+    // ========================================================================
+    
+    pub fn pci_config_read32(&self, bus: u8, device: u8, function: u8, offset: u8) -> u32 {
+        let address: u32 = 0x8000_0000
+            | ((bus as u32) << 16)
+            | ((device as u32 & 0x1F) << 11)
+            | ((function as u32 & 0x07) << 8)
+            | ((offset as u32) & 0xFC);
+        
+        let mut pci = self.pci.write().unwrap();
+        pci.write_address(address);
+        pci.read_data()
+    }
+    
+    pub fn pci_config_write32(&self, bus: u8, device: u8, function: u8, offset: u8, value: u32) {
+        let address: u32 = 0x8000_0000
+            | ((bus as u32) << 16)
+            | ((device as u32 & 0x1F) << 11)
+            | ((function as u32 & 0x07) << 8)
+            | ((offset as u32) & 0xFC);
+        
+        let mut pci = self.pci.write().unwrap();
+        pci.write_address(address);
+        pci.write_data(value);
+    }
+    
+    // ========================================================================
+    // CPU Operations
+    // ========================================================================
+    
+    pub fn rdtsc(&self) -> u64 {
+        self.cpu().rdtsc()
+    }
+    
+    pub fn cpuid(&self, leaf: u32) -> (u32, u32, u32, u32) {
+        self.cpu().cpuid(leaf, 0)
+    }
+    
+    pub fn cpuid_count(&self, leaf: u32, subleaf: u32) -> (u32, u32, u32, u32) {
+        self.cpu().cpuid(leaf, subleaf)
+    }
+    
+    pub fn read_cr3(&self) -> u64 {
+        self.cpu().read_cr3()
+    }
+    
+    pub fn write_cr3(&self, value: u64) {
+        self.cpu().write_cr3(value);
+    }
+    
+    pub fn read_rsp(&self) -> u64 {
+        self.cpu().read_rsp()
+    }
+    
+    pub fn hlt(&self) {
+        self.cpu().halt();
+    }
+    
+    pub fn pause(&self) {
+        // No-op in emulation
+        self.cpu().advance_cycles(10);
+    }
+    
+    pub fn lfence(&self) {
+        // No-op in emulation
+    }
+    
+    pub fn sfence(&self) {
+        // No-op in emulation
+    }
+    
+    pub fn mfence(&self) {
+        // No-op in emulation
+    }
+    
+    // ========================================================================
+    // Memory Operations
+    // ========================================================================
+    
+    pub fn read_phys_u64(&self, addr: u64) -> u64 {
+        // Check for MMIO
+        if self.devices.is_mmio(addr) {
+            let lo = self.devices.mmio_read(addr, IoAccess::Dword);
+            let hi = self.devices.mmio_read(addr + 4, IoAccess::Dword);
+            (lo as u64) | ((hi as u64) << 32)
+        } else {
+            self.memory.read_u64(addr)
+        }
+    }
+    
+    pub fn write_phys_u64(&self, addr: u64, value: u64) {
+        if self.devices.is_mmio(addr) {
+            self.devices.mmio_write(addr, value as u32, IoAccess::Dword);
+            self.devices.mmio_write(addr + 4, (value >> 32) as u32, IoAccess::Dword);
+        } else {
+            self.memory.write_u64(addr, value);
+        }
+    }
+    
+    // ========================================================================
+    // Interrupt Operations
+    // ========================================================================
+    
+    pub fn enable_interrupts(&self) {
+        self.cpu().enable_interrupts();
+    }
+    
+    pub fn disable_interrupts(&self) {
+        self.cpu().disable_interrupts();
+    }
+    
+    pub fn interrupts_enabled(&self) -> bool {
+        self.cpu().interrupts_enabled()
+    }
+    
+    // ========================================================================
+    // Time Simulation
+    // ========================================================================
+    
+    /// Advance time by given number of cycles
+    pub fn tick(&self, cycles: u64) {
+        // Advance all CPUs
+        for cpu in self.cpus.read().unwrap().iter() {
+            cpu.advance_cycles(cycles);
+        }
+        
+        // Tick all devices
+        self.devices.tick(cycles);
+    }
+}
+
+impl Default for HardwareAbstractionLayer {
+    fn default() -> Self {
+        Self::new(64)
+    }
+}
+
+// ============================================================================
+// Global function wrappers (for drop-in replacement of kernel safety functions)
+// These are used when the kernel code calls safety::inb() etc.
+// ============================================================================
+
+/// Port I/O read byte - uses HAL if available, otherwise panics
+pub fn inb(port: u16) -> u8 {
+    if hal_initialized() {
+        get_hal().inb(port)
+    } else {
+        panic!("HAL not initialized, cannot perform port I/O");
+    }
+}
+
+pub fn inw(port: u16) -> u16 {
+    if hal_initialized() {
+        get_hal().inw(port)
+    } else {
+        panic!("HAL not initialized");
+    }
+}
+
+pub fn inl(port: u16) -> u32 {
+    if hal_initialized() {
+        get_hal().inl(port)
+    } else {
+        panic!("HAL not initialized");
+    }
+}
+
+pub fn outb(port: u16, value: u8) {
+    if hal_initialized() {
+        get_hal().outb(port, value);
+    } else {
+        panic!("HAL not initialized");
+    }
+}
+
+pub fn outw(port: u16, value: u16) {
+    if hal_initialized() {
+        get_hal().outw(port, value);
+    } else {
+        panic!("HAL not initialized");
+    }
+}
+
+pub fn outl(port: u16, value: u32) {
+    if hal_initialized() {
+        get_hal().outl(port, value);
+    } else {
+        panic!("HAL not initialized");
+    }
+}
+
+pub fn pci_config_read32(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
+    if hal_initialized() {
+        get_hal().pci_config_read32(bus, device, function, offset)
+    } else {
+        panic!("HAL not initialized");
+    }
+}
+
+pub fn pci_config_write32(bus: u8, device: u8, function: u8, offset: u8, value: u32) {
+    if hal_initialized() {
+        get_hal().pci_config_write32(bus, device, function, offset, value);
+    } else {
+        panic!("HAL not initialized");
+    }
+}
+
+pub fn rdtsc() -> u64 {
+    if hal_initialized() {
+        get_hal().rdtsc()
+    } else {
+        0 // Safe default for timing
+    }
+}
+
+pub fn cpuid(leaf: u32) -> (u32, u32, u32, u32) {
+    if hal_initialized() {
+        get_hal().cpuid(leaf)
+    } else {
+        (0, 0, 0, 0)
+    }
+}
+
+pub fn cpuid_count(leaf: u32, subleaf: u32) -> (u32, u32, u32, u32) {
+    if hal_initialized() {
+        get_hal().cpuid_count(leaf, subleaf)
+    } else {
+        (0, 0, 0, 0)
+    }
+}
+
+pub fn read_cr3() -> u64 {
+    if hal_initialized() {
+        get_hal().read_cr3()
+    } else {
+        0
+    }
+}
+
+pub fn hlt() {
+    if hal_initialized() {
+        get_hal().hlt();
+    }
+}
+
+pub fn pause() {
+    if hal_initialized() {
+        get_hal().pause();
+    }
+}
+
+pub fn lfence() {
+    if hal_initialized() {
+        get_hal().lfence();
+    }
+}
+
+pub fn sfence() {
+    if hal_initialized() {
+        get_hal().sfence();
+    }
+}
+
+pub fn mfence() {
+    if hal_initialized() {
+        get_hal().mfence();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    
+    #[test]
+    fn test_hal_basic() {
+        let hal = Arc::new(HardwareAbstractionLayer::new(64));
+        set_hal(hal.clone());
+        
+        // Test CPUID
+        let (eax, ebx, ecx, edx) = cpuid(0);
+        assert!(eax >= 1); // Should have at least leaf 1
+        
+        // Test TSC
+        let tsc1 = rdtsc();
+        let tsc2 = rdtsc();
+        assert!(tsc2 > tsc1);
+        
+        clear_hal();
+    }
+    
+    #[test]
+    fn test_hal_pci() {
+        let hal = Arc::new(HardwareAbstractionLayer::new(64));
+        set_hal(hal.clone());
+        
+        // Read host bridge vendor ID
+        let vendor = pci_config_read32(0, 0, 0, 0) & 0xFFFF;
+        assert_eq!(vendor, super::super::pci::vendor::INTEL as u32);
+        
+        clear_hal();
+    }
+}

@@ -2,5 +2,6 @@
 [build]
 target = "x86_64-unknown-linux-gnu"
 
-# Explicitly disable build-std (tests use prebuilt std)
-# Leave unstable section empty to override parent's build-std config
+# NOTE: Cannot override [unstable] build-std here due to Cargo config merging rules
+# The test runner (ndk test) must pass -Z build-std= to disable build-std
+

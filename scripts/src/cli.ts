@@ -311,6 +311,7 @@ program
   .action(async (options) => {
     const projectRoot = findProjectRoot();
     const testDir = resolve(projectRoot, 'tests');
+    const manifestPath = resolve(testDir, 'Cargo.toml');
     
     // Check if tests directory exists
     if (!existsSync(testDir)) {
@@ -319,8 +320,9 @@ program
     }
     
     // Build cargo test command
-    // Tests directory has its own rust-toolchain.toml (stable) to avoid build-std
-    const args = ['test'];
+    // Run from /tmp to avoid inheriting parent .cargo/config.toml (build-std issue)
+    // Use --manifest-path to point to tests/Cargo.toml
+    const args = ['test', '--manifest-path', manifestPath];
     
     if (options.release) {
       args.push('--release');
@@ -336,10 +338,18 @@ program
     
     logger.step('Running unit tests...');
     
-    // Run cargo test in the tests directory
-    const child = spawn('cargo', args, {
-      cwd: testDir,
+    // Run cargo test from /tmp to avoid inheriting parent .cargo/config.toml
+    // This prevents the duplicate lang item issue caused by build-std config merging
+    // Use isolated target directory in /tmp to avoid cached artifacts with build-std
+    // Must use +nightly since we're running from /tmp (rust-toolchain.toml not visible)
+    const child = spawn('cargo', ['+nightly', ...args], {
+      cwd: '/tmp',
       stdio: 'inherit',
+      env: {
+        ...process.env,
+        // Use isolated target dir to avoid cached libcore from build-std
+        CARGO_TARGET_DIR: '/tmp/nexa-tests-target',
+      },
     });
     
     child.on('close', (code) => {

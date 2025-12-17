@@ -51,6 +51,7 @@ fn preprocess_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
 
 /// Preprocess a single Rust file
 /// Removes #[global_allocator], #[alloc_error_handler], and extern crate alloc
+/// Removes #[cfg(test)] guards (test framework always runs in test mode)
 /// Replaces alloc:: with std:: for std compatibility
 fn preprocess_file(src: &Path, dst: &Path) -> std::io::Result<()> {
     let file = fs::File::open(src)?;
@@ -67,6 +68,13 @@ fn preprocess_file(src: &Path, dst: &Path) -> std::io::Result<()> {
         // Remove extern crate alloc - tests use std's alloc
         if trimmed == "extern crate alloc;" {
             writeln!(output, "// REMOVED FOR TESTING: {}", line)?;
+            continue;
+        }
+        
+        // Remove #[cfg(test)] guards - test framework is always in test mode
+        // This makes test-only types like UdpMessage available
+        if trimmed == "#[cfg(test)]" {
+            writeln!(output, "// REMOVED FOR TESTING (cfg test): {}", line)?;
             continue;
         }
         
@@ -147,3 +155,4 @@ fn preprocess_file(src: &Path, dst: &Path) -> std::io::Result<()> {
     
     Ok(())
 }
+
