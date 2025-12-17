@@ -301,6 +301,10 @@ impl Process {
             cmdline,
             cmdline_len,
             open_fds: 0, // No open file descriptors initially
+            exec_pending: false,
+            exec_entry: 0,
+            exec_stack: 0,
+            exec_user_data_sel: 0,
         })
     }
 
@@ -494,6 +498,10 @@ impl Process {
                     cmdline,
                     cmdline_len,
                     open_fds: 0, // No open file descriptors initially
+                    exec_pending: false,
+                    exec_entry: 0,
+                    exec_stack: 0,
+                    exec_user_data_sel: 0,
                 });
             } else {
                 kwarn!(
@@ -588,6 +596,10 @@ impl Process {
             cmdline,
             cmdline_len,
             open_fds: 0, // No open file descriptors initially
+            exec_pending: false,
+            exec_entry: 0,
+            exec_stack: 0,
+            exec_user_data_sel: 0,
         })
     }
 }

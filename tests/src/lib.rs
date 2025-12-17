@@ -231,9 +231,13 @@ mod tests_integration;
 #[path = "interrupts.rs"]
 mod tests_interrupts;
 
-/// System call interface tests
+/// System call interface tests (legacy)
 #[path = "syscalls.rs"]
 mod tests_syscalls;
+
+/// System call tests (organized by feature)
+#[path = "syscalls/mod.rs"]
+mod tests_syscalls_ext;
 
 /// User-space driver framework tests
 #[path = "udrv.rs"]

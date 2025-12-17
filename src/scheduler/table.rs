@@ -127,3 +127,35 @@ pub fn get_process_from_table(pid: Pid) -> Option<Process> {
 
     None
 }
+
+/// Get mutable reference to process by PID - executes closure with mutable access
+/// This is needed for per-process exec context (race-condition fix)
+pub fn with_process_mut<F, R>(pid: Pid, f: F) -> Option<R>
+where
+    F: FnOnce(&mut Process) -> R,
+{
+    let mut table = PROCESS_TABLE.lock();
+
+    // Try radix tree lookup first (O(log N))
+    if let Some(idx) = crate::process::lookup_pid(pid) {
+        let idx = idx as usize;
+        if idx < table.len() {
+            if let Some(entry) = &mut table[idx] {
+                if entry.process.pid == pid {
+                    return Some(f(&mut entry.process));
+                }
+            }
+        }
+    }
+
+    // Fallback to linear scan if radix tree lookup fails
+    for slot in table.iter_mut() {
+        if let Some(entry) = slot {
+            if entry.process.pid == pid {
+                return Some(f(&mut entry.process));
+            }
+        }
+    }
+
+    None
+}

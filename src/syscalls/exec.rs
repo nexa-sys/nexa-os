@@ -2,12 +2,19 @@
 //!
 //! This module handles the exec context that allows execve to communicate
 //! with the syscall handler assembly code.
+//!
+//! FIXED: Now uses per-process exec context stored in Process struct instead
+//! of global EXEC_CONTEXT. This prevents race conditions where:
+//! 1. Process A sets exec context
+//! 2. Process B overwrites it before A consumes
+//! 3. A gets B's entry point (wrong!)
 
 use crate::ktrace;
+use crate::scheduler;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-/// Exec context - stores entry/stack/segments for exec syscall
-/// Protected by atomics with release/acquire ordering for safety
+/// Legacy global exec context - DEPRECATED, kept for compatibility
+/// Use set_exec_context_for_process and get_exec_context instead
 pub struct ExecContext {
     pub pending: AtomicBool,
     pub entry: AtomicU64,
@@ -22,23 +29,30 @@ pub static EXEC_CONTEXT: ExecContext = ExecContext {
     user_data_sel: AtomicU64::new(0),
 };
 
-/// Set exec context for syscall handler to pick up
+/// Set exec context for a specific process (NEW - race-condition-free)
 /// Called by execve syscall implementation
-pub fn set_exec_context(entry: u64, stack: u64, user_data_sel: u64) {
-    // Store entry first
-    EXEC_CONTEXT.entry.store(entry, Ordering::SeqCst);
-    // Store stack second
-    EXEC_CONTEXT.stack.store(stack, Ordering::SeqCst);
-    // Store user data segment selector for syscall fast path to restore
-    EXEC_CONTEXT
-        .user_data_sel
-        .store(user_data_sel, Ordering::SeqCst);
-    // Finally, signal that exec context is ready
-    // SeqCst ensures all prior stores are visible before this store
-    EXEC_CONTEXT.pending.store(true, Ordering::SeqCst);
+pub fn set_exec_context_for_process(pid: u64, entry: u64, stack: u64, user_data_sel: u64) {
+    scheduler::with_process_mut(pid, |proc| {
+        proc.exec_pending = true;
+        proc.exec_entry = entry;
+        proc.exec_stack = stack;
+        proc.exec_user_data_sel = user_data_sel;
+        ktrace!(
+            "[set_exec_context_for_process] pid={} entry={:#x} stack={:#x}",
+            pid, entry, stack
+        );
+    });
 }
 
-/// Get and clear exec context (called from assembly)
+/// Set exec context for current process (convenience wrapper)
+/// Called by execve syscall implementation
+pub fn set_exec_context(entry: u64, stack: u64, user_data_sel: u64) {
+    if let Some(pid) = scheduler::current_pid() {
+        set_exec_context_for_process(pid, entry, stack, user_data_sel);
+    }
+}
+
+/// Get and clear exec context for current process (called from assembly)
 /// Returns: AL = 1 if exec was pending, 0 otherwise
 /// Outputs: entry_out, stack_out, user_data_sel_out (each 8 bytes)
 #[no_mangle]
@@ -47,30 +61,44 @@ pub extern "C" fn get_exec_context(
     stack_out: *mut u64,
     user_data_sel_out: *mut u64,
 ) -> bool {
-    if EXEC_CONTEXT
-        .pending
-        .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
-        .is_ok()
-    {
-        let entry = EXEC_CONTEXT.entry.load(Ordering::SeqCst);
-        let stack = EXEC_CONTEXT.stack.load(Ordering::SeqCst);
-        let user_data_sel = EXEC_CONTEXT.user_data_sel.load(Ordering::SeqCst);
-        unsafe {
-            *entry_out = entry;
-            *stack_out = stack;
-            if !user_data_sel_out.is_null() {
-                *user_data_sel_out = user_data_sel;
-            }
+    let pid = match scheduler::current_pid() {
+        Some(p) => p,
+        None => {
+            ktrace!("[get_exec_context] no current process!");
+            return false;
         }
-        ktrace!(
-            "[get_exec_context] returning entry={:#x}, stack={:#x}, user_data_sel={:#x}",
-            entry,
-            stack,
-            user_data_sel
-        );
-        true
-    } else {
-        ktrace!("[get_exec_context] no exec pending!");
-        false
+    };
+    
+    let result = scheduler::with_process_mut(pid, |proc| {
+        if proc.exec_pending {
+            // Atomically consume the exec context
+            proc.exec_pending = false;
+            let entry = proc.exec_entry;
+            let stack = proc.exec_stack;
+            let user_data_sel = proc.exec_user_data_sel;
+            
+            unsafe {
+                *entry_out = entry;
+                *stack_out = stack;
+                if !user_data_sel_out.is_null() {
+                    *user_data_sel_out = user_data_sel;
+                }
+            }
+            ktrace!(
+                "[get_exec_context] pid={} returning entry={:#x}, stack={:#x}, user_data_sel={:#x}",
+                pid, entry, stack, user_data_sel
+            );
+            true
+        } else {
+            false
+        }
+    });
+    
+    match result {
+        Some(true) => true,
+        _ => {
+            ktrace!("[get_exec_context] pid={} no exec pending!", pid);
+            false
+        }
     }
 }

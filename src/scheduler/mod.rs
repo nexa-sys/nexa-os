@@ -50,7 +50,7 @@ pub use types::{BASE_TIME_SLICE_MS, DEFAULT_TIME_SLICE, NUM_PRIORITY_LEVELS};
 // Re-export table functions
 pub use table::{
     current_cr3, current_pid, get_current_pid, get_tick, process_table_lock, set_current_pid,
-    update_current_user_context,
+    update_current_user_context, with_process_mut,
 };
 
 // Re-export process management functions

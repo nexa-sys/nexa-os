@@ -25,10 +25,10 @@ mod types;
 // Note: allocate_pid now comes from pid_tree module for radix tree based allocation
 pub use pid_tree::allocate_pid;
 pub use types::{
-    build_cmdline, Context, Pid, Process, ProcessState, DEFAULT_ARGV0, HEAP_BASE, HEAP_SIZE,
-    INTERP_BASE, INTERP_REGION_SIZE, KERNEL_STACK_ALIGN, KERNEL_STACK_SIZE, MAX_CMDLINE_SIZE,
-    MAX_PROCESSES, MAX_PROCESS_ARGS, STACK_BASE, STACK_SIZE, USER_PHYS_BASE, USER_REGION_SIZE,
-    USER_VIRT_BASE,
+    build_cmdline, clone_flags, Context, Pid, Process, ProcessState, DEFAULT_ARGV0, HEAP_BASE,
+    HEAP_SIZE, INTERP_BASE, INTERP_REGION_SIZE, KERNEL_STACK_ALIGN, KERNEL_STACK_SIZE,
+    MAX_CMDLINE_SIZE, MAX_PROCESSES, MAX_PROCESS_ARGS, STACK_BASE, STACK_SIZE, USER_PHYS_BASE,
+    USER_REGION_SIZE, USER_VIRT_BASE,
 };
 
 // Re-export PID management functions

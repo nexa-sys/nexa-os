@@ -175,6 +175,11 @@ pub struct Process {
     pub cmdline: [u8; MAX_CMDLINE_SIZE], // Command line arguments (null-separated, double-null terminated)
     pub cmdline_len: usize,              // Actual length of command line data
     pub open_fds: u16, // Bitmask of open file descriptors (bits 0-15 correspond to fd 3-18)
+    // Per-process exec context (fixes race condition with global EXEC_CONTEXT)
+    pub exec_pending: bool,   // True if execve has set new entry/stack
+    pub exec_entry: u64,      // New entry point after execve
+    pub exec_stack: u64,      // New stack pointer after execve  
+    pub exec_user_data_sel: u64, // User data segment selector
 }
 
 /// Legacy global PID counter (kept for reference, use pid_tree::allocate_pid instead)
