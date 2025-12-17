@@ -5,8 +5,9 @@
 ## 设计理念
 
 - **测试代码与内核代码分离** - 不需要在内核代码中使用 `#[cfg(test)]`
-- **测试纯逻辑** - 测试不依赖硬件的算法和数据结构
-- **Mock 组件** - 使用 mock 对象模拟硬件相关组件
+- **按子系统组织测试** - 每个内核子系统有独立的测试目录
+- **Mock 组件** - 使用 `mock/` 模块模拟硬件（CPU、中断控制器、设备等）
+- **集成测试** - `integration/` 目录测试多子系统协作
 
 ## 目录结构
 
@@ -15,19 +16,87 @@ tests/
 ├── Cargo.toml              # 独立的 Cargo 配置
 ├── .cargo/
 │   └── config.toml         # 覆盖父目录配置，使用 host target
+├── README.md               # 本文档
 └── src/
-    ├── lib.rs              # 测试入口
-    ├── posix.rs            # POSIX 类型测试
-    ├── algorithms/         # 算法测试
-    │   ├── bitmap.rs       # 位图分配器
-    │   ├── ring_buffer.rs  # 环形缓冲区
-    │   └── checksum.rs     # 校验和算法
-    ├── data_structures/    # 数据结构测试
-    │   ├── fixed_vec.rs    # 固定大小向量
-    │   └── path.rs         # 路径操作
-    └── mock/               # Mock 组件
-        ├── memory.rs       # 内存分配器 mock
-        └── scheduler.rs    # 调度器 mock
+    ├── lib.rs              # 测试入口 + 内核源码导入
+    │
+    ├── fs/                 # 文件系统测试
+    │   ├── mod.rs
+    │   ├── fstab.rs        # fstab 解析
+    │   └── comprehensive.rs # 文件描述符、inode 综合测试
+    │
+    ├── mm/                 # 内存管理测试
+    │   ├── mod.rs
+    │   ├── allocator.rs    # Buddy 分配器
+    │   ├── comprehensive.rs # 虚拟地址、分页、内存布局
+    │   └── safety.rs       # layout_of、layout_array 安全工具
+    │
+    ├── net/                # 网络协议栈测试
+    │   ├── mod.rs
+    │   ├── ethernet.rs     # 以太网帧
+    │   ├── ipv4.rs         # IPv4 地址和数据包
+    │   ├── arp.rs          # ARP 协议
+    │   ├── udp.rs          # UDP 数据报
+    │   ├── udp_helper.rs   # UDP 辅助函数
+    │   └── comprehensive.rs # 综合协议栈测试
+    │
+    ├── ipc/                # 进程间通信测试
+    │   ├── mod.rs
+    │   ├── signal.rs       # 信号处理
+    │   └── comprehensive.rs # 信号、管道综合测试
+    │
+    ├── process/            # 进程管理测试
+    │   ├── mod.rs
+    │   ├── types.rs        # ProcessState、Context 基础类型
+    │   ├── context.rs      # 进程上下文
+    │   ├── state.rs        # 状态转换
+    │   ├── thread.rs       # 线程管理
+    │   └── comprehensive.rs # PID 分配、生命周期综合测试
+    │
+    ├── scheduler/          # 调度器测试
+    │   ├── mod.rs
+    │   ├── types.rs        # CpuMask、SchedPolicy 基础类型
+    │   ├── basic.rs        # 基础调度测试
+    │   ├── eevdf.rs        # EEVDF 算法
+    │   ├── eevdf_vruntime.rs # vruntime 计算
+    │   ├── percpu.rs       # Per-CPU 队列
+    │   ├── smp.rs          # SMP 调度
+    │   ├── smp_comprehensive.rs # SMP 综合测试
+    │   └── stress.rs       # 压力测试
+    │
+    ├── kmod/               # 内核模块测试
+    │   ├── mod.rs
+    │   ├── crypto.rs       # 加密算法
+    │   ├── pkcs7.rs        # PKCS#7 签名
+    │   └── nkm.rs          # NKM 模块格式
+    │
+    ├── integration/        # 集成测试
+    │   ├── mod.rs
+    │   ├── boot.rs         # 启动流程
+    │   ├── devices.rs      # 设备初始化
+    │   ├── interrupt.rs    # 中断处理
+    │   ├── memory.rs       # 内存子系统
+    │   ├── smp.rs          # SMP 启动
+    │   └── scheduler_smp.rs # SMP 调度集成
+    │
+    ├── mock/               # 硬件模拟层
+    │   ├── mod.rs
+    │   ├── cpu.rs          # CPU 模拟
+    │   ├── memory.rs       # 内存模拟
+    │   ├── hal.rs          # 硬件抽象层
+    │   ├── pci.rs          # PCI 总线
+    │   ├── vm.rs           # 虚拟机环境
+    │   └── devices/        # 设备模拟
+    │       ├── lapic.rs    # Local APIC
+    │       ├── ioapic.rs   # I/O APIC
+    │       ├── pic.rs      # 8259 PIC
+    │       ├── pit.rs      # 8254 PIT
+    │       ├── rtc.rs      # RTC
+    │       └── uart.rs     # 串口
+    │
+    ├── interrupts.rs       # 中断处理单元测试
+    ├── syscalls.rs         # 系统调用接口测试
+    └── udrv.rs             # 用户态驱动框架测试
 ```
 
 ## 运行测试
@@ -39,13 +108,16 @@ tests/
 ./ndk test
 
 # 运行匹配模式的测试
-./ndk test --filter bitmap
+./ndk test --filter scheduler     # 调度器相关
+./ndk test --filter process       # 进程管理相关
+./ndk test --filter comprehensive # 所有综合测试
+./ndk test --filter eevdf         # EEVDF 算法测试
 
 # 详细输出
 ./ndk test --verbose
 
-# release 模式
-./ndk test --release
+# 生成覆盖率报告
+./ndk coverage html
 ```
 
 ### 直接使用 Cargo
@@ -54,8 +126,10 @@ tests/
 cd tests
 cargo test
 
-# 运行特定测试
-cargo test bitmap
+# 运行特定模块测试
+cargo test fs::                   # 文件系统测试
+cargo test net::                  # 网络测试
+cargo test scheduler::            # 调度器测试
 
 # 详细输出
 cargo test -- --nocapture
@@ -63,48 +137,50 @@ cargo test -- --nocapture
 
 ## 添加新测试
 
-### 1. 纯算法测试
+### 1. 在已有子系统中添加测试
 
-在 `src/algorithms/` 中添加新模块：
+在对应目录添加新文件，然后在 `mod.rs` 中导入：
 
 ```rust
-// src/algorithms/my_algorithm.rs
-
-pub fn my_function(input: u32) -> u32 {
-    input * 2
-}
-
+// 例如: src/fs/vfs.rs
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
-    fn test_my_function() {
-        assert_eq!(my_function(21), 42);
+    fn test_vfs_mount() {
+        // 测试代码
     }
 }
 ```
 
-然后在 `src/algorithms.rs` 中导出：
+然后在 `src/fs/mod.rs` 中添加：
 
 ```rust
-pub mod my_algorithm;
+mod vfs;
 ```
 
-### 2. Mock 组件测试
+### 2. 添加新的子系统测试
 
-对于需要模拟硬件的组件，在 `src/mock/` 中添加 mock 实现：
+1. 创建目录 `src/new_subsystem/`
+2. 创建 `src/new_subsystem/mod.rs`
+3. 在 `src/lib.rs` 中添加模块声明
+
+### 3. 使用 Mock 硬件
 
 ```rust
-// src/mock/my_device.rs
+use crate::mock::cpu::MockCpu;
+use crate::mock::devices::MockLapic;
 
-pub struct MockDevice {
-    // 模拟设备状态
-}
-
-impl MockDevice {
-    pub fn new() -> Self { ... }
-    pub fn read(&self) -> u8 { ... }
-    pub fn write(&mut self, val: u8) { ... }
+#[test]
+fn test_with_mock_hardware() {
+    let cpu = MockCpu::new();
+    let lapic = MockLapic::new();
+    // 使用模拟硬件进行测试
 }
 ```
+
+## 测试命名约定
+
+- 文件名: `snake_case.rs`
+- 测试函数: `功能描述>()`
+- 综合测试文件: `comprehensive.rs`
+- 类型定义测试: `types.rs`

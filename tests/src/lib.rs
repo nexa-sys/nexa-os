@@ -4,6 +4,19 @@
 //! Build.rs preprocesses kernel source to remove #[global_allocator] and
 //! #[alloc_error_handler] which conflict with std.
 //!
+//! # Module Organization
+//!
+//! Tests are organized by kernel subsystem:
+//! - `fs/` - Filesystem tests (fstab, inodes, file descriptors)
+//! - `mm/` - Memory management (allocator, paging, virtual memory)
+//! - `net/` - Network stack (Ethernet, IPv4, UDP, ARP)
+//! - `ipc/` - Inter-process communication (signals, pipes)
+//! - `process/` - Process management (context, state, threads)
+//! - `scheduler/` - Scheduler (EEVDF, per-CPU, SMP)
+//! - `kmod/` - Kernel modules (crypto, PKCS#7, NKM format)
+//! - `integration/` - Multi-subsystem integration tests
+//! - `mock/` - Hardware emulation layer
+//!
 //! # How it works
 //! 1. build.rs copies kernel source to build/kernel_src/, removing conflicting attributes
 //! 2. We include the preprocessed kernel source via #[path]
@@ -14,8 +27,6 @@
 #![allow(dead_code)]
 #![allow(unused_variables)]
 #![allow(unused_imports)]
-
-// Note: We use std's alloc, so no extern crate alloc needed
 
 // ===========================================================================
 // Kernel logging macros - output to stderr for test visibility
@@ -180,69 +191,51 @@ pub use security::elf;
 pub use tty::vt;
 
 // ===========================================================================
-// Test modules - organized by subsystem
+// Test Modules
 // ===========================================================================
+// Organized by kernel subsystem
 
-#[path = "net/mod.rs"]
-mod tests_net;
-
-#[path = "kmod/mod.rs"]
-mod tests_kmod;
-
+/// Filesystem tests (fstab, inodes, file descriptors)
 #[path = "fs/mod.rs"]
 mod tests_fs;
 
+/// Memory management tests (allocator, paging, virtual memory)
+#[path = "mm/mod.rs"]
+mod tests_mm;
+
+/// Network protocol stack tests (Ethernet, IPv4, UDP, ARP)
+#[path = "net/mod.rs"]
+mod tests_net;
+
+/// IPC and signal handling tests
 #[path = "ipc/mod.rs"]
 mod tests_ipc;
 
-#[path = "scheduler.rs"]
-mod tests_scheduler_basic;
+/// Process management tests (context, state, threads, PID)
+#[path = "process/mod.rs"]
+mod tests_process;
 
+/// Scheduler tests (EEVDF, per-CPU, SMP)
 #[path = "scheduler/mod.rs"]
 mod tests_scheduler;
 
-#[path = "process.rs"]
-mod tests_process;
+/// Kernel module tests (crypto, signing, NKM format)
+#[path = "kmod/mod.rs"]
+mod tests_kmod;
 
-#[path = "process/mod.rs"]
-mod tests_process_detailed;
-
-#[path = "safety.rs"]
-mod tests_safety;
-
-#[path = "mm.rs"]
-mod tests_mm;
-
+/// Multi-subsystem integration tests
 #[path = "integration/mod.rs"]
 mod tests_integration;
 
-#[path = "syscalls.rs"]
-mod tests_syscalls;
-
+/// Interrupt handling tests
 #[path = "interrupts.rs"]
 mod tests_interrupts;
 
+/// System call interface tests
+#[path = "syscalls.rs"]
+mod tests_syscalls;
+
+/// User-space driver framework tests
 #[path = "udrv.rs"]
 mod tests_udrv;
-
-// Comprehensive new test modules
-#[path = "memory_management.rs"]
-mod tests_memory_management;
-
-#[path = "process_management.rs"]
-mod tests_process_management;
-
-#[path = "filesystem_tests.rs"]
-mod tests_filesystem;
-
-#[path = "network_tests.rs"]
-mod tests_network_protocols;
-
-#[path = "ipc_tests.rs"]
-mod tests_ipc_comprehensive;
-
-#[path = "smp_scheduler_tests.rs"]
-mod tests_smp_scheduler;
-
-
 
