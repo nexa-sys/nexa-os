@@ -2,8 +2,13 @@
 //!
 //! This module contains all IPC-related tests including:
 //! - Signal delivery and handling
-//! - Pipes
+//! - Signal edge cases and POSIX compliance
+//! - Futex operations for pthread support
+//! - Pipes and ring buffers
 //! - Message queues
 
 mod comprehensive;
+mod futex;
+mod pipe;
 mod signal;
+mod signal_advanced;

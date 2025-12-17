@@ -4,6 +4,7 @@
 //! This module includes:
 //! - Basic scheduler types (CpuMask, SchedPolicy)
 //! - EEVDF algorithm and vruntime calculation
+//! - EEVDF nice value weights
 //! - Per-CPU queue management
 //! - SMP load balancing
 //! - Stress tests
@@ -11,6 +12,7 @@
 mod basic;
 mod eevdf;
 mod eevdf_vruntime;
+mod eevdf_weights;
 mod percpu;
 mod smp;
 mod smp_comprehensive;
@@ -20,6 +22,7 @@ mod types;
 pub use basic::*;
 pub use eevdf::*;
 pub use eevdf_vruntime::*;
+pub use eevdf_weights::*;
 pub use percpu::*;
 pub use smp::*;
 pub use smp_comprehensive::*;
