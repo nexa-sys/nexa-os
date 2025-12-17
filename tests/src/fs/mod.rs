@@ -12,5 +12,6 @@ mod cpio;
 mod cpio_edge_cases;
 mod fd;
 mod fd_edge_cases;
+mod fd_limits;
 mod fstab;
 mod vfs_edge_cases;

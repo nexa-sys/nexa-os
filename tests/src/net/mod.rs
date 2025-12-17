@@ -11,11 +11,13 @@
 
 mod arp;
 mod checksum_validation;
+mod checksum_edge_cases;
 mod comprehensive;
 mod dns;
 mod ethernet;
 mod ipv4;
 mod ipv4_validation;
+mod tcp_congestion;
 mod tcp_edge_cases;
 mod tcp_states;
 mod udp;

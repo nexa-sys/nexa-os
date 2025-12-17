@@ -124,8 +124,10 @@ pub fn pipe_write(pipe_id: PipeId, data: &[u8]) -> Result<usize, &'static str> {
     let pipe = &mut pipes[pipe_id];
 
     match pipe.state {
-        PipeState::Closed | PipeState::ReadClosed => Err("Pipe read end closed (SIGPIPE)"),
-        _ => {
+        PipeState::Closed => Err("Pipe is closed"),
+        PipeState::ReadClosed => Err("Pipe read end closed (SIGPIPE)"),
+        PipeState::WriteClosed => Err("Pipe write end closed"),
+        PipeState::Open => {
             if pipe.is_full() {
                 Err("Pipe buffer full (would block)")
             } else {

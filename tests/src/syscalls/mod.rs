@@ -12,4 +12,5 @@ mod clone_edge_cases;
 mod memory;
 mod memory_tests;
 mod mmap_edge_cases;
+mod parameter_stress;
 mod parameter_validation;

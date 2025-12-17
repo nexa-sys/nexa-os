@@ -17,6 +17,7 @@ mod fork;
 mod memory_constants_validation;
 mod memory_layout;
 mod memory_layout_validation;
+mod memory_stress;
 mod pid_edge_cases;
 mod pid_tree;
 mod pid_tree_edge_cases;

@@ -16,6 +16,7 @@ mod eevdf;
 mod eevdf_boundary;
 mod eevdf_comprehensive;
 mod eevdf_edge_cases;
+mod eevdf_priority;
 mod eevdf_vruntime;
 mod eevdf_weights;
 mod percpu;
