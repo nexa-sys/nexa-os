@@ -11,6 +11,7 @@
 //! - VMA (Virtual Memory Area) management
 
 mod allocator;
+mod brk_edge_cases;
 mod buddy;
 mod buddy_edge_cases;
 mod comprehensive;

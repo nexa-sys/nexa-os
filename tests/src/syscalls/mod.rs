@@ -7,6 +7,7 @@
 //! - Network operations
 //! - Clone/thread operations
 
+mod clone_comprehensive;
 mod clone_edge_cases;
 mod memory;
 mod memory_tests;
