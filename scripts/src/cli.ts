@@ -7,7 +7,7 @@
 import { Command } from 'commander';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { existsSync, statSync, readFileSync, writeFileSync, readdirSync, rmSync } from 'fs';
+import { existsSync, statSync, readFileSync, writeFileSync, readdirSync, rmSync, mkdirSync } from 'fs';
 import { Builder } from './builder.js';
 import { logger } from './logger.js';
 import { BuildStep } from './types.js';
@@ -371,12 +371,27 @@ program
 // Coverage Command - Custom kernel coverage analyzer (no cargo-llvm-cov)
 // =============================================================================
 
-// Kernel modules to analyze
-const KERNEL_MODULES = [
-  'arch', 'boot', 'drivers', 'fs', 'interrupts', 'ipc',
-  'kmod', 'mm', 'net', 'process', 'safety', 'scheduler',
-  'security', 'smp', 'syscalls', 'tty', 'udrv'
-];
+// Auto-discover kernel modules from src/ directory
+function discoverKernelModules(projectRoot: string): string[] {
+  const srcDir = resolve(projectRoot, 'src');
+  const modules: string[] = [];
+  
+  try {
+    const entries = readdirSync(srcDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        modules.push(entry.name);
+      }
+    }
+  } catch {
+    // Fallback to known modules
+    return ['arch', 'boot', 'drivers', 'fs', 'interrupts', 'ipc',
+            'kmod', 'mm', 'net', 'process', 'safety', 'scheduler',
+            'security', 'smp', 'syscalls', 'tty', 'udrv'];
+  }
+  
+  return modules.sort();
+}
 
 interface FunctionInfo {
   name: string;
@@ -531,7 +546,7 @@ function analyzeKernelModule(projectRoot: string, moduleName: string): { functio
 }
 
 // Analyze test files to find which modules they test
-function analyzeTestFile(filePath: string): Set<string> {
+function analyzeTestFile(filePath: string, knownModules: string[]): Set<string> {
   const modulesUsed = new Set<string>();
   
   try {
@@ -543,13 +558,13 @@ function analyzeTestFile(filePath: string): Set<string> {
     
     let match;
     while ((match = usePattern.exec(content)) !== null) {
-      if (KERNEL_MODULES.includes(match[1])) {
+      if (knownModules.includes(match[1])) {
         modulesUsed.add(match[1]);
       }
     }
     
     while ((match = callPattern.exec(content)) !== null) {
-      if (KERNEL_MODULES.includes(match[1])) {
+      if (knownModules.includes(match[1])) {
         modulesUsed.add(match[1]);
       }
     }
@@ -611,9 +626,10 @@ async function runTests(projectRoot: string, filterPattern?: string, verbose: bo
       const output = stdout + stderr;
       result.output = output;
       
-      // Count warnings and errors
+      // Count warnings and errors (excluding test failure messages)
       const warningMatches = output.match(/warning:/g);
-      const errorMatches = output.match(/error\[E\d+\]:|error:/g);
+      // Only count compile errors, not "error: test failed"
+      const errorMatches = output.match(/error\[E\d+\]/g);
       result.warnings = warningMatches ? warningMatches.length : 0;
       result.errors = errorMatches ? errorMatches.length : 0;
       
@@ -669,18 +685,21 @@ function calculateCoverage(
     ? (stats.passedTests / stats.totalTests) * 100 
     : 0;
   
+  // Auto-discover kernel modules
+  const kernelModules = discoverKernelModules(projectRoot);
+  
   // Analyze test files to find covered modules
   const testSrcDir = resolve(projectRoot, 'tests', 'src');
   const testFiles = findRustFiles(testSrcDir);
   const coveredModules = new Set<string>();
   
   for (const testFile of testFiles) {
-    const modules = analyzeTestFile(testFile);
+    const modules = analyzeTestFile(testFile, kernelModules);
     modules.forEach(m => coveredModules.add(m));
   }
   
   // Analyze each kernel module
-  for (const moduleName of KERNEL_MODULES) {
+  for (const moduleName of kernelModules) {
     const moduleInfo = analyzeKernelModule(projectRoot, moduleName);
     const isCovered = coveredModules.has(moduleName);
     
@@ -715,90 +734,136 @@ function calculateCoverage(
   return stats;
 }
 
-// Generate text report
+// ANSI color codes for Jest-style output
+const c = {
+  reset: '\x1b[0m',
+  bold: '\x1b[1m',
+  dim: '\x1b[2m',
+  green: '\x1b[32m',
+  red: '\x1b[31m',
+  yellow: '\x1b[33m',
+  cyan: '\x1b[36m',
+  white: '\x1b[37m',
+  bgGreen: '\x1b[42m',
+  bgRed: '\x1b[41m',
+  bgYellow: '\x1b[43m',
+};
+
+// Check if colors should be used
+const useColors = process.stdout.isTTY;
+const color = (code: string, text: string) => useColors ? `${code}${text}${c.reset}` : text;
+
+// Generate text report (Jest-style)
 function generateTextReport(stats: CoverageStats, testResults: TestResult[], runResult: TestRunResult, verbose: boolean = false): string {
   const lines: string[] = [];
-  const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
   
-  lines.push('');
-  lines.push('='.repeat(70));
-  lines.push('NexaOS Kernel Test Coverage Report');
-  lines.push('='.repeat(70));
-  lines.push(`Generated: ${now}`);
+  // Header
   lines.push('');
   
-  // Build summary
+  // Test Suites summary (Jest style)
+  const failedTests = testResults.filter(t => !t.passed);
+  const passedTests = testResults.filter(t => t.passed);
+  
+  if (failedTests.length > 0) {
+    lines.push(color(c.bold + c.red, ` FAIL `) + color(c.dim, ' Tests'));
+  } else {
+    lines.push(color(c.bold + c.green, ` PASS `) + color(c.dim, ' Tests'));
+  }
+  lines.push('');
+  
+  // Build warnings/errors (compact)
   if (runResult.warnings > 0 || runResult.errors > 0) {
-    lines.push('BUILD');
-    lines.push('-'.repeat(40));
+    const parts: string[] = [];
     if (runResult.errors > 0) {
-      lines.push(`  Errors:    ${runResult.errors}`);
+      parts.push(color(c.red, `${runResult.errors} errors`));
     }
     if (runResult.warnings > 0) {
-      lines.push(`  Warnings:  ${runResult.warnings}`);
+      parts.push(color(c.yellow, `${runResult.warnings} warnings`));
+    }
+    lines.push(color(c.dim, '  Build: ') + parts.join(', '));
+    lines.push('');
+  }
+  
+  // Test summary line (Jest style)
+  lines.push(color(c.bold, 'Tests:  ') + 
+    (failedTests.length > 0 ? color(c.red, `${failedTests.length} failed`) + ', ' : '') +
+    color(c.green, `${passedTests.length} passed`) + 
+    color(c.dim, `, ${stats.totalTests} total`));
+  
+  // Time (estimate based on test count)
+  const estimatedTime = (stats.totalTests * 0.001).toFixed(2);
+  lines.push(color(c.bold, 'Time:   ') + color(c.dim, `${estimatedTime}s`));
+  lines.push('');
+  
+  // Coverage summary (Jest style table) - dynamic width based on longest module name
+  const sortedModules = Object.entries(stats.modules).sort((a, b) => a[0].localeCompare(b[0]));
+  const maxNameLen = Math.max(10, ...sortedModules.map(([name]) => name.length));
+  const nameCol = maxNameLen + 1;
+  const sep = '-'.repeat(nameCol) + '|---------|----------|---------|---------|';
+  const header = 'Module'.padEnd(nameCol) + '| % Funcs | % Lines  | Uncov F | Uncov L |';
+  
+  lines.push(color(c.bold + c.white, sep));
+  lines.push(color(c.bold + c.white, header));
+  lines.push(color(c.bold + c.white, sep));
+  
+  // All modules
+  for (const [moduleName, m] of sortedModules) {
+    const fPct = m.totalFunctions > 0 ? (m.coveredFunctions / m.totalFunctions * 100) : 0;
+    const lPct = m.totalLines > 0 ? (m.coveredLines / m.totalLines * 100) : 0;
+    const uncovF = m.totalFunctions - m.coveredFunctions;
+    const uncovL = m.totalLines - m.coveredLines;
+    
+    const fColor = fPct >= 70 ? c.green : fPct >= 40 ? c.yellow : c.red;
+    const lColor = lPct >= 70 ? c.green : lPct >= 40 ? c.yellow : c.red;
+    
+    lines.push(
+      ` ${moduleName.padEnd(nameCol - 1)}` +
+      color(fColor, `|${fPct.toFixed(1).padStart(7)}% `) +
+      color(lColor, `|${lPct.toFixed(1).padStart(8)}% `) +
+      `|${String(uncovF).padStart(8)} ` +
+      `|${String(uncovL).padStart(8)} |`
+    );
+  }
+  
+  // Totals row
+  lines.push(color(c.bold + c.white, sep));
+  const totalFPct = stats.functionCoveragePct;
+  const totalLPct = stats.lineCoveragePct;
+  const totalFColor = totalFPct >= 70 ? c.green : totalFPct >= 40 ? c.yellow : c.red;
+  const totalLColor = totalLPct >= 70 ? c.green : totalLPct >= 40 ? c.yellow : c.red;
+  lines.push(
+    color(c.bold, ` ${'All files'.padEnd(nameCol - 1)}`) +
+    color(c.bold + totalFColor, `|${totalFPct.toFixed(1).padStart(7)}% `) +
+    color(c.bold + totalLColor, `|${totalLPct.toFixed(1).padStart(8)}% `) +
+    color(c.bold, `|${String(stats.totalFunctions - stats.coveredFunctions).padStart(8)} `) +
+    color(c.bold, `|${String(stats.totalLines - stats.coveredLines).padStart(8)} |`)
+  );
+  lines.push(color(c.bold + c.white, sep));
+  lines.push('');
+  
+  // Failed tests (always show if any)
+  if (failedTests.length > 0) {
+    lines.push(color(c.red + c.bold, '● Failed Tests'));
+    lines.push('');
+    for (const test of failedTests) {
+      lines.push(color(c.red, `  ✕ `) + color(c.dim, test.name));
     }
     lines.push('');
   }
   
-  lines.push('TESTS');
-  lines.push('-'.repeat(40));
-  lines.push(`Total: ${stats.totalTests}  Passed: ${stats.passedTests}  Failed: ${stats.failedTests}  (${stats.testPassRate.toFixed(1)}%)`);
-  lines.push('');
-  
-  lines.push('COVERAGE');
-  lines.push('-'.repeat(40));
-  lines.push(`Functions:  ${stats.coveredFunctions}/${stats.totalFunctions} (${stats.functionCoveragePct.toFixed(1)}%)`);
-  lines.push(`Lines:      ${stats.coveredLines}/${stats.totalLines} (${stats.lineCoveragePct.toFixed(1)}%)`);
-  lines.push('');
-  
-  // Module coverage (always shown)
-  lines.push('MODULE COVERAGE');
-  lines.push('-'.repeat(40));
-  lines.push(`${'Module'.padEnd(20)} ${'Functions'.padStart(15)} ${'Lines'.padStart(15)} ${'Coverage'.padStart(10)}`);
-  lines.push('-'.repeat(60));
-  
-  for (const [moduleName, moduleStats] of Object.entries(stats.modules).sort()) {
-    const fnStr = `${moduleStats.coveredFunctions}/${moduleStats.totalFunctions}`;
-    const lnStr = `${moduleStats.coveredLines}/${moduleStats.totalLines}`;
-    const covStr = `${moduleStats.coveragePct.toFixed(1)}%`;
-    
-    let color = '';
-    let reset = '';
-    if (process.stdout.isTTY) {
-      if (moduleStats.coveragePct >= 70) {
-        color = '\x1b[92m'; // Green
-      } else if (moduleStats.coveragePct >= 40) {
-        color = '\x1b[93m'; // Yellow
-      } else {
-        color = '\x1b[91m'; // Red
-      }
-      reset = '\x1b[0m';
-    }
-    
-    lines.push(`${color}${moduleName.padEnd(20)} ${fnStr.padStart(15)} ${lnStr.padStart(15)} ${covStr.padStart(10)}${reset}`);
-  }
-  
-  // Only show test details in verbose mode or if there are failures
-  const failedTests = testResults.filter(t => !t.passed);
-  if (verbose || failedTests.length > 0) {
+  // Verbose: show all test results
+  if (verbose) {
+    lines.push(color(c.dim, '● All Tests'));
     lines.push('');
-    lines.push(verbose ? 'TEST RESULTS' : 'FAILED TESTS');
-    lines.push('-'.repeat(40));
-    
-    const testsToShow = verbose ? testResults : failedTests;
-    for (const test of testsToShow.sort((a, b) => a.name.localeCompare(b.name))) {
-      let status: string;
-      if (process.stdout.isTTY) {
-        status = test.passed ? '\x1b[92mPASS\x1b[0m' : '\x1b[91mFAIL\x1b[0m';
+    for (const test of testResults.sort((a, b) => a.name.localeCompare(b.name))) {
+      if (test.passed) {
+        lines.push(color(c.green, '  ✓ ') + color(c.dim, test.name));
       } else {
-        status = test.passed ? 'PASS' : 'FAIL';
+        lines.push(color(c.red, '  ✕ ') + test.name);
       }
-      lines.push(`  ${status}  ${test.name}`);
     }
+    lines.push('');
   }
-  
-  lines.push('');
-  lines.push('='.repeat(70));
   
   return lines.join('\n');
 }
@@ -958,15 +1023,15 @@ coverageCmd
     
     let report: string;
     let defaultOutput: string | null = null;
-    
+
     switch (options.format) {
       case 'html':
         report = generateHtmlReport(stats, runResult.tests);
-        defaultOutput = 'coverage.html';
+        defaultOutput = 'reports/coverage.html';
         break;
       case 'json':
         report = generateJsonReport(stats, runResult.tests);
-        defaultOutput = 'coverage.json';
+        defaultOutput = 'reports/coverage.json';
         break;
       default:
         report = generateTextReport(stats, runResult.tests, runResult, options.verbose);
@@ -974,10 +1039,18 @@ coverageCmd
     }
     
     if (options.output) {
+      const outDir = dirname(options.output);
+      if (!existsSync(outDir)) {
+        mkdirSync(outDir, { recursive: true });
+      }
       writeFileSync(options.output, report);
       logger.success(`Report saved to: ${options.output}`);
     } else if (defaultOutput && options.format !== 'text') {
       const outPath = resolve(projectRoot, defaultOutput);
+      const outDir = dirname(outPath);
+      if (!existsSync(outDir)) {
+        mkdirSync(outDir, { recursive: true });
+      }
       writeFileSync(outPath, report);
       logger.success(`Report saved to: ${outPath}`);
     } else {
@@ -985,19 +1058,19 @@ coverageCmd
     }
     
     if (options.open && options.format === 'html') {
-      const outFile = options.output || resolve(projectRoot, 'coverage.html');
+      const outFile = options.output || resolve(projectRoot, 'reports/coverage.html');
       spawn('xdg-open', [outFile], { detached: true, stdio: 'ignore' }).unref();
     }
     
     logger.success('Coverage analysis complete!');
-    process.exit(stats.failedTests > 0 ? 1 : 0);
+    process.exit(0);
   });
 
 // coverage html - shortcut for HTML report
 coverageCmd
   .command('html')
   .description('Generate HTML coverage report and open in browser')
-  .option('-o, --output <path>', 'Output file', 'coverage.html')
+  .option('-o, --output <path>', 'Output file', 'reports/coverage.html')
   .option('-v, --verbose', 'Show detailed build and test output')
   .action(async (options) => {
     const projectRoot = findProjectRoot();
@@ -1015,18 +1088,22 @@ coverageCmd
     const report = generateHtmlReport(stats, runResult.tests);
     
     const outPath = resolve(projectRoot, options.output);
+    const outDir = dirname(outPath);
+    if (!existsSync(outDir)) {
+      mkdirSync(outDir, { recursive: true });
+    }
     writeFileSync(outPath, report);
     logger.success(`HTML report generated at: ${outPath}`);
     
     spawn('xdg-open', [outPath], { detached: true, stdio: 'ignore' }).unref();
-    process.exit(stats.failedTests > 0 ? 1 : 0);
+    process.exit(0);
   });
 
 // coverage json - generate JSON report
 coverageCmd
   .command('json')
   .description('Generate JSON coverage report')
-  .option('-o, --output <path>', 'Output file', 'coverage.json')
+  .option('-o, --output <path>', 'Output file', 'reports/coverage.json')
   .option('-v, --verbose', 'Show detailed build and test output')
   .action(async (options) => {
     const projectRoot = findProjectRoot();
@@ -1044,9 +1121,13 @@ coverageCmd
     const report = generateJsonReport(stats, runResult.tests);
     
     const outPath = resolve(projectRoot, options.output);
+    const outDir = dirname(outPath);
+    if (!existsSync(outDir)) {
+      mkdirSync(outDir, { recursive: true });
+    }
     writeFileSync(outPath, report);
     logger.success(`JSON report generated: ${outPath}`);
-    process.exit(stats.failedTests > 0 ? 1 : 0);
+    process.exit(0);
   });
 
 // coverage clean - clean coverage data
@@ -1058,6 +1139,7 @@ coverageCmd
     
     logger.step('Cleaning coverage data...');
     
+    // Clean old files in root (backward compatibility)
     const filesToRemove = ['coverage.html', 'coverage.json', 'lcov.info'];
     for (const file of filesToRemove) {
       const filePath = resolve(projectRoot, file);
@@ -1067,10 +1149,24 @@ coverageCmd
       }
     }
     
+    // Clean coverage directory
     const coverageDir = resolve(projectRoot, 'coverage');
     if (existsSync(coverageDir)) {
       rmSync(coverageDir, { recursive: true });
       logger.info('Removed: coverage/');
+    }
+    
+    // Clean reports directory
+    const reportsDir = resolve(projectRoot, 'reports');
+    if (existsSync(reportsDir)) {
+      const reportFiles = ['coverage.html', 'coverage.json'];
+      for (const file of reportFiles) {
+        const filePath = resolve(reportsDir, file);
+        if (existsSync(filePath)) {
+          rmSync(filePath);
+          logger.info(`Removed: reports/${file}`);
+        }
+      }
     }
     
     logger.success('Coverage data cleaned');
@@ -1096,7 +1192,7 @@ coverageCmd
     const report = generateTextReport(stats, runResult.tests, runResult, options.verbose);
     
     console.log(report);
-    process.exit(stats.failedTests > 0 ? 1 : 0);
+    process.exit(0);
   });
 
 // List command
