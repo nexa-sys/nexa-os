@@ -545,34 +545,101 @@ function analyzeKernelModule(projectRoot: string, moduleName: string): { functio
   return result;
 }
 
-// Analyze test files to find which modules they test
-function analyzeTestFile(filePath: string, knownModules: string[]): Set<string> {
-  const modulesUsed = new Set<string>();
+// Extract function calls from test file content
+function extractFunctionCalls(content: string): Set<string> {
+  const calls = new Set<string>();
   
-  try {
-    const content = readFileSync(filePath, 'utf-8');
-    
-    // Find use statements and module references
-    const usePattern = /use\s+(?:crate::)?(\w+)(?:::\w+)*/g;
-    const callPattern = /(\w+)::\w+\s*\(/g;
-    
+  // Match function calls: module::submodule::function_name(
+  // Also match method calls: .function_name(
+  // Also match direct calls: function_name(
+  const patterns = [
+    /(\w+)::(\w+)::(\w+)\s*\(/g,           // module::submod::func(
+    /(\w+)::(\w+)\s*\(/g,                   // module::func( or Type::method(
+    /\.(\w+)\s*\(/g,                         // .method(
+    /(?<![:\w])(\w+)\s*\(/g,                // standalone func(
+  ];
+  
+  for (const pattern of patterns) {
     let match;
-    while ((match = usePattern.exec(content)) !== null) {
-      if (knownModules.includes(match[1])) {
-        modulesUsed.add(match[1]);
+    while ((match = pattern.exec(content)) !== null) {
+      // Get the function name (last capturing group)
+      const funcName = match[match.length - 1];
+      if (funcName && !isRustKeyword(funcName)) {
+        calls.add(funcName);
+      }
+      // Also add qualified names
+      if (match.length >= 3) {
+        calls.add(`${match[1]}::${match[2]}`);
+      }
+      if (match.length >= 4) {
+        calls.add(`${match[2]}::${match[3]}`);
       }
     }
-    
-    while ((match = callPattern.exec(content)) !== null) {
-      if (knownModules.includes(match[1])) {
-        modulesUsed.add(match[1]);
-      }
-    }
-  } catch {
-    // Ignore errors
   }
   
-  return modulesUsed;
+  return calls;
+}
+
+// Check if a word is a Rust keyword (to filter out false positives)
+function isRustKeyword(word: string): boolean {
+  const keywords = new Set([
+    'if', 'else', 'for', 'while', 'loop', 'match', 'return', 'break',
+    'continue', 'fn', 'let', 'mut', 'const', 'static', 'pub', 'use',
+    'mod', 'struct', 'enum', 'impl', 'trait', 'type', 'where', 'async',
+    'await', 'move', 'ref', 'self', 'super', 'crate', 'as', 'in',
+    'Some', 'None', 'Ok', 'Err', 'true', 'false', 'assert', 'assert_eq',
+    'assert_ne', 'debug_assert', 'panic', 'println', 'eprintln', 'format',
+    'vec', 'box', 'dyn', 'unsafe', 'extern', 'sizeof', 'typeof',
+  ]);
+  return keywords.has(word);
+}
+
+// Analyze all test files to find actually covered functions
+function analyzeTestCoverage(projectRoot: string): Map<string, Set<string>> {
+  const testSrcDir = resolve(projectRoot, 'tests', 'src');
+  const testFiles = findRustFiles(testSrcDir);
+  
+  // Map: module name -> set of covered function names
+  const coverage = new Map<string, Set<string>>();
+  
+  for (const testFile of testFiles) {
+    try {
+      const content = readFileSync(testFile, 'utf-8');
+      const calls = extractFunctionCalls(content);
+      
+      // Determine which module this test file covers
+      const relativePath = testFile.replace(testSrcDir, '').replace(/^[\/\\]/, '');
+      const parts = relativePath.split(/[\/\\]/);
+      
+      // Try to match to a kernel module
+      // e.g., tests/src/scheduler/mod.rs -> scheduler
+      // e.g., tests/src/integration/scheduler_smp.rs -> scheduler
+      let moduleName = parts[0].replace(/\.rs$/, '');
+      
+      // Handle integration tests that reference modules in filename
+      if (moduleName === 'integration' && parts.length > 1) {
+        const filename = parts[1].replace(/\.rs$/, '');
+        // Extract module name from integration test filename
+        // e.g., scheduler_smp.rs -> scheduler
+        const match = filename.match(/^(\w+?)(?:_|$)/);
+        if (match) {
+          moduleName = match[1];
+        }
+      }
+      
+      if (!coverage.has(moduleName)) {
+        coverage.set(moduleName, new Set());
+      }
+      
+      const moduleCalls = coverage.get(moduleName)!;
+      calls.forEach(c => moduleCalls.add(c));
+      
+    } catch {
+      // Ignore errors
+    }
+  }
+  
+  return coverage;
 }
 
 // Run cargo test and parse results
@@ -688,27 +755,34 @@ function calculateCoverage(
   // Auto-discover kernel modules
   const kernelModules = discoverKernelModules(projectRoot);
   
-  // Analyze test files to find covered modules
-  const testSrcDir = resolve(projectRoot, 'tests', 'src');
-  const testFiles = findRustFiles(testSrcDir);
-  const coveredModules = new Set<string>();
-  
-  for (const testFile of testFiles) {
-    const modules = analyzeTestFile(testFile, kernelModules);
-    modules.forEach(m => coveredModules.add(m));
-  }
+  // Analyze test files to find actually covered functions per module
+  const testCoverage = analyzeTestCoverage(projectRoot);
   
   // Analyze each kernel module
   for (const moduleName of kernelModules) {
     const moduleInfo = analyzeKernelModule(projectRoot, moduleName);
-    const isCovered = coveredModules.has(moduleName);
-    
     const moduleTotal = moduleInfo.functions.length;
-    // Estimate coverage: if module is tested, assume ~60% function coverage
-    const moduleCovered = isCovered ? Math.floor(moduleTotal * 0.6) : 0;
-    const moduleCoveredLines = isCovered 
-      ? Math.floor(moduleInfo.codeLines * 0.6) 
-      : 0;
+    
+    // Get function names that are covered by tests
+    const coveredFuncNames = testCoverage.get(moduleName) || new Set<string>();
+    
+    // Count actually covered functions by matching names
+    let moduleCovered = 0;
+    let moduleCoveredLines = 0;
+    
+    for (const func of moduleInfo.functions) {
+      // Check if this function is called in tests
+      const isCovered = coveredFuncNames.has(func.name) ||
+        // Also check qualified names like "module::func"
+        Array.from(coveredFuncNames).some(name => 
+          name.endsWith(`::${func.name}`) || name === func.name
+        );
+      
+      if (isCovered) {
+        moduleCovered++;
+        moduleCoveredLines += (func.lineEnd - func.lineStart + 1);
+      }
+    }
     
     stats.modules[moduleName] = {
       totalFunctions: moduleTotal,
