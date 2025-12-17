@@ -1,5 +1,3 @@
-#[cfg(test)]
-use super::drivers::NetError;
 /// UDP helper utilities and higher-level abstractions
 ///
 /// This module provides:
@@ -8,13 +6,13 @@ use super::drivers::NetError;
 /// - Buffer management utilities
 /// - Protocol handler abstractions
 
-#[cfg(test)]
-use super::ipv4::Ipv4Address;
-
 // Note: UdpMessage is not used in production code, only in tests
 // If needed in production, use references to avoid large stack allocations
 /// UDP message for higher-level access (NOT RECOMMENDED for production use)
 /// Use references or slices instead to avoid 64KB stack allocation
+#[cfg(test)]
+use super::drivers::NetError;
+
 #[cfg(test)]
 #[derive(Clone)]
 pub struct UdpMessage {
@@ -126,18 +124,6 @@ impl UdpConnectionContext {
 
 // UdpProtocolHandler trait is deprecated - don't use in production
 // Use raw buffer processing instead to avoid large allocations
-#[cfg(test)]
-/// UDP protocol handler trait (test-only, uses large UdpMessage)
-pub trait UdpProtocolHandler {
-    /// Handle incoming UDP packet
-    fn handle_packet(&mut self, message: &UdpMessage) -> Result<(), NetError>;
-
-    /// Called periodically for protocol timeouts, retransmissions, etc.
-    fn poll(&mut self) -> Result<(), NetError>;
-
-    /// Check if this handler is interested in the given destination port
-    fn handles_port(&self, port: u16) -> bool;
-}
 
 /// DNS-like protocol helper (port 53)
 pub struct DnsHelper {
