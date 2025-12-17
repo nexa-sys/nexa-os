@@ -11,7 +11,10 @@
 
 mod comprehensive;
 mod context;
+mod context_switch;
+mod elf_loader;
 mod fork;
+mod memory_layout;
 mod pid_tree;
 mod state;
 mod state_machine;
@@ -20,7 +23,10 @@ mod types;
 
 pub use comprehensive::*;
 pub use context::*;
+pub use context_switch::*;
+pub use elf_loader::*;
 pub use fork::*;
+pub use memory_layout::*;
 pub use pid_tree::*;
 pub use state::*;
 pub use state_machine::*;

@@ -11,7 +11,9 @@
 mod comprehensive;
 mod futex;
 mod pipe;
+mod pipe_edge_cases;
 mod signal;
 mod signal_advanced;
+mod signal_comprehensive;
 mod signal_edge_cases;
 mod socketpair;

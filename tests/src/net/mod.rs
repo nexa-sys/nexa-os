@@ -14,6 +14,7 @@ mod comprehensive;
 mod dns;
 mod ethernet;
 mod ipv4;
+mod tcp_edge_cases;
 mod tcp_states;
 mod udp;
 mod udp_helper;

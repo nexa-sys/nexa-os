@@ -321,26 +321,32 @@ fn test_scheduler_need_resched_flag() {
 fn test_scheduler_need_resched_concurrent() {
     let cpu = Arc::new(PerCpuSchedData::new(0));
     let barrier = Arc::new(Barrier::new(2));
+    let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
     
     let cpu_clone = Arc::clone(&cpu);
     let barrier_clone = Arc::clone(&barrier);
+    let done_clone = Arc::clone(&done);
     
     // Thread 1: Sets need_resched repeatedly
     let setter = thread::spawn(move || {
         barrier_clone.wait();
         for _ in 0..1000 {
             cpu_clone.run_queue.lock().set_need_resched(true);
+            thread::yield_now(); // Allow other thread to observe
         }
+        done_clone.store(true, std::sync::atomic::Ordering::Release);
     });
     
-    // Thread 2: Checks and clears
+    // Thread 2: Checks and clears until setter is done
+    let cpu_checker = Arc::clone(&cpu);
     let checker = thread::spawn(move || {
         barrier.wait();
         let mut true_count = 0;
-        for _ in 0..1000 {
-            if cpu.run_queue.lock().check_need_resched() {
+        while !done.load(std::sync::atomic::Ordering::Acquire) || true_count == 0 {
+            if cpu_checker.run_queue.lock().check_need_resched() {
                 true_count += 1;
             }
+            thread::yield_now();
         }
         true_count
     });

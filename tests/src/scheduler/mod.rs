@@ -16,6 +16,7 @@ mod eevdf_edge_cases;
 mod eevdf_vruntime;
 mod eevdf_weights;
 mod percpu;
+mod priority_tests;
 mod smp;
 mod smp_comprehensive;
 mod stress;

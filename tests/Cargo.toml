@@ -5,7 +5,7 @@ edition = "2021"
 description = "Full kernel unit tests with hardware mocks"
 publish = false
 build = "build.rs"
-
+# run tests with `ndk test`
 [lib]
 path = "src/lib.rs"
 
