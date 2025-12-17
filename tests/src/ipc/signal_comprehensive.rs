@@ -131,14 +131,33 @@ mod tests {
             state.block_signal(sig as u32);
         }
         
-        // Send all signals
+        // Send all signals except SIGKILL and SIGSTOP (which can't be blocked)
         for sig in 1..NSIG {
+            if sig as u32 == SIGKILL || sig as u32 == SIGSTOP {
+                continue;
+            }
             let _ = state.send_signal(sig as u32);
         }
         
-        // No signal should be deliverable
+        // No signal should be deliverable (SIGKILL/SIGSTOP weren't sent)
         assert!(state.has_pending_signal().is_none(), 
                "All blocked signals should not be deliverable");
+    }
+
+    #[test]
+    fn test_sigkill_sigstop_always_deliverable() {
+        let mut state = SignalState::new();
+        
+        // Try to block SIGKILL and SIGSTOP
+        state.block_signal(SIGKILL);
+        state.block_signal(SIGSTOP);
+        
+        // Send SIGKILL
+        state.send_signal(SIGKILL).unwrap();
+        
+        // SIGKILL should still be deliverable (cannot be blocked per POSIX)
+        assert_eq!(state.has_pending_signal(), Some(SIGKILL),
+            "SIGKILL cannot be blocked per POSIX");
     }
 
     #[test]

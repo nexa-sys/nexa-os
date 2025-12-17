@@ -490,7 +490,39 @@ const c = {
 const useColors = process.stdout.isTTY;
 const color = (code: string, text: string) => useColors ? `${code}${text}${c.reset}` : text;
 
-// Generate text report (Jest-style)
+/** Format uncovered line numbers in compact ranges (e.g., "21,45-52,89") */
+function formatUncoveredLines(lines: number[], maxLength: number = 25): string {
+  if (lines.length === 0) return '';
+  
+  // Sort and dedupe
+  const sorted = [...new Set(lines)].sort((a, b) => a - b);
+  
+  // Group into ranges
+  const ranges: string[] = [];
+  let start = sorted[0];
+  let end = sorted[0];
+  
+  for (let i = 1; i < sorted.length; i++) {
+    if (sorted[i] === end + 1) {
+      end = sorted[i];
+    } else {
+      ranges.push(start === end ? String(start) : `${start}-${end}`);
+      start = sorted[i];
+      end = sorted[i];
+    }
+  }
+  ranges.push(start === end ? String(start) : `${start}-${end}`);
+  
+  // Join and truncate if too long
+  let result = ranges.join(',');
+  if (result.length > maxLength) {
+    result = result.slice(0, maxLength - 3) + '...';
+  }
+  
+  return result;
+}
+
+// Generate text report (Jest-style with file details)
 function generateTextReport(stats: CoverageStats, testResults: TestResult[], runResult: TestRunResult, verbose: boolean = false): string {
   const lines: string[] = [];
   
@@ -532,50 +564,114 @@ function generateTextReport(stats: CoverageStats, testResults: TestResult[], run
   lines.push(color(c.bold, 'Time:   ') + color(c.dim, `${estimatedTime}s`));
   lines.push('');
   
-  // Coverage summary (Jest style table) - dynamic width based on longest module name
+  // Coverage summary table - Jest style with % Stmts, % Branch, % Funcs, % Lines, Uncovered Lines
   const sortedModules = Object.entries(stats.modules).sort((a, b) => a[0].localeCompare(b[0]));
-  const maxNameLen = Math.max(10, ...sortedModules.map(([name]) => name.length));
-  const nameCol = maxNameLen + 1;
-  const sep = '-'.repeat(nameCol) + '|---------|----------|---------|---------|';
-  const header = 'Module'.padEnd(nameCol) + '| % Funcs | % Lines  | Uncov F | Uncov L |';
   
-  lines.push(color(c.bold + c.white, sep));
-  lines.push(color(c.bold + c.white, header));
-  lines.push(color(c.bold + c.white, sep));
-  
-  // All modules
+  // Calculate max file path length for proper column width
+  let maxPathLen = 20;
   for (const [moduleName, m] of sortedModules) {
+    maxPathLen = Math.max(maxPathLen, moduleName.length + 2);
+    if (verbose && m.files) {
+      for (const f of m.files) {
+        maxPathLen = Math.max(maxPathLen, f.filePath.length + 4);
+      }
+    }
+  }
+  const pathCol = Math.min(maxPathLen + 1, 45); // Cap at 45 chars
+  
+  // Build header
+  const sepLine = '-'.repeat(pathCol) + '|----------|----------|----------|----------|-------------------|';
+  const headerLine = 'File'.padEnd(pathCol) + '| % Stmts  | % Branch | % Funcs  | % Lines  | Uncovered Line #s |';
+  
+  lines.push(color(c.bold + c.white, sepLine));
+  lines.push(color(c.bold + c.white, headerLine));
+  lines.push(color(c.bold + c.white, sepLine));
+  
+  // All modules and files
+  for (const [moduleName, m] of sortedModules) {
+    const sPct = m.totalStatements > 0 ? (m.coveredStatements / m.totalStatements * 100) : 0;
+    const bPct = m.totalBranches > 0 ? (m.coveredBranches / m.totalBranches * 100) : 0;
     const fPct = m.totalFunctions > 0 ? (m.coveredFunctions / m.totalFunctions * 100) : 0;
     const lPct = m.totalLines > 0 ? (m.coveredLines / m.totalLines * 100) : 0;
-    const uncovF = m.totalFunctions - m.coveredFunctions;
-    const uncovL = m.totalLines - m.coveredLines;
     
+    const sColor = sPct >= 70 ? c.green : sPct >= 40 ? c.yellow : c.red;
+    const bColor = bPct >= 70 ? c.green : bPct >= 40 ? c.yellow : c.red;
     const fColor = fPct >= 70 ? c.green : fPct >= 40 ? c.yellow : c.red;
     const lColor = lPct >= 70 ? c.green : lPct >= 40 ? c.yellow : c.red;
     
+    // Module row (bold)
+    const modPath = moduleName.padEnd(pathCol - 1);
     lines.push(
-      ` ${moduleName.padEnd(nameCol - 1)}` +
-      color(fColor, `|${fPct.toFixed(1).padStart(7)}% `) +
-      color(lColor, `|${lPct.toFixed(1).padStart(8)}% `) +
-      `|${String(uncovF).padStart(8)} ` +
-      `|${String(uncovL).padStart(8)} |`
+      color(c.bold, ` ${modPath}`) +
+      color(sColor, `|${sPct.toFixed(2).padStart(8)}% `) +
+      color(bColor, `|${bPct.toFixed(2).padStart(8)}% `) +
+      color(fColor, `|${fPct.toFixed(2).padStart(8)}% `) +
+      color(lColor, `|${lPct.toFixed(2).padStart(8)}% `) +
+      `|${' '.repeat(18)}|`
     );
+    
+    // File details in verbose mode
+    if (verbose && m.files) {
+      // Sort files by coverage (lowest first) to highlight problem areas
+      const sortedFiles = [...m.files].sort((a, b) => {
+        const aCov = a.totalFunctions > 0 ? a.coveredFunctions / a.totalFunctions : 0;
+        const bCov = b.totalFunctions > 0 ? b.coveredFunctions / b.totalFunctions : 0;
+        return aCov - bCov;
+      });
+      
+      for (const f of sortedFiles) {
+        const fsPct = f.totalStatements > 0 ? (f.coveredStatements / f.totalStatements * 100) : 0;
+        const fbPct = f.totalBranches > 0 ? (f.coveredBranches / f.totalBranches * 100) : 0;
+        const ffPct = f.totalFunctions > 0 ? (f.coveredFunctions / f.totalFunctions * 100) : 0;
+        const flPct = f.totalLines > 0 ? (f.coveredLines / f.totalLines * 100) : 0;
+        
+        const fsColor = fsPct >= 70 ? c.green : fsPct >= 40 ? c.yellow : c.red;
+        const fbColor = fbPct >= 70 ? c.green : fbPct >= 40 ? c.yellow : c.red;
+        const ffColor = ffPct >= 70 ? c.green : ffPct >= 40 ? c.yellow : c.red;
+        const flColor = flPct >= 70 ? c.green : flPct >= 40 ? c.yellow : c.red;
+        
+        // Truncate file path if needed
+        let filePath = '  ' + f.filePath;
+        if (filePath.length > pathCol - 1) {
+          filePath = '  ...' + f.filePath.slice(-(pathCol - 6));
+        }
+        
+        // Format uncovered lines
+        const uncovStr = formatUncoveredLines(f.uncoveredLineNumbers, 17);
+        
+        lines.push(
+          color(c.dim, filePath.padEnd(pathCol - 1)) +
+          color(fsColor, `|${fsPct.toFixed(2).padStart(8)}% `) +
+          color(fbColor, `|${fbPct.toFixed(2).padStart(8)}% `) +
+          color(ffColor, `|${ffPct.toFixed(2).padStart(8)}% `) +
+          color(flColor, `|${flPct.toFixed(2).padStart(8)}% `) +
+          `|${uncovStr.padEnd(18)}|`
+        );
+      }
+    }
   }
   
   // Totals row
-  lines.push(color(c.bold + c.white, sep));
+  lines.push(color(c.bold + c.white, sepLine));
+  const totalSPct = stats.statementCoveragePct;
+  const totalBPct = stats.branchCoveragePct;
   const totalFPct = stats.functionCoveragePct;
   const totalLPct = stats.lineCoveragePct;
+  
+  const totalSColor = totalSPct >= 70 ? c.green : totalSPct >= 40 ? c.yellow : c.red;
+  const totalBColor = totalBPct >= 70 ? c.green : totalBPct >= 40 ? c.yellow : c.red;
   const totalFColor = totalFPct >= 70 ? c.green : totalFPct >= 40 ? c.yellow : c.red;
   const totalLColor = totalLPct >= 70 ? c.green : totalLPct >= 40 ? c.yellow : c.red;
+  
   lines.push(
-    color(c.bold, ` ${'All files'.padEnd(nameCol - 1)}`) +
-    color(c.bold + totalFColor, `|${totalFPct.toFixed(1).padStart(7)}% `) +
-    color(c.bold + totalLColor, `|${totalLPct.toFixed(1).padStart(8)}% `) +
-    color(c.bold, `|${String(stats.totalFunctions - stats.coveredFunctions).padStart(8)} `) +
-    color(c.bold, `|${String(stats.totalLines - stats.coveredLines).padStart(8)} |`)
+    color(c.bold, ` ${'All files'.padEnd(pathCol - 1)}`) +
+    color(c.bold + totalSColor, `|${totalSPct.toFixed(2).padStart(8)}% `) +
+    color(c.bold + totalBColor, `|${totalBPct.toFixed(2).padStart(8)}% `) +
+    color(c.bold + totalFColor, `|${totalFPct.toFixed(2).padStart(8)}% `) +
+    color(c.bold + totalLColor, `|${totalLPct.toFixed(2).padStart(8)}% `) +
+    `|${' '.repeat(18)}|`
   );
-  lines.push(color(c.bold + c.white, sep));
+  lines.push(color(c.bold + c.white, sepLine));
   lines.push('');
   
   // Failed tests (always show if any)
@@ -617,18 +713,50 @@ function generateHtmlReport(stats: CoverageStats, testResults: TestResult[]): st
   
   let moduleRows = '';
   for (const [name, m] of Object.entries(stats.modules).sort()) {
+    const sPct = m.totalStatements > 0 ? (m.coveredStatements / m.totalStatements * 100) : 0;
+    const bPct = m.totalBranches > 0 ? (m.coveredBranches / m.totalBranches * 100) : 0;
+    const fPct = m.totalFunctions > 0 ? (m.coveredFunctions / m.totalFunctions * 100) : 0;
+    const lPct = m.totalLines > 0 ? (m.coveredLines / m.totalLines * 100) : 0;
+    
     moduleRows += `
-      <tr>
-        <td><strong>${name}</strong></td>
-        <td>${m.coveredFunctions} / ${m.totalFunctions}</td>
-        <td>${m.coveredLines} / ${m.totalLines}</td>
-        <td class="${getCoverageClass(m.coveragePct)}">${m.coveragePct.toFixed(1)}%</td>
+      <tr class="module-row" data-module="${name}">
+        <td><strong>📁 ${name}</strong></td>
+        <td class="${getCoverageClass(sPct)}">${sPct.toFixed(1)}%</td>
+        <td class="${getCoverageClass(bPct)}">${bPct.toFixed(1)}%</td>
+        <td class="${getCoverageClass(fPct)}">${fPct.toFixed(1)}%</td>
+        <td class="${getCoverageClass(lPct)}">${lPct.toFixed(1)}%</td>
         <td style="width: 150px;">
           <div class="progress-bar">
-            <div class="progress-fill" style="width: ${m.coveragePct}%; background: ${getBarColor(m.coveragePct)};"></div>
+            <div class="progress-fill" style="width: ${fPct}%; background: ${getBarColor(fPct)};"></div>
           </div>
         </td>
+        <td></td>
       </tr>`;
+    
+    // Add file rows (collapsed by default)
+    if (m.files) {
+      for (const f of m.files.sort((a, b) => a.filePath.localeCompare(b.filePath))) {
+        const fsPct = f.totalStatements > 0 ? (f.coveredStatements / f.totalStatements * 100) : 0;
+        const fbPct = f.totalBranches > 0 ? (f.coveredBranches / f.totalBranches * 100) : 0;
+        const ffPct = f.totalFunctions > 0 ? (f.coveredFunctions / f.totalFunctions * 100) : 0;
+        const flPct = f.totalLines > 0 ? (f.coveredLines / f.totalLines * 100) : 0;
+        
+        const uncoveredLines = f.uncoveredLineNumbers.length > 10 
+          ? formatUncoveredLines(f.uncoveredLineNumbers, 30)
+          : f.uncoveredLineNumbers.join(', ');
+        
+        moduleRows += `
+      <tr class="file-row" data-module="${name}" style="display: none;">
+        <td style="padding-left: 30px;"><span style="color: #666;">📄</span> ${f.filePath.split('/').pop()}</td>
+        <td class="${getCoverageClass(fsPct)}">${fsPct.toFixed(1)}%</td>
+        <td class="${getCoverageClass(fbPct)}">${fbPct.toFixed(1)}%</td>
+        <td class="${getCoverageClass(ffPct)}">${ffPct.toFixed(1)}%</td>
+        <td class="${getCoverageClass(flPct)}">${flPct.toFixed(1)}%</td>
+        <td></td>
+        <td class="uncovered-lines">${uncoveredLines || '-'}</td>
+      </tr>`;
+      }
+    }
   }
   
   let testRows = '';
@@ -648,26 +776,31 @@ function generateHtmlReport(stats: CoverageStats, testResults: TestResult[]): st
   <title>NexaOS Kernel Coverage Report</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 20px; background: #1a1a2e; color: #eee; }
-    .container { max-width: 1200px; margin: 0 auto; }
+    .container { max-width: 1400px; margin: 0 auto; }
     h1 { color: #00d9ff; border-bottom: 2px solid #00d9ff; padding-bottom: 10px; }
     h2 { color: #a0a0ff; margin-top: 30px; }
-    .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin: 20px 0; }
-    .stat-card { background: #252545; border-radius: 8px; padding: 20px; text-align: center; }
-    .stat-card h3 { margin: 0; color: #888; font-size: 14px; }
-    .stat-card .value { font-size: 36px; font-weight: bold; margin: 10px 0; }
-    .stat-card .sub { font-size: 12px; color: #666; }
+    .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 15px; margin: 20px 0; }
+    .stat-card { background: #252545; border-radius: 8px; padding: 15px; text-align: center; }
+    .stat-card h3 { margin: 0; color: #888; font-size: 12px; }
+    .stat-card .value { font-size: 28px; font-weight: bold; margin: 8px 0; }
+    .stat-card .sub { font-size: 11px; color: #666; }
     .coverage-high { color: #00ff88; }
     .coverage-medium { color: #ffcc00; }
     .coverage-low { color: #ff4444; }
     table { width: 100%; border-collapse: collapse; margin: 20px 0; }
-    th, td { padding: 12px; text-align: left; border-bottom: 1px solid #333; }
-    th { background: #252545; color: #00d9ff; }
+    th, td { padding: 10px; text-align: left; border-bottom: 1px solid #333; }
+    th { background: #252545; color: #00d9ff; font-size: 13px; }
     tr:hover { background: #252545; }
-    .progress-bar { width: 100%; height: 8px; background: #333; border-radius: 4px; overflow: hidden; }
+    .module-row { cursor: pointer; }
+    .module-row:hover { background: #303060; }
+    .file-row { background: #1e1e3e; }
+    .progress-bar { width: 100%; height: 6px; background: #333; border-radius: 3px; overflow: hidden; }
     .progress-fill { height: 100%; }
     .test-pass { color: #00ff88; }
     .test-fail { color: #ff4444; }
     .timestamp { color: #666; font-size: 12px; margin-bottom: 20px; }
+    .uncovered-lines { font-family: monospace; font-size: 11px; color: #ff8888; max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
+    .expand-hint { font-size: 11px; color: #666; margin-left: 5px; }
   </style>
 </head>
 <body>
@@ -682,20 +815,38 @@ function generateHtmlReport(stats: CoverageStats, testResults: TestResult[]): st
         <div class="sub">${stats.passedTests} / ${stats.totalTests} tests</div>
       </div>
       <div class="stat-card">
-        <h3>Function Coverage</h3>
-        <div class="value ${getCoverageClass(stats.functionCoveragePct)}">${stats.functionCoveragePct.toFixed(1)}%</div>
-        <div class="sub">${stats.coveredFunctions} / ${stats.totalFunctions} functions</div>
+        <h3>Statement Coverage</h3>
+        <div class="value ${getCoverageClass(stats.statementCoveragePct)}">${stats.statementCoveragePct.toFixed(1)}%</div>
+        <div class="sub">${stats.coveredStatements} / ${stats.totalStatements} stmts</div>
       </div>
       <div class="stat-card">
-        <h3>Line Coverage (Est.)</h3>
+        <h3>Branch Coverage</h3>
+        <div class="value ${getCoverageClass(stats.branchCoveragePct)}">${stats.branchCoveragePct.toFixed(1)}%</div>
+        <div class="sub">${stats.coveredBranches} / ${stats.totalBranches} branches</div>
+      </div>
+      <div class="stat-card">
+        <h3>Function Coverage</h3>
+        <div class="value ${getCoverageClass(stats.functionCoveragePct)}">${stats.functionCoveragePct.toFixed(1)}%</div>
+        <div class="sub">${stats.coveredFunctions} / ${stats.totalFunctions} funcs</div>
+      </div>
+      <div class="stat-card">
+        <h3>Line Coverage</h3>
         <div class="value ${getCoverageClass(stats.lineCoveragePct)}">${stats.lineCoveragePct.toFixed(1)}%</div>
         <div class="sub">${stats.coveredLines} / ${stats.totalLines} lines</div>
       </div>
     </div>
     
-    <h2>📦 Module Coverage</h2>
+    <h2>📦 Module Coverage <span class="expand-hint">(click to expand)</span></h2>
     <table>
-      <thead><tr><th>Module</th><th>Functions</th><th>Lines</th><th>Coverage</th><th></th></tr></thead>
+      <thead><tr>
+        <th>File</th>
+        <th>% Stmts</th>
+        <th>% Branch</th>
+        <th>% Funcs</th>
+        <th>% Lines</th>
+        <th></th>
+        <th>Uncovered Lines</th>
+      </tr></thead>
       <tbody>${moduleRows}</tbody>
     </table>
     
@@ -705,6 +856,17 @@ function generateHtmlReport(stats: CoverageStats, testResults: TestResult[]): st
       <tbody>${testRows}</tbody>
     </table>
   </div>
+  
+  <script>
+    document.querySelectorAll('.module-row').forEach(row => {
+      row.addEventListener('click', () => {
+        const module = row.dataset.module;
+        document.querySelectorAll('.file-row[data-module="' + module + '"]').forEach(fileRow => {
+          fileRow.style.display = fileRow.style.display === 'none' ? 'table-row' : 'none';
+        });
+      });
+    });
+  </script>
 </body>
 </html>`;
 }
@@ -718,8 +880,14 @@ function generateJsonReport(stats: CoverageStats, testResults: TestResult[]): st
       passedTests: stats.passedTests,
       failedTests: stats.failedTests,
       testPassRate: stats.testPassRate,
+      statementCoveragePct: stats.statementCoveragePct,
+      branchCoveragePct: stats.branchCoveragePct,
       functionCoveragePct: stats.functionCoveragePct,
       lineCoveragePct: stats.lineCoveragePct,
+      totalStatements: stats.totalStatements,
+      coveredStatements: stats.coveredStatements,
+      totalBranches: stats.totalBranches,
+      coveredBranches: stats.coveredBranches,
       totalFunctions: stats.totalFunctions,
       coveredFunctions: stats.coveredFunctions,
       totalLines: stats.totalLines,

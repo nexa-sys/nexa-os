@@ -13,6 +13,7 @@
 mod basic;
 mod consistency;
 mod eevdf;
+mod eevdf_boundary;
 mod eevdf_edge_cases;
 mod eevdf_vruntime;
 mod eevdf_weights;

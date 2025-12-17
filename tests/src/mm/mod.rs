@@ -12,6 +12,7 @@
 
 mod allocator;
 mod buddy;
+mod buddy_edge_cases;
 mod comprehensive;
 mod paging_edge_cases;
 mod safety;

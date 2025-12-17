@@ -20,12 +20,37 @@ export interface FunctionInfo {
   isPub: boolean;
 }
 
+export interface BranchInfo {
+  lineNumber: number;
+  type: 'if' | 'match' | 'loop' | 'while';
+  covered: boolean;
+}
+
+export interface FileStats {
+  filePath: string;           // 相对于 src/ 的路径
+  totalFunctions: number;
+  coveredFunctions: number;
+  totalLines: number;         // 代码行数（不含注释和空行）
+  coveredLines: number;
+  totalStatements: number;    // 语句数
+  coveredStatements: number;
+  totalBranches: number;      // 分支数
+  coveredBranches: number;
+  uncoveredLineNumbers: number[];  // 未覆盖的行号
+  functions: FunctionInfo[];  // 文件中的所有函数
+}
+
 export interface ModuleStats {
   totalFunctions: number;
   coveredFunctions: number;
   totalLines: number;
   coveredLines: number;
+  totalStatements: number;
+  coveredStatements: number;
+  totalBranches: number;
+  coveredBranches: number;
   coveragePct: number;
+  files: FileStats[];         // 模块中的所有文件统计
 }
 
 export interface CoverageStats {
@@ -35,6 +60,12 @@ export interface CoverageStats {
   totalLines: number;
   coveredLines: number;
   lineCoveragePct: number;
+  totalStatements: number;
+  coveredStatements: number;
+  statementCoveragePct: number;
+  totalBranches: number;
+  coveredBranches: number;
+  branchCoveragePct: number;
   totalTests: number;
   passedTests: number;
   failedTests: number;
@@ -157,14 +188,132 @@ export function parseRustFunctions(filePath: string): FunctionInfo[] {
   return functions;
 }
 
+/** Parse file to count statements (executable lines) */
+function countStatements(content: string): number {
+  const lines = content.split('\n');
+  let statements = 0;
+  
+  for (const line of lines) {
+    const stripped = line.trim();
+    // Count lines that likely contain executable statements
+    if (stripped && 
+        !stripped.startsWith('//') && 
+        !stripped.startsWith('/*') &&
+        !stripped.startsWith('*') &&
+        !stripped.startsWith('*/') &&
+        stripped !== '{' && 
+        stripped !== '}' &&
+        !stripped.startsWith('use ') &&
+        !stripped.startsWith('mod ') &&
+        !stripped.startsWith('pub mod ') &&
+        !stripped.startsWith('#[') &&
+        !stripped.startsWith('//!') &&
+        !stripped.startsWith('///')) {
+      statements++;
+    }
+  }
+  
+  return statements;
+}
+
+/** Parse file to find branch points (if, match, while, loop) */
+function findBranches(content: string): { lineNumber: number; type: 'if' | 'match' | 'loop' | 'while' }[] {
+  const lines = content.split('\n');
+  const branches: { lineNumber: number; type: 'if' | 'match' | 'loop' | 'while' }[] = [];
+  
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    
+    // Skip comments
+    if (line.startsWith('//') || line.startsWith('/*')) continue;
+    
+    // Match branch keywords at start of expressions
+    if (/\bif\s+/.test(line) && !line.includes('else if')) {
+      branches.push({ lineNumber: i + 1, type: 'if' });
+    }
+    if (/\belse\s+if\s+/.test(line)) {
+      branches.push({ lineNumber: i + 1, type: 'if' });
+    }
+    if (/\bmatch\s+/.test(line)) {
+      branches.push({ lineNumber: i + 1, type: 'match' });
+    }
+    if (/\bwhile\s+/.test(line)) {
+      branches.push({ lineNumber: i + 1, type: 'while' });
+    }
+    if (/\bloop\s*\{/.test(line)) {
+      branches.push({ lineNumber: i + 1, type: 'loop' });
+    }
+  }
+  
+  return branches;
+}
+
+/** Analyze a single Rust file for detailed stats */
+export function analyzeRustFile(filePath: string, projectRoot: string): FileStats {
+  const relativePath = filePath.replace(resolve(projectRoot, 'src') + '/', '');
+  
+  const stats: FileStats = {
+    filePath: relativePath,
+    totalFunctions: 0,
+    coveredFunctions: 0,
+    totalLines: 0,
+    coveredLines: 0,
+    totalStatements: 0,
+    coveredStatements: 0,
+    totalBranches: 0,
+    coveredBranches: 0,
+    uncoveredLineNumbers: [],
+    functions: []
+  };
+  
+  try {
+    const content = readFileSync(filePath, 'utf-8');
+    const lines = content.split('\n');
+    
+    // Count code lines (non-empty, non-comment)
+    for (let i = 0; i < lines.length; i++) {
+      const stripped = lines[i].trim();
+      if (stripped && !stripped.startsWith('//')) {
+        stats.totalLines++;
+      }
+    }
+    
+    // Count statements
+    stats.totalStatements = countStatements(content);
+    
+    // Find branches
+    const branches = findBranches(content);
+    stats.totalBranches = branches.length;
+    
+    // Parse functions
+    stats.functions = parseRustFunctions(filePath);
+    stats.totalFunctions = stats.functions.length;
+    
+  } catch {
+    // Ignore errors
+  }
+  
+  return stats;
+}
+
 /** Analyze a kernel module to get all functions and line counts */
 export function analyzeKernelModule(projectRoot: string, moduleName: string): { 
   functions: FunctionInfo[], 
   totalLines: number, 
-  codeLines: number 
+  codeLines: number,
+  files: FileStats[],
+  totalStatements: number,
+  totalBranches: number
 } {
   const modulePath = resolve(projectRoot, 'src', moduleName);
-  const result = { functions: [] as FunctionInfo[], totalLines: 0, codeLines: 0 };
+  const result = { 
+    functions: [] as FunctionInfo[], 
+    totalLines: 0, 
+    codeLines: 0,
+    files: [] as FileStats[],
+    totalStatements: 0,
+    totalBranches: 0
+  };
   
   const rustFiles = findRustFiles(modulePath);
   
@@ -182,6 +331,12 @@ export function analyzeKernelModule(projectRoot: string, moduleName: string): {
       }
       
       result.functions.push(...parseRustFunctions(file));
+      
+      // Analyze file for detailed stats
+      const fileStats = analyzeRustFile(file, projectRoot);
+      result.files.push(fileStats);
+      result.totalStatements += fileStats.totalStatements;
+      result.totalBranches += fileStats.totalBranches;
     } catch {
       // Ignore errors
     }
@@ -374,6 +529,12 @@ export function calculateCoverage(
     totalLines: 0,
     coveredLines: 0,
     lineCoveragePct: 0,
+    totalStatements: 0,
+    coveredStatements: 0,
+    statementCoveragePct: 0,
+    totalBranches: 0,
+    coveredBranches: 0,
+    branchCoveragePct: 0,
     totalTests: testResults.length,
     passedTests: testResults.filter(t => t.passed).length,
     failedTests: testResults.filter(t => !t.passed).length,
@@ -402,15 +563,82 @@ export function calculateCoverage(
     // Count actually covered functions by matching names
     let moduleCovered = 0;
     let moduleCoveredLines = 0;
+    let moduleCoveredStatements = 0;
+    let moduleCoveredBranches = 0;
     
-    for (const func of moduleInfo.functions) {
-      // Check if this function is called in tests
-      const isCovered = coveredFuncNames.has(func.name);
+    // Update file-level coverage
+    const updatedFiles: FileStats[] = [];
+    
+    for (const fileStats of moduleInfo.files) {
+      const updatedFile = { ...fileStats };
+      updatedFile.coveredFunctions = 0;
+      updatedFile.coveredLines = 0;
+      updatedFile.coveredStatements = 0;
+      updatedFile.coveredBranches = 0;
+      updatedFile.uncoveredLineNumbers = [];
       
-      if (isCovered) {
-        moduleCovered++;
-        moduleCoveredLines += (func.lineEnd - func.lineStart + 1);
+      // Track which lines are covered via function coverage
+      const coveredLineSet = new Set<number>();
+      
+      for (const func of fileStats.functions) {
+        const isCovered = coveredFuncNames.has(func.name);
+        
+        if (isCovered) {
+          updatedFile.coveredFunctions++;
+          moduleCovered++;
+          
+          // Mark all lines in the function as covered
+          for (let line = func.lineStart; line <= func.lineEnd; line++) {
+            coveredLineSet.add(line);
+          }
+          
+          const funcLines = func.lineEnd - func.lineStart + 1;
+          moduleCoveredLines += funcLines;
+          updatedFile.coveredLines += funcLines;
+        }
       }
+      
+      // Calculate statement and branch coverage based on function coverage ratio
+      const funcCoverageRatio = updatedFile.totalFunctions > 0 
+        ? updatedFile.coveredFunctions / updatedFile.totalFunctions 
+        : 0;
+      
+      updatedFile.coveredStatements = Math.round(updatedFile.totalStatements * funcCoverageRatio);
+      updatedFile.coveredBranches = Math.round(updatedFile.totalBranches * funcCoverageRatio);
+      
+      moduleCoveredStatements += updatedFile.coveredStatements;
+      moduleCoveredBranches += updatedFile.coveredBranches;
+      
+      // Calculate uncovered line numbers (lines not in any covered function)
+      // For display, only show first/last few to avoid huge lists
+      try {
+        const content = readFileSync(resolve(projectRoot, 'src', fileStats.filePath), 'utf-8');
+        const lines = content.split('\n');
+        
+        for (let i = 0; i < lines.length; i++) {
+          const stripped = lines[i].trim();
+          const lineNum = i + 1;
+          
+          // Only check executable lines
+          if (stripped && 
+              !stripped.startsWith('//') && 
+              !stripped.startsWith('/*') &&
+              !stripped.startsWith('*') &&
+              !stripped.startsWith('use ') &&
+              !stripped.startsWith('mod ') &&
+              !stripped.startsWith('#[') &&
+              stripped !== '{' && 
+              stripped !== '}') {
+            if (!coveredLineSet.has(lineNum)) {
+              updatedFile.uncoveredLineNumbers.push(lineNum);
+            }
+          }
+        }
+      } catch {
+        // Ignore errors
+      }
+      
+      updatedFiles.push(updatedFile);
     }
     
     stats.modules[moduleName] = {
@@ -418,13 +646,22 @@ export function calculateCoverage(
       coveredFunctions: moduleCovered,
       totalLines: moduleInfo.codeLines,
       coveredLines: moduleCoveredLines,
-      coveragePct: moduleTotal > 0 ? (moduleCovered / moduleTotal) * 100 : 0
+      totalStatements: moduleInfo.totalStatements,
+      coveredStatements: moduleCoveredStatements,
+      totalBranches: moduleInfo.totalBranches,
+      coveredBranches: moduleCoveredBranches,
+      coveragePct: moduleTotal > 0 ? (moduleCovered / moduleTotal) * 100 : 0,
+      files: updatedFiles
     };
     
     stats.totalFunctions += moduleTotal;
     stats.coveredFunctions += moduleCovered;
     stats.totalLines += moduleInfo.codeLines;
     stats.coveredLines += moduleCoveredLines;
+    stats.totalStatements += moduleInfo.totalStatements;
+    stats.coveredStatements += moduleCoveredStatements;
+    stats.totalBranches += moduleInfo.totalBranches;
+    stats.coveredBranches += moduleCoveredBranches;
   }
   
   stats.functionCoveragePct = stats.totalFunctions > 0 
@@ -432,6 +669,12 @@ export function calculateCoverage(
     : 0;
   stats.lineCoveragePct = stats.totalLines > 0 
     ? (stats.coveredLines / stats.totalLines) * 100 
+    : 0;
+  stats.statementCoveragePct = stats.totalStatements > 0 
+    ? (stats.coveredStatements / stats.totalStatements) * 100 
+    : 0;
+  stats.branchCoveragePct = stats.totalBranches > 0 
+    ? (stats.coveredBranches / stats.totalBranches) * 100 
     : 0;
   
   return stats;

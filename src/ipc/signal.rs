@@ -70,7 +70,10 @@ impl SignalState {
 
     /// Check if a signal is pending and not blocked
     pub fn has_pending_signal(&self) -> Option<u32> {
-        let deliverable = self.pending & !self.blocked;
+        // SIGKILL and SIGSTOP can never be blocked, so always deliverable
+        let unblockable_mask = (1u64 << SIGKILL) | (1u64 << SIGSTOP);
+        let effective_blocked = self.blocked & !unblockable_mask;
+        let deliverable = self.pending & !effective_blocked;
         if deliverable == 0 {
             return None;
         }
@@ -120,8 +123,9 @@ impl SignalState {
     }
 
     /// Block a signal
+    /// Note: SIGKILL and SIGSTOP cannot be blocked per POSIX
     pub fn block_signal(&mut self, signum: u32) {
-        if signum < NSIG as u32 {
+        if signum < NSIG as u32 && signum != SIGKILL && signum != SIGSTOP {
             self.blocked |= 1u64 << signum;
         }
     }
