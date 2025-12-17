@@ -413,6 +413,14 @@ interface TestResult {
   passed: boolean;
 }
 
+interface TestRunResult {
+  tests: TestResult[];
+  warnings: number;
+  errors: number;
+  buildFailed: boolean;
+  output: string;
+}
+
 // Parse Rust file and count functions
 function parseRustFunctions(filePath: string): FunctionInfo[] {
   const functions: FunctionInfo[] = [];
@@ -554,14 +562,17 @@ function analyzeTestFile(filePath: string): Set<string> {
 
 // Run cargo test and parse results
 // Runs from /tmp to avoid inheriting parent .cargo/config.toml (build-std issue)
-async function runTests(projectRoot: string, filterPattern?: string): Promise<TestResult[]> {
-  const testDir = resolve(projectRoot, 'tests');
-  const manifestPath = resolve(testDir, 'Cargo.toml');
-  const results: TestResult[] = [];
+async function runTests(projectRoot: string, filterPattern?: string, verbose: boolean = false): Promise<TestRunResult> {
+  const manifestPath = resolve(projectRoot, 'tests', 'Cargo.toml');
+  const result: TestRunResult = {
+    tests: [],
+    warnings: 0,
+    errors: 0,
+    buildFailed: false,
+    output: ''
+  };
   
   return new Promise((resolvePromise) => {
-    // Run cargo test from /tmp to avoid inheriting parent .cargo/config.toml
-    // This prevents the duplicate lang item issue caused by build-std config merging
     const args = ['+nightly', 'test', '--lib', '--manifest-path', manifestPath];
     if (filterPattern) {
       args.push(filterPattern);
@@ -569,10 +580,9 @@ async function runTests(projectRoot: string, filterPattern?: string): Promise<Te
     args.push('--', '--test-threads=1');
     
     const child = spawn('cargo', args, {
-      cwd: '/tmp',  // Run from /tmp to avoid config.toml inheritance
+      cwd: '/tmp',
       env: {
         ...process.env,
-        // Use isolated target dir to avoid cached libcore from build-std
         CARGO_TARGET_DIR: '/tmp/nexa-tests-target',
       },
       stdio: ['inherit', 'pipe', 'pipe']
@@ -582,33 +592,56 @@ async function runTests(projectRoot: string, filterPattern?: string): Promise<Te
     let stderr = '';
     
     child.stdout?.on('data', (data) => {
-      stdout += data.toString();
-      process.stdout.write(data);
+      const str = data.toString();
+      stdout += str;
+      if (verbose) {
+        process.stdout.write(data);
+      }
     });
     
     child.stderr?.on('data', (data) => {
-      stderr += data.toString();
-      process.stderr.write(data);
+      const str = data.toString();
+      stderr += str;
+      if (verbose) {
+        process.stderr.write(data);
+      }
     });
     
-    child.on('close', () => {
+    child.on('close', (code) => {
       const output = stdout + stderr;
+      result.output = output;
       
-      // Parse test results from output
+      // Count warnings and errors
+      const warningMatches = output.match(/warning:/g);
+      const errorMatches = output.match(/error\[E\d+\]:|error:/g);
+      result.warnings = warningMatches ? warningMatches.length : 0;
+      result.errors = errorMatches ? errorMatches.length : 0;
+      
+      // Parse test results from output first
       const testPattern = /test\s+(\S+)\s+\.\.\.\s+(ok|FAILED)/g;
       let match;
       while ((match = testPattern.exec(output)) !== null) {
-        results.push({
+        result.tests.push({
           name: match[1],
           passed: match[2] === 'ok'
         });
       }
       
-      resolvePromise(results);
+      // Check if build failed (no tests ran = build issue)
+      if (output.includes('could not compile') || (code !== 0 && result.tests.length === 0)) {
+        result.buildFailed = true;
+        // On build failure, show the output even if not verbose
+        if (!verbose) {
+          console.log(output);
+        }
+      }
+      
+      resolvePromise(result);
     });
     
     child.on('error', () => {
-      resolvePromise(results);
+      result.buildFailed = true;
+      resolvePromise(result);
     });
   });
 }
@@ -683,7 +716,7 @@ function calculateCoverage(
 }
 
 // Generate text report
-function generateTextReport(stats: CoverageStats, testResults: TestResult[]): string {
+function generateTextReport(stats: CoverageStats, testResults: TestResult[], runResult: TestRunResult, verbose: boolean = false): string {
   const lines: string[] = [];
   const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
   
@@ -694,16 +727,31 @@ function generateTextReport(stats: CoverageStats, testResults: TestResult[]): st
   lines.push(`Generated: ${now}`);
   lines.push('');
   
-  lines.push('SUMMARY');
+  // Build summary
+  if (runResult.warnings > 0 || runResult.errors > 0) {
+    lines.push('BUILD');
+    lines.push('-'.repeat(40));
+    if (runResult.errors > 0) {
+      lines.push(`  Errors:    ${runResult.errors}`);
+    }
+    if (runResult.warnings > 0) {
+      lines.push(`  Warnings:  ${runResult.warnings}`);
+    }
+    lines.push('');
+  }
+  
+  lines.push('TESTS');
   lines.push('-'.repeat(40));
-  lines.push(`Total Tests:        ${stats.totalTests}`);
-  lines.push(`  Passed:           ${stats.passedTests} (${stats.testPassRate.toFixed(1)}%)`);
-  lines.push(`  Failed:           ${stats.failedTests}`);
-  lines.push('');
-  lines.push(`Function Coverage:  ${stats.coveredFunctions}/${stats.totalFunctions} (${stats.functionCoveragePct.toFixed(1)}%)`);
-  lines.push(`Line Coverage:      ${stats.coveredLines}/${stats.totalLines} (${stats.lineCoveragePct.toFixed(1)}%)`);
+  lines.push(`Total: ${stats.totalTests}  Passed: ${stats.passedTests}  Failed: ${stats.failedTests}  (${stats.testPassRate.toFixed(1)}%)`);
   lines.push('');
   
+  lines.push('COVERAGE');
+  lines.push('-'.repeat(40));
+  lines.push(`Functions:  ${stats.coveredFunctions}/${stats.totalFunctions} (${stats.functionCoveragePct.toFixed(1)}%)`);
+  lines.push(`Lines:      ${stats.coveredLines}/${stats.totalLines} (${stats.lineCoveragePct.toFixed(1)}%)`);
+  lines.push('');
+  
+  // Module coverage (always shown)
   lines.push('MODULE COVERAGE');
   lines.push('-'.repeat(40));
   lines.push(`${'Module'.padEnd(20)} ${'Functions'.padStart(15)} ${'Lines'.padStart(15)} ${'Coverage'.padStart(10)}`);
@@ -730,18 +778,23 @@ function generateTextReport(stats: CoverageStats, testResults: TestResult[]): st
     lines.push(`${color}${moduleName.padEnd(20)} ${fnStr.padStart(15)} ${lnStr.padStart(15)} ${covStr.padStart(10)}${reset}`);
   }
   
-  lines.push('');
-  lines.push('TEST RESULTS');
-  lines.push('-'.repeat(40));
-  
-  for (const test of testResults.sort((a, b) => a.name.localeCompare(b.name))) {
-    let status: string;
-    if (process.stdout.isTTY) {
-      status = test.passed ? '\x1b[92mPASS\x1b[0m' : '\x1b[91mFAIL\x1b[0m';
-    } else {
-      status = test.passed ? 'PASS' : 'FAIL';
+  // Only show test details in verbose mode or if there are failures
+  const failedTests = testResults.filter(t => !t.passed);
+  if (verbose || failedTests.length > 0) {
+    lines.push('');
+    lines.push(verbose ? 'TEST RESULTS' : 'FAILED TESTS');
+    lines.push('-'.repeat(40));
+    
+    const testsToShow = verbose ? testResults : failedTests;
+    for (const test of testsToShow.sort((a, b) => a.name.localeCompare(b.name))) {
+      let status: string;
+      if (process.stdout.isTTY) {
+        status = test.passed ? '\x1b[92mPASS\x1b[0m' : '\x1b[91mFAIL\x1b[0m';
+      } else {
+        status = test.passed ? 'PASS' : 'FAIL';
+      }
+      lines.push(`  ${status}  ${test.name}`);
     }
-    lines.push(`  ${status}  ${test.name}`);
   }
   
   lines.push('');
@@ -888,6 +941,7 @@ coverageCmd
   .option('-o, --output <path>', 'Output path for coverage report')
   .option('--open', 'Open HTML report in browser (html format only)')
   .option('--filter <pattern>', 'Run only tests matching pattern')
+  .option('-v, --verbose', 'Show detailed build and test output')
   .action(async (options) => {
     const projectRoot = findProjectRoot();
     const testDir = resolve(projectRoot, 'tests');
@@ -899,23 +953,23 @@ coverageCmd
     
     logger.step('Running tests with coverage analysis...');
     
-    const testResults = await runTests(projectRoot, options.filter);
-    const stats = calculateCoverage(projectRoot, testResults);
+    const runResult = await runTests(projectRoot, options.filter, options.verbose);
+    const stats = calculateCoverage(projectRoot, runResult.tests);
     
     let report: string;
     let defaultOutput: string | null = null;
     
     switch (options.format) {
       case 'html':
-        report = generateHtmlReport(stats, testResults);
+        report = generateHtmlReport(stats, runResult.tests);
         defaultOutput = 'coverage.html';
         break;
       case 'json':
-        report = generateJsonReport(stats, testResults);
+        report = generateJsonReport(stats, runResult.tests);
         defaultOutput = 'coverage.json';
         break;
       default:
-        report = generateTextReport(stats, testResults);
+        report = generateTextReport(stats, runResult.tests, runResult, options.verbose);
         break;
     }
     
@@ -944,6 +998,7 @@ coverageCmd
   .command('html')
   .description('Generate HTML coverage report and open in browser')
   .option('-o, --output <path>', 'Output file', 'coverage.html')
+  .option('-v, --verbose', 'Show detailed build and test output')
   .action(async (options) => {
     const projectRoot = findProjectRoot();
     const testDir = resolve(projectRoot, 'tests');
@@ -955,9 +1010,9 @@ coverageCmd
     
     logger.step('Generating HTML coverage report...');
     
-    const testResults = await runTests(projectRoot);
-    const stats = calculateCoverage(projectRoot, testResults);
-    const report = generateHtmlReport(stats, testResults);
+    const runResult = await runTests(projectRoot, undefined, options.verbose);
+    const stats = calculateCoverage(projectRoot, runResult.tests);
+    const report = generateHtmlReport(stats, runResult.tests);
     
     const outPath = resolve(projectRoot, options.output);
     writeFileSync(outPath, report);
@@ -972,6 +1027,7 @@ coverageCmd
   .command('json')
   .description('Generate JSON coverage report')
   .option('-o, --output <path>', 'Output file', 'coverage.json')
+  .option('-v, --verbose', 'Show detailed build and test output')
   .action(async (options) => {
     const projectRoot = findProjectRoot();
     const testDir = resolve(projectRoot, 'tests');
@@ -983,9 +1039,9 @@ coverageCmd
     
     logger.step('Generating JSON coverage report...');
     
-    const testResults = await runTests(projectRoot);
-    const stats = calculateCoverage(projectRoot, testResults);
-    const report = generateJsonReport(stats, testResults);
+    const runResult = await runTests(projectRoot, undefined, options.verbose);
+    const stats = calculateCoverage(projectRoot, runResult.tests);
+    const report = generateJsonReport(stats, runResult.tests);
     
     const outPath = resolve(projectRoot, options.output);
     writeFileSync(outPath, report);
@@ -1022,24 +1078,26 @@ coverageCmd
   });
 
 // Default coverage action (show text summary)
-coverageCmd.action(async () => {
-  const projectRoot = findProjectRoot();
-  const testDir = resolve(projectRoot, 'tests');
-  
-  if (!existsSync(testDir)) {
-    logger.error('Tests directory not found. Expected: tests/');
-    process.exit(1);
-  }
-  
-  logger.step('Analyzing test coverage...');
-  
-  const testResults = await runTests(projectRoot);
-  const stats = calculateCoverage(projectRoot, testResults);
-  const report = generateTextReport(stats, testResults);
-  
-  console.log(report);
-  process.exit(stats.failedTests > 0 ? 1 : 0);
-});
+coverageCmd
+  .option('-v, --verbose', 'Show detailed build and test output')
+  .action(async (options) => {
+    const projectRoot = findProjectRoot();
+    const testDir = resolve(projectRoot, 'tests');
+    
+    if (!existsSync(testDir)) {
+      logger.error('Tests directory not found. Expected: tests/');
+      process.exit(1);
+    }
+    
+    logger.step('Analyzing test coverage...');
+    
+    const runResult = await runTests(projectRoot, undefined, options.verbose);
+    const stats = calculateCoverage(projectRoot, runResult.tests);
+    const report = generateTextReport(stats, runResult.tests, runResult, options.verbose);
+    
+    console.log(report);
+    process.exit(stats.failedTests > 0 ? 1 : 0);
+  });
 
 // List command
 program
