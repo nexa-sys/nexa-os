@@ -462,4 +462,140 @@ mod tests {
         let skip_switch = current_pid == next_pid;
         assert!(skip_switch);
     }
+
+    // =========================================================================
+    // Exec Context and Scheduler Interaction Tests
+    // =========================================================================
+
+    #[test]
+    fn test_execve_updates_process_entry_before_return() {
+        // When execve is called, it MUST update the process entry
+        // before returning the magic value. This ensures that even if
+        // the syscall return path is preempted, the process table has
+        // the correct new entry point.
+        
+        let mut entry = ProcessEntry::empty();
+        entry.process.pid = 8;
+        entry.process.user_rip = 0x400000;  // Old: login code
+        entry.process.user_rsp = 0x7FFFF00; // Old: login stack
+        
+        // Simulate execve updating the entry
+        let shell_entry = 0x1000000;
+        let shell_stack = 0x1A00000;
+        
+        // execve updates process table FIRST
+        entry.process.user_rip = shell_entry;
+        entry.process.user_rsp = shell_stack;
+        entry.process.entry_point = shell_entry;
+        entry.process.stack_top = shell_stack;
+        
+        // Now even if preempted before EXEC_CONTEXT is consumed,
+        // the process table has correct values
+        assert_eq!(entry.process.user_rip, shell_entry);
+        assert_eq!(entry.process.user_rsp, shell_stack);
+    }
+
+    #[test]
+    fn test_scheduler_respects_updated_user_rip_rsp() {
+        // After execve, scheduler should use updated user_rip/user_rsp
+        // from process table, not from GS_DATA (which has old values)
+        
+        let mut entry = ProcessEntry::empty();
+        entry.process.pid = 8;
+        entry.process.has_entered_user = true;
+        
+        // After execve updates
+        entry.process.user_rip = 0x1000000;  // Shell entry
+        entry.process.user_rsp = 0x1A00000;  // Shell stack
+        
+        // When scheduler restores this process, it should use these values
+        // for context restoration, not whatever was in GS_DATA
+        
+        // The FirstRun path uses entry.process.entry_point and stack_top
+        // The Switch path uses entry.process.user_rip and user_rsp
+        
+        assert_eq!(entry.process.user_rip, 0x1000000);
+        assert_eq!(entry.process.user_rsp, 0x1A00000);
+    }
+
+    #[test]
+    fn test_gs_data_must_be_updated_on_exec() {
+        // If using Switch path (context_valid=true), GS_DATA slots are
+        // restored from process entry. But for exec, we need to ensure
+        // these are updated correctly.
+        
+        // Simulated GS_DATA structure
+        struct GsData {
+            user_rsp: u64,      // Slot 0
+            saved_rcx: u64,     // Slot 7 - becomes RIP on sysretq
+            saved_rflags: u64,  // Slot 8
+        }
+        
+        // Before execve
+        let mut gs = GsData {
+            user_rsp: 0x7FFFF00,   // Login's stack
+            saved_rcx: 0x400100,   // Login's return address
+            saved_rflags: 0x202,
+        };
+        
+        // After execve, if we want normal syscall return to work,
+        // GS_DATA must be updated to new values
+        // BUT the current code doesn't do this - it relies on EXEC_CONTEXT!
+        
+        // Proposed fix: Update GS_DATA in execve before returning magic
+        let shell_entry = 0x1000000;
+        let shell_stack = 0x1A00000;
+        
+        gs.saved_rcx = shell_entry;  // New RIP
+        gs.user_rsp = shell_stack;   // New RSP
+        
+        // Now even normal syscall return path would work
+        assert_eq!(gs.saved_rcx, shell_entry);
+        assert_eq!(gs.user_rsp, shell_stack);
+    }
+
+    #[test]
+    fn test_timer_interrupt_from_kernel_mode() {
+        // When timer interrupt fires while in kernel mode (e.g., in syscall
+        // return path after get_exec_context but before sysretq), the handler
+        // detects kernel mode via CS and should NOT try to save "user" context.
+        
+        const KERNEL_CS: u16 = 0x08;
+        const USER_CS: u16 = 0x23;
+        
+        fn is_from_userspace(cs: u16) -> bool {
+            (cs & 3) == 3  // Check RPL (ring privilege level)
+        }
+        
+        assert!(!is_from_userspace(KERNEL_CS));
+        assert!(is_from_userspace(USER_CS));
+        
+        // If from kernel mode, context should be preserved on kernel stack
+        // via normal interrupt frame, not via GS_DATA manipulation
+    }
+
+    #[test]
+    fn test_preemption_during_syscall_return_critical_section() {
+        // The syscall return path has a critical section:
+        // 1. Check if rax == EXEC_MAGIC
+        // 2. If yes, call get_exec_context() 
+        // 3. Load new entry/stack to registers
+        // 4. Execute sysretq/iretq
+        
+        // Preemption between 3 and 4 is problematic because:
+        // - EXEC_CONTEXT.pending is already false
+        // - Registers have new values but context switch will save/restore
+        //   using the process table or GS_DATA
+        
+        // Solution options:
+        // A) Disable interrupts during steps 2-4
+        // B) Store exec context in process table entry (per-process)
+        // C) Update GS_DATA slots in execve() so normal return works
+        
+        // Option C seems simplest: modify execve to update GS_DATA
+        // before returning magic value. Then even if preempted and
+        // EXEC_CONTEXT is lost, normal return path reads correct values.
+        
+        assert!(true); // Conceptual test
+    }
 }

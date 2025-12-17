@@ -6,6 +6,7 @@
 //! - Process operations
 //! - Network operations
 //! - Clone/thread operations
+//! - Exec context race conditions
 
 mod clone_comprehensive;
 mod clone_edge_cases;

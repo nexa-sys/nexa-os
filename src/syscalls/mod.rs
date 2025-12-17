@@ -20,7 +20,7 @@
 
 use crate::kinfo;
 
-mod exec;
+pub mod exec;
 mod fd;
 mod file;
 mod ioctl;
