@@ -466,3 +466,335 @@ fn test_percpu_rq_same_deadline() {
     assert!(next.is_some());
     assert_eq!(rq.len(), 2);
 }
+
+// ============================================================================
+// Per-CPU Data Isolation and Race Condition Tests
+// ============================================================================
+
+#[test]
+fn test_percpu_data_isolation() {
+    // Verify that per-CPU data structures are properly isolated
+    let data0 = PerCpuSchedData::new(0);
+    let data1 = PerCpuSchedData::new(1);
+    
+    // Modify data0
+    {
+        let mut rq = data0.run_queue.lock();
+        rq.enqueue(make_rq_entry(1, 1000, SchedPolicy::Normal)).unwrap();
+    }
+    use core::sync::atomic::Ordering;
+    data0.context_switches.fetch_add(100, Ordering::SeqCst);
+    
+    // Verify data1 is unaffected
+    {
+        let rq = data1.run_queue.lock();
+        assert!(rq.is_empty(), "CPU 1 queue should be unaffected");
+    }
+    assert_eq!(data1.context_switches.load(Ordering::SeqCst), 0, 
+               "CPU 1 stats should be unaffected");
+}
+
+#[test]
+fn test_concurrent_percpu_modification() {
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+    
+    // Test concurrent modification of per-CPU data from multiple threads
+    let data = Arc::new(PerCpuSchedData::new(0));
+    let barrier = Arc::new(Barrier::new(8));
+    let mut handles = vec![];
+    
+    for thread_id in 0..8 {
+        let data = Arc::clone(&data);
+        let barrier = Arc::clone(&barrier);
+        
+        handles.push(thread::spawn(move || {
+            barrier.wait();
+            
+            for i in 0..100 {
+                // Each thread does different operations
+                match thread_id % 4 {
+                    0 => {
+                        // Enqueue/dequeue
+                        let pid = (thread_id * 1000 + i) as u64;
+                        let mut rq = data.run_queue.lock();
+                        let _ = rq.enqueue(make_rq_entry(pid, i as u64 * 100, SchedPolicy::Normal));
+                        let _ = rq.dequeue(pid);
+                    }
+                    1 => {
+                        // Context switch recording
+                        data.record_context_switch(i % 2 == 0);
+                    }
+                    2 => {
+                        // Idle tracking
+                        data.enter_idle(i as u64 * 1000);
+                        data.exit_idle(i as u64 * 1000 + 500);
+                    }
+                    3 => {
+                        // Load average update
+                        data.update_load_average();
+                    }
+                    _ => unreachable!(),
+                }
+            }
+        }));
+    }
+    
+    for handle in handles {
+        handle.join().expect("Thread panicked");
+    }
+    
+    // Verify data is still consistent
+    let rq = data.run_queue.lock();
+    assert!(rq.len() <= PERCPU_RQ_SIZE, "Queue length should be bounded");
+}
+
+#[test]
+fn test_load_imbalance_detection() {
+    // Create CPUs with different loads
+    let cpu0 = PerCpuSchedData::new(0);
+    let cpu1 = PerCpuSchedData::new(1);
+    
+    // CPU 0: Heavy load (many processes)
+    {
+        let mut rq = cpu0.run_queue.lock();
+        for i in 0..50 {
+            rq.enqueue(make_rq_entry(i, i as u64 * 100, SchedPolicy::Normal)).unwrap();
+        }
+    }
+    
+    // CPU 1: Light load
+    {
+        let mut rq = cpu1.run_queue.lock();
+        for i in 100..105 {
+            rq.enqueue(make_rq_entry(i, i as u64 * 100, SchedPolicy::Normal)).unwrap();
+        }
+    }
+    
+    // Update load averages
+    for _ in 0..10 {
+        cpu0.update_load_average();
+        cpu1.update_load_average();
+    }
+    
+    use core::sync::atomic::Ordering;
+    let load0 = cpu0.load_avg.load(Ordering::Relaxed);
+    let load1 = cpu1.load_avg.load(Ordering::Relaxed);
+    
+    assert!(load0 > load1, "CPU 0 should have higher load than CPU 1");
+    
+    // Calculate imbalance
+    let imbalance = load0.saturating_sub(load1);
+    eprintln!("Load imbalance: CPU0={}, CPU1={}, diff={}", load0, load1, imbalance);
+}
+
+#[test]
+fn test_statistics_no_corruption_under_load() {
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+    
+    let data = Arc::new(PerCpuSchedData::new(0));
+    let barrier = Arc::new(Barrier::new(8));
+    let mut handles = vec![];
+    
+    let expected_switches_per_thread = 1000u64;
+    
+    for _ in 0..8 {
+        let data = Arc::clone(&data);
+        let barrier = Arc::clone(&barrier);
+        
+        handles.push(thread::spawn(move || {
+            barrier.wait();
+            for _ in 0..expected_switches_per_thread {
+                data.record_context_switch(true);
+            }
+        }));
+    }
+    
+    for handle in handles {
+        handle.join().expect("Thread panicked");
+    }
+    
+    use core::sync::atomic::Ordering;
+    let total_switches = data.context_switches.load(Ordering::SeqCst);
+    let expected_total = 8 * expected_switches_per_thread;
+    
+    assert_eq!(total_switches, expected_total, 
+               "All context switches should be counted without corruption");
+}
+
+#[test]
+fn test_cross_cpu_enqueue_race() {
+    use std::sync::{Arc, Barrier, atomic::{AtomicU64, Ordering}};
+    use std::thread;
+    
+    // Simulate multiple CPUs trying to enqueue to the same target CPU
+    let target_cpu = Arc::new(PerCpuSchedData::new(0));
+    let barrier = Arc::new(Barrier::new(4));
+    let success_count = Arc::new(AtomicU64::new(0));
+    let mut handles = vec![];
+    
+    for source_cpu in 0..4 {
+        let target = Arc::clone(&target_cpu);
+        let barrier = Arc::clone(&barrier);
+        let successes = Arc::clone(&success_count);
+        
+        handles.push(thread::spawn(move || {
+            barrier.wait();
+            
+            for i in 0..25 {
+                let pid = (source_cpu * 100 + i) as u64;
+                let mut rq = target.run_queue.lock();
+                if rq.enqueue(make_rq_entry(pid, pid * 100, SchedPolicy::Normal)).is_ok() {
+                    successes.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }));
+    }
+    
+    for handle in handles {
+        handle.join().expect("Thread panicked");
+    }
+    
+    let total_success = success_count.load(Ordering::Relaxed);
+    let queue_len = target_cpu.run_queue.lock().len();
+    
+    eprintln!("Cross-CPU enqueue: {} successful, {} in queue", total_success, queue_len);
+    assert_eq!(total_success as usize, queue_len, 
+               "Successful enqueues should match queue length");
+}
+
+#[test]
+fn test_simultaneous_pick_next() {
+    use std::sync::{Arc, Barrier, atomic::{AtomicU64, Ordering}};
+    use std::thread;
+    
+    // Multiple threads trying to pick_next from same queue
+    let data = Arc::new(PerCpuSchedData::new(0));
+    let barrier = Arc::new(Barrier::new(4));
+    let picked_count = Arc::new(AtomicU64::new(0));
+    
+    // Pre-fill queue
+    {
+        let mut rq = data.run_queue.lock();
+        for i in 0..100 {
+            rq.enqueue(make_rq_entry(i, i as u64 * 100, SchedPolicy::Normal)).unwrap();
+        }
+    }
+    
+    let mut handles = vec![];
+    
+    for _ in 0..4 {
+        let data = Arc::clone(&data);
+        let barrier = Arc::clone(&barrier);
+        let picked = Arc::clone(&picked_count);
+        
+        handles.push(thread::spawn(move || {
+            barrier.wait();
+            
+            loop {
+                let mut rq = data.run_queue.lock();
+                if rq.pick_next().is_some() {
+                    picked.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    break;
+                }
+            }
+        }));
+    }
+    
+    for handle in handles {
+        handle.join().expect("Thread panicked");
+    }
+    
+    let total_picked = picked_count.load(Ordering::Relaxed);
+    assert_eq!(total_picked, 100, "All 100 entries should be picked exactly once");
+}
+
+#[test]
+fn test_realistic_scheduling_scenario() {
+    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+    use std::thread;
+    use std::time::Duration;
+    
+    let data = Arc::new(PerCpuSchedData::new(0));
+    let stop_flag = Arc::new(AtomicBool::new(false));
+    let mut handles = vec![];
+    
+    // Simulate ticker (updates load average)
+    {
+        let data = Arc::clone(&data);
+        let stop = Arc::clone(&stop_flag);
+        handles.push(thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                data.update_load_average();
+                data.local_tick.fetch_add(1, Ordering::Relaxed);
+                thread::sleep(Duration::from_micros(100));
+            }
+        }));
+    }
+    
+    // Simulate process arrivals
+    {
+        let data = Arc::clone(&data);
+        let stop = Arc::clone(&stop_flag);
+        handles.push(thread::spawn(move || {
+            let mut pid = 0u64;
+            while !stop.load(Ordering::Relaxed) {
+                let mut rq = data.run_queue.lock();
+                if rq.len() < PERCPU_RQ_SIZE / 2 {
+                    let _ = rq.enqueue(make_rq_entry(pid, pid * 100, SchedPolicy::Normal));
+                    pid += 1;
+                }
+                drop(rq);
+                thread::sleep(Duration::from_micros(50));
+            }
+        }));
+    }
+    
+    // Simulate scheduler
+    {
+        let data = Arc::clone(&data);
+        let stop = Arc::clone(&stop_flag);
+        handles.push(thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                let mut rq = data.run_queue.lock();
+                if let Some(entry) = rq.pick_next() {
+                    rq.set_current(Some(entry.pid));
+                    drop(rq);
+                    
+                    // Simulate running
+                    thread::sleep(Duration::from_micros(100));
+                    
+                    // Context switch
+                    data.record_context_switch(false);
+                    
+                    let mut rq = data.run_queue.lock();
+                    rq.set_current(None);
+                }
+            }
+        }));
+    }
+    
+    // Run for a short duration
+    thread::sleep(Duration::from_millis(100));
+    stop_flag.store(true, Ordering::Relaxed);
+    
+    for handle in handles {
+        handle.join().unwrap();
+    }
+    
+    // Verify state is consistent
+    use core::sync::atomic::Ordering as AtomicOrdering;
+    let switches = data.context_switches.load(AtomicOrdering::Relaxed);
+    let ticks = data.local_tick.load(AtomicOrdering::Relaxed);
+    let load = data.load_avg.load(AtomicOrdering::Relaxed);
+    
+    eprintln!("Realistic scenario results:");
+    eprintln!("  Context switches: {}", switches);
+    eprintln!("  Ticks: {}", ticks);
+    eprintln!("  Final load average: {}", load);
+    
+    assert!(switches > 0, "Some context switches should have occurred");
+    assert!(ticks > 0, "Some ticks should have occurred");
+}

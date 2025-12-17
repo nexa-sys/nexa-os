@@ -5,12 +5,14 @@
 
 mod basic;
 mod eevdf;
+mod eevdf_vruntime;
 mod percpu;
 mod smp;
 mod stress;
 
 pub use basic::*;
 pub use eevdf::*;
+pub use eevdf_vruntime::*;
 pub use percpu::*;
 pub use smp::*;
 pub use stress::*;
