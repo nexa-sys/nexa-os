@@ -1080,7 +1080,10 @@ coverageCmd
 
 // Default coverage action (show text summary)
 coverageCmd
-  .option('-v, --verbose', 'Show detailed build and test output')
+  .option('-v, --verbose', 'Show detailed file-level coverage')
+  .option('-m, --module <name>', 'Show coverage for specific module only')
+  .option('--show-uncovered', 'Show uncovered line numbers in output')
+  .option('--threshold <pct>', 'Exit with error if coverage is below threshold', parseFloat)
   .action(async (options) => {
     const projectRoot = findProjectRoot();
     const testDir = resolve(projectRoot, 'tests');
@@ -1094,9 +1097,39 @@ coverageCmd
     
     const runResult = await runTests(projectRoot, undefined, options.verbose);
     const stats = calculateCoverage(projectRoot, runResult.tests);
-    const report = generateTextReport(stats, runResult.tests, runResult, options.verbose);
     
-    console.log(report);
+    // Filter to specific module if requested
+    if (options.module) {
+      const modName = options.module;
+      if (!stats.modules[modName]) {
+        logger.error(`Module not found: ${modName}`);
+        logger.info(`Available modules: ${Object.keys(stats.modules).join(', ')}`);
+        process.exit(1);
+      }
+      
+      // Create filtered stats
+      const filteredStats: CoverageStats = {
+        ...stats,
+        modules: { [modName]: stats.modules[modName] }
+      };
+      
+      const report = generateTextReport(filteredStats, runResult.tests, runResult, true); // Always verbose for single module
+      console.log(report);
+    } else {
+      const report = generateTextReport(stats, runResult.tests, runResult, options.verbose);
+      console.log(report);
+    }
+    
+    // Check threshold
+    if (options.threshold !== undefined) {
+      const avgCoverage = (stats.statementCoveragePct + stats.branchCoveragePct + 
+                          stats.functionCoveragePct + stats.lineCoveragePct) / 4;
+      if (avgCoverage < options.threshold) {
+        logger.error(`Coverage ${avgCoverage.toFixed(2)}% is below threshold ${options.threshold}%`);
+        process.exit(1);
+      }
+    }
+    
     process.exit(0);
   });
 
