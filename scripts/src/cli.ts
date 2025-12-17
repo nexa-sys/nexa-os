@@ -7,7 +7,7 @@
 import { Command } from 'commander';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { existsSync, statSync, readFileSync, writeFileSync, readdirSync, rmSync, mkdirSync } from 'fs';
+import { existsSync, statSync, writeFileSync, rmSync, mkdirSync } from 'fs';
 import { Builder } from './builder.js';
 import { logger } from './logger.js';
 import { BuildStep } from './types.js';
@@ -28,6 +28,11 @@ import {
   interactiveFeatures
 } from './features.js';
 import { generateQemuScript, loadQemuConfig, generateNexaConfig } from './qemu.js';
+import { 
+  calculateCoverage, 
+  CoverageStats, 
+  TestResult
+} from './coverage.js';
 import { spawn } from 'child_process';
 
 fileURLToPath(import.meta.url);
@@ -368,65 +373,8 @@ program
   });
 
 // =============================================================================
-// Coverage Command - Custom kernel coverage analyzer (no cargo-llvm-cov)
+// Coverage Command - Test runner and report generation
 // =============================================================================
-
-// Auto-discover kernel modules from src/ directory
-function discoverKernelModules(projectRoot: string): string[] {
-  const srcDir = resolve(projectRoot, 'src');
-  const modules: string[] = [];
-  
-  try {
-    const entries = readdirSync(srcDir, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.isDirectory()) {
-        modules.push(entry.name);
-      }
-    }
-  } catch {
-    // Fallback to known modules
-    return ['arch', 'boot', 'drivers', 'fs', 'interrupts', 'ipc',
-            'kmod', 'mm', 'net', 'process', 'safety', 'scheduler',
-            'security', 'smp', 'syscalls', 'tty', 'udrv'];
-  }
-  
-  return modules.sort();
-}
-
-interface FunctionInfo {
-  name: string;
-  filePath: string;
-  lineStart: number;
-  lineEnd: number;
-  isPub: boolean;
-}
-
-interface ModuleStats {
-  totalFunctions: number;
-  coveredFunctions: number;
-  totalLines: number;
-  coveredLines: number;
-  coveragePct: number;
-}
-
-interface CoverageStats {
-  totalFunctions: number;
-  coveredFunctions: number;
-  functionCoveragePct: number;
-  totalLines: number;
-  coveredLines: number;
-  lineCoveragePct: number;
-  totalTests: number;
-  passedTests: number;
-  failedTests: number;
-  testPassRate: number;
-  modules: Record<string, ModuleStats>;
-}
-
-interface TestResult {
-  name: string;
-  passed: boolean;
-}
 
 interface TestRunResult {
   tests: TestResult[];
@@ -434,212 +382,6 @@ interface TestRunResult {
   errors: number;
   buildFailed: boolean;
   output: string;
-}
-
-// Parse Rust file and count functions
-function parseRustFunctions(filePath: string): FunctionInfo[] {
-  const functions: FunctionInfo[] = [];
-  
-  try {
-    const content = readFileSync(filePath, 'utf-8');
-    const lines = content.split('\n');
-    
-    const fnPattern = /^\s*(pub\s+)?(async\s+)?fn\s+(\w+)/;
-    let inFunction = false;
-    let braceDepth = 0;
-    let currentFn: FunctionInfo | null = null;
-    
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      const trimmed = line.trim();
-      
-      const fnMatch = trimmed.match(fnPattern);
-      if (fnMatch && !inFunction) {
-        currentFn = {
-          name: fnMatch[3],
-          filePath,
-          lineStart: i + 1,
-          lineEnd: i + 1,
-          isPub: !!fnMatch[1]
-        };
-        
-        inFunction = true;
-        braceDepth = (line.match(/{/g) || []).length - (line.match(/}/g) || []).length;
-        
-        if (braceDepth <= 0 && line.includes('{')) {
-          currentFn.lineEnd = i + 1;
-          functions.push(currentFn);
-          currentFn = null;
-          inFunction = false;
-          braceDepth = 0;
-        }
-        continue;
-      }
-      
-      if (inFunction && currentFn) {
-        braceDepth += (line.match(/{/g) || []).length - (line.match(/}/g) || []).length;
-        
-        if (braceDepth <= 0) {
-          currentFn.lineEnd = i + 1;
-          functions.push(currentFn);
-          currentFn = null;
-          inFunction = false;
-          braceDepth = 0;
-        }
-      }
-    }
-  } catch {
-    // Ignore read errors
-  }
-  
-  return functions;
-}
-
-// Recursively find all .rs files in a directory
-function findRustFiles(dir: string): string[] {
-  const files: string[] = [];
-  
-  try {
-    const entries = readdirSync(dir, { withFileTypes: true });
-    for (const entry of entries) {
-      const fullPath = resolve(dir, entry.name);
-      if (entry.isDirectory()) {
-        files.push(...findRustFiles(fullPath));
-      } else if (entry.name.endsWith('.rs')) {
-        files.push(fullPath);
-      }
-    }
-  } catch {
-    // Ignore errors
-  }
-  
-  return files;
-}
-
-// Analyze kernel module
-function analyzeKernelModule(projectRoot: string, moduleName: string): { functions: FunctionInfo[], totalLines: number, codeLines: number } {
-  const modulePath = resolve(projectRoot, 'src', moduleName);
-  const result = { functions: [] as FunctionInfo[], totalLines: 0, codeLines: 0 };
-  
-  const rustFiles = findRustFiles(modulePath);
-  
-  for (const file of rustFiles) {
-    try {
-      const content = readFileSync(file, 'utf-8');
-      const lines = content.split('\n');
-      result.totalLines += lines.length;
-      
-      for (const line of lines) {
-        const stripped = line.trim();
-        if (stripped && !stripped.startsWith('//')) {
-          result.codeLines++;
-        }
-      }
-      
-      result.functions.push(...parseRustFunctions(file));
-    } catch {
-      // Ignore errors
-    }
-  }
-  
-  return result;
-}
-
-// Extract function calls from test file content
-function extractFunctionCalls(content: string): Set<string> {
-  const calls = new Set<string>();
-  
-  // Match function calls: module::submodule::function_name(
-  // Also match method calls: .function_name(
-  // Also match direct calls: function_name(
-  const patterns = [
-    /(\w+)::(\w+)::(\w+)\s*\(/g,           // module::submod::func(
-    /(\w+)::(\w+)\s*\(/g,                   // module::func( or Type::method(
-    /\.(\w+)\s*\(/g,                         // .method(
-    /(?<![:\w])(\w+)\s*\(/g,                // standalone func(
-  ];
-  
-  for (const pattern of patterns) {
-    let match;
-    while ((match = pattern.exec(content)) !== null) {
-      // Get the function name (last capturing group)
-      const funcName = match[match.length - 1];
-      if (funcName && !isRustKeyword(funcName)) {
-        calls.add(funcName);
-      }
-      // Also add qualified names
-      if (match.length >= 3) {
-        calls.add(`${match[1]}::${match[2]}`);
-      }
-      if (match.length >= 4) {
-        calls.add(`${match[2]}::${match[3]}`);
-      }
-    }
-  }
-  
-  return calls;
-}
-
-// Check if a word is a Rust keyword (to filter out false positives)
-function isRustKeyword(word: string): boolean {
-  const keywords = new Set([
-    'if', 'else', 'for', 'while', 'loop', 'match', 'return', 'break',
-    'continue', 'fn', 'let', 'mut', 'const', 'static', 'pub', 'use',
-    'mod', 'struct', 'enum', 'impl', 'trait', 'type', 'where', 'async',
-    'await', 'move', 'ref', 'self', 'super', 'crate', 'as', 'in',
-    'Some', 'None', 'Ok', 'Err', 'true', 'false', 'assert', 'assert_eq',
-    'assert_ne', 'debug_assert', 'panic', 'println', 'eprintln', 'format',
-    'vec', 'box', 'dyn', 'unsafe', 'extern', 'sizeof', 'typeof',
-  ]);
-  return keywords.has(word);
-}
-
-// Analyze all test files to find actually covered functions
-function analyzeTestCoverage(projectRoot: string): Map<string, Set<string>> {
-  const testSrcDir = resolve(projectRoot, 'tests', 'src');
-  const testFiles = findRustFiles(testSrcDir);
-  
-  // Map: module name -> set of covered function names
-  const coverage = new Map<string, Set<string>>();
-  
-  for (const testFile of testFiles) {
-    try {
-      const content = readFileSync(testFile, 'utf-8');
-      const calls = extractFunctionCalls(content);
-      
-      // Determine which module this test file covers
-      const relativePath = testFile.replace(testSrcDir, '').replace(/^[\/\\]/, '');
-      const parts = relativePath.split(/[\/\\]/);
-      
-      // Try to match to a kernel module
-      // e.g., tests/src/scheduler/mod.rs -> scheduler
-      // e.g., tests/src/integration/scheduler_smp.rs -> scheduler
-      let moduleName = parts[0].replace(/\.rs$/, '');
-      
-      // Handle integration tests that reference modules in filename
-      if (moduleName === 'integration' && parts.length > 1) {
-        const filename = parts[1].replace(/\.rs$/, '');
-        // Extract module name from integration test filename
-        // e.g., scheduler_smp.rs -> scheduler
-        const match = filename.match(/^(\w+?)(?:_|$)/);
-        if (match) {
-          moduleName = match[1];
-        }
-      }
-      
-      if (!coverage.has(moduleName)) {
-        coverage.set(moduleName, new Set());
-      }
-      
-      const moduleCalls = coverage.get(moduleName)!;
-      calls.forEach(c => moduleCalls.add(c));
-      
-    } catch {
-      // Ignore errors
-    }
-  }
-  
-  return coverage;
 }
 
 // Run cargo test and parse results
@@ -727,85 +469,6 @@ async function runTests(projectRoot: string, filterPattern?: string, verbose: bo
       resolvePromise(result);
     });
   });
-}
-
-// Calculate coverage stats
-function calculateCoverage(
-  projectRoot: string, 
-  testResults: TestResult[]
-): CoverageStats {
-  const stats: CoverageStats = {
-    totalFunctions: 0,
-    coveredFunctions: 0,
-    functionCoveragePct: 0,
-    totalLines: 0,
-    coveredLines: 0,
-    lineCoveragePct: 0,
-    totalTests: testResults.length,
-    passedTests: testResults.filter(t => t.passed).length,
-    failedTests: testResults.filter(t => !t.passed).length,
-    testPassRate: 0,
-    modules: {}
-  };
-  
-  stats.testPassRate = stats.totalTests > 0 
-    ? (stats.passedTests / stats.totalTests) * 100 
-    : 0;
-  
-  // Auto-discover kernel modules
-  const kernelModules = discoverKernelModules(projectRoot);
-  
-  // Analyze test files to find actually covered functions per module
-  const testCoverage = analyzeTestCoverage(projectRoot);
-  
-  // Analyze each kernel module
-  for (const moduleName of kernelModules) {
-    const moduleInfo = analyzeKernelModule(projectRoot, moduleName);
-    const moduleTotal = moduleInfo.functions.length;
-    
-    // Get function names that are covered by tests
-    const coveredFuncNames = testCoverage.get(moduleName) || new Set<string>();
-    
-    // Count actually covered functions by matching names
-    let moduleCovered = 0;
-    let moduleCoveredLines = 0;
-    
-    for (const func of moduleInfo.functions) {
-      // Check if this function is called in tests
-      const isCovered = coveredFuncNames.has(func.name) ||
-        // Also check qualified names like "module::func"
-        Array.from(coveredFuncNames).some(name => 
-          name.endsWith(`::${func.name}`) || name === func.name
-        );
-      
-      if (isCovered) {
-        moduleCovered++;
-        moduleCoveredLines += (func.lineEnd - func.lineStart + 1);
-      }
-    }
-    
-    stats.modules[moduleName] = {
-      totalFunctions: moduleTotal,
-      coveredFunctions: moduleCovered,
-      totalLines: moduleInfo.codeLines,
-      coveredLines: moduleCoveredLines,
-      coveragePct: moduleTotal > 0 ? (moduleCovered / moduleTotal) * 100 : 0
-    };
-    
-    stats.totalFunctions += moduleTotal;
-    stats.coveredFunctions += moduleCovered;
-    stats.totalLines += moduleInfo.codeLines;
-    stats.coveredLines += moduleCoveredLines;
-  }
-  
-  stats.functionCoveragePct = stats.totalFunctions > 0 
-    ? (stats.coveredFunctions / stats.totalFunctions) * 100 
-    : 0;
-  stats.lineCoveragePct = stats.totalLines > 0 
-    ? (stats.coveredLines / stats.totalLines) * 100 
-    : 0;
-  
-  return stats;
 }
 
 // ANSI color codes for Jest-style output
