@@ -207,4 +207,8 @@ mod tests_safety;
 #[path = "mm.rs"]
 mod tests_mm;
 
+#[path = "integration/mod.rs"]
+mod tests_integration;
+
+
 

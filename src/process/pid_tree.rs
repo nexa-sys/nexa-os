@@ -17,13 +17,14 @@
 //!
 //! ## Usage
 //!
-//! ```rust
+//! ```rust,ignore
 //! use crate::process::pid_tree;
 //!
 //! // Allocate a new PID
 //! let pid = pid_tree::allocate_pid();
 //!
 //! // Register the PID in the radix tree with its process table index
+//! let process_table_idx = 0usize; // Example index
 //! pid_tree::register_pid_mapping(pid, process_table_idx);
 //!
 //! // Look up process table index by PID (O(log N))

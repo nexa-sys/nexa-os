@@ -465,6 +465,61 @@ pub fn mfence() {
     }
 }
 
+/// MMIO read 32-bit
+pub fn mmio_read_u32(addr: u64) -> u32 {
+    if hal_initialized() {
+        let hal = get_hal();
+        hal.devices.mmio_read(addr, super::devices::IoAccess::Dword)
+    } else {
+        0
+    }
+}
+
+/// MMIO write 32-bit
+pub fn mmio_write_u32(addr: u64, value: u32) {
+    if hal_initialized() {
+        let hal = get_hal();
+        hal.devices.mmio_write(addr, value, super::devices::IoAccess::Dword);
+    }
+}
+
+/// CLI - disable interrupts
+pub fn cli() {
+    if hal_initialized() {
+        get_hal().disable_interrupts();
+    }
+}
+
+/// STI - enable interrupts
+pub fn sti() {
+    if hal_initialized() {
+        get_hal().enable_interrupts();
+    }
+}
+
+/// Check if interrupts are enabled
+pub fn interrupts_enabled() -> bool {
+    if hal_initialized() {
+        get_hal().interrupts_enabled()
+    } else {
+        false
+    }
+}
+
+/// Execute closure with interrupts disabled
+pub fn interrupt_free<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    let was_enabled = interrupts_enabled();
+    cli();
+    let result = f();
+    if was_enabled {
+        sti();
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

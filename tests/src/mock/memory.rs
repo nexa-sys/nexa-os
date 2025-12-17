@@ -25,6 +25,8 @@ pub type VirtAddr = u64;
 pub enum MemoryType {
     /// Usable RAM
     Ram,
+    /// Alias for Ram (compatibility)
+    Usable,
     /// Reserved (firmware, etc.)
     Reserved,
     /// ACPI reclaimable
@@ -37,6 +39,13 @@ pub enum MemoryType {
     Kernel,
     /// Bootloader data
     Bootloader,
+}
+
+impl MemoryType {
+    /// Check if memory is usable (Ram or Usable)
+    pub fn is_usable(&self) -> bool {
+        matches!(self, MemoryType::Ram | MemoryType::Usable)
+    }
 }
 
 /// A memory region descriptor
