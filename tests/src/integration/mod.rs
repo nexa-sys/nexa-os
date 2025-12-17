@@ -7,3 +7,5 @@ mod boot;
 mod devices;
 mod interrupt;
 mod memory;
+mod smp;
+mod scheduler_smp;

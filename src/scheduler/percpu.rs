@@ -221,7 +221,9 @@ impl PerCpuRunQueue {
                 None => true,
                 Some(best) => {
                     if best.policy == SchedPolicy::Realtime {
-                        false
+                        false // Never dominate RT
+                    } else if best.policy == SchedPolicy::Idle {
+                        true // Always dominate Idle
                     } else if entry.eligible && !best.eligible {
                         true
                     } else if !entry.eligible && best.eligible {

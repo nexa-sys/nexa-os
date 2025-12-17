@@ -196,10 +196,16 @@ mod tests_fs;
 mod tests_ipc;
 
 #[path = "scheduler.rs"]
+mod tests_scheduler_basic;
+
+#[path = "scheduler/mod.rs"]
 mod tests_scheduler;
 
 #[path = "process.rs"]
 mod tests_process;
+
+#[path = "process/mod.rs"]
+mod tests_process_detailed;
 
 #[path = "safety.rs"]
 mod tests_safety;
