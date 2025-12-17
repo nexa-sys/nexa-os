@@ -216,5 +216,14 @@ mod tests_mm;
 #[path = "integration/mod.rs"]
 mod tests_integration;
 
+#[path = "syscalls.rs"]
+mod tests_syscalls;
+
+#[path = "interrupts.rs"]
+mod tests_interrupts;
+
+#[path = "udrv.rs"]
+mod tests_udrv;
+
 
 
