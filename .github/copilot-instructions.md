@@ -1,107 +1,216 @@
 # NexaOS AI Coding Guide
 
 ## Architecture Overview
-NexaOS is a Rust `no_std` hybrid kernel with 6-stage boot (`src/boot/stages.rs`): Bootloader → KernelInit → Initramfs → RootSwitch → RealRoot → UserSpace. The kernel runs in Ring 0, userspace in Ring 3 with full POSIX compliance.
+
+NexaOS is a Rust `no_std` hybrid kernel with 6-stage boot (`src/boot/stages.rs`): 
+**Bootloader → KernelInit → Initramfs → RootSwitch → RealRoot → UserSpace**. 
+The kernel runs in Ring 0, userspace in Ring 3 with full POSIX compliance.
 
 ### Key Subsystems
+
 | Component | Location | Purpose |
 |-----------|----------|---------|
 | Boot entry | `src/main.rs` → `src/lib.rs` | Multiboot2 → kernel_main |
 | Memory | `src/mm/paging.rs`, `src/process/types.rs` | Identity-mapped kernel, isolated userspace with 4-level paging |
-| Scheduler | `src/scheduler/` | Round-robin with priorities |
+| Scheduler | `src/scheduler/` | Round-robin with priorities; maintains ProcessState consistency |
 | Syscalls | `src/syscalls/` | 50+ POSIX syscalls, organized by domain (file, process, signal, network, memory, thread, time) |
 | Filesystems | `src/fs/initramfs.rs`, `src/fs/` | CPIO initramfs → ext2 rootfs after pivot_root (stage 4) |
 | Safety helpers | `src/safety/` | Centralized unsafe wrappers (volatile, MMIO, port I/O, packet casting) |
 | Networking | `src/net/` | Full UDP/IPv4 stack, ARP, DNS resolver; TCP in progress |
 | Kernel modules | `modules/`, `src/kmod/` | Loadable `.nkm` modules (ext2, e1000, virtio) with PKCS#7 signing |
+| Init system | `src/boot/init.rs` | PID 1 service management (System V runlevels, /etc/inittab parsing) |
 
-### Memory Layout Constants (`src/process/types.rs`)
+### Critical Memory Layout (`src/process/types.rs`)
+
 ```rust
-USER_VIRT_BASE: 0x1000000   // Userspace code base (16MB)
-HEAP_BASE:      0x1200000   // User heap region
-STACK_BASE:     0x1400000   // User stack region (2MB)
-INTERP_BASE:    0x1600000   // Dynamic linker region (16MB reserved)
+USER_VIRT_BASE: 0x1000000      // Userspace code base (16MB)
+HEAP_BASE:      0x1200000      // User heap (8MB: 0x1200000–0x1A00000)
+STACK_BASE:     0x1A00000      // User stack (2MB, placed after heap)
+INTERP_BASE:    0x1C00000      // Dynamic linker region (16MB reserved)
 ```
-**Critical**: Changes require coordinated updates in `src/mm/paging.rs` + `src/process/loader.rs`.
+
+**⚠️ Critical Invariant**: Changes to these constants require simultaneous updates in:
+- `src/mm/paging.rs` (map_user_region, identity mapping)
+- `src/process/loader.rs` (ELF loading, segment placement)
+- `src/security/elf.rs` (auxiliary vector setup)
+
+Failure to sync these causes memory corruption or segfaults during ELF loading.
 
 ## Build & Test Workflows
-```bash
-./ndk build full              # Full: kernel → userspace → rootfs → ISO (use first!)
-./ndk run                     # Boot in QEMU with serial console
-./ndk dev                     # Build + run (development mode)
-./ndk dev --quick             # Quick build + run
-./ndk build kernel iso        # After kernel-only changes (using build steps)
-./ndk run --debug             # Run with GDB server
-./ndk qemu generate           # Regenerate QEMU script from config/qemu.yaml
-```
 
-### Common Commands
+### Standard Commands
+
 ```bash
-./ndk build full        # Full system build
-./ndk build quick       # Quick build (kernel + initramfs + ISO)
-./ndk build kernel      # Build kernel only
-./ndk build userspace   # Build userspace programs
-./ndk build modules     # Build kernel modules
-./ndk build rootfs      # Build root filesystem
-./ndk clean             # Clean build artifacts
-./ndk features list     # List kernel features
-./ndk list              # List build targets
+./ndk build full              # ALWAYS START WITH THIS: kernel → nrlib → userspace → modules → rootfs → ISO
+./ndk build quick             # Fast: kernel + initramfs + ISO (skip rootfs rebuild)
+./ndk build kernel            # Kernel only (use after .rs changes)
+./ndk build userspace rootfs iso  # Rebuild after userspace/etc/ changes
+./ndk run                     # Boot in QEMU (uses last built ISO)
+./ndk dev --quick             # Build + run in one command
+./ndk test                    # Run unit tests (tests/ crate)
+./ndk test --filter bitmap    # Run specific test pattern
+./ndk coverage html           # Generate coverage report (requires cargo-llvm-cov)
+./ndk run --debug             # Start GDB server at 127.0.0.1:1234
 ```
 
 ### Environment Variables
+
 ```bash
-BUILD_TYPE=debug ./ndk build full     # Debug build (default, STABLE)
-BUILD_TYPE=release ./ndk build full   # Release build (O3 may cause fork/exec crashes!)
-LOG_LEVEL=info ./ndk build kernel     # Set kernel log level (debug|info|warn|error)
-SMP=8 ./ndk run                       # Run with 8 CPU cores
-MEMORY=2G ./ndk run                   # Run with 2GB RAM
+BUILD_TYPE=debug ./ndk build full     # Debug build (DEFAULT, STABLE)
+BUILD_TYPE=release ./ndk build full   # Release (O3 may break fork/exec; avoid)
+LOG_LEVEL=info ./ndk build kernel     # Kernel log level: debug|info|warn|error
+SMP=8 ./ndk run                       # Boot with 8 CPU cores
+MEMORY=2G ./ndk run                   # Boot with 2GB RAM
+FEATURE_smp=true ./ndk build kernel   # Enable SMP at build time
 ```
 
-**Build order matters**: Dependencies are kernel → nrlib → userspace → modules → initramfs → rootfs → iso.
+**Build order is strict**: kernel → nrlib → userspace → modules → initramfs → rootfs → iso.
+Skipping steps breaks subsequent builds.
 
 ## Coding Conventions
 
 ### Kernel Code (`src/`)
-- **`no_std` only** — no heap allocations in kernel; use fixed-size buffers
-- **Logging**: `kinfo!`, `kwarn!`, `kerror!`, `kdebug!`, `kfatal!` (defined in `src/logger.rs`)
-- **Error handling**: Propagate `Errno` from `src/posix.rs`; never panic in syscall paths
-- **Unsafe code**: Route through `src/safety/` helpers:
+
+- **`no_std` only** — No heap allocations; use fixed-size buffers (StaticVec, ArrayVec)
+- **Logging macros** (`src/logger.rs`): `kinfo!`, `kwarn!`, `kerror!`, `kdebug!`, `kfatal!`
+  - **Never disable logging** — serial output is essential for boot debugging
+  - Log level controlled by kernel command line (e.g., `log_level=debug`)
+- **Error handling**: Return `Errno` (from `src/posix.rs`); never panic in syscall paths
+- **Unsafe code**: Use `src/safety/` helpers exclusively:
   ```rust
-  use crate::safety::{inb, outb, volatile_read, copy_from_user, cast_header};
+  use crate::safety::{inb, outb, volatile_read, volatile_write, copy_from_user, copy_to_user, cast_header};
   ```
+  Rationale: Centralizes x86_64 low-level details in one place for auditing.
+
+### Process & Scheduler Consistency
+
+Process state management is **critical** because three subsystems interact:
+1. **Scheduler** (`src/scheduler/mod.rs`) — tracks Ready/Running/Sleeping/Zombie
+2. **Signals** (`src/ipc/signal.rs`) — can transition processes to Sleeping/Running
+3. **wait4 syscall** (`src/syscalls/process.rs`) — must see consistent Zombie state
+
+**Pattern to follow**:
+- Always acquire process lock before modifying `ProcessState`
+- After signal delivery, update scheduler queue (don't just change state)
+- When marking Zombie, ensure parent PID is set so wait4 can find it
+- See `src/scheduler/mod.rs:update_process_state()` for reference
 
 ### Adding New Syscalls (`src/syscalls/`)
-1. Add constant to `numbers.rs`: `pub const SYS_XXX: u64 = N;`
-2. Implement in domain file (`file.rs`, `process.rs`, `network.rs`, `memory.rs`, etc.)
-3. Wire up in `mod.rs:syscall_dispatch` match arm
-4. Update `userspace/nrlib/src/lib.rs` with wrapper if needed by Rust std
 
-### Userspace (`userspace/`)
-- Target JSON: `targets/x86_64-nexaos-userspace.json`
-- **nrlib** (`userspace/nrlib/`): libc shim for Rust `std` (pthread stubs, TLS, malloc, stdio, socket)
-- **ld-nrlib** (`userspace/ld-nrlib/`): Dynamic linker at `/lib64/ld-nrlib-x86_64.so.1`
-- **Adding programs**: Create in `userspace/programs/`, add to `userspace/Cargo.toml` workspace members
+1. **Define syscall number** in `numbers.rs`:
+   ```rust
+   pub const SYS_MYPROCEDURE: u64 = 450;  // Check for conflicts in Linux source
+   ```
+
+2. **Implement logic** in domain file (file.rs, process.rs, network.rs, memory.rs, etc.):
+   ```rust
+   pub fn my_procedure(arg1: u64, arg2: u64) -> Result<u64, Errno> {
+       // Validate inputs
+       // Perform operation
+       // Return Errno on failure
+   }
+   ```
+
+3. **Wire up dispatcher** in `mod.rs:syscall_dispatch()`:
+   ```rust
+   SYS_MYPROCEDURE => my_procedure(arg1, arg2),
+   ```
+
+4. **Update nrlib** (`userspace/nrlib/src/lib.rs`) if Rust std needs this syscall:
+   ```rust
+   pub unsafe fn myprocedure(arg1: u64, arg2: u64) -> i64 {
+       raw_syscall2(SYS_MYPROCEDURE, arg1, arg2)
+   }
+   ```
+
+### Userspace Programs & Libraries
+
+**Workspace structure** (`userspace/`):
+- **nrlib** — C-compatible libc shim (pthread stubs, TLS, malloc, stdio, socket). **Always linked, statically**.
+- **ld-nrlib** — Dynamic linker at `/lib64/ld-nrlib-x86_64.so.1`. Loads .so files, sets up auxiliary vectors.
+- **programs/** — Organized by category (core, user, network, coreutils, power). Each is a separate crate.
+- **lib/** — Shared libraries (.so files): ncryptolib, nssl, nzip, nh2, nh3, ntcp2.
+
+**Target triple** (`targets/`): `x86_64-nexaos-userspace.json`
+- **pic (Position Independent Code)** variant (`x86_64-nexaos-userspace-pic.json`) used for .so files
+- **lib variant** (`x86_64-nexaos-userspace-lib.json`) for static libraries
+
+**Adding a new program**:
+```bash
+mkdir -p userspace/programs/category/myprogram
+cat > userspace/programs/category/myprogram/Cargo.toml << 'EOF'
+[package]
+name = "myprogram"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+nrlib = { path = "../../nrlib" }
+EOF
+```
+
+Then add to `userspace/Cargo.toml` workspace members. Build with `./ndk build userspace`.
 
 ### Service Registration (`etc/inittab`)
-```
-id:runlevels:action:process
+
+Format: `id:runlevels:action:process`
+
+```ini
 1:2345:respawn:/sbin/getty 38400 tty1
+2:345:once:/sbin/uefi-compatd
+3:6:ctrlaltdel:/sbin/shutdown -h now
 ```
-Services use System V runlevels (0=halt, 1=single, 3=multi-user, 6=reboot). Init is `/sbin/ni`.
+
+- **Runlevels**: bitmask (0=halt, 1=single, 2=multi-user, 3=multi-network, 5=GUI, 6=reboot)
+- **Actions**: respawn (auto-restart), once, ctrlaltdel, sysinit
+- **Init binary**: `/sbin/ni` (implemented in `userspace/programs/core/init`)
+
+Parsed by `src/boot/init.rs:parse_inittab()`. See `etc/inittab` for examples.
+
+### Testing
+
+**Unit tests** live in separate `tests/` crate (uses standard Rust std environment):
+
+```bash
+cd tests
+cargo test --lib                # Run all tests
+cargo test --lib bitmap         # Match test name
+cargo test -- --nocapture       # Show println! output
+```
+
+Tests cannot use kernel-specific code; instead mock components. See `tests/src/mock/` for examples.
+
+Add tests to `tests/src/{algorithms,data_structures}/` as Rust test modules.
 
 ## Critical Pitfalls
-- **Never disable logging** — serial output is essential for boot debugging
-- **ProcessState consistency** — scheduler, signals (`src/ipc/signal.rs`), and wait4 must stay synchronized
-- **Dynamic linking** — PT_INTERP must match `/lib64/ld-nrlib-x86_64.so.1`
-- **Rebuild rootfs** after `userspace/` or `etc/` changes: `./ndk build userspace rootfs iso`
-- **Memory constants** — USER_VIRT_BASE/STACK_BASE changes break ELF loading; coordinate with paging
 
-## Debugging
+1. **ProcessState must stay synchronized** across scheduler, signals, and wait4. Lock process before modifying state.
+2. **Memory constants changes** (USER_VIRT_BASE, etc.) require coordinated updates in paging.rs + loader.rs + elf.rs.
+3. **Dynamic linker mismatch** — PT_INTERP must always be `/lib64/ld-nrlib-x86_64.so.1`; hardcoded in loader.
+4. **Userspace rebuild** — After modifying `userspace/` or `etc/`, run `./ndk build userspace rootfs iso` (not just `build kernel`).
+5. **Release builds** — O3 optimization can break fork/exec; stick with debug builds for stability.
+6. **Never panic in syscalls** — Return `Errno` instead; panics crash the entire kernel.
+
+## Debugging Techniques
+
 ```bash
-./ndk run --debug                        # GDB server + pause at start
-gdb -ex "target remote :1234"            # Attach GDB
-grub-file --is-x86-multiboot2 target/x86_64-nexaos/debug/nexa-os  # Verify boot
+# Boot with debugger paused at start
+./ndk run --debug
+
+# In another terminal
+gdb -ex "target remote :1234" target/x86_64-nexaos/debug/nexa-os
+(gdb) c           # Continue execution
+(gdb) info proc   # Show current PID
+(gdb) break fork  # Break on specific symbol (if available in debug build)
+
+# View kernel ring buffer (64KB circular)
+dmesg            # In userspace shell
+
+# Verify multiboot compliance
+grub-file --is-x86-multiboot2 target/x86_64-nexaos/debug/nexa-os
+
+# Module signing for loadable drivers
+./scripts/sign-module.sh module_name.nkm
 ```
-- Serial console shows all `kinfo!/kerror!` output
-- Kernel ring buffer: `dmesg` in userspace (64KB, via `SYS_SYSLOG`)
-- Module signing: `./scripts/sign-module.sh` (PKCS#7/CMS)
+
+Serial console output shows all kernel logs. QEMU's `-serial stdio` redirects to terminal.
