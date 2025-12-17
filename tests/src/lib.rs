@@ -225,5 +225,24 @@ mod tests_interrupts;
 #[path = "udrv.rs"]
 mod tests_udrv;
 
+// Comprehensive new test modules
+#[path = "memory_management.rs"]
+mod tests_memory_management;
+
+#[path = "process_management.rs"]
+mod tests_process_management;
+
+#[path = "filesystem_tests.rs"]
+mod tests_filesystem;
+
+#[path = "network_tests.rs"]
+mod tests_network_protocols;
+
+#[path = "ipc_tests.rs"]
+mod tests_ipc_comprehensive;
+
+#[path = "smp_scheduler_tests.rs"]
+mod tests_smp_scheduler;
+
 
 
