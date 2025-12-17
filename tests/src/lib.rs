@@ -239,3 +239,6 @@ mod tests_syscalls;
 #[path = "udrv.rs"]
 mod tests_udrv;
 
+/// Security and ELF validation tests
+#[path = "security/mod.rs"]
+mod tests_security;

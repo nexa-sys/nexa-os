@@ -10,6 +10,7 @@
 
 mod comprehensive;
 mod futex;
+mod futex_edge_cases;
 mod pipe;
 mod pipe_edge_cases;
 mod signal;

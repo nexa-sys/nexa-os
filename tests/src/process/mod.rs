@@ -15,6 +15,7 @@ mod context_switch;
 mod elf_loader;
 mod fork;
 mod memory_layout;
+mod pid_edge_cases;
 mod pid_tree;
 mod state;
 mod state_machine;

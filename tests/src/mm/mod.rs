@@ -13,6 +13,7 @@
 mod allocator;
 mod buddy;
 mod comprehensive;
+mod paging_edge_cases;
 mod safety;
 mod slab;
 mod vma;

@@ -11,6 +11,7 @@
 //! - Stress tests
 
 mod basic;
+mod consistency;
 mod eevdf;
 mod eevdf_edge_cases;
 mod eevdf_vruntime;

@@ -10,6 +10,7 @@
 //! - Comprehensive protocol stack tests
 
 mod arp;
+mod checksum_validation;
 mod comprehensive;
 mod dns;
 mod ethernet;
