@@ -8,9 +8,11 @@
 //! - Virtual address mapping
 //! - Page table operations
 //! - Safety utilities (layout_of, layout_array)
+//! - VMA (Virtual Memory Area) management
 
 mod allocator;
 mod buddy;
 mod comprehensive;
 mod safety;
 mod slab;
+mod vma;

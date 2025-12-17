@@ -5,9 +5,10 @@
 //! - Inode operations  
 //! - Path parsing and manipulation
 //! - fstab parsing
-//! - CPIO (initramfs) parsing
+//! - CPIO (initramfs) parsing and edge cases
 
 mod comprehensive;
 mod cpio;
+mod cpio_edge_cases;
 mod fd;
 mod fstab;

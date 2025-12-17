@@ -5,12 +5,14 @@
 //! - Basic scheduler types (CpuMask, SchedPolicy)
 //! - EEVDF algorithm and vruntime calculation
 //! - EEVDF nice value weights
+//! - EEVDF edge cases and potential bugs
 //! - Per-CPU queue management
 //! - SMP load balancing
 //! - Stress tests
 
 mod basic;
 mod eevdf;
+mod eevdf_edge_cases;
 mod eevdf_vruntime;
 mod eevdf_weights;
 mod percpu;
