@@ -109,17 +109,27 @@ mod tests {
     fn test_buddy_is_valid_pair() {
         const PAGE_SIZE: u64 = 4096;
         
+        // Buddy pair validation: Two addresses are buddies if:
+        // 1. They XOR to the block size for that order
+        // 2. Both addresses are aligned to the block size
+        // 3. They are from the same parent block (lower bits must match)
         fn is_valid_buddy_pair(addr1: u64, addr2: u64, order: usize) -> bool {
             let block_size = PAGE_SIZE << order;
+            // Check alignment
+            if addr1 & (block_size - 1) != 0 || addr2 & (block_size - 1) != 0 {
+                return false;
+            }
+            // XOR check: buddies differ only in the buddy bit
             (addr1 ^ addr2) == block_size
         }
         
-        // Valid pairs
-        assert!(is_valid_buddy_pair(0x0000, 0x1000, 0));
-        assert!(is_valid_buddy_pair(0x0000, 0x2000, 1));
+        // Valid pairs: addresses differ exactly by block_size and are aligned
+        assert!(is_valid_buddy_pair(0x0000, 0x1000, 0));  // Order 0: 4KB buddies at 0 and 4KB
+        assert!(is_valid_buddy_pair(0x0000, 0x2000, 1));  // Order 1: 8KB buddies at 0 and 8KB
         
         // Invalid pairs
-        assert!(!is_valid_buddy_pair(0x0000, 0x2000, 0));
+        assert!(!is_valid_buddy_pair(0x0000, 0x2000, 0)); // 0x2000 is not 4KB-buddy of 0
+        // 0x1000 and 0x3000 at order 1: 0x1000 is not aligned to 8KB
         assert!(!is_valid_buddy_pair(0x1000, 0x3000, 1));
     }
 

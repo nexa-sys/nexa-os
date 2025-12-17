@@ -93,9 +93,15 @@ mod tests {
         assert!(is_valid_fd(FD_BASE));
         assert!(is_valid_fd(FD_BASE + 1));
         
-        // Invalid fds
-        assert!(!is_valid_fd(FD_BASE - 1)); // Gap between stderr and FD_BASE
-        assert!(!is_valid_fd(FD_BASE + MAX_OPEN_FILES as u64)); // Past max
+        // FD_BASE - 1 = 2 = STDERR, which IS valid (standard fds)
+        // So there is no gap between stderr and FD_BASE
+        assert!(is_valid_fd(FD_BASE - 1)); // This is STDERR
+        
+        // Invalid fds: past max
+        assert!(!is_valid_fd(FD_BASE + MAX_OPEN_FILES as u64));
+        
+        // Note: With FD_BASE = 3, fds 0,1,2 are standard streams
+        // and fds 3+ are user file descriptors with no gap
     }
 
     #[test]

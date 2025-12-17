@@ -63,7 +63,7 @@ mod tests {
     fn test_context_zero_initialization() {
         let ctx = Context::zero();
         
-        // All registers should be zero
+        // All general purpose registers should be zero
         assert_eq!(ctx.rax, 0);
         assert_eq!(ctx.rbx, 0);
         assert_eq!(ctx.rcx, 0);
@@ -81,7 +81,10 @@ mod tests {
         assert_eq!(ctx.r14, 0);
         assert_eq!(ctx.r15, 0);
         assert_eq!(ctx.rip, 0);
-        assert_eq!(ctx.rflags, 0);
+        
+        // rflags should be 0x202 (IF flag set + reserved bit 1)
+        // This is intentional to ensure interrupts are enabled for user processes
+        assert_eq!(ctx.rflags, 0x202);
     }
 
     #[test]
