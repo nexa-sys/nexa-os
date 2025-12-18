@@ -2,6 +2,9 @@
 //!
 //! These tests call the REAL kernel functions and verify they work correctly.
 //! Tests should FAIL when bugs exist and PASS when fixed.
+//!
+//! NOTE: These tests share global state (PROCESS_TABLE) so they use a mutex
+//! to serialize execution.
 
 use crate::scheduler::{
     wake_process, 
@@ -9,11 +12,21 @@ use crate::scheduler::{
     process_table_lock,
 };
 use crate::scheduler::table::PROCESS_TABLE;
-use crate::scheduler::percpu::check_need_resched;
+use crate::scheduler::percpu::{check_need_resched, init_percpu_sched};
 use crate::process::{Process, ProcessState, Pid, MAX_CMDLINE_SIZE};
 use crate::signal::SignalState;
 
-use std::sync::atomic::Ordering;
+use std::sync::{atomic::Ordering, Once, Mutex};
+
+static INIT_PERCPU: Once = Once::new();
+static TEST_MUTEX: Mutex<()> = Mutex::new(());
+
+/// Initialize per-CPU scheduler for testing (only once)
+fn ensure_percpu_init() {
+    INIT_PERCPU.call_once(|| {
+        init_percpu_sched(0);
+    });
+}
 
 /// Helper: Create a minimal test process
 fn make_test_process(pid: Pid) -> Process {
@@ -59,6 +72,7 @@ fn make_test_process(pid: Pid) -> Process {
 
 /// Clear the process table for a clean test environment
 fn clear_process_table() {
+    ensure_percpu_init();
     let mut table = process_table_lock();
     for slot in table.iter_mut() {
         *slot = None;
@@ -98,6 +112,7 @@ fn add_test_process(pid: Pid, state: ProcessState) -> Result<(), &'static str> {
 
 #[test]
 fn test_wake_process_sets_state_to_ready() {
+    let _guard = TEST_MUTEX.lock().unwrap();
     clear_process_table();
     
     // Add a sleeping process
@@ -134,6 +149,7 @@ fn test_wake_process_sets_state_to_ready() {
 
 #[test]
 fn test_wake_process_sets_need_resched_flag() {
+    let _guard = TEST_MUTEX.lock().unwrap();
     clear_process_table();
     
     // Add a sleeping process
@@ -161,17 +177,21 @@ fn test_wake_process_sets_need_resched_flag() {
 
 #[test]
 fn test_wake_process_gives_vruntime_credit() {
+    let _guard = TEST_MUTEX.lock().unwrap();
     clear_process_table();
     
+    // Use unique PID to avoid conflicts with parallel tests
+    let pid = 2002;
+    
     // Add a sleeping process with high vruntime
-    add_test_process(102, ProcessState::Sleeping).unwrap();
+    add_test_process(pid, ProcessState::Sleeping).unwrap();
     
     // Set a high vruntime (simulating process that ran a lot before sleeping)
     {
         let mut table = process_table_lock();
         for slot in table.iter_mut() {
             if let Some(entry) = slot {
-                if entry.process.pid == 102 {
+                if entry.process.pid == pid {
                     entry.vruntime = 100_000_000; // 100ms worth
                     break;
                 }
@@ -180,8 +200,8 @@ fn test_wake_process_gives_vruntime_credit() {
     }
     
     // Wake it
-    let woke = wake_process(102);
-    assert!(woke);
+    let woke = wake_process(pid);
+    assert!(woke, "wake_process should succeed for sleeping process");
     
     // Check vruntime - it should get credit (lower vruntime = higher priority)
     {
@@ -189,7 +209,7 @@ fn test_wake_process_gives_vruntime_credit() {
         let mut found_vruntime = None;
         for slot in table.iter() {
             if let Some(entry) = slot {
-                if entry.process.pid == 102 {
+                if entry.process.pid == pid {
                     found_vruntime = Some(entry.vruntime);
                     break;
                 }
@@ -209,6 +229,7 @@ fn test_wake_process_gives_vruntime_credit() {
 
 #[test]
 fn test_wake_process_does_nothing_for_ready_process() {
+    let _guard = TEST_MUTEX.lock().unwrap();
     clear_process_table();
     
     // Add a Ready process (not sleeping)
@@ -225,6 +246,7 @@ fn test_wake_process_does_nothing_for_ready_process() {
 
 #[test]
 fn test_wake_process_does_nothing_for_running_process() {
+    let _guard = TEST_MUTEX.lock().unwrap();
     clear_process_table();
     
     // Add a Running process
@@ -240,6 +262,7 @@ fn test_wake_process_does_nothing_for_running_process() {
 
 #[test]
 fn test_wake_nonexistent_process() {
+    let _guard = TEST_MUTEX.lock().unwrap();
     clear_process_table();
     
     // Try to wake a process that doesn't exist
@@ -250,6 +273,7 @@ fn test_wake_nonexistent_process() {
 
 #[test]
 fn test_wake_process_recalculates_vdeadline() {
+    let _guard = TEST_MUTEX.lock().unwrap();
     clear_process_table();
     
     add_test_process(105, ProcessState::Sleeping).unwrap();
@@ -306,6 +330,7 @@ fn test_keyboard_wake_shell_scenario() {
     // - User types -> keyboard ISR calls wake_process(8)
     // - Shell MUST be scheduled immediately (next tick)
     
+    let _guard = TEST_MUTEX.lock().unwrap();
     clear_process_table();
     
     // DHCP running
@@ -349,19 +374,23 @@ fn test_keyboard_wake_shell_scenario() {
 
 #[test]
 fn test_multiple_wakes_all_set_resched() {
+    let _guard = TEST_MUTEX.lock().unwrap();
     clear_process_table();
     
+    // Use unique PIDs to avoid conflicts with parallel tests
+    let pids: Vec<u64> = (3010..3015).collect();
+    
     // Add multiple sleeping processes
-    for pid in 10..15 {
+    for &pid in &pids {
         add_test_process(pid, ProcessState::Sleeping).unwrap();
     }
     
     // Wake them one by one, each should set need_resched
-    for pid in 10..15 {
+    for &pid in &pids {
         let _ = check_need_resched(); // Clear flag
         
         let woke = wake_process(pid);
-        assert!(woke);
+        assert!(woke, "wake_process should succeed for PID {}", pid);
         
         let need_resched = check_need_resched();
         assert!(need_resched, 
