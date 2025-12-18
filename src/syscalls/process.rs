@@ -136,6 +136,7 @@ pub fn fork(syscall_return_addr: u64) -> u64 {
     child_process.exit_code = 0;
     child_process.clear_child_tid = 0; // No clear_child_tid for fork
     child_process.exec_pending = false; // Child should not inherit parent's exec context
+    child_process.wake_pending = false; // Child starts with no pending wake
 
     let kernel_stack_layout = Layout::from_size_align(
         crate::process::KERNEL_STACK_SIZE,

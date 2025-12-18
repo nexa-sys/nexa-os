@@ -47,6 +47,7 @@ mod tests {
             exec_entry: 0,
             exec_stack: 0,
             exec_user_data_sel: 0,
+            wake_pending: false,
         }
     }
 

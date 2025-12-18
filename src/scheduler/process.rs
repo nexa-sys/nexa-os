@@ -224,6 +224,21 @@ pub fn set_process_state(pid: Pid, state: ProcessState) -> Result<(), &'static s
         if idx < table.len() {
             if let Some(entry) = &mut table[idx] {
                 if entry.process.pid == pid {
+                    // CRITICAL FIX: Check wake_pending before allowing sleep
+                    // This prevents the race condition where:
+                    // 1. Process registers as waiter (add_waiter)
+                    // 2. Interrupt fires, wake_process() called on Ready process
+                    //    -> sets wake_pending = true
+                    // 3. Process tries to sleep -> sees wake_pending, stays Ready
+                    if state == ProcessState::Sleeping && entry.process.wake_pending {
+                        ktrace!(
+                            "[set_process_state] PID {} blocked sleep due to wake_pending",
+                            pid
+                        );
+                        entry.process.wake_pending = false; // Consume the pending wake
+                        return Ok(()); // Don't change state - process stays Ready
+                    }
+                    
                     // DEBUG: Log state transitions to Zombie with INFO level
                     if state == ProcessState::Zombie {
                         kinfo!(
@@ -251,6 +266,16 @@ pub fn set_process_state(pid: Pid, state: ProcessState) -> Result<(), &'static s
         let Some(entry) = slot else { continue };
         if entry.process.pid != pid {
             continue;
+        }
+
+        // CRITICAL FIX: Check wake_pending before allowing sleep (fallback path)
+        if state == ProcessState::Sleeping && entry.process.wake_pending {
+            ktrace!(
+                "[set_process_state] PID {} blocked sleep due to wake_pending (fallback)",
+                pid
+            );
+            entry.process.wake_pending = false;
+            return Ok(());
         }
 
         // DEBUG: Log state transitions to Zombie with INFO level
@@ -580,6 +605,7 @@ fn wake_process_internal(pid: Pid, try_lock: bool) -> bool {
     };
 
     let mut woke = false;
+    let mut set_pending = false;
 
     // Try radix tree lookup first (O(log N))
     if let Some(idx) = crate::process::lookup_pid(pid) {
@@ -587,22 +613,35 @@ fn wake_process_internal(pid: Pid, try_lock: bool) -> bool {
         if idx < table.len() {
             if let Some(entry) = &mut table[idx] {
                 if entry.process.pid == pid {
-                    if entry.process.state == ProcessState::Sleeping {
-                        entry.process.state = ProcessState::Ready;
-                        entry.wait_time = 0;
+                    match entry.process.state {
+                        ProcessState::Sleeping => {
+                            entry.process.state = ProcessState::Ready;
+                            entry.process.wake_pending = false; // Clear any pending wake
+                            entry.wait_time = 0;
 
-                        // EEVDF: Adjust vruntime for waking process
-                        // Give some credit but not too much to prevent unfair advantage
-                        if entry.vruntime < min_vrt {
-                            let credit = super::types::BASE_SLICE_NS / 2;
-                            entry.vruntime = min_vrt.saturating_sub(credit);
+                            // EEVDF: Adjust vruntime for waking process
+                            // Give some credit but not too much to prevent unfair advantage
+                            if entry.vruntime < min_vrt {
+                                let credit = super::types::BASE_SLICE_NS / 2;
+                                entry.vruntime = min_vrt.saturating_sub(credit);
+                            }
+                            // Recalculate deadline
+                            entry.vdeadline =
+                                calc_vdeadline(entry.vruntime, entry.slice_ns, entry.weight);
+                            entry.lag = 0; // Reset lag on wake
+
+                            woke = true;
                         }
-                        // Recalculate deadline
-                        entry.vdeadline =
-                            calc_vdeadline(entry.vruntime, entry.slice_ns, entry.weight);
-                        entry.lag = 0; // Reset lag on wake
-
-                        woke = true;
+                        ProcessState::Ready | ProcessState::Running => {
+                            // CRITICAL FIX: Set wake_pending flag to prevent race condition
+                            // where wake arrives before the process actually sleeps.
+                            // When the process tries to sleep, it will see this flag and stay Ready.
+                            entry.process.wake_pending = true;
+                            set_pending = true;
+                        }
+                        ProcessState::Zombie => {
+                            // Cannot wake a zombie
+                        }
                     }
                 }
             }
@@ -610,26 +649,34 @@ fn wake_process_internal(pid: Pid, try_lock: bool) -> bool {
     }
 
     // Fallback to linear scan if radix tree lookup didn't find it
-    if !woke {
+    if !woke && !set_pending {
         for slot in table.iter_mut() {
             let Some(entry) = slot else { continue };
             if entry.process.pid != pid {
                 continue;
             }
 
-            if entry.process.state == ProcessState::Sleeping {
-                entry.process.state = ProcessState::Ready;
-                entry.wait_time = 0;
+            match entry.process.state {
+                ProcessState::Sleeping => {
+                    entry.process.state = ProcessState::Ready;
+                    entry.process.wake_pending = false;
+                    entry.wait_time = 0;
 
-                // EEVDF: Adjust vruntime for waking process
-                if entry.vruntime < min_vrt {
-                    let credit = super::types::BASE_SLICE_NS / 2;
-                    entry.vruntime = min_vrt.saturating_sub(credit);
+                    // EEVDF: Adjust vruntime for waking process
+                    if entry.vruntime < min_vrt {
+                        let credit = super::types::BASE_SLICE_NS / 2;
+                        entry.vruntime = min_vrt.saturating_sub(credit);
+                    }
+                    entry.vdeadline = calc_vdeadline(entry.vruntime, entry.slice_ns, entry.weight);
+                    entry.lag = 0;
+
+                    woke = true;
                 }
-                entry.vdeadline = calc_vdeadline(entry.vruntime, entry.slice_ns, entry.weight);
-                entry.lag = 0;
-
-                woke = true;
+                ProcessState::Ready | ProcessState::Running => {
+                    entry.process.wake_pending = true;
+                    set_pending = true;
+                }
+                ProcessState::Zombie => {}
             }
             break;
         }

@@ -180,6 +180,13 @@ pub struct Process {
     pub exec_entry: u64,      // New entry point after execve
     pub exec_stack: u64,      // New stack pointer after execve  
     pub exec_user_data_sel: u64, // User data segment selector
+    /// Pending wake flag - set when wake_process() is called on a Ready/Running process.
+    /// This prevents the race condition where wake arrives before sleep:
+    /// 1. Process calls add_waiter() but hasn't slept yet
+    /// 2. Interrupt fires, wake_process() called - process is Ready, wake "lost"
+    /// 3. Process then sleeps and is stuck forever
+    /// With this flag, step 2 sets wake_pending=true, and step 3 checks it before sleeping.
+    pub wake_pending: bool,
 }
 
 /// Legacy global PID counter (kept for reference, use pid_tree::allocate_pid instead)

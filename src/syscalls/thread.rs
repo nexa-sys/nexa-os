@@ -156,6 +156,7 @@ pub fn clone(
     child_process.context_valid = false; // Context not yet saved by context_switch
     child_process.is_fork_child = true;
     child_process.exit_code = 0;
+    child_process.wake_pending = false; // Child starts with no pending wake
 
     // Handle CLONE_THREAD - create a thread in the same thread group
     if (flags & CLONE_THREAD) != 0 {
