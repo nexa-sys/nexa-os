@@ -9,6 +9,9 @@
 //! - Per-CPU queue management
 //! - SMP load balancing
 //! - Stress tests
+//! - Foreground process starvation detection
+//! - vruntime leak detection
+//! - tick() handler bug detection
 
 mod basic;
 mod consistency;
@@ -19,6 +22,7 @@ mod eevdf_edge_cases;
 mod eevdf_priority;
 mod eevdf_vruntime;
 mod eevdf_weights;
+mod foreground_starvation;
 mod foreground_unresponsive;
 mod keyboard_handler_source_test;
 mod keyboard_interrupt_bug;
@@ -27,7 +31,9 @@ mod priority_tests;
 mod smp;
 mod smp_comprehensive;
 mod stress;
+mod tick_bug;
 mod types;
+mod vruntime_leak;
 mod wake_process_tests;
 
 pub use basic::*;
