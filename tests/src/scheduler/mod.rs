@@ -19,6 +19,7 @@ mod eevdf_edge_cases;
 mod eevdf_priority;
 mod eevdf_vruntime;
 mod eevdf_weights;
+mod foreground_unresponsive;
 mod keyboard_handler_source_test;
 mod keyboard_interrupt_bug;
 mod percpu;
