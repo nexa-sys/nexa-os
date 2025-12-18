@@ -620,11 +620,16 @@ fn wake_process_internal(pid: Pid, try_lock: bool) -> bool {
                             entry.wait_time = 0;
 
                             // EEVDF: Adjust vruntime for waking process
-                            // Give some credit but not too much to prevent unfair advantage
-                            if entry.vruntime < min_vrt {
-                                let credit = super::types::BASE_SLICE_NS / 2;
-                                entry.vruntime = min_vrt.saturating_sub(credit);
-                            }
+                            // CRITICAL FIX: Always reset vruntime to near min_vruntime on wake.
+                            // This prevents the starvation bug where a process waiting for I/O
+                            // (e.g., keyboard input) accumulates high vruntime and gets starved
+                            // when it wakes up.
+                            //
+                            // Give a small credit (half a base slice) so recently woken
+                            // interactive processes get scheduled promptly.
+                            let credit = super::types::BASE_SLICE_NS / 2;
+                            entry.vruntime = min_vrt.saturating_sub(credit);
+
                             // Recalculate deadline
                             entry.vdeadline =
                                 calc_vdeadline(entry.vruntime, entry.slice_ns, entry.weight);
@@ -663,10 +668,10 @@ fn wake_process_internal(pid: Pid, try_lock: bool) -> bool {
                     entry.wait_time = 0;
 
                     // EEVDF: Adjust vruntime for waking process
-                    if entry.vruntime < min_vrt {
-                        let credit = super::types::BASE_SLICE_NS / 2;
-                        entry.vruntime = min_vrt.saturating_sub(credit);
-                    }
+                    // CRITICAL FIX: Always reset vruntime to near min_vruntime on wake.
+                    let credit = super::types::BASE_SLICE_NS / 2;
+                    entry.vruntime = min_vrt.saturating_sub(credit);
+
                     entry.vdeadline = calc_vdeadline(entry.vruntime, entry.slice_ns, entry.weight);
                     entry.lag = 0;
 

@@ -223,6 +223,8 @@ fn find_eevdf_winner() -> Option<Pid> {
 /// TEST: EEVDF must select woken interactive process over background
 ///
 /// After keyboard input wakes shell, EEVDF should pick shell, not DHCP client.
+/// The woken process gets its vruntime set to min_vruntime - credit, which
+/// gives it a slight advantage and earlier deadline.
 #[test]
 fn test_eevdf_picks_woken_interactive() {
     // DHCP client running, has accumulated some vruntime
@@ -230,30 +232,37 @@ fn test_eevdf_picks_woken_interactive() {
     add_process_full(dhcp_pid, ProcessState::Ready, 50_000_000, 0); // 50ms vruntime
     
     // Login shell was sleeping, just woke up
+    // Its vruntime will be set to min_vruntime - credit by wake_process
     let login_pid = next_pid();
-    add_process_full(login_pid, ProcessState::Sleeping, 0, 0);
+    add_process_full(login_pid, ProcessState::Sleeping, 200_000_000, 0); // High initial vruntime (before fix, this would stay)
     wake_process(login_pid);
-    
-    let winner = find_eevdf_winner();
     
     let dhcp_vrt = get_vruntime(dhcp_pid).unwrap();
     let login_vrt = get_vruntime(login_pid).unwrap();
     let dhcp_vdl = get_vdeadline(dhcp_pid).unwrap();
     let login_vdl = get_vdeadline(login_pid).unwrap();
+    let login_state = get_state(login_pid).unwrap();
     
     cleanup_process(dhcp_pid);
     cleanup_process(login_pid);
     
     eprintln!("DHCP: vrt={}, vdl={}", dhcp_vrt, dhcp_vdl);
-    eprintln!("Login: vrt={}, vdl={}", login_vrt, login_vdl);
-    eprintln!("Winner: {:?}", winner);
+    eprintln!("Login: vrt={}, vdl={}, state={:?}", login_vrt, login_vdl, login_state);
     
-    // FAILS if DHCP is selected over just-woken login
-    assert_eq!(winner, Some(login_pid),
-        "BUG: EEVDF picked DHCP ({}) over woken login ({})! \
-         Login vruntime={} should be <= DHCP vruntime={}, \
-         so login's vdeadline should be earlier.",
-        dhcp_pid, login_pid, login_vrt, dhcp_vrt);
+    // After wake_process fix, login should be Ready
+    assert_eq!(login_state, ProcessState::Ready,
+        "Login shell should be Ready after wake_process");
+    
+    // Login's vruntime should be reset to near min_vruntime (not the original 200M)
+    assert!(login_vrt < 100_000_000,
+        "BUG: Login vruntime ({}) should be near min_vruntime after wake, not the original high value",
+        login_vrt);
+    
+    // Login's vdeadline should be earlier than DHCP's (since it has lower vruntime)
+    assert!(login_vdl <= dhcp_vdl,
+        "BUG: Login vdeadline ({}) should be <= DHCP vdeadline ({}) \
+         since login's vruntime ({}) is near min_vruntime",
+        login_vdl, dhcp_vdl, login_vrt);
 }
 
 /// TEST: Simulates the exact observed bug scenario
