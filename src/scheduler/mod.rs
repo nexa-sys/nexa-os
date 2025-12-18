@@ -39,7 +39,7 @@ mod priority;
 mod process;
 mod smp;
 mod stats;
-mod table;
+pub mod table;
 mod types;
 
 // Re-export types for external use

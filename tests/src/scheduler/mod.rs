@@ -25,6 +25,7 @@ mod smp;
 mod smp_comprehensive;
 mod stress;
 mod types;
+mod wake_process_tests;
 
 pub use basic::*;
 pub use eevdf::*;
