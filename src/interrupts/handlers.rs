@@ -104,7 +104,7 @@ pub extern "x86-interrupt" fn timer_interrupt_handler(stack_frame: InterruptStac
 }
 
 /// Keyboard interrupt handler (IRQ1, vector 33)
-pub extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
+pub extern "x86-interrupt" fn keyboard_interrupt_handler(stack_frame: InterruptStackFrame) {
     // Mark entering interrupt context
     crate::smp::enter_interrupt();
 
@@ -120,7 +120,37 @@ pub extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: Interrupt
 
     // Record interrupt and leave context
     crate::smp::record_interrupt();
-    let _ = crate::smp::leave_interrupt();
+    let resched_pending = crate::smp::leave_interrupt();
+
+    // CRITICAL FIX: Check if a process was woken up by keyboard input.
+    // When add_scancode() wakes a sleeping process (e.g., shell waiting for input),
+    // it sets the need_resched flag via wake_process(). We must check this flag
+    // and reschedule immediately, otherwise the woken process must wait for the
+    // next timer tick (up to 1ms), causing noticeable input lag.
+    if resched_pending {
+        // Ensure GS base points to kernel GS_DATA before calling scheduler
+        crate::smp::ensure_kernel_gs_base();
+
+        // Save user-mode context from InterruptStackFrame to GS_DATA for scheduler
+        let cs_ring = stack_frame.code_segment.0 & 3;
+        if cs_ring == 3 {
+            // User mode interrupt - save context to GS_DATA
+            unsafe {
+                let gs_data_ptr = crate::smp::current_gs_data_ptr();
+                gs_data_ptr
+                    .add(super::gs_context::GS_SLOT_USER_RSP)
+                    .write(stack_frame.stack_pointer.as_u64());
+                gs_data_ptr
+                    .add(super::gs_context::GS_SLOT_SAVED_RCX)
+                    .write(stack_frame.instruction_pointer.as_u64());
+                gs_data_ptr
+                    .add(super::gs_context::GS_SLOT_SAVED_RFLAGS)
+                    .write(stack_frame.cpu_flags.bits());
+            }
+        }
+
+        crate::scheduler::do_schedule_from_interrupt();
+    }
 }
 
 /// Macro to define spurious IRQ handlers that mask the interrupt line
