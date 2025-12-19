@@ -152,6 +152,17 @@ impl Ext4Filesystem {
     }
 
     fn lookup_internal(&self, path: &str) -> Option<FileRef> {
+        // Maximum symlink depth to prevent infinite loops
+        const MAX_SYMLINK_DEPTH: u32 = 8;
+        self.lookup_internal_with_depth(path, 0, MAX_SYMLINK_DEPTH)
+    }
+
+    fn lookup_internal_with_depth(&self, path: &str, depth: u32, max_depth: u32) -> Option<FileRef> {
+        if depth >= max_depth {
+            mod_warn!("lookup_internal: too many symlinks");
+            return None;
+        }
+
         let trimmed = path.trim_matches('/');
         let mut inode_num = 2u32;
         
@@ -161,13 +172,122 @@ impl Ext4Filesystem {
         
         let mut inode = self.load_inode(inode_num)?;
         
-        for segment in trimmed.split('/') {
-            if segment.is_empty() { continue; }
+        // Split path into segments for symlink handling
+        let mut segments: [&str; 32] = [""; 32];
+        let mut num_segments = 0;
+        for seg in trimmed.split('/') {
+            if !seg.is_empty() && num_segments < 32 {
+                segments[num_segments] = seg;
+                num_segments += 1;
+            }
+        }
+
+        for idx in 0..num_segments {
+            let segment = segments[idx];
             inode_num = self.find_in_dir(&inode, segment)?;
             inode = self.load_inode(inode_num)?;
+
+            // Handle symlinks for intermediate path components
+            // Also handle symlink for the final component (so open() follows symlinks)
+            if inode.is_symlink() {
+                let mut target_buf = [0u8; 256];
+                if let Some(target) = self.read_symlink_target(&inode, &mut target_buf) {
+                    // Build the new path: target + remaining segments
+                    let mut new_path_buf = [0u8; 512];
+                    let mut new_path_len = 0usize;
+
+                    // If target is absolute, use it directly
+                    // If relative, we need to prepend the current directory
+                    if target.starts_with('/') {
+                        // Absolute symlink
+                        let target_bytes = target.as_bytes();
+                        new_path_buf[..target_bytes.len()].copy_from_slice(target_bytes);
+                        new_path_len = target_bytes.len();
+                    } else {
+                        // Relative symlink - prepend current directory
+                        // Current directory is segments[0..idx] joined with '/'
+                        new_path_buf[0] = b'/';
+                        new_path_len = 1;
+                        for i in 0..idx {
+                            let seg = segments[i].as_bytes();
+                            new_path_buf[new_path_len..new_path_len + seg.len()].copy_from_slice(seg);
+                            new_path_len += seg.len();
+                            new_path_buf[new_path_len] = b'/';
+                            new_path_len += 1;
+                        }
+                        // Add the symlink target
+                        let target_bytes = target.as_bytes();
+                        new_path_buf[new_path_len..new_path_len + target_bytes.len()].copy_from_slice(target_bytes);
+                        new_path_len += target_bytes.len();
+                    }
+
+                    // Append remaining path segments
+                    for i in (idx + 1)..num_segments {
+                        new_path_buf[new_path_len] = b'/';
+                        new_path_len += 1;
+                        let seg = segments[i].as_bytes();
+                        new_path_buf[new_path_len..new_path_len + seg.len()].copy_from_slice(seg);
+                        new_path_len += seg.len();
+                    }
+
+                    if let Ok(new_path) = core::str::from_utf8(&new_path_buf[..new_path_len]) {
+                        return self.lookup_internal_with_depth(new_path, depth + 1, max_depth);
+                    }
+                    return None;
+                }
+                return None;
+            }
         }
         
         self.file_ref_from_inode(inode_num)
+    }
+
+    /// Read the target of a symbolic link
+    /// Returns None if not a symlink or on error
+    fn read_symlink_target<'a>(&self, inode: &Ext4Inode, buf: &'a mut [u8; 256]) -> Option<&'a str> {
+        if !inode.is_symlink() {
+            return None;
+        }
+
+        let size = inode.size() as usize;
+        if size == 0 || size > 255 {
+            return None;
+        }
+
+        if inode.is_fast_symlink() {
+            // Fast symlink: target is stored inline in block pointers
+            let target = inode.fast_symlink_target();
+            buf[..target.len()].copy_from_slice(target);
+            return core::str::from_utf8(&buf[..target.len()]).ok();
+        }
+
+        // Slow symlink: target is stored in data blocks
+        // Read using extents or indirect blocks
+        let bs = self.block_size;
+        let mut block_buf = [0u8; 4096];
+
+        if inode.uses_extents() {
+            if let Some(tree) = inode.extent_tree(bs) {
+                // Find the first extent and read from it
+                if let Some(ext) = tree.extents().next() {
+                    let pblock = ext.start_block();
+                    if self.read_bytes(pblock * bs as u64, &mut block_buf[..bs]) {
+                        buf[..size].copy_from_slice(&block_buf[..size]);
+                        return core::str::from_utf8(&buf[..size]).ok();
+                    }
+                }
+            }
+        } else {
+            // Traditional indirect blocks
+            if let Some(block_num) = inode.indirect_block(0, bs) {
+                if block_num != 0 && self.read_bytes(block_num as u64 * bs as u64, &mut block_buf[..bs]) {
+                    buf[..size].copy_from_slice(&block_buf[..size]);
+                    return core::str::from_utf8(&buf[..size]).ok();
+                }
+            }
+        }
+
+        None
     }
 
     fn file_ref_from_inode(&self, inode_num: u32) -> Option<FileRef> {

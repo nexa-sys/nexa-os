@@ -2,7 +2,7 @@
 
 use crate::constants::*;
 use crate::elf::{Elf64Dyn, Elf64Ehdr, Elf64Phdr};
-use crate::helpers::{cstr_len, is_libc_library, map_library_name, memset, page_align_down, page_align_up};
+use crate::helpers::{cstr_len, map_library_name, memset, page_align_down, page_align_up};
 use crate::reloc::process_rela;
 use crate::state::{DynInfo, GLOBAL_SYMTAB};
 use crate::syscall::{close_file, lseek, mmap, open_file, read_bytes};
@@ -132,8 +132,11 @@ pub unsafe fn search_library(name: &[u8]) -> Option<[u8; 256]> {
 /// Load a shared library from path
 /// Returns (base_addr, load_bias, dyn_info) or (0, 0, DynInfo::new()) on failure
 pub unsafe fn load_shared_library(path: *const u8) -> (u64, i64, DynInfo) {
+    use crate::helpers::{print_str, print_hex};
+    
     let fd = open_file(path);
     if fd < 0 {
+        print_str("[ld-nrlib] ERROR: Failed to open library\n");
         return (0, 0, DynInfo::new());
     }
 
@@ -143,6 +146,7 @@ pub unsafe fn load_shared_library(path: *const u8) -> (u64, i64, DynInfo) {
     let bytes_read = read_bytes(fd as i32, ehdr_buf.as_mut_ptr(), 64);
 
     if bytes_read < 64 {
+        print_str("[ld-nrlib] ERROR: Failed to read ELF header\n");
         close_file(fd as i32);
         return (0, 0, DynInfo::new());
     }
@@ -155,12 +159,16 @@ pub unsafe fn load_shared_library(path: *const u8) -> (u64, i64, DynInfo) {
         || ehdr.e_ident[2] != b'L'
         || ehdr.e_ident[3] != b'F'
     {
+        print_str("[ld-nrlib] ERROR: Invalid ELF magic\n");
         close_file(fd as i32);
         return (0, 0, DynInfo::new());
     }
 
     // Must be shared object (ET_DYN = 3)
     if ehdr.e_type != 3 {
+        print_str("[ld-nrlib] ERROR: Not a shared object, e_type=");
+        print_hex(ehdr.e_type as u64);
+        print_str("\n");
         close_file(fd as i32);
         return (0, 0, DynInfo::new());
     }
@@ -287,38 +295,49 @@ pub unsafe fn load_shared_library(path: *const u8) -> (u64, i64, DynInfo) {
 // Recursive Library Loading
 // ============================================================================
 
+/// Check if a library is already loaded by comparing base addresses
+/// We track loaded libraries in GLOBAL_SYMTAB
+unsafe fn is_library_already_loaded(path: &[u8; 256]) -> bool {
+    // Simple check: try to open and see if we already have it
+    // A proper implementation would store loaded library paths
+    // For now, just return false and let duplicate loads be caught elsewhere
+    let _ = path;
+    false
+}
+
 /// Load a library and recursively load its dependencies
 /// Returns true if library was loaded successfully (or already loaded)
 pub unsafe fn load_library_recursive(name: &[u8]) -> bool {
-    // Skip libc-like libraries that map to libnrlib.so
-    if name.len() > 0 {
-        // Convert to null-terminated for is_libc_library check
-        let mut name_buf = [0u8; 128];
-        let copy_len = core::cmp::min(name.len(), 127);
-        for i in 0..copy_len {
-            name_buf[i] = name[i];
-        }
-        name_buf[copy_len] = 0;
-
-        if is_libc_library(name_buf.as_ptr()) {
-            return true;
-        }
+    use crate::helpers::print_str;
+    
+    if name.is_empty() {
+        return false;
     }
 
-    // Try mapped name first, then original name
-    let mapped_name = map_library_name(name);
-
-    let path = if let Some(p) = search_library(&mapped_name) {
-        p
-    } else if let Some(p) = search_library(name) {
+    // Search for the library in standard paths
+    // The filesystem handles symlinks (libc.so -> libnrlib.so) automatically
+    let path = if let Some(p) = search_library(name) {
         p
     } else {
-        return false;
+        // Try mapped name as fallback
+        let mapped_name = map_library_name(name);
+        if let Some(p) = search_library(&mapped_name) {
+            p
+        } else {
+            print_str("[ld-nrlib] ERROR: Library not found: ");
+            for &c in name {
+                if c == 0 { break; }
+                crate::helpers::print(&[c]);
+            }
+            print_str("\n");
+            return false;
+        }
     };
 
     // Load the library
     let (lib_base, lib_bias, lib_dyn_info) = load_shared_library(path.as_ptr());
     if lib_base == 0 {
+        print_str("[ld-nrlib] ERROR: Failed to load library\n");
         return false;
     }
 

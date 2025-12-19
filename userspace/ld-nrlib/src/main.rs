@@ -36,9 +36,9 @@ mod tls;
 use auxv::{store_auxv, AuxInfo};
 use constants::*;
 use elf::{AuxEntry, Elf64Dyn, Elf64Phdr, Elf64Sym};
-use helpers::{cstr_len, is_libc_library, print_str};
-use loader::{load_library_recursive, load_shared_library, parse_dynamic_section};
-use reloc::{process_rela, process_rela_with_symtab};
+use helpers::{cstr_len, print_str};
+use loader::{load_library_recursive, parse_dynamic_section};
+use reloc::process_rela_with_symtab;
 use state::{DynInfo, GLOBAL_SYMTAB};
 use symbol::global_symbol_lookup;
 use syscall::exit;
@@ -191,58 +191,12 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
         main_lib.valid = true;
         GLOBAL_SYMTAB.lib_count = 1;
 
-        // Step 1: Load libnrlib.so first (always needed)
-        let libnrlib_path = b"/lib64/libnrlib.so\0";
-        let (lib_base, lib_bias, lib_dyn_info) = load_shared_library(libnrlib_path.as_ptr());
-
-        if lib_base != 0 {
-            let lib_idx = GLOBAL_SYMTAB.lib_count;
-            if lib_idx < MAX_LIBS {
-                let lib = &mut GLOBAL_SYMTAB.libs[lib_idx];
-                lib.base_addr = lib_base;
-                lib.load_bias = lib_bias;
-                lib.dyn_info = lib_dyn_info;
-                lib.valid = true;
-                GLOBAL_SYMTAB.lib_count = lib_idx + 1;
-
-                if lib_dyn_info.rela != 0 && lib_dyn_info.relasz > 0 {
-                    process_rela(
-                        lib_dyn_info.rela,
-                        lib_dyn_info.relasz,
-                        lib_dyn_info.relaent,
-                        lib_bias,
-                    );
-                }
-
-                if lib_dyn_info.init != 0 {
-                    let init_fn: extern "C" fn() = core::mem::transmute(lib_dyn_info.init);
-                    init_fn();
-                }
-
-                if lib_dyn_info.init_array != 0 && lib_dyn_info.init_arraysz > 0 {
-                    let count = lib_dyn_info.init_arraysz / 8;
-                    let array = lib_dyn_info.init_array as *const u64;
-                    for i in 0..count {
-                        let fn_ptr = *array.add(i as usize);
-                        if fn_ptr != 0 && fn_ptr != u64::MAX {
-                            let init_fn: extern "C" fn() = core::mem::transmute(fn_ptr);
-                            init_fn();
-                        }
-                    }
-                }
-            }
-        }
-
-        // Step 2: Load other DT_NEEDED libraries
+        // Load DT_NEEDED libraries from main executable
         if main_dyn_info.needed_count > 0 {
             for i in 0..main_dyn_info.needed_count {
                 let name_offset = main_dyn_info.needed[i];
                 let name_ptr = (main_dyn_info.strtab + name_offset) as *const u8;
                 let name_len = cstr_len(name_ptr);
-
-                if is_libc_library(name_ptr) {
-                    continue;
-                }
 
                 let name_slice = core::slice::from_raw_parts(name_ptr, name_len);
                 load_library_recursive(name_slice);

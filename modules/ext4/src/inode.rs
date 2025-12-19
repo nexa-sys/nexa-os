@@ -103,6 +103,21 @@ impl Ext4Inode {
         (self.mode & 0o170000) == 0o120000
     }
 
+    /// Check if this is a fast symlink (target stored inline in block pointers)
+    /// Fast symlinks have size <= 60 bytes and no allocated blocks
+    pub fn is_fast_symlink(&self) -> bool {
+        self.is_symlink() && self.size() <= 60 && self.blocks_lo == 0
+    }
+
+    /// Read symlink target for fast symlinks (stored in block pointer area)
+    /// Returns the target path as bytes
+    pub fn fast_symlink_target(&self) -> &[u8] {
+        // For fast symlinks, the target is stored directly in the block[] array
+        // which occupies 60 bytes
+        let size = (self.size() as usize).min(60);
+        &self.block[..size]
+    }
+
     pub fn uses_extents(&self) -> bool {
         (self.flags & EXT4_INODE_FLAG_EXTENTS) != 0
     }
