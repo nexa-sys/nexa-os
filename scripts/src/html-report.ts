@@ -16,7 +16,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
  * Try to use the Vue-based coverage UI, fall back to static HTML if not available
  */
 export function generateHtmlReport(stats: CoverageStats, testResults: TestResult[]): string {
-  const vueUiPath = resolve(__dirname, '..', 'coverage-ui', 'dist', 'index.html');
+  const vueUiPath = resolve(__dirname, '..', 'ui', 'coverage', 'dist', 'index.html');
   
   if (existsSync(vueUiPath)) {
     return generateVueHtmlReport(stats, testResults, vueUiPath);

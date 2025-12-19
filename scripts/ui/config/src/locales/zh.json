@@ -1,0 +1,75 @@
+{
+  "title": "NexaOS 配置",
+  "nav": {
+    "home": "首页",
+    "features": "功能特性",
+    "modules": "内核模块",
+    "programs": "用户程序",
+    "build": "构建"
+  },
+  "home": {
+    "welcome": "NexaOS 内核配置",
+    "description": "配置和定制您的 NexaOS 内核构建。选择功能、模块和程序来创建适合您需求的优化内核。",
+    "quickStart": "快速开始",
+    "presets": "预设配置",
+    "custom": "自定义配置"
+  },
+  "features": {
+    "title": "内核功能",
+    "description": "启用或禁用内核功能以自定义构建。",
+    "network": "网络",
+    "kernel": "内核",
+    "filesystem": "文件系统",
+    "security": "安全",
+    "graphics": "图形",
+    "debug": "调试"
+  },
+  "modules": {
+    "title": "内核模块",
+    "description": "选择要包含在构建中的内核模块。",
+    "filesystem": "文件系统驱动",
+    "block": "块设备驱动",
+    "network": "网络驱动",
+    "memory": "内存管理"
+  },
+  "programs": {
+    "title": "用户空间程序",
+    "description": "选择要包含在根文件系统中的程序。"
+  },
+  "build": {
+    "title": "构建配置",
+    "description": "配置构建选项并开始构建过程。",
+    "profile": "构建配置文件",
+    "type": "构建类型",
+    "debug": "调试版",
+    "release": "发布版",
+    "start": "开始构建",
+    "building": "构建中...",
+    "success": "构建成功完成！",
+    "failed": "构建失败。请查看日志了解详情。",
+    "estimatedSize": "预估大小",
+    "kernelSize": "内核大小",
+    "rootfsSize": "根文件系统大小"
+  },
+  "common": {
+    "enabled": "已启用",
+    "disabled": "已禁用",
+    "dependencies": "依赖",
+    "required": "必需",
+    "save": "保存",
+    "reset": "重置",
+    "apply": "应用",
+    "cancel": "取消",
+    "loading": "加载中..."
+  },
+  "presets": {
+    "full": "完整版",
+    "fullDesc": "启用所有功能",
+    "minimal": "最小化",
+    "minimalDesc": "仅包含必要功能",
+    "embedded": "嵌入式",
+    "embeddedDesc": "最小内核体积",
+    "server": "服务器",
+    "serverDesc": "无图形界面服务器配置"
+  }
+}

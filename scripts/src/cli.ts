@@ -1230,6 +1230,132 @@ program
     });
   });
 
+// =============================================================================
+// UI Command - Configuration UI
+// =============================================================================
+
+import { startConfigApi } from './config-api.js';
+
+const uiCmd = program
+  .command('ui')
+  .description('Launch configuration UI for OS trimming and build management');
+
+// ui start - launch both frontend and backend
+uiCmd
+  .command('start')
+  .alias('s')
+  .description('Start the configuration UI (frontend + backend)')
+  .option('-p, --port <port>', 'API server port', '8765')
+  .option('--no-open', 'Do not open browser automatically')
+  .action(async (options) => {
+    const projectRoot = findProjectRoot();
+    const configDir = resolve(projectRoot, 'scripts', 'ui', 'config');
+    
+    logger.section('Starting NexaOS Configuration UI');
+    
+    // Start built-in API server
+    logger.info(`Starting API server on port ${options.port}...`);
+    await startConfigApi(projectRoot, parseInt(options.port));
+    
+    // Check if frontend dependencies are installed
+    if (!existsSync(resolve(configDir, 'node_modules'))) {
+      logger.info('Installing frontend dependencies...');
+      const npmInstall = spawn('npm', ['install'], {
+        cwd: configDir,
+        stdio: 'inherit'
+      });
+      await new Promise<void>((resolve, reject) => {
+        npmInstall.on('exit', (code) => code === 0 ? resolve() : reject(new Error('npm install failed')));
+      });
+    }
+    
+    // Start frontend dev server
+    logger.info('Starting frontend dev server...');
+    const frontendProcess = spawn('npm', ['run', 'dev'], {
+      cwd: configDir,
+      stdio: 'inherit'
+    });
+    
+    // Open browser if requested
+    if (options.open !== false) {
+      setTimeout(() => {
+        spawn('xdg-open', ['http://localhost:5173'], { detached: true, stdio: 'ignore' }).unref();
+      }, 3000);
+    }
+    
+    // Handle shutdown
+    const cleanup = () => {
+      logger.info('Shutting down...');
+      frontendProcess.kill();
+      process.exit(0);
+    };
+    
+    process.on('SIGINT', cleanup);
+    process.on('SIGTERM', cleanup);
+    
+    // Wait for frontend to exit
+    frontendProcess.on('exit', (code) => {
+      process.exit(code ?? 0);
+    });
+  });
+
+// ui api - start only API server
+uiCmd
+  .command('api')
+  .description('Start only the API server')
+  .option('-p, --port <port>', 'API server port', '8765')
+  .action(async (options) => {
+    const projectRoot = findProjectRoot();
+    
+    logger.info(`Starting API server on port ${options.port}...`);
+    await startConfigApi(projectRoot, parseInt(options.port));
+    
+    // Keep running
+    logger.info('Press Ctrl+C to stop');
+  });
+
+// ui build - build frontend for production
+uiCmd
+  .command('build')
+  .description('Build frontend for production')
+  .action(async () => {
+    const projectRoot = findProjectRoot();
+    const configDir = resolve(projectRoot, 'scripts', 'ui', 'config');
+    
+    logger.info('Building frontend...');
+    
+    // Install dependencies if needed
+    if (!existsSync(resolve(configDir, 'node_modules'))) {
+      const npmInstall = spawn('npm', ['install'], {
+        cwd: configDir,
+        stdio: 'inherit'
+      });
+      await new Promise<void>((resolve, reject) => {
+        npmInstall.on('exit', (code) => code === 0 ? resolve() : reject(new Error('npm install failed')));
+      });
+    }
+    
+    // Build
+    const buildProcess = spawn('npm', ['run', 'build'], {
+      cwd: configDir,
+      stdio: 'inherit'
+    });
+    
+    buildProcess.on('exit', (code) => {
+      if (code === 0) {
+        logger.success('Frontend built successfully!');
+        logger.info(`Output: ${resolve(configDir, 'dist')}`);
+      }
+      process.exit(code ?? 0);
+    });
+  });
+
+// Default ui action (no subcommand = start)
+uiCmd.action(async () => {
+  // Trigger the start command
+  await uiCmd.commands.find(c => c.name() === 'start')?.parseAsync(['start'], { from: 'user' });
+});
+
 // QEMU command group - for QEMU-specific operations
 const qemuCmd = program
   .command('qemu')
@@ -1306,7 +1432,7 @@ if (process.argv.length <= 2) {
 }
 
 // Handle unknown commands before parsing
-const validCommands = ['build', 'b', 'clean', 'test', 't', 'coverage', 'cov', 'list', 'info', 'features', 'f', 'run', 'dev', 'd', 'qemu', '-V', '--version', '-h', '--help'];
+const validCommands = ['build', 'b', 'clean', 'test', 't', 'coverage', 'cov', 'list', 'info', 'features', 'f', 'run', 'dev', 'd', 'ui', 'qemu', '-V', '--version', '-h', '--help'];
 const firstArg = process.argv[2];
 if (firstArg && !firstArg.startsWith('-') && !validCommands.includes(firstArg)) {
   console.error(`\x1b[31mError:\x1b[0m Unknown command '${firstArg}'`);

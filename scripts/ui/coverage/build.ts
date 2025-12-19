@@ -20,7 +20,7 @@ export function generateCoverageHtml(coverageData: object): string {
   const templatePath = resolve(__dirname, 'dist', 'index.html');
   
   if (!existsSync(templatePath)) {
-    throw new Error('Coverage UI not built. Run: cd scripts/coverage-ui && npm install && npm run build');
+    throw new Error('Coverage UI not built. Run: cd scripts/ui/coverage && npm install && npm run build');
   }
   
   let html = readFileSync(templatePath, 'utf-8');

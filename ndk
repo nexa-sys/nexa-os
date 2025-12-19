@@ -29,6 +29,10 @@
 #     clean        - Clean coverage data
 #   run            - Run NexaOS in QEMU
 #   dev, d         - Build and run (development mode)
+#   ui             - Configuration UI for OS trimming
+#     start, s     - Start frontend + API server
+#     api          - Start API server only
+#     build        - Build frontend for production
 #   qemu           - QEMU management commands
 #   features, f    - Manage kernel features
 #   list           - List build targets
@@ -41,6 +45,7 @@
 #   ./ndk test --filter bitmap  # Run tests matching 'bitmap'
 #   ./ndk coverage        # Show coverage summary
 #   ./ndk coverage html   # Generate HTML coverage report
+#   ./ndk ui              # Launch configuration UI
 #   ./ndk dev             # Build and run
 #   ./ndk dev --quick     # Quick build and run
 #   ./ndk run --debug     # Run with GDB server

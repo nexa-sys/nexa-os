@@ -1,0 +1,75 @@
+{
+  "title": "NexaOS Configuration",
+  "nav": {
+    "home": "Home",
+    "features": "Features",
+    "modules": "Modules",
+    "programs": "Programs",
+    "build": "Build"
+  },
+  "home": {
+    "welcome": "NexaOS Kernel Configuration",
+    "description": "Configure and customize your NexaOS kernel build. Select features, modules, and programs to create an optimized kernel for your needs.",
+    "quickStart": "Quick Start",
+    "presets": "Presets",
+    "custom": "Custom Configuration"
+  },
+  "features": {
+    "title": "Kernel Features",
+    "description": "Enable or disable kernel features to customize your build.",
+    "network": "Network",
+    "kernel": "Kernel",
+    "filesystem": "Filesystem",
+    "security": "Security",
+    "graphics": "Graphics",
+    "debug": "Debug"
+  },
+  "modules": {
+    "title": "Kernel Modules",
+    "description": "Select which kernel modules to include in the build.",
+    "filesystem": "Filesystem Drivers",
+    "block": "Block Device Drivers",
+    "network": "Network Drivers",
+    "memory": "Memory Management"
+  },
+  "programs": {
+    "title": "Userspace Programs",
+    "description": "Select which programs to include in the root filesystem."
+  },
+  "build": {
+    "title": "Build Configuration",
+    "description": "Configure build options and start the build process.",
+    "profile": "Build Profile",
+    "type": "Build Type",
+    "debug": "Debug",
+    "release": "Release",
+    "start": "Start Build",
+    "building": "Building...",
+    "success": "Build completed successfully!",
+    "failed": "Build failed. Check the logs for details.",
+    "estimatedSize": "Estimated Size",
+    "kernelSize": "Kernel Size",
+    "rootfsSize": "Rootfs Size"
+  },
+  "common": {
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "dependencies": "Dependencies",
+    "required": "Required",
+    "save": "Save",
+    "reset": "Reset",
+    "apply": "Apply",
+    "cancel": "Cancel",
+    "loading": "Loading..."
+  },
+  "presets": {
+    "full": "Full",
+    "fullDesc": "All features enabled",
+    "minimal": "Minimal",
+    "minimalDesc": "Essential features only",
+    "embedded": "Embedded",
+    "embeddedDesc": "Smallest possible kernel",
+    "server": "Server",
+    "serverDesc": "Headless server configuration"
+  }
+}
