@@ -45,29 +45,21 @@ mod tests {
     // Invalid Address Tests
     // =========================================================================
 
-    // BUG: Kernel doesn't validate kernel-space addresses before write_bytes.
-    // This causes SIGSEGV. The test runs in a subprocess so it won't crash
-    // the test runner - we verify the subprocess crashes as expected.
-    #[test]
-    fn test_mmap_kernel_address_rejected() {
-        use std::process::{Command, Stdio};
-        
-        // Run a subprocess that attempts to mmap to kernel address
-        let output = Command::new(std::env::current_exe().unwrap())
-            .arg("--test")
-            .arg("test_mmap_kernel_address_rejected_inner")
-            .arg("--exact")
-            .arg("--nocapture")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .output()
-            .expect("Failed to run subprocess");
-        
-        // BUG: kernel should return MAP_FAILED, but instead it crashes with SIGSEGV
-        // When kernel is fixed, this test should be updated to expect success
-        assert!(!output.status.success(), 
-            "BUG: Kernel should reject kernel-space addresses but currently crashes. \
-             When fixed, mmap should return MAP_FAILED.");
+    // Kernel should reject mmap requests with kernel-space addresses
+    // and return MAP_FAILED instead of crashing
+    rusty_fork_test! {
+        #[test]
+        fn test_mmap_kernel_address_rejected() {
+            setup_vm();
+            // Attempt to mmap at a kernel-space address (>= 0xFFFF_8000_0000_0000)
+            let kernel_addr: u64 = 0xFFFF_8000_0000_0000;
+            let result = mmap(kernel_addr, PAGE_SIZE, PROT_READ | PROT_WRITE,
+                MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+            
+            // Kernel should reject this and return MAP_FAILED
+            assert_eq!(result, MAP_FAILED, 
+                "mmap should reject kernel-space addresses and return MAP_FAILED");
+        }
     }
 
     rusty_fork_test! {
@@ -100,27 +92,21 @@ mod tests {
         }
     }
 
-    // BUG: Kernel has integer overflow in (length + PAGE_SIZE - 1).
-    // This causes panic. Test verifies the bug exists.
-    #[test]
-    fn test_mmap_overflow_size() {
-        use std::process::{Command, Stdio};
-        
-        let output = Command::new(std::env::current_exe().unwrap())
-            .arg("--test")
-            .arg("test_mmap_overflow_size_inner")
-            .arg("--exact")
-            .arg("--nocapture")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .output()
-            .expect("Failed to run subprocess");
-        
-        // BUG: kernel should return MAP_FAILED for overflow, but panics instead
-        // When fixed, this test should be updated to expect success
-        assert!(!output.status.success(),
-            "BUG: Kernel should handle overflow gracefully but currently panics. \
-             When fixed, mmap should return MAP_FAILED.");
+    // Kernel should handle length overflow gracefully and return MAP_FAILED
+    // instead of panicking
+    rusty_fork_test! {
+        #[test]
+        fn test_mmap_overflow_size() {
+            setup_vm();
+            // Use a length that would overflow when adding PAGE_SIZE - 1
+            let overflow_length: u64 = u64::MAX - PAGE_SIZE + 2;
+            let result = mmap(0, overflow_length, PROT_READ | PROT_WRITE,
+                MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+            
+            // Kernel should detect overflow and return MAP_FAILED
+            assert_eq!(result, MAP_FAILED,
+                "mmap should handle overflow gracefully and return MAP_FAILED");
+        }
     }
 
     rusty_fork_test! {

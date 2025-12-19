@@ -108,6 +108,7 @@ pub fn pipe_read(pipe_id: PipeId, buffer: &mut [u8]) -> Result<usize, &'static s
 
     match pipe.state {
         PipeState::Closed => Err("Pipe is closed"),
+        PipeState::ReadClosed => Err("Pipe read end closed"),
         PipeState::WriteClosed if pipe.is_empty() => Ok(0), // EOF
         _ => Ok(pipe.read(buffer)),
     }

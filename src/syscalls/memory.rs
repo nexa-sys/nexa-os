@@ -93,11 +93,27 @@ pub fn mmap(addr: u64, length: u64, prot: u64, flags: u64, fd: i64, offset: u64)
         return MAP_FAILED;
     }
 
-    // Round up length to page size
-    let aligned_length = (length + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+    // Round up length to page size, checking for overflow
+    let aligned_length = match length.checked_add(PAGE_SIZE - 1) {
+        Some(sum) => sum & !(PAGE_SIZE - 1),
+        None => {
+            kerror!("[mmap] Length overflow: {:#x}", length);
+            posix::set_errno(errno::EINVAL);
+            return MAP_FAILED;
+        }
+    };
 
     // Check for anonymous mapping
     let is_anonymous = (flags & MAP_ANONYMOUS) != 0;
+
+    // Validate that requested address is not in kernel space
+    // Kernel space on x86_64 starts at 0xFFFF_8000_0000_0000
+    const KERNEL_SPACE_START: u64 = 0xFFFF_8000_0000_0000;
+    if addr >= KERNEL_SPACE_START {
+        kerror!("[mmap] Rejected kernel-space address: {:#x}", addr);
+        posix::set_errno(errno::EINVAL);
+        return MAP_FAILED;
+    }
 
     // Determine mapping address
     let map_addr = if (flags & MAP_FIXED) != 0 {
