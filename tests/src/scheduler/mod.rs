@@ -35,6 +35,8 @@ mod tick_bug;
 mod types;
 mod vruntime_leak;
 mod wake_process_tests;
+mod state_race_bugs;
+mod eevdf_bugs;
 
 pub use basic::*;
 pub use eevdf::*;

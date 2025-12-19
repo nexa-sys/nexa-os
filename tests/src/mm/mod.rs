@@ -20,3 +20,4 @@ mod safety;
 mod slab;
 mod vma;
 mod vma_advanced;
+mod allocator_bugs;

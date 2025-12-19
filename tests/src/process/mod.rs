@@ -26,6 +26,7 @@ mod state_machine;
 mod state_machine_validation;
 mod thread;
 mod types;
+mod memory_layout_bugs;
 
 pub use comprehensive::*;
 pub use context::*;

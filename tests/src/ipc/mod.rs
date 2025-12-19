@@ -24,3 +24,4 @@ mod signal_edge_cases;
 mod signal_race_conditions;
 mod signal_state_machine;
 mod socketpair;
+mod signal_bugs;
