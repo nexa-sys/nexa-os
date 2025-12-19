@@ -31,6 +31,7 @@ use crate::process::{Process, ProcessState, Pid, MAX_CMDLINE_SIZE, MAX_PROCESSES
 use crate::signal::SignalState;
 
 use std::sync::Once;
+    use serial_test::serial;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static INIT_PERCPU: Once = Once::new();
@@ -226,6 +227,7 @@ fn find_eevdf_winner() -> Option<Pid> {
 /// The woken process gets its vruntime set to min_vruntime - credit, which
 /// gives it a slight advantage and earlier deadline.
 #[test]
+#[serial]
 fn test_eevdf_picks_woken_interactive() {
     // DHCP client running, has accumulated some vruntime
     let dhcp_pid = next_pid();
@@ -269,6 +271,7 @@ fn test_eevdf_picks_woken_interactive() {
 ///
 /// Reproduces: shell vruntime grows to 228M while background is only ~50M
 #[test]
+#[serial]
 fn test_reproduce_observed_starvation_bug() {
     // This is the exact scenario from the kernel logs:
     // - PID 2 (DHCP) runs periodically, sleeps 10 seconds at a time
@@ -350,6 +353,7 @@ fn test_reproduce_observed_starvation_bug() {
 /// User types multiple characters quickly. Shell should process each without
 /// building up vruntime.
 #[test]
+#[serial]
 fn test_rapid_keystrokes_vruntime_stable() {
     let shell_pid = next_pid();
     add_process_full(shell_pid, ProcessState::Ready, 0, 0);
@@ -401,6 +405,7 @@ fn test_rapid_keystrokes_vruntime_stable() {
 ///
 /// When keyboard input arrives, need_resched should force immediate scheduling.
 #[test]
+#[serial]
 fn test_need_resched_forces_interactive_scheduling() {
     ensure_percpu_init();
     
@@ -435,6 +440,7 @@ fn test_need_resched_forces_interactive_scheduling() {
 ///
 /// Woken process must be eligible to run (lag >= 0).
 #[test]
+#[serial]
 fn test_woken_process_is_eligible() {
     let pid = next_pid();
     
@@ -461,6 +467,7 @@ fn test_woken_process_is_eligible() {
 /// Process that slept for a long time should be FAVORED when it wakes,
 /// not penalized with high vruntime.
 #[test]
+#[serial]
 fn test_long_sleep_not_penalized() {
     let worker_pid = next_pid();  // Runs constantly
     let timer_pid = next_pid();   // Wakes up every 10 seconds

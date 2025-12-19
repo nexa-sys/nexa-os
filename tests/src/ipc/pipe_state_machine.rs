@@ -9,6 +9,7 @@
 
 #[cfg(test)]
 mod tests {
+    use serial_test::serial;
     use crate::ipc::pipe::{
         create_pipe, pipe_read, pipe_write, 
         close_pipe_read, close_pipe_write,
@@ -19,6 +20,7 @@ mod tests {
     // =========================================================================
 
     #[test]
+    #[serial]
     fn test_pipe_create_returns_valid_ids() {
         let result = create_pipe();
         
@@ -31,6 +33,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_pipe_create_multiple() {
         // Try to create multiple pipes
         let mut pipes = Vec::new();
@@ -50,6 +53,7 @@ mod tests {
     // =========================================================================
 
     #[test]
+    #[serial]
     fn test_pipe_write_then_read() {
         if let Ok((read_fd, write_fd)) = create_pipe() {
             let data = b"Hello, pipe!";
@@ -71,6 +75,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_pipe_read_empty() {
         if let Ok((read_fd, _write_fd)) = create_pipe() {
             let mut buffer = [0u8; 64];
@@ -85,6 +90,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_pipe_partial_read() {
         if let Ok((read_fd, write_fd)) = create_pipe() {
             let data = b"Hello, World!";
@@ -117,6 +123,7 @@ mod tests {
     // =========================================================================
 
     #[test]
+    #[serial]
     fn test_pipe_read_after_write_close() {
         if let Ok((read_fd, write_fd)) = create_pipe() {
             // Write some data
@@ -143,6 +150,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_pipe_write_after_read_close_fails() {
         if let Ok((read_fd, write_fd)) = create_pipe() {
             // Close read end
@@ -156,6 +164,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_pipe_double_close() {
         if let Ok((read_fd, write_fd)) = create_pipe() {
             // Close both ends
@@ -177,6 +186,7 @@ mod tests {
     // =========================================================================
 
     #[test]
+    #[serial]
     fn test_pipe_read_invalid_id() {
         let mut buffer = [0u8; 64];
         
@@ -186,12 +196,14 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_pipe_write_invalid_id() {
         let result = pipe_write(9999, b"test");
         assert!(result.is_err(), "Write with invalid pipe ID should fail");
     }
 
     #[test]
+    #[serial]
     fn test_pipe_close_invalid_id() {
         let result = close_pipe_read(9999);
         assert!(result.is_err(), "Close read with invalid ID should fail");
@@ -205,6 +217,7 @@ mod tests {
     // =========================================================================
 
     #[test]
+    #[serial]
     fn test_pipe_fill_to_capacity() {
         if let Ok((read_fd, write_fd)) = create_pipe() {
             // PIPE_BUF_SIZE is typically 4096
@@ -244,6 +257,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_pipe_write_full_fails() {
         if let Ok((_read_fd, write_fd)) = create_pipe() {
             // Fill the pipe (don't read)
@@ -269,6 +283,7 @@ mod tests {
     // =========================================================================
 
     #[test]
+    #[serial]
     fn test_pipe_circular_buffer_wraparound() {
         if let Ok((read_fd, write_fd)) = create_pipe() {
             let data = [0x42u8; 1000];
@@ -293,6 +308,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_pipe_staggered_read_write() {
         if let Ok((read_fd, write_fd)) = create_pipe() {
             // Interleave writes and reads with different sizes
@@ -322,6 +338,7 @@ mod tests {
     // =========================================================================
 
     #[test]
+    #[serial]
     fn test_pipe_write_zero_bytes() {
         if let Ok((_read_fd, write_fd)) = create_pipe() {
             let result = pipe_write(write_fd, &[]);
@@ -334,6 +351,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_pipe_read_zero_buffer() {
         if let Ok((read_fd, write_fd)) = create_pipe() {
             // Write some data first
@@ -355,6 +373,7 @@ mod tests {
     // =========================================================================
 
     #[test]
+    #[serial]
     fn test_pipe_state_open() {
         if let Ok((read_fd, write_fd)) = create_pipe() {
             // Both ends open - read and write should work
@@ -368,6 +387,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_pipe_state_write_closed() {
         if let Ok((read_fd, write_fd)) = create_pipe() {
             pipe_write(write_fd, b"data").ok();
@@ -381,6 +401,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_pipe_state_read_closed() {
         if let Ok((read_fd, write_fd)) = create_pipe() {
             close_pipe_read(read_fd).ok();
@@ -392,6 +413,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_pipe_state_both_closed() {
         if let Ok((read_fd, write_fd)) = create_pipe() {
             close_pipe_read(read_fd).ok();

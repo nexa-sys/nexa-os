@@ -24,6 +24,7 @@ use crate::process::{Process, ProcessState, Pid, MAX_CMDLINE_SIZE};
 use crate::signal::SignalState;
 
 use std::sync::Once;
+    use serial_test::serial;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static INIT_PERCPU: Once = Once::new();
@@ -214,6 +215,7 @@ fn simulate_buggy_tick_ignoring_state(pid: Pid, delta_ns: u64) {
 /// This verifies the invariant: a process in Sleeping state should NOT
 /// have its vruntime modified by any tick-like operation.
 #[test]
+#[serial]
 fn test_sleeping_process_vruntime_invariant() {
     ensure_percpu_init();
     
@@ -244,6 +246,7 @@ fn test_sleeping_process_vruntime_invariant() {
 /// Ready processes are waiting to be scheduled, not running.
 /// Their vruntime must not change.
 #[test]
+#[serial]
 fn test_ready_process_vruntime_invariant() {
     ensure_percpu_init();
     
@@ -269,6 +272,7 @@ fn test_ready_process_vruntime_invariant() {
 ///
 /// When multiple processes exist, only the Running one should be updated.
 #[test]
+#[serial]
 fn test_only_running_process_updated() {
     ensure_percpu_init();
     
@@ -313,6 +317,7 @@ fn test_only_running_process_updated() {
 /// This test demonstrates the bug: if tick() updates vruntime without
 /// checking process state, Sleeping processes get their vruntime inflated.
 #[test]
+#[serial]
 fn test_detect_buggy_tick_behavior() {
     ensure_percpu_init();
     
@@ -355,6 +360,7 @@ fn test_detect_buggy_tick_behavior() {
 ///
 /// vruntime should only reflect actual running time.
 #[test]
+#[serial]
 fn test_keyboard_read_flow_correct_vruntime() {
     ensure_percpu_init();
     
@@ -414,6 +420,7 @@ fn test_keyboard_read_flow_correct_vruntime() {
 /// Process toggles between Running and Sleeping rapidly.
 /// vruntime should only accumulate during Running periods.
 #[test]
+#[serial]
 fn test_rapid_state_transitions_vruntime() {
     ensure_percpu_init();
     
@@ -471,6 +478,7 @@ fn test_rapid_state_transitions_vruntime() {
 
 /// TEST: Verify slice_remaining only decrements for Running
 #[test]
+#[serial]
 fn test_slice_only_consumed_when_running() {
     ensure_percpu_init();
     

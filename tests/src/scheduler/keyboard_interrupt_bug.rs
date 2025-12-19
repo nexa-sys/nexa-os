@@ -28,6 +28,7 @@ use crate::scheduler::percpu::{check_need_resched, init_percpu_sched, set_need_r
 use crate::process::{Process, ProcessState, Pid, MAX_CMDLINE_SIZE};
 use crate::signal::SignalState;
 use std::sync::{Once, Mutex};
+    use serial_test::serial;
 
 static INIT_PERCPU: Once = Once::new();
 static TEST_MUTEX: Mutex<()> = Mutex::new(());
@@ -120,6 +121,7 @@ fn simulate_add_scancode_wake(pid: crate::process::Pid) -> bool {
 /// Test: After waking a process, need_resched flag should be set
 /// This is a PRECONDITION for the keyboard handler to correctly reschedule
 #[test]
+#[serial]
 fn test_wake_process_sets_need_resched_flag() {
     let _guard = TEST_MUTEX.lock().unwrap();
     ensure_percpu_init();
@@ -173,6 +175,7 @@ fn test_wake_process_sets_need_resched_flag() {
 /// The test will PASS because it only checks the code structure,
 /// but it documents the missing functionality.
 #[test]
+#[serial]
 fn test_keyboard_handler_missing_resched_check() {
     let _guard = TEST_MUTEX.lock().unwrap();
     ensure_percpu_init();
@@ -199,6 +202,7 @@ fn test_keyboard_handler_missing_resched_check() {
 /// Test: Simulate keyboard interrupt behavior and verify the timing issue
 /// This test shows WHY the missing resched check causes problems
 #[test]
+#[serial]
 fn test_keyboard_wake_requires_timer_tick_to_run() {
     let _guard = TEST_MUTEX.lock().unwrap();
     ensure_percpu_init();
@@ -264,6 +268,7 @@ fn test_keyboard_wake_requires_timer_tick_to_run() {
 /// This directly tests the bug: leave_interrupt() returns true when need_resched
 /// was set, but keyboard_interrupt_handler throws away this return value!
 #[test]
+#[serial]
 fn test_leave_interrupt_returns_resched_pending_ignored() {
     let _guard = TEST_MUTEX.lock().unwrap();
     ensure_percpu_init();

@@ -224,6 +224,16 @@ pub fn set_process_state(pid: Pid, state: ProcessState) -> Result<(), &'static s
         if idx < table.len() {
             if let Some(entry) = &mut table[idx] {
                 if entry.process.pid == pid {
+                    // CRITICAL: Zombie is a terminal state - cannot transition out
+                    if entry.process.state == ProcessState::Zombie {
+                        ktrace!(
+                            "[set_process_state] PID {} is Zombie, ignoring transition to {:?}",
+                            pid,
+                            state
+                        );
+                        return Ok(()); // Silently ignore - Zombie cannot change state
+                    }
+
                     // CRITICAL FIX: Check wake_pending before allowing sleep
                     // This prevents the race condition where:
                     // 1. Process registers as waiter (add_waiter)
@@ -266,6 +276,16 @@ pub fn set_process_state(pid: Pid, state: ProcessState) -> Result<(), &'static s
         let Some(entry) = slot else { continue };
         if entry.process.pid != pid {
             continue;
+        }
+
+        // CRITICAL: Zombie is a terminal state - cannot transition out (fallback path)
+        if entry.process.state == ProcessState::Zombie {
+            ktrace!(
+                "[set_process_state] PID {} is Zombie, ignoring transition to {:?} (fallback)",
+                pid,
+                state
+            );
+            return Ok(());
         }
 
         // CRITICAL FIX: Check wake_pending before allowing sleep (fallback path)
@@ -544,6 +564,9 @@ pub fn update_process_cr3(pid: Pid, new_cr3: u64) -> Result<(), &'static str> {
 }
 
 /// Set the state of the current process using radix tree for O(log N) lookup
+/// 
+/// CRITICAL: This function checks wake_pending before allowing sleep transitions
+/// to prevent race conditions with wake_process() on other CPUs.
 pub fn set_current_process_state(state: ProcessState) {
     // Use per-CPU aware current_pid() instead of global CURRENT_PID
     let Some(curr_pid) = current_pid() else {
@@ -558,6 +581,23 @@ pub fn set_current_process_state(state: ProcessState) {
         if idx < table.len() {
             if let Some(entry) = &mut table[idx] {
                 if entry.process.pid == curr_pid {
+                    // CRITICAL: Zombie is a terminal state
+                    if entry.process.state == ProcessState::Zombie {
+                        return;
+                    }
+                    
+                    // CRITICAL FIX for SMP: Check wake_pending before sleeping
+                    // Another CPU may have called wake_process() while we were
+                    // preparing to sleep. If so, consume the pending wake and stay Ready.
+                    if state == ProcessState::Sleeping && entry.process.wake_pending {
+                        ktrace!(
+                            "[set_current_process_state] PID {} blocked sleep due to wake_pending",
+                            curr_pid
+                        );
+                        entry.process.wake_pending = false;
+                        return; // Stay in current state (Ready/Running)
+                    }
+                    
                     entry.process.state = state;
                     return;
                 }
@@ -569,6 +609,21 @@ pub fn set_current_process_state(state: ProcessState) {
     for slot in table.iter_mut() {
         let Some(entry) = slot else { continue };
         if entry.process.pid == curr_pid {
+            // CRITICAL: Zombie is a terminal state (fallback path)
+            if entry.process.state == ProcessState::Zombie {
+                return;
+            }
+            
+            // CRITICAL FIX for SMP: Check wake_pending before sleeping (fallback path)
+            if state == ProcessState::Sleeping && entry.process.wake_pending {
+                ktrace!(
+                    "[set_current_process_state] PID {} blocked sleep due to wake_pending (fallback)",
+                    curr_pid
+                );
+                entry.process.wake_pending = false;
+                return;
+            }
+            
             entry.process.state = state;
             break;
         }

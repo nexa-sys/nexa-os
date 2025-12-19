@@ -17,6 +17,7 @@ use crate::process::{Process, ProcessState, Pid, MAX_CMDLINE_SIZE};
 use crate::signal::SignalState;
 
 use std::sync::{atomic::Ordering, Once, Mutex};
+    use serial_test::serial;
 
 static INIT_PERCPU: Once = Once::new();
 static TEST_MUTEX: Mutex<()> = Mutex::new(());
@@ -112,6 +113,7 @@ fn add_test_process(pid: Pid, state: ProcessState) -> Result<(), &'static str> {
 // =============================================================================
 
 #[test]
+#[serial]
 fn test_wake_process_sets_state_to_ready() {
     let _guard = TEST_MUTEX.lock().unwrap();
     clear_process_table();
@@ -149,6 +151,7 @@ fn test_wake_process_sets_state_to_ready() {
 }
 
 #[test]
+#[serial]
 fn test_wake_process_sets_need_resched_flag() {
     let _guard = TEST_MUTEX.lock().unwrap();
     clear_process_table();
@@ -177,6 +180,7 @@ fn test_wake_process_sets_need_resched_flag() {
 }
 
 #[test]
+#[serial]
 fn test_wake_process_gives_vruntime_credit() {
     let _guard = TEST_MUTEX.lock().unwrap();
     clear_process_table();
@@ -229,6 +233,7 @@ fn test_wake_process_gives_vruntime_credit() {
 }
 
 #[test]
+#[serial]
 fn test_wake_process_does_nothing_for_ready_process() {
     let _guard = TEST_MUTEX.lock().unwrap();
     clear_process_table();
@@ -246,6 +251,7 @@ fn test_wake_process_does_nothing_for_ready_process() {
 }
 
 #[test]
+#[serial]
 fn test_wake_process_does_nothing_for_running_process() {
     let _guard = TEST_MUTEX.lock().unwrap();
     clear_process_table();
@@ -262,6 +268,7 @@ fn test_wake_process_does_nothing_for_running_process() {
 }
 
 #[test]
+#[serial]
 fn test_wake_nonexistent_process() {
     let _guard = TEST_MUTEX.lock().unwrap();
     clear_process_table();
@@ -273,6 +280,7 @@ fn test_wake_nonexistent_process() {
 }
 
 #[test]
+#[serial]
 fn test_wake_process_recalculates_vdeadline() {
     let _guard = TEST_MUTEX.lock().unwrap();
     clear_process_table();
@@ -324,6 +332,7 @@ fn test_wake_process_recalculates_vdeadline() {
 // =============================================================================
 
 #[test]
+#[serial]
 fn test_keyboard_wake_shell_scenario() {
     // This test reproduces the exact bug scenario:
     // - DHCP client (PID 2) is Running with full time slice
@@ -374,6 +383,7 @@ fn test_keyboard_wake_shell_scenario() {
 }
 
 #[test]
+#[serial]
 fn test_multiple_wakes_all_set_resched() {
     let _guard = TEST_MUTEX.lock().unwrap();
     clear_process_table();

@@ -32,6 +32,7 @@ use crate::process::{Process, ProcessState, Pid, MAX_CMDLINE_SIZE};
 use crate::signal::SignalState;
 
 use std::sync::Once;
+    use serial_test::serial;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static INIT_PERCPU: Once = Once::new();
@@ -185,6 +186,7 @@ fn set_vruntime(pid: Pid, vrt: u64) {
 /// When a process is Sleeping (waiting for I/O), its vruntime should stay
 /// constant. If tick() incorrectly updates Sleeping processes, this test FAILS.
 #[test]
+#[serial]
 fn test_sleeping_process_vruntime_stable() {
     let pid = next_pid();
     let initial_vrt = 1_000_000u64;
@@ -211,6 +213,7 @@ fn test_sleeping_process_vruntime_stable() {
 /// min_vruntime so it gets fair CPU time. If not adjusted, the process
 /// will be starved.
 #[test]
+#[serial]
 fn test_woken_process_vruntime_near_min() {
     // Background process with high vruntime (ran a lot)
     let bg_pid = next_pid();
@@ -246,6 +249,7 @@ fn test_woken_process_vruntime_near_min() {
 /// Simulates: shell waiting for keyboard, background process running.
 /// After wake, shell should be scheduled soon (low vruntime).
 #[test]
+#[serial]
 fn test_interactive_not_starved_by_background() {
     let bg_pid = next_pid();
     let shell_pid = next_pid();
@@ -277,6 +281,7 @@ fn test_interactive_not_starved_by_background() {
 /// Simulates shell reading keyboard: sleep -> wake -> read char -> sleep -> ...
 /// Each cycle should NOT increase vruntime if the process didn't actually run.
 #[test]
+#[serial]
 fn test_sleep_wake_cycle_vruntime_stable() {
     let pid = next_pid();
     let initial_vrt = 1_000_000u64;
@@ -315,6 +320,7 @@ fn test_sleep_wake_cycle_vruntime_stable() {
 /// grows LINEARLY with CPU time, not exponentially.
 /// FAILS if vruntime grows exponentially.
 #[test]
+#[serial]
 fn test_no_exponential_vruntime_growth() {
     let pid = next_pid();
     let initial_vrt = 4_000_000u64;
@@ -371,6 +377,7 @@ fn test_no_exponential_vruntime_growth() {
 /// Two processes: one runs continuously, one sleeps.
 /// The running one should have HIGHER vruntime (consumed more CPU).
 #[test]
+#[serial]
 fn test_running_has_higher_vruntime_than_sleeping() {
     let runner_pid = next_pid();
     let sleeper_pid = next_pid();
@@ -415,6 +422,7 @@ fn test_running_has_higher_vruntime_than_sleeping() {
 /// 4. Key pressed, process woken
 /// 5. vruntime should be similar to step 1
 #[test]
+#[serial]
 fn test_keyboard_wait_vruntime_preserved() {
     let pid = next_pid();
     let initial_vrt = 10_000_000u64;

@@ -31,6 +31,7 @@ use crate::process::{Process, ProcessState, Pid, MAX_CMDLINE_SIZE};
 use crate::signal::SignalState;
 
 use std::sync::Once;
+    use serial_test::serial;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static INIT_PERCPU: Once = Once::new();
@@ -203,6 +204,7 @@ fn set_lag(pid: Pid, lag: i64) {
 /// Simulates: wake arrives BEFORE sleep, process then sleeps and is stuck forever.
 /// FAILS if bug exists (process stuck in Sleeping).
 #[test]
+#[serial]
 fn test_race_wake_before_sleep_must_not_strand() {
     let pid = next_pid();
     add_process(pid, ProcessState::Ready);
@@ -241,6 +243,7 @@ fn test_race_wake_before_sleep_must_not_strand() {
 ///
 /// FAILS if calling wake on Ready process allows it to sleep afterward.
 #[test]
+#[serial]
 fn test_wake_ready_prevents_sleep() {
     let pid = next_pid();
     add_process(pid, ProcessState::Ready);
@@ -277,6 +280,7 @@ fn test_wake_ready_prevents_sleep() {
 ///
 /// FAILS if any iteration leaves process stuck.
 #[test]
+#[serial]
 fn test_rapid_race_no_stuck_process() {
     let pid = next_pid();
     add_process(pid, ProcessState::Ready);
@@ -322,6 +326,7 @@ fn test_rapid_race_no_stuck_process() {
 ///
 /// FAILS if wake doesn't set need_resched (woken process won't run promptly).
 #[test]
+#[serial]
 fn test_wake_must_set_need_resched() {
     let pid = next_pid();
     add_process(pid, ProcessState::Sleeping);
@@ -360,6 +365,7 @@ fn test_wake_must_set_need_resched() {
 ///
 /// FAILS if lag is negative (process ineligible for EEVDF scheduling).
 #[test]
+#[serial]
 fn test_wake_must_reset_lag_nonnegative() {
     let pid = next_pid();
     add_process(pid, ProcessState::Sleeping);
@@ -392,6 +398,7 @@ fn test_wake_must_reset_lag_nonnegative() {
 ///
 /// FAILS if woken shell has higher vruntime than long-running background.
 #[test]
+#[serial]
 fn test_woken_vruntime_allows_scheduling() {
     // Background with high vruntime
     let bg_pid = next_pid();
@@ -432,6 +439,7 @@ fn test_woken_vruntime_allows_scheduling() {
 /// Simulates read_raw_for_tty flow with interrupt during sleep prep.
 /// FAILS if shell gets stuck.
 #[test]
+#[serial]
 fn test_keyboard_read_race_sequence() {
     let shell_pid = next_pid();
     add_process(shell_pid, ProcessState::Ready);
@@ -475,6 +483,7 @@ fn test_keyboard_read_race_sequence() {
 /// Basic test that wake_process correctly transitions Sleeping -> Ready.
 /// This should PASS (wake on Sleeping works).
 #[test]
+#[serial]
 fn test_normal_wake_sleeping_works() {
     let pid = next_pid();
     add_process(pid, ProcessState::Sleeping);

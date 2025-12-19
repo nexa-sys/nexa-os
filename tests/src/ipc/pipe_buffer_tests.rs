@@ -4,6 +4,7 @@
 
 #[cfg(test)]
 mod tests {
+    use serial_test::serial;
     // Constants matching pipe implementation
     const PIPE_BUF_SIZE: usize = 4096;
     const MAX_PIPES: usize = 16;
@@ -121,6 +122,7 @@ mod tests {
     // =========================================================================
 
     #[test]
+    #[serial]
     fn test_pipe_write_read() {
         let mut pipe = PipeBuffer::new();
         
@@ -135,6 +137,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_pipe_fifo_order() {
         let mut pipe = PipeBuffer::new();
         
@@ -153,6 +156,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_pipe_partial_read() {
         let mut pipe = PipeBuffer::new();
         
@@ -175,6 +179,7 @@ mod tests {
     // =========================================================================
 
     #[test]
+    #[serial]
     fn test_pipe_full_buffer() {
         let mut pipe = PipeBuffer::new();
         
@@ -192,6 +197,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_pipe_wrap_around() {
         let mut pipe = PipeBuffer::new();
         
@@ -216,6 +222,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_pipe_boundary_write() {
         let mut pipe = PipeBuffer::new();
         
@@ -238,6 +245,7 @@ mod tests {
     // =========================================================================
 
     #[test]
+    #[serial]
     fn test_pipe_eof_on_write_close() {
         let mut pipe = PipeBuffer::new();
         
@@ -255,6 +263,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_pipe_sigpipe_on_read_close() {
         let mut pipe = PipeBuffer::new();
         
@@ -266,6 +275,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_pipe_double_close() {
         let mut pipe = PipeBuffer::new();
         
@@ -276,6 +286,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_pipe_close_both_ends() {
         let mut pipe = PipeBuffer::new();
         
@@ -290,6 +301,7 @@ mod tests {
     // =========================================================================
 
     #[test]
+    #[serial]
     fn test_posix_pipe_buf_atomic() {
         // POSIX guarantees writes <= PIPE_BUF are atomic
         assert!(PIPE_BUF_SIZE >= 512, "POSIX requires PIPE_BUF >= 512");
@@ -299,6 +311,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_write_larger_than_buffer() {
         let mut pipe = PipeBuffer::new();
         
@@ -315,6 +328,7 @@ mod tests {
     // =========================================================================
 
     #[test]
+    #[serial]
     fn test_read_empty_pipe() {
         let mut pipe = PipeBuffer::new();
         
@@ -327,6 +341,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_empty_write() {
         let mut pipe = PipeBuffer::new();
         
@@ -341,6 +356,7 @@ mod tests {
     // =========================================================================
 
     #[test]
+    #[serial]
     fn test_pipe_pool_limit() {
         // Verify we track the limit
         assert_eq!(MAX_PIPES, 16);
@@ -353,6 +369,7 @@ mod tests {
     // =========================================================================
 
     #[test]
+    #[serial]
     fn test_count_consistency() {
         let mut pipe = PipeBuffer::new();
         
@@ -371,6 +388,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_position_wrap() {
         let mut pipe = PipeBuffer::new();
         
@@ -390,6 +408,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_read_write_interleave() {
         let mut pipe = PipeBuffer::new();
         
@@ -411,6 +430,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_state_transitions() {
         let mut pipe = PipeBuffer::new();
         

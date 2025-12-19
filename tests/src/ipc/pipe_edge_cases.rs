@@ -5,6 +5,7 @@
 
 #[cfg(test)]
 mod tests {
+    use serial_test::serial;
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
@@ -152,6 +153,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_pipe_create_and_basic_io() {
         let (read_end, write_end) = create_pipe().expect("Failed to create pipe");
 
@@ -168,6 +170,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_pipe_exact_buffer_size_write() {
         let (read_end, write_end) = create_pipe().expect("Failed to create pipe");
 
@@ -192,6 +195,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_pipe_partial_write_when_nearly_full() {
         let (read_end, write_end) = create_pipe().expect("Failed to create pipe");
 
@@ -220,6 +224,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_pipe_circular_buffer_wraparound() {
         let (read_end, write_end) = create_pipe().expect("Failed to create pipe");
 
@@ -238,6 +243,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_pipe_empty_read() {
         let (read_end, _write_end) = create_pipe().expect("Failed to create pipe");
 
@@ -248,6 +254,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_pipe_zero_length_operations() {
         let (read_end, write_end) = create_pipe().expect("Failed to create pipe");
 
@@ -266,6 +273,7 @@ mod tests {
     // =========================================================================
 
     #[test]
+    #[serial]
     fn test_pipe_close_read_end_then_write() {
         let (read_end, write_end) = create_pipe().expect("Failed to create pipe");
 
@@ -278,6 +286,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_pipe_close_write_end_then_read() {
         let (read_end, write_end) = create_pipe().expect("Failed to create pipe");
 
@@ -298,6 +307,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_pipe_close_both_ends() {
         let (read_end, write_end) = create_pipe().expect("Failed to create pipe");
 
@@ -311,6 +321,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_pipe_double_close() {
         let (read_end, write_end) = create_pipe().expect("Failed to create pipe");
 
@@ -328,6 +339,7 @@ mod tests {
     // =========================================================================
 
     #[test]
+    #[serial]
     fn test_pipe_resource_exhaustion() {
         // Note: This test validates resource exhaustion behavior.
         // In a mock environment without resource limits, we simply verify
@@ -362,6 +374,7 @@ mod tests {
     // =========================================================================
 
     #[test]
+    #[serial]
     fn test_pipe_invalid_id_read() {
         let mut buffer = [0u8; 64];
         let result = pipe_read(999, &mut buffer);
@@ -369,12 +382,14 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_pipe_invalid_id_write() {
         let result = pipe_write(999, b"test");
         assert!(result.is_err(), "Invalid pipe ID should fail");
     }
 
     #[test]
+    #[serial]
     fn test_pipe_invalid_id_close() {
         assert!(close_pipe_read(999).is_err());
         assert!(close_pipe_write(999).is_err());
@@ -385,6 +400,7 @@ mod tests {
     // =========================================================================
 
     #[test]
+    #[serial]
     fn test_pipe_large_transfer_integrity() {
         let (read_end, write_end) = create_pipe().expect("Failed to create pipe");
 
@@ -429,6 +445,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_pipe_sequential_read_preserves_order() {
         let (read_end, write_end) = create_pipe().expect("Failed to create pipe");
 

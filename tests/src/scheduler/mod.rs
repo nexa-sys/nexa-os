@@ -12,6 +12,12 @@
 //! - Foreground process starvation detection
 //! - vruntime leak detection
 //! - tick() handler bug detection
+//! - TTY foreground process bug detection
+//! - Waiter mechanism bug detection
+//! - Process state machine bug detection
+
+// Test isolation utilities - must be first
+pub mod test_isolation;
 
 mod basic;
 mod consistency;
@@ -37,6 +43,10 @@ mod vruntime_leak;
 mod wake_process_tests;
 mod state_race_bugs;
 mod eevdf_bugs;
+mod tty_foreground_bugs;
+mod waiter_mechanism_bugs;
+mod state_machine_bugs;
+mod smp_race_bugs;
 
 pub use basic::*;
 pub use eevdf::*;
