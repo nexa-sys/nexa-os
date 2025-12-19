@@ -520,6 +520,56 @@ where
     result
 }
 
+// ============================================================================
+// Memory Operations (for kernel memory.rs mmap support)
+// ============================================================================
+
+/// Set memory region to a value - uses HAL memory if available
+/// 
+/// # Safety
+/// - `dst` must be valid for `count` bytes when HAL is initialized
+/// - When HAL is initialized, dst is treated as a physical/kernel address
+///   and the operation goes through HAL's memory system
+pub unsafe fn memset(dst: *mut u8, value: u8, count: usize) {
+    if hal_initialized() {
+        let hal = get_hal();
+        let addr = dst as u64;
+        for i in 0..count {
+            hal.memory.write_u8(addr + i as u64, value);
+        }
+    } else {
+        // No HAL - use real memory (this is what happens in the real kernel)
+        core::ptr::write_bytes(dst, value, count);
+    }
+}
+
+/// Zero-initialize a memory region
+///
+/// # Safety  
+/// - `dst` must be valid for `count` bytes
+pub unsafe fn memzero(dst: *mut u8, count: usize) {
+    memset(dst, 0, count);
+}
+
+/// Copy memory from one region to another
+///
+/// # Safety
+/// - `src` and `dst` must be valid for `count` bytes
+/// - Regions must not overlap
+pub unsafe fn memcpy(dst: *mut u8, src: *const u8, count: usize) {
+    if hal_initialized() {
+        let hal = get_hal();
+        let dst_addr = dst as u64;
+        let src_addr = src as u64;
+        for i in 0..count {
+            let byte = hal.memory.read_u8(src_addr + i as u64);
+            hal.memory.write_u8(dst_addr + i as u64, byte);
+        }
+    } else {
+        core::ptr::copy_nonoverlapping(src, dst, count);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,4 +1,5 @@
 # Tests use nightly to match kernel dependencies
+# run tests 'ndk test '
 [toolchain]
 channel = "nightly"
 components = ["rust-src", "llvm-tools-preview"]

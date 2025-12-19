@@ -10,6 +10,18 @@ use std::alloc::{alloc, alloc_zeroed, dealloc, Layout};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
+// Linux mmap constants
+const MAP_PRIVATE: i32 = 0x02;
+const MAP_ANONYMOUS: i32 = 0x20;
+const MAP_FIXED: i32 = 0x10;
+const PROT_READ: i32 = 0x1;
+const PROT_WRITE: i32 = 0x2;
+
+extern "C" {
+    fn mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, fd: i32, offset: i64) -> *mut u8;
+    fn munmap(addr: *mut u8, len: usize) -> i32;
+}
+
 /// Page size constants
 pub const PAGE_SIZE: usize = 4096;
 pub const PAGE_SHIFT: usize = 12;
@@ -76,7 +88,8 @@ impl MemoryRegion {
 /// MMIO regions are handled separately by devices.
 pub struct PhysicalMemory {
     /// Backing store for RAM (page-aligned allocations)
-    pages: RwLock<HashMap<u64, *mut u8>>,
+    /// Value is (ptr, is_mmap) - true if allocated via mmap, false if via alloc
+    pages: RwLock<HashMap<u64, (*mut u8, bool)>>,
     /// Memory map (like E820)
     regions: RwLock<Vec<MemoryRegion>>,
     /// Total usable RAM size
@@ -151,21 +164,63 @@ impl PhysicalMemory {
     }
     
     /// Ensure a page exists (allocate on first access)
+    /// 
+    /// For high addresses (>= 0x10000): uses mmap with MAP_FIXED to allocate at exact address.
+    /// For low addresses (< 0x10000): uses heap allocation since Linux blocks low mmap.
     fn ensure_page(&self, page_addr: u64) -> *mut u8 {
         let mut pages = self.pages.write().unwrap();
         
-        if let Some(&ptr) = pages.get(&page_addr) {
+        if let Some(&(ptr, _)) = pages.get(&page_addr) {
             return ptr;
         }
         
-        // Allocate new page
-        let layout = Layout::from_size_align(PAGE_SIZE, PAGE_SIZE).unwrap();
-        let ptr = unsafe { alloc_zeroed(layout) };
-        if ptr.is_null() {
-            panic!("Failed to allocate page at {:#x}", page_addr);
+        // Linux typically has mmap_min_addr = 65536 (0x10000)
+        // We can't mmap below that, so use heap allocation for low addresses
+        const MMAP_MIN_ADDR: u64 = 0x10000;
+        
+        if page_addr < MMAP_MIN_ADDR {
+            // Low address: use heap allocation
+            let layout = Layout::from_size_align(PAGE_SIZE, PAGE_SIZE).unwrap();
+            let ptr = unsafe { alloc_zeroed(layout) };
+            if ptr.is_null() {
+                panic!("Failed to allocate page for low address {:#x}", page_addr);
+            }
+            pages.insert(page_addr, (ptr, false)); // false = use dealloc, not munmap
+            self.stats.lock().unwrap().allocations += 1;
+            return ptr;
         }
         
-        pages.insert(page_addr, ptr);
+        // High address: use mmap with MAP_FIXED to allocate at exact address
+        // This makes kernel addresses (like 0x1d00000) valid in the test process
+        let ptr = unsafe {
+            mmap(
+                page_addr as *mut u8,
+                PAGE_SIZE,
+                PROT_READ | PROT_WRITE,
+                MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED,
+                -1,
+                0,
+            )
+        };
+        
+        // MAP_FAILED is (void*)-1 on Linux
+        let map_failed = usize::MAX as *mut u8;
+        
+        if ptr == map_failed {
+            // mmap MAP_FIXED failed - the address might already be mapped
+            // (e.g., by another test thread in parallel). In this case,
+            // the address IS valid, just not owned by us. Use it directly.
+            pages.insert(page_addr, (page_addr as *mut u8, false));
+            self.stats.lock().unwrap().allocations += 1;
+            return page_addr as *mut u8;
+        }
+        
+        // Zero the page
+        unsafe {
+            core::ptr::write_bytes(ptr, 0, PAGE_SIZE);
+        }
+        
+        pages.insert(page_addr, (ptr, true)); // true = use munmap
         self.stats.lock().unwrap().allocations += 1;
         
         ptr
@@ -265,8 +320,12 @@ impl Drop for PhysicalMemory {
         let pages = self.pages.get_mut().unwrap();
         let layout = Layout::from_size_align(PAGE_SIZE, PAGE_SIZE).unwrap();
         
-        for &ptr in pages.values() {
-            unsafe { dealloc(ptr, layout); }
+        for &(ptr, is_mmap) in pages.values() {
+            if is_mmap {
+                unsafe { munmap(ptr, PAGE_SIZE); }
+            } else {
+                unsafe { dealloc(ptr, layout); }
+            }
         }
     }
 }

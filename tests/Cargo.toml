@@ -54,6 +54,7 @@ font8x8 = { version = "0.3", default-features = false }
 nexa_boot_info = { path = "../boot/boot-info" }
 uart_16550 = "0.3"
 pic8259 = "0.10"
+rusty-fork = "0.3.1"
 
 [build-dependencies]
 cc = "1.0"
