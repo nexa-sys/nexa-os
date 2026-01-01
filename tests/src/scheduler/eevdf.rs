@@ -206,7 +206,7 @@ fn test_time_slice_exhaustion() {
     // Initially, slice should be full
     assert_eq!(entry.slice_remaining_ns, BASE_SLICE_NS);
     
-    // Simulate consumption
+    // Consume time slice
     let consumed = 1_000_000; // 1ms
     entry.slice_remaining_ns = entry.slice_remaining_ns.saturating_sub(consumed);
     assert!(entry.slice_remaining_ns < BASE_SLICE_NS);
@@ -223,7 +223,7 @@ fn test_time_slice_replenishment() {
     // Exhaust the slice
     entry.slice_remaining_ns = 0;
     
-    // Simulate replenishment logic (directly test the expected behavior)
+    // Replenishment logic (directly test the expected behavior)
     // replenish_slice is internal to scheduler, so we verify the behavior manually
     let expected_slice = BASE_SLICE_NS * entry.weight as u64 / NICE_0_WEIGHT as u64;
     entry.slice_remaining_ns = expected_slice;
@@ -293,7 +293,7 @@ fn test_lag_accumulation_for_waiting() {
     entry.lag = 0;
     entry.wait_time = 0;
     
-    // Simulate waiting
+    // Waiting process
     let wait_ticks = 10;
     entry.wait_time += wait_ticks;
     
@@ -309,7 +309,7 @@ fn test_lag_accumulation_for_waiting() {
 fn test_min_vruntime_monotonic() {
     // min_vruntime should only increase to prevent starvation
     
-    // Simulate a scenario where we track min_vruntime
+    // Track min_vruntime
     let mut min_vruntime: u64 = 1000;
     
     // New process joins with vruntime 0
@@ -354,7 +354,7 @@ fn test_last_cpu_tracking() {
     let mut entry = make_test_entry(1, 0, SchedPolicy::Normal);
     entry.last_cpu = 0;
     
-    // Simulate migration
+    // Migration to different CPU
     entry.last_cpu = 3;
     
     // Should prefer running on last CPU for cache locality

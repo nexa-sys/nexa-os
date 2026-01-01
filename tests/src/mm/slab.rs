@@ -236,7 +236,7 @@ mod tests {
         
         assert!(check_redzones(&memory));
         
-        // Simulate overflow
+        // Overflow corrupts redzone
         memory[24] = 0x00;
         assert!(!check_redzones(&memory));
     }

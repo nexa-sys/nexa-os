@@ -389,12 +389,12 @@ mod tests {
 
     #[test]
     fn test_vruntime_accumulation_large() {
-        // Simulate long-running process accumulating vruntime
+        // Long-running process accumulating vruntime
         let mut vruntime = 0u64;
         let delta_exec = 4_000_000u64; // 4ms per tick
         let weight = nice_to_weight(0);
         
-        // Simulate 1 million ticks (about 4000 seconds of CPU time)
+        // 1 million ticks (about 4000 seconds of CPU time)
         for _ in 0..1_000_000 {
             let delta = calc_delta_vruntime(delta_exec, weight);
             vruntime = vruntime.saturating_add(delta);

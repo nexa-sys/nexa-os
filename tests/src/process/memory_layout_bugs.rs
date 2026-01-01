@@ -195,7 +195,7 @@ mod tests {
         // Maximum brk should not exceed heap_end
         let max_brk = heap_end;
         
-        // Simulate brk increase
+        // brk increase
         let new_brk = initial_brk + 0x10000; // 64KB allocation
         assert!(new_brk <= max_brk,
             "BUG: brk() would exceed heap boundary");

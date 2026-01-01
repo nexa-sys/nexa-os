@@ -205,7 +205,7 @@ mod tests {
         // Send some pending signals
         state.send_signal(SIGUSR2).unwrap();
         
-        // Simulate exec - reset to defaults
+        // exec resets signal handlers to defaults
         state.reset_to_default();
         
         // Actions should be reset
@@ -346,7 +346,7 @@ mod tests {
     }
 
     // =========================================================================
-    // Real-Time Signal Simulation
+    // Real-Time Signal Tests
     // =========================================================================
 
     #[test]
@@ -361,7 +361,7 @@ mod tests {
     }
 
     // =========================================================================
-    // Sigaction Structure Simulation
+    // Sigaction Structure Tests
     // =========================================================================
 
     #[test]
@@ -384,7 +384,7 @@ mod tests {
 
     #[test]
     fn test_sigset_operations() {
-        // sigset_t operations simulation
+        // sigset_t operations test
         struct SigSet(u64);
         
         impl SigSet {

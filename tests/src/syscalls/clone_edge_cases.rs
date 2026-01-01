@@ -1,26 +1,19 @@
 //! Clone/Thread Syscall Edge Case Tests
 //!
-//! Tests for clone syscall, thread creation, and thread group management.
-//! Focuses on potential race conditions and edge cases.
+//! Tests for clone syscall using REAL kernel constants.
+//! Tests thread creation, thread group management, and race conditions.
 
 #[cfg(test)]
 mod tests {
     use crate::process::{ProcessState, KERNEL_STACK_SIZE, KERNEL_STACK_ALIGN};
     use crate::scheduler::ProcessEntry;
-
-    // Clone flags
-    const CLONE_VM: u64 = 0x00000100;
-    const CLONE_FS: u64 = 0x00000200;
-    const CLONE_FILES: u64 = 0x00000400;
-    const CLONE_SIGHAND: u64 = 0x00000800;
-    const CLONE_THREAD: u64 = 0x00010000;
-    const CLONE_NEWNS: u64 = 0x00020000;
-    const CLONE_SYSVSEM: u64 = 0x00040000;
-    const CLONE_SETTLS: u64 = 0x00080000;
-    const CLONE_PARENT_SETTID: u64 = 0x00100000;
-    const CLONE_CHILD_CLEARTID: u64 = 0x00200000;
-    const CLONE_CHILD_SETTID: u64 = 0x01000000;
-    const CLONE_VFORK: u64 = 0x00004000;
+    
+    // Import REAL kernel clone flags
+    use crate::syscalls::{
+        CLONE_VM, CLONE_FS, CLONE_FILES, CLONE_SIGHAND, CLONE_THREAD,
+        CLONE_NEWNS, CLONE_SYSVSEM, CLONE_SETTLS, CLONE_PARENT_SETTID,
+        CLONE_CHILD_CLEARTID, CLONE_CHILD_SETTID, CLONE_VFORK,
+    };
 
     // =========================================================================
     // Clone Flag Validation Tests
@@ -99,7 +92,7 @@ mod tests {
         let mut parent_tid_storage: u32 = 0;
         let child_pid: u64 = 12345;
         
-        // Simulate storing TID
+        // Store child TID as kernel does
         parent_tid_storage = child_pid as u32;
         
         assert_eq!(parent_tid_storage, 12345);
@@ -111,7 +104,7 @@ mod tests {
         let mut child_tid_storage: u32 = 0;
         let child_pid: u64 = 12345;
         
-        // Simulate storing TID in child
+        // Store child TID in child's address space as kernel does
         child_tid_storage = child_pid as u32;
         
         assert_eq!(child_tid_storage, 12345);

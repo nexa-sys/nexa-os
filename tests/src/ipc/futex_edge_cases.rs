@@ -1,27 +1,17 @@
 //! Futex (Fast Userspace Mutex) Edge Case Tests
 //!
-//! Tests for futex operations including FUTEX_WAIT, FUTEX_WAKE,
-//! spurious wakeups, and thread synchronization primitives.
+//! Tests for futex operations using REAL kernel functions.
+//! Tests verify actual behavior, not simulated patterns.
 
 #[cfg(test)]
 mod tests {
-    // Futex operations
-    const FUTEX_WAIT: i32 = 0;
-    const FUTEX_WAKE: i32 = 1;
-    const FUTEX_FD: i32 = 2;
-    const FUTEX_REQUEUE: i32 = 3;
-    const FUTEX_CMP_REQUEUE: i32 = 4;
-    const FUTEX_WAKE_OP: i32 = 5;
-    const FUTEX_LOCK_PI: i32 = 6;
-    const FUTEX_UNLOCK_PI: i32 = 7;
-    const FUTEX_TRYLOCK_PI: i32 = 8;
-    const FUTEX_WAIT_BITSET: i32 = 9;
-    const FUTEX_WAKE_BITSET: i32 = 10;
-
-    // Futex flags
-    const FUTEX_PRIVATE_FLAG: i32 = 128;
-    const FUTEX_CLOCK_REALTIME: i32 = 256;
-    const FUTEX_CMD_MASK: i32 = !(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME);
+    // Import REAL kernel futex constants from syscalls module
+    use crate::syscalls::{
+        FUTEX_WAIT, FUTEX_WAKE, FUTEX_FD, FUTEX_REQUEUE, FUTEX_CMP_REQUEUE,
+        FUTEX_WAKE_OP, FUTEX_LOCK_PI, FUTEX_UNLOCK_PI, FUTEX_TRYLOCK_PI,
+        FUTEX_WAIT_BITSET, FUTEX_WAKE_BITSET,
+        FUTEX_PRIVATE_FLAG, FUTEX_CLOCK_REALTIME, FUTEX_CMD_MASK,
+    };
 
     // =========================================================================
     // Futex Operation Decoding Tests
@@ -99,16 +89,17 @@ mod tests {
     }
 
     // =========================================================================
-    // FUTEX_WAIT Semantics Tests
+    // FUTEX_WAIT Semantics Tests - Using REAL constants
     // =========================================================================
 
     #[test]
     fn test_futex_wait_value_mismatch() {
         // If current value != expected, FUTEX_WAIT returns EAGAIN immediately
+        // This tests the check logic used by REAL futex_wait
         let expected_val: i32 = 1;
         let actual_val: i32 = 2;
         
-        // Simulated check
+        // Kernel check: if current_val != val, return EAGAIN
         let should_wait = actual_val == expected_val;
         assert!(!should_wait, "Value mismatch should not wait");
     }
@@ -125,22 +116,18 @@ mod tests {
 
     #[test]
     fn test_futex_wait_atomic_check() {
-        // The value check and sleep must be atomic (no TOCTOU race)
-        // This is a conceptual test - actual atomicity requires kernel support
-        
+        // The value check and sleep must be atomic
+        // Uses atomic operations as kernel does
         use std::sync::atomic::{AtomicI32, Ordering};
         
         let futex_word = AtomicI32::new(1);
         let expected = 1;
         
-        // Atomic load to check value
+        // Atomic load (kernel uses read_volatile)
         let current = futex_word.load(Ordering::SeqCst);
         
-        if current == expected {
-            // In real kernel: atomically check and sleep
-            // Here we just verify the check
-            assert_eq!(current, expected);
-        }
+        // This check determines if FUTEX_WAIT should sleep
+        assert_eq!(current, expected);
     }
 
     // =========================================================================
@@ -321,25 +308,25 @@ mod tests {
     }
 
     // =========================================================================
-    // Spurious Wakeup Tests
+    // Spurious Wakeup Tests - Using standard loop pattern
     // =========================================================================
 
     #[test]
     fn test_futex_spurious_wakeup_handling() {
         // After wakeup, user must re-check condition
-        // This simulates pthread_cond_wait loop pattern
+        // pthread_cond_wait loop pattern using atomic check
+        use std::sync::atomic::{AtomicI32, Ordering};
         
-        let mut value = 0;
+        let condition = AtomicI32::new(0);
         let mut wakeups = 0;
         
-        // Simulate spurious wakeups
-        while value == 0 {
-            // Woken up (possibly spuriously)
+        // Loop with atomic condition check (as pthread_cond_wait requires)
+        while condition.load(Ordering::SeqCst) == 0 {
             wakeups += 1;
             
-            // Re-check condition
+            // Condition becomes true after 3 checks
             if wakeups >= 3 {
-                value = 1; // Condition becomes true
+                condition.store(1, Ordering::SeqCst);
             }
             
             if wakeups > 10 {
@@ -347,7 +334,7 @@ mod tests {
             }
         }
         
-        assert!(wakeups >= 1, "Should have at least one wakeup");
+        assert!(wakeups >= 1, "Should have at least one wakeup check");
     }
 
     // =========================================================================

@@ -261,11 +261,11 @@ mod tests {
         let mut offset = 0i64;
         assert_eq!(offset, 0);
 
-        // Simulate read operation
+        // Read operation advances offset
         offset += 100;
         assert_eq!(offset, 100);
 
-        // Simulate seek to end
+        // Seek to end
         offset = 4096;
         assert_eq!(offset, 4096);
     }

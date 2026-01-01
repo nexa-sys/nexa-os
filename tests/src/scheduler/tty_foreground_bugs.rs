@@ -252,7 +252,7 @@ mod tests {
         let pid = next_pid();
         add_process_full(pid, ProcessState::Ready, 0);
 
-        // Simulate: wake arrived while Ready
+        // Pre-condition: wake_pending already set (e.g., by prior wake on Ready)
         set_wake_pending(pid, true);
 
         // Try to sleep
@@ -310,8 +310,7 @@ mod tests {
         let mut stuck_count = 0;
 
         for _i in 0..100 {
-            // Simulate: process registers waiter (stays Ready)
-            // Wake arrives
+            // Wake arrives while process is Ready
             wake_process(pid);
             // Process tries to sleep
             let _ = set_process_state(pid, ProcessState::Sleeping);
@@ -477,7 +476,7 @@ mod tests {
 
     /// BUG TEST: Foreground shell with high vruntime vs background
     ///
-    /// Simulates the exact production bug:
+    /// Reproduces the exact production bug:
     /// - Shell (PID 8) waiting for input, vruntime = 228M
     /// - DHCP (PID 2) vruntime = 4M
     /// - User types
@@ -556,9 +555,9 @@ mod tests {
     ///
     /// Tests that the lock ordering doesn't cause deadlock or lost wakes.
     /// 
-    /// NOTE: This test simulates SMP race conditions. In the real kernel,
-    /// wake_process() on CPU 1 can race with set_process_state(Sleeping) on CPU 0.
-    /// The wake_pending mechanism should prevent lost wakes.
+    /// NOTE: Uses threads to create real SMP-like race conditions.
+    /// wake_process() on one thread races with set_process_state(Sleeping) on another.
+    /// The wake_pending mechanism must prevent lost wakes.
     #[test]
     #[serial]
     fn bug_concurrent_wake_sleep_stress() {
@@ -572,7 +571,7 @@ mod tests {
         let stop_flag = Arc::new(AtomicBool::new(false));
         let stop_flag_clone = stop_flag.clone();
 
-        // Spawn waker thread (simulates interrupt on another CPU)
+        // Waker thread: represents interrupt handler or another CPU calling wake_process
         let waker = thread::spawn(move || {
             let mut wake_count = 0u64;
             while !stop_flag_clone.load(AtomicOrdering::Relaxed) {
@@ -586,7 +585,7 @@ mod tests {
             wake_count
         });
 
-        // Main thread does sleep attempts (simulates process on CPU 0)
+        // Main thread: represents process trying to sleep (races with waker)
         let mut stuck_count = 0;
         let mut recovered_count = 0;
         let mut wake_failed_but_ready = 0;
@@ -666,7 +665,7 @@ mod tests {
         let pid = next_pid();
         add_process_full(pid, ProcessState::Ready, 0);
 
-        // Simulate SIGCONT delivery (calls wake_process internally)
+        // SIGCONT delivery path calls wake_process internally
         wake_process(pid);
 
         // Process tries to sleep
@@ -684,14 +683,52 @@ mod tests {
     // Integration Test: Full Keyboard Input Scenario
     // =========================================================================
 
-    /// Integration test: Simulates complete keyboard read flow
+    // Hardware mock: Keyboard waiter queue (mirrors src/drivers/keyboard.rs)
+    const MAX_KEYBOARD_WAITERS: usize = 16;
+
+    struct KeyboardWaiterList {
+        waiters: [Option<Pid>; MAX_KEYBOARD_WAITERS],
+    }
+
+    impl KeyboardWaiterList {
+        fn new() -> Self {
+            Self { waiters: [None; MAX_KEYBOARD_WAITERS] }
+        }
+
+        /// Add PID to waiter list (mirrors keyboard::add_waiter)
+        fn add_waiter(&mut self, pid: Pid) -> bool {
+            for slot in self.waiters.iter_mut() {
+                if slot.is_none() {
+                    *slot = Some(pid);
+                    return true;
+                }
+            }
+            false
+        }
+
+        /// Wake all waiters (mirrors keyboard::wake_all_waiters)
+        /// Called from add_scancode() in interrupt context
+        fn wake_all_waiters(&mut self) {
+            for slot in self.waiters.iter_mut() {
+                if let Some(pid) = slot.take() {
+                    wake_process(pid);
+                }
+            }
+        }
+
+        fn contains(&self, pid: Pid) -> bool {
+            self.waiters.iter().any(|s| *s == Some(pid))
+        }
+    }
+
+    /// Integration test: Full keyboard read flow with waiter mock
     ///
+    /// Tests exact read_raw_for_tty() sequence:
     /// 1. Shell is Ready
     /// 2. Shell calls add_waiter (still Ready)
     /// 3. Keyboard interrupt fires
     /// 4. wake_all_waiters -> wake_process(shell) [shell is Ready]
     /// 5. Shell calls set_current_process_state(Sleeping)
-    /// 6. Shell calls do_schedule
     ///
     /// Expected: Shell stays Ready (wake_pending prevents sleep)
     #[test]
@@ -700,13 +737,27 @@ mod tests {
         let shell_pid = next_pid();
         add_process_full(shell_pid, ProcessState::Ready, 0);
 
-        // Step 1-2: Shell registers as waiter (simulated, stays Ready)
+        let mut waiters = KeyboardWaiterList::new();
 
-        // Step 3-4: Interrupt, wake on Ready
-        wake_process(shell_pid);
+        // Step 1: try_read_char() returns None (buffer empty)
+        let has_char = false;
 
-        // Step 5: Shell tries to sleep
-        let _ = set_process_state(shell_pid, ProcessState::Sleeping);
+        if !has_char {
+            // Step 2: add_waiter(shell_pid)
+            let added = waiters.add_waiter(shell_pid);
+            assert!(added, "Waiter queue should accept shell");
+            assert!(waiters.contains(shell_pid), "Shell should be in waiter list");
+
+            // Step 3-4: INTERRUPT - keyboard fires, wake_all_waiters called
+            // Shell is still Ready (hasn't slept yet)
+            waiters.wake_all_waiters();
+
+            // Shell removed from waiter list
+            assert!(!waiters.contains(shell_pid), "Shell removed from waiter list");
+
+            // Step 5: Shell tries to sleep
+            let _ = set_process_state(shell_pid, ProcessState::Sleeping);
+        }
 
         // Check result
         let final_state = get_state(shell_pid);
@@ -714,9 +765,10 @@ mod tests {
 
         cleanup_process(shell_pid);
 
-        // Shell should NOT be sleeping
+        // Shell should NOT be sleeping - wake_pending blocked the transition
         assert_ne!(final_state, Some(ProcessState::Sleeping),
             "INTEGRATION BUG: Shell stuck in Sleeping after keyboard read flow! \
+             Shell is no longer in waiter list, so nothing will wake it. \
              This is the exact bug causing shell unresponsiveness.");
 
         // wake_pending should be consumed

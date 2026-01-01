@@ -249,12 +249,12 @@ mod tests {
     }
 
     // =========================================================================
-    // Context Switching Simulation Tests
+    // Context Switching Tests
     // =========================================================================
 
     #[test]
     fn test_context_save_restore() {
-        // Simulate save and restore of CPU context
+        // Test save and restore of CPU context struct
         let mut original_ctx = Context::zero();
         original_ctx.rax = 0xDEADBEEF;
         original_ctx.rbx = 0xCAFEBABE;
@@ -321,7 +321,7 @@ mod tests {
 
     #[test]
     fn test_sleeping_to_running_transition() {
-        // Simulate state transition
+        // Test state transition enum values
         let mut state = ProcessState::Sleeping;
         assert_eq!(state, ProcessState::Sleeping);
 
@@ -381,11 +381,11 @@ mod tests {
     fn test_context_arithmetic_in_registers() {
         let mut ctx = Context::zero();
 
-        // Simulate arithmetic operations
+        // Test arithmetic operations on registers
         ctx.rax = 10;
         ctx.rbx = 20;
 
-        // Simulate addition (in real CPU, would use ADD instruction)
+        // Addition (verifying Context struct field operations)
         ctx.rcx = ctx.rax + ctx.rbx;
         assert_eq!(ctx.rcx, 30);
     }

@@ -191,7 +191,7 @@ fn test_wake_process_gives_vruntime_credit() {
     // Add a sleeping process with high vruntime
     add_test_process(pid, ProcessState::Sleeping).unwrap();
     
-    // Set a high vruntime (simulating process that ran a lot before sleeping)
+    // Set a high vruntime (process that ran a lot before sleeping)
     {
         let mut table = process_table_lock();
         for slot in table.iter_mut() {
@@ -352,7 +352,7 @@ fn test_keyboard_wake_shell_scenario() {
     // Clear need_resched
     let _ = check_need_resched();
     
-    // Simulate keyboard interrupt waking shell
+    // Keyboard interrupt wakes shell (via wake_all_waiters -> wake_process)
     let woke = wake_process(8);
     assert!(woke, "Shell should be woken");
     

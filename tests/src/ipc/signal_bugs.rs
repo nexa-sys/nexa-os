@@ -312,7 +312,7 @@ mod tests {
     }
 
     // =========================================================================
-    // BUG TEST: Concurrent signal operations (simulated)
+    // BUG TEST: Concurrent signal operations
     // =========================================================================
 
     /// Test: Multiple sends of same signal should not cause issues

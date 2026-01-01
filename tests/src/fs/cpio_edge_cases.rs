@@ -256,7 +256,7 @@ mod tests {
 
     #[test]
     fn test_truncated_header() {
-        // Simulate reading a truncated archive
+        // Test reading a truncated archive
         fn validate_archive(data: &[u8]) -> Result<(), &'static str> {
             if data.len() < CPIO_HEADER_SIZE {
                 return Err("Archive too small for header");
@@ -271,7 +271,7 @@ mod tests {
 
     #[test]
     fn test_truncated_file_data() {
-        // Simulate file data extending beyond archive
+        // Test file data extending beyond archive
         fn validate_entry(archive_len: usize, data_offset: usize, file_size: usize) -> Result<(), &'static str> {
             if data_offset + file_size > archive_len {
                 return Err("File data extends beyond archive");

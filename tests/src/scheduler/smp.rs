@@ -152,7 +152,7 @@ fn test_find_least_loaded_cpu_single() {
 fn test_load_distribution_concept() {
     // Conceptual test for load distribution
     
-    // Simulate 4 CPUs with different loads
+    // 4 CPUs with different loads
     let loads = [10u8, 50, 30, 20]; // CPU 0 has lowest load
     
     // Find least loaded
@@ -222,7 +222,7 @@ fn test_numa_policy() {
 fn test_find_best_cpu_numa_concept() {
     // Conceptual test for NUMA-aware CPU selection
     
-    // Simulate CPUs on different NUMA nodes
+    // CPUs on different NUMA nodes
     // CPU 0-3: NUMA node 0
     // CPU 4-7: NUMA node 1
     
@@ -361,7 +361,7 @@ fn test_process_migration_concept() {
         rq0.enqueue(make_rq_entry(1, 1000)).unwrap();
     }
     
-    // Simulate migration: remove from CPU 0, add to CPU 1
+    // Migration: remove from CPU 0, add to CPU 1
     let entry = {
         let mut rq0 = data0.run_queue.lock();
         rq0.dequeue(1)

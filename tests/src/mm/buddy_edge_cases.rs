@@ -161,7 +161,7 @@ mod tests {
             pages_free: 1024,
         };
         
-        // Simulate allocation of order 2 (4 pages)
+        // Allocation of order 2 (4 pages)
         let order = 2;
         let pages = 1u64 << order;
         
@@ -252,7 +252,7 @@ mod tests {
 
     #[test]
     fn test_free_list_cycle_detection() {
-        // Simulate detecting a cycle in free list
+        // Detect a cycle in free list
         fn detect_cycle(nodes: &[u64]) -> bool {
             use std::collections::HashSet;
             let mut seen = HashSet::new();

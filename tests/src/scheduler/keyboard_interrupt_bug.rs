@@ -112,8 +112,8 @@ fn make_process_entry(proc: Process) -> ProcessEntry {
     }
 }
 
-/// Simulate what add_scancode does: wake process and expect need_resched to be set
-fn simulate_add_scancode_wake(pid: crate::process::Pid) -> bool {
+/// Wrapper for add_scancode wake path: wake process and expect need_resched to be set
+fn do_add_scancode_wake(pid: crate::process::Pid) -> bool {
     // This is what add_scancode -> wake_all_waiters -> wake_process does
     wake_process(pid)
 }
@@ -142,8 +142,8 @@ fn test_wake_process_sets_need_resched_flag() {
     // Clear any existing need_resched flag
     let _ = check_need_resched();
     
-    // Wake the process (this is what add_scancode does via wake_all_waiters)
-    let woke = simulate_add_scancode_wake(900);
+    // Wake the process (via add_scancode -> wake_all_waiters)
+    let woke = do_add_scancode_wake(900);
     assert!(woke, "wake_process should return true for sleeping process");
     
     // CRITICAL: Verify need_resched was set by wake_process
@@ -199,7 +199,7 @@ fn test_keyboard_handler_missing_resched_check() {
     assert!(true, "This test documents the bug - see comments above");
 }
 
-/// Test: Simulate keyboard interrupt behavior and verify the timing issue
+/// Test: Keyboard interrupt behavior and verify the timing issue
 /// This test shows WHY the missing resched check causes problems
 #[test]
 #[serial]
@@ -226,7 +226,7 @@ fn test_keyboard_wake_requires_timer_tick_to_run() {
         }
     }
     
-    // Simulate keyboard input arriving: wake the shell process
+    // Keyboard input arriving: wake the shell process
     let _ = check_need_resched(); // Clear any existing flag
     let woke = wake_process(902);
     assert!(woke, "Shell process should be woken");
@@ -273,7 +273,7 @@ fn test_leave_interrupt_returns_resched_pending_ignored() {
     let _guard = TEST_MUTEX.lock().unwrap();
     ensure_percpu_init();
     
-    // Set need_resched flag (simulating what wake_process does)
+    // Set need_resched flag (what wake_process does)
     set_need_resched(0);
     
     // In timer_interrupt_handler:

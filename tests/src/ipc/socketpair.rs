@@ -1,492 +1,334 @@
-//! Socketpair and Advanced Pipe Tests
+//! Socketpair Tests
 //!
-//! Tests for bidirectional socketpair communication and advanced pipe edge cases.
+//! Tests for bidirectional socketpair communication using real kernel functions.
 
 #[cfg(test)]
 mod tests {
+    use crate::pipe::{
+        close_socketpair_end, create_socketpair, socketpair_has_data, socketpair_read,
+        socketpair_write,
+    };
+
     // =========================================================================
-    // Socketpair State Tests
+    // Socketpair Basic Operations - Using Real Kernel Functions
     // =========================================================================
 
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    enum SocketpairState {
-        Open,
-        FirstClosed,
-        SecondClosed,
-        Closed,
-    }
+    #[test]
+    fn test_socketpair_creation() {
+        // Create a real socketpair using kernel function
+        let pair_id = create_socketpair().expect("Failed to create socketpair");
 
-    struct Socketpair {
-        state: SocketpairState,
-        buf_0_to_1: Vec<u8>,
-        buf_1_to_0: Vec<u8>,
-    }
+        // Verify the socketpair is usable by checking if it has data (should be false initially)
+        let has_data_0 = socketpair_has_data(pair_id, 0).expect("Failed to check end 0");
+        let has_data_1 = socketpair_has_data(pair_id, 1).expect("Failed to check end 1");
 
-    impl Socketpair {
-        const BUF_SIZE: usize = 4096;
+        assert!(!has_data_0, "End 0 should have no data initially");
+        assert!(!has_data_1, "End 1 should have no data initially");
 
-        fn new() -> Self {
-            Self {
-                state: SocketpairState::Open,
-                buf_0_to_1: Vec::new(),
-                buf_1_to_0: Vec::new(),
-            }
-        }
-
-        fn write_from(&mut self, end: usize, data: &[u8]) -> Result<usize, &'static str> {
-            match self.state {
-                SocketpairState::Closed => Err("Socketpair is closed"),
-                SocketpairState::FirstClosed if end == 0 => Err("This socket end is closed"),
-                SocketpairState::SecondClosed if end == 1 => Err("This socket end is closed"),
-                SocketpairState::FirstClosed if end == 1 => Err("Peer socket closed (SIGPIPE)"),
-                SocketpairState::SecondClosed if end == 0 => Err("Peer socket closed (SIGPIPE)"),
-                _ => {
-                    let buf = if end == 0 {
-                        &mut self.buf_0_to_1
-                    } else {
-                        &mut self.buf_1_to_0
-                    };
-                    
-                    let available = Self::BUF_SIZE.saturating_sub(buf.len());
-                    if available == 0 {
-                        return Err("Buffer full");
-                    }
-                    
-                    let to_write = data.len().min(available);
-                    buf.extend_from_slice(&data[..to_write]);
-                    Ok(to_write)
-                }
-            }
-        }
-
-        fn read_to(&mut self, end: usize, buffer: &mut [u8]) -> Result<usize, &'static str> {
-            match self.state {
-                SocketpairState::Closed => Err("Socketpair is closed"),
-                SocketpairState::FirstClosed if end == 0 => Err("This socket end is closed"),
-                SocketpairState::SecondClosed if end == 1 => Err("This socket end is closed"),
-                _ => {
-                    // Read from the buffer written by the other end
-                    let buf = if end == 0 {
-                        &mut self.buf_1_to_0
-                    } else {
-                        &mut self.buf_0_to_1
-                    };
-                    
-                    let to_read = buffer.len().min(buf.len());
-                    buffer[..to_read].copy_from_slice(&buf[..to_read]);
-                    buf.drain(..to_read);
-                    Ok(to_read)
-                }
-            }
-        }
-
-        fn close(&mut self, end: usize) {
-            match self.state {
-                SocketpairState::Open => {
-                    self.state = if end == 0 {
-                        SocketpairState::FirstClosed
-                    } else {
-                        SocketpairState::SecondClosed
-                    };
-                }
-                SocketpairState::FirstClosed if end == 1 => {
-                    self.state = SocketpairState::Closed;
-                }
-                SocketpairState::SecondClosed if end == 0 => {
-                    self.state = SocketpairState::Closed;
-                }
-                _ => {}
-            }
-        }
+        // Cleanup
+        let _ = close_socketpair_end(pair_id, 0);
+        let _ = close_socketpair_end(pair_id, 1);
     }
 
     #[test]
-    fn test_socketpair_bidirectional() {
-        let mut pair = Socketpair::new();
-        
-        // Write from end 0, read from end 1
-        pair.write_from(0, b"hello").unwrap();
-        let mut buf = [0u8; 10];
-        let n = pair.read_to(1, &mut buf).unwrap();
-        assert_eq!(n, 5);
-        assert_eq!(&buf[..5], b"hello");
-        
-        // Write from end 1, read from end 0
-        pair.write_from(1, b"world").unwrap();
-        let n = pair.read_to(0, &mut buf).unwrap();
-        assert_eq!(n, 5);
-        assert_eq!(&buf[..5], b"world");
+    fn test_socketpair_bidirectional_write_read() {
+        let pair_id = create_socketpair().expect("Failed to create socketpair");
+
+        // Write from end 0, should be readable from end 1
+        let data = b"hello from end 0";
+        let written = socketpair_write(pair_id, 0, data).expect("Write from end 0 failed");
+        assert_eq!(written, data.len());
+
+        // Verify end 1 has data to read
+        let has_data = socketpair_has_data(pair_id, 1).expect("Check failed");
+        assert!(has_data, "End 1 should have data after end 0 writes");
+
+        // Read from end 1
+        let mut buf = [0u8; 32];
+        let read = socketpair_read(pair_id, 1, &mut buf).expect("Read from end 1 failed");
+        assert_eq!(read, data.len());
+        assert_eq!(&buf[..read], data);
+
+        // Cleanup
+        let _ = close_socketpair_end(pair_id, 0);
+        let _ = close_socketpair_end(pair_id, 1);
     }
 
     #[test]
-    fn test_socketpair_half_close() {
-        let mut pair = Socketpair::new();
-        
-        // Close end 0
-        pair.close(0);
-        assert_eq!(pair.state, SocketpairState::FirstClosed);
-        
-        // End 0 cannot write
-        assert!(pair.write_from(0, b"test").is_err());
-        
-        // End 1 writing to closed peer should get SIGPIPE
-        let result = pair.write_from(1, b"test");
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "Peer socket closed (SIGPIPE)");
-    }
+    fn test_socketpair_reverse_direction() {
+        let pair_id = create_socketpair().expect("Failed to create socketpair");
 
-    #[test]
-    fn test_socketpair_full_close() {
-        let mut pair = Socketpair::new();
-        
-        pair.close(0);
-        pair.close(1);
-        
-        assert_eq!(pair.state, SocketpairState::Closed);
-        
-        // Neither end can read or write
-        assert!(pair.write_from(0, b"test").is_err());
-        assert!(pair.write_from(1, b"test").is_err());
+        // Write from end 1, should be readable from end 0
+        let data = b"hello from end 1";
+        let written = socketpair_write(pair_id, 1, data).expect("Write from end 1 failed");
+        assert_eq!(written, data.len());
+
+        // Verify end 0 has data to read
+        let has_data = socketpair_has_data(pair_id, 0).expect("Check failed");
+        assert!(has_data, "End 0 should have data after end 1 writes");
+
+        // Read from end 0
+        let mut buf = [0u8; 32];
+        let read = socketpair_read(pair_id, 0, &mut buf).expect("Read from end 0 failed");
+        assert_eq!(read, data.len());
+        assert_eq!(&buf[..read], data);
+
+        // Cleanup
+        let _ = close_socketpair_end(pair_id, 0);
+        let _ = close_socketpair_end(pair_id, 1);
     }
 
     #[test]
     fn test_socketpair_buffer_independence() {
-        let mut pair = Socketpair::new();
-        
-        // Write different data from each end
-        pair.write_from(0, b"from0").unwrap();
-        pair.write_from(1, b"from1").unwrap();
-        
-        // Each end should read data written by the other
+        let pair_id = create_socketpair().expect("Failed to create socketpair");
+
+        // Write different data from each end simultaneously
+        let data_0 = b"from0";
+        let data_1 = b"from1";
+
+        socketpair_write(pair_id, 0, data_0).expect("Write from end 0 failed");
+        socketpair_write(pair_id, 1, data_1).expect("Write from end 1 failed");
+
+        // Both ends should have data available
+        assert!(socketpair_has_data(pair_id, 0).unwrap());
+        assert!(socketpair_has_data(pair_id, 1).unwrap());
+
+        // Each end reads the data written by the other
+        let mut buf = [0u8; 16];
+
+        let read_0 = socketpair_read(pair_id, 0, &mut buf).expect("Read at end 0 failed");
+        assert_eq!(&buf[..read_0], data_1);
+
+        let read_1 = socketpair_read(pair_id, 1, &mut buf).expect("Read at end 1 failed");
+        assert_eq!(&buf[..read_1], data_0);
+
+        // Cleanup
+        let _ = close_socketpair_end(pair_id, 0);
+        let _ = close_socketpair_end(pair_id, 1);
+    }
+
+    #[test]
+    fn test_socketpair_half_close_end_0() {
+        let pair_id = create_socketpair().expect("Failed to create socketpair");
+
+        // Close end 0
+        close_socketpair_end(pair_id, 0).expect("Failed to close end 0");
+
+        // End 0 cannot write anymore
+        let result = socketpair_write(pair_id, 0, b"test");
+        assert!(result.is_err(), "Closed end 0 should not be able to write");
+
+        // End 1 writing to closed peer should fail (SIGPIPE equivalent)
+        let result = socketpair_write(pair_id, 1, b"test");
+        assert!(result.is_err(), "Writing to closed peer should fail");
+
+        // Cleanup remaining end
+        let _ = close_socketpair_end(pair_id, 1);
+    }
+
+    #[test]
+    fn test_socketpair_half_close_end_1() {
+        let pair_id = create_socketpair().expect("Failed to create socketpair");
+
+        // Close end 1
+        close_socketpair_end(pair_id, 1).expect("Failed to close end 1");
+
+        // End 1 cannot write anymore
+        let result = socketpair_write(pair_id, 1, b"test");
+        assert!(result.is_err(), "Closed end 1 should not be able to write");
+
+        // End 0 writing to closed peer should fail
+        let result = socketpair_write(pair_id, 0, b"test");
+        assert!(result.is_err(), "Writing to closed peer should fail");
+
+        // Cleanup remaining end
+        let _ = close_socketpair_end(pair_id, 0);
+    }
+
+    #[test]
+    fn test_socketpair_full_close() {
+        let pair_id = create_socketpair().expect("Failed to create socketpair");
+
+        // Close both ends
+        close_socketpair_end(pair_id, 0).expect("Failed to close end 0");
+        close_socketpair_end(pair_id, 1).expect("Failed to close end 1");
+
+        // Neither end can write or read
+        assert!(socketpair_write(pair_id, 0, b"test").is_err());
+        assert!(socketpair_write(pair_id, 1, b"test").is_err());
+
         let mut buf = [0u8; 10];
-        
-        let n = pair.read_to(0, &mut buf).unwrap();
-        assert_eq!(&buf[..n], b"from1");
-        
-        let n = pair.read_to(1, &mut buf).unwrap();
-        assert_eq!(&buf[..n], b"from0");
-    }
-
-    // =========================================================================
-    // Advanced Pipe Tests
-    // =========================================================================
-
-    #[test]
-    fn test_pipe_capacity() {
-        // Linux default pipe capacity is 64KB (16 pages)
-        const PIPE_CAPACITY: usize = 65536;
-        
-        assert_eq!(PIPE_CAPACITY, 64 * 1024);
-        assert_eq!(PIPE_CAPACITY / 4096, 16); // 16 pages
+        assert!(socketpair_read(pair_id, 0, &mut buf).is_err());
+        assert!(socketpair_read(pair_id, 1, &mut buf).is_err());
     }
 
     #[test]
-    fn test_pipe_splice_compatibility() {
-        // splice() moves data between pipes without copying to userspace
-        // This test verifies the concept
-        
-        struct PipeBuffer {
-            data: Vec<u8>,
-        }
-        
-        fn splice(src: &mut PipeBuffer, dst: &mut PipeBuffer, len: usize) -> usize {
-            let available = src.data.len().min(len);
-            let data: Vec<u8> = src.data.drain(..available).collect();
-            dst.data.extend(data);
-            available
-        }
-        
-        let mut src = PipeBuffer { data: vec![1, 2, 3, 4, 5] };
-        let mut dst = PipeBuffer { data: Vec::new() };
-        
-        let spliced = splice(&mut src, &mut dst, 3);
-        
-        assert_eq!(spliced, 3);
-        assert_eq!(dst.data, vec![1, 2, 3]);
-        assert_eq!(src.data, vec![4, 5]);
+    fn test_socketpair_multiple_writes() {
+        let pair_id = create_socketpair().expect("Failed to create socketpair");
+
+        // Multiple writes from same end accumulate in buffer
+        socketpair_write(pair_id, 0, b"hello ").expect("First write failed");
+        socketpair_write(pair_id, 0, b"world").expect("Second write failed");
+
+        // Read should get all accumulated data
+        let mut buf = [0u8; 32];
+        let read = socketpair_read(pair_id, 1, &mut buf).expect("Read failed");
+        assert_eq!(&buf[..read], b"hello world");
+
+        // Cleanup
+        let _ = close_socketpair_end(pair_id, 0);
+        let _ = close_socketpair_end(pair_id, 1);
     }
 
     #[test]
-    fn test_pipe_vmsplice_concept() {
-        // vmsplice() transfers memory pages to/from a pipe
-        // This test verifies the concept of zero-copy transfers
-        
-        #[derive(Clone)]
-        struct PageRef {
-            data: Vec<u8>,
-        }
-        
-        struct PipeWithPages {
-            pages: Vec<PageRef>,
-        }
-        
-        fn vmsplice_to_pipe(pipe: &mut PipeWithPages, pages: &[PageRef]) -> usize {
-            let mut total = 0;
-            for page in pages {
-                total += page.data.len();
-                pipe.pages.push(page.clone());
-            }
-            total
-        }
-        
-        let mut pipe = PipeWithPages { pages: Vec::new() };
-        let pages = vec![
-            PageRef { data: vec![1, 2, 3, 4] },
-            PageRef { data: vec![5, 6, 7, 8] },
-        ];
-        
-        let bytes = vmsplice_to_pipe(&mut pipe, &pages);
-        
-        assert_eq!(bytes, 8);
-        assert_eq!(pipe.pages.len(), 2);
-    }
+    fn test_socketpair_partial_read() {
+        let pair_id = create_socketpair().expect("Failed to create socketpair");
 
-    // =========================================================================
-    // FIFO (Named Pipe) Tests
-    // =========================================================================
+        // Write some data
+        socketpair_write(pair_id, 0, b"abcdefghij").expect("Write failed");
 
-    #[test]
-    fn test_fifo_open_modes() {
-        // FIFOs have special open semantics
-        
-        #[derive(Clone, Copy, PartialEq)]
-        enum OpenMode {
-            ReadOnly,
-            WriteOnly,
-            ReadWrite,
-        }
-        
-        #[derive(Clone, Copy, PartialEq)]
-        enum FifoState {
-            NoReaders,
-            NoWriters,
-            Both,
-            Neither,
-        }
-        
-        fn open_fifo(state: &mut FifoState, mode: OpenMode, blocking: bool) -> Result<(), &'static str> {
-            match (state, mode, blocking) {
-                // Opening for read when no writer - blocks or fails
-                (FifoState::NoWriters | FifoState::Neither, OpenMode::ReadOnly, true) => {
-                    Err("Would block waiting for writer")
-                }
-                (FifoState::NoWriters | FifoState::Neither, OpenMode::ReadOnly, false) => {
-                    // Non-blocking succeeds immediately
-                    Ok(())
-                }
-                // Opening for write when no reader - ENXIO
-                (FifoState::NoReaders | FifoState::Neither, OpenMode::WriteOnly, false) => {
-                    Err("ENXIO: No reader")
-                }
-                (FifoState::NoReaders | FifoState::Neither, OpenMode::WriteOnly, true) => {
-                    Err("Would block waiting for reader")
-                }
-                // O_RDWR never blocks
-                (_, OpenMode::ReadWrite, _) => Ok(()),
-                _ => Ok(()),
-            }
-        }
-        
-        let mut state = FifoState::Neither;
-        
-        // Non-blocking read succeeds
-        assert!(open_fifo(&mut state, OpenMode::ReadOnly, false).is_ok());
-        
-        // Non-blocking write fails with ENXIO
-        assert!(open_fifo(&mut state, OpenMode::WriteOnly, false).is_err());
-        
-        // O_RDWR always succeeds
-        assert!(open_fifo(&mut state, OpenMode::ReadWrite, false).is_ok());
-    }
+        // Read only 5 bytes
+        let mut buf = [0u8; 5];
+        let read = socketpair_read(pair_id, 1, &mut buf).expect("Read failed");
+        assert_eq!(read, 5);
+        assert_eq!(&buf[..5], b"abcde");
 
-    // =========================================================================
-    // Pipe Reference Counting
-    // =========================================================================
+        // Read remaining 5 bytes
+        let read = socketpair_read(pair_id, 1, &mut buf).expect("Second read failed");
+        assert_eq!(read, 5);
+        assert_eq!(&buf[..5], b"fghij");
 
-    #[test]
-    fn test_pipe_refcount() {
-        struct PipeInner {
-            read_refs: u32,
-            write_refs: u32,
-        }
-        
-        impl PipeInner {
-            fn new() -> Self {
-                Self {
-                    read_refs: 1,
-                    write_refs: 1,
-                }
-            }
-            
-            fn add_read_ref(&mut self) {
-                self.read_refs += 1;
-            }
-            
-            fn add_write_ref(&mut self) {
-                self.write_refs += 1;
-            }
-            
-            fn drop_read_ref(&mut self) -> bool {
-                self.read_refs -= 1;
-                self.read_refs == 0
-            }
-            
-            fn drop_write_ref(&mut self) -> bool {
-                self.write_refs -= 1;
-                self.write_refs == 0
-            }
-            
-            fn should_destroy(&self) -> bool {
-                self.read_refs == 0 && self.write_refs == 0
-            }
-        }
-        
-        let mut pipe = PipeInner::new();
-        
-        // Fork duplicates both ends
-        pipe.add_read_ref();
-        pipe.add_write_ref();
-        
-        assert_eq!(pipe.read_refs, 2);
-        assert_eq!(pipe.write_refs, 2);
-        
-        // Parent closes both ends
-        pipe.drop_read_ref();
-        pipe.drop_write_ref();
-        
-        assert!(!pipe.should_destroy());
-        
-        // Child closes both ends
-        pipe.drop_read_ref();
-        pipe.drop_write_ref();
-        
-        assert!(pipe.should_destroy());
-    }
+        // No more data
+        assert!(!socketpair_has_data(pair_id, 1).unwrap());
 
-    // =========================================================================
-    // Pipe and Fork Interaction
-    // =========================================================================
-
-    #[test]
-    fn test_pipe_fork_pattern() {
-        // Standard pattern: parent writes, child reads
-        
-        struct Process {
-            read_fds: Vec<usize>,
-            write_fds: Vec<usize>,
-        }
-        
-        fn fork_with_pipe() -> (Process, Process) {
-            let pipe_id = 0; // Simulated pipe
-            
-            // Parent and child both have both ends after fork
-            let mut parent = Process {
-                read_fds: vec![pipe_id],
-                write_fds: vec![pipe_id],
-            };
-            
-            let mut child = Process {
-                read_fds: vec![pipe_id],
-                write_fds: vec![pipe_id],
-            };
-            
-            // Parent closes read end (will write)
-            parent.read_fds.clear();
-            
-            // Child closes write end (will read)
-            child.write_fds.clear();
-            
-            (parent, child)
-        }
-        
-        let (parent, child) = fork_with_pipe();
-        
-        // Parent can only write
-        assert!(parent.read_fds.is_empty());
-        assert!(!parent.write_fds.is_empty());
-        
-        // Child can only read
-        assert!(!child.read_fds.is_empty());
-        assert!(child.write_fds.is_empty());
+        // Cleanup
+        let _ = close_socketpair_end(pair_id, 0);
+        let _ = close_socketpair_end(pair_id, 1);
     }
 
     #[test]
-    fn test_pipe_chain_pattern() {
-        // Shell pipeline: cmd1 | cmd2 | cmd3
-        
-        struct PipelineStage {
-            stdin_from_pipe: Option<usize>,
-            stdout_to_pipe: Option<usize>,
-        }
-        
-        fn create_pipeline(n_stages: usize) -> Vec<PipelineStage> {
-            let mut stages = Vec::new();
-            
-            for i in 0..n_stages {
-                let stdin = if i == 0 { None } else { Some(i - 1) };
-                let stdout = if i == n_stages - 1 { None } else { Some(i) };
-                
-                stages.push(PipelineStage {
-                    stdin_from_pipe: stdin,
-                    stdout_to_pipe: stdout,
-                });
-            }
-            
-            stages
-        }
-        
-        let pipeline = create_pipeline(3);
-        
-        // First stage: stdin from terminal, stdout to pipe 0
-        assert_eq!(pipeline[0].stdin_from_pipe, None);
-        assert_eq!(pipeline[0].stdout_to_pipe, Some(0));
-        
-        // Middle stage: stdin from pipe 0, stdout to pipe 1
-        assert_eq!(pipeline[1].stdin_from_pipe, Some(0));
-        assert_eq!(pipeline[1].stdout_to_pipe, Some(1));
-        
-        // Last stage: stdin from pipe 1, stdout to terminal
-        assert_eq!(pipeline[2].stdin_from_pipe, Some(1));
-        assert_eq!(pipeline[2].stdout_to_pipe, None);
-    }
+    fn test_socketpair_empty_read() {
+        let pair_id = create_socketpair().expect("Failed to create socketpair");
 
-    // =========================================================================
-    // Edge Cases
-    // =========================================================================
+        // No data written yet
+        assert!(!socketpair_has_data(pair_id, 0).unwrap());
+        assert!(!socketpair_has_data(pair_id, 1).unwrap());
 
-    #[test]
-    fn test_pipe_write_to_self() {
-        // Writing to a pipe in the same process (no readers blocked)
-        // should eventually deadlock if pipe is full and process blocks
-        
-        const PIPE_SIZE: usize = 4096;
-        
-        fn detect_self_pipe_deadlock(write_size: usize, is_blocking: bool) -> bool {
-            if write_size > PIPE_SIZE && is_blocking {
-                // Would deadlock: process blocks on full pipe, no one to read
-                true
-            } else {
-                false
-            }
-        }
-        
-        assert!(detect_self_pipe_deadlock(5000, true));
-        assert!(!detect_self_pipe_deadlock(5000, false)); // Non-blocking returns EAGAIN
-        assert!(!detect_self_pipe_deadlock(1000, true)); // Small write succeeds
-    }
-
-    #[test]
-    fn test_pipe_empty_read_eof() {
-        let mut pair = Socketpair::new();
-        
-        // Close writer
-        pair.close(0);
-        
-        // Read from end 1 should get EOF (0 bytes)
-        // Note: In our simulation, reading from a closed peer's buffer returns 0 bytes
+        // Reading from empty buffer returns 0 bytes
         let mut buf = [0u8; 10];
-        let result = pair.read_to(1, &mut buf);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 0); // EOF
+        let read = socketpair_read(pair_id, 0, &mut buf).expect("Read failed");
+        assert_eq!(read, 0);
+
+        // Cleanup
+        let _ = close_socketpair_end(pair_id, 0);
+        let _ = close_socketpair_end(pair_id, 1);
+    }
+
+    #[test]
+    fn test_socketpair_concurrent_usage() {
+        let pair_id = create_socketpair().expect("Failed to create socketpair");
+
+        // Write from both ends in quick succession
+        socketpair_write(pair_id, 0, b"ping").expect("Ping failed");
+        socketpair_write(pair_id, 1, b"pong").expect("Pong failed");
+
+        let mut buf = [0u8; 10];
+
+        // End 0 receives "pong"
+        let read = socketpair_read(pair_id, 0, &mut buf).expect("Read 0 failed");
+        assert_eq!(&buf[..read], b"pong");
+
+        // End 1 receives "ping"
+        let read = socketpair_read(pair_id, 1, &mut buf).expect("Read 1 failed");
+        assert_eq!(&buf[..read], b"ping");
+
+        // Cleanup
+        let _ = close_socketpair_end(pair_id, 0);
+        let _ = close_socketpair_end(pair_id, 1);
+    }
+
+    #[test]
+    fn test_socketpair_invalid_id() {
+        // Test with invalid socketpair ID
+        let invalid_id = 9999;
+
+        let result = socketpair_write(invalid_id, 0, b"test");
+        assert!(result.is_err());
+
+        let mut buf = [0u8; 10];
+        let result = socketpair_read(invalid_id, 0, &mut buf);
+        assert!(result.is_err());
+
+        let result = socketpair_has_data(invalid_id, 0);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_multiple_socketpairs() {
+        // Create multiple socketpairs
+        let pair1 = create_socketpair().expect("Failed to create pair 1");
+        let pair2 = create_socketpair().expect("Failed to create pair 2");
+
+        // Write different data to each
+        socketpair_write(pair1, 0, b"pair1").expect("Write to pair1 failed");
+        socketpair_write(pair2, 0, b"pair2").expect("Write to pair2 failed");
+
+        let mut buf = [0u8; 10];
+
+        // Verify data is isolated between pairs
+        let read = socketpair_read(pair1, 1, &mut buf).expect("Read pair1 failed");
+        assert_eq!(&buf[..read], b"pair1");
+
+        let read = socketpair_read(pair2, 1, &mut buf).expect("Read pair2 failed");
+        assert_eq!(&buf[..read], b"pair2");
+
+        // Cleanup
+        let _ = close_socketpair_end(pair1, 0);
+        let _ = close_socketpair_end(pair1, 1);
+        let _ = close_socketpair_end(pair2, 0);
+        let _ = close_socketpair_end(pair2, 1);
+    }
+
+    #[test]
+    fn test_socketpair_binary_data() {
+        let pair_id = create_socketpair().expect("Failed to create socketpair");
+
+        // Write binary data including null bytes
+        let binary_data: [u8; 10] = [0x00, 0xFF, 0x01, 0xFE, 0x02, 0xFD, 0x03, 0xFC, 0x04, 0xFB];
+        socketpair_write(pair_id, 0, &binary_data).expect("Binary write failed");
+
+        // Read and verify
+        let mut buf = [0u8; 10];
+        let read = socketpair_read(pair_id, 1, &mut buf).expect("Binary read failed");
+        assert_eq!(read, 10);
+        assert_eq!(buf, binary_data);
+
+        // Cleanup
+        let _ = close_socketpair_end(pair_id, 0);
+        let _ = close_socketpair_end(pair_id, 1);
+    }
+
+    #[test]
+    fn test_socketpair_echo_pattern() {
+        // Common IPC pattern: send request, receive response
+        let pair_id = create_socketpair().expect("Failed to create socketpair");
+
+        // Process A (end 0) sends request
+        socketpair_write(pair_id, 0, b"REQUEST").expect("Request failed");
+
+        // Process B (end 1) receives and responds
+        let mut buf = [0u8; 16];
+        let read = socketpair_read(pair_id, 1, &mut buf).expect("Read request failed");
+        assert_eq!(&buf[..read], b"REQUEST");
+
+        socketpair_write(pair_id, 1, b"RESPONSE").expect("Response failed");
+
+        // Process A receives response
+        let read = socketpair_read(pair_id, 0, &mut buf).expect("Read response failed");
+        assert_eq!(&buf[..read], b"RESPONSE");
+
+        // Cleanup
+        let _ = close_socketpair_end(pair_id, 0);
+        let _ = close_socketpair_end(pair_id, 1);
     }
 }

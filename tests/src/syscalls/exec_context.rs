@@ -124,7 +124,7 @@ mod tests {
         let entry1 = proc.exec_entry;
         let stack1 = proc.exec_stack;
 
-        // Simulating preemption: with per-process storage,
+        // After preemption: with per-process storage,
         // the context remains in the Process struct
 
         // After preemption, we can still access it
@@ -164,7 +164,7 @@ mod tests {
 
     #[test]
     fn test_login_to_shell_scenario_fixed() {
-        // Simulating the exact scenario that was broken:
+        // Reproducing the exact scenario that was broken:
         // login calls execve("/bin/sh"), gets preempted, shell never starts
 
         let mut login = make_test_process(5);

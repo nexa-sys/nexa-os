@@ -79,7 +79,7 @@ fn test_thread_group_membership() {
 
 #[test]
 fn test_clone_thread_inherits_tgid() {
-    // Simulate clone() creating a thread
+    // clone() creating a thread: child inherits TGID
     let parent = make_process(100, 1, 100, false);
     
     // Child thread inherits TGID from parent
@@ -91,7 +91,7 @@ fn test_clone_thread_inherits_tgid() {
 
 #[test]
 fn test_fork_creates_new_tgid() {
-    // Simulate fork() creating a new process
+    // fork() creating a new process: child gets new TGID
     let parent = make_process(100, 1, 100, false);
     
     // Forked child gets new TGID (== PID)
@@ -200,8 +200,8 @@ fn test_main_thread_exit_terminates_group() {
     main.process.state = ProcessState::Zombie;
     main.process.exit_code = 42;
     
-    // In real implementation, terminate_thread_group() would set all to Zombie
-    // Here we simulate:
+    // terminate_thread_group() sets all to Zombie
+    // Set thread states to match:
     thread1.process.state = ProcessState::Zombie;
     thread1.process.exit_code = 42;
     thread2.process.state = ProcessState::Zombie;
@@ -252,7 +252,7 @@ fn test_threads_can_run_on_different_cpus() {
     let mut main = make_process(100, 1, 100, false);
     let mut thread1 = make_process(101, 1, 100, true);
     
-    // Simulate running on different CPUs
+    // Running on different CPUs
     main.last_cpu = 0;
     main.process.state = ProcessState::Running;
     
@@ -325,7 +325,7 @@ fn test_threads_independent_time_tracking() {
     let mut main = make_process(100, 1, 100, false);
     let mut thread1 = make_process(101, 1, 100, true);
     
-    // Simulate different CPU usage
+    // Different CPU usage
     main.total_time = 1000;
     main.cpu_burst_count = 10;
     

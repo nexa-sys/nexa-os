@@ -628,7 +628,7 @@ fn test_cross_cpu_enqueue_race() {
     use std::sync::{Arc, Barrier, atomic::{AtomicU64, Ordering}};
     use std::thread;
     
-    // Simulate multiple CPUs trying to enqueue to the same target CPU
+    // Multiple CPUs trying to enqueue to the same target CPU
     let target_cpu = Arc::new(PerCpuSchedData::new(0));
     let barrier = Arc::new(Barrier::new(4));
     let success_count = Arc::new(AtomicU64::new(0));
@@ -721,7 +721,7 @@ fn test_realistic_scheduling_scenario() {
     let stop_flag = Arc::new(AtomicBool::new(false));
     let mut handles = vec![];
     
-    // Simulate ticker (updates load average)
+    // Ticker (updates load average)
     {
         let data = Arc::clone(&data);
         let stop = Arc::clone(&stop_flag);
@@ -734,7 +734,7 @@ fn test_realistic_scheduling_scenario() {
         }));
     }
     
-    // Simulate process arrivals
+    // Process arrivals
     {
         let data = Arc::clone(&data);
         let stop = Arc::clone(&stop_flag);
@@ -752,7 +752,7 @@ fn test_realistic_scheduling_scenario() {
         }));
     }
     
-    // Simulate scheduler
+    // Scheduler
     {
         let data = Arc::clone(&data);
         let stop = Arc::clone(&stop_flag);
@@ -763,7 +763,7 @@ fn test_realistic_scheduling_scenario() {
                     rq.set_current(Some(entry.pid));
                     drop(rq);
                     
-                    // Simulate running
+                    // Running
                     thread::sleep(Duration::from_micros(100));
                     
                     // Context switch

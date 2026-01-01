@@ -201,7 +201,7 @@ fn set_lag(pid: Pid, lag: i64) {
 
 /// TEST: Race condition must not cause process to get stuck
 ///
-/// Simulates: wake arrives BEFORE sleep, process then sleeps and is stuck forever.
+/// Tests wake arriving BEFORE sleep: process sleeps and is stuck forever.
 /// FAILS if bug exists (process stuck in Sleeping).
 #[test]
 #[serial]
@@ -248,7 +248,7 @@ fn test_wake_ready_prevents_sleep() {
     let pid = next_pid();
     add_process(pid, ProcessState::Ready);
     
-    // Wake on Ready (simulating race)
+    // Wake on Ready (race condition scenario)
     wake_process(pid);
     
     // Try to sleep
@@ -436,7 +436,7 @@ fn test_woken_vruntime_allows_scheduling() {
 
 /// TEST: Exact keyboard read race sequence
 ///
-/// Simulates read_raw_for_tty flow with interrupt during sleep prep.
+/// Tests read_raw_for_tty flow with interrupt during sleep prep.
 /// FAILS if shell gets stuck.
 #[test]
 #[serial]
@@ -444,8 +444,8 @@ fn test_keyboard_read_race_sequence() {
     let shell_pid = next_pid();
     add_process(shell_pid, ProcessState::Ready);
     
-    // Simulate read_raw_for_tty:
-    // 1. add_waiter(shell_pid) - registered (simulated)
+    // read_raw_for_tty sequence with race condition:
+    // 1. add_waiter(shell_pid) - registered (waiter mock not used, process is Ready)
     // 2. INTERRUPT: wake_all_waiters runs
     //    - removes shell from waiter list
     //    - calls wake_process(shell_pid)

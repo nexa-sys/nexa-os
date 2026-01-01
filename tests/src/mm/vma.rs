@@ -214,7 +214,7 @@ mod tests {
     }
 
     // =========================================================================
-    // VMA Range Tests (Simulated)
+    // VMA Range Tests
     // =========================================================================
 
     #[derive(Debug, Clone, Copy)]
@@ -341,7 +341,7 @@ mod tests {
 
     #[test]
     fn test_mmap_region_finding() {
-        // Simulate finding a free region in address space
+        // Finding a free region in address space
         struct AddressSpace {
             vmas: Vec<VMARange>,
         }

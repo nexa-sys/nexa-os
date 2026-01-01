@@ -308,7 +308,7 @@ mod tests {
         let mut vruntime_2 = 0u64;
         let time_quantum = 1_000_000u64; // 1ms
         
-        // Simulate 100 scheduling rounds
+        // 100 scheduling rounds
         for round in 0..100 {
             if round % 2 == 0 {
                 vruntime_1 += calc_vruntime_delta(time_quantum, weight);
@@ -423,7 +423,7 @@ mod tests {
         
         let mut selections = [0u32; 2];
         
-        // Simulate many scheduling rounds
+        // Many scheduling rounds
         for _ in 0..1000 {
             // Simplified selection: lowest vruntime wins
             let selected_idx = if processes[0].vruntime <= processes[1].vruntime { 0 } else { 1 };

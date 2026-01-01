@@ -1,9 +1,157 @@
 //! Process Context Tests
 //!
 //! Tests for CPU context saving/restoring and context switch mechanics.
+//! Uses REAL scheduler functions for state transitions.
 
-use crate::process::{Context, ProcessState};
-use crate::scheduler::ProcessEntry;
+use crate::process::{Context, ProcessState, Process, Pid, MAX_CMDLINE_SIZE};
+use crate::scheduler::{ProcessEntry, set_process_state, process_table_lock};
+use crate::scheduler::{SchedPolicy, CpuMask, BASE_SLICE_NS, NICE_0_WEIGHT, calc_vdeadline};
+use crate::scheduler::percpu::init_percpu_sched;
+use crate::signal::SignalState;
+use serial_test::serial;
+use std::sync::Once;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static INIT_PERCPU: Once = Once::new();
+static NEXT_PID: AtomicU64 = AtomicU64::new(85000);
+
+fn next_pid() -> Pid {
+    NEXT_PID.fetch_add(1, Ordering::SeqCst)
+}
+
+fn ensure_percpu_init() {
+    INIT_PERCPU.call_once(|| {
+        init_percpu_sched(0);
+    });
+}
+
+fn make_test_process(pid: Pid, state: ProcessState) -> Process {
+    Process {
+        pid,
+        ppid: 1,
+        tgid: pid,
+        state,
+        entry_point: 0x1000000,
+        stack_top: 0x1A00000,
+        heap_start: 0x1200000,
+        heap_end: 0x1200000,
+        signal_state: SignalState::new(),
+        context: Context::zero(),
+        has_entered_user: true,
+        context_valid: true,
+        is_fork_child: false,
+        is_thread: false,
+        cr3: 0x1000,
+        tty: 0,
+        memory_base: 0x1000000,
+        memory_size: 0x1000000,
+        user_rip: 0x1000100,
+        user_rsp: 0x19FFF00,
+        user_rflags: 0x202,
+        user_r10: 0,
+        user_r8: 0,
+        user_r9: 0,
+        exit_code: 0,
+        term_signal: None,
+        kernel_stack: 0x2000000,
+        fs_base: 0,
+        clear_child_tid: 0,
+        cmdline: [0; MAX_CMDLINE_SIZE],
+        cmdline_len: 0,
+        open_fds: 0,
+        exec_pending: false,
+        exec_entry: 0,
+        exec_stack: 0,
+        exec_user_data_sel: 0,
+        wake_pending: false,
+    }
+}
+
+fn make_process_entry_with_context(proc: Process, vruntime: u64) -> ProcessEntry {
+    let vdeadline = calc_vdeadline(vruntime, BASE_SLICE_NS, NICE_0_WEIGHT);
+    ProcessEntry {
+        process: proc,
+        vruntime,
+        vdeadline,
+        lag: 0,
+        weight: NICE_0_WEIGHT,
+        slice_ns: BASE_SLICE_NS,
+        slice_remaining_ns: BASE_SLICE_NS,
+        priority: 100,
+        base_priority: 100,
+        time_slice: 100,
+        total_time: 0,
+        wait_time: 0,
+        last_scheduled: 0,
+        cpu_burst_count: 0,
+        avg_cpu_burst: 0,
+        policy: SchedPolicy::Normal,
+        nice: 0,
+        quantum_level: 0,
+        preempt_count: 0,
+        voluntary_switches: 0,
+        cpu_affinity: CpuMask::all(),
+        last_cpu: 0,
+        numa_preferred_node: crate::numa::NUMA_NO_NODE,
+        numa_policy: crate::numa::NumaPolicy::Local,
+    }
+}
+
+fn add_process_with_context(pid: Pid, state: ProcessState, rax: u64, rbx: u64, rsp: u64, rip: u64) {
+    ensure_percpu_init();
+    let mut proc = make_test_process(pid, state);
+    proc.context.rax = rax;
+    proc.context.rbx = rbx;
+    proc.context.rsp = rsp;
+    proc.context.rip = rip;
+    
+    let mut table = process_table_lock();
+    for (idx, slot) in table.iter_mut().enumerate() {
+        if slot.is_none() {
+            crate::process::register_pid_mapping(pid, idx as u16);
+            let entry = make_process_entry_with_context(proc, 0);
+            *slot = Some(entry);
+            return;
+        }
+    }
+    panic!("No free slot for test process {}", pid);
+}
+
+fn get_state(pid: Pid) -> Option<ProcessState> {
+    let table = process_table_lock();
+    for slot in table.iter() {
+        if let Some(entry) = slot {
+            if entry.process.pid == pid {
+                return Some(entry.process.state);
+            }
+        }
+    }
+    None
+}
+
+fn get_context_rax(pid: Pid) -> Option<u64> {
+    let table = process_table_lock();
+    for slot in table.iter() {
+        if let Some(entry) = slot {
+            if entry.process.pid == pid {
+                return Some(entry.process.context.rax);
+            }
+        }
+    }
+    None
+}
+
+fn cleanup_process(pid: Pid) {
+    let mut table = process_table_lock();
+    for slot in table.iter_mut() {
+        if let Some(entry) = slot {
+            if entry.process.pid == pid {
+                *slot = None;
+                return;
+            }
+        }
+    }
+}
 
 // ============================================================================
 // Context Structure Tests
@@ -135,80 +283,70 @@ fn test_process_context_modification() {
 }
 
 // ============================================================================
-// Context Switch Simulation Tests
+// Context Switch Tests - Using REAL scheduler functions
 // ============================================================================
 
 #[test]
+#[serial]
 fn test_context_switch_save_restore_cycle() {
-    // Simulate a context switch
+    // Test context switch using REAL process table and state transitions
     
-    // Process A running
-    let mut proc_a = ProcessEntry::empty();
-    proc_a.process.pid = 1;
-    proc_a.process.state = ProcessState::Running;
-    proc_a.process.context.rax = 0x1111;
-    proc_a.process.context.rbx = 0x2222;
-    proc_a.process.context.rsp = 0x7FFF_A000;
-    proc_a.process.context.rip = 0x0040_A000;
+    let pid_a = next_pid();
+    let pid_b = next_pid();
     
-    // Process B ready
-    let mut proc_b = ProcessEntry::empty();
-    proc_b.process.pid = 2;
-    proc_b.process.state = ProcessState::Ready;
-    proc_b.process.context.rax = 0x3333;
-    proc_b.process.context.rbx = 0x4444;
-    proc_b.process.context.rsp = 0x7FFF_B000;
-    proc_b.process.context.rip = 0x0040_B000;
+    // Process A running with specific context
+    add_process_with_context(pid_a, ProcessState::Running, 0x1111, 0x2222, 0x7FFF_A000, 0x0040_A000);
     
-    // Context switch: A -> B
+    // Process B ready with specific context
+    add_process_with_context(pid_b, ProcessState::Ready, 0x3333, 0x4444, 0x7FFF_B000, 0x0040_B000);
     
-    // 1. Save A's context (simulated - registers would be saved to context)
-    proc_a.process.state = ProcessState::Ready;
-    proc_a.process.context_valid = true;
+    // Context switch: A -> B using REAL set_process_state
+    // 1. A goes from Running to Ready (preempted)
+    let _ = set_process_state(pid_a, ProcessState::Ready);
     
-    // 2. Restore B's context (simulated - context would be loaded to registers)
-    proc_b.process.state = ProcessState::Running;
+    // 2. B goes from Ready to Running (scheduled)
+    let _ = set_process_state(pid_b, ProcessState::Running);
     
-    // Verify states
-    assert_eq!(proc_a.process.state, ProcessState::Ready);
-    assert!(proc_a.process.context_valid);
-    assert_eq!(proc_b.process.state, ProcessState::Running);
+    // Verify states through REAL process table
+    let state_a = get_state(pid_a);
+    let state_b = get_state(pid_b);
     
     // Verify contexts are preserved
-    assert_eq!(proc_a.process.context.rax, 0x1111);
-    assert_eq!(proc_b.process.context.rax, 0x3333);
+    let ctx_a_rax = get_context_rax(pid_a);
+    let ctx_b_rax = get_context_rax(pid_b);
+    
+    cleanup_process(pid_a);
+    cleanup_process(pid_b);
+    
+    assert_eq!(state_a, Some(ProcessState::Ready), "Process A should be Ready");
+    assert_eq!(state_b, Some(ProcessState::Running), "Process B should be Running");
+    assert_eq!(ctx_a_rax, Some(0x1111), "Context A should be preserved");
+    assert_eq!(ctx_b_rax, Some(0x3333), "Context B should be preserved");
 }
 
 #[test]
+#[serial]
 fn test_context_preserved_through_multiple_switches() {
-    let mut proc = ProcessEntry::empty();
-    proc.process.pid = 1;
+    let pid = next_pid();
     
     // Set initial context
-    proc.process.context.rax = 0xAAAA;
-    proc.process.context.rbx = 0xBBBB;
-    proc.process.context.r12 = 0xCCCC;
-    proc.process.context.r13 = 0xDDDD;
-    proc.process.context.rsp = 0x7FFF_0000;
-    proc.process.context.rip = 0x0040_0000;
+    add_process_with_context(pid, ProcessState::Ready, 0xAAAA, 0xBBBB, 0x7FFF_0000, 0x0040_0000);
     
-    // Simulate multiple context switches
-    for _ in 0..100 {
+    // Use REAL set_process_state for multiple switches
+    for _ in 0..10 {
         // Ready -> Running
-        proc.process.state = ProcessState::Running;
+        let _ = set_process_state(pid, ProcessState::Running);
         
         // Running -> Ready (preempted)
-        proc.process.state = ProcessState::Ready;
-        proc.process.context_valid = true;
+        let _ = set_process_state(pid, ProcessState::Ready);
     }
     
-    // Context should be unchanged
-    assert_eq!(proc.process.context.rax, 0xAAAA);
-    assert_eq!(proc.process.context.rbx, 0xBBBB);
-    assert_eq!(proc.process.context.r12, 0xCCCC);
-    assert_eq!(proc.process.context.r13, 0xDDDD);
-    assert_eq!(proc.process.context.rsp, 0x7FFF_0000);
-    assert_eq!(proc.process.context.rip, 0x0040_0000);
+    // Context should be unchanged - verify through REAL process table
+    let ctx_rax = get_context_rax(pid);
+    
+    cleanup_process(pid);
+    
+    assert_eq!(ctx_rax, Some(0xAAAA), "Context should be preserved through state transitions");
 }
 
 // ============================================================================

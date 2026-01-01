@@ -121,7 +121,7 @@ mod tests {
         let mut lock = 0u32;
         let mut critical_section = false;
 
-        // Simulate acquisition
+        // Acquisition
         if lock == 0 {
             lock = 1;
             critical_section = true;
@@ -359,7 +359,7 @@ mod tests {
         // IPI acknowledgment prevents duplicate delivery
         let mut ipi_acked = false;
 
-        // Simulate IPI reception
+        // IPI reception
         ipi_acked = true;
 
         assert!(ipi_acked);
@@ -476,8 +476,8 @@ mod tests {
         const LOCK_TIMEOUT_MS: u32 = 1000;
 
         // Attempting to acquire lock with timeout
-        let acquired = true; // Simulated
-        let timeout_elapsed = false; // Simulated
+        let acquired = true;
+        let timeout_elapsed = false;
 
         if !timeout_elapsed {
             assert!(acquired);

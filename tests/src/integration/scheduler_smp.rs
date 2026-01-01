@@ -203,7 +203,7 @@ fn test_scheduler_load_imbalance_detection() {
 
 #[test]
 fn test_scheduler_migration_concept() {
-    // Simulate process migration
+    // Test process migration between CPUs
     let cpu0 = PerCpuSchedData::new(0);
     let cpu1 = PerCpuSchedData::new(1);
     
@@ -249,7 +249,7 @@ fn test_scheduler_affinity_enforcement() {
     entry.cpu_affinity.set(0);
     entry.cpu_affinity.set(2);
     
-    // Simulate scheduling decision on CPU 1
+    // Scheduling decision on CPU 1
     let target_cpu = 1usize;
     let can_schedule = entry.cpu_affinity.is_set(target_cpu);
     assert!(!can_schedule, "Should not schedule on CPU 1 (not in affinity)");
@@ -274,7 +274,7 @@ fn test_scheduler_affinity_migration_blocked() {
     // Add to CPU 0
     cpu0.run_queue.lock().enqueue(entry.clone()).unwrap();
     
-    // Simulate affinity check before migration
+    // Affinity check before migration
     let mut affinity = CpuMask::empty();
     affinity.set(0); // Only CPU 0
     
@@ -298,7 +298,7 @@ fn test_scheduler_need_resched_flag() {
         assert!(!rq.check_need_resched());
     }
     
-    // Set flag (simulating IPI or wake-up)
+    // Set flag (IPI or wake-up notification)
     {
         let rq = cpu0.run_queue.lock();
         rq.set_need_resched(true);

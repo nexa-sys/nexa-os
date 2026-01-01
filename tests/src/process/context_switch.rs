@@ -98,7 +98,7 @@ mod tests {
     // Register Preservation Tests
     // =========================================================================
 
-    /// Simulates context save/restore to verify all fields are preserved
+    /// Context save/restore helper to verify all fields are preserved
     struct ContextPreserver {
         saved: Option<Context>,
     }
@@ -222,7 +222,7 @@ mod tests {
         // Syscall arguments use specific registers
         let mut ctx = Context::zero();
         
-        // Simulate setting up a syscall
+        // Set up a syscall
         ctx.rax = 1; // syscall number (write)
         ctx.rdi = 1; // arg1 (fd)
         ctx.rsi = 0x400000; // arg2 (buf)

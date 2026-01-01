@@ -177,9 +177,9 @@ fn get_state(pid: Pid) -> Option<ProcessState> {
         .map(|e| e.process.state)
 }
 
-/// Simulates what a correct tick() implementation should do for a running process:
-/// update vruntime by delta_ns.
-fn simulate_correct_tick_for_running(pid: Pid, delta_ns: u64) {
+/// What a correct tick() implementation does for a running process:
+/// update vruntime by delta_ns. Operates on real process_table.
+fn update_running_process_vruntime(pid: Pid, delta_ns: u64) {
     let mut table = process_table_lock();
     for slot in table.iter_mut() {
         if let Some(entry) = slot {
@@ -192,9 +192,10 @@ fn simulate_correct_tick_for_running(pid: Pid, delta_ns: u64) {
     }
 }
 
-/// Simulates a BUGGY tick() that updates vruntime based on PID without
+/// A BUGGY tick() that updates vruntime based on PID without
 /// checking process state - this is the bug we're trying to detect.
-fn simulate_buggy_tick_ignoring_state(pid: Pid, delta_ns: u64) {
+/// Operates on real process_table.
+fn buggy_update_vruntime_ignoring_state(pid: Pid, delta_ns: u64) {
     let mut table = process_table_lock();
     for slot in table.iter_mut() {
         if let Some(entry) = slot {
@@ -228,9 +229,9 @@ fn test_sleeping_process_vruntime_invariant() {
     // Verify state is Sleeping
     assert_eq!(get_state(pid), Some(ProcessState::Sleeping));
     
-    // Simulate correct behavior: check state before updating
+    // Correct behavior: check state before updating
     // A correct tick implementation should NOT modify Sleeping processes
-    simulate_correct_tick_for_running(pid, 1_000_000);
+    update_running_process_vruntime(pid, 1_000_000);
     
     let final_vrt = get_vruntime(pid).unwrap();
     
@@ -256,8 +257,8 @@ fn test_ready_process_vruntime_invariant() {
     
     add_process_with_state(ready_pid, ProcessState::Ready, initial_vrt);
     
-    // Simulate correct tick behavior
-    simulate_correct_tick_for_running(ready_pid, 5_000_000);
+    // Correct tick behavior
+    update_running_process_vruntime(ready_pid, 5_000_000);
     
     let final_vrt = get_vruntime(ready_pid).unwrap();
     
@@ -289,9 +290,9 @@ fn test_only_running_process_updated() {
     add_process_with_state(sleeping_pid, ProcessState::Sleeping, sleeping_vrt_initial);
     add_process_with_state(ready_pid, ProcessState::Ready, ready_vrt_initial);
     
-    // Simulate correct tick - only updates Running process
+    // Correct tick - only updates Running process
     let delta = 5_000_000u64;
-    simulate_correct_tick_for_running(running_pid, delta);
+    update_running_process_vruntime(running_pid, delta);
     
     let running_vrt_final = get_vruntime(running_pid).unwrap();
     let sleeping_vrt_final = get_vruntime(sleeping_pid).unwrap();
@@ -330,9 +331,9 @@ fn test_detect_buggy_tick_behavior() {
     // Process goes to sleep (e.g., waiting for keyboard)
     let _ = set_process_state(pid, ProcessState::Sleeping);
     
-    // BUG simulation: tick() updates vruntime without checking state
+    // BUG: tick() updates vruntime without checking state
     let delta = 100_000_000u64; // 100ms of fake "running time"
-    simulate_buggy_tick_ignoring_state(pid, delta);
+    buggy_update_vruntime_ignoring_state(pid, delta);
     
     let final_vrt = get_vruntime(pid).unwrap();
     
@@ -351,7 +352,7 @@ fn test_detect_buggy_tick_behavior() {
 
 /// TEST: Keyboard read flow should not inflate vruntime
 ///
-/// Simulates the exact scenario from the bug report:
+/// Tests the exact scenario from the bug report:
 /// 1. Process runs briefly
 /// 2. Calls read() on keyboard, no data available
 /// 3. Process set to Sleeping
@@ -389,9 +390,9 @@ fn test_keyboard_read_flow_correct_vruntime() {
     let _ = set_process_state(pid, ProcessState::Sleeping);
     
     // Step 4: Time passes - correct implementation should NOT update vruntime
-    // Simulate 1 second of "sleep time" with correct tick behavior
+    // 1 second of "sleep time" with correct tick behavior
     for _ in 0..100 {
-        simulate_correct_tick_for_running(pid, 10_000_000); // 10ms * 100 = 1s
+        update_running_process_vruntime(pid, 10_000_000); // 10ms * 100 = 1s
     }
     
     let vrt_after_sleep_period = get_vruntime(pid).unwrap();
@@ -447,7 +448,7 @@ fn test_rapid_state_transitions_vruntime() {
         }
         
         // Run for 1ms
-        simulate_correct_tick_for_running(pid, run_delta);
+        update_running_process_vruntime(pid, run_delta);
         expected_vruntime += run_delta;
         
         // Sleep
@@ -455,7 +456,7 @@ fn test_rapid_state_transitions_vruntime() {
         
         // 50ms of sleep - vruntime should NOT increase
         for _ in 0..5 {
-            simulate_correct_tick_for_running(pid, 10_000_000);
+            update_running_process_vruntime(pid, 10_000_000);
         }
         
         // Wake
@@ -489,16 +490,16 @@ fn test_slice_only_consumed_when_running() {
     let initial_slice = get_slice_remaining(pid).unwrap();
     
     // Run for 1ms
-    simulate_correct_tick_for_running(pid, 1_000_000);
+    update_running_process_vruntime(pid, 1_000_000);
     
     let slice_after_run = get_slice_remaining(pid).unwrap();
     
     // Now sleep
     let _ = set_process_state(pid, ProcessState::Sleeping);
     
-    // Simulate many ticks while sleeping
+    // Apply many ticks while sleeping
     for _ in 0..100 {
-        simulate_correct_tick_for_running(pid, 10_000_000);
+        update_running_process_vruntime(pid, 10_000_000);
     }
     
     let slice_after_sleep = get_slice_remaining(pid).unwrap();

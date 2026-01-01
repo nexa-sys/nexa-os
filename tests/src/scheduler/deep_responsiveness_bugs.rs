@@ -233,7 +233,7 @@ mod tests {
             let _ = set_process_state(pid, ProcessState::Ready);
             set_wake_pending(pid, false);
 
-            // Simulate: wake arrives
+            // Wake arrives
             wake_process(pid);
 
             // Timer tick happens (might modify scheduling state)
@@ -270,8 +270,7 @@ mod tests {
         set_wake_pending(pid, true);
 
         // Call schedule - this should not affect wake_pending
-        // Note: In real kernel, do_schedule() is called, but in test we can't
-        // fully simulate context switch. We check the invariant after tick().
+        // Note: In real kernel, do_schedule() is called. We check the invariant after tick().
         let _ = tick(1);
 
         let pending = get_wake_pending(pid);
@@ -300,7 +299,7 @@ mod tests {
         let bg_pid = next_pid();
         add_process_with_vruntime(bg_pid, ProcessState::Running, 10_000_000);
 
-        // Create shell with very high vruntime (simulating old sleeping state)
+        // Create shell with very high vruntime (representing long-sleeping state)
         let shell_pid = next_pid();
         add_process_with_vruntime(shell_pid, ProcessState::Sleeping, 1_000_000_000);
 
@@ -339,7 +338,7 @@ mod tests {
         let pid = next_pid();
         add_process(pid, ProcessState::Sleeping);
 
-        // Simulate multiple wake sources (keyboard, timer, signal)
+        // Multiple wake sources (keyboard, timer, signal)
         let woke1 = wake_process(pid);
         let woke2 = wake_process(pid);
         let woke3 = wake_process(pid);
@@ -529,7 +528,7 @@ mod tests {
         let pid1 = next_pid();
         add_process(pid1, ProcessState::Sleeping);
 
-        // Remove process (simulating exit)
+        // Remove process (exit)
         cleanup_process(pid1);
 
         // Create new process with potentially same slot
@@ -574,7 +573,7 @@ mod tests {
         // Wake - sets need_resched
         wake_process(pid);
 
-        // Simulate timer tick (might try to clear/check flag)
+        // Timer tick (might try to clear/check flag)
         let _ = tick(1);
 
         // Check if need_resched is still accessible
@@ -603,7 +602,7 @@ mod tests {
         let pid = next_pid();
         add_process(pid, ProcessState::Sleeping);
 
-        // Simulate signal delivery (which should call wake_process internally)
+        // Signal delivery (which should call wake_process internally)
         // In real kernel: do_signal() -> wake_process()
         let woke = wake_process(pid);
 

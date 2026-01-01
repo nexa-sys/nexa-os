@@ -113,6 +113,25 @@ pub use types::user_buffer_in_range;
 // Re-export thread-related functions for internal kernel use
 pub use thread::{futex_wake_internal, FUTEX_WAKE};
 
+// Re-export futex constants for testing
+pub use thread::{
+    FUTEX_WAIT, FUTEX_FD, FUTEX_REQUEUE, FUTEX_CMP_REQUEUE,
+    FUTEX_WAKE_OP, FUTEX_LOCK_PI, FUTEX_UNLOCK_PI, FUTEX_TRYLOCK_PI,
+    FUTEX_WAIT_BITSET, FUTEX_WAKE_BITSET,
+    FUTEX_PRIVATE_FLAG, FUTEX_CLOCK_REALTIME, FUTEX_CMD_MASK,
+};
+
+// Re-export clone flags for testing
+pub use thread::{
+    CLONE_VM, CLONE_FS, CLONE_FILES, CLONE_SIGHAND, CLONE_THREAD,
+    CLONE_NEWNS, CLONE_SYSVSEM, CLONE_SETTLS, CLONE_PARENT_SETTID,
+    CLONE_CHILD_CLEARTID, CLONE_DETACHED, CLONE_UNTRACED,
+    CLONE_CHILD_SETTID, CLONE_VFORK,
+};
+
+// Re-export arch_prctl constants for testing
+pub use thread::{ARCH_SET_GS, ARCH_SET_FS, ARCH_GET_FS, ARCH_GET_GS};
+
 /// Main syscall dispatcher
 #[no_mangle]
 pub extern "C" fn syscall_dispatch(

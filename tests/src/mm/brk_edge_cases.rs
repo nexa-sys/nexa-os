@@ -233,7 +233,7 @@ mod tests {
     fn test_brk_expand_shrink_cycle() {
         let mut current = HEAP_BASE;
         
-        // Simulate expand/shrink cycles
+        // Expand/shrink cycles
         for i in 0..10 {
             // Expand
             let expand_to = HEAP_BASE + ((i + 1) as u64 * 0x1000);

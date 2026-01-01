@@ -160,7 +160,7 @@ mod tests {
 
     /// Test: ls hang scenario - shell sleeping, ls running with exhausted slice
     /// 
-    /// This simulates the exact scenario that causes ls to hang:
+    /// This reproduces the exact scenario that causes ls to hang:
     /// - Shell (PID 1) is Sleeping (waiting on wait4)
     /// - ls (PID 2) is Running with exhausted time slice
     /// 

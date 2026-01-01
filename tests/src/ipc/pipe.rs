@@ -260,15 +260,15 @@ mod tests {
         const PIPE_BUF_SIZE: usize = 65536;
         
         // Large writes may be partial
-        fn simulate_write(requested: usize, available: usize) -> usize {
+        fn calc_write_size(requested: usize, available: usize) -> usize {
             requested.min(available)
         }
         
         // Full write when space available
-        assert_eq!(simulate_write(1000, PIPE_BUF_SIZE), 1000);
+        assert_eq!(calc_write_size(1000, PIPE_BUF_SIZE), 1000);
         
         // Partial write when buffer nearly full
-        assert_eq!(simulate_write(1000, 500), 500);
+        assert_eq!(calc_write_size(1000, 500), 500);
     }
 
     // =========================================================================

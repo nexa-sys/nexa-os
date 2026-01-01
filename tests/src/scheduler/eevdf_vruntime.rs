@@ -67,10 +67,10 @@ fn make_rq_entry(pid: u64, vruntime: u64, vdeadline: u64) -> RunQueueEntry {
 
 #[test]
 fn test_vruntime_no_unbounded_growth() {
-    // Simulate a long-running process to ensure vruntime doesn't grow unboundedly
+    // Test long-running process to ensure vruntime doesn't grow unboundedly
     let mut entry = make_test_entry(1, 0);
     
-    // Simulate 1 hour of CPU time (3.6e12 ns)
+    // Run for 1 hour of CPU time (3.6e12 ns)
     let total_runtime_ns: u64 = 3_600_000_000_000;
     let step_ns: u64 = 10_000_000; // 10ms steps
     let steps = total_runtime_ns / step_ns;
@@ -86,7 +86,7 @@ fn test_vruntime_no_unbounded_growth() {
     assert!(entry.vruntime > initial_vruntime);
     assert!(entry.vruntime < u64::MAX / 2, "vruntime should not grow too large");
     
-    eprintln!("vruntime after 1 hour simulation: {} (delta from start: {})", 
+    eprintln!("vruntime after 1 hour: {} (delta from start: {})", 
               entry.vruntime, entry.vruntime - initial_vruntime);
 }
 
@@ -199,10 +199,10 @@ fn test_vdeadline_overflow_protection() {
 fn test_lag_bounded_growth() {
     let mut entry = make_test_entry(1, 0);
     
-    // Simulate waiting for a long time (lag should be bounded)
+    // Long waiting time (lag should be bounded)
     const MAX_LAG: i64 = 100_000_000; // 100ms max as defined in kernel
     
-    // Simulate lag accumulation
+    // Lag accumulation over many iterations
     for _ in 0..10000 {
         entry.lag = entry.lag.saturating_add(100_000); // Add 100us each iteration
         entry.lag = entry.lag.min(MAX_LAG);
@@ -217,7 +217,7 @@ fn test_lag_negative_after_running() {
     let mut entry = make_test_entry(1, 0);
     entry.lag = 50_000_000; // 50ms positive lag (deserves CPU)
     
-    // Simulate running - lag should decrease
+    // Running: lag should decrease
     let runtime_ns = 100_000_000u64; // 100ms
     entry.lag = entry.lag.saturating_sub(runtime_ns as i64);
     
@@ -324,8 +324,8 @@ fn test_concurrent_vruntime_updates() {
 }
 
 #[test]
-fn test_vruntime_update_race_simulation() {
-    // Simulate a race condition scenario where multiple "CPUs" update vruntime
+fn test_vruntime_update_race() {
+    // Race condition scenario: multiple "CPUs" update vruntime concurrently
     let shared_vruntime = Arc::new(AtomicU64::new(0));
     let barrier = Arc::new(Barrier::new(8));
     let mut handles = vec![];
@@ -336,7 +336,7 @@ fn test_vruntime_update_race_simulation() {
         handles.push(thread::spawn(move || {
             barrier.wait();
             for _ in 0..1000 {
-                // Simulate vruntime increment
+                // vruntime increment
                 let delta = 1000u64;
                 vruntime.fetch_add(delta, Ordering::SeqCst);
             }
@@ -383,7 +383,7 @@ fn test_percpu_vruntime_divergence() {
 
 #[test]
 fn test_process_migration_vruntime_adjustment() {
-    // Simulate a process migrating between CPUs with different min_vruntimes
+    // Process migrating between CPUs with different min_vruntimes
     let mut rq0 = PerCpuRunQueue::new(0);
     let mut rq1 = PerCpuRunQueue::new(1);
     
@@ -394,7 +394,7 @@ fn test_process_migration_vruntime_adjustment() {
     // CPU 1 has high vruntime (more advanced)
     rq1.enqueue(make_rq_entry(3, 100_000, 104_000)).unwrap();
     
-    // Simulate migrating PID 2 from CPU 0 to CPU 1
+    // Migrate PID 2 from CPU 0 to CPU 1
     let migrated = rq0.dequeue(2).unwrap();
     
     // When migrating, vruntime should be adjusted to target CPU's min_vruntime
@@ -475,7 +475,7 @@ fn test_extreme_vruntime_values() {
 
 #[test]
 fn test_vruntime_consistency_under_load() {
-    // Simulate heavy scheduling load and verify vruntime consistency
+    // Heavy scheduling load: verify vruntime consistency
     let data = Arc::new(PerCpuSchedData::new(0));
     let barrier = Arc::new(Barrier::new(4));
     let error_count = Arc::new(AtomicU64::new(0));

@@ -254,7 +254,7 @@ fn test_open_fd_count() {
     // Track open FDs
     assert_eq!(entry.process.open_fds, 0);
     
-    // Simulate opening files
+    // Opening files
     entry.process.open_fds = 3; // stdin, stdout, stderr
     assert_eq!(entry.process.open_fds, 3);
 }

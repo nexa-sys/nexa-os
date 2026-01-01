@@ -267,7 +267,7 @@ fn test_eevdf_picks_woken_interactive() {
         login_vdl, dhcp_vdl, login_vrt);
 }
 
-/// TEST: Simulates the exact observed bug scenario
+/// TEST: Reproduces the exact observed bug scenario
 ///
 /// Reproduces: shell vruntime grows to 228M while background is only ~50M
 #[test]
@@ -285,19 +285,19 @@ fn test_reproduce_observed_starvation_bug() {
     add_process_full(dhcp_pid, ProcessState::Sleeping, 4_000_000, 0);
     add_process_full(login_pid, ProcessState::Ready, 4_000_000, 0);
     
-    // Simulate 60 seconds of operation
+    // Run 60 seconds of operation
     for cycle in 0..6 {
         // DHCP wakes up
         wake_process(dhcp_pid);
         
-        // DHCP runs for ~500ms doing network stuff
+        // DHCP runs for ~500ms doing network stuff - use REAL set_process_state
+        set_process_state(dhcp_pid, ProcessState::Running);
         {
             let mut table = process_table_lock();
             for slot in table.iter_mut() {
                 if let Some(entry) = slot {
                     if entry.process.pid == dhcp_pid {
-                        entry.process.state = ProcessState::Running;
-                        // Simulate vruntime increase from running 500ms
+                        // vruntime increase from running 500ms
                         entry.vruntime = entry.vruntime.saturating_add(500_000_000);
                         break;
                     }
@@ -324,7 +324,7 @@ fn test_reproduce_observed_starvation_bug() {
     cleanup_process(dhcp_pid);
     cleanup_process(login_pid);
     
-    eprintln!("After 60s simulation:");
+    eprintln!("After 60s run:");
     eprintln!("  DHCP vruntime: {}", dhcp_vrt);
     eprintln!("  Login vruntime: {}", login_vrt);
     
@@ -362,14 +362,14 @@ fn test_rapid_keystrokes_vruntime_stable() {
     
     // Simulate typing 10 characters rapidly
     for _ in 0..10 {
-        // Shell processes character (very fast, ~1ms)
+        // Shell processes character (very fast, ~1ms) - use REAL set_process_state
+        set_process_state(shell_pid, ProcessState::Running);
         {
             let mut table = process_table_lock();
             for slot in table.iter_mut() {
                 if let Some(entry) = slot {
                     if entry.process.pid == shell_pid {
-                        entry.process.state = ProcessState::Running;
-                        // Simulate vruntime increase from running 1ms
+                        // vruntime increase from running 1ms
                         entry.vruntime = entry.vruntime.saturating_add(1_000_000);
                         break;
                     }
@@ -476,13 +476,13 @@ fn test_long_sleep_not_penalized() {
     add_process_full(worker_pid, ProcessState::Ready, 0, 0);
     add_process_full(timer_pid, ProcessState::Sleeping, 0, 0);
     
-    // Worker runs for 10 seconds
+    // Worker runs for 10 seconds - use REAL set_process_state
+    set_process_state(worker_pid, ProcessState::Running);
     {
         let mut table = process_table_lock();
         for slot in table.iter_mut() {
             if let Some(entry) = slot {
                 if entry.process.pid == worker_pid {
-                    entry.process.state = ProcessState::Running;
                     // Simulate vruntime increase from running 10 seconds
                     entry.vruntime = entry.vruntime.saturating_add(10_000_000_000);
                     break;

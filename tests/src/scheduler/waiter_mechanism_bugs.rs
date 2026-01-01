@@ -167,7 +167,7 @@ mod tests {
     }
 
     // =========================================================================
-    // Simulated Waiter List (mirrors keyboard.rs structure)
+    // Waiter List Helper (mirrors keyboard.rs structure)
     // =========================================================================
 
     const MAX_WAITERS: usize = 8;
@@ -450,10 +450,10 @@ mod tests {
     }
 
     // =========================================================================
-    // Integration: Full read() syscall simulation
+    // Integration: Full read() syscall test
     // =========================================================================
 
-    /// Integration: Simulates complete read() syscall on /dev/tty
+    /// Integration: Tests complete read() syscall on /dev/tty
     ///
     /// This mimics the actual read_raw_for_tty() flow in the kernel.
     #[test]
@@ -463,11 +463,11 @@ mod tests {
         add_process(shell_pid, ProcessState::Running); // Currently running
 
         let mut waiters = MockWaiterList::new();
-        let mut simulated_buffer: Vec<u8> = Vec::new();
+        let mut test_buffer: Vec<u8> = Vec::new();
 
-        // Simulate: read() syscall entry
+        // read() syscall entry
         // 1. Check if data available (none)
-        assert!(simulated_buffer.is_empty());
+        assert!(test_buffer.is_empty());
 
         // 2. Register as waiter
         let _ = waiters.add_waiter(shell_pid);
@@ -480,7 +480,7 @@ mod tests {
         // Between add_waiter() and sleep, interrupt can fire
 
         // 4. Keyboard interrupt fires!
-        simulated_buffer.push(b'a');
+        test_buffer.push(b'a');
         let woken = waiters.wake_all(); // Removes shell, calls wake_process
         assert_eq!(woken.len(), 1);
 
@@ -491,7 +491,7 @@ mod tests {
 
         // Check final state
         let final_state = get_state(shell_pid);
-        let data_available = !simulated_buffer.is_empty();
+        let data_available = !test_buffer.is_empty();
 
         cleanup_process(shell_pid);
 

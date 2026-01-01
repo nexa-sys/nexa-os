@@ -214,7 +214,7 @@ mod tests {
     //
     // This is the CRITICAL bug that causes shell to become unresponsive.
     //
-    // Scenario (read_raw_for_tty):
+    // Race sequence in read_raw_for_tty:
     // 1. Shell calls add_waiter(pid) - still Ready
     // 2. Keyboard interrupt fires
     // 3. wake_all_waiters() -> wake_process(pid) on Ready process
@@ -233,7 +233,7 @@ mod tests {
         let pid = next_pid();
         add_process(pid, ProcessState::Ready);
 
-        // Simulate keyboard interrupt waking a Ready shell
+        // Keyboard interrupt wakes a Ready shell
         wake_process(pid);
 
         let pending = get_wake_pending(pid);
@@ -255,7 +255,7 @@ mod tests {
         let pid = next_pid();
         add_process(pid, ProcessState::Ready);
 
-        // Manually set wake_pending (simulating wake arrived before sleep)
+        // Set wake_pending (wake arrived before sleep scenario)
         set_wake_pending(pid, true);
 
         // Process tries to sleep
@@ -285,7 +285,7 @@ mod tests {
         let pid = next_pid();
         add_process(pid, ProcessState::Ready);
 
-        // Step 1: Shell registered as waiter (simulated)
+        // Step 1: Shell registered as waiter
         // Step 2: Keyboard interrupt - wake_process called on Ready
         wake_process(pid);
 
@@ -544,19 +544,19 @@ mod tests {
     }
 
     // =========================================================================
-    // BUG #9: Concurrent State Changes (SMP Simulation)
+    // BUG #9: Concurrent State Changes (SMP Race)
     //
     // In SMP, different CPUs may call wake and sleep "simultaneously".
     // =========================================================================
 
-    /// Simulated SMP race: wake on CPU1 while sleep on CPU0
+    /// SMP race test: wake on CPU1 while sleep on CPU0
     #[test]
     #[serial]
-    fn smp_concurrent_wake_sleep_invariant() {
+    fn test_smp_concurrent_wake_sleep() {
         let pid = next_pid();
         add_process(pid, ProcessState::Ready);
 
-        // Simulate interleaved operations:
+        // Test interleaved operations:
         // CPU0: decides to sleep, about to call set_process_state
         // CPU1: keyboard interrupt, calls wake_process
 
@@ -643,7 +643,7 @@ mod tests {
         let pid = next_pid();
         add_process(pid, ProcessState::Ready);
 
-        // Simulate signal delivery waking a Ready process
+        // Signal delivery waking a Ready process
         // (Signal handler calls wake_process internally)
         wake_process(pid);
 

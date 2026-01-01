@@ -85,7 +85,10 @@ pub use priority::{
     adjust_process_priority,
     age_process_priorities,
     boost_all_priorities,
+    calc_delta_vruntime,
+    calc_delta_vruntime_fast,
     calc_vdeadline,
+    calc_vdeadline_fast,
     force_reschedule,
     // EEVDF specific exports
     get_eevdf_info,

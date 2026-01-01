@@ -1,27 +1,21 @@
 //! Clone and Thread Creation Edge Case Tests
 //!
-//! Tests for clone() syscall including flag combinations, resource sharing,
-//! and thread group management edge cases.
+//! Tests for clone() syscall using REAL kernel constants.
+//! Tests flag combinations, resource sharing, and thread group management.
 
 #[cfg(test)]
 mod tests {
-    // Clone flags from Linux ABI
-    const CLONE_VM: u64 = 0x00000100;
-    const CLONE_FS: u64 = 0x00000200;
-    const CLONE_FILES: u64 = 0x00000400;
-    const CLONE_SIGHAND: u64 = 0x00000800;
+    // Import REAL kernel clone flags
+    use crate::syscalls::{
+        CLONE_VM, CLONE_FS, CLONE_FILES, CLONE_SIGHAND, CLONE_THREAD,
+        CLONE_NEWNS, CLONE_SYSVSEM, CLONE_SETTLS, CLONE_PARENT_SETTID,
+        CLONE_CHILD_CLEARTID, CLONE_DETACHED, CLONE_UNTRACED,
+        CLONE_CHILD_SETTID, CLONE_VFORK,
+    };
+    
+    // Additional flags from Linux ABI (not in kernel yet)
     const CLONE_PTRACE: u64 = 0x00002000;
-    const CLONE_VFORK: u64 = 0x00004000;
     const CLONE_PARENT: u64 = 0x00008000;
-    const CLONE_THREAD: u64 = 0x00010000;
-    const CLONE_NEWNS: u64 = 0x00020000;
-    const CLONE_SYSVSEM: u64 = 0x00040000;
-    const CLONE_SETTLS: u64 = 0x00080000;
-    const CLONE_PARENT_SETTID: u64 = 0x00100000;
-    const CLONE_CHILD_CLEARTID: u64 = 0x00200000;
-    const CLONE_DETACHED: u64 = 0x00400000;
-    const CLONE_UNTRACED: u64 = 0x00800000;
-    const CLONE_CHILD_SETTID: u64 = 0x01000000;
     const CLONE_NEWCGROUP: u64 = 0x02000000;
     const CLONE_NEWUTS: u64 = 0x04000000;
     const CLONE_NEWIPC: u64 = 0x08000000;
@@ -136,96 +130,254 @@ mod tests {
     }
 
     // =========================================================================
-    // Thread Group Tests
+    // Thread Group Tests - Using REAL process table
     // =========================================================================
 
-    /// Simulates thread group management
-    struct ThreadGroup {
-        tgid: u64,
-        members: Vec<u64>, // thread IDs
-        exit_signal: i32,
+    use crate::process::{Process, ProcessState, Pid, MAX_CMDLINE_SIZE};
+    use crate::scheduler::{ProcessEntry, process_table_lock};
+    use crate::scheduler::{SchedPolicy, CpuMask, BASE_SLICE_NS, NICE_0_WEIGHT, calc_vdeadline};
+    use crate::scheduler::percpu::init_percpu_sched;
+    use crate::signal::SignalState;
+    use serial_test::serial;
+    use std::sync::Once;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static INIT_PERCPU: Once = Once::new();
+    static NEXT_PID: AtomicU64 = AtomicU64::new(90000);
+
+    fn next_pid() -> Pid {
+        NEXT_PID.fetch_add(1, Ordering::SeqCst)
     }
 
-    impl ThreadGroup {
-        fn new(leader_pid: u64, exit_signal: i32) -> Self {
-            Self {
-                tgid: leader_pid,
-                members: vec![leader_pid],
-                exit_signal,
+    fn ensure_percpu_init() {
+        INIT_PERCPU.call_once(|| {
+            init_percpu_sched(0);
+        });
+    }
+
+    fn make_test_process(pid: Pid, tgid: Pid, is_thread: bool) -> Process {
+        Process {
+            pid,
+            ppid: 1,
+            tgid,
+            state: ProcessState::Ready,
+            entry_point: 0x1000000,
+            stack_top: 0x1A00000,
+            heap_start: 0x1200000,
+            heap_end: 0x1200000,
+            signal_state: SignalState::new(),
+            context: crate::process::Context::zero(),
+            has_entered_user: true,
+            context_valid: true,
+            is_fork_child: false,
+            is_thread,
+            cr3: 0x1000,
+            tty: 0,
+            memory_base: 0x1000000,
+            memory_size: 0x1000000,
+            user_rip: 0x1000100,
+            user_rsp: 0x19FFF00,
+            user_rflags: 0x202,
+            user_r10: 0,
+            user_r8: 0,
+            user_r9: 0,
+            exit_code: 0,
+            term_signal: None,
+            kernel_stack: 0x2000000,
+            fs_base: 0,
+            clear_child_tid: 0,
+            cmdline: [0; MAX_CMDLINE_SIZE],
+            cmdline_len: 0,
+            open_fds: 0,
+            exec_pending: false,
+            exec_entry: 0,
+            exec_stack: 0,
+            exec_user_data_sel: 0,
+            wake_pending: false,
+        }
+    }
+
+    fn make_process_entry(proc: Process) -> ProcessEntry {
+        let vdeadline = calc_vdeadline(0, BASE_SLICE_NS, NICE_0_WEIGHT);
+        ProcessEntry {
+            process: proc,
+            vruntime: 0,
+            vdeadline,
+            lag: 0,
+            weight: NICE_0_WEIGHT,
+            slice_ns: BASE_SLICE_NS,
+            slice_remaining_ns: BASE_SLICE_NS,
+            priority: 100,
+            base_priority: 100,
+            time_slice: 100,
+            total_time: 0,
+            wait_time: 0,
+            last_scheduled: 0,
+            cpu_burst_count: 0,
+            avg_cpu_burst: 0,
+            policy: SchedPolicy::Normal,
+            nice: 0,
+            quantum_level: 0,
+            preempt_count: 0,
+            voluntary_switches: 0,
+            cpu_affinity: CpuMask::all(),
+            last_cpu: 0,
+            numa_preferred_node: crate::numa::NUMA_NO_NODE,
+            numa_policy: crate::numa::NumaPolicy::Local,
+        }
+    }
+
+    fn add_thread_to_table(pid: Pid, tgid: Pid, is_thread: bool) {
+        ensure_percpu_init();
+        let mut table = process_table_lock();
+        for (idx, slot) in table.iter_mut().enumerate() {
+            if slot.is_none() {
+                crate::process::register_pid_mapping(pid, idx as u16);
+                let entry = make_process_entry(make_test_process(pid, tgid, is_thread));
+                *slot = Some(entry);
+                return;
             }
         }
+        panic!("No free slot for test process {}", pid);
+    }
 
-        fn add_thread(&mut self, tid: u64) {
-            self.members.push(tid);
-        }
+    fn count_threads_in_group(tgid: Pid) -> usize {
+        let table = process_table_lock();
+        table.iter()
+            .filter_map(|s| s.as_ref())
+            .filter(|e| e.process.tgid == tgid)
+            .count()
+    }
 
-        fn remove_thread(&mut self, tid: u64) -> bool {
-            if let Some(pos) = self.members.iter().position(|&t| t == tid) {
-                self.members.remove(pos);
-                true
-            } else {
-                false
+    fn cleanup_thread_group(tgid: Pid) {
+        let mut table = process_table_lock();
+        for slot in table.iter_mut() {
+            if let Some(entry) = slot {
+                if entry.process.tgid == tgid {
+                    *slot = None;
+                }
             }
-        }
-
-        fn is_leader(&self, tid: u64) -> bool {
-            tid == self.tgid
-        }
-
-        fn member_count(&self) -> usize {
-            self.members.len()
         }
     }
 
     #[test]
+    #[serial]
     fn test_thread_group_creation() {
-        let tg = ThreadGroup::new(1000, 0);
+        let leader_pid = next_pid();
         
-        assert_eq!(tg.tgid, 1000);
-        assert_eq!(tg.member_count(), 1);
-        assert!(tg.is_leader(1000));
+        // Add leader (main thread): tgid == pid, is_thread = false
+        add_thread_to_table(leader_pid, leader_pid, false);
+        
+        let count = count_threads_in_group(leader_pid);
+        
+        // Check leader properties through REAL process table
+        let is_leader = {
+            let table = process_table_lock();
+            table.iter()
+                .filter_map(|s| s.as_ref())
+                .find(|e| e.process.pid == leader_pid)
+                .map(|e| e.process.tgid == e.process.pid && !e.process.is_thread)
+                .unwrap_or(false)
+        };
+        
+        cleanup_thread_group(leader_pid);
+        
+        assert_eq!(count, 1, "Thread group should have 1 member");
+        assert!(is_leader, "Leader should have tgid == pid and is_thread = false");
     }
 
     #[test]
+    #[serial]
     fn test_thread_group_add_threads() {
-        let mut tg = ThreadGroup::new(1000, 0);
+        let leader_pid = next_pid();
+        let thread1_pid = next_pid();
+        let thread2_pid = next_pid();
         
-        tg.add_thread(1001);
-        tg.add_thread(1002);
+        // Add leader
+        add_thread_to_table(leader_pid, leader_pid, false);
         
-        assert_eq!(tg.member_count(), 3);
-        assert!(tg.is_leader(1000));
-        assert!(!tg.is_leader(1001));
+        // Add threads (same tgid as leader, is_thread = true)
+        add_thread_to_table(thread1_pid, leader_pid, true);
+        add_thread_to_table(thread2_pid, leader_pid, true);
+        
+        let count = count_threads_in_group(leader_pid);
+        
+        // Verify thread properties
+        let thread1_correct = {
+            let table = process_table_lock();
+            table.iter()
+                .filter_map(|s| s.as_ref())
+                .find(|e| e.process.pid == thread1_pid)
+                .map(|e| e.process.tgid == leader_pid && e.process.is_thread)
+                .unwrap_or(false)
+        };
+        
+        cleanup_thread_group(leader_pid);
+        
+        assert_eq!(count, 3, "Thread group should have 3 members");
+        assert!(thread1_correct, "Thread should have correct tgid and is_thread flag");
     }
 
     #[test]
+    #[serial]
     fn test_thread_group_remove_thread() {
-        let mut tg = ThreadGroup::new(1000, 0);
-        tg.add_thread(1001);
-        tg.add_thread(1002);
+        let leader_pid = next_pid();
+        let thread1_pid = next_pid();
+        let thread2_pid = next_pid();
         
-        assert!(tg.remove_thread(1001));
-        assert_eq!(tg.member_count(), 2);
+        add_thread_to_table(leader_pid, leader_pid, false);
+        add_thread_to_table(thread1_pid, leader_pid, true);
+        add_thread_to_table(thread2_pid, leader_pid, true);
         
-        // Can't remove same thread twice
-        assert!(!tg.remove_thread(1001));
+        // Remove one thread (exit)
+        {
+            let mut table = process_table_lock();
+            for slot in table.iter_mut() {
+                if let Some(entry) = slot {
+                    if entry.process.pid == thread1_pid {
+                        *slot = None;
+                        break;
+                    }
+                }
+            }
+        }
+        
+        let count = count_threads_in_group(leader_pid);
+        cleanup_thread_group(leader_pid);
+        
+        assert_eq!(count, 2, "Thread group should have 2 members after removal");
     }
 
     #[test]
+    #[serial]
     fn test_thread_group_leader_exit() {
-        // When leader exits, all threads should be notified
-        let mut tg = ThreadGroup::new(1000, 0);
-        tg.add_thread(1001);
-        tg.add_thread(1002);
+        let leader_pid = next_pid();
+        let thread1_pid = next_pid();
+        let thread2_pid = next_pid();
         
-        // Leader exits - group is "defunct" but threads continue until they exit
-        tg.remove_thread(1000);
+        add_thread_to_table(leader_pid, leader_pid, false);
+        add_thread_to_table(thread1_pid, leader_pid, true);
+        add_thread_to_table(thread2_pid, leader_pid, true);
         
-        // Group still has members
-        assert_eq!(tg.member_count(), 2);
+        // Leader exits - in POSIX, remaining threads keep running with same tgid
+        {
+            let mut table = process_table_lock();
+            for slot in table.iter_mut() {
+                if let Some(entry) = slot {
+                    if entry.process.pid == leader_pid {
+                        // Mark as Zombie rather than remove immediately
+                        entry.process.state = ProcessState::Zombie;
+                        break;
+                    }
+                }
+            }
+        }
         
-        // But tgid still points to original leader
-        assert_eq!(tg.tgid, 1000);
+        // Other threads still exist with same tgid
+        let remaining = count_threads_in_group(leader_pid);
+        cleanup_thread_group(leader_pid);
+        
+        assert_eq!(remaining, 3, "All members (including zombie leader) should remain");
     }
 
     // =========================================================================
@@ -368,16 +520,24 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_max_threads_per_process() {
-        // There should be a reasonable limit on threads per process
-        const MAX_THREADS: usize = 1024; // Example limit
+        // Test using REAL process table - limited by MAX_PROCESSES
+        use crate::process::MAX_PROCESSES;
         
-        let mut tg = ThreadGroup::new(1, 0);
+        let leader_pid = next_pid();
+        add_thread_to_table(leader_pid, leader_pid, false);
         
-        for i in 2..=MAX_THREADS as u64 {
-            tg.add_thread(i);
+        // Add threads up to a reasonable test limit (not filling entire table)
+        let test_limit = 10; // Keep test fast
+        for _ in 0..test_limit {
+            let thread_pid = next_pid();
+            add_thread_to_table(thread_pid, leader_pid, true);
         }
         
-        assert_eq!(tg.member_count(), MAX_THREADS);
+        let count = count_threads_in_group(leader_pid);
+        cleanup_thread_group(leader_pid);
+        
+        assert_eq!(count, test_limit + 1, "Should have leader + {} threads", test_limit);
     }
 }

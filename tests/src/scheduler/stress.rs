@@ -547,7 +547,7 @@ fn test_deadline_ordering_after_updates() {
         rq.enqueue(make_rq_entry(i, i as u64 * 1000)).unwrap();
     }
     
-    // Update some entries (simulating vruntime changes)
+    // Update some entries (vruntime changes)
     rq.update_entry(5, 100, 500, true);   // Move PID 5 earlier
     rq.update_entry(0, 10000, 15000, true); // Move PID 0 later
     

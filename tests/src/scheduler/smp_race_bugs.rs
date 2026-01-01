@@ -173,11 +173,11 @@ mod tests {
     // SMP Race: Cross-CPU Wake Before Sleep
     // =========================================================================
 
-    /// SMP BUG TEST: Simulated cross-CPU wake-before-sleep race
+    /// SMP BUG TEST: Cross-CPU wake-before-sleep race using threads
     ///
-    /// This simulates:
-    /// - CPU 0: Shell process, about to sleep for keyboard input
-    /// - CPU 1: Keyboard interrupt handler, calling wake_process
+    /// This creates real race conditions:
+    /// - Thread 0 (main): Shell process, about to sleep for keyboard input
+    /// - Thread 1: Keyboard interrupt handler, calling wake_process
     ///
     /// The race window is between add_waiter() and set_process_state(Sleeping).
     #[test]
@@ -191,18 +191,18 @@ mod tests {
         let lost_wakes = Arc::new(AtomicU64::new(0));
         let lost_wakes_clone = lost_wakes.clone();
 
-        // Simulate CPU 1: Keyboard interrupt handler
+        // Thread 1: Keyboard interrupt handler (represents CPU 1)
         let cpu1 = thread::spawn(move || {
             while !stop_clone.load(Ordering::Relaxed) {
-                // Simulate interrupt: wake the shell
+                // Interrupt: wake the shell
                 wake_process(shell_pid);
                 thread::yield_now();
             }
         });
 
-        // Simulate CPU 0: Shell process trying to read keyboard
+        // CPU 0: Shell process trying to read keyboard
         for _ in 0..500 {
-            // Shell is Ready, simulating "just registered as waiter"
+            // Shell is Ready (just registered as waiter)
             
             // Try to sleep
             let _ = set_process_state(shell_pid, ProcessState::Sleeping);
@@ -245,7 +245,7 @@ mod tests {
 
         let wake_success = Arc::new(AtomicU64::new(0));
         
-        // Spawn 4 threads simulating 4 CPUs all trying to wake same process
+        // Spawn 4 threads (representing 4 CPUs) all trying to wake same process
         let mut handles = vec![];
         for _ in 0..4 {
             let ws = wake_success.clone();
@@ -500,7 +500,7 @@ mod tests {
 
     /// SMP Integration: Realistic keyboard input scenario
     ///
-    /// Simulates the exact scenario that causes shell unresponsiveness:
+    /// Reproduces the exact scenario that causes shell unresponsiveness:
     /// - Shell on CPU 0 waiting for keyboard
     /// - Keyboard interrupt on CPU 1
     /// - DHCP client also running
@@ -518,7 +518,7 @@ mod tests {
         let stop = Arc::new(AtomicBool::new(false));
         let stop_clone = stop.clone();
 
-        // CPU 1: Keyboard interrupt simulation
+        // CPU 1: Keyboard interrupt handler
         let cpu1 = thread::spawn(move || {
             let mut wakes = 0;
             while !stop_clone.load(Ordering::Relaxed) {
@@ -526,7 +526,7 @@ mod tests {
                 wake_process(shell_pid);
                 wakes += 1;
                 
-                // Simulate interrupt rate (~every 10ms for keypress)
+                // Interrupt rate (~every 10ms for keypress)
                 thread::sleep(std::time::Duration::from_micros(100));
             }
             wakes
@@ -565,7 +565,7 @@ mod tests {
                 successful_reads += 1;
             }
             
-            // Simulate shell processing
+            // Shell processing
             thread::yield_now();
         }
 

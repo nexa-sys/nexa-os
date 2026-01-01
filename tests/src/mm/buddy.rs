@@ -187,7 +187,7 @@ mod tests {
             pages_free: 1000,
         };
         
-        // Simulate allocation of 4 pages
+        // Allocation of 4 pages
         stats.allocations += 1;
         stats.pages_allocated += 4;
         stats.pages_free -= 4;
@@ -244,7 +244,7 @@ mod tests {
 
     #[test]
     fn test_fragmentation_scenario() {
-        // Simulate fragmentation: allocate order 0, 2, 0, 2, free middle
+        // Fragmentation: allocate order 0, 2, 0, 2, free middle
         // This creates holes in the free list
         
         let allocations = [(0, "block1"), (2, "block2"), (0, "block3"), (2, "block4")];

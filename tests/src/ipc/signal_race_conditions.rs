@@ -233,7 +233,7 @@ mod tests {
         state.send_signal(SIGINT).unwrap();
         state.block_signal(SIGUSR2);
         
-        // Reset (simulates exec)
+        // Reset as exec would (clears pending, resets handlers)
         state.reset_to_default();
         
         // Pending signals should be cleared
@@ -302,7 +302,7 @@ mod tests {
     }
 
     // =========================================================================
-    // Race Condition Simulation Tests
+    // Race Condition Tests
     // =========================================================================
 
     #[test]

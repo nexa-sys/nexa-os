@@ -1,6 +1,6 @@
 //! Keyboard Read Flow Bug Detection Tests
 //!
-//! These tests directly simulate the read_raw_for_tty() code path
+//! These tests exercise the read_raw_for_tty() code path using hardware mocks
 //! to detect bugs that can cause foreground processes to hang.
 //!
 //! ## The Critical Code Path (from keyboard.rs read_raw_for_tty):
@@ -186,7 +186,7 @@ mod tests {
     }
 
     // =========================================================================
-    // Simulated Keyboard Waiter List (mirrors actual keyboard.rs)
+    // Hardware Mock: Keyboard Waiter List (mirrors actual keyboard.rs)
     // =========================================================================
 
     const MAX_KEYBOARD_WAITERS: usize = 8;
@@ -244,7 +244,7 @@ mod tests {
     // Test: Exact read_raw_for_tty flow with race condition
     // =========================================================================
 
-    /// Simulates exact read_raw_for_tty() flow with keyboard interrupt race
+    /// Tests exact read_raw_for_tty() flow with keyboard interrupt race
     ///
     /// This is the EXACT sequence that can cause shell to hang:
     /// 1. try_read_char() returns None (no input)
@@ -263,7 +263,7 @@ mod tests {
         
         let mut waiters = KeyboardWaiterList::new();
 
-        // Step 1: try_read_char() returns None (simulated)
+        // Step 1: try_read_char() returns None (buffer empty)
         let has_char = false;
 
         if !has_char {
@@ -311,7 +311,7 @@ mod tests {
             
             let mut waiters = KeyboardWaiterList::new();
 
-            // Simulate race
+            // Race sequence: add_waiter -> wake_all -> sleep
             waiters.add_waiter(shell_pid);
             waiters.wake_all_waiters();
             let _ = set_process_state(shell_pid, ProcessState::Sleeping);
@@ -512,7 +512,7 @@ mod tests {
         assert_eq!(curr, Some(pid), 
             "SETUP BUG: current_pid() should return our test PID after set_current_pid()");
 
-        // Simulate wake arriving (keyboard interrupt)
+        // Wake arrives (from keyboard interrupt calling wake_all_waiters)
         wake_process(pid);
 
         let pending = get_wake_pending(pid);
@@ -581,7 +581,7 @@ mod tests {
         let shell_pid = next_pid();
         add_process(shell_pid, ProcessState::Running);
         
-        // Set shell as current process (simulates shell is running)
+        // Set shell as current process (shell is running on this CPU)
         set_current_pid(Some(shell_pid));
         
         // Clear need_resched before test
@@ -701,7 +701,7 @@ mod tests {
 
         waiters.add_waiter(pid1);
 
-        // Simulate: wake_all starts, then pid2 adds itself
+        // wake_all runs, then pid2 adds itself
         // In real code, this requires locking, so the add happens before or after
         waiters.wake_all_waiters();
         waiters.add_waiter(pid2);
@@ -727,8 +727,7 @@ mod tests {
             
             let mut waiters = KeyboardWaiterList::new();
 
-            // Simulate read_raw_for_tty loop iteration
-            // No char available
+            // read_raw_for_tty loop iteration: no char available
             waiters.add_waiter(shell_pid);
             
             // State change to sleeping
@@ -756,7 +755,7 @@ mod tests {
     // Stress: Many cycles of the complete flow
     // =========================================================================
 
-    /// Stress test: Many complete read cycles with race simulation
+    /// Stress test: Many complete read cycles with race conditions
     #[test]
     #[serial]
     fn stress_many_read_cycles() {
@@ -772,7 +771,7 @@ mod tests {
             set_wake_pending(shell_pid, false);
             let _ = set_process_state(shell_pid, ProcessState::Ready);
 
-            // Simulate read cycle with possible race
+            // Read cycle with possible race condition
             let race_happens = i % 3 == 0; // 1 in 3 iterations have race
 
             waiters.add_waiter(shell_pid);

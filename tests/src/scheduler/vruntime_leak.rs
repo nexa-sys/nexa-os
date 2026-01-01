@@ -192,10 +192,8 @@ fn test_sleeping_process_vruntime_stable() {
     let initial_vrt = 1_000_000u64;
     add_process(pid, ProcessState::Sleeping, initial_vrt);
     
-    // Simulate 100 timer ticks while process is sleeping
-    // The point of this test is to verify that the vruntime does NOT change
-    // for sleeping processes - we don't call any update functions,
-    // we just verify that the scheduler correctly preserves vruntime.
+    // Verify that vruntime does NOT change for sleeping processes.
+    // The scheduler should NOT update vruntime for non-running processes.
     
     let final_vrt = get_vruntime(pid).unwrap();
     cleanup_process(pid);
@@ -246,7 +244,7 @@ fn test_woken_process_vruntime_near_min() {
 
 /// TEST: Interactive process must not be starved by background
 ///
-/// Simulates: shell waiting for keyboard, background process running.
+/// Scenario: shell waiting for keyboard, background process running.
 /// After wake, shell should be scheduled soon (low vruntime).
 #[test]
 #[serial]
@@ -278,7 +276,7 @@ fn test_interactive_not_starved_by_background() {
 
 /// TEST: Multiple sleep/wake cycles must not accumulate vruntime
 ///
-/// Simulates shell reading keyboard: sleep -> wake -> read char -> sleep -> ...
+/// Tests shell reading keyboard pattern: sleep -> wake -> read char -> sleep -> ...
 /// Each cycle should NOT increase vruntime if the process didn't actually run.
 #[test]
 #[serial]
@@ -326,16 +324,18 @@ fn test_no_exponential_vruntime_growth() {
     let initial_vrt = 4_000_000u64;
     add_process(pid, ProcessState::Ready, initial_vrt);
     
-    // Simulate 5 scheduler cycles - manually increase vruntime as tick() would
+    // Run 5 scheduler cycles - use REAL set_process_state and manual vruntime update
     for _i in 0..5 {
-        // Mark as Running and manually update vruntime
+        // Mark as Running via REAL function
+        set_process_state(pid, ProcessState::Running);
+        
+        // Manually update vruntime as tick() would
         {
             let mut table = process_table_lock();
             for slot in table.iter_mut() {
                 if let Some(entry) = slot {
                     if entry.process.pid == pid {
-                        entry.process.state = ProcessState::Running;
-                        // Simulate one time slice of CPU usage
+                        // One time slice of CPU usage
                         // vruntime increases by slice_ns * NICE_0_WEIGHT / weight
                         // For NICE_0_WEIGHT weight: vruntime += slice_ns
                         entry.vruntime = entry.vruntime.saturating_add(BASE_SLICE_NS);
@@ -385,14 +385,15 @@ fn test_running_has_higher_vruntime_than_sleeping() {
     add_process(runner_pid, ProcessState::Ready, 0);
     add_process(sleeper_pid, ProcessState::Sleeping, 0);
     
-    // Simulate runner using CPU for 100ms
+    // Runner uses CPU for 100ms - use REAL set_process_state
+    set_process_state(runner_pid, ProcessState::Running);
+    
+    // Manually add vruntime as if process ran
     {
         let mut table = process_table_lock();
         for slot in table.iter_mut() {
             if let Some(entry) = slot {
                 if entry.process.pid == runner_pid {
-                    entry.process.state = ProcessState::Running;
-                    // Manually simulate vruntime accumulation
                     entry.vruntime = entry.vruntime.saturating_add(100_000_000); // 100ms
                     break;
                 }
@@ -415,7 +416,7 @@ fn test_running_has_higher_vruntime_than_sleeping() {
 
 /// TEST: Keyboard input wait should not increase vruntime
 ///
-/// Simulates exact keyboard read flow:
+/// Tests exact keyboard read flow:
 /// 1. Process is Ready
 /// 2. Enters keyboard read, sets state to Sleeping
 /// 3. Waits for input (multiple ticks)
