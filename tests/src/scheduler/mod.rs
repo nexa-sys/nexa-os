@@ -47,6 +47,9 @@ mod tty_foreground_bugs;
 mod waiter_mechanism_bugs;
 mod state_machine_bugs;
 mod smp_race_bugs;
+mod foreground_responsiveness_bugs;
+mod deep_responsiveness_bugs;
+mod keyboard_read_flow_bugs;
 
 pub use basic::*;
 pub use eevdf::*;

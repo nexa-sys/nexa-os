@@ -10,7 +10,7 @@
 //! than background processes, so EEVDF schedules it less frequently.
 //!
 //! ## Observable Symptom (from kernel logs):
-//! ```
+//! ```text
 //! EEVDF: PID 8 slice exhausted (vrt=4000000, vdl=6000000)
 //! EEVDF: PID 8 slice exhausted (vrt=8000000, vdl=8000000)
 //! EEVDF: PID 8 slice exhausted (vrt=16000000, vdl=16000000)
