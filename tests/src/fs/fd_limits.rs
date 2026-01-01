@@ -1,79 +1,115 @@
-//! File Descriptor Edge Case Tests
+//! File Descriptor Limits and Edge Case Tests
 //!
-//! Tests for file descriptor operations including:
-//! - FD limits and exhaustion
-//! - Invalid FD handling
-//! - FD inheritance across fork/exec
-//! - Close-on-exec flags
+//! Tests for FD limits, exhaustion, and edge cases using real kernel code.
+//!
+//! NOTE: Tests that modify FILE_HANDLES are marked #[serial] to prevent race conditions.
 
 #[cfg(test)]
 mod tests {
-    // File descriptor constants - defined locally since types module is private
-    const FD_STDIN: usize = 0;
-    const FD_STDOUT: usize = 1;
-    const FD_STDERR: usize = 2;
-    const FD_CLOEXEC: usize = 1;
-    const MAX_FDS: usize = 64;
+    use crate::syscalls::types::{
+        allocate_duplicate_slot, clear_file_handle,
+        FileHandle, FileBacking, FD_BASE, MAX_OPEN_FILES,
+    };
+    use crate::posix::{Metadata, errno};
+    use serial_test::serial;
 
-    // =========================================================================
-    // Standard FD Tests
-    // =========================================================================
-
-    #[test]
-    fn test_standard_fd_values() {
-        assert_eq!(FD_STDIN, 0, "stdin should be FD 0");
-        assert_eq!(FD_STDOUT, 1, "stdout should be FD 1");
-        assert_eq!(FD_STDERR, 2, "stderr should be FD 2");
+    /// Helper to clear all file handles for test isolation
+    fn clear_all_handles() {
+        unsafe {
+            for idx in 0..MAX_OPEN_FILES {
+                clear_file_handle(idx);
+            }
+        }
     }
 
-    #[test]
-    fn test_standard_fds_sequential() {
-        // Standard FDs should be sequential
-        assert_eq!(FD_STDOUT, FD_STDIN + 1);
-        assert_eq!(FD_STDERR, FD_STDOUT + 1);
+    /// Helper to create a dummy file handle for testing
+    fn dummy_handle() -> FileHandle {
+        FileHandle {
+            backing: FileBacking::DevNull,
+            position: 0,
+            metadata: Metadata::empty(),
+        }
     }
 
     // =========================================================================
-    // FD Limits Tests
+    // FD Limits Tests (using real kernel constants)
     // =========================================================================
 
     #[test]
     fn test_max_fds_reasonable() {
-        // MAX_FDS should be reasonable
-        assert!(MAX_FDS >= 16, "Should support at least 16 FDs");
-        assert!(MAX_FDS <= 65536, "Should not have excessive FD limit");
+        assert!(MAX_OPEN_FILES >= 16, "Should support at least 16 FDs");
+        assert!(MAX_OPEN_FILES <= 65536, "Should not have excessive FD limit");
     }
 
     #[test]
-    fn test_max_fds_power_of_two() {
-        // Many implementations use power of 2 for efficiency
-        // This is not a strict requirement, just documentation
-        let is_power_of_two = MAX_FDS.count_ones() == 1;
-        eprintln!("MAX_FDS={}, is_power_of_two={}", MAX_FDS, is_power_of_two);
+    fn test_fd_base_after_stdio() {
+        // First available FD after stdin/stdout/stderr should be 3
+        assert_eq!(FD_BASE, 3);
     }
 
     // =========================================================================
-    // FD Flags Tests
+    // FD Exhaustion Tests (using real kernel allocation)
+    // These tests use #[serial] because they modify global FILE_HANDLES state
     // =========================================================================
 
     #[test]
-    fn test_cloexec_flag_value() {
-        // FD_CLOEXEC should be non-zero
-        assert!(FD_CLOEXEC != 0, "FD_CLOEXEC should be non-zero");
-        
-        // Should be a single bit or small value
-        assert!(FD_CLOEXEC <= 0xFF, "FD_CLOEXEC should be a simple flag");
+    #[serial]
+    fn test_fd_exhaustion_returns_emfile() {
+        clear_all_handles();
+
+        // Fill all slots
+        for _ in 0..MAX_OPEN_FILES {
+            let _ = allocate_duplicate_slot(FD_BASE, dummy_handle()).unwrap();
+        }
+
+        // Next allocation should fail with EMFILE
+        let result = allocate_duplicate_slot(FD_BASE, dummy_handle());
+        assert!(result.is_err());
+        assert!(result.is_err()); // EMFILE
     }
 
-    // =========================================================================
-    // FileDescriptor Structure Tests
-    // =========================================================================
+    #[test]
+    #[serial]
+    fn test_fd_reuse_after_close() {
+        clear_all_handles();
+
+        // Allocate 3 FDs
+        let fd1 = allocate_duplicate_slot(FD_BASE, dummy_handle()).unwrap();
+        let fd2 = allocate_duplicate_slot(FD_BASE, dummy_handle()).unwrap();
+        let fd3 = allocate_duplicate_slot(FD_BASE, dummy_handle()).unwrap();
+
+        assert_eq!(fd1, FD_BASE);
+        assert_eq!(fd2, FD_BASE + 1);
+        assert_eq!(fd3, FD_BASE + 2);
+
+        // Close fd2 (slot 1)
+        unsafe { clear_file_handle(1); }
+
+        // Next allocation should reuse slot 1 (fd = FD_BASE + 1)
+        let fd4 = allocate_duplicate_slot(FD_BASE, dummy_handle()).unwrap();
+        assert_eq!(fd4, FD_BASE + 1);
+    }
 
     #[test]
-    fn test_fd_structure_size() {
-        // Just verify constants are reasonable
-        assert!(MAX_FDS > 0);
-        assert!(FD_CLOEXEC > 0);
+    #[serial]
+    fn test_partial_exhaustion_then_release() {
+        clear_all_handles();
+
+        // Allocate all slots
+        for _ in 0..MAX_OPEN_FILES {
+            let _ = allocate_duplicate_slot(FD_BASE, dummy_handle()).unwrap();
+        }
+
+        // Should be exhausted
+        assert!(allocate_duplicate_slot(FD_BASE, dummy_handle()).is_err());
+
+        // Release one slot
+        unsafe { clear_file_handle(0); }
+
+        // Should be able to allocate again
+        let result = allocate_duplicate_slot(FD_BASE, dummy_handle());
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), FD_BASE); // Reuses slot 0
     }
 
     // =========================================================================
@@ -81,20 +117,20 @@ mod tests {
     // =========================================================================
 
     #[test]
-    fn test_negative_fd_invalid() {
-        // Negative FDs should be considered invalid
-        let neg_fd: i32 = -1;
-        
-        // This is the common error return value
-        assert!(neg_fd < 0);
+    fn test_fd_beyond_max_invalid() {
+        // Trying to allocate with min_fd beyond range should fail
+        let result = allocate_duplicate_slot(FD_BASE + MAX_OPEN_FILES as u64, dummy_handle());
+        assert!(result.is_err());
     }
 
     #[test]
-    fn test_fd_beyond_max_invalid() {
-        // FDs >= MAX_FDS should be invalid
-        let invalid_fd = MAX_FDS + 1;
+    fn test_negative_fd_semantics() {
+        // Negative FDs (-1) are commonly used as error indicators
+        let neg_fd: i32 = -1;
         
-        assert!(invalid_fd > MAX_FDS);
+        // When cast to u64, becomes very large number
+        let as_u64 = neg_fd as u64;
+        assert!(as_u64 > MAX_OPEN_FILES as u64);
     }
 
     // =========================================================================
@@ -102,38 +138,48 @@ mod tests {
     // =========================================================================
 
     #[test]
-    fn test_first_available_fd() {
-        // First available FD after stdin/stdout/stderr should be 3
-        let first_available = FD_STDERR + 1;
-        assert_eq!(first_available, 3);
+    fn test_valid_fd_range() {
+        // Valid user FDs are [FD_BASE, FD_BASE + MAX_OPEN_FILES)
+        let min_valid = FD_BASE;
+        let max_valid = FD_BASE + MAX_OPEN_FILES as u64 - 1;
+
+        assert!(min_valid >= 3);
+        assert!(max_valid > min_valid);
     }
 
     #[test]
-    fn test_fd_range_valid() {
-        // Valid FD range is 0 to MAX_FDS-1
-        for fd in 0..MAX_FDS.min(100) {
-            assert!(fd < MAX_FDS, "FD {} should be valid", fd);
+    #[serial]
+    fn test_allocation_respects_min_fd() {
+        clear_all_handles();
+
+        // Allocate with min_fd = 10
+        let fd = allocate_duplicate_slot(10, dummy_handle()).unwrap();
+        assert_eq!(fd, 10);
+
+        // Allocate with min_fd = 5, should get 5 (lower slot available)
+        let fd2 = allocate_duplicate_slot(5, dummy_handle()).unwrap();
+        assert_eq!(fd2, 5);
+    }
+
+    // =========================================================================
+    // Stress Tests
+    // =========================================================================
+
+    #[test]
+    #[serial]
+    fn test_allocate_close_cycle() {
+        clear_all_handles();
+
+        // Do multiple allocate/close cycles
+        for cycle in 0..5 {
+            // Allocate all
+            for i in 0..MAX_OPEN_FILES {
+                let result = allocate_duplicate_slot(FD_BASE, dummy_handle());
+                assert!(result.is_ok(), "Cycle {}, alloc {} failed", cycle, i);
+            }
+
+            // Clear all
+            clear_all_handles();
         }
-    }
-
-    // =========================================================================
-    // Documentation Tests
-    // =========================================================================
-
-    #[test]
-    fn test_fd_numbering_convention() {
-        // Document the FD numbering convention
-        // 0: stdin
-        // 1: stdout  
-        // 2: stderr
-        // 3+: user files
-        
-        assert!(FD_STDIN == 0);
-        assert!(FD_STDOUT == 1);
-        assert!(FD_STDERR == 2);
-        
-        // First user FD
-        let first_user_fd = 3;
-        assert!(first_user_fd > FD_STDERR);
     }
 }

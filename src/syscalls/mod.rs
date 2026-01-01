@@ -38,7 +38,7 @@ pub mod swap;
 mod system;
 mod thread;
 pub mod time;
-mod types;
+pub mod types;
 mod uefi;
 mod user;
 mod watchdog;
