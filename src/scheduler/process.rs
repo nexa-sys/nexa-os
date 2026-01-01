@@ -950,3 +950,195 @@ pub fn terminate_thread_group(tgid: Pid, exit_code: i32) {
         }
     }
 }
+
+// ============================================================================
+// Query Functions for Testing & Debugging
+// ============================================================================
+
+/// Get process state by PID
+pub fn get_process_state(pid: Pid) -> Option<ProcessState> {
+    let table = PROCESS_TABLE.lock();
+
+    // Try radix tree lookup first
+    if let Some(idx) = crate::process::lookup_pid(pid) {
+        let idx = idx as usize;
+        if idx < table.len() {
+            if let Some(entry) = &table[idx] {
+                if entry.process.pid == pid {
+                    return Some(entry.process.state);
+                }
+            }
+        }
+    }
+
+    // Fallback to linear scan
+    for slot in table.iter() {
+        if let Some(entry) = slot {
+            if entry.process.pid == pid {
+                return Some(entry.process.state);
+            }
+        }
+    }
+
+    None
+}
+
+/// Get vruntime for a process
+pub fn get_process_vruntime(pid: Pid) -> Option<u64> {
+    let table = PROCESS_TABLE.lock();
+
+    if let Some(idx) = crate::process::lookup_pid(pid) {
+        let idx = idx as usize;
+        if idx < table.len() {
+            if let Some(entry) = &table[idx] {
+                if entry.process.pid == pid {
+                    return Some(entry.vruntime);
+                }
+            }
+        }
+    }
+
+    for slot in table.iter() {
+        if let Some(entry) = slot {
+            if entry.process.pid == pid {
+                return Some(entry.vruntime);
+            }
+        }
+    }
+
+    None
+}
+
+/// Get lag for a process
+pub fn get_process_lag(pid: Pid) -> Option<i64> {
+    let table = PROCESS_TABLE.lock();
+
+    if let Some(idx) = crate::process::lookup_pid(pid) {
+        let idx = idx as usize;
+        if idx < table.len() {
+            if let Some(entry) = &table[idx] {
+                if entry.process.pid == pid {
+                    return Some(entry.lag);
+                }
+            }
+        }
+    }
+
+    for slot in table.iter() {
+        if let Some(entry) = slot {
+            if entry.process.pid == pid {
+                return Some(entry.lag);
+            }
+        }
+    }
+
+    None
+}
+
+/// Get vdeadline for a process
+pub fn get_process_vdeadline(pid: Pid) -> Option<u64> {
+    let table = PROCESS_TABLE.lock();
+
+    if let Some(idx) = crate::process::lookup_pid(pid) {
+        let idx = idx as usize;
+        if idx < table.len() {
+            if let Some(entry) = &table[idx] {
+                if entry.process.pid == pid {
+                    return Some(entry.vdeadline);
+                }
+            }
+        }
+    }
+
+    for slot in table.iter() {
+        if let Some(entry) = slot {
+            if entry.process.pid == pid {
+                return Some(entry.vdeadline);
+            }
+        }
+    }
+
+    None
+}
+
+/// Get slice_remaining_ns for a process
+pub fn get_process_slice_remaining(pid: Pid) -> Option<u64> {
+    let table = PROCESS_TABLE.lock();
+
+    if let Some(idx) = crate::process::lookup_pid(pid) {
+        let idx = idx as usize;
+        if idx < table.len() {
+            if let Some(entry) = &table[idx] {
+                if entry.process.pid == pid {
+                    return Some(entry.slice_remaining_ns);
+                }
+            }
+        }
+    }
+
+    for slot in table.iter() {
+        if let Some(entry) = slot {
+            if entry.process.pid == pid {
+                return Some(entry.slice_remaining_ns);
+            }
+        }
+    }
+
+    None
+}
+
+/// Set vruntime for a process (for testing)
+pub fn set_process_vruntime(pid: Pid, vruntime: u64) -> Result<(), &'static str> {
+    let mut table = PROCESS_TABLE.lock();
+
+    if let Some(idx) = crate::process::lookup_pid(pid) {
+        let idx = idx as usize;
+        if idx < table.len() {
+            if let Some(entry) = &mut table[idx] {
+                if entry.process.pid == pid {
+                    entry.vruntime = vruntime;
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    for slot in table.iter_mut() {
+        if let Some(entry) = slot {
+            if entry.process.pid == pid {
+                entry.vruntime = vruntime;
+                return Ok(());
+            }
+        }
+    }
+
+    Err("Process not found")
+}
+
+/// Set lag for a process (for testing)
+pub fn set_process_lag(pid: Pid, lag: i64) -> Result<(), &'static str> {
+    let mut table = PROCESS_TABLE.lock();
+
+    if let Some(idx) = crate::process::lookup_pid(pid) {
+        let idx = idx as usize;
+        if idx < table.len() {
+            if let Some(entry) = &mut table[idx] {
+                if entry.process.pid == pid {
+                    entry.lag = lag;
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    for slot in table.iter_mut() {
+        if let Some(entry) = slot {
+            if entry.process.pid == pid {
+                entry.lag = lag;
+                return Ok(());
+            }
+        }
+    }
+
+    Err("Process not found")
+}

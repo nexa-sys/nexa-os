@@ -78,6 +78,14 @@ pub use process::{
     try_wake_process,
     update_process_cr3,
     wake_process,
+    // Query functions for testing/debugging
+    get_process_state,
+    get_process_vruntime,
+    get_process_lag,
+    get_process_vdeadline,
+    get_process_slice_remaining,
+    set_process_vruntime,
+    set_process_lag,
 };
 
 // Re-export priority functions (EEVDF core)

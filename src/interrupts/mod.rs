@@ -33,5 +33,6 @@ pub use gs_context::{
 };
 pub use handlers::{PICS, PIC_1_OFFSET, PIC_2_OFFSET};
 pub use idt::{
-    init_interrupts, init_interrupts_ap, is_cpu_idt_initialized, is_idt_initialized, setup_syscall,
+    init_interrupts, init_interrupts_ap, is_canonical_address, is_cpu_idt_initialized,
+    is_idt_initialized, setup_syscall,
 };

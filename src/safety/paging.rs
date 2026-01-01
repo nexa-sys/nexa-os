@@ -225,3 +225,54 @@ pub unsafe fn verify_pml4_content(cr3: u64) -> bool {
 
     has_present
 }
+
+// ============================================================================
+// Address Helper Functions (exported for testing)
+// ============================================================================
+
+/// Page size constant (4KB)
+pub const PAGE_SIZE: u64 = 4096;
+
+/// Extract the page offset from an address (lower 12 bits)
+#[inline]
+pub const fn page_offset(addr: u64) -> u64 {
+    addr & 0xFFF
+}
+
+/// Extract the page frame number from an address (upper bits)
+#[inline]
+pub const fn page_frame_number(addr: u64) -> u64 {
+    addr >> 12
+}
+
+/// Check if an address is canonical (valid for x86_64)
+/// Bits 48-63 must be sign-extension of bit 47
+#[inline]
+pub const fn is_canonical_address(addr: u64) -> bool {
+    let high_bits = addr >> 47;
+    high_bits == 0 || high_bits == 0x1FFFF
+}
+
+/// Check if an address is in the kernel range (high canonical)
+#[inline]
+pub const fn is_kernel_address(addr: u64) -> bool {
+    addr >= 0xFFFF_8000_0000_0000
+}
+
+/// Check if an address is in the user range (low canonical)
+#[inline]
+pub const fn is_user_address(addr: u64) -> bool {
+    addr < 0x0000_8000_0000_0000
+}
+
+/// Align a size up to the given alignment
+#[inline]
+pub const fn align_up(size: u64, alignment: u64) -> u64 {
+    (size + alignment - 1) & !(alignment - 1)
+}
+
+/// Align an address down to the given alignment
+#[inline]
+pub const fn align_down(addr: u64, alignment: u64) -> u64 {
+    addr & !(alignment - 1)
+}

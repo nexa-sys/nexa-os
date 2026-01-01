@@ -666,7 +666,10 @@ fn cpu_supports_syscall() -> bool {
     }
 }
 
-fn is_canonical_address(addr: u64) -> bool {
+/// Check if an address is canonical (valid for x86_64)
+/// Bits 48-63 must match bit 47 (sign extension)
+#[inline]
+pub fn is_canonical_address(addr: u64) -> bool {
     let sign = (addr >> 47) & 1;
     let upper = addr >> 48;
     if sign == 0 {

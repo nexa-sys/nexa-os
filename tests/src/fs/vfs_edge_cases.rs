@@ -11,6 +11,7 @@ mod tests {
         FD_BASE, MAX_OPEN_FILES, STDIN, STDOUT, STDERR,
     };
     use crate::posix::{Metadata, errno};
+    use serial_test::serial;
 
     /// Helper to clear all file handles for test isolation
     fn clear_all_handles() {
@@ -43,6 +44,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_fd_allocation_sequential() {
         clear_all_handles();
 
@@ -60,6 +62,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_fd_reuse_after_close() {
         clear_all_handles();
 
@@ -77,6 +80,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_fd_max_limit() {
         clear_all_handles();
 

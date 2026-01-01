@@ -6,6 +6,8 @@
 use crate::process::{Context, ProcessState, Process, Pid, MAX_CMDLINE_SIZE};
 use crate::scheduler::{ProcessEntry, set_process_state, process_table_lock};
 use crate::scheduler::{SchedPolicy, CpuMask, BASE_SLICE_NS, NICE_0_WEIGHT, calc_vdeadline};
+// Use REAL kernel query function
+use crate::scheduler::get_process_state;
 use crate::scheduler::percpu::init_percpu_sched;
 use crate::signal::SignalState;
 use serial_test::serial;
@@ -115,18 +117,6 @@ fn add_process_with_context(pid: Pid, state: ProcessState, rax: u64, rbx: u64, r
         }
     }
     panic!("No free slot for test process {}", pid);
-}
-
-fn get_state(pid: Pid) -> Option<ProcessState> {
-    let table = process_table_lock();
-    for slot in table.iter() {
-        if let Some(entry) = slot {
-            if entry.process.pid == pid {
-                return Some(entry.process.state);
-            }
-        }
-    }
-    None
 }
 
 fn get_context_rax(pid: Pid) -> Option<u64> {
@@ -307,9 +297,9 @@ fn test_context_switch_save_restore_cycle() {
     // 2. B goes from Ready to Running (scheduled)
     let _ = set_process_state(pid_b, ProcessState::Running);
     
-    // Verify states through REAL process table
-    let state_a = get_state(pid_a);
-    let state_b = get_state(pid_b);
+    // Verify states through REAL kernel function
+    let state_a = get_process_state(pid_a);
+    let state_b = get_process_state(pid_b);
     
     // Verify contexts are preserved
     let ctx_a_rax = get_context_rax(pid_a);
