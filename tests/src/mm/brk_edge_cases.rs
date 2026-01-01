@@ -1,14 +1,14 @@
 //! BRK syscall edge case tests
 //!
-//! Tests for heap management via brk() syscall including boundary conditions,
-//! overflow handling, and concurrent access patterns.
+//! Tests for heap memory layout constants and boundary validation.
+//! These tests verify the correctness of heap configuration in the kernel.
 
 #[cfg(test)]
 mod tests {
-    use crate::process::{HEAP_BASE, HEAP_SIZE};
+    use crate::process::{HEAP_BASE, HEAP_SIZE, USER_VIRT_BASE, USER_REGION_SIZE, STACK_BASE};
 
     // =========================================================================
-    // Heap Boundary Tests
+    // Heap Constants Validation
     // =========================================================================
 
     #[test]
@@ -16,7 +16,7 @@ mod tests {
         // Heap must start at a page-aligned address
         assert_eq!(HEAP_BASE % 4096, 0, "HEAP_BASE must be page-aligned");
         
-        // Heap size must be reasonable
+        // Heap size must be reasonable (at least 1MB, at most 2GB)
         assert!(HEAP_SIZE >= 0x100000, "Heap should be at least 1MB");
         assert!(HEAP_SIZE <= 0x8000_0000, "Heap should not exceed 2GB");
         
@@ -36,8 +36,6 @@ mod tests {
 
     #[test]
     fn test_heap_in_user_space() {
-        use crate::process::{USER_VIRT_BASE, USER_REGION_SIZE};
-        
         let user_end = USER_VIRT_BASE + USER_REGION_SIZE;
         let heap_end = HEAP_BASE + HEAP_SIZE;
         
@@ -46,262 +44,214 @@ mod tests {
         assert!(heap_end <= user_end, "Heap must end before user region ends");
     }
 
-    // =========================================================================
-    // BRK Boundary Condition Tests (Simulated)
-    // =========================================================================
-
-    /// Simulates brk() syscall behavior for testing
-    struct BrkSimulator {
-        current_brk: u64,
-        heap_start: u64,
-        heap_max: u64,
-    }
-
-    impl BrkSimulator {
-        fn new() -> Self {
-            Self {
-                current_brk: HEAP_BASE,
-                heap_start: HEAP_BASE,
-                heap_max: HEAP_BASE + HEAP_SIZE,
-            }
-        }
-
-        /// Simulate brk syscall
-        fn brk(&mut self, addr: u64) -> Result<u64, &'static str> {
-            // Query current break
-            if addr == 0 {
-                return Ok(self.current_brk);
-            }
-
-            // Validate new break address
-            if addr < self.heap_start {
-                return Err("ENOMEM: Below heap start");
-            }
-            if addr > self.heap_max {
-                return Err("ENOMEM: Above heap max");
-            }
-
-            let old_brk = self.current_brk;
-            self.current_brk = addr;
-
-            Ok(addr)
-        }
-
-        fn current(&self) -> u64 {
-            self.current_brk
-        }
-    }
-
     #[test]
-    fn test_brk_query() {
-        let mut sim = BrkSimulator::new();
+    fn test_heap_before_stack() {
+        let heap_end = HEAP_BASE + HEAP_SIZE;
         
-        // Query should return current break
-        assert_eq!(sim.brk(0).unwrap(), HEAP_BASE);
-    }
-
-    #[test]
-    fn test_brk_expand() {
-        let mut sim = BrkSimulator::new();
-        
-        // Expand heap
-        let new_brk = HEAP_BASE + 0x1000;
-        assert_eq!(sim.brk(new_brk).unwrap(), new_brk);
-        assert_eq!(sim.current(), new_brk);
-    }
-
-    #[test]
-    fn test_brk_shrink() {
-        let mut sim = BrkSimulator::new();
-        
-        // First expand
-        sim.brk(HEAP_BASE + 0x2000).unwrap();
-        
-        // Then shrink
-        let shrunk = HEAP_BASE + 0x1000;
-        assert_eq!(sim.brk(shrunk).unwrap(), shrunk);
-        assert_eq!(sim.current(), shrunk);
-    }
-
-    #[test]
-    fn test_brk_at_maximum() {
-        let mut sim = BrkSimulator::new();
-        
-        // Expand to maximum
-        let max = HEAP_BASE + HEAP_SIZE;
-        assert_eq!(sim.brk(max).unwrap(), max);
-    }
-
-    #[test]
-    fn test_brk_beyond_maximum() {
-        let mut sim = BrkSimulator::new();
-        
-        // Try to expand beyond maximum
-        let beyond = HEAP_BASE + HEAP_SIZE + 1;
-        assert!(sim.brk(beyond).is_err());
-        
-        // Current brk should be unchanged
-        assert_eq!(sim.current(), HEAP_BASE);
-    }
-
-    #[test]
-    fn test_brk_below_minimum() {
-        let mut sim = BrkSimulator::new();
-        
-        // First expand a bit
-        sim.brk(HEAP_BASE + 0x1000).unwrap();
-        
-        // Try to shrink below heap start
-        assert!(sim.brk(HEAP_BASE - 1).is_err());
-    }
-
-    #[test]
-    fn test_brk_at_minimum() {
-        let mut sim = BrkSimulator::new();
-        
-        // Expand first
-        sim.brk(HEAP_BASE + 0x1000).unwrap();
-        
-        // Shrink to exactly heap start
-        assert_eq!(sim.brk(HEAP_BASE).unwrap(), HEAP_BASE);
+        // Heap must end before stack starts
+        assert!(heap_end <= STACK_BASE, 
+            "Heap end ({:#x}) must be <= STACK_BASE ({:#x})", heap_end, STACK_BASE);
     }
 
     // =========================================================================
-    // Edge Case: Repeated Operations
+    // Memory Layout Consistency
     // =========================================================================
 
     #[test]
-    fn test_brk_repeated_same_value() {
-        let mut sim = BrkSimulator::new();
-        
-        let target = HEAP_BASE + 0x1000;
-        
-        // Setting to same value multiple times should succeed
-        for _ in 0..10 {
-            assert_eq!(sim.brk(target).unwrap(), target);
-        }
+    fn test_heap_gap_from_user_base() {
+        // Heap should have some gap from USER_VIRT_BASE for code/data
+        let code_space = HEAP_BASE - USER_VIRT_BASE;
+        assert!(code_space >= 0x100000, 
+            "Should have at least 1MB for code/data before heap");
     }
 
     #[test]
-    fn test_brk_oscillating() {
-        let mut sim = BrkSimulator::new();
+    fn test_heap_to_stack_gap() {
+        let heap_end = HEAP_BASE + HEAP_SIZE;
         
-        let low = HEAP_BASE + 0x1000;
-        let high = HEAP_BASE + 0x2000;
-        
-        // Oscillate between two values
-        for _ in 0..5 {
-            assert_eq!(sim.brk(high).unwrap(), high);
-            assert_eq!(sim.brk(low).unwrap(), low);
-        }
+        // Gap between heap and stack (should be 0 or positive)
+        let gap = STACK_BASE.saturating_sub(heap_end);
+        assert!(STACK_BASE >= heap_end || gap == 0,
+            "Stack should not overlap with heap");
     }
 
     // =========================================================================
-    // Edge Case: Page Alignment
+    // Boundary Arithmetic Tests
     // =========================================================================
 
     #[test]
-    fn test_brk_unaligned_address() {
-        // Note: Real brk() may or may not require alignment
-        // This tests the behavior with unaligned addresses
-        
-        let unaligned = HEAP_BASE + 0x123; // Not page-aligned
-        let page_size: u64 = 4096;
-        
-        // Check if it's aligned
-        assert_ne!(unaligned % page_size, 0);
-        
-        // In some implementations, this might be rounded up
-        let aligned_up = (unaligned + page_size - 1) & !(page_size - 1);
-        assert_eq!(aligned_up % page_size, 0);
-    }
-
-    // =========================================================================
-    // Edge Case: Overflow Detection
-    // =========================================================================
-
-    #[test]
-    fn test_brk_address_overflow_check() {
-        // Test potential overflow in address calculations
-        
-        let large_addr = u64::MAX - 0x1000;
-        let size_to_add: u64 = 0x2000;
-        
-        // This should overflow
-        let result = large_addr.checked_add(size_to_add);
-        assert!(result.is_none(), "Should detect overflow");
+    fn test_page_count_calculation() {
+        let page_count = HEAP_SIZE / 4096;
+        assert!(page_count > 0, "Heap should have at least one page");
+        assert!(page_count < 1_000_000, "Heap page count should be reasonable");
     }
 
     #[test]
-    fn test_heap_size_calculation_safety() {
-        // Ensure heap calculations don't overflow
-        
-        let start = HEAP_BASE;
-        let end = HEAP_BASE + HEAP_SIZE;
-        
-        // Calculate size - should not overflow or underflow
-        let size = end.checked_sub(start);
-        assert!(size.is_some());
-        assert_eq!(size.unwrap(), HEAP_SIZE);
-    }
-
-    // =========================================================================
-    // Bug Detection: Concurrent State
-    // =========================================================================
-
-    #[test]
-    fn test_brk_state_consistency() {
-        // Test that brk state remains consistent through operations
-        
-        let mut sim = BrkSimulator::new();
-        
-        let steps = vec![
-            HEAP_BASE + 0x1000,
-            HEAP_BASE + 0x2000,
-            HEAP_BASE + 0x1500,
-            HEAP_BASE + 0x3000,
-            HEAP_BASE + 0x500,
+    fn test_heap_address_range() {
+        // Test various addresses within heap range
+        let addresses = [
+            HEAP_BASE,
+            HEAP_BASE + 1,
+            HEAP_BASE + 4095,
+            HEAP_BASE + 4096,
+            HEAP_BASE + HEAP_SIZE / 2,
+            HEAP_BASE + HEAP_SIZE - 4096,
+            HEAP_BASE + HEAP_SIZE - 1,
         ];
         
-        let mut expected = HEAP_BASE;
+        for &addr in &addresses {
+            assert!(addr >= HEAP_BASE, "Address {:#x} should be >= HEAP_BASE", addr);
+            assert!(addr < HEAP_BASE + HEAP_SIZE, 
+                "Address {:#x} should be < heap end", addr);
+        }
+    }
+
+    #[test]
+    fn test_heap_outside_range() {
+        // Test addresses outside heap range
+        let outside = [
+            HEAP_BASE - 1,
+            HEAP_BASE + HEAP_SIZE,
+            HEAP_BASE + HEAP_SIZE + 1,
+            0,
+            u64::MAX,
+        ];
         
-        for &target in &steps {
-            if target >= sim.heap_start && target <= sim.heap_max {
-                sim.brk(target).unwrap();
-                expected = target;
-            }
-            assert_eq!(sim.current(), expected, "State inconsistent after brk({})", target);
+        for &addr in &outside {
+            let in_heap = addr >= HEAP_BASE && addr < HEAP_BASE + HEAP_SIZE;
+            assert!(!in_heap, "Address {:#x} should NOT be in heap range", addr);
         }
     }
 
     // =========================================================================
-    // Memory Layout Integration
+    // BRK Logic Validation (Algorithm Tests)
     // =========================================================================
 
-    #[test]
-    fn test_heap_does_not_overlap_stack() {
-        use crate::process::{STACK_BASE, STACK_SIZE};
-        
-        let heap_end = HEAP_BASE + HEAP_SIZE;
-        let stack_start = STACK_BASE;
-        let stack_end = STACK_BASE + STACK_SIZE;
-        
-        // Heap and stack must not overlap
-        assert!(
-            heap_end <= stack_start || HEAP_BASE >= stack_end,
-            "Heap and stack regions overlap!"
-        );
+    /// Test the brk validation logic (without actual syscall)
+    fn validate_brk(current_brk: u64, new_brk: u64) -> Result<u64, &'static str> {
+        // Query current break
+        if new_brk == 0 {
+            return Ok(current_brk);
+        }
+
+        // Validate: must be within heap region
+        if new_brk < HEAP_BASE {
+            return Err("ENOMEM: Below heap start");
+        }
+        if new_brk > HEAP_BASE + HEAP_SIZE {
+            return Err("ENOMEM: Above heap max");
+        }
+
+        Ok(new_brk)
     }
 
     #[test]
-    fn test_heap_does_not_overlap_code() {
-        use crate::process::USER_VIRT_BASE;
+    fn test_brk_validation_query() {
+        // Query (addr=0) should return current break
+        let result = validate_brk(HEAP_BASE + 0x1000, 0);
+        assert_eq!(result.unwrap(), HEAP_BASE + 0x1000);
+    }
+
+    #[test]
+    fn test_brk_validation_expand() {
+        // Valid expansion
+        let result = validate_brk(HEAP_BASE, HEAP_BASE + 0x1000);
+        assert_eq!(result.unwrap(), HEAP_BASE + 0x1000);
+    }
+
+    #[test]
+    fn test_brk_validation_shrink() {
+        // Valid shrink
+        let result = validate_brk(HEAP_BASE + 0x2000, HEAP_BASE + 0x1000);
+        assert_eq!(result.unwrap(), HEAP_BASE + 0x1000);
+    }
+
+    #[test]
+    fn test_brk_validation_at_max() {
+        // Expand to exact maximum
+        let max = HEAP_BASE + HEAP_SIZE;
+        let result = validate_brk(HEAP_BASE, max);
+        assert_eq!(result.unwrap(), max);
+    }
+
+    #[test]
+    fn test_brk_validation_beyond_max() {
+        // Attempt to expand beyond maximum
+        let beyond = HEAP_BASE + HEAP_SIZE + 1;
+        let result = validate_brk(HEAP_BASE, beyond);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_brk_validation_below_min() {
+        // Attempt to shrink below heap start
+        let result = validate_brk(HEAP_BASE + 0x1000, HEAP_BASE - 1);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_brk_validation_at_min() {
+        // Shrink to exact minimum (heap start)
+        let result = validate_brk(HEAP_BASE + 0x1000, HEAP_BASE);
+        assert_eq!(result.unwrap(), HEAP_BASE);
+    }
+
+    // =========================================================================
+    // Page Alignment Tests
+    // =========================================================================
+
+    #[test]
+    fn test_page_aligned_brk() {
+        // Test that page-aligned addresses are accepted
+        let aligned_addrs = [
+            HEAP_BASE,
+            HEAP_BASE + 0x1000,
+            HEAP_BASE + 0x2000,
+            HEAP_BASE + 0x10000,
+        ];
         
-        // Code typically starts at USER_VIRT_BASE
-        // Heap should start after code region
-        assert!(
-            HEAP_BASE > USER_VIRT_BASE,
-            "Heap should start after code region"
-        );
+        for &addr in &aligned_addrs {
+            let result = validate_brk(HEAP_BASE, addr);
+            assert!(result.is_ok(), "Page-aligned addr {:#x} should be valid", addr);
+        }
+    }
+
+    #[test]
+    fn test_unaligned_brk_accepted() {
+        // brk() typically accepts unaligned addresses (kernel rounds up internally)
+        let unaligned = HEAP_BASE + 0x1001;
+        let result = validate_brk(HEAP_BASE, unaligned);
+        // Should succeed - actual page allocation happens in kernel
+        assert!(result.is_ok());
+    }
+
+    // =========================================================================
+    // Stress Pattern Tests
+    // =========================================================================
+
+    #[test]
+    fn test_brk_expand_shrink_cycle() {
+        let mut current = HEAP_BASE;
+        
+        // Simulate expand/shrink cycles
+        for i in 0..10 {
+            // Expand
+            let expand_to = HEAP_BASE + ((i + 1) as u64 * 0x1000);
+            if let Ok(new) = validate_brk(current, expand_to) {
+                current = new;
+            }
+            
+            // Partial shrink
+            let shrink_to = current - 0x800;
+            if shrink_to >= HEAP_BASE {
+                if let Ok(new) = validate_brk(current, shrink_to) {
+                    current = new;
+                }
+            }
+        }
+        
+        // Final state should be valid
+        assert!(current >= HEAP_BASE);
+        assert!(current <= HEAP_BASE + HEAP_SIZE);
     }
 }

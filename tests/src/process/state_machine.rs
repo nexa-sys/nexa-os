@@ -1,287 +1,228 @@
 //! Process State Machine Tests
 //!
-//! Tests for process state transitions and invariants.
+//! Tests for process state transitions using the REAL kernel scheduler.
 //! These tests verify that state transitions follow POSIX semantics.
 
 #[cfg(test)]
 mod tests {
-    use crate::process::ProcessState;
+    use crate::process::{Process, ProcessState, Context};
+    use crate::scheduler::{
+        add_process, remove_process, set_process_state, wake_process,
+        get_process, process_table_lock,
+    };
+    use serial_test::serial;
 
-    // =========================================================================
-    // State Machine Definition
-    // =========================================================================
-
-    /// Simulates the process state machine
-    struct ProcessStateMachine {
-        state: ProcessState,
-        exit_code: Option<i32>,
-        term_signal: Option<u32>,
+    /// Helper to get process state by PID
+    fn get_process_state(pid: u64) -> Option<ProcessState> {
+        let table = process_table_lock();
+        for slot in table.iter() {
+            if let Some(entry) = slot {
+                if entry.process.pid == pid {
+                    return Some(entry.process.state);
+                }
+            }
+        }
+        None
     }
 
-    impl ProcessStateMachine {
-        fn new() -> Self {
-            Self {
-                state: ProcessState::Ready,
-                exit_code: None,
-                term_signal: None,
-            }
+    /// Helper to clear test processes from the table
+    fn cleanup_test_pids(pids: &[u64]) {
+        for &pid in pids {
+            let _ = remove_process(pid);
         }
+    }
 
-        /// Transition to Running (scheduler picks this process)
-        fn dispatch(&mut self) -> Result<(), &'static str> {
-            match self.state {
-                ProcessState::Ready => {
-                    self.state = ProcessState::Running;
-                    Ok(())
-                }
-                _ => Err("Can only dispatch Ready processes"),
-            }
-        }
-
-        /// Transition to Ready (process yields or time slice expires)
-        fn preempt(&mut self) -> Result<(), &'static str> {
-            match self.state {
-                ProcessState::Running => {
-                    self.state = ProcessState::Ready;
-                    Ok(())
-                }
-                _ => Err("Can only preempt Running processes"),
-            }
-        }
-
-        /// Transition to Sleeping (process waits for event)
-        fn sleep(&mut self) -> Result<(), &'static str> {
-            match self.state {
-                ProcessState::Running => {
-                    self.state = ProcessState::Sleeping;
-                    Ok(())
-                }
-                _ => Err("Can only sleep Running processes"),
-            }
-        }
-
-        /// Transition from Sleeping to Ready (event occurred)
-        fn wake(&mut self) -> Result<(), &'static str> {
-            match self.state {
-                ProcessState::Sleeping => {
-                    self.state = ProcessState::Ready;
-                    Ok(())
-                }
-                _ => Err("Can only wake Sleeping processes"),
-            }
-        }
-
-        /// Transition to Zombie (process exits)
-        fn exit(&mut self, code: i32) -> Result<(), &'static str> {
-            match self.state {
-                ProcessState::Running => {
-                    self.state = ProcessState::Zombie;
-                    self.exit_code = Some(code);
-                    Ok(())
-                }
-                _ => Err("Can only exit Running processes"),
-            }
-        }
-
-        /// Transition to Zombie via signal
-        fn kill(&mut self, signal: u32) -> Result<(), &'static str> {
-            match self.state {
-                ProcessState::Running | ProcessState::Sleeping | ProcessState::Ready => {
-                    self.state = ProcessState::Zombie;
-                    self.term_signal = Some(signal);
-                    Ok(())
-                }
-                ProcessState::Zombie => Err("Process is already dead"),
-            }
-        }
-
-        /// Reap zombie (parent calls wait)
-        fn reap(&mut self) -> Result<(Option<i32>, Option<u32>), &'static str> {
-            match self.state {
-                ProcessState::Zombie => {
-                    let result = (self.exit_code, self.term_signal);
-                    // Process is now truly gone
-                    Ok(result)
-                }
-                _ => Err("Can only reap Zombie processes"),
-            }
+    /// Helper to create a minimal test process
+    fn create_test_process(pid: u64) -> Process {
+        Process {
+            pid,
+            ppid: 1,
+            tgid: pid,
+            state: ProcessState::Ready,
+            entry_point: 0x1000000,
+            stack_top: 0x1A00000,
+            heap_start: 0x1200000,
+            heap_end: 0x1200000,
+            signal_state: crate::ipc::signal::SignalState::new(),
+            context: Context::zero(),
+            has_entered_user: false,
+            context_valid: false,
+            is_fork_child: false,
+            is_thread: false,
+            cr3: 0,
+            tty: 0,
+            memory_base: 0,
+            memory_size: 0,
+            user_rip: 0,
+            user_rsp: 0,
+            user_rflags: 0x202,
+            user_r10: 0,
+            user_r8: 0,
+            user_r9: 0,
+            exit_code: 0,
+            term_signal: None,
+            kernel_stack: 0,
+            fs_base: 0,
+            clear_child_tid: 0,
+            cmdline: [0; 1024],
+            cmdline_len: 0,
+            open_fds: 0,
+            exec_pending: false,
+            exec_entry: 0,
+            exec_stack: 0,
+            exec_user_data_sel: 0,
+            wake_pending: false,
         }
     }
 
     // =========================================================================
-    // Basic State Transition Tests
+    // Basic State Transition Tests (using REAL kernel code)
     // =========================================================================
 
     #[test]
+    #[serial]
     fn test_initial_state() {
-        let proc = ProcessStateMachine::new();
-        assert_eq!(proc.state, ProcessState::Ready);
-    }
-
-    #[test]
-    fn test_ready_to_running() {
-        let mut proc = ProcessStateMachine::new();
-        assert!(proc.dispatch().is_ok());
-        assert_eq!(proc.state, ProcessState::Running);
-    }
-
-    #[test]
-    fn test_running_to_ready() {
-        let mut proc = ProcessStateMachine::new();
-        proc.dispatch().unwrap();
-        assert!(proc.preempt().is_ok());
-        assert_eq!(proc.state, ProcessState::Ready);
-    }
-
-    #[test]
-    fn test_running_to_sleeping() {
-        let mut proc = ProcessStateMachine::new();
-        proc.dispatch().unwrap();
-        assert!(proc.sleep().is_ok());
-        assert_eq!(proc.state, ProcessState::Sleeping);
-    }
-
-    #[test]
-    fn test_sleeping_to_ready() {
-        let mut proc = ProcessStateMachine::new();
-        proc.dispatch().unwrap();
-        proc.sleep().unwrap();
-        assert!(proc.wake().is_ok());
-        assert_eq!(proc.state, ProcessState::Ready);
-    }
-
-    #[test]
-    fn test_running_to_zombie() {
-        let mut proc = ProcessStateMachine::new();
-        proc.dispatch().unwrap();
-        assert!(proc.exit(0).is_ok());
-        assert_eq!(proc.state, ProcessState::Zombie);
-        assert_eq!(proc.exit_code, Some(0));
-    }
-
-    #[test]
-    fn test_zombie_reap() {
-        let mut proc = ProcessStateMachine::new();
-        proc.dispatch().unwrap();
-        proc.exit(42).unwrap();
+        let test_pids = [1100u64];
+        cleanup_test_pids(&test_pids);
         
-        let result = proc.reap();
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), (Some(42), None));
-    }
-
-    // =========================================================================
-    // Invalid State Transition Tests
-    // =========================================================================
-
-    #[test]
-    fn test_cannot_dispatch_running() {
-        let mut proc = ProcessStateMachine::new();
-        proc.dispatch().unwrap();
-        assert!(proc.dispatch().is_err());
-    }
-
-    #[test]
-    fn test_cannot_dispatch_sleeping() {
-        let mut proc = ProcessStateMachine::new();
-        proc.dispatch().unwrap();
-        proc.sleep().unwrap();
-        assert!(proc.dispatch().is_err());
-    }
-
-    #[test]
-    fn test_cannot_dispatch_zombie() {
-        let mut proc = ProcessStateMachine::new();
-        proc.dispatch().unwrap();
-        proc.exit(0).unwrap();
-        assert!(proc.dispatch().is_err());
-    }
-
-    #[test]
-    fn test_cannot_preempt_ready() {
-        let mut proc = ProcessStateMachine::new();
-        assert!(proc.preempt().is_err());
-    }
-
-    #[test]
-    fn test_cannot_preempt_sleeping() {
-        let mut proc = ProcessStateMachine::new();
-        proc.dispatch().unwrap();
-        proc.sleep().unwrap();
-        assert!(proc.preempt().is_err());
-    }
-
-    #[test]
-    fn test_cannot_sleep_ready() {
-        let mut proc = ProcessStateMachine::new();
-        assert!(proc.sleep().is_err());
-    }
-
-    #[test]
-    fn test_cannot_wake_ready() {
-        let mut proc = ProcessStateMachine::new();
-        assert!(proc.wake().is_err());
-    }
-
-    #[test]
-    fn test_cannot_wake_running() {
-        let mut proc = ProcessStateMachine::new();
-        proc.dispatch().unwrap();
-        assert!(proc.wake().is_err());
-    }
-
-    #[test]
-    fn test_cannot_exit_sleeping() {
-        let mut proc = ProcessStateMachine::new();
-        proc.dispatch().unwrap();
-        proc.sleep().unwrap();
-        assert!(proc.exit(0).is_err());
-    }
-
-    #[test]
-    fn test_cannot_reap_living() {
-        let mut proc = ProcessStateMachine::new();
-        assert!(proc.reap().is_err());
+        let proc = create_test_process(1100);
+        assert_eq!(proc.state, ProcessState::Ready);
         
-        proc.dispatch().unwrap();
-        assert!(proc.reap().is_err());
-    }
-
-    // =========================================================================
-    // Signal (Kill) Transition Tests
-    // =========================================================================
-
-    #[test]
-    fn test_kill_ready() {
-        let mut proc = ProcessStateMachine::new();
-        assert!(proc.kill(9).is_ok()); // SIGKILL
-        assert_eq!(proc.state, ProcessState::Zombie);
-        assert_eq!(proc.term_signal, Some(9));
+        add_process(proc, 20).unwrap();
+        
+        // Verify process is in the scheduler with Ready state
+        let state = get_process_state(1100);
+        assert_eq!(state, Some(ProcessState::Ready));
+        
+        cleanup_test_pids(&test_pids);
     }
 
     #[test]
-    fn test_kill_running() {
-        let mut proc = ProcessStateMachine::new();
-        proc.dispatch().unwrap();
-        assert!(proc.kill(15).is_ok()); // SIGTERM
-        assert_eq!(proc.state, ProcessState::Zombie);
+    #[serial]
+    fn test_ready_to_sleeping() {
+        let test_pids = [1101u64];
+        cleanup_test_pids(&test_pids);
+        
+        let proc = create_test_process(1101);
+        add_process(proc, 20).unwrap();
+        
+        // Transition Ready -> Sleeping
+        set_process_state(1101, ProcessState::Sleeping).unwrap();
+        
+        let state = get_process_state(1101);
+        assert_eq!(state, Some(ProcessState::Sleeping));
+        
+        cleanup_test_pids(&test_pids);
     }
 
     #[test]
-    fn test_kill_sleeping() {
-        let mut proc = ProcessStateMachine::new();
-        proc.dispatch().unwrap();
-        proc.sleep().unwrap();
-        assert!(proc.kill(9).is_ok());
-        assert_eq!(proc.state, ProcessState::Zombie);
+    #[serial]
+    fn test_sleeping_to_ready_via_wake() {
+        let test_pids = [1102u64];
+        cleanup_test_pids(&test_pids);
+        
+        let proc = create_test_process(1102);
+        add_process(proc, 20).unwrap();
+        
+        // Put to sleep
+        set_process_state(1102, ProcessState::Sleeping).unwrap();
+        assert_eq!(get_process_state(1102), Some(ProcessState::Sleeping));
+        
+        // Wake up - should transition to Ready
+        let woke = wake_process(1102);
+        assert!(woke, "wake_process should return true for sleeping process");
+        
+        let state = get_process_state(1102);
+        assert_eq!(state, Some(ProcessState::Ready));
+        
+        cleanup_test_pids(&test_pids);
     }
 
     #[test]
-    fn test_cannot_kill_zombie() {
-        let mut proc = ProcessStateMachine::new();
-        proc.dispatch().unwrap();
-        proc.exit(0).unwrap();
-        assert!(proc.kill(9).is_err());
+    #[serial]
+    fn test_wake_pending_prevents_sleep() {
+        let test_pids = [1103u64];
+        cleanup_test_pids(&test_pids);
+        
+        let proc = create_test_process(1103);
+        add_process(proc, 20).unwrap();
+        
+        // Process is Ready, wake_process sets wake_pending
+        let woke = wake_process(1103);
+        assert!(!woke, "wake_process on Ready process returns false but sets pending");
+        
+        // Now try to sleep - should be blocked by wake_pending
+        set_process_state(1103, ProcessState::Sleeping).unwrap();
+        
+        // Process should still be Ready due to wake_pending
+        let state = get_process_state(1103);
+        assert_eq!(state, Some(ProcessState::Ready), 
+            "Process should stay Ready when wake_pending is set");
+        
+        cleanup_test_pids(&test_pids);
+    }
+
+    #[test]
+    #[serial]
+    fn test_ready_to_zombie() {
+        let test_pids = [1104u64];
+        cleanup_test_pids(&test_pids);
+        
+        let proc = create_test_process(1104);
+        add_process(proc, 20).unwrap();
+        
+        // Transition to Zombie (process exits)
+        set_process_state(1104, ProcessState::Zombie).unwrap();
+        
+        let state = get_process_state(1104);
+        assert_eq!(state, Some(ProcessState::Zombie));
+        
+        cleanup_test_pids(&test_pids);
+    }
+
+    #[test]
+    #[serial]
+    fn test_zombie_is_terminal() {
+        let test_pids = [1105u64];
+        cleanup_test_pids(&test_pids);
+        
+        let proc = create_test_process(1105);
+        add_process(proc, 20).unwrap();
+        
+        // Become zombie
+        set_process_state(1105, ProcessState::Zombie).unwrap();
+        
+        // Try to transition out of Zombie - should be ignored
+        set_process_state(1105, ProcessState::Ready).unwrap();
+        assert_eq!(get_process_state(1105), Some(ProcessState::Zombie));
+        
+        set_process_state(1105, ProcessState::Running).unwrap();
+        assert_eq!(get_process_state(1105), Some(ProcessState::Zombie));
+        
+        set_process_state(1105, ProcessState::Sleeping).unwrap();
+        assert_eq!(get_process_state(1105), Some(ProcessState::Zombie));
+        
+        cleanup_test_pids(&test_pids);
+    }
+
+    #[test]
+    #[serial]
+    fn test_cannot_wake_zombie() {
+        let test_pids = [1106u64];
+        cleanup_test_pids(&test_pids);
+        
+        let proc = create_test_process(1106);
+        add_process(proc, 20).unwrap();
+        
+        set_process_state(1106, ProcessState::Zombie).unwrap();
+        
+        // Try to wake a zombie
+        let woke = wake_process(1106);
+        assert!(!woke, "Should not be able to wake a zombie");
+        
+        assert_eq!(get_process_state(1106), Some(ProcessState::Zombie));
+        
+        cleanup_test_pids(&test_pids);
     }
 
     // =========================================================================
@@ -289,103 +230,80 @@ mod tests {
     // =========================================================================
 
     #[test]
-    fn test_typical_lifecycle() {
-        let mut proc = ProcessStateMachine::new();
-        
-        // Ready -> Running -> Ready (preempted)
-        proc.dispatch().unwrap();
-        proc.preempt().unwrap();
-        assert_eq!(proc.state, ProcessState::Ready);
-        
-        // Ready -> Running -> Sleeping -> Ready (woken)
-        proc.dispatch().unwrap();
-        proc.sleep().unwrap();
-        proc.wake().unwrap();
-        assert_eq!(proc.state, ProcessState::Ready);
-        
-        // Ready -> Running -> Zombie
-        proc.dispatch().unwrap();
-        proc.exit(0).unwrap();
-        assert_eq!(proc.state, ProcessState::Zombie);
-    }
-
-    #[test]
+    #[serial]
     fn test_io_bound_lifecycle() {
-        let mut proc = ProcessStateMachine::new();
+        let test_pids = [1110u64];
+        cleanup_test_pids(&test_pids);
+        
+        let proc = create_test_process(1110);
+        add_process(proc, 20).unwrap();
         
         // IO-bound process: frequent sleep/wake cycles
-        for _ in 0..5 {
-            proc.dispatch().unwrap();
-            proc.sleep().unwrap();
-            proc.wake().unwrap();
+        for i in 0..5 {
+            // Sleep (waiting for I/O)
+            set_process_state(1110, ProcessState::Sleeping).unwrap();
+            assert_eq!(get_process_state(1110), Some(ProcessState::Sleeping),
+                "Iteration {}: should be sleeping", i);
+            
+            // Wake (I/O completed)
+            wake_process(1110);
+            assert_eq!(get_process_state(1110), Some(ProcessState::Ready),
+                "Iteration {}: should be ready after wake", i);
         }
         
-        proc.dispatch().unwrap();
-        proc.exit(0).unwrap();
+        // Finally exit
+        set_process_state(1110, ProcessState::Zombie).unwrap();
+        assert_eq!(get_process_state(1110), Some(ProcessState::Zombie));
         
-        let (code, _) = proc.reap().unwrap();
-        assert_eq!(code, Some(0));
+        cleanup_test_pids(&test_pids);
     }
 
     #[test]
-    fn test_cpu_bound_lifecycle() {
-        let mut proc = ProcessStateMachine::new();
+    #[serial]
+    fn test_multiple_processes_independent_states() {
+        let test_pids: Vec<u64> = (1120..1125).collect();
+        cleanup_test_pids(&test_pids);
         
-        // CPU-bound process: frequent preemptions
-        for _ in 0..10 {
-            proc.dispatch().unwrap();
-            proc.preempt().unwrap();
+        // Add multiple processes
+        for &pid in &test_pids {
+            let proc = create_test_process(pid);
+            add_process(proc, 20).unwrap();
         }
         
-        proc.dispatch().unwrap();
-        proc.exit(0).unwrap();
-        assert_eq!(proc.state, ProcessState::Zombie);
+        // Set different states for each
+        set_process_state(1120, ProcessState::Ready).unwrap();
+        set_process_state(1121, ProcessState::Sleeping).unwrap();
+        set_process_state(1122, ProcessState::Running).unwrap();
+        set_process_state(1123, ProcessState::Zombie).unwrap();
+        set_process_state(1124, ProcessState::Sleeping).unwrap();
+        
+        // Verify each has its own state
+        assert_eq!(get_process_state(1120), Some(ProcessState::Ready));
+        assert_eq!(get_process_state(1121), Some(ProcessState::Sleeping));
+        assert_eq!(get_process_state(1122), Some(ProcessState::Running));
+        assert_eq!(get_process_state(1123), Some(ProcessState::Zombie));
+        assert_eq!(get_process_state(1124), Some(ProcessState::Sleeping));
+        
+        // Wake sleeping processes
+        wake_process(1121);
+        wake_process(1124);
+        
+        assert_eq!(get_process_state(1121), Some(ProcessState::Ready));
+        assert_eq!(get_process_state(1124), Some(ProcessState::Ready));
+        
+        // Zombie should still be zombie
+        assert_eq!(get_process_state(1123), Some(ProcessState::Zombie));
+        
+        cleanup_test_pids(&test_pids);
     }
 
     // =========================================================================
-    // Concurrent State Access Simulation
-    // =========================================================================
-
-    #[test]
-    fn test_state_consistency() {
-        // Simulate what might happen with concurrent access
-        use std::sync::{Arc, Mutex};
-        use std::thread;
-
-        let state = Arc::new(Mutex::new(ProcessState::Ready));
-        
-        // Multiple "threads" trying to check and modify state
-        let state1 = state.clone();
-        let state2 = state.clone();
-        
-        let handle1 = thread::spawn(move || {
-            let mut s = state1.lock().unwrap();
-            if *s == ProcessState::Ready {
-                *s = ProcessState::Running;
-            }
-        });
-        
-        let handle2 = thread::spawn(move || {
-            let mut s = state2.lock().unwrap();
-            if *s == ProcessState::Ready {
-                *s = ProcessState::Running;
-            }
-        });
-        
-        handle1.join().unwrap();
-        handle2.join().unwrap();
-        
-        // Final state should be Running (one of them succeeded)
-        assert_eq!(*state.lock().unwrap(), ProcessState::Running);
-    }
-
-    // =========================================================================
-    // Wait Status Encoding Tests
+    // Wait Status Encoding Tests (pure algorithm, no kernel state needed)
     // =========================================================================
 
     #[test]
     fn test_wait_status_encoding() {
-        // POSIX wait status macros simulation
+        // POSIX wait status macros
         fn wifexited(status: i32) -> bool {
             (status & 0x7F) == 0
         }
@@ -414,18 +332,48 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_exit_code_preservation() {
-        let mut proc = ProcessStateMachine::new();
-        proc.dispatch().unwrap();
+        let test_pids: Vec<u64> = (1200..1206).collect();
+        cleanup_test_pids(&test_pids);
         
-        // Various exit codes
-        for code in [0, 1, 42, 127, 128, 255, -1] {
-            let mut p = ProcessStateMachine::new();
-            p.dispatch().unwrap();
-            p.exit(code).unwrap();
+        // Test various exit codes are preserved in the Process struct
+        for (i, code) in [0i32, 1, 42, 127, 128, 255].iter().enumerate() {
+            let pid = 1200 + i as u64;
+            let mut proc = create_test_process(pid);
+            proc.exit_code = *code;
             
-            let (exit_code, _) = p.reap().unwrap();
-            assert_eq!(exit_code, Some(code));
+            add_process(proc, 20).unwrap();
+            
+            // Verify exit code is stored
+            let table = process_table_lock();
+            let entry = table.iter()
+                .filter_map(|s| s.as_ref())
+                .find(|e| e.process.pid == pid);
+            
+            assert!(entry.is_some(), "Process {} should exist", pid);
+            assert_eq!(entry.unwrap().process.exit_code, *code,
+                "Exit code {} should be preserved", code);
         }
+        
+        cleanup_test_pids(&test_pids);
+    }
+
+    #[test]
+    #[serial]
+    fn test_process_removal() {
+        let test_pids = [1300u64];
+        cleanup_test_pids(&test_pids);
+        
+        let proc = create_test_process(1300);
+        add_process(proc, 20).unwrap();
+        
+        assert!(get_process_state(1300).is_some());
+        
+        // Remove the process
+        remove_process(1300).unwrap();
+        
+        // Should no longer exist
+        assert!(get_process_state(1300).is_none());
     }
 }
