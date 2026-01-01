@@ -488,31 +488,142 @@ mod tests {
     // =========================================================================
 
     /// set_current_process_state must respect wake_pending too
+    /// 
+    /// CRITICAL: This test must use the ACTUAL set_current_process_state() function,
+    /// not set_process_state(), because that's what the kernel uses!
+    /// The test must:
+    /// 1. Set up per-CPU current_pid correctly
+    /// 2. Call wake_process() to set wake_pending
+    /// 3. Call set_current_process_state(Sleeping) - MUST NOT SLEEP
     #[test]
     #[serial]
     fn set_current_process_state_respects_pending() {
+        ensure_percpu_init();
+        
         let pid = next_pid();
         add_process(pid, ProcessState::Running);
 
-        // Set as current process
-        // Note: This requires the per-CPU CURRENT_PID to be set
-        // In test environment, we use set_process_state instead which
-        // has the same wake_pending check
+        // CRITICAL: Set this process as the "current" process on CPU 0
+        // This is what makes set_current_process_state() find the right process
+        set_current_pid(Some(pid));
 
-        // Simulate wake arriving
+        // Verify current_pid() returns our PID
+        let curr = current_pid();
+        assert_eq!(curr, Some(pid), 
+            "SETUP BUG: current_pid() should return our test PID after set_current_pid()");
+
+        // Simulate wake arriving (keyboard interrupt)
         wake_process(pid);
 
         let pending = get_wake_pending(pid);
         assert_eq!(pending, Some(true), "Running process should get wake_pending");
 
-        // Try to sleep
-        let _ = set_process_state(pid, ProcessState::Sleeping);
+        // CRITICAL TEST: Call the ACTUAL function the kernel uses!
+        // This is set_current_process_state(), NOT set_process_state()
+        set_current_process_state(ProcessState::Sleeping);
 
         let state = get_state(pid);
+        
+        // Clean up
+        set_current_pid(None);
         cleanup_process(pid);
 
+        // ASSERTION: Process must NOT be sleeping because wake_pending was set
         assert_ne!(state, Some(ProcessState::Sleeping),
-            "set_process_state with wake_pending must not sleep");
+            "BUG DETECTED: set_current_process_state() allowed sleep despite wake_pending!\n\
+             This is the EXACT bug that causes shell to hang:\n\
+             1. Shell calls add_waiter(pid)\n\
+             2. Keyboard interrupt: wake_all_waiters() -> wake_process(pid)\n\
+             3. wake_process sets wake_pending=true (shell is Running)\n\
+             4. Shell calls set_current_process_state(Sleeping)\n\
+             5. BUG: Shell goes to sleep, misses the keyboard input!\n\
+             \n\
+             The fix: set_current_process_state() must check wake_pending before sleeping.");
+    }
+
+    /// Test that set_current_process_state returns early when current_pid is None
+    #[test]
+    #[serial]  
+    fn set_current_process_state_no_current_process() {
+        ensure_percpu_init();
+        
+        let pid = next_pid();
+        add_process(pid, ProcessState::Ready);
+        
+        // DON'T set current_pid - leave it as None
+        set_current_pid(None);
+        
+        // Verify current_pid() returns None
+        let curr = current_pid();
+        assert_eq!(curr, None, "current_pid should be None for this test");
+        
+        // Call set_current_process_state - should do nothing since no current process
+        set_current_process_state(ProcessState::Sleeping);
+        
+        // Process state should be unchanged (still Ready)
+        let state = get_state(pid);
+        cleanup_process(pid);
+        
+        assert_eq!(state, Some(ProcessState::Ready),
+            "set_current_process_state() with no current process should not affect other processes");
+    }
+
+    /// Test the REAL flow: set_current_pid + wake + set_current_process_state
+    ///
+    /// BUG FOUND: wake_process() was NOT setting need_resched when the process
+    /// was already Running/Ready and only wake_pending was set.
+    /// This caused foreground processes to have input latency.
+    #[test]
+    #[serial]
+    fn real_keyboard_read_flow_with_set_current_process_state() {
+        ensure_percpu_init();
+        
+        let shell_pid = next_pid();
+        add_process(shell_pid, ProcessState::Running);
+        
+        // Set shell as current process (simulates shell is running)
+        set_current_pid(Some(shell_pid));
+        
+        // Clear need_resched before test
+        let _ = check_need_resched();
+        
+        // STEP 1: Shell notices no input, will register as waiter
+        let mut waiters = KeyboardWaiterList::new();
+        waiters.add_waiter(shell_pid);
+        
+        // RACE CONDITION: Keyboard interrupt fires BEFORE shell sleeps
+        waiters.wake_all_waiters(); // This calls wake_process(shell_pid)
+        
+        // wake_process should have set wake_pending because shell is Running
+        let pending = get_wake_pending(shell_pid);
+        assert_eq!(pending, Some(true), "wake_process on Running should set wake_pending");
+        
+        // BUG TEST: need_resched MUST be set even when only wake_pending is set!
+        // This was the bug - need_resched was only set when woke=true (Sleeping->Ready)
+        // but NOT when set_pending=true (Running/Ready -> wake_pending=true)
+        let need_resched = check_need_resched();
+        assert!(need_resched,
+            "BUG DETECTED: wake_process() did NOT set need_resched when wake_pending was set!\n\
+             This causes foreground process latency:\n\
+             - Keyboard interrupt arrives while shell is Running\n\
+             - wake_process() sets wake_pending=true but NOT need_resched\n\
+             - Shell continues running until time slice expires\n\
+             - User experiences input lag\n\
+             \n\
+             FIX: wake_process() must set need_resched when set_pending=true, not just when woke=true");
+        
+        // STEP 2: Shell calls set_current_process_state(Sleeping)
+        // This should NOT sleep because wake_pending is set
+        set_current_process_state(ProcessState::Sleeping);
+        
+        let state = get_state(shell_pid);
+        
+        // Clean up - don't call set_current_pid(None) as it triggers CR3 operations
+        cleanup_process(shell_pid);
+        
+        // CRITICAL ASSERTION
+        assert_ne!(state, Some(ProcessState::Sleeping),
+            "Shell went to sleep despite pending keyboard input!");
     }
 
     // =========================================================================

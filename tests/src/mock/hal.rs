@@ -12,6 +12,11 @@ use super::devices::{DeviceManager, IoAccess};
 use super::memory::PhysicalMemory;
 use super::pci::PciBus;
 
+// Re-export x86_64 types for mock functions
+use x86_64::structures::paging::{PhysFrame, Size4KiB};
+use x86_64::registers::control::Cr3Flags;
+use x86_64::PhysAddr;
+
 // Global HAL instance (thread-local for test isolation)
 thread_local! {
     static HAL: RwLock<Option<Arc<HardwareAbstractionLayer>>> = RwLock::new(None);
@@ -435,6 +440,12 @@ pub fn read_cr3() -> u64 {
     }
 }
 
+pub fn write_cr3(value: u64) {
+    if hal_initialized() {
+        get_hal().write_cr3(value);
+    }
+}
+
 pub fn hlt() {
     if hal_initialized() {
         get_hal().hlt();
@@ -568,6 +579,27 @@ pub unsafe fn memcpy(dst: *mut u8, src: *const u8, count: usize) {
     } else {
         core::ptr::copy_nonoverlapping(src, dst, count);
     }
+}
+
+// ===========================================================================
+// Mock functions for x86_64 crate hardware calls
+// These are drop-in replacements that return compatible types
+// ===========================================================================
+
+/// Mock for Cr3::read() - returns (PhysFrame, Cr3Flags) like the real function
+pub fn mock_cr3_read() -> (PhysFrame<Size4KiB>, Cr3Flags) {
+    let cr3_value = read_cr3();
+    // Create a PhysFrame from the CR3 value (must be page-aligned)
+    let addr = if cr3_value == 0 { 0x1000 } else { cr3_value & !0xFFF };
+    let frame = PhysFrame::from_start_address(PhysAddr::new(addr))
+        .expect("CR3 mock: invalid physical address");
+    (frame, Cr3Flags::empty())
+}
+
+/// Mock for Cr3::write(frame, flags) - takes PhysFrame and Cr3Flags like the real function
+pub fn mock_cr3_write(frame: PhysFrame<Size4KiB>, _flags: Cr3Flags) {
+    let cr3_value = frame.start_address().as_u64();
+    write_cr3(cr3_value);
 }
 
 #[cfg(test)]

@@ -53,6 +53,7 @@ fn preprocess_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
 /// Removes #[global_allocator], #[alloc_error_handler], and extern crate alloc
 /// Removes #[cfg(test)] guards (test framework always runs in test mode)
 /// Replaces alloc:: with std:: for std compatibility
+/// Replaces x86_64 crate hardware calls with mock HAL calls
 fn preprocess_file(src: &Path, dst: &Path) -> std::io::Result<()> {
     let file = fs::File::open(src)?;
     let reader = BufReader::new(file);
@@ -148,6 +149,11 @@ fn preprocess_file(src: &Path, dst: &Path) -> std::io::Result<()> {
                 .replace("alloc::alloc::alloc_zeroed", "std::alloc::alloc_zeroed")
                 .replace("alloc::alloc::dealloc", "std::alloc::dealloc")
                 .replace("alloc::alloc::realloc", "std::alloc::realloc")
+                // Replace x86_64 crate Cr3 hardware calls with mock HAL
+                // Must replace full path to avoid partial matches
+                .replace("x86_64::registers::control::Cr3::read()", "crate::mock::hal::mock_cr3_read()")
+                .replace("Cr3::read()", "crate::mock::hal::mock_cr3_read()")
+                .replace("Cr3::write(", "crate::mock::hal::mock_cr3_write(")
         };
         
         writeln!(output, "{}", processed_line)?;

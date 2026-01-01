@@ -748,10 +748,16 @@ fn wake_process_internal(pid: Pid, try_lock: bool) -> bool {
     // CRITICAL: Signal that a reschedule is needed when a process wakes up.
     // This allows interactive processes (e.g., waiting for keyboard input) to
     // preempt background processes immediately, preventing starvation.
-    if woke {
+    //
+    // BUG FIX: Also set need_resched when wake_pending is set!
+    // Previously, if the process was Running/Ready when wake_process() was called,
+    // we only set wake_pending but NOT need_resched. This caused the process to
+    // continue running until its time slice expired, causing input latency.
+    if woke || set_pending {
         let cpu_id = crate::smp::current_cpu_id();
         super::percpu::set_need_resched(cpu_id);
-        crate::ktrace!("wake_process: PID {} woke, set need_resched on CPU {}", pid, cpu_id);
+        crate::ktrace!("wake_process: PID {} woke={} pending={}, set need_resched on CPU {}", 
+            pid, woke, set_pending, cpu_id);
     }
 
     woke

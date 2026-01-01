@@ -50,6 +50,7 @@ mod smp_race_bugs;
 mod foreground_responsiveness_bugs;
 mod deep_responsiveness_bugs;
 mod keyboard_read_flow_bugs;
+mod single_process_slice_exhausted_bug;
 
 pub use basic::*;
 pub use eevdf::*;
