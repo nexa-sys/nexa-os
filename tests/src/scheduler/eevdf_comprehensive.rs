@@ -8,8 +8,10 @@ mod tests {
     // EEVDF constants from scheduler
     use crate::scheduler::{
         BASE_SLICE_NS, MAX_SLICE_NS, NICE_0_WEIGHT, SCHED_GRANULARITY_NS,
-        nice_to_weight, calc_vdeadline,
+        nice_to_weight, calc_vdeadline, is_eligible, ProcessEntry, SchedPolicy,
     };
+    use crate::scheduler::percpu::{PerCpuRunQueue, RunQueueEntry};
+    use crate::process::ProcessState;
 
     // =========================================================================
     // Nice to Weight Conversion Tests
@@ -164,34 +166,38 @@ mod tests {
     // Eligibility Tests
     // =========================================================================
 
+    /// Helper to create test ProcessEntry
+    fn make_test_entry(pid: u64, lag: i64) -> ProcessEntry {
+        let mut entry = ProcessEntry::empty();
+        entry.process.pid = pid;
+        entry.process.state = ProcessState::Ready;
+        entry.nice = 0;
+        entry.policy = SchedPolicy::Normal;
+        entry.weight = nice_to_weight(0);
+        entry.slice_ns = BASE_SLICE_NS;
+        entry.slice_remaining_ns = BASE_SLICE_NS;
+        entry.vruntime = 1000;
+        entry.vdeadline = calc_vdeadline(1000, BASE_SLICE_NS, nice_to_weight(0));
+        entry.lag = lag;
+        entry
+    }
+
     #[test]
     fn test_eligibility_concept() {
         // A task is eligible if its lag >= 0
-        // lag = ideal_service - actual_service
-        // Task is eligible when vruntime <= min_vruntime (simplified)
+        // Use real is_eligible from kernel
 
-        struct Task {
-            vruntime: u64,
-        }
+        // Task with positive lag (deserves CPU) is eligible
+        let entry_positive = make_test_entry(1, 500);
+        assert!(is_eligible(&entry_positive));
 
-        fn is_eligible(task: &Task, min_vruntime: u64) -> bool {
-            // Using signed comparison for wraparound safety
-            (task.vruntime as i64).wrapping_sub(min_vruntime as i64) <= 0
-        }
+        // Task with zero lag (caught up) is eligible
+        let entry_zero = make_test_entry(2, 0);
+        assert!(is_eligible(&entry_zero));
 
-        let min_vruntime: u64 = 1000;
-
-        // Task with lower vruntime is eligible
-        let task_behind = Task { vruntime: 500 };
-        assert!(is_eligible(&task_behind, min_vruntime));
-
-        // Task with equal vruntime is eligible
-        let task_equal = Task { vruntime: 1000 };
-        assert!(is_eligible(&task_equal, min_vruntime));
-
-        // Task with higher vruntime is not eligible
-        let task_ahead = Task { vruntime: 1500 };
-        assert!(!is_eligible(&task_ahead, min_vruntime));
+        // Task with negative lag (ran too much) is NOT eligible
+        let entry_negative = make_test_entry(3, -500);
+        assert!(!is_eligible(&entry_negative));
     }
 
     // =========================================================================
@@ -340,41 +346,34 @@ mod tests {
         assert_eq!(new_min, 75);
     }
 
+    /// Helper to create RunQueueEntry
+    fn make_rq_entry(pid: u64, vruntime: u64, vdeadline: u64) -> RunQueueEntry {
+        RunQueueEntry {
+            pid,
+            table_index: pid as u16,
+            vdeadline,
+            vruntime,
+            policy: SchedPolicy::Normal,
+            priority: 128,
+            eligible: true,
+        }
+    }
+
     #[test]
     fn test_deadline_ordering() {
         // EEVDF picks task with earliest deadline among eligible tasks
+        // Use real PerCpuRunQueue::pick_next
 
-        struct Task {
-            pid: u64,
-            vruntime: u64,
-            vdeadline: u64,
-        }
+        let mut rq = PerCpuRunQueue::new(0);
+        
+        let weight = nice_to_weight(0);
+        rq.enqueue(make_rq_entry(1, 100, calc_vdeadline(100, BASE_SLICE_NS, weight)));
+        rq.enqueue(make_rq_entry(2, 90, calc_vdeadline(90, BASE_SLICE_NS, weight)));
+        rq.enqueue(make_rq_entry(3, 110, calc_vdeadline(110, BASE_SLICE_NS, weight)));
 
-        impl Task {
-            fn new(pid: u64, vruntime: u64, nice: i8) -> Self {
-                let weight = nice_to_weight(nice);
-                let vdeadline = calc_vdeadline(vruntime, BASE_SLICE_NS, weight);
-                Self { pid, vruntime, vdeadline }
-            }
-        }
+        let next = rq.pick_next();
 
-        fn pick_next(tasks: &[Task], min_vruntime: u64) -> Option<u64> {
-            tasks.iter()
-                .filter(|t| (t.vruntime as i64).wrapping_sub(min_vruntime as i64) <= 0)
-                .min_by_key(|t| t.vdeadline)
-                .map(|t| t.pid)
-        }
-
-        let tasks = vec![
-            Task::new(1, 100, 0),
-            Task::new(2, 90, 0),
-            Task::new(3, 110, 0),
-        ];
-
-        let min_vruntime = 100;
-        let next = pick_next(&tasks, min_vruntime);
-
-        // Should pick task 2 (lowest vruntime, all have same deadline offset)
-        assert_eq!(next, Some(2));
+        // Should pick task 2 (lowest vruntime = earliest deadline for same nice)
+        assert_eq!(next.map(|e| e.pid), Some(2));
     }
 }

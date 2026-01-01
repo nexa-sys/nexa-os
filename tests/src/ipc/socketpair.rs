@@ -1,9 +1,11 @@
 //! Socketpair Tests
 //!
 //! Tests for bidirectional socketpair communication using real kernel functions.
+//! NOTE: These tests use #[serial] because they share a global socketpair table.
 
 #[cfg(test)]
 mod tests {
+    use serial_test::serial;
     use crate::pipe::{
         close_socketpair_end, create_socketpair, socketpair_has_data, socketpair_read,
         socketpair_write,
@@ -14,6 +16,7 @@ mod tests {
     // =========================================================================
 
     #[test]
+    #[serial]
     fn test_socketpair_creation() {
         // Create a real socketpair using kernel function
         let pair_id = create_socketpair().expect("Failed to create socketpair");
@@ -31,6 +34,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_socketpair_bidirectional_write_read() {
         let pair_id = create_socketpair().expect("Failed to create socketpair");
 
@@ -55,6 +59,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_socketpair_reverse_direction() {
         let pair_id = create_socketpair().expect("Failed to create socketpair");
 
@@ -79,6 +84,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_socketpair_buffer_independence() {
         let pair_id = create_socketpair().expect("Failed to create socketpair");
 
@@ -108,6 +114,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_socketpair_half_close_end_0() {
         let pair_id = create_socketpair().expect("Failed to create socketpair");
 
@@ -127,6 +134,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_socketpair_half_close_end_1() {
         let pair_id = create_socketpair().expect("Failed to create socketpair");
 
@@ -146,6 +154,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_socketpair_full_close() {
         let pair_id = create_socketpair().expect("Failed to create socketpair");
 
@@ -163,6 +172,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_socketpair_multiple_writes() {
         let pair_id = create_socketpair().expect("Failed to create socketpair");
 
@@ -181,6 +191,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_socketpair_partial_read() {
         let pair_id = create_socketpair().expect("Failed to create socketpair");
 
@@ -207,6 +218,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_socketpair_empty_read() {
         let pair_id = create_socketpair().expect("Failed to create socketpair");
 
@@ -225,6 +237,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_socketpair_concurrent_usage() {
         let pair_id = create_socketpair().expect("Failed to create socketpair");
 
@@ -248,6 +261,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_socketpair_invalid_id() {
         // Test with invalid socketpair ID
         let invalid_id = 9999;
@@ -264,6 +278,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_multiple_socketpairs() {
         // Create multiple socketpairs
         let pair1 = create_socketpair().expect("Failed to create pair 1");
@@ -290,6 +305,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_socketpair_binary_data() {
         let pair_id = create_socketpair().expect("Failed to create socketpair");
 
@@ -309,6 +325,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_socketpair_echo_pattern() {
         // Common IPC pattern: send request, receive response
         let pair_id = create_socketpair().expect("Failed to create socketpair");

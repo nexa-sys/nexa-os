@@ -10,11 +10,10 @@
 #[cfg(test)]
 mod tests {
     use crate::scheduler::{
-        nice_to_weight, BASE_SLICE_NS, MAX_SLICE_NS, NICE_0_WEIGHT, SCHED_GRANULARITY_NS,
+        calc_delta_vruntime, calc_vdeadline, get_min_vruntime, nice_to_weight, BASE_SLICE_NS,
+        MAX_SLICE_NS, NICE_0_WEIGHT, SCHED_GRANULARITY_NS,
     };
 
-    // Local implementations for testing (since priority module is private)
-    
     /// Convert milliseconds to nanoseconds
     #[inline]
     const fn ms_to_ns(ms: u64) -> u64 {
@@ -25,30 +24,6 @@ mod tests {
     #[inline]
     const fn ns_to_ms(ns: u64) -> u64 {
         ns / 1_000_000
-    }
-    
-    /// Calculate the weighted vruntime delta
-    #[inline]
-    fn calc_delta_vruntime(delta_exec_ns: u64, weight: u64) -> u64 {
-        if weight == 0 {
-            return delta_exec_ns;
-        }
-        ((delta_exec_ns as u128 * NICE_0_WEIGHT as u128) / weight as u128) as u64
-    }
-    
-    /// Calculate virtual deadline for a process
-    #[inline]
-    fn calc_vdeadline(vruntime: u64, slice_ns: u64, weight: u64) -> u64 {
-        if weight == 0 {
-            return vruntime.saturating_add(slice_ns);
-        }
-        let delta = ((slice_ns as u128 * NICE_0_WEIGHT as u128) / weight as u128) as u64;
-        vruntime.saturating_add(delta)
-    }
-    
-    /// Get minimum vruntime (stub)
-    fn get_min_vruntime() -> u64 {
-        0
     }
 
     // =========================================================================

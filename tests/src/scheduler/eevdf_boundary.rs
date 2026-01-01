@@ -9,9 +9,10 @@
 #[cfg(test)]
 mod tests {
     use crate::scheduler::{
-        nice_to_weight, CpuMask, SchedPolicy, ProcessEntry,
+        nice_to_weight, calc_vdeadline, is_eligible, CpuMask, SchedPolicy, ProcessEntry,
         BASE_SLICE_NS, MAX_SLICE_NS, NICE_0_WEIGHT, SCHED_GRANULARITY_NS,
     };
+    use crate::process::ProcessState;
 
     // =========================================================================
     // Nice to Weight Conversion Tests
@@ -239,11 +240,7 @@ mod tests {
     fn test_vdeadline_calculation() {
         // vdeadline = vruntime + request/weight
         // This gives latency guarantee
-        
-        fn calc_vdeadline(vruntime: u64, request_ns: u64, weight: u64) -> u64 {
-            let slice = request_ns / weight;
-            vruntime.saturating_add(slice)
-        }
+        // Use real calc_vdeadline from kernel
         
         let vruntime = 1000u64;
         let request = 4096u64; // 4096ns request
@@ -256,10 +253,7 @@ mod tests {
     #[test]
     fn test_vdeadline_higher_priority() {
         // Higher weight (lower nice) should get earlier deadline
-        fn calc_vdeadline(vruntime: u64, request_ns: u64, weight: u64) -> u64 {
-            let slice = request_ns / weight;
-            vruntime.saturating_add(slice)
-        }
+        // Use real calc_vdeadline from kernel
         
         let vruntime = 1000u64;
         let request = 1_000_000u64; // 1ms
@@ -277,24 +271,38 @@ mod tests {
     // Eligibility Tests
     // =========================================================================
 
+    /// Helper to create test ProcessEntry with specific lag
+    fn make_entry_with_lag(pid: u64, lag: i64) -> ProcessEntry {
+        let mut entry = ProcessEntry::empty();
+        entry.process.pid = pid;
+        entry.process.state = ProcessState::Ready;
+        entry.nice = 0;
+        entry.policy = SchedPolicy::Normal;
+        entry.weight = nice_to_weight(0);
+        entry.slice_ns = BASE_SLICE_NS;
+        entry.slice_remaining_ns = BASE_SLICE_NS;
+        entry.vruntime = 1000;
+        entry.vdeadline = 1000 + BASE_SLICE_NS;
+        entry.lag = lag;
+        entry
+    }
+
     #[test]
     fn test_eligibility_check() {
         // In EEVDF, a process is eligible if its lag >= 0
-        // lag = ideal_service - actual_service
+        // Use real is_eligible from kernel
         
-        fn is_eligible(vruntime: u64, min_vruntime: u64, weight: u64, total_weight: u64) -> bool {
-            // Simplified eligibility: vruntime <= min_vruntime + epsilon
-            // Real implementation considers lag
-            vruntime <= min_vruntime.saturating_add(SCHED_GRANULARITY_NS)
-        }
+        // Process with positive lag (hasn't run enough) is eligible
+        let entry_positive = make_entry_with_lag(1, 1000);
+        assert!(is_eligible(&entry_positive));
         
-        let min_vruntime = 1000u64;
+        // Process with zero lag (caught up) is eligible
+        let entry_zero = make_entry_with_lag(2, 0);
+        assert!(is_eligible(&entry_zero));
         
-        // Process with low vruntime is eligible
-        assert!(is_eligible(900, min_vruntime, NICE_0_WEIGHT, NICE_0_WEIGHT * 4));
-        
-        // Process with vruntime close to min is eligible
-        assert!(is_eligible(1000, min_vruntime, NICE_0_WEIGHT, NICE_0_WEIGHT * 4));
+        // Process with negative lag (ran too much) is NOT eligible
+        let entry_negative = make_entry_with_lag(3, -1000);
+        assert!(!is_eligible(&entry_negative));
     }
 
     // =========================================================================

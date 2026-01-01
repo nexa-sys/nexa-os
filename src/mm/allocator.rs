@@ -49,6 +49,55 @@ const HEAP_MAGIC: u32 = 0xDEADBEEF;
 const POISON_BYTE: u8 = 0xCC;
 
 // =============================================================================
+// Buddy Allocator Helper Functions (Exported for testing)
+// =============================================================================
+
+/// Calculate minimum order needed for a given size
+/// Order 0 = 1 page (4KB), Order 1 = 2 pages (8KB), etc.
+#[inline]
+pub const fn size_to_order(size: usize) -> usize {
+    if size <= PAGE_SIZE {
+        return 0;
+    }
+    let pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
+    // Round up to next power of 2
+    (usize::BITS - (pages - 1).leading_zeros()) as usize
+}
+
+/// Convert order to size in bytes
+#[inline]
+pub const fn order_to_size(order: usize) -> usize {
+    PAGE_SIZE << order
+}
+
+/// Calculate buddy address by XORing with block size
+/// Buddy pairs differ only in the bit position corresponding to block size
+#[inline]
+pub const fn get_buddy_addr(addr: u64, order: usize) -> u64 {
+    let block_size = (PAGE_SIZE << order) as u64;
+    addr ^ block_size
+}
+
+/// Check if two addresses form a valid buddy pair at given order
+#[inline]
+pub const fn is_valid_buddy_pair(addr1: u64, addr2: u64, order: usize) -> bool {
+    let block_size = (PAGE_SIZE << order) as u64;
+    // Check alignment
+    if addr1 & (block_size - 1) != 0 || addr2 & (block_size - 1) != 0 {
+        return false;
+    }
+    // XOR check: buddies differ only in the buddy bit
+    (addr1 ^ addr2) == block_size
+}
+
+/// Check if address is aligned to the given order
+#[inline]
+pub const fn is_order_aligned(addr: u64, order: usize) -> bool {
+    let alignment = (PAGE_SIZE << order) as u64;
+    addr & (alignment - 1) == 0
+}
+
+// =============================================================================
 // Physical Frame Allocator (Buddy System)
 // =============================================================================
 

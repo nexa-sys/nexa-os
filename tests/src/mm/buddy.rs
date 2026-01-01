@@ -1,10 +1,14 @@
 //! Buddy Allocator edge case tests
 //!
 //! Tests for physical memory allocator boundary conditions and fragmentation.
+//! Uses REAL kernel functions from crate::mm::allocator
 
 #[cfg(test)]
 mod tests {
-    use crate::mm::allocator::BuddyStats;
+    use crate::mm::allocator::{
+        BuddyStats, get_buddy_addr, is_order_aligned, is_valid_buddy_pair,
+        order_to_size, size_to_order,
+    };
     
     // =========================================================================
     // Buddy Allocator Constants Tests
@@ -13,28 +17,26 @@ mod tests {
     #[test]
     fn test_buddy_max_order() {
         const MAX_ORDER: usize = 11;
-        const PAGE_SIZE: usize = 4096;
         
         // Max allocation = 2^11 pages = 2048 pages = 8MB
-        let max_alloc = PAGE_SIZE << MAX_ORDER;
+        let max_alloc = order_to_size(MAX_ORDER);
         assert_eq!(max_alloc, 8 * 1024 * 1024);
     }
 
     #[test]
     fn test_buddy_page_size() {
-        const PAGE_SIZE: usize = 4096;
-        
-        assert!(PAGE_SIZE.is_power_of_two());
-        assert_eq!(PAGE_SIZE, 0x1000);
+        // Order 0 = 1 page = 4KB
+        let page_size = order_to_size(0);
+        assert!(page_size.is_power_of_two());
+        assert_eq!(page_size, 0x1000);
     }
 
     #[test]
     fn test_buddy_order_sizes() {
-        const PAGE_SIZE: usize = 4096;
         const MAX_ORDER: usize = 11;
         
         let order_sizes: Vec<usize> = (0..=MAX_ORDER)
-            .map(|order| PAGE_SIZE << order)
+            .map(|order| order_to_size(order))
             .collect();
         
         // Verify each order is double the previous
@@ -44,23 +46,12 @@ mod tests {
     }
 
     // =========================================================================
-    // Order Calculation Tests
+    // Order Calculation Tests (using REAL kernel functions)
     // =========================================================================
 
     #[test]
     fn test_size_to_order() {
-        const PAGE_SIZE: usize = 4096;
-        
-        // Calculate minimum order needed for a given size
-        fn size_to_order(size: usize) -> usize {
-            if size <= PAGE_SIZE {
-                return 0;
-            }
-            let pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
-            // Round up to next power of 2
-            (usize::BITS - (pages - 1).leading_zeros()) as usize
-        }
-        
+        // Use REAL kernel function
         assert_eq!(size_to_order(1), 0);
         assert_eq!(size_to_order(4096), 0);
         assert_eq!(size_to_order(4097), 1);
@@ -70,91 +61,113 @@ mod tests {
 
     #[test]
     fn test_order_to_size() {
-        const PAGE_SIZE: usize = 4096;
-        
-        fn order_to_size(order: usize) -> usize {
-            PAGE_SIZE << order
-        }
-        
+        // Use REAL kernel function
         assert_eq!(order_to_size(0), 4096);
         assert_eq!(order_to_size(1), 8192);
         assert_eq!(order_to_size(2), 16384);
         assert_eq!(order_to_size(10), 4 * 1024 * 1024);
     }
 
+    #[test]
+    fn test_size_order_roundtrip() {
+        // Size -> Order -> Size should be >= original (rounding up)
+        for size in [1, 100, 4096, 4097, 8192, 8193, 65536] {
+            let order = size_to_order(size);
+            let result_size = order_to_size(order);
+            assert!(result_size >= size, "size={} order={} result={}", size, order, result_size);
+        }
+    }
+
     // =========================================================================
-    // Buddy Pairing Tests
+    // Buddy Pairing Tests (using REAL kernel functions)
     // =========================================================================
 
     #[test]
     fn test_buddy_address_calculation() {
-        const PAGE_SIZE: u64 = 4096;
-        
-        // Calculate buddy address by XORing with block size
-        fn get_buddy(addr: u64, order: usize) -> u64 {
-            let block_size = PAGE_SIZE << order;
-            addr ^ block_size
-        }
+        // Use REAL kernel function get_buddy_addr
         
         // Order 0: 4KB blocks
-        assert_eq!(get_buddy(0x1000, 0), 0x0000);
-        assert_eq!(get_buddy(0x0000, 0), 0x1000);
+        assert_eq!(get_buddy_addr(0x1000, 0), 0x0000);
+        assert_eq!(get_buddy_addr(0x0000, 0), 0x1000);
         
         // Order 1: 8KB blocks
-        assert_eq!(get_buddy(0x2000, 1), 0x0000);
-        assert_eq!(get_buddy(0x0000, 1), 0x2000);
+        assert_eq!(get_buddy_addr(0x2000, 1), 0x0000);
+        assert_eq!(get_buddy_addr(0x0000, 1), 0x2000);
+        
+        // Buddy of buddy should be original
+        assert_eq!(get_buddy_addr(get_buddy_addr(0x4000, 2), 2), 0x4000);
     }
 
     #[test]
     fn test_buddy_is_valid_pair() {
-        const PAGE_SIZE: u64 = 4096;
-        
-        // Buddy pair validation: Two addresses are buddies if:
-        // 1. They XOR to the block size for that order
-        // 2. Both addresses are aligned to the block size
-        // 3. They are from the same parent block (lower bits must match)
-        fn is_valid_buddy_pair(addr1: u64, addr2: u64, order: usize) -> bool {
-            let block_size = PAGE_SIZE << order;
-            // Check alignment
-            if addr1 & (block_size - 1) != 0 || addr2 & (block_size - 1) != 0 {
-                return false;
-            }
-            // XOR check: buddies differ only in the buddy bit
-            (addr1 ^ addr2) == block_size
-        }
+        // Use REAL kernel function is_valid_buddy_pair
         
         // Valid pairs: addresses differ exactly by block_size and are aligned
-        assert!(is_valid_buddy_pair(0x0000, 0x1000, 0));  // Order 0: 4KB buddies at 0 and 4KB
-        assert!(is_valid_buddy_pair(0x0000, 0x2000, 1));  // Order 1: 8KB buddies at 0 and 8KB
+        assert!(is_valid_buddy_pair(0x0000, 0x1000, 0));  // Order 0: 4KB buddies
+        assert!(is_valid_buddy_pair(0x0000, 0x2000, 1));  // Order 1: 8KB buddies
+        assert!(is_valid_buddy_pair(0x4000, 0x0000, 2));  // Order 2: 16KB buddies
         
         // Invalid pairs
         assert!(!is_valid_buddy_pair(0x0000, 0x2000, 0)); // 0x2000 is not 4KB-buddy of 0
-        // 0x1000 and 0x3000 at order 1: 0x1000 is not aligned to 8KB
-        assert!(!is_valid_buddy_pair(0x1000, 0x3000, 1));
+        assert!(!is_valid_buddy_pair(0x1000, 0x3000, 1)); // Not aligned to 8KB
+    }
+
+    #[test]
+    fn test_buddy_symmetry() {
+        // If A is buddy of B, then B is buddy of A
+        // Use properly aligned addresses for each order
+        for order in 0..8 {
+            let block_size = order_to_size(order) as u64;
+            // Use address that is aligned to block_size * 2 (parent block alignment)
+            let addr = block_size * 2;
+            let buddy = get_buddy_addr(addr, order);
+            assert_eq!(get_buddy_addr(buddy, order), addr,
+                "Buddy of buddy should be original at order {}", order);
+            assert!(is_valid_buddy_pair(addr, buddy, order),
+                "addr={:#x} buddy={:#x} should be valid pair at order {}", addr, buddy, order);
+            assert!(is_valid_buddy_pair(buddy, addr, order),
+                "buddy={:#x} addr={:#x} should be valid pair at order {}", buddy, addr, order);
+        }
     }
 
     // =========================================================================
-    // Alignment Tests
+    // Alignment Tests (using REAL kernel functions)
     // =========================================================================
 
     #[test]
     fn test_address_alignment() {
-        const PAGE_SIZE: u64 = 4096;
-        
-        fn is_aligned(addr: u64, order: usize) -> bool {
-            let alignment = PAGE_SIZE << order;
-            addr & (alignment - 1) == 0
-        }
+        // Use REAL kernel function is_order_aligned
         
         // Order 0 alignment (4KB)
-        assert!(is_aligned(0x0000, 0));
-        assert!(is_aligned(0x1000, 0));
-        assert!(!is_aligned(0x1001, 0));
+        assert!(is_order_aligned(0x0000, 0));
+        assert!(is_order_aligned(0x1000, 0));
+        assert!(!is_order_aligned(0x1001, 0));
         
         // Order 1 alignment (8KB)
-        assert!(is_aligned(0x0000, 1));
-        assert!(is_aligned(0x2000, 1));
-        assert!(!is_aligned(0x1000, 1));
+        assert!(is_order_aligned(0x0000, 1));
+        assert!(is_order_aligned(0x2000, 1));
+        assert!(!is_order_aligned(0x1000, 1));
+        
+        // Order 2 alignment (16KB)
+        assert!(is_order_aligned(0x0000, 2));
+        assert!(is_order_aligned(0x4000, 2));
+        assert!(!is_order_aligned(0x2000, 2));
+    }
+
+    #[test]
+    fn test_alignment_consistency() {
+        // Higher order alignment implies lower order alignment
+        for addr in [0x0000u64, 0x10000, 0x100000] {
+            for high_order in 0..8 {
+                if is_order_aligned(addr, high_order) {
+                    for low_order in 0..high_order {
+                        assert!(is_order_aligned(addr, low_order),
+                            "addr={:#x} aligned to order {} but not to order {}",
+                            addr, high_order, low_order);
+                    }
+                }
+            }
+        }
     }
 
     // =========================================================================
@@ -223,23 +236,22 @@ mod tests {
 
     #[test]
     fn test_zero_size_allocation() {
-        // Zero-size allocation should be rejected
-        let size = 0usize;
-        assert_eq!(size, 0);
-        // Allocator should return error or minimum allocation
+        // Zero-size should map to order 0 (minimum allocation)
+        let order = size_to_order(0);
+        assert_eq!(order, 0);
+        assert_eq!(order_to_size(order), 4096);
     }
 
     #[test]
     fn test_max_size_allocation() {
-        const PAGE_SIZE: usize = 4096;
         const MAX_ORDER: usize = 11;
         
-        let max_size = PAGE_SIZE << MAX_ORDER;
+        let max_size = order_to_size(MAX_ORDER);
         assert_eq!(max_size, 8 * 1024 * 1024);
         
-        // Allocation larger than max should fail
-        let too_large = max_size + 1;
-        assert!(too_large > max_size);
+        // Size larger than max would need order > MAX_ORDER
+        let order = size_to_order(max_size + 1);
+        assert!(order > MAX_ORDER);
     }
 
     #[test]
@@ -248,6 +260,7 @@ mod tests {
         // This creates holes in the free list
         
         let allocations = [(0, "block1"), (2, "block2"), (0, "block3"), (2, "block4")];
+        let _ = allocations; // Use it
         
         // After freeing block2 and block3, we have fragmentation
         // Order 2 hole at former block2 position
@@ -259,7 +272,7 @@ mod tests {
 
     #[test]
     fn test_memory_exhaustion() {
-        let mut pages_free = 100u64;
+        let pages_free = 100u64;
         let request_pages = 128u64;
         
         // Cannot satisfy request

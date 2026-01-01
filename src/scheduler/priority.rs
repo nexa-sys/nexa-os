@@ -216,16 +216,20 @@ pub fn place_entity(entry: &mut super::types::ProcessEntry, is_new: bool) {
 }
 
 /// Update process state after running for delta_exec nanoseconds
+/// EEVDF lag calculation: lag tracks the difference between ideal and actual service
+/// Higher weight processes should have lag decrease more slowly (they deserve more CPU)
 pub fn update_curr(entry: &mut super::types::ProcessEntry, delta_exec_ns: u64) {
-    // Update vruntime
+    // Update vruntime (weighted virtual time)
     let delta_vrt = calc_delta_vruntime(delta_exec_ns, entry.weight);
     entry.vruntime = entry.vruntime.saturating_add(delta_vrt);
 
     // Decrease remaining slice
     entry.slice_remaining_ns = entry.slice_remaining_ns.saturating_sub(delta_exec_ns);
 
-    // Decrease lag (we consumed CPU time)
-    entry.lag = entry.lag.saturating_sub(delta_exec_ns as i64);
+    // EEVDF lag update: decrease by virtual runtime, not actual runtime
+    // This ensures high-weight processes maintain eligibility longer
+    // lag represents: (ideal_share - actual_received) in virtual time units
+    entry.lag = entry.lag.saturating_sub(delta_vrt as i64);
 
     // Update legacy fields
     entry.total_time = entry.total_time.saturating_add(ns_to_ms(delta_exec_ns));

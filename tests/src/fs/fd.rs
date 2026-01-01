@@ -98,6 +98,7 @@ mod tests {
     // =========================================================================
 
     #[test]
+    #[serial]
     fn test_fd_allocation_sequential() {
         clear_all_handles();
 
@@ -112,6 +113,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_fd_allocation_with_min_fd() {
         clear_all_handles();
 
@@ -124,6 +126,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_fd_allocation_finds_lowest() {
         clear_all_handles();
 
@@ -138,6 +141,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_fd_allocation_exhaustion() {
         clear_all_handles();
 
@@ -154,6 +158,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_fd_allocation_min_fd_too_high() {
         clear_all_handles();
 

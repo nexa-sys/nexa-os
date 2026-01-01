@@ -96,6 +96,7 @@ pub use priority::{
     get_process_sched_info,
     is_eligible,
     set_process_policy,
+    update_curr,
 };
 
 // Re-export core scheduling functions

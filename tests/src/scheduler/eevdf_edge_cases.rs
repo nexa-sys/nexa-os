@@ -6,9 +6,12 @@
 #[cfg(test)]
 mod tests {
     use crate::scheduler::{
-        nice_to_weight, calc_vdeadline,
-        BASE_SLICE_NS, MAX_SLICE_NS, NICE_0_WEIGHT, SCHED_GRANULARITY_NS,
+        calc_delta_vruntime, calc_vdeadline, is_eligible, nice_to_weight, update_curr,
+        ProcessEntry, BASE_SLICE_NS, MAX_SLICE_NS, NICE_0_WEIGHT, SCHED_GRANULARITY_NS,
     };
+    use crate::scheduler::percpu::{PerCpuRunQueue, RunQueueEntry, PERCPU_RQ_SIZE};
+    use crate::scheduler::SchedPolicy;
+    use crate::process::ProcessState;
 
     // =========================================================================
     // EEVDF Constants Tests
@@ -100,22 +103,16 @@ mod tests {
     }
 
     // =========================================================================
-    // Virtual Runtime Calculation Tests
+    // Virtual Runtime Calculation Tests - Using Real Kernel Functions
     // =========================================================================
-
-    /// Calculate weighted virtual runtime increase
-    fn calc_vruntime_delta(actual_time_ns: u64, weight: u64) -> u64 {
-        // vruntime_delta = actual_time * NICE_0_WEIGHT / weight
-        (actual_time_ns as u128 * NICE_0_WEIGHT as u128 / weight as u128) as u64
-    }
 
     #[test]
     fn test_vruntime_nice_zero() {
         // Nice 0 process: vruntime increases at 1:1
         let actual = 1_000_000u64; // 1ms
         let weight = nice_to_weight(0);
-        let delta = calc_vruntime_delta(actual, weight);
-        
+        let delta = calc_delta_vruntime(actual, weight);
+
         assert_eq!(delta, actual);
     }
 
@@ -125,10 +122,10 @@ mod tests {
         let actual = 1_000_000u64;
         let weight_0 = nice_to_weight(0);
         let weight_neg10 = nice_to_weight(-10);
-        
-        let delta_0 = calc_vruntime_delta(actual, weight_0);
-        let delta_neg10 = calc_vruntime_delta(actual, weight_neg10);
-        
+
+        let delta_0 = calc_delta_vruntime(actual, weight_0);
+        let delta_neg10 = calc_delta_vruntime(actual, weight_neg10);
+
         // Higher weight = slower vruntime increase
         assert!(delta_neg10 < delta_0);
     }
@@ -139,10 +136,10 @@ mod tests {
         let actual = 1_000_000u64;
         let weight_0 = nice_to_weight(0);
         let weight_pos10 = nice_to_weight(10);
-        
-        let delta_0 = calc_vruntime_delta(actual, weight_0);
-        let delta_pos10 = calc_vruntime_delta(actual, weight_pos10);
-        
+
+        let delta_0 = calc_delta_vruntime(actual, weight_0);
+        let delta_pos10 = calc_delta_vruntime(actual, weight_pos10);
+
         // Lower weight = faster vruntime increase
         assert!(delta_pos10 > delta_0);
     }
@@ -189,109 +186,101 @@ mod tests {
     }
 
     // =========================================================================
-    // EEVDF Eligibility Tests
+    // EEVDF Eligibility Tests (using real ProcessEntry and is_eligible)
     // =========================================================================
 
-    /// Calculate lag: ideal_time - actual_time
-    fn calc_lag(ideal_vruntime: u64, actual_vruntime: u64) -> i64 {
-        ideal_vruntime as i64 - actual_vruntime as i64
-    }
-
-    /// Check if process is eligible (lag >= 0)
-    fn is_eligible(ideal_vruntime: u64, actual_vruntime: u64) -> bool {
-        calc_lag(ideal_vruntime, actual_vruntime) >= 0
+    /// Helper to create test ProcessEntry with specific lag value
+    fn make_entry_with_lag(pid: u64, lag: i64) -> ProcessEntry {
+        let mut entry = ProcessEntry::empty();
+        entry.process.pid = pid;
+        entry.process.state = ProcessState::Ready;
+        entry.nice = 0;
+        entry.policy = SchedPolicy::Normal;
+        entry.weight = nice_to_weight(0);
+        entry.slice_ns = BASE_SLICE_NS;
+        entry.slice_remaining_ns = BASE_SLICE_NS;
+        entry.vruntime = 1000;
+        entry.vdeadline = 1000 + BASE_SLICE_NS;
+        entry.lag = lag;
+        entry
     }
 
     #[test]
     fn test_eligibility_caught_up() {
-        // Process that has run its fair share
-        let ideal = 1000u64;
-        let actual = 1000u64;
+        // Process that has run its fair share (lag = 0)
+        let entry = make_entry_with_lag(1, 0);
         
-        assert!(is_eligible(ideal, actual));
+        assert!(is_eligible(&entry));
     }
 
     #[test]
     fn test_eligibility_behind() {
         // Process that hasn't run enough (positive lag)
-        let ideal = 1000u64;
-        let actual = 500u64;
+        let entry = make_entry_with_lag(1, 500);
         
-        assert!(is_eligible(ideal, actual));
-        assert!(calc_lag(ideal, actual) > 0);
+        assert!(is_eligible(&entry));
+        assert!(entry.lag > 0);
     }
 
     #[test]
     fn test_eligibility_ahead() {
         // Process that has run too much (negative lag)
-        let ideal = 1000u64;
-        let actual = 1500u64;
+        let entry = make_entry_with_lag(1, -500);
         
-        assert!(!is_eligible(ideal, actual));
-        assert!(calc_lag(ideal, actual) < 0);
+        assert!(!is_eligible(&entry));
+        assert!(entry.lag < 0);
     }
 
     // =========================================================================
-    // EEVDF Selection Tests
+    // EEVDF Selection Tests (using real PerCpuRunQueue::pick_next)
     // =========================================================================
 
-    struct EevdfProcess {
-        pid: u64,
-        vruntime: u64,
-        vdeadline: u64,
-        weight: u64,
-    }
-
-    fn select_next_eevdf(processes: &[EevdfProcess], min_vruntime: u64) -> Option<u64> {
-        // 1. Filter eligible processes (vruntime <= min_vruntime)
-        // 2. Select one with earliest virtual deadline
-        
-        let mut best: Option<&EevdfProcess> = None;
-        
-        for p in processes {
-            // Check eligibility (simplified: vruntime <= min_vruntime + some_threshold)
-            if p.vruntime > min_vruntime + 1000 {
-                continue; // Not eligible
-            }
-            
-            match best {
-                None => best = Some(p),
-                Some(current_best) => {
-                    if p.vdeadline < current_best.vdeadline {
-                        best = Some(p);
-                    }
-                }
-            }
+    /// Helper to create RunQueueEntry for selection tests
+    fn make_rq_entry(pid: u64, vruntime: u64, vdeadline: u64) -> RunQueueEntry {
+        RunQueueEntry {
+            pid,
+            table_index: pid as u16,
+            vdeadline,
+            vruntime,
+            policy: SchedPolicy::Normal,
+            priority: 128,
+            eligible: true,
         }
-        
-        best.map(|p| p.pid)
     }
 
     #[test]
     fn test_eevdf_selection_basic() {
-        let processes = vec![
-            EevdfProcess { pid: 1, vruntime: 100, vdeadline: 200, weight: 1024 },
-            EevdfProcess { pid: 2, vruntime: 100, vdeadline: 150, weight: 1024 },
-            EevdfProcess { pid: 3, vruntime: 100, vdeadline: 300, weight: 1024 },
-        ];
+        // Use real PerCpuRunQueue::pick_next for selection
+        let mut rq = PerCpuRunQueue::new(0);
         
-        let selected = select_next_eevdf(&processes, 100);
+        // Add entries with different deadlines
+        rq.enqueue(make_rq_entry(1, 100, 200));
+        rq.enqueue(make_rq_entry(2, 100, 150));  // Earliest deadline
+        rq.enqueue(make_rq_entry(3, 100, 300));
+        
+        let selected = rq.pick_next();
         
         // Should select process with earliest deadline (PID 2)
-        assert_eq!(selected, Some(2));
+        assert_eq!(selected.map(|e| e.pid), Some(2));
     }
 
     #[test]
     fn test_eevdf_selection_ineligible() {
-        let processes = vec![
-            EevdfProcess { pid: 1, vruntime: 5000, vdeadline: 200, weight: 1024 }, // Ineligible
-            EevdfProcess { pid: 2, vruntime: 100, vdeadline: 250, weight: 1024 },  // Eligible
-        ];
+        // Use real PerCpuRunQueue::pick_next for selection
+        let mut rq = PerCpuRunQueue::new(0);
         
-        let selected = select_next_eevdf(&processes, 100);
+        // Add one ineligible entry (marked as not eligible)
+        let mut entry1 = make_rq_entry(1, 5000, 200);
+        entry1.eligible = false;  // Marked ineligible
+        rq.enqueue(entry1);
+        
+        // Add one eligible entry
+        rq.enqueue(make_rq_entry(2, 100, 250));
+        
+        let selected = rq.pick_next();
         
         // Should select PID 2 (PID 1 is not eligible)
-        assert_eq!(selected, Some(2));
+        assert_eq!(selected.map(|e| e.pid), Some(2));
     }
 
     // =========================================================================
@@ -311,9 +300,9 @@ mod tests {
         // 100 scheduling rounds
         for round in 0..100 {
             if round % 2 == 0 {
-                vruntime_1 += calc_vruntime_delta(time_quantum, weight);
+                vruntime_1 += calc_delta_vruntime(time_quantum, weight);
             } else {
-                vruntime_2 += calc_vruntime_delta(time_quantum, weight);
+                vruntime_2 += calc_delta_vruntime(time_quantum, weight);
             }
         }
         
@@ -328,8 +317,8 @@ mod tests {
         let weight_pos5 = nice_to_weight(5);
         let time_quantum = 1_000_000u64;
         
-        let vruntime_delta_neg5 = calc_vruntime_delta(time_quantum, weight_neg5);
-        let vruntime_delta_pos5 = calc_vruntime_delta(time_quantum, weight_pos5);
+        let vruntime_delta_neg5 = calc_delta_vruntime(time_quantum, weight_neg5);
+        let vruntime_delta_pos5 = calc_delta_vruntime(time_quantum, weight_pos5);
         
         // To have equal vruntime progress, neg5 needs more actual time
         // Ratio should be approximately weight ratio
@@ -349,7 +338,7 @@ mod tests {
         let large_vruntime = u64::MAX - 1_000_000;
         let weight = nice_to_weight(0);
         
-        let delta = calc_vruntime_delta(1_000_000, weight);
+        let delta = calc_delta_vruntime(1_000_000, weight);
         
         // Should handle large values without panic
         let new_vruntime = large_vruntime.saturating_add(delta);
@@ -411,35 +400,83 @@ mod tests {
         assert_eq!(new_vruntime, min_vruntime);
     }
 
+    /// Helper to create a full ProcessEntry for EEVDF testing
+    fn make_test_entry(pid: u64, nice: i8) -> ProcessEntry {
+        let mut entry = ProcessEntry::empty();
+        entry.process.pid = pid;
+        entry.process.state = ProcessState::Ready;
+        entry.nice = nice;
+        entry.policy = SchedPolicy::Normal;
+        entry.weight = nice_to_weight(nice);
+        entry.slice_ns = BASE_SLICE_NS;
+        entry.slice_remaining_ns = BASE_SLICE_NS;
+        entry.vruntime = 0;
+        entry.vdeadline = calc_vdeadline(0, BASE_SLICE_NS, entry.weight);
+        entry.lag = 0;
+        entry
+    }
+
     #[test]
     fn test_starvation_prevention() {
-        // Processes with high priority shouldn't starve others
-        // After enough time, all processes should make progress
+        // Test EEVDF starvation prevention using real update_curr and is_eligible
+        // Even with extreme nice values, low priority process should eventually run
         
-        let mut processes = vec![
-            EevdfProcess { pid: 1, vruntime: 0, vdeadline: 100, weight: nice_to_weight(-20) as u64 },
-            EevdfProcess { pid: 2, vruntime: 0, vdeadline: 1000, weight: nice_to_weight(19) as u64 },
-        ];
+        let mut entry_high = make_test_entry(1, -20);  // Highest priority
+        let mut entry_low = make_test_entry(2, 19);    // Lowest priority
         
         let mut selections = [0u32; 2];
+        let run_time_ns = 1_000_000u64; // 1ms per scheduling round
         
-        // Many scheduling rounds
-        for _ in 0..1000 {
-            // Simplified selection: lowest vruntime wins
-            let selected_idx = if processes[0].vruntime <= processes[1].vruntime { 0 } else { 1 };
+        // Simulate 100 scheduling rounds and print first 10
+        for i in 0..100 {
+            // Check eligibility using real is_eligible function
+            let high_eligible = is_eligible(&entry_high);
+            let low_eligible = is_eligible(&entry_low);
             
-            selections[selected_idx] += 1;
+            // Select based on EEVDF rules: eligible + earliest deadline
+            let selected = if high_eligible && low_eligible {
+                // Both eligible - pick by deadline (lower wins)
+                if entry_high.vdeadline <= entry_low.vdeadline { 0 } else { 1 }
+            } else if high_eligible {
+                0
+            } else if low_eligible {
+                1
+            } else {
+                // Neither eligible - pick one with less negative lag
+                if entry_high.lag >= entry_low.lag { 0 } else { 1 }
+            };
             
-            // Update vruntime
-            let delta = calc_vruntime_delta(1_000_000, processes[selected_idx].weight);
-            processes[selected_idx].vruntime += delta;
+            if i < 10 {
+                eprintln!("Round {}: high(vdl={}, lag={}, elig={}) low(vdl={}, lag={}, elig={}) -> {}",
+                    i, entry_high.vdeadline, entry_high.lag, high_eligible,
+                    entry_low.vdeadline, entry_low.lag, low_eligible,
+                    if selected == 0 { "HIGH" } else { "LOW" });
+            }
+            
+            selections[selected] += 1;
+            
+            // Update the selected entry using real update_curr
+            if selected == 0 {
+                update_curr(&mut entry_high, run_time_ns);
+                // Other process gains lag (it was waiting)
+                entry_low.lag = entry_low.lag.saturating_add(run_time_ns as i64);
+            } else {
+                update_curr(&mut entry_low, run_time_ns);
+                entry_high.lag = entry_high.lag.saturating_add(run_time_ns as i64);
+            }
         }
         
-        // Both processes should get some CPU time
-        assert!(selections[0] > 0, "Process 1 starved");
-        assert!(selections[1] > 0, "Process 2 starved");
+        // CRITICAL: Both processes MUST get some CPU time
+        assert!(selections[0] > 0, "High priority process starved");
+        assert!(selections[1] > 0, "Low priority process starved");
         
-        // High priority should get more
-        assert!(selections[0] > selections[1]);
+        // High priority should get significantly more CPU time
+        assert!(selections[0] > selections[1], 
+                "Higher priority should run more: high={}, low={}", selections[0], selections[1]);
+        
+        // Weight ratio for nice -20 vs nice 19 is about 88:1
+        // High priority should dominate but low priority still gets some time
+        let ratio = selections[0] as f64 / selections[1].max(1) as f64;
+        assert!(ratio > 10.0, "Ratio {} too low for extreme nice difference", ratio);
     }
 }

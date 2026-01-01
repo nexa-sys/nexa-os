@@ -5,6 +5,7 @@
 
 #[cfg(test)]
 mod tests {
+    use serial_test::serial;
     use crate::syscalls::*;
     use crate::syscalls::types::{
         allocate_duplicate_slot, clear_file_handle, 
@@ -151,6 +152,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_kernel_fd_allocation_finds_lowest() {
         // Clear all FD slots first
         clear_all_handles();
@@ -169,6 +171,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_kernel_fd_allocation_min_fd() {
         clear_all_handles();
         
@@ -182,6 +185,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_kernel_fd_allocation_exhaustion() {
         clear_all_handles();
         

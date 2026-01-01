@@ -12,45 +12,14 @@ mod tests {
     use crate::scheduler::{
         nice_to_weight, ProcessEntry, SchedPolicy, CpuMask,
         BASE_SLICE_NS, NICE_0_WEIGHT, MAX_SLICE_NS, SCHED_GRANULARITY_NS,
-        calc_vdeadline, is_eligible,
+        calc_delta_vruntime, calc_delta_vruntime_fast, calc_vdeadline, is_eligible,
     };
     use crate::process::{Process, ProcessState};
-    
-    // Helper functions for vruntime calculation (reimplemented from scheduler priority)
-    #[inline(always)]
-    fn calc_delta_vruntime(delta_exec_ns: u64, weight: u64) -> u64 {
-        if weight == 0 {
-            return delta_exec_ns;
-        }
-        ((delta_exec_ns as u128 * NICE_0_WEIGHT as u128) / weight as u128) as u64
-    }
-    
-    /// Precomputed inverse weights for O(1) vruntime calculation
-    const INV_WEIGHT: [u64; 40] = [
-        48388, 59856, 76040, 92818, 118348, 147320, 184698, 229616, 287308, 360437,
-        449829, 563644, 704093, 875809, 1099582, 1376151, 1717300, 2157191, 2708050, 3363326,
-        4194304, 5237765, 6557202, 8165337, 10153587, 12820798, 15790321, 19976592, 24970740, 31350126,
-        39045157, 49367440, 61356676, 76695844, 95443717, 119304647, 148102320, 186737708, 238609294,
-        286331153,
-    ];
-    
-    #[inline(always)]
-    const fn nice_to_inv_weight(nice: i8) -> u64 {
-        let idx = nice as i32 + 20;
-        let idx = if idx < 0 { 0 } else if idx > 39 { 39 } else { idx as usize };
-        INV_WEIGHT[idx]
-    }
-    
-    #[inline(always)]
-    fn calc_delta_vruntime_fast(delta_exec_ns: u64, nice: i8) -> u64 {
-        let inv_weight = nice_to_inv_weight(nice);
-        ((delta_exec_ns as u128 * NICE_0_WEIGHT as u128 * inv_weight as u128) >> 32) as u64
-    }
-    
+
     fn is_nearly_eligible(entry: &ProcessEntry) -> bool {
         entry.lag >= -1_000_000
     }
-    
+
     fn is_wakeup_eligible(entry: &ProcessEntry) -> bool {
         entry.lag >= -500_000 // WAKEUP_PREEMPT_THRESH_NS
     }

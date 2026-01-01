@@ -14,22 +14,12 @@ use crate::scheduler::percpu::{
     RunQueueEntry, PerCpuRunQueue, PerCpuSchedData, PERCPU_RQ_SIZE,
 };
 use crate::scheduler::ProcessEntry;
-use crate::scheduler::{calc_vdeadline, is_eligible};
+use crate::scheduler::{calc_delta_vruntime, calc_vdeadline, is_eligible};
 use crate::process::ProcessState;
 
 use std::sync::{Arc, Barrier, atomic::{AtomicU64, Ordering}};
 use std::thread;
 use std::time::Duration;
-
-/// Calculate the weighted vruntime delta
-/// delta_vruntime = delta_exec * NICE_0_WEIGHT / weight
-#[inline]
-fn calc_delta_vruntime(delta_exec_ns: u64, weight: u64) -> u64 {
-    if weight == 0 {
-        return delta_exec_ns;
-    }
-    ((delta_exec_ns as u128 * NICE_0_WEIGHT as u128) / weight as u128) as u64
-}
 
 /// Helper to create a test process entry
 fn make_test_entry(pid: u64, nice: i8) -> ProcessEntry {
