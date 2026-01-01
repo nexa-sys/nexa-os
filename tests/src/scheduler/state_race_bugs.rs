@@ -11,7 +11,7 @@ mod tests {
     use crate::scheduler::{
         wake_process, set_process_state, process_table_lock,
         ProcessEntry, SchedPolicy, CpuMask, BASE_SLICE_NS, NICE_0_WEIGHT,
-        calc_vdeadline, nice_to_weight,
+        calc_vdeadline, nice_to_weight, get_process_state,
     };
     use crate::signal::SignalState;
     use crate::numa;
@@ -134,14 +134,6 @@ mod tests {
         }
     }
 
-    fn get_state(pid: Pid) -> Option<ProcessState> {
-        let table = process_table_lock();
-        table.iter()
-            .filter_map(|s| s.as_ref())
-            .find(|e| e.process.pid == pid)
-            .map(|e| e.process.state)
-    }
-
     fn get_wake_pending(pid: Pid) -> Option<bool> {
         let table = process_table_lock();
         table.iter()
@@ -195,7 +187,7 @@ mod tests {
         // Call REAL set_process_state
         let _ = set_process_state(pid, ProcessState::Sleeping);
 
-        let state = get_state(pid);
+        let state = get_process_state(pid);
         let pending = get_wake_pending(pid);
         cleanup_process(pid);
 
@@ -217,7 +209,7 @@ mod tests {
         // Call REAL wake_process on Sleeping
         let woke = wake_process(pid);
 
-        let state = get_state(pid);
+        let state = get_process_state(pid);
         let pending = get_wake_pending(pid);
         cleanup_process(pid);
 
@@ -239,7 +231,7 @@ mod tests {
 
         // Call REAL wake_process on Zombie
         let woke = wake_process(pid);
-        let state = get_state(pid);
+        let state = get_process_state(pid);
 
         cleanup_process(pid);
 
@@ -354,7 +346,7 @@ mod tests {
             // Try to sleep
             let _ = set_process_state(pid, ProcessState::Sleeping);
 
-            if get_state(pid) == Some(ProcessState::Sleeping) {
+            if get_process_state(pid) == Some(ProcessState::Sleeping) {
                 stuck_count += 1;
                 // Recover
                 wake_process(pid);

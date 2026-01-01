@@ -21,6 +21,7 @@ mod tests {
         wake_process, set_process_state, process_table_lock,
         SchedPolicy, ProcessEntry, CpuMask, BASE_SLICE_NS, NICE_0_WEIGHT,
         calc_vdeadline, get_min_vruntime, tick, do_schedule,
+        get_process_state, get_process_vruntime,
     };
     use crate::scheduler::percpu::{init_percpu_sched, check_need_resched, set_need_resched};
     use crate::signal::SignalState;
@@ -165,28 +166,12 @@ mod tests {
         }
     }
 
-    fn get_state(pid: Pid) -> Option<ProcessState> {
-        let table = process_table_lock();
-        table.iter()
-            .filter_map(|s| s.as_ref())
-            .find(|e| e.process.pid == pid)
-            .map(|e| e.process.state)
-    }
-
     fn get_wake_pending(pid: Pid) -> Option<bool> {
         let table = process_table_lock();
         table.iter()
             .filter_map(|s| s.as_ref())
             .find(|e| e.process.pid == pid)
             .map(|e| e.process.wake_pending)
-    }
-
-    fn get_vruntime(pid: Pid) -> Option<u64> {
-        let table = process_table_lock();
-        table.iter()
-            .filter_map(|s| s.as_ref())
-            .find(|e| e.process.pid == pid)
-            .map(|e| e.vruntime)
     }
 
     fn set_wake_pending(pid: Pid, pending: bool) {
@@ -242,7 +227,7 @@ mod tests {
             // Process tries to sleep
             let _ = set_process_state(pid, ProcessState::Sleeping);
 
-            let state = get_state(pid);
+            let state = get_process_state(pid);
             if state == Some(ProcessState::Sleeping) {
                 cleanup_process(pid);
                 panic!("BUG: Timer tick caused wake_pending to be lost!\n\
@@ -304,12 +289,12 @@ mod tests {
         add_process_with_vruntime(shell_pid, ProcessState::Sleeping, 1_000_000_000);
 
         // Get deadlines before wake
-        let bg_vrt_before = get_vruntime(bg_pid).unwrap_or(0);
+        let bg_vrt_before = get_process_vruntime(bg_pid).unwrap_or(0);
 
         // Wake shell
         wake_process(shell_pid);
 
-        let shell_vrt_after = get_vruntime(shell_pid).unwrap_or(u64::MAX);
+        let shell_vrt_after = get_process_vruntime(shell_pid).unwrap_or(u64::MAX);
 
         cleanup_process(bg_pid);
         cleanup_process(shell_pid);
@@ -343,7 +328,7 @@ mod tests {
         let woke2 = wake_process(pid);
         let woke3 = wake_process(pid);
 
-        let state = get_state(pid);
+        let state = get_process_state(pid);
         let pending = get_wake_pending(pid);
 
         cleanup_process(pid);
@@ -380,12 +365,12 @@ mod tests {
         assert_eq!(get_wake_pending(pid), Some(true));
 
         // State query should NOT consume wake_pending
-        let _ = get_state(pid);
+        let _ = get_process_state(pid);
         assert_eq!(get_wake_pending(pid), Some(true),
             "BUG: State query consumed wake_pending!");
 
         // Vruntime query should NOT consume wake_pending
-        let _ = get_vruntime(pid);
+        let _ = get_process_vruntime(pid);
         assert_eq!(get_wake_pending(pid), Some(true),
             "BUG: Vruntime query consumed wake_pending!");
 
@@ -428,7 +413,7 @@ mod tests {
 
         // Now if it tries to sleep, must be blocked
         let _ = set_process_state(pid, ProcessState::Sleeping);
-        let state = get_state(pid);
+        let state = get_process_state(pid);
 
         cleanup_process(pid);
 
@@ -461,7 +446,7 @@ mod tests {
             let _ = tick(1);          // another tick
             let _ = set_process_state(pid, ProcessState::Sleeping);  // blocked
 
-            let state = get_state(pid);
+            let state = get_process_state(pid);
             if state == Some(ProcessState::Sleeping) {
                 cleanup_process(pid);
                 panic!("BUG: Complex wake/tick/sleep sequence lost wake!");
@@ -500,7 +485,7 @@ mod tests {
         // All must be Ready
         let mut stuck = 0;
         for &pid in &pids {
-            if get_state(pid) != Some(ProcessState::Ready) {
+            if get_process_state(pid) != Some(ProcessState::Ready) {
                 stuck += 1;
             }
         }
@@ -538,7 +523,7 @@ mod tests {
         // Try to wake old PID - should fail gracefully
         let woke = wake_process(pid1);
 
-        let state2 = get_state(pid2);
+        let state2 = get_process_state(pid2);
         let pending2 = get_wake_pending(pid2);
 
         cleanup_process(pid2);
@@ -606,7 +591,7 @@ mod tests {
         // In real kernel: do_signal() -> wake_process()
         let woke = wake_process(pid);
 
-        let state = get_state(pid);
+        let state = get_process_state(pid);
         cleanup_process(pid);
 
         assert!(woke, "Signal wake should succeed");
@@ -636,7 +621,7 @@ mod tests {
             wake_process(pid);
             let _ = set_process_state(pid, ProcessState::Sleeping);
 
-            if get_state(pid) == Some(ProcessState::Sleeping) {
+            if get_process_state(pid) == Some(ProcessState::Sleeping) {
                 stuck_count += 1;
                 // Recover
                 wake_process(pid);
@@ -675,7 +660,7 @@ mod tests {
         // Late wake arrives (e.g., timer fired for something the process was waiting for)
         let woke = wake_process(pid);
 
-        let state = get_state(pid);
+        let state = get_process_state(pid);
         cleanup_process(pid);
 
         assert!(!woke, "Cannot wake a Zombie");
@@ -710,7 +695,7 @@ mod tests {
             // After first blocked sleep, process is Ready with pending=false
             // Subsequent sleeps should actually sleep
             if i > 0 {
-                let state = get_state(pid);
+                let state = get_process_state(pid);
                 if state == Some(ProcessState::Sleeping) {
                     // This is expected - second+ sleep should work
                     wake_process(pid); // Wake for next iteration

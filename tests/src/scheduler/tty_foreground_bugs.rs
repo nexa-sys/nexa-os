@@ -36,6 +36,7 @@ mod tests {
         wake_process, set_process_state, process_table_lock,
         SchedPolicy, ProcessEntry, CpuMask, BASE_SLICE_NS, NICE_0_WEIGHT,
         calc_vdeadline, nice_to_weight, get_min_vruntime,
+        get_process_state, get_process_vruntime,
     };
     use crate::scheduler::percpu::{init_percpu_sched, check_need_resched, set_need_resched};
     use crate::signal::SignalState;
@@ -157,28 +158,12 @@ mod tests {
         }
     }
 
-    fn get_state(pid: Pid) -> Option<ProcessState> {
-        let table = process_table_lock();
-        table.iter()
-            .filter_map(|s| s.as_ref())
-            .find(|e| e.process.pid == pid)
-            .map(|e| e.process.state)
-    }
-
     fn get_wake_pending(pid: Pid) -> Option<bool> {
         let table = process_table_lock();
         table.iter()
             .filter_map(|s| s.as_ref())
             .find(|e| e.process.pid == pid)
             .map(|e| e.process.wake_pending)
-    }
-
-    fn get_vruntime(pid: Pid) -> Option<u64> {
-        let table = process_table_lock();
-        table.iter()
-            .filter_map(|s| s.as_ref())
-            .find(|e| e.process.pid == pid)
-            .map(|e| e.vruntime)
     }
 
     fn set_vruntime(pid: Pid, vrt: u64) {
@@ -258,7 +243,7 @@ mod tests {
         // Try to sleep
         let _ = set_process_state(pid, ProcessState::Sleeping);
 
-        let state = get_state(pid);
+        let state = get_process_state(pid);
         let pending = get_wake_pending(pid);
 
         cleanup_process(pid);
@@ -290,7 +275,7 @@ mod tests {
         // Try to sleep
         let _ = set_process_state(pid, ProcessState::Sleeping);
 
-        let state = get_state(pid);
+        let state = get_process_state(pid);
 
         cleanup_process(pid);
 
@@ -315,7 +300,7 @@ mod tests {
             // Process tries to sleep
             let _ = set_process_state(pid, ProcessState::Sleeping);
 
-            if get_state(pid) == Some(ProcessState::Sleeping) {
+            if get_process_state(pid) == Some(ProcessState::Sleeping) {
                 stuck_count += 1;
                 // Recover for next iteration
                 wake_process(pid);
@@ -351,8 +336,8 @@ mod tests {
         // User types, shell wakes
         wake_process(shell_pid);
 
-        let shell_vrt = get_vruntime(shell_pid).unwrap_or(u64::MAX);
-        let bg_vrt = get_vruntime(bg_pid).unwrap_or(0);
+        let shell_vrt = get_process_vruntime(shell_pid).unwrap_or(u64::MAX);
+        let bg_vrt = get_process_vruntime(bg_pid).unwrap_or(0);
 
         cleanup_process(bg_pid);
         cleanup_process(shell_pid);
@@ -380,7 +365,7 @@ mod tests {
 
         wake_process(pid);
 
-        let vrt_after = get_vruntime(pid).unwrap_or(u64::MAX);
+        let vrt_after = get_process_vruntime(pid).unwrap_or(u64::MAX);
 
         cleanup_process(pid);
 
@@ -461,7 +446,7 @@ mod tests {
         add_process_full(pid, ProcessState::Zombie, 0);
 
         let woke = wake_process(pid);
-        let state = get_state(pid);
+        let state = get_process_state(pid);
 
         cleanup_process(pid);
 
@@ -495,9 +480,9 @@ mod tests {
         // User types - shell wakes
         wake_process(shell_pid);
 
-        let shell_vrt = get_vruntime(shell_pid).unwrap_or(u64::MAX);
-        let dhcp_vrt = get_vruntime(dhcp_pid).unwrap_or(0);
-        let shell_state = get_state(shell_pid);
+        let shell_vrt = get_process_vruntime(shell_pid).unwrap_or(u64::MAX);
+        let dhcp_vrt = get_process_vruntime(dhcp_pid).unwrap_or(0);
+        let shell_state = get_process_state(shell_pid);
 
         cleanup_process(dhcp_pid);
         cleanup_process(shell_pid);
@@ -534,8 +519,8 @@ mod tests {
         // User types in vim
         wake_process(vim_pid);
         
-        let vim_vrt = get_vruntime(vim_pid).unwrap_or(u64::MAX);
-        let bg_vrt = get_vruntime(bg_pid).unwrap_or(0);
+        let vim_vrt = get_process_vruntime(vim_pid).unwrap_or(u64::MAX);
+        let bg_vrt = get_process_vruntime(bg_pid).unwrap_or(0);
 
         cleanup_process(bg_pid);
         cleanup_process(shell_pid);
@@ -593,11 +578,11 @@ mod tests {
         
         for i in 0..iterations {
             let _ = set_process_state(pid, ProcessState::Sleeping);
-            if get_state(pid) == Some(ProcessState::Sleeping) {
+            if get_process_state(pid) == Some(ProcessState::Sleeping) {
                 stuck_count += 1;
                 // Recover - try to wake the sleeping process
                 let wake_result = wake_process(pid);
-                let state_after_wake = get_state(pid);
+                let state_after_wake = get_process_state(pid);
                 if wake_result {
                     recovered_count += 1;
                 } else {
@@ -671,7 +656,7 @@ mod tests {
         // Process tries to sleep
         let _ = set_process_state(pid, ProcessState::Sleeping);
 
-        let state = get_state(pid);
+        let state = get_process_state(pid);
 
         cleanup_process(pid);
 
@@ -760,7 +745,7 @@ mod tests {
         }
 
         // Check result
-        let final_state = get_state(shell_pid);
+        let final_state = get_process_state(shell_pid);
         let wake_pending_final = get_wake_pending(shell_pid);
 
         cleanup_process(shell_pid);

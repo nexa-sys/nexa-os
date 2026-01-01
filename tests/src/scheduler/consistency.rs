@@ -11,6 +11,7 @@ mod tests {
     use crate::scheduler::{
         ProcessEntry, CpuMask, SchedPolicy, nice_to_weight, process_table_lock,
         wake_process, set_process_state, BASE_SLICE_NS, NICE_0_WEIGHT, calc_vdeadline,
+        get_process_state,
     };
     use crate::signal::SignalState;
     use crate::numa;
@@ -130,14 +131,6 @@ mod tests {
         }
     }
 
-    fn get_state(pid: Pid) -> Option<ProcessState> {
-        let table = process_table_lock();
-        table.iter()
-            .filter_map(|s| s.as_ref())
-            .find(|e| e.process.pid == pid)
-            .map(|e| e.process.state)
-    }
-
     // =========================================================================
     // Scheduler Invariant Tests - Using REAL process table
     // =========================================================================
@@ -172,7 +165,7 @@ mod tests {
         let pid = next_pid();
         add_process(pid, ProcessState::Zombie);
 
-        let state = get_state(pid);
+        let state = get_process_state(pid);
         cleanup_process(pid);
 
         assert_eq!(state, Some(ProcessState::Zombie));
@@ -188,7 +181,7 @@ mod tests {
         // Use REAL set_process_state
         set_process_state(pid, ProcessState::Sleeping);
         
-        let state = get_state(pid);
+        let state = get_process_state(pid);
         cleanup_process(pid);
 
         assert_eq!(state, Some(ProcessState::Sleeping));
@@ -206,10 +199,10 @@ mod tests {
 
         // Use REAL set_process_state
         set_process_state(pid, ProcessState::Running);
-        let state1 = get_state(pid);
+        let state1 = get_process_state(pid);
 
         set_process_state(pid, ProcessState::Sleeping);
-        let state2 = get_state(pid);
+        let state2 = get_process_state(pid);
 
         cleanup_process(pid);
 
@@ -238,7 +231,7 @@ mod tests {
         // Use REAL wake_process to wake from signal
         wake_process(pid);
         
-        let state = get_state(pid);
+        let state = get_process_state(pid);
         cleanup_process(pid);
 
         assert_eq!(state, Some(ProcessState::Ready), "Signal should wake sleeping process");

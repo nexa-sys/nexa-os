@@ -27,7 +27,7 @@ mod tests {
     use crate::scheduler::{
         wake_process, set_process_state, process_table_lock,
         SchedPolicy, ProcessEntry, CpuMask, BASE_SLICE_NS, NICE_0_WEIGHT,
-        calc_vdeadline,
+        calc_vdeadline, get_process_state,
     };
     use crate::scheduler::percpu::{init_percpu_sched, check_need_resched};
     use crate::signal::SignalState;
@@ -150,14 +150,6 @@ mod tests {
         }
     }
 
-    fn get_state(pid: Pid) -> Option<ProcessState> {
-        let table = process_table_lock();
-        table.iter()
-            .filter_map(|s| s.as_ref())
-            .find(|e| e.process.pid == pid)
-            .map(|e| e.process.state)
-    }
-
     fn get_wake_pending(pid: Pid) -> Option<bool> {
         let table = process_table_lock();
         table.iter()
@@ -251,7 +243,7 @@ mod tests {
         // Step 4: Shell tries to sleep
         let _ = set_process_state(shell_pid, ProcessState::Sleeping);
 
-        let final_state = get_state(shell_pid);
+        let final_state = get_process_state(shell_pid);
 
         cleanup_process(shell_pid);
 
@@ -286,7 +278,7 @@ mod tests {
         // Shell finally tries to sleep
         let _ = set_process_state(shell_pid, ProcessState::Sleeping);
 
-        let final_state = get_state(shell_pid);
+        let final_state = get_process_state(shell_pid);
 
         cleanup_process(shell_pid);
 
@@ -366,8 +358,8 @@ mod tests {
         // Keyboard interrupt - both wake
         waiters.wake_all();
 
-        let state1 = get_state(pid1);
-        let state2 = get_state(pid2);
+        let state1 = get_process_state(pid1);
+        let state2 = get_process_state(pid2);
 
         cleanup_process(pid1);
         cleanup_process(pid2);
@@ -401,7 +393,7 @@ mod tests {
         cleanup_process(pid);
 
         // Verify process is gone
-        let state_after_cleanup = get_state(pid);
+        let state_after_cleanup = get_process_state(pid);
         assert_eq!(state_after_cleanup, None, "Process should be removed");
 
         // Try to wake the non-existent PID
@@ -431,8 +423,8 @@ mod tests {
         assert_eq!(pending1, Some(true), "wake_pending should be set");
 
         // Multiple state queries shouldn't clear it
-        let _ = get_state(pid);
-        let _ = get_state(pid);
+        let _ = get_process_state(pid);
+        let _ = get_process_state(pid);
         let _ = get_wake_pending(pid);
 
         let pending2 = get_wake_pending(pid);
@@ -490,7 +482,7 @@ mod tests {
         let _ = set_process_state(shell_pid, ProcessState::Sleeping);
 
         // Check final state
-        let final_state = get_state(shell_pid);
+        let final_state = get_process_state(shell_pid);
         let data_available = !test_buffer.is_empty();
 
         cleanup_process(shell_pid);
@@ -525,7 +517,7 @@ mod tests {
             // Try to sleep
             let _ = set_process_state(shell_pid, ProcessState::Sleeping);
 
-            let state = get_state(shell_pid);
+            let state = get_process_state(shell_pid);
             assert_ne!(state, Some(ProcessState::Sleeping),
                 "BUG: Shell stuck on iteration {}", i);
 

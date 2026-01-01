@@ -37,7 +37,7 @@ mod tests {
     use crate::scheduler::{
         wake_process, set_process_state, process_table_lock,
         SchedPolicy, ProcessEntry, CpuMask, BASE_SLICE_NS, NICE_0_WEIGHT,
-        calc_vdeadline,
+        calc_vdeadline, get_process_state,
     };
     use crate::scheduler::percpu::{init_percpu_sched, check_need_resched};
     use crate::signal::SignalState;
@@ -177,14 +177,6 @@ mod tests {
         }
     }
 
-    fn get_state(pid: Pid) -> Option<ProcessState> {
-        let table = process_table_lock();
-        table.iter()
-            .filter_map(|s| s.as_ref())
-            .find(|e| e.process.pid == pid)
-            .map(|e| e.process.state)
-    }
-
     fn get_exit_code(pid: Pid) -> Option<i32> {
         let table = process_table_lock();
         table.iter()
@@ -245,7 +237,7 @@ mod tests {
         add_process(pid, ProcessState::Ready);
 
         let result = set_process_state(pid, ProcessState::Sleeping);
-        let state = get_state(pid);
+        let state = get_process_state(pid);
 
         cleanup_process(pid);
 
@@ -261,7 +253,7 @@ mod tests {
         add_process(pid, ProcessState::Sleeping);
 
         let woke = wake_process(pid);
-        let state = get_state(pid);
+        let state = get_process_state(pid);
 
         cleanup_process(pid);
 
@@ -277,7 +269,7 @@ mod tests {
         add_process(pid, ProcessState::Running);
 
         let result = set_process_state(pid, ProcessState::Ready);
-        let state = get_state(pid);
+        let state = get_process_state(pid);
 
         cleanup_process(pid);
 
@@ -296,7 +288,7 @@ mod tests {
         set_exit_code(pid, 42);
         let result = set_process_state(pid, ProcessState::Zombie);
         
-        let state = get_state(pid);
+        let state = get_process_state(pid);
         let exit_code = get_exit_code(pid);
 
         cleanup_process(pid);
@@ -319,7 +311,7 @@ mod tests {
 
         // Attempt to wake zombie (should fail)
         let woke = wake_process(pid);
-        let state = get_state(pid);
+        let state = get_process_state(pid);
 
         cleanup_process(pid);
 
@@ -337,7 +329,7 @@ mod tests {
 
         // Attempt to sleep zombie
         let _ = set_process_state(pid, ProcessState::Sleeping);
-        let state = get_state(pid);
+        let state = get_process_state(pid);
 
         cleanup_process(pid);
 
@@ -367,7 +359,7 @@ mod tests {
         set_exit_code(pid, 123);
         let _ = set_process_state(pid, ProcessState::Zombie);
 
-        let state = get_state(pid);
+        let state = get_process_state(pid);
         let exit_code = get_exit_code(pid);
 
         cleanup_process(pid);
@@ -388,7 +380,7 @@ mod tests {
         set_term_signal(pid, Some(15));
         let _ = set_process_state(pid, ProcessState::Zombie);
 
-        let state = get_state(pid);
+        let state = get_process_state(pid);
         let term_sig = get_term_signal(pid);
 
         cleanup_process(pid);
@@ -421,7 +413,7 @@ mod tests {
         // Sleep attempt - should be blocked and consume pending
         let _ = set_process_state(pid, ProcessState::Sleeping);
         
-        let state = get_state(pid);
+        let state = get_process_state(pid);
         let pending = get_wake_pending(pid);
 
         cleanup_process(pid);
@@ -454,7 +446,7 @@ mod tests {
         // Wake from Sleeping
         wake_process(pid);
 
-        let state = get_state(pid);
+        let state = get_process_state(pid);
         let pending = get_wake_pending(pid);
 
         cleanup_process(pid);
@@ -547,12 +539,12 @@ mod tests {
             let _ = set_process_state(pid, ProcessState::Sleeping);
             
             // If actually sleeping, wake it
-            if get_state(pid) == Some(ProcessState::Sleeping) {
+            if get_process_state(pid) == Some(ProcessState::Sleeping) {
                 wake_process(pid);
             }
 
             // Should be Ready
-            let state = get_state(pid);
+            let state = get_process_state(pid);
             assert!(state == Some(ProcessState::Ready) || state == Some(ProcessState::Sleeping),
                 "Unexpected state on iteration {}: {:?}", i, state);
 
@@ -593,7 +585,7 @@ mod tests {
 
         // All should be in valid states
         for &pid in &pids {
-            let state = get_state(pid);
+            let state = get_process_state(pid);
             assert!(matches!(state, Some(ProcessState::Ready) | Some(ProcessState::Sleeping) | Some(ProcessState::Running)),
                 "Invalid state for PID {}: {:?}", pid, state);
             cleanup_process(pid);

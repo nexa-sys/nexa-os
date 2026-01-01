@@ -35,7 +35,7 @@ mod tests {
         wake_process, set_process_state, set_current_process_state,
         process_table_lock, current_pid, set_current_pid,
         SchedPolicy, ProcessEntry, CpuMask, BASE_SLICE_NS, NICE_0_WEIGHT,
-        calc_vdeadline,
+        calc_vdeadline, get_process_state,
     };
     use crate::scheduler::percpu::{init_percpu_sched, check_need_resched};
     use crate::signal::SignalState;
@@ -157,14 +157,6 @@ mod tests {
         }
     }
 
-    fn get_state(pid: Pid) -> Option<ProcessState> {
-        let table = process_table_lock();
-        table.iter()
-            .filter_map(|s| s.as_ref())
-            .find(|e| e.process.pid == pid)
-            .map(|e| e.process.state)
-    }
-
     fn get_wake_pending(pid: Pid) -> Option<bool> {
         let table = process_table_lock();
         table.iter()
@@ -283,7 +275,7 @@ mod tests {
             let _ = set_process_state(shell_pid, ProcessState::Sleeping);
         }
 
-        let final_state = get_state(shell_pid);
+        let final_state = get_process_state(shell_pid);
         let final_pending = get_wake_pending(shell_pid);
 
         // Cleanup after reading state
@@ -316,7 +308,7 @@ mod tests {
             waiters.wake_all_waiters();
             let _ = set_process_state(shell_pid, ProcessState::Sleeping);
 
-            if get_state(shell_pid) == Some(ProcessState::Sleeping) {
+            if get_process_state(shell_pid) == Some(ProcessState::Sleeping) {
                 stuck_count += 1;
                 // Wake it for accurate count only
             }
@@ -347,13 +339,13 @@ mod tests {
 
         // First wake (data arrives)
         wake_process(shell_pid);
-        assert_eq!(get_state(shell_pid), Some(ProcessState::Ready));
+        assert_eq!(get_process_state(shell_pid), Some(ProcessState::Ready));
 
         // Spurious: data consumed by another, shell goes back to sleep
         let _ = set_process_state(shell_pid, ProcessState::Sleeping);
         
         // This SHOULD succeed (no pending wake)
-        let state = get_state(shell_pid);
+        let state = get_process_state(shell_pid);
 
         cleanup_process(shell_pid);
 
@@ -392,7 +384,7 @@ mod tests {
         assert!(!added, "Queue full, should reject");
 
         // Overflow process still Ready, not stuck
-        let state = get_state(overflow_pid);
+        let state = get_process_state(overflow_pid);
 
         // Cleanup
         for pid in &pids {
@@ -428,7 +420,7 @@ mod tests {
 
         // All should be Ready
         for &pid in &pids {
-            assert_eq!(get_state(pid), Some(ProcessState::Ready),
+            assert_eq!(get_process_state(pid), Some(ProcessState::Ready),
                 "All waiters should be woken");
         }
 
@@ -442,9 +434,9 @@ mod tests {
         }
 
         // Check all states are valid
-        assert_eq!(get_state(pids[0]), Some(ProcessState::Running));
+        assert_eq!(get_process_state(pids[0]), Some(ProcessState::Running));
         for &pid in &pids[1..] {
-            assert_eq!(get_state(pid), Some(ProcessState::Sleeping),
+            assert_eq!(get_process_state(pid), Some(ProcessState::Sleeping),
                 "Processes without data should be able to sleep");
         }
 
@@ -522,7 +514,7 @@ mod tests {
         // This is set_current_process_state(), NOT set_process_state()
         set_current_process_state(ProcessState::Sleeping);
 
-        let state = get_state(pid);
+        let state = get_process_state(pid);
         
         // Clean up
         set_current_pid(None);
@@ -561,7 +553,7 @@ mod tests {
         set_current_process_state(ProcessState::Sleeping);
         
         // Process state should be unchanged (still Ready)
-        let state = get_state(pid);
+        let state = get_process_state(pid);
         cleanup_process(pid);
         
         assert_eq!(state, Some(ProcessState::Ready),
@@ -616,7 +608,7 @@ mod tests {
         // This should NOT sleep because wake_pending is set
         set_current_process_state(ProcessState::Sleeping);
         
-        let state = get_state(shell_pid);
+        let state = get_process_state(shell_pid);
         
         // Clean up - don't call set_current_pid(None) as it triggers CR3 operations
         cleanup_process(shell_pid);
@@ -644,7 +636,7 @@ mod tests {
         // Wake should still work
         wake_process(shell_pid);
 
-        let state = get_state(shell_pid);
+        let state = get_process_state(shell_pid);
         cleanup_process(shell_pid);
 
         assert_eq!(state, Some(ProcessState::Ready),
@@ -672,7 +664,7 @@ mod tests {
         // This should not crash or corrupt state
         waiters.wake_all_waiters();
 
-        let state = get_state(pid);
+        let state = get_process_state(pid);
         cleanup_process(pid);
 
         // Zombie should remain zombie
@@ -734,12 +726,12 @@ mod tests {
             let _ = set_process_state(shell_pid, ProcessState::Sleeping);
 
             // If we got here without wake, we're sleeping
-            let state_before_wake = get_state(shell_pid);
+            let state_before_wake = get_process_state(shell_pid);
 
             // Keyboard input arrives
             waiters.wake_all_waiters();
 
-            let state_after_wake = get_state(shell_pid);
+            let state_after_wake = get_process_state(shell_pid);
 
             cleanup_process(shell_pid);
 
@@ -789,7 +781,7 @@ mod tests {
                 waiters.wake_all_waiters();
             }
 
-            if get_state(shell_pid) == Some(ProcessState::Sleeping) {
+            if get_process_state(shell_pid) == Some(ProcessState::Sleeping) {
                 stuck_iterations.push(i);
                 // Recover
                 wake_process(shell_pid);

@@ -9,6 +9,7 @@ mod tests {
     use crate::process::{ProcessState, Pid, Process, MAX_CMDLINE_SIZE};
     use crate::scheduler::{ProcessEntry, wake_process, set_process_state, process_table_lock};
     use crate::scheduler::{SchedPolicy, CpuMask, BASE_SLICE_NS, NICE_0_WEIGHT, calc_vdeadline};
+    use crate::scheduler::get_process_state;
     use crate::scheduler::percpu::init_percpu_sched;
     use crate::signal::SignalState;
     use serial_test::serial;
@@ -112,18 +113,6 @@ mod tests {
             }
         }
         panic!("No free slot for test process {}", pid);
-    }
-
-    fn get_state(pid: Pid) -> Option<ProcessState> {
-        let table = process_table_lock();
-        for slot in table.iter() {
-            if let Some(entry) = slot {
-                if entry.process.pid == pid {
-                    return Some(entry.process.state);
-                }
-            }
-        }
-        None
     }
 
     fn cleanup_process(pid: Pid) {
@@ -369,7 +358,7 @@ mod tests {
         // Use REAL wake_process (signal delivery calls this internally)
         let woke = wake_process(pid);
         
-        let final_state = get_state(pid);
+        let final_state = get_process_state(pid);
         cleanup_process(pid);
         
         assert!(woke, "wake_process should succeed on Sleeping process");
@@ -408,7 +397,7 @@ mod tests {
                 }
             }
             
-            let final_state = get_state(pid);
+            let final_state = get_process_state(pid);
             let term_sig = {
                 let table = process_table_lock();
                 table.iter()

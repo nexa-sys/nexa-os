@@ -29,7 +29,7 @@ mod tests {
     use crate::scheduler::{
         wake_process, set_process_state, process_table_lock,
         SchedPolicy, ProcessEntry, CpuMask, BASE_SLICE_NS, NICE_0_WEIGHT,
-        calc_vdeadline,
+        calc_vdeadline, get_process_state,
     };
     use crate::scheduler::percpu::{init_percpu_sched, check_need_resched, set_need_resched};
     use crate::signal::SignalState;
@@ -153,14 +153,6 @@ mod tests {
         }
     }
 
-    fn get_state(pid: Pid) -> Option<ProcessState> {
-        let table = process_table_lock();
-        table.iter()
-            .filter_map(|s| s.as_ref())
-            .find(|e| e.process.pid == pid)
-            .map(|e| e.process.state)
-    }
-
     fn get_wake_pending(pid: Pid) -> Option<bool> {
         let table = process_table_lock();
         table.iter()
@@ -208,7 +200,7 @@ mod tests {
             let _ = set_process_state(shell_pid, ProcessState::Sleeping);
             
             // Check if we got stuck
-            if get_state(shell_pid) == Some(ProcessState::Sleeping) {
+            if get_process_state(shell_pid) == Some(ProcessState::Sleeping) {
                 // This is the bug: shell is sleeping but wake was "lost"
                 lost_wakes_clone.fetch_add(1, Ordering::Relaxed);
                 // Recover for next iteration
@@ -264,7 +256,7 @@ mod tests {
         }
 
         let total_success = wake_success.load(Ordering::Relaxed);
-        let final_state = get_state(pid);
+        let final_state = get_process_state(pid);
         
         cleanup_process(pid);
 
@@ -309,7 +301,7 @@ mod tests {
                     match (thread_id + i) % 4 {
                         0 => { let _ = set_process_state(pid, ProcessState::Sleeping); }
                         1 => { wake_process(pid); }
-                        2 => { let _ = get_state(pid); }
+                        2 => { let _ = get_process_state(pid); }
                         _ => { let _ = get_wake_pending(pid); }
                     }
                     
@@ -377,9 +369,9 @@ mod tests {
             wake_process(pid);
             
             // Now try to sleep - if wake_pending was set, this should fail
-            let before_state = get_state(pid);
+            let before_state = get_process_state(pid);
             let _ = set_process_state(pid, ProcessState::Sleeping);
-            let after_state = get_state(pid);
+            let after_state = get_process_state(pid);
             
             match (before_state, after_state) {
                 (Some(ProcessState::Ready), Some(ProcessState::Ready)) => {
@@ -454,7 +446,7 @@ mod tests {
                     }
                     
                     // Verify state is always valid
-                    let state = get_state(pid);
+                    let state = get_process_state(pid);
                     match state {
                         Some(ProcessState::Ready) |
                         Some(ProcessState::Sleeping) |
@@ -540,12 +532,12 @@ mod tests {
             // Shell tries to sleep waiting for input
             let _ = set_process_state(shell_pid, ProcessState::Sleeping);
             
-            let state = get_state(shell_pid);
+            let state = get_process_state(shell_pid);
             if state == Some(ProcessState::Sleeping) {
                 // Check if we can recover
                 thread::sleep(std::time::Duration::from_micros(200));
                 
-                let state_after = get_state(shell_pid);
+                let state_after = get_process_state(shell_pid);
                 if state_after == Some(ProcessState::Sleeping) {
                     // Still sleeping - this is concerning
                     stuck_count += 1;

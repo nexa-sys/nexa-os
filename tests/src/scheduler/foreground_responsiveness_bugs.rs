@@ -34,6 +34,7 @@ mod tests {
         wake_process, set_process_state, process_table_lock,
         SchedPolicy, ProcessEntry, CpuMask, BASE_SLICE_NS, NICE_0_WEIGHT,
         calc_vdeadline, get_min_vruntime,
+        get_process_state, get_process_vruntime,
     };
     use crate::scheduler::percpu::{init_percpu_sched, check_need_resched, set_need_resched};
     use crate::signal::SignalState;
@@ -173,28 +174,12 @@ mod tests {
         }
     }
 
-    fn get_state(pid: Pid) -> Option<ProcessState> {
-        let table = process_table_lock();
-        table.iter()
-            .filter_map(|s| s.as_ref())
-            .find(|e| e.process.pid == pid)
-            .map(|e| e.process.state)
-    }
-
     fn get_wake_pending(pid: Pid) -> Option<bool> {
         let table = process_table_lock();
         table.iter()
             .filter_map(|s| s.as_ref())
             .find(|e| e.process.pid == pid)
             .map(|e| e.process.wake_pending)
-    }
-
-    fn get_vruntime(pid: Pid) -> Option<u64> {
-        let table = process_table_lock();
-        table.iter()
-            .filter_map(|s| s.as_ref())
-            .find(|e| e.process.pid == pid)
-            .map(|e| e.vruntime)
     }
 
     fn set_wake_pending(pid: Pid, pending: bool) {
@@ -261,7 +246,7 @@ mod tests {
         // Process tries to sleep
         let _ = set_process_state(pid, ProcessState::Sleeping);
 
-        let state = get_state(pid);
+        let state = get_process_state(pid);
         let pending = get_wake_pending(pid);
         cleanup_process(pid);
 
@@ -292,7 +277,7 @@ mod tests {
         // Step 3: Shell tries to sleep (after interrupt returned)
         let _ = set_process_state(pid, ProcessState::Sleeping);
 
-        let final_state = get_state(pid);
+        let final_state = get_process_state(pid);
         cleanup_process(pid);
 
         // CORRECTNESS CHECK: Process must NOT be stuck sleeping
@@ -331,7 +316,7 @@ mod tests {
             // Try to sleep
             let _ = set_process_state(pid, ProcessState::Sleeping);
 
-            if get_state(pid) == Some(ProcessState::Sleeping) {
+            if get_process_state(pid) == Some(ProcessState::Sleeping) {
                 stuck_count += 1;
                 // Recover for next iteration
                 wake_process(pid);
@@ -369,7 +354,7 @@ mod tests {
         // Single sleep attempt
         let _ = set_process_state(pid, ProcessState::Sleeping);
 
-        let state_after = get_state(pid);
+        let state_after = get_process_state(pid);
         cleanup_process(pid);
 
         // Wake pending must be set after all those wakes
@@ -433,8 +418,8 @@ mod tests {
         // Shell wakes up
         wake_process(shell_pid);
 
-        let shell_vrt = get_vruntime(shell_pid).unwrap_or(u64::MAX);
-        let bg_vrt = get_vruntime(bg_pid).unwrap_or(0);
+        let shell_vrt = get_process_vruntime(shell_pid).unwrap_or(u64::MAX);
+        let bg_vrt = get_process_vruntime(bg_pid).unwrap_or(0);
 
         cleanup_process(shell_pid);
         cleanup_process(bg_pid);
@@ -462,7 +447,7 @@ mod tests {
         add_process(pid, ProcessState::Zombie);
 
         let woke = wake_process(pid);
-        let state = get_state(pid);
+        let state = get_process_state(pid);
         let pending = get_wake_pending(pid);
 
         cleanup_process(pid);
@@ -517,7 +502,7 @@ mod tests {
             let _ = set_process_state(pid, ProcessState::Sleeping);
             let woke = wake_process(pid);
 
-            if !woke || get_state(pid) != Some(ProcessState::Ready) {
+            if !woke || get_process_state(pid) != Some(ProcessState::Ready) {
                 stuck_count += 1;
                 // Try to recover
                 let _ = set_process_state(pid, ProcessState::Ready);
@@ -527,7 +512,7 @@ mod tests {
             wake_process(pid);
             let _ = set_process_state(pid, ProcessState::Sleeping);
 
-            if get_state(pid) == Some(ProcessState::Sleeping) {
+            if get_process_state(pid) == Some(ProcessState::Sleeping) {
                 stuck_count += 1;
                 wake_process(pid);
             }
@@ -566,7 +551,7 @@ mod tests {
         // CPU0 now runs (returns from interrupt context)
         let _ = set_process_state(pid, ProcessState::Sleeping);
 
-        let state = get_state(pid);
+        let state = get_process_state(pid);
         cleanup_process(pid);
 
         // Invariant: must NOT be sleeping (wake_pending should have blocked it)
@@ -615,7 +600,7 @@ mod tests {
         // Check for stuck processes
         let mut stuck_pids = Vec::new();
         for &pid in &pids {
-            if get_state(pid) == Some(ProcessState::Sleeping) {
+            if get_process_state(pid) == Some(ProcessState::Sleeping) {
                 // Try to wake - if it works, it wasn't truly stuck
                 if !wake_process(pid) {
                     stuck_pids.push(pid);
@@ -652,7 +637,7 @@ mod tests {
         // Now if process tries to sleep (e.g., in interruptible syscall)
         let _ = set_process_state(pid, ProcessState::Sleeping);
 
-        let state = get_state(pid);
+        let state = get_process_state(pid);
         cleanup_process(pid);
 
         assert_eq!(pending, Some(true),
@@ -679,7 +664,7 @@ mod tests {
         wake_process(shell_pid);
         let _ = set_process_state(shell_pid, ProcessState::Sleeping);
 
-        let state = get_state(shell_pid);
+        let state = get_process_state(shell_pid);
         cleanup_process(shell_pid);
 
         // Should not be sleeping (wake_pending mechanism works)
@@ -702,11 +687,11 @@ mod tests {
 
         // First sleep
         let _ = set_process_state(pid, ProcessState::Sleeping);
-        let state1 = get_state(pid);
+        let state1 = get_process_state(pid);
 
         // Second sleep (already sleeping)
         let _ = set_process_state(pid, ProcessState::Sleeping);
-        let state2 = get_state(pid);
+        let state2 = get_process_state(pid);
 
         cleanup_process(pid);
 
@@ -730,7 +715,7 @@ mod tests {
             add_process(pid, ProcessState::Sleeping);
 
             let woke = wake_process(pid);
-            let state = get_state(pid);
+            let state = get_process_state(pid);
 
             cleanup_process(pid);
 
@@ -769,7 +754,7 @@ mod tests {
             set_wake_pending(pid, true);
 
             let _ = set_process_state(pid, ProcessState::Sleeping);
-            let state = get_state(pid);
+            let state = get_process_state(pid);
 
             cleanup_process(pid);
 
