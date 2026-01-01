@@ -1269,12 +1269,35 @@ fn do_schedule_internal(from_interrupt: bool) {
             );
         },
         None => {
-            // No ready process found - this can happen when all processes are sleeping.
-            // Instead of setting current_pid to None (which would cause "no current process" errors),
-            // we enter an idle loop waiting for an interrupt to wake up a process.
-            // 
-            // IMPORTANT: Do NOT set current_pid to None here, as that would cause
-            // "User-mode page fault but no current process" errors if a fault occurs.
+            // compute_schedule_decision returns None in two cases:
+            // 1. Current process continues running (time slice replenished, no switch needed)
+            // 2. No process is ready to run at all
+            //
+            // CRITICAL FIX: We must distinguish these cases!
+            // Check if current process is still Running - if so, just return and let it continue.
+            // Only enter idle loop if there truly is no runnable process.
+            
+            let has_running_process = {
+                let table = PROCESS_TABLE.lock();
+                if let Some(curr_pid) = current_pid() {
+                    table.iter().any(|slot| {
+                        slot.as_ref().map_or(false, |e| {
+                            e.process.pid == curr_pid && e.process.state == ProcessState::Running
+                        })
+                    })
+                } else {
+                    false
+                }
+            };
+            
+            if has_running_process {
+                // Current process is still Running - just return and let it continue
+                // This happens when time slice expired but no other process is ready
+                crate::ktrace!("do_schedule(): Current process continues running");
+                return;
+            }
+            
+            // No running process - enter idle loop waiting for interrupt
             crate::ktrace!("do_schedule(): No ready process, entering idle loop");
             
             // Enable interrupts and halt until an interrupt occurs.
