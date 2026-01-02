@@ -145,6 +145,15 @@ pub mod backup;
 pub mod tenant;
 pub mod api;
 
+// New Enterprise Platform Features (v2.0)
+pub mod webgui;     // Web-based management UI
+pub mod cli;        // Command-line interface tools
+pub mod events;     // Event system and audit logging
+pub mod templates;  // VM template management (OVA/OVF)
+pub mod auth;       // Enhanced authentication (LDAP/OAuth2/SAML)
+pub mod licensing;  // License management and feature gating
+pub mod ha;         // High availability (Raft consensus, fencing, failover)
+
 // Re-export from hypervisor module (which has its own re-exports)
 pub use hypervisor::{
     Hypervisor, HypervisorConfig, HypervisorError, HypervisorResult,
@@ -155,15 +164,25 @@ pub use hypervisor::{
     CpuPool as HvCpuPool, MemoryPool as HvMemoryPool, StoragePool as HvStoragePool, NetworkPool,
 };
 
+// Re-export new enterprise features
+pub use webgui::WebGuiServer;
+pub use cli::{CliConfig, OutputFormat};
+pub use events::{Event, EventBus, AuditLogger};
+pub use templates::{Template, TemplateLibrary, OvaImporter, OvaExporter};
+pub use auth::{AuthManager, AuthBackend, AuthenticatedUser};
+pub use licensing::{License, LicenseValidator, FeatureGate, Edition};
+pub use ha::{RaftNode, FencingManager, FailoverManager, HaConfig};
+
 /// NVM version information
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-pub const VERSION_MAJOR: u32 = 1;
+pub const VERSION_MAJOR: u32 = 2;
 pub const VERSION_MINOR: u32 = 0;
 pub const VERSION_PATCH: u32 = 0;
 
 /// Platform name
 pub const PLATFORM_NAME: &str = "NexaOS Virtual Machine";
 pub const PLATFORM_VENDOR: &str = "NexaOS Team";
+pub const PLATFORM_EDITION: &str = "Enterprise";
 
 #[cfg(test)]
 mod tests {
