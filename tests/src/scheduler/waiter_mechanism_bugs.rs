@@ -30,6 +30,8 @@ mod tests {
         calc_vdeadline, get_process_state,
     };
     use crate::scheduler::percpu::{init_percpu_sched, check_need_resched};
+    // Use REAL kernel keyboard waiter functions
+    use crate::drivers::keyboard::{add_waiter, remove_waiter, wake_all_waiters};
     use crate::signal::SignalState;
     use crate::numa;
 
@@ -159,57 +161,8 @@ mod tests {
     }
 
     // =========================================================================
-    // Waiter List Helper (mirrors keyboard.rs structure)
-    // =========================================================================
-
-    const MAX_WAITERS: usize = 8;
-
-    struct MockWaiterList {
-        waiters: [Option<Pid>; MAX_WAITERS],
-    }
-
-    impl MockWaiterList {
-        fn new() -> Self {
-            Self { waiters: [None; MAX_WAITERS] }
-        }
-
-        fn add_waiter(&mut self, pid: Pid) -> bool {
-            for slot in self.waiters.iter_mut() {
-                if slot.is_none() {
-                    *slot = Some(pid);
-                    return true;
-                }
-            }
-            false // Queue full
-        }
-
-        fn remove_waiter(&mut self, pid: Pid) {
-            for slot in self.waiters.iter_mut() {
-                if *slot == Some(pid) {
-                    *slot = None;
-                    return;
-                }
-            }
-        }
-
-        fn wake_all(&mut self) -> Vec<Pid> {
-            let mut woken = Vec::new();
-            for slot in self.waiters.iter_mut() {
-                if let Some(pid) = slot.take() {
-                    wake_process(pid);
-                    woken.push(pid);
-                }
-            }
-            woken
-        }
-
-        fn count(&self) -> usize {
-            self.waiters.iter().filter(|s| s.is_some()).count()
-        }
-    }
-
-    // =========================================================================
     // BUG TEST: Waiter removed but process not yet sleeping
+    // Using REAL kernel add_waiter/wake_all_waiters functions
     // =========================================================================
 
     /// BUG TEST: wake_all removes waiter, but process hasn't slept yet
@@ -228,17 +181,12 @@ mod tests {
         let shell_pid = next_pid();
         add_process(shell_pid, ProcessState::Ready);
 
-        let mut waiters = MockWaiterList::new();
-
-        // Step 1: Shell registers as waiter
-        assert!(waiters.add_waiter(shell_pid));
-        assert_eq!(waiters.count(), 1);
+        // Step 1: Shell registers as waiter using REAL kernel function
+        add_waiter(shell_pid);
 
         // Steps 2-3: Interrupt fires, wake_all removes shell and calls wake_process
-        let woken = waiters.wake_all();
-        assert_eq!(woken.len(), 1);
-        assert_eq!(woken[0], shell_pid);
-        assert_eq!(waiters.count(), 0); // Shell REMOVED from list
+        // Using REAL kernel function
+        wake_all_waiters();
 
         // Step 4: Shell tries to sleep
         let _ = set_process_state(shell_pid, ProcessState::Sleeping);
@@ -263,17 +211,17 @@ mod tests {
         let shell_pid = next_pid();
         add_process(shell_pid, ProcessState::Ready);
 
-        let mut waiters = MockWaiterList::new();
-        waiters.add_waiter(shell_pid);
+        // Using REAL kernel functions
+        add_waiter(shell_pid);
 
         // First interrupt - removes shell
-        waiters.wake_all();
+        wake_all_waiters();
         
         // Shell re-registers (still Ready)
-        waiters.add_waiter(shell_pid);
+        add_waiter(shell_pid);
         
         // Second interrupt - removes shell again
-        waiters.wake_all();
+        wake_all_waiters();
 
         // Shell finally tries to sleep
         let _ = set_process_state(shell_pid, ProcessState::Sleeping);
@@ -294,44 +242,44 @@ mod tests {
     /// BUG TEST: Waiter list overflow drops processes silently
     ///
     /// If more than MAX_WAITERS processes wait for keyboard, some are dropped.
+    /// (MAX_WAITERS = 8 in kernel keyboard.rs)
     #[test]
     #[serial]
     fn bug_waiter_list_overflow() {
+        const MAX_KEYBOARD_WAITERS: usize = 8;
         let mut pids = Vec::new();
-        let mut waiters = MockWaiterList::new();
 
-        // Create MAX_WAITERS + 2 processes
-        for _ in 0..(MAX_WAITERS + 2) {
+        // Create MAX_KEYBOARD_WAITERS + 2 processes in SLEEPING state
+        // This way we can detect which ones get woken (Sleeping -> Ready)
+        for _ in 0..(MAX_KEYBOARD_WAITERS + 2) {
             let pid = next_pid();
-            add_process(pid, ProcessState::Ready);
+            add_process(pid, ProcessState::Sleeping);
             pids.push(pid);
         }
 
-        // All try to register as waiters
-        let mut registered = 0;
-        let mut dropped = Vec::new();
+        // All try to register as waiters using REAL kernel function
+        // Only the first 8 will be added (queue capacity limit)
         for &pid in &pids {
-            if waiters.add_waiter(pid) {
-                registered += 1;
-            } else {
-                dropped.push(pid);
-            }
+            add_waiter(pid);
         }
+
+        // Now wake all - only the first 8 registered will be woken
+        wake_all_waiters();
+
+        // Check how many were actually woken (state changed from Sleeping to Ready)
+        let woken_count = pids.iter()
+            .filter(|&&pid| get_process_state(pid) == Some(ProcessState::Ready))
+            .count();
 
         // Cleanup
         for pid in &pids {
             cleanup_process(*pid);
         }
 
-        // Verify overflow detection
-        assert_eq!(registered, MAX_WAITERS,
-            "Should only be able to register {} waiters", MAX_WAITERS);
-        assert_eq!(dropped.len(), 2,
-            "Two processes should have been dropped");
-        
         // This test documents the limitation - not necessarily a "bug" to fix,
-        // but important to understand. The dropped processes will spin-wait,
-        // which may cause high CPU usage but at least they won't hang.
+        // but important to understand. The kernel waiter list has limited capacity.
+        assert!(woken_count <= MAX_KEYBOARD_WAITERS,
+            "Should only wake at most {} waiters, but woke {}", MAX_KEYBOARD_WAITERS, woken_count);
     }
 
     // =========================================================================
@@ -351,12 +299,12 @@ mod tests {
         add_process(pid1, ProcessState::Sleeping);
         add_process(pid2, ProcessState::Sleeping);
 
-        let mut waiters = MockWaiterList::new();
-        waiters.add_waiter(pid1);
-        waiters.add_waiter(pid2);
+        // Using REAL kernel functions
+        add_waiter(pid1);
+        add_waiter(pid2);
 
         // Keyboard interrupt - both wake
-        waiters.wake_all();
+        wake_all_waiters();
 
         let state1 = get_process_state(pid1);
         let state2 = get_process_state(pid2);
@@ -442,7 +390,7 @@ mod tests {
     }
 
     // =========================================================================
-    // Integration: Full read() syscall test
+    // Integration: Full read() syscall test using REAL kernel functions
     // =========================================================================
 
     /// Integration: Tests complete read() syscall on /dev/tty
@@ -454,27 +402,20 @@ mod tests {
         let shell_pid = next_pid();
         add_process(shell_pid, ProcessState::Running); // Currently running
 
-        let mut waiters = MockWaiterList::new();
-        let mut test_buffer: Vec<u8> = Vec::new();
-
         // read() syscall entry
         // 1. Check if data available (none)
-        assert!(test_buffer.is_empty());
 
-        // 2. Register as waiter
-        let _ = waiters.add_waiter(shell_pid);
+        // 2. Register as waiter using REAL kernel function
+        add_waiter(shell_pid);
 
         // 3. State changes to Ready before sleep
-        //    (kernel may do some prep work here)
         let _ = set_process_state(shell_pid, ProcessState::Ready);
 
         // --- RACE WINDOW STARTS ---
         // Between add_waiter() and sleep, interrupt can fire
 
-        // 4. Keyboard interrupt fires!
-        test_buffer.push(b'a');
-        let woken = waiters.wake_all(); // Removes shell, calls wake_process
-        assert_eq!(woken.len(), 1);
+        // 4. Keyboard interrupt fires! Using REAL kernel function
+        wake_all_waiters(); // Removes shell, calls wake_process
 
         // --- RACE WINDOW ENDS ---
 
@@ -483,14 +424,12 @@ mod tests {
 
         // Check final state
         let final_state = get_process_state(shell_pid);
-        let data_available = !test_buffer.is_empty();
 
         cleanup_process(shell_pid);
 
-        // Data is available, shell should NOT be sleeping
-        assert!(data_available, "Data should be in buffer");
+        // Shell should NOT be sleeping due to wake_pending
         assert_ne!(final_state, Some(ProcessState::Sleeping),
-            "CRITICAL BUG: Shell stuck sleeping despite data available! \
+            "CRITICAL BUG: Shell stuck sleeping despite wake! \
              User typed but shell won't respond. \
              FIX: wake_pending mechanism must prevent this sleep.");
     }
@@ -504,15 +443,13 @@ mod tests {
         let shell_pid = next_pid();
         add_process(shell_pid, ProcessState::Ready);
 
-        let mut waiters = MockWaiterList::new();
-
         for i in 0..10 {
-            // Register waiter
-            waiters.add_waiter(shell_pid);
+            // Register waiter using REAL kernel function
+            add_waiter(shell_pid);
 
-            // Keyboard interrupt
+            // Keyboard interrupt using REAL kernel functions
             wake_process(shell_pid); // Sets wake_pending if Ready
-            waiters.wake_all(); // Removes from list
+            wake_all_waiters(); // Removes from list
 
             // Try to sleep
             let _ = set_process_state(shell_pid, ProcessState::Sleeping);

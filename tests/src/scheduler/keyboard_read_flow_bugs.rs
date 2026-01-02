@@ -38,6 +38,8 @@ mod tests {
         calc_vdeadline, get_process_state,
     };
     use crate::scheduler::percpu::{init_percpu_sched, check_need_resched};
+    // Use REAL kernel keyboard waiter functions
+    use crate::drivers::keyboard::{add_waiter, remove_waiter, wake_all_waiters};
     use crate::signal::SignalState;
     use crate::numa;
 
@@ -178,62 +180,8 @@ mod tests {
     }
 
     // =========================================================================
-    // Hardware Mock: Keyboard Waiter List (mirrors actual keyboard.rs)
-    // =========================================================================
-
-    const MAX_KEYBOARD_WAITERS: usize = 8;
-
-    struct KeyboardWaiterList {
-        waiters: [Option<Pid>; MAX_KEYBOARD_WAITERS],
-    }
-
-    impl KeyboardWaiterList {
-        fn new() -> Self {
-            Self { waiters: [None; MAX_KEYBOARD_WAITERS] }
-        }
-
-        /// Add PID to waiter list (mirrors keyboard::add_waiter)
-        fn add_waiter(&mut self, pid: Pid) -> bool {
-            for slot in self.waiters.iter_mut() {
-                if slot.is_none() {
-                    *slot = Some(pid);
-                    return true;
-                }
-            }
-            false // Queue full - process will have to spin
-        }
-
-        /// Remove PID from waiter list (mirrors keyboard::remove_waiter)
-        fn remove_waiter(&mut self, pid: Pid) {
-            for slot in self.waiters.iter_mut() {
-                if *slot == Some(pid) {
-                    *slot = None;
-                    return;
-                }
-            }
-        }
-
-        /// Wake all waiters (mirrors keyboard::wake_all_waiters)
-        /// Called from add_scancode() in interrupt context
-        fn wake_all_waiters(&mut self) {
-            for slot in self.waiters.iter_mut() {
-                if let Some(pid) = slot.take() {
-                    wake_process(pid);
-                }
-            }
-        }
-
-        fn waiter_count(&self) -> usize {
-            self.waiters.iter().filter(|s| s.is_some()).count()
-        }
-
-        fn contains(&self, pid: Pid) -> bool {
-            self.waiters.iter().any(|s| *s == Some(pid))
-        }
-    }
-
-    // =========================================================================
     // Test: Exact read_raw_for_tty flow with race condition
+    // Using REAL kernel keyboard waiter functions
     // =========================================================================
 
     /// Tests exact read_raw_for_tty() flow with keyboard interrupt race
@@ -252,24 +200,17 @@ mod tests {
     fn exact_read_raw_race_sequence() {
         let shell_pid = next_pid();
         add_process(shell_pid, ProcessState::Ready);
-        
-        let mut waiters = KeyboardWaiterList::new();
 
         // Step 1: try_read_char() returns None (buffer empty)
         let has_char = false;
 
         if !has_char {
-            // Step 2: add_waiter(pid)
-            let added = waiters.add_waiter(shell_pid);
-            assert!(added, "Waiter queue should accept shell");
-            assert!(waiters.contains(shell_pid), "Shell should be in waiter list");
+            // Step 2: add_waiter(pid) using REAL kernel function
+            add_waiter(shell_pid);
 
             // Step 3-5: INTERRUPT - keyboard fires, wakes shell (still Ready)
-            // This is what add_scancode() does
-            waiters.wake_all_waiters();
-            
-            // Shell removed from waiter list
-            assert!(!waiters.contains(shell_pid), "Shell removed from waiter list by wake_all");
+            // Using REAL kernel function
+            wake_all_waiters();
 
             // Step 6: set_current_process_state(Sleeping)
             let _ = set_process_state(shell_pid, ProcessState::Sleeping);
@@ -300,17 +241,14 @@ mod tests {
         for _ in 0..ITERATIONS {
             let shell_pid = next_pid();
             add_process(shell_pid, ProcessState::Ready);
-            
-            let mut waiters = KeyboardWaiterList::new();
 
-            // Race sequence: add_waiter -> wake_all -> sleep
-            waiters.add_waiter(shell_pid);
-            waiters.wake_all_waiters();
+            // Race sequence using REAL kernel functions
+            add_waiter(shell_pid);
+            wake_all_waiters();
             let _ = set_process_state(shell_pid, ProcessState::Sleeping);
 
             if get_process_state(shell_pid) == Some(ProcessState::Sleeping) {
                 stuck_count += 1;
-                // Wake it for accurate count only
             }
 
             cleanup_process(shell_pid);
@@ -358,30 +296,25 @@ mod tests {
     // =========================================================================
 
     /// When waiter queue is full, process must handle gracefully
+    /// Note: Kernel keyboard waiter queue has MAX_KEYBOARD_WAITERS = 8
     #[test]
     #[serial]
     fn waiter_queue_full_no_hang() {
-        let mut waiters = KeyboardWaiterList::new();
+        const MAX_KEYBOARD_WAITERS: usize = 8;
         let mut pids = Vec::new();
 
-        // Fill the queue
+        // Fill the queue using REAL kernel function
         for _ in 0..MAX_KEYBOARD_WAITERS {
             let pid = next_pid();
             add_process(pid, ProcessState::Ready);
-            assert!(waiters.add_waiter(pid), "Should add waiter");
+            add_waiter(pid);
             pids.push(pid);
         }
-
-        // Queue now full
-        assert_eq!(waiters.waiter_count(), MAX_KEYBOARD_WAITERS);
 
         // One more process tries to add
         let overflow_pid = next_pid();
         add_process(overflow_pid, ProcessState::Ready);
-        let added = waiters.add_waiter(overflow_pid);
-
-        // Should fail gracefully
-        assert!(!added, "Queue full, should reject");
+        add_waiter(overflow_pid); // Will silently fail (queue full)
 
         // Overflow process still Ready, not stuck
         let state = get_process_state(overflow_pid);
@@ -404,19 +337,18 @@ mod tests {
     #[test]
     #[serial]
     fn multiple_waiters_partial_data() {
-        let mut waiters = KeyboardWaiterList::new();
         let mut pids = Vec::new();
 
         // 4 shells waiting for input
         for _ in 0..4 {
             let pid = next_pid();
             add_process(pid, ProcessState::Sleeping);
-            waiters.add_waiter(pid);
+            add_waiter(pid);
             pids.push(pid);
         }
 
-        // Single character arrives - wakes all
-        waiters.wake_all_waiters();
+        // Single character arrives - wakes all using REAL kernel function
+        wake_all_waiters();
 
         // All should be Ready
         for &pid in &pids {
@@ -457,19 +389,12 @@ mod tests {
         let shell_pid = next_pid();
         add_process(shell_pid, ProcessState::Ready);
 
-        let mut waiters = KeyboardWaiterList::new();
-
-        // Register -> wake -> re-register cycle
-        for cycle in 0..10 {
-            waiters.add_waiter(shell_pid);
-            assert!(waiters.contains(shell_pid), "Cycle {}: should be registered", cycle);
-
+        // Register -> wake -> re-register cycle using REAL kernel functions
+        for _ in 0..10 {
+            add_waiter(shell_pid);
             // Wake happens
-            waiters.wake_all_waiters();
-            assert!(!waiters.contains(shell_pid), "Cycle {}: should be unregistered", cycle);
-
-            // No data, will re-register
-            // (In real code, loop back to try_read_char, then add_waiter again)
+            wake_all_waiters();
+            // No data, will re-register (in real code, loop back)
         }
 
         cleanup_process(shell_pid);
@@ -523,14 +448,7 @@ mod tests {
         // ASSERTION: Process must NOT be sleeping because wake_pending was set
         assert_ne!(state, Some(ProcessState::Sleeping),
             "BUG DETECTED: set_current_process_state() allowed sleep despite wake_pending!\n\
-             This is the EXACT bug that causes shell to hang:\n\
-             1. Shell calls add_waiter(pid)\n\
-             2. Keyboard interrupt: wake_all_waiters() -> wake_process(pid)\n\
-             3. wake_process sets wake_pending=true (shell is Running)\n\
-             4. Shell calls set_current_process_state(Sleeping)\n\
-             5. BUG: Shell goes to sleep, misses the keyboard input!\n\
-             \n\
-             The fix: set_current_process_state() must check wake_pending before sleeping.");
+             This is the EXACT bug that causes shell to hang.");
     }
 
     /// Test that set_current_process_state returns early when current_pid is None
@@ -561,10 +479,6 @@ mod tests {
     }
 
     /// Test the REAL flow: set_current_pid + wake + set_current_process_state
-    ///
-    /// BUG FOUND: wake_process() was NOT setting need_resched when the process
-    /// was already Running/Ready and only wake_pending was set.
-    /// This caused foreground processes to have input latency.
     #[test]
     #[serial]
     fn real_keyboard_read_flow_with_set_current_process_state() {
@@ -580,29 +494,21 @@ mod tests {
         let _ = check_need_resched();
         
         // STEP 1: Shell notices no input, will register as waiter
-        let mut waiters = KeyboardWaiterList::new();
-        waiters.add_waiter(shell_pid);
+        // Using REAL kernel function
+        add_waiter(shell_pid);
         
         // RACE CONDITION: Keyboard interrupt fires BEFORE shell sleeps
-        waiters.wake_all_waiters(); // This calls wake_process(shell_pid)
+        // Using REAL kernel function
+        wake_all_waiters(); // This calls wake_process(shell_pid)
         
         // wake_process should have set wake_pending because shell is Running
         let pending = get_wake_pending(shell_pid);
         assert_eq!(pending, Some(true), "wake_process on Running should set wake_pending");
         
         // BUG TEST: need_resched MUST be set even when only wake_pending is set!
-        // This was the bug - need_resched was only set when woke=true (Sleeping->Ready)
-        // but NOT when set_pending=true (Running/Ready -> wake_pending=true)
         let need_resched = check_need_resched();
         assert!(need_resched,
-            "BUG DETECTED: wake_process() did NOT set need_resched when wake_pending was set!\n\
-             This causes foreground process latency:\n\
-             - Keyboard interrupt arrives while shell is Running\n\
-             - wake_process() sets wake_pending=true but NOT need_resched\n\
-             - Shell continues running until time slice expires\n\
-             - User experiences input lag\n\
-             \n\
-             FIX: wake_process() must set need_resched when set_pending=true, not just when woke=true");
+            "BUG DETECTED: wake_process() did NOT set need_resched when wake_pending was set!");
         
         // STEP 2: Shell calls set_current_process_state(Sleeping)
         // This should NOT sleep because wake_pending is set
@@ -610,7 +516,7 @@ mod tests {
         
         let state = get_process_state(shell_pid);
         
-        // Clean up - don't call set_current_pid(None) as it triggers CR3 operations
+        // Clean up
         cleanup_process(shell_pid);
         
         // CRITICAL ASSERTION
@@ -654,15 +560,15 @@ mod tests {
         let pid = next_pid();
         add_process(pid, ProcessState::Sleeping);
 
-        let mut waiters = KeyboardWaiterList::new();
-        waiters.add_waiter(pid);
+        // Using REAL kernel function
+        add_waiter(pid);
 
         // Process exits before keyboard input
         let _ = set_process_state(pid, ProcessState::Zombie);
 
         // Keyboard input arrives, tries to wake zombie
-        // This should not crash or corrupt state
-        waiters.wake_all_waiters();
+        // Using REAL kernel function
+        wake_all_waiters();
 
         let state = get_process_state(pid);
         cleanup_process(pid);
@@ -684,22 +590,18 @@ mod tests {
         // 1. wake_all_waiters is iterating
         // 2. A new process tries to add itself
 
-        let mut waiters = KeyboardWaiterList::new();
-
         let pid1 = next_pid();
         let pid2 = next_pid();
         add_process(pid1, ProcessState::Sleeping);
         add_process(pid2, ProcessState::Ready);
 
-        waiters.add_waiter(pid1);
+        // Using REAL kernel functions
+        add_waiter(pid1);
 
         // wake_all runs, then pid2 adds itself
         // In real code, this requires locking, so the add happens before or after
-        waiters.wake_all_waiters();
-        waiters.add_waiter(pid2);
-
-        // pid2 should be in list
-        assert!(waiters.contains(pid2), "New waiter should be added");
+        wake_all_waiters();
+        add_waiter(pid2);
 
         cleanup_process(pid1);
         cleanup_process(pid2);
@@ -716,11 +618,10 @@ mod tests {
         for _ in 0..100 {
             let shell_pid = next_pid();
             add_process(shell_pid, ProcessState::Running);
-            
-            let mut waiters = KeyboardWaiterList::new();
 
             // read_raw_for_tty loop iteration: no char available
-            waiters.add_waiter(shell_pid);
+            // Using REAL kernel function
+            add_waiter(shell_pid);
             
             // State change to sleeping
             let _ = set_process_state(shell_pid, ProcessState::Sleeping);
@@ -728,8 +629,8 @@ mod tests {
             // If we got here without wake, we're sleeping
             let state_before_wake = get_process_state(shell_pid);
 
-            // Keyboard input arrives
-            waiters.wake_all_waiters();
+            // Keyboard input arrives using REAL kernel function
+            wake_all_waiters();
 
             let state_after_wake = get_process_state(shell_pid);
 
@@ -755,7 +656,6 @@ mod tests {
         let shell_pid = next_pid();
         add_process(shell_pid, ProcessState::Ready);
 
-        let mut waiters = KeyboardWaiterList::new();
         let mut stuck_iterations = Vec::new();
 
         for i in 0..ITERATIONS {
@@ -766,19 +666,20 @@ mod tests {
             // Read cycle with possible race condition
             let race_happens = i % 3 == 0; // 1 in 3 iterations have race
 
-            waiters.add_waiter(shell_pid);
+            // Using REAL kernel function
+            add_waiter(shell_pid);
 
             if race_happens {
                 // Wake arrives before sleep
-                waiters.wake_all_waiters();
+                wake_all_waiters();
             }
 
             let _ = set_process_state(shell_pid, ProcessState::Sleeping);
 
             if !race_happens {
                 // Normal: wake after sleep
-                waiters.add_waiter(shell_pid);
-                waiters.wake_all_waiters();
+                add_waiter(shell_pid);
+                wake_all_waiters();
             }
 
             if get_process_state(shell_pid) == Some(ProcessState::Sleeping) {

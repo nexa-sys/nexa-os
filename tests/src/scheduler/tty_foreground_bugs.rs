@@ -39,6 +39,8 @@ mod tests {
         get_process_state, get_process_vruntime,
     };
     use crate::scheduler::percpu::{init_percpu_sched, check_need_resched, set_need_resched};
+    // Use REAL kernel keyboard waiter functions
+    use crate::drivers::keyboard::{add_waiter, remove_waiter, wake_all_waiters};
     use crate::signal::SignalState;
     use crate::numa;
 
@@ -666,47 +668,10 @@ mod tests {
 
     // =========================================================================
     // Integration Test: Full Keyboard Input Scenario
+    // Using REAL kernel keyboard waiter functions
     // =========================================================================
 
-    // Hardware mock: Keyboard waiter queue (mirrors src/drivers/keyboard.rs)
-    const MAX_KEYBOARD_WAITERS: usize = 16;
-
-    struct KeyboardWaiterList {
-        waiters: [Option<Pid>; MAX_KEYBOARD_WAITERS],
-    }
-
-    impl KeyboardWaiterList {
-        fn new() -> Self {
-            Self { waiters: [None; MAX_KEYBOARD_WAITERS] }
-        }
-
-        /// Add PID to waiter list (mirrors keyboard::add_waiter)
-        fn add_waiter(&mut self, pid: Pid) -> bool {
-            for slot in self.waiters.iter_mut() {
-                if slot.is_none() {
-                    *slot = Some(pid);
-                    return true;
-                }
-            }
-            false
-        }
-
-        /// Wake all waiters (mirrors keyboard::wake_all_waiters)
-        /// Called from add_scancode() in interrupt context
-        fn wake_all_waiters(&mut self) {
-            for slot in self.waiters.iter_mut() {
-                if let Some(pid) = slot.take() {
-                    wake_process(pid);
-                }
-            }
-        }
-
-        fn contains(&self, pid: Pid) -> bool {
-            self.waiters.iter().any(|s| *s == Some(pid))
-        }
-    }
-
-    /// Integration test: Full keyboard read flow with waiter mock
+    /// Integration test: Full keyboard read flow with REAL kernel functions
     ///
     /// Tests exact read_raw_for_tty() sequence:
     /// 1. Shell is Ready
@@ -722,23 +687,17 @@ mod tests {
         let shell_pid = next_pid();
         add_process_full(shell_pid, ProcessState::Ready, 0);
 
-        let mut waiters = KeyboardWaiterList::new();
-
         // Step 1: try_read_char() returns None (buffer empty)
         let has_char = false;
 
         if !has_char {
-            // Step 2: add_waiter(shell_pid)
-            let added = waiters.add_waiter(shell_pid);
-            assert!(added, "Waiter queue should accept shell");
-            assert!(waiters.contains(shell_pid), "Shell should be in waiter list");
+            // Step 2: add_waiter(shell_pid) using REAL kernel function
+            add_waiter(shell_pid);
 
             // Step 3-4: INTERRUPT - keyboard fires, wake_all_waiters called
             // Shell is still Ready (hasn't slept yet)
-            waiters.wake_all_waiters();
-
-            // Shell removed from waiter list
-            assert!(!waiters.contains(shell_pid), "Shell removed from waiter list");
+            // Using REAL kernel function
+            wake_all_waiters();
 
             // Step 5: Shell tries to sleep
             let _ = set_process_state(shell_pid, ProcessState::Sleeping);

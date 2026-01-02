@@ -83,7 +83,7 @@ pub fn remove_waiter(pid: crate::process::Pid) {
 }
 
 /// Wake up all processes waiting for keyboard input
-fn wake_all_waiters() {
+pub fn wake_all_waiters() {
     let mut waiters = KEYBOARD_WAITERS.lock();
     for slot in waiters.iter_mut() {
         if let Some(pid) = slot.take() {
