@@ -31,7 +31,8 @@ export async function buildKernel(env: BuildEnvironment): Promise<BuildStepResul
     cwd: env.projectRoot,
     target: env.targets.kernel,
     release: env.buildType === 'release',
-    buildStd: undefined, // Kernel uses custom build
+    buildStd: ['core', 'compiler_builtins', 'alloc'], // no_std kernel needs build-std
+    buildStdFeatures: ['compiler-builtins-mem'], // Provide memcpy/memset/memcmp
     features: featuresStr,
     logName: 'kernel',
   });

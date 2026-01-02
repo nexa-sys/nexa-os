@@ -254,6 +254,7 @@ export async function cargoBuild(
     package?: string;
     features?: string;
     buildStd?: string[];
+    buildStdFeatures?: string[];
     rustflags?: string;
     targetDir?: string;
     extraArgs?: string[];
@@ -268,6 +269,11 @@ export async function cargoBuild(
   // Build std if specified
   if (options.buildStd && options.buildStd.length > 0) {
     args.push('-Z', `build-std=${options.buildStd.join(',')}`);
+  }
+  
+  // Build std features if specified
+  if (options.buildStdFeatures && options.buildStdFeatures.length > 0) {
+    args.push('-Z', `build-std-features=${options.buildStdFeatures.join(',')}`);
   }
   
   args.push('--target', options.target);

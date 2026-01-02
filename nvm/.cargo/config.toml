@@ -1,0 +1,9 @@
+# Override root workspace config - use host target for nvm crate
+# This crate uses std and runs on the host machine
+
+[build]
+target = "x86_64-unknown-linux-gnu"
+
+[unstable]
+build-std = []
+build-std-features = []

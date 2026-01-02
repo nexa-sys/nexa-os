@@ -1,0 +1,39 @@
+[package]
+name = "nvm"
+version = "1.0.0"
+edition = "2021"
+description = "NexaOS Virtual Machine - Enterprise-Grade Hypervisor Platform"
+authors = ["NexaOS Team"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/nexa-sys/nexa-os"
+keywords = ["virtualization", "hypervisor", "vm", "kvm", "vmware"]
+categories = ["virtualization", "emulators", "hardware-support"]
+
+[features]
+default = ["full"]
+full = ["vtx", "amdv", "sdn", "monitoring", "backup", "distributed-storage", "multi-tenant"]
+
+# Hardware Virtualization Support
+vtx = []       # Intel VT-x emulation
+amdv = []      # AMD-V (SVM) emulation
+
+# Enterprise Features
+sdn = []                    # Software Defined Networking
+monitoring = []             # Monitoring and alerting
+backup = []                 # Backup and disaster recovery
+distributed-storage = []    # Distributed storage system
+multi-tenant = []           # Multi-tenant management
+
+# Development features
+tracing = []                # Detailed execution tracing
+
+[dependencies]
+# x86_64 hardware support
+x86_64 = "0.15"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"], optional = true }
+serde_json = { version = "1.0", optional = true }
+
+[dev-dependencies]
+# criterion = "0.5"
