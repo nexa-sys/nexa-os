@@ -1,19 +1,18 @@
 //! Virtual Memory Subsystem for Testing
 //!
 //! Provides complete memory emulation:
-//! - Physical memory (simulated RAM)
+//! - Physical memory (simulated RAM) using single mmap (QEMU-style)
 //! - Memory-mapped I/O regions
 //! - Page frame allocation
 //! - Memory access tracking for debugging
 
-use std::alloc::{alloc, alloc_zeroed, dealloc, Layout};
+use std::alloc::{alloc_zeroed, dealloc, Layout};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
 // Linux mmap constants
 const MAP_PRIVATE: i32 = 0x02;
 const MAP_ANONYMOUS: i32 = 0x20;
-const MAP_FIXED: i32 = 0x10;
 const PROT_READ: i32 = 0x1;
 const PROT_WRITE: i32 = 0x2;
 
@@ -85,11 +84,13 @@ impl MemoryRegion {
 /// Physical memory emulation
 ///
 /// This emulates the actual physical RAM that the kernel sees.
+/// Uses a single mmap allocation for the entire RAM region (like QEMU).
 /// MMIO regions are handled separately by devices.
 pub struct PhysicalMemory {
-    /// Backing store for RAM (page-aligned allocations)
-    /// Value is (ptr, is_mmap) - true if allocated via mmap, false if via alloc
-    pages: RwLock<HashMap<u64, (*mut u8, bool)>>,
+    /// Single mmap'd region for all RAM (like QEMU's RAMBlock)
+    ram_base: *mut u8,
+    /// Size of the RAM region
+    ram_size: usize,
     /// Memory map (like E820)
     regions: RwLock<Vec<MemoryRegion>>,
     /// Total usable RAM size
@@ -107,14 +108,40 @@ pub struct MemoryStats {
     pub deallocations: u64,
 }
 
-// Safety: We carefully manage the raw pointers
+// Safety: The ram_base pointer is valid for the lifetime of PhysicalMemory
+// and we use proper synchronization for stats
 unsafe impl Send for PhysicalMemory {}
 unsafe impl Sync for PhysicalMemory {}
 
 impl PhysicalMemory {
     /// Create physical memory with given size
+    /// 
+    /// Allocates a single contiguous region via mmap (like QEMU)
     pub fn new(size_mb: usize) -> Self {
         let total_size = size_mb * 1024 * 1024;
+        
+        // Allocate RAM via mmap (without MAP_FIXED - let OS choose address)
+        let ram_base = unsafe {
+            mmap(
+                std::ptr::null_mut(),
+                total_size,
+                PROT_READ | PROT_WRITE,
+                MAP_PRIVATE | MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        
+        let map_failed = usize::MAX as *mut u8;
+        if ram_base == map_failed || ram_base.is_null() {
+            panic!("Failed to mmap {} MB for physical memory", size_mb);
+        }
+        
+        // Zero the memory
+        unsafe {
+            std::ptr::write_bytes(ram_base, 0, total_size);
+        }
+        
         let mut regions = Vec::new();
         
         // Create standard x86 memory map
@@ -126,7 +153,8 @@ impl PhysicalMemory {
         regions.push(MemoryRegion::new(0x100000, total_size - 0x100000, MemoryType::Ram));
         
         Self {
-            pages: RwLock::new(HashMap::new()),
+            ram_base,
+            ram_size: total_size,
             regions: RwLock::new(regions),
             total_size,
             stats: Mutex::new(MemoryStats::default()),
@@ -135,13 +163,35 @@ impl PhysicalMemory {
     
     /// Create with custom memory map
     pub fn with_regions(regions: Vec<MemoryRegion>) -> Self {
-        let total_size = regions.iter()
+        let total_size: usize = regions.iter()
             .filter(|r| r.region_type == MemoryType::Ram)
             .map(|r| r.size)
             .sum();
+        
+        // Allocate RAM via mmap
+        let ram_base = unsafe {
+            mmap(
+                std::ptr::null_mut(),
+                total_size,
+                PROT_READ | PROT_WRITE,
+                MAP_PRIVATE | MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        
+        let map_failed = usize::MAX as *mut u8;
+        if ram_base == map_failed || ram_base.is_null() {
+            panic!("Failed to mmap {} bytes for physical memory", total_size);
+        }
+        
+        unsafe {
+            std::ptr::write_bytes(ram_base, 0, total_size);
+        }
             
         Self {
-            pages: RwLock::new(HashMap::new()),
+            ram_base,
+            ram_size: total_size,
             regions: RwLock::new(regions),
             total_size,
             stats: Mutex::new(MemoryStats::default()),
@@ -163,92 +213,31 @@ impl PhysicalMemory {
         self.stats.lock().unwrap().clone()
     }
     
-    /// Ensure a page exists (allocate on first access)
-    /// 
-    /// For high addresses (>= 0x10000): uses mmap with MAP_FIXED to allocate at exact address.
-    /// For low addresses (< 0x10000): uses heap allocation since Linux blocks low mmap.
-    fn ensure_page(&self, page_addr: u64) -> *mut u8 {
-        let mut pages = self.pages.write().unwrap();
-        
-        if let Some(&(ptr, _)) = pages.get(&page_addr) {
-            return ptr;
+    /// Get pointer to physical address (bounds checked)
+    #[inline]
+    fn get_ptr(&self, addr: PhysAddr) -> *mut u8 {
+        if (addr as usize) >= self.ram_size {
+            panic!("Physical address {:#x} out of bounds (max {:#x})", addr, self.ram_size);
         }
-        
-        // Linux typically has mmap_min_addr = 65536 (0x10000)
-        // We can't mmap below that, so use heap allocation for low addresses
-        const MMAP_MIN_ADDR: u64 = 0x10000;
-        
-        if page_addr < MMAP_MIN_ADDR {
-            // Low address: use heap allocation
-            let layout = Layout::from_size_align(PAGE_SIZE, PAGE_SIZE).unwrap();
-            let ptr = unsafe { alloc_zeroed(layout) };
-            if ptr.is_null() {
-                panic!("Failed to allocate page for low address {:#x}", page_addr);
-            }
-            pages.insert(page_addr, (ptr, false)); // false = use dealloc, not munmap
-            self.stats.lock().unwrap().allocations += 1;
-            return ptr;
-        }
-        
-        // High address: use mmap with MAP_FIXED to allocate at exact address
-        // This makes kernel addresses (like 0x1d00000) valid in the test process
-        let ptr = unsafe {
-            mmap(
-                page_addr as *mut u8,
-                PAGE_SIZE,
-                PROT_READ | PROT_WRITE,
-                MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED,
-                -1,
-                0,
-            )
-        };
-        
-        // MAP_FAILED is (void*)-1 on Linux
-        let map_failed = usize::MAX as *mut u8;
-        
-        if ptr == map_failed {
-            // mmap MAP_FIXED failed - the address might already be mapped
-            // (e.g., by another test thread in parallel). In this case,
-            // the address IS valid, just not owned by us. Use it directly.
-            pages.insert(page_addr, (page_addr as *mut u8, false));
-            self.stats.lock().unwrap().allocations += 1;
-            return page_addr as *mut u8;
-        }
-        
-        // Zero the page
-        unsafe {
-            core::ptr::write_bytes(ptr, 0, PAGE_SIZE);
-        }
-        
-        pages.insert(page_addr, (ptr, true)); // true = use munmap
-        self.stats.lock().unwrap().allocations += 1;
-        
-        ptr
+        unsafe { self.ram_base.add(addr as usize) }
     }
     
     /// Read a byte from physical memory
+    #[inline]
     pub fn read_u8(&self, addr: PhysAddr) -> u8 {
         self.stats.lock().unwrap().reads += 1;
-        
-        let page_addr = addr & !(PAGE_SIZE as u64 - 1);
-        let offset = (addr & (PAGE_SIZE as u64 - 1)) as usize;
-        
-        let ptr = self.ensure_page(page_addr);
-        unsafe { *ptr.add(offset) }
+        unsafe { *self.get_ptr(addr) }
     }
     
     /// Write a byte to physical memory
+    #[inline]
     pub fn write_u8(&self, addr: PhysAddr, value: u8) {
         self.stats.lock().unwrap().writes += 1;
-        
-        let page_addr = addr & !(PAGE_SIZE as u64 - 1);
-        let offset = (addr & (PAGE_SIZE as u64 - 1)) as usize;
-        
-        let ptr = self.ensure_page(page_addr);
-        unsafe { *ptr.add(offset) = value; }
+        unsafe { *self.get_ptr(addr) = value; }
     }
     
     /// Read a 16-bit value
+    #[inline]
     pub fn read_u16(&self, addr: PhysAddr) -> u16 {
         let lo = self.read_u8(addr) as u16;
         let hi = self.read_u8(addr + 1) as u16;
@@ -256,6 +245,7 @@ impl PhysicalMemory {
     }
     
     /// Write a 16-bit value
+    #[inline]
     pub fn write_u16(&self, addr: PhysAddr, value: u16) {
         self.write_u8(addr, value as u8);
         self.write_u8(addr + 1, (value >> 8) as u8);
@@ -291,41 +281,60 @@ impl PhysicalMemory {
         self.write_u32(addr + 4, (value >> 32) as u32);
     }
     
-    /// Read a slice of bytes
+    /// Read a slice of bytes (optimized for bulk reads)
+    #[inline]
     pub fn read_bytes(&self, addr: PhysAddr, buf: &mut [u8]) {
-        for (i, byte) in buf.iter_mut().enumerate() {
-            *byte = self.read_u8(addr + i as u64);
+        if (addr as usize) + buf.len() > self.ram_size {
+            panic!("read_bytes: address range {:#x}-{:#x} out of bounds", 
+                   addr, addr + buf.len() as u64);
+        }
+        self.stats.lock().unwrap().reads += buf.len() as u64;
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                self.ram_base.add(addr as usize),
+                buf.as_mut_ptr(),
+                buf.len()
+            );
         }
     }
     
-    /// Write a slice of bytes
+    /// Write a slice of bytes (optimized for bulk writes)
+    #[inline]
     pub fn write_bytes(&self, addr: PhysAddr, data: &[u8]) {
-        for (i, &byte) in data.iter().enumerate() {
-            self.write_u8(addr + i as u64, byte);
+        if (addr as usize) + data.len() > self.ram_size {
+            panic!("write_bytes: address range {:#x}-{:#x} out of bounds", 
+                   addr, addr + data.len() as u64);
+        }
+        self.stats.lock().unwrap().writes += data.len() as u64;
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                data.as_ptr(),
+                self.ram_base.add(addr as usize),
+                data.len()
+            );
         }
     }
     
-    /// Get raw pointer to a page (for direct access in performance-critical paths)
+    /// Get raw pointer to physical address (for direct access)
     /// 
     /// # Safety
     /// Caller must ensure proper synchronization and bounds checking
-    pub unsafe fn page_ptr(&self, page_addr: u64) -> *mut u8 {
-        self.ensure_page(page_addr)
+    #[inline]
+    pub unsafe fn raw_ptr(&self, addr: PhysAddr) -> *mut u8 {
+        self.get_ptr(addr)
+    }
+    
+    /// Get the base pointer and size (for advanced usage like snapshotting)
+    pub fn ram_region(&self) -> (*mut u8, usize) {
+        (self.ram_base, self.ram_size)
     }
 }
 
 impl Drop for PhysicalMemory {
     fn drop(&mut self) {
-        // Free all allocated pages
-        let pages = self.pages.get_mut().unwrap();
-        let layout = Layout::from_size_align(PAGE_SIZE, PAGE_SIZE).unwrap();
-        
-        for &(ptr, is_mmap) in pages.values() {
-            if is_mmap {
-                unsafe { munmap(ptr, PAGE_SIZE); }
-            } else {
-                unsafe { dealloc(ptr, layout); }
-            }
+        // Free the mmap'd region
+        if !self.ram_base.is_null() {
+            unsafe { munmap(self.ram_base, self.ram_size); }
         }
     }
 }

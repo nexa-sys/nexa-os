@@ -13,20 +13,42 @@ const MMAP_REGION_START: u64 = 0x1D00000;
 /// Number of pages to preallocate for tests
 const MMAP_REGION_PAGES: u64 = 1024; // 4MB
 const PAGE_SIZE_U64: u64 = 4096;
+const REGION_SIZE: usize = (MMAP_REGION_PAGES * PAGE_SIZE_U64) as usize;
 
-/// Initialize memory region for kernel mmap to use
+// Linux mmap constants for setup
+const LIBC_PROT_READ: i32 = 0x1;
+const LIBC_PROT_WRITE: i32 = 0x2;
+const LIBC_MAP_PRIVATE: i32 = 0x02;
+const LIBC_MAP_ANONYMOUS: i32 = 0x20;
+const LIBC_MAP_FIXED: i32 = 0x10;
+
+extern "C" {
+    fn mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, fd: i32, offset: i64) -> *mut u8;
+}
+
+/// Initialize memory region for kernel mmap to use.
+/// Uses real mmap MAP_FIXED to map memory at the exact address the kernel expects.
 fn setup_vm() {
     use crate::mock::vm::VirtualMachine;
     
+    // Map real memory at MMAP_REGION_START using system mmap
+    let ptr = unsafe {
+        mmap(
+            MMAP_REGION_START as *mut u8,
+            REGION_SIZE,
+            LIBC_PROT_READ | LIBC_PROT_WRITE,
+            LIBC_MAP_PRIVATE | LIBC_MAP_ANONYMOUS | LIBC_MAP_FIXED,
+            -1,
+            0
+        )
+    };
+    
+    if ptr as usize == usize::MAX || ptr as u64 != MMAP_REGION_START {
+        panic!("Failed to mmap region at {:#x}, got {:?}", MMAP_REGION_START, ptr);
+    }
+    
     let vm = VirtualMachine::new();
     vm.install();
-    
-    // Pre-allocate pages at kernel mmap addresses
-    let mem = vm.memory();
-    for i in 0..MMAP_REGION_PAGES {
-        let page_addr = MMAP_REGION_START + i * PAGE_SIZE_U64;
-        mem.read_u8(page_addr);
-    }
     
     // Keep VM alive
     std::mem::forget(vm);

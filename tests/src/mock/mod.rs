@@ -65,6 +65,7 @@
 //! ```
 
 pub mod cpu;
+pub mod debugger;
 pub mod devices;
 pub mod hal;
 pub mod memory;
@@ -72,9 +73,17 @@ pub mod pci;
 pub mod vm;
 
 // Re-export main components
-pub use cpu::{VirtualCpu, CpuState, Registers};
+pub use cpu::{
+    VirtualCpu, CpuState, Registers, CpuPool, CpuStateSnapshot,
+    DebugRegisters, PerformanceCounters, Breakpoint, BreakpointType,
+    CpuException, CpuEvent, PendingInterrupt,
+};
+pub use debugger::{
+    VmDebugger, DebuggerState, DebugCommand, DebugEvent,
+    BreakpointInfo, Watchpoint, StackFrame, Instruction, disassemble,
+};
 pub use devices::{Device, DeviceId, DeviceManager};
 pub use hal::HardwareAbstractionLayer;
 pub use memory::{MockPageAllocator, VirtualMemory, PhysicalMemory, MemoryRegion};
 pub use pci::{PciBus, PciDevice, PciConfig};
-pub use vm::{VirtualMachine, VmConfig, VmEvent};
+pub use vm::{VirtualMachine, VmConfig, VmEvent, VmState, VmSnapshot, VmStatistics, VmBuilder};
