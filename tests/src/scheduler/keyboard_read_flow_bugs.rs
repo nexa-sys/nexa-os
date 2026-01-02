@@ -319,6 +319,9 @@ mod tests {
         // Overflow process still Ready, not stuck
         let state = get_process_state(overflow_pid);
 
+        // CRITICAL: Clear the waiter queue before cleanup to not pollute other tests
+        wake_all_waiters();
+
         // Cleanup
         for pid in &pids {
             cleanup_process(*pid);
@@ -695,5 +698,421 @@ mod tests {
             "STUCK BUG: Process got stuck in {} iterations: {:?}",
             stuck_iterations.len(), 
             if stuck_iterations.len() > 10 { &stuck_iterations[..10] } else { &stuck_iterations[..] });
+    }
+
+    // =========================================================================
+    // BUG: Double wake_all_waiters call - waiters already removed
+    // =========================================================================
+
+    /// BUG TEST: Repeated wake_all_waiters when waiters already cleared
+    ///
+    /// If interrupt fires twice quickly:
+    /// 1. First wake_all_waiters clears waiter list
+    /// 2. Second wake_all_waiters has empty list - no wakes
+    /// 3. Process between step 1 and 2 may register and miss wake
+    #[test]
+    #[serial]
+    fn double_wake_all_waiters_race() {
+        let pid1 = next_pid();
+        let pid2 = next_pid();
+        add_process(pid1, ProcessState::Sleeping);
+        add_process(pid2, ProcessState::Ready);
+
+        // pid1 registered as waiter
+        add_waiter(pid1);
+
+        // First interrupt: wakes pid1, clears list
+        wake_all_waiters();
+
+        // pid2 registers BETWEEN the two interrupts
+        add_waiter(pid2);
+        let _ = set_process_state(pid2, ProcessState::Sleeping);
+
+        // Second interrupt: should wake pid2
+        wake_all_waiters();
+
+        let state1 = get_process_state(pid1);
+        let state2 = get_process_state(pid2);
+
+        cleanup_process(pid1);
+        cleanup_process(pid2);
+
+        assert_eq!(state1, Some(ProcessState::Ready), "pid1 should be Ready");
+        assert_eq!(state2, Some(ProcessState::Ready),
+            "BUG: pid2 registered after first wake but before sleep, \
+             second wake_all should have woken it!");
+    }
+
+    // =========================================================================
+    // BUG: wake_pending not cleared after successful sleep
+    // =========================================================================
+
+    /// BUG TEST: Stale wake_pending from previous cycle
+    ///
+    /// If wake_pending is not properly cleared:
+    /// 1. Cycle 1: wake_pending set, blocks sleep -> OK
+    /// 2. Cycle 2: tries to sleep, but old wake_pending blocks it -> BUG
+    #[test]
+    #[serial]
+    fn stale_wake_pending_between_cycles() {
+        let shell_pid = next_pid();
+        add_process(shell_pid, ProcessState::Ready);
+
+        // Cycle 1: wake-before-sleep race
+        add_waiter(shell_pid);
+        wake_all_waiters();  // Sets wake_pending
+        let _ = set_process_state(shell_pid, ProcessState::Sleeping); // Should NOT sleep
+
+        let state1 = get_process_state(shell_pid);
+        let pending1 = get_wake_pending(shell_pid);
+
+        // Cycle 2: Normal operation (no race this time)
+        // Process consumed the data, ready to sleep for more
+        add_waiter(shell_pid);
+        // NO wake this time
+        let _ = set_process_state(shell_pid, ProcessState::Sleeping);
+
+        let state2 = get_process_state(shell_pid);
+        let pending2 = get_wake_pending(shell_pid);
+
+        cleanup_process(shell_pid);
+
+        assert_ne!(state1, Some(ProcessState::Sleeping), "Cycle 1 should block sleep");
+        assert_eq!(pending1, Some(false), "wake_pending should be consumed in cycle 1");
+        assert_eq!(state2, Some(ProcessState::Sleeping), 
+            "BUG: Cycle 2 should sleep (no pending wake), but stale wake_pending blocked it!");
+        assert_eq!(pending2, Some(false), "No wake in cycle 2");
+    }
+
+    // =========================================================================
+    // BUG: wake_process on Running doesn't set need_resched
+    // =========================================================================
+
+    /// BUG TEST: wake on Running must set need_resched
+    ///
+    /// If process is Running and wake arrives:
+    /// 1. wake_pending is set (correct)
+    /// 2. But need_resched might not be set!
+    /// 3. Process continues running until time slice ends
+    /// 4. Only then tries to sleep, wake_pending blocks it
+    /// 
+    /// Problem: If process never sleeps voluntarily, it doesn't benefit from wake_pending
+    /// Solution: need_resched should be set so scheduler can check wake_pending at next tick
+    #[test]
+    #[serial]
+    fn wake_running_sets_need_resched() {
+        ensure_percpu_init();
+        
+        let pid = next_pid();
+        add_process(pid, ProcessState::Running);
+
+        // Clear need_resched before test
+        let _ = check_need_resched();
+
+        // Wake arrives while Running
+        wake_process(pid);
+
+        let pending = get_wake_pending(pid);
+        let resched = check_need_resched();
+
+        cleanup_process(pid);
+
+        assert_eq!(pending, Some(true), "wake_pending should be set");
+        assert!(resched,
+            "BUG: wake_process on Running did not set need_resched! \
+             Interactive latency will suffer.");
+    }
+
+    // =========================================================================
+    // BUG: remove_waiter not called before sleep retry
+    // =========================================================================
+
+    /// BUG TEST: Duplicate waiter entries if not removed before retry
+    ///
+    /// If process is woken, checks no data, re-adds waiter without removing:
+    /// 1. add_waiter(pid)  -> [pid]
+    /// 2. wake_all_waiters -> wakes pid, list now []
+    /// 3. No data, process loops
+    /// 4. add_waiter(pid)  -> [pid]  // OK if wake cleared it
+    /// 
+    /// But if implementation doesn't clear on wake:
+    /// 1. add_waiter(pid)  -> [pid]
+    /// 2. Data arrives, but no wake_all called yet
+    /// 3. Process checks, has data, returns
+    /// 4. Process returns for more
+    /// 5. add_waiter(pid)  -> [pid, pid]  // DUPLICATE!
+    #[test]
+    #[serial]
+    fn no_duplicate_waiter_entries() {
+        let pid = next_pid();
+        add_process(pid, ProcessState::Ready);
+
+        // Scenario: add multiple times without wake in between
+        add_waiter(pid);
+        remove_waiter(pid);  // Should be no-op or actually remove
+        add_waiter(pid);     // Second add
+        
+        // Now wake - should wake exactly once
+        wake_all_waiters();
+
+        // Process should be Ready (was already Ready, wake_pending set)
+        let pending = get_wake_pending(pid);
+
+        // Re-add after wake
+        add_waiter(pid);
+        add_waiter(pid);  // Duplicate add - kernel should handle
+
+        wake_all_waiters();
+
+        let state = get_process_state(pid);
+
+        cleanup_process(pid);
+
+        assert_eq!(pending, Some(true), "First wake should set wake_pending");
+        // After all the manipulation, process should still be in valid state
+        assert_eq!(state, Some(ProcessState::Ready), "Process should remain Ready");
+    }
+
+    // =========================================================================
+    // BUG: Sleeping process not in waiter list
+    // =========================================================================
+
+    /// BUG TEST: Process sleeps but never added to waiter list
+    ///
+    /// If code does:
+    ///   set_process_state(Sleeping)  // WRONG ORDER
+    ///   add_waiter(pid)
+    ///
+    /// Race window where keyboard fires after sleep but before add.
+    #[test]
+    #[serial]
+    fn wrong_order_sleep_before_add() {
+        let pid = next_pid();
+        add_process(pid, ProcessState::Ready);
+
+        // WRONG order (demonstrates bug if kernel code is wrong)
+        let _ = set_process_state(pid, ProcessState::Sleeping);
+        // If keyboard interrupt fires HERE, wake_all_waiters does nothing
+        // because pid is not in waiter list yet
+        add_waiter(pid);
+
+        // Keyboard fires, but pid is Sleeping and WAS added after sleep
+        wake_all_waiters();
+
+        let state = get_process_state(pid);
+        cleanup_process(pid);
+
+        // This should work if add_waiter works on Sleeping process
+        assert_eq!(state, Some(ProcessState::Ready),
+            "wake_all should wake even if waiter added while Sleeping");
+    }
+
+    // =========================================================================
+    // BUG: Thread blocked in read while main thread exits
+    // =========================================================================
+
+    /// BUG TEST: Thread waiting for input when main thread exits
+    ///
+    /// Multi-threaded process:
+    /// - Thread 1 (main): exits
+    /// - Thread 2: blocked in read(), waiting for keyboard
+    /// 
+    /// Thread 2 should receive some signal (SIGHUP?) or be killed
+    #[test]
+    #[serial]
+    fn thread_blocked_read_main_exits() {
+        let main_pid = next_pid();
+        let thread_pid = next_pid();
+
+        add_process(main_pid, ProcessState::Running);
+        // Thread shares tgid with main
+        {
+            let mut table = process_table_lock();
+            for slot in table.iter_mut() {
+                if slot.is_none() {
+                    let mut proc = make_test_process(thread_pid, ProcessState::Sleeping);
+                    proc.tgid = main_pid;  // Same thread group
+                    proc.is_thread = true;
+                    crate::process::register_pid_mapping(thread_pid, 0); // Dummy index
+                    *slot = Some(make_process_entry(proc));
+                    break;
+                }
+            }
+        }
+
+        // Thread is waiting for keyboard
+        add_waiter(thread_pid);
+
+        // Main thread exits
+        let _ = set_process_state(main_pid, ProcessState::Zombie);
+
+        // At this point, something should happen to thread
+        // In POSIX: orphaned threads continue, but should be wakeable
+        
+        // Keyboard input arrives
+        wake_all_waiters();
+
+        let thread_state = get_process_state(thread_pid);
+        
+        cleanup_process(thread_pid);
+        cleanup_process(main_pid);
+
+        // Thread should be woken (Ready) not stuck Sleeping forever
+        assert_eq!(thread_state, Some(ProcessState::Ready),
+            "BUG: Thread blocked in read stuck after main exits!");
+    }
+
+    // =========================================================================
+    // BUG: Rapid keystroke loss under load
+    // =========================================================================
+
+    /// BUG TEST: Multiple rapid keystrokes with process switching
+    ///
+    /// User types fast while system is busy:
+    /// 1. Shell sleeping
+    /// 2. Key 1: wakes shell
+    /// 3. Shell processes, sleeps again
+    /// 4. Key 2: wakes shell (but shell might not have slept yet!)
+    /// 5. Key 3: wakes shell (shell still processing)
+    #[test]
+    #[serial]
+    fn rapid_keystrokes_no_loss() {
+        let shell = next_pid();
+        add_process(shell, ProcessState::Sleeping);
+        add_waiter(shell);
+
+        // Key 1
+        wake_all_waiters();
+        assert_eq!(get_process_state(shell), Some(ProcessState::Ready), "Key 1 should wake");
+
+        // Shell processes (Running)
+        let _ = set_process_state(shell, ProcessState::Running);
+
+        // Key 2 arrives while Running
+        add_waiter(shell);  // Shell re-registers (may or may not succeed)
+        wake_all_waiters(); // Should set wake_pending
+
+        // Shell finishes processing key 1, tries to sleep for more
+        let _ = set_process_state(shell, ProcessState::Sleeping);
+
+        // Should NOT sleep because key 2 is pending
+        let state_after_key2 = get_process_state(shell);
+        let pending = get_wake_pending(shell);
+
+        // Key 3 arrives
+        add_waiter(shell);
+        wake_all_waiters();
+
+        cleanup_process(shell);
+
+        // Key 2 should have prevented sleep OR shell was woken for key 3
+        assert!(state_after_key2 != Some(ProcessState::Sleeping) || pending == Some(true),
+            "BUG: Keystroke lost! Shell slept despite pending input.");
+    }
+
+    // =========================================================================
+    // BUG: EINTR handling leaves process unwakeable
+    // =========================================================================
+
+    /// BUG TEST: Signal interrupts read, process restarts but stuck
+    ///
+    /// 1. Shell in read(), registered as waiter, Sleeping
+    /// 2. Signal arrives (e.g. SIGCHLD) - wakes shell with EINTR
+    /// 3. Shell handles signal, restarts read()
+    /// 4. Shell adds waiter, but wake_pending might be stale?
+    #[test]
+    #[serial]
+    fn eintr_restart_not_stuck() {
+        let shell = next_pid();
+        add_process(shell, ProcessState::Sleeping);
+        add_waiter(shell);
+
+        // Signal arrives (we just wake the process to simulate)
+        wake_process(shell);
+        assert_eq!(get_process_state(shell), Some(ProcessState::Ready));
+
+        // Shell handles signal, returns EINTR, libc restarts read()
+        // Shell re-registers as waiter
+        add_waiter(shell);
+        let _ = set_process_state(shell, ProcessState::Sleeping);
+
+        let state = get_process_state(shell);
+        
+        // Keyboard input arrives
+        wake_all_waiters();
+
+        let final_state = get_process_state(shell);
+
+        cleanup_process(shell);
+
+        assert_eq!(state, Some(ProcessState::Sleeping), 
+            "Shell should sleep after EINTR handling (no pending input)");
+        assert_eq!(final_state, Some(ProcessState::Ready),
+            "BUG: Shell stuck after EINTR restart! Keyboard input ignored.");
+    }
+
+    // =========================================================================
+    // BUG: Ctrl+C during read leaves shell stuck
+    // =========================================================================
+
+    /// BUG TEST: Ctrl+C sends SIGINT but shell might not wake properly
+    ///
+    /// Ctrl+C path:
+    /// 1. Keyboard scancode 0x1D + 0x2E
+    /// 2. Driver sends SIGINT to foreground process group
+    /// 3. Shell receives SIGINT, should wake from read
+    #[test]
+    #[serial]
+    fn ctrl_c_wakes_shell() {
+        let shell = next_pid();
+        add_process(shell, ProcessState::Sleeping);
+        add_waiter(shell);
+
+        // Ctrl+C: keyboard driver calls wake on shell (for SIGINT delivery)
+        wake_process(shell);
+
+        let state = get_process_state(shell);
+        cleanup_process(shell);
+
+        assert_eq!(state, Some(ProcessState::Ready),
+            "BUG: Ctrl+C (SIGINT) did not wake shell from read!");
+    }
+
+    // =========================================================================
+    // BUG: Background process promoted to foreground still blocked
+    // =========================================================================
+
+    /// BUG TEST: "fg" command brings job to foreground, must be responsive
+    ///
+    /// 1. Job running in background (Sleeping on I/O)
+    /// 2. User types "fg" to bring to foreground
+    /// 3. Shell sends SIGCONT to job
+    /// 4. Job should become responsive to keyboard
+    #[test]
+    #[serial]
+    fn fg_command_makes_responsive() {
+        let bg_job = next_pid();
+        add_process(bg_job, ProcessState::Sleeping);
+
+        // Job is sleeping (stopped by SIGTSTP or waiting on pipe)
+        
+        // User types "fg", shell sends SIGCONT
+        wake_process(bg_job);
+
+        let state = get_process_state(bg_job);
+
+        // Job now in foreground, tries to read keyboard
+        add_waiter(bg_job);
+        let _ = set_process_state(bg_job, ProcessState::Sleeping);
+
+        // User types
+        wake_all_waiters();
+
+        let final_state = get_process_state(bg_job);
+        cleanup_process(bg_job);
+
+        assert_eq!(state, Some(ProcessState::Ready), "SIGCONT should wake job");
+        assert_eq!(final_state, Some(ProcessState::Ready), 
+            "BUG: Job promoted to foreground still stuck!");
     }
 }

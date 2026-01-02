@@ -10,10 +10,10 @@ The kernel runs in Ring 0, userspace in Ring 3 with full POSIX compliance.
 
 | Component | Location | Purpose |
 |-----------|----------|---------|
-| Boot entry | `src/main.rs` → `src/lib.rs` | Multiboot2 → kernel_main |
+| Boot entry | `src/main.rs` → `src/lib.rs` | Multiboot2 → `kernel_main()`, UEFI → `kernel_main_uefi()` |
 | Memory | `src/mm/paging.rs`, `src/process/types.rs` | Identity-mapped kernel, isolated userspace with 4-level paging |
-| Scheduler | `src/scheduler/` | Round-robin with priorities; maintains ProcessState consistency |
-| Syscalls | `src/syscalls/` | 50+ POSIX syscalls, organized by domain (file, process, signal, network, memory, thread, time) |
+| Scheduler | `src/scheduler/` | **EEVDF algorithm** (Linux 6.6+): vruntime, deadlines, per-CPU queues |
+| Syscalls | `src/syscalls/` | 60+ POSIX syscalls, organized by domain (file, process, signal, network, memory, thread, time) |
 | Filesystems | `src/fs/initramfs.rs`, `src/fs/` | CPIO initramfs → ext2 rootfs after pivot_root (stage 4) |
 | Safety helpers | `src/safety/` | Centralized unsafe wrappers (volatile, MMIO, port I/O, packet casting) |
 | Networking | `src/net/` | Full UDP/IPv4 stack, ARP, DNS resolver; TCP in progress |
@@ -35,6 +35,16 @@ INTERP_BASE:    0x1C00000      // Dynamic linker region (16MB reserved)
 - `src/security/elf.rs` (auxiliary vector setup)
 
 Failure to sync these causes memory corruption or segfaults during ELF loading.
+
+### EEVDF Scheduler (`src/scheduler/`)
+
+The scheduler uses EEVDF (Earliest Eligible Virtual Deadline First), same as Linux 6.6+:
+- **vruntime**: Tracks weighted CPU time consumption per process
+- **Virtual Deadline**: `vruntime + slice/weight` provides latency guarantees
+- **Per-CPU queues**: Each CPU has its own run queue to minimize lock contention
+- **Eligibility**: Only processes with `lag >= 0` can preempt current task
+
+Key files: `types.rs` (constants), `priority.rs` (vruntime/deadline), `percpu.rs` (per-CPU state)
 
 ## Build & Test Workflows
 
@@ -178,9 +188,11 @@ cargo test --lib bitmap         # Match test name
 cargo test -- --nocapture       # Show println! output
 ```
 
-Tests cannot use kernel-specific code; instead mock components. See `tests/src/mock/` for examples.
+**⚠️ 测试原则**：测试应直接测试内核代码的**纯函数和数据结构**，**不要重新实现或模拟内核逻辑**。
+- ✅ 正确：测试解析器、算法、数据结构转换、边界条件
+- ❌ 错误：写 "Simulates kernel behavior" 的伪实现
 
-Add tests to `tests/src/{algorithms,data_structures}/` as Rust test modules.
+测试按子系统组织在 `tests/src/{fs,mm,net,ipc,process,scheduler,kmod}/`。
 
 ## Critical Pitfalls
 

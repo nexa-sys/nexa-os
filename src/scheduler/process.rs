@@ -925,6 +925,11 @@ pub fn terminate_thread_group(tgid: Pid, exit_code: i32) {
             tgid
         );
 
+        // CRITICAL FIX: Wake up sleeping threads first before marking as Zombie
+        // This ensures threads blocked on I/O (keyboard, network, etc.) are woken
+        // so they can handle the termination signal properly.
+        wake_process(pid);
+
         // Handle thread exit (clear_child_tid and futex wake)
         if let Some(futex_addr) = handle_thread_exit(pid) {
             // Wake any threads waiting on this futex
@@ -948,6 +953,34 @@ pub fn terminate_thread_group(tgid: Pid, exit_code: i32) {
                 e
             );
         }
+    }
+}
+
+/// Wake all threads in a thread group (e.g., when leader exits)
+/// This ensures sleeping threads are woken when the main thread exits.
+pub fn wake_thread_group(tgid: Pid) {
+    let table = PROCESS_TABLE.lock();
+
+    // Collect all PIDs to wake
+    let mut pids_to_wake = [0u64; MAX_PROCESSES];
+    let mut count = 0;
+
+    for slot in table.iter() {
+        if let Some(entry) = slot {
+            if entry.process.tgid == tgid && count < MAX_PROCESSES {
+                pids_to_wake[count] = entry.process.pid;
+                count += 1;
+            }
+        }
+    }
+
+    drop(table);
+
+    // Wake each thread
+    for i in 0..count {
+        let pid = pids_to_wake[i];
+        ktrace!("[wake_thread_group] Waking PID {} (tgid={})", pid, tgid);
+        wake_process(pid);
     }
 }
 

@@ -42,6 +42,16 @@ pub fn exit(code: i32) -> ! {
     // Check if this is a thread or the main process
     let is_thread = crate::scheduler::is_thread(pid);
 
+    // CRITICAL FIX: If this is the main thread (thread group leader), wake all
+    // other threads in the group so they can handle the exit signal.
+    // This prevents threads blocked on I/O from being stuck forever.
+    if !is_thread {
+        if let Some(tgid) = crate::scheduler::get_tgid(pid) {
+            ktrace!("[SYS_EXIT] Main thread {} exiting, waking thread group", pid);
+            crate::scheduler::wake_thread_group(tgid);
+        }
+    }
+
     if let Err(e) = crate::scheduler::set_process_exit_code(pid, code) {
         kerror!("Failed to record exit code for PID {}: {}", pid, e);
     }

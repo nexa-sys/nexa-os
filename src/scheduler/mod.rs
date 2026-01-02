@@ -78,6 +78,7 @@ pub use process::{
     try_wake_process,
     update_process_cr3,
     wake_process,
+    wake_thread_group,
     // Query functions for testing/debugging
     get_process_state,
     get_process_vruntime,
