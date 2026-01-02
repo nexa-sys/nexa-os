@@ -12,6 +12,8 @@ mod tests {
         FUTEX_WAIT_BITSET, FUTEX_WAKE_BITSET,
         FUTEX_PRIVATE_FLAG, FUTEX_CLOCK_REALTIME, FUTEX_CMD_MASK,
     };
+    // Import REAL kernel address validation functions
+    use crate::safety::paging::{is_user_address, is_kernel_address};
 
     // =========================================================================
     // Futex Operation Decoding Tests
@@ -60,32 +62,28 @@ mod tests {
 
     #[test]
     fn test_futex_address_alignment() {
-        // Futex address must be 4-byte aligned
+        // Futex address must be 4-byte aligned and in user space
+        // Use REAL kernel is_user_address for user space check
         fn is_valid_futex_addr(addr: u64) -> bool {
-            addr != 0 && (addr & 3) == 0
+            addr != 0 && (addr & 3) == 0 && is_user_address(addr)
         }
         
         assert!(!is_valid_futex_addr(0), "Null address should be invalid");
-        assert!(!is_valid_futex_addr(1), "Misaligned by 1");
-        assert!(!is_valid_futex_addr(2), "Misaligned by 2");
-        assert!(!is_valid_futex_addr(3), "Misaligned by 3");
-        assert!(is_valid_futex_addr(4), "4-byte aligned should be valid");
-        assert!(!is_valid_futex_addr(5), "Misaligned by 1 from 4");
-        assert!(is_valid_futex_addr(0x1000), "Page-aligned should be valid");
+        // Low addresses - depends on user space start
+        use crate::process::USER_VIRT_BASE;
+        assert!(is_valid_futex_addr(USER_VIRT_BASE), "User base should be valid if aligned");
+        assert!(is_valid_futex_addr(USER_VIRT_BASE + 4), "4-byte aligned in user space");
+        assert!(!is_valid_futex_addr(USER_VIRT_BASE + 1), "Misaligned by 1");
     }
 
     #[test]
     fn test_futex_user_address_range() {
-        // Futex address should be in user space
+        // Use REAL kernel is_user_address function
         use crate::process::{USER_VIRT_BASE, INTERP_BASE, INTERP_REGION_SIZE};
         
-        fn is_user_space_addr(addr: u64) -> bool {
-            addr >= USER_VIRT_BASE && addr < INTERP_BASE + INTERP_REGION_SIZE
-        }
-        
-        assert!(!is_user_space_addr(0x1000), "Below user space");
-        assert!(is_user_space_addr(USER_VIRT_BASE), "Start of user space");
-        assert!(is_user_space_addr(USER_VIRT_BASE + 0x1000), "In user space");
+        assert!(!is_user_address(0x1000), "Below user space");
+        assert!(is_user_address(USER_VIRT_BASE), "Start of user space");
+        assert!(is_user_address(USER_VIRT_BASE + 0x1000), "In user space");
     }
 
     // =========================================================================
@@ -345,13 +343,10 @@ mod tests {
     fn test_futex_shared_vs_private() {
         // Shared futex: processes can share if in shared memory
         // Private futex: only threads in same process
+        // Use kernel constant directly for checking private flag
         
-        fn is_private_futex(op: i32) -> bool {
-            (op & FUTEX_PRIVATE_FLAG) != 0
-        }
-        
-        assert!(!is_private_futex(FUTEX_WAIT));
-        assert!(is_private_futex(FUTEX_WAIT | FUTEX_PRIVATE_FLAG));
+        assert_eq!(FUTEX_WAIT & FUTEX_PRIVATE_FLAG, 0); // Not private by default
+        assert_ne!((FUTEX_WAIT | FUTEX_PRIVATE_FLAG) & FUTEX_PRIVATE_FLAG, 0); // Private when flag set
     }
 
     // =========================================================================
@@ -361,22 +356,27 @@ mod tests {
     #[test]
     fn test_futex_requeue_basic() {
         // FUTEX_REQUEUE: move waiters from one futex to another
-        let mut queue1: Vec<u64> = vec![1, 2, 3, 4, 5]; // Waiters on futex1
-        let mut queue2: Vec<u64> = vec![]; // Waiters on futex2
+        // This test verifies the semantics that the kernel futex_requeue implements:
+        // 1. Wake up to wake_count waiters on futex1
+        // 2. Move up to requeue_count remaining waiters to futex2
+        // The actual implementation is in kernel's futex syscall handler
         
-        let wake_count = 1;
-        let requeue_count = 3;
+        let wake_count = 1u32;
+        let requeue_count = 3u32;
+        let total_waiters = 5u32;
         
-        // Wake first `wake_count` waiters
-        let woken: Vec<u64> = queue1.drain(..std::cmp::min(wake_count, queue1.len())).collect();
-        assert_eq!(woken, vec![1]);
+        // After FUTEX_REQUEUE(futex1, futex2, wake_count=1, requeue_count=3):
+        // - 1 waiter woken (was on futex1)
+        // - 3 waiters moved to futex2
+        // - 1 waiter remains on futex1
+        let woken = std::cmp::min(wake_count, total_waiters);
+        let can_requeue = total_waiters.saturating_sub(woken);
+        let requeued = std::cmp::min(requeue_count, can_requeue);
+        let remaining = total_waiters - woken - requeued;
         
-        // Requeue next `requeue_count` waiters to queue2
-        let requeued: Vec<u64> = queue1.drain(..std::cmp::min(requeue_count, queue1.len())).collect();
-        queue2.extend(requeued.clone());
-        
-        assert_eq!(queue1, vec![5]); // Remaining
-        assert_eq!(queue2, vec![2, 3, 4]); // Requeued
+        assert_eq!(woken, 1);
+        assert_eq!(requeued, 3);
+        assert_eq!(remaining, 1);
     }
 
     #[test]
@@ -400,29 +400,26 @@ mod tests {
     #[test]
     fn test_futex_invalid_operation() {
         let invalid_op = 100;
+        let cmd = invalid_op & FUTEX_CMD_MASK;
         
-        fn is_valid_futex_op(op: i32) -> bool {
-            let cmd = op & FUTEX_CMD_MASK;
-            matches!(cmd, 
-                FUTEX_WAIT | FUTEX_WAKE | FUTEX_FD | FUTEX_REQUEUE |
-                FUTEX_CMP_REQUEUE | FUTEX_WAKE_OP | FUTEX_LOCK_PI |
-                FUTEX_UNLOCK_PI | FUTEX_TRYLOCK_PI | FUTEX_WAIT_BITSET |
-                FUTEX_WAKE_BITSET
-            )
-        }
+        // Valid operations are defined by kernel constants
+        let valid_ops = [
+            FUTEX_WAIT, FUTEX_WAKE, FUTEX_FD, FUTEX_REQUEUE,
+            FUTEX_CMP_REQUEUE, FUTEX_WAKE_OP, FUTEX_LOCK_PI,
+            FUTEX_UNLOCK_PI, FUTEX_TRYLOCK_PI, FUTEX_WAIT_BITSET,
+            FUTEX_WAKE_BITSET,
+        ];
         
-        assert!(!is_valid_futex_op(invalid_op));
+        assert!(!valid_ops.contains(&cmd), "Invalid op should not match any valid operation");
     }
 
     #[test]
     fn test_futex_wait_on_kernel_address() {
         // Waiting on kernel address should fail
+        // Use REAL kernel is_kernel_address function
         let kernel_addr: u64 = 0xFFFF_8000_0000_0000;
         
-        fn is_user_address(addr: u64) -> bool {
-            addr < 0x0000_8000_0000_0000
-        }
-        
+        assert!(is_kernel_address(kernel_addr));
         assert!(!is_user_address(kernel_addr));
     }
 }

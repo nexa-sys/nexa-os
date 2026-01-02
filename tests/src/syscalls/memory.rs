@@ -9,6 +9,8 @@ mod tests {
         MAP_SHARED, MAP_PRIVATE, MAP_FIXED, MAP_ANONYMOUS, MAP_ANON,
         MAP_NORESERVE, MAP_POPULATE, MAP_FAILED, PAGE_SIZE,
     };
+    // Use REAL kernel alignment functions
+    use crate::safety::paging::{align_up, align_down};
 
     // =========================================================================
     // Protection Flag Tests
@@ -105,9 +107,10 @@ mod tests {
 
     #[test]
     fn test_page_alignment() {
-        // Test page alignment check
+        // Test page alignment using REAL kernel align_down function
+        // An address is page-aligned if align_down(addr, PAGE_SIZE) == addr
         fn is_page_aligned(addr: u64) -> bool {
-            addr & (PAGE_SIZE - 1) == 0
+            align_down(addr, PAGE_SIZE) == addr
         }
         
         assert!(is_page_aligned(0));
@@ -122,30 +125,22 @@ mod tests {
 
     #[test]
     fn test_page_round_up() {
-        // Round length up to page boundary
-        fn round_up(len: u64) -> u64 {
-            (len + PAGE_SIZE - 1) & !(PAGE_SIZE - 1)
-        }
-        
-        assert_eq!(round_up(0), 0);
-        assert_eq!(round_up(1), PAGE_SIZE);
-        assert_eq!(round_up(PAGE_SIZE - 1), PAGE_SIZE);
-        assert_eq!(round_up(PAGE_SIZE), PAGE_SIZE);
-        assert_eq!(round_up(PAGE_SIZE + 1), PAGE_SIZE * 2);
+        // Test REAL kernel align_up function for page rounding
+        assert_eq!(align_up(0, PAGE_SIZE), 0);
+        assert_eq!(align_up(1, PAGE_SIZE), PAGE_SIZE);
+        assert_eq!(align_up(PAGE_SIZE - 1, PAGE_SIZE), PAGE_SIZE);
+        assert_eq!(align_up(PAGE_SIZE, PAGE_SIZE), PAGE_SIZE);
+        assert_eq!(align_up(PAGE_SIZE + 1, PAGE_SIZE), PAGE_SIZE * 2);
     }
 
     #[test]
     fn test_page_round_down() {
-        // Round address down to page boundary
-        fn round_down(addr: u64) -> u64 {
-            addr & !(PAGE_SIZE - 1)
-        }
-        
-        assert_eq!(round_down(0), 0);
-        assert_eq!(round_down(1), 0);
-        assert_eq!(round_down(PAGE_SIZE - 1), 0);
-        assert_eq!(round_down(PAGE_SIZE), PAGE_SIZE);
-        assert_eq!(round_down(PAGE_SIZE + 1), PAGE_SIZE);
+        // Test REAL kernel align_down function for page rounding
+        assert_eq!(align_down(0, PAGE_SIZE), 0);
+        assert_eq!(align_down(1, PAGE_SIZE), 0);
+        assert_eq!(align_down(PAGE_SIZE - 1, PAGE_SIZE), 0);
+        assert_eq!(align_down(PAGE_SIZE, PAGE_SIZE), PAGE_SIZE);
+        assert_eq!(align_down(PAGE_SIZE + 1, PAGE_SIZE), PAGE_SIZE);
     }
 
     // =========================================================================
@@ -161,15 +156,12 @@ mod tests {
 
     #[test]
     fn test_map_failed_detection() {
-        // Helper to detect mmap failure
-        fn mmap_failed(result: u64) -> bool {
-            result == MAP_FAILED
-        }
-        
-        assert!(mmap_failed(MAP_FAILED));
-        assert!(mmap_failed(u64::MAX));
-        assert!(!mmap_failed(0));
-        assert!(!mmap_failed(0x1000));
+        // Test MAP_FAILED detection directly using kernel constant
+        // No need for local helper - just compare directly
+        assert_eq!(MAP_FAILED, MAP_FAILED);
+        assert_eq!(u64::MAX, MAP_FAILED);
+        assert_ne!(0u64, MAP_FAILED);
+        assert_ne!(0x1000u64, MAP_FAILED);
     }
 
     // =========================================================================

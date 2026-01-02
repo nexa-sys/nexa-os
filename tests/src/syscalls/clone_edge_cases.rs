@@ -39,33 +39,20 @@ mod tests {
     fn test_clone_thread_requirements() {
         // CLONE_THREAD requires CLONE_SIGHAND
         // CLONE_SIGHAND requires CLONE_VM
-        fn validate_thread_flags(flags: u64) -> bool {
-            if (flags & CLONE_THREAD) != 0 {
-                // CLONE_THREAD needs CLONE_SIGHAND
-                if (flags & CLONE_SIGHAND) == 0 {
-                    return false;
-                }
-            }
-            if (flags & CLONE_SIGHAND) != 0 {
-                // CLONE_SIGHAND needs CLONE_VM
-                if (flags & CLONE_VM) == 0 {
-                    return false;
-                }
-            }
-            true
-        }
+        // Use REAL kernel validation function
+        use crate::syscalls::validate_clone_flags;
         
         // Valid thread flags
         let valid_thread = CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD;
-        assert!(validate_thread_flags(valid_thread));
+        assert!(validate_clone_flags(valid_thread).is_ok());
         
         // Invalid: CLONE_THREAD without CLONE_SIGHAND
         let invalid = CLONE_VM | CLONE_THREAD;
-        assert!(!validate_thread_flags(invalid));
+        assert!(validate_clone_flags(invalid).is_err());
         
         // Invalid: CLONE_SIGHAND without CLONE_VM
         let invalid2 = CLONE_SIGHAND;
-        assert!(!validate_thread_flags(invalid2));
+        assert!(validate_clone_flags(invalid2).is_err());
     }
 
     #[test]

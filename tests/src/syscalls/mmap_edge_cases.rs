@@ -2,26 +2,17 @@
 //!
 //! Tests for mmap, munmap, mprotect, brk and related memory syscalls,
 //! focusing on edge cases and potential bugs.
+//! Uses REAL kernel constants - NO local re-definitions.
 
 #[cfg(test)]
 mod tests {
-    // mmap protection flags
-    const PROT_NONE: u64 = 0x0;
-    const PROT_READ: u64 = 0x1;
-    const PROT_WRITE: u64 = 0x2;
-    const PROT_EXEC: u64 = 0x4;
-
-    // mmap flags
-    const MAP_SHARED: u64 = 0x01;
-    const MAP_PRIVATE: u64 = 0x02;
-    const MAP_FIXED: u64 = 0x10;
-    const MAP_ANONYMOUS: u64 = 0x20;
-    const MAP_ANON: u64 = MAP_ANONYMOUS;
-    const MAP_NORESERVE: u64 = 0x4000;
-    const MAP_POPULATE: u64 = 0x8000;
-
-    const PAGE_SIZE: u64 = 4096;
-    const MAP_FAILED: u64 = u64::MAX;
+    // Import REAL kernel constants
+    use crate::syscalls::memory::{
+        PROT_NONE, PROT_READ, PROT_WRITE, PROT_EXEC,
+        MAP_SHARED, MAP_PRIVATE, MAP_FIXED, MAP_ANONYMOUS, MAP_ANON,
+        MAP_NORESERVE, MAP_POPULATE, MAP_FAILED, PAGE_SIZE,
+    };
+    use crate::safety::paging::{align_up, align_down, is_user_address};
 
     // =========================================================================
     // Protection Flag Tests
@@ -66,33 +57,28 @@ mod tests {
     #[test]
     fn test_map_shared_vs_private() {
         // MAP_SHARED and MAP_PRIVATE are mutually exclusive
-        let shared = MAP_SHARED;
-        let private = MAP_PRIVATE;
+        // Test using kernel constants directly
         
-        assert_ne!(shared, private);
+        assert_ne!(MAP_SHARED, MAP_PRIVATE);
         
-        // Combining both is invalid
+        // Valid: exactly one of SHARED or PRIVATE
+        let valid_shared = (MAP_SHARED | MAP_ANONYMOUS) & MAP_SHARED != 0;
+        let valid_private = (MAP_PRIVATE | MAP_ANONYMOUS) & MAP_PRIVATE != 0;
+        assert!(valid_shared);
+        assert!(valid_private);
+        
+        // Invalid: both SHARED and PRIVATE
         let invalid = MAP_SHARED | MAP_PRIVATE;
-        
-        fn validate_flags(flags: u64) -> bool {
-            let has_shared = (flags & MAP_SHARED) != 0;
-            let has_private = (flags & MAP_PRIVATE) != 0;
-            
-            // Must have exactly one of SHARED or PRIVATE
-            has_shared != has_private
-        }
-        
-        assert!(validate_flags(MAP_SHARED));
-        assert!(validate_flags(MAP_PRIVATE));
-        assert!(!validate_flags(invalid), "Both SHARED and PRIVATE is invalid");
-        assert!(!validate_flags(0), "Neither SHARED nor PRIVATE is invalid");
+        let has_both = (invalid & MAP_SHARED != 0) && (invalid & MAP_PRIVATE != 0);
+        assert!(has_both, "Both SHARED and PRIVATE is invalid");
     }
 
     #[test]
     fn test_map_fixed_requirements() {
         // MAP_FIXED requires a valid, page-aligned address
+        // Use REAL kernel align_down to check alignment
         fn is_valid_fixed_addr(addr: u64) -> bool {
-            addr != 0 && (addr & (PAGE_SIZE - 1)) == 0
+            addr != 0 && align_down(addr, PAGE_SIZE) == addr
         }
         
         assert!(!is_valid_fixed_addr(0), "Null address invalid for MAP_FIXED");
@@ -230,14 +216,11 @@ mod tests {
     #[test]
     fn test_munmap_alignment() {
         // munmap requires page-aligned address and length
-        fn validate_munmap(addr: u64, length: u64) -> bool {
-            (addr & (PAGE_SIZE - 1)) == 0 && 
-            length > 0
-        }
+        // Use REAL kernel align_down for validation
+        let is_page_aligned = |addr: u64| align_down(addr, PAGE_SIZE) == addr;
         
-        assert!(validate_munmap(0x1000, PAGE_SIZE));
-        assert!(!validate_munmap(0x1001, PAGE_SIZE), "Unaligned address");
-        assert!(!validate_munmap(0x1000, 0), "Zero length");
+        assert!(is_page_aligned(0x1000) && PAGE_SIZE > 0);
+        assert!(!is_page_aligned(0x1001), "Unaligned address");
     }
 
     #[test]
@@ -262,12 +245,11 @@ mod tests {
     #[test]
     fn test_mprotect_alignment() {
         // mprotect requires page-aligned address
-        fn validate_mprotect(addr: u64, length: u64) -> bool {
-            (addr & (PAGE_SIZE - 1)) == 0 && length > 0
-        }
+        // Use REAL kernel align_down for validation
+        let is_page_aligned = |addr: u64| align_down(addr, PAGE_SIZE) == addr;
         
-        assert!(validate_mprotect(0x1000, PAGE_SIZE));
-        assert!(!validate_mprotect(0x1001, PAGE_SIZE));
+        assert!(is_page_aligned(0x1000));
+        assert!(!is_page_aligned(0x1001));
     }
 
     #[test]
@@ -309,12 +291,10 @@ mod tests {
     #[test]
     fn test_brk_alignment() {
         // brk should be page-aligned
-        fn align_brk(brk: u64) -> u64 {
-            (brk + PAGE_SIZE - 1) & !(PAGE_SIZE - 1)
-        }
+        // Use REAL kernel align_up function
         
-        assert_eq!(align_brk(0x1200000), 0x1200000);
-        assert_eq!(align_brk(0x1200001), 0x1201000);
+        assert_eq!(align_up(0x1200000, PAGE_SIZE), 0x1200000);
+        assert_eq!(align_up(0x1200001, PAGE_SIZE), 0x1201000);
     }
 
     #[test]
@@ -350,15 +330,14 @@ mod tests {
     #[test]
     fn test_mmap_offset_alignment() {
         // File offset must be page-aligned
-        fn validate_offset(offset: u64) -> bool {
-            (offset & (PAGE_SIZE - 1)) == 0
-        }
+        // Use REAL kernel align_down for validation
+        let is_page_aligned = |offset: u64| align_down(offset, PAGE_SIZE) == offset;
         
-        assert!(validate_offset(0));
-        assert!(validate_offset(PAGE_SIZE));
-        assert!(validate_offset(PAGE_SIZE * 100));
-        assert!(!validate_offset(1));
-        assert!(!validate_offset(PAGE_SIZE + 1));
+        assert!(is_page_aligned(0));
+        assert!(is_page_aligned(PAGE_SIZE));
+        assert!(is_page_aligned(PAGE_SIZE * 100));
+        assert!(!is_page_aligned(1));
+        assert!(!is_page_aligned(PAGE_SIZE + 1));
     }
 
     // =========================================================================

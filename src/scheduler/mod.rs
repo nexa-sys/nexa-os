@@ -106,6 +106,7 @@ pub use priority::{
     is_eligible,
     set_process_policy,
     update_curr,
+    update_min_vruntime,
 };
 
 // Re-export core scheduling functions

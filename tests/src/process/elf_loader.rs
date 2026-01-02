@@ -8,65 +8,51 @@
 
 #[cfg(test)]
 mod tests {
+    // Use REAL kernel ELF types
+    use crate::security::elf::{Elf64Header, ElfClass, ElfData, ELF_MAGIC};
+    use crate::process::{USER_VIRT_BASE, STACK_BASE};
+    
+    // Use kernel PAGE_SIZE from safety/paging
+    use crate::safety::paging::PAGE_SIZE;
+
     // =========================================================================
     // ELF Magic Number Tests
     // =========================================================================
 
-    const ELF_MAGIC: &[u8] = b"\x7fELF";
-
     #[test]
     fn test_elf_magic_constant() {
-        assert_eq!(ELF_MAGIC.len(), 4);
-        assert_eq!(ELF_MAGIC[0], 0x7F);
-        assert_eq!(ELF_MAGIC[1], b'E');
-        assert_eq!(ELF_MAGIC[2], b'L');
-        assert_eq!(ELF_MAGIC[3], b'F');
+        // Use REAL kernel ELF_MAGIC constant
+        assert_eq!(ELF_MAGIC, 0x464C457F); // 0x7F 'E' 'L' 'F' in little-endian
     }
 
     // =========================================================================
     // ELF Header Validation Tests
     // =========================================================================
 
-    /// Minimal ELF header structure for testing
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    struct Elf64Header {
-        e_ident: [u8; 16],
-        e_type: u16,
-        e_machine: u16,
-        e_version: u32,
-        e_entry: u64,
-        e_phoff: u64,
-        e_shoff: u64,
-        e_flags: u32,
-        e_ehsize: u16,
-        e_phentsize: u16,
-        e_phnum: u16,
-        e_shentsize: u16,
-        e_shnum: u16,
-        e_shstrndx: u16,
-    }
-
-    const EI_MAG0: usize = 0;
-    const EI_MAG1: usize = 1;
-    const EI_MAG2: usize = 2;
-    const EI_MAG3: usize = 3;
+    // Use REAL kernel constants
     const EI_CLASS: usize = 4;
     const EI_DATA: usize = 5;
     const EI_VERSION: usize = 6;
-    const EI_OSABI: usize = 7;
-
-    const ELFCLASS64: u8 = 2;
-    const ELFDATA2LSB: u8 = 1;
-    const EV_CURRENT: u8 = 1;
+    const ELFCLASS64: u8 = ElfClass::Elf64 as u8;
+    const ELFDATA2LSB: u8 = ElfData::LittleEndian as u8;
 
     const ET_EXEC: u16 = 2;
     const ET_DYN: u16 = 3;
     const EM_X86_64: u16 = 62;
 
     fn make_valid_elf_header() -> Elf64Header {
-        let mut header = Elf64Header {
-            e_ident: [0; 16],
+        Elf64Header {
+            e_ident: {
+                let mut ident = [0u8; 16];
+                ident[0] = 0x7F;
+                ident[1] = b'E';
+                ident[2] = b'L';
+                ident[3] = b'F';
+                ident[4] = ELFCLASS64;
+                ident[5] = ELFDATA2LSB;
+                ident[6] = 1; // EV_CURRENT
+                ident
+            },
             e_type: ET_EXEC,
             e_machine: EM_X86_64,
             e_version: 1,
@@ -77,28 +63,17 @@ mod tests {
             e_ehsize: 64,
             e_phentsize: 56,
             e_phnum: 1,
-            e_shentsize: 64,
+            e_shentsize: 0,
             e_shnum: 0,
             e_shstrndx: 0,
-        };
-        
-        // Set magic
-        header.e_ident[EI_MAG0] = 0x7F;
-        header.e_ident[EI_MAG1] = b'E';
-        header.e_ident[EI_MAG2] = b'L';
-        header.e_ident[EI_MAG3] = b'F';
-        header.e_ident[EI_CLASS] = ELFCLASS64;
-        header.e_ident[EI_DATA] = ELFDATA2LSB;
-        header.e_ident[EI_VERSION] = EV_CURRENT;
-        
-        header
+        }
     }
 
     #[test]
-    fn test_valid_elf_header_magic() {
+    fn test_valid_elf_header() {
+        // Use REAL kernel Elf64Header::is_valid() method
         let header = make_valid_elf_header();
-        
-        assert_eq!(header.e_ident[0..4], *ELF_MAGIC);
+        assert!(header.is_valid(), "Valid header should pass validation");
     }
 
     #[test]
@@ -121,7 +96,9 @@ mod tests {
     fn test_elf_header_machine() {
         let header = make_valid_elf_header();
         
-        assert_eq!(header.e_machine, EM_X86_64,
+        // Copy from packed struct to avoid alignment issues
+        let e_machine = { header.e_machine };
+        assert_eq!(e_machine, EM_X86_64,
                    "Should be x86_64 architecture");
     }
 
@@ -129,36 +106,43 @@ mod tests {
     // Invalid Header Detection Tests
     // =========================================================================
 
-    fn validate_elf_header(data: &[u8]) -> Result<(), &'static str> {
-        if data.len() < 64 {
+    // Helper to validate ELF data using kernel's is_valid method
+    fn validate_elf_data(data: &[u8]) -> Result<(), &'static str> {
+        if data.len() < core::mem::size_of::<Elf64Header>() {
             return Err("ELF data too small");
         }
         
-        if &data[0..4] != ELF_MAGIC {
-            return Err("Invalid ELF magic");
-        }
+        // SAFETY: We checked the data is large enough
+        let header = unsafe { &*(data.as_ptr() as *const Elf64Header) };
         
-        if data[EI_CLASS] != ELFCLASS64 {
-            return Err("Not 64-bit ELF");
+        if header.is_valid() {
+            Ok(())
+        } else {
+            // Check what failed to provide better error message
+            let magic = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+            if magic != ELF_MAGIC {
+                return Err("Invalid ELF magic");
+            }
+            if data[EI_CLASS] != ELFCLASS64 {
+                return Err("Not 64-bit ELF");
+            }
+            if data[EI_DATA] != ELFDATA2LSB {
+                return Err("Not little-endian");
+            }
+            Err("Invalid ELF header")
         }
-        
-        if data[EI_DATA] != ELFDATA2LSB {
-            return Err("Not little-endian");
-        }
-        
-        Ok(())
     }
 
     #[test]
     fn test_detect_empty_data() {
-        let result = validate_elf_header(&[]);
+        let result = validate_elf_data(&[]);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "ELF data too small");
     }
 
     #[test]
     fn test_detect_too_small() {
-        let result = validate_elf_header(&[0; 63]);
+        let result = validate_elf_data(&[0; 63]);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "ELF data too small");
     }
@@ -171,7 +155,7 @@ mod tests {
         data[2] = b'L';
         data[3] = b'F';
         
-        let result = validate_elf_header(&data);
+        let result = validate_elf_data(&data);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "Invalid ELF magic");
     }
@@ -179,10 +163,14 @@ mod tests {
     #[test]
     fn test_detect_32bit_elf() {
         let mut data = [0u8; 64];
-        data[0..4].copy_from_slice(ELF_MAGIC);
+        // Set correct magic
+        data[0] = 0x7F;
+        data[1] = b'E';
+        data[2] = b'L';
+        data[3] = b'F';
         data[EI_CLASS] = 1; // ELFCLASS32
         
-        let result = validate_elf_header(&data);
+        let result = validate_elf_data(&data);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "Not 64-bit ELF");
     }
@@ -190,11 +178,15 @@ mod tests {
     #[test]
     fn test_detect_big_endian() {
         let mut data = [0u8; 64];
-        data[0..4].copy_from_slice(ELF_MAGIC);
+        // Set correct magic
+        data[0] = 0x7F;
+        data[1] = b'E';
+        data[2] = b'L';
+        data[3] = b'F';
         data[EI_CLASS] = ELFCLASS64;
         data[EI_DATA] = 2; // ELFDATA2MSB (big endian)
         
-        let result = validate_elf_header(&data);
+        let result = validate_elf_data(&data);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "Not little-endian");
     }

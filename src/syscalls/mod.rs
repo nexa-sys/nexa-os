@@ -127,6 +127,7 @@ pub use thread::{
     CLONE_NEWNS, CLONE_SYSVSEM, CLONE_SETTLS, CLONE_PARENT_SETTID,
     CLONE_CHILD_CLEARTID, CLONE_DETACHED, CLONE_UNTRACED,
     CLONE_CHILD_SETTID, CLONE_VFORK,
+    validate_clone_flags,
 };
 
 // Re-export arch_prctl constants for testing

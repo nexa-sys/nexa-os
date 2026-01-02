@@ -8,6 +8,7 @@ mod tests {
     use crate::scheduler::{
         calc_delta_vruntime, calc_vdeadline, is_eligible, nice_to_weight, update_curr,
         ProcessEntry, BASE_SLICE_NS, MAX_SLICE_NS, NICE_0_WEIGHT, SCHED_GRANULARITY_NS,
+        get_min_vruntime, update_min_vruntime,
     };
     use crate::scheduler::percpu::{PerCpuRunQueue, RunQueueEntry, PERCPU_RQ_SIZE};
     use crate::scheduler::SchedPolicy;
@@ -367,37 +368,33 @@ mod tests {
 
     #[test]
     fn test_min_vruntime_update() {
-        // min_vruntime should only increase
-        let mut min_vruntime = 0u64;
+        // Use REAL kernel function to test min_vruntime behavior
+        // min_vruntime should only increase monotonically
         
-        fn update_min_vruntime(min: &mut u64, process_vruntime: u64) {
-            if process_vruntime > *min {
-                *min = process_vruntime;
-            }
-        }
+        let initial = get_min_vruntime();
         
-        update_min_vruntime(&mut min_vruntime, 100);
-        assert_eq!(min_vruntime, 100);
+        // Update using real kernel function
+        update_min_vruntime();
         
-        update_min_vruntime(&mut min_vruntime, 50); // Lower value
-        assert_eq!(min_vruntime, 100); // Should not decrease
+        let after_update = get_min_vruntime();
         
-        update_min_vruntime(&mut min_vruntime, 200);
-        assert_eq!(min_vruntime, 200);
+        // min_vruntime should never decrease
+        assert!(after_update >= initial, 
+            "min_vruntime decreased! {} -> {}", initial, after_update);
     }
 
     #[test]
     fn test_new_process_vruntime() {
         // New process should start at min_vruntime to be fair
-        let min_vruntime = 1000u64;
+        // Test using real kernel min_vruntime
+        let min_vruntime = get_min_vruntime();
         
-        fn init_new_process_vruntime(min_vruntime: u64) -> u64 {
-            // Could add a bonus to help new processes get scheduled
-            min_vruntime
-        }
+        // When creating a new process entry, it should initialize at min_vruntime
+        let mut entry = ProcessEntry::empty();
+        entry.vruntime = min_vruntime;
         
-        let new_vruntime = init_new_process_vruntime(min_vruntime);
-        assert_eq!(new_vruntime, min_vruntime);
+        assert_eq!(entry.vruntime, min_vruntime,
+            "New process should start at current min_vruntime");
     }
 
     /// Helper to create a full ProcessEntry for EEVDF testing

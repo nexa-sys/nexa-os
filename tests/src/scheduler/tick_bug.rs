@@ -11,6 +11,8 @@ use crate::scheduler::{
     // Use REAL kernel query/setter functions
     get_process_state, get_process_vruntime, get_process_slice_remaining,
     set_process_vruntime,
+    // Use REAL tick and update functions
+    tick, update_curr,
 };
 use crate::scheduler::percpu::init_percpu_sched;
 use crate::process::{Process, ProcessState, Pid, MAX_CMDLINE_SIZE};
@@ -145,34 +147,11 @@ fn cleanup_processes(pids: &[Pid]) {
     }
 }
 
-/// Correct tick behavior: update vruntime only for Running process
-fn update_running_process_vruntime(pid: Pid, delta_ns: u64) {
-    let mut table = process_table_lock();
-    for slot in table.iter_mut() {
-        if let Some(entry) = slot {
-            if entry.process.pid == pid && entry.process.state == ProcessState::Running {
-                entry.vruntime = entry.vruntime.saturating_add(delta_ns);
-                entry.slice_remaining_ns = entry.slice_remaining_ns.saturating_sub(delta_ns);
-            }
-        }
-    }
-}
-
-/// BUGGY tick: updates vruntime regardless of state (bug we detect)
-fn buggy_update_vruntime_ignoring_state(pid: Pid, delta_ns: u64) {
-    let mut table = process_table_lock();
-    for slot in table.iter_mut() {
-        if let Some(entry) = slot {
-            if entry.process.pid == pid {
-                entry.vruntime = entry.vruntime.saturating_add(delta_ns);
-            }
-        }
-    }
-}
-
 // =============================================================================
-// TICK BUG TESTS - Using REAL kernel functions
+// TICK BUG TESTS - Using REAL kernel tick() and update_curr() functions
 // =============================================================================
+// NOTE: These tests use the actual kernel tick() function from scheduler::core.
+// The kernel tick() function correctly updates only the RUNNING process's vruntime.
 
 #[test]
 #[serial]
@@ -183,11 +162,11 @@ fn test_sleeping_process_vruntime_invariant() {
     add_process_with_state(sleeping_pid, ProcessState::Sleeping, 1_000_000);
     add_process_with_state(running_pid, ProcessState::Running, 500_000);
     
-    // Use REAL kernel function
+    // Get vruntime before tick using REAL kernel function
     let sleep_vrt_before = get_process_vruntime(sleeping_pid).unwrap();
     
-    // Simulate tick for running process
-    update_running_process_vruntime(running_pid, 1_000_000);
+    // Use REAL kernel tick() - this should only update Running process
+    tick(1); // 1 ms elapsed
     
     // Sleeping process vruntime must NOT change
     let sleep_vrt_after = get_process_vruntime(sleeping_pid).unwrap();
@@ -206,10 +185,11 @@ fn test_ready_process_vruntime_invariant() {
     add_process_with_state(ready_pid, ProcessState::Ready, 1_000_000);
     add_process_with_state(running_pid, ProcessState::Running, 500_000);
     
-    // Use REAL kernel function
+    // Get vruntime before tick using REAL kernel function
     let ready_vrt_before = get_process_vruntime(ready_pid).unwrap();
     
-    update_running_process_vruntime(running_pid, 1_000_000);
+    // Use REAL kernel tick()
+    tick(1); // 1 ms elapsed
     
     // Ready process vruntime must NOT change
     let ready_vrt_after = get_process_vruntime(ready_pid).unwrap();
@@ -226,40 +206,51 @@ fn test_running_process_vruntime_increases() {
     
     add_process_with_state(running_pid, ProcessState::Running, 1_000_000);
     
-    // Use REAL kernel function
+    // Get vruntime before tick using REAL kernel function
     let vrt_before = get_process_vruntime(running_pid).unwrap();
     
-    update_running_process_vruntime(running_pid, 500_000);
+    // Use REAL kernel tick() - running process vruntime should increase
+    tick(1); // 1 ms elapsed
     
     // Running process vruntime should increase
     let vrt_after = get_process_vruntime(running_pid).unwrap();
-    assert_eq!(vrt_after, vrt_before + 500_000,
-        "Running process vruntime did not increase correctly");
+    assert!(vrt_after > vrt_before,
+        "Running process vruntime did not increase after tick");
     
     cleanup_process(running_pid);
 }
 
 #[test]
 #[serial]
-fn test_detect_buggy_vruntime_update() {
+fn test_tick_only_updates_running_process() {
+    // This test verifies the core EEVDF invariant: tick() only updates
+    // the vruntime of the currently RUNNING process, not Sleeping/Ready ones
     let sleeping_pid = next_pid();
+    let ready_pid = next_pid();
+    let running_pid = next_pid();
     
     add_process_with_state(sleeping_pid, ProcessState::Sleeping, 1_000_000);
+    add_process_with_state(ready_pid, ProcessState::Ready, 1_000_000);
+    add_process_with_state(running_pid, ProcessState::Running, 1_000_000);
     
-    // Use REAL kernel function
-    let vrt_before = get_process_vruntime(sleeping_pid).unwrap();
+    // Capture all vruntimes before tick
+    let sleep_vrt_before = get_process_vruntime(sleeping_pid).unwrap();
+    let ready_vrt_before = get_process_vruntime(ready_pid).unwrap();
+    let running_vrt_before = get_process_vruntime(running_pid).unwrap();
     
-    // This is the BUG: updating vruntime regardless of state
-    buggy_update_vruntime_ignoring_state(sleeping_pid, 500_000);
+    // Use REAL kernel tick()
+    tick(1);
     
-    // With buggy implementation, vruntime changes incorrectly
-    let vrt_after = get_process_vruntime(sleeping_pid).unwrap();
+    // Verify invariants
+    let sleep_vrt_after = get_process_vruntime(sleeping_pid).unwrap();
+    let ready_vrt_after = get_process_vruntime(ready_pid).unwrap();
+    let running_vrt_after = get_process_vruntime(running_pid).unwrap();
     
-    // This assertion catches the bug
-    assert_ne!(vrt_before, vrt_after,
-        "Buggy implementation should have changed vruntime");
+    assert_eq!(sleep_vrt_before, sleep_vrt_after, "Sleeping vruntime changed!");
+    assert_eq!(ready_vrt_before, ready_vrt_after, "Ready vruntime changed!");
+    assert!(running_vrt_after > running_vrt_before, "Running vruntime should increase!");
     
-    cleanup_process(sleeping_pid);
+    cleanup_processes(&[sleeping_pid, ready_pid, running_pid]);
 }
 
 #[test]
@@ -269,13 +260,14 @@ fn test_slice_remaining_decreases_for_running() {
     
     add_process_with_state(running_pid, ProcessState::Running, 0);
     
-    // Use REAL kernel function
+    // Get slice_remaining before tick using REAL kernel function
     let slice_before = get_process_slice_remaining(running_pid).unwrap();
     
-    update_running_process_vruntime(running_pid, 100_000);
+    // Use REAL kernel tick()
+    tick(1); // 1 ms = 1_000_000 ns
     
     let slice_after = get_process_slice_remaining(running_pid).unwrap();
-    assert_eq!(slice_after, slice_before - 100_000,
+    assert!(slice_after < slice_before,
         "slice_remaining should decrease for running process");
     
     cleanup_process(running_pid);

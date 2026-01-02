@@ -1,38 +1,30 @@
 //! ELF Loader Security and Validation Tests
 //!
 //! Tests for ELF parsing security, bounds checking, and attack prevention.
+//! Uses REAL kernel ELF types from security/elf module.
 
 #[cfg(test)]
 mod tests {
     use crate::process::{
         USER_VIRT_BASE, HEAP_BASE, STACK_BASE, INTERP_BASE, INTERP_REGION_SIZE,
     };
+    // Import REAL kernel ELF types
+    use crate::security::elf::{
+        ELF_MAGIC, ElfClass, ElfData, ElfType, PhType, 
+        Elf64Header, Elf64ProgramHeader, ph_flags,
+    };
+    use crate::safety::paging::{is_user_address, is_kernel_address};
 
-    // ELF Magic bytes
-    const ELF_MAGIC: [u8; 4] = [0x7F, b'E', b'L', b'F'];
-    
-    // ELF class
-    const ELFCLASS32: u8 = 1;
-    const ELFCLASS64: u8 = 2;
-    
-    // ELF data encoding
-    const ELFDATA2LSB: u8 = 1; // Little-endian
-    const ELFDATA2MSB: u8 = 2; // Big-endian
-    
-    // ELF type
-    const ET_EXEC: u16 = 2; // Executable
-    const ET_DYN: u16 = 3;  // Shared object (PIE)
-    
-    // ELF machine
+    // Local constants for compatibility (should match kernel)
+    const ELFCLASS64: u8 = ElfClass::Elf64 as u8;
+    const ELFCLASS32: u8 = ElfClass::Elf32 as u8;
+    const ELFDATA2LSB: u8 = ElfData::LittleEndian as u8;
+    const ELFDATA2MSB: u8 = ElfData::BigEndian as u8;
+    const ET_EXEC: u16 = ElfType::Executable as u16;
+    const ET_DYN: u16 = ElfType::Shared as u16;
+    const PT_LOAD: u32 = PhType::Load as u32;
+    const PT_INTERP: u32 = PhType::Interp as u32;
     const EM_X86_64: u16 = 62;
-    
-    // Program header types
-    const PT_NULL: u32 = 0;
-    const PT_LOAD: u32 = 1;
-    const PT_DYNAMIC: u32 = 2;
-    const PT_INTERP: u32 = 3;
-    const PT_PHDR: u32 = 6;
-    const PT_GNU_STACK: u32 = 0x6474e551;
 
     // =========================================================================
     // ELF Header Validation Tests
@@ -40,8 +32,13 @@ mod tests {
 
     #[test]
     fn test_elf_magic_validation() {
+        // ELF_MAGIC is u32 = 0x464C457F ('\x7FELF' in little-endian)
         fn validate_magic(data: &[u8]) -> bool {
-            data.len() >= 4 && data[0..4] == ELF_MAGIC
+            if data.len() < 4 {
+                return false;
+            }
+            let magic = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+            magic == ELF_MAGIC
         }
         
         let valid_elf = [0x7F, b'E', b'L', b'F', 0x02, 0x01, 0x01, 0x00];

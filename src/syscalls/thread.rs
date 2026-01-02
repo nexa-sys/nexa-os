@@ -25,6 +25,28 @@ pub const CLONE_UNTRACED: u64 = 0x00800000; // Tracing doesn't follow
 pub const CLONE_CHILD_SETTID: u64 = 0x01000000; // Store TID in child
 pub const CLONE_VFORK: u64 = 0x00004000; // Parent sleeps until child exits
 
+/// Validate clone flags for Linux semantics
+///
+/// # Rules (from Linux kernel):
+/// - CLONE_THREAD requires CLONE_SIGHAND
+/// - CLONE_SIGHAND requires CLONE_VM
+/// - CLONE_THREAD implies CLONE_VM (transitively)
+///
+/// # Returns
+/// - Ok(()) if flags are valid
+/// - Err(errno::EINVAL) if flags violate dependencies
+pub fn validate_clone_flags(flags: u64) -> Result<(), i32> {
+    // CLONE_THREAD requires CLONE_SIGHAND (Linux semantics)
+    if (flags & CLONE_THREAD) != 0 && (flags & CLONE_SIGHAND) == 0 {
+        return Err(errno::EINVAL);
+    }
+    // CLONE_SIGHAND requires CLONE_VM
+    if (flags & CLONE_SIGHAND) != 0 && (flags & CLONE_VM) == 0 {
+        return Err(errno::EINVAL);
+    }
+    Ok(())
+}
+
 /// arch_prctl operations
 pub const ARCH_SET_GS: i32 = 0x1001;
 pub const ARCH_SET_FS: i32 = 0x1002;

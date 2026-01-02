@@ -2,10 +2,16 @@
 //!
 //! Tests for buddy allocator boundary conditions, merging/splitting logic,
 //! and potential bugs in free list management.
+//!
+//! Uses REAL kernel functions - NO local re-implementations.
 
 #[cfg(test)]
 mod tests {
-    use crate::mm::allocator::BuddyStats;
+    use crate::mm::allocator::{
+        BuddyStats, size_to_order, order_to_size, get_buddy_addr, 
+        is_valid_buddy_pair, is_order_aligned,
+    };
+    use crate::safety::paging::{align_up, align_down};
 
     const PAGE_SIZE: u64 = 4096;
     const MAX_ORDER: usize = 11;
@@ -328,15 +334,11 @@ mod tests {
 
     #[test]
     fn test_size_rounding() {
-        // Size should be rounded down to page boundary
-        fn round_down(size: u64) -> u64 {
-            size & !0xFFF
-        }
-        
-        assert_eq!(round_down(0x1000), 0x1000);
-        assert_eq!(round_down(0x1001), 0x1000);
-        assert_eq!(round_down(0x1FFF), 0x1000);
-        assert_eq!(round_down(0x2000), 0x2000);
+        // Use REAL kernel align_down function for page boundary rounding
+        assert_eq!(align_down(0x1000, PAGE_SIZE), 0x1000);
+        assert_eq!(align_down(0x1001, PAGE_SIZE), 0x1000);
+        assert_eq!(align_down(0x1FFF, PAGE_SIZE), 0x1000);
+        assert_eq!(align_down(0x2000, PAGE_SIZE), 0x2000);
     }
 
     #[test]

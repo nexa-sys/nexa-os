@@ -81,52 +81,40 @@ mod tests {
     #[test]
     fn test_clone_thread_requires_sighand() {
         // CLONE_THREAD requires CLONE_SIGHAND (Linux semantics)
-        fn validate_flags(flags: u64) -> Result<(), &'static str> {
-            if (flags & CLONE_THREAD) != 0 && (flags & CLONE_SIGHAND) == 0 {
-                return Err("EINVAL: CLONE_THREAD requires CLONE_SIGHAND");
-            }
-            Ok(())
-        }
+        // Use REAL kernel validation function
+        use crate::syscalls::validate_clone_flags;
 
         // Valid: thread with sighand
-        assert!(validate_flags(CLONE_THREAD | CLONE_SIGHAND | CLONE_VM).is_ok());
+        assert!(validate_clone_flags(CLONE_THREAD | CLONE_SIGHAND | CLONE_VM).is_ok());
 
         // Invalid: thread without sighand
-        assert!(validate_flags(CLONE_THREAD | CLONE_VM).is_err());
+        assert!(validate_clone_flags(CLONE_THREAD | CLONE_VM).is_err());
     }
 
     #[test]
     fn test_clone_sighand_requires_vm() {
         // CLONE_SIGHAND requires CLONE_VM (Linux semantics)
-        fn validate_flags(flags: u64) -> Result<(), &'static str> {
-            if (flags & CLONE_SIGHAND) != 0 && (flags & CLONE_VM) == 0 {
-                return Err("EINVAL: CLONE_SIGHAND requires CLONE_VM");
-            }
-            Ok(())
-        }
+        // Use REAL kernel validation function
+        use crate::syscalls::validate_clone_flags;
 
         // Valid: sighand with vm
-        assert!(validate_flags(CLONE_SIGHAND | CLONE_VM).is_ok());
+        assert!(validate_clone_flags(CLONE_SIGHAND | CLONE_VM).is_ok());
 
         // Invalid: sighand without vm
-        assert!(validate_flags(CLONE_SIGHAND).is_err());
+        assert!(validate_clone_flags(CLONE_SIGHAND).is_err());
     }
 
     #[test]
     fn test_clone_thread_requires_vm() {
         // CLONE_THREAD implies shared address space
-        fn validate_flags(flags: u64) -> Result<(), &'static str> {
-            if (flags & CLONE_THREAD) != 0 && (flags & CLONE_VM) == 0 {
-                return Err("EINVAL: CLONE_THREAD requires CLONE_VM");
-            }
-            Ok(())
-        }
+        // Use REAL kernel validation function
+        use crate::syscalls::validate_clone_flags;
 
         // Valid: thread with vm
-        assert!(validate_flags(CLONE_THREAD | CLONE_VM | CLONE_SIGHAND).is_ok());
+        assert!(validate_clone_flags(CLONE_THREAD | CLONE_VM | CLONE_SIGHAND).is_ok());
 
         // Invalid: thread without vm (makes no sense)
-        assert!(validate_flags(CLONE_THREAD | CLONE_SIGHAND).is_err());
+        assert!(validate_clone_flags(CLONE_THREAD | CLONE_SIGHAND).is_err());
     }
 
     // =========================================================================
@@ -387,13 +375,16 @@ mod tests {
     #[test]
     fn test_stack_address_alignment() {
         // Stack pointer should be 16-byte aligned for x86_64 ABI
-        fn validate_stack(stack: u64) -> bool {
-            (stack & 0xF) == 0
-        }
+        // Use REAL kernel alignment function
+        use crate::safety::paging::align_down;
+        const STACK_ALIGN: u64 = 16;
+        
+        // Check if address is 16-byte aligned using kernel function
+        let is_aligned = |addr: u64| align_down(addr, STACK_ALIGN) == addr;
 
-        assert!(validate_stack(0x7FFF_FFFF_FFF0), "16-byte aligned stack");
-        assert!(!validate_stack(0x7FFF_FFFF_FFF1), "Misaligned by 1");
-        assert!(!validate_stack(0x7FFF_FFFF_FFF8), "8-byte aligned only");
+        assert!(is_aligned(0x7FFF_FFFF_FFF0), "16-byte aligned stack");
+        assert!(!is_aligned(0x7FFF_FFFF_FFF1), "Misaligned by 1");
+        assert!(!is_aligned(0x7FFF_FFFF_FFF8), "8-byte aligned only");
     }
 
     #[test]
@@ -422,12 +413,14 @@ mod tests {
     #[test]
     fn test_tls_address_alignment() {
         // TLS base should be aligned
-        fn validate_tls(addr: u64) -> bool {
-            (addr & 0xF) == 0
-        }
+        // Use REAL kernel alignment function
+        use crate::safety::paging::align_down;
+        const TLS_ALIGN: u64 = 16;
+        
+        let is_aligned = |addr: u64| align_down(addr, TLS_ALIGN) == addr;
 
-        assert!(validate_tls(0x7FFF_FFFF_0000));
-        assert!(!validate_tls(0x7FFF_FFFF_0001));
+        assert!(is_aligned(0x7FFF_FFFF_0000));
+        assert!(!is_aligned(0x7FFF_FFFF_0001));
     }
 
     #[test]
