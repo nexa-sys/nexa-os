@@ -10,7 +10,7 @@ use crate::scheduler::{
     get_min_vruntime, calc_vdeadline,
     // Use REAL kernel query/setter functions
     get_process_state, get_process_vruntime, get_process_slice_remaining,
-    set_process_vruntime,
+    set_process_vruntime, set_current_pid,
     // Use REAL tick and update functions
     tick, update_curr,
 };
@@ -161,6 +161,8 @@ fn test_sleeping_process_vruntime_invariant() {
     
     add_process_with_state(sleeping_pid, ProcessState::Sleeping, 1_000_000);
     add_process_with_state(running_pid, ProcessState::Running, 500_000);
+    // Set current_pid so tick() can find the running process
+    set_current_pid(Some(running_pid));
     
     // Get vruntime before tick using REAL kernel function
     let sleep_vrt_before = get_process_vruntime(sleeping_pid).unwrap();
@@ -184,6 +186,8 @@ fn test_ready_process_vruntime_invariant() {
     
     add_process_with_state(ready_pid, ProcessState::Ready, 1_000_000);
     add_process_with_state(running_pid, ProcessState::Running, 500_000);
+    // Set current_pid so tick() can find the running process
+    set_current_pid(Some(running_pid));
     
     // Get vruntime before tick using REAL kernel function
     let ready_vrt_before = get_process_vruntime(ready_pid).unwrap();
@@ -205,6 +209,8 @@ fn test_running_process_vruntime_increases() {
     let running_pid = next_pid();
     
     add_process_with_state(running_pid, ProcessState::Running, 1_000_000);
+    // Set current_pid so tick() can find the running process
+    set_current_pid(Some(running_pid));
     
     // Get vruntime before tick using REAL kernel function
     let vrt_before = get_process_vruntime(running_pid).unwrap();
@@ -232,6 +238,8 @@ fn test_tick_only_updates_running_process() {
     add_process_with_state(sleeping_pid, ProcessState::Sleeping, 1_000_000);
     add_process_with_state(ready_pid, ProcessState::Ready, 1_000_000);
     add_process_with_state(running_pid, ProcessState::Running, 1_000_000);
+    // Set current_pid so tick() can find the running process
+    set_current_pid(Some(running_pid));
     
     // Capture all vruntimes before tick
     let sleep_vrt_before = get_process_vruntime(sleeping_pid).unwrap();
@@ -259,6 +267,8 @@ fn test_slice_remaining_decreases_for_running() {
     let running_pid = next_pid();
     
     add_process_with_state(running_pid, ProcessState::Running, 0);
+    // Set current_pid so tick() can find the running process
+    set_current_pid(Some(running_pid));
     
     // Get slice_remaining before tick using REAL kernel function
     let slice_before = get_process_slice_remaining(running_pid).unwrap();

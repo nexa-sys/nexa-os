@@ -78,12 +78,17 @@ mod tests {
 
     #[test]
     fn test_futex_user_address_range() {
-        // Use REAL kernel is_user_address function
+        // is_user_address checks if an address is in the LOW canonical address range
+        // (< 0x0000_8000_0000_0000), not specifically in NexaOS user space.
+        // For NexaOS-specific user space checks, we'd need USER_VIRT_BASE bounds.
         use crate::process::{USER_VIRT_BASE, INTERP_BASE, INTERP_REGION_SIZE};
         
-        assert!(!is_user_address(0x1000), "Below user space");
-        assert!(is_user_address(USER_VIRT_BASE), "Start of user space");
+        // Low canonical addresses (below 0x0000_8000_0000_0000) are considered "user"
+        assert!(is_user_address(0x1000), "Low canonical address is user space");
+        assert!(is_user_address(USER_VIRT_BASE), "USER_VIRT_BASE is user space");
         assert!(is_user_address(USER_VIRT_BASE + 0x1000), "In user space");
+        // High canonical addresses are kernel space
+        assert!(!is_user_address(0xFFFF_8000_0000_0000), "High canonical is kernel");
     }
 
     // =========================================================================

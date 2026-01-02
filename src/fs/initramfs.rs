@@ -77,6 +77,7 @@ pub struct CpioNewcHeader {
 
 impl CpioNewcHeader {
     const MAGIC_NEWC: &'static [u8; 6] = b"070701";
+    const MAGIC_CRC: &'static [u8; 6] = b"070702";
     const TRAILER: &'static str = "TRAILER!!!";
 
     fn parse_hex(bytes: &[u8]) -> u64 {
@@ -94,7 +95,7 @@ impl CpioNewcHeader {
     }
 
     pub fn is_valid(&self) -> bool {
-        &self.magic == Self::MAGIC_NEWC
+        &self.magic == Self::MAGIC_NEWC || &self.magic == Self::MAGIC_CRC
     }
 
     pub fn filesize(&self) -> usize {
