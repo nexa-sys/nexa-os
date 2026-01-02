@@ -14,6 +14,10 @@ pub const STDERR: u64 = 2;
 pub const FD_BASE: u64 = 3;
 pub const MAX_OPEN_FILES: usize = 16;
 
+// POSIX path limits
+pub const NAME_MAX: usize = 255;    // Maximum filename length
+pub const PATH_MAX: usize = 4096;   // Maximum path length
+
 // List files flags
 pub const LIST_FLAG_INCLUDE_HIDDEN: u64 = 0x1;
 
@@ -22,8 +26,52 @@ pub const USER_FLAG_ADMIN: u64 = 0x1;
 
 // fcntl commands
 pub const F_DUPFD: u64 = 0;
+pub const F_GETFD: u64 = 1;
+pub const F_SETFD: u64 = 2;
 pub const F_GETFL: u64 = 3;
 pub const F_SETFL: u64 = 4;
+pub const F_DUPFD_CLOEXEC: u64 = 1030;
+
+// Open flags (POSIX compatible)
+pub const O_RDONLY: u64 = 0;
+pub const O_WRONLY: u64 = 1;
+pub const O_RDWR: u64 = 2;
+pub const O_CREAT: u64 = 0o100;
+pub const O_EXCL: u64 = 0o200;
+pub const O_TRUNC: u64 = 0o1000;
+pub const O_APPEND: u64 = 0o2000;
+pub const O_NONBLOCK: u64 = 0o4000;
+pub const O_CLOEXEC: u64 = 0o2000000;
+pub const O_ACCMODE: u64 = 3;
+
+// Seek constants (POSIX compatible)
+pub const SEEK_SET: i32 = 0;
+pub const SEEK_CUR: i32 = 1;
+pub const SEEK_END: i32 = 2;
+
+// File type constants (mode & S_IFMT)
+pub const S_IFMT: u32 = 0o170000;   // Type mask
+pub const S_IFREG: u32 = 0o100000;  // Regular file
+pub const S_IFDIR: u32 = 0o040000;  // Directory
+pub const S_IFLNK: u32 = 0o120000;  // Symbolic link
+pub const S_IFCHR: u32 = 0o020000;  // Character device
+pub const S_IFBLK: u32 = 0o060000;  // Block device
+pub const S_IFIFO: u32 = 0o010000;  // FIFO/pipe
+pub const S_IFSOCK: u32 = 0o140000; // Socket
+
+// File permission constants
+pub const S_IRWXU: u32 = 0o700;     // User RWX
+pub const S_IRUSR: u32 = 0o400;     // User read
+pub const S_IWUSR: u32 = 0o200;     // User write
+pub const S_IXUSR: u32 = 0o100;     // User execute
+pub const S_IRWXG: u32 = 0o070;     // Group RWX
+pub const S_IRGRP: u32 = 0o040;     // Group read
+pub const S_IWGRP: u32 = 0o020;     // Group write
+pub const S_IXGRP: u32 = 0o010;     // Group execute
+pub const S_IRWXO: u32 = 0o007;     // Other RWX
+pub const S_IROTH: u32 = 0o004;     // Other read
+pub const S_IWOTH: u32 = 0o002;     // Other write
+pub const S_IXOTH: u32 = 0o001;     // Other execute
 
 // Clock IDs
 pub const CLOCK_REALTIME: i32 = 0;

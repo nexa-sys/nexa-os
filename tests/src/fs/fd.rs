@@ -1,6 +1,7 @@
 //! File Descriptor Tests
 //!
 //! Tests for file descriptor management using real kernel types and functions.
+//! Uses REAL kernel constants - no simulated implementations.
 //!
 //! NOTE: Tests that modify FILE_HANDLES use #[serial] to prevent race conditions.
 
@@ -10,6 +11,9 @@ mod tests {
         allocate_duplicate_slot, clear_file_handle, handle_for_fd,
         FileHandle, FileBacking, StdStreamKind, 
         FD_BASE, MAX_OPEN_FILES, STDIN, STDOUT, STDERR,
+        // Import open/seek constants from kernel
+        O_RDONLY, O_WRONLY, O_RDWR, O_CREAT, O_TRUNC, O_APPEND, O_ACCMODE,
+        SEEK_SET, SEEK_CUR, SEEK_END,
     };
     use crate::posix::{Metadata, errno};
     use serial_test::serial;
@@ -183,16 +187,12 @@ mod tests {
     }
 
     // =========================================================================
-    // Seek Position Tests (algorithm validation)
+    // Seek Position Tests (using kernel SEEK_* constants)
     // =========================================================================
 
     #[test]
     fn test_seek_positions() {
-        // SEEK constants from POSIX
-        const SEEK_SET: i32 = 0;
-        const SEEK_CUR: i32 = 1;
-        const SEEK_END: i32 = 2;
-
+        // Using kernel SEEK_* constants
         fn calculate_new_position(
             current: u64,
             file_size: u64,
@@ -200,9 +200,9 @@ mod tests {
             whence: i32,
         ) -> Option<u64> {
             let base = match whence {
-                SEEK_SET => 0i64,
-                SEEK_CUR => current as i64,
-                SEEK_END => file_size as i64,
+                x if x == SEEK_SET => 0i64,
+                x if x == SEEK_CUR => current as i64,
+                x if x == SEEK_END => file_size as i64,
                 _ => return None,
             };
 
@@ -228,22 +228,15 @@ mod tests {
     }
 
     // =========================================================================
-    // Open Flags Tests (constants validation)
+    // Open Flags Tests (using kernel O_* constants)
     // =========================================================================
 
     #[test]
     fn test_open_flags() {
-        // These should match kernel's open flags
-        const O_RDONLY: u32 = 0;
-        const O_WRONLY: u32 = 1;
-        const O_RDWR: u32 = 2;
-        const O_CREAT: u32 = 0o100;
-        const O_TRUNC: u32 = 0o1000;
-        const O_APPEND: u32 = 0o2000;
-
+        // Using kernel's open flags
         // Access mode is in lowest 2 bits
-        fn access_mode(flags: u32) -> u32 {
-            flags & 0o3
+        fn access_mode(flags: u64) -> u64 {
+            flags & O_ACCMODE
         }
 
         assert_eq!(access_mode(O_RDONLY), O_RDONLY);

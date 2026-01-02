@@ -1,437 +1,563 @@
 //! Comprehensive IPC and signal handling tests
 //!
-//! Tests signal delivery, pipes, message queues, and inter-process communication.
+//! Tests signal delivery, pipes, socketpairs, and inter-process communication
+//! using the REAL kernel implementations from src/ipc/.
 
 #[cfg(test)]
 mod tests {
+    use serial_test::serial;
+    use crate::ipc::signal::{
+        SignalState, SignalAction, NSIG,
+        SIGHUP, SIGINT, SIGQUIT, SIGILL, SIGTRAP, SIGABRT, SIGBUS, SIGFPE,
+        SIGKILL, SIGUSR1, SIGSEGV, SIGUSR2, SIGPIPE, SIGALRM, SIGTERM,
+        SIGCHLD, SIGCONT, SIGSTOP, SIGTSTP,
+        default_signal_action,
+    };
+    use crate::ipc::pipe::{
+        create_pipe, pipe_read, pipe_write, close_pipe_read, close_pipe_write,
+        create_socketpair, socketpair_read, socketpair_write, close_socketpair_end,
+        socketpair_has_data,
+    };
+
     // =========================================================================
-    // Signal Number Tests
+    // Signal Number Tests (using kernel constants)
     // =========================================================================
 
     #[test]
     fn test_standard_signal_numbers() {
-        // POSIX standard signals
-        const SIGHUP: u32 = 1;
-        const SIGINT: u32 = 2;
-        const SIGQUIT: u32 = 3;
-        const SIGILL: u32 = 4;
-        const SIGTRAP: u32 = 5;
-        const SIGABRT: u32 = 6;
-        const SIGBUS: u32 = 7;
-        const SIGFPE: u32 = 8;
-        const SIGKILL: u32 = 9;
-        const SIGUSR1: u32 = 10;
-        const SIGSEGV: u32 = 11;
-        const SIGUSR2: u32 = 12;
-        const SIGPIPE: u32 = 13;
-        const SIGALRM: u32 = 14;
-        const SIGTERM: u32 = 15;
-
-        // All signals should be unique
-        let signals = vec![
-            SIGHUP, SIGINT, SIGQUIT, SIGILL, SIGTRAP, SIGABRT, SIGBUS, SIGFPE,
-            SIGKILL, SIGUSR1, SIGSEGV, SIGUSR2, SIGPIPE, SIGALRM, SIGTERM,
-        ];
-
-        for i in 0..signals.len() {
-            for j in (i + 1)..signals.len() {
-                assert_ne!(signals[i], signals[j], "Duplicate signal numbers");
-            }
-        }
+        // Verify POSIX standard signal numbers from kernel
+        assert_eq!(SIGHUP, 1);
+        assert_eq!(SIGINT, 2);
+        assert_eq!(SIGQUIT, 3);
+        assert_eq!(SIGILL, 4);
+        assert_eq!(SIGTRAP, 5);
+        assert_eq!(SIGABRT, 6);
+        assert_eq!(SIGBUS, 7);
+        assert_eq!(SIGFPE, 8);
+        assert_eq!(SIGKILL, 9);
+        assert_eq!(SIGUSR1, 10);
+        assert_eq!(SIGSEGV, 11);
+        assert_eq!(SIGUSR2, 12);
+        assert_eq!(SIGPIPE, 13);
+        assert_eq!(SIGALRM, 14);
+        assert_eq!(SIGTERM, 15);
     }
 
     #[test]
     fn test_signal_range() {
-        // Real-time signals typically start at 32
-        const SIGRTMIN: u32 = 32;
-        const SIGRTMAX: u32 = 64;
-
-        assert!(SIGRTMAX > SIGRTMIN);
-        assert_eq!(SIGRTMAX - SIGRTMIN, 32);
+        // Kernel signal range
+        assert_eq!(NSIG, 32);
+        assert!(SIGTERM < NSIG as u32);
+        assert!(SIGKILL < NSIG as u32);
     }
 
     #[test]
     fn test_fatal_signals() {
-        const SIGKILL: u32 = 9;  // Cannot be caught
-        const SIGTERM: u32 = 15; // Can be caught
-
-        assert_ne!(SIGKILL, SIGTERM);
-
-        // SIGKILL is special - no handler
+        // SIGKILL cannot be caught - verify it's signal 9
         assert_eq!(SIGKILL, 9);
+        assert_eq!(SIGTERM, 15);
+        assert_ne!(SIGKILL, SIGTERM);
     }
 
     #[test]
-    fn test_default_signal_behaviors() {
-        // Default behaviors: Term, Core, Ign, Stop, Cont
-
-        // SIGTERM - terminate
-        const SIGTERM: u32 = 15;
-
-        // SIGSTOP - stop (cannot be caught)
-        const SIGSTOP: u32 = 19;
-
-        // SIGCONT - continue
-        const SIGCONT: u32 = 18;
-
-        assert_ne!(SIGTERM, SIGSTOP);
+    fn test_job_control_signals() {
+        // Job control signals
+        assert_eq!(SIGSTOP, 19);
+        assert_eq!(SIGCONT, 18);
+        assert_eq!(SIGTSTP, 20);
         assert_ne!(SIGSTOP, SIGCONT);
     }
 
     // =========================================================================
-    // Signal Mask Tests
+    // Signal State Tests (using kernel SignalState)
     // =========================================================================
 
     #[test]
-    fn test_signal_mask_operations() {
-        // Signal mask represents which signals are blocked
-        let mut mask = 0u64;
-
-        // Block SIGINT (signal 2)
-        const SIGINT: usize = 1; // Signal masks use 0-based indexing for bit position
-        mask |= 1u64 << SIGINT;
-
-        // Check if blocked
-        assert_ne!(mask & (1u64 << SIGINT), 0);
+    fn test_signal_state_creation() {
+        let state = SignalState::new();
+        // New state should have no pending signals
+        assert!(state.has_pending_signal().is_none());
     }
 
     #[test]
-    fn test_signal_set_operations() {
-        // Initialize empty signal set
-        let mut sigset = 0u64;
-
-        // Add signal 1 (SIGHUP)
-        sigset |= 1u64 << 0;
-
-        // Add signal 2 (SIGINT)
-        sigset |= 1u64 << 1;
-
-        // Check both are set
-        assert_ne!(sigset & (1u64 << 0), 0);
-        assert_ne!(sigset & (1u64 << 1), 0);
+    fn test_signal_send_and_pending() {
+        let mut state = SignalState::new();
+        
+        // Send SIGUSR1
+        let result = state.send_signal(SIGUSR1);
+        assert!(result.is_ok());
+        
+        // Should be pending
+        assert_eq!(state.has_pending_signal(), Some(SIGUSR1));
     }
 
     #[test]
-    fn test_signal_mask_remove() {
-        let mut mask = u64::MAX;
+    fn test_signal_clear() {
+        let mut state = SignalState::new();
+        
+        state.send_signal(SIGUSR1).unwrap();
+        assert!(state.has_pending_signal().is_some());
+        
+        state.clear_signal(SIGUSR1);
+        assert!(state.has_pending_signal().is_none());
+    }
 
-        // Remove signal 1
-        mask &= !(1u64 << 0);
+    #[test]
+    fn test_signal_blocking() {
+        let mut state = SignalState::new();
+        
+        // Block SIGUSR1 then send it
+        state.block_signal(SIGUSR1);
+        state.send_signal(SIGUSR1).unwrap();
+        
+        // Signal is pending but blocked - should not be deliverable
+        assert!(state.has_pending_signal().is_none());
+        
+        // Unblock it
+        state.unblock_signal(SIGUSR1);
+        
+        // Now should be deliverable
+        assert_eq!(state.has_pending_signal(), Some(SIGUSR1));
+    }
 
-        // Verify removed
-        assert_eq!(mask & (1u64 << 0), 0);
+    #[test]
+    fn test_sigkill_cannot_be_blocked() {
+        let mut state = SignalState::new();
+        
+        // Try to block SIGKILL (should be ignored per POSIX)
+        state.block_signal(SIGKILL);
+        state.send_signal(SIGKILL).unwrap();
+        
+        // SIGKILL should still be deliverable
+        assert_eq!(state.has_pending_signal(), Some(SIGKILL));
+    }
 
-        // Others still set
-        assert_ne!(mask & (1u64 << 1), 0);
+    #[test]
+    fn test_sigstop_cannot_be_blocked() {
+        let mut state = SignalState::new();
+        
+        // Try to block SIGSTOP (should be ignored per POSIX)
+        state.block_signal(SIGSTOP);
+        state.send_signal(SIGSTOP).unwrap();
+        
+        // SIGSTOP should still be deliverable
+        assert_eq!(state.has_pending_signal(), Some(SIGSTOP));
+    }
+
+    #[test]
+    fn test_signal_action_cannot_change_sigkill() {
+        let mut state = SignalState::new();
+        
+        // Cannot ignore SIGKILL
+        let result = state.set_action(SIGKILL, SignalAction::Ignore);
+        assert!(result.is_err());
+        
+        // Cannot set handler for SIGKILL
+        let result = state.set_action(SIGKILL, SignalAction::Handler(0x1000));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_signal_action_cannot_change_sigstop() {
+        let mut state = SignalState::new();
+        
+        // Cannot ignore SIGSTOP
+        let result = state.set_action(SIGSTOP, SignalAction::Ignore);
+        assert!(result.is_err());
+        
+        // Cannot set handler for SIGSTOP
+        let result = state.set_action(SIGSTOP, SignalAction::Handler(0x1000));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_signal_action_change() {
+        let mut state = SignalState::new();
+        
+        // Set SIGTERM to ignore
+        let old = state.set_action(SIGTERM, SignalAction::Ignore).unwrap();
+        assert_eq!(old, SignalAction::Default);
+        
+        // Verify change
+        let current = state.get_action(SIGTERM).unwrap();
+        assert_eq!(current, SignalAction::Ignore);
+    }
+
+    #[test]
+    fn test_signal_handler_registration() {
+        let mut state = SignalState::new();
+        
+        let handler_addr: u64 = 0x400000;
+        let old = state.set_action(SIGUSR1, SignalAction::Handler(handler_addr)).unwrap();
+        assert_eq!(old, SignalAction::Default);
+        
+        let action = state.get_action(SIGUSR1).unwrap();
+        assert_eq!(action, SignalAction::Handler(handler_addr));
+    }
+
+    #[test]
+    fn test_signal_zero_invalid() {
+        let mut state = SignalState::new();
+        
+        // Signal 0 should be rejected for send_signal
+        let result = state.send_signal(0);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_signal_out_of_range() {
+        let mut state = SignalState::new();
+        
+        // Signal >= NSIG should be rejected
+        let result = state.send_signal(NSIG as u32);
+        assert!(result.is_err());
+        
+        let result = state.send_signal(100);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_multiple_pending_signals() {
+        let mut state = SignalState::new();
+        
+        // Send multiple signals
+        state.send_signal(SIGTERM).unwrap();
+        state.send_signal(SIGINT).unwrap();
+        state.send_signal(SIGUSR1).unwrap();
+        
+        // Should have pending signals (lowest number first)
+        let first = state.has_pending_signal();
+        assert!(first.is_some());
+        
+        // Clear it and check next
+        state.clear_signal(first.unwrap());
+        let second = state.has_pending_signal();
+        assert!(second.is_some());
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn test_signal_reset_to_default() {
+        let mut state = SignalState::new();
+        
+        // Set up some state
+        state.send_signal(SIGUSR1).unwrap();
+        state.set_action(SIGTERM, SignalAction::Ignore).unwrap();
+        
+        // Reset (simulates exec)
+        state.reset_to_default();
+        
+        // Pending should be cleared
+        assert!(state.has_pending_signal().is_none());
+        
+        // Action should be reset
+        assert_eq!(state.get_action(SIGTERM).unwrap(), SignalAction::Default);
+    }
+
+    #[test]
+    fn test_default_signal_actions() {
+        // SIGCHLD default is ignore
+        assert_eq!(default_signal_action(SIGCHLD), SignalAction::Ignore);
+        
+        // SIGCONT default is ignore
+        assert_eq!(default_signal_action(SIGCONT), SignalAction::Ignore);
+        
+        // Most other signals default to terminate
+        assert_eq!(default_signal_action(SIGTERM), SignalAction::Default);
     }
 
     // =========================================================================
-    // Pipe Tests
+    // Pipe Tests (using kernel pipe implementation)
     // =========================================================================
 
     #[test]
-    fn test_pipe_file_descriptor_pair() {
-        // Pipe creates two file descriptors
-        const READ_END: u32 = 3;  // Conventional first pipe fd
-        const WRITE_END: u32 = 4; // Conventional second pipe fd
-
-        assert_ne!(READ_END, WRITE_END);
-        assert!(READ_END < WRITE_END);
+    #[serial]
+    fn test_pipe_creation() {
+        let result = create_pipe();
+        assert!(result.is_ok(), "Failed to create pipe");
+        
+        let (read_end, write_end) = result.unwrap();
+        // Both ends should be valid indices
+        assert!(read_end < 16); // MAX_PIPES
+        assert!(write_end < 16);
+        
+        // Cleanup
+        let _ = close_pipe_read(read_end);
+        let _ = close_pipe_write(write_end);
     }
 
     #[test]
-    fn test_pipe_buffer_size() {
-        // Standard pipe buffer is typically 4KB or 64KB
-        const PIPE_BUFFER_MIN: usize = 4096;
-        const PIPE_BUFFER_TYPICAL: usize = 65536;
-
-        assert!(PIPE_BUFFER_TYPICAL >= PIPE_BUFFER_MIN);
+    #[serial]
+    fn test_pipe_write_and_read() {
+        let (read_end, write_end) = create_pipe().unwrap();
+        
+        // Write some data
+        let data = b"Hello, pipe!";
+        let written = pipe_write(write_end, data).unwrap();
+        assert_eq!(written, data.len());
+        
+        // Read it back
+        let mut buffer = [0u8; 64];
+        let read = pipe_read(read_end, &mut buffer).unwrap();
+        assert_eq!(read, data.len());
+        assert_eq!(&buffer[..read], data);
+        
+        // Cleanup
+        let _ = close_pipe_read(read_end);
+        let _ = close_pipe_write(write_end);
     }
 
     #[test]
+    #[serial]
     fn test_pipe_empty_read() {
-        // Reading from empty pipe blocks (or returns 0 if writer closed)
-        let pipe_has_data = false;
+        let (read_end, write_end) = create_pipe().unwrap();
+        
+        // Reading from empty pipe returns 0 bytes
+        let mut buffer = [0u8; 64];
+        let read = pipe_read(read_end, &mut buffer).unwrap();
+        assert_eq!(read, 0);
+        
+        // Cleanup
+        let _ = close_pipe_read(read_end);
+        let _ = close_pipe_write(write_end);
+    }
 
-        if !pipe_has_data {
-            // Would block or return EOF
-            assert!(!pipe_has_data);
+    #[test]
+    #[serial]
+    fn test_pipe_close_write_end() {
+        let (read_end, write_end) = create_pipe().unwrap();
+        
+        // Write some data
+        pipe_write(write_end, b"data").unwrap();
+        
+        // Close write end
+        close_pipe_write(write_end).unwrap();
+        
+        // Read remaining data
+        let mut buffer = [0u8; 64];
+        let read = pipe_read(read_end, &mut buffer).unwrap();
+        assert_eq!(read, 4);
+        
+        // Further read should return EOF (0)
+        let read = pipe_read(read_end, &mut buffer).unwrap();
+        assert_eq!(read, 0);
+        
+        // Cleanup
+        let _ = close_pipe_read(read_end);
+    }
+
+    #[test]
+    #[serial]
+    fn test_pipe_close_read_end() {
+        let (read_end, write_end) = create_pipe().unwrap();
+        
+        // Close read end
+        close_pipe_read(read_end).unwrap();
+        
+        // Writing should fail (broken pipe / SIGPIPE)
+        let result = pipe_write(write_end, b"data");
+        assert!(result.is_err());
+        
+        // Cleanup
+        let _ = close_pipe_write(write_end);
+    }
+
+    #[test]
+    #[serial]
+    fn test_pipe_invalid_id() {
+        // Invalid pipe ID should fail
+        let mut buffer = [0u8; 64];
+        let result = pipe_read(999, &mut buffer);
+        assert!(result.is_err());
+        
+        let result = pipe_write(999, b"data");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    #[serial]
+    fn test_pipe_multiple_writes() {
+        let (read_end, write_end) = create_pipe().unwrap();
+        
+        // Multiple writes
+        pipe_write(write_end, b"Hello").unwrap();
+        pipe_write(write_end, b" ").unwrap();
+        pipe_write(write_end, b"World").unwrap();
+        
+        // Single read should get all data
+        let mut buffer = [0u8; 64];
+        let read = pipe_read(read_end, &mut buffer).unwrap();
+        assert_eq!(read, 11); // "Hello World"
+        assert_eq!(&buffer[..read], b"Hello World");
+        
+        // Cleanup
+        let _ = close_pipe_read(read_end);
+        let _ = close_pipe_write(write_end);
+    }
+
+    #[test]
+    #[serial]
+    fn test_pipe_partial_read() {
+        let (read_end, write_end) = create_pipe().unwrap();
+        
+        pipe_write(write_end, b"Hello World").unwrap();
+        
+        // Read only 5 bytes
+        let mut buffer = [0u8; 5];
+        let read = pipe_read(read_end, &mut buffer).unwrap();
+        assert_eq!(read, 5);
+        assert_eq!(&buffer[..read], b"Hello");
+        
+        // Read remaining
+        let mut buffer = [0u8; 64];
+        let read = pipe_read(read_end, &mut buffer).unwrap();
+        assert_eq!(read, 6);
+        assert_eq!(&buffer[..read], b" World");
+        
+        // Cleanup
+        let _ = close_pipe_read(read_end);
+        let _ = close_pipe_write(write_end);
+    }
+
+    // =========================================================================
+    // Socketpair Tests (using kernel socketpair implementation)
+    // =========================================================================
+
+    #[test]
+    fn test_socketpair_creation() {
+        let result = create_socketpair();
+        assert!(result.is_ok(), "Failed to create socketpair");
+        
+        let pair_id = result.unwrap();
+        assert!(pair_id < 8); // MAX_SOCKETPAIRS
+    }
+
+    #[test]
+    fn test_socketpair_bidirectional() {
+        let pair_id = create_socketpair().unwrap();
+        
+        // Write from end 0, read from end 1
+        socketpair_write(pair_id, 0, b"Hello from 0").unwrap();
+        
+        let mut buffer = [0u8; 64];
+        let read = socketpair_read(pair_id, 1, &mut buffer).unwrap();
+        assert_eq!(&buffer[..read], b"Hello from 0");
+        
+        // Write from end 1, read from end 0
+        socketpair_write(pair_id, 1, b"Hello from 1").unwrap();
+        
+        let read = socketpair_read(pair_id, 0, &mut buffer).unwrap();
+        assert_eq!(&buffer[..read], b"Hello from 1");
+    }
+
+    #[test]
+    fn test_socketpair_empty_read() {
+        let pair_id = create_socketpair().unwrap();
+        
+        let mut buffer = [0u8; 64];
+        let read = socketpair_read(pair_id, 0, &mut buffer).unwrap();
+        assert_eq!(read, 0);
+    }
+
+    #[test]
+    fn test_socketpair_has_data() {
+        let pair_id = create_socketpair().unwrap();
+        
+        // Initially no data
+        assert!(!socketpair_has_data(pair_id, 0).unwrap());
+        assert!(!socketpair_has_data(pair_id, 1).unwrap());
+        
+        // Write from end 0
+        socketpair_write(pair_id, 0, b"data").unwrap();
+        
+        // End 1 should have data (from end 0)
+        assert!(socketpair_has_data(pair_id, 1).unwrap());
+        // End 0 should not have data (no one wrote to it)
+        assert!(!socketpair_has_data(pair_id, 0).unwrap());
+    }
+
+    #[test]
+    fn test_socketpair_close_one_end() {
+        let pair_id = create_socketpair().unwrap();
+        
+        // Close end 0
+        close_socketpair_end(pair_id, 0).unwrap();
+        
+        // Writing from end 0 should fail
+        let result = socketpair_write(pair_id, 0, b"data");
+        assert!(result.is_err());
+        
+        // Writing to end 0 (from end 1) should report SIGPIPE
+        let result = socketpair_write(pair_id, 1, b"data");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_socketpair_close_both_ends() {
+        let pair_id = create_socketpair().unwrap();
+        
+        close_socketpair_end(pair_id, 0).unwrap();
+        close_socketpair_end(pair_id, 1).unwrap();
+        
+        // Both operations should fail now
+        let result = socketpair_read(pair_id, 0, &mut [0u8; 64]);
+        assert!(result.is_err());
+        
+        let result = socketpair_write(pair_id, 1, b"data");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_socketpair_invalid_id() {
+        let result = socketpair_read(999, 0, &mut [0u8; 64]);
+        assert!(result.is_err());
+        
+        let result = socketpair_write(999, 0, b"data");
+        assert!(result.is_err());
+        
+        let result = socketpair_has_data(999, 0);
+        assert!(result.is_err());
+    }
+
+    // =========================================================================
+    // Integration Tests (signals + pipes)
+    // =========================================================================
+
+    #[test]
+    fn test_sigpipe_signal_number() {
+        // SIGPIPE should be 13 per POSIX
+        assert_eq!(SIGPIPE, 13);
+        
+        // Writing to closed pipe would generate SIGPIPE
+        let mut state = SignalState::new();
+        state.send_signal(SIGPIPE).unwrap();
+        assert_eq!(state.has_pending_signal(), Some(SIGPIPE));
+    }
+
+    #[test]
+    fn test_signal_mask_full_range() {
+        let mut state = SignalState::new();
+        
+        // Send all valid signals (1 to NSIG-1)
+        for sig in 1..NSIG as u32 {
+            let _ = state.send_signal(sig);
         }
-    }
-
-    #[test]
-    fn test_pipe_full_write() {
-        // Writing to full pipe blocks until space available
-        const BUFFER_SIZE: usize = 65536;
-        let mut written = 0usize;
-
-        // Simulate filling pipe
-        written = BUFFER_SIZE;
-
-        assert_eq!(written, BUFFER_SIZE);
-    }
-
-    #[test]
-    fn test_pipe_atomicity_small_writes() {
-        // Writes up to PIPE_BUF are atomic
-        const PIPE_BUF: usize = 4096;
-
-        let write_size = 512usize;
-        assert!(write_size <= PIPE_BUF);
-
-        // Should be atomic - no interleaving with other writes
-    }
-
-    #[test]
-    fn test_pipe_atomicity_large_writes() {
-        // Writes larger than PIPE_BUF may be split
-        const PIPE_BUF: usize = 4096;
-
-        let write_size = 8192usize;
-        assert!(write_size > PIPE_BUF);
-
-        // May be interleaved with other writes
-    }
-
-    // =========================================================================
-    // Message Queue Tests
-    // =========================================================================
-
-    #[test]
-    fn test_message_queue_types() {
-        // Message types are positive integers
-        const MSG_TYPE_CONTROL: i32 = 1;
-        const MSG_TYPE_DATA: i32 = 2;
-        const MSG_TYPE_ERROR: i32 = 3;
-
-        assert!(MSG_TYPE_CONTROL > 0);
-        assert_ne!(MSG_TYPE_CONTROL, MSG_TYPE_DATA);
-    }
-
-    #[test]
-    fn test_message_queue_capacity() {
-        // Typical message queue limits
-        const MAX_MESSAGES: usize = 10;
-        const MAX_MESSAGE_SIZE: usize = 4096;
-
-        assert!(MAX_MESSAGES > 0);
-        assert!(MAX_MESSAGE_SIZE > 0);
-    }
-
-    #[test]
-    fn test_message_queue_priority() {
-        // Messages can have priority levels
-        const PRIORITY_HIGH: i32 = 10;
-        const PRIORITY_NORMAL: i32 = 5;
-        const PRIORITY_LOW: i32 = 1;
-
-        assert!(PRIORITY_HIGH > PRIORITY_NORMAL);
-        assert!(PRIORITY_NORMAL > PRIORITY_LOW);
-    }
-
-    // =========================================================================
-    // Semaphore Tests
-    // =========================================================================
-
-    #[test]
-    fn test_semaphore_initial_value() {
-        // Binary semaphore starts at 1 or 0
-        let binary_sem = 1i32;
-        assert!(binary_sem == 0 || binary_sem == 1);
-
-        // Counting semaphore can start at any non-negative value
-        let counting_sem = 5i32;
-        assert!(counting_sem >= 0);
-    }
-
-    #[test]
-    fn test_semaphore_operations() {
-        // P(S): wait - decrement if > 0, else block
-        // V(S): signal - increment and wake waiter
-
-        let mut sem_value = 2i32;
-
-        // V(S) - signal
-        sem_value += 1;
-        assert_eq!(sem_value, 3);
-
-        // P(S) - wait (non-blocking path, > 0)
-        if sem_value > 0 {
-            sem_value -= 1;
-        }
-        assert_eq!(sem_value, 2);
-    }
-
-    #[test]
-    fn test_semaphore_blocking() {
-        let mut sem_value = 0i32;
-
-        // P(S) on zero semaphore would block
-        if sem_value > 0 {
-            sem_value -= 1;
-            // Would execute immediately
-        } else {
-            // Would block waiting for V(S)
-            assert_eq!(sem_value, 0);
-        }
-    }
-
-    // =========================================================================
-    // Shared Memory Tests
-    // =========================================================================
-
-    #[test]
-    fn test_shared_memory_size() {
-        // Shared memory segment size should be multiple of page size
-        const PAGE_SIZE: usize = 4096;
-
-        let segment_size = 4 * PAGE_SIZE;
-        assert_eq!(segment_size % PAGE_SIZE, 0);
-    }
-
-    #[test]
-    fn test_shared_memory_alignment() {
-        // Shared memory addresses should be page-aligned
-        let shared_mem_addr = 0x1000000u64;
-        const PAGE_SIZE: u64 = 4096;
-
-        assert_eq!(shared_mem_addr % PAGE_SIZE, 0);
-    }
-
-    #[test]
-    fn test_shared_memory_permissions() {
-        // Permission bits for shared memory (rwx for owner, group, other)
-        const PERM_OWNER_READ: u16 = 0o400;
-        const PERM_OWNER_WRITE: u16 = 0o200;
-        const PERM_GROUP_READ: u16 = 0o040;
-        const PERM_OTHER_READ: u16 = 0o004;
-
-        let perms = PERM_OWNER_READ | PERM_OWNER_WRITE | PERM_GROUP_READ | PERM_OTHER_READ;
-        assert_ne!(perms, 0);
-    }
-
-    // =========================================================================
-    // Mutex/Futex Tests
-    // =========================================================================
-
-    #[test]
-    fn test_futex_states() {
-        // Futex can be unlocked (0) or locked (1 or more)
-        const FUTEX_UNLOCKED: i32 = 0;
-        const FUTEX_LOCKED: i32 = 1;
-
-        assert_ne!(FUTEX_UNLOCKED, FUTEX_LOCKED);
-    }
-
-    #[test]
-    fn test_futex_atomicity() {
-        // Futex operations must be atomic
-        let mut futex_value = 0i32;
-
-        // Atomic increment
-        futex_value = futex_value.wrapping_add(1);
-        assert_eq!(futex_value, 1);
-
-        // Should not allow interleaving
-    }
-
-    // =========================================================================
-    // Signal Handler Registration Tests
-    // =========================================================================
-
-    #[test]
-    fn test_signal_action_flags() {
-        // SA_RESTART, SA_SIGINFO, SA_ONSTACK, etc.
-        const SA_RESTART: u32 = 0x10000000;
-        const SA_SIGINFO: u32 = 0x04000000;
-        const SA_ONSTACK: u32 = 0x08000000;
-
-        assert_ne!(SA_RESTART, SA_SIGINFO);
-        assert_ne!(SA_SIGINFO, SA_ONSTACK);
-    }
-
-    #[test]
-    fn test_signal_handler_special_values() {
-        // SIG_DFL, SIG_IGN, SIG_ERR
-        const SIG_DFL: isize = 0;
-        const SIG_IGN: isize = 1;
-        const SIG_ERR: isize = -1;
-
-        assert_ne!(SIG_DFL, SIG_IGN);
-        assert_ne!(SIG_IGN, SIG_ERR);
-    }
-
-    // =========================================================================
-    // Signal Delivery Tests
-    // =========================================================================
-
-    #[test]
-    fn test_pending_signals_representation() {
-        // Pending signals can be represented as bitmask
-        let pending = 0u64;
-        assert_eq!(pending, 0); // No pending signals
-
-        // Signal 1 pending
-        let pending_with_sig1 = 1u64 << 0;
-        assert_ne!(pending_with_sig1, 0);
+        
+        // Should have at least one pending
+        assert!(state.has_pending_signal().is_some());
     }
 
     #[test]
     fn test_signal_delivery_order() {
-        // Standard signals delivered in numeric order
-        // Real-time signals in FIFO order
-
-        let sig1 = 5u32;
-        let sig2 = 10u32;
-        let sig3 = 3u32;
-
-        assert!(sig1 < sig2);
-        assert!(sig3 < sig1);
-    }
-
-    // =========================================================================
-    // Edge Cases and Validation
-    // =========================================================================
-
-    #[test]
-    fn test_no_signal_zero() {
-        // Signal 0 is reserved (used for permission checks)
-        const SIG_ZERO: u32 = 0;
-        assert_eq!(SIG_ZERO, 0);
-    }
-
-    #[test]
-    fn test_signal_mask_capacity() {
-        // Signal mask typically supports 64 signals
-        const MAX_SIGNALS: usize = 64;
-
-        let mask = u64::MAX;
-        let bit_count = 64usize;
-
-        assert_eq!(bit_count, MAX_SIGNALS);
-    }
-
-    #[test]
-    fn test_message_queue_empty_condition() {
-        let queue_size = 0usize;
-        assert_eq!(queue_size, 0);
-    }
-
-    #[test]
-    fn test_pipe_closed_behavior() {
-        // Writing to closed pipe generates SIGPIPE
-        const SIGPIPE: u32 = 13;
-
-        // Reading from closed pipe returns EOF
-        let pipe_data_remaining = false;
-        assert!(!pipe_data_remaining);
-    }
-
-    #[test]
-    fn test_signal_stack_overflow_protection() {
-        // Alternate signal stack prevents stack overflow on signal handler
-        const SIGSTKSZ: usize = 8192; // Recommended size
-
-        assert!(SIGSTKSZ > 0);
+        let mut state = SignalState::new();
+        
+        // Send signals out of order
+        state.send_signal(SIGTERM).unwrap(); // 15
+        state.send_signal(SIGINT).unwrap();  // 2
+        state.send_signal(SIGUSR1).unwrap(); // 10
+        
+        // Lowest numbered signal should be delivered first
+        let first = state.has_pending_signal().unwrap();
+        assert_eq!(first, SIGINT); // 2 is lowest
     }
 }

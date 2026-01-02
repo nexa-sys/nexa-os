@@ -1355,17 +1355,8 @@ pub fn read(fd: u64, buf: *mut u8, count: usize) -> u64 {
     u64::MAX
 }
 
-// Open flags (POSIX compatible)
-#[allow(dead_code)]
-const O_RDONLY: u64 = 0;
-#[allow(dead_code)]
-const O_WRONLY: u64 = 1;
-#[allow(dead_code)]
-const O_RDWR: u64 = 2;
-const O_CREAT: u64 = 0o100;
-const O_TRUNC: u64 = 0o1000;
-#[allow(dead_code)]
-const O_APPEND: u64 = 0o2000;
+// Import open flags from types.rs
+use super::types::{O_CREAT, O_TRUNC};
 
 /// Open system call
 /// flags: O_RDONLY, O_WRONLY, O_RDWR, O_CREAT, O_TRUNC, O_APPEND

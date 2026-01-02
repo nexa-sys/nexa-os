@@ -9,6 +9,7 @@
 
 #[cfg(test)]
 mod tests {
+    use serial_test::serial;
     use crate::ipc::pipe::{
         create_pipe, pipe_read, pipe_write, close_pipe_read, close_pipe_write,
     };
@@ -18,6 +19,7 @@ mod tests {
     // =========================================================================
 
     #[test]
+    #[serial]
     fn test_create_pipe_success() {
         let result = create_pipe();
         assert!(result.is_ok(), "First pipe creation should succeed");
@@ -29,6 +31,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_create_multiple_pipes() {
         let mut pipes = Vec::new();
         
@@ -55,6 +58,7 @@ mod tests {
     // =========================================================================
 
     #[test]
+    #[serial]
     fn test_read_invalid_pipe_id() {
         let mut buffer = [0u8; 64];
         
@@ -64,6 +68,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_write_invalid_pipe_id() {
         let data = [0u8; 64];
         
@@ -72,6 +77,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_close_invalid_pipe_id() {
         let result = close_pipe_read(9999);
         assert!(result.is_err(), "Closing invalid pipe ID should fail");
@@ -85,6 +91,7 @@ mod tests {
     // =========================================================================
 
     #[test]
+    #[serial]
     fn test_read_from_empty_pipe() {
         let (read_end, write_end) = create_pipe().expect("pipe creation failed");
         
@@ -101,6 +108,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_read_with_zero_buffer() {
         let (read_end, write_end) = create_pipe().expect("pipe creation failed");
         
@@ -124,6 +132,7 @@ mod tests {
     // =========================================================================
 
     #[test]
+    #[serial]
     fn test_write_and_read() {
         let (read_end, write_end) = create_pipe().expect("pipe creation failed");
         
@@ -142,6 +151,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_write_zero_bytes() {
         let (read_end, write_end) = create_pipe().expect("pipe creation failed");
         
@@ -159,6 +169,7 @@ mod tests {
     // =========================================================================
 
     #[test]
+    #[serial]
     fn test_write_to_closed_read_end() {
         let (read_end, write_end) = create_pipe().expect("pipe creation failed");
         
@@ -174,6 +185,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_read_from_closed_write_end() {
         let (read_end, write_end) = create_pipe().expect("pipe creation failed");
         
@@ -197,6 +209,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_double_close() {
         let (read_end, write_end) = create_pipe().expect("pipe creation failed");
         
@@ -216,6 +229,7 @@ mod tests {
     // =========================================================================
 
     #[test]
+    #[serial]
     fn test_partial_read() {
         let (read_end, write_end) = create_pipe().expect("pipe creation failed");
         
@@ -240,6 +254,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_multiple_small_writes() {
         let (read_end, write_end) = create_pipe().expect("pipe creation failed");
         
@@ -271,6 +286,7 @@ mod tests {
     // =========================================================================
 
     #[test]
+    #[serial]
     fn test_close_write_then_read() {
         let (read_end, write_end) = create_pipe().expect("pipe creation failed");
         
@@ -279,6 +295,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_close_read_then_write() {
         let (read_end, write_end) = create_pipe().expect("pipe creation failed");
         
@@ -291,6 +308,7 @@ mod tests {
     // =========================================================================
 
     #[test]
+    #[serial]
     fn test_pipe_slot_reuse() {
         // Create and close a pipe
         let (read_end, write_end) = create_pipe().expect("first pipe creation failed");

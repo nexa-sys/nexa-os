@@ -30,23 +30,23 @@ use spin::Mutex;
 
 /// Maximum order for buddy allocator (2^MAX_ORDER pages)
 /// MAX_ORDER=11 means up to 2^11 = 2048 pages = 8MB contiguous allocations
-const MAX_ORDER: usize = 11;
+pub const MAX_ORDER: usize = 11;
 
 /// Page size (4KB for x86_64)
-const PAGE_SIZE: usize = 4096;
+pub const PAGE_SIZE: usize = 4096;
 
 /// Number of slab size classes
-const SLAB_CLASSES: usize = 8;
+pub const SLAB_CLASSES: usize = 8;
 
 /// Slab sizes: 16, 32, 64, 128, 256, 512, 1024, 2048 bytes
 /// Larger allocations are handled directly by the buddy allocator
-const SLAB_SIZES: [usize; SLAB_CLASSES] = [16, 32, 64, 128, 256, 512, 1024, 2048];
+pub const SLAB_SIZES: [usize; SLAB_CLASSES] = [16, 32, 64, 128, 256, 512, 1024, 2048];
 
 /// Magic number for heap block validation
-const HEAP_MAGIC: u32 = 0xDEADBEEF;
+pub const HEAP_MAGIC: u32 = 0xDEADBEEF;
 
 /// Poison pattern for freed memory (aids debugging)
-const POISON_BYTE: u8 = 0xCC;
+pub const POISON_BYTE: u8 = 0xCC;
 
 // =============================================================================
 // Buddy Allocator Helper Functions (Exported for testing)

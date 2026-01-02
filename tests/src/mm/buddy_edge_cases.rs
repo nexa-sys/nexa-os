@@ -9,12 +9,9 @@
 mod tests {
     use crate::mm::allocator::{
         BuddyStats, size_to_order, order_to_size, get_buddy_addr, 
-        is_valid_buddy_pair, is_order_aligned,
+        is_valid_buddy_pair, is_order_aligned, MAX_ORDER, PAGE_SIZE,
     };
     use crate::safety::paging::{align_up, align_down};
-
-    const PAGE_SIZE: u64 = 4096;
-    const MAX_ORDER: usize = 11;
 
     // =========================================================================
     // Address Validation Tests
@@ -59,9 +56,9 @@ mod tests {
     fn test_order_to_pages() {
         for order in 0..MAX_ORDER {
             let pages = 1usize << order;
-            let expected_size = pages * PAGE_SIZE as usize;
+            let expected_size = pages * PAGE_SIZE;
             
-            assert_eq!(expected_size, (PAGE_SIZE as usize) << order);
+            assert_eq!(expected_size, PAGE_SIZE << order);
         }
     }
 
@@ -102,7 +99,7 @@ mod tests {
         // This means XORing twice returns the original
         let addr = 0x10000u64;
         let order = 2;
-        let block_size = PAGE_SIZE << order;
+        let block_size = (PAGE_SIZE << order) as u64;
         
         let buddy = addr ^ block_size;
         let back_to_original = buddy ^ block_size;
@@ -125,7 +122,7 @@ mod tests {
         // Buddy of block at address 0
         let addr = 0u64;
         let order = 0;
-        let block_size = PAGE_SIZE << order;
+        let block_size = (PAGE_SIZE << order) as u64;
         
         let buddy = addr ^ block_size;
         assert_eq!(buddy, block_size, "Buddy of 0 should be block_size");
@@ -135,7 +132,7 @@ mod tests {
     fn test_buddy_alignment_requirement() {
         // Blocks must be aligned to their size
         fn is_aligned_to_order(addr: u64, order: usize) -> bool {
-            let alignment = PAGE_SIZE << order;
+            let alignment = (PAGE_SIZE << order) as u64;
             addr & (alignment - 1) == 0
         }
         
@@ -335,10 +332,10 @@ mod tests {
     #[test]
     fn test_size_rounding() {
         // Use REAL kernel align_down function for page boundary rounding
-        assert_eq!(align_down(0x1000, PAGE_SIZE), 0x1000);
-        assert_eq!(align_down(0x1001, PAGE_SIZE), 0x1000);
-        assert_eq!(align_down(0x1FFF, PAGE_SIZE), 0x1000);
-        assert_eq!(align_down(0x2000, PAGE_SIZE), 0x2000);
+        assert_eq!(align_down(0x1000, PAGE_SIZE as u64), 0x1000);
+        assert_eq!(align_down(0x1001, PAGE_SIZE as u64), 0x1000);
+        assert_eq!(align_down(0x1FFF, PAGE_SIZE as u64), 0x1000);
+        assert_eq!(align_down(0x2000, PAGE_SIZE as u64), 0x2000);
     }
 
     #[test]
@@ -347,7 +344,7 @@ mod tests {
         // largest possible power-of-2 blocks
         fn largest_fitting_order(size: u64, base_aligned: u64) -> usize {
             for order in (0..MAX_ORDER).rev() {
-                let block_size = PAGE_SIZE << order;
+                let block_size = (PAGE_SIZE << order) as u64;
                 if size >= block_size && base_aligned & (block_size - 1) == 0 {
                     return order;
                 }

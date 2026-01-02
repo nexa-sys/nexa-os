@@ -2,6 +2,7 @@
 //!
 //! Tests for file descriptor management constants, syscall numbers,
 //! and tests kernel FD allocation functions directly.
+//! Uses REAL kernel constants and functions - no simulated implementations.
 
 #[cfg(test)]
 mod tests {
@@ -9,7 +10,12 @@ mod tests {
     use crate::syscalls::*;
     use crate::syscalls::types::{
         allocate_duplicate_slot, clear_file_handle, 
-        FileHandle, FileBacking, StdStreamKind, FD_BASE, MAX_OPEN_FILES
+        FileHandle, FileBacking, StdStreamKind, FD_BASE, MAX_OPEN_FILES,
+        STDIN, STDOUT, STDERR,
+        // Import fcntl commands from kernel
+        F_DUPFD, F_GETFD, F_SETFD, F_GETFL, F_SETFL, F_DUPFD_CLOEXEC,
+        // Import open flags from kernel
+        O_RDONLY, O_WRONLY, O_RDWR, O_CREAT, O_EXCL, O_TRUNC, O_APPEND, O_NONBLOCK, O_CLOEXEC, O_ACCMODE,
     };
     use crate::posix::Metadata;
 
@@ -23,20 +29,15 @@ mod tests {
     }
 
     // =========================================================================
-    // File Descriptor Constants Tests
+    // File Descriptor Constants Tests (using REAL kernel constants)
     // =========================================================================
 
     #[test]
     fn test_standard_fd_numbers() {
-        // Standard POSIX file descriptors
-        const STDIN_FILENO: u64 = 0;
-        const STDOUT_FILENO: u64 = 1;
-        const STDERR_FILENO: u64 = 2;
-        
-        // These should be consistent across POSIX systems
-        assert_eq!(STDIN_FILENO, 0);
-        assert_eq!(STDOUT_FILENO, 1);
-        assert_eq!(STDERR_FILENO, 2);
+        // Standard POSIX file descriptors from kernel
+        assert_eq!(STDIN, 0);
+        assert_eq!(STDOUT, 1);
+        assert_eq!(STDERR, 2);
     }
 
     // =========================================================================
@@ -64,7 +65,7 @@ mod tests {
     }
 
     // =========================================================================
-    // Fcntl Tests
+    // Fcntl Tests (using REAL kernel constants)
     // =========================================================================
 
     #[test]
@@ -72,46 +73,38 @@ mod tests {
         assert!(SYS_FCNTL > 0);
     }
 
-    // Fcntl commands
-    const F_DUPFD: u64 = 0;
-    const F_GETFD: u64 = 1;
-    const F_SETFD: u64 = 2;
-    const F_GETFL: u64 = 3;
-    const F_SETFL: u64 = 4;
-    const F_DUPFD_CLOEXEC: u64 = 1030;
-
     #[test]
     fn test_fcntl_commands_distinct() {
+        // Using kernel F_* constants
         assert_ne!(F_DUPFD, F_GETFD);
         assert_ne!(F_GETFD, F_SETFD);
         assert_ne!(F_GETFL, F_SETFL);
         assert_ne!(F_DUPFD, F_DUPFD_CLOEXEC);
     }
 
-    // =========================================================================
-    // File Flags Tests
-    // =========================================================================
+    #[test]
+    fn test_fcntl_commands_values() {
+        // Verify kernel fcntl command values match POSIX
+        assert_eq!(F_DUPFD, 0);
+        assert_eq!(F_GETFD, 1);
+        assert_eq!(F_SETFD, 2);
+        assert_eq!(F_GETFL, 3);
+        assert_eq!(F_SETFL, 4);
+        assert_eq!(F_DUPFD_CLOEXEC, 1030);
+    }
 
-    // Open flags
-    const O_RDONLY: u64 = 0;
-    const O_WRONLY: u64 = 1;
-    const O_RDWR: u64 = 2;
-    const O_CREAT: u64 = 0o100;
-    const O_EXCL: u64 = 0o200;
-    const O_TRUNC: u64 = 0o1000;
-    const O_APPEND: u64 = 0o2000;
-    const O_NONBLOCK: u64 = 0o4000;
-    const O_CLOEXEC: u64 = 0o2000000;
+    // =========================================================================
+    // File Flags Tests (using REAL kernel constants)
+    // =========================================================================
 
     #[test]
     fn test_open_flags_access_modes() {
-        // Access modes are mutually exclusive
+        // Access modes are mutually exclusive - using kernel constants
         assert_eq!(O_RDONLY, 0);
         assert_eq!(O_WRONLY, 1);
         assert_eq!(O_RDWR, 2);
         
-        // Access mode mask
-        const O_ACCMODE: u64 = 3;
+        // Access mode mask from kernel
         assert_eq!(O_RDONLY & O_ACCMODE, O_RDONLY);
         assert_eq!(O_WRONLY & O_ACCMODE, O_WRONLY);
         assert_eq!(O_RDWR & O_ACCMODE, O_RDWR);
@@ -119,7 +112,7 @@ mod tests {
 
     #[test]
     fn test_open_flags_can_combine() {
-        // Create and write-only can be combined
+        // Create and write-only can be combined - using kernel constants
         let flags = O_CREAT | O_WRONLY | O_TRUNC;
         assert_ne!(flags & O_CREAT, 0);
         assert_ne!(flags & O_WRONLY, 0);
@@ -129,7 +122,7 @@ mod tests {
 
     #[test]
     fn test_open_flags_values() {
-        // Verify standard flag values
+        // Verify kernel open flag values match POSIX
         assert_eq!(O_CREAT, 0o100);
         assert_eq!(O_EXCL, 0o200);
         assert_eq!(O_TRUNC, 0o1000);

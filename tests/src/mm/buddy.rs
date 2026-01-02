@@ -7,7 +7,7 @@
 mod tests {
     use crate::mm::allocator::{
         BuddyStats, get_buddy_addr, is_order_aligned, is_valid_buddy_pair,
-        order_to_size, size_to_order,
+        order_to_size, size_to_order, MAX_ORDER,
     };
     
     // =========================================================================
@@ -16,8 +16,7 @@ mod tests {
 
     #[test]
     fn test_buddy_max_order() {
-        const MAX_ORDER: usize = 11;
-        
+        // Use REAL kernel MAX_ORDER constant
         // Max allocation = 2^11 pages = 2048 pages = 8MB
         let max_alloc = order_to_size(MAX_ORDER);
         assert_eq!(max_alloc, 8 * 1024 * 1024);
@@ -33,8 +32,7 @@ mod tests {
 
     #[test]
     fn test_buddy_order_sizes() {
-        const MAX_ORDER: usize = 11;
-        
+        // Use REAL kernel MAX_ORDER constant
         let order_sizes: Vec<usize> = (0..=MAX_ORDER)
             .map(|order| order_to_size(order))
             .collect();
@@ -244,8 +242,7 @@ mod tests {
 
     #[test]
     fn test_max_size_allocation() {
-        const MAX_ORDER: usize = 11;
-        
+        // Use REAL kernel MAX_ORDER constant
         let max_size = order_to_size(MAX_ORDER);
         assert_eq!(max_size, 8 * 1024 * 1024);
         

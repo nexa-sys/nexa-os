@@ -1,364 +1,329 @@
 //! Pipe Implementation Tests
 //!
-//! Tests for pipe buffer management and read/write semantics.
+//! Tests for pipe buffer management and read/write semantics
+//! using REAL kernel pipe functions.
 
 #[cfg(test)]
 mod tests {
-    // =========================================================================
-    // Pipe Buffer Constants
-    // =========================================================================
-
-    #[test]
-    fn test_pipe_buffer_size() {
-        // Standard pipe buffer size (64KB on Linux)
-        const PIPE_BUF_SIZE: usize = 65536;
-        
-        assert_eq!(PIPE_BUF_SIZE, 64 * 1024);
-        assert!(PIPE_BUF_SIZE.is_power_of_two());
-    }
-
-    #[test]
-    fn test_pipe_buf_atomic_write() {
-        // POSIX guarantees atomic writes up to PIPE_BUF bytes
-        const PIPE_BUF: usize = 4096;
-        
-        assert_eq!(PIPE_BUF, 4096);
-    }
-
-    // =========================================================================
-    // Ring Buffer Tests
-    // =========================================================================
-
-    #[test]
-    fn test_ring_buffer_empty() {
-        struct RingBuffer {
-            read_pos: usize,
-            write_pos: usize,
-            capacity: usize,
-        }
-        
-        impl RingBuffer {
-            fn is_empty(&self) -> bool {
-                self.read_pos == self.write_pos
-            }
-            
-            fn len(&self) -> usize {
-                if self.write_pos >= self.read_pos {
-                    self.write_pos - self.read_pos
-                } else {
-                    self.capacity - self.read_pos + self.write_pos
-                }
-            }
-        }
-        
-        let buf = RingBuffer {
-            read_pos: 0,
-            write_pos: 0,
-            capacity: 4096,
-        };
-        
-        assert!(buf.is_empty());
-        assert_eq!(buf.len(), 0);
-    }
-
-    #[test]
-    fn test_ring_buffer_wrap() {
-        struct RingBuffer {
-            read_pos: usize,
-            write_pos: usize,
-            capacity: usize,
-        }
-        
-        impl RingBuffer {
-            fn len(&self) -> usize {
-                (self.write_pos + self.capacity - self.read_pos) % self.capacity
-            }
-            
-            fn available(&self) -> usize {
-                self.capacity - self.len() - 1 // Keep one byte empty to distinguish full from empty
-            }
-        }
-        
-        // Buffer wrapped around
-        let buf = RingBuffer {
-            read_pos: 4000,
-            write_pos: 100,
-            capacity: 4096,
-        };
-        
-        // len = (100 + 4096 - 4000) % 4096 = 196
-        assert_eq!(buf.len(), 196);
-        
-        // available = 4096 - 196 - 1 = 3899
-        assert_eq!(buf.available(), 3899);
-    }
-
-    #[test]
-    fn test_ring_buffer_full() {
-        struct RingBuffer {
-            read_pos: usize,
-            write_pos: usize,
-            capacity: usize,
-        }
-        
-        impl RingBuffer {
-            fn is_full(&self) -> bool {
-                (self.write_pos + 1) % self.capacity == self.read_pos
-            }
-        }
-        
-        // Full buffer (write_pos + 1 == read_pos, modulo capacity)
-        let buf = RingBuffer {
-            read_pos: 0,
-            write_pos: 4095,
-            capacity: 4096,
-        };
-        
-        assert!(buf.is_full());
-    }
-
-    // =========================================================================
-    // Pipe End States
-    // =========================================================================
-
-    #[test]
-    fn test_pipe_end_states() {
-        struct Pipe {
-            read_end_open: bool,
-            write_end_open: bool,
-        }
-        
-        // Both ends open
-        let mut pipe = Pipe {
-            read_end_open: true,
-            write_end_open: true,
-        };
-        
-        // Close write end
-        pipe.write_end_open = false;
-        
-        // Read should return EOF (0 bytes) when buffer empty and write end closed
-        fn read_behavior(pipe: &Pipe, buffer_empty: bool) -> &'static str {
-            if !pipe.read_end_open {
-                "EBADF"
-            } else if buffer_empty && !pipe.write_end_open {
-                "EOF"
-            } else if buffer_empty {
-                "BLOCK"
-            } else {
-                "READ_DATA"
-            }
-        }
-        
-        assert_eq!(read_behavior(&pipe, true), "EOF");
-    }
-
-    #[test]
-    fn test_broken_pipe() {
-        struct Pipe {
-            read_end_open: bool,
-            write_end_open: bool,
-        }
-        
-        // Read end closed, write end open
-        let pipe = Pipe {
-            read_end_open: false,
-            write_end_open: true,
-        };
-        
-        // Write to pipe with no readers should fail with EPIPE
-        // and send SIGPIPE to process
-        fn write_behavior(pipe: &Pipe) -> &'static str {
-            if !pipe.write_end_open {
-                "EBADF"
-            } else if !pipe.read_end_open {
-                "EPIPE"
-            } else {
-                "WRITE"
-            }
-        }
-        
-        assert_eq!(write_behavior(&pipe), "EPIPE");
-    }
-
-    // =========================================================================
-    // Blocking vs Non-Blocking Tests
-    // =========================================================================
-
-    #[test]
-    fn test_blocking_read() {
-        #[derive(Clone, Copy)]
-        struct PipeFlags {
-            non_blocking: bool,
-        }
-        
-        fn read_empty_pipe(flags: PipeFlags, write_end_open: bool) -> &'static str {
-            if !write_end_open {
-                "EOF"
-            } else if flags.non_blocking {
-                "EAGAIN"
-            } else {
-                "BLOCK"
-            }
-        }
-        
-        // Blocking read on empty pipe with write end open
-        let blocking = PipeFlags { non_blocking: false };
-        assert_eq!(read_empty_pipe(blocking, true), "BLOCK");
-        
-        // Non-blocking read returns EAGAIN
-        let non_blocking = PipeFlags { non_blocking: true };
-        assert_eq!(read_empty_pipe(non_blocking, true), "EAGAIN");
-    }
-
-    #[test]
-    fn test_blocking_write() {
-        #[derive(Clone, Copy)]
-        struct PipeFlags {
-            non_blocking: bool,
-        }
-        
-        fn write_full_pipe(flags: PipeFlags, read_end_open: bool) -> &'static str {
-            if !read_end_open {
-                "EPIPE"
-            } else if flags.non_blocking {
-                "EAGAIN"
-            } else {
-                "BLOCK"
-            }
-        }
-        
-        // Blocking write on full pipe
-        let blocking = PipeFlags { non_blocking: false };
-        assert_eq!(write_full_pipe(blocking, true), "BLOCK");
-        
-        // Non-blocking write returns EAGAIN
-        let non_blocking = PipeFlags { non_blocking: true };
-        assert_eq!(write_full_pipe(non_blocking, true), "EAGAIN");
-    }
-
-    // =========================================================================
-    // Atomic Write Tests
-    // =========================================================================
-
-    #[test]
-    fn test_atomic_write_guarantee() {
-        const PIPE_BUF: usize = 4096;
-        
-        // Writes <= PIPE_BUF are atomic
-        fn is_atomic_write(size: usize) -> bool {
-            size <= PIPE_BUF
-        }
-        
-        assert!(is_atomic_write(1));
-        assert!(is_atomic_write(4096));
-        assert!(!is_atomic_write(4097));
-    }
-
-    #[test]
-    fn test_partial_write() {
-        const PIPE_BUF_SIZE: usize = 65536;
-        
-        // Large writes may be partial
-        fn calc_write_size(requested: usize, available: usize) -> usize {
-            requested.min(available)
-        }
-        
-        // Full write when space available
-        assert_eq!(calc_write_size(1000, PIPE_BUF_SIZE), 1000);
-        
-        // Partial write when buffer nearly full
-        assert_eq!(calc_write_size(1000, 500), 500);
-    }
+    use serial_test::serial;
+    use crate::ipc::pipe::{
+        create_pipe, pipe_read, pipe_write, close_pipe_read, close_pipe_write,
+    };
 
     // =========================================================================
     // Pipe Creation Tests
     // =========================================================================
 
     #[test]
-    fn test_pipe_fds() {
-        // pipe() returns two fds: [read_fd, write_fd]
-        struct PipeFds {
-            read_fd: i32,
-            write_fd: i32,
-        }
+    #[serial]
+    fn test_pipe_creation() {
+        let result = create_pipe();
+        assert!(result.is_ok(), "Pipe creation should succeed");
         
-        fn create_pipe(next_fd: i32) -> PipeFds {
-            PipeFds {
-                read_fd: next_fd,
-                write_fd: next_fd + 1,
-            }
-        }
+        let (read_end, write_end) = result.unwrap();
+        assert!(read_end < 16); // MAX_PIPES
+        assert!(write_end < 16);
         
-        let pipe = create_pipe(3);
-        assert_eq!(pipe.read_fd, 3);
-        assert_eq!(pipe.write_fd, 4);
+        // Cleanup
+        let _ = close_pipe_read(read_end);
+        let _ = close_pipe_write(write_end);
     }
 
     #[test]
-    fn test_pipe2_flags() {
-        const O_NONBLOCK: i32 = 0o4000;
-        const O_CLOEXEC: i32 = 0o2000000;
+    #[serial]
+    fn test_pipe_basic_io() {
+        let (read_end, write_end) = create_pipe().unwrap();
         
-        // pipe2() accepts flags
-        fn validate_pipe2_flags(flags: i32) -> bool {
-            // Only O_NONBLOCK and O_CLOEXEC are valid
-            let valid_flags = O_NONBLOCK | O_CLOEXEC;
-            (flags & !valid_flags) == 0
-        }
+        let data = b"Hello";
+        let written = pipe_write(write_end, data).unwrap();
+        assert_eq!(written, 5);
         
-        assert!(validate_pipe2_flags(0));
-        assert!(validate_pipe2_flags(O_NONBLOCK));
-        assert!(validate_pipe2_flags(O_CLOEXEC));
-        assert!(validate_pipe2_flags(O_NONBLOCK | O_CLOEXEC));
-        assert!(!validate_pipe2_flags(0o100)); // Invalid flag
+        let mut buffer = [0u8; 32];
+        let read = pipe_read(read_end, &mut buffer).unwrap();
+        assert_eq!(read, 5);
+        assert_eq!(&buffer[..5], b"Hello");
+        
+        // Cleanup
+        let _ = close_pipe_read(read_end);
+        let _ = close_pipe_write(write_end);
     }
 
     // =========================================================================
-    // Select/Poll Integration
+    // Ring Buffer Behavior Tests (via kernel pipe)
     // =========================================================================
 
     #[test]
-    fn test_pipe_poll_events() {
-        const POLLIN: i16 = 0x001;
-        const POLLOUT: i16 = 0x004;
-        const POLLHUP: i16 = 0x010;
-        const POLLERR: i16 = 0x008;
+    #[serial]
+    fn test_pipe_empty_read() {
+        let (read_end, write_end) = create_pipe().unwrap();
         
-        fn get_poll_events(
-            is_read_end: bool,
-            buffer_has_data: bool,
-            buffer_has_space: bool,
-            other_end_closed: bool,
-        ) -> i16 {
-            let mut events = 0;
-            
-            if is_read_end {
-                if buffer_has_data {
-                    events |= POLLIN;
-                }
-                if other_end_closed && !buffer_has_data {
-                    events |= POLLHUP;
-                }
-            } else {
-                if buffer_has_space {
-                    events |= POLLOUT;
-                }
-                if other_end_closed {
-                    events |= POLLERR;
-                }
+        // Empty pipe read returns 0
+        let mut buffer = [0u8; 32];
+        let read = pipe_read(read_end, &mut buffer).unwrap();
+        assert_eq!(read, 0);
+        
+        // Cleanup
+        let _ = close_pipe_read(read_end);
+        let _ = close_pipe_write(write_end);
+    }
+
+    #[test]
+    #[serial]
+    fn test_pipe_fifo_order() {
+        let (read_end, write_end) = create_pipe().unwrap();
+        
+        // Write multiple chunks
+        pipe_write(write_end, b"ABC").unwrap();
+        pipe_write(write_end, b"DEF").unwrap();
+        
+        // Should read in FIFO order
+        let mut buffer = [0u8; 32];
+        let read = pipe_read(read_end, &mut buffer).unwrap();
+        assert_eq!(&buffer[..read], b"ABCDEF");
+        
+        // Cleanup
+        let _ = close_pipe_read(read_end);
+        let _ = close_pipe_write(write_end);
+    }
+
+    #[test]
+    #[serial]
+    fn test_pipe_partial_read() {
+        let (read_end, write_end) = create_pipe().unwrap();
+        
+        pipe_write(write_end, b"Hello World").unwrap();
+        
+        // Read only first 5 bytes
+        let mut buffer = [0u8; 5];
+        let read = pipe_read(read_end, &mut buffer).unwrap();
+        assert_eq!(read, 5);
+        assert_eq!(&buffer[..read], b"Hello");
+        
+        // Remaining data should still be there
+        let mut buffer = [0u8; 32];
+        let read = pipe_read(read_end, &mut buffer).unwrap();
+        assert_eq!(read, 6);
+        assert_eq!(&buffer[..read], b" World");
+        
+        // Cleanup
+        let _ = close_pipe_read(read_end);
+        let _ = close_pipe_write(write_end);
+    }
+
+    #[test]
+    #[serial]
+    fn test_pipe_multiple_partial_reads() {
+        let (read_end, write_end) = create_pipe().unwrap();
+        
+        pipe_write(write_end, b"0123456789").unwrap();
+        
+        // Read in small chunks
+        let mut buffer = [0u8; 3];
+        
+        let read = pipe_read(read_end, &mut buffer).unwrap();
+        assert_eq!(&buffer[..read], b"012");
+        
+        let read = pipe_read(read_end, &mut buffer).unwrap();
+        assert_eq!(&buffer[..read], b"345");
+        
+        let read = pipe_read(read_end, &mut buffer).unwrap();
+        assert_eq!(&buffer[..read], b"678");
+        
+        let read = pipe_read(read_end, &mut buffer).unwrap();
+        assert_eq!(&buffer[..read], b"9");
+        
+        // Cleanup
+        let _ = close_pipe_read(read_end);
+        let _ = close_pipe_write(write_end);
+    }
+
+    // =========================================================================
+    // Pipe End State Tests
+    // =========================================================================
+
+    #[test]
+    #[serial]
+    fn test_pipe_close_write_eof() {
+        let (read_end, write_end) = create_pipe().unwrap();
+        
+        pipe_write(write_end, b"data").unwrap();
+        close_pipe_write(write_end).unwrap();
+        
+        // Read remaining data
+        let mut buffer = [0u8; 32];
+        let read = pipe_read(read_end, &mut buffer).unwrap();
+        assert_eq!(read, 4);
+        
+        // Next read should return EOF (0)
+        let read = pipe_read(read_end, &mut buffer).unwrap();
+        assert_eq!(read, 0);
+        
+        // Cleanup
+        let _ = close_pipe_read(read_end);
+    }
+
+    #[test]
+    #[serial]
+    fn test_pipe_broken_pipe() {
+        let (read_end, write_end) = create_pipe().unwrap();
+        
+        // Close read end first
+        close_pipe_read(read_end).unwrap();
+        
+        // Write to pipe with no readers should fail (EPIPE)
+        let result = pipe_write(write_end, b"data");
+        assert!(result.is_err());
+        
+        // Cleanup
+        let _ = close_pipe_write(write_end);
+    }
+
+    #[test]
+    #[serial]
+    fn test_pipe_close_both_ends() {
+        let (read_end, write_end) = create_pipe().unwrap();
+        
+        close_pipe_read(read_end).unwrap();
+        close_pipe_write(write_end).unwrap();
+        
+        // Operations on closed pipe should fail
+        let mut buffer = [0u8; 32];
+        let result = pipe_read(read_end, &mut buffer);
+        assert!(result.is_err());
+    }
+
+    // =========================================================================
+    // Blocking vs Non-Blocking Behavior Tests
+    // =========================================================================
+
+    #[test]
+    #[serial]
+    fn test_pipe_non_blocking_empty_read() {
+        let (read_end, write_end) = create_pipe().unwrap();
+        
+        // Our implementation returns 0 for empty pipe (non-blocking behavior)
+        let mut buffer = [0u8; 32];
+        let read = pipe_read(read_end, &mut buffer).unwrap();
+        assert_eq!(read, 0);
+        
+        // Cleanup
+        let _ = close_pipe_read(read_end);
+        let _ = close_pipe_write(write_end);
+    }
+
+    // =========================================================================
+    // Pipe Buffer Capacity Tests
+    // =========================================================================
+
+    #[test]
+    #[serial]
+    fn test_pipe_buffer_fill() {
+        let (read_end, write_end) = create_pipe().unwrap();
+        
+        // Write data to fill buffer
+        let chunk = [0xAAu8; 1024];
+        let mut total_written = 0;
+        
+        // Keep writing until buffer is full or we've written enough
+        for _ in 0..4 {
+            match pipe_write(write_end, &chunk) {
+                Ok(n) => total_written += n,
+                Err(_) => break, // Buffer full
             }
-            
-            events
         }
         
-        // Read end with data
-        assert_ne!(get_poll_events(true, true, false, false) & POLLIN, 0);
+        assert!(total_written > 0, "Should write some data");
         
-        // Write end with space
-        assert_ne!(get_poll_events(false, false, true, false) & POLLOUT, 0);
+        // Read all data back
+        let mut total_read = 0;
+        let mut buffer = [0u8; 4096];
         
-        // Read end, write closed, no data = POLLHUP
-        assert_ne!(get_poll_events(true, false, false, true) & POLLHUP, 0);
+        loop {
+            let read = pipe_read(read_end, &mut buffer).unwrap();
+            if read == 0 {
+                break;
+            }
+            total_read += read;
+        }
+        
+        assert_eq!(total_read, total_written);
+        
+        // Cleanup
+        let _ = close_pipe_read(read_end);
+        let _ = close_pipe_write(write_end);
+    }
+
+    // =========================================================================
+    // Error Handling Tests
+    // =========================================================================
+
+    #[test]
+    #[serial]
+    fn test_pipe_invalid_id() {
+        let mut buffer = [0u8; 32];
+        
+        // Invalid pipe ID should fail
+        let result = pipe_read(999, &mut buffer);
+        assert!(result.is_err());
+        
+        let result = pipe_write(999, b"data");
+        assert!(result.is_err());
+    }
+
+    // =========================================================================
+    // Atomicity Tests (PIPE_BUF guarantee)
+    // =========================================================================
+
+    #[test]
+    #[serial]
+    fn test_pipe_atomic_small_write() {
+        let (read_end, write_end) = create_pipe().unwrap();
+        
+        // Small writes (< PIPE_BUF) should be atomic
+        let small_data = [0x55u8; 512];
+        let written = pipe_write(write_end, &small_data).unwrap();
+        
+        // Should write all or nothing (atomic)
+        assert_eq!(written, 512);
+        
+        // Read should get all data
+        let mut buffer = [0u8; 1024];
+        let read = pipe_read(read_end, &mut buffer).unwrap();
+        assert_eq!(read, 512);
+        assert!(buffer[..512].iter().all(|&b| b == 0x55));
+        
+        // Cleanup
+        let _ = close_pipe_read(read_end);
+        let _ = close_pipe_write(write_end);
+    }
+
+    // =========================================================================
+    // Multiple Pipes Test
+    // =========================================================================
+
+    #[test]
+    #[serial]
+    fn test_multiple_pipes_independent() {
+        let (read1, write1) = create_pipe().unwrap();
+        let (read2, write2) = create_pipe().unwrap();
+        
+        // Write different data to each pipe
+        pipe_write(write1, b"pipe1").unwrap();
+        pipe_write(write2, b"pipe2").unwrap();
+        
+        // Read from each pipe
+        let mut buffer = [0u8; 32];
+        
+        let read = pipe_read(read1, &mut buffer).unwrap();
+        assert_eq!(&buffer[..read], b"pipe1");
+        
+        let read = pipe_read(read2, &mut buffer).unwrap();
+        assert_eq!(&buffer[..read], b"pipe2");
+        
+        // Cleanup
+        let _ = close_pipe_read(read1);
+        let _ = close_pipe_write(write1);
+        let _ = close_pipe_read(read2);
+        let _ = close_pipe_write(write2);
     }
 }

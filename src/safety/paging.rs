@@ -266,9 +266,14 @@ pub const fn is_user_address(addr: u64) -> bool {
 }
 
 /// Align a size up to the given alignment
+/// Returns 0 on overflow (cannot align extremely large values)
 #[inline]
 pub const fn align_up(size: u64, alignment: u64) -> u64 {
-    (size + alignment - 1) & !(alignment - 1)
+    // Check for overflow: if size + alignment - 1 would overflow
+    match size.checked_add(alignment - 1) {
+        Some(val) => val & !(alignment - 1),
+        None => 0, // Overflow case: return 0 to indicate error
+    }
 }
 
 /// Align an address down to the given alignment

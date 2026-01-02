@@ -2,6 +2,7 @@
 //!
 //! Tests for file descriptor management, VFS operations, and filesystem
 //! edge cases using real kernel code.
+//! Uses REAL kernel constants - no simulated implementations.
 
 #[cfg(test)]
 mod tests {
@@ -9,6 +10,9 @@ mod tests {
         allocate_duplicate_slot, clear_file_handle, handle_for_fd,
         FileHandle, FileBacking, StdStreamKind,
         FD_BASE, MAX_OPEN_FILES, STDIN, STDOUT, STDERR,
+        // Import open/seek constants from kernel
+        O_RDONLY, O_WRONLY, O_RDWR, O_CREAT, O_EXCL, O_TRUNC, O_ACCMODE,
+        SEEK_SET, SEEK_CUR, SEEK_END,
     };
     use crate::posix::{Metadata, errno};
     use serial_test::serial;
@@ -102,13 +106,9 @@ mod tests {
 
     #[test]
     fn test_open_access_modes() {
-        // Access mode is in lower 2 bits
-        const O_RDONLY: u64 = 0;
-        const O_WRONLY: u64 = 1;
-        const O_RDWR: u64 = 2;
-
+        // Access mode is in lower 2 bits - using kernel constants
         fn get_access_mode(flags: u64) -> u64 {
-            flags & 3
+            flags & O_ACCMODE
         }
 
         assert_eq!(get_access_mode(O_RDONLY), 0);
@@ -118,10 +118,7 @@ mod tests {
 
     #[test]
     fn test_open_flags_combinable() {
-        const O_WRONLY: u64 = 1;
-        const O_CREAT: u64 = 0x40;
-        const O_TRUNC: u64 = 0x200;
-
+        // Using kernel constants
         let flags = O_WRONLY | O_CREAT | O_TRUNC;
 
         assert_ne!(flags & O_CREAT, 0);
@@ -130,9 +127,7 @@ mod tests {
 
     #[test]
     fn test_o_excl_with_creat() {
-        const O_CREAT: u64 = 0x40;
-        const O_EXCL: u64 = 0x80;
-
+        // Using kernel constants
         fn validate_excl(flags: u64) -> bool {
             if (flags & O_EXCL) != 0 {
                 (flags & O_CREAT) != 0
@@ -151,10 +146,7 @@ mod tests {
 
     #[test]
     fn test_seek_constants() {
-        const SEEK_SET: i32 = 0;
-        const SEEK_CUR: i32 = 1;
-        const SEEK_END: i32 = 2;
-
+        // Verify kernel SEEK_* constants match POSIX values
         assert_eq!(SEEK_SET, 0);
         assert_eq!(SEEK_CUR, 1);
         assert_eq!(SEEK_END, 2);
@@ -162,15 +154,12 @@ mod tests {
 
     #[test]
     fn test_seek_position_calculation() {
-        const SEEK_SET: i32 = 0;
-        const SEEK_CUR: i32 = 1;
-        const SEEK_END: i32 = 2;
-
+        // Using kernel SEEK_* constants
         fn calculate_seek(current: u64, size: u64, offset: i64, whence: i32) -> Option<u64> {
             let base = match whence {
-                SEEK_SET => 0i64,
-                SEEK_CUR => current as i64,
-                SEEK_END => size as i64,
+                x if x == SEEK_SET => 0i64,
+                x if x == SEEK_CUR => current as i64,
+                x if x == SEEK_END => size as i64,
                 _ => return None,
             };
             let result = base + offset;
