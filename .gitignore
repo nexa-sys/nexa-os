@@ -7,7 +7,7 @@ dist
 build
 node_modules
 logs
-
+tmp
 # NexaOS Test Coverage Tools Generated Reports
 reports/
 

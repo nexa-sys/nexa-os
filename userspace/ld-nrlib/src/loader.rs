@@ -2,7 +2,7 @@
 
 use crate::constants::*;
 use crate::elf::{Elf64Dyn, Elf64Ehdr, Elf64Phdr};
-use crate::helpers::{cstr_len, map_library_name, memset, page_align_down, page_align_up};
+use crate::helpers::{cstr_len, map_library_name, memset_internal, page_align_down, page_align_up};
 use crate::reloc::process_rela;
 use crate::state::{DynInfo, GLOBAL_SYMTAB};
 use crate::syscall::{close_file, lseek, mmap, open_file, read_bytes};
@@ -268,7 +268,7 @@ pub unsafe fn load_shared_library(path: *const u8) -> (u64, i64, DynInfo) {
         if phdr.p_memsz > phdr.p_filesz {
             let bss_start = ((phdr.p_vaddr + phdr.p_filesz) as i64 + load_bias) as *mut u8;
             let bss_size = (phdr.p_memsz - phdr.p_filesz) as usize;
-            memset(bss_start, 0, bss_size);
+            memset_internal(bss_start, 0, bss_size);
         }
     }
 

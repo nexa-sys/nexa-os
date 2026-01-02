@@ -2,7 +2,7 @@
 
 use crate::constants::*;
 use crate::elf::{Elf64Rela, Elf64Sym};
-use crate::helpers::memcpy;
+use crate::helpers::memcpy_internal;
 use crate::state::DynInfo;
 use crate::symbol::{get_symbol_name, global_symbol_lookup_cstr};
 
@@ -92,7 +92,7 @@ pub unsafe fn process_rela_with_symtab(
                                 as *const Elf64Sym);
                             let size = sym.st_size as usize;
                             if size > 0 {
-                                memcpy(target as *mut u8, sym_addr as *const u8, size);
+                                memcpy_internal(target as *mut u8, sym_addr as *const u8, size);
                             }
                         }
                     }

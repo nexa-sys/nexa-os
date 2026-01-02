@@ -46,21 +46,93 @@ pub unsafe fn print_num(val: u64) {
 }
 
 // ============================================================================
-// Memory Functions
+// Memory Functions (internal use)
 // ============================================================================
 
-/// Copy memory
-pub unsafe fn memcpy(dest: *mut u8, src: *const u8, n: usize) {
+/// Copy memory (internal helper)
+pub unsafe fn memcpy_internal(dest: *mut u8, src: *const u8, n: usize) {
     for i in 0..n {
         *dest.add(i) = *src.add(i);
     }
 }
 
-/// Zero memory
-pub unsafe fn memset(dest: *mut u8, val: u8, n: usize) {
+/// Zero memory (internal helper)
+pub unsafe fn memset_internal(dest: *mut u8, val: u8, n: usize) {
     for i in 0..n {
         *dest.add(i) = val;
     }
+}
+
+// ============================================================================
+// C ABI Memory Intrinsics (required by compiler/linker)
+// These are exported as #[no_mangle] so the linker can find them
+// ============================================================================
+
+/// C ABI memcpy - required by compiler intrinsics
+#[no_mangle]
+pub unsafe extern "C" fn memcpy(dest: *mut core::ffi::c_void, src: *const core::ffi::c_void, n: usize) -> *mut core::ffi::c_void {
+    memcpy_internal(dest as *mut u8, src as *const u8, n);
+    dest
+}
+
+/// C ABI memset - required by compiler intrinsics
+#[no_mangle]
+pub unsafe extern "C" fn memset(dest: *mut core::ffi::c_void, val: i32, n: usize) -> *mut core::ffi::c_void {
+    memset_internal(dest as *mut u8, val as u8, n);
+    dest
+}
+
+/// C ABI memmove - handles overlapping regions
+#[no_mangle]
+pub unsafe extern "C" fn memmove(dest: *mut core::ffi::c_void, src: *const core::ffi::c_void, n: usize) -> *mut core::ffi::c_void {
+    let dest_ptr = dest as *mut u8;
+    let src_ptr = src as *const u8;
+    if (dest_ptr as usize) < (src_ptr as usize) {
+        // Forward copy
+        for i in 0..n {
+            *dest_ptr.add(i) = *src_ptr.add(i);
+        }
+    } else {
+        // Backward copy for overlapping regions
+        for i in (0..n).rev() {
+            *dest_ptr.add(i) = *src_ptr.add(i);
+        }
+    }
+    dest
+}
+
+/// C ABI strlen
+#[no_mangle]
+pub unsafe extern "C" fn strlen(s: *const i8) -> usize {
+    cstr_len(s as *const u8)
+}
+
+/// C ABI bcmp (BSD byte comparison, returns 0 if equal)
+#[no_mangle]
+pub unsafe extern "C" fn bcmp(a: *const core::ffi::c_void, b: *const core::ffi::c_void, n: usize) -> i32 {
+    let a = a as *const u8;
+    let b = b as *const u8;
+    for i in 0..n {
+        if *a.add(i) != *b.add(i) {
+            return 1;
+        }
+    }
+    0
+}
+
+/// C ABI memcmp
+#[no_mangle]
+pub unsafe extern "C" fn memcmp(a: *const core::ffi::c_void, b: *const core::ffi::c_void, n: usize) -> i32 {
+    let a = a as *const u8;
+    let b = b as *const u8;
+    for i in 0..n {
+        let va = *a.add(i);
+        let vb = *b.add(i);
+        if va != vb {
+            return (va as i32) - (vb as i32);
+        }
+    }
+    0
 }
 
 // ============================================================================

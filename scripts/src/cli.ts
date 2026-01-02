@@ -371,17 +371,24 @@ program
     
     logger.step('Running unit tests...');
     
-    // Run cargo test from /tmp to avoid inheriting parent .cargo/config.toml
-    // This prevents the duplicate lang item issue caused by build-std config merging
-    // Use isolated target directory in /tmp to avoid cached artifacts with build-std
-    // Must use +nightly since we're running from /tmp (rust-toolchain.toml not visible)
-    const child = spawn('cargo', ['+nightly', ...args], {
-      cwd: '/tmp',
+    // Create tmp directory in project root for isolated test target directory
+    const tmpDir = resolve(projectRoot, 'tmp');
+    if (!existsSync(tmpDir)) {
+      mkdirSync(tmpDir, { recursive: true });
+    }
+    const testsTargetDir = resolve(tmpDir, 'nexa-tests-target');
+    
+    // Run cargo test from project root with explicit host target
+    // This overrides the x86_64-nexaos target from .cargo/config.toml
+    // Use isolated target directory to avoid cached artifacts from kernel builds
+    // Must use +nightly for tests crate features
+    const child = spawn('cargo', ['+nightly', ...args, '--target', 'x86_64-unknown-linux-gnu'], {
+      cwd: projectRoot,
       stdio: 'inherit',
       env: {
         ...process.env,
         // Use isolated target dir to avoid cached libcore from build-std
-        CARGO_TARGET_DIR: '/tmp/nexa-tests-target',
+        CARGO_TARGET_DIR: testsTargetDir,
       },
     });
     
@@ -413,7 +420,7 @@ interface TestRunResult {
 }
 
 // Run cargo test and parse results
-// Runs from /tmp to avoid inheriting parent .cargo/config.toml (build-std issue)
+// Runs from project tmp/ to avoid inheriting parent .cargo/config.toml (build-std issue)
 async function runTests(projectRoot: string, filterPattern?: string, verbose: boolean = false): Promise<TestRunResult> {
   const manifestPath = resolve(projectRoot, 'tests', 'Cargo.toml');
   const result: TestRunResult = {
@@ -424,18 +431,27 @@ async function runTests(projectRoot: string, filterPattern?: string, verbose: bo
     output: ''
   };
   
+  // Create tmp directory in project root for isolated test target directory
+  const tmpDir = resolve(projectRoot, 'tmp');
+  if (!existsSync(tmpDir)) {
+    mkdirSync(tmpDir, { recursive: true });
+  }
+  const testsTargetDir = resolve(tmpDir, 'nexa-tests-target');
+  
   return new Promise((resolvePromise) => {
-    const args = ['+nightly', 'test', '--lib', '--manifest-path', manifestPath];
+    // Run cargo test from project root with explicit host target
+    // This overrides the x86_64-nexaos target from .cargo/config.toml
+    const args = ['+nightly', 'test', '--lib', '--manifest-path', manifestPath, '--target', 'x86_64-unknown-linux-gnu'];
     if (filterPattern) {
       args.push(filterPattern);
     }
     args.push('--', '--test-threads=1');
     
     const child = spawn('cargo', args, {
-      cwd: '/tmp',
+      cwd: projectRoot,
       env: {
         ...process.env,
-        CARGO_TARGET_DIR: '/tmp/nexa-tests-target',
+        CARGO_TARGET_DIR: testsTargetDir,
       },
       stdio: ['inherit', 'pipe', 'pipe']
     });

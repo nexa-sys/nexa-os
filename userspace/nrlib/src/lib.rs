@@ -1196,26 +1196,55 @@ pub unsafe extern "C" fn memcmp(a: *const c_void, b: *const c_void, n: usize) ->
     0
 }
 
+/// BSD-compatible byte comparison function.
+/// Returns 0 if the first n bytes are identical, non-zero otherwise.
+/// Note: Unlike memcmp, bcmp only checks for equality, not ordering.
+#[no_mangle]
+pub unsafe extern "C" fn bcmp(a: *const c_void, b: *const c_void, n: usize) -> i32 {
+    // bcmp is semantically equivalent to memcmp for equality checking
+    memcmp(a, b, n)
+}
+
+// Force export of memory intrinsics for dynamic linking
+// These functions are used by compiled code but the linker might strip them
+// as "unused" since they're compiler builtins. Using #[used] with #[no_mangle]
+// and extern "C" ABI ensures they're exported in the dynamic symbol table.
 #[repr(C)]
-struct MemIntrinsicRefs {
-    memcpy: unsafe extern "C" fn(*mut c_void, *const c_void, usize) -> *mut c_void,
-    memmove: unsafe extern "C" fn(*mut c_void, *const c_void, usize) -> *mut c_void,
-    memset: unsafe extern "C" fn(*mut c_void, c_int, usize) -> *mut c_void,
-    memcmp: unsafe extern "C" fn(*const c_void, *const c_void, usize) -> c_int,
+pub struct MemIntrinsicRefs {
+    pub memcpy: unsafe extern "C" fn(*mut c_void, *const c_void, usize) -> *mut c_void,
+    pub memmove: unsafe extern "C" fn(*mut c_void, *const c_void, usize) -> *mut c_void,
+    pub memset: unsafe extern "C" fn(*mut c_void, c_int, usize) -> *mut c_void,
+    pub memcmp: unsafe extern "C" fn(*const c_void, *const c_void, usize) -> c_int,
+    pub bcmp: unsafe extern "C" fn(*const c_void, *const c_void, usize) -> c_int,
+    pub strlen: extern "C" fn(*const u8) -> usize,
 }
 
 #[used]
-static MEM_INTRINSIC_REFS: MemIntrinsicRefs = MemIntrinsicRefs {
+#[no_mangle]
+pub static MEM_INTRINSIC_REFS: MemIntrinsicRefs = MemIntrinsicRefs {
     memcpy,
     memmove,
     memset,
     memcmp,
+    bcmp,
+    strlen,
 };
 
+/// Force linker to retain all memory intrinsic symbols for dynamic linking.
+/// This function touches all memory-related symbols to prevent dead code elimination.
 #[no_mangle]
-#[deprecated(note = "No longer required; memory intrinsics are retained automatically")]
 pub extern "C" fn __nrlib_force_mem_link() {
-    // Compatibility shim kept for older binaries; no work required now.
+    // Force references to all symbols to ensure they're not stripped
+    let _refs = &MEM_INTRINSIC_REFS;
+    // Use volatile to prevent optimization
+    unsafe {
+        core::ptr::read_volatile(&MEM_INTRINSIC_REFS.memcpy);
+        core::ptr::read_volatile(&MEM_INTRINSIC_REFS.memmove);
+        core::ptr::read_volatile(&MEM_INTRINSIC_REFS.memset);
+        core::ptr::read_volatile(&MEM_INTRINSIC_REFS.memcmp);
+        core::ptr::read_volatile(&MEM_INTRINSIC_REFS.bcmp);
+        core::ptr::read_volatile(&MEM_INTRINSIC_REFS.strlen);
+    }
 }
 
 #[no_mangle]

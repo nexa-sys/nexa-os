@@ -159,6 +159,13 @@ export function getPicRustFlags(): string {
     '-C link-arg=-u_start',
     '-C link-arg=-u_start_c',
     '-C link-arg=--export-dynamic',
+    // Force export memory intrinsics that might be stripped as unused
+    '-C link-arg=-umemcpy',
+    '-C link-arg=-umemmove',
+    '-C link-arg=-umemset',
+    '-C link-arg=-umemcmp',
+    '-C link-arg=-ubcmp',
+    '-C link-arg=-ustrlen',
   ].join(' ');
 }
 
