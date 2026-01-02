@@ -102,7 +102,34 @@ buildCmd
   .command('full')
   .alias('all')
   .description('Full system build (kernel, userspace, rootfs, initramfs, ISO)')
-  .action(async () => {
+  .option('--dist <distribution>', 'Build for specific distribution (desktop, server, exvm, vcen, k8s)')
+  .action(async (options) => {
+    if (options.dist) {
+      // Delegate to dist build
+      const projectRoot = findProjectRoot();
+      const configPath = resolve(projectRoot, 'config/distributions.yaml');
+      
+      if (!existsSync(configPath)) {
+        logger.error('distributions.yaml not found');
+        process.exit(1);
+      }
+      
+      const { readFileSync } = await import('fs');
+      const yaml = await import('yaml');
+      const config = yaml.parse(readFileSync(configPath, 'utf-8'));
+      
+      const dist = config.distributions[options.dist];
+      if (!dist) {
+        logger.error(`Unknown distribution: ${options.dist}`);
+        console.log('Available: ' + Object.keys(config.distributions).join(', '));
+        process.exit(1);
+      }
+      
+      logger.section(`Building ${dist.name} (${dist.codename})`);
+      process.env.NEXAOS_DIST = options.dist;
+      process.env.NEXAOS_DIST_NAME = dist.name;
+    }
+    
     const builder = new Builder(findProjectRoot());
     const result = await builder.buildFull();
     process.exit(result.success ? 0 : 1);
@@ -1129,6 +1156,152 @@ featuresCmd
   });
 
 // =============================================================================
+// Distribution Commands
+// =============================================================================
+
+const distCmd = program
+  .command('dist')
+  .description('Distribution management commands')
+  .showHelpAfterError('(use "./ndk dist --help" for available subcommands)');
+
+// dist list - list available distributions
+distCmd
+  .command('list')
+  .alias('ls')
+  .description('List available distributions')
+  .action(async () => {
+    const projectRoot = findProjectRoot();
+    const configPath = resolve(projectRoot, 'config/distributions.yaml');
+    
+    if (!existsSync(configPath)) {
+      logger.error('distributions.yaml not found');
+      process.exit(1);
+    }
+    
+    const { readFileSync } = await import('fs');
+    const yaml = await import('yaml');
+    const config = yaml.parse(readFileSync(configPath, 'utf-8'));
+    
+    console.log('\n📦 Available NexaOS Distributions\n');
+    
+    for (const [id, dist] of Object.entries(config.distributions)) {
+      const d = dist as any;
+      console.log(`  \x1b[1m${id}\x1b[0m - ${d.name} (${d.codename})`);
+      console.log(`    ${d.description}`);
+      console.log(`    Target: ${d.target_users?.join(', ') || 'general'}`);
+      console.log('');
+    }
+  });
+
+// dist info - show distribution details  
+distCmd
+  .command('info <distribution>')
+  .description('Show detailed information about a distribution')
+  .action(async (distribution: string) => {
+    const projectRoot = findProjectRoot();
+    const configPath = resolve(projectRoot, 'config/distributions.yaml');
+    
+    if (!existsSync(configPath)) {
+      logger.error('distributions.yaml not found');
+      process.exit(1);
+    }
+    
+    const { readFileSync } = await import('fs');
+    const yaml = await import('yaml');
+    const config = yaml.parse(readFileSync(configPath, 'utf-8'));
+    
+    const dist = config.distributions[distribution];
+    if (!dist) {
+      logger.error(`Unknown distribution: ${distribution}`);
+      console.log('Available: ' + Object.keys(config.distributions).join(', '));
+      process.exit(1);
+    }
+    
+    console.log(`\n📦 ${dist.name} (${dist.codename})\n`);
+    console.log(`Description: ${dist.description}`);
+    console.log(`Target Users: ${dist.target_users?.join(', ')}`);
+    console.log('');
+    
+    console.log('Kernel Features:');
+    for (const feat of dist.kernel?.features || []) {
+      console.log(`  • ${feat}`);
+    }
+    console.log('');
+    
+    console.log('Modules:');
+    for (const [category, mods] of Object.entries(dist.modules || {})) {
+      console.log(`  ${category}: ${(mods as string[]).join(', ')}`);
+    }
+    console.log('');
+    
+    console.log('Services:');
+    for (const svc of dist.services || []) {
+      console.log(`  • ${svc}`);
+    }
+    console.log('');
+  });
+
+// dist build - build a specific distribution
+distCmd
+  .command('build <distribution>')
+  .description('Build a specific distribution')
+  .option('-r, --release', 'Build in release mode')
+  .option('--iso-only', 'Only generate ISO (skip rootfs rebuild)')
+  .action(async (distribution: string, options) => {
+    const projectRoot = findProjectRoot();
+    const configPath = resolve(projectRoot, 'config/distributions.yaml');
+    
+    if (!existsSync(configPath)) {
+      logger.error('distributions.yaml not found');
+      process.exit(1);
+    }
+    
+    const { readFileSync } = await import('fs');
+    const yaml = await import('yaml');
+    const config = yaml.parse(readFileSync(configPath, 'utf-8'));
+    
+    const dist = config.distributions[distribution];
+    if (!dist) {
+      logger.error(`Unknown distribution: ${distribution}`);
+      process.exit(1);
+    }
+    
+    logger.section(`Building ${dist.name} (${dist.codename})`);
+    
+    // Set distribution-specific environment variables
+    process.env.NEXAOS_DIST = distribution;
+    process.env.NEXAOS_DIST_NAME = dist.name;
+    
+    if (options.release) {
+      process.env.BUILD_TYPE = 'release';
+    }
+    
+    // Use existing builder with distribution env vars set
+    const builder = new Builder(projectRoot);
+    
+    let result;
+    if (options.isoOnly) {
+      result = await builder.buildIsoOnly();
+    } else {
+      result = await builder.buildFull();
+    }
+    
+    if (result.success) {
+      logger.success(`${dist.name} build complete!`);
+      
+      // Show output path
+      const outputPath = config.output_paths?.[distribution];
+      if (outputPath?.iso) {
+        console.log(`\nISO: ${outputPath.iso.replace('{version}', '0.1.0').replace('{arch}', 'x86_64')}`);
+      }
+    } else {
+      logger.error(`Build failed for ${dist.name}`);
+    }
+    
+    process.exit(result.success ? 0 : 1);
+  });
+
+// =============================================================================
 // QEMU Commands
 // =============================================================================
 
@@ -1432,7 +1605,7 @@ if (process.argv.length <= 2) {
 }
 
 // Handle unknown commands before parsing
-const validCommands = ['build', 'b', 'clean', 'test', 't', 'coverage', 'cov', 'list', 'info', 'features', 'f', 'run', 'dev', 'd', 'ui', 'qemu', '-V', '--version', '-h', '--help'];
+const validCommands = ['build', 'b', 'clean', 'test', 't', 'coverage', 'cov', 'list', 'info', 'features', 'f', 'run', 'dev', 'd', 'ui', 'qemu', 'dist', '-V', '--version', '-h', '--help'];
 const firstArg = process.argv[2];
 if (firstArg && !firstArg.startsWith('-') && !validCommands.includes(firstArg)) {
   console.error(`\x1b[31mError:\x1b[0m Unknown command '${firstArg}'`);

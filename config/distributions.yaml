@@ -1,0 +1,347 @@
+# NexaOS Distribution Configuration
+#
+# Defines different distributions/editions of NexaOS:
+# - NexaOS Desktop: Full desktop environment with GUI
+# - NexaOS Server: Headless server with management tools
+# - NexaOS EXVM: Dedicated hypervisor platform (NVM-based)
+# - NexaOS VCEN: Virtualization Control Center
+# - NexaOS K8S: Kubernetes-optimized container host
+
+# =============================================================================
+# Distribution Definitions
+# =============================================================================
+
+distributions:
+  # Desktop Edition - Full desktop experience
+  desktop:
+    name: "NexaOS Desktop"
+    codename: "Aurora"
+    description: "Full-featured desktop with graphical interface"
+    target_users: ["developers", "end-users", "workstations"]
+    
+    # Kernel configuration
+    kernel:
+      features:
+        - smp
+        - graphics
+        - audio
+        - usb
+        - bluetooth
+        - acpi
+        - power_management
+      log_level: warn
+      
+    # Included modules
+    modules:
+      filesystem: [ext2, ext3, ext4]
+      block: [virtio_blk, ide, nvme, ahci]
+      memory: [swap]
+      network: [e1000, virtio_net]
+      graphics: [drm_basic, fb_simple]
+      input: [ps2, usb_hid]
+      
+    # Userspace programs
+    programs:
+      core: all
+      user: all
+      network: all
+      coreutils: all
+      desktop:
+        - compositor
+        - terminal
+        - file_manager
+        - settings
+        - browser
+        
+    # Services to enable
+    services:
+      - ni              # init
+      - networkd        # Network management
+      - dbus            # Desktop bus
+      - compositorcd    # Compositor daemon
+      - powerd          # Power management
+      
+    # Rootfs extras
+    rootfs:
+      include_docs: true
+      include_dev_tools: true
+      locale: "en_US.UTF-8"
+      timezone: "UTC"
+      
+    # ISO settings
+    iso:
+      bootable: true
+      include_installer: true
+      
+  # Server Edition - Headless server
+  server:
+    name: "NexaOS Server"
+    codename: "Bastion"
+    description: "Headless server optimized for stability and performance"
+    target_users: ["system_admins", "data_centers", "cloud"]
+    
+    kernel:
+      features:
+        - smp
+        - network_acceleration
+        - large_pages
+        - numa
+      log_level: info
+      
+    modules:
+      filesystem: [ext2, ext3, ext4]
+      block: [virtio_blk, nvme, ahci]
+      memory: [swap]
+      network: [e1000, virtio_net]
+      
+    programs:
+      core: all
+      user: [passwd, useradd, groupadd]
+      network: all
+      coreutils: all
+      server:
+        - sshd
+        - crond
+        - monitord
+        
+    services:
+      - ni
+      - networkd
+      - sshd
+      - crond
+      
+    rootfs:
+      include_docs: false
+      include_dev_tools: false
+      locale: "C.UTF-8"
+      timezone: "UTC"
+      
+    iso:
+      bootable: true
+      include_installer: true
+
+  # EXVM Edition - Enterprise Hypervisor (NVM-based)
+  exvm:
+    name: "NexaOS EXVM"
+    codename: "Horizon"
+    description: "Enterprise hypervisor platform similar to VMware ESXi/Proxmox"
+    target_users: ["virtualization_admins", "data_centers", "private_cloud"]
+    
+    kernel:
+      features:
+        - smp
+        - vt_x          # Intel VT-x
+        - amd_v         # AMD-V
+        - iommu
+        - large_pages
+        - numa
+        - sr_iov
+      log_level: info
+      
+    modules:
+      filesystem: [ext2, ext4]
+      block: [virtio_blk, nvme, ahci]
+      memory: [swap]
+      network: [e1000, virtio_net]
+      virtualization:
+        - kvm_core
+        - vfio
+        
+    # Minimal userspace + NVM
+    programs:
+      core: [init, ni, shutdown, halt, reboot]
+      user: [passwd, login]
+      network: [ip, ping, curl]
+      coreutils: [ls, cat, cp, mv, rm, mkdir, chmod, chown]
+      hypervisor:
+        - nvm-server    # Main hypervisor daemon
+        - nvmctl        # Management CLI
+        
+    services:
+      - ni
+      - networkd
+      - nvm-server
+      
+    rootfs:
+      include_docs: false
+      include_dev_tools: false
+      locale: "C.UTF-8"
+      timezone: "UTC"
+      web_ui: true      # Include NVM WebGUI
+      
+    iso:
+      bootable: true
+      include_installer: true
+      
+    # EXVM-specific features
+    exvm_features:
+      live_migration: true
+      high_availability: true
+      distributed_storage: true
+      backup_integration: true
+      multi_tenant: true
+
+  # VCEN Edition - Virtualization Control Center
+  vcen:
+    name: "NexaOS VCEN"
+    codename: "Nexus"
+    description: "Centralized management for multiple EXVM hosts"
+    target_users: ["cloud_admins", "msp", "enterprise"]
+    
+    kernel:
+      features:
+        - smp
+        - network_acceleration
+      log_level: info
+      
+    modules:
+      filesystem: [ext2, ext4]
+      block: [virtio_blk, nvme]
+      memory: [swap]
+      network: [e1000, virtio_net]
+      
+    programs:
+      core: [init, ni, shutdown]
+      user: [passwd, login]
+      network: all
+      coreutils: all
+      management:
+        - vcen-server     # Control center daemon
+        - vcen-cli        # Management CLI
+        - vcen-agent      # Host agent
+        
+    services:
+      - ni
+      - networkd
+      - vcen-server
+      - postgresql      # Database backend
+      
+    rootfs:
+      include_docs: false
+      include_dev_tools: false
+      locale: "C.UTF-8"
+      timezone: "UTC"
+      web_ui: true
+      database: postgresql
+      
+    iso:
+      bootable: true
+      include_installer: true
+      appliance: true   # Pre-configured as virtual appliance
+
+  # K8S Edition - Kubernetes-optimized
+  k8s:
+    name: "NexaOS K8S"
+    codename: "Nautilus"
+    description: "Container-optimized OS for Kubernetes nodes"
+    target_users: ["devops", "platform_engineers", "cloud_native"]
+    
+    kernel:
+      features:
+        - smp
+        - cgroups_v2
+        - namespaces
+        - seccomp
+        - overlayfs
+        - network_namespaces
+      log_level: warn
+      
+    modules:
+      filesystem: [ext4, overlayfs]
+      block: [virtio_blk, nvme]
+      memory: [swap]
+      network: [e1000, virtio_net, veth, bridge]
+      container:
+        - cgroup_devices
+        - cgroup_memory
+        - cgroup_cpu
+        
+    programs:
+      core: [init, ni, shutdown]
+      user: [passwd]
+      network: [ip, iptables, nftables]
+      coreutils: [ls, cat, cp, mv, rm, mkdir, chmod]
+      container:
+        - containerd
+        - runc
+        - crictl
+        - kubelet
+        - kubeadm
+        - kubectl
+        
+    services:
+      - ni
+      - networkd
+      - containerd
+      - kubelet
+      
+    rootfs:
+      include_docs: false
+      include_dev_tools: false
+      locale: "C.UTF-8"
+      timezone: "UTC"
+      immutable: true   # Read-only rootfs with overlay
+      
+    iso:
+      bootable: true
+      include_installer: true
+
+# =============================================================================
+# Build Matrix
+# =============================================================================
+# Defines which distributions to build by default
+
+build_matrix:
+  default: [server]
+  full: [desktop, server, exvm, vcen, k8s]
+  
+  # CI/CD targets
+  ci_quick: [server]
+  ci_full: [server, exvm, k8s]
+  
+  # Release targets
+  release: [desktop, server, exvm, k8s]
+
+# =============================================================================
+# Distribution-specific paths
+# =============================================================================
+
+output_paths:
+  desktop:
+    iso: "target/iso/nexaos-desktop-{version}-{arch}.iso"
+    rootfs: "build/rootfs-desktop"
+  server:
+    iso: "target/iso/nexaos-server-{version}-{arch}.iso"
+    rootfs: "build/rootfs-server"
+  exvm:
+    iso: "target/iso/nexaos-exvm-{version}-{arch}.iso"
+    rootfs: "build/rootfs-exvm"
+  vcen:
+    iso: "target/iso/nexaos-vcen-{version}-{arch}.iso"
+    ova: "target/ova/nexaos-vcen-{version}.ova"
+    rootfs: "build/rootfs-vcen"
+  k8s:
+    iso: "target/iso/nexaos-k8s-{version}-{arch}.iso"
+    rootfs: "build/rootfs-k8s"
+
+# =============================================================================
+# Shared Components
+# =============================================================================
+# Components shared across all distributions
+
+shared:
+  kernel_base: true
+  nrlib: true
+  ld_nrlib: true
+  basic_coreutils: true
+  
+# =============================================================================
+# Version Information
+# =============================================================================
+
+versioning:
+  major: 0
+  minor: 1
+  patch: 0
+  codename: "Genesis"
+  release_date: null  # Set on release
