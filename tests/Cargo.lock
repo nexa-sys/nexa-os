@@ -250,6 +250,7 @@ dependencies = [
  "linked_list_allocator",
  "multiboot2",
  "nexa_boot_info",
+ "nvm",
  "pic8259",
  "rusty-fork",
  "serial_test",
@@ -261,6 +262,13 @@ dependencies = [
 [[package]]
 name = "nexa_boot_info"
 version = "0.1.0"
+
+[[package]]
+name = "nvm"
+version = "1.0.0"
+dependencies = [
+ "x86_64 0.15.4",
+]
 
 [[package]]
 name = "once_cell"

@@ -57,6 +57,9 @@ pic8259 = "0.10"
 rusty-fork = "0.3.1"
 serial_test = "3.1"
 
+# NVM - NexaOS Virtual Machine platform (extracted from tests/mock)
+nvm = { path = "../nvm" }
+
 [build-dependencies]
 cc = "1.0"
 

@@ -78,10 +78,11 @@ macro_rules! kpanic {
 }
 
 // ===========================================================================
-// Hardware mocks - simulates CPU/hardware for testing
+// Hardware mocks - NVM (NexaOS Virtual Machine) platform
 // ===========================================================================
 
-pub mod mock;
+// Use NVM as the mock module for backward compatibility
+pub use nvm as mock;
 
 // ===========================================================================
 // Import FULL kernel source (preprocessed by build.rs)
