@@ -68,6 +68,7 @@ pub mod cpu;
 pub mod debugger;
 pub mod devices;
 pub mod hal;
+pub mod hypervisor;
 pub mod memory;
 pub mod pci;
 pub mod vm;
@@ -87,3 +88,30 @@ pub use hal::HardwareAbstractionLayer;
 pub use memory::{MockPageAllocator, VirtualMemory, PhysicalMemory, MemoryRegion};
 pub use pci::{PciBus, PciDevice, PciConfig};
 pub use vm::{VirtualMachine, VmConfig, VmEvent, VmState, VmSnapshot, VmStatistics, VmBuilder};
+
+// Re-export enterprise hypervisor components
+pub use hypervisor::{
+    // Core types
+    Hypervisor, HypervisorFeatures, HypervisorStats,
+    VmId, VmStatus, VmSpec, VmInstance,
+    // Resource management
+    CpuPool as HypervisorCpuPool, MemoryPool, StoragePool, NetworkPool,
+    // Advanced memory
+    MemoryManager, BalloonManager, KsmManager, NumaManager,
+    // Live migration
+    MigrationManager, MigrationType, MigrationProgress, MigrationId,
+    // Storage
+    StorageManager, VirtualDisk, DiskFormat,
+    // Network
+    NetworkManager, VirtualSwitch, VirtualNic, MacAddress,
+    // Scheduler
+    VmScheduler, SchedulerPolicy,
+    // Cluster
+    ClusterManager, ClusterHost, HaManager, DrsManager,
+    // Security
+    SecurityManager, SecurityPolicy, TpmEmulator, SecureBootKeys,
+    // API
+    ApiServer, ApiConfig, ApiRequest, ApiResponse,
+    // Manager
+    VmManager, VmManagerConfig, VmManagerBuilder, VmTemplate, ManagerEvent,
+};
