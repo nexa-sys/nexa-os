@@ -19,6 +19,7 @@ The kernel runs in Ring 0, userspace in Ring 3 with full POSIX compliance.
 | Networking | `src/net/` | Full UDP/IPv4 stack, ARP, DNS resolver; TCP in progress |
 | Kernel modules | `modules/`, `src/kmod/` | Loadable `.nkm` modules (ext2, e1000, virtio) with PKCS#7 signing |
 | Init system | `src/boot/init.rs` | PID 1 service management (System V runlevels, /etc/inittab parsing) |
+| NVM Hypervisor | `nvm/` | Enterprise hypervisor platform (VT-x/AMD-V, live migration, HA) |
 
 ### Critical Memory Layout (`src/process/types.rs`)
 
@@ -59,7 +60,7 @@ Key files: `types.rs` (constants), `priority.rs` (vruntime/deadline), `percpu.rs
 ./ndk dev --quick             # Build + run in one command
 ./ndk test                    # Run unit tests (tests/ crate)
 ./ndk test --filter bitmap    # Run specific test pattern
-./ndk coverage html           # Generate coverage report (requires cargo-llvm-cov)
+./ndk coverage html           # Generate HTML coverage report
 ./ndk run --debug             # Start GDB server at 127.0.0.1:1234
 ```
 
@@ -182,14 +183,30 @@ Parsed by `src/boot/init.rs:parse_inittab()`. See `etc/inittab` for examples.
 **Unit tests** live in separate `tests/` crate (uses standard Rust std environment):
 
 ```bash
-cd tests
-cargo test --lib                # Run all tests
-cargo test --lib bitmap         # Match test name
-cargo test -- --nocapture       # Show println! output
+./ndk test                    # Run unit tests (tests/ crate)
+./ndk test --filter bitmap    # Run specific test pattern
+./ndk coverage html           # Generate HTML coverage report
 ```
 
-**⚠️ 测试原则**：测试应直接测试内核代码的**纯函数和数据结构**，**不要重新实现或模拟内核逻辑**。
-- ✅ 正确：测试解析器、算法、数据结构转换、边界条件
+测试套件通过 `build.rs` 预处理内核源码，用硬件 mock 层运行**真正的内核代码**。
+- `build.rs` 复制内核源码到 `build/kernel_src/`，移除与 std 冲突的属性
+- 硬件操作通过 mock 模块模拟（CPU、APIC、PIT、UART 等）
+- 内核的分配器逻辑运行在 std 分配器之上
+- **mock 模块由 NVM (`nvm/`) 提供**
+
+NVM 是完整的虚拟机平台（`pub use nvm as mock;`），提供：
+- `nvm/src/cpu.rs` — x86-64 CPU 模拟（寄存器、CR0-CR8、MSR、CPUID）
+- `nvm/src/memory.rs` — 物理内存模拟（单一 mmap 区域，类似 QEMU）
+- `nvm/src/hal.rs` — 硬件抽象层（替代 `src/safety/x86.rs` 的 port I/O）
+- `nvm/src/devices/` — 设备模拟（PIC、PIT、LAPIC、IOAPIC、UART、RTC）
+
+**Coverage 工具**（`scripts/src/coverage.ts`）是自研的静态分析覆盖率工具：
+- 解析 Rust 源码提取函数、impl 块、分支信息
+- 分析测试文件中的函数调用匹配覆盖
+- 生成 Jest 风格的文本报告和 HTML/JSON 报告
+- 支持模块级、文件级、行级覆盖率统计
+
+**⚠️ 测试原则**：**不要重新实现或模拟内核逻辑**。
 - ❌ 错误：写 "Simulates kernel behavior" 的伪实现
 
 测试按子系统组织在 `tests/src/{fs,mm,net,ipc,process,scheduler,kmod}/`。
