@@ -55,6 +55,29 @@ pub const SIGTTIN: c_int = 21;
 /// Terminal output for background process
 pub const SIGTTOU: c_int = 22;
 
+// Real-time signal constants (Linux)
+/// First real-time signal
+pub const SIGRTMIN: c_int = 32;
+/// Last real-time signal
+pub const SIGRTMAX: c_int = 64;
+
+// ============================================================================
+// Real-time Signal Functions
+// ============================================================================
+
+/// Get the maximum real-time signal number
+/// Used by tokio/mio signal handling
+#[no_mangle]
+pub extern "C" fn __libc_current_sigrtmax() -> c_int {
+    SIGRTMAX
+}
+
+/// Get the minimum real-time signal number
+#[no_mangle]
+pub extern "C" fn __libc_current_sigrtmin() -> c_int {
+    SIGRTMIN
+}
+
 // ============================================================================
 // Signal Functions
 // ============================================================================

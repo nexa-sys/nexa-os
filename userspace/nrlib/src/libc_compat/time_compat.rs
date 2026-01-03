@@ -181,7 +181,7 @@ pub unsafe extern "C" fn pause() -> c_int {
 }
 
 // ============================================================================
-// System Configuration
+// System Configuration Constants (sysconf implementation is in sched.rs)
 // ============================================================================
 
 /// sysconf name constants
@@ -190,16 +190,6 @@ pub const _SC_PAGESIZE: c_int = 30;
 pub const _SC_PAGE_SIZE: c_int = 30;
 pub const _SC_NPROCESSORS_CONF: c_int = 83;
 pub const _SC_NPROCESSORS_ONLN: c_int = 84;
-
-#[no_mangle]
-pub unsafe extern "C" fn sysconf(name: c_int) -> c_long {
-    match name {
-        _SC_CLK_TCK => 100, // 100 Hz clock (standard Linux)
-        _SC_PAGESIZE | _SC_PAGE_SIZE => 4096,
-        _SC_NPROCESSORS_CONF | _SC_NPROCESSORS_ONLN => 1, // Single core for now
-        _ => -1,                                          // Not supported
-    }
-}
 
 // ============================================================================
 // Process Times

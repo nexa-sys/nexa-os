@@ -24,6 +24,71 @@ use nexa_boot_info::{BlockDeviceInfo, FramebufferInfo, NetworkDeviceInfo};
 #[no_mangle]
 pub static __libc_single_threaded: u8 = 1; // 1 = single-threaded (skip locks)
 
+// This variable is externally visible and its value cannot be determined at compile time
+// Used to prevent dead code elimination of __nrlib_force_export_symbols
+#[no_mangle]
+pub static mut __nrlib_force_export_enabled: u8 = 0;
+
+/// Force export of libc symbols required by tokio/mio/std.
+/// This function ACTUALLY CALLS each function (with dummy/invalid args)
+/// to force Rust to keep them in the binary. The function is designed
+/// to be called from CRT init but its return value is always ignored.
+/// 
+/// The value of __nrlib_force_export_enabled is 0 at startup, so these
+/// calls never actually execute. But because the variable is externally
+/// visible (#[no_mangle]), the compiler cannot prove this at compile time
+/// and must keep all the code.
+#[no_mangle]
+#[inline(never)]
+pub extern "C" fn __nrlib_force_export_symbols() -> usize {
+    // Read from externally visible variable - compiler cannot optimize this away
+    let should_call: bool = unsafe { __nrlib_force_export_enabled != 0 };
+    
+    let mut result: usize = 0;
+    
+    if should_call {
+        unsafe {
+            // Epoll functions - actually call them (will fail harmlessly)
+            result ^= libc_compat::epoll::epoll_create1(0) as usize;
+            result ^= libc_compat::epoll::epoll_ctl(-1, 0, -1, core::ptr::null_mut()) as usize;
+            result ^= libc_compat::epoll::epoll_wait(-1, core::ptr::null_mut(), 0, 0) as usize;
+            result ^= libc_compat::epoll::epoll_pwait(-1, core::ptr::null_mut(), 0, 0, core::ptr::null()) as usize;
+            result ^= libc_compat::epoll::eventfd(0, 0) as usize;
+            result ^= libc_compat::epoll::eventfd_read(-1, core::ptr::null_mut()) as usize;
+            result ^= libc_compat::epoll::eventfd_write(-1, 0) as usize;
+            
+            // Scheduler functions
+            result ^= libc_compat::sched::sched_getaffinity(0, 0, core::ptr::null_mut()) as usize;
+            result ^= libc_compat::sched::sched_setaffinity(0, 0, core::ptr::null()) as usize;
+            result ^= libc_compat::sched::get_nprocs() as usize;
+            
+            // User database functions
+            result ^= libc_compat::user::getpwuid_r(0, core::ptr::null_mut(), core::ptr::null_mut(), 0, core::ptr::null_mut()) as usize;
+            result ^= libc_compat::user::getpwnam_r(core::ptr::null(), core::ptr::null_mut(), core::ptr::null_mut(), 0, core::ptr::null_mut()) as usize;
+            result ^= libc_compat::user::getpwuid(0) as usize;
+            result ^= libc_compat::user::getpwnam(core::ptr::null()) as usize;
+            result ^= libc_compat::user::gethostname(core::ptr::null_mut(), 0) as usize;
+            result ^= libc_compat::user::sethostname(core::ptr::null(), 0) as usize;
+            result ^= libc_compat::user::uname(core::ptr::null_mut()) as usize;
+            
+            // Socket server functions
+            result ^= socket::listen(-1, 0) as usize;
+            result ^= socket::accept(-1, core::ptr::null_mut(), core::ptr::null_mut()) as usize;
+            result ^= socket::accept4(-1, core::ptr::null_mut(), core::ptr::null_mut(), 0) as usize;
+            result ^= socket::shutdown(-1, 0) as usize;
+            
+            // Signal functions
+            result ^= libc_compat::signal::__libc_current_sigrtmax() as usize;
+            result ^= libc_compat::signal::__libc_current_sigrtmin() as usize;
+            
+            // Pthread functions
+            result ^= libc_compat::pthread::pthread_atfork(None, None, None) as usize;
+        }
+    }
+    
+    result
+}
+
 // C Runtime support for std programs
 pub mod crt;
 

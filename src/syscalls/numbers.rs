@@ -156,3 +156,27 @@ pub const SYS_PORT_OUT: u64 = 271; // Write to I/O port
 
 // Watchdog timer syscall (NexaOS extension)
 pub const SYS_WATCHDOG_CTL: u64 = 280; // Watchdog control
+
+// Socket extended syscalls (Linux-compatible)
+pub const SYS_GETSOCKOPT: u64 = 55; // Get socket options
+pub const SYS_ACCEPT4: u64 = 288; // Accept with flags (Linux x86_64)
+pub const SYS_SHUTDOWN_SOCKET: u64 = 48; // Shutdown socket (Linux: 48)
+
+// Epoll syscalls (Linux-compatible)
+pub const SYS_EPOLL_CREATE: u64 = 213; // Create epoll instance (deprecated)
+pub const SYS_EPOLL_CREATE1: u64 = 291; // Create epoll instance with flags
+pub const SYS_EPOLL_CTL: u64 = 233; // Control epoll instance
+pub const SYS_EPOLL_WAIT: u64 = 232; // Wait for epoll events
+pub const SYS_EPOLL_PWAIT: u64 = 281; // Wait for epoll events with signal mask
+
+// Event file descriptor (Linux-compatible)
+pub const SYS_EVENTFD: u64 = 284; // Create eventfd (deprecated)
+pub const SYS_EVENTFD2: u64 = 290; // Create eventfd with flags
+
+// Scheduler syscalls (Linux-compatible)
+pub const SYS_SCHED_GETAFFINITY: u64 = 204; // Get CPU affinity mask
+pub const SYS_SCHED_SETAFFINITY: u64 = 203; // Set CPU affinity mask
+
+// User/hostname syscalls (Linux-compatible)
+pub const SYS_UNAME: u64 = 63; // Get system information
+pub const SYS_GETHOSTNAME: u64 = 290; // Get hostname (custom, Linux uses uname)

@@ -21,6 +21,7 @@
 use crate::kinfo;
 
 pub mod exec;
+mod epoll;
 mod fd;
 mod file;
 mod ioctl;
@@ -33,6 +34,7 @@ mod network;
 pub mod numbers;
 mod port;
 mod process;
+mod sched;
 mod signal;
 pub mod swap;
 mod system;
@@ -70,6 +72,7 @@ use nexa_boot_info::FramebufferInfo;
 use types::*;
 
 // Import all syscall implementations
+use epoll::{epoll_create1, epoll_ctl, epoll_pwait, epoll_wait, eventfd2};
 use fd::{dup, dup2, pipe};
 use file::{
     close, fcntl, fstat, get_errno, list_files, lseek, open, pread64, pwrite64, read, readlink,
@@ -85,11 +88,12 @@ use memory_advanced::{
 };
 use memory_vma::brk_vma as brk; // Use VMA-based brk for per-process heap tracking
 use network::{
-    bind, connect, get_dns_servers, recvfrom, sendto, set_dns_servers, setsockopt, socket,
-    socketpair,
+    accept, accept4, bind, connect, get_dns_servers, getpeername, getsockname, listen, recvfrom,
+    sendto, set_dns_servers, setsockopt, shutdown_socket, socket, socketpair,
 };
 use port::{ioperm, iopl, port_in, port_out};
 use process::{execve, exit, fork, getppid, kill, wait4};
+use sched::{sched_getaffinity, sched_setaffinity};
 use signal::{sigaction, sigprocmask};
 use system::{chroot, mount, pivot_root, reboot, runlevel, shutdown, syslog, umount};
 use thread::{arch_prctl, clone, futex, get_robust_list, gettid, set_robust_list, set_tid_address};
@@ -486,6 +490,79 @@ pub extern "C" fn syscall_dispatch(
         SYS_UEFI_GET_USB_INFO => uefi_get_usb_info(arg1 as usize, arg2 as *mut UsbHostDescriptor),
         SYS_UEFI_GET_HID_INFO => uefi_get_hid_info(arg1 as usize, arg2 as *mut HidInputDescriptor),
         SYS_UEFI_MAP_USB_MMIO => uefi_map_usb_mmio(arg1 as usize),
+        // Epoll syscalls
+        SYS_EPOLL_CREATE1 => epoll_create1(arg1 as i32),
+        SYS_EPOLL_CREATE => epoll_create1(0), // epoll_create ignores size, same as epoll_create1(0)
+        SYS_EPOLL_CTL => {
+            // epoll_ctl needs 4 args: epfd, op, fd, event
+            let arg4 = unsafe {
+                let mut r10_val: u64;
+                core::arch::asm!(
+                    "mov {0}, gs:[32]",
+                    out(reg) r10_val,
+                    options(nostack, preserves_flags)
+                );
+                r10_val
+            };
+            epoll_ctl(arg1, arg2 as i32, arg3 as i32, arg4 as *mut epoll::EpollEvent)
+        }
+        SYS_EPOLL_WAIT => {
+            // epoll_wait needs 4 args: epfd, events, maxevents, timeout
+            let arg4 = unsafe {
+                let mut r10_val: u64;
+                core::arch::asm!(
+                    "mov {0}, gs:[32]",
+                    out(reg) r10_val,
+                    options(nostack, preserves_flags)
+                );
+                r10_val
+            };
+            epoll_wait(arg1, arg2 as *mut epoll::EpollEvent, arg3 as i32, arg4 as i32)
+        }
+        SYS_EPOLL_PWAIT => {
+            // epoll_pwait needs 6 args: epfd, events, maxevents, timeout, sigmask, sigsetsize
+            let (arg4, arg5, arg6) = unsafe {
+                let mut r10_val: u64;
+                let mut r8_val: u64;
+                let mut r9_val: u64;
+                core::arch::asm!(
+                    "mov {0}, gs:[32]",
+                    "mov {1}, gs:[40]",
+                    "mov {2}, gs:[48]",
+                    out(reg) r10_val,
+                    out(reg) r8_val,
+                    out(reg) r9_val,
+                    options(nostack, preserves_flags)
+                );
+                (r10_val, r8_val, r9_val)
+            };
+            epoll_pwait(arg1, arg2 as *mut epoll::EpollEvent, arg3 as i32, arg4 as i32, arg5 as *const u64, arg6 as usize)
+        }
+        // Eventfd syscalls
+        SYS_EVENTFD2 => eventfd2(arg1 as u32, arg2 as u32),
+        SYS_EVENTFD => eventfd2(arg1 as u32, 0),
+        // Scheduler syscalls
+        SYS_SCHED_GETAFFINITY => sched_getaffinity(arg1 as i64, arg2 as usize, arg3 as *mut u64),
+        SYS_SCHED_SETAFFINITY => sched_setaffinity(arg1 as i64, arg2 as usize, arg3 as *const u64),
+        // Additional socket syscalls
+        SYS_LISTEN => listen(arg1, arg2 as i32),
+        SYS_ACCEPT => accept(arg1, arg2 as *mut SockAddr, arg3 as *mut u32),
+        SYS_ACCEPT4 => {
+            // accept4 needs 4 args: sockfd, addr, addrlen, flags
+            let arg4 = unsafe {
+                let mut r10_val: u64;
+                core::arch::asm!(
+                    "mov {0}, gs:[32]",
+                    out(reg) r10_val,
+                    options(nostack, preserves_flags)
+                );
+                r10_val
+            };
+            accept4(arg1, arg2 as *mut SockAddr, arg3 as *mut u32, arg4 as i32)
+        }
+        SYS_SHUTDOWN_SOCKET => shutdown_socket(arg1, arg2 as i32),
+        SYS_GETSOCKNAME => getsockname(arg1, arg2 as *mut SockAddr, arg3 as *mut u32),
+        SYS_GETPEERNAME => getpeername(arg1, arg2 as *mut SockAddr, arg3 as *mut u32),
         // Swap management syscalls
         SYS_SWAPON => swap::swapon(arg1 as *const u8, arg2 as u32),
         SYS_SWAPOFF => swap::swapoff(arg1 as *const u8),

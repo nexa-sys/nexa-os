@@ -22,6 +22,9 @@
 //! - `reloc` - Relocation processing
 //! - `fs` - Filesystem operations (mkdir, rmdir, getcwd, chdir, etc.)
 //! - `string` - String functions and error handling (strerror, strcpy, etc.)
+//! - `epoll` - Epoll and eventfd for async I/O
+//! - `sched` - Scheduler functions (sched_getaffinity, sysconf)
+//! - `user` - User database and hostname (getpwuid_r, gethostname)
 //!
 //! Note: Basic functions (read, write, open, close, exit, getpid, memcpy, etc.)
 //! are already defined in lib.rs. This module only adds additional functions
@@ -29,6 +32,7 @@
 
 pub mod clone;
 pub mod env;
+pub mod epoll;
 pub mod fs;
 pub mod io;
 pub mod math;
@@ -36,12 +40,14 @@ pub mod memory;
 pub mod network;
 pub mod process;
 pub mod pthread;
+pub mod sched;
 pub mod signal;
 pub mod string;
 pub mod syscall_wrapper;
 pub mod time_compat;
 pub mod types;
 pub mod unwind;
+pub mod user;
 
 // Dynamic linking support modules
 pub mod dl;
@@ -59,6 +65,7 @@ pub use clone::*;
 pub use dirent::*;
 pub use dl::*;
 pub use env::*;
+pub use epoll::*;
 pub use fs::*;
 pub use io::*;
 pub use math::*;
@@ -66,9 +73,11 @@ pub use memory::*;
 pub use network::*;
 pub use process::*;
 pub use pthread::*;
+pub use sched::*;
 pub use signal::*;
 pub use string::*;
 pub use syscall_wrapper::*;
 pub use time_compat::*;
 pub use types::*;
 pub use unwind::*;
+pub use user::*;

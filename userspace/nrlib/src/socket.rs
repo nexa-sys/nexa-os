@@ -596,6 +596,105 @@ pub extern "C" fn getsockopt(
     }
 }
 
+// ============================================================================
+// TCP Server Functions (listen, accept, shutdown)
+// ============================================================================
+
+// Additional syscall numbers
+const SYS_LISTEN: usize = 50;
+const SYS_ACCEPT: usize = 43;
+const SYS_ACCEPT4: usize = 288;
+const SYS_SHUTDOWN: usize = 48;
+
+// Shutdown flags
+pub const SHUT_RD: i32 = 0;   // No more receptions
+pub const SHUT_WR: i32 = 1;   // No more transmissions
+pub const SHUT_RDWR: i32 = 2; // No more receptions or transmissions
+
+/// Listen for connections on a socket
+///
+/// # Arguments
+/// * `sockfd` - Socket file descriptor (must be bound)
+/// * `backlog` - Maximum length of the pending connections queue
+///
+/// # Returns
+/// 0 on success, -1 on error (errno set)
+#[no_mangle]
+pub extern "C" fn listen(sockfd: i32, backlog: i32) -> i32 {
+    let ret = crate::syscall2(SYS_LISTEN as u64, sockfd as u64, backlog as u64);
+    crate::translate_ret_i32(ret)
+}
+
+/// Accept a connection on a socket
+///
+/// # Arguments
+/// * `sockfd` - Listening socket file descriptor
+/// * `addr` - Buffer to store client address (can be NULL)
+/// * `addrlen` - Pointer to address length (in/out, can be NULL if addr is NULL)
+///
+/// # Returns
+/// New socket file descriptor on success, -1 on error
+#[no_mangle]
+pub extern "C" fn accept(sockfd: i32, addr: *mut SockAddr, addrlen: *mut u32) -> i32 {
+    let ret = crate::syscall3(
+        SYS_ACCEPT as u64,
+        sockfd as u64,
+        addr as u64,
+        addrlen as u64,
+    );
+    crate::translate_ret_i32(ret)
+}
+
+/// Accept a connection with flags
+///
+/// # Arguments
+/// * `sockfd` - Listening socket file descriptor
+/// * `addr` - Buffer to store client address (can be NULL)
+/// * `addrlen` - Pointer to address length (in/out)
+/// * `flags` - SOCK_NONBLOCK and/or SOCK_CLOEXEC
+///
+/// # Returns
+/// New socket file descriptor on success, -1 on error
+#[no_mangle]
+pub extern "C" fn accept4(sockfd: i32, addr: *mut SockAddr, addrlen: *mut u32, flags: i32) -> i32 {
+    let result: i64;
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            inlateout("rax") SYS_ACCEPT4 => result,
+            in("rdi") sockfd as u64,
+            in("rsi") addr as u64,
+            in("rdx") addrlen as u64,
+            in("r10") flags as u64,
+            lateout("rcx") _,
+            lateout("r11") _,
+            options(nostack)
+        );
+    }
+
+    if result < 0 {
+        crate::set_errno((-result) as i32);
+        -1
+    } else {
+        crate::set_errno(0);
+        result as i32
+    }
+}
+
+/// Shut down part of a full-duplex connection
+///
+/// # Arguments
+/// * `sockfd` - Socket file descriptor
+/// * `how` - SHUT_RD, SHUT_WR, or SHUT_RDWR
+///
+/// # Returns
+/// 0 on success, -1 on error
+#[no_mangle]
+pub extern "C" fn shutdown(sockfd: i32, how: i32) -> i32 {
+    let ret = crate::syscall2(SYS_SHUTDOWN as u64, sockfd as u64, how as u64);
+    crate::translate_ret_i32(ret)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

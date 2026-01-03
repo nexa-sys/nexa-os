@@ -60,6 +60,12 @@ impl From<[u8; 4]> for Ipv4Address {
     }
 }
 
+impl From<Ipv4Address> for [u8; 4] {
+    fn from(addr: Ipv4Address) -> Self {
+        addr.0
+    }
+}
+
 impl From<&[u8]> for Ipv4Address {
     fn from(bytes: &[u8]) -> Self {
         let mut arr = [0u8; 4];

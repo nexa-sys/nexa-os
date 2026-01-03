@@ -1619,3 +1619,89 @@ pub unsafe extern "C" fn __pthread_once(
 ) -> c_int {
     pthread_once(once_control, init_routine)
 }
+
+// ============================================================================
+// Fork Handlers
+// ============================================================================
+
+/// Maximum number of atfork handlers
+const MAX_ATFORK_HANDLERS: usize = 32;
+
+/// Fork handler entry
+struct AtForkHandler {
+    prepare: Option<unsafe extern "C" fn()>,
+    parent: Option<unsafe extern "C" fn()>,
+    child: Option<unsafe extern "C" fn()>,
+}
+
+/// Fork handler storage
+static mut ATFORK_HANDLERS: [Option<AtForkHandler>; MAX_ATFORK_HANDLERS] =
+    [const { None }; MAX_ATFORK_HANDLERS];
+static mut ATFORK_COUNT: usize = 0;
+
+/// Register fork handlers
+///
+/// # Arguments
+/// * `prepare` - Called in parent before fork (in reverse order of registration)
+/// * `parent` - Called in parent after fork (in order of registration)
+/// * `child` - Called in child after fork (in order of registration)
+///
+/// # Returns
+/// 0 on success, non-zero on error
+#[no_mangle]
+pub unsafe extern "C" fn pthread_atfork(
+    prepare: Option<unsafe extern "C" fn()>,
+    parent: Option<unsafe extern "C" fn()>,
+    child: Option<unsafe extern "C" fn()>,
+) -> c_int {
+    if ATFORK_COUNT >= MAX_ATFORK_HANDLERS {
+        return crate::ENOMEM;
+    }
+
+    ATFORK_HANDLERS[ATFORK_COUNT] = Some(AtForkHandler {
+        prepare,
+        parent,
+        child,
+    });
+    ATFORK_COUNT += 1;
+    0
+}
+
+/// Called before fork in parent process (internal)
+#[no_mangle]
+pub unsafe extern "C" fn __run_atfork_prepare() {
+    // Call prepare handlers in reverse order
+    for i in (0..ATFORK_COUNT).rev() {
+        if let Some(ref handler) = ATFORK_HANDLERS[i] {
+            if let Some(prepare) = handler.prepare {
+                prepare();
+            }
+        }
+    }
+}
+
+/// Called after fork in parent process (internal)
+#[no_mangle]
+pub unsafe extern "C" fn __run_atfork_parent() {
+    // Call parent handlers in order
+    for i in 0..ATFORK_COUNT {
+        if let Some(ref handler) = ATFORK_HANDLERS[i] {
+            if let Some(parent) = handler.parent {
+                parent();
+            }
+        }
+    }
+}
+
+/// Called after fork in child process (internal)
+#[no_mangle]
+pub unsafe extern "C" fn __run_atfork_child() {
+    // Call child handlers in order
+    for i in 0..ATFORK_COUNT {
+        if let Some(ref handler) = ATFORK_HANDLERS[i] {
+            if let Some(child) = handler.child {
+                child();
+            }
+        }
+    }
+}

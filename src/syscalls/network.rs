@@ -1320,3 +1320,390 @@ pub fn socketpair(domain: i32, socket_type: i32, protocol: i32, sv: *mut [i32; 2
     posix::set_errno(0);
     0
 }
+
+// ============================================================================
+// TCP Server Functions (listen, accept, shutdown)
+// ============================================================================
+
+/// Shutdown flags
+pub const SHUT_RD: i32 = 0;
+pub const SHUT_WR: i32 = 1;
+pub const SHUT_RDWR: i32 = 2;
+
+/// SYS_LISTEN - Mark socket as passive (listening)
+pub fn listen(sockfd: u64, backlog: i32) -> u64 {
+    kinfo!("[SYS_LISTEN] sockfd={} backlog={}", sockfd, backlog);
+
+    let idx = if sockfd >= FD_BASE {
+        (sockfd - FD_BASE) as usize
+    } else {
+        posix::set_errno(posix::errno::EBADF);
+        return u64::MAX;
+    };
+
+    if idx >= MAX_OPEN_FILES {
+        posix::set_errno(posix::errno::EBADF);
+        return u64::MAX;
+    }
+
+    unsafe {
+        let Some(handle) = FILE_HANDLES[idx].as_mut() else {
+            posix::set_errno(posix::errno::EBADF);
+            return u64::MAX;
+        };
+
+        let FileBacking::Socket(ref sock_handle) = handle.backing else {
+            posix::set_errno(posix::errno::ENOTSOCK);
+            return u64::MAX;
+        };
+
+        // Only TCP sockets can listen
+        if sock_handle.socket_type != SOCK_STREAM {
+            posix::set_errno(posix::errno::EOPNOTSUPP);
+            return u64::MAX;
+        }
+
+        // Mark socket as listening in network stack
+        if let Some(res) = crate::net::with_net_stack(|stack| {
+            stack.tcp_listen(sock_handle.socket_index, backlog as usize)
+        }) {
+            match res {
+                Ok(_) => {
+                    kinfo!("[SYS_LISTEN] Socket {} now listening", sockfd);
+                    posix::set_errno(0);
+                    return 0;
+                }
+                Err(_) => {
+                    posix::set_errno(posix::errno::EINVAL);
+                    return u64::MAX;
+                }
+            }
+        }
+    }
+
+    posix::set_errno(posix::errno::ENETDOWN);
+    u64::MAX
+}
+
+/// SYS_ACCEPT - Accept a connection on a socket
+pub fn accept(sockfd: u64, addr: *mut SockAddr, addrlen: *mut u32) -> u64 {
+    kinfo!("[SYS_ACCEPT] sockfd={}", sockfd);
+
+    let idx = if sockfd >= FD_BASE {
+        (sockfd - FD_BASE) as usize
+    } else {
+        posix::set_errno(posix::errno::EBADF);
+        return u64::MAX;
+    };
+
+    if idx >= MAX_OPEN_FILES {
+        posix::set_errno(posix::errno::EBADF);
+        return u64::MAX;
+    }
+
+    unsafe {
+        let Some(handle) = FILE_HANDLES[idx].as_ref() else {
+            posix::set_errno(posix::errno::EBADF);
+            return u64::MAX;
+        };
+
+        let FileBacking::Socket(ref sock_handle) = handle.backing else {
+            posix::set_errno(posix::errno::ENOTSOCK);
+            return u64::MAX;
+        };
+
+        if sock_handle.socket_type != SOCK_STREAM {
+            posix::set_errno(posix::errno::EOPNOTSUPP);
+            return u64::MAX;
+        }
+
+        // Try to accept a connection
+        if let Some(res) = crate::net::with_net_stack(|stack| {
+            stack.tcp_accept(sock_handle.socket_index)
+        }) {
+            match res {
+                Ok((new_socket_idx, remote_ip, remote_port)) => {
+                    // Find free file handle slot
+                    for new_idx in 0..MAX_OPEN_FILES {
+                        if FILE_HANDLES[new_idx].is_none() {
+                            // Fill in client address if requested
+                            if !addr.is_null() && !addrlen.is_null() {
+                                let addr_ref = &mut *addr;
+                                addr_ref.sa_family = AF_INET as u16;
+                                let port_bytes = remote_port.to_be_bytes();
+                                addr_ref.sa_data[0] = port_bytes[0];
+                                addr_ref.sa_data[1] = port_bytes[1];
+                                addr_ref.sa_data[2..6].copy_from_slice(&remote_ip);
+                                *addrlen = 16; // sizeof(sockaddr_in)
+                            }
+
+                            let new_socket_handle = SocketHandle {
+                                socket_index: new_socket_idx,
+                                domain: AF_INET,
+                                socket_type: SOCK_STREAM,
+                                protocol: IPPROTO_TCP,
+                                device_index: sock_handle.device_index,
+                                broadcast_enabled: false,
+                                recv_timeout_ms: sock_handle.recv_timeout_ms,
+                            };
+
+                            let metadata = crate::posix::Metadata::empty()
+                                .with_type(crate::posix::FileType::Socket)
+                                .with_uid(0)
+                                .with_gid(0)
+                                .with_mode(0o0600);
+
+                            let new_handle = FileHandle {
+                                backing: FileBacking::Socket(new_socket_handle),
+                                position: 0,
+                                metadata,
+                            };
+
+                            FILE_HANDLES[new_idx] = Some(new_handle);
+                            let new_fd = FD_BASE + new_idx as u64;
+                            super::file::mark_fd_open(new_fd);
+
+                            kinfo!(
+                                "[SYS_ACCEPT] Accepted connection from {}.{}.{}.{}:{}, new fd={}",
+                                remote_ip[0],
+                                remote_ip[1],
+                                remote_ip[2],
+                                remote_ip[3],
+                                remote_port,
+                                new_fd
+                            );
+                            posix::set_errno(0);
+                            return new_fd;
+                        }
+                    }
+
+                    kwarn!("[SYS_ACCEPT] No free file descriptors");
+                    posix::set_errno(posix::errno::EMFILE);
+                    return u64::MAX;
+                }
+                Err(_) => {
+                    // No pending connections (would block)
+                    posix::set_errno(posix::errno::EAGAIN);
+                    return u64::MAX;
+                }
+            }
+        }
+    }
+
+    posix::set_errno(posix::errno::ENETDOWN);
+    u64::MAX
+}
+
+/// SYS_ACCEPT4 - Accept with flags
+pub fn accept4(sockfd: u64, addr: *mut SockAddr, addrlen: *mut u32, flags: i32) -> u64 {
+    kinfo!("[SYS_ACCEPT4] sockfd={} flags={:#x}", sockfd, flags);
+
+    // For now, ignore flags and call regular accept
+    // TODO: Implement SOCK_NONBLOCK and SOCK_CLOEXEC handling
+    accept(sockfd, addr, addrlen)
+}
+
+/// SYS_SHUTDOWN - Shut down socket send/receive
+pub fn shutdown_socket(sockfd: u64, how: i32) -> u64 {
+    kinfo!("[SYS_SHUTDOWN] sockfd={} how={}", sockfd, how);
+
+    if how != SHUT_RD && how != SHUT_WR && how != SHUT_RDWR {
+        posix::set_errno(posix::errno::EINVAL);
+        return u64::MAX;
+    }
+
+    let idx = if sockfd >= FD_BASE {
+        (sockfd - FD_BASE) as usize
+    } else {
+        posix::set_errno(posix::errno::EBADF);
+        return u64::MAX;
+    };
+
+    if idx >= MAX_OPEN_FILES {
+        posix::set_errno(posix::errno::EBADF);
+        return u64::MAX;
+    }
+
+    unsafe {
+        let Some(handle) = FILE_HANDLES[idx].as_ref() else {
+            posix::set_errno(posix::errno::EBADF);
+            return u64::MAX;
+        };
+
+        let FileBacking::Socket(ref sock_handle) = handle.backing else {
+            posix::set_errno(posix::errno::ENOTSOCK);
+            return u64::MAX;
+        };
+
+        // Shutdown the socket in network stack
+        if let Some(res) = crate::net::with_net_stack(|stack| {
+            stack.tcp_shutdown(sock_handle.socket_index, how)
+        }) {
+            match res {
+                Ok(_) => {
+                    kinfo!("[SYS_SHUTDOWN] Socket {} shutdown (how={})", sockfd, how);
+                    posix::set_errno(0);
+                    return 0;
+                }
+                Err(_) => {
+                    posix::set_errno(posix::errno::ENOTCONN);
+                    return u64::MAX;
+                }
+            }
+        }
+    }
+
+    posix::set_errno(posix::errno::ENETDOWN);
+    u64::MAX
+}
+
+/// SYS_GETSOCKNAME - Get local socket address
+pub fn getsockname(sockfd: u64, addr: *mut SockAddr, addrlen: *mut u32) -> u64 {
+    kinfo!("[SYS_GETSOCKNAME] sockfd={}", sockfd);
+
+    if addr.is_null() || addrlen.is_null() {
+        posix::set_errno(posix::errno::EFAULT);
+        return u64::MAX;
+    }
+
+    let idx = if sockfd >= FD_BASE {
+        (sockfd - FD_BASE) as usize
+    } else {
+        posix::set_errno(posix::errno::EBADF);
+        return u64::MAX;
+    };
+
+    if idx >= MAX_OPEN_FILES {
+        posix::set_errno(posix::errno::EBADF);
+        return u64::MAX;
+    }
+
+    unsafe {
+        let Some(handle) = FILE_HANDLES[idx].as_ref() else {
+            posix::set_errno(posix::errno::EBADF);
+            return u64::MAX;
+        };
+
+        let FileBacking::Socket(ref sock_handle) = handle.backing else {
+            posix::set_errno(posix::errno::ENOTSOCK);
+            return u64::MAX;
+        };
+
+        // Get local address from network stack
+        if let Some(res) = crate::net::with_net_stack(|stack| {
+            stack.get_local_addr(sock_handle.socket_index, sock_handle.socket_type == SOCK_STREAM)
+        }) {
+            match res {
+                Ok((local_ip, local_port)) => {
+                    let addr_ref = &mut *addr;
+                    addr_ref.sa_family = AF_INET as u16;
+                    let port_bytes = local_port.to_be_bytes();
+                    addr_ref.sa_data[0] = port_bytes[0];
+                    addr_ref.sa_data[1] = port_bytes[1];
+                    addr_ref.sa_data[2..6].copy_from_slice(&local_ip);
+                    for i in 6..14 {
+                        addr_ref.sa_data[i] = 0;
+                    }
+                    *addrlen = 16;
+
+                    kinfo!(
+                        "[SYS_GETSOCKNAME] {}.{}.{}.{}:{}",
+                        local_ip[0],
+                        local_ip[1],
+                        local_ip[2],
+                        local_ip[3],
+                        local_port
+                    );
+                    posix::set_errno(0);
+                    return 0;
+                }
+                Err(_) => {
+                    // Return INADDR_ANY:0 for unbound sockets
+                    let addr_ref = &mut *addr;
+                    addr_ref.sa_family = AF_INET as u16;
+                    for i in 0..14 {
+                        addr_ref.sa_data[i] = 0;
+                    }
+                    *addrlen = 16;
+                    posix::set_errno(0);
+                    return 0;
+                }
+            }
+        }
+    }
+
+    posix::set_errno(posix::errno::ENETDOWN);
+    u64::MAX
+}
+
+/// SYS_GETPEERNAME - Get remote socket address
+pub fn getpeername(sockfd: u64, addr: *mut SockAddr, addrlen: *mut u32) -> u64 {
+    kinfo!("[SYS_GETPEERNAME] sockfd={}", sockfd);
+
+    if addr.is_null() || addrlen.is_null() {
+        posix::set_errno(posix::errno::EFAULT);
+        return u64::MAX;
+    }
+
+    let idx = if sockfd >= FD_BASE {
+        (sockfd - FD_BASE) as usize
+    } else {
+        posix::set_errno(posix::errno::EBADF);
+        return u64::MAX;
+    };
+
+    if idx >= MAX_OPEN_FILES {
+        posix::set_errno(posix::errno::EBADF);
+        return u64::MAX;
+    }
+
+    unsafe {
+        let Some(handle) = FILE_HANDLES[idx].as_ref() else {
+            posix::set_errno(posix::errno::EBADF);
+            return u64::MAX;
+        };
+
+        let FileBacking::Socket(ref sock_handle) = handle.backing else {
+            posix::set_errno(posix::errno::ENOTSOCK);
+            return u64::MAX;
+        };
+
+        // Get remote address from network stack
+        if let Some(res) = crate::net::with_net_stack(|stack| {
+            stack.get_peer_addr(sock_handle.socket_index)
+        }) {
+            match res {
+                Ok((remote_ip, remote_port)) => {
+                    let addr_ref = &mut *addr;
+                    addr_ref.sa_family = AF_INET as u16;
+                    let port_bytes = remote_port.to_be_bytes();
+                    addr_ref.sa_data[0] = port_bytes[0];
+                    addr_ref.sa_data[1] = port_bytes[1];
+                    addr_ref.sa_data[2..6].copy_from_slice(&remote_ip);
+                    for i in 6..14 {
+                        addr_ref.sa_data[i] = 0;
+                    }
+                    *addrlen = 16;
+
+                    kinfo!(
+                        "[SYS_GETPEERNAME] {}.{}.{}.{}:{}",
+                        remote_ip[0],
+                        remote_ip[1],
+                        remote_ip[2],
+                        remote_ip[3],
+                        remote_port
+                    );
+                    posix::set_errno(0);
+                    return 0;
+                }
+                Err(_) => {
+                    posix::set_errno(posix::errno::ENOTCONN);
+                    return u64::MAX;
+                }
+            }
+        }
+    }
+
+    posix::set_errno(posix::errno::ENETDOWN);
+    u64::MAX
+}

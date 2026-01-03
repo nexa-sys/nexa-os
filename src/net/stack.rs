@@ -764,6 +764,208 @@ impl NetStack {
         self.tcp_sockets[socket_idx].poll(tx)
     }
 
+    /// Mark TCP socket as listening
+    pub fn tcp_listen(&mut self, socket_idx: usize, backlog: usize) -> Result<(), NetError> {
+        if socket_idx >= MAX_TCP_SOCKETS {
+            return Err(NetError::InvalidSocket);
+        }
+
+        let socket = &mut self.tcp_sockets[socket_idx];
+
+        // Socket must be bound (local_port set) before listening
+        if socket.local_port == 0 {
+            return Err(NetError::InvalidState);
+        }
+
+        // Get device IP for local_ip
+        let device_idx = socket.device_idx.unwrap_or(0);
+        if device_idx < self.devices.len() && self.devices[device_idx].present {
+            socket.local_ip = Ipv4Address::from(self.devices[device_idx].ip);
+            socket.local_mac = MacAddress(self.devices[device_idx].mac);
+        }
+
+        // Backlog is noted but not used for now (single connection per socket)
+        let _ = backlog;
+
+        socket.listen(socket.local_ip, socket.local_port)
+    }
+
+    /// Accept a connection on a listening socket
+    /// Returns (new_socket_idx, remote_ip, remote_port)
+    pub fn tcp_accept(&mut self, socket_idx: usize) -> Result<(usize, [u8; 4], u16), NetError> {
+        if socket_idx >= MAX_TCP_SOCKETS {
+            return Err(NetError::InvalidSocket);
+        }
+
+        let socket = &self.tcp_sockets[socket_idx];
+
+        // Socket must be in Listen state or SynReceived/Established (connection completed)
+        match socket.state {
+            super::tcp::TcpState::Listen => {
+                // No pending connection yet
+                return Err(NetError::WouldBlock);
+            }
+            super::tcp::TcpState::SynReceived => {
+                // Connection handshake in progress, not yet complete
+                return Err(NetError::WouldBlock);
+            }
+            super::tcp::TcpState::Established => {
+                // Connection completed on listening socket - we need to clone it
+                // For real accept() semantics, we transfer the connection to a new socket
+                // and reset the listener to Listen state
+
+                let remote_ip: [u8; 4] = socket.remote_ip.into();
+                let remote_port = socket.remote_port;
+
+                // Find a free socket for the new connection
+                let mut new_idx = None;
+                for (idx, sock) in self.tcp_sockets.iter().enumerate() {
+                    if idx != socket_idx && !sock.in_use {
+                        new_idx = Some(idx);
+                        break;
+                    }
+                }
+
+                let new_socket_idx = match new_idx {
+                    Some(idx) => idx,
+                    None => return Err(NetError::TooManyConnections),
+                };
+
+                // Use unsafe pointer operations to avoid simultaneous borrow
+                // SAFETY: socket_idx != new_socket_idx (checked by find loop)
+                unsafe {
+                    let src_ptr = &self.tcp_sockets[socket_idx] as *const super::tcp::TcpSocket;
+                    let dst_ptr = &mut self.tcp_sockets[new_socket_idx] as *mut super::tcp::TcpSocket;
+                    (*dst_ptr).clone_from_established(&*src_ptr);
+                }
+
+                // Reset the listening socket to Listen state
+                self.tcp_sockets[socket_idx].reset_to_listen();
+
+                kinfo!(
+                    "[tcp_accept] Accepted connection from {}.{}.{}.{}:{}, new socket={}",
+                    remote_ip[0],
+                    remote_ip[1],
+                    remote_ip[2],
+                    remote_ip[3],
+                    remote_port,
+                    new_socket_idx
+                );
+
+                Ok((new_socket_idx, remote_ip, remote_port))
+            }
+            _ => {
+                // Invalid state for accept
+                Err(NetError::InvalidState)
+            }
+        }
+    }
+
+    /// Shutdown TCP socket send/receive
+    pub fn tcp_shutdown(&mut self, socket_idx: usize, how: i32) -> Result<(), NetError> {
+        if socket_idx >= MAX_TCP_SOCKETS {
+            return Err(NetError::InvalidSocket);
+        }
+
+        self.tcp_sockets[socket_idx].shutdown(how)
+    }
+
+    /// Get local address of a socket (TCP or UDP)
+    pub fn get_local_addr(&self, socket_idx: usize, is_tcp: bool) -> Result<([u8; 4], u16), NetError> {
+        if is_tcp {
+            if socket_idx >= MAX_TCP_SOCKETS {
+                return Err(NetError::InvalidSocket);
+            }
+            let socket = &self.tcp_sockets[socket_idx];
+            if !socket.in_use {
+                return Err(NetError::InvalidSocket);
+            }
+            Ok((socket.local_ip.into(), socket.local_port))
+        } else {
+            if socket_idx >= MAX_UDP_SOCKETS {
+                return Err(NetError::InvalidSocket);
+            }
+            let socket = &self.udp_sockets[socket_idx];
+            if !socket.in_use {
+                return Err(NetError::InvalidSocket);
+            }
+            // For UDP, get device IP as local IP
+            let device_ip = if self.devices[0].present {
+                self.devices[0].ip
+            } else {
+                [0, 0, 0, 0]
+            };
+            Ok((device_ip, socket.local_port))
+        }
+    }
+
+    /// Get remote address of a connected socket (TCP only)
+    pub fn get_peer_addr(&self, socket_idx: usize) -> Result<([u8; 4], u16), NetError> {
+        if socket_idx >= MAX_TCP_SOCKETS {
+            return Err(NetError::InvalidSocket);
+        }
+        let socket = &self.tcp_sockets[socket_idx];
+        if !socket.in_use {
+            return Err(NetError::InvalidSocket);
+        }
+        if socket.state == super::tcp::TcpState::Closed
+            || socket.state == super::tcp::TcpState::Listen
+        {
+            return Err(NetError::NotConnected);
+        }
+        Ok((socket.remote_ip.into(), socket.remote_port))
+    }
+
+    /// Bind TCP socket to local address
+    pub fn tcp_bind(
+        &mut self,
+        socket_idx: usize,
+        device_index: usize,
+        local_port: u16,
+    ) -> Result<(), NetError> {
+        if socket_idx >= MAX_TCP_SOCKETS {
+            return Err(NetError::InvalidSocket);
+        }
+        if device_index >= self.devices.len() || !self.devices[device_index].present {
+            return Err(NetError::InvalidDevice);
+        }
+
+        // Check if socket is already in use
+        if self.tcp_sockets[socket_idx].in_use {
+            return Err(NetError::AddressInUse);
+        }
+
+        // Check if port is already in use by another TCP socket
+        for (idx, sock) in self.tcp_sockets.iter().enumerate() {
+            if idx != socket_idx && sock.in_use && sock.local_port == local_port {
+                return Err(NetError::AddressInUse);
+            }
+        }
+
+        let device = &self.devices[device_index];
+        let device_ip = device.ip;
+        let device_mac = device.mac;
+
+        let socket = &mut self.tcp_sockets[socket_idx];
+        socket.local_ip = Ipv4Address::from(device_ip);
+        socket.local_port = local_port;
+        socket.local_mac = MacAddress(device_mac);
+        socket.device_idx = Some(device_index);
+        socket.in_use = true;
+
+        kinfo!(
+            "[tcp_bind] Bound socket {} to {}.{}.{}.{}:{}",
+            socket_idx,
+            device_ip[0],
+            device_ip[1],
+            device_ip[2],
+            device_ip[3],
+            local_port
+        );
+
+        Ok(())
+    }
+
     /// Send UDP datagram
     pub fn udp_send(
         &mut self,

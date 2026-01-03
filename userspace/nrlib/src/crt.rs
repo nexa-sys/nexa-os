@@ -67,6 +67,12 @@ unsafe extern "C" fn __nexa_crt_start(stack_ptr: *const usize) -> ! {
     // This is critical for proper std support
     crate::libc_compat::pthread::__nrlib_init_main_thread_tls();
 
+    // Force export of libc symbols for tokio/mio/std (prevents dead code elimination)
+    // Use volatile read/write to ensure this isn't optimized away
+    static mut FORCE_EXPORT_VAL: usize = 0;
+    core::ptr::write_volatile(&mut FORCE_EXPORT_VAL, crate::__nrlib_force_export_symbols());
+    core::ptr::read_volatile(&FORCE_EXPORT_VAL);
+
     if stack_ptr.is_null() {
         let exit_code = main(0, core::ptr::null());
         sys_exit(exit_code)

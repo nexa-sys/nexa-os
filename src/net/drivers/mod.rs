@@ -26,6 +26,10 @@ pub enum NetError {
     ConnectionClosed,
     WouldBlock,
     NoDevice,
+    /// Socket not connected (for getpeername)
+    NotConnected,
+    /// Invalid parameter
+    InvalidParam,
     /// Driver module not loaded
     ModuleNotLoaded,
     /// Network stack not ready (feature disabled)

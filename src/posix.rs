@@ -35,13 +35,15 @@ pub mod errno {
     pub const ENOTEMPTY: i32 = 39; // Directory not empty
     pub const ENOEXEC: i32 = 8; // Exec format error
     pub const ENOTSOCK: i32 = 88; // Socket operation on non-socket
-    pub const ENOTSUP: i32 = 95; // Operation not supported
+    pub const EOPNOTSUPP: i32 = 95; // Operation not supported on socket
+    pub const ENOTSUP: i32 = 95; // Operation not supported (same as EOPNOTSUPP)
     pub const EAFNOSUPPORT: i32 = 97; // Address family not supported
     pub const EADDRINUSE: i32 = 98; // Address already in use
     pub const EADDRNOTAVAIL: i32 = 99; // Cannot assign requested address
     pub const ENETDOWN: i32 = 100; // Network is down
     pub const ENETUNREACH: i32 = 101; // Network is unreachable
     pub const ECONNRESET: i32 = 104; // Connection reset by peer
+    pub const ENOTCONN: i32 = 107; // Transport endpoint is not connected
     pub const ETIMEDOUT: i32 = 110; // Connection timed out
     pub const ECONNREFUSED: i32 = 111; // Connection refused
     pub const EINPROGRESS: i32 = 115; // Operation in progress

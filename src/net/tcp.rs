@@ -412,6 +412,61 @@ impl TcpSocket {
         }
     }
 
+    /// Clone connection state from another socket (for accept())
+    /// Transfers all connection-related state to this socket
+    pub fn clone_from_established(&mut self, source: &TcpSocket) {
+        self.state = source.state;
+        self.local_ip = source.local_ip;
+        self.local_port = source.local_port;
+        self.remote_ip = source.remote_ip;
+        self.remote_port = source.remote_port;
+        self.local_mac = source.local_mac;
+        self.remote_mac = source.remote_mac;
+        self.device_idx = source.device_idx;
+        self.iss = source.iss;
+        self.irs = source.irs;
+        self.snd_una = source.snd_una;
+        self.snd_nxt = source.snd_nxt;
+        self.snd_wnd = source.snd_wnd;
+        self.rcv_nxt = source.rcv_nxt;
+        self.rcv_wnd = source.rcv_wnd;
+        self.mss = source.mss;
+        self.peer_mss = source.peer_mss;
+        self.window_scale = source.window_scale;
+        self.peer_window_scale = source.peer_window_scale;
+        self.sack_permitted = source.sack_permitted;
+        self.use_timestamps = source.use_timestamps;
+        self.ts_recent = source.ts_recent;
+        self.ts_last_ack_sent = source.ts_last_ack_sent;
+        self.cwnd = source.cwnd;
+        self.ssthresh = source.ssthresh;
+        self.rto = source.rto;
+        self.srtt = source.srtt;
+        self.rttvar = source.rttvar;
+        self.last_activity = source.last_activity;
+        self.in_use = true;
+    }
+
+    /// Reset socket to Listen state (after accepting a connection)
+    pub fn reset_to_listen(&mut self) {
+        self.state = TcpState::Listen;
+        self.remote_ip = Ipv4Address::UNSPECIFIED;
+        self.remote_port = 0;
+        self.remote_mac = MacAddress([0; 6]);
+        self.iss = 0;
+        self.irs = 0;
+        self.snd_una = 0;
+        self.snd_nxt = 0;
+        self.rcv_nxt = 0;
+        self.snd_wnd = 0;
+        self.dup_acks = 0;
+        self.last_ack = 0;
+        self.in_recovery = false;
+        self.send_buffer.clear();
+        self.recv_buffer.clear();
+        self.retransmit_queue.clear();
+    }
+
     /// Initialize socket for active connection (client)
     pub fn connect(
         &mut self,
@@ -535,6 +590,41 @@ impl TcpSocket {
                 Ok(())
             }
             _ => Err(NetError::InvalidState),
+        }
+    }
+
+    /// Shutdown socket - stop reading, writing, or both
+    /// how: 0 = SHUT_RD, 1 = SHUT_WR, 2 = SHUT_RDWR
+    pub fn shutdown(&mut self, how: i32) -> Result<(), NetError> {
+        match how {
+            0 => {
+                // SHUT_RD - stop receiving
+                self.recv_buffer.clear();
+                self.rcv_wnd = 0;
+                Ok(())
+            }
+            1 => {
+                // SHUT_WR - stop sending (initiate graceful close)
+                if self.state == TcpState::Established {
+                    self.state = TcpState::FinWait1;
+                } else if self.state == TcpState::CloseWait {
+                    self.state = TcpState::LastAck;
+                }
+                Ok(())
+            }
+            2 => {
+                // SHUT_RDWR - stop both
+                self.recv_buffer.clear();
+                self.rcv_wnd = 0;
+                self.send_buffer.clear();
+                if self.state == TcpState::Established {
+                    self.state = TcpState::FinWait1;
+                } else if self.state == TcpState::CloseWait {
+                    self.state = TcpState::LastAck;
+                }
+                Ok(())
+            }
+            _ => Err(NetError::InvalidParam),
         }
     }
 
