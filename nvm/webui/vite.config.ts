@@ -23,7 +23,8 @@ export default defineConfig({
     },
   },
   build: {
-    outDir: '../build/webui',
+    // Output to 'dist' for rust-embed to pick up
+    outDir: 'dist',
     emptyOutDir: true,
     rollupOptions: {
       output: {

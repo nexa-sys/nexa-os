@@ -233,6 +233,29 @@ impl WebGuiServer {
         let config = self.state.config.read().clone();
         let state = self.state.clone();
 
+        // Initialize database if enabled
+        #[cfg(feature = "database")]
+        {
+            use crate::db::{DatabaseConfig, init_database};
+            
+            let db_config = DatabaseConfig::default();
+            log::info!("Connecting to PostgreSQL database...");
+            
+            match init_database(db_config).await {
+                Ok(_) => log::info!("Database initialized successfully (default admin: admin/admin123)"),
+                Err(e) => log::warn!("Database init failed (using fallback auth): {}", e),
+            }
+        }
+
+        // Check if embedded frontend is available
+        let has_frontend = super::frontend::has_frontend();
+        if has_frontend {
+            log::info!("Embedded Vue.js frontend available ({} files)", 
+                      super::frontend::list_assets().len());
+        } else {
+            log::warn!("Frontend not embedded. Build with: cd webui && npm run build");
+        }
+
         // Build router with all routes
         let app = Router::new()
             // API v2 routes
@@ -241,10 +264,10 @@ impl WebGuiServer {
             .route("/ws", get(super::websocket::ws_handler))
             // noVNC console
             .route("/novnc/:vmid", get(super::console::novnc_handler))
-            // Static assets
-            .nest_service("/static", ServeDir::new(&config.assets_dir))
-            // Root - serve index.html
-            .route("/", get(super::handlers::index_handler))
+            // Health check endpoint (no auth required)
+            .route("/health", get(Self::health_check))
+            // Serve embedded frontend or fallback to static directory
+            .fallback(super::frontend::serve_frontend)
             // Apply middleware
             .layer(CompressionLayer::new())
             .with_state(state);
@@ -252,13 +275,45 @@ impl WebGuiServer {
         let addr: SocketAddr = format!("{}:{}", config.bind_address, config.http_port)
             .parse()?;
 
-        log::info!("Starting NVM WebGUI server on {}", addr);
+        log::info!("Starting NVM WebGUI server on http://{}", addr);
+        log::info!("Default login: admin / admin123");
 
         // Start server
         let listener = tokio::net::TcpListener::bind(addr).await?;
         axum::serve(listener, app).await?;
 
         Ok(())
+    }
+
+    /// Health check endpoint
+    #[cfg(feature = "webgui")]
+    async fn health_check() -> impl axum::response::IntoResponse {
+        use axum::Json;
+        
+        #[derive(serde::Serialize)]
+        struct Health {
+            status: &'static str,
+            version: &'static str,
+            frontend: bool,
+            database: bool,
+        }
+
+        let mut database_ok = false;
+        
+        #[cfg(feature = "database")]
+        {
+            use crate::db::DB;
+            if let Some(db) = DB.read().as_ref() {
+                database_ok = db.is_connected();
+            }
+        }
+
+        Json(Health {
+            status: "ok",
+            version: env!("CARGO_PKG_VERSION"),
+            frontend: super::frontend::has_frontend(),
+            database: database_ok,
+        })
     }
 
     #[cfg(feature = "webgui")]
@@ -270,7 +325,7 @@ impl WebGuiServer {
             .route("/auth/login", post(super::handlers::auth::login))
             .route("/auth/logout", post(super::handlers::auth::logout))
             .route("/auth/refresh", post(super::handlers::auth::refresh_token))
-            .route("/auth/me", get(super::handlers::auth::current_user))
+            .route("/auth/me", get(super::handlers::auth::me))
             // Dashboard
             .route("/dashboard", get(super::handlers::dashboard::overview))
             .route("/dashboard/stats", get(super::handlers::dashboard::stats))

@@ -15,6 +15,8 @@
 //! - Task and event logs
 //! - WebSocket-based real-time updates
 //! - noVNC/SPICE console integration
+//! - **Embedded Vue.js frontend**
+//! - **PostgreSQL database backend**
 
 pub mod server;
 pub mod routes;
@@ -26,18 +28,10 @@ pub mod auth;
 pub mod middleware;
 pub mod templates;
 pub mod assets;
+pub mod frontend;
 
 pub use server::{WebGuiServer, WebGuiConfig, WebGuiState};
 pub use websocket::{WebSocketManager, ClientConnection, WsMessage};
 pub use console::{VmConsole, ConsoleType, ConsoleSession};
 pub use auth::{WebAuthManager, SessionManager, Session, SessionToken};
-
-use std::sync::Arc;
-use std::net::SocketAddr;
-
-/// Default WebGUI port
-pub const DEFAULT_PORT: u16 = 8006;
-/// Default bind address
-pub const DEFAULT_BIND: &str = "0.0.0.0";
-/// API version
-pub const API_VERSION: &str = "v2";
+pub use frontend::{serve_frontend, serve_index, has_frontend, FrontendAssets};

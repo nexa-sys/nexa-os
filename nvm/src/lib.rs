@@ -146,6 +146,10 @@ pub mod backup;
 pub mod tenant;
 pub mod api;
 
+// Database backend (PostgreSQL)
+#[cfg(feature = "database")]
+pub mod db;
+
 // New Enterprise Platform Features (v2.0)
 pub mod webgui;     // Web-based management UI
 pub mod cli;        // Command-line interface tools

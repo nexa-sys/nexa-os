@@ -50,6 +50,16 @@ impl<T> ApiResponse<T> {
         }
     }
 
+    /// Create error from ApiError
+    pub fn from_error(err: ApiError) -> Self {
+        Self {
+            success: false,
+            data: None,
+            error: Some(err),
+            meta: None,
+        }
+    }
+
     pub fn with_meta(mut self, meta: ResponseMeta) -> Self {
         self.meta = Some(meta);
         self
@@ -62,6 +72,53 @@ pub struct ApiError {
     pub code: u32,
     pub message: String,
     pub details: Option<serde_json::Value>,
+}
+
+impl ApiError {
+    /// Create a new error
+    pub fn new(code: u32, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            details: None,
+        }
+    }
+
+    /// Create a 400 Bad Request error
+    pub fn bad_request(message: impl Into<String>) -> Self {
+        Self::new(400, message)
+    }
+
+    /// Create a 401 Unauthorized error
+    pub fn unauthorized(message: impl Into<String>) -> Self {
+        Self::new(401, message)
+    }
+
+    /// Create a 403 Forbidden error
+    pub fn forbidden(message: impl Into<String>) -> Self {
+        Self::new(403, message)
+    }
+
+    /// Create a 404 Not Found error
+    pub fn not_found(message: impl Into<String>) -> Self {
+        Self::new(404, message)
+    }
+
+    /// Create a 500 Internal Server Error
+    pub fn internal(message: impl Into<String>) -> Self {
+        Self::new(500, message)
+    }
+
+    /// Create a 501 Not Implemented error
+    pub fn not_implemented(message: impl Into<String>) -> Self {
+        Self::new(501, message)
+    }
+
+    /// Add details to the error
+    pub fn with_details(mut self, details: serde_json::Value) -> Self {
+        self.details = Some(details);
+        self
+    }
 }
 
 /// Response metadata (pagination, etc.)
