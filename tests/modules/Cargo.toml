@@ -1,0 +1,26 @@
+[package]
+name = "nexa-modules-tests"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "NexaOS Kernel Modules tests (ext2, e1000, virtio, etc.)"
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
+
+# 按模块选择测试
+ext2 = []
+ext3 = []
+ext4 = []
+e1000 = []
+virtio_blk = []
+virtio_net = []
+ahci = []
+nvme = []
+
+[dependencies]
+serial_test = { workspace = true }
+nvm = { workspace = true }

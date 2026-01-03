@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # NexaOS Development Kit (NDK)
-# Main entry point for the build system
+# Enterprise-grade build system and development tools
 #
 # Usage:
 #   ./ndk [command] [options]
 #
-# Commands:
+# Build Commands:
 #   build, b       - Build NexaOS components
 #     full, all    - Full system build
 #     quick, q     - Quick build (kernel + initramfs + ISO)
@@ -16,40 +16,73 @@
 #     programs, p  - Build userspace programs
 #     initramfs, i - Build initramfs
 #     rootfs, r    - Build root filesystem
+#     nvm          - Build NVM hypervisor
 #     swap         - Build swap image
 #     iso          - Build ISO image
 #     steps        - Run multiple build steps
 #   clean          - Clean build artifacts
-#   test, t        - Run kernel unit tests (tests/ crate)
-#   coverage, cov  - Test coverage analysis (requires cargo-llvm-cov)
+#
+# Test Commands:
+#   test, t        - Run tests (multi-target: kernel, userspace, nvm, modules)
+#     --target <t> - Test specific target (kernel, userspace-libs, nvm, modules, boot)
+#     --filter <p> - Run only tests matching pattern
+#     --quick      - Skip slow/stress tests
+#     --list       - List available test targets
+#     --quality-gates - Check quality gates after tests
+#   test kernel    - Run kernel unit tests only (legacy)
+#
+# Coverage Commands:
+#   coverage, cov  - Test coverage analysis
 #     run          - Run tests with coverage
 #     html         - Generate HTML report
-#     lcov         - Generate LCOV report (CI integration)
+#     json         - Generate JSON report (CI)
+#     lcov         - Generate LCOV report (Codecov/Coveralls)
 #     summary      - Show coverage summary
 #     clean        - Clean coverage data
+#
+# Developer Tools:
+#   fmt            - Format all Rust code (all workspaces)
+#     --check      - Check only, don't modify
+#     --workspace  - Format specific workspace
+#     --list       - List all workspaces
+#   lint           - Run Clippy lints
+#     --fix        - Auto-fix issues
+#     --strict     - Treat warnings as errors
+#   check          - Fast type checking
+#   doc            - Generate documentation
+#     --open       - Open in browser
+#     --private    - Include private items
+#   audit          - Security audit (vulnerabilities)
+#   outdated       - Check for outdated dependencies
+#   sloc, loc      - Lines of code statistics
+#   workspaces, ws - List all Rust workspaces
+#   ci             - Run full CI pipeline (fmt + lint + test + coverage)
+#
+# Runtime Commands:
 #   run            - Run NexaOS in QEMU
 #   dev, d         - Build and run (development mode)
-#   ui             - Configuration UI for OS trimming
-#     start, s     - Start frontend + API server
-#     api          - Start API server only
-#     build        - Build frontend for production
 #   qemu           - QEMU management commands
+#
+# Configuration:
+#   ui             - Configuration UI for OS trimming
 #   features, f    - Manage kernel features
 #   list           - List build targets
 #   info           - Show build environment info
+#   dist           - Distribution management
 #
 # Examples:
-#   ./ndk build full      # Full build
-#   ./ndk build quick     # Quick build
-#   ./ndk test            # Run unit tests
-#   ./ndk test --filter bitmap  # Run tests matching 'bitmap'
-#   ./ndk coverage        # Show coverage summary
-#   ./ndk coverage html   # Generate HTML coverage report
-#   ./ndk ui              # Launch configuration UI
-#   ./ndk dev             # Build and run
-#   ./ndk dev --quick     # Quick build and run
-#   ./ndk run --debug     # Run with GDB server
-#   ./ndk features list   # List kernel features
+#   ./ndk build full          # Full build
+#   ./ndk build quick         # Quick build
+#   ./ndk test                # Run all tests
+#   ./ndk test --target nvm   # Test NVM only
+#   ./ndk coverage html       # Generate HTML coverage report
+#   ./ndk fmt                 # Format all code
+#   ./ndk fmt --check         # Check formatting (CI)
+#   ./ndk lint --strict       # Strict lint check
+#   ./ndk ci                  # Full CI pipeline
+#   ./ndk audit               # Security audit
+#   ./ndk sloc                # Count lines of code
+#   ./ndk dev --quick         # Quick build and run
 
 set -e
 

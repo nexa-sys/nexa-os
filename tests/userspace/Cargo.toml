@@ -1,0 +1,26 @@
+[package]
+name = "nexa-userspace-tests"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "NexaOS Userspace tests (nrlib, libraries, programs)"
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
+
+# 测试目标选择
+nrlib = []
+libs = []
+programs = []
+
+[dependencies]
+serial_test = { workspace = true }
+
+# 被测代码 - 用户空间库可以直接依赖
+# nrlib = { path = "../../userspace/nrlib" }
+# ncryptolib = { path = "../../userspace/lib/ncryptolib" }
+# nssl = { path = "../../userspace/lib/nssl" }
+# nzip = { path = "../../userspace/lib/nzip" }

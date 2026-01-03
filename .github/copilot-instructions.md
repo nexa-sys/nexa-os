@@ -180,36 +180,99 @@ Parsed by `src/boot/init.rs:parse_inittab()`. See `etc/inittab` for examples.
 
 ### Testing
 
-**Unit tests** live in separate `tests/` crate (uses standard Rust std environment):
+**tests/ workspace** 统一管理所有测试：
 
-```bash
-./ndk test                    # Run unit tests (tests/ crate)
-./ndk test --filter bitmap    # Run specific test pattern
-./ndk coverage html           # Generate HTML coverage report
+```
+tests/
+  kernel/       # 内核测试 (build.rs 预处理 src/)
+  userspace/    # 用户空间测试 (nrlib, libs, programs)
+  modules/      # 内核模块测试 (ext2, e1000, virtio)
+  nvm/          # NVM 虚拟机平台测试
+  Cargo.toml    # workspace 配置
 ```
 
-测试套件通过 `build.rs` 预处理内核源码，用硬件 mock 层运行**真正的内核代码**。
-- `build.rs` 复制内核源码到 `build/kernel_src/`，移除与 std 冲突的属性
-- 硬件操作通过 mock 模块模拟（CPU、APIC、PIT、UART 等）
-- 内核的分配器逻辑运行在 std 分配器之上
-- **mock 模块由 NVM (`nvm/`) 提供**
+```bash
+# 运行所有测试
+./ndk test
 
-NVM 是完整的虚拟机平台（`pub use nvm as mock;`），提供：
-- `nvm/src/cpu.rs` — x86-64 CPU 模拟（寄存器、CR0-CR8、MSR、CPUID）
-- `nvm/src/memory.rs` — 物理内存模拟（单一 mmap 区域，类似 QEMU）
-- `nvm/src/hal.rs` — 硬件抽象层（替代 `src/safety/x86.rs` 的 port I/O）
-- `nvm/src/devices/` — 设备模拟（PIC、PIT、LAPIC、IOAPIC、UART、RTC）
+# 运行特定目标
+./ndk test --target kernel        # 内核测试
+./ndk test --target userspace     # 用户空间测试  
+./ndk test --target modules       # 内核模块测试
+./ndk test --target nvm           # NVM 平台测试
 
-**Coverage 工具**（`scripts/src/coverage.ts`）是自研的静态分析覆盖率工具：
-- 解析 Rust 源码提取函数、impl 块、分支信息
-- 分析测试文件中的函数调用匹配覆盖
-- 生成 Jest 风格的文本报告和 HTML/JSON 报告
-- 支持模块级、文件级、行级覆盖率统计
+# 其他选项
+./ndk test --filter net           # 过滤测试名
+./ndk test --quick                # 跳过慢速测试
+./ndk test --list                 # 列出可用目标
+```
+
+**Coverage analysis** with quality gates:
+
+```bash
+./ndk coverage                    # Show coverage summary
+./ndk coverage html               # Generate HTML report
+./ndk coverage json               # Generate JSON report (CI)
+./ndk coverage --threshold 60     # Fail if below 60%
+```
+
+**测试架构**:
+- `tests/kernel/` 通过 `build.rs` 预处理内核源码到 `build/kernel_src/`
+- `tests/kernel/` 依赖 NVM 提供硬件模拟（CPU、设备）
+- 每个测试目标是独立的 crate，避免 build.rs 冲突
 
 **⚠️ 测试原则**：**不要重新实现或模拟内核逻辑**。
 - ❌ 错误：写 "Simulates kernel behavior" 的伪实现
 
-测试按子系统组织在 `tests/src/{fs,mm,net,ipc,process,scheduler,kmod}/`。
+## Developer Tools (Enterprise)
+
+NDK 提供完整的企业级开发工具链：
+
+```bash
+# 代码格式化（所有工作空间）
+./ndk fmt                         # 格式化所有代码
+./ndk fmt --check                 # CI 模式：只检查不修改
+./ndk fmt --workspace nvm         # 只格式化 NVM
+./ndk fmt --list                  # 列出所有工作空间
+
+# Lint 检查
+./ndk lint                        # 运行 Clippy
+./ndk lint --fix                  # 自动修复
+./ndk lint --strict               # 严格模式（warnings = errors）
+
+# 类型检查
+./ndk check                       # 快速类型检查
+
+# 文档生成
+./ndk doc                         # 生成文档
+./ndk doc --open                  # 生成并在浏览器打开
+./ndk doc --private               # 包含私有项
+
+# 安全审计
+./ndk audit                       # 检查已知漏洞
+./ndk audit --fix                 # 尝试自动修复
+
+# 依赖检查
+./ndk outdated                    # 检查过期依赖
+
+# 代码统计
+./ndk sloc                        # 按组件统计代码行数
+./ndk workspaces                  # 列出所有 Rust 工作空间
+
+# CI 流水线（本地运行）
+./ndk ci                          # fmt + lint + test + coverage
+./ndk ci --threshold 60           # 设置覆盖率阈值
+```
+
+**工作空间结构**：
+| 工作空间 | 路径 | Toolchain | no_std |
+|---------|------|-----------|--------|
+| kernel | `.` | nightly | ✓ |
+| tests | `tests/` | nightly | ✗ |
+| nvm | `nvm/` | stable | ✗ |
+| userspace | `userspace/` | nightly | ✗ |
+| modules | `modules/` | nightly | ✓ |
+| boot-info | `boot/boot-info/` | stable | ✓ |
 
 ## Critical Pitfalls
 

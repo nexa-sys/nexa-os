@@ -2,6 +2,14 @@
 /**
  * NexaOS Development Kit (NDK) - CLI
  * TypeScript-based build system and development tools
+ * 
+ * Enterprise-grade development toolkit with:
+ * - Multi-target test framework (kernel, userspace, nvm, modules)
+ * - Unified code formatting (fmt)
+ * - Lint checking (clippy)
+ * - Security auditing (audit)
+ * - Documentation generation (doc)
+ * - Coverage analysis with quality gates
  */
 
 import { Command } from 'commander';
@@ -35,6 +43,22 @@ import {
 } from './coverage.js';
 import { generateHtmlReport } from './html-report.js';
 import { spawn } from 'child_process';
+import {
+  formatCode,
+  lintCode,
+  checkCode,
+  generateDocs,
+  auditDependencies,
+  checkOutdated,
+  countLines,
+  listWorkspaces,
+} from './devtools.js';
+import {
+  runTests as runMultiTargetTests,
+  listTestTargets,
+  generateTestSummary,
+  checkQualityGates,
+} from './testing.js';
 
 fileURLToPath(import.meta.url);
 
@@ -355,16 +379,64 @@ program
   });
 
 // =============================================================================
-// Test Command
+// Test Command - Multi-target testing framework
 // =============================================================================
 
-program
+const testCmd = program
   .command('test')
   .alias('t')
-  .description('Run kernel unit tests (tests/ crate)')
+  .description('Run tests across the entire OS (kernel, userspace, nvm, modules)')
   .option('-v, --verbose', 'Show verbose output')
   .option('--filter <pattern>', 'Run only tests matching pattern')
-  .option('--release', 'Run tests in release mode')
+  .option('--target <target>', 'Test specific target: kernel, userspace, nvm, modules, boot')
+  .option('--quick', 'Skip slow and stress tests')
+  .option('--list', 'List available test targets')
+  .option('--quality-gates', 'Check quality gates after tests')
+  .action(async (options) => {
+    const projectRoot = findProjectRoot();
+    const env = createBuildEnvironment(projectRoot);
+    
+    // List targets
+    if (options.list) {
+      await listTestTargets(env);
+      process.exit(0);
+    }
+    
+    // Run tests
+    const results = await runMultiTargetTests(env, {
+      target: options.target,
+      filter: options.filter,
+      verbose: options.verbose,
+      quick: options.quick,
+    });
+    
+    // Print summary
+    console.log(generateTestSummary(results));
+    
+    // Check quality gates if requested
+    if (options.qualityGates) {
+      const gateResult = checkQualityGates(env, results);
+      if (!gateResult.passed) {
+        logger.error('Quality gates failed:');
+        for (const v of gateResult.violations) {
+          console.log(`  ✗ ${v}`);
+        }
+        process.exit(1);
+      }
+      logger.success('All quality gates passed');
+    }
+    
+    // Exit with appropriate code
+    const allPassed = results.every(r => r.success);
+    process.exit(allPassed ? 0 : 1);
+  });
+
+// Legacy test command (for backward compatibility)
+testCmd
+  .command('kernel')
+  .description('Run kernel unit tests only (legacy)')
+  .option('-v, --verbose', 'Show verbose output')
+  .option('--filter <pattern>', 'Run only tests matching pattern')
   .action(async (options) => {
     const projectRoot = findProjectRoot();
     const testDir = resolve(projectRoot, 'tests');
@@ -376,14 +448,15 @@ program
       process.exit(1);
     }
     
-    // Build cargo test command
-    // Run from /tmp to avoid inheriting parent .cargo/config.toml (build-std issue)
-    // Use --manifest-path to point to tests/Cargo.toml
-    const args = ['test', '--manifest-path', manifestPath];
-    
-    if (options.release) {
-      args.push('--release');
+    // Create tmp directory for isolated test target
+    const tmpDir = resolve(projectRoot, 'tmp');
+    if (!existsSync(tmpDir)) {
+      mkdirSync(tmpDir, { recursive: true });
     }
+    const testsTargetDir = resolve(tmpDir, 'nexa-tests-target');
+    
+    // Build cargo test command
+    const args = ['test', '--manifest-path', manifestPath];
     
     if (options.filter) {
       args.push(options.filter);
@@ -393,25 +466,13 @@ program
       args.push('--', '--nocapture');
     }
     
-    logger.step('Running unit tests...');
+    logger.step('Running kernel unit tests...');
     
-    // Create tmp directory in project root for isolated test target directory
-    const tmpDir = resolve(projectRoot, 'tmp');
-    if (!existsSync(tmpDir)) {
-      mkdirSync(tmpDir, { recursive: true });
-    }
-    const testsTargetDir = resolve(tmpDir, 'nexa-tests-target');
-    
-    // Run cargo test from project root with explicit host target
-    // This overrides the x86_64-nexaos target from .cargo/config.toml
-    // Use isolated target directory to avoid cached artifacts from kernel builds
-    // Must use +nightly for tests crate features
     const child = spawn('cargo', ['+nightly', ...args, '--target', 'x86_64-unknown-linux-gnu'], {
       cwd: projectRoot,
       stdio: 'inherit',
       env: {
         ...process.env,
-        // Use isolated target dir to avoid cached libcore from build-std
         CARGO_TARGET_DIR: testsTargetDir,
       },
     });
@@ -1637,6 +1698,280 @@ qemuCmd
     console.log('');
   });
 
+// =============================================================================
+// Developer Tools Commands (Enterprise-grade)
+// =============================================================================
+
+// fmt - Format code
+program
+  .command('fmt')
+  .description('Format all Rust code (kernel, userspace, nvm, tests, modules)')
+  .option('-c, --check', 'Check formatting without modifying files')
+  .option('-w, --workspace <name>', 'Format specific workspace only')
+  .option('-v, --verbose', 'Show verbose output')
+  .option('--list', 'List all workspaces')
+  .action(async (options) => {
+    const projectRoot = findProjectRoot();
+    const env = createBuildEnvironment(projectRoot);
+    
+    if (options.list) {
+      listWorkspaces(env);
+      process.exit(0);
+    }
+    
+    const result = await formatCode(env, {
+      check: options.check,
+      verbose: options.verbose,
+      workspace: options.workspace,
+    });
+    
+    if (result.success) {
+      logger.success(options.check ? 'All code is properly formatted' : 'Code formatted successfully');
+    } else {
+      if (options.check) {
+        logger.error(`${result.errorCount} file(s) need formatting`);
+        logger.info('Run "./ndk fmt" to fix');
+      } else {
+        logger.error('Format failed');
+      }
+    }
+    process.exit(result.success ? 0 : 1);
+  });
+
+// lint - Run Clippy
+program
+  .command('lint')
+  .description('Run Clippy lints on all Rust code')
+  .option('--fix', 'Automatically fix lint issues')
+  .option('-s, --strict', 'Treat warnings as errors')
+  .option('-w, --workspace <name>', 'Lint specific workspace only')
+  .option('-v, --verbose', 'Show verbose output')
+  .action(async (options) => {
+    const projectRoot = findProjectRoot();
+    const env = createBuildEnvironment(projectRoot);
+    
+    const result = await lintCode(env, {
+      fix: options.fix,
+      strict: options.strict,
+      verbose: options.verbose,
+      workspace: options.workspace,
+    });
+    
+    if (result.success) {
+      logger.success('Lint check passed');
+    } else {
+      logger.warn(`${result.warningCount} warnings, ${result.errorCount} errors`);
+    }
+    process.exit(result.success ? 0 : 1);
+  });
+
+// check - Type check
+program
+  .command('check')
+  .description('Run fast type checking (cargo check)')
+  .option('-w, --workspace <name>', 'Check specific workspace only')
+  .option('-v, --verbose', 'Show verbose output')
+  .action(async (options) => {
+    const projectRoot = findProjectRoot();
+    const env = createBuildEnvironment(projectRoot);
+    
+    const result = await checkCode(env, {
+      verbose: options.verbose,
+      workspace: options.workspace,
+    });
+    
+    process.exit(result.success ? 0 : 1);
+  });
+
+// doc - Generate documentation
+program
+  .command('doc')
+  .description('Generate Rust documentation')
+  .option('-o, --open', 'Open documentation in browser')
+  .option('-p, --private', 'Include private items')
+  .option('-w, --workspace <name>', 'Document specific workspace only')
+  .action(async (options) => {
+    const projectRoot = findProjectRoot();
+    const env = createBuildEnvironment(projectRoot);
+    
+    const result = await generateDocs(env, {
+      open: options.open,
+      private: options.private,
+      workspace: options.workspace,
+    });
+    
+    process.exit(result.success ? 0 : 1);
+  });
+
+// audit - Security audit
+program
+  .command('audit')
+  .description('Run security audit on dependencies')
+  .option('--fix', 'Attempt to fix vulnerabilities')
+  .option('-v, --verbose', 'Show verbose output')
+  .action(async (options) => {
+    const projectRoot = findProjectRoot();
+    const env = createBuildEnvironment(projectRoot);
+    
+    const result = await auditDependencies(env, {
+      fix: options.fix,
+      verbose: options.verbose,
+    });
+    
+    process.exit(result.success ? 0 : 1);
+  });
+
+// outdated - Check for outdated dependencies
+program
+  .command('outdated')
+  .description('Check for outdated dependencies')
+  .option('-w, --workspace <name>', 'Check specific workspace only')
+  .action(async (options) => {
+    const projectRoot = findProjectRoot();
+    const env = createBuildEnvironment(projectRoot);
+    
+    const result = await checkOutdated(env, {
+      workspace: options.workspace,
+    });
+    
+    process.exit(result.success ? 0 : 1);
+  });
+
+// sloc - Lines of code statistics
+program
+  .command('sloc')
+  .alias('loc')
+  .description('Count lines of code by component')
+  .action(async () => {
+    const projectRoot = findProjectRoot();
+    const env = createBuildEnvironment(projectRoot);
+    
+    await countLines(env);
+  });
+
+// workspaces - List all Rust workspaces
+program
+  .command('workspaces')
+  .alias('ws')
+  .description('List all Rust workspaces in the project')
+  .action(async () => {
+    const projectRoot = findProjectRoot();
+    const env = createBuildEnvironment(projectRoot);
+    
+    listWorkspaces(env);
+  });
+
+// =============================================================================
+// CI Command - Run all CI checks
+// =============================================================================
+
+program
+  .command('ci')
+  .description('Run all CI checks (fmt, lint, test, coverage)')
+  .option('--no-coverage', 'Skip coverage check')
+  .option('--threshold <pct>', 'Coverage threshold (default: 60)', parseFloat, 60)
+  .action(async (options) => {
+    const projectRoot = findProjectRoot();
+    const env = createBuildEnvironment(projectRoot);
+    let allPassed = true;
+    
+    logger.section('Running CI Pipeline');
+    
+    // 1. Format check
+    logger.step('Step 1/4: Format check');
+    const fmtResult = await formatCode(env, { check: true });
+    if (!fmtResult.success) {
+      logger.error('Format check failed');
+      allPassed = false;
+    } else {
+      logger.success('Format check passed');
+    }
+    
+    // 2. Lint check
+    logger.step('Step 2/4: Lint check');
+    const lintResult = await lintCode(env, { strict: false });
+    if (lintResult.errorCount > 0) {
+      logger.error(`Lint check failed: ${lintResult.errorCount} errors`);
+      allPassed = false;
+    } else {
+      logger.success(`Lint check passed (${lintResult.warningCount} warnings)`);
+    }
+    
+    // 3. Tests
+    logger.step('Step 3/4: Tests');
+    const testResults = await runMultiTargetTests(env, { quick: true });
+    const testsFailed = testResults.some(r => !r.success);
+    if (testsFailed) {
+      logger.error('Tests failed');
+      allPassed = false;
+    } else {
+      const totalPassed = testResults.reduce((sum, r) => sum + r.passed, 0);
+      logger.success(`Tests passed: ${totalPassed} tests`);
+    }
+    
+    // 4. Coverage (optional)
+    if (options.coverage !== false) {
+      logger.step('Step 4/4: Coverage check');
+      // Use existing coverage module
+      const testRunResult = await runLegacyTests(projectRoot);
+      const stats = calculateCoverage(projectRoot, testRunResult.tests);
+      
+      const avgCoverage = (stats.statementCoveragePct + stats.functionCoveragePct + stats.lineCoveragePct) / 3;
+      
+      if (avgCoverage < options.threshold) {
+        logger.error(`Coverage ${avgCoverage.toFixed(1)}% below threshold ${options.threshold}%`);
+        allPassed = false;
+      } else {
+        logger.success(`Coverage: ${avgCoverage.toFixed(1)}%`);
+      }
+    }
+    
+    // Summary
+    console.log('');
+    if (allPassed) {
+      logger.success('✓ All CI checks passed');
+    } else {
+      logger.error('✗ CI pipeline failed');
+    }
+    
+    process.exit(allPassed ? 0 : 1);
+  });
+
+// Helper function for legacy test runner (used by coverage)
+async function runLegacyTests(projectRoot: string): Promise<{ tests: TestResult[], output: string }> {
+  const manifestPath = resolve(projectRoot, 'tests', 'Cargo.toml');
+  const tmpDir = resolve(projectRoot, 'tmp');
+  if (!existsSync(tmpDir)) {
+    mkdirSync(tmpDir, { recursive: true });
+  }
+  const testsTargetDir = resolve(tmpDir, 'nexa-tests-target');
+  
+  return new Promise((resolvePromise) => {
+    const tests: TestResult[] = [];
+    let output = '';
+    
+    const args = ['+nightly', 'test', '--lib', '--manifest-path', manifestPath, '--target', 'x86_64-unknown-linux-gnu', '--', '--test-threads=1'];
+    
+    const child = spawn('cargo', args, {
+      cwd: projectRoot,
+      env: { ...process.env, CARGO_TARGET_DIR: testsTargetDir },
+      stdio: ['inherit', 'pipe', 'pipe'],
+    });
+    
+    child.stdout?.on('data', (data) => { output += data.toString(); });
+    child.stderr?.on('data', (data) => { output += data.toString(); });
+    
+    child.on('close', () => {
+      const testPattern = /test\s+(\S+)\s+\.\.\.\s+(ok|FAILED)/g;
+      let match;
+      while ((match = testPattern.exec(output)) !== null) {
+        tests.push({ name: match[1], passed: match[2] === 'ok' });
+      }
+      resolvePromise({ tests, output });
+    });
+  });
+}
+
 // Default action (no command = show help)
 // Note: This handles the case when no command is provided
 if (process.argv.length <= 2) {
@@ -1645,7 +1980,7 @@ if (process.argv.length <= 2) {
 }
 
 // Handle unknown commands before parsing
-const validCommands = ['build', 'b', 'clean', 'test', 't', 'coverage', 'cov', 'list', 'info', 'features', 'f', 'run', 'dev', 'd', 'ui', 'qemu', 'dist', '-V', '--version', '-h', '--help'];
+const validCommands = ['build', 'b', 'clean', 'test', 't', 'coverage', 'cov', 'list', 'info', 'features', 'f', 'run', 'dev', 'd', 'ui', 'qemu', 'dist', 'fmt', 'lint', 'check', 'doc', 'audit', 'outdated', 'sloc', 'loc', 'workspaces', 'ws', 'ci', '-V', '--version', '-h', '--help'];
 const firstArg = process.argv[2];
 if (firstArg && !firstArg.startsWith('-') && !validCommands.includes(firstArg)) {
   console.error(`\x1b[31mError:\x1b[0m Unknown command '${firstArg}'`);

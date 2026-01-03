@@ -1,0 +1,121 @@
+# =============================================================================
+# NexaOS Testing Configuration
+# =============================================================================
+# tests/ workspace 统一管理所有测试
+#
+# 结构:
+#   tests/kernel/     - 内核测试 (需要 build.rs 预处理 src/)
+#   tests/userspace/  - 用户空间测试 (nrlib, libs, programs)
+#   tests/modules/    - 内核模块测试 (ext2, e1000, virtio)
+#   tests/nvm/        - NVM 虚拟机平台测试
+#
+# Usage:
+#   ./ndk test                      # 运行所有测试
+#   ./ndk test --target kernel      # 只运行内核测试
+#   ./ndk test --target userspace   # 只运行用户空间测试
+#   ./ndk test --filter net         # 过滤测试名
+#   ./ndk test --quick              # 跳过慢速测试
+
+# =============================================================================
+# Workspace 配置
+# =============================================================================
+workspace:
+  path: "tests/"
+  manifest: "tests/Cargo.toml"
+  toolchain: "nightly"
+
+# =============================================================================
+# 测试目标 (tests/ workspace 的成员)
+# =============================================================================
+targets:
+  kernel:
+    name: "内核测试"
+    crate: "nexa-kernel-tests"
+    path: "tests/kernel"
+    toolchain: "nightly"
+    features:
+      - "net_full"
+      - "kernel_full"
+      - "fs_full"
+      - "gfx_full"
+    coverage:
+      source_dirs:
+        - "src/"
+      exclude:
+        - "src/main.rs"
+
+  userspace:
+    name: "用户空间测试"
+    crate: "nexa-userspace-tests"
+    path: "tests/userspace"
+    toolchain: "nightly"
+    coverage:
+      source_dirs:
+        - "userspace/nrlib/src/"
+        - "userspace/lib/"
+
+  modules:
+    name: "内核模块测试"
+    crate: "nexa-modules-tests"
+    path: "tests/modules"
+    toolchain: "nightly"
+    coverage:
+      source_dirs:
+        - "modules/"
+
+  nvm:
+    name: "NVM 平台测试"
+    crate: "nexa-nvm-tests"
+    path: "tests/nvm"
+    toolchain: "nightly"
+    coverage:
+      source_dirs:
+        - "nvm/src/"
+
+# =============================================================================
+# 测试分类
+# =============================================================================
+categories:
+  unit:
+    pattern: "test_*"
+    parallel: true
+    timeout: 30
+
+  integration:
+    pattern: "integration_*"
+    parallel: false
+    timeout: 120
+
+  stress:
+    pattern: "stress_*"
+    parallel: false
+    timeout: 600
+    skip_quick: true
+
+# =============================================================================
+# 覆盖率配置
+# =============================================================================
+coverage:
+  thresholds:
+    statements: 60.0
+    branches: 50.0
+    functions: 65.0
+    lines: 60.0
+  formats:
+    - html
+    - json
+    - lcov
+  output_dir: "reports/coverage"
+
+# =============================================================================
+# 质量门禁
+# =============================================================================
+quality_gates:
+  tests:
+    min_pass_rate: 100.0
+    max_flaky_rate: 1.0
+  coverage:
+    min_statements: 60.0
+    min_branches: 50.0
+    min_functions: 65.0
+    min_lines: 60.0

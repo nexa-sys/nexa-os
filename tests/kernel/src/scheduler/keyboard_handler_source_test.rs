@@ -20,7 +20,7 @@
 #[test]
 fn test_keyboard_handler_has_resched_check() {
     // Read the keyboard interrupt handler source code
-    let handler_source = include_str!("../../../src/interrupts/handlers.rs");
+    let handler_source = include_str!("../../../../src/interrupts/handlers.rs");
     
     // Find the keyboard_interrupt_handler function
     let kbd_handler_start = handler_source.find("fn keyboard_interrupt_handler")
@@ -74,7 +74,7 @@ fn test_keyboard_handler_has_resched_check() {
 /// Test: Compare timer and keyboard handlers to show the inconsistency
 #[test]
 fn test_handler_consistency_timer_vs_keyboard() {
-    let source = include_str!("../../../src/interrupts/handlers.rs");
+    let source = include_str!("../../../../src/interrupts/handlers.rs");
     
     // Find timer_interrupt_handler
     let timer_start = source.find("fn timer_interrupt_handler")
@@ -136,7 +136,7 @@ fn test_handler_consistency_timer_vs_keyboard() {
 /// Test: Verify the exact buggy pattern exists (for documentation)
 #[test]
 fn test_buggy_pattern_exists() {
-    let source = include_str!("../../../src/interrupts/handlers.rs");
+    let source = include_str!("../../../../src/interrupts/handlers.rs");
     
     // Find keyboard_interrupt_handler
     let kbd_start = source.find("fn keyboard_interrupt_handler")

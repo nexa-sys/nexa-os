@@ -1,4 +1,4 @@
-//! Build script for nexa-os-tests
+//! Build script for nexa-kernel-tests
 //!
 //! This script preprocesses kernel source files for testing:
 //! 1. Copies kernel source to a build directory
@@ -12,7 +12,9 @@ use std::path::Path;
 
 fn main() {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let kernel_src = Path::new(manifest_dir).parent().unwrap().join("src");
+    // tests/kernel/ -> tests/ -> project root -> src/
+    let project_root = Path::new(manifest_dir).parent().unwrap().parent().unwrap();
+    let kernel_src = project_root.join("src");
     let build_dir = Path::new(manifest_dir).join("build").join("kernel_src");
     
     // Clean and recreate build directory
@@ -25,7 +27,7 @@ fn main() {
     // Export preprocessed source path
     println!("cargo:rustc-env=KERNEL_SRC={}", build_dir.display());
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-changed=../src");
+    println!("cargo:rerun-if-changed=../../src");
 }
 
 /// Recursively preprocess a directory

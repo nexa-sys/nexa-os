@@ -1,70 +1,37 @@
-[package]
-name = "nexa-os-tests"
+# =============================================================================
+# NexaOS Test Suite - Workspace
+# =============================================================================
+# 统一测试框架，镜像被测代码结构
+#
+# 结构：
+#   tests/kernel/     - 内核测试 (需要 build.rs 预处理)
+#   tests/userspace/  - 用户空间测试 (nrlib, lib/*, programs/*)
+#   tests/modules/    - 内核模块测试 (ext2, e1000, virtio_*)
+#   tests/nvm/        - NVM 虚拟机平台测试
+
+[workspace]
+resolver = "2"
+members = [
+    "kernel",
+    "userspace",
+    "modules",
+    "nvm",
+]
+
+[workspace.package]
 version = "0.0.1"
 edition = "2021"
-description = "Full kernel unit tests with hardware mocks"
 publish = false
-build = "build.rs"
-# run tests with `ndk test`
-[lib]
-path = "src/lib.rs"
 
-[features]
-default = ["net_full", "kernel_full", "fs_full", "gfx_full"]
-
-# Network features (mirror kernel)
-net_full = ["net_ipv4", "net_udp", "net_tcp", "net_arp", "net_ethernet", "net_dns", "net_dhcp", "net_netlink"]
-net_ipv4 = ["net_ethernet"]
-net_udp = ["net_ipv4"]
-net_tcp = ["net_ipv4"]
-net_arp = ["net_ethernet"]
-net_ethernet = []
-net_dns = ["net_udp"]
-net_dhcp = ["net_udp"]
-net_netlink = []
-
-# Kernel features
-kernel_full = ["smp", "numa", "kmod", "kmod_signing"]
-smp = []
-numa = ["smp"]
-kmod = []
-kmod_signing = ["kmod"]
-
-# Graphics features
-gfx_full = ["gfx_framebuffer", "gfx_ttf", "gfx_compositor"]
-gfx_framebuffer = []
-gfx_ttf = []
-gfx_compositor = []
-
-# Filesystem features
-fs_full = ["fs_initramfs", "fs_devfs", "fs_procfs", "fs_sysfs"]
-fs_initramfs = []
-fs_devfs = []
-fs_procfs = []
-fs_sysfs = []
-
-[dependencies]
-# Same as kernel dependencies
-spin = "0.9"
-x86_64 = "0.15"
-multiboot2 = { version = "0.24", default-features = false }
-linked_list_allocator = { version = "0.10", default-features = false, features = ["use_spin"] }
-lazy_static = { version = "1.4", features = ["spin_no_std"] }
-font8x8 = { version = "0.3", default-features = false }
-nexa_boot_info = { path = "../boot/boot-info" }
-uart_16550 = "0.3"
-pic8259 = "0.10"
-rusty-fork = "0.3.1"
+[workspace.dependencies]
+# 测试框架
 serial_test = "3.1"
+rusty-fork = "0.3.1"
 
-# NVM - NexaOS Virtual Machine platform (extracted from tests/mock)
+# NVM 作为硬件模拟层
 nvm = { path = "../nvm" }
 
-[build-dependencies]
-cc = "1.0"
-
-[dev-dependencies]
-
-[package.metadata.llvm-cov]
-show-branch = true
-include = ["../src/**/*.rs", "src/**/*.rs"]
+# 被测代码依赖
+spin = "0.9"
+x86_64 = "0.15"
+lazy_static = { version = "1.4", features = ["spin_no_std"] }

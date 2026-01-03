@@ -1,0 +1,68 @@
+[package]
+name = "nexa-kernel-tests"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "NexaOS Kernel unit tests with hardware mocks"
+build = "build.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = ["net_full", "kernel_full", "fs_full", "gfx_full"]
+
+# Network features (mirror kernel)
+net_full = ["net_ipv4", "net_udp", "net_tcp", "net_arp", "net_ethernet", "net_dns", "net_dhcp", "net_netlink"]
+net_ipv4 = ["net_ethernet"]
+net_udp = ["net_ipv4"]
+net_tcp = ["net_ipv4"]
+net_arp = ["net_ethernet"]
+net_ethernet = []
+net_dns = ["net_udp"]
+net_dhcp = ["net_udp"]
+net_netlink = []
+
+# Kernel features
+kernel_full = ["smp", "numa", "kmod", "kmod_signing"]
+smp = []
+numa = ["smp"]
+kmod = []
+kmod_signing = ["kmod"]
+
+# Graphics features
+gfx_full = ["gfx_framebuffer", "gfx_ttf", "gfx_compositor"]
+gfx_framebuffer = []
+gfx_ttf = []
+gfx_compositor = []
+
+# Filesystem features
+fs_full = ["fs_initramfs", "fs_devfs", "fs_procfs", "fs_sysfs"]
+fs_initramfs = []
+fs_devfs = []
+fs_procfs = []
+fs_sysfs = []
+
+[dependencies]
+# Same as kernel dependencies
+spin = { workspace = true }
+x86_64 = { workspace = true }
+multiboot2 = { version = "0.24", default-features = false }
+linked_list_allocator = { version = "0.10", default-features = false, features = ["use_spin"] }
+lazy_static = { workspace = true }
+font8x8 = { version = "0.3", default-features = false }
+nexa_boot_info = { path = "../../boot/boot-info" }
+uart_16550 = "0.3"
+pic8259 = "0.10"
+rusty-fork = { workspace = true }
+serial_test = { workspace = true }
+
+# NVM - NexaOS Virtual Machine platform (hardware mock)
+nvm = { workspace = true }
+
+[build-dependencies]
+cc = "1.0"
+
+[package.metadata.llvm-cov]
+show-branch = true
+include = ["../../src/**/*.rs", "src/**/*.rs"]

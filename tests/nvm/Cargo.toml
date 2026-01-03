@@ -1,0 +1,23 @@
+[package]
+name = "nexa-nvm-tests"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "NexaOS NVM Hypervisor Platform tests"
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
+
+# 按组件选择测试
+cpu = []
+hypervisor = []
+vm = []
+memory = []
+devices = []
+
+[dependencies]
+serial_test = { workspace = true }
+nvm = { workspace = true }
