@@ -11,6 +11,13 @@ const sizeClasses: Record<string, string> = {
   full: 'max-w-full mx-4',
 }
 
+const typeIcons: Record<string, string> = {
+  danger: 'M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z',
+  warning: 'M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z',
+  info: 'M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z',
+  success: 'M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z',
+}
+
 function closeModal(id: string) {
   modalStore.close(id)
 }
@@ -23,22 +30,22 @@ function closeModal(id: string) {
       <div
         v-for="modal in modalStore.modals"
         :key="modal.id"
-        class="fixed inset-0 z-50 flex items-center justify-center"
+        class="modal-container"
       >
         <!-- Backdrop -->
         <div
-          class="absolute inset-0 bg-black/60 backdrop-blur-sm"
+          class="modal-overlay"
           @click="modal.options.closable ? closeModal(modal.id) : null"
         />
         
         <!-- Modal Content -->
-        <div :class="['relative bg-dark-800 rounded-xl shadow-2xl border border-dark-600 w-full', sizeClasses[modal.options.size || 'md']]">
+        <div :class="['modal', sizeClasses[modal.options.size || 'md']]">
           <!-- Header -->
-          <div v-if="modal.options.title" class="flex items-center justify-between px-6 py-4 border-b border-dark-600">
-            <h3 class="text-lg font-semibold text-white">{{ modal.options.title }}</h3>
+          <div v-if="modal.options.title" class="modal-header">
+            <h3 class="modal-title">{{ modal.options.title }}</h3>
             <button
               v-if="modal.options.closable"
-              class="text-dark-400 hover:text-white p-1"
+              class="text-dark-500 hover:text-white p-1 -mr-1 transition-colors"
               @click="closeModal(modal.id)"
             >
               <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -61,36 +68,42 @@ function closeModal(id: string) {
     <Transition name="modal">
       <div
         v-if="modalStore.confirmDialog.visible"
-        class="fixed inset-0 z-50 flex items-center justify-center"
+        class="modal-container"
       >
         <div
-          class="absolute inset-0 bg-black/60 backdrop-blur-sm"
+          class="modal-overlay"
           @click="modalStore.resolveConfirm(false)"
         />
         
-        <div class="relative bg-dark-800 rounded-xl shadow-2xl border border-dark-600 w-full max-w-md">
+        <div class="modal max-w-md">
           <div class="p-6">
+            <!-- Icon -->
             <div :class="[
-              'w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-4',
+              'w-14 h-14 rounded-full flex items-center justify-center mx-auto mb-5',
               {
-                'bg-red-500/10 text-red-400': modalStore.confirmDialog.type === 'danger',
-                'bg-yellow-500/10 text-yellow-400': modalStore.confirmDialog.type === 'warning',
-                'bg-blue-500/10 text-blue-400': modalStore.confirmDialog.type === 'info',
+                'bg-danger-900/30 text-danger-400': modalStore.confirmDialog.type === 'danger',
+                'bg-warning-900/30 text-warning-400': modalStore.confirmDialog.type === 'warning',
+                'bg-primary-900/30 text-primary-400': modalStore.confirmDialog.type === 'info',
+                'bg-success-900/30 text-success-400': modalStore.confirmDialog.type === 'success',
               }
             ]">
-              <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+              <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" :d="typeIcons[modalStore.confirmDialog.type || 'info']"/>
               </svg>
             </div>
             
+            <!-- Title -->
             <h3 class="text-lg font-semibold text-white text-center mb-2">
               {{ modalStore.confirmDialog.title }}
             </h3>
-            <p class="text-dark-400 text-center mb-6">
+            
+            <!-- Message -->
+            <p class="text-dark-400 text-center mb-6 leading-relaxed">
               {{ modalStore.confirmDialog.message }}
             </p>
             
-            <div class="flex space-x-3">
+            <!-- Actions -->
+            <div class="flex gap-3">
               <button
                 class="flex-1 btn-secondary"
                 @click="modalStore.resolveConfirm(false)"
@@ -115,9 +128,12 @@ function closeModal(id: string) {
 </template>
 
 <style scoped>
-.modal-enter-active,
+.modal-enter-active {
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
 .modal-leave-active {
-  transition: all 0.2s ease;
+  transition: all 0.15s ease-out;
 }
 
 .modal-enter-from,
@@ -125,8 +141,8 @@ function closeModal(id: string) {
   opacity: 0;
 }
 
-.modal-enter-from > div:last-child,
-.modal-leave-to > div:last-child {
-  transform: scale(0.95);
+.modal-enter-from .modal,
+.modal-leave-to .modal {
+  transform: scale(0.95) translateY(10px);
 }
 </style>

@@ -2,6 +2,8 @@ import { defineStore } from 'pinia'
 import { ref, shallowRef, markRaw } from 'vue'
 import type { Component } from 'vue'
 
+export type ConfirmDialogType = 'danger' | 'warning' | 'info' | 'success'
+
 export interface ModalOptions {
   title?: string
   size?: 'sm' | 'md' | 'lg' | 'xl' | 'full'
@@ -25,7 +27,7 @@ export const useModalStore = defineStore('modal', () => {
     visible: boolean
     title: string
     message: string
-    type: 'danger' | 'warning' | 'info'
+    type: ConfirmDialogType
     confirmText: string
     cancelText: string
     resolve: ((value: boolean) => void) | null
@@ -73,7 +75,7 @@ export const useModalStore = defineStore('modal', () => {
   function confirm(options: {
     title: string
     message: string
-    type?: 'danger' | 'warning' | 'info'
+    type?: ConfirmDialogType
     confirmText?: string
     cancelText?: string
   }): Promise<boolean> {
