@@ -292,7 +292,9 @@ extern "C" fn nvme_read(handle: BlockDeviceHandle, sector: u64, count: u32, buf:
     }
 
     // Lock
-    unsafe { kmod_spinlock_lock(&mut dev.controller.lock); }
+    unsafe { 
+        kmod_spinlock_lock(&mut dev.controller.lock); 
+    }
 
     let result = nvme_do_io(dev, slba, nlb, buf, false);
 

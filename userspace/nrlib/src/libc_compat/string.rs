@@ -260,7 +260,10 @@ pub unsafe extern "C" fn strcpy(dest: *mut c_char, src: *const c_char) -> *mut c
 }
 
 /// Copy string with length limit
+/// NOTE: We use volatile operations to prevent the compiler from "optimizing"
+/// this into a call to strncpy (which would cause infinite recursion).
 #[no_mangle]
+#[inline(never)]
 pub unsafe extern "C" fn strncpy(dest: *mut c_char, src: *const c_char, n: size_t) -> *mut c_char {
     if dest.is_null() || src.is_null() {
         return dest;
@@ -268,12 +271,13 @@ pub unsafe extern "C" fn strncpy(dest: *mut c_char, src: *const c_char, n: size_
 
     let mut i = 0;
     while i < n {
-        let c = *src.add(i);
-        *dest.add(i) = c;
+        let c = core::ptr::read_volatile(src.add(i));
+        core::ptr::write_volatile(dest.add(i), c);
         if c == 0 {
             // Pad with zeros
+            i += 1;
             while i < n {
-                *dest.add(i) = 0;
+                core::ptr::write_volatile(dest.add(i), 0);
                 i += 1;
             }
             break;
@@ -317,16 +321,19 @@ pub unsafe extern "C" fn strncat(dest: *mut c_char, src: *const c_char, n: size_
 }
 
 /// Compare strings
+/// NOTE: We use volatile reads to prevent the compiler from "optimizing"
+/// this into a call to strcmp (which would cause infinite recursion).
 #[no_mangle]
+#[inline(never)]
 pub unsafe extern "C" fn strcmp(s1: *const c_char, s2: *const c_char) -> c_int {
     if s1.is_null() || s2.is_null() {
         return 0;
     }
 
-    let mut i = 0isize;
+    let mut i = 0usize;
     loop {
-        let c1 = *s1.offset(i) as u8;
-        let c2 = *s2.offset(i) as u8;
+        let c1 = core::ptr::read_volatile(s1.add(i)) as u8;
+        let c2 = core::ptr::read_volatile(s2.add(i)) as u8;
         if c1 != c2 || c1 == 0 {
             return (c1 as c_int) - (c2 as c_int);
         }
@@ -335,49 +342,59 @@ pub unsafe extern "C" fn strcmp(s1: *const c_char, s2: *const c_char) -> c_int {
 }
 
 /// Compare strings with length limit
+/// NOTE: We use volatile reads to prevent the compiler from "optimizing"
+/// this into a call to strncmp (which would cause infinite recursion).
 #[no_mangle]
+#[inline(never)]
 pub unsafe extern "C" fn strncmp(s1: *const c_char, s2: *const c_char, n: size_t) -> c_int {
     if s1.is_null() || s2.is_null() || n == 0 {
         return 0;
     }
 
-    for i in 0..n {
-        let c1 = *s1.add(i) as u8;
-        let c2 = *s2.add(i) as u8;
+    let mut i = 0;
+    while i < n {
+        let c1 = core::ptr::read_volatile(s1.add(i)) as u8;
+        let c2 = core::ptr::read_volatile(s2.add(i)) as u8;
         if c1 != c2 || c1 == 0 {
             return (c1 as c_int) - (c2 as c_int);
         }
+        i += 1;
     }
     0
 }
 
 /// Get string length
+/// NOTE: We use volatile reads to prevent the compiler from "optimizing"
+/// this into a call to strnlen (which would cause infinite recursion).
 #[no_mangle]
+#[inline(never)]
 pub unsafe extern "C" fn strnlen(s: *const c_char, maxlen: size_t) -> size_t {
     if s.is_null() {
         return 0;
     }
 
     let mut len = 0;
-    while len < maxlen && *s.add(len) != 0 {
+    while len < maxlen && core::ptr::read_volatile(s.add(len)) != 0 {
         len += 1;
     }
     len
 }
 
 /// Find character in string
+/// NOTE: We use volatile reads to prevent compiler optimization.
 #[no_mangle]
+#[inline(never)]
 pub unsafe extern "C" fn strchr(s: *const c_char, c: c_int) -> *mut c_char {
     if s.is_null() {
         return ptr::null_mut();
     }
 
     let c = c as u8;
-    let mut i = 0isize;
+    let mut i = 0usize;
     loop {
-        let ch = *s.offset(i) as u8;
+        let ch = core::ptr::read_volatile(s.add(i)) as u8;
         if ch == c {
-            return s.offset(i) as *mut c_char;
+            return s.add(i) as *mut c_char;
         }
         if ch == 0 {
             return ptr::null_mut();
@@ -387,7 +404,9 @@ pub unsafe extern "C" fn strchr(s: *const c_char, c: c_int) -> *mut c_char {
 }
 
 /// Find last occurrence of character in string
+/// NOTE: We use volatile reads to prevent compiler optimization.
 #[no_mangle]
+#[inline(never)]
 pub unsafe extern "C" fn strrchr(s: *const c_char, c: c_int) -> *mut c_char {
     if s.is_null() {
         return ptr::null_mut();
@@ -395,11 +414,11 @@ pub unsafe extern "C" fn strrchr(s: *const c_char, c: c_int) -> *mut c_char {
 
     let c = c as u8;
     let mut result: *mut c_char = ptr::null_mut();
-    let mut i = 0isize;
+    let mut i = 0usize;
     loop {
-        let ch = *s.offset(i) as u8;
+        let ch = core::ptr::read_volatile(s.add(i)) as u8;
         if ch == c {
-            result = s.offset(i) as *mut c_char;
+            result = s.add(i) as *mut c_char;
         }
         if ch == 0 {
             break;
@@ -410,14 +429,16 @@ pub unsafe extern "C" fn strrchr(s: *const c_char, c: c_int) -> *mut c_char {
 }
 
 /// Find substring
+/// NOTE: We use volatile reads to prevent compiler optimization.
 #[no_mangle]
+#[inline(never)]
 pub unsafe extern "C" fn strstr(haystack: *const c_char, needle: *const c_char) -> *mut c_char {
     if haystack.is_null() || needle.is_null() {
         return ptr::null_mut();
     }
 
     // Empty needle matches at start
-    if *needle == 0 {
+    if core::ptr::read_volatile(needle) == 0 {
         return haystack as *mut c_char;
     }
 
@@ -428,17 +449,23 @@ pub unsafe extern "C" fn strstr(haystack: *const c_char, needle: *const c_char) 
         return ptr::null_mut();
     }
 
-    for i in 0..=(haystack_len - needle_len) {
+    let mut i = 0;
+    while i <= haystack_len - needle_len {
         let mut match_found = true;
-        for j in 0..needle_len {
-            if *haystack.add(i + j) != *needle.add(j) {
+        let mut j = 0;
+        while j < needle_len {
+            let hc = core::ptr::read_volatile(haystack.add(i + j));
+            let nc = core::ptr::read_volatile(needle.add(j));
+            if hc != nc {
                 match_found = false;
                 break;
             }
+            j += 1;
         }
         if match_found {
             return haystack.add(i) as *mut c_char;
         }
+        i += 1;
     }
 
     ptr::null_mut()

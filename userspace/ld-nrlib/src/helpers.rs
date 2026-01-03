@@ -129,29 +129,41 @@ pub unsafe extern "C" fn strlen(s: *const i8) -> usize {
 }
 
 /// C ABI bcmp (BSD byte comparison, returns 0 if equal)
+/// NOTE: We use volatile reads to prevent the compiler from "optimizing"
+/// this into a call to bcmp/memcmp (which would cause infinite recursion).
 #[no_mangle]
+#[inline(never)]
 pub unsafe extern "C" fn bcmp(a: *const core::ffi::c_void, b: *const core::ffi::c_void, n: usize) -> i32 {
     let a = a as *const u8;
     let b = b as *const u8;
-    for i in 0..n {
-        if *a.add(i) != *b.add(i) {
+    let mut i = 0;
+    while i < n {
+        let va = core::ptr::read_volatile(a.add(i));
+        let vb = core::ptr::read_volatile(b.add(i));
+        if va != vb {
             return 1;
         }
+        i += 1;
     }
     0
 }
 
 /// C ABI memcmp
+/// NOTE: We use volatile reads to prevent the compiler from "optimizing"
+/// this into a call to memcmp (which would cause infinite recursion).
 #[no_mangle]
+#[inline(never)]
 pub unsafe extern "C" fn memcmp(a: *const core::ffi::c_void, b: *const core::ffi::c_void, n: usize) -> i32 {
     let a = a as *const u8;
     let b = b as *const u8;
-    for i in 0..n {
-        let va = *a.add(i);
-        let vb = *b.add(i);
+    let mut i = 0;
+    while i < n {
+        let va = core::ptr::read_volatile(a.add(i));
+        let vb = core::ptr::read_volatile(b.add(i));
         if va != vb {
             return (va as i32) - (vb as i32);
         }
+        i += 1;
     }
     0
 }
@@ -161,9 +173,12 @@ pub unsafe extern "C" fn memcmp(a: *const core::ffi::c_void, b: *const core::ffi
 // ============================================================================
 
 /// Get length of C string (not including null terminator)
+/// NOTE: We use volatile reads to prevent the compiler from "optimizing"
+/// this into a call to strlen (which would cause infinite recursion).
+#[inline(never)]
 pub unsafe fn cstr_len(s: *const u8) -> usize {
     let mut len = 0;
-    while *s.add(len) != 0 {
+    while core::ptr::read_volatile(s.add(len)) != 0 {
         len += 1;
         if len > 256 {
             break;
@@ -173,11 +188,13 @@ pub unsafe fn cstr_len(s: *const u8) -> usize {
 }
 
 /// Compare two library names (handles libc.so -> libnrlib.so mapping)
+/// NOTE: We use volatile reads to prevent compiler optimization.
+#[inline(never)]
 pub unsafe fn is_same_library_name(a: *const u8, b: *const u8) -> bool {
     let mut i = 0;
     loop {
-        let ca = *a.add(i);
-        let cb = *b.add(i);
+        let ca = core::ptr::read_volatile(a.add(i));
+        let cb = core::ptr::read_volatile(b.add(i));
         if ca == 0 && cb == 0 {
             return true;
         }
@@ -192,14 +209,19 @@ pub unsafe fn is_same_library_name(a: *const u8, b: *const u8) -> bool {
 }
 
 /// Check if name starts with prefix
+/// NOTE: We use volatile reads to prevent compiler optimization.
+#[inline(never)]
 pub unsafe fn starts_with(name: *const u8, prefix: &[u8]) -> bool {
-    for (i, &c) in prefix.iter().enumerate() {
+    let mut i = 0;
+    while i < prefix.len() {
+        let c = prefix[i];
         if c == 0 {
             return true;
         }
-        if *name.add(i) != c {
+        if core::ptr::read_volatile(name.add(i)) != c {
             return false;
         }
+        i += 1;
     }
     true
 }

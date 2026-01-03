@@ -781,6 +781,16 @@ fn get_old_context_info(
             candidate.process.fs_base = current_fs_base;
         }
 
+        // SAFETY: Interrupts must be disabled here!
+        // We're about to set context_valid = true, and then context_switch will save
+        // the actual context. If an interrupt fires between these two operations,
+        // another scheduling decision could see context_valid = true but find garbage
+        // in the context fields (they haven't been saved yet).
+        debug_assert!(
+            !x86_64::instructions::interrupts::are_enabled(),
+            "get_old_context_info: interrupts must be disabled when setting context_valid!"
+        );
+
         // Mark context as valid since we're about to save to it via context_switch
         candidate.process.context_valid = true;
 
@@ -908,6 +918,12 @@ unsafe fn execute_first_run_via_context_switch(
 ) {
     // crate::serial_println!("[FRVCS] PID={} kstack={:#x}", process.pid, kernel_stack);
 
+    // NOTE: Interrupts are already disabled by do_schedule_internal() before calling us.
+    debug_assert!(
+        !x86_64::instructions::interrupts::are_enabled(),
+        "execute_first_run_via_context_switch called with interrupts enabled!"
+    );
+
     // Alignment probe for kernel_stack/new_context.rsp (avoid fmt/logging)
     {
         use crate::safety::x86::{serial_debug_byte, serial_debug_hex};
@@ -991,9 +1007,20 @@ unsafe fn execute_first_run_via_context_switch(
 }
 
 /// Trampoline for Switch path - returns to userspace via sysretq
+/// 
+/// CRITICAL: This trampoline MUST NOT be interrupted by timer!
+/// We disable interrupts at entry and keep them disabled until sysretq.
+/// If we allowed interrupts, another process could use the same kernel stack
+/// and corrupt our saved state.
 #[unsafe(naked)]
 unsafe extern "C" fn switch_return_trampoline() {
     core::arch::naked_asm!(
+        // CRITICAL: Disable interrupts IMMEDIATELY at entry!
+        // This trampoline must run atomically - if timer interrupt fires here,
+        // the scheduler might switch to another process that uses the same kernel
+        // stack, corrupting our state.
+        "cli",
+
         // r12 = user_rip
         // r13 = user_rsp
         // r14 = user_rflags
@@ -1002,11 +1029,11 @@ unsafe extern "C" fn switch_return_trampoline() {
         // rbp = user_r8
         // [rsp] = user_r9 (on stack)
 
-        // Pop user_r9 from stack into a temporary location (use rax, will be clobbered anyway)
+        // Pop user_r9 from stack
         "pop rax",  // rax = user_r9
 
-        // Ensure GS base is correct (using callee-saved registers to preserve context)
-        // Save r8/r9 values before the call since they may be clobbered
+        // Ensure GS base is correct (interrupts are disabled, so this is safe)
+        // We still need to save/restore around the call due to calling convention
         "push rax",  // save user_r9
         "push rbx",  // save user_r10
         "push rbp",  // save user_r8
@@ -1015,7 +1042,7 @@ unsafe extern "C" fn switch_return_trampoline() {
         "pop rbx",   // restore user_r10
         "pop rax",   // restore user_r9
 
-        // Activate address space (r15 = cr3, preserved across call)
+        // Activate address space (r15 = cr3)
         "push rax",
         "push rbx",
         "push rbp",
@@ -1035,21 +1062,28 @@ unsafe extern "C" fn switch_return_trampoline() {
         "mov r9, rax",   // r9 (from rax)
         "call {restore_user_syscall_context_full}",
 
-        // sysretq to return to userspace
-        "cli",
         // Clear kernel stack guard flags before returning
         "xor rax, rax",
         "mov gs:[160], rax",  // GS_SLOT_KERNEL_STACK_GUARD * 8
         "mov gs:[168], rax",  // GS_SLOT_KERNEL_STACK_SNAPSHOT * 8
+
+        // Restore user callee-saved registers from GS_DATA
+        // Since interrupts are disabled, GS_DATA cannot be overwritten by timer
+        "mov rbx, gs:[176]",  // Restore user RBX
+        "mov rbp, gs:[184]",  // Restore user RBP
+        "mov r12, gs:[192]",  // Restore user R12
+        "mov r13, gs:[200]",  // Restore user R13
+        "mov r14, gs:[208]",  // Restore user R14
+        "mov r15, gs:[216]",  // Restore user R15
+
         // Load sysretq parameters from GS_DATA
         "mov rcx, gs:[0x38]",  // GS_SLOT_SAVED_RCX = 7, * 8 = 0x38 -> user RIP
         "mov r11, gs:[0x40]",  // GS_SLOT_SAVED_RFLAGS = 8, * 8 = 0x40 -> user RFLAGS
         "mov rsp, gs:[0x00]",  // GS_SLOT_USER_RSP = 0, * 8 = 0x00 -> user RSP
-        // CRITICAL FIX: Must swapgs before sysretq to restore user GS base!
-        // Without this, GS_BASE remains pointing to kernel GS_DATA after return,
-        // and the next syscall's swapgs will set GS_BASE=0 (KernelGSBase), causing
-        // gs:[8] to read from address 8 instead of GS_DATA offset 8.
+
+        // Swap GS base before sysretq to restore user GS
         "swapgs",
+        // sysretq will re-enable interrupts via RFLAGS restoration
         "sysretq",
 
         ensure_kernel_gs_base = sym crate::smp::ensure_kernel_gs_base,
@@ -1079,9 +1113,13 @@ unsafe fn execute_context_switch(
     kernel_stack: u64,
     fs_base: u64,
 ) {
-    // CRITICAL: Disable interrupts during context switch setup.
-    // Timer interrupts could otherwise re-enter the scheduler and corrupt state.
-    x86_64::instructions::interrupts::disable();
+    // NOTE: Interrupts are already disabled by do_schedule_internal() before calling us.
+    // This ensures atomicity between compute_schedule_decision() and the actual context switch.
+    // Previously this was done here, but that left a race window.
+    debug_assert!(
+        !x86_64::instructions::interrupts::are_enabled(),
+        "execute_context_switch called with interrupts enabled!"
+    );
 
     // CRITICAL: Ensure GS base is correct FIRST before any GS_DATA operations.
     crate::smp::ensure_kernel_gs_base();
@@ -1112,6 +1150,13 @@ unsafe fn execute_context_switch(
     // This happens when a process called do_schedule() voluntarily from kernel code.
     let next_rip = next_context.rip;
     let next_rsp = next_context.rsp;
+
+    // DEBUG: Print context info for debugging
+    crate::kdebug!(
+        "[CTX_SWITCH] next_rip={:#x} next_rsp={:#x} user_rip={:#x} user_rsp={:#x}",
+        next_rip, next_rsp, user_rip, user_rsp
+    );
+
     // Kernel code is loaded at 0x100000. The text section spans to about 0x300000
     // and the kernel image (including BSS) can reach up to 0xe00000.
     // A valid kernel RIP must be in the text section range.
@@ -1149,6 +1194,28 @@ unsafe fn execute_context_switch(
             user_r8,
             user_r9,
         );
+
+        // DEBUG: Print exact values before context_switch
+        let ctx_ptr = next_context as *const _;
+        let ctx_rip = next_context.rip;
+        let ctx_rsp = next_context.rsp;
+        crate::serial_println!(
+            "[CTX_BEFORE] ptr={:#x} rip@0x78={:#x} rsp@0x80={:#x}",
+            ctx_ptr as u64,
+            ctx_rip,
+            ctx_rsp
+        );
+        // Also dump memory at the context pointer
+        let raw_ptr = ctx_ptr as *const u64;
+        unsafe {
+            crate::serial_println!(
+                "[CTX_RAW] @+0x70={:#x} @+0x78={:#x} @+0x80={:#x} @+0x88={:#x}",
+                *raw_ptr.add(14), // rax at 0x70
+                *raw_ptr.add(15), // rip at 0x78
+                *raw_ptr.add(16), // rsp at 0x80
+                *raw_ptr.add(17), // rflags at 0x88
+            );
+        }
 
         // Direct context switch to saved kernel context
         context_switch(old_context_ptr, next_context as *const _);
@@ -1213,6 +1280,29 @@ unsafe fn execute_context_switch(
 fn do_schedule_internal(from_interrupt: bool) {
     // TEMPORARILY DISABLED: crate::net::poll() may cause recursive scheduler issue
     // crate::net::poll();
+
+    // CRITICAL FIX: Disable interrupts BEFORE computing schedule decision!
+    // 
+    // Previously, interrupts were only disabled inside execute_context_switch(),
+    // AFTER compute_schedule_decision() had already:
+    //   1. Set context_valid = true for the current process
+    //   2. Copied the next process's context to a local variable
+    //   3. Released the PROCESS_TABLE lock
+    //
+    // This created a race condition where a timer interrupt could fire between
+    // compute_schedule_decision() returning and execute_context_switch() being called.
+    // The nested do_schedule_from_interrupt() could then:
+    //   - See context_valid = true (set in step 1) but no actual context saved yet
+    //   - Corrupt the scheduling state
+    //   - Result in restoring garbage context (e.g., rip=0x381)
+    //
+    // By disabling interrupts here, we ensure atomicity between the decision
+    // and its execution. Interrupts will be re-enabled either:
+    //   - By the context switch (new process's RFLAGS has IF=1)
+    //   - By enable_and_hlt() in the idle loop
+    //   - Explicitly if no context switch occurs
+    let interrupts_were_enabled = x86_64::instructions::interrupts::are_enabled();
+    x86_64::instructions::interrupts::disable();
 
     {
         let mut stats = SCHED_STATS.lock();
@@ -1294,6 +1384,10 @@ fn do_schedule_internal(from_interrupt: bool) {
                 // Current process is still Running - just return and let it continue
                 // This happens when time slice expired but no other process is ready
                 crate::ktrace!("do_schedule(): Current process continues running");
+                // Restore interrupt state before returning
+                if interrupts_were_enabled {
+                    x86_64::instructions::interrupts::enable();
+                }
                 return;
             }
             

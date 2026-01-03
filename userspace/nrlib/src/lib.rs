@@ -1180,14 +1180,15 @@ pub unsafe extern "C" fn memset(s: *mut c_void, c: i32, n: usize) -> *mut c_void
 }
 
 #[no_mangle]
+#[inline(never)]
 pub unsafe extern "C" fn memcmp(a: *const c_void, b: *const c_void, n: usize) -> i32 {
     let a = a as *const u8;
     let b = b as *const u8;
 
     let mut i = 0usize;
     while i < n {
-        let va = ptr::read(a.add(i));
-        let vb = ptr::read(b.add(i));
+        let va = ptr::read_volatile(a.add(i));
+        let vb = ptr::read_volatile(b.add(i));
         if va != vb {
             return (va as i32) - (vb as i32);
         }
@@ -1248,11 +1249,12 @@ pub extern "C" fn __nrlib_force_mem_link() {
 }
 
 #[no_mangle]
+#[inline(never)]
 pub extern "C" fn strlen(s: *const u8) -> usize {
     unsafe {
         let mut i = 0usize;
         loop {
-            if ptr::read(s.add(i)) == 0 {
+            if ptr::read_volatile(s.add(i)) == 0 {
                 return i;
             }
             i += 1;

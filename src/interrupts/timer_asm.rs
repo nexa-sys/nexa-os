@@ -71,15 +71,19 @@ global_asm!(
         mov gs:[88],  rdi
         mov gs:[96],  rsi
         mov gs:[104], rdx
-        mov gs:[112], rbx
-        mov gs:[120], rbp
+        // CRITICAL: Save callee-saved registers to same slots as syscall_asm.rs!
+        // This ensures switch_return_trampoline can restore from a consistent location
+        // regardless of whether process was preempted via timer or syscall.
+        // Syscall slots: 176=rbx, 184=rbp, 192=r12, 200=r13, 208=r14, 216=r15
+        mov gs:[176], rbx    // GS_SLOT_INT81_RBX (22)
+        mov gs:[184], rbp    // GS_SLOT_INT81_RBP (23)
         mov gs:[128], r8
         mov gs:[136], r9
         mov gs:[144], r10
-        mov gs:[152], r12
-        mov gs:[200], r13
-        mov gs:[208], r14
-        mov gs:[216], r15
+        mov gs:[192], r12    // GS_SLOT_INT81_R12 (24)
+        mov gs:[200], r13    // GS_SLOT_INT81_R13 (25)
+        mov gs:[208], r14    // GS_SLOT_INT81_R14 (26)
+        mov gs:[216], r15    // GS_SLOT_INT81_R15 (27)
         mov gs:[224], rcx    // GS_SLOT_SAVED_GPR_RCX (28)
         mov gs:[232], r11    // GS_SLOT_SAVED_GPR_R11 (29)
         mov rax, [rsp + 0]   // saved RAX is at top of our push-save area
@@ -95,7 +99,9 @@ global_asm!(
         swapgs
     2:
 
-        // Restore GPRs and return (reverse of push order - LIFO).
+        // Restore GPRs in reverse order of push (LIFO).
+        // Push order was: r15, r14, r13, r12, r11, r10, r9, r8, rbp, rbx, rdx, rcx, rsi, rdi, rax
+        // So pop order is: rax, rdi, rsi, rcx, rdx, rbx, rbp, r8, r9, r10, r11, r12, r13, r14, r15
         pop rax
         pop rdi
         pop rsi
