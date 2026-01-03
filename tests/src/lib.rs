@@ -241,9 +241,37 @@ mod tests_syscalls;
 mod tests_syscalls_ext;
 
 /// User-space driver framework tests
-#[path = "udrv.rs"]
+#[path = "udrv/mod.rs"]
 mod tests_udrv;
 
 /// Security and ELF validation tests
 #[path = "security/mod.rs"]
 mod tests_security;
+
+/// Boot subsystem tests (stages, config)
+#[path = "boot/mod.rs"]
+mod tests_boot;
+
+/// SMP subsystem tests (CpuData, CpuStatus, constants)
+#[path = "smp/mod.rs"]
+mod tests_smp;
+
+/// Architecture tests (GDT, TSS, selectors)
+#[path = "arch/mod.rs"]
+mod tests_arch;
+
+/// Interrupts subsystem tests (IDT, PIC, GS context, exceptions)
+#[path = "interrupts/mod.rs"]
+mod tests_interrupts_ext;
+
+/// TTY subsystem tests (VT, PTY, termios)
+#[path = "tty/mod.rs"]
+mod tests_tty;
+
+/// Drivers subsystem tests (serial, RTC, random, VGA)
+#[path = "drivers/mod.rs"]
+mod tests_drivers;
+
+/// Safety module tests (volatile, x86 I/O, pointers)
+#[path = "safety/mod.rs"]
+mod tests_safety;

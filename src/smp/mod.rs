@@ -34,10 +34,15 @@ mod init;
 mod ipi;
 mod state;
 mod trampoline;
-mod types;
+pub mod types;
 
 // Re-export types
-pub use types::{CpuData, CpuStatus, MAX_CPUS};
+pub use types::{
+    CpuData, CpuStatus, CpuInfo, ApBootArgs, PerCpuTrampolineData, PerCpuGsData,
+    MAX_CPUS, TRAMPOLINE_BASE, TRAMPOLINE_MAX_SIZE, TRAMPOLINE_VECTOR,
+    PER_CPU_DATA_SIZE, AP_STACK_SIZE, STARTUP_WAIT_LOOPS, STARTUP_RETRY_MAX,
+    STATIC_CPU_COUNT,
+};
 
 // Re-export IPI constants
 pub use ipi::{IPI_CALL_FUNCTION, IPI_HALT, IPI_RESCHEDULE, IPI_TLB_FLUSH};

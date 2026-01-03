@@ -5,7 +5,7 @@
 //! - IPv4 address/packet operations
 //! - ARP protocol
 //! - UDP datagrams
-//! - TCP state machine
+//! - TCP state machine and header
 //! - DNS protocol
 //! - Comprehensive protocol stack tests
 
@@ -17,8 +17,10 @@ mod dns;
 mod ethernet;
 mod ipv4;
 mod ipv4_validation;
+mod netlink;
 mod tcp_congestion;
 mod tcp_edge_cases;
+mod tcp_header;
 mod tcp_states;
 mod udp;
 mod udp_helper;
