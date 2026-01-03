@@ -818,8 +818,10 @@ pub async fn create(
     Json(req): Json<CreateVmRequest>,
 ) -> impl IntoResponse {
     use crate::vmstate::{VmState, NetworkInterface};
+    use crate::executor::{vm_executor, VmExecConfig, DiskExecConfig, NetworkExecConfig, FirmwareType, NetworkType};
     
     let state_mgr = vm_state();
+    let mut executor = vm_executor();
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -864,13 +866,84 @@ pub async fn create(
         started_at: None,
         config_path: None,
         disk_paths: vec![],
-        network_interfaces,
+        network_interfaces: network_interfaces.clone(),
         tags: tags.clone(),
         description: req.description.clone(),
     };
     
     match state_mgr.create_vm(vm) {
         Ok(vm_id) => {
+            // Get data directory for disk path
+            let data_dir = executor.vm_data_dir(&vm_id);
+            let disk_path = data_dir.join(format!("{}-disk0.qcow2", req.name));
+            
+            // Create disk image
+            if let Err(e) = executor.create_disk_image(&disk_path, disk_gb, "qcow2") {
+                // Rollback: delete VM state
+                let _ = state_mgr.delete_vm(&vm_id);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ApiResponse::<VmListItem>::error(500, &format!("Failed to create disk: {}", e))),
+                );
+            }
+            
+            // Build execution config and register VM in hypervisor
+            let disks = vec![DiskExecConfig {
+                path: disk_path,
+                format: "qcow2".to_string(),
+                bus: "virtio".to_string(),
+                cache: "writeback".to_string(),
+                io: "native".to_string(),
+                bootable: true,
+                discard: true,
+                readonly: false,
+                serial: None,
+            }];
+            
+            let networks: Vec<NetworkExecConfig> = network_interfaces.iter().map(|nic| {
+                NetworkExecConfig {
+                    id: nic.id.clone(),
+                    mac: nic.mac.clone(),
+                    net_type: NetworkType::User,
+                    bridge: None,
+                    model: "virtio-net-pci".to_string(),
+                    multiqueue: false,
+                    queues: 1,
+                    vlan_id: None,
+                }
+            }).collect();
+            
+            let exec_config = VmExecConfig {
+                vm_id: vm_id.clone(),
+                name: req.name.clone(),
+                vcpus,
+                cpu_sockets: 1,
+                cpu_cores: vcpus,
+                cpu_threads: 1,
+                cpu_model: "host".to_string(),
+                memory_mb,
+                memory_balloon: true,
+                disks,
+                networks,
+                cdrom_iso: None,
+                firmware: FirmwareType::Uefi,
+                secure_boot: false,
+                tpm_enabled: false,
+                tpm_version: "2.0".to_string(),
+                machine_type: "q35".to_string(),
+                nested_virt: false,
+                vnc_display: None,
+                qmp_socket: None,
+                enable_kvm: executor.is_kvm_available(),
+                extra_args: vec![],
+            };
+            
+            // Register VM in hypervisor (ESXi-style: create = allocate resources)
+            if let Err(e) = executor.register_vm(exec_config) {
+                log::warn!("Failed to register VM in hypervisor: {} (VM state created)", e);
+                // Don't fail - the VM state is created, hypervisor registration can be retried on start
+            }
+            
             // Return full VM object matching frontend Vm interface
             let created_at = chrono::DateTime::from_timestamp(now as i64, 0)
                 .map(|dt| dt.to_rfc3339())
@@ -926,8 +999,20 @@ pub async fn delete(
     State(_state): State<Arc<WebGuiState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let state_mgr = vm_state();
+    use crate::executor::vm_executor;
     
+    let state_mgr = vm_state();
+    let mut executor = vm_executor();
+    
+    // Delete from hypervisor first (this also stops the VM if running)
+    if executor.is_registered(&id) {
+        if let Err(e) = executor.delete_vm(&id) {
+            log::warn!("Failed to delete VM from hypervisor: {}", e);
+            // Continue with state deletion even if hypervisor delete fails
+        }
+    }
+    
+    // Delete VM state
     match state_mgr.delete_vm(&id) {
         Ok(_) => Json(ApiResponse::<()>::success(())),
         Err(e) => Json(ApiResponse::<()>::error(404, &e)),
@@ -955,19 +1040,21 @@ pub async fn start(
         return Json(ApiResponse::<serde_json::Value>::error(400, "VM is already running"));
     }
     
-    // Build execution config
-    let data_dir = executor.vm_data_dir(&id);
-    
-    // Create disk configurations
-    let disks: Vec<DiskExecConfig> = if vm.disk_paths.is_empty() {
-        // Create default disk if none exists
+    // If VM is not registered in hypervisor (e.g., from older state), register it now
+    if !executor.is_registered(&id) {
+        log::info!("VM {} not registered in hypervisor, registering now...", id);
+        
+        let data_dir = executor.vm_data_dir(&id);
         let disk_path = data_dir.join(format!("{}-disk0.qcow2", vm.name));
+        
+        // Create disk if doesn't exist
         if !disk_path.exists() {
             if let Err(e) = executor.create_disk_image(&disk_path, vm.disk_gb, "qcow2") {
                 return Json(ApiResponse::<serde_json::Value>::error(500, &format!("Failed to create disk: {}", e)));
             }
         }
-        vec![DiskExecConfig {
+        
+        let disks = vec![DiskExecConfig {
             path: disk_path,
             format: "qcow2".to_string(),
             bus: "virtio".to_string(),
@@ -977,64 +1064,53 @@ pub async fn start(
             discard: true,
             readonly: false,
             serial: None,
-        }]
-    } else {
-        vm.disk_paths.iter().enumerate().map(|(idx, path)| {
-            DiskExecConfig {
-                path: path.clone(),
-                format: "qcow2".to_string(),
-                bus: "virtio".to_string(),
-                cache: "writeback".to_string(),
-                io: "native".to_string(),
-                bootable: idx == 0,
-                discard: true,
-                readonly: false,
-                serial: None,
+        }];
+        
+        let networks: Vec<NetworkExecConfig> = vm.network_interfaces.iter().map(|nic| {
+            NetworkExecConfig {
+                id: nic.id.clone(),
+                mac: nic.mac.clone(),
+                net_type: NetworkType::User,
+                bridge: None,
+                model: "virtio-net-pci".to_string(),
+                multiqueue: false,
+                queues: 1,
+                vlan_id: None,
             }
-        }).collect()
-    };
-    
-    // Build network configurations
-    let networks: Vec<NetworkExecConfig> = vm.network_interfaces.iter().map(|nic| {
-        NetworkExecConfig {
-            id: nic.id.clone(),
-            mac: nic.mac.clone(),
-            net_type: NetworkType::User, // Default to user-mode
-            bridge: None,
-            model: "virtio-net-pci".to_string(),
-            multiqueue: false,
-            queues: 1,
-            vlan_id: None,
+        }).collect();
+        
+        let exec_config = VmExecConfig {
+            vm_id: id.clone(),
+            name: vm.name.clone(),
+            vcpus: vm.vcpus,
+            cpu_sockets: 1,
+            cpu_cores: vm.vcpus,
+            cpu_threads: 1,
+            cpu_model: "host".to_string(),
+            memory_mb: vm.memory_mb,
+            memory_balloon: true,
+            disks,
+            networks,
+            cdrom_iso: None,
+            firmware: FirmwareType::Uefi,
+            secure_boot: false,
+            tpm_enabled: false,
+            tpm_version: "2.0".to_string(),
+            machine_type: "q35".to_string(),
+            nested_virt: false,
+            vnc_display: None,
+            qmp_socket: None,
+            enable_kvm: executor.is_kvm_available(),
+            extra_args: vec![],
+        };
+        
+        if let Err(e) = executor.register_vm(exec_config) {
+            return Json(ApiResponse::<serde_json::Value>::error(500, &format!("Failed to register VM: {}", e)));
         }
-    }).collect();
+    }
     
-    let exec_config = VmExecConfig {
-        vm_id: id.clone(),
-        name: vm.name.clone(),
-        vcpus: vm.vcpus,
-        cpu_sockets: 1,
-        cpu_cores: vm.vcpus,
-        cpu_threads: 1,
-        cpu_model: "host".to_string(),
-        memory_mb: vm.memory_mb,
-        memory_balloon: true,
-        disks,
-        networks,
-        cdrom_iso: None,
-        firmware: FirmwareType::Uefi,
-        secure_boot: false,
-        tpm_enabled: false,
-        tpm_version: "2.0".to_string(),
-        machine_type: "q35".to_string(),
-        nested_virt: false,
-        vnc_display: None,
-        qmp_socket: None,
-        enable_kvm: executor.is_kvm_available(),
-        extra_args: vec![],
-    };
-    
-    // Start the VM
-    match executor.start_vm(exec_config) {
+    // Start the VM (just calls hypervisor.start_vm)
+    match executor.start_vm(&id) {
         Ok(_running_vm) => {
             // Update state to running
             let _ = state_mgr.set_vm_status(&id, StateVmStatus::Running);
@@ -1050,15 +1126,9 @@ pub async fn start(
             })))
         }
         Err(e) => {
-            // If QEMU isn't available, still update state for demo purposes
-            log::warn!("VM execution failed (QEMU may not be available): {}", e);
-            let _ = state_mgr.set_vm_status(&id, StateVmStatus::Running);
+            log::warn!("VM execution failed: {}", e);
             
-            Json(ApiResponse::success(serde_json::json!({
-                "task_id": Uuid::new_v4().to_string(),
-                "status": "running",
-                "warning": format!("VM state set but execution failed: {}", e)
-            })))
+            Json(ApiResponse::<serde_json::Value>::error(500, &format!("Failed to start VM: {}", e)))
         }
     }
 }

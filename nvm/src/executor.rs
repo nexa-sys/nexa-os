@@ -197,6 +197,8 @@ pub struct RunningVm {
 pub struct VmExecutor {
     /// NVM hypervisor instance
     hypervisor: Arc<Hypervisor>,
+    /// VM ID mapping: api_vm_id -> hypervisor_vm_id
+    vm_ids: HashMap<String, VmId>,
     /// Running VMs mapping: api_id -> RunningVm
     running_vms: HashMap<String, Arc<RunningVm>>,
     /// VM data directory
@@ -215,10 +217,19 @@ impl VmExecutor {
         // Check KVM availability
         let kvm_available = std::path::Path::new("/dev/kvm").exists();
         
+        // Use user's data directory instead of system directory
+        let data_dir = dirs::data_local_dir()
+            .unwrap_or_else(|| PathBuf::from("/tmp"))
+            .join("nvm");
+        
+        // Ensure the directory exists
+        let _ = std::fs::create_dir_all(&data_dir);
+        
         Self {
             hypervisor,
+            vm_ids: HashMap::new(),
             running_vms: HashMap::new(),
-            data_dir: PathBuf::from("/var/lib/nvm"),
+            data_dir,
             next_vnc_port: 5900,
             kvm_available,
         }
@@ -241,34 +252,55 @@ impl VmExecutor {
         self.hypervisor.clone()
     }
     
-    /// Start a VM using NVM's native hypervisor
-    pub fn start_vm(&mut self, config: VmExecConfig) -> VmExecResult<Arc<RunningVm>> {
-        // Check if already running
-        if self.is_running(&config.vm_id) {
+    /// Register a VM in the hypervisor (called when VM is created via API)
+    /// This is like ESXi's "Create VM" - allocates resources but doesn't start
+    pub fn register_vm(&mut self, config: VmExecConfig) -> VmExecResult<VmId> {
+        // Check if already registered
+        if self.vm_ids.contains_key(&config.vm_id) {
             return Err(VmExecError::AlreadyRunning(config.vm_id.clone()));
         }
         
         // Build VM spec from config
         let spec = self.build_vm_spec(&config)?;
         
-        // Create VM in hypervisor
+        // Create VM in hypervisor (just registers, doesn't start)
         let hv_id = self.hypervisor.create_vm(spec)
             .map_err(|e| VmExecError::HypervisorError(e.to_string()))?;
         
-        // Start VM
+        // Store mapping
+        self.vm_ids.insert(config.vm_id.clone(), hv_id);
+        
+        log::info!("Registered VM {} (hypervisor ID: {})", config.vm_id, hv_id);
+        
+        Ok(hv_id)
+    }
+    
+    /// Start a VM that is already registered in hypervisor
+    pub fn start_vm(&mut self, vm_id: &str) -> VmExecResult<Arc<RunningVm>> {
+        // Check if already running
+        if self.is_running(vm_id) {
+            return Err(VmExecError::AlreadyRunning(vm_id.to_string()));
+        }
+        
+        // Get hypervisor VM ID
+        let hv_id = self.vm_ids.get(vm_id)
+            .copied()
+            .ok_or_else(|| VmExecError::NotFound(vm_id.to_string()))?;
+        
+        // Start VM in hypervisor
         self.hypervisor.start_vm(hv_id)
             .map_err(|e| VmExecError::HypervisorError(e.to_string()))?;
         
         // Allocate VNC port
-        let vnc_port = config.vnc_display.unwrap_or_else(|| {
+        let vnc_port = {
             let port = self.next_vnc_port;
             self.next_vnc_port += 1;
             port
-        });
+        };
         
         // Create running VM handle
         let running_vm = Arc::new(RunningVm {
-            vm_id: config.vm_id.clone(),
+            vm_id: vm_id.to_string(),
             hv_id,
             started_at: std::time::Instant::now(),
             vnc_port,
@@ -276,31 +308,52 @@ impl VmExecutor {
         });
         
         // Store in running VMs
-        self.running_vms.insert(config.vm_id.clone(), running_vm.clone());
+        self.running_vms.insert(vm_id.to_string(), running_vm.clone());
         
         log::info!("Started VM {} (hypervisor ID: {}, VNC port: {})", 
-            config.vm_id, hv_id, vnc_port);
+            vm_id, hv_id, vnc_port);
         
         Ok(running_vm)
     }
     
-    /// Stop a VM
+    /// Stop a VM (VM remains registered, can be started again)
     pub fn stop_vm(&mut self, vm_id: &str, force: bool) -> VmExecResult<()> {
         let running_vm = self.get_running_vm(vm_id)?;
         
-        if force {
-            self.hypervisor.destroy_vm(running_vm.hv_id)
-                .map_err(|e| VmExecError::HypervisorError(e.to_string()))?;
-        } else {
-            self.hypervisor.stop_vm(running_vm.hv_id)
-                .map_err(|e| VmExecError::HypervisorError(e.to_string()))?;
-        }
+        // Stop in hypervisor (not destroy - VM remains registered)
+        self.hypervisor.stop_vm(running_vm.hv_id)
+            .map_err(|e| VmExecError::HypervisorError(e.to_string()))?;
         
+        // Remove from running VMs
         self.running_vms.remove(vm_id);
         
         log::info!("Stopped VM {} (force: {})", vm_id, force);
         
         Ok(())
+    }
+    
+    /// Delete a VM from hypervisor (unregister)
+    pub fn delete_vm(&mut self, vm_id: &str) -> VmExecResult<()> {
+        // Stop if running
+        if self.is_running(vm_id) {
+            self.stop_vm(vm_id, true)?;
+        }
+        
+        // Get hypervisor VM ID
+        if let Some(hv_id) = self.vm_ids.remove(vm_id) {
+            // Destroy in hypervisor
+            self.hypervisor.destroy_vm(hv_id)
+                .map_err(|e| VmExecError::HypervisorError(e.to_string()))?;
+            
+            log::info!("Deleted VM {} from hypervisor", vm_id);
+        }
+        
+        Ok(())
+    }
+    
+    /// Check if a VM is registered in hypervisor
+    pub fn is_registered(&self, vm_id: &str) -> bool {
+        self.vm_ids.contains_key(vm_id)
     }
     
     /// Pause a VM
