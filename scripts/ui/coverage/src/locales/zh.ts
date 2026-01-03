@@ -1,5 +1,5 @@
 export const zh = {
-  title: 'NexaOS 内核测试覆盖率报告',
+  title: 'NexaOS 测试覆盖率报告',
   generated: '生成时间',
   summary: {
     testPassRate: '测试通过率',

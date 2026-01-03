@@ -21,6 +21,32 @@ export interface VmStats {
   network_tx_bps: number
 }
 
+// Detailed hardware info from VM details API
+export interface VmDisk {
+  id: string
+  name: string
+  size_gb: number
+  format: string
+  storage_pool: string
+  bus: string
+}
+
+export interface VmNetwork {
+  id: string
+  mac: string
+  network: string
+  model: string
+  ip?: string
+}
+
+export interface VmHardware {
+  vcpus: number
+  memory_mb: number
+  disks: VmDisk[]
+  networks: VmNetwork[]
+  cdrom?: string
+}
+
 export interface Vm {
   id: string
   name: string
@@ -29,6 +55,7 @@ export interface Vm {
   host_node?: string
   template?: string
   config: VmConfig
+  hardware?: VmHardware  // Detailed hardware info (from detail API)
   stats?: VmStats
   created_at: string
   updated_at: string
@@ -75,13 +102,45 @@ export const useVmsStore = defineStore('vms', () => {
     
     try {
       const response = await api.get(`/vms/${id}`)
-      selectedVm.value = response.data.data
-      // Update in list
-      const idx = vms.value.findIndex(vm => vm.id === id)
-      if (idx !== -1) {
-        vms.value[idx] = selectedVm.value!
+      const data = response.data.data
+      
+      // Map detailed VM response to Vm interface
+      // Backend returns VmDetails with hardware object
+      const vm: Vm = {
+        id: data.id,
+        name: data.name,
+        status: data.status,
+        description: data.description,
+        host_node: data.node,
+        template: data.template,
+        config: {
+          cpu_cores: data.hardware?.vcpus || data.config?.cpu_cores || 2,
+          memory_mb: data.hardware?.memory_mb || data.config?.memory_mb || 2048,
+          disk_gb: data.hardware?.disks?.[0]?.size_gb || data.config?.disk_gb || 20,
+          network: data.hardware?.networks?.[0]?.network || data.config?.network || 'default',
+          boot_order: data.config?.boot_order || ['disk', 'cdrom'],
+        },
+        hardware: data.hardware,  // Include full hardware details
+        stats: data.metrics ? {
+          cpu_usage: data.metrics.cpu_percent || 0,
+          memory_usage: data.metrics.memory_used_mb ? (data.metrics.memory_used_mb / (data.hardware?.memory_mb || 1)) * 100 : 0,
+          disk_read_bps: data.metrics.disk_read_bps || 0,
+          disk_write_bps: data.metrics.disk_write_bps || 0,
+          network_rx_bps: data.metrics.net_rx_bps || 0,
+          network_tx_bps: data.metrics.net_tx_bps || 0,
+        } : undefined,
+        created_at: data.created_at ? new Date(data.created_at * 1000).toISOString() : new Date().toISOString(),
+        updated_at: data.started_at ? new Date(data.started_at * 1000).toISOString() : new Date().toISOString(),
+        tags: data.tags || [],
       }
-      return selectedVm.value
+      
+      selectedVm.value = vm
+      // Update in list
+      const idx = vms.value.findIndex(v => v.id === id)
+      if (idx !== -1) {
+        vms.value[idx] = vm
+      }
+      return vm
     } catch (e: any) {
       error.value = e.response?.data?.error?.message || 'Failed to fetch VM'
       return null
@@ -155,14 +214,22 @@ export const useVmsStore = defineStore('vms', () => {
     
     try {
       const response = await api.post(`/vms/${id}/${action}`)
-      const updatedVm = response.data.data
-      const idx = vms.value.findIndex(vm => vm.id === id)
-      if (idx !== -1) {
-        vms.value[idx] = updatedVm
+      const result = response.data.data
+      
+      // Backend returns {task_id, status} not full VM, so update status locally
+      if (result?.status) {
+        const idx = vms.value.findIndex(vm => vm.id === id)
+        if (idx !== -1) {
+          vms.value[idx] = { ...vms.value[idx], status: result.status }
+        }
+        if (selectedVm.value?.id === id) {
+          selectedVm.value = { ...selectedVm.value, status: result.status }
+        }
       }
-      if (selectedVm.value?.id === id) {
-        selectedVm.value = updatedVm
-      }
+      
+      // Optionally refresh full VM data after action
+      await fetchVm(id)
+      
       return true
     } catch (e: any) {
       error.value = e.response?.data?.error?.message || `Failed to ${action} VM`

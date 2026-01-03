@@ -124,32 +124,73 @@ pub struct VmSnapshot {
     pub description: Option<String>,
 }
 
-/// Create VM request
+/// Create VM request - supports both frontend config format and direct format
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateVmRequest {
     pub name: String,
+    #[serde(default)]
     pub description: Option<String>,
+    #[serde(default)]
     pub template: Option<String>,
-    pub os_type: String,
-    pub vcpus: u32,
-    pub memory_mb: u64,
-    pub disks: Vec<CreateDiskSpec>,
-    pub networks: Vec<CreateNetworkSpec>,
+    
+    // Frontend sends config object with these fields
+    #[serde(default)]
+    pub config: Option<CreateVmConfig>,
+    
+    // Direct fields (for backward compatibility)
+    #[serde(default)]
+    pub os_type: Option<String>,
+    #[serde(default)]
+    pub vcpus: Option<u32>,
+    #[serde(default)]
+    pub memory_mb: Option<u64>,
+    #[serde(default)]
+    pub disks: Option<Vec<CreateDiskSpec>>,
+    #[serde(default)]
+    pub networks: Option<Vec<CreateNetworkSpec>>,
+    #[serde(default)]
     pub iso: Option<String>,
-    pub start_after_create: bool,
-    pub tags: Vec<String>,
+    #[serde(default)]
+    pub start_after_create: Option<bool>,
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
 }
+
+/// Config object from frontend form
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateVmConfig {
+    #[serde(default = "default_cpu_cores")]
+    pub cpu_cores: u32,
+    #[serde(default = "default_memory_mb")]
+    pub memory_mb: u64,
+    #[serde(default = "default_disk_gb")]
+    pub disk_gb: u64,
+    #[serde(default = "default_network")]
+    pub network: String,
+    #[serde(default)]
+    pub boot_order: Vec<String>,
+}
+
+fn default_cpu_cores() -> u32 { 2 }
+fn default_memory_mb() -> u64 { 2048 }
+fn default_disk_gb() -> u64 { 20 }
+fn default_network() -> String { "default".to_string() }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateDiskSpec {
     pub size_gb: u64,
+    #[serde(default = "default_storage_pool")]
     pub storage_pool: String,
+    #[serde(default)]
     pub format: Option<String>,
 }
+
+fn default_storage_pool() -> String { "local".to_string() }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateNetworkSpec {
     pub network: String,
+    #[serde(default)]
     pub mac: Option<String>,
 }
 
@@ -320,7 +361,7 @@ pub async fn create(
     State(_state): State<Arc<WebGuiState>>,
     Json(req): Json<CreateVmRequest>,
 ) -> impl IntoResponse {
-    use crate::vmstate::VmState;
+    use crate::vmstate::{VmState, NetworkInterface};
     
     let state_mgr = vm_state();
     let now = std::time::SystemTime::now()
@@ -328,37 +369,88 @@ pub async fn create(
         .map(|d| d.as_secs())
         .unwrap_or(0);
     
+    // Extract values from config object (frontend format) or direct fields (API format)
+    let (vcpus, memory_mb, disk_gb, network) = if let Some(config) = &req.config {
+        (config.cpu_cores, config.memory_mb, config.disk_gb, config.network.clone())
+    } else {
+        (
+            req.vcpus.unwrap_or(2),
+            req.memory_mb.unwrap_or(2048),
+            req.disks.as_ref().and_then(|d| d.first().map(|d| d.size_gb)).unwrap_or(20),
+            req.networks.as_ref().and_then(|n| n.first().map(|n| n.network.clone())).unwrap_or_else(|| "default".to_string()),
+        )
+    };
+    
+    let tags = req.tags.clone().unwrap_or_default();
+    
+    // Generate network interface
+    let nic_id = format!("nic-{}", &Uuid::new_v4().to_string()[..8]);
+    let mac = format!("52:54:00:{:02x}:{:02x}:{:02x}",
+        rand::random::<u8>(), rand::random::<u8>(), rand::random::<u8>());
+    
+    let network_interfaces = vec![NetworkInterface {
+        id: nic_id,
+        mac,
+        network: network.clone(),
+        model: "virtio".to_string(),
+        ip: None,
+    }];
+    
     let vm = VmState {
         id: String::new(), // Will be generated
-        name: req.name,
+        name: req.name.clone(),
         status: StateVmStatus::Stopped,
-        vcpus: req.vcpus,
-        memory_mb: req.memory_mb,
-        disk_gb: req.disks.first().map(|d| d.size_gb).unwrap_or(20),
+        vcpus,
+        memory_mb,
+        disk_gb,
         node: None,
         created_at: now,
         started_at: None,
         config_path: None,
         disk_paths: vec![],
-        network_interfaces: vec![],
-        tags: req.tags,
-        description: req.description,
+        network_interfaces,
+        tags: tags.clone(),
+        description: req.description.clone(),
     };
     
     match state_mgr.create_vm(vm) {
         Ok(vm_id) => {
+            // Return full VM object matching frontend Vm interface
+            let created_at = chrono::DateTime::from_timestamp(now as i64, 0)
+                .map(|dt| dt.to_rfc3339())
+                .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+            
+            let response_vm = VmListItem {
+                id: vm_id.clone(),
+                name: req.name,
+                status: "stopped".to_string(),
+                description: req.description,
+                host_node: None,
+                template: req.template,
+                config: VmListConfig {
+                    cpu_cores: vcpus,
+                    memory_mb,
+                    disk_gb,
+                    network,
+                    boot_order: req.config.as_ref()
+                        .map(|c| c.boot_order.clone())
+                        .unwrap_or_else(|| vec!["disk".to_string(), "cdrom".to_string()]),
+                },
+                stats: None,
+                created_at: created_at.clone(),
+                updated_at: created_at,
+                tags,
+            };
+            
             (
                 StatusCode::CREATED,
-                Json(ApiResponse::success(serde_json::json!({
-                    "id": vm_id,
-                    "task_id": Uuid::new_v4().to_string()
-                }))),
+                Json(ApiResponse::success(response_vm)),
             )
         }
         Err(e) => {
             (
                 StatusCode::BAD_REQUEST,
-                Json(ApiResponse::<serde_json::Value>::error(400, &e)),
+                Json(ApiResponse::<VmListItem>::error(400, &e)),
             )
         }
     }
@@ -534,4 +626,125 @@ pub async fn metrics(
     };
     
     Json(ApiResponse::success(metrics))
+}
+
+/// WebSocket console handler for VM
+#[cfg(feature = "webgui")]
+pub async fn console_ws(
+    ws: axum::extract::WebSocketUpgrade,
+    State(state): State<Arc<WebGuiState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    // Verify VM exists and is running
+    let state_mgr = vm_state();
+    let vm = state_mgr.list_vms().into_iter().find(|v| v.id == id);
+    
+    match vm {
+        Some(v) if v.status == StateVmStatus::Running => {
+            ws.on_upgrade(move |socket| handle_console_socket(socket, state, id))
+        }
+        Some(_) => {
+            // VM exists but not running - return upgrade anyway but close immediately
+            ws.on_upgrade(move |socket| handle_console_error(socket, 4001, "VM is not running"))
+        }
+        None => {
+            ws.on_upgrade(move |socket| handle_console_error(socket, 4004, "VM not found"))
+        }
+    }
+}
+
+#[cfg(feature = "webgui")]
+async fn handle_console_error(
+    mut socket: axum::extract::ws::WebSocket,
+    code: u16,
+    reason: &'static str,
+) {
+    use axum::extract::ws::Message;
+    
+    let _ = socket.send(Message::Close(Some(axum::extract::ws::CloseFrame {
+        code,
+        reason: reason.into(),
+    }))).await;
+}
+
+#[cfg(feature = "webgui")]
+async fn handle_console_socket(
+    socket: axum::extract::ws::WebSocket,
+    state: Arc<WebGuiState>,
+    vm_id: String,
+) {
+    use axum::extract::ws::Message;
+    use futures_util::{SinkExt, StreamExt};
+    
+    let (mut sender, mut receiver) = socket.split();
+    
+    // Send initial connection success message
+    let _ = sender.send(Message::Text(serde_json::json!({
+        "type": "connected",
+        "vm_id": vm_id,
+        "console_type": "vnc",
+        "message": "Console connection established"
+    }).to_string().into())).await;
+    
+    // In a real implementation, this would connect to QEMU's VNC server
+    // and proxy the VNC protocol over WebSocket (like noVNC does)
+    
+    // For now, we'll just echo messages and handle basic commands
+    while let Some(msg) = receiver.next().await {
+        if let Ok(msg) = msg {
+            match msg {
+                Message::Text(text) => {
+                    // Handle console commands
+                    if let Ok(cmd) = serde_json::from_str::<serde_json::Value>(&text) {
+                        match cmd.get("type").and_then(|t| t.as_str()) {
+                            Some("key") => {
+                                // Would forward key events to QEMU
+                                let _ = sender.send(Message::Text(serde_json::json!({
+                                    "type": "ack",
+                                    "command": "key"
+                                }).to_string().into())).await;
+                            }
+                            Some("mouse") => {
+                                // Would forward mouse events to QEMU
+                                let _ = sender.send(Message::Text(serde_json::json!({
+                                    "type": "ack",
+                                    "command": "mouse"
+                                }).to_string().into())).await;
+                            }
+                            Some("resize") => {
+                                // Would handle screen resize
+                                let _ = sender.send(Message::Text(serde_json::json!({
+                                    "type": "ack",
+                                    "command": "resize"
+                                }).to_string().into())).await;
+                            }
+                            Some("ping") => {
+                                let _ = sender.send(Message::Text(serde_json::json!({
+                                    "type": "pong"
+                                }).to_string().into())).await;
+                            }
+                            _ => {
+                                let _ = sender.send(Message::Text(serde_json::json!({
+                                    "type": "error",
+                                    "message": "Unknown command"
+                                }).to_string().into())).await;
+                            }
+                        }
+                    }
+                }
+                Message::Binary(data) => {
+                    // Binary data would be VNC protocol frames
+                    // Echo back for now (in real impl, proxy to QEMU VNC)
+                    let _ = sender.send(Message::Binary(data)).await;
+                }
+                Message::Ping(data) => {
+                    let _ = sender.send(Message::Pong(data)).await;
+                }
+                Message::Close(_) => break,
+                _ => {}
+            }
+        }
+    }
+    
+    log::debug!("Console WebSocket closed for VM {}", vm_id);
 }

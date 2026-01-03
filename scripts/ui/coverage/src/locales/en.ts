@@ -1,5 +1,5 @@
 export const en = {
-  title: 'NexaOS Kernel Test Coverage Report',
+  title: 'NexaOS  Test Coverage Report',
   generated: 'Generated',
   summary: {
     testPassRate: 'Test Pass Rate',

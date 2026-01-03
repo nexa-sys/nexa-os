@@ -25,7 +25,7 @@ const form = ref<VmCreateParams>({
     cpu_cores: 2,
     memory_mb: 2048,
     disk_gb: 20,
-    network: 'vmbr0',
+    network: 'default',
     boot_order: ['disk', 'cdrom', 'network'],
   },
   tags: [],
@@ -35,7 +35,9 @@ const form = ref<VmCreateParams>({
 const templates = ref([{ id: '', name: 'Blank VM', description: 'Start from scratch' }])
 
 // Networks from API
-const networks = ref<Array<{ id: string; name: string; description: string }>>([])
+const networks = ref<Array<{ id: string; name: string; description: string }>>([
+  { id: 'default', name: 'default (Bridge)', description: 'Default NAT network' }
+])
 
 async function fetchTemplates() {
   try {
@@ -60,19 +62,29 @@ async function fetchNetworks() {
   try {
     loadingNetworks.value = true
     const response = await api.get('/networks')
-    if (response.data.success && response.data.data) {
-      networks.value = response.data.data.map((net: any) => ({
+    if (response.data.success && response.data.data && response.data.data.length > 0) {
+      const apiNetworks = response.data.data.map((net: any) => ({
         id: net.id || net.name,
         name: `${net.name} (${net.network_type || 'Bridge'})`,
         description: net.cidr || ''
       }))
-      // Set default network if available
-      if (networks.value.length > 0 && !form.value.config.network) {
-        form.value.config.network = networks.value[0].id
-      }
+      // Merge with default, removing duplicates
+      const defaultIds = new Set(networks.value.map(n => n.id))
+      networks.value = [
+        ...networks.value,
+        ...apiNetworks.filter((n: any) => !defaultIds.has(n.id))
+      ]
+    }
+    // Ensure form has a valid network selected
+    if (!form.value.config.network || !networks.value.find(n => n.id === form.value.config.network)) {
+      form.value.config.network = networks.value[0]?.id || 'default'
     }
   } catch (e) {
     console.error('Failed to fetch networks:', e)
+    // Keep default network on error
+    if (!form.value.config.network) {
+      form.value.config.network = 'default'
+    }
   } finally {
     loadingNetworks.value = false
   }

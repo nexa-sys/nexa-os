@@ -210,11 +210,19 @@ tests/
 **Coverage analysis** with quality gates:
 
 ```bash
-./ndk coverage                    # Show coverage summary
-./ndk coverage html               # Generate HTML report
-./ndk coverage json               # Generate JSON report (CI)
-./ndk coverage --threshold 60     # Fail if below 60%
+./ndk cov run                     # 运行测试并显示多目标覆盖率
+./ndk cov html                    # 生成 HTML 报告并打开
+./ndk cov json                    # 生成 JSON 报告
+./ndk cov targets                 # 列出可用目标
+./ndk cov run --target kernel     # 只分析内核覆盖率
+./ndk cov run -v                  # 详细模式（显示文件级覆盖）
 ```
+
+**覆盖率报告结构**：
+- 总览：聚合所有目标的覆盖率
+- 目标视图：kernel / userspace / modules / nvm
+- 模块视图：每个目标下的模块详情
+- 文件视图：具体文件和未覆盖行号
 
 **测试架构**:
 - `tests/kernel/` 通过 `build.rs` 预处理内核源码到 `build/kernel_src/`

@@ -11,10 +11,13 @@ const vmId = route.params.id as string
 const connected = ref(false)
 const loading = ref(true)
 const error = ref<string | null>(null)
+const consoleMessages = ref<string[]>([])
 
 // VNC connection
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 let ws: WebSocket | null = null
+let reconnectAttempts = 0
+const maxReconnectAttempts = 3
 
 onMounted(async () => {
   // Fetch VM info
@@ -32,34 +35,65 @@ onMounted(async () => {
     return
   }
 
-  // Connect to VNC/SPICE
+  connectWebSocket()
+})
+
+function connectWebSocket() {
+  // Connect to VNC/SPICE via WebSocket
   try {
-    const wsUrl = `ws://${window.location.host}/api/v2/vms/${vmId}/console/ws`
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const wsUrl = `${protocol}//${window.location.host}/api/v2/vms/${vmId}/console/ws`
     ws = new WebSocket(wsUrl)
     
     ws.onopen = () => {
       connected.value = true
       loading.value = false
+      reconnectAttempts = 0
+      consoleMessages.value.push('Connected to VM console')
     }
     
-    ws.onerror = () => {
-      error.value = 'Failed to connect to console'
-      loading.value = false
+    ws.onerror = (e) => {
+      console.error('WebSocket error:', e)
+      if (!connected.value && reconnectAttempts < maxReconnectAttempts) {
+        reconnectAttempts++
+        consoleMessages.value.push(`Connection failed, retrying (${reconnectAttempts}/${maxReconnectAttempts})...`)
+        setTimeout(connectWebSocket, 2000)
+      } else if (!connected.value) {
+        error.value = 'Failed to connect to console. Please check that the VM is running and try again.'
+        loading.value = false
+      }
     }
     
-    ws.onclose = () => {
+    ws.onclose = (e) => {
       connected.value = false
+      if (e.code === 4001) {
+        error.value = 'VM is not running'
+      } else if (e.code === 4004) {
+        error.value = 'VM not found'
+      } else if (!error.value) {
+        consoleMessages.value.push('Connection closed')
+      }
     }
     
     ws.onmessage = (event) => {
-      // Handle VNC/SPICE frames
-      console.log('Received data:', event.data)
+      // Handle console messages
+      try {
+        const data = JSON.parse(event.data)
+        if (data.type === 'connected') {
+          consoleMessages.value.push(`Console ready: ${data.message}`)
+        } else if (data.type === 'error') {
+          consoleMessages.value.push(`Error: ${data.message}`)
+        }
+      } catch {
+        // Binary VNC data - would be handled by noVNC library
+        console.log('Received binary data:', event.data.length, 'bytes')
+      }
     }
   } catch (e) {
     error.value = 'Failed to initialize console connection'
     loading.value = false
   }
-})
+}
 
 onUnmounted(() => {
   if (ws) {

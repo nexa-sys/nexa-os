@@ -229,7 +229,7 @@ function openConsole() {
               <div>
                 <div class="flex justify-between text-sm mb-2">
                   <span class="text-dark-400">CPU</span>
-                  <span class="text-white">{{ vm.config.cpu_cores }} vCPUs</span>
+                  <span class="text-white">{{ vm.config?.cpu_cores ?? 0 }} vCPUs</span>
                 </div>
                 <div class="h-2 bg-dark-700 rounded-full overflow-hidden">
                   <div class="h-full bg-accent-500 rounded-full" :style="{ width: `${vm.stats?.cpu_usage || 0}%` }" />
@@ -238,7 +238,7 @@ function openConsole() {
               <div>
                 <div class="flex justify-between text-sm mb-2">
                   <span class="text-dark-400">Memory</span>
-                  <span class="text-white">{{ vm.config.memory_mb }} MB</span>
+                  <span class="text-white">{{ vm.config?.memory_mb ?? 0 }} MB</span>
                 </div>
                 <div class="h-2 bg-dark-700 rounded-full overflow-hidden">
                   <div class="h-full bg-green-500 rounded-full" :style="{ width: `${vm.stats?.memory_usage || 0}%` }" />
@@ -247,13 +247,13 @@ function openConsole() {
               <div>
                 <div class="flex justify-between text-sm mb-2">
                   <span class="text-dark-400">Disk</span>
-                  <span class="text-white">{{ vm.config.disk_gb }} GB</span>
+                  <span class="text-white">{{ vm.config?.disk_gb ?? 0 }} GB</span>
                 </div>
               </div>
               <div>
                 <div class="flex justify-between text-sm">
                   <span class="text-dark-400">Network</span>
-                  <span class="text-white">{{ vm.config.network }}</span>
+                  <span class="text-white">{{ vm.config?.network ?? 'N/A' }}</span>
                 </div>
               </div>
             </div>
@@ -267,6 +267,7 @@ function openConsole() {
             <RouterLink :to="`/vms/${vmId}/edit`" class="btn-secondary text-sm">Edit</RouterLink>
           </div>
           <div class="space-y-4">
+            <!-- CPU -->
             <div class="flex items-center justify-between p-4 bg-dark-700/50 rounded-lg">
               <div class="flex items-center space-x-3">
                 <div class="w-10 h-10 bg-dark-700 rounded-lg flex items-center justify-center">
@@ -276,10 +277,12 @@ function openConsole() {
                 </div>
                 <div>
                   <p class="text-white font-medium">CPU</p>
-                  <p class="text-sm text-dark-400">{{ vm.config.cpu_cores }} virtual cores</p>
+                  <p class="text-sm text-dark-400">{{ vm.hardware?.vcpus || vm.config?.cpu_cores || 0 }} virtual cores</p>
                 </div>
               </div>
             </div>
+            
+            <!-- Memory -->
             <div class="flex items-center justify-between p-4 bg-dark-700/50 rounded-lg">
               <div class="flex items-center space-x-3">
                 <div class="w-10 h-10 bg-dark-700 rounded-lg flex items-center justify-center">
@@ -289,22 +292,87 @@ function openConsole() {
                 </div>
                 <div>
                   <p class="text-white font-medium">Memory</p>
-                  <p class="text-sm text-dark-400">{{ vm.config.memory_mb }} MB</p>
+                  <p class="text-sm text-dark-400">{{ vm.hardware?.memory_mb || vm.config?.memory_mb || 0 }} MB</p>
                 </div>
               </div>
             </div>
-            <div class="flex items-center justify-between p-4 bg-dark-700/50 rounded-lg">
-              <div class="flex items-center space-x-3">
-                <div class="w-10 h-10 bg-dark-700 rounded-lg flex items-center justify-center">
-                  <svg class="w-5 h-5 text-dark-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"/>
-                  </svg>
+            
+            <!-- Disks Section -->
+            <div class="border-t border-dark-600 pt-4 mt-4">
+              <h4 class="text-sm font-medium text-dark-400 uppercase mb-3">Storage Disks</h4>
+              
+              <!-- If hardware.disks available, show detailed list -->
+              <template v-if="vm.hardware?.disks && vm.hardware.disks.length > 0">
+                <div v-for="disk in vm.hardware.disks" :key="disk.id" class="flex items-center justify-between p-4 bg-dark-700/50 rounded-lg mb-2">
+                  <div class="flex items-center space-x-3">
+                    <div class="w-10 h-10 bg-dark-700 rounded-lg flex items-center justify-center">
+                      <svg class="w-5 h-5 text-dark-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"/>
+                      </svg>
+                    </div>
+                    <div>
+                      <p class="text-white font-medium">{{ disk.name }}</p>
+                      <p class="text-sm text-dark-400">{{ disk.size_gb }} GB • {{ disk.format }} • {{ disk.bus }}</p>
+                    </div>
+                  </div>
+                  <span class="text-xs text-dark-500">{{ disk.storage_pool }}</span>
                 </div>
-                <div>
-                  <p class="text-white font-medium">Disk</p>
-                  <p class="text-sm text-dark-400">{{ vm.config.disk_gb }} GB</p>
+              </template>
+              
+              <!-- Fallback to simple disk display -->
+              <template v-else>
+                <div class="flex items-center justify-between p-4 bg-dark-700/50 rounded-lg">
+                  <div class="flex items-center space-x-3">
+                    <div class="w-10 h-10 bg-dark-700 rounded-lg flex items-center justify-center">
+                      <svg class="w-5 h-5 text-dark-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"/>
+                      </svg>
+                    </div>
+                    <div>
+                      <p class="text-white font-medium">Primary Disk</p>
+                      <p class="text-sm text-dark-400">{{ vm.config?.disk_gb ?? 0 }} GB • qcow2 • virtio</p>
+                    </div>
+                  </div>
                 </div>
-              </div>
+              </template>
+            </div>
+            
+            <!-- Networks Section -->
+            <div class="border-t border-dark-600 pt-4 mt-4">
+              <h4 class="text-sm font-medium text-dark-400 uppercase mb-3">Network Interfaces</h4>
+              
+              <template v-if="vm.hardware?.networks && vm.hardware.networks.length > 0">
+                <div v-for="nic in vm.hardware.networks" :key="nic.id" class="flex items-center justify-between p-4 bg-dark-700/50 rounded-lg mb-2">
+                  <div class="flex items-center space-x-3">
+                    <div class="w-10 h-10 bg-dark-700 rounded-lg flex items-center justify-center">
+                      <svg class="w-5 h-5 text-dark-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.14 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0"/>
+                      </svg>
+                    </div>
+                    <div>
+                      <p class="text-white font-medium">{{ nic.network }}</p>
+                      <p class="text-sm text-dark-400">{{ nic.mac }} • {{ nic.model }}</p>
+                      <p v-if="nic.ip" class="text-xs text-accent-400">IP: {{ nic.ip }}</p>
+                    </div>
+                  </div>
+                </div>
+              </template>
+              
+              <template v-else>
+                <div class="flex items-center justify-between p-4 bg-dark-700/50 rounded-lg">
+                  <div class="flex items-center space-x-3">
+                    <div class="w-10 h-10 bg-dark-700 rounded-lg flex items-center justify-center">
+                      <svg class="w-5 h-5 text-dark-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.14 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0"/>
+                      </svg>
+                    </div>
+                    <div>
+                      <p class="text-white font-medium">{{ vm.config?.network ?? 'default' }}</p>
+                      <p class="text-sm text-dark-400">virtio</p>
+                    </div>
+                  </div>
+                </div>
+              </template>
             </div>
           </div>
         </div>

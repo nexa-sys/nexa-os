@@ -5,7 +5,7 @@
  */
 
 import { spawn, spawnSync } from 'child_process';
-import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, readdirSync, readFileSync } from 'fs';
 import { resolve, relative, join } from 'path';
 import { logger } from './logger.js';
 import { BuildEnvironment } from './types.js';
@@ -501,7 +501,7 @@ export async function auditDependencies(
  */
 export async function checkOutdated(
   env: BuildEnvironment,
-  options: {
+  _options: {
     workspace?: string;
   } = {}
 ): Promise<ToolResult> {

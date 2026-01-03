@@ -242,11 +242,11 @@ function openConsole(vm: Vm) {
             </td>
             <td class="px-4 py-4">
               <div class="text-sm text-dark-300">
-                <span>{{ vm.config.cpu_cores }} vCPU</span>
+                <span>{{ vm.config?.cpu_cores ?? 0 }} vCPU</span>
                 <span class="mx-2">•</span>
-                <span>{{ vm.config.memory_mb }} MB</span>
+                <span>{{ vm.config?.memory_mb ?? 0 }} MB</span>
                 <span class="mx-2">•</span>
-                <span>{{ vm.config.disk_gb }} GB</span>
+                <span>{{ vm.config?.disk_gb ?? 0 }} GB</span>
               </div>
             </td>
             <td class="px-4 py-4">

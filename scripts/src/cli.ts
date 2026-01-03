@@ -39,7 +39,8 @@ import { generateQemuScript, loadQemuConfig, generateNexaConfig } from './qemu.j
 import { 
   calculateCoverage, 
   CoverageStats, 
-  TestResult
+  TestResult,
+  getAvailableTargets,
 } from './coverage.js';
 import { generateHtmlReport } from './html-report.js';
 import { spawn } from 'child_process';
@@ -651,7 +652,7 @@ function formatUncoveredLines(lines: number[], maxLength: number = 25): string {
   return result;
 }
 
-// Generate text report (Jest-style with file details)
+// Generate text report (Jest-style with multi-target support)
 function generateTextReport(stats: CoverageStats, testResults: TestResult[], runResult: TestRunResult, verbose: boolean = false): string {
   const lines: string[] = [];
   
@@ -692,6 +693,35 @@ function generateTextReport(stats: CoverageStats, testResults: TestResult[], run
   const estimatedTime = (stats.totalTests * 0.001).toFixed(2);
   lines.push(color(c.bold, 'Time:   ') + color(c.dim, `${estimatedTime}s`));
   lines.push('');
+  
+  // Target summary (multi-target overview)
+  if (stats.targets && Object.keys(stats.targets).length > 0) {
+    lines.push(color(c.bold + c.cyan, '📊 Coverage by Target'));
+    lines.push('');
+    
+    const targetIcons: Record<string, string> = {
+      kernel: '🔧',
+      userspace: '📱',
+      modules: '🧩',
+      nvm: '☁️',
+    };
+    
+    for (const [targetName, target] of Object.entries(stats.targets)) {
+      const icon = targetIcons[targetName] || '📦';
+      const fPct = target.functionCoveragePct;
+      const fColor = fPct >= 70 ? c.green : fPct >= 40 ? c.yellow : c.red;
+      const testStatus = target.totalTests > 0 
+        ? `${target.passedTests}/${target.totalTests} tests`
+        : 'no tests';
+      
+      lines.push(
+        `  ${icon} ${color(c.bold, target.displayName.padEnd(25))}` +
+        color(fColor, `${fPct.toFixed(1)}%`.padStart(7)) +
+        color(c.dim, ` funcs  ${testStatus}`)
+      );
+    }
+    lines.push('');
+  }
   
   // Coverage summary table - Jest style with % Stmts, % Branch, % Funcs, % Lines, Uncovered Lines
   const sortedModules = Object.entries(stats.modules).sort((a, b) => a[0].localeCompare(b[0]));
@@ -868,6 +898,7 @@ coverageCmd
   .description('Run tests and generate coverage report')
   .option('-f, --format <format>', 'Output format: text, html, json', 'text')
   .option('-o, --output <path>', 'Output path for coverage report')
+  .option('-t, --target <target>', 'Analyze specific target: kernel, userspace, modules, nvm')
   .option('--open', 'Open HTML report in browser (html format only)')
   .option('--filter <pattern>', 'Run only tests matching pattern')
   .option('-v, --verbose', 'Show detailed build and test output')
@@ -880,10 +911,20 @@ coverageCmd
       process.exit(1);
     }
     
+    // Validate target option
+    if (options.target) {
+      const validTargets = ['kernel', 'userspace', 'modules', 'nvm'];
+      if (!validTargets.includes(options.target)) {
+        logger.error(`Invalid target: ${options.target}`);
+        logger.info(`Valid targets: ${validTargets.join(', ')}`);
+        process.exit(1);
+      }
+    }
+    
     logger.step('Running tests with coverage analysis...');
     
     const runResult = await runTests(projectRoot, options.filter, options.verbose);
-    const stats = calculateCoverage(projectRoot, runResult.tests);
+    const stats = calculateCoverage(projectRoot, runResult.tests, options.target);
     
     let report: string;
     let defaultOutput: string | null = null;
@@ -935,6 +976,7 @@ coverageCmd
   .command('html')
   .description('Generate HTML coverage report and open in browser')
   .option('-o, --output <path>', 'Output file', 'reports/coverage.html')
+  .option('-t, --target <target>', 'Analyze specific target: kernel, userspace, modules, nvm')
   .option('-v, --verbose', 'Show detailed build and test output')
   .action(async (options) => {
     const projectRoot = findProjectRoot();
@@ -948,7 +990,7 @@ coverageCmd
     logger.step('Generating HTML coverage report...');
     
     const runResult = await runTests(projectRoot, undefined, options.verbose);
-    const stats = calculateCoverage(projectRoot, runResult.tests);
+    const stats = calculateCoverage(projectRoot, runResult.tests, options.target);
     const report = generateHtmlReport(stats, runResult.tests);
     
     const outPath = resolve(projectRoot, options.output);
@@ -968,6 +1010,7 @@ coverageCmd
   .command('json')
   .description('Generate JSON coverage report')
   .option('-o, --output <path>', 'Output file', 'reports/coverage.json')
+  .option('-t, --target <target>', 'Analyze specific target: kernel, userspace, modules, nvm')
   .option('-v, --verbose', 'Show detailed build and test output')
   .action(async (options) => {
     const projectRoot = findProjectRoot();
@@ -981,7 +1024,7 @@ coverageCmd
     logger.step('Generating JSON coverage report...');
     
     const runResult = await runTests(projectRoot, undefined, options.verbose);
-    const stats = calculateCoverage(projectRoot, runResult.tests);
+    const stats = calculateCoverage(projectRoot, runResult.tests, options.target);
     const report = generateJsonReport(stats, runResult.tests);
     
     const outPath = resolve(projectRoot, options.output);
@@ -991,6 +1034,31 @@ coverageCmd
     }
     writeFileSync(outPath, report);
     logger.success(`JSON report generated: ${outPath}`);
+    process.exit(0);
+  });
+
+// coverage targets - list available targets
+coverageCmd
+  .command('targets')
+  .description('List available coverage targets')
+  .action(() => {
+    console.log('\n📋 Available Coverage Targets\n');
+    
+    const targetIcons: Record<string, string> = {
+      kernel: '🔧',
+      userspace: '📱',
+      modules: '🧩',
+      nvm: '☁️',
+    };
+    
+    for (const target of getAvailableTargets()) {
+      const icon = targetIcons[target.name] || '📦';
+      console.log(`  ${icon} ${color(c.bold, target.name.padEnd(12))} ${target.displayName}`);
+    }
+    
+    console.log('\nUsage: ./ndk cov run --target <target>');
+    console.log('       ./ndk cov html --target <target>');
+    console.log('');
     process.exit(0);
   });
 

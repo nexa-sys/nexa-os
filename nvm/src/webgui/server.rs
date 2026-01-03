@@ -345,6 +345,7 @@ impl WebGuiServer {
             .route("/vms/:id/clone", post(super::handlers::vm::clone))
             .route("/vms/:id/migrate", post(super::handlers::vm::migrate))
             .route("/vms/:id/console", get(super::handlers::vm::console_ticket))
+            .route("/vms/:id/console/ws", get(super::handlers::vm::console_ws))
             .route("/vms/:id/metrics", get(super::handlers::vm::metrics))
             // Templates
             .route("/templates", get(super::handlers::template::list))
