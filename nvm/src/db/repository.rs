@@ -1,44 +1,84 @@
 //! Database Repositories - Data Access Layer
 //!
 //! Provides async repository pattern for database operations.
+//! Supports both PostgreSQL and SQLite backends through unified traits.
 
 use super::models::*;
 use super::DatabaseError;
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-#[cfg(feature = "database")]
+#[cfg(feature = "postgres")]
 use sqlx::PgPool;
 
+#[cfg(feature = "sqlite")]
+use sqlx::SqlitePool;
+
 // ============================================================================
-// User Repository
+// Password Hashing Helpers
 // ============================================================================
 
+fn hash_password(password: &str) -> Result<String, DatabaseError> {
+    use argon2::{password_hash::SaltString, Argon2, PasswordHasher};
+    use rand::rngs::OsRng;
+
+    let salt = SaltString::generate(&mut OsRng);
+    let argon2 = Argon2::default();
+    argon2
+        .hash_password(password.as_bytes(), &salt)
+        .map_err(|e| DatabaseError::InvalidData(e.to_string()))
+        .map(|h| h.to_string())
+}
+
+fn verify_password(password: &str, hash: &str) -> bool {
+    use argon2::{Argon2, PasswordHash, PasswordVerifier};
+
+    let parsed_hash = match PasswordHash::new(hash) {
+        Ok(h) => h,
+        Err(_) => return false,
+    };
+    Argon2::default()
+        .verify_password(password.as_bytes(), &parsed_hash)
+        .is_ok()
+}
+
+// ============================================================================
+// User Repository Trait
+// ============================================================================
+
+/// Trait for user repository operations (database-agnostic)
+#[allow(async_fn_in_trait)]
+pub trait UserRepositoryTrait: Send + Sync {
+    async fn create(&self, user: &CreateUser) -> Result<User, DatabaseError>;
+    async fn find_by_id(&self, id: Uuid) -> Result<Option<User>, DatabaseError>;
+    async fn find_by_username(&self, username: &str) -> Result<Option<User>, DatabaseError>;
+    async fn verify_credentials(&self, username: &str, password: &str) -> Result<Option<User>, DatabaseError>;
+    async fn list(&self, offset: i64, limit: i64) -> Result<(Vec<User>, i64), DatabaseError>;
+    async fn update(&self, id: Uuid, update: &UpdateUser) -> Result<User, DatabaseError>;
+    async fn delete(&self, id: Uuid) -> Result<(), DatabaseError>;
+    async fn change_password(&self, id: Uuid, new_password: &str) -> Result<(), DatabaseError>;
+}
+
+// ============================================================================
+// PostgreSQL User Repository
+// ============================================================================
+
+#[cfg(feature = "postgres")]
 pub struct UserRepository {
-    #[cfg(feature = "database")]
     pool: PgPool,
 }
 
+#[cfg(feature = "postgres")]
 impl UserRepository {
-    #[cfg(feature = "database")]
-    pub fn new(pool: PgPool) -> Self {
+    pub fn new_pg(pool: PgPool) -> Self {
         Self { pool }
     }
+}
 
-    /// Create a new user
-    #[cfg(feature = "database")]
-    pub async fn create(&self, user: &CreateUser) -> Result<User, DatabaseError> {
-        use argon2::{password_hash::SaltString, Argon2, PasswordHasher};
-        use rand::rngs::OsRng;
-
-        // Hash password
-        let salt = SaltString::generate(&mut OsRng);
-        let argon2 = Argon2::default();
-        let password_hash = argon2
-            .hash_password(user.password.as_bytes(), &salt)
-            .map_err(|e| DatabaseError::InvalidData(e.to_string()))?
-            .to_string();
-
+#[cfg(feature = "postgres")]
+impl UserRepositoryTrait for UserRepository {
+    async fn create(&self, user: &CreateUser) -> Result<User, DatabaseError> {
+        let password_hash = hash_password(&user.password)?;
         let id = Uuid::new_v4();
         let now = Utc::now();
 
@@ -63,9 +103,7 @@ impl UserRepository {
         Ok(result)
     }
 
-    /// Find user by ID
-    #[cfg(feature = "database")]
-    pub async fn find_by_id(&self, id: Uuid) -> Result<Option<User>, DatabaseError> {
+    async fn find_by_id(&self, id: Uuid) -> Result<Option<User>, DatabaseError> {
         let result = sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = $1")
             .bind(id)
             .fetch_optional(&self.pool)
@@ -73,9 +111,7 @@ impl UserRepository {
         Ok(result)
     }
 
-    /// Find user by username
-    #[cfg(feature = "database")]
-    pub async fn find_by_username(&self, username: &str) -> Result<Option<User>, DatabaseError> {
+    async fn find_by_username(&self, username: &str) -> Result<Option<User>, DatabaseError> {
         let result = sqlx::query_as::<_, User>("SELECT * FROM users WHERE username = $1")
             .bind(username)
             .fetch_optional(&self.pool)
@@ -83,66 +119,38 @@ impl UserRepository {
         Ok(result)
     }
 
-    /// Verify password and return user if valid
-    #[cfg(feature = "database")]
-    pub async fn verify_credentials(
-        &self,
-        username: &str,
-        password: &str,
-    ) -> Result<Option<User>, DatabaseError> {
-        use argon2::{Argon2, PasswordHash, PasswordVerifier};
-
+    async fn verify_credentials(&self, username: &str, password: &str) -> Result<Option<User>, DatabaseError> {
         let user = match self.find_by_username(username).await? {
             Some(u) => u,
             None => return Ok(None),
         };
 
-        // Check if account is locked or inactive
         if user.is_locked || !user.is_active {
             return Ok(None);
         }
 
-        // Verify password
-        let parsed_hash = PasswordHash::new(&user.password_hash)
-            .map_err(|e| DatabaseError::InvalidData(e.to_string()))?;
-
-        if Argon2::default()
-            .verify_password(password.as_bytes(), &parsed_hash)
-            .is_ok()
-        {
-            // Update last login and reset failed attempts
-            sqlx::query(
-                "UPDATE users SET last_login = $1, failed_login_attempts = 0 WHERE id = $2",
-            )
-            .bind(Utc::now())
-            .bind(user.id)
-            .execute(&self.pool)
-            .await?;
-
+        if verify_password(password, &user.password_hash) {
+            sqlx::query("UPDATE users SET last_login = $1, failed_login_attempts = 0 WHERE id = $2")
+                .bind(Utc::now())
+                .bind(user.id)
+                .execute(&self.pool)
+                .await?;
             Ok(Some(user))
         } else {
-            // Increment failed attempts
             sqlx::query(
                 "UPDATE users SET failed_login_attempts = failed_login_attempts + 1, 
-                 is_locked = (failed_login_attempts >= 5) WHERE id = $1",
+                 is_locked = (failed_login_attempts >= 5) WHERE id = $1"
             )
             .bind(user.id)
             .execute(&self.pool)
             .await?;
-
             Ok(None)
         }
     }
 
-    /// List all users with pagination
-    #[cfg(feature = "database")]
-    pub async fn list(
-        &self,
-        offset: i64,
-        limit: i64,
-    ) -> Result<(Vec<User>, i64), DatabaseError> {
+    async fn list(&self, offset: i64, limit: i64) -> Result<(Vec<User>, i64), DatabaseError> {
         let users = sqlx::query_as::<_, User>(
-            "SELECT * FROM users ORDER BY created_at DESC OFFSET $1 LIMIT $2",
+            "SELECT * FROM users ORDER BY created_at DESC OFFSET $1 LIMIT $2"
         )
         .bind(offset)
         .bind(limit)
@@ -156,9 +164,7 @@ impl UserRepository {
         Ok((users, count.0))
     }
 
-    /// Update user
-    #[cfg(feature = "database")]
-    pub async fn update(&self, id: Uuid, update: &UpdateUser) -> Result<User, DatabaseError> {
+    async fn update(&self, id: Uuid, update: &UpdateUser) -> Result<User, DatabaseError> {
         let user = self.find_by_id(id).await?.ok_or(DatabaseError::NotFound)?;
 
         let email = update.email.as_ref().unwrap_or(&user.email);
@@ -186,9 +192,7 @@ impl UserRepository {
         Ok(result)
     }
 
-    /// Delete user
-    #[cfg(feature = "database")]
-    pub async fn delete(&self, id: Uuid) -> Result<(), DatabaseError> {
+    async fn delete(&self, id: Uuid) -> Result<(), DatabaseError> {
         let result = sqlx::query("DELETE FROM users WHERE id = $1")
             .bind(id)
             .execute(&self.pool)
@@ -197,64 +201,267 @@ impl UserRepository {
         if result.rows_affected() == 0 {
             return Err(DatabaseError::NotFound);
         }
-
         Ok(())
     }
 
-    /// Change user password
-    #[cfg(feature = "database")]
-    pub async fn change_password(
-        &self,
-        id: Uuid,
-        new_password: &str,
-    ) -> Result<(), DatabaseError> {
-        use argon2::{password_hash::SaltString, Argon2, PasswordHasher};
-        use rand::rngs::OsRng;
-
-        let salt = SaltString::generate(&mut OsRng);
-        let argon2 = Argon2::default();
-        let password_hash = argon2
-            .hash_password(new_password.as_bytes(), &salt)
-            .map_err(|e| DatabaseError::InvalidData(e.to_string()))?
-            .to_string();
-
+    async fn change_password(&self, id: Uuid, new_password: &str) -> Result<(), DatabaseError> {
+        let password_hash = hash_password(new_password)?;
         sqlx::query(
-            "UPDATE users SET password_hash = $1, last_password_change = $2, updated_at = $2 WHERE id = $3",
+            "UPDATE users SET password_hash = $1, last_password_change = $2, updated_at = $2 WHERE id = $3"
         )
         .bind(&password_hash)
         .bind(Utc::now())
         .bind(id)
         .execute(&self.pool)
         .await?;
-
         Ok(())
     }
 }
 
 // ============================================================================
-// Session Repository
+// SQLite User Repository
 // ============================================================================
 
+#[cfg(feature = "sqlite")]
+pub struct SqliteUserRepository {
+    pool: SqlitePool,
+}
+
+#[cfg(feature = "sqlite")]
+impl SqliteUserRepository {
+    pub fn new_sqlite(pool: SqlitePool) -> Self {
+        Self { pool }
+    }
+}
+
+#[cfg(feature = "sqlite")]
+impl UserRepositoryTrait for SqliteUserRepository {
+    async fn create(&self, user: &CreateUser) -> Result<User, DatabaseError> {
+        let password_hash = hash_password(&user.password)?;
+        let id = Uuid::new_v4();
+        let now = Utc::now();
+
+        // SQLite doesn't support RETURNING *, so we insert then select
+        sqlx::query(
+            r#"
+            INSERT INTO users (id, username, email, password_hash, display_name, role, 
+                              is_active, is_locked, failed_login_attempts, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, 1, 0, 0, ?, ?)
+            "#,
+        )
+        .bind(id.to_string())
+        .bind(&user.username)
+        .bind(&user.email)
+        .bind(&password_hash)
+        .bind(&user.display_name)
+        .bind(user.role.to_string())
+        .bind(now.to_rfc3339())
+        .bind(now.to_rfc3339())
+        .execute(&self.pool)
+        .await?;
+
+        self.find_by_id(id).await?.ok_or(DatabaseError::NotFound)
+    }
+
+    async fn find_by_id(&self, id: Uuid) -> Result<Option<User>, DatabaseError> {
+        let row = sqlx::query_as::<_, SqliteUserRow>("SELECT * FROM users WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|r| r.into()))
+    }
+
+    async fn find_by_username(&self, username: &str) -> Result<Option<User>, DatabaseError> {
+        let row = sqlx::query_as::<_, SqliteUserRow>("SELECT * FROM users WHERE username = ?")
+            .bind(username)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|r| r.into()))
+    }
+
+    async fn verify_credentials(&self, username: &str, password: &str) -> Result<Option<User>, DatabaseError> {
+        let user = match self.find_by_username(username).await? {
+            Some(u) => u,
+            None => return Ok(None),
+        };
+
+        if user.is_locked || !user.is_active {
+            return Ok(None);
+        }
+
+        if verify_password(password, &user.password_hash) {
+            sqlx::query("UPDATE users SET last_login = ?, failed_login_attempts = 0 WHERE id = ?")
+                .bind(Utc::now().to_rfc3339())
+                .bind(user.id.to_string())
+                .execute(&self.pool)
+                .await?;
+            Ok(Some(user))
+        } else {
+            sqlx::query(
+                "UPDATE users SET failed_login_attempts = failed_login_attempts + 1, 
+                 is_locked = CASE WHEN failed_login_attempts >= 5 THEN 1 ELSE 0 END WHERE id = ?"
+            )
+            .bind(user.id.to_string())
+            .execute(&self.pool)
+            .await?;
+            Ok(None)
+        }
+    }
+
+    async fn list(&self, offset: i64, limit: i64) -> Result<(Vec<User>, i64), DatabaseError> {
+        let rows = sqlx::query_as::<_, SqliteUserRow>(
+            "SELECT * FROM users ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users")
+            .fetch_one(&self.pool)
+            .await?;
+
+        Ok((rows.into_iter().map(|r| r.into()).collect(), count.0))
+    }
+
+    async fn update(&self, id: Uuid, update: &UpdateUser) -> Result<User, DatabaseError> {
+        let user = self.find_by_id(id).await?.ok_or(DatabaseError::NotFound)?;
+
+        let email = update.email.as_ref().unwrap_or(&user.email);
+        let display_name = update.display_name.as_ref().or(user.display_name.as_ref());
+        let role = update.role.unwrap_or(user.role);
+        let is_active = update.is_active.unwrap_or(user.is_active);
+
+        sqlx::query(
+            "UPDATE users SET email = ?, display_name = ?, role = ?, is_active = ?, updated_at = ? WHERE id = ?"
+        )
+        .bind(email)
+        .bind(display_name)
+        .bind(role.to_string())
+        .bind(if is_active { 1i32 } else { 0i32 })
+        .bind(Utc::now().to_rfc3339())
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await?;
+
+        self.find_by_id(id).await?.ok_or(DatabaseError::NotFound)
+    }
+
+    async fn delete(&self, id: Uuid) -> Result<(), DatabaseError> {
+        let result = sqlx::query("DELETE FROM users WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(DatabaseError::NotFound);
+        }
+        Ok(())
+    }
+
+    async fn change_password(&self, id: Uuid, new_password: &str) -> Result<(), DatabaseError> {
+        let password_hash = hash_password(new_password)?;
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "UPDATE users SET password_hash = ?, last_password_change = ?, updated_at = ? WHERE id = ?"
+        )
+        .bind(&password_hash)
+        .bind(&now)
+        .bind(&now)
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+}
+
+// SQLite row type for User (handles type conversions)
+#[cfg(feature = "sqlite")]
+#[derive(sqlx::FromRow)]
+struct SqliteUserRow {
+    id: String,
+    username: String,
+    email: String,
+    password_hash: String,
+    display_name: Option<String>,
+    role: String,
+    is_active: i32,
+    is_locked: i32,
+    failed_login_attempts: i32,
+    last_login: Option<String>,
+    last_password_change: Option<String>,
+    created_at: String,
+    updated_at: String,
+    created_by: Option<String>,
+}
+
+#[cfg(feature = "sqlite")]
+impl From<SqliteUserRow> for User {
+    fn from(row: SqliteUserRow) -> Self {
+        use std::str::FromStr;
+        User {
+            id: Uuid::parse_str(&row.id).unwrap_or_default(),
+            username: row.username,
+            email: row.email,
+            password_hash: row.password_hash,
+            display_name: row.display_name,
+            role: match row.role.as_str() {
+                "admin" => UserRole::Admin,
+                "operator" => UserRole::Operator,
+                "auditor" => UserRole::Auditor,
+                _ => UserRole::Viewer,
+            },
+            is_active: row.is_active != 0,
+            is_locked: row.is_locked != 0,
+            failed_login_attempts: row.failed_login_attempts,
+            last_login: row.last_login.and_then(|s| DateTime::parse_from_rfc3339(&s).ok().map(|d| d.with_timezone(&Utc))),
+            last_password_change: row.last_password_change.and_then(|s| DateTime::parse_from_rfc3339(&s).ok().map(|d| d.with_timezone(&Utc))),
+            created_at: DateTime::parse_from_rfc3339(&row.created_at).map(|d| d.with_timezone(&Utc)).unwrap_or_else(|_| Utc::now()),
+            updated_at: DateTime::parse_from_rfc3339(&row.updated_at).map(|d| d.with_timezone(&Utc)).unwrap_or_else(|_| Utc::now()),
+            created_by: row.created_by.and_then(|s| Uuid::parse_str(&s).ok()),
+        }
+    }
+}
+
+// ============================================================================
+// Unified Repository Constructor
+// ============================================================================
+
+#[cfg(feature = "postgres")]
+impl UserRepository {
+    pub fn new(pool: PgPool) -> Self {
+        Self::new_pg(pool)
+    }
+}
+
+#[cfg(feature = "sqlite")]
+impl SqliteUserRepository {
+    pub fn new(pool: SqlitePool) -> Self {
+        Self::new_sqlite(pool)
+    }
+}
+
+// ============================================================================
+// Session Repository (simplified - PostgreSQL only for now)
+// ============================================================================
+
+#[cfg(feature = "postgres")]
 pub struct SessionRepository {
-    #[cfg(feature = "database")]
     pool: PgPool,
 }
 
+#[cfg(feature = "postgres")]
 impl SessionRepository {
-    #[cfg(feature = "database")]
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
     }
 
-    /// Create a new session
-    #[cfg(feature = "database")]
     pub async fn create(&self, session: &CreateSession) -> Result<DbSession, DatabaseError> {
         use sha2::{Digest, Sha256};
 
         let id = Uuid::new_v4();
         let now = Utc::now();
 
-        // Hash the token for storage
         let mut hasher = Sha256::new();
         hasher.update(session.token.as_bytes());
         let token_hash = hex::encode(hasher.finalize());
@@ -281,8 +488,6 @@ impl SessionRepository {
         Ok(result)
     }
 
-    /// Find session by token (verifies hash)
-    #[cfg(feature = "database")]
     pub async fn find_by_token(&self, token: &str) -> Result<Option<DbSession>, DatabaseError> {
         use sha2::{Digest, Sha256};
 
@@ -291,7 +496,7 @@ impl SessionRepository {
         let token_hash = hex::encode(hasher.finalize());
 
         let result = sqlx::query_as::<_, DbSession>(
-            "SELECT * FROM sessions WHERE token_hash = $1 AND is_revoked = false AND expires_at > $2",
+            "SELECT * FROM sessions WHERE token_hash = $1 AND is_revoked = false AND expires_at > $2"
         )
         .bind(&token_hash)
         .bind(Utc::now())
@@ -301,19 +506,6 @@ impl SessionRepository {
         Ok(result)
     }
 
-    /// Update last activity
-    #[cfg(feature = "database")]
-    pub async fn touch(&self, id: Uuid) -> Result<(), DatabaseError> {
-        sqlx::query("UPDATE sessions SET last_activity = $1 WHERE id = $2")
-            .bind(Utc::now())
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
-    }
-
-    /// Revoke session
-    #[cfg(feature = "database")]
     pub async fn revoke(&self, id: Uuid) -> Result<(), DatabaseError> {
         sqlx::query("UPDATE sessions SET is_revoked = true WHERE id = $1")
             .bind(id)
@@ -322,18 +514,6 @@ impl SessionRepository {
         Ok(())
     }
 
-    /// Revoke all sessions for user
-    #[cfg(feature = "database")]
-    pub async fn revoke_all_for_user(&self, user_id: Uuid) -> Result<u64, DatabaseError> {
-        let result = sqlx::query("UPDATE sessions SET is_revoked = true WHERE user_id = $1")
-            .bind(user_id)
-            .execute(&self.pool)
-            .await?;
-        Ok(result.rows_affected())
-    }
-
-    /// Cleanup expired sessions
-    #[cfg(feature = "database")]
     pub async fn cleanup_expired(&self) -> Result<u64, DatabaseError> {
         let result = sqlx::query("DELETE FROM sessions WHERE expires_at < $1 OR is_revoked = true")
             .bind(Utc::now())
@@ -344,22 +524,79 @@ impl SessionRepository {
 }
 
 // ============================================================================
-// Audit Log Repository
+// Settings Repository
 // ============================================================================
 
-pub struct AuditLogRepository {
-    #[cfg(feature = "database")]
+#[cfg(feature = "postgres")]
+pub struct SettingsRepository {
     pool: PgPool,
 }
 
-impl AuditLogRepository {
-    #[cfg(feature = "database")]
+#[cfg(feature = "postgres")]
+impl SettingsRepository {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
     }
 
-    /// Create audit log entry
-    #[cfg(feature = "database")]
+    pub async fn get(&self, key: &str) -> Result<Option<Setting>, DatabaseError> {
+        let result = sqlx::query_as::<_, Setting>("SELECT * FROM settings WHERE key = $1")
+            .bind(key)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(result)
+    }
+
+    pub async fn set(
+        &self,
+        key: &str,
+        value: serde_json::Value,
+        user_id: Option<Uuid>,
+    ) -> Result<Setting, DatabaseError> {
+        let result = sqlx::query_as::<_, Setting>(
+            r#"
+            INSERT INTO settings (key, value, updated_at, updated_by)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (key) DO UPDATE
+            SET value = $2, updated_at = $3, updated_by = $4
+            RETURNING *
+            "#,
+        )
+        .bind(key)
+        .bind(&value)
+        .bind(Utc::now())
+        .bind(user_id)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(result)
+    }
+
+    pub async fn get_by_category(&self, category: &str) -> Result<Vec<Setting>, DatabaseError> {
+        let results = sqlx::query_as::<_, Setting>(
+            "SELECT * FROM settings WHERE category = $1 ORDER BY key"
+        )
+        .bind(category)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(results)
+    }
+}
+
+// ============================================================================
+// Audit Log Repository  
+// ============================================================================
+
+#[cfg(feature = "postgres")]
+pub struct AuditLogRepository {
+    pool: PgPool,
+}
+
+#[cfg(feature = "postgres")]
+impl AuditLogRepository {
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+
     pub async fn create(&self, entry: &CreateAuditLog) -> Result<AuditLog, DatabaseError> {
         let id = Uuid::new_v4();
         let now = Utc::now();
@@ -390,149 +627,5 @@ impl AuditLogRepository {
         .await?;
 
         Ok(result)
-    }
-
-    /// Search audit logs with filters
-    #[cfg(feature = "database")]
-    pub async fn search(
-        &self,
-        user_id: Option<Uuid>,
-        action: Option<&str>,
-        resource_type: Option<&str>,
-        from: Option<chrono::DateTime<Utc>>,
-        to: Option<chrono::DateTime<Utc>>,
-        offset: i64,
-        limit: i64,
-    ) -> Result<(Vec<AuditLog>, i64), DatabaseError> {
-        // Build dynamic query
-        let mut conditions = vec!["1=1".to_string()];
-        let mut param_idx = 1;
-
-        if user_id.is_some() {
-            conditions.push(format!("user_id = ${}", param_idx));
-            param_idx += 1;
-        }
-        if action.is_some() {
-            conditions.push(format!("action LIKE ${}", param_idx));
-            param_idx += 1;
-        }
-        if resource_type.is_some() {
-            conditions.push(format!("resource_type = ${}", param_idx));
-            param_idx += 1;
-        }
-        if from.is_some() {
-            conditions.push(format!("timestamp >= ${}", param_idx));
-            param_idx += 1;
-        }
-        if to.is_some() {
-            conditions.push(format!("timestamp <= ${}", param_idx));
-            param_idx += 1;
-        }
-
-        let where_clause = conditions.join(" AND ");
-        let query = format!(
-            "SELECT * FROM audit_logs WHERE {} ORDER BY timestamp DESC OFFSET ${} LIMIT ${}",
-            where_clause,
-            param_idx,
-            param_idx + 1
-        );
-
-        let mut query_builder = sqlx::query_as::<_, AuditLog>(&query);
-
-        if let Some(uid) = user_id {
-            query_builder = query_builder.bind(uid);
-        }
-        if let Some(a) = action {
-            query_builder = query_builder.bind(format!("%{}%", a));
-        }
-        if let Some(rt) = resource_type {
-            query_builder = query_builder.bind(rt);
-        }
-        if let Some(f) = from {
-            query_builder = query_builder.bind(f);
-        }
-        if let Some(t) = to {
-            query_builder = query_builder.bind(t);
-        }
-
-        let logs = query_builder
-            .bind(offset)
-            .bind(limit)
-            .fetch_all(&self.pool)
-            .await?;
-
-        // Get total count (simplified - in production use separate count query)
-        let count_query = format!("SELECT COUNT(*) FROM audit_logs WHERE {}", where_clause);
-        let count: (i64,) = sqlx::query_as(&count_query)
-            .fetch_one(&self.pool)
-            .await
-            .unwrap_or((0,));
-
-        Ok((logs, count.0))
-    }
-}
-
-// ============================================================================
-// Settings Repository
-// ============================================================================
-
-pub struct SettingsRepository {
-    #[cfg(feature = "database")]
-    pool: PgPool,
-}
-
-impl SettingsRepository {
-    #[cfg(feature = "database")]
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
-    }
-
-    /// Get setting by key
-    #[cfg(feature = "database")]
-    pub async fn get(&self, key: &str) -> Result<Option<Setting>, DatabaseError> {
-        let result = sqlx::query_as::<_, Setting>("SELECT * FROM settings WHERE key = $1")
-            .bind(key)
-            .fetch_optional(&self.pool)
-            .await?;
-        Ok(result)
-    }
-
-    /// Set setting value
-    #[cfg(feature = "database")]
-    pub async fn set(
-        &self,
-        key: &str,
-        value: serde_json::Value,
-        user_id: Option<Uuid>,
-    ) -> Result<Setting, DatabaseError> {
-        let result = sqlx::query_as::<_, Setting>(
-            r#"
-            INSERT INTO settings (key, value, updated_at, updated_by)
-            VALUES ($1, $2, $3, $4)
-            ON CONFLICT (key) DO UPDATE
-            SET value = $2, updated_at = $3, updated_by = $4
-            RETURNING *
-            "#,
-        )
-        .bind(key)
-        .bind(&value)
-        .bind(Utc::now())
-        .bind(user_id)
-        .fetch_one(&self.pool)
-        .await?;
-
-        Ok(result)
-    }
-
-    /// Get all settings by category
-    #[cfg(feature = "database")]
-    pub async fn get_by_category(&self, category: &str) -> Result<Vec<Setting>, DatabaseError> {
-        let results = sqlx::query_as::<_, Setting>(
-            "SELECT * FROM settings WHERE category = $1 ORDER BY key",
-        )
-        .bind(category)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(results)
     }
 }

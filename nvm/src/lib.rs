@@ -146,8 +146,8 @@ pub mod backup;
 pub mod tenant;
 pub mod api;
 
-// Database backend (PostgreSQL)
-#[cfg(feature = "database")]
+// Database backend (PostgreSQL or SQLite)
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
 pub mod db;
 
 // New Enterprise Platform Features (v2.0)

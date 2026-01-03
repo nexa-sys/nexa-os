@@ -234,15 +234,16 @@ impl WebGuiServer {
         let state = self.state.clone();
 
         // Initialize database if enabled
-        #[cfg(feature = "database")]
+        #[cfg(any(feature = "postgres", feature = "sqlite"))]
         {
             use crate::db::{DatabaseConfig, init_database};
             
-            let db_config = DatabaseConfig::default();
-            log::info!("Connecting to PostgreSQL database...");
+            // Use development config (auto-detect backend, SQLite fallback)
+            let db_config = DatabaseConfig::development();
+            log::info!("Connecting to database (auto-detect mode)...");
             
             match init_database(db_config).await {
-                Ok(_) => log::info!("Database initialized successfully (default admin: admin/admin123)"),
+                Ok(_) => log::info!("Database initialized successfully"),
                 Err(e) => log::warn!("Database init failed (using fallback auth): {}", e),
             }
         }
@@ -300,7 +301,7 @@ impl WebGuiServer {
 
         let mut database_ok = false;
         
-        #[cfg(feature = "database")]
+        #[cfg(any(feature = "postgres", feature = "sqlite"))]
         {
             use crate::db::DB;
             if let Some(db) = DB.read().as_ref() {

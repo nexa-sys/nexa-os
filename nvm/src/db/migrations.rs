@@ -1,16 +1,37 @@
 //! Database Migrations - Schema Management
 //!
 //! Embedded SQL migrations that run automatically on startup.
+//! Supports both PostgreSQL and SQLite with automatic dialect detection.
 
-use super::DatabaseError;
+use super::{DatabaseError, UnifiedPool, DatabaseBackend};
 
-#[cfg(feature = "database")]
-use sqlx::PgPool;
+#[cfg(feature = "postgres")]
+use sqlx::postgres::PgPool;
 
-/// Run all migrations
-#[cfg(feature = "database")]
-pub async fn run_migrations(pool: &PgPool) -> Result<(), DatabaseError> {
-    log::info!("Running database migrations...");
+#[cfg(feature = "sqlite")]
+use sqlx::sqlite::SqlitePool;
+
+/// Run all migrations for the given pool
+pub async fn run_migrations(pool: &UnifiedPool) -> Result<(), DatabaseError> {
+    match pool.backend_type() {
+        #[cfg(feature = "postgres")]
+        Some(DatabaseBackend::PostgreSQL) => {
+            let pg = pool.as_postgres()?;
+            run_postgres_migrations(pg).await
+        }
+        #[cfg(feature = "sqlite")]
+        Some(DatabaseBackend::SQLite | DatabaseBackend::SQLiteMemory) => {
+            let sqlite = pool.as_sqlite()?;
+            run_sqlite_migrations(sqlite).await
+        }
+        _ => Err(DatabaseError::NotConnected),
+    }
+}
+
+/// Run PostgreSQL-specific migrations
+#[cfg(feature = "postgres")]
+async fn run_postgres_migrations(pool: &PgPool) -> Result<(), DatabaseError> {
+    log::info!("Running PostgreSQL migrations...");
 
     // Create migrations tracking table
     sqlx::query(
@@ -27,7 +48,7 @@ pub async fn run_migrations(pool: &PgPool) -> Result<(), DatabaseError> {
     .map_err(|e| DatabaseError::MigrationFailed(e.to_string()))?;
 
     // Run each migration if not already applied
-    let migrations = get_migrations();
+    let migrations = get_postgres_migrations();
     
     for (name, sql) in migrations {
         let applied: Option<(i32,)> = sqlx::query_as(
@@ -39,7 +60,7 @@ pub async fn run_migrations(pool: &PgPool) -> Result<(), DatabaseError> {
         .map_err(|e| DatabaseError::MigrationFailed(e.to_string()))?;
 
         if applied.is_none() {
-            log::info!("Applying migration: {}", name);
+            log::info!("Applying PostgreSQL migration: {}", name);
             
             sqlx::query(sql)
                 .execute(pool)
@@ -54,29 +75,105 @@ pub async fn run_migrations(pool: &PgPool) -> Result<(), DatabaseError> {
         }
     }
 
-    log::info!("Database migrations complete");
+    log::info!("PostgreSQL migrations complete");
     Ok(())
 }
 
-/// Get all migrations in order
-fn get_migrations() -> Vec<(&'static str, &'static str)> {
+/// Run SQLite-specific migrations
+#[cfg(feature = "sqlite")]
+async fn run_sqlite_migrations(pool: &SqlitePool) -> Result<(), DatabaseError> {
+    log::info!("Running SQLite migrations...");
+
+    // Create migrations tracking table
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS _migrations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            applied_at TEXT DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| DatabaseError::MigrationFailed(e.to_string()))?;
+
+    // Run each migration if not already applied
+    let migrations = get_sqlite_migrations();
+    
+    for (name, sql) in migrations {
+        let applied: Option<(i32,)> = sqlx::query_as(
+            "SELECT id FROM _migrations WHERE name = ?"
+        )
+        .bind(name)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| DatabaseError::MigrationFailed(e.to_string()))?;
+
+        if applied.is_none() {
+            log::info!("Applying SQLite migration: {}", name);
+            
+            // SQLite doesn't support multiple statements well, so split them
+            for statement in sql.split(';').filter(|s| !s.trim().is_empty()) {
+                sqlx::query(statement.trim())
+                    .execute(pool)
+                    .await
+                    .map_err(|e| DatabaseError::MigrationFailed(format!("{}: {}", name, e)))?;
+            }
+
+            sqlx::query("INSERT INTO _migrations (name) VALUES (?)")
+                .bind(name)
+                .execute(pool)
+                .await
+                .map_err(|e| DatabaseError::MigrationFailed(e.to_string()))?;
+        }
+    }
+
+    log::info!("SQLite migrations complete");
+    Ok(())
+}
+
+// ============================================================================
+// PostgreSQL Migrations
+// ============================================================================
+
+#[cfg(feature = "postgres")]
+fn get_postgres_migrations() -> Vec<(&'static str, &'static str)> {
     vec![
-        ("001_create_enums", MIGRATION_001_ENUMS),
-        ("002_create_users", MIGRATION_002_USERS),
-        ("003_create_sessions", MIGRATION_003_SESSIONS),
-        ("004_create_audit_logs", MIGRATION_004_AUDIT_LOGS),
-        ("005_create_settings", MIGRATION_005_SETTINGS),
-        ("006_create_vms", MIGRATION_006_VMS),
-        ("007_create_api_keys", MIGRATION_007_API_KEYS),
-        ("008_create_indexes", MIGRATION_008_INDEXES),
+        ("001_create_enums", PG_MIGRATION_001_ENUMS),
+        ("002_create_users", PG_MIGRATION_002_USERS),
+        ("003_create_sessions", PG_MIGRATION_003_SESSIONS),
+        ("004_create_audit_logs", PG_MIGRATION_004_AUDIT_LOGS),
+        ("005_create_settings", PG_MIGRATION_005_SETTINGS),
+        ("006_create_vms", PG_MIGRATION_006_VMS),
+        ("007_create_api_keys", PG_MIGRATION_007_API_KEYS),
+        ("008_create_indexes", PG_MIGRATION_008_INDEXES),
     ]
 }
 
 // ============================================================================
-// Migration SQL
+// SQLite Migrations
 // ============================================================================
 
-const MIGRATION_001_ENUMS: &str = r#"
+#[cfg(feature = "sqlite")]
+fn get_sqlite_migrations() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("001_create_users", SQLITE_MIGRATION_001_USERS),
+        ("002_create_sessions", SQLITE_MIGRATION_002_SESSIONS),
+        ("003_create_audit_logs", SQLITE_MIGRATION_003_AUDIT_LOGS),
+        ("004_create_settings", SQLITE_MIGRATION_004_SETTINGS),
+        ("005_create_vms", SQLITE_MIGRATION_005_VMS),
+        ("006_create_api_keys", SQLITE_MIGRATION_006_API_KEYS),
+        ("007_create_indexes", SQLITE_MIGRATION_007_INDEXES),
+    ]
+}
+
+// ============================================================================
+// PostgreSQL Migration SQL
+// ============================================================================
+
+#[cfg(feature = "postgres")]
+const PG_MIGRATION_001_ENUMS: &str = r#"
 -- User roles enum
 DO $$ BEGIN
     CREATE TYPE user_role AS ENUM ('admin', 'operator', 'viewer', 'auditor');
@@ -92,7 +189,8 @@ EXCEPTION
 END $$;
 "#;
 
-const MIGRATION_002_USERS: &str = r#"
+#[cfg(feature = "postgres")]
+const PG_MIGRATION_002_USERS: &str = r#"
 CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY,
     username VARCHAR(64) NOT NULL UNIQUE,
@@ -113,13 +211,12 @@ CREATE TABLE IF NOT EXISTS users (
     CONSTRAINT email_format CHECK (email ~* '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$')
 );
 
--- Add comments
 COMMENT ON TABLE users IS 'User accounts for NVM platform';
 COMMENT ON COLUMN users.password_hash IS 'Argon2id hashed password';
-COMMENT ON COLUMN users.failed_login_attempts IS 'Counter for account lockout (locks at 5)';
 "#;
 
-const MIGRATION_003_SESSIONS: &str = r#"
+#[cfg(feature = "postgres")]
+const PG_MIGRATION_003_SESSIONS: &str = r#"
 CREATE TABLE IF NOT EXISTS sessions (
     id UUID PRIMARY KEY,
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -135,13 +232,10 @@ CREATE TABLE IF NOT EXISTS sessions (
 
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(token_hash);
-CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at) WHERE is_revoked = false;
-
-COMMENT ON TABLE sessions IS 'User authentication sessions';
-COMMENT ON COLUMN sessions.token_hash IS 'SHA-256 hash of session token';
 "#;
 
-const MIGRATION_004_AUDIT_LOGS: &str = r#"
+#[cfg(feature = "postgres")]
+const PG_MIGRATION_004_AUDIT_LOGS: &str = r#"
 CREATE TABLE IF NOT EXISTS audit_logs (
     id UUID PRIMARY KEY,
     timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -157,15 +251,10 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     status audit_status NOT NULL DEFAULT 'success',
     error_message TEXT
 );
-
--- Partition by month for large deployments (optional)
--- CREATE TABLE audit_logs_2024_01 PARTITION OF audit_logs
---     FOR VALUES FROM ('2024-01-01') TO ('2024-02-01');
-
-COMMENT ON TABLE audit_logs IS 'Security and operational audit trail';
 "#;
 
-const MIGRATION_005_SETTINGS: &str = r#"
+#[cfg(feature = "postgres")]
+const PG_MIGRATION_005_SETTINGS: &str = r#"
 CREATE TABLE IF NOT EXISTS settings (
     key VARCHAR(128) PRIMARY KEY,
     value JSONB NOT NULL,
@@ -176,27 +265,20 @@ CREATE TABLE IF NOT EXISTS settings (
     updated_by UUID REFERENCES users(id) ON DELETE SET NULL
 );
 
--- Insert default settings
 INSERT INTO settings (key, value, description, category) VALUES
     ('system.name', '"NVM Enterprise"', 'System display name', 'general'),
     ('system.timezone', '"UTC"', 'Default timezone', 'general'),
-    ('auth.session_timeout', '28800', 'Session timeout in seconds (8 hours)', 'auth'),
-    ('auth.max_sessions_per_user', '10', 'Maximum concurrent sessions', 'auth'),
-    ('auth.require_2fa', 'false', 'Require two-factor authentication', 'auth'),
-    ('auth.password_min_length', '8', 'Minimum password length', 'auth'),
-    ('backup.retention_days', '30', 'Backup retention period', 'backup'),
-    ('cluster.heartbeat_interval', '5', 'Cluster heartbeat interval (seconds)', 'cluster'),
+    ('auth.session_timeout', '28800', 'Session timeout in seconds', 'auth'),
     ('vm.default_memory_mb', '2048', 'Default VM memory', 'vm'),
     ('vm.default_vcpus', '2', 'Default VM vCPUs', 'vm')
 ON CONFLICT (key) DO NOTHING;
-
-COMMENT ON TABLE settings IS 'System configuration settings';
 "#;
 
-const MIGRATION_006_VMS: &str = r#"
+#[cfg(feature = "postgres")]
+const PG_MIGRATION_006_VMS: &str = r#"
 CREATE TABLE IF NOT EXISTS vms (
     id UUID PRIMARY KEY,
-    name VARCHAR(64) NOT NULL,
+    name VARCHAR(64) NOT NULL UNIQUE,
     description TEXT,
     vcpus INTEGER NOT NULL DEFAULT 2,
     memory_mb BIGINT NOT NULL DEFAULT 2048,
@@ -209,21 +291,12 @@ CREATE TABLE IF NOT EXISTS vms (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     created_by UUID REFERENCES users(id) ON DELETE SET NULL,
     tags JSONB DEFAULT '[]',
-    config JSONB DEFAULT '{}',
-    
-    CONSTRAINT vm_name_unique UNIQUE (name),
-    CONSTRAINT vcpus_positive CHECK (vcpus > 0),
-    CONSTRAINT memory_positive CHECK (memory_mb > 0)
+    config JSONB DEFAULT '{}'
 );
-
-CREATE INDEX IF NOT EXISTS idx_vms_status ON vms(status);
-CREATE INDEX IF NOT EXISTS idx_vms_node ON vms(node_id);
-CREATE INDEX IF NOT EXISTS idx_vms_created_by ON vms(created_by);
-
-COMMENT ON TABLE vms IS 'Virtual machine definitions';
 "#;
 
-const MIGRATION_007_API_KEYS: &str = r#"
+#[cfg(feature = "postgres")]
+const PG_MIGRATION_007_API_KEYS: &str = r#"
 CREATE TABLE IF NOT EXISTS api_keys (
     id UUID PRIMARY KEY,
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -238,31 +311,143 @@ CREATE TABLE IF NOT EXISTS api_keys (
     
     CONSTRAINT api_key_name_user_unique UNIQUE (user_id, name)
 );
-
-CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id);
-CREATE INDEX IF NOT EXISTS idx_api_keys_prefix ON api_keys(prefix);
-
-COMMENT ON TABLE api_keys IS 'API keys for programmatic access';
-COMMENT ON COLUMN api_keys.prefix IS 'First 8 characters for key identification';
 "#;
 
-const MIGRATION_008_INDEXES: &str = r#"
--- Performance indexes for common queries
+#[cfg(feature = "postgres")]
+const PG_MIGRATION_008_INDEXES: &str = r#"
 CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
-CREATE INDEX IF NOT EXISTS idx_users_active ON users(is_active) WHERE is_active = true;
 CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_logs(timestamp DESC);
-CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_logs(user_id);
-CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_logs(action);
-CREATE INDEX IF NOT EXISTS idx_audit_resource ON audit_logs(resource_type, resource_id);
+CREATE INDEX IF NOT EXISTS idx_vms_status ON vms(status);
+CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id);
+"#;
 
--- Full-text search on VM names (optional)
--- CREATE INDEX IF NOT EXISTS idx_vms_name_search ON vms USING gin(to_tsvector('english', name));
+// ============================================================================
+// SQLite Migration SQL
+// ============================================================================
 
--- Analyze tables for query optimization
-ANALYZE users;
-ANALYZE sessions;
-ANALYZE audit_logs;
-ANALYZE settings;
-ANALYZE vms;
-ANALYZE api_keys;
+#[cfg(feature = "sqlite")]
+const SQLITE_MIGRATION_001_USERS: &str = r#"
+CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    username TEXT NOT NULL UNIQUE,
+    email TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    display_name TEXT,
+    role TEXT NOT NULL DEFAULT 'viewer' CHECK(role IN ('admin', 'operator', 'viewer', 'auditor')),
+    is_active INTEGER NOT NULL DEFAULT 1,
+    is_locked INTEGER NOT NULL DEFAULT 0,
+    failed_login_attempts INTEGER NOT NULL DEFAULT 0,
+    last_login TEXT,
+    last_password_change TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    created_by TEXT REFERENCES users(id) ON DELETE SET NULL
+)
+"#;
+
+#[cfg(feature = "sqlite")]
+const SQLITE_MIGRATION_002_SESSIONS: &str = r#"
+CREATE TABLE IF NOT EXISTS sessions (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash TEXT NOT NULL,
+    csrf_token TEXT NOT NULL,
+    ip_address TEXT,
+    user_agent TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    expires_at TEXT NOT NULL,
+    last_activity TEXT NOT NULL DEFAULT (datetime('now')),
+    is_revoked INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(token_hash)
+"#;
+
+#[cfg(feature = "sqlite")]
+const SQLITE_MIGRATION_003_AUDIT_LOGS: &str = r#"
+CREATE TABLE IF NOT EXISTS audit_logs (
+    id TEXT PRIMARY KEY,
+    timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+    user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+    username TEXT,
+    action TEXT NOT NULL,
+    resource_type TEXT NOT NULL,
+    resource_id TEXT,
+    resource_name TEXT,
+    details TEXT,
+    ip_address TEXT,
+    user_agent TEXT,
+    status TEXT NOT NULL DEFAULT 'success' CHECK(status IN ('success', 'failure', 'denied')),
+    error_message TEXT
+)
+"#;
+
+#[cfg(feature = "sqlite")]
+const SQLITE_MIGRATION_004_SETTINGS: &str = r#"
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    description TEXT,
+    category TEXT NOT NULL DEFAULT 'general',
+    is_secret INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_by TEXT REFERENCES users(id) ON DELETE SET NULL
+);
+INSERT OR IGNORE INTO settings (key, value, description, category) VALUES
+    ('system.name', '"NVM Enterprise"', 'System display name', 'general');
+INSERT OR IGNORE INTO settings (key, value, description, category) VALUES
+    ('system.timezone', '"UTC"', 'Default timezone', 'general');
+INSERT OR IGNORE INTO settings (key, value, description, category) VALUES
+    ('auth.session_timeout', '28800', 'Session timeout in seconds', 'auth');
+INSERT OR IGNORE INTO settings (key, value, description, category) VALUES
+    ('vm.default_memory_mb', '2048', 'Default VM memory', 'vm');
+INSERT OR IGNORE INTO settings (key, value, description, category) VALUES
+    ('vm.default_vcpus', '2', 'Default VM vCPUs', 'vm')
+"#;
+
+#[cfg(feature = "sqlite")]
+const SQLITE_MIGRATION_005_VMS: &str = r#"
+CREATE TABLE IF NOT EXISTS vms (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    description TEXT,
+    vcpus INTEGER NOT NULL DEFAULT 2,
+    memory_mb INTEGER NOT NULL DEFAULT 2048,
+    disk_gb INTEGER NOT NULL DEFAULT 20,
+    status TEXT NOT NULL DEFAULT 'stopped',
+    os_type TEXT,
+    template_id TEXT,
+    node_id TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+    tags TEXT DEFAULT '[]',
+    config TEXT DEFAULT '{}'
+)
+"#;
+
+#[cfg(feature = "sqlite")]
+const SQLITE_MIGRATION_006_API_KEYS: &str = r#"
+CREATE TABLE IF NOT EXISTS api_keys (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    key_hash TEXT NOT NULL,
+    prefix TEXT NOT NULL,
+    permissions TEXT NOT NULL DEFAULT '[]',
+    expires_at TEXT,
+    last_used TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    is_revoked INTEGER NOT NULL DEFAULT 0,
+    
+    UNIQUE (user_id, name)
+)
+"#;
+
+#[cfg(feature = "sqlite")]
+const SQLITE_MIGRATION_007_INDEXES: &str = r#"
+CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
+CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_logs(timestamp);
+CREATE INDEX IF NOT EXISTS idx_vms_status ON vms(status);
+CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id)
 "#;
