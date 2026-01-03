@@ -692,7 +692,8 @@ function buildFunctionToModuleMap(projectRoot: string, kernelModules: string[]):
 
 /** Analyze all test files to build coverage map */
 export function analyzeTestCoverage(projectRoot: string, knownModules: string[]): Map<string, Set<string>> {
-  const testSrcDir = resolve(projectRoot, 'tests', 'src');
+  // tests/ 重构后，内核测试在 tests/kernel/src/
+  const testSrcDir = resolve(projectRoot, 'tests', 'kernel', 'src');
   const testFiles = findRustFiles(testSrcDir);
   
   // Map: module name -> set of covered function names
@@ -730,7 +731,7 @@ export function analyzeTestCoverage(projectRoot: string, knownModules: string[])
       const allReferencedItems = new Set([...functionCalls, ...importedItems]);
       
       // === Strategy 1: Direct module path mapping ===
-      // If test file is in tests/src/ipc/, it tests the ipc module
+      // If test file is in tests/kernel/src/ipc/, it tests the ipc module
       if (knownModules.includes(firstPart)) {
         const modFuncs = coverage.get(firstPart)!;
         allReferencedItems.forEach(fn => modFuncs.add(fn));

@@ -246,6 +246,11 @@ async function runTargetTests(
   return new Promise((resolvePromise) => {
     const child = spawn('cargo', args, {
       cwd: workspacePath,
+      env: {
+        ...process.env,
+        // 使用 workspace 的 target 目录以利用编译缓存
+        CARGO_TARGET_DIR: resolve(workspacePath, 'target'),
+      },
       stdio: ['inherit', 'pipe', 'pipe'],
     });
     
