@@ -61,6 +61,12 @@ pub use process::{
     find_child_with_state,
     get_child_state,
     get_process,
+    get_process_lag,
+    get_process_slice_remaining,
+    // Query functions for testing/debugging
+    get_process_state,
+    get_process_vdeadline,
+    get_process_vruntime,
     // Thread management functions
     get_tgid,
     get_thread_group_members,
@@ -70,8 +76,10 @@ pub use process::{
     remove_process,
     set_current_process_state,
     set_process_exit_code,
+    set_process_lag,
     set_process_state,
     set_process_term_signal,
+    set_process_vruntime,
     sleep_current_process,
     terminate_thread_group,
     thread_group_count,
@@ -79,14 +87,6 @@ pub use process::{
     update_process_cr3,
     wake_process,
     wake_thread_group,
-    // Query functions for testing/debugging
-    get_process_state,
-    get_process_vruntime,
-    get_process_lag,
-    get_process_vdeadline,
-    get_process_slice_remaining,
-    set_process_vruntime,
-    set_process_lag,
 };
 
 // Re-export priority functions (EEVDF core)

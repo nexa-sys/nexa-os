@@ -751,10 +751,10 @@ pub fn recvfrom(
         // First try to receive immediately without waiting
         crate::net::poll();
         let buffer = slice::from_raw_parts_mut(buf, len);
-        
-        if let Some(res) = crate::net::with_net_stack(|stack| {
-            stack.udp_receive(socket_index, buffer)
-        }) {
+
+        if let Some(res) =
+            crate::net::with_net_stack(|stack| stack.udp_receive(socket_index, buffer))
+        {
             if let Ok(result) = res {
                 // Data available immediately
                 if !_src_addr.is_null() && !_addrlen.is_null() {
@@ -783,9 +783,8 @@ pub fn recvfrom(
                 if elapsed_ms >= timeout_ms {
                     ktrace!("[SYS_RECVFROM] TIMEOUT after {}ms", elapsed_ms);
                     // Clear waiting before returning
-                    let _ = crate::net::with_net_stack(|stack| {
-                        stack.udp_clear_waiting(socket_index)
-                    });
+                    let _ =
+                        crate::net::with_net_stack(|stack| stack.udp_clear_waiting(socket_index));
                     posix::set_errno(posix::errno::EAGAIN);
                     return u64::MAX;
                 }
@@ -797,7 +796,11 @@ pub fn recvfrom(
             });
 
             // Put process to sleep - will be woken when data arrives
-            ktrace!("[SYS_RECVFROM] PID {} sleeping on UDP socket {}", current_pid, socket_index);
+            ktrace!(
+                "[SYS_RECVFROM] PID {} sleeping on UDP socket {}",
+                current_pid,
+                socket_index
+            );
             scheduler::sleep_current_process();
             scheduler::do_schedule();
 
@@ -805,9 +808,9 @@ pub fn recvfrom(
             crate::net::poll();
             let buffer = slice::from_raw_parts_mut(buf, len);
 
-            if let Some(res) = crate::net::with_net_stack(|stack| {
-                stack.udp_receive(socket_index, buffer)
-            }) {
+            if let Some(res) =
+                crate::net::with_net_stack(|stack| stack.udp_receive(socket_index, buffer))
+            {
                 match res {
                     Ok(result) => {
                         ktrace!(
@@ -1418,9 +1421,9 @@ pub fn accept(sockfd: u64, addr: *mut SockAddr, addrlen: *mut u32) -> u64 {
         }
 
         // Try to accept a connection
-        if let Some(res) = crate::net::with_net_stack(|stack| {
-            stack.tcp_accept(sock_handle.socket_index)
-        }) {
+        if let Some(res) =
+            crate::net::with_net_stack(|stack| stack.tcp_accept(sock_handle.socket_index))
+        {
             match res {
                 Ok((new_socket_idx, remote_ip, remote_port)) => {
                     // Find free file handle slot
@@ -1536,9 +1539,9 @@ pub fn shutdown_socket(sockfd: u64, how: i32) -> u64 {
         };
 
         // Shutdown the socket in network stack
-        if let Some(res) = crate::net::with_net_stack(|stack| {
-            stack.tcp_shutdown(sock_handle.socket_index, how)
-        }) {
+        if let Some(res) =
+            crate::net::with_net_stack(|stack| stack.tcp_shutdown(sock_handle.socket_index, how))
+        {
             match res {
                 Ok(_) => {
                     kinfo!("[SYS_SHUTDOWN] Socket {} shutdown (how={})", sockfd, how);
@@ -1591,7 +1594,10 @@ pub fn getsockname(sockfd: u64, addr: *mut SockAddr, addrlen: *mut u32) -> u64 {
 
         // Get local address from network stack
         if let Some(res) = crate::net::with_net_stack(|stack| {
-            stack.get_local_addr(sock_handle.socket_index, sock_handle.socket_type == SOCK_STREAM)
+            stack.get_local_addr(
+                sock_handle.socket_index,
+                sock_handle.socket_type == SOCK_STREAM,
+            )
         }) {
             match res {
                 Ok((local_ip, local_port)) => {
@@ -1669,9 +1675,9 @@ pub fn getpeername(sockfd: u64, addr: *mut SockAddr, addrlen: *mut u32) -> u64 {
         };
 
         // Get remote address from network stack
-        if let Some(res) = crate::net::with_net_stack(|stack| {
-            stack.get_peer_addr(sock_handle.socket_index)
-        }) {
+        if let Some(res) =
+            crate::net::with_net_stack(|stack| stack.get_peer_addr(sock_handle.socket_index))
+        {
             match res {
                 Ok((remote_ip, remote_port)) => {
                     let addr_ref = &mut *addr;

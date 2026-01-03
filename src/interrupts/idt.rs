@@ -419,8 +419,7 @@ pub fn init_interrupts_ap(cpu_id: usize) {
         // Set up hardware interrupts (APs also need these for timer, etc.)
         // Use assembly wrapper for timer that saves all GPRs to GS_DATA
         let timer_asm_addr = timer_interrupt_handler_asm as usize as u64;
-        idt_ref[PIC_1_OFFSET]
-            .set_handler_addr(x86_64::VirtAddr::new_truncate(timer_asm_addr));
+        idt_ref[PIC_1_OFFSET].set_handler_addr(x86_64::VirtAddr::new_truncate(timer_asm_addr));
         idt_ref[PIC_1_OFFSET + 1].set_handler_fn(keyboard_interrupt_handler);
         idt_ref[PIC_1_OFFSET + 2].set_handler_fn(spurious_irq2_handler);
         idt_ref[PIC_1_OFFSET + 3].set_handler_fn(spurious_irq3_handler);

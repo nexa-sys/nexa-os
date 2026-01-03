@@ -176,9 +176,9 @@ pub struct Process {
     pub cmdline_len: usize,              // Actual length of command line data
     pub open_fds: u16, // Bitmask of open file descriptors (bits 0-15 correspond to fd 3-18)
     // Per-process exec context (fixes race condition with global EXEC_CONTEXT)
-    pub exec_pending: bool,   // True if execve has set new entry/stack
-    pub exec_entry: u64,      // New entry point after execve
-    pub exec_stack: u64,      // New stack pointer after execve  
+    pub exec_pending: bool,      // True if execve has set new entry/stack
+    pub exec_entry: u64,         // New entry point after execve
+    pub exec_stack: u64,         // New stack pointer after execve
     pub exec_user_data_sel: u64, // User data segment selector
     /// Pending wake flag - set when wake_process() is called on a Ready/Running process.
     /// This prevents the race condition where wake arrives before sleep:

@@ -10,9 +10,9 @@
 //! - Dependency tracking
 //! - Version management
 
-use spin::Mutex;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
+use spin::Mutex;
 
 /// Driver ID type
 pub type DriverId = u32;
@@ -53,7 +53,11 @@ pub struct DriverVersion {
 
 impl DriverVersion {
     pub fn new(major: u8, minor: u8, patch: u8) -> Self {
-        Self { major, minor, patch }
+        Self {
+            major,
+            minor,
+            patch,
+        }
     }
 }
 
@@ -112,7 +116,7 @@ impl DeviceId {
             class_code: 0,
         }
     }
-    
+
     pub fn with_class(vendor: u16, device: u16, class_code: u32) -> Self {
         Self {
             vendor,
@@ -122,7 +126,7 @@ impl DeviceId {
             class_code,
         }
     }
-    
+
     pub fn matches(&self, other: &DeviceId) -> bool {
         if self.vendor != 0 && self.vendor != other.vendor {
             return false;
@@ -203,19 +207,19 @@ impl DriverRegistry {
             next_id: 1,
         }
     }
-    
+
     /// Register a driver
     pub fn register(&mut self, mut info: DriverInfo) -> Result<DriverId, super::RegistryError> {
         if self.count >= MAX_DRIVERS {
             return Err(super::RegistryError::TableFull);
         }
-        
+
         // Assign ID
         let id = self.next_id;
         self.next_id += 1;
         info.id = id;
         info.state = DriverState::Registered;
-        
+
         // Find empty slot
         for slot in self.drivers.iter_mut() {
             if slot.is_none() {
@@ -224,10 +228,10 @@ impl DriverRegistry {
                 return Ok(id);
             }
         }
-        
+
         Err(super::RegistryError::TableFull)
     }
-    
+
     /// Unregister a driver
     pub fn unregister(&mut self, id: DriverId) -> Result<(), super::RegistryError> {
         for slot in self.drivers.iter_mut() {
@@ -244,33 +248,34 @@ impl DriverRegistry {
         }
         Err(super::RegistryError::NotFound)
     }
-    
+
     /// Get driver info
     pub fn get_info(&self, id: DriverId) -> Option<DriverInfo> {
-        self.drivers.iter()
+        self.drivers
+            .iter()
             .find_map(|slot| slot.as_ref().filter(|d| d.id == id))
             .cloned()
     }
-    
+
     /// Find driver by name
     pub fn find_by_name(&self, name: &str) -> Option<DriverId> {
         let name_bytes = name.as_bytes();
-        self.drivers.iter()
-            .find_map(|slot| {
-                slot.as_ref().and_then(|d| {
-                    let len = d.name.iter().position(|&b| b == 0).unwrap_or(32);
-                    if &d.name[..len] == name_bytes {
-                        Some(d.id)
-                    } else {
-                        None
-                    }
-                })
+        self.drivers.iter().find_map(|slot| {
+            slot.as_ref().and_then(|d| {
+                let len = d.name.iter().position(|&b| b == 0).unwrap_or(32);
+                if &d.name[..len] == name_bytes {
+                    Some(d.id)
+                } else {
+                    None
+                }
             })
+        })
     }
-    
+
     /// Find drivers for device
     pub fn find_for_device(&self, device: &DeviceId) -> Vec<DriverId> {
-        self.drivers.iter()
+        self.drivers
+            .iter()
             .filter_map(|slot| {
                 slot.as_ref().and_then(|d| {
                     if d.devices.iter().any(|dev_id| dev_id.matches(device)) {
@@ -282,31 +287,32 @@ impl DriverRegistry {
             })
             .collect()
     }
-    
+
     /// Find drivers by class
     pub fn find_by_class(&self, class: DriverClass) -> Vec<DriverId> {
-        self.drivers.iter()
+        self.drivers
+            .iter()
             .filter_map(|slot| {
-                slot.as_ref().and_then(|d| {
-                    if d.class == class {
-                        Some(d.id)
-                    } else {
-                        None
-                    }
-                })
+                slot.as_ref()
+                    .and_then(|d| if d.class == class { Some(d.id) } else { None })
             })
             .collect()
     }
-    
+
     /// List all drivers
     pub fn list_drivers(&self) -> Vec<DriverId> {
-        self.drivers.iter()
+        self.drivers
+            .iter()
             .filter_map(|slot| slot.as_ref().map(|d| d.id))
             .collect()
     }
-    
+
     /// Update driver state
-    pub fn set_state(&mut self, id: DriverId, state: DriverState) -> Result<(), super::RegistryError> {
+    pub fn set_state(
+        &mut self,
+        id: DriverId,
+        state: DriverState,
+    ) -> Result<(), super::RegistryError> {
         for slot in self.drivers.iter_mut() {
             if let Some(driver) = slot {
                 if driver.id == id {
@@ -317,7 +323,7 @@ impl DriverRegistry {
         }
         Err(super::RegistryError::NotFound)
     }
-    
+
     /// Get driver count
     pub fn count(&self) -> usize {
         self.count
@@ -346,7 +352,7 @@ impl DriverInfoBuilder {
         let name_bytes = name.as_bytes();
         let len = core::cmp::min(name_bytes.len(), 31);
         name_buf[..len].copy_from_slice(&name_bytes[..len]);
-        
+
         Self {
             info: DriverInfo {
                 id: 0,
@@ -358,40 +364,42 @@ impl DriverInfoBuilder {
                 entry_point: 0,
                 state: DriverState::Registered,
                 flags: 0,
-            }
+            },
         }
     }
-    
+
     pub fn version(mut self, major: u8, minor: u8, patch: u8) -> Self {
         self.info.version = DriverVersion::new(major, minor, patch);
         self
     }
-    
+
     pub fn device(mut self, vendor: u16, device: u16) -> Self {
         self.info.devices.push(DeviceId::new(vendor, device));
         self
     }
-    
+
     pub fn device_class(mut self, vendor: u16, device: u16, class_code: u32) -> Self {
-        self.info.devices.push(DeviceId::with_class(vendor, device, class_code));
+        self.info
+            .devices
+            .push(DeviceId::with_class(vendor, device, class_code));
         self
     }
-    
+
     pub fn isolation(mut self, iso: super::IsolationClass) -> Self {
         self.info.isolation = iso;
         self
     }
-    
+
     pub fn entry_point(mut self, addr: u64) -> Self {
         self.info.entry_point = addr;
         self
     }
-    
+
     pub fn flags(mut self, flags: u32) -> Self {
         self.info.flags = flags;
         self
     }
-    
+
     pub fn build(self) -> DriverInfo {
         self.info
     }
@@ -413,9 +421,5 @@ pub mod pci_class {
 /// Match device against all registered drivers
 pub fn match_device(device: &DeviceId) -> Option<DriverId> {
     let registry = super::DRIVER_REGISTRY.lock();
-    registry
-        .as_ref()?
-        .find_for_device(device)
-        .first()
-        .copied()
+    registry.as_ref()?.find_for_device(device).first().copied()
 }

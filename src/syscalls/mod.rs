@@ -20,8 +20,8 @@
 
 use crate::kinfo;
 
-pub mod exec;
 mod epoll;
+pub mod exec;
 mod fd;
 mod file;
 mod ioctl;
@@ -119,23 +119,20 @@ pub use thread::{futex_wake_internal, FUTEX_WAKE};
 
 // Re-export futex constants for testing
 pub use thread::{
-    FUTEX_WAIT, FUTEX_FD, FUTEX_REQUEUE, FUTEX_CMP_REQUEUE,
-    FUTEX_WAKE_OP, FUTEX_LOCK_PI, FUTEX_UNLOCK_PI, FUTEX_TRYLOCK_PI,
-    FUTEX_WAIT_BITSET, FUTEX_WAKE_BITSET,
-    FUTEX_PRIVATE_FLAG, FUTEX_CLOCK_REALTIME, FUTEX_CMD_MASK,
+    FUTEX_CLOCK_REALTIME, FUTEX_CMD_MASK, FUTEX_CMP_REQUEUE, FUTEX_FD, FUTEX_LOCK_PI,
+    FUTEX_PRIVATE_FLAG, FUTEX_REQUEUE, FUTEX_TRYLOCK_PI, FUTEX_UNLOCK_PI, FUTEX_WAIT,
+    FUTEX_WAIT_BITSET, FUTEX_WAKE_BITSET, FUTEX_WAKE_OP,
 };
 
 // Re-export clone flags for testing
 pub use thread::{
-    CLONE_VM, CLONE_FS, CLONE_FILES, CLONE_SIGHAND, CLONE_THREAD,
-    CLONE_NEWNS, CLONE_SYSVSEM, CLONE_SETTLS, CLONE_PARENT_SETTID,
-    CLONE_CHILD_CLEARTID, CLONE_DETACHED, CLONE_UNTRACED,
-    CLONE_CHILD_SETTID, CLONE_VFORK,
-    validate_clone_flags,
+    validate_clone_flags, CLONE_CHILD_CLEARTID, CLONE_CHILD_SETTID, CLONE_DETACHED, CLONE_FILES,
+    CLONE_FS, CLONE_NEWNS, CLONE_PARENT_SETTID, CLONE_SETTLS, CLONE_SIGHAND, CLONE_SYSVSEM,
+    CLONE_THREAD, CLONE_UNTRACED, CLONE_VFORK, CLONE_VM,
 };
 
 // Re-export arch_prctl constants for testing
-pub use thread::{ARCH_SET_GS, ARCH_SET_FS, ARCH_GET_FS, ARCH_GET_GS};
+pub use thread::{ARCH_GET_FS, ARCH_GET_GS, ARCH_SET_FS, ARCH_SET_GS};
 
 /// Main syscall dispatcher
 #[no_mangle]
@@ -196,7 +193,12 @@ pub extern "C" fn syscall_dispatch(
                 );
                 r10_val
             };
-            readlinkat(arg1 as i32, arg2 as *const u8, arg3 as *mut u8, arg4 as usize)
+            readlinkat(
+                arg1 as i32,
+                arg2 as *const u8,
+                arg3 as *mut u8,
+                arg4 as usize,
+            )
         }
         SYS_LSEEK => lseek(arg1, arg2 as i64, arg3),
         SYS_PREAD64 => {
@@ -504,7 +506,12 @@ pub extern "C" fn syscall_dispatch(
                 );
                 r10_val
             };
-            epoll_ctl(arg1, arg2 as i32, arg3 as i32, arg4 as *mut epoll::EpollEvent)
+            epoll_ctl(
+                arg1,
+                arg2 as i32,
+                arg3 as i32,
+                arg4 as *mut epoll::EpollEvent,
+            )
         }
         SYS_EPOLL_WAIT => {
             // epoll_wait needs 4 args: epfd, events, maxevents, timeout
@@ -517,7 +524,12 @@ pub extern "C" fn syscall_dispatch(
                 );
                 r10_val
             };
-            epoll_wait(arg1, arg2 as *mut epoll::EpollEvent, arg3 as i32, arg4 as i32)
+            epoll_wait(
+                arg1,
+                arg2 as *mut epoll::EpollEvent,
+                arg3 as i32,
+                arg4 as i32,
+            )
         }
         SYS_EPOLL_PWAIT => {
             // epoll_pwait needs 6 args: epfd, events, maxevents, timeout, sigmask, sigsetsize
@@ -536,7 +548,14 @@ pub extern "C" fn syscall_dispatch(
                 );
                 (r10_val, r8_val, r9_val)
             };
-            epoll_pwait(arg1, arg2 as *mut epoll::EpollEvent, arg3 as i32, arg4 as i32, arg5 as *const u64, arg6 as usize)
+            epoll_pwait(
+                arg1,
+                arg2 as *mut epoll::EpollEvent,
+                arg3 as i32,
+                arg4 as i32,
+                arg5 as *const u64,
+                arg6 as usize,
+            )
         }
         // Eventfd syscalls
         SYS_EVENTFD2 => eventfd2(arg1 as u32, arg2 as u32),

@@ -49,9 +49,9 @@
 //! Service Handler (IC1/IC2)
 //! ```
 
-use spin::Mutex;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use spin::Mutex;
 
 /// Maximum RPC channels
 pub const MAX_RPC_CHANNELS: usize = 256;
@@ -157,7 +157,7 @@ impl InvocationStack {
             depth: 0,
         }
     }
-    
+
     fn push(&mut self, ctx: InvocationContext) -> Result<(), RpcError> {
         if self.depth >= MAX_INVOCATION_DEPTH {
             return Err(RpcError::StackOverflow);
@@ -166,7 +166,7 @@ impl InvocationStack {
         self.depth += 1;
         Ok(())
     }
-    
+
     fn pop(&mut self) -> Result<InvocationContext, RpcError> {
         if self.depth == 0 {
             return Err(RpcError::StackUnderflow);
@@ -174,7 +174,7 @@ impl InvocationStack {
         self.depth -= 1;
         Ok(self.entries[self.depth])
     }
-    
+
     fn current_depth(&self) -> usize {
         self.depth
     }
@@ -289,28 +289,28 @@ impl StackPool {
             total_allocated: 0,
         }
     }
-    
+
     fn allocate(&mut self, for_recovery: bool) -> Option<u64> {
         // If not for recovery, leave reserved stacks
         let min_available = if for_recovery { 0 } else { self.reserved };
-        
+
         if self.available <= min_available {
             return None;
         }
-        
+
         self.available -= 1;
         let stack = self.stacks[self.available];
         self.stacks[self.available] = 0;
         Some(stack)
     }
-    
+
     fn return_stack(&mut self, stack: u64) {
         if self.available < STACK_POOL_SIZE {
             self.stacks[self.available] = stack;
             self.available += 1;
         }
     }
-    
+
     fn add_stacks(&mut self, stacks: &[u64]) {
         for &stack in stacks {
             if self.available < STACK_POOL_SIZE {
@@ -320,7 +320,7 @@ impl StackPool {
             }
         }
     }
-    
+
     fn needs_more(&self) -> bool {
         // Request more when below threshold
         self.available < self.reserved + 4
@@ -345,7 +345,7 @@ pub struct ServiceEndpoint {
 }
 
 // Global state
-static CHANNELS: Mutex<[Option<RpcChannel>; MAX_RPC_CHANNELS]> = 
+static CHANNELS: Mutex<[Option<RpcChannel>; MAX_RPC_CHANNELS]> =
     Mutex::new([const { None }; MAX_RPC_CHANNELS]);
 static NEXT_CHANNEL_ID: AtomicU32 = AtomicU32::new(1);
 static SERVICES: Mutex<Vec<ServiceEndpoint>> = Mutex::new(Vec::new());
@@ -353,8 +353,12 @@ static SERVICES: Mutex<Vec<ServiceEndpoint>> = Mutex::new(Vec::new());
 /// Initialize RPC subsystem
 pub fn init() {
     crate::kinfo!("UDRV/RPC: Initializing RPC-like IPC subsystem");
-    crate::kinfo!("UDRV/RPC: {} max channels, {} args, {} shmem",
-                  MAX_RPC_CHANNELS, RPC_REG_ARGS, RPC_SHMEM_SIZE);
+    crate::kinfo!(
+        "UDRV/RPC: {} max channels, {} args, {} shmem",
+        MAX_RPC_CHANNELS,
+        RPC_REG_ARGS,
+        RPC_SHMEM_SIZE
+    );
 }
 
 /// Register a service endpoint
@@ -365,7 +369,7 @@ pub fn register_service(
 ) -> RpcResult<u32> {
     let mut services = SERVICES.lock();
     let id = services.len() as u32 + 1;
-    
+
     services.push(ServiceEndpoint {
         id,
         entry_point,
@@ -374,10 +378,14 @@ pub fn register_service(
         stack_pool: StackPool::new(),
         bound_channels: Vec::new(),
     });
-    
-    crate::kinfo!("UDRV/RPC: Registered service {} at {:#x} (IC{:?})",
-                  id, entry_point, isolation_class);
-    
+
+    crate::kinfo!(
+        "UDRV/RPC: Registered service {} at {:#x} (IC{:?})",
+        id,
+        entry_point,
+        isolation_class
+    );
+
     Ok(id)
 }
 
@@ -389,14 +397,14 @@ pub fn create_channel(service_id: u32, caller_pid: u32) -> RpcResult<u32> {
         return Err(RpcError::ServiceNotFound);
     }
     drop(services);
-    
+
     let mut channels = CHANNELS.lock();
-    
+
     // Find empty slot
     for slot in channels.iter_mut() {
         if slot.is_none() {
             let id = NEXT_CHANNEL_ID.fetch_add(1, Ordering::SeqCst);
-            
+
             *slot = Some(RpcChannel {
                 id,
                 service_id,
@@ -406,37 +414,39 @@ pub fn create_channel(service_id: u32, caller_pid: u32) -> RpcResult<u32> {
                 invocation_stack: InvocationStack::new(),
                 accounting: RpcAccounting::new(caller_pid),
             });
-            
+
             return Ok(id);
         }
     }
-    
+
     Err(RpcError::TableFull)
 }
 
 /// Perform an RPC call
 pub fn call(channel_id: u32, msg: &RpcMessage) -> RpcResult<RpcMessage> {
     let mut channels = CHANNELS.lock();
-    
-    let channel = channels.iter_mut()
+
+    let channel = channels
+        .iter_mut()
         .find_map(|slot| slot.as_mut().filter(|c| c.id == channel_id))
         .ok_or(RpcError::ChannelNotFound)?;
-    
+
     if channel.state != RpcChannelState::Idle {
         return Err(RpcError::InvalidState);
     }
-    
+
     // Get service endpoint
     let services = SERVICES.lock();
-    let service = services.iter()
+    let service = services
+        .iter()
         .find(|s| s.id == channel.service_id)
         .ok_or(RpcError::ServiceNotFound)?;
-    
+
     let entry_point = service.entry_point;
     let domain_id = service.domain_id;
     let isolation_class = service.isolation_class;
     drop(services);
-    
+
     // Save caller context
     let ctx = InvocationContext {
         rip: 0, // Would be set by actual call mechanism
@@ -448,23 +458,27 @@ pub fn call(channel_id: u32, msg: &RpcMessage) -> RpcResult<RpcMessage> {
         _reserved: [0; 6],
     };
     channel.invocation_stack.push(ctx)?;
-    
+
     // Start accounting
     channel.accounting.call_start = crate::safety::rdtsc();
     channel.accounting.ipc_count += 1;
     channel.state = RpcChannelState::Calling;
-    
+
     // Get stack for handler
-    let stack = channel.bound_stack.or_else(|| {
-        let mut services = SERVICES.lock();
-        services.iter_mut()
-            .find(|s| s.id == channel.service_id)?
-            .stack_pool
-            .allocate(false)
-    }).ok_or(RpcError::NoStacks)?;
-    
+    let stack = channel
+        .bound_stack
+        .or_else(|| {
+            let mut services = SERVICES.lock();
+            services
+                .iter_mut()
+                .find(|s| s.id == channel.service_id)?
+                .stack_pool
+                .allocate(false)
+        })
+        .ok_or(RpcError::NoStacks)?;
+
     drop(channels);
-    
+
     // Perform the actual call based on isolation class
     let result = match isolation_class {
         super::IsolationClass::IC0 => {
@@ -480,15 +494,16 @@ pub fn call(channel_id: u32, msg: &RpcMessage) -> RpcResult<RpcMessage> {
             call_ic2(entry_point, msg, stack, domain_id)
         }
     };
-    
+
     // Update accounting
     let mut channels = CHANNELS.lock();
-    if let Some(channel) = channels.iter_mut()
-        .find_map(|slot| slot.as_mut().filter(|c| c.id == channel_id)) 
+    if let Some(channel) = channels
+        .iter_mut()
+        .find_map(|slot| slot.as_mut().filter(|c| c.id == channel_id))
     {
         let end_time = crate::safety::rdtsc();
         channel.accounting.cpu_cycles += end_time - channel.accounting.call_start;
-        
+
         // Return stack if not bound
         if channel.bound_stack.is_none() {
             let mut services = SERVICES.lock();
@@ -496,12 +511,12 @@ pub fn call(channel_id: u32, msg: &RpcMessage) -> RpcResult<RpcMessage> {
                 service.stack_pool.return_stack(stack);
             }
         }
-        
+
         // Pop invocation context
         let _ = channel.invocation_stack.pop();
         channel.state = RpcChannelState::Idle;
     }
-    
+
     result
 }
 
@@ -509,56 +524,63 @@ pub fn call(channel_id: u32, msg: &RpcMessage) -> RpcResult<RpcMessage> {
 fn call_ic0(entry_point: u64, msg: &RpcMessage, _stack: u64) -> RpcResult<RpcMessage> {
     // In IC0, we just call the function directly
     // This is the fastest path (~18 cycles)
-    
+
     // Safety: IC0 services are part of TCB
-    let handler: fn(&RpcMessage) -> RpcResult<RpcMessage> = unsafe {
-        core::mem::transmute(entry_point)
-    };
-    
+    let handler: fn(&RpcMessage) -> RpcResult<RpcMessage> =
+        unsafe { core::mem::transmute(entry_point) };
+
     handler(msg)
 }
 
 /// IC1 call - gate-based call with domain switch
-fn call_ic1(entry_point: u64, msg: &RpcMessage, stack: u64, domain_id: u8) -> RpcResult<RpcMessage> {
+fn call_ic1(
+    entry_point: u64,
+    msg: &RpcMessage,
+    stack: u64,
+    domain_id: u8,
+) -> RpcResult<RpcMessage> {
     // IC1 uses hardware domain isolation (PKS/Watchpoint)
     // Switch domain, change stack, call handler
-    
+
     // Switch to target domain
     unsafe {
         super::isolation::switch_ic1_domain(domain_id);
     }
-    
+
     // Call handler with new stack
-    let result = unsafe {
-        call_with_stack(entry_point, msg, stack)
-    };
-    
+    let result = unsafe { call_with_stack(entry_point, msg, stack) };
+
     // Switch back to kernel domain (0)
     unsafe {
         super::isolation::switch_ic1_domain(0);
     }
-    
+
     result
 }
 
 /// IC2 call - full context switch to userspace
-fn call_ic2(entry_point: u64, msg: &RpcMessage, stack: u64, domain_id: u8) -> RpcResult<RpcMessage> {
+fn call_ic2(
+    entry_point: u64,
+    msg: &RpcMessage,
+    stack: u64,
+    domain_id: u8,
+) -> RpcResult<RpcMessage> {
     // IC2 uses full address space isolation
     // This requires a syscall return to userspace and wait for completion
-    
+
     // For now, simulate the call
     // In real implementation, this would:
     // 1. Switch CR3 to user process page table
     // 2. Switch to Ring 3
     // 3. Jump to entry point with msg in registers
     // 4. Wait for sysret
-    
+
     // Placeholder - actual implementation requires scheduler integration
     Err(RpcError::InvalidState)
 }
 
 /// Call handler with specified stack
-/// 
+///
 /// # Safety
 /// Caller must ensure entry_point and stack are valid
 unsafe fn call_with_stack(entry_point: u64, msg: &RpcMessage, stack: u64) -> RpcResult<RpcMessage> {
@@ -571,10 +593,11 @@ unsafe fn call_with_stack(entry_point: u64, msg: &RpcMessage, stack: u64) -> Rpc
 /// Bind a stack to a channel for frequent calls
 pub fn bind_stack(channel_id: u32, stack: u64) -> RpcResult<()> {
     let mut channels = CHANNELS.lock();
-    let channel = channels.iter_mut()
+    let channel = channels
+        .iter_mut()
         .find_map(|slot| slot.as_mut().filter(|c| c.id == channel_id))
         .ok_or(RpcError::ChannelNotFound)?;
-    
+
     channel.bound_stack = Some(stack);
     Ok(())
 }
@@ -582,25 +605,25 @@ pub fn bind_stack(channel_id: u32, stack: u64) -> RpcResult<()> {
 /// Get accounting info for a channel
 pub fn get_accounting(channel_id: u32) -> RpcResult<RpcAccounting> {
     let channels = CHANNELS.lock();
-    let channel = channels.iter()
+    let channel = channels
+        .iter()
         .find_map(|slot| slot.as_ref().filter(|c| c.id == channel_id))
         .ok_or(RpcError::ChannelNotFound)?;
-    
+
     Ok(channel.accounting)
 }
 
 /// Destroy an RPC channel
 pub fn destroy_channel(channel_id: u32) -> RpcResult<()> {
     let mut channels = CHANNELS.lock();
-    
+
     for slot in channels.iter_mut() {
         if let Some(channel) = slot {
             if channel.id == channel_id {
                 // Return bound stack if any
                 if let Some(stack) = channel.bound_stack {
                     let mut services = SERVICES.lock();
-                    if let Some(service) = services.iter_mut()
-                        .find(|s| s.id == channel.service_id) 
+                    if let Some(service) = services.iter_mut().find(|s| s.id == channel.service_id)
                     {
                         service.stack_pool.return_stack(stack);
                     }
@@ -610,7 +633,7 @@ pub fn destroy_channel(channel_id: u32) -> RpcResult<()> {
             }
         }
     }
-    
+
     Err(RpcError::ChannelNotFound)
 }
 
@@ -618,27 +641,31 @@ pub fn destroy_channel(channel_id: u32) -> RpcResult<()> {
 /// Uses reserved stacks to call memory manager for reclaim
 pub fn handle_oom_recovery() -> RpcResult<()> {
     crate::kwarn!("UDRV/RPC: OOM during RPC, attempting recovery");
-    
+
     // Find memory manager service
     let services = SERVICES.lock();
-    let mem_mgr = services.iter()
+    let mem_mgr = services
+        .iter()
         .find(|s| s.id == 1) // Assume service 1 is memory manager
         .ok_or(RpcError::ServiceNotFound)?;
-    
+
     let entry_point = mem_mgr.entry_point;
     drop(services);
-    
+
     // Use reserved stack for recovery
     let mut services = SERVICES.lock();
-    let mem_mgr = services.iter_mut()
+    let mem_mgr = services
+        .iter_mut()
         .find(|s| s.id == 1)
         .ok_or(RpcError::ServiceNotFound)?;
-    
-    let stack = mem_mgr.stack_pool.allocate(true)
+
+    let stack = mem_mgr
+        .stack_pool
+        .allocate(true)
         .ok_or(RpcError::NoStacks)?;
-    
+
     drop(services);
-    
+
     // Call memory reclaim
     let msg = RpcMessage {
         msg_type: RpcMessageType::Call,
@@ -647,14 +674,14 @@ pub fn handle_oom_recovery() -> RpcResult<()> {
         shmem_offset: 0,
         shmem_len: 0,
     };
-    
+
     let _ = call_ic0(entry_point, &msg, stack)?;
-    
+
     // Return stack
     let mut services = SERVICES.lock();
     if let Some(mem_mgr) = services.iter_mut().find(|s| s.id == 1) {
         mem_mgr.stack_pool.return_stack(stack);
     }
-    
+
     Ok(())
 }

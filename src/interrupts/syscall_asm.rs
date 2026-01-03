@@ -19,9 +19,7 @@ global_asm!(
     //   [rsp+16] = RFLAGS
     //   [rsp+24] = user RSP
     //   [rsp+32] = SS
-
-    "swapgs",           // Swap to kernel GS
-
+    "swapgs", // Swap to kernel GS
     // CRITICAL: Save additional syscall argument registers for syscalls with >3 args
     // This must be done FIRST before any register is modified!
     "mov gs:[32], r10", // GS[4]  = arg4 (r10)

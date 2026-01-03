@@ -4,8 +4,8 @@
 //! - Virtual terminal management
 //! - Console I/O
 
-pub mod vt;
 pub mod pty;
+pub mod vt;
 
 // Re-export commonly used items
 pub use vt::{

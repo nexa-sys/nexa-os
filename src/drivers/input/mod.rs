@@ -31,11 +31,8 @@ pub mod keyboard;
 pub mod mouse;
 
 pub use event::{
-    InputEvent, InputEventType, InputId, InputDeviceInfo,
-    EV_SYN, EV_KEY, EV_REL, EV_ABS, EV_MSC, EV_LED,
-    SYN_REPORT, SYN_DROPPED,
-    REL_X, REL_Y, REL_WHEEL,
-    BTN_LEFT, BTN_RIGHT, BTN_MIDDLE,
+    InputDeviceInfo, InputEvent, InputEventType, InputId, BTN_LEFT, BTN_MIDDLE, BTN_RIGHT, EV_ABS,
+    EV_KEY, EV_LED, EV_MSC, EV_REL, EV_SYN, REL_WHEEL, REL_X, REL_Y, SYN_DROPPED, SYN_REPORT,
 };
 pub use keyboard::KeyboardDevice;
 pub use mouse::MouseDevice;

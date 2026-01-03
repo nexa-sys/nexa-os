@@ -31,8 +31,8 @@ impl Termios {
     const fn default_raw() -> Self {
         Self {
             c_iflag: 0,
-            c_oflag: 1,      // OPOST
-            c_cflag: 0o60,   // CS8
+            c_oflag: 1,    // OPOST
+            c_cflag: 0o60, // CS8
             c_lflag: 0,
             c_line: 0,
             c_cc: [0; NCCS],

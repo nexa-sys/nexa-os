@@ -354,7 +354,8 @@ pub struct Ext4ModuleOps {
     pub lookup: Option<extern "C" fn(*mut u8, *const u8, usize, *mut Ext4FileRefHandle) -> i32>,
     pub read_at: Option<extern "C" fn(*const Ext4FileRefHandle, usize, *mut u8, usize) -> i32>,
     pub write_at: Option<extern "C" fn(*const Ext4FileRefHandle, usize, *const u8, usize) -> i32>,
-    pub list_dir: Option<extern "C" fn(*mut u8, *const u8, usize, DirEntryCallback, *mut u8) -> i32>,
+    pub list_dir:
+        Option<extern "C" fn(*mut u8, *const u8, usize, DirEntryCallback, *mut u8) -> i32>,
     pub get_stats: Option<extern "C" fn(*mut u8, *mut Ext4Stats) -> i32>,
     pub set_writable: Option<extern "C" fn(bool)>,
     pub is_writable: Option<extern "C" fn() -> bool>,
@@ -380,7 +381,10 @@ impl Ext4ModuleOps {
     }
 
     fn is_valid(&self) -> bool {
-        self.new.is_some() && self.lookup.is_some() && self.read_at.is_some() && self.list_dir.is_some()
+        self.new.is_some()
+            && self.lookup.is_some()
+            && self.read_at.is_some()
+            && self.list_dir.is_some()
     }
 }
 
@@ -698,7 +702,11 @@ pub fn ext4_read_at(file: &Ext4FileRefHandle, offset: usize, buf: &mut [u8]) -> 
     drop(ops);
 
     let ret = read_fn(file, offset, buf.as_mut_ptr(), buf.len());
-    if ret >= 0 { ret as usize } else { 0 }
+    if ret >= 0 {
+        ret as usize
+    } else {
+        0
+    }
 }
 
 /// List ext4 directory entries
@@ -733,7 +741,9 @@ where
         file_type: u8,
         ctx: *mut u8,
     ) {
-        if name.is_null() || ctx.is_null() { return; }
+        if name.is_null() || ctx.is_null() {
+            return;
+        }
 
         unsafe {
             let ctx = &mut *(ctx as *mut CallbackContext<F>);
@@ -1267,7 +1277,7 @@ impl FileSystem for Ext4ModularFs {
         if !ext4_is_writable() {
             return Err("ext4 filesystem is read-only");
         }
-        
+
         let ops = EXT4_OPS.lock();
         let create_fn = ops.create_file.ok_or("create not supported")?;
         let handle = ext4_global().ok_or("ext4 not mounted")?;
@@ -1817,7 +1827,8 @@ extern "C" fn ext4_modular_get_stats_bridge(
 
     if ret == 0 {
         unsafe {
-            (*stats).total_blocks = ext4_stats.blocks_count_lo as u64 | ((ext4_stats.blocks_count_hi as u64) << 32);
+            (*stats).total_blocks =
+                ext4_stats.blocks_count_lo as u64 | ((ext4_stats.blocks_count_hi as u64) << 32);
             (*stats).free_blocks = ext4_stats.free_blocks as u64;
             (*stats).avail_blocks = ext4_stats.free_blocks as u64;
             (*stats).total_inodes = ext4_stats.inodes_count as u64;

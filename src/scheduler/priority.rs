@@ -286,7 +286,7 @@ pub fn check_preempt_curr(
 /// responsiveness for interactive ones. Max slice is 100ms.
 pub fn replenish_slice(entry: &mut super::types::ProcessEntry) {
     use super::types::MAX_SLICE_NS;
-    
+
     // Base slice from policy
     let base_slice = match entry.policy {
         SchedPolicy::Realtime => BASE_SLICE_NS * 2, // 8ms for realtime
@@ -298,7 +298,7 @@ pub fn replenish_slice(entry: &mut super::types::ProcessEntry) {
     // EEVDF progressive slice growth:
     // Each time a process uses its full slice without voluntary yield,
     // it gets a larger slice next time (up to MAX_SLICE_NS = 100ms)
-    // 
+    //
     // Growth pattern: 4ms -> 8ms -> 16ms -> 32ms -> 64ms -> 100ms
     let prev_slice = entry.slice_ns;
     let slice = if prev_slice == 0 {

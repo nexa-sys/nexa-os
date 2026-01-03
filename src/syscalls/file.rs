@@ -469,7 +469,12 @@ pub fn write(fd: u64, buf: u64, count: u64) -> u64 {
                     let position = handle.position as u64;
                     let sector = position / 512;
                     let sector_count = ((count + 511) / 512) as u32;
-                    match crate::drivers::loop_write_sectors(index as usize, sector, sector_count, data) {
+                    match crate::drivers::loop_write_sectors(
+                        index as usize,
+                        sector,
+                        sector_count,
+                        data,
+                    ) {
                         Ok(written) => {
                             let new_pos = handle.position + written;
                             let mut updated = handle;
@@ -1293,7 +1298,12 @@ pub fn read(fd: u64, buf: *mut u8, count: usize) -> u64 {
                 FileBacking::DevLoop(index) => {
                     // Read from loop device
                     let dest = slice::from_raw_parts_mut(buf, count);
-                    match crate::drivers::r#loop::read_sectors(index as usize, 0, (count / 512) as u32, dest) {
+                    match crate::drivers::r#loop::read_sectors(
+                        index as usize,
+                        0,
+                        (count / 512) as u32,
+                        dest,
+                    ) {
                         Ok(bytes) => {
                             posix::set_errno(0);
                             return bytes as u64;
@@ -1321,7 +1331,8 @@ pub fn read(fd: u64, buf: *mut u8, count: usize) -> u64 {
                     }
                     let events_ptr = buf as *mut InputEvent;
                     let events_buf = slice::from_raw_parts_mut(events_ptr, max_events);
-                    let events_read = crate::drivers::input::read_events(index as usize, events_buf);
+                    let events_read =
+                        crate::drivers::input::read_events(index as usize, events_buf);
                     if events_read == 0 {
                         // No events available - would block
                         posix::set_errno(posix::errno::EAGAIN);
@@ -1969,7 +1980,6 @@ pub fn close(fd: u64) -> u64 {
                     );
                 }
             }
-
             // Clean up PTY resources
             else if let FileBacking::PtyMaster(id) = handle.backing {
                 crate::tty::pty::close_master(id as usize);
@@ -2169,11 +2179,7 @@ fn build_fd_link_target(fd: u64) -> Option<String> {
             alloc::format!("socketpair:[{}]:{}", pair.pair_id, pair.end)
         }
         FileBacking::Inline(_) => String::from("initramfs"),
-        FileBacking::Modular(m) => alloc::format!(
-            "modfs:{}:inode:{}",
-            m.fs_index,
-            m.inode
-        ),
+        FileBacking::Modular(m) => alloc::format!("modfs:{}:inode:{}", m.fs_index, m.inode),
         #[allow(deprecated)]
         FileBacking::Ext2(_) => String::from("ext2"),
         FileBacking::DevLoop(n) => alloc::format!("/dev/loop{}", n),
@@ -2517,17 +2523,15 @@ pub fn get_file_size(fd: u64) -> Option<u64> {
         return None;
     }
 
-    unsafe {
-        get_file_handle(idx).map(|handle| handle.metadata.size)
-    }
+    unsafe { get_file_handle(idx).map(|handle| handle.metadata.size) }
 }
 
 /// Get file path for a given file descriptor (internal API)
 ///
 /// Returns the path if available, or a generated name otherwise.
 pub fn get_file_path(fd: u64) -> Option<alloc::string::String> {
-    use alloc::string::String;
     use alloc::format;
+    use alloc::string::String;
 
     if fd < FD_BASE {
         return match fd {
@@ -2544,28 +2548,26 @@ pub fn get_file_path(fd: u64) -> Option<alloc::string::String> {
     }
 
     unsafe {
-        get_file_handle(idx).map(|handle| {
-            match handle.backing {
-                FileBacking::StdStream(_) => String::from("/dev/tty"),
-                FileBacking::DevNull => String::from("/dev/null"),
-                FileBacking::DevZero => String::from("/dev/zero"),
-                FileBacking::DevFull => String::from("/dev/full"),
-                FileBacking::DevRandom => String::from("/dev/random"),
-                FileBacking::DevUrandom => String::from("/dev/urandom"),
-                FileBacking::PtyMaster(_) => String::from("/dev/ptmx"),
-                FileBacking::PtySlave(id) => format!("/dev/pts/{}", id),
-                FileBacking::Socket(sock) => format!("socket:[{}]", sock.socket_index),
-                FileBacking::Socketpair(pair) => format!("socketpair:[{}]:{}", pair.pair_id, pair.end),
-                FileBacking::Inline(_) => String::from("initramfs"),
-                FileBacking::Modular(m) => format!("modfs:{}:inode:{}", m.fs_index, m.inode),
-                #[allow(deprecated)]
-                FileBacking::Ext2(_) => String::from("ext2"),
-                FileBacking::DevLoop(n) => format!("/dev/loop{}", n),
-                FileBacking::DevLoopControl => String::from("/dev/loop-control"),
-                FileBacking::DevInputEvent(n) => format!("/dev/input/event{}", n),
-                FileBacking::DevInputMice => String::from("/dev/input/mice"),
-                FileBacking::DevWatchdog => String::from("/dev/watchdog"),
-            }
+        get_file_handle(idx).map(|handle| match handle.backing {
+            FileBacking::StdStream(_) => String::from("/dev/tty"),
+            FileBacking::DevNull => String::from("/dev/null"),
+            FileBacking::DevZero => String::from("/dev/zero"),
+            FileBacking::DevFull => String::from("/dev/full"),
+            FileBacking::DevRandom => String::from("/dev/random"),
+            FileBacking::DevUrandom => String::from("/dev/urandom"),
+            FileBacking::PtyMaster(_) => String::from("/dev/ptmx"),
+            FileBacking::PtySlave(id) => format!("/dev/pts/{}", id),
+            FileBacking::Socket(sock) => format!("socket:[{}]", sock.socket_index),
+            FileBacking::Socketpair(pair) => format!("socketpair:[{}]:{}", pair.pair_id, pair.end),
+            FileBacking::Inline(_) => String::from("initramfs"),
+            FileBacking::Modular(m) => format!("modfs:{}:inode:{}", m.fs_index, m.inode),
+            #[allow(deprecated)]
+            FileBacking::Ext2(_) => String::from("ext2"),
+            FileBacking::DevLoop(n) => format!("/dev/loop{}", n),
+            FileBacking::DevLoopControl => String::from("/dev/loop-control"),
+            FileBacking::DevInputEvent(n) => format!("/dev/input/event{}", n),
+            FileBacking::DevInputMice => String::from("/dev/input/mice"),
+            FileBacking::DevWatchdog => String::from("/dev/watchdog"),
         })
     }
 }
@@ -2614,7 +2616,8 @@ pub fn pread_internal(fd: u64, buf: &mut [u8], offset: i64) -> Result<usize, i32
                     }
                     let available = file_size - offset as usize;
                     let to_read = core::cmp::min(buf.len(), available);
-                    buf[..to_read].copy_from_slice(&data[offset as usize..offset as usize + to_read]);
+                    buf[..to_read]
+                        .copy_from_slice(&data[offset as usize..offset as usize + to_read]);
                     Ok(to_read)
                 }
                 FileBacking::DevRandom | FileBacking::DevUrandom => {
@@ -2626,15 +2629,16 @@ pub fn pread_internal(fd: u64, buf: &mut [u8], offset: i64) -> Result<usize, i32
                     buf.fill(0);
                     Ok(buf.len())
                 }
-                FileBacking::StdStream(_) | FileBacking::Socket(_) | FileBacking::Socketpair(_) |
-                FileBacking::PtyMaster(_) | FileBacking::PtySlave(_) => {
-                    Err(posix::errno::ESPIPE)
-                }
-                FileBacking::DevLoop(_) | FileBacking::DevLoopControl |
-                FileBacking::DevInputEvent(_) | FileBacking::DevInputMice |
-                FileBacking::DevWatchdog => {
-                    Err(posix::errno::EINVAL)
-                }
+                FileBacking::StdStream(_)
+                | FileBacking::Socket(_)
+                | FileBacking::Socketpair(_)
+                | FileBacking::PtyMaster(_)
+                | FileBacking::PtySlave(_) => Err(posix::errno::ESPIPE),
+                FileBacking::DevLoop(_)
+                | FileBacking::DevLoopControl
+                | FileBacking::DevInputEvent(_)
+                | FileBacking::DevInputMice
+                | FileBacking::DevWatchdog => Err(posix::errno::EINVAL),
             }
         } else {
             Err(posix::errno::EBADF)
@@ -2687,32 +2691,26 @@ pub fn pwrite_internal(fd: u64, buf: &[u8], offset: i64) -> Result<usize, i32> {
                         Err(_) => Err(posix::errno::EIO),
                     }
                 }
-                FileBacking::Inline(_) => {
-                    Err(posix::errno::EROFS)
-                }
+                FileBacking::Inline(_) => Err(posix::errno::EROFS),
                 FileBacking::DevRandom | FileBacking::DevUrandom => {
                     crate::drivers::dev_random_write(buf);
                     Ok(buf.len())
                 }
-                FileBacking::DevNull | FileBacking::DevZero => {
-                    Ok(buf.len())
-                }
-                FileBacking::DevFull => {
-                    Err(posix::errno::ENOSPC)
-                }
-                FileBacking::StdStream(_) | FileBacking::Socket(_) | FileBacking::Socketpair(_) |
-                FileBacking::PtyMaster(_) | FileBacking::PtySlave(_) => {
-                    Err(posix::errno::ESPIPE)
-                }
-                FileBacking::DevLoop(_) | FileBacking::DevLoopControl |
-                FileBacking::DevInputEvent(_) | FileBacking::DevInputMice |
-                FileBacking::DevWatchdog => {
-                    Err(posix::errno::EINVAL)
-                }
+                FileBacking::DevNull | FileBacking::DevZero => Ok(buf.len()),
+                FileBacking::DevFull => Err(posix::errno::ENOSPC),
+                FileBacking::StdStream(_)
+                | FileBacking::Socket(_)
+                | FileBacking::Socketpair(_)
+                | FileBacking::PtyMaster(_)
+                | FileBacking::PtySlave(_) => Err(posix::errno::ESPIPE),
+                FileBacking::DevLoop(_)
+                | FileBacking::DevLoopControl
+                | FileBacking::DevInputEvent(_)
+                | FileBacking::DevInputMice
+                | FileBacking::DevWatchdog => Err(posix::errno::EINVAL),
             }
         } else {
             Err(posix::errno::EBADF)
         }
     }
 }
-

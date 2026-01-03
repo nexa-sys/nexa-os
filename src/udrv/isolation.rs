@@ -42,9 +42,9 @@
 //! └── Standard IPC
 //! ```
 
-use spin::Mutex;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
+use spin::Mutex;
 
 /// Maximum number of IC1 domains (hardware limited)
 /// Intel PKS: 16 domains, ARM Watchpoint: 4 domains
@@ -58,12 +58,12 @@ pub enum IsolationClass {
     /// Security: Part of trusted computing base
     /// Performance: ~18 cycles roundtrip IPC
     IC0 = 0,
-    
+
     /// Mechanism-enforced isolation in kernel space
     /// Security: Hardware domain isolation (PKS/Watchpoint)
     /// Performance: ~500 cycles roundtrip IPC
     IC1 = 1,
-    
+
     /// Full address space isolation (userspace)
     /// Security: Process isolation + privilege separation
     /// Performance: ~1000 cycles roundtrip IPC
@@ -74,21 +74,21 @@ impl IsolationClass {
     /// Get the security level (higher = more secure)
     pub fn security_level(&self) -> u8 {
         match self {
-            IsolationClass::IC0 => 0,  // Least secure (in TCB)
-            IsolationClass::IC1 => 1,  // Medium security
-            IsolationClass::IC2 => 2,  // Most secure
+            IsolationClass::IC0 => 0, // Least secure (in TCB)
+            IsolationClass::IC1 => 1, // Medium security
+            IsolationClass::IC2 => 2, // Most secure
         }
     }
-    
+
     /// Get approximate IPC latency in cycles
     pub fn ipc_latency_cycles(&self) -> u32 {
         match self {
-            IsolationClass::IC0 => 18,    // Direct function call
-            IsolationClass::IC1 => 500,   // Gate + domain switch
-            IsolationClass::IC2 => 1000,  // Full context switch
+            IsolationClass::IC0 => 18,   // Direct function call
+            IsolationClass::IC1 => 500,  // Gate + domain switch
+            IsolationClass::IC2 => 1000, // Full context switch
         }
     }
-    
+
     /// Check if this class can access another class
     pub fn can_access(&self, target: IsolationClass) -> bool {
         // Lower isolation classes can access higher ones
@@ -137,7 +137,7 @@ impl IC1DomainManager {
             allocated_count: 0,
         }
     }
-    
+
     fn allocate(&mut self, owner_id: u32) -> Result<u8, IsolationError> {
         // Domain 0 is reserved for kernel
         for i in 1..MAX_IC1_DOMAINS {
@@ -155,7 +155,7 @@ impl IC1DomainManager {
         }
         Err(IsolationError::DomainsFull)
     }
-    
+
     fn deallocate(&mut self, domain_id: u8) -> Result<(), IsolationError> {
         let idx = domain_id as usize;
         if idx >= MAX_IC1_DOMAINS || idx == 0 {
@@ -169,7 +169,7 @@ impl IC1DomainManager {
         self.allocated_count -= 1;
         Ok(())
     }
-    
+
     fn get(&self, domain_id: u8) -> Option<&IC1Domain> {
         let idx = domain_id as usize;
         if idx < MAX_IC1_DOMAINS && self.domains[idx].allocated {
@@ -178,8 +178,13 @@ impl IC1DomainManager {
             None
         }
     }
-    
-    fn set_memory_region(&mut self, domain_id: u8, base: u64, size: u64) -> Result<(), IsolationError> {
+
+    fn set_memory_region(
+        &mut self,
+        domain_id: u8,
+        base: u64,
+        size: u64,
+    ) -> Result<(), IsolationError> {
         let idx = domain_id as usize;
         if idx >= MAX_IC1_DOMAINS {
             return Err(IsolationError::InvalidDomain);
@@ -269,11 +274,11 @@ static NEXT_IC2_ID: AtomicU32 = AtomicU32::new(1);
 /// Initialize isolation subsystem
 pub fn init() {
     crate::kinfo!("UDRV/Isolation: Initializing isolation classes");
-    
+
     // Check hardware support for IC1
     let pks_supported = check_pks_support();
     let watchpoint_supported = check_watchpoint_support();
-    
+
     if pks_supported {
         crate::kinfo!("UDRV/Isolation: Intel PKS supported - IC1 available");
     } else if watchpoint_supported {
@@ -281,7 +286,7 @@ pub fn init() {
     } else {
         crate::kwarn!("UDRV/Isolation: No IC1 hardware support - falling back to IC2 only");
     }
-    
+
     // Reserve domain 0 for kernel
     let mut manager = IC1_MANAGER.lock();
     manager.domains[0] = IC1Domain {
@@ -291,8 +296,11 @@ pub fn init() {
         mem_base: 0,
         mem_size: 0,
     };
-    
-    crate::kinfo!("UDRV/Isolation: {} IC1 domains available", MAX_IC1_DOMAINS - 1);
+
+    crate::kinfo!(
+        "UDRV/Isolation: {} IC1 domains available",
+        MAX_IC1_DOMAINS - 1
+    );
 }
 
 /// Check for Intel PKS support
@@ -349,7 +357,7 @@ pub fn create_ic2_context(cr3: u64) -> IC2Context {
 }
 
 /// Switch to IC1 domain (kernel-internal)
-/// 
+///
 /// # Safety
 /// Caller must ensure domain is valid and properly configured
 #[inline(always)]
@@ -379,18 +387,18 @@ pub fn enter_ic1_gate(gate: &IsolationGate) -> Result<(), IsolationError> {
     if gate.flags & gate_flags::GATE_ENABLED == 0 {
         return Err(IsolationError::PermissionDenied);
     }
-    
+
     // Verify target domain exists
     if get_ic1_domain(gate.target_domain).is_none() {
         return Err(IsolationError::InvalidDomain);
     }
-    
+
     // Switch domain and jump to entry point
     unsafe {
         switch_ic1_domain(gate.target_domain);
         // Entry point call would happen here in real implementation
     }
-    
+
     Ok(())
 }
 

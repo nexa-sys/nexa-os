@@ -10,23 +10,9 @@ use core::mem;
 use core::ptr;
 
 use nexa_boot_info::{
-    bar_flags,
-    block_flags,
-    device_flags,
-    flags,
-    network_flags,
-    BlockDeviceInfo,
-    BootInfo,
-    DeviceDescriptor,
-    DeviceKind,
-    FramebufferInfo,
-    MemoryRegion,
-    KernelSegment,
-    NetworkDeviceInfo,
-    PciBarInfo,
-    PciDeviceInfo,
-    UsbHostInfo,
-    MAX_DEVICE_DESCRIPTORS,
+    bar_flags, block_flags, device_flags, flags, network_flags, BlockDeviceInfo, BootInfo,
+    DeviceDescriptor, DeviceKind, FramebufferInfo, KernelSegment, MemoryRegion, NetworkDeviceInfo,
+    PciBarInfo, PciDeviceInfo, UsbHostInfo, MAX_DEVICE_DESCRIPTORS,
 };
 use r_efi::base as raw_base;
 use r_efi::protocols::pci_io;
@@ -38,9 +24,11 @@ use uefi::proto::media::file::{Directory, File, FileAttribute, FileMode, Regular
 use uefi::proto::media::fs::SimpleFileSystem;
 use uefi::proto::network::snp::{NetworkState, SimpleNetwork};
 use uefi::proto::unsafe_protocol;
-use uefi::table::boot::{AllocateType, MemoryType, OpenProtocolAttributes, OpenProtocolParams, SearchType};
-use uefi::Identify;
+use uefi::table::boot::{
+    AllocateType, MemoryType, OpenProtocolAttributes, OpenProtocolParams, SearchType,
+};
 use uefi::Error;
+use uefi::Identify;
 use uefi::{cstr16, Handle, Status};
 
 // Primary paths for EFI System Partition
@@ -134,17 +122,17 @@ impl NexaConfig {
     /// ```
     fn parse(data: &[u8]) -> Self {
         let mut cfg = Self::default();
-        
+
         for line in data.split(|&b| b == b'\n') {
             let line = trim_bytes(line);
             if line.is_empty() || line.starts_with(b"#") {
                 continue;
             }
-            
+
             if let Some(pos) = line.iter().position(|&b| b == b'=') {
                 let key = trim_bytes(&line[..pos]);
                 let value = trim_bytes(&line[pos + 1..]);
-                
+
                 match key {
                     b"root" => {
                         let len = value.len().min(cfg.root.len());
@@ -199,20 +187,20 @@ impl NexaConfig {
                 }
             }
         }
-        
+
         cfg
     }
 
     /// Build kernel command line from configuration
     fn build_cmdline(&self) -> Vec<u8> {
         let mut cmdline = Vec::new();
-        
+
         // root=
         if self.root_len > 0 {
             cmdline.extend_from_slice(b"root=");
             cmdline.extend_from_slice(&self.root[..self.root_len]);
         }
-        
+
         // rootfstype=
         if self.rootfstype_len > 0 {
             if !cmdline.is_empty() {
@@ -221,7 +209,7 @@ impl NexaConfig {
             cmdline.extend_from_slice(b"rootfstype=");
             cmdline.extend_from_slice(&self.rootfstype[..self.rootfstype_len]);
         }
-        
+
         // init=
         if self.init_len > 0 {
             if !cmdline.is_empty() {
@@ -230,7 +218,7 @@ impl NexaConfig {
             cmdline.extend_from_slice(b"init=");
             cmdline.extend_from_slice(&self.init[..self.init_len]);
         }
-        
+
         // console=
         if self.console_len > 0 {
             if !cmdline.is_empty() {
@@ -239,7 +227,7 @@ impl NexaConfig {
             cmdline.extend_from_slice(b"console=");
             cmdline.extend_from_slice(&self.console[..self.console_len]);
         }
-        
+
         // quiet
         if self.quiet {
             if !cmdline.is_empty() {
@@ -247,7 +235,7 @@ impl NexaConfig {
             }
             cmdline.extend_from_slice(b"quiet");
         }
-        
+
         // debug
         if self.debug {
             if !cmdline.is_empty() {
@@ -255,7 +243,7 @@ impl NexaConfig {
             }
             cmdline.extend_from_slice(b"debug");
         }
-        
+
         // extra params
         if self.extra_params_len > 0 {
             if !cmdline.is_empty() {
@@ -263,15 +251,22 @@ impl NexaConfig {
             }
             cmdline.extend_from_slice(&self.extra_params[..self.extra_params_len]);
         }
-        
+
         cmdline
     }
 }
 
 /// Trim leading and trailing whitespace from byte slice
 fn trim_bytes(bytes: &[u8]) -> &[u8] {
-    let start = bytes.iter().position(|&b| !b.is_ascii_whitespace()).unwrap_or(bytes.len());
-    let end = bytes.iter().rposition(|&b| !b.is_ascii_whitespace()).map(|i| i + 1).unwrap_or(start);
+    let start = bytes
+        .iter()
+        .position(|&b| !b.is_ascii_whitespace())
+        .unwrap_or(bytes.len());
+    let end = bytes
+        .iter()
+        .rposition(|&b| !b.is_ascii_whitespace())
+        .map(|i| i + 1)
+        .unwrap_or(start);
     &bytes[start..end]
 }
 
@@ -517,9 +512,8 @@ const fn hex_value(b: u8) -> u32 {
 }
 
 const fn encode_eisa_id(bytes: [u8; 7]) -> u32 {
-    let manufacturer = (letter_value(bytes[0]) << 10)
-        | (letter_value(bytes[1]) << 5)
-        | letter_value(bytes[2]);
+    let manufacturer =
+        (letter_value(bytes[0]) << 10) | (letter_value(bytes[1]) << 5) | letter_value(bytes[2]);
     let product = (hex_value(bytes[3]) << 12)
         | (hex_value(bytes[4]) << 8)
         | (hex_value(bytes[5]) << 4)
@@ -573,7 +567,7 @@ fn collect_block_devices(bs: &BootServices, image: Handle, table: &mut DeviceTab
 
         // Try to get PCI snapshot from the same handle first
         let mut pci_snapshot = pci_snapshot_for_handle(bs, image, *handle);
-        
+
         // If that fails, try to find PCI I/O protocol for this address (or use direct config space access)
         if pci_snapshot.is_none() {
             log::warn!("Failed to get PCI snapshot from BlockIO handle, searching by address {:04x}:{:02x}:{:02x}.{}", 
@@ -640,20 +634,31 @@ fn collect_network_devices(bs: &BootServices, image: Handle, table: &mut DeviceT
 
         // Try to get PCI snapshot from the same handle first
         let mut pci_snapshot = pci_snapshot_for_handle(bs, image, *handle);
-        
+
         // If that fails, try to find PCI I/O protocol for this address
         if pci_snapshot.is_none() {
-            log::warn!("Failed to get PCI snapshot from SimpleNetwork handle, searching by address");
+            log::warn!(
+                "Failed to get PCI snapshot from SimpleNetwork handle, searching by address"
+            );
             pci_snapshot = find_pci_snapshot_by_address(bs, image, address);
         }
 
         table.ensure_pci_entry(address, device_flags::NETWORK, |pci| {
             if let Some(snapshot) = pci_snapshot.as_ref() {
                 apply_pci_snapshot(pci, snapshot);
-                log::info!("Applied PCI snapshot: vendor={:04x}, device={:04x}", snapshot.vendor_id, snapshot.device_id);
+                log::info!(
+                    "Applied PCI snapshot: vendor={:04x}, device={:04x}",
+                    snapshot.vendor_id,
+                    snapshot.device_id
+                );
             } else {
-                log::warn!("No PCI snapshot available for network device at {:04x}:{:02x}:{:02x}.{}", 
-                          address.segment, address.bus, address.device, address.function);
+                log::warn!(
+                    "No PCI snapshot available for network device at {:04x}:{:02x}:{:02x}.{}",
+                    address.segment,
+                    address.bus,
+                    address.device,
+                    address.function
+                );
             }
         });
 
@@ -661,7 +666,9 @@ fn collect_network_devices(bs: &BootServices, image: Handle, table: &mut DeviceT
         let mut descriptor = DeviceDescriptor::empty();
         descriptor.kind = DeviceKind::Network;
         descriptor.flags = device_flags::NETWORK;
-        descriptor.data = nexa_boot_info::DeviceData { network: network_info };
+        descriptor.data = nexa_boot_info::DeviceData {
+            network: network_info,
+        };
         if !table.push_descriptor(descriptor) {
             break;
         }
@@ -690,11 +697,11 @@ fn collect_usb_controllers(bs: &BootServices, image: Handle, table: &mut DeviceT
                 OpenProtocolAttributes::GetProtocol,
             )
         };
-        
+
         let Ok(pci_proto) = pci_proto else {
             continue;
         };
-        
+
         let Some(pci_io) = pci_proto.get() else {
             continue;
         };
@@ -739,7 +746,7 @@ fn collect_usb_controllers(bs: &BootServices, image: Handle, table: &mut DeviceT
             descriptor.kind = DeviceKind::UsbHost;
             descriptor.flags = device_flags::USB_HOST;
             descriptor.data = nexa_boot_info::DeviceData { usb_host: usb_info };
-            
+
             if table.push_descriptor(descriptor) {
                 log::info!(
                     "Found USB {} controller at {:04x}:{:02x}:{:02x}.{} (MMIO: {:#x}, size: {:#x})",
@@ -794,15 +801,19 @@ fn build_usb_host_info(
     // Port count would require parsing controller-specific registers
     // For now, set a reasonable default
     info.port_count = match controller_type {
-        3 => 4,  // xHCI typically has 4-8 ports
-        2 => 4,  // EHCI typically has 2-4 ports
-        _ => 2,  // OHCI typically has 2 ports
+        3 => 4, // xHCI typically has 4-8 ports
+        2 => 4, // EHCI typically has 2-4 ports
+        _ => 2, // OHCI typically has 2 ports
     };
 
     info
 }
 
-fn pci_snapshot_for_handle(bs: &BootServices, image: Handle, handle: Handle) -> Option<PciSnapshot> {
+fn pci_snapshot_for_handle(
+    bs: &BootServices,
+    image: Handle,
+    handle: Handle,
+) -> Option<PciSnapshot> {
     let pci_proto = unsafe {
         bs.open_protocol::<PciIo>(
             OpenProtocolParams {
@@ -819,7 +830,11 @@ fn pci_snapshot_for_handle(bs: &BootServices, image: Handle, handle: Handle) -> 
     snapshot
 }
 
-fn find_pci_snapshot_by_address(bs: &BootServices, image: Handle, target_addr: PciAddress) -> Option<PciSnapshot> {
+fn find_pci_snapshot_by_address(
+    bs: &BootServices,
+    image: Handle,
+    target_addr: PciAddress,
+) -> Option<PciSnapshot> {
     // Try to enumerate all PCI I/O handles and find one matching the address
     let Ok(handles) = bs.locate_handle_buffer(SearchType::ByProtocol(&PciIo::GUID)) else {
         log::warn!("Failed to locate PCI I/O handles");
@@ -831,21 +846,31 @@ fn find_pci_snapshot_by_address(bs: &BootServices, image: Handle, target_addr: P
         let Some(addr) = pci_address_for_handle(bs, image, *handle) else {
             continue;
         };
-        
-        if addr.segment == target_addr.segment 
-            && addr.bus == target_addr.bus 
-            && addr.device == target_addr.device 
-            && addr.function == target_addr.function 
+
+        if addr.segment == target_addr.segment
+            && addr.bus == target_addr.bus
+            && addr.device == target_addr.device
+            && addr.function == target_addr.function
         {
-            log::info!("Found matching PCI I/O handle for {:04x}:{:02x}:{:02x}.{}", 
-                      addr.segment, addr.bus, addr.device, addr.function);
+            log::info!(
+                "Found matching PCI I/O handle for {:04x}:{:02x}:{:02x}.{}",
+                addr.segment,
+                addr.bus,
+                addr.device,
+                addr.function
+            );
             return pci_snapshot_for_handle(bs, image, *handle);
         }
     }
-    
-    log::warn!("Could not find PCI I/O handle for {:04x}:{:02x}:{:02x}.{}, trying root bridge", 
-              target_addr.segment, target_addr.bus, target_addr.device, target_addr.function);
-    
+
+    log::warn!(
+        "Could not find PCI I/O handle for {:04x}:{:02x}:{:02x}.{}, trying root bridge",
+        target_addr.segment,
+        target_addr.bus,
+        target_addr.device,
+        target_addr.function
+    );
+
     // Fallback to PCI Root Bridge I/O protocol
     read_pci_via_root_bridge(bs, target_addr)
 }
@@ -853,9 +878,14 @@ fn find_pci_snapshot_by_address(bs: &BootServices, image: Handle, target_addr: P
 fn read_pci_via_root_bridge(_bs: &BootServices, addr: PciAddress) -> Option<PciSnapshot> {
     // Fallback: Direct PCI configuration space access via I/O ports
     // This works on x86/x86_64 platforms
-    log::info!("Trying direct PCI config space access for {:04x}:{:02x}:{:02x}.{}", 
-              addr.segment, addr.bus, addr.device, addr.function);
-    
+    log::info!(
+        "Trying direct PCI config space access for {:04x}:{:02x}:{:02x}.{}",
+        addr.segment,
+        addr.bus,
+        addr.device,
+        addr.function
+    );
+
     // Read PCI config directly without using UEFI protocols
     read_pci_config_direct(addr)
 }
@@ -867,42 +897,42 @@ fn read_pci_config_direct(addr: PciAddress) -> Option<PciSnapshot> {
             | ((addr.bus as u32) << 16)
             | ((addr.device as u32) << 11)
             | ((addr.function as u32) << 8);
-        
+
         // Read vendor_id and device_id
         let vendor_device = read_pci_config_dword(pci_addr, 0x00)?;
         let vendor_id = (vendor_device & 0xFFFF) as u16;
         let device_id = (vendor_device >> 16) as u16;
-        
+
         if vendor_id == 0xFFFF || vendor_id == 0x0000 {
             return None;
         }
-        
+
         // Read class code and revision
         let class_rev = read_pci_config_dword(pci_addr, 0x08)?;
         let revision = (class_rev & 0xFF) as u8;
         let prog_if = ((class_rev >> 8) & 0xFF) as u8;
         let subclass = ((class_rev >> 16) & 0xFF) as u8;
         let class_code = ((class_rev >> 24) & 0xFF) as u8;
-        
+
         // Read header type
         let header_misc = read_pci_config_dword(pci_addr, 0x0C)?;
         let header_type = ((header_misc >> 16) & 0xFF) as u8;
-        
+
         // Read interrupt line and pin
         let interrupt_reg = read_pci_config_dword(pci_addr, 0x3C).unwrap_or(0);
         let interrupt_line = (interrupt_reg & 0xFF) as u8;
         let interrupt_pin = ((interrupt_reg >> 8) & 0xFF) as u8;
-        
+
         // Read BARs
         let mut bars = [PciBarInfo::empty(); 6];
         let max_bars = if (header_type & 0x7F) == 0x00 { 6 } else { 2 };
-        
+
         for i in 0..max_bars {
             if let Some(bar_info) = read_pci_bar(pci_addr, i) {
                 bars[i] = bar_info;
             }
         }
-        
+
         Some(PciSnapshot {
             vendor_id,
             device_id,
@@ -920,31 +950,31 @@ fn read_pci_config_direct(addr: PciAddress) -> Option<PciSnapshot> {
 
 unsafe fn read_pci_config_dword(base_addr: u32, offset: u32) -> Option<u32> {
     use core::arch::asm;
-    
+
     let addr = base_addr | (offset & 0xFC);
     let mut value: u32;
-    
+
     // Write address to 0xCF8
     asm!("out dx, eax", in("dx") 0xCF8u16, in("eax") addr, options(nomem, nostack));
-    
+
     // Read data from 0xCFC
     asm!("in eax, dx", in("dx") 0xCFCu16, out("eax") value, options(nomem, nostack));
-    
+
     Some(value)
 }
 
 unsafe fn read_pci_bar(base_addr: u32, bar_index: usize) -> Option<PciBarInfo> {
     let offset = 0x10 + (bar_index as u32 * 4);
     let bar_value = read_pci_config_dword(base_addr, offset)?;
-    
+
     if bar_value == 0 {
         return Some(PciBarInfo::empty());
     }
-    
+
     let is_io = (bar_value & 0x1) != 0;
     let is_64bit = !is_io && ((bar_value >> 1) & 0x3) == 0x2;
     let is_prefetchable = !is_io && ((bar_value >> 3) & 0x1) != 0;
-    
+
     let mut flags = 0u32;
     if is_io {
         flags |= bar_flags::IO_SPACE;
@@ -957,7 +987,7 @@ unsafe fn read_pci_bar(base_addr: u32, bar_index: usize) -> Option<PciBarInfo> {
             flags |= bar_flags::PREFETCHABLE;
         }
     }
-    
+
     let base = if is_io {
         (bar_value & 0xFFFF_FFFC) as u64
     } else {
@@ -968,7 +998,7 @@ unsafe fn read_pci_bar(base_addr: u32, bar_index: usize) -> Option<PciBarInfo> {
             (bar_value & 0xFFFF_FFF0) as u64
         }
     };
-    
+
     Some(PciBarInfo {
         base,
         length: 0, // Size detection would require writing to BAR, skip for now
@@ -1039,9 +1069,7 @@ fn build_network_info(
     info.pci_function = address.function;
     info.if_type = mode.if_type;
 
-    let mac_len = mode
-        .hw_address_size
-        .min(info.mac_address.len() as u32) as usize;
+    let mac_len = mode.hw_address_size.min(info.mac_address.len() as u32) as usize;
     info.mac_len = mac_len as u8;
     if mac_len > 0 {
         info.mac_address[..mac_len].copy_from_slice(&mode.current_address.0[..mac_len]);
@@ -1167,11 +1195,7 @@ fn read_pci_bars(bs: &BootServices, pci_io: &PciIo, header_type: u8) -> [PciBarI
     bars
 }
 
-fn query_bar_descriptor(
-    bs: &BootServices,
-    pci_io: &PciIo,
-    bar_index: u8,
-) -> Option<(u64, u64)> {
+fn query_bar_descriptor(bs: &BootServices, pci_io: &PciIo, bar_index: u8) -> Option<(u64, u64)> {
     let mut _attributes: pci_io::Attribute = 0;
     let mut resource_ptr: *mut c_void = ptr::null_mut();
     let status = (pci_io.0.get_bar_attributes)(
@@ -1236,7 +1260,9 @@ fn parse_pci_address(path: &DevicePath) -> Option<PciAddress> {
     let mut bus = 0u8;
 
     for node in path.node_iter() {
-        let Ok(specific) = node.as_enum() else { continue };
+        let Ok(specific) = node.as_enum() else {
+            continue;
+        };
         match specific {
             DevicePathNodeEnum::AcpiAcpi(acpi_node) => {
                 if is_pci_root_hid(acpi_node.hid()) {
@@ -1273,22 +1299,22 @@ fn parse_pci_address(path: &DevicePath) -> Option<PciAddress> {
 fn get_acpi_rsdp_addr(st: &SystemTable<Boot>) -> Option<u64> {
     // ACPI 2.0+ GUID: 8868e871-e4f1-11d3-bc22-0080c73c8881
     const ACPI_20_TABLE_GUID: uefi::Guid = uefi::Guid::from_bytes([
-        0x71, 0xe8, 0x68, 0x88,  // time_low
-        0xf1, 0xe4,              // time_mid
-        0xd3, 0x11,              // time_high_and_version
-        0xbc, 0x22,              // clock_seq
-        0x00, 0x80, 0xc7, 0x3c, 0x88, 0x81,  // node
+        0x71, 0xe8, 0x68, 0x88, // time_low
+        0xf1, 0xe4, // time_mid
+        0xd3, 0x11, // time_high_and_version
+        0xbc, 0x22, // clock_seq
+        0x00, 0x80, 0xc7, 0x3c, 0x88, 0x81, // node
     ]);
-    
+
     // ACPI 1.0 GUID (fallback): eb9d2d30-2d88-11d3-9a16-0090273fc14d
     const ACPI_TABLE_GUID: uefi::Guid = uefi::Guid::from_bytes([
-        0x30, 0x2d, 0x9d, 0xeb,  // time_low
-        0x88, 0x2d,              // time_mid
-        0xd3, 0x11,              // time_high_and_version
-        0x9a, 0x16,              // clock_seq
-        0x00, 0x90, 0x27, 0x3f, 0xc1, 0x4d,  // node
+        0x30, 0x2d, 0x9d, 0xeb, // time_low
+        0x88, 0x2d, // time_mid
+        0xd3, 0x11, // time_high_and_version
+        0x9a, 0x16, // clock_seq
+        0x00, 0x90, 0x27, 0x3f, 0xc1, 0x4d, // node
     ]);
-    
+
     // Try ACPI 2.0+ first
     for entry in st.config_table() {
         if entry.guid == ACPI_20_TABLE_GUID {
@@ -1297,7 +1323,7 @@ fn get_acpi_rsdp_addr(st: &SystemTable<Boot>) -> Option<u64> {
             return Some(rsdp_addr);
         }
     }
-    
+
     // Fall back to ACPI 1.0
     for entry in st.config_table() {
         if entry.guid == ACPI_TABLE_GUID {
@@ -1306,7 +1332,7 @@ fn get_acpi_rsdp_addr(st: &SystemTable<Boot>) -> Option<u64> {
             return Some(rsdp_addr);
         }
     }
-    
+
     log::warn!("ACPI RSDP not found in UEFI configuration table");
     None
 }
@@ -1327,7 +1353,7 @@ fn efi_main(image: Handle, mut st: SystemTable<Boot>) -> Status {
         Ok(dir) => {
             log::info!("Boot volume opened successfully");
             dir
-        },
+        }
         Err(status) => {
             log::error!("Failed to open boot volume: {:?}", status);
             return status;
@@ -1342,11 +1368,11 @@ fn efi_main(image: Handle, mut st: SystemTable<Boot>) -> Status {
     // List root directory
     log::info!("=== Listing root directory ===");
     let _ = list_directory(&mut root, cstr16!("\\"));
-    
+
     // List EFI directory
     log::info!("=== Listing \\EFI directory ===");
     let _ = list_directory(&mut root, cstr16!("\\EFI"));
-    
+
     // List BOOT directory
     log::info!("=== Listing \\EFI\\BOOT directory ===");
     let _ = list_directory(&mut root, cstr16!("\\EFI\\BOOT"));
@@ -1355,7 +1381,7 @@ fn efi_main(image: Handle, mut st: SystemTable<Boot>) -> Status {
         Ok(data) => {
             log::info!("Kernel image loaded, size: {} bytes", data.len());
             data
-        },
+        }
         Err(status) => {
             log::error!("Failed to load kernel image: {:?}", status);
             return status;
@@ -1366,11 +1392,11 @@ fn efi_main(image: Handle, mut st: SystemTable<Boot>) -> Status {
         Ok(data) => {
             log::info!("Initramfs loaded, size: {} bytes", data.len());
             data
-        },
+        }
         Err(status) if status == Status::NOT_FOUND => {
             log::warn!("Initramfs not found, using empty");
             Vec::new()
-        },
+        }
         Err(status) => {
             log::error!("Failed to load initramfs: {:?}", status);
             return status;
@@ -1399,13 +1425,13 @@ fn efi_main(image: Handle, mut st: SystemTable<Boot>) -> Status {
                 info.actual_entry_point
             );
             info
-        },
+        }
         Err(status) => {
             log::error!("Kernel load failed: {:?}", status);
             return status;
         }
     };
-    
+
     // 添加调试信息验证入口点地址
     log::info!("Expected entry point: {:#x}", 0x101020);
     if loaded.expected_entry_point != 0x101020 {
@@ -1415,24 +1441,31 @@ fn efi_main(image: Handle, mut st: SystemTable<Boot>) -> Status {
             loaded.expected_entry_point
         );
     }
-    
+
     // 收集设备信息
     let device_table = collect_device_table(bs, image);
     log::info!("Device table collected, count: {}", device_table.count);
-    
+
     // 获取ACPI RSDP地址
     let acpi_rsdp_addr = get_acpi_rsdp_addr(&st);
-    
+
     // 准备帧缓冲信息
     let framebuffer_info = detect_framebuffer(bs, image);
-    log::info!("Framebuffer detection completed, found: {}", framebuffer_info.is_some());
-    
+    log::info!(
+        "Framebuffer detection completed, found: {}",
+        framebuffer_info.is_some()
+    );
+
     // 准备initramfs
     let initramfs_region = match stage_payload(bs, &initramfs_bytes, MemoryType::LOADER_DATA) {
         Ok(region) => {
-            log::info!("Initramfs staged, addr: {:#x}, size: {}", region.phys_addr, region.length);
+            log::info!(
+                "Initramfs staged, addr: {:#x}, size: {}",
+                region.phys_addr,
+                region.length
+            );
             region
-        },
+        }
         Err(status) => {
             log::error!("Failed to allocate initramfs region: {:?}", status);
             return status;
@@ -1440,7 +1473,7 @@ fn efi_main(image: Handle, mut st: SystemTable<Boot>) -> Status {
     };
 
     // NOTE: rootfs is no longer staged to memory - kernel uses block device drivers directly
-    
+
     // 创建启动信息
     let kernel_segments_region = match stage_kernel_segments(bs, &loaded.segments) {
         Ok(region) => {
@@ -1462,7 +1495,7 @@ fn efi_main(image: Handle, mut st: SystemTable<Boot>) -> Status {
             return status;
         }
     };
-    
+
     // 计算总物理内存大小（在 exit_boot_services 之前必须完成）
     let total_physical_memory = calculate_total_physical_memory(bs);
 
@@ -1480,22 +1513,34 @@ fn efi_main(image: Handle, mut st: SystemTable<Boot>) -> Status {
         total_physical_memory,
     ) {
         Ok(region) => {
-            log::info!("Boot info staged, addr: {:#x}, size: {}", region.phys_addr, region.length);
+            log::info!(
+                "Boot info staged, addr: {:#x}, size: {}",
+                region.phys_addr,
+                region.length
+            );
             region
-        },
+        }
         Err(status) => {
             log::error!("Failed to allocate boot info region: {:?}", status);
             return status;
         }
     };
 
-    log::info!("About to exit boot services, kernel_offset={:#x}", loaded.kernel_offset);
+    log::info!(
+        "About to exit boot services, kernel_offset={:#x}",
+        loaded.kernel_offset
+    );
     log::info!("Segments to mirror: {}", loaded.segments.len());
     for (i, seg) in loaded.segments.iter().enumerate() {
-        log::info!("  Segment {}: expected={:#x}, actual={:#x}, memsz={:#x}",
-            i, seg.expected_addr, seg.actual_addr, seg.memsz);
+        log::info!(
+            "  Segment {}: expected={:#x}, actual={:#x}, memsz={:#x}",
+            i,
+            seg.expected_addr,
+            seg.actual_addr,
+            seg.memsz
+        );
     }
-    
+
     // If we need to mirror segments, allocate the expected memory regions BEFORE exiting boot services
     if loaded.kernel_offset != 0 {
         log::info!("Allocating expected memory regions for mirroring...");
@@ -1510,16 +1555,24 @@ fn efi_main(image: Handle, mut st: SystemTable<Boot>) -> Status {
                 pages,
             ) {
                 Ok(_) => {
-                    log::info!("  Allocated {:#x} ({} pages) for mirroring", seg.expected_addr, pages);
+                    log::info!(
+                        "  Allocated {:#x} ({} pages) for mirroring",
+                        seg.expected_addr,
+                        pages
+                    );
                 }
                 Err(e) => {
-                    log::warn!("  Cannot allocate {:#x} for mirroring: {:?}", seg.expected_addr, e.status());
+                    log::warn!(
+                        "  Cannot allocate {:#x} for mirroring: {:?}",
+                        seg.expected_addr,
+                        e.status()
+                    );
                     // Try to continue anyway - memory might still be accessible after exit_boot_services
                 }
             }
         }
     }
-    
+
     let _ = st.exit_boot_services(MemoryType::LOADER_DATA);
     log::info!("Exit boot services completed");
 
@@ -1538,13 +1591,15 @@ fn efi_main(image: Handle, mut st: SystemTable<Boot>) -> Status {
                 entry_point
             );
 
-            if let Some(expected_ptr) = mirror_boot_info_to_expected(&boot_info_region, loaded.kernel_offset) {
+            if let Some(expected_ptr) =
+                mirror_boot_info_to_expected(&boot_info_region, loaded.kernel_offset)
+            {
                 boot_info_ptr = expected_ptr;
                 log::info!(
                     "Boot info mirrored to expected address {:#x}",
                     boot_info_ptr
                 );
-                
+
                 // Clear the kernel_load_offset in the mirrored boot_info since kernel
                 // is now running at link-time addresses after mirroring
                 unsafe {
@@ -1638,35 +1693,41 @@ struct LoadedKernel {
     expected_base: u64,
     expected_entry_point: u64,
     actual_entry_point: u64,
-    kernel_base: u64,      // 实际加载的基地址
-    kernel_offset: i64,    // 相对于链接地址的偏移
+    kernel_base: u64,   // 实际加载的基地址
+    kernel_offset: i64, // 相对于链接地址的偏移
     segments: Vec<LoadedSegment>,
 }
 
 fn open_boot_volume(bs: &BootServices, image: Handle) -> Result<Directory, Status> {
     log::info!("Searching for boot volume with kernel files");
-    
+
     // 获取所有支持 SimpleFileSystem 的设备
     let handles = bs
         .locate_handle_buffer(SearchType::ByProtocol(&SimpleFileSystem::GUID))
         .map_err(|e| {
-            log::error!("Failed to locate handles with SimpleFileSystem protocol: {:?}", e);
+            log::error!(
+                "Failed to locate handles with SimpleFileSystem protocol: {:?}",
+                e
+            );
             Status::UNSUPPORTED
         })?;
-    
+
     if handles.is_empty() {
         log::error!("No devices with SimpleFileSystem protocol found");
         return Err(Status::NOT_FOUND);
     }
-    
-    log::info!("Found {} device(s) with SimpleFileSystem protocol", handles.len());
-    
+
+    log::info!(
+        "Found {} device(s) with SimpleFileSystem protocol",
+        handles.len()
+    );
+
     let mut first_valid_volume = None;
-    
+
     // 尝试每个文件系统设备，找到包含内核文件的那个
     for (index, &device_handle) in handles.iter().enumerate() {
         log::info!("Trying device {} ({:?})", index, device_handle);
-        
+
         let fs = unsafe {
             bs.open_protocol::<SimpleFileSystem>(
                 OpenProtocolParams {
@@ -1677,56 +1738,77 @@ fn open_boot_volume(bs: &BootServices, image: Handle) -> Result<Directory, Statu
                 OpenProtocolAttributes::GetProtocol,
             )
         };
-        
+
         let Ok(fs) = fs else {
-            log::warn!("  Failed to open SimpleFileSystem protocol on device {}", index);
+            log::warn!(
+                "  Failed to open SimpleFileSystem protocol on device {}",
+                index
+            );
             continue;
         };
-        
+
         let Some(file_system) = fs.get_mut() else {
-            log::warn!("  Failed to get SimpleFileSystem reference for device {}", index);
+            log::warn!(
+                "  Failed to get SimpleFileSystem reference for device {}",
+                index
+            );
             continue;
         };
-        
+
         let mut volume = match file_system.open_volume() {
             Ok(vol) => vol,
             Err(e) => {
-                log::warn!("  Failed to open volume on device {}: {:?}", index, e.status());
+                log::warn!(
+                    "  Failed to open volume on device {}: {:?}",
+                    index,
+                    e.status()
+                );
                 continue;
             }
         };
-        
+
         // Save first valid volume as fallback
         if first_valid_volume.is_none() {
             first_valid_volume = Some((index, device_handle));
         }
-        
+
         // 尝试打开内核文件来验证这是正确的卷
         log::info!("  Checking for kernel file on device {}", index);
-        
+
         // Try primary path first
         let primary_result = volume.open(KERNEL_PATH, FileMode::Read, FileAttribute::empty());
         if primary_result.is_ok() {
-            log::info!("  Found kernel file on device {} (primary path)! Using this volume.", index);
+            log::info!(
+                "  Found kernel file on device {} (primary path)! Using this volume.",
+                index
+            );
             return Ok(volume);
         }
-        
+
         // Try fallback ISO path
         let fallback_result = volume.open(KERNEL_PATH_ISO, FileMode::Read, FileAttribute::empty());
         if fallback_result.is_ok() {
-            log::info!("  Found kernel file on device {} (fallback ISO path)! Using this volume.", index);
+            log::info!(
+                "  Found kernel file on device {} (fallback ISO path)! Using this volume.",
+                index
+            );
             return Ok(volume);
         }
-        
+
         // Neither path found
-        log::info!("  Kernel file not found on device {} (tried both {:?} and {:?})", index, KERNEL_PATH, KERNEL_PATH_ISO);
+        log::info!(
+            "  Kernel file not found on device {} (tried both {:?} and {:?})",
+            index,
+            KERNEL_PATH,
+            KERNEL_PATH_ISO
+        );
     }
-    
+
     // If we couldn't find a device with the kernel file, use the first valid volume
     // and rely on read_file_multi() to find the file via fallback paths
     if let Some((idx, device_handle)) = first_valid_volume {
         log::warn!("Could not find kernel file on any device, using first valid volume (device {}) as fallback", idx);
-        
+
         let fs = unsafe {
             bs.open_protocol::<SimpleFileSystem>(
                 OpenProtocolParams {
@@ -1737,41 +1819,48 @@ fn open_boot_volume(bs: &BootServices, image: Handle) -> Result<Directory, Statu
                 OpenProtocolAttributes::GetProtocol,
             )
         };
-        
+
         if let Ok(fs) = fs {
             if let Some(file_system) = fs.get_mut() {
                 if let Ok(volume) = file_system.open_volume() {
-                    log::info!("Attempting to use device {} anyway - will try all known file paths", idx);
+                    log::info!(
+                        "Attempting to use device {} anyway - will try all known file paths",
+                        idx
+                    );
                     return Ok(volume);
                 }
             }
         }
     }
-    
+
     log::error!("Could not find any boot volume with SimpleFileSystem protocol");
     Err(Status::NOT_FOUND)
 }
 
 fn list_directory(root: &mut Directory, path: &uefi::CStr16) -> Result<(), Status> {
     log::info!("Listing directory: {:?}", path);
-    
+
     let handle = root
         .open(path, FileMode::Read, FileAttribute::empty())
         .map_err(|e: Error| {
             log::error!("Failed to open directory {:?}: {:?}", path, e.status());
             e.status()
         })?;
-    
+
     let Some(mut dir) = handle.into_directory() else {
         log::error!("Path {:?} is not a directory", path);
         return Err(Status::UNSUPPORTED);
     };
-    
+
     let mut entry_buffer = [0u8; 512];
     loop {
         match dir.read_entry(&mut entry_buffer) {
             Ok(Some(info)) => {
-                log::info!("  Found: {:?} (attr: {:?})", info.file_name(), info.attribute());
+                log::info!(
+                    "  Found: {:?} (attr: {:?})",
+                    info.file_name(),
+                    info.attribute()
+                );
             }
             Ok(None) => {
                 log::info!("End of directory listing");
@@ -1783,18 +1872,18 @@ fn list_directory(root: &mut Directory, path: &uefi::CStr16) -> Result<(), Statu
             }
         }
     }
-    
+
     Ok(())
 }
 
 fn read_file(root: &mut Directory, path: &uefi::CStr16) -> Result<Vec<u8>, Status> {
     log::info!("Attempting to open file: {:?}", path);
     let handle = root
-    .open(path, FileMode::Read, FileAttribute::empty())
-    .map_err(|e: Error| {
-        log::error!("Failed to open file {:?}: {:?}", path, e.status());
-        e.status()
-    })?;
+        .open(path, FileMode::Read, FileAttribute::empty())
+        .map_err(|e: Error| {
+            log::error!("Failed to open file {:?}: {:?}", path, e.status());
+            e.status()
+        })?;
     let Some(file) = handle.into_regular_file() else {
         log::error!("File {:?} is not a regular file", path);
         return Err(Status::UNSUPPORTED);
@@ -1804,7 +1893,11 @@ fn read_file(root: &mut Directory, path: &uefi::CStr16) -> Result<Vec<u8>, Statu
 }
 
 /// Try to read a file from multiple possible paths (ESP and ISO 9660)
-fn read_file_multi(root: &mut Directory, primary_path: &uefi::CStr16, fallback_path: &uefi::CStr16) -> Result<Vec<u8>, Status> {
+fn read_file_multi(
+    root: &mut Directory,
+    primary_path: &uefi::CStr16,
+    fallback_path: &uefi::CStr16,
+) -> Result<Vec<u8>, Status> {
     // Try primary path first
     match read_file(root, primary_path) {
         Ok(data) => {
@@ -1812,13 +1905,20 @@ fn read_file_multi(root: &mut Directory, primary_path: &uefi::CStr16, fallback_p
             return Ok(data);
         }
         Err(Status::NOT_FOUND) => {
-            log::warn!("Primary path not found: {:?}, trying fallback", primary_path);
+            log::warn!(
+                "Primary path not found: {:?}, trying fallback",
+                primary_path
+            );
         }
         Err(e) => {
-            log::warn!("Error reading from primary path {:?}: {:?}, trying fallback", primary_path, e);
+            log::warn!(
+                "Error reading from primary path {:?}: {:?}, trying fallback",
+                primary_path,
+                e
+            );
         }
     }
-    
+
     // Try fallback path
     match read_file(root, fallback_path) {
         Ok(data) => {
@@ -1829,20 +1929,17 @@ fn read_file_multi(root: &mut Directory, primary_path: &uefi::CStr16, fallback_p
             log::warn!("Fallback path also failed: {:?}", e);
         }
     }
-    
+
     // If both failed, return error
     log::error!("Failed to read file from all attempted paths");
     Err(Status::NOT_FOUND)
 }
 
-
 fn read_entire_file(mut file: RegularFile) -> Result<Vec<u8>, Status> {
     let mut buffer = Vec::new();
     let mut chunk = [0u8; 4096];
     loop {
-        let read = file
-            .read(&mut chunk)
-            .map_err(|e: Error| e.status())?;
+        let read = file.read(&mut chunk).map_err(|e: Error| e.status())?;
         if read == 0 {
             break;
         }
@@ -1868,7 +1965,9 @@ fn load_nexa_config(root: &mut Directory) -> NexaConfig {
                     }
                 }
                 if config.rootfstype_len > 0 {
-                    if let Ok(fstype_str) = core::str::from_utf8(&config.rootfstype[..config.rootfstype_len]) {
+                    if let Ok(fstype_str) =
+                        core::str::from_utf8(&config.rootfstype[..config.rootfstype_len])
+                    {
                         log::info!("  rootfstype={}", fstype_str);
                     }
                 }
@@ -1918,7 +2017,7 @@ fn load_kernel_image(bs: &BootServices, image: &[u8]) -> Result<LoadedKernel, St
     // 第一遍：找出所有 LOAD 段的地址范围
     let mut min_addr = u64::MAX;
     let mut max_addr = 0u64;
-    
+
     for i in 0..phnum {
         let offset = phoff + i * phentsize;
         if offset + mem::size_of::<Elf64Phdr>() > image.len() {
@@ -1928,10 +2027,10 @@ fn load_kernel_image(bs: &BootServices, image: &[u8]) -> Result<LoadedKernel, St
         if ph.p_type != 1 || ph.p_memsz == 0 {
             continue;
         }
-        
+
         let start = ph.p_paddr;
         let end = ph.p_paddr + ph.p_memsz;
-        
+
         if start < min_addr {
             min_addr = start;
         }
@@ -1939,19 +2038,24 @@ fn load_kernel_image(bs: &BootServices, image: &[u8]) -> Result<LoadedKernel, St
             max_addr = end;
         }
     }
-    
+
     if min_addr >= max_addr {
         log::error!("No valid LOAD segments found");
         return Err(Status::LOAD_ERROR);
     }
-    
+
     // 计算需要的总内存大小
     let total_size = (max_addr - min_addr) as usize;
     let pages = (total_size + 0xFFF) / 0x1000;
-    
-    log::info!("Kernel expects to be loaded at {:#x}-{:#x} (size: {:#x}, {} pages)", 
-               min_addr, max_addr, total_size, pages);
-    
+
+    log::info!(
+        "Kernel expects to be loaded at {:#x}-{:#x} (size: {:#x}, {} pages)",
+        min_addr,
+        max_addr,
+        total_size,
+        pages
+    );
+
     // 尝试在期望地址分配，如果失败则在任意地址分配
     let actual_base = match bs.allocate_pages(
         AllocateType::Address(min_addr),
@@ -1963,8 +2067,12 @@ fn load_kernel_image(bs: &BootServices, image: &[u8]) -> Result<LoadedKernel, St
             min_addr
         }
         Err(e) => {
-            log::warn!("Cannot allocate at expected address {:#x}: {:?}", min_addr, e.status());
-            
+            log::warn!(
+                "Cannot allocate at expected address {:#x}: {:?}",
+                min_addr,
+                e.status()
+            );
+
             // 尝试在 64MB 以下分配（低于常见的 UEFI 固件内存）
             log::info!("Trying to allocate below 64MB...");
             match bs.allocate_pages(
@@ -1977,7 +2085,10 @@ fn load_kernel_image(bs: &BootServices, image: &[u8]) -> Result<LoadedKernel, St
                     addr
                 }
                 Err(e2) => {
-                    log::warn!("Cannot allocate below 64MB: {:?}, trying below 4GB", e2.status());
+                    log::warn!(
+                        "Cannot allocate below 64MB: {:?}, trying below 4GB",
+                        e2.status()
+                    );
                     // 最后尝试在 4GB 以下分配
                     match bs.allocate_pages(
                         AllocateType::MaxAddress(0xFFFFFFFF),
@@ -1989,7 +2100,11 @@ fn load_kernel_image(bs: &BootServices, image: &[u8]) -> Result<LoadedKernel, St
                             addr
                         }
                         Err(e3) => {
-                            log::error!("Failed to allocate {} pages anywhere: {:?}", pages, e3.status());
+                            log::error!(
+                                "Failed to allocate {} pages anywhere: {:?}",
+                                pages,
+                                e3.status()
+                            );
                             return Err(e3.status());
                         }
                     }
@@ -1997,12 +2112,16 @@ fn load_kernel_image(bs: &BootServices, image: &[u8]) -> Result<LoadedKernel, St
             }
         }
     };
-    
+
     // 计算加载偏移
     let load_offset = (actual_base as i64) - (min_addr as i64);
-    log::info!("Load offset: {:#x} (actual base: {:#x}, expected base: {:#x})", 
-               load_offset, actual_base, min_addr);
-    
+    log::info!(
+        "Load offset: {:#x} (actual base: {:#x}, expected base: {:#x})",
+        load_offset,
+        actual_base,
+        min_addr
+    );
+
     // 第二遍：加载所有段
     for i in 0..phnum {
         let offset = phoff + i * phentsize;
@@ -2015,10 +2134,16 @@ fn load_kernel_image(bs: &BootServices, image: &[u8]) -> Result<LoadedKernel, St
         let actual_addr = ((expected_addr as i64) + load_offset) as u64;
         let memsz = ph.p_memsz as usize;
         let filesz = ph.p_filesz as usize;
-        
-        log::info!("Loading segment {}: {:#x} -> {:#x}, memsz={:#x}, filesz={:#x}", 
-                   i, expected_addr, actual_addr, memsz, filesz);
-        
+
+        log::info!(
+            "Loading segment {}: {:#x} -> {:#x}, memsz={:#x}, filesz={:#x}",
+            i,
+            expected_addr,
+            actual_addr,
+            memsz,
+            filesz
+        );
+
         if memsz == 0 {
             continue;
         }
@@ -2051,24 +2176,24 @@ fn load_kernel_image(bs: &BootServices, image: &[u8]) -> Result<LoadedKernel, St
     }
 
     log::info!("Loading kernel ELF program headers complete");
-    
+
     // 查找 UEFI 入口点
     let expected_entry = match find_uefi_entry(image) {
         Some(ptr) => {
             log::info!("UEFI entry point in ELF: {:#x}", ptr);
             ptr
-        },
+        }
         None => {
             log::error!("Kernel image missing .nexa.uefi_entry section");
             return Err(Status::LOAD_ERROR);
         }
     };
-    
+
     // 应用加载偏移到入口点
     let actual_entry = ((expected_entry as i64) + load_offset) as u64;
     log::info!("Actual UEFI entry point: {:#x}", actual_entry);
 
-    Ok(LoadedKernel { 
+    Ok(LoadedKernel {
         expected_base: min_addr,
         expected_entry_point: expected_entry,
         actual_entry_point: actual_entry,
@@ -2078,18 +2203,18 @@ fn load_kernel_image(bs: &BootServices, image: &[u8]) -> Result<LoadedKernel, St
     })
 }
 
-fn stage_payload(bs: &BootServices, data: &[u8], mem_type: MemoryType) -> Result<MemoryRegion, Status> {
+fn stage_payload(
+    bs: &BootServices,
+    data: &[u8],
+    mem_type: MemoryType,
+) -> Result<MemoryRegion, Status> {
     if data.is_empty() {
         return Ok(MemoryRegion::empty());
     }
 
     let pages = (data.len() + 0xFFF) / 0x1000;
     let addr = bs
-        .allocate_pages(
-            AllocateType::MaxAddress(MAX_PHYS_ADDR),
-            mem_type,
-            pages,
-        )
+        .allocate_pages(AllocateType::MaxAddress(MAX_PHYS_ADDR), mem_type, pages)
         .map_err(|e: Error| e.status())? as usize;
     unsafe {
         ptr::copy_nonoverlapping(data.as_ptr(), addr as *mut u8, data.len());
@@ -2104,7 +2229,10 @@ fn stage_payload(bs: &BootServices, data: &[u8], mem_type: MemoryType) -> Result
     })
 }
 
-fn stage_kernel_segments(bs: &BootServices, segments: &[LoadedSegment]) -> Result<MemoryRegion, Status> {
+fn stage_kernel_segments(
+    bs: &BootServices,
+    segments: &[LoadedSegment],
+) -> Result<MemoryRegion, Status> {
     if segments.is_empty() {
         return Ok(MemoryRegion::empty());
     }
@@ -2246,10 +2374,7 @@ fn stage_boot_info(
 
     let addr = allocation as usize;
     if (addr as u64) > BOOT_INFO_PREF_MAX_ADDR {
-        log::warn!(
-            "Boot info allocated above preferred range: {:#x}",
-            addr
-        );
+        log::warn!("Boot info allocated above preferred range: {:#x}", addr);
     }
 
     let cmdline_region = match stage_cmdline(bs, cmdline) {
@@ -2272,34 +2397,43 @@ fn stage_boot_info(
         devices.count != 0,
         !cmdline_region.is_empty(),
     );
-    
+
     // 如果有内核加载偏移，设置标志位
     if kernel_offset != 0 {
         flags_value |= nexa_boot_info::flags::HAS_KERNEL_OFFSET;
-        log::info!("Setting HAS_KERNEL_OFFSET flag, offset={:#x}", kernel_offset);
+        log::info!(
+            "Setting HAS_KERNEL_OFFSET flag, offset={:#x}",
+            kernel_offset
+        );
     }
 
     if !kernel_segments.is_empty() {
-        let segment_count = (kernel_segments.length as usize)
-            / core::mem::size_of::<KernelSegment>();
+        let segment_count =
+            (kernel_segments.length as usize) / core::mem::size_of::<KernelSegment>();
         flags_value |= nexa_boot_info::flags::HAS_KERNEL_SEGMENTS;
         log::info!(
             "Setting HAS_KERNEL_SEGMENTS flag ({} entries)",
             segment_count
         );
     }
-    
+
     // 如果有ACPI RSDP地址，设置标志位
     if acpi_rsdp_addr.is_some() {
         flags_value |= nexa_boot_info::flags::HAS_ACPI_RSDP;
-        log::info!("Setting HAS_ACPI_RSDP flag, addr={:#x}", acpi_rsdp_addr.unwrap());
+        log::info!(
+            "Setting HAS_ACPI_RSDP flag, addr={:#x}",
+            acpi_rsdp_addr.unwrap()
+        );
     }
-    
+
     // 如果有物理内存信息，设置标志位
     if total_physical_memory > 0 {
         flags_value |= nexa_boot_info::flags::HAS_PHYSICAL_MEMORY;
-        log::info!("Setting HAS_PHYSICAL_MEMORY flag, size={} bytes ({} MB)", 
-            total_physical_memory, total_physical_memory / (1024 * 1024));
+        log::info!(
+            "Setting HAS_PHYSICAL_MEMORY flag, size={} bytes ({} MB)",
+            total_physical_memory,
+            total_physical_memory / (1024 * 1024)
+        );
     }
 
     // NOTE: rootfs field is set to empty - kernel uses block device drivers directly
@@ -2387,30 +2521,33 @@ fn stage_cmdline(bs: &BootServices, cmdline: &[u8]) -> Result<MemoryRegion, Stat
 fn calculate_total_physical_memory(bs: &BootServices) -> u64 {
     // Get the memory map to calculate total usable memory
     let mut buffer = vec![0u8; 4096 * 8]; // Should be enough for most systems
-    
+
     loop {
         match bs.memory_map(&mut buffer) {
             Ok(memory_map) => {
                 let mut total_memory: u64 = 0;
-                
+
                 for entry in memory_map.entries() {
                     // Count conventional memory (usable RAM)
                     // Also include boot services code/data that will be available after exit_boot_services
                     match entry.ty {
-                        MemoryType::CONVENTIONAL |
-                        MemoryType::BOOT_SERVICES_CODE |
-                        MemoryType::BOOT_SERVICES_DATA |
-                        MemoryType::LOADER_CODE |
-                        MemoryType::LOADER_DATA => {
+                        MemoryType::CONVENTIONAL
+                        | MemoryType::BOOT_SERVICES_CODE
+                        | MemoryType::BOOT_SERVICES_DATA
+                        | MemoryType::LOADER_CODE
+                        | MemoryType::LOADER_DATA => {
                             let region_size = entry.page_count * 4096;
                             total_memory = total_memory.saturating_add(region_size);
                         }
                         _ => {}
                     }
                 }
-                
-                log::info!("Total usable physical memory: {} bytes ({} MB)", 
-                    total_memory, total_memory / (1024 * 1024));
+
+                log::info!(
+                    "Total usable physical memory: {} bytes ({} MB)",
+                    total_memory,
+                    total_memory / (1024 * 1024)
+                );
                 return total_memory;
             }
             Err(e) => {
@@ -2480,20 +2617,37 @@ fn detect_framebuffer(bs: &BootServices, image: Handle) -> Option<FramebufferInf
         }
     };
 
-    let (bytes_per_pixel, bpp, red_position, red_size, green_position, green_size, blue_position, blue_size) =
-        match mode.pixel_format() {
-            PixelFormat::Rgb => (4, 32, 0, 8, 8, 8, 16, 8),
-            PixelFormat::Bgr => (4, 32, 16, 8, 8, 8, 0, 8),
-            PixelFormat::Bitmask => {
-                let bitmask = mode.pixel_bitmask()?;
-                let (red_position, red_size) = mask_info(bitmask.red);
-                let (green_position, green_size) = mask_info(bitmask.green);
-                let (blue_position, blue_size) = mask_info(bitmask.blue);
-                let total = (red_size as u16 + green_size as u16 + blue_size as u16).min(32) as u8;
-                (4, total, red_position, red_size, green_position, green_size, blue_position, blue_size)
-            }
-            PixelFormat::BltOnly => return None,
-        };
+    let (
+        bytes_per_pixel,
+        bpp,
+        red_position,
+        red_size,
+        green_position,
+        green_size,
+        blue_position,
+        blue_size,
+    ) = match mode.pixel_format() {
+        PixelFormat::Rgb => (4, 32, 0, 8, 8, 8, 16, 8),
+        PixelFormat::Bgr => (4, 32, 16, 8, 8, 8, 0, 8),
+        PixelFormat::Bitmask => {
+            let bitmask = mode.pixel_bitmask()?;
+            let (red_position, red_size) = mask_info(bitmask.red);
+            let (green_position, green_size) = mask_info(bitmask.green);
+            let (blue_position, blue_size) = mask_info(bitmask.blue);
+            let total = (red_size as u16 + green_size as u16 + blue_size as u16).min(32) as u8;
+            (
+                4,
+                total,
+                red_position,
+                red_size,
+                green_position,
+                green_size,
+                blue_position,
+                blue_size,
+            )
+        }
+        PixelFormat::BltOnly => return None,
+    };
 
     Some(FramebufferInfo {
         address: fb.as_mut_ptr() as u64,
@@ -2524,7 +2678,13 @@ fn find_uefi_entry(image: &[u8]) -> Option<u64> {
     let shnum = header.e_shnum as usize;
     let shstrndx = header.e_shstrndx as usize;
 
-    log::info!("ELF section header: offset={:#x}, count={}, size={}, str_index={}", shoff, shnum, shentsize, shstrndx);
+    log::info!(
+        "ELF section header: offset={:#x}, count={}, size={}, str_index={}",
+        shoff,
+        shnum,
+        shentsize,
+        shstrndx
+    );
 
     if shoff == 0 || shentsize == 0 || shnum == 0 {
         log::error!("Invalid section header table");

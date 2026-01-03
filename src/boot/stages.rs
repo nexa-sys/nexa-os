@@ -374,7 +374,10 @@ pub fn mount_real_root() -> Result<(), &'static str> {
     mount_filesystem_by_type(root_fstype, disk_image)?;
 
     mark_mounted("rootfs");
-    crate::kinfo!("Real root mounted at /sysroot ({} via module, read-only)", root_fstype);
+    crate::kinfo!(
+        "Real root mounted at /sysroot ({} via module, read-only)",
+        root_fstype
+    );
 
     Ok(())
 }
@@ -388,24 +391,24 @@ fn mount_filesystem_by_type(fstype: &str, disk_image: &'static [u8]) -> Result<(
                 crate::kerror!("{} module not loaded, cannot mount root filesystem", fstype);
                 return Err("filesystem module not loaded");
             }
-            
+
             // Initialize ext2 filesystem via module
             crate::fs::ext2_new(disk_image).map_err(|e| {
                 crate::kerror!("Failed to parse {} filesystem: {:?}", fstype, e);
                 "Invalid filesystem"
             })?;
-            
+
             crate::kinfo!("Successfully parsed {} filesystem via module", fstype);
-            
+
             // Mount using the Ext2ModularFs adapter
             static EXT2_MODULAR_FS: crate::fs::ext2_modular::Ext2ModularFs =
                 crate::fs::ext2_modular::Ext2ModularFs;
-            
+
             crate::fs::mount_at("/sysroot", &EXT2_MODULAR_FS).map_err(|e| {
                 crate::kerror!("Failed to mount filesystem: {:?}", e);
                 "Mount failed"
             })?;
-            
+
             Ok(())
         }
         "ext4" => {
@@ -413,24 +416,24 @@ fn mount_filesystem_by_type(fstype: &str, disk_image: &'static [u8]) -> Result<(
                 crate::kerror!("{} module not loaded, cannot mount root filesystem", fstype);
                 return Err("filesystem module not loaded");
             }
-            
+
             // Initialize ext4 filesystem via module
             crate::fs::ext2_modular::ext4_new(disk_image).map_err(|e| {
                 crate::kerror!("Failed to parse {} filesystem: {:?}", fstype, e);
                 "Invalid filesystem"
             })?;
-            
+
             crate::kinfo!("Successfully parsed {} filesystem via module", fstype);
-            
+
             // Mount using the Ext4ModularFs adapter
             static EXT4_MODULAR_FS: crate::fs::ext2_modular::Ext4ModularFs =
                 crate::fs::ext2_modular::Ext4ModularFs;
-            
+
             crate::fs::mount_at("/sysroot", &EXT4_MODULAR_FS).map_err(|e| {
                 crate::kerror!("Failed to mount filesystem: {:?}", e);
                 "Mount failed"
             })?;
-            
+
             Ok(())
         }
         "ext3" => {
@@ -450,18 +453,28 @@ fn mount_filesystem_by_type(fstype: &str, disk_image: &'static [u8]) -> Result<(
         _ => {
             // Try to find a registered filesystem module by name
             if let Some(fs_index) = crate::fs::find_modular_fs(fstype) {
-                crate::kinfo!("Found registered filesystem module: {} (index {})", fstype, fs_index);
-                
+                crate::kinfo!(
+                    "Found registered filesystem module: {} (index {})",
+                    fstype,
+                    fs_index
+                );
+
                 // Mount using the modular filesystem API
                 crate::fs::mount_modular_fs(fs_index, disk_image).map_err(|e| {
                     crate::kerror!("Failed to mount {} filesystem: {:?}", fstype, e);
                     "Mount failed"
                 })?;
-                
-                crate::kinfo!("Successfully mounted {} filesystem via modular registry", fstype);
+
+                crate::kinfo!(
+                    "Successfully mounted {} filesystem via modular registry",
+                    fstype
+                );
                 Ok(())
             } else {
-                crate::kerror!("Unsupported filesystem type: {} (no module registered)", fstype);
+                crate::kerror!(
+                    "Unsupported filesystem type: {} (no module registered)",
+                    fstype
+                );
                 Err("Unsupported filesystem type")
             }
         }
@@ -563,7 +576,7 @@ fn scan_for_block_device(device_name: &str) -> Result<&'static [u8], &'static st
                 // For IDE controllers, set drive index in bits 8-9 (default 0 = primary master)
                 // This can be extended to detect multiple drives if needed
                 features |= 0 << 8; // Primary Master
-                
+
                 let boot_dev = crate::drivers::block::BootBlockDevice {
                     pci_segment: dev_info.pci_segment,
                     pci_bus: dev_info.pci_bus,
@@ -670,17 +683,17 @@ fn pivot_filesystem_by_type(fstype: &str) -> Result<(), &'static str> {
         "ext2" => {
             if crate::fs::ext2_is_module_loaded() && crate::fs::ext2_global().is_some() {
                 crate::kinfo!("Remounting ext2 filesystem as new root (via module)");
-                
+
                 static EXT2_MODULAR_FS: crate::fs::ext2_modular::Ext2ModularFs =
                     crate::fs::ext2_modular::Ext2ModularFs;
-                
+
                 crate::fs::remount_root(&EXT2_MODULAR_FS).map_err(|e| {
                     crate::kerror!("Failed to remount root: {}", e);
                     "Remount failed"
                 })?;
-                
+
                 crate::kinfo!("Root filesystem switched successfully");
-                
+
                 if let Err(e) = crate::fs::enable_ext2_write() {
                     crate::kwarn!("Failed to enable ext2 write mode: {}", e);
                 } else {
@@ -688,35 +701,43 @@ fn pivot_filesystem_by_type(fstype: &str) -> Result<(), &'static str> {
                 }
                 Ok(())
             } else {
-                crate::kerror!("No ext2 filesystem registered (module not loaded or not initialized)");
+                crate::kerror!(
+                    "No ext2 filesystem registered (module not loaded or not initialized)"
+                );
                 Err("No filesystem to pivot to")
             }
         }
         "ext4" => {
-            if crate::fs::ext2_modular::is_ext4_loaded() && crate::fs::ext2_modular::ext4_global().is_some() {
+            if crate::fs::ext2_modular::is_ext4_loaded()
+                && crate::fs::ext2_modular::ext4_global().is_some()
+            {
                 crate::kinfo!("Remounting ext4 filesystem as new root (via module)");
-                
+
                 static EXT4_MODULAR_FS: crate::fs::ext2_modular::Ext4ModularFs =
                     crate::fs::ext2_modular::Ext4ModularFs;
-                
+
                 crate::fs::remount_root(&EXT4_MODULAR_FS).map_err(|e| {
                     crate::kerror!("Failed to remount root: {}", e);
                     "Remount failed"
                 })?;
-                
+
                 crate::kinfo!("Root filesystem switched successfully");
-                
+
                 crate::fs::ext2_modular::ext4_enable_write_mode();
                 crate::kinfo!("ext4 filesystem is now writable");
                 Ok(())
             } else {
-                crate::kerror!("No ext4 filesystem registered (module not loaded or not initialized)");
+                crate::kerror!(
+                    "No ext4 filesystem registered (module not loaded or not initialized)"
+                );
                 Err("No filesystem to pivot to")
             }
         }
         "ext3" => {
             // ext3 can use ext4 driver (preferred) or fall back to ext2
-            if crate::fs::ext2_modular::is_ext4_loaded() && crate::fs::ext2_modular::ext4_global().is_some() {
+            if crate::fs::ext2_modular::is_ext4_loaded()
+                && crate::fs::ext2_modular::ext4_global().is_some()
+            {
                 crate::kinfo!("Using ext4 driver for ext3 filesystem");
                 return pivot_filesystem_by_type("ext4");
             } else if crate::fs::ext2_is_module_loaded() && crate::fs::ext2_global().is_some() {
@@ -736,7 +757,10 @@ fn pivot_filesystem_by_type(fstype: &str) -> Result<(), &'static str> {
                 crate::kerror!("Filesystem type '{}' not yet supported for pivot", fstype);
                 Err("Unsupported filesystem type for pivot")
             } else {
-                crate::kerror!("Unsupported filesystem type: {} (no module registered)", fstype);
+                crate::kerror!(
+                    "Unsupported filesystem type: {} (no module registered)",
+                    fstype
+                );
                 Err("Unsupported filesystem type")
             }
         }

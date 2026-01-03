@@ -171,7 +171,10 @@ pub fn log(level: LogLevel, args: fmt::Arguments<'_>) {
     // #GP on misaligned stacks.
     // Route all logging through a tiny assembly shim that realigns RSP to 16 bytes.
     unsafe {
-        log_aligned(level.priority(), (&args as *const fmt::Arguments<'_>).cast());
+        log_aligned(
+            level.priority(),
+            (&args as *const fmt::Arguments<'_>).cast(),
+        );
     }
 }
 

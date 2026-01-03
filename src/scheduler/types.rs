@@ -230,7 +230,7 @@ pub struct ProcessEntry {
     /// Virtual deadline - vruntime + request/weight (in nanoseconds)
     pub vdeadline: u64,
     /// Lag - difference between ideal and actual CPU time (can be negative)
-    /// Positive lag means the process deserves more CPU time 
+    /// Positive lag means the process deserves more CPU time
     pub lag: i64,
     /// Weight based on nice value (higher weight = more CPU share)
     pub weight: u64,

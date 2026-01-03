@@ -59,7 +59,7 @@ pub extern "x86-interrupt" fn page_fault_handler(
     let rip = stack_frame.instruction_pointer.as_u64();
     let rsp = stack_frame.stack_pointer.as_u64();
     let rflags = stack_frame.cpu_flags.bits();
-    
+
     // Debug: Log every page fault
     if let Some(pid) = crate::scheduler::current_pid() {
         crate::kdebug!(
@@ -127,7 +127,10 @@ pub extern "x86-interrupt" fn page_fault_handler(
             let signal = crate::ipc::signal::SIGSEGV;
 
             // Get current CR3 for debugging
-            let cr3 = x86_64::registers::control::Cr3::read().0.start_address().as_u64();
+            let cr3 = x86_64::registers::control::Cr3::read()
+                .0
+                .start_address()
+                .as_u64();
             // Get FS base for TLS debugging
             let fs_base = unsafe { x86_64::registers::model_specific::Msr::new(0xC0000100).read() };
 
@@ -708,7 +711,8 @@ pub extern "x86-interrupt" fn segment_not_present_handler(
 
             let exit_code = 128 + crate::ipc::signal::SIGSEGV as i32;
             let _ = crate::scheduler::set_process_exit_code(pid, exit_code);
-            let _ = crate::scheduler::set_process_term_signal(pid, crate::ipc::signal::SIGSEGV as i32);
+            let _ =
+                crate::scheduler::set_process_term_signal(pid, crate::ipc::signal::SIGSEGV as i32);
             let _ = crate::scheduler::set_process_state(pid, crate::process::ProcessState::Zombie);
 
             // Wake up parent process if it's sleeping (waiting for this child to exit)

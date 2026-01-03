@@ -578,7 +578,7 @@ pub fn poll() {
     }
 
     let now_ms = logger::boot_time_us() / 1_000;
-    
+
     // CRITICAL: Use try_lock() instead of lock() because poll() is called from
     // timer interrupt context. If another code path holds NET_STATE lock when
     // the timer interrupt fires, lock() would deadlock. try_lock() safely skips

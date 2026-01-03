@@ -27,10 +27,10 @@
 //! - IPC message rate
 //! - Hardware resource access
 
-use super::isolation::{IsolationClass, IC2Context};
-use spin::Mutex;
+use super::isolation::{IC2Context, IsolationClass};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
+use spin::Mutex;
 
 /// Maximum drivers per container
 pub const MAX_DRIVERS_PER_CONTAINER: usize = 8;
@@ -107,9 +107,9 @@ pub struct ContainerLimits {
 impl Default for ContainerLimits {
     fn default() -> Self {
         Self {
-            cpu_time_us: 100_000,     // 10% CPU
+            cpu_time_us: 100_000,           // 10% CPU
             memory_bytes: 16 * 1024 * 1024, // 16MB
-            ipc_rate: 10_000,          // 10k msgs/sec
+            ipc_rate: 10_000,               // 10k msgs/sec
             max_fds: 256,
             max_threads: 16,
             hw_access: false,
@@ -172,26 +172,29 @@ pub mod hw_grant_flags {
 }
 
 // Global state
-static CONTAINERS: Mutex<[Option<DriverContainer>; super::MAX_CONTAINERS]> = 
+static CONTAINERS: Mutex<[Option<DriverContainer>; super::MAX_CONTAINERS]> =
     Mutex::new([const { None }; super::MAX_CONTAINERS]);
 static NEXT_CONTAINER_ID: AtomicU32 = AtomicU32::new(1);
 
 /// Initialize container subsystem
 pub fn init() {
     crate::kinfo!("UDRV/Container: Initializing driver container subsystem");
-    crate::kinfo!("UDRV/Container: {} max containers, {} drivers per container",
-                  super::MAX_CONTAINERS, MAX_DRIVERS_PER_CONTAINER);
+    crate::kinfo!(
+        "UDRV/Container: {} max containers, {} drivers per container",
+        super::MAX_CONTAINERS,
+        MAX_DRIVERS_PER_CONTAINER
+    );
 }
 
 /// Create a new driver container
 pub fn create(isolation: IsolationClass) -> Result<DriverContainerId, super::ContainerError> {
     let mut containers = CONTAINERS.lock();
-    
+
     // Find empty slot
     for slot in containers.iter_mut() {
         if slot.is_none() {
             let id = NEXT_CONTAINER_ID.fetch_add(1, Ordering::SeqCst);
-            
+
             let container = DriverContainer {
                 id,
                 name: [0; 32],
@@ -206,30 +209,37 @@ pub fn create(isolation: IsolationClass) -> Result<DriverContainerId, super::Con
                 init_entry: 0,
                 pid: None,
             };
-            
+
             *slot = Some(container);
-            
-            crate::kinfo!("UDRV/Container: Created container {} with IC{:?}",
-                          id, isolation);
-            
+
+            crate::kinfo!(
+                "UDRV/Container: Created container {} with IC{:?}",
+                id,
+                isolation
+            );
+
             return Ok(id);
         }
     }
-    
+
     Err(super::ContainerError::TableFull)
 }
 
 /// Configure container limits
-pub fn configure_limits(id: DriverContainerId, limits: ContainerLimits) -> Result<(), super::ContainerError> {
+pub fn configure_limits(
+    id: DriverContainerId,
+    limits: ContainerLimits,
+) -> Result<(), super::ContainerError> {
     let mut containers = CONTAINERS.lock();
-    let container = containers.iter_mut()
+    let container = containers
+        .iter_mut()
         .find_map(|slot| slot.as_mut().filter(|c| c.id == id))
         .ok_or(super::ContainerError::NotFound)?;
-    
+
     if container.state != ContainerState::Created {
         return Err(super::ContainerError::InvalidState);
     }
-    
+
     container.limits = limits;
     Ok(())
 }
@@ -237,30 +247,35 @@ pub fn configure_limits(id: DriverContainerId, limits: ContainerLimits) -> Resul
 /// Set container name
 pub fn set_name(id: DriverContainerId, name: &str) -> Result<(), super::ContainerError> {
     let mut containers = CONTAINERS.lock();
-    let container = containers.iter_mut()
+    let container = containers
+        .iter_mut()
         .find_map(|slot| slot.as_mut().filter(|c| c.id == id))
         .ok_or(super::ContainerError::NotFound)?;
-    
+
     let name_bytes = name.as_bytes();
     let len = core::cmp::min(name_bytes.len(), 31);
     container.name[..len].copy_from_slice(&name_bytes[..len]);
     container.name[len] = 0;
-    
+
     Ok(())
 }
 
 /// Spawn a driver in a container
-pub fn spawn(container_id: DriverContainerId, driver_id: super::DriverId) -> Result<(), super::ContainerError> {
+pub fn spawn(
+    container_id: DriverContainerId,
+    driver_id: super::DriverId,
+) -> Result<(), super::ContainerError> {
     let mut containers = CONTAINERS.lock();
-    let container = containers.iter_mut()
+    let container = containers
+        .iter_mut()
         .find_map(|slot| slot.as_mut().filter(|c| c.id == container_id))
         .ok_or(super::ContainerError::NotFound)?;
-    
+
     // Check driver count limit
     if container.driver_count >= MAX_DRIVERS_PER_CONTAINER {
         return Err(super::ContainerError::TableFull);
     }
-    
+
     // Add driver to container
     for slot in container.drivers.iter_mut() {
         if slot.is_none() {
@@ -269,26 +284,30 @@ pub fn spawn(container_id: DriverContainerId, driver_id: super::DriverId) -> Res
             break;
         }
     }
-    
-    crate::kinfo!("UDRV/Container: Spawned driver {} in container {}",
-                  driver_id, container_id);
-    
+
+    crate::kinfo!(
+        "UDRV/Container: Spawned driver {} in container {}",
+        driver_id,
+        container_id
+    );
+
     Ok(())
 }
 
 /// Initialize container (set up isolation and runtime)
 pub fn initialize(id: DriverContainerId) -> Result<(), super::ContainerError> {
     let mut containers = CONTAINERS.lock();
-    let container = containers.iter_mut()
+    let container = containers
+        .iter_mut()
         .find_map(|slot| slot.as_mut().filter(|c| c.id == id))
         .ok_or(super::ContainerError::NotFound)?;
-    
+
     if container.state != ContainerState::Created {
         return Err(super::ContainerError::InvalidState);
     }
-    
+
     container.state = ContainerState::Initializing;
-    
+
     // Set up isolation based on class
     match container.isolation {
         IsolationClass::IC0 => {
@@ -300,7 +319,11 @@ pub fn initialize(id: DriverContainerId) -> Result<(), super::ContainerError> {
             let domain = super::isolation::allocate_ic1_domain(id)
                 .map_err(super::ContainerError::IsolationError)?;
             container.ic1_domain = Some(domain);
-            crate::kinfo!("UDRV/Container: Container {} using IC1 domain {}", id, domain);
+            crate::kinfo!(
+                "UDRV/Container: Container {} using IC1 domain {}",
+                id,
+                domain
+            );
         }
         IsolationClass::IC2 => {
             // IC2 - create process context
@@ -308,38 +331,40 @@ pub fn initialize(id: DriverContainerId) -> Result<(), super::ContainerError> {
             let cr3 = crate::paging::kernel_pml4_phys(); // Placeholder
             let ctx = super::isolation::create_ic2_context(cr3);
             container.ic2_context = Some(ctx);
-            crate::kinfo!("UDRV/Container: Container {} using IC2 process isolation", id);
+            crate::kinfo!(
+                "UDRV/Container: Container {} using IC2 process isolation",
+                id
+            );
         }
     }
-    
+
     container.state = ContainerState::Running;
-    
+
     Ok(())
 }
 
 /// Start container execution
 pub fn start(id: DriverContainerId) -> Result<(), super::ContainerError> {
     let mut containers = CONTAINERS.lock();
-    let container = containers.iter_mut()
+    let container = containers
+        .iter_mut()
         .find_map(|slot| slot.as_mut().filter(|c| c.id == id))
         .ok_or(super::ContainerError::NotFound)?;
-    
+
     if container.state != ContainerState::Running {
         return Err(super::ContainerError::InvalidState);
     }
-    
+
     if container.init_entry == 0 {
         // No init entry set - drivers will be started individually
         return Ok(());
     }
-    
+
     // Call container init
     match container.isolation {
         IsolationClass::IC0 | IsolationClass::IC1 => {
             // Direct or gate call
-            let init_fn: fn() = unsafe {
-                core::mem::transmute(container.init_entry)
-            };
+            let init_fn: fn() = unsafe { core::mem::transmute(container.init_entry) };
             init_fn();
         }
         IsolationClass::IC2 => {
@@ -347,45 +372,50 @@ pub fn start(id: DriverContainerId) -> Result<(), super::ContainerError> {
             // This would spawn a userspace process
         }
     }
-    
+
     Ok(())
 }
 
 /// Stop a container
 pub fn stop(id: DriverContainerId) -> Result<(), super::ContainerError> {
     let mut containers = CONTAINERS.lock();
-    let container = containers.iter_mut()
+    let container = containers
+        .iter_mut()
         .find_map(|slot| slot.as_mut().filter(|c| c.id == id))
         .ok_or(super::ContainerError::NotFound)?;
-    
+
     if container.state != ContainerState::Running {
         return Err(super::ContainerError::InvalidState);
     }
-    
+
     container.state = ContainerState::Stopping;
-    
+
     // Stop all drivers
     for driver_id in container.drivers.iter().flatten() {
         // Would signal driver to stop
-        crate::kinfo!("UDRV/Container: Stopping driver {} in container {}", driver_id, id);
+        crate::kinfo!(
+            "UDRV/Container: Stopping driver {} in container {}",
+            driver_id,
+            id
+        );
     }
-    
+
     container.state = ContainerState::Stopped;
-    
+
     // Clean up isolation resources
     if let Some(domain) = container.ic1_domain {
         let _ = super::isolation::deallocate_ic1_domain(domain);
     }
-    
+
     crate::kinfo!("UDRV/Container: Container {} stopped", id);
-    
+
     Ok(())
 }
 
 /// Destroy a container
 pub fn destroy(id: DriverContainerId) -> Result<(), super::ContainerError> {
     let mut containers = CONTAINERS.lock();
-    
+
     for slot in containers.iter_mut() {
         if let Some(container) = slot {
             if container.id == id {
@@ -398,16 +428,17 @@ pub fn destroy(id: DriverContainerId) -> Result<(), super::ContainerError> {
             }
         }
     }
-    
+
     Err(super::ContainerError::NotFound)
 }
 
 /// Get container info
 pub fn get_info(id: DriverContainerId) -> Option<ContainerInfo> {
     let containers = CONTAINERS.lock();
-    let container = containers.iter()
+    let container = containers
+        .iter()
         .find_map(|slot| slot.as_ref().filter(|c| c.id == id))?;
-    
+
     Some(ContainerInfo {
         id: container.id,
         isolation: container.isolation,
@@ -432,38 +463,54 @@ pub struct ContainerInfo {
 /// List all containers
 pub fn list_containers() -> Vec<DriverContainerId> {
     let containers = CONTAINERS.lock();
-    containers.iter()
+    containers
+        .iter()
         .filter_map(|slot| slot.as_ref().map(|c| c.id))
         .collect()
 }
 
 /// Grant hardware resource to container
-pub fn grant_hardware(id: DriverContainerId, grant: HardwareGrant) -> Result<(), super::ContainerError> {
+pub fn grant_hardware(
+    id: DriverContainerId,
+    grant: HardwareGrant,
+) -> Result<(), super::ContainerError> {
     let containers = CONTAINERS.lock();
-    let container = containers.iter()
+    let container = containers
+        .iter()
         .find_map(|slot| slot.as_ref().filter(|c| c.id == id))
         .ok_or(super::ContainerError::NotFound)?;
-    
+
     if !container.limits.hw_access {
         return Err(super::ContainerError::InvalidState);
     }
-    
+
     // Map hardware resource into container's address space
     match grant.resource_type {
         HardwareResourceType::Mmio => {
             // Map MMIO region
-            crate::kinfo!("UDRV/Container: Granted MMIO {:#x}+{:#x} to container {}",
-                          grant.phys_addr, grant.size, id);
+            crate::kinfo!(
+                "UDRV/Container: Granted MMIO {:#x}+{:#x} to container {}",
+                grant.phys_addr,
+                grant.size,
+                id
+            );
         }
         HardwareResourceType::IoPort => {
             // Set I/O port permissions
-            crate::kinfo!("UDRV/Container: Granted I/O ports {:#x}+{} to container {}",
-                          grant.phys_addr, grant.size, id);
+            crate::kinfo!(
+                "UDRV/Container: Granted I/O ports {:#x}+{} to container {}",
+                grant.phys_addr,
+                grant.size,
+                id
+            );
         }
         HardwareResourceType::DmaBuffer => {
             // Allocate DMA buffer
-            crate::kinfo!("UDRV/Container: Granted DMA buffer {} bytes to container {}",
-                          grant.size, id);
+            crate::kinfo!(
+                "UDRV/Container: Granted DMA buffer {} bytes to container {}",
+                grant.size,
+                id
+            );
         }
         HardwareResourceType::Interrupt => {
             if let Some(irq) = grant.irq {
@@ -471,19 +518,20 @@ pub fn grant_hardware(id: DriverContainerId, grant: HardwareGrant) -> Result<(),
             }
         }
     }
-    
+
     Ok(())
 }
 
 /// Handle container crash
 pub fn handle_crash(id: DriverContainerId, reason: &str) {
     let mut containers = CONTAINERS.lock();
-    if let Some(container) = containers.iter_mut()
+    if let Some(container) = containers
+        .iter_mut()
         .find_map(|slot| slot.as_mut().filter(|c| c.id == id))
     {
         container.state = ContainerState::Crashed;
         crate::kerror!("UDRV/Container: Container {} crashed: {}", id, reason);
-        
+
         // Could implement auto-restart here
     }
 }

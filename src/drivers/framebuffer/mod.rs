@@ -235,7 +235,9 @@ pub fn try_with_writer<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut FramebufferWriter) -> R,
 {
-    FRAMEBUFFER_WRITER.try_lock().and_then(|mut guard| guard.as_mut().map(f))
+    FRAMEBUFFER_WRITER
+        .try_lock()
+        .and_then(|mut guard| guard.as_mut().map(f))
 }
 
 /// Print formatted output to the framebuffer

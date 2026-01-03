@@ -23,7 +23,7 @@ pub mod handlers;
 pub mod idt;
 pub mod ipi;
 pub mod syscall_asm;
-pub mod timer_asm;  // Assembly timer handler that saves all GPRs
+pub mod timer_asm; // Assembly timer handler that saves all GPRs
 
 // Re-export commonly used items at module level
 pub use gs_context::{

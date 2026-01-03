@@ -434,9 +434,9 @@ impl FileSystem for DevFs {
                 .with_mode(0o666);
 
             const PTY_NAMES: [&str; 32] = [
-                "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13",
-                "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25",
-                "26", "27", "28", "29", "30", "31",
+                "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14",
+                "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28",
+                "29", "30", "31",
             ];
 
             crate::tty::pty::list_allocated_ids(|id| {
@@ -458,8 +458,7 @@ impl FileSystem for DevFs {
 
             // List event devices
             const EVENT_NAMES: [&str; 8] = [
-                "event0", "event1", "event2", "event3",
-                "event4", "event5", "event6", "event7",
+                "event0", "event1", "event2", "event3", "event4", "event5", "event6", "event7",
             ];
 
             for (id, name) in EVENT_NAMES.iter().enumerate() {

@@ -238,7 +238,11 @@ impl BuddyAllocator {
             if let Some(addr) = self.free_lists[current_order] {
                 // Validate address before reading
                 if !Self::is_valid_addr(addr) {
-                    crate::kerror!("allocate: corrupt free list at order {}, addr={:#x}", current_order, addr);
+                    crate::kerror!(
+                        "allocate: corrupt free list at order {}, addr={:#x}",
+                        current_order,
+                        addr
+                    );
                     self.free_lists[current_order] = None;
                     continue;
                 }
@@ -319,7 +323,11 @@ impl BuddyAllocator {
         while let Some(addr) = current_addr {
             // Validate address before any pointer operations
             if !Self::is_valid_addr(addr) {
-                crate::kerror!("remove_from_free_list: corrupt free list at order {}, addr={:#x}", order, addr);
+                crate::kerror!(
+                    "remove_from_free_list: corrupt free list at order {}, addr={:#x}",
+                    order,
+                    addr
+                );
                 // Truncate the list at the previous valid entry
                 if let Some(prev) = prev_addr {
                     unsafe {

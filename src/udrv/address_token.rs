@@ -44,9 +44,9 @@
 //! token.writev(offset, &new_data)?;
 //! ```
 
-use spin::Mutex;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use spin::Mutex;
 
 /// Maximum number of address tokens
 pub const MAX_TOKENS: usize = 1024;
@@ -183,19 +183,26 @@ impl TokenManager {
             granted_count: 0,
         }
     }
-    
-    fn create(&mut self, phys_addr: u64, size: u64, access: TokenAccess, obj_type: KernelObjectType, owner_domain: u8) -> Result<u32, TokenError> {
+
+    fn create(
+        &mut self,
+        phys_addr: u64,
+        size: u64,
+        access: TokenAccess,
+        obj_type: KernelObjectType,
+        owner_domain: u8,
+    ) -> Result<u32, TokenError> {
         // Check access permissions for object type
         if access == TokenAccess::ReadWrite && !obj_type.allows_rw() {
             return Err(TokenError::AccessDenied);
         }
-        
+
         // Find empty slot
         for slot in self.tokens.iter_mut() {
             if slot.is_none() {
                 let id = self.next_id;
                 self.next_id += 1;
-                
+
                 *slot = Some(AddressToken {
                     id,
                     phys_addr,
@@ -207,54 +214,56 @@ impl TokenManager {
                     obj_type,
                     flags: token_flags::TOKEN_VALID,
                 });
-                
+
                 return Ok(id);
             }
         }
-        
+
         Err(TokenError::TableFull)
     }
-    
+
     fn get(&self, id: u32) -> Option<&AddressToken> {
-        self.tokens.iter()
+        self.tokens
+            .iter()
             .find_map(|slot| slot.as_ref().filter(|t| t.id == id))
     }
-    
+
     fn get_mut(&mut self, id: u32) -> Option<&mut AddressToken> {
-        self.tokens.iter_mut()
+        self.tokens
+            .iter_mut()
             .find_map(|slot| slot.as_mut().filter(|t| t.id == id))
     }
-    
+
     fn grant(&mut self, id: u32, grantee_domain: u8, virt_addr: u64) -> Result<(), TokenError> {
         let token = self.get_mut(id).ok_or(TokenError::NotFound)?;
-        
+
         if token.flags & token_flags::TOKEN_GRANTED != 0 {
             return Err(TokenError::AlreadyGranted);
         }
-        
+
         token.grantee_domain = grantee_domain;
         token.virt_addr = virt_addr;
         token.flags |= token_flags::TOKEN_GRANTED;
         self.granted_count += 1;
-        
+
         Ok(())
     }
-    
+
     fn revoke(&mut self, id: u32) -> Result<(), TokenError> {
         let token = self.get_mut(id).ok_or(TokenError::NotFound)?;
-        
+
         if token.flags & token_flags::TOKEN_GRANTED == 0 {
             return Err(TokenError::NotGranted);
         }
-        
+
         token.grantee_domain = 0;
         token.virt_addr = 0;
         token.flags &= !token_flags::TOKEN_GRANTED;
         self.granted_count -= 1;
-        
+
         Ok(())
     }
-    
+
     fn destroy(&mut self, id: u32) -> Result<(), TokenError> {
         for slot in self.tokens.iter_mut() {
             if let Some(token) = slot {
@@ -277,8 +286,11 @@ static TOKEN_MANAGER: Mutex<TokenManager> = Mutex::new(TokenManager::new());
 /// Initialize address token subsystem
 pub fn init() {
     crate::kinfo!("UDRV/Token: Initializing address token subsystem");
-    crate::kinfo!("UDRV/Token: {} max tokens, page size {} bytes",
-                  MAX_TOKENS, TOKEN_PAGE_SIZE);
+    crate::kinfo!(
+        "UDRV/Token: {} max tokens, page size {} bytes",
+        MAX_TOKENS,
+        TOKEN_PAGE_SIZE
+    );
 }
 
 /// Create a new address token
@@ -289,7 +301,9 @@ pub fn create_token(
     obj_type: KernelObjectType,
     owner_domain: u8,
 ) -> Result<u32, TokenError> {
-    TOKEN_MANAGER.lock().create(phys_addr, size, access, obj_type, owner_domain)
+    TOKEN_MANAGER
+        .lock()
+        .create(phys_addr, size, access, obj_type, owner_domain)
 }
 
 /// Grant a token to a domain
@@ -313,27 +327,27 @@ pub fn get_token(id: u32) -> Option<AddressToken> {
 }
 
 /// Verify token access for writev operation
-/// 
+///
 /// This is called when a service uses writev to update a read-only token
 pub fn verify_writev(id: u32, offset: u64, len: u64, caller_domain: u8) -> Result<u64, TokenError> {
     let manager = TOKEN_MANAGER.lock();
     let token = manager.get(id).ok_or(TokenError::NotFound)?;
-    
+
     // Check caller is the grantee
     if token.grantee_domain != caller_domain {
         return Err(TokenError::PermissionDenied);
     }
-    
+
     // Check token is granted
     if token.flags & token_flags::TOKEN_GRANTED == 0 {
         return Err(TokenError::NotGranted);
     }
-    
+
     // Check bounds
     if offset + len > token.size {
         return Err(TokenError::SizeMismatch);
     }
-    
+
     // Return physical address for kernel to perform the write
     Ok(token.phys_addr + offset)
 }
@@ -365,13 +379,13 @@ impl TokenRingBuffer {
             data_offset,
         }
     }
-    
+
     /// Check if buffer is empty
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.head.load(Ordering::Acquire) == self.tail.load(Ordering::Acquire)
     }
-    
+
     /// Check if buffer is full
     #[inline]
     pub fn is_full(&self) -> bool {
@@ -379,7 +393,7 @@ impl TokenRingBuffer {
         let tail = self.tail.load(Ordering::Acquire);
         (tail - head) >= self.capacity
     }
-    
+
     /// Get number of entries
     #[inline]
     pub fn len(&self) -> u64 {
@@ -387,25 +401,24 @@ impl TokenRingBuffer {
         let tail = self.tail.load(Ordering::Acquire);
         tail - head
     }
-    
+
     /// Push entry (producer side)
     /// Returns offset of entry or None if full
     pub fn push(&self) -> Option<u64> {
         loop {
             let head = self.head.load(Ordering::Acquire);
             let tail = self.tail.load(Ordering::Relaxed);
-            
+
             if (tail - head) >= self.capacity {
                 return None; // Full
             }
-            
+
             // Try to claim the slot
-            if self.tail.compare_exchange_weak(
-                tail,
-                tail + 1,
-                Ordering::AcqRel,
-                Ordering::Relaxed,
-            ).is_ok() {
+            if self
+                .tail
+                .compare_exchange_weak(tail, tail + 1, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+            {
                 // Calculate offset
                 let index = tail & (self.capacity - 1);
                 return Some(self.data_offset + index * self.entry_size);
@@ -414,25 +427,24 @@ impl TokenRingBuffer {
             core::hint::spin_loop();
         }
     }
-    
+
     /// Pop entry (consumer side)
     /// Returns offset of entry or None if empty
     pub fn pop(&self) -> Option<u64> {
         loop {
             let head = self.head.load(Ordering::Relaxed);
             let tail = self.tail.load(Ordering::Acquire);
-            
+
             if head == tail {
                 return None; // Empty
             }
-            
+
             // Try to consume the slot
-            if self.head.compare_exchange_weak(
-                head,
-                head + 1,
-                Ordering::AcqRel,
-                Ordering::Relaxed,
-            ).is_ok() {
+            if self
+                .head
+                .compare_exchange_weak(head, head + 1, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+            {
                 // Calculate offset
                 let index = head & (self.capacity - 1);
                 return Some(self.data_offset + index * self.entry_size);

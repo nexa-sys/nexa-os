@@ -47,7 +47,10 @@ pub fn exit(code: i32) -> ! {
     // This prevents threads blocked on I/O from being stuck forever.
     if !is_thread {
         if let Some(tgid) = crate::scheduler::get_tgid(pid) {
-            ktrace!("[SYS_EXIT] Main thread {} exiting, waking thread group", pid);
+            ktrace!(
+                "[SYS_EXIT] Main thread {} exiting, waking thread group",
+                pid
+            );
             crate::scheduler::wake_thread_group(tgid);
         }
     }
@@ -626,7 +629,7 @@ pub fn execve(path: *const u8, _argv: *const *const u8, _envp: *const *const u8)
                     // a first-run process if preempted, leading to double-execution.
                     // The EXEC_CONTEXT mechanism handles jumping to the new entry point
                     // in the syscall return path.
-                    // 
+                    //
                     // Also clear is_fork_child since execve replaces the process image.
                     entry.process.is_fork_child = false;
 
@@ -723,9 +726,9 @@ pub fn wait4(pid: i64, status: *mut i32, options: i32, _rusage: *mut u8) -> u64 
             // Use efficient single-pass lookup instead of iterating all possible PIDs
             let (has_child, zombie_pid, exit_code, term_signal) =
                 crate::scheduler::find_any_child_for_wait(current_pid);
-            
+
             found_any_child = has_child;
-            
+
             if let Some(zpid) = zombie_pid {
                 wait_pid = zpid;
                 child_exited = true;

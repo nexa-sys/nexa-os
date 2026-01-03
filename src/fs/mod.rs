@@ -38,16 +38,36 @@ pub use initramfs::{
 
 // Re-export from ext2_modular (modular ext2 via kmod)
 pub use ext2_modular::{
-    enable_write_mode as ext2_enable_write_mode, get_stats as ext2_get_stats,
-    global as ext2_global, init as ext2_modular_init, is_module_loaded as ext2_is_module_loaded,
-    is_writable as ext2_is_writable, list_directory as ext2_list_directory, lookup as ext2_lookup,
-    metadata_for_path as ext2_metadata_for_path, new as ext2_new, read_at as ext2_read_at,
-    register_global as ext2_register_global, write_at as ext2_write_at, Ext2Error, Ext2Handle,
-    Ext2ModularFs, Ext2Stats, FileRefHandle,
+    enable_write_mode as ext2_enable_write_mode,
+    ext4_enable_write_mode,
+    ext4_global,
+    ext4_is_writable,
+    ext4_list_directory,
+    ext4_lookup,
+    ext4_new,
+    ext4_read_at,
+    get_stats as ext2_get_stats,
+    global as ext2_global,
+    init as ext2_modular_init,
+    is_ext4_loaded,
+    is_module_loaded as ext2_is_module_loaded,
+    is_writable as ext2_is_writable,
+    list_directory as ext2_list_directory,
+    lookup as ext2_lookup,
+    metadata_for_path as ext2_metadata_for_path,
+    new as ext2_new,
+    read_at as ext2_read_at,
+    register_global as ext2_register_global,
+    write_at as ext2_write_at,
+    Ext2Error,
+    Ext2Handle,
+    Ext2ModularFs,
+    Ext2Stats,
+    Ext4FileRefHandle,
     // ext4 exports
-    Ext4ModularFs, Ext4FileRefHandle, Ext4Stats,
-    is_ext4_loaded, ext4_global, ext4_new, ext4_lookup, ext4_read_at,
-    ext4_list_directory, ext4_enable_write_mode, ext4_is_writable,
+    Ext4ModularFs,
+    Ext4Stats,
+    FileRefHandle,
 };
 
 // Re-export filesystem abstraction traits
@@ -78,9 +98,8 @@ pub use tmpfs::{
 // Re-export devfs
 pub use devfs::{
     get_device_type, init as devfs_init, is_device, register_block_device, register_device,
-    register_framebuffer_device, register_network_device, register_loop_device,
-    register_loop_control, register_input_event_device, register_input_mice,
-    DevFs, DeviceType, DEVFS,
+    register_framebuffer_device, register_input_event_device, register_input_mice,
+    register_loop_control, register_loop_device, register_network_device, DevFs, DeviceType, DEVFS,
 };
 
 // Re-export fstab

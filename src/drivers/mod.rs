@@ -124,37 +124,31 @@ pub use random::{
 
 // Re-export from loop (loop device driver)
 pub use r#loop::{
-    init as init_loop, attach as loop_attach, detach as loop_detach,
-    get_free as loop_get_free, is_attached as loop_is_attached,
-    read_sectors as loop_read_sectors, write_sectors as loop_write_sectors,
-    loop_control_ioctl, loop_device_ioctl, get_device_info as loop_get_device_info,
-    LoopInfo64, LoopFlags, MAX_LOOP_DEVICES,
-    LOOP_SET_FD, LOOP_CLR_FD, LOOP_GET_STATUS64, LOOP_SET_STATUS64,
-    LOOP_CTL_GET_FREE, LOOP_CTL_ADD, LOOP_CTL_REMOVE,
+    attach as loop_attach, detach as loop_detach, get_device_info as loop_get_device_info,
+    get_free as loop_get_free, init as init_loop, is_attached as loop_is_attached,
+    loop_control_ioctl, loop_device_ioctl, read_sectors as loop_read_sectors,
+    write_sectors as loop_write_sectors, LoopFlags, LoopInfo64, LOOP_CLR_FD, LOOP_CTL_ADD,
+    LOOP_CTL_GET_FREE, LOOP_CTL_REMOVE, LOOP_GET_STATUS64, LOOP_SET_FD, LOOP_SET_STATUS64,
+    MAX_LOOP_DEVICES,
 };
 
 // Re-export from input (unified input event subsystem)
-pub use input::{
-    init as init_input, device_count as input_device_count,
-    device_exists as input_device_exists, has_events as input_has_events,
-    read_events as input_read_events, get_device_id as input_get_device_id,
-    get_device_info as input_get_device_info, list_devices as input_list_devices,
-    InputDeviceType,
-};
 pub use input::event::{
-    InputEvent, InputId, InputDeviceInfo,
-    EV_SYN, EV_KEY, EV_REL, EV_ABS, EV_MSC, EV_LED,
-    SYN_REPORT, SYN_DROPPED,
-    REL_X, REL_Y, REL_WHEEL,
-    BTN_LEFT, BTN_RIGHT, BTN_MIDDLE,
+    InputDeviceInfo, InputEvent, InputId, BTN_LEFT, BTN_MIDDLE, BTN_RIGHT, EV_ABS, EV_KEY, EV_LED,
+    EV_MSC, EV_REL, EV_SYN, REL_WHEEL, REL_X, REL_Y, SYN_DROPPED, SYN_REPORT,
+};
+pub use input::{
+    device_count as input_device_count, device_exists as input_device_exists,
+    get_device_id as input_get_device_id, get_device_info as input_get_device_info,
+    has_events as input_has_events, init as init_input, list_devices as input_list_devices,
+    read_events as input_read_events, InputDeviceType,
 };
 
 // Re-export from watchdog (hardware watchdog timer)
 pub use watchdog::{
-    init as init_watchdog, is_initialized as watchdog_is_initialized,
-    enable as watchdog_enable, disable as watchdog_disable,
-    feed as watchdog_feed, set_timeout as watchdog_set_timeout,
-    get_timeout as watchdog_get_timeout, get_info as watchdog_get_info,
-    is_enabled as watchdog_is_enabled, get_type as watchdog_get_type,
-    watchdog_ioctl, WatchdogInfo, WatchdogType,
+    disable as watchdog_disable, enable as watchdog_enable, feed as watchdog_feed,
+    get_info as watchdog_get_info, get_timeout as watchdog_get_timeout,
+    get_type as watchdog_get_type, init as init_watchdog, is_enabled as watchdog_is_enabled,
+    is_initialized as watchdog_is_initialized, set_timeout as watchdog_set_timeout, watchdog_ioctl,
+    WatchdogInfo, WatchdogType,
 };

@@ -48,9 +48,9 @@
 //! - Interrupts handled in kernel for low latency
 //! - DMA completes without userspace involvement
 
-use spin::Mutex;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
+use spin::Mutex;
 
 /// Twin driver ID type
 pub type TwinDriverId = u32;
@@ -291,7 +291,7 @@ pub enum RingBufferType {
 }
 
 // Global state
-static TWIN_DRIVERS: Mutex<[Option<TwinDriver>; MAX_TWIN_DRIVERS]> = 
+static TWIN_DRIVERS: Mutex<[Option<TwinDriver>; MAX_TWIN_DRIVERS]> =
     Mutex::new([const { None }; MAX_TWIN_DRIVERS]);
 static NEXT_TWIN_ID: AtomicU32 = AtomicU32::new(1);
 
@@ -304,17 +304,17 @@ pub fn init() {
 /// Create a new twin driver
 pub fn create(name: &str, class: TwinDriverClass) -> Result<TwinDriverId, TwinDriverError> {
     let mut drivers = TWIN_DRIVERS.lock();
-    
+
     // Find empty slot
     for slot in drivers.iter_mut() {
         if slot.is_none() {
             let id = NEXT_TWIN_ID.fetch_add(1, Ordering::SeqCst);
-            
+
             let mut name_buf = [0u8; 32];
             let name_bytes = name.as_bytes();
             let len = core::cmp::min(name_bytes.len(), 31);
             name_buf[..len].copy_from_slice(&name_bytes[..len]);
-            
+
             *slot = Some(TwinDriver {
                 id,
                 name: name_buf,
@@ -324,13 +324,13 @@ pub fn create(name: &str, class: TwinDriverClass) -> Result<TwinDriverId, TwinDr
                 state: TwinDriverState::Uninitialized,
                 shared_region: None,
             });
-            
+
             crate::kinfo!("UDRV/Twin: Created twin driver {} ({})", id, name);
-            
+
             return Ok(id);
         }
     }
-    
+
     Err(TwinDriverError::TableFull)
 }
 
@@ -341,21 +341,25 @@ pub fn load_control_plane(
     entry_point: u64,
 ) -> Result<(), TwinDriverError> {
     let mut drivers = TWIN_DRIVERS.lock();
-    let driver = drivers.iter_mut()
+    let driver = drivers
+        .iter_mut()
         .find_map(|slot| slot.as_mut().filter(|d| d.id == id))
         .ok_or(TwinDriverError::NotFound)?;
-    
+
     if driver.state != TwinDriverState::Uninitialized {
         return Err(TwinDriverError::InvalidState);
     }
-    
+
     driver.control.container_id = container_id;
     driver.control.entry_point = entry_point;
     driver.state = TwinDriverState::ControlLoaded;
-    
-    crate::kinfo!("UDRV/Twin: Loaded control plane for driver {} in container {}",
-                  id, container_id);
-    
+
+    crate::kinfo!(
+        "UDRV/Twin: Loaded control plane for driver {} in container {}",
+        id,
+        container_id
+    );
+
     Ok(())
 }
 
@@ -366,27 +370,31 @@ pub fn load_data_plane(
     ops: DataPlaneOps,
 ) -> Result<(), TwinDriverError> {
     let mut drivers = TWIN_DRIVERS.lock();
-    let driver = drivers.iter_mut()
+    let driver = drivers
+        .iter_mut()
         .find_map(|slot| slot.as_mut().filter(|d| d.id == id))
         .ok_or(TwinDriverError::NotFound)?;
-    
+
     // Data plane must be IC0 or IC1 for performance
     if isolation == super::IsolationClass::IC2 {
         return Err(TwinDriverError::InvalidIsolation);
     }
-    
+
     driver.data.isolation = isolation;
     driver.data.stub_ops = ops;
-    
+
     if driver.state == TwinDriverState::ControlLoaded {
         driver.state = TwinDriverState::Linked;
     } else {
         driver.state = TwinDriverState::DataLoaded;
     }
-    
-    crate::kinfo!("UDRV/Twin: Loaded data plane stub for driver {} (IC{:?})",
-                  id, isolation);
-    
+
+    crate::kinfo!(
+        "UDRV/Twin: Loaded data plane stub for driver {} (IC{:?})",
+        id,
+        isolation
+    );
+
     Ok(())
 }
 
@@ -398,23 +406,28 @@ pub fn add_mmio_region(
     cacheable: bool,
 ) -> Result<u64, TwinDriverError> {
     let mut drivers = TWIN_DRIVERS.lock();
-    let driver = drivers.iter_mut()
+    let driver = drivers
+        .iter_mut()
         .find_map(|slot| slot.as_mut().filter(|d| d.id == id))
         .ok_or(TwinDriverError::NotFound)?;
-    
+
     // Map physical to virtual (would use actual mapping in real implementation)
     let virt_addr = phys_addr + 0xFFFF_8000_0000_0000; // Direct map offset
-    
+
     driver.data.mmio_regions.push(MmioMapping {
         phys_addr,
         virt_addr,
         size,
         cacheable,
     });
-    
-    crate::kinfo!("UDRV/Twin: Added MMIO region {:#x}+{:#x} to driver {}",
-                  phys_addr, size, id);
-    
+
+    crate::kinfo!(
+        "UDRV/Twin: Added MMIO region {:#x}+{:#x} to driver {}",
+        phys_addr,
+        size,
+        id
+    );
+
     Ok(virt_addr)
 }
 
@@ -425,87 +438,99 @@ pub fn add_dma_buffer(
     direction: DmaDirection,
 ) -> Result<DmaDescriptor, TwinDriverError> {
     let mut drivers = TWIN_DRIVERS.lock();
-    let driver = drivers.iter_mut()
+    let driver = drivers
+        .iter_mut()
         .find_map(|slot| slot.as_mut().filter(|d| d.id == id))
         .ok_or(TwinDriverError::NotFound)?;
-    
+
     // Allocate DMA buffer (would use DMA allocator in real implementation)
     let phys_addr = 0x1000_0000 + (driver.data.dma_descriptors.len() as u64 * size);
     let virt_addr = phys_addr + 0xFFFF_8000_0000_0000;
-    
+
     let desc = DmaDescriptor {
         phys_addr,
         virt_addr,
         size,
         direction,
     };
-    
+
     driver.data.dma_descriptors.push(desc);
-    
-    crate::kinfo!("UDRV/Twin: Added DMA buffer {:#x} ({} bytes) to driver {}",
-                  phys_addr, size, id);
-    
+
+    crate::kinfo!(
+        "UDRV/Twin: Added DMA buffer {:#x} ({} bytes) to driver {}",
+        phys_addr,
+        size,
+        id
+    );
+
     Ok(desc)
 }
 
 /// Register IRQ handler
 pub fn register_irq(id: TwinDriverId, irq: u8, shared: bool) -> Result<(), TwinDriverError> {
     let mut drivers = TWIN_DRIVERS.lock();
-    let driver = drivers.iter_mut()
+    let driver = drivers
+        .iter_mut()
         .find_map(|slot| slot.as_mut().filter(|d| d.id == id))
         .ok_or(TwinDriverError::NotFound)?;
-    
+
     // Get handler from stub ops
     let handler = driver.data.stub_ops.irq_handler;
-    
+
     driver.data.irq_handlers.push(IrqHandler {
         irq,
         handler,
         shared,
     });
-    
-    crate::kinfo!("UDRV/Twin: Registered IRQ {} for driver {} (shared={})",
-                  irq, id, shared);
-    
+
+    crate::kinfo!(
+        "UDRV/Twin: Registered IRQ {} for driver {} (shared={})",
+        irq,
+        id,
+        shared
+    );
+
     Ok(())
 }
 
 /// Start twin driver
 pub fn start(id: TwinDriverId) -> Result<(), TwinDriverError> {
     let mut drivers = TWIN_DRIVERS.lock();
-    let driver = drivers.iter_mut()
+    let driver = drivers
+        .iter_mut()
         .find_map(|slot| slot.as_mut().filter(|d| d.id == id))
         .ok_or(TwinDriverError::NotFound)?;
-    
+
     if driver.state != TwinDriverState::Linked {
         return Err(TwinDriverError::InvalidState);
     }
-    
+
     // Initialize via control plane
     // Would send IPC to control plane to initialize device
-    
+
     driver.state = TwinDriverState::Running;
-    
+
     crate::kinfo!("UDRV/Twin: Started twin driver {}", id);
-    
+
     Ok(())
 }
 
 /// Stop twin driver
 pub fn stop(id: TwinDriverId) -> Result<(), TwinDriverError> {
     let mut drivers = TWIN_DRIVERS.lock();
-    let driver = drivers.iter_mut()
+    let driver = drivers
+        .iter_mut()
         .find_map(|slot| slot.as_mut().filter(|d| d.id == id))
         .ok_or(TwinDriverError::NotFound)?;
-    
+
     if driver.state != TwinDriverState::Running {
         return Err(TwinDriverError::InvalidState);
     }
-    
+
     driver.state = TwinDriverState::Stopped;
-    
+
     crate::kinfo!("UDRV/Twin: Stopped twin driver {}", id);
-    
+
     Ok(())
 }
 
@@ -513,17 +538,21 @@ pub fn stop(id: TwinDriverId) -> Result<(), TwinDriverError> {
 #[inline]
 pub fn xmit(id: TwinDriverId, data: &[u8]) -> Result<i32, TwinDriverError> {
     let drivers = TWIN_DRIVERS.lock();
-    let driver = drivers.iter()
+    let driver = drivers
+        .iter()
         .find_map(|slot| slot.as_ref().filter(|d| d.id == id))
         .ok_or(TwinDriverError::NotFound)?;
-    
+
     if driver.state != TwinDriverState::Running {
         return Err(TwinDriverError::InvalidState);
     }
-    
-    let xmit_fn = driver.data.stub_ops.xmit
+
+    let xmit_fn = driver
+        .data
+        .stub_ops
+        .xmit
         .ok_or(TwinDriverError::NotSupported)?;
-    
+
     Ok(xmit_fn(data.as_ptr(), data.len()))
 }
 
@@ -531,33 +560,43 @@ pub fn xmit(id: TwinDriverId, data: &[u8]) -> Result<i32, TwinDriverError> {
 #[inline]
 pub fn recv(id: TwinDriverId, buffer: &mut [u8]) -> Result<i32, TwinDriverError> {
     let drivers = TWIN_DRIVERS.lock();
-    let driver = drivers.iter()
+    let driver = drivers
+        .iter()
         .find_map(|slot| slot.as_ref().filter(|d| d.id == id))
         .ok_or(TwinDriverError::NotFound)?;
-    
+
     if driver.state != TwinDriverState::Running {
         return Err(TwinDriverError::InvalidState);
     }
-    
-    let recv_fn = driver.data.stub_ops.recv
+
+    let recv_fn = driver
+        .data
+        .stub_ops
+        .recv
         .ok_or(TwinDriverError::NotSupported)?;
-    
+
     Ok(recv_fn(buffer.as_mut_ptr(), buffer.len()))
 }
 
 /// Send control message to control plane
-pub fn control_message(id: TwinDriverId, msg: &ControlMessage) -> Result<ControlResponse, TwinDriverError> {
+pub fn control_message(
+    id: TwinDriverId,
+    msg: &ControlMessage,
+) -> Result<ControlResponse, TwinDriverError> {
     let drivers = TWIN_DRIVERS.lock();
-    let driver = drivers.iter()
+    let driver = drivers
+        .iter()
         .find_map(|slot| slot.as_ref().filter(|d| d.id == id))
         .ok_or(TwinDriverError::NotFound)?;
-    
-    let _channel = driver.control.ipc_channel
+
+    let _channel = driver
+        .control
+        .ipc_channel
         .ok_or(TwinDriverError::NotInitialized)?;
-    
+
     // Would send IPC message to control plane
     // For now, return placeholder
-    
+
     Ok(ControlResponse {
         status: 0,
         data: [0; 64],
@@ -581,7 +620,7 @@ pub enum ControlOp {
     PowerUp = 3,
     PowerDown = 4,
     GetStats = 5,
-    SetMac = 6,    // Network specific
+    SetMac = 6, // Network specific
     SetMtu = 7,
     Custom = 255,
 }
@@ -608,9 +647,10 @@ pub enum TwinDriverError {
 /// Get twin driver info
 pub fn get_info(id: TwinDriverId) -> Option<TwinDriverInfo> {
     let drivers = TWIN_DRIVERS.lock();
-    let driver = drivers.iter()
+    let driver = drivers
+        .iter()
         .find_map(|slot| slot.as_ref().filter(|d| d.id == id))?;
-    
+
     Some(TwinDriverInfo {
         id: driver.id,
         class: driver.class,
@@ -639,7 +679,8 @@ pub struct TwinDriverInfo {
 /// List all twin drivers
 pub fn list_drivers() -> Vec<TwinDriverId> {
     let drivers = TWIN_DRIVERS.lock();
-    drivers.iter()
+    drivers
+        .iter()
         .filter_map(|slot| slot.as_ref().map(|d| d.id))
         .collect()
 }

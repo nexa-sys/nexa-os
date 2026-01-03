@@ -835,7 +835,8 @@ impl NetStack {
                 // SAFETY: socket_idx != new_socket_idx (checked by find loop)
                 unsafe {
                     let src_ptr = &self.tcp_sockets[socket_idx] as *const super::tcp::TcpSocket;
-                    let dst_ptr = &mut self.tcp_sockets[new_socket_idx] as *mut super::tcp::TcpSocket;
+                    let dst_ptr =
+                        &mut self.tcp_sockets[new_socket_idx] as *mut super::tcp::TcpSocket;
                     (*dst_ptr).clone_from_established(&*src_ptr);
                 }
 
@@ -871,7 +872,11 @@ impl NetStack {
     }
 
     /// Get local address of a socket (TCP or UDP)
-    pub fn get_local_addr(&self, socket_idx: usize, is_tcp: bool) -> Result<([u8; 4], u16), NetError> {
+    pub fn get_local_addr(
+        &self,
+        socket_idx: usize,
+        is_tcp: bool,
+    ) -> Result<([u8; 4], u16), NetError> {
         if is_tcp {
             if socket_idx >= MAX_TCP_SOCKETS {
                 return Err(NetError::InvalidSocket);

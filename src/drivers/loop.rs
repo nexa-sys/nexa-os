@@ -238,7 +238,10 @@ static INITIALIZED: spin::Once<()> = spin::Once::new();
 /// Initialize the loop device subsystem
 pub fn init() {
     INITIALIZED.call_once(|| {
-        crate::kinfo!("Loop device subsystem initialized ({} devices)", MAX_LOOP_DEVICES);
+        crate::kinfo!(
+            "Loop device subsystem initialized ({} devices)",
+            MAX_LOOP_DEVICES
+        );
     });
 }
 
@@ -309,7 +312,12 @@ pub fn attach(
         dev.flags |= LoopFlags::ReadOnly as u32;
     }
 
-    crate::kinfo!("loop{}: attached to '{}' ({} bytes)", index, path, file_size);
+    crate::kinfo!(
+        "loop{}: attached to '{}' ({} bytes)",
+        index,
+        path,
+        file_size
+    );
     Ok(())
 }
 
@@ -452,11 +460,7 @@ pub fn get_device_info(index: usize) -> Option<(u64, u32, bool)> {
         return None;
     }
 
-    Some((
-        dev.total_sectors(),
-        dev.block_size,
-        dev.is_readonly(),
-    ))
+    Some((dev.total_sectors(), dev.block_size, dev.is_readonly()))
 }
 
 /// Read from a loop device
@@ -565,9 +569,9 @@ pub fn write_sectors(index: usize, sector: u64, count: u32, buf: &[u8]) -> Resul
 /// Handle ioctl on /dev/loop-control
 pub fn loop_control_ioctl(cmd: u64, arg: u64) -> Result<i64, i32> {
     match cmd {
-        LOOP_CTL_GET_FREE => {
-            get_free().map(|idx| idx as i64).ok_or(crate::posix::errno::ENOSPC)
-        }
+        LOOP_CTL_GET_FREE => get_free()
+            .map(|idx| idx as i64)
+            .ok_or(crate::posix::errno::ENOSPC),
         LOOP_CTL_ADD => {
             let index = arg as usize;
             if index >= MAX_LOOP_DEVICES {
@@ -606,12 +610,11 @@ pub fn loop_device_ioctl(index: usize, cmd: u64, arg: u64) -> Result<i64, i32> {
             let fd = arg;
 
             // Get file size from the fd
-            let file_size = crate::syscalls::get_file_size(fd)
-                .ok_or(crate::posix::errno::EBADF)?;
+            let file_size = crate::syscalls::get_file_size(fd).ok_or(crate::posix::errno::EBADF)?;
 
             // Get file path for display
-            let path = crate::syscalls::get_file_path(fd)
-                .unwrap_or_else(|| alloc::format!("fd:{}", fd));
+            let path =
+                crate::syscalls::get_file_path(fd).unwrap_or_else(|| alloc::format!("fd:{}", fd));
 
             attach(index, fd, &path, file_size, false)?;
             Ok(0)
@@ -686,8 +689,6 @@ pub fn list_devices() -> Vec<(usize, bool, Option<String>)> {
     devices
         .iter()
         .enumerate()
-        .map(|(i, dev)| {
-            (i, dev.is_attached(), dev.backing_path.clone())
-        })
+        .map(|(i, dev)| (i, dev.is_attached(), dev.backing_path.clone()))
         .collect()
 }

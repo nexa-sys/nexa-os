@@ -73,7 +73,7 @@ pub extern "C" fn timer_interrupt_handler_inner() {
 }
 
 /// Timer interrupt handler (IRQ0, vector 32)
-/// 
+///
 /// DEPRECATED: This handler is kept for compatibility but should not be used.
 /// Use timer_interrupt_handler_asm (in timer_asm.rs) instead, which properly
 /// saves all GPRs to GS_DATA before calling timer_interrupt_handler_inner.

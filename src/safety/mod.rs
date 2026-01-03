@@ -65,6 +65,6 @@ pub use packet::{
 pub use paging::{
     activate_cr3, align_down, align_up, current_cr3, entry_is_huge, entry_is_present,
     entry_phys_addr, flush_tlb_all, is_canonical_address, is_kernel_address, is_user_address,
-    page_frame_number, page_offset, page_table_at_phys, page_table_at_phys_ref,
-    page_table_indices, translate_virtual, validate_cr3, verify_pml4_content, PAGE_SIZE,
+    page_frame_number, page_offset, page_table_at_phys, page_table_at_phys_ref, page_table_indices,
+    translate_virtual, validate_cr3, verify_pml4_content, PAGE_SIZE,
 };

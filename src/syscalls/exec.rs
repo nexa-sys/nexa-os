@@ -39,7 +39,9 @@ pub fn set_exec_context_for_process(pid: u64, entry: u64, stack: u64, user_data_
         proc.exec_user_data_sel = user_data_sel;
         ktrace!(
             "[set_exec_context_for_process] pid={} entry={:#x} stack={:#x}",
-            pid, entry, stack
+            pid,
+            entry,
+            stack
         );
     });
 }
@@ -68,32 +70,33 @@ pub extern "C" fn get_exec_context(
             return false;
         }
     };
-    
-    let result = scheduler::with_process_mut(pid, |proc| {
-        if proc.exec_pending {
-            // Atomically consume the exec context
-            proc.exec_pending = false;
-            let entry = proc.exec_entry;
-            let stack = proc.exec_stack;
-            let user_data_sel = proc.exec_user_data_sel;
-            
-            unsafe {
-                *entry_out = entry;
-                *stack_out = stack;
-                if !user_data_sel_out.is_null() {
-                    *user_data_sel_out = user_data_sel;
+
+    let result =
+        scheduler::with_process_mut(pid, |proc| {
+            if proc.exec_pending {
+                // Atomically consume the exec context
+                proc.exec_pending = false;
+                let entry = proc.exec_entry;
+                let stack = proc.exec_stack;
+                let user_data_sel = proc.exec_user_data_sel;
+
+                unsafe {
+                    *entry_out = entry;
+                    *stack_out = stack;
+                    if !user_data_sel_out.is_null() {
+                        *user_data_sel_out = user_data_sel;
+                    }
                 }
-            }
-            ktrace!(
+                ktrace!(
                 "[get_exec_context] pid={} returning entry={:#x}, stack={:#x}, user_data_sel={:#x}",
                 pid, entry, stack, user_data_sel
             );
-            true
-        } else {
-            false
-        }
-    });
-    
+                true
+            } else {
+                false
+            }
+        });
+
     match result {
         Some(true) => true,
         _ => {

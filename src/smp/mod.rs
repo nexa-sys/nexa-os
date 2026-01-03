@@ -38,10 +38,9 @@ pub mod types;
 
 // Re-export types
 pub use types::{
-    CpuData, CpuStatus, CpuInfo, ApBootArgs, PerCpuTrampolineData, PerCpuGsData,
-    MAX_CPUS, TRAMPOLINE_BASE, TRAMPOLINE_MAX_SIZE, TRAMPOLINE_VECTOR,
-    PER_CPU_DATA_SIZE, AP_STACK_SIZE, STARTUP_WAIT_LOOPS, STARTUP_RETRY_MAX,
-    STATIC_CPU_COUNT,
+    ApBootArgs, CpuData, CpuInfo, CpuStatus, PerCpuGsData, PerCpuTrampolineData, AP_STACK_SIZE,
+    MAX_CPUS, PER_CPU_DATA_SIZE, STARTUP_RETRY_MAX, STARTUP_WAIT_LOOPS, STATIC_CPU_COUNT,
+    TRAMPOLINE_BASE, TRAMPOLINE_MAX_SIZE, TRAMPOLINE_VECTOR,
 };
 
 // Re-export IPI constants

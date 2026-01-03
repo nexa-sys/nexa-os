@@ -136,7 +136,9 @@ pub fn jump_to_usermode_with_cr3(entry: u64, stack: u64, cr3: u64) -> ! {
     {
         use crate::safety::x86::{serial_debug_byte, serial_debug_hex};
         let rsp: u64;
-        unsafe { core::arch::asm!("mov {0}, rsp", out(reg) rsp, options(nomem, nostack, preserves_flags)); }
+        unsafe {
+            core::arch::asm!("mov {0}, rsp", out(reg) rsp, options(nomem, nostack, preserves_flags));
+        }
         serial_debug_byte(b'J');
         serial_debug_hex(rsp & 0xF, 1);
         serial_debug_byte(b'\n');
@@ -174,7 +176,9 @@ pub fn jump_to_usermode_with_cr3(entry: u64, stack: u64, cr3: u64) -> ! {
     {
         use crate::safety::x86::{serial_debug_byte, serial_debug_hex};
         let rsp: u64;
-        unsafe { core::arch::asm!("mov {0}, rsp", out(reg) rsp, options(nomem, nostack, preserves_flags)); }
+        unsafe {
+            core::arch::asm!("mov {0}, rsp", out(reg) rsp, options(nomem, nostack, preserves_flags));
+        }
         serial_debug_byte(b'G');
         serial_debug_hex(rsp & 0xF, 1);
         serial_debug_byte(b'\n');
@@ -250,10 +254,10 @@ pub fn jump_to_usermode_with_cr3(entry: u64, stack: u64, cr3: u64) -> ! {
             // Switch CR3 first. Keep CR3 in a fixed register to avoid allocator conflicts
             // with the required sysretq registers (RCX=RIP, R11=RFLAGS, RSP=user stack).
             "mov cr3, rax",
-            
+
             // Swap GS to user GS (0) and save kernel GS to KernelGSBase
             "swapgs",
-            
+
             // Clear RAX (return value)
             "xor eax, eax",
 
@@ -262,13 +266,13 @@ pub fn jump_to_usermode_with_cr3(entry: u64, stack: u64, cr3: u64) -> ! {
 
             // Execute sysretq
             "sysretq",
-            
+
             // Inputs
             in("rax") cr3,         // CR3 source
             in("rcx") entry,       // entry -> rcx (RIP for sysretq)
             in("rdi") stack,       // stack -> rdi (moved to rsp inside)
             in("r11") 0x202u64,    // rflags -> r11 (RFLAGS for sysretq)
-            
+
             options(noreturn)
         );
     }

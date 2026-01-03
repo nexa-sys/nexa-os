@@ -179,7 +179,11 @@ pub fn epoll_ctl(epfd: u64, op: i32, fd: i32, event: *const EpollEvent) -> u64 {
                     data: ev_data,
                 },
             );
-            kinfo!("[SYS_EPOLL_CTL] Added fd {} with events {:#x}", fd, ev_events);
+            kinfo!(
+                "[SYS_EPOLL_CTL] Added fd {} with events {:#x}",
+                fd,
+                ev_events
+            );
         }
         EPOLL_CTL_DEL => {
             if instance.entries.remove(&fd).is_none() {

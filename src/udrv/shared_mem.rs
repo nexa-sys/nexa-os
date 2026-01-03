@@ -11,9 +11,9 @@
 //! - Control/data plane communication
 //! - DMA buffer sharing
 
-use spin::Mutex;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
+use spin::Mutex;
 
 /// Shared region ID type
 pub type SharedRegionId = u32;
@@ -133,19 +133,20 @@ pub fn create(
     owner: u32,
     flags: u32,
 ) -> Result<SharedRegionId, SharedMemError> {
-    if size == 0 || size > (1 << 30) { // Max 1GB
+    if size == 0 || size > (1 << 30) {
+        // Max 1GB
         return Err(SharedMemError::InvalidSize);
     }
-    
+
     // Allocate physical memory (would use actual allocator)
     let phys_addr = allocate_physical(size, flags)?;
-    
+
     let mut regions = REGIONS.lock();
-    
+
     for slot in regions.iter_mut() {
         if slot.is_none() {
             let id = NEXT_REGION_ID.fetch_add(1, Ordering::SeqCst);
-            
+
             *slot = Some(SharedRegion {
                 id,
                 phys_addr,
@@ -156,14 +157,18 @@ pub fn create(
                 clients: Vec::new(),
                 flags,
             });
-            
-            crate::kinfo!("UDRV/SharedMem: Created region {} ({} bytes, type {:?})",
-                          id, size, region_type);
-            
+
+            crate::kinfo!(
+                "UDRV/SharedMem: Created region {} ({} bytes, type {:?})",
+                id,
+                size,
+                region_type
+            );
+
             return Ok(id);
         }
     }
-    
+
     // Free allocated memory on failure
     free_physical(phys_addr, size);
     Err(SharedMemError::TableFull)
@@ -176,92 +181,102 @@ pub fn map_to_client(
     access: SharedAccess,
 ) -> Result<u64, SharedMemError> {
     let mut regions = REGIONS.lock();
-    let region = regions.iter_mut()
+    let region = regions
+        .iter_mut()
         .find_map(|slot| slot.as_mut().filter(|r| r.id == id))
         .ok_or(SharedMemError::NotFound)?;
-    
+
     // Check access permissions
     if !can_grant_access(region.access, access) {
         return Err(SharedMemError::PermissionDenied);
     }
-    
+
     // Check if already mapped
     if region.clients.iter().any(|c| c.client_id == client_id) {
         return Err(SharedMemError::AlreadyMapped);
     }
-    
+
     // Map to client's address space (would use actual mapping)
     let virt_addr = map_to_address_space(client_id, region.phys_addr, region.size, access)?;
-    
+
     region.clients.push(SharedClient {
         client_id,
         virt_addr,
         access,
     });
-    
-    crate::kinfo!("UDRV/SharedMem: Mapped region {} to client {} at {:#x}",
-                  id, client_id, virt_addr);
-    
+
+    crate::kinfo!(
+        "UDRV/SharedMem: Mapped region {} to client {} at {:#x}",
+        id,
+        client_id,
+        virt_addr
+    );
+
     Ok(virt_addr)
 }
 
 /// Unmap region from a client
 pub fn unmap_from_client(id: SharedRegionId, client_id: u32) -> Result<(), SharedMemError> {
     let mut regions = REGIONS.lock();
-    let region = regions.iter_mut()
+    let region = regions
+        .iter_mut()
         .find_map(|slot| slot.as_mut().filter(|r| r.id == id))
         .ok_or(SharedMemError::NotFound)?;
-    
-    let idx = region.clients.iter()
+
+    let idx = region
+        .clients
+        .iter()
         .position(|c| c.client_id == client_id)
         .ok_or(SharedMemError::NotMapped)?;
-    
+
     let client = region.clients.remove(idx);
-    
+
     // Unmap from address space (would use actual unmapping)
     unmap_from_address_space(client_id, client.virt_addr, region.size)?;
-    
-    crate::kinfo!("UDRV/SharedMem: Unmapped region {} from client {}", id, client_id);
-    
+
+    crate::kinfo!(
+        "UDRV/SharedMem: Unmapped region {} from client {}",
+        id,
+        client_id
+    );
+
     Ok(())
 }
 
 /// Destroy a shared region
 pub fn destroy(id: SharedRegionId) -> Result<(), SharedMemError> {
     let mut regions = REGIONS.lock();
-    
+
     for slot in regions.iter_mut() {
         if let Some(region) = slot {
             if region.id == id {
                 // Unmap from all clients
                 for client in &region.clients {
-                    let _ = unmap_from_address_space(
-                        client.client_id,
-                        client.virt_addr,
-                        region.size,
-                    );
+                    let _ =
+                        unmap_from_address_space(client.client_id, client.virt_addr, region.size);
                 }
-                
+
                 // Free physical memory
                 free_physical(region.phys_addr, region.size);
-                
+
                 crate::kinfo!("UDRV/SharedMem: Destroyed region {}", id);
-                
+
                 *slot = None;
                 return Ok(());
             }
         }
     }
-    
+
     Err(SharedMemError::NotFound)
 }
 
 /// Get region info
 pub fn get_info(id: SharedRegionId) -> Option<SharedRegionInfo> {
     let regions = REGIONS.lock();
-    let region = regions.iter()
+    let region = regions
+        .iter()
         .find_map(|slot| slot.as_ref().filter(|r| r.id == id))?;
-    
+
     Some(SharedRegionInfo {
         id: region.id,
         phys_addr: region.phys_addr,
@@ -290,7 +305,8 @@ pub struct SharedRegionInfo {
 /// List all regions
 pub fn list_regions() -> Vec<SharedRegionId> {
     let regions = REGIONS.lock();
-    regions.iter()
+    regions
+        .iter()
         .filter_map(|slot| slot.as_ref().map(|r| r.id))
         .collect()
 }
@@ -298,11 +314,11 @@ pub fn list_regions() -> Vec<SharedRegionId> {
 /// List regions for owner
 pub fn list_for_owner(owner: u32) -> Vec<SharedRegionId> {
     let regions = REGIONS.lock();
-    regions.iter()
+    regions
+        .iter()
         .filter_map(|slot| {
-            slot.as_ref().and_then(|r| {
-                if r.owner == owner { Some(r.id) } else { None }
-            })
+            slot.as_ref()
+                .and_then(|r| if r.owner == owner { Some(r.id) } else { None })
         })
         .collect()
 }
@@ -322,15 +338,16 @@ fn allocate_physical(size: u64, flags: u32) -> Result<u64, SharedMemError> {
     // In real implementation, this would use the physical memory allocator
     // For now, use a simple bump allocator simulation
     static NEXT_PHYS: AtomicU32 = AtomicU32::new(0x2000_0000); // Start at 512MB
-    
+
     let aligned_size = (size + 0xFFF) & !0xFFF; // Page align
     let addr = NEXT_PHYS.fetch_add(aligned_size as u32, Ordering::SeqCst) as u64;
-    
+
     // Check if we exceeded available memory (simplified check)
-    if addr + aligned_size > 0x4000_0000 { // 1GB limit
+    if addr + aligned_size > 0x4000_0000 {
+        // 1GB limit
         return Err(SharedMemError::AllocationFailed);
     }
-    
+
     Ok(addr)
 }
 
@@ -350,7 +367,7 @@ fn map_to_address_space(
     // 1. Get client's page table
     // 2. Find free virtual address range
     // 3. Map physical pages with appropriate permissions
-    
+
     // For now, use direct mapping
     Ok(phys_addr + 0xFFFF_8000_0000_0000) // Direct map offset
 }
@@ -365,7 +382,7 @@ fn unmap_from_address_space(
     // 1. Get client's page table
     // 2. Unmap the virtual address range
     // 3. Flush TLB
-    
+
     Ok(())
 }
 
@@ -392,7 +409,7 @@ pub struct RingBufferHeader {
 
 impl RingBufferHeader {
     pub const MAGIC: u32 = 0x52494E47; // "RING"
-    
+
     pub fn init(&mut self, entries: u32, entry_size: u32) {
         self.magic = Self::MAGIC;
         self.head = 0;
@@ -402,23 +419,23 @@ impl RingBufferHeader {
         self.flags = 0;
         self._reserved = [0; 2];
     }
-    
+
     pub fn is_valid(&self) -> bool {
         self.magic == Self::MAGIC
     }
-    
+
     pub fn is_empty(&self) -> bool {
         self.head == self.tail
     }
-    
+
     pub fn is_full(&self) -> bool {
         ((self.tail + 1) % self.entries) == self.head
     }
-    
+
     pub fn len(&self) -> u32 {
         (self.tail + self.entries - self.head) % self.entries
     }
-    
+
     pub fn data_offset(&self) -> u32 {
         core::mem::size_of::<Self>() as u32
     }
@@ -433,7 +450,7 @@ pub fn create_ring_buffer(
     let header_size = core::mem::size_of::<RingBufferHeader>() as u64;
     let data_size = entries as u64 * entry_size as u64;
     let total_size = header_size + data_size;
-    
+
     let id = create(
         total_size,
         SharedRegionType::RingBuffer,
@@ -441,10 +458,11 @@ pub fn create_ring_buffer(
         owner,
         shared_flags::LOCKED | shared_flags::DMA_COHERENT,
     )?;
-    
+
     // Initialize header
     let regions = REGIONS.lock();
-    if let Some(region) = regions.iter()
+    if let Some(region) = regions
+        .iter()
         .find_map(|slot| slot.as_ref().filter(|r| r.id == id))
     {
         let header_ptr = (region.phys_addr + 0xFFFF_8000_0000_0000) as *mut RingBufferHeader;
@@ -452,6 +470,6 @@ pub fn create_ring_buffer(
             (*header_ptr).init(entries, entry_size);
         }
     }
-    
+
     Ok(id)
 }

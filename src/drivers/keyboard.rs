@@ -442,7 +442,7 @@ pub fn read_raw(buf: &mut [u8], count: usize) -> usize {
 pub fn read_raw_for_tty(tty: usize, buf: &mut [u8], count: usize) -> usize {
     use crate::process::ProcessState;
     use crate::scheduler;
-    
+
     let mut pos = 0;
     let max_read = core::cmp::min(buf.len(), count);
 

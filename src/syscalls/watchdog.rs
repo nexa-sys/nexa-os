@@ -43,18 +43,16 @@ pub fn watchdog_ctl(cmd: u64, arg: u64) -> u64 {
     const CMD_GET_STATUS: u64 = 6;
 
     match cmd {
-        CMD_ENABLE => {
-            match watchdog::enable() {
-                Ok(()) => {
-                    posix::set_errno(0);
-                    0
-                }
-                Err(e) => {
-                    posix::set_errno(e);
-                    u64::MAX
-                }
+        CMD_ENABLE => match watchdog::enable() {
+            Ok(()) => {
+                posix::set_errno(0);
+                0
             }
-        }
+            Err(e) => {
+                posix::set_errno(e);
+                u64::MAX
+            }
+        },
         CMD_DISABLE => {
             // Disabling watchdog requires root
             if !crate::auth::is_superuser() {
@@ -74,18 +72,16 @@ pub fn watchdog_ctl(cmd: u64, arg: u64) -> u64 {
                 }
             }
         }
-        CMD_FEED => {
-            match watchdog::feed() {
-                Ok(()) => {
-                    posix::set_errno(0);
-                    0
-                }
-                Err(e) => {
-                    posix::set_errno(e);
-                    u64::MAX
-                }
+        CMD_FEED => match watchdog::feed() {
+            Ok(()) => {
+                posix::set_errno(0);
+                0
             }
-        }
+            Err(e) => {
+                posix::set_errno(e);
+                u64::MAX
+            }
+        },
         CMD_SET_TIMEOUT => {
             // Setting timeout requires root
             if !crate::auth::is_superuser() {
@@ -125,7 +121,11 @@ pub fn watchdog_ctl(cmd: u64, arg: u64) -> u64 {
         }
         CMD_GET_STATUS => {
             posix::set_errno(0);
-            if watchdog::is_enabled() { 1 } else { 0 }
+            if watchdog::is_enabled() {
+                1
+            } else {
+                0
+            }
         }
         _ => {
             posix::set_errno(posix::errno::EINVAL);

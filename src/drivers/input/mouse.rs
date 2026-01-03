@@ -4,11 +4,8 @@
 //! and /dev/input/mice (combined mouse device).
 
 use super::event::{
-    InputEvent, InputId, InputDeviceInfo,
-    EV_KEY, EV_REL, EV_SYN, SYN_REPORT,
-    REL_X, REL_Y, REL_WHEEL,
-    BTN_LEFT, BTN_RIGHT, BTN_MIDDLE,
-    BUS_I8042,
+    InputDeviceInfo, InputEvent, InputId, BTN_LEFT, BTN_MIDDLE, BTN_RIGHT, BUS_I8042, EV_KEY,
+    EV_REL, EV_SYN, REL_WHEEL, REL_X, REL_Y, SYN_REPORT,
 };
 use core::sync::atomic::{AtomicBool, AtomicI8, Ordering};
 use spin::Mutex;
@@ -222,14 +219,7 @@ pub fn process_byte(byte: u8) {
 }
 
 /// Generate input events from mouse state
-fn generate_events(
-    left: bool,
-    right: bool,
-    middle: bool,
-    dx: i32,
-    dy: i32,
-    dz: i32,
-) {
+fn generate_events(left: bool, right: bool, middle: bool, dx: i32, dy: i32, dz: i32) {
     let mut buffer = MOUSE_BUFFER.lock();
     let mut has_events = false;
 

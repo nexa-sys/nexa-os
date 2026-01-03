@@ -248,7 +248,7 @@ pub fn set_process_state(pid: Pid, state: ProcessState) -> Result<(), &'static s
                         entry.process.wake_pending = false; // Consume the pending wake
                         return Ok(()); // Don't change state - process stays Ready
                     }
-                    
+
                     // DEBUG: Log state transitions to Zombie with INFO level
                     if state == ProcessState::Zombie {
                         kinfo!(
@@ -452,9 +452,7 @@ pub fn find_child_with_state(parent_pid: Pid, target_state: ProcessState) -> Opt
 /// Check if parent has any children and optionally find zombie child
 /// Returns (has_any_child, zombie_child_pid, exit_code, term_signal)
 /// This is more efficient than iterating through all possible PIDs
-pub fn find_any_child_for_wait(
-    parent_pid: Pid,
-) -> (bool, Option<Pid>, Option<i32>, Option<i32>) {
+pub fn find_any_child_for_wait(parent_pid: Pid) -> (bool, Option<Pid>, Option<i32>, Option<i32>) {
     let table = PROCESS_TABLE.lock();
 
     let mut has_any_child = false;
@@ -476,7 +474,9 @@ pub fn find_any_child_for_wait(
     }
 
     match zombie_child {
-        Some((pid, exit_code, term_signal)) => (has_any_child, Some(pid), Some(exit_code), term_signal),
+        Some((pid, exit_code, term_signal)) => {
+            (has_any_child, Some(pid), Some(exit_code), term_signal)
+        }
         None => (has_any_child, None, None, None),
     }
 }
@@ -564,7 +564,7 @@ pub fn update_process_cr3(pid: Pid, new_cr3: u64) -> Result<(), &'static str> {
 }
 
 /// Set the state of the current process using radix tree for O(log N) lookup
-/// 
+///
 /// CRITICAL: This function checks wake_pending before allowing sleep transitions
 /// to prevent race conditions with wake_process() on other CPUs.
 pub fn set_current_process_state(state: ProcessState) {
@@ -585,7 +585,7 @@ pub fn set_current_process_state(state: ProcessState) {
                     if entry.process.state == ProcessState::Zombie {
                         return;
                     }
-                    
+
                     // CRITICAL FIX for SMP: Check wake_pending before sleeping
                     // Another CPU may have called wake_process() while we were
                     // preparing to sleep. If so, consume the pending wake and stay Ready.
@@ -597,7 +597,7 @@ pub fn set_current_process_state(state: ProcessState) {
                         entry.process.wake_pending = false;
                         return; // Stay in current state (Ready/Running)
                     }
-                    
+
                     entry.process.state = state;
                     return;
                 }
@@ -613,7 +613,7 @@ pub fn set_current_process_state(state: ProcessState) {
             if entry.process.state == ProcessState::Zombie {
                 return;
             }
-            
+
             // CRITICAL FIX for SMP: Check wake_pending before sleeping (fallback path)
             if state == ProcessState::Sleeping && entry.process.wake_pending {
                 ktrace!(
@@ -623,7 +623,7 @@ pub fn set_current_process_state(state: ProcessState) {
                 entry.process.wake_pending = false;
                 return;
             }
-            
+
             entry.process.state = state;
             break;
         }
@@ -756,8 +756,13 @@ fn wake_process_internal(pid: Pid, try_lock: bool) -> bool {
     if woke || set_pending {
         let cpu_id = crate::smp::current_cpu_id();
         super::percpu::set_need_resched(cpu_id);
-        crate::ktrace!("wake_process: PID {} woke={} pending={}, set need_resched on CPU {}", 
-            pid, woke, set_pending, cpu_id);
+        crate::ktrace!(
+            "wake_process: PID {} woke={} pending={}, set need_resched on CPU {}",
+            pid,
+            woke,
+            set_pending,
+            cpu_id
+        );
     }
 
     woke

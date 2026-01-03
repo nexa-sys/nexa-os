@@ -66,9 +66,7 @@ pub fn ioctl(fd: u64, request: u64, arg: u64) -> u64 {
                     }
                 }
             }
-            FileBacking::DevInputEvent(index) => {
-                ioctl_input_event(index as usize, request, arg)
-            }
+            FileBacking::DevInputEvent(index) => ioctl_input_event(index as usize, request, arg),
             FileBacking::DevInputMice => {
                 // /dev/input/mice doesn't support most ioctls
                 posix::set_errno(posix::errno::ENOTTY);
@@ -116,7 +114,12 @@ fn ioctl_input_event(index: usize, request: u64, arg: u64) -> u64 {
         }
         EVIOCGID => {
             // Return device ID
-            if arg == 0 || !user_buffer_in_range(arg, mem::size_of::<crate::drivers::input::event::InputId>() as u64) {
+            if arg == 0
+                || !user_buffer_in_range(
+                    arg,
+                    mem::size_of::<crate::drivers::input::event::InputId>() as u64,
+                )
+            {
                 posix::set_errno(posix::errno::EFAULT);
                 return u64::MAX;
             }
@@ -177,7 +180,9 @@ fn ioctl_pty(id: usize, is_master: bool, request: u64, arg: u64) -> u64 {
             0
         }
         TCGETS => {
-            if arg == 0 || !user_buffer_in_range(arg, mem::size_of::<crate::tty::pty::Termios>() as u64) {
+            if arg == 0
+                || !user_buffer_in_range(arg, mem::size_of::<crate::tty::pty::Termios>() as u64)
+            {
                 posix::set_errno(posix::errno::EFAULT);
                 return u64::MAX;
             }
@@ -190,7 +195,9 @@ fn ioctl_pty(id: usize, is_master: bool, request: u64, arg: u64) -> u64 {
             0
         }
         TCSETS | TCSETSW | TCSETSF => {
-            if arg == 0 || !user_buffer_in_range(arg, mem::size_of::<crate::tty::pty::Termios>() as u64) {
+            if arg == 0
+                || !user_buffer_in_range(arg, mem::size_of::<crate::tty::pty::Termios>() as u64)
+            {
                 posix::set_errno(posix::errno::EFAULT);
                 return u64::MAX;
             }
@@ -203,7 +210,9 @@ fn ioctl_pty(id: usize, is_master: bool, request: u64, arg: u64) -> u64 {
             0
         }
         TIOCGWINSZ => {
-            if arg == 0 || !user_buffer_in_range(arg, mem::size_of::<crate::tty::pty::WinSize>() as u64) {
+            if arg == 0
+                || !user_buffer_in_range(arg, mem::size_of::<crate::tty::pty::WinSize>() as u64)
+            {
                 posix::set_errno(posix::errno::EFAULT);
                 return u64::MAX;
             }
@@ -216,7 +225,9 @@ fn ioctl_pty(id: usize, is_master: bool, request: u64, arg: u64) -> u64 {
             0
         }
         TIOCSWINSZ => {
-            if arg == 0 || !user_buffer_in_range(arg, mem::size_of::<crate::tty::pty::WinSize>() as u64) {
+            if arg == 0
+                || !user_buffer_in_range(arg, mem::size_of::<crate::tty::pty::WinSize>() as u64)
+            {
                 posix::set_errno(posix::errno::EFAULT);
                 return u64::MAX;
             }

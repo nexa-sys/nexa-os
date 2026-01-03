@@ -71,23 +71,23 @@
 
 pub mod address_token;
 pub mod container;
-pub mod isolation;
 pub mod ipc_rpc;
+pub mod isolation;
 pub mod registry;
 pub mod shared_mem;
 pub mod twin_driver;
 
 // Re-export core types
 pub use address_token::{AddressToken, TokenAccess, TokenError};
-pub use container::{DriverContainer, DriverContainerId, ContainerState};
+pub use container::{ContainerState, DriverContainer, DriverContainerId};
+pub use ipc_rpc::{RpcChannel, RpcError, RpcMessage, RpcResult};
 pub use isolation::{IsolationClass, IsolationError};
-pub use ipc_rpc::{RpcChannel, RpcMessage, RpcError, RpcResult};
-pub use registry::{DriverInfo, DriverRegistry, DriverId, DriverClass};
-pub use shared_mem::{SharedRegion, SharedRegionId, SharedMemError};
-pub use twin_driver::{TwinDriver, ControlPlane, DataPlane, TwinDriverId};
+pub use registry::{DriverClass, DriverId, DriverInfo, DriverRegistry};
+pub use shared_mem::{SharedMemError, SharedRegion, SharedRegionId};
+pub use twin_driver::{ControlPlane, DataPlane, TwinDriver, TwinDriverId};
 
-use spin::Mutex;
 use alloc::vec::Vec;
+use spin::Mutex;
 
 /// Maximum number of user-space drivers
 pub const MAX_UDRV_DRIVERS: usize = 64;
@@ -101,7 +101,7 @@ static DRIVER_REGISTRY: Mutex<Option<DriverRegistry>> = Mutex::new(None);
 /// Initialize the user-space driver framework
 pub fn init() {
     crate::kinfo!("UDRV: Initializing user-space driver framework");
-    
+
     // Initialize subsystems
     isolation::init();
     registry::init();
@@ -109,13 +109,16 @@ pub fn init() {
     ipc_rpc::init();
     shared_mem::init();
     address_token::init();
-    
+
     // Create global registry
     let mut registry = DRIVER_REGISTRY.lock();
     *registry = Some(DriverRegistry::new());
-    
-    crate::kinfo!("UDRV: Framework initialized with {} max drivers, {} max containers",
-                  MAX_UDRV_DRIVERS, MAX_CONTAINERS);
+
+    crate::kinfo!(
+        "UDRV: Framework initialized with {} max drivers, {} max containers",
+        MAX_UDRV_DRIVERS,
+        MAX_CONTAINERS
+    );
 }
 
 /// Check if framework is initialized

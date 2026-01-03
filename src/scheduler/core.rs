@@ -19,9 +19,7 @@ use super::context::context_switch;
 use super::priority::{
     calc_vdeadline, is_eligible, ms_to_ns, replenish_slice, update_curr, update_min_vruntime,
 };
-use super::table::{
-    current_pid, set_current_pid, GLOBAL_TICK, PROCESS_TABLE, SCHED_STATS,
-};
+use super::table::{current_pid, set_current_pid, GLOBAL_TICK, PROCESS_TABLE, SCHED_STATS};
 use super::types::{SchedPolicy, BASE_SLICE_NS};
 
 /// Initialize scheduler subsystem
@@ -444,7 +442,11 @@ pub fn tick(elapsed_ms: u64) -> bool {
         for slot in table.iter() {
             if let Some(entry) = slot {
                 if entry.process.state == ProcessState::Ready {
-                    crate::kdebug!("tick: curr {} not running, found ready PID {}", curr_pid, entry.process.pid);
+                    crate::kdebug!(
+                        "tick: curr {} not running, found ready PID {}",
+                        curr_pid,
+                        entry.process.pid
+                    );
                     return true; // Trigger scheduling to run the ready process
                 }
             }
@@ -647,7 +649,7 @@ fn transition_current_to_ready(
         // Allow transition from Running OR Sleeping (voluntary sleep in syscall like wait4)
         // When a process calls set_current_process_state(Sleeping) then do_schedule(),
         // its state is already Sleeping, not Running. We still need to save its context.
-        let can_save = entry.process.state == ProcessState::Running 
+        let can_save = entry.process.state == ProcessState::Running
             || entry.process.state == ProcessState::Sleeping;
         if !can_save {
             continue;
@@ -706,7 +708,7 @@ fn extract_next_process_info(
 
     // Legacy: Update time_slice for compatibility
     entry.time_slice = super::priority::ns_to_ms(entry.slice_remaining_ns);
-    
+
     entry.process.state = ProcessState::Running;
 
     // Update last_cpu to record which CPU is running this process
@@ -749,7 +751,7 @@ fn get_old_context_info(
 
         // Voluntary = process gave up CPU willingly (sleep, I/O wait, yield)
         // NOT voluntary = timer preemption while still having time slice
-        // 
+        //
         // This is important for EEVDF progressive slice growth:
         // - Voluntary yield → reset to base slice (keep interactive processes responsive)
         // - Timer preemption after full slice → grow slice (reward CPU-bound processes)
@@ -870,7 +872,9 @@ extern "C" fn first_run_trampoline() -> ! {
     {
         use crate::safety::x86::{serial_debug_byte, serial_debug_hex};
         let rsp: u64;
-        unsafe { core::arch::asm!("mov {0}, rsp", out(reg) rsp, options(nomem, nostack, preserves_flags)); }
+        unsafe {
+            core::arch::asm!("mov {0}, rsp", out(reg) rsp, options(nomem, nostack, preserves_flags));
+        }
         serial_debug_byte(b'F');
         serial_debug_hex(rsp & 0xF, 1);
         serial_debug_byte(b'\n');
@@ -900,7 +904,10 @@ extern "C" fn first_run_trampoline() -> ! {
         crate::kpanic!("FirstRun PID {} has CR3=0", process.pid);
     }
 
-    crate::serial_println!("[FRT] PID {} calling mark_process_entered_user", process.pid);
+    crate::serial_println!(
+        "[FRT] PID {} calling mark_process_entered_user",
+        process.pid
+    );
     mark_process_entered_user(process.pid);
     process.execute();
     // process.execute() never returns, but compiler doesn't know
@@ -1007,7 +1014,7 @@ unsafe fn execute_first_run_via_context_switch(
 }
 
 /// Trampoline for Switch path - returns to userspace via sysretq
-/// 
+///
 /// CRITICAL: This trampoline MUST NOT be interrupted by timer!
 /// We disable interrupts at entry and keep them disabled until sysretq.
 /// If we allowed interrupts, another process could use the same kernel stack
@@ -1154,7 +1161,10 @@ unsafe fn execute_context_switch(
     // DEBUG: Print context info for debugging
     crate::kdebug!(
         "[CTX_SWITCH] next_rip={:#x} next_rsp={:#x} user_rip={:#x} user_rsp={:#x}",
-        next_rip, next_rsp, user_rip, user_rsp
+        next_rip,
+        next_rsp,
+        user_rip,
+        user_rsp
     );
 
     // Kernel code is loaded at 0x100000. The text section spans to about 0x300000
@@ -1166,14 +1176,14 @@ unsafe fn execute_context_switch(
     // - Kernel heap allocations start around 0x200000 and can reach several MB
     // - RSP should not be in userspace (< 0x1000000) but that overlaps with kernel heap
     // - Use a simple check: RSP should be at least 0x100000 (1MB) to be in kernel space
-    let is_kernel_context = next_rip >= 0x100000 && next_rip < 0x300000 
-        && next_rsp >= 0x100000;
-    
+    let is_kernel_context = next_rip >= 0x100000 && next_rip < 0x300000 && next_rsp >= 0x100000;
+
     // SAFETY CHECK: If context looks invalid, log and use trampoline path instead
     if next_rip != 0 && next_rip < 0x100000 {
         crate::kwarn!(
             "[SCHED] Corrupted context detected: rip={:#x}, rsp={:#x}, using trampoline",
-            next_rip, next_rsp
+            next_rip,
+            next_rsp
         );
     }
 
@@ -1282,7 +1292,7 @@ fn do_schedule_internal(from_interrupt: bool) {
     // crate::net::poll();
 
     // CRITICAL FIX: Disable interrupts BEFORE computing schedule decision!
-    // 
+    //
     // Previously, interrupts were only disabled inside execute_context_switch(),
     // AFTER compute_schedule_decision() had already:
     //   1. Set context_valid = true for the current process
@@ -1366,7 +1376,7 @@ fn do_schedule_internal(from_interrupt: bool) {
             // CRITICAL FIX: We must distinguish these cases!
             // Check if current process is still Running - if so, just return and let it continue.
             // Only enter idle loop if there truly is no runnable process.
-            
+
             let has_running_process = {
                 let table = PROCESS_TABLE.lock();
                 if let Some(curr_pid) = current_pid() {
@@ -1379,7 +1389,7 @@ fn do_schedule_internal(from_interrupt: bool) {
                     false
                 }
             };
-            
+
             if has_running_process {
                 // Current process is still Running - just return and let it continue
                 // This happens when time slice expired but no other process is ready
@@ -1390,10 +1400,10 @@ fn do_schedule_internal(from_interrupt: bool) {
                 }
                 return;
             }
-            
+
             // No running process - enter idle loop waiting for interrupt
             crate::ktrace!("do_schedule(): No ready process, entering idle loop");
-            
+
             // Enable interrupts and halt until an interrupt occurs.
             // The timer interrupt will call check_sleepers() and potentially wake up a process,
             // and the next tick will trigger another scheduling attempt.
@@ -1411,7 +1421,7 @@ fn do_schedule_internal(from_interrupt: bool) {
                         }
                     }
                 }
-                
+
                 // No ready process, wait for interrupt
                 x86_64::instructions::interrupts::enable_and_hlt();
             }
@@ -1502,8 +1512,14 @@ fn compute_schedule_decision(from_interrupt: bool) -> Option<ScheduleDecision> {
 
     let entry = table[next_idx].as_mut().expect("Process entry vanished");
     let _cpu_id = crate::smp::current_cpu_id();
-    crate::kdebug!("[SCHED_SEL] CPU{} Selected PID {} state={:?} ctx_valid={} has_entered_user={}",
-        _cpu_id, entry.process.pid, entry.process.state, entry.process.context_valid, entry.process.has_entered_user);
+    crate::kdebug!(
+        "[SCHED_SEL] CPU{} Selected PID {} state={:?} ctx_valid={} has_entered_user={}",
+        _cpu_id,
+        entry.process.pid,
+        entry.process.state,
+        entry.process.context_valid,
+        entry.process.has_entered_user
+    );
     let (
         first_run,
         next_pid,

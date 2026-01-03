@@ -4,8 +4,8 @@
 
 use crate::fs::ext2_modular::FileRefHandle;
 use crate::posix;
-use core::ptr::{addr_of, addr_of_mut};
 use core::ptr;
+use core::ptr::{addr_of, addr_of_mut};
 
 // File descriptor constants
 pub const STDIN: u64 = 0;
@@ -15,8 +15,8 @@ pub const FD_BASE: u64 = 3;
 pub const MAX_OPEN_FILES: usize = 16;
 
 // POSIX path limits
-pub const NAME_MAX: usize = 255;    // Maximum filename length
-pub const PATH_MAX: usize = 4096;   // Maximum path length
+pub const NAME_MAX: usize = 255; // Maximum filename length
+pub const PATH_MAX: usize = 4096; // Maximum path length
 
 // List files flags
 pub const LIST_FLAG_INCLUDE_HIDDEN: u64 = 0x1;
@@ -50,28 +50,28 @@ pub const SEEK_CUR: i32 = 1;
 pub const SEEK_END: i32 = 2;
 
 // File type constants (mode & S_IFMT)
-pub const S_IFMT: u32 = 0o170000;   // Type mask
-pub const S_IFREG: u32 = 0o100000;  // Regular file
-pub const S_IFDIR: u32 = 0o040000;  // Directory
-pub const S_IFLNK: u32 = 0o120000;  // Symbolic link
-pub const S_IFCHR: u32 = 0o020000;  // Character device
-pub const S_IFBLK: u32 = 0o060000;  // Block device
-pub const S_IFIFO: u32 = 0o010000;  // FIFO/pipe
+pub const S_IFMT: u32 = 0o170000; // Type mask
+pub const S_IFREG: u32 = 0o100000; // Regular file
+pub const S_IFDIR: u32 = 0o040000; // Directory
+pub const S_IFLNK: u32 = 0o120000; // Symbolic link
+pub const S_IFCHR: u32 = 0o020000; // Character device
+pub const S_IFBLK: u32 = 0o060000; // Block device
+pub const S_IFIFO: u32 = 0o010000; // FIFO/pipe
 pub const S_IFSOCK: u32 = 0o140000; // Socket
 
 // File permission constants
-pub const S_IRWXU: u32 = 0o700;     // User RWX
-pub const S_IRUSR: u32 = 0o400;     // User read
-pub const S_IWUSR: u32 = 0o200;     // User write
-pub const S_IXUSR: u32 = 0o100;     // User execute
-pub const S_IRWXG: u32 = 0o070;     // Group RWX
-pub const S_IRGRP: u32 = 0o040;     // Group read
-pub const S_IWGRP: u32 = 0o020;     // Group write
-pub const S_IXGRP: u32 = 0o010;     // Group execute
-pub const S_IRWXO: u32 = 0o007;     // Other RWX
-pub const S_IROTH: u32 = 0o004;     // Other read
-pub const S_IWOTH: u32 = 0o002;     // Other write
-pub const S_IXOTH: u32 = 0o001;     // Other execute
+pub const S_IRWXU: u32 = 0o700; // User RWX
+pub const S_IRUSR: u32 = 0o400; // User read
+pub const S_IWUSR: u32 = 0o200; // User write
+pub const S_IXUSR: u32 = 0o100; // User execute
+pub const S_IRWXG: u32 = 0o070; // Group RWX
+pub const S_IRGRP: u32 = 0o040; // Group read
+pub const S_IWGRP: u32 = 0o020; // Group write
+pub const S_IXGRP: u32 = 0o010; // Group execute
+pub const S_IRWXO: u32 = 0o007; // Other RWX
+pub const S_IROTH: u32 = 0o004; // Other read
+pub const S_IWOTH: u32 = 0o002; // Other write
+pub const S_IXOTH: u32 = 0o001; // Other execute
 
 // Clock IDs
 pub const CLOCK_REALTIME: i32 = 0;

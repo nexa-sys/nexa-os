@@ -262,16 +262,12 @@ pub fn generate_rtc() -> (&'static [u8], usize) {
         let _ = writeln!(
             writer,
             "rtc_time\t: {:02}:{:02}:{:02}",
-            dt.hour,
-            dt.minute,
-            dt.second
+            dt.hour, dt.minute, dt.second
         );
         let _ = writeln!(
             writer,
             "rtc_date\t: {:04}-{:02}-{:02}",
-            dt.year,
-            dt.month,
-            dt.day
+            dt.year, dt.month, dt.day
         );
     }
 
