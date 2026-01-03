@@ -137,7 +137,7 @@ fn read_line(buf: &mut [u8]) -> usize {
             }
             continue;
         }
-
+        
         // Handle newline
         if ch == b'\n' || ch == b'\r' {
             println!();

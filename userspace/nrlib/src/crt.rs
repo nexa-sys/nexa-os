@@ -16,29 +16,30 @@ extern "C" {
 // Raw entry point reached immediately after the kernel jumps into the binary.
 // Defined in hand-written assembly so we can preserve the initial stack pointer
 // before Rust emits any prologue.
-// Note: We use .protected visibility to ensure symbol is exported in shared library
+// Note: We need .globl to make it global and explicit no visibility attribute
+// to get STV_DEFAULT. The -u_start linker flag forces the symbol to be kept.
 #[cfg(target_arch = "x86_64")]
 global_asm!(
     ".section .text.startup,\"ax\",@progbits",
+    // _start entry point - must be GLOBAL with DEFAULT visibility for dynamic linking
     ".globl _start",
-    ".protected _start",
-    ".type _start,@function",
+    ".type _start, @function",
     "_start:",
-    "\t.cfi_startproc",
-    "\tmov rbx, rsp", // Preserve userspace stack pointer (points at argc)
-    "\tand rsp, -16", // Realign the stack prior to calling into Rust
-    "\tmov rdi, rbx", // Pass original stack pointer as first arg
-    "\txor rbp, rbp", // Clear frame pointer to aid unwinding/debug
-    "\tcall __nexa_crt_start",
-    "\tud2", // Should never return; trap if it does
-    "\t.cfi_endproc",
-    "\t.size _start, .-_start",
+    ".cfi_startproc",
+    "mov rbx, rsp",       // Preserve userspace stack pointer (points at argc)
+    "and rsp, -16",       // Realign the stack prior to calling into Rust
+    "mov rdi, rbx",       // Pass original stack pointer as first arg
+    "xor rbp, rbp",       // Clear frame pointer to aid unwinding/debug
+    "call __nexa_crt_start",
+    "ud2",                // Should never return; trap if it does
+    ".cfi_endproc",
+    ".size _start, . - _start",
+    // _start_c for compatibility - same as _start
     ".globl _start_c",
-    ".protected _start_c",
-    ".type _start_c,@function",
+    ".type _start_c, @function",
     "_start_c:",
-    "\tjmp _start",
-    "\t.size _start_c, .-_start_c",
+    "jmp _start",
+    ".size _start_c, . - _start_c",
 );
 
 // Force the linker to export _start and _start_c by referencing them

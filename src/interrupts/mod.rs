@@ -15,6 +15,7 @@
 //! - `syscall_asm`: Assembly entry points for system calls
 //! - `gs_context`: GS segment data management for user/kernel transitions
 //! - `ipi`: Inter-Processor Interrupt handlers for SMP
+//! - `timer_asm`: Assembly wrapper for timer interrupt to save all GPRs
 
 pub mod exceptions;
 pub mod gs_context;
@@ -22,6 +23,7 @@ pub mod handlers;
 pub mod idt;
 pub mod ipi;
 pub mod syscall_asm;
+pub mod timer_asm;  // Assembly timer handler that saves all GPRs
 
 // Re-export commonly used items at module level
 pub use gs_context::{

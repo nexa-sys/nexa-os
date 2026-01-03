@@ -36,7 +36,7 @@ mod tls;
 use auxv::{store_auxv, AuxInfo};
 use constants::*;
 use elf::{AuxEntry, Elf64Dyn, Elf64Phdr, Elf64Sym};
-use helpers::{cstr_len, print_str};
+use helpers::{cstr_len, print_str, print_hex, print};
 use loader::{load_library_recursive, parse_dynamic_section};
 use reloc::process_rela_with_symtab;
 use state::{DynInfo, GLOBAL_SYMTAB};
@@ -46,6 +46,181 @@ use syscall::exit;
 // ============================================================================
 // Entry Point
 // ============================================================================
+
+/// Early print using inline assembly - no relocations needed
+/// Prints a single character to stdout
+#[no_mangle]
+#[inline(never)]
+pub unsafe extern "C" fn early_putchar(c: u8) {
+    let buf: [u8; 1] = [c];
+    let ret: i64;
+    // Use volatile option to ensure syscall is not optimized away
+    core::arch::asm!(
+        "syscall",
+        in("rax") 1u64, // SYS_WRITE
+        in("rdi") 1u64, // stdout (fd 1)
+        in("rsi") buf.as_ptr(),
+        in("rdx") 1u64,
+        lateout("rax") ret,
+        lateout("rcx") _,
+        lateout("r11") _,
+        options(nostack)
+    );
+    // Use ret to prevent optimization
+    core::hint::black_box(ret);
+}
+
+/// Bootstrap: relocate ourselves before accessing any global data
+/// Must be called before any code that uses global variables or string literals
+#[no_mangle]
+#[inline(never)]
+pub unsafe extern "C" fn bootstrap_self(stack_ptr: *const u64) -> i64 {
+    // Use individual chars - byte literals don't need relocation
+    early_putchar(b'\n');
+    early_putchar(b'[');
+    early_putchar(b'B');
+    early_putchar(b'S');
+    early_putchar(b']');
+    
+    // Parse stack to find auxv
+    let argc = *stack_ptr as usize;
+    let argv = stack_ptr.add(1) as *const *const u8;
+    let mut ptr = argv.add(argc + 1) as *const *const u8;
+    
+    // Skip envp - be careful with potential infinite loop
+    let mut env_count = 0usize;
+    while !(*ptr).is_null() && env_count < 1000 {
+        ptr = ptr.add(1);
+        env_count += 1;
+    }
+    ptr = ptr.add(1);
+    
+    // Now ptr points to auxv - find AT_BASE (our load address)
+    let mut ld_base: u64 = 0;
+    let auxv = ptr as *const AuxEntry;
+    let mut aux_ptr = auxv;
+    let mut aux_count = 0usize;
+    
+    // Parse auxv silently
+    loop {
+        if aux_count > 100 {
+            break;
+        }
+        let entry = *aux_ptr;
+        if entry.a_type == 0 { // AT_NULL
+            break;
+        }
+        if entry.a_type == 7 { // AT_BASE
+            ld_base = entry.a_val;
+        }
+        aux_ptr = aux_ptr.add(1);
+        aux_count += 1;
+    }
+    
+    // Print result: B for base found, 0 for no base
+    if ld_base == 0 {
+        early_putchar(b'0');
+        early_putchar(b'\n');
+        return 0;
+    }
+    
+    early_putchar(b'B');
+    
+    // Find our own _DYNAMIC section via program headers embedded in our ELF
+    // The ELF header is at ld_base
+    let ehdr = ld_base as *const Elf64Ehdr;
+    let phoff = (*ehdr).e_phoff;
+    let phnum = (*ehdr).e_phnum as usize;
+    let phentsize = (*ehdr).e_phentsize as usize;
+    
+    let mut dyn_vaddr: u64 = 0;
+    for i in 0..phnum {
+        let phdr = (ld_base + phoff + (i * phentsize) as u64) as *const Elf64Phdr;
+        if (*phdr).p_type == PT_DYNAMIC {
+            dyn_vaddr = (*phdr).p_vaddr;
+            break;
+        }
+    }
+    
+    if dyn_vaddr == 0 {
+        early_putchar(b'E');
+        early_putchar(b'\n');
+        return -1;
+    }
+    
+    early_putchar(b'D');
+    
+    // Process our own relocations
+    let dyn_addr = ld_base + dyn_vaddr;
+    let mut rela: u64 = 0;
+    let mut relasz: u64 = 0;
+    
+    let mut dyn_ptr = dyn_addr as *const Elf64Dyn;
+    loop {
+        let entry = *dyn_ptr;
+        if entry.d_tag == 0 { // DT_NULL
+            break;
+        }
+        match entry.d_tag {
+            7 => rela = entry.d_val,   // DT_RELA
+            8 => relasz = entry.d_val, // DT_RELASZ
+            _ => {}
+        }
+        dyn_ptr = dyn_ptr.add(1);
+    }
+    
+    if rela != 0 && relasz != 0 {
+        // Process R_X86_64_RELATIVE relocations
+        let rela_addr = ld_base + rela;
+        let num_rela = relasz / 24; // sizeof(Elf64_Rela) = 24
+        
+        for i in 0..num_rela {
+            let rela_entry = (rela_addr + i * 24) as *const Elf64Rela;
+            let r_type = (*rela_entry).r_info & 0xffffffff;
+            
+            if r_type == 8 { // R_X86_64_RELATIVE
+                let r_offset = (*rela_entry).r_offset;
+                let r_addend = (*rela_entry).r_addend;
+                let target = (ld_base + r_offset) as *mut u64;
+                *target = (ld_base as i64 + r_addend) as u64;
+            }
+        }
+        early_putchar(b'R');
+        early_putchar(b'\n');
+    } else {
+        early_putchar(b'N');
+        early_putchar(b'\n');
+    }
+    
+    ld_base as i64
+}
+
+/// Elf64_Rela structure for relocations
+#[repr(C)]
+struct Elf64Rela {
+    r_offset: u64,
+    r_info: u64,
+    r_addend: i64,
+}
+
+/// Elf64_Ehdr structure
+#[repr(C)]
+struct Elf64Ehdr {
+    e_ident: [u8; 16],
+    e_type: u16,
+    e_machine: u16,
+    e_version: u32,
+    e_entry: u64,
+    e_phoff: u64,
+    e_shoff: u64,
+    e_flags: u32,
+    e_ehsize: u16,
+    e_phentsize: u16,
+    e_phnum: u16,
+    e_shentsize: u16,
+    e_shnum: u16,
+    e_shstrndx: u16,
+}
 
 /// Raw entry point - receives stack pointer from kernel
 #[unsafe(naked)]
@@ -57,7 +232,33 @@ pub unsafe extern "C" fn _start() -> ! {
         // - argv at [rsp + 8]
         // - envp after argv (NULL terminated)
         // - auxv after envp (NULL terminated)
-        "mov rdi, rsp",           // Pass stack pointer as first argument
+        
+        // Print '[' using syscall directly (cannot be optimized away)
+        "push rsp",               // Save original stack pointer
+        "sub rsp, 16",            // Allocate buffer on stack (aligned)
+        "mov byte ptr [rsp], 0x5b", // '[' character
+        "mov rax, 1",             // SYS_WRITE
+        "mov rdi, 1",             // stdout
+        "mov rsi, rsp",           // buffer
+        "mov rdx, 1",             // length
+        "syscall",
+        // Print 'S'
+        "mov byte ptr [rsp], 0x53", // 'S' character
+        "mov rax, 1",
+        "mov rdi, 1",
+        "mov rsi, rsp",
+        "mov rdx, 1",
+        "syscall",
+        // Print ']'
+        "mov byte ptr [rsp], 0x5d", // ']' character
+        "mov rax, 1",
+        "mov rdi, 1",
+        "mov rsi, rsp",
+        "mov rdx, 1",
+        "syscall",
+        "add rsp, 16",            // Restore stack
+        "pop rdi",                // Get original stack pointer into rdi (argument for ld_main)
+        
         "and rsp, -16",           // Align stack to 16 bytes
         "xor rbp, rbp",           // Clear frame pointer
         "call {ld_main}",
@@ -80,9 +281,26 @@ pub unsafe extern "C" fn _start_c() -> ! {
 /// Main dynamic linker entry point
 #[no_mangle]
 unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
+    // CRITICAL: Bootstrap ourselves first - relocate our own GOT/data
+    // This must happen before accessing ANY global variables or string literals
+    // Use black_box to prevent optimization
+    let ld_base = core::hint::black_box(bootstrap_self(stack_ptr));
+    
+    // Additional barrier to ensure bootstrap_self is not optimized away
+    if ld_base < 0 {
+        // Should never happen, but prevents dead code elimination
+        syscall::exit(127);
+    }
+    
+    // Now we can safely use print_str and other functions
+    print_str("LD1\n");
+    
     // Parse the stack to get argc, argv, envp, auxv
     let argc = *stack_ptr as usize;
+    print_str("LD_ARGC\n");
     let argv = stack_ptr.add(1) as *const *const u8;
+
+    print_str("LD_ARGV\n");
 
     // Skip past argv (argc+1 entries including NULL terminator)
     let mut ptr = argv.add(argc + 1) as *const *const u8;
@@ -92,6 +310,8 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
         ptr = ptr.add(1);
     }
     ptr = ptr.add(1); // Skip NULL terminator
+
+    print_str("LD_ENVP\n");
 
     // Now ptr points to auxv
     let auxv = ptr as *const AuxEntry;
@@ -127,8 +347,12 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
         aux_ptr = aux_ptr.add(1);
     }
 
+    print_str("LD4\n");
+
     // Store auxv globally for getauxval support
     store_auxv(&aux_info);
+
+    print_str("LD5\n");
 
     // Find the dynamic section of the main executable
     if aux_info.at_phdr == 0 || aux_info.at_phnum == 0 {
@@ -136,26 +360,54 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
         exit(127);
     }
 
+    print_str("LD6\n");
+
     // Scan program headers to find PT_DYNAMIC
     let mut dyn_addr: u64 = 0;
     let mut load_bias: i64 = 0;
     let mut first_load_vaddr: u64 = u64::MAX;
+
+    // Debug: print phdr info
+    print_str("PHDR=");
+    print_hex(aux_info.at_phdr);
+    print_str(" PHNUM=");
+    print_hex(aux_info.at_phnum);
+    print_str("\n");
 
     let phdrs = core::slice::from_raw_parts(
         aux_info.at_phdr as *const Elf64Phdr,
         aux_info.at_phnum as usize,
     );
 
+    print_str("LD7\n");
+
     // Calculate load bias from first PT_LOAD segment
     // Also find PT_TLS segment for main executable
+    let mut phdr_idx = 0usize;
     for phdr in phdrs {
+        // Debug: print each phdr type
+        print_str("PT[");
+        print_hex(phdr_idx as u64);
+        print_str("]=");
+        print_hex(phdr.p_type as u64);
+        print_str("\n");
+        phdr_idx += 1;
+        
         if phdr.p_type == PT_LOAD && phdr.p_vaddr < first_load_vaddr {
             first_load_vaddr = phdr.p_vaddr;
         }
         if phdr.p_type == PT_DYNAMIC {
             dyn_addr = phdr.p_vaddr;
+            print_str("FOUND_DYN=");
+            print_hex(dyn_addr);
+            print_str("\n");
         }
     }
+    print_str("LOOP_DONE dyn=");
+    print_hex(dyn_addr);
+    print_str("\n");
+
+    print_str("LD8\n");
 
     // For PIE executables loaded at AT_PHDR location
     if first_load_vaddr != u64::MAX {
@@ -167,6 +419,8 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
         }
     }
 
+    print_str("LD9\n");
+
     // Register TLS for main executable
     for phdr in phdrs {
         if phdr.p_type == PT_TLS {
@@ -176,22 +430,58 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
         }
     }
 
-    // Parse main executable's dynamic section first
-    let mut main_dyn_info = DynInfo::new();
-    if dyn_addr != 0 {
-        dyn_addr = (dyn_addr as i64 + load_bias) as u64;
+    print_str("LDA\n");
 
-        parse_dynamic_section(dyn_addr, load_bias, &mut main_dyn_info);
+    // Debug: print dyn_addr before check
+    print_str("DYN_ADDR=");
+    print_hex(dyn_addr);
+    print_str("\n");
+    
+    // TEST: Print before DynInfo allocation
+    print_str("PRE_ALLOC\n");
+
+    // Use static storage to avoid stack issues
+    // Note: This is safe because ld_main only runs once per process
+    static mut MAIN_DYN_INFO: DynInfo = DynInfo::new();
+    let main_dyn_info = &mut MAIN_DYN_INFO;
+    
+    // TEST: Print after DynInfo allocation
+    print_str("POST_ALLOC\n");
+    
+    // Force condition evaluation - prevent optimization
+    let dyn_nonzero = dyn_addr != 0;
+    print_str("NONZERO=");
+    print_hex(dyn_nonzero as u64);
+    print_str("\n");
+    
+    // *** TEST: Print unconditionally to verify we get here ***
+    print_str("BEFORE_IF\n");
+    
+    if dyn_nonzero {
+        print_str("LDA1\n");
+        dyn_addr = (dyn_addr as i64 + load_bias) as u64;
+        print_str("LDA2 DYN=");
+        print_hex(dyn_addr);
+        print_str("\n");
+
+        parse_dynamic_section(dyn_addr, load_bias, main_dyn_info);
+
+        print_str("LDB\n");
 
         // Store main executable info in global symbol table (index 0)
         let main_lib = &mut GLOBAL_SYMTAB.libs[0];
         main_lib.base_addr = (first_load_vaddr as i64 + load_bias) as u64;
         main_lib.load_bias = load_bias;
-        main_lib.dyn_info = main_dyn_info;
+        main_lib.dyn_info = *main_dyn_info;
         main_lib.valid = true;
         GLOBAL_SYMTAB.lib_count = 1;
 
+        print_str("LDC\n");
+
         // Load DT_NEEDED libraries from main executable
+        print_str("LDD NEEDED=");
+        print_hex(main_dyn_info.needed_count as u64);
+        print_str("\n");
         if main_dyn_info.needed_count > 0 {
             for i in 0..main_dyn_info.needed_count {
                 let name_offset = main_dyn_info.needed[i];
@@ -199,11 +489,15 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
                 let name_len = cstr_len(name_ptr);
 
                 let name_slice = core::slice::from_raw_parts(name_ptr, name_len);
+                print_str("LOAD: ");
+                print(name_slice);
+                print_str("\n");
                 load_library_recursive(name_slice);
             }
         }
 
         // Step 3: Process main executable's relocations
+        print_str("LDE RELA\n");
         if main_dyn_info.rela != 0 && main_dyn_info.relasz > 0 {
             process_rela_with_symtab(
                 main_dyn_info.rela,
@@ -224,6 +518,7 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
             );
         }
 
+        print_str("LDF LIB_RELOCS\n");
         // Step 4: Process library relocations
         for i in 1..GLOBAL_SYMTAB.lib_count {
             let lib = &GLOBAL_SYMTAB.libs[i];
@@ -252,6 +547,7 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
             }
         }
 
+        print_str("LDG PREINIT\n");
         // Step 5: Call preinit_array
         if main_dyn_info.preinit_array != 0 && main_dyn_info.preinit_arraysz > 0 {
             let count = main_dyn_info.preinit_arraysz / 8;
@@ -265,6 +561,7 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
             }
         }
 
+        print_str("LDH INIT\n");
         // Step 6: Call init functions
         if main_dyn_info.init != 0 {
             let init_fn: extern "C" fn() = core::mem::transmute(main_dyn_info.init);
@@ -282,20 +579,33 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
                 }
             }
         }
+        print_str("LDI END_IF\n");
     }
 
     // Transfer control to the main executable
     let mut entry = aux_info.at_entry;
 
+    print_str("[ld-nrlib] at_entry=");
+    print_hex(entry);
+    print_str(", lib_count=");
+    print_hex(GLOBAL_SYMTAB.lib_count as u64);
+    print_str("\n");
+
     if entry == 0 {
         let elf_header_addr = (first_load_vaddr as i64 + load_bias) as u64;
         let e_entry = *((elf_header_addr + 24) as *const u64);
+        print_str("[ld-nrlib] e_entry from header=");
+        print_hex(e_entry);
+        print_str("\n");
 
         if e_entry != 0 {
             entry = (e_entry as i64 + load_bias) as u64;
         } else {
             if dyn_addr != 0 {
                 let start_addr = find_symbol_by_name(dyn_addr, load_bias, b"_start\0");
+                print_str("[ld-nrlib] _start from dyn=");
+                print_hex(start_addr);
+                print_str("\n");
                 if start_addr != 0 {
                     entry = start_addr;
                 }
@@ -303,6 +613,9 @@ unsafe extern "C" fn ld_main(stack_ptr: *const u64) -> ! {
 
             if entry == 0 {
                 let start_addr = global_symbol_lookup(b"_start");
+                print_str("[ld-nrlib] _start from global=");
+                print_hex(start_addr);
+                print_str("\n");
                 if start_addr != 0 {
                     entry = start_addr;
                 } else {

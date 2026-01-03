@@ -103,7 +103,7 @@ export async function buildNrlibShared(
     target: env.targets.userspacePic,
     release: true,
     buildStd: ['core'],
-    rustflags: getPicRustFlags(),
+    rustflags: getPicRustFlags(env.projectRoot),
     logName: 'nrlib-shared',
   });
   

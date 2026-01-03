@@ -59,6 +59,18 @@ pub extern "x86-interrupt" fn page_fault_handler(
     let rip = stack_frame.instruction_pointer.as_u64();
     let rsp = stack_frame.stack_pointer.as_u64();
     let rflags = stack_frame.cpu_flags.bits();
+    
+    // Debug: Log every page fault
+    if let Some(pid) = crate::scheduler::current_pid() {
+        crate::kdebug!(
+            "page_fault: PID {} addr={:#x} RIP={:#x} RSP={:#x} err={:?}",
+            pid,
+            fault_addr,
+            rip,
+            rsp,
+            error_code
+        );
+    }
 
     // Check if this is a user-mode page fault using the error code's USER_MODE bit
     // This is more reliable than checking CS because:
@@ -86,6 +98,12 @@ pub extern "x86-interrupt" fn page_fault_handler(
                 match crate::mm::handle_user_demand_fault(fault_addr, pid, cr3, memory_base) {
                     Ok(()) => {
                         // Successfully mapped the page, return to continue execution
+                        crate::kdebug!(
+                            "demand_fault: PID {} OK at {:#x}, RIP={:#x}, returning to user",
+                            pid,
+                            fault_addr,
+                            rip
+                        );
                         return; // Continue execution
                     }
                     Err(e) => {

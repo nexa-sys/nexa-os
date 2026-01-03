@@ -6,10 +6,12 @@ use crate::syscall::write;
 // Printing Functions
 // ============================================================================
 
+#[inline(never)]
 pub unsafe fn print(msg: &[u8]) {
     write(2, msg.as_ptr(), msg.len());
 }
 
+#[inline(never)]
 pub unsafe fn print_str(s: &str) {
     print(s.as_bytes());
 }
@@ -50,16 +52,27 @@ pub unsafe fn print_num(val: u64) {
 // ============================================================================
 
 /// Copy memory (internal helper)
+/// NOTE: We use volatile operations to prevent the compiler from "optimizing"
+/// this into a call to memcpy (which would cause infinite recursion).
+#[inline(never)]
 pub unsafe fn memcpy_internal(dest: *mut u8, src: *const u8, n: usize) {
-    for i in 0..n {
-        *dest.add(i) = *src.add(i);
+    let mut i = 0;
+    while i < n {
+        let byte = core::ptr::read_volatile(src.add(i));
+        core::ptr::write_volatile(dest.add(i), byte);
+        i += 1;
     }
 }
 
 /// Zero memory (internal helper)
+/// NOTE: We use volatile writes to prevent the compiler from "optimizing"
+/// this into a call to memset (which would cause infinite recursion).
+#[inline(never)]
 pub unsafe fn memset_internal(dest: *mut u8, val: u8, n: usize) {
-    for i in 0..n {
-        *dest.add(i) = val;
+    let mut i = 0;
+    while i < n {
+        core::ptr::write_volatile(dest.add(i), val);
+        i += 1;
     }
 }
 
@@ -83,19 +96,27 @@ pub unsafe extern "C" fn memset(dest: *mut core::ffi::c_void, val: i32, n: usize
 }
 
 /// C ABI memmove - handles overlapping regions
+/// NOTE: We use volatile operations to prevent compiler optimization
 #[no_mangle]
+#[inline(never)]
 pub unsafe extern "C" fn memmove(dest: *mut core::ffi::c_void, src: *const core::ffi::c_void, n: usize) -> *mut core::ffi::c_void {
     let dest_ptr = dest as *mut u8;
     let src_ptr = src as *const u8;
     if (dest_ptr as usize) < (src_ptr as usize) {
         // Forward copy
-        for i in 0..n {
-            *dest_ptr.add(i) = *src_ptr.add(i);
+        let mut i = 0;
+        while i < n {
+            let byte = core::ptr::read_volatile(src_ptr.add(i));
+            core::ptr::write_volatile(dest_ptr.add(i), byte);
+            i += 1;
         }
     } else {
         // Backward copy for overlapping regions
-        for i in (0..n).rev() {
-            *dest_ptr.add(i) = *src_ptr.add(i);
+        let mut i = n;
+        while i > 0 {
+            i -= 1;
+            let byte = core::ptr::read_volatile(src_ptr.add(i));
+            core::ptr::write_volatile(dest_ptr.add(i), byte);
         }
     }
     dest

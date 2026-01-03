@@ -151,8 +151,8 @@ export function getNrlibRustFlags(): string {
 /**
  * Get RUSTFLAGS for PIC (shared libraries)
  */
-export function getPicRustFlags(): string {
-  return [
+export function getPicRustFlags(projectRoot?: string): string {
+  const flags = [
     '-C opt-level=2',
     '-C panic=abort',
     '-C relocation-model=pic',
@@ -166,7 +166,14 @@ export function getPicRustFlags(): string {
     '-C link-arg=-umemcmp',
     '-C link-arg=-ubcmp',
     '-C link-arg=-ustrlen',
-  ].join(' ');
+  ];
+  
+  // Add version script for nrlib to export _start symbols
+  if (projectRoot) {
+    flags.push(`-C link-arg=--version-script=${projectRoot}/userspace/nrlib/nrlib.ld`);
+  }
+  
+  return flags.join(' ');
 }
 
 /**

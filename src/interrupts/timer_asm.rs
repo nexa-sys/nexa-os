@@ -95,7 +95,7 @@ global_asm!(
         swapgs
     2:
 
-        // Restore GPRs and return.
+        // Restore GPRs and return (reverse of push order - LIFO).
         pop rax
         pop rdi
         pop rsi

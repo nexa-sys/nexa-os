@@ -217,6 +217,7 @@ pub fn build_initial_stack(
     aux_len += 1;
 
     if let Some(interp) = interpreter {
+        kinfo!("build_initial_stack: setting AT_BASE={:#x}", interp.base_addr);
         aux_entries[aux_len] = (AT_BASE, interp.base_addr);
         aux_len += 1;
     }

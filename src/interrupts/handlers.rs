@@ -21,7 +21,62 @@ pub const PIC_2_OFFSET: u8 = PIC_1_OFFSET + 8;
 pub static PICS: spin::Mutex<ChainedPics> =
     spin::Mutex::new(unsafe { ChainedPics::new(PIC_1_OFFSET, PIC_2_OFFSET) });
 
+/// Inner timer interrupt handler called from assembly wrapper.
+///
+/// This is called by `timer_interrupt_handler_asm` after it has:
+/// - Saved all GPRs on the kernel stack
+/// - Populated GS_DATA slots with user context (for Ring 3 interrupts)
+/// - Called swapgs if from Ring 3
+///
+/// The assembly wrapper will restore GPRs and call iretq after this returns.
+#[no_mangle]
+pub extern "C" fn timer_interrupt_handler_inner() {
+    // Mark entering interrupt context (disables preemption)
+    crate::smp::enter_interrupt();
+
+    // Record interrupt on per-CPU statistics
+    crate::smp::record_interrupt();
+
+    // Update per-CPU local tick counter
+    if let Some(cpu_data) = crate::smp::current_cpu_data() {
+        cpu_data
+            .local_tick
+            .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    }
+
+    // Timer tick for scheduler (1ms granularity)
+    const TIMER_TICK_MS: u64 = 1;
+
+    // Check sleeping processes and wake them if their time has come
+    crate::syscalls::time::check_sleepers();
+
+    // Poll network stack to receive packets and wake up waiting processes.
+    crate::net::poll();
+
+    // Check if current process should be preempted
+    let should_resched = crate::scheduler::tick(TIMER_TICK_MS);
+
+    // Mark leaving interrupt context and check for pending reschedule
+    let resched_pending = crate::smp::leave_interrupt();
+
+    // CRITICAL: Send EOI AFTER all processing is complete but BEFORE reschedule.
+    unsafe {
+        PICS.lock().notify_end_of_interrupt(PIC_1_OFFSET);
+    }
+
+    if should_resched || resched_pending {
+        // The assembly wrapper has already saved user context to GS_DATA,
+        // so we don't need to do it here. Just call do_schedule_from_interrupt.
+        crate::smp::ensure_kernel_gs_base();
+        crate::scheduler::do_schedule_from_interrupt();
+    }
+}
+
 /// Timer interrupt handler (IRQ0, vector 32)
+/// 
+/// DEPRECATED: This handler is kept for compatibility but should not be used.
+/// Use timer_interrupt_handler_asm (in timer_asm.rs) instead, which properly
+/// saves all GPRs to GS_DATA before calling timer_interrupt_handler_inner.
 ///
 /// This is the main scheduling tick for BSP. It:
 /// 1. Marks the CPU as in interrupt context

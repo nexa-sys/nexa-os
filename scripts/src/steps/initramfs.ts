@@ -178,7 +178,7 @@ async function buildInitramfsLibs(env: BuildEnvironment): Promise<BuildStepResul
     target: env.targets.userspacePic,
     release: true,
     buildStd: ['core'],
-    rustflags: getPicRustFlags(),
+    rustflags: getPicRustFlags(env.projectRoot),
     logName: 'initramfs-libnrlib',
   });
   

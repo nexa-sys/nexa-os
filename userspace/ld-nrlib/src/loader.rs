@@ -66,26 +66,66 @@ pub unsafe fn parse_dynamic_section(dyn_addr: u64, load_bias: i64, dyn_info: &mu
 
 /// Search for a library in standard paths
 pub unsafe fn search_library(name: &[u8]) -> Option<[u8; 256]> {
+    use crate::helpers::{print_str, print_hex, print};
+    
+    // Early debug before ANY slice/reference use
+    print_str("[SX1]\n");
+    
+    // Use 256-byte buffer - should work if kernel demand paging is correct
     let mut path_buf = [0u8; 256];
+    
+    print_str("[SX2]\n");
 
-    // Use stack-local array to avoid global pointer relocation issues
-    let search_paths: [&[u8]; 4] = [
-        LIB_PATH_1.as_slice(),
-        LIB_PATH_2.as_slice(),
-        LIB_PATH_3.as_slice(),
-        LIB_PATH_4.as_slice(),
+    // Use stack-local inline literals to completely avoid any pointer dereference
+    // that might require relocation
+    let lib64: [u8; 8] = *b"/lib64\0\0";
+    let lib: [u8; 6] = *b"/lib\0\0";
+    let usr_lib64: [u8; 12] = *b"/usr/lib64\0\0";
+    let usr_lib: [u8; 10] = *b"/usr/lib\0\0";
+    
+    print_str("[SX3]\n");
+
+    // Directly iterate over paths
+    let search_paths: [[u8; 16]; 4] = [
+        // Copy into fixed-size arrays
+        {
+            let mut arr = [0u8; 16];
+            let mut i = 0;
+            while i < lib64.len() { arr[i] = lib64[i]; i += 1; }
+            arr
+        },
+        {
+            let mut arr = [0u8; 16];
+            let mut i = 0;
+            while i < lib.len() { arr[i] = lib[i]; i += 1; }
+            arr
+        },
+        {
+            let mut arr = [0u8; 16];
+            let mut i = 0;
+            while i < usr_lib64.len() { arr[i] = usr_lib64[i]; i += 1; }
+            arr
+        },
+        {
+            let mut arr = [0u8; 16];
+            let mut i = 0;
+            while i < usr_lib.len() { arr[i] = usr_lib[i]; i += 1; }
+            arr
+        },
     ];
 
+    print_str("[SX4]\n");
+    
     let mut path_idx = 0usize;
     while path_idx < 4 {
-        let search_path = search_paths[path_idx];
+        let search_path = &search_paths[path_idx];
         // Build path: search_path + "/" + name
         let mut pos = 0;
 
         // Copy search path (without null terminator)
         let mut i = 0;
-        while i < search_path.len() && search_path[i] != 0 {
-            if pos < 255 {
+        while i < 16 && search_path[i] != 0 {
+            if pos < 63 {
                 path_buf[pos] = search_path[i];
                 pos += 1;
             }
@@ -93,7 +133,7 @@ pub unsafe fn search_library(name: &[u8]) -> Option<[u8; 256]> {
         }
 
         // Add separator
-        if pos < 255 {
+        if pos < 63 {
             path_buf[pos] = b'/';
             pos += 1;
         }
@@ -112,8 +152,16 @@ pub unsafe fn search_library(name: &[u8]) -> Option<[u8; 256]> {
         // Null terminate
         path_buf[pos] = 0;
 
+        print_str("[search] trying: ");
+        print(&path_buf[..pos]);
+        print_str("\n");
+
         // Try to open to check if it exists
         let fd = open_file(path_buf.as_ptr());
+        print_str("[search] fd=");
+        print_hex(fd as u64);
+        print_str("\n");
+        
         if fd >= 0 {
             close_file(fd as i32);
             return Some(path_buf);
@@ -122,6 +170,7 @@ pub unsafe fn search_library(name: &[u8]) -> Option<[u8; 256]> {
         path_idx += 1;
     }
 
+    print_str("[search] not found\n");
     None
 }
 
@@ -308,20 +357,29 @@ unsafe fn is_library_already_loaded(path: &[u8; 256]) -> bool {
 /// Load a library and recursively load its dependencies
 /// Returns true if library was loaded successfully (or already loaded)
 pub unsafe fn load_library_recursive(name: &[u8]) -> bool {
-    use crate::helpers::print_str;
+    use crate::helpers::{print_str, print_hex, print};
+    
+    print_str("[ld] load_library_recursive: ");
+    print(name);
+    print_str("\n");
     
     if name.is_empty() {
+        print_str("[ld] name is empty\n");
         return false;
     }
 
     // Search for the library in standard paths
     // The filesystem handles symlinks (libc.so -> libnrlib.so) automatically
+    print_str("[ld] searching...\n");
     let path = if let Some(p) = search_library(name) {
+        print_str("[ld] found in search\n");
         p
     } else {
         // Try mapped name as fallback
+        print_str("[ld] trying mapped name\n");
         let mapped_name = map_library_name(name);
         if let Some(p) = search_library(&mapped_name) {
+            print_str("[ld] found with mapped name\n");
             p
         } else {
             print_str("[ld-nrlib] ERROR: Library not found: ");
@@ -333,6 +391,8 @@ pub unsafe fn load_library_recursive(name: &[u8]) -> bool {
             return false;
         }
     };
+
+    print_str("[ld] loading...\n");
 
     // Load the library
     let (lib_base, lib_bias, lib_dyn_info) = load_shared_library(path.as_ptr());

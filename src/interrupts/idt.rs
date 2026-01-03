@@ -38,6 +38,11 @@ use crate::interrupts::syscall_asm::{
     ring3_switch_handler, syscall_instruction_handler, syscall_interrupt_handler,
 };
 
+// External assembly handler from timer_asm.rs - saves all GPRs before calling inner handler
+extern "C" {
+    fn timer_interrupt_handler_asm();
+}
+
 /// Toggle IA32_* MSR configuration for `syscall` fast path.
 /// With dynamic linking we now encounter Glibc-generated `syscall` instructions
 /// immediately during interpreter startup, so keep this enabled by default and
@@ -120,7 +125,10 @@ lazy_static! {
                 .set_stack_index(error_code_ist); // Reuse handler
 
             // Set up hardware interrupts
-            idt[PIC_1_OFFSET].set_handler_fn(timer_interrupt_handler);
+            // Use assembly wrapper for timer that saves all GPRs to GS_DATA
+            let timer_asm_addr = timer_interrupt_handler_asm as usize as u64;
+            idt[PIC_1_OFFSET]
+                .set_handler_addr(x86_64::VirtAddr::new_truncate(timer_asm_addr));
             idt[PIC_1_OFFSET + 1].set_handler_fn(keyboard_interrupt_handler);
             idt[PIC_1_OFFSET + 2].set_handler_fn(spurious_irq2_handler);
             idt[PIC_1_OFFSET + 3].set_handler_fn(spurious_irq3_handler);
@@ -409,7 +417,10 @@ pub fn init_interrupts_ap(cpu_id: usize) {
             .set_stack_index(error_code_ist);
 
         // Set up hardware interrupts (APs also need these for timer, etc.)
-        idt_ref[PIC_1_OFFSET].set_handler_fn(timer_interrupt_handler);
+        // Use assembly wrapper for timer that saves all GPRs to GS_DATA
+        let timer_asm_addr = timer_interrupt_handler_asm as usize as u64;
+        idt_ref[PIC_1_OFFSET]
+            .set_handler_addr(x86_64::VirtAddr::new_truncate(timer_asm_addr));
         idt_ref[PIC_1_OFFSET + 1].set_handler_fn(keyboard_interrupt_handler);
         idt_ref[PIC_1_OFFSET + 2].set_handler_fn(spurious_irq2_handler);
         idt_ref[PIC_1_OFFSET + 3].set_handler_fn(spurious_irq3_handler);
