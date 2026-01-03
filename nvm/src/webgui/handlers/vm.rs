@@ -2,6 +2,7 @@
 
 use super::{ApiResponse, ResponseMeta, PaginationParams};
 use crate::webgui::server::WebGuiState;
+use crate::vmstate::{vm_state, VmStatus as StateVmStatus};
 use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -169,44 +170,41 @@ pub struct ConsoleTicket {
 
 #[cfg(feature = "webgui")]
 pub async fn list(
-    State(state): State<Arc<WebGuiState>>,
+    State(_state): State<Arc<WebGuiState>>,
     Query(params): Query<PaginationParams>,
 ) -> impl IntoResponse {
-    // Demo data
-    let vms = vec![
-        VmListItem {
-            id: "vm-001".to_string(),
-            name: "web-server-01".to_string(),
-            status: "running".to_string(),
-            vcpus: 4,
-            memory_mb: 8192,
-            disk_gb: 100,
-            node: "node-01".to_string(),
-            uptime: Some(86400),
-            cpu_usage: Some(25.5),
-            memory_usage: Some(45.2),
-            tags: vec!["production".to_string(), "web".to_string()],
-        },
-        VmListItem {
-            id: "vm-002".to_string(),
-            name: "db-server-01".to_string(),
-            status: "running".to_string(),
-            vcpus: 8,
-            memory_mb: 32768,
-            disk_gb: 500,
-            node: "node-02".to_string(),
-            uptime: Some(172800),
-            cpu_usage: Some(45.0),
-            memory_usage: Some(78.5),
-            tags: vec!["production".to_string(), "database".to_string()],
-        },
-    ];
+    // Get VMs from state manager
+    let state_mgr = vm_state();
+    let all_vms = state_mgr.list_vms();
     
+    let vms: Vec<VmListItem> = all_vms.iter().map(|vm| {
+        VmListItem {
+            id: vm.id.clone(),
+            name: vm.name.clone(),
+            status: vm.status.to_string(),
+            vcpus: vm.vcpus,
+            memory_mb: vm.memory_mb,
+            disk_gb: vm.disk_gb,
+            node: vm.node.clone().unwrap_or_else(|| "local".to_string()),
+            uptime: vm.started_at.map(|start| {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                now.saturating_sub(start)
+            }),
+            cpu_usage: None, // Would be from monitoring
+            memory_usage: None,
+            tags: vm.tags.clone(),
+        }
+    }).collect();
+    
+    let total = vms.len() as u64;
     let meta = ResponseMeta {
         page: params.page,
         per_page: params.per_page,
-        total: vms.len() as u64,
-        total_pages: 1,
+        total,
+        total_pages: ((total as f64) / (params.per_page as f64)).ceil() as u32,
     };
     
     Json(ApiResponse::success(vms).with_meta(meta))
@@ -214,143 +212,212 @@ pub async fn list(
 
 #[cfg(feature = "webgui")]
 pub async fn get(
-    State(state): State<Arc<WebGuiState>>,
+    State(_state): State<Arc<WebGuiState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let vm = VmDetails {
-        id: id.clone(),
-        name: "web-server-01".to_string(),
-        description: Some("Production web server".to_string()),
-        status: "running".to_string(),
-        config: VmConfig {
-            os_type: "linux".to_string(),
-            boot_order: vec!["disk".to_string(), "cdrom".to_string()],
-            bios_type: "uefi".to_string(),
-            secure_boot: true,
-            tpm: true,
-        },
-        hardware: VmHardware {
-            vcpus: 4,
-            memory_mb: 8192,
-            disks: vec![VmDisk {
-                id: "disk-001".to_string(),
-                name: "root".to_string(),
-                size_gb: 100,
-                format: "qcow2".to_string(),
-                storage_pool: "local".to_string(),
-                bus: "virtio".to_string(),
-            }],
-            networks: vec![VmNetwork {
-                id: "nic-001".to_string(),
-                mac: "52:54:00:12:34:56".to_string(),
-                network: "default".to_string(),
-                model: "virtio".to_string(),
-                ip: Some("192.168.1.100".to_string()),
-            }],
-            cdrom: None,
-        },
-        metrics: Some(VmMetrics {
-            cpu_percent: 25.5,
-            memory_used_mb: 3700,
-            disk_read_bps: 10_000_000,
-            disk_write_bps: 5_000_000,
-            net_rx_bps: 50_000_000,
-            net_tx_bps: 30_000_000,
-        }),
-        snapshots: vec![],
-        node: "node-01".to_string(),
-        created_at: chrono::Utc::now().timestamp() as u64 - 86400 * 30,
-        started_at: Some(chrono::Utc::now().timestamp() as u64 - 86400),
-        tags: vec!["production".to_string(), "web".to_string()],
-    };
+    let state_mgr = vm_state();
     
-    Json(ApiResponse::success(vm))
+    match state_mgr.get_vm(&id) {
+        Some(vm) => {
+            let details = VmDetails {
+                id: vm.id.clone(),
+                name: vm.name.clone(),
+                description: vm.description.clone(),
+                status: vm.status.to_string(),
+                config: VmConfig {
+                    os_type: "linux".to_string(),
+                    boot_order: vec!["disk".to_string(), "cdrom".to_string()],
+                    bios_type: "uefi".to_string(),
+                    secure_boot: false,
+                    tpm: false,
+                },
+                hardware: VmHardware {
+                    vcpus: vm.vcpus,
+                    memory_mb: vm.memory_mb,
+                    disks: vec![VmDisk {
+                        id: "disk-001".to_string(),
+                        name: "root".to_string(),
+                        size_gb: vm.disk_gb,
+                        format: "qcow2".to_string(),
+                        storage_pool: "local".to_string(),
+                        bus: "virtio".to_string(),
+                    }],
+                    networks: vm.network_interfaces.iter().map(|nic| VmNetwork {
+                        id: nic.id.clone(),
+                        mac: nic.mac.clone(),
+                        network: nic.network.clone(),
+                        model: nic.model.clone(),
+                        ip: nic.ip.clone(),
+                    }).collect(),
+                    cdrom: None,
+                },
+                metrics: None, // Would come from monitoring
+                snapshots: vec![],
+                node: vm.node.clone().unwrap_or_else(|| "local".to_string()),
+                created_at: vm.created_at,
+                started_at: vm.started_at,
+                tags: vm.tags.clone(),
+            };
+            Json(ApiResponse::success(details))
+        }
+        None => {
+            Json(ApiResponse::<VmDetails>::error(404, &format!("VM '{}' not found", id)))
+        }
+    }
 }
 
 #[cfg(feature = "webgui")]
 pub async fn create(
-    State(state): State<Arc<WebGuiState>>,
+    State(_state): State<Arc<WebGuiState>>,
     Json(req): Json<CreateVmRequest>,
 ) -> impl IntoResponse {
-    let vm_id = format!("vm-{}", Uuid::new_v4().to_string()[..8].to_string());
+    use crate::vmstate::VmState;
     
-    (
-        StatusCode::CREATED,
-        Json(ApiResponse::success(serde_json::json!({
-            "id": vm_id,
-            "task_id": Uuid::new_v4().to_string()
-        }))),
-    )
+    let state_mgr = vm_state();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    
+    let vm = VmState {
+        id: String::new(), // Will be generated
+        name: req.name,
+        status: StateVmStatus::Stopped,
+        vcpus: req.vcpus,
+        memory_mb: req.memory_mb,
+        disk_gb: req.disks.first().map(|d| d.size_gb).unwrap_or(20),
+        node: None,
+        created_at: now,
+        started_at: None,
+        config_path: None,
+        disk_paths: vec![],
+        network_interfaces: vec![],
+        tags: req.tags,
+        description: req.description,
+    };
+    
+    match state_mgr.create_vm(vm) {
+        Ok(vm_id) => {
+            (
+                StatusCode::CREATED,
+                Json(ApiResponse::success(serde_json::json!({
+                    "id": vm_id,
+                    "task_id": Uuid::new_v4().to_string()
+                }))),
+            )
+        }
+        Err(e) => {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ApiResponse::<serde_json::Value>::error(400, &e)),
+            )
+        }
+    }
 }
 
 #[cfg(feature = "webgui")]
 pub async fn update(
-    State(state): State<Arc<WebGuiState>>,
+    State(_state): State<Arc<WebGuiState>>,
     Path(id): Path<String>,
-    Json(req): Json<serde_json::Value>,
+    Json(_req): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     Json(ApiResponse::success(serde_json::json!({"id": id})))
 }
 
 #[cfg(feature = "webgui")]
 pub async fn delete(
-    State(state): State<Arc<WebGuiState>>,
+    State(_state): State<Arc<WebGuiState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    Json(ApiResponse::<()>::success(()))
+    let state_mgr = vm_state();
+    
+    match state_mgr.delete_vm(&id) {
+        Ok(_) => Json(ApiResponse::<()>::success(())),
+        Err(e) => Json(ApiResponse::<()>::error(404, &e)),
+    }
 }
 
 #[cfg(feature = "webgui")]
 pub async fn start(
-    State(state): State<Arc<WebGuiState>>,
+    State(_state): State<Arc<WebGuiState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    Json(ApiResponse::success(serde_json::json!({
-        "task_id": Uuid::new_v4().to_string()
-    })))
+    let state_mgr = vm_state();
+    
+    match state_mgr.set_vm_status(&id, StateVmStatus::Running) {
+        Ok(_) => Json(ApiResponse::success(serde_json::json!({
+            "task_id": Uuid::new_v4().to_string(),
+            "status": "running"
+        }))),
+        Err(e) => Json(ApiResponse::<serde_json::Value>::error(404, &e)),
+    }
 }
 
 #[cfg(feature = "webgui")]
 pub async fn stop(
-    State(state): State<Arc<WebGuiState>>,
+    State(_state): State<Arc<WebGuiState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    Json(ApiResponse::success(serde_json::json!({
-        "task_id": Uuid::new_v4().to_string()
-    })))
+    let state_mgr = vm_state();
+    
+    match state_mgr.set_vm_status(&id, StateVmStatus::Stopped) {
+        Ok(_) => Json(ApiResponse::success(serde_json::json!({
+            "task_id": Uuid::new_v4().to_string(),
+            "status": "stopped"
+        }))),
+        Err(e) => Json(ApiResponse::<serde_json::Value>::error(404, &e)),
+    }
 }
 
 #[cfg(feature = "webgui")]
 pub async fn restart(
-    State(state): State<Arc<WebGuiState>>,
+    State(_state): State<Arc<WebGuiState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    Json(ApiResponse::success(serde_json::json!({
-        "task_id": Uuid::new_v4().to_string()
-    })))
+    let state_mgr = vm_state();
+    
+    // Stop then start
+    let _ = state_mgr.set_vm_status(&id, StateVmStatus::Stopped);
+    match state_mgr.set_vm_status(&id, StateVmStatus::Running) {
+        Ok(_) => Json(ApiResponse::success(serde_json::json!({
+            "task_id": Uuid::new_v4().to_string(),
+            "status": "running"
+        }))),
+        Err(e) => Json(ApiResponse::<serde_json::Value>::error(404, &e)),
+    }
 }
 
 #[cfg(feature = "webgui")]
 pub async fn pause(
-    State(state): State<Arc<WebGuiState>>,
+    State(_state): State<Arc<WebGuiState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    Json(ApiResponse::success(serde_json::json!({"status": "paused"})))
+    let state_mgr = vm_state();
+    
+    match state_mgr.set_vm_status(&id, StateVmStatus::Paused) {
+        Ok(_) => Json(ApiResponse::success(serde_json::json!({"status": "paused"}))),
+        Err(e) => Json(ApiResponse::<serde_json::Value>::error(404, &e)),
+    }
 }
 
 #[cfg(feature = "webgui")]
 pub async fn resume(
-    State(state): State<Arc<WebGuiState>>,
+    State(_state): State<Arc<WebGuiState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    Json(ApiResponse::success(serde_json::json!({"status": "running"})))
+    let state_mgr = vm_state();
+    
+    match state_mgr.set_vm_status(&id, StateVmStatus::Running) {
+        Ok(_) => Json(ApiResponse::success(serde_json::json!({"status": "running"}))),
+        Err(e) => Json(ApiResponse::<serde_json::Value>::error(404, &e)),
+    }
 }
 
 #[cfg(feature = "webgui")]
 pub async fn snapshot(
-    State(state): State<Arc<WebGuiState>>,
-    Path(id): Path<String>,
-    Json(req): Json<SnapshotRequest>,
+    State(_state): State<Arc<WebGuiState>>,
+    Path(_id): Path<String>,
+    Json(_req): Json<SnapshotRequest>,
 ) -> impl IntoResponse {
     Json(ApiResponse::success(serde_json::json!({
         "snapshot_id": Uuid::new_v4().to_string(),
@@ -360,9 +427,9 @@ pub async fn snapshot(
 
 #[cfg(feature = "webgui")]
 pub async fn clone(
-    State(state): State<Arc<WebGuiState>>,
-    Path(id): Path<String>,
-    Json(req): Json<CloneRequest>,
+    State(_state): State<Arc<WebGuiState>>,
+    Path(_id): Path<String>,
+    Json(_req): Json<CloneRequest>,
 ) -> impl IntoResponse {
     Json(ApiResponse::success(serde_json::json!({
         "vm_id": format!("vm-{}", &Uuid::new_v4().to_string()[..8]),
@@ -372,18 +439,23 @@ pub async fn clone(
 
 #[cfg(feature = "webgui")]
 pub async fn migrate(
-    State(state): State<Arc<WebGuiState>>,
+    State(_state): State<Arc<WebGuiState>>,
     Path(id): Path<String>,
-    Json(req): Json<MigrateRequest>,
+    Json(_req): Json<MigrateRequest>,
 ) -> impl IntoResponse {
-    Json(ApiResponse::success(serde_json::json!({
-        "task_id": Uuid::new_v4().to_string()
-    })))
+    let state_mgr = vm_state();
+    
+    match state_mgr.set_vm_status(&id, StateVmStatus::Migrating) {
+        Ok(_) => Json(ApiResponse::success(serde_json::json!({
+            "task_id": Uuid::new_v4().to_string()
+        }))),
+        Err(e) => Json(ApiResponse::<serde_json::Value>::error(404, &e)),
+    }
 }
 
 #[cfg(feature = "webgui")]
 pub async fn console_ticket(
-    State(state): State<Arc<WebGuiState>>,
+    State(_state): State<Arc<WebGuiState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let ticket = ConsoleTicket {
@@ -399,16 +471,17 @@ pub async fn console_ticket(
 
 #[cfg(feature = "webgui")]
 pub async fn metrics(
-    State(state): State<Arc<WebGuiState>>,
-    Path(id): Path<String>,
+    State(_state): State<Arc<WebGuiState>>,
+    Path(_id): Path<String>,
 ) -> impl IntoResponse {
+    // In a real implementation, this would come from a monitoring system
     let metrics = VmMetrics {
-        cpu_percent: 25.5,
-        memory_used_mb: 3700,
-        disk_read_bps: 10_000_000,
-        disk_write_bps: 5_000_000,
-        net_rx_bps: 50_000_000,
-        net_tx_bps: 30_000_000,
+        cpu_percent: 0.0,
+        memory_used_mb: 0,
+        disk_read_bps: 0,
+        disk_write_bps: 0,
+        net_rx_bps: 0,
+        net_tx_bps: 0,
     };
     
     Json(ApiResponse::success(metrics))

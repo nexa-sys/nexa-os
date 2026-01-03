@@ -7,6 +7,8 @@ pub mod commands;
 pub mod output;
 pub mod config;
 pub mod shell;
+pub mod client;
+pub mod state;
 
 use std::path::PathBuf;
 use serde::{Deserialize, Serialize};

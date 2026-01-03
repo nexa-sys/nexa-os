@@ -125,6 +125,7 @@ pub mod devices;
 pub mod pci;
 pub mod vm;
 pub mod debugger;
+pub mod vmstate;  // VM state persistence
 
 // Hardware virtualization extensions
 pub mod vmx;      // Intel VT-x
