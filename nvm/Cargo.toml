@@ -98,6 +98,9 @@ config = "0.14"
 # CLI utilities
 atty = "0.2"
 
+# System info
+num_cpus = "1.16"
+
 # Archive handling
 tar = "0.4"
 

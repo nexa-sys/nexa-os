@@ -1,7 +1,10 @@
 //! Storage handlers
+//!
+//! Storage pool and volume management using real state data
 
 use super::{ApiResponse, ResponseMeta, PaginationParams};
 use crate::webgui::server::WebGuiState;
+use crate::vmstate::{vm_state, StoragePoolState};
 use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -65,66 +68,137 @@ pub struct CreateVolumeRequest {
 
 #[cfg(feature = "webgui")]
 pub async fn list_pools(
-    State(state): State<Arc<WebGuiState>>,
+    State(_state): State<Arc<WebGuiState>>,
 ) -> impl IntoResponse {
-    let pools = vec![
+    let state_mgr = vm_state();
+    let storage_pools = state_mgr.list_storage_pools();
+    
+    // Convert from vmstate format to API format
+    let pools: Vec<StoragePool> = storage_pools.iter().map(|p| {
         StoragePool {
+            id: format!("pool-{}", &p.name),
+            name: p.name.clone(),
+            pool_type: p.pool_type.clone(),
+            path: p.path.to_string_lossy().to_string(),
+            total_bytes: p.total_bytes,
+            used_bytes: p.used_bytes,
+            available_bytes: p.total_bytes.saturating_sub(p.used_bytes),
+            status: p.status.clone(),
+            nodes: vec!["local".to_string()],
+        }
+    }).collect();
+    
+    // If no pools exist, create a default local pool
+    if pools.is_empty() {
+        // Auto-create default storage pool from system info
+        let default_path = dirs::data_local_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("/var/lib/nvm"))
+            .join("images");
+        
+        // Try to get real disk space info
+        #[cfg(target_os = "linux")]
+        let (total, used) = {
+            use std::process::Command;
+            let output = Command::new("df")
+                .args(["-B1", default_path.to_string_lossy().as_ref()])
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .and_then(|s| {
+                    let line = s.lines().nth(1)?;
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    if parts.len() >= 4 {
+                        let total = parts[1].parse::<u64>().ok()?;
+                        let used = parts[2].parse::<u64>().ok()?;
+                        Some((total, used))
+                    } else {
+                        None
+                    }
+                });
+            output.unwrap_or((500_000_000_000, 0))
+        };
+        #[cfg(not(target_os = "linux"))]
+        let (total, used) = (500_000_000_000u64, 0u64);
+        
+        let default_pool = StoragePool {
             id: "pool-local".to_string(),
             name: "local".to_string(),
             pool_type: "dir".to_string(),
-            path: "/var/lib/nvm/images".to_string(),
-            total_bytes: 1_000_000_000_000,
-            used_bytes: 450_000_000_000,
-            available_bytes: 550_000_000_000,
+            path: default_path.to_string_lossy().to_string(),
+            total_bytes: total,
+            used_bytes: used,
+            available_bytes: total.saturating_sub(used),
             status: "online".to_string(),
-            nodes: vec!["node-01".to_string()],
-        },
-        StoragePool {
-            id: "pool-nfs".to_string(),
-            name: "shared-nfs".to_string(),
-            pool_type: "nfs".to_string(),
-            path: "nfs-server:/exports/vms".to_string(),
-            total_bytes: 10_000_000_000_000,
-            used_bytes: 3_500_000_000_000,
-            available_bytes: 6_500_000_000_000,
-            status: "online".to_string(),
-            nodes: vec!["node-01".to_string(), "node-02".to_string(), "node-03".to_string()],
-        },
-    ];
+            nodes: vec!["local".to_string()],
+        };
+        return Json(ApiResponse::success(vec![default_pool]));
+    }
     
     Json(ApiResponse::success(pools))
 }
 
 #[cfg(feature = "webgui")]
 pub async fn create_pool(
-    State(state): State<Arc<WebGuiState>>,
+    State(_state): State<Arc<WebGuiState>>,
     Json(req): Json<CreatePoolRequest>,
 ) -> impl IntoResponse {
-    (
-        StatusCode::CREATED,
-        Json(ApiResponse::success(serde_json::json!({
-            "id": format!("pool-{}", req.name)
-        }))),
-    )
+    let state_mgr = vm_state();
+    
+    let pool = StoragePoolState {
+        name: req.name.clone(),
+        pool_type: req.pool_type,
+        path: std::path::PathBuf::from(&req.path),
+        total_bytes: 0, // Will be detected on first scan
+        used_bytes: 0,
+        status: "online".to_string(),
+    };
+    
+    match state_mgr.create_storage_pool(pool) {
+        Ok(_) => (
+            StatusCode::CREATED,
+            Json(ApiResponse::success(serde_json::json!({
+                "id": format!("pool-{}", req.name),
+                "name": req.name
+            }))),
+        ),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(ApiResponse::<serde_json::Value>::error(400, &e)),
+        ),
+    }
 }
 
 #[cfg(feature = "webgui")]
 pub async fn list_volumes(
-    State(state): State<Arc<WebGuiState>>,
-    Query(params): Query<PaginationParams>,
+    State(_state): State<Arc<WebGuiState>>,
+    Query(_params): Query<PaginationParams>,
 ) -> impl IntoResponse {
-    let volumes = vec![
-        Volume {
-            id: "vol-001".to_string(),
-            name: "web-server-01-root.qcow2".to_string(),
-            pool: "local".to_string(),
-            size_bytes: 107_374_182_400,
-            allocated_bytes: 25_000_000_000,
-            format: "qcow2".to_string(),
-            vm_id: Some("vm-001".to_string()),
-            created_at: chrono::Utc::now().timestamp() as u64 - 86400 * 30,
-        },
-    ];
+    let state_mgr = vm_state();
+    let all_vms = state_mgr.list_vms();
+    
+    // Build volume list from VM disk paths
+    let volumes: Vec<Volume> = all_vms.iter()
+        .flat_map(|vm| {
+            vm.disk_paths.iter().enumerate().map(move |(i, path)| {
+                let size = std::fs::metadata(path)
+                    .map(|m| m.len())
+                    .unwrap_or(vm.disk_gb * 1_073_741_824);
+                    
+                Volume {
+                    id: format!("vol-{}-{}", &vm.id, i),
+                    name: path.file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| format!("{}-disk-{}.qcow2", vm.name, i)),
+                    pool: "local".to_string(),
+                    size_bytes: size,
+                    allocated_bytes: size, // For qcow2, would need qemu-img info
+                    format: "qcow2".to_string(),
+                    vm_id: Some(vm.id.clone()),
+                    created_at: vm.created_at,
+                }
+            })
+        })
+        .collect();
     
     Json(ApiResponse::success(volumes))
 }

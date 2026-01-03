@@ -1,32 +1,78 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useVmsStore } from '@/stores/vms'
+import { api } from '@/api'
 import { Chart, registerables } from 'chart.js'
 import { Line, Doughnut } from 'vue-chartjs'
 
 Chart.register(...registerables)
 
 const vmsStore = useVmsStore()
+const refreshInterval = ref<number | null>(null)
+const lastUpdated = ref<Date>(new Date())
+const isRefreshing = ref(false)
 
-// Stats
+// Dashboard overview data from API
+interface DashboardOverview {
+  cluster: {
+    name: string
+    status: string
+    total_nodes: number
+    online_nodes: number
+    total_cpu_cores: number
+    used_cpu_cores: number
+    total_memory_gb: number
+    used_memory_gb: number
+  }
+  vms: {
+    total: number
+    running: number
+    stopped: number
+    paused: number
+    error: number
+  }
+  storage: {
+    pools: number
+    total_tb: number
+    used_tb: number
+    volumes: number
+    snapshots: number
+  }
+  network: {
+    switches: number
+    networks: number
+    active_connections: number
+  }
+  recent_events: Array<{
+    id: string
+    timestamp: number
+    severity: string
+    source: string
+    message: string
+  }>
+}
+
+// Stats from real API data
 const stats = ref({
   totalVms: 0,
   runningVms: 0,
+  stoppedVms: 0,
+  errorVms: 0,
   totalCpu: 0,
   usedCpu: 0,
-  totalMemoryGb: 64,
+  totalMemoryGb: 0,
   usedMemoryGb: 0,
-  totalStorageTb: 10,
+  totalStorageTb: 0,
   usedStorageTb: 0,
-  networkThroughput: 0,
-  alerts: 0,
+  networkConnections: 0,
+  clusterStatus: 'unknown' as string,
 })
 
 // Resource usage chart data
 const cpuChartData = computed(() => ({
   labels: ['Used', 'Available'],
   datasets: [{
-    data: [stats.value.usedCpu, stats.value.totalCpu - stats.value.usedCpu],
+    data: [stats.value.usedCpu, Math.max(0, stats.value.totalCpu - stats.value.usedCpu)],
     backgroundColor: ['#6366f1', '#1e1e2e'],
     borderWidth: 0,
   }],
@@ -35,7 +81,7 @@ const cpuChartData = computed(() => ({
 const memoryChartData = computed(() => ({
   labels: ['Used', 'Available'],
   datasets: [{
-    data: [stats.value.usedMemoryGb, stats.value.totalMemoryGb - stats.value.usedMemoryGb],
+    data: [stats.value.usedMemoryGb, Math.max(0, stats.value.totalMemoryGb - stats.value.usedMemoryGb)],
     backgroundColor: ['#22c55e', '#1e1e2e'],
     borderWidth: 0,
   }],
@@ -50,13 +96,13 @@ const chartOptions = {
   },
 }
 
-// Activity chart
+// Activity chart with real history data
 const activityChartData = ref({
-  labels: ['00:00', '04:00', '08:00', '12:00', '16:00', '20:00', '24:00'],
+  labels: ['00:00', '04:00', '08:00', '12:00', '16:00', '20:00', 'Now'],
   datasets: [
     {
       label: 'CPU %',
-      data: [25, 30, 45, 60, 55, 40, 35],
+      data: [0, 0, 0, 0, 0, 0, 0],
       borderColor: '#6366f1',
       backgroundColor: 'rgba(99, 102, 241, 0.1)',
       fill: true,
@@ -64,7 +110,7 @@ const activityChartData = ref({
     },
     {
       label: 'Memory %',
-      data: [40, 42, 50, 65, 60, 55, 50],
+      data: [0, 0, 0, 0, 0, 0, 0],
       borderColor: '#22c55e',
       backgroundColor: 'rgba(34, 197, 94, 0.1)',
       fill: true,
@@ -100,22 +146,116 @@ const activityChartOptions = {
   },
 }
 
-// Recent events
-const recentEvents = ref([
-  { id: 1, type: 'success', message: 'VM "web-server-01" started successfully', time: '2 min ago' },
-  { id: 2, type: 'info', message: 'Backup completed for "db-server"', time: '15 min ago' },
-  { id: 3, type: 'warning', message: 'High CPU usage on node-02', time: '1 hour ago' },
-  { id: 4, type: 'success', message: 'Live migration completed', time: '2 hours ago' },
-])
+// Recent events from API
+const recentEvents = ref<Array<{
+  id: string | number
+  type: string
+  message: string
+  time: string
+}>>([])
+
+// Format relative time
+function formatRelativeTime(timestamp: number): string {
+  const now = Date.now() / 1000
+  const diff = now - timestamp
+  
+  if (diff < 60) return 'Just now'
+  if (diff < 3600) return `${Math.floor(diff / 60)} min ago`
+  if (diff < 86400) return `${Math.floor(diff / 3600)} hours ago`
+  return `${Math.floor(diff / 86400)} days ago`
+}
+
+// Fetch dashboard data from API
+async function fetchDashboard() {
+  isRefreshing.value = true
+  try {
+    const response = await api.get<{ success: boolean; data: DashboardOverview }>('/dashboard')
+    if (response.data.success && response.data.data) {
+      const data = response.data.data
+      
+      // Update stats from real data
+      stats.value = {
+        totalVms: data.vms.total,
+        runningVms: data.vms.running,
+        stoppedVms: data.vms.stopped,
+        errorVms: data.vms.error,
+        totalCpu: data.cluster.total_cpu_cores,
+        usedCpu: data.cluster.used_cpu_cores,
+        totalMemoryGb: data.cluster.total_memory_gb,
+        usedMemoryGb: data.cluster.used_memory_gb,
+        totalStorageTb: data.storage.total_tb,
+        usedStorageTb: data.storage.used_tb,
+        networkConnections: data.network.active_connections,
+        clusterStatus: data.cluster.status,
+      }
+      
+      // Update events
+      if (data.recent_events) {
+        recentEvents.value = data.recent_events.map(e => ({
+          id: e.id,
+          type: e.severity === 'error' ? 'error' : 
+                e.severity === 'warning' ? 'warning' : 
+                e.severity === 'info' ? 'info' : 'success',
+          message: e.message,
+          time: formatRelativeTime(e.timestamp),
+        }))
+      }
+    }
+    
+    // Fetch stats for chart history
+    const statsResponse = await api.get<{ success: boolean; data: any }>('/dashboard/stats')
+    if (statsResponse.data.success && statsResponse.data.data) {
+      const statsData = statsResponse.data.data
+      
+      // Update activity chart with history data
+      if (statsData.history && statsData.history.length > 0) {
+        const cpuHistory = statsData.history.map((h: any) => h.cpu || 0)
+        const memHistory = statsData.history.map((h: any) => h.memory || 0)
+        
+        activityChartData.value.datasets[0].data = cpuHistory
+        activityChartData.value.datasets[1].data = memHistory
+      } else {
+        // Use current values if no history
+        const cpuPct = stats.value.totalCpu > 0 
+          ? (stats.value.usedCpu / stats.value.totalCpu * 100) : 0
+        const memPct = stats.value.totalMemoryGb > 0 
+          ? (stats.value.usedMemoryGb / stats.value.totalMemoryGb * 100) : 0
+        
+        activityChartData.value.datasets[0].data = [cpuPct, cpuPct, cpuPct, cpuPct, cpuPct, cpuPct, cpuPct]
+        activityChartData.value.datasets[1].data = [memPct, memPct, memPct, memPct, memPct, memPct, memPct]
+      }
+    }
+    
+    lastUpdated.value = new Date()
+  } catch (error) {
+    console.error('Failed to fetch dashboard data:', error)
+  } finally {
+    isRefreshing.value = false
+  }
+}
+
+// Manual refresh
+async function handleRefresh() {
+  await fetchDashboard()
+  await vmsStore.fetchVms()
+}
 
 onMounted(async () => {
+  // Initial fetch
+  await fetchDashboard()
   await vmsStore.fetchVms()
   
-  stats.value.totalVms = vmsStore.vms.length
-  stats.value.runningVms = vmsStore.runningVms.length
-  stats.value.usedCpu = vmsStore.totalCpu
-  stats.value.totalCpu = 64
-  stats.value.usedMemoryGb = Math.round(vmsStore.totalMemory / 1024)
+  // Set up auto-refresh every 30 seconds
+  refreshInterval.value = window.setInterval(() => {
+    fetchDashboard()
+  }, 30000)
+})
+
+onUnmounted(() => {
+  // Clean up interval
+  if (refreshInterval.value) {
+    clearInterval(refreshInterval.value)
+  }
 })
 </script>
 
@@ -128,12 +268,37 @@ onMounted(async () => {
         <p class="text-dark-400 mt-1">Overview of your virtualization infrastructure</p>
       </div>
       <div class="flex items-center space-x-3">
-        <span class="text-sm text-dark-400">Last updated: Just now</span>
-        <button class="btn-secondary flex items-center space-x-2">
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <!-- Cluster Status Badge -->
+        <span 
+          class="px-3 py-1 rounded-full text-xs font-medium"
+          :class="{
+            'bg-green-500/20 text-green-400': stats.clusterStatus === 'healthy',
+            'bg-yellow-500/20 text-yellow-400': stats.clusterStatus === 'degraded',
+            'bg-red-500/20 text-red-400': stats.clusterStatus === 'critical',
+            'bg-gray-500/20 text-gray-400': stats.clusterStatus === 'unknown',
+          }"
+        >
+          Cluster: {{ stats.clusterStatus }}
+        </span>
+        <span class="text-sm text-dark-400">
+          Last updated: {{ lastUpdated.toLocaleTimeString() }}
+        </span>
+        <button 
+          @click="handleRefresh" 
+          :disabled="isRefreshing"
+          class="btn-secondary flex items-center space-x-2"
+          :class="{ 'opacity-50 cursor-not-allowed': isRefreshing }"
+        >
+          <svg 
+            class="w-4 h-4" 
+            :class="{ 'animate-spin': isRefreshing }"
+            fill="none" 
+            stroke="currentColor" 
+            viewBox="0 0 24 24"
+          >
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
           </svg>
-          <span>Refresh</span>
+          <span>{{ isRefreshing ? 'Refreshing...' : 'Refresh' }}</span>
         </button>
       </div>
     </div>
@@ -145,7 +310,11 @@ onMounted(async () => {
           <div>
             <p class="text-dark-400 text-sm">Virtual Machines</p>
             <p class="text-2xl font-bold text-white mt-1">{{ stats.totalVms }}</p>
-            <p class="text-sm text-green-400 mt-1">{{ stats.runningVms }} running</p>
+            <div class="flex items-center space-x-2 mt-1">
+              <span class="text-sm text-green-400">{{ stats.runningVms }} running</span>
+              <span v-if="stats.stoppedVms > 0" class="text-sm text-gray-400">{{ stats.stoppedVms }} stopped</span>
+              <span v-if="stats.errorVms > 0" class="text-sm text-red-400">{{ stats.errorVms }} error</span>
+            </div>
           </div>
           <div class="w-12 h-12 bg-accent-500/10 rounded-lg flex items-center justify-center">
             <svg class="w-6 h-6 text-accent-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -175,7 +344,7 @@ onMounted(async () => {
           <div>
             <p class="text-dark-400 text-sm">Memory</p>
             <p class="text-2xl font-bold text-white mt-1">{{ stats.usedMemoryGb }} / {{ stats.totalMemoryGb }} GB</p>
-            <p class="text-sm text-dark-400 mt-1">{{ Math.round(stats.usedMemoryGb / stats.totalMemoryGb * 100) }}% used</p>
+            <p class="text-sm text-dark-400 mt-1">{{ stats.totalMemoryGb > 0 ? Math.round(stats.usedMemoryGb / stats.totalMemoryGb * 100) : 0 }}% used</p>
           </div>
           <div class="w-12 h-12 bg-green-500/10 rounded-lg flex items-center justify-center">
             <svg class="w-6 h-6 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -189,8 +358,8 @@ onMounted(async () => {
         <div class="flex items-center justify-between">
           <div>
             <p class="text-dark-400 text-sm">Storage</p>
-            <p class="text-2xl font-bold text-white mt-1">{{ stats.usedStorageTb }} / {{ stats.totalStorageTb }} TB</p>
-            <p class="text-sm text-dark-400 mt-1">{{ Math.round(stats.usedStorageTb / stats.totalStorageTb * 100) }}% used</p>
+            <p class="text-2xl font-bold text-white mt-1">{{ stats.usedStorageTb.toFixed(2) }} / {{ stats.totalStorageTb.toFixed(2) }} TB</p>
+            <p class="text-sm text-dark-400 mt-1">{{ stats.totalStorageTb > 0 ? Math.round(stats.usedStorageTb / stats.totalStorageTb * 100) : 0 }}% used</p>
           </div>
           <div class="w-12 h-12 bg-purple-500/10 rounded-lg flex items-center justify-center">
             <svg class="w-6 h-6 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -211,7 +380,7 @@ onMounted(async () => {
             <div class="w-24 h-24 mx-auto relative">
               <Doughnut :data="cpuChartData" :options="chartOptions" />
               <div class="absolute inset-0 flex items-center justify-center">
-                <span class="text-lg font-bold text-white">{{ Math.round(stats.usedCpu / stats.totalCpu * 100) }}%</span>
+                <span class="text-lg font-bold text-white">{{ stats.totalCpu > 0 ? Math.round(stats.usedCpu / stats.totalCpu * 100) : 0 }}%</span>
               </div>
             </div>
             <p class="text-dark-400 text-sm mt-2">CPU</p>
@@ -220,7 +389,7 @@ onMounted(async () => {
             <div class="w-24 h-24 mx-auto relative">
               <Doughnut :data="memoryChartData" :options="chartOptions" />
               <div class="absolute inset-0 flex items-center justify-center">
-                <span class="text-lg font-bold text-white">{{ Math.round(stats.usedMemoryGb / stats.totalMemoryGb * 100) }}%</span>
+                <span class="text-lg font-bold text-white">{{ stats.totalMemoryGb > 0 ? Math.round(stats.usedMemoryGb / stats.totalMemoryGb * 100) : 0 }}%</span>
               </div>
             </div>
             <p class="text-dark-400 text-sm mt-2">Memory</p>

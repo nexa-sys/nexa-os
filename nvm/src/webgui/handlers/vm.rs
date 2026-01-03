@@ -14,20 +14,41 @@ use axum::{
     response::IntoResponse,
 };
 
-/// VM list item
+/// VM list item - matches frontend Vm interface
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VmListItem {
     pub id: String,
     pub name: String,
     pub status: String,
-    pub vcpus: u32,
+    pub description: Option<String>,
+    pub host_node: Option<String>,
+    pub template: Option<String>,
+    pub config: VmListConfig,
+    pub stats: Option<VmListStats>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub tags: Vec<String>,
+}
+
+/// VM config for list items - matches frontend VmConfig interface
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VmListConfig {
+    pub cpu_cores: u32,
     pub memory_mb: u64,
     pub disk_gb: u64,
-    pub node: String,
-    pub uptime: Option<u64>,
-    pub cpu_usage: Option<f64>,
-    pub memory_usage: Option<f64>,
-    pub tags: Vec<String>,
+    pub network: String,
+    pub boot_order: Vec<String>,
+}
+
+/// VM stats for list items - matches frontend VmStats interface
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VmListStats {
+    pub cpu_usage: f64,
+    pub memory_usage: f64,
+    pub disk_read_bps: u64,
+    pub disk_write_bps: u64,
+    pub network_rx_bps: u64,
+    pub network_tx_bps: u64,
 }
 
 /// VM details
@@ -177,24 +198,52 @@ pub async fn list(
     let state_mgr = vm_state();
     let all_vms = state_mgr.list_vms();
     
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    
     let vms: Vec<VmListItem> = all_vms.iter().map(|vm| {
+        // Format timestamps as ISO8601 strings
+        let created_at = chrono::DateTime::from_timestamp(vm.created_at as i64, 0)
+            .map(|dt| dt.to_rfc3339())
+            .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+        
+        let updated_at = vm.started_at
+            .and_then(|t| chrono::DateTime::from_timestamp(t as i64, 0))
+            .map(|dt| dt.to_rfc3339())
+            .unwrap_or_else(|| created_at.clone());
+        
         VmListItem {
             id: vm.id.clone(),
             name: vm.name.clone(),
             status: vm.status.to_string(),
-            vcpus: vm.vcpus,
-            memory_mb: vm.memory_mb,
-            disk_gb: vm.disk_gb,
-            node: vm.node.clone().unwrap_or_else(|| "local".to_string()),
-            uptime: vm.started_at.map(|start| {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
-                now.saturating_sub(start)
-            }),
-            cpu_usage: None, // Would be from monitoring
-            memory_usage: None,
+            description: vm.description.clone(),
+            host_node: vm.node.clone(),
+            template: None,
+            config: VmListConfig {
+                cpu_cores: vm.vcpus,
+                memory_mb: vm.memory_mb,
+                disk_gb: vm.disk_gb,
+                network: vm.network_interfaces.first()
+                    .map(|nic| nic.network.clone())
+                    .unwrap_or_else(|| "default".to_string()),
+                boot_order: vec!["disk".to_string(), "cdrom".to_string()],
+            },
+            stats: if vm.status == StateVmStatus::Running {
+                Some(VmListStats {
+                    cpu_usage: 0.0,      // Would come from monitoring
+                    memory_usage: 0.0,
+                    disk_read_bps: 0,
+                    disk_write_bps: 0,
+                    network_rx_bps: 0,
+                    network_tx_bps: 0,
+                })
+            } else {
+                None
+            },
+            created_at,
+            updated_at,
             tags: vm.tags.clone(),
         }
     }).collect();

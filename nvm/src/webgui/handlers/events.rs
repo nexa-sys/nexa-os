@@ -1,7 +1,10 @@
 //! Events and audit log handlers
+//!
+//! Real event data from vmstate event logging system
 
 use super::{ApiResponse, ResponseMeta, PaginationParams};
 use crate::webgui::server::WebGuiState;
+use crate::vmstate::vm_state;
 use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
@@ -61,49 +64,71 @@ pub struct AuditQuery {
 
 #[cfg(feature = "webgui")]
 pub async fn list(
-    State(state): State<Arc<WebGuiState>>,
+    State(_state): State<Arc<WebGuiState>>,
     Query(params): Query<EventQuery>,
 ) -> impl IntoResponse {
-    let now = chrono::Utc::now().timestamp() as u64;
+    let state_mgr = vm_state();
     
-    let events = vec![
-        Event {
-            id: "evt-001".to_string(),
-            timestamp: now - 60,
-            event_type: "vm.started".to_string(),
-            severity: "info".to_string(),
-            source: "vm-web-01".to_string(),
-            message: "Virtual machine started successfully".to_string(),
-            user: Some("admin".to_string()),
-            target: Some("vm-001".to_string()),
-        },
-        Event {
-            id: "evt-002".to_string(),
-            timestamp: now - 300,
-            event_type: "node.joined".to_string(),
-            severity: "info".to_string(),
-            source: "node-03".to_string(),
-            message: "Node joined the cluster".to_string(),
-            user: None,
-            target: Some("node-03".to_string()),
-        },
-        Event {
-            id: "evt-003".to_string(),
-            timestamp: now - 600,
-            event_type: "storage.warning".to_string(),
-            severity: "warning".to_string(),
-            source: "pool-local".to_string(),
-            message: "Storage pool reaching 80% capacity".to_string(),
-            user: None,
-            target: Some("pool-local".to_string()),
-        },
-    ];
+    // Get events from state manager
+    let limit = params.pagination.per_page as usize;
+    let raw_events = if let Some(since) = params.from {
+        state_mgr.get_events_since(since)
+    } else {
+        state_mgr.get_events(limit * 10) // Get more for filtering
+    };
     
+    // Convert and filter events
+    let mut events: Vec<Event> = raw_events.iter()
+        .filter(|e| {
+            // Filter by severity if specified
+            if let Some(ref sev) = params.severity {
+                let event_sev = format!("{:?}", e.severity).to_lowercase();
+                if &event_sev != sev {
+                    return false;
+                }
+            }
+            // Filter by event type if specified  
+            if let Some(ref et) = params.event_type {
+                if !e.event_type.to_string().contains(et) {
+                    return false;
+                }
+            }
+            // Filter by source if specified
+            if let Some(ref src) = params.source {
+                if !e.source.contains(src) {
+                    return false;
+                }
+            }
+            // Filter by time range
+            if let Some(to) = params.to {
+                if e.timestamp > to {
+                    return false;
+                }
+            }
+            true
+        })
+        .map(|e| Event {
+            id: e.id.clone(),
+            timestamp: e.timestamp,
+            event_type: e.event_type.to_string(),
+            severity: format!("{:?}", e.severity).to_lowercase(),
+            source: e.source.clone(),
+            message: e.message.clone(),
+            user: e.user.clone(),
+            target: e.details.as_ref()
+                .and_then(|d| d.get("vm_id").or(d.get("vm_name")))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+        })
+        .take(limit)
+        .collect();
+    
+    let total = events.len() as u64;
     let meta = ResponseMeta {
         page: params.pagination.page,
         per_page: params.pagination.per_page,
-        total: events.len() as u64,
-        total_pages: 1,
+        total,
+        total_pages: ((total as f64) / (params.pagination.per_page as f64)).ceil() as u32,
     };
     
     Json(ApiResponse::success(events).with_meta(meta))
@@ -111,62 +136,87 @@ pub async fn list(
 
 #[cfg(feature = "webgui")]
 pub async fn audit_log(
-    State(state): State<Arc<WebGuiState>>,
+    State(_state): State<Arc<WebGuiState>>,
     Query(params): Query<AuditQuery>,
 ) -> impl IntoResponse {
-    let now = chrono::Utc::now().timestamp() as u64;
+    let state_mgr = vm_state();
     
-    let entries = vec![
-        AuditEntry {
-            id: "audit-001".to_string(),
-            timestamp: now - 120,
-            user: "admin".to_string(),
-            action: "vm.create".to_string(),
-            resource_type: "vm".to_string(),
-            resource_id: "vm-005".to_string(),
-            ip_address: "192.168.1.100".to_string(),
-            user_agent: Some("Mozilla/5.0".to_string()),
-            result: "success".to_string(),
-            details: Some(serde_json::json!({
-                "vm_name": "test-vm",
-                "vcpus": 4,
-                "memory_mb": 8192
-            })),
-        },
-        AuditEntry {
-            id: "audit-002".to_string(),
-            timestamp: now - 180,
-            user: "operator".to_string(),
-            action: "vm.start".to_string(),
-            resource_type: "vm".to_string(),
-            resource_id: "vm-001".to_string(),
-            ip_address: "192.168.1.101".to_string(),
-            user_agent: Some("NVM CLI/2.0".to_string()),
-            result: "success".to_string(),
-            details: None,
-        },
-        AuditEntry {
-            id: "audit-003".to_string(),
-            timestamp: now - 300,
-            user: "admin".to_string(),
-            action: "user.create".to_string(),
-            resource_type: "user".to_string(),
-            resource_id: "user-new".to_string(),
-            ip_address: "192.168.1.100".to_string(),
-            user_agent: Some("Mozilla/5.0".to_string()),
-            result: "success".to_string(),
-            details: Some(serde_json::json!({
-                "username": "newuser",
-                "roles": ["operator"]
-            })),
-        },
-    ];
+    // Get events that have user information (audit-relevant)
+    let limit = params.pagination.per_page as usize;
+    let raw_events = state_mgr.get_events(limit * 10);
     
+    // Convert events to audit entries (only events with user info or action-based)
+    let entries: Vec<AuditEntry> = raw_events.iter()
+        .filter(|e| {
+            // Filter by user if specified
+            if let Some(ref usr) = params.user {
+                if e.user.as_ref().map(|u| u != usr).unwrap_or(true) {
+                    return false;
+                }
+            }
+            // Filter by action if specified
+            if let Some(ref action) = params.action {
+                if !e.event_type.to_string().contains(action) {
+                    return false;
+                }
+            }
+            // Filter by time range
+            if let Some(from) = params.from {
+                if e.timestamp < from {
+                    return false;
+                }
+            }
+            if let Some(to) = params.to {
+                if e.timestamp > to {
+                    return false;
+                }
+            }
+            true
+        })
+        .map(|e| {
+            let (resource_type, resource_id) = match &e.details {
+                Some(d) => {
+                    let rt = if d.get("vm_id").is_some() { "vm" }
+                        else if d.get("pool_name").is_some() { "storage" }
+                        else if d.get("network_name").is_some() { "network" }
+                        else { "system" };
+                    let ri = d.get("vm_id")
+                        .or(d.get("pool_name"))
+                        .or(d.get("network_name"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("-")
+                        .to_string();
+                    (rt.to_string(), ri)
+                }
+                None => ("system".to_string(), "-".to_string()),
+            };
+            
+            AuditEntry {
+                id: format!("audit-{}", &e.id[4..]), // Convert evt-xxx to audit-xxx
+                timestamp: e.timestamp,
+                user: e.user.clone().unwrap_or_else(|| "system".to_string()),
+                action: e.event_type.to_string(),
+                resource_type,
+                resource_id,
+                ip_address: "127.0.0.1".to_string(), // Would need request context
+                user_agent: None,
+                result: if e.severity == crate::vmstate::EventSeverity::Error { 
+                    "failure" 
+                } else { 
+                    "success" 
+                }.to_string(),
+                details: e.details.clone(),
+            }
+        })
+        .take(limit)
+        .collect();
+    
+    let total = entries.len() as u64;
     let meta = ResponseMeta {
         page: params.pagination.page,
         per_page: params.pagination.per_page,
-        total: entries.len() as u64,
-        total_pages: 1,
+        total,
+        total_pages: ((total as f64) / (params.pagination.per_page as f64)).ceil() as u32,
     };
     
     Json(ApiResponse::success(entries).with_meta(meta))

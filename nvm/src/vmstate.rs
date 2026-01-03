@@ -2,12 +2,16 @@
 //!
 //! Centralized VM state management for both CLI and WebGUI.
 //! Provides persistence and synchronization of VM states.
+//! Enterprise features: event logging, audit trail, metrics history.
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
+
+/// Maximum number of events to keep in memory
+const MAX_EVENTS: usize = 1000;
 
 /// Global VM state manager
 pub struct VmStateManager {
@@ -19,6 +23,81 @@ pub struct VmStateManager {
     storage_pools: RwLock<HashMap<String, StoragePoolState>>,
     /// Networks
     networks: RwLock<HashMap<String, NetworkState>>,
+    /// Event log (recent events)
+    events: RwLock<VecDeque<SystemEvent>>,
+}
+
+/// System event for audit logging
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SystemEvent {
+    pub id: String,
+    pub timestamp: u64,
+    pub event_type: EventType,
+    pub severity: EventSeverity,
+    pub source: String,
+    pub message: String,
+    pub details: Option<serde_json::Value>,
+    pub user: Option<String>,
+}
+
+/// Event type enumeration
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EventType {
+    VmCreate,
+    VmStart,
+    VmStop,
+    VmDelete,
+    VmMigrate,
+    VmSnapshot,
+    VmClone,
+    VmError,
+    StorageCreate,
+    StorageDelete,
+    NetworkCreate,
+    NetworkDelete,
+    UserLogin,
+    UserLogout,
+    SystemStart,
+    SystemShutdown,
+    ConfigChange,
+    SecurityAlert,
+}
+
+impl std::fmt::Display for EventType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            EventType::VmCreate => "vm_create",
+            EventType::VmStart => "vm_start",
+            EventType::VmStop => "vm_stop",
+            EventType::VmDelete => "vm_delete",
+            EventType::VmMigrate => "vm_migrate",
+            EventType::VmSnapshot => "vm_snapshot",
+            EventType::VmClone => "vm_clone",
+            EventType::VmError => "vm_error",
+            EventType::StorageCreate => "storage_create",
+            EventType::StorageDelete => "storage_delete",
+            EventType::NetworkCreate => "network_create",
+            EventType::NetworkDelete => "network_delete",
+            EventType::UserLogin => "user_login",
+            EventType::UserLogout => "user_logout",
+            EventType::SystemStart => "system_start",
+            EventType::SystemShutdown => "system_shutdown",
+            EventType::ConfigChange => "config_change",
+            EventType::SecurityAlert => "security_alert",
+        };
+        write!(f, "{}", s)
+    }
+}
+
+/// Event severity level
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EventSeverity {
+    Info,
+    Warning,
+    Error,
+    Critical,
 }
 
 /// VM state record
@@ -105,6 +184,7 @@ struct PersistedState {
     vms: HashMap<String, VmState>,
     storage_pools: HashMap<String, StoragePoolState>,
     networks: HashMap<String, NetworkState>,
+    events: Vec<SystemEvent>,
     version: u32,
 }
 
@@ -117,6 +197,7 @@ impl VmStateManager {
             state_file: state_file.clone(),
             storage_pools: RwLock::new(HashMap::new()),
             networks: RwLock::new(HashMap::new()),
+            events: RwLock::new(VecDeque::with_capacity(MAX_EVENTS)),
         };
         
         // Load persisted state
@@ -140,12 +221,17 @@ impl VmStateManager {
                     *self.vms.write() = state.vms;
                     *self.storage_pools.write() = state.storage_pools;
                     *self.networks.write() = state.networks;
+                    *self.events.write() = state.events.into_iter().collect();
                     log::info!("Loaded {} VMs from state file", self.vms.read().len());
                     return;
                 }
             }
         }
         log::info!("Starting with empty VM state");
+        
+        // Log system start event
+        self.log_event(EventType::SystemStart, EventSeverity::Info, "system", 
+            "NVM Enterprise Platform started", None, None);
     }
     
     /// Save state to disk
@@ -158,6 +244,7 @@ impl VmStateManager {
             vms: self.vms.read().clone(),
             storage_pools: self.storage_pools.read().clone(),
             networks: self.networks.read().clone(),
+            events: self.events.read().iter().cloned().collect(),
             version: 1,
         };
         
@@ -165,6 +252,71 @@ impl VmStateManager {
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         std::fs::write(&self.state_file, content)?;
         Ok(())
+    }
+    
+    // ========== Event Logging ==========
+    
+    /// Log a system event
+    pub fn log_event(
+        &self,
+        event_type: EventType,
+        severity: EventSeverity,
+        source: &str,
+        message: &str,
+        details: Option<serde_json::Value>,
+        user: Option<String>,
+    ) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        
+        let event = SystemEvent {
+            id: format!("evt-{:08x}", rand::random::<u32>()),
+            timestamp: now,
+            event_type,
+            severity,
+            source: source.to_string(),
+            message: message.to_string(),
+            details,
+            user,
+        };
+        
+        let mut events = self.events.write();
+        if events.len() >= MAX_EVENTS {
+            events.pop_front();
+        }
+        events.push_back(event);
+    }
+    
+    /// Get recent events (newest first)
+    pub fn get_events(&self, limit: usize) -> Vec<SystemEvent> {
+        self.events.read()
+            .iter()
+            .rev()
+            .take(limit)
+            .cloned()
+            .collect()
+    }
+    
+    /// Get events filtered by type
+    pub fn get_events_by_type(&self, event_type: EventType, limit: usize) -> Vec<SystemEvent> {
+        self.events.read()
+            .iter()
+            .rev()
+            .filter(|e| e.event_type == event_type)
+            .take(limit)
+            .cloned()
+            .collect()
+    }
+    
+    /// Get events since timestamp
+    pub fn get_events_since(&self, since: u64) -> Vec<SystemEvent> {
+        self.events.read()
+            .iter()
+            .filter(|e| e.timestamp >= since)
+            .cloned()
+            .collect()
     }
     
     // ========== VM Operations ==========
@@ -199,8 +351,19 @@ impl VmStateManager {
         }
         
         let id = vm.id.clone();
+        let name = vm.name.clone();
         vms.insert(id.clone(), vm);
         drop(vms);
+        
+        // Log event
+        self.log_event(
+            EventType::VmCreate,
+            EventSeverity::Info,
+            &name,
+            &format!("VM '{}' created with ID {}", name, id),
+            Some(serde_json::json!({"vm_id": id})),
+            None,
+        );
         
         let _ = self.save_state();
         Ok(id)
@@ -210,6 +373,8 @@ impl VmStateManager {
     pub fn set_vm_status(&self, id: &str, status: VmStatus) -> Result<(), String> {
         let mut vms = self.vms.write();
         if let Some(vm) = vms.get_mut(id) {
+            let old_status = vm.status;
+            let vm_name = vm.name.clone();
             vm.status = status;
             if status == VmStatus::Running {
                 vm.started_at = Some(
@@ -220,6 +385,34 @@ impl VmStateManager {
                 );
             }
             drop(vms);
+            
+            // Log appropriate event based on status change
+            let (event_type, message) = match status {
+                VmStatus::Running => (EventType::VmStart, format!("VM '{}' started", vm_name)),
+                VmStatus::Stopped => (EventType::VmStop, format!("VM '{}' stopped", vm_name)),
+                VmStatus::Error => (EventType::VmError, format!("VM '{}' entered error state", vm_name)),
+                _ => (EventType::VmStop, format!("VM '{}' status changed to {:?}", vm_name, status)),
+            };
+            
+            let severity = if status == VmStatus::Error {
+                EventSeverity::Error
+            } else {
+                EventSeverity::Info
+            };
+            
+            self.log_event(
+                event_type,
+                severity,
+                &vm_name,
+                &message,
+                Some(serde_json::json!({
+                    "vm_id": id,
+                    "old_status": format!("{:?}", old_status),
+                    "new_status": format!("{:?}", status),
+                })),
+                None,
+            );
+            
             let _ = self.save_state();
             Ok(())
         } else {
@@ -231,7 +424,19 @@ impl VmStateManager {
     pub fn delete_vm(&self, id: &str) -> Result<VmState, String> {
         let mut vms = self.vms.write();
         if let Some(vm) = vms.remove(id) {
+            let vm_name = vm.name.clone();
             drop(vms);
+            
+            // Log deletion event
+            self.log_event(
+                EventType::VmDelete,
+                EventSeverity::Warning,
+                &vm_name,
+                &format!("VM '{}' (ID: {}) deleted", vm_name, id),
+                Some(serde_json::json!({"vm_id": id, "vm_name": vm_name})),
+                None,
+            );
+            
             let _ = self.save_state();
             Ok(vm)
         } else {
