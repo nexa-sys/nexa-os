@@ -1,12 +1,48 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
+import { api } from '../api'
 
-const templates = ref([
-  { id: '1', name: 'Ubuntu 22.04 LTS', os: 'Linux', size: '2.5 GB', cpu: 2, memory: 2048, disk: 20 },
-  { id: '2', name: 'Debian 12', os: 'Linux', size: '1.8 GB', cpu: 2, memory: 1024, disk: 16 },
-  { id: '3', name: 'CentOS Stream 9', os: 'Linux', size: '3.2 GB', cpu: 2, memory: 2048, disk: 25 },
-  { id: '4', name: 'Windows Server 2022', os: 'Windows', size: '8.5 GB', cpu: 4, memory: 4096, disk: 60 },
-])
+interface Template {
+  id: string
+  name: string
+  os: string
+  size: string
+  cpu: number
+  memory: number
+  disk: number
+}
+
+const templates = ref<Template[]>([])
+const loading = ref(true)
+const error = ref<string | null>(null)
+
+async function fetchTemplates() {
+  try {
+    loading.value = true
+    error.value = null
+    const response = await api.get('/templates')
+    if (response.data.success && response.data.data) {
+      templates.value = response.data.data.map((tpl: any) => ({
+        id: tpl.id,
+        name: tpl.name || 'Unnamed Template',
+        os: tpl.os_type || 'Unknown',
+        size: tpl.disk_size_gb ? `${tpl.disk_size_gb} GB` : '-',
+        cpu: tpl.cpu_cores || 1,
+        memory: tpl.memory_mb || 1024,
+        disk: tpl.disk_size_gb || 10
+      }))
+    }
+  } catch (e: any) {
+    error.value = e.message || 'Failed to load templates'
+    console.error('Failed to fetch templates:', e)
+  } finally {
+    loading.value = false
+  }
+}
+
+onMounted(() => {
+  fetchTemplates()
+})
 </script>
 
 <template>

@@ -1,21 +1,48 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
+import { api } from '../api'
 
 interface StoragePool {
   id: string
   name: string
-  type: 'local' | 'nfs' | 'iscsi' | 'ceph'
+  type: 'local' | 'nfs' | 'iscsi' | 'ceph' | 'dir'
   status: 'online' | 'offline' | 'degraded'
   totalGb: number
   usedGb: number
   path: string
 }
 
-const storagePools = ref<StoragePool[]>([
-  { id: '1', name: 'local-lvm', type: 'local', status: 'online', totalGb: 500, usedGb: 250, path: '/dev/pve/data' },
-  { id: '2', name: 'nfs-share', type: 'nfs', status: 'online', totalGb: 2000, usedGb: 800, path: '192.168.1.100:/export/vms' },
-  { id: '3', name: 'ceph-pool', type: 'ceph', status: 'online', totalGb: 10000, usedGb: 3500, path: 'ceph://vm-pool' },
-])
+const storagePools = ref<StoragePool[]>([])
+const loading = ref(true)
+const error = ref<string | null>(null)
+
+async function fetchStoragePools() {
+  try {
+    loading.value = true
+    error.value = null
+    const response = await api.get('/storage/pools')
+    if (response.data.success && response.data.data) {
+      storagePools.value = response.data.data.map((pool: any) => ({
+        id: pool.id,
+        name: pool.name,
+        type: pool.pool_type || 'dir',
+        status: pool.status || 'online',
+        totalGb: Math.round((pool.total_bytes || 0) / (1024 * 1024 * 1024)),
+        usedGb: Math.round((pool.used_bytes || 0) / (1024 * 1024 * 1024)),
+        path: pool.path || ''
+      }))
+    }
+  } catch (e: any) {
+    error.value = e.message || 'Failed to load storage pools'
+    console.error('Failed to fetch storage pools:', e)
+  } finally {
+    loading.value = false
+  }
+}
+
+onMounted(() => {
+  fetchStoragePools()
+})
 
 const statusColors: Record<string, string> = {
   online: 'bg-green-500',

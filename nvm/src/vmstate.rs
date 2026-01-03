@@ -25,6 +25,87 @@ pub struct VmStateManager {
     networks: RwLock<HashMap<String, NetworkState>>,
     /// Event log (recent events)
     events: RwLock<VecDeque<SystemEvent>>,
+    /// VM Templates
+    templates: RwLock<HashMap<String, VmTemplate>>,
+    /// Backup jobs
+    backups: RwLock<HashMap<String, BackupRecord>>,
+    /// Backup schedules
+    backup_schedules: RwLock<HashMap<String, BackupSchedule>>,
+}
+
+/// VM Template record
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VmTemplate {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub os_type: String,
+    pub os_version: Option<String>,
+    pub vcpus: u32,
+    pub memory_mb: u64,
+    pub disk_gb: u64,
+    pub disk_path: Option<PathBuf>,
+    pub created_at: u64,
+    pub updated_at: u64,
+    pub size_bytes: u64,
+    pub tags: Vec<String>,
+    pub public: bool,
+    pub owner: String,
+}
+
+/// Backup record
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackupRecord {
+    pub id: String,
+    pub vm_id: String,
+    pub vm_name: String,
+    pub backup_type: String,  // "full" or "incremental"
+    pub status: BackupStatus,
+    pub progress: f64,
+    pub size_bytes: u64,
+    pub started_at: u64,
+    pub finished_at: Option<u64>,
+    pub target_path: PathBuf,
+    pub description: Option<String>,
+}
+
+/// Backup status
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BackupStatus {
+    Pending,
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl std::fmt::Display for BackupStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BackupStatus::Pending => write!(f, "pending"),
+            BackupStatus::Running => write!(f, "running"),
+            BackupStatus::Completed => write!(f, "completed"),
+            BackupStatus::Failed => write!(f, "failed"),
+            BackupStatus::Cancelled => write!(f, "cancelled"),
+        }
+    }
+}
+
+/// Backup schedule
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackupSchedule {
+    pub id: String,
+    pub name: String,
+    pub vm_ids: Vec<String>,
+    pub backup_type: String,
+    pub cron_schedule: String,  // Cron format: "0 2 * * *"
+    pub target_path: PathBuf,
+    pub retention_days: u32,
+    pub enabled: bool,
+    pub last_run: Option<u64>,
+    pub next_run: Option<u64>,
+    pub created_at: u64,
 }
 
 /// System event for audit logging
@@ -185,6 +266,9 @@ struct PersistedState {
     storage_pools: HashMap<String, StoragePoolState>,
     networks: HashMap<String, NetworkState>,
     events: Vec<SystemEvent>,
+    templates: HashMap<String, VmTemplate>,
+    backups: HashMap<String, BackupRecord>,
+    backup_schedules: HashMap<String, BackupSchedule>,
     version: u32,
 }
 
@@ -198,6 +282,9 @@ impl VmStateManager {
             storage_pools: RwLock::new(HashMap::new()),
             networks: RwLock::new(HashMap::new()),
             events: RwLock::new(VecDeque::with_capacity(MAX_EVENTS)),
+            templates: RwLock::new(HashMap::new()),
+            backups: RwLock::new(HashMap::new()),
+            backup_schedules: RwLock::new(HashMap::new()),
         };
         
         // Load persisted state
@@ -222,6 +309,9 @@ impl VmStateManager {
                     *self.storage_pools.write() = state.storage_pools;
                     *self.networks.write() = state.networks;
                     *self.events.write() = state.events.into_iter().collect();
+                    *self.templates.write() = state.templates;
+                    *self.backups.write() = state.backups;
+                    *self.backup_schedules.write() = state.backup_schedules;
                     log::info!("Loaded {} VMs from state file", self.vms.read().len());
                     return;
                 }
@@ -245,6 +335,9 @@ impl VmStateManager {
             storage_pools: self.storage_pools.read().clone(),
             networks: self.networks.read().clone(),
             events: self.events.read().iter().cloned().collect(),
+            templates: self.templates.read().clone(),
+            backups: self.backups.read().clone(),
+            backup_schedules: self.backup_schedules.read().clone(),
             version: 1,
         };
         
@@ -490,6 +583,125 @@ impl VmStateManager {
         drop(networks);
         let _ = self.save_state();
         Ok(())
+    }
+    
+    // ========== Template Operations ==========
+    
+    /// List all templates
+    pub fn list_templates(&self) -> Vec<VmTemplate> {
+        self.templates.read().values().cloned().collect()
+    }
+    
+    /// Get a template by ID
+    pub fn get_template(&self, id: &str) -> Option<VmTemplate> {
+        self.templates.read().get(id).cloned()
+    }
+    
+    /// Create a template
+    pub fn create_template(&self, mut template: VmTemplate) -> Result<String, String> {
+        let mut templates = self.templates.write();
+        
+        if template.id.is_empty() {
+            template.id = format!("tpl-{:06x}", rand::random::<u32>() & 0xffffff);
+        }
+        
+        if templates.values().any(|t| t.name == template.name) {
+            return Err(format!("Template with name '{}' already exists", template.name));
+        }
+        
+        let id = template.id.clone();
+        templates.insert(id.clone(), template);
+        drop(templates);
+        let _ = self.save_state();
+        Ok(id)
+    }
+    
+    /// Delete a template
+    pub fn delete_template(&self, id: &str) -> Result<VmTemplate, String> {
+        let mut templates = self.templates.write();
+        if let Some(template) = templates.remove(id) {
+            drop(templates);
+            let _ = self.save_state();
+            Ok(template)
+        } else {
+            Err(format!("Template '{}' not found", id))
+        }
+    }
+    
+    // ========== Backup Operations ==========
+    
+    /// List all backup records
+    pub fn list_backups(&self) -> Vec<BackupRecord> {
+        self.backups.read().values().cloned().collect()
+    }
+    
+    /// Get backup by ID
+    pub fn get_backup(&self, id: &str) -> Option<BackupRecord> {
+        self.backups.read().get(id).cloned()
+    }
+    
+    /// Create a backup record
+    pub fn create_backup(&self, mut backup: BackupRecord) -> Result<String, String> {
+        let mut backups = self.backups.write();
+        
+        if backup.id.is_empty() {
+            backup.id = format!("backup-{:06x}", rand::random::<u32>() & 0xffffff);
+        }
+        
+        let id = backup.id.clone();
+        backups.insert(id.clone(), backup);
+        drop(backups);
+        let _ = self.save_state();
+        Ok(id)
+    }
+    
+    /// Update backup status
+    pub fn update_backup(&self, id: &str, status: BackupStatus, progress: f64, size: Option<u64>) -> Result<(), String> {
+        let mut backups = self.backups.write();
+        if let Some(backup) = backups.get_mut(id) {
+            backup.status = status;
+            backup.progress = progress;
+            if let Some(s) = size {
+                backup.size_bytes = s;
+            }
+            if status == BackupStatus::Completed || status == BackupStatus::Failed {
+                backup.finished_at = Some(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0)
+                );
+            }
+            drop(backups);
+            let _ = self.save_state();
+            Ok(())
+        } else {
+            Err(format!("Backup '{}' not found", id))
+        }
+    }
+    
+    /// List backup schedules
+    pub fn list_backup_schedules(&self) -> Vec<BackupSchedule> {
+        self.backup_schedules.read().values().cloned().collect()
+    }
+    
+    /// Create a backup schedule
+    pub fn create_backup_schedule(&self, mut schedule: BackupSchedule) -> Result<String, String> {
+        let mut schedules = self.backup_schedules.write();
+        
+        if schedule.id.is_empty() {
+            schedule.id = format!("sched-{:06x}", rand::random::<u32>() & 0xffffff);
+        }
+        
+        if schedules.values().any(|s| s.name == schedule.name) {
+            return Err(format!("Schedule with name '{}' already exists", schedule.name));
+        }
+        
+        let id = schedule.id.clone();
+        schedules.insert(id.clone(), schedule);
+        drop(schedules);
+        let _ = self.save_state();
+        Ok(id)
     }
 }
 

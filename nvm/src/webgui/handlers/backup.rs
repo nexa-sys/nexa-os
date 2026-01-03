@@ -1,8 +1,12 @@
 //! Backup handlers
+//!
+//! Backup job and schedule management using real vmstate data
 
 use super::{ApiResponse, ResponseMeta, PaginationParams};
 use crate::webgui::server::WebGuiState;
+use crate::vmstate::{vm_state, BackupRecord, BackupSchedule as StateBackupSchedule, BackupStatus};
 use std::sync::Arc;
+use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -28,7 +32,7 @@ pub struct BackupJob {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BackupSchedule {
+pub struct BackupScheduleResponse {
     pub id: String,
     pub name: String,
     pub vms: Vec<String>,
@@ -62,43 +66,33 @@ pub struct CreateScheduleRequest {
 
 #[cfg(feature = "webgui")]
 pub async fn list_jobs(
-    State(state): State<Arc<WebGuiState>>,
+    State(_state): State<Arc<WebGuiState>>,
     Query(params): Query<PaginationParams>,
 ) -> impl IntoResponse {
-    let now = chrono::Utc::now().timestamp() as u64;
+    let state_mgr = vm_state();
+    let backup_records = state_mgr.list_backups();
     
-    let jobs = vec![
+    // Convert to API format
+    let jobs: Vec<BackupJob> = backup_records.iter().map(|b| {
         BackupJob {
-            id: "backup-001".to_string(),
-            vm_id: "vm-001".to_string(),
-            vm_name: "web-server-01".to_string(),
-            backup_type: "full".to_string(),
-            status: "completed".to_string(),
-            progress: 100.0,
-            size_bytes: 25_000_000_000,
-            started_at: now - 7200,
-            finished_at: Some(now - 3600),
-            target: "backup-storage".to_string(),
-        },
-        BackupJob {
-            id: "backup-002".to_string(),
-            vm_id: "vm-002".to_string(),
-            vm_name: "db-server-01".to_string(),
-            backup_type: "incremental".to_string(),
-            status: "running".to_string(),
-            progress: 45.5,
-            size_bytes: 0,
-            started_at: now - 1800,
-            finished_at: None,
-            target: "backup-storage".to_string(),
-        },
-    ];
+            id: b.id.clone(),
+            vm_id: b.vm_id.clone(),
+            vm_name: b.vm_name.clone(),
+            backup_type: b.backup_type.clone(),
+            status: b.status.to_string(),
+            progress: b.progress,
+            size_bytes: b.size_bytes,
+            started_at: b.started_at,
+            finished_at: b.finished_at,
+            target: b.target_path.to_string_lossy().to_string(),
+        }
+    }).collect();
     
     let meta = ResponseMeta {
         page: params.page,
         per_page: params.per_page,
         total: jobs.len() as u64,
-        total_pages: 1,
+        total_pages: ((jobs.len() as f64) / (params.per_page as f64)).ceil() as u32,
     };
     
     Json(ApiResponse::success(jobs).with_meta(meta))
@@ -106,50 +100,113 @@ pub async fn list_jobs(
 
 #[cfg(feature = "webgui")]
 pub async fn create_job(
-    State(state): State<Arc<WebGuiState>>,
+    State(_state): State<Arc<WebGuiState>>,
     Json(req): Json<CreateBackupRequest>,
 ) -> impl IntoResponse {
-    (
-        StatusCode::CREATED,
-        Json(ApiResponse::success(serde_json::json!({
-            "id": format!("backup-{}", &Uuid::new_v4().to_string()[..8]),
-            "task_id": Uuid::new_v4().to_string()
-        }))),
-    )
+    let state_mgr = vm_state();
+    
+    // Get VM info
+    let vm_name = state_mgr.get_vm(&req.vm_id)
+        .map(|vm| vm.name)
+        .unwrap_or_else(|| req.vm_id.clone());
+    
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    
+    let backup = BackupRecord {
+        id: String::new(),
+        vm_id: req.vm_id.clone(),
+        vm_name,
+        backup_type: req.backup_type,
+        status: BackupStatus::Pending,
+        progress: 0.0,
+        size_bytes: 0,
+        started_at: now,
+        finished_at: None,
+        target_path: PathBuf::from(&req.target),
+        description: req.description,
+    };
+    
+    match state_mgr.create_backup(backup) {
+        Ok(id) => (
+            StatusCode::CREATED,
+            Json(ApiResponse::success(serde_json::json!({
+                "id": id,
+                "task_id": Uuid::new_v4().to_string()
+            }))),
+        ),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(ApiResponse::<serde_json::Value>::error(400, &e)),
+        ),
+    }
 }
 
 #[cfg(feature = "webgui")]
 pub async fn list_schedules(
-    State(state): State<Arc<WebGuiState>>,
+    State(_state): State<Arc<WebGuiState>>,
 ) -> impl IntoResponse {
-    let now = chrono::Utc::now().timestamp() as u64;
+    let state_mgr = vm_state();
+    let schedules = state_mgr.list_backup_schedules();
     
-    let schedules = vec![
-        BackupSchedule {
-            id: "schedule-001".to_string(),
-            name: "Daily production backup".to_string(),
-            vms: vec!["vm-001".to_string(), "vm-002".to_string()],
-            backup_type: "incremental".to_string(),
-            schedule: "0 2 * * *".to_string(),
-            target: "backup-storage".to_string(),
-            retention_days: 30,
-            enabled: true,
-            last_run: Some(now - 86400),
-            next_run: Some(now + 43200),
-        },
-        BackupSchedule {
-            id: "schedule-002".to_string(),
-            name: "Weekly full backup".to_string(),
-            vms: vec!["vm-001".to_string(), "vm-002".to_string(), "vm-003".to_string()],
-            backup_type: "full".to_string(),
-            schedule: "0 3 * * 0".to_string(),
-            target: "offsite-storage".to_string(),
-            retention_days: 90,
-            enabled: true,
-            last_run: Some(now - 86400 * 3),
-            next_run: Some(now + 86400 * 4),
-        },
-    ];
+    // Convert to API format
+    let response: Vec<BackupScheduleResponse> = schedules.iter().map(|s| {
+        BackupScheduleResponse {
+            id: s.id.clone(),
+            name: s.name.clone(),
+            vms: s.vm_ids.clone(),
+            backup_type: s.backup_type.clone(),
+            schedule: s.cron_schedule.clone(),
+            target: s.target_path.to_string_lossy().to_string(),
+            retention_days: s.retention_days,
+            enabled: s.enabled,
+            last_run: s.last_run,
+            next_run: s.next_run,
+        }
+    }).collect();
     
-    Json(ApiResponse::success(schedules))
+    Json(ApiResponse::success(response))
+}
+
+#[cfg(feature = "webgui")]
+pub async fn create_schedule(
+    State(_state): State<Arc<WebGuiState>>,
+    Json(req): Json<CreateScheduleRequest>,
+) -> impl IntoResponse {
+    let state_mgr = vm_state();
+    
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    
+    let schedule = StateBackupSchedule {
+        id: String::new(),
+        name: req.name.clone(),
+        vm_ids: req.vms,
+        backup_type: req.backup_type,
+        cron_schedule: req.schedule,
+        target_path: PathBuf::from(&req.target),
+        retention_days: req.retention_days,
+        enabled: true,
+        last_run: None,
+        next_run: Some(now + 86400), // Simple: next day
+        created_at: now,
+    };
+    
+    match state_mgr.create_backup_schedule(schedule) {
+        Ok(id) => (
+            StatusCode::CREATED,
+            Json(ApiResponse::success(serde_json::json!({
+                "id": id,
+                "name": req.name
+            }))),
+        ),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(ApiResponse::<serde_json::Value>::error(400, &e)),
+        ),
+    }
 }

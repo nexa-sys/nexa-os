@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
+import { api } from '../api'
 
 interface Network {
   id: string
@@ -12,11 +13,38 @@ interface Network {
   ports: number
 }
 
-const networks = ref<Network[]>([
-  { id: '1', name: 'vmbr0', type: 'bridge', status: 'active', cidr: '192.168.1.0/24', gateway: '192.168.1.1', ports: 12 },
-  { id: '2', name: 'vmbr1', type: 'bridge', status: 'active', cidr: '10.0.0.0/24', gateway: '10.0.0.1', ports: 5 },
-  { id: '3', name: 'vlan100', type: 'vlan', status: 'active', vlanId: 100, ports: 3 },
-])
+const networks = ref<Network[]>([])
+const loading = ref(true)
+const error = ref<string | null>(null)
+
+async function fetchNetworks() {
+  try {
+    loading.value = true
+    error.value = null
+    const response = await api.get('/networks')
+    if (response.data.success && response.data.data) {
+      networks.value = response.data.data.map((net: any) => ({
+        id: net.id,
+        name: net.name,
+        type: net.network_type || 'bridge',
+        status: net.status || 'active',
+        cidr: net.cidr,
+        gateway: net.gateway,
+        vlanId: net.vlan_id,
+        ports: net.vm_count || 0
+      }))
+    }
+  } catch (e: any) {
+    error.value = e.message || 'Failed to load networks'
+    console.error('Failed to fetch networks:', e)
+  } finally {
+    loading.value = false
+  }
+}
+
+onMounted(() => {
+  fetchNetworks()
+})
 </script>
 
 <template>

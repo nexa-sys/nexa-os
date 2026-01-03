@@ -1,22 +1,56 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
+import { api } from '../api'
 
 interface ClusterNode {
   id: string
   name: string
   status: 'online' | 'offline' | 'maintenance'
   ip: string
-  role: 'master' | 'worker'
+  role: 'master' | 'worker' | 'standalone'
   cpu: { used: number; total: number }
   memory: { usedGb: number; totalGb: number }
   vms: number
 }
 
-const nodes = ref<ClusterNode[]>([
-  { id: '1', name: 'node-01', status: 'online', ip: '192.168.1.10', role: 'master', cpu: { used: 45, total: 64 }, memory: { usedGb: 48, totalGb: 128 }, vms: 15 },
-  { id: '2', name: 'node-02', status: 'online', ip: '192.168.1.11', role: 'worker', cpu: { used: 32, total: 64 }, memory: { usedGb: 64, totalGb: 128 }, vms: 12 },
-  { id: '3', name: 'node-03', status: 'maintenance', ip: '192.168.1.12', role: 'worker', cpu: { used: 0, total: 64 }, memory: { usedGb: 0, totalGb: 128 }, vms: 0 },
-])
+const nodes = ref<ClusterNode[]>([])
+const loading = ref(true)
+const error = ref<string | null>(null)
+
+async function fetchNodes() {
+  try {
+    loading.value = true
+    error.value = null
+    const response = await api.get('/nodes')
+    if (response.data.success && response.data.data) {
+      nodes.value = response.data.data.map((node: any) => ({
+        id: node.id,
+        name: node.hostname || node.id,
+        status: node.status || 'online',
+        ip: node.ip_address || '',
+        role: node.role || 'standalone',
+        cpu: { 
+          used: Math.round(node.cpu_usage * node.cpu_cores / 100) || 0, 
+          total: node.cpu_cores || 1 
+        },
+        memory: { 
+          usedGb: Math.round((node.memory_used_mb || 0) / 1024), 
+          totalGb: Math.round((node.memory_total_mb || 0) / 1024) 
+        },
+        vms: node.vm_count || 0
+      }))
+    }
+  } catch (e: any) {
+    error.value = e.message || 'Failed to load nodes'
+    console.error('Failed to fetch nodes:', e)
+  } finally {
+    loading.value = false
+  }
+}
+
+onMounted(() => {
+  fetchNodes()
+})
 
 const statusColors: Record<string, string> = {
   online: 'bg-green-500',

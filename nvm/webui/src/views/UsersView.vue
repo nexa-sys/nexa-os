@@ -1,11 +1,46 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
+import { api } from '../api'
 
-const users = ref([
-  { id: '1', username: 'admin', email: 'admin@example.com', role: 'Administrator', status: 'active', lastLogin: '2025-01-15 10:30' },
-  { id: '2', username: 'operator', email: 'ops@example.com', role: 'Operator', status: 'active', lastLogin: '2025-01-14 16:45' },
-  { id: '3', username: 'viewer', email: 'view@example.com', role: 'Viewer', status: 'inactive', lastLogin: '2025-01-10 09:00' },
-])
+interface User {
+  id: string
+  username: string
+  email: string
+  role: string
+  status: string
+  lastLogin: string
+}
+
+const users = ref<User[]>([])
+const loading = ref(true)
+const error = ref<string | null>(null)
+
+async function fetchUsers() {
+  try {
+    loading.value = true
+    error.value = null
+    const response = await api.get('/users')
+    if (response.data.success && response.data.data) {
+      users.value = response.data.data.map((user: any) => ({
+        id: user.id,
+        username: user.username || user.name || 'Unknown',
+        email: user.email || '',
+        role: user.role || 'User',
+        status: user.enabled ? 'active' : 'inactive',
+        lastLogin: user.last_login ? new Date(user.last_login * 1000).toLocaleString() : 'Never'
+      }))
+    }
+  } catch (e: any) {
+    error.value = e.message || 'Failed to load users'
+    console.error('Failed to fetch users:', e)
+  } finally {
+    loading.value = false
+  }
+}
+
+onMounted(() => {
+  fetchUsers()
+})
 </script>
 
 <template>

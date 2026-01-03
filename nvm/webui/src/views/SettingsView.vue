@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
+import { api } from '../api'
 
 const tabs = ref([
   { id: 'general', name: 'General', icon: 'cog' },
@@ -10,11 +11,14 @@ const tabs = ref([
 ])
 
 const activeTab = ref('general')
+const loading = ref(true)
+const saving = ref(false)
+const error = ref<string | null>(null)
 
 // Settings state
 const settings = ref({
   general: {
-    clusterName: 'nvm-cluster-01',
+    clusterName: '',
     timezone: 'UTC',
     language: 'en',
     autoUpdate: true,
@@ -48,10 +52,49 @@ const settings = ref({
   },
 })
 
-function saveSettings() {
-  // TODO: Save settings to API
-  console.log('Saving settings:', settings.value)
+async function fetchSettings() {
+  try {
+    loading.value = true
+    error.value = null
+    const response = await api.get('/system/config')
+    if (response.data.success && response.data.data) {
+      const config = response.data.data
+      settings.value.general.clusterName = config.cluster_name || 'local-cluster'
+      settings.value.general.timezone = config.timezone || 'UTC'
+      settings.value.network.dnsServers = config.dns_servers || ['8.8.8.8']
+      settings.value.security.sessionTimeout = config.session_timeout || 30
+      settings.value.security.auditLogging = config.audit_logging ?? true
+    }
+  } catch (e: any) {
+    error.value = e.message || 'Failed to load settings'
+    console.error('Failed to fetch settings:', e)
+  } finally {
+    loading.value = false
+  }
 }
+
+async function saveSettings() {
+  try {
+    saving.value = true
+    await api.put('/system/config', {
+      cluster_name: settings.value.general.clusterName,
+      timezone: settings.value.general.timezone,
+      dns_servers: settings.value.network.dnsServers,
+      session_timeout: settings.value.security.sessionTimeout,
+      audit_logging: settings.value.security.auditLogging,
+    })
+    console.log('Settings saved successfully')
+  } catch (e: any) {
+    error.value = e.message || 'Failed to save settings'
+    console.error('Failed to save settings:', e)
+  } finally {
+    saving.value = false
+  }
+}
+
+onMounted(() => {
+  fetchSettings()
+})
 </script>
 
 <template>

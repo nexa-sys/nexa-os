@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useVmsStore } from '@/stores/vms'
 import { useNotificationStore } from '@/stores/notification'
+import { api } from '@/api'
 import type { VmCreateParams } from '@/stores/vms'
 
 const router = useRouter()
@@ -12,6 +13,8 @@ const notificationStore = useNotificationStore()
 // Form steps
 const currentStep = ref(1)
 const totalSteps = 4
+const loadingTemplates = ref(true)
+const loadingNetworks = ref(true)
 
 // Form data
 const form = ref<VmCreateParams>({
@@ -28,20 +31,57 @@ const form = ref<VmCreateParams>({
   tags: [],
 })
 
-// Templates
-const templates = ref([
-  { id: '', name: 'Blank VM', description: 'Start from scratch' },
-  { id: 'ubuntu-22.04', name: 'Ubuntu 22.04 LTS', description: 'Popular Linux distribution' },
-  { id: 'debian-12', name: 'Debian 12', description: 'Stable Linux distribution' },
-  { id: 'centos-stream-9', name: 'CentOS Stream 9', description: 'Enterprise Linux' },
-  { id: 'windows-server-2022', name: 'Windows Server 2022', description: 'Microsoft Server OS' },
-])
+// Templates from API
+const templates = ref([{ id: '', name: 'Blank VM', description: 'Start from scratch' }])
 
-// Networks
-const networks = ref([
-  { id: 'vmbr0', name: 'vmbr0 (Bridge)', description: '192.168.1.0/24' },
-  { id: 'vmbr1', name: 'vmbr1 (Internal)', description: '10.0.0.0/24' },
-])
+// Networks from API
+const networks = ref<Array<{ id: string; name: string; description: string }>>([])
+
+async function fetchTemplates() {
+  try {
+    loadingTemplates.value = true
+    const response = await api.get('/templates')
+    if (response.data.success && response.data.data) {
+      const apiTemplates = response.data.data.map((tpl: any) => ({
+        id: tpl.id,
+        name: tpl.name || 'Unnamed',
+        description: tpl.os_type || 'Custom template'
+      }))
+      templates.value = [{ id: '', name: 'Blank VM', description: 'Start from scratch' }, ...apiTemplates]
+    }
+  } catch (e) {
+    console.error('Failed to fetch templates:', e)
+  } finally {
+    loadingTemplates.value = false
+  }
+}
+
+async function fetchNetworks() {
+  try {
+    loadingNetworks.value = true
+    const response = await api.get('/networks')
+    if (response.data.success && response.data.data) {
+      networks.value = response.data.data.map((net: any) => ({
+        id: net.id || net.name,
+        name: `${net.name} (${net.network_type || 'Bridge'})`,
+        description: net.cidr || ''
+      }))
+      // Set default network if available
+      if (networks.value.length > 0 && !form.value.config.network) {
+        form.value.config.network = networks.value[0].id
+      }
+    }
+  } catch (e) {
+    console.error('Failed to fetch networks:', e)
+  } finally {
+    loadingNetworks.value = false
+  }
+}
+
+onMounted(() => {
+  fetchTemplates()
+  fetchNetworks()
+})
 
 // Validation
 const isStepValid = computed(() => {

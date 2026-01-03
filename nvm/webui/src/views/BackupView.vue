@@ -1,11 +1,46 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
+import { api } from '../api'
 
-const backups = ref([
-  { id: '1', vmName: 'web-server-01', type: 'full', size: '15.2 GB', date: '2025-01-15 03:00', status: 'completed' },
-  { id: '2', vmName: 'db-server', type: 'incremental', size: '2.1 GB', date: '2025-01-15 03:30', status: 'completed' },
-  { id: '3', vmName: 'mail-server', type: 'full', size: '8.5 GB', date: '2025-01-14 03:00', status: 'completed' },
-])
+interface Backup {
+  id: string
+  vmName: string
+  type: string
+  size: string
+  date: string
+  status: string
+}
+
+const backups = ref<Backup[]>([])
+const loading = ref(true)
+const error = ref<string | null>(null)
+
+async function fetchBackups() {
+  try {
+    loading.value = true
+    error.value = null
+    const response = await api.get('/backup/jobs')
+    if (response.data.success && response.data.data) {
+      backups.value = response.data.data.map((backup: any) => ({
+        id: backup.id,
+        vmName: backup.vm_name || backup.target || 'Unknown',
+        type: backup.backup_type || 'full',
+        size: backup.size_bytes ? `${(backup.size_bytes / (1024 * 1024 * 1024)).toFixed(1)} GB` : '-',
+        date: backup.created_at ? new Date(backup.created_at * 1000).toLocaleString() : '-',
+        status: backup.status || 'unknown'
+      }))
+    }
+  } catch (e: any) {
+    error.value = e.message || 'Failed to load backups'
+    console.error('Failed to fetch backups:', e)
+  } finally {
+    loading.value = false
+  }
+}
+
+onMounted(() => {
+  fetchBackups()
+})
 </script>
 
 <template>
