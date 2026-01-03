@@ -160,7 +160,7 @@ function openConsole(vm: Vm) {
     </div>
 
     <!-- VM Table -->
-    <div class="card overflow-hidden">
+    <div class="card overflow-visible">
       <div v-if="vmsStore.loading" class="p-8 text-center">
         <svg class="animate-spin w-8 h-8 mx-auto text-accent-500" fill="none" viewBox="0 0 24 24">
           <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
@@ -209,7 +209,7 @@ function openConsole(vm: Vm) {
           <tr
             v-for="vm in filteredVms"
             :key="vm.id"
-            class="hover:bg-dark-700/30 transition-colors"
+            class="hover:bg-dark-700/30 transition-colors relative"
           >
             <td class="px-4 py-4">
               <input
@@ -302,7 +302,7 @@ function openConsole(vm: Vm) {
 
                   <div
                     v-if="showActionsMenu === vm.id"
-                    class="absolute right-0 mt-2 w-48 bg-dark-700 rounded-lg shadow-xl border border-dark-600 py-1 z-10"
+                    class="absolute right-0 mt-2 w-48 bg-dark-700 rounded-lg shadow-xl border border-dark-600 py-1 z-[9999]"
                   >
                     <RouterLink :to="`/vms/${vm.id}`" class="block px-4 py-2 text-sm text-dark-300 hover:bg-dark-600 hover:text-white">
                       View Details
@@ -335,7 +335,7 @@ function openConsole(vm: Vm) {
     <!-- Click outside to close menu -->
     <div
       v-if="showActionsMenu"
-      class="fixed inset-0 z-[5]"
+      class="fixed inset-0 z-[9998]"
       @click="showActionsMenu = null"
     />
   </div>

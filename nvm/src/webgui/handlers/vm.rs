@@ -1024,7 +1024,7 @@ pub async fn start(
     State(_state): State<Arc<WebGuiState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    use crate::executor::{vm_executor, VmExecConfig, DiskExecConfig, NetworkExecConfig, FirmwareType, NetworkType};
+    use crate::executor::vm_executor;
     
     let state_mgr = vm_state();
     let mut executor = vm_executor();
@@ -1040,73 +1040,11 @@ pub async fn start(
         return Json(ApiResponse::<serde_json::Value>::error(400, "VM is already running"));
     }
     
-    // If VM is not registered in hypervisor (e.g., from older state), register it now
+    // VM must be registered in hypervisor - if not, it's a corrupted state
     if !executor.is_registered(&id) {
-        log::info!("VM {} not registered in hypervisor, registering now...", id);
-        
-        let data_dir = executor.vm_data_dir(&id);
-        let disk_path = data_dir.join(format!("{}-disk0.qcow2", vm.name));
-        
-        // Create disk if doesn't exist
-        if !disk_path.exists() {
-            if let Err(e) = executor.create_disk_image(&disk_path, vm.disk_gb, "qcow2") {
-                return Json(ApiResponse::<serde_json::Value>::error(500, &format!("Failed to create disk: {}", e)));
-            }
-        }
-        
-        let disks = vec![DiskExecConfig {
-            path: disk_path,
-            format: "qcow2".to_string(),
-            bus: "virtio".to_string(),
-            cache: "writeback".to_string(),
-            io: "native".to_string(),
-            bootable: true,
-            discard: true,
-            readonly: false,
-            serial: None,
-        }];
-        
-        let networks: Vec<NetworkExecConfig> = vm.network_interfaces.iter().map(|nic| {
-            NetworkExecConfig {
-                id: nic.id.clone(),
-                mac: nic.mac.clone(),
-                net_type: NetworkType::User,
-                bridge: None,
-                model: "virtio-net-pci".to_string(),
-                multiqueue: false,
-                queues: 1,
-                vlan_id: None,
-            }
-        }).collect();
-        
-        let exec_config = VmExecConfig {
-            vm_id: id.clone(),
-            name: vm.name.clone(),
-            vcpus: vm.vcpus,
-            cpu_sockets: 1,
-            cpu_cores: vm.vcpus,
-            cpu_threads: 1,
-            cpu_model: "host".to_string(),
-            memory_mb: vm.memory_mb,
-            memory_balloon: true,
-            disks,
-            networks,
-            cdrom_iso: None,
-            firmware: FirmwareType::Uefi,
-            secure_boot: false,
-            tpm_enabled: false,
-            tpm_version: "2.0".to_string(),
-            machine_type: "q35".to_string(),
-            nested_virt: false,
-            vnc_display: None,
-            qmp_socket: None,
-            enable_kvm: executor.is_kvm_available(),
-            extra_args: vec![],
-        };
-        
-        if let Err(e) = executor.register_vm(exec_config) {
-            return Json(ApiResponse::<serde_json::Value>::error(500, &format!("Failed to register VM: {}", e)));
-        }
+        log::error!("VM {} not registered in hypervisor - possible data corruption", id);
+        return Json(ApiResponse::<serde_json::Value>::error(500, 
+            "VM not registered in hypervisor. This may indicate disk or state corruption. Please delete and recreate the VM."));
     }
     
     // Start the VM (just calls hypervisor.start_vm)
