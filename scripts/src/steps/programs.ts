@@ -137,7 +137,15 @@ export async function buildAllPrograms(
   await ensureNrlib(env);
   
   const config = await loadBuildConfig(env.projectRoot);
-  const programs = getAllPrograms(config);
+  const allPrograms = getAllPrograms(config);
+  
+  // Filter out external programs (they are built separately, e.g., nvm via 'ndk build nvm')
+  const programs = allPrograms.filter(p => !p.external);
+  const externalPrograms = allPrograms.filter(p => p.external);
+  
+  if (externalPrograms.length > 0) {
+    logger.info(`Skipping ${externalPrograms.length} external programs: ${externalPrograms.map(p => p.package).join(', ')}`);
+  }
   
   // Separate programs into batchable (no features) and individual (has features)
   const staticNoFeatures = programs.filter(p => (p.link ?? 'dyn') === 'std' && !p.features);

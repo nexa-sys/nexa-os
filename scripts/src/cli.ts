@@ -75,7 +75,7 @@ const buildCmd = program
   .showHelpAfterError('(use "./ndk build --help" for available subcommands)');
 
 // Valid build subcommands for validation
-const validBuildSubcommands = ['full', 'all', 'quick', 'q', 'kernel', 'k', 'userspace', 'u', 'libs', 'l', 'modules', 'm', 'programs', 'p', 'initramfs', 'i', 'rootfs', 'r', 'swap', 'iso', 'steps', 's'];
+const validBuildSubcommands = ['full', 'all', 'quick', 'q', 'kernel', 'k', 'userspace', 'u', 'libs', 'l', 'modules', 'm', 'programs', 'p', 'initramfs', 'i', 'rootfs', 'r', 'swap', 'iso', 'nvm', 'steps', 's'];
 
 // Check for excess arguments before parsing - build subcommands only accept one target (except 'steps')
 const buildIdx = process.argv.findIndex(arg => arg === 'build' || arg === 'b');
@@ -286,6 +286,30 @@ buildCmd
   .action(async () => {
     const builder = new Builder(findProjectRoot());
     const result = await builder.buildIsoOnly();
+    process.exit(result.success ? 0 : 1);
+  });
+
+// build nvm - NVM hypervisor platform
+buildCmd
+  .command('nvm')
+  .description('Build NVM hypervisor platform (nvm-server + nvmctl)')
+  .option('--features <features>', 'Cargo features to enable (default: full)', 'full')
+  .option('--skip-frontend', 'Skip WebUI frontend build')
+  .option('--list', 'List NVM components')
+  .action(async (options) => {
+    const projectRoot = findProjectRoot();
+    
+    if (options.list) {
+      const { listNvmBinaries } = await import('./steps/nvm.js');
+      await listNvmBinaries();
+      process.exit(0);
+    }
+    
+    const builder = new Builder(projectRoot);
+    const result = await builder.buildNvmOnly({
+      features: options.features,
+      skipFrontend: options.skipFrontend,
+    });
     process.exit(result.success ? 0 : 1);
   });
 

@@ -13,3 +13,4 @@ export * from './iso.js';
 export * from './uefi.js';
 export * from './swap.js';
 export * from './clean.js';
+export * from './nvm.js';

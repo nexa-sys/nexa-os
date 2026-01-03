@@ -211,6 +211,32 @@ async function createFilesystemImage(env: BuildEnvironment, rootfsDir: string, f
 }
 
 /**
+ * Install external programs (like NVM) if they are pre-built
+ */
+async function installExternalPrograms(env: BuildEnvironment, rootfsDir: string): Promise<void> {
+  // Check if NVM binaries exist (built via 'ndk build nvm')
+  // NVM uses NexaOS userspace dynamic target (links to nrlib)
+  const nvmReleaseDir = join(env.projectRoot, 'nvm', 'target', 'x86_64-nexaos-userspace-dynamic', 'release');
+  
+  const nvmBinaries = [
+    { name: 'nvm-server', dest: 'sbin' },
+    { name: 'nvmctl', dest: 'bin' },
+  ];
+  
+  for (const bin of nvmBinaries) {
+    const src = join(nvmReleaseDir, bin.name);
+    if (existsSync(src)) {
+      const destPath = join(rootfsDir, bin.dest);
+      await mkdir(destPath, { recursive: true });
+      await copyFile(src, join(destPath, bin.name));
+      await chmod(join(destPath, bin.name), 0o755);
+      const size = await getFileSize(join(destPath, bin.name));
+      logger.success(`Installed ${bin.name} to /${bin.dest} (${size})`);
+    }
+  }
+}
+
+/**
  * Build the complete root filesystem
  */
 export async function buildRootfs(env: BuildEnvironment): Promise<BuildStepResult> {
@@ -226,6 +252,7 @@ export async function buildRootfs(env: BuildEnvironment): Promise<BuildStepResul
   await setupRootfsDirs(rootfsDir);
   await installLibs(env, rootfsDir);
   await buildAllPrograms(env, rootfsDir);
+  await installExternalPrograms(env, rootfsDir);  // Install NVM if built
   await installConfigs(env, rootfsDir);
   await installCaCerts(env, rootfsDir);
   

@@ -22,6 +22,8 @@ import {
   buildSwapImage,
   cleanAll,
   cleanBuild,
+  buildNvm,
+  cleanNvm,
 } from './steps/index.js';
 
 export class Builder {
@@ -224,6 +226,21 @@ export class Builder {
   }
   
   /**
+   * Build NVM hypervisor platform
+   */
+  async buildNvmOnly(options?: { features?: string; skipFrontend?: boolean }): Promise<BuildStepResult> {
+    await this.init();
+    return timedStep('Building NVM', () => buildNvm(this.env, options));
+  }
+  
+  /**
+   * Clean NVM build artifacts
+   */
+  async cleanNvmOnly(): Promise<BuildStepResult> {
+    return cleanNvm(this.env);
+  }
+  
+  /**
    * Run a build step
    */
   async run(step: BuildStep): Promise<BuildStepResult> {
@@ -248,6 +265,8 @@ export class Builder {
         return this.buildSwapOnly();
       case 'iso':
         return this.buildIsoOnly();
+      case 'nvm':
+        return this.buildNvmOnly();
       case 'clean':
         return this.clean();
       default:

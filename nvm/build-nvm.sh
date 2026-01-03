@@ -1,6 +1,13 @@
 #!/bin/bash
-# NVM Enterprise Build Script
-# Builds the Vue.js frontend and Rust backend together
+# NVM Enterprise Build Script (Standalone)
+# 
+# NOTE: The preferred way to build NVM is through the NDK build system:
+#   ./ndk build nvm              # Build NVM (frontend + backend)
+#   ./ndk build nvm --list       # List NVM components
+#   ./ndk build steps nvm rootfs # Build NVM and rootfs
+#
+# This script is kept for standalone development/testing.
+# It builds the Vue.js frontend and Rust backend together.
 #
 # Usage:
 #   ./build-nvm.sh          # Full build (frontend + backend)

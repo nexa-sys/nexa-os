@@ -425,6 +425,7 @@ function mergeConfigs(
         link: p.link || 'dyn',
         path: p.path,
         category: category as any,  // Store category name for log organization
+        external: p.external,       // Mark external programs (built separately)
       }));
   }
   

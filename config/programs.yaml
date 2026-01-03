@@ -36,7 +36,7 @@
 core:
   - package: ni
     path: core/init
-    description: "System V init implementation"
+    description: "Systemd init implementation"
     dest: sbin
     link: std
     enabled: true
@@ -506,6 +506,37 @@ kmod:
     dest: sbin
     link: dyn
     enabled: true
+
+# =============================================================================
+# Hypervisor Programs (NVM)
+# =============================================================================
+# Enterprise hypervisor platform components for EXVM/VCEN distributions.
+# These are marked as 'external' because they use a special build process:
+#   - Standard Rust targets (not NexaOS userspace targets)
+#   - Vue.js frontend bundled via rust-embed
+#   - Complex enterprise feature flags
+#
+# Build: ./ndk build nvm
+# The rootfs builder will install pre-built NVM binaries if available.
+
+hypervisor:
+  - package: nvm-server
+    path: nvm
+    binary: nvm-server
+    description: "NVM hypervisor daemon with WebGUI"
+    dest: sbin
+    link: std
+    enabled: true
+    external: true              # Built via 'ndk build nvm', not normal userspace build
+  
+  - package: nvmctl
+    path: nvm
+    binary: nvmctl
+    description: "NVM management CLI"
+    dest: bin
+    link: std
+    enabled: true
+    external: true
 
 # =============================================================================
 # Test Programs

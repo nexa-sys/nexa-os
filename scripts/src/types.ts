@@ -10,18 +10,19 @@
 
 // Program category names matching directory structure
 export type ProgramCategoryName = 
-  | 'core'      // ni, getty
-  | 'user'      // shell, login, logout, adduser
-  | 'network'   // nslookup, ip, dhcp, nurl
-  | 'daemons'   // ntpd, uefi_compatd
-  | 'system'    // dmesg
-  | 'coreutils' // ls, cat, cp, mv...
-  | 'power'     // reboot, shutdown, halt, poweroff
-  | 'memory'    // swapon, swapoff, mkswap, free
-  | 'ipc'       // ipc-create, ipc-send, ipc-recv
-  | 'editors'   // edit
-  | 'kmod'      // lsmod, insmod, rmmod, modinfo
-  | 'test';     // crashtest, thread_test, etc.
+  | 'core'       // ni, getty
+  | 'user'       // shell, login, logout, adduser
+  | 'network'    // nslookup, ip, dhcp, nurl
+  | 'daemons'    // ntpd, uefi_compatd
+  | 'system'     // dmesg
+  | 'coreutils'  // ls, cat, cp, mv...
+  | 'power'      // reboot, shutdown, halt, poweroff
+  | 'memory'     // swapon, swapoff, mkswap, free
+  | 'ipc'        // ipc-create, ipc-send, ipc-recv
+  | 'editors'    // edit
+  | 'kmod'       // lsmod, insmod, rmmod, modinfo
+  | 'hypervisor' // nvm-server, nvmctl (built from nvm/)
+  | 'test';      // crashtest, thread_test, etc.
 
 // Program configuration from config/programs.yaml
 export interface ProgramConfig {
@@ -32,6 +33,7 @@ export interface ProgramConfig {
   link: 'std' | 'dyn';  // static or dynamic linking
   path?: string;    // path under programs/ (e.g., 'core/init')
   category?: ProgramCategoryName;  // category for log organization
+  external?: boolean;  // true for programs built via separate process (e.g., nvm)
 }
 
 export interface ProgramCategory {
@@ -150,6 +152,7 @@ export interface ProgramsConfig {
 
 export interface ProgramDefinition {
   package: string;
+  path?: string;       // path under programs/ (e.g., 'core/init') or special for external
   binary?: string;
   description?: string;
   dest: string;
@@ -158,6 +161,7 @@ export interface ProgramDefinition {
   enabled?: boolean;
   required?: boolean;
   production?: boolean;
+  external?: boolean;  // true for programs built from external crates (e.g., nvm/)
 }
 
 // Libraries config file (config/libraries.yaml)
@@ -268,6 +272,7 @@ export type BuildStep =
   | 'rootfs'
   | 'swap'
   | 'iso'
+  | 'nvm'       // NVM hypervisor platform (nvm-server, nvmctl)
   | 'clean';
 
 // RUSTFLAGS builder options
