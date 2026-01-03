@@ -114,7 +114,17 @@ pub mod storage;
 // Re-export main types
 pub use self::core::{
     Hypervisor, HypervisorConfig, HypervisorError, HypervisorResult,
-    VmHandle, VmId, VmSpec, VmStatus, VmInfo, VmInstance,
+    VmHandle, VmId, VmSpec, VmSpecBuilder, VmStatus, VmInfo, VmInstance,
+    // Disk types
+    DiskSpec, DiskFormat, DiskInterface, CacheMode, IoMode,
+    // Network types
+    NetworkSpec, NetworkType, NicModel, NetworkQosSpec,
+    // Boot and firmware types
+    BootDevice, FirmwareType, CpuModel, MachineType,
+    // NUMA and CPU types
+    NumaSpec, NumaNode, CpuPinning,
+    // Security types
+    VmSecuritySpec,
 };
 pub use self::manager::{
     VmManager, VmManagerConfig, VmManagerBuilder, VmMetadata, VmTemplate,
@@ -129,7 +139,7 @@ pub use self::memory::{
     MemoryHotplugManager, MemoryOvercommitManager,
 };
 pub use self::storage::{
-    StorageManager, VirtualDisk, DiskFormat, Snapshot,
+    StorageManager, VirtualDisk, Snapshot,
     StoragePoolType, StorageCache, StoragePoolId, VirtualDiskId, SnapshotId,
 };
 pub use self::network::{

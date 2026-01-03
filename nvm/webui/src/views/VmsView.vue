@@ -335,7 +335,7 @@ function openConsole(vm: Vm) {
     <!-- Click outside to close menu -->
     <div
       v-if="showActionsMenu"
-      class="fixed inset-0 z-0"
+      class="fixed inset-0 z-[5]"
       @click="showActionsMenu = null"
     />
   </div>

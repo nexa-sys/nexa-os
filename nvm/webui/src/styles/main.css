@@ -301,18 +301,18 @@
            rounded shadow-lg border border-dark-600 whitespace-nowrap;
   }
 
-  /* Modal */
+  /* Modal - high z-index to ensure it's above sidebar and other elements */
   .modal-overlay {
-    @apply fixed inset-0 bg-black/60 backdrop-blur-sm z-40 animate-fade-in;
+    @apply fixed inset-0 bg-black/60 backdrop-blur-sm z-[9998] animate-fade-in;
   }
 
   .modal-container {
-    @apply fixed inset-0 z-50 flex items-center justify-center p-4;
+    @apply fixed inset-0 z-[9999] flex items-center justify-center p-4;
   }
 
   .modal {
     @apply bg-dark-900 rounded-xl border border-dark-700 shadow-modal 
-           max-w-lg w-full max-h-[90vh] overflow-hidden animate-slide-up;
+           max-w-lg w-full max-h-[90vh] overflow-hidden animate-slide-up relative;
   }
 
   .modal-header {

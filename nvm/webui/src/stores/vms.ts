@@ -62,12 +62,127 @@ export interface Vm {
   tags?: string[]
 }
 
+// Simple mode create params (backward compatible)
 export interface VmCreateParams {
   name: string
   description?: string
   template?: string
   config: VmConfig
   tags?: string[]
+}
+
+// ===== Enterprise Configuration Types (ESXi/vCenter compatible) =====
+
+export interface CpuConfig {
+  sockets: number
+  cores_per_socket: number
+  threads_per_core: number
+  model: string
+  features: string[]
+  limit_mhz?: number
+  reservation_mhz?: number
+  nested: boolean
+}
+
+export interface MemoryConfig {
+  size_mb: number
+  hugepages: boolean
+  hugepage_size?: string
+  balloon: boolean
+  overcommit_ratio?: number
+  numa_enabled: boolean
+  hot_add: boolean
+}
+
+export interface EnterpriseDiskSpec {
+  size_gb: number
+  format: string          // qcow2, raw, vmdk
+  storage_pool: string
+  bus: string             // virtio, scsi, sata, ide
+  cache: string           // none, writeback, writethrough
+  io_mode: string         // native, threads
+  iops_limit?: number
+  mbps_limit?: number
+  thin_provisioning: boolean
+  boot_order?: number
+  existing_path?: string  // Use existing disk image
+}
+
+export interface EnterpriseNetworkSpec {
+  network: string         // Network bridge/VLAN
+  model: string           // virtio, e1000, e1000e
+  mac?: string            // Auto-generated if not provided
+  vlan_id?: number
+  rate_limit_mbps?: number
+  queues?: number
+  mtu?: number
+}
+
+export interface CdromConfig {
+  iso_path?: string
+  boot_order?: number
+}
+
+export interface UsbConfig {
+  enabled: boolean
+  controller_type: string  // xhci, ehci, uhci
+  devices: string[]        // List of USB device passthrough
+}
+
+export interface GpuConfig {
+  mode: string            // none, passthrough, vgpu, mdev
+  device_id?: string
+  vgpu_type?: string
+  framebuffer_mb?: number
+}
+
+export interface SerialPortConfig {
+  mode: string            // none, pty, socket, file
+  path?: string
+}
+
+export interface EnterpriseHardwareConfig {
+  cpu: CpuConfig
+  memory: MemoryConfig
+  disks: EnterpriseDiskSpec[]
+  networks: EnterpriseNetworkSpec[]
+  cdrom?: CdromConfig
+  usb?: UsbConfig
+  gpu?: GpuConfig
+  serial_ports: SerialPortConfig[]
+}
+
+export interface BootConfig {
+  firmware: string        // bios, uefi, uefi-secure
+  secure_boot: boolean
+  boot_order: string[]    // disk, cdrom, network, usb
+  boot_delay: number
+  splash_screen?: string
+}
+
+export interface SecurityConfig {
+  tpm: boolean
+  tpm_version: string
+  sev: boolean
+  sev_policy?: number
+  tdx: boolean
+  encryption_key?: string
+  isolation: string       // none, hypervisor, hardware
+}
+
+// Enterprise mode create params (full featured)
+export interface EnterpriseVmCreateParams {
+  name: string
+  description?: string
+  template?: string
+  os_type?: string
+  hardware?: EnterpriseHardwareConfig
+  boot?: BootConfig
+  security?: SecurityConfig
+  iso?: string
+  start_after_create?: boolean
+  tags?: string[]
+  host_node?: string
 }
 
 export const useVmsStore = defineStore('vms', () => {
@@ -149,14 +264,17 @@ export const useVmsStore = defineStore('vms', () => {
     }
   }
 
-  async function createVm(params: VmCreateParams) {
+  async function createVm(params: VmCreateParams | EnterpriseVmCreateParams) {
     loading.value = true
     error.value = null
     
     try {
       const response = await api.post('/vms', params)
       const newVm = response.data.data
-      vms.value.push(newVm)
+      
+      // Refresh VMs list to get the full VM object from backend
+      await fetchVms()
+      
       return newVm
     } catch (e: any) {
       error.value = e.response?.data?.error?.message || 'Failed to create VM'

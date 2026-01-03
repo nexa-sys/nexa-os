@@ -126,6 +126,7 @@ pub mod pci;
 pub mod vm;
 pub mod debugger;
 pub mod vmstate;  // VM state persistence
+pub mod executor; // VM execution engine (QEMU integration)
 
 // Hardware virtualization extensions
 pub mod vmx;      // Intel VT-x
