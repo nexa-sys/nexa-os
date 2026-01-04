@@ -336,27 +336,23 @@ impl FirmwareManager {
         self.set_phase(BootPhase::InitDevices);
         self.post_code(0x40);  // PCI enumeration
         
-        // Add default boot device
-        self.add_boot_device(BootDevice {
-            id: "hd0".into(),
-            device_type: BootDeviceType::HardDisk,
-            priority: 0,
-            bootable: true,
-            description: "Primary Hard Disk".into(),
-        });
+        // NOTE: Do NOT add fake boot devices here!
+        // The VM should call add_boot_device() only for actually attached disks
+        // This allows proper "No bootable device" detection
         
-        self.post_code(0x50);  // Boot device init complete
-        self.set_phase(BootPhase::BootSelect);
+        self.post_code(0x50);  // Device enumeration complete
         
-        // Select boot device
+        // Phase: Wait for setup key (2-3 second timeout for F2/DEL)
+        self.set_phase(BootPhase::WaitingForSetupKey);
+        
+        // Initialize boot timeout countdown
         {
             let mut state = self.state.write().unwrap();
-            state.boot_device_index = Some(0);
-            state.boot_attempt += 1;
+            state.boot_timeout_secs = 3;  // Enterprise standard: 3 seconds
         }
         
-        self.post_code(0x60);  // Loading boot sector
-        self.set_phase(BootPhase::Loading);
+        // Boot device selection happens after setup key wait timeout
+        // or when user presses a boot key
         
         Ok(context)
     }
@@ -425,6 +421,40 @@ impl FirmwareManager {
         devices.push(device);
         // Sort by priority
         devices.sort_by_key(|d| d.priority);
+    }
+    
+    /// Proceed to boot after setup key wait timeout
+    /// Returns true if boot can proceed, false if no bootable device
+    pub fn proceed_to_boot(&self) -> bool {
+        if !self.has_bootable_device() {
+            self.set_no_bootable_device();
+            return false;
+        }
+        
+        // Select first bootable device
+        {
+            let mut state = self.state.write().unwrap();
+            state.boot_device_index = Some(0);
+            state.boot_attempt += 1;
+        }
+        
+        self.post_code(0x60);  // Loading boot sector
+        self.set_phase(BootPhase::Loading);
+        
+        true
+    }
+    
+    /// Check if we're in setup key wait phase
+    pub fn is_waiting_for_setup_key(&self) -> bool {
+        matches!(self.get_phase(), BootPhase::WaitingForSetupKey)
+    }
+    
+    /// Enter BIOS/UEFI setup
+    pub fn enter_setup(&self) {
+        let mut state = self.state.write().unwrap();
+        state.phase = BootPhase::SetupMenu;
+        state.setup_requested = true;
+        state.menu_state = Some(BootMenuState::Main);
     }
     
     /// Get current boot phase
@@ -518,10 +548,138 @@ impl FirmwareManager {
         state.last_error = Some("No bootable device found".to_string());
     }
     
-    /// Check for bootable devices
+    /// Set boot sector invalid state (disk exists but no valid bootloader)
+    pub fn set_boot_sector_invalid(&self, device_name: &str) {
+        let mut state = self.state.write().unwrap();
+        state.phase = BootPhase::NoBootableDevice;
+        state.last_error = Some(format!(
+            "No operating system found on {}. Missing bootloader or invalid boot sector.", 
+            device_name
+        ));
+    }
+    
+    /// Check for bootable devices (just presence, not boot sector validity)
     pub fn has_bootable_device(&self) -> bool {
         let devices = self.boot_devices.read().unwrap();
         devices.iter().any(|d| d.bootable)
+    }
+    
+    /// Validate boot sector from disk image
+    /// 
+    /// For BIOS: Check MBR signature (0x55 0xAA at offset 510-511)
+    /// For UEFI: Check GPT signature or EFI bootloader path
+    /// 
+    /// Returns: (is_valid, error_message)
+    pub fn validate_boot_sector(&self, boot_sector: &[u8], firmware_type: FirmwareType) -> (bool, Option<String>) {
+        if boot_sector.len() < 512 {
+            return (false, Some("Boot sector too small (< 512 bytes)".to_string()));
+        }
+        
+        match firmware_type {
+            FirmwareType::Bios => {
+                // Check MBR signature: bytes 510-511 must be 0x55 0xAA
+                let sig_55 = boot_sector[510];
+                let sig_aa = boot_sector[511];
+                
+                if sig_55 == 0x55 && sig_aa == 0xAA {
+                    // Check if partition table has at least one bootable partition
+                    // or if there's code in the boot sector (non-zero first bytes)
+                    let has_code = boot_sector[0..446].iter().any(|&b| b != 0);
+                    if has_code {
+                        (true, None)
+                    } else {
+                        // MBR signature present but no boot code
+                        (false, Some("Disk has MBR signature but no boot code".to_string()))
+                    }
+                } else {
+                    (false, Some(format!(
+                        "Invalid MBR signature: expected 0x55AA, found 0x{:02X}{:02X}",
+                        sig_55, sig_aa
+                    )))
+                }
+            }
+            FirmwareType::Uefi | FirmwareType::UefiSecure => {
+                // For UEFI, check for GPT signature "EFI PART" at LBA 1 (offset 512)
+                // Or check protective MBR (0xEE partition type)
+                let sig_55 = boot_sector[510];
+                let sig_aa = boot_sector[511];
+                
+                if sig_55 == 0x55 && sig_aa == 0xAA {
+                    // Check for protective MBR (GPT indicator)
+                    // Partition type 0xEE at offset 450 indicates GPT
+                    let partition_type = boot_sector[450];
+                    if partition_type == 0xEE {
+                        // Protective MBR found, this is a GPT disk
+                        // Actual EFI boot file check would need filesystem access
+                        (true, None)
+                    } else {
+                        // Legacy MBR, might be hybrid or legacy boot
+                        let has_code = boot_sector[0..446].iter().any(|&b| b != 0);
+                        if has_code {
+                            (true, None)
+                        } else {
+                            (false, Some("No EFI System Partition found".to_string()))
+                        }
+                    }
+                } else {
+                    (false, Some("Invalid boot sector signature".to_string()))
+                }
+            }
+        }
+    }
+    
+    /// Get error message for boot failure
+    pub fn get_boot_error_message(&self, firmware_type: FirmwareType) -> Vec<String> {
+        let state = self.state.read().unwrap();
+        let mut lines = Vec::new();
+        
+        match firmware_type {
+            FirmwareType::Bios => {
+                lines.push(String::new());
+                lines.push(String::from("================================================================================"));
+                if let Some(ref error) = state.last_error {
+                    if error.contains("Invalid MBR") {
+                        lines.push(String::from("              MISSING OPERATING SYSTEM"));
+                    } else if error.contains("no boot code") {
+                        lines.push(String::from("              DISK BOOT FAILURE"));
+                    } else {
+                        lines.push(String::from("            OPERATING SYSTEM NOT FOUND"));
+                    }
+                } else {
+                    lines.push(String::from("            OPERATING SYSTEM NOT FOUND"));
+                }
+                lines.push(String::from("================================================================================"));
+                lines.push(String::new());
+                if let Some(ref error) = state.last_error {
+                    lines.push(error.clone());
+                }
+                lines.push(String::new());
+                lines.push(String::from("Please insert a bootable disk and press any key..."));
+                lines.push(String::from("Or press F2 to enter BIOS Setup"));
+            }
+            FirmwareType::Uefi | FirmwareType::UefiSecure => {
+                lines.push(String::new());
+                lines.push(String::from("================================================================================"));
+                lines.push(String::from("              NO BOOTABLE DEVICE FOUND"));
+                lines.push(String::from("================================================================================"));
+                lines.push(String::new());
+                if let Some(ref error) = state.last_error {
+                    lines.push(error.clone());
+                } else {
+                    lines.push(String::from("No EFI bootloader found on any device."));
+                }
+                lines.push(String::new());
+                lines.push(String::from("The system could not find a valid boot device."));
+                lines.push(String::from("Please verify:"));
+                lines.push(String::from("  - A bootable disk is attached"));
+                lines.push(String::from("  - The disk contains a valid EFI System Partition"));
+                lines.push(String::from("  - \\EFI\\BOOT\\BOOTX64.EFI exists on the ESP"));
+                lines.push(String::new());
+                lines.push(String::from("[F2] Enter UEFI Setup    [F12] Boot Menu    [Ctrl+Alt+Del] Reboot"));
+            }
+        }
+        
+        lines
     }
     
     /// Get boot timeout remaining

@@ -1414,6 +1414,11 @@ impl VmInstance {
             name: self.spec.name.clone(),
             nested_virt: self.spec.nested_virt,
             numa_nodes: Vec::new(),
+            boot_disks: self.spec.disks.iter()
+                .filter(|d| d.bootable)
+                .map(|d| d.path.to_string_lossy().to_string())
+                .collect(),
+            cdrom_images: Vec::new(),  // TODO: Add cdrom support to VmSpec
         };
         
         let vm = crate::vm::VirtualMachine::with_config(vm_config);

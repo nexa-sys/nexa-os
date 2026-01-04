@@ -172,6 +172,10 @@ pub struct VmConfig {
     pub nested_virt: bool,
     /// NUMA node configuration (memory_mb per node)
     pub numa_nodes: Vec<usize>,
+    /// Boot disk image paths (if any)
+    pub boot_disks: Vec<String>,
+    /// CD-ROM/ISO image paths (if any)
+    pub cdrom_images: Vec<String>,
 }
 
 impl Default for VmConfig {
@@ -191,6 +195,8 @@ impl Default for VmConfig {
             name: String::from("NexaOS-TestVM"),
             nested_virt: false,
             numa_nodes: Vec::new(),
+            boot_disks: Vec::new(),      // No boot disk by default
+            cdrom_images: Vec::new(),    // No CD-ROM by default
         }
     }
 }
@@ -212,6 +218,8 @@ impl VmConfig {
             name: String::from("MinimalVM"),
             nested_virt: false,
             numa_nodes: Vec::new(),
+            boot_disks: Vec::new(),
+            cdrom_images: Vec::new(),
         }
     }
     
@@ -231,6 +239,8 @@ impl VmConfig {
             name: String::from("FullVM"),
             nested_virt: false,
             numa_nodes: Vec::new(),
+            boot_disks: Vec::new(),
+            cdrom_images: Vec::new(),
         }
     }
     
@@ -551,22 +561,47 @@ impl VirtualMachine {
                         }
                     }
                     
-                    // Check for bootable devices - if none, show enterprise error
-                    if !fw_manager.has_bootable_device() {
+                    // Enterprise boot device validation:
+                    // 1. Check if any disk is attached (boot_disks or cdrom_images)
+                    // 2. If disk exists, validate boot sector (MBR signature for BIOS, GPT/EFI for UEFI)
+                    // 3. Show appropriate error: "No boot device" vs "Missing OS / Invalid boot sector"
+                    
+                    let has_disks = !self.config.boot_disks.is_empty() || !self.config.cdrom_images.is_empty();
+                    
+                    if !has_disks {
+                        // Case 1: No disk attached at all
                         fw_manager.set_no_bootable_device();
                         vga_lock.write_string("\n");
                         
-                        for line in fw_manager.get_no_boot_device_message(self.config.firmware_type) {
-                            if line.contains("NOT FOUND") || line.contains("NO BOOTABLE") {
+                        for line in fw_manager.get_boot_error_message(self.config.firmware_type) {
+                            if line.contains("NOT FOUND") || line.contains("MISSING") || line.contains("FAILURE") {
                                 vga_lock.write_string_colored(&format!("{}\n", line), 0x4F);  // White on red
-                            } else if line.contains("[F2]") || line.contains("[F12]") || line.contains("Ctrl+Alt+Del") {
+                            } else if line.contains("[F2]") || line.contains("[F12]") || line.contains("Ctrl+Alt+Del") || line.contains("press") {
                                 vga_lock.write_string_colored(&format!("{}\n", line), 0x0E);  // Yellow
                             } else {
                                 vga_lock.write_string(&format!("{}\n", line));
                             }
                         }
                     } else {
-                        vga_lock.write_string("Loading Boot Manager...\n\n");
+                        // Case 2: Disk exists - try to read and validate boot sector
+                        let boot_valid = self.validate_boot_sector(&fw_manager);
+                        
+                        if boot_valid {
+                            vga_lock.write_string("Loading Boot Manager...\n\n");
+                        } else {
+                            // Disk exists but no valid bootloader
+                            vga_lock.write_string("\n");
+                            
+                            for line in fw_manager.get_boot_error_message(self.config.firmware_type) {
+                                if line.contains("NOT FOUND") || line.contains("MISSING") || line.contains("FAILURE") {
+                                    vga_lock.write_string_colored(&format!("{}\n", line), 0x4F);  // White on red
+                                } else if line.contains("[F2]") || line.contains("[F12]") || line.contains("Ctrl+Alt+Del") || line.contains("press") {
+                                    vga_lock.write_string_colored(&format!("{}\n", line), 0x0E);  // Yellow
+                                } else {
+                                    vga_lock.write_string(&format!("{}\n", line));
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -587,6 +622,63 @@ impl VirtualMachine {
                     vga_lock.write_string_colored("Press Ctrl+Alt+Del to restart\n", 0x0E);
                     vga_lock.write_string("System halted.\n");
                 }
+            }
+        }
+    }
+    
+    /// Validate boot sector from attached disk
+    /// 
+    /// Reads the first 512 bytes of the boot disk and validates:
+    /// - BIOS: MBR signature (0x55AA) and boot code presence
+    /// - UEFI: GPT signature or EFI bootloader
+    fn validate_boot_sector(&self, fw_manager: &crate::firmware::FirmwareManager) -> bool {
+        use std::fs::File;
+        use std::io::Read;
+        
+        // Try boot disks first, then CD-ROMs
+        let disk_path = self.config.boot_disks.first()
+            .or_else(|| self.config.cdrom_images.first());
+        
+        let Some(path) = disk_path else {
+            // No disk configured
+            fw_manager.set_no_bootable_device();
+            return false;
+        };
+        
+        // Try to open and read the boot sector
+        let mut boot_sector = [0u8; 512];
+        
+        match File::open(path) {
+            Ok(mut file) => {
+                match file.read_exact(&mut boot_sector) {
+                    Ok(_) => {
+                        // Validate boot sector
+                        let (valid, error_msg) = fw_manager.validate_boot_sector(
+                            &boot_sector, 
+                            self.config.firmware_type
+                        );
+                        
+                        if !valid {
+                            if let Some(msg) = error_msg {
+                                fw_manager.set_boot_sector_invalid(&format!("{}: {}", path, msg));
+                            } else {
+                                fw_manager.set_boot_sector_invalid(path);
+                            }
+                        }
+                        
+                        valid
+                    }
+                    Err(e) => {
+                        // Disk exists but can't read (might be empty or smaller than 512 bytes)
+                        fw_manager.set_boot_sector_invalid(&format!("{}: Read error - {}", path, e));
+                        false
+                    }
+                }
+            }
+            Err(e) => {
+                // Disk file doesn't exist or can't be opened
+                fw_manager.set_boot_sector_invalid(&format!("{}: {}", path, e));
+                false
             }
         }
     }
