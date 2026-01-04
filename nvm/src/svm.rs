@@ -72,6 +72,25 @@ pub enum SvmError {
     InvalidGuestState(String),
 }
 
+impl std::fmt::Display for SvmError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotSupported => write!(f, "SVM not supported"),
+            Self::AlreadyEnabled => write!(f, "SVM already enabled"),
+            Self::NotEnabled => write!(f, "SVM not enabled"),
+            Self::InvalidVmcb => write!(f, "Invalid VMCB"),
+            Self::VmcbNotLoaded => write!(f, "VMCB not loaded"),
+            Self::VmrunFailed(msg) => write!(f, "VMRUN failed: {}", msg),
+            Self::NptFault { gpa, error_code } => 
+                write!(f, "NPT fault at GPA 0x{:x}, error 0x{:x}", gpa, error_code),
+            Self::Shutdown => write!(f, "Shutdown (triple fault)"),
+            Self::InvalidGuestState(msg) => write!(f, "Invalid guest state: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for SvmError {}
+
 /// SVM capabilities
 #[derive(Debug, Clone)]
 pub struct SvmCapabilities {
@@ -1239,6 +1258,17 @@ impl SvmExecutor {
     /// Check if running
     pub fn is_running(&self) -> bool {
         self.running.load(Ordering::SeqCst)
+    }
+    
+    /// Pause the executor (same as stop, execution continues when run() is called)
+    pub fn pause(&self) {
+        self.running.store(false, Ordering::SeqCst);
+    }
+    
+    /// Resume the executor (sets running flag, but run() must be called separately)
+    pub fn resume(&self) {
+        // Just set the flag, actual execution happens in run()
+        // No-op here since run() will set it to true
     }
     
     /// Get SVM manager

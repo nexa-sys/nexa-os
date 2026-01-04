@@ -47,6 +47,12 @@ pub struct CompiledBlock {
     pub invalidated: bool,
 }
 
+// SAFETY: CompiledBlock's host_code pointer points to executable memory that is
+// only written during compilation and read-only during execution. The memory
+// is managed by CodeCache and lives as long as the CompiledBlock.
+unsafe impl Send for CompiledBlock {}
+unsafe impl Sync for CompiledBlock {}
+
 impl CompiledBlock {
     pub fn record_execution(&self) {
         self.exec_count.fetch_add(1, Ordering::Relaxed);
