@@ -1255,7 +1255,10 @@ impl VirtualCpu {
     }
     
     pub fn write_rflags(&self, value: u64) {
-        self.state.write().unwrap().regs.rflags = value;
+        let mut state = self.state.write().unwrap();
+        state.regs.rflags = value;
+        // Sync interrupts_enabled with IF flag (bit 9)
+        state.interrupts_enabled = (value & rflags::IF) != 0;
     }
     
     /// Read a general purpose register by index (0=RAX, 1=RCX, 2=RDX, etc.)

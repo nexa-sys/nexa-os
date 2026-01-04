@@ -29,6 +29,8 @@ impl DeviceId {
     pub const AHCI: Self = Self(0x31);
     pub const NVME: Self = Self(0x32);
     pub const FRAMEBUFFER: Self = Self(0x40);
+    pub const KEYBOARD: Self = Self(0x50);
+    pub const VGA: Self = Self(0x41);
 }
 
 /// I/O access type

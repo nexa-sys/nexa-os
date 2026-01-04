@@ -115,6 +115,11 @@ function connectWebSocket() {
       loading.value = false
       reconnectAttempts = 0
       consoleMessages.value.push('Connected to VM console')
+      // Auto-enable keyboard capture for better UX
+      nextTick(() => {
+        keyboardCaptured.value = true
+        canvasRef.value?.focus()
+      })
     }
     
     ws.onerror = (e) => {
@@ -412,7 +417,6 @@ function disableKeyboardCapture() {
         tabindex="0"
         @mousedown="enableKeyboardCapture"
         @focus="keyboardCaptured = true"
-        @blur="keyboardCaptured = false"
         @contextmenu.prevent
       />
     </div>

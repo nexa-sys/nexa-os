@@ -1536,12 +1536,18 @@ async fn handle_console_socket(
                                                 let _ = executor.inject_key(&vm_id, key_str, true);
                                             }
                                         }
-                                    } else if let Some(key) = cmd.get("key").and_then(|k| k.as_str()) {
-                                        let key_mapped = map_js_key_to_ps2(key, &cmd);
-                                        let _ = executor.inject_key(&vm_id, &key_mapped, is_release);
                                     } else if let Some(code) = cmd.get("code").and_then(|c| c.as_str()) {
-                                        let key_mapped = map_js_code_to_ps2(code);
-                                        let _ = executor.inject_key(&vm_id, &key_mapped, is_release);
+                                        // Prefer code over key - code is physical key location, more reliable
+                                        if !code.is_empty() {
+                                            let key_mapped = map_js_code_to_ps2(code);
+                                            let _ = executor.inject_key(&vm_id, &key_mapped, is_release);
+                                        }
+                                    } else if let Some(key) = cmd.get("key").and_then(|k| k.as_str()) {
+                                        // Fallback to key if code is not available
+                                        if !key.is_empty() {
+                                            let key_mapped = map_js_key_to_ps2(key, &cmd);
+                                            let _ = executor.inject_key(&vm_id, &key_mapped, is_release);
+                                        }
                                     }
                                 }
                                 

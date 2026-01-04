@@ -101,7 +101,7 @@ pub struct Ps2Keyboard {
 impl Ps2Keyboard {
     pub fn new() -> Self {
         Self {
-            id: DeviceId(0x50), // New device ID for keyboard
+            id: DeviceId::KEYBOARD, // Use standard device ID
             output_buffer: VecDeque::new(),
             input_buffer: VecDeque::new(),
             status: status::SYSTEM_FLAG | status::KEYBOARD_ENABLED,

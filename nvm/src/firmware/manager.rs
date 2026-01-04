@@ -214,7 +214,7 @@ impl Default for FirmwareBootContext {
             cr3: 0,
             cr4: 0,
             efer: 0,
-            rflags: 0x0000_0002,  // Reserved bit 1 always set
+            rflags: 0x0000_0202,  // Reserved bit 1 + IF (enable interrupts)
             gdt_base: 0,
             gdt_limit: 0,
             idt_base: 0,
@@ -395,7 +395,7 @@ impl FirmwareManager {
                     cr4: 0x0000_06A0,
                     // EFER: LME + LMA + SCE + NXE
                     efer: 0x0000_0D01,
-                    rflags: 0x0000_0002,
+                    rflags: 0x0000_0202,  // Reserved bit 1 + IF (enable interrupts)
                     gdt_base: 0x0008_0000,  // GDT at 512KB
                     gdt_limit: 0x2F,        // 6 entries (null + code64 + data64 + code32 + data32 + tss)
                     idt_base: 0x0008_1000,  // IDT at 512KB + 4KB
