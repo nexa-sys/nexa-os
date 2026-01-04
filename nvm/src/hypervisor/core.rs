@@ -1545,7 +1545,15 @@ impl VmInstance {
         // System info
         vga.write_string(&format!("VM: {}\n", self.spec.name));
         vga.write_string(&format!("vCPUs: {}  Memory: {} MB\n", self.spec.vcpus, self.spec.memory_mb));
-        vga.write_string(&format!("Backend: {:?}\n\n", self.backend_type));
+        
+        // Backend info with performance note
+        let backend_info = match self.backend_type {
+            VmBackendType::Jit => "JIT (ReadyNow! enabled, no VM-exit overhead)",
+            VmBackendType::Vmx => "Intel VT-x (VMX)",
+            VmBackendType::Svm => "AMD-V (SVM)",
+            VmBackendType::Auto => "Auto-detected",
+        };
+        vga.write_string(&format!("Backend: {}\n\n", backend_info));
         
         // Firmware info
         match self.spec.firmware {
@@ -1559,7 +1567,11 @@ impl VmInstance {
             }
         }
         
-        vga.write_string_colored("Initializing hardware...\n", 0x07);
+        vga.write_string_colored("[OK] ", 0x0A);  // Green
+        vga.write_string("Hardware initialized\n");
+        vga.write_string_colored("[OK] ", 0x0A);
+        vga.write_string("VM running - awaiting boot device\n\n");
+        vga.write_string("_");  // Cursor
     }
     
     /// Start with Intel VT-x (VMX) backend

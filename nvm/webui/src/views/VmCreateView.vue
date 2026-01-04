@@ -155,10 +155,10 @@ const cpuModels = ['host-passthrough', 'host-model', 'qemu64', 'Skylake-Server',
 const firmwareOptions = ['uefi', 'bios']
 const machineTypes = ['q35', 'i440fx', 'virt']
 const backendOptions = [
-  { value: 'jit', label: 'JIT (Software)', description: '5-15% faster, no hardware virtualization needed' },
-  { value: 'vmx', label: 'VMX (Intel VT-x)', description: 'Intel hardware virtualization' },
-  { value: 'svm', label: 'SVM (AMD-V)', description: 'AMD hardware virtualization' },
-  { value: 'auto', label: 'Auto-detect', description: 'Choose best available backend' },
+  { value: 'jit', label: 'JIT + ReadyNow!', description: 'Fastest: no VM-exit overhead, 5-15% faster than hardware virt' },
+  { value: 'vmx', label: 'VMX (Intel VT-x)', description: 'Intel hardware virtualization with JIT fallback' },
+  { value: 'svm', label: 'SVM (AMD-V)', description: 'AMD hardware virtualization with JIT fallback' },
+  { value: 'auto', label: 'Auto-detect', description: 'Choose best available backend automatically' },
 ]
 
 // Computed total vCPUs
