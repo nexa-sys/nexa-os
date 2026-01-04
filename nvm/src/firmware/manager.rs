@@ -44,14 +44,48 @@ pub enum BootPhase {
     PostComplete,
     /// Initializing boot devices
     InitDevices,
+    /// Waiting for user input (F2/DEL to enter setup)
+    WaitingForSetupKey,
+    /// Entering BIOS/UEFI setup menu
+    SetupMenu,
     /// Selecting boot device
     BootSelect,
     /// Loading boot loader/OS
     Loading,
     /// Boot handoff complete, OS running
     Running,
+    /// No bootable device - show error and enter setup
+    NoBootableDevice,
     /// Boot failed
     Failed,
+}
+
+/// Boot menu state for enterprise BIOS/UEFI setup
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BootMenuState {
+    /// Main menu
+    Main,
+    /// Boot order configuration
+    BootOrder,
+    /// Date/Time settings
+    DateTime,
+    /// Security settings
+    Security,
+    /// Exit menu
+    Exit,
+}
+
+/// Key codes for setup menu navigation
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetupKey {
+    F2,
+    Delete,
+    Escape,
+    Enter,
+    Up,
+    Down,
+    F10,  // Save & Exit
+    CtrlAltDel,
 }
 
 impl Default for BootPhase {
@@ -81,6 +115,16 @@ pub struct FirmwareState {
     pub cpu_count: u32,
     /// Boot time (milliseconds since reset)
     pub boot_time_ms: u64,
+    /// Boot timeout remaining (seconds)
+    pub boot_timeout_secs: u8,
+    /// Whether setup key was pressed
+    pub setup_requested: bool,
+    /// Boot menu state (if in setup)
+    pub menu_state: Option<BootMenuState>,
+    /// Last error message
+    pub last_error: Option<String>,
+    /// Whether Ctrl+Alt+Del was pressed
+    pub reboot_requested: bool,
 }
 
 impl Default for FirmwareState {
@@ -95,6 +139,11 @@ impl Default for FirmwareState {
             memory_detected_kb: 0,
             cpu_count: 1,
             boot_time_ms: 0,
+            boot_timeout_secs: 3,  // ESXi-style 3 second timeout
+            setup_requested: false,
+            menu_state: None,
+            last_error: None,
+            reboot_requested: false,
         }
     }
 }
@@ -431,7 +480,133 @@ impl FirmwareManager {
     /// Mark boot as failed
     pub fn boot_failed(&self, error: &str) {
         self.set_phase(BootPhase::Failed);
+        {
+            let mut state = self.state.write().unwrap();
+            state.last_error = Some(error.to_string());
+        }
         self.error_log.lock().unwrap().push(error.to_string());
+    }
+    
+    /// Handle setup key press (F2/DEL)
+    pub fn request_setup(&self) {
+        let mut state = self.state.write().unwrap();
+        state.setup_requested = true;
+        state.phase = BootPhase::SetupMenu;
+        state.menu_state = Some(BootMenuState::Main);
+    }
+    
+    /// Handle Ctrl+Alt+Del
+    pub fn request_reboot(&self) {
+        let mut state = self.state.write().unwrap();
+        state.reboot_requested = true;
+    }
+    
+    /// Check if reboot was requested
+    pub fn is_reboot_requested(&self) -> bool {
+        self.state.read().unwrap().reboot_requested
+    }
+    
+    /// Check if setup was requested
+    pub fn is_setup_requested(&self) -> bool {
+        self.state.read().unwrap().setup_requested
+    }
+    
+    /// Set no bootable device state
+    pub fn set_no_bootable_device(&self) {
+        let mut state = self.state.write().unwrap();
+        state.phase = BootPhase::NoBootableDevice;
+        state.last_error = Some("No bootable device found".to_string());
+    }
+    
+    /// Check for bootable devices
+    pub fn has_bootable_device(&self) -> bool {
+        let devices = self.boot_devices.read().unwrap();
+        devices.iter().any(|d| d.bootable)
+    }
+    
+    /// Get boot timeout remaining
+    pub fn get_boot_timeout(&self) -> u8 {
+        self.state.read().unwrap().boot_timeout_secs
+    }
+    
+    /// Decrement boot timeout
+    pub fn tick_boot_timeout(&self) -> u8 {
+        let mut state = self.state.write().unwrap();
+        if state.boot_timeout_secs > 0 {
+            state.boot_timeout_secs -= 1;
+        }
+        state.boot_timeout_secs
+    }
+    
+    /// Generate boot prompt text for display
+    pub fn get_boot_prompt(&self, firmware_type: FirmwareType) -> Vec<String> {
+        let state = self.state.read().unwrap();
+        let mut lines = Vec::new();
+        
+        match firmware_type {
+            FirmwareType::Bios => {
+                lines.push(String::new());
+                lines.push(format!("Press F2 or DEL to enter BIOS Setup ({} sec)", state.boot_timeout_secs));
+                lines.push(String::from("Press F12 for Boot Menu"));
+                lines.push(String::new());
+            }
+            FirmwareType::Uefi | FirmwareType::UefiSecure => {
+                lines.push(String::new());
+                lines.push(format!("Press F2 or DEL to enter UEFI Setup ({} sec)", state.boot_timeout_secs));
+                lines.push(String::from("Press F12 for Boot Device Selection"));
+                if matches!(firmware_type, FirmwareType::UefiSecure) {
+                    lines.push(String::from("Secure Boot: ENABLED"));
+                }
+                lines.push(String::new());
+            }
+        }
+        
+        lines
+    }
+    
+    /// Generate no boot device error message
+    pub fn get_no_boot_device_message(&self, firmware_type: FirmwareType) -> Vec<String> {
+        let mut lines = Vec::new();
+        
+        match firmware_type {
+            FirmwareType::Bios => {
+                lines.push(String::new());
+                lines.push(String::from("================================================================================"));
+                lines.push(String::from("                         BOOT DEVICE NOT FOUND"));
+                lines.push(String::from("================================================================================"));
+                lines.push(String::new());
+                lines.push(String::from("No bootable device detected. Please verify:"));
+                lines.push(String::from("  - Boot media is properly connected"));
+                lines.push(String::from("  - Boot order is correctly configured in BIOS Setup"));
+                lines.push(String::from("  - Boot device contains a valid operating system"));
+                lines.push(String::new());
+                lines.push(String::from("Press F2 to enter BIOS Setup"));
+                lines.push(String::from("Press Ctrl+Alt+Del to reboot"));
+                lines.push(String::new());
+                lines.push(String::from("Strike the F1 key to retry boot, F2 for setup utility"));
+            }
+            FirmwareType::Uefi | FirmwareType::UefiSecure => {
+                lines.push(String::new());
+                lines.push(String::from("================================================================================"));
+                lines.push(String::from("                       NO BOOTABLE DEVICE FOUND"));
+                lines.push(String::from("================================================================================"));
+                lines.push(String::new());
+                lines.push(String::from("  The system could not find any bootable devices."));
+                lines.push(String::new());
+                lines.push(String::from("  Please ensure that:"));
+                lines.push(String::from("    1. A bootable medium is connected (HDD, SSD, USB, CD/DVD)"));
+                lines.push(String::from("    2. The boot device contains a valid EFI boot loader"));
+                lines.push(String::from("    3. Secure Boot is disabled if using unsigned boot media"));
+                lines.push(String::new());
+                lines.push(String::from("  Options:"));
+                lines.push(String::from("    [F2]            Enter UEFI Setup"));
+                lines.push(String::from("    [F12]           Select Boot Device"));
+                lines.push(String::from("    [Ctrl+Alt+Del]  Restart System"));
+                lines.push(String::new());
+            }
+        }
+        
+        lines
     }
     
     /// Get firmware version string

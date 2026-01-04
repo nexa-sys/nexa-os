@@ -326,6 +326,160 @@ impl Vga {
         // Render to framebuffer after writing
         self.render_text_to_framebuffer();
     }
+    
+    /// Write a string with specified color attribute
+    /// attr format: 0xBF where B=background (0-F), F=foreground (0-F)
+    /// Common values:
+    ///   0x07 - Light gray on black (default)
+    ///   0x0F - Bright white on black
+    ///   0x1F - Bright white on blue (BIOS header style)
+    ///   0x4F - Bright white on red (error)
+    ///   0x0E - Yellow on black (warning/highlight)
+    ///   0x0A - Light green on black (success)
+    ///   0x0C - Light red on black (error text)
+    pub fn write_string_colored(&mut self, s: &str, attr: u8) {
+        for ch in s.bytes() {
+            match ch {
+                b'\n' => {
+                    self.cursor_x = 0;
+                    self.cursor_y += 1;
+                }
+                b'\r' => {
+                    self.cursor_x = 0;
+                }
+                b'\x08' => {
+                    if self.cursor_x > 0 {
+                        self.cursor_x -= 1;
+                    }
+                }
+                _ => {
+                    if self.cursor_x < TEXT_COLS as u8 && self.cursor_y < TEXT_ROWS as u8 {
+                        let idx = (self.cursor_y as usize * TEXT_COLS + self.cursor_x as usize) * 2;
+                        self.text_buffer[idx] = ch;
+                        self.text_buffer[idx + 1] = attr;
+                        self.cursor_x += 1;
+                    }
+                }
+            }
+            
+            // Handle line wrap
+            if self.cursor_x >= TEXT_COLS as u8 {
+                self.cursor_x = 0;
+                self.cursor_y += 1;
+            }
+            
+            // Handle scroll
+            if self.cursor_y >= TEXT_ROWS as u8 {
+                self.scroll_up();
+                self.cursor_y = (TEXT_ROWS - 1) as u8;
+            }
+        }
+        
+        self.dirty = true;
+        // Render to framebuffer after writing
+        self.render_text_to_framebuffer();
+    }
+    
+    /// Set text attribute for subsequent write_char calls at current position
+    pub fn set_attribute(&mut self, attr: u8) {
+        if self.cursor_x < TEXT_COLS as u8 && self.cursor_y < TEXT_ROWS as u8 {
+            let idx = (self.cursor_y as usize * TEXT_COLS + self.cursor_x as usize) * 2;
+            self.text_buffer[idx + 1] = attr;
+        }
+    }
+    
+    /// Fill a line with a character and attribute (for drawing borders)
+    pub fn fill_line(&mut self, row: u8, ch: u8, attr: u8) {
+        if row < TEXT_ROWS as u8 {
+            for col in 0..TEXT_COLS {
+                let idx = (row as usize * TEXT_COLS + col) * 2;
+                self.text_buffer[idx] = ch;
+                self.text_buffer[idx + 1] = attr;
+            }
+            self.dirty = true;
+        }
+    }
+    
+    /// Draw a box with double-line borders (enterprise UI style)
+    pub fn draw_box(&mut self, top: u8, left: u8, bottom: u8, right: u8, attr: u8) {
+        // Box drawing characters
+        const TOP_LEFT: u8 = 0xC9;      // ╔
+        const TOP_RIGHT: u8 = 0xBB;     // ╗
+        const BOTTOM_LEFT: u8 = 0xC8;   // ╚
+        const BOTTOM_RIGHT: u8 = 0xBC;  // ╝
+        const HORIZONTAL: u8 = 0xCD;    // ═
+        const VERTICAL: u8 = 0xBA;      // ║
+        
+        // Top border
+        self.set_char_at(top, left, TOP_LEFT, attr);
+        for col in (left + 1)..right {
+            self.set_char_at(top, col, HORIZONTAL, attr);
+        }
+        self.set_char_at(top, right, TOP_RIGHT, attr);
+        
+        // Side borders
+        for row in (top + 1)..bottom {
+            self.set_char_at(row, left, VERTICAL, attr);
+            self.set_char_at(row, right, VERTICAL, attr);
+        }
+        
+        // Bottom border
+        self.set_char_at(bottom, left, BOTTOM_LEFT, attr);
+        for col in (left + 1)..right {
+            self.set_char_at(bottom, col, HORIZONTAL, attr);
+        }
+        self.set_char_at(bottom, right, BOTTOM_RIGHT, attr);
+        
+        self.dirty = true;
+    }
+    
+    /// Set a character at a specific position
+    pub fn set_char_at(&mut self, row: u8, col: u8, ch: u8, attr: u8) {
+        if row < TEXT_ROWS as u8 && col < TEXT_COLS as u8 {
+            let idx = (row as usize * TEXT_COLS + col as usize) * 2;
+            self.text_buffer[idx] = ch;
+            self.text_buffer[idx + 1] = attr;
+        }
+    }
+    
+    /// Write string at specific position
+    pub fn write_string_at(&mut self, row: u8, col: u8, s: &str, attr: u8) {
+        let old_x = self.cursor_x;
+        let old_y = self.cursor_y;
+        
+        self.cursor_x = col;
+        self.cursor_y = row;
+        
+        for ch in s.bytes() {
+            if ch == b'\n' || ch == b'\r' {
+                continue; // Skip newlines in positioned write
+            }
+            if self.cursor_x < TEXT_COLS as u8 && self.cursor_y < TEXT_ROWS as u8 {
+                let idx = (self.cursor_y as usize * TEXT_COLS + self.cursor_x as usize) * 2;
+                self.text_buffer[idx] = ch;
+                self.text_buffer[idx + 1] = attr;
+                self.cursor_x += 1;
+            }
+        }
+        
+        self.cursor_x = old_x;
+        self.cursor_y = old_y;
+        self.dirty = true;
+    }
+    
+    /// Clear a region with specified attribute
+    pub fn clear_region(&mut self, top: u8, left: u8, bottom: u8, right: u8, attr: u8) {
+        for row in top..=bottom {
+            for col in left..=right {
+                if row < TEXT_ROWS as u8 && col < TEXT_COLS as u8 {
+                    let idx = (row as usize * TEXT_COLS + col as usize) * 2;
+                    self.text_buffer[idx] = b' ';
+                    self.text_buffer[idx + 1] = attr;
+                }
+            }
+        }
+        self.dirty = true;
+    }
 
     /// Scroll text buffer up by one line
     fn scroll_up(&mut self) {

@@ -331,6 +331,8 @@ pub struct VirtualMachine {
     serial_output: Arc<Mutex<Vec<u8>>>,
     /// VGA display device
     vga_device: Option<Arc<Mutex<crate::devices::vga::Vga>>>,
+    /// PS/2 Keyboard device
+    keyboard_device: Option<Arc<Mutex<crate::devices::keyboard::Ps2Keyboard>>>,
     /// Event log
     events: Arc<Mutex<VecDeque<VmEvent>>>,
     /// Maximum event log size
@@ -420,6 +422,17 @@ impl VirtualMachine {
             None
         };
         
+        // PS/2 Keyboard Controller
+        let keyboard_device = {
+            let keyboard = Arc::new(Mutex::new(crate::devices::keyboard::Ps2Keyboard::new()));
+            // Register keyboard port ranges (0x60 and 0x64)
+            hal.devices.add_device_with_ports(
+                keyboard.clone(),
+                &[(0x60, 0x60), (0x64, 0x64)],
+            );
+            Some(keyboard)
+        };
+        
         // Add additional CPUs
         for _ in 1..config.cpus {
             hal.add_cpu();
@@ -431,6 +444,7 @@ impl VirtualMachine {
             state: RwLock::new(VmState::Created),
             serial_output,
             vga_device,
+            keyboard_device,
             events: Arc::new(Mutex::new(VecDeque::with_capacity(max_events))),
             max_events,
             snapshots: RwLock::new(HashMap::new()),
@@ -463,7 +477,7 @@ impl VirtualMachine {
     
     /// Load firmware (BIOS or UEFI) into guest memory
     fn load_firmware(&self) {
-        use crate::firmware::{FirmwareManager, FirmwareType};
+        use crate::firmware::{FirmwareManager, FirmwareType, BootPhase};
         
         // Get raw memory slice from physical memory
         let (ram_ptr, ram_size) = self.hal.memory.ram_region();
@@ -492,42 +506,85 @@ impl VirtualMachine {
                     is_write: true 
                 });
                 
-                // Display boot info on VGA
+                // Display boot info on VGA - Enterprise-grade boot experience
                 if let Some(ref vga) = self.vga_device {
                     let mut vga_lock = vga.lock().unwrap();
                     vga_lock.clear();
                     
                     match self.config.firmware_type {
                         FirmwareType::Bios => {
-                            vga_lock.write_string("NexaBIOS v1.0 - Enterprise Edition\n");
-                            vga_lock.write_string("==================================\n\n");
+                            // ESXi-style BIOS boot screen
+                            vga_lock.write_string_colored("NexaBIOS v1.0 - Enterprise Edition\n", 0x1F);  // White on blue
+                            vga_lock.write_string("================================================================================\n");
                             vga_lock.write_string(&format!("Memory: {} MB detected\n", self.config.memory_mb));
-                            vga_lock.write_string(&format!("CPUs: {} processor(s)\n", self.config.cpus));
-                            vga_lock.write_string("\nPOST Complete. Booting...\n\n");
+                            vga_lock.write_string(&format!("CPUs: {} processor(s)\n\n", self.config.cpus));
+                            vga_lock.write_string("POST Complete.\n\n");
+                            
+                            // Setup key prompt (F2/DEL)
+                            for line in fw_manager.get_boot_prompt(self.config.firmware_type) {
+                                if line.contains("F2") || line.contains("DEL") {
+                                    vga_lock.write_string_colored(&format!("{}\n", line), 0x0E);  // Yellow
+                                } else {
+                                    vga_lock.write_string(&format!("{}\n", line));
+                                }
+                            }
                         }
                         FirmwareType::Uefi | FirmwareType::UefiSecure => {
-                            vga_lock.write_string("NexaUEFI v1.0 - Enterprise Edition\n");
-                            vga_lock.write_string("==================================\n\n");
+                            // Modern UEFI boot screen (like Dell/HP enterprise servers)
+                            vga_lock.write_string_colored("NexaUEFI v1.0 - Enterprise Edition\n", 0x1F);  // White on blue
+                            vga_lock.write_string("================================================================================\n\n");
                             vga_lock.write_string(&format!("Memory: {} MB\n", self.config.memory_mb));
                             vga_lock.write_string(&format!("CPUs: {} processor(s)\n", self.config.cpus));
                             if matches!(self.config.firmware_type, FirmwareType::UefiSecure) {
-                                vga_lock.write_string("Secure Boot: ENABLED\n");
+                                vga_lock.write_string_colored("Secure Boot: ENABLED\n", 0x0A);  // Green
                             }
-                            vga_lock.write_string("\nUEFI Initialization Complete.\n");
-                            vga_lock.write_string("Loading Boot Manager...\n\n");
+                            vga_lock.write_string("\nUEFI Initialization Complete.\n\n");
+                            
+                            // Setup key prompt
+                            for line in fw_manager.get_boot_prompt(self.config.firmware_type) {
+                                if line.contains("F2") || line.contains("DEL") || line.contains("F12") {
+                                    vga_lock.write_string_colored(&format!("{}\n", line), 0x0E);  // Yellow
+                                } else {
+                                    vga_lock.write_string(&format!("{}\n", line));
+                                }
+                            }
                         }
+                    }
+                    
+                    // Check for bootable devices - if none, show enterprise error
+                    if !fw_manager.has_bootable_device() {
+                        fw_manager.set_no_bootable_device();
+                        vga_lock.write_string("\n");
+                        
+                        for line in fw_manager.get_no_boot_device_message(self.config.firmware_type) {
+                            if line.contains("NOT FOUND") || line.contains("NO BOOTABLE") {
+                                vga_lock.write_string_colored(&format!("{}\n", line), 0x4F);  // White on red
+                            } else if line.contains("[F2]") || line.contains("[F12]") || line.contains("Ctrl+Alt+Del") {
+                                vga_lock.write_string_colored(&format!("{}\n", line), 0x0E);  // Yellow
+                            } else {
+                                vga_lock.write_string(&format!("{}\n", line));
+                            }
+                        }
+                    } else {
+                        vga_lock.write_string("Loading Boot Manager...\n\n");
                     }
                 }
             }
             Err(e) => {
-                // Boot failed
+                // Boot failed - show enterprise error
                 self.record_event(VmEvent::PortIo { 
                     port: 0x80, value: 0xE0, is_write: true // Error
                 });
                 
+                fw_manager.boot_failed(&e.to_string());
+                
                 if let Some(ref vga) = self.vga_device {
                     let mut vga_lock = vga.lock().unwrap();
-                    vga_lock.write_string(&format!("\nFirmware Error: {}\n", e));
+                    vga_lock.write_string_colored("\n\n*** FIRMWARE INITIALIZATION ERROR ***\n\n", 0x4F);
+                    vga_lock.write_string(&format!("Error: {}\n\n", e));
+                    vga_lock.write_string("The system was unable to initialize the firmware.\n");
+                    vga_lock.write_string("Please check hardware configuration.\n\n");
+                    vga_lock.write_string_colored("Press Ctrl+Alt+Del to restart\n", 0x0E);
                     vga_lock.write_string("System halted.\n");
                 }
             }
@@ -731,6 +788,83 @@ impl VirtualMachine {
         if let Some(vga) = &self.vga_device {
             let mut vga_lock = vga.lock().unwrap();
             vga_lock.write_string(text);
+        }
+    }
+    
+    /// Write colored text to VGA console
+    pub fn vga_write_colored(&self, text: &str, attr: u8) {
+        if let Some(vga) = &self.vga_device {
+            let mut vga_lock = vga.lock().unwrap();
+            vga_lock.write_string_colored(text, attr);
+        }
+    }
+    
+    // ========================================================================
+    // Keyboard Input (Enterprise boot-time key handling)
+    // ========================================================================
+    
+    /// Inject a keyboard key press
+    pub fn inject_key(&self, key: &str, is_release: bool) {
+        if let Some(ref keyboard) = self.keyboard_device {
+            let mut kb_lock = keyboard.lock().unwrap();
+            kb_lock.inject_key(key, is_release);
+        }
+    }
+    
+    /// Check if setup key (F2/DEL) was pressed
+    pub fn is_setup_key_pressed(&self) -> bool {
+        if let Some(ref keyboard) = self.keyboard_device {
+            keyboard.lock().unwrap().setup_key_pressed()
+        } else {
+            false
+        }
+    }
+    
+    /// Check if reboot combination (Ctrl+Alt+Del) was pressed
+    pub fn is_reboot_requested(&self) -> bool {
+        if let Some(ref keyboard) = self.keyboard_device {
+            keyboard.lock().unwrap().reboot_requested()
+        } else {
+            false
+        }
+    }
+    
+    /// Poll for special key event
+    pub fn poll_special_key(&self) -> Option<crate::devices::keyboard::SpecialKey> {
+        if let Some(ref keyboard) = self.keyboard_device {
+            keyboard.lock().unwrap().poll_special_key()
+        } else {
+            None
+        }
+    }
+    
+    /// Clear pending special key events
+    pub fn clear_special_keys(&self) {
+        if let Some(ref keyboard) = self.keyboard_device {
+            keyboard.lock().unwrap().clear_special_keys();
+        }
+    }
+    
+    /// Handle Ctrl+Alt+Del reboot request
+    pub fn handle_reboot_request(&self) {
+        if self.is_reboot_requested() {
+            self.record_event(VmEvent::StateChange { 
+                from: *self.state.read().unwrap(), 
+                to: VmState::Created 
+            });
+            
+            // Display reboot message
+            if let Some(ref vga) = self.vga_device {
+                let mut vga_lock = vga.lock().unwrap();
+                vga_lock.write_string_colored("\n\nSystem restart initiated (Ctrl+Alt+Del)...\n", 0x0E);
+            }
+            
+            // Reset VM
+            self.reset();
+            self.clear_special_keys();
+            
+            // Restart
+            self.start();
         }
     }
 

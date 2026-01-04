@@ -39,7 +39,7 @@ pub mod manager;
 pub use bios::{Bios, BiosConfig, BiosServices};
 pub use uefi::{UefiFirmware, UefiConfig, UefiBootServices, UefiRuntimeServices};
 pub use font::{VgaFont, get_vga_font, FONT_WIDTH, FONT_HEIGHT};
-pub use manager::{FirmwareManager, FirmwareBootContext, FirmwareState, BootPhase};
+pub use manager::{FirmwareManager, FirmwareBootContext, FirmwareState, BootPhase, BootMenuState, SetupKey};
 
 use crate::memory::PhysAddr;
 

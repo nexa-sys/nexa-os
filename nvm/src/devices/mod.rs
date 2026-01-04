@@ -317,6 +317,9 @@ pub mod ioapic;
 /// VGA/Framebuffer emulation
 pub mod vga;
 
+/// PS/2 Keyboard Controller emulation
+pub mod keyboard;
+
 #[cfg(test)]
 mod tests {
     use super::*;
