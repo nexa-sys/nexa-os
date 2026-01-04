@@ -121,6 +121,7 @@ const form = ref({
     order: ['disk', 'cdrom', 'network'],
     machine_type: 'q35',
     menu_timeout: 0,
+    backend: 'jit',  // Execution backend: jit (software, 5-15% faster), vmx (Intel), svm (AMD)
   },
   
   // Security configuration
@@ -153,6 +154,12 @@ const nicModels = ['virtio', 'e1000', 'e1000e', 'vmxnet3', 'rtl8139']
 const cpuModels = ['host-passthrough', 'host-model', 'qemu64', 'Skylake-Server', 'EPYC']
 const firmwareOptions = ['uefi', 'bios']
 const machineTypes = ['q35', 'i440fx', 'virt']
+const backendOptions = [
+  { value: 'jit', label: 'JIT (Software)', description: '5-15% faster, no hardware virtualization needed' },
+  { value: 'vmx', label: 'VMX (Intel VT-x)', description: 'Intel hardware virtualization' },
+  { value: 'svm', label: 'SVM (AMD-V)', description: 'AMD hardware virtualization' },
+  { value: 'auto', label: 'Auto-detect', description: 'Choose best available backend' },
+]
 
 // Computed total vCPUs
 const totalVcpus = computed(() => 
@@ -549,6 +556,7 @@ function buildRequest() {
       order: form.value.boot.order,
       machine_type: form.value.boot.machine_type,
       menu_timeout: form.value.boot.menu_timeout,
+      backend: form.value.boot.backend,
     },
     security: {
       tpm: form.value.security.tpm,
@@ -1158,6 +1166,31 @@ function formatSize(gb: number): string {
             <select v-model="form.boot.machine_type" class="input w-full">
               <option v-for="mt in machineTypes" :key="mt" :value="mt">{{ mt }}</option>
             </select>
+          </div>
+        </div>
+
+        <div>
+          <label class="block text-sm font-medium text-dark-300 mb-2">Execution Backend</label>
+          <div class="grid grid-cols-2 gap-3">
+            <label 
+              v-for="backend in backendOptions" 
+              :key="backend.value"
+              class="relative flex items-start p-3 rounded-lg border cursor-pointer transition-colors"
+              :class="form.boot.backend === backend.value 
+                ? 'border-primary-500 bg-primary-500/10' 
+                : 'border-dark-600 hover:border-dark-500'"
+            >
+              <input 
+                type="radio" 
+                :value="backend.value" 
+                v-model="form.boot.backend"
+                class="mt-1 mr-3"
+              />
+              <div>
+                <span class="text-white font-medium">{{ backend.label }}</span>
+                <p class="text-xs text-dark-400 mt-0.5">{{ backend.description }}</p>
+              </div>
+            </label>
           </div>
         </div>
 

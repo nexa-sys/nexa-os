@@ -19,6 +19,7 @@ use crate::svm::SvmExecutor;
 use crate::vmx::VmxExecutor;
 use crate::memory::PhysicalMemory;
 use crate::devices::vga::Vga;
+use crate::devices::keyboard::Ps2Keyboard;
 
 /// Unique VM identifier
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1404,6 +1405,8 @@ pub struct VmInstance {
     backend_type: VmBackendType,
     /// VGA device for console display
     vga: RwLock<Vga>,
+    /// PS/2 keyboard controller
+    keyboard: RwLock<Ps2Keyboard>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1450,6 +1453,7 @@ impl VmInstance {
             memory: RwLock::new(None),
             backend_type,
             vga: RwLock::new(Vga::new()),
+            keyboard: RwLock::new(Ps2Keyboard::new()),
         }
     }
     
@@ -1535,27 +1539,27 @@ impl VmInstance {
         
         // Clear screen and display boot banner
         vga.clear();
-        vga.write_string_colored("NVM Enterprise Hypervisor v2.0\\n", 0x0F);  // White on black
-        vga.write_string_colored("========================================\\n\\n", 0x07);
+        vga.write_string_colored("NVM Enterprise Hypervisor v2.0\n", 0x0F);  // White on black
+        vga.write_string_colored("========================================\n\n", 0x07);
         
         // System info
-        vga.write_string(&format!("VM: {}\\n", self.spec.name));
-        vga.write_string(&format!("vCPUs: {}  Memory: {} MB\\n", self.spec.vcpus, self.spec.memory_mb));
-        vga.write_string(&format!("Backend: {:?}\\n\\n", self.backend_type));
+        vga.write_string(&format!("VM: {}\n", self.spec.name));
+        vga.write_string(&format!("vCPUs: {}  Memory: {} MB\n", self.spec.vcpus, self.spec.memory_mb));
+        vga.write_string(&format!("Backend: {:?}\n\n", self.backend_type));
         
         // Firmware info
         match self.spec.firmware {
             FirmwareType::Bios => {
-                vga.write_string_colored("SeaBIOS (emulated)\\n", 0x0E);
-                vga.write_string("Press F2 for Setup, F12 for Boot Menu\\n\\n");
+                vga.write_string_colored("SeaBIOS (emulated)\n", 0x0E);
+                vga.write_string("Press F2 for Setup, F12 for Boot Menu\n\n");
             }
             FirmwareType::Uefi | FirmwareType::UefiSecure => {
-                vga.write_string_colored("UEFI Firmware (emulated)\\n", 0x0E);
-                vga.write_string("Press DEL or F2 for UEFI Setup\\n\\n");
+                vga.write_string_colored("UEFI Firmware (emulated)\n", 0x0E);
+                vga.write_string("Press DEL or F2 for UEFI Setup\n\n");
             }
         }
         
-        vga.write_string_colored("Initializing hardware...\\n", 0x07);
+        vga.write_string_colored("Initializing hardware...\n", 0x07);
     }
     
     /// Start with Intel VT-x (VMX) backend
@@ -1768,14 +1772,15 @@ impl VmInstance {
     }
     
     /// Inject keyboard key event to PS/2 controller
-    /// TODO: Implement keyboard in hardware virt backends
-    pub fn inject_key(&self, _key: &str, _is_release: bool) {
-        // Keyboard not yet implemented in hardware virt backends
+    pub fn inject_key(&self, key: &str, is_release: bool) {
+        let mut keyboard = self.keyboard.write().unwrap();
+        keyboard.inject_key(key, is_release);
     }
     
     /// Inject keyboard scancode directly
-    pub fn inject_scancode(&self, _scancode: u8, _is_release: bool) {
-        // Keyboard not yet implemented in hardware virt backends
+    pub fn inject_scancode(&self, scancode: u8, is_release: bool) {
+        let mut keyboard = self.keyboard.write().unwrap();
+        keyboard.inject_scancode(scancode, is_release);
     }
     
     /// Advance VM execution by specified cycles
