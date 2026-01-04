@@ -251,10 +251,13 @@ NDK 提供完整的企业级开发工具链：
 # 类型检查
 ./ndk check                       # 快速类型检查
 
-# 文档生成
-./ndk doc                         # 生成文档
+# 文档生成（cargo doc）
+./ndk doc                         # 生成所有工作空间文档
 ./ndk doc --open                  # 生成并在浏览器打开
 ./ndk doc --private               # 包含私有项
+./ndk doc --workspace nvm         # 只生成 NVM 文档
+./ndk doc --all                   # 包含内核（需要 nightly）
+./ndk doc --list                  # 列出可用文档目标
 
 # 安全审计
 ./ndk audit                       # 检查已知漏洞
@@ -277,7 +280,7 @@ NDK 提供完整的企业级开发工具链：
 |---------|------|-----------|--------|
 | kernel | `.` | nightly | ✓ |
 | tests | `tests/` | nightly | ✗ |
-| nvm | `nvm/` | stable | ✗ |
+| nvm | `nvm/` | nightly | ✗ |
 | userspace | `userspace/` | nightly | ✗ |
 | modules | `modules/` | nightly | ✓ |
 | boot-info | `boot/boot-info/` | stable | ✓ |

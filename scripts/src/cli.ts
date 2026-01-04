@@ -1854,10 +1854,12 @@ program
 // doc - Generate documentation
 program
   .command('doc')
-  .description('Generate Rust documentation')
+  .description('Generate Rust documentation for all workspaces')
   .option('-o, --open', 'Open documentation in browser')
   .option('-p, --private', 'Include private items')
   .option('-w, --workspace <name>', 'Document specific workspace only')
+  .option('-a, --all', 'Document all workspaces including kernel')
+  .option('-l, --list', 'List available documentation targets')
   .action(async (options) => {
     const projectRoot = findProjectRoot();
     const env = createBuildEnvironment(projectRoot);
@@ -1866,6 +1868,8 @@ program
       open: options.open,
       private: options.private,
       workspace: options.workspace,
+      all: options.all,
+      list: options.list,
     });
     
     process.exit(result.success ? 0 : 1);

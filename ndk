@@ -49,9 +49,12 @@
 #     --fix        - Auto-fix issues
 #     --strict     - Treat warnings as errors
 #   check          - Fast type checking
-#   doc            - Generate documentation
-#     --open       - Open in browser
-#     --private    - Include private items
+#   doc            - Generate documentation for all workspaces
+#     --open, -o   - Open in browser
+#     --private, -p- Include private items
+#     --workspace, -w <name> - Document specific workspace
+#     --all, -a    - Include kernel (needs nightly features)
+#     --list, -l   - List available documentation targets
 #   audit          - Security audit (vulnerabilities)
 #   outdated       - Check for outdated dependencies
 #   sloc, loc      - Lines of code statistics

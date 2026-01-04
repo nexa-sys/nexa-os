@@ -4,8 +4,8 @@
  * 企业级开发工具：格式化、lint、检查、文档、审计、基准测试等
  */
 
-import { spawn, spawnSync } from 'child_process';
-import { existsSync, readdirSync, readFileSync } from 'fs';
+import { spawn, spawnSync, execSync } from 'child_process';
+import { existsSync, readdirSync, readFileSync, mkdirSync, writeFileSync } from 'fs';
 import { resolve, relative, join } from 'path';
 import { logger } from './logger.js';
 import { BuildEnvironment } from './types.js';
@@ -60,13 +60,13 @@ function discoverWorkspaces(projectRoot: string): RustWorkspace[] {
     });
   }
   
-  // Boot info (no_std, stable)
+  // Boot info (no_std, nightly)
   if (existsSync(resolve(projectRoot, 'boot/boot-info/Cargo.toml'))) {
     workspaces.push({
       name: 'boot-info',
       path: resolve(projectRoot, 'boot/boot-info'),
       manifest: resolve(projectRoot, 'boot/boot-info/Cargo.toml'),
-      toolchain: 'stable',
+      toolchain: 'nightly',
       isNoStd: true,
     });
   }
@@ -82,18 +82,18 @@ function discoverWorkspaces(projectRoot: string): RustWorkspace[] {
     });
   }
   
-  // NVM hypervisor (std, stable)
+  // NVM hypervisor (std, nightly - uses x86_64 crate which requires nightly features)
   if (existsSync(resolve(projectRoot, 'nvm/Cargo.toml'))) {
     workspaces.push({
       name: 'nvm',
       path: resolve(projectRoot, 'nvm'),
       manifest: resolve(projectRoot, 'nvm/Cargo.toml'),
-      toolchain: 'stable',
+      toolchain: 'nightly',
       isNoStd: false,
     });
   }
   
-  // Userspace workspace (std, nightly for no_std compat)
+  // Userspace workspace (包含 nrlib, ld-nrlib, libs, programs)
   if (existsSync(resolve(projectRoot, 'userspace/Cargo.toml'))) {
     workspaces.push({
       name: 'userspace',
@@ -104,7 +104,7 @@ function discoverWorkspaces(projectRoot: string): RustWorkspace[] {
     });
   }
   
-  // Modules workspace (no_std, nightly)
+  // Modules workspace (no_std, nightly) - 作为整体处理
   if (existsSync(resolve(projectRoot, 'modules/Cargo.toml'))) {
     workspaces.push({
       name: 'modules',
@@ -117,7 +117,6 @@ function discoverWorkspaces(projectRoot: string): RustWorkspace[] {
   
   return workspaces;
 }
-
 // =============================================================================
 // Format Tool (fmt)
 // =============================================================================
@@ -350,15 +349,310 @@ export async function checkCode(
 // Documentation Tool
 // =============================================================================
 
+interface DocEntry {
+  name: string;
+  path: string;
+  description: string;
+  category: 'core' | 'drivers' | 'userspace' | 'tools';
+}
+
+// 预定义的文档描述
+const DOC_DESCRIPTIONS: Record<string, { description: string; category: DocEntry['category'] }> = {
+  // Core
+  nexa_os: { description: 'NexaOS Kernel - Hybrid kernel core with POSIX syscalls, scheduler, and memory management', category: 'core' },
+  nexa_boot_info: { description: 'Boot Info - Multiboot2/UEFI boot information structures', category: 'core' },
+  
+  // NVM & Tools
+  nvm: { description: 'NVM Hypervisor - Enterprise virtualization platform with VT-x/AMD-V', category: 'tools' },
+  nvmctl: { description: 'NVM CLI - Command-line interface for NVM management', category: 'tools' },
+  nvm_server: { description: 'NVM Server - Web API and management server for NVM', category: 'tools' },
+  
+  // Tests
+  kernel_tests: { description: 'Kernel Tests - Unit and integration tests for kernel subsystems', category: 'tools' },
+  nexa_kernel_tests: { description: 'Kernel Tests - Unit and integration tests', category: 'tools' },
+  nexa_nvm_tests: { description: 'NVM Tests - Tests for hypervisor platform', category: 'tools' },
+  nexa_modules_tests: { description: 'Module Tests - Tests for kernel modules', category: 'tools' },
+  nexa_userspace_tests: { description: 'Userspace Tests - Tests for userspace libraries', category: 'tools' },
+  
+  // Userspace - Core libs
+  nrlib: { description: 'nrlib - POSIX-compatible C library for userspace programs', category: 'userspace' },
+  ld_nrlib: { description: 'ld-nrlib - Dynamic linker for ELF executables', category: 'userspace' },
+  
+  // Userspace - Libraries
+  ncryptolib: { description: 'ncryptolib - Cryptographic library (AES, SHA, etc.)', category: 'userspace' },
+  nssl: { description: 'nssl - SSL/TLS implementation', category: 'userspace' },
+  nzip: { description: 'nzip - Compression library (gzip, deflate)', category: 'userspace' },
+  nh2: { description: 'nh2 - HTTP/2 protocol implementation', category: 'userspace' },
+  nh3: { description: 'nh3 - HTTP/3 (QUIC) protocol implementation', category: 'userspace' },
+  ntcp2: { description: 'ntcp2 - TCP/IP networking library', category: 'userspace' },
+  
+  // Userspace - Programs
+  init: { description: 'init - System V init daemon (PID 1)', category: 'userspace' },
+  shell: { description: 'shell - NexaOS command shell', category: 'userspace' },
+  getty: { description: 'getty - Terminal login handler', category: 'userspace' },
+  login: { description: 'login - User authentication program', category: 'userspace' },
+  
+  // Modules - Filesystems
+  ext2_module: { description: 'ext2 - EXT2 filesystem driver', category: 'drivers' },
+  ext3_module: { description: 'ext3 - EXT3 filesystem driver', category: 'drivers' },
+  ext4_module: { description: 'ext4 - EXT4 filesystem driver', category: 'drivers' },
+  swap_module: { description: 'swap - Swap space management module', category: 'drivers' },
+  
+  // Modules - Block devices
+  ahci_module: { description: 'ahci - AHCI/SATA controller driver', category: 'drivers' },
+  ide_module: { description: 'ide - IDE/ATA disk driver', category: 'drivers' },
+  nvme_module: { description: 'nvme - NVMe SSD driver', category: 'drivers' },
+  virtio_blk_module: { description: 'virtio_blk - VirtIO block device driver', category: 'drivers' },
+  
+  // Modules - Network
+  e1000_module: { description: 'e1000 - Intel E1000 network driver', category: 'drivers' },
+  virtio_net_module: { description: 'virtio_net - VirtIO network driver', category: 'drivers' },
+  virtio_common: { description: 'virtio_common - VirtIO common abstractions', category: 'drivers' },
+};
+
+/**
+ * 动态发现并构建文档条目列表
+ */
+function buildDocEntries(
+  projectRoot: string
+): DocEntry[] {
+  const entries: DocEntry[] = [];
+  const docDir = resolve(projectRoot, 'target/doc');
+  const tripleDocDir = resolve(projectRoot, 'target/x86_64-unknown-linux-gnu/doc');
+  
+  // 检查两个可能的文档目录
+  const dirsToCheck = [docDir, tripleDocDir].filter(d => existsSync(d));
+  
+  const seenCrates = new Set<string>();
+  
+  for (const dir of dirsToCheck) {
+    try {
+      const items = readdirSync(dir, { withFileTypes: true });
+      
+      for (const item of items) {
+        if (!item.isDirectory()) continue;
+        
+        const crateName = item.name;
+        
+        // 跳过静态资源目录
+        if (['static.files', 'src', 'src-files.js', 'implementors'].includes(crateName)) continue;
+        if (crateName.startsWith('.')) continue;
+        
+        // 检查是否有 index.html
+        const indexPath = resolve(dir, crateName, 'index.html');
+        if (!existsSync(indexPath)) continue;
+        
+        // 避免重复
+        if (seenCrates.has(crateName)) continue;
+        seenCrates.add(crateName);
+        
+        // 获取描述和分类
+        const info = DOC_DESCRIPTIONS[crateName] || {
+          description: `${crateName} - Rust crate documentation`,
+          category: 'userspace' as const,
+        };
+        
+        entries.push({
+          name: crateName,
+          path: `${crateName}/index.html`,
+          description: info.description,
+          category: info.category,
+        });
+      }
+    } catch {
+      // 忽略读取错误
+    }
+  }
+  
+  // 按类别和名称排序
+  const categoryOrder = { core: 0, drivers: 1, userspace: 2, tools: 3 };
+  entries.sort((a, b) => {
+    const catDiff = categoryOrder[a.category] - categoryOrder[b.category];
+    if (catDiff !== 0) return catDiff;
+    return a.name.localeCompare(b.name);
+  });
+  
+  return entries;
+}
+
+/**
+ * 生成统一的文档索引页
+ * 优先使用 Vue UI，否则使用简单 HTML 作为 fallback
+ */
+function generateDocsIndex(
+  projectRoot: string,
+  successfulDocs: string[]
+): void {
+  const docsDir = resolve(projectRoot, 'target/doc');
+  const indexPath = resolve(docsDir, 'index.html');
+  const vueDistPath = resolve(projectRoot, 'scripts/ui/docs/dist/index.html');
+  
+  // 动态发现所有已生成的文档
+  const docEntries = buildDocEntries(projectRoot);
+  
+  // 准备文档数据
+  const docsData = {
+    projectName: 'NexaOS',
+    version: '1.0.0',
+    timestamp: new Date().toISOString(),
+    docs: docEntries,
+    workspaces: successfulDocs,
+  };
+  
+  let html: string;
+  
+  // 尝试使用 Vue UI
+  if (existsSync(vueDistPath)) {
+    html = readFileSync(vueDistPath, 'utf-8');
+    // 注入文档数据
+    const dataScript = `<script id="docs-data" type="application/json">${JSON.stringify(docsData)}</script>`;
+    html = html.replace('</head>', `${dataScript}\n</head>`);
+  } else {
+    // Fallback: 使用简单 HTML
+    html = generateFallbackDocsHtml(docEntries);
+  }
+  
+  // 确保目录存在并写入
+  mkdirSync(docsDir, { recursive: true });
+  writeFileSync(indexPath, html);
+}
+
+/**
+ * 生成简单的 fallback HTML（当 Vue UI 未构建时使用）
+ */
+function generateFallbackDocsHtml(docEntries: DocEntry[]): string {
+  const categoryNames: Record<string, string> = {
+    core: 'Core Components',
+    drivers: 'Drivers & Modules',
+    userspace: 'Userspace Libraries',
+    tools: 'Tools & Testing',
+  };
+  
+  // 按类别分组
+  const byCategory: Record<string, DocEntry[]> = {};
+  for (const entry of docEntries) {
+    if (!byCategory[entry.category]) {
+      byCategory[entry.category] = [];
+    }
+    byCategory[entry.category].push(entry);
+  }
+  
+  const categoryOrder = ['core', 'drivers', 'userspace', 'tools'];
+  
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NexaOS Documentation</title>
+  <style>
+    :root {
+      --bg-color: #0f1419;
+      --text-color: #c5c5c5;
+      --link-color: #4fc1ff;
+      --header-bg: #1a1f25;
+      --card-bg: #1a1f25;
+      --border-color: #2a2f35;
+    }
+    body {
+      font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
+      background-color: var(--bg-color);
+      color: var(--text-color);
+      margin: 0;
+      padding: 0;
+      line-height: 1.6;
+    }
+    .container { max-width: 1200px; margin: 0 auto; padding: 2rem; }
+    header {
+      background: var(--header-bg);
+      padding: 2rem 0;
+      border-bottom: 1px solid var(--border-color);
+      margin-bottom: 2rem;
+    }
+    header h1 { margin: 0; font-size: 2rem; color: #fff; }
+    header p { margin: 0.5rem 0 0 0; color: #888; }
+    .section-title {
+      font-size: 1.25rem;
+      color: #fff;
+      margin: 2rem 0 1rem 0;
+      padding-bottom: 0.5rem;
+      border-bottom: 1px solid var(--border-color);
+    }
+    .docs-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 1.25rem;
+    }
+    .doc-card {
+      background: var(--card-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 1.25rem;
+      transition: border-color 0.2s, transform 0.2s;
+    }
+    .doc-card:hover {
+      border-color: var(--link-color);
+      transform: translateY(-2px);
+    }
+    .doc-card h3 { margin: 0 0 0.5rem 0; font-size: 1rem; }
+    .doc-card h3 a { color: var(--link-color); text-decoration: none; }
+    .doc-card h3 a:hover { text-decoration: underline; }
+    .doc-card p { margin: 0; color: #888; font-size: 0.85rem; }
+    footer {
+      margin-top: 3rem;
+      padding-top: 1.5rem;
+      border-top: 1px solid var(--border-color);
+      text-align: center;
+      color: #666;
+      font-size: 0.85rem;
+    }
+    footer code {
+      background: var(--header-bg);
+      padding: 0.2rem 0.5rem;
+      border-radius: 4px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="container">
+      <h1>📚 NexaOS Documentation</h1>
+      <p>API Reference and Developer Documentation</p>
+    </div>
+  </header>
+  <main class="container">
+${categoryOrder.filter(cat => byCategory[cat]?.length).map(cat => `
+    <h2 class="section-title">${categoryNames[cat]}</h2>
+    <div class="docs-grid">
+${byCategory[cat].map(doc => `      <div class="doc-card">
+        <h3><a href="${doc.path}">${doc.name}</a></h3>
+        <p>${doc.description}</p>
+      </div>`).join('\n')}
+    </div>`).join('\n')}
+  </main>
+  <footer>
+    <p>Generated by NexaOS Development Kit (NDK) · <code>./ndk doc</code></p>
+    <p style="margin-top: 0.5rem; font-size: 0.75rem;">
+      Run <code>cd scripts/ui/docs && npm install && npm run build</code> for enhanced UI
+    </p>
+  </footer>
+</body>
+</html>`;
+}
+
 /**
  * 生成文档
+ * 
+ * 支持所有工作空间，包括需要自定义 target 的内核
  */
 export async function generateDocs(
   env: BuildEnvironment,
   options: {
     open?: boolean;       // 打开浏览器
     private?: boolean;    // 包含私有项
-    workspace?: string;
+    workspace?: string;   // 指定工作空间
+    all?: boolean;        // 生成所有文档（包括内核）
+    list?: boolean;       // 列出可用工作空间
   } = {}
 ): Promise<ToolResult> {
   const workspaces = discoverWorkspaces(env.projectRoot);
@@ -369,29 +663,89 @@ export async function generateDocs(
     warningCount: 0,
   };
   
+  // 列出可用工作空间
+  if (options.list) {
+    logger.section('Available Documentation Targets');
+    console.log('');
+    for (const ws of workspaces) {
+      const noStdTag = ws.isNoStd ? ' [no_std]' : '';
+      console.log(`  ${ws.name.padEnd(15)} ${ws.toolchain.padEnd(8)}${noStdTag}`);
+    }
+    console.log('');
+    logger.info('Use --workspace <name> to document specific workspace');
+    logger.info('Use --all to document all workspaces including kernel');
+    return result;
+  }
+  
   logger.section('Generating Documentation');
   
-  // Filter to documentable workspaces (skip kernel for now)
-  const targetWorkspaces = (options.workspace
-    ? workspaces.filter(w => w.name === options.workspace)
-    : workspaces
-  ).filter(w => w.name !== 'kernel');  // Skip kernel (needs custom target)
+  // 确定要生成文档的工作空间
+  let targetWorkspaces: RustWorkspace[];
+  if (options.workspace) {
+    targetWorkspaces = workspaces.filter(w => w.name === options.workspace);
+    if (targetWorkspaces.length === 0) {
+      logger.error(`Workspace not found: ${options.workspace}`);
+      result.success = false;
+      result.errorCount = 1;
+      return result;
+    }
+  } else if (options.all) {
+    // 包含所有工作空间
+    targetWorkspaces = workspaces;
+  } else {
+    // 默认跳过内核（需要特殊处理）和 uefi-loader
+    targetWorkspaces = workspaces.filter(w => 
+      w.name !== 'kernel' && w.name !== 'uefi-loader'
+    );
+  }
+  
+  const successfulDocs: string[] = [];
+  const centralDocDir = resolve(env.projectRoot, 'target/doc');
+  
+  // 确保中央文档目录存在
+  mkdirSync(centralDocDir, { recursive: true });
   
   for (const workspace of targetWorkspaces) {
     logger.step(`Documenting: ${workspace.name}`);
     
-    const args = [`+${workspace.toolchain}`, 'doc'];
+    const args: string[] = [`+${workspace.toolchain}`, 'doc'];
     args.push('--manifest-path', workspace.manifest);
-    args.push('--no-deps');  // Don't document dependencies
+    args.push('--no-deps');  // 不生成依赖项文档
+    
+    // Userspace 需要排除某些有 optional 依赖问题的 crate
+    if (workspace.name === 'userspace') {
+      args.push('--workspace');
+      args.push('--exclude', 'uefi_compatd');  // 有 optional nrlib 依赖问题
+    }
+    
+    // 关键：根目录 .cargo/config.toml 设置了默认 target 为内核 target
+    // 所有非内核工作空间都必须显式指定 --target 来覆盖
+    if (workspace.name === 'kernel') {
+      // 内核需要自定义 target 和 build-std
+      const targetJson = resolve(env.projectRoot, 'targets/x86_64-nexaos.json');
+      args.push('--target', targetJson);
+      args.push('-Zbuild-std=core,compiler_builtins,alloc');
+      args.push('-Zbuild-std-features=compiler-builtins-mem');
+      args.push('--target-dir', resolve(env.projectRoot, 'target/kernel-doc'));
+    } else {
+      // 所有其他工作空间（包括 no_std 的 modules、boot-info）都使用标准 Linux target
+      // 这样可以生成文档而不需要 build-std
+      args.push('--target', 'x86_64-unknown-linux-gnu');
+      args.push('--target-dir', resolve(env.projectRoot, 'target'));
+    }
     
     if (options.private) {
       args.push('--document-private-items');
     }
     
     const docResult = spawnSync('cargo', args, {
-      cwd: env.projectRoot,
+      cwd: workspace.path,
       encoding: 'utf-8',
       stdio: ['inherit', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        RUSTDOCFLAGS: '--enable-index-page -Zunstable-options',
+      },
     });
     
     result.output += docResult.stdout || '';
@@ -401,15 +755,85 @@ export async function generateDocs(
       result.success = false;
       result.errorCount++;
       logger.error(`${workspace.name}: doc failed`);
+      // 显示错误详情
+      if (docResult.stderr) {
+        const lines = docResult.stderr.split('\n').slice(0, 10);
+        for (const line of lines) {
+          if (line.trim()) console.log(`  ${line}`);
+        }
+      }
     } else {
+      successfulDocs.push(workspace.name);
       logger.success(`${workspace.name}: documented`);
     }
   }
   
-  // Open docs if requested
+  // 复制所有文档到中央位置
+  logger.step('Consolidating documentation');
+  
+  // 复制内核文档
+  if (successfulDocs.includes('kernel')) {
+    const kernelDocSrc = resolve(env.projectRoot, 'target/kernel-doc/targets/x86_64-nexaos/doc');
+    if (existsSync(kernelDocSrc)) {
+      try {
+        execSync(`cp -r ${kernelDocSrc}/* ${centralDocDir}/`, { stdio: 'ignore' });
+      } catch {
+        // 忽略复制错误
+      }
+    }
+  }
+  
+  // 复制模块文档
+  if (successfulDocs.includes('modules')) {
+    const modulesDocSrc = resolve(env.projectRoot, 'target/modules-doc/targets/x86_64-nexaos-module/doc');
+    if (existsSync(modulesDocSrc)) {
+      try {
+        execSync(`cp -r ${modulesDocSrc}/* ${centralDocDir}/`, { stdio: 'ignore' });
+      } catch {
+        // 忽略复制错误
+      }
+    }
+  }
+  
+  // 复制标准工作空间文档（可能在 target/<triple>/doc 或 target/doc）
+  const standardDocLocations = [
+    resolve(env.projectRoot, 'target/x86_64-unknown-linux-gnu/doc'),
+    resolve(env.projectRoot, 'target/doc'),
+  ];
+  
+  for (const docLocation of standardDocLocations) {
+    if (existsSync(docLocation) && docLocation !== centralDocDir) {
+      try {
+        // 复制所有内容（排除 .lock 文件）
+        execSync(`cp -r ${docLocation}/* ${centralDocDir}/ 2>/dev/null || true`, { stdio: 'ignore' });
+      } catch {
+        // 忽略复制错误
+      }
+    }
+  }
+  
+  // 生成统一索引页
+  if (successfulDocs.length > 0) {
+    logger.step('Generating documentation index');
+    try {
+      generateDocsIndex(env.projectRoot, successfulDocs);
+      logger.success('Index generated: target/doc/index.html');
+    } catch (e) {
+      logger.warn('Failed to generate index page');
+    }
+  }
+  
+  // 打印文档位置
+  if (result.success && successfulDocs.length > 0) {
+    console.log('');
+    logger.info(`Documentation generated at: ${resolve(env.projectRoot, 'target/doc')}`);
+  }
+  
+  // 按需打开浏览器
   if (options.open && result.success) {
     const docsPath = resolve(env.projectRoot, 'target/doc/index.html');
     if (existsSync(docsPath)) {
+      logger.info('Opening documentation in browser...');
       spawn('xdg-open', [docsPath], { detached: true, stdio: 'ignore' }).unref();
     }
   }

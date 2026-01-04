@@ -20,11 +20,6 @@ scripts/ui/
 │   │   ├── locales/   # i18n 国际化
 │   │   └── router/    # Vue Router
 │   └── dist/          # 构建输出
-│
-└── config-api/        # 配置 API 后端 (FastAPI)
-    └── nexaos_config_api/
-        ├── main.py    # FastAPI 应用
-        └── config.py  # 配置文件管理
 ```
 
 ## 使用方法
@@ -75,15 +70,6 @@ cd scripts/ui/config
 npm install
 npm run dev
 ```
-
-### 后端开发
-
-```bash
-cd scripts/ui/config-api
-pip install -e .
-uvicorn nexaos_config_api.main:app --reload --port 8765
-```
-
 ## API 端点
 
 | 端点 | 方法 | 描述 |
