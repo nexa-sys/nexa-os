@@ -321,20 +321,57 @@ impl HardwareAbstractionLayer {
     // ========================================================================
     
     /// Advance time by given number of cycles
+    /// 
+    /// This implements the real x86 hardware behavior:
+    /// 1. Advance CPU cycle counters
+    /// 2. Tick devices (which forwards device IRQs to PIC)
+    /// 3. Check PIC for pending interrupts
+    /// 4. If CPU has interrupts enabled, inject interrupt to CPU
     pub fn tick(&self, cycles: u64) {
-        // Advance all CPUs
+        // Phase 1: Advance all CPUs
         for cpu in self.cpus.read().unwrap().iter() {
             cpu.advance_cycles(cycles);
         }
         
-        // Tick all devices
+        // Phase 2: Tick all devices (this also forwards IRQs to PIC)
         self.devices.tick(cycles);
+        
+        // Phase 3: Check PIC and inject interrupts to CPU
+        // This models the INTR line from PIC to CPU
+        self.check_and_deliver_interrupts();
     }
-}
-
-impl Default for HardwareAbstractionLayer {
-    fn default() -> Self {
-        Self::new(64)
+    
+    /// Check PIC for pending interrupts and deliver to CPU
+    /// 
+    /// Models the x86 interrupt delivery: PIC raises INTR, CPU samples at
+    /// instruction boundary, sends INTA, receives vector, jumps to ISR.
+    fn check_and_deliver_interrupts(&self) {
+        use crate::devices::pic::Pic8259;
+        use crate::devices::DeviceId;
+        
+        // Get PIC device
+        if let Some(pic_dev) = self.devices.get_device(DeviceId::PIC_MASTER) {
+            let mut pic_guard = pic_dev.lock().unwrap();
+            if let Some(pic) = pic_guard.as_any_mut().downcast_mut::<Pic8259>() {
+                // Check if PIC has pending interrupt
+                if pic.has_interrupt() {
+                    // Get current CPU
+                    let cpu = self.cpu();
+                    
+                    // Only deliver if CPU has interrupts enabled (IF=1)
+                    if cpu.interrupts_enabled() {
+                        // Get the interrupt vector FIRST, then ACK
+                        // This mimics the CPU's INTA cycle which returns the vector
+                        if let Some(vector) = pic.get_interrupt_vector() {
+                            // ACK the interrupt - clears IRR, sets ISR
+                            pic.ack_interrupt();
+                            // Inject interrupt to CPU
+                            cpu.inject_interrupt(vector);
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -632,6 +669,71 @@ mod tests {
         // Read host bridge vendor ID
         let vendor = pci_config_read32(0, 0, 0, 0) & 0xFFFF;
         assert_eq!(vendor, super::super::pci::vendor::INTEL as u32);
+        
+        clear_hal();
+    }
+    
+    #[test]
+    fn test_keyboard_interrupt_delivery() {
+        use crate::devices::{Device, DeviceId, IoAccess};
+        use crate::devices::pic::Pic8259;
+        use crate::devices::keyboard::Ps2Keyboard;
+        use std::sync::Mutex;
+        
+        let hal = Arc::new(HardwareAbstractionLayer::new(64));
+        set_hal(hal.clone());
+        
+        // Create and register PIC
+        let pic = Arc::new(Mutex::new(Pic8259::new()));
+        hal.devices.add_device_with_ports(pic.clone(), &[(0x20, 0x21), (0xA0, 0xA1)]);
+        
+        // Initialize PIC with vector base 0x20
+        {
+            let mut p = pic.lock().unwrap();
+            // Use Device trait methods explicitly
+            // ICW1: init + ICW4 needed
+            Device::port_write(&mut *p, 0x20, 0x11, IoAccess::Byte);
+            // ICW2: vector base 0x20
+            Device::port_write(&mut *p, 0x21, 0x20, IoAccess::Byte);
+            // ICW3: slave on IRQ2
+            Device::port_write(&mut *p, 0x21, 0x04, IoAccess::Byte);
+            // ICW4: 8086 mode
+            Device::port_write(&mut *p, 0x21, 0x01, IoAccess::Byte);
+            // Unmask IRQ1 (keyboard)
+            Device::port_write(&mut *p, 0x21, 0x00, IoAccess::Byte);
+        }
+        
+        // Create and register keyboard
+        let kb = Arc::new(Mutex::new(Ps2Keyboard::new()));
+        hal.devices.add_device_with_ports(kb.clone(), &[(0x60, 0x64)]);
+        
+        // Enable interrupts on CPU
+        hal.cpu().enable_interrupts();
+        
+        // Verify initial state: no pending interrupts
+        assert!(!hal.cpu().has_pending_interrupt(), "Should have no pending interrupt initially");
+        
+        // Inject a key
+        kb.lock().unwrap().inject_key("a", false);
+        
+        // Verify keyboard has interrupt pending
+        {
+            let k = kb.lock().unwrap();
+            assert!(Device::has_interrupt(&*k), "Keyboard should have interrupt pending");
+        }
+        
+        // Tick HAL - this should:
+        // 1. Forward keyboard IRQ1 to PIC
+        // 2. Check PIC for interrupts
+        // 3. Inject interrupt to CPU
+        hal.tick(1000);
+        
+        // Verify CPU received the interrupt
+        assert!(hal.cpu().has_pending_interrupt(), "CPU should have pending interrupt after tick");
+        
+        // Verify the interrupt vector is correct (0x20 + 1 = 0x21 for IRQ1)
+        let vector = hal.cpu().deliver_interrupt();
+        assert_eq!(vector, Some(0x21), "Interrupt vector should be 0x21 (IRQ1)");
         
         clear_hal();
     }

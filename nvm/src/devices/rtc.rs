@@ -2,6 +2,7 @@
 //!
 //! CMOS RTC at ports 0x70-0x71
 
+use std::any::Any;
 use super::{Device, DeviceId, IoAccess};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -192,6 +193,14 @@ impl Device for Rtc {
     
     fn name(&self) -> &str {
         "CMOS RTC"
+    }
+    
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
     }
     
     fn reset(&mut self) {

@@ -3,6 +3,7 @@
 //! The I/O APIC handles external interrupts and routes them to Local APICs.
 //! MMIO base: 0xFEC0_0000 (default)
 
+use std::any::Any;
 use super::{Device, DeviceId, IoAccess};
 use crate::memory::PhysAddr;
 
@@ -169,6 +170,14 @@ impl Device for IoApic {
     
     fn name(&self) -> &str {
         "I/O APIC"
+    }
+    
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
     }
     
     fn reset(&mut self) {

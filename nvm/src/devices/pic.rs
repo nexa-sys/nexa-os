@@ -6,6 +6,7 @@
 //! Master PIC: ports 0x20-0x21, IRQ 0-7
 //! Slave PIC: ports 0xA0-0xA1, IRQ 8-15
 
+use std::any::Any;
 use super::{Device, DeviceId, IoAccess};
 
 /// PIC initialization state
@@ -294,6 +295,27 @@ impl Pic8259 {
             Some(self.master.vector_offset + master_irq)
         }
     }
+    
+    /// Check if any unmasked interrupt is pending
+    pub fn has_interrupt(&self) -> bool {
+        self.master.has_interrupt()
+    }
+    
+    /// Acknowledge interrupt (INTA cycle)
+    /// 
+    /// This simulates the CPU's INTA signal which:
+    /// 1. Gets the highest priority pending IRQ
+    /// 2. Clears its IRR bit
+    /// 3. Sets its ISR bit (unless auto-EOI)
+    pub fn ack_interrupt(&mut self) {
+        if let Some(irq) = self.master.get_interrupt() {
+            if irq == 2 {
+                // Cascade - also ACK slave
+                self.slave.ack();
+            }
+            self.master.ack();
+        }
+    }
 }
 
 impl Default for Pic8259 {
@@ -314,6 +336,14 @@ impl Device for Pic8259 {
     fn reset(&mut self) {
         self.master.reset();
         self.slave.reset();
+    }
+    
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
     }
     
     fn handles_port(&self, port: u16) -> bool {
@@ -342,7 +372,7 @@ impl Device for Pic8259 {
     }
     
     fn has_interrupt(&self) -> bool {
-        self.master.has_interrupt()
+        Pic8259::has_interrupt(self)
     }
     
     fn interrupt_vector(&self) -> Option<u8> {
@@ -350,12 +380,7 @@ impl Device for Pic8259 {
     }
     
     fn ack_interrupt(&mut self) {
-        if let Some(irq) = self.master.get_interrupt() {
-            if irq == 2 {
-                self.slave.ack();
-            }
-            self.master.ack();
-        }
+        Pic8259::ack_interrupt(self)
     }
 }
 

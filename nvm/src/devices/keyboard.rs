@@ -10,6 +10,7 @@
 //! - 0x60: Data port (read keyboard data, write commands to keyboard)
 //! - 0x64: Status/Command port (read status, write controller commands)
 
+use std::any::Any;
 use super::{Device, DeviceId, IoAccess};
 use std::collections::VecDeque;
 
@@ -614,6 +615,14 @@ impl Device for Ps2Keyboard {
     
     fn name(&self) -> &str {
         "PS/2 Keyboard Controller"
+    }
+    
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
     }
     
     fn reset(&mut self) {

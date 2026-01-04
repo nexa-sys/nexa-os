@@ -4,6 +4,7 @@
 //! COM1: 0x3F8-0x3FF
 //! COM2: 0x2F8-0x2FF
 
+use std::any::Any;
 use super::{Device, DeviceId, IoAccess};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -363,6 +364,14 @@ impl Device for Uart16550 {
             DeviceId::UART_COM2 => "16550 UART COM2",
             _ => "16550 UART",
         }
+    }
+    
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
     }
     
     fn reset(&mut self) {

@@ -3,6 +3,7 @@
 //! Provides a trait-based system for emulating hardware devices.
 //! Each device can respond to Port I/O, MMIO, and generate interrupts.
 
+use std::any::Any;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 use super::memory::PhysAddr;
@@ -48,6 +49,12 @@ pub trait Device: Send + Sync {
     
     /// Reset device to initial state
     fn reset(&mut self);
+    
+    /// Downcast to concrete type for special operations (e.g., PIC.raise_irq)
+    fn as_any(&self) -> &dyn Any;
+    
+    /// Downcast to mutable concrete type
+    fn as_any_mut(&mut self) -> &mut dyn Any;
     
     /// Port I/O read
     fn port_read(&mut self, port: u16, access: IoAccess) -> u32 {
@@ -256,12 +263,54 @@ impl DeviceManager {
         }
     }
     
-    /// Tick all devices
+    /// Tick all devices and forward interrupts to PIC
+    /// 
+    /// This implements the real x86 interrupt delivery model:
+    /// 1. Tick all devices (advance their internal state)
+    /// 2. Check each device for pending interrupts
+    /// 3. Forward pending IRQs to the 8259 PIC via raise_irq()
+    /// 
+    /// In real hardware, IRQ lines are physical wires connecting devices to PIC.
+    /// In our emulation, we poll devices and programmatically assert IRQ lines.
     pub fn tick(&self, cycles: u64) {
-        let devices = self.devices.read().unwrap();
-        for dev in devices.iter() {
-            let mut d = dev.lock().unwrap();
-            d.tick(cycles);
+        // Phase 1: Tick all devices
+        {
+            let devices = self.devices.read().unwrap();
+            for dev in devices.iter() {
+                let mut d = dev.lock().unwrap();
+                d.tick(cycles);
+            }
+        }
+        
+        // Phase 2: Collect pending interrupts (excluding PIC itself)
+        let pending_irqs: Vec<u8> = {
+            let devices = self.devices.read().unwrap();
+            let mut irqs = Vec::new();
+            for dev in devices.iter() {
+                let d = dev.lock().unwrap();
+                // Skip PIC - it doesn't generate IRQs, it receives them
+                if d.id() == DeviceId::PIC_MASTER || d.id() == DeviceId::PIC_SLAVE {
+                    continue;
+                }
+                if d.has_interrupt() {
+                    if let Some(irq) = d.interrupt_vector() {
+                        irqs.push(irq);
+                    }
+                }
+            }
+            irqs
+        };
+        
+        // Phase 3: Forward IRQs to PIC using downcast
+        if !pending_irqs.is_empty() {
+            if let Some(pic_dev) = self.get_device(DeviceId::PIC_MASTER) {
+                let mut pic_guard = pic_dev.lock().unwrap();
+                if let Some(pic) = pic_guard.as_any_mut().downcast_mut::<pic::Pic8259>() {
+                    for irq in pending_irqs {
+                        pic.raise_irq(irq);
+                    }
+                }
+            }
         }
     }
     
@@ -333,6 +382,8 @@ mod tests {
         fn id(&self) -> DeviceId { self.id }
         fn name(&self) -> &str { "Dummy" }
         fn reset(&mut self) {}
+        fn as_any(&self) -> &dyn Any { self }
+        fn as_any_mut(&mut self) -> &mut dyn Any { self }
         fn handles_port(&self, port: u16) -> bool {
             self.ports.contains(&port)
         }

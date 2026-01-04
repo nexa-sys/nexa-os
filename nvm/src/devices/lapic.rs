@@ -3,6 +3,7 @@
 //! The Local APIC is the per-CPU interrupt controller in modern x86 systems.
 //! MMIO base: 0xFEE0_0000 (configurable via MSR)
 
+use std::any::Any;
 use super::{Device, DeviceId, IoAccess};
 use crate::memory::PhysAddr;
 use std::collections::VecDeque;
@@ -311,6 +312,14 @@ impl Device for LocalApic {
     
     fn name(&self) -> &str {
         "Local APIC"
+    }
+    
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
     }
     
     fn reset(&mut self) {

@@ -6,6 +6,7 @@
 //! - Linear framebuffer (up to 1920x1080, 32bpp)
 //! - VGA register emulation (3C0-3CF, 3D4-3D5)
 
+use std::any::Any;
 use super::{Device, DeviceId, IoAccess};
 use crate::memory::PhysAddr;
 use std::sync::{Arc, Mutex};
@@ -548,6 +549,14 @@ impl Device for Vga {
     
     fn name(&self) -> &str {
         "VGA"
+    }
+    
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
     }
     
     fn reset(&mut self) {

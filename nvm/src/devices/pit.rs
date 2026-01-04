@@ -5,6 +5,7 @@
 //! Channel 1: Memory refresh (legacy)
 //! Channel 2: PC Speaker
 
+use std::any::Any;
 use super::{Device, DeviceId, IoAccess};
 
 /// Operating mode for a PIT channel
@@ -282,6 +283,14 @@ impl Device for Pit8254 {
     
     fn name(&self) -> &str {
         "8254 PIT"
+    }
+    
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
     }
     
     fn reset(&mut self) {
