@@ -16,6 +16,7 @@ use super::security::SecurityPolicy;
 
 // Import VM backends
 use crate::svm::SvmExecutor;
+use crate::vmx::VmxExecutor;
 use crate::memory::PhysicalMemory;
 
 /// Unique VM identifier
@@ -1377,6 +1378,8 @@ pub struct VmInstance {
     status_changed_at: RwLock<Instant>,
     stats: RwLock<VmInstanceStats>,
     snapshots: RwLock<HashMap<String, VmSnapshot>>,
+    /// VMX hardware virtualization backend (Intel)
+    vmx_executor: RwLock<Option<Arc<VmxExecutor>>>,
     /// SVM hardware virtualization backend (AMD)
     svm_executor: RwLock<Option<Arc<SvmExecutor>>>,
     /// JIT execution backend (software, no hardware virt required)
@@ -1423,6 +1426,7 @@ impl VmInstance {
             status_changed_at: RwLock::new(Instant::now()),
             stats: RwLock::new(VmInstanceStats::default()),
             snapshots: RwLock::new(HashMap::new()),
+            vmx_executor: RwLock::new(None),
             svm_executor: RwLock::new(None),
             jit_engine: RwLock::new(None),
             memory: RwLock::new(None),
@@ -1472,24 +1476,25 @@ impl VmInstance {
         
         self.set_status(VmStatus::Starting);
         
-        // Create guest physical memory
-        let memory_bytes = (self.spec.memory_mb as usize) * 1024 * 1024;
-        let memory = Arc::new(PhysicalMemory::new(memory_bytes));
+        // Create guest physical memory (PhysicalMemory::new takes MB)
+        let memory = Arc::new(PhysicalMemory::new(self.spec.memory_mb as usize));
         
         // Load firmware into guest memory
-        self.load_firmware_to_memory(&memory)?;
+        if let Err(e) = self.load_firmware_to_memory(&memory) {
+            self.set_status(VmStatus::Stopped);
+            return Err(e);
+        }
         
         // Initialize backend based on type
-        match self.backend_type {
-            VmBackendType::Vmx => {
-                self.start_vmx_backend(&memory)?;
-            }
-            VmBackendType::Svm => {
-                self.start_svm_backend(&memory)?;
-            }
-            VmBackendType::Jit => {
-                self.start_jit_backend(&memory)?;
-            }
+        let backend_result = match self.backend_type {
+            VmBackendType::Vmx => self.start_vmx_backend(&memory),
+            VmBackendType::Svm => self.start_svm_backend(&memory),
+            VmBackendType::Jit => self.start_jit_backend(&memory),
+        };
+        
+        if let Err(e) = backend_result {
+            self.set_status(VmStatus::Stopped);
+            return Err(e);
         }
         
         // Store memory
@@ -1501,10 +1506,13 @@ impl VmInstance {
     
     /// Start with Intel VT-x (VMX) backend
     fn start_vmx_backend(&self, memory: &Arc<PhysicalMemory>) -> HypervisorResult<()> {
-        // TODO: Implement VMX backend initialization
-        // For now, fall back to JIT
-        log::warn!("VMX backend not fully implemented, falling back to JIT");
-        self.start_jit_backend(memory)
+        let jit_config = Self::default_jit_config();
+        
+        let executor = VmxExecutor::with_jit_config(memory.clone(), jit_config);
+        executor.init().map_err(|e| HypervisorError::StartFailed(format!("VMX init failed: {:?}", e)))?;
+        
+        *self.vmx_executor.write().unwrap() = Some(Arc::new(executor));
+        Ok(())
     }
     
     /// Start with AMD-V (SVM) backend  
@@ -1584,7 +1592,9 @@ impl VmInstance {
         // Stop the appropriate backend
         match self.backend_type {
             VmBackendType::Vmx => {
-                // TODO: VMX stop
+                if let Some(executor) = self.vmx_executor.read().unwrap().as_ref() {
+                    executor.stop();
+                }
             }
             VmBackendType::Svm => {
                 if let Some(executor) = self.svm_executor.read().unwrap().as_ref() {
@@ -1597,6 +1607,7 @@ impl VmInstance {
         }
         
         // Clear backends
+        *self.vmx_executor.write().unwrap() = None;
         *self.svm_executor.write().unwrap() = None;
         *self.jit_engine.write().unwrap() = None;
         *self.memory.write().unwrap() = None;
@@ -1617,7 +1628,9 @@ impl VmInstance {
         
         match self.backend_type {
             VmBackendType::Vmx => {
-                // TODO: VMX pause
+                if let Some(executor) = self.vmx_executor.read().unwrap().as_ref() {
+                    executor.pause();
+                }
             }
             VmBackendType::Svm => {
                 if let Some(executor) = self.svm_executor.read().unwrap().as_ref() {
@@ -1644,7 +1657,9 @@ impl VmInstance {
         
         match self.backend_type {
             VmBackendType::Vmx => {
-                // TODO: VMX resume
+                if let Some(executor) = self.vmx_executor.read().unwrap().as_ref() {
+                    executor.resume();
+                }
             }
             VmBackendType::Svm => {
                 if let Some(executor) = self.svm_executor.read().unwrap().as_ref() {

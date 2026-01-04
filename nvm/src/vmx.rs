@@ -1196,6 +1196,16 @@ impl VmxExecutor {
         self.running.store(false, Ordering::SeqCst);
     }
     
+    /// Pause execution
+    pub fn pause(&self) {
+        self.running.store(false, Ordering::SeqCst);
+    }
+    
+    /// Resume execution
+    pub fn resume(&self) {
+        self.running.store(true, Ordering::SeqCst);
+    }
+    
     /// Check if running
     pub fn is_running(&self) -> bool {
         self.running.load(Ordering::SeqCst)
