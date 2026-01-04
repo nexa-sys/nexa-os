@@ -1535,7 +1535,7 @@ impl VmInstance {
         }
     }
     
-    /// Inject keyboard key event (for console input)
+    /// Inject keyboard key event to PS/2 controller
     pub fn inject_key(&self, key: &str, is_release: bool) {
         if let Some(vm) = self.vm.read().unwrap().as_ref() {
             vm.inject_key(key, is_release);

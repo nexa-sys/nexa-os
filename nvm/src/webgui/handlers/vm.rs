@@ -1502,43 +1502,40 @@ async fn handle_console_socket(
             match msg {
                 Message::Text(text) => {
                     // Handle console commands
+                    log::trace!("[Console] WS text: {}", text);
                     if let Ok(cmd) = serde_json::from_str::<serde_json::Value>(&text) {
                         let mut sender = frame_sender.lock().await;
                         match cmd.get("type").and_then(|t| t.as_str()) {
                             Some("key") => {
                                 // Forward key events to VM PS/2 keyboard
-                                // Process key injection in a scope to release executor before await
+                                // Keys are injected to keyboard controller, which raises IRQ1
+                                // BIOS/OS handles key combinations like Ctrl+Alt+Del
                                 {
                                     let executor = vm_executor();
                                     
-                                    // Handle different key event formats
                                     let action = cmd.get("action").and_then(|a| a.as_str()).unwrap_or("press");
                                     let is_release = action == "up";
                                     
-                                    // Check for key combination (Ctrl+Alt+Del, etc.)
                                     if let Some(keys) = cmd.get("keys").and_then(|k| k.as_array()) {
-                                        // Handle key combinations like ["ctrl", "alt", "delete"]
+                                        // Key combination - press all then release in reverse
                                         for key in keys {
                                             if let Some(key_str) = key.as_str() {
-                                                let _ = executor.inject_key(&vm_id, key_str, false); // Press
+                                                let _ = executor.inject_key(&vm_id, key_str, false);
                                             }
                                         }
-                                        // Release in reverse order
                                         for key in keys.iter().rev() {
                                             if let Some(key_str) = key.as_str() {
-                                                let _ = executor.inject_key(&vm_id, key_str, true); // Release
+                                                let _ = executor.inject_key(&vm_id, key_str, true);
                                             }
                                         }
                                     } else if let Some(key) = cmd.get("key").and_then(|k| k.as_str()) {
-                                        // Handle single key event
                                         let key_mapped = map_js_key_to_ps2(key, &cmd);
                                         let _ = executor.inject_key(&vm_id, &key_mapped, is_release);
                                     } else if let Some(code) = cmd.get("code").and_then(|c| c.as_str()) {
-                                        // Handle by key code (e.g., "KeyA", "Enter", "ArrowUp")
                                         let key_mapped = map_js_code_to_ps2(code);
                                         let _ = executor.inject_key(&vm_id, &key_mapped, is_release);
                                     }
-                                } // executor released here before await
+                                }
                                 
                                 let _ = sender.send(Message::Text(serde_json::json!({
                                     "type": "ack",

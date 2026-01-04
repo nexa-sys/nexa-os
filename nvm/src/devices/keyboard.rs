@@ -397,6 +397,16 @@ impl Ps2Keyboard {
         self.special_keys.iter().any(|k| matches!(k, SpecialKey::CtrlAltDel))
     }
     
+    /// Check if Ctrl key is currently pressed
+    pub fn is_ctrl_pressed(&self) -> bool {
+        self.modifiers.ctrl_pressed()
+    }
+    
+    /// Check if Alt key is currently pressed  
+    pub fn is_alt_pressed(&self) -> bool {
+        self.modifiers.alt_pressed()
+    }
+    
     /// Clear special key queue
     pub fn clear_special_keys(&mut self) {
         self.special_keys.clear();
@@ -691,6 +701,32 @@ mod tests {
         kb.inject_key("del", false);
         
         assert!(kb.reboot_requested());
+    }
+    
+    #[test]
+    fn test_ctrl_alt_del_from_frontend() {
+        // Test with exact key names sent by frontend: ["ctrl", "alt", "delete"]
+        let mut kb = Ps2Keyboard::new();
+        
+        // Simulate frontend sending Ctrl+Alt+Del combo
+        kb.inject_key("ctrl", false);    // Press ctrl
+        assert!(kb.modifiers.ctrl_pressed(), "Ctrl should be pressed after 'ctrl' key");
+        
+        kb.inject_key("alt", false);     // Press alt
+        assert!(kb.modifiers.alt_pressed(), "Alt should be pressed after 'alt' key");
+        
+        kb.inject_key("delete", false);  // Press delete
+        
+        // Check if reboot was requested
+        assert!(kb.reboot_requested(), "Ctrl+Alt+Del should trigger reboot request");
+        
+        // Now simulate release in reverse order
+        kb.inject_key("delete", true);
+        kb.inject_key("alt", true);
+        kb.inject_key("ctrl", true);
+        
+        assert!(!kb.modifiers.ctrl_pressed(), "Ctrl should be released");
+        assert!(!kb.modifiers.alt_pressed(), "Alt should be released");
     }
     
     #[test]

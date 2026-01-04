@@ -892,77 +892,20 @@ impl VirtualMachine {
     }
     
     // ========================================================================
-    // Keyboard Input (Enterprise boot-time key handling)
+    // Keyboard Input
     // ========================================================================
     
-    /// Inject a keyboard key press
+    /// Inject a keyboard key press to PS/2 controller
+    /// The controller will raise IRQ1 for BIOS/OS to handle
     pub fn inject_key(&self, key: &str, is_release: bool) {
         if let Some(ref keyboard) = self.keyboard_device {
-            let mut kb_lock = keyboard.lock().unwrap();
-            kb_lock.inject_key(key, is_release);
-        }
-    }
-    
-    /// Check if setup key (F2/DEL) was pressed
-    pub fn is_setup_key_pressed(&self) -> bool {
-        if let Some(ref keyboard) = self.keyboard_device {
-            keyboard.lock().unwrap().setup_key_pressed()
-        } else {
-            false
-        }
-    }
-    
-    /// Check if reboot combination (Ctrl+Alt+Del) was pressed
-    pub fn is_reboot_requested(&self) -> bool {
-        if let Some(ref keyboard) = self.keyboard_device {
-            keyboard.lock().unwrap().reboot_requested()
-        } else {
-            false
-        }
-    }
-    
-    /// Poll for special key event
-    pub fn poll_special_key(&self) -> Option<crate::devices::keyboard::SpecialKey> {
-        if let Some(ref keyboard) = self.keyboard_device {
-            keyboard.lock().unwrap().poll_special_key()
-        } else {
-            None
-        }
-    }
-    
-    /// Clear pending special key events
-    pub fn clear_special_keys(&self) {
-        if let Some(ref keyboard) = self.keyboard_device {
-            keyboard.lock().unwrap().clear_special_keys();
+            keyboard.lock().unwrap().inject_key(key, is_release);
         }
     }
     
     /// Get keyboard device for direct access
     pub fn get_keyboard_device(&self) -> Option<Arc<Mutex<crate::devices::keyboard::Ps2Keyboard>>> {
         self.keyboard_device.clone()
-    }
-    
-    /// Handle Ctrl+Alt+Del reboot request
-    pub fn handle_reboot_request(&self) {
-        if self.is_reboot_requested() {
-            self.record_event(VmEvent::StateChange { 
-                from: *self.state.read().unwrap(), 
-                to: VmState::Created 
-            });
-            
-            // Display reboot message
-            if let Some(ref vga) = self.vga_device {
-                let mut vga_lock = vga.lock().unwrap();
-                vga_lock.write_string_colored("\n\nSystem restart initiated (Ctrl+Alt+Del)...\n", 0x0E);
-            }
-            
-            // Reset VM
-            self.reset();
-            self.clear_special_keys();
-            
-            // Restart
-            self.start();
-        }
     }
 
     // ========================================================================
