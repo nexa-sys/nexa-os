@@ -524,6 +524,16 @@ impl VmExecutor {
         self.hypervisor.vm_inject_scancode(running_vm.hv_id, scancode, is_release)
             .map_err(|e| VmExecError::ConsoleError(e.to_string()))
     }
+    
+    /// Advance VM execution by specified cycles
+    /// This must be called periodically to process device ticks, interrupts, and CPU execution.
+    /// For real-time emulation, call with ~10000 cycles per 10ms for approximate 1MHz emulation.
+    pub fn tick_vm(&self, vm_id: &str, cycles: u64) -> VmExecResult<()> {
+        let running_vm = self.get_running_vm(vm_id)?;
+        
+        self.hypervisor.vm_tick(running_vm.hv_id, cycles)
+            .map_err(|e| VmExecError::ConsoleError(e.to_string()))
+    }
 
     /// Get VM data directory
     pub fn vm_data_dir(&self, vm_id: &str) -> PathBuf {

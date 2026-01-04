@@ -1470,6 +1470,14 @@ async fn handle_console_socket(
         loop {
             interval.tick().await;
             
+            // Advance VM execution - process device ticks, interrupts, CPU cycles
+            // This is critical for keyboard IRQ delivery and other device processing
+            // 10000 cycles per 100ms tick = ~100kHz effective emulation speed
+            {
+                let executor = vm_executor();
+                let _ = executor.tick_vm(&vm_id_clone, 10000);
+            }
+            
             // Get framebuffer from VM
             let framebuffer = {
                 let executor = vm_executor();

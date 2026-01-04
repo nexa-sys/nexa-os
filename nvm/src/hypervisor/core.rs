@@ -1207,6 +1207,14 @@ impl Hypervisor {
         Ok(())
     }
     
+    /// Advance VM execution by specified cycles
+    /// Must be called periodically to process device interrupts and CPU execution
+    pub fn vm_tick(&self, id: VmId, cycles: u64) -> HypervisorResult<()> {
+        let vm = self.get_vm(id)?;
+        vm.tick(cycles);
+        Ok(())
+    }
+    
     /// Get VM by ID
     fn get_vm(&self, id: VmId) -> HypervisorResult<Arc<VmInstance>> {
         self.vms.read().unwrap()
@@ -1549,6 +1557,14 @@ impl VmInstance {
                 let mut kb = keyboard.lock().unwrap();
                 kb.inject_scancode(scancode, is_release);
             }
+        }
+    }
+    
+    /// Advance VM execution by specified cycles
+    /// This processes device ticks, interrupts, and CPU execution
+    pub fn tick(&self, cycles: u64) {
+        if let Some(vm) = self.vm.read().unwrap().as_ref() {
+            vm.run(cycles);
         }
     }
 
