@@ -827,6 +827,14 @@ pub async fn create(
         .map(|d| d.as_secs())
         .unwrap_or(0);
     
+    // Extract disk configuration from request
+    // Enterprise feature: Support diskless VMs for PXE boot, live ISO, thin clients
+    let disks_from_hardware: Vec<EnterpriseDiskSpec> = req.hardware.as_ref()
+        .map(|hw| hw.disks.clone())
+        .unwrap_or_default();
+    let disks_from_legacy: Vec<CreateDiskSpec> = req.disks.clone().unwrap_or_default();
+    let has_disks = !disks_from_hardware.is_empty() || !disks_from_legacy.is_empty();
+    
     // Extract values from config object (frontend format) or direct fields (API format)
     let (vcpus, memory_mb, disk_gb, network) = if let Some(config) = &req.config {
         (config.cpu_cores, config.memory_mb, config.disk_gb, config.network.clone())
@@ -834,7 +842,9 @@ pub async fn create(
         (
             req.vcpus.unwrap_or(2),
             req.memory_mb.unwrap_or(2048),
-            req.disks.as_ref().and_then(|d| d.first().map(|d| d.size_gb)).unwrap_or(20),
+            disks_from_legacy.first().map(|d| d.size_gb)
+                .or_else(|| disks_from_hardware.first().map(|d| d.size_gb))
+                .unwrap_or(0),
             req.networks.as_ref().and_then(|n| n.first().map(|n| n.network.clone())).unwrap_or_else(|| "default".to_string()),
         )
     };
@@ -873,32 +883,79 @@ pub async fn create(
     
     match state_mgr.create_vm(vm) {
         Ok(vm_id) => {
-            // Get data directory for disk path
             let data_dir = executor.vm_data_dir(&vm_id);
-            let disk_path = data_dir.join(format!("{}-disk0.qcow2", req.name));
+            let mut disk_configs: Vec<DiskExecConfig> = vec![];
+            let mut created_disk_paths: Vec<std::path::PathBuf> = vec![];
             
-            // Create disk image
-            if let Err(e) = executor.create_disk_image(&disk_path, disk_gb, "qcow2") {
-                // Rollback: delete VM state
-                let _ = state_mgr.delete_vm(&vm_id);
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ApiResponse::<VmListItem>::error(500, &format!("Failed to create disk: {}", e))),
-                );
+            // Create disks only if configured (enterprise: diskless VMs supported)
+            if has_disks {
+                // Use hardware disks (enterprise format) if available, else fall back to legacy format
+                if !disks_from_hardware.is_empty() {
+                    for (idx, disk) in disks_from_hardware.iter().enumerate() {
+                        let disk_path = data_dir.join(format!("{}-disk{}.{}", req.name, idx, &disk.format));
+                        
+                        // Create disk image
+                        if let Err(e) = executor.create_disk_image(&disk_path, disk.size_gb, &disk.format) {
+                            // Rollback: delete VM state and already created disks
+                            for path in &created_disk_paths {
+                                let _ = std::fs::remove_file(path);
+                            }
+                            let _ = state_mgr.delete_vm(&vm_id);
+                            return (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                Json(ApiResponse::<VmListItem>::error(500, &format!("Failed to create disk {}: {}", idx, e))),
+                            );
+                        }
+                        created_disk_paths.push(disk_path.clone());
+                        
+                        disk_configs.push(DiskExecConfig {
+                            path: disk_path,
+                            format: disk.format.clone(),
+                            bus: disk.bus.clone(),
+                            cache: disk.cache.clone(),
+                            io: "native".to_string(),
+                            bootable: disk.bootable,
+                            discard: disk.discard != "ignore",
+                            readonly: false,
+                            serial: None,
+                        });
+                    }
+                } else {
+                    // Legacy format (simple disks)
+                    for (idx, disk) in disks_from_legacy.iter().enumerate() {
+                        let format = disk.format.as_deref().unwrap_or("qcow2");
+                        let disk_path = data_dir.join(format!("{}-disk{}.{}", req.name, idx, format));
+                        
+                        // Create disk image
+                        if let Err(e) = executor.create_disk_image(&disk_path, disk.size_gb, format) {
+                            // Rollback: delete VM state and already created disks
+                            for path in &created_disk_paths {
+                                let _ = std::fs::remove_file(path);
+                            }
+                            let _ = state_mgr.delete_vm(&vm_id);
+                            return (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                Json(ApiResponse::<VmListItem>::error(500, &format!("Failed to create disk {}: {}", idx, e))),
+                            );
+                        }
+                        created_disk_paths.push(disk_path.clone());
+                        
+                        disk_configs.push(DiskExecConfig {
+                            path: disk_path,
+                            format: format.to_string(),
+                            bus: disk.bus.clone().unwrap_or_else(|| "virtio".to_string()),
+                            cache: disk.cache.clone().unwrap_or_else(|| "writeback".to_string()),
+                            io: "native".to_string(),
+                            bootable: idx == 0,
+                            discard: true,
+                            readonly: false,
+                            serial: None,
+                        });
+                    }
+                }
+            } else {
+                log::info!("Creating diskless VM '{}' (ID: {})", req.name, vm_id);
             }
-            
-            // Build execution config and register VM in hypervisor
-            let disks = vec![DiskExecConfig {
-                path: disk_path,
-                format: "qcow2".to_string(),
-                bus: "virtio".to_string(),
-                cache: "writeback".to_string(),
-                io: "native".to_string(),
-                bootable: true,
-                discard: true,
-                readonly: false,
-                serial: None,
-            }];
             
             let networks: Vec<NetworkExecConfig> = network_interfaces.iter().map(|nic| {
                 NetworkExecConfig {
@@ -913,6 +970,22 @@ pub async fn create(
                 }
             }).collect();
             
+            // Extract boot configuration
+            let boot_order = req.boot.as_ref()
+                .map(|b| b.order.clone())
+                .unwrap_or_else(|| {
+                    if has_disks {
+                        vec!["disk".to_string(), "cdrom".to_string(), "network".to_string()]
+                    } else {
+                        // Diskless VM: boot from CD or network first
+                        vec!["cdrom".to_string(), "network".to_string()]
+                    }
+                });
+            
+            let firmware = req.boot.as_ref()
+                .map(|b| if b.firmware == "bios" { FirmwareType::Bios } else { FirmwareType::Uefi })
+                .unwrap_or(FirmwareType::Uefi);
+            
             let exec_config = VmExecConfig {
                 vm_id: vm_id.clone(),
                 name: req.name.clone(),
@@ -923,15 +996,25 @@ pub async fn create(
                 cpu_model: "host".to_string(),
                 memory_mb,
                 memory_balloon: true,
-                disks,
+                disks: disk_configs,
                 networks,
-                cdrom_iso: None,
-                firmware: FirmwareType::Uefi,
-                secure_boot: false,
-                tpm_enabled: false,
-                tpm_version: "2.0".to_string(),
-                machine_type: "q35".to_string(),
-                nested_virt: false,
+                cdrom_iso: req.hardware.as_ref()
+                    .and_then(|hw| hw.cdrom.as_ref())
+                    .filter(|cd| cd.iso.is_some())
+                    .and_then(|cd| cd.iso.clone())
+                    .map(|iso| std::path::PathBuf::from(iso)),
+                firmware,
+                secure_boot: req.boot.as_ref().map(|b| b.secure_boot).unwrap_or(false),
+                tpm_enabled: req.security.as_ref().map(|s| s.tpm).unwrap_or(false),
+                tpm_version: req.security.as_ref()
+                    .map(|s| s.tpm_version.clone())
+                    .unwrap_or_else(|| "2.0".to_string()),
+                machine_type: req.boot.as_ref()
+                    .map(|b| b.machine_type.clone())
+                    .unwrap_or_else(|| "q35".to_string()),
+                nested_virt: req.hardware.as_ref()
+                    .map(|hw| hw.cpu.nested_virt)
+                    .unwrap_or(false),
                 vnc_display: None,
                 qmp_socket: None,
                 enable_kvm: executor.is_kvm_available(),
@@ -961,9 +1044,7 @@ pub async fn create(
                     memory_mb,
                     disk_gb,
                     network,
-                    boot_order: req.config.as_ref()
-                        .map(|c| c.boot_order.clone())
-                        .unwrap_or_else(|| vec!["disk".to_string(), "cdrom".to_string()]),
+                    boot_order: boot_order,
                 },
                 stats: None,
                 created_at: created_at.clone(),
@@ -994,15 +1075,48 @@ pub async fn update(
     Json(ApiResponse::success(serde_json::json!({"id": id})))
 }
 
+/// Query parameters for VM deletion
+#[derive(Debug, Deserialize, Default)]
+pub struct DeleteVmQuery {
+    /// Delete associated disk files (default: false for safety)
+    #[serde(default)]
+    pub delete_disks: bool,
+    /// Delete associated backup files (default: false for safety)
+    #[serde(default)]
+    pub delete_backups: bool,
+    /// Force deletion even if VM is running (will stop VM first)
+    #[serde(default)]
+    pub force: bool,
+}
+
 #[cfg(feature = "webgui")]
 pub async fn delete(
     State(_state): State<Arc<WebGuiState>>,
     Path(id): Path<String>,
+    Query(query): Query<DeleteVmQuery>,
 ) -> impl IntoResponse {
     use crate::executor::vm_executor;
     
     let state_mgr = vm_state();
     let mut executor = vm_executor();
+    
+    // Check if VM is running and handle accordingly
+    if let Some(vm) = state_mgr.get_vm(&id) {
+        if vm.status == crate::vmstate::VmStatus::Running {
+            if query.force {
+                // Force stop the VM first
+                log::info!("Force stopping VM {} before deletion", id);
+                if let Err(e) = executor.stop_vm(&id, true) {
+                    log::warn!("Failed to stop VM {} before deletion: {}", id, e);
+                }
+            } else {
+                return Json(ApiResponse::<serde_json::Value>::error(
+                    400, 
+                    "VM is running. Stop the VM first or use force=true to force deletion"
+                ));
+            }
+        }
+    }
     
     // Delete from hypervisor first (this also stops the VM if running)
     if executor.is_registered(&id) {
@@ -1012,10 +1126,49 @@ pub async fn delete(
         }
     }
     
-    // Delete VM state
-    match state_mgr.delete_vm(&id) {
-        Ok(_) => Json(ApiResponse::<()>::success(())),
-        Err(e) => Json(ApiResponse::<()>::error(404, &e)),
+    // Delete VM state with cleanup options
+    if query.delete_disks || query.delete_backups {
+        match state_mgr.delete_vm_with_cleanup(&id, query.delete_disks, query.delete_backups) {
+            Ok((vm, cleanup_result)) => {
+                log::info!(
+                    "VM {} deleted: {} disks deleted, {} backups deleted, {} disk errors, {} backup errors",
+                    vm.name,
+                    cleanup_result.disks_deleted,
+                    cleanup_result.backups_deleted,
+                    cleanup_result.disk_errors.len(),
+                    cleanup_result.backup_errors.len()
+                );
+                
+                Json(ApiResponse::success(serde_json::json!({
+                    "message": format!("VM '{}' deleted successfully", vm.name),
+                    "cleanup": {
+                        "disks_deleted": cleanup_result.disks_deleted,
+                        "backups_deleted": cleanup_result.backups_deleted,
+                        "schedules_deleted": cleanup_result.schedules_deleted,
+                        "config_deleted": cleanup_result.config_deleted,
+                        "disk_errors": cleanup_result.disk_errors,
+                        "backup_errors": cleanup_result.backup_errors,
+                    }
+                })))
+            }
+            Err(e) => Json(ApiResponse::<serde_json::Value>::error(404, &e)),
+        }
+    } else {
+        // Basic deletion without cleanup (backward compatible)
+        match state_mgr.delete_vm(&id) {
+            Ok(vm) => Json(ApiResponse::success(serde_json::json!({
+                "message": format!("VM '{}' deleted successfully (disk files and backups preserved)", vm.name),
+                "cleanup": {
+                    "disks_deleted": 0,
+                    "backups_deleted": 0,
+                    "schedules_deleted": 0,
+                    "config_deleted": false,
+                    "disk_errors": [],
+                    "backup_errors": [],
+                }
+            }))),
+            Err(e) => Json(ApiResponse::<serde_json::Value>::error(404, &e)),
+        }
     }
 }
 
@@ -1353,8 +1506,40 @@ async fn handle_console_socket(
                         let mut sender = frame_sender.lock().await;
                         match cmd.get("type").and_then(|t| t.as_str()) {
                             Some("key") => {
-                                // Forward key events to VM
-                                // TODO: Implement keyboard input handling
+                                // Forward key events to VM PS/2 keyboard
+                                // Process key injection in a scope to release executor before await
+                                {
+                                    let executor = vm_executor();
+                                    
+                                    // Handle different key event formats
+                                    let action = cmd.get("action").and_then(|a| a.as_str()).unwrap_or("press");
+                                    let is_release = action == "up";
+                                    
+                                    // Check for key combination (Ctrl+Alt+Del, etc.)
+                                    if let Some(keys) = cmd.get("keys").and_then(|k| k.as_array()) {
+                                        // Handle key combinations like ["ctrl", "alt", "delete"]
+                                        for key in keys {
+                                            if let Some(key_str) = key.as_str() {
+                                                let _ = executor.inject_key(&vm_id, key_str, false); // Press
+                                            }
+                                        }
+                                        // Release in reverse order
+                                        for key in keys.iter().rev() {
+                                            if let Some(key_str) = key.as_str() {
+                                                let _ = executor.inject_key(&vm_id, key_str, true); // Release
+                                            }
+                                        }
+                                    } else if let Some(key) = cmd.get("key").and_then(|k| k.as_str()) {
+                                        // Handle single key event
+                                        let key_mapped = map_js_key_to_ps2(key, &cmd);
+                                        let _ = executor.inject_key(&vm_id, &key_mapped, is_release);
+                                    } else if let Some(code) = cmd.get("code").and_then(|c| c.as_str()) {
+                                        // Handle by key code (e.g., "KeyA", "Enter", "ArrowUp")
+                                        let key_mapped = map_js_code_to_ps2(code);
+                                        let _ = executor.inject_key(&vm_id, &key_mapped, is_release);
+                                    }
+                                } // executor released here before await
+                                
                                 let _ = sender.send(Message::Text(serde_json::json!({
                                     "type": "ack",
                                     "command": "key"
@@ -1422,4 +1607,186 @@ async fn handle_console_socket(
     update_task.abort();
     
     log::debug!("Console WebSocket closed for VM {}", vm_id);
+}
+
+/// Map JavaScript key value to PS/2 keyboard key name
+fn map_js_key_to_ps2(key: &str, cmd: &serde_json::Value) -> String {
+    // Check for modifier states
+    let shift = cmd.get("shift").and_then(|v| v.as_bool()).unwrap_or(false);
+    let ctrl = cmd.get("ctrl").and_then(|v| v.as_bool()).unwrap_or(false);
+    let alt = cmd.get("alt").and_then(|v| v.as_bool()).unwrap_or(false);
+    
+    // If key is a single character and not a modifier
+    if key.len() == 1 {
+        let c = key.chars().next().unwrap();
+        // For letter keys, our PS2 keyboard expects lowercase
+        if c.is_ascii_alphabetic() {
+            return c.to_lowercase().to_string();
+        }
+        // For numbers and symbols, return as-is
+        return key.to_string();
+    }
+    
+    // Map special keys
+    match key {
+        // Modifier keys
+        "Shift" | "ShiftLeft" | "ShiftRight" => "lshift".to_string(),
+        "Control" | "ControlLeft" | "ControlRight" => "lctrl".to_string(),
+        "Alt" | "AltLeft" => "lalt".to_string(),
+        "AltRight" | "AltGraph" => "ralt".to_string(),
+        "Meta" | "MetaLeft" | "MetaRight" => "lmeta".to_string(),
+        
+        // Arrow keys
+        "ArrowUp" => "up".to_string(),
+        "ArrowDown" => "down".to_string(),
+        "ArrowLeft" => "left".to_string(),
+        "ArrowRight" => "right".to_string(),
+        
+        // Function keys
+        "F1" => "f1".to_string(),
+        "F2" => "f2".to_string(),
+        "F3" => "f3".to_string(),
+        "F4" => "f4".to_string(),
+        "F5" => "f5".to_string(),
+        "F6" => "f6".to_string(),
+        "F7" => "f7".to_string(),
+        "F8" => "f8".to_string(),
+        "F9" => "f9".to_string(),
+        "F10" => "f10".to_string(),
+        "F11" => "f11".to_string(),
+        "F12" => "f12".to_string(),
+        
+        // Navigation/editing keys
+        "Enter" => "enter".to_string(),
+        "Tab" => "tab".to_string(),
+        "Backspace" => "backspace".to_string(),
+        "Delete" => "delete".to_string(),
+        "Insert" => "insert".to_string(),
+        "Home" => "home".to_string(),
+        "End" => "end".to_string(),
+        "PageUp" => "pageup".to_string(),
+        "PageDown" => "pagedown".to_string(),
+        "Escape" => "escape".to_string(),
+        " " => "space".to_string(),
+        
+        // Lock keys
+        "CapsLock" => "capslock".to_string(),
+        "NumLock" => "numlock".to_string(),
+        "ScrollLock" => "scrolllock".to_string(),
+        
+        // Other special keys
+        "PrintScreen" => "printscreen".to_string(),
+        "Pause" => "pause".to_string(),
+        "ContextMenu" => "menu".to_string(),
+        
+        // Numpad keys
+        "Numpad0" => "kp0".to_string(),
+        "Numpad1" => "kp1".to_string(),
+        "Numpad2" => "kp2".to_string(),
+        "Numpad3" => "kp3".to_string(),
+        "Numpad4" => "kp4".to_string(),
+        "Numpad5" => "kp5".to_string(),
+        "Numpad6" => "kp6".to_string(),
+        "Numpad7" => "kp7".to_string(),
+        "Numpad8" => "kp8".to_string(),
+        "Numpad9" => "kp9".to_string(),
+        "NumpadEnter" => "kpenter".to_string(),
+        "NumpadAdd" => "kpplus".to_string(),
+        "NumpadSubtract" => "kpminus".to_string(),
+        "NumpadMultiply" => "kpasterisk".to_string(),
+        "NumpadDivide" => "kpslash".to_string(),
+        "NumpadDecimal" => "kpdot".to_string(),
+        
+        // Default: return as lowercase
+        _ => key.to_lowercase(),
+    }
+}
+
+/// Map JavaScript key code to PS/2 keyboard key name
+fn map_js_code_to_ps2(code: &str) -> String {
+    match code {
+        // Letter keys (KeyA through KeyZ)
+        c if c.starts_with("Key") && c.len() == 4 => {
+            c[3..].to_lowercase()
+        }
+        
+        // Digit keys (Digit0 through Digit9)
+        c if c.starts_with("Digit") && c.len() == 6 => {
+            c[5..].to_string()
+        }
+        
+        // Numpad keys (same mapping as above)
+        "Numpad0" => "kp0".to_string(),
+        "Numpad1" => "kp1".to_string(),
+        "Numpad2" => "kp2".to_string(),
+        "Numpad3" => "kp3".to_string(),
+        "Numpad4" => "kp4".to_string(),
+        "Numpad5" => "kp5".to_string(),
+        "Numpad6" => "kp6".to_string(),
+        "Numpad7" => "kp7".to_string(),
+        "Numpad8" => "kp8".to_string(),
+        "Numpad9" => "kp9".to_string(),
+        "NumpadEnter" => "kpenter".to_string(),
+        "NumpadAdd" => "kpplus".to_string(),
+        "NumpadSubtract" => "kpminus".to_string(),
+        "NumpadMultiply" => "kpasterisk".to_string(),
+        "NumpadDivide" => "kpslash".to_string(),
+        "NumpadDecimal" => "kpdot".to_string(),
+        
+        // Arrow keys
+        "ArrowUp" => "up".to_string(),
+        "ArrowDown" => "down".to_string(),
+        "ArrowLeft" => "left".to_string(),
+        "ArrowRight" => "right".to_string(),
+        
+        // Function keys
+        c if c.starts_with("F") && c.len() >= 2 && c.len() <= 3 => {
+            c.to_lowercase()
+        }
+        
+        // Modifier keys
+        "ShiftLeft" => "lshift".to_string(),
+        "ShiftRight" => "rshift".to_string(),
+        "ControlLeft" => "lctrl".to_string(),
+        "ControlRight" => "rctrl".to_string(),
+        "AltLeft" => "lalt".to_string(),
+        "AltRight" => "ralt".to_string(),
+        "MetaLeft" => "lmeta".to_string(),
+        "MetaRight" => "rmeta".to_string(),
+        
+        // Special keys
+        "Enter" => "enter".to_string(),
+        "Tab" => "tab".to_string(),
+        "Backspace" => "backspace".to_string(),
+        "Delete" => "delete".to_string(),
+        "Insert" => "insert".to_string(),
+        "Home" => "home".to_string(),
+        "End" => "end".to_string(),
+        "PageUp" => "pageup".to_string(),
+        "PageDown" => "pagedown".to_string(),
+        "Escape" => "escape".to_string(),
+        "Space" => "space".to_string(),
+        "CapsLock" => "capslock".to_string(),
+        "NumLock" => "numlock".to_string(),
+        "ScrollLock" => "scrolllock".to_string(),
+        "PrintScreen" => "printscreen".to_string(),
+        "Pause" => "pause".to_string(),
+        "ContextMenu" => "menu".to_string(),
+        
+        // Punctuation keys
+        "Minus" => "-".to_string(),
+        "Equal" => "=".to_string(),
+        "BracketLeft" => "[".to_string(),
+        "BracketRight" => "]".to_string(),
+        "Backslash" => "\\".to_string(),
+        "Semicolon" => ";".to_string(),
+        "Quote" => "'".to_string(),
+        "Backquote" => "`".to_string(),
+        "Comma" => ",".to_string(),
+        "Period" => ".".to_string(),
+        "Slash" => "/".to_string(),
+        
+        // Default: return as lowercase
+        _ => code.to_lowercase(),
+    }
 }

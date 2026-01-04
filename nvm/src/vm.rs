@@ -937,6 +937,11 @@ impl VirtualMachine {
         }
     }
     
+    /// Get keyboard device for direct access
+    pub fn get_keyboard_device(&self) -> Option<Arc<Mutex<crate::devices::keyboard::Ps2Keyboard>>> {
+        self.keyboard_device.clone()
+    }
+    
     /// Handle Ctrl+Alt+Del reboot request
     pub fn handle_reboot_request(&self) {
         if self.is_reboot_requested() {

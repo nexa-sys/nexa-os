@@ -1,13 +1,20 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { useVmsStore } from '@/stores/vms'
 import { useNotificationStore } from '@/stores/notification'
 import { api } from '@/api'
+import { vmsApi } from '@/api/vms'
 
 const router = useRouter()
+const route = useRoute()
 const vmsStore = useVmsStore()
 const notificationStore = useNotificationStore()
+
+// Edit mode detection
+const isEditMode = computed(() => route.name === 'vm-edit' && !!route.params.id)
+const vmId = computed(() => route.params.id as string | undefined)
+const loadingVm = ref(false)
 
 // Form steps - expanded for enterprise configuration
 const currentStep = ref(1)
@@ -256,12 +263,131 @@ async function fetchNodes() {
   }
 }
 
-onMounted(() => {
-  fetchTemplates()
-  fetchNetworks()
-  fetchStoragePools()
-  fetchIsos()
-  fetchNodes()
+// Load existing VM data for edit mode
+async function loadVmForEdit(id: string) {
+  try {
+    loadingVm.value = true
+    const response = await vmsApi.get(id)
+    if (response.data.success && response.data.data) {
+      const vm = response.data.data
+      
+      // Populate form with existing VM data
+      form.value.name = vm.name || ''
+      form.value.description = vm.description || ''
+      form.value.tags = vm.tags || []
+      
+      // CPU configuration
+      if (vm.config?.cpu) {
+        const cpu = vm.config.cpu
+        form.value.cpu.sockets = cpu.sockets || 1
+        form.value.cpu.cores_per_socket = cpu.cores_per_socket || cpu.cores || 2
+        form.value.cpu.threads_per_core = cpu.threads_per_core || 1
+        form.value.cpu.model = cpu.model || 'host-passthrough'
+        form.value.cpu.hot_add = cpu.hot_add || false
+        form.value.cpu.nested_virt = cpu.nested_virt || false
+        form.value.cpu.reservation_mhz = cpu.reservation_mhz
+        form.value.cpu.limit_mhz = cpu.limit_mhz
+      }
+      
+      // Memory configuration
+      if (vm.config?.memory) {
+        const mem = vm.config.memory
+        form.value.memory.size_mb = mem.size_mb || 2048
+        form.value.memory.max_size_mb = mem.max_size_mb
+        form.value.memory.hot_add = mem.hot_add || false
+        form.value.memory.reservation_mb = mem.reservation_mb
+        form.value.memory.ballooning = mem.ballooning !== false
+        form.value.memory.ksm = mem.ksm || false
+        form.value.memory.huge_pages = mem.huge_pages || false
+      }
+      
+      // Disks configuration
+      if (vm.config?.disks && vm.config.disks.length > 0) {
+        form.value.disks = vm.config.disks.map((disk: any) => ({
+          id: disk.id || crypto.randomUUID(),
+          size_gb: disk.size_gb || 20,
+          storage_pool: disk.storage_pool || 'local',
+          format: disk.format || 'qcow2',
+          bus: disk.bus || 'virtio',
+          cache: disk.cache || 'writeback',
+          bootable: disk.bootable || false,
+          ssd_emulation: disk.ssd_emulation || false,
+          iops_limit: disk.iops_limit,
+          // Preserve existing disk path for edit mode
+          path: disk.path,
+        }))
+      }
+      
+      // Network configuration  
+      if (vm.config?.networks && vm.config.networks.length > 0) {
+        form.value.networks = vm.config.networks.map((net: any) => ({
+          id: net.id || crypto.randomUUID(),
+          network: net.network || 'default',
+          mac: net.mac || '',
+          model: net.model || 'virtio',
+          vlan_id: net.vlan_id,
+          inbound_limit_mbps: net.inbound_limit_mbps,
+          outbound_limit_mbps: net.outbound_limit_mbps,
+        }))
+      }
+      
+      // CD/DVD configuration
+      if (vm.config?.cdrom) {
+        form.value.cdrom.enabled = vm.config.cdrom.enabled || false
+        form.value.cdrom.iso = vm.config.cdrom.iso || ''
+        form.value.cdrom.bus = vm.config.cdrom.bus || 'sata'
+      }
+      
+      // Boot configuration
+      if (vm.config?.boot) {
+        const boot = vm.config.boot
+        form.value.boot.firmware = boot.firmware || 'uefi'
+        form.value.boot.secure_boot = boot.secure_boot || false
+        form.value.boot.order = boot.order || ['disk', 'cdrom', 'network']
+        form.value.boot.machine_type = boot.machine_type || 'q35'
+        form.value.boot.menu_timeout = boot.menu_timeout || 0
+      }
+      
+      // Security configuration
+      if (vm.config?.security) {
+        const sec = vm.config.security
+        form.value.security.tpm = sec.tpm || false
+        form.value.security.tpm_version = sec.tpm_version || '2.0'
+        form.value.security.sev = sec.sev || false
+        form.value.security.isolation = sec.isolation || 'hypervisor'
+      }
+      
+      // Advanced options
+      form.value.advanced.host_node = vm.host_node
+      
+      notificationStore.success('VM Loaded', `Editing "${vm.name}"`)
+    } else {
+      notificationStore.error('Load Failed', 'Failed to load VM configuration')
+      router.push('/vms')
+    }
+  } catch (e: any) {
+    console.error('Failed to load VM:', e)
+    notificationStore.error('Load Failed', e.response?.data?.error?.message || 'Failed to load VM for editing')
+    router.push('/vms')
+  } finally {
+    loadingVm.value = false
+  }
+}
+
+onMounted(async () => {
+  // Fetch reference data in parallel
+  await Promise.all([
+    fetchTemplates(),
+    fetchNetworks(),
+    fetchStoragePools(),
+    fetchIsos(),
+    fetchNodes()
+  ])
+  
+  // If in edit mode, load existing VM data
+  if (isEditMode.value && vmId.value) {
+    await loadVmForEdit(vmId.value)
+  }
 })
 
 // Disk management functions
@@ -279,12 +405,13 @@ function addDisk() {
 }
 
 function removeDisk(index: number) {
-  if (form.value.disks.length > 1) {
-    form.value.disks.splice(index, 1)
-    // Ensure at least one disk is bootable
-    if (!form.value.disks.some(d => d.bootable)) {
-      form.value.disks[0].bootable = true
-    }
+  // Enterprise feature: Allow removing all disks for diskless VMs
+  // (PXE boot, live ISO, thin clients, etc.)
+  form.value.disks.splice(index, 1)
+  
+  // Ensure at least one remaining disk is bootable (if any disks remain)
+  if (form.value.disks.length > 0 && !form.value.disks.some(d => d.bootable)) {
+    form.value.disks[0].bootable = true
   }
 }
 
@@ -317,6 +444,7 @@ function generateMac(index: number) {
 }
 
 // Validation
+// Enterprise feature: Allow diskless VMs for PXE boot, ISO boot, or network boot scenarios
 const isStepValid = computed(() => {
   switch (currentStep.value) {
     case 1: // Basic Info
@@ -324,7 +452,22 @@ const isStepValid = computed(() => {
     case 2: // CPU & Memory
       return totalVcpus.value >= 1 && form.value.memory.size_mb >= 256
     case 3: // Storage
-      return form.value.disks.length >= 1 && form.value.disks.some(d => d.bootable)
+      // Allow diskless VMs - useful for:
+      // - PXE network boot (stateless clients)
+      // - Live ISO/CD boot
+      // - Network-attached storage only
+      // - Thin clients
+      // If disks exist, at least one should be bootable (unless booting from CD/network)
+      if (form.value.disks.length === 0) {
+        // Diskless VM is valid - will boot from CD, network, or other source
+        return true
+      }
+      // If disks exist and CD/network boot is not primary, require bootable disk
+      const primaryBoot = form.value.boot.order[0]
+      if (primaryBoot === 'disk') {
+        return form.value.disks.some(d => d.bootable)
+      }
+      return true // CD or network boot is primary
     case 4: // Network
       return form.value.networks.length >= 1
     case 5: // Boot & Security
@@ -437,6 +580,35 @@ async function createVm() {
   }
 }
 
+async function updateVm() {
+  if (!vmId.value) return
+  
+  vmsStore.loading = true
+  try {
+    const request = buildRequest()
+    const response = await vmsApi.update(vmId.value, request)
+    if (response.data.success) {
+      notificationStore.success('VM Updated', `"${form.value.name}" has been updated successfully`)
+      router.push(`/vms/${vmId.value}`)
+    } else {
+      notificationStore.error('Update Failed', response.data.error?.message || 'Failed to update VM')
+    }
+  } catch (e: any) {
+    notificationStore.error('Update Failed', e.response?.data?.error?.message || 'Failed to update VM')
+  } finally {
+    vmsStore.loading = false
+  }
+}
+
+// Submit handler - creates or updates based on mode
+async function handleSubmit() {
+  if (isEditMode.value) {
+    await updateVm()
+  } else {
+    await createVm()
+  }
+}
+
 // Tag input
 const tagInput = ref('')
 
@@ -474,6 +646,14 @@ function formatSize(gb: number): string {
 
 <template>
   <div class="p-6 max-w-6xl mx-auto">
+    <!-- Loading overlay for edit mode -->
+    <div v-if="loadingVm" class="fixed inset-0 bg-dark-900/80 flex items-center justify-center z-50">
+      <div class="text-center">
+        <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-accent-500 mx-auto mb-4"></div>
+        <p class="text-white">Loading VM configuration...</p>
+      </div>
+    </div>
+    
     <!-- Header -->
     <div class="mb-8">
       <button
@@ -485,8 +665,8 @@ function formatSize(gb: number): string {
         </svg>
         Back to VMs
       </button>
-      <h1 class="text-2xl font-bold text-white">Create Virtual Machine</h1>
-      <p class="text-dark-400 mt-1">Enterprise-grade VM configuration</p>
+      <h1 class="text-2xl font-bold text-white">{{ isEditMode ? 'Edit Virtual Machine' : 'Create Virtual Machine' }}</h1>
+      <p class="text-dark-400 mt-1">{{ isEditMode ? 'Modify VM configuration' : 'Enterprise-grade VM configuration' }}</p>
     </div>
 
     <!-- Progress Steps -->
@@ -767,6 +947,29 @@ function formatSize(gb: number): string {
           </button>
         </div>
 
+        <!-- Diskless VM info banner -->
+        <div v-if="form.disks.length === 0" class="bg-blue-500/10 border border-blue-500/30 rounded-lg p-4">
+          <div class="flex items-start gap-3">
+            <svg class="w-5 h-5 text-blue-400 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            </svg>
+            <div>
+              <h3 class="text-blue-400 font-medium">Diskless VM</h3>
+              <p class="text-dark-300 text-sm mt-1">
+                This VM has no hard disks configured. It can still boot from:
+              </p>
+              <ul class="text-dark-400 text-sm mt-2 list-disc list-inside space-y-1">
+                <li><strong class="text-dark-300">CD/DVD ISO</strong> - Live distributions, rescue disks</li>
+                <li><strong class="text-dark-300">Network (PXE)</strong> - Thin clients, diskless workstations</li>
+                <li><strong class="text-dark-300">iSCSI/NAS</strong> - Network-attached storage boot</li>
+              </ul>
+              <p class="text-dark-400 text-sm mt-2">
+                Make sure to configure the boot order in Step 5 to use CD-ROM or Network first.
+              </p>
+            </div>
+          </div>
+        </div>
+
         <div class="space-y-4">
           <div 
             v-for="(disk, index) in form.disks" 
@@ -785,9 +988,9 @@ function formatSize(gb: number): string {
                   @click="setBootDisk(index)"
                 >Set as Boot</button>
                 <button 
-                  v-if="form.disks.length > 1"
                   class="text-xs text-red-400 hover:text-red-300"
                   @click="removeDisk(index)"
+                  :title="form.disks.length === 1 ? 'Remove to create diskless VM' : 'Remove disk'"
                 >Remove</button>
               </div>
             </div>
@@ -1166,13 +1369,13 @@ function formatSize(gb: number): string {
           v-else
           class="btn-primary"
           :disabled="vmsStore.loading"
-          @click="createVm"
+          @click="handleSubmit"
         >
           <svg v-if="vmsStore.loading" class="animate-spin -ml-1 mr-2 h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
             <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"/>
           </svg>
-          {{ vmsStore.loading ? 'Creating...' : 'Create VM' }}
+          {{ vmsStore.loading ? (isEditMode ? 'Saving...' : 'Creating...') : (isEditMode ? 'Save Changes' : 'Create VM') }}
         </button>
       </div>
     </div>

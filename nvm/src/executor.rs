@@ -505,6 +505,25 @@ impl VmExecutor {
         self.hypervisor.vm_vga_write(running_vm.hv_id, text)
             .map_err(|e| VmExecError::ConsoleError(e.to_string()))
     }
+    
+    /// Inject keyboard key event to VM (for console input)
+    /// 
+    /// Supports human-readable key names: a-z, 0-9, f1-f12, enter, space, 
+    /// escape, up, down, left, right, lctrl, rctrl, lalt, ralt, lshift, rshift, del, etc.
+    pub fn inject_key(&self, vm_id: &str, key: &str, is_release: bool) -> VmExecResult<()> {
+        let running_vm = self.get_running_vm(vm_id)?;
+        
+        self.hypervisor.vm_inject_key(running_vm.hv_id, key, is_release)
+            .map_err(|e| VmExecError::ConsoleError(e.to_string()))
+    }
+    
+    /// Inject keyboard scancode directly to VM
+    pub fn inject_scancode(&self, vm_id: &str, scancode: u8, is_release: bool) -> VmExecResult<()> {
+        let running_vm = self.get_running_vm(vm_id)?;
+        
+        self.hypervisor.vm_inject_scancode(running_vm.hv_id, scancode, is_release)
+            .map_err(|e| VmExecError::ConsoleError(e.to_string()))
+    }
 
     /// Get VM data directory
     pub fn vm_data_dir(&self, vm_id: &str) -> PathBuf {

@@ -13,6 +13,23 @@ use std::sync::Arc;
 /// Maximum number of events to keep in memory
 const MAX_EVENTS: usize = 1000;
 
+/// Result of cleanup operations during VM deletion
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DeleteCleanupResult {
+    /// Number of disk files successfully deleted
+    pub disks_deleted: usize,
+    /// Number of backup files successfully deleted
+    pub backups_deleted: usize,
+    /// Number of backup schedules deleted (single-VM schedules)
+    pub schedules_deleted: usize,
+    /// Whether the config file was deleted
+    pub config_deleted: bool,
+    /// Errors encountered while deleting disks
+    pub disk_errors: Vec<String>,
+    /// Errors encountered while deleting backups
+    pub backup_errors: Vec<String>,
+}
+
 /// Global VM state manager
 pub struct VmStateManager {
     /// In-memory VM states
@@ -531,7 +548,168 @@ impl VmStateManager {
         }
     }
     
-    /// Delete a VM
+    /// Delete a VM with options for cleaning up associated resources
+    /// 
+    /// # Arguments
+    /// * `id` - VM ID to delete
+    /// * `delete_disks` - Whether to delete associated disk files
+    /// * `delete_backups` - Whether to delete associated backups
+    /// 
+    /// Returns the deleted VM state and a summary of cleanup operations
+    pub fn delete_vm_with_cleanup(
+        &self, 
+        id: &str, 
+        delete_disks: bool, 
+        delete_backups: bool
+    ) -> Result<(VmState, DeleteCleanupResult), String> {
+        let mut cleanup_result = DeleteCleanupResult::default();
+        
+        // Get VM info first
+        let vm = {
+            let vms = self.vms.read();
+            match vms.get(id) {
+                Some(vm) => vm.clone(),
+                None => return Err(format!("VM '{}' not found", id)),
+            }
+        };
+        
+        // Collect backups for this VM before deletion
+        if delete_backups {
+            let backups: Vec<BackupRecord> = self.backups.read()
+                .values()
+                .filter(|b| b.vm_id == id)
+                .cloned()
+                .collect();
+            
+            // Delete backup files and records
+            for backup in &backups {
+                // Delete backup file
+                if backup.target_path.exists() {
+                    match std::fs::remove_file(&backup.target_path) {
+                        Ok(_) => {
+                            log::info!("Deleted backup file: {:?}", backup.target_path);
+                            cleanup_result.backups_deleted += 1;
+                        }
+                        Err(e) => {
+                            log::warn!("Failed to delete backup file {:?}: {}", backup.target_path, e);
+                            cleanup_result.backup_errors.push(format!(
+                                "Failed to delete {}: {}", 
+                                backup.target_path.display(), 
+                                e
+                            ));
+                        }
+                    }
+                }
+                
+                // Also try to delete backup directory if it exists
+                if let Some(parent) = backup.target_path.parent() {
+                    // Only remove if it's a VM-specific backup directory and empty
+                    if parent.exists() && parent.to_string_lossy().contains(&backup.vm_id) {
+                        if let Ok(entries) = std::fs::read_dir(parent) {
+                            if entries.count() == 0 {
+                                let _ = std::fs::remove_dir(parent);
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Remove backup records from state
+            {
+                let mut backups_write = self.backups.write();
+                let backup_ids: Vec<String> = backups.iter().map(|b| b.id.clone()).collect();
+                for backup_id in backup_ids {
+                    backups_write.remove(&backup_id);
+                }
+            }
+            
+            // Also clean up backup schedules that only reference this VM
+            {
+                let mut schedules = self.backup_schedules.write();
+                let schedule_ids_to_remove: Vec<String> = schedules
+                    .iter()
+                    .filter(|(_, s)| s.vm_ids.len() == 1 && s.vm_ids[0] == id)
+                    .map(|(id, _)| id.clone())
+                    .collect();
+                
+                for schedule_id in schedule_ids_to_remove {
+                    schedules.remove(&schedule_id);
+                    cleanup_result.schedules_deleted += 1;
+                }
+                
+                // Remove this VM from multi-VM schedules
+                for schedule in schedules.values_mut() {
+                    schedule.vm_ids.retain(|vm_id| vm_id != id);
+                }
+            }
+        }
+        
+        // Delete disk files
+        if delete_disks {
+            for disk_path in &vm.disk_paths {
+                if disk_path.exists() {
+                    match std::fs::remove_file(disk_path) {
+                        Ok(_) => {
+                            log::info!("Deleted disk file: {:?}", disk_path);
+                            cleanup_result.disks_deleted += 1;
+                        }
+                        Err(e) => {
+                            log::warn!("Failed to delete disk file {:?}: {}", disk_path, e);
+                            cleanup_result.disk_errors.push(format!(
+                                "Failed to delete {}: {}", 
+                                disk_path.display(), 
+                                e
+                            ));
+                        }
+                    }
+                }
+            }
+            
+            // Also delete VM config file if exists
+            if let Some(ref config_path) = vm.config_path {
+                if config_path.exists() {
+                    match std::fs::remove_file(config_path) {
+                        Ok(_) => {
+                            log::info!("Deleted config file: {:?}", config_path);
+                            cleanup_result.config_deleted = true;
+                        }
+                        Err(e) => {
+                            log::warn!("Failed to delete config file {:?}: {}", config_path, e);
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Remove VM from state
+        let vm_name = vm.name.clone();
+        {
+            let mut vms = self.vms.write();
+            vms.remove(id);
+        }
+        
+        // Log deletion event with cleanup details
+        self.log_event(
+            EventType::VmDelete,
+            EventSeverity::Warning,
+            &vm_name,
+            &format!("VM '{}' (ID: {}) deleted with cleanup", vm_name, id),
+            Some(serde_json::json!({
+                "vm_id": id, 
+                "vm_name": vm_name,
+                "disks_deleted": cleanup_result.disks_deleted,
+                "backups_deleted": cleanup_result.backups_deleted,
+                "delete_disks_requested": delete_disks,
+                "delete_backups_requested": delete_backups,
+            })),
+            None,
+        );
+        
+        let _ = self.save_state();
+        Ok((vm, cleanup_result))
+    }
+    
+    /// Delete a VM (basic, no resource cleanup - for backward compatibility)
     pub fn delete_vm(&self, id: &str) -> Result<VmState, String> {
         let mut vms = self.vms.write();
         if let Some(vm) = vms.remove(id) {

@@ -1193,6 +1193,20 @@ impl Hypervisor {
         Ok(())
     }
     
+    /// Inject keyboard key event to VM (for console input)
+    pub fn vm_inject_key(&self, id: VmId, key: &str, is_release: bool) -> HypervisorResult<()> {
+        let vm = self.get_vm(id)?;
+        vm.inject_key(key, is_release);
+        Ok(())
+    }
+    
+    /// Inject keyboard scancode directly to VM
+    pub fn vm_inject_scancode(&self, id: VmId, scancode: u8, is_release: bool) -> HypervisorResult<()> {
+        let vm = self.get_vm(id)?;
+        vm.inject_scancode(scancode, is_release);
+        Ok(())
+    }
+    
     /// Get VM by ID
     fn get_vm(&self, id: VmId) -> HypervisorResult<Arc<VmInstance>> {
         self.vms.read().unwrap()
@@ -1518,6 +1532,23 @@ impl VmInstance {
     pub fn vga_write(&self, text: &str) {
         if let Some(vm) = self.vm.read().unwrap().as_ref() {
             vm.vga_write(text);
+        }
+    }
+    
+    /// Inject keyboard key event (for console input)
+    pub fn inject_key(&self, key: &str, is_release: bool) {
+        if let Some(vm) = self.vm.read().unwrap().as_ref() {
+            vm.inject_key(key, is_release);
+        }
+    }
+    
+    /// Inject keyboard scancode directly
+    pub fn inject_scancode(&self, scancode: u8, is_release: bool) {
+        if let Some(vm) = self.vm.read().unwrap().as_ref() {
+            if let Some(keyboard) = vm.get_keyboard_device() {
+                let mut kb = keyboard.lock().unwrap();
+                kb.inject_scancode(scancode, is_release);
+            }
         }
     }
 
